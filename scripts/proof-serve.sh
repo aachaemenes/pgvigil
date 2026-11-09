@@ -36,6 +36,13 @@ NID=$(pick "select instance_id from pgvigil.activity_summary group by instance_i
 for v in AID AT SID DID VID IID NID; do [[ -n "${!v}" ]] || fail "no data for $v: run the other proofs first"; done
 # DMS data is optional (proof-dms.sh fills it): checked when an instance holds a task with table statistics
 read -r MID MARN < <(pick "select t.instance_id, t.task_arn from pgvigil.dms_tasks t where exists (select 1 from pgvigil.dms_table_stats s where s.instance_id = t.instance_id and s.task_arn = t.task_arn) order by t.snapshot_at desc limit 1" | tr '|' ' ')
+# the shell's per-instance tabs (replication, jobs, logs, configuration, databases) read their proofs' data
+RID=$(pick "select instance_id from pgvigil.replication_latest where kind in ('sender','slot') order by snapshot_at desc limit 1")
+JID=$(pick "select instance_id from pgvigil.job_runs where start_time > now() - interval '30 days' order by start_time desc limit 1")
+LID=$(pick "select instance_id from pgvigil.log_events where snapshot_at > now() - interval '30 days' order by snapshot_at desc limit 1")
+CID=$(pick "select instance_id from pgvigil.instance_setting_history order by changed_at desc limit 1")
+BID=$(pick "select instance_id from pgvigil.databases limit 1")
+for v in RID JID LID CID BID; do [[ -n "${!v}" ]] || fail "no data for $v: run proof-replication, proof-jobs, proof-logs, integration and the dbstats proof first"; done
 
 LOG=$(mktemp); "$BIN" serve -config "$CFG" -dsn env:READ_DSN -listen "127.0.0.1:$PORT" -no-login >"$LOG" 2>&1 & SRVPID=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
@@ -66,6 +73,24 @@ if [[ -n "${MID:-}" ]]; then
   rows "dms?instance=$MID" 'len(d["tasks"]["rows"])' 1
   rows "dms?instance=$MID&task=$MARN" 'len(d["tables"]["rows"])' 1
 else echo "dms: no task data in this repository (proof-dms.sh fills it): the endpoint answered empty"; fi
+# the shell: the overview carries check_group as its last column; the new per-instance endpoints answer
+rows overview 'min([len(r) for r in d["rows"]] or [8]) if d["columns"][-1]=="check_group" else 0' 8
+rows "replication?instance=$RID&from=$FROM" 'len(d["latest"]["rows"])' 1
+rows "replication?instance=$RID&from=$FROM" 'len(d["series"]["rows"])' 1
+rows "replication?instance=$RID&from=$FROM" 'len(d["checks"]["rows"])' 0
+rows "jobs?instance=$JID&from=$FROM" 'len(d["jobs"]["rows"])' 1
+rows "jobs?instance=$JID&from=$FROM" 'len(d["runs"]["rows"])' 1
+rows "logs?instance=$LID&from=$FROM" 'len(d["events"]["rows"])' 1
+rows "logs?instance=$LID&from=$FROM" 'len(d["counts"]["rows"])' 1
+rows "logs?instance=$LID&from=$FROM&kind=slow" 'len(d["events"]["rows"])' 0
+rows "config?instance=$CID&from=$FROM" 'len(d["state"]["rows"])' 1
+rows "config?instance=$CID&from=$FROM" 'len(d["settings"]["rows"])' 1
+rows "config?instance=$CID&from=$FROM" 'd["history_total"]["rows"][0][0]' 1
+rows "config?instance=$CID&from=$FROM" 'len(d["extensions"]["rows"])' 1
+rows "databases?instance=$BID" 'len(d["rows"])' 1
+[[ $(code "$U/api/logs?instance=$LID&kind=bad") == 400 ]] || fail "logs kind=bad was not 400"
+[[ $(code "$U/api/replication") == 400 ]] || fail "replication without instance was not 400"
+[[ $(code "$U/api/config?instance=1&from=bad") == 400 ]] || fail "config with a bad from was not 400"
 [[ $(code "$U/api/dms?instance=x") == 400 ]] || fail "dms with a bad instance was not 400"
 [[ $(code -H 'Host: evil.example' "$U/api/instances") == 421 ]] || fail "a foreign Host was answered"
 [[ $(code "$U/api/activity") == 400 ]] || fail "activity without instance was not 400"

@@ -3,9 +3,10 @@
 -- A payload that carries one statement twice (a collector that scanned pg_stat_statements twice while
 -- the counters moved, or any client sending duplicates) used to fail the whole cycle: the upsert into
 -- statements_current cannot update one row twice in one statement (SQLSTATE 21000) and statements_delta
--- would get two rows for one key. The row with the most calls (then the most time) is the later reading
--- and wins; everything else in the function is unchanged from 0003. Same signature: CREATE OR REPLACE.
--- The collector itself reads the view once since the same change (internal/collect/statements.go).
+-- would get two rows for one key. The row with the most calls (then the most time) is taken as the later
+-- reading and wins; a reset between two readings of one payload makes the earlier one win, so a client
+-- reads the view once, as the collector does since the same change (internal/collect/statements.go).
+-- Everything else in the function is unchanged from 0003. Same signature: CREATE OR REPLACE.
 
 CREATE OR REPLACE FUNCTION pgvigil.import_statements(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$

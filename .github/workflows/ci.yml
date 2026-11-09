@@ -34,7 +34,10 @@ jobs:
           go-version-file: go.mod
       - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go vet ./...
-      - run: go test ./...
+      - name: go test (the repository-backed tests run too: fixture imports on this PostgreSQL)
+        env:
+          PGVIGIL_REPO_DSN: postgres://postgres:pgvigil@localhost:5432/pgvigil?sslmode=disable
+        run: go test ./...
       - run: go build -o bin/pgvigil ./cmd/pgvigil
       - name: integration (migrate, collect as pg_monitor, settings history)
         env:

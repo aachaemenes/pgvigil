@@ -10,6 +10,8 @@
 # returns (the reset time is stored per current row); a payload that names one statement twice (two
 # readings of the view while its counters moved) imports whole, the reading with the most calls is
 # kept and the next cycle's delta counts from it (migration 0017).
+# On PostgreSQL 13 (no pg_stat_statements_info) an overtaking reset is undetectable: snapshot 4 is then
+# 6/false and the window total 14, and the script says so.
 # Expected: snapshot 1 writes no delta for the marker (first sight); after 5 more runs,
 # snapshot 2 has one delta row for the marker with calls = 5 and reset = false; after
 # pg_stat_statements_reset() and 3 runs, snapshot 3 has one row with calls = 3 and reset = true;
@@ -64,12 +66,14 @@ psql "$ADMIN_DSN" -XAtq -c "select pg_stat_statements_reset()" >/dev/null
 marker 9; sleep 1
 "$BIN" collect -config "$CFG" -once statements >/dev/null
 r4=$(q "select calls || '/' || reset from pgvigil.statements_delta where instance_id=$iid and queryid=$qid order by snapshot_at desc limit 1")
-[ "$r4" = "9/true" ] || fail "snapshot 4 (overtake) expected calls 9 reset true, got '$r4'"
+HAS_INFO=$(psql "$ADMIN_DSN" -XAt -c "select count(*) from pg_catalog.pg_class where relname = 'pg_stat_statements_info'")
+if [ "$HAS_INFO" = "1" ]; then want4="9/true"; wanttop=17; else want4="6/false"; wanttop=14; echo "note: no pg_stat_statements_info on this server (PostgreSQL 13): an overtaking reset is undetectable, expecting 6/false and a window total of 14"; fi
+[ "$r4" = "$want4" ] || fail "snapshot 4 (overtake) expected $want4, got '$r4'"
 neg=$(q "select count(*) from pgvigil.statements_delta where instance_id=$iid and (calls < 0 or total_exec_ms < 0 or wal_bytes < 0)")
 [ "$neg" = "0" ] || fail "negative deltas: $neg"
 
 top=$(q "select round(calls) from pgvigil.top_statements($iid, now() - interval '10 minutes', now(), 500) where queryid=$qid")
-[ "$top" = "17" ] || fail "top_statements expected calls 17 for the marker, got '$top'"
+[ "$top" = "$wanttop" ] || fail "top_statements expected calls $wanttop for the marker, got '$top'"
 # crafted: a cycle whose info row is missing must not turn the next cycle into a mass reset
 q "select pgvigil.import_statements($iid, now() - interval '3 minutes', '[{\"kind\":\"stmt\",\"dbid\":1,\"datname\":\"d\",\"userid\":1,\"usename\":\"u\",\"queryid\":424242,\"toplevel\":true,\"calls\":100,\"total_exec_ms\":10,\"rows\":1,\"shared_blks_hit\":0,\"shared_blks_read\":0,\"shared_blks_dirtied\":0,\"shared_blks_written\":0,\"temp_blks_read\":0,\"temp_blks_written\":0,\"blk_read_ms\":0,\"blk_write_ms\":0,\"temp_read_ms\":0,\"temp_write_ms\":0,\"wal_bytes\":0,\"query\":\"crafted\"},{\"kind\":\"info\",\"dealloc\":0,\"stats_reset\":\"2026-01-01T00:00:00Z\"}]'::jsonb)" >/dev/null
 q "select pgvigil.import_statements($iid, now() - interval '2 minutes', '[{\"kind\":\"stmt\",\"dbid\":1,\"datname\":\"d\",\"userid\":1,\"usename\":\"u\",\"queryid\":424242,\"toplevel\":true,\"calls\":110,\"total_exec_ms\":11,\"rows\":1,\"shared_blks_hit\":0,\"shared_blks_read\":0,\"shared_blks_dirtied\":0,\"shared_blks_written\":0,\"temp_blks_read\":0,\"temp_blks_written\":0,\"blk_read_ms\":0,\"blk_write_ms\":0,\"temp_read_ms\":0,\"temp_write_ms\":0,\"wal_bytes\":0,\"query\":\"crafted\"}]'::jsonb)" >/dev/null
@@ -86,4 +90,4 @@ q "select pgvigil.import_statements($iid, now() - interval '40 seconds', '[$(dup
 dd=$(q "select string_agg(calls || '/' || reset, ' ' order by snapshot_at) from pgvigil.statements_delta where instance_id=$iid and queryid=434343")
 [ "$dd" = "10/false" ] || fail "duplicate key: expected one delta 10/false, got '$dd'"
 q "delete from pgvigil.statements_delta where instance_id=$iid and queryid in (424242, 434343); delete from pgvigil.statements_current where instance_id=$iid and queryid in (424242, 434343); delete from pgvigil.statement_text where instance_id=$iid and queryid in (424242, 434343)" >/dev/null
-echo "proof-statements: OK (queryid $qid: first sight no delta, 5/false, 3/true after reset, 9/true after an overtaking reset; window total 17; an info-row gap stays 10/false 10/false; one statement twice in a payload imports whole, 60 kept, next delta 10/false)"
+echo "proof-statements: OK (queryid $qid: first sight no delta, 5/false, 3/true after reset, $want4 after an overtaking reset; window total $wanttop; an info-row gap stays 10/false 10/false; one statement twice in a payload imports whole, 60 kept, next delta 10/false)"
