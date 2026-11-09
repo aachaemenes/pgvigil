@@ -4,7 +4,7 @@ PostgreSQL monitoring for DBAs: daily checks, running queries with blocking chai
 
 One collector binary (Go, static, no runtime on the target) polls each instance on a schedule and writes into a PostgreSQL repository. A web UI served by the same binary, and later an installable desktop client, read the repository; Grafana can read it too.
 
-Status: phase 1, under construction. The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers and the desktop wrapper are not built yet. The first tagged release is being prepared.
+Status: phase 1, under construction. The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers and the desktop wrapper are not built yet. The first release is [v0.1.0](https://github.com/aachaemenes/pgvigil/releases/tag/v0.1.0): static binaries for Linux, Windows and macOS.
 
 ## What it collects today
 
@@ -36,7 +36,7 @@ Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud 
 
 ## Quick start
 
-Until the first release the binary is built from source (Go 1.27): `go build -o bin/pgvigil ./cmd/pgvigil`, or `make build`. A release binary goes anywhere on the PATH; `pgvigil version` prints its tag.
+Download the binary for your platform from the [latest release](https://github.com/aachaemenes/pgvigil/releases/latest), verify it (the section below), rename it `pgvigil` (`pgvigil.exe` on Windows) and put it anywhere on the PATH; `pgvigil version` prints its tag. From source instead: Go 1.27, `go build -o bin/pgvigil ./cmd/pgvigil` or `make build`.
 
 1. A repository database on a PostgreSQL 13+ server (any edition, RDS and Aurora included), and a login that owns it; this is the only place pgvigil writes. The owner needs CREATEROLE: `migrate` creates the three NOLOGIN roles of the access contract (`pgvigil_collector`, `pgvigil_reader`, `pgvigil_auth`). On RDS and Aurora the master user has it.
    ```
@@ -92,7 +92,7 @@ cosign verify-blob --signature SHA256SUMS.sig --certificate SHA256SUMS.pem \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
 
-The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag. No release exists yet.
+The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag.
 
 ## Licence
 
