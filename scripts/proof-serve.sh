@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Proof of `pgvigil serve` against a repository that already holds collected data, connected as a
-# login holding only pgvigil_reader: every API endpoint answers 200 with JSON, bad parameters 400,
-# the shell page and its script load, a POST is refused.
+# Proof of `pgvigil serve` against a repository that already holds collected data (run the other
+# proofs first), connected as a login holding only pgvigil_reader: every endpoint answers with rows
+# read from real data, bad parameters get 400, a foreign Host 421, the page loads, a POST is refused.
 #   PGVIGIL_REPO_DSN  repository owner connection (creates and drops the reader login)
-# Expected: health/instances/overview 200 with columns; activity/statements/counters (all four kinds)
-# 200 for the first instance; activity without instance = 400; POST = 405; GET / = 200 with the title.
+# Expected: health/instances/overview 200 with rows; activity at a snapshot with a lock waiter returns
+# sessions and a blocking chain; statements, and counters of all four kinds, return rows for an
+# instance that holds that data; activity without instance = 400; Host evil.example = 421;
+# POST = 405; GET / = 200 with the title.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -22,22 +24,41 @@ DB=$(psql "$PGVIGIL_REPO_DSN" -XAt -c "select current_database()")
 psql "$PGVIGIL_REPO_DSN" -XAtq -c "create role $R login password '$PW' in role pgvigil_reader" >/dev/null
 export READ_DSN="host=$HOST port=$DBPORT user=$R password=$PW dbname=$DB sslmode=disable"
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
-ID=$(psql "$PGVIGIL_REPO_DSN" -XAt -c "select min(instance_id) from pgvigil.instances where is_active")
-[[ -n "$ID" ]] || fail "the repository holds no instance: run a collection first"
+pick() { psql "$PGVIGIL_REPO_DSN" -XAt -c "$1"; }
+# instances that hold each kind of data, and a snapshot with a lock waiter (proof-activity seeds one)
+read -r AID AT < <(pick "select instance_id, to_char(snapshot_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')
+                          from pgvigil.activity_summary where waiting_lock > 0 order by snapshot_at desc limit 1" | tr '|' ' ')
+SID=$(pick "select instance_id from pgvigil.statements_delta order by snapshot_at desc limit 1")
+DID=$(pick "select instance_id from pgvigil.dbstats group by instance_id having count(distinct snapshot_at) > 1 order by max(snapshot_at) desc limit 1")
+VID=$(pick "select instance_id from pgvigil.serverstats group by instance_id having count(*) > 1 order by max(snapshot_at) desc limit 1")
+IID=$(pick "select instance_id from pgvigil.iostats group by instance_id having count(distinct snapshot_at) > 1 order by max(snapshot_at) desc limit 1")
+NID=$(pick "select instance_id from pgvigil.activity_summary group by instance_id having count(*) > 1 order by max(snapshot_at) desc limit 1")
+for v in AID AT SID DID VID IID NID; do [[ -n "${!v}" ]] || fail "no data for $v: run the other proofs first"; done
 
 LOG=$(mktemp); "$BIN" serve -config "$CFG" -dsn env:READ_DSN -listen "127.0.0.1:$PORT" >"$LOG" 2>&1 & SRVPID=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 "$SRVPID" 2>/dev/null || fail "serve exited: $(cat "$LOG")"
 U="http://127.0.0.1:$PORT"
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
-FROM=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ)
-for p in health instances overview "activity?instance=$ID" "statements?instance=$ID&from=$FROM" \
-         "counters?instance=$ID&kind=db&from=$FROM" "counters?instance=$ID&kind=server&from=$FROM" \
-         "counters?instance=$ID&kind=io&from=$FROM" "counters?instance=$ID&kind=sessions&from=$FROM"; do
-  body=$(curl -s -w '\n%{http_code}' "$U/api/$p" || true)
-  [[ "${body##*$'\n'}" == 200 ]] || fail "/api/$p as the reader: ${body}"
-  echo "ok /api/$p"
-done
+FROM=$(date -u -d '-30 days' +%Y-%m-%dT%H:%M:%SZ)
+rows() {  # rows <path> <jq-like python expression giving a count> <min>
+  local body; body=$(curl -s -w '\n%{http_code}' "$U/api/$1" || true)
+  [[ "${body##*$'\n'}" == 200 ]] || fail "/api/$1 as the reader: ${body}"
+  local n; n=$(printf '%s' "${body%$'\n'*}" | python3 -c "import json,sys; d=json.load(sys.stdin); print($2)")
+  (( n >= $3 )) || fail "/api/$1 returned $n rows, want at least $3"
+  echo "ok /api/$1: $n"
+}
+rows health 'len(d["rows"])' 1
+rows instances 'len(d["rows"])' 1
+rows overview 'len(d["rows"])' 0
+rows "activity?instance=$AID&at=$AT" 'len(d["sessions"]["rows"])' 2
+rows "activity?instance=$AID&at=$AT" 'len(d["chains"]["rows"])' 1
+rows "statements?instance=$SID&from=$FROM" 'len(d["rows"])' 1
+rows "counters?instance=$DID&kind=db&from=$FROM" 'len(d["rows"])' 1
+rows "counters?instance=$VID&kind=server&from=$FROM" 'len(d["rows"])' 1
+rows "counters?instance=$IID&kind=io&from=$FROM" 'len(d["rows"])' 1
+rows "counters?instance=$NID&kind=sessions&from=$FROM" 'len(d["rows"])' 2
+[[ $(code -H 'Host: evil.example' "$U/api/instances") == 421 ]] || fail "a foreign Host was answered"
 [[ $(code "$U/api/activity") == 400 ]] || fail "activity without instance was not 400"
 [[ $(code -X POST "$U/api/instances") == 405 ]] || fail "POST was not refused"
 curl -s "$U/" | grep -q '<title>pgvigil</title>' || fail "the shell page did not load"

@@ -1,6 +1,7 @@
 import { get, rowsOf } from './api';
 import { activity, counters, Ctx, errorBox, instances, overview, statements } from './pages';
 import { el } from './ui';
+import { destroyCharts } from './chart';
 
 const pages: Record<string, { label: string; render: (c: Ctx) => Promise<HTMLElement>; perInstance: boolean; windowed: boolean }> = {
   overview: { label: 'Overview', render: overview, perInstance: false, windowed: false },
@@ -11,6 +12,7 @@ const pages: Record<string, { label: string; render: (c: Ctx) => Promise<HTMLEle
 };
 
 let timer: number | undefined;
+let generation = 0;   // a render that finishes after a newer one started is dropped
 
 function parse(): { page: string; ctx: Ctx } {
   const h = location.hash.replace(/^#\/?/, '');
@@ -38,6 +40,8 @@ function href(page: string, ctx: Ctx, over: Partial<Ctx> = {}): string {
 
 async function render() {
   window.clearTimeout(timer);
+  timer = undefined;
+  const gen = ++generation;
   const { page, ctx } = parse();
   if (ctx.instance) localStorageSet('pgvigil.instance', String(ctx.instance));
   const nav = document.getElementById('nav')!;
@@ -48,6 +52,7 @@ async function render() {
   bar.replaceChildren();
   try {
     const inst = rowsOf(await get('instances'));
+    if (gen !== generation) return;
     if (pages[page].perInstance) {
       const sel = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'instance...'),
         ...inst.map(r => { const o = el('option', { value: String(r.instance_id) }, String(r.name)); if (Number(r.instance_id) === ctx.instance) o.selected = true; return o; }));
@@ -66,11 +71,15 @@ async function render() {
   bar.append(refresh, el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })));
 
   const main = document.getElementById('main')!;
+  let view: HTMLElement;
   try {
-    main.replaceChildren(await pages[page].render(ctx));
+    view = await pages[page].render(ctx);
   } catch (e) {
-    main.replaceChildren(errorBox(e));
+    view = errorBox(e);
   }
+  if (gen !== generation) return;
+  destroyCharts();
+  main.replaceChildren(view);
   // live pages refresh every 30 s while the tab is visible
   if ((page === 'overview' || page === 'activity') && !ctx.at) {
     timer = window.setTimeout(() => { if (!document.hidden) void render(); else timer = undefined; }, 30000);

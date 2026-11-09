@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,16 +29,26 @@ var dist embed.FS
 type Server struct {
 	pool *pgxpool.Pool
 	log  *slog.Logger
-	// expected maps instance name -> collection -> interval in seconds (from the config),
-	// used to call a collection stale; an instance missing from it gets DefaultStaleSecs.
-	expected map[string]map[string]int
+	// expected holds the collection intervals in seconds used to call a collection stale:
+	// Defaults per collection (the collector's own), Instances per configured instance
+	// (0 = disabled there). A collection named by neither is stale after DefaultStaleSecs.
+	expected Expected
+	// hosts are the Host header values accepted; empty = any (a non-loopback listen).
+	hosts map[string]bool
+}
+
+// Expected is the interval map of the stale check.
+type Expected struct {
+	Defaults  map[string]int            `json:"defaults"`
+	Instances map[string]map[string]int `json:"instances"`
 }
 
 // DefaultStaleSecs is the age after which a collection with no known interval is stale.
-const DefaultStaleSecs = 900
+const DefaultStaleSecs = 3 * 3600
 
 // Open connects to the repository read-only.
-func Open(ctx context.Context, log *slog.Logger, dsn string, expected map[string]map[string]int) (*Server, error) {
+// hosts lists the Host header values to accept (DNS-rebinding guard); nil accepts any.
+func Open(ctx context.Context, log *slog.Logger, dsn string, expected Expected, hosts []string) (*Server, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("repository dsn is empty")
 	}
@@ -62,7 +73,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, expected map[string
 		pool.Close()
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
-	return &Server{pool: pool, log: log, expected: expected}, nil
+	return &Server{pool: pool, log: log, expected: expected, hosts: hostSet(hosts)}, nil
 }
 
 // Close releases the pool.
@@ -94,12 +105,33 @@ func (s *Server) Handler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
-	return secure(mux)
+	return s.secure(mux)
 }
 
-// secure adds the headers a local admin UI wants: no framing, no sniffing, same-origin only.
-func secure(h http.Handler) http.Handler {
+func hostSet(hosts []string) map[string]bool {
+	if len(hosts) == 0 {
+		return nil
+	}
+	m := map[string]bool{}
+	for _, h := range hosts {
+		m[strings.ToLower(h)] = true
+	}
+	return m
+}
+
+// LoopbackHosts are the Host values a loopback listen on port accepts.
+func LoopbackHosts(port string) []string {
+	return []string{"localhost:" + port, "127.0.0.1:" + port, "[::1]:" + port, "localhost", "127.0.0.1", "[::1]"}
+}
+
+// secure refuses a Host the server does not answer to (a DNS-rebinding page would send its
+// own name) and adds the headers a local admin UI wants: no framing, no sniffing, same origin.
+func (s *Server) secure(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.hosts != nil && !s.hosts[strings.ToLower(r.Host)] {
+			writeErr(w, http.StatusMisdirectedRequest, errors.New("unknown host"))
+			return
+		}
 		hd := w.Header()
 		hd.Set("X-Content-Type-Options", "nosniff")
 		hd.Set("X-Frame-Options", "DENY")
@@ -206,8 +238,46 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	t, err := s.query(r.Context(), sqlOverview, string(exp), DefaultStaleSecs)
-	s.reply(w, r, t, err)
+	// each check runs alone: one that fails or times out becomes its own row, the rest still show
+	out := &table{Columns: []string{"severity", "instance", "instance_id", "check_name", "object", "at", "detail"}, Rows: [][]any{}}
+	names := map[int32]string{}
+	if t, err := s.query(r.Context(), `SELECT instance_id, name FROM pgvigil.instances`); err == nil {
+		for _, row := range t.Rows {
+			if id, ok := row[0].(int32); ok {
+				names[id], _ = row[1].(string)
+			}
+		}
+	}
+	for _, c := range overviewChecks {
+		var args []any
+		if strings.Contains(c.sql, "$1") {
+			args = []any{string(exp), DefaultStaleSecs}
+		}
+		t, err := s.query(r.Context(), c.sql, args...)
+		if err != nil {
+			s.log.Warn("overview check failed", "check", c.name, "err", err)
+			out.Rows = append(out.Rows, []any{"critical", "", nil, "check could not run", c.name, time.Now(), err.Error()})
+			continue
+		}
+		for _, row := range t.Rows {
+			id, _ := row[0].(int32)
+			out.Rows = append(out.Rows, []any{row[1], names[id], row[0], row[2], row[3], row[4], row[5]})
+		}
+	}
+	sort.SliceStable(out.Rows, func(i, j int) bool {
+		a, b := out.Rows[i], out.Rows[j]
+		if (a[0] == "critical") != (b[0] == "critical") {
+			return a[0] == "critical"
+		}
+		for _, k := range []int{1, 3, 4} {
+			x, y := fmt.Sprint(a[k]), fmt.Sprint(b[k])
+			if x != y {
+				return x < y
+			}
+		}
+		return false
+	})
+	s.reply(w, r, out, nil)
 }
 
 func (s *Server) activity(w http.ResponseWriter, r *http.Request) {

@@ -16,47 +16,54 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, i.tags
  WHERE i.is_active
  ORDER BY i.name`
 
-// sqlOverview is the daily-checks list, one row per finding, worst first.
-// $1 = {"instance": {"collection": seconds}} from the config, $2 = the fallback stale age.
-// A collection is stale past three intervals (at least five minutes).
-const sqlOverview = `
-WITH inst AS (SELECT instance_id, name FROM pgvigil.instances WHERE is_active),
-checks AS (
-  SELECT c.instance_id, 'critical' AS severity, 'collection failing' AS check_name, c.collection AS object,
-         c.snapshot_at AS at, c.note AS detail
-    FROM pgvigil.collection_dates c JOIN inst i USING (instance_id)
-   WHERE c.status = 'error'
-  UNION ALL
-  SELECT c.instance_id, 'warning', 'collection stale', c.collection, c.snapshot_at,
-         'last ' || to_char(now() - c.snapshot_at, 'DD"d" HH24"h" MI"m"') || ' ago'
-    FROM pgvigil.collection_dates c JOIN inst i USING (instance_id)
-   WHERE c.status <> 'error'
-     AND now() - c.snapshot_at > make_interval(secs => greatest(300, 3 * coalesce(($1::jsonb -> i.name ->> c.collection)::int, $2::int)))
-  UNION ALL
-  SELECT r.instance_id, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'critical' ELSE 'warning' END,
-         r.check_name, r.object, r.snapshot_at,
-         r.value::text || ' ' || r.unit || coalesce(' (' || r.state || ')', '')
-    FROM pgvigil.replication_checks r JOIN inst i USING (instance_id)
-  UNION ALL
-  SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f.job_name, f.job_id::text), f.start_time,
-         left(f.return_message, 300)
-    FROM pgvigil.job_failures f JOIN inst i USING (instance_id)
-  UNION ALL
-  SELECT i.instance_id, CASE WHEN x.checksum_failures > 0 THEN 'critical' ELSE 'warning' END,
-         CASE WHEN x.checksum_failures > 0 THEN 'checksum failures (24 h)' ELSE 'deadlocks (24 h)' END,
-         x.datname, x.last_at,
-         CASE WHEN x.checksum_failures > 0 THEN x.checksum_failures::text || ' checksum failure(s); ' ELSE '' END
-           || x.deadlocks::text || ' deadlock(s)'
-    FROM inst i
-    CROSS JOIN LATERAL (
-      SELECT d.datname, sum(d.deadlocks) AS deadlocks, sum(d.checksum_failures) AS checksum_failures, max(d.snapshot_at) AS last_at
-        FROM pgvigil.dbstats_rate(i.instance_id, now() - interval '1 day', now()) d
-       GROUP BY d.datname) x
-   WHERE x.deadlocks > 0 OR x.checksum_failures > 0
-)
-SELECT ch.severity, i.name AS instance, ch.instance_id, ch.check_name, ch.object, ch.at, ch.detail
-  FROM checks ch JOIN inst i USING (instance_id)
- ORDER BY ch.severity = 'critical' DESC, i.name, ch.check_name, ch.object`
+// overviewChecks are the daily checks, each its own statement so a slow or failing check
+// costs only its own rows. Every one returns instance_id, severity, check_name, object, at, detail.
+// $1 (stale only) = {"defaults": {collection: secs}, "instances": {name: {collection: secs}}};
+// an interval of 0 = disabled there. $2 = the age used when neither names the collection.
+var overviewChecks = []struct{ name, sql string }{
+	{"collection failing", `
+SELECT c.instance_id, 'critical' AS severity, 'collection failing' AS check_name, c.collection AS object,
+       c.snapshot_at AS at, c.note AS detail
+  FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active AND c.status = 'error'`},
+	{"collection stale", `
+SELECT instance_id, 'warning', 'collection stale', collection, snapshot_at,
+       'last ' || to_char(now() - snapshot_at, 'DD"d" HH24"h" MI"m"') || ' ago'
+  FROM (SELECT c.*, coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
+                             ($1::jsonb -> 'defaults' ->> c.collection)::int) AS iv
+          FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id)
+         WHERE i.is_active AND c.status <> 'error') x
+ WHERE coalesce(iv, -1) <> 0
+   AND now() - snapshot_at > make_interval(secs => CASE WHEN iv IS NULL THEN $2::int ELSE greatest(300, 3 * iv) END)`},
+	{"replication", `
+SELECT r.instance_id, CASE WHEN r.check_name LIKE 'slot WAL status%' THEN 'critical' ELSE 'warning' END,
+       r.check_name, r.object, r.snapshot_at,
+       r.value::text || ' ' || r.unit || coalesce(' (' || r.state || ')', '')
+  FROM pgvigil.replication_checks r JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active`},
+	{"jobs", `
+SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f.job_name, f.job_id::text), f.start_time,
+       left(f.return_message, 300)
+  FROM pgvigil.job_failures f JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active`},
+	// counters only rise within one stats_reset epoch: last minus first per epoch, no per-row deltas
+	{"deadlocks and checksums", `
+SELECT instance_id, CASE WHEN ck > 0 THEN 'critical' ELSE 'warning' END,
+       CASE WHEN ck > 0 THEN 'checksum failures (24 h)' ELSE 'deadlocks (24 h)' END,
+       datname, last_at,
+       CASE WHEN ck > 0 THEN ck::text || ' checksum failure(s); ' ELSE '' END || dl::text || ' deadlock(s)'
+  FROM (SELECT instance_id, datname, sum(dl) AS dl, sum(ck) AS ck, max(last_at) AS last_at
+          FROM (SELECT d.instance_id, d.dbid, max(d.datname) AS datname, max(d.snapshot_at) AS last_at,
+                       greatest(0, (array_agg(d.deadlocks ORDER BY d.snapshot_at DESC))[1]
+                                 - (array_agg(d.deadlocks ORDER BY d.snapshot_at))[1]) AS dl,
+                       greatest(0, (array_agg(d.checksum_failures ORDER BY d.snapshot_at DESC))[1]
+                                 - (array_agg(d.checksum_failures ORDER BY d.snapshot_at))[1]) AS ck
+                  FROM pgvigil.dbstats d JOIN pgvigil.instances i USING (instance_id)
+                 WHERE i.is_active AND d.snapshot_at > now() - interval '1 day'
+                 GROUP BY d.instance_id, d.dbid, d.stats_reset) e
+         GROUP BY instance_id, datname) x
+ WHERE dl > 0 OR ck > 0`},
+}
 
 // sqlSessions is one activity snapshot with statement text and ages at the snapshot.
 const sqlSessions = `
@@ -85,7 +92,9 @@ SELECT snapshot_at,
        sum(deadlocks) AS deadlocks, sum(numbackends) AS backends
   FROM pgvigil.dbstats_rate($1, $2, $3)
  WHERE interval_secs > 0
- GROUP BY snapshot_at ORDER BY snapshot_at`,
+ GROUP BY snapshot_at
+HAVING NOT bool_or(reset)                -- a database reset in this interval: no point, not a dip
+ ORDER BY snapshot_at`,
 	"server": `
 SELECT snapshot_at,
        checkpoints_timed + checkpoints_req AS checkpoints, checkpoints_req,
@@ -106,7 +115,9 @@ SELECT snapshot_at,
        round(sum(fsyncs)::numeric / max(interval_secs), 2) AS fsyncs_s
   FROM pgvigil.iostats_rate($1, $2, $3)
  WHERE interval_secs > 0
- GROUP BY snapshot_at ORDER BY snapshot_at`,
+ GROUP BY snapshot_at
+HAVING NOT bool_or(reset)                -- an IO row reset in this interval: no point, not a dip
+ ORDER BY snapshot_at`,
 	"sessions": `
 SELECT snapshot_at, total, active, idle_in_txn, waiting_lock, active_client_wait,
        longest_active_secs, longest_idle_txn_secs, oldest_xmin_age

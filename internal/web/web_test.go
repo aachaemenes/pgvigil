@@ -53,3 +53,19 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// A loopback server answers only to its own names: a DNS-rebinding page sends its own Host.
+func TestHostGuard(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil)), hosts: hostSet(LoopbackHosts("8080"))}
+	h := s.Handler()
+	for host, want := range map[string]int{"127.0.0.1:8080": 200, "localhost:8080": 200, "[::1]:8080": 200,
+		"evil.example:8080": 421, "127.0.0.1:9999": 421} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("Host %s: got %d, want %d", host, rec.Code, want)
+		}
+	}
+}

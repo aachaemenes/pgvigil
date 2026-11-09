@@ -2,6 +2,10 @@ import uPlot from 'uplot';
 import { Row } from './api';
 import { el } from './ui';
 
+// live charts, destroyed before the next page is drawn (each holds window listeners)
+const live: uPlot[] = [];
+export function destroyCharts() { while (live.length) live.pop()!.destroy(); }
+
 const palette = ['#2f6fdf', '#d9480f', '#2b8a3e', '#ae3ec9', '#e8590c', '#1098ad', '#5c940d', '#c2255c'];
 
 // lineChart draws one chart of the named series over snapshot_at.
@@ -23,7 +27,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   // size to the container once it is in the page
   requestAnimationFrame(() => {
     opts.width = Math.max(300, holder.clientWidth || 560);
-    new uPlot(opts, data, holder);
+    if (!holder.isConnected) return;     // the page was replaced before this frame
+    live.push(new uPlot(opts, data, holder));
   });
   return box;
 }

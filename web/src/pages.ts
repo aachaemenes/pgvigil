@@ -122,7 +122,8 @@ function snapshotPicker(ctx: Ctx): HTMLElement {
     input.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
   }
   const go = (at?: string) => { location.hash = `#/activity?i=${ctx.instance}` + (at ? `&at=${encodeURIComponent(at)}` : ''); };
-  input.addEventListener('change', () => { go(input.value ? new Date(input.value).toISOString() : undefined); });
+  // the picker has whole seconds and snapshots have fractions: take the end of the chosen second
+  input.addEventListener('change', () => { go(input.value ? new Date(new Date(input.value).getTime() + 999).toISOString() : undefined); });
   const latest = el('button', { type: 'button' }, 'Latest');
   latest.addEventListener('click', () => go());
   return el('div', { class: 'picker' }, 'Snapshot at or before ', input, ' ', latest, ctx.at ? el('span', { class: 'meta' }, ' (history: auto refresh off)') : null);

@@ -37,7 +37,17 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if *dsn != "" {
 		d = config.Resolve(*dsn)
 	}
-	srv, err := web.Open(ctx, log, d, expectedIntervals(cfg))
+	host, port, err := net.SplitHostPort(*listen)
+	if err != nil {
+		return fmt.Errorf("-listen: %w", err)
+	}
+	var hosts []string // nil = any Host (beyond loopback the proxy in front decides)
+	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		hosts = web.LoopbackHosts(port)
+	} else {
+		log.Warn("serve listens beyond loopback and has no login; put it behind a proxy with authentication", "listen", *listen)
+	}
+	srv, err := web.Open(ctx, log, d, expectedIntervals(cfg), hosts)
 	if err != nil {
 		return err
 	}
@@ -47,10 +57,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	if host, _, _ := net.SplitHostPort(*listen); host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		log.Warn("serve listens beyond loopback and has no login; put it behind a proxy with authentication", "listen", *listen)
-	}
-	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second}
+	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
+	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	log.Info("pgvigil serve started", "url", fmt.Sprintf("http://%s/", ln.Addr()))
@@ -67,17 +75,19 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 }
 
-// expectedIntervals maps each configured instance to its collections' intervals in seconds.
-func expectedIntervals(cfg *config.Config) map[string]map[string]int {
-	out := map[string]map[string]int{}
+// expectedIntervals gives the stale check every collection's default interval and each
+// configured instance's effective one (0 = disabled there), in seconds.
+func expectedIntervals(cfg *config.Config) web.Expected {
+	e := web.Expected{Defaults: map[string]int{}, Instances: map[string]map[string]int{}}
+	for _, c := range collect.All() {
+		e.Defaults[c.Name()] = int(c.DefaultInterval() / time.Second)
+	}
 	for _, in := range cfg.Instances {
 		m := map[string]int{}
 		for _, c := range collect.All() {
-			if iv := cfg.Interval(in, c.Name(), c.DefaultInterval()); iv > 0 {
-				m[c.Name()] = int(iv / time.Second)
-			}
+			m[c.Name()] = int(cfg.Interval(in, c.Name(), c.DefaultInterval()) / time.Second)
 		}
-		out[in.Name] = m
+		e.Instances[in.Name] = m
 	}
-	return out
+	return e
 }
