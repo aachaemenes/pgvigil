@@ -192,3 +192,62 @@ func TestLiveBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestTableScenarios checks each table row of the last hourly read against the rules of
+// pgvigil.table_checks (0016_tables.sql): a scenario's table trips its own check and nothing else does.
+func TestTableScenarios(t *testing.T) {
+	big := func(r Row) bool { return r["relpages"].(int64) >= 1000 }
+	checks := func(r Row) []string {
+		var out []string
+		live, dead := float64(r["n_live_tup"].(int64)), float64(r["n_dead_tup"].(int64))
+		if r["last_vacuum"] == nil && big(r) {
+			out = append(out, "never vacuumed")
+		}
+		if r["last_analyze"] == nil && big(r) {
+			out = append(out, "never analyzed")
+		}
+		if r["last_analyze"] != nil && live > 0 && float64(r["n_mod_since_analyze"].(int64)) > 0.2*live && big(r) {
+			out = append(out, "statistics stale")
+		}
+		if r["bloat_pct"].(float64) > 20 && r["bloat_bytes"].(int64) >= 104857600 {
+			out = append(out, "bloat")
+		}
+		if live+dead > 1000 && dead > 0.2*(live+dead) {
+			out = append(out, "dead rows")
+		}
+		if r["autovacuum_off"].(bool) {
+			out = append(out, "autovacuum off")
+		}
+		return out
+	}
+	want := map[string]string{"bloat": "bloat", "dead": "dead rows", "avoff": "autovacuum off", "novac": "never vacuumed"}
+	for i, s := range Specs("demo-", 12) {
+		var last []Row
+		for _, b := range run(t, s, i, 7) {
+			if b.Collection == "tables" {
+				last = b.Rows
+			}
+		}
+		if last == nil {
+			t.Fatalf("%s: no tables batch", s.Name)
+		}
+		var got []string
+		for _, r := range last {
+			if r["kind"] == "table" {
+				for _, c := range checks(r) {
+					got = append(got, c+":"+r["table_name"].(string))
+				}
+			}
+		}
+		exp := 0
+		if w, ok := want[s.Tables]; ok {
+			exp = 1
+			if len(got) != 1 || got[0] != w+":"+tables[s.App][1] {
+				t.Errorf("%s (%s): checks %v, want %s on %s", s.Name, s.Tables, got, w, tables[s.App][1])
+			}
+		}
+		if exp == 0 && len(got) != 0 {
+			t.Errorf("%s: unexpected checks %v", s.Name, got)
+		}
+	}
+}

@@ -238,6 +238,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if g.Spec.DMS {
 		add("dms", g.dmsRows(t))
 	}
+	if first || t.Minute() == 0 {
+		add("tables", g.tableRows(t, first))
+	}
 	g.prev = t
 	return out
 }
@@ -254,7 +257,7 @@ func (g *Gen) Collections() []string {
 	if g.Spec.DMS {
 		c = append(c, "dms")
 	}
-	return c
+	return append(c, "tables")
 }
 
 // ---------------------------------------------------------------- instance
@@ -902,6 +905,104 @@ func (g *Gen) logRows(t, prev time.Time) []Row {
 	return out
 }
 
+// ---------------------------------------------------------------- tables
+
+// tableDefs is each application database's table list: the application's three main tables, then two
+// small ones. base is the heap size in MB at load 1; the problem table of a Tables scenario is picked by name.
+func (g *Gen) tableDefs() []struct {
+	name string
+	base float64
+} {
+	t := tables[g.Spec.App]
+	return []struct {
+		name string
+		base float64
+	}{{t[0], 900}, {t[1], 2400}, {t[2], 300}, {"audit_log", 160}, {"settings", 0.2}}
+}
+
+// tableRows is the hourly tables read: a 'db' row per application database and a 'table' row per table.
+// Healthy tables are vacuumed and analyzed within hours, dead rows under 5 %, bloat under 10 %. The Tables
+// scenario puts one table in the state its check looks for (the scenario's problem table is the second
+// main table, the biggest):
+//
+//	bloat - 35 % of the pages not needed for the live rows (over 100 MB)   -> table bloat
+//	dead  - 30 % of the rows dead                                            -> table dead rows
+//	avoff - autovacuum_enabled = false                                       -> table autovacuum off
+//	novac - loaded by DMS, analyzed, never vacuumed, nothing all-visible     -> table never vacuumed
+//	skip  - the biggest table is skipped for a lock on odd hours after the first read (its row is kept)
+func (g *Gen) tableRows(t time.Time, first bool) []Row {
+	s := g.Spec
+	var out []Row
+	week := math.Max(0, t.Sub(g.start).Hours()/(24*7))
+	for di, db := range s.DBs {
+		dbid := dbOID(di)
+		var bigPages, bigVisible, big, neverVac int64
+		for ti, td := range g.tableDefs() {
+			relid := 16500 + int64(di)*1000 + int64(ti)*7
+			problem := ti == 1 && di == 0
+			if problem && s.Tables == "skip" && !first && t.Hour()%2 == 1 {
+				out = append(out, Row{"kind": "table_skipped", "dbid": dbid, "relid": relid})
+				continue
+			}
+			heap := int64(td.base * 1e6 * math.Max(0.25, s.Load) * (1 + 0.04*week))
+			pages := heap / 8192
+			live := int64(float64(pages) * 60)
+			dead := live / 40
+			bloatPct := 4 + 4*noise(s.Name+td.name+"bloat", t.Truncate(24*time.Hour))
+			vacAgo := time.Duration(2+hash64(s.Name+td.name)%9) * time.Hour
+			lastVac := t.Add(-vacAgo).Truncate(time.Minute)
+			lastAn := lastVac.Add(10 * time.Minute)
+			visible := pages * 92 / 100
+			avOff := false
+			insSinceVac := live / 200
+			if problem {
+				switch s.Tables {
+				case "bloat":
+					bloatPct = 35
+				case "dead":
+					dead = live * 3 / 7 // 30 % of live + dead
+				case "avoff":
+					avOff = true
+					lastVac = g.pmStart.Add(36 * time.Hour)
+					dead = live / 8
+				case "novac":
+					visible, insSinceVac = 0, live
+					lastAn = minDur(t, g.end.Add(-6*24*time.Hour+4*time.Hour).Truncate(time.Hour))
+				}
+			}
+			bloatBytes := int64(float64(heap) * bloatPct / 100)
+			row := Row{"kind": "table", "dbid": dbid, "relid": relid, "datname": db, "schema_name": "public", "table_name": td.name,
+				"relkind": "r", "heap_bytes": heap, "toast_bytes": heap / 50, "index_bytes": heap * 2 / 5,
+				"total_bytes": heap + heap/50 + heap*2/5, "relpages": pages, "reltuples": float64(live), "relallvisible": visible,
+				"n_live_tup": live, "n_dead_tup": dead, "n_mod_since_analyze": live / 50, "n_ins_since_vacuum": insSinceVac,
+				"last_vacuum": lastVac, "last_autovacuum": lastVac, "last_analyze": lastAn, "last_autoanalyze": lastAn,
+				"vacuums": 40 + hash64(td.name)%50, "analyzes": 60 + hash64(td.name)%50, "seq_scan": 12 + hash64(s.Name+td.name)%400,
+				"idx_scan": int64(1e5 * s.Load * (1 + week)), "autovacuum_off": avOff, "xid_age": 40e6 + hash64(s.Name+td.name)%90e6,
+				"mxid_age": 1000 + hash64(td.name)%5000, "stats_readable": true, "stats_columns": 6 + ti,
+				"est_pages": pages - bloatBytes/8192, "bloat_bytes": bloatBytes, "bloat_pct": math.Round(bloatPct*10) / 10}
+			if s.Tables == "novac" && problem {
+				row["last_vacuum"], row["last_autovacuum"], row["vacuums"] = nil, nil, 0
+				row["schema_name"] = "erp"
+				neverVac++
+			}
+			if pages >= 1000 {
+				big++
+				bigPages += pages
+				bigVisible += visible
+			}
+			out = append(out, row)
+		}
+		bigNever := int64(0)
+		if s.Tables == "novac" && di == 0 {
+			bigNever = neverVac
+		}
+		out = append(out, Row{"kind": "db", "dbid": dbid, "datname": db, "stats_reset": nil, "user_tables": int64(len(g.tableDefs())),
+			"never_vacuumed": neverVac, "never_analyzed": 0, "big_tables": big, "big_never_vacuumed": bigNever,
+			"big_under_half_visible": bigNever, "big_pages": bigPages, "big_visible_pages": bigVisible})
+	}
+	return out
+}
+
 // ---------------------------------------------------------------- dms
 
 // dmsLatency is the CDC latency at t: seconds, then climbing past the 300 s threshold for the last 3 h.
@@ -976,6 +1077,21 @@ func (g *Gen) dmsRows(t time.Time) []Row {
 			row["latency_source_s"], row["latency_target_s"] = lat*0.35, lat
 			row["incoming_changes"] = 400 * s.Load * (0.2 + c) * (1 + lat/60)
 			row["latency_at"] = t
+			// the drain readout: the apply keeps ahead of the read, except in the ramp's first two hours and a
+			// quarter (falling behind, changes spilled to disk on the target); from 45 minutes before the
+			// anchor it outruns the read again, so the ETA shows while the spill drains
+			in := 50 * s.Load * (0.2 + c)
+			out := in * 1.15
+			spill := 0.0
+			if ramp := g.end.Add(-3 * time.Hour); !t.Before(ramp) {
+				spill = row["incoming_changes"].(float64) * 0.3
+				if t.Before(g.end.Add(-45 * time.Minute)) {
+					out = in * 0.7
+				} else {
+					out = in * 1.6
+				}
+			}
+			row["rows_in_s"], row["rows_out_s"], row["disk_source"], row["disk_target"] = in, out, 0.0, spill
 			row["cdc_start_position"] = fmt.Sprintf("%X/%08X", 0x2A, hash64(tk.id)&0xffffffff)
 			row["recovery_checkpoint"] = fmt.Sprintf("checkpoint:V1#%d#%X/%08X#0#0#*#0#%d", 4100+t.Unix()%900, 0x2B, t.Unix()&0xffffff, t.Unix()/60)
 		}
