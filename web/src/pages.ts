@@ -12,6 +12,7 @@ import { dmsIOView } from './io';
 import { actionsCol, actionsState } from './actions';
 import { applyTagFilter, tagCols, tagFilterBar, tagKeys, tagUI, withTagFields } from './tree';
 import { jobsReportFleetView } from './jobsreport';
+import { rolesFleetView } from './roles';
 
 export type { Ctx };
 const range = window_;
@@ -597,6 +598,14 @@ export async function versions(ctx: Ctx): Promise<HTMLElement> {
 export async function jobsRoot(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'));
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}
+
+// roles is the fleet's Roles page: superusers and login roles per server, in scope.
+export async function roles(ctx: Ctx): Promise<HTMLElement> {
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await rolesFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'roles'));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }

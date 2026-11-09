@@ -244,6 +244,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if first || t.Minute() == 0 {
 		add("extensions", g.extensionRows(t))
 		add("versions", g.versionRows(t))
+		add("roles", g.roleRows(t))
 	}
 	add("io", g.ioRows(t))
 	if !g.Spec.Replica { // a standby does not vacuum: the collector skips both there (logCollections logs it)
@@ -281,7 +282,7 @@ func (g *Gen) Collections() []string {
 	if g.Spec.Platform == "rds" || g.Spec.Platform == "aurora" {
 		c = append(c, "io")
 	}
-	return append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "extensions", "versions")
+	return append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "extensions", "versions", "roles")
 }
 
 // ---------------------------------------------------------------- instance
