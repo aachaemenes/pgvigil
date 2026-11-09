@@ -1,13 +1,17 @@
 package web
 
 // sqlInstances lists the active instances with their state and the latest session summary.
+// $1 = the stale check's expectations: a collection disabled or gated off for an instance (0) is not
+// counted as failing there, so an error row an earlier build left behind does not alarm for ever.
 const sqlInstances = `
 SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, i.tags, i.last_seen,
        st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
        a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age,
        (SELECT count(*) FROM pgvigil.collection_dates c
-         WHERE c.instance_id = i.instance_id AND c.status = 'error') AS collections_failing
+         WHERE c.instance_id = i.instance_id AND c.status = 'error'
+           AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
+                        ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0) AS collections_failing
   FROM pgvigil.instances i
   LEFT JOIN pgvigil.instance_state st ON st.instance_id = i.instance_id
   LEFT JOIN LATERAL (SELECT * FROM pgvigil.activity_summary x
@@ -25,7 +29,9 @@ var overviewChecks = []struct{ name, sql string }{
 SELECT c.instance_id, 'critical' AS severity, 'collection failing' AS check_name, c.collection AS object,
        c.snapshot_at AS at, c.note AS detail
   FROM pgvigil.collection_dates c JOIN pgvigil.instances i USING (instance_id)
- WHERE i.is_active AND c.status = 'error'`},
+ WHERE i.is_active AND c.status = 'error'
+   AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
+                ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0`},
 	{"collection stale", `
 SELECT instance_id, 'warning', 'collection stale', collection, snapshot_at,
        'last ' || to_char(now() - snapshot_at, 'DD"d" HH24"h" MI"m"') || ' ago'
@@ -137,7 +143,7 @@ SELECT t.instance_id, i.name AS instance, t.task_id, t.task_arn, t.migration_typ
        t.latency_source_s, t.latency_target_s, t.incoming_changes, t.latency_at, t.latency_warn_secs,
        round(t.elapsed_ms / 1000.0) AS elapsed_secs, t.start_date, t.stop_date, t.full_load_start, t.full_load_finish,
        t.cdc_start_position, t.recovery_checkpoint, ri.ri_id, t.ri_arn, left(t.last_failure, 1000) AS last_failure,
-       t.snapshot_at, t.is_present,
+       t.snapshot_at, t.is_present, t.tables_partial,
        (SELECT count(*) FROM pgvigil.dms_table_stats s
          WHERE s.instance_id = t.instance_id AND s.task_arn = t.task_arn AND s.is_present) AS tables
   FROM pgvigil.dms_tasks t

@@ -229,7 +229,12 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
-	t, err := s.query(r.Context(), sqlInstances)
+	exp, err := json.Marshal(s.expected)
+	if err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	t, err := s.query(r.Context(), sqlInstances, string(exp))
 	s.reply(w, r, t, err)
 }
 

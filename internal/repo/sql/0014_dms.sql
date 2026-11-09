@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.dms_tasks (
   tables_loading      int,
   tables_queued       int,
   tables_errored      int,
-  elapsed_ms          bigint,                 -- ReplicationTaskStats.ElapsedTimeMillis: the full load's duration on a live task (2.8 s for 1,100 rows), not the task's age
+  elapsed_ms          bigint,                 -- ReplicationTaskStats.ElapsedTimeMillis: the full load's duration, not the task's age
   created             timestamptz,
   started             timestamptz,            -- ReplicationTaskStartDate
   fresh_start         timestamptz,
@@ -220,6 +220,8 @@ END $$;
 -- (a CDC task stopped, a full-load task stopped early or for another reason) is a warning. A stop reason
 -- naming a fatal error, memory, disk or a licence is critical whatever the status. The CDC latency check
 -- waits for the full load of a full-load-and-cdc task to finish (cached changes apply after it by design).
+-- A task stopped on purpose warns for as long as it is named in aws.dms.tasks: the snooze is taking it off
+-- the list (its row then goes is_present = false and leaves every check).
 CREATE OR REPLACE VIEW pgvigil.dms_checks AS
 WITH t AS (SELECT * FROM pgvigil.dms_tasks WHERE is_present),
      v AS (SELECT instance_id, task_arn,

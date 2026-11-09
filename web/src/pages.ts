@@ -201,7 +201,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
     { key: 'status', fmt: taskBadge },
     { key: 'migration_type', label: 'type' },
     { key: 'progress_pct', label: 'full load %', num: true },
-    { key: 'tables', num: true },
+    { key: 'tables', num: true, fmt: (v, r) => r.tables_partial ? fmtNum(v) + '+ (cut)' : fmtNum(v) },
     { key: 'tables_errored', label: 'errored', num: true },
     { key: 'latency_source_s', label: 'latency source', num: true, fmt: fmtSecs },
     { key: 'latency_target_s', label: 'latency target', num: true, fmt: fmtSecs },

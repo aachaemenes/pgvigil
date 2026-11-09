@@ -1,5 +1,6 @@
 # Dependency updates as pull requests, weekly: Go modules, the frontend's npm packages, the Actions used by CI.
 # Every version is pinned in go.sum / package-lock.json; this is how a pin moves on purpose.
+# GitHub reads this file from the default branch only: it arms when phase1 merges to main (review 14).
 version: 2
 updates:
   - package-ecosystem: gomod

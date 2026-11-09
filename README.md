@@ -18,7 +18,7 @@ Status: phase 1, under construction. The collector, the repository, the collecti
 | databases | hourly | pg_database with sizes, xid and multixact age | current inventory plus a size history |
 | jobs | 1 min | pg_cron (cron.job, cron.job_run_details) and pgAgent (pga_job, pga_joblog) where installed | current jobs, a run history, `job_failures` and `job_running` views |
 | logs | 1 min | RDS / Aurora: the postgresql log exported to CloudWatch Logs, read from a cursor with a 5 min overlap: slow statements, lock waits, deadlocks, failed logins (text masked and capped) | `log_events` in monthly partitions, `log_cursor` per source |
-| dms | 1 min | AWS DMS tasks named in the instance's `aws.dms.tasks` (or `*`): DescribeReplicationTasks, DescribeTableStatistics, DescribeReplicationInstances, CloudWatch CDC latency and host metrics; read only | `dms_tasks`, `dms_table_stats`, `dms_instances` (current, absent objects kept with `is_present = false`), `dms_task_sample` per run, `dms_checks` view |
+| dms | 1 min | AWS DMS tasks named in the instance's `aws.dms.tasks` (or `*`): DescribeReplicationTasks, DescribeTableStatistics, DescribeReplicationInstances, CloudWatch CDC latency and host metrics; read only | `dms_tasks`, `dms_table_stats`, `dms_instances` (current, absent objects kept with `is_present = false`), `dms_task_sample` per run, `dms_checks` view (a task stopped on purpose warns until it leaves the list) |
 
 Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud SQL, AlloyDB) and each collection says whether it applies to that platform and version. Column names are taken from the server's own catalog views, so PostgreSQL 13 through 18 share one query set.
 
@@ -29,7 +29,7 @@ Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud 
 - Time-series tables are partitioned by month (UTC) and dropped whole by `pgvigil.purge()`.
 - Credentials never sit in the config file: a DSN is `env:NAME` or `file:/path`. On the managed platforms the platform's own token login (IAM, Entra, Cloud SQL IAM) is the intended door.
 - Credentials inside collected text are masked before they leave the target (replication conninfo, `PASSWORD '...'` literals, `password=` / `PWD=` in connection strings).
-- `query_text: full | normalized | none` says what statement text the repository may hold at all: the text as the server shows it, every literal replaced by `?`, or no text (hashes and counters only); per file or per instance.
+- `query_text: full | normalized | none` says what statement text the repository may hold at all: the text as the server shows it; every literal replaced by `?` and comments dropped, keyed by a hash of that normalized form (nothing of the raw text, not even its hash, is kept); or no text and no text hash at all. Per file or per instance.
 - The AWS door (`aws:` block per instance) reads only: CloudWatch Logs, the DMS Describe* calls and CloudWatch metrics. Nothing starts, stops or modifies a task.
 
 ## Build and run (from source, for now)
