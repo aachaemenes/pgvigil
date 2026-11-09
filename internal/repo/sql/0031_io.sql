@@ -239,15 +239,20 @@ END $$;
 -- ---------------------------------------------------------------------------------------------------------
 
 -- Thresholds (the k row): an EBS IO / byte balance or a gp2 burst balance under 20 % warns, under 5 % is critical
--- (the low point of the last hour: at 0 the volume or instance falls to its baseline IOPS or throughput); a queue
--- depth over 10 and a read latency over 20 ms warn, as the last hour's mean on the platform and the last 30
--- minutes' mean on a DMS replication instance (one minute's spike is not a finding); more checkpoints requested
--- than timed over the last 24 h warns (WAL volume forces them: max_wal_size is small for the write rate), not on
--- Aurora (its storage has no checkpoint to tune). track_io_timing off is pgvigil.findings' own rule (0016), not
--- repeated here.
+-- (the low point of the last hour: at 0 the volume or instance falls to its baseline IOPS or throughput).
+-- Platform, as the last hour's means: a read latency over 20 ms warns only with at least 1 read a second (an idle
+-- instance's few cold reads, or the first after a Serverless resume, are slow by nature); a queue depth over 10
+-- warns only when the read or write latency is 5 ms or more, or unknown (a provisioned-IOPS volume runs a deep
+-- queue at sub-millisecond latency by design). DMS replication instance, as the last 30 minutes' mean of at least
+-- 3 samples (one minute's spike, or a first sample alone, is not a finding): queue over 10, read or write latency
+-- over 20 ms. Checkpoints: at least 12 requested in 24 h and more than were timed, with at least 1 GB of WAL written
+-- or the WAL volume unknown (PG13): an idle server skips its timed checkpoints, and a backup, a manual CHECKPOINT
+-- or a restart counts as requested; not on Aurora (its storage has no checkpoint to tune). track_io_timing off is
+-- pgvigil.findings' own rule (0016), not repeated here.
 CREATE OR REPLACE VIEW pgvigil.io_findings AS
 WITH k AS (SELECT 20.0::float8 AS balance_warn, 5.0::float8 AS balance_crit, 10.0::float8 AS queue_max,
-                  20.0::float8 AS latency_ms_max, 3 AS checkpoints_min),
+                  20.0::float8 AS latency_ms_max, 1.0::float8 AS read_iops_min, 5.0::float8 AS queue_latency_ms_min,
+                  3 AS dms_samples_min, 12 AS checkpoints_min, 1073741824::numeric AS checkpoint_wal_min),
 h AS (
   SELECT s.instance_id, s.metric, avg(s.value) AS mean, min(s.value) AS low, max(s.snapshot_at) AS at
     FROM pgvigil.cloud_io_sample s JOIN pgvigil.instances i USING (instance_id)
@@ -261,9 +266,11 @@ d AS (
     JOIN pgvigil.dms_instances di ON di.instance_id = r.instance_id AND di.ri_arn = r.ri_arn AND di.is_present
    WHERE r.snapshot_at > now() - interval '30 minutes'
    GROUP BY r.instance_id, r.ri_arn
+  HAVING count(*) >= (SELECT dms_samples_min FROM k)
 ),
 ck AS (
-  SELECT i.instance_id, sum(c.checkpoints_timed) AS timed, sum(c.checkpoints_req) AS req, max(c.snapshot_at) AS at
+  SELECT i.instance_id, sum(c.checkpoints_timed) AS timed, sum(c.checkpoints_req) AS req, sum(c.wal_bytes) AS wal,
+         max(c.snapshot_at) AS at
     FROM pgvigil.instances i
     CROSS JOIN LATERAL pgvigil.serverstats_rate(i.instance_id, now() - interval '1 day', now()) c
    WHERE i.is_active AND i.platform <> 'aurora'
@@ -281,10 +288,13 @@ SELECT h.instance_id, CASE WHEN h.low < k.balance_crit THEN 'critical' ELSE 'war
  WHERE h.metric IN ('EBSIOBalance%', 'EBSByteBalance%', 'BurstBalance') AND h.low < k.balance_warn
 UNION ALL
 SELECT h.instance_id, 'warning', 'DiskQueueDepth', round(h.mean::numeric, 1)::text, true, 'under ' || k.queue_max::text, 'rds, aurora',
-       'IOs waiting on the storage, the last hour''s mean: the volume is not keeping up (IOPS or throughput at the volume or instance limit)',
+       'IOs waiting on the storage with slow IOs, the last hour''s mean: the volume is not keeping up (IOPS or throughput at the volume or instance limit)',
        'pgvigil io', h.at
   FROM h, k
  WHERE h.metric = 'DiskQueueDepth' AND h.mean > k.queue_max
+   AND coalesce((SELECT max(l.mean) * 1000 FROM h l
+                  WHERE l.instance_id = h.instance_id AND l.metric IN ('ReadLatency', 'WriteLatency')), k.queue_latency_ms_min)
+       >= k.queue_latency_ms_min
 UNION ALL
 SELECT h.instance_id, 'warning', 'ReadLatency', round((h.mean * 1000)::numeric, 1)::text || ' ms', true,
        'under ' || k.latency_ms_max::text || ' ms', 'rds, aurora',
@@ -292,6 +302,7 @@ SELECT h.instance_id, 'warning', 'ReadLatency', round((h.mean * 1000)::numeric, 
        'pgvigil io', h.at
   FROM h, k
  WHERE h.metric = 'ReadLatency' AND h.mean * 1000 > k.latency_ms_max
+   AND EXISTS (SELECT 1 FROM h r WHERE r.instance_id = h.instance_id AND r.metric = 'ReadIOPS' AND r.mean >= k.read_iops_min)
 UNION ALL
 SELECT d.instance_id, 'warning', 'DMS DiskQueueDepth', d.ri_id || ': ' || round(d.queue_depth::numeric, 1)::text, true,
        'under ' || k.queue_max::text, 'dms',
@@ -309,7 +320,7 @@ SELECT d.instance_id, 'warning', 'DMS ' || x.metric, d.ri_id || ': ' || round(x.
 UNION ALL
 SELECT ck.instance_id, 'warning', 'checkpoints requested', ck.req::text || ' requested, ' || ck.timed::text || ' timed (24 h)', true,
        'more timed than requested', 'not aurora',
-       'checkpoints are forced by WAL volume more often than by checkpoint_timeout: max_wal_size is small for the write rate (more full-page writes, IO bursts)',
+       'more checkpoints requested than timed with WAL being written: most likely WAL volume forces them and max_wal_size is small for the write rate (more full-page writes, IO bursts); backups, manual CHECKPOINTs and restarts count as requested too',
        'pgvigil io', ck.at
   FROM ck, k
- WHERE ck.req > ck.timed AND ck.req >= k.checkpoints_min;
+ WHERE ck.req > ck.timed AND ck.req >= k.checkpoints_min AND coalesce(ck.wal >= k.checkpoint_wal_min, true);

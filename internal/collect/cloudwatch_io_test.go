@@ -126,8 +126,16 @@ func TestIORowsAuroraRecorded(t *testing.T) {
 	}
 	// the volume counters arrive about 30 minutes late: a read window that does not reach back past that lag
 	// never stores one (the live proof's first failure, 2026-11-09)
-	if n["VolumeReadIOPs"] < 1 || n["VolumeWriteIOPs"] < 1 {
-		t.Errorf("volume datapoints %v: none inside the read window (window %v)", n, api.windows["VolumeReadIOPs"])
+	// exactly the recorded datapoints of the 2 hours before the replay time (from the period boundary), so a
+	// window cut back below the lag, or past it, shows here
+	want := 0
+	for _, m := range api.metrics {
+		if m.Metric == "VolumeReadIOPs" && !m.At.Before(now.Add(-2*time.Hour).Truncate(5*time.Minute)) && m.At.Before(now) {
+			want++
+		}
+	}
+	if want == 0 || n["VolumeReadIOPs"] != want || n["VolumeWriteIOPs"] != want {
+		t.Errorf("volume datapoints %v, want %d each (the recorded ones in the 2-hour window %v)", n, want, api.windows["VolumeReadIOPs"])
 	}
 	if n["AuroraVolumeBytesLeftTotal"] != 0 {
 		t.Errorf("AuroraVolumeBytesLeftTotal rows %d: no datapoint was recorded, none may be invented", n["AuroraVolumeBytesLeftTotal"])
