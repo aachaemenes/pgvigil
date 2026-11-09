@@ -46,7 +46,8 @@ SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f
        left(f.return_message, 300)
   FROM pgvigil.job_failures f JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active`},
-	// counters only rise within one stats_reset epoch: last minus first per epoch, no per-row deltas
+	// counters only rise within one stats_reset epoch, so max minus min per epoch = last minus first,
+	// as a hash aggregate: ordered array_agg sorted the whole day (21 s at 5.76 M rows, 0.9 s this way)
 	{"deadlocks and checksums", `
 SELECT instance_id, CASE WHEN ck > 0 THEN 'critical' ELSE 'warning' END,
        CASE WHEN ck > 0 THEN 'checksum failures (24 h)' ELSE 'deadlocks (24 h)' END,
@@ -54,10 +55,8 @@ SELECT instance_id, CASE WHEN ck > 0 THEN 'critical' ELSE 'warning' END,
        CASE WHEN ck > 0 THEN ck::text || ' checksum failure(s); ' ELSE '' END || dl::text || ' deadlock(s)'
   FROM (SELECT instance_id, datname, sum(dl) AS dl, sum(ck) AS ck, max(last_at) AS last_at
           FROM (SELECT d.instance_id, d.dbid, max(d.datname) AS datname, max(d.snapshot_at) AS last_at,
-                       greatest(0, (array_agg(d.deadlocks ORDER BY d.snapshot_at DESC))[1]
-                                 - (array_agg(d.deadlocks ORDER BY d.snapshot_at))[1]) AS dl,
-                       greatest(0, (array_agg(d.checksum_failures ORDER BY d.snapshot_at DESC))[1]
-                                 - (array_agg(d.checksum_failures ORDER BY d.snapshot_at))[1]) AS ck
+                       greatest(0, max(d.deadlocks) - min(d.deadlocks)) AS dl,
+                       greatest(0, max(d.checksum_failures) - min(d.checksum_failures)) AS ck
                   FROM pgvigil.dbstats d JOIN pgvigil.instances i USING (instance_id)
                  WHERE i.is_active AND d.snapshot_at > now() - interval '1 day'
                  GROUP BY d.instance_id, d.dbid, d.stats_reset) e
