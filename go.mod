@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.75.6
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.92.1
 	github.com/aws/aws-sdk-go-v2/service/databasemigrationservice v1.75.8
+	github.com/aws/aws-sdk-go-v2/service/rds v1.132.2
 	github.com/jackc/pgx/v5 v5.12.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
