@@ -36,7 +36,8 @@ printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 "$BIN" migrate -config "$CFG" >/dev/null
 psql "$PGVIGIL_REPO_DSN" -XAt -c "select 1 from pgvigil.schema_version where version = '0015_ui_login.sql'" | grep -q 1 || fail "0015 not applied"
 PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$CFG" "$USR" 2>/dev/null || fail "user add"
-"$BIN" user list -config "$CFG" | grep -q "^$USR  *enabled" || fail "user list does not show $USR enabled"
+# a producer piped into grep -q loses the race when it prints a second line after the match (EPIPE under pipefail): grep without -q reads it all
+"$BIN" user list -config "$CFG" | grep "^$USR  *enabled" >/dev/null || fail "user list does not show $USR enabled"
 [[ $(psql "$PGVIGIL_REPO_DSN" -XAt -c "select password_hash like '\$argon2id\$v=19\$%' from pgvigil.ui_users where username = '$USR'") == t ]] || fail "the stored hash is not argon2id"
 if PGVIGIL_PASSWORD="short" "$BIN" user add -config "$CFG" "other$RANDOM" 2>/dev/null; then fail "a short password was accepted"; fi
 if PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$CFG" "$USR" 2>/dev/null; then fail "a second add of one name succeeded"; fi
@@ -113,7 +114,7 @@ if "$BIN" cert -out "$TMPD" >/dev/null 2>&1; then fail "cert overwrote an existi
 mkdir -p "$TMPD/c2" "$TMPD/c3"
 if "$BIN" cert -out "$TMPD/c2" -hosts 10.0.0.5:8443 >/dev/null 2>&1; then fail "cert accepted a host with a port"; fi
 [[ ! -e "$TMPD/c2/pgvigil.key" ]] || fail "cert wrote a key for a refused host list"
-"$BIN" cert -out "$TMPD/c3" -hosts '[::1],Example.Internal' | grep -q 'for ::1, example.internal' || fail "cert did not read a bracketed IPv6 and lower-case a name"
+"$BIN" cert -out "$TMPD/c3" -hosts '[::1],Example.Internal' | grep 'for ::1, example.internal' >/dev/null || fail "cert did not read a bracketed IPv6 and lower-case a name"
 rm -f "$TMPD/c3/pgvigil.key"
 if "$BIN" cert -out "$TMPD/c3" >/dev/null 2>&1; then fail "cert wrote beside a lone certificate"; fi
 [[ ! -e "$TMPD/c3/pgvigil.key" ]] || fail "cert left a key beside the old certificate (a mismatched pair)"
