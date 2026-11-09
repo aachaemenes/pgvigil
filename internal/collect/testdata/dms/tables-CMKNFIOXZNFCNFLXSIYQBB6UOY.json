@@ -1,0 +1,33 @@
+{
+    "TableStatistics": [
+        {
+            "SchemaName": "dbo",
+            "TableName": "orders",
+            "Inserts": 100,
+            "Deletes": 0,
+            "Updates": 0,
+            "Ddls": 0,
+            "AppliedInserts": 100,
+            "AppliedDeletes": 0,
+            "AppliedUpdates": 0,
+            "AppliedDdls": 0,
+            "FullLoadRows": 1100,
+            "FullLoadCondtnlChkFailedRows": 0,
+            "FullLoadErrorRows": 0,
+            "FullLoadStartTime": "2026-11-09T04:42:07.184000-08:00",
+            "FullLoadEndTime": "2026-11-09T04:42:07.985000-08:00",
+            "FullLoadReloaded": false,
+            "LastUpdateTime": "2026-11-09T04:43:42.020000-08:00",
+            "TableState": "Table completed",
+            "ValidationPendingRecords": 0,
+            "ValidationFailedRecords": 0,
+            "ValidationSuspendedRecords": 0,
+            "ValidationState": "Not enabled",
+            "ResyncState": "Not enabled",
+            "ResyncRowsAttempted": 0,
+            "ResyncRowsSucceeded": 0,
+            "ResyncRowsFailed": 0,
+            "ResyncProgress": 0.0
+        }
+    ]
+}

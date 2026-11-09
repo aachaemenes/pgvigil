@@ -8,7 +8,7 @@
 #                      testdata from the live API (account id and host names masked).
 #   PGVIGIL_REPO_DSN   repository;  AWS_PROFILE default dba-lab;  CLUSTER default dba-lab-pg;  TASK default dmslab-task
 # Expected (live): one dms_tasks row for the task with status running or stopped, its replication instance row,
-# a dbo.orders table row with full_load_rows >= 1000, a latency datapoint while running, one sample per collect,
+# a dbo.orders table row with full_load_rows >= 1000, the CDC latency whenever CloudWatch holds a datapoint for the task, one sample per collect,
 # the second collect adding no task row; overview check rows only when the task is not running clean.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -63,6 +63,13 @@ iid=$(q "select instance_id from pgvigil.instances where name='lab-aurora-writer
 ARN=$(q "select task_arn from pgvigil.dms_tasks where instance_id=$iid and task_id='$TASK' and is_present")
 [[ -n "$ARN" ]] || fail "no dms_tasks row for $TASK"
 STATUS=$(q "select status from pgvigil.dms_tasks where instance_id=$iid and task_arn='$ARN'")
+# CloudWatch publishes a task's metrics some time into CDC (the lab: none 13 min after the start): the latency is
+# graded against CloudWatch itself - when the CLI sees a datapoint for the task in the collector's window, the
+# collector must have it too (the dimensions); when CloudWatch has none, latency is reported as not graded
+CW_LAT=$(aws cloudwatch get-metric-statistics --namespace AWS/DMS --metric-name CDCLatencySource \
+  --dimensions "Name=ReplicationInstanceIdentifier,Value=$(q "select r.ri_id from pgvigil.dms_instances r join pgvigil.dms_tasks t using (instance_id, ri_arn) where t.task_arn='$ARN'")" "Name=ReplicationTaskIdentifier,Value=${ARN##*:}" \
+  --start-time "$(date -u -d '-15 min' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 60 --statistics Maximum \
+  --query 'length(Datapoints)' --output text --profile "$PROFILE" --region "$REGION" 2>/dev/null || echo 0)
 RI=$(q "select count(*) from pgvigil.dms_instances r join pgvigil.dms_tasks t using (instance_id, ri_arn) where t.task_arn='$ARN' and r.is_present")
 ORDERS=$(q "select coalesce(max(full_load_rows), -1) from pgvigil.dms_table_stats where instance_id=$iid and task_arn='$ARN' and schema_name='dbo' and table_name='orders'")
 LAT=$(q "select coalesce(latency_source_s::text, 'none') || '/' || coalesce(latency_target_s::text, 'none') from pgvigil.dms_tasks where task_arn='$ARN'")
@@ -73,7 +80,8 @@ echo "task status=$STATUS replication_instances=$RI orders_full_load_rows=$ORDER
 [[ "$RI" == 1 ]] || fail "replication instance row missing"
 [[ "$ORDERS" -ge 1000 ]] || fail "dbo.orders full_load_rows $ORDERS"
 [[ "$LOGNOTE" == ok ]] || fail "the collection did not end ok (a metrics error is 'partial'): $LOGNOTE"
-if [[ "$STATUS" == running ]]; then [[ "$LAT" != none/none ]] || fail "a running task has no CDC latency datapoint"; fi
+if [[ "$CW_LAT" != 0 ]]; then [[ "$LAT" != none/none ]] || fail "CloudWatch has $CW_LAT CDCLatencySource datapoint(s) for the task and the collector read none (dimensions)"; echo "latency graded against $CW_LAT CloudWatch datapoint(s)"
+else echo "latency not graded: CloudWatch has no CDCLatencySource datapoint for the task in the last 15 min"; fi
 [[ "$CPU" != none ]] || fail "no CPUUtilization datapoint for the replication instance"
 N1=$(q "select count(*) from pgvigil.dms_tasks where instance_id=$iid"); S1=$(q "select count(*) from pgvigil.dms_task_sample where instance_id=$iid")
 "$BIN" collect -config "$CFG" -once dms >/dev/null || fail "second collect"

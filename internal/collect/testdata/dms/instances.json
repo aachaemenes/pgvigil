@@ -5,13 +5,14 @@
       "ReplicationInstanceClass": "dms.t3.small",
       "ReplicationInstanceStatus": "available",
       "AllocatedStorage": 20,
-      "InstanceCreateTime": "2026-11-09T12:31:00.000000+00:00",
+      "InstanceCreateTime": "2026-11-09T04:38:55.011000-08:00",
       "AvailabilityZone": "us-east-2a",
-      "ReplicationInstanceArn": "arn:aws:dms:us-east-2:123456789012:rep:T3OM7OUB5NM2LCVZF7JPGJRNUE",
+      "PreferredMaintenanceWindow": "mon:11:09-mon:11:39",
       "PendingModifiedValues": {},
       "MultiAZ": false,
       "EngineVersion": "3.6.1",
       "AutoMinorVersionUpgrade": true,
+      "ReplicationInstanceArn": "arn:aws:dms:us-east-2:123456789012:rep:LXWZ36JSXRDWPB73I43LDL37MM",
       "PubliclyAccessible": true,
       "NetworkType": "IPV4"
     }

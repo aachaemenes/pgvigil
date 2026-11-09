@@ -1,61 +1,6 @@
 [
-  {
-    "metric": "CDCLatencySource",
-    "dims": {
-      "ReplicationInstanceIdentifier": "dmslab-ri",
-      "ReplicationTaskIdentifier": "K55IUCGBASJS5VHZJIINA45FII"
-    },
-    "value": 3.0,
-    "at": "2026-11-09T13:01:00Z"
-  },
-  {
-    "metric": "CDCLatencyTarget",
-    "dims": {
-      "ReplicationInstanceIdentifier": "dmslab-ri",
-      "ReplicationTaskIdentifier": "K55IUCGBASJS5VHZJIINA45FII"
-    },
-    "value": 2.0,
-    "at": "2026-11-09T13:01:00Z"
-  },
-  {
-    "metric": "CDCIncomingChanges",
-    "dims": {
-      "ReplicationInstanceIdentifier": "dmslab-ri",
-      "ReplicationTaskIdentifier": "K55IUCGBASJS5VHZJIINA45FII"
-    },
-    "value": 0.0,
-    "at": "2026-11-09T13:01:00Z"
-  },
-  {
-    "metric": "CPUUtilization",
-    "dims": {
-      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
-    },
-    "value": 4.2,
-    "at": "2026-11-09T13:01:00Z"
-  },
-  {
-    "metric": "FreeableMemory",
-    "dims": {
-      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
-    },
-    "value": 1200000000.0,
-    "at": "2026-11-09T13:01:00Z"
-  },
-  {
-    "metric": "FreeStorageSpace",
-    "dims": {
-      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
-    },
-    "value": 19000000000.0,
-    "at": "2026-11-09T13:01:00Z"
-  },
-  {
-    "metric": "SwapUsage",
-    "dims": {
-      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
-    },
-    "value": 0.0,
-    "at": "2026-11-09T13:01:00Z"
-  }
+  {"metric": "CDCLatencySource", "dims": {"ReplicationInstanceIdentifier": "dmslab-ri", "ReplicationTaskIdentifier": "CMKNFIOXZNFCNFLXSIYQBB6UOY"}, "value": 0.0, "at": "2026-11-09T04:54:00-08:00"},
+  {"metric": "CDCLatencyTarget", "dims": {"ReplicationInstanceIdentifier": "dmslab-ri", "ReplicationTaskIdentifier": "CMKNFIOXZNFCNFLXSIYQBB6UOY"}, "value": 0.0, "at": "2026-11-09T04:54:00-08:00"},
+  {"metric": "CDCIncomingChanges", "dims": {"ReplicationInstanceIdentifier": "dmslab-ri", "ReplicationTaskIdentifier": "CMKNFIOXZNFCNFLXSIYQBB6UOY"}, "value": 0.0, "at": "2026-11-09T04:54:00-08:00"},
+  {"metric": "CPUUtilization", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 2.4307405434203515, "at": "2026-11-09T04:53:00-08:00"}
 ]
