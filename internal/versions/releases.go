@@ -81,16 +81,16 @@ var skipped = map[int]map[int]bool{18: {5: true}}
 
 // Status is one server version read against the table.
 type Status struct {
-	Major, Minor   int
-	Known          bool      // the major is in the table
-	Latest         int       // the newest minor of the major in the table
-	LatestDate     time.Time // its release date
-	BehindBy       int       // minors released after this one (the skipped ones not counted); 0 when current or newer
-	Newer          bool      // the server is newer than the table (the table is out of date)
-	ReleasedAt     time.Time // this minor's release date; zero when the table has no date for it
-	EOL            time.Time
-	EOLPassed      bool
-	EOLInMonths    int // whole months from now to the EOL; negative once past
+	Major, Minor    int
+	Known           bool      // the major is in the table
+	Latest          int       // the newest minor of the major in the table
+	LatestDate      time.Time // its release date
+	BehindBy        int       // minors released after this one (the skipped ones not counted); 0 when current or newer
+	Newer           bool      // the server is newer than the table (the table is out of date)
+	ReleasedAt      time.Time // this minor's release date; zero when the table has no date for it
+	EOL             time.Time
+	EOLPassed       bool
+	EOLInMonths     int // whole months from now to the EOL; negative once past
 	ReleasedDaysAgo int // days since this minor's release; -1 when unknown
 }
 

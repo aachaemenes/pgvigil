@@ -1,16 +1,17 @@
 // The fleet's instances and daily-check rows, shared by the tree, the Summary grid and the checks page,
 // fetched at most once per 25 s unless a refresh forces it.
-import { get, Row, rowsOf } from './api';
+import { get, Row, rowsOf, Table } from './api';
+import { versionCell } from './versions';
 
-export interface Fleet { instances: Row[]; checks: Row[]; at: number }
+export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 
 export async function fleet(force = false): Promise<Fleet> {
   if (!force && cache && Date.now() - cache.at < 25000) return cache;
   if (pending) return pending;
-  pending = Promise.all([get('instances'), get('overview')])
-    .then(([i, c]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), at: Date.now() }))
+  pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {})])
+    .then(([i, c, v]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
 }
@@ -32,10 +33,11 @@ export const groups: Group[] = [
   { key: 'host', label: 'Host', checks: ['host'], tab: 'host' },
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
   { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage' },
+  { key: 'version', label: 'Version', checks: [], tab: 'versions' },   // from the versions fleet read, not a check group
 ];
 
 export type Level = 0 | 1 | 2;   // ok, warning, critical
-export interface Cell { level: Level; n: number; detail: string[]; none?: boolean }   // none = no data to judge
+export interface Cell { level: Level; n: number; detail: string[]; none?: boolean; text?: string }   // none = no data to judge; text overrides the OK / n warning reading
 
 const sevLevel = (s: unknown): Level => s === 'critical' ? 2 : 1;
 
@@ -50,12 +52,22 @@ function activityCell(r: Row): Cell {
   return { level: d.length ? 1 : 0, n: d.length, detail: d };
 }
 
+// versionCellOf: the Summary's Version cell from the instance's versions_fleet row (versionCell's reading: EOL,
+// minors behind, deprecated engine, maintenance due, collations); no row or no version read yet = none.
+function versionCellOf(f: Fleet, id: number): Cell {
+  const v = f.versions.find(x => Number(x.instance_id) === id);
+  if (!v) return { level: 0, n: 0, detail: ['no version read yet'], none: true };
+  const c = versionCell(v);
+  return { level: c.level, n: c.detail.length, detail: c.detail, none: c.none, text: c.none ? undefined : c.text };
+}
+
 export function cells(f: Fleet, r: Row): Record<string, Cell> {
   const id = Number(r.instance_id);
   const mine = f.checks.filter(c => Number(c.instance_id) === id);
   const out: Record<string, Cell> = {};
   for (const g of groups) {
     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
+    if (g.key === 'version') { out[g.key] = versionCellOf(f, id); continue; }
     const hit = mine.filter(c => g.checks.includes(String(c.check_group)));
     // Host and Disk read "no sample" on an instance the host collection has never reached (no system_stats, no
     // CloudWatch door: Azure, Cloud SQL): an empty check list there is not OK
@@ -78,7 +90,7 @@ export function worst(f: Fleet, r: Row): Level {
 
 export const levelClass = ['ok', 'warn', 'crit'];
 export const cellClass = (c: Cell) => c.none ? 'none' : levelClass[c.level];
-export const cellText = (c: Cell) => c.none ? 'no sample' : c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`;
+export const cellText = (c: Cell) => c.none ? 'no sample' : c.text ?? (c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`);
 
 export function tagsOf(r: Row): string[] {
   const t = r.tags;

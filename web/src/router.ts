@@ -22,11 +22,11 @@ export function rememberInstance(id?: number) { if (id) try { localStorage.setIt
 
 export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', disks: 'Disk report', storage: 'Storage' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', disks: 'Disk report', storage: 'Storage', extensions: 'Extensions', versions: 'Versions' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', activity: 'Running queries', statements: 'Statements', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
   replication: 'Replication', jobs: 'Jobs', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
-  host: 'Host', storage: 'Storage',
+  host: 'Host', storage: 'Storage', extensions: 'Extensions', versions: 'Versions',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
