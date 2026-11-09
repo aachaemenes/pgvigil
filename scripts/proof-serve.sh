@@ -5,7 +5,7 @@
 #   PGVIGIL_REPO_DSN  repository owner connection (creates and drops the reader login)
 # Expected: health/instances/overview 200 with rows; activity at a snapshot with a lock waiter returns
 # sessions and a blocking chain; statements, and counters of all four kinds, return rows for an
-# instance that holds that data; activity without instance = 400; Host evil.example = 421;
+# instance that holds that data; dms answers (with tasks and one task's tables when proof-dms filled them); activity without instance = 400; dms with a bad instance = 400; Host evil.example = 421;
 # POST = 405; GET / = 200 with the title.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -34,6 +34,8 @@ VID=$(pick "select instance_id from pgvigil.serverstats group by instance_id hav
 IID=$(pick "select instance_id from pgvigil.iostats group by instance_id having count(distinct snapshot_at) > 1 order by max(snapshot_at) desc limit 1")
 NID=$(pick "select instance_id from pgvigil.activity_summary group by instance_id having count(*) > 1 order by max(snapshot_at) desc limit 1")
 for v in AID AT SID DID VID IID NID; do [[ -n "${!v}" ]] || fail "no data for $v: run the other proofs first"; done
+# DMS data is optional (proof-dms.sh fills it): checked when an instance holds a task with table statistics
+read -r MID MARN < <(pick "select t.instance_id, t.task_arn from pgvigil.dms_tasks t where exists (select 1 from pgvigil.dms_table_stats s where s.instance_id = t.instance_id and s.task_arn = t.task_arn) order by t.snapshot_at desc limit 1" | tr '|' ' ')
 
 LOG=$(mktemp); "$BIN" serve -config "$CFG" -dsn env:READ_DSN -listen "127.0.0.1:$PORT" >"$LOG" 2>&1 & SRVPID=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
@@ -58,6 +60,12 @@ rows "counters?instance=$DID&kind=db&from=$FROM" 'len(d["rows"])' 1
 rows "counters?instance=$VID&kind=server&from=$FROM" 'len(d["rows"])' 1
 rows "counters?instance=$IID&kind=io&from=$FROM" 'len(d["rows"])' 1
 rows "counters?instance=$NID&kind=sessions&from=$FROM" 'len(d["rows"])' 2
+rows dms 'len(d["tasks"]["rows"]) + len(d["instances"]["rows"])' 0
+if [[ -n "${MID:-}" ]]; then
+  rows "dms?instance=$MID" 'len(d["tasks"]["rows"])' 1
+  rows "dms?instance=$MID&task=$MARN" 'len(d["tables"]["rows"])' 1
+else echo "dms: no task data in this repository (proof-dms.sh fills it): the endpoint answered empty"; fi
+[[ $(code "$U/api/dms?instance=x") == 400 ]] || fail "dms with a bad instance was not 400"
 [[ $(code -H 'Host: evil.example' "$U/api/instances") == 421 ]] || fail "a foreign Host was answered"
 [[ $(code "$U/api/activity") == 400 ]] || fail "activity without instance was not 400"
 [[ $(code -X POST "$U/api/instances") == 405 ]] || fail "POST was not refused"
