@@ -82,11 +82,17 @@ func (statementsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.I
 	tempReadTime := pick("temp_blk_read_time", "0::float8")
 	tempWriteTime := pick("temp_blk_write_time", "0::float8")
 
+	// The view is read ONCE (a materialized CTE) and both top sets are picked from that read. Two
+	// scans of pg_stat_statements see different counters for a statement that ran in between, UNION
+	// then keeps both versions of one (dbid, userid, queryid, toplevel) and import_statements' upsert
+	// into statements_current fails on the second ("cannot affect row a second time"), losing the
+	// whole cycle; seen on a busy target polled every 90 s.
 	sql := fmt.Sprintf(`
-WITH picked AS (
-  (SELECT s.* FROM %[7]s.pg_stat_statements s WHERE s.queryid IS NOT NULL ORDER BY s.total_exec_time DESC LIMIT %[8]d)
+WITH pss AS MATERIALIZED (SELECT * FROM %[7]s.pg_stat_statements WHERE queryid IS NOT NULL),
+picked AS (
+  (SELECT * FROM pss ORDER BY total_exec_time DESC LIMIT %[8]d)
   UNION
-  (SELECT s.* FROM %[7]s.pg_stat_statements s WHERE s.queryid IS NOT NULL ORDER BY s.calls DESC LIMIT %[9]d)
+  (SELECT * FROM pss ORDER BY calls DESC LIMIT %[9]d)
 )
 SELECT 'stmt'                         AS kind,
        s.dbid::bigint                 AS dbid,

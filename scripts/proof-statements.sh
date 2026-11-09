@@ -7,7 +7,9 @@
 #   PGVIGIL_REPO_DSN  repository (the proof's instance row and its data stay there, under the name proof-statements);  ADMIN_DSN  superuser connection to the monitored server
 #
 # Also checked: a statement absent from the import that first sees a reset is still flagged when it
-# returns (the reset time is stored per current row).
+# returns (the reset time is stored per current row); a payload that names one statement twice (two
+# readings of the view while its counters moved) imports whole, the reading with the most calls is
+# kept and the next cycle's delta counts from it (migration 0017).
 # Expected: snapshot 1 writes no delta for the marker (first sight); after 5 more runs,
 # snapshot 2 has one delta row for the marker with calls = 5 and reset = false; after
 # pg_stat_statements_reset() and 3 runs, snapshot 3 has one row with calls = 3 and reset = true;
@@ -74,5 +76,14 @@ q "select pgvigil.import_statements($iid, now() - interval '2 minutes', '[{\"kin
 q "select pgvigil.import_statements($iid, now() - interval '1 minute', '[{\"kind\":\"stmt\",\"dbid\":1,\"datname\":\"d\",\"userid\":1,\"usename\":\"u\",\"queryid\":424242,\"toplevel\":true,\"calls\":120,\"total_exec_ms\":12,\"rows\":1,\"shared_blks_hit\":0,\"shared_blks_read\":0,\"shared_blks_dirtied\":0,\"shared_blks_written\":0,\"temp_blks_read\":0,\"temp_blks_written\":0,\"blk_read_ms\":0,\"blk_write_ms\":0,\"temp_read_ms\":0,\"temp_write_ms\":0,\"wal_bytes\":0,\"query\":\"crafted\"},{\"kind\":\"info\",\"dealloc\":0,\"stats_reset\":\"2026-01-01T00:00:00Z\"}]'::jsonb)" >/dev/null
 crafted=$(q "select string_agg(calls || '/' || reset, ' ' order by snapshot_at) from pgvigil.statements_delta where instance_id=$iid and queryid=424242")
 [ "$crafted" = "10/false 10/false" ] || fail "info-row gap: expected '10/false 10/false', got '$crafted'"
-q "delete from pgvigil.statements_delta where instance_id=$iid and queryid=424242; delete from pgvigil.statements_current where instance_id=$iid and queryid=424242; delete from pgvigil.statement_text where instance_id=$iid and queryid=424242" >/dev/null
-echo "proof-statements: OK (queryid $qid: first sight no delta, 5/false, 3/true after reset, 9/true after an overtaking reset; window total 17; an info-row gap stays 10/false 10/false)"
+# crafted: one statement twice in one payload (two readings of the view while the counters moved) must import
+# whole; the reading with the most calls is kept and the next cycle's delta counts from it
+dup() { printf '{"kind":"stmt","dbid":1,"datname":"d","userid":1,"usename":"u","queryid":434343,"toplevel":true,"calls":%s,"total_exec_ms":%s,"rows":1,"shared_blks_hit":0,"shared_blks_read":0,"shared_blks_dirtied":0,"shared_blks_written":0,"temp_blks_read":0,"temp_blks_written":0,"blk_read_ms":0,"blk_write_ms":0,"temp_read_ms":0,"temp_write_ms":0,"wal_bytes":0,"query":"crafted-dup"}' "$1" "$2"; }
+q "select pgvigil.import_statements($iid, now() - interval '50 seconds', '[$(dup 50 5),$(dup 60 6),{\"kind\":\"info\",\"dealloc\":0,\"stats_reset\":\"2026-01-01T00:00:00Z\"}]'::jsonb)" >/dev/null || fail "a payload naming one statement twice failed to import"
+cur=$(q "select calls from pgvigil.statements_current where instance_id=$iid and queryid=434343")
+[ "$cur" = "60" ] || fail "duplicate key: expected the reading with 60 calls kept, got '$cur'"
+q "select pgvigil.import_statements($iid, now() - interval '40 seconds', '[$(dup 70 7),$(dup 65 6.5),{\"kind\":\"info\",\"dealloc\":0,\"stats_reset\":\"2026-01-01T00:00:00Z\"}]'::jsonb)" >/dev/null || fail "the second duplicate payload failed to import"
+dd=$(q "select string_agg(calls || '/' || reset, ' ' order by snapshot_at) from pgvigil.statements_delta where instance_id=$iid and queryid=434343")
+[ "$dd" = "10/false" ] || fail "duplicate key: expected one delta 10/false, got '$dd'"
+q "delete from pgvigil.statements_delta where instance_id=$iid and queryid in (424242, 434343); delete from pgvigil.statements_current where instance_id=$iid and queryid in (424242, 434343); delete from pgvigil.statement_text where instance_id=$iid and queryid in (424242, 434343)" >/dev/null
+echo "proof-statements: OK (queryid $qid: first sight no delta, 5/false, 3/true after reset, 9/true after an overtaking reset; window total 17; an info-row gap stays 10/false 10/false; one statement twice in a payload imports whole, 60 kept, next delta 10/false)"
