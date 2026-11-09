@@ -11,7 +11,12 @@
 #   reset     stats_reset moves mid-day: deadlocks 0->1, then 0->7                                    -> 8 deadlocks, warning
 #   checksum  checksum_failures 0->2 in the last 10 minutes, deadlocks steady                         -> critical, 2 failures, 0 deadlocks
 #   quiet     nothing changes                                                                          -> no row
-# Expected: exactly those 4 case rows, every bulk database 2 deadlocks (N*D rows), under the budget.
+#   deadfall  xact_commit keeps rising, deadlocks 10->12, then 0->1 (a fall in deadlocks alone)       -> 3 deadlocks, warning
+#   risefail  failover onto a node with higher counters (postmaster_start moves): deadlocks 2->3,
+#             then 5 steady, checksum_failures 0 then 3 steady                                         -> 1 deadlock, warning (no critical)
+#   late      deadlocks 40->41, restart to 0 steady; then a pre-restart row (41) imported late        -> 1 deadlock, warning
+# Every row carries postmaster_start 2026-01-01 except risefail after its failover.
+# Expected: exactly those 7 case rows, every bulk database 2 deadlocks (N*D rows), under the budget.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -35,7 +40,7 @@ C=$(P -c "select instance_id from pgvigil.instances where name = 'case'")
 P -c "do \$\$ declare m int; t timestamptz; b timestamptz := date_trunc('minute', now()); begin
   for m in reverse 1439..0 loop
     t := b - make_interval(mins => m);
-    perform pgvigil.import_dbstats($C, t, jsonb_build_array(
+    perform pgvigil.import_dbstats($C, t, (select jsonb_agg(case when x ? 'postmaster_start' then x else x || jsonb_build_object('postmaster_start','2026-01-01T00:00:00Z') end) from jsonb_array_elements(jsonb_build_array(
       jsonb_build_object('kind','db','dbid',1,'datname','crash','xact_commit', case when m >= 700 then 100000 - m else 1440 - m end,
         'deadlocks', case when m >= 700 then 100 + (1439 - m) / 147 else (699 - m) / 233 end,
         'checksum_failures', case when m >= 700 then 1 else 0 end),
@@ -46,10 +51,24 @@ P -c "do \$\$ declare m int; t timestamptz; b timestamptz := date_trunc('minute'
         'deadlocks', case when m >= 700 then (1439 - m) / 739 else (699 - m) / 99 end, 'checksum_failures', 0),
       jsonb_build_object('kind','db','dbid',4,'datname','checksum','xact_commit', 100000 - m, 'deadlocks', 9,
         'checksum_failures', case when m < 10 then 2 else 0 end),
-      jsonb_build_object('kind','db','dbid',5,'datname','quiet','xact_commit', 100000, 'deadlocks', 4, 'checksum_failures', 0)));
-  end loop; end \$\$"
+      jsonb_build_object('kind','db','dbid',5,'datname','quiet','xact_commit', 100000, 'deadlocks', 4, 'checksum_failures', 0),
+      jsonb_build_object('kind','db','dbid',6,'datname','deadfall','xact_commit', 100000 - m,
+        'deadlocks', case when m >= 700 then 10 + (1439 - m) / 369 else (699 - m) / 699 end, 'checksum_failures', 0),
+      jsonb_build_object('kind','db','dbid',7,'datname','risefail',
+        'postmaster_start', case when m >= 700 then '2026-01-01T00:00:00Z' else '2026-11-01T00:00:00Z' end,
+        'xact_commit', case when m >= 700 then 1000 + (1439 - m) else 90000 + (699 - m) end,
+        'deadlocks', case when m >= 700 then 2 + (1439 - m) / 739 else 5 end,
+        'checksum_failures', case when m >= 700 then 0 else 3 end),
+      jsonb_build_object('kind','db','dbid',8,'datname','late','xact_commit', case when m >= 700 then 100000 - m else 1440 - m end,
+        'deadlocks', case when m >= 700 then 40 + (1439 - m) / 739 else 0 end, 'checksum_failures', 0)
+    )) x));
+  end loop;
+  -- a pre-restart read of 'late' arriving after the restart (30 s past the m=705 snapshot)
+  perform pgvigil.import_dbstats($C, b - interval '705 minutes' + interval '30 seconds', jsonb_build_array(
+    jsonb_build_object('kind','db','dbid',8,'datname','late','postmaster_start','2026-01-01T00:00:00Z','xact_commit', 100000 - 705, 'deadlocks', 41, 'checksum_failures', 0)));
+  end \$\$"
 EP=$(P -c "select string_agg(datname || '=' || n, ' ' order by datname) from (select datname, count(distinct epoch) n from pgvigil.dbstats where instance_id = $C group by datname) x")
-[[ "$EP" == "checksum=1 crash=2 failover=2 quiet=1 reset=2" ]] || fail "epochs: $EP"
+[[ "$EP" == "checksum=1 crash=2 deadfall=2 failover=2 late=2 quiet=1 reset=2 risefail=2" ]] || fail "epochs: $EP"
 # bulk load for time (epoch 0, every series rising)
 P -c "select pgvigil.ensure_month_partition('dbstats', now() - interval '1 day'), pgvigil.ensure_month_partition('dbstats', now())" >/dev/null
 P -c "insert into pgvigil.dbstats(instance_id, snapshot_at, dbid, datname, xact_commit, deadlocks, checksum_failures, epoch)
@@ -62,9 +81,12 @@ TOUT=$(P -c "\timing on" -c "$Q")
 MS=$(sed -n 's/^Time: \([0-9]*\)\..*/\1/p' <<<"$TOUT"); OUT=$(grep -v '^Time: ' <<<"$TOUT")
 [[ "$MS" =~ ^[0-9]+$ ]] || fail "no timing line"
 CASES=$(grep "^$C|" <<<"$OUT" | cut -d'|' -f2-4,6 | sort | tr '\n' ';')
-WANT="critical|checksum failures (24 h)|checksum|2 checksum failure(s); 0 deadlock(s);warning|deadlocks (24 h)|crash|8 deadlock(s);warning|deadlocks (24 h)|failover|3 deadlock(s);warning|deadlocks (24 h)|reset|8 deadlock(s);"
+WANT=$(printf '%s\n' "critical|checksum failures (24 h)|checksum|2 checksum failure(s); 0 deadlock(s)" \
+  "warning|deadlocks (24 h)|crash|8 deadlock(s)" "warning|deadlocks (24 h)|deadfall|3 deadlock(s)" \
+  "warning|deadlocks (24 h)|failover|3 deadlock(s)" "warning|deadlocks (24 h)|late|1 deadlock(s)" \
+  "warning|deadlocks (24 h)|reset|8 deadlock(s)" "warning|deadlocks (24 h)|risefail|1 deadlock(s)" | sort | tr '\n' ';')
 [[ "$CASES" == "$WANT" ]] || fail "cases: $CASES"
 BULK=$(grep -vc "^$C|" <<<"$OUT" || true); BAD=$(grep -v "^$C|" <<<"$OUT" | grep -vc "^[0-9]*|warning|deadlocks (24 h)|db[0-9]*|.*|2 deadlock(s)$" || true)
 [[ "$BULK" -eq $((N*D)) && "$BAD" -eq 0 ]] || fail "bulk rows $BULK (expected $((N*D))), $BAD not 2 deadlocks"
 [[ "$MS" -le "$BUDGET" ]] || fail "check took $MS ms, budget $BUDGET ms"
-echo "OK: overview deadlock check, 4 cases right, $((N*D*1440)) bulk rows, $BULK bulk result rows, $MS ms cold (budget $BUDGET ms)"
+echo "OK: overview deadlock check, 7 cases right, $((N*D*1440)) bulk rows, $BULK bulk result rows, $MS ms cold (budget $BUDGET ms)"

@@ -35,6 +35,7 @@ func (dbstatsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.I
 	}
 	dbSQL := fmt.Sprintf(`
 SELECT 'db' AS kind, d.datid::bigint AS dbid, d.datname::text AS datname, d.stats_reset,
+       pg_postmaster_start_time() AS postmaster_start,
        d.numbackends, d.xact_commit, d.xact_rollback, d.blks_read, d.blks_hit,
        d.tup_returned, d.tup_fetched, d.tup_inserted, d.tup_updated, d.tup_deleted,
        d.conflicts, d.temp_files, d.temp_bytes, d.deadlocks,
