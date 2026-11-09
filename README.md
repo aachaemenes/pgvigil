@@ -28,7 +28,9 @@ Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud 
 - Rows reach the repository as a JSON array handed to `pgvigil.import_<collection>(instance_id, snapshot_at, payload)`; the collector never knows the table shapes. The import functions are SECURITY DEFINER: the collector's repository login (`pgvigil_collector`) can execute them and read nothing. A `pgvigil_reader` role serves the UI.
 - Time-series tables are partitioned by month (UTC) and dropped whole by `pgvigil.purge()`.
 - Credentials never sit in the config file: a DSN is `env:NAME` or `file:/path`. On the managed platforms the platform's own token login (IAM, Entra, Cloud SQL IAM) is the intended door.
-- Credentials inside collected text are masked before they leave the target (replication conninfo, `PASSWORD '...'` literals).
+- Credentials inside collected text are masked before they leave the target (replication conninfo, `PASSWORD '...'` literals, `password=` / `PWD=` in connection strings).
+- `query_text: full | normalized | none` says what statement text the repository may hold at all: the text as the server shows it, every literal replaced by `?`, or no text (hashes and counters only); per file or per instance.
+- The AWS door (`aws:` block per instance) reads only: CloudWatch Logs, the DMS Describe* calls and CloudWatch metrics. Nothing starts, stops or modifies a task.
 
 ## Build and run (from source, for now)
 

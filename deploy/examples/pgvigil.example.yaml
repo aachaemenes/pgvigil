@@ -8,6 +8,12 @@ repository:
 schedules:
   instance: 1h
 
+# What statement text the repository may hold (an instance can override it):
+#   full        the text as the server shows it (credentials always masked)
+#   normalized  every literal replaced by ? before the text leaves the collector
+#   none        no statement text at all, only hashes and counters
+query_text: full
+
 instances:
   - name: prod-writer
     dsn: env:PROD_WRITER_DSN           # host=... user=pgvigil dbname=postgres sslmode=require
@@ -15,6 +21,16 @@ instances:
     tags: [prod, aurora]
     schedules:
       instance: 30m
+    # The AWS door of an RDS / Aurora instance: the postgresql log over CloudWatch Logs (logs) and the
+    # DMS tasks that feed or read this instance (dms). Credentials come from the SDK's usual chain
+    # (an aws login session, a profile, an instance role); nothing is stored here.
+    # aws:
+    #   region: us-east-2
+    #   profile: prod-readonly           # optional
+    #   cluster: prod-pg                 # Aurora: the cluster id; RDS: db_instance: <id> instead
+    #   dms:
+    #     tasks: [orders-to-dw, "*"]     # task identifiers or ARNs; "*" = every task the profile sees
+    #     latency_warn_secs: 300         # the CDC latency the overview warns at
   - name: prod-reader
     dsn: env:PROD_READER_DSN
     tags: [prod, aurora, reader]
