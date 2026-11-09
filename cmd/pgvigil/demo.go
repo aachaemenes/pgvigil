@@ -126,7 +126,8 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	// the accepted Host values come from the bound port (-listen 127.0.0.1:0 picks one)
 	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
-	srv, err := web.Open(ctx, log, repoDSN, web.Options{Expected: expectedIntervals(&config.Config{}), Hosts: web.LoopbackHosts(port)})
+	srv, err := web.Open(ctx, log, repoDSN, web.Options{Expected: expectedIntervals(&config.Config{}), Hosts: web.LoopbackHosts(port),
+		Tags: web.TagsUI{GroupBy: []string{"env", "team"}, EnvOrder: config.DefaultEnvOrder}})
 	if err != nil {
 		_ = ln.Close()
 		return err

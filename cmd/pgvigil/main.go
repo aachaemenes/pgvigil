@@ -10,6 +10,7 @@
 //	pgvigil demo     [-config f | -pgbin dir] [-serve]                                        seed (and serve) the demo fleet
 //	pgvigil roles                                                                            the CREATE ROLE script
 //	pgvigil purge    -config pgvigil.yaml [-days 30] [-dry-run]                            the repository's retention, as its owner
+//	pgvigil tag      -config pgvigil.yaml [-reset] <instance> [key=value[,value...]] [-key] [key]   fix an instance's tags in the repository
 //	pgvigil install   [-bin p] [-config p] [-user a] [-no-start]                             the collector as a service (systemd / Windows)
 //	pgvigil uninstall [-bin p] [-config p] [-user a] [-purge]
 //	pgvigil version
@@ -72,6 +73,8 @@ func run(args []string) int {
 		err = runDemo(ctx, log, args[1:])
 	case "purge":
 		err = runPurge(ctx, log, args[1:])
+	case "tag":
+		err = runTag(ctx, args[1:])
 	case "install":
 		err = runInstall(log, args[1:])
 	case "uninstall":
@@ -92,7 +95,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|purge|install|uninstall|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector

@@ -12,9 +12,10 @@ import { vacuumView } from './vacuum';
 import { extensionsView } from './extensions';
 import { versionsView } from './versions';
 import { ioView } from './io';
+import { actionsLogView } from './actions';
 import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_ } from './router';
-import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
+import { mountTree, setTreeHidden, tagChips, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
@@ -24,6 +25,7 @@ const instancePages: Record<string, Render> = {
   tables: c => tablesView(c.instance!), vacuum: vacuumView, findings, host: hostView, storage: storageView,
   extensions: c => extensionsView(c.instance!), versions: c => versionsView(c.instance!),
   io: c => ioView(c.instance!, window_(c), rangeLabel(c)),
+  actions: actionsLogView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms']);
@@ -133,7 +135,8 @@ async function render(force = false) {
     crumb.replaceChildren(
       el('a', { href: href(ctx, { tab: ctx.instance ? 'summary' : ctx.tab, instance: undefined, tag: undefined }) }, 'All instances'),
       ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, 'tag ' + ctx.tag)] : []),
-      ...(ctx.instance ? [' / ', el('b', {}, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []));
+      ...(ctx.instance ? [' / ', el('b', {}, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []),
+      ...(inst ? [tagChips(ctx, inst)] : []));
   } catch (e) {
     if (e instanceof LoginRequired) { showLogin(); return; }
     crumb.replaceChildren(errorBox(e));

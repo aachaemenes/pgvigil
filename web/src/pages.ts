@@ -9,6 +9,8 @@ import { storageFleetView } from './storage';
 import { extensionsFleetView } from './extensions';
 import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
+import { actionsCol, actionsState } from './actions';
+import { applyTagFilter, tagCols, tagFilterBar, tagKeys, tagUI, withTagFields } from './tree';
 
 export type { Ctx };
 const range = window_;
@@ -79,7 +81,7 @@ export async function instances(ctx: Ctx): Promise<HTMLElement> {
 export async function activity(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
   const at = ctx.at ?? (isLive(ctx) ? undefined : range(ctx).to);
-  const a = await get<Activity>('activity', { instance: ctx.instance, at });
+  const [a, act] = await Promise.all([get<Activity>('activity', { instance: ctx.instance, at }), actionsState(ctx.instance)]);
   const sec = el('section', {}, el('h2', {}, 'Running queries'), snapshotPicker(ctx, at));
   if (!a.snapshot_at) { sec.append(el('p', { class: 'empty' }, 'No activity snapshot for this instance yet.')); return sec; }
   const sum = rowsOf(a.summary)[0] ?? {};
@@ -121,6 +123,7 @@ export async function activity(ctx: Ctx): Promise<HTMLElement> {
     { key: 'application_name', label: 'app' },
     { key: 'client' },
     { key: 'query', wide: true, fmt: truncQuery },
+    actionsCol(ctx, act, () => { location.hash = href(ctx, { tab: 'activity', at: undefined }); }),
   ];
   sec.append(grid(rowsOf(a.sessions), cols, 'No active or idle-in-transaction sessions in this snapshot.'));
   return sec;
@@ -283,9 +286,11 @@ export { errorBox };
 // ---- fleet Summary: one row per instance, one coloured cell per check group (DBADash's Summary tab)
 
 export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
-  const f = await fleet();
-  const insts = inTag(ctx, f.instances);
-  const rows = insts.map(r => {
+  const [f] = await Promise.all([fleet(), tagUI()]);
+  const scope = inTag(ctx, f.instances);
+  const keys = tagKeys(scope);
+  const insts = applyTagFilter(scope);
+  const rows = withTagFields(insts, keys).map(r => {
     const c = cells(f, r);
     const row: Row = { ...r, _cells: c, _worst: Math.max(...Object.values(c).map(x => x.level)) };
     for (const g of groups) row['g_' + g.key] = c[g.key].level * 1000 + c[g.key].n;   // sorts by level, then count
@@ -315,6 +320,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     { key: 'name', label: 'instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
     { key: 'platform' },
     { key: 'is_replica', label: 'role', fmt: v => v ? 'replica' : 'primary' },
+    ...tagCols(keys),
     ...groups.map(statusCol),
     { key: 'total', label: 'sessions', num: true },
     { key: 'waiting_lock', label: 'lock waits', num: true },
@@ -324,6 +330,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   return el('section', {}, el('h2', {}, 'Summary' + scopeLabel(ctx)),
     el('p', { class: 'meta' }, 'The state now, one row per instance; a cell opens that instance at the matching tab, its hover lists the checks.'),
     tiles,
+    tagFilterBar(scope),
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
     grid(rows, cols, 'No instances yet: run the collector.'));
 }

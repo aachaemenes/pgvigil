@@ -258,6 +258,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if first || t.Minute()%15 == 0 {
 		add("storage", g.storageRows(t))
 	}
+	if t.Equal(g.end) {
+		add("actions_log", g.actionsLogRows())
+	}
 	g.prev = t
 	return out
 }

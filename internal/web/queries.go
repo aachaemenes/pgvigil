@@ -4,7 +4,7 @@ package web
 // $1 = the stale check's expectations: a collection disabled or gated off for an instance (0) is not
 // counted as failing there, so an error row an earlier build left behind does not alarm for ever.
 const sqlInstances = `
-SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, i.tags, i.last_seen,
+SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coalesce(tm.tags, i.tags) AS tags, i.last_seen,
        st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
        a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at,
@@ -14,6 +14,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, i.tags
                         ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0) AS collections_failing
   FROM pgvigil.instances i
   LEFT JOIN pgvigil.instance_state st ON st.instance_id = i.instance_id
+  LEFT JOIN pgvigil.instance_tags_merged tm ON tm.instance_id = i.instance_id
   LEFT JOIN pgvigil.host_state h ON h.instance_id = i.instance_id
   LEFT JOIN LATERAL (SELECT * FROM pgvigil.activity_summary x
                       WHERE x.instance_id = i.instance_id
@@ -84,7 +85,7 @@ SELECT instance_id, CASE WHEN ck > 0 THEN 'critical' ELSE 'warning' END,
 
 // sqlSessions is one activity snapshot with statement text and ages at the snapshot.
 const sqlSessions = `
-SELECT s.pid, s.leader_pid, s.backend_type, s.datname, s.usename, s.application_name, s.client, s.state,
+SELECT s.pid, s.backend_start, s.leader_pid, s.backend_type, s.datname, s.usename, s.application_name, s.client, s.state,
        s.wait_event_type, s.wait_event, s.blocking_pids, s.is_blocker,
        extract(epoch FROM s.snapshot_at - s.query_start)::int AS query_secs,
        extract(epoch FROM s.snapshot_at - s.xact_start)::int  AS xact_secs,

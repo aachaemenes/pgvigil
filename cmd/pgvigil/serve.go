@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aachaemenes/pgvigil/internal/actions"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/web"
@@ -88,7 +89,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		hosts = web.LoopbackHosts(strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
 	}
 	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
-		SessionTTL: time.Duration(*sessionHours) * time.Hour})
+		SessionTTL: time.Duration(*sessionHours) * time.Hour,
+		Actions:    &web.ActionsConfig{LogDSN: cfg.Repository.DSN(), Doors: actions.DoorsFromConfig(cfg)},
+		Tags:       web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}})
 	if err != nil {
 		_ = ln.Close()
 		return err

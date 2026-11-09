@@ -41,6 +41,10 @@ type Server struct {
 	auth *authState
 	// tls says the listener is TLS: HSTS is sent and the session cookie is Secure.
 	tls bool
+	// actions is the cancel / terminate door (actions.go); never nil after Open.
+	actions *Actions
+	// tags is the config's ui: block for GET /api/tags (q_tags.go).
+	tags TagsUI
 }
 
 // Options shape a Server beyond its repository connection.
@@ -54,6 +58,10 @@ type Options struct {
 	TLS bool
 	// SessionTTL is a session's life from its login; 0 = 12 h.
 	SessionTTL time.Duration
+	// Actions turns the cancel / terminate door on (nil = off, the routes say why).
+	Actions *ActionsConfig
+	// Tags is the config's ui: block (the tree's grouping and value order).
+	Tags TagsUI
 }
 
 // Expected is the interval map of the stale check.
@@ -92,7 +100,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 		pool.Close()
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
-	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS}
+	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags}
 	if o.Login {
 		var n int64
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_user_count()`).Scan(&n); err != nil {
@@ -120,11 +128,14 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 			return *h, nil
 		}, o.TLS, o.SessionTTL)
 	}
+	if s.actions, err = s.NewActions(ctx, o.Actions); err != nil {
+		log.Warn("actions are off", "reason", err)
+	}
 	return s, nil
 }
 
-// Close releases the pool.
-func (s *Server) Close() { s.pool.Close() }
+// Close releases the audit pool and the pool.
+func (s *Server) Close() { s.actions.Close(); s.pool.Close() }
 
 // Handler returns the routes: /api/... (behind the login when it is on) and the embedded frontend.
 // The shell and its assets are public: they hold no data.
@@ -154,6 +165,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/versions", s.Versions)
 	api.HandleFunc("GET /api/io", s.IO)
 	api.HandleFunc("GET /api/dmsio", s.DMSIO)
+	api.HandleFunc("GET /api/tags", s.Tags(s.tags))
+	api.HandleFunc("POST /api/actions/cancel", s.actions.Cancel)
+	api.HandleFunc("POST /api/actions/terminate", s.actions.Terminate)
+	api.HandleFunc("GET /api/actions/log", s.actions.Log)
 	api.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})

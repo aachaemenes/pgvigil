@@ -16,12 +16,20 @@ schedules:
 #   none        no statement text at all, only hashes and counters
 query_text: full
 
+# The UI's tree: one folder level per tag key, in order (a tag is a plain word or key:value, below);
+# env_order ranks the values of every level, prod first; the rest follow by name.
+ui:
+  group_by: [env, team]
+  env_order: [prod, staging, dev]
+
 # A host that only serves the UI (pgvigil serve, pgvigil user, pgvigil migrate) may leave this list empty.
 instances:
   - name: prod-writer
     dsn: env:PROD_WRITER_DSN           # host=... user=pgvigil dbname=postgres sslmode=require
     platform: auto                     # auto | onprem | rds | aurora | azure | cloudsql | alloydb
-    tags: [prod, aurora]
+    tags: [prod, aurora, env:prod, team:orders]   # plain words (key `tag`) and key:value pairs; `pgvigil tag` overrides them in the repository
+    # actions_dsn: env:PROD_WRITER_ACTIONS_DSN  # the cancel / terminate door: the login pgvigil_actions holding pg_signal_backend
+    #                                  # only (pgvigil roles prints it); absent = the buttons stay off on this instance
     schedules:
       instance: 30m
     # The AWS door of an RDS / Aurora instance: the postgresql log over CloudWatch Logs (logs) and the
@@ -36,6 +44,6 @@ instances:
     #     latency_warn_secs: 300         # the CDC latency the overview warns at
   - name: prod-reader
     dsn: env:PROD_READER_DSN
-    tags: [prod, aurora, reader]
+    tags: [prod, aurora, reader, env:prod, team:orders]
     # disabled: [<collection>]         # collections this instance never runs; names are
     #                                  # checked against `pgvigil collect` 's known list at start
