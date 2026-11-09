@@ -53,6 +53,10 @@ jobs:
         env:
           PGVIGIL_REPO_DSN: postgres://postgres:pgvigil@localhost:5432/pgvigil?sslmode=disable
         run: scripts/proof-auth.sh
+      - name: storage collection and forecasts (migration 0033; the container and Aurora parts skip here)
+        env:
+          PGVIGIL_REPO_DSN: "host=localhost port=5432 user=postgres password=pgvigil dbname=postgres sslmode=disable"
+        run: scripts/proof-storage.sh
   lint:
     runs-on: ubuntu-latest
     steps:

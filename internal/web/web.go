@@ -145,6 +145,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/tables", s.tables)
 	api.HandleFunc("GET /api/findings", s.findings)
 	api.HandleFunc("GET /api/slow", s.slow)
+	api.HandleFunc("GET /api/host", s.Host)
+	api.HandleFunc("GET /api/disks", s.Disks)
+	api.HandleFunc("GET /api/storage", s.Storage)
+	api.HandleFunc("GET /api/storage/fleet", s.StorageFleet)
 	api.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})

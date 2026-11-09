@@ -4,6 +4,8 @@ import { lineChart } from './chart';
 import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { diskReportView } from './host';
+import { storageFleetView } from './storage';
 
 export type { Ctx };
 const range = window_;
@@ -546,6 +548,21 @@ export async function findings(ctx: Ctx): Promise<HTMLElement> {
   if (ctx.instance) return findingsView(ctx.instance);
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const view = await findingsView(undefined, ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'findings'));
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}
+
+// disks and storage: the fleet Disk report and the Storage root, scoped to the tag folder like findings,
+// each row linking to its instance's Host or Storage tab.
+export async function disks(ctx: Ctx): Promise<HTMLElement> {
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await diskReportView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'host'));
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}
+export async function storage(ctx: Ctx): Promise<HTMLElement> {
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await storageFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'storage'));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }

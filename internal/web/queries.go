@@ -7,13 +7,14 @@ const sqlInstances = `
 SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, i.tags, i.last_seen,
        st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
-       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age,
+       a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at,
        (SELECT count(*) FROM pgvigil.collection_dates c
          WHERE c.instance_id = i.instance_id AND c.status = 'error'
            AND coalesce(($1::jsonb -> 'instances' -> i.name ->> c.collection)::int,
                         ($1::jsonb -> 'defaults' ->> c.collection)::int, -1) <> 0) AS collections_failing
   FROM pgvigil.instances i
   LEFT JOIN pgvigil.instance_state st ON st.instance_id = i.instance_id
+  LEFT JOIN pgvigil.host_state h ON h.instance_id = i.instance_id
   LEFT JOIN LATERAL (SELECT * FROM pgvigil.activity_summary x
                       WHERE x.instance_id = i.instance_id
                       ORDER BY x.snapshot_at DESC LIMIT 1) a ON true

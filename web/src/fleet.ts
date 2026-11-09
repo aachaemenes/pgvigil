@@ -28,6 +28,9 @@ export const groups: Group[] = [
   { key: 'dms', label: 'DMS', checks: ['dms'], tab: 'dms' },
   { key: 'tables', label: 'Tables', checks: ['tables'], tab: 'tables' },
   { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters' },
+  { key: 'host', label: 'Host', checks: ['host'], tab: 'host' },
+  { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
+  { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage' },
 ];
 
 export type Level = 0 | 1 | 2;   // ok, warning, critical
@@ -53,6 +56,12 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
   for (const g of groups) {
     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
     const hit = mine.filter(c => g.checks.includes(String(c.check_group)));
+    // Host and Disk read "no sample" on an instance the host collection has never reached (no system_stats, no
+    // CloudWatch door: Azure, Cloud SQL): an empty check list there is not OK
+    if ((g.key === 'host' || g.key === 'disk') && r.host_at == null && hit.length === 0) {
+      out[g.key] = { level: 0, n: 0, detail: ['no host sample yet'], none: true };
+      continue;
+    }
     out[g.key] = {
       level: hit.reduce<Level>((a, c) => Math.max(a, sevLevel(c.severity)) as Level, 0),
       n: hit.length,

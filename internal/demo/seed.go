@@ -253,6 +253,9 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.Time) error {
 	for _, c := range g.Collections() {
 		status, note := "ok", ""
+		if c == "host" && !g.hostDoor() {
+			status, note = "skipped", hostSkipNote
+		}
 		if c == "statements" && g.Spec.StmtBroken {
 			status, note = "error", `statements on `+g.Spec.Name+`: ERROR: pg_stat_statements must be loaded via "shared_preload_libraries" (SQLSTATE 55000)`
 		}

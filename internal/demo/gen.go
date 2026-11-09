@@ -241,6 +241,12 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if first || t.Minute() == 0 {
 		add("tables", g.tableRows(t, first))
 	}
+	if g.hostDoor() {
+		add("host", g.hostRows(t))
+	}
+	if first || t.Minute()%15 == 0 {
+		add("storage", g.storageRows(t))
+	}
 	g.prev = t
 	return out
 }
@@ -257,7 +263,8 @@ func (g *Gen) Collections() []string {
 	if g.Spec.DMS {
 		c = append(c, "dms")
 	}
-	return append(c, "tables")
+	// host rides along on every platform: on one without a door the collector logs the skip (logCollections)
+	return append(c, "tables", "host", "storage")
 }
 
 // ---------------------------------------------------------------- instance
