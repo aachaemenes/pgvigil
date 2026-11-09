@@ -1,5 +1,5 @@
 import { Activity, DMS, get, Row, rowsOf, Table } from './api';
-import { dmsDrainView, slowCols, statementOrders, stmtCols } from './borrowed';
+import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
 import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
@@ -227,7 +227,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
     { key: 'is_present', label: 'present', fmt: v => v ? 'yes' : 'gone' },
   ];
   sec.append(grid(tasks, taskCols, 'No DMS tasks: name them under an instance\'s aws.dms.tasks in the collector config.'));
-  if (tasks.length) sec.append(dmsDrainView(d.drain));
+  if (tasks.length) sec.append(dmsDrainView(scoped(rowsOf(d.drain))));
   if (ctx.task) {
     const t = tasks.find(r => r.task_arn === ctx.task && (!ctx.taskInstance || Number(r.instance_id) === ctx.taskInstance));
     sec.append(el('h3', {}, `Tables of ${t ? String(t.task_id) : ctx.task}`), el('p', { class: 'meta' }, link('all tasks', href(ctx, { tab: 'dms', task: undefined, taskInstance: undefined }))));
@@ -538,3 +538,13 @@ export async function config(ctx: Ctx): Promise<HTMLElement> {
 }
 
 export type { Fleet };
+
+// findings: one instance's parameter findings, or the fleet's scoped to the tag folder picked in the tree,
+// each row linking to its instance's Findings tab.
+export async function findings(ctx: Ctx): Promise<HTMLElement> {
+  if (ctx.instance) return findingsView(ctx.instance);
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await findingsView(undefined, ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'findings'));
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}

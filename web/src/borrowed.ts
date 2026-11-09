@@ -59,12 +59,15 @@ export async function tablesView(instance: number): Promise<HTMLElement> {
 
 // ---- Findings -------------------------------------------------------------------------------------------
 
-export async function findingsView(instance?: number): Promise<HTMLElement> {
-  const rows = rowsOf(await get('findings', { instance }));
+// findingsView: one instance's findings, or the fleet's (keep narrows the fleet to a tag folder; instLink
+// turns the instance name into a link to that instance's Findings tab).
+export async function findingsView(instance?: number, keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
+  let rows = rowsOf(await get('findings', { instance }));
+  if (keep) rows = rows.filter(keep);
   const crit = rows.filter(r => r.severity === 'critical').length, warn = rows.filter(r => r.severity === 'warning').length;
   const cols: Col[] = [
     { key: 'severity', fmt: sevBadge },
-    ...(instance ? [] : [{ key: 'instance' } as Col, { key: 'platform' } as Col]),
+    ...(instance ? [] : [{ key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') } as Col, { key: 'platform' } as Col]),
     { key: 'setting' },
     { key: 'value', fmt: (v, r) => r.is_set ? String(v ?? '') : String(v ?? '') + ' (default)' },
     { key: 'suggested' },
@@ -118,9 +121,9 @@ export const slowCols: Col[] = [
 
 // ---- DMS drain ------------------------------------------------------------------------------------------
 
-// dmsDrainView renders the drain readout rows the /api/dms reply carries under "drain".
-export function dmsDrainView(drain: Table | null | undefined): HTMLElement {
-  const rows: Row[] = rowsOf(drain);
+// dmsDrainView renders the drain readout rows the /api/dms reply carries under "drain" (the caller scopes
+// them to the tag folder like the task rows).
+export function dmsDrainView(rows: Row[]): HTMLElement {
   const eta = (v: unknown, r: Row) => v != null ? fmtSecs(v)
     : Number(r.latency_target_s ?? 0) > 0 && r.speed_x != null ? 'not draining' : '';
   const cols: Col[] = [
