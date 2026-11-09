@@ -65,9 +65,9 @@ SELECT CASE WHEN v.pid IS NOT NULL THEN 'vacuum' WHEN an.pid IS NOT NULL THEN 'a
             WHEN a.query ~* '^\s*vacuum' THEN 'vacuum' WHEN a.query ~* '^\s*analy[sz]e' THEN 'analyze'
             WHEN a.query ~* '^autovacuum: (VACUUM|BRIN)' THEN 'vacuum' WHEN a.query ~* '^autovacuum: ANALYZE' THEN 'analyze'
             ELSE 'worker' END AS kind,
-       a.pid, a.datid::bigint AS dbid, a.datname::text AS datname, coalesce(v.relid, an.relid)::bigint AS relid,
+       a.pid, a.datid::bigint AS dbid, a.datname::text AS datname, coalesce(v.relid, an.relid, w.relation)::bigint AS relid,
        coalesce((SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE a.datname = current_database() AND c.oid = coalesce(v.relid, an.relid)),
+                  WHERE a.datname = current_database() AND c.oid = coalesce(v.relid, an.relid, w.relation)),
                 substring(a.query FROM '^autovacuum: (?:VACUUM ANALYZE|VACUUM|ANALYZE) ([^ ]+)'))::text AS table_name,
        a.backend_type::text AS backend_type, a.backend_type = 'autovacuum worker' AS is_auto,
        coalesce(a.query ~ 'to prevent wraparound', false) AS is_wraparound,
@@ -82,6 +82,9 @@ SELECT CASE WHEN v.pid IS NOT NULL THEN 'vacuum' WHEN an.pid IS NOT NULL THEN 'a
   FROM pg_stat_activity a
   LEFT JOIN pg_stat_progress_vacuum v ON v.pid = a.pid
   LEFT JOIN pg_stat_progress_analyze an ON an.pid = a.pid
+  -- a run waiting for its table lock is not in the progress views yet: its table is the relation it waits on
+  LEFT JOIN LATERAL (SELECT l.relation FROM pg_locks l
+                      WHERE l.pid = a.pid AND NOT l.granted AND l.locktype = 'relation' LIMIT 1) w ON a.wait_event_type = 'Lock'
  WHERE a.pid <> pg_backend_pid()
    AND (a.backend_type = 'autovacuum worker' OR v.pid IS NOT NULL OR an.pid IS NOT NULL
         OR (a.state = 'active' AND a.wait_event_type = 'Lock' AND a.query ~* '^\s*(vacuum|analy[sz]e)'))`

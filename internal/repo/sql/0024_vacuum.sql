@@ -372,9 +372,9 @@ SELECT v.*,
 -- the per-table autovacuum state with the hours over a threshold
 CREATE OR REPLACE VIEW pgvigil.vacuum_table_state AS
 SELECT t.*, t.datname || '.' || t.schema_name || '.' || t.table_name AS object,
-       round(t.n_dead_tup / nullif(t.vac_threshold, 0), 2) AS dead_ratio,
-       round(t.n_ins_since_vacuum / nullif(t.ins_threshold, 0), 2) AS ins_ratio,
-       round(t.n_mod_since_analyze / nullif(t.anl_threshold, 0), 2) AS anl_ratio,
+       round((t.n_dead_tup / nullif(t.vac_threshold, 0))::numeric, 2) AS dead_ratio,
+       round((t.n_ins_since_vacuum / nullif(t.ins_threshold, 0))::numeric, 2) AS ins_ratio,
+       round((t.n_mod_since_analyze / nullif(t.anl_threshold, 0))::numeric, 2) AS anl_ratio,
        round(extract(epoch FROM t.snapshot_at - t.over_since)::numeric / 3600, 1) AS hours_over,
        round(100.0 * t.xid_age / nullif(t.freeze_max_age, 0), 1) AS freeze_pct
   FROM pgvigil.vacuum_tables t
