@@ -1,5 +1,5 @@
 -- 0036: the wave A join for the host and storage collections (0021, 0033). The findings view gains the host rules
--- (CPU, swap, a volume under 10 % free) and the storage forecasts (a volume full within 30 days, under 10 % free);
+-- (CPU, swap, a volume under 10 % free: one per volume) and the storage forecast (a volume full within 30 days);
 -- purge() gains their partitioned tables and the rows of volumes no longer present. Both bodies are 0016's with the
 -- additions (a frozen file is never edited; a later join re-creates them again with its own additions).
 
@@ -111,7 +111,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the host collection (0021): CPU over 90 % for 10 minutes, swap used, a disk under 10 % free
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.host_findings
     UNION ALL
-    -- the storage forecasts (0033): a volume full within 30 days, a volume under 10 % free
+    -- the storage forecast (0033): a volume full within 30 days (the free-% rule is host_findings', above)
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.storage_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;

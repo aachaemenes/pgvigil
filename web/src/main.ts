@@ -21,7 +21,7 @@ const instancePages: Record<string, Render> = {
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms']);
-const liveInstance = new Set(['summary', 'activity', 'dms']);
+const liveInstance = new Set(['summary', 'activity', 'dms', 'host']);
 
 let timer: number | undefined;
 let generation = 0;   // a render that finishes after a newer one started is dropped

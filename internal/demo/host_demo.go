@@ -4,9 +4,10 @@ package demo
 // and import_storage take, exactly as the collectors send them. On-prem instances read as system_stats,
 // RDS and Aurora as CloudWatch; Azure and Cloud SQL have no host door, so the host collection is
 // skipped there with its reason, as on a real server. The scenarios: erp01 runs its CPU over 90 %
-// (the CPU rule), erp02's data volume fills in about 13 days (the Storage forecast), hr01's root
-// volume sits at 4 % free with 3 GiB of swap used, orders01's RDS volume at 7.6 % free with swap,
-// billing01 has storage autoscaling to 2 TiB. A copy of an instance (a scale run) keeps its
+// (the CPU rule), erp02's data volume fills in about 13 days at 6 % free (the Storage forecast and the
+// Disk free-% rule both light), hr01's root volume sits at 4 % free with 3 GiB of swap used, orders01's
+// RDS volume at 7.6 % free with 1.2 GiB of swap used (the cloud swap rule is over 1 GiB), billing01 has
+// storage autoscaling to 2 TiB. A copy of an instance (a scale run) keeps its
 // template's name inside its own, so it keeps the scenario.
 
 import (
@@ -87,7 +88,7 @@ func (g *Gen) hostRows(t time.Time) []Row {
 		free := freeEnd + int64(float64(rate)*toEnd)
 		swap := int64(0)
 		if has("orders01") {
-			swap = 300 << 20
+			swap = 1200 << 20 // over the 1 GiB cloud rule
 		}
 		return []Row{
 			{"kind": "host", "source": "cloudwatch", "os_name": "Amazon RDS", "os_version": "db.r6g.xlarge", "aws_resource": s.Name,
