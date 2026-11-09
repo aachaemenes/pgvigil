@@ -32,10 +32,19 @@ func (statementsCollector) Applies(info platform.Info) (bool, string) {
 	return true, ""
 }
 
-// statementsTopN bounds one snapshot. Statements outside the top set still get a
-// correct rate later: each delta row carries its own interval since the last
-// time that statement was seen.
-const statementsTopN = 500
+// statementsTopN bounds one snapshot: the top set by total time, plus the top
+// set by calls so frequent cheap statements are not lost. A statement outside
+// both sets keeps its last cumulative row in the repository; when it returns,
+// its delta carries the whole gap as interval_secs, and the repository's
+// top_statements scales such a delta by its share inside the asked window.
+const (
+	statementsTopN     = 500
+	statementsTopCalls = 200
+	// statementsTextMax caps the text sent per statement; the repository keeps
+	// only the first text it sees per queryid, so resending the whole text of
+	// 500 statements every interval buys nothing and can run to hundreds of MB.
+	statementsTextMax = 16384
+)
 
 func (statementsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Info) ([]Row, error) {
 	var schema string
@@ -74,6 +83,11 @@ func (statementsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.I
 	tempWriteTime := pick("temp_blk_write_time", "0::float8")
 
 	sql := fmt.Sprintf(`
+WITH picked AS (
+  (SELECT s.* FROM %[7]s.pg_stat_statements s WHERE s.queryid IS NOT NULL ORDER BY s.total_exec_time DESC LIMIT %[8]d)
+  UNION
+  (SELECT s.* FROM %[7]s.pg_stat_statements s WHERE s.queryid IS NOT NULL ORDER BY s.calls DESC LIMIT %[9]d)
+)
 SELECT 'stmt'                         AS kind,
        s.dbid::bigint                 AS dbid,
        d.datname::text                AS datname,
@@ -91,13 +105,10 @@ SELECT 'stmt'                         AS kind,
        %[4]s                          AS temp_read_ms,
        %[5]s                          AS temp_write_ms,
        %[6]s                          AS wal_bytes,
-       s.query
-  FROM %[7]s.pg_stat_statements s
+       left(s.query, %[10]d)          AS query
+  FROM picked s
   LEFT JOIN pg_database d ON d.oid = s.dbid
-  LEFT JOIN pg_roles r    ON r.oid = s.userid
- WHERE s.queryid IS NOT NULL
- ORDER BY s.total_exec_time DESC
- LIMIT %[8]d`, toplevel, readTime, writeTime, tempReadTime, tempWriteTime, walBytes, quoteIdent(schema), statementsTopN)
+  LEFT JOIN pg_roles r    ON r.oid = s.userid`, toplevel, readTime, writeTime, tempReadTime, tempWriteTime, walBytes, quoteIdent(schema), statementsTopN, statementsTopCalls, statementsTextMax)
 
 	srows, err := conn.Query(ctx, sql)
 	if err != nil {
