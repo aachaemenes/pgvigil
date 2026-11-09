@@ -12,12 +12,12 @@ import (
 
 // iostatsCollector reads pg_stat_io (PG16+) by backend type, object and context, the rows
 // with any reads, writes or hits, and stores them as read; iostats_rate() takes the
-// difference to the previous row over a window (its default lookback is 15 minutes, so a
-// cadence above that leaves the rate empty). It is the largest series pgvigil stores: about
-// 80 rows a read on PG18, and 21.3 of the 25.6 MB an idle instance cost a day while it was
-// read every minute inside dbstats. Its own collection at 5 minutes cuts that to about a
-// third; `schedules: iostats: 1m` restores the minute. The rows keep kind io, so
-// import_dbstats takes them too (the demo's generator still sends them that way).
+// difference to the previous row over a window (the web UI passes it a lookback of three
+// intervals for the first point's baseline; the function's own default is 15 minutes). It
+// is the largest series pgvigil stores (most of what dbstats stored while it read it every
+// minute: the README's Sizing section), so it is its own collection at 5 minutes;
+// `schedules: iostats: 1m` restores the minute. The rows keep kind io, so import_dbstats
+// takes them too (the demo's generator still sends them that way).
 type iostatsCollector struct{}
 
 func init() { Register(iostatsCollector{}) }

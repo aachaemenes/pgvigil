@@ -550,13 +550,45 @@ func (s *Server) counters(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	sql, ok := sqlCounters[r.URL.Query().Get("kind")]
+	kind := r.URL.Query().Get("kind")
+	sql, ok := sqlCounters[kind]
 	if !ok {
 		writeErr(w, http.StatusBadRequest, errors.New("kind must be db, server, io or sessions"))
 		return
 	}
-	t, err := s.query(r.Context(), sql, id, from, to)
+	if kind == "sessions" {
+		t, err := s.query(r.Context(), sql, id, from, to)
+		s.reply(w, r, t, err)
+		return
+	}
+	collection := "dbstats"
+	if kind == "io" {
+		collection = "iostats"
+	}
+	t, err := s.query(r.Context(), sql, id, from, to, s.rateLookback(r.Context(), id, collection))
 	s.reply(w, r, t, err)
+}
+
+// rateLookback is how far before the window a *_rate() read may reach for the first point's
+// baseline: three intervals of the collection that fills the table, never under the functions'
+// own 15-minute default, taken from the stale check's interval map (the instance's own schedule,
+// else the collection default). So a cadence set above 15 minutes (schedules: iostats: 30m) keeps
+// its first point in every preset instead of an empty 15-minute chart (review 20a).
+func (s *Server) rateLookback(ctx context.Context, id int, collection string) int {
+	secs := s.expected.Defaults[collection]
+	var name string
+	if err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&name); err == nil {
+		if m, ok := s.expected.Instances[name]; ok {
+			if v, ok := m[collection]; ok && v > 0 {
+				secs = v
+			}
+		}
+	}
+	lb := 3 * secs
+	if lb < 900 {
+		lb = 900
+	}
+	return lb
 }
 
 // multi runs named queries in order into one JSON object; the first error ends the reply.

@@ -8,7 +8,7 @@ repository:
 schedules:
   instance: 1h
   # iostats: 1m                     # pg_stat_io (PG16+) every minute instead of every 5: about three times the
-  #                                # repository storage per instance (the README's Sizing section)
+  #                                  repository storage per instance (the README's Sizing section)
 
 # What statement text the repository may hold (an instance can override it):
 #   full        the text as the server shows it (credentials always masked)

@@ -104,7 +104,7 @@ SELECT snapshot_at,
        round(sum(tup_inserted + tup_updated + tup_deleted)::numeric / max(interval_secs), 2) AS tup_written_s,
        round(sum(temp_bytes)::numeric    / max(interval_secs), 0) AS temp_bytes_s,
        sum(deadlocks) AS deadlocks, sum(numbackends) AS backends
-  FROM pgvigil.dbstats_rate($1, $2, $3)
+  FROM pgvigil.dbstats_rate($1, $2, $3, make_interval(secs => $4))
  WHERE interval_secs > 0
  GROUP BY snapshot_at
 HAVING NOT bool_or(reset)                -- a database reset in this interval: no point, not a dip
@@ -117,7 +117,7 @@ SELECT snapshot_at,
        round(wal_bytes / interval_secs, 0) AS wal_bytes_s,
        round(wal_records::numeric / interval_secs, 2) AS wal_records_s,
        wal_buffers_full
-  FROM pgvigil.serverstats_rate($1, $2, $3)
+  FROM pgvigil.serverstats_rate($1, $2, $3, make_interval(secs => $4))
  WHERE interval_secs > 0
  ORDER BY snapshot_at`,
 	"io": `
@@ -127,7 +127,7 @@ SELECT snapshot_at,
        round(sum(extend_bytes) / max(interval_secs), 0) AS extend_bytes_s,
        round(sum(hits)::numeric / max(interval_secs), 2) AS hits_s,
        round(sum(fsyncs)::numeric / max(interval_secs), 2) AS fsyncs_s
-  FROM pgvigil.iostats_rate($1, $2, $3)
+  FROM pgvigil.iostats_rate($1, $2, $3, make_interval(secs => $4))
  WHERE interval_secs > 0
  GROUP BY snapshot_at
 HAVING NOT bool_or(reset)                -- an IO row reset in this interval: no point, not a dip

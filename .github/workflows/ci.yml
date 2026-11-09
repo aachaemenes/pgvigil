@@ -44,6 +44,11 @@ jobs:
           PGVIGIL_REPO_DSN: postgres://postgres:pgvigil@localhost:5432/pgvigil?sslmode=disable
           ADMIN_DSN: postgres://postgres:pgvigil@localhost:5432/postgres?sslmode=disable
         run: scripts/integration.sh
+      - name: dbstats and iostats (the rates; the pg_stat_io split, skipped below PG 16)
+        env:
+          PGVIGIL_REPO_DSN: postgres://postgres:pgvigil@localhost:5432/pgvigil?sslmode=disable
+          ADMIN_DSN: postgres://postgres:pgvigil@localhost:5432/postgres?sslmode=disable
+        run: scripts/proof-dbstats.sh
       - name: UI login and TLS listen (migration 0015, pgvigil user, pgvigil cert)
         env:
           PGVIGIL_REPO_DSN: postgres://postgres:pgvigil@localhost:5432/pgvigil?sslmode=disable

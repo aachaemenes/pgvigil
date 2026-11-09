@@ -24,7 +24,7 @@ The demo fleet (`pgvigil demo`): the Summary grid, one row per instance and a co
 | activity | 1 min | pg_stat_activity: active and idle-in-transaction sessions, every blocker any Lock waiter names, pg_blocking_pids | samples in monthly partitions, a per-snapshot summary, `blocking_chains()` to the head |
 | statements | 5 min | pg_stat_statements, top 500 by time plus top 200 by calls, text capped and masked | per-interval deltas with reset detection, `top_statements()` over a window |
 | dbstats | 1 min | pg_stat_database, bgwriter / checkpointer / WAL | cumulative rows, `*_rate()` functions over a window |
-| iostats | 5 min | pg_stat_io (PG16+) by backend type, object and context; `schedules: iostats: 1m` reads it every minute at about three times the storage (Sizing below) | cumulative rows, `iostats_rate()` over a window |
+| iostats | 5 min | pg_stat_io (PG16+) by backend type, object and context; `schedules: iostats: 1m` reads it every minute at about three times the storage (Sizing below); any cadence works, the Counters chart looks back three intervals for its first point | cumulative rows, `iostats_rate()` over a window |
 | replication | 1 min | pg_stat_replication, pg_stat_wal_receiver, slots with retained WAL, subscriptions, publications, conflicts, aurora_replica_status() | one row per object per snapshot, `replication_checks` view |
 | databases | hourly | pg_database with sizes, xid and multixact age | current inventory plus a size history |
 | jobs | 1 min | pg_cron (cron.job, cron.job_run_details) and pgAgent (pga_job, pga_joblog) where installed | current jobs, a run history, `job_failures` and `job_running` views |
@@ -127,7 +127,7 @@ Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvig
 
 The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
 
-`scripts/*.sh` are the proofs: each seeds a condition on a throwaway PostgreSQL (a lock chain, a statements reset, a replication slot, a password literal, a login), collects or serves, and checks the result against the expected result written in its header. `scripts/integration.sh` and `scripts/proof-auth.sh` run in CI against PostgreSQL 13, 16 and 18.
+`scripts/*.sh` are the proofs: each seeds a condition on a throwaway PostgreSQL (a lock chain, a statements reset, a replication slot, a password literal, a login), collects or serves, and checks the result against the expected result written in its header. `scripts/integration.sh`, `scripts/proof-dbstats.sh` and `scripts/proof-auth.sh` run in CI against PostgreSQL 13, 16 and 18.
 
 ## Retention
 

@@ -1,5 +1,5 @@
 -- 0018: pg_stat_io leaves the dbstats collection for its own, iostats, read every 5 minutes by default
--- (its rows were 21.3 of the 25.6 MB an idle instance stored a day at the minute cadence). The import
+-- (its rows were most of what an idle instance stored a day at the minute cadence: README, Sizing). The import
 -- takes the same rows (kind io) into the same partitioned table; import_dbstats keeps its io branch for
 -- a collector not yet upgraded and for the demo's generator, so nothing changes shape and nothing is
 -- lost across the upgrade. apply_roles (run by migrate after this file) makes it the collector's door.

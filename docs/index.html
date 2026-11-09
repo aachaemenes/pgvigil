@@ -93,7 +93,7 @@
     <tr><td>activity</td><td>1 min</td><td>pg_stat_activity: active and idle-in-transaction sessions, blockers, pg_blocking_pids, blocking chains to the head</td></tr>
     <tr><td>statements</td><td>5 min</td><td>pg_stat_statements, top by time and by calls, per-interval deltas with reset detection</td></tr>
     <tr><td>dbstats</td><td>1 min</td><td>pg_stat_database, bgwriter, checkpointer, WAL, as rates</td></tr>
-    <tr><td>iostats</td><td>5 min</td><td>pg_stat_io (PG16+) by backend type, object and context, as rates; every minute by one schedule line</td></tr>
+    <tr><td>iostats</td><td>5 min</td><td>pg_stat_io (PG16+) by backend type, object and context, as rates; every minute with <code>schedules: iostats: 1m</code></td></tr>
     <tr><td>replication</td><td>1 min</td><td>pg_stat_replication, wal receiver, slots with retained WAL, subscriptions, conflicts, aurora_replica_status()</td></tr>
     <tr><td>databases</td><td>hourly</td><td>inventory with sizes, transaction id and multixact age</td></tr>
     <tr><td>jobs</td><td>1 min</td><td>pg_cron and pgAgent jobs, run history, failures</td></tr>
