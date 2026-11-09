@@ -8,6 +8,7 @@ import { checks, config, Ctx, disks, dms, errorBox, findings, fleetSummary, inst
 import { tablesView } from './borrowed';
 import { hostView } from './host';
 import { storageView } from './storage';
+import { vacuumView } from './vacuum';
 import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rememberInstance, rootTabs } from './router';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
@@ -17,7 +18,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
-  tables: c => tablesView(c.instance!), findings, host: hostView, storage: storageView,
+  tables: c => tablesView(c.instance!), vacuum: vacuumView, findings, host: hostView, storage: storageView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms']);

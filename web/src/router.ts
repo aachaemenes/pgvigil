@@ -24,7 +24,7 @@ export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 2
 
 export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', disks: 'Disk report', storage: 'Storage' };
 export const instanceTabs: Record<string, string> = {
-  summary: 'Summary', activity: 'Running queries', statements: 'Statements', counters: 'Counters', tables: 'Tables',
+  summary: 'Summary', activity: 'Running queries', statements: 'Statements', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
   replication: 'Replication', jobs: 'Jobs', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
   host: 'Host', storage: 'Storage',
 };

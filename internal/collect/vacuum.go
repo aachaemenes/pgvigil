@@ -54,8 +54,8 @@ func vacuumApplies(info platform.Info) (bool, string) {
 	return true, ""
 }
 
-func (vacuumCollector) Name() string                          { return "vacuum" }
-func (vacuumCollector) DefaultInterval() time.Duration        { return time.Minute }
+func (vacuumCollector) Name() string                           { return "vacuum" }
+func (vacuumCollector) DefaultInterval() time.Duration         { return time.Minute }
 func (vacuumCollector) Applies(i platform.Info) (bool, string) { return vacuumApplies(i) }
 
 // vacuumRunningSQL: %[1]s dead tuples, %[2]s max dead tuples, %[3]s indexes_total, %[4]s indexes_processed
@@ -137,8 +137,8 @@ func (vacuumCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Info)
 	return out, nil
 }
 
-func (vacuumTablesCollector) Name() string                          { return "vacuum_tables" }
-func (vacuumTablesCollector) DefaultInterval() time.Duration        { return time.Hour }
+func (vacuumTablesCollector) Name() string                           { return "vacuum_tables" }
+func (vacuumTablesCollector) DefaultInterval() time.Duration         { return time.Hour }
 func (vacuumTablesCollector) Applies(i platform.Info) (bool, string) { return vacuumApplies(i) }
 
 func (vacuumTablesCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row, error) {

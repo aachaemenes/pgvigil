@@ -57,6 +57,7 @@ SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f
 SELECT d.instance_id, d.severity, d.check_name, d.object, d.at, d.detail
   FROM pgvigil.dms_checks d JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active`},
+	{"vacuum", VacuumOverviewCheckSQL},
 	{"tables", `
 SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
   FROM pgvigil.table_checks c JOIN pgvigil.instances i USING (instance_id)

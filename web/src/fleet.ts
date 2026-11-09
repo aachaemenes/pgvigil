@@ -27,6 +27,7 @@ export const groups: Group[] = [
   { key: 'jobs', label: 'Jobs', checks: ['jobs'], tab: 'jobs' },
   { key: 'dms', label: 'DMS', checks: ['dms'], tab: 'dms' },
   { key: 'tables', label: 'Tables', checks: ['tables'], tab: 'tables' },
+  { key: 'vacuum', label: 'Vacuum', checks: ['vacuum'], tab: 'vacuum' },
   { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters' },
   { key: 'host', label: 'Host', checks: ['host'], tab: 'host' },
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
