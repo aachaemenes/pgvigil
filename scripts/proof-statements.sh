@@ -4,8 +4,10 @@
 # then resets the extension's counters and checks the reset flag. Never run against a shared
 # server (it calls pg_stat_statements_reset()).
 #
-#   PGVIGIL_REPO_DSN  repository;  ADMIN_DSN  superuser connection to the monitored server
+#   PGVIGIL_REPO_DSN  repository (the proof's instance row and its data stay there, under the name proof-statements);  ADMIN_DSN  superuser connection to the monitored server
 #
+# Also checked: a statement absent from the import that first sees a reset is still flagged when it
+# returns (the reset time is stored per current row).
 # Expected: snapshot 1 writes no delta for the marker (first sight); after 5 more runs,
 # snapshot 2 has one delta row for the marker with calls = 5 and reset = false; after
 # pg_stat_statements_reset() and 3 runs, snapshot 3 has one row with calls = 3 and reset = true;
@@ -29,13 +31,13 @@ cat > "$CFG" <<EOF
 repository:
   dsn: env:PGVIGIL_REPO_DSN
 instances:
-  - name: proof-target
+  - name: proof-statements
     dsn: env:ADMIN_DSN
 EOF
 HAD_EXT=$(psql "$ADMIN_DSN" -XAt -c "select count(*) from pg_extension where extname='pg_stat_statements'")
 psql "$ADMIN_DSN" -XAtq -c "drop table if exists $TBL" -c "create table $TBL (id int)" -c "create extension if not exists pg_stat_statements" >/dev/null
 "$BIN" migrate -config "$CFG" >/dev/null
-iid_sql="select instance_id from pgvigil.instances where name='proof-target'"
+iid_sql="select instance_id from pgvigil.instances where name='proof-statements'"
 
 marker 2
 "$BIN" collect -config "$CFG" -once statements >/dev/null

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.statements_current (
   queryid             bigint NOT NULL,
   toplevel            boolean NOT NULL,
   snapshot_at         timestamptz NOT NULL,
+  stats_reset         timestamptz,                 -- the extension's stats_reset when this row was stored (PG14+)
   calls               bigint,
   total_exec_ms       double precision,
   rows                bigint,
@@ -77,8 +78,6 @@ CREATE OR REPLACE FUNCTION pgvigil.import_statements(p_instance_id int, p_snapsh
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_new_reset  timestamptz;
-  v_last_reset timestamptz;
-  v_reset_all  boolean := false;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_statements'), p_instance_id);
   PERFORM pgvigil.ensure_month_partition('statements_delta', p_snapshot_at);
@@ -103,22 +102,23 @@ BEGIN
    ORDER BY queryid
   ON CONFLICT (instance_id, queryid) DO UPDATE SET last_seen = EXCLUDED.last_seen;
 
-  -- A reset is any counter going backwards on the row, or the extension's own stats_reset
-  -- moving since the last import (then every row of the instance is a reset, including one
-  -- whose calls happen to equal the old count). After a reset the delta is the cumulative
-  -- value since the reset. Eviction and re-entry (dealloc) shows as counters backwards too.
+  -- A reset is: the extension's stats_reset differs from the one stored with the row's last
+  -- cumulative values (so a statement absent from the import that first saw the reset is still
+  -- caught when it comes back), or any counter going backwards on the row (an evicted entry that
+  -- re-entered: dealloc). After a reset the delta is the cumulative value since the reset, and
+  -- when the reset time is known the interval starts there, not at the stale baseline; for an
+  -- eviction the start is unknown and the interval is the whole gap (said in the row by reset
+  -- with no stats_reset move).
   SELECT (r->>'stats_reset')::timestamptz INTO v_new_reset
     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'info' LIMIT 1;
-  SELECT i.stats_reset INTO v_last_reset
-    FROM pgvigil.statements_info i WHERE i.instance_id = p_instance_id ORDER BY i.snapshot_at DESC LIMIT 1;
-  v_reset_all := v_new_reset IS NOT NULL AND v_last_reset IS NOT NULL AND v_new_reset > v_last_reset;
 
   INSERT INTO pgvigil.statements_delta (
     instance_id, snapshot_at, interval_secs, reset, dbid, datname, userid, usename, queryid, toplevel,
     calls, total_exec_ms, rows, shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written,
     temp_blks_read, temp_blks_written, blk_read_ms, blk_write_ms, temp_read_ms, temp_write_ms, wal_bytes)
   SELECT p_instance_id, p_snapshot_at,
-         greatest(1, extract(epoch FROM p_snapshot_at - c.snapshot_at))::int,
+         greatest(1, extract(epoch FROM p_snapshot_at - CASE WHEN x.rs AND v_new_reset IS NOT NULL AND v_new_reset > c.snapshot_at
+                                                              THEN v_new_reset ELSE c.snapshot_at END))::int,
          x.rs,
          i.dbid, i.datname, i.userid, i.usename, i.queryid, i.toplevel,
          CASE WHEN x.rs THEN i.calls ELSE i.calls - c.calls END,
@@ -139,22 +139,22 @@ BEGIN
     JOIN pgvigil.statements_current c
       ON c.instance_id = p_instance_id AND c.dbid = i.dbid AND c.userid = i.userid
      AND c.queryid = i.queryid AND c.toplevel = i.toplevel
-    CROSS JOIN LATERAL (SELECT v_reset_all
+    CROSS JOIN LATERAL (SELECT (v_new_reset IS NOT NULL AND c.stats_reset IS DISTINCT FROM v_new_reset)
                            OR i.calls < c.calls OR i.total_exec_ms < c.total_exec_ms OR i.rows < c.rows
                            OR i.shared_blks_hit < c.shared_blks_hit OR i.shared_blks_read < c.shared_blks_read
                            OR i.wal_bytes < c.wal_bytes AS rs) x
    WHERE (i.calls <> c.calls OR x.rs) AND i.calls > 0;   -- nothing ran and no reset: no row
 
   INSERT INTO pgvigil.statements_current AS c (
-    instance_id, dbid, userid, queryid, toplevel, snapshot_at, calls, total_exec_ms, rows,
+    instance_id, dbid, userid, queryid, toplevel, snapshot_at, stats_reset, calls, total_exec_ms, rows,
     shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written, temp_blks_read, temp_blks_written,
     blk_read_ms, blk_write_ms, temp_read_ms, temp_write_ms, wal_bytes)
-  SELECT p_instance_id, dbid, userid, queryid, toplevel, p_snapshot_at, calls, total_exec_ms, rows,
+  SELECT p_instance_id, dbid, userid, queryid, toplevel, p_snapshot_at, v_new_reset, calls, total_exec_ms, rows,
          shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written, temp_blks_read, temp_blks_written,
          blk_read_ms, blk_write_ms, temp_read_ms, temp_write_ms, wal_bytes
     FROM pgv_stmt_in
   ON CONFLICT (instance_id, dbid, userid, queryid, toplevel) DO UPDATE SET
-    snapshot_at = EXCLUDED.snapshot_at, calls = EXCLUDED.calls, total_exec_ms = EXCLUDED.total_exec_ms, rows = EXCLUDED.rows,
+    snapshot_at = EXCLUDED.snapshot_at, stats_reset = EXCLUDED.stats_reset, calls = EXCLUDED.calls, total_exec_ms = EXCLUDED.total_exec_ms, rows = EXCLUDED.rows,
     shared_blks_hit = EXCLUDED.shared_blks_hit, shared_blks_read = EXCLUDED.shared_blks_read,
     shared_blks_dirtied = EXCLUDED.shared_blks_dirtied, shared_blks_written = EXCLUDED.shared_blks_written,
     temp_blks_read = EXCLUDED.temp_blks_read, temp_blks_written = EXCLUDED.temp_blks_written,

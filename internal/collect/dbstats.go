@@ -14,8 +14,10 @@ import (
 // per database (transactions, blocks, tuples, temp, deadlocks, checksum failures,
 // sessions), one server row (bgwriter, checkpointer, WAL) and pg_stat_io by
 // backend type, object and context (PG16+). Rows are stored as read; the
-// repository's *_rate views take the difference to the previous row and treat a
-// reset (stats_reset moved, or a counter went backwards) as a new baseline.
+// repository's *_rate functions take the difference to the previous row over a
+// window and treat a reset (stats_reset moved, or a counter went backwards) as a
+// new baseline. Database sizes are the hourly databases collection's job: a
+// pg_database_size walks every relation file and is not a per-minute read.
 type dbstatsCollector struct{}
 
 func init() { Register(dbstatsCollector{}) }
@@ -39,8 +41,7 @@ SELECT 'db' AS kind, d.datid::bigint AS dbid, d.datname::text AS datname, d.stat
        %s AS checksum_failures, %s AS checksum_last_failure,
        d.blk_read_time, d.blk_write_time,
        %s AS session_time, %s AS active_time, %s AS idle_in_transaction_time,
-       %s AS sessions, %s AS sessions_abandoned, %s AS sessions_fatal, %s AS sessions_killed,
-       pg_database_size(d.datid) AS size_bytes
+       %s AS sessions, %s AS sessions_abandoned, %s AS sessions_fatal, %s AS sessions_killed
   FROM pg_stat_database d
   JOIN pg_database db ON db.oid = d.datid
  WHERE NOT db.datistemplate AND db.datallowconn`,

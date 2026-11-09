@@ -24,7 +24,7 @@ cat > "$CFG" <<EOF
 repository:
   dsn: env:PGVIGIL_REPO_DSN
 instances:
-  - name: proof-target
+  - name: proof-activity
     dsn: env:ADMIN_DSN
 EOF
 
@@ -47,7 +47,7 @@ sleep 1.5
 
 "$BIN" collect -config "$CFG" -once activity
 
-iid=$(q "select instance_id from pgvigil.instances where name='proof-target'")
+iid=$(q "select instance_id from pgvigil.instances where name='proof-activity'")
 snap=$(q "select max(snapshot_at) from pgvigil.activity_summary where instance_id=$iid")
 [ -n "$snap" ] || fail "no summary row"
 sessions=$(q "select count(*) from pgvigil.activity_sample where instance_id=$iid and snapshot_at='$snap'")
