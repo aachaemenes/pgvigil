@@ -44,7 +44,8 @@ type Info struct {
 const detectSQL = `
 SELECT
   CASE
-    WHEN EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'aurora_version') THEN 'aurora'
+    -- aurora_version() is internal (no pg_proc row); Aurora's own settings are the marker
+    WHEN EXISTS (SELECT 1 FROM pg_settings WHERE name LIKE 'apg\_%' OR name LIKE 'aurora\_%') THEN 'aurora'
     WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rdsadmin') THEN 'rds'
     WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'azure_pg_admin') THEN 'azure'
     WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('alloydbsuperuser','alloydbadmin')) THEN 'alloydb'

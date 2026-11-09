@@ -64,7 +64,8 @@ SELECT 'db' AS kind, d.datid::bigint AS dbid, d.datname::text AS datname, d.stat
 		return nil, err
 	}
 	hasCheckpointer := info.ServerVersionNum >= 170000
-	hasWal := info.ServerVersionNum >= 140000
+	// Aurora refuses pg_stat_get_wal() (0A000): its storage layer has no local WAL counters
+	hasWal := info.ServerVersionNum >= 140000 && info.Kind != platform.Aurora
 	ckFrom, walFrom := "", ""
 	var ckc, walc map[string]bool
 	if hasCheckpointer {
