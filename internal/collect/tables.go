@@ -69,16 +69,13 @@ SELECT 'db' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = curren
   FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
  WHERE c.relkind IN ('r', 'm')`
 
-// tablesSQL reads the top N tables by total size. Sizes take an AccessShareLock per relation, so the
-// candidates come from the catalog first (the biggest 4N by pages and the biggest 4N by row count:
-// a table loaded and never vacuumed or analyzed still has relpages 0, but its insert counter moved),
-// and a table with an AccessExclusiveLock held or queued (a VACUUM FULL, an ALTER, a TRUNCATE) is left
-// out: asking for its size would wait behind that lock. The bloat estimate is pg_gather's
-// (gather_report.sql, after ioguix's pgsql-bloat-estimation): the expected pages from the live row
-// count and the average row width in pg_stats, against the heap and TOAST pages on disk; it needs
-// SELECT on the table to see its pg_stats rows (stats_readable says whether the estimate could run).
-// %[1]s = n_ins_since_vacuum (PG13+), %[2]d = N.
-const tablesSQL = `
+// tablesCandidatesSQL is the shared head of the table read: the candidates come from the catalog (the
+// biggest 4N by pages and the biggest 4N by row count: a table loaded and never vacuumed or analyzed still
+// has relpages 0, but its insert counter moved), and "locked" are the candidates with an AccessExclusiveLock
+// held or queued on the table, one of its indexes, its TOAST table or the TOAST index (a VACUUM FULL, an
+// ALTER, a TRUNCATE, a REINDEX): the size functions open every one of those relations, so asking would wait
+// behind that lock. %[1]s = n_ins_since_vacuum (PG13+), %[2]d = N.
+const tablesCandidatesSQL = `
 WITH s AS (
   SELECT s.relid, s.n_live_tup, s.n_dead_tup, s.n_mod_since_analyze, %[1]s AS n_ins_since_vacuum,
          s.last_vacuum, s.last_autovacuum, s.last_analyze, s.last_autoanalyze,
@@ -90,14 +87,37 @@ WITH s AS (
   UNION
   (SELECT c.oid FROM pg_class c JOIN s ON s.relid = c.oid WHERE c.relkind IN ('r', 'm')
     ORDER BY s.n_live_tup + s.n_dead_tup DESC LIMIT 4 * %[2]d)
+), locked AS (
+  SELECT x.oid FROM cand x JOIN pg_class c ON c.oid = x.oid
+   WHERE EXISTS (SELECT 1 FROM pg_locks l
+                  WHERE l.locktype = 'relation' AND l.mode = 'AccessExclusiveLock'
+                    AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                    AND (l.relation = x.oid
+                         OR (c.reltoastrelid <> 0 AND l.relation = c.reltoastrelid)
+                         OR l.relation IN (SELECT i.indexrelid FROM pg_index i
+                                            WHERE i.indrelid = x.oid OR (c.reltoastrelid <> 0 AND i.indrelid = c.reltoastrelid))))
 ), free AS (
-  SELECT x.oid FROM cand x
-   WHERE NOT EXISTS (SELECT 1 FROM pg_locks l
-                      WHERE l.locktype = 'relation' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
-                        AND l.relation = x.oid AND l.mode = 'AccessExclusiveLock')
-), sized AS (
+  SELECT x.oid FROM cand x WHERE x.oid NOT IN (SELECT oid FROM locked)
+`
+
+// tablesSkippedSQL names the candidates left out for a lock: the import keeps their last row present
+// (not read this hour is not "left the top N").
+const tablesSkippedSQL = tablesCandidatesSQL + `)
+SELECT 'table_skipped' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
+       l.oid::bigint AS relid
+  FROM locked l`
+
+// tablesSQL reads the top N free candidates by total size. The bloat estimate is pg_gather's
+// (gather_report.sql, after ioguix's pgsql-bloat-estimation): the expected heap pages from the live row
+// count and the average row width in pg_stats, at the table's fillfactor (ioguix's est_tblpages_ff), plus
+// the TOAST pages as they are (TOAST bloat is not estimated), against the heap and TOAST pages on disk. It
+// needs SELECT on the table to see its pg_stats rows (stats_readable), and every live column to have
+// statistics (a column added since the last ANALYZE would understate the row width: no estimate then).
+const tablesSQL = tablesCandidatesSQL + `), sized AS (
   SELECT c.oid, c.relnamespace, c.relname, c.relkind, c.reltoastrelid, c.relpages, c.reltuples, c.relallvisible,
          c.relfrozenxid, c.relminmxid,
+         coalesce((SELECT o.option_value::int FROM pg_options_to_table(c.reloptions) o WHERE o.option_name = 'fillfactor'), 100) AS fillfactor,
+         (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS ncols,
          coalesce(array_to_string(c.reloptions, ',') ~* '(^|,)autovacuum_enabled=(false|off|no|n|f|0)(,|$)', false) AS autovacuum_off,
          pg_total_relation_size(c.oid) AS total_bytes, pg_relation_size(c.oid) AS heap_bytes,
          pg_indexes_size(c.oid) AS index_bytes,
@@ -115,8 +135,8 @@ WITH s AS (
    GROUP BY z.oid
 ), est AS (
   SELECT z.oid, st.attcount,
-         CASE WHEN st.attcount > 0 AND s.n_live_tup > 0 THEN
-           ceil(s.n_live_tup / ((current_setting('block_size')::numeric - 24) /
+         CASE WHEN st.attcount > 0 AND st.attcount >= z.ncols AND s.n_live_tup > 0 THEN
+           ceil(s.n_live_tup / ((current_setting('block_size')::numeric - 24) * z.fillfactor / 100 /
              (4 + h.hdr + st.tpl_data_size + 16
                 - CASE WHEN h.hdr %% 8 = 0 THEN 8 ELSE h.hdr %% 8 END
                 - CASE WHEN ceil(st.tpl_data_size)::int %% 8 = 0 THEN 8 ELSE ceil(st.tpl_data_size)::int %% 8 END)))
@@ -163,6 +183,7 @@ func (tablesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platfo
 		insCol = "s.n_ins_since_vacuum"
 	}
 	q := fmt.Sprintf(tablesSQL, insCol, tablesTopN)
+	qs := fmt.Sprintf(tablesSkippedSQL, insCol, tablesTopN)
 
 	out := []Row{}
 	var cur string
@@ -177,9 +198,9 @@ func (tablesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platfo
 	for _, db := range dbs {
 		var rows []Row
 		if db == cur {
-			rows, err = tablesRead(ctx, conn, q)
+			rows, err = tablesRead(ctx, conn, q, qs)
 		} else {
-			rows, err = tablesReadOther(ctx, in, db, q)
+			rows, err = tablesReadOther(ctx, in, db, q, qs)
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -211,7 +232,7 @@ func tablesDatabases(ctx context.Context, conn *pgx.Conn) ([]string, error) {
 }
 
 // tablesRead runs the summary and the table read on one database's connection.
-func tablesRead(ctx context.Context, conn *pgx.Conn, q string) ([]Row, error) {
+func tablesRead(ctx context.Context, conn *pgx.Conn, q, qs string) ([]Row, error) {
 	r, err := conn.Query(ctx, tablesDBSQL)
 	if err != nil {
 		return nil, fmt.Errorf("summary: %w", err)
@@ -228,12 +249,24 @@ func tablesRead(ctx context.Context, conn *pgx.Conn, q string) ([]Row, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tables: %w", err)
 	}
-	return append(db, t...), nil
+	// the candidates left out for a lock: the import keeps their rows present. A lock taken between the
+	// candidate pick and the size calls makes the read wait its lock_timeout and fail for this database,
+	// which keeps every row of it as it was (a collector_error, not an absence)
+	r, err = conn.Query(ctx, qs)
+	if err != nil {
+		return nil, fmt.Errorf("skipped tables: %w", err)
+	}
+	k, err := rowsToMaps(r)
+	if err != nil {
+		return nil, fmt.Errorf("skipped tables: %w", err)
+	}
+	db = append(db, t...)
+	return append(db, k...), nil
 }
 
 // tablesReadOther connects to another database with the instance's DSN and the collector's session
 // settings, reads it, and closes the connection.
-func tablesReadOther(ctx context.Context, in config.Instance, db, q string) ([]Row, error) {
+func tablesReadOther(ctx context.Context, in config.Instance, db, q, qs string) ([]Row, error) {
 	dsn := in.DSN()
 	if dsn == "" {
 		return nil, fmt.Errorf("dsn %q resolved to an empty string", in.DSNRaw)
@@ -251,5 +284,5 @@ func tablesReadOther(ctx context.Context, in config.Instance, db, q string) ([]R
 	if _, err := conn.Exec(ctx, sessionSetup); err != nil {
 		return nil, fmt.Errorf("session setup: %w", err)
 	}
-	return tablesRead(ctx, conn, q)
+	return tablesRead(ctx, conn, q, qs)
 }

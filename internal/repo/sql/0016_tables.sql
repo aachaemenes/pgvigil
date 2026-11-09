@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.tables (
   mxid_age             bigint,
   stats_readable       boolean,                -- the login may read the table's pg_stats rows (SELECT on it)
   stats_columns        int,                    -- columns with planner statistics (0 = never analyzed, or unreadable)
-  est_pages            bigint,                 -- pg_gather's expected pages (heap + TOAST) for the live rows
+  est_pages            bigint,                 -- pg_gather's expected heap pages for the live rows at the fillfactor, + the TOAST pages as they are
   bloat_bytes          bigint,
   bloat_pct            numeric,
   first_seen           timestamptz NOT NULL,
@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.table_sizes (
 ) PARTITION BY RANGE (snapshot_at);
 
 -- payload: {kind:'db', dbid, datname, stats_reset, user_tables, ...} per database read, {kind:'table', dbid,
--- relid, ...} per table, {kind:'collector_error', source:'tables:<datname>' | 'tables', message}. Absence is
+-- relid, ...} per table, {kind:'table_skipped', dbid, relid} per table left out for a lock (its row is kept as
+-- it was), {kind:'collector_error', source:'tables:<datname>' | 'tables', message}. Absence is
 -- judged only inside a database this payload read (its 'db' row is there); a database that failed this run
 -- keeps its rows as they were.
 CREATE OR REPLACE FUNCTION pgvigil.import_tables(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -153,12 +154,13 @@ BEGIN
     stats_readable = EXCLUDED.stats_readable, stats_columns = EXCLUDED.stats_columns, est_pages = EXCLUDED.est_pages,
     bloat_bytes = EXCLUDED.bloat_bytes, bloat_pct = EXCLUDED.bloat_pct, is_present = true;
 
-  -- inside a database read this run, a table not listed left the top N (or was dropped)
+  -- inside a database read this run, a table not listed left the top N (or was dropped); a table the
+  -- collector skipped for a lock ({kind:'table_skipped', dbid, relid}) was not read, so its row stays
   UPDATE pgvigil.tables t SET is_present = false
    WHERE t.instance_id = p_instance_id AND t.is_present
      AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = t.dbid)
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
-                      WHERE r->>'kind' = 'table' AND (r->>'dbid')::bigint = t.dbid AND (r->>'relid')::bigint = t.relid);
+                      WHERE r->>'kind' IN ('table', 'table_skipped') AND (r->>'dbid')::bigint = t.dbid AND (r->>'relid')::bigint = t.relid);
 
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'table') THEN
     PERFORM pgvigil.ensure_month_partition('table_sizes', p_snapshot_at);
@@ -248,6 +250,7 @@ ALTER TABLE pgvigil.dms_tasks
   ADD COLUMN IF NOT EXISTS memory_source  double precision,   -- CDCChangesMemorySource
   ADD COLUMN IF NOT EXISTS memory_target  double precision;   -- CDCChangesMemoryTarget
 ALTER TABLE pgvigil.dms_task_sample
+  ADD COLUMN IF NOT EXISTS latency_at     timestamptz,        -- the CloudWatch datapoint the latencies come from
   ADD COLUMN IF NOT EXISTS rows_in_s      double precision,
   ADD COLUMN IF NOT EXISTS rows_out_s     double precision,
   ADD COLUMN IF NOT EXISTS disk_source    double precision,
@@ -323,11 +326,11 @@ BEGIN
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'task') THEN
     PERFORM pgvigil.ensure_month_partition('dms_task_sample', p_snapshot_at);
     INSERT INTO pgvigil.dms_task_sample (instance_id, snapshot_at, task_arn, status, progress_pct, tables_errored,
-                                         latency_source_s, latency_target_s, incoming_changes, rows_in_s, rows_out_s,
+                                         latency_source_s, latency_target_s, incoming_changes, latency_at, rows_in_s, rows_out_s,
                                          disk_source, disk_target)
     SELECT p_instance_id, p_snapshot_at, r->>'task_arn', r->>'status', (r->>'progress_pct')::int, (r->>'tables_errored')::int,
            (r->>'latency_source_s')::float8, (r->>'latency_target_s')::float8, (r->>'incoming_changes')::float8,
-           (r->>'rows_in_s')::float8, (r->>'rows_out_s')::float8, (r->>'disk_source')::float8, (r->>'disk_target')::float8
+           (r->>'latency_at')::timestamptz, (r->>'rows_in_s')::float8, (r->>'rows_out_s')::float8, (r->>'disk_source')::float8, (r->>'disk_target')::float8
       FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'task';
   END IF;
 
@@ -368,8 +371,9 @@ END $$;
 -- The drain readout per present task (the line of a DMS operations watch, without the chain-end anchor a fleet
 -- monitor does not have: "caught up" means the target latency reaches zero).
 --   reader_at      the source position the task has read to: the latency's timestamp minus the source latency
---   target latency now against the newest sample 10-30 minutes older (the toolkit's ~10-minute baseline, so
---   one stale CloudWatch datapoint does not swing it):
+--   target latency now against the newest sample whose datapoint is 10-30 minutes older (the toolkit's
+--   ~10-minute baseline, so one stale CloudWatch datapoint does not swing it); times are the datapoints'
+--   (latency_at), not the imports', so a datapoint read twice adds no false "keeping pace":
 --     speed_x      target-position advance per wall-clock second (1 = keeping pace, > 1 = catching up)
 --     eta_secs     latency now / the rate it falls; NULL when it is not falling
 --   rows_behind    CDCIncomingChanges; eta_rows_secs = rows behind / (rows out - rows in) per second, NULL when
@@ -381,10 +385,10 @@ CREATE OR REPLACE VIEW pgvigil.dms_drain AS
 SELECT t.instance_id, t.task_arn, t.task_id, t.status, t.migration_type, t.snapshot_at,
        t.latency_source_s, t.latency_target_s, t.latency_at,
        t.latency_at - make_interval(secs => t.latency_source_s) AS reader_at,
-       b.snapshot_at AS baseline_at, b.latency_target_s AS baseline_latency_s,
-       round((1 - (t.latency_target_s - b.latency_target_s) / nullif(extract(epoch FROM t.snapshot_at - b.snapshot_at), 0))::numeric, 3) AS speed_x,
-       CASE WHEN t.latency_target_s > 0 AND b.latency_target_s > t.latency_target_s
-            THEN round((t.latency_target_s * extract(epoch FROM t.snapshot_at - b.snapshot_at)
+       b.at AS baseline_at, b.latency_target_s AS baseline_latency_s,
+       round((1 - (t.latency_target_s - b.latency_target_s) / nullif(extract(epoch FROM coalesce(t.latency_at, t.snapshot_at) - b.at), 0))::numeric, 3) AS speed_x,
+       CASE WHEN t.latency_target_s > 0 AND b.latency_target_s > t.latency_target_s AND coalesce(t.latency_at, t.snapshot_at) > b.at
+            THEN round((t.latency_target_s * extract(epoch FROM coalesce(t.latency_at, t.snapshot_at) - b.at)
                         / (b.latency_target_s - t.latency_target_s))::numeric) END AS eta_secs,
        t.incoming_changes AS rows_behind, t.rows_in_s, t.rows_out_s,
        CASE WHEN t.incoming_changes > 0 AND t.rows_out_s > coalesce(t.rows_in_s, 0)
@@ -396,11 +400,12 @@ SELECT t.instance_id, t.task_arn, t.task_id, t.status, t.migration_type, t.snaps
        v.pending_records, v.failed_records
   FROM pgvigil.dms_tasks t
   LEFT JOIN LATERAL (
-    SELECT s.snapshot_at, s.latency_target_s
+    SELECT coalesce(s.latency_at, s.snapshot_at) AS at, s.latency_target_s
       FROM pgvigil.dms_task_sample s
      WHERE s.instance_id = t.instance_id AND s.task_arn = t.task_arn AND s.latency_target_s IS NOT NULL
-       AND s.snapshot_at <= t.snapshot_at - interval '10 minutes' AND s.snapshot_at >= t.snapshot_at - interval '30 minutes'
-     ORDER BY s.snapshot_at DESC LIMIT 1) b ON true
+       AND coalesce(s.latency_at, s.snapshot_at) <= coalesce(t.latency_at, t.snapshot_at) - interval '10 minutes'
+       AND coalesce(s.latency_at, s.snapshot_at) >= coalesce(t.latency_at, t.snapshot_at) - interval '30 minutes'
+     ORDER BY coalesce(s.latency_at, s.snapshot_at) DESC LIMIT 1) b ON true
   LEFT JOIN LATERAL (
     SELECT count(*) AS tables,
            count(*) FILTER (WHERE s.validation_state = 'Validated') AS validated,
@@ -505,7 +510,7 @@ SELECT s.instance_id, s.snapshot_at, s.platform, s.server_version_num, s.is_repl
     ('checkpoint_completion_target', CASE WHEN s.server_version_num >= 140000 THEN '0.9' ELSE '0.5' END),
     ('checkpoint_timeout', '300'), ('default_toast_compression', 'pglz'), ('huge_pages', 'try'),
     ('idle_session_timeout', '0'), ('idle_in_transaction_session_timeout', '0'), ('jit', 'on'), ('log_hostname', 'off'),
-    ('log_lock_waits', CASE WHEN s.server_version_num >= 180000 THEN 'on' ELSE 'off' END),
+    ('log_lock_waits', 'off'),
     ('max_connections', coalesce(s.max_connections::text, '100')),
     ('max_standby_streaming_delay', '30000'), ('max_standby_archive_delay', '30000'),
     ('max_wal_size', '1024'), ('min_wal_size', '80'), ('random_page_cost', '4'), ('seq_page_cost', '1'),
@@ -536,8 +541,8 @@ WITH v AS (
 ), r(instance_id, name, severity, suggested, platforms, detail, hit) AS (
   SELECT instance_id, name, 'critical', 'on', 'all', 'autovacuum is off: no dead-row cleanup and no anti-wraparound vacuum beyond the forced one',
          value <> 'on' FROM v WHERE name = 'autovacuum'
-  UNION ALL SELECT instance_id, name, 'warning', '2', 'all', 'autovacuum_vacuum_cost_delay outside 2-20 ms: 0 lets autovacuum saturate I/O, above 20 it crawls',
-         num > 20 OR num = 0 FROM v WHERE name = 'autovacuum_vacuum_cost_delay'
+  UNION ALL SELECT instance_id, name, 'warning', '2', 'all', 'autovacuum_vacuum_cost_delay outside 2-20 ms: 0 (or -1, which takes vacuum_cost_delay, 0 by default) lets autovacuum saturate I/O, above 20 it crawls',
+         num > 20 OR num = 0 OR num = -1 FROM v WHERE name = 'autovacuum_vacuum_cost_delay'
   UNION ALL SELECT instance_id, name, 'info', '3', 'self-managed', 'more autovacuum workers share one cost limit, so each runs slower',
          num > 3 AND platform = 'onprem' FROM v WHERE name = 'autovacuum_max_workers'
   UNION ALL SELECT instance_id, name, 'warning', '200000000', 'all', 'autovacuum_freeze_max_age above 800 million leaves little room before wraparound',
@@ -574,8 +579,8 @@ WITH v AS (
          num > 1.2 AND platform <> 'onprem' FROM v WHERE name = 'random_page_cost'
   UNION ALL SELECT instance_id, name, 'warning', '1', 'all', 'seq_page_cost is the unit every other cost is relative to; change random_page_cost instead',
          num <> 1 FROM v WHERE name = 'seq_page_cost'
-  UNION ALL SELECT v.instance_id, v.name, 'warning', 'local', 'all', 'synchronous_standby_names is set with synchronous_commit on: every commit waits for a standby (hangs when it is gone)',
-         v.value <> '' AND c.value = 'on' FROM v JOIN v c ON c.instance_id = v.instance_id AND c.name = 'synchronous_commit'
+  UNION ALL SELECT v.instance_id, v.name, 'warning', 'local', 'all', 'synchronous_standby_names is set with synchronous_commit on / remote_write / remote_apply: every commit waits for a standby (hangs when it is gone)',
+         v.value <> '' AND c.value IN ('on', 'remote_write', 'remote_apply') FROM v JOIN v c ON c.instance_id = v.instance_id AND c.name = 'synchronous_commit'
    WHERE v.name = 'synchronous_standby_names'
   UNION ALL SELECT instance_id, name, 'info', 'on', 'all', 'without I/O timing, statement and database read times are not measured',
          value = 'off' FROM v WHERE name = 'track_io_timing'
@@ -609,7 +614,7 @@ WITH v AS (
   UNION ALL SELECT instance_id, name, 'info', '200000000', 'all', 'autovacuum_freeze_max_age above the 200 million default: anti-wraparound vacuums start later and do more at once',
          num > 200000000 AND num <= 800000000 FROM v WHERE name = 'autovacuum_freeze_max_age'
 )
-SELECT DISTINCT ON (x.instance_id, x.setting, x.detail) x.*
+SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
   FROM (
     SELECT v.instance_id, r.severity, r.name AS setting, v.value, v.is_set, r.suggested, r.platforms, r.detail,
            'pg_gather' AS source, v.snapshot_at AS at
@@ -633,7 +638,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.detail) x.*
       FROM pgvigil.replication_latest s
      WHERE s.kind = 'slot' AND NOT coalesce(s.active, false) AND NOT coalesce((s.detail->>'synced')::boolean, false)
   ) x
- ORDER BY x.instance_id, x.setting, x.detail;
+ ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 4. statements
