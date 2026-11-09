@@ -52,3 +52,5 @@ export interface DMS {
   instances: Table | null;
   tables: Table | null;
 }
+
+export type Tables<K extends string> = Record<K, Table | null>;

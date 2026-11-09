@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -136,6 +137,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/statements", s.statements)
 	api.HandleFunc("GET /api/counters", s.counters)
 	api.HandleFunc("GET /api/dms", s.dms)
+	api.HandleFunc("GET /api/replication", s.replication)
+	api.HandleFunc("GET /api/jobs", s.jobs)
+	api.HandleFunc("GET /api/logs", s.logs)
+	api.HandleFunc("GET /api/config", s.config)
+	api.HandleFunc("GET /api/databases", s.databases)
 	api.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
@@ -307,7 +313,8 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// each check runs alone: one that fails or times out becomes its own row, the rest still show
-	out := &table{Columns: []string{"severity", "instance", "instance_id", "check_name", "object", "at", "detail"}, Rows: [][]any{}}
+	// check_group names the check that produced the row: the fleet Summary grid colours one cell per group
+	out := &table{Columns: []string{"severity", "instance", "instance_id", "check_name", "object", "at", "detail", "check_group"}, Rows: [][]any{}}
 	names := map[int32]string{}
 	if t, err := s.query(r.Context(), `SELECT instance_id, name FROM pgvigil.instances`); err == nil {
 		for _, row := range t.Rows {
@@ -328,12 +335,12 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		t, err := s.query(r.Context(), c.sql, args...)
 		if err != nil {
 			s.log.Warn("overview check failed", "check", c.name, "err", err)
-			out.Rows = append(out.Rows, []any{"critical", "", nil, "check could not run", c.name, time.Now(), err.Error()})
+			out.Rows = append(out.Rows, []any{"critical", "", nil, "check could not run", c.name, time.Now(), err.Error(), c.name})
 			continue
 		}
 		for _, row := range t.Rows {
 			id, _ := row[0].(int32)
-			out.Rows = append(out.Rows, []any{row[1], names[id], row[0], row[2], row[3], row[4], row[5]})
+			out.Rows = append(out.Rows, []any{row[1], names[id], row[0], row[2], row[3], row[4], row[5], c.name})
 		}
 	}
 	sort.SliceStable(out.Rows, func(i, j int) bool {
@@ -478,5 +485,110 @@ func (s *Server) counters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := s.query(r.Context(), sql, id, from, to)
+	s.reply(w, r, t, err)
+}
+
+// multi runs named queries in order into one JSON object; the first error ends the reply.
+func (s *Server) multi(w http.ResponseWriter, r *http.Request, parts []part) {
+	out := map[string]*table{}
+	for _, p := range parts {
+		t, err := s.query(r.Context(), p.sql, p.args...)
+		if err != nil {
+			s.reply(w, r, nil, fmt.Errorf("%s: %w", p.name, err))
+			return
+		}
+		out[p.name] = t
+	}
+	s.reply(w, r, out, nil)
+}
+
+type part struct {
+	name string
+	sql  string
+	args []any
+}
+
+// replication: the newest snapshot's objects, the instance's replication checks, and the lag of
+// senders, receivers, slots and Aurora replicas over the window.
+func (s *Server) replication(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// about 600 points per object over any window, never finer than the one-minute collection
+	step := int(math.Ceil(to.Sub(from).Seconds() / 600))
+	if step < 60 {
+		step = 60
+	}
+	s.multi(w, r, []part{
+		{"latest", sqlReplLatest, []any{id}},
+		{"checks", sqlReplChecks, []any{id}},
+		{"series", sqlReplSeries, []any{id, from, to, step}},
+		{"series_meta", `SELECT $1::int AS step_secs, $2::int AS cap`, []any{step, replSeriesCap}},
+	})
+}
+
+// jobs: the instance's scheduled jobs and their runs that started in the window.
+func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.multi(w, r, []part{
+		{"jobs", sqlJobs, []any{id}},
+		{"runs", sqlJobRuns, []any{id, from, to}},
+	})
+}
+
+// logs: the log events of the window (?kind= one kind), newest first, and the count per kind.
+func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var kind *string
+	if v := r.URL.Query().Get("kind"); v != "" {
+		switch v {
+		case "slow", "lock_wait", "deadlock", "auth_fail":
+			kind = &v
+		default:
+			writeErr(w, http.StatusBadRequest, errors.New("kind must be slow, lock_wait, deadlock or auth_fail"))
+			return
+		}
+	}
+	s.multi(w, r, []part{
+		{"counts", sqlLogCounts, []any{id, from, to}},
+		{"events", sqlLogEvents, []any{id, from, to, kind}},
+	})
+}
+
+// config: the instance_state row, its non-default settings and extensions, and the setting changes
+// recorded in the window (with the count over all time, so an empty window is not read as "never changed").
+func (s *Server) config(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.multi(w, r, []part{
+		{"state", sqlConfigState, []any{id}},
+		{"settings", sqlConfigSettings, []any{id}},
+		{"extensions", sqlConfigExtensions, []any{id}},
+		{"history", sqlConfigHistory, []any{id, from, to}},
+		{"history_total", sqlConfigHistoryTotal, []any{id}},
+	})
+}
+
+// databases: the instance's database inventory, largest first.
+func (s *Server) databases(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	t, err := s.query(r.Context(), sqlDatabases, id)
 	s.reply(w, r, t, err)
 }
