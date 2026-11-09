@@ -25,8 +25,11 @@ func defaultInstallOptions() installOptions {
 	return installOptions{Bin: "/usr/local/bin/pgvigil", Config: "/etc/pgvigil/pgvigil.yaml", User: "pgvigil"}
 }
 
-// renderUnit is the systemd unit for the given paths and account. The collector writes nothing on
-// the host (its logs go to the journal through stderr), so the file system is read only to it.
+// renderUnit is the systemd unit for the given paths and account (its primary group is the group;
+// no Group= line, which would name a group that need not exist). The collector writes nothing on the
+// host (its logs go to the journal through stderr), so the file system is read only to it. Exit 3 is
+// a configuration error (no instance named yet): systemd does not restart on it, so a host that boots
+// before its config is written fails once instead of looping.
 func renderUnit(bin, cfg, envFile, account string) string {
 	return fmt.Sprintf(`[Unit]
 Description=pgvigil PostgreSQL monitoring collector
@@ -37,11 +40,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=%[4]s
-Group=%[4]s
 EnvironmentFile=%[3]s
 ExecStart=%[1]s run -config %[2]s
 Restart=on-failure
 RestartSec=10s
+RestartPreventExitStatus=3
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -83,6 +86,18 @@ func ensureAccount(log *slog.Logger, name string) (int, int, error) {
 		if !errors.As(err, &unknown) {
 			return 0, 0, err
 		}
+		// a static binary's user.Lookup reads /etc/passwd only; an account served by LDAP or SSSD is
+		// found through id (NSS) before anything is created
+		if uidOut, e1 := exec.Command("id", "-u", name).Output(); e1 == nil {
+			if gidOut, e2 := exec.Command("id", "-g", name).Output(); e2 == nil {
+				uid, e3 := strconv.Atoi(strings.TrimSpace(string(uidOut)))
+				gid, e4 := strconv.Atoi(strings.TrimSpace(string(gidOut)))
+				if e3 == nil && e4 == nil {
+					log.Info("service account found through the name service", "user", name)
+					return uid, gid, nil
+				}
+			}
+		}
 		var out []byte
 		if _, lookErr := exec.LookPath("useradd"); lookErr == nil {
 			out, err = exec.Command("useradd", "--system", "--no-create-home", "--user-group", "--shell", "/usr/sbin/nologin", name).CombinedOutput()
@@ -123,6 +138,9 @@ func installService(log *slog.Logger, o installOptions) error {
 	}
 	cfgDir := filepath.Dir(o.Config)
 	envFile := filepath.Join(cfgDir, envName)
+	if err := dedicatedFolder(cfgDir, filepath.Base(o.Config)); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		return err
 	}
@@ -165,6 +183,10 @@ func installService(log *slog.Logger, o installOptions) error {
 		if !ready {
 			log.Info("service enabled, not started", "why", why)
 		}
+		if state, _ := systemctl("is-active", "pgvigil.service"); state == "active" {
+			fmt.Printf("pgvigil is upgraded and enabled; the running service still runs the previous binary until: systemctl restart pgvigil\n")
+			return nil
+		}
 		fmt.Printf("pgvigil is installed and enabled. Next:\n  1. %s: the repository login in PGVIGIL_REPO_DSN and one line per monitored instance\n  2. %s: list the instances\n  3. systemctl start pgvigil && systemctl status pgvigil\n", envFile, o.Config)
 		return nil
 	}
@@ -204,14 +226,13 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 		_, _ = systemctl("reset-failed", "pgvigil.service")
 	}
 	if o.Purge {
-		cfgDir := filepath.Dir(o.Config)
-		if err := os.RemoveAll(cfgDir); err != nil {
+		if err := purgeFolder(log, filepath.Dir(o.Config), filepath.Base(o.Config), envName); err != nil {
 			return err
 		}
 		if err := os.Remove(o.Bin); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		log.Info("removed", "config", cfgDir, "binary", o.Bin)
+		log.Info("removed", "binary", o.Bin)
 	} else {
 		fmt.Printf("the service is gone; %s and %s are kept (pgvigil uninstall -purge removes them).\n", filepath.Dir(o.Config), o.Bin)
 	}

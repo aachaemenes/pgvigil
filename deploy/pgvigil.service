@@ -7,11 +7,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=pgvigil
-Group=pgvigil
 EnvironmentFile=/etc/pgvigil/pgvigil.env
 ExecStart=/usr/local/bin/pgvigil run -config /etc/pgvigil/pgvigil.yaml
 Restart=on-failure
 RestartSec=10s
+RestartPreventExitStatus=3
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

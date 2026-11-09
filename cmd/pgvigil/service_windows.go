@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -113,7 +114,11 @@ func installService(log *slog.Logger, o installOptions) error {
 	}
 	dataDir := filepath.Dir(o.Config)
 	dsnFile := filepath.Join(dataDir, dsnFileName)
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	logDir := filepath.Join(dataDir, "logs")
+	if err := dedicatedFolder(dataDir, filepath.Base(o.Config)); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return err
 	}
 	for _, f := range []struct{ path, content string }{{o.Config, configTemplate("file:" + dsnFile)}, {dsnFile, ""}} {
@@ -173,28 +178,25 @@ func installService(log *slog.Logger, o installOptions) error {
 	}
 	icacls(dataDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", o.User+":(OI)(CI)R")
 	icacls(filepath.Dir(o.Bin), "/grant", o.User+":(OI)(CI)RX")
-	// the service reads its folder and writes one file in it: its log
-	logFile := filepath.Join(dataDir, logFileName)
-	if _, err := writeIfAbsent(logFile, "", 0o644); err != nil {
-		return err
-	}
-	icacls(logFile, "/grant", o.User+":M")
-	log.Info("permissions set", "data", dataDir, "readers", "SYSTEM, Administrators, "+o.User, "writable by the service", logFile)
+	// the service reads its folder and writes only under logs\ (so a deleted log is made again, and the
+	// config and repo.dsn stay out of its reach)
+	icacls(logDir, "/grant", o.User+":(OI)(CI)M")
+	log.Info("permissions set", "data", dataDir, "readers", "SYSTEM, Administrators, "+o.User, "writable by the service", logDir)
 	ready, why := configNamesAnInstance(o.Config)
 	if o.NoStart || !ready {
 		if !ready {
 			log.Info("service installed, not started", "why", why)
 		}
-		fmt.Printf("pgvigil is installed as the service %s (automatic start). Next:\n  1. %s: the collector's repository connection string, one line (the owner ran migrate and roles)\n  2. %s: list the instances (each dsn as file:<path> beside it, or env:NAME set for the service)\n  3. Start-Service %s; Get-Content %s -Wait\n", serviceName, dsnFile, o.Config, serviceName, filepath.Join(dataDir, logFileName))
+		fmt.Printf("pgvigil is installed as the service %s (automatic start). Next:\n  1. %s: the collector's repository connection string, one line (the owner ran migrate and roles)\n  2. %s: list the instances (each dsn as file:<path> beside it, or env:NAME set for the service)\n  3. Start-Service %s; Get-Content %s -Wait\n", serviceName, dsnFile, o.Config, serviceName, filepath.Join(logDir, logFileName))
 		return nil
 	}
 	if err := s.Start(); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
 	if _, err := waitState(s, svc.Running, 15*time.Second); err != nil {
-		return fmt.Errorf("the service did not come up (%v); see %s", err, filepath.Join(dataDir, logFileName))
+		return fmt.Errorf("the service did not come up (%v); see %s", err, filepath.Join(logDir, logFileName))
 	}
-	fmt.Printf("pgvigil is installed and running (Get-Service %s; the log is %s).\n", serviceName, filepath.Join(dataDir, logFileName))
+	fmt.Printf("pgvigil is installed and running (Get-Service %s; the log is %s).\n", serviceName, filepath.Join(logDir, logFileName))
 	return nil
 }
 
@@ -220,13 +222,14 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 	}
 	dataDir := filepath.Dir(o.Config)
 	if o.Purge {
-		if err := os.RemoveAll(dataDir); err != nil {
+		if err := purgeFolder(log, dataDir, filepath.Base(o.Config), dsnFileName); err != nil {
 			return err
 		}
-		if err := os.RemoveAll(filepath.Dir(o.Bin)); err != nil {
-			fmt.Printf("%s could not be removed (%v): delete the folder by hand once this process has exited.\n", filepath.Dir(o.Bin), err)
+		if err := os.Remove(o.Bin); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Printf("%s could not be removed (%v): delete it by hand once this process has exited.\n", o.Bin, err)
+		} else if err := os.Remove(filepath.Dir(o.Bin)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Info("folder kept: it still holds other files", "path", filepath.Dir(o.Bin))
 		}
-		log.Info("removed", "data", dataDir)
 	} else {
 		fmt.Printf("the service is gone; %s and %s are kept (pgvigil uninstall -purge removes them).\n", dataDir, filepath.Dir(o.Bin))
 	}
@@ -251,6 +254,11 @@ func (p *pgvigilService) Execute(_ []string, r <-chan svc.ChangeRequest, changes
 		case err := <-done:
 			changes <- svc.Status{State: svc.StopPending}
 			if err != nil {
+				var ec interface{ ExitCode() int }
+				if errors.As(err, &ec) && ec.ExitCode() == 3 {
+					p.log.Error("configuration error; the service stops and is not retried until the config is fixed and it is started again", "err", err)
+					return false, 0
+				}
 				p.log.Error("pgvigil failed", "err", err)
 				return true, 1
 			}
@@ -297,10 +305,11 @@ func maybeRunAsService(args []string) (bool, int) {
 	if err != nil || !isSvc || len(args) == 0 || args[0] != "run" {
 		return false, 0
 	}
-	logPath := filepath.Join(programData(), "pgvigil", logFileName)
+	logPath := filepath.Join(programData(), "pgvigil", "logs", logFileName)
 	if cfgPath := flagValue(args[1:], "-config"); cfgPath != "" {
-		logPath = filepath.Join(filepath.Dir(cfgPath), logFileName)
+		logPath = filepath.Join(filepath.Dir(cfgPath), "logs", logFileName)
 	}
+	_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
 	w := io.Writer(io.Discard)
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		defer func() { _ = f.Close() }()

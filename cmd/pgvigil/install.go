@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -44,11 +45,11 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	o := def
 	fs.StringVar(&o.Bin, "bin", def.Bin, "path the binary is installed to")
 	fs.StringVar(&o.Config, "config", def.Config, "path of the configuration file")
+	fs.StringVar(&o.User, "user", def.User, "service account (Linux; install creates it as a system user when missing)")
 	if name == "install" {
-		fs.StringVar(&o.User, "user", def.User, "service account (Linux; created as a system user when missing)")
 		fs.BoolVar(&o.NoStart, "no-start", false, "install and enable, but do not start the service")
 	} else {
-		fs.BoolVar(&o.Purge, "purge", false, "also remove the configuration folder and the binary")
+		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
 	}
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -163,6 +164,64 @@ func writeIfAbsent(path, content string, mode os.FileMode) (bool, error) {
 	}
 	return true, f.Close()
 }
+
+// ownFiles are the files the installer itself puts beside the config (and the folder of the Windows log).
+var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "pgvigil.log", "logs"}
+
+// dedicatedFolder refuses a config folder that is not the installer's own. The installer sets that
+// folder's permissions and -purge removes it, so it must be named pgvigil, or not exist yet, or hold
+// nothing but the installer's files: a flat /etc/pgvigil.yaml would hand /etc to the service account
+// and a C:\pgvigil.yaml would rewrite the ACL of C:\.
+func dedicatedFolder(dir, cfgName string) error {
+	if filepath.Base(dir) == "pgvigil" {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == cfgName || slices.Contains(ownFiles, e.Name()) {
+			continue
+		}
+		return fmt.Errorf("-config %s: its folder %s holds other files (%s); the installer owns that folder (its permissions, -purge), so put the config in a folder of its own, e.g. %s", cfgName, dir, e.Name(), filepath.Join(dir, "pgvigil", cfgName))
+	}
+	return nil
+}
+
+// purgeFolder removes the installer's own files from dir and then dir itself when nothing else is
+// left; a folder that still holds other files is kept and named.
+func purgeFolder(log *slog.Logger, dir string, files ...string) error {
+	for _, f := range files {
+		if err := os.Remove(filepath.Join(dir, f)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	_ = os.Remove(filepath.Join(dir, "logs", "pgvigil.log"))
+	_ = os.Remove(filepath.Join(dir, "logs"))
+	if err := os.Remove(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		log.Info("folder kept: it still holds other files", "path", dir)
+		return nil
+	}
+	log.Info("removed", "folder", dir)
+	return nil
+}
+
+// configError is a configuration-shape failure (the file missing or invalid, no instance named).
+// Its exit code 3 lets a service manager tell it from a runtime failure: the systemd unit does not
+// restart on it (RestartPreventExitStatus=3) and the Windows service stops without a retry, so a host
+// installed before its config is written does not loop at boot.
+type configError struct{ err error }
+
+func (e *configError) Error() string { return e.err.Error() }
+func (e *configError) Unwrap() error { return e.err }
+func (e *configError) ExitCode() int { return 3 }
 
 // configNamesAnInstance says whether the config at path loads and lists at least one instance: the
 // service is started only then (a fresh template lists none, and the collector would refuse it).

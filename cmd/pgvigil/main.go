@@ -10,12 +10,13 @@
 //	pgvigil demo     [-config f | -pgbin dir] [-serve]                                        seed (and serve) the demo fleet
 //	pgvigil roles                                                                            the CREATE ROLE script
 //	pgvigil install   [-bin p] [-config p] [-user a] [-no-start]                             the collector as a service (systemd / Windows)
-//	pgvigil uninstall [-config p] [-purge]
+//	pgvigil uninstall [-bin p] [-config p] [-user a] [-purge]
 //	pgvigil version
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -34,7 +35,7 @@ var version = "dev"
 
 func main() { os.Exit(run(os.Args[1:])) }
 
-// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error.
+// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error, 3 a configuration error.
 // Deferred cleanup (the signal context) runs before os.Exit this way.
 func run(args []string) int {
 	if len(args) < 1 {
@@ -78,6 +79,10 @@ func run(args []string) int {
 	}
 	if err != nil {
 		log.Error("pgvigil failed", "err", err)
+		var ec interface{ ExitCode() int }
+		if errors.As(err, &ec) {
+			return ec.ExitCode() // 3: a configuration error, which a service manager must not retry
+		}
 		return 1
 	}
 	return 0
@@ -100,13 +105,13 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 	}
 	cfg, err := config.Load(*path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, &configError{err}
 	}
 	if needInstance && len(cfg.Instances) == 0 {
-		return nil, nil, fmt.Errorf("config %s: at least one instance is required", *path)
+		return nil, nil, &configError{fmt.Errorf("config %s: at least one instance is required", *path)}
 	}
 	if err := checkCollectionNames(cfg); err != nil {
-		return nil, nil, fmt.Errorf("config %s: %w", *path, err)
+		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
 	}
 	cfg.Flags.Once = *once
 	cfg.Flags.Instance = *inst

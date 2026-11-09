@@ -4,10 +4,12 @@
 # systemd as PID 1. Needs docker, go and python3 on this machine; the systemd image is built once and kept
 # as pgvigil-proof-systemd:bookworm (docker rmi it to rebuild).
 #   PGVIGIL_PROOF_KEEP=1   leave the containers running after a failure (for a look)
-# Expected: `curl | sh` with PGVIGIL_VERSION and PGVIGIL_BASE_URL verifies the checksum and installs: the
+# Expected: a -config in a shared folder (/etc) is refused before anything is touched; `curl | sh` with
+# PGVIGIL_VERSION and PGVIGIL_BASE_URL verifies the checksum and installs: the
 # binary at /usr/local/bin/pgvigil prints the version, the system user pgvigil exists, /etc/pgvigil holds
 # pgvigil.yaml and pgvigil.env (0640 root:pgvigil), the unit is enabled and inactive (no instance yet) and
-# the script says what to edit; a checksum that does not match is refused; after the config names an
+# the script says what to edit; started with that template the unit fails once with exit 3 and is not
+# restarted; a checksum that does not match is refused; after the config names an
 # instance a second run (the upgrade path) keeps the edited config, restarts nothing extra and starts the
 # service, which runs as pgvigil and writes an instance row and an activity sample to the repository within
 # 90 s; `pgvigil uninstall` removes the unit and keeps the config and binary; `-purge` removes those too;
@@ -70,6 +72,15 @@ grep -q 'checksum mismatch' "$WORK/bad.out" || fail "the refusal did not say che
 insys test ! -e /usr/local/bin/pgvigil || fail "a binary was installed despite the bad checksum"
 echo "ok   checksum mismatch refused, nothing installed"
 
+echo "== a config in a shared folder is refused before anything is touched =="
+insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 PGVIGIL_NO_SERVICE=1 sh" >/dev/null 2>&1 || fail "download for the refusal check"
+if insys sh -c "cd / && ./pgvigil install -config /etc/pgvigil.yaml -no-start" >"$WORK/shared.out" 2>&1; then fail "a config in /etc was accepted"; fi
+grep -q 'holds other files' "$WORK/shared.out" || fail "the refusal did not name the shared folder: $(cat "$WORK/shared.out")"
+[[ "$(insys stat -c '%a %U:%G' /etc)" == "755 root:root" ]] || fail "/etc was changed: $(insys stat -c '%a %U:%G' /etc)"
+insys test ! -e /etc/pgvigil.yaml || fail "a config was written into /etc"
+insys rm -f /pgvigil
+echo "ok   shared folder refused, /etc untouched"
+
 echo "== first install (no instance yet) =="
 insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh" >"$WORK/i1.out" 2>&1 || fail "install.sh failed: $(cat "$WORK/i1.out")"
 grep -q 'checksum verified' "$WORK/i1.out" || fail "no 'checksum verified' line: $(cat "$WORK/i1.out")"
@@ -82,6 +93,15 @@ insys id -u pgvigil >/dev/null || fail "no system user pgvigil"
 [[ "$(insys systemctl is-enabled pgvigil)" == enabled ]] || fail "unit not enabled"
 [[ "$(insys systemctl is-active pgvigil || true)" == inactive ]] || fail "the service started without an instance: $(insys systemctl is-active pgvigil || true)"
 echo "ok   binary $V, user, 640/750 files, unit enabled, service inactive until an instance is named"
+
+echo "== the boot case: started with the empty template, the unit fails once and does not loop =="
+insys systemctl start pgvigil || true
+sleep 12
+[[ "$(insys systemctl show -p ExecMainStatus --value pgvigil)" == 3 ]] || fail "exit status of the unconfigured run: $(insys systemctl show -p ExecMainStatus --value pgvigil) (want 3)"
+[[ "$(insys systemctl show -p NRestarts --value pgvigil)" == 0 ]] || fail "the unit restarted $(insys systemctl show -p NRestarts --value pgvigil) time(s) on a configuration error"
+[[ "$(insys systemctl show -p SubState --value pgvigil)" != auto-restart ]] || fail "the unit is in auto-restart"
+insys systemctl reset-failed pgvigil >/dev/null 2>&1 || true
+echo "ok   unconfigured start: exit 3, no restart"
 
 echo "== the config names an instance; the second run (upgrade path) starts the service =="
 insys /usr/local/bin/pgvigil migrate -config /etc/pgvigil/pgvigil.yaml >/dev/null 2>&1 && fail "migrate ran with an empty PGVIGIL_REPO_DSN" || true
@@ -108,4 +128,4 @@ insys /usr/local/bin/pgvigil uninstall -purge >"$WORK/u2.out" 2>&1 || fail "unin
 insys test ! -e /etc/pgvigil || fail "-purge kept /etc/pgvigil"
 insys test ! -e /usr/local/bin/pgvigil || fail "-purge kept the binary"
 echo "ok   uninstall keeps config and binary; -purge removes both"
-echo "proof-install: OK (checksum refusal, install without an instance, upgrade path starting the service as pgvigil with $n sample(s), uninstall, purge; busybox parse)"
+echo "proof-install: OK (checksum refusal, shared folder refused, install without an instance, the unconfigured start exits 3 without a loop, upgrade path starting the service as pgvigil with $n sample(s), uninstall, purge; busybox parse)"

@@ -56,11 +56,19 @@ if ($Phase -eq 'install') {
     $proofSvc = Get-Service -Name pgvigil
     if ($proofSvc.Status -ne 'Running') { Fail "service state after the second install: $($proofSvc.Status)" }
     if ((Get-Content -Path $proofCfg -Raw) -notmatch 'win-proof-target') { Fail 'the upgrade overwrote the edited config' }
-    $proofLog = Join-Path $proofDataDir 'pgvigil.log'
+    $proofLog = Join-Path (Join-Path $proofDataDir 'logs') 'pgvigil.log'
     $proofSeen = $false
     for ($i = 0; $i -lt 30; $i++) { if ((Test-Path $proofLog) -and ((Get-Content $proofLog -Raw) -match 'scheduler started')) { $proofSeen = $true; break }; Start-Sleep -Seconds 1 }
     if (-not $proofSeen) { Fail "pgvigil.log does not say 'scheduler started' within 30 s: $(if (Test-Path $proofLog) { Get-Content $proofLog -Raw } else { 'no log file' })" }
     Write-Output 'ok   upgrade path kept the config; service Running; the log says scheduler started'
+    # an operator rotates by deleting the log: the service must be able to make it again
+    Stop-Service -Name pgvigil
+    Remove-Item -Path $proofLog -Force
+    Start-Service -Name pgvigil
+    $proofAgain = $false
+    for ($i = 0; $i -lt 20; $i++) { if (Test-Path $proofLog) { $proofAgain = $true; break }; Start-Sleep -Seconds 1 }
+    if (-not $proofAgain) { Fail 'the service did not recreate its deleted log within 20 s' }
+    Write-Output 'ok   a deleted log is made again by the running service'
     exit 0
 }
 

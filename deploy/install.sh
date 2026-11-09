@@ -46,7 +46,8 @@ fi
 
 ASSET="pgvigil_${VERSION}_${OS}_${ARCH}"
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+WORK2=""
+trap 'rm -rf "$WORK" "$WORK2"' EXIT
 say "pgvigil $VERSION for $OS/$ARCH"
 fetch "$BASE/$VERSION/$ASSET" "$WORK/$ASSET" || die "download failed: $BASE/$VERSION/$ASSET"
 fetch "$BASE/$VERSION/SHA256SUMS" "$WORK/SHA256SUMS" || die "download failed: $BASE/$VERSION/SHA256SUMS"
@@ -58,6 +59,15 @@ elif command -v shasum >/dev/null 2>&1; then (cd "$WORK" && shasum -a 256 -c sum
 else die "neither sha256sum nor shasum is installed"; fi
 say "checksum verified"
 chmod 0755 "$WORK/$ASSET"
+# a hardened host mounts /tmp noexec: the binary then runs from /var/tmp instead, or the operator names TMPDIR
+if ! "$WORK/$ASSET" version >/dev/null 2>&1; then
+  WORK2=$(mktemp -d /var/tmp/pgvigil.XXXXXX 2>/dev/null) || WORK2=""
+  if [ -n "$WORK2" ] && mv "$WORK/$ASSET" "$WORK2/$ASSET" && "$WORK2/$ASSET" version >/dev/null 2>&1; then
+    WORK="$WORK2"
+  else
+    die "the downloaded binary cannot run from $WORK (a noexec mount?): set TMPDIR to a folder that allows execution and run again"
+  fi
+fi
 
 if [ "${PGVIGIL_NO_SERVICE:-}" = "1" ]; then
   mv "$WORK/$ASSET" ./pgvigil
