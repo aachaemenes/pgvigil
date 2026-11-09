@@ -90,13 +90,11 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// Validate checks the shape, not connectivity.
+// Validate checks the shape, not connectivity. An empty instance list is valid
+// (a host that only serves the UI); the collector commands require one.
 func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Repository.DSNRaw) == "" {
 		return fmt.Errorf("repository.dsn is required")
-	}
-	if len(c.Instances) == 0 {
-		return fmt.Errorf("at least one instance is required")
 	}
 	seen := map[string]bool{}
 	for i := range c.Instances {

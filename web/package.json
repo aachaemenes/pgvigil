@@ -1,0 +1,16 @@
+{
+  "name": "pgvigil-web",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --noEmit && esbuild src/main.ts --bundle --minify --format=esm --target=es2020 --outfile=../internal/web/dist/app.js && cp node_modules/uplot/dist/uPlot.min.css ../internal/web/dist/uplot.css",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "uplot": "1.6.32"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3"
+  }
+}

@@ -34,3 +34,6 @@ go.work.sum
 
 # build output
 bin/
+
+# frontend dependencies
+web/node_modules/

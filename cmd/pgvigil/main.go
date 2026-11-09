@@ -4,6 +4,7 @@
 //	pgvigil run      -config pgvigil.yaml            run every scheduled collection until stopped
 //	pgvigil collect  -config pgvigil.yaml -once instance [-instance name]
 //	pgvigil migrate  -config pgvigil.yaml            apply the repository schema
+//	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080]   web UI and JSON API (read only)
 //	pgvigil version
 package main
 
@@ -50,6 +51,8 @@ func run(args []string) int {
 		err = runScheduler(ctx, log, args[1:])
 	case "roles":
 		err = runRoles(args[1:])
+	case "serve":
+		err = runServe(ctx, log, args[1:])
 	default:
 		usage()
 		return 2
@@ -62,7 +65,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|version> [-config file] [-once collection] [-instance name]")
 }
 
 func loadConfig(args []string) (*config.Config, *flag.FlagSet, error) {
@@ -76,6 +79,9 @@ func loadConfig(args []string) (*config.Config, *flag.FlagSet, error) {
 	cfg, err := config.Load(*path)
 	if err != nil {
 		return nil, nil, err
+	}
+	if len(cfg.Instances) == 0 {
+		return nil, nil, fmt.Errorf("config %s: at least one instance is required", *path)
 	}
 	if err := checkCollectionNames(cfg); err != nil {
 		return nil, nil, fmt.Errorf("config %s: %w", *path, err)

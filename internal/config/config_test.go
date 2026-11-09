@@ -70,7 +70,6 @@ instances:
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]Config{
 		"no repo":    {Instances: []Instance{{Name: "a", DSNRaw: "x"}}},
-		"no inst":    {Repository: Repository{DSNRaw: "r"}},
 		"dup name":   {Repository: Repository{DSNRaw: "r"}, Instances: []Instance{{Name: "a", DSNRaw: "x"}, {Name: "a", DSNRaw: "y"}}},
 		"bad plat":   {Repository: Repository{DSNRaw: "r"}, Instances: []Instance{{Name: "a", DSNRaw: "x", Platform: "mainframe"}}},
 		"empty dsn":  {Repository: Repository{DSNRaw: "r"}, Instances: []Instance{{Name: "a"}}},
@@ -81,5 +80,13 @@ func TestValidateRejects(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
+	}
+}
+
+// A repository with no instances is valid: a host that only serves the UI.
+func TestValidateServeOnly(t *testing.T) {
+	c := Config{Repository: Repository{DSNRaw: "r"}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("serve-only config rejected: %v", err)
 	}
 }

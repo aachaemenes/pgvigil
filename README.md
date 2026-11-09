@@ -37,7 +37,12 @@ bin/pgvigil migrate -config pgvigil.yaml                  # as the repository ow
 bin/pgvigil roles                                         # prints the CREATE ROLE statements
 bin/pgvigil collect -config pgvigil.yaml -once instance   # one collection, one run
 bin/pgvigil run -config pgvigil.yaml                      # every collection on its schedule
+bin/pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_READER_DSN   # web UI on http://127.0.0.1:8080/
 ```
+
+`pgvigil serve` is read only: its sessions are `default_transaction_read_only` with a 15 s statement timeout, and `-dsn` should name a login holding only `pgvigil_reader`. It listens on loopback by default and has no login of its own yet, so anything wider belongs behind a proxy with authentication. Pages: Overview (daily checks: failing or stale collections, replication, failed jobs, deadlocks and checksum failures in 24 h), Instances, Running queries (blocking chains with the head, history by snapshot time), Statements (top by total time over a window) and Counters (database, server, IO and session rates). The JSON endpoints under `/api/` return `{columns, rows}` and serve Grafana or scripts as well.
+
+The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
 
 `scripts/*.sh` are the proofs: each seeds a condition on a throwaway PostgreSQL (a lock chain, a statements reset, a replication slot, a password literal), collects, and checks the repository against the expected result written in its header. `scripts/integration.sh` runs in CI against PostgreSQL 13, 16 and 18.
 

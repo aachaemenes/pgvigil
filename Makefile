@@ -17,3 +17,8 @@ tidy:
 
 clean:
 	rm -rf bin
+
+# frontend: rebuild internal/web/dist from web/ (needs Node; the output is committed)
+.PHONY: web
+web:
+	cd web && npm ci && npm run build
