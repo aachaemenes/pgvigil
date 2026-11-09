@@ -46,8 +46,9 @@ SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f
        left(f.return_message, 300)
   FROM pgvigil.job_failures f JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active`},
-	// counters only rise within one stats_reset epoch, so max minus min per epoch = last minus first,
-	// as a hash aggregate: ordered array_agg sorted the whole day (21 s at 5.76 M rows, 0.9 s this way)
+	// the import starts a new epoch when stats_reset moves or a counter falls (a crash or a failover
+	// restarts them under the same stats_reset), so within one epoch max minus min is the rise, as a hash
+	// aggregate: an ordered array_agg or lag() sorts the whole day (21 s / 27 s at 5.76 M rows, 1 s this way)
 	{"deadlocks and checksums", `
 SELECT instance_id, CASE WHEN ck > 0 THEN 'critical' ELSE 'warning' END,
        CASE WHEN ck > 0 THEN 'checksum failures (24 h)' ELSE 'deadlocks (24 h)' END,
@@ -59,7 +60,7 @@ SELECT instance_id, CASE WHEN ck > 0 THEN 'critical' ELSE 'warning' END,
                        greatest(0, max(d.checksum_failures) - min(d.checksum_failures)) AS ck
                   FROM pgvigil.dbstats d JOIN pgvigil.instances i USING (instance_id)
                  WHERE i.is_active AND d.snapshot_at > now() - interval '1 day'
-                 GROUP BY d.instance_id, d.dbid, d.stats_reset) e
+                 GROUP BY d.instance_id, d.dbid, d.stats_reset, d.epoch) e
          GROUP BY instance_id, datname) x
  WHERE dl > 0 OR ck > 0`},
 }
