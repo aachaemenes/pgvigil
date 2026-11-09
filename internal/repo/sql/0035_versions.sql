@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.instance_versions (
   aws_resource                text,          -- cluster:<id> or instance:<id>
   engine                      text,
   engine_version              text,
+  engine_status               text,          -- available | deprecated (DescribeDBEngineVersions)
   auto_minor_version_upgrade  boolean,       -- the cluster's flag, or every member instance's when the cluster has none
   maintenance_window          text,
   aws_members                 jsonb,         -- the cluster's instances: id, class, engine_version, auto minor upgrade, window, writer
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.version_history (
   instance_id      int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   changed_at       timestamptz NOT NULL,   -- the read that saw it
   applied_at       timestamptz,            -- the postmaster start the new version runs from (server changes)
-  change           text NOT NULL,          -- patch | major upgrade | downgrade | rebuild | engine version
+  change           text NOT NULL,          -- patch | major upgrade | downgrade | aurora patch | rebuild | engine version
   old_value        text,
   new_value        text
 );
@@ -98,9 +99,14 @@ BEGIN
               ELSE 'patch' END,
          v_old.server_version, s->>'server_version',
          (s->>'server_version_num')::int IS DISTINCT FROM v_old.server_version_num),
-        ('rebuild', coalesce(v_old.aurora_version, v_old.version_string), coalesce(s->>'aurora_version', s->>'version_string'),
+        -- Aurora patches its own build under the same PostgreSQL minor: aurora_version moves, the number does not
+        ('aurora patch', v_old.aurora_version, s->>'aurora_version',
          (s->>'server_version_num')::int IS NOT DISTINCT FROM v_old.server_version_num
-         AND (s->>'version_string' IS DISTINCT FROM v_old.version_string OR s->>'aurora_version' IS DISTINCT FROM v_old.aurora_version))
+         AND s->>'aurora_version' IS DISTINCT FROM v_old.aurora_version),
+        ('rebuild', v_old.version_string, s->>'version_string',
+         (s->>'server_version_num')::int IS NOT DISTINCT FROM v_old.server_version_num
+         AND s->>'aurora_version' IS NOT DISTINCT FROM v_old.aurora_version
+         AND s->>'version_string' IS DISTINCT FROM v_old.version_string)
       ) c(change, old_value, new_value, hit)
      WHERE c.hit;
   END IF;
@@ -124,6 +130,7 @@ BEGIN
   IF v_aws AND e IS NOT NULL THEN
     UPDATE pgvigil.instance_versions v SET
       aws_resource = e->>'resource', engine = e->>'engine', engine_version = e->>'engine_version',
+      engine_status = e->>'engine_status',
       auto_minor_version_upgrade = coalesce((e->>'auto_minor_version_upgrade')::boolean,
         (SELECT bool_and((r->>'auto_minor_version_upgrade')::boolean) FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'aws_instance')),
       maintenance_window = e->>'maintenance_window',
@@ -181,7 +188,7 @@ CREATE OR REPLACE VIEW pgvigil.version_findings AS
 SELECT c.instance_id, 'warning' AS severity, 'collation version' AS setting,
        c.datname || ': ' || c.recorded_version || ' -> ' || c.actual_version AS value, true AS is_set,
        'REINDEX the text indexes of ' || c.datname || ', then ALTER DATABASE ' || quote_ident(c.datname) || ' REFRESH COLLATION VERSION' AS suggested,
-       'self-managed' AS platforms,
+       'all' AS platforms,
        'the database recorded collation version ' || c.recorded_version || ' (' || coalesce(c.locale, '?')
        || ') and the library now reports ' || c.actual_version
        || ': an OS or ICU update changed the sort rules, so indexes on text built under the old rules can miss rows or let duplicates past a unique index until they are rebuilt' AS detail,
@@ -189,6 +196,14 @@ SELECT c.instance_id, 'warning' AS severity, 'collation version' AS setting,
   FROM pgvigil.database_collations c
  WHERE c.is_present AND c.recorded_version IS NOT NULL AND c.actual_version IS NOT NULL
    AND c.recorded_version <> c.actual_version
+UNION ALL
+-- RDS / Aurora: the engine version is deprecated (AWS will upgrade it on its own schedule; new instances cannot use it)
+SELECT v.instance_id, 'warning', 'engine version', v.engine_version || ' deprecated', true,
+       'upgrade to a supported engine version (the Versions tab lists the targets)', 'managed',
+       v.engine || ' ' || v.engine_version || ' is deprecated: AWS schedules its own upgrade of deprecated versions and no new instance can be created on it',
+       'pgvigil', v.aws_read_at
+  FROM pgvigil.instance_versions v
+ WHERE v.engine_status = 'deprecated'
 UNION ALL
 -- RDS / Aurora pending maintenance: warning when AWS applies it on its own within 14 days, info beyond or undated
 -- (an undated action waits for someone to apply or schedule it)
@@ -213,7 +228,7 @@ SELECT i.instance_id, i.name AS instance, i.platform,
        coalesce(v.server_version_num, i.server_version_num) AS server_version_num,
        coalesce(v.server_version, st.server_version) AS server_version,
        v.aurora_version, coalesce(v.postmaster_start, st.postmaster_start) AS last_restart,
-       v.engine, v.engine_version, v.auto_minor_version_upgrade, v.maintenance_window, v.aws_read_at,
+       v.engine, v.engine_version, v.engine_status, v.auto_minor_version_upgrade, v.maintenance_window, v.aws_read_at,
        (SELECT count(*) FROM pgvigil.version_pending p WHERE p.instance_id = i.instance_id AND p.is_present) AS pending_actions,
        (SELECT min(least(p.forced_apply, p.auto_applied_after, p.current_apply)) FROM pgvigil.version_pending p
          WHERE p.instance_id = i.instance_id AND p.is_present) AS next_maintenance,
@@ -229,5 +244,8 @@ SELECT i.instance_id, i.name AS instance, i.platform,
   LEFT JOIN pgvigil.instance_versions v ON v.instance_id = i.instance_id
   LEFT JOIN pgvigil.instance_state st ON st.instance_id = i.instance_id
   LEFT JOIN LATERAL (SELECT * FROM pgvigil.version_history x WHERE x.instance_id = i.instance_id
-                      ORDER BY x.changed_at DESC LIMIT 1) h ON true
+                      ORDER BY x.changed_at DESC,
+                               CASE x.change WHEN 'major upgrade' THEN 0 WHEN 'downgrade' THEN 1 WHEN 'patch' THEN 2
+                                             WHEN 'aurora patch' THEN 3 WHEN 'engine version' THEN 4 ELSE 5 END
+                      LIMIT 1) h ON true
  WHERE i.is_active;

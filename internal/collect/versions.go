@@ -32,7 +32,8 @@ import (
 //
 //	server       server_version_num, server_version, version_string, aurora_version, postmaster_start
 //	collation    dbid, datname, provider, locale, recorded_version, actual_version   (PostgreSQL 15+)
-//	aws_engine   resource, engine, engine_version, auto_minor_version_upgrade, maintenance_window, members
+//	aws_engine   resource, engine, engine_version, engine_status (available | deprecated), auto_minor_version_upgrade,
+//	             maintenance_window, members
 //	aws_instance id, class, engine_version, auto_minor_version_upgrade, maintenance_window, is_writer
 //	aws_target   engine_version, is_major, description, auto_upgrade
 //	aws_pending  resource, action, description, auto_applied_after, forced_apply, current_apply, opt_in_status
@@ -60,10 +61,13 @@ SELECT 'server' AS kind, current_setting('server_version_num')::int AS server_ve
 
 // versionsCollationSQL: the databases a login may connect to, with the collation version recorded at
 // creation (or the last ALTER DATABASE ... REFRESH COLLATION VERSION) and the library's version now. A
-// database on the C or POSIX locale has no version (NULL on both sides). PostgreSQL 15+.
+// database on the C or POSIX locale has no version (NULL on both sides). The locale shown is the one whose version
+// is recorded: the ICU or builtin locale (daticulocale on 15 and 16, datlocale from 17), else the libc datcollate;
+// to_jsonb reads whichever column the version has. PostgreSQL 15+.
 const versionsCollationSQL = `
 SELECT 'collation' AS kind, d.oid::bigint AS dbid, d.datname::text AS datname, d.datlocprovider::text AS provider,
-       d.datcollate::text AS locale, d.datcollversion AS recorded_version,
+       coalesce(to_jsonb(d)->>'datlocale', to_jsonb(d)->>'daticulocale', d.datcollate::text) AS locale,
+       d.datcollversion AS recorded_version,
        pg_database_collation_actual_version(d.oid) AS actual_version
   FROM pg_database d
  WHERE d.datallowconn
@@ -205,11 +209,14 @@ func versionsAWSRows(ctx context.Context, api rdsAPI, a config.AWS) ([]Row, erro
 		pendingFilter = rdstypes.Filter{Name: aws.String("db-instance-id"), Values: []string{a.DBInstance}}
 	}
 
-	ev, err := api.DescribeDBEngineVersions(ctx, &rds.DescribeDBEngineVersionsInput{Engine: aws.String(engine), EngineVersion: aws.String(engineVersion)})
+	// IncludeAll: a deprecated engine version is listed only with it (and its upgrade targets matter most then)
+	ev, err := api.DescribeDBEngineVersions(ctx, &rds.DescribeDBEngineVersionsInput{Engine: aws.String(engine), EngineVersion: aws.String(engineVersion),
+		IncludeAll: aws.Bool(true)})
 	if err != nil {
 		return nil, fmt.Errorf("DescribeDBEngineVersions %s %s: %w", engine, engineVersion, err)
 	}
 	for _, v := range ev.DBEngineVersions {
+		out[0]["engine_status"] = aws.ToString(v.Status) // out[0] is the aws_engine row
 		for _, t := range v.ValidUpgradeTarget {
 			out = append(out, Row{"kind": "aws_target", "engine_version": aws.ToString(t.EngineVersion), "is_major": aws.ToBool(t.IsMajorVersionUpgrade),
 				"description": aws.ToString(t.Description), "auto_upgrade": aws.ToBool(t.AutoUpgrade)})

@@ -119,6 +119,9 @@ func Majors() []Major { return append([]Major(nil), majors...) }
 
 // Lookup reads server_version_num (180006 = 18.6) against the table at now.
 func Lookup(versionNum int, now time.Time) Status {
+	// the table's dates are UTC days: compare dates, so "passed" and the month count agree on the EOL day
+	u := now.UTC()
+	now = time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 	s := Status{Major: versionNum / 10000, Minor: versionNum % 10000, ReleasedDaysAgo: -1}
 	var mj *Major
 	for i := range majors {

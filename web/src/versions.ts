@@ -14,7 +14,8 @@ const ver = (r: Row) => r.major != null ? `${r.major}.${r.minor}` : String(r.ser
 export type VersionLevel = 0 | 1 | 2;   // ok, warning, critical (the Summary grid's levels)
 
 // versionCell: critical when the major is past its end of life; warning when the major ends within 6 months,
-// the server is 2 or more minors behind, or AWS will apply maintenance on its own within 14 days; a server
+// the server is 2 or more minors behind, AWS will apply maintenance on its own within 14 days, the engine version
+// is deprecated or a collation version changed; a server
 // with no version read is 'none'.
 export function versionCell(r: Row): { level: VersionLevel; text: string; detail: string[]; none?: boolean } {
   if (r.server_version_num == null) return { level: 0, text: 'no sample', detail: [], none: true };
@@ -26,6 +27,7 @@ export function versionCell(r: Row): { level: VersionLevel; text: string; detail
   if (r.next_maintenance && new Date(String(r.next_maintenance)).getTime() - Date.now() < 14 * 86400e3) {
     level = Math.max(level, 1) as VersionLevel; d.push(`maintenance applied by AWS from ${fmtTime(r.next_maintenance)}`);
   }
+  if (r.engine_status === 'deprecated') { level = Math.max(level, 1) as VersionLevel; d.push(`engine version ${r.engine_version} is deprecated`); }
   if (Number(r.collation_mismatches ?? 0) > 0) { level = Math.max(level, 1) as VersionLevel; d.push(`${r.collation_mismatches} database(s) with a changed collation version`); }
   return { level, text: ver(r) + (Number(r.behind_by ?? 0) > 0 ? ` (-${r.behind_by})` : ''), detail: d };
 }
@@ -43,8 +45,13 @@ const fleetCols = (instLink?: (name: string, id: unknown) => Node): Col[] => [
   { key: 'behind_by', label: 'behind', num: true, fmt: behind },
   { key: 'released_days_ago', label: 'minor released', num: true, fmt: v => v == null ? '' : `${v} days ago` },
   { key: 'eol', label: 'end of life', fmt: eol },
-  { key: 'engine_version', label: 'engine version', fmt: (v, r) => [v, r.aurora_version].filter(x => x != null && x !== '').join(' / ') },
-  { key: 'pending_actions', label: 'pending maintenance', num: true, fmt: (v, r) => Number(v) > 0 ? badge(`${v} from ${fmtTime(r.next_maintenance)}`, 'warn') : '' },
+  { key: 'engine_version', label: 'engine version', fmt: (v, r) => {
+      const t = [v, r.aurora_version].filter(x => x != null && x !== '').join(' / ');
+      return r.engine_status === 'deprecated' ? badge(t + ' deprecated', 'warn') : t;
+    } },
+  // dated: AWS applies it on its own (warn); undated: it waits for someone to apply or schedule it
+  { key: 'pending_actions', label: 'pending maintenance', num: true, fmt: (v, r) => Number(v) === 0 || v == null ? ''
+      : r.next_maintenance ? badge(`${v} from ${fmtTime(r.next_maintenance)}`, 'warn') : badge(`${v} undated`, '') },
   { key: 'auto_minor_version_upgrade', label: 'auto minor upgrade', fmt: yn },
   { key: 'maintenance_window', label: 'window' },
   { key: 'last_restart', label: 'last restart', fmt: fmtTime },

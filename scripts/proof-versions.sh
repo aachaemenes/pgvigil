@@ -34,6 +34,14 @@
 #       14.10 -> behind 14, EOL 2026-11-12, not passed, 0 months
 #       13.5 -> EOL passed, behind 18, release date unknown
 #       18.7 -> newer than the table;  9.6 (90624) -> not known
+#  [review 1 fold, expected before the rerun:]
+#  A2. on PostgreSQL 15+ a second target database created with the ICU provider (icu_locale en-US): its collation row
+#      reads provider i, locale en-US (the ICU locale, not datcollate), recorded_version not NULL and = actual_version
+#  B2. an Aurora patch (aurora_version 16.4.2 -> 16.4.3, the number unchanged) writes 'aurora patch', not 'rebuild';
+#      a major upgrade with an engine change at the same read leaves last_change = 'major upgrade' (the tie-break)
+#  C2. an aws_engine row with status deprecated -> version_findings adds engine version|warning|16.4 deprecated
+#  D2. Lookup at 2026-11-11 23:00 PST (2026-11-12 07:00 UTC) for 14.10: passed true and months 0 (both read the UTC
+#      date); at 2026-11-11 12:00 UTC: passed false, months 0
 #  E. (LAB=1) the Aurora cluster: platform aurora, engine aurora-postgresql, an engine_version 17.x, aurora_version
 #     set, aws_read_at set, at least one upgrade target, the pending maintenance rows listed (zero is a valid
 #     answer: printed), no collector_error (status ok)
@@ -46,12 +54,12 @@ BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
 ADMIN_DSN=${ADMIN_DSN:-$PGVIGIL_REPO_DSN}
 SUF=$RANDOM
-REPO_DB=pgvigil_verproof_$SUF; T1=pgvigil_ver1_$SUF; MON=pgvigil_vermon_$SUF; MONPW=p$RANDOM$RANDOM
+REPO_DB=pgvigil_verproof_$SUF; T1=pgvigil_ver1_$SUF; T2=pgvigil_ver2_$SUF; MON=pgvigil_vermon_$SUF; MONPW=p$RANDOM$RANDOM
 dsn_for() { echo "$ADMIN_DSN dbname=$1"; }   # a later keyword wins, in libpq and in pgx
 CFG=$(mktemp); CHK=scripts/tmp-proof-versions-$SUF
 cleanup() {
   rm -f "$CFG"; rm -rf "$CHK"
-  for d in "$REPO_DB" "$T1"; do psql "$ADMIN_DSN" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1 || true; done
+  for d in "$REPO_DB" "$T1" "$T2"; do psql "$ADMIN_DSN" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1 || true; done
   psql "$ADMIN_DSN" -XAtq -c "drop role if exists $MON" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -64,6 +72,9 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 t1() { psql "$(dsn_for "$T1")" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 
 echo "--- A. first read"
+if (( $(t1 "select current_setting('server_version_num')") >= 150000 )); then
+  psql "$ADMIN_DSN" -XAtq -v ON_ERROR_STOP=1 -c "create database $T2 template template0 locale_provider icu icu_locale 'en-US'" >/dev/null
+fi
 cat > "$CFG" <<EOF
 repository:
   dsn: env:PGVIGIL_REPO_DSN
@@ -85,6 +96,11 @@ echo "row: $(q "select server_version_num, server_version, postmaster_start, ver
 if (( NUM >= 150000 )); then
   [[ $(q "select count(*) from pgvigil.database_collations where instance_id=$iid and datname='$T1' and is_present") == 1 ]] || fail "no collation row for $T1"
   echo "collations: $(q "select string_agg(datname || ' ' || provider || ' ' || coalesce(recorded_version, 'null') || '/' || coalesce(actual_version, 'null'), ', ') from pgvigil.database_collations where instance_id=$iid and datname='$T1'")"
+fi
+if (( NUM >= 150000 )); then
+  c2=$(q "select provider || '|' || locale || '|' || (recorded_version is not null and recorded_version = actual_version) from pgvigil.database_collations where instance_id=$iid and datname='$T2'")
+  [[ $c2 == "i|en-US|true" ]] || fail "ICU collation row: $c2"
+  echo "ICU database: $(q "select provider, locale, recorded_version, actual_version from pgvigil.database_collations where instance_id=$iid and datname='$T2'")"
 fi
 [[ $(q "select count(*) from pgvigil.version_history where instance_id=$iid") == 0 ]] || fail "history on the first read"
 [[ $(q "select count(*) from pgvigil.version_findings where instance_id=$iid") == 0 ]] || fail "findings: $(q "select * from pgvigil.version_findings where instance_id=$iid")"
@@ -142,6 +158,22 @@ impx 120 "$base, ${eng//ENGV/16.6}, $sysup, $undated, {\"kind\":\"aws_read\"}"
   || fail "engine history: $(q "select change, old_value, new_value from pgvigil.version_history where instance_id=$ix")"
 echo "fleet x: $(fl); engine history 16.4 -> 16.6"
 
+echo "--- B2/C2. an Aurora patch, a major upgrade with its engine change, a deprecated engine version"
+ia=$(q "select pgvigil.ensure_instance('proof-ver-a-$SUF', 'aurora', '16.4', 160004, false, '{}')")
+srv() { echo '{"kind":"server","server_version_num":'$1',"server_version":"'$2'","version_string":"PostgreSQL '$2'","aurora_version":"'$3'","postmaster_start":"2026-10-01T00:00:00Z"}'; }
+aeng() { echo '{"kind":"aws_engine","resource":"cluster:a","engine":"aurora-postgresql","engine_version":"'$1'","engine_status":"'$2'","auto_minor_version_upgrade":true},{"kind":"aws_read"}'; }
+impa() { q "select pgvigil.import_versions($ia, now() + make_interval(secs => $1), '[$2]')" >/dev/null; }
+impa 0 "$(srv 160004 16.4 16.4.2), $(aeng 16.4 deprecated)"
+impa 60 "$(srv 160004 16.4 16.4.3), $(aeng 16.4 deprecated)"
+[[ $(q "select string_agg(change || '|' || old_value || '|' || new_value, ',') from pgvigil.version_history where instance_id=$ia") == "aurora patch|16.4.2|16.4.3" ]] \
+  || fail "aurora patch: $(q "select change, old_value, new_value from pgvigil.version_history where instance_id=$ia")"
+[[ $(q "select string_agg(setting || '|' || severity || '|' || value, ',') from pgvigil.version_findings where instance_id=$ia") == "engine version|warning|16.4 deprecated" ]] \
+  || fail "deprecated finding: $(q "select setting, severity, value from pgvigil.version_findings where instance_id=$ia")"
+impa 120 "$(srv 170004 17.4 17.4.1), $(aeng 17.4 available)"
+[[ $(q "select last_change from pgvigil.versions_fleet where instance_id=$ia") == "major upgrade" ]] || fail "tie-break: $(q "select last_change from pgvigil.versions_fleet where instance_id=$ia")"
+[[ $(q "select count(*) from pgvigil.version_findings where instance_id=$ia") == 0 ]] || fail "deprecated finding stays after the upgrade"
+echo "aurora: $(q "select string_agg(change || ' ' || coalesce(old_value, '') || ' -> ' || coalesce(new_value, ''), '; ' order by changed_at, change) from pgvigil.version_history where instance_id=$ia"); last_change major upgrade"
+
 echo "--- D. the release table"
 mkdir -p "$CHK"
 cat > "$CHK/main.go" <<'EOF'
@@ -161,6 +193,11 @@ func main() {
 		fmt.Printf("%d known=%v latest=%d behind=%d newer=%v eol=%s passed=%v months=%d days=%d\n", n, s.Known, s.Latest, s.BehindBy, s.Newer,
 			s.EOL.Format("2006-01-02"), s.EOLPassed, s.EOLInMonths, s.ReleasedDaysAgo)
 	}
+	pst := time.FixedZone("PST", -8*3600)
+	for _, at := range []time.Time{time.Date(2026, 11, 11, 23, 0, 0, 0, pst), time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)} {
+		s := versions.Lookup(140010, at)
+		fmt.Printf("140010 at %s passed=%v months=%d\n", at.UTC().Format(time.RFC3339), s.EOLPassed, s.EOLInMonths)
+	}
 }
 EOF
 got=$(go run "./$CHK")
@@ -169,7 +206,9 @@ want="180006 known=true latest=6 behind=0 newer=false eol=2030-11-14 passed=fals
 140010 known=true latest=24 behind=14 newer=false eol=2026-11-12 passed=false months=0 days=1096
 130005 known=true latest=23 behind=18 newer=false eol=2025-11-13 passed=true months=-11 days=-1
 180007 known=true latest=6 behind=0 newer=true eol=2030-11-14 passed=false months=48 days=-1
-90624 known=false latest=0 behind=0 newer=false eol=0001-01-01 passed=false months=0 days=-1"
+90624 known=false latest=0 behind=0 newer=false eol=0001-01-01 passed=false months=0 days=-1
+140010 at 2026-11-12T07:00:00Z passed=true months=0
+140010 at 2026-11-11T12:00:00Z passed=false months=0"
 [[ "$got" == "$want" ]] || fail "release table: got
 $got
 want
