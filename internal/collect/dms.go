@@ -303,7 +303,18 @@ func dmsResourceID(arn string) string {
 
 // task metrics (Maximum over the period) and host metrics (the stat named) read per run
 var (
-	dmsTaskMetrics = []string{"CDCLatencySource", "CDCLatencyTarget", "CDCIncomingChanges"}
+	dmsTaskMetrics = []string{"CDCLatencySource", "CDCLatencyTarget", "CDCIncomingChanges",
+		"CDCThroughputRowsSource", "CDCThroughputRowsTarget", "CDCChangesDiskSource", "CDCChangesDiskTarget",
+		"CDCChangesMemorySource", "CDCChangesMemoryTarget"}
+	// dmsTaskColumns maps each task metric to its row column: the latency pair and the backlog, the read and
+	// apply rates (the drain readout: rows behind / the net apply rate), and the changes held in memory and
+	// spilled to disk on each side (a restart mid-spill throws the spilled transactions away)
+	dmsTaskColumns = []struct{ metric, col string }{
+		{"CDCLatencySource", "latency_source_s"}, {"CDCLatencyTarget", "latency_target_s"}, {"CDCIncomingChanges", "incoming_changes"},
+		{"CDCThroughputRowsSource", "rows_in_s"}, {"CDCThroughputRowsTarget", "rows_out_s"},
+		{"CDCChangesDiskSource", "disk_source"}, {"CDCChangesDiskTarget", "disk_target"},
+		{"CDCChangesMemorySource", "memory_source"}, {"CDCChangesMemoryTarget", "memory_target"},
+	}
 	dmsHostMetrics = []struct{ name, stat string }{
 		{"CPUUtilization", "Average"}, {"FreeableMemory", "Minimum"}, {"FreeStorageSpace", "Minimum"}, {"SwapUsage", "Maximum"},
 	}
@@ -408,10 +419,14 @@ func dmsTaskRow(t dmstypes.ReplicationTask, m map[string]dmsMetric, latencyWarn 
 		row["full_load_start"], row["full_load_finish"] = tsOrNil(s.FullLoadStartDate), tsOrNil(s.FullLoadFinishDate)
 	}
 	// the metric keys were built with sorted dimension names: instance identifier, then task id
-	for _, mt := range []struct{ metric, col string }{{"CDCLatencySource", "latency_source_s"}, {"CDCLatencyTarget", "latency_target_s"}, {"CDCIncomingChanges", "incoming_changes"}} {
+	for _, mt := range dmsTaskColumns {
 		for k, v := range m {
 			if strings.HasPrefix(k, mt.metric+"|") && strings.HasSuffix(k, "|"+dmsResourceID(aws.ToString(t.ReplicationTaskArn))) {
 				row[mt.col] = v.Value
+				// latency_at dates the latency pair and the backlog, as before the rate and spill metrics joined
+				if !strings.HasPrefix(mt.metric, "CDCLatency") && mt.metric != "CDCIncomingChanges" {
+					continue
+				}
 				if at, ok := row["latency_at"].(time.Time); !ok || v.At.After(at) {
 					row["latency_at"] = v.At.UTC()
 				}
