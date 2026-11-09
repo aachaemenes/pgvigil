@@ -9,6 +9,8 @@
 //	pgvigil cert     [-hosts a,b] [-out dir]                                                 a self-signed TLS pair
 //	pgvigil demo     [-config f | -pgbin dir] [-serve]                                        seed (and serve) the demo fleet
 //	pgvigil roles                                                                            the CREATE ROLE script
+//	pgvigil install   [-bin p] [-config p] [-user a] [-no-start]                             the collector as a service (systemd / Windows)
+//	pgvigil uninstall [-config p] [-purge]
 //	pgvigil version
 package main
 
@@ -39,6 +41,9 @@ func run(args []string) int {
 		usage()
 		return 2
 	}
+	if handled, code := maybeRunAsService(args); handled { // Windows: `run` under the service control manager
+		return code
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -63,6 +68,10 @@ func run(args []string) int {
 		err = runCert(args[1:])
 	case "demo":
 		err = runDemo(ctx, log, args[1:])
+	case "install":
+		err = runInstall(log, args[1:])
+	case "uninstall":
+		err = runUninstall(log, args[1:])
 	default:
 		usage()
 		return 2
@@ -75,7 +84,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|install|uninstall|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector

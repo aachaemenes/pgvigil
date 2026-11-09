@@ -4,7 +4,7 @@ PostgreSQL monitoring for DBAs: daily checks, running queries with blocking chai
 
 One collector binary (Go, static, no runtime on the target) polls each instance on a schedule and writes into a PostgreSQL repository. A web UI served by the same binary, and later an installable desktop client, read the repository; Grafana can read it too.
 
-Status: phase 1, under construction. The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers and the desktop wrapper are not built yet. The first release is [v0.1.0](https://github.com/aachaemenes/pgvigil/releases/tag/v0.1.0): static binaries for Linux, Windows and macOS.
+Status: phase 1, under construction. The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers and the service wrappers ship with v0.2.0 (the section below); the desktop wrapper is not built yet. The first release is [v0.1.0](https://github.com/aachaemenes/pgvigil/releases/tag/v0.1.0): static binaries for Linux, Windows and macOS.
 
 ## What it collects today
 
@@ -73,7 +73,26 @@ Download the binary for your platform from the [latest release](https://github.c
    ```
    `serve` is read only: its sessions are `default_transaction_read_only` with a 15 s statement timeout. Pages: Overview (daily checks: failing or stale collections, replication, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in 24 h), Instances, Running queries (blocking chains with the head, history by snapshot time), Statements (top by total time over a window), Counters (database, server, IO and session rates) and DMS (tasks, their tables, the replication instances). The JSON endpoints under `/api/` return `{columns, rows}` behind the same login (the session cookie) and serve scripts as well; Grafana reads the repository views directly with a `pgvigil_reader` login.
 
-On Windows the same commands run in PowerShell (`$env:PGVIGIL_REPO_DSN = '...'`, `pgvigil.exe ...`); the Windows service wrapper and the installers are the next task.
+On Windows the same commands run in PowerShell (`$env:PGVIGIL_REPO_DSN = '...'`, `pgvigil.exe ...`).
+
+## Installing as a service
+
+From v0.2.0 the binary installs itself as a service, and two thin scripts fetch the release, verify its checksum and call it (re-run either to upgrade: the binary and the service definition are replaced, the config is kept):
+
+```
+curl -fsSL https://pgvigil.com/install.sh | sh          # Linux (POSIX sh; sudo when not root)
+irm https://pgvigil.com/install.ps1 | iex               # Windows, elevated PowerShell
+```
+
+`PGVIGIL_VERSION=v0.2.0` pins a tag, `PGVIGIL_BASE_URL` points at a mirror of the release folder (air-gapped sites), `PGVIGIL_NO_SERVICE=1` only downloads and verifies the binary into the current folder. The scripts are `deploy/install.sh` and `deploy/install.ps1` (served from pgvigil.com as the same files); read them first if you like.
+
+What `pgvigil install` does (and `pgvigil uninstall` undoes; `-purge` also removes the config folder and the binary):
+
+- Linux: the binary to `/usr/local/bin/pgvigil`; a system account `pgvigil` (no home, no shell; `-user` names another); `/etc/pgvigil/pgvigil.yaml` (a template that lists no instance) and `/etc/pgvigil/pgvigil.env` (`PGVIGIL_REPO_DSN=` and one line per monitored instance), both `0640 root:pgvigil`; the unit `/etc/systemd/system/pgvigil.service` (`deploy/pgvigil.service`: runs as `pgvigil`, read-only file system, restart on failure), enabled. The service is started only once the config names an instance, so the first run ends with the three steps left to you; after `migrate`, `roles` and the edits, run the installer again or `systemctl start pgvigil`. Logs: `journalctl -u pgvigil`.
+- Windows: the binary to `%ProgramFiles%\pgvigil\pgvigil.exe` (the installer script adds the folder to the machine PATH); `%ProgramData%\pgvigil\pgvigil.yaml` (the template points the repository at `file:...\repo.dsn` beside it, one line, empty until you fill it) with the folder readable by SYSTEM, Administrators and the service's own account only; the service `pgvigil` under the virtual account `NT SERVICE\pgvigil` (no password to keep), automatic start, restarted on failure. Started once the config names an instance (each instance DSN as `file:` beside the config: a service has no shell environment). Logs: `%ProgramData%\pgvigil\pgvigil.log` (the service writes that one file and nothing else in the folder; no rotation yet). `uninstall` leaves the PATH entry.
+- macOS and the BSDs: the binary and the config template only; run `pgvigil run -config ...` under launchd or your init.
+
+Proofs: `scripts/proof-install.sh` (a Debian container running systemd, a mock release server, a throwaway repository: checksum refusal, install without an instance, the upgrade path starting the service as `pgvigil`, uninstall, purge) and `scripts/proof-install-windows.sh` (the same on a Windows VM over SSH).
 
 Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvigil serve -no-login` (loopback only), `pgvigil serve -session-hours 8`.
 

@@ -1,0 +1,22 @@
+[Unit]
+Description=pgvigil PostgreSQL monitoring collector
+Documentation=https://github.com/aachaemenes/pgvigil
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pgvigil
+Group=pgvigil
+EnvironmentFile=/etc/pgvigil/pgvigil.env
+ExecStart=/usr/local/bin/pgvigil run -config /etc/pgvigil/pgvigil.yaml
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target

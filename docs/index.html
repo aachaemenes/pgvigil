@@ -96,6 +96,10 @@
 
 <section id="install"><div class="wrap">
   <h2>Install</h2>
+  <p>From v0.2.0, one line installs the collector as a service (the binary is fetched from the release and its checksum verified first; run it again to upgrade):</p>
+<pre><code>curl -fsSL https://pgvigil.com/install.sh | sh          # Linux: a system account, a systemd unit
+irm https://pgvigil.com/install.ps1 | iex               # Windows: a service under NT SERVICE\pgvigil, elevated PowerShell</code></pre>
+  <p>By hand, on any release:</p>
   <ol>
     <li>Download the binary for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and verify it against <code>SHA256SUMS</code> (signed with Sigstore; the README shows the two commands).</li>
     <li>Create a repository database on any PostgreSQL 13+ server and copy <code>pgvigil.example.yaml</code>; connection strings are read from the environment or a file, never written in the config.</li>
@@ -107,7 +111,7 @@ pgvigil roles                                   # CREATE ROLE statements for the
 pgvigil user add admin -config pgvigil.yaml
 pgvigil run -config pgvigil.yaml
 pgvigil serve -config pgvigil.yaml -listen 0.0.0.0:8443 -tls-cert pgvigil.crt -tls-key pgvigil.key</code></pre>
-  <p>The full quick start, the configuration reference and the platform notes are in the <a href="https://github.com/aachaemenes/pgvigil#readme">README</a>. Installers and service wrappers for Linux and Windows are the next release.</p>
+  <p>The full quick start, the configuration reference and the platform notes are in the <a href="https://github.com/aachaemenes/pgvigil#readme">README</a>. The installer scripts are <code>deploy/install.sh</code> and <code>deploy/install.ps1</code> in the repository, served here as the same files; <code>pgvigil install</code> and <code>uninstall</code> are described in the README.</p>
 </div></section>
 
 <section id="security"><div class="wrap">
