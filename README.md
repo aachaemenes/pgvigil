@@ -75,6 +75,22 @@ Download the binary for your platform from the [latest release](https://github.c
 
 On Windows the same commands run in PowerShell (`$env:PGVIGIL_REPO_DSN = '...'`, `pgvigil.exe ...`).
 
+## Demo
+
+`pgvigil demo` seeds a synthetic fleet through the import functions and, with `-serve`, serves it on loopback without a login: 12 instances across on-prem, RDS, Aurora, Azure and Cloud SQL, 7 days of history with two blocking chains and an idle-in-transaction head, statements with a reset, counters with a daily curve, a lagging replica and an inactive slot, a failed pg_cron job, a lag-warned DMS task with tables in error, and log events. The instances carry the tag `demo` and the name prefix `demo-`; a re-run replaces them and touches nothing else.
+
+```
+pgvigil demo -dsn 'postgres://pgvigil_owner:...@host:5432/pgvigil_demo?sslmode=disable' -serve   # into a repository database you own
+```
+
+On a laptop with no admin rights and no Docker, a portable PostgreSQL does: unzip the EDB binaries archive (`postgresql-17.x-windows-x64-binaries.zip`; a Linux tarball works the same way) and point `-pgbin` at its `bin` folder. The demo runs `initdb` into `-pgdata` (default `pgvigil-demo-data` in the current folder, reused on the next run), starts that server on a free port, seeds, serves, and stops it when you press Ctrl-C:
+
+```
+pgvigil.exe demo -pgbin C:\Users\you\pgsql\bin -serve      # then open http://127.0.0.1:8080/
+```
+
+`-instances 1000 -days 7` seeds a scale run (the twelve repeat); `-listen` moves the port. Proven on Linux and on Windows as an administrator; a standard Windows account is not proven yet.
+
 ## Installing as a service
 
 From v0.2.0 the binary installs itself as a service, and two thin scripts fetch the release, verify its checksum and call it (re-run either to upgrade: the binary and the service definition are replaced, the config is kept):
@@ -94,7 +110,7 @@ What `pgvigil install` does (and `pgvigil uninstall` undoes; `-purge` also remov
 
 Proofs: `scripts/proof-install.sh` (a Debian container running systemd, a mock release server, a throwaway repository: checksum refusal, install without an instance, the upgrade path starting the service as `pgvigil`, uninstall, purge) and `scripts/proof-install-windows.sh` (the same on a Windows VM over SSH).
 
-Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvigil serve -no-login` (loopback only), `pgvigil serve -session-hours 8`.
+Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvigil serve -no-login` (loopback only), `pgvigil serve -session-hours 8`, `pgvigil demo` (the section below).
 
 The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
 
