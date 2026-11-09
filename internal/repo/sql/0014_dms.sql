@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.dms_tasks (
   tables_loading      int,
   tables_queued       int,
   tables_errored      int,
-  elapsed_ms          bigint,
+  elapsed_ms          bigint,                 -- ReplicationTaskStats.ElapsedTimeMillis: the full load's duration on a live task (2.8 s for 1,100 rows), not the task's age
   created             timestamptz,
   started             timestamptz,            -- ReplicationTaskStartDate
   fresh_start         timestamptz,

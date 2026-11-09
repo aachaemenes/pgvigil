@@ -206,7 +206,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
     { key: 'latency_source_s', label: 'latency source', num: true, fmt: fmtSecs },
     { key: 'latency_target_s', label: 'latency target', num: true, fmt: fmtSecs },
     { key: 'incoming_changes', label: 'incoming changes', num: true },
-    { key: 'elapsed_secs', label: 'elapsed', num: true, fmt: fmtSecs },
+    { key: 'elapsed_secs', label: 'full load time', num: true, fmt: fmtSecs },   // ElapsedTimeMillis is the full load's duration on a live task, not the task's age
     { key: 'ri_id', label: 'replication instance' },
     { key: 'stop_reason', label: 'stop reason', wide: true },
     { key: 'last_failure', label: 'last failure', wide: true },
