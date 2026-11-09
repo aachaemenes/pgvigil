@@ -23,7 +23,7 @@ import (
 // Rows by kind:
 //
 //	available  name, default_version, comment                    (once)
-//	library    name, via (shared | session | local), position    (once)
+//	library    name, via (shared | session | local | db_role)     (once)
 //	setting    name, setting, unit                               (once; a library's setting exists only while it is loaded)
 //	databases  names: every connectable database                 (once; a database not listed is gone)
 //	db         dbid, datname                                     (per database read: its installed set is complete)
@@ -61,17 +61,40 @@ SELECT 'available' AS kind, name::text AS name, default_version::text AS default
   FROM pg_available_extensions
  ORDER BY name`
 
-// extensionsLibrariesSQL parses the three preload lists: comma separated, each entry optionally quoted and
-// optionally a path ($libdir/pg_stat_statements, /usr/lib/postgresql/16/lib/auto_explain.so); the name is
-// the file name without its directory and suffix, which is what an extension's library is called.
-// current_setting(..., true) is NULL where the login may not read the list (no pg_read_all_settings).
+// extensionsLibrariesSQL parses the preload lists: comma separated, each entry optionally quoted and optionally a
+// path ($libdir/pg_stat_statements, /usr/lib/postgresql/16/lib/auto_explain.so); the name is the file name
+// without its directory and suffix, which is what an extension's library is called. The three server lists come
+// from pg_settings, which leaves out a list the login may not read (no pg_read_all_settings) instead of raising
+// an error, as current_setting would. The fourth source, via db_role, is every ALTER DATABASE / ALTER ROLE ... SET
+// session_preload_libraries or local_preload_libraries in pg_db_role_setting (readable by any login): a library
+// loaded that way works in that database or for that role though the server's lists do not name it.
 const extensionsLibrariesSQL = `
-SELECT 'library' AS kind, regexp_replace(regexp_replace(btrim(e.lib, ' "'), '^.*[/\\]', ''), '\.(so|dll|dylib)$', '') AS name,
-       l.via, e.pos::int AS position
-  FROM (VALUES ('shared', 'shared_preload_libraries'), ('session', 'session_preload_libraries'),
-               ('local', 'local_preload_libraries')) l(via, guc)
-  CROSS JOIN LATERAL regexp_split_to_table(coalesce(current_setting(l.guc, true), ''), ',') WITH ORDINALITY e(lib, pos)
+WITH lists AS (
+  SELECT CASE s.name WHEN 'shared_preload_libraries' THEN 'shared' WHEN 'session_preload_libraries' THEN 'session' ELSE 'local' END AS via,
+         s.setting AS list
+    FROM pg_settings s
+   WHERE s.name IN ('shared_preload_libraries', 'session_preload_libraries', 'local_preload_libraries')
+  UNION ALL
+  SELECT 'db_role', substr(c.cfg, strpos(c.cfg, '=') + 1)
+    FROM pg_db_role_setting r CROSS JOIN LATERAL unnest(r.setconfig) c(cfg)
+   WHERE c.cfg LIKE 'session\_preload\_libraries=%' OR c.cfg LIKE 'local\_preload\_libraries=%'
+)
+SELECT DISTINCT 'library' AS kind, regexp_replace(regexp_replace(btrim(e.lib, ' "'), '^.*[/\\]', ''), '\.(so|dll|dylib)$', '') AS name,
+       l.via
+  FROM lists l CROSS JOIN LATERAL regexp_split_to_table(coalesce(l.list, ''), ',') e(lib)
  WHERE btrim(e.lib, ' "') <> ''`
+
+// extensionsDBRoleSQL is the ALTER DATABASE / ROLE preload settings as one setting row (empty when there are
+// none): the import tracks its changes, and its presence says the db_role source was read.
+const extensionsDBRoleSQL = `
+SELECT 'setting' AS kind, 'db_role_preload_libraries' AS name,
+       coalesce((SELECT string_agg(coalesce(d.datname, '*') || '/' || coalesce(a.rolname, '*') || ': ' || c.cfg, '; '
+                                   ORDER BY d.datname NULLS FIRST, a.rolname NULLS FIRST, c.cfg)
+                   FROM pg_db_role_setting r CROSS JOIN LATERAL unnest(r.setconfig) c(cfg)
+                   LEFT JOIN pg_database d ON d.oid = r.setdatabase
+                   LEFT JOIN pg_roles a ON a.oid = r.setrole
+                  WHERE c.cfg LIKE 'session\_preload\_libraries=%' OR c.cfg LIKE 'local\_preload\_libraries=%'), '') AS setting,
+       NULL::text AS unit`
 
 const extensionsSettingsSQL = `
 SELECT 'setting' AS kind, name::text AS name, setting::text AS setting, unit::text AS unit
@@ -93,7 +116,8 @@ func (extensionsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ pl
 	for _, q := range []struct {
 		sql  string
 		args []any
-	}{{extensionsAvailableSQL, nil}, {extensionsLibrariesSQL, nil}, {extensionsSettingsSQL, []any{extensionLibrarySettings}}} {
+	}{{extensionsAvailableSQL, nil}, {extensionsLibrariesSQL, nil}, {extensionsDBRoleSQL, nil},
+		{extensionsSettingsSQL, []any{extensionLibrarySettings}}} {
 		r, err := conn.Query(ctx, q.sql, q.args...)
 		if err != nil {
 			return nil, err

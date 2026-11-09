@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.instance_extensions (
   available        boolean NOT NULL,          -- in pg_available_extensions (its control file is on the server)
   default_version  text,
   comment          text,
-  preloaded_via    text[] NOT NULL DEFAULT '{}',   -- shared / session / local: the preload lists naming it
+  preloaded_via    text[] NOT NULL DEFAULT '{}',   -- shared / session / local / db_role (an ALTER DATABASE or ROLE SET): where it is preloaded
   is_present       boolean NOT NULL DEFAULT true,  -- false once a read no longer lists it (package removed, unloaded)
   PRIMARY KEY (instance_id, name)
 );
@@ -65,7 +65,7 @@ CREATE OR REPLACE FUNCTION pgvigil.import_extensions(p_instance_id int, p_snapsh
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_first  boolean;
-  v_vias   text[];   -- the preload lists this read could see (the login reads them through pg_read_all_settings)
+  v_vias   text[];   -- the preload sources this read could see (shared / session / local need pg_read_all_settings; db_role)
   v_names  text[];   -- every connectable database, when the read listed them
   v_new    jsonb;    -- the server-wide rows of this read
 BEGIN
@@ -74,10 +74,12 @@ BEGIN
          AND NOT EXISTS (SELECT 1 FROM pgvigil.database_extensions WHERE instance_id = p_instance_id);
 
   SELECT coalesce(array_agg(CASE r->>'name' WHEN 'shared_preload_libraries' THEN 'shared'
-                                            WHEN 'session_preload_libraries' THEN 'session' ELSE 'local' END), '{}')
+                                            WHEN 'session_preload_libraries' THEN 'session'
+                                            WHEN 'local_preload_libraries' THEN 'local' ELSE 'db_role' END), '{}')
     INTO v_vias
     FROM jsonb_array_elements(p_payload) r
-   WHERE r->>'kind' = 'setting' AND r->>'name' IN ('shared_preload_libraries', 'session_preload_libraries', 'local_preload_libraries');
+   WHERE r->>'kind' = 'setting'
+     AND r->>'name' IN ('shared_preload_libraries', 'session_preload_libraries', 'local_preload_libraries', 'db_role_preload_libraries');
 
   -- ---- server-wide: available extensions and preloaded libraries ----------------------------------------
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'available') THEN
@@ -146,19 +148,26 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'setting' AND r->>'name' = s.name);
   END IF;
 
-  -- ---- per database: the databases this read completed (a db row) are replaced; the others keep their rows
+  -- ---- per database: the databases this read completed (a db row) are replaced; the others keep their rows.
+  -- History compares by database name, so a database dropped and re-created under its name (a new dbid: a
+  -- refresh, pg_restore -C) reads as the same database; a database seen for the first time (new, or never read
+  -- before: a failed connection, past the cap) writes no history, its extensions were not "installed" just now.
   IF NOT v_first THEN
     INSERT INTO pgvigil.extension_history (instance_id, changed_at, datname, name, change, old_value, new_value)
     SELECT p_instance_id, p_snapshot_at, coalesce(n.datname, o.datname), coalesce(n.name, o.name),
            CASE WHEN o.name IS NULL THEN 'installed' WHEN n.name IS NULL THEN 'removed' ELSE 'updated' END,
            o.version, n.version
-      FROM (SELECT (r->>'dbid')::bigint AS dbid, r->>'datname' AS datname, r->>'name' AS name, r->>'version' AS version
-              FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'installed') n
-      FULL JOIN (SELECT d.* FROM pgvigil.database_extensions d
+      FROM (SELECT r->>'datname' AS datname, r->>'name' AS name, r->>'version' AS version
+              FROM jsonb_array_elements(p_payload) r
+             WHERE r->>'kind' = 'installed'
+               AND EXISTS (SELECT 1 FROM pgvigil.database_extensions x
+                            WHERE x.instance_id = p_instance_id AND x.is_present AND x.datname = r->>'datname')) n
+      FULL JOIN (SELECT d.datname, d.name, max(d.version) AS version FROM pgvigil.database_extensions d
                   WHERE d.instance_id = p_instance_id AND d.is_present
                     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
-                                 WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = d.dbid)) o
-        ON o.dbid = n.dbid AND o.name = n.name
+                                 WHERE r->>'kind' = 'db' AND r->>'datname' = d.datname)
+                  GROUP BY d.datname, d.name) o
+        ON o.datname = n.datname AND o.name = n.name
      WHERE o.version IS DISTINCT FROM n.version;
   END IF;
 
@@ -170,9 +179,12 @@ BEGIN
     schema_name = EXCLUDED.schema_name, is_present = true;
   UPDATE pgvigil.database_extensions d SET is_present = false, snapshot_at = p_snapshot_at
    WHERE d.instance_id = p_instance_id AND d.is_present
-     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = d.dbid)
-     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
-                      WHERE r->>'kind' = 'installed' AND (r->>'dbid')::bigint = d.dbid AND r->>'name' = d.name);
+     AND ((EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = d.dbid)
+           AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
+                            WHERE r->>'kind' = 'installed' AND (r->>'dbid')::bigint = d.dbid AND r->>'name' = d.name))
+          -- the database was re-created under its name: the old dbid's rows go
+          OR (NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = d.dbid)
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND r->>'datname' = d.datname)));
 
   -- a database no longer connectable (dropped, CONNECT revoked, made a template) leaves the list: its rows go
   SELECT ARRAY(SELECT jsonb_array_elements_text(r->'names')) INTO v_names
@@ -246,7 +258,7 @@ SELECT s.instance_id, 'warning', s.name, s.setting, true, 'on', 'all',
 UNION ALL
 SELECT d.instance_id, 'warning', 'pg_hint_plan', d.datname || ': created, not preloaded', true,
        'add pg_hint_plan to shared_preload_libraries (or session_preload_libraries)', 'all',
-       'CREATE EXTENSION pg_hint_plan only makes its hint table; the hints work only where the library is loaded. It is in no preload list, so unless the application LOADs it per session every hint comment is silently ignored',
+       'CREATE EXTENSION pg_hint_plan only makes its hint table; the hints work only where the library is loaded. It is in no preload list (shared_preload_libraries, session_preload_libraries, or an ALTER DATABASE / ALTER ROLE ... SET of one), so unless the application LOADs it per session every hint comment is silently ignored',
        'pgvigil', d.snapshot_at
   FROM d JOIN any_read USING (instance_id)
  WHERE d.name = 'pg_hint_plan'

@@ -26,6 +26,14 @@
 #     collect again: extension_history gains exactly, for the two proof databases,
 #         <tgt1>|amcheck|updated|1.0|1.5, <tgt2>|hstore|removed|1.4|, <tgt2>|pg_trgm|installed||1.6
 #     the hstore row is_present false; the amcheck and hstore warnings are gone; the collection status is ok
+#  [review 1 fold, expected before the rerun:]
+#  B2. tgt2 dropped and re-created under its name with hstore (at the default), a role-and-database setting
+#      ALTER ROLE <app> IN DATABASE <tgt1> SET session_preload_libraries = 'auto_explain', collect again:
+#      - no tgt2 row of the old dbid stays present; tgt2 = hstore <default>, plpgsql 1.0
+#      - history for tgt2 exactly: hstore|installed||<default>, pg_trgm|removed|1.6| (plpgsql, in both, writes none)
+#      - auto_explain gets preloaded_via {db_role}; the setting db_role_preload_libraries names
+#        '<tgt1>/<app>: session_preload_libraries=auto_explain'; server history rows auto_explain|preload||db_role and
+#        db_role_preload_libraries|setting||<that value>
 #  C. import_extensions seeded on scratch instances (the rules the sandbox cannot show):
 #       x: pg_stat_statements not in pg_available_extensions -> exactly pg_stat_statements|warning|not available
 #       y: shared list 'auto_explain,pg_hint_plan', pg_stat_statements available, auto_explain.log_min_duration 0 ms,
@@ -38,6 +46,12 @@
 #     and on z a second import (no shared_preload_libraries setting row = the list unreadable; no db row for app2,
 #     a collector_error instead; a databases list without 'gone') -> pg_stat_statements keeps preloaded_via {shared}
 #     and no 'preload' history row; app2's rows stay present; gone's rows go is_present false
+#     [review 1 fold] and on y a second import (pg_stat_statements' default 1.10 -> 1.11, pg_hint_plan no longer
+#     in pg_available_extensions but still in the shared list, hstore newly available, auto_explain out of the list,
+#     enable_hint on) -> server history exactly: auto_explain|preload|shared|, hstore|available||1.8,
+#     pg_hint_plan|unavailable|1.6.0|, pg_stat_statements|default version|1.10|1.11, and the settings
+#     auto_explain.log_min_duration|setting|0|, pg_hint_plan.enable_hint|setting|off|on,
+#     shared_preload_libraries|setting|auto_explain,pg_hint_plan|pg_hint_plan
 #  D. ext_version_lt: 1.9 < 1.10, 1.4 < 1.4.1, not 1.10 < 1.9, NULL on 'unpackaged'.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -45,12 +59,14 @@ BIN=${PGVIGIL_BIN:-bin/pgvigil}
 ADMIN_DSN=${ADMIN_DSN:-$PGVIGIL_REPO_DSN}
 SUF=$RANDOM
 REPO_DB=pgvigil_extproof_$SUF; T1=pgvigil_ext1_$SUF; T2=pgvigil_ext2_$SUF; MON=pgvigil_extmon_$SUF; MONPW=p$RANDOM$RANDOM
+APP=pgvigil_extapp_$SUF
 dsn_for() { echo "$ADMIN_DSN dbname=$1"; }   # a later keyword wins, in libpq and in pgx
 CFG=$(mktemp)
 cleanup() {
   rm -f "$CFG"
   for d in "$REPO_DB" "$T1" "$T2"; do psql "$ADMIN_DSN" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1 || true; done
   psql "$ADMIN_DSN" -XAtq -c "drop role if exists $MON" >/dev/null 2>&1 || true
+  psql "$ADMIN_DSN" -XAtq -c "drop role if exists $APP" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -122,6 +138,36 @@ echo "history:"; echo "$hist"
 [[ $(q "select is_present from pgvigil.database_extensions where instance_id=$iid and datname='$T2' and name='hstore'") == f ]] || fail "hstore still present"
 [[ $(q "select count(*) from pgvigil.extension_findings where instance_id=$iid and severity='warning' $mine") == 0 ]] || fail "warnings after the update: $(fnd "$iid" "$mine")"
 
+echo "--- B2. a re-created database and a role-and-database preload"
+OLD2=$(q "select distinct dbid from pgvigil.database_extensions where instance_id=$iid and datname='$T2'")
+HDEF=$(t1 "select default_version from pg_available_extensions where name = 'hstore'")
+psql "$ADMIN_DSN" -XAtq -v ON_ERROR_STOP=1 -c "drop database $T2 with (force)" -c "create database $T2" -c "create role $APP nologin" \
+  -c "alter role $APP in database $T1 set session_preload_libraries = 'auto_explain'" >/dev/null
+t2 "create extension hstore"
+sleep 1.1
+"$BIN" collect -config "$CFG" -once extensions || fail "collect extensions (run 3)"
+[[ $(q "select count(*) from pgvigil.database_extensions where instance_id=$iid and dbid=$OLD2 and is_present") == 0 ]] || fail "old $T2 rows still present"
+[[ $(dbx "$T2") == "hstore $HDEF,plpgsql 1.0" ]] || fail "re-created tgt2 rows: $(dbx "$T2")"
+S3=$(q "select max(changed_at) from pgvigil.extension_history where instance_id=$iid")
+h3() { q "select string_agg(coalesce(datname, '') || '|' || name || '|' || change || '|' || coalesce(old_value, '') || '|' || coalesce(new_value, ''), E'\n' order by datname nulls first, name, change)
+            from pgvigil.extension_history where instance_id=$iid and changed_at='$S3' $1"; }
+want=$(printf '%s\n' "$T2|hstore|installed||$HDEF" "$T2|pg_trgm|removed|$TRGM|")
+[[ "$(h3 "and datname='$T2'")" == "$want" ]] || fail "re-created tgt2 history: got
+$(h3 "and datname='$T2'")
+want
+$want"
+[[ $(q "select preloaded_via from pgvigil.instance_extensions where instance_id=$iid and name='auto_explain'") == "{db_role}" ]] \
+  || fail "auto_explain preloaded_via: $(q "select preloaded_via from pgvigil.instance_extensions where instance_id=$iid and name='auto_explain'")"
+DRV="$T1/$APP: session_preload_libraries=auto_explain"
+[[ $(q "select setting from pgvigil.instance_extension_settings where instance_id=$iid and name='db_role_preload_libraries'") == "$DRV" ]] \
+  || fail "db_role_preload_libraries: $(q "select setting from pgvigil.instance_extension_settings where instance_id=$iid and name='db_role_preload_libraries'")"
+want=$(printf '%s\n' "|auto_explain|preload||db_role" "|db_role_preload_libraries|setting||$DRV")
+[[ "$(h3 "and datname is null")" == "$want" ]] || fail "server history run 3: got
+$(h3 "and datname is null")
+want
+$want"
+echo "re-created $T2 and the role preload:"; h3 ""
+
 echo "--- C. seeded rules"
 seed() { q "select pgvigil.ensure_instance('proof-ext-$1-$SUF', 'onprem', '16.4', 160004, false, '{}')"; }
 imp() { q "select pgvigil.import_extensions($1, now() + make_interval(secs => $2), '$3'::jsonb)" >/dev/null; }
@@ -183,6 +229,25 @@ imp "$iz" 60 '[{"kind":"available","name":"pg_stat_statements","default_version"
 [[ $(q "select is_present from pgvigil.database_extensions where instance_id=$iz and datname='app2'") == t ]] || fail "app2 rows dropped on a failed read"
 [[ $(q "select is_present from pgvigil.database_extensions where instance_id=$iz and datname='gone'") == f ]] || fail "gone rows still present"
 echo "z second import: preload kept, app2 kept, gone removed"
+
+# y again: the server-wide history kinds
+imp "$iy" 60 '[{"kind":"available","name":"pg_stat_statements","default_version":"1.11"},
+               {"kind":"available","name":"hstore","default_version":"1.8"},
+               {"kind":"library","name":"pg_hint_plan","via":"shared","position":1},
+               {"kind":"setting","name":"shared_preload_libraries","setting":"pg_hint_plan"},
+               {"kind":"setting","name":"pg_hint_plan.enable_hint","setting":"on"},
+               {"kind":"databases","names":["app"]},{"kind":"db","dbid":1,"datname":"app"},
+               {"kind":"installed","dbid":1,"datname":"app","name":"pg_hint_plan","version":"1.6.0"}]'
+hy=$(q "select string_agg(name || '|' || change || '|' || coalesce(old_value, '') || '|' || coalesce(new_value, ''), E'\n' order by name, change)
+          from pgvigil.extension_history where instance_id=$iy and datname is null")
+want=$(printf '%s\n' "auto_explain|preload|shared|" "auto_explain.log_min_duration|setting|0|" "hstore|available||1.8" \
+                     "pg_hint_plan|unavailable|1.6.0|" "pg_hint_plan.enable_hint|setting|off|on" \
+                     "pg_stat_statements|default version|1.10|1.11" "shared_preload_libraries|setting|auto_explain,pg_hint_plan|pg_hint_plan")
+[[ "$hy" == "$want" ]] || fail "y server history: got
+$hy
+want
+$want"
+echo "y server history:"; echo "$hy"
 
 echo "--- D. ext_version_lt"
 [[ $(q "select pgvigil.ext_version_lt('1.9','1.10'), pgvigil.ext_version_lt('1.4','1.4.1'), pgvigil.ext_version_lt('1.10','1.9'), pgvigil.ext_version_lt('unpackaged','1.0') is null") == "t|t|f|t" ]] \
