@@ -23,9 +23,18 @@
 #  C. pg_rotate_logfile(), then select pg_sleep(0.25) /* <tag>-c */ in the new file: collect adds exactly that one row,
 #     from the new file's name; the cursor moves forward.
 #  D. the EXECUTE grant revoked: collect ends 'skipped' with the same reason; the stored rows stay.
-#  E. the views on the collected rows (instance P): slow_top(P, seed - 1 min, now, 0, 'count') lists the -a shape
-#     first with statements 3 (the three literals are one shape), slow_top(..., 'total') lists the -b shape first;
-#     slow_top(P, ..., 1000, ...) has only the -b shape; slow_events has 5 rows for P, reader 'server log'.
+#  [review 1 fold, expected before the rerun]
+#  D2. the narrow door: as the cluster superuser create public.pgvigil_read_log (collect/serverlog.go's text), the wide
+#     grant still revoked; select pg_sleep(0.25) /* <tag>-d */; collect: status ok, exactly one new row (-d). As the
+#     login the door returns NULL for '../pg_hba.conf' and 'pg_hba.conf' (names pg_ls_logdir does not list). The door
+#     dropped, a SECURITY DEFINER function of the same name and types owned by the login itself (a schema of its own)
+#     is not taken: collect ends 'skipped' with the reason again.
+#  D3. an absolute log_directory outside the data directory ('<tmp>/abslog'), the wide grant given again (no door):
+#     select pg_sleep(0.25) /* <tag>-e */ written there; collect: one row from source 'serverlog:<tmp>/abslog:...'.
+#  E. the views on the collected rows (instance P): slow_top(P, seed - 1 min, now, 0) at rank_count 1 is the -a shape
+#     with statements 3 (the three literals are one shape), at rank_total 1 the -b shape; with p_min_ms 1000 one row
+#     (-b); slow_events has 7 rows for P, reader 'server log', each with a shape_key; slow_totals(P, ...) = 7
+#     statements, 5 shapes, 1 instance.
 #  F. a seeded window on a scratch instance S (import_logs as the owner, times in UTC, 3 days before today 00:00 UTC):
 #       day 1: 500 ms and 2,000 ms of "SELECT * FROM t WHERE id = 1" / "... id = 2" (one shape)
 #       day 2: 15,000 ms of "UPDATE t SET v = 'x' WHERE id = 7", 70,000 ms and 70,000 ms of "SELECT pg_sleep(70)"
@@ -33,13 +42,18 @@
 #     slow_histogram(S, day1, day3, 0, 'UTC') = day1 2 statements (under_1s 1, s1_to_10 1, total 2,500, max 2,000),
 #     day2 3 statements (s10_to_60 1, over_60s 2, total 155,000, max 70,000); with p_min_ms 1000: day1 1, day2 3;
 #     with p_tz 'Not/AZone': the UTC days again.
-#     slow_top(S, ..., 0, 'count'): first the SELECT * shape (2, total 2,500, mean 1,250, queryid 4242), then
+#     slow_top(S, ...) by rank_count (the 'count' order until review 1; one call returns both ranks since): first the SELECT * shape (2, total 2,500, mean 1,250, queryid 4242), then
 #     pg_sleep (2, 140,000); 'total': pg_sleep first (140,000), the UPDATE (15,000) second, SELECT * third;
 #     [first run 2026-11-09: the count list came pg_sleep, SELECT *, UPDATE - the expectation missed that the two
 #      shapes tie at 2, and slow_top breaks a tie by total time (its ORDER BY); graded against that order since]
-#     slow_top(NULL, ...) (the fleet) includes the rows of S and of P.
-#  G. rights: pgvigil_collector may run import_serverlog; pgvigil_reader may run slow_top and slow_histogram and read
-#     slow_events and slow_sources; slow_sources lists P's serverlog reader 'skipped' with its reason.
+#     slow_top(NULL, ...) (the fleet) includes the rows of S and of P; slow_top(S, ..., 1) returns 2 rows (the first
+#     of each rank); [first run of the fold: 1 row - on S the first by count (the tie broken by total time) and the
+#     first by total time are the same pg_sleep shape; graded as 1 since, with that shape]; the statement_text row's shape_key equals the SELECT * events' shape_key; slow_totals(S, ...) =
+#     5 statements, 3 shapes, total 157,500, max 70,000.
+#  G. rights: pgvigil_collector may run import_serverlog; pgvigil_reader may run slow_top, slow_totals and slow_histogram
+#     and read slow_events and slow_sources; slow_sources lists P's serverlog reader 'ok' (its last run, D3).
+#  K. a measurement, not graded: import_logs of 20,000 slow events into a scratch instance with the shape_key trigger
+#     on, and of another 20,000 with it disabled (the time of each printed).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -147,13 +161,53 @@ collect
 [[ $(q "select count(*) from pgvigil.log_events where instance_id=$P") == $((N1 + 1)) ]] || fail "D: stored rows changed"
 echo "D ok"
 
+echo "--- D2. the narrow door"
+DOOR=$(awk '/^const serverlogDoorSQL = `/{f=1; sub(/^const serverlogDoorSQL = `/, "")} f{ if (/`$/) { sub(/`$/, ""); print; exit } print }' internal/collect/serverlog.go)
+[[ "$DOOR" == *"pgvigil_read_log"* ]] || fail "D2: the door's text was not found in serverlog.go"
+printf '%s\n' "${DOOR//<login>/$MON}" | psql "$SU" -XAtq -v ON_ERROR_STOP=1 >/dev/null
+psql "$SU" -XAtq -v ON_ERROR_STOP=1 >/dev/null -c "set log_min_duration_statement = 100" -c "select pg_sleep(0.25) /* $TAG-d */"
+sleep 0.5
+collect
+[[ $(st) == "ok|" ]] || fail "D2 status with the door: $(st)"
+[[ $(q "select count(*) from pgvigil.log_events where instance_id=$P") == $((N1 + 2)) ]] || fail "D2: want exactly one new row"
+[[ $(c "statement like '%$TAG-d%'") == 1 ]] || fail "D2: the -d row"
+for nm in ../pg_hba.conf pg_hba.conf; do
+  [[ $(psql "$MON_DSN" -XAt -c "select public.pgvigil_read_log('$nm', 0, 100) is null") == t ]] || fail "D2: the door served $nm"
+done
+su "drop function public.pgvigil_read_log(text, bigint, bigint)"
+su "create schema imp_$SUF authorization $MON"
+psql "$MON_DSN" -XAtq -v ON_ERROR_STOP=1 -c "create function imp_$SUF.pgvigil_read_log(p_name text, p_offset bigint, p_length bigint) returns bytea
+  language sql security definer as 'select null::bytea'"
+collect
+[[ $(st) == "skipped|"*"$GRANT_TXT"* ]] || fail "D2: the login's own function was taken: $(st)"
+su "drop schema imp_$SUF cascade"
+echo "D2 ok"
+
+echo "--- D3. an absolute log_directory outside the data directory"
+su "grant execute on function pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) to $MON"
+mkdir -p "$DIR/abslog"
+su "alter system set log_directory = '$DIR/abslog'"
+su "select pg_reload_conf()" >/dev/null
+for _ in $(seq 1 50); do [[ $(su "select count(*) from pg_ls_logdir()") -ge 1 ]] && break; sleep 0.1; done
+sleep 1.1
+psql "$SU" -XAtq -v ON_ERROR_STOP=1 >/dev/null -c "set log_min_duration_statement = 100" -c "select pg_sleep(0.25) /* $TAG-e */"
+sleep 0.5
+collect
+[[ $(st) == "ok|" ]] || fail "D3 status: $(st)"
+[[ $(c "statement like '%$TAG-e%' and source like 'serverlog:$DIR/abslog:postgresql-%.log'") == 1 ]] \
+  || fail "D3: the -e row: $(q "select string_agg(source, '; ') from pgvigil.log_events where instance_id=$P and statement like '%$TAG-e%'")"
+su "alter system reset log_directory"
+su "select pg_reload_conf()" >/dev/null
+echo "D3 ok"
+
 echo "--- E. the views on the collected rows"
 W="'$SEED'::timestamptz - interval '1 minute', now()"
-top1() { q "select statements || '|' || (example like '%$TAG-$1%') from pgvigil.slow_top($P, $W, $2, '$3') limit 1"; }
-[[ $(top1 a 0 count) == "3|true" ]] || fail "E top by count: $(q "select statements, example from pgvigil.slow_top($P, $W, 0, 'count')")"
-[[ $(top1 b 0 total) == "1|true" ]] || fail "E top by total"
-[[ $(q "select count(*) || '|' || bool_and(example like '%$TAG-b%') from pgvigil.slow_top($P, $W, 1000, 'count')") == "1|true" ]] || fail "E threshold 1000"
-[[ $(q "select count(*) || '|' || min(reader) from pgvigil.slow_events where instance_id=$P") == "5|server log" ]] || fail "E slow_events"
+top1() { q "select statements || '|' || (example like '%$TAG-$1%') from pgvigil.slow_top($P, $W, $2) where $3 = 1"; }
+[[ $(top1 a 0 rank_count) == "3|true" ]] || fail "E top by count: $(q "select rank_count, statements, example from pgvigil.slow_top($P, $W, 0)")"
+[[ $(top1 b 0 rank_total) == "1|true" ]] || fail "E top by total"
+[[ $(q "select count(*) || '|' || bool_and(example like '%$TAG-b%') from pgvigil.slow_top($P, $W, 1000)") == "1|true" ]] || fail "E threshold 1000"
+[[ $(q "select count(*) || '|' || min(reader) || '|' || count(shape_key) from pgvigil.slow_events where instance_id=$P") == "7|server log|7" ]] || fail "E slow_events"
+[[ $(q "select concat_ws(',', statements, shapes, instances) from pgvigil.slow_totals($P, $W, 0)") == "7,5,1" ]] || fail "E totals: $(q "select row(t.*) from pgvigil.slow_totals($P, $W, 0) t")"
 echo "E ok"
 
 echo "--- F. a seeded window"
@@ -173,21 +227,45 @@ H=$(q "select string_agg(concat_ws(',', day - '$D0'::date, statements), ' ' orde
 [[ "$H" == "0,1 1,3" ]] || fail "F histogram min 1000: $H"
 H=$(q "select string_agg(concat_ws(',', day - '$D0'::date, statements), ' ' order by day) from pgvigil.slow_histogram($S, $SW, 0, 'Not/AZone')")
 [[ "$H" == "0,2 1,3" ]] || fail "F histogram unknown tz: $H"
-T=$(q "select string_agg(concat_ws(',', left(example, 13), statements, total_ms, mean_ms, queryid), ' | ') from pgvigil.slow_top($S, $SW, 0, 'count')")
+T=$(q "select string_agg(concat_ws(',', left(example, 13), statements, total_ms, mean_ms, queryid), ' | ' order by rank_count) from pgvigil.slow_top($S, $SW, 0)")
 [[ "$T" == "SELECT pg_sle,2,140000,70000 | SELECT * FROM,2,2500,1250,4242 | UPDATE t SET ,1,15000,15000" ]] || fail "F top by count: $T"
-T=$(q "select string_agg(left(example, 6), ',') from pgvigil.slow_top($S, $SW, 0, 'total')")
-[[ "$T" == "SELECT,UPDATE,SELECT" ]] || fail "F top by total: $T"
-[[ $(q "select string_agg(left(example, 13), ',') from pgvigil.slow_top($S, $SW, 0, 'total')") == "SELECT pg_sle,UPDATE t SET ,SELECT * FROM" ]] || fail "F top by total order"
-[[ $(q "select count(distinct instance_id) from pgvigil.slow_top(NULL, ('$D0'::timestamp at time zone 'UTC'), now(), 0, 'count', 500) where instance_id in ($S, $P)") == 2 ]] \
+[[ $(q "select string_agg(left(example, 13), ',' order by rank_total) from pgvigil.slow_top($S, $SW, 0)") == "SELECT pg_sle,UPDATE t SET ,SELECT * FROM" ]] || fail "F top by total order"
+[[ $(q "select count(*) || '|' || min(left(example, 13)) from pgvigil.slow_top($S, $SW, 0, 1)") == "1|SELECT pg_sle" ]] || fail "F limit 1: the first of each rank"
+[[ $(q "select (select shape_key from pgvigil.statement_text where instance_id=$S and queryid=4242) = all (array(select shape_key from pgvigil.log_events where instance_id=$S and statement like 'SELECT * FROM t%'))") == t ]] || fail "F shape keys"
+[[ $(q "select concat_ws(',', statements, shapes, total_ms, max_ms) from pgvigil.slow_totals($S, $SW, 0)") == "5,3,157500,70000" ]] || fail "F totals: $(q "select row(t.*) from pgvigil.slow_totals($S, $SW, 0) t")"
+[[ $(q "select count(distinct instance_id) from pgvigil.slow_top(NULL, ('$D0'::timestamp at time zone 'UTC'), now(), 0, 500) where instance_id in ($S, $P)") == 2 ]] \
   || fail "F: the fleet read misses an instance"
 echo "F ok"
 
 echo "--- G. rights and the sources view"
 [[ $(q "select has_function_privilege('pgvigil_collector', 'pgvigil.import_serverlog(int, timestamptz, jsonb)', 'EXECUTE')") == t ]] || fail "G collector"
-[[ $(q "select has_function_privilege('pgvigil_reader', 'pgvigil.slow_top(int, timestamptz, timestamptz, float8, text, int)', 'EXECUTE')
+[[ $(q "select has_function_privilege('pgvigil_reader', 'pgvigil.slow_top(int, timestamptz, timestamptz, float8, int)', 'EXECUTE')
+          and has_function_privilege('pgvigil_reader', 'pgvigil.slow_totals(int, timestamptz, timestamptz, float8)', 'EXECUTE')
           and has_function_privilege('pgvigil_reader', 'pgvigil.slow_histogram(int, timestamptz, timestamptz, float8, text)', 'EXECUTE')
           and has_table_privilege('pgvigil_reader', 'pgvigil.slow_events', 'SELECT') and has_table_privilege('pgvigil_reader', 'pgvigil.slow_sources', 'SELECT')") == t ]] || fail "G reader"
-[[ $(q "select reader || '|' || status || '|' || (note like '%$GRANT_TXT%') from pgvigil.slow_sources where instance_id=$P") == "serverlog|skipped|true" ]] \
+[[ $(q "select reader || '|' || status from pgvigil.slow_sources where instance_id=$P") == "serverlog|ok" ]] \
   || fail "G sources: $(q "select row(s.*) from pgvigil.slow_sources s where instance_id=$P")"
 echo "G ok"
+
+echo "--- K. import_logs with and without the shape_key trigger (measured, not graded)"
+q "insert into pgvigil.instances (name, platform) values ('proof-slow-cost-$SUF', 'onprem')" >/dev/null
+K=$(q "select instance_id from pgvigil.instances where name='proof-slow-cost-$SUF'")
+cost() {
+  psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -c "
+create temp table kp as
+select jsonb_agg(jsonb_build_object('kind', 'event', 'kind_of', 'slow', 'at', now() - g * interval '1 second', 'pid', g,
+         'duration_ms', 1000 + g, 'source', 'seed', 'event_key', '$1' || g,
+         'statement', 'SELECT * FROM orders o JOIN lines l ON l.order_id = o.id WHERE o.customer = ' || g || ' AND o.note = ' || quote_literal('x' || g))) AS p
+  from generate_series(1, 20000) g;" -c "
+do \$\$ declare t0 timestamptz := clock_timestamp(); begin
+  perform pgvigil.import_logs($K, now(), (select p from kp));
+  raise notice 'ms %', round(extract(epoch from clock_timestamp() - t0) * 1000);
+end \$\$;" 2>&1 | sed -n 's/.*NOTICE:  ms //p'
+}
+ON=$(cost on)
+q "alter table pgvigil.log_events disable trigger log_events_shape" >/dev/null
+OFF=$(cost off)
+q "alter table pgvigil.log_events enable trigger log_events_shape" >/dev/null
+[[ -n "$ON" && -n "$OFF" ]] || fail "K: no timing"
+echo "K: 20,000 slow events through import_logs: trigger on $ON ms, trigger off $OFF ms"
 echo "PASS proof-slow"

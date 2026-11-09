@@ -33,7 +33,16 @@ const sqlSlowHistogram = `
 SELECT day::text AS day, statements, under_1s, s1_to_10, s10_to_60, over_60s, total_ms, max_ms
   FROM pgvigil.slow_histogram($1, $2, $3, $4, $5)`
 
-const sqlSlowTop = `SELECT * FROM pgvigil.slow_top($1, $2, $3, $4, $5, $6)`
+// sqlSlowTop serves both top lists in one call: the page sorts by rank_count or rank_total.
+const sqlSlowTop = `SELECT * FROM pgvigil.slow_top($1, $2, $3, $4, $5)`
+
+const sqlSlowTotals = `SELECT * FROM pgvigil.slow_totals($1, $2, $3, $4)`
+
+// sqlSlowMeta: the threshold, the histogram's start and the zone its days are in (UTC when the server does not
+// know the name the page sent).
+const sqlSlowMeta = `
+SELECT $1::int AS min_ms, $2::timestamptz AS histogram_from,
+       coalesce((SELECT name FROM pg_timezone_names WHERE name = $3::text), 'UTC') AS tz`
 
 // sqlSlowRecent is the window's slow statements of one instance, newest first.
 const sqlSlowRecent = `
@@ -93,11 +102,11 @@ func (s *Server) SlowQueries(w http.ResponseWriter, r *http.Request) {
 	}
 	ms := float64(minMS)
 	parts := []part{
-		{"meta", `SELECT $1::int AS min_ms, $2::timestamptz AS histogram_from, $3::text AS tz`, []any{minMS, histFrom, tz}},
+		{"meta", sqlSlowMeta, []any{minMS, histFrom, tz}},
 		{"sources", sqlSlowSources, []any{inst}},
+		{"totals", sqlSlowTotals, []any{inst, from, to, ms}},
 		{"histogram", sqlSlowHistogram, []any{inst, histFrom, to, ms, tz}},
-		{"top_count", sqlSlowTop, []any{inst, from, to, ms, "count", limit}},
-		{"top_total", sqlSlowTop, []any{inst, from, to, ms, "total", limit}},
+		{"top", sqlSlowTop, []any{inst, from, to, ms, limit}},
 	}
 	if fleet {
 		parts = append(parts, part{"instances", sqlSlowByInstance, []any{from, to, ms}})

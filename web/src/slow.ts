@@ -11,7 +11,11 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
 
-type Parts = 'meta' | 'sources' | 'histogram' | 'top_count' | 'top_total' | 'recent' | 'sampled' | 'instances';
+type Parts = 'meta' | 'sources' | 'totals' | 'histogram' | 'top' | 'recent' | 'sampled' | 'instances';
+
+// byRank: one top list from the reply's rows (each carries its rank by count and by total time).
+const byRank = (rows: Row[], key: 'rank_count' | 'rank_total', limit = 50) =>
+  rows.filter(r => Number(r[key]) <= limit).sort((a, b) => Number(a[key]) - Number(b[key]));
 
 // the picker's choices in milliseconds; 0 = everything the log holds
 export const thresholds: [number, string][] = [
@@ -120,24 +124,23 @@ function floorNote(src: Row[], ms: number): string {
 export async function slowView(ctx: Ctx): Promise<HTMLElement> {
   const ms = thresholdOf(), tz = tzOf();
   const d = await get<Record<Parts, Table | null>>('slowqueries', { instance: ctx.instance, ...window_(ctx), min: ms, tz });
-  const src = rowsOf(d.sources), hist = rowsOf(d.histogram), byCount = rowsOf(d.top_count), byTotal = rowsOf(d.top_total);
+  const src = rowsOf(d.sources), hist = rowsOf(d.histogram), top = rowsOf(d.top);
+  const byCount = byRank(top, 'rank_count'), byTotal = byRank(top, 'rank_total');
   const recent = rowsOf(d.recent), sampled = rowsOf(d.sampled);
-  const meta = rowsOf(d.meta)[0] ?? {};
-  const n = byCount.reduce((a, r) => a + Number(r.statements ?? 0), 0);
-  const total = byCount.reduce((a, r) => a + Number(r.total_ms ?? 0), 0);
-  const longest = byCount.reduce((a, r) => Math.max(a, Number(r.max_ms ?? 0)), 0);
+  const meta = rowsOf(d.meta)[0] ?? {}, tot = rowsOf(d.totals)[0] ?? {};
+  const n = Number(tot.statements ?? 0);
   const fed = src.filter(s => s.reader != null);
   const sec = el('section', {}, el('h2', {}, `Slow queries (${rangeLabel(ctx)})`), picker(ctx, ms, ctx.tab));
   sec.append(el('div', { class: 'tiles' },
     tile('slow statements', fmtNum(n), n ? 'warn' : ''),
-    tile('shapes', fmtNum(byCount.length)),
-    tile('total time', msTxt(total) || '0 ms'),
-    tile('longest', msTxt(longest) || '-'),
+    tile('shapes', fmtNum(tot.shapes ?? 0)),
+    tile('total time', msTxt(tot.total_ms) || '0 ms'),
+    tile('longest', msTxt(tot.max_ms) || '-'),
     tile('long runs sampled', fmtNum(sampled.length))));
   sec.append(el('p', { class: 'meta' }, floorNote(src, ms)));
   sec.append(el('h3', {}, 'Log readers'), fed.length ? grid(fed, sourceCols(false))
     : el('p', { class: 'empty' }, 'No log reader has run on this instance: RDS and Aurora need an aws: block (the logs collection); '
-      + 'on-prem the serverlog collection needs logging_collector on and the read grant (its last run names what is missing).'));
+      + 'on-prem the serverlog collection needs logging_collector on and a read door (its last run names what is missing).'));
   sec.append(el('h3', {}, `Per day since ${fmtTime(meta.histogram_from)}`), histogram(hist, String(meta.tz ?? tz)));
   sec.append(el('h3', {}, 'Top by count'), grid(byCount, topCols(ctx, 'count', false), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Top by total time'), grid(byTotal, topCols(ctx, 'total', false), 'No slow statement in this window.'));
@@ -154,7 +157,10 @@ export async function slowFleetView(ctx: Ctx, keep?: (r: Row) => boolean, instLi
   const ms = thresholdOf(), tz = tzOf();
   const d = await get<Record<Parts, Table | null>>('slowqueries', { ...window_(ctx), min: ms, tz, limit: keep ? 500 : 50 });
   const k = (rows: Row[]) => keep ? rows.filter(keep) : rows;
-  const insts = k(rowsOf(d.instances)), byCount = k(rowsOf(d.top_count)).slice(0, 50), byTotal = k(rowsOf(d.top_total)).slice(0, 50);
+  // under a tag folder the fleet's ranks are re-counted over the folder's rows
+  const rerank = (rows: Row[], key: 'rank_count' | 'rank_total') => [...rows].sort((a, b) => Number(a[key]) - Number(b[key])).slice(0, 50);
+  const top = k(rowsOf(d.top));
+  const insts = k(rowsOf(d.instances)), byCount = rerank(top, 'rank_count'), byTotal = rerank(top, 'rank_total');
   const src = k(rowsOf(d.sources)), meta = rowsOf(d.meta)[0] ?? {};
   const n = insts.reduce((a, r) => a + Number(r.statements ?? 0), 0);
   const skipped = src.filter(s => s.status === 'skipped' || s.status === 'error').length;
@@ -175,8 +181,13 @@ export async function slowFleetView(ctx: Ctx, keep?: (r: Row) => boolean, instLi
   sec.append(el('h3', {}, `Per day since ${fmtTime(meta.histogram_from)}${keep ? ' (the whole fleet)' : ''}`), histogram(rowsOf(d.histogram), String(meta.tz ?? tz)));
   sec.append(el('h3', {}, 'Top by count'), grid(byCount, topCols(ctx, 'count', true, instLink), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Top by total time'), grid(byTotal, topCols(ctx, 'total', true, instLink), 'No slow statement in this window.'));
-  sec.append(el('h3', {}, 'Log readers'), props([['what feeds this', 'RDS and Aurora: the logs collection (CloudWatch Logs, an aws: block). '
-    + 'On-prem: the serverlog collection (logging_collector on, GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) to the monitoring login).']]),
+  sec.append(el('h3', {}, 'Log readers'), props([
+    ['RDS and Aurora', 'the logs collection: the postgresql log in CloudWatch Logs (an aws: block in the config)'],
+    ['on-prem', 'the serverlog collection: logging_collector on, and a read door for the monitoring login'],
+    ['the read door', 'recommended: the function pgvigil_read_log (SECURITY DEFINER, owned by a superuser), which serves only the files pg_ls_logdir() lists; '
+      + 'the wide fallback: GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean), which also opens every file under '
+      + 'the data directory (pg_hba.conf, server.key, the password hashes of pg_authid). pg_read_server_files alone opens neither.'],
+  ]),
   grid(src, sourceCols(true, instLink), 'No instance.'));
   return sec;
 }
