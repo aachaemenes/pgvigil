@@ -52,9 +52,25 @@ func Open(ctx context.Context, dsn string) (*Repo, error) {
 // Close releases the pool.
 func (r *Repo) Close() { r.pool.Close() }
 
+// migrateLockKey is the advisory lock that serialises concurrent migrates
+// (a collector restarted by systemd while an operator runs `pgvigil migrate`).
+const migrateLockKey int64 = 7265471133001
+
 // Migrate applies pending migration files in name order; returns how many ran.
+// The whole run holds a session advisory lock on one dedicated connection, so a
+// second migrate waits and then finds nothing to do.
 func (r *Repo) Migrate(ctx context.Context) (int, error) {
-	if _, err := r.pool.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS pgvigil;
+	c, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("migrate: %w", err)
+	}
+	defer c.Release()
+	if _, err := c.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockKey); err != nil {
+		return 0, fmt.Errorf("migrate lock: %w", err)
+	}
+	defer func() { _, _ = c.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockKey) }()
+
+	if _, err := c.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS pgvigil;
 CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
   version    text PRIMARY KEY,
   applied_at timestamptz NOT NULL DEFAULT now()
@@ -75,7 +91,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 	applied := 0
 	for _, n := range names {
 		var exists bool
-		if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pgvigil.schema_version WHERE version = $1)`, n).Scan(&exists); err != nil {
+		if err := c.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pgvigil.schema_version WHERE version = $1)`, n).Scan(&exists); err != nil {
 			return applied, err
 		}
 		if exists {
@@ -85,7 +101,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 		if err != nil {
 			return applied, err
 		}
-		tx, err := r.pool.Begin(ctx)
+		tx, err := c.Begin(ctx)
 		if err != nil {
 			return applied, err
 		}

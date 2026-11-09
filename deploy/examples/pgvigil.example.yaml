@@ -18,4 +18,5 @@ instances:
   - name: prod-reader
     dsn: env:PROD_READER_DSN
     tags: [prod, aurora, reader]
-    disabled: [jobs]                   # a reader cannot run pg_cron
+    # disabled: [<collection>]         # collections this instance never runs; names are
+    #                                  # checked against `pgvigil collect` 's known list at start

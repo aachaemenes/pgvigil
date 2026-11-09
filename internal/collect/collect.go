@@ -117,7 +117,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	if err != nil {
 		return Result{Err: err, Duration: time.Since(start)}
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	info, err := platform.Detect(ctx, conn, in.Platform)
 	if err != nil {

@@ -25,33 +25,38 @@ import (
 // version is set by the build (-ldflags "-X main.version=...").
 var version = "dev"
 
-func main() {
-	if len(os.Args) < 2 {
+func main() { os.Exit(run(os.Args[1:])) }
+
+// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error.
+// Deferred cleanup (the signal context) runs before os.Exit this way.
+func run(args []string) int {
+	if len(args) < 1 {
 		usage()
-		os.Exit(2)
+		return 2
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "version":
 		fmt.Println("pgvigil", version)
 	case "migrate":
-		err = runMigrate(ctx, log, os.Args[2:])
+		err = runMigrate(ctx, log, args[1:])
 	case "collect":
-		err = runCollect(ctx, log, os.Args[2:])
+		err = runCollect(ctx, log, args[1:])
 	case "run":
-		err = runScheduler(ctx, log, os.Args[2:])
+		err = runScheduler(ctx, log, args[1:])
 	default:
 		usage()
-		os.Exit(2)
+		return 2
 	}
 	if err != nil {
 		log.Error("pgvigil failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func usage() {
@@ -69,6 +74,9 @@ func loadConfig(args []string) (*config.Config, *flag.FlagSet, error) {
 	cfg, err := config.Load(*path)
 	if err != nil {
 		return nil, nil, err
+	}
+	if err := checkCollectionNames(cfg); err != nil {
+		return nil, nil, fmt.Errorf("config %s: %w", *path, err)
 	}
 	cfg.Flags.Once = *once
 	cfg.Flags.Instance = *inst
@@ -104,17 +112,23 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 	if _, ok := collect.Get(cfg.Flags.Once); !ok {
 		return fmt.Errorf("unknown collection %q; known: %v", cfg.Flags.Once, collect.Names())
 	}
+	// everything that can be wrong in the arguments fails here, before any connection
+	var targets []config.Instance
+	for _, in := range cfg.Instances {
+		if cfg.Flags.Instance == "" || in.Name == cfg.Flags.Instance {
+			targets = append(targets, in)
+		}
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no configured instance named %q", cfg.Flags.Instance)
+	}
 	r, err := repo.Open(ctx, cfg.Repository.DSN())
 	if err != nil {
 		return err
 	}
 	defer r.Close()
-	failed, matched := 0, 0
-	for _, in := range cfg.Instances {
-		if cfg.Flags.Instance != "" && in.Name != cfg.Flags.Instance {
-			continue
-		}
-		matched++
+	failed := 0
+	for _, in := range targets {
 		res := collect.RunOnce(ctx, log, r, in, cfg.Flags.Once)
 		if res.Err != nil {
 			failed++
@@ -123,11 +137,35 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 		fmt.Printf("%s %s: %d row(s) in %s%s\n", in.Name, cfg.Flags.Once, res.Rows, res.Duration, res.Note)
 	}
-	if matched == 0 {
-		return fmt.Errorf("no configured instance named %q", cfg.Flags.Instance)
-	}
 	if failed > 0 {
-		return fmt.Errorf("%d of %d instance(s) failed", failed, matched)
+		return fmt.Errorf("%d of %d instance(s) failed", failed, len(targets))
+	}
+	return nil
+}
+
+// checkCollectionNames rejects a schedules: or disabled: entry that names no
+// collection; the config package cannot import collect, so the check lives here.
+func checkCollectionNames(cfg *config.Config) error {
+	known := map[string]bool{}
+	for _, n := range collect.Names() {
+		known[n] = true
+	}
+	for n := range cfg.Schedules {
+		if !known[n] {
+			return fmt.Errorf("schedules: unknown collection %q; known: %v", n, collect.Names())
+		}
+	}
+	for _, in := range cfg.Instances {
+		for n := range in.Schedules {
+			if !known[n] {
+				return fmt.Errorf("instance %q schedules: unknown collection %q; known: %v", in.Name, n, collect.Names())
+			}
+		}
+		for _, n := range in.Disabled {
+			if !known[n] {
+				return fmt.Errorf("instance %q disabled: unknown collection %q; known: %v", in.Name, n, collect.Names())
+			}
+		}
 	}
 	return nil
 }

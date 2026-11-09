@@ -32,7 +32,7 @@ SELECT
   current_setting('TimeZone')                       AS time_zone,
   current_database()                                AS connected_database,
   current_user                                      AS connected_user,
-  inet_server_addr()::text                          AS server_addr,
+  host(inet_server_addr())                          AS server_addr,
   inet_server_port()                                AS server_port,
   current_setting('data_checksums')                 AS data_checksums,
   current_setting('shared_buffers')                 AS shared_buffers,
@@ -44,8 +44,18 @@ SELECT
   (SELECT count(*) FROM pg_database WHERE NOT datistemplate)   AS database_count,
   (SELECT coalesce(json_agg(json_build_object('name', extname, 'version', extversion) ORDER BY extname), '[]'::json)
      FROM pg_extension)                             AS extensions,
-  (SELECT coalesce(json_agg(json_build_object('name', name, 'value', setting) ORDER BY name), '[]'::json)
-     FROM pg_settings WHERE source NOT IN ('default','override')) AS non_default_settings`
+  -- Server-level sources only: the collector's own SETs (session), role settings (user,
+  -- database user) and client-supplied values are not the instance's configuration.
+  -- Settings that can carry a credential are masked; their presence and changes still show.
+  (SELECT coalesce(json_agg(json_build_object('name', name, 'value',
+            CASE
+              WHEN name IN ('primary_conninfo','archive_command','restore_command','archive_cleanup_command',
+                            'recovery_end_command','ssl_passphrase_command','ssl_key_file')
+                THEN '<masked>'
+              ELSE regexp_replace(setting, '(password|passfile|sslkey|sslpassword)=\S+', '\1=<masked>', 'gi')
+            END) ORDER BY name), '[]'::json)
+     FROM pg_settings
+    WHERE source IN ('configuration file','command line','environment variable','global','database')) AS non_default_settings`
 
 func (instanceCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error) {
 	rows, err := conn.Query(ctx, instanceSQL)
@@ -71,7 +81,7 @@ func (instanceCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.
 func rowsToMaps(rows pgx.Rows) ([]Row, error) {
 	defer rows.Close()
 	descs := rows.FieldDescriptions()
-	var out []Row
+	out := []Row{} // never nil: an empty collection must serialise as [] not null
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {

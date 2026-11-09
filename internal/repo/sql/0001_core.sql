@@ -124,6 +124,9 @@ DECLARE
 BEGIN
   r := p_payload -> 0;           -- one row per instance
   IF r IS NULL THEN RETURN; END IF;
+  -- two imports of the same instance at once (a one-off collect beside the scheduler)
+  -- would both read the same old snapshot and write the same history rows: serialise them
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_instance'), p_instance_id);
 
   SELECT non_default_settings INTO v_old FROM pgvigil.instance_state WHERE instance_id = p_instance_id;
 
