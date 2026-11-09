@@ -173,3 +173,114 @@ SELECT s.schema_name, s.table_name, s.table_state, s.full_load_rows, s.full_load
   JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND ($1::int IS NULL OR s.instance_id = $1) AND s.task_arn = $2
  ORDER BY s.is_present DESC, (s.table_state ILIKE '%error%') DESC, s.validation_failed DESC NULLS LAST, s.schema_name, s.table_name`
+
+// sqlReplLatest is the newest replication snapshot of one instance (replication_latest: the last day).
+const sqlReplLatest = `
+SELECT kind, key, state, lag_bytes, lag_secs, active, snapshot_at, detail
+  FROM pgvigil.replication_latest
+ WHERE instance_id = $1
+ ORDER BY CASE kind WHEN 'sender' THEN 1 WHEN 'receiver' THEN 2 WHEN 'aurora_replica' THEN 3 WHEN 'slot' THEN 4
+                    WHEN 'subscription' THEN 5 WHEN 'publication' THEN 6 ELSE 7 END, key`
+
+// sqlReplChecks are the replication daily checks of one instance.
+const sqlReplChecks = `
+SELECT check_name, object, value, unit, state, snapshot_at
+  FROM pgvigil.replication_checks
+ WHERE instance_id = $1
+ ORDER BY check_name, object`
+
+// sqlReplSeries is the lag of every lag-bearing object over the window, capped so a busy fleet
+// member cannot send a page megabytes of points.
+const sqlReplSeries = `
+SELECT snapshot_at, kind, key, lag_bytes, lag_secs
+  FROM pgvigil.replication_sample
+ WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+   AND kind IN ('sender', 'receiver', 'slot', 'aurora_replica')
+ ORDER BY snapshot_at, kind, key
+ LIMIT 20000`
+
+// sqlJobs is the job list of one instance with its newest run's status.
+const sqlJobs = `
+SELECT j.scheduler, j.job_id, j.job_name, j.schedule, j.datname, j.run_as, j.active, j.next_run, j.last_run,
+       lr.status AS last_status, lr.start_time AS last_start, lr.duration_secs AS last_duration_secs,
+       j.command, j.is_present, j.snapshot_at
+  FROM pgvigil.jobs j
+  LEFT JOIN LATERAL (SELECT r.status, r.start_time, r.duration_secs FROM pgvigil.job_runs r
+                      WHERE r.instance_id = j.instance_id AND r.scheduler = j.scheduler AND r.job_id = j.job_id
+                      ORDER BY r.start_time DESC NULLS LAST LIMIT 1) lr ON true
+ WHERE j.instance_id = $1
+ ORDER BY j.is_present DESC, j.scheduler, j.job_name NULLS LAST, j.job_id`
+
+// sqlJobRuns are the runs that started in the window, newest first.
+const sqlJobRuns = `
+SELECT r.start_time, r.end_time, r.duration_secs, r.scheduler, r.job_id, j.job_name, r.run_id, r.status,
+       r.datname, r.run_as, left(r.return_message, 1000) AS return_message, left(r.command, 1000) AS command
+  FROM pgvigil.job_runs r
+  LEFT JOIN pgvigil.jobs j ON j.instance_id = r.instance_id AND j.scheduler = r.scheduler AND j.job_id = r.job_id
+ WHERE r.instance_id = $1 AND r.start_time > $2 AND r.start_time <= $3
+ ORDER BY r.start_time DESC
+ LIMIT 1000`
+
+// sqlLogCounts is the number of log events per kind in the window.
+const sqlLogCounts = `
+SELECT kind, count(*) AS events, max(snapshot_at) AS last_at
+  FROM pgvigil.log_events
+ WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+ GROUP BY kind
+ ORDER BY kind`
+
+// sqlLogEvents are the window's log events ($4 = one kind or NULL), newest first.
+const sqlLogEvents = `
+SELECT snapshot_at AS at, kind, pid, datname, usename, client, duration_ms,
+       left(statement, 2000) AS statement, left(detail, 1000) AS detail, source
+  FROM pgvigil.log_events
+ WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3 AND ($4::text IS NULL OR kind = $4)
+ ORDER BY snapshot_at DESC
+ LIMIT 1000`
+
+// sqlConfigState is the instance_state row without its two JSON lists.
+const sqlConfigState = `
+SELECT snapshot_at, platform, server_version, server_version_num, is_replica, postmaster_start, server_now,
+       time_zone, connected_database, connected_user, server_addr, server_port, data_checksums, shared_buffers,
+       max_connections, work_mem, wal_level, track_io_timing, log_min_duration_statement, database_count,
+       has_pg_stat_statements, has_pg_cron, has_pgagent, has_wait_sampling, has_log_fdw
+  FROM pgvigil.instance_state
+ WHERE instance_id = $1`
+
+// sqlConfigSettings unpacks the non-default settings (a JSON array of {name, value}).
+const sqlConfigSettings = `
+SELECT x ->> 'name' AS name, x ->> 'value' AS value
+  FROM pgvigil.instance_state st,
+       jsonb_array_elements(CASE WHEN jsonb_typeof(st.non_default_settings) = 'array' THEN st.non_default_settings ELSE '[]' END) x
+ WHERE st.instance_id = $1
+ ORDER BY lower(x ->> 'name')`
+
+// sqlConfigExtensions unpacks the installed extensions (a JSON array of {name, version}).
+const sqlConfigExtensions = `
+SELECT x ->> 'name' AS name, x ->> 'version' AS version
+  FROM pgvigil.instance_state st,
+       jsonb_array_elements(CASE WHEN jsonb_typeof(st.extensions) = 'array' THEN st.extensions ELSE '[]' END) x
+ WHERE st.instance_id = $1
+ ORDER BY x ->> 'name'`
+
+// sqlConfigHistory is the setting changes of the window, newest first.
+const sqlConfigHistory = `
+SELECT h.changed_at, h.name, h.old_value, h.new_value
+  FROM pgvigil.instance_setting_history h
+ WHERE h.instance_id = $1 AND h.changed_at > $2 AND h.changed_at <= $3
+ ORDER BY h.changed_at DESC, h.name
+ LIMIT 1000`
+
+// sqlConfigHistoryTotal is the change count over all time and the newest change.
+const sqlConfigHistoryTotal = `
+SELECT count(*) AS changes, max(changed_at) AS last_change
+  FROM pgvigil.instance_setting_history
+ WHERE instance_id = $1`
+
+// sqlDatabases is one instance's database inventory, present and largest first.
+const sqlDatabases = `
+SELECT datname, owner, encoding, size_bytes, xid_age, mxid_age, can_connect, allow_conn, conn_limit,
+       is_template, tablespace, first_seen, snapshot_at, is_present
+  FROM pgvigil.databases
+ WHERE instance_id = $1
+ ORDER BY is_present DESC, size_bytes DESC NULLS LAST, datname`

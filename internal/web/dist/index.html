@@ -9,11 +9,16 @@
 </head>
 <body>
 <header>
-  <a class="brand" href="#/overview">pgvigil</a>
-  <nav id="nav"></nav>
+  <button type="button" id="show-tree" title="Show the tree">&#9776;</button>
+  <a class="brand" href="#/summary">pgvigil</a>
+  <div id="crumb"></div>
   <div id="bar"></div>
 </header>
-<main id="main"><p class="empty">Loading...</p></main>
+<aside id="tree"></aside>
+<div id="content">
+  <nav id="tabs"></nav>
+  <main id="main"><p class="empty">Loading...</p></main>
+</div>
 <script type="module" src="app.js"></script>
 </body>
 </html>

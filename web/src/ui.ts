@@ -55,6 +55,7 @@ export interface Col {
   fmt?: (v: unknown, row: Record<string, unknown>) => string | Node;
   num?: boolean;          // right-aligned, sorted numerically
   wide?: boolean;         // long text, clipped with a title
+  cls?: (v: unknown, row: Record<string, unknown>) => string;   // an extra cell class (a status colour)
 }
 
 // grid renders rows as a sortable table; clicking a header sorts by it.
@@ -90,7 +91,10 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       for (const c of cols) {
         const v = r[c.key];
         const out = c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v));
-        const td = el('td', c.num ? { class: 'num' } : c.wide ? { class: 'wide' } : {});
+        const base = c.num ? 'num' : c.wide ? 'wide' : '';
+        const extra = c.cls ? c.cls(v, r) : '';
+        const cl = [base, extra].filter(Boolean).join(' ');
+        const td = el('td', cl ? { class: cl } : {});
         if (c.wide && typeof out === 'string') td.title = out;
         td.append(out);
         tr.append(td);
@@ -108,4 +112,21 @@ export function badge(text: string, kind: string): HTMLElement {
 
 export function errorBox(e: unknown): HTMLElement {
   return el('p', { class: 'error' }, 'Error: ' + (e instanceof Error ? e.message : String(e)));
+}
+
+export function dot(level: number, title = ''): HTMLElement {
+  const e = el('span', { class: 'dot ' + (['ok', 'warn', 'crit'][level] ?? 'none') });
+  if (title) e.title = title;
+  return e;
+}
+
+export function tile(label: string, value: string, kind = ''): HTMLElement {
+  return el('div', { class: 'tile ' + kind }, el('div', { class: 'tile-v' }, value), el('div', { class: 'tile-l' }, label));
+}
+
+// props renders label/value pairs as a two-column card.
+export function props(pairs: [string, string | Node][]): HTMLElement {
+  const t = el('table', { class: 'props' });
+  for (const [k, v] of pairs) t.append(el('tr', {}, el('th', {}, k), el('td', {}, v)));
+  return el('div', { class: 'grid-wrap' }, t);
 }

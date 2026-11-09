@@ -1,44 +1,49 @@
-import { get, LoginRequired, post, rowsOf, Session } from './api';
-import { activity, counters, Ctx, dms, errorBox, instances, overview, statements } from './pages';
-import { el } from './ui';
+// The shell: a header (brand, where you are, the time range, refresh, theme, the user), the instance
+// tree on the left, a tab strip (root tabs for the fleet or a tag, instance tabs for one instance)
+// and the page under it.
+import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
+import { fleet, forget } from './fleet';
+import { checks, config, Ctx, dms, errorBox, fleetSummary, instances, instanceSummary, jobs, logs, replication, statements, counters, activity } from './pages';
+import { rangePicker } from './rangepicker';
+import { href, instanceTabs, isLive, parse, rootTabs } from './router';
+import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
+import { el } from './ui';
 
-const pages: Record<string, { label: string; render: (c: Ctx) => Promise<HTMLElement>; perInstance: boolean; windowed: boolean }> = {
-  overview: { label: 'Overview', render: overview, perInstance: false, windowed: false },
-  instances: { label: 'Instances', render: instances, perInstance: false, windowed: false },
-  activity: { label: 'Running queries', render: activity, perInstance: true, windowed: false },
-  statements: { label: 'Statements', render: statements, perInstance: true, windowed: true },
-  counters: { label: 'Counters', render: counters, perInstance: true, windowed: true },
-  dms: { label: 'DMS', render: dms, perInstance: false, windowed: false },
+type Render = (c: Ctx) => Promise<HTMLElement>;
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, instances, dms };
+const instancePages: Record<string, Render> = {
+  summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
 };
+// pages that show the state now refresh every 30 s while the tab is visible and the range follows now
+const liveRoot = new Set(['summary', 'checks', 'dms']);
+const liveInstance = new Set(['summary', 'activity', 'dms']);
 
 let timer: number | undefined;
 let generation = 0;   // a render that finishes after a newer one started is dropped
 let session: Session = { login: false };
 let loginShown = false;   // the sign-in form is up: a tab switch or a hash change must not rebuild it
 
-function parse(): { page: string; ctx: Ctx } {
-  const h = location.hash.replace(/^#\/?/, '');
-  const [p, qs] = h.split('?');
-  const q = new URLSearchParams(qs ?? '');
-  const saved = Number(localStorageGet('pgvigil.instance')) || undefined;
-  const i = Number(q.get('i')) || saved;
-  return {
-    page: pages[p] ? p : 'overview',
-    ctx: { instance: i, window: q.get('w') ?? '1h', kind: q.get('kind') ?? 'db', at: q.get('at') ?? undefined, task: q.get('task') ?? undefined, taskInstance: Number(q.get('ti')) || undefined },
-  };
+const $ = (id: string) => document.getElementById(id)!;
+
+// ---- theme: auto (the system's), light or dark, remembered per browser
+function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* private window */ } }
+const themes = ['auto', 'light', 'dark'];
+function applyTheme(t: string) {
+  if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
 }
-
-function localStorageGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
-function localStorageSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* private window */ } }
-
-function href(page: string, ctx: Ctx, over: Partial<Ctx> = {}): string {
-  const c = { ...ctx, ...over };
-  const q = new URLSearchParams();
-  if (c.instance) q.set('i', String(c.instance));
-  if (page === 'counters') q.set('kind', c.kind);
-  if (pages[page]?.windowed) q.set('w', c.window);
-  return `#/${page}?${q}`;
+applyTheme(lsGet('pgvigil.theme') ?? 'auto');
+function themeButton(): HTMLElement {
+  const cur = lsGet('pgvigil.theme') ?? 'auto';
+  const b = el('button', { type: 'button', title: 'Theme: auto follows the system' }, 'Theme: ' + cur);
+  b.addEventListener('click', () => {
+    const next = themes[(themes.indexOf(lsGet('pgvigil.theme') ?? 'auto') + 1) % themes.length];
+    lsSet('pgvigil.theme', next); applyTheme(next);
+    void render();   // charts read the theme's colours when drawn
+  });
+  return b;
 }
 
 // showLogin replaces the page with the sign-in form; a successful sign-in renders the page asked for.
@@ -47,8 +52,10 @@ function showLogin(message = '') {
   timer = undefined;
   ++generation;
   loginShown = true;
-  document.getElementById('nav')!.replaceChildren();
-  document.getElementById('bar')!.replaceChildren();
+  document.body.classList.add('signin');
+  $('tabs').replaceChildren();
+  $('bar').replaceChildren();
+  $('crumb').replaceChildren();
   const user = el('input', { name: 'username', autocomplete: 'username', required: '', autofocus: '', maxlength: '64' });
   const pass = el('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: '' });
   const err = el('p', { class: 'error' }, message);
@@ -63,81 +70,85 @@ function showLogin(message = '') {
       session = await post<Session>('login', { username: user.value.trim(), password: pass.value });
       pass.value = '';
       loginShown = false;
+      document.body.classList.remove('signin');
+      forget();
       void render();
     } catch (e) {
       err.textContent = e instanceof Error ? e.message : String(e);
       err.hidden = false; btn.disabled = false; pass.value = ''; pass.focus();
     }
   });
-  document.getElementById('main')!.replaceChildren(form);
+  $('main').replaceChildren(form);
   user.focus();
 }
 
 async function signOut() {
   try { await post('logout'); } catch { /* the session is gone either way */ }
   session = { login: true };
+  forget();
   showLogin('Signed out.');
 }
 
-async function render() {
+async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
   const gen = ++generation;
-  const { page, ctx } = parse();
-  if (ctx.instance) localStorageSet('pgvigil.instance', String(ctx.instance));
-  const nav = document.getElementById('nav')!;
-  nav.replaceChildren(...Object.entries(pages).map(([k, v]) =>
-    el('a', { href: href(k, ctx), class: k === page ? 'on' : '' }, v.label)));
+  const ctx = parse();
+  const tabs = ctx.instance ? instanceTabs : rootTabs;
+  const pages = ctx.instance ? instancePages : rootPages;
 
-  const bar = document.getElementById('bar')!;
-  bar.replaceChildren();
-  try {
-    const inst = rowsOf(await get('instances'));
-    if (gen !== generation) return;
-    if (pages[page].perInstance) {
-      const sel = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'instance...'),
-        ...inst.map(r => { const o = el('option', { value: String(r.instance_id) }, String(r.name)); if (Number(r.instance_id) === ctx.instance) o.selected = true; return o; }));
-      sel.addEventListener('change', () => { location.hash = href(page, ctx, { instance: Number(sel.value) || undefined }); });
-      bar.append(sel);
-    }
-    if (pages[page].windowed) {
-      const ws = el('select', { 'aria-label': 'window' }, ...['15m', '1h', '6h', '24h', '7d'].map(w => {
-        const o = el('option', { value: w }, 'last ' + w); if (w === ctx.window) o.selected = true; return o; }));
-      ws.addEventListener('change', () => { location.hash = href(page, ctx, { window: ws.value }); });
-      bar.append(ws);
-    }
-  } catch (e) {
-    if (e instanceof LoginRequired) { showLogin(); return; }
-    bar.append(errorBox(e));
-  }
-  const refresh = el('button', { type: 'button' }, 'Refresh');
-  refresh.addEventListener('click', () => { void render(); });
-  bar.append(refresh, el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })));
+  $('tabs').replaceChildren(...Object.entries(tabs).map(([k, label]) =>
+    el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab ? 'on' : '' }, label)));
+
+  const bar = $('bar');
+  const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');
+  refresh.addEventListener('click', () => { void render(true); });
+  bar.replaceChildren(rangePicker(ctx), refresh,
+    el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })),
+    themeButton());
   if (session.login && session.user) {
     const out = el('button', { type: 'button', class: 'link' }, 'Sign out');
     out.addEventListener('click', () => { void signOut(); });
     bar.append(el('span', { class: 'meta' }, session.user), out);
   }
 
-  const main = document.getElementById('main')!;
+  // the tree and the breadcrumb come from the fleet read; a failure there still shows the page
+  const crumb = $('crumb');
+  try {
+    const f = await fleet(force);
+    if (gen !== generation) return;
+    updateTree(f, ctx);
+    const inst = ctx.instance ? f.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
+    crumb.replaceChildren(
+      el('a', { href: href(ctx, { tab: ctx.instance ? 'summary' : ctx.tab, instance: undefined, tag: undefined }) }, 'All instances'),
+      ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, 'tag ' + ctx.tag)] : []),
+      ...(ctx.instance ? [' / ', el('b', {}, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []));
+  } catch (e) {
+    if (e instanceof LoginRequired) { showLogin(); return; }
+    crumb.replaceChildren(errorBox(e));
+  }
+
   let view: HTMLElement;
   try {
-    view = await pages[page].render(ctx);
+    view = await pages[ctx.tab](ctx);
   } catch (e) {
     if (e instanceof LoginRequired) { showLogin(); return; }
     view = errorBox(e);
   }
   if (gen !== generation) return;
   destroyCharts();
-  main.replaceChildren(view);
-  // live pages refresh every 30 s while the tab is visible
-  if ((page === 'overview' || page === 'activity' || page === 'dms') && !ctx.at) {
-    timer = window.setTimeout(() => { if (!document.hidden) void render(); else timer = undefined; }, 30000);
+  $('main').replaceChildren(view);
+  const live = ctx.instance ? liveInstance : liveRoot;
+  if (live.has(ctx.tab) && isLive(ctx) && !ctx.at) {
+    timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, 30000);
   }
 }
 
+mountTree($('tree'));
+setTreeHidden(treeHiddenSaved());
+$('show-tree').addEventListener('click', () => setTreeHidden(false));
 window.addEventListener('hashchange', () => { if (!loginShown) void render(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined && !loginShown) void render(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined && !loginShown) void render(true); });
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
   try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
