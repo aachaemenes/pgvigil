@@ -48,6 +48,14 @@ func (logsCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row, erro
 	return nil, fmt.Errorf("logs needs the instance config: %w", ErrSkip)
 }
 
+// Configured: the reader needs an aws: block naming the cluster, the instance or the log group.
+func (logsCollector) Configured(in config.Instance) (bool, string) {
+	if in.AWS == nil || in.AWS.PostgresLogGroup() == "" {
+		return false, "no aws: block with cluster or db_instance in the config"
+	}
+	return true, ""
+}
+
 // cwEvent is one CloudWatch log event, the part the reader uses.
 type cwEvent struct {
 	Stream  string
@@ -79,7 +87,9 @@ func fetcherFor(ctx context.Context, a config.AWS) (logFetcher, error) {
 	return f, err
 }
 
-var newFetcher = func(ctx context.Context, a config.AWS) (logFetcher, error) {
+// loadAWS resolves the SDK configuration for an instance's AWS door: the region and profile of the
+// aws: block over the SDK's usual chain (environment, shared config incl. an `aws login` session, a role).
+func loadAWS(ctx context.Context, a config.AWS) (aws.Config, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
 	if a.Region != "" {
 		opts = append(opts, awsconfig.WithRegion(a.Region))
@@ -89,7 +99,15 @@ var newFetcher = func(ctx context.Context, a config.AWS) (logFetcher, error) {
 	}
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("aws config: %w", err)
+		return aws.Config{}, fmt.Errorf("aws config: %w", err)
+	}
+	return cfg, nil
+}
+
+var newFetcher = func(ctx context.Context, a config.AWS) (logFetcher, error) {
+	cfg, err := loadAWS(ctx, a)
+	if err != nil {
+		return nil, err
 	}
 	cl := cloudwatchlogs.NewFromConfig(cfg)
 	return func(ctx context.Context, group string, from time.Time, limit int) ([]cwEvent, error) {

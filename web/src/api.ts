@@ -23,3 +23,9 @@ export interface Activity {
   sessions: Table | null;
   chains: Table | null;
 }
+
+export interface DMS {
+  tasks: Table | null;
+  instances: Table | null;
+  tables: Table | null;
+}

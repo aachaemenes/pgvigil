@@ -1,0 +1,28 @@
+{
+  "ReplicationTasks": [
+    {
+      "ReplicationTaskIdentifier": "dmslab-task",
+      "SourceEndpointArn": "arn:aws:dms:us-east-2:123456789012:endpoint:6GGI6YPWWGAYUVLKIB732KEVWA",
+      "TargetEndpointArn": "arn:aws:dms:us-east-2:123456789012:endpoint:EOM4SFKCZEYHZBFGAGZT3QEC5U",
+      "ReplicationInstanceArn": "arn:aws:dms:us-east-2:123456789012:rep:T3OM7OUB5NM2LCVZF7JPGJRNUE",
+      "MigrationType": "full-load-and-cdc",
+      "Status": "running",
+      "ReplicationTaskCreationDate": "2026-11-09T12:40:12.505000+00:00",
+      "ReplicationTaskStartDate": "2026-11-09T12:52:05.212000+00:00",
+      "ReplicationTaskArn": "arn:aws:dms:us-east-2:123456789012:task:K55IUCGBASJS5VHZJIINA45FII",
+      "RecoveryCheckpoint": "checkpoint:V1#1#0000004A:00000F50:0001#0#0#*#0#0",
+      "ReplicationTaskStats": {
+        "FullLoadProgressPercent": 100,
+        "ElapsedTimeMillis": 612000,
+        "TablesLoaded": 1,
+        "TablesLoading": 0,
+        "TablesQueued": 0,
+        "TablesErrored": 0,
+        "FreshStartDate": "2026-11-09T12:52:11.528000+00:00",
+        "StartDate": "2026-11-09T12:52:11.528000+00:00",
+        "FullLoadStartDate": "2026-11-09T12:52:40.000000+00:00",
+        "FullLoadFinishDate": "2026-11-09T12:53:02.000000+00:00"
+      }
+    }
+  ]
+}

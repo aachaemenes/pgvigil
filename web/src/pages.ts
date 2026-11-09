@@ -1,8 +1,8 @@
-import { Activity, get, Row, rowsOf } from './api';
+import { Activity, DMS, get, Row, rowsOf } from './api';
 import { lineChart } from './chart';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 
-export interface Ctx { instance?: number; window: string; kind: string; at?: string }
+export interface Ctx { instance?: number; window: string; kind: string; at?: string; task?: string }
 
 const windows: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800 };
 function range(w: string) {
@@ -183,6 +183,78 @@ export async function counters(ctx: Ctx): Promise<HTMLElement> {
     el('a', { href: `#/counters?i=${ctx.instance}&kind=${k}&w=${ctx.window}`, class: k === kind ? 'on' : '' }, k)));
   const charts = el('div', { class: 'charts' }, ...counterSets[kind].map(c => lineChart(c.title, rows, c.series, c.fmt)));
   return el('section', {}, el('h2', {}, `Counters (last ${ctx.window})`), tabs, charts);
+}
+
+const taskBadge = (v: unknown) => {
+  const s = String(v ?? '');
+  const kind = ['failed', 'failed-move', 'error'].includes(s) ? 'crit' : s === 'running' ? 'ok' : ['stopped', 'stopping', 'starting', 'ready'].includes(s) ? 'warn' : '';
+  return badge(s, kind);
+};
+
+export async function dms(ctx: Ctx): Promise<HTMLElement> {
+  const d = await get<DMS>('dms', { task: ctx.task });
+  const tasks = rowsOf(d.tasks), ris = rowsOf(d.instances), tables = rowsOf(d.tables);
+  const sec = el('section', {}, el('h2', {}, 'DMS replication tasks'));
+  const taskCols: Col[] = [
+    { key: 'instance', fmt: (v, r) => link(String(v), `#/activity?i=${r.instance_id}`) },
+    { key: 'task_id', label: 'task', fmt: (v, r) => link(String(v), `#/dms?task=${encodeURIComponent(String(r.task_arn))}`) },
+    { key: 'status', fmt: taskBadge },
+    { key: 'migration_type', label: 'type' },
+    { key: 'progress_pct', label: 'full load %', num: true },
+    { key: 'tables', num: true },
+    { key: 'tables_errored', label: 'errored', num: true },
+    { key: 'latency_source_s', label: 'latency source', num: true, fmt: fmtSecs },
+    { key: 'latency_target_s', label: 'latency target', num: true, fmt: fmtSecs },
+    { key: 'incoming_changes', label: 'incoming changes', num: true },
+    { key: 'elapsed_secs', label: 'elapsed', num: true, fmt: fmtSecs },
+    { key: 'ri_id', label: 'replication instance' },
+    { key: 'stop_reason', label: 'stop reason', wide: true },
+    { key: 'last_failure', label: 'last failure', wide: true },
+    { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
+    { key: 'is_present', label: 'present', fmt: v => v ? 'yes' : 'gone' },
+  ];
+  sec.append(grid(tasks, taskCols, 'No DMS tasks: name them under an instance\'s aws.dms.tasks in the collector config.'));
+  if (ctx.task) {
+    const t = tasks.find(r => r.task_arn === ctx.task);
+    sec.append(el('h3', {}, `Tables of ${t ? String(t.task_id) : ctx.task}`), el('p', { class: 'meta' }, link('all tasks', '#/dms')));
+    const tableCols: Col[] = [
+      { key: 'schema_name', label: 'schema' },
+      { key: 'table_name', label: 'table' },
+      { key: 'table_state', label: 'state' },
+      { key: 'full_load_rows', label: 'full load rows', num: true },
+      { key: 'full_load_error_rows', label: 'load errors', num: true },
+      { key: 'inserts', num: true },
+      { key: 'updates', num: true },
+      { key: 'deletes', num: true },
+      { key: 'ddls', num: true },
+      { key: 'validation_state', label: 'validation' },
+      { key: 'validation_failed', label: 'failed', num: true },
+      { key: 'validation_pending', label: 'pending', num: true },
+      { key: 'last_update', label: 'updated', fmt: fmtTime },
+      { key: 'validation_detail', label: 'detail', wide: true },
+    ];
+    sec.append(grid(tables, tableCols, 'No table statistics for this task yet (it has not started).'));
+  }
+  sec.append(el('h3', {}, 'Replication instances'));
+  const riCols: Col[] = [
+    { key: 'instance', fmt: (v, r) => link(String(v), `#/activity?i=${r.instance_id}`) },
+    { key: 'ri_id', label: 'identifier' },
+    { key: 'status' },
+    { key: 'class' },
+    { key: 'engine_version', label: 'engine' },
+    { key: 'tasks', num: true },
+    { key: 'cpu_pct', label: 'CPU %', num: true },
+    { key: 'freeable_bytes', label: 'freeable memory', num: true, fmt: fmtBytes },
+    { key: 'swap_bytes', label: 'swap', num: true, fmt: fmtBytes },
+    { key: 'free_storage_bytes', label: 'free storage', num: true, fmt: fmtBytes },
+    { key: 'allocated_gb', label: 'storage GB', num: true },
+    { key: 'multi_az', label: 'multi-AZ', fmt: v => v ? 'yes' : 'no' },
+    { key: 'az' },
+    { key: 'pending', wide: true },
+    { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
+  ];
+  sec.append(grid(ris, riCols, 'No replication instances yet.'));
+  return sec;
 }
 
 export { errorBox };

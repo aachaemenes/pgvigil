@@ -27,6 +27,10 @@ func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config
 			if iv <= 0 {
 				continue
 			}
+			if skip, why := collect.Gated(c, in); skip {
+				log.Debug("collection off by config", "instance", in.Name, "collection", c.Name(), "why", why)
+				continue
+			}
 			started++
 			wg.Add(1)
 			go func(in config.Instance, name string, iv time.Duration) {

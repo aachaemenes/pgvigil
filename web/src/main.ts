@@ -1,5 +1,5 @@
 import { get, rowsOf } from './api';
-import { activity, counters, Ctx, errorBox, instances, overview, statements } from './pages';
+import { activity, counters, Ctx, dms, errorBox, instances, overview, statements } from './pages';
 import { el } from './ui';
 import { destroyCharts } from './chart';
 
@@ -9,6 +9,7 @@ const pages: Record<string, { label: string; render: (c: Ctx) => Promise<HTMLEle
   activity: { label: 'Running queries', render: activity, perInstance: true, windowed: false },
   statements: { label: 'Statements', render: statements, perInstance: true, windowed: true },
   counters: { label: 'Counters', render: counters, perInstance: true, windowed: true },
+  dms: { label: 'DMS', render: dms, perInstance: false, windowed: false },
 };
 
 let timer: number | undefined;
@@ -22,7 +23,7 @@ function parse(): { page: string; ctx: Ctx } {
   const i = Number(q.get('i')) || saved;
   return {
     page: pages[p] ? p : 'overview',
-    ctx: { instance: i, window: q.get('w') ?? '1h', kind: q.get('kind') ?? 'db', at: q.get('at') ?? undefined },
+    ctx: { instance: i, window: q.get('w') ?? '1h', kind: q.get('kind') ?? 'db', at: q.get('at') ?? undefined, task: q.get('task') ?? undefined },
   };
 }
 
@@ -81,7 +82,7 @@ async function render() {
   destroyCharts();
   main.replaceChildren(view);
   // live pages refresh every 30 s while the tab is visible
-  if ((page === 'overview' || page === 'activity') && !ctx.at) {
+  if ((page === 'overview' || page === 'activity' || page === 'dms') && !ctx.at) {
     timer = window.setTimeout(() => { if (!document.hidden) void render(); else timer = undefined; }, 30000);
   }
 }

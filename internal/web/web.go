@@ -88,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/activity", s.activity)
 	mux.HandleFunc("GET /api/statements", s.statements)
 	mux.HandleFunc("GET /api/counters", s.counters)
+	mux.HandleFunc("GET /api/dms", s.dms)
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
@@ -322,6 +323,44 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.Chains, err = s.query(ctx, `SELECT * FROM pgvigil.blocking_chains($1, $2) ORDER BY head_pid, depth, pid`, id, *snap)
+	s.reply(w, r, out, err)
+}
+
+// dms lists the replication tasks (every instance, or one with ?instance=), the replication instances
+// they run on, and with ?task=<arn> that task's table statistics.
+func (s *Server) dms(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var id *int
+	if v := q.Get("instance"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive instance_id"))
+			return
+		}
+		id = &n
+	}
+	ctx := r.Context()
+	out := struct {
+		Tasks     *table `json:"tasks"`
+		Instances *table `json:"instances"`
+		Tables    *table `json:"tables"`
+	}{}
+	var err error
+	if out.Tasks, err = s.query(ctx, sqlDMSTasks, id); err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	if out.Instances, err = s.query(ctx, sqlDMSInstances, id); err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	if task := q.Get("task"); task != "" {
+		if len(task) > 512 {
+			writeErr(w, http.StatusBadRequest, errors.New("task must be a task ARN"))
+			return
+		}
+		out.Tables, err = s.query(ctx, sqlDMSTables, id, task)
+	}
 	s.reply(w, r, out, err)
 }
 

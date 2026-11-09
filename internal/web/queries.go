@@ -46,6 +46,10 @@ SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f
        left(f.return_message, 300)
   FROM pgvigil.job_failures f JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active`},
+	{"dms", `
+SELECT d.instance_id, d.severity, d.check_name, d.object, d.at, d.detail
+  FROM pgvigil.dms_checks d JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active`},
 	// the import starts a new epoch when stats_reset moves or a counter falls (a crash or a failover
 	// restarts them under the same stats_reset), so within one epoch max minus min is the rise, as a hash
 	// aggregate: an ordered array_agg or lag() sorts the whole day (21 s / 27 s at 5.76 M rows, 1 s this way)
@@ -125,3 +129,41 @@ SELECT snapshot_at, total, active, idle_in_txn, waiting_lock, active_client_wait
  WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
  ORDER BY snapshot_at`,
 }
+
+// sqlDMSTasks lists the replication tasks of every instance ($1 NULL) or one, newest state first.
+const sqlDMSTasks = `
+SELECT t.instance_id, i.name AS instance, t.task_id, t.task_arn, t.migration_type, t.status, t.stop_reason,
+       t.progress_pct, t.tables_loaded, t.tables_loading, t.tables_queued, t.tables_errored,
+       t.latency_source_s, t.latency_target_s, t.incoming_changes, t.latency_at, t.latency_warn_secs,
+       round(t.elapsed_ms / 1000.0) AS elapsed_secs, t.start_date, t.stop_date, t.full_load_start, t.full_load_finish,
+       t.cdc_start_position, t.recovery_checkpoint, ri.ri_id, t.ri_arn, left(t.last_failure, 1000) AS last_failure,
+       t.snapshot_at, t.is_present,
+       (SELECT count(*) FROM pgvigil.dms_table_stats s
+         WHERE s.instance_id = t.instance_id AND s.task_arn = t.task_arn AND s.is_present) AS tables
+  FROM pgvigil.dms_tasks t
+  JOIN pgvigil.instances i USING (instance_id)
+  LEFT JOIN pgvigil.dms_instances ri ON ri.instance_id = t.instance_id AND ri.ri_arn = t.ri_arn
+ WHERE i.is_active AND ($1::int IS NULL OR t.instance_id = $1)
+ ORDER BY t.is_present DESC, i.name, t.task_id`
+
+// sqlDMSInstances lists the replication instances the tasks run on with their host metrics.
+const sqlDMSInstances = `
+SELECT r.instance_id, i.name AS instance, r.ri_id, r.ri_arn, r.status, r.class, r.engine_version, r.allocated_gb,
+       r.multi_az, r.public, r.az, r.created, r.pending, r.cpu_pct, r.freeable_bytes, r.free_storage_bytes, r.swap_bytes,
+       r.snapshot_at, r.is_present,
+       (SELECT count(*) FROM pgvigil.dms_tasks t WHERE t.instance_id = r.instance_id AND t.ri_arn = r.ri_arn AND t.is_present) AS tasks
+  FROM pgvigil.dms_instances r
+  JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active AND ($1::int IS NULL OR r.instance_id = $1)
+ ORDER BY r.is_present DESC, i.name, r.ri_id`
+
+// sqlDMSTables is one task's table statistics ($2 = the task ARN), errors and validation failures first.
+const sqlDMSTables = `
+SELECT s.schema_name, s.table_name, s.table_state, s.full_load_rows, s.full_load_error_rows, s.full_load_cond_failed_rows,
+       s.inserts, s.updates, s.deletes, s.ddls, s.applied_inserts, s.applied_updates, s.applied_deletes, s.applied_ddls,
+       s.full_load_start, s.full_load_end, s.last_update, s.validation_state, s.validation_pending, s.validation_failed,
+       s.validation_suspended, left(s.validation_detail, 500) AS validation_detail, s.full_load_reloaded, s.is_present
+  FROM pgvigil.dms_table_stats s
+  JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active AND ($1::int IS NULL OR s.instance_id = $1) AND s.task_arn = $2
+ ORDER BY s.is_present DESC, (s.table_state ILIKE '%error%') DESC, s.validation_failed DESC NULLS LAST, s.schema_name, s.table_name`

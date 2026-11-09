@@ -48,6 +48,22 @@ type InstanceRunner interface {
 // CursorFunc returns how far a source was read, and false when it never was.
 type CursorFunc func(ctx context.Context, source string) (time.Time, bool, error)
 
+// ConfigGate is a Collector that only runs on an instance whose config names its source (an aws:
+// block); the scheduler skips the others without a connection, and RunOnce says why.
+type ConfigGate interface {
+	Configured(in config.Instance) (ok bool, why string)
+}
+
+// Gated reports whether a collection is off for an instance by its config alone.
+func Gated(c Collector, in config.Instance) (skip bool, why string) {
+	if g, ok := c.(ConfigGate); ok {
+		if ok, why := g.Configured(in); !ok {
+			return true, why
+		}
+	}
+	return false, ""
+}
+
 // ErrSkip is returned (wrapped, with the reason) by a run that does not apply to this instance's config.
 var ErrSkip = errors.New("skipped")
 
@@ -127,6 +143,9 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
 	}
 	start := time.Now()
+	if skip, why := Gated(c, in); skip {
+		return Result{Note: " (skipped: " + why + ")"}
+	}
 	conn, err := Connect(ctx, in)
 	if err != nil {
 		return Result{Err: err, Duration: time.Since(start)}

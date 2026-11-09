@@ -57,6 +57,26 @@ type AWS struct {
 	Cluster    string `yaml:"cluster"`     // Aurora: the DB cluster identifier
 	DBInstance string `yaml:"db_instance"` // RDS: the DB instance identifier
 	LogGroup   string `yaml:"log_group"`   // override; default /aws/rds/{cluster|instance}/<id>/postgresql
+	// DMS names the replication tasks whose state rides on this instance (the tasks that feed it or read
+	// from it); nil = the dms collection skips this instance.
+	DMS *DMS `yaml:"dms"`
+}
+
+// DMS is the AWS DMS part of an instance's AWS door: which replication tasks to read and the latency
+// threshold the overview check applies to them.
+type DMS struct {
+	// Tasks lists replication task identifiers (or ARNs); "*" = every task the profile sees in the region.
+	Tasks []string `yaml:"tasks"`
+	// LatencyWarnSecs is the CDC latency (source or target, seconds) above which the overview warns; 0 = 300.
+	LatencyWarnSecs int `yaml:"latency_warn_secs"`
+}
+
+// LatencyWarn returns the configured threshold or its default.
+func (d *DMS) LatencyWarn() int {
+	if d == nil || d.LatencyWarnSecs <= 0 {
+		return 300
+	}
+	return d.LatencyWarnSecs
 }
 
 // PostgresLogGroup is the CloudWatch log group RDS exports the postgresql log to.
@@ -141,6 +161,16 @@ func (c *Config) Validate() error {
 		case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
 		default:
 			return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
+		}
+		if in.AWS != nil && in.AWS.DMS != nil {
+			for _, t := range in.AWS.DMS.Tasks {
+				if strings.TrimSpace(t) == "" {
+					return fmt.Errorf("instance %q: aws.dms.tasks holds an empty name", in.Name)
+				}
+			}
+			if in.AWS.DMS.LatencyWarnSecs < 0 {
+				return fmt.Errorf("instance %q: aws.dms.latency_warn_secs must be 0 or more", in.Name)
+			}
 		}
 	}
 	return nil

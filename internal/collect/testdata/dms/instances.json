@@ -1,0 +1,19 @@
+{
+  "ReplicationInstances": [
+    {
+      "ReplicationInstanceIdentifier": "dmslab-ri",
+      "ReplicationInstanceClass": "dms.t3.small",
+      "ReplicationInstanceStatus": "available",
+      "AllocatedStorage": 20,
+      "InstanceCreateTime": "2026-11-09T12:31:00.000000+00:00",
+      "AvailabilityZone": "us-east-2a",
+      "ReplicationInstanceArn": "arn:aws:dms:us-east-2:123456789012:rep:T3OM7OUB5NM2LCVZF7JPGJRNUE",
+      "PendingModifiedValues": {},
+      "MultiAZ": false,
+      "EngineVersion": "3.6.1",
+      "AutoMinorVersionUpgrade": true,
+      "PubliclyAccessible": true,
+      "NetworkType": "IPV4"
+    }
+  ]
+}

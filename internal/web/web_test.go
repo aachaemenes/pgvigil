@@ -29,6 +29,7 @@ func TestRoutesWithoutDatabase(t *testing.T) {
 		{"/api/statements?instance=1&from=2025-01-01T00:00:00Z&to=2026-01-01T00:00:00Z", 400, "longer than 31 days"},
 		{"/api/statements?instance=1&limit=9999", 400, "limit must be"},
 		{"/api/counters?instance=1&kind=disk", 400, "kind must be"},
+		{"/api/dms?instance=zero", 400, "instance must be"},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
