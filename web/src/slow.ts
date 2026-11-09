@@ -23,18 +23,9 @@ export const thresholds: [number, string][] = [
 ];
 const defaultMs = 1000;
 
-// thresholdOf reads ms= from the hash (the router keeps the rest).
-export function thresholdOf(): number {
-  const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
-  const v = Number(q.get('ms'));
-  return q.has('ms') && Number.isFinite(v) && v >= 0 && v <= 86400000 ? Math.trunc(v) : defaultMs;
-}
-
-function withMs(link: string, ms: number): string {
-  const [p, qs] = link.split('?');
-  const q = new URLSearchParams(qs ?? '');
-  q.set('ms', String(ms));
-  return `${p}?${q}`;
+// thresholdOf is the threshold the router carries in the hash (ms=), kept across a range change on this tab.
+export function thresholdOf(ctx: Ctx): number {
+  return ctx.ms ?? defaultMs;
 }
 
 const msTxt = (v: unknown) => {
@@ -50,7 +41,7 @@ const bands: [string, string, string][] = [
 // picker: the threshold choices as links (the current one marked), and the log's own floor.
 function picker(ctx: Ctx, ms: number, tab: string): HTMLElement {
   return el('div', { class: 'subtabs' }, el('span', {}, 'Threshold:'), ...thresholds.map(([v, l]) =>
-    el('a', { href: withMs(href(ctx, { tab }), v), class: v === ms ? 'on' : '' }, l)));
+    el('a', { href: href(ctx, { tab, ms: v }), class: v === ms ? 'on' : '' }, l)));
 }
 
 // histogram: one row per day, a bar per duration band scaled to the busiest day, the count and the total.
@@ -122,7 +113,7 @@ function floorNote(src: Row[], ms: number): string {
 }
 
 export async function slowView(ctx: Ctx): Promise<HTMLElement> {
-  const ms = thresholdOf(), tz = tzOf();
+  const ms = thresholdOf(ctx), tz = tzOf();
   const d = await get<Record<Parts, Table | null>>('slowqueries', { instance: ctx.instance, ...window_(ctx), min: ms, tz });
   const src = rowsOf(d.sources), hist = rowsOf(d.histogram), top = rowsOf(d.top);
   const byCount = byRank(top, 'rank_count'), byTotal = byRank(top, 'rank_total');
@@ -154,7 +145,7 @@ export async function slowView(ctx: Ctx): Promise<HTMLElement> {
 
 // slowFleetView: the fleet root (keep narrows it to a tag folder; instLink makes an instance name a link to its tab).
 export async function slowFleetView(ctx: Ctx, keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
-  const ms = thresholdOf(), tz = tzOf();
+  const ms = thresholdOf(ctx), tz = tzOf();
   const d = await get<Record<Parts, Table | null>>('slowqueries', { ...window_(ctx), min: ms, tz, limit: keep ? 500 : 50 });
   const k = (rows: Row[]) => keep ? rows.filter(keep) : rows;
   // under a tag folder the fleet's ranks are re-counted over the folder's rows

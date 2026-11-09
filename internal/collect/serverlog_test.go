@@ -330,7 +330,7 @@ func TestServerlogModifiedSecond(t *testing.T) {
 func TestServerlogDoorText(t *testing.T) {
 	for _, want := range []string{"pgvigil_read_log(p_name text, p_offset bigint, p_length bigint) RETURNS bytea", "SECURITY DEFINER",
 		"SET search_path = pg_catalog", "WHERE p_name IN (SELECT name FROM pg_ls_logdir())", "REVOKE ALL ON FUNCTION", "FROM PUBLIC"} {
-		if !strings.Contains(serverlogDoorSQL, want) {
+		if !strings.Contains(ServerlogDoorSQL, want) {
 			t.Errorf("the door's text lacks %q", want)
 		}
 	}

@@ -5,19 +5,8 @@ package demo
 // rows (logRows). The standby (onprem-erp02) has no read grant: its collection log says skipped, with the
 // collector's reason.
 //
-// The lead's lines (internal/demo/<slice>_demo.go is this file):
-//   Step (gen.go, after the logs line):
-//     if g.Spec.Platform == "onprem" && !g.Spec.Replica {
-//         add("serverlog", g.serverlogRows(t, prev))
-//     }
-//   Collections (gen.go, before the return):
-//     if g.Spec.Platform == "onprem" {
-//         c = append(c, "serverlog")
-//     }
-//   logCollections (seed.go, beside the vacuum skip):
-//     if c == "serverlog" && g.Spec.Replica {
-//         status, note = "skipped", serverlogSkipNote
-//     }
+// Step adds these rows under the serverlog collection on an on-prem primary (gen.go), Collections lists serverlog
+// on every on-prem instance, and logCollections (seed.go) marks the standby's run skipped with serverlogSkipNote.
 
 import (
 	"fmt"
@@ -29,7 +18,7 @@ import (
 
 // serverlogSkipNote is the collection log's note without the read grant, in the collector's words (serverlogSettings.check).
 const serverlogSkipNote = "the monitoring login may not read the log files: the client DBA's opt-in is the function pgvigil_read_log " +
-	"(SECURITY DEFINER, serves only the log files; its text is in the README), or the wide door GRANT EXECUTE ON FUNCTION " +
+	"(SECURITY DEFINER, serves only the log files; `pgvigil roles` prints it), or the wide door GRANT EXECUTE ON FUNCTION " +
 	"pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean) TO <login>, which also opens every file under the data directory " +
 	"(pg_hba.conf, server.key, pg_authid's password hashes); pg_read_server_files alone opens neither"
 

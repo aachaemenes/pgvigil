@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
+
+	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
 // runRoles prints the SQL an operator runs on the repository (as its owner) to
@@ -39,6 +42,20 @@ CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
 -- repository's pgvigil.actions_log, written by serve through the config's repository login (pgvigil_collector).
 -- CREATE ROLE %[4]s LOGIN PASSWORD '<set-me>' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
 -- GRANT pg_signal_backend TO %[4]s;
-`, collector, reader, monitor, act)
+
+-- Optional, per on-prem monitored server: the read door of the serverlog collection (the server-log files
+-- through pg_ls_logdir(), for the Slow queries view). Run as a superuser on that server; the function serves
+-- only the files pg_ls_logdir() lists. The wide alternative, GRANT EXECUTE ON FUNCTION
+-- pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean), opens every file under the data directory
+-- (pg_hba.conf, server.key, pg_authid's password hashes) and is not recommended; pg_read_server_files alone
+-- opens neither. Without a door the collection is skipped with its reason.
+%[5]s
+`, collector, reader, monitor, act, serverlogDoorBlock(monitor))
 	return nil
+}
+
+// serverlogDoorBlock is the serverlog read door's statement, commented out, with the monitoring login filled in.
+func serverlogDoorBlock(login string) string {
+	text := strings.ReplaceAll(collect.ServerlogDoorSQL, "<login>", login)
+	return "-- " + strings.ReplaceAll(text, "\n", "\n-- ")
 }

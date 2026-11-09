@@ -343,6 +343,18 @@ func (g *Gen) settings(t time.Time) []Row {
 	return out
 }
 
+// settingValue is one setting of settings(t): the instance_state column follows the Configuration tab's value,
+// a SettingEdit included.
+func (g *Gen) settingValue(t time.Time, name string) string {
+	for _, r := range g.settings(t) {
+		if r["name"] == name {
+			v, _ := r["value"].(string)
+			return v
+		}
+	}
+	return ""
+}
+
 func (g *Gen) instanceRows(t time.Time) []Row {
 	s := g.Spec
 	ext := []Row{{"name": "plpgsql", "version": "1.0"}}
@@ -357,7 +369,7 @@ func (g *Gen) instanceRows(t time.Time) []Row {
 		"postmaster_start": g.pmStart, "server_now": t, "time_zone": "UTC", "connected_database": "postgres",
 		"connected_user": "pgvigil_monitor", "server_addr": s.Addr, "server_port": 5432, "data_checksums": "on",
 		"shared_buffers": "8GB", "max_connections": s.MaxConn, "work_mem": "4MB", "wal_level": "replica",
-		"track_io_timing": "on", "log_min_duration_statement": g.logMinDuration(), "database_count": len(g.dbList()),
+		"track_io_timing": "on", "log_min_duration_statement": g.settingValue(t, "log_min_duration_statement"), "database_count": len(g.dbList()),
 		"platform": s.Platform, "has_pg_stat_statements": !s.StmtBroken, "has_pg_cron": s.Cron, "has_pgagent": false,
 		"has_wait_sampling": false, "has_log_fdw": false, "extensions": ext, "non_default_settings": g.settings(t),
 	}}

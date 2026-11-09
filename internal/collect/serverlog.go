@@ -27,7 +27,7 @@ import (
 //
 //   - the narrow door (preferred): a superuser-owned SECURITY DEFINER function pgvigil_read_log(text, bigint,
 //     bigint) in any schema of the monitored database that serves only the names pg_ls_logdir() lists
-//     (serverlogDoorSQL is its text);
+//     (ServerlogDoorSQL is its text);
 //   - the wide door: GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean).
 //     It opens every file under the data directory (pg_hba.conf, server.key, the pg_authid heap with the
 //     password hashes) as well as an absolute log_directory (PostgreSQL 18, proof-slow.sh sections A, H, I).
@@ -50,9 +50,9 @@ const (
 // serverlogReadFn names the function the wide door grants, as has_function_privilege takes it.
 const serverlogReadFn = "pg_catalog.pg_read_binary_file(text, bigint, bigint, boolean)"
 
-// serverlogDoorSQL is the narrow door the client's DBA creates as a superuser in the monitored database (the
+// ServerlogDoorSQL is the narrow door the client's DBA creates as a superuser in the monitored database (the
 // schema is free; the reader finds it by name, argument types, owner and SECURITY DEFINER).
-const serverlogDoorSQL = `CREATE FUNCTION public.pgvigil_read_log(p_name text, p_offset bigint, p_length bigint) RETURNS bytea
+const ServerlogDoorSQL = `CREATE FUNCTION public.pgvigil_read_log(p_name text, p_offset bigint, p_length bigint) RETURNS bytea
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog AS $$
   SELECT pg_read_binary_file(current_setting('log_directory') || '/' || p_name, p_offset, p_length, true)
    WHERE p_name IN (SELECT name FROM pg_ls_logdir())
@@ -155,7 +155,7 @@ func (s serverlogSettings) check() string {
 		return "the monitoring login may not run pg_ls_logdir() (GRANT pg_monitor TO <login>)"
 	case s.Door == "" && !s.CanRead:
 		return "the monitoring login may not read the log files: the client DBA's opt-in is the function pgvigil_read_log " +
-			"(SECURITY DEFINER, serves only the log files; its text is in the README), or the wide door GRANT EXECUTE ON FUNCTION " +
+			"(SECURITY DEFINER, serves only the log files; `pgvigil roles` prints it), or the wide door GRANT EXECUTE ON FUNCTION " +
 			serverlogReadFn + " TO <login>, which also opens every file under the data directory (pg_hba.conf, server.key, " +
 			"pg_authid's password hashes); pg_read_server_files alone opens neither"
 	}

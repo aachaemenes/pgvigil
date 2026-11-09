@@ -55,7 +55,7 @@ var base = []Spec{
 		Load: 0.6, MaxConn: 200, Addr: "10.20.2.21", IdleHead: true, Tags: []string{"prod", "hr", "env:prod", "team:hr"}, Tables: "avoff"},
 	{Name: "rds-orders01", Platform: "rds", Version: "16.13", VersionNum: 160013, App: "orders", DBs: []string{"orders"},
 		Load: 2.0, MaxConn: 500, Addr: "10.30.4.15", ChainDDL: true, StmtReset: true, Deadlocks: true, Logs: true, Tags: []string{"prod", "orders", "env:prod", "team:orders"},
-		SettingEdit: "log_min_duration_statement=-1>1000", Tables: "dead"},
+		SettingEdit: "log_min_duration_statement=5000>1000", Tables: "dead"},
 	{Name: "rds-billing01", Platform: "rds", Version: "17.11", VersionNum: 170011, App: "billing", DBs: []string{"billing"},
 		Load: 0.9, MaxConn: 300, Addr: "10.30.4.22", SlotStale: true, Cron: true, Logs: true, Tags: []string{"prod", "billing", "env:prod", "team:billing"}},
 	{Name: "aurora-crm01", Platform: "aurora", Version: "17.10", VersionNum: 170010, App: "crm", DBs: []string{"crm"},

@@ -15,6 +15,7 @@ export interface Ctx {
   taskInstance?: number;
   order?: string;        // statements sort
   minSecs?: number;      // statements: executions seen running at least this long
+  ms?: number;           // slow queries: the threshold in milliseconds
 }
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
@@ -53,6 +54,7 @@ export function parse(): Ctx {
     taskInstance: Number(q.get('ti')) || undefined,
     order: q.get('order') ?? undefined,
     minSecs: q.has('min') && Number.isFinite(Number(q.get('min'))) ? Math.min(86400, Math.max(0, Math.trunc(Number(q.get('min'))))) : undefined,
+    ms: q.has('ms') && Number.isFinite(Number(q.get('ms'))) ? Math.min(86400000, Math.max(0, Math.trunc(Number(q.get('ms'))))) : undefined,
   };
 }
 
@@ -74,6 +76,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (c.tab === 'activity') page('at', 'at');
   if (c.tab === 'dms') { page('task', 'task'); page('taskInstance', 'ti'); }
   if (c.tab === 'statements') { page('order', 'order'); page('minSecs', 'min'); }
+  if (c.tab === 'slowqueries') page('ms', 'ms');
   return `#/${c.tab}?${q}`;
 }
 
