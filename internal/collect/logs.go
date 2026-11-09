@@ -56,7 +56,7 @@ type cwEvent struct {
 
 // logFetcher reads events of a log group from a start time; the CloudWatch client in production,
 // a recorded set in tests.
-type logFetcher func(ctx context.Context, group string, from time.Time, max int) ([]cwEvent, error)
+type logFetcher func(ctx context.Context, group string, from time.Time, limit int) ([]cwEvent, error)
 
 var newFetcher = func(ctx context.Context, a config.AWS) (logFetcher, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
@@ -71,13 +71,13 @@ var newFetcher = func(ctx context.Context, a config.AWS) (logFetcher, error) {
 		return nil, fmt.Errorf("aws config: %w", err)
 	}
 	cl := cloudwatchlogs.NewFromConfig(cfg)
-	return func(ctx context.Context, group string, from time.Time, max int) ([]cwEvent, error) {
+	return func(ctx context.Context, group string, from time.Time, limit int) ([]cwEvent, error) {
 		var out []cwEvent
 		p := cloudwatchlogs.NewFilterLogEventsPaginator(cl, &cloudwatchlogs.FilterLogEventsInput{
 			LogGroupName: aws.String(group),
 			StartTime:    aws.Int64(from.UnixMilli()),
 		})
-		for p.HasMorePages() && len(out) < max {
+		for p.HasMorePages() && len(out) < limit {
 			page, err := p.NextPage(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("FilterLogEvents %s: %w", group, err)

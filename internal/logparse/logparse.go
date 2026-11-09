@@ -17,6 +17,7 @@ import (
 // Kind of event.
 type Kind string
 
+// The kinds of event Parse returns.
 const (
 	Slow     Kind = "slow"
 	LockWait Kind = "lock_wait"
