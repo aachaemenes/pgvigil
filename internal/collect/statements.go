@@ -105,10 +105,10 @@ SELECT 'stmt'                         AS kind,
        %[4]s                          AS temp_read_ms,
        %[5]s                          AS temp_write_ms,
        %[6]s                          AS wal_bytes,
-       left(s.query, %[10]d)          AS query
+       %[10]s                         AS query
   FROM picked s
   LEFT JOIN pg_database d ON d.oid = s.dbid
-  LEFT JOIN pg_roles r    ON r.oid = s.userid`, toplevel, readTime, writeTime, tempReadTime, tempWriteTime, walBytes, quoteIdent(schema), statementsTopN, statementsTopCalls, statementsTextMax)
+  LEFT JOIN pg_roles r    ON r.oid = s.userid`, toplevel, readTime, writeTime, tempReadTime, tempWriteTime, walBytes, quoteIdent(schema), statementsTopN, statementsTopCalls, maskSQL(fmt.Sprintf("left(s.query, %d)", statementsTextMax)))
 
 	srows, err := conn.Query(ctx, sql)
 	if err != nil {

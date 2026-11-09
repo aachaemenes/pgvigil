@@ -36,3 +36,14 @@ func col(cols map[string]bool, alias, name, typ string) string {
 	}
 	return "NULL::" + typ
 }
+
+// maskSQL wraps a query-text expression so a password literal never leaves the
+// target: CREATE/ALTER ROLE|USER ... PASSWORD '...', IDENTIFIED BY '...', and a
+// connection-string password=... inside the text. pg_stat_statements normalises
+// constants in DML but keeps utility statements verbatim, so this applies to
+// pg_stat_activity.query and pg_stat_statements.query alike.
+func maskSQL(expr string) string {
+	return `regexp_replace(regexp_replace(` + expr +
+		`, '((PASSWORD|IDENTIFIED\s+BY)\s+)(''(?:[^'']|'''')*''|E''(?:[^'']|'''')*''|\$[0-9]+)', '\1''<masked>''', 'gi')` +
+		`, '(password|passfile|sslkey|sslpassword)=\S+', '\1=<masked>', 'gi')`
+}

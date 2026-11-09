@@ -37,8 +37,8 @@ func (activityCollector) Applies(info platform.Info) (bool, string) {
 // sessionsSQL stores active and idle-in-transaction client backends, plus every
 // backend some Lock waiter names in pg_blocking_pids (an idle holder of an
 // advisory lock, an autovacuum worker, a parallel worker), so a chain's head is
-// always in the snapshot. query_id exists from PostgreSQL 14; the %s is
-// 'a.query_id' or 'NULL::bigint'.
+// always in the snapshot. query_id exists from PostgreSQL 14; the first %s is
+// 'a.query_id' or 'NULL::bigint', the second the masked query text (maskSQL).
 const sessionsSQL = `
 WITH blockers AS (
   SELECT DISTINCT b AS pid
@@ -64,7 +64,7 @@ SELECT 'session'                                              AS kind,
        a.leader_pid,
        %s                                                     AS query_id,
        hashtextextended(a.query, 0)                           AS query_hash,
-       a.query,
+       %s AS query,
        a.backend_type,
        (a.pid IN (SELECT pid FROM blockers))                  AS is_blocker
   FROM pg_stat_activity a
@@ -96,7 +96,7 @@ func (activityCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.
 	if info.ServerVersionNum >= 140000 {
 		queryID = "a.query_id"
 	}
-	rows, err := conn.Query(ctx, fmt.Sprintf(sessionsSQL, queryID))
+	rows, err := conn.Query(ctx, fmt.Sprintf(sessionsSQL, queryID, maskSQL("a.query")))
 	if err != nil {
 		return nil, fmt.Errorf("sessions: %w", err)
 	}
