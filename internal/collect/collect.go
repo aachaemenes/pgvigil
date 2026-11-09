@@ -10,9 +10,11 @@ package collect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +38,18 @@ type Collector interface {
 	// Run executes the collection on an open connection.
 	Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error)
 }
+
+// InstanceRunner is a Collector that also needs the instance's config and its stored log cursor
+// (the log reader); RunOnce calls RunInstance instead of Run when a collector has it.
+type InstanceRunner interface {
+	RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error)
+}
+
+// CursorFunc returns how far a source was read, and false when it never was.
+type CursorFunc func(ctx context.Context, source string) (time.Time, bool, error)
+
+// ErrSkip is returned (wrapped, with the reason) by a run that does not apply to this instance's config.
+var ErrSkip = errors.New("skipped")
 
 var registry = map[string]Collector{}
 
@@ -131,7 +145,19 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
 		return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
-	rows, err := c.Run(ctx, conn, info)
+	var rows []Row
+	if ir, ok := c.(InstanceRunner); ok {
+		rows, err = ir.RunInstance(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
+			return r.LogCursor(ctx, instanceID, source)
+		})
+	} else {
+		rows, err = c.Run(ctx, conn, info)
+	}
+	if errors.Is(err, ErrSkip) {
+		why := strings.TrimSuffix(err.Error(), ": "+ErrSkip.Error())
+		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+		return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
+	}
 	if err != nil {
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
 		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}

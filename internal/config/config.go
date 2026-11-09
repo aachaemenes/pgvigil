@@ -45,6 +45,31 @@ type Instance struct {
 	Schedules map[string]Duration `yaml:"schedules"`
 	// Disabled lists collections that never run on this instance.
 	Disabled []string `yaml:"disabled"`
+	// AWS names the RDS / Aurora resource for the log reader (CloudWatch Logs); nil = no AWS door.
+	AWS *AWS `yaml:"aws"`
+}
+
+// AWS is an instance's door to its cloud side. Credentials come from the SDK's usual chain
+// (environment, shared config profile incl. an `aws login` session, instance role); none are stored here.
+type AWS struct {
+	Region     string `yaml:"region"`
+	Profile    string `yaml:"profile"`
+	Cluster    string `yaml:"cluster"`     // Aurora: the DB cluster identifier
+	DBInstance string `yaml:"db_instance"` // RDS: the DB instance identifier
+	LogGroup   string `yaml:"log_group"`   // override; default /aws/rds/{cluster|instance}/<id>/postgresql
+}
+
+// PostgresLogGroup is the CloudWatch log group RDS exports the postgresql log to.
+func (a AWS) PostgresLogGroup() string {
+	switch {
+	case a.LogGroup != "":
+		return a.LogGroup
+	case a.Cluster != "":
+		return "/aws/rds/cluster/" + a.Cluster + "/postgresql"
+	case a.DBInstance != "":
+		return "/aws/rds/instance/" + a.DBInstance + "/postgresql"
+	}
+	return ""
 }
 
 // DSN resolves the instance connection string.

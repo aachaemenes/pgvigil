@@ -179,6 +179,18 @@ func (r *Repo) Import(ctx context.Context, instanceID int, collection string, sn
 	return err
 }
 
+// LogCursor returns how far a log source was read for an instance (false: never).
+func (r *Repo) LogCursor(ctx context.Context, instanceID int, source string) (time.Time, bool, error) {
+	var t *time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.log_cursor($1, $2)`, instanceID, source).Scan(&t); err != nil {
+		return time.Time{}, false, fmt.Errorf("log_cursor: %w", err)
+	}
+	if t == nil {
+		return time.Time{}, false, nil
+	}
+	return *t, true, nil
+}
+
 // LogCollection records when a collection ran and how it ended.
 func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note string) error {
 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,

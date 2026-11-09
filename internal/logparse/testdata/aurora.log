@@ -1,0 +1,21 @@
+2026-11-09 12:00:00 UTC::@:[500]:LOG:  checkpoint starting: time
+2026-11-09 12:00:01 UTC:10.0.0.5(54321):app@shop:[1234]:LOG:  duration: 612.345 ms  statement: select pg_sleep(0.6),
+	'two lines'
+2026-11-09 12:00:02 UTC:10.0.0.5(54322):app@shop:[1235]:LOG:  duration: 1500.000 ms  execute S_1: update orders set x = $1 where id = $2
+2026-11-09 12:00:02 UTC:10.0.0.5(54322):app@shop:[1235]:DETAIL:  parameters: $1 = '7', $2 = '42'
+2026-11-09 12:00:03 UTC:10.0.0.6(40000):app@shop:[2001]:LOG:  process 2001 still waiting for ShareLock on transaction 777 after 1000.071 ms
+2026-11-09 12:00:03 UTC:10.0.0.6(40000):app@shop:[2001]:DETAIL:  Process holding the lock: 2002. Wait queue: 2001.
+2026-11-09 12:00:03 UTC:10.0.0.6(40000):app@shop:[2001]:CONTEXT:  while updating tuple (0,1) in relation "orders"
+2026-11-09 12:00:03 UTC:10.0.0.6(40000):app@shop:[2001]:STATEMENT:  update orders set x = 1 where id = 1
+2026-11-09 12:00:04 UTC:10.0.0.6(40000):app@shop:[2001]:ERROR:  deadlock detected
+2026-11-09 12:00:04 UTC:10.0.0.6(40000):app@shop:[2001]:DETAIL:  Process 2001 waits for ShareLock on transaction 777; blocked by process 2002.
+	Process 2002 waits for ShareLock on transaction 778; blocked by process 2001.
+	Process 2001: update orders set x = 1 where id = 1
+	Process 2002: update orders set x = 2 where id = 2
+2026-11-09 12:00:04 UTC:10.0.0.6(40000):app@shop:[2001]:HINT:  See server log for query details.
+2026-11-09 12:00:04 UTC:10.0.0.6(40000):app@shop:[2001]:STATEMENT:  update orders set x = 1 where id = 1
+2026-11-09 12:00:05 UTC:203.0.113.9(5555):admin@postgres:[3001]:FATAL:  password authentication failed for user "admin"
+2026-11-09 12:00:05 UTC:203.0.113.9(5555):admin@postgres:[3001]:DETAIL:  Connection matched pg_hba.conf line 5: "host all all 0.0.0.0/0 md5"
+2026-11-09 12:00:06 UTC:10.0.0.5(54323):app@shop:[1236]:LOG:  duration: 0.512 ms
+not a log line
+2026-11-09 12:00:07 UTC:10.0.0.7(1):ghost@shop:[4001]:FATAL:  role "ghost" does not exist
