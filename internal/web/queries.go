@@ -56,6 +56,10 @@ SELECT f.instance_id, 'critical', 'job failed', f.scheduler || ' ' || coalesce(f
 SELECT d.instance_id, d.severity, d.check_name, d.object, d.at, d.detail
   FROM pgvigil.dms_checks d JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active`},
+	{"tables", `
+SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
+  FROM pgvigil.table_checks c JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active`},
 	// the import starts a new epoch when stats_reset moves or a counter falls (a crash or a failover
 	// restarts them under the same stats_reset), so within one epoch max minus min is the rise, as a hash
 	// aggregate: an ordered array_agg or lag() sorts the whole day (21 s / 27 s at 5.76 M rows, 1 s this way)
@@ -292,3 +296,46 @@ SELECT datname, owner, encoding, size_bytes, xid_age, mxid_age, can_connect, all
   FROM pgvigil.databases
  WHERE instance_id = $1
  ORDER BY is_present DESC, size_bytes DESC NULLS LAST, datname`
+
+// sqlTables is one instance's tables in the latest top N per database, the ones with a check first. The
+// checks view (a fleet-wide CTE) is read once per request through the aggregated join, never per table row.
+const sqlTables = `
+SELECT t.datname, t.schema_name, t.table_name, t.total_bytes, t.heap_bytes, t.toast_bytes, t.index_bytes,
+       t.n_live_tup, t.n_dead_tup,
+       round(100.0 * t.n_dead_tup / nullif(t.n_live_tup + t.n_dead_tup, 0), 1) AS dead_pct,
+       round(100.0 * t.relallvisible / nullif(t.relpages, 0), 1) AS all_visible_pct,
+       t.bloat_pct, t.bloat_bytes, t.last_vacuum, t.last_analyze, t.n_mod_since_analyze, t.n_ins_since_vacuum,
+       t.vacuums, t.analyzes, t.seq_scan, t.idx_scan, t.xid_age, t.mxid_age, t.autovacuum_off, t.stats_readable,
+       t.snapshot_at, c.checks
+  FROM pgvigil.tables t
+  LEFT JOIN (SELECT object, count(*) AS n, string_agg(check_name, ', ' ORDER BY check_name) AS checks
+               FROM pgvigil.table_checks WHERE instance_id = $1 GROUP BY object) c
+    ON c.object = t.datname || '.' || t.schema_name || '.' || t.table_name
+ WHERE t.instance_id = $1 AND t.is_present
+ ORDER BY coalesce(c.n, 0) DESC, t.total_bytes DESC NULLS LAST`
+
+// sqlTableDatabases is the per-database summary of one instance's table read.
+const sqlTableDatabases = `
+SELECT d.datname, d.user_tables, d.never_vacuumed, d.never_analyzed, d.big_tables, d.big_never_vacuumed,
+       d.big_under_half_visible, round(100.0 * d.big_visible_pages / nullif(d.big_pages, 0), 1) AS big_visible_pct,
+       d.stats_reset, d.snapshot_at
+  FROM pgvigil.table_databases d
+ WHERE d.instance_id = $1 AND d.is_present
+ ORDER BY d.datname`
+
+// sqlFindings lists the findings of every instance ($1 NULL) or one, the most severe first.
+const sqlFindings = `
+SELECT f.instance_id, i.name AS instance, i.platform, f.severity, f.setting, f.value, f.is_set, f.suggested, f.platforms,
+       f.detail, f.source, f.at
+  FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active AND ($1::int IS NULL OR f.instance_id = $1)
+ ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, i.name, f.setting`
+
+// sqlDMSDrain is the drain readout of every task ($1 NULL) or one instance's.
+const sqlDMSDrain = `
+SELECT d.instance_id, i.name AS instance, d.task_id, d.task_arn, d.status, d.latency_target_s, d.reader_at, d.speed_x,
+       d.eta_secs, d.rows_behind, d.rows_in_s, d.rows_out_s, d.eta_rows_secs, d.disk_source, d.disk_target, d.spilling,
+       d.tables, d.validated, d.pending, d.never_validated, d.failed, d.suspended, d.pending_records, d.failed_records
+  FROM pgvigil.dms_drain d JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active AND ($1::int IS NULL OR d.instance_id = $1)
+ ORDER BY i.name, d.task_id`

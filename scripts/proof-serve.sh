@@ -91,6 +91,20 @@ rows "databases?instance=$BID" 'len(d["rows"])' 1
 [[ $(code "$U/api/logs?instance=$LID&kind=bad") == 400 ]] || fail "logs kind=bad was not 400"
 [[ $(code "$U/api/replication") == 400 ]] || fail "replication without instance was not 400"
 [[ $(code "$U/api/config?instance=1&from=bad") == 400 ]] || fail "config with a bad from was not 400"
+# the borrowed views (task 21): tables, findings, the statements sort and the slow executions, the dms drain table
+TBID=$(pick "select instance_id from pgvigil.table_databases where is_present order by snapshot_at desc limit 1")
+if [[ -n "$TBID" ]]; then
+  rows "tables?instance=$TBID" 'len(d["databases"]["rows"])' 1
+  rows "tables?instance=$TBID" 'len(d["tables"]["rows"])' 1
+else echo "tables: no table read in this repository (collect -once tables fills it): the endpoint is checked for its 400 only"; fi
+rows findings 'len(d["rows"])' 1
+rows "findings?instance=$SID" 'len(d["rows"])' 0
+rows "slow?instance=$AID&from=$FROM&min=0" 'len(d["rows"])' 1
+rows "statements?instance=$SID&from=$FROM&order=calls" 'len(d["rows"])' 1
+rows dms '1 if "drain" in d else 0' 1
+[[ $(code "$U/api/tables") == 400 ]] || fail "tables without instance was not 400"
+[[ $(code "$U/api/statements?instance=$SID&order=bad") == 400 ]] || fail "statements order=bad was not 400"
+[[ $(code "$U/api/slow?instance=$SID&min=bad") == 400 ]] || fail "slow min=bad was not 400"
 [[ $(code "$U/api/dms?instance=x") == 400 ]] || fail "dms with a bad instance was not 400"
 [[ $(code -H 'Host: evil.example' "$U/api/instances") == 421 ]] || fail "a foreign Host was answered"
 [[ $(code "$U/api/activity") == 400 ]] || fail "activity without instance was not 400"

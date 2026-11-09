@@ -40,6 +40,10 @@ func TestRoutesWithoutDatabase(t *testing.T) {
 		{"/api/logs?instance=1&kind=bad", 400, "kind must be"},
 		{"/api/config", 400, "instance must be"},
 		{"/api/databases?instance=0", 400, "instance must be"},
+		{"/api/tables", 400, "instance must be"},
+		{"/api/findings?instance=0", 400, "instance must be"},
+		{"/api/slow?instance=1&min=bad", 400, "min must be"},
+		{"/api/statements?instance=1&order=bad", 400, "order must be"},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()

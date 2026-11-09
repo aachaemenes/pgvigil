@@ -51,6 +51,7 @@ export interface DMS {
   tasks: Table | null;
   instances: Table | null;
   tables: Table | null;
+  drain?: Table | null;
 }
 
 export type Tables<K extends string> = Record<K, Table | null>;
