@@ -1,0 +1,34 @@
+2026-11-09 14:18:45.975 PST [82038] LOG:  starting PostgreSQL 18.6 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 16.2.1 20260810, 64-bit
+2026-11-09 14:18:45.975 PST [82038] LOG:  listening on IPv6 address "::1", port 5497
+2026-11-09 14:18:45.975 PST [82038] LOG:  listening on IPv4 address "127.0.0.1", port 5497
+2026-11-09 14:18:45.977 PST [82045] LOG:  database system was shut down at 2026-11-09 14:18:36 PST
+2026-11-09 14:18:45.978 PST [82038] LOG:  database system is ready to accept connections
+2026-11-09 14:18:46.082 PST [82052] mon@postgres ERROR:  permission denied for function pg_read_binary_file
+2026-11-09 14:18:46.082 PST [82052] mon@postgres STATEMENT:  select length(pg_read_binary_file('log/'||(select name from pg_ls_logdir() limit 1), 0, 100, true))
+2026-11-09 14:18:50.435 PST [83097] mon@postgres ERROR:  absolute path not allowed
+2026-11-09 14:18:50.435 PST [83097] mon@postgres STATEMENT:  select length(pg_read_binary_file('/etc/hostname', 0, 10, true))
+2026-11-09 14:18:58.251 PST [82038] LOG:  received SIGHUP, reloading configuration files
+2026-11-09 14:18:58.251 PST [82038] LOG:  parameter "log_directory" changed to "/var/log/pglog"
+2026-11-09 14:19:17.792 PST [89466] postgres@postgres LOG:  duration: 150.467 ms  statement: select pg_sleep(0.15) /* slow1 */
+2026-11-09 14:19:17.913 PST [89466] postgres@postgres LOG:  duration: 121.220 ms  statement: select pg_sleep(0.12),
+	  'line two' /* multi */
+2026-11-09 14:19:18.635 PST [89481] postgres@postgres LOG:  process 89481 still waiting for ShareLock on transaction 760 after 200.053 ms
+2026-11-09 14:19:18.635 PST [89481] postgres@postgres DETAIL:  Process holding the lock: 89471. Wait queue: 89481.
+2026-11-09 14:19:18.635 PST [89481] postgres@postgres CONTEXT:  while updating tuple (0,1) in relation "t_dl"
+2026-11-09 14:19:18.635 PST [89481] postgres@postgres STATEMENT:  update t_dl set v=2 where id=1
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres LOG:  process 89471 detected deadlock while waiting for ShareLock on transaction 761 after 200.057 ms
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres DETAIL:  Process holding the lock: 89481. Wait queue: .
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres CONTEXT:  while updating tuple (0,2) in relation "t_dl"
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres STATEMENT:  update t_dl set v=1 where id=2
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres ERROR:  deadlock detected
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres DETAIL:  Process 89471 waits for ShareLock on transaction 761; blocked by process 89481.
+	Process 89481 waits for ShareLock on transaction 760; blocked by process 89471.
+	Process 89471: update t_dl set v=1 where id=2
+	Process 89481: update t_dl set v=2 where id=1
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres HINT:  See server log for query details.
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres CONTEXT:  while updating tuple (0,2) in relation "t_dl"
+2026-11-09 14:19:19.133 PST [89471] postgres@postgres STATEMENT:  update t_dl set v=1 where id=2
+2026-11-09 14:19:19.133 PST [89481] postgres@postgres LOG:  process 89481 acquired ShareLock on transaction 760 after 698.311 ms
+2026-11-09 14:19:19.133 PST [89481] postgres@postgres CONTEXT:  while updating tuple (0,1) in relation "t_dl"
+2026-11-09 14:19:19.133 PST [89481] postgres@postgres STATEMENT:  update t_dl set v=2 where id=1
+2026-11-09 14:19:19.140 PST [89523] nosuchrole@postgres FATAL:  role "nosuchrole" does not exist
