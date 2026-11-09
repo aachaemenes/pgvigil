@@ -130,8 +130,11 @@ function snapshotPicker(ctx: Ctx, at?: string): HTMLElement {
   const go = (t?: string) => { location.hash = href(ctx, { tab: 'activity', at: t }); };
   // the picker has whole seconds and snapshots have fractions: take the end of the chosen second
   input.addEventListener('change', () => { go(input.value ? new Date(new Date(input.value).getTime() + 999).toISOString() : undefined); });
-  const latest = el('button', { type: 'button' }, 'Latest');
-  latest.addEventListener('click', () => go());
+  // under a custom range the page shows the range's end: Latest returns to a range that follows now
+  const latest = el('button', { type: 'button', title: isLive(ctx) ? 'The newest snapshot' : 'The newest snapshot (switches the range to the last hour)' }, 'Latest');
+  latest.addEventListener('click', () => {
+    location.hash = isLive(ctx) ? href(ctx, { tab: 'activity', at: undefined }) : href(ctx, { tab: 'activity', at: undefined, range: { preset: '1h' } });
+  });
   const hist = ctx.at ? ' (history: auto refresh off)' : at ? ' (the end of the custom range: auto refresh off)' : '';
   return el('div', { class: 'picker' }, 'Snapshot at or before ', input, ' ', latest, hist ? el('span', { class: 'meta' }, hist) : null);
 }
@@ -200,8 +203,11 @@ const taskBadge = (v: unknown) => {
 
 export async function dms(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<DMS>('dms', { instance: ctx.instance, task: ctx.task, task_instance: ctx.taskInstance });
-  const tasks = rowsOf(d.tasks), ris = rowsOf(d.instances), tables = rowsOf(d.tables);
-  const sec = el('section', {}, el('h2', {}, 'DMS replication tasks'), el('p', { class: 'meta' }, 'The newest state of each task; the time range does not apply.'));
+  // a tag folder picked in the tree scopes the fleet DMS tab like the other root tabs
+  const ids = ctx.tag && !ctx.instance ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const scoped = (rows: Row[]) => ids ? rows.filter(r => ids.has(Number(r.instance_id))) : rows;
+  const tasks = scoped(rowsOf(d.tasks)), ris = scoped(rowsOf(d.instances)), tables = rowsOf(d.tables);
+  const sec = el('section', {}, el('h2', {}, 'DMS replication tasks' + (ctx.instance ? '' : scopeLabel(ctx))), el('p', { class: 'meta' }, 'The newest state of each task; the time range does not apply.'));
   const taskCols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id, 'dms') },
     { key: 'task_id', label: 'task', fmt: (v, r) => link(String(v), href(ctx, { tab: 'dms', task: String(r.task_arn), taskInstance: Number(r.instance_id) })) },
@@ -401,7 +407,7 @@ function pivot(rows: Row[], name: (r: Row) => string, val: (r: Row) => number | 
 
 export async function replication(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
-  const d = await get<Record<'latest' | 'checks' | 'series', Table>>('replication', { instance: ctx.instance, ...range(ctx) });
+  const d = await get<Record<'latest' | 'checks' | 'series' | 'series_meta', Table>>('replication', { instance: ctx.instance, ...range(ctx) });
   const sec = el('section', {}, el('h2', {}, 'Replication'));
   const checkCols: Col[] = [
     { key: 'check_name', label: 'check', fmt: v => badge(String(v), String(v).startsWith('slot WAL status') ? 'crit' : 'warn') },
@@ -422,7 +428,12 @@ export async function replication(ctx: Ctx): Promise<HTMLElement> {
   const name = (r: Row) => `${r.kind} ${r.key}`;
   const secs = pivot(series, name, r => r.lag_secs == null ? null : Number(r.lag_secs));
   const bytes = pivot(series, name, r => r.lag_bytes == null ? null : Number(r.lag_bytes));
-  sec.append(el('h3', {}, `Lag (${rangeLabel(ctx)})`), el('div', { class: 'charts' },
+  const meta = rowsOf(d.series_meta)[0] ?? {};
+  const step = Number(meta.step_secs ?? 60), capped = series.length >= Number(meta.cap ?? Infinity);
+  sec.append(el('h3', {}, `Lag (${rangeLabel(ctx)})`),
+    el('p', { class: capped ? 'error' : 'meta' }, `Each point is the largest lag in a ${fmtSecs(step)} bucket.` +
+      (capped ? ` Too many objects for this range: the oldest points are cut, the chart starts at ${fmtTime(series[0]?.snapshot_at)}. Pick a shorter range.` : '')),
+    el('div', { class: 'charts' },
     lineChart('Replay lag (s)', secs.rows, secs.series),
     lineChart('Lag / retained WAL', bytes.rows, bytes.series, fmtBytes)));
   return sec;

@@ -6,7 +6,7 @@ import { destroyCharts } from './chart';
 import { fleet, forget } from './fleet';
 import { checks, config, Ctx, dms, errorBox, fleetSummary, instances, instanceSummary, jobs, logs, replication, statements, counters, activity } from './pages';
 import { rangePicker } from './rangepicker';
-import { href, instanceTabs, isLive, parse, rootTabs } from './router';
+import { href, instanceTabs, isLive, parse, rememberInstance, rootTabs } from './router';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 
@@ -94,6 +94,7 @@ async function render(force = false) {
   timer = undefined;
   const gen = ++generation;
   const ctx = parse();
+  rememberInstance(ctx.instance);
   const tabs = ctx.instance ? instanceTabs : rootTabs;
   const pages = ctx.instance ? instancePages : rootPages;
 

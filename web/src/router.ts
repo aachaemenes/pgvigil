@@ -15,6 +15,9 @@ export interface Ctx {
   taskInstance?: number;
 }
 
+function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
+export function rememberInstance(id?: number) { if (id) try { localStorage.setItem('pgvigil.instance', String(id)); } catch { /* private window */ } }
+
 export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
 
 export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', instances: 'Instances', dms: 'DMS' };
@@ -28,9 +31,10 @@ export function parse(): Ctx {
   const h = location.hash.replace(/^#\/?/, '');
   const [p, qs] = h.split('?');
   const q = new URLSearchParams(qs ?? '');
-  const instance = Number(q.get('i')) || undefined;
-  const tabs = instance ? instanceTabs : rootTabs;
   const name = legacy[p] ?? p;
+  // an instance-only tab without i (an old bookmark) opens the instance last viewed in this browser
+  const instance = Number(q.get('i')) || (instanceTabs[name] && !rootTabs[name] && !q.get('tag') ? Number(lsGet('pgvigil.instance')) || undefined : undefined);
+  const tabs = instance ? instanceTabs : rootTabs;
   const from = q.get('from') ?? undefined, to = q.get('to') ?? undefined;
   const custom = from && to && !isNaN(Date.parse(from)) && !isNaN(Date.parse(to)) && Date.parse(from) < Date.parse(to);
   const w = q.get('w') ?? '';

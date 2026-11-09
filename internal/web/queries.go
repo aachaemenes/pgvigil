@@ -189,15 +189,23 @@ SELECT check_name, object, value, unit, state, snapshot_at
  WHERE instance_id = $1
  ORDER BY check_name, object`
 
-// sqlReplSeries is the lag of every lag-bearing object over the window, capped so a busy fleet
-// member cannot send a page megabytes of points.
+// sqlReplSeries is the lag of every lag-bearing object over the window, the max per $4-second bucket
+// (the handler picks about 600 buckets per window), and when even that passes the cap the NEWEST rows
+// are kept: a lag chart that loses its end loses the point the page is opened for.
 const sqlReplSeries = `
-SELECT snapshot_at, kind, key, lag_bytes, lag_secs
-  FROM pgvigil.replication_sample
- WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
-   AND kind IN ('sender', 'receiver', 'slot', 'aurora_replica')
- ORDER BY snapshot_at, kind, key
- LIMIT 20000`
+SELECT * FROM (
+  SELECT to_timestamp(floor(extract(epoch FROM snapshot_at) / $4) * $4) AS snapshot_at, kind, key,
+         max(lag_bytes) AS lag_bytes, max(lag_secs) AS lag_secs
+    FROM pgvigil.replication_sample
+   WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+     AND kind IN ('sender', 'receiver', 'slot', 'aurora_replica')
+   GROUP BY 1, 2, 3
+   ORDER BY 1 DESC
+   LIMIT 20000) x
+ ORDER BY snapshot_at, kind, key`
+
+// replSeriesCap is sqlReplSeries's LIMIT: the page says so when a reply holds this many rows.
+const replSeriesCap = 20000
 
 // sqlJobs is the job list of one instance with its newest run's status.
 const sqlJobs = `

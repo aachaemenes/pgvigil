@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -515,10 +516,16 @@ func (s *Server) replication(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// about 600 points per object over any window, never finer than the one-minute collection
+	step := int(math.Ceil(to.Sub(from).Seconds() / 600))
+	if step < 60 {
+		step = 60
+	}
 	s.multi(w, r, []part{
 		{"latest", sqlReplLatest, []any{id}},
 		{"checks", sqlReplChecks, []any{id}},
-		{"series", sqlReplSeries, []any{id, from, to}},
+		{"series", sqlReplSeries, []any{id, from, to, step}},
+		{"series_meta", `SELECT $1::int AS step_secs, $2::int AS cap`, []any{step, replSeriesCap}},
 	})
 }
 
