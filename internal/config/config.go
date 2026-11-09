@@ -25,6 +25,8 @@ type Config struct {
 	// always masked), normalized (every literal replaced by ?), none (no statement text at all,
 	// only hashes and counters). An instance's own query_text overrides it.
 	QueryText string `yaml:"query_text"`
+	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
+	UI UI `yaml:"ui"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -44,7 +46,9 @@ type Instance struct {
 	// DSNRaw is a libpq keyword/value or URL connection string, or env:/file: indirection.
 	DSNRaw string `yaml:"dsn"`
 	// Platform is auto (default), onprem, rds, aurora, azure, cloudsql or alloydb.
-	Platform  string              `yaml:"platform"`
+	Platform string `yaml:"platform"`
+	// Tags are plain words (prod) or key:value pairs (env:prod, team:billing), both in one list; a plain
+	// word is the key "tag". The repository keeps them as written; 'pgvigil tag' overrides a key there.
 	Tags      []string            `yaml:"tags"`
 	Schedules map[string]Duration `yaml:"schedules"`
 	// Disabled lists collections that never run on this instance.
@@ -59,6 +63,79 @@ type Instance struct {
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
 	// accepted: the password of a login that can stop sessions never sits in the file.
 	ActionsDSNRaw string `yaml:"actions_dsn"`
+}
+
+// UI is the ui: block: the tree's folder levels and the order of the values in them.
+type UI struct {
+	// GroupBy lists tag keys, one folder level each, in order (e.g. [env, team]); empty = one folder per tag.
+	GroupBy []string `yaml:"group_by"`
+	// EnvOrder orders the values of every level: a listed value comes first, in the listed order (prod first);
+	// the rest follow by name. Empty = DefaultEnvOrder.
+	EnvOrder []string `yaml:"env_order"`
+}
+
+// DefaultEnvOrder puts production first and the lower environments after it.
+var DefaultEnvOrder = []string{"prod", "production", "prd", "staging", "stage", "uat", "qa", "test", "dev", "development"}
+
+// MaxGroupLevels caps the tree's folder levels.
+const MaxGroupLevels = 4
+
+// Tag is one key:value pair; a plain word is Key "tag".
+type Tag struct {
+	Key   string
+	Value string
+}
+
+// String is the tag's one written form: the value alone for the key "tag", else key:value.
+func (t Tag) String() string {
+	if t.Key == "tag" {
+		return t.Value
+	}
+	return t.Key + ":" + t.Value
+}
+
+// ValidTagKey says whether k may be a tag key: lower-case letters, digits, '_', '.', '-', 1..40 characters.
+func ValidTagKey(k string) bool {
+	if len(k) == 0 || len(k) > 40 {
+		return false
+	}
+	for _, r := range k {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseTag reads "prod" (key tag) or "env:prod" (the first ':' splits); the key is lower-cased, both
+// parts trimmed. The repository's view pgvigil.instance_tag_pairs (0032) splits the same way.
+func ParseTag(s string) (Tag, error) {
+	s = strings.TrimSpace(s)
+	t := Tag{Key: "tag", Value: s}
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		t = Tag{Key: strings.ToLower(strings.TrimSpace(s[:i])), Value: strings.TrimSpace(s[i+1:])}
+	}
+	switch {
+	case t.Value == "":
+		return t, fmt.Errorf("tag %q has no value", s)
+	case !ValidTagKey(t.Key):
+		return t, fmt.Errorf("tag %q: the key must be lower-case letters, digits, '_', '.' or '-' (1..40)", s)
+	case len(t.Value) > 100 || strings.ContainsAny(t.Value, ",\n\r\t"):
+		return t, fmt.Errorf("tag %q: the value must be at most 100 characters, without a comma or a control character", s)
+	}
+	return t, nil
+}
+
+// TagPairs returns the instance's tags as pairs (Validate has checked them).
+func (i Instance) TagPairs() []Tag {
+	out := make([]Tag, 0, len(i.Tags))
+	for _, s := range i.Tags {
+		if t, err := ParseTag(s); err == nil {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // ActionsDSN resolves the actions door; "" = none configured (or an unset variable / unreadable file).
@@ -167,6 +244,27 @@ func (c *Config) Validate() error {
 	if !validQueryText(c.QueryText) {
 		return fmt.Errorf("query_text must be full, normalized or none (got %q)", c.QueryText)
 	}
+	if len(c.UI.GroupBy) > MaxGroupLevels {
+		return fmt.Errorf("ui.group_by: at most %d levels (got %d)", MaxGroupLevels, len(c.UI.GroupBy))
+	}
+	keys := map[string]bool{}
+	for _, k := range c.UI.GroupBy {
+		if !ValidTagKey(k) {
+			return fmt.Errorf("ui.group_by: %q is not a tag key (lower-case letters, digits, '_', '.', '-')", k)
+		}
+		if keys[k] {
+			return fmt.Errorf("ui.group_by: %q is listed twice", k)
+		}
+		keys[k] = true
+	}
+	for _, v := range c.UI.EnvOrder {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("ui.env_order holds an empty value")
+		}
+	}
+	if len(c.UI.EnvOrder) == 0 {
+		c.UI.EnvOrder = DefaultEnvOrder
+	}
 	seen := map[string]bool{}
 	for i := range c.Instances {
 		in := &c.Instances[i]
@@ -193,6 +291,11 @@ func (c *Config) Validate() error {
 		case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
 		default:
 			return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
+		}
+		for _, s := range in.Tags {
+			if _, err := ParseTag(s); err != nil {
+				return fmt.Errorf("instance %q: %w", in.Name, err)
+			}
 		}
 		if v := strings.TrimSpace(in.ActionsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: actions_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
