@@ -59,6 +59,9 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	if *serve && host != "127.0.0.1" && host != "localhost" && host != "::1" {
 		return errors.New("demo -serve runs without a login and listens on loopback only (127.0.0.1, localhost, ::1)")
 	}
+	if *open && !*serve {
+		return errors.New("demo: -open needs -serve (there is no page to open without it)")
+	}
 
 	repoDSN := ""
 	switch {

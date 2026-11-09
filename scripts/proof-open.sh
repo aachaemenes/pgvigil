@@ -3,7 +3,8 @@
 #   PGVIGIL_REPO_DSN  a connection as a login that may CREATE DATABASE (the demo repository is made and dropped)
 # A stub browser on the child's PATH records what pgvigil launches; no real browser opens.
 # Expected: (1) `demo -serve -open` with a stub `chromium` first on PATH launches it with exactly
-# `--app=http://127.0.0.1:<the bound port>/` and the port is the one the log names; (2) `serve -open`
+# `--app=http://127.0.0.1:<the bound port>/`, the port is the one the log names, and the browser sits in its own
+# process group (a Ctrl-C in pgvigil's terminal must not close it); (2) `serve -open`
 # with only a stub `xdg-open` launches that with the bare URL (the default-browser fallback);
 # (3) `serve -open` with no browser at all logs the "no browser could be started" warning and
 # still answers /api/health 200. Linux only (the candidates differ per OS; the Windows run is by hand).
@@ -25,26 +26,30 @@ DBPORT=$(psql "$PGVIGIL_REPO_DSN" -XAt -c "select inet_server_port()")
 USERNAME=$(psql "$PGVIGIL_REPO_DSN" -XAt -c "select current_user")
 psql "$PGVIGIL_REPO_DSN" -XAtq -c "create database $DB" >/dev/null
 export DEMO_DSN="host=$HOST port=$DBPORT user=$USERNAME dbname=$DB sslmode=disable"
-[[ "$PGVIGIL_REPO_DSN" == *password=* ]] && DEMO_DSN="$DEMO_DSN password=${PGVIGIL_REPO_DSN##*password=}"
+[[ "$PGVIGIL_REPO_DSN" =~ password=([^[:space:]]+) ]] && DEMO_DSN="$DEMO_DSN password=${BASH_REMATCH[1]}"
 printf 'repository:\n  dsn: env:DEMO_DSN\ninstances: []\n' > "$WORK/cfg.yaml"
 
-# the stubs: each records its argv, one per line, and exits
+# the stubs: each records its argv, one per line, and exits; the app stub also records its process group
+# (it runs with the proof's stub-only PATH, so it sets its own for ps and tr)
 mkdir -p "$WORK/stub-app" "$WORK/stub-default" "$WORK/stub-none"
-printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/app.args"\n' "$WORK" > "$WORK/stub-app/chromium"; chmod +x "$WORK/stub-app/chromium"
+printf '#!/bin/sh\nPATH=/usr/bin:/bin\nprintf "%%s\\n" "$@" > "%s/app.args"\nps -o pgid= -p $$ | tr -d " " > "%s/app.pgid"\n' "$WORK" "$WORK" > "$WORK/stub-app/chromium"; chmod +x "$WORK/stub-app/chromium"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/default.args"\n' "$WORK" > "$WORK/stub-default/xdg-open"; chmod +x "$WORK/stub-default/xdg-open"
 
-# (1) demo -serve -open: seeds, serves on a picked port, launches the app window on that port
-PATH="$WORK/stub-app" "$BIN" demo -dsn "$DEMO_DSN" -serve -listen 127.0.0.1:0 -open >"$WORK/demo.out" 2>"$WORK/demo.log" & DPID=$!
+# (1) demo -serve -open: seeds (one instance, one day: the switch is under test, not the seed), serves on a picked
+# port, launches the app window on that port, in its own process group
+PATH="$WORK/stub-app" "$BIN" demo -dsn "$DEMO_DSN" -instances 1 -days 1 -serve -listen 127.0.0.1:0 -open >"$WORK/demo.out" 2>"$WORK/demo.log" & DPID=$!
 PORT=""
-for _ in $(seq 300); do PORT=$(grep -m1 -o 'url=http://127.0.0.1:[0-9]*' "$WORK/demo.log" | grep -o '[0-9]*$' || true); [[ -n "$PORT" ]] && break; sleep 0.5; done
+for _ in $(seq 600); do PORT=$(grep -m1 -o 'url=http://127.0.0.1:[0-9]*' "$WORK/demo.log" | grep -o '[0-9]*$' || true); [[ -n "$PORT" ]] && break; sleep 0.5; done
 [[ -n "$PORT" ]] || { cat "$WORK/demo.log" >&2; fail "demo: no serving URL logged"; }
 for _ in $(seq 50); do [[ -s "$WORK/app.args" ]] && break; sleep 0.1; done
 [[ -s "$WORK/app.args" ]] || { cat "$WORK/demo.log" >&2; fail "demo -open: the stub browser was not launched"; }
 got=$(cat "$WORK/app.args")
 [[ "$got" == "--app=http://127.0.0.1:$PORT/" ]] || fail "demo -open launched with '$got', want --app=http://127.0.0.1:$PORT/"
 grep -q 'open: app window' "$WORK/demo.log" || fail "demo -open: no 'app window' log line"
+my_pgid=$(ps -o pgid= -p "$DPID" | tr -d ' '); stub_pgid=$(cat "$WORK/app.pgid" 2>/dev/null || true)
+[[ -n "$stub_pgid" && "$stub_pgid" != "$my_pgid" ]] || fail "the browser shares pgvigil's process group ($stub_pgid vs $my_pgid): a Ctrl-C would close it"
 curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null || fail "demo: the served URL does not answer"
-ok "demo -serve -open: chromium launched with --app=http://127.0.0.1:$PORT/ (the logged port), the UI answers"
+ok "demo -serve -open: chromium launched with --app=http://127.0.0.1:$PORT/ (the logged port) in its own process group, the UI answers"
 kill -INT "$DPID"; wait "$DPID" 2>/dev/null || true; DPID=""
 
 # (2) serve -open with only xdg-open: the default-browser fallback gets the bare URL

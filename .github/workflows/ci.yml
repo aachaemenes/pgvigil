@@ -57,6 +57,10 @@ jobs:
         env:
           PGVIGIL_REPO_DSN: "host=localhost port=5432 user=postgres password=pgvigil dbname=postgres sslmode=disable"
         run: scripts/proof-storage.sh
+      - name: the -open switch (serve and demo open an app-mode window; stub browsers)
+        env:
+          PGVIGIL_REPO_DSN: "host=localhost port=5432 user=postgres password=pgvigil dbname=postgres sslmode=disable"
+        run: scripts/proof-open.sh
   lint:
     runs-on: ubuntu-latest
     steps:

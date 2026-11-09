@@ -92,6 +92,7 @@ func openWindow(log *slog.Logger, url string) string {
 			return false
 		}
 		cmd := exec.Command(prog, argv[1:]...)
+		detach(cmd)
 		if err := cmd.Start(); err != nil {
 			log.Warn("open: the browser did not start", "program", prog, "err", err)
 			return false
