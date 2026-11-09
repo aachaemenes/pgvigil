@@ -140,19 +140,19 @@ pgvigil purge -config pgvigil.yaml -days 30      # as the owner: PGVIGIL_REPO_DS
 
 Three ways to schedule it:
 
-- systemd: `deploy/pgvigil-purge.service` and `deploy/pgvigil-purge.timer` (daily at 03:15, a random delay of up to 15 minutes, a missed run caught up after a downtime). Copy both to `/etc/systemd/system/`, write the owner's DSN as `PGVIGIL_REPO_DSN=...` in `/etc/pgvigil/pgvigil-purge.env` (`0640 root:pgvigil`; apart from the collector's env file, which holds the collector login), then `systemctl enable --now pgvigil-purge.timer`. `systemctl list-timers pgvigil-purge.timer` shows the next run, `journalctl -u pgvigil-purge` the last.
-- pg_cron on the repository server (RDS and Aurora have it; the job runs in `cron.database_name`, so schedule it there with `cron.schedule_in_database` when the repository is another database), as the owner so the job runs as the owner: `SELECT cron.schedule('pgvigil-purge', '15 3 * * *', $$SELECT pgvigil.purge(30)$$);`
+- systemd: `deploy/pgvigil-purge.service` and `deploy/pgvigil-purge.timer` (daily at 03:15, a random delay of up to 15 minutes, a missed run caught up after a downtime). Copy both to `/etc/systemd/system/`, write the owner's DSN as `PGVIGIL_REPO_DSN=...` in `/etc/pgvigil/pgvigil-purge.env` (`0600 root:root`: systemd reads it as root before it drops to the service account, so the collector's own account never reads the owner's credential; apart from the collector's env file, which holds the collector login), then `systemctl enable --now pgvigil-purge.timer`. `systemctl list-timers pgvigil-purge.timer` shows the next run, `journalctl -u pgvigil-purge` the last.
+- pg_cron on the repository server (RDS and Aurora have it; `cron.database_name` is a parameter-group setting, `postgres` by default, so when the repository is another database schedule with `cron.schedule_in_database`, pg_cron 1.4+), as the owner so the job runs as the owner: `SELECT cron.schedule('pgvigil-purge', '15 3 * * *', $$SELECT pgvigil.purge(30)$$);`. On RDS and Aurora the owner needs `GRANT USAGE ON SCHEMA cron TO <owner>` from an `rds_superuser` member first.
 - Windows: a daily scheduled task running `pgvigil.exe purge -config C:\ProgramData\pgvigil\pgvigil-purge.yaml -days 30`, where that config is a copy whose `repository.dsn` is a `file:` holding the owner's DSN, readable by the task's account alone (the installed config points at the collector's DSN file). Not proven here yet.
 
 ## Sizing
 
-Measured 2026-11-09 against one idle PostgreSQL 18 target with one database, polled at the defaults for six minutes and scaled to a day (the sizing note with the commands and the raw output lives with the project's records); a busy server stores more statement deltas (capped at the top 500 by time plus the top 200 by calls per snapshot) and more activity rows, so these are the floor:
+Measured 2026-11-09 against one idle PostgreSQL 18 target with one database, polled for six minutes with pg_stat_io every minute (the default before it became its own collection) and scaled to a day; the 5-minute row is derived from that measurement (the pg_stat_io share divided by five), not measured. The sizing note with the commands and the raw output lives with the project's records. A busy server stores more statement deltas (capped at the top 500 by time plus the top 200 by calls per snapshot) and more activity rows, so these are the floor:
 
 | Collector settings | Repository growth per instance-day | 1,000 instances at 30 days (30-61 on disk with the monthly partitions) |
 |---|---|---|
-| the defaults (pg_stat_io every 5 minutes) | about 8.6 MB | about 260-500 GB |
-| `schedules: iostats: 1m` | about 25.6 MB | about 770 GB-1.5 TB |
-| `schedules: iostats: disabled`, or PG15 and older (no pg_stat_io) | about 4.3 MB | about 130-240 GB |
+| the defaults (pg_stat_io every 5 minutes), derived | about 8.6 MB | about 260-530 GB |
+| `schedules: iostats: 1m`, as measured | about 25.6 MB | about 770 GB-1.6 TB |
+| `schedules: iostats: disabled`, or PG15 and older (no pg_stat_io) | about 4.3 MB | about 130-260 GB |
 
 WAL is written on top of that, about the same volume again as the table and index data: size the repository's WAL disk or archive for it. The demo's synthetic history is lighter (about 2 MB per instance-day) and is not a sizing base.
 
