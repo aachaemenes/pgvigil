@@ -114,10 +114,10 @@ print(json.dumps(d, indent=2))' | mask > "$D/instances.json"
     done
     for MS in CPUUtilization:Average FreeableMemory:Minimum FreeStorageSpace:Minimum SwapUsage:Maximum; do
       M=${MS%%:*}; ST=${MS##*:}
-      V=$(aws cloudwatch get-metric-statistics --namespace AWS/DMS --metric-name "$M" --dimensions "Name=ReplicationInstanceIdentifier,Value=$RI_ID" --start-time "$START" --end-time "$END" --period 60 --statistics "$ST" --query "sort_by(Datapoints,&Timestamp)[-1].[$ST,Timestamp]" --output text --profile "$PROFILE" --region "$REGION")
+      V=$(aws cloudwatch get-metric-statistics --namespace AWS/DMS --metric-name "$M" --dimensions "Name=ReplicationInstanceExternalResourceId,Value=${RI_ARN##*:}" --start-time "$START" --end-time "$END" --period 60 --statistics "$ST" --query "sort_by(Datapoints,&Timestamp)[-1].[$ST,Timestamp]" --output text --profile "$PROFILE" --region "$REGION")
       [[ "$V" == None* || -z "$V" ]] && continue
       read -r VAL AT <<<"$V"; [[ $first == 1 ]] || echo ","; first=0
-      printf '  {"metric": "%s", "dims": {"ReplicationInstanceIdentifier": "%s"}, "value": %s, "at": "%s"}' "$M" "$RI_ID" "$VAL" "$AT"
+      printf '  {"metric": "%s", "dims": {"ReplicationInstanceExternalResourceId": "%s"}, "value": %s, "at": "%s"}' "$M" "${RI_ARN##*:}" "$VAL" "$AT"
     done
     echo; echo "]"
   } > "$D/metrics.json"

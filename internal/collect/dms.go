@@ -291,8 +291,10 @@ var (
 )
 
 // dmsMetrics reads the newest datapoint of every task and host metric in one GetMetricData round
-// (batched). Task metrics carry both dimensions: the replication instance identifier and the task's
-// resource id (the tail of its ARN, which is what DMS publishes, not the user-assigned name).
+// (batched). DMS publishes a task metric under ReplicationInstanceIdentifier (the instance's name) plus
+// ReplicationTaskIdentifier = the task's resource id (the tail of its ARN, not the user-assigned name), and
+// a host metric under ReplicationInstanceExternalResourceId = the tail of the instance's ARN (list-metrics
+// on a live instance, 2026-11-09).
 func dmsMetrics(ctx context.Context, api dmsAPI, tasks []dmstypes.ReplicationTask, ris map[string]dmstypes.ReplicationInstance, now time.Time) (map[string]dmsMetric, error) {
 	var queries []cwtypes.MetricDataQuery
 	keys := map[string]string{} // query id -> metric key
@@ -332,7 +334,7 @@ func dmsMetrics(ctx context.Context, api dmsAPI, tasks []dmstypes.ReplicationTas
 	}
 	i := 0
 	for _, ri := range ris {
-		dims := map[string]string{"ReplicationInstanceIdentifier": aws.ToString(ri.ReplicationInstanceIdentifier)}
+		dims := map[string]string{"ReplicationInstanceExternalResourceId": dmsResourceID(aws.ToString(ri.ReplicationInstanceArn))}
 		for j, m := range dmsHostMetrics {
 			add(fmt.Sprintf("r%d_%d", i, j), m.name, m.stat, dims)
 		}
@@ -424,8 +426,9 @@ func dmsInstanceRow(r dmstypes.ReplicationInstance, m map[string]dmsMetric) Row 
 		"multi_az": r.MultiAZ, "public": r.PubliclyAccessible, "az": nilIfEmpty(aws.ToString(r.AvailabilityZone)),
 		"created": tsOrNil(r.InstanceCreateTime), "free_until": tsOrNil(r.FreeUntil), "pending": dmsPending(r.PendingModifiedValues),
 	}
+	rid := dmsResourceID(aws.ToString(r.ReplicationInstanceArn))
 	for _, mt := range []struct{ metric, col string }{{"CPUUtilization", "cpu_pct"}, {"FreeableMemory", "freeable_bytes"}, {"FreeStorageSpace", "free_storage_bytes"}, {"SwapUsage", "swap_bytes"}} {
-		if v, ok := m[dmsMetricKey(mt.metric, id)]; ok {
+		if v, ok := m[dmsMetricKey(mt.metric, rid)]; ok {
 			row[mt.col] = v.Value
 		}
 	}

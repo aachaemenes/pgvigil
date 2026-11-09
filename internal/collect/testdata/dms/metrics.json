@@ -29,7 +29,7 @@
   {
     "metric": "CPUUtilization",
     "dims": {
-      "ReplicationInstanceIdentifier": "dmslab-ri"
+      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
     },
     "value": 4.2,
     "at": "2026-11-09T13:01:00Z"
@@ -37,7 +37,7 @@
   {
     "metric": "FreeableMemory",
     "dims": {
-      "ReplicationInstanceIdentifier": "dmslab-ri"
+      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
     },
     "value": 1200000000.0,
     "at": "2026-11-09T13:01:00Z"
@@ -45,7 +45,7 @@
   {
     "metric": "FreeStorageSpace",
     "dims": {
-      "ReplicationInstanceIdentifier": "dmslab-ri"
+      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
     },
     "value": 19000000000.0,
     "at": "2026-11-09T13:01:00Z"
@@ -53,7 +53,7 @@
   {
     "metric": "SwapUsage",
     "dims": {
-      "ReplicationInstanceIdentifier": "dmslab-ri"
+      "ReplicationInstanceExternalResourceId": "T3OM7OUB5NM2LCVZF7JPGJRNUE"
     },
     "value": 0.0,
     "at": "2026-11-09T13:01:00Z"
