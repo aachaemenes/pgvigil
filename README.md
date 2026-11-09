@@ -23,7 +23,8 @@ The demo fleet (`pgvigil demo`): the Summary grid, one row per instance and a co
 | instance | hourly | version, recovery state, settings (server-level sources only, credentials masked), extensions | current state plus a history of setting changes |
 | activity | 1 min | pg_stat_activity: active and idle-in-transaction sessions, every blocker any Lock waiter names, pg_blocking_pids | samples in monthly partitions, a per-snapshot summary, `blocking_chains()` to the head |
 | statements | 5 min | pg_stat_statements, top 500 by time plus top 200 by calls, text capped and masked | per-interval deltas with reset detection, `top_statements()` over a window |
-| dbstats | 1 min | pg_stat_database, bgwriter / checkpointer / WAL, pg_stat_io | cumulative rows, `*_rate()` functions over a window |
+| dbstats | 1 min | pg_stat_database, bgwriter / checkpointer / WAL | cumulative rows, `*_rate()` functions over a window |
+| iostats | 5 min | pg_stat_io (PG16+) by backend type, object and context; `schedules: iostats: 1m` reads it every minute at about three times the storage (Sizing below) | cumulative rows, `iostats_rate()` over a window |
 | replication | 1 min | pg_stat_replication, pg_stat_wal_receiver, slots with retained WAL, subscriptions, publications, conflicts, aurora_replica_status() | one row per object per snapshot, `replication_checks` view |
 | databases | hourly | pg_database with sizes, xid and multixact age | current inventory plus a size history |
 | jobs | 1 min | pg_cron (cron.job, cron.job_run_details) and pgAgent (pga_job, pga_joblog) where installed | current jobs, a run history, `job_failures` and `job_running` views |
@@ -36,7 +37,7 @@ Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud 
 
 - The collector runs as a `pg_monitor` login at most, opens read-only sessions with a 30 s statement timeout and a 2 s lock timeout, and never writes to a monitored server.
 - Rows reach the repository as a JSON array handed to `pgvigil.import_<collection>(instance_id, snapshot_at, payload)`; the collector never knows the table shapes. The import functions are SECURITY DEFINER: the collector's repository login (`pgvigil_collector`) can execute them and read nothing. A `pgvigil_reader` role serves the UI.
-- Time-series tables are partitioned by month (UTC) and dropped whole by `pgvigil.purge()`.
+- Time-series tables are partitioned by month (UTC) and dropped whole by `pgvigil.purge()`, which `pgvigil purge` runs on the operator's schedule (Retention below).
 - Credentials never sit in the config file: a DSN is `env:NAME` or `file:/path`. On the managed platforms the platform's own token login (IAM, Entra, Cloud SQL IAM) is the intended door.
 - Credentials inside collected text are masked before they leave the target (replication conninfo, `PASSWORD '...'` literals, `password=` / `PWD=` in connection strings).
 - `query_text: full | normalized | none` says what statement text the repository may hold at all: the text as the server shows it; every literal replaced by `?` and comments dropped, keyed by a hash of that normalized form (nothing of the raw text, not even its hash, is kept); or no text and no text hash at all. Per file or per instance.
@@ -83,6 +84,8 @@ Download the binary for your platform from the [latest release](https://github.c
    ```
    `serve` is read only: its sessions are `default_transaction_read_only` with a 15 s statement timeout. Pages: Overview (daily checks: failing or stale collections, replication, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in 24 h), Instances, Running queries (blocking chains with the head, history by snapshot time), Statements (top by total time over a window), Counters (database, server, IO and session rates) and DMS (tasks, their tables, the replication instances). The JSON endpoints under `/api/` return `{columns, rows}` behind the same login (the session cookie) and serve scripts as well; Grafana reads the repository views directly with a `pgvigil_reader` login.
 
+7. The retention: schedule `pgvigil purge` daily as the owner (the Retention section below).
+
 On Windows the same commands run in PowerShell (`$env:PGVIGIL_REPO_DSN = '...'`, `pgvigil.exe ...`).
 
 ## Demo
@@ -125,6 +128,35 @@ Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvig
 The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
 
 `scripts/*.sh` are the proofs: each seeds a condition on a throwaway PostgreSQL (a lock chain, a statements reset, a replication slot, a password literal, a login), collects or serves, and checks the result against the expected result written in its header. `scripts/integration.sh` and `scripts/proof-auth.sh` run in CI against PostgreSQL 13, 16 and 18.
+
+## Retention
+
+Every time series (activity samples, statement deltas, the counters, iostats, replication samples, database and table sizes, log events, DMS samples) is partitioned by month in UTC, and `pgvigil.purge(days)` drops a partition once its whole month is older than `days`, so a daily `purge(30)` keeps between 30 and about 61 days on disk; the row-level series (job runs, activity summaries, statement info, statement and query texts no sample names any more, the collection log) are deleted past the same age. pgvigil does not run it by itself: the operator schedules it, as the repository owner (the function is granted to no other login).
+
+```
+pgvigil purge -config pgvigil.yaml -dry-run      # the partitions a run would drop; nothing changes
+pgvigil purge -config pgvigil.yaml -days 30      # as the owner: PGVIGIL_REPO_DSN is the owner's DSN, as for migrate
+```
+
+Three ways to schedule it:
+
+- systemd: `deploy/pgvigil-purge.service` and `deploy/pgvigil-purge.timer` (daily at 03:15, a random delay of up to 15 minutes, a missed run caught up after a downtime). Copy both to `/etc/systemd/system/`, write the owner's DSN as `PGVIGIL_REPO_DSN=...` in `/etc/pgvigil/pgvigil-purge.env` (`0640 root:pgvigil`; apart from the collector's env file, which holds the collector login), then `systemctl enable --now pgvigil-purge.timer`. `systemctl list-timers pgvigil-purge.timer` shows the next run, `journalctl -u pgvigil-purge` the last.
+- pg_cron on the repository server (RDS and Aurora have it; the job runs in `cron.database_name`, so schedule it there with `cron.schedule_in_database` when the repository is another database), as the owner so the job runs as the owner: `SELECT cron.schedule('pgvigil-purge', '15 3 * * *', $$SELECT pgvigil.purge(30)$$);`
+- Windows: a daily scheduled task running `pgvigil.exe purge -config C:\ProgramData\pgvigil\pgvigil-purge.yaml -days 30`, where that config is a copy whose `repository.dsn` is a `file:` holding the owner's DSN, readable by the task's account alone (the installed config points at the collector's DSN file). Not proven here yet.
+
+## Sizing
+
+Measured 2026-11-09 against one idle PostgreSQL 18 target with one database, polled at the defaults for six minutes and scaled to a day (the sizing note with the commands and the raw output lives with the project's records); a busy server stores more statement deltas (capped at the top 500 by time plus the top 200 by calls per snapshot) and more activity rows, so these are the floor:
+
+| Collector settings | Repository growth per instance-day | 1,000 instances at 30 days (30-61 on disk with the monthly partitions) |
+|---|---|---|
+| the defaults (pg_stat_io every 5 minutes) | about 8.6 MB | about 260-500 GB |
+| `schedules: iostats: 1m` | about 25.6 MB | about 770 GB-1.5 TB |
+| `schedules: iostats: disabled`, or PG15 and older (no pg_stat_io) | about 4.3 MB | about 130-240 GB |
+
+WAL is written on top of that, about the same volume again as the table and index data: size the repository's WAL disk or archive for it. The demo's synthetic history is lighter (about 2 MB per instance-day) and is not a sizing base.
+
+Collectors: one collector polling 1,000 instance entries against one target standing in for the fleet used 94 MB of memory and 0.19 cores on average (about one core in the burst at the start of each minute) and lost no collection; plan one collector per 1,000 instances, or per 500 to halve each one's burst. Each monitored server sees one short connection per collection per interval (9 to 46 ms each on the test target), never a held one. Each collector keeps a pool of connections to the repository at pgx's default size, the CPU count of its host and at least 4 (23 held on the 24-CPU test host); cap it with `pool_max_conns=<n>` in the repository DSN (`...?sslmode=require&pool_max_conns=8` in the URL form, ` pool_max_conns=8` in the keyword form) and size the repository's `max_connections` for the collectors plus the UI (`pgvigil serve` holds at most 8) plus your own sessions, or put a pooler in front of the collectors (PgBouncer in transaction mode suits them: every import is one function call). Ten collectors at the default pool on hosts like the test one would hold about 230 connections.
 
 ## Releases and how to verify one
 

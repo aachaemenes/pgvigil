@@ -220,3 +220,43 @@ func validIdent(s string) bool {
 	}
 	return true
 }
+
+// Purge calls pgvigil.purge(days) as the connected login (the owner's: the function is granted to
+// nobody else) and returns the count it reports, partitions dropped plus rows deleted.
+func (r *Repo) Purge(ctx context.Context, days int) (int64, error) {
+	var n int64
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.purge($1)`, days).Scan(&n); err != nil {
+		return 0, fmt.Errorf("purge: %w", err)
+	}
+	return n, nil
+}
+
+// PurgeCandidates lists the monthly partitions under schema pgvigil that purge(days) would drop,
+// by the function's own rule: the month after the partition's (UTC) lies before now minus days.
+// It takes every partitioned series in the schema, so a series the function does not yet name
+// would be listed though kept.
+func (r *Repo) PurgeCandidates(ctx context.Context, days int) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+SELECT c.relname
+  FROM pg_inherits i
+  JOIN pg_class c ON c.oid = i.inhrelid
+  JOIN pg_class p ON p.oid = i.inhparent
+  JOIN pg_namespace ns ON ns.oid = p.relnamespace
+ WHERE ns.nspname = 'pgvigil'
+   AND c.relname ~ '_[0-9]{6}$'
+   AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => $1)
+ ORDER BY c.relname`, days)
+	if err != nil {
+		return nil, fmt.Errorf("purge candidates: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}

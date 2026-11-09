@@ -1,0 +1,17 @@
+[Unit]
+Description=pgvigil repository retention (pgvigil purge)
+Documentation=https://github.com/aachaemenes/pgvigil
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pgvigil
+# the OWNER's repository DSN (purge() is the owner's alone): PGVIGIL_REPO_DSN=postgres://pgvigil_owner:...@repo-host:5432/pgvigil?sslmode=require
+EnvironmentFile=/etc/pgvigil/pgvigil-purge.env
+ExecStart=/usr/local/bin/pgvigil purge -config /etc/pgvigil/pgvigil.yaml -days 30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
