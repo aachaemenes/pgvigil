@@ -3,33 +3,128 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pgvigil</title>
-<meta name="description" content="pgvigil: PostgreSQL monitoring for DBAs, across on-prem, RDS, Aurora, Azure and Google Cloud.">
+<title>pgvigil: open-source PostgreSQL monitoring for DBAs</title>
+<meta name="description" content="pgvigil is an open-source (MIT) PostgreSQL monitoring tool for DBAs: daily checks, running queries and blocking chains, top statements, counters, replication, jobs, logs and DMS tasks, across on-prem PostgreSQL, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.">
+<link rel="canonical" href="https://pgvigil.com/">
+<meta property="og:title" content="pgvigil: open-source PostgreSQL monitoring for DBAs">
+<meta property="og:description" content="One collector binary, a PostgreSQL repository, a web UI with its own login. Daily checks, blocking chains, top statements, replication, jobs, logs, DMS.">
+<meta property="og:url" content="https://pgvigil.com/">
+<meta property="og:type" content="website">
 <style>
-  :root { --bg: #ffffff; --fg: #000000; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #000000; --fg: #ffffff; } }
+  :root { --bg: #ffffff; --fg: #1d2330; --muted: #5d6676; --line: #dde1e8; --card: #f7f8fa; --accent: #2f6fdf; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14171d; --fg: #e4e7ec; --muted: #9aa3b2; --line: #2c323d; --card: #1b1f27; --accent: #6b9cff; } }
+  * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
-  body { font: 18px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-  main { max-width: 560px; margin: 0 auto; padding: 18vh 16px 12vh; }
-  h1 { font-size: 1.1rem; font-weight: 500; letter-spacing: 0.02em; margin: 0 0 2.2em; }
-  p { margin: 0 0 1.4em; }
-  a { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
-  footer { margin-top: 4em; font-size: 0.9rem; }
-  footer p { margin: 0 0 0.5em; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+  body { font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  header { border-bottom: 1px solid var(--line); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  nav { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.6rem; padding: .9rem 0; }
+  nav .brand { font-weight: 700; font-size: 1.15rem; color: var(--fg); text-decoration: none; margin-right: auto; }
+  nav a:not(.brand) { color: var(--muted); text-decoration: none; }
+  .hero { padding: 4.5rem 0 3rem; }
+  .hero h1 { font-size: 2.3rem; line-height: 1.2; margin: 0 0 1rem; }
+  .hero p.lead { font-size: 1.2rem; color: var(--muted); max-width: 44rem; margin: 0 0 1.8rem; }
+  .btn { display: inline-block; padding: .6rem 1.1rem; border-radius: 6px; border: 1px solid var(--accent); text-decoration: none; margin: 0 .6rem .6rem 0; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  section { padding: 2.4rem 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 1.45rem; margin: 0 0 1.2rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; }
+  .card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .97rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  pre { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; font-size: .9rem; line-height: 1.5; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .93em; }
+  ol li, ul li { margin-bottom: .45rem; }
+  footer { border-top: 1px solid var(--line); padding: 2rem 0 3rem; color: var(--muted); font-size: .95rem; }
+  footer p { margin: 0 0 .5rem; }
 </style>
 </head>
 <body>
+<header><div class="wrap"><nav>
+  <a class="brand" href="/">pgvigil</a>
+  <a href="#features">Features</a>
+  <a href="#collects">What it collects</a>
+  <a href="#install">Install</a>
+  <a href="#security">Security</a>
+  <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
+</nav></div></header>
+
 <main>
-  <h1>pgvigil</h1>
-  <p>pgvigil watches PostgreSQL the way a DBA does: the daily checks, what is running right now and who is blocking whom, the statements that cost the most, the settings that changed, the jobs that failed, the replication that fell behind.</p>
-  <p>One collector binary. A PostgreSQL repository. A web UI with its own login, served by the same binary over HTTPS. The same on your own servers, Amazon RDS and Aurora (with their logs and DMS tasks), Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.</p>
-  <p>The collector connects as a <code>pg_monitor</code> login, reads only, and never writes to a monitored server. Credentials stay out of the config file and out of the collected text, and a switch keeps statement literals out of the repository altogether.</p>
-  <p>It is open source under the MIT licence and it is being built in the open. The code, the proofs and the quick start are on GitHub; the first tagged release, with signed binaries for Linux, Windows and macOS, is being prepared.</p>
-  <footer>
-    <p><a href="https://github.com/aachaemenes/pgvigil">github.com/aachaemenes/pgvigil</a> &middot; <a href="https://github.com/aachaemenes/pgvigil#quick-start">quick start</a></p>
-    <p>pgvigil is an independent project, not affiliated with Trimble, Inc. or DBA Dash.</p>
-  </footer>
+<div class="wrap hero">
+  <h1>Open-source PostgreSQL monitoring, built the way a DBA works</h1>
+  <p class="lead">pgvigil watches your PostgreSQL servers: the daily checks, what is running right now and who is blocking whom, the statements that cost the most, the settings that changed, the jobs that failed, the replication that fell behind. One collector binary, a PostgreSQL repository, a web UI with its own login.</p>
+  <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download the latest release</a>
+  <a class="btn" href="https://github.com/aachaemenes/pgvigil#quick-start">Quick start</a>
+  <a class="btn" href="https://github.com/aachaemenes/pgvigil">Source on GitHub</a>
+</div>
+
+<section id="features"><div class="wrap">
+  <h2>Features</h2>
+  <div class="cards">
+    <div class="card"><h3>Daily checks</h3><p>One overview page: stale or failing collections, replication problems, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in the last 24 hours.</p></div>
+    <div class="card"><h3>Running queries and blocking chains</h3><p>Every active and idle-in-transaction session, sampled each minute, with the blocking chain walked to its head. Step back through history by snapshot time.</p></div>
+    <div class="card"><h3>Top statements</h3><p>pg_stat_statements as deltas per interval, with reset detection, so the top statements over any window are real numbers, not cumulative totals.</p></div>
+    <div class="card"><h3>Counters and rates</h3><p>pg_stat_database, the background writer, checkpointer, WAL and pg_stat_io as rates over a window, charted.</p></div>
+    <div class="card"><h3>Replication, slots, jobs</h3><p>Streaming and logical replication, slots with retained WAL, Aurora replica status, pg_cron and pgAgent job runs and failures.</p></div>
+    <div class="card"><h3>Cloud doors</h3><p>On RDS and Aurora, the PostgreSQL log from CloudWatch Logs (slow statements, lock waits, deadlocks, failed logins) and AWS DMS tasks with their table statistics and CDC latency.</p></div>
+    <div class="card"><h3>Every platform, one query set</h3><p>On-prem PostgreSQL 13 to 18, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB. Column names come from the server's own catalog, so one query set serves them all.</p></div>
+    <div class="card"><h3>Small and static</h3><p>A single static Go binary for Linux, Windows and macOS, no runtime on the target, about 30 MB of memory while polling fifty instances. The web UI is embedded in the same binary.</p></div>
+    <div class="card"><h3>Open source, MIT</h3><p>Built in the open on GitHub. Signed release binaries with checksums; dependencies pinned and scanned in CI.</p></div>
+  </div>
+</div></section>
+
+<section id="collects"><div class="wrap">
+  <h2>What it collects</h2>
+  <div class="scroll"><table>
+    <tr><th>Collection</th><th>Cadence</th><th>Source</th></tr>
+    <tr><td>instance</td><td>hourly</td><td>version, recovery state, non-default settings (credentials masked) with a history of changes, extensions</td></tr>
+    <tr><td>activity</td><td>1 min</td><td>pg_stat_activity: active and idle-in-transaction sessions, blockers, pg_blocking_pids, blocking chains to the head</td></tr>
+    <tr><td>statements</td><td>5 min</td><td>pg_stat_statements, top by time and by calls, per-interval deltas with reset detection</td></tr>
+    <tr><td>dbstats</td><td>1 min</td><td>pg_stat_database, bgwriter, checkpointer, WAL, pg_stat_io, as rates</td></tr>
+    <tr><td>replication</td><td>1 min</td><td>pg_stat_replication, wal receiver, slots with retained WAL, subscriptions, conflicts, aurora_replica_status()</td></tr>
+    <tr><td>databases</td><td>hourly</td><td>inventory with sizes, transaction id and multixact age</td></tr>
+    <tr><td>jobs</td><td>1 min</td><td>pg_cron and pgAgent jobs, run history, failures</td></tr>
+    <tr><td>logs</td><td>1 min</td><td>RDS and Aurora: the PostgreSQL log from CloudWatch Logs, slow statements, lock waits, deadlocks, failed logins</td></tr>
+    <tr><td>dms</td><td>1 min</td><td>AWS DMS tasks, table statistics, replication instances, CDC latency and host metrics, read only</td></tr>
+  </table></div>
+</div></section>
+
+<section id="install"><div class="wrap">
+  <h2>Install</h2>
+  <ol>
+    <li>Download the binary for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and verify it against <code>SHA256SUMS</code> (signed with Sigstore; the README shows the two commands).</li>
+    <li>Create a repository database on any PostgreSQL 13+ server and copy <code>pgvigil.example.yaml</code>; connection strings are read from the environment or a file, never written in the config.</li>
+    <li><code>pgvigil migrate</code>, then <code>pgvigil roles</code> for the three logins, then <code>pgvigil user add admin</code> for the web UI.</li>
+    <li><code>pgvigil run</code> for the collector; <code>pgvigil serve</code> for the web UI, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
+  </ol>
+<pre><code>pgvigil migrate -config pgvigil.yaml
+pgvigil roles                                   # CREATE ROLE statements for the collector, the UI and the monitored servers
+pgvigil user add admin -config pgvigil.yaml
+pgvigil run -config pgvigil.yaml
+pgvigil serve -config pgvigil.yaml -listen 0.0.0.0:8443 -tls-cert pgvigil.crt -tls-key pgvigil.key</code></pre>
+  <p>The full quick start, the configuration reference and the platform notes are in the <a href="https://github.com/aachaemenes/pgvigil#readme">README</a>. Installers and service wrappers for Linux and Windows are the next release.</p>
+</div></section>
+
+<section id="security"><div class="wrap">
+  <h2>Security</h2>
+  <ul>
+    <li>The collector connects to a monitored server as a <code>pg_monitor</code> login, opens read-only sessions with statement and lock timeouts, and never writes to it.</li>
+    <li>Credentials never sit in the config file and are masked out of every collected text. A switch stores statement text as is, with every literal replaced, or not at all.</li>
+    <li>The repository uses three roles: the collector may only call the import functions, the reader may only read, and the UI's password check runs through one SECURITY DEFINER function nobody else can call.</li>
+    <li>The web UI has its own login (argon2id hashes, HttpOnly SameSite=Strict cookies, rate limits) and refuses to listen beyond loopback without TLS.</li>
+    <li>Releases are static binaries built by GitHub Actions from a tag, with a SHA256SUMS file signed through Sigstore; modules are pinned and checked by govulncheck in CI.</li>
+  </ul>
+</div></section>
 </main>
+
+<footer><div class="wrap">
+  <p><a href="https://github.com/aachaemenes/pgvigil">github.com/aachaemenes/pgvigil</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/releases">Releases</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/issues">Issues</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/LICENSE">MIT licence</a></p>
+  <p>pgvigil is an independent open-source project by Allen Achaemenes. It is not affiliated with Trimble, Inc. or DBA Dash, nor with the PostgreSQL Global Development Group.</p>
+</div></footer>
 </body>
 </html>
