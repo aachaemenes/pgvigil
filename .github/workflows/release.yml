@@ -1,0 +1,50 @@
+# Release on a tag v*: the tests, static binaries for Linux, Windows and macOS, a SHA256SUMS file,
+# and a keyless Sigstore signature of that file (the GitHub Actions OIDC identity is the signer,
+# recorded in the public Rekor log), all attached to the GitHub release. Nothing is published
+# from a laptop: a release is reproducible from this file and the tag.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # the release and its assets
+  id-token: write   # the OIDC token cosign signs with (keyless)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go mod verify
+      - run: go vet ./... && go test ./...
+      - name: build the binaries
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for t in linux/amd64 linux/arm64 windows/amd64 darwin/arm64 darwin/amd64; do
+            GOOS="${t%/*}"; GOARCH="${t#*/}"; ext=""
+            [ "$GOOS" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w -X main.version=$V" \
+              -o "dist/pgvigil_${V}_${GOOS}_${GOARCH}${ext}" ./cmd/pgvigil
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+      - uses: sigstore/cosign-installer@v3
+      - name: sign the checksums (keyless)
+        run: cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig --output-certificate dist/SHA256SUMS.pem dist/SHA256SUMS
+      - name: verify what was just signed
+        run: |
+          cosign verify-blob --signature dist/SHA256SUMS.sig --certificate dist/SHA256SUMS.pem \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com dist/SHA256SUMS
+      - name: publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false

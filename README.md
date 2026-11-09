@@ -51,6 +51,19 @@ The frontend is TypeScript under `web/`, built into `internal/web/dist/` (commit
 
 `scripts/*.sh` are the proofs: each seeds a condition on a throwaway PostgreSQL (a lock chain, a statements reset, a replication slot, a password literal), collects, and checks the repository against the expected result written in its header. `scripts/integration.sh` runs in CI against PostgreSQL 13, 16 and 18.
 
+## Releases and how to verify one
+
+A tag `v*` runs `.github/workflows/release.yml`: tests, static binaries for Linux (amd64, arm64), Windows (amd64) and macOS (arm64, amd64), a `SHA256SUMS` file, and a keyless [Sigstore](https://www.sigstore.dev/) signature of that file made with the workflow's own GitHub identity (no signing key exists anywhere). To verify a download:
+
+```
+sha256sum -c SHA256SUMS --ignore-missing
+cosign verify-blob --signature SHA256SUMS.sig --certificate SHA256SUMS.pem \
+  --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/<tag>" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+```
+
+The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag. No release exists yet.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). pgvigil is an independent project, not affiliated with Trimble, Inc. or DBA Dash.
