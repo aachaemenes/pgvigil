@@ -37,7 +37,7 @@ for v in AID AT SID DID VID IID NID; do [[ -n "${!v}" ]] || fail "no data for $v
 # DMS data is optional (proof-dms.sh fills it): checked when an instance holds a task with table statistics
 read -r MID MARN < <(pick "select t.instance_id, t.task_arn from pgvigil.dms_tasks t where exists (select 1 from pgvigil.dms_table_stats s where s.instance_id = t.instance_id and s.task_arn = t.task_arn) order by t.snapshot_at desc limit 1" | tr '|' ' ')
 
-LOG=$(mktemp); "$BIN" serve -config "$CFG" -dsn env:READ_DSN -listen "127.0.0.1:$PORT" >"$LOG" 2>&1 & SRVPID=$!
+LOG=$(mktemp); "$BIN" serve -config "$CFG" -dsn env:READ_DSN -listen "127.0.0.1:$PORT" -no-login >"$LOG" 2>&1 & SRVPID=$!
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 "$SRVPID" 2>/dev/null || fail "serve exited: $(cat "$LOG")"
 U="http://127.0.0.1:$PORT"
@@ -69,6 +69,7 @@ else echo "dms: no task data in this repository (proof-dms.sh fills it): the end
 [[ $(code -H 'Host: evil.example' "$U/api/instances") == 421 ]] || fail "a foreign Host was answered"
 [[ $(code "$U/api/activity") == 400 ]] || fail "activity without instance was not 400"
 [[ $(code -X POST "$U/api/instances") == 405 ]] || fail "POST was not refused"
+curl -s "$U/api/session" | grep -q '"login":false' || fail "/api/session did not say the login is off"
 curl -s "$U/" | grep -q '<title>pgvigil</title>' || fail "the shell page did not load"
 [[ $(code "$U/app.js") == 200 ]] || fail "app.js did not load"
 echo "OK: serve answers every endpoint as a pgvigil_reader login"

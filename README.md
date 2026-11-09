@@ -4,7 +4,7 @@ PostgreSQL monitoring for DBAs: daily checks, running queries with blocking chai
 
 One collector binary (Go, static, no runtime on the target) polls each instance on a schedule and writes into a PostgreSQL repository. A web UI served by the same binary, and later an installable desktop client, read the repository; Grafana can read it too.
 
-Status: phase 1, under construction. The collector, the repository, the collections below and the first UI pages work and are proven on PostgreSQL 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers, the UI login and the release are not built yet. Nothing is released.
+Status: phase 1, under construction. The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers and the desktop wrapper are not built yet. The first tagged release is being prepared.
 
 ## What it collects today
 
@@ -31,25 +31,55 @@ Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud 
 - Credentials inside collected text are masked before they leave the target (replication conninfo, `PASSWORD '...'` literals, `password=` / `PWD=` in connection strings).
 - `query_text: full | normalized | none` says what statement text the repository may hold at all: the text as the server shows it; every literal replaced by `?` and comments dropped, keyed by a hash of that normalized form (nothing of the raw text, not even its hash, is kept); or no text and no text hash at all. Per file or per instance.
 - The AWS door (`aws:` block per instance) reads only: CloudWatch Logs, the DMS Describe* calls and CloudWatch metrics. Nothing starts, stops or modifies a task.
+- The web UI has its own login: users in `pgvigil.ui_users` with argon2id password hashes, managed by `pgvigil user` as the repository owner. The UI's repository login verifies a password through one SECURITY DEFINER function (`pgvigil_auth` role) and can never read the hashes; a `pgvigil_reader` login (Grafana, a script) cannot call it. A session is a random token in an HttpOnly, SameSite=Strict cookie (Secure under TLS), held in the serve process for 12 hours; a POST needs the `X-Pgvigil` header; five failed logins lock the name and the address for a minute.
+- `pgvigil serve` listens on loopback by default. A listen reachable from other machines needs `-tls-cert` and `-tls-key` and keeps the login: it refuses to start without them. `-no-login` is accepted on loopback only.
 
-## Build and run (from source, for now)
+## Quick start
 
-```
-go build -o bin/pgvigil ./cmd/pgvigil
-cp deploy/examples/pgvigil.example.yaml pgvigil.yaml     # edit: repository dsn, instances
-export PGVIGIL_REPO_DSN='postgres://pgvigil_agent:...@repo-host:5432/pgvigil?sslmode=require'
-bin/pgvigil migrate -config pgvigil.yaml                  # as the repository owner, once per upgrade
-bin/pgvigil roles                                         # prints the CREATE ROLE statements
-bin/pgvigil collect -config pgvigil.yaml -once instance   # one collection, one run
-bin/pgvigil run -config pgvigil.yaml                      # every collection on its schedule
-bin/pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_READER_DSN   # web UI on http://127.0.0.1:8080/
-```
+Until the first release the binary is built from source (Go 1.27): `go build -o bin/pgvigil ./cmd/pgvigil`, or `make build`. A release binary goes anywhere on the PATH; `pgvigil version` prints its tag.
 
-`pgvigil serve` is read only: its sessions are `default_transaction_read_only` with a 15 s statement timeout, and `-dsn` should name a login holding only `pgvigil_reader`. It listens on loopback by default and has no login of its own yet, so anything wider belongs behind a proxy with authentication. Pages: Overview (daily checks: failing or stale collections, replication, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in 24 h), Instances, Running queries (blocking chains with the head, history by snapshot time), Statements (top by total time over a window), Counters (database, server, IO and session rates) and DMS (tasks, their tables, the replication instances). The JSON endpoints under `/api/` return `{columns, rows}` and serve Grafana or scripts as well.
+1. A repository database on a PostgreSQL 13+ server (any edition, RDS and Aurora included), and a login that owns it; this is the only place pgvigil writes. The owner needs CREATEROLE: `migrate` creates the three NOLOGIN roles of the access contract (`pgvigil_collector`, `pgvigil_reader`, `pgvigil_auth`). On RDS and Aurora the master user has it.
+   ```
+   CREATE ROLE pgvigil_owner LOGIN CREATEROLE PASSWORD '...';
+   CREATE DATABASE pgvigil OWNER pgvigil_owner;
+   ```
+2. The config: copy `deploy/examples/pgvigil.example.yaml` to `pgvigil.yaml`, name the repository DSN as `env:PGVIGIL_REPO_DSN` and list the instances to monitor (each DSN as `env:` or `file:`). Nothing secret goes in the file.
+3. The schema and the roles, as the owner:
+   ```
+   export PGVIGIL_REPO_DSN='postgres://pgvigil_owner:...@repo-host:5432/pgvigil?sslmode=require'
+   pgvigil migrate -config pgvigil.yaml          # once per upgrade
+   pgvigil roles                                  # prints the CREATE ROLE statements: run them, passwords filled in
+   ```
+   `roles` prints three logins: the collector's (`pgvigil_collector`: may only call the import functions), the UI's (`pgvigil_reader` + `pgvigil_auth`: reads every view and verifies UI passwords) and the monitoring login for each monitored server (`pg_monitor`).
+4. The first UI user, as the owner (the password is asked for twice, at least 12 characters; `PGVIGIL_PASSWORD` or a piped line for a script):
+   ```
+   pgvigil user add admin -config pgvigil.yaml
+   ```
+5. The collector, as the collector login:
+   ```
+   export PGVIGIL_REPO_DSN='postgres://pgvigil_agent:...@repo-host:5432/pgvigil?sslmode=require'
+   pgvigil collect -config pgvigil.yaml -once instance   # one collection, one run: the first sight of each instance
+   pgvigil run -config pgvigil.yaml                       # every collection on its schedule, until stopped
+   ```
+6. The web UI, as the UI login. On the machine itself, over loopback:
+   ```
+   export PGVIGIL_UI_DSN='postgres://pgvigil_ui:...@repo-host:5432/pgvigil?sslmode=require'
+   pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_UI_DSN                 # http://127.0.0.1:8080/, sign in as admin
+   ```
+   For other machines, over HTTPS (a certificate from your CA, or a self-signed pair from `pgvigil cert`, which the browser will warn about):
+   ```
+   pgvigil cert -hosts pgvigil.example.internal,10.0.0.5                       # writes pgvigil.crt and pgvigil.key (0600)
+   pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_UI_DSN -listen 0.0.0.0:8443 -tls-cert pgvigil.crt -tls-key pgvigil.key
+   ```
+   `serve` is read only: its sessions are `default_transaction_read_only` with a 15 s statement timeout. Pages: Overview (daily checks: failing or stale collections, replication, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in 24 h), Instances, Running queries (blocking chains with the head, history by snapshot time), Statements (top by total time over a window), Counters (database, server, IO and session rates) and DMS (tasks, their tables, the replication instances). The JSON endpoints under `/api/` return `{columns, rows}` behind the same login (the session cookie) and serve scripts as well; Grafana reads the repository views directly with a `pgvigil_reader` login.
+
+On Windows the same commands run in PowerShell (`$env:PGVIGIL_REPO_DSN = '...'`, `pgvigil.exe ...`); the Windows service wrapper and the installers are the next task.
+
+Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvigil serve -no-login` (loopback only), `pgvigil serve -session-hours 8`.
 
 The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
 
-`scripts/*.sh` are the proofs: each seeds a condition on a throwaway PostgreSQL (a lock chain, a statements reset, a replication slot, a password literal), collects, and checks the repository against the expected result written in its header. `scripts/integration.sh` runs in CI against PostgreSQL 13, 16 and 18.
+`scripts/*.sh` are the proofs: each seeds a condition on a throwaway PostgreSQL (a lock chain, a statements reset, a replication slot, a password literal, a login), collects or serves, and checks the result against the expected result written in its header. `scripts/integration.sh` and `scripts/proof-auth.sh` run in CI against PostgreSQL 13, 16 and 18.
 
 ## Releases and how to verify one
 

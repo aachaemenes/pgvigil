@@ -16,16 +16,18 @@
   a { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
   footer { margin-top: 4em; font-size: 0.9rem; }
   footer p { margin: 0 0 0.5em; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
 </style>
 </head>
 <body>
 <main>
   <h1>pgvigil</h1>
-  <p>pgvigil watches PostgreSQL the way a DBA does: the daily checks, what is running right now and who is blocking whom, the statements that cost the most, the settings that changed, the jobs that failed.</p>
-  <p>One collector binary. A PostgreSQL repository. Dashboards on top. The same on your own servers, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.</p>
-  <p>It is open source under the MIT licence and it is being built in the open. There is nothing to install yet.</p>
+  <p>pgvigil watches PostgreSQL the way a DBA does: the daily checks, what is running right now and who is blocking whom, the statements that cost the most, the settings that changed, the jobs that failed, the replication that fell behind.</p>
+  <p>One collector binary. A PostgreSQL repository. A web UI with its own login, served by the same binary over HTTPS. The same on your own servers, Amazon RDS and Aurora (with their logs and DMS tasks), Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.</p>
+  <p>The collector connects as a <code>pg_monitor</code> login, reads only, and never writes to a monitored server. Credentials stay out of the config file and out of the collected text, and a switch keeps statement literals out of the repository altogether.</p>
+  <p>It is open source under the MIT licence and it is being built in the open. The code, the proofs and the quick start are on GitHub; the first tagged release, with signed binaries for Linux, Windows and macOS, is being prepared.</p>
   <footer>
-    <p><a href="https://github.com/aachaemenes/pgvigil">github.com/aachaemenes/pgvigil</a></p>
+    <p><a href="https://github.com/aachaemenes/pgvigil">github.com/aachaemenes/pgvigil</a> &middot; <a href="https://github.com/aachaemenes/pgvigil#quick-start">quick start</a></p>
     <p>pgvigil is an independent project, not affiliated with Trimble, Inc. or DBA Dash.</p>
   </footer>
 </main>

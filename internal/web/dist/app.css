@@ -42,3 +42,11 @@ pre.sql { margin: .4rem 0; padding: .4rem; background: var(--bg); border-radius:
 @media (prefers-color-scheme: dark) { .u-legend, .u-axis { color: var(--fg); } }
 .picker { margin-bottom: .6rem; color: var(--muted); }
 input { font: inherit; padding: .15rem .4rem; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+form.login { max-width: 22rem; margin: 10vh auto; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1.2rem 1.4rem 1.4rem; }
+form.login h2 { margin-bottom: 1rem; }
+form.login label { display: block; margin: .7rem 0; color: var(--muted); }
+form.login input { display: block; width: 100%; margin-top: .25rem; padding: .4rem .5rem; color: var(--fg); }
+form.login button { margin-top: .9rem; padding: .4rem 1rem; background: var(--accent); color: #fff; border-color: var(--accent); }
+form.login button:disabled { opacity: .6; cursor: default; }
+form.login .error { margin: .8rem 0 0; }
+button.link { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }

@@ -1,4 +1,4 @@
-import { get, rowsOf } from './api';
+import { get, LoginRequired, post, rowsOf, Session } from './api';
 import { activity, counters, Ctx, dms, errorBox, instances, overview, statements } from './pages';
 import { el } from './ui';
 import { destroyCharts } from './chart';
@@ -14,6 +14,7 @@ const pages: Record<string, { label: string; render: (c: Ctx) => Promise<HTMLEle
 
 let timer: number | undefined;
 let generation = 0;   // a render that finishes after a newer one started is dropped
+let session: Session = { login: false };
 
 function parse(): { page: string; ctx: Ctx } {
   const h = location.hash.replace(/^#\/?/, '');
@@ -37,6 +38,42 @@ function href(page: string, ctx: Ctx, over: Partial<Ctx> = {}): string {
   if (page === 'counters') q.set('kind', c.kind);
   if (pages[page]?.windowed) q.set('w', c.window);
   return `#/${page}?${q}`;
+}
+
+// showLogin replaces the page with the sign-in form; a successful sign-in renders the page asked for.
+function showLogin(message = '') {
+  window.clearTimeout(timer);
+  timer = undefined;
+  ++generation;
+  document.getElementById('nav')!.replaceChildren();
+  document.getElementById('bar')!.replaceChildren();
+  const user = el('input', { name: 'username', autocomplete: 'username', required: '', autofocus: '', maxlength: '64' });
+  const pass = el('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: '' });
+  const err = el('p', { class: 'error' }, message);
+  if (!message) err.hidden = true;
+  const btn = el('button', { type: 'submit' }, 'Sign in');
+  const form = el('form', { class: 'login' }, el('h2', {}, 'Sign in to pgvigil'),
+    el('label', {}, 'User name', user), el('label', {}, 'Password', pass), btn, err);
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    btn.disabled = true; err.hidden = true;
+    try {
+      session = await post<Session>('login', { username: user.value.trim(), password: pass.value });
+      pass.value = '';
+      void render();
+    } catch (e) {
+      err.textContent = e instanceof Error ? e.message : String(e);
+      err.hidden = false; btn.disabled = false; pass.value = ''; pass.focus();
+    }
+  });
+  document.getElementById('main')!.replaceChildren(form);
+  user.focus();
+}
+
+async function signOut() {
+  try { await post('logout'); } catch { /* the session is gone either way */ }
+  session = { login: true };
+  showLogin('Signed out.');
 }
 
 async function render() {
@@ -66,16 +103,25 @@ async function render() {
       ws.addEventListener('change', () => { location.hash = href(page, ctx, { window: ws.value }); });
       bar.append(ws);
     }
-  } catch (e) { bar.append(errorBox(e)); }
+  } catch (e) {
+    if (e instanceof LoginRequired) { showLogin(); return; }
+    bar.append(errorBox(e));
+  }
   const refresh = el('button', { type: 'button' }, 'Refresh');
   refresh.addEventListener('click', () => { void render(); });
   bar.append(refresh, el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })));
+  if (session.login && session.user) {
+    const out = el('button', { type: 'button', class: 'link' }, 'Sign out');
+    out.addEventListener('click', () => { void signOut(); });
+    bar.append(el('span', { class: 'meta' }, session.user), out);
+  }
 
   const main = document.getElementById('main')!;
   let view: HTMLElement;
   try {
     view = await pages[page].render(ctx);
   } catch (e) {
+    if (e instanceof LoginRequired) { showLogin(); return; }
     view = errorBox(e);
   }
   if (gen !== generation) return;
@@ -89,4 +135,8 @@ async function render() {
 
 window.addEventListener('hashchange', () => { void render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined) void render(); });
-void render();
+// the first load asks who holds this session; a 401 shows the sign-in form before any page
+(async () => {
+  try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
+  void render();
+})();

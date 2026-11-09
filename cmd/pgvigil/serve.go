@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,15 +18,22 @@ import (
 
 // runServe starts the web UI and JSON API over the repository:
 //
-//	pgvigil serve -config pgvigil.yaml [-listen 127.0.0.1:8080] [-dsn env:PGVIGIL_READER_DSN]
+//	pgvigil serve -config pgvigil.yaml [-listen 127.0.0.1:8080] [-dsn env:PGVIGIL_UI_DSN]
+//	              [-tls-cert pgvigil.crt -tls-key pgvigil.key] [-no-login] [-session-hours 12]
 //
-// -dsn names a reader login (pgvigil_reader); without it the repository DSN of the config is used.
-// The server binds to loopback by default: it has no login of its own yet.
+// -dsn names the UI's repository login (pgvigil_reader + pgvigil_auth); without it the repository
+// DSN of the config is used. The UI login (pgvigil.ui_users) is on unless -no-login, which a loopback
+// listen alone may ask for. A listen beyond loopback needs TLS and the login; it refuses to start
+// without them.
 func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	path := fs.String("config", "pgvigil.yaml", "path to the configuration file")
 	listen := fs.String("listen", "127.0.0.1:8080", "address to listen on")
-	dsn := fs.String("dsn", "", "reader connection string (or env:NAME / file:path); default the config's repository dsn")
+	dsn := fs.String("dsn", "", "UI connection string (or env:NAME / file:path); default the config's repository dsn")
+	tlsCert := fs.String("tls-cert", "", "PEM certificate (with -tls-key): serve HTTPS")
+	tlsKey := fs.String("tls-key", "", "PEM private key (with -tls-cert)")
+	noLogin := fs.Bool("no-login", false, "serve without the UI login (allowed on a loopback listen only)")
+	sessionHours := fs.Int("session-hours", 12, "hours a login stays valid")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -41,13 +49,39 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return fmt.Errorf("-listen: %w", err)
 	}
-	var hosts []string // nil = any Host (beyond loopback the proxy in front decides)
-	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
-		hosts = web.LoopbackHosts(port)
-	} else {
-		log.Warn("serve listens beyond loopback and has no login; put it behind a proxy with authentication", "listen", *listen)
+	if *sessionHours < 1 || *sessionHours > 24*30 {
+		return errors.New("-session-hours must be 1..720")
 	}
-	srv, err := web.Open(ctx, log, d, expectedIntervals(cfg), hosts)
+	useTLS := *tlsCert != "" || *tlsKey != ""
+	if useTLS && (*tlsCert == "" || *tlsKey == "") {
+		return errors.New("-tls-cert and -tls-key go together")
+	}
+	loopback := host == "127.0.0.1" || host == "localhost" || host == "::1"
+	if !loopback {
+		if !useTLS {
+			return fmt.Errorf("a listen on %s is reachable from other machines and needs -tls-cert and -tls-key ('pgvigil cert' writes a self-signed pair)", *listen)
+		}
+		if *noLogin {
+			return errors.New("-no-login is allowed on a loopback listen (127.0.0.1, localhost, ::1) only")
+		}
+	}
+	var hosts []string // nil = any Host (beyond loopback the certificate names the server)
+	if loopback {
+		hosts = web.LoopbackHosts(port)
+	}
+	var tlsCfg *tls.Config
+	if useTLS {
+		pair, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+		tlsCfg = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+	}
+	if *noLogin {
+		log.Warn("serve runs without the UI login: anyone who reaches this loopback port reads the repository", "listen", *listen)
+	}
+	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
+		SessionTTL: time.Duration(*sessionHours) * time.Hour})
 	if err != nil {
 		return err
 	}
@@ -58,10 +92,16 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
-	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second}
+	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}
 	errc := make(chan error, 1)
-	go func() { errc <- hs.Serve(ln) }()
-	log.Info("pgvigil serve started", "url", fmt.Sprintf("http://%s/", ln.Addr()))
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+		go func() { errc <- hs.ServeTLS(ln, "", "") }()
+	} else {
+		go func() { errc <- hs.Serve(ln) }()
+	}
+	log.Info("pgvigil serve started", "url", fmt.Sprintf("%s://%s/", scheme, ln.Addr()), "login", !*noLogin)
 	select {
 	case <-ctx.Done():
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

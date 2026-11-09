@@ -14,6 +14,7 @@ schedules:
 #   none        no statement text at all, only hashes and counters
 query_text: full
 
+# A host that only serves the UI (pgvigil serve, pgvigil user, pgvigil migrate) may leave this list empty.
 instances:
   - name: prod-writer
     dsn: env:PROD_WRITER_DSN           # host=... user=pgvigil dbname=postgres sslmode=require

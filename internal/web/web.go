@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,6 +36,23 @@ type Server struct {
 	expected Expected
 	// hosts are the Host header values accepted; empty = any (a non-loopback listen).
 	hosts map[string]bool
+	// auth is the UI login; nil = off (a loopback listen that asked for it).
+	auth *authState
+	// tls says the listener is TLS: HSTS is sent and the session cookie is Secure.
+	tls bool
+}
+
+// Options shape a Server beyond its repository connection.
+type Options struct {
+	Expected Expected
+	// Hosts lists the Host header values to accept (DNS-rebinding guard); nil accepts any.
+	Hosts []string
+	// Login requires the UI login (pgvigil.ui_users) on every /api endpoint but login, logout and session.
+	Login bool
+	// TLS says the listener is TLS.
+	TLS bool
+	// SessionTTL is a session's life from its login; 0 = 12 h.
+	SessionTTL time.Duration
 }
 
 // Expected is the interval map of the stale check.
@@ -46,9 +64,9 @@ type Expected struct {
 // DefaultStaleSecs is the age after which a collection with no known interval is stale.
 const DefaultStaleSecs = 3 * 3600
 
-// Open connects to the repository read-only.
-// hosts lists the Host header values to accept (DNS-rebinding guard); nil accepts any.
-func Open(ctx context.Context, log *slog.Logger, dsn string, expected Expected, hosts []string) (*Server, error) {
+// Open connects to the repository read-only and, with o.Login, checks that the login can work:
+// the serve login must hold pgvigil_auth and the schema must carry 0015.
+func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, errors.New("repository dsn is empty")
 	}
@@ -73,31 +91,72 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, expected Expected, 
 		pool.Close()
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
-	return &Server{pool: pool, log: log, expected: expected, hosts: hostSet(hosts)}, nil
+	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS}
+	if o.Login {
+		var n int64
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_user_count()`).Scan(&n); err != nil {
+			pool.Close()
+			var pg *pgconn.PgError
+			switch {
+			case errors.As(err, &pg) && pg.Code == "42501":
+				return nil, fmt.Errorf("the serve login may not check passwords: as the repository owner run GRANT pgvigil_auth TO %s", cfg.ConnConfig.User)
+			case errors.As(err, &pg) && pg.Code == "42883":
+				return nil, errors.New("the repository has no UI login yet: run 'pgvigil migrate' as the repository owner")
+			}
+			return nil, fmt.Errorf("ui login check: %w", err)
+		}
+		if n == 0 {
+			log.Warn("no UI user can log in yet: run 'pgvigil user add <name>' as the repository owner")
+		}
+		s.auth = newAuth(func(ctx context.Context, user string) (string, error) {
+			var h *string
+			if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_password_hash($1)`, user).Scan(&h); err != nil {
+				return "", err
+			}
+			if h == nil {
+				return "", nil
+			}
+			return *h, nil
+		}, o.TLS, o.SessionTTL)
+	}
+	return s, nil
 }
 
 // Close releases the pool.
 func (s *Server) Close() { s.pool.Close() }
 
-// Handler returns the routes: /api/... and the embedded frontend.
+// Handler returns the routes: /api/... (behind the login when it is on) and the embedded frontend.
+// The shell and its assets are public: they hold no data.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", s.health)
-	mux.HandleFunc("GET /api/instances", s.instances)
-	mux.HandleFunc("GET /api/overview", s.overview)
-	mux.HandleFunc("GET /api/activity", s.activity)
-	mux.HandleFunc("GET /api/statements", s.statements)
-	mux.HandleFunc("GET /api/counters", s.counters)
-	mux.HandleFunc("GET /api/dms", s.dms)
-	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/health", s.health)
+	api.HandleFunc("GET /api/instances", s.instances)
+	api.HandleFunc("GET /api/overview", s.overview)
+	api.HandleFunc("GET /api/activity", s.activity)
+	api.HandleFunc("GET /api/statements", s.statements)
+	api.HandleFunc("GET /api/counters", s.counters)
+	api.HandleFunc("GET /api/dms", s.dms)
+	api.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("GET /api/session", s.sessionInfo)
+	mux.Handle("/api/", s.requireLogin(api))
 	sub, err := fs.Sub(dist, "dist")
 	if err != nil {
 		panic(err) // the embed path is fixed at build time
 	}
 	files := http.FileServerFS(sub)
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+	// no method in the pattern: "GET /" and the method-less "/api/" gate would be two patterns
+	// neither of which is more specific, which the mux refuses
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeErr(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
 		// a client-side route (#/...) never reaches here; unknown paths get the shell
 		if r.URL.Path != "/" {
 			if _, err := fs.Stat(sub, strings.TrimPrefix(r.URL.Path, "/")); err != nil {
@@ -126,7 +185,7 @@ func LoopbackHosts(port string) []string {
 }
 
 // secure refuses a Host the server does not answer to (a DNS-rebinding page would send its
-// own name) and adds the headers a local admin UI wants: no framing, no sniffing, same origin.
+// own name) and adds the headers an admin UI wants: no framing, no sniffing, same origin, HSTS under TLS.
 func (s *Server) secure(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.hosts != nil && !s.hosts[strings.ToLower(r.Host)] {
@@ -137,7 +196,10 @@ func (s *Server) secure(h http.Handler) http.Handler {
 		hd.Set("X-Content-Type-Options", "nosniff")
 		hd.Set("X-Frame-Options", "DENY")
 		hd.Set("Referrer-Policy", "no-referrer")
-		hd.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:")
+		hd.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; form-action 'self'")
+		if s.tls {
+			hd.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		h.ServeHTTP(w, r)
 	})
 }

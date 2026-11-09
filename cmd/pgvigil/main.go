@@ -4,7 +4,10 @@
 //	pgvigil run      -config pgvigil.yaml            run every scheduled collection until stopped
 //	pgvigil collect  -config pgvigil.yaml -once instance [-instance name]
 //	pgvigil migrate  -config pgvigil.yaml            apply the repository schema
-//	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080]   web UI and JSON API (read only)
+//	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080] [-tls-cert f -tls-key f]   web UI and JSON API (read only)
+//	pgvigil user     <add|passwd|enable|disable|remove|list> -config pgvigil.yaml [name]        the UI's logins
+//	pgvigil cert     [-hosts a,b] [-out dir]                                                 a self-signed TLS pair
+//	pgvigil roles                                                                            the CREATE ROLE script
 //	pgvigil version
 package main
 
@@ -53,6 +56,10 @@ func run(args []string) int {
 		err = runRoles(args[1:])
 	case "serve":
 		err = runServe(ctx, log, args[1:])
+	case "user":
+		err = runUser(ctx, log, args[1:])
+	case "cert":
+		err = runCert(args[1:])
 	default:
 		usage()
 		return 2
@@ -65,10 +72,13 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|version> [-config file] [-once collection] [-instance name]")
 }
 
-func loadConfig(args []string) (*config.Config, *flag.FlagSet, error) {
+// loadConfig reads the config for the repository commands; needInstance is the collector
+// commands' rule (collect, run), not migrate's: a host that only serves the UI lists no instance
+// and still migrates its repository.
+func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet, error) {
 	fs := flag.NewFlagSet("pgvigil", flag.ContinueOnError)
 	path := fs.String("config", "pgvigil.yaml", "path to the configuration file")
 	once := fs.String("once", "", "collection to run once (collect only)")
@@ -80,7 +90,7 @@ func loadConfig(args []string) (*config.Config, *flag.FlagSet, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(cfg.Instances) == 0 {
+	if needInstance && len(cfg.Instances) == 0 {
 		return nil, nil, fmt.Errorf("config %s: at least one instance is required", *path)
 	}
 	if err := checkCollectionNames(cfg); err != nil {
@@ -92,7 +102,7 @@ func loadConfig(args []string) (*config.Config, *flag.FlagSet, error) {
 }
 
 func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
-	cfg, _, err := loadConfig(args)
+	cfg, _, err := loadConfig(args, false)
 	if err != nil {
 		return err
 	}
@@ -110,7 +120,7 @@ func runMigrate(ctx context.Context, log *slog.Logger, args []string) error {
 }
 
 func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
-	cfg, _, err := loadConfig(args)
+	cfg, _, err := loadConfig(args, true)
 	if err != nil {
 		return err
 	}
@@ -179,7 +189,7 @@ func checkCollectionNames(cfg *config.Config) error {
 }
 
 func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
-	cfg, _, err := loadConfig(args)
+	cfg, _, err := loadConfig(args, true)
 	if err != nil {
 		return err
 	}
