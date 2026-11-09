@@ -18,6 +18,9 @@ BEGIN
   END IF;
 END $$;
 
+CREATE OR REPLACE FUNCTION pgvigil.schema_latest()
+RETURNS text LANGUAGE sql STABLE AS $$ SELECT max(version) FROM pgvigil.schema_version $$;
+
 CREATE OR REPLACE FUNCTION pgvigil.apply_roles()
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -33,7 +36,7 @@ BEGIN
      WHERE n.nspname = 'pgvigil'
   LOOP
     EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', f.sig);
-    IF f.proname LIKE 'import\_%' OR f.proname IN ('ensure_instance', 'log_collection') THEN
+    IF f.proname LIKE 'import\_%' OR f.proname IN ('ensure_instance', 'log_collection', 'schema_latest') THEN
       -- the collector's door: runs as the owner, sees only its arguments
       EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp', f.sig);
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_collector', f.sig);

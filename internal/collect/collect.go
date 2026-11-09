@@ -141,7 +141,14 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)
-	_ = r.LogCollection(ctx, instanceID, name, start, d, "ok", "")
+	status, note := "ok", ""
+	for _, row := range rows {
+		if row["kind"] == "collector_error" {
+			status, note = "partial", fmt.Sprintf("%v: %v", row["source"], row["message"])
+			break
+		}
+	}
+	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
 	return Result{Rows: len(rows), Duration: d}
 }

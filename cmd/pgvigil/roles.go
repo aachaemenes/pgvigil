@@ -24,6 +24,9 @@ CREATE ROLE %[2]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader;
 -- On each monitored PostgreSQL server: the monitoring login (pg_monitor is all it needs;
 -- on RDS, Aurora, Azure and Cloud SQL prefer the platform's IAM / Entra token login instead of a password)
 CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
+-- pg_cron (in cron.database_name, usually postgres): its row-level security shows a login only
+-- its own jobs; to monitor every job the login needs USAGE on schema cron and BYPASSRLS:
+-- GRANT USAGE ON SCHEMA cron TO %[3]s; ALTER ROLE %[3]s BYPASSRLS;   -- not available on RDS: see the docs
 -- optional, where pg_stat_statements lives in a schema the login cannot see:
 -- GRANT USAGE ON SCHEMA <that schema> TO %[3]s;
 `, collector, reader, monitor)

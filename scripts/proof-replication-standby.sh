@@ -55,7 +55,7 @@ iid=$(q "select instance_id from pgvigil.instances where name='proof-standby'")
 snap=$(q "select max(snapshot_at) from pgvigil.replication_sample where instance_id=$iid")
 kinds=$(q "select string_agg(kind || '=' || c, ' ' order by kind) from (select kind, count(*) c from pgvigil.replication_sample where instance_id=$iid and snapshot_at='$snap' group by kind) x")
 recv=$(q "select coalesce(state,'?') || '/' || coalesce(lag_secs::text,'NULL') from pgvigil.replication_sample where instance_id=$iid and snapshot_at='$snap' and kind='receiver'")
-errs=$(q "select count(*) from pgvigil.collection_log where instance_id=$iid and collection='replication' and status='partial'")
+errs=$(q "select count(*) from pgvigil.collection_dates where instance_id=$iid and collection='replication' and status='partial'")
 echo "standby snapshot kinds: $kinds; receiver status/replay_delay = $recv; partial errors = $errs"
 [[ "$kinds" == *"receiver=1"* ]] || fail "no receiver row"
 [[ "$kinds" == *"sender="* ]] || fail "no sender row on the standby"

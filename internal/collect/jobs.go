@@ -24,13 +24,16 @@ func (jobsCollector) Name() string                   { return "jobs" }
 func (jobsCollector) DefaultInterval() time.Duration { return time.Minute }
 func (jobsCollector) Applies(info platform.Info) (bool, string) {
 	if !info.HasPgCron && !info.HasPgAgent {
-		return false, "neither pg_cron nor pgAgent is installed in the connected database"
+		return false, "neither pg_cron nor pgAgent is installed in the connected database (pg_cron lives in cron.database_name, usually postgres)"
 	}
 	return true, ""
 }
 
 // pg_cron: cron.job (jobname from 1.3) and cron.job_run_details (1.4+); the
-// last hour of runs is enough at a one-minute cadence, the import de-duplicates.
+// last day of runs, so a run that started over an hour ago and then ends is
+// still read once more and closed; the import de-duplicates.
+// pg_cron's row-level security shows a non-superuser only its own jobs: the
+// monitoring login needs bypassrls or superuser-equivalent rights to see all.
 const cronJobsSQL = `
 SELECT 'job' AS kind, 'pg_cron' AS scheduler, j.jobid::bigint AS job_id, %s AS job_name, j.schedule, j.command,
        j.database::text AS datname, j.username::text AS run_as, j.active, j.nodename, j.nodeport
@@ -41,7 +44,7 @@ SELECT 'run' AS kind, 'pg_cron' AS scheduler, r.jobid::bigint AS job_id, r.runid
        r.database::text AS datname, r.username::text AS run_as, r.command, r.status, r.return_message,
        r.start_time, r.end_time, extract(epoch FROM r.end_time - r.start_time) AS duration_secs
   FROM cron.job_run_details r
- WHERE r.start_time > now() - interval '1 hour' OR r.end_time IS NULL`
+ WHERE r.start_time > now() - interval '1 day' OR r.end_time IS NULL`
 
 const pgagentJobsSQL = `
 SELECT 'job' AS kind, 'pgagent' AS scheduler, j.jobid::bigint AS job_id, j.jobname AS job_name,
@@ -59,7 +62,7 @@ SELECT 'run' AS kind, 'pgagent' AS scheduler, l.jlgjobid::bigint AS job_id, l.jl
        CASE WHEN l.jlgstatus = 'r' THEN NULL ELSE l.jlgstart + l.jlgduration END AS end_time,
        extract(epoch FROM l.jlgduration) AS duration_secs
   FROM pgagent.pga_joblog l
- WHERE l.jlgstart > now() - interval '1 hour' OR l.jlgstatus = 'r'`
+ WHERE l.jlgstart > now() - interval '1 day' OR l.jlgstatus = 'r'`
 
 func (jobsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error) {
 	out := []Row{}

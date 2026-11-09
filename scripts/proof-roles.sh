@@ -32,8 +32,12 @@ out=$(psql "$COLL_DSN" -XAt -c "select count(*) from pgvigil.activity_sample" 2>
 out=$(psql "$COLL_DSN" -XAt -c "select count(*) from pgvigil.instance_state" 2>&1 || true)
 [[ "$out" == *"permission denied"* ]] || fail "collector could read instance_state: $out"
 if "$BIN" migrate -config "$CFG" >/dev/null 2>&1; then fail "migrate as the collector login succeeded"; fi
+# the daemon starts as the collector login (it checks the schema, it does not migrate)
+timeout 8 "$BIN" run -config "$CFG" >/dev/null 2>&1 & RUNPID=$!
+sleep 5; kill -0 "$RUNPID" 2>/dev/null || fail "pgvigil run exited early as the collector login"
+kill "$RUNPID" 2>/dev/null || true; wait "$RUNPID" 2>/dev/null || true
 cnt=$(psql "$READ_DSN" -XAt -c "select count(*) from pgvigil.activity_latest" 2>&1) || fail "reader could not read activity_latest: $cnt"
 psql "$READ_DSN" -XAtq -c "select * from pgvigil.blocking_chains(1, now()) limit 1" >/dev/null 2>&1 || fail "reader could not call blocking_chains"
 out=$(psql "$READ_DSN" -XAt -c "select pgvigil.import_instance(1, now(), '[]'::jsonb)" 2>&1 || true)
 [[ "$out" == *"permission denied"* ]] || fail "reader could call import_instance: $out"
-echo "proof-roles: OK (collector: collect yes, read no, migrate no; reader: read yes, import no)"
+echo "proof-roles: OK (collector: collect yes, run yes, read no, migrate no; reader: read yes, import no)"

@@ -54,10 +54,8 @@ BEGIN
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' <> 'collector_error';
 
-  -- a kind that could not be read this snapshot: visible in the collection log, the rest is stored
-  INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, duration_ms, status, note)
-  SELECT p_instance_id, 'replication', p_snapshot_at, NULL, 'partial', (r->>'source') || ': ' || (r->>'message')
-    FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'collector_error';
+  -- a kind that could not be read is reported by the collector as status 'partial' through
+  -- log_collection (collection_dates and collection_log); replication_checks lists it
 END $$;
 
 -- newest snapshot per instance, every kind (bounded to the last day: a cadence gap longer than
@@ -88,7 +86,12 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
   UNION ALL
   SELECT instance_id, snapshot_at, 'replay lag', key, lag_secs::bigint, 'seconds', state
     FROM pgvigil.replication_latest
-   WHERE kind IN ('sender', 'receiver', 'aurora_replica') AND coalesce(lag_secs, 0) > 30;
+   WHERE kind IN ('sender', 'receiver', 'aurora_replica') AND coalesce(lag_secs, 0) > 30
+  UNION ALL
+  -- a read that failed is a check of its own: an unreadable slot list must not look healthy
+  SELECT d.instance_id, d.snapshot_at, 'replication read failed', split_part(d.note, ':', 1), NULL::bigint, NULL, d.note
+    FROM pgvigil.collection_dates d
+   WHERE d.collection = 'replication' AND d.status = 'partial';
 
 CREATE OR REPLACE FUNCTION pgvigil.purge(p_days int DEFAULT 30)
 RETURNS bigint LANGUAGE plpgsql AS $$

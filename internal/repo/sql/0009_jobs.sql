@@ -85,7 +85,7 @@ CREATE OR REPLACE VIEW pgvigil.job_running AS
          extract(epoch FROM now() - r.start_time)::int AS running_secs
     FROM pgvigil.job_runs r
     LEFT JOIN pgvigil.jobs j ON j.instance_id = r.instance_id AND j.scheduler = r.scheduler AND j.job_id = r.job_id
-   WHERE r.end_time IS NULL AND r.status IN ('running', 'starting');
+   WHERE r.end_time IS NULL AND r.status NOT IN ('succeeded', 'failed', 'internal error', 'aborted');
 
 CREATE OR REPLACE FUNCTION pgvigil.purge(p_days int DEFAULT 30)
 RETURNS bigint LANGUAGE plpgsql AS $$

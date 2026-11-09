@@ -113,22 +113,46 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 			_ = tx.Rollback(ctx)
 			return applied, err
 		}
+		// re-apply the access contract inside the same transaction: CREATE OR REPLACE resets
+		// SECURITY DEFINER, so an import function replaced by this file must not commit without it
+		var hasRoles bool
+		if err := tx.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.apply_roles()') IS NOT NULL`).Scan(&hasRoles); err != nil {
+			_ = tx.Rollback(ctx)
+			return applied, err
+		}
+		if hasRoles {
+			if _, err := tx.Exec(ctx, `SELECT pgvigil.apply_roles()`); err != nil {
+				_ = tx.Rollback(ctx)
+				return applied, fmt.Errorf("apply_roles after %s: %w", n, err)
+			}
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return applied, err
 		}
 		applied++
 	}
-	// the access contract (0008) covers whatever the migrations just added
-	var hasRoles bool
-	if err := c.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.apply_roles()') IS NOT NULL`).Scan(&hasRoles); err != nil {
-		return applied, err
+	return applied, nil
+}
+
+// SchemaCurrent reports whether every embedded migration is applied, through a
+// SECURITY DEFINER function the collector role may call; `pgvigil run` checks
+// this instead of migrating, so the daemon runs with the collector login.
+func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
+	entries, err := fs.ReadDir(migrations, "sql")
+	if err != nil {
+		return false, "", err
 	}
-	if hasRoles {
-		if _, err := c.Exec(ctx, `SELECT pgvigil.apply_roles()`); err != nil {
-			return applied, fmt.Errorf("apply_roles: %w", err)
+	latest := ""
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") && e.Name() > latest {
+			latest = e.Name()
 		}
 	}
-	return applied, nil
+	var have *string
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.schema_latest()`).Scan(&have); err != nil {
+		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
+	}
+	return have != nil && *have >= latest, latest, nil
 }
 
 // EnsureInstance upserts the instance row and returns its id.

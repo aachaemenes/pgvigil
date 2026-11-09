@@ -182,8 +182,12 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer r.Close()
-	if _, err := r.Migrate(ctx); err != nil {
-		return fmt.Errorf("migrate: %w", err)
+	ok, latest, err := r.SchemaCurrent(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("repository schema is behind this binary (needs %s): run 'pgvigil migrate' as the repository owner", latest)
 	}
 	return sched.Run(ctx, log, r, cfg)
 }
