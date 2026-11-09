@@ -6,6 +6,16 @@ One collector binary (Go, static, no runtime on the target) polls each instance 
 
 Status: phase 1, under construction. The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers and the service wrappers ship with v0.2.0 (the section below); the desktop wrapper is not built yet. The first release is [v0.1.0](https://github.com/aachaemenes/pgvigil/releases/tag/v0.1.0): static binaries for Linux, Windows and macOS.
 
+## Screenshots
+
+The demo fleet (`pgvigil demo`): the Summary grid, one row per instance and a coloured cell per check group; an instance's running queries with the blocking chain to its head; the DMS tab with the drain readout.
+
+![Summary grid](docs/img/summary.png)
+
+![Running queries with a blocking chain](docs/img/running-queries.png)
+
+![DMS tasks with the drain readout](docs/img/dms.png)
+
 ## What it collects today
 
 | Collection | Cadence | Source | Stored as |

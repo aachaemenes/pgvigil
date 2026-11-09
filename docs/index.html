@@ -30,6 +30,7 @@
   section { padding: 2.4rem 0; border-top: 1px solid var(--line); }
   h2 { font-size: 1.45rem; margin: 0 0 1.2rem; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
+  .shots { padding: 0 0 2rem; } .shots figure { margin: 0 0 1.4rem; } .shots img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; } .shots figcaption { color: var(--muted); font-size: .95rem; margin-top: .5rem; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; }
   .card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
   .card p { margin: 0; color: var(--muted); font-size: .97rem; }
@@ -62,6 +63,12 @@
   <a class="btn" href="https://github.com/aachaemenes/pgvigil#quick-start">Quick start</a>
   <a class="btn" href="https://github.com/aachaemenes/pgvigil">Source on GitHub</a>
 </div>
+
+<section id="screens"><div class="wrap shots">
+  <figure><img src="img/summary.png" alt="The Summary grid: one row per instance, a coloured cell per check group" width="1600" height="900" loading="lazy"><figcaption>The fleet on one screen: one row per instance, a coloured cell per check group, the demo fleet of twelve.</figcaption></figure>
+  <figure><img src="img/running-queries.png" alt="Running queries: a blocking chain to its head with the head's statement" width="1600" height="900" loading="lazy"><figcaption>Running queries: the blocking chain to its head, the head's statement, every session.</figcaption></figure>
+  <figure><img src="img/dms.png" alt="DMS tasks with the drain readout: speed, ETA, rows behind, spill" width="1600" height="900" loading="lazy"><figcaption>DMS tasks next to the databases they feed: latency, the drain speed, the ETA, the spill to disk.</figcaption></figure>
+</div></section>
 
 <section id="features"><div class="wrap">
   <h2>Features</h2>
