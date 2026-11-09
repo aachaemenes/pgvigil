@@ -41,27 +41,28 @@ type Spec struct {
 	Logs        bool   // CloudWatch log events (RDS / Aurora)
 	StmtBroken  bool   // the statements collection fails (pg_stat_statements not preloaded)
 	SettingEdit string // a setting changed during the week: name=old>new
+	Tables      string // a table scenario: bloat | dead | avoff | novac | skip (the tables collection)
 }
 
 // base is the twelve-instance fleet of the walk-through.
 var base = []Spec{
 	{Name: "onprem-erp01", Platform: "onprem", Version: "16.6", VersionNum: 160006, App: "erp", DBs: []string{"erp", "erp_audit"},
 		Load: 1.6, MaxConn: 400, Addr: "10.20.1.11", ChainActive: true, SenderTo: "onprem-erp02", Tags: []string{"prod", "erp"},
-		SettingEdit: "work_mem=4MB>64MB"},
+		SettingEdit: "work_mem=4MB>64MB", Tables: "bloat"},
 	{Name: "onprem-erp02", Platform: "onprem", Version: "16.6", VersionNum: 160006, Replica: true, App: "erp", DBs: []string{"erp", "erp_audit"},
 		Load: 0.4, MaxConn: 400, Addr: "10.20.1.12", ReceiverOf: "onprem-erp01", Tags: []string{"prod", "erp"}},
 	{Name: "onprem-hr01", Platform: "onprem", Version: "15.10", VersionNum: 150010, App: "hr", DBs: []string{"hr"},
-		Load: 0.6, MaxConn: 200, Addr: "10.20.2.21", IdleHead: true, Tags: []string{"prod", "hr"}},
+		Load: 0.6, MaxConn: 200, Addr: "10.20.2.21", IdleHead: true, Tags: []string{"prod", "hr"}, Tables: "avoff"},
 	{Name: "rds-orders01", Platform: "rds", Version: "16.4", VersionNum: 160004, App: "orders", DBs: []string{"orders"},
 		Load: 2.0, MaxConn: 500, Addr: "10.30.4.15", ChainDDL: true, StmtReset: true, Deadlocks: true, Logs: true, Tags: []string{"prod", "orders"},
-		SettingEdit: "log_min_duration_statement=-1>1000"},
+		SettingEdit: "log_min_duration_statement=-1>1000", Tables: "dead"},
 	{Name: "rds-billing01", Platform: "rds", Version: "17.2", VersionNum: 170002, App: "billing", DBs: []string{"billing"},
 		Load: 0.9, MaxConn: 300, Addr: "10.30.4.22", SlotStale: true, Cron: true, Logs: true, Tags: []string{"prod", "billing"}},
 	{Name: "aurora-crm01", Platform: "aurora", Version: "17.4", VersionNum: 170004, App: "crm", DBs: []string{"crm"},
 		Load: 1.3, MaxConn: 1000, Addr: "10.30.8.31", AuroraRead: "aurora-crm01-reader1", Cron: true, CronFail: true, Logs: true,
 		Tags: []string{"prod", "crm"}},
 	{Name: "aurora-dms01", Platform: "aurora", Version: "17.4", VersionNum: 170004, App: "erp", DBs: []string{"erp_mirror"},
-		Load: 0.8, MaxConn: 1000, Addr: "10.30.8.41", DMS: true, Logs: true, Tags: []string{"prod", "migration"}},
+		Load: 0.8, MaxConn: 1000, Addr: "10.30.8.41", DMS: true, Logs: true, Tags: []string{"prod", "migration"}, Tables: "novac"},
 	{Name: "aurora-reporting01", Platform: "aurora", Version: "16.6", VersionNum: 160006, App: "reporting", DBs: []string{"warehouse"},
 		Load: 0.7, MaxConn: 800, Addr: "10.30.8.51", Logs: true, Tags: []string{"staging", "reporting"}},
 	{Name: "azure-portal01", Platform: "azure", Version: "16.8", VersionNum: 160008, App: "portal", DBs: []string{"portal"},
@@ -69,7 +70,7 @@ var base = []Spec{
 	{Name: "azure-portal02", Platform: "azure", Version: "15.12", VersionNum: 150012, App: "portal", DBs: []string{"portal_qa"},
 		Load: 0.3, MaxConn: 200, Addr: "10.40.1.12", Tags: []string{"staging", "portal"}},
 	{Name: "cloudsql-analytics01", Platform: "cloudsql", Version: "16.6", VersionNum: 160006, App: "analytics", DBs: []string{"events"},
-		Load: 1.0, MaxConn: 600, Addr: "10.50.0.11", Tags: []string{"prod", "analytics"}},
+		Load: 1.0, MaxConn: 600, Addr: "10.50.0.11", Tags: []string{"prod", "analytics"}, Tables: "skip"},
 	{Name: "cloudsql-analytics02", Platform: "cloudsql", Version: "15.10", VersionNum: 150010, App: "analytics", DBs: []string{"events_dev"},
 		Load: 0.25, MaxConn: 200, Addr: "10.50.0.12", StmtBroken: true, Tags: []string{"staging", "analytics"}},
 }

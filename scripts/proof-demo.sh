@@ -19,12 +19,16 @@
 #   overview     exactly these demo rows (check@instance):
 #                  collection failing@cloudsql-analytics02 (statements), replay lag@onprem-erp01,
 #                  replay lag@onprem-erp02, inactive slot retaining WAL@rds-billing01,
-#                  job failed@aurora-crm01 x2, DMS CDC latency@aurora-dms01, DMS tables in
-#                  error@aurora-dms01, DMS validation failures@aurora-dms01, deadlocks (24 h)@rds-orders01
-#                  with '3 deadlock(s)'; no stale collection, no 'check could not run'
+#                  job failed@aurora-crm01 x2, DMS CDC latency@aurora-dms01, DMS changes on disk@aurora-dms01,
+#                  DMS tables in error@aurora-dms01, DMS validation failures@aurora-dms01, DMS validation
+#                  suspended@aurora-dms01 (the attachments table in 'Error'), deadlocks (24 h)@rds-orders01
+#                  with '3 deadlock(s)', table autovacuum off@onprem-hr01, table bloat@onprem-erp01, table dead
+#                  rows@rds-orders01, table never vacuumed@aurora-dms01; no stale collection, no 'check could not run'
 #   jobs         aurora-crm01 3 jobs, rds-billing01 2
 #   logs         slow, lock_wait, deadlock and auth_fail events; 3 deadlocks in 24 h on rds-orders01
-#   dms          2 tasks, 15 tables, 2 in 'Table error'
+#   dms          2 tasks, 15 tables, 2 in 'Table error'; the CDC task's drain readout has an ETA and is spilling
+#   tables       14 databases, 70 tables present (5 per application database; cloudsql-analytics01's skipped
+#                table keeps its row); table_checks = exactly the four table rows of the overview
 #   settings     one change each on onprem-erp01 (work_mem) and rds-orders01 (log_min_duration_statement)
 #   rerun        "12 replaced"; no instance_id of the first run is left in any table with an instance_id
 #                column; the same counts; a non-demo instance named like a demo one (prefix trap-) makes
@@ -92,6 +96,12 @@ check_repo() {
   [[ "$got" == 3 ]] || fail "deadlock events in 24 h: $got"; ok "deadlock events in 24 h: 3"
   got=$(P -c "select count(*) || '/' || (select count(*) from pgvigil.dms_table_stats) || '/' || (select count(*) from pgvigil.dms_table_stats where table_state = 'Table error') from pgvigil.dms_tasks where is_present")
   [[ "$got" == "2/15/2" ]] || fail "dms tasks/tables/errors: $got"; ok "dms tasks/tables/errors: $got"
+  got=$(P -c "select count(*) filter (where eta_rows_secs > 0 and spilling) || '/' || count(*) from pgvigil.dms_drain d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and d.task_id = 'erp-to-aurora-cdc'")
+  [[ "$got" == "1/1" ]] || fail "dms drain eta and spill: $got"; ok "dms drain: the CDC task has an ETA and is spilling"
+  got=$(P -c "select (select count(*) from pgvigil.table_databases d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and d.is_present) || '/' || count(*) from pgvigil.tables t join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and t.is_present")
+  [[ "$got" == "14/70" ]] || fail "tables databases/tables: $got"; ok "tables: 14 databases, 70 tables"
+  got=$(P -c "select string_agg(c.check_name || '@' || i.name || ':' || c.object, ' ' order by c.check_name) from pgvigil.table_checks c join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
+  [[ "$got" == "table autovacuum off@demo-onprem-hr01:hr.public.timesheets table bloat@demo-onprem-erp01:erp.public.order_lines table dead rows@demo-rds-orders01:orders.public.order_items table never vacuumed@demo-aurora-dms01:erp_mirror.erp.order_lines" ]] || fail "table checks: $got"; ok "table checks: the four scenario tables"
   got=$(P -c "select string_agg(i.name || ':' || h.name, ' ' order by i.name) from pgvigil.instance_setting_history h join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
   [[ "$got" == "demo-onprem-erp01:work_mem demo-rds-orders01:log_min_duration_statement" ]] || fail "setting history: $got"; ok "setting history: $got"
 }
@@ -103,21 +113,27 @@ PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 for _ in $(seq 50); do curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
 api() { curl -fsS "http://127.0.0.1:$PORT/api/$1"; }
 EXPECTED_OVERVIEW="DMS CDC latency@demo-aurora-dms01
+DMS changes on disk@demo-aurora-dms01
 DMS tables in error@demo-aurora-dms01
 DMS validation failures@demo-aurora-dms01
+DMS validation suspended@demo-aurora-dms01
 collection failing@demo-cloudsql-analytics02
 deadlocks (24 h)@demo-rds-orders01
 inactive slot retaining WAL@demo-rds-billing01
 job failed@demo-aurora-crm01
 job failed@demo-aurora-crm01
 replay lag@demo-onprem-erp01
-replay lag@demo-onprem-erp02"
+replay lag@demo-onprem-erp02
+table autovacuum off@demo-onprem-hr01
+table bloat@demo-onprem-erp01
+table dead rows@demo-rds-orders01
+table never vacuumed@demo-aurora-dms01"
 check_api() {
   local got id
   got=$(api instances | python3 -c 'import json,sys; d=json.load(sys.stdin); n=d["columns"].index("tags"); print(sum(1 for r in d["rows"] if "demo" in (r[n] or [])))')
   [[ "$got" == 12 ]] || fail "api instances: $got"; ok "api instances: 12 demo"
   got=$(api overview | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["columns"]; print("\n".join(sorted(r[c.index("check_name")]+"@"+r[c.index("instance")] for r in d["rows"] if r[c.index("instance")].startswith("demo-") or r[c.index("check_name")]=="check could not run")))')
-  [[ "$got" == "$EXPECTED_OVERVIEW" ]] || { echo "$got" >&2; fail "overview rows differ"; }; ok "api overview: the 10 expected demo rows"
+  [[ "$got" == "$EXPECTED_OVERVIEW" ]] || { echo "$got" >&2; fail "overview rows differ"; }; ok "api overview: the 16 expected demo rows"
   api overview | grep -q '3 deadlock(s)' || fail "overview deadlock detail"; ok "api overview: 3 deadlock(s)"
   id=$(P -c "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
   got=$(api "activity?instance=$id" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["chains"]["rows"]))')
