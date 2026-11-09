@@ -14,7 +14,8 @@ set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}" "${ADMIN_DSN:?}"
 CFG=$(mktemp); FIFO=$(mktemp -u)
-cleanup() { rm -f "$CFG"; [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null; [ -n "${W1:-}" ] && kill "$W1" 2>/dev/null; [ -n "${W2:-}" ] && kill "$W2" 2>/dev/null; rm -f "$FIFO"; psql "$ADMIN_DSN" -XAtq -c "drop table if exists pgvigil_proof_t" >/dev/null 2>&1 || true; }
+# every step tolerates an already-gone process: under set -e a failing kill would end the trap early
+cleanup() { rm -f "$CFG"; for p in "${HOLDER:-}" "${W1:-}" "${W2:-}" "${W3:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done; rm -f "$FIFO"; psql "$ADMIN_DSN" -XAtq -c "drop table if exists pgvigil_proof_t" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -c "$1"; }
@@ -53,12 +54,16 @@ sessions=$(q "select count(*) from pgvigil.activity_sample where instance_id=$ii
 holders=$(q "select count(*) from pgvigil.activity_sample where instance_id=$iid and snapshot_at='$snap' and state='idle in transaction'")
 waiters=$(q "select count(*) from pgvigil.activity_sample where instance_id=$iid and snapshot_at='$snap' and state='active' and wait_event_type='Lock' and cardinality(blocking_pids) >= 1")
 summary=$(q "select waiting_lock || '/' || idle_in_txn || '/' || total from pgvigil.activity_summary where instance_id=$iid and snapshot_at='$snap'")
-chains=$(q "select count(*) || ' rows, heads=' || count(distinct head_pid) || ', depth=' || coalesce(max(depth),0) || ', head_state=' || coalesce(min(head_state),'?') from pgvigil.blocking_chains($iid, '$snap')")
+chains=$(q "select count(*) || ' rows, heads=' || count(distinct head_pid) || ', maxdepth=' || coalesce(max(depth),0) || ', cycles=' || count(*) filter (where in_cycle) || ', head_state=' || coalesce(min(head_state),'?') from pgvigil.blocking_chains($iid, '$snap')")
 echo "sessions=$sessions holders=$holders waiters=$waiters summary(waiting_lock/idle_in_txn/total)=$summary chains: $chains"
 [ "$holders" -ge 1 ] || fail "no idle-in-transaction holder captured"
 [ "$waiters" -eq 2 ] || fail "expected 2 Lock waiters with blocking_pids, got $waiters"
 [ "${summary%%/*}" -eq 2 ] || fail "summary waiting_lock != 2"
-[[ "$chains" == "2 rows, heads=1, depth=1, head_state=idle in transaction" ]] || fail "chains: $chains"
+# two waiters on one head: exactly one row each, the head idle in transaction, no cycle.
+# (on an exclusive-lock queue a later waiter also lists the waiters ahead of it, which are
+#  Lock waiters themselves and so are followed, never reported as heads)
+[[ "$chains" == 2\ rows,\ heads=1,\ maxdepth=*,\ cycles=0,\ head_state=idle\ in\ transaction ]] || fail "chains: $chains"
+[ "$(q "select count(*) from pgvigil.activity_sample where instance_id=$iid and snapshot_at='$snap' and is_blocker")" = "1" ] || fail "expected exactly one is_blocker row (the holder)"
 # release the holder and confirm the next snapshot is quiet
 printf 'ROLLBACK;\n' >&3; exec 3>&-; wait $W1 $W2 2>/dev/null || true; sleep 0.5
 "$BIN" collect -config "$CFG" -once activity >/dev/null

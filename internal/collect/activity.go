@@ -27,13 +27,24 @@ func init() { Register(activityCollector{}) }
 
 func (activityCollector) Name() string                   { return "activity" }
 func (activityCollector) DefaultInterval() time.Duration { return time.Minute }
-func (activityCollector) Applies(platform.Info) (bool, string) {
+func (activityCollector) Applies(info platform.Info) (bool, string) {
+	if info.ServerVersionNum < 130000 {
+		return false, "needs PostgreSQL 13 or later (leader_pid)"
+	}
 	return true, ""
 }
 
-// sessionsSQL stores active and idle-in-transaction client backends. query_id
-// exists from PostgreSQL 14; the %s is 'a.query_id' or 'NULL::bigint'.
+// sessionsSQL stores active and idle-in-transaction client backends, plus every
+// backend some Lock waiter names in pg_blocking_pids (an idle holder of an
+// advisory lock, an autovacuum worker, a parallel worker), so a chain's head is
+// always in the snapshot. query_id exists from PostgreSQL 14; the %s is
+// 'a.query_id' or 'NULL::bigint'.
 const sessionsSQL = `
+WITH blockers AS (
+  SELECT DISTINCT b AS pid
+    FROM pg_stat_activity w, unnest(pg_blocking_pids(w.pid)) b
+   WHERE w.wait_event_type = 'Lock' AND w.pid <> pg_backend_pid()
+)
 SELECT 'session'                                              AS kind,
        a.pid,
        a.backend_start,
@@ -53,11 +64,14 @@ SELECT 'session'                                              AS kind,
        a.leader_pid,
        %s                                                     AS query_id,
        hashtextextended(a.query, 0)                           AS query_hash,
-       a.query
+       a.query,
+       a.backend_type,
+       (a.pid IN (SELECT pid FROM blockers))                  AS is_blocker
   FROM pg_stat_activity a
  WHERE a.pid <> pg_backend_pid()
-   AND a.backend_type = 'client backend'
-   AND a.state IN ('active', 'idle in transaction', 'idle in transaction (aborted)')`
+   AND ( (a.backend_type = 'client backend'
+          AND a.state IN ('active', 'idle in transaction', 'idle in transaction (aborted)'))
+         OR a.pid IN (SELECT pid FROM blockers) )`
 
 // summarySQL counts every client session once per snapshot.
 const summarySQL = `
