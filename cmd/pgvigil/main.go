@@ -7,6 +7,7 @@
 //	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080] [-tls-cert f -tls-key f]   web UI and JSON API (read only)
 //	pgvigil user     <add|passwd|enable|disable|remove|list> -config pgvigil.yaml [name]        the UI's logins
 //	pgvigil cert     [-hosts a,b] [-out dir]                                                 a self-signed TLS pair
+//	pgvigil demo     [-config f | -pgbin dir] [-serve]                                        seed (and serve) the demo fleet
 //	pgvigil roles                                                                            the CREATE ROLE script
 //	pgvigil version
 package main
@@ -60,6 +61,8 @@ func run(args []string) int {
 		err = runUser(ctx, log, args[1:])
 	case "cert":
 		err = runCert(args[1:])
+	case "demo":
+		err = runDemo(ctx, log, args[1:])
 	default:
 		usage()
 		return 2
@@ -72,7 +75,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector
