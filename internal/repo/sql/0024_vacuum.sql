@@ -362,8 +362,16 @@ END $$;
 -- ---------------------------------------------------------------------------------------------------------
 
 -- the vacuums and analyzes running now: the latest minute read's rows, while that read is under 10 minutes old
+-- (a table the collector could not name - another database's manual run - is named from the hourly reads)
 CREATE OR REPLACE VIEW pgvigil.vacuum_running AS
-SELECT v.*,
+SELECT v.instance_id, v.snapshot_at, v.kind, v.pid, v.dbid, v.datname, v.relid,
+       coalesce(v.table_name, (SELECT x.schema_name || '.' || x.table_name FROM pgvigil.vacuum_tables x
+                                WHERE x.instance_id = v.instance_id AND x.dbid = v.dbid AND x.relid = v.relid),
+                (SELECT x.schema_name || '.' || x.table_name FROM pgvigil.tables x
+                  WHERE x.instance_id = v.instance_id AND x.dbid = v.dbid AND x.relid = v.relid)) AS table_name,
+       v.backend_type, v.is_auto, v.is_wraparound, v.phase, v.heap_blks_total, v.heap_blks_scanned, v.heap_blks_vacuumed,
+       v.index_vacuum_count, v.indexes_total, v.indexes_processed, v.dead_tuples, v.max_dead_tuples, v.sample_blks_total,
+       v.sample_blks_scanned, v.xact_start, v.query_start, v.elapsed_secs, v.wait_event_type, v.wait_event, v.blocking_pids, v.query,
        CASE WHEN v.heap_blks_total > 0 THEN round(100.0 * v.heap_blks_scanned / v.heap_blks_total, 1) END AS scanned_pct
   FROM pgvigil.vacuum_state s
   JOIN pgvigil.vacuum_sample v ON v.instance_id = s.instance_id AND v.snapshot_at = s.snapshot_at
@@ -450,7 +458,7 @@ SELECT r.instance_id, 'warning', 'vacuum running over an hour',
        coalesce(r.datname || '.' || r.table_name, r.datname || ' relid ' || r.relid::text, 'pid ' || r.pid::text), r.snapshot_at,
        CASE WHEN r.is_auto THEN 'autovacuum' ELSE 'manual' END || ' ' || r.kind
        || CASE WHEN r.is_wraparound THEN ' (to prevent wraparound)' ELSE '' END || ', pid ' || r.pid::text || ', running '
-       || (r.elapsed_secs / 60)::text || ' min, phase ' || coalesce(r.phase, 'not started')
+       || make_interval(secs => r.elapsed_secs)::text || ', phase ' || coalesce(r.phase, 'not started')
        || coalesce(', ' || r.scanned_pct::text || ' % of the heap scanned', '')
   FROM pgvigil.vacuum_running r
  WHERE r.kind IN ('vacuum', 'analyze') AND r.elapsed_secs >= 3600
@@ -458,7 +466,7 @@ UNION ALL
 SELECT r.instance_id, CASE WHEN r.is_wraparound THEN 'critical' ELSE 'warning' END, 'vacuum waiting on a lock',
        coalesce(r.datname || '.' || r.table_name, r.datname || ' relid ' || r.relid::text, 'pid ' || r.pid::text), r.snapshot_at,
        CASE WHEN r.is_auto THEN 'autovacuum' ELSE 'manual' END || ' ' || r.kind || ', pid ' || r.pid::text || ', waiting on '
-       || coalesce(r.wait_event, 'a lock') || ' for up to ' || (r.elapsed_secs / 60)::text || ' min'
+       || coalesce(r.wait_event, 'a lock') || ' for up to ' || make_interval(secs => r.elapsed_secs)::text
        || coalesce(', blocked by pid ' || array_to_string(r.blocking_pids, ', '), '')
   FROM pgvigil.vacuum_running r
  WHERE r.kind IN ('vacuum', 'analyze') AND r.wait_event_type = 'Lock';
@@ -488,7 +496,10 @@ RETURNS TABLE (source text, started_at timestamptz, ended_at timestamptz, kind t
                is_wraparound boolean, elapsed_secs int, last_phase text, heap_blks_total bigint, heap_blks_scanned bigint,
                dead_tuples bigint, index_vacuum_count bigint, waited_lock boolean, detail text)
 LANGUAGE sql STABLE AS $$
-  SELECT 'sample', r.started_at, r.last_seen, r.kind, r.datname, r.table_name, r.is_auto, r.is_wraparound, r.elapsed_secs,
+  SELECT 'sample', r.started_at, r.last_seen, r.kind, r.datname,
+         coalesce(r.table_name, (SELECT x.schema_name || '.' || x.table_name FROM pgvigil.vacuum_tables x
+                                  WHERE x.instance_id = r.instance_id AND x.dbid = r.dbid AND x.relid = r.relid),
+                  'relid ' || r.relid::text), r.is_auto, r.is_wraparound, r.elapsed_secs,
          r.last_phase, r.heap_blks_total, r.heap_blks_scanned, r.dead_tuples, r.index_vacuum_count, r.waited_lock,
          NULL::text
     FROM pgvigil.vacuum_runs r

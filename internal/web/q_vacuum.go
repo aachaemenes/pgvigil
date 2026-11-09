@@ -21,18 +21,15 @@ SELECT s.*, extract(epoch FROM now() - s.snapshot_at)::int AS read_secs_ago
   FROM pgvigil.vacuum_state s
  WHERE s.instance_id = $1`
 
-// sqlVacuumRunning: running now; a table the collector could not name (another database's manual run) is
-// named from the hourly reads when they hold it.
+// sqlVacuumRunning: running now (the view names a table the collector could not from the hourly reads).
 const sqlVacuumRunning = `
 SELECT r.kind, r.pid, r.datname,
-       coalesce(r.table_name, vt.schema_name || '.' || vt.table_name, t.schema_name || '.' || t.table_name, 'relid ' || r.relid::text) AS table_name,
+       coalesce(r.table_name, 'relid ' || r.relid::text) AS table_name,
        r.is_auto, r.is_wraparound, coalesce(r.phase, CASE WHEN r.wait_event_type = 'Lock' THEN 'waiting for its lock' END) AS phase,
        r.heap_blks_total, r.heap_blks_scanned, r.scanned_pct, r.heap_blks_vacuumed, r.index_vacuum_count,
        r.indexes_total, r.indexes_processed, r.dead_tuples, r.sample_blks_total, r.sample_blks_scanned,
        r.elapsed_secs, r.wait_event_type, r.wait_event, r.blocking_pids, r.query, r.snapshot_at
   FROM pgvigil.vacuum_running r
-  LEFT JOIN pgvigil.vacuum_tables vt ON vt.instance_id = r.instance_id AND vt.dbid = r.dbid AND vt.relid = r.relid
-  LEFT JOIN pgvigil.tables t ON t.instance_id = r.instance_id AND t.dbid = r.dbid AND t.relid = r.relid
  WHERE r.instance_id = $1
  ORDER BY r.kind = 'worker', r.elapsed_secs DESC NULLS LAST`
 
