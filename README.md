@@ -4,7 +4,7 @@ PostgreSQL monitoring for DBAs: daily checks, running queries with blocking chai
 
 One collector binary (Go, static, no runtime on the target) polls each instance on a schedule and writes into a PostgreSQL repository. A web UI served by the same binary, and later an installable desktop client, read the repository; Grafana can read it too.
 
-Status: phase 1, under construction. The collector, the repository and the collections below work and are proven on PostgreSQL 18; the UI, the installers and the cloud log and metric doors are not built yet. Nothing is released.
+Status: phase 1, under construction. The collector, the repository, the collections below and the first UI pages work and are proven on PostgreSQL 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers, the UI login and the release are not built yet. Nothing is released.
 
 ## What it collects today
 
@@ -16,6 +16,9 @@ Status: phase 1, under construction. The collector, the repository and the colle
 | dbstats | 1 min | pg_stat_database, bgwriter / checkpointer / WAL, pg_stat_io | cumulative rows, `*_rate()` functions over a window |
 | replication | 1 min | pg_stat_replication, pg_stat_wal_receiver, slots with retained WAL, subscriptions, publications, conflicts, aurora_replica_status() | one row per object per snapshot, `replication_checks` view |
 | databases | hourly | pg_database with sizes, xid and multixact age | current inventory plus a size history |
+| jobs | 1 min | pg_cron (cron.job, cron.job_run_details) and pgAgent (pga_job, pga_joblog) where installed | current jobs, a run history, `job_failures` and `job_running` views |
+| logs | 1 min | RDS / Aurora: the postgresql log exported to CloudWatch Logs, read from a cursor with a 5 min overlap: slow statements, lock waits, deadlocks, failed logins (text masked and capped) | `log_events` in monthly partitions, `log_cursor` per source |
+| dms | 1 min | AWS DMS tasks named in the instance's `aws.dms.tasks` (or `*`): DescribeReplicationTasks, DescribeTableStatistics, DescribeReplicationInstances, CloudWatch CDC latency and host metrics; read only | `dms_tasks`, `dms_table_stats`, `dms_instances` (current, absent objects kept with `is_present = false`), `dms_task_sample` per run, `dms_checks` view |
 
 Platform detection runs on every connection (on-prem, RDS, Aurora, Azure, Cloud SQL, AlloyDB) and each collection says whether it applies to that platform and version. Column names are taken from the server's own catalog views, so PostgreSQL 13 through 18 share one query set.
 
@@ -40,7 +43,7 @@ bin/pgvigil run -config pgvigil.yaml                      # every collection on 
 bin/pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_READER_DSN   # web UI on http://127.0.0.1:8080/
 ```
 
-`pgvigil serve` is read only: its sessions are `default_transaction_read_only` with a 15 s statement timeout, and `-dsn` should name a login holding only `pgvigil_reader`. It listens on loopback by default and has no login of its own yet, so anything wider belongs behind a proxy with authentication. Pages: Overview (daily checks: failing or stale collections, replication, failed jobs, deadlocks and checksum failures in 24 h), Instances, Running queries (blocking chains with the head, history by snapshot time), Statements (top by total time over a window) and Counters (database, server, IO and session rates). The JSON endpoints under `/api/` return `{columns, rows}` and serve Grafana or scripts as well.
+`pgvigil serve` is read only: its sessions are `default_transaction_read_only` with a 15 s statement timeout, and `-dsn` should name a login holding only `pgvigil_reader`. It listens on loopback by default and has no login of its own yet, so anything wider belongs behind a proxy with authentication. Pages: Overview (daily checks: failing or stale collections, replication, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in 24 h), Instances, Running queries (blocking chains with the head, history by snapshot time), Statements (top by total time over a window), Counters (database, server, IO and session rates) and DMS (tasks, their tables, the replication instances). The JSON endpoints under `/api/` return `{columns, rows}` and serve Grafana or scripts as well.
 
 The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
 
