@@ -62,8 +62,11 @@ export async function tablesView(instance: number): Promise<HTMLElement> {
 // findingsView: one instance's findings, or the fleet's (keep narrows the fleet to a tag folder; instLink
 // turns the instance name into a link to that instance's Findings tab).
 export async function findingsView(instance?: number, keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
-  let rows = rowsOf(await get('findings', { instance }));
+  // an instance with no settings read yet has no findings either: the empty text must not call it clean
+  const [f, cfg] = await Promise.all([get('findings', { instance }), instance ? get<{ state: Table | null }>('config', { instance }) : Promise.resolve(null)]);
+  let rows = rowsOf(f);
   if (keep) rows = rows.filter(keep);
+  const noRead = !!instance && rowsOf(cfg?.state).length === 0;
   const crit = rows.filter(r => r.severity === 'critical').length, warn = rows.filter(r => r.severity === 'warning').length;
   const cols: Col[] = [
     { key: 'severity', fmt: sevBadge },
@@ -77,7 +80,7 @@ export async function findingsView(instance?: number, keep?: (r: Row) => boolean
   ];
   return el('section', {}, el('h2', {}, 'Findings'),
     el('p', { class: 'meta' }, `${crit} critical, ${warn} warning, ${rows.length - crit - warn} advice. Parameters off their recommended range for the platform, from the latest settings read.`),
-    grid(rows, cols, 'No findings: every checked parameter is in its recommended range.'));
+    grid(rows, cols, noRead ? 'No settings read for this instance yet: the instance collection runs hourly.' : 'No findings: every checked parameter is in its recommended range.'));
 }
 
 // ---- Statements: the sorts top_statements_by knows and the slow executions of a window -----------------

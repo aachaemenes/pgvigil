@@ -297,7 +297,8 @@ SELECT datname, owner, encoding, size_bytes, xid_age, mxid_age, can_connect, all
  WHERE instance_id = $1
  ORDER BY is_present DESC, size_bytes DESC NULLS LAST, datname`
 
-// sqlTables is one instance's tables in the latest top N per database, the ones with a check first.
+// sqlTables is one instance's tables in the latest top N per database, the ones with a check first. The
+// checks view (a fleet-wide CTE) is read once per request through the aggregated join, never per table row.
 const sqlTables = `
 SELECT t.datname, t.schema_name, t.table_name, t.total_bytes, t.heap_bytes, t.toast_bytes, t.index_bytes,
        t.n_live_tup, t.n_dead_tup,
@@ -305,14 +306,13 @@ SELECT t.datname, t.schema_name, t.table_name, t.total_bytes, t.heap_bytes, t.to
        round(100.0 * t.relallvisible / nullif(t.relpages, 0), 1) AS all_visible_pct,
        t.bloat_pct, t.bloat_bytes, t.last_vacuum, t.last_analyze, t.n_mod_since_analyze, t.n_ins_since_vacuum,
        t.vacuums, t.analyzes, t.seq_scan, t.idx_scan, t.xid_age, t.mxid_age, t.autovacuum_off, t.stats_readable,
-       t.snapshot_at,
-       (SELECT string_agg(c.check_name, ', ' ORDER BY c.check_name) FROM pgvigil.table_checks c
-         WHERE c.instance_id = t.instance_id AND c.object = t.datname || '.' || t.schema_name || '.' || t.table_name) AS checks
+       t.snapshot_at, c.checks
   FROM pgvigil.tables t
+  LEFT JOIN (SELECT object, count(*) AS n, string_agg(check_name, ', ' ORDER BY check_name) AS checks
+               FROM pgvigil.table_checks WHERE instance_id = $1 GROUP BY object) c
+    ON c.object = t.datname || '.' || t.schema_name || '.' || t.table_name
  WHERE t.instance_id = $1 AND t.is_present
- ORDER BY (SELECT count(*) FROM pgvigil.table_checks c
-            WHERE c.instance_id = t.instance_id AND c.object = t.datname || '.' || t.schema_name || '.' || t.table_name) DESC,
-          t.total_bytes DESC NULLS LAST`
+ ORDER BY coalesce(c.n, 0) DESC, t.total_bytes DESC NULLS LAST`
 
 // sqlTableDatabases is the per-database summary of one instance's table read.
 const sqlTableDatabases = `

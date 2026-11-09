@@ -51,7 +51,7 @@ export function parse(): Ctx {
     task: q.get('task') ?? undefined,
     taskInstance: Number(q.get('ti')) || undefined,
     order: q.get('order') ?? undefined,
-    minSecs: q.has('min') && Number.isFinite(Number(q.get('min'))) && Number(q.get('min')) >= 0 ? Number(q.get('min')) : undefined,
+    minSecs: q.has('min') && Number.isFinite(Number(q.get('min'))) ? Math.min(86400, Math.max(0, Math.trunc(Number(q.get('min'))))) : undefined,
   };
 }
 

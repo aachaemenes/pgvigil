@@ -97,9 +97,9 @@ if [[ -n "$TBID" ]]; then
   rows "tables?instance=$TBID" 'len(d["databases"]["rows"])' 1
   rows "tables?instance=$TBID" 'len(d["tables"]["rows"])' 1
 else echo "tables: no table read in this repository (collect -once tables fills it): the endpoint is checked for its 400 only"; fi
-rows findings 'len(d["rows"])' 0
+rows findings 'len(d["rows"])' 1
 rows "findings?instance=$SID" 'len(d["rows"])' 0
-rows "slow?instance=$AID&from=$FROM" 'len(d["rows"])' 0
+rows "slow?instance=$AID&from=$FROM&min=0" 'len(d["rows"])' 1
 rows "statements?instance=$SID&from=$FROM&order=calls" 'len(d["rows"])' 1
 rows dms '1 if "drain" in d else 0' 1
 [[ $(code "$U/api/tables") == 400 ]] || fail "tables without instance was not 400"

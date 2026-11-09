@@ -145,19 +145,20 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
   const order = statementOrders.some(o => o[0] === ctx.order) ? ctx.order! : 'time';
   const minSecs = ctx.minSecs ?? 5;
   const w = { instance: ctx.instance, ...range(ctx) };
-  const [st, slow] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs })]);
+  // the slow read is separate: its failure shows under its own heading, the top statements stay
+  const [st, slow] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs }).catch((e: unknown) => e)]);
   const sortBar = el('div', { class: 'subtabs' }, ...statementOrders.map(([k, l]) =>
     el('a', { href: href(ctx, { tab: 'statements', order: k }), class: k === order ? 'on' : '' }, 'by ' + l)));
-  const minIn = el('input', { type: 'number', min: '0', max: '86400', value: String(minSecs), style: 'width:5em', 'aria-label': 'seconds at least' });
+  const minIn = el('input', { type: 'number', min: '0', max: '86400', step: '1', value: String(minSecs), style: 'width:5em', 'aria-label': 'seconds at least' });
   minIn.addEventListener('change', () => {
     const v = Number(minIn.value);
-    if (Number.isFinite(v) && v >= 0) location.hash = href(ctx, { tab: 'statements', minSecs: v });
+    if (Number.isFinite(v)) location.hash = href(ctx, { tab: 'statements', minSecs: Math.min(86400, Math.max(0, Math.trunc(v))) });
   });
   return el('section', {}, el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
     grid(rowsOf(st), stmtCols(order), 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
     el('h3', {}, 'Ran at least ', minIn, ' s in this window'),
     el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from its transaction start.'),
-    grid(rowsOf(slow), slowCols, 'Nothing seen running that long in this window.'));
+    slow instanceof Error ? errorBox(slow) : grid(rowsOf(slow as Table), slowCols, 'Nothing seen running that long in this window.'));
 }
 
 const counterSets: Record<string, { title: string; series: { key: string; label: string }[]; fmt?: (v: number) => string }[]> = {
