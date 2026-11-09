@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
@@ -18,7 +19,7 @@ import (
 
 // runServe starts the web UI and JSON API over the repository:
 //
-//	pgvigil serve -config pgvigil.yaml [-listen 127.0.0.1:8080] [-dsn env:PGVIGIL_UI_DSN]
+//	pgvigil serve -config pgvigil.yaml [-listen 127.0.0.1:8080] [-dsn env:PGVIGIL_UI_DSN] [-open]
 //	              [-tls-cert pgvigil.crt -tls-key pgvigil.key] [-no-login] [-session-hours 12]
 //
 // -dsn names the UI's repository login (pgvigil_reader + pgvigil_auth); without it the repository
@@ -33,6 +34,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	tlsCert := fs.String("tls-cert", "", "PEM certificate (with -tls-key): serve HTTPS")
 	tlsKey := fs.String("tls-key", "", "PEM private key (with -tls-cert)")
 	noLogin := fs.Bool("no-login", false, "serve without the UI login (allowed on a loopback listen only)")
+	open := fs.Bool("open", false, "open the UI in an app-mode browser window (Edge or Chrome, its own window) once it listens; the default browser when neither is found")
 	sessionHours := fs.Int("session-hours", 12, "hours a login stays valid")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -45,7 +47,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if *dsn != "" {
 		d = config.Resolve(*dsn)
 	}
-	host, port, err := net.SplitHostPort(*listen)
+	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {
 		return fmt.Errorf("-listen: %w", err)
 	}
@@ -65,10 +67,6 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 			return errors.New("-no-login is allowed on a loopback listen (127.0.0.1, localhost, ::1) only")
 		}
 	}
-	var hosts []string // nil = any Host (beyond loopback the certificate names the server)
-	if loopback {
-		hosts = web.LoopbackHosts(port)
-	}
 	var tlsCfg *tls.Config
 	if useTLS {
 		pair, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
@@ -80,17 +78,23 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if *noLogin {
 		log.Warn("serve runs without the UI login: anyone who reaches this loopback port reads the repository", "listen", *listen)
 	}
-	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
-		SessionTTL: time.Duration(*sessionHours) * time.Hour})
-	if err != nil {
-		return err
-	}
-	defer srv.Close()
-
+	// bind first: the accepted Host values follow the bound port (-listen 127.0.0.1:0 picks one, as demo does)
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
 	}
+	var hosts []string // nil = any Host (beyond loopback the certificate names the server)
+	if loopback {
+		hosts = web.LoopbackHosts(strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
+	}
+	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
+		SessionTTL: time.Duration(*sessionHours) * time.Hour})
+	if err != nil {
+		_ = ln.Close()
+		return err
+	}
+	defer srv.Close()
+
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}
 	errc := make(chan error, 1)
@@ -102,6 +106,9 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		go func() { errc <- hs.Serve(ln) }()
 	}
 	log.Info("pgvigil serve started", "url", fmt.Sprintf("%s://%s/", scheme, ln.Addr()), "login", !*noLogin)
+	if *open {
+		openWindow(log, browseURL(scheme, ln.Addr()))
+	}
 	select {
 	case <-ctx.Done():
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

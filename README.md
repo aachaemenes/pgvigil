@@ -83,6 +83,7 @@ Download the binary for your platform from the [latest release](https://github.c
    ```
    export PGVIGIL_UI_DSN='postgres://pgvigil_ui:...@repo-host:5432/pgvigil?sslmode=require'
    pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_UI_DSN                 # http://127.0.0.1:8080/, sign in as admin
+   pgvigil serve -config pgvigil.yaml -dsn env:PGVIGIL_UI_DSN -open           # the same in its own window (Edge or Chrome app mode; no install, no admin right)
    ```
    For other machines, over HTTPS (a certificate from your CA, or a self-signed pair from `pgvigil cert`, which the browser will warn about):
    ```
@@ -106,7 +107,7 @@ pgvigil demo -dsn 'postgres://pgvigil_owner:...@host:5432/pgvigil_demo?sslmode=d
 On a laptop with no admin rights and no Docker, a portable PostgreSQL does: unzip the EDB binaries archive (`postgresql-17.x-windows-x64-binaries.zip`; a Linux tarball works the same way) and point `-pgbin` at its `bin` folder. The demo runs `initdb` into `-pgdata` (default `pgvigil-demo-data` in the current folder, reused on the next run), starts that server on a free port, seeds, serves, and stops it when you press Ctrl-C:
 
 ```
-pgvigil.exe demo -pgbin C:\Users\you\pgsql\bin -serve      # then open http://127.0.0.1:8080/
+pgvigil.exe demo -pgbin C:\Users\you\pgsql\bin -serve -open   # opens in its own window; without -open, http://127.0.0.1:8080/ in a browser
 ```
 
 `-instances 1000 -days 7` seeds a scale run (the twelve repeat); `-listen` moves the port. Proven on Linux and on Windows as an administrator; a standard Windows account is not proven yet.
@@ -131,6 +132,8 @@ What `pgvigil install` does (and `pgvigil uninstall` undoes; `-purge` also remov
 Proofs: `scripts/proof-install.sh` (a Debian container running systemd, a mock release server, a throwaway repository: checksum refusal, install without an instance, the upgrade path starting the service as `pgvigil`, uninstall, purge) and `scripts/proof-install-windows.sh` (the same on a Windows VM over SSH).
 
 Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvigil serve -no-login` (loopback only), `pgvigil serve -session-hours 8`, `pgvigil demo` (the section below).
+
+`-open` on `serve` and `demo -serve` opens the UI as an app-mode window once the port listens: the page in its own window with no address bar or tabs, through the Edge or Chrome already on the box (a per-user install under the user's own profile counts, so a standard user without admin rights gets the window); the default browser opens a tab when neither is found, and when no browser starts at all the server keeps running and the URL is in the log. With a self-signed certificate the window shows the browser's warning first. The desktop application proper (a tray icon, start at login, the collector as a service) is planned for a later release.
 
 The frontend is TypeScript under `web/`, built into `internal/web/dist/` (committed, so `go build` needs no Node): `cd web && npm ci && npm run build` after a change there.
 
