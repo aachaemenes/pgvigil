@@ -13,7 +13,7 @@
 CREATE TABLE pgvigil.instance_tag_overrides (
   instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   key          text NOT NULL CHECK (key ~ '^[a-z0-9_.-]{1,40}$'),
-  vals         text[] CHECK (vals IS NULL OR (cardinality(vals) BETWEEN 1 AND 20 AND array_position(vals, NULL) IS NULL)),
+  vals         text[] CHECK (vals IS NULL OR (cardinality(vals) BETWEEN 1 AND 20 AND array_position(vals, NULL) IS NULL AND '' <> ALL (vals))),
   set_at       timestamptz NOT NULL DEFAULT now(),
   set_by       text NOT NULL DEFAULT current_user,
   PRIMARY KEY (instance_id, key)
@@ -23,10 +23,10 @@ COMMENT ON TABLE pgvigil.instance_tag_overrides IS 'pgvigil tag: a key''s values
 -- one written tag as (key, value); NULL key for an empty or malformed one
 CREATE FUNCTION pgvigil.tag_split(p_tag text)
 RETURNS TABLE (key text, value text) LANGUAGE sql IMMUTABLE AS $$
-  SELECT CASE WHEN strpos(t, ':') > 0 THEN lower(btrim(left(t, strpos(t, ':') - 1))) ELSE 'tag' END,
-         CASE WHEN strpos(t, ':') > 0 THEN btrim(substr(t, strpos(t, ':') + 1)) ELSE t END
-    FROM (SELECT btrim(p_tag) AS t) x
-   WHERE btrim(coalesce(p_tag, '')) <> ''
+  SELECT CASE WHEN strpos(t, ':') > 0 THEN lower(btrim(left(t, strpos(t, ':') - 1), E' \t\r\n')) ELSE 'tag' END,
+         CASE WHEN strpos(t, ':') > 0 THEN btrim(substr(t, strpos(t, ':') + 1), E' \t\r\n') ELSE t END
+    FROM (SELECT btrim(p_tag, E' \t\r\n') AS t) x
+   WHERE btrim(coalesce(p_tag, ''), E' \t\r\n') <> ''
 $$;
 
 CREATE VIEW pgvigil.instance_tag_pairs AS
@@ -40,7 +40,7 @@ UNION ALL
 SELECT o.instance_id, o.key, v.value, 'override'
   FROM pgvigil.instance_tag_overrides o
   CROSS JOIN LATERAL unnest(o.vals) AS v(value)
- WHERE o.vals IS NOT NULL;
+ WHERE o.vals IS NOT NULL AND v.value <> '';
 
 CREATE VIEW pgvigil.instance_tags_merged AS
 SELECT i.instance_id,

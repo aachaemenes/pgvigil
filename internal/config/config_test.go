@@ -133,7 +133,7 @@ func TestTags(t *testing.T) {
 			t.Errorf("%q: got %+v %v, want %s", c[0], g, err, c[1])
 		}
 	}
-	for _, bad := range []string{"", "  ", "env:", ":prod", "bad key:x", "env:a,b", strings.Repeat("k", 41) + ":v"} {
+	for _, bad := range []string{"", "  ", "env:", ":prod", "tag:a:b", "a:b:c:d" + "\t", "\tprod", "bad key:x", "env:a,b", strings.Repeat("k", 41) + ":v"} {
 		if _, err := ParseTag(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
@@ -153,6 +153,7 @@ func TestTags(t *testing.T) {
 		{"ui:\n  group_by: [Env]\n", "not a tag key"},
 		{"ui:\n  group_by: [a, b, c, d, e]\n", "at most 4"},
 		{"ui:\n  env_order: [prod, \"\"]\n", "empty value"},
+		{"ui:\n  env_order: [Prod, \" Dev \"]\n", ""},
 	} {
 		p := filepath.Join(t.TempDir(), "c.yaml")
 		if err := os.WriteFile(p, []byte(base+c.body), 0o600); err != nil {
@@ -167,6 +168,10 @@ func TestTags(t *testing.T) {
 		case c.want == "" && len(cfg.UI.EnvOrder) == 0:
 			t.Errorf("%q: env_order not defaulted", c.body)
 		}
+	}
+	cu := &Config{Repository: Repository{DSNRaw: "x"}, UI: UI{EnvOrder: []string{"Prod", " Dev "}}}
+	if err := cu.Validate(); err != nil || cu.UI.EnvOrder[0] != "prod" || cu.UI.EnvOrder[1] != "dev" {
+		t.Errorf("env_order not lower-cased and trimmed: %v %v", cu.UI.EnvOrder, err)
 	}
 	if got := (Instance{Tags: []string{"prod", "env:dev"}}).TagPairs(); len(got) != 2 || got[1].Key != "env" {
 		t.Errorf("TagPairs: %+v", got)

@@ -51,7 +51,7 @@ export async function tagUI(force = false): Promise<TagUI> {
         if (!ov.has(id)) ov.set(id, new Set());
         ov.get(id)!.add(String(p[kI]));
       }
-      ui = { group_by: d.group_by ?? [], env_order: d.env_order?.length ? d.env_order : DEFAULT_ORDER, overridden: ov };
+      ui = { group_by: d.group_by ?? [], env_order: d.env_order?.length ? d.env_order.map(v => v.trim().toLowerCase()) : DEFAULT_ORDER, overridden: ov };
       uiAt = Date.now();
       return ui;
     })
@@ -248,8 +248,10 @@ export function tagFilterBar(rows: Row[], onChange: () => void = rerender): HTML
     valSel.disabled = !k;
     valSel.style.display = k ? '' : 'none';
   };
-  if (tf && keys.includes(tf.key)) keySel.value = tf.key; else tf = null;
+  if (tf && keys.includes(tf.key)) keySel.value = tf.key; else if (tf) { tf = null; saveFilter(); }
   fillValues();
+  // a remembered value that no instance carries any more (an override reset) would empty the grid: drop it
+  if (tf && tf.value !== '' && !rows.some(r => valuesOf(r, tf!.key).includes(tf!.value))) { tf = null; saveFilter(); keySel.value = ''; fillValues(); }
   if (tf) valSel.value = tf.value;
   const changed = () => { tf = keySel.value ? { key: keySel.value, value: valSel.value } : null; saveFilter(); onChange(); };
   keySel.addEventListener('change', () => { fillValues(); changed(); });

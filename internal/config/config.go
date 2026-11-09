@@ -111,6 +111,11 @@ func ValidTagKey(k string) bool {
 // ParseTag reads "prod" (key tag) or "env:prod" (the first ':' splits); the key is lower-cased, both
 // parts trimmed. The repository's view pgvigil.instance_tag_pairs (0032) splits the same way.
 func ParseTag(s string) (Tag, error) {
+	// a tab or a line break anywhere is refused before trimming: the repository's tag_split and the UI must
+	// read the written tag the same way
+	if strings.ContainsAny(s, "\t\r\n\v\f") {
+		return Tag{}, fmt.Errorf("tag %q holds a tab or a line break", s)
+	}
 	s = strings.TrimSpace(s)
 	t := Tag{Key: "tag", Value: s}
 	if i := strings.IndexByte(s, ':'); i >= 0 {
@@ -121,6 +126,8 @@ func ParseTag(s string) (Tag, error) {
 		return t, fmt.Errorf("tag %q has no value", s)
 	case !ValidTagKey(t.Key):
 		return t, fmt.Errorf("tag %q: the key must be lower-case letters, digits, '_', '.' or '-' (1..40)", s)
+	case t.Key == "tag" && strings.ContainsRune(t.Value, ':'):
+		return t, fmt.Errorf("tag %q: a plain word cannot hold ':' (it would read back as a key:value pair)", s)
 	case len(t.Value) > 100 || strings.ContainsAny(t.Value, ",\n\r\t"):
 		return t, fmt.Errorf("tag %q: the value must be at most 100 characters, without a comma or a control character", s)
 	}
@@ -257,10 +264,11 @@ func (c *Config) Validate() error {
 		}
 		keys[k] = true
 	}
-	for _, v := range c.UI.EnvOrder {
+	for i, v := range c.UI.EnvOrder {
 		if strings.TrimSpace(v) == "" {
 			return fmt.Errorf("ui.env_order holds an empty value")
 		}
+		c.UI.EnvOrder[i] = strings.ToLower(strings.TrimSpace(v)) // the tree ranks lower-cased values
 	}
 	if len(c.UI.EnvOrder) == 0 {
 		c.UI.EnvOrder = DefaultEnvOrder

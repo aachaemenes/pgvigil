@@ -3,8 +3,9 @@
 # GET /api/tags, the instances read) on the sandbox; the sandbox server is both the repository and the monitored one.
 #   PGVIGIL_REPO_DSN  repository owner connection. Creates and drops one instance and one login with a random suffix.
 # Needs the join's wiring: the 'tag' command in main.go, GET /api/tags and the merged tags column of the instances read.
-# Expected: migrate applies 0032; a config whose tag is "env:" is refused ("has no value") and one with group_by
-# [env, env] ("listed twice"); a collection writes the config's [prod, erp, env:prod, team:billing] as written and
+# Expected: migrate applies 0032; a config whose tag is "env:" is refused ("has no value"), one with the plain word
+# "tag:a:b" ("cannot hold ':'") and one with group_by [env, env] ("listed twice"); an owner insert of an empty
+# override value is refused by the CHECK; a collection writes the config's [prod, erp, env:prod, team:billing] as written and
 # instance_tags_merged shows {env:prod,erp,prod,team:billing}, all four pairs source config; `pgvigil tag <i>
 # team=payments,ledger` -> {env:prod,erp,prod,team:ledger,team:payments} with team source override (its listing
 # says "override"); `-env` hides env -> {erp,prod,team:ledger,team:payments} (listing "env:* hidden"); a second
@@ -27,7 +28,7 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; [[ -s "$LOG" ]] && sed 's/^/  serve: /' "$LOG" >&2; exit 1; }
-HOST=$(q "select coalesce(host(inet_server_addr()),'localhost')"); DBPORT=$(q "select inet_server_port()"); DB=$(q "select current_database()")
+HOST=$(q "select coalesce(host(inet_server_addr()),'localhost')"); DBPORT=$(q "select coalesce(inet_server_port()::text, current_setting('port'))"); DB=$(q "select current_database()")
 cat > "$CFG" <<EOF
 repository:
   dsn: env:PGVIGIL_REPO_DSN
@@ -46,10 +47,13 @@ echo "ok: migrate applied 0032"
 sed 's/"team:billing"/"env:"/' "$CFG" > "$BAD"
 out=$("$BIN" migrate -config "$BAD" 2>&1) && fail "a tag without a value was accepted"
 [[ "$out" == *"has no value"* ]] || fail "the empty tag refusal does not say why: $out"
+sed 's/"team:billing"/"tag:a:b"/' "$CFG" > "$BAD"
+out=$("$BIN" migrate -config "$BAD" 2>&1) && fail "a plain word holding ':' was accepted"
+[[ "$out" == *"cannot hold ':'"* ]] || fail "the plain-word ':' refusal does not say why: $out"
 sed 's/group_by: \[env, team\]/group_by: [env, env]/' "$CFG" > "$BAD"
 out=$("$BIN" migrate -config "$BAD" 2>&1) && fail "group_by [env, env] was accepted"
 [[ "$out" == *"listed twice"* ]] || fail "the group_by refusal does not say why: $out"
-echo "ok: a tag without a value and a key grouped twice are refused"
+echo "ok: a tag without a value, a plain word holding ':' and a key grouped twice are refused"
 
 merged() { q "select m.tags from pgvigil.instance_tags_merged m join pgvigil.instances i using (instance_id) where i.name = '$I'"; }
 pairs() { q "select string_agg(key || '=' || value || '/' || source, ' ' order by key, value) from pgvigil.instance_tag_pairs p join pgvigil.instances i using (instance_id) where i.name = '$I'"; }
@@ -58,6 +62,9 @@ expect() { local got; got=$(merged); [[ "$got" == "$1" ]] || fail "$2: merged ta
 "$BIN" collect -config "$CFG" -once instance >/dev/null 2>&1 || fail "collect -once instance"
 [[ $(q "select tags from pgvigil.instances where name = '$I'") == '{prod,erp,env:prod,team:billing}' ]] || fail "instances.tags is not the config's list as written"
 expect '{env:prod,erp,prod,team:billing}' "the config's tags"
+out=$(psql "$PGVIGIL_REPO_DSN" -XAt -c "insert into pgvigil.instance_tag_overrides (instance_id, key, vals) select instance_id, 'env', '{\"\"}' from pgvigil.instances where name = '$I'" 2>&1 || true)
+[[ "$out" == *"violates check constraint"* ]] || fail "an empty override value was accepted: $out"
+echo "ok: an empty override value is refused by the CHECK"
 [[ $(pairs) == "env=prod/config tag=erp/config tag=prod/config team=billing/config" ]] || fail "pairs: $(pairs)"
 
 out=$("$BIN" tag -config "$CFG" "$I" team=payments,ledger)

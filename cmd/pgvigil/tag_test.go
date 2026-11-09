@@ -19,10 +19,13 @@ func TestTagOps(t *testing.T) {
 	if err != nil || len(r) != 2 || !r[0].Reset {
 		t.Fatalf("reset: %+v %v", r, err)
 	}
-	for _, bad := range [][]string{{"env"}, {"env="}, {"=prod"}, {"Env Name=x"}, {"env=a", "env=b"}, {"env=a,,b"}, {"-"}} {
+	for _, bad := range [][]string{{"env"}, {"env="}, {"=prod"}, {"Env Name=x"}, {"env=a", "env=b"}, {"env=a,,b"}, {"-"}, {"-reset"}, {"-config=x"}, {"tag=a:b"}} {
 		if _, err := tagOps(bad, false); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+	if _, err := tagOps([]string{"-env"}, true); err == nil {
+		t.Error("-reset with -env accepted")
 	}
 	if _, err := tagOps(nil, true); err == nil {
 		t.Error("-reset without keys accepted")

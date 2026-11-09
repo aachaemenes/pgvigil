@@ -68,6 +68,10 @@ func tagOps(args []string, reset bool) ([]tagOp, error) {
 	for _, a := range args {
 		var op tagOp
 		switch {
+		case a == "-reset" || a == "-config" || strings.HasPrefix(a, "-config=") || strings.HasPrefix(a, "--"):
+			return nil, fmt.Errorf("%q: flags go before the instance name", a)
+		case reset && strings.HasPrefix(a, "-"):
+			return nil, fmt.Errorf("%q: -reset takes the key names alone (env, not -env)", a)
 		case reset:
 			op = tagOp{Key: strings.ToLower(strings.TrimSpace(a)), Reset: true}
 		case strings.HasPrefix(a, "-"):
