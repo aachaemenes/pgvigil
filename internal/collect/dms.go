@@ -23,7 +23,7 @@ import (
 // dmsCollector reads the AWS DMS replication tasks an instance's aws.dms block names (the tasks
 // that feed this instance or read from it): state and progress from DescribeReplicationTasks,
 // per-table counts and validation from DescribeTableStatistics, the replication instances the
-// tasks run on, and the CloudWatch latency and host metrics. Nothing is written to DMS: the
+// tasks run on, and the CloudWatch latency, host and storage IO metrics. Nothing is written to DMS: the
 // start, stop and resume actions are a later, separately authorised feature.
 type dmsCollector struct{}
 
@@ -315,8 +315,18 @@ var (
 		{"CDCChangesDiskSource", "disk_source"}, {"CDCChangesDiskTarget", "disk_target"},
 		{"CDCChangesMemorySource", "memory_source"}, {"CDCChangesMemoryTarget", "memory_target"},
 	}
-	dmsHostMetrics = []struct{ name, stat string }{
-		{"CPUUtilization", "Average"}, {"FreeableMemory", "Minimum"}, {"FreeStorageSpace", "Minimum"}, {"SwapUsage", "Maximum"},
+	// dmsHostMetrics are the replication instance's host and storage IO metrics with the statistic read and the
+	// row column each fills. Units per the DMS monitoring reference: IOPS count/s, latency MILLISECONDS (RDS
+	// reports seconds), throughput bytes/s, queue depth a count. The IO series share the host metrics'
+	// dimension (ReplicationInstanceExternalResourceId); a live instance's IO series are not yet recorded.
+	dmsHostMetrics = []struct{ name, stat, col string }{
+		{"CPUUtilization", "Average", "cpu_pct"}, {"FreeableMemory", "Minimum", "freeable_bytes"},
+		{"FreeStorageSpace", "Minimum", "free_storage_bytes"}, {"SwapUsage", "Maximum", "swap_bytes"},
+		{"ReadIOPS", "Average", "read_iops"}, {"WriteIOPS", "Average", "write_iops"},
+		{"ReadLatency", "Average", "read_latency_ms"}, {"WriteLatency", "Average", "write_latency_ms"},
+		{"ReadThroughput", "Average", "read_bytes_s"}, {"WriteThroughput", "Average", "write_bytes_s"},
+		{"DiskQueueDepth", "Maximum", "queue_depth"},
+		{"NetworkTransmitThroughput", "Average", "net_tx_bytes_s"}, {"NetworkReceiveThroughput", "Average", "net_rx_bytes_s"},
 	}
 )
 
@@ -461,9 +471,12 @@ func dmsInstanceRow(r dmstypes.ReplicationInstance, m map[string]dmsMetric) Row 
 		"created": tsOrNil(r.InstanceCreateTime), "free_until": tsOrNil(r.FreeUntil), "pending": dmsPending(r.PendingModifiedValues),
 	}
 	rid := dmsResourceID(aws.ToString(r.ReplicationInstanceArn))
-	for _, mt := range []struct{ metric, col string }{{"CPUUtilization", "cpu_pct"}, {"FreeableMemory", "freeable_bytes"}, {"FreeStorageSpace", "free_storage_bytes"}, {"SwapUsage", "swap_bytes"}} {
-		if v, ok := m[dmsMetricKey(mt.metric, rid)]; ok {
+	for _, mt := range dmsHostMetrics {
+		if v, ok := m[dmsMetricKey(mt.name, rid)]; ok {
 			row[mt.col] = v.Value
+			if at, ok := row["metrics_at"].(time.Time); !ok || v.At.After(at) {
+				row["metrics_at"] = v.At.UTC()
+			}
 		}
 	}
 	return row

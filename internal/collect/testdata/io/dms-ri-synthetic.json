@@ -1,0 +1,13 @@
+[
+  {"metric": "ReadIOPS", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 95.0, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "WriteIOPS", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 2900.0, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "ReadLatency", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 4.1, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "WriteLatency", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 38.5, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "ReadThroughput", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 1258291.2, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "WriteThroughput", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 48234496.0, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "DiskQueueDepth", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 31.0, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "NetworkTransmitThroughput", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 5242880.0, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "NetworkReceiveThroughput", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 23068672.0, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "FreeStorageSpace", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 6442450944.0, "at": "2026-11-09T04:53:00-08:00"},
+  {"metric": "CPUUtilization", "dims": {"ReplicationInstanceExternalResourceId": "LXWZ36JSXRDWPB73I43LDL37MM"}, "value": 41.5, "at": "2026-11-09T04:53:00-08:00"}
+]
