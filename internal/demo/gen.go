@@ -920,6 +920,12 @@ func (g *Gen) tableDefs() []struct {
 	}{{t[0], 900}, {t[1], 2400}, {t[2], 300}, {"audit_log", 160}, {"settings", 0.2}}
 }
 
+// novacLoaded is when the novac scenario's table appears: the first hourly read after the DMS full load
+// (cdcStart + 3 h, see dmsRows), already analyzed by the load, never vacuumed.
+func (g *Gen) novacLoaded() time.Time {
+	return g.end.Add(-6 * 24 * time.Hour).Truncate(time.Hour).Add(4 * time.Hour)
+}
+
 // tableRows is the hourly tables read: a 'db' row per application database and a 'table' row per table.
 // Healthy tables are vacuumed and analyzed within hours, dead rows under 5 %, bloat under 10 %. The Tables
 // scenario puts one table in the state its check looks for (the scenario's problem table is the second
@@ -936,13 +942,12 @@ func (g *Gen) tableRows(t time.Time, first bool) []Row {
 	week := math.Max(0, t.Sub(g.start).Hours()/(24*7))
 	for di, db := range s.DBs {
 		dbid := dbOID(di)
-		var bigPages, bigVisible, big, neverVac int64
+		var bigPages, bigVisible, big, neverVac, userTables int64
 		for ti, td := range g.tableDefs() {
 			relid := 16500 + int64(di)*1000 + int64(ti)*7
 			problem := ti == 1 && di == 0
-			if problem && s.Tables == "skip" && !first && t.Hour()%2 == 1 {
-				out = append(out, Row{"kind": "table_skipped", "dbid": dbid, "relid": relid})
-				continue
+			if problem && s.Tables == "novac" && t.Before(g.novacLoaded()) {
+				continue // the DMS full load has not created it yet
 			}
 			heap := int64(td.base * 1e6 * math.Max(0.25, s.Load) * (1 + 0.04*week))
 			pages := heap / 8192
@@ -952,6 +957,7 @@ func (g *Gen) tableRows(t time.Time, first bool) []Row {
 			vacAgo := time.Duration(2+hash64(s.Name+td.name)%9) * time.Hour
 			lastVac := t.Add(-vacAgo).Truncate(time.Minute)
 			lastAn := lastVac.Add(10 * time.Minute)
+			lastAutoAn := lastAn
 			visible := pages * 92 / 100
 			avOff := false
 			insSinceVac := live / 200
@@ -964,10 +970,11 @@ func (g *Gen) tableRows(t time.Time, first bool) []Row {
 				case "avoff":
 					avOff = true
 					lastVac = g.pmStart.Add(36 * time.Hour)
+					lastAutoAn = lastVac // autovacuum_enabled = false stops autoanalyze too; the analyze is a manual one
 					dead = live / 8
 				case "novac":
 					visible, insSinceVac = 0, live
-					lastAn = minDur(t, g.end.Add(-6*24*time.Hour+4*time.Hour).Truncate(time.Hour))
+					lastAn, lastAutoAn = g.novacLoaded(), g.novacLoaded()
 				}
 			}
 			bloatBytes := int64(float64(heap) * bloatPct / 100)
@@ -975,7 +982,7 @@ func (g *Gen) tableRows(t time.Time, first bool) []Row {
 				"relkind": "r", "heap_bytes": heap, "toast_bytes": heap / 50, "index_bytes": heap * 2 / 5,
 				"total_bytes": heap + heap/50 + heap*2/5, "relpages": pages, "reltuples": float64(live), "relallvisible": visible,
 				"n_live_tup": live, "n_dead_tup": dead, "n_mod_since_analyze": live / 50, "n_ins_since_vacuum": insSinceVac,
-				"last_vacuum": lastVac, "last_autovacuum": lastVac, "last_analyze": lastAn, "last_autoanalyze": lastAn,
+				"last_vacuum": lastVac, "last_autovacuum": lastVac, "last_analyze": lastAn, "last_autoanalyze": lastAutoAn,
 				"vacuums": 40 + hash64(td.name)%50, "analyzes": 60 + hash64(td.name)%50, "seq_scan": 12 + hash64(s.Name+td.name)%400,
 				"idx_scan": int64(1e5 * s.Load * (1 + week)), "autovacuum_off": avOff, "xid_age": 40e6 + hash64(s.Name+td.name)%90e6,
 				"mxid_age": 1000 + hash64(td.name)%5000, "stats_readable": true, "stats_columns": 6 + ti,
@@ -990,13 +997,20 @@ func (g *Gen) tableRows(t time.Time, first bool) []Row {
 				bigPages += pages
 				bigVisible += visible
 			}
+			userTables++
+			if problem && s.Tables == "skip" && !first && t.Hour()%2 == 1 {
+				// skipped for a lock: its row stays as last read; the 'db' row still counts it, as the
+				// collector's whole-database counts read pg_stat_user_tables without the lock
+				out = append(out, Row{"kind": "table_skipped", "dbid": dbid, "relid": relid})
+				continue
+			}
 			out = append(out, row)
 		}
 		bigNever := int64(0)
 		if s.Tables == "novac" && di == 0 {
 			bigNever = neverVac
 		}
-		out = append(out, Row{"kind": "db", "dbid": dbid, "datname": db, "stats_reset": nil, "user_tables": int64(len(g.tableDefs())),
+		out = append(out, Row{"kind": "db", "dbid": dbid, "datname": db, "stats_reset": nil, "user_tables": userTables,
 			"never_vacuumed": neverVac, "never_analyzed": 0, "big_tables": big, "big_never_vacuumed": bigNever,
 			"big_under_half_visible": bigNever, "big_pages": bigPages, "big_visible_pages": bigVisible})
 	}
@@ -1008,10 +1022,12 @@ func (g *Gen) tableRows(t time.Time, first bool) []Row {
 // dmsLatency is the CDC latency at t: seconds, then climbing past the 300 s threshold for the last 3 h.
 func (g *Gen) dmsLatency(t time.Time) float64 {
 	v := 2 + 6*noise(g.Spec.Name+"lat", t)
-	if ramp := t.Sub(g.end.Add(-3 * time.Hour)).Seconds(); ramp > 0 {
-		v += math.Min(ramp, 3*3600) * 0.1 // holds at the anchor's ~1,080 s while 'demo -serve' runs on
-	}
-	return v
+	// climbs 0.1 s a second from 3 h before the anchor to 45 min before it (to ~810 s), then the apply catches
+	// up and it falls 0.15 s a second (to ~405 s at the anchor, still over the 300 s threshold); both are
+	// clamped, so it holds at the anchor's value while 'demo -serve' runs on (the overview keeps the row)
+	up := math.Min(math.Max(0, t.Sub(g.end.Add(-3*time.Hour)).Seconds()), 8100)
+	down := math.Min(math.Max(0, t.Sub(g.end.Add(-45*time.Minute)).Seconds()), 2700)
+	return v + up*0.1 - down*0.15
 }
 
 func (g *Gen) dmsRows(t time.Time) []Row {
@@ -1079,7 +1095,8 @@ func (g *Gen) dmsRows(t time.Time) []Row {
 			row["latency_at"] = t
 			// the drain readout: the apply keeps ahead of the read, except in the ramp's first two hours and a
 			// quarter (falling behind, changes spilled to disk on the target); from 45 minutes before the
-			// anchor it outruns the read again, so the ETA shows while the spill drains
+			// anchor it outruns the read again, so the ETA shows while latency, rows behind and the spill
+			// (a share of rows behind) fall; under 'demo -serve' they hold at the anchor's values, spill included
 			in := 50 * s.Load * (0.2 + c)
 			out := in * 1.15
 			spill := 0.0
