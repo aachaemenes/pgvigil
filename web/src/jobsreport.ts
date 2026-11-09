@@ -23,6 +23,18 @@ const fails = (v: unknown) => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
 const weekMs = 7 * 24 * 3600 * 1000;
 const jobLabel = (r: Row) => `${String(r.scheduler ?? '')} ${String(r.job_name ?? r.job_id ?? '')}`;
 
+// statusRank orders the status column: failing or missed first, then over average, ok, disabled, gone
+function statusRank(r: Row): number {
+  if (r.is_present === false) return 6;
+  if (r.active === false) return 5;
+  if (Number(r.fail_streak) >= 3 || r.missed) return 0;
+  if (r.over_average) return 1;
+  if (Number(r.fail_streak) > 0) return 2;
+  return r.schedule_note ? 3 : 4;
+}
+// withRank adds the rank the status column sorts by (the grid sorts on a row field)
+const withRank = (rows: Row[]): Row[] => rows.map(r => ({ ...r, status_rank: statusRank(r) }));
+
 // status sums up a job's problems in a word or two, the worst first
 function status(r: Row): string | Node {
   if (r.is_present === false) return 'gone';
@@ -42,12 +54,12 @@ function status(r: Row): string | Node {
 const jobCols: Col[] = [
   { key: 'job_name', label: 'job', fmt: (v, r) => String(v ?? r.job_id ?? '') },
   { key: 'scheduler' },
-  { key: 'status', fmt: (_v, r) => status(r) },
+  { key: 'status_rank', label: 'status', num: true, fmt: (_v, r) => status(r) },
   { key: 'schedule', fmt: (v, r) => String(v ?? '') + (r.schedule_note ? ` (${String(r.schedule_note)})` : '') },
   { key: 'last_status', label: 'last run', fmt: runBadge },
   { key: 'last_start', label: 'last start', fmt: fmtTime },
   { key: 'last_duration_secs', label: 'took', num: true, fmt: dur },
-  { key: 'next_run', label: 'next run', fmt: (v, r) => r.active === false ? '' : fmtTime(v) },
+  { key: 'next_run', label: 'next run', fmt: (v, r) => r.active === false || r.is_present === false ? '' : fmtTime(v) },
   { key: 'fail_streak', label: 'failed in a row', num: true, fmt: streak },
   { key: 'runs_7d', label: 'runs 7 d', num: true },
   { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails },
@@ -83,7 +95,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
   // the trend reads at least the last 7 days of the window's end
   const from = new Date(Math.min(Date.parse(w.from), Date.parse(w.to) - weekMs)).toISOString();
   const d = await get<Record<'jobs' | 'trend' | 'checks', Table | null>>('jobsreport', { instance: ctx.instance, from, to: w.to });
-  const jobs = rowsOf(d.jobs), checks = rowsOf(d.checks), trend = rowsOf(d.trend);
+  const jobs = withRank(rowsOf(d.jobs)), checks = rowsOf(d.checks), trend = rowsOf(d.trend);
   const sec = el('section', {}, el('h2', {}, 'Job report'));
   if (!jobs.length) {
     sec.append(el('p', { class: 'empty' }, 'No scheduled jobs: pg_cron or pgAgent is not installed in the connected database, or nothing is scheduled (the jobs collection runs every minute).'));
@@ -103,7 +115,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
     `Jobs read ${fmtTime(jobs[0].snapshot_at)}. Failing: the last 3 or more finished runs failed. Over 2x average: the latest run (a running one by its age) `
     + 'took over twice the average of the other successful runs of 30 days (3 or more) and 10 s more. Missed: pg_cron, no run since the scheduled '
     + 'time before the latest one (two scheduled runs without one; schedules rarer than about every 12 days are not judged, the history is 30 days); '
-    + "pgAgent, its own next run over 5 minutes past. pg_cron's times are in its cron.timezone; the next run is as of the read."));
+    + "pgAgent, its own next run over 5 minutes past. The schedule is read in pg_cron's cron.timezone; the times shown are this browser's local time; the next run is as of the read."));
   if (checks.length) {
     sec.append(el('h3', {}, 'Checks'), grid(checks, [
       { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'check' }, { key: 'object', label: 'job' },
@@ -134,7 +146,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
 // a tag folder; instLink makes the instance name a link to its Job report tab).
 export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
   const d = await get<Record<'counts' | 'jobs', Table | null>>('jobsreport');
-  let rows = rowsOf(d.jobs);
+  let rows = withRank(rowsOf(d.jobs));
   if (keep) rows = rows.filter(keep);
   const c = rowsOf(d.counts)[0] ?? {};
   const failing = rows.filter(r => Number(r.fail_streak) >= 3).length, missed = rows.filter(r => r.missed).length;
