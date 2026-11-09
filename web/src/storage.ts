@@ -16,7 +16,8 @@ const perDay = (v: unknown) => v == null ? 'too little history' : (Number(v) < 0
 // a forecast past ten years is not a date anyone plans to
 const dayTxt = (v: unknown) => Number(v) > 3650 ? 'over 10 years' : fmtNum(v) + ' days';
 const days = (v: unknown) => v == null ? '' : Number(v) > 3650 ? dayTxt(v) : Number(v) < 7 ? badge(fmtNum(v) + ' days', 'crit') : Number(v) < 30 ? badge(fmtNum(v) + ' days', 'warn') : fmtNum(v) + ' days';
-const volName = (v: unknown, r: Row) => String(v ?? '') + (r.holds_data ? ' (data)' : '') + (r.kind === 'rds' && r.autoscaling ? ' (autoscaling)' : '');
+const volName = (v: unknown, r: Row) => String(v ?? '') + (r.holds_data ? ' (data)' : '')
+  + (r.kind === 'rds' && r.autoscaling ? (r.at_maximum ? ' (autoscaling at its maximum)' : ' (autoscaling)') : '');
 
 const volCols: Col[] = [
   { key: 'volume', fmt: volName },
@@ -26,6 +27,7 @@ const volCols: Col[] = [
   { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
   { key: 'total_bytes', label: 'size', num: true, fmt: fmtBytes },
   { key: 'capacity_bytes', label: 'grows to', num: true, fmt: (v, r) => v != null && v !== r.total_bytes ? fmtBytes(v) : '' },
+  { key: 'headroom_bytes', label: 'room left', num: true, fmt: fmtBytes },
   { key: 'growth_7d_per_day', label: 'growth (7 d)', num: true, fmt: perDay },
   { key: 'growth_30d_per_day', label: 'growth (30 d)', num: true, fmt: perDay },
   { key: 'snapshot_at', label: 'read', fmt: fmtTime },
@@ -61,7 +63,7 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
     const pairs: [string, string | Node][] = [];
     if (rds) {
       pairs.push(['RDS allocated', fmtBytes(rds.allocated_bytes)],
-        ['storage autoscaling', rds.autoscaling ? `on, up to ${fmtBytes(rds.max_allocated_bytes)}` : 'off'],
+        ['storage autoscaling', rds.autoscaling ? (rds.at_maximum ? `on, at its maximum of ${fmtBytes(rds.max_allocated_bytes)}` : `on, up to ${fmtBytes(rds.max_allocated_bytes)}`) : 'off'],
         ['storage type', `${String(rds.storage_type ?? '')}${rds.iops ? `, ${fmtNum(rds.iops)} IOPS` : ''}${rds.throughput ? `, ${fmtNum(rds.throughput)} MiB/s` : ''}`]);
     }
     if (aur) {
@@ -110,7 +112,7 @@ export async function storageFleetView(keep?: (r: Row) => boolean, instLink?: (n
   if (keep) rows = rows.filter(keep);
   const repo = rowsOf(d.repository)[0] ?? {};
   const soon = rows.filter(r => r.days_until_full != null && Number(r.days_until_full) < 30).length;
-  const low = rows.filter(r => r.free_pct != null && Number(r.free_pct) < 10).length;
+  const low = rows.filter(r => r.headroom_pct != null && Number(r.headroom_pct) < 10).length;
   return el('section', {}, el('h2', {}, 'Storage'),
     el('div', { class: 'tiles' },
       tile('volumes', String(rows.length)),

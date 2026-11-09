@@ -15,7 +15,7 @@ SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
 
 // sqlStorageVolumes is one instance's volumes with growth and days until full, the soonest first.
 const sqlStorageVolumes = `
-SELECT volume, kind, total_bytes, used_bytes, free_bytes, free_pct, capacity_bytes, autoscaling, holds_data,
+SELECT volume, kind, total_bytes, used_bytes, free_bytes, free_pct, capacity_bytes, headroom_bytes, headroom_pct, autoscaling, at_maximum, holds_data,
        growth_7d_per_day, growth_30d_per_day, days_until_full_7, days_until_full_30, days_until_full, snapshot_at
   FROM pgvigil.volume_forecast($1)
  ORDER BY days_until_full NULLS LAST, free_pct NULLS LAST, volume`
@@ -23,7 +23,7 @@ SELECT volume, kind, total_bytes, used_bytes, free_bytes, free_pct, capacity_byt
 // sqlStorageObjects is what the storage collection read: the WAL directory, the tablespaces, the RDS and
 // Aurora volumes.
 const sqlStorageObjects = `
-SELECT kind, name, location, size_bytes, files, allocated_bytes, max_allocated_bytes, autoscaling, storage_type, iops, throughput,
+SELECT kind, name, location, size_bytes, files, allocated_bytes, max_allocated_bytes, autoscaling, at_maximum, storage_type, iops, throughput,
        class, limit_bytes, round(100.0 * size_bytes / nullif(limit_bytes, 0), 3) AS limit_pct, metrics_at, snapshot_at
   FROM pgvigil.storage_state
  WHERE instance_id = $1 AND is_present
@@ -56,8 +56,8 @@ SELECT pg_database_size(current_database()) AS database_bytes,
 
 // sqlStorageFleet is the fleet's volumes, the soonest full first, then the fullest.
 const sqlStorageFleet = `
-SELECT instance_id, instance, platform, volume, kind, total_bytes, used_bytes, free_bytes, free_pct, capacity_bytes, autoscaling,
-       holds_data, growth_7d_per_day, growth_30d_per_day, days_until_full, snapshot_at
+SELECT instance_id, instance, platform, volume, kind, total_bytes, used_bytes, free_bytes, free_pct, capacity_bytes, headroom_bytes,
+       headroom_pct, autoscaling, at_maximum, holds_data, growth_7d_per_day, growth_30d_per_day, days_until_full, snapshot_at
   FROM pgvigil.volume_forecast(NULL)
  ORDER BY days_until_full NULLS LAST, free_pct NULLS LAST, instance, volume`
 

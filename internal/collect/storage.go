@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -72,6 +73,9 @@ func (storageCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 	}
 	id, err := hostAWSInstanceID(ctx, conn, info, *in.AWS)
 	if err != nil && (info.Kind != platform.Aurora || in.AWS.Cluster == "") {
+		if errors.Is(err, ErrSkip) {
+			return out, nil // no db_instance in the aws: block (it names logs or DMS only): no platform volume to read
+		}
 		return append(out, Row{"kind": "collector_error", "source": "storage:aws", "message": err.Error()}), nil
 	}
 	api, err := hostClientFor(ctx, *in.AWS)
@@ -88,7 +92,8 @@ func storageCloudRows(ctx context.Context, api hostAPI, kind platform.Kind, id, 
 	errRow := func(src string, err error) Row {
 		return Row{"kind": "collector_error", "source": "storage:" + src, "message": err.Error()}
 	}
-	if id != "" {
+	// DescribeDBInstances: on RDS for the volume, on Aurora only to find the cluster when the config names none
+	if id != "" && (kind == platform.RDS || cluster == "") {
 		d, err := describeDBInstance(ctx, api, id, now)
 		switch {
 		case err != nil:
@@ -103,12 +108,12 @@ func storageCloudRows(ctx context.Context, api hostAPI, kind platform.Kind, id, 
 				if d.AllocatedStorage != nil {
 					row["allocated_bytes"] = int64(*d.AllocatedStorage) << 30
 				}
-				// storage autoscaling is on when a maximum above the allocated size is set
+				// storage autoscaling is on when a maximum is set; at_maximum: it has grown to it and adds nothing more
+				row["autoscaling"] = d.MaxAllocatedStorage != nil
+				row["at_maximum"] = false
 				if d.MaxAllocatedStorage != nil {
 					row["max_allocated_bytes"] = int64(*d.MaxAllocatedStorage) << 30
-					row["autoscaling"] = d.AllocatedStorage != nil && *d.MaxAllocatedStorage > *d.AllocatedStorage
-				} else {
-					row["autoscaling"] = false
+					row["at_maximum"] = d.AllocatedStorage != nil && *d.MaxAllocatedStorage <= *d.AllocatedStorage
 				}
 				out = append(out, row)
 			}

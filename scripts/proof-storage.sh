@@ -29,6 +29,13 @@
 #     'volume under 10 % free|warning|/young'; inst 2 'volume under 10 % free|critical|rds:storage'; nothing for 3 and 4.
 #     database_growth(inst 1): db 'grow' 10 GiB, +1 GiB/day over 10 days -> growth_7d about 1 GiB, days_to_double about 10;
 #     db 'new' with 2 hours of history -> growth NULL. storage_findings rows = storage_checks rows.
+#     [review s2-45 fold, expected before the rerun: db 'new' is seeded as 3 points 1 hour apart (the count passes, the
+#      span does not); inst 1 gains /resv 100 GiB, 90 used, 5 free (5 GiB reserved), +1 GiB/day -> headroom 5 GiB,
+#      days_until_full 5.0 -> 'volume full within 30 days|critical|/resv' and 'volume under 10 % free|warning|/resv';
+#      inst 5 (rds, autoscaling at its maximum: allocated = max = 100 GiB, 5 free, flat) -> autoscaling true,
+#      at_maximum true, capacity 100 GiB -> 'volume under 10 % free|warning|rds:storage'; inst 3 keeps 905 days;
+#      storage_findings carries only 'volume full within 30 days' rows (3: /data, /wal, /resv); an RDS aws: block
+#      without db_instance is not a collector error (Go, not exercised here)]
 #     A second import_storage without one tablespace marks it absent; one with only a collector_error keeps the rest.
 #  D. storage_state aurora_volume|dba-lab-pg with size_bytes > 0 and limit_bytes 140737488355328; wal files 0 (Aurora
 #     keeps no local WAL); the tablespaces read.
@@ -110,9 +117,13 @@ i1=$(q "select pgvigil.ensure_instance('storage-rules-onprem-$SUF', 'onprem', 'p
 i2=$(q "select pgvigil.ensure_instance('storage-rules-rds-$SUF', 'rds', 'proof', 170009, false, '{proof}')")
 i3=$(q "select pgvigil.ensure_instance('storage-rules-rdsauto-$SUF', 'rds', 'proof', 170009, false, '{proof}')")
 i4=$(q "select pgvigil.ensure_instance('storage-rules-aurora-$SUF', 'aurora', 'proof', 170009, false, '{proof}')")
+i5=$(q "select pgvigil.ensure_instance('storage-rules-rdsmax-$SUF', 'rds', 'proof', 170009, false, '{proof}')")
 disk() { echo "{\"kind\":\"disk\",\"source\":\"$5\",\"mount_point\":\"$1\",\"total_bytes\":$(($2*G)),\"used_bytes\":$(($3*G)),\"free_bytes\":$((($2-$3)*G)),\"holds_data\":$4}"; }
 host() { echo "{\"kind\":\"host\",\"source\":\"$1\"}"; }
-q "select pgvigil.import_host($i1, now(), '[$(host system_stats), $(disk /data 100 80 true system_stats), $(disk /wal 100 90 false system_stats), $(disk /flat 100 50 false system_stats), $(disk /young 100 95 false system_stats)]'::jsonb)" >/dev/null
+q "select pgvigil.import_host($i1, now(), '[$(host system_stats), $(disk /data 100 80 true system_stats), $(disk /wal 100 90 false system_stats), $(disk /flat 100 50 false system_stats), $(disk /young 100 95 false system_stats),
+   {\"kind\":\"disk\",\"source\":\"system_stats\",\"mount_point\":\"/resv\",\"total_bytes\":$((100*G)),\"used_bytes\":$((90*G)),\"free_bytes\":$((5*G)),\"holds_data\":false}]'::jsonb)" >/dev/null
+q "select pgvigil.import_host($i5, now(), '[$(host cloudwatch), $(disk rds:storage 100 95 false cloudwatch)]'::jsonb)" >/dev/null
+q "select pgvigil.import_storage($i5, now(), '[{\"kind\":\"rds\",\"name\":\"rds-c\",\"allocated_bytes\":$((100*G)),\"max_allocated_bytes\":$((100*G)),\"autoscaling\":true,\"at_maximum\":true}]'::jsonb)" >/dev/null
 q "select pgvigil.import_host($i2, now(), '[$(host cloudwatch), $(disk rds:storage 100 96 false cloudwatch)]'::jsonb)" >/dev/null
 q "select pgvigil.import_host($i3, now(), '[$(host cloudwatch), $(disk rds:storage 100 95 false cloudwatch)]'::jsonb)" >/dev/null
 q "select pgvigil.import_storage($i2, now(), '[{\"kind\":\"rds\",\"name\":\"rds-a\",\"allocated_bytes\":$((100*G)),\"autoscaling\":false}]'::jsonb)" >/dev/null
@@ -129,6 +140,8 @@ BEGIN
       ($i1, t, '/data', 100::bigint*$G, (80::bigint*$G - h * 0.25 * $G)::bigint, (20::bigint*$G + h * 0.25 * $G)::bigint),
       ($i1, t, '/wal',  100::bigint*$G, (90::bigint*$G - h * 0.5 * $G)::bigint, (10::bigint*$G + h * 0.5 * $G)::bigint),
       ($i1, t, '/flat', 100::bigint*$G, 50::bigint*$G, 50::bigint*$G),
+      ($i1, t, '/resv', 100::bigint*$G, (90::bigint*$G - h * 0.25 * $G)::bigint, (5::bigint*$G + h * 0.25 * $G)::bigint),
+      ($i5, t, 'rds:storage', 100::bigint*$G, 95::bigint*$G, 5::bigint*$G),
       ($i2, t, 'rds:storage', 100::bigint*$G, 96::bigint*$G, 4::bigint*$G),
       ($i3, t, 'rds:storage', 100::bigint*$G, (95::bigint*$G - h * 0.25 * $G)::bigint, (5::bigint*$G + h * 0.25 * $G)::bigint);
     IF h = 1 THEN
@@ -141,7 +154,7 @@ END \$\$" >/dev/null
 q "select pgvigil.import_storage($i4, now(), '[{\"kind\":\"aurora_volume\",\"name\":\"lab\",\"size_bytes\":$((10*G)),\"limit_bytes\":140737488355328}]'::jsonb)" >/dev/null
 q "select '  ' || instance || ' ' || volume || ' free ' || free_pct || ' % g7 ' || coalesce(pg_size_pretty(growth_7d_per_day::bigint), 'NULL') || ' g30 '
      || coalesce(pg_size_pretty(growth_30d_per_day::bigint), 'NULL') || ' capacity ' || pg_size_pretty(capacity_bytes) || ' days ' || coalesce(days_until_full::text, 'NULL')
-     from pgvigil.volume_forecast(NULL) where instance_id in ($i1,$i2,$i3,$i4) order by instance, volume"
+     from pgvigil.volume_forecast(NULL) where instance_id in ($i1,$i2,$i3,$i4,$i5) order by instance, volume"
 near() { awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d <= t) }'; }
 d_data=$(q "select days_until_full from pgvigil.volume_forecast($i1) where volume='/data'"); near "$d_data" 20 0.5 || fail "C: /data days $d_data"
 d_wal=$(q "select days_until_full from pgvigil.volume_forecast($i1) where volume='/wal'"); near "$d_wal" 5 0.2 || fail "C: /wal days $d_wal"
@@ -151,15 +164,20 @@ g_data=$(q "select growth_7d_per_day from pgvigil.volume_forecast($i1) where vol
 [ "$(q "select capacity_bytes = 1000::bigint * $G and autoscaling from pgvigil.volume_forecast($i3)")" = t ] || fail "C: autoscaling capacity"
 d3=$(q "select days_until_full from pgvigil.volume_forecast($i3)"); near "$d3" 905 2 || fail "C: rds autoscaling days $d3"
 [ "$(q "select capacity_bytes = 140737488355328 and kind = 'aurora_volume' from pgvigil.volume_forecast($i4)")" = t ] || fail "C: aurora capacity"
+d_resv=$(q "select days_until_full from pgvigil.volume_forecast($i1) where volume='/resv'"); near "$d_resv" 5 0.2 || fail "C: /resv days $d_resv (reserved blocks are not free)"
+[ "$(q "select autoscaling and at_maximum and capacity_bytes = 100::bigint * $G from pgvigil.volume_forecast($i5)")" = t ] || fail "C: autoscaling at its maximum"
 got=$(q "select string_agg(i.name || '|' || c.check_name || '|' || c.severity || '|' || c.object, E'\n' order by i.name, c.check_name, c.object)
-           from pgvigil.storage_checks c join pgvigil.instances i using (instance_id) where c.instance_id in ($i1,$i2,$i3,$i4)")
+           from pgvigil.storage_checks c join pgvigil.instances i using (instance_id) where c.instance_id in ($i1,$i2,$i3,$i4,$i5)")
 echo "$got"
 want="storage-rules-onprem-$SUF|volume full within 30 days|warning|/data
+storage-rules-onprem-$SUF|volume full within 30 days|critical|/resv
 storage-rules-onprem-$SUF|volume full within 30 days|critical|/wal
+storage-rules-onprem-$SUF|volume under 10 % free|warning|/resv
 storage-rules-onprem-$SUF|volume under 10 % free|warning|/young
-storage-rules-rds-$SUF|volume under 10 % free|critical|rds:storage"
+storage-rules-rds-$SUF|volume under 10 % free|critical|rds:storage
+storage-rules-rdsmax-$SUF|volume under 10 % free|warning|rds:storage"
 [ "$got" = "$want" ] || fail "C: storage_checks"
-[ "$(q "select count(*) from pgvigil.storage_findings where instance_id in ($i1,$i2,$i3,$i4)")" = 4 ] || fail "C: findings vs checks"
+[ "$(q "select string_agg(split_part(value, ':', 1), ',' order by value) from pgvigil.storage_findings where instance_id in ($i1,$i2,$i3,$i4,$i5)")" = "/data,/resv,/wal" ] || fail "C: findings carry the forecast rule only"
 # database growth: 'grow' +1 GiB/day over 10 days, 'new' two hours of history
 q "insert into pgvigil.databases (instance_id, dbid, datname, snapshot_at, size_bytes, first_seen, is_present, is_template)
    values ($i1, 1, 'grow', now(), 10::bigint*$G, now(), true, false), ($i1, 2, 'new', now(), $G, now(), true, false)" >/dev/null
@@ -168,7 +186,7 @@ q "DO \$\$ DECLARE h int; t timestamptz; BEGIN
        t := now() - make_interval(hours => 6 * h);
        PERFORM pgvigil.ensure_month_partition('database_sizes', t);
        INSERT INTO pgvigil.database_sizes (instance_id, snapshot_at, dbid, datname, size_bytes) VALUES ($i1, t, 1, 'grow', (10::bigint*$G - h * 0.25 * $G)::bigint);
-       IF h <= 2 THEN INSERT INTO pgvigil.database_sizes (instance_id, snapshot_at, dbid, datname, size_bytes) VALUES ($i1, t, 2, 'new', $G); END IF;
+       IF h <= 2 THEN INSERT INTO pgvigil.database_sizes (instance_id, snapshot_at, dbid, datname, size_bytes) VALUES ($i1, now() - make_interval(hours => h), 2, 'new', $G + h); END IF;
      END LOOP; END \$\$" >/dev/null
 q "select '  db ' || datname || ' ' || pg_size_pretty(size_bytes) || ' g7 ' || coalesce(pg_size_pretty(growth_7d_per_day::bigint), 'NULL') || ' doubles in ' || coalesce(days_to_double::text, 'NULL')
      from pgvigil.database_growth($i1)"
