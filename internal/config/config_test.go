@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,5 +89,38 @@ func TestValidateServeOnly(t *testing.T) {
 	c := Config{Repository: Repository{DSNRaw: "r"}}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("serve-only config rejected: %v", err)
+	}
+}
+
+func TestActionsDSN(t *testing.T) {
+	base := "repository:\n  dsn: env:REPO\ninstances:\n  - name: a\n    dsn: env:A\n"
+	for _, c := range []struct {
+		line string
+		ok   bool
+	}{
+		{"", true},
+		{"    actions_dsn: env:PGVIGIL_ACT\n", true},
+		{"    actions_dsn: file:/run/secrets/act\n", true},
+		{"    actions_dsn: \"host=h user=pgvigil_actions password=p\"\n", false},
+		{"    actions_dsn: postgres://u:p@h/db\n", false},
+	} {
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(p, []byte(base+c.line), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(p)
+		if (err == nil) != c.ok {
+			t.Errorf("%q: err=%v, want ok=%v", c.line, err, c.ok)
+		}
+		if err != nil && !strings.Contains(err.Error(), "env:NAME or file:/path") {
+			t.Errorf("%q: the refusal does not say why: %v", c.line, err)
+		}
+	}
+	t.Setenv("PGVIGIL_ACT", "host=x user=pgvigil_actions")
+	if got := (Instance{ActionsDSNRaw: "env:PGVIGIL_ACT"}).ActionsDSN(); got != "host=x user=pgvigil_actions" {
+		t.Errorf("ActionsDSN: %q", got)
+	}
+	if got := (Instance{}).ActionsDSN(); got != "" {
+		t.Errorf("no actions_dsn: %q", got)
 	}
 }

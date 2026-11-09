@@ -54,6 +54,19 @@ type Instance struct {
 	QueryText string `yaml:"query_text"`
 	// AWS names the RDS / Aurora resource for the log reader (CloudWatch Logs); nil = no AWS door.
 	AWS *AWS `yaml:"aws"`
+	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT
+	// pg_signal_backend, never a superuser) the UI's Cancel and Terminate buttons use on this server.
+	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
+	// accepted: the password of a login that can stop sessions never sits in the file.
+	ActionsDSNRaw string `yaml:"actions_dsn"`
+}
+
+// ActionsDSN resolves the actions door; "" = none configured (or an unset variable / unreadable file).
+func (i Instance) ActionsDSN() string {
+	if i.ActionsDSNRaw == "" {
+		return ""
+	}
+	return Resolve(i.ActionsDSNRaw)
 }
 
 // AWS is an instance's door to its cloud side. Credentials come from the SDK's usual chain
@@ -180,6 +193,9 @@ func (c *Config) Validate() error {
 		case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
 		default:
 			return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
+		}
+		if v := strings.TrimSpace(in.ActionsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
+			return fmt.Errorf("instance %q: actions_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}
 		if in.AWS != nil && in.AWS.DMS != nil {
 			for _, t := range in.AWS.DMS.Tasks {
