@@ -181,6 +181,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
 		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
+	applyTextPolicy(rows, in.QueryText)
 	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
 		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}

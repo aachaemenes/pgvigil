@@ -21,6 +21,10 @@ type Config struct {
 	// Schedules overrides the default interval of a collection for every instance,
 	// e.g. activity: 30s. An instance's own Schedules override these.
 	Schedules map[string]Duration `yaml:"schedules"`
+	// QueryText says what statement text the repository may hold: full (default; credentials
+	// always masked), normalized (every literal replaced by ?), none (no statement text at all,
+	// only hashes and counters). An instance's own query_text overrides it.
+	QueryText string `yaml:"query_text"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -45,6 +49,9 @@ type Instance struct {
 	Schedules map[string]Duration `yaml:"schedules"`
 	// Disabled lists collections that never run on this instance.
 	Disabled []string `yaml:"disabled"`
+	// QueryText overrides the file-level query_text for this instance (full | normalized | none);
+	// Validate fills it from the file-level value when empty.
+	QueryText string `yaml:"query_text"`
 	// AWS names the RDS / Aurora resource for the log reader (CloudWatch Logs); nil = no AWS door.
 	AWS *AWS `yaml:"aws"`
 }
@@ -141,6 +148,12 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Repository.DSNRaw) == "" {
 		return fmt.Errorf("repository.dsn is required")
 	}
+	if c.QueryText == "" {
+		c.QueryText = "full"
+	}
+	if !validQueryText(c.QueryText) {
+		return fmt.Errorf("query_text must be full, normalized or none (got %q)", c.QueryText)
+	}
 	seen := map[string]bool{}
 	for i := range c.Instances {
 		in := &c.Instances[i]
@@ -156,6 +169,12 @@ func (c *Config) Validate() error {
 		}
 		if in.Platform == "" {
 			in.Platform = "auto"
+		}
+		if in.QueryText == "" {
+			in.QueryText = c.QueryText
+		}
+		if !validQueryText(in.QueryText) {
+			return fmt.Errorf("instance %q: query_text must be full, normalized or none (got %q)", in.Name, in.QueryText)
 		}
 		switch in.Platform {
 		case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
@@ -175,6 +194,8 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+func validQueryText(v string) bool { return v == "full" || v == "normalized" || v == "none" }
 
 // Resolve applies the env:/file: indirection.
 func Resolve(v string) string {
