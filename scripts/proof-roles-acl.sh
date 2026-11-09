@@ -54,6 +54,23 @@
 #  D. role_flags and role_is_platform: role_flags(super, login, connlimit 5, valid until 2030-01-01) =
 #     'superuser,login,connection limit 5,valid until 2030-01-01 00:00 UTC'; role_is_platform: rds rdsadmin t,
 #     onprem rdsadmin f, any pg_monitor t, any oid 10 t, azure azure_pg_admin t, onprem app f.
+#  [review 1 fold, expected before the rerun:]
+#  B2'. the superuser read's rules come back in rule_number order = (file_name, line_number) order; the collection
+#      status ok (no database the superuser may not connect to)
+#  C2. x a fourth time: app_x gets config ['search_path=app'], database b is not read (no db row, noconnect [b])
+#      after a read that had schema ACLs for a and b -> history exactly: role setting|app_x|added||search_path=app;
+#      b's schema ACL rows stay present; role_state.unreadable_dbs = {b}
+#      z (onprem): hba read with 'host all /^app_ 10.0.0.0/8 scram-sha-256' and 'host all postgres ... peer'; app_rw
+#      (login, named only by the regex) and lone_z (login, named by nothing) -> exactly one finding:
+#      login without a way in|info|lone_z; z again with one error line added -> no 'login without a way in' row
+#  E. the collector's masking expressions on literals: options ['ldapserver=x','ldapbindpasswd=Hunter2!','radiussecrets=s1,s2']
+#     -> ['ldapserver=x','ldapbindpasswd=********','radiussecrets=********']; rolconfig ['app.secret_key=a','app.api_token=b',
+#     'app.dsn=postgres://u:pw@h/db','search_path=app','app.db_password=c'] -> only search_path keeps its value.
+#     (the expressions are copied from roles.go; the proof greps that roles.go still holds each one)
+#  (status 'ok' above also accepts 'partial' when its note names no database of this proof: another proof on the
+#  shared sandbox dropping its own database mid-read)
+#  F. scale: 200 seeded instances x 1000 roles x up to 1400 distinct memberships x 12 hba rules (a scratch repository); role_findings
+#     for one instance under 2 s, the whole fleet's role_findings under 30 s, the fleet summary query under 30 s
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -102,7 +119,10 @@ EOF
 "$BIN" collect -config "$CFG" -once roles -instance "proof-roles-$SUF" || fail "collect roles (run 1)"
 iid=$(q "select instance_id from pgvigil.instances where name='proof-roles-$SUF'")
 st() { q "select status || coalesce(': ' || note, '') from pgvigil.collection_dates where instance_id=$1 and collection='roles'"; }
-[[ $(st "$iid") == ok* ]] || fail "collection status: $(st "$iid")"
+# the sandbox is shared: another proof may drop its own database between this read's list and its connect, which makes
+# the read 'partial' with that database named; a partial that names one of this proof's databases is a failure
+stok() { local v; v=$(st "$1"); [[ $v == ok || ( $v == partial:* && $v != *"_$SUF"* ) ]]; }
+stok "$iid" || fail "collection status: $(st "$iid")"
 mine="like '%\_$SUF'"
 flags=$(q "select string_agg(rolname || '=' || pgvigil.role_flags(super, inherit, createrole, createdb, canlogin, replication, bypassrls, connlimit, valid_until), ' ' order by rolname)
              from pgvigil.role_attributes where instance_id=$iid and is_present and rolname $mine")
@@ -151,7 +171,7 @@ adm "create role $NW login; grant $GRP to $NW; revoke temporary on database $T1 
 t1 "revoke usage on schema $SCH from $GRP" >/dev/null
 sleep 1.1
 "$BIN" collect -config "$CFG" -once roles -instance "proof-roles-$SUF" || fail "collect roles (run 2)"
-[[ $(st "$iid") == ok ]] || fail "status run 2: $(st "$iid")"
+stok "$iid" || fail "status run 2: $(st "$iid")"
 S2=$(q "select max(changed_at) from pgvigil.role_history where instance_id=$iid")
 hist=$(q "select string_agg(object_kind || '|' || coalesce(datname, '') || '|' || object || '|' || change || '|' || coalesce(old_value, '') || '|' || coalesce(new_value, ''), E'\n'
                             order by object_kind, object)
@@ -175,7 +195,7 @@ echo "findings after: $got"
 echo "--- B2. the hba rules read as a superuser"
 "$BIN" collect -config "$CFG" -once roles -instance "proof-roles-su-$SUF" || fail "collect roles (superuser)"
 isu=$(q "select instance_id from pgvigil.instances where name='proof-roles-su-$SUF'")
-[[ $(st "$isu") == ok ]] || fail "status su: $(st "$isu")"
+stok "$isu" || fail "status su: $(st "$isu")"
 NRULES=$(adm "select count(*) from pg_hba_file_rules")
 hs=$(q "select hba_status || '|' || length(hba_checksum) || '|' || hba_rules from pgvigil.role_state where instance_id=$isu")
 [[ "$hs" == "read|32|$NRULES" ]] || fail "hba state as superuser: '$hs' (server has $NRULES rules)"
@@ -183,6 +203,9 @@ hs=$(q "select hba_status || '|' || length(hba_checksum) || '|' || hba_rules fro
 echo "hba: read, $NRULES rule(s), checksum $(q "select hba_checksum from pgvigil.role_state where instance_id=$isu")"
 q "select line_number, pgvigil.role_hba_text(type, databases, users, address, netmask, auth_method, options, error) from pgvigil.hba_rules where instance_id=$isu order by line_number"
 [[ $(q "select count(*) from pgvigil.role_findings where instance_id=$isu and setting='pg_monitor'") == 0 ]] || fail "pg_monitor finding on a superuser login"
+[[ $(q "select array_agg(line_number order by rule_number) = array_agg(line_number order by file_name, line_number) from pgvigil.hba_rules where instance_id=$isu and is_present") == t ]] \
+  || fail "hba rules not in rule order"
+stok "$isu" || fail "superuser read status: $(st "$isu")"
 
 echo "--- C. seeded rules"
 seed() { q "select pgvigil.ensure_instance('proof-roles-$1-$SUF', '$2', '16.4', 160004, false, '{}')"; }
@@ -202,11 +225,13 @@ XACL='{"kind":"dbacls","names":["a","b"]},{"kind":"databases","names":["a","b"]}
 {"kind":"dbacl","datname":"a","owner":"postgres","grantee":"rw_x","grantor":"postgres","privileges":"CONNECT","grantable":"","is_default":false},
 {"kind":"dbacl","datname":"b","owner":"postgres","grantee":"postgres","grantor":"postgres","privileges":"CONNECT,CREATE,TEMPORARY","grantable":"","is_default":false},
 {"kind":"dbacl","datname":"b","owner":"postgres","grantee":"rw_x","grantor":"postgres","privileges":"CONNECT","grantable":"","is_default":false}'
+XDB='{"kind":"db","dbid":1,"datname":"a"},{"kind":"schemaacl","datname":"a","schema_name":"public","owner":"postgres","grantee":"PUBLIC","grantor":"postgres","privileges":"USAGE","grantable":"","is_default":false}'
+XDBB='{"kind":"db","dbid":2,"datname":"b"},{"kind":"schemaacl","datname":"b","schema_name":"public","owner":"postgres","grantee":"PUBLIC","grantor":"postgres","privileges":"USAGE","grantable":"","is_default":false}'
 hba() { # line type db users address method
   printf '{"kind":"hba","rule_number":%s,"file_name":"/etc/pg_hba.conf","line_number":%s,"type":"%s","databases":["%s"],"users":["%s"],"address":%s,"netmask":null,"auth_method":"%s","options":null,"error":null}' "$1" "$1" "$2" "$3" "$4" "$5" "$6"; }
 H1="$(hba 1 local all postgres null peer),$(hba 2 host all +grp_x '"0.0.0.0/0"' md5),$(hba 3 host all mon_x '"10.0.0.0/8"' scram-sha-256),
 $(hba 4 host all rw_x '"10.0.0.0/8"' scram-sha-256),$(hba 5 local all peer_x null peer),$(hba 6 host replication all '"10.0.0.0/8"' trust)"
-imp "$ix" 0 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_pg_monitor\":false},$XROLES,$XMEM,$XACL,$H1,
+imp "$ix" 0 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_pg_monitor\":false},$XROLES,$XMEM,$XACL,$XDB,$XDBB,$H1,
               {\"kind\":\"hba_state\",\"status\":\"read\",\"note\":\"\",\"checksum\":\"sum1\",\"rules\":6}]"
 imp "$iy" 0 "[{\"kind\":\"login\",\"name\":\"admin_y\",\"is_super\":false,\"has_pg_monitor\":true},
               $(role rdsadmin 16390 true true true true true null),$(role rds_superuser 16391 false true true false false null),
@@ -225,7 +250,7 @@ $want"
   echo "findings $c:"; echo "$got"
 done
 # x again, the hba read skipped: the rules and the checksum stay, no history
-imp "$ix" 60 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_pg_monitor\":false},$XROLES,$XMEM,$XACL,
+imp "$ix" 60 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_pg_monitor\":false},$XROLES,$XMEM,$XACL,$XDB,$XDBB,
                {\"kind\":\"hba_state\",\"status\":\"skipped\",\"note\":\"permission denied\"}]"
 [[ $(q "select count(*) from pgvigil.hba_rules where instance_id=$ix and is_present") == 6 ]] || fail "x rules dropped on a skipped read"
 [[ $(q "select hba_status || '|' || hba_checksum || '|' || hba_rules from pgvigil.role_state where instance_id=$ix") == "skipped|sum1|6" ]] \
@@ -234,7 +259,7 @@ imp "$ix" 60 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_p
 # x a third time, read, one rule added and the replication rule gone
 H3="$(hba 1 local all postgres null peer),$(hba 2 host all +grp_x '"0.0.0.0/0"' md5),$(hba 3 host all mon_x '"10.0.0.0/8"' scram-sha-256),
 $(hba 4 host all rw_x '"10.0.0.0/8"' scram-sha-256),$(hba 5 local all peer_x null peer),$(hba 6 host all lone_x '"0.0.0.0/0"' scram-sha-256)"
-imp "$ix" 120 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_pg_monitor\":false},$XROLES,$XMEM,$XACL,$H3,
+imp "$ix" 120 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_pg_monitor\":false},$XROLES,$XMEM,$XACL,$XDB,$XDBB,$H3,
                 {\"kind\":\"hba_state\",\"status\":\"read\",\"note\":\"\",\"checksum\":\"sum3\",\"rules\":6}]"
 hx=$(q "select string_agg(object_kind || '|' || object || '|' || change || '|' || coalesce(old_value, '') || '|' || coalesce(new_value, ''), E'\n' order by object_kind, object)
           from pgvigil.role_history where instance_id=$ix")
@@ -247,10 +272,75 @@ $want"
 echo "x hba history:"; echo "$hx"
 [[ $(q "select count(*) from pgvigil.role_findings where instance_id=$ix and value='lone_x'") == 0 ]] || fail "lone_x finding stays"
 
+echo "--- C2. a role setting, an unreadable database, a regex user, an error line"
+XROLES4=${XROLES/'"name":"app_x","oid":16401,"super":false,"inherit":true,"createrole":true,"createdb":false,"canlogin":false,"replication":false,"bypassrls":false,"connlimit":-1,"valid_until":null,"config":null'/'"name":"app_x","oid":16401,"super":false,"inherit":true,"createrole":true,"createdb":false,"canlogin":false,"replication":false,"bypassrls":false,"connlimit":-1,"valid_until":null,"config":["search_path=app"]'}
+[[ "$XROLES4" != "$XROLES" ]] || fail "proof: app_x config substitution did not apply"
+imp "$ix" 180 "[{\"kind\":\"login\",\"name\":\"mon_x\",\"is_super\":false,\"has_pg_monitor\":false},$XROLES4,$XMEM,$XACL,$XDB,
+                {\"kind\":\"noconnect\",\"names\":[\"b\"]},$H3,{\"kind\":\"hba_state\",\"status\":\"read\",\"note\":\"\",\"checksum\":\"sum3\",\"rules\":6}]"
+S4=$(q "select max(changed_at) from pgvigil.role_history where instance_id=$ix")
+h4=$(q "select string_agg(object_kind || '|' || object || '|' || change || '|' || coalesce(old_value, '') || '|' || coalesce(new_value, ''), E'\n') from pgvigil.role_history where instance_id=$ix and changed_at='$S4'")
+[[ "$h4" == "role setting|app_x|added||search_path=app" ]] || fail "x role setting history: '$h4'"
+[[ $(q "select count(*) from pgvigil.acl_schemas where instance_id=$ix and datname='b' and is_present") == 1 ]] || fail "b schema ACL dropped though only unreadable"
+[[ $(q "select unreadable_dbs from pgvigil.role_state where instance_id=$ix") == "{b}" ]] || fail "unreadable_dbs: $(q "select unreadable_dbs from pgvigil.role_state where instance_id=$ix")"
+echo "x: $h4; b kept, unreadable_dbs {b}"
+iz=$(seed z onprem)
+ZBASE="{\"kind\":\"login\",\"name\":\"postgres\",\"is_super\":true,\"has_pg_monitor\":true},$(role postgres 10 true true true true true null),
+$(role app_rw 16400 false false false true false null),$(role lone_z 16401 false false false true false null)"
+ZH="$(hba 1 local all postgres null peer),$(hba 2 host all /^app_ '"10.0.0.0/8"' scram-sha-256)"
+imp "$iz" 0 "[$ZBASE,$ZH,{\"kind\":\"hba_state\",\"status\":\"read\",\"note\":\"\",\"checksum\":\"z1\",\"rules\":2}]"
+[[ "$(fnd "$iz" "")" == "login without a way in|info|lone_z" ]] || fail "z findings: $(fnd "$iz" "")"
+ZERR='{"kind":"hba","rule_number":null,"file_name":"/etc/pg_hba.conf","line_number":9,"type":null,"databases":null,"users":null,"address":null,"netmask":null,"auth_method":null,"options":null,"error":"invalid authentication method \"pam2\""}'
+imp "$iz" 60 "[$ZBASE,$ZH,$ZERR,{\"kind\":\"hba_state\",\"status\":\"read\",\"note\":\"\",\"checksum\":\"z2\",\"rules\":3}]"
+[[ $(q "select count(*) from pgvigil.role_findings where instance_id=$iz and setting='login without a way in'") == 0 ]] || fail "z: no-way-in judged on a file with an error line"
+echo "z: regex user admits app_rw; lone_z flagged; nothing judged once a line is in error"
+
+echo "--- E. the collector's masking expressions"
+OPTX="regexp_replace(o, '^(ldapbindpasswd|radiussecrets?)=.*\$', '\\1=********')"
+CFGX="CASE WHEN split_part(c, '=', 1) ~* '(pass|secret|token|key)' OR c ~* 'password\\s*=' OR c ~ '://[^:/@\\s]+:[^@\\s]+@'"
+grep -qF "$OPTX" internal/collect/roles.go || fail "roles.go no longer holds the options mask: $OPTX"
+grep -qF "$CFGX" internal/collect/roles.go || fail "roles.go no longer holds the rolconfig mask: $CFGX"
+mo=$(adm "select array_to_string(ARRAY(SELECT $OPTX FROM unnest(ARRAY['ldapserver=x','ldapbindpasswd=Hunter2!','radiussecrets=s1,s2']) o), ' ')")
+[[ "$mo" == "ldapserver=x ldapbindpasswd=******** radiussecrets=********" ]] || fail "options mask: '$mo'"
+mc=$(adm "select array_to_string(ARRAY(SELECT $CFGX THEN split_part(c, '=', 1) || '=********' ELSE c END
+            FROM unnest(ARRAY['app.secret_key=a','app.api_token=b','app.dsn=postgres://u:pw@h/db','search_path=app','app.db_password=c']) c), ' ')")
+[[ "$mc" == "app.secret_key=******** app.api_token=******** app.dsn=******** search_path=app app.db_password=********" ]] || fail "rolconfig mask: '$mc'"
+echo "masks: $mo | $mc"
+
 echo "--- D. role_flags and role_is_platform"
 [[ $(q "select pgvigil.role_flags(true, true, false, false, true, false, false, 5, '2030-01-01 00:00+00')") == "superuser,login,connection limit 5,valid until 2030-01-01 00:00 UTC" ]] \
   || fail "role_flags: $(q "select pgvigil.role_flags(true, true, false, false, true, false, false, 5, '2030-01-01 00:00+00')")"
 [[ $(q "select pgvigil.role_is_platform('rds','rdsadmin',16390), pgvigil.role_is_platform('onprem','rdsadmin',16390), pgvigil.role_is_platform('onprem','pg_monitor',3373),
              pgvigil.role_is_platform('onprem','postgres',10), pgvigil.role_is_platform('azure','azure_pg_admin',16390), pgvigil.role_is_platform('onprem','app',16500)") == "t|f|t|t|t|f" ]] \
   || fail "role_is_platform"
+echo "--- F. scale: 200 instances x 1000 roles"
+q "DO \$\$
+DECLARE i int; iid int; p jsonb;
+BEGIN
+  FOR i IN 1..200 LOOP
+    iid := pgvigil.ensure_instance('proof-roles-scale-' || i || '-$SUF', 'onprem', '16.4', 160004, false, '{}');
+    SELECT jsonb_build_array(jsonb_build_object('kind','login','name','mon','is_super',false,'has_pg_monitor',true),
+                             jsonb_build_object('kind','hba_state','status','read','note','','checksum','s','rules',12))
+           || (SELECT jsonb_agg(jsonb_build_object('kind','role','name','r' || g,'oid',16400 + g,'super',g = 1,'inherit',true,
+                                                   'createrole',g % 97 = 0,'createdb',false,'canlogin',g % 3 <> 0,'replication',false,
+                                                   'bypassrls',false,'connlimit',-1,'valid_until',NULL,'config',NULL))
+                 FROM generate_series(1, 1000) g)
+           || (SELECT jsonb_agg(DISTINCT jsonb_build_object('kind','member','role','r' || (g % 50 + 1) * 3,'member','r' || (g * 7 % 1000 + 1),
+                                                   'grantor','postgres','admin_option',false))
+                 FROM generate_series(1, 1400) g)
+           || (SELECT jsonb_agg(jsonb_build_object('kind','hba','rule_number',g,'file_name','/f','line_number',g,'type','host',
+                                                   'databases',jsonb_build_array('all'),'users',jsonb_build_array(CASE WHEN g % 2 = 0 THEN '+r' || g * 3 ELSE 'r' || g END),
+                                                   'address','10.0.0.0/8','auth_method','scram-sha-256'))
+                 FROM generate_series(1, 12) g)
+      INTO p;
+    PERFORM pgvigil.import_roles(iid, now(), p);
+  END LOOP;
+END \$\$" >/dev/null
+one=$(q "select instance_id from pgvigil.instances where name = 'proof-roles-scale-7-$SUF'")
+tm() { local t0; t0=$(date +%s%N); q "$1" >/dev/null; echo $(( ($(date +%s%N) - t0) / 1000000 )); }
+t1=$(tm "select count(*) from pgvigil.role_findings where instance_id=$one")
+t2=$(tm "select count(*) from pgvigil.role_findings")
+t3=$(tm "$(sed -n '/^const sqlRolesFleetSummary = `/,/^ ORDER BY i.name`/p' internal/web/q_roles.go | sed '1d;s/`$//')")
+n1=$(q "select count(*) from pgvigil.role_findings where instance_id=$one")
+echo "scale: one instance ${t1} ms ($n1 finding(s)), whole fleet ${t2} ms, fleet summary ${t3} ms"
+(( t1 < 2000 && t2 < 30000 && t3 < 30000 )) || fail "scale timings over budget"
 echo "PASS proof-roles-acl"

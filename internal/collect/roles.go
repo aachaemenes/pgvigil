@@ -30,6 +30,7 @@ import (
 //	dbacl      datname, owner, grantee, grantor, privileges, grantable, is_default (once per database and grant)
 //	dbacls     names: every database whose datacl was read (a database not listed is gone)
 //	databases  names: every connectable database
+//	noconnect  names: the databases the login may not connect to (their schema and default ACLs are not read)
 //	db         dbid, datname                               (per database read: its schema and default ACLs are complete)
 //	schemaacl  datname, schema_name, owner, grantee, grantor, privileges, grantable, is_default
 //	defacl     datname, owner, schema_name, objtype, grantee, grantor, privileges, grantable
@@ -58,14 +59,16 @@ SELECT 'login' AS kind, current_user::text AS name,
        (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS is_super,
        pg_has_role(current_user, 'pg_monitor', 'USAGE') AS has_pg_monitor`
 
-// rolesRolesSQL lists every role. rolconfig (ALTER ROLE ... SET) keeps its names; a value of a setting whose name
-// says password, or that carries a password= keyword, is masked before it leaves the server.
+// rolesRolesSQL lists every role. rolconfig (ALTER ROLE ... SET) keeps its names; the value of a setting whose name
+// says pass, secret, token or key, or that carries a password= keyword or a URL with a user and password, is masked
+// before it leaves the server.
 const rolesRolesSQL = `
 SELECT 'role' AS kind, r.rolname::text AS name, r.oid::bigint AS oid, r.rolsuper AS super, r.rolinherit AS inherit,
        r.rolcreaterole AS createrole, r.rolcreatedb AS createdb, r.rolcanlogin AS canlogin,
        r.rolreplication AS replication, r.rolbypassrls AS bypassrls, r.rolconnlimit AS connlimit,
        r.rolvaliduntil AS valid_until,
-       ARRAY(SELECT CASE WHEN split_part(c, '=', 1) ~* 'pass' OR c ~* 'password\s*=' THEN split_part(c, '=', 1) || '=********' ELSE c END
+       ARRAY(SELECT CASE WHEN split_part(c, '=', 1) ~* '(pass|secret|token|key)' OR c ~* 'password\s*=' OR c ~ '://[^:/@\s]+:[^@\s]+@'
+                         THEN split_part(c, '=', 1) || '=********' ELSE c END
                FROM unnest(r.rolconfig) c) AS config
   FROM pg_roles r
  ORDER BY r.rolname`
@@ -136,12 +139,26 @@ SELECT has_table_privilege('pg_catalog.pg_hba_file_rules', 'SELECT')
 
 // rolesHBASQL reads the rules in the order the server applies them; the line with an error has error set and
 // no rule fields. The column set is the one PostgreSQL 15+ has (rule_number, file_name); an older server's
-// view lacks them and the read substitutes NULL.
+// view lacks them and the read substitutes NULL. The options column carries an LDAP bind password
+// (ldapbindpasswd=) and RADIUS secrets (radiussecrets=) in clear: their values are masked here. Every row carries
+// the checksum of the whole read (one statement, so the rules and the checksum come from one file state): the md5
+// of each rule's fields, masked options included, in the order the server applies them, line numbers left out, so a
+// change of a rule, its order or its options changes it and a comment or a blank line does not.
 const rolesHBASQL = `
-SELECT 'hba' AS kind, %s AS rule_number, %s AS file_name, h.line_number, h.type,
-       h.database AS databases, h.user_name AS users, h.address, h.netmask, h.auth_method, h.options, h.error
-  FROM pg_hba_file_rules h
- ORDER BY h.line_number`
+WITH h AS (
+  SELECT %s AS rule_number, %s AS file_name, h.line_number, h.type, h.database AS databases, h.user_name AS users,
+         h.address, h.netmask, h.auth_method,
+         CASE WHEN h.options IS NOT NULL THEN
+           ARRAY(SELECT regexp_replace(o, '^(ldapbindpasswd|radiussecrets?)=.*$', '\1=********') FROM unnest(h.options) o) END AS options,
+         h.error
+    FROM pg_hba_file_rules h
+)
+SELECT 'hba' AS kind, h.*,
+       md5(coalesce(string_agg(concat_ws('|', h.file_name, h.type, h.databases::text, h.users::text, h.address, h.netmask,
+                                         h.auth_method, h.options::text, h.error), E'\n')
+                    OVER (ORDER BY h.file_name, h.line_number ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING), '')) AS checksum
+  FROM h
+ ORDER BY h.file_name, h.line_number`
 
 // RunInstance reads the cluster-wide catalogs on conn, then the schema and default ACLs of conn's database and
 // of every other connectable database (its own short connection), up to tablesMaxDatabases.
@@ -183,6 +200,19 @@ func (rolesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platfor
 	if err := conn.QueryRow(ctx, `SELECT current_database()::text`).Scan(&cur); err != nil {
 		return nil, err
 	}
+	// a database the login may not connect to keeps its last schema and default ACLs; the read names it (a
+	// platform's own database, rdsadmin on RDS, is one on every read, so it is not a collector error)
+	connectable := map[string]bool{}
+	for _, d := range dbs {
+		connectable[d] = true
+	}
+	unreadable := []string{}
+	for _, d := range aclNames {
+		if !connectable[d] {
+			unreadable = append(unreadable, d)
+		}
+	}
+	out = append(out, Row{"kind": "noconnect", "names": unreadable})
 	if len(dbs) > tablesMaxDatabases {
 		out = append(out, Row{"kind": "collector_error", "source": "roles",
 			"message": fmt.Sprintf("%d databases: the first %d by name are read (tablesMaxDatabases)", len(dbs), tablesMaxDatabases)})
@@ -216,9 +246,11 @@ func rolesQuery(ctx context.Context, conn *pgx.Conn, sql string, args ...any) ([
 	return rowsToMaps(r)
 }
 
+// md5Empty is md5(”): the checksum of a file with no rules.
+const md5Empty = "d41d8cd98f00b204e9800998ecf8427e"
+
 // rolesHBA reads pg_hba_file_rules when the login may, and always returns the hba_state row: read with the
-// checksum and the rule count, or skipped with the reason. The checksum is the md5 of every rule's fields in
-// line order, so a reload that changes a rule, its order or its options changes it; a comment does not.
+// checksum (rolesHBASQL) and the rule count, or skipped with the reason.
 func rolesHBA(ctx context.Context, conn *pgx.Conn) ([]Row, error) {
 	var ok bool
 	if err := conn.QueryRow(ctx, rolesHBAPrivSQL).Scan(&ok); err != nil {
@@ -245,12 +277,12 @@ func rolesHBA(ctx context.Context, conn *pgx.Conn) ([]Row, error) {
 		// function: the read goes on without the rules
 		return []Row{{"kind": "hba_state", "status": "skipped", "note": "pg_hba_file_rules: " + err.Error()}}, nil
 	}
-	var sum string
-	if err := conn.QueryRow(ctx, `
-SELECT md5(coalesce(string_agg(concat_ws('|', h.line_number, h.type, h.database::text, h.user_name::text, h.address, h.netmask,
-                                         h.auth_method, h.options::text, h.error), E'\n' ORDER BY h.line_number), ''))
-  FROM pg_hba_file_rules h`).Scan(&sum); err != nil {
-		return []Row{{"kind": "hba_state", "status": "skipped", "note": "pg_hba_file_rules checksum: " + err.Error()}}, nil
+	sum := md5Empty
+	for _, r := range rows {
+		if v, ok := r["checksum"].(string); ok {
+			sum = v
+		}
+		delete(r, "checksum")
 	}
 	return append(rows, Row{"kind": "hba_state", "status": "read", "note": "", "checksum": sum, "rules": len(rows)}), nil
 }

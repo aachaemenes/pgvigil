@@ -20,7 +20,7 @@ SELECT f.instance_id, f.severity, 'role: ' || f.setting, f.value, f.at, f.detail
 // sqlRolesState is the instance's read state: the collector's login, pg_monitor, the hba read or its skip.
 const sqlRolesState = `
 SELECT s.login_name, s.login_is_super, s.login_has_pg_monitor, s.hba_status, s.hba_note, s.hba_checksum, s.hba_rules,
-       s.hba_read_at, s.snapshot_at
+       s.hba_read_at, array_to_string(s.unreadable_dbs, ', ') AS unreadable_dbs, s.snapshot_at
   FROM pgvigil.role_state s
  WHERE s.instance_id = $1`
 
@@ -99,15 +99,22 @@ SELECT f.instance_id, i.name AS instance, i.platform, f.rolname, f.super, f.canl
  ORDER BY i.name, f.super DESC, f.is_platform, f.rolname`
 
 // sqlRolesFleetSummary is one row per active instance with a roles read: how many superusers (beyond the platform's
-// own), login roles, findings, and whether the hba rules were read.
+// own), login roles, findings above info, changes in 7 days, and whether the hba rules were read. Each count is one
+// grouped pass, not a per-instance subquery.
 const sqlRolesFleetSummary = `
+WITH r AS (
+  SELECT instance_id, count(*) FILTER (WHERE super AND NOT is_platform) AS superusers, count(*) FILTER (WHERE canlogin) AS login_roles
+    FROM pgvigil.role_fleet GROUP BY instance_id
+), f AS (
+  SELECT instance_id, count(*) AS warnings FROM pgvigil.role_findings WHERE severity <> 'info' GROUP BY instance_id
+), h AS (
+  SELECT instance_id, count(*) AS changes_7d FROM pgvigil.role_history WHERE changed_at > now() - interval '7 days' GROUP BY instance_id
+)
 SELECT s.instance_id, i.name AS instance, i.platform, s.login_name, s.login_has_pg_monitor, s.hba_status,
-       (SELECT count(*) FROM pgvigil.role_fleet f WHERE f.instance_id = s.instance_id AND f.super AND NOT f.is_platform) AS superusers,
-       (SELECT count(*) FROM pgvigil.role_fleet f WHERE f.instance_id = s.instance_id AND f.canlogin) AS login_roles,
-       (SELECT count(*) FROM pgvigil.role_findings x WHERE x.instance_id = s.instance_id AND x.severity <> 'info') AS warnings,
-       (SELECT count(*) FROM pgvigil.role_history h WHERE h.instance_id = s.instance_id AND h.changed_at > now() - interval '7 days') AS changes_7d,
-       s.snapshot_at
+       coalesce(r.superusers, 0) AS superusers, coalesce(r.login_roles, 0) AS login_roles,
+       coalesce(f.warnings, 0) AS warnings, coalesce(h.changes_7d, 0) AS changes_7d, s.snapshot_at
   FROM pgvigil.role_state s JOIN pgvigil.instances i USING (instance_id)
+  LEFT JOIN r USING (instance_id) LEFT JOIN f USING (instance_id) LEFT JOIN h USING (instance_id)
  WHERE i.is_active
  ORDER BY i.name`
 

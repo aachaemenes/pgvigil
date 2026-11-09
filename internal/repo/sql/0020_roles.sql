@@ -10,8 +10,11 @@
 --   acl_schemas             each schema's ACL, per database
 --   acl_default_privileges  ALTER DEFAULT PRIVILEGES entries, per database
 --   hba_rules               the pg_hba.conf rules as pg_hba_file_rules shows them
---   role_history            what changed between two reads: a role added, removed or altered, a membership or a
---                           privilege granted, revoked or changed, an hba rule added or removed, the hba checksum
+--   role_history            what changed between two reads: a role added, removed or altered (its attributes, its
+--                           ALTER ROLE ... SET list), a membership or a privilege granted, revoked or changed, an hba
+--                           rule added or removed, the hba checksum. Rows are keyed by name: a role renamed reads as
+--                           removed and added (pg_roles keeps no rename history; the oid is stored, not compared)
+--   role_member_closure     every membership through any depth, per instance (rebuilt by the import)
 --   role_flags              a role's attributes as one comparable text (the history's value)
 --   role_is_platform        whether a role is the server's or the platform's own (not an application role)
 --   role_findings           the role rules, in pgvigil.findings' columns (the join unions it in)
@@ -27,7 +30,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.role_state (
   hba_note              text,          -- why it was skipped
   hba_checksum          text,          -- md5 of the rules at the last read that could read them
   hba_rules             int,
-  hba_read_at           timestamptz    -- the last read that could read them
+  hba_read_at           timestamptz,   -- the last read that could read them
+  unreadable_dbs        text[]         -- databases the login may not connect to: their schema and default ACLs are the last read's
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.role_attributes (
@@ -136,13 +140,23 @@ CREATE TABLE IF NOT EXISTS pgvigil.hba_rules (
 CREATE TABLE IF NOT EXISTS pgvigil.role_history (
   instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   changed_at   timestamptz NOT NULL,
-  object_kind  text NOT NULL,          -- role | member | database acl | schema acl | default privileges | hba rule | hba checksum
+  object_kind  text NOT NULL,          -- role | role setting | member | database acl | schema acl | default privileges | hba rule | hba checksum
   datname      text,                   -- NULL: a server-wide change
   object       text NOT NULL,
   change       text NOT NULL,          -- added | removed | changed | granted | revoked
   old_value    text,
   new_value    text
 );
+-- every membership through any depth, per instance, rebuilt by each import that reads the memberships: (member, role)
+-- for each role the member reaches by a chain of grants (an hba +group names its members through it)
+CREATE TABLE IF NOT EXISTS pgvigil.role_member_closure (
+  instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  member_name  text NOT NULL,
+  role_name    text NOT NULL,
+  depth        int NOT NULL,
+  PRIMARY KEY (instance_id, member_name, role_name)
+);
+CREATE INDEX IF NOT EXISTS role_members_member_idx ON pgvigil.role_members (instance_id, member_name) WHERE is_present;
 CREATE INDEX IF NOT EXISTS role_history_idx ON pgvigil.role_history (instance_id, changed_at);
 
 CREATE OR REPLACE FUNCTION pgvigil.role_flags(p_super boolean, p_inherit boolean, p_createrole boolean, p_createdb boolean,
@@ -185,13 +199,22 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
                              p_address || coalesce('/' || p_netmask, ''), p_auth_method, array_to_string(p_options, ' ')) END
 $$;
 
+-- whether a role name matches a pg_hba.conf regular expression (a user entry /^...); a pattern the repository cannot
+-- compile counts as a match (the rule is then not held against the role)
+CREATE OR REPLACE FUNCTION pgvigil.role_regex_match(p_name text, p_pattern text)
+RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  RETURN p_name ~ p_pattern;
+EXCEPTION WHEN invalid_regular_expression THEN
+  RETURN true;
+END $$;
+
 CREATE OR REPLACE FUNCTION pgvigil.import_roles(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_first     boolean;
   v_cluster   boolean;   -- the cluster-wide read happened (a login row)
-  v_aclnames  text[];    -- every database whose datacl was read
-  v_names     text[];    -- every connectable database
+  v_aclnames  text[];    -- every database in pg_database (allowconn, not a template): one not listed is gone
   v_dbs       text[];    -- the databases whose schema and default ACLs this read completed
   v_hba       jsonb;     -- this read's hba_state
   v_sum_prev  text;      -- the checksum of the last read that could read the hba rules (NULL: never)
@@ -203,8 +226,6 @@ BEGIN
   v_cluster := v_login IS NOT NULL;
   SELECT ARRAY(SELECT jsonb_array_elements_text(r->'names')) INTO v_aclnames
     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'dbacls' LIMIT 1;
-  SELECT ARRAY(SELECT jsonb_array_elements_text(r->'names')) INTO v_names
-    FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'databases' LIMIT 1;
   v_dbs := ARRAY(SELECT r->>'datname' FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db');
   SELECT r INTO v_hba FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'hba_state' LIMIT 1;
   SELECT hba_checksum INTO v_sum_prev FROM pgvigil.role_state WHERE instance_id = p_instance_id;
@@ -216,7 +237,7 @@ BEGIN
   IF NOT v_first THEN
     INSERT INTO pgvigil.role_history (instance_id, changed_at, object_kind, datname, object, change, old_value, new_value)
     SELECT p_instance_id, p_snapshot_at, coalesce(n.kind, o.kind), coalesce(n.datname, o.datname), coalesce(n.object, o.object),
-           CASE WHEN coalesce(n.kind, o.kind) IN ('role', 'hba rule')
+           CASE WHEN coalesce(n.kind, o.kind) IN ('role', 'role setting', 'hba rule')
                 THEN CASE WHEN o.object IS NULL THEN 'added' WHEN n.object IS NULL THEN 'removed' ELSE 'changed' END
                 ELSE CASE WHEN o.object IS NULL THEN 'granted' WHEN n.object IS NULL THEN 'revoked' ELSE 'changed' END END,
            o.value, n.value
@@ -227,6 +248,9 @@ BEGIN
                                   (r->>'canlogin')::boolean, (r->>'replication')::boolean, (r->>'bypassrls')::boolean,
                                   (r->>'connlimit')::int, (r->>'valid_until')::timestamptz) AS value
           FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'role'
+        UNION ALL
+        SELECT 'role setting', NULL, r->>'name', array_to_string(pgvigil.role_text_array(r->'config'), '; ')
+          FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'role' AND jsonb_array_length(coalesce(nullif(r->'config', 'null'), '[]')) > 0
         UNION ALL
         SELECT 'member', NULL, (r->>'role') || ' <- ' || (r->>'member') || coalesce(' (by ' || nullif(r->>'grantor', '') || ')', ''),
                concat_ws(',', CASE WHEN (r->>'admin_option')::boolean THEN 'admin' END,
@@ -263,6 +287,9 @@ BEGIN
                pgvigil.role_flags(a.super, a.inherit, a.createrole, a.createdb, a.canlogin, a.replication, a.bypassrls, a.connlimit, a.valid_until) AS value
           FROM pgvigil.role_attributes a WHERE a.instance_id = p_instance_id AND a.is_present AND v_cluster
         UNION ALL
+        SELECT 'role setting', NULL, a.rolname, array_to_string(a.config, '; ')
+          FROM pgvigil.role_attributes a WHERE a.instance_id = p_instance_id AND a.is_present AND v_cluster AND cardinality(a.config) > 0
+        UNION ALL
         SELECT 'member', NULL, m.role_name || ' <- ' || m.member_name || coalesce(' (by ' || nullif(m.grantor_name, '') || ')', ''),
                concat_ws(',', CASE WHEN m.admin_option THEN 'admin' END, CASE WHEN m.inherit_option IS FALSE THEN 'noinherit' END,
                          CASE WHEN m.set_option IS FALSE THEN 'noset' END)
@@ -296,10 +323,11 @@ BEGIN
 
   -- ---- the state row ----------------------------------------------------------------------------------------
   INSERT INTO pgvigil.role_state AS s (instance_id, snapshot_at, login_name, login_is_super, login_has_pg_monitor,
-                                       hba_status, hba_note, hba_checksum, hba_rules, hba_read_at)
+                                       hba_status, hba_note, hba_checksum, hba_rules, hba_read_at, unreadable_dbs)
   VALUES (p_instance_id, p_snapshot_at, v_login->>'name', (v_login->>'is_super')::boolean, (v_login->>'has_pg_monitor')::boolean,
           v_hba->>'status', nullif(v_hba->>'note', ''), v_hba->>'checksum', (v_hba->>'rules')::int,
-          CASE WHEN v_hba->>'status' = 'read' THEN p_snapshot_at END)
+          CASE WHEN v_hba->>'status' = 'read' THEN p_snapshot_at END,
+          (SELECT pgvigil.role_text_array(r->'names') FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'noconnect' LIMIT 1))
   ON CONFLICT (instance_id) DO UPDATE SET
     snapshot_at = EXCLUDED.snapshot_at,
     login_name = coalesce(EXCLUDED.login_name, s.login_name),
@@ -310,7 +338,8 @@ BEGIN
     -- a skipped read keeps the last checksum, its rule count and when it was read
     hba_checksum = CASE WHEN EXCLUDED.hba_status = 'read' THEN EXCLUDED.hba_checksum ELSE s.hba_checksum END,
     hba_rules = CASE WHEN EXCLUDED.hba_status = 'read' THEN EXCLUDED.hba_rules ELSE s.hba_rules END,
-    hba_read_at = CASE WHEN EXCLUDED.hba_status = 'read' THEN EXCLUDED.hba_read_at ELSE s.hba_read_at END;
+    hba_read_at = CASE WHEN EXCLUDED.hba_status = 'read' THEN EXCLUDED.hba_read_at ELSE s.hba_read_at END,
+    unreadable_dbs = EXCLUDED.unreadable_dbs;
 
   -- ---- roles and memberships (cluster-wide) ------------------------------------------------------------------
   IF v_cluster THEN
@@ -343,6 +372,17 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
                         WHERE r->>'kind' = 'member' AND r->>'role' = m.role_name AND r->>'member' = m.member_name
                           AND coalesce(r->>'grantor', '') = m.grantor_name);
+
+    DELETE FROM pgvigil.role_member_closure WHERE instance_id = p_instance_id;
+    INSERT INTO pgvigil.role_member_closure (instance_id, member_name, role_name, depth)
+    WITH RECURSIVE c(member_name, role_name, depth) AS (
+      SELECT member_name, role_name, 1 FROM pgvigil.role_members WHERE instance_id = p_instance_id AND is_present
+      UNION
+      SELECT c.member_name, m.role_name, c.depth + 1
+        FROM c JOIN pgvigil.role_members m ON m.instance_id = p_instance_id AND m.member_name = c.role_name AND m.is_present
+       WHERE c.depth < 20
+    )
+    SELECT p_instance_id, member_name, role_name, min(depth) FROM c GROUP BY member_name, role_name;
   END IF;
 
   -- ---- database ACLs (one shared catalog, every database at once) --------------------------------------------
@@ -374,7 +414,7 @@ BEGIN
            AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
                             WHERE r->>'kind' = 'schemaacl' AND r->>'datname' = s.datname AND r->>'schema_name' = s.schema_name
                               AND r->>'grantee' = s.grantee AND r->>'grantor' = s.grantor))
-          OR s.datname <> ALL (coalesce(v_names, ARRAY[s.datname])));
+          OR s.datname <> ALL (coalesce(v_aclnames, ARRAY[s.datname])));
 
   INSERT INTO pgvigil.acl_default_privileges AS p (instance_id, datname, owner, schema_name, objtype, grantee, grantor, snapshot_at,
                                                    privileges, grantable, is_present)
@@ -390,15 +430,15 @@ BEGIN
                             WHERE r->>'kind' = 'defacl' AND r->>'datname' = p.datname AND r->>'owner' = p.owner
                               AND coalesce(r->>'schema_name', '') = p.schema_name AND r->>'objtype' = p.objtype
                               AND r->>'grantee' = p.grantee AND r->>'grantor' = p.grantor))
-          OR p.datname <> ALL (coalesce(v_names, ARRAY[p.datname])));
+          OR p.datname <> ALL (coalesce(v_aclnames, ARRAY[p.datname])));
 
   INSERT INTO pgvigil.role_databases AS d (instance_id, datname, dbid, read_at, is_present)
   SELECT p_instance_id, r->>'datname', (r->>'dbid')::bigint, p_snapshot_at, true
     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db'
   ON CONFLICT (instance_id, datname) DO UPDATE SET dbid = EXCLUDED.dbid, read_at = EXCLUDED.read_at, is_present = true;
-  IF v_names IS NOT NULL THEN
+  IF v_aclnames IS NOT NULL THEN   -- a database dropped (gone from pg_database); one only unreadable keeps its rows
     UPDATE pgvigil.role_databases d SET is_present = false
-     WHERE d.instance_id = p_instance_id AND d.is_present AND d.datname <> ALL (v_names);
+     WHERE d.instance_id = p_instance_id AND d.is_present AND d.datname <> ALL (v_aclnames);
   END IF;
 
   -- ---- the hba rules: a read replaces them, a skip keeps the last ones -----------------------------------------
@@ -423,17 +463,6 @@ BEGIN
   END IF;
 END $$;
 
--- every membership through any depth: (member, role) for each role the member reaches by a chain of grants
-CREATE OR REPLACE VIEW pgvigil.role_members_closure AS
-WITH RECURSIVE c(instance_id, member_name, role_name, depth) AS (
-  SELECT instance_id, member_name, role_name, 1 FROM pgvigil.role_members WHERE is_present
-  UNION
-  SELECT c.instance_id, c.member_name, m.role_name, c.depth + 1
-    FROM c JOIN pgvigil.role_members m ON m.instance_id = c.instance_id AND m.member_name = c.role_name AND m.is_present
-   WHERE c.depth < 20
-)
-SELECT instance_id, member_name, role_name, min(depth) AS depth FROM c GROUP BY instance_id, member_name, role_name;
-
 -- ---------------------------------------------------------------------------------------------------------
 -- the role rules, one row per finding in pgvigil.findings' columns: instance_id, severity, setting, value,
 -- is_set, suggested, platforms, detail, source, at. Only instances with a roles read take part.
@@ -454,26 +483,37 @@ WITH st AS (
   SELECT a.* FROM a
    WHERE NOT a.super AND NOT a.is_platform
      AND NOT EXISTS (SELECT 1 FROM admins x WHERE x.instance_id = a.instance_id AND x.rolname = a.rolname)
-), member_of AS ( -- every role each role is a member of, through any depth (an hba +group matches through it)
-  SELECT DISTINCT instance_id, member_name AS rolname, role_name AS group_name FROM pgvigil.role_members_closure
 ), dbs AS (
   SELECT instance_id, count(DISTINCT datname) AS n FROM pgvigil.acl_databases WHERE is_present GROUP BY instance_id
-), hba AS (      -- the hba rules of instances whose last read could read them, the replication-only ones left out
-  SELECT h.* FROM pgvigil.hba_rules h JOIN st USING (instance_id)
-   WHERE h.is_present AND h.error IS NULL AND st.hba_rules IS NOT NULL
+), hst AS (      -- the instances whose stored hba rules can be judged: read at least once, and no line in error (with a
+                 -- syntax error the server keeps the rules it loaded before, so the file shown is not the one in effect)
+  SELECT st.instance_id FROM st
+   WHERE st.hba_rules IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.hba_rules e WHERE e.instance_id = st.instance_id AND e.is_present AND e.error IS NOT NULL)
+), hu AS (       -- each user entry of each rule that admits a normal connection (replication-only rules left out)
+  SELECT h.instance_id, h.auth_method, u
+    FROM pgvigil.hba_rules h JOIN hst USING (instance_id) CROSS JOIN LATERAL unnest(h.users) u
+   WHERE h.is_present AND h.error IS NULL
      AND EXISTS (SELECT 1 FROM unnest(h.databases) d WHERE d <> 'replication')
-), way AS (      -- per login role: the auth methods of the hba rules that name it (all, itself, a +group it is in, an @file)
-  SELECT a.instance_id, a.rolname, a.valid_until, a.snapshot_at,
-         array_agg(DISTINCT h.auth_method) FILTER (WHERE h.auth_method IS NOT NULL AND h.auth_method <> 'reject') AS methods
-    FROM a
-    JOIN st USING (instance_id)
-    LEFT JOIN hba h ON h.instance_id = a.instance_id
-     AND EXISTS (SELECT 1 FROM unnest(h.users) u
-                  WHERE u = 'all' OR u = a.rolname OR u LIKE '@%'
-                     OR (u LIKE '+%' AND (substr(u, 2) = a.rolname
-                         OR EXISTS (SELECT 1 FROM member_of g WHERE g.instance_id = a.instance_id AND g.rolname = a.rolname AND g.group_name = substr(u, 2)))))
-   WHERE a.canlogin AND st.hba_rules IS NOT NULL
-   GROUP BY a.instance_id, a.rolname, a.valid_until, a.snapshot_at
+), lg AS (
+  SELECT a.instance_id, a.rolname, a.valid_until, a.snapshot_at FROM a JOIN hst USING (instance_id) WHERE a.canlogin
+), hit AS (      -- (login role, method) for every entry that names it: all or an @file, itself or +itself, a +group it
+                 -- is a member of at any depth, a /regex that matches it
+  SELECT lg.instance_id, lg.rolname, hu.auth_method FROM lg JOIN hu ON hu.instance_id = lg.instance_id AND (hu.u = 'all' OR hu.u LIKE '@%')
+  UNION
+  SELECT lg.instance_id, lg.rolname, hu.auth_method FROM lg JOIN hu ON hu.instance_id = lg.instance_id AND hu.u IN (lg.rolname, '+' || lg.rolname)
+  UNION
+  SELECT lg.instance_id, lg.rolname, hu.auth_method
+    FROM lg JOIN pgvigil.role_member_closure c ON c.instance_id = lg.instance_id AND c.member_name = lg.rolname
+    JOIN hu ON hu.instance_id = lg.instance_id AND hu.u = '+' || c.role_name
+  UNION
+  SELECT lg.instance_id, lg.rolname, hu.auth_method
+    FROM lg JOIN hu ON hu.instance_id = lg.instance_id AND hu.u LIKE '/%' AND pgvigil.role_regex_match(lg.rolname, substr(hu.u, 2))
+), way AS (      -- per login role: the auth methods that let it in (reject aside)
+  SELECT lg.instance_id, lg.rolname, lg.valid_until, lg.snapshot_at,
+         array_agg(DISTINCT hit.auth_method) FILTER (WHERE hit.auth_method IS NOT NULL AND hit.auth_method <> 'reject') AS methods
+    FROM lg LEFT JOIN hit ON hit.instance_id = lg.instance_id AND hit.rolname = lg.rolname
+   GROUP BY lg.instance_id, lg.rolname, lg.valid_until, lg.snapshot_at
 )
 -- a superuser beyond the server's bootstrap role and the platform's own
 SELECT a.instance_id, 'warning' AS severity, 'superuser' AS setting, a.rolname AS value, true AS is_set,
@@ -517,7 +557,8 @@ SELECT g.instance_id, 'info', 'granted on every database', g.grantee, true,
 UNION ALL
 -- a login role with no way in: no hba rule names it (reject aside), or only password rules do and its password has
 -- expired (VALID UNTIL). Whether a role has a password at all is not visible: pg_roles masks it and pg_authid is
--- never read; the rule needs the hba rules read (a superuser login, or SELECT granted on pg_hba_file_rules).
+-- never read; the rule needs the hba rules read (a superuser login, or SELECT granted on pg_hba_file_rules) and none
+-- of them in error.
 SELECT w.instance_id, 'info', 'login without a way in', w.rolname, true,
        'ALTER ROLE ' || quote_ident(w.rolname) || ' NOLOGIN if it is unused, or a pg_hba.conf line for it', 'all',
        CASE WHEN w.methods IS NULL

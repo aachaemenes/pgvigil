@@ -92,7 +92,7 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
       grid(only(schemaacl), [
         { key: 'datname', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'owner' }, { key: 'grantee' },
         { key: 'privileges', fmt: privs }, { key: 'grantor' }, { key: 'is_default', label: '', fmt: dflt },
-      ], 'No schema ACL read for this database (it could not be read, or it is past the databases cap).'),
+      ], 'No schema ACL read for this database (the login may not connect to it, the connection failed, or it is past the databases cap).'),
       el('h4', {}, 'Default privileges (ALTER DEFAULT PRIVILEGES)'),
       grid(only(defacl), [
         { key: 'datname', label: 'database' }, { key: 'owner', label: 'for objects of' },
@@ -102,7 +102,11 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
   };
   pick.addEventListener('change', draw);
   draw();
-  sec.append(el('h3', {}, 'Privileges per database'), el('label', {}, 'Database ', pick), acl);
+  sec.append(el('h3', {}, 'Privileges per database'), el('label', {}, 'Database ', pick));
+  if (st.unreadable_dbs) {
+    sec.append(el('p', { class: 'meta' }, `The monitoring login may not connect to ${String(st.unreadable_dbs)}: their schema ACLs and default privileges are from the last read that could (none, if it never could).`));
+  }
+  sec.append(acl);
 
   sec.append(el('h3', {}, 'pg_hba.conf rules'));
   if (st.hba_status !== 'read') {
