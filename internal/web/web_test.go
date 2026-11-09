@@ -30,6 +30,7 @@ func TestRoutesWithoutDatabase(t *testing.T) {
 		{"/api/statements?instance=1&limit=9999", 400, "limit must be"},
 		{"/api/counters?instance=1&kind=disk", 400, "kind must be"},
 		{"/api/dms?instance=zero", 400, "instance must be"},
+		{"/api/dms?task=arn:x&task_instance=-1", 400, "task_instance must be"},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()

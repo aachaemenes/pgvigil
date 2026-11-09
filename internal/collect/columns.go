@@ -45,5 +45,5 @@ func col(cols map[string]bool, alias, name, typ string) string {
 func maskSQL(expr string) string {
 	return `regexp_replace(regexp_replace(` + expr +
 		`, '((PASSWORD|IDENTIFIED\s+BY)\s+)(''(?:[^'']|'''')*''|E''(?:[^'']|'''')*''|\$[0-9]+)', '\1''<masked>''', 'gi')` +
-		`, '(password|passfile|sslkey|sslpassword)=\S+', '\1=<masked>', 'gi')`
+		`, '(password|passfile|sslkey|sslpassword|pwd)=\S+', '\1=<masked>', 'gi')`
 }

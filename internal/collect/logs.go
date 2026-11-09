@@ -223,7 +223,7 @@ func logRows(evs []cwEvent, source string, from time.Time, loc *time.Location, f
 
 var (
 	maskPasswordRE = regexp.MustCompile(`(?i)((PASSWORD|IDENTIFIED\s+BY)\s+)('(?:[^']|'')*'|E'(?:[^']|'')*'|\$[0-9]+)`)
-	maskConnRE     = regexp.MustCompile(`(?i)(password|passfile|sslkey|sslpassword)=\S+`)
+	maskConnRE     = regexp.MustCompile(`(?i)(password|passfile|sslkey|sslpassword|pwd)=\S+`)
 )
 
 // maskText applies maskSQL's two rules to text read from a log, then the statements text cap.

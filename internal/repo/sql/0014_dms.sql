@@ -4,7 +4,7 @@
 -- An object that left the API keeps its last row with is_present = false (the jobs pattern).
 
 CREATE TABLE IF NOT EXISTS pgvigil.dms_instances (
-  instance_id         int NOT NULL,
+  instance_id         int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   ri_arn              text NOT NULL,
   ri_id               text NOT NULL,          -- the replication instance identifier
   snapshot_at         timestamptz NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.dms_instances (
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.dms_tasks (
-  instance_id         int NOT NULL,
+  instance_id         int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   task_arn            text NOT NULL,
   task_id             text NOT NULL,          -- the user-assigned task identifier
   snapshot_at         timestamptz NOT NULL,
@@ -59,13 +59,14 @@ CREATE TABLE IF NOT EXISTS pgvigil.dms_tasks (
   incoming_changes    double precision,       -- CDCIncomingChanges
   latency_at          timestamptz,
   latency_warn_secs   int NOT NULL DEFAULT 300,
+  tables_partial      boolean NOT NULL DEFAULT false,   -- the table statistics were cut at the collector's cap this run
   first_seen          timestamptz NOT NULL,
   is_present          boolean NOT NULL DEFAULT true,
   PRIMARY KEY (instance_id, task_arn)
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.dms_task_sample (
-  instance_id         int NOT NULL,
+  instance_id         int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   snapshot_at         timestamptz NOT NULL,
   task_arn            text NOT NULL,
   status              text,
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.dms_task_sample (
 ) PARTITION BY RANGE (snapshot_at);
 
 CREATE TABLE IF NOT EXISTS pgvigil.dms_table_stats (
-  instance_id                 int NOT NULL,
+  instance_id                 int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   task_arn                    text NOT NULL,
   schema_name                 text NOT NULL,
   table_name                  text NOT NULL,
@@ -139,7 +140,7 @@ BEGIN
                                       elapsed_ms, created, started, fresh_start, start_date, stop_date, full_load_start,
                                       full_load_finish, cdc_start_position, recovery_checkpoint, source_endpoint_arn,
                                       target_endpoint_arn, latency_source_s, latency_target_s, incoming_changes, latency_at,
-                                      latency_warn_secs, first_seen, is_present)
+                                      latency_warn_secs, tables_partial, first_seen, is_present)
   SELECT p_instance_id, r->>'task_arn', r->>'task_id', p_snapshot_at, r->>'ri_arn', r->>'migration_type', r->>'status',
          r->>'stop_reason', r->>'last_failure', (r->>'progress_pct')::int, (r->>'tables_loaded')::int,
          (r->>'tables_loading')::int, (r->>'tables_queued')::int, (r->>'tables_errored')::int, (r->>'elapsed_ms')::bigint,
@@ -148,7 +149,7 @@ BEGIN
          (r->>'full_load_finish')::timestamptz, r->>'cdc_start_position', r->>'recovery_checkpoint',
          r->>'source_endpoint_arn', r->>'target_endpoint_arn', (r->>'latency_source_s')::float8,
          (r->>'latency_target_s')::float8, (r->>'incoming_changes')::float8, (r->>'latency_at')::timestamptz,
-         coalesce((r->>'latency_warn_secs')::int, 300), p_snapshot_at, true
+         coalesce((r->>'latency_warn_secs')::int, 300), coalesce((r->>'tables_partial')::boolean, false), p_snapshot_at, true
     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'task'
   ON CONFLICT (instance_id, task_arn) DO UPDATE SET
     task_id = EXCLUDED.task_id, snapshot_at = EXCLUDED.snapshot_at, ri_arn = EXCLUDED.ri_arn,
@@ -162,7 +163,7 @@ BEGIN
     source_endpoint_arn = EXCLUDED.source_endpoint_arn, target_endpoint_arn = EXCLUDED.target_endpoint_arn,
     latency_source_s = EXCLUDED.latency_source_s, latency_target_s = EXCLUDED.latency_target_s,
     incoming_changes = EXCLUDED.incoming_changes, latency_at = EXCLUDED.latency_at,
-    latency_warn_secs = EXCLUDED.latency_warn_secs, is_present = true;
+    latency_warn_secs = EXCLUDED.latency_warn_secs, tables_partial = EXCLUDED.tables_partial, is_present = true;
 
   UPDATE pgvigil.dms_tasks t SET is_present = false
    WHERE t.instance_id = p_instance_id AND t.is_present
@@ -203,18 +204,22 @@ BEGIN
     validation_failed = EXCLUDED.validation_failed, validation_suspended = EXCLUDED.validation_suspended,
     validation_detail = EXCLUDED.validation_detail, is_present = true;
 
-  -- a table that left a task described in this run (the mapping changed)
+  -- a table that left a task described in this run (the mapping changed); a task whose statistics were cut
+  -- at the collector's cap keeps every row (the unread tail is not absent, only unread)
   UPDATE pgvigil.dms_table_stats s SET is_present = false
    WHERE s.instance_id = p_instance_id AND s.is_present
-     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'task' AND r->>'task_arn' = s.task_arn)
+     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
+                  WHERE r->>'kind' = 'task' AND r->>'task_arn' = s.task_arn AND NOT coalesce((r->>'tables_partial')::boolean, false))
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
                       WHERE r->>'kind' = 'table' AND r->>'task_arn' = s.task_arn
                         AND r->>'schema_name' = s.schema_name AND r->>'table_name' = s.table_name);
 END $$;
 
 -- The daily checks on DMS, one row per finding: instance_id, severity, check_name, object, at, detail.
--- A stopped full-load task is its normal end; a stopped CDC task is not. A stop reason naming a fatal error,
--- memory, disk or a licence is critical whatever the status.
+-- A full-load task that stopped with FULL_LOAD_ONLY_FINISHED at 100 % reached its normal end; any other stop
+-- (a CDC task stopped, a full-load task stopped early or for another reason) is a warning. A stop reason
+-- naming a fatal error, memory, disk or a licence is critical whatever the status. The CDC latency check
+-- waits for the full load of a full-load-and-cdc task to finish (cached changes apply after it by design).
 CREATE OR REPLACE VIEW pgvigil.dms_checks AS
 WITH t AS (SELECT * FROM pgvigil.dms_tasks WHERE is_present),
      v AS (SELECT instance_id, task_arn,
@@ -229,9 +234,10 @@ SELECT t.instance_id, 'critical' AS severity, 'DMS task failed' AS check_name, t
     OR (t.status = 'stopped' AND t.stop_reason ~* 'FATAL|LOW_MEMORY|LOW_DISK|LICENSE')
 UNION ALL
 SELECT t.instance_id, 'warning', 'DMS task stopped', t.task_id, coalesce(t.stop_date, t.snapshot_at),
-       coalesce(t.stop_reason, 'no stop reason') || ' (' || coalesce(t.migration_type, '?') || ')'
+       coalesce(t.stop_reason, 'no stop reason') || ' (' || coalesce(t.migration_type, '?') || ', full load ' || coalesce(t.progress_pct::text, '?') || ' %)'
   FROM t
- WHERE t.status = 'stopped' AND coalesce(t.migration_type, '') <> 'full-load'
+ WHERE t.status = 'stopped'
+   AND NOT (coalesce(t.migration_type, '') = 'full-load' AND coalesce(t.stop_reason, '') ~* 'FULL_LOAD_ONLY_FINISHED' AND coalesce(t.progress_pct, 100) = 100)
    AND NOT coalesce(t.stop_reason ~* 'FATAL|LOW_MEMORY|LOW_DISK|LICENSE', false)
 UNION ALL
 SELECT t.instance_id, 'warning', 'DMS CDC latency', t.task_id, coalesce(t.latency_at, t.snapshot_at),
@@ -239,6 +245,7 @@ SELECT t.instance_id, 'warning', 'DMS CDC latency', t.task_id, coalesce(t.latenc
        || ' s (threshold ' || t.latency_warn_secs::text || ' s)'
   FROM t
  WHERE t.status = 'running' AND greatest(coalesce(t.latency_source_s, 0), coalesce(t.latency_target_s, 0)) > t.latency_warn_secs
+   AND (coalesce(t.migration_type, '') <> 'full-load-and-cdc' OR t.full_load_finish IS NOT NULL)
 UNION ALL
 SELECT t.instance_id, 'warning', 'DMS tables in error', t.task_id, t.snapshot_at,
        coalesce(v.err_tables, 0)::text || ' table(s) in error, ' || coalesce(t.tables_errored, 0)::text

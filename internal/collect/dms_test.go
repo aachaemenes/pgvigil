@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,10 +26,12 @@ import (
 // which unmarshals into the SDK output types by field name): tasks.json, instances.json,
 // tables-<task resource id>.json, and metrics.json as [{metric, dims{name: value}, value, at}].
 type recordedDMS struct {
-	dir     string
-	t       *testing.T
-	metrics []recordedMetric
-	calls   map[string]int
+	dir      string
+	t        *testing.T
+	metrics  []recordedMetric
+	calls    map[string]int
+	tables   []dmstypes.TableStatistics // when set, DescribeTableStatistics serves these instead of the file
+	pageSize int                        // with tables: rows per page (Marker = the offset)
 }
 
 type recordedMetric struct {
@@ -91,6 +94,19 @@ func (r *recordedDMS) DescribeReplicationTasks(_ context.Context, in *dms.Descri
 }
 
 func (r *recordedDMS) DescribeTableStatistics(_ context.Context, in *dms.DescribeTableStatisticsInput, _ ...func(*dms.Options)) (*dms.DescribeTableStatisticsOutput, error) {
+	if r.tables != nil {
+		r.calls["tables-paged"]++
+		off := 0
+		if m := aws.ToString(in.Marker); m != "" {
+			off, _ = strconv.Atoi(m)
+		}
+		end := min(off+r.pageSize, len(r.tables))
+		out := &dms.DescribeTableStatisticsOutput{TableStatistics: r.tables[off:end]}
+		if end < len(r.tables) {
+			out.Marker = aws.String(strconv.Itoa(end))
+		}
+		return out, nil
+	}
 	var out dms.DescribeTableStatisticsOutput
 	if err := r.load("tables-"+dmsResourceID(aws.ToString(in.ReplicationTaskArn))+".json", &out); err != nil {
 		return nil, err
@@ -199,6 +215,41 @@ func TestDmsRowsUnknownTaskIsEmpty(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Errorf("%d rows for a task the API does not know, want 0 (ResourceNotFoundFault = empty)", len(rows))
+	}
+}
+
+// A task with more tables than the cap is read in part: the rows read land, the task row says partial,
+// a collector_error row names it, and (import side) the unread tail is never marked absent.
+func TestDmsTableCutIsSaidNotHidden(t *testing.T) {
+	api := newRecordedDMS(t)
+	for i := 0; i < 5; i++ {
+		api.tables = append(api.tables, dmstypes.TableStatistics{SchemaName: aws.String("s"), TableName: aws.String("t" + strconv.Itoa(i)), FullLoadRows: int64(i)})
+	}
+	api.pageSize = 2
+	old := dmsMaxTables
+	dmsMaxTables = 3
+	defer func() { dmsMaxTables = old }()
+	rows, err := dmsRows(context.Background(), api, config.DMS{Tasks: []string{"dmslab-task"}}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := byKind(rows)
+	if len(k["table"]) != 3 {
+		t.Errorf("table rows %d, want 3 (the cap)", len(k["table"]))
+	}
+	if k["task"][0]["tables_partial"] != true {
+		t.Errorf("task row tables_partial = %v, want true", k["task"][0]["tables_partial"])
+	}
+	if len(k["collector_error"]) != 1 || !strings.Contains(k["collector_error"][0]["message"].(string), "cut at 3") {
+		t.Errorf("collector_error rows: %v", k["collector_error"])
+	}
+	if api.calls["tables-paged"] > 2 {
+		t.Errorf("%d pages read for a cap of 3 at 2 per page, want 2", api.calls["tables-paged"])
+	}
+	api.pageSize = 10
+	rows, _ = dmsRows(context.Background(), api, config.DMS{Tasks: []string{"dmslab-task"}}, time.Now())
+	if k := byKind(rows); len(k["table"]) != 3 || k["task"][0]["tables_partial"] != true {
+		t.Errorf("one page over the cap: %d table rows, partial %v", len(k["table"]), k["task"][0]["tables_partial"])
 	}
 }
 

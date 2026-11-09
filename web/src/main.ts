@@ -23,7 +23,7 @@ function parse(): { page: string; ctx: Ctx } {
   const i = Number(q.get('i')) || saved;
   return {
     page: pages[p] ? p : 'overview',
-    ctx: { instance: i, window: q.get('w') ?? '1h', kind: q.get('kind') ?? 'db', at: q.get('at') ?? undefined, task: q.get('task') ?? undefined },
+    ctx: { instance: i, window: q.get('w') ?? '1h', kind: q.get('kind') ?? 'db', at: q.get('at') ?? undefined, task: q.get('task') ?? undefined, taskInstance: Number(q.get('ti')) || undefined },
   };
 }
 

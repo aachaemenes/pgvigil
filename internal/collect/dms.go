@@ -31,10 +31,13 @@ func init() { Register(dmsCollector{}) }
 
 const (
 	dmsMetricWindow = 15 * time.Minute // CloudWatch is read this far back; the newest datapoint is kept
-	dmsMaxTables    = 10000            // table statistics rows read per task
 	dmsMetricBatch  = 100              // GetMetricData queries per call (the API takes up to 500)
 	dmsTextMax      = 2000             // a failure message or a validation detail is cut here
 )
+
+// dmsMaxTables caps the table statistics rows read per task and run; a task over it is read in part,
+// its row says so (tables_partial) and a collector_error row names it (a var: tests lower it).
+var dmsMaxTables = 10000
 
 func (dmsCollector) Name() string                         { return "dms" }
 func (dmsCollector) DefaultInterval() time.Duration       { return time.Minute }
@@ -137,24 +140,34 @@ func dmsRows(ctx context.Context, api dmsAPI, cfg config.DMS, now time.Time) ([]
 	}
 
 	var rows []Row
+	partial := map[string]bool{}
+	var errRows []Row
 	for _, t := range tasks {
 		arn := aws.ToString(t.ReplicationTaskArn)
-		stats, err := dmsDescribeTables(ctx, api, arn)
+		stats, cut, err := dmsDescribeTables(ctx, api, arn)
 		if err != nil {
 			return nil, err
 		}
 		for _, s := range stats {
 			rows = append(rows, dmsTableRow(arn, s))
 		}
+		if cut {
+			partial[arn] = true
+			errRows = append(errRows, Row{"kind": "collector_error", "source": "dms:" + aws.ToString(t.ReplicationTaskIdentifier),
+				"message": fmt.Sprintf("table statistics cut at %d rows: the rest are not read (dmsMaxTables)", len(stats))})
+		}
 	}
 
 	metrics, merr := dmsMetrics(ctx, api, tasks, riByArn, now)
 	for _, t := range tasks {
-		rows = append(rows, dmsTaskRow(t, metrics, cfg.LatencyWarn()))
+		row := dmsTaskRow(t, metrics, cfg.LatencyWarn())
+		row["tables_partial"] = partial[aws.ToString(t.ReplicationTaskArn)]
+		rows = append(rows, row)
 	}
 	for _, r := range ris {
 		rows = append(rows, dmsInstanceRow(r, metrics))
 	}
+	rows = append(rows, errRows...)
 	if merr != nil {
 		rows = append(rows, Row{"kind": "collector_error", "source": "cloudwatch:AWS/DMS", "message": merr.Error()})
 	}
@@ -247,20 +260,26 @@ func dmsDescribeInstances(ctx context.Context, api dmsAPI, arns map[string]bool)
 	return out, nil
 }
 
-func dmsDescribeTables(ctx context.Context, api dmsAPI, taskArn string) ([]dmstypes.TableStatistics, error) {
-	var out []dmstypes.TableStatistics
+// dmsDescribeTables reads a task's table statistics up to dmsMaxTables rows; cut says the task has more.
+func dmsDescribeTables(ctx context.Context, api dmsAPI, taskArn string) (out []dmstypes.TableStatistics, cut bool, err error) {
 	p := dms.NewDescribeTableStatisticsPaginator(api, &dms.DescribeTableStatisticsInput{ReplicationTaskArn: aws.String(taskArn)})
-	for p.HasMorePages() && len(out) < dmsMaxTables {
+	for p.HasMorePages() {
+		if len(out) >= dmsMaxTables {
+			return out, true, nil
+		}
 		page, err := p.NextPage(ctx)
 		if err != nil {
 			if dmsNotFound(err) {
 				break // a task that never started has no statistics yet
 			}
-			return nil, fmt.Errorf("DescribeTableStatistics %s: %w", taskArn, err)
+			return nil, false, fmt.Errorf("DescribeTableStatistics %s: %w", taskArn, err)
 		}
 		out = append(out, page.TableStatistics...)
+		if len(out) > dmsMaxTables {
+			return out[:dmsMaxTables], true, nil
+		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
 // dmsMetric is one CloudWatch datapoint keyed by metric name and dimension values.

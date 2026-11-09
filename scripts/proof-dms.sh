@@ -9,6 +9,7 @@
 #   PGVIGIL_REPO_DSN   repository;  AWS_PROFILE default dba-lab;  CLUSTER default dba-lab-pg;  TASK default dmslab-task
 # Expected (live): one dms_tasks row for the task with status running or stopped, its replication instance row,
 # a dbo.orders table row with full_load_rows >= 1000, the CDC latency whenever CloudWatch holds a datapoint for the task, one sample per collect,
+# (the seeded alert-rule states and the recorded-response fill run first, on the sandbox, every time)
 # the second collect adding no task row; overview check rows only when the task is not running clean.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -30,15 +31,18 @@ seed "[{\"kind\":\"ri\",\"ri_arn\":\"$RI\",\"ri_id\":\"proof-ri\",\"status\":\"a
  {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:FAILED\",\"task_id\":\"t-failed\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load-and-cdc\",\"status\":\"failed\",\"last_failure\":\"Last Error  Task error notification received from subtask 0, thread 0 [reason: cannot connect]\",\"latency_warn_secs\":300},
  {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:STOPPEDCDC\",\"task_id\":\"t-stopped-cdc\",\"ri_arn\":\"$RI\",\"migration_type\":\"cdc\",\"status\":\"stopped\",\"stop_reason\":\"Stop Reason NORMAL\",\"latency_warn_secs\":300},
  {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:DONEFL\",\"task_id\":\"t-done-full-load\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load\",\"status\":\"stopped\",\"stop_reason\":\"Stop Reason FULL_LOAD_ONLY_FINISHED\",\"progress_pct\":100,\"latency_warn_secs\":300},
- {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:LAGGING\",\"task_id\":\"t-lagging\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load-and-cdc\",\"status\":\"running\",\"latency_source_s\":12,\"latency_target_s\":400,\"latency_at\":\"2026-11-09T12:00:00Z\",\"latency_warn_secs\":300},
+ {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:LAGGING\",\"task_id\":\"t-lagging\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load-and-cdc\",\"status\":\"running\",\"progress_pct\":100,\"full_load_finish\":\"2026-11-09T11:00:00Z\",\"latency_source_s\":12,\"latency_target_s\":400,\"latency_at\":\"2026-11-09T12:00:00Z\",\"latency_warn_secs\":300},
  {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:LOWDISK\",\"task_id\":\"t-lowdisk\",\"ri_arn\":\"$RI\",\"migration_type\":\"cdc\",\"status\":\"stopped\",\"stop_reason\":\"Stop Reason STOPPED_DUE_TO_LOW_DISK\",\"latency_warn_secs\":300},
+ {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:FLRECOV\",\"task_id\":\"t-fl-recoverable\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load\",\"status\":\"stopped\",\"stop_reason\":\"Stop Reason RECOVERABLE_ERROR\",\"progress_pct\":40,\"latency_warn_secs\":300},
+ {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:FLEARLY\",\"task_id\":\"t-fl-early\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load\",\"status\":\"stopped\",\"stop_reason\":\"Stop Reason NORMAL\",\"progress_pct\":12,\"latency_warn_secs\":300},
+ {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:LOADING\",\"task_id\":\"t-loading\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load-and-cdc\",\"status\":\"running\",\"progress_pct\":35,\"latency_source_s\":1,\"latency_target_s\":500,\"latency_warn_secs\":300},
  {\"kind\":\"task\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:HEALTHY\",\"task_id\":\"t-healthy\",\"ri_arn\":\"$RI\",\"migration_type\":\"full-load-and-cdc\",\"status\":\"running\",\"latency_source_s\":2,\"latency_target_s\":1,\"tables_errored\":0,\"latency_warn_secs\":300},
  {\"kind\":\"table\",\"task_arn\":\"arn:aws:dms:us-east-2:123456789012:task:HEALTHY\",\"schema_name\":\"public\",\"table_name\":\"bad\",\"table_state\":\"Table error\",\"full_load_rows\":10,\"full_load_error_rows\":3,\"validation_failed\":2,\"validation_state\":\"Mismatched records\"}]"
 GOT=$(q "select check_name || '|' || severity || '|' || object from pgvigil.dms_checks where instance_id=$SID" | sort)
-WANT=$(printf '%s\n' 'DMS CDC latency|warning|t-lagging' 'DMS instance storage low|critical|proof-ri' 'DMS validation failures|warning|t-healthy' 'DMS tables in error|warning|t-healthy' 'DMS task failed|critical|t-failed' 'DMS task failed|critical|t-lowdisk' 'DMS task stopped|warning|t-stopped-cdc' | sort)
+WANT=$(printf '%s\n' 'DMS CDC latency|warning|t-lagging' 'DMS instance storage low|critical|proof-ri' 'DMS validation failures|warning|t-healthy' 'DMS tables in error|warning|t-healthy' 'DMS task failed|critical|t-failed' 'DMS task failed|critical|t-lowdisk' 'DMS task stopped|warning|t-stopped-cdc' 'DMS task stopped|warning|t-fl-recoverable' 'DMS task stopped|warning|t-fl-early' | sort)
 if [[ "$GOT" != "$WANT" ]]; then echo "got:"; echo "$GOT"; echo "want:"; echo "$WANT"; q "delete from pgvigil.instances where instance_id=$SID" >/dev/null; fail "dms_checks rows differ"; fi
 q "delete from pgvigil.instances where instance_id=$SID" >/dev/null
-echo "alert rules: OK (7 findings, the finished full-load task and the healthy task's own state raise none)"
+echo "alert rules: OK (9 findings; the finished full-load task, the healthy task's own state and a loading full-load-and-cdc task's latency raise none)"
 
 [[ "${LIVE:-0}" == 1 ]] || { echo "proof-dms: OK (recorded only; LIVE=1 for the lab task)"; exit 0; }
 

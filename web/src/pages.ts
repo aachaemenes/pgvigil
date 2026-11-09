@@ -2,7 +2,7 @@ import { Activity, DMS, get, Row, rowsOf } from './api';
 import { lineChart } from './chart';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 
-export interface Ctx { instance?: number; window: string; kind: string; at?: string; task?: string }
+export interface Ctx { instance?: number; window: string; kind: string; at?: string; task?: string; taskInstance?: number }
 
 const windows: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800 };
 function range(w: string) {
@@ -192,12 +192,12 @@ const taskBadge = (v: unknown) => {
 };
 
 export async function dms(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<DMS>('dms', { task: ctx.task });
+  const d = await get<DMS>('dms', { task: ctx.task, task_instance: ctx.taskInstance });
   const tasks = rowsOf(d.tasks), ris = rowsOf(d.instances), tables = rowsOf(d.tables);
   const sec = el('section', {}, el('h2', {}, 'DMS replication tasks'));
   const taskCols: Col[] = [
     { key: 'instance', fmt: (v, r) => link(String(v), `#/activity?i=${r.instance_id}`) },
-    { key: 'task_id', label: 'task', fmt: (v, r) => link(String(v), `#/dms?task=${encodeURIComponent(String(r.task_arn))}`) },
+    { key: 'task_id', label: 'task', fmt: (v, r) => link(String(v), `#/dms?task=${encodeURIComponent(String(r.task_arn))}&ti=${r.instance_id}`) },
     { key: 'status', fmt: taskBadge },
     { key: 'migration_type', label: 'type' },
     { key: 'progress_pct', label: 'full load %', num: true },
@@ -215,7 +215,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
   ];
   sec.append(grid(tasks, taskCols, 'No DMS tasks: name them under an instance\'s aws.dms.tasks in the collector config.'));
   if (ctx.task) {
-    const t = tasks.find(r => r.task_arn === ctx.task);
+    const t = tasks.find(r => r.task_arn === ctx.task && (!ctx.taskInstance || Number(r.instance_id) === ctx.taskInstance));
     sec.append(el('h3', {}, `Tables of ${t ? String(t.task_id) : ctx.task}`), el('p', { class: 'meta' }, link('all tasks', '#/dms')));
     const tableCols: Col[] = [
       { key: 'schema_name', label: 'schema' },

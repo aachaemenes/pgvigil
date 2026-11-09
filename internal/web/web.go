@@ -339,6 +339,24 @@ func (s *Server) dms(w http.ResponseWriter, r *http.Request) {
 		}
 		id = &n
 	}
+	// the tables of one task row: task_instance names the instance the task rides on (two instance
+	// blocks naming one task are two rows), else the page's instance filter, else any
+	task := q.Get("task")
+	tid := id
+	if task != "" {
+		if len(task) > 512 {
+			writeErr(w, http.StatusBadRequest, errors.New("task must be a task ARN"))
+			return
+		}
+		if v := q.Get("task_instance"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				writeErr(w, http.StatusBadRequest, errors.New("task_instance must be a positive instance_id"))
+				return
+			}
+			tid = &n
+		}
+	}
 	ctx := r.Context()
 	out := struct {
 		Tasks     *table `json:"tasks"`
@@ -354,12 +372,8 @@ func (s *Server) dms(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	if task := q.Get("task"); task != "" {
-		if len(task) > 512 {
-			writeErr(w, http.StatusBadRequest, errors.New("task must be a task ARN"))
-			return
-		}
-		out.Tables, err = s.query(ctx, sqlDMSTables, id, task)
+	if task != "" {
+		out.Tables, err = s.query(ctx, sqlDMSTables, tid, task)
 	}
 	s.reply(w, r, out, err)
 }

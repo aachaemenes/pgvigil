@@ -85,6 +85,12 @@ func expectedIntervals(cfg *config.Config) web.Expected {
 	for _, in := range cfg.Instances {
 		m := map[string]int{}
 		for _, c := range collect.All() {
+			// a collection gated off by the instance's config (no aws: block) never writes a row:
+			// 0 keeps the stale check from flagging the row an earlier build left behind
+			if skip, _ := collect.Gated(c, in); skip {
+				m[c.Name()] = 0
+				continue
+			}
 			m[c.Name()] = int(cfg.Interval(in, c.Name(), c.DefaultInterval()) / time.Second)
 		}
 		e.Instances[in.Name] = m
