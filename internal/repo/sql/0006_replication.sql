@@ -24,7 +24,7 @@ BEGIN
            WHEN 'sender'         THEN coalesce(r->>'application_name', '') || '@' || coalesce(r->>'client_addr', '') || '#' || coalesce(r->>'pid', '')
            WHEN 'receiver'       THEN coalesce(r->>'slot_name', r->>'sender_host', 'receiver')
            WHEN 'slot'           THEN r->>'slot_name'
-           WHEN 'subscription'   THEN r->>'subname'
+           WHEN 'subscription'   THEN coalesce(r->>'datname', '') || ':' || coalesce(r->>'subname', '')
            WHEN 'publication'    THEN r->>'pubname'
            WHEN 'conflict'       THEN r->>'datname'
            WHEN 'aurora_replica' THEN r->>'server_id'
@@ -51,16 +51,24 @@ BEGIN
            WHEN 'subscription' THEN (r->>'enabled')::boolean
            ELSE NULL END,
          r
-    FROM jsonb_array_elements(p_payload) r;
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' <> 'collector_error';
+
+  -- a kind that could not be read this snapshot: visible in the collection log, the rest is stored
+  INSERT INTO pgvigil.collection_log (instance_id, collection, snapshot_at, duration_ms, status, note)
+  SELECT p_instance_id, 'replication', p_snapshot_at, NULL, 'partial', (r->>'source') || ': ' || (r->>'message')
+    FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'collector_error';
 END $$;
 
--- newest snapshot per instance, every kind
+-- newest snapshot per instance, every kind (bounded to the last day: a cadence gap longer than
+-- that means the instance is stale anyway, and the full scan over every partition is avoided)
 CREATE OR REPLACE VIEW pgvigil.replication_latest AS
   SELECT s.*
     FROM pgvigil.replication_sample s
     JOIN (SELECT instance_id, max(snapshot_at) AS snapshot_at
-            FROM pgvigil.replication_sample GROUP BY instance_id) l
-      ON l.instance_id = s.instance_id AND l.snapshot_at = s.snapshot_at;
+            FROM pgvigil.replication_sample WHERE snapshot_at > now() - interval '1 day' GROUP BY instance_id) l
+      ON l.instance_id = s.instance_id AND l.snapshot_at = s.snapshot_at
+   WHERE s.snapshot_at > now() - interval '1 day';
 
 -- the daily-check questions, one row each: inactive slots retaining WAL, lagging senders, lost slots
 CREATE OR REPLACE VIEW pgvigil.replication_checks AS
@@ -68,6 +76,7 @@ CREATE OR REPLACE VIEW pgvigil.replication_checks AS
          lag_bytes AS value, 'bytes' AS unit, detail->>'wal_status' AS state
     FROM pgvigil.replication_latest
    WHERE kind = 'slot' AND NOT coalesce(active, false) AND coalesce(lag_bytes, 0) > 0
+     AND NOT coalesce((detail->>'synced')::boolean, false)      -- a failover slot synced from the primary is always inactive on a PG17 standby
   UNION ALL
   SELECT instance_id, snapshot_at, 'slot WAL status not reserved', key, lag_bytes, 'bytes', detail->>'wal_status'
     FROM pgvigil.replication_latest

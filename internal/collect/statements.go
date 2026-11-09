@@ -123,10 +123,12 @@ SELECT 'stmt'                         AS kind,
 	if cols["toplevel"] {
 		var dealloc *int64
 		var statsReset *time.Time
-		err := conn.QueryRow(ctx, fmt.Sprintf(`SELECT dealloc, stats_reset FROM %s.pg_stat_statements_info`, quoteIdent(schema))).Scan(&dealloc, &statsReset)
-		if err == nil {
-			out = append(out, Row{"kind": "info", "dealloc": dealloc, "stats_reset": statsReset})
+		// a failure here is a failure of the collection: a cycle without the info row would make
+		// the repository treat every statement as reset on the next cycle
+		if err := conn.QueryRow(ctx, fmt.Sprintf(`SELECT dealloc, stats_reset FROM %s.pg_stat_statements_info`, quoteIdent(schema))).Scan(&dealloc, &statsReset); err != nil {
+			return nil, fmt.Errorf("pg_stat_statements_info: %w", err)
 		}
+		out = append(out, Row{"kind": "info", "dealloc": dealloc, "stats_reset": statsReset})
 	}
 	return out, nil
 }

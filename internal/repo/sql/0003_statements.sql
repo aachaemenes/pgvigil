@@ -139,7 +139,7 @@ BEGIN
     JOIN pgvigil.statements_current c
       ON c.instance_id = p_instance_id AND c.dbid = i.dbid AND c.userid = i.userid
      AND c.queryid = i.queryid AND c.toplevel = i.toplevel
-    CROSS JOIN LATERAL (SELECT (v_new_reset IS NOT NULL AND c.stats_reset IS DISTINCT FROM v_new_reset)
+    CROSS JOIN LATERAL (SELECT (v_new_reset IS NOT NULL AND c.stats_reset IS NOT NULL AND c.stats_reset <> v_new_reset)
                            OR i.calls < c.calls OR i.total_exec_ms < c.total_exec_ms OR i.rows < c.rows
                            OR i.shared_blks_hit < c.shared_blks_hit OR i.shared_blks_read < c.shared_blks_read
                            OR i.wal_bytes < c.wal_bytes AS rs) x
@@ -154,7 +154,7 @@ BEGIN
          blk_read_ms, blk_write_ms, temp_read_ms, temp_write_ms, wal_bytes
     FROM pgv_stmt_in
   ON CONFLICT (instance_id, dbid, userid, queryid, toplevel) DO UPDATE SET
-    snapshot_at = EXCLUDED.snapshot_at, stats_reset = EXCLUDED.stats_reset, calls = EXCLUDED.calls, total_exec_ms = EXCLUDED.total_exec_ms, rows = EXCLUDED.rows,
+    snapshot_at = EXCLUDED.snapshot_at, stats_reset = coalesce(EXCLUDED.stats_reset, c.stats_reset), calls = EXCLUDED.calls, total_exec_ms = EXCLUDED.total_exec_ms, rows = EXCLUDED.rows,
     shared_blks_hit = EXCLUDED.shared_blks_hit, shared_blks_read = EXCLUDED.shared_blks_read,
     shared_blks_dirtied = EXCLUDED.shared_blks_dirtied, shared_blks_written = EXCLUDED.shared_blks_written,
     temp_blks_read = EXCLUDED.temp_blks_read, temp_blks_written = EXCLUDED.temp_blks_written,

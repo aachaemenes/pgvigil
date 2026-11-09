@@ -31,7 +31,7 @@ instances:
     tags: [lab, aurora]
 EOF
 "$BIN" migrate -config "$CFG" >/dev/null
-for c in instance activity dbstats statements; do
+for c in instance activity dbstats statements replication databases; do
   "$BIN" collect -config "$CFG" -once "$c" || true      # a skip prints its reason, a failure exits 1 and is graded below
 done
 iid=$(q "select instance_id from pgvigil.instances where name='lab-aurora-writer'")
