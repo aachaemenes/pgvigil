@@ -158,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/tables", s.tables)
 	api.HandleFunc("GET /api/findings", s.findings)
 	api.HandleFunc("GET /api/slow", s.slow)
+	api.HandleFunc("GET /api/slowqueries", s.SlowQueries)
 	api.HandleFunc("GET /api/host", s.Host)
 	api.HandleFunc("GET /api/disks", s.Disks)
 	api.HandleFunc("GET /api/storage", s.Storage)

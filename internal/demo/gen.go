@@ -235,6 +235,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if g.Spec.Logs {
 		add("logs", g.logRows(t, prev))
 	}
+	if g.Spec.Platform == "onprem" && !g.Spec.Replica {
+		add("serverlog", g.serverlogRows(t, prev))
+	}
 	if g.Spec.DMS {
 		add("dms", g.dmsRows(t))
 	}
@@ -282,10 +285,25 @@ func (g *Gen) Collections() []string {
 	if g.Spec.Platform == "rds" || g.Spec.Platform == "aurora" {
 		c = append(c, "io")
 	}
+	if g.Spec.Platform == "onprem" {
+		c = append(c, "serverlog")
+	}
 	return append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "extensions", "versions", "roles")
 }
 
 // ---------------------------------------------------------------- instance
+
+// logMinDuration is the demo server's log_min_duration_statement: the managed platforms log at 5 s (the CloudWatch
+// reader's rows), an on-prem primary at 1 s (the serverlog collection's rows), a standby logs none.
+func (g *Gen) logMinDuration() string {
+	switch {
+	case g.Spec.Platform == "rds" || g.Spec.Platform == "aurora":
+		return "5000"
+	case g.Spec.Platform == "onprem" && !g.Spec.Replica:
+		return "1000"
+	}
+	return "-1"
+}
 
 func (g *Gen) settings(t time.Time) []Row {
 	s := g.Spec
@@ -304,9 +322,7 @@ func (g *Gen) settings(t time.Time) []Row {
 	if s.DMS || s.SlotStale {
 		vals["wal_level"] = "logical"
 	}
-	if s.Platform == "rds" || s.Platform == "aurora" {
-		vals["log_min_duration_statement"] = "5000"
-	}
+	vals["log_min_duration_statement"] = g.logMinDuration()
 	if s.SettingEdit != "" {
 		name, rest, _ := strings.Cut(s.SettingEdit, "=")
 		oldV, newV, _ := strings.Cut(rest, ">")
@@ -341,7 +357,7 @@ func (g *Gen) instanceRows(t time.Time) []Row {
 		"postmaster_start": g.pmStart, "server_now": t, "time_zone": "UTC", "connected_database": "postgres",
 		"connected_user": "pgvigil_monitor", "server_addr": s.Addr, "server_port": 5432, "data_checksums": "on",
 		"shared_buffers": "8GB", "max_connections": s.MaxConn, "work_mem": "4MB", "wal_level": "replica",
-		"track_io_timing": "on", "log_min_duration_statement": "-1", "database_count": len(g.dbList()),
+		"track_io_timing": "on", "log_min_duration_statement": g.logMinDuration(), "database_count": len(g.dbList()),
 		"platform": s.Platform, "has_pg_stat_statements": !s.StmtBroken, "has_pg_cron": s.Cron, "has_pgagent": false,
 		"has_wait_sampling": false, "has_log_fdw": false, "extensions": ext, "non_default_settings": g.settings(t),
 	}}

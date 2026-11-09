@@ -259,6 +259,9 @@ func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.T
 		if (c == "vacuum" || c == "vacuum_tables") && g.Spec.Replica {
 			status, note = "skipped", vacuumSkipNote
 		}
+		if c == "serverlog" && g.Spec.Replica {
+			status, note = "skipped", serverlogSkipNote
+		}
 		if c == "statements" && g.Spec.StmtBroken {
 			status, note = "error", `statements on `+g.Spec.Name+`: ERROR: pg_stat_statements must be loaded via "shared_preload_libraries" (SQLSTATE 55000)`
 		}

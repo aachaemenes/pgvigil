@@ -13,6 +13,7 @@ import { actionsCol, actionsState } from './actions';
 import { applyTagFilter, tagCols, tagFilterBar, tagKeys, tagUI, withTagFields } from './tree';
 import { jobsReportFleetView } from './jobsreport';
 import { rolesFleetView } from './roles';
+import { slowFleetView } from './slow';
 
 export type { Ctx };
 const range = window_;
@@ -607,6 +608,14 @@ export async function jobsRoot(ctx: Ctx): Promise<HTMLElement> {
 export async function roles(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const view = await rolesFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'roles'));
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}
+
+// slows is the fleet's Slow queries page: the slowest statements over the window, per instance in scope.
+export async function slows(ctx: Ctx): Promise<HTMLElement> {
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await slowFleetView(ctx, ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'slowqueries'));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }
