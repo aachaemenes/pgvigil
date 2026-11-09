@@ -1,0 +1,19 @@
+{
+  "DBClusters": [
+    {
+      "DBClusterIdentifier": "dba-lab-pg",
+      "Engine": "aurora-postgresql",
+      "EngineVersion": "17.9",
+      "AutoMinorVersionUpgrade": true,
+      "PreferredMaintenanceWindow": "fri:03:28-fri:03:58",
+      "Status": "available",
+      "DBClusterMembers": [
+        {
+          "DBInstanceIdentifier": "dba-lab-pg-instance-1",
+          "IsClusterWriter": true,
+          "PromotionTier": 1
+        }
+      ]
+    }
+  ]
+}

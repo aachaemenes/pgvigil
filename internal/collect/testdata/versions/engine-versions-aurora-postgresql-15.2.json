@@ -1,0 +1,186 @@
+{
+  "DBEngineVersions": [
+    {
+      "Engine": "aurora-postgresql",
+      "EngineVersion": "15.2",
+      "Status": "deprecated",
+      "ValidUpgradeTarget": [
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.10",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.10)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.12",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.12)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.13",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.13)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.14",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.14)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.15",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.15)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.17",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.17)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.18",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.18)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "15.19",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 15.19)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": false
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "16.8",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 16.8)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "16.9",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 16.9)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "16.10",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 16.10)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "16.11",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 16.11)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "16.13",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 16.13)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "16.14",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 16.14)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "16.15",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 16.15)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "17.4",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 17.4)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "17.5",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 17.5)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "17.6",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 17.6)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "17.7",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 17.7)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "17.9",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 17.9)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "17.10",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 17.10)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "17.11",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 17.11)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "18.3",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 18.3)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "18.4",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 18.4)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        },
+        {
+          "Engine": "aurora-postgresql",
+          "EngineVersion": "18.6",
+          "Description": "Aurora PostgreSQL (Compatible with PostgreSQL 18.6)",
+          "AutoUpgrade": false,
+          "IsMajorVersionUpgrade": true
+        }
+      ]
+    }
+  ]
+}

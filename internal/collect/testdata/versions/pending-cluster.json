@@ -1,0 +1,13 @@
+{
+  "PendingMaintenanceActions": [
+    {
+      "ResourceIdentifier": "arn:aws:rds:us-east-2:123456789012:cluster:dba-lab-pg",
+      "PendingMaintenanceActionDetails": [
+        {
+          "Action": "os-upgrade",
+          "Description": "New Operating System patch is available"
+        }
+      ]
+    }
+  ]
+}
