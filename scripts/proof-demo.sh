@@ -26,9 +26,11 @@
 #                  rows@rds-orders01, table never vacuumed@aurora-dms01; no stale collection, no 'check could not run'
 #   jobs         aurora-crm01 3 jobs, rds-billing01 2
 #   logs         slow, lock_wait, deadlock and auth_fail events; 3 deadlocks in 24 h on rds-orders01
-#   dms          2 tasks, 15 tables, 2 in 'Table error'; the CDC task's drain readout has an ETA and is spilling
+#   dms          2 tasks, 15 tables, 2 in 'Table error'; the CDC task's drain readout has a rows ETA and a latency
+#                ETA (latency falling, speed over 1x) and is spilling
 #   tables       14 databases, 70 tables present (5 per application database; cloudsql-analytics01's skipped
-#                table keeps its row); table_checks = exactly the four table rows of the overview
+#                table keeps its last read: older than its database's read on an odd UTC hour, the same on an
+#                even one); table_checks = exactly the four table rows of the overview
 #   settings     one change each on onprem-erp01 (work_mem) and rds-orders01 (log_min_duration_statement)
 #   rerun        "12 replaced"; no instance_id of the first run is left in any table with an instance_id
 #                column; the same counts; a non-demo instance named like a demo one (prefix trap-) makes
@@ -96,10 +98,16 @@ check_repo() {
   [[ "$got" == 3 ]] || fail "deadlock events in 24 h: $got"; ok "deadlock events in 24 h: 3"
   got=$(P -c "select count(*) || '/' || (select count(*) from pgvigil.dms_table_stats) || '/' || (select count(*) from pgvigil.dms_table_stats where table_state = 'Table error') from pgvigil.dms_tasks where is_present")
   [[ "$got" == "2/15/2" ]] || fail "dms tasks/tables/errors: $got"; ok "dms tasks/tables/errors: $got"
-  got=$(P -c "select count(*) filter (where eta_rows_secs > 0 and spilling) || '/' || count(*) from pgvigil.dms_drain d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and d.task_id = 'erp-to-aurora-cdc'")
-  [[ "$got" == "1/1" ]] || fail "dms drain eta and spill: $got"; ok "dms drain: the CDC task has an ETA and is spilling"
+  got=$(P -c "select count(*) filter (where eta_rows_secs > 0 and eta_secs > 0 and speed_x > 1 and spilling) || '/' || count(*) from pgvigil.dms_drain d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and d.task_id = 'erp-to-aurora-cdc'")
+  [[ "$got" == "1/1" ]] || fail "dms drain eta and spill: $got"; ok "dms drain: the CDC task drains (rows and latency ETA, speed over 1x) and is spilling"
   got=$(P -c "select (select count(*) from pgvigil.table_databases d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and d.is_present) || '/' || count(*) from pgvigil.tables t join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags) and t.is_present")
   [[ "$got" == "14/70" ]] || fail "tables databases/tables: $got"; ok "tables: 14 databases, 70 tables"
+  # the skip scenario: on an odd UTC hour the latest read skipped event_props, so its row is older than its
+  # database's read; on an even hour it was read with it
+  got=$(P -c "select case when extract(hour from d.snapshot_at at time zone 'UTC')::int % 2 = 1 then t.snapshot_at < d.snapshot_at else t.snapshot_at = d.snapshot_at end
+                from pgvigil.tables t join pgvigil.table_databases d using (instance_id, dbid) join pgvigil.instances i using (instance_id)
+               where i.name = 'demo-cloudsql-analytics01' and t.table_name = 'event_props' and t.is_present")
+  [[ "$got" == t ]] || fail "skipped table row kept: $got"; ok "tables: the skipped table keeps its last read"
   got=$(P -c "select string_agg(c.check_name || '@' || i.name || ':' || c.object, ' ' order by c.check_name) from pgvigil.table_checks c join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
   [[ "$got" == "table autovacuum off@demo-onprem-hr01:hr.public.timesheets table bloat@demo-onprem-erp01:erp.public.order_lines table dead rows@demo-rds-orders01:orders.public.order_items table never vacuumed@demo-aurora-dms01:erp_mirror.erp.order_lines" ]] || fail "table checks: $got"; ok "table checks: the four scenario tables"
   got=$(P -c "select string_agg(i.name || ':' || h.name, ' ' order by i.name) from pgvigil.instance_setting_history h join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")

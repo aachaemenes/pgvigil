@@ -193,61 +193,124 @@ func TestLiveBounded(t *testing.T) {
 	}
 }
 
-// TestTableScenarios checks each table row of the last hourly read against the rules of
-// pgvigil.table_checks (0016_tables.sql): a scenario's table trips its own check and nothing else does.
-func TestTableScenarios(t *testing.T) {
-	big := func(r Row) bool { return r["relpages"].(int64) >= 1000 }
-	checks := func(r Row) []string {
-		var out []string
-		live, dead := float64(r["n_live_tup"].(int64)), float64(r["n_dead_tup"].(int64))
-		if r["last_vacuum"] == nil && big(r) {
-			out = append(out, "never vacuumed")
-		}
-		if r["last_analyze"] == nil && big(r) {
-			out = append(out, "never analyzed")
-		}
-		if r["last_analyze"] != nil && live > 0 && float64(r["n_mod_since_analyze"].(int64)) > 0.2*live && big(r) {
-			out = append(out, "statistics stale")
-		}
-		if r["bloat_pct"].(float64) > 20 && r["bloat_bytes"].(int64) >= 104857600 {
-			out = append(out, "bloat")
-		}
-		if live+dead > 1000 && dead > 0.2*(live+dead) {
-			out = append(out, "dead rows")
-		}
-		if r["autovacuum_off"].(bool) {
-			out = append(out, "autovacuum off")
-		}
-		return out
+// tableChecks applies the rules of pgvigil.table_checks (0016_tables.sql) to one 'table' row.
+func tableChecks(r Row) []string {
+	pages := r["relpages"].(int64)
+	if hp := r["heap_bytes"].(int64) / 8192; hp > pages {
+		pages = hp
 	}
+	big := pages >= 1000
+	live, dead := float64(r["n_live_tup"].(int64)), float64(r["n_dead_tup"].(int64))
+	var out []string
+	if r["last_vacuum"] == nil && big {
+		out = append(out, "never vacuumed")
+	}
+	if r["last_analyze"] == nil && big {
+		out = append(out, "never analyzed")
+	}
+	if r["last_analyze"] != nil && live > 0 && float64(r["n_mod_since_analyze"].(int64)) > 0.2*live && big {
+		out = append(out, "statistics stale")
+	}
+	if r["bloat_pct"].(float64) > 20 && r["bloat_bytes"].(int64) >= 104857600 {
+		out = append(out, "bloat")
+	}
+	if xid, mx := r["xid_age"].(int64), r["mxid_age"].(int64); xid >= 1000000000 || mx >= 1000000000 {
+		out = append(out, "xid age")
+	}
+	if live+dead > 1000 && dead > 0.2*(live+dead) {
+		out = append(out, "dead rows")
+	}
+	if r["autovacuum_off"].(bool) {
+		out = append(out, "autovacuum off")
+	}
+	return out
+}
+
+// TestTableScenarios checks every hourly tables read of the 7 days: no table ever trips a check other than
+// its scenario's, a scenario table trips its own check at the anchor, nothing is vacuumed or analyzed after
+// the snapshot, and the skip scenario sends table_skipped on some reads but never on the first.
+func TestTableScenarios(t *testing.T) {
 	want := map[string]string{"bloat": "bloat", "dead": "dead rows", "avoff": "autovacuum off", "novac": "never vacuumed"}
 	for i, s := range Specs("demo-", 12) {
+		problem := tables[s.App][1]
+		var reads, skipped int
 		var last []Row
 		for _, b := range run(t, s, i, 7) {
-			if b.Collection == "tables" {
-				last = b.Rows
+			if b.Collection != "tables" {
+				continue
 			}
-		}
-		if last == nil {
-			t.Fatalf("%s: no tables batch", s.Name)
-		}
-		var got []string
-		for _, r := range last {
-			if r["kind"] == "table" {
-				for _, c := range checks(r) {
-					got = append(got, c+":"+r["table_name"].(string))
+			reads++
+			last = b.Rows
+			for _, r := range b.Rows {
+				switch r["kind"] {
+				case "table_skipped":
+					if reads == 1 {
+						t.Errorf("%s: table_skipped on the first read", s.Name)
+					}
+					skipped++
+				case "table":
+					for _, k := range []string{"last_vacuum", "last_analyze", "last_autovacuum", "last_autoanalyze"} {
+						if at, ok := r[k].(time.Time); ok && at.After(b.At) {
+							t.Errorf("%s %s: %s %v after the snapshot %v", s.Name, r["table_name"], k, at, b.At)
+						}
+					}
+					for _, c := range tableChecks(r) {
+						if c != want[s.Tables] || r["table_name"] != problem {
+							t.Errorf("%s at %v: %s trips %q", s.Name, b.At, r["table_name"], c)
+						}
+					}
 				}
 			}
 		}
-		exp := 0
+		if s.Tables == "skip" && skipped == 0 {
+			t.Errorf("%s: no table_skipped row in %d reads", s.Name, reads)
+		}
 		if w, ok := want[s.Tables]; ok {
-			exp = 1
-			if len(got) != 1 || got[0] != w+":"+tables[s.App][1] {
-				t.Errorf("%s (%s): checks %v, want %s on %s", s.Name, s.Tables, got, w, tables[s.App][1])
+			var got []string
+			for _, r := range last {
+				if r["kind"] == "table" {
+					for _, c := range tableChecks(r) {
+						got = append(got, c+":"+r["table_name"].(string))
+					}
+				}
+			}
+			if len(got) != 1 || got[0] != w+":"+problem {
+				t.Errorf("%s (%s): checks at the anchor %v, want %s on %s", s.Name, s.Tables, got, w, problem)
 			}
 		}
-		if exp == 0 && len(got) != 0 {
-			t.Errorf("%s: unexpected checks %v", s.Name, got)
+	}
+}
+
+// TestDMSDrain checks the CDC task at the anchor against pgvigil.dms_drain's reading: the apply outruns the
+// read (an ETA), latency is falling against 10-30 minutes earlier (speed over 1x) but still over the 300 s
+// threshold, and the spill is on and smaller than at its peak 45 minutes before.
+func TestDMSDrain(t *testing.T) {
+	for i, s := range Specs("demo-", 12) {
+		if !s.DMS {
+			continue
+		}
+		task := map[time.Time]Row{}
+		for _, b := range run(t, s, i, 7) {
+			if b.Collection == "dms" {
+				for _, r := range b.Rows {
+					if r["kind"] == "task" && r["task_id"] == "erp-to-aurora-cdc" {
+						task[b.At] = r
+					}
+				}
+			}
+		}
+		now, then, peak := task[anchor], task[anchor.Add(-20*time.Minute)], task[anchor.Add(-45*time.Minute)]
+		if now == nil || then == nil || peak == nil {
+			t.Fatalf("%s: CDC task rows missing at the anchor, -20 min or -45 min", s.Name)
+		}
+		if now["rows_out_s"].(float64) <= now["rows_in_s"].(float64) {
+			t.Errorf("%s: no ETA at the anchor: out %v <= in %v", s.Name, now["rows_out_s"], now["rows_in_s"])
+		}
+		if l, l0 := now["latency_target_s"].(float64), then["latency_target_s"].(float64); l >= l0 || l <= 300 {
+			t.Errorf("%s: latency at the anchor %v (20 min before %v): want falling and over 300", s.Name, l, l0)
+		}
+		if d, d0 := now["disk_target"].(float64), peak["disk_target"].(float64); d <= 0 || d >= d0 {
+			t.Errorf("%s: spill at the anchor %v (peak %v): want on and draining", s.Name, d, d0)
 		}
 	}
 }
