@@ -230,7 +230,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 	}
 	add("replication", g.replicationRows(t))
 	if g.Spec.Cron {
-		add("jobs", g.jobRows(t, prev))
+		add("jobs", g.jobReportRows(t, prev))
 	}
 	if g.Spec.Logs {
 		add("logs", g.logRows(t, prev))

@@ -4,7 +4,7 @@
 import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget } from './fleet';
-import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobs, logs, replication, statements, counters, activity, storage, versions } from './pages';
+import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobs, jobsRoot, logs, replication, statements, counters, activity, storage, versions } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
 import { storageView } from './storage';
@@ -13,22 +13,24 @@ import { extensionsView } from './extensions';
 import { versionsView } from './versions';
 import { ioView } from './io';
 import { actionsLogView } from './actions';
+import { jobsReportView } from './jobsreport';
 import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_ } from './router';
 import { mountTree, setTreeHidden, tagChips, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, extensions, versions };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, extensions, versions, jobs: jobsRoot };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
   tables: c => tablesView(c.instance!), vacuum: vacuumView, findings, host: hostView, storage: storageView,
   extensions: c => extensionsView(c.instance!), versions: c => versionsView(c.instance!),
   io: c => ioView(c.instance!, window_(c), rangeLabel(c)),
   actions: actionsLogView,
+  jobsreport: jobsReportView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
-const liveRoot = new Set(['summary', 'checks', 'dms']);
+const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs']);
 const liveInstance = new Set(['summary', 'activity', 'dms', 'host', 'vacuum', 'io']);
 
 let timer: number | undefined;

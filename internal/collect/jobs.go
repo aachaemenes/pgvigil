@@ -89,6 +89,7 @@ func (jobsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info
 		if err := run("cron.job_run_details", cronRunsSQL); err != nil {
 			return nil, err
 		}
+		AddCronTimes(out, time.Now(), ReadCronSettings(ctx, conn))
 	}
 	if info.HasPgAgent {
 		if err := run("pgagent.pga_job", pgagentJobsSQL); err != nil {

@@ -11,6 +11,7 @@ import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
 import { actionsCol, actionsState } from './actions';
 import { applyTagFilter, tagCols, tagFilterBar, tagKeys, tagUI, withTagFields } from './tree';
+import { jobsReportFleetView } from './jobsreport';
 
 export type { Ctx };
 const range = window_;
@@ -588,6 +589,14 @@ export async function extensions(ctx: Ctx): Promise<HTMLElement> {
 export async function versions(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const view = await versionsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'versions'));
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}
+
+// jobsRoot is the fleet's Jobs page: the failing, missed and over-average jobs of every instance in scope.
+export async function jobsRoot(ctx: Ctx): Promise<HTMLElement> {
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }
