@@ -36,10 +36,16 @@ type Event struct {
 	DurationMS float64 // slow: the statement's duration; lock_wait: the wait so far
 	Statement  string  // slow / deadlock / lock_wait: the statement text where the log has it
 	Detail     string  // deadlock: the DETAIL lines; lock_wait: the holders; auth_fail: the message
+	// Key identifies the entry from its first line alone (time text, level, pid, message), so an entry
+	// read once without its DETAIL / STATEMENT lines and again with them keeps one key.
+	Key string
 }
 
 // prefix: 2026-11-09 12:00:00 UTC:10.0.0.1(54321):postgres@postgres:[1234]:LOG:  message
-var prefixRE = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) (\w+):([^:]*):([^@:]*)@([^:]*):\[(\d+)\]:([A-Z]+):\s+(.*)$`)
+// %r is empty, [local] or host(port); the host may be IPv6, so it is matched up to its (port).
+var prefixRE = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?) ([^\s:]+):(\[local\]|.*?\(\d+\)|):([^@:]*)@([^:]*):\[(\d+)\]:([A-Z]+):\s+(.*)$`)
+
+var offsetRE = regexp.MustCompile(`^([+-])(\d{2})(\d{2})?$`)
 
 var (
 	durationRE = regexp.MustCompile(`^duration: ([0-9.]+) ms\s+(?:statement|execute [^:]*|parse [^:]*|bind [^:]*):\s?(.*)$`)
@@ -48,14 +54,23 @@ var (
 
 type entry struct {
 	at                   time.Time
+	key                  string
 	client, user, dbname string
 	pid                  int
 	level, msg           string
 	more                 []string // continuation lines and DETAIL / STATEMENT entries of the same pid
 }
 
-// Parse reads log text and returns the events in order. Lines it cannot read are skipped.
-func Parse(r io.Reader) ([]Event, error) {
+// Parse reads log text written in UTC; see ParseIn.
+func Parse(r io.Reader) ([]Event, error) { return ParseIn(r, time.UTC) }
+
+// ParseIn reads log text and returns the events in order; lines it cannot read are skipped.
+// loc is the server's log_timezone: %t prints only a zone abbreviation, so a time is read in loc
+// unless its zone is UTC / GMT or a numeric offset (+03, -0530).
+func ParseIn(r io.Reader, loc *time.Location) ([]Event, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	var out []Event
@@ -87,18 +102,39 @@ func Parse(r io.Reader) ([]Event, error) {
 			continue
 		}
 		flush()
-		at, _ := time.Parse("2006-01-02 15:04:05", m[1][:19])
-		if loc, err := time.LoadLocation(m[2]); err == nil {
-			at, _ = time.ParseInLocation("2006-01-02 15:04:05", m[1][:19], loc)
+		layout := "2006-01-02 15:04:05"
+		if len(m[1]) > 19 {
+			layout += ".999999"
 		}
-		cur = &entry{at: at, client: m[3], user: m[4], dbname: m[5], pid: pid, level: level, msg: m[8]}
+		at, err := time.ParseInLocation(layout, m[1], zoneOf(m[2], loc))
+		if err != nil {
+			continue
+		}
+		cur = &entry{at: at, key: m[1] + " " + m[2] + "|" + level + "|" + m[6] + "|" + m[8],
+			client: m[3], user: m[4], dbname: m[5], pid: pid, level: level, msg: m[8]}
 	}
 	flush()
 	return out, sc.Err()
 }
 
+func zoneOf(abbr string, loc *time.Location) *time.Location {
+	if abbr == "UTC" || abbr == "GMT" {
+		return time.UTC
+	}
+	if m := offsetRE.FindStringSubmatch(abbr); m != nil {
+		h, _ := strconv.Atoi(m[2])
+		mi, _ := strconv.Atoi(m[3])
+		off := h*3600 + mi*60
+		if m[1] == "-" {
+			off = -off
+		}
+		return time.FixedZone(abbr, off)
+	}
+	return loc
+}
+
 func classify(e *entry) (Event, bool) {
-	ev := Event{At: e.at, Client: e.client, User: e.user, Database: e.dbname, PID: e.pid}
+	ev := Event{At: e.at, Client: e.client, User: e.user, Database: e.dbname, PID: e.pid, Key: e.key}
 	switch {
 	case e.level == "LOG" && strings.HasPrefix(e.msg, "duration: "):
 		m := durationRE.FindStringSubmatch(e.msg)

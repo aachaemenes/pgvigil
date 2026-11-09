@@ -5,9 +5,10 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -58,6 +59,26 @@ type cwEvent struct {
 // a recorded set in tests.
 type logFetcher func(ctx context.Context, group string, from time.Time, limit int) ([]cwEvent, error)
 
+// fetchers keeps one CloudWatch client per profile and region across runs.
+var (
+	fetchersMu sync.Mutex
+	fetchers   = map[string]logFetcher{}
+)
+
+func fetcherFor(ctx context.Context, a config.AWS) (logFetcher, error) {
+	k := a.Profile + "|" + a.Region
+	fetchersMu.Lock()
+	defer fetchersMu.Unlock()
+	if f, ok := fetchers[k]; ok {
+		return f, nil
+	}
+	f, err := newFetcher(ctx, a)
+	if err == nil {
+		fetchers[k] = f
+	}
+	return f, err
+}
+
 var newFetcher = func(ctx context.Context, a config.AWS) (logFetcher, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
 	if a.Region != "" {
@@ -90,7 +111,7 @@ var newFetcher = func(ctx context.Context, a config.AWS) (logFetcher, error) {
 	}, nil
 }
 
-func (logsCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error) {
+func (logsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error) {
 	if in.AWS == nil || in.AWS.PostgresLogGroup() == "" {
 		return nil, fmt.Errorf("no aws: block with cluster or db_instance in the config: %w", ErrSkip)
 	}
@@ -102,7 +123,14 @@ func (logsCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platform.In
 	} else if ok {
 		from = t.Add(-logsOverlap)
 	}
-	fetch, err := newFetcher(ctx, *in.AWS)
+	loc := time.UTC
+	var tz string
+	if err := conn.QueryRow(ctx, "SELECT current_setting('log_timezone')").Scan(&tz); err == nil {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	fetch, err := fetcherFor(ctx, *in.AWS)
 	if err != nil {
 		return nil, err
 	}
@@ -110,19 +138,40 @@ func (logsCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platform.In
 	if err != nil {
 		return nil, err
 	}
-	return logRows(evs, source, from), nil
+	return logRows(evs, source, from, loc, len(evs) >= logsMaxEvents), nil
 }
 
 // logRows parses the events stream by stream (an entry's lines stay together) and returns
-// the event rows plus one cursor row. With a full batch (logsMaxEvents) the cursor stops at the
-// last event's time so the next run continues there.
-func logRows(evs []cwEvent, source string, from time.Time) []Row {
+// the event rows plus one cursor row. The cursor is the earliest of the streams' latest events,
+// so a stream that delivers behind the others is re-read from there (within the overlap). A full
+// batch (the limit reached) puts the cursor one overlap past its last event: the next run then
+// starts at that event instead of re-reading the same window for ever. Lines delivered later
+// than the overlap behind the cursor are not read (a stated limit).
+func logRows(evs []cwEvent, source string, from time.Time, loc *time.Location, full bool) []Row {
 	byStream := map[string][]cwEvent{}
-	readTo := from
+	latest := map[string]time.Time{}
+	var last time.Time
 	for _, e := range evs {
 		byStream[e.Stream] = append(byStream[e.Stream], e)
-		if e.Time.After(readTo) {
-			readTo = e.Time
+		if e.Time.After(latest[e.Stream]) {
+			latest[e.Stream] = e.Time
+		}
+		if e.Time.After(last) {
+			last = e.Time
+		}
+	}
+	readTo := from
+	if full {
+		readTo = last.Add(logsOverlap)
+	} else {
+		first := true
+		for _, t := range latest {
+			if first || t.Before(readTo) {
+				readTo, first = t, false
+			}
+		}
+		if readTo.Before(from) {
+			readTo = from
 		}
 	}
 	streams := make([]string, 0, len(byStream))
@@ -139,20 +188,34 @@ func logRows(evs []cwEvent, source string, from time.Time) []Row {
 			b.WriteString(strings.TrimRight(e.Message, "\n"))
 			b.WriteByte('\n')
 		}
-		parsed, _ := logparse.Parse(strings.NewReader(b.String()))
+		parsed, _ := logparse.ParseIn(strings.NewReader(b.String()), loc)
 		for _, p := range parsed {
-			sum := md5.Sum([]byte(strings.Join([]string{string(p.Kind), s, strconv.Itoa(p.PID), p.At.UTC().Format(time.RFC3339Nano),
-				p.Statement, p.Detail, strconv.FormatFloat(p.DurationMS, 'f', -1, 64)}, "\x00")))
+			sum := md5.Sum([]byte(string(p.Kind) + "\x00" + s + "\x00" + p.Key))
 			rows = append(rows, Row{
 				"kind": "event", "kind_of": string(p.Kind), "at": p.At.UTC(), "pid": p.PID, "client": p.Client,
 				"usename": p.User, "datname": p.Database, "duration_ms": nilIfZero(p.DurationMS),
-				"statement": nilIfEmpty(p.Statement), "detail": nilIfEmpty(p.Detail),
+				"statement": nilIfEmpty(maskText(p.Statement)), "detail": nilIfEmpty(maskText(p.Detail)),
 				"source": source + ":" + s, "event_key": hex.EncodeToString(sum[:]),
 			})
 		}
 	}
 	rows = append(rows, Row{"kind": "cursor", "source": source, "read_to": readTo.UTC()})
 	return rows
+}
+
+var (
+	maskPasswordRE = regexp.MustCompile(`(?i)((PASSWORD|IDENTIFIED\s+BY)\s+)('(?:[^']|'')*'|E'(?:[^']|'')*'|\$[0-9]+)`)
+	maskConnRE     = regexp.MustCompile(`(?i)(password|passfile|sslkey|sslpassword)=\S+`)
+)
+
+// maskText applies maskSQL's two rules to text read from a log, then the statements text cap.
+func maskText(s string) string {
+	s = maskPasswordRE.ReplaceAllString(s, "${1}'<masked>'")
+	s = maskConnRE.ReplaceAllString(s, "${1}=<masked>")
+	if len(s) > statementsTextMax {
+		s = strings.ToValidUTF8(s[:statementsTextMax], "")
+	}
+	return s
 }
 
 func nilIfZero(f float64) any {

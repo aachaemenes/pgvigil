@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseAuroraFixture(t *testing.T) {
@@ -46,5 +47,28 @@ func TestParseAuroraFixture(t *testing.T) {
 	}
 	if evs[2].Detail != "Process holding the lock: 2002. Wait queue: 2001." {
 		t.Errorf("lock wait detail: %q", evs[2].Detail)
+	}
+}
+
+func TestParseZonesAndIPv6(t *testing.T) {
+	la, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Skip("no tzdata")
+	}
+	in := `2026-11-09 04:00:01 PST:[2600:1f16::5](54321):app@shop:[11]:LOG:  duration: 600.000 ms  statement: select 1
+2026-11-09 15:00:01 +03:2600:1f16::5(54321):app@shop:[12]:LOG:  duration: 600.000 ms  statement: select 2
+2026-11-09 12:00:01.250 UTC:[local]:app@shop:[13]:LOG:  duration: 600.000 ms  statement: select 3
+`
+	evs, err := ParseIn(strings.NewReader(in), la)
+	if err != nil || len(evs) != 3 {
+		t.Fatalf("events %d err %v", len(evs), err)
+	}
+	for i, want := range []string{"12:00:01", "12:00:01", "12:00:01.25"} {
+		if got := evs[i].At.UTC().Format("15:04:05.999"); got != want {
+			t.Errorf("event %d at %s UTC, want %s", i, got, want)
+		}
+	}
+	if evs[1].Client != "2600:1f16::5(54321)" {
+		t.Errorf("IPv6 client %q", evs[1].Client)
 	}
 }

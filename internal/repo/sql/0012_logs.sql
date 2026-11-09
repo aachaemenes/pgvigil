@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.log_events (
 CREATE TABLE IF NOT EXISTS pgvigil.log_cursor (
   instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   source        text NOT NULL,         -- e.g. cloudwatch:/aws/rds/cluster/<id>/postgresql
-  read_to       timestamptz NOT NULL,  -- events up to here are stored
+  read_to       timestamptz NOT NULL,  -- the next read starts one overlap before this (logs.go logRows)
   updated_at    timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (instance_id, source)
 );

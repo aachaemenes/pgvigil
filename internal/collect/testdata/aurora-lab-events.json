@@ -1,0 +1,97 @@
+[
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226041000,
+        "m": "2026-11-09 12:07:21 UTC:172.16.15.0(16887):postgres@postgres:[1088]:LOG:  duration: 706.521 ms  statement: /* pgvigil_proof_7090 */ select pg_sleep(0.7)\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 19520 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------zNiUND5HfA6cbdMM8HzIU6\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 19530 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------FYxI9UZD9jL6NDjBdHVvdf\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 19536 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------6ovhVHonA1cty9UVG5b4Dt\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226044000,
+        "m": "2026-11-09 12:07:24 UTC:172.16.15.0(8901):postgres@postgres:[1092]:LOG:  process 1092 still waiting for ShareLock on transaction 86516 after 1000.615 ms"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226044000,
+        "m": "2026-11-09 12:07:24 UTC:172.16.15.0(8901):postgres@postgres:[1092]:DETAIL:  Process holding the lock: 1091. Wait queue: 1092."
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226044000,
+        "m": "2026-11-09 12:07:24 UTC:172.16.15.0(8901):postgres@postgres:[1092]:CONTEXT:  while updating tuple (0,1) in relation \"pgvigil_proof_7090\""
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226044000,
+        "m": "2026-11-09 12:07:24 UTC:172.16.15.0(8901):postgres@postgres:[1092]:STATEMENT:  begin; update pgvigil_proof_7090 set v = 2 where id = 2; select pg_sleep(0.5); update pgvigil_proof_7090 set v = 2 where id = 1; commit"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:LOG:  process 1091 detected deadlock while waiting for ShareLock on transaction 86517 after 1000.056 ms"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:DETAIL:  Process holding the lock: 1092. Wait queue: ."
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:CONTEXT:  while updating tuple (0,2) in relation \"pgvigil_proof_7090\""
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:STATEMENT:  begin; update pgvigil_proof_7090 set v = 1 where id = 1; select pg_sleep(3); update pgvigil_proof_7090 set v = 1 where id = 2; commit"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:ERROR:  deadlock detected"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:DETAIL:  Process 1091 waits for ShareLock on transaction 86517; blocked by process 1092.\n\tProcess 1092 waits for ShareLock on transaction 86516; blocked by process 1091.\n\tProcess 1091: begin; update pgvigil_proof_7090 set v = 1 where id = 1; select pg_sleep(3); update pgvigil_proof_7090 set v = 1 where id = 2; commit\n\tProcess 1092: begin; update pgvigil_proof_7090 set v = 2 where id = 2; select pg_sleep(0.5); update pgvigil_proof_7090 set v = 2 where id = 1; commit"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:HINT:  See server log for query details."
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:CONTEXT:  while updating tuple (0,2) in relation \"pgvigil_proof_7090\""
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8173):postgres@postgres:[1091]:STATEMENT:  begin; update pgvigil_proof_7090 set v = 1 where id = 1; select pg_sleep(3); update pgvigil_proof_7090 set v = 1 where id = 2; commit"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8901):postgres@postgres:[1092]:LOG:  process 1092 acquired ShareLock on transaction 86516 after 3258.690 ms"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8901):postgres@postgres:[1092]:CONTEXT:  while updating tuple (0,1) in relation \"pgvigil_proof_7090\""
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8901):postgres@postgres:[1092]:STATEMENT:  begin; update pgvigil_proof_7090 set v = 2 where id = 2; select pg_sleep(0.5); update pgvigil_proof_7090 set v = 2 where id = 1; commit"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "2026-11-09 12:07:26 UTC:172.16.15.0(8901):postgres@postgres:[1092]:LOG:  duration: 3765.538 ms  statement: begin; update pgvigil_proof_7090 set v = 2 where id = 2; select pg_sleep(0.5); update pgvigil_proof_7090 set v = 2 where id = 1; commit\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 29298 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------AxmIECIXo9kmxwVXi1YzUS\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 29306 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------Wtm1e7kWupTs3G9NRtK8G0\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 28456 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------jRIR6Jn2IQ5LtxbcCy0XQo\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 36726 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------kXI8gx7h3P777Cixzd14C8\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact"
+    },
+    {
+        "s": "dba-lab-pg-instance-1",
+        "t": 1794226046000,
+        "m": "* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 56198 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------gN36u0XHs0P2uvyDjTpMVY\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 56206 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------iWmfdnWJXBo3qAaxvGcgcE\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact\n* Host rdsauthproxy:1108 was resolved.\n* IPv6: (none)\n* IPv4: 172.16.15.2\n*   Trying 172.16.15.2:1108...\n* Established connection to rdsauthproxy (172.16.15.2 port 1108) from 172.16.15.3 port 56216 \n* using HTTP/1.x\n> POST /authenticateRequest HTTP/1.1\r\nHost: rdsauthproxy:1108\r\nAccept: */*\r\nContent-Length: 2994\r\nContent-Type: multipart/form-data; boundary=------------------------AyzUerxZXha0O0KDSZeMvX\r\n* upload completely sent off: 2994 bytes\n< HTTP/1.1 200 OK\r\n< Content-Type: text/html;charset=utf-8\r\n< Content-Length: 0\r\n< \r\n* Connection #0 to host rdsauthproxy:1108 left intact"
+    }
+]
