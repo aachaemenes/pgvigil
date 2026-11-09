@@ -116,7 +116,7 @@
   <p>From v0.2.0, one line installs the collector as a service (the binary is fetched from the release and its checksum verified first; run it again to upgrade):</p>
 <pre><code>curl -fsSL https://pgvigil.com/install.sh | sh          # Linux: a system account, a systemd unit
 irm https://pgvigil.com/install.ps1 | iex               # Windows: a service under NT SERVICE\pgvigil, elevated PowerShell</code></pre>
-  <p>No server to point it at yet? <code>pgvigil demo -pgbin &lt;portable PostgreSQL bin folder&gt; -serve</code> runs a throwaway repository from an unzipped PostgreSQL, seeds a 12-instance fleet with 7 days of history and serves it on your own machine: no admin rights, no Docker.</p>
+  <p>No server to point it at yet? <code>pgvigil demo -pgbin &lt;portable PostgreSQL bin folder&gt; -serve -open</code> runs a throwaway repository from an unzipped PostgreSQL, seeds a 12-instance fleet with 7 days of history and serves it on your own machine: no admin rights, no Docker.</p>
   <p>By hand, on any release:</p>
   <ol>
     <li>Download the binary for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and verify it against <code>SHA256SUMS</code> (signed with Sigstore; the README shows the two commands).</li>

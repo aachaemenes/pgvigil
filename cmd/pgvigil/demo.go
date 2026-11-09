@@ -22,7 +22,7 @@ import (
 // runDemo seeds a repository with the synthetic demo fleet, and with -serve serves it:
 //
 //	pgvigil demo -config pgvigil.yaml [-dsn env:NAME] [-seed 1] [-instances 12] [-days 7]
-//	pgvigil demo -serve [-listen 127.0.0.1:8080] (-config f | -pgbin <dir> [-pgdata <dir>])
+//	pgvigil demo -serve [-listen 127.0.0.1:8080] [-open] (-config f | -pgbin <dir> [-pgdata <dir>])
 //
 // The repository login must own the schema (demo migrates it and replaces the instances tagged
 // demo). -pgbin names a portable PostgreSQL (the EDB zip's pgsql\bin, a tarball's bin): demo runs
@@ -37,6 +37,7 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	pgdata := fs.String("pgdata", "pgvigil-demo-data", "data folder for -pgbin (made on the first run, reused after)")
 	serve := fs.Bool("serve", false, "after seeding, serve the UI on loopback without a login and keep the fleet live")
 	listen := fs.String("listen", "127.0.0.1:8080", "address to serve on (-serve; loopback only)")
+	open := fs.Bool("open", false, "with -serve: open the UI in an app-mode browser window (Edge or Chrome, its own window); the default browser when neither is found")
 	seed := fs.Uint64("seed", 1, "random seed: the same seed gives the same fleet")
 	n := fs.Int("instances", 12, "instances to seed (more than 12 repeats the twelve, for a scale run)")
 	days := fs.Int("days", 7, "days of history")
@@ -57,6 +58,9 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	}
 	if *serve && host != "127.0.0.1" && host != "localhost" && host != "::1" {
 		return errors.New("demo -serve runs without a login and listens on loopback only (127.0.0.1, localhost, ::1)")
+	}
+	if *open && !*serve {
+		return errors.New("demo: -open needs -serve (there is no page to open without it)")
 	}
 
 	repoDSN := ""
@@ -132,6 +136,9 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	log.Info("pgvigil demo serving", "url", fmt.Sprintf("http://%s/", ln.Addr()), "login", false)
+	if *open {
+		openWindow(log, browseURL("http", ln.Addr()))
+	}
 
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
