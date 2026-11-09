@@ -1,0 +1,12 @@
+{
+  "DBInstances": [
+    {
+      "DBInstanceIdentifier": "orders-db",
+      "DBInstanceClass": "db.m6g.large",
+      "Engine": "postgres",
+      "EngineVersion": "16.4",
+      "AutoMinorVersionUpgrade": false,
+      "PreferredMaintenanceWindow": "sun:06:00-sun:06:30"
+    }
+  ]
+}

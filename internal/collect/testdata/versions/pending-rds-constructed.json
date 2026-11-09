@@ -1,0 +1,17 @@
+{
+  "PendingMaintenanceActions": [
+    {
+      "ResourceIdentifier": "arn:aws:rds:us-east-2:123456789012:db:orders-db",
+      "PendingMaintenanceActionDetails": [
+        {
+          "Action": "db-upgrade",
+          "Description": "Automatic minor version upgrade to 16.9",
+          "AutoAppliedAfterDate": "2026-12-01T00:00:00Z",
+          "ForcedApplyDate": "2027-01-15T00:00:00Z",
+          "CurrentApplyDate": "2026-12-06T06:00:00Z",
+          "OptInStatus": "next-maintenance"
+        }
+      ]
+    }
+  ]
+}

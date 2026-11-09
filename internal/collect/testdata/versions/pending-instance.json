@@ -1,0 +1,13 @@
+{
+  "PendingMaintenanceActions": [
+    {
+      "ResourceIdentifier": "arn:aws:rds:us-east-2:123456789012:db:dba-lab-pg-instance-1",
+      "PendingMaintenanceActionDetails": [
+        {
+          "Action": "system-update",
+          "Description": "New Operating System patch is available"
+        }
+      ]
+    }
+  ]
+}

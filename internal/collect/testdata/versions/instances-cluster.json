@@ -1,0 +1,13 @@
+{
+  "DBInstances": [
+    {
+      "DBInstanceIdentifier": "dba-lab-pg-instance-1",
+      "DBInstanceClass": "db.serverless",
+      "Engine": "aurora-postgresql",
+      "EngineVersion": "17.9",
+      "AutoMinorVersionUpgrade": true,
+      "PreferredMaintenanceWindow": "mon:04:04-mon:04:34",
+      "DBClusterIdentifier": "dba-lab-pg"
+    }
+  ]
+}
