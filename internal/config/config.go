@@ -143,7 +143,7 @@ func (i Instance) ActionsDSN() string {
 	if i.ActionsDSNRaw == "" {
 		return ""
 	}
-	return Resolve(i.ActionsDSNRaw)
+	return Resolve(strings.TrimSpace(i.ActionsDSNRaw))
 }
 
 // AWS is an instance's door to its cloud side. Credentials come from the SDK's usual chain

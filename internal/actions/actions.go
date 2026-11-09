@@ -57,13 +57,27 @@ const (
 type Door struct {
 	Monitor string // the instance's monitoring login (dsn)
 	Actions string // the actions login (actions_dsn); "" = no actions on this instance
+	// Configured says actions_dsn is set in the config, so an empty Actions means it did not resolve
+	// (an unset variable or an unreadable file), not that the instance has none.
+	Configured bool
+}
+
+// Off is the reason a door cannot act, or "" when it can.
+func (d Door) Off(instance string) string {
+	switch {
+	case d.Actions != "":
+		return ""
+	case d.Configured:
+		return fmt.Sprintf("instance %s: actions_dsn is configured but resolved to an empty string (an unset variable or an unreadable file)", instance)
+	}
+	return fmt.Sprintf("instance %s has no actions_dsn: cancel and terminate are off there (pgvigil roles prints the login to create)", instance)
 }
 
 // DoorsFromConfig maps every configured instance name to its door.
 func DoorsFromConfig(cfg *config.Config) map[string]Door {
 	m := map[string]Door{}
 	for _, in := range cfg.Instances {
-		m[in.Name] = Door{Monitor: in.DSN(), Actions: in.ActionsDSN()}
+		m[in.Name] = Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != ""}
 	}
 	return m
 }
@@ -101,6 +115,8 @@ func Validate(r Request) error {
 		return fmt.Errorf("a reason of at least %d characters is required", MinReason)
 	case len([]rune(r.Reason)) > MaxReason:
 		return fmt.Errorf("the reason is longer than %d characters", MaxReason)
+	case strings.ContainsRune(r.Reason, 0):
+		return errors.New("the reason holds a NUL character")
 	case strings.TrimSpace(r.User) == "":
 		return errors.New("no UI user: actions need the UI login")
 	}
@@ -134,8 +150,8 @@ func Execute(ctx context.Context, d Door, r Request) Result {
 	if err := Validate(r); err != nil {
 		return refused("%s", err.Error())
 	}
-	if d.Actions == "" {
-		return refused("instance %s has no actions_dsn: cancel and terminate are off there (pgvigil roles prints the login to create)", r.Instance)
+	if off := d.Off(r.Instance); off != "" {
+		return refused("%s", off)
 	}
 	if d.Monitor == "" {
 		return refused("instance %s: the monitoring dsn resolved to an empty string", r.Instance)
@@ -190,6 +206,22 @@ SELECT a.backend_start, a.usename, a.application_name, a.backend_type, coalesce(
 		return res
 	}
 	defer func() { _ = act.Close(ctx) }()
+	// the two logins must reach one server: a copy-pasted actions_dsn naming another host would signal an
+	// unrelated session there. pg_postmaster_start_time() is readable by any login.
+	var monStart, actStart time.Time
+	if err := mon.QueryRow(ctx, `SELECT pg_postmaster_start_time()`).Scan(&monStart); err != nil {
+		res.Outcome, res.Detail = Refused, fmt.Sprintf("the server check failed: %v", err)
+		return res
+	}
+	if err := act.QueryRow(ctx, `SELECT pg_postmaster_start_time()`).Scan(&actStart); err != nil {
+		res.Outcome, res.Detail = Failed, fmt.Sprintf("the actions login's server check failed: %v", err)
+		return res
+	}
+	if !monStart.Equal(actStart) {
+		res.Outcome, res.Detail = Refused, fmt.Sprintf("actions_dsn reaches another server than the instance's dsn (server started %s vs %s): nothing was sent",
+			actStart.UTC().Format(time.RFC3339), monStart.UTC().Format(time.RFC3339))
+		return res
+	}
 	var actSuper, signal bool
 	if err := act.QueryRow(ctx, `SELECT r.rolsuper, pg_has_role(current_user, 'pg_signal_backend', 'USAGE')
 	                               FROM pg_roles r WHERE r.rolname = current_user`).Scan(&actSuper, &signal); err != nil {
@@ -251,8 +283,9 @@ func Row(at time.Time, r Request, res Result) LogRow {
 	if rs := []rune(reason); len(rs) > MaxReason {
 		reason = string(rs[:MaxReason])
 	}
-	return LogRow{At: at, Instance: r.Instance, UIUser: r.User, Client: r.Client, Action: r.Kind, PID: r.PID, BackendStart: bs,
-		TargetUser: res.TargetUser, TargetApp: res.TargetApp, Reason: reason, Outcome: res.Outcome, Detail: res.Detail}
+	nul := func(s string) string { return strings.ReplaceAll(s, "\x00", "") } // jsonb refuses \u0000: the row must land
+	return LogRow{At: at, Instance: r.Instance, UIUser: nul(r.User), Client: nul(r.Client), Action: r.Kind, PID: r.PID, BackendStart: bs,
+		TargetUser: nul(res.TargetUser), TargetApp: nul(res.TargetApp), Reason: nul(reason), Outcome: res.Outcome, Detail: nul(res.Detail)}
 }
 
 // Payload is the jsonb argument of pgvigil.import_actions_log.

@@ -9,7 +9,7 @@
 # Expected: migrate applies 0028; `pgvigil roles` prints CREATE ROLE pgvigil_actions and GRANT
 # pg_signal_backend; a config with an inline actions_dsn is refused ("env:NAME or file:/path"); the
 # collector login may EXECUTE import_actions_log and may not UPDATE or DELETE actions_log; through the
-# handlers: a POST without the X-Pgvigil header 403 and not logged, a sleeping session of an application
+# handlers: a POST without the X-Pgvigil header 403 and not logged, a reason holding a NUL 400 and not logged, a sleeping session of an application
 # login cancelled (200 done, its pg_sleep ends with 57014 and the session stays), another terminated (200
 # done, its connection ends 57P01), the superuser's own session refused (409 "superuser"), a stale pid (the
 # backend_start of the row shown one microsecond off) refused (409 "reused"), a typed confirmation that is
@@ -34,7 +34,7 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 HOST=$(q "select coalesce(host(inet_server_addr()),'localhost')")
-DBPORT=$(q "select inet_server_port()")
+DBPORT=$(q "select coalesce(inet_server_port()::text, current_setting('port'))")
 DB=$(q "select current_database()")
 dsn() { echo "host=$HOST port=$DBPORT user=$1 password=$PW dbname=$DB sslmode=disable"; }
 

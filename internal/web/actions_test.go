@@ -79,6 +79,17 @@ func TestActionsValidateAndRow(t *testing.T) {
 	if res := actions.Execute(context.Background(), actions.Door{Monitor: "x"}, ok); res.Outcome != actions.Refused || !strings.Contains(res.Detail, "no actions_dsn") {
 		t.Errorf("no door: %+v", res)
 	}
+	if res := actions.Execute(context.Background(), actions.Door{Monitor: "x", Configured: true}, ok); res.Outcome != actions.Refused || !strings.Contains(res.Detail, "resolved to an empty string") {
+		t.Errorf("a door that did not resolve: %+v", res)
+	}
+	nul := ok
+	nul.Reason = "kill\x00 it now"
+	if actions.Validate(nul) == nil {
+		t.Error("a NUL in the reason passed Validate")
+	}
+	if row := actions.Row(time.Now(), nul, actions.Result{Detail: "a\x00b"}); strings.ContainsRune(row.Reason+row.Detail, 0) {
+		t.Errorf("Row kept a NUL: %+v", row)
+	}
 	row := actions.Row(time.Now(), actions.Request{Kind: actions.Terminate, Reason: "  "}, actions.Result{Outcome: actions.Refused})
 	if row.Reason != "(no reason given)" || row.BackendStart != nil {
 		t.Errorf("an empty reason / zero start: %+v", row)
@@ -190,6 +201,17 @@ func TestActionsProof(t *testing.T) {
 		t.Fatalf("no header: %d %v, %d rows logged", code, out, logCount())
 	}
 	t.Log("ok: a POST without the X-Pgvigil header is 403 and not logged")
+	nb := body(iid, a1, a1.bs, strconv.Itoa(a1.pid))
+	nb["reason"] = "kill\u0000 it"
+	if code, out := post(a.Cancel, true, nb); code != 400 || logCount() != 0 {
+		t.Fatalf("a NUL in the reason: %d %v, %d rows logged", code, out, logCount())
+	}
+	select {
+	case err := <-a1.done:
+		t.Fatalf("the NUL request signalled the session: %v", err)
+	default:
+	}
+	t.Log("ok: a NUL in the reason is 400, nothing sent, nothing logged")
 
 	// cancel: the sleep ends with 57014, the session stays
 	if code, out := post(a.Cancel, true, body(iid, a1, a1.bs, strconv.Itoa(a1.pid))); code != 200 || out["outcome"] != "done" {
