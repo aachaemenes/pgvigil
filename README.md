@@ -101,7 +101,7 @@ On Windows the same commands run in PowerShell (`$env:PGVIGIL_REPO_DSN = '...'`,
 
 ## Demo
 
-`pgvigil demo` seeds a synthetic fleet through the import functions and, with `-serve`, serves it on loopback without a login: 12 instances across on-prem, RDS, Aurora, Azure and Cloud SQL, 7 days of history with two blocking chains and an idle-in-transaction head, statements with a reset, counters with a daily curve, a lagging replica and an inactive slot, a failed pg_cron job, a lag-warned DMS task with tables in error, and log events. The instances carry the tag `demo` and the name prefix `demo-`; a re-run replaces them and touches nothing else.
+`pgvigil demo` seeds a synthetic fleet through the import functions and, with `-serve`, serves it on loopback without a login: 12 instances across on-prem, RDS, Aurora, Azure and Cloud SQL, 7 days of history with two blocking chains and an idle-in-transaction head, statements with a reset, counters with a daily curve, a lagging replica and an inactive slot, a failed pg_cron job, a lag-warned DMS task with tables in error, and log events. The instances carry the tag `demo` and the name prefix `demo-`; a re-run replaces them and touches nothing else. Every instance also carries `env:` and `team:` tags, so the tree shows the fleet grouped as env: prod (9) and env: staging (3) with a team folder inside each and the Summary carries env and team columns; three instances carry an actions log of past cancel and terminate attempts.
 
 ```
 pgvigil demo -dsn 'postgres://pgvigil_owner:...@host:5432/pgvigil_demo?sslmode=disable' -serve   # into a repository database you own

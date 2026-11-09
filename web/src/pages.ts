@@ -291,6 +291,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const [f] = await Promise.all([fleet(), tagUI()]);
   const scope = inTag(ctx, f.instances);
   const keys = tagKeys(scope);
+  const filterBar = tagFilterBar(scope);   // built first: it drops a remembered filter this scope no longer carries
   const insts = applyTagFilter(scope);
   const rows = withTagFields(insts, keys).map(r => {
     const c = cells(f, r);
@@ -302,7 +303,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const n = [0, 0, 0];
   for (const r of rows) n[Number(r._worst)]++;
   const tiles = el('div', { class: 'tiles' },
-    tile('Instances', String(rows.length)),
+    tile('Instances', insts.length === scope.length ? String(rows.length) : `${rows.length} of ${scope.length}`),
     tile('Critical', String(n[2]), n[2] ? 'crit' : 'ok'),
     tile('Warning', String(n[1]), n[1] ? 'warn' : 'ok'),
     tile('OK', String(n[0]), 'ok'),
@@ -331,8 +332,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const broken = f.checks.filter(r => r.instance_id == null);
   return el('section', {}, el('h2', {}, 'Summary' + scopeLabel(ctx)),
     el('p', { class: 'meta' }, 'The state now, one row per instance; a cell opens that instance at the matching tab, its hover lists the checks.'),
+    filterBar,
     tiles,
-    tagFilterBar(scope),
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
     grid(rows, cols, 'No instances yet: run the collector.'));
 }

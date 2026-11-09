@@ -130,6 +130,8 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	}
 	if s.actions, err = s.NewActions(ctx, o.Actions); err != nil {
 		log.Warn("actions are off", "reason", err)
+	} else if o.Actions != nil && s.actions.off != "" {
+		log.Warn("actions are off", "reason", s.actions.off)
 	}
 	return s, nil
 }
