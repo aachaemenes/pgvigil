@@ -12,12 +12,13 @@ import (
 
 // dbstatsCollector reads the cumulative counters every minute: pg_stat_database
 // per database (transactions, blocks, tuples, temp, deadlocks, checksum failures,
-// sessions), one server row (bgwriter, checkpointer, WAL) and pg_stat_io by
-// backend type, object and context (PG16+). Rows are stored as read; the
-// repository's *_rate functions take the difference to the previous row over a
-// window and treat a reset (stats_reset moved, or a counter went backwards) as a
-// new baseline. Database sizes are the hourly databases collection's job: a
-// pg_database_size walks every relation file and is not a per-minute read.
+// sessions) and one server row (bgwriter, checkpointer, WAL). Rows are stored as
+// read; the repository's *_rate functions take the difference to the previous row
+// over a window and treat a reset (stats_reset moved, or a counter went backwards)
+// as a new baseline. pg_stat_io is the iostats collection's read (every 5 minutes
+// by default: its rows were most of what this collection stored). Database sizes
+// are the hourly databases collection's job: a pg_database_size walks every
+// relation file and is not a per-minute read.
 type dbstatsCollector struct{}
 
 func init() { Register(dbstatsCollector{}) }
@@ -116,28 +117,5 @@ SELECT 'server' AS kind, b.stats_reset AS bgwriter_stats_reset, %s AS checkpoint
 	}
 	out = append(out, server...)
 
-	if info.HasPgStatIO {
-		ioc, err := viewColumns(ctx, conn, "pg_catalog.pg_stat_io")
-		if err != nil {
-			return nil, err
-		}
-		ioSQL := fmt.Sprintf(`
-SELECT 'io' AS kind, i.backend_type, i.object, i.context, i.stats_reset,
-       i.reads, %s AS read_bytes, i.read_time, i.writes, %s AS write_bytes, i.write_time, i.writebacks, i.writeback_time,
-       i.extends, %s AS extend_bytes, i.extend_time, %s AS op_bytes, i.hits, i.evictions, i.reuses, i.fsyncs, i.fsync_time
-  FROM pg_stat_io i
- WHERE i.reads IS NOT NULL OR i.writes IS NOT NULL OR i.hits IS NOT NULL`,
-			col(ioc, "i", "read_bytes", "numeric"), col(ioc, "i", "write_bytes", "numeric"),
-			col(ioc, "i", "extend_bytes", "numeric"), col(ioc, "i", "op_bytes", "bigint"))
-		irows, err := conn.Query(ctx, ioSQL)
-		if err != nil {
-			return nil, fmt.Errorf("pg_stat_io: %w", err)
-		}
-		io, err := rowsToMaps(irows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, io...)
-	}
 	return out, nil
 }
