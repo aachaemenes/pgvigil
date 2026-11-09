@@ -51,6 +51,18 @@ func (g *Gen) versionRows(t time.Time) []Row {
 		engine, res = "aurora-postgresql", "cluster:"+s.Name
 	}
 	maj, mi := num/10000, num%10000
+	// the cluster's instances (DescribeDBInstances): an Aurora cluster has a writer and a reader, an RDS instance is itself
+	members := []Row{{"kind": "aws_instance", "id": s.Name, "class": "db.r6g.xlarge", "engine_version": fmt.Sprintf("%d.%d", maj, mi),
+		"auto_minor_version_upgrade": true, "maintenance_window": "sun:06:00-sun:06:30", "is_writer": true}}
+	if s.Platform == "aurora" {
+		members = []Row{
+			{"kind": "aws_instance", "id": s.Name + "-instance-1", "class": "db.r6g.large", "engine_version": fmt.Sprintf("%d.%d", maj, mi),
+				"auto_minor_version_upgrade": true, "maintenance_window": "sun:06:00-sun:06:30", "is_writer": true},
+			{"kind": "aws_instance", "id": s.Name + "-instance-2", "class": "db.r6g.large", "engine_version": fmt.Sprintf("%d.%d", maj, mi),
+				"auto_minor_version_upgrade": true, "maintenance_window": "sun:06:30-sun:07:00", "is_writer": false},
+		}
+	}
+	out = append(out, members...)
 	out = append(out, Row{"kind": "aws_engine", "resource": res, "engine": engine, "engine_version": fmt.Sprintf("%d.%d", maj, mi),
 		"auto_minor_version_upgrade": true, "maintenance_window": "sun:06:00-sun:06:30", "members": []string{s.Name}},
 		Row{"kind": "aws_target", "engine_version": fmt.Sprintf("%d.%d", maj, mi+1), "is_major": false, "description": "minor (demo)", "auto_upgrade": false},

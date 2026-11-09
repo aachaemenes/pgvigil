@@ -71,7 +71,7 @@ var base = []Spec{
 		Load: 0.3, MaxConn: 200, Addr: "10.40.1.12", Tags: []string{"staging", "portal"}},
 	{Name: "cloudsql-analytics01", Platform: "cloudsql", Version: "16.15", VersionNum: 160015, App: "analytics", DBs: []string{"events"},
 		Load: 1.0, MaxConn: 600, Addr: "10.50.0.11", Tags: []string{"prod", "analytics"}, Tables: "skip"},
-	{Name: "cloudsql-analytics02", Platform: "cloudsql", Version: "15.19", VersionNum: 150019, App: "analytics", DBs: []string{"events_dev"},
+	{Name: "cloudsql-analytics02", Platform: "cloudsql", Version: "14.24", VersionNum: 140024, App: "analytics", DBs: []string{"events_dev"},
 		Load: 0.25, MaxConn: 200, Addr: "10.50.0.12", StmtBroken: true, Tags: []string{"staging", "analytics"}},
 }
 

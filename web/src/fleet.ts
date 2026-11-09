@@ -10,7 +10,9 @@ let pending: Promise<Fleet> | null = null;
 export async function fleet(force = false): Promise<Fleet> {
   if (!force && cache && Date.now() - cache.at < 25000) return cache;
   if (pending) return pending;
-  pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {})])
+  // the versions read is optional: a repository not yet migrated to 0035 (or any failure there) costs the Version
+  // column only, never the tree and the Summary
+  pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null }))])
     .then(([i, c, v]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;

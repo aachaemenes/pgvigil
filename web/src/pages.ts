@@ -316,7 +316,6 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     ...groups.map(statusCol),
     { key: 'total', label: 'sessions', num: true },
     { key: 'waiting_lock', label: 'lock waits', num: true },
-    { key: 'server_version', label: 'version', fmt: v => String(v ?? '').split(' ').slice(0, 2).join(' ') },
     { key: 'activity_at', label: 'last sample', fmt: fmtTime },
   ];
   const broken = f.checks.filter(r => r.instance_id == null);

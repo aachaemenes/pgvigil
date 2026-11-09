@@ -1,10 +1,11 @@
 -- 0038: the wave A join for the extensions (0019) and versions (0035) collections. The findings view gains the
 -- extension rules (outdated, pg_stat_statements not preloaded or absent, pg_hint_plan created but not preloaded,
--- auto_explain at 0 ms, and the rest) and the version rules (a major past its end of life or ending soon, minors
--- behind, a deprecated engine version, maintenance AWS applies on its own, a changed collation version); purge()
--- gains the rows of extensions, settings, pending actions and collations no longer present and the extension
--- history older than the retention (version_history is small and stays whole; neither migration partitions a
--- table). Both bodies are 0037's with the additions (a frozen file is never edited; a later join re-creates
+-- auto_explain at 0 ms, and the rest) and the version rules (a deprecated engine version, maintenance AWS applies
+-- on its own or that waits undated, a changed collation version; the end-of-life and minors-behind readings come
+-- from the release table through the Versions API and the Summary's Version cell, not this view); purge() gains the
+-- rows of extensions, settings, pending actions and collations no longer present (the three change logs
+-- extension_history, instance_setting_history and version_history stay whole: one row per real change; neither
+-- migration partitions a table). Both bodies are 0037's with the additions (a frozen file is never edited; a later join re-creates
 -- them again with its own).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -125,7 +126,7 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     -- the extensions collection (0019): outdated, preload and setting rules per extension
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.extension_findings
     UNION ALL
-    -- the versions collection (0035): end of life, minors behind, a deprecated engine version, pending maintenance, collations
+    -- the versions collection (0035): a deprecated engine version, pending maintenance, a changed collation version
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.version_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
@@ -195,14 +196,12 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.vacuum_databases WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  -- extensions, their settings and per-database rows no longer present, and the extension history (0019)
+  -- extensions, their settings and per-database rows no longer present (0019; extension_history stays whole)
   DELETE FROM pgvigil.instance_extensions WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.instance_extension_settings WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.database_extensions WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
-  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  DELETE FROM pgvigil.extension_history WHERE changed_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- pending maintenance actions and database collations no longer present (0035)
   DELETE FROM pgvigil.version_pending WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
