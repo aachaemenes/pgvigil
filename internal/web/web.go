@@ -142,6 +142,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/logs", s.logs)
 	api.HandleFunc("GET /api/config", s.config)
 	api.HandleFunc("GET /api/databases", s.databases)
+	api.HandleFunc("GET /api/tables", s.tables)
+	api.HandleFunc("GET /api/findings", s.findings)
+	api.HandleFunc("GET /api/slow", s.slow)
 	api.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})
@@ -440,6 +443,7 @@ func (s *Server) dms(w http.ResponseWriter, r *http.Request) {
 		Tasks     *table `json:"tasks"`
 		Instances *table `json:"instances"`
 		Tables    *table `json:"tables"`
+		Drain     *table `json:"drain"`
 	}{}
 	var err error
 	if out.Tasks, err = s.query(ctx, sqlDMSTasks, id); err != nil {
@@ -447,6 +451,10 @@ func (s *Server) dms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if out.Instances, err = s.query(ctx, sqlDMSInstances, id); err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	if out.Drain, err = s.query(ctx, sqlDMSDrain, id); err != nil {
 		s.reply(w, r, nil, err)
 		return
 	}
@@ -469,7 +477,70 @@ func (s *Server) statements(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.top_statements($1, $2, $3, $4)`, id, from, to, limit)
+	order := r.URL.Query().Get("order")
+	if order == "" {
+		order = "time"
+	}
+	if !statementOrders[order] {
+		writeErr(w, http.StatusBadRequest, errors.New("order must be time, calls, io, mean, rows, temp or wal"))
+		return
+	}
+	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, $4, $5)`, id, from, to, order, limit)
+	s.reply(w, r, t, err)
+}
+
+// statementOrders are the sorts top_statements_by knows.
+var statementOrders = map[string]bool{"time": true, "calls": true, "io": true, "mean": true, "rows": true, "temp": true, "wal": true}
+
+// tables is one instance's table health read: the per-database summary and the tables.
+func (s *Server) tables(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out := struct {
+		Databases *table `json:"databases"`
+		Tables    *table `json:"tables"`
+	}{}
+	if out.Databases, err = s.query(r.Context(), sqlTableDatabases, id); err != nil {
+		s.reply(w, r, nil, err)
+		return
+	}
+	out.Tables, err = s.query(r.Context(), sqlTables, id)
+	s.reply(w, r, out, err)
+}
+
+// findings lists the parameter findings of every instance, or one with ?instance=.
+func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
+	var id *int
+	if v := r.URL.Query().Get("instance"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive instance_id"))
+			return
+		}
+		id = &n
+	}
+	t, err := s.query(r.Context(), sqlFindings, id)
+	s.reply(w, r, t, err)
+}
+
+// slow lists the executions seen running at least ?min= seconds (default 5) between from and to.
+func (s *Server) slow(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	minSecs := 5
+	if v := r.URL.Query().Get("min"); v != "" {
+		if minSecs, err = strconv.Atoi(v); err != nil || minSecs < 0 || minSecs > 86400 {
+			writeErr(w, http.StatusBadRequest, errors.New("min must be 0..86400 seconds"))
+			return
+		}
+	}
+	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.slow_in_window($1, $2, $3, $4, 200)`, id, from, to, minSecs)
 	s.reply(w, r, t, err)
 }
 

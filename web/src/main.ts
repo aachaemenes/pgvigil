@@ -5,15 +5,17 @@ import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget } from './fleet';
 import { checks, config, Ctx, dms, errorBox, fleetSummary, instances, instanceSummary, jobs, logs, replication, statements, counters, activity } from './pages';
+import { findingsView, tablesView } from './borrowed';
 import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rememberInstance, rootTabs } from './router';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, instances, dms };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings: () => findingsView(), instances, dms };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
+  tables: c => tablesView(c.instance!), findings: c => findingsView(c.instance),
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms']);

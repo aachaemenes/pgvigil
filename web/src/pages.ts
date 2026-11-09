@@ -1,4 +1,5 @@
 import { Activity, DMS, get, Row, rowsOf, Table } from './api';
+import { dmsDrainView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
 import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
@@ -141,23 +142,22 @@ function snapshotPicker(ctx: Ctx, at?: string): HTMLElement {
 
 export async function statements(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
-  const rows = rowsOf(await get('statements', { instance: ctx.instance, ...range(ctx), limit: 100 }));
-  const cols: Col[] = [
-    { key: 'total_exec_ms', label: 'total ms', num: true },
-    { key: 'calls', num: true },
-    { key: 'mean_exec_ms', label: 'mean ms', num: true },
-    { key: 'rows', num: true },
-    { key: 'shared_blks_read', label: 'blks read', num: true },
-    { key: 'shared_blks_hit', label: 'blks hit', num: true },
-    { key: 'temp_blks_written', label: 'temp blks', num: true },
-    { key: 'wal_bytes', label: 'WAL', num: true, fmt: fmtBytes },
-    { key: 'datname', label: 'db' },
-    { key: 'usename', label: 'user' },
-    { key: 'queryid', label: 'queryid' },
-    { key: 'query', wide: true, fmt: truncQuery },
-  ];
-  return el('section', {}, el('h2', {}, `Top statements (${rangeLabel(ctx)})`),
-    grid(rows, cols, 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'));
+  const order = statementOrders.some(o => o[0] === ctx.order) ? ctx.order! : 'time';
+  const minSecs = ctx.minSecs ?? 5;
+  const w = { instance: ctx.instance, ...range(ctx) };
+  const [st, slow] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs })]);
+  const sortBar = el('div', { class: 'subtabs' }, ...statementOrders.map(([k, l]) =>
+    el('a', { href: href(ctx, { tab: 'statements', order: k }), class: k === order ? 'on' : '' }, 'by ' + l)));
+  const minIn = el('input', { type: 'number', min: '0', max: '86400', value: String(minSecs), style: 'width:5em', 'aria-label': 'seconds at least' });
+  minIn.addEventListener('change', () => {
+    const v = Number(minIn.value);
+    if (Number.isFinite(v) && v >= 0) location.hash = href(ctx, { tab: 'statements', minSecs: v });
+  });
+  return el('section', {}, el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
+    grid(rowsOf(st), stmtCols(order), 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
+    el('h3', {}, 'Ran at least ', minIn, ' s in this window'),
+    el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from its transaction start.'),
+    grid(rowsOf(slow), slowCols, 'Nothing seen running that long in this window.'));
 }
 
 const counterSets: Record<string, { title: string; series: { key: string; label: string }[]; fmt?: (v: number) => string }[]> = {
@@ -227,6 +227,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
     { key: 'is_present', label: 'present', fmt: v => v ? 'yes' : 'gone' },
   ];
   sec.append(grid(tasks, taskCols, 'No DMS tasks: name them under an instance\'s aws.dms.tasks in the collector config.'));
+  if (tasks.length) sec.append(dmsDrainView(d.drain));
   if (ctx.task) {
     const t = tasks.find(r => r.task_arn === ctx.task && (!ctx.taskInstance || Number(r.instance_id) === ctx.taskInstance));
     sec.append(el('h3', {}, `Tables of ${t ? String(t.task_id) : ctx.task}`), el('p', { class: 'meta' }, link('all tasks', href(ctx, { tab: 'dms', task: undefined, taskInstance: undefined }))));

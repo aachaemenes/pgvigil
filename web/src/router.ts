@@ -13,6 +13,8 @@ export interface Ctx {
   at?: string;           // activity snapshot
   task?: string;         // DMS task ARN
   taskInstance?: number;
+  order?: string;        // statements sort
+  minSecs?: number;      // statements: executions seen running at least this long
 }
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
@@ -20,10 +22,10 @@ export function rememberInstance(id?: number) { if (id) try { localStorage.setIt
 
 export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', instances: 'Instances', dms: 'DMS' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS' };
 export const instanceTabs: Record<string, string> = {
-  summary: 'Summary', activity: 'Running queries', statements: 'Statements', counters: 'Counters',
-  replication: 'Replication', jobs: 'Jobs', logs: 'Logs', dms: 'DMS', config: 'Configuration',
+  summary: 'Summary', activity: 'Running queries', statements: 'Statements', counters: 'Counters', tables: 'Tables',
+  replication: 'Replication', jobs: 'Jobs', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
@@ -48,6 +50,8 @@ export function parse(): Ctx {
     at: q.get('at') ?? undefined,
     task: q.get('task') ?? undefined,
     taskInstance: Number(q.get('ti')) || undefined,
+    order: q.get('order') ?? undefined,
+    minSecs: q.has('min') && Number.isFinite(Number(q.get('min'))) && Number(q.get('min')) >= 0 ? Number(q.get('min')) : undefined,
   };
 }
 
@@ -68,6 +72,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (c.tab === 'logs') page('logKind', 'lk');
   if (c.tab === 'activity') page('at', 'at');
   if (c.tab === 'dms') { page('task', 'task'); page('taskInstance', 'ti'); }
+  if (c.tab === 'statements') { page('order', 'order'); page('minSecs', 'min'); }
   return `#/${c.tab}?${q}`;
 }
 
