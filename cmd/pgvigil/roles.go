@@ -10,7 +10,7 @@ import (
 // UI passwords), and on each monitored server to create the monitoring login. Nothing is executed: the operator reads it,
 // fills in the passwords or the identity, and runs it.
 func runRoles(args []string) error {
-	collector, reader, monitor := "pgvigil_agent", "pgvigil_ui", "pgvigil_monitor"
+	collector, reader, monitor, act := "pgvigil_agent", "pgvigil_ui", "pgvigil_monitor", "pgvigil_actions"
 	if len(args) > 0 && args[0] == "-h" {
 		fmt.Fprintln(os.Stderr, "usage: pgvigil roles   prints the CREATE ROLE statements for the repository and the monitored servers")
 		return nil
@@ -31,6 +31,14 @@ CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
 -- GRANT USAGE ON SCHEMA cron TO %[3]s; ALTER ROLE %[3]s BYPASSRLS;   -- not available on RDS: see the docs
 -- optional, where pg_stat_statements lives in a schema the login cannot see:
 -- GRANT USAGE ON SCHEMA <that schema> TO %[3]s;
-`, collector, reader, monitor)
+
+-- Optional, per monitored server: the actions login behind the UI's Cancel and Terminate buttons.
+-- Absent by default; create it only where the UI may stop sessions. It holds pg_signal_backend and
+-- nothing else (never a superuser: pgvigil refuses one, and a superuser's session stays out of its reach).
+-- Point the instance's actions_dsn at it (env:NAME or file:/path only); every attempt is kept in the
+-- repository's pgvigil.actions_log, written by serve through the config's repository login (pgvigil_collector).
+-- CREATE ROLE %[4]s LOGIN PASSWORD '<set-me>' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+-- GRANT pg_signal_backend TO %[4]s;
+`, collector, reader, monitor, act)
 	return nil
 }

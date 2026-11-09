@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,5 +89,91 @@ func TestValidateServeOnly(t *testing.T) {
 	c := Config{Repository: Repository{DSNRaw: "r"}}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("serve-only config rejected: %v", err)
+	}
+}
+
+func TestActionsDSN(t *testing.T) {
+	base := "repository:\n  dsn: env:REPO\ninstances:\n  - name: a\n    dsn: env:A\n"
+	for _, c := range []struct {
+		line string
+		ok   bool
+	}{
+		{"", true},
+		{"    actions_dsn: env:PGVIGIL_ACT\n", true},
+		{"    actions_dsn: file:/run/secrets/act\n", true},
+		{"    actions_dsn: \"host=h user=pgvigil_actions password=p\"\n", false},
+		{"    actions_dsn: postgres://u:p@h/db\n", false},
+	} {
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(p, []byte(base+c.line), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(p)
+		if (err == nil) != c.ok {
+			t.Errorf("%q: err=%v, want ok=%v", c.line, err, c.ok)
+		}
+		if err != nil && !strings.Contains(err.Error(), "env:NAME or file:/path") {
+			t.Errorf("%q: the refusal does not say why: %v", c.line, err)
+		}
+	}
+	t.Setenv("PGVIGIL_ACT", "host=x user=pgvigil_actions")
+	if got := (Instance{ActionsDSNRaw: "env:PGVIGIL_ACT"}).ActionsDSN(); got != "host=x user=pgvigil_actions" {
+		t.Errorf("ActionsDSN: %q", got)
+	}
+	if got := (Instance{}).ActionsDSN(); got != "" {
+		t.Errorf("no actions_dsn: %q", got)
+	}
+}
+
+func TestTags(t *testing.T) {
+	for _, c := range [][2]string{{"prod", "tag/prod"}, {" Env : prod ", "env/prod"}, {"team:billing", "team/billing"}, {"tag:prod", "tag/prod"},
+		{"url:http://x", "url/http://x"}} {
+		g, err := ParseTag(c[0])
+		if err != nil || g.Key+"/"+g.Value != c[1] {
+			t.Errorf("%q: got %+v %v, want %s", c[0], g, err, c[1])
+		}
+	}
+	for _, bad := range []string{"", "  ", "env:", ":prod", "tag:a:b", "a:b:c:d" + "\t", "\tprod", "bad key:x", "env:a,b", strings.Repeat("k", 41) + ":v"} {
+		if _, err := ParseTag(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if s := (Tag{Key: "tag", Value: "prod"}).String() + " " + (Tag{Key: "env", Value: "dev"}).String(); s != "prod env:dev" {
+		t.Errorf("String: %q", s)
+	}
+	base := "repository:\n  dsn: env:REPO\n"
+	for _, c := range []struct {
+		body string
+		want string // "" = ok
+	}{
+		{"instances:\n  - name: a\n    dsn: env:A\n    tags: [prod, env:prod, team:billing]\n", ""},
+		{"instances:\n  - name: a\n    dsn: env:A\n    tags: [\"env:\"]\n", "has no value"},
+		{"ui:\n  group_by: [env, team]\n  env_order: [prod, dev]\n", ""},
+		{"ui:\n  group_by: [env, env]\n", "listed twice"},
+		{"ui:\n  group_by: [Env]\n", "not a tag key"},
+		{"ui:\n  group_by: [a, b, c, d, e]\n", "at most 4"},
+		{"ui:\n  env_order: [prod, \"\"]\n", "empty value"},
+		{"ui:\n  env_order: [Prod, \" Dev \"]\n", ""},
+	} {
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(p, []byte(base+c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%q: %v", c.body, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%q: err=%v, want %q", c.body, err, c.want)
+		case c.want == "" && len(cfg.UI.EnvOrder) == 0:
+			t.Errorf("%q: env_order not defaulted", c.body)
+		}
+	}
+	cu := &Config{Repository: Repository{DSNRaw: "x"}, UI: UI{EnvOrder: []string{"Prod", " Dev "}}}
+	if err := cu.Validate(); err != nil || cu.UI.EnvOrder[0] != "prod" || cu.UI.EnvOrder[1] != "dev" {
+		t.Errorf("env_order not lower-cased and trimmed: %v %v", cu.UI.EnvOrder, err)
+	}
+	if got := (Instance{Tags: []string{"prod", "env:dev"}}).TagPairs(); len(got) != 2 || got[1].Key != "env" {
+		t.Errorf("TagPairs: %+v", got)
 	}
 }
