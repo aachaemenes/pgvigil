@@ -1,13 +1,15 @@
+# Dependency updates as pull requests, weekly: Go modules, the frontend's npm packages, the Actions used by CI.
+# Every version is pinned in go.sum / package-lock.json; this is how a pin moves on purpose.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
-    schedule:
-      interval: weekly
-    groups:
-      go-deps:
-        patterns: ["*"]
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
-    schedule:
-      interval: weekly
+    schedule: { interval: weekly }

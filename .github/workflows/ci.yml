@@ -51,3 +51,13 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.15.0 # pinned to the local golangci-lint; bump on purpose
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go mod verify
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0   # the version run locally on 2026-11-09; bump on purpose
+      - run: govulncheck ./...
