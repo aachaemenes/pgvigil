@@ -11,8 +11,9 @@ import { storageView } from './storage';
 import { vacuumView } from './vacuum';
 import { extensionsView } from './extensions';
 import { versionsView } from './versions';
+import { ioView } from './io';
 import { rangePicker } from './rangepicker';
-import { href, instanceTabs, isLive, parse, rememberInstance, rootTabs } from './router';
+import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_ } from './router';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 
@@ -22,6 +23,7 @@ const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
   tables: c => tablesView(c.instance!), vacuum: vacuumView, findings, host: hostView, storage: storageView,
   extensions: c => extensionsView(c.instance!), versions: c => versionsView(c.instance!),
+  io: c => ioView(c.instance!, window_(c), rangeLabel(c)),
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms']);

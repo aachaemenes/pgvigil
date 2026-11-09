@@ -245,6 +245,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("extensions", g.extensionRows(t))
 		add("versions", g.versionRows(t))
 	}
+	add("io", g.ioRows(t))
 	if !g.Spec.Replica { // a standby does not vacuum: the collector skips both there (logCollections logs it)
 		add("vacuum", g.vacuumRows(t))
 		if first || t.Minute() == 0 {
@@ -274,6 +275,9 @@ func (g *Gen) Collections() []string {
 		c = append(c, "dms")
 	}
 	// host rides along on every platform: on one without a door the collector logs the skip (logCollections)
+	if g.Spec.Platform == "rds" || g.Spec.Platform == "aurora" {
+		c = append(c, "io")
+	}
 	return append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "extensions", "versions")
 }
 
@@ -1058,6 +1062,9 @@ func (g *Gen) dmsRows(t time.Time) []Row {
 		"engine_version": "3.5.4", "allocated_gb": 200, "multi_az": false, "public": false, "az": "us-east-1a", "created": g.pmStart,
 		"free_until": nil, "pending": nil, "cpu_pct": 12 + 35*c + 5*noise(s.Name+"cpu", t), "freeable_bytes": int64(5.5e9 - 1.5e9*c),
 		"free_storage_bytes": int64(150e9), "swap_bytes": 0}}
+	for k, v := range g.dmsIO(t) {
+		out[0][k] = v
+	}
 
 	cdcStart := g.end.Add(-6 * 24 * time.Hour).Truncate(time.Hour)
 	flFinish := cdcStart.Add(3 * time.Hour)

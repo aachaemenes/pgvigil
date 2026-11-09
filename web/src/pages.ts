@@ -8,6 +8,7 @@ import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { extensionsFleetView } from './extensions';
 import { versionsFleetView } from './versions';
+import { dmsIOView } from './io';
 
 export type { Ctx };
 const range = window_;
@@ -273,6 +274,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
     { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
   ];
   sec.append(grid(ris, riCols, 'No replication instances yet.'));
+  if (ris.length) sec.append(await dmsIOView(range(ctx), ctx.instance, ids ? (r: Row) => ids.has(Number(r.instance_id)) : undefined));
   return sec;
 }
 
