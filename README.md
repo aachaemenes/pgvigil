@@ -8,7 +8,7 @@ Status: phase 1, under construction. The collector, the repository, the collecti
 
 ## Screenshots
 
-The demo fleet (`pgvigil demo`): the Summary grid, one row per instance and a coloured cell per check group; an instance's running queries with the blocking chain to its head; the DMS tab with the drain readout.
+The demo fleet (`pgvigil demo`): the Summary grid, one row per instance and a coloured cell per check group (collection, activity, replication, jobs, DMS, tables, vacuum, deadlocks and checksums, host, disk, storage, IO, and the version against the release table); an instance's running queries with the blocking chain to its head; the DMS tab with the drain readout.
 
 ![Summary grid](docs/img/summary.png)
 

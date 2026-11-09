@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pgvigil: open-source PostgreSQL monitoring for DBAs</title>
-<meta name="description" content="pgvigil is an open-source (MIT) PostgreSQL monitoring tool for DBAs: daily checks, running queries and blocking chains, top statements, counters, replication, jobs, logs and DMS tasks, across on-prem PostgreSQL, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.">
+<meta name="description" content="pgvigil is an open-source (MIT) PostgreSQL monitoring tool for DBAs: daily checks, running queries and blocking chains, top statements, counters, replication, jobs, logs, DMS tasks, host and storage with days until full, vacuum, versions against the release table, extensions and storage IO, across on-prem PostgreSQL, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.">
 <link rel="canonical" href="https://pgvigil.com/">
 <meta property="og:title" content="pgvigil: open-source PostgreSQL monitoring for DBAs">
-<meta property="og:description" content="One collector binary, a PostgreSQL repository, a web UI with its own login. Daily checks, blocking chains, top statements, replication, jobs, logs, DMS.">
+<meta property="og:description" content="One collector binary, a PostgreSQL repository, a web UI with its own login. Daily checks, blocking chains, top statements, replication, jobs, logs, DMS, host and storage, vacuum, versions, extensions, IO.">
 <meta property="og:url" content="https://pgvigil.com/">
 <meta property="og:type" content="website">
 <style>
@@ -78,6 +78,8 @@
     <div class="card"><h3>Top statements</h3><p>pg_stat_statements as deltas per interval, with reset detection, so the top statements over any window are real numbers, not cumulative totals.</p></div>
     <div class="card"><h3>Counters and rates</h3><p>pg_stat_database, the background writer, checkpointer, WAL and pg_stat_io as rates over a window, charted.</p></div>
     <div class="card"><h3>Replication, slots, jobs</h3><p>Streaming and logical replication, slots with retained WAL, Aurora replica status, pg_cron and pgAgent job runs and failures.</p></div>
+    <div class="card"><h3>Host, disk and storage</h3><p>CPU, memory, swap and load from the server itself (system_stats on-prem, CloudWatch on RDS and Aurora), every volume with its free space, growth per day and days until full, a fleet Disk report and a Storage view sorted by the soonest full.</p></div>
+    <div class="card"><h3>Vacuum, versions, extensions, IO</h3><p>Running vacuums and the tables autovacuum is behind on, wraparound headroom, every server's version against the PostgreSQL release table with end of life and pending cloud maintenance, outdated extensions, and the storage IO of RDS, Aurora and DMS instances.</p></div>
     <div class="card"><h3>Cloud doors</h3><p>On RDS and Aurora, the PostgreSQL log from CloudWatch Logs (slow statements, lock waits, deadlocks, failed logins) and AWS DMS tasks with their table statistics and CDC latency.</p></div>
     <div class="card"><h3>Every platform, one query set</h3><p>On-prem PostgreSQL 13 to 18, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB. Column names come from the server's own catalog, so one query set serves them all.</p></div>
     <div class="card"><h3>Small and static</h3><p>A single static Go binary for Linux, Windows and macOS, no runtime on the target, about 30 MB of memory while polling fifty instances. The web UI is embedded in the same binary.</p></div>
@@ -98,7 +100,14 @@
     <tr><td>databases</td><td>hourly</td><td>inventory with sizes, transaction id and multixact age</td></tr>
     <tr><td>jobs</td><td>1 min</td><td>pg_cron and pgAgent jobs, run history, failures</td></tr>
     <tr><td>logs</td><td>1 min</td><td>RDS and Aurora: the PostgreSQL log from CloudWatch Logs, slow statements, lock waits, deadlocks, failed logins</td></tr>
-    <tr><td>dms</td><td>1 min</td><td>AWS DMS tasks, table statistics, replication instances, CDC latency and host metrics, read only</td></tr>
+    <tr><td>dms</td><td>1 min</td><td>AWS DMS tasks, table statistics, replication instances, CDC latency, host metrics and the instances' IO, read only</td></tr>
+    <tr><td>tables</td><td>hourly</td><td>the biggest tables per database with dead rows, bloat, vacuum state and the table checks</td></tr>
+    <tr><td>vacuum</td><td>1 min, tables hourly</td><td>vacuums and analyzes running now (a VACUUM waiting on its table lock included), the run history, tables over their autovacuum thresholds for hours, wraparound against the freeze max age, xmin holders</td></tr>
+    <tr><td>host</td><td>1 min</td><td>on-prem through the <code>system_stats</code> extension where installed: OS, CPU, memory, load, every mount, device IO; RDS and Aurora through CloudWatch; the fleet Disk report</td></tr>
+    <tr><td>storage</td><td>15 min</td><td>volumes with growth per day and days until full, the WAL directory, tablespaces, RDS allocated storage with its autoscaling maximum, the Aurora volume against 128 TiB, database and table growth</td></tr>
+    <tr><td>extensions</td><td>hourly</td><td>installed per database against the server's available versions, the preload lists and the extension settings; which servers have which extension</td></tr>
+    <tr><td>versions</td><td>hourly</td><td>the server version against a built-in PostgreSQL release table (minors behind, end of life), the last restart and version changes, RDS and Aurora upgrade targets and pending maintenance, collation versions</td></tr>
+    <tr><td>io</td><td>5 min</td><td>RDS and Aurora storage IO from CloudWatch: IOPS, latency, throughput, queue depth, burst balance; the DMS replication instances' IO</td></tr>
   </table></div>
 </div></section>
 
