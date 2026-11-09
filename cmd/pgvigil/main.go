@@ -48,6 +48,8 @@ func run(args []string) int {
 		err = runCollect(ctx, log, args[1:])
 	case "run":
 		err = runScheduler(ctx, log, args[1:])
+	case "roles":
+		err = runRoles(args[1:])
 	default:
 		usage()
 		return 2
@@ -60,7 +62,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|version> [-config file] [-once collection] [-instance name]")
 }
 
 func loadConfig(args []string) (*config.Config, *flag.FlagSet, error) {

@@ -23,11 +23,12 @@ TARGET_DSN="host=$HOSTADDR port=$PORT user=$ROLE password=$PASS dbname=$DBNAME s
 CFG=$(mktemp)
 trap 'rm -f "$CFG"; psql "$ADMIN_DSN" -XAtq -c "alter system reset work_mem" -c "select pg_reload_conf()" -c "drop role if exists $ROLE" >/dev/null 2>&1 || true' EXIT
 
+INST="it-target-$RANDOM"   # a fresh instance name per run, so the first snapshot is a first sight on a reused repository
 cat > "$CFG" <<EOF
 repository:
   dsn: env:PGVIGIL_REPO_DSN
 instances:
-  - name: it-target
+  - name: $INST
     dsn: env:IT_TARGET_DSN
     tags: [it]
 EOF
@@ -43,7 +44,7 @@ psql "$ADMIN_DSN" -XAtq -c "alter system reset work_mem" -c "select pg_reload_co
 "$BIN" migrate -config "$CFG"                       # second run: nothing to apply, no error
 "$BIN" collect -config "$CFG" -once instance
 
-iid=$(q "select instance_id from pgvigil.instances where name='it-target'")
+iid=$(q "select instance_id from pgvigil.instances where name='$INST'")
 [ -n "$iid" ] || fail "no instance row"
 [ "$(q "select count(*) from pgvigil.instance_setting_history where instance_id=$iid")" = "0" ] || fail "history rows after the first snapshot"
 for own in statement_timeout lock_timeout default_transaction_read_only application_name; do

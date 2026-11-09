@@ -118,6 +118,16 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 		}
 		applied++
 	}
+	// the access contract (0008) covers whatever the migrations just added
+	var hasRoles bool
+	if err := c.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.apply_roles()') IS NOT NULL`).Scan(&hasRoles); err != nil {
+		return applied, err
+	}
+	if hasRoles {
+		if _, err := c.Exec(ctx, `SELECT pgvigil.apply_roles()`); err != nil {
+			return applied, fmt.Errorf("apply_roles: %w", err)
+		}
+	}
 	return applied, nil
 }
 

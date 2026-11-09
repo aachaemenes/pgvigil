@@ -6,8 +6,8 @@
 #   PGVIGIL_REPO_DSN  repository (the proof's instance row and its data stay there, under the name proof-replication);  ADMIN_DSN  superuser connection to the monitored server
 #
 # Expected: a 'slot' row for the created slot with active = false and retained_bytes > 0
-# after the WAL writes; a 'conflict' row per connectable database; zero 'sender' and
-# 'receiver' rows (no standby); replication_checks lists the slot as 'inactive slot retaining WAL'.
+# after the WAL writes; a 'conflict' row per connectable database; replication_checks lists the
+# slot as 'inactive slot retaining WAL'. Sender rows are not asserted (another session may stream).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}" "${ADMIN_DSN:?}"
@@ -39,6 +39,6 @@ echo "kinds: $kinds; slot $SLOT active/retained/wal_status = $slot; checks = $ch
 IFS=/ read -r _ retained _ <<<"$slot"
 [ "${retained:-0}" -gt 0 ] || fail "retained_bytes not > 0"
 [[ "$kinds" == *"conflict="* ]] || fail "no conflict rows"
-[[ "$kinds" != *"sender="* ]] || fail "unexpected sender rows on a server without a standby"
+# sender rows are not asserted: another session may be streaming from this server during the proof
 [ "$chk" = "1" ] || fail "replication_checks did not flag the slot"
 echo "proof-replication: OK"
