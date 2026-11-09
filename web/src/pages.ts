@@ -213,7 +213,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag && !ctx.instance ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const scoped = (rows: Row[]) => ids ? rows.filter(r => ids.has(Number(r.instance_id))) : rows;
   const tasks = scoped(rowsOf(d.tasks)), ris = scoped(rowsOf(d.instances)), tables = rowsOf(d.tables);
-  const sec = el('section', {}, el('h2', {}, 'DMS replication tasks' + (ctx.instance ? '' : scopeLabel(ctx))), el('p', { class: 'meta' }, 'The newest state of each task; the time range does not apply.'));
+  const sec = el('section', {}, el('h2', {}, 'DMS replication tasks' + (ctx.instance ? '' : scopeLabel(ctx))), el('p', { class: 'meta' }, 'The newest state of each task; the time range applies only to the replication instance IO charts below.'));
   const taskCols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id, 'dms') },
     { key: 'task_id', label: 'task', fmt: (v, r) => link(String(v), href(ctx, { tab: 'dms', task: String(r.task_arn), taskInstance: Number(r.instance_id) })) },

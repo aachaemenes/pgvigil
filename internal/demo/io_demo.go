@@ -1,7 +1,7 @@
 package demo
 
-// IO rows for the demo fleet (the io collection, task 43) and the replication instance's IO: the shapes import_io and
-// import_dms take, as the slice drafted them (notes/teams/...-s4-join.patch).
+// IO rows for the demo fleet (the io collection) and the replication instance's IO: the shapes import_io and
+// import_dms take.
 
 import (
 	"math"
