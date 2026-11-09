@@ -72,7 +72,9 @@ if ($Phase -eq 'install') {
     exit 0
 }
 
-# uninstall
+# uninstall: -purge removes the installer's own files and the folder only when nothing else is left, so the
+# proof's own target.dsn goes first (an operator's file would be kept, and the folder with it)
+Remove-Item -Path (Join-Path $proofDataDir 'target.dsn') -Force -ErrorAction SilentlyContinue
 $ErrorActionPreference = 'Continue'
 & $proofExe uninstall -purge 2>$null | Out-Null
 $ErrorActionPreference = 'Stop'
