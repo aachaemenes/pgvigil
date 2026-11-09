@@ -1,0 +1,8 @@
+# CI: the repository and the monitored instance are the same service container.
+repository:
+  dsn: env:PGVIGIL_REPO_DSN
+instances:
+  - name: ci-postgres
+    dsn: env:CI_TARGET_DSN
+    platform: auto
+    tags: [ci]

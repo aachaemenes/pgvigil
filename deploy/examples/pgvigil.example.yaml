@@ -1,0 +1,21 @@
+# pgvigil configuration. Secrets stay out of this file: write a value as
+#   env:NAME     read from the environment
+#   file:/path   read from a file (one line)
+repository:
+  dsn: env:PGVIGIL_REPO_DSN          # postgres://pgvigil:...@repo-host:5432/pgvigil
+
+# Global overrides of a collection's default interval; "disabled" turns one off everywhere.
+schedules:
+  instance: 1h
+
+instances:
+  - name: prod-writer
+    dsn: env:PROD_WRITER_DSN           # host=... user=pgvigil dbname=postgres sslmode=require
+    platform: auto                     # auto | onprem | rds | aurora | azure | cloudsql | alloydb
+    tags: [prod, aurora]
+    schedules:
+      instance: 30m
+  - name: prod-reader
+    dsn: env:PROD_READER_DSN
+    tags: [prod, aurora, reader]
+    disabled: [jobs]                   # a reader cannot run pg_cron
