@@ -241,9 +241,11 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if first || t.Minute() == 0 {
 		add("tables", g.tableRows(t, first))
 	}
-	add("vacuum", g.vacuumRows(t))
-	if first || t.Minute() == 0 {
-		add("vacuum_tables", g.vacuumTablesRows(t))
+	if !g.Spec.Replica { // a standby does not vacuum: the collector skips both there (logCollections logs it)
+		add("vacuum", g.vacuumRows(t))
+		if first || t.Minute() == 0 {
+			add("vacuum_tables", g.vacuumTablesRows(t))
+		}
 	}
 	if g.hostDoor() {
 		add("host", g.hostRows(t))

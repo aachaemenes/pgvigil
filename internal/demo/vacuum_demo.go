@@ -7,6 +7,9 @@ import (
 
 // ---------------------------------------------------------------- vacuum
 
+// vacuumSkipNote is the collection log's note on a standby, in the collector's words (vacuumApplies).
+const vacuumSkipNote = "a standby does not vacuum: its primary's read covers it"
+
 // vacuumRows is the minute vacuum read: the summary, an autovacuum of the second main table of the first
 // database in the first 20 minutes of every third hour (a 6 h anti-wraparound one on the Tables "avoff"
 // scenario's instance is not modelled: its table has autovacuum off), and on the instance whose Tables
@@ -56,7 +59,11 @@ func (g *Gen) vacuumTablesRows(t time.Time) []Row {
 		if s.Tables == "avoff" && di == 0 {
 			age = 230e6
 		}
-		out = append(out, Row{"kind": "wrap", "dbid": dbOID(di), "datname": db, "allow_conn": true, "xid_age": age, "mxid_age": 1200})
+		id := dbOID(di)
+		if db == "postgres" { // the databases collection gives postgres OID 5 (dbOID(-1))
+			id = dbOID(-1)
+		}
+		out = append(out, Row{"kind": "wrap", "dbid": id, "datname": db, "allow_conn": true, "xid_age": age, "mxid_age": 1200})
 	}
 	out = append(out, Row{"kind": "wrap", "dbid": int64(1), "datname": "template1", "allow_conn": true, "xid_age": int64(20e6), "mxid_age": 0},
 		Row{"kind": "wrap", "dbid": int64(4), "datname": "template0", "allow_conn": false, "xid_age": int64(20e6), "mxid_age": 0})
