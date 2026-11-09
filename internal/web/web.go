@@ -317,9 +317,13 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, c := range overviewChecks {
+		// a check names the parameters it takes: $1 the expectations, $2 the default stale age
 		var args []any
-		if strings.Contains(c.sql, "$1") {
+		switch {
+		case strings.Contains(c.sql, "$2"):
 			args = []any{string(exp), DefaultStaleSecs}
+		case strings.Contains(c.sql, "$1"):
+			args = []any{string(exp)}
 		}
 		t, err := s.query(r.Context(), c.sql, args...)
 		if err != nil {

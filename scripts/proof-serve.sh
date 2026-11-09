@@ -53,6 +53,7 @@ rows() {  # rows <path> <jq-like python expression giving a count> <min>
 rows health 'len(d["rows"])' 1
 rows instances 'len(d["rows"])' 1
 rows overview 'len(d["rows"])' 0
+curl -s "$U/api/overview" | grep -q 'check could not run' && fail "an overview check could not run: $(curl -s "$U/api/overview" | grep -o 'check could not run[^]]*' | head -3)"
 rows "activity?instance=$AID&at=$AT" 'len(d["sessions"]["rows"])' 2
 rows "activity?instance=$AID&at=$AT" 'len(d["chains"]["rows"])' 1
 rows "statements?instance=$SID&from=$FROM" 'len(d["rows"])' 1
