@@ -4,7 +4,7 @@ PostgreSQL monitoring for DBAs: daily checks, running queries with blocking chai
 
 One collector binary (Go, static, no runtime on the target) polls each instance on a schedule and writes into a PostgreSQL repository. A web UI served by the same binary, and later an installable desktop client, read the repository; Grafana can read it too.
 
-Status: phase 1, under construction. The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log and DMS doors); the installers and the service wrappers ship with v0.2.0 (the section below); the desktop wrapper is not built yet. The first release is [v0.1.0](https://github.com/aachaemenes/pgvigil/releases/tag/v0.1.0): static binaries for Linux, Windows and macOS.
+Status: phase 2 in progress; wave A merged 2026-11-09 (host and disk, storage, vacuum, extensions, versions, IO). The collector, the repository, the collections below, the web UI with its login and HTTPS listen work and are proven on PostgreSQL 13 through 18 and on Aurora PostgreSQL 17 (the AWS log, DMS, CloudWatch and RDS doors); the installers and the service wrappers ship with v0.2.0 (the section below); the desktop wrapper is not built yet. The first release is [v0.1.0](https://github.com/aachaemenes/pgvigil/releases/tag/v0.1.0): static binaries for Linux, Windows and macOS.
 
 ## Screenshots
 
