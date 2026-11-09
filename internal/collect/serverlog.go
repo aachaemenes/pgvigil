@@ -613,7 +613,6 @@ func (lp *linePrefix) timeOf(m []string, z *logZone) (time.Time, bool) {
 
 var zoneOffsetRE = regexp.MustCompile(`^([+-])(\d{2})(\d{2})?$`)
 
-
 // rewrite turns the lines of a stderr log into the RDS prefix shape with the time in UTC (so logparse reads
 // it without the server's zone, and a re-read line keeps its key), keeping the tab-led continuation lines and
 // dropping lines that match neither and lines whose time zone it cannot read (with their continuation lines;

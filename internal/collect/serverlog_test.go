@@ -324,3 +324,19 @@ func TestServerlogModifiedSecond(t *testing.T) {
 		t.Errorf("a file closed in from's second: %d slow events, want 1", n)
 	}
 }
+
+// The narrow door's text (the README carries it) is the shape serverlogDoorFind looks for: the name, three
+// arguments text, bigint, bigint, bytea out, SECURITY DEFINER, and it serves only pg_ls_logdir's names.
+func TestServerlogDoorText(t *testing.T) {
+	for _, want := range []string{"pgvigil_read_log(p_name text, p_offset bigint, p_length bigint) RETURNS bytea", "SECURITY DEFINER",
+		"SET search_path = pg_catalog", "WHERE p_name IN (SELECT name FROM pg_ls_logdir())", "REVOKE ALL ON FUNCTION", "FROM PUBLIC"} {
+		if !strings.Contains(serverlogDoorSQL, want) {
+			t.Errorf("the door's text lacks %q", want)
+		}
+	}
+	for _, want := range []string{"proname = 'pgvigil_read_log'", "prosecdef", "rolsuper", "'25 20 20'::oidvector", "'bytea'::regtype"} {
+		if !strings.Contains(serverlogDoorFind, want) {
+			t.Errorf("the door's lookup lacks %q", want)
+		}
+	}
+}
