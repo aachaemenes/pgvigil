@@ -261,8 +261,8 @@ func (s *CronSpec) PriorDue(t time.Time, loc *time.Location) time.Time {
 
 // CronSettings are the pg_cron settings the schedule arithmetic needs; Err is a failed read.
 type CronSettings struct {
-	Timezone  string // cron.timezone ("GMT" when the setting is not there: pg_cron before 1.5, or not loaded)
-	DomAndDow bool   // cron.match_dom_and_dow (pg_cron 1.6.8+): both day fields must match
+	Timezone  string    // cron.timezone ("GMT" when the setting is not there: pg_cron before 1.5, or not loaded)
+	DomAndDow bool      // cron.match_dom_and_dow (pg_cron 1.6.8+): both day fields must match
 	Now       time.Time // the server's clock at the read (the collector host's when the read failed): the runs' start_time is on that clock
 	Err       error
 }
