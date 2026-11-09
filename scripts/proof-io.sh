@@ -31,7 +31,8 @@
 #             /api/dmsio answers instances and series
 #   live      collection_dates io ok; cloud_io_sample holds VolumeReadIOPs and VolumeWriteIOPs rows for the
 #             cluster; AuroraVolumeBytesLeftTotal has none (read, NULL: AWS documents it for Aurora MySQL); after
-#             WAIT, ReadIOPS, ReadLatency and DiskQueueDepth rows too (the instance was awake a full period)
+#             WAIT, ReadIOPS, ReadLatency and DiskQueueDepth rows too (the instance was awake a full period); across
+#             the two reads no metric holds two datapoints under 300 s apart (each span stored once)
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -183,4 +184,8 @@ live_read
 for m in ReadIOPS ReadLatency DiskQueueDepth; do
   [ "$(q "select count(*) from pgvigil.cloud_io_sample where instance_id = $LID and metric = '$m'")" -ge 1 ] || fail "no $m rows after $WAIT s awake"
 done
+# two reads minutes apart store each 5-minute span once: no metric holds two datapoints under 300 s apart
+dup=$(q "select count(*) from (select snapshot_at - lag(snapshot_at) over (partition by metric order by snapshot_at) as gap
+                                from pgvigil.cloud_io_sample where instance_id = $LID) x where gap < interval '300 seconds'")
+[ "$dup" = 0 ] || fail "$dup datapoint(s) under 300 s from their neighbour: one span stored under two timestamps"
 echo "proof-io: OK (recorded, rules, server, live)"

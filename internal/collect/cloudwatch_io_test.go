@@ -26,6 +26,24 @@ import (
 type recordedCW struct {
 	metrics []recordedMetric
 	queries []cwtypes.MetricDataQuery
+	windows map[string]time.Duration
+	onCall  func(*cloudwatch.GetMetricDataInput)
+}
+
+// auroraRecordedNow is the read time the recorded Aurora answer is replayed at: 31 minutes after its newest
+// datapoint, the lag the lab cluster's volume counters showed (newest 10:54 at 11:24 PST, 2026-11-09).
+func auroraRecordedNow(t *testing.T, ms []recordedMetric) time.Time {
+	t.Helper()
+	var newest time.Time
+	for _, m := range ms {
+		if m.At.After(newest) {
+			newest = m.At
+		}
+	}
+	if newest.IsZero() {
+		t.Fatal("no recorded datapoint")
+	}
+	return newest.Add(31 * time.Minute)
 }
 
 func loadRecordedMetrics(t *testing.T, name string) []recordedMetric {
@@ -41,8 +59,19 @@ func loadRecordedMetrics(t *testing.T, name string) []recordedMetric {
 	return out
 }
 
+// GetMetricData answers each query with the recorded datapoints of its metric and dimensions INSIDE the call's
+// time window, as CloudWatch does; windows records each call's span per metric.
 func (r *recordedCW) GetMetricData(_ context.Context, in *cloudwatch.GetMetricDataInput, _ ...func(*cloudwatch.Options)) (*cloudwatch.GetMetricDataOutput, error) {
 	r.queries = append(r.queries, in.MetricDataQueries...)
+	if r.onCall != nil {
+		r.onCall(in)
+	}
+	if r.windows == nil {
+		r.windows = map[string]time.Duration{}
+	}
+	for _, q := range in.MetricDataQueries {
+		r.windows[aws.ToString(q.MetricStat.Metric.MetricName)] = aws.ToTime(in.EndTime).Sub(aws.ToTime(in.StartTime))
+	}
 	out := &cloudwatch.GetMetricDataOutput{}
 	for _, q := range in.MetricDataQueries {
 		res := cwtypes.MetricDataResult{Id: q.Id, StatusCode: cwtypes.StatusCodeComplete}
@@ -56,7 +85,7 @@ func (r *recordedCW) GetMetricData(_ context.Context, in *cloudwatch.GetMetricDa
 					match = false
 				}
 			}
-			if match {
+			if match && !m.At.Before(aws.ToTime(in.StartTime)) && m.At.Before(aws.ToTime(in.EndTime)) {
 				res.Values = append(res.Values, m.Value)
 				res.Timestamps = append(res.Timestamps, m.At)
 			}
@@ -68,7 +97,8 @@ func (r *recordedCW) GetMetricData(_ context.Context, in *cloudwatch.GetMetricDa
 
 func TestIORowsAuroraRecorded(t *testing.T) {
 	api := &recordedCW{metrics: loadRecordedMetrics(t, "aurora-lab.json")}
-	rows, err := ioRows(context.Background(), api, platform.Aurora, config.AWS{Cluster: "dba-lab-pg"}, time.Now())
+	now := auroraRecordedNow(t, api.metrics)
+	rows, err := ioRows(context.Background(), api, platform.Aurora, config.AWS{Cluster: "dba-lab-pg"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +124,10 @@ func TestIORowsAuroraRecorded(t *testing.T) {
 			t.Errorf("VolumeReadIOPs unit %v", r["unit"])
 		}
 	}
-	if n["VolumeReadIOPs"] != 32 || n["VolumeWriteIOPs"] != 32 {
-		t.Errorf("volume datapoints %v, want 32 each (the recorded answer)", n)
+	// the volume counters arrive about 30 minutes late: a read window that does not reach back past that lag
+	// never stores one (the live proof's first failure, 2026-11-09)
+	if n["VolumeReadIOPs"] < 1 || n["VolumeWriteIOPs"] < 1 {
+		t.Errorf("volume datapoints %v: none inside the read window (window %v)", n, api.windows["VolumeReadIOPs"])
 	}
 	if n["AuroraVolumeBytesLeftTotal"] != 0 {
 		t.Errorf("AuroraVolumeBytesLeftTotal rows %d: no datapoint was recorded, none may be invented", n["AuroraVolumeBytesLeftTotal"])
@@ -220,7 +252,8 @@ func TestIOFixtureImport(t *testing.T) {
 		return n
 	}
 
-	io, err := ioRows(ctx, &recordedCW{metrics: loadRecordedMetrics(t, "aurora-lab.json")}, platform.Aurora, config.AWS{Cluster: "dba-lab-pg"}, time.Now())
+	rec := loadRecordedMetrics(t, "aurora-lab.json")
+	io, err := ioRows(ctx, &recordedCW{metrics: rec}, platform.Aurora, config.AWS{Cluster: "dba-lab-pg"}, auroraRecordedNow(t, rec))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,5 +295,30 @@ func TestIOFixtureImport(t *testing.T) {
 	}
 	if n := count(`SELECT count(*) FROM pgvigil.dms_ri_sample WHERE instance_id = $1`); n != 2 {
 		t.Errorf("dms_ri_sample rows %d, want 2 (one per import)", n)
+	}
+}
+
+// TestIOWindowAlignedToPeriod: CloudWatch lays a request's periods from its StartTime (to the minute), so two
+// reads started at different minutes return one 5-minute span under different timestamps and the import's key
+// (metric, datapoint time) never matches: every run would add overlapping rows (the live proof, 2026-11-09:
+// 19 then 36 VolumeReadIOPs rows with the same newest point). Every request starts on a period boundary.
+func TestIOWindowAlignedToPeriod(t *testing.T) {
+	for _, now := range []time.Time{
+		time.Date(2026, 11, 9, 19, 32, 13, 0, time.UTC), time.Date(2026, 11, 9, 19, 34, 59, 0, time.UTC),
+	} {
+		api := &recordedCW{}
+		starts := map[time.Time]bool{}
+		api.onCall = func(in *cloudwatch.GetMetricDataInput) { starts[aws.ToTime(in.StartTime)] = true }
+		if _, err := ioRows(context.Background(), api, platform.Aurora, config.AWS{Cluster: "c"}, now); err != nil {
+			t.Fatal(err)
+		}
+		if len(starts) == 0 {
+			t.Fatal("no request")
+		}
+		for s := range starts {
+			if s.Unix()%ioPeriod != 0 {
+				t.Errorf("now %s: StartTime %s is not on a %d-second boundary", now.Format(time.TimeOnly), s.Format(time.TimeOnly), ioPeriod)
+			}
+		}
 	}
 }
