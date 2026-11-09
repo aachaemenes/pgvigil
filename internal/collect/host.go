@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
+	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -37,7 +38,14 @@ type hostCollector struct{}
 
 func init() { Register(hostCollector{}) }
 
-const hostMetricWindow = 15 * time.Minute // CloudWatch is read this far back; the newest datapoint is kept
+const (
+	hostMetricWindow = 15 * time.Minute // CloudWatch is read this far back; the newest datapoint is kept
+	// hostMetricFresh: a datapoint older than this is not stored as the current value (a paused Serverless
+	// instance or a delivery gap would otherwise repeat one datapoint as a fresh sample every minute)
+	hostMetricFresh = 5 * time.Minute
+	// hostDescribeTTL: DescribeDBInstances answers change rarely; one call per instance per hour
+	hostDescribeTTL = time.Hour
+)
 
 func (hostCollector) Name() string                         { return "host" }
 func (hostCollector) DefaultInterval() time.Duration       { return time.Minute }
@@ -217,13 +225,23 @@ func hostDisks(rows []map[string]any, datadir string) []Row {
 		}
 		d.mounts = append(d.mounts, mp)
 	}
+	// the data directory's mount: the longest mount of any device that is a prefix of it (a root volume
+	// matches every path, so the choice is made across all devices, never per device)
+	dataMount := ""
+	for _, k := range order {
+		for _, m := range byDev[k].mounts {
+			if datadir != "" && (datadir == m || strings.HasPrefix(datadir, strings.TrimSuffix(m, "/")+"/")) && len(m) > len(dataMount) {
+				dataMount = m
+			}
+		}
+	}
 	out := make([]Row, 0, len(order))
 	for _, k := range order {
 		d := byDev[k]
 		sort.Strings(d.mounts)
 		name, holds := "", false
-		for _, m := range d.mounts { // the longest mount that is a prefix of the data directory
-			if datadir != "" && (datadir == m || strings.HasPrefix(datadir, strings.TrimSuffix(m, "/")+"/")) && len(m) > len(name) {
+		for _, m := range d.mounts {
+			if dataMount != "" && m == dataMount {
 				name, holds = m, true
 			}
 		}
@@ -362,6 +380,9 @@ func hostCloudRows(ctx context.Context, api hostAPI, kind platform.Kind, id stri
 			if _, err := fmt.Sscanf(aws.ToString(r.Id), "m%d", &i); err != nil || i >= len(hostCloudMetrics) {
 				continue
 			}
+			if now.Sub(r.Timestamps[0]) > hostMetricFresh {
+				continue
+			}
 			vals[hostCloudMetrics[i].col] = r.Values[0]
 			if r.Timestamps[0].After(newest) {
 				newest = r.Timestamps[0]
@@ -386,7 +407,7 @@ func hostCloudRows(ctx context.Context, api hostAPI, kind platform.Kind, id stri
 		host["metrics_at"] = newest.UTC()
 	} else {
 		errRows = append(errRows, Row{"kind": "collector_error", "source": "cloudwatch",
-			"message": fmt.Sprintf("no AWS/RDS datapoint for %s in the last %s (a paused Serverless instance, or a wrong identifier)", id, hostMetricWindow)})
+			"message": fmt.Sprintf("no AWS/RDS datapoint for %s in the last %s (a paused Serverless instance, or a wrong identifier)", id, hostMetricFresh)})
 	}
 
 	out := []Row{host}
@@ -396,12 +417,11 @@ func hostCloudRows(ctx context.Context, api hostAPI, kind platform.Kind, id stri
 		if v, ok := vals["free_storage"]; ok {
 			disk["free_bytes"] = int64(v)
 		}
-		di, err := api.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{DBInstanceIdentifier: aws.String(id)})
+		d, err := describeDBInstance(ctx, api, id, now)
 		switch {
 		case err != nil:
-			errRows = append(errRows, Row{"kind": "collector_error", "source": "rds", "message": "DescribeDBInstances: " + err.Error()})
-		case len(di.DBInstances) > 0:
-			d := di.DBInstances[0]
+			errRows = append(errRows, Row{"kind": "collector_error", "source": "rds", "message": err.Error()})
+		case d != nil:
 			host["os_version"] = nilIfEmpty(aws.ToString(d.DBInstanceClass))
 			disk["fs_type"] = nilIfEmpty(aws.ToString(d.StorageType))
 			if d.AllocatedStorage != nil {
@@ -423,4 +443,38 @@ func hostCloudRows(ctx context.Context, api hostAPI, kind platform.Kind, id stri
 		}
 	}
 	return append(out, errRows...), nil
+}
+
+// describeDBInstance returns the instance's DescribeDBInstances answer, cached for hostDescribeTTL per
+// identifier (the host collection runs every minute; the allocated storage and the class change rarely).
+var (
+	describeMu    sync.Mutex
+	describeCache = map[string]struct {
+		at time.Time
+		db *rdstypes.DBInstance
+	}{}
+)
+
+func describeDBInstance(ctx context.Context, api hostAPI, id string, now time.Time) (*rdstypes.DBInstance, error) {
+	describeMu.Lock()
+	c, ok := describeCache[id]
+	describeMu.Unlock()
+	if ok && now.Sub(c.at) < hostDescribeTTL {
+		return c.db, nil
+	}
+	di, err := api.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{DBInstanceIdentifier: aws.String(id)})
+	if err != nil {
+		return nil, fmt.Errorf("DescribeDBInstances %s: %w", id, err)
+	}
+	var db *rdstypes.DBInstance
+	if len(di.DBInstances) > 0 {
+		db = &di.DBInstances[0]
+	}
+	describeMu.Lock()
+	describeCache[id] = struct {
+		at time.Time
+		db *rdstypes.DBInstance
+	}{now, db}
+	describeMu.Unlock()
+	return db, nil
 }

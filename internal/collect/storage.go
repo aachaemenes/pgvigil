@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	cwtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -90,12 +89,11 @@ func storageCloudRows(ctx context.Context, api hostAPI, kind platform.Kind, id, 
 		return Row{"kind": "collector_error", "source": "storage:" + src, "message": err.Error()}
 	}
 	if id != "" {
-		di, err := api.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{DBInstanceIdentifier: aws.String(id)})
+		d, err := describeDBInstance(ctx, api, id, now)
 		switch {
 		case err != nil:
-			out = append(out, errRow("rds", fmt.Errorf("DescribeDBInstances %s: %w", id, err)))
-		case len(di.DBInstances) > 0:
-			d := di.DBInstances[0]
+			out = append(out, errRow("rds", err))
+		case d != nil:
 			if cluster == "" {
 				cluster = aws.ToString(d.DBClusterIdentifier)
 			}

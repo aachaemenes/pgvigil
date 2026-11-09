@@ -140,7 +140,7 @@ BEGIN
     mounts = EXCLUDED.mounts, holds_data = EXCLUDED.holds_data, is_present = true;
 
   IF h IS NOT NULL AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
-                                    WHERE r->>'kind' = 'collector_error' AND r->>'source' IN ('system_stats:disk', 'cloudwatch')) THEN
+                                    WHERE r->>'kind' = 'collector_error' AND r->>'source' IN ('system_stats:disk', 'cloudwatch', 'rds')) THEN
     UPDATE pgvigil.host_disks d SET is_present = false
      WHERE d.instance_id = p_instance_id AND d.is_present
        AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
@@ -155,7 +155,7 @@ BEGIN
       FROM (SELECT DISTINCT ON (r->>'mount_point') r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'disk') x
      WHERE NOT EXISTS (SELECT 1 FROM pgvigil.host_disk_history y
                         WHERE y.instance_id = p_instance_id AND y.mount_point = x.r->>'mount_point'
-                          AND y.snapshot_at > p_snapshot_at - interval '15 minutes' AND y.snapshot_at <= p_snapshot_at);
+                          AND y.snapshot_at > p_snapshot_at - interval '15 minutes' AND y.snapshot_at < p_snapshot_at + interval '15 minutes');
   END IF;
 
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'io') THEN
@@ -210,8 +210,10 @@ SELECT d.instance_id, i.name AS instance, i.platform, d.mount_point, d.device, d
 
 -- The overview's host and disk checks (instance_id, severity, check_name, object, at, detail, check_group):
 --   disk free under 10 % (critical under 5 %), read in the last hour;
---   swap in use on the newest sample of the last 15 minutes (on-prem: over 1 % of the swap; RDS / Aurora: SwapUsage over 64 MB);
---   CPU over 90 % on every sample of the last 10 minutes (at least 5 samples spanning 8 minutes or more).
+--   swap in use on the newest sample of the last 15 minutes: on-prem over 5 % of the swap and over 256 MB; RDS / Aurora
+--   SwapUsage over 1 GB (an idle Serverless v2 instance carries a few hundred MB: the lab's showed 325-384 MB);
+--   CPU over 90 % on every CPU reading of the last 10 minutes: at least 5 distinct readings (a CloudWatch datapoint
+--   counts once however many samples repeat it) spanning 8 minutes or more; samples without a CPU value do not count.
 CREATE OR REPLACE VIEW pgvigil.host_checks AS
 SELECT d.instance_id, CASE WHEN d.free_pct < 5 THEN 'critical' ELSE 'warning' END AS severity, 'disk free under 10 %' AS check_name,
        d.mount_point AS object, d.snapshot_at AS at,
@@ -226,20 +228,22 @@ SELECT l.instance_id, 'warning', 'swap used', coalesce(l.host_name, l.aws_resour
        'host'
   FROM pgvigil.host_latest l
  WHERE l.snapshot_at > now() - interval '15 minutes'
-   AND CASE WHEN l.source = 'cloudwatch' THEN l.swap_used > 64 * 1024 * 1024
-            ELSE l.swap_used > 0.01 * nullif(l.swap_total, 0) END
+   AND CASE WHEN l.source = 'cloudwatch' THEN l.swap_used > 1024 * 1024 * 1024
+            ELSE l.swap_used > 0.05 * nullif(l.swap_total, 0) AND l.swap_used > 256 * 1024 * 1024 END
 UNION ALL
-SELECT c.instance_id, CASE WHEN c.min_cpu >= 98 THEN 'critical' ELSE 'warning' END, 'CPU over 90 % for 10 minutes',
+SELECT s.instance_id, CASE WHEN c.min_cpu >= 98 THEN 'critical' ELSE 'warning' END, 'CPU over 90 % for 10 minutes',
        coalesce(s.host_name, s.aws_resource, s.source), c.last_at,
        'lowest ' || round(c.min_cpu::numeric, 1)::text || ' %, average ' || round(c.avg_cpu::numeric, 1)::text || ' % over '
        || c.n::text || ' samples',
        'host'
-  FROM (SELECT h.instance_id, min(h.cpu_pct) AS min_cpu, avg(h.cpu_pct) AS avg_cpu, count(*) AS n,
-               max(h.snapshot_at) AS last_at, min(h.snapshot_at) AS first_at
+  FROM pgvigil.host_state s
+  CROSS JOIN LATERAL (
+        -- per instance, so the partitions' (instance_id, snapshot_at) index drives it
+        SELECT s.instance_id, min(h.cpu_pct) AS min_cpu, avg(h.cpu_pct) AS avg_cpu,
+               count(DISTINCT coalesce(h.metrics_at, h.snapshot_at)) AS n,
+               max(coalesce(h.metrics_at, h.snapshot_at)) AS last_at, min(coalesce(h.metrics_at, h.snapshot_at)) AS first_at
           FROM pgvigil.host_sample h
-         WHERE h.snapshot_at > now() - interval '10 minutes'
-         GROUP BY h.instance_id) c
-  JOIN pgvigil.host_state s USING (instance_id)
+         WHERE h.instance_id = s.instance_id AND h.snapshot_at > now() - interval '10 minutes' AND h.cpu_pct IS NOT NULL) c
  WHERE c.min_cpu > 90 AND c.n >= 5 AND c.last_at - c.first_at >= interval '8 minutes';
 
 -- The same rules in the findings columns; the join UNION ALLs this into pgvigil.findings.

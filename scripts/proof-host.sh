@@ -27,6 +27,12 @@
 #     scratch instance 2 (cloudwatch, Aurora shape): SwapUsage 10 MB, CPU 95 % on 3 samples only -> no check;
 #     scratch instance 3 (cloudwatch, RDS shape): rds:storage 20 GiB with 1 GiB free (5 %, not under 5) ->
 #       disk free under 10 %|warning; SwapUsage 100 MB -> swap used|warning
+#       [review s2-32 fold, expected before the rerun: the cloud swap floor is now 1 GB (an idle Serverless instance
+#        carries 325-384 MB), so instance 3 gives only 'disk free under 10 %|warning|rds:storage'; and two new scratch
+#        instances raise nothing: instance 5 (cloudwatch) with 1 sample at 95 % and 4 samples without a CPU value;
+#        instance 6 (cloudwatch) with 6 samples at 95 % over 10 minutes that all carry one metrics_at (one datapoint
+#        repeated); instance 7 (system_stats) with the swap at 3 % of 8 GiB (under 5 %) raises nothing;
+#        an import 5 minutes OLDER than instance 1's newest adds no history row]
 #     host_findings rows = host_checks rows; a second import of instance 1 without /big marks it is_present false;
 #     an import carrying a collector_error 'system_stats:disk' and no /data keeps /data present; disk_report lists
 #     the present volumes only; host_disk_history keeps one row per volume across imports 1 minute apart.
@@ -89,7 +95,10 @@ EOF
     PW=p$RANDOM$RANDOM; MONPW=m$RANDOM$RANDOM
     docker run -d --name "$CTR" -e POSTGRES_PASSWORD="$PW" -p 127.0.0.1::5432 "$IMAGE" >/dev/null
     PORT=$(docker port "$CTR" 5432/tcp | head -1 | sed 's/.*://')
-    for _ in $(seq 60); do docker exec "$CTR" pg_isready -q -U postgres 2>/dev/null && psql "host=127.0.0.1 port=$PORT user=postgres password=$PW dbname=postgres" -XAtqc "select 1" >/dev/null 2>&1 && break; sleep 1; done
+    [ -n "$PORT" ] || fail "A: the container published no port"
+    up=0
+    for _ in $(seq 60); do docker exec "$CTR" pg_isready -q -U postgres 2>/dev/null && psql "host=127.0.0.1 port=$PORT user=postgres password=$PW dbname=postgres" -XAtqc "select 1" >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
+    [ "$up" = 1 ] || fail "A: the container never accepted a connection" 
     C="host=127.0.0.1 port=$PORT user=postgres password=$PW sslmode=disable"
     psql "$C dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create database tgt" -c "create role mon login password '$MONPW' in role pg_monitor" >/dev/null
     psql "$C dbname=tgt" -XAtq -v ON_ERROR_STOP=1 -c "create extension system_stats" >/dev/null
@@ -158,7 +167,15 @@ echo "$got"
 [ "$(q "select count(*) from pgvigil.host_checks where instance_id=$i2")" = 0 ] || fail "C: instance 2 should raise nothing"
 got3=$(q "select string_agg(check_name || '|' || severity || '|' || object, ',' order by check_name) from pgvigil.host_checks where instance_id=$i3")
 echo "$got3"
-[ "$got3" = "disk free under 10 %|warning|rds:storage,swap used|warning|rds-1" ] || fail "C: instance 3 checks"
+[ "$got3" = "disk free under 10 %|warning|rds:storage" ] || fail "C: instance 3 checks"
+i5=$(q "select pgvigil.ensure_instance('host-rules-nullcpu-$SUF', 'rds', 'proof', 170009, false, '{proof}')")
+i6=$(q "select pgvigil.ensure_instance('host-rules-repeat-$SUF', 'aurora', 'proof', 170009, false, '{proof}')")
+i7=$(q "select pgvigil.ensure_instance('host-rules-swap-$SUF', 'onprem', 'proof', 180000, false, '{proof}')")
+q "select pgvigil.import_host($i5, now() - interval '9 minutes', '[{\"kind\":\"host\",\"source\":\"cloudwatch\",\"cpu_pct\":95}]'::jsonb)" >/dev/null
+for m in 7 5 3 1; do q "select pgvigil.import_host($i5, now() - interval '$m minutes', '[{\"kind\":\"host\",\"source\":\"cloudwatch\",\"mem_free\":$G}]'::jsonb)" >/dev/null; done
+for m in 9 8 6 4 2 0; do q "select pgvigil.import_host($i6, now() - interval '$m minutes', '[{\"kind\":\"host\",\"source\":\"cloudwatch\",\"cpu_pct\":95,\"metrics_at\":\"$(date -u -d '-10 min' +%Y-%m-%dT%H:%M:00Z)\"}]'::jsonb)" >/dev/null; done
+q "select pgvigil.import_host($i7, now(), '[{\"kind\":\"host\",\"source\":\"system_stats\",\"cpu_pct\":10,\"swap_total\":$((8*G)),\"swap_used\":$((G*3/100*8))}]'::jsonb)" >/dev/null
+[ "$(q "select count(*) from pgvigil.host_checks where instance_id in ($i5,$i6,$i7)")" = 0 ] || fail "C: NULL CPU, a repeated datapoint or a small swap raised a check"
 [ "$(q "select count(*) from pgvigil.host_findings where instance_id in ($i1,$i2,$i3)")" = "$(q "select count(*) from pgvigil.host_checks where instance_id in ($i1,$i2,$i3)")" ] || fail "C: findings vs checks"
 [ "$(q "select count(*) from pgvigil.host_findings where instance_id=$i1 and source='pgvigil host' and is_set and platforms='all'")" = 4 ] || fail "C: findings columns"
 [ "$(q "select count(*) from pgvigil.host_disk_history where instance_id=$i1")" = 3 ] || fail "C: history thinning (3 volumes, imports within 15 min)"
@@ -168,6 +185,9 @@ q "select pgvigil.import_host($i1, now() + interval '2 seconds', '[$(host1 50), 
 [ "$(q "select is_present from pgvigil.host_disks where instance_id=$i1 and mount_point='/data'")" = t ] || fail "C: /data should be kept on a failed disk read"
 [ "$(q "select count(*) from pgvigil.disk_report where instance_id=$i1")" = 2 ] || fail "C: disk_report present volumes"
 [ "$(q "select string_agg(mount_point, ',' order by free_pct) from pgvigil.disk_report where instance_id in ($i1,$i3)")" = "/wal,rds:storage,/data" ] || fail "C: disk_report order"
+nh=$(q "select count(*) from pgvigil.host_disk_history where instance_id=$i1")
+q "select pgvigil.import_host($i1, now() - interval '5 minutes', '[$(host1 50), $(disk /data sdb 7 true)]'::jsonb)" >/dev/null
+[ "$(q "select count(*) from pgvigil.host_disk_history where instance_id=$i1")" = "$nh" ] || fail "C: an older import added a history row"
 echo "C: OK"
 
 if [ "${AURORA:-0}" = 1 ]; then

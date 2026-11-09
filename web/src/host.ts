@@ -34,12 +34,15 @@ export async function hostView(ctx: Ctx): Promise<HTMLElement> {
     return sec;
   }
   const cloud = h.source === 'cloudwatch';
+  // the swap check's thresholds (0021 host_checks): RDS / Aurora over 1 GB; on-prem over 5 % of the swap and over 256 MB
+  const sw = Number(h.swap_used ?? 0);
+  const swapHigh = cloud ? sw > 2 ** 30 : sw > 0.05 * Number(h.swap_total ?? 0) && sw > 256 * 2 ** 20;
   const memUsedPct = h.mem_total ? 100 * Number(h.mem_used) / Number(h.mem_total) : null;
   sec.append(el('div', { class: 'tiles' },
     tile('CPU', h.cpu_pct == null ? '-' : fmtNum(h.cpu_pct) + ' %', Number(h.cpu_pct) > 90 ? 'warn' : ''),
     cloud ? tile('freeable memory', fmtBytes(h.mem_free) || '-')
       : tile('memory used', memUsedPct == null ? '-' : fmtNum(Math.round(memUsedPct)) + ' %'),
-    tile('swap used', fmtBytes(h.swap_used) || '-', Number(h.swap_used) > 0 ? 'warn' : ''),
+    tile('swap used', fmtBytes(h.swap_used) || '-', swapHigh ? 'warn' : ''),
     cloud ? tile('connections', fmtNum(h.connections) || '-') : tile('load (1 min)', fmtNum(h.load1) || '-'),
   ));
   const pairs: [string, string | Node][] = [
