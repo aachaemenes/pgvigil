@@ -10,7 +10,7 @@
     "uplot": "1.6.32"
   },
   "devDependencies": {
-    "esbuild": "0.25.12",
+    "esbuild": "0.28.2",
     "typescript": "5.9.3"
   }
 }
