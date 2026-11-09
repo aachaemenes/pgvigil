@@ -12,13 +12,16 @@
 -- The rules:
 --   failing repeatedly  the last 3 or more finished runs failed (failed, internal error, aborted) with no
 --                       success after them (within 30 days)
---   over its average    the latest run (a running one by its age) took over twice the average of the job's
---                       other finished successful runs of 30 days (3 or more of them) and at least 10 s more
+--   over its average    the latest run, when it succeeded or is still running (a running one by its age),
+--                       took over twice the average of the job's other finished successful runs of 30 days
+--                       (3 or more of them) and at least 10 s more (a failed run is the 'jobs' check's)
 --   missed              pg_cron: no run started at or after prior_due (30 s of slack): two scheduled runs
 --                       went by without one; only for an active, present job seen before prior_due, no run
---                       still going, and prior_due within 25 days (the history kept is 30 days, so a
---                       schedule rarer than about every 12 days is not judged); pgAgent: its own next run
---                       is over 5 minutes past at the read (the agent did not pick the job up)
+--                       going (a running row under a day old: an older one is taken as left behind by a
+--                       crashed launcher, and the job is judged), and prior_due within 25 days (the history
+--                       kept is 30 days, so a schedule rarer than about every 12 days is not judged);
+--                       pgAgent: its own next run is over 5 minutes past at the read (the agent did not pick
+--                       the job up; no next run = not judged)
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 1. the parser's columns
@@ -75,11 +78,12 @@ SELECT j.instance_id, i.name AS instance, i.platform, j.scheduler, j.job_id, j.j
        coalesce(lr.running, false) AS last_running, left(lr.return_message, 500) AS last_message,
        coalesce(a.runs_7d, 0) AS runs_7d, coalesce(a.failures_7d, 0) AS failures_7d, a.avg_7d_secs, a.max_7d_secs,
        coalesce(a.runs_30d, 0) AS runs_30d, coalesce(a.failures_30d, 0) AS failures_30d, a.avg_30d_secs, a.max_30d_secs,
-       a.last_ok, coalesce(fs.n, 0) AS fail_streak, b.n AS base_runs, round(b.avg_secs::numeric, 1) AS base_avg_secs,
-       coalesce(lr.start_time IS NOT NULL AND b.n >= 3
+       a.last_ok, coalesce(fs.n, 0) AS fail_streak, a.base_n AS base_runs, round(a.base_avg::numeric, 1) AS base_avg_secs,
+       coalesce((lr.running OR lr.status = 'succeeded') AND a.base_n >= 3
                 AND CASE WHEN lr.running THEN extract(epoch FROM now() - lr.start_time) ELSE lr.duration_secs END
-                    > greatest(2 * b.avg_secs, b.avg_secs + 10), false) AS over_average,
-       CASE WHEN NOT j.is_present OR NOT coalesce(j.active, true) OR coalesce(lr.running, false) THEN false
+                    > greatest(2 * a.base_avg, a.base_avg + 10), false) AS over_average,
+       coalesce(CASE WHEN NOT j.is_present OR NOT coalesce(j.active, true)
+                          OR (lr.running AND lr.start_time > now() - interval '1 day') THEN false
             WHEN j.scheduler = 'pg_cron' THEN
                  j.schedule_note IS NULL AND j.prior_due IS NOT NULL AND j.prior_due > j.first_seen
                  AND j.prior_due > now() - interval '25 days'
@@ -87,14 +91,15 @@ SELECT j.instance_id, i.name AS instance, i.platform, j.scheduler, j.job_id, j.j
                                   WHERE x.instance_id = j.instance_id AND x.scheduler = j.scheduler AND x.job_id = j.job_id
                                     AND x.start_time >= j.prior_due - interval '30 seconds')
             WHEN j.scheduler = 'pgagent' THEN j.next_run < j.snapshot_at - interval '5 minutes'
-            ELSE false END AS missed
+            ELSE false END, false) AS missed
   FROM pgvigil.jobs j
   JOIN pgvigil.instances i USING (instance_id)
   LEFT JOIN LATERAL (SELECT r.run_id, r.status, r.start_time, r.end_time, r.duration_secs, r.return_message,
                             r.end_time IS NULL AND r.status NOT IN ('succeeded', 'failed', 'internal error', 'aborted') AS running
                        FROM pgvigil.job_runs r
                       WHERE r.instance_id = j.instance_id AND r.scheduler = j.scheduler AND r.job_id = j.job_id
-                      ORDER BY r.start_time DESC NULLS LAST LIMIT 1) lr ON true
+                        AND r.start_time IS NOT NULL
+                      ORDER BY r.start_time DESC LIMIT 1) lr ON true
   LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE r.start_time > now() - interval '7 days') AS runs_7d,
                             count(*) FILTER (WHERE r.start_time > now() - interval '7 days'
                                                AND r.status IN ('failed', 'internal error', 'aborted')) AS failures_7d,
@@ -104,18 +109,19 @@ SELECT j.instance_id, i.name AS instance, i.platform, j.scheduler, j.job_id, j.j
                             count(*) FILTER (WHERE r.status IN ('failed', 'internal error', 'aborted')) AS failures_30d,
                             round(avg(r.duration_secs)::numeric, 1) AS avg_30d_secs,
                             round(max(r.duration_secs)::numeric, 1) AS max_30d_secs,
-                            max(r.start_time) FILTER (WHERE r.status = 'succeeded') AS last_ok
+                            max(r.start_time) FILTER (WHERE r.status = 'succeeded') AS last_ok,
+                            -- the base of over_average: the other finished successful runs
+                            count(*) FILTER (WHERE r.status = 'succeeded' AND r.duration_secs IS NOT NULL
+                                               AND r.run_id IS DISTINCT FROM lr.run_id) AS base_n,
+                            avg(r.duration_secs) FILTER (WHERE r.status = 'succeeded' AND r.duration_secs IS NOT NULL
+                                                           AND r.run_id IS DISTINCT FROM lr.run_id) AS base_avg
                        FROM pgvigil.job_runs r
                       WHERE r.instance_id = j.instance_id AND r.scheduler = j.scheduler AND r.job_id = j.job_id
                         AND r.start_time > now() - interval '30 days') a ON true
   LEFT JOIN LATERAL (SELECT count(*) AS n FROM pgvigil.job_runs r
                       WHERE r.instance_id = j.instance_id AND r.scheduler = j.scheduler AND r.job_id = j.job_id
                         AND r.start_time > coalesce(a.last_ok, now() - interval '30 days')
-                        AND r.status IN ('failed', 'internal error', 'aborted')) fs ON true
-  LEFT JOIN LATERAL (SELECT count(*) AS n, avg(r.duration_secs) AS avg_secs FROM pgvigil.job_runs r
-                      WHERE r.instance_id = j.instance_id AND r.scheduler = j.scheduler AND r.job_id = j.job_id
-                        AND r.start_time > now() - interval '30 days' AND r.status = 'succeeded'
-                        AND r.duration_secs IS NOT NULL AND r.run_id IS DISTINCT FROM lr.run_id) b ON true;
+                        AND r.status IN ('failed', 'internal error', 'aborted')) fs ON true;
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 3. the checks and the findings
@@ -142,6 +148,7 @@ SELECT instance_id, 'critical', 'job schedule missed', object, coalesce(prior_du
        CASE WHEN scheduler = 'pg_cron'
             THEN 'no run since ' || to_char(prior_due AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC: two scheduled runs of '''
                  || schedule || ''' went by without one; last run ' || coalesce(to_char(last_start AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', 'none in 30 days')
+                 || CASE WHEN last_running THEN ', its row still says running over a day later (left behind by a crashed or restarted launcher?)' ELSE '' END
                  || ' (is pg_cron running, cron.database_name right, the job''s node reachable?)'
             ELSE 'pgAgent''s next run ' || to_char(next_run AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC is past and the job has not started: is the pgAgent service running?' END
   FROM r WHERE missed;

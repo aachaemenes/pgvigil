@@ -39,16 +39,35 @@ CASES='* * * * *        | 2026-11-09T14:59:59Z | 2026-11-09T15:00:00Z
 #     5 at-boot     pg_cron '@reboot', schedule_note set, no runs -> not missed
 #     6 agent-down  pgagent, next_run now-20 min, no runs -> missed (pgAgent's own next run is past)
 #     7 disabled    pg_cron '*/10 * * * *', active false, 3 failures -> fail_streak 3 but no check
+#     [review fold, expected before the rerun]
+#     8 running-now pg_cron '*/5 * * * *': ok at M5-60/-55/-50/-45 (2 s), a run started now-10 min still running
+#                   -> over_average (600 s by age against 2.0), not missed (a run going)
+#     9 stuck       pg_cron '*/5 * * * *': ok at now-3d-15/-10/-5 min (2 s), a 'running' row started now-3 days
+#                   (left behind by a crashed launcher) -> missed (a running row over a day old does not count)
+#                   and over_average
+#    10 new-job     pg_cron '*/5 * * * *', first seen in the second import (now), no runs -> not missed
+#    11 gone        pg_cron, in the first import only (is_present false), 3 failures -> no check, sorted last
+#    12 agent-nonext pgagent, no next run, one failed run -> missed false (not NULL), no check, not among the first rows
+#    13 failed-long pg_cron '0 * * * *': ok at H-5h..H-1h (60 s), failed at H after 600 s -> fail_streak 1,
+#                   over_average false (a failed run is the 'jobs' check's)
 #     job_report_checks for the instance, exactly:
 #        critical | job failing repeatedly          | pg_cron fails-3
 #        critical | job schedule missed             | pg_cron missed
+#        critical | job schedule missed             | pg_cron stuck
 #        critical | job schedule missed             | pgagent agent-down
+#        warning  | job run over twice its average  | pg_cron running-now
 #        warning  | job run over twice its average  | pg_cron slow
-#     job_report_findings: the same 4 rows, setting = check_name, value = object, the ten columns in order
-#  D. the handler (go test TestJobsReportProof against this repository): the instance report has 7 jobs, 4 checks,
-#     trend rows over the window, the 4 problem jobs first; an empty window has no trend rows; the fleet has 4
-#     problem jobs and counts jobs 6, failing 1, missed 2, over_average 1, instances 1; the overview has 4
-#     'jobs report' rows and no "check could not run".
+#        warning  | job run over twice its average  | pg_cron stuck
+#     job_report_findings: the same 7 rows, setting = check_name, value = object, the ten columns in order
+#  D. the handler (go test TestJobsReportProof against this repository): the instance report has 13 jobs, 7 checks,
+#     trend rows over the window, the 6 jobs with a check first and the gone job last; an empty window has no trend
+#     rows; the fleet has 8 problem jobs (the 6 plus agent-nonext and failed-long, whose last run failed) and counts
+#     jobs 11, failing 3, missed 3, over_average 3, instances 1; the overview has 7 'jobs report' rows and no
+#     "check could not run".
+#  F. the collector path (AddCronTimes in jobs.go, the lead's wiring line): pg_cron is not in this sandbox
+#     (shared_preload_libraries), so next_run and prior_due come seeded here; where the server named by
+#     PGVIGIL_CRON_DSN has pg_cron, the proof collects jobs from it once and expects every pg_cron job with a parsed
+#     schedule to carry next_run and prior_due; without it the step says "skipped" with the reason.
 #  E. a second import at now + 1 min whose fails-3 run at M10 succeeded -> fail_streak 0, the failing check gone.
 set -euo pipefail
 export PATH=$HOME/.local/share/mise/shims:$PATH
@@ -98,9 +117,9 @@ job() { # id name scheduler schedule active [next_run] [prior_due] [note]
   echo "$x}"
 }
 RUN=0; RUNS=()
-run() { # job_id start_epoch secs status: appends one run to RUNS (no subshell: the run_id counter must persist)
+run() { # job_id start_epoch secs status [scheduler]: appends one run to RUNS (no subshell: the run_id counter must persist)
   RUN=$((RUN + 1))
-  RUNS+=("{\"kind\":\"run\",\"scheduler\":\"pg_cron\",\"job_id\":$1,\"run_id\":$RUN,\"status\":\"$4\",\"return_message\":\"$([[ $4 == failed ]] && echo 'ERROR: relation x does not exist' || echo 'SELECT 1')\",\"start_time\":\"$(ts "$2")\",\"end_time\":\"$(ts $(( $2 + ${3%.*} )))\",\"duration_secs\":$3}")
+  RUNS+=("{\"kind\":\"run\",\"scheduler\":\"${5:-pg_cron}\",\"job_id\":$1,\"run_id\":$RUN,\"status\":\"$4\",\"return_message\":\"$([[ $4 == failed ]] && echo 'ERROR: relation x does not exist' || echo 'SELECT 1')\",\"start_time\":\"$(ts "$2")\",\"end_time\":\"$(ts $(( $2 + ${3%.*} )))\",\"duration_secs\":$3}")
 }
 JOBS=(
   "$(job 1 fails-3 pg_cron '*/10 * * * *' true $((M10 + 600)) $((M10 - 600)))"
@@ -110,7 +129,13 @@ JOBS=(
   "$(job 5 at-boot pg_cron '@reboot' true '' '' '@reboot: runs at server start only')"
   "$(job 6 agent-down pgagent '' true $((NOW - 1200)))"
   "$(job 7 disabled pg_cron '*/10 * * * *' false $((M10 + 600)) $((M10 - 600)))"
+  "$(job 8 running-now pg_cron '*/5 * * * *' true $((M5 + 300)) $((M5 - 300)))"
+  "$(job 9 stuck pg_cron '*/5 * * * *' true $((M5 + 300)) $((M5 - 300)))"
+  "$(job 12 agent-nonext pgagent '' true)"
+  "$(job 13 failed-long pg_cron '0 * * * *' true $((H + 3600)) $((H - 3600)))"
 )
+JOBS0=("${JOBS[@]}" "$(job 11 gone pg_cron '*/10 * * * *' true $((M10 + 600)) $((M10 - 600)))")
+JOBS+=("$(job 10 new-job pg_cron '*/5 * * * *' true $((M5 + 300)) $((M5 - 300)))")
 for m in 60 50 40; do run 1 $((M10 - m * 60)) 5 succeeded; done
 for m in 30 20 10; do run 1 $((M10 - m * 60)) 1 failed; done
 for h in 5 4 3 2 1; do run 2 $((H - h * 3600)) 60 succeeded; done
@@ -119,8 +144,20 @@ run 3 $((M5 - 3600)) 2 succeeded
 for m in 10 5 0; do run 4 $((M5 - m * 60)) 2 succeeded; done
 run 4 $((NOW - 10 * 86400)) 20 succeeded
 for m in 30 20 10; do run 7 $((M10 - m * 60)) 1 failed; done
+open_run() { # job_id start_epoch: a run still going (no end)
+  RUN=$((RUN + 1))
+  RUNS+=("{\"kind\":\"run\",\"scheduler\":\"pg_cron\",\"job_id\":$1,\"run_id\":$RUN,\"status\":\"running\",\"start_time\":\"$(ts "$2")\"}")
+}
+for m in 60 55 50 45; do run 8 $((M5 - m * 60)) 2 succeeded; done
+open_run 8 $((NOW - 600))
+for m in 15 10 5; do run 9 $((NOW - 3 * 86400 - m * 60)) 2 succeeded; done
+open_run 9 $((NOW - 3 * 86400))
+for m in 30 20 10; do run 11 $((M10 - m * 60)) 1 failed; done
+run 12 $((NOW - 1800)) 3 failed pgagent
+for h in 5 4 3 2 1; do run 13 $((H - h * 3600)) 60 succeeded; done
+run 13 $H 600 failed
 join() { local IFS=,; echo "[$*]"; }
-q "select pgvigil.import_jobs($IID, to_timestamp($NOW - 7200), '$(join "${JOBS[@]}")'::jsonb)" >/dev/null
+q "select pgvigil.import_jobs($IID, to_timestamp($NOW - 7200), '$(join "${JOBS0[@]}")'::jsonb)" >/dev/null
 q "select pgvigil.import_jobs($IID, to_timestamp($NOW), '$(join "${JOBS[@]}" "${RUNS[@]}")'::jsonb)" >/dev/null
 
 echo "job_report:"
@@ -137,19 +174,28 @@ want healthy "runs_7d || '/' || runs_30d || '/' || max_7d_secs || '/' || max_30d
 want at-boot "missed || '/' || runs_30d" "false/0"
 want agent-down "missed" "t"
 want disabled "fail_streak || '/' || missed" "3/false"
+want running-now "over_average || '/' || missed || '/' || last_running" "true/false/true"
+want stuck "missed || '/' || over_average || '/' || last_running" "true/true/true"
+want new-job "missed || '/' || runs_30d" "false/0"
+want gone "is_present || '/' || fail_streak" "false/3"
+want agent-nonext "coalesce(missed::text, 'NULL') || '/' || fail_streak" "false/1"
+want failed-long "over_average || '/' || fail_streak || '/' || base_runs" "false/1/5"
 
 echo "job_report_checks:"
 CHECKS=$(q "select severity || ' | ' || check_name || ' | ' || object from pgvigil.job_report_checks where instance_id = $IID order by severity, check_name, object")
 echo "$CHECKS" | sed 's/^/  /'
 EXPECT='critical | job failing repeatedly | pg_cron fails-3
 critical | job schedule missed | pg_cron missed
+critical | job schedule missed | pg_cron stuck
 critical | job schedule missed | pgagent agent-down
-warning | job run over twice its average | pg_cron slow'
+warning | job run over twice its average | pg_cron running-now
+warning | job run over twice its average | pg_cron slow
+warning | job run over twice its average | pg_cron stuck'
 [[ "$CHECKS" == "$EXPECT" ]] || fail "the checks differ from the header"
 FCOLS=$(q "select string_agg(attname, ',' order by attnum) from pg_attribute where attrelid = 'pgvigil.job_report_findings'::regclass and attnum > 0")
 [[ "$FCOLS" == "instance_id,severity,setting,value,is_set,suggested,platforms,detail,source,at" ]] || fail "findings columns: $FCOLS"
 [[ $(q "select count(*) from pgvigil.job_report_findings f join pgvigil.job_report_checks c on c.instance_id = f.instance_id
-         and c.check_name = f.setting and c.object = f.value where f.instance_id = $IID") == 4 ]] || fail "findings do not match the checks"
+         and c.check_name = f.setting and c.object = f.value where f.instance_id = $IID") == 7 ]] || fail "findings do not match the checks"
 q "select setting || ': ' || detail from pgvigil.job_report_findings where instance_id = $IID order by 1" | sed 's/^/  /'
 
 echo "--- D. the handler"
@@ -167,4 +213,23 @@ want fails-3 "fail_streak" "0"
 [[ $(q "select count(*) from pgvigil.job_report_checks where instance_id = $IID and check_name = 'job failing repeatedly'") == 0 ]] \
   || fail "the failing check stayed after a success"
 
-echo "proof-jobs-report: OK (14 parser cases; 7 seeded jobs: 4 checks and 4 findings as the header says; handler, fleet and overview; a success ends the streak)"
+echo "--- F. the collector path"
+if [[ -z "${PGVIGIL_CRON_DSN:-}" ]]; then
+  F="skipped: no PGVIGIL_CRON_DSN (a server with pg_cron in shared_preload_libraries; this sandbox has none)"
+elif [[ $(psql "$PGVIGIL_CRON_DSN" -XAtq -c "select count(*) from pg_extension where extname = 'pg_cron'") != 1 ]]; then
+  F="skipped: pg_cron is not installed in the database PGVIGIL_CRON_DSN names"
+else
+  printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances:\n  - name: proof-jobsreport-cron-%s\n    dsn: env:PGVIGIL_CRON_DSN\n' "$SUF" > "$CFG"
+  "$BIN" collect -config "$CFG" -once jobs
+  CID=$(q "select instance_id from pgvigil.instances where name = 'proof-jobsreport-cron-$SUF'")
+  N=$(q "select count(*) || '/' || count(*) filter (where next_run is not null and prior_due is not null) || '/' || count(*) filter (where schedule_note is not null)
+           from pgvigil.jobs where instance_id = $CID and scheduler = 'pg_cron'")
+  [[ "${N%%/*}" -gt 0 ]] || fail "no pg_cron job collected (schedule one with cron.schedule first)"
+  IFS=/ read -r all filled noted <<< "$N"
+  [[ $((filled + noted)) == "$all" ]] || fail "pg_cron jobs without next_run and prior_due and without a note: $N (all/filled/noted)"
+  [[ "$filled" -gt 0 ]] || fail "no pg_cron job has next_run and prior_due: is the AddCronTimes line in jobs.go?"
+  F="$all pg_cron jobs collected: $filled with next_run and prior_due, $noted with a note"
+fi
+echo "  $F"
+
+echo "proof-jobs-report: OK (14 parser cases; 13 seeded jobs: 7 checks and 7 findings as the header says; handler, fleet and overview; a success ends the streak; collector path: $F)"

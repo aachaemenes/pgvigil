@@ -18,9 +18,9 @@ import (
 // repository and PGVIGIL_JOBS_PROOF_INSTANCE the seeded instance; skipped without them. It calls the handler
 // and the overview as the API serves them and checks the shapes the proof's header names.
 func TestJobsReportProof(t *testing.T) {
-	dsn, inst := os.Getenv("PGVIGIL_JOBS_PROOF_DSN"), os.Getenv("PGVIGIL_JOBS_PROOF_INSTANCE")
-	if dsn == "" || inst == "" {
-		t.Skip("PGVIGIL_JOBS_PROOF_DSN / PGVIGIL_JOBS_PROOF_INSTANCE not set")
+	dsn, inst, from := os.Getenv("PGVIGIL_JOBS_PROOF_DSN"), os.Getenv("PGVIGIL_JOBS_PROOF_INSTANCE"), os.Getenv("PGVIGIL_JOBS_PROOF_FROM")
+	if dsn == "" || inst == "" || from == "" {
+		t.Skip("PGVIGIL_JOBS_PROOF_DSN / _INSTANCE / _FROM not set")
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
@@ -60,37 +60,40 @@ func TestJobsReportProof(t *testing.T) {
 	if len(d["trend"].Rows) != 0 {
 		t.Errorf("a window with no runs has %d trend rows", len(d["trend"].Rows))
 	}
-	d = call(s.JobsReport, "/api/jobsreport?instance="+inst+"&from="+os.Getenv("PGVIGIL_JOBS_PROOF_FROM"))
+	d = call(s.JobsReport, "/api/jobsreport?instance="+inst+"&from="+from)
 	jobs, checks := d["jobs"], d["checks"]
 	t.Logf("instance: %d jobs, %d checks, %d trend rows", len(jobs.Rows), len(checks.Rows), len(d["trend"].Rows))
-	if len(jobs.Rows) != 7 {
-		t.Errorf("jobs = %d, want 7", len(jobs.Rows))
+	if len(jobs.Rows) != 13 {
+		t.Errorf("jobs = %d, want 13", len(jobs.Rows))
 	}
-	if len(checks.Rows) != 4 {
-		t.Errorf("checks = %d, want 4", len(checks.Rows))
+	if len(checks.Rows) != 7 {
+		t.Errorf("checks = %d, want 7", len(checks.Rows))
 	}
 	if len(d["trend"].Rows) == 0 {
 		t.Error("no trend rows over the seeded window")
 	}
-	// the problem jobs sort first among the present ones
+	// the jobs with a check sort first, the gone one last
 	name := col(jobs, "job_name")
 	first := map[string]bool{}
-	for _, r := range jobs.Rows[:4] {
+	for _, r := range jobs.Rows[:6] {
 		first[r[name].(string)] = true
 	}
-	for _, n := range []string{"fails-3", "slow", "missed", "agent-down"} {
+	for _, n := range []string{"fails-3", "slow", "missed", "agent-down", "running-now", "stuck"} {
 		if !first[n] {
-			t.Errorf("%s is not among the first four rows: %v", n, first)
+			t.Errorf("%s is not among the first six rows: %v", n, first)
 		}
+	}
+	if last := jobs.Rows[len(jobs.Rows)-1][name]; last != "gone" {
+		t.Errorf("the last row is %v, want the gone job", last)
 	}
 
 	f := call(s.JobsReport, "/api/jobsreport")
 	c := f["counts"]
 	t.Logf("fleet: counts %v, %d jobs", c.Rows[0], len(f["jobs"].Rows))
-	if len(f["jobs"].Rows) != 4 {
-		t.Errorf("fleet problem jobs = %d, want 4", len(f["jobs"].Rows))
+	if len(f["jobs"].Rows) != 8 {
+		t.Errorf("fleet problem jobs = %d, want 8", len(f["jobs"].Rows))
 	}
-	want := map[string]int64{"jobs": 6, "failing": 1, "missed": 2, "over_average": 1, "instances": 1}
+	want := map[string]int64{"jobs": 11, "failing": 3, "missed": 3, "over_average": 3, "instances": 1}
 	for k, v := range want {
 		if got, _ := c.Rows[0][col(c, k)].(float64); int64(got) != v {
 			t.Errorf("fleet %s = %v, want %d", k, c.Rows[0][col(c, k)], v)
@@ -111,7 +114,7 @@ func TestJobsReportProof(t *testing.T) {
 		}
 	}
 	t.Logf("overview: %d 'jobs report' rows", n)
-	if n != 4 {
-		t.Errorf("overview 'jobs report' rows = %d, want 4", n)
+	if n != 7 {
+		t.Errorf("overview 'jobs report' rows = %d, want 7", n)
 	}
 }
