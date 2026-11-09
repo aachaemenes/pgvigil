@@ -87,16 +87,15 @@ func TestLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil)), tls: true}
-	s.auth = newAuth(func(_ context.Context, user string) (string, error) {
-		if user == "alice" {
-			return hash, nil
-		}
-		return "", nil
-	}, true, time.Hour)
+	stored := map[string]string{"alice": hash} // what the repository holds: the test disables and re-passwords through it
+	s.auth = newAuth(func(_ context.Context, user string) (string, error) { return stored[user], nil }, true, time.Hour)
+	var slept time.Duration
+	s.auth.sleep = func(_ context.Context, d time.Duration) error { slept += d; return nil }
 	h := s.Handler()
+	addr := "10.1.1.1:5000"
 	do := func(method, path, body string, header bool, cookie *http.Cookie) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		req.RemoteAddr = "10.1.1.1:5000"
+		req.RemoteAddr = addr
 		if header {
 			req.Header.Set(loginHeader, "1")
 		}
@@ -154,37 +153,81 @@ func TestLogin(t *testing.T) {
 	s.auth.now = func() time.Time { return time.Now().Add(61 * time.Minute) }
 	want(do(http.MethodGet, "/api/session", "", false, cookie), 401, "login required") // the TTL passed
 
+	// a live session dies the moment its user is disabled, and the moment the password changes
+	s.auth.now = time.Now
+	rec = login("alice", "correct horse battery")
+	want(rec, 200, "alice")
+	cookie = rec.Result().Cookies()[0]
+	want(do(http.MethodGet, "/api/session", "", false, cookie), 200, "alice")
+	stored["alice"] = "" // disabled or removed: the lookup returns nothing
+	want(do(http.MethodGet, "/api/session", "", false, cookie), 401, "login required")
+	stored["alice"] = hash
+	want(do(http.MethodGet, "/api/session", "", false, cookie), 401, "login required") // revoked, not suspended
+	rec = login("alice", "correct horse battery")
+	cookie = rec.Result().Cookies()[0]
+	want(do(http.MethodGet, "/api/activity", "", false, cookie), 400, "instance must be")
+	stored["alice"], _ = auth.Hash("a new password now")
+	want(do(http.MethodGet, "/api/activity", "", false, cookie), 401, "login required")
+	stored["alice"] = hash
+
+	// five failures: the address is refused (the right password included); the name is only slowed
 	for i := 0; i < maxFails; i++ {
 		want(login("alice", "wrong password here"), 401, "wrong user name or password")
 	}
 	rec = login("alice", "correct horse battery")
-	want(rec, 429, "too many login attempts")
+	want(rec, 429, "too many login attempts from this address")
 	if rec.Header().Get("Retry-After") == "" {
 		t.Fatal("429 without Retry-After")
 	}
-	want(login("bob", "whatever this is"), 429, "too many") // the address is locked too
-	s.auth.now = func() time.Time { return time.Now().Add(63 * time.Minute) }
-	want(login("alice", "correct horse battery"), 200, "alice") // the minute passed
+	want(login("bob", "whatever this is"), 429, "too many") // the address is refused for every name
+	addr = "10.2.2.2:6000"                                  // another address, the same name: slowed, then judged
+	slept = 0
+	want(login("alice", "correct horse battery"), 200, "alice")
+	if slept != nameDelayStep {
+		t.Fatalf("the slowed name waited %v, want %v", slept, nameDelayStep)
+	}
+	slept = 0
+	want(login("alice", "correct horse battery"), 200, "alice") // the success cleared the name's count
+	if slept != 0 {
+		t.Fatalf("a clean name waited %v", slept)
+	}
+	addr = "10.1.1.1:5000"
+	s.auth.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	want(login("alice", "correct horse battery"), 200, "alice") // the address's minute passed
 }
 
-// The failure counters: a name is locked from every address, an address for every name; a different
-// pair is not; a lock ends with its window.
-func TestLoginLockKeys(t *testing.T) {
+// The failure counters: an address past the limit is refused for the rest of its minute; a name past
+// it only waits, 2 s more per failure up to 20 s; a lock ends with its window; a success clears both.
+func TestLoginLimits(t *testing.T) {
 	a := newAuth(nil, false, 0)
 	for i := 0; i < maxFails; i++ {
-		a.recordFail("ip:A", "user:bob")
+		a.recordFail("A", "bob")
 	}
-	if a.blocked("ip:A", "user:carol") == 0 || a.blocked("ip:B", "user:bob") == 0 {
-		t.Fatal("the address or the name was not locked")
+	if a.addrWait("A") == 0 || a.addrWait("B") != 0 {
+		t.Fatal("the address limit")
 	}
-	if a.blocked("ip:B", "user:carol") != 0 {
-		t.Fatal("an unrelated pair was locked")
+	if d := a.nameDelay("bob"); d != nameDelayStep {
+		t.Fatalf("bob's delay %v, want %v", d, nameDelayStep)
 	}
+	if a.nameDelay("carol") != 0 {
+		t.Fatal("an unrelated name was slowed")
+	}
+	for i := 0; i < 20; i++ {
+		a.recordFail("C", "bob")
+	}
+	if d := a.nameDelay("bob"); d != nameDelayMax {
+		t.Fatalf("bob's delay after 25 failures %v, want the cap %v", d, nameDelayMax)
+	}
+	a.clearFails("A", "bob")
+	if a.addrWait("A") != 0 || a.nameDelay("bob") != 0 {
+		t.Fatal("a success did not clear the counters")
+	}
+	a.recordFail("A", "bob")
 	a.now = func() time.Time { return time.Now().Add(failWindow + time.Second) }
-	if a.blocked("ip:A", "user:bob") != 0 {
-		t.Fatal("the lock outlived its window")
+	if a.addrWait("A") != 0 {
+		t.Fatal("the window outlived its minute")
 	}
-	a.recordFail("ip:A")
+	a.recordFail("A", "bob")
 	if n := a.fails["ip:A"].n; n != 1 {
 		t.Fatalf("a failure after the window counted %d, want 1", n)
 	}

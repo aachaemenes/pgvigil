@@ -9,8 +9,9 @@
 # /api/login without the header 403, a wrong password 401, the right one 200 with an HttpOnly
 # SameSite=Strict cookie without Secure (http), the cookie opens /api/instances (200) and names the user
 # in /api/session, logout 204 and the cookie is dead (401), a disabled user 401 and enabled again 200, a
-# changed password: old 401 new 200, five failures then 429 with Retry-After; `pgvigil cert` writes
-# pgvigil.crt and a 0600 pgvigil.key and refuses to overwrite; serve with that pair on loopback answers
+# changed password: old 401 new 200, an open session dies the moment its user is disabled or re-passworded,
+# five failures then 429 with Retry-After; `pgvigil cert` writes pgvigil.crt and a 0600 pgvigil.key, refuses
+# to overwrite or to write beside a lone certificate, refuses a host with a port, reads [::1]; serve with that pair on loopback answers
 # https 200 with Strict-Transport-Security and a Secure cookie; plain http on the TLS port is 400.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -87,23 +88,35 @@ if grep -qi '^set-cookie: .*Secure' "$TMPD/hdr"; then fail "a Secure cookie on p
 curl -s -b "$CJ" "$U/api/session" | grep -q "\"user\":\"$USR\"" || fail "session does not name the user"
 [[ $(code -b "$CJ" -H 'X-Pgvigil: 1' -X POST "$U/api/logout") == 204 ]] || fail "logout was not 204"
 [[ $(code -b "$CJ" "$U/api/instances") == 401 ]] || fail "the cookie survived logout"
+[[ $(login "$USR" "$UPW") == 200 ]] || fail "login before disable"
+[[ $(code -b "$CJ" "$U/api/instances") == 200 ]] || fail "the session before disable"
 "$BIN" user disable -config "$CFG" "$USR" 2>/dev/null
+[[ $(code -b "$CJ" "$U/api/instances") == 401 ]] || fail "a disabled user's open session survived"
 [[ $(login "$USR" "$UPW") == 401 ]] || fail "a disabled user logged in"
 "$BIN" user enable -config "$CFG" "$USR" 2>/dev/null
 [[ $(login "$USR" "$UPW") == 200 ]] || fail "an enabled user could not log in"
+[[ $(code -b "$CJ" "$U/api/session") == 200 ]] || fail "the session after enable"
 PGVIGIL_PASSWORD="$UPW2" "$BIN" user passwd -config "$CFG" "$USR" 2>/dev/null
+[[ $(code -b "$CJ" "$U/api/instances") == 401 ]] || fail "the open session survived a password change"
 [[ $(login "$USR" "$UPW") == 401 ]] || fail "the old password still works"
 [[ $(login "$USR" "$UPW2") == 200 ]] || fail "the new password does not work"
 for i in 1 2 3 4 5; do [[ $(login "$USR" "wrong-$i-$RANDOM") == 401 ]] || fail "failure $i was not 401"; done
 [[ $(login "$USR" "$UPW2" -D "$TMPD/hdr") == 429 ]] || fail "the sixth attempt was not 429"
 grep -qi '^retry-after: [0-9]' "$TMPD/hdr" || fail "429 without Retry-After"
-echo "ok: login on loopback (401/403/401/200+cookie/200/204/401, disable, passwd, 429)"
+echo "ok: login on loopback (401/403/401/200+cookie/200/204/401, a live session dies at disable and at passwd, 429)"
 kill "$SRVPID"; wait "$SRVPID" 2>/dev/null || true; SRVPID=""
 
 "$BIN" cert -out "$TMPD" -hosts localhost,127.0.0.1 >/dev/null || fail "pgvigil cert"
 [[ -s "$TMPD/pgvigil.crt" && -s "$TMPD/pgvigil.key" ]] || fail "cert files missing"
 [[ $(stat -c %a "$TMPD/pgvigil.key") == 600 ]] || fail "key mode $(stat -c %a "$TMPD/pgvigil.key"), want 600"
 if "$BIN" cert -out "$TMPD" >/dev/null 2>&1; then fail "cert overwrote an existing pair"; fi
+mkdir -p "$TMPD/c2" "$TMPD/c3"
+if "$BIN" cert -out "$TMPD/c2" -hosts 10.0.0.5:8443 >/dev/null 2>&1; then fail "cert accepted a host with a port"; fi
+[[ ! -e "$TMPD/c2/pgvigil.key" ]] || fail "cert wrote a key for a refused host list"
+"$BIN" cert -out "$TMPD/c3" -hosts '[::1],Example.Internal' | grep -q 'for ::1, example.internal' || fail "cert did not read a bracketed IPv6 and lower-case a name"
+rm -f "$TMPD/c3/pgvigil.key"
+if "$BIN" cert -out "$TMPD/c3" >/dev/null 2>&1; then fail "cert wrote beside a lone certificate"; fi
+[[ ! -e "$TMPD/c3/pgvigil.key" ]] || fail "cert left a key beside the old certificate (a mismatched pair)"
 : > "$LOG"
 "$BIN" serve -config "$CFG" -dsn env:UI_DSN -listen "127.0.0.1:$TLSPORT" -tls-cert "$TMPD/pgvigil.crt" -tls-key "$TMPD/pgvigil.key" >"$LOG" 2>&1 & SRVPID=$!
 T="https://127.0.0.1:$TLSPORT"
@@ -115,5 +128,5 @@ grep -qi '^strict-transport-security: max-age=' "$TMPD/hdr" || fail "no HSTS hea
 grep -qi '^set-cookie: pgvigil_session=.*Secure' "$TMPD/hdr" || fail "the cookie over TLS is not Secure"
 plain=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$TLSPORT/" || true)
 [[ "$plain" == 400 || "$plain" == 000 ]] || fail "plain http on the TLS port answered $plain"
-echo "ok: TLS (cert 0600, no overwrite, https 200, HSTS, Secure cookie, plain http refused)"
+echo "ok: TLS (cert 0600, no overwrite, a port or a bracketed name refused, no lone key, https 200, HSTS, Secure cookie, plain http refused)"
 echo "proof-auth: OK"

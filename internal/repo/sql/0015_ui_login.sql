@@ -6,6 +6,9 @@
 --   table as the owner. The serve login holds pgvigil_reader and pgvigil_auth.
 --   Sessions live in the serve process (a random token in an HttpOnly cookie), never in the repository:
 --   the UI's repository session stays read-only.
+--   The ui_* functions run as the role that ran `pgvigil migrate`: the repository owner (CREATEROLE, not
+--   a superuser, is the model the README gives); each body is one fixed parameterised SELECT with a
+--   pinned search_path. Any relation named ui_* is owner-only: a view over ui_users carries the prefix.
 
 CREATE TABLE pgvigil.ui_users (
   user_id          int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -76,7 +79,7 @@ BEGIN
      WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p', 'v')
   LOOP
     EXECUTE format('REVOKE ALL ON %s FROM PUBLIC, pgvigil_collector, pgvigil_auth', t.rel);
-    IF t.relname = 'ui_users' THEN
+    IF t.relname LIKE 'ui\_%' THEN
       EXECUTE format('REVOKE ALL ON %s FROM pgvigil_reader', t.rel);
     ELSE
       EXECUTE format('GRANT SELECT ON %s TO pgvigil_reader', t.rel);

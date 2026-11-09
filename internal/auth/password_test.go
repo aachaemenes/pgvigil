@@ -25,7 +25,7 @@ func TestHashRoundTrip(t *testing.T) {
 	if h2 == h {
 		t.Fatal("two hashes of one password share a salt")
 	}
-	if ok, err := Verify(Dummy, "anything at all"); err != nil || ok {
+	if ok, err := Verify(Dummy(), "anything at all"); err != nil || ok {
 		t.Fatalf("the dummy hash verified: ok=%v err=%v", ok, err)
 	}
 }
@@ -43,7 +43,7 @@ func TestPasswordRule(t *testing.T) {
 
 func TestVerifyRejectsMalformed(t *testing.T) {
 	for _, s := range []string{"", "plain", "$argon2i$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA", "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA",
-		"$argon2id$v=19$m=99999999,t=2,p=1$c2FsdA$aGFzaA", "$argon2id$v=19$m=19456,t=2,p=1$!!$aGFzaA"} {
+		"$argon2id$v=19$m=99999999,t=2,p=1$c2FsdA$aGFzaA", "$argon2id$v=19$m=19456,t=2,p=300$c2FsdA$aGFzaA", "$argon2id$v=19$m=19456,t=2,p=1$!!$aGFzaA"} {
 		if ok, err := Verify(s, "x"); err == nil || ok {
 			t.Errorf("%q: ok=%v err=%v, want an error", s, ok, err)
 		}

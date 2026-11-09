@@ -19,20 +19,27 @@ import (
 
 // The UI login. A password is checked against the argon2id hash pgvigil.ui_password_hash() returns
 // (a SECURITY DEFINER function only the pgvigil_auth role may call); a session is a random token held
-// in this process and sent as an HttpOnly, SameSite=Strict cookie (Secure under TLS). A POST needs
-// the X-Pgvigil header, which no cross-site form can set, so the cookie alone never authorises a
-// change. Failures are limited per client address and per user name.
+// in this process and sent as an HttpOnly, SameSite=Strict cookie (Secure under TLS). Every gated
+// request asks the repository for the user's current hash again (one primary-key read), so a user
+// disabled, removed or given a new password loses an open session at once. A POST needs the
+// X-Pgvigil header, which no cross-site form can set, so the cookie alone never authorises a change.
+// Failures are counted per client address and per user name: an address past the limit is refused
+// for the rest of the minute; a user name past it is slowed down, never locked, so a stranger who
+// knows an operator's name cannot keep the operator out.
 const (
 	sessionCookie = "pgvigil_session"
 	loginHeader   = "X-Pgvigil"
 	maxFails      = 5
 	failWindow    = time.Minute
+	nameDelayStep = 2 * time.Second
+	nameDelayMax  = 20 * time.Second
 	defaultTTL    = 12 * time.Hour
 	verifySlots   = 4 // concurrent argon2 verifies: each holds 19 MiB while it runs
 )
 
 type session struct {
 	user    string
+	hash    string // the hash the login verified against; a different one now = the password changed
 	expires time.Time
 }
 
@@ -48,6 +55,7 @@ type authState struct {
 	ttl      time.Duration
 	sem      chan struct{}
 	now      func() time.Time
+	sleep    func(ctx context.Context, d time.Duration) error // the name slowdown; a test stubs it
 	mu       sync.Mutex
 	sessions map[string]session
 	fails    map[string]failRecord
@@ -58,11 +66,22 @@ func newAuth(lookup func(context.Context, string) (string, error), secure bool, 
 		ttl = defaultTTL
 	}
 	return &authState{lookup: lookup, secure: secure, ttl: ttl, sem: make(chan struct{}, verifySlots), now: time.Now,
-		sessions: map[string]session{}, fails: map[string]failRecord{}}
+		sleep: sleepCtx, sessions: map[string]session{}, fails: map[string]failRecord{}}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // issue starts a session and returns its token (32 random bytes).
-func (a *authState) issue(user string) (string, error) {
+func (a *authState) issue(user, hash string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -76,19 +95,30 @@ func (a *authState) issue(user string) (string, error) {
 			delete(a.sessions, k)
 		}
 	}
-	a.sessions[tok] = session{user: user, expires: now.Add(a.ttl)}
+	a.sessions[tok] = session{user: user, hash: hash, expires: now.Add(a.ttl)}
 	return tok, nil
 }
 
-func (a *authState) userOf(tok string) (string, bool) {
+// verify returns the session's user when the token is live and the user still exists, is enabled
+// and keeps the password the session was opened with; otherwise the session is gone. A repository
+// error keeps the session (the request's own query fails on the same error).
+func (a *authState) verify(ctx context.Context, tok string) (string, bool) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	s, ok := a.sessions[tok]
+	if ok && !a.now().Before(s.expires) {
+		delete(a.sessions, tok)
+		ok = false
+	}
+	a.mu.Unlock()
 	if !ok {
 		return "", false
 	}
-	if !a.now().Before(s.expires) {
-		delete(a.sessions, tok)
+	hash, err := a.lookup(ctx, s.user)
+	if err != nil {
+		return s.user, true
+	}
+	if hash == "" || hash != s.hash {
+		a.revoke(tok)
 		return "", false
 	}
 	return s.user, true
@@ -100,32 +130,49 @@ func (a *authState) revoke(tok string) {
 	delete(a.sessions, tok)
 }
 
-// blocked returns how long any of the keys stays locked after maxFails failures in failWindow.
-func (a *authState) blocked(keys ...string) time.Duration {
-	now := a.now()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	var wait time.Duration
+func (a *authState) sweepFails(now time.Time) {
 	for k, f := range a.fails {
 		if !now.Before(f.reset) {
 			delete(a.fails, k)
 		}
 	}
-	for _, k := range keys {
-		if f, ok := a.fails[k]; ok && f.n >= maxFails {
-			if d := f.reset.Sub(now); d > wait {
-				wait = d
-			}
-		}
-	}
-	return wait
 }
 
-func (a *authState) recordFail(keys ...string) {
+// addrWait returns how long a client address stays refused after maxFails failures in failWindow.
+func (a *authState) addrWait(ip string) time.Duration {
 	now := a.now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, k := range keys {
+	a.sweepFails(now)
+	if f, ok := a.fails["ip:"+ip]; ok && f.n >= maxFails {
+		return f.reset.Sub(now)
+	}
+	return 0
+}
+
+// nameDelay returns the slowdown an attempt on a user name carries after maxFails failures in
+// failWindow: 2 s more per failure, 20 s at most; the attempt is still judged.
+func (a *authState) nameDelay(user string) time.Duration {
+	now := a.now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sweepFails(now)
+	f, ok := a.fails["user:"+user]
+	if !ok || f.n < maxFails {
+		return 0
+	}
+	d := time.Duration(f.n-maxFails+1) * nameDelayStep
+	if d > nameDelayMax {
+		d = nameDelayMax
+	}
+	return d
+}
+
+func (a *authState) recordFail(ip, user string) {
+	now := a.now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, k := range []string{"ip:" + ip, "user:" + user} {
 		f := a.fails[k]
 		if !now.Before(f.reset) {
 			f = failRecord{reset: now.Add(failWindow)}
@@ -135,12 +182,11 @@ func (a *authState) recordFail(keys ...string) {
 	}
 }
 
-func (a *authState) clearFails(keys ...string) {
+func (a *authState) clearFails(ip, user string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, k := range keys {
-		delete(a.fails, k)
-	}
+	delete(a.fails, "ip:"+ip)
+	delete(a.fails, "user:"+user)
 }
 
 func (a *authState) cookie(tok string, maxAge int) *http.Cookie {
@@ -155,19 +201,25 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// sessionUser names the live session's user, or "" without one.
+func (s *Server) sessionUser(r *http.Request) string {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil {
+		return ""
+	}
+	u, ok := s.auth.verify(r.Context(), c.Value)
+	if !ok {
+		return ""
+	}
+	return u
+}
+
 // requireLogin lets a request through with a live session, or when the login is off.
 func (s *Server) requireLogin(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.auth != nil {
-			c, err := r.Cookie(sessionCookie)
-			if err != nil {
-				writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-				return
-			}
-			if _, ok := s.auth.userOf(c.Value); !ok {
-				writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-				return
-			}
+		if s.auth != nil && s.sessionUser(r) == "" {
+			writeErr(w, http.StatusUnauthorized, errors.New("login required"))
+			return
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -197,12 +249,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("user name and password are required"))
 		return
 	}
-	keys := []string{"ip:" + clientIP(r), "user:" + user}
-	if d := a.blocked(keys...); d > 0 {
+	ip := clientIP(r)
+	if d := a.addrWait(ip); d > 0 {
 		secs := int(d.Seconds()) + 1
 		w.Header().Set("Retry-After", strconv.Itoa(secs))
-		writeErr(w, http.StatusTooManyRequests, fmt.Errorf("too many login attempts; try again in %d s", secs))
+		writeErr(w, http.StatusTooManyRequests, fmt.Errorf("too many login attempts from this address; try again in %d s", secs))
 		return
+	}
+	if d := a.nameDelay(user); d > 0 {
+		if err := a.sleep(r.Context(), d); err != nil {
+			return
+		}
 	}
 	hash, err := a.lookup(r.Context(), user)
 	if err != nil {
@@ -212,7 +269,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	target := hash
 	if target == "" {
-		target = auth.Dummy // an unknown name costs the same time as a wrong password
+		target = auth.Dummy() // an unknown name costs the same time as a wrong password
 	}
 	select {
 	case a.sem <- struct{}{}:
@@ -225,19 +282,19 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("stored password hash is not usable", "user", user, "err", verr)
 	}
 	if verr != nil || !ok || hash == "" {
-		a.recordFail(keys...)
-		s.log.Info("login failed", "user", user, "from", clientIP(r))
+		a.recordFail(ip, user)
+		s.log.Info("login failed", "user", user, "from", ip)
 		writeErr(w, http.StatusUnauthorized, errors.New("wrong user name or password"))
 		return
 	}
-	tok, err := a.issue(user)
+	tok, err := a.issue(user, hash)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	a.clearFails(keys...)
+	a.clearFails(ip, user)
 	http.SetCookie(w, a.cookie(tok, int(a.ttl.Seconds())))
-	s.log.Info("login", "user", user, "from", clientIP(r))
+	s.log.Info("login", "user", user, "from", ip)
 	s.reply(w, r, map[string]any{"login": true, "user": user}, nil)
 }
 
@@ -264,11 +321,9 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, map[string]any{"login": false}, nil)
 		return
 	}
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		if u, ok := s.auth.userOf(c.Value); ok {
-			s.reply(w, r, map[string]any{"login": true, "user": u}, nil)
-			return
-		}
+	if u := s.sessionUser(r); u != "" {
+		s.reply(w, r, map[string]any{"login": true, "user": u}, nil)
+		return
 	}
 	writeErr(w, http.StatusUnauthorized, errors.New("login required"))
 }

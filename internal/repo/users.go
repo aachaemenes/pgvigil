@@ -71,7 +71,7 @@ func (r *Repo) UIUserAdd(ctx context.Context, name, hash string) error {
 	return nil
 }
 
-// UIUserSetPassword replaces the hash and re-enables the user.
+// UIUserSetPassword replaces the hash; a disabled user stays disabled (enable is its own verb).
 func (r *Repo) UIUserSetPassword(ctx context.Context, name, hash string) error {
 	t, err := r.pool.Exec(ctx, `UPDATE pgvigil.ui_users SET password_hash = $2, password_set_at = now() WHERE username = $1`, name, hash)
 	if err != nil {

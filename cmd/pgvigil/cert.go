@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -70,13 +71,20 @@ func runCert(args []string) error {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 	}
-	for _, n := range names {
-		if ip := net.ParseIP(n); ip != nil {
+	for i, n := range names {
+		dns, ip, err := certHost(n)
+		if err != nil {
+			return err
+		}
+		if ip != nil {
 			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+			names[i] = ip.String()
 		} else {
-			tmpl.DNSNames = append(tmpl.DNSNames, n)
+			tmpl.DNSNames = append(tmpl.DNSNames, dns)
+			names[i] = dns
 		}
 	}
+	tmpl.Subject.CommonName = names[0]
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		return err
@@ -87,6 +95,12 @@ func runCert(args []string) error {
 	}
 	crtPath := filepath.Join(*out, "pgvigil.crt")
 	keyPath := filepath.Join(*out, "pgvigil.key")
+	// both checked before either is written: a key written next to an old certificate is a mismatched pair
+	for _, p := range []string{crtPath, keyPath} {
+		if _, err := os.Stat(p); err == nil {
+			return fmt.Errorf("%s exists; remove the pair first", p)
+		}
+	}
 	if err := writeNew(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
@@ -96,6 +110,28 @@ func runCert(args []string) error {
 	fmt.Printf("wrote %s and %s for %s, valid %d days\n", crtPath, keyPath, strings.Join(names, ", "), *days)
 	fmt.Printf("serve with: pgvigil serve -config pgvigil.yaml -listen 0.0.0.0:8443 -tls-cert %s -tls-key %s\n", crtPath, keyPath)
 	return nil
+}
+
+var hostnameRE = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62})?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,62})?)*$`)
+
+// certHost reads one -hosts entry: an IP address (brackets allowed), or a host name. A port, a
+// bracketed name or anything else a browser would never match is refused rather than written as a
+// DNS entry the certificate can never satisfy.
+func certHost(h string) (string, net.IP, error) {
+	h = strings.TrimSpace(h)
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = h[1 : len(h)-1]
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return "", ip, nil
+	}
+	if strings.Contains(h, ":") {
+		return "", nil, fmt.Errorf("-hosts %q: a name takes no port, and an IPv6 address stands alone (no port)", h)
+	}
+	if len(h) > 253 || !hostnameRE.MatchString(h) {
+		return "", nil, fmt.Errorf("-hosts %q: not a host name (letters, digits, hyphens and dots) or an IP address", h)
+	}
+	return strings.ToLower(h), nil, nil
 }
 
 // writeNew refuses to overwrite: a key in place is never replaced by accident.

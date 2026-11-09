@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -77,8 +78,8 @@ func Verify(encoded, password string) (bool, error) {
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &m, &t, &p); err != nil {
 		return false, errors.New("malformed argon2 parameters")
 	}
-	// a stored hash states its own cost; refuse one that would eat the server (a tampered row)
-	if m == 0 || m > 1024*1024 || t == 0 || t > 16 || p == 0 || p > 8 {
+	// a stored hash states its own cost; refuse one that would eat the server (a tampered row): 256 MiB at most
+	if m == 0 || m > 256*1024 || t == 0 || t > 16 || p == 0 || p > 8 {
 		return false, errors.New("argon2 parameters out of range")
 	}
 	salt, err := b64.DecodeString(parts[4])
@@ -94,15 +95,24 @@ func Verify(encoded, password string) (bool, error) {
 }
 
 // Dummy is a hash of a random secret nobody knows: verifying an unknown user against it costs the
-// same as a real check, so a login's timing does not say whether the name exists.
-var Dummy = func() string {
-	secret := make([]byte, 24)
-	if _, err := rand.Read(secret); err != nil {
-		panic(err)
-	}
-	h, err := Hash(b64.EncodeToString(secret))
-	if err != nil {
-		panic(err)
-	}
-	return h
-}()
+// same as a real check, so a login's timing does not say whether the name exists. Made on first use,
+// so `pgvigil version` pays nothing for it.
+func Dummy() string {
+	dummyOnce.Do(func() {
+		secret := make([]byte, 24)
+		if _, err := rand.Read(secret); err != nil {
+			panic(err)
+		}
+		h, err := Hash(b64.EncodeToString(secret))
+		if err != nil {
+			panic(err)
+		}
+		dummy = h
+	})
+	return dummy
+}
+
+var (
+	dummyOnce sync.Once
+	dummy     string
+)

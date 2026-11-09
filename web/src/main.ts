@@ -15,6 +15,7 @@ const pages: Record<string, { label: string; render: (c: Ctx) => Promise<HTMLEle
 let timer: number | undefined;
 let generation = 0;   // a render that finishes after a newer one started is dropped
 let session: Session = { login: false };
+let loginShown = false;   // the sign-in form is up: a tab switch or a hash change must not rebuild it
 
 function parse(): { page: string; ctx: Ctx } {
   const h = location.hash.replace(/^#\/?/, '');
@@ -45,6 +46,7 @@ function showLogin(message = '') {
   window.clearTimeout(timer);
   timer = undefined;
   ++generation;
+  loginShown = true;
   document.getElementById('nav')!.replaceChildren();
   document.getElementById('bar')!.replaceChildren();
   const user = el('input', { name: 'username', autocomplete: 'username', required: '', autofocus: '', maxlength: '64' });
@@ -60,6 +62,7 @@ function showLogin(message = '') {
     try {
       session = await post<Session>('login', { username: user.value.trim(), password: pass.value });
       pass.value = '';
+      loginShown = false;
       void render();
     } catch (e) {
       err.textContent = e instanceof Error ? e.message : String(e);
@@ -133,8 +136,8 @@ async function render() {
   }
 }
 
-window.addEventListener('hashchange', () => { void render(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined) void render(); });
+window.addEventListener('hashchange', () => { if (!loginShown) void render(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined && !loginShown) void render(); });
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
   try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
