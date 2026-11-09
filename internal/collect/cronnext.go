@@ -263,19 +263,23 @@ func (s *CronSpec) PriorDue(t time.Time, loc *time.Location) time.Time {
 type CronSettings struct {
 	Timezone  string // cron.timezone ("GMT" when the setting is not there: pg_cron before 1.5, or not loaded)
 	DomAndDow bool   // cron.match_dom_and_dow (pg_cron 1.6.8+): both day fields must match
+	Now       time.Time // the server's clock at the read (the collector host's when the read failed): the runs' start_time is on that clock
 	Err       error
 }
 
-// ReadCronSettings reads cron.timezone and cron.match_dom_and_dow on the connected server. Both are
-// superuser-only settings that pg_read_all_settings (in pg_monitor) may read; a failed read is returned in
-// Err, and AddCronTimes then judges nothing (a wrong zone would call jobs missed that are not).
+// ReadCronSettings reads the server's clock, cron.timezone and cron.match_dom_and_dow on the connected server.
+// The two settings are superuser-only and pg_read_all_settings (in pg_monitor) may read them; a failed read is
+// returned in Err, and AddCronTimes then judges nothing (a wrong zone would call jobs missed that are not). The
+// clock is the server's so that next_run and prior_due sit on the same clock as the runs' start_time: a collector
+// host ahead of the server by more than a schedule interval would otherwise call a healthy minute job missed.
 func ReadCronSettings(ctx context.Context, conn *pgx.Conn) CronSettings {
 	var tz, both *string
-	err := conn.QueryRow(ctx, `SELECT current_setting('cron.timezone', true), current_setting('cron.match_dom_and_dow', true)`).Scan(&tz, &both)
+	var now time.Time
+	err := conn.QueryRow(ctx, `SELECT now(), current_setting('cron.timezone', true), current_setting('cron.match_dom_and_dow', true)`).Scan(&now, &tz, &both)
 	if err != nil {
-		return CronSettings{Timezone: "GMT", Err: err}
+		return CronSettings{Timezone: "GMT", Now: time.Now(), Err: err}
 	}
-	cs := CronSettings{Timezone: "GMT"}
+	cs := CronSettings{Timezone: "GMT", Now: now}
 	if tz != nil && *tz != "" {
 		cs.Timezone = *tz
 	}

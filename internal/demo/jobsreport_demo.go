@@ -4,8 +4,8 @@ package demo
 // report tells, and the two values the jobs collection's own schedule parser adds (next_run where the row has
 // none, prior_due), so the Job report tab, the fleet Jobs root and the Summary's Jobs column show them.
 //
-// Step: the jobs line becomes      add("jobs", g.jobReportRows(t, prev))     (in place of g.jobRows(t, prev))
-// Collections: no change (the rows ride on the "jobs" collection).
+// Step adds these rows under the jobs collection (gen.go: add("jobs", g.jobReportRows(t, prev))); Collections is
+// unchanged: the rows ride on "jobs".
 //
 // The stories, all at the anchor (g.end):
 //   - aurora-crm01 (CronFail): sync-contacts '*/20 * * * *' failed its last four runs (from 80 minutes before
