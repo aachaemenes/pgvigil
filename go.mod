@@ -10,6 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/databasemigrationservice v1.75.8
 	github.com/jackc/pgx/v5 v5.12.0
 	golang.org/x/crypto v0.58.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -34,6 +35,5 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

@@ -9,11 +9,14 @@
 //	pgvigil cert     [-hosts a,b] [-out dir]                                                 a self-signed TLS pair
 //	pgvigil demo     [-config f | -pgbin dir] [-serve]                                        seed (and serve) the demo fleet
 //	pgvigil roles                                                                            the CREATE ROLE script
+//	pgvigil install   [-bin p] [-config p] [-user a] [-no-start]                             the collector as a service (systemd / Windows)
+//	pgvigil uninstall [-bin p] [-config p] [-user a] [-purge]
 //	pgvigil version
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -32,12 +35,15 @@ var version = "dev"
 
 func main() { os.Exit(run(os.Args[1:])) }
 
-// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error.
+// run returns the process exit code: 0 ok, 1 a failure, 2 a usage error, 3 a configuration error.
 // Deferred cleanup (the signal context) runs before os.Exit this way.
 func run(args []string) int {
 	if len(args) < 1 {
 		usage()
 		return 2
+	}
+	if handled, code := maybeRunAsService(args); handled { // Windows: `run` under the service control manager
+		return code
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -63,19 +69,27 @@ func run(args []string) int {
 		err = runCert(args[1:])
 	case "demo":
 		err = runDemo(ctx, log, args[1:])
+	case "install":
+		err = runInstall(log, args[1:])
+	case "uninstall":
+		err = runUninstall(log, args[1:])
 	default:
 		usage()
 		return 2
 	}
 	if err != nil {
 		log.Error("pgvigil failed", "err", err)
+		var ec interface{ ExitCode() int }
+		if errors.As(err, &ec) {
+			return ec.ExitCode() // 3: a configuration error, which a service manager must not retry
+		}
 		return 1
 	}
 	return 0
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|install|uninstall|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector
@@ -91,13 +105,13 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 	}
 	cfg, err := config.Load(*path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, &configError{err}
 	}
 	if needInstance && len(cfg.Instances) == 0 {
-		return nil, nil, fmt.Errorf("config %s: at least one instance is required", *path)
+		return nil, nil, &configError{fmt.Errorf("config %s: at least one instance is required", *path)}
 	}
 	if err := checkCollectionNames(cfg); err != nil {
-		return nil, nil, fmt.Errorf("config %s: %w", *path, err)
+		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
 	}
 	cfg.Flags.Once = *once
 	cfg.Flags.Instance = *inst
