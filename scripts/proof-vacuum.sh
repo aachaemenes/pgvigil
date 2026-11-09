@@ -32,7 +32,16 @@
 #       'table over vacuum threshold' | warning; a fourth read at T+18h still over -> critical (25 h); a fifth read
 #       not over -> over_since NULL and the check gone; db.s.cold over only at T -> no check (under 6 h)
 #     - wraparound rows with freeze_max_age 200,000,000: xid ages 50 M (nothing), 150 M (warning), 1.2 B (critical)
+#       [review 1 fold, expected before the rerun: the warning moves from 50 % to past 100 % of the freeze max age
+#        (a healthy database's age cycles up to it): 150 M now raises nothing, a fourth database at 250 M is the warning]
 #     - vacuum_findings has as many rows as vacuum_checks for the scratch instance, setting = check_name
+#  C2. [review 1 fold, expected before the rerun] the fold's fixtures on the same scratch instance:
+#     - one VACUUM statement (pid 301, one query_start) over s.a then s.b -> two runs (one per relid), s.a with its own
+#       heap_blks_scanned 90000 and s.b with 100
+#     - a VACUUM ANALYZE (pid 302) seen in its vacuum phase, then its analyze phase -> one run, kind vacuum
+#     - a vacuum waiting on a Lock for 4,000 s (pid 303) -> 'vacuum waiting on a lock' only, no 'vacuum running over an hour'
+#     - db.s.gap over its threshold at T-7h, left out of the list at T-6h (another table listed), over again at T-5h..T
+#       (hourly) -> hours_over 7.0, the check stays
 #  D. log_events takes kind 'autovacuum' (seeded as the owner) and vacuum_history returns it with source 'log'
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -148,7 +157,7 @@ RUN1='{"kind":"vacuum","pid":101,"dbid":1,"datname":"db","relid":11,"table_name"
 RUN2='{"kind":"analyze","pid":102,"dbid":1,"datname":"db","relid":12,"table_name":"s.wrapped","is_auto":true,"is_wraparound":true,"query_start":"2026-11-09T11:00:00Z","elapsed_secs":120,"wait_event_type":"Lock","wait_event":"relation","blocking_pids":[555]}'
 imp vacuum "$T" "[$SUM,$RUN1,$RUN2]"
 SET='{"kind":"settings","autovacuum":"off","track_counts":"on","max_workers":3,"freeze_max_age":200000000,"mxid_freeze_max_age":400000000,"failsafe_age":1600000000}'
-WRAP='{"kind":"wrap","dbid":1,"datname":"db","allow_conn":true,"xid_age":50000000,"mxid_age":10},{"kind":"wrap","dbid":2,"datname":"warm","allow_conn":true,"xid_age":150000000,"mxid_age":10},{"kind":"wrap","dbid":3,"datname":"hot","allow_conn":true,"xid_age":1200000000,"mxid_age":10}'
+WRAP='{"kind":"wrap","dbid":1,"datname":"db","allow_conn":true,"xid_age":50000000,"mxid_age":10},{"kind":"wrap","dbid":2,"datname":"warm","allow_conn":true,"xid_age":150000000,"mxid_age":10},{"kind":"wrap","dbid":3,"datname":"hot","allow_conn":true,"xid_age":1200000000,"mxid_age":10},{"kind":"wrap","dbid":4,"datname":"due","allow_conn":true,"xid_age":250000000,"mxid_age":10}'
 DBR='{"kind":"db","dbid":1,"datname":"db","user_tables":2,"over_vacuum":1}'
 tbl() { printf '{"kind":"table","dbid":1,"relid":%s,"datname":"db","schema_name":"s","table_name":"%s","n_live_tup":1000,"n_dead_tup":%s,"vac_threshold":250,"anl_threshold":150,"n_mod_since_analyze":0,"autovacuum_enabled":true,"over_vacuum":%s,"over_insert":false,"over_analyze":false,"xid_age":1000,"freeze_max_age":200000000}' "$1" "$2" "$3" "$4"; }
 HOT=$(tbl 21 hot 900 true); COLD=$(tbl 22 cold 900 true); COLDOK=$(tbl 22 cold 10 false); HOTOK=$(tbl 21 hot 10 false)
@@ -158,7 +167,7 @@ imp vacuum_tables "$(at '-1 hour')" "[$SET,$WRAP,$DBR,$HOT,$COLDOK]"
 imp vacuum_tables "$T" "[$SET,$WRAP,$DBR,$HOT,$COLD]"
 GOT=$(q "select check_name || '|' || severity || '|' || object from pgvigil.vacuum_checks where instance_id=$SID" | sort)
 WANT=$(printf '%s\n' 'autovacuum off|critical|autovacuum' 'vacuum running over an hour|warning|db.s.big' 'vacuum waiting on a lock|critical|db.s.wrapped' \
-  'table over vacuum threshold|warning|db.s.hot' 'wraparound|warning|warm' 'wraparound|critical|hot' | sort)
+  'table over vacuum threshold|warning|db.s.hot' 'wraparound|warning|due' 'wraparound|critical|hot' | sort)
 [[ "$GOT" == "$WANT" ]] || { echo "got:"; echo "$GOT"; echo "want:"; echo "$WANT"; fail "vacuum_checks rows differ"; }
 [[ $(q "select hours_over from pgvigil.vacuum_table_state where instance_id=$SID and table_name='hot'") == 7.0 ]] || fail "hours_over: $(q "select hours_over from pgvigil.vacuum_table_state where instance_id=$SID and table_name='hot'")"
 imp vacuum_tables "$(at '18 hours')" "[$SET,$WRAP,$DBR,$HOT,$COLD]"
@@ -169,6 +178,29 @@ imp vacuum_tables "$(at '19 hours')" "[$SET,$WRAP,$DBR,$HOTOK,$COLD]"
 [[ $(q "select count(*) from pgvigil.vacuum_findings where instance_id=$SID") == $(q "select count(*) from pgvigil.vacuum_checks where instance_id=$SID") ]] || fail "findings count"
 [[ $(q "select count(*) from pgvigil.vacuum_findings f where instance_id=$SID and setting not in (select check_name from pgvigil.vacuum_checks where instance_id=$SID)") == 0 ]] || fail "findings setting"
 echo "C: OK ($(q "select count(*) from pgvigil.vacuum_checks where instance_id=$SID") checks on the scratch instance after the release read)"
+
+echo "--- C2. the review fold's fixtures"
+S2=$(q "select pgvigil.ensure_instance('vacuum-fold-$SUF', 'onprem', 'proof', 160004, false, '{proof}')")
+imp2() { q "select pgvigil.import_$1($S2, '$2'::timestamptz, \$j\$$3\$j\$::jsonb)" >/dev/null; }
+SUM2='{"kind":"summary","autovacuum":"on","track_counts":"on","max_workers":3,"workers_running":1}'
+vr() { printf '{"kind":"%s","pid":%s,"dbid":1,"datname":"db","relid":%s,"table_name":"s.%s","is_auto":false,"is_wraparound":false,"phase":"%s","heap_blks_total":%s,"heap_blks_scanned":%s,"query_start":"2026-11-09T09:00:00Z","elapsed_secs":%s%s}' "$@"; }
+imp2 vacuum "$(at '-3 minutes')" "[$SUM2,$(vr vacuum 301 31 a 'scanning heap' 100000 90000 60 ''),$(vr vacuum 302 32 c 'scanning heap' 10 5 60 '')]"
+imp2 vacuum "$(at '-2 minutes')" "[$SUM2,$(vr vacuum 301 33 b 'scanning heap' 500 100 120 ''),$(vr analyze 302 32 c 'acquiring sample rows' 0 0 120 '')]"
+imp2 vacuum "$T" "[$SUM2,$(vr vacuum 303 34 d 'null' 0 0 4000 ',"wait_event_type":"Lock","wait_event":"relation","blocking_pids":[9]')]"
+[[ $(q "select string_agg(table_name || ':' || heap_blks_scanned, ',' order by table_name) from pgvigil.vacuum_runs where instance_id=$S2 and pid=301") == "s.a:90000,s.b:100" ]] \
+  || fail "multi-table run: $(q "select string_agg(table_name || ':' || heap_blks_scanned, ',') from pgvigil.vacuum_runs where instance_id=$S2 and pid=301")"
+[[ $(q "select count(*) || ':' || min(kind) from pgvigil.vacuum_runs where instance_id=$S2 and pid=302") == "1:vacuum" ]] || fail "VACUUM ANALYZE kind: $(q "select kind from pgvigil.vacuum_runs where instance_id=$S2 and pid=302")"
+[[ $(q "select string_agg(check_name, ',' order by check_name) from pgvigil.vacuum_checks where instance_id=$S2 and object='db.s.d'") == "vacuum waiting on a lock" ]] \
+  || fail "lock wait over an hour: $(q "select string_agg(check_name, ',') from pgvigil.vacuum_checks where instance_id=$S2")"
+GAP=$(tbl 41 gap 900 true); OTHER=$(tbl 42 other 900 true)
+imp2 vacuum_tables "$(at '-7 hours')" "[$SET,$DBR,$GAP]"
+imp2 vacuum_tables "$(at '-6 hours')" "[$SET,$DBR,$OTHER]"
+for h in 5 4 3 2 1; do imp2 vacuum_tables "$(at "-$h hours")" "[$SET,$DBR,$GAP,$OTHER]"; done
+imp2 vacuum_tables "$T" "[$SET,$DBR,$GAP,$OTHER]"
+[[ $(q "select hours_over from pgvigil.vacuum_table_state where instance_id=$S2 and table_name='gap'") == 7.0 ]] \
+  || fail "a missed listing reset the streak: $(q "select hours_over from pgvigil.vacuum_table_state where instance_id=$S2 and table_name='gap'")"
+[[ $(q "select count(*) from pgvigil.vacuum_checks where instance_id=$S2 and check_name='table over vacuum threshold' and object='db.s.gap'") == 1 ]] || fail "gap check"
+echo "C2: OK (two runs for one statement, VACUUM ANALYZE stays a vacuum, one check for a long lock wait, the streak survives a missed listing)"
 
 echo "--- D. the log's autovacuum entries"
 q "select pgvigil.ensure_month_partition('log_events', now())" >/dev/null

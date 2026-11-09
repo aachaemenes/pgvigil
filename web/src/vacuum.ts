@@ -37,7 +37,7 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
       Number(st.workers_running) >= Number(st.max_workers) && Number(st.max_workers) > 0 ? 'warn' : ''),
     tile('vacuums / analyzes now', `${fmtNum(st.vacuums_running)} / ${fmtNum(st.analyzes_running)}`),
     tile('tables over threshold', fmtNum(over.length), over.length ? 'warn' : ''),
-    tile('oldest database, % of freeze max', fmtNum(maxWrap) + ' %', maxWrap > 50 ? 'warn' : ''),
+    tile('oldest database, % of freeze max', fmtNum(maxWrap) + ' %', maxWrap > 100 ? 'warn' : ''),
     tile('checks', fmtNum(checks.length), checks.some(c => c.severity === 'critical') ? 'crit' : checks.length ? 'warn' : '')));
   sec.append(el('p', { class: 'meta' },
     `Minute read ${fmtTime(st.snapshot_at)}${stale ? ' (over 10 minutes old: "running now" is empty)' : ''}; settings and tables read hourly, last ${st.settings_at ? fmtTime(st.settings_at) : 'never'}. `
@@ -91,24 +91,26 @@ export async function vacuumView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'last_autovacuum', label: 'last autovacuum', fmt: never },
     { key: 'last_vacuum', label: 'last vacuum', fmt: never },
     { key: 'last_autoanalyze', label: 'last autoanalyze', fmt: never },
-    { key: 'freeze_pct', label: 'xid age, % of freeze max', num: true, fmt: pct, cls: v => Number(v) > 50 ? 'warn' : '' },
+    { key: 'freeze_pct', label: 'xid age, % of freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
   ];
   sec.append(el('h3', {}, 'Tables over or near a threshold'),
     el('p', { class: 'meta' }, 'Thresholds as autovacuum computes them: the table\'s own reloptions over the server settings, base + scale factor x reltuples. A ratio of 1x or more is over. Read hourly per database, at most 50 tables per database.'),
     grid(tables.filter(r => Number(r.dead_ratio) >= 0.5 || Number(r.ins_ratio) >= 0.5 || Number(r.anl_ratio) >= 1), tCols, 'No table is over or near a threshold.'));
   const weekAgo = Date.now() - weekMs;
+  // the later of the manual and the automatic vacuum (NaN for a missing one drops out of the max)
+  const lastVac = (r: Row) => Math.max(...[r.last_vacuum, r.last_autovacuum].filter(v => v != null).map(v => Date.parse(String(v))));
   const unvac = tables.filter(r => r.autovacuum_enabled === false || (r.last_vacuum == null && r.last_autovacuum == null)
-    || Date.parse(String(r.last_autovacuum ?? r.last_vacuum ?? '')) < weekAgo);
-  sec.append(el('h3', {}, 'Never or long unvacuumed, or autovacuum off'),
-    el('p', { class: 'meta' }, '"Never" means no vacuum since the statistics reset; long means over 7 days with dead rows.'),
+    || lastVac(r) < weekAgo || Number(r.freeze_pct) > 90);
+  sec.append(el('h3', {}, 'Never or long unvacuumed, autovacuum off, or near a forced freeze'),
+    el('p', { class: 'meta' }, '"Never" means no vacuum since the statistics reset; long means over 7 days with dead rows; near a forced freeze means an xid age past 90 % of the freeze max age.'),
     grid(unvac, tCols, 'None.'));
 
   sec.append(el('h3', {}, 'Wraparound'), grid(wrap, [
     { key: 'datname', label: 'database' },
     { key: 'xid_age', label: 'xid age', num: true },
-    { key: 'xid_freeze_pct', label: '% of freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'crit' : Number(v) > 50 ? 'warn' : '' },
+    { key: 'xid_freeze_pct', label: '% of freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
     { key: 'mxid_age', label: 'multixact age', num: true },
-    { key: 'mxid_freeze_pct', label: '% of mxid freeze max', num: true, fmt: pct, cls: v => Number(v) > 50 ? 'warn' : '' },
+    { key: 'mxid_freeze_pct', label: '% of mxid freeze max', num: true, fmt: pct, cls: v => Number(v) > 100 ? 'warn' : '' },
     { key: 'xid_horizon_pct', label: '% of 2^31', num: true, fmt: pct },
     { key: 'user_tables', label: 'user tables', num: true },
     { key: 'over_vacuum', label: 'over vacuum threshold', num: true },

@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.vacuum_runs (
   kind                 text NOT NULL,          -- vacuum or analyze
   dbid                 bigint,
   datname              text,
-  relid                bigint,
+  relid                bigint NOT NULL DEFAULT 0,  -- 0: not known (one statement can vacuum many tables: each is its own run)
   table_name           text,
   is_auto              boolean,
   is_wraparound        boolean,
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.vacuum_runs (
   index_vacuum_count   bigint,
   waited_lock          boolean NOT NULL DEFAULT false,
   samples              int NOT NULL DEFAULT 1,
-  PRIMARY KEY (instance_id, pid, started_at)
+  PRIMARY KEY (instance_id, pid, started_at, relid)
 );
 CREATE INDEX IF NOT EXISTS vacuum_runs_seen ON pgvigil.vacuum_runs (instance_id, last_seen);
 
@@ -144,23 +144,25 @@ BEGIN
            r->>'query'
       FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' IN ('vacuum', 'analyze', 'worker');
 
-    -- fold into the runs: one per (pid, query_start); a later sample of the same run moves last_seen and the
-    -- progress, a table resolved later fills its name
+    -- fold into the runs: one per (pid, query_start, table) - a database-wide VACUUM is one statement over many
+    -- tables; a later sample of the same run moves last_seen and the progress, a name resolved later fills in
     INSERT INTO pgvigil.vacuum_runs AS v (instance_id, pid, started_at, kind, dbid, datname, relid, table_name, is_auto, is_wraparound,
                                           first_seen, last_seen, elapsed_secs, last_phase, heap_blks_total, heap_blks_scanned,
                                           dead_tuples, index_vacuum_count, waited_lock, samples)
-    SELECT DISTINCT ON ((r->>'pid')::int, (r->>'query_start')::timestamptz)
+    SELECT DISTINCT ON ((r->>'pid')::int, (r->>'query_start')::timestamptz, coalesce((r->>'relid')::bigint, 0))
            p_instance_id, (r->>'pid')::int, (r->>'query_start')::timestamptz, r->>'kind', (r->>'dbid')::bigint, r->>'datname',
-           (r->>'relid')::bigint, r->>'table_name', (r->>'is_auto')::boolean, (r->>'is_wraparound')::boolean,
+           coalesce((r->>'relid')::bigint, 0), r->>'table_name', (r->>'is_auto')::boolean, (r->>'is_wraparound')::boolean,
            p_snapshot_at, p_snapshot_at, (r->>'elapsed_secs')::int, r->>'phase', (r->>'heap_blks_total')::bigint,
            (r->>'heap_blks_scanned')::bigint, (r->>'dead_tuples')::bigint, (r->>'index_vacuum_count')::bigint,
            coalesce(r->>'wait_event_type' = 'Lock', false), 1
       FROM jsonb_array_elements(p_payload) r
      WHERE r->>'kind' IN ('vacuum', 'analyze') AND r->>'query_start' IS NOT NULL
-     ORDER BY (r->>'pid')::int, (r->>'query_start')::timestamptz, r->>'kind' DESC   -- 'vacuum' over 'analyze' (VACUUM ANALYZE)
-    ON CONFLICT (instance_id, pid, started_at) DO UPDATE SET
-      kind = EXCLUDED.kind, dbid = coalesce(EXCLUDED.dbid, v.dbid), datname = coalesce(EXCLUDED.datname, v.datname),
-      relid = coalesce(EXCLUDED.relid, v.relid), table_name = coalesce(EXCLUDED.table_name, v.table_name),
+     ORDER BY (r->>'pid')::int, (r->>'query_start')::timestamptz, coalesce((r->>'relid')::bigint, 0), r->>'kind' DESC   -- 'vacuum' over 'analyze'
+    ON CONFLICT (instance_id, pid, started_at, relid) DO UPDATE SET
+      -- a VACUUM ANALYZE goes on to its analyze phase: it stays a vacuum
+      kind = CASE WHEN v.kind = 'vacuum' THEN 'vacuum' ELSE EXCLUDED.kind END,
+      dbid = coalesce(EXCLUDED.dbid, v.dbid), datname = coalesce(EXCLUDED.datname, v.datname),
+      table_name = coalesce(EXCLUDED.table_name, v.table_name),
       is_wraparound = EXCLUDED.is_wraparound OR coalesce(v.is_wraparound, false),
       last_seen = greatest(v.last_seen, EXCLUDED.last_seen), elapsed_secs = greatest(v.elapsed_secs, EXCLUDED.elapsed_secs),
       last_phase = coalesce(EXCLUDED.last_phase, v.last_phase),
@@ -340,9 +342,11 @@ BEGIN
     ins_threshold = EXCLUDED.ins_threshold, anl_threshold = EXCLUDED.anl_threshold,
     autovacuum_enabled = EXCLUDED.autovacuum_enabled, has_own_settings = EXCLUDED.has_own_settings,
     over_vacuum = EXCLUDED.over_vacuum, over_insert = EXCLUDED.over_insert, over_analyze = EXCLUDED.over_analyze,
-    -- the streak continues only through reads that kept the table listed and over
+    -- the streak continues through reads that found the table over; a read that left it out of the capped list
+    -- (not under: not listed) keeps the streak for up to 3 hours
     over_since = CASE WHEN EXCLUDED.over_since IS NULL THEN NULL
-                      WHEN t.is_present AND t.over_since IS NOT NULL THEN t.over_since
+                      WHEN t.over_since IS NOT NULL AND (t.is_present OR t.snapshot_at > EXCLUDED.snapshot_at - interval '3 hours')
+                      THEN t.over_since
                       ELSE EXCLUDED.over_since END,
     last_vacuum = EXCLUDED.last_vacuum, last_autovacuum = EXCLUDED.last_autovacuum, last_analyze = EXCLUDED.last_analyze,
     last_autoanalyze = EXCLUDED.last_autoanalyze, autovacuum_count = EXCLUDED.autovacuum_count,
@@ -350,7 +354,7 @@ BEGIN
     freeze_max_age = EXCLUDED.freeze_max_age, is_present = true;
 
   -- inside a database read this run, a table not listed is no longer of interest (or was dropped)
-  UPDATE pgvigil.vacuum_tables t SET is_present = false, over_since = NULL
+  UPDATE pgvigil.vacuum_tables t SET is_present = false
    WHERE t.instance_id = p_instance_id AND t.is_present
      AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = t.dbid)
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
@@ -425,8 +429,11 @@ SELECT h.instance_id, h.snapshot_at, h.holder, h.name, h.datname, h.xmin_age, h.
 --   table over vacuum threshold- dead rows (or inserts) over the table's autovacuum threshold in every hourly
 --                                read for 6 hours (warning) or 24 (critical): autovacuum is not reaching it
 --                                (workers busy, a lock, a held xmin, a cost limit too low)
---   wraparound                 - age(datfrozenxid) or mxid_age(datminmxid) over 50 % of the freeze max age
---                                (warning), over 1,000,000,000 or the failsafe age (critical)
+--   wraparound                 - age(datfrozenxid) or mxid_age(datminmxid) past the freeze max age (warning: the
+--                                forced anti-wraparound vacuum is due and has not caught up), over 1,000,000,000 or
+--                                the failsafe age (critical). Not at 50 %: a healthy database's age cycles from near 0
+--                                up to the freeze max age (static tables freeze only there), so it sits over half of
+--                                it half of the time
 --   vacuum running over an hour- a vacuum or analyze running for an hour or more now
 --   vacuum waiting on a lock   - a vacuum or analyze waiting on a heavyweight lock now (critical when it is an
 --                                anti-wraparound one), with the blocking pids
@@ -442,7 +449,11 @@ SELECT t.instance_id, CASE WHEN t.hours_over >= 24 THEN 'critical' ELSE 'warning
        || CASE WHEN t.over_vacuum THEN t.n_dead_tup::text || ' dead rows against ' || round(t.vac_threshold)::text
                ELSE t.n_ins_since_vacuum::text || ' inserts against ' || round(t.ins_threshold)::text END
        || '; last autovacuum ' || coalesce(to_char(t.last_autovacuum AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', 'never recorded')
+       || coalesce('; a ' || r.kind || ' of it is running since ' || to_char(r.query_start AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', '')
   FROM pgvigil.vacuum_table_state t
+  LEFT JOIN LATERAL (SELECT x.kind, x.query_start FROM pgvigil.vacuum_running x
+                      WHERE x.instance_id = t.instance_id AND x.dbid = t.dbid AND x.relid = t.relid AND x.kind = 'vacuum'
+                      LIMIT 1) r ON true
  WHERE t.hours_over >= 6 AND t.autovacuum_enabled
 UNION ALL
 SELECT w.instance_id,
@@ -452,7 +463,7 @@ SELECT w.instance_id,
        || coalesce(w.freeze_max_age::text, '?') || '), multixact age ' || coalesce(w.mxid_age::text, '?') || ' ('
        || coalesce(w.mxid_freeze_pct::text, '?') || ' %): find what holds the xmin horizon back'
   FROM pgvigil.vacuum_wraparound w
- WHERE w.xid_freeze_pct > 50 OR w.mxid_freeze_pct > 50 OR greatest(w.xid_age, w.mxid_age) >= 1000000000
+ WHERE w.xid_freeze_pct > 100 OR w.mxid_freeze_pct > 100 OR greatest(w.xid_age, w.mxid_age) >= 1000000000
 UNION ALL
 SELECT r.instance_id, 'warning', 'vacuum running over an hour',
        coalesce(r.datname || '.' || r.table_name, r.datname || ' relid ' || r.relid::text, 'pid ' || r.pid::text), r.snapshot_at,
@@ -461,7 +472,7 @@ SELECT r.instance_id, 'warning', 'vacuum running over an hour',
        || make_interval(secs => r.elapsed_secs)::text || ', phase ' || coalesce(r.phase, 'not started')
        || coalesce(', ' || r.scanned_pct::text || ' % of the heap scanned', '')
   FROM pgvigil.vacuum_running r
- WHERE r.kind IN ('vacuum', 'analyze') AND r.elapsed_secs >= 3600
+ WHERE r.kind IN ('vacuum', 'analyze') AND r.elapsed_secs >= 3600 AND r.wait_event_type IS DISTINCT FROM 'Lock'
 UNION ALL
 SELECT r.instance_id, CASE WHEN r.is_wraparound THEN 'critical' ELSE 'warning' END, 'vacuum waiting on a lock',
        coalesce(r.datname || '.' || r.table_name, r.datname || ' relid ' || r.relid::text, 'pid ' || r.pid::text), r.snapshot_at,
@@ -477,7 +488,7 @@ SELECT c.instance_id, c.severity, c.check_name AS setting, c.object AS value, tr
        CASE c.check_name
          WHEN 'autovacuum off' THEN 'on'
          WHEN 'table over vacuum threshold' THEN 'autovacuum reaches it within the hour'
-         WHEN 'wraparound' THEN 'under 50 % of autovacuum_freeze_max_age'
+         WHEN 'wraparound' THEN 'under autovacuum_freeze_max_age'
          WHEN 'vacuum running over an hour' THEN 'under an hour'
          ELSE 'no lock wait' END AS suggested,
        'all' AS platforms, c.detail, 'pgvigil' AS source, c.at
@@ -499,7 +510,7 @@ LANGUAGE sql STABLE AS $$
   SELECT 'sample', r.started_at, r.last_seen, r.kind, r.datname,
          coalesce(r.table_name, (SELECT x.schema_name || '.' || x.table_name FROM pgvigil.vacuum_tables x
                                   WHERE x.instance_id = r.instance_id AND x.dbid = r.dbid AND x.relid = r.relid),
-                  'relid ' || r.relid::text), r.is_auto, r.is_wraparound, r.elapsed_secs,
+                  'relid ' || nullif(r.relid, 0)::text), r.is_auto, r.is_wraparound, r.elapsed_secs,
          r.last_phase, r.heap_blks_total, r.heap_blks_scanned, r.dead_tuples, r.index_vacuum_count, r.waited_lock,
          NULL::text
     FROM pgvigil.vacuum_runs r

@@ -63,7 +63,7 @@ func (vacuumCollector) Applies(i platform.Info) (bool, string) { return vacuumAp
 const vacuumRunningSQL = `
 SELECT CASE WHEN v.pid IS NOT NULL THEN 'vacuum' WHEN an.pid IS NOT NULL THEN 'analyze'
             WHEN a.query ~* '^\s*vacuum' THEN 'vacuum' WHEN a.query ~* '^\s*analy[sz]e' THEN 'analyze'
-            WHEN a.query ~* '^autovacuum: (VACUUM|BRIN)' THEN 'vacuum' WHEN a.query ~* '^autovacuum: ANALYZE' THEN 'analyze'
+            WHEN a.query ~* '^autovacuum: VACUUM' THEN 'vacuum' WHEN a.query ~* '^autovacuum: ANALYZE' THEN 'analyze'
             ELSE 'worker' END AS kind,
        a.pid, a.datid::bigint AS dbid, a.datname::text AS datname, coalesce(v.relid, an.relid, w.relation)::bigint AS relid,
        coalesce((SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -176,7 +176,7 @@ SELECT 'wrap' AS kind, d.oid::bigint AS dbid, d.datname::text AS datname, d.data
 // (relation_needs_vacanalyze): base + scale factor x reltuples, the table's reloption over the server
 // setting, the vacuum threshold capped by autovacuum_vacuum_max_threshold (PG18+), reltuples -1 (never
 // vacuumed or analyzed, PG14+) as 0. PG18 also scales the insert threshold by the unfrozen fraction of the
-// table; that refinement is not applied here (the insert threshold reads high on a mostly frozen table).
+// table (pg_class.relallfrozen); %[3]s is that fraction, 1 before PG18.
 // %[1]s = n_ins_since_vacuum (PG13+ column, or NULL).
 const vacuumThresholdCTE = `
 WITH g AS (
@@ -188,6 +188,7 @@ WITH g AS (
          current_setting('autovacuum_freeze_max_age')::bigint AS fma
 ), t AS (
   SELECT c.oid, n.nspname, c.relname, c.relkind, greatest(c.reltuples, 0)::float8 AS rt, c.reltuples::float8 AS reltuples,
+         %[3]s AS unfrozen,
          c.relfrozenxid, c.relminmxid,
          coalesce((SELECT jsonb_object_agg(o.option_name, o.option_value) FROM pg_options_to_table(c.reloptions) o
                     WHERE o.option_name LIKE 'autovacuum%%'), '{}'::jsonb) AS o,
@@ -197,7 +198,7 @@ WITH g AS (
    WHERE c.relkind IN ('r', 'm')
 ), th AS (
   SELECT t.*,
-         NOT coalesce(t.o->>'autovacuum_enabled' ~* '^(false|off|no|n|f|0)$', false) AS av_enabled,
+         coalesce((t.o->>'autovacuum_enabled')::boolean, true) AS av_enabled,   -- the server's own boolean parser
          t.o <> '{}'::jsonb AS has_own,
          CASE WHEN coalesce((t.o->>'autovacuum_vacuum_max_threshold')::float8, g.vmax) >= 0
               THEN least(coalesce((t.o->>'autovacuum_vacuum_threshold')::float8, g.vt) + coalesce((t.o->>'autovacuum_vacuum_scale_factor')::float8, g.vs) * t.rt,
@@ -205,7 +206,7 @@ WITH g AS (
               ELSE coalesce((t.o->>'autovacuum_vacuum_threshold')::float8, g.vt) + coalesce((t.o->>'autovacuum_vacuum_scale_factor')::float8, g.vs) * t.rt
          END AS vac_thr,
          CASE WHEN t.n_ins_since_vacuum IS NOT NULL AND coalesce((t.o->>'autovacuum_vacuum_insert_threshold')::float8, g.it) >= 0
-              THEN coalesce((t.o->>'autovacuum_vacuum_insert_threshold')::float8, g.it) + coalesce((t.o->>'autovacuum_vacuum_insert_scale_factor')::float8, g.isf) * t.rt
+              THEN coalesce((t.o->>'autovacuum_vacuum_insert_threshold')::float8, g.it) + coalesce((t.o->>'autovacuum_vacuum_insert_scale_factor')::float8, g.isf) * t.rt * t.unfrozen
          END AS ins_thr,
          coalesce((t.o->>'autovacuum_analyze_threshold')::float8, g.at) + coalesce((t.o->>'autovacuum_analyze_scale_factor')::float8, g.asf) * t.rt AS anl_thr,
          least(coalesce((t.o->>'autovacuum_freeze_max_age')::bigint, g.fma), g.fma) AS fma,
@@ -227,10 +228,27 @@ SELECT 'db' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = curren
        count(*) FILTER (WHERE never_vac) AS never_vacuumed
   FROM x`
 
-// vacuumTablesSQL lists the tables of interest, the furthest over a threshold first: over or past half of
-// a threshold (with 1,000 rows or more changed), autovacuum off, never vacuumed with 1,000 rows or more,
-// no vacuum for 7 days with dead rows, or past half the freeze max age. %[2]d = N.
-const vacuumTablesSQL = vacuumThresholdCTE + `
+// vacuumTablesSQL lists the tables of interest in two budgets of N each, so a long list of one kind never
+// pushes out the other: the tables over a vacuum, insert or analyze threshold, the furthest over first; and
+// the rest - past half a threshold (with 1,000 rows or more changed), autovacuum off, never vacuumed with
+// 1,000 rows or more, no vacuum for 7 days with dead rows, or past 90 % of the freeze max age. %[2]d = N.
+const vacuumTablesSQL = vacuumThresholdCTE + `, y AS (
+  SELECT x.*, greatest(n_dead_tup / nullif(vac_thr, 0), coalesce(n_ins_since_vacuum / nullif(ins_thr, 0), 0),
+                       n_mod_since_analyze / nullif(anl_thr, 0), xid_age::float8 / nullif(fma, 0)) AS score,
+         over_vac OR coalesce(over_ins, false) OR over_anl AS is_over
+    FROM x
+), pick AS (
+  (SELECT * FROM y WHERE is_over ORDER BY score DESC NULLS LAST LIMIT %[2]d)
+  UNION ALL
+  (SELECT * FROM y
+    WHERE NOT is_over
+      AND (NOT av_enabled OR never_vac
+           OR (n_dead_tup >= 1000 AND n_dead_tup > 0.5 * vac_thr)
+           OR (n_ins_since_vacuum >= 1000 AND n_ins_since_vacuum > 0.5 * ins_thr)
+           OR (n_dead_tup > 0 AND greatest(last_vacuum, last_autovacuum) < now() - interval '7 days')
+           OR xid_age > 0.9 * fma)
+    ORDER BY score DESC NULLS LAST LIMIT %[2]d)
+)
 SELECT 'table' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, oid::bigint AS relid, nspname::text AS schema_name, relname::text AS table_name,
        relkind::text AS relkind, reltuples, n_live_tup, n_dead_tup, n_ins_since_vacuum, n_mod_since_analyze,
@@ -239,15 +257,8 @@ SELECT 'table' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = cur
        over_vac AS over_vacuum, coalesce(over_ins, false) AS over_insert, over_anl AS over_analyze,
        last_vacuum, last_autovacuum, last_analyze, last_autoanalyze, autovacuum_count, autoanalyze_count,
        xid_age, mxid_age, fma AS freeze_max_age
-  FROM x
- WHERE over_vac OR coalesce(over_ins, false) OR over_anl OR NOT av_enabled OR never_vac
-    OR (n_dead_tup >= 1000 AND n_dead_tup > 0.5 * vac_thr)
-    OR (n_ins_since_vacuum >= 1000 AND n_ins_since_vacuum > 0.5 * ins_thr)
-    OR (n_dead_tup > 0 AND greatest(last_vacuum, last_autovacuum) < now() - interval '7 days')
-    OR xid_age > 0.5 * fma
- ORDER BY greatest(n_dead_tup / nullif(vac_thr, 0), coalesce(n_ins_since_vacuum / nullif(ins_thr, 0), 0),
-                   n_mod_since_analyze / nullif(anl_thr, 0), xid_age::float8 / nullif(fma, 0)) DESC NULLS LAST
- LIMIT %[2]d`
+  FROM pick
+ ORDER BY is_over DESC, score DESC NULLS LAST`
 
 // RunInstance reads the settings and the wraparound rows on conn, then each connectable database's tables
 // (the connected one on conn, the others on their own short connection), up to vacuumTablesMaxDatabases.
@@ -274,8 +285,15 @@ func (vacuumTablesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ 
 	} else if cols["n_ins_since_vacuum"] {
 		insCol = "s.n_ins_since_vacuum"
 	}
-	qd := fmt.Sprintf(vacuumDBSQL, insCol)
-	qt := fmt.Sprintf(vacuumTablesSQL, insCol, vacuumTablesTopN)
+	// PG18: the insert threshold scales by the unfrozen fraction of the table
+	unfrozen := "1::float8"
+	if cols, err := viewColumns(ctx, conn, "pg_catalog.pg_class"); err != nil {
+		return nil, err
+	} else if cols["relallfrozen"] {
+		unfrozen = "CASE WHEN c.relpages > 0 THEN 1 - least(c.relallfrozen, c.relpages)::float8 / c.relpages ELSE 1 END"
+	}
+	qd := fmt.Sprintf(vacuumDBSQL, insCol, 0, unfrozen)
+	qt := fmt.Sprintf(vacuumTablesSQL, insCol, vacuumTablesTopN, unfrozen)
 	var cur string
 	if err := conn.QueryRow(ctx, `SELECT current_database()::text`).Scan(&cur); err != nil {
 		return nil, err
