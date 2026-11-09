@@ -10,14 +10,17 @@ package collect
 //
 // The grammar is pg_cron's (its entry parser comes from Vixie cron):
 //   - five fields: minute 0-59, hour 0-23, day of month 1-31, month 1-12 or jan-dec, day of week 0-7 or
-//     sun-sat (0 and 7 are Sunday); each a comma list of *, n, n-m, each with an optional /step
-//     (n/step = n-max/step); '$' in the day of month is the month's last day (pg_cron 1.5+)
+//     sun-sat (0 and 7 are Sunday); each a comma list of *, n, n-m, */step or n-m/step (pg_cron refuses a
+//     step on a single value, n/step, and so does this parser); '$' as the whole day-of-month field is the
+//     month's last day (pg_cron 1.5+); fields after the fifth are ignored, as pg_cron's parser does
 //   - when both day fields are restricted (neither starts with '*') a day matches either one; when one
-//     starts with '*' both must match (Vixie's rule)
-//   - the named shortcuts @yearly @annually @monthly @weekly @daily @midnight @hourly, and @reboot (no
-//     scheduled time: runs at server start only)
+//     starts with '*' both must match (Vixie's rule); with pg_cron's cron.match_dom_and_dow on (1.6.8+)
+//     both must always match
+//   - the named shortcuts @yearly @annually @monthly @weekly @daily @midnight @hourly, and @reboot or
+//     @restart (no scheduled time: runs at server start only)
 //   - 'N seconds' (1-59, pg_cron 1.5+): every N seconds, no fixed phase
-// The times are in pg_cron's cron.timezone (GMT unless set; CronTimezone reads it).
+// The times are in pg_cron's cron.timezone (GMT unless set); ReadCronSettings reads it and the day rule.
+// The zone database is embedded (time/tzdata): a Windows host has none of its own.
 
 import (
 	"context"
@@ -29,12 +32,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	_ "time/tzdata" // the zone database for hosts without one (Windows)
 )
 
 // CronSpec is one parsed pg_cron schedule.
 type CronSpec struct {
 	minute, hour, dom, month, dow uint64 // bit n set = value n matches
 	domStar, dowStar              bool   // the field starts with '*' (Vixie's day rule)
+	matchBoth                     bool   // cron.match_dom_and_dow: both day fields must match
 	lastDOM                       bool   // '$' in the day of month
 	every                         time.Duration
 	reboot                        bool
@@ -53,7 +59,7 @@ var cronDays = []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
 // ParseCron parses a pg_cron schedule string.
 func ParseCron(expr string) (*CronSpec, error) {
 	e := strings.ToLower(strings.TrimSpace(expr))
-	if e == "@reboot" {
+	if e == "@reboot" || e == "@restart" {
 		return &CronSpec{reboot: true}, nil
 	}
 	if m := cronSeconds.FindStringSubmatch(e); m != nil {
@@ -67,6 +73,9 @@ func ParseCron(expr string) (*CronSpec, error) {
 		e = s
 	}
 	f := strings.Fields(e)
+	if len(f) > 5 { // pg_cron reads five fields and ignores the rest
+		f = f[:5]
+	}
 	if len(f) != 5 {
 		return nil, fmt.Errorf("%q: want five fields (minute hour day-of-month month day-of-week), a @shortcut or 'N seconds'", expr)
 	}
@@ -78,15 +87,10 @@ func ParseCron(expr string) (*CronSpec, error) {
 	if s.hour, err = cronField(f[1], 0, 23, nil); err != nil {
 		return nil, fmt.Errorf("%q hour: %w", expr, err)
 	}
-	dom := f[2]
-	if items := strings.Split(dom, ","); containsStr(items, "$") {
+	if f[2] == "$" { // pg_cron takes '$' only as the whole field
 		s.lastDOM = true
-		dom = strings.Join(removeStr(items, "$"), ",")
-	}
-	if dom != "" {
-		if s.dom, err = cronField(dom, 1, 31, nil); err != nil {
-			return nil, fmt.Errorf("%q day of month: %w", expr, err)
-		}
+	} else if s.dom, err = cronField(f[2], 1, 31, nil); err != nil {
+		return nil, fmt.Errorf("%q day of month: %w", expr, err)
 	}
 	if s.month, err = cronField(f[3], 1, 12, cronMonths); err != nil {
 		return nil, fmt.Errorf("%q month: %w", expr, err)
@@ -148,39 +152,20 @@ func cronField(field string, lo, hi int, names []string) (uint64, error) {
 				return 0, fmt.Errorf("range %q runs backwards", rng)
 			}
 		default:
+			if step != 1 { // pg_cron: "Step specified without range"
+				return 0, fmt.Errorf("%q: a step needs a range (n-m/step or */step)", item)
+			}
 			v, err := val(rng)
 			if err != nil {
 				return 0, err
 			}
-			a = v
-			if step == 1 { // n alone; n/step runs to the maximum
-				b = v
-			}
+			a, b = v, v
 		}
 		for v := a; v <= b; v += step {
 			bits |= 1 << uint(v)
 		}
 	}
 	return bits, nil
-}
-
-func containsStr(xs []string, s string) bool {
-	for _, x := range xs {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
-func removeStr(xs []string, s string) []string {
-	out := xs[:0:0]
-	for _, x := range xs {
-		if x != s {
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 // dayMatches applies Vixie's rule: both day fields restricted = either matches; otherwise both.
@@ -190,7 +175,7 @@ func (s *CronSpec) dayMatches(t time.Time) bool {
 		d = true
 	}
 	w := s.dow&(1<<uint(t.Weekday())) != 0
-	if s.domStar || s.dowStar {
+	if s.domStar || s.dowStar || s.matchBoth {
 		return d && w
 	}
 	return d || w
@@ -274,21 +259,36 @@ func (s *CronSpec) PriorDue(t time.Time, loc *time.Location) time.Time {
 	return s.Prev(last.Add(-time.Minute), loc)
 }
 
-// CronTimezone is pg_cron's cron.timezone on the connected server (GMT when the setting is not there:
-// pg_cron before 1.5, or not loaded).
-func CronTimezone(ctx context.Context, conn *pgx.Conn) string {
-	var tz *string
-	if err := conn.QueryRow(ctx, `SELECT current_setting('cron.timezone', true)`).Scan(&tz); err != nil || tz == nil || *tz == "" {
-		return "GMT"
-	}
-	return *tz
+// CronSettings are the pg_cron settings the schedule arithmetic needs; Err is a failed read.
+type CronSettings struct {
+	Timezone  string // cron.timezone ("GMT" when the setting is not there: pg_cron before 1.5, or not loaded)
+	DomAndDow bool   // cron.match_dom_and_dow (pg_cron 1.6.8+): both day fields must match
+	Err       error
 }
 
-// AddCronTimes adds next_run and prior_due to every pg_cron job row of a jobs read taken at now, in pg_cron's
-// time zone tz; a schedule the parser does not take, @reboot, or an unknown time zone leaves a schedule_note
-// instead (a job with a note is never called missed). A next_run the row already carries is kept.
-func AddCronTimes(rows []Row, now time.Time, tz string) {
-	loc, tzErr := time.LoadLocation(tz)
+// ReadCronSettings reads cron.timezone and cron.match_dom_and_dow on the connected server. Both are
+// superuser-only settings that pg_read_all_settings (in pg_monitor) may read; a failed read is returned in
+// Err, and AddCronTimes then judges nothing (a wrong zone would call jobs missed that are not).
+func ReadCronSettings(ctx context.Context, conn *pgx.Conn) CronSettings {
+	var tz, both *string
+	err := conn.QueryRow(ctx, `SELECT current_setting('cron.timezone', true), current_setting('cron.match_dom_and_dow', true)`).Scan(&tz, &both)
+	if err != nil {
+		return CronSettings{Timezone: "GMT", Err: err}
+	}
+	cs := CronSettings{Timezone: "GMT"}
+	if tz != nil && *tz != "" {
+		cs.Timezone = *tz
+	}
+	cs.DomAndDow = both != nil && (*both == "on" || *both == "true")
+	return cs
+}
+
+// AddCronTimes adds next_run and prior_due to every pg_cron job row of a jobs read taken at now, under pg_cron's
+// settings cs; a schedule the parser does not take, @reboot, an unknown time zone or a failed settings read
+// leaves a schedule_note instead (a job with a note is never called missed). A next_run the row already
+// carries is kept.
+func AddCronTimes(rows []Row, now time.Time, cs CronSettings) {
+	loc, tzErr := time.LoadLocation(cs.Timezone)
 	if tzErr != nil {
 		loc = time.UTC
 	}
@@ -305,14 +305,18 @@ func AddCronTimes(rows []Row, now time.Time, tz string) {
 		case spec.reboot:
 			r["schedule_note"] = "@reboot: runs at server start only"
 			continue
+		case cs.Err != nil:
+			r["schedule_note"] = "pg_cron settings not read (" + cs.Err.Error() + "): next run and missed runs not computed"
+			continue
 		}
+		spec.matchBoth = cs.DomAndDow
 		if r["next_run"] == nil {
 			if n := spec.Next(now, loc); !n.IsZero() {
 				r["next_run"] = n.UTC()
 			}
 		}
 		if tzErr != nil {
-			r["schedule_note"] = fmt.Sprintf("cron.timezone %q is not known here: the times are UTC", tz)
+			r["schedule_note"] = fmt.Sprintf("cron.timezone %q is not known here: the times are UTC", cs.Timezone)
 			continue
 		}
 		if p := spec.PriorDue(now, loc); !p.IsZero() {

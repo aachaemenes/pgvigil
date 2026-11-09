@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -24,7 +25,7 @@ var cronCases = []cronCase{
 	{"* * * * *", "2026-11-09T14:59:30Z", "2026-11-09T15:00:00Z"},
 	{"* * * * *", "2026-11-09T15:00:00Z", "2026-11-09T15:01:00Z"},
 	{"*/15 * * * *", "2026-11-09T14:45:00Z", "2026-11-09T15:00:00Z"},
-	{"5/20 * * * *", "2026-11-09T14:46:00Z", "2026-11-09T15:05:00Z"},
+	{"5-59/20 * * * *", "2026-11-09T14:46:00Z", "2026-11-09T15:05:00Z"},
 	// hour boundary
 	{"30 * * * *", "2026-11-09T23:31:00Z", "2026-11-10T00:30:00Z"},
 	{"0 9-17/4 * * *", "2026-11-09T13:00:00Z", "2026-11-09T17:00:00Z"},
@@ -51,6 +52,9 @@ var cronCases = []cronCase{
 	// the other forms
 	{"30 seconds", "2026-11-09T14:00:10Z", "2026-11-09T14:00:40Z"},
 	{"@reboot", "2026-11-09T14:00:00Z", ""},
+	{"@restart", "2026-11-09T14:00:00Z", ""},
+	// pg_cron reads five fields and ignores the rest
+	{"0 0 12 * * *", "2026-11-09T00:00:00Z", "2026-11-12T00:00:00Z"},
 }
 
 func checkCron(t *testing.T, c cronCase, loc *time.Location) {
@@ -147,7 +151,7 @@ func TestCronTimezone(t *testing.T) {
 
 func TestCronParseErrors(t *testing.T) {
 	for _, e := range []string{"", "* * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * * 13 *", "* * * * 8",
-		"5-1 * * * *", "*/0 * * * *", "0 seconds", "60 seconds", "@sometimes", "a * * * *", "1,,2 * * * *"} {
+		"5-1 * * * *", "*/0 * * * *", "5/20 * * * *", "0 0 1,$ * *", "0 0 $/2 * *", "0 seconds", "60 seconds", "@sometimes", "a * * * *", "1,,2 * * * *"} {
 		if _, err := ParseCron(e); err == nil {
 			t.Errorf("%q parsed, want an error", e)
 		}
@@ -165,7 +169,7 @@ func TestAddCronTimes(t *testing.T) {
 		{"kind": "job", "scheduler": "pg_cron", "job_id": 5, "schedule": "0 3 * * *", "next_run": set},
 		{"kind": "run", "scheduler": "pg_cron", "job_id": 1, "run_id": 9},
 	}
-	AddCronTimes(rows, now, "GMT")
+	AddCronTimes(rows, now, CronSettings{Timezone: "GMT"})
 	if rows[0]["next_run"] != mustUTC(t, "2026-11-09T15:15:00Z") || rows[0]["prior_due"] != mustUTC(t, "2026-11-09T14:45:00Z") {
 		t.Errorf("job 1: %v", rows[0])
 	}
@@ -182,8 +186,45 @@ func TestAddCronTimes(t *testing.T) {
 		t.Errorf("job 5: %v", rows[4])
 	}
 	rows = []Row{{"kind": "job", "scheduler": "pg_cron", "job_id": 1, "schedule": "0 3 * * *"}}
-	AddCronTimes(rows, now, "Nowhere/Atlantis")
+	AddCronTimes(rows, now, CronSettings{Timezone: "Nowhere/Atlantis"})
 	if rows[0]["prior_due"] != nil || rows[0]["next_run"] == nil || rows[0]["schedule_note"] == nil {
 		t.Errorf("unknown tz: %v", rows[0])
+	}
+}
+
+func TestCronMatchDomAndDow(t *testing.T) {
+	s, _ := ParseCron("0 0 1,15 * mon")
+	after := mustUTC(t, "2026-11-16T01:00:00Z")
+	if got := s.Next(after, time.UTC).Format(time.RFC3339); got != "2026-11-23T00:00:00Z" { // Vixie: the 1st, the 15th or a Monday
+		t.Errorf("either-day next = %s", got)
+	}
+	s.matchBoth = true // cron.match_dom_and_dow on: a 1st or 15th that is a Monday
+	if got := s.Next(after, time.UTC).Format(time.RFC3339); got != "2027-02-01T00:00:00Z" {
+		t.Errorf("both-days next = %s", got)
+	}
+	if got := s.Prev(after, time.UTC).Format(time.RFC3339); got != "2026-06-15T00:00:00Z" {
+		t.Errorf("both-days prev = %s", got)
+	}
+	rows := []Row{{"kind": "job", "scheduler": "pg_cron", "job_id": 1, "schedule": "0 0 1,15 * mon"}}
+	AddCronTimes(rows, after, CronSettings{Timezone: "GMT", DomAndDow: true})
+	if rows[0]["next_run"] != mustUTC(t, "2027-02-01T00:00:00Z") {
+		t.Errorf("AddCronTimes with the setting: %v", rows[0])
+	}
+}
+
+func TestAddCronTimesSettingsUnread(t *testing.T) {
+	rows := []Row{{"kind": "job", "scheduler": "pg_cron", "job_id": 1, "schedule": "0 3 * * *"}}
+	AddCronTimes(rows, mustUTC(t, "2026-11-09T15:07:00Z"), CronSettings{Timezone: "GMT", Err: errors.New("permission denied")})
+	if n, _ := rows[0]["schedule_note"].(string); !strings.Contains(n, "not read") || rows[0]["prior_due"] != nil || rows[0]["next_run"] != nil {
+		t.Errorf("unread settings: %v", rows[0])
+	}
+}
+
+// TestCronTzdataEmbedded: the zone names pg_cron uses load without a system zone database (Windows).
+func TestCronTzdataEmbedded(t *testing.T) {
+	for _, z := range []string{"GMT", "America/New_York", "Asia/Kolkata"} {
+		if _, err := time.LoadLocation(z); err != nil {
+			t.Errorf("%s: %v", z, err)
+		}
 	}
 }
