@@ -22,6 +22,7 @@ import { rolesView } from './roles';
 import { plansView } from './plan';
 import { slowView } from './slow';
 import { waitsView } from './waits';
+import { compareView } from './compare';
 import { indexesView } from './indexes';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
@@ -48,6 +49,7 @@ const instancePages: Record<string, Render> = {
   indexes: c => indexesView(c.instance!, c),
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
+  compare: compareView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs']);

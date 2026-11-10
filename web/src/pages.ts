@@ -8,6 +8,7 @@ import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
+import { sessionSetsSection } from './sessionsets';
 import { jobLink } from './drill';
 import { backupsFleetView } from './backups';
 import { corruptionFleetView } from './corruption';
@@ -168,7 +169,8 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
   // the slow read is separate: its failure shows under its own heading, the top statements stay
   const [st, slow] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs }).catch((e: unknown) => e)]);
   const sortBar = el('div', { class: 'subtabs' }, ...statementOrders.map(([k, l]) =>
-    el('a', { href: href(ctx, { tab: 'statements', order: k }), class: k === order ? 'on' : '' }, 'by ' + l)));
+    el('a', { href: href(ctx, { tab: 'statements', order: k }), class: k === order ? 'on' : '' }, 'by ' + l)),
+    el('a', { href: href(ctx, { tab: 'compare' }) }, 'compare with 1 and 7 days earlier'));
   const minIn = el('input', { type: 'number', min: '0', max: '86400', step: '1', value: String(minSecs), style: 'width:5em', 'aria-label': 'seconds at least' });
   minIn.addEventListener('change', () => {
     const v = Number(minIn.value);
@@ -569,6 +571,7 @@ export async function config(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Non-default settings'),
     grid(rowsOf(d.settings), [{ key: 'name', label: 'setting', fmt: v => changed.has(String(v)) ? el('b', { title: 'changed in this range' }, String(v) + ' *') : String(v) },
                               { key: 'value', wide: true }], 'No non-default settings recorded.'));
+  sec.append(await sessionSetsSection(ctx));
   return sec;
 }
 

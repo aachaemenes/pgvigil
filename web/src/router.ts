@@ -35,9 +35,9 @@ export const instanceTabs: Record<string, string> = {
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
-export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index' };
+export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare' };
 // the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
-export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs' };
+export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs', compare: 'statements' };
 
 export function parse(): Ctx {
   const h = location.hash.replace(/^#\/?/, '');

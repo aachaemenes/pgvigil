@@ -101,6 +101,7 @@ type Gen struct {
 	stmts      []stmtDef
 	stmtCum    []counters
 	stmtPrev   time.Time
+	regCum     []counters // compare_demo.go: the two regression shapes' cumulative counters
 	statsReset time.Time
 	resetAt    time.Time
 	dbCum      []counters
@@ -252,6 +253,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("versions", g.versionRows(t))
 		add("roles", g.roleRows(t))
 		add("indexes", g.indexRows(t))
+		add("session_sets", g.sessionSetRows(t))
 	}
 	add("io", g.ioRows(t))
 	add("pi", g.piDemoRows(t, first))
@@ -305,7 +307,7 @@ func (g *Gen) Collections() []string {
 	if g.waitDoor() {
 		c = append(c, "waits")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes")
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets")
 	if g.amcheckOn() {
 		c = append(c, "amcheck")
 	}
@@ -745,6 +747,9 @@ func (g *Gen) statementRows(t time.Time) []Row {
 		for i := range g.stmtCum {
 			g.stmtCum[i] = counters{}
 		}
+		for i := range g.regCum {
+			g.regCum[i] = counters{}
+		}
 		g.statsReset = g.resetAt
 		from = g.resetAt
 	}
@@ -800,6 +805,7 @@ func (g *Gen) statementRows(t time.Time) []Row {
 			"blk_read_ms": k["blk_read_ms"], "blk_write_ms": k["blk_write_ms"], "temp_read_ms": k["temp_read_ms"],
 			"temp_write_ms": k["temp_write_ms"], "wal_bytes": k.int("wal_bytes"), "query": st.text})
 	}
+	out = append(out, g.regressRows(t, dt)...)
 	out = append(out, Row{"kind": "info", "dealloc": 0, "stats_reset": g.statsReset})
 	g.stmtPrev = t
 	return out
