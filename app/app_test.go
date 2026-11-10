@@ -181,6 +181,14 @@ func TestUpdate(t *testing.T) {
 	if hits != 2 {
 		t.Errorf("feed hits %d, want 2", hits)
 	}
+	// a redirect off https / loopback is refused like the feed itself
+	away := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://example.com/latest.json", http.StatusFound)
+	}))
+	defer away.Close()
+	if _, _, err := CheckUpdate(ctx, away.Client(), away.URL, "v0.1.0"); err == nil || !strings.Contains(err.Error(), "not https") {
+		t.Errorf("a redirect to plain http beyond loopback: %v", err)
+	}
 	for _, c := range []struct {
 		tag, cur string
 		want     bool
@@ -205,6 +213,38 @@ func TestIcon(t *testing.T) {
 	}
 	if p := iconPixel(n/2, 3, n); p>>24 != 0xFF || p&0xFFFFFF == 0xFFFFFF {
 		t.Errorf("the disc is teal and opaque: %08x", p)
+	}
+}
+
+func TestListenerRow(t *testing.T) {
+	row4 := func(addr []byte, port uint16) []byte {
+		r := make([]byte, tcp4RowSize)
+		copy(r[tcp4AddrAt:], addr)
+		r[tcp4PortAt], r[tcp4PortAt+1] = byte(port>>8), byte(port)
+		return r
+	}
+	row6 := func(addr []byte, port uint16) []byte {
+		r := make([]byte, tcp6RowSize)
+		copy(r[tcp6AddrAt:], addr)
+		r[tcp6PortAt], r[tcp6PortAt+1] = byte(port>>8), byte(port)
+		return r
+	}
+	for _, c := range []struct {
+		row  []byte
+		v6   bool
+		want bool
+	}{
+		{row4([]byte{127, 0, 0, 1}, 8080), false, true},
+		{row4([]byte{0, 0, 0, 0}, 8080), false, true},
+		{row4([]byte{192, 168, 1, 5}, 8080), false, false}, // a LAN listener of the port: another socket
+		{row4([]byte{127, 0, 0, 1}, 8081), false, false},
+		{row6(ip6Loopback, 8080), true, true},
+		{row6(ip6Any, 8080), true, true},
+		{row6(append([]byte{0xfe, 0x80}, make([]byte, 14)...), 8080), true, false},
+	} {
+		if got := listenerRowMatches(c.row, c.v6, 8080); got != c.want {
+			t.Errorf("row %v v6 %v: %v, want %v", c.row, c.v6, got, c.want)
+		}
 	}
 }
 

@@ -97,35 +97,34 @@ func listenerOwnedByMe(base string) (bool, error) {
 		return false, err
 	}
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return false, nil // another user's process (or a protected one): not ours
+	if err != nil { // another user's process (or a protected one): not ours
+		return false, fmt.Errorf("the listening process %d cannot be opened as this user: %v", pid, err)
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
 	var tok windows.Token
 	if err := windows.OpenProcessToken(h, windows.TOKEN_QUERY, &tok); err != nil {
-		return false, nil
+		return false, fmt.Errorf("the listening process %d's token cannot be read as this user: %v", pid, err)
 	}
 	defer func() { _ = tok.Close() }()
 	theirs, err := tok.GetTokenUser()
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("the listening process %d's user: %v", pid, err)
 	}
 	mine, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return false, err
 	}
-	return windows.EqualSid(theirs.User.Sid, mine.User.Sid), nil
+	if !windows.EqualSid(theirs.User.Sid, mine.User.Sid) {
+		return false, fmt.Errorf("the listening process %d runs as %s", pid, theirs.User.Sid.String())
+	}
+	return true, nil
 }
 
-// listenerPid finds the pid that listens on the port (IPv4 loopback or any, or IPv6 with v6).
+// listenerPid finds the pid that listens on the port on loopback or every address (IPv4, or IPv6 with v6).
 func listenerPid(port uint16, v6 bool) (uint32, error) {
-	af := uint32(windows.AF_INET)
-	rowSize := 24 // MIB_TCPROW_OWNER_PID: state, local addr, local port, remote addr, remote port, pid
-	portAt := 8
+	af, rowSize := uint32(windows.AF_INET), tcp4RowSize
 	if v6 {
-		af = windows.AF_INET6
-		rowSize = 56 // MIB_TCP6ROW_OWNER_PID: local addr[16], scope, port, remote addr[16], scope, port, state, pid
-		portAt = 20
+		af, rowSize = windows.AF_INET6, tcp6RowSize
 	}
 	var size uint32
 	_, _, _ = pGetExtendedTCPTable.Call(0, uintptr(unsafe.Pointer(&size)), 0, uintptr(af), uintptr(tcpTableOwnerPIDListener), 0)
@@ -137,12 +136,10 @@ func listenerPid(port uint16, v6 bool) (uint32, error) {
 	if r, _, _ := pGetExtendedTCPTable.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)), 0, uintptr(af), uintptr(tcpTableOwnerPIDListener), 0); r != 0 {
 		return 0, fmt.Errorf("GetExtendedTcpTable: %d", r)
 	}
-	n := binary.LittleEndian.Uint32(buf[0:4])
-	for i := uint32(0); i < n; i++ {
-		row := buf[4+int(i)*rowSize : 4+int(i+1)*rowSize]
-		// the port is in network byte order in the low two bytes of its DWORD
-		p := uint16(row[portAt])<<8 | uint16(row[portAt+1])
-		if p == port {
+	n := int(binary.LittleEndian.Uint32(buf[0:4]))
+	for i := 0; i < n && 4+(i+1)*rowSize <= int(size); i++ {
+		row := buf[4+i*rowSize : 4+(i+1)*rowSize]
+		if listenerRowMatches(row, v6, port) {
 			return binary.LittleEndian.Uint32(row[rowSize-4:]), nil
 		}
 	}

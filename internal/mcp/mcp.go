@@ -97,7 +97,10 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	lines := make(chan line)
 	errc := make(chan error, 1)
 	go func() {
-		defer close(lines)
+		// every way out sends one value on errc before lines closes: Serve, seeing lines closed,
+		// reads errc (a cancel used to leave it empty, and Serve waited for ever)
+		var rerr error
+		defer func() { errc <- rerr; close(lines) }()
 		br := bufio.NewReaderSize(in, 64*1024)
 		for {
 			var buf []byte
@@ -124,10 +127,9 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 				}
 			}
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					err = nil
+				if !errors.Is(err, io.EOF) {
+					rerr = err
 				}
-				errc <- err
 				return
 			}
 		}

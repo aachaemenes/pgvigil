@@ -16,7 +16,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/web"
 )
 
-// the dispatch line in main.go comes at the join; until then this keeps the branch lint-clean on its own
+// branch-only guard (the branch has no dispatch line in main.go): the join removes this comment and the line below
 var _ = runMCP
 
 // runMCP serves the Model Context Protocol on stdin and stdout for an AI client on this machine:

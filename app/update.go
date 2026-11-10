@@ -31,9 +31,18 @@ func CheckUpdate(ctx context.Context, client *http.Client, feed, current string)
 	if err != nil {
 		return Release{}, false, fmt.Errorf("update feed: %w", err)
 	}
-	if u.Scheme != "https" && (u.Scheme != "http" || !loopbackHost(u.Hostname())) {
-		return Release{}, false, errors.New("update feed: https only (http to loopback for a local mirror)")
+	if err := feedAllowed(u); err != nil {
+		return Release{}, false, err
 	}
+	// a redirect is held to the same rule as the feed itself (the client would follow it anywhere)
+	c := *client
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("update feed: too many redirects")
+		}
+		return feedAllowed(req.URL)
+	}
+	client = &c
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feed, nil)
@@ -61,6 +70,14 @@ func CheckUpdate(ctx context.Context, client *http.Client, feed, current string)
 		r.URL = "" // a page the window will not open
 	}
 	return r, Newer(r.Tag, current), nil
+}
+
+// feedAllowed is the feed's rule: https, or http to loopback (a local mirror, a test).
+func feedAllowed(u *url.URL) error {
+	if u.Scheme == "https" || (u.Scheme == "http" && loopbackHost(u.Hostname())) {
+		return nil
+	}
+	return fmt.Errorf("update feed: %s is not https (http only to loopback, for a local mirror)", u.Redacted())
 }
 
 // Newer says whether tag is a later release than current; a dev or unparsable current never asks.
