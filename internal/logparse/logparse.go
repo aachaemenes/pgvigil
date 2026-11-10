@@ -60,6 +60,10 @@ var (
 	planRE     = regexp.MustCompile(`^duration: ([0-9.]+) ms\s+plan:\s?(.*)$`)
 )
 
+// statementContextRE: a CONTEXT line that quotes statement text (PL/pgSQL's SQL statement "...", a dblink or
+// postgres_fdw remote query, an SQL function's body).
+var statementContextRE = regexp.MustCompile(`SQL statement "|while executing |SQL function "[^"]*" statement \d+`)
+
 // corruptionRE are the messages of a damaged page, file, TOAST value or commit log, as PostgreSQL 12 to 18
 // word them (bufmgr, md.c / smgr, the checksum check, detoast, heap vacuum's freeze checks, slru, multixact, the
 // B-tree page checks). A missing file
@@ -196,14 +200,35 @@ func classify(e *entry) (Event, bool) {
 		ev.Statement = strings.TrimRight(strings.Join(append([]string{m[2]}, e.raw...), "\n"), "\n ")
 		ev.Statement = strings.TrimLeft(ev.Statement, "\n")
 	case isCorruption(e.level, e.msg):
+		// Detail keeps the server's own text (the message, its DETAIL / HINT, the CONTEXT lines that name a block,
+		// a relation or a process); a CONTEXT line that quotes statement text (SQL statement "...", while executing
+		// ...) and a QUERY line go to Statement with the STATEMENT, so the query_text policy governs every statement text.
 		ev.Kind = Corruption
 		d := []string{e.msg}
-		for _, t := range []string{"DETAIL", "HINT", "CONTEXT"} {
+		for _, t := range []string{"DETAIL", "HINT"} {
 			if v := tagged(e.more, t); v != "" {
 				d = append(d, t+": "+v)
 			}
 		}
-		ev.Detail, ev.Statement = strings.Join(d, "\n"), tagged(e.more, "STATEMENT")
+		var ctx, stmt []string
+		if v := tagged(e.more, "CONTEXT"); v != "" {
+			for _, l := range strings.Split(v, "\n") {
+				if statementContextRE.MatchString(l) {
+					stmt = append(stmt, l)
+				} else {
+					ctx = append(ctx, l)
+				}
+			}
+		}
+		if len(ctx) > 0 {
+			d = append(d, "CONTEXT: "+strings.Join(ctx, "\n"))
+		}
+		for _, t := range []string{"QUERY", "STATEMENT"} {
+			if v := tagged(e.more, t); v != "" {
+				stmt = append(stmt, v)
+			}
+		}
+		ev.Detail, ev.Statement = strings.Join(d, "\n"), strings.Join(stmt, "\n")
 	case e.level == "LOG" && strings.HasPrefix(e.msg, "duration: "):
 		m := durationRE.FindStringSubmatch(e.msg)
 		if m == nil {

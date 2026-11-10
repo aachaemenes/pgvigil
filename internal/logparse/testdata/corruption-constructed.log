@@ -20,3 +20,7 @@
 2026-11-08 10:01:01 UTC:10.0.0.5(40008):app@app:[5112]:ERROR:  MultiXactId 1048577 has not been created yet -- apparent wraparound
 2026-11-08 10:01:02 UTC:10.0.0.5(40009):app@app:[5113]:WARNING:  zeroing out 3 invalid pages among blocks 8..15 of relation "base/16384/16385"
 2026-11-08 10:01:03 UTC:10.0.0.5(40010):app@app:[5114]:WARNING:  ignoring 2 checksum failures among blocks 8..15 of relation "base/16384/16385"
+2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:ERROR:  invalid page in block 9 of relation base/16384/16390
+2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:CONTEXT:  SQL statement "SELECT secret FROM accounts WHERE ssn = '123-45-6789'"
+	PL/pgSQL function load_accounts() line 4 at PERFORM
+2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:STATEMENT:  select load_accounts()

@@ -54,7 +54,8 @@
 #     corruption_events, corruption_summary, amcheck_runs, amcheck_latest and amcheck_state.
 #  [review 1 fold, expected before the rerun]
 #  A also: TestCorruptionMultiBlock (a recorded PG 18 combined read with two bad headers = one event, a zeroed index
-#     page, two zero_damaged_pages WARNINGs: 4 events); the constructed file 12 of 15 entries.
+#     page, two zero_damaged_pages WARNINGs: 4 events); the constructed file 13 of 16 entries (the lead's condition: a CONTEXT
+#     line that quotes statement text goes to statement, never detail).
 #  C: the log finding's value now starts '3 message(s)' (messages, not damaged reads).
 #  D: the instance schedule is amcheck: 1s through D4 (the collector skips a run inside 90% of its interval since the
 #     last run's start, so D2 -> D3 -> D4 each wait 1 s); amproof also holds a partitioned table pt (pt_pkey, relkind

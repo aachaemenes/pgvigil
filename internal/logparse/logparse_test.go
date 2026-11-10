@@ -151,7 +151,7 @@ func TestCorruptionRecorded(t *testing.T) {
 func TestCorruptionConstructed(t *testing.T) {
 	evs := parseFile(t, "corruption-constructed.log")
 	c := byKind(evs, Corruption)
-	want := []int{5101, 5102, 5103, 5104, 5104, 5105, 5106, 5107, 5111, 5112, 5113, 5114}
+	want := []int{5101, 5102, 5103, 5104, 5104, 5105, 5106, 5107, 5111, 5112, 5113, 5114, 5115}
 	if len(c) != len(want) || len(evs) != len(want) {
 		t.Fatalf("got %d corruption of %d events, want %d: %+v", len(c), len(evs), len(want), evs)
 	}
@@ -165,6 +165,12 @@ func TestCorruptionConstructed(t *testing.T) {
 	}
 	if !strings.Contains(c[6].Detail, `DETAIL: Could not open file "pg_xact/0003"`) {
 		t.Errorf("the commit log's detail: %q", c[6].Detail)
+	}
+	// a CONTEXT that quotes statement text goes to Statement (under the query_text policy), the rest stays in Detail
+	last := c[len(c)-1]
+	if strings.Contains(last.Detail, "123-45-6789") || !strings.Contains(last.Detail, "CONTEXT: PL/pgSQL function load_accounts() line 4 at PERFORM") ||
+		last.Statement != "SQL statement \"SELECT secret FROM accounts WHERE ssn = '123-45-6789'\"\nselect load_accounts()" {
+		t.Errorf("statement text in a CONTEXT: detail %q statement %q", last.Detail, last.Statement)
 	}
 	if c[2].Statement != "select * from pg_statistic" || c[2].Database != "app" {
 		t.Errorf("the missing chunk: %+v", c[2])
