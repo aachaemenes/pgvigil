@@ -11,12 +11,13 @@
 --
 -- Read functions (the API reads only these):
 --   dbinfo(i)                         every database of an instance with its facts, growth over 7 and 30 days and extensions;
---                                     a dropped database stays listed with is_present false until the retention removes it.
+--                                     a dropped database stays listed with is_present false until purge() deletes it after the
+--                                     retention (the delete rides the wave's join migration, which re-creates purge()).
 --   dbinfo_tablespaces(i)             each tablespace, its size and the databases whose default it is.
 --   database_size_series(i, f, t, b, n)   the n largest present databases' size per b-second bucket of the window (long form).
 --   table_size_series(i, db, f, t, b, n)  the n largest present tables' size per bucket (db NULL = the whole instance).
 --   fleet_database_growers(n)         the fleet's databases that grew the most over 7 days, with the 30-day growth.
---   fleet_table_growers(n)            the same for tables.
+--   fleet_table_growers(n)            the same for tables, from the oldest day of each window only (see the function).
 -- "grown" is the newest size minus the oldest inside the window, NULL until the history spans a day (7 days) or a
 -- week (30 days); the per-day slope is growth_per_day (0033) over the same points.
 
@@ -160,25 +161,37 @@ LANGUAGE sql STABLE AS $$
    LIMIT p_limit
 $$;
 
+-- The fleet's tables by growth. table_sizes holds an hourly point per tracked table (the top N of every database), so the
+-- 30-day history of a fleet is millions of rows: this reads only two one-day slices of it, the oldest day of each window
+-- (a point 6 to 7 days old, and 29 to 30 days old), and takes the growth as the table's size now minus the first point of
+-- the slice. A table younger than the window has no point there: its growth is NULL here (dbinfo, per instance, reads the
+-- whole history). No per-day slope: it would need every point.
 CREATE OR REPLACE FUNCTION pgvigil.fleet_table_growers(p_limit int DEFAULT 50)
 RETURNS TABLE (instance_id int, instance text, platform text, dbid bigint, relid bigint, datname text, schema_name text, table_name text,
                total_bytes bigint, grown_7d_bytes bigint, grown_7d_pct numeric, grown_30d_bytes bigint, grown_30d_pct numeric,
-               growth_7d_per_day numeric, snapshot_at timestamptz)
+               snapshot_at timestamptz)
 LANGUAGE sql STABLE AS $$
-  WITH h AS (
-    SELECT s.instance_id, s.dbid, s.relid,
-           pgvigil.grown_since(array_agg(s.snapshot_at), array_agg(s.total_bytes), now() - interval '7 days', interval '1 day') AS grown7,
-           pgvigil.grown_since(array_agg(s.snapshot_at), array_agg(s.total_bytes), now() - interval '30 days', interval '7 days') AS grown30,
-           pgvigil.growth_per_day(array_agg(s.snapshot_at) FILTER (WHERE s.snapshot_at > now() - interval '7 days'),
-                                  array_agg(s.total_bytes) FILTER (WHERE s.snapshot_at > now() - interval '7 days'), interval '1 day') AS g7
+  WITH o7 AS (
+    SELECT DISTINCT ON (s.instance_id, s.dbid, s.relid) s.instance_id, s.dbid, s.relid, s.total_bytes
       FROM pgvigil.table_sizes s
-     WHERE s.snapshot_at > now() - interval '30 days'
-     GROUP BY s.instance_id, s.dbid, s.relid)
+     WHERE s.snapshot_at >= now() - interval '7 days' AND s.snapshot_at < now() - interval '6 days' AND s.total_bytes IS NOT NULL
+     ORDER BY s.instance_id, s.dbid, s.relid, s.snapshot_at),
+  o30 AS (
+    SELECT DISTINCT ON (s.instance_id, s.dbid, s.relid) s.instance_id, s.dbid, s.relid, s.total_bytes
+      FROM pgvigil.table_sizes s
+     WHERE s.snapshot_at >= now() - interval '30 days' AND s.snapshot_at < now() - interval '29 days' AND s.total_bytes IS NOT NULL
+     ORDER BY s.instance_id, s.dbid, s.relid, s.snapshot_at),
+  h AS (
+    SELECT t.instance_id, t.dbid, t.relid, t.total_bytes - o7.total_bytes AS grown7, t.total_bytes - o30.total_bytes AS grown30
+      FROM pgvigil.tables t
+      LEFT JOIN o7 ON o7.instance_id = t.instance_id AND o7.dbid = t.dbid AND o7.relid = t.relid
+      LEFT JOIN o30 ON o30.instance_id = t.instance_id AND o30.dbid = t.dbid AND o30.relid = t.relid
+     WHERE t.is_present AND (o7.relid IS NOT NULL OR o30.relid IS NOT NULL))
   SELECT i.instance_id, i.name, i.platform, t.dbid, t.relid, t.datname, t.schema_name, t.table_name, t.total_bytes,
          h.grown7, round(100.0 * h.grown7 / nullif(t.total_bytes - h.grown7, 0), 1),
-         h.grown30, round(100.0 * h.grown30 / nullif(t.total_bytes - h.grown30, 0), 1), h.g7, t.snapshot_at
+         h.grown30, round(100.0 * h.grown30 / nullif(t.total_bytes - h.grown30, 0), 1), t.snapshot_at
     FROM h
-    JOIN pgvigil.tables t ON t.instance_id = h.instance_id AND t.dbid = h.dbid AND t.relid = h.relid AND t.is_present
+    JOIN pgvigil.tables t ON t.instance_id = h.instance_id AND t.dbid = h.dbid AND t.relid = h.relid
     JOIN pgvigil.instances i ON i.instance_id = h.instance_id AND i.is_active
    WHERE coalesce(h.grown7, 0) > 0 OR coalesce(h.grown30, 0) > 0
    ORDER BY h.grown7 DESC NULLS LAST, h.grown30 DESC NULLS LAST, i.name, t.datname, t.schema_name, t.table_name

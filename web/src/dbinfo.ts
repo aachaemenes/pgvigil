@@ -30,19 +30,20 @@ const perDay = (v: unknown) => v == null ? '' : (Number(v) < 0 ? '-' + fmtBytes(
 const yesNo = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const limitTxt = (v: unknown) => v == null ? '' : Number(v) < 0 ? 'none' : fmtNum(v);
 
-// series turns long rows (snapshot_at, label, bytes) into one row per snapshot with a column per label, in the
-// order the labels first appear sorted by their newest size, largest first.
+// series turns long rows (snapshot_at, label, bytes) into one row per snapshot with a column per label (keyed 's:' +
+// label, so a database named snapshot_at or __proto__ cannot clash with the row's own keys), the labels sorted by
+// their newest size, largest first.
 export function series(rows: Row[], label: (r: Row) => string, val: string): { rows: Row[]; series: { key: string; label: string }[] } {
   const last = new Map<string, number>();
   const by = new Map<string, Row>();
   for (const r of rows) {
-    const k = label(r), t = String(r.snapshot_at);
+    const k = 's:' + label(r), t = String(r.snapshot_at);
     if (r[val] != null) last.set(k, Number(r[val]));
     if (!by.has(t)) by.set(t, { snapshot_at: t });
     by.get(t)![k] = r[val] == null ? null : Number(r[val]);
   }
   const keys = [...last.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
-  return { rows: [...by.values()].sort((a, b) => Date.parse(String(a.snapshot_at)) - Date.parse(String(b.snapshot_at))), series: keys.map(k => ({ key: k, label: k })) };
+  return { rows: [...by.values()].sort((a, b) => Date.parse(String(a.snapshot_at)) - Date.parse(String(b.snapshot_at))), series: keys.map(k => ({ key: k, label: k.slice(2) })) };
 }
 
 // dbLink: a database name opening its drill-down page (task 48), the time range kept.
@@ -135,7 +136,6 @@ export async function dbinfoFleetView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
     { key: 'grown_7d_pct', label: '7 d %', num: true, fmt: pctTxt },
     { key: 'grown_30d_bytes', label: 'grown (30 d)', num: true, fmt: grownTxt },
     { key: 'grown_30d_pct', label: '30 d %', num: true, fmt: pctTxt },
-    { key: 'growth_7d_per_day', label: 'per day (7 d)', num: true, fmt: perDay },
   ];
   return el('section', {}, el('h2', {}, 'Growth'),
     el('div', { class: 'tiles' },
@@ -143,11 +143,13 @@ export async function dbinfoFleetView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
       tile('grown (7 d)', fmtBytes(dbs.reduce((a, r) => a + Math.max(0, Number(r.grown_7d_bytes ?? 0)), 0)) || '-'),
       tile('growing tables', String(tabs.length))),
     el('p', { class: 'meta' }, 'The databases and tables of the fleet that grew the most over the last 7 days, with their 30-day growth: '
-      + 'the newest size minus the oldest of the window. Tables: the largest of each database (the tables collection).'),
+      + 'the newest size minus the oldest of the window. Tables: the largest of each database (the tables collection), '
+      + 'their size now minus the first read of the window\'s oldest day, so a table younger than the window shows no growth for it.'),
     el('h3', {}, 'Databases'),
     grid(dbs, [instCol, { key: 'platform' },
       { key: 'datname', label: 'database', fmt: (v, r) => dbLink(ctx, v, r.dbid, Number(r.instance_id)) },
-      { key: 'size_bytes', label: 'size', num: true, fmt: fmtBytes }, ...growth], 'No database grew in the last 30 days (or the history is under a day).'),
+      { key: 'size_bytes', label: 'size', num: true, fmt: fmtBytes }, ...growth,
+      { key: 'growth_7d_per_day', label: 'per day (7 d)', num: true, fmt: perDay }], 'No database grew in the last 30 days (or the history is under a day).'),
     el('h3', {}, 'Tables'),
     grid(tabs, [instCol,
       { key: 'datname', label: 'db' }, { key: 'schema_name', label: 'schema' },
