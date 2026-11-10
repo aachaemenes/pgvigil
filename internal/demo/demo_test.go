@@ -2,6 +2,7 @@ package demo
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,10 +63,142 @@ func TestFleet(t *testing.T) {
 	if plat["onprem"] != 3 || plat["rds"] != 2 || plat["aurora"] != 3 || plat["azure"] != 2 || plat["cloudsql"] != 2 {
 		t.Fatalf("platforms: %v", plat)
 	}
+	// the three SQL Server instances follow the twelve; the copies of a scale run follow those
 	big := Specs("x-", 30)
-	if big[12].Name != "x-onprem-erp01-001" || big[12].SenderTo != "x-onprem-erp02-001" || big[13].ReceiverOf != "x-onprem-erp01-001" {
-		t.Fatalf("copies: %s %s %s", big[12].Name, big[12].SenderTo, big[13].ReceiverOf)
+	if FleetSize != 15 || big[12].Name != "x-onprem-sql01" || big[13].Name != "x-onprem-sql02" || big[14].Name != "x-azure-sql03" {
+		t.Fatalf("the SQL Server instances: %d, %s %s %s", FleetSize, big[12].Name, big[13].Name, big[14].Name)
 	}
+	for i, s := range big {
+		if (s.Engine == EngineSQLServer) != (i >= 12 && i < 15) {
+			t.Fatalf("%s (index %d): engine %q", s.Name, i, s.Engine)
+		}
+	}
+	if big[15].Name != "x-onprem-erp01-001" || big[15].SenderTo != "x-onprem-erp02-001" || big[16].ReceiverOf != "x-onprem-erp01-001" {
+		t.Fatalf("copies: %s %s %s", big[15].Name, big[15].SenderTo, big[16].ReceiverOf)
+	}
+}
+
+// A SQL Server instance runs its own collections and none of PostgreSQL's, and a PostgreSQL instance none of
+// SQL Server's; the scenarios the walk-through opens are in the batches: the chain with its sleeping head at the
+// anchor on sql01, the wait counters only ever rising, the day's Extended Events twice a minute apart with the same
+// keys, the storage year before the history, and the managed instance without volumes or a slow session.
+func TestMSSQLDemo(t *testing.T) {
+	specs := Specs("demo-", FleetSize)
+	for i, s := range specs[:12] {
+		if i > 1 {
+			break // two PostgreSQL instances are enough to see no mssql_ batch
+		}
+		for _, b := range run(t, s, i, 1) {
+			if strings.HasPrefix(b.Collection, "mssql_") {
+				t.Fatalf("%s: a SQL Server batch %s", s.Name, b.Collection)
+			}
+		}
+	}
+	for i, s := range specs[12:] {
+		idx := 12 + i
+		g := NewGen(s, idx, 7, Grid(anchor, 7)[0], anchor)
+		for _, c := range g.Collections() {
+			if !strings.HasPrefix(c, "mssql_") {
+				t.Fatalf("%s: collection %s", s.Name, c)
+			}
+		}
+		batches := run(t, s, idx, 7)
+		seen := map[string]int{}
+		var lastWaits map[string]int64
+		var xeKeys []string
+		var atAnchor, storageBefore, volumes, slowStates int
+		for _, b := range batches {
+			if !strings.HasPrefix(b.Collection, "mssql_") {
+				t.Fatalf("%s: a PostgreSQL batch %s", s.Name, b.Collection)
+			}
+			seen[b.Collection]++
+			switch b.Collection {
+			case "mssql_waits":
+				cur := map[string]int64{}
+				for _, r := range b.Rows {
+					if r["kind"] == "wait" {
+						cur[r["wait_type"].(string)] = r["wait_ms"].(int64)
+					}
+				}
+				for w, v := range lastWaits {
+					if cur[w] < v {
+						t.Fatalf("%s: %s went down at %v: %d after %d", s.Name, w, b.At, cur[w], v)
+					}
+				}
+				lastWaits = cur
+			case "mssql_requests":
+				if b.At.Equal(anchor) {
+					for _, r := range b.Rows {
+						if r["kind"] == "blocking" && r["head_session_id"] == 71 && r["longest_wait_ms"].(int64) > 300000 {
+							atAnchor++
+						}
+					}
+				}
+			case "mssql_xe":
+				keys := ""
+				for _, r := range b.Rows {
+					if r["kind"] == "state" && r["capture"] == "slow" && r["state"] == "not installed" {
+						slowStates++
+					}
+					if k, ok := r["event_key"].(string); ok {
+						keys += k + "@" + r["event_at"].(string) + ";"
+					}
+				}
+				xeKeys = append(xeKeys, keys)
+			case "mssql_storage":
+				if b.At.Before(Grid(anchor, 7)[0]) {
+					storageBefore++
+				}
+				for _, r := range b.Rows {
+					if r["kind"] == "volume" {
+						volumes++
+					}
+				}
+			}
+		}
+		for _, c := range []string{"mssql_instance", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore"} {
+			if seen[c] == 0 {
+				t.Errorf("%s: no %s batch", s.Name, c)
+			}
+		}
+		if len(xeKeys) != 2 || xeKeys[0] != xeKeys[1] || xeKeys[0] == "" {
+			t.Errorf("%s: Extended Events: %d imports, the same events in both: %v", s.Name, len(xeKeys), len(xeKeys) == 2 && xeKeys[0] == xeKeys[1])
+		}
+		if storageBefore < 350 {
+			t.Errorf("%s: %d storage reads before the history, want a year of days", s.Name, storageBefore)
+		}
+		sql01, sql03 := strings.HasSuffix(s.Name, "-sql01"), strings.HasSuffix(s.Name, "-sql03")
+		if (atAnchor == 1) != sql01 {
+			t.Errorf("%s: %d chain head(s) over five minutes at the anchor", s.Name, atAnchor)
+		}
+		if (seen["mssql_jobs"] > 0) != sql01 || (seen["mssql_ag"] > 0) == sql03 || (seen["mssql_backups"] > 0) == sql03 {
+			t.Errorf("%s: jobs %d, ag %d, backups %d batches", s.Name, seen["mssql_jobs"], seen["mssql_ag"], seen["mssql_backups"])
+		}
+		if (volumes == 0) != sql03 || (slowStates == 2) != sql03 {
+			t.Errorf("%s: %d volume rows, %d 'slow not installed' states", s.Name, volumes, slowStates)
+		}
+		// a live tick after the seed: the capture states alone, no event twice
+		for _, b := range g2(t, s, idx).Step(anchor.Add(time.Minute)) {
+			if b.Collection == "mssql_xe" {
+				for _, r := range b.Rows {
+					if r["kind"] != "state" {
+						t.Fatalf("%s: a live tick carries a %v row of Extended Events", s.Name, r["kind"])
+					}
+				}
+			}
+		}
+	}
+}
+
+// g2 is a generator stepped through the seed's grid, ready for a live tick.
+func g2(t *testing.T, s Spec, idx int) *Gen {
+	t.Helper()
+	grid := Grid(anchor, 7)
+	g := NewGen(s, idx, 7, grid[0], anchor)
+	for _, at := range grid {
+		g.Step(at)
+	}
+	return g
 }
 
 // the latest snapshot carries both chains and the idle head, with the head holding and not waiting

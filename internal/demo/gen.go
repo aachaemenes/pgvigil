@@ -207,6 +207,9 @@ func dbOID(i int) int64 {
 
 // Step returns the import batches of the snapshot at t (t after the previous step).
 func (g *Gen) Step(t time.Time) []Batch {
+	if g.Spec.Engine == EngineSQLServer { // its own collections, none of PostgreSQL's (mssql_demo.go)
+		return g.mssqlStep(t)
+	}
 	first := g.prev.IsZero()
 	prev := g.prev
 	if first {
@@ -298,6 +301,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 
 // Collections names what this instance's collector runs (for the collection log).
 func (g *Gen) Collections() []string {
+	if g.Spec.Engine == EngineSQLServer {
+		return g.mssqlCollections()
+	}
 	c := []string{"instance", "databases", "activity", "dbstats", "statements", "replication"}
 	if g.Spec.Cron {
 		c = append(c, "jobs")

@@ -39,7 +39,7 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	listen := fs.String("listen", "127.0.0.1:8080", "address to serve on (-serve; loopback only)")
 	open := fs.Bool("open", false, "with -serve: open the UI in an app-mode browser window (Edge or Chrome, its own window); the default browser when neither is found")
 	seed := fs.Uint64("seed", 1, "random seed: the same seed gives the same fleet")
-	n := fs.Int("instances", 12, "instances to seed (more than 12 repeats the twelve, for a scale run)")
+	n := fs.Int("instances", demo.FleetSize, "instances to seed: twelve PostgreSQL and three SQL Server (more repeats the twelve, for a scale run)")
 	days := fs.Int("days", 7, "days of history")
 	workers := fs.Int("workers", 8, "instances imported in parallel")
 	prefix := fs.String("prefix", "demo-", "instance name prefix; a re-run replaces the demo instances with this prefix")

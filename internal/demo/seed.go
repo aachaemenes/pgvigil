@@ -18,7 +18,7 @@ import (
 // Options shape a seed.
 type Options struct {
 	Prefix    string    // instance name prefix (default "demo-")
-	Instances int       // fleet size (default 12; more = copies of the twelve, for a scale run)
+	Instances int       // fleet size (default 15: twelve PostgreSQL and three SQL Server; more = copies of the twelve, for a scale run)
 	Days      int       // history length (default 7)
 	Seed      uint64    // the random seed (same seed and anchor = same data)
 	Workers   int       // instances imported in parallel (default 8)
@@ -31,7 +31,7 @@ func (o *Options) defaults() {
 		o.Prefix = "demo-"
 	}
 	if o.Instances <= 0 {
-		o.Instances = len(base)
+		o.Instances = FleetSize
 	}
 	if o.Days <= 0 {
 		o.Days = 7
@@ -133,8 +133,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	}
 	for i, s := range specs {
 		var id int
-		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, $3, $4, $5, $6)`,
-			s.Name, s.Platform, s.Version, s.VersionNum, s.Replica, s.Tags).Scan(&id); err != nil {
+		engine := "postgres"
+		if s.Engine != "" {
+			engine = s.Engine
+		}
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, $3, $4, $5, $6, $7)`,
+			s.Name, s.Platform, s.Version, s.VersionNum, s.Replica, s.Tags, engine).Scan(&id); err != nil {
 			return nil, st, fmt.Errorf("ensure_instance %s: %w", s.Name, err)
 		}
 		f.gens = append(f.gens, NewGen(s, i, o.Seed, grid[0], o.End))
@@ -264,6 +268,9 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.Time) error {
 	for _, c := range g.Collections() {
 		status, note := "ok", ""
+		if why := g.mssqlSkipNote(c); why != "" {
+			status, note = "skipped", why
+		}
 		if c == "host" && !g.hostDoor() {
 			status, note = "skipped", hostSkipNote
 		}
