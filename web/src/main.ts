@@ -97,6 +97,8 @@ function applyTheme(t: string) {
   else document.documentElement.setAttribute('data-theme', t);
 }
 applyTheme(lsGet('pgvigil.theme') ?? 'auto');
+// under 'auto' a change of the system's light / dark setting redraws the page, so the charts take the new colours
+window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if ((lsGet('pgvigil.theme') ?? 'auto') === 'auto') void render(); });
 function themeButton(): HTMLElement {
   const cur = lsGet('pgvigil.theme') ?? 'auto';
   const b = el('button', { type: 'button', title: 'Theme: auto follows the system' }, 'Theme: ' + cur);

@@ -174,7 +174,10 @@ h2 { font-size: 1.05rem; } h3 { font-size: 1rem; }
    the monospace kept for statements and code; figures in a grid line up (tabular-nums). An OK status cell has no
    fill, only its quiet mark; warning and critical keep a tint, their word and their count; the dark theme's tints
    sit closer to the page. The tab row stays under the header while the page scrolls. The charts' series colours
-   are one categorical order per theme (--s1..--s8), validated for colour-blind separation of neighbours. */
+   are one categorical order per theme (--s1..--s8), validated for colour-blind separation of neighbours. Every dark
+   slot clears 3:1 on the dark page; in the light theme slots 3, 4 and 5 (aqua, yellow, magenta) sit under 3:1 on
+   white (2.82, 2.17, 2.69) by the palette's own design: the legend names each series with its value under the
+   cursor, and the slots are not re-stepped (the order is validated as a set). */
 :root { --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) { --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
@@ -185,10 +188,19 @@ h2 { font-size: 1.05rem; } h3 { font-size: 1rem; }
 body { font: 13px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
 pre.sql, code, .grid td.wide, .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
 .grid td.status.ok { background: none; }
-.grid td.status.ok .cell-link { color: var(--ok); }
 .grid tbody tr:hover td { filter: none; box-shadow: inset 0 0 0 999px rgba(127, 127, 127, .09); }
 #tabs { position: sticky; top: var(--head-h, 2.9rem); z-index: 2; }
-.grid th { top: 0; }
+/* under 760 px the header scrolls away (position: static above), so the tab row sticks to the top of the window */
+@media (max-width: 760px) { #tabs { top: 0; } }
+/* a control reached by the keyboard is never left under the sticky header and tab row (WCAG 2.2 2.4.11) */
+html { scroll-padding-top: calc(var(--head-h, 2.9rem) + 3rem); }
 .grid td.status.ok .cell-link { color: var(--muted); }
 .u-legend { font-size: 12px; color: var(--muted); } .u-legend th, .u-legend .u-label { font-weight: 400; }
 .chart h3 { font-weight: 500; font-size: .95rem; }
+.test-name { display: inline-flex; align-items: center; gap: .45rem; }
+/* the Summary's toolbar: the tag filter and the focused view on one row; the toggle's box is drawn, the button keeps its name */
+.toolbar { display: flex; align-items: center; gap: 1.4rem; flex-wrap: wrap; margin: .2rem 0 .9rem; }
+.toolbar .tag-filter, .toolbar .seg { margin: 0; }
+.seg button.toggle::before { content: ""; display: inline-block; width: .8rem; height: .8rem; margin-right: .4rem; vertical-align: -.1rem;
+  border: 1px solid var(--muted); border-radius: 2px; box-sizing: border-box; }
+.seg button.toggle[aria-pressed="true"]::before { content: ""; background: var(--accent); border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--bg); }

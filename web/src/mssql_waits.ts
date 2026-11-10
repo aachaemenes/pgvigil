@@ -65,6 +65,8 @@ function stackedChart(title: string, p: { rows: Row[]; types: string[] }): HTMLE
     svg('text', { x: String(L - 4), y: String(H - B), 'text-anchor': 'end', 'font-size': '11', fill: 'currentColor' }, '0'),
     svg('text', { x: String(L), y: String(H - 6), 'font-size': '11', fill: 'currentColor' }, fmtTime(p.rows[0].snapshot_at)),
     svg('text', { x: String(W), y: String(H - 6), 'text-anchor': 'end', 'font-size': '11', fill: 'currentColor' }, fmtTime(p.rows[p.rows.length - 1].snapshot_at)));
+  const pal = paletteNow();   // read once per chart: getComputedStyle per rectangle cost bars x types reads
+  const colourOf = (t: string, ti: number) => t === 'other' ? pal[8] : pal[Math.min(ti, 7)];   // 'other' is always the neutral
   p.rows.forEach((r, i) => {
     let y = H - B;
     p.types.forEach((t, ti) => {
@@ -72,14 +74,14 @@ function stackedChart(title: string, p: { rows: Row[]; types: string[] }): HTMLE
       if (v <= 0) return;
       const h = (H - B - T) * v / max;
       y -= h;
-      pic.append(svg('rect', { x: String(L + i * bw + 0.5), y: String(y), width: String(Math.max(1, bw - 1)), height: String(h), fill: paletteNow()[Math.min(ti, 8)] },
+      pic.append(svg('rect', { x: String(L + i * bw + 0.5), y: String(y), width: String(Math.max(1, bw - 1)), height: String(h), fill: colourOf(t, ti) },
         svg('title', {}, `${fmtTime(r.snapshot_at)} ${t}: ${fmtNum(v)}`)));
     });
   });
   const legend = el('p', { class: 'meta' });
   p.types.forEach((t, ti) => {
     const sw = el('span', { class: 'swatch', 'aria-hidden': 'true' });
-    sw.style.background = paletteNow()[Math.min(ti, 8)];
+    sw.style.background = colourOf(t, ti);
     legend.append(sw, ' ' + t + '  ');
   });
   box.append(pic as unknown as HTMLElement, legend);

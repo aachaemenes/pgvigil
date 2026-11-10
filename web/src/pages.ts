@@ -2,7 +2,7 @@ import { Activity, DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { cellClass, cells, cellText, Fleet, fleet, groups, levelClass, tagsOf } from './fleet';
+import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 import { diskReportView } from './host';
@@ -434,14 +434,16 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     },
   });
   const testCols: Col[] = [
-    { key: 'test', label: 'test', cls: (_v, r) => 'status ' + levelClass[Number(r._worst)],
-      fmt: v => el('a', { class: 'cell-link', href: href(ctx, { tab: 'checks' }) }, String(v)) },
+    // the name carries a small mark of its worst count, never a fill: the count cells beside it hold the colour, so a
+    // column of red names does not shout the same thing twice (the calm pass: colour only where a value is out of range)
+    { key: 'test', label: 'test',
+      fmt: (v, r) => el('span', { class: 'test-name' }, dot(Number(r._worst), ['OK', 'warning', 'critical'][Number(r._worst)]),
+        el('a', { class: 'cell-link', href: href(ctx, { tab: 'checks' }) }, String(v))) },
     countCol('ok', 'instances OK'), countCol('warn', 'instances warning'), countCol('crit', 'instances critical'), countCol('na', 'instances N/A'),
   ];
   drawUpper(); drawLower();
   return el('section', {}, el('h2', {}, 'Summary' + scopeLabel(ctx)),
-    filterBar,
-    el('div', { class: 'seg' }, focusBtn),
+    el('div', { class: 'toolbar' }, filterBar, el('div', { class: 'seg' }, focusBtn)),
     tiles,
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
     upper,

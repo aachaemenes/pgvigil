@@ -479,12 +479,14 @@ export function tagFilterBar(rows: Row[], onChange: () => void = rerender): HTML
   const keys = tagKeys(rows);
   const keySel = el('select', { 'aria-label': 'filter by tag key' }, el('option', { value: '' }, 'any tag'), ...keys.map(k => el('option', { value: k }, k === 'tag' ? 'tag (plain)' : k)));
   const valSel = el('select', { 'aria-label': 'filter by tag value' });
+  const eq = el('span', { 'aria-hidden': 'true' }, ' = ');
   const fillValues = () => {
     const k = keySel.value;
     const vs = [...new Set(rows.flatMap(r => valuesOf(r, k)))].sort(cmpValues);
     valSel.replaceChildren(...vs.map(v => el('option', { value: v }, v)), el('option', { value: '' }, `(no ${k})`));
     valSel.disabled = !k;
     valSel.style.display = k ? '' : 'none';
+    eq.style.display = k ? '' : 'none';   // 'any tag =' with nothing after it read as a broken sentence
   };
   if (tf && keys.includes(tf.key)) keySel.value = tf.key; else if (tf) { tf = null; saveFilter(); }
   fillValues();
@@ -494,5 +496,5 @@ export function tagFilterBar(rows: Row[], onChange: () => void = rerender): HTML
   const changed = () => { tf = keySel.value ? { key: keySel.value, value: valSel.value } : null; saveFilter(); onChange(); };
   keySel.addEventListener('change', () => { fillValues(); changed(); });
   valSel.addEventListener('change', changed);
-  return el('div', { class: 'meta tag-filter' }, 'Filter: ', keySel, ' = ', valSel);
+  return el('div', { class: 'meta tag-filter' }, 'Filter: ', keySel, eq, valSel);
 }

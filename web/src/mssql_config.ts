@@ -19,7 +19,9 @@ export async function mssqlConfigView(ctx: Ctx): Promise<HTMLElement> {
   }
   const changed = values.filter(r => r.changed_at != null).sort((a, b) => String(b.changed_at).localeCompare(String(a.changed_at)));
   const pending = values.filter(r => r.pending === true && r.is_present !== false);
-  sec.append(el('p', { class: 'meta counts' }, `${values.filter(r => r.is_present !== false).length} values, read ${fmtTime(values[0].snapshot_at)}; `,
+  // the newest read: a value no longer listed keeps the time of the last read that saw it
+  const lastRead = values.map(r => String(r.snapshot_at ?? '')).reduce((a, b) => b > a ? b : a, '');
+  sec.append(el('p', { class: 'meta counts' }, `${values.filter(r => r.is_present !== false).length} values, read ${fmtTime(lastRead)}; `,
     `${changed.length} changed since pgvigil first read them; `,
     pending.length ? el('span', { class: 'warn' }, `${pending.length} set and not in use yet`) : 'none waiting to take effect', '.'));
   const changeCols: Col[] = [
@@ -31,7 +33,9 @@ export async function mssqlConfigView(ctx: Ctx): Promise<HTMLElement> {
   const valueCols: Col[] = [
     { key: 'name' },
     { key: 'value_in_use', label: 'in use', fmt: num },
-    { key: 'value', label: 'set', fmt: (v, r) => r.pending === true ? el('span', {}, num(v), ' ', badge('not in use yet', 'warn')) : num(v) },
+    // a dynamic option waits for RECONFIGURE, any other for a restart of the service; a value no longer listed waits for nothing
+    { key: 'value', label: 'set', fmt: (v, r) => r.pending === true && r.is_present !== false
+      ? el('span', {}, num(v), ' ', badge(r.is_dynamic === true ? 'needs RECONFIGURE' : 'needs a restart', 'warn')) : num(v) },
     { key: 'minimum', fmt: num }, { key: 'maximum', fmt: num },
     { key: 'is_dynamic', label: 'dynamic', fmt: yn }, { key: 'is_advanced', label: 'advanced', fmt: yn },
     { key: 'is_present', label: 'listed', fmt: v => v === false ? 'no longer' : 'yes' },
@@ -44,6 +48,6 @@ export async function mssqlConfigView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'last_startup_at', label: 'started', fmt: fmtTime },
     { key: 'ifi_enabled', label: 'instant file initialization', fmt: yn }, { key: 'is_clustered', label: 'clustered', fmt: yn },
   ];
-  sec.append(el('h3', {}, 'Services'), grid(services, svcCols, 'The server lists no service (a managed instance), or the mssql_services collection has not run yet.'));
+  sec.append(el('h3', {}, 'Services'), grid(services, svcCols, 'No service listed: an Azure SQL Database or a managed instance lists none, a login without the right to read sys.dm_server_services sees none (see Collection on the Summary), or the mssql_services collection has not run yet.'));
   return sec;
 }
