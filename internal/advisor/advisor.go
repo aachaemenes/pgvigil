@@ -1,5 +1,5 @@
 // Package advisor is pgvigil's index advisor, a tool run on demand (never on a schedule): on one database of a
-// monitored server where pg_qualstats (the PoWA team, PostgreSQL licence) and HypoPG (the PoWA team, PostgreSQL
+// monitored server where pg_qualstats (Ronan Dunklau and the PoWA team, PostgreSQL licence) and HypoPG (PostgreSQL
 // licence) are installed, it asks pg_qualstats_index_advisor() which indexes the predicates it sampled would want,
 // then tests each one in the planner as a HYPOTHETICAL index: hypopg_create_index() adds it to this session's planner
 // only (nothing is written to the catalog or to disk), the statements that would use it are EXPLAINed (never

@@ -21,7 +21,6 @@ const problemText: Record<string, string> = {
 const problemKind: Record<string, string> = { invalid: 'warn', duplicate: 'warn', redundant: '', unused: '' };
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const code = (v: unknown) => v == null ? '' : el('code', {}, String(v));
 
 const indexCols: Col[] = [
   { key: 'datname', label: 'database' },
@@ -32,9 +31,8 @@ const indexCols: Col[] = [
   { key: 'table_bytes', label: 'table size', num: true, fmt: fmtBytes },
   { key: 'idx_scan', label: 'scans', num: true },
   { key: 'covered_by', label: 'covered by', fmt: (v, r) => v == null ? '' : String(v) + (r.supports_fk ? ' (may serve a foreign key)' : '') },
-  { key: 'index_def', label: 'definition', wide: true },
-  { key: 'drop_sql', label: 'DO (not run by pgvigil)', fmt: code },
-  { key: 'undo_sql', label: 'UNDO', fmt: code },
+  { key: 'drop_sql', label: 'DO (not run by pgvigil)', wide: true },
+  { key: 'undo_sql', label: 'UNDO (the definition)', wide: true },
   { key: 'first_seen', label: 'since', fmt: fmtTime },
 ];
 

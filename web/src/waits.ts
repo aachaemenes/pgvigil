@@ -45,16 +45,16 @@ const treeCols: Col[] = [
   { key: 'query', label: 'statement (the last one, on an idle row)', wide: true },
 ];
 
-// pivot turns (snapshot_at, event_type, samples) rows into one row per time with a column per event type.
+// pivot turns (snapshot_at, event_type, sessions) rows into one row per time with a column per event type.
 function pivot(rows: Row[]): { rows: Row[]; types: string[] } {
   const totals = new Map<string, number>();
-  for (const r of rows) totals.set(String(r.event_type), (totals.get(String(r.event_type)) ?? 0) + Number(r.samples));
+  for (const r of rows) totals.set(String(r.event_type), (totals.get(String(r.event_type)) ?? 0) + Number(r.sessions));
   const types = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]);
   const byTime = new Map<string, Row>();
   for (const r of rows) {
     const k = String(r.snapshot_at);
     if (!byTime.has(k)) byTime.set(k, Object.fromEntries([['snapshot_at', r.snapshot_at], ...types.map(t => [t, 0])]));
-    if (types.includes(String(r.event_type))) byTime.get(k)![String(r.event_type)] = Number(r.samples);
+    if (types.includes(String(r.event_type))) byTime.get(k)![String(r.event_type)] = Number(r.sessions);
   }
   return { rows: [...byTime.values()], types };
 }
@@ -64,7 +64,8 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
   const events = rowsOf(d.events), st = rowsOf(d.state)[0];
   const sec = el('section', {}, el('h2', {}, `Waits (${rangeLabel(ctx)})`));
   const source = String(events[0]?.source ?? (st?.status === 'ok' ? 'pg_wait_sampling' : 'activity'));
-  sec.append(el('p', { class: 'meta' }, 'Source: ' + (sourceText[source] ?? source) + '.'
+  sec.append(el('p', { class: 'meta' }, 'Source: ' + (sourceText[source] ?? source) + '. The background processes\' idle '
+    + 'waits between their rounds (the Activity type) are left out.'
     + (st?.status === 'skipped' ? ` The waits collection is skipped here: ${String(st.note ?? '')}.` : '')
     + (st?.status === 'error' ? ` The waits collection failed: ${String(st.note ?? '')}.` : '')));
   if (events.length === 0) {
@@ -77,10 +78,10 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('div', { class: 'tiles' },
       tile('samples', fmtNum(total)),
       tile(source === 'activity' ? 'session samples' : 'wait time', source === 'activity' ? fmtNum(total) : fmtSecs(Math.round(waitTotal))),
-      tile('on CPU (no wait event)', total ? fmtNum(Math.round(100 * cpu / total)) + ' %' : '-'),
-      tile('lock waits', total ? fmtNum(Math.round(100 * lock / total)) + ' %' : '-', lock > 0 ? 'warn' : 'ok')));
+      tile('on CPU (no wait event)', total ? fmtNum(Math.round(1000 * cpu / total) / 10) + ' %' : '-'),
+      tile('lock waits', total ? fmtNum(Math.round(1000 * lock / total) / 10) + ' %' : '-', lock > 0 ? 'warn' : 'ok')));
     const p = pivot(rowsOf(d.series));
-    sec.append(el('div', { class: 'charts' }, lineChart('Samples per event type', p.rows, p.types.map(t => ({ key: t, label: t })))));
+    sec.append(el('div', { class: 'charts' }, lineChart('Average sessions waiting, by event type', p.rows, p.types.map(t => ({ key: t, label: t })))));
     sec.append(el('h3', {}, 'Wait events'), grid(events, eventCols));
     sec.append(el('h3', {}, 'Statements that waited most'), grid(rowsOf(d.queries), queryCols,
       'No statement identified (query ids need compute_query_id, on by default with pg_stat_statements).'));

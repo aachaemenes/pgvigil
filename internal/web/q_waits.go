@@ -12,22 +12,23 @@ import (
 // (pgvigil.lock_tree, after postgres_dba's l2_lock_trees.sql). No Summary column: waits are a view, not a check.
 
 // sqlWaitsBase is the window's samples from the best source: the extension's rows when there are any, else the
-// activity samples of active sessions. $1 instance, $2 from, $3 to.
+// activity samples of active sessions. $1 instance, $2 from, $3 to. The Activity wait type is left out: it is the
+// background processes idling between their rounds (the checkpointer's, the WAL writer's main loop), never work waiting.
 const sqlWaitsBase = `
 WITH ws AS (
-  SELECT w.snapshot_at, w.source, w.event_type, w.event, w.queryid, w.samples, w.wait_secs
+  SELECT w.snapshot_at, w.source, w.event_type, w.event, w.queryid, w.samples, w.wait_secs, w.interval_secs
     FROM pgvigil.wait_sample w
-   WHERE w.instance_id = $1 AND w.snapshot_at > $2 AND w.snapshot_at <= $3
+   WHERE w.instance_id = $1 AND w.snapshot_at > $2 AND w.snapshot_at <= $3 AND w.event_type <> 'Activity'
 ), act AS (
   SELECT a.snapshot_at, 'activity'::text AS source, coalesce(a.wait_event_type, 'CPU') AS event_type,
          coalesce(a.wait_event, 'CPU') AS event, coalesce(a.query_id, 0) AS queryid, 1::bigint AS samples,
-         NULL::float8 AS wait_secs, a.query_hash
+         NULL::float8 AS wait_secs, NULL::int AS interval_secs, a.query_hash
     FROM pgvigil.activity_sample a
    WHERE a.instance_id = $1 AND a.snapshot_at > $2 AND a.snapshot_at <= $3 AND a.state = 'active'
      AND coalesce(a.backend_type, 'client backend') = 'client backend'
      AND NOT EXISTS (SELECT 1 FROM ws)
 ), s AS (
-  SELECT snapshot_at, source, event_type, event, queryid, samples, wait_secs, NULL::bigint AS query_hash FROM ws
+  SELECT snapshot_at, source, event_type, event, queryid, samples, wait_secs, interval_secs, NULL::bigint AS query_hash FROM ws
   UNION ALL
   SELECT * FROM act
 )`
@@ -41,12 +42,23 @@ SELECT max(source) AS source, event_type, event, sum(samples)::bigint AS samples
  ORDER BY samples DESC, event_type, event
  LIMIT 100`
 
-// sqlWaitsSeries: the samples per event type over time, in about 120 steps of at least a minute.
+// sqlWaitsSeries: the average sessions waiting per event type over time, in about 120 steps of at least a minute:
+// the wait time over the seconds the step's reads cover (pg_wait_sampling), or the sessions seen per snapshot (the
+// activity samples, one a minute), so a step the reads only partly cover does not read as a drop.
 const sqlWaitsSeries = sqlWaitsBase + `
 , step AS (SELECT greatest(60, extract(epoch FROM $3::timestamptz - $2::timestamptz) / 120)::int AS secs)
-SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / step.secs) * step.secs) AS snapshot_at, s.event_type,
-       sum(s.samples)::bigint AS samples
-  FROM s, step
+, b AS (
+  SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / step.secs) * step.secs) AS bucket, s.*
+    FROM s, step
+), cover AS (
+  SELECT bucket, sum(coalesce(iv, 60))::float8 AS secs
+    FROM (SELECT DISTINCT bucket, snapshot_at, interval_secs AS iv FROM b) x
+   GROUP BY bucket
+)
+SELECT b.bucket AS snapshot_at, b.event_type,
+       round((CASE WHEN max(b.source) = 'activity' THEN sum(b.samples) * 60.0 / max(cover.secs)
+                   ELSE coalesce(sum(b.wait_secs), sum(b.samples)) / max(cover.secs) END)::numeric, 3) AS sessions
+  FROM b JOIN cover USING (bucket)
  GROUP BY 1, 2
  ORDER BY 1, 2`
 
@@ -55,7 +67,7 @@ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / step.secs) * step.
 const sqlWaitsQueries = sqlWaitsBase + `
 , q AS (
   SELECT s.queryid, max(s.query_hash) AS query_hash, sum(s.samples)::bigint AS samples, sum(s.wait_secs) AS wait_secs,
-         (array_agg(s.event_type || ':' || s.event ORDER BY s.samples DESC))[1] AS top_wait
+         (array_agg(CASE WHEN s.event_type = 'CPU' THEN 'CPU' ELSE s.event_type || ':' || s.event END ORDER BY s.samples DESC))[1] AS top_wait
     FROM s
    WHERE s.queryid <> 0 OR s.query_hash IS NOT NULL
    GROUP BY s.queryid, CASE WHEN s.queryid = 0 THEN s.query_hash END
