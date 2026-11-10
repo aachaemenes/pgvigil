@@ -9,8 +9,10 @@
 #   PGVIGIL_BIN        a build with the alerts command and the /api/alerts route (the lead's wiring; default bin/pgvigil).
 #   python3            the SMTP sink and the HTTP listener.
 #
-# Every sender pass after B prints its exit code, summary line and stderr into the record (pass <tag>: ...); a pass that
-# exits other than 0 or 1 or prints no summary line fails the proof. K grades its rows against the pass's own mark.
+# Every sender pass after B prints its exit code, summary line and stderr into the record (pass <tag>: ...). Expected of
+# each: exit 1, the summary line, stderr only dead's and redir's 'alert channel failed' warnings and the 'N alert(s) not
+# sent' error; any other exit, no summary line, or a failure of another channel fails the proof. K grades its rows
+# against the pass's own mark.
 #
 # The demo's findings move while the proof runs (some are defined over the last minutes), so every count below is
 # graded against what the pass itself recorded (its alert_log rows, the alert rows it opened), never against a later
@@ -171,15 +173,20 @@ PY
 }
 stamp() { sleep 0.01; touch "$WORK/stamp.$1"; sleep 0.01; }
 # one pass of the sender with its exit code, summary line and stderr kept in the record (never >/dev/null: run 1 at the
-# wave F re-merge failed K and could not say why). Exit 1 is the dead and redir channels failing by design and is
-# recorded; any other exit, or no summary line, is a crash of the pass and fails the proof with its text.
+# wave F re-merge failed K and could not say why). Every pass is owed exit 1 with a summary line: dead and redir are due
+# a send and fail by design on every pass (a failed send opens no row, so they are due again). Exit 0 would mean no
+# critical finding was due at all; any other exit, or no summary line, is a crash: both fail the proof with the stderr
+# text. A failure of any channel other than dead or redir (the sink or the listener died) fails it too.
 pass() {
   local tag=$1 rc
   set +e; "$BIN" alerts -config "$WORK/alerts.yaml" >"$WORK/pass.$tag.out" 2>"$WORK/pass.$tag.err"; rc=$?; set -e
   echo "pass $tag: exit $rc: $(grep -m1 '^alerts: ' "$WORK/pass.$tag.out" || echo '(no summary line)')"
   if [[ -s "$WORK/pass.$tag.err" ]]; then sed "s/^/pass $tag stderr: /" "$WORK/pass.$tag.err"; fi
-  if ! { (( rc == 0 || rc == 1 )) && grep -q '^alerts: ' "$WORK/pass.$tag.out"; }; then
-    fail "pass $tag: exit $rc: $(tr '\n' ' ' < "$WORK/pass.$tag.err" | cut -c1-600)"
+  if ! { (( rc == 1 )) && grep -q '^alerts: ' "$WORK/pass.$tag.out"; }; then
+    fail "pass $tag: exit $rc, want 1 with a summary line: $(tr '\n' ' ' < "$WORK/pass.$tag.err" | cut -c1-600)"
+  fi
+  if grep 'msg="alert channel failed"' "$WORK/pass.$tag.err" | grep -vq -e 'err="dead: ' -e 'err="redir: '; then
+    fail "pass $tag: a channel other than dead or redir failed: $(grep 'msg="alert channel failed"' "$WORK/pass.$tag.err" | grep -v -e 'err="dead: ' -e 'err="redir: ' | tr '\n' ' ' | cut -c1-600)"
   fi
 }
 
@@ -336,7 +343,7 @@ new_eml "$WORK/stamp.K" | grep -q "^\[RESOLVED\] $DEACT:" && fail "K: a recovery
 [[ $(find "$WORK/drop" "$WORK/grace" -newer "$WORK/stamp.K" -name '*-resolved-*' -print0 | xargs -0 -r grep -l "\"instance\": \"$DEACT\"" | wc -l) == 0 ]] || fail "K: a resolved file for $DEACT"
 # cleared by THIS pass (cleared_at at or after its mark), never 'within the last minute'; on a failure the rows' state
 krows() { q "select count(*) filter (where cleared_at >= '$TK') || '|' || count(recovery_sent_at) filter (where cleared_at >= '$TK') from pgvigil.alert_state where instance_name = '$DEACT'"; }
-kstate() { q "select 'open ' || count(*) filter (where cleared_at is null) || ', of them with missing_since ' || count(missing_since) filter (where cleared_at is null) || ', cleared before the mark ' || count(*) filter (where cleared_at < '$TK') || ', rows in alert_findings ' || (select count(*) from pgvigil.alert_findings f where f.instance = '$DEACT') || ', is_active ' || (select is_active from pgvigil.instances where name = '$DEACT') from pgvigil.alert_state where instance_name = '$DEACT'"; }
+kstate() { q "select 'open ' || count(*) filter (where cleared_at is null) || ', of them with missing_since ' || count(missing_since) filter (where cleared_at is null) || ', cleared before the mark ' || count(*) filter (where cleared_at < '$TK') || ', rows in alert_findings ' || (select count(*) from pgvigil.alert_findings f where f.instance = '$DEACT') || ', is_active ' || coalesce((select is_active::text from pgvigil.instances where name = '$DEACT'), 'no instance row') from pgvigil.alert_state where instance_name = '$DEACT'"; }
 [[ $(krows) == "$KN|0" ]] || fail "K: $DEACT's rows cleared by the pass|with recovery: $(krows), want $KN|0; $(kstate)"
 ok "K: $DEACT deactivated: its $KN alert rows cleared without a message"
 
