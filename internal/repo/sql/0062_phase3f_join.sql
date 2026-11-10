@@ -1,10 +1,12 @@
 -- 0062: the join of phase 3 wave F (schema snapshots 59, alerts out 60, custom checks 61, memory and poolers 62), rebuilt
 -- at every slice's merge from 0057's definitions (never edited by hand): pgvigil.findings re-created with the arms of the
 -- merged slices (memory_findings from 0061: clients waiting on the pooler, a pool at its size, temp-file spills, one
--- relation holding over half of shared_buffers; schema_findings and custom_findings join at their merges; alerts add no
--- arm, their rows are per channel) and purge() re-created with the merged slices' partition parents (buffercache_sample,
--- temp_sample, pooler_sample) and retention deletes (pooler_state by snapshot_at). A frozen file is never edited; a later
--- join re-creates both again with its own additions.
+-- relation holding over half of shared_buffers; custom_findings from 0060: a threshold crossed, a failed run, not run in
+-- two cadences while the collection visits; schema_findings joins at its merge; alerts add no arm, their rows are per
+-- channel) and purge() re-created with the merged slices' partition parents (buffercache_sample, temp_sample,
+-- pooler_sample, custom_results) and retention deletes (pooler_state by snapshot_at; custom_checks not listed within the
+-- window, present or not: a collection switched off lists nothing). A frozen file is never edited; a later join
+-- re-creates both again with its own additions.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (
@@ -159,6 +161,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- memory and poolers (0061): the pooler's waiting clients and full pools, temp-file spills, one relation over half of shared_buffers
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.memory_findings
+    UNION ALL
+    -- custom checks (0060): a threshold crossed, a failed run, not run in two cadences while the collection visits
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.custom_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
@@ -179,7 +184,7 @@ BEGIN
        AND p.relname IN ('activity_sample', 'statements_delta', 'dbstats', 'serverstats', 'iostats', 'replication_sample', 'database_sizes',
                          'log_events', 'dms_task_sample', 'table_sizes',
                          'host_sample', 'host_disk_history', 'host_io', 'storage_sample',
-                         'vacuum_sample', 'cloud_io_sample', 'dms_ri_sample', 'backup_sample', 'amcheck_runs', 'wait_sample', 'index_usage_daily', 'pi_load', 'serverless_sample', 'buffercache_sample', 'temp_sample', 'pooler_sample')
+                         'vacuum_sample', 'cloud_io_sample', 'dms_ri_sample', 'backup_sample', 'amcheck_runs', 'wait_sample', 'index_usage_daily', 'pi_load', 'serverless_sample', 'buffercache_sample', 'temp_sample', 'pooler_sample', 'custom_results')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
   LOOP
@@ -292,8 +297,11 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.compare_findings_cache WHERE computed_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  -- wave F (0062): the pooler's state rows
+  -- wave F (0062): the pooler's state rows; every custom check not listed within the window, present or not (a collection
+  -- switched off lists nothing, so its rows would otherwise stay present for ever)
   DELETE FROM pgvigil.pooler_state WHERE snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.custom_checks WHERE snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   RETURN n;
 END $$;

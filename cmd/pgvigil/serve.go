@@ -45,6 +45,10 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	// the custom: list (task 61): with it the stale check counts the custom collection among the expected ones
+	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
+		return err
+	}
 	d := cfg.Repository.DSN()
 	if *dsn != "" {
 		d = config.Resolve(*dsn)

@@ -123,6 +123,10 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 	if err := checkCollectionNames(cfg); err != nil {
 		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
 	}
+	// the custom: list (task 61): read from the same file, validated against the instances, the list the custom collection runs
+	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
+		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
+	}
 	cfg.Flags.Once = *once
 	cfg.Flags.Instance = *inst
 	return cfg, fs, nil

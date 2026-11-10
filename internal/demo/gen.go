@@ -233,6 +233,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("statements", g.statementRows(t))
 	}
 	add("replication", g.replicationRows(t))
+	add("custom", g.customDemoRows(t, first)) // every minute: the two custom checks' definitions and their results at each check's cadence
 	if g.Spec.Cron {
 		add("jobs", g.jobReportRows(t, prev))
 	}
@@ -317,7 +318,7 @@ func (g *Gen) Collections() []string {
 	if g.waitDoor() {
 		c = append(c, "waits")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files")
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files", "custom")
 	if g.Spec.Name == "aurora-crm01" {
 		c = append(c, "pgbouncer")
 	}

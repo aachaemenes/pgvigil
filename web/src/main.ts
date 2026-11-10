@@ -4,7 +4,7 @@
 import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget } from './fleet';
-import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobs, jobsRoot, logs, replication, roles, slows, statements, counters, activity, storage, backups, corruption, versions, indexes, growth } from './pages';
+import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobs, jobsRoot, logs, replication, roles, slows, statements, counters, activity, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
 import { capacitySection, loadView } from './pi';
@@ -25,6 +25,7 @@ import { waitsView } from './waits';
 import { compareView } from './compare';
 import { memory } from './memory';
 import { hasPooler, pooler } from './pooler';
+import { customView } from './custom';
 import { indexesView } from './indexes';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
@@ -35,7 +36,7 @@ import { el } from './ui';
 import { exportButtons } from './export';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
@@ -52,7 +53,7 @@ const instancePages: Record<string, Render> = {
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
   compare: compareView,
-  memory, pooler,
+  memory, pooler, custom: customView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs']);
