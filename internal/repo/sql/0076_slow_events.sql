@@ -9,7 +9,10 @@
 --                    sample of the same pid during the run, when one was taken); no CPU, reads, writes or rows.
 --        SQL Server  the slow capture (mssql_slow_events: rpc_completed, sql_batch_completed and the statement
 --                    events), with its CPU, reads, writes, rows, client host, application, login and result
---                    ('OK', 'Error', 'Abort'); failed = a result other than OK.
+--                    ('OK', 'Error', 'Abort'); failed = a result other than OK. is_statement marks the statement
+--                    events (sql_statement_completed, sp_statement_completed): with the capture's statement
+--                    events on, one slow procedure call stores its call and its slow statements, so the pages
+--                    count the calls (rpc and batch completions) unless asked for every event.
 --   2. pgvigil.slow_bucket(ms): DBA Dash's ten duration buckets as 0..9 (under 5 s, 5-10 s, 10-20 s, 20-30 s,
 --      30-60 s, 1-5 min, 5-10 min, 10-30 min, 30-60 min, 1 h and over); the page names them.
 --   3. pgvigil.stmt_trend(instance, queryid, datname, from, to, secs): one pg_stat_statements row's trend per
@@ -29,7 +32,7 @@ SELECT e.instance_id, i.name AS instance, i.platform, 'postgres'::text AS engine
        e.datname AS database_name, e.usename AS user_name, e.client, NULL::text AS application,
        'OK'::text AS result, false AS failed, e.pid AS session_id,
        CASE WHEN e.source LIKE 'serverlog:%' THEN 'server log' ELSE 'CloudWatch' END AS event_type,
-       NULL::text AS object_name, e.statement, e.shape_key
+       NULL::text AS object_name, e.statement, e.shape_key, false AS is_statement
   FROM pgvigil.log_events e
   JOIN pgvigil.instances i USING (instance_id)
  WHERE e.kind = 'slow'
@@ -38,7 +41,7 @@ SELECT s.instance_id, i.name, i.platform, 'sqlserver', s.event_at, s.event_key,
        s.duration_ms, s.cpu_ms, s.logical_reads, s.physical_reads, s.writes, s.row_count,
        s.database_name, s.login_name, s.host_name, s.program_name,
        s.result, coalesce(s.result <> 'OK', false), s.session_id,
-       s.event_name, s.object_name, s.statement, s.shape_key
+       s.event_name, s.object_name, s.statement, s.shape_key, s.event_name IN ('sql_statement_completed', 'sp_statement_completed')
   FROM pgvigil.mssql_slow_events s
   JOIN pgvigil.instances i USING (instance_id);
 
@@ -58,6 +61,8 @@ RETURNS int LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 $$;
 
 -- stmt_trend: snapshot_at is the start of each interval (date_bin from p_from); an interval with no delta has no row.
+-- A delta is binned at the middle of the period it covers (its snapshot_at is that period's end), so its calls fall
+-- in the same interval as the log events of the same runs.
 -- A reset delta (the statistics were reset between two reads) is left out: its counters are not a difference.
 CREATE OR REPLACE FUNCTION pgvigil.stmt_trend(p_instance_id int, p_queryid bigint, p_datname text,
                                               p_from timestamptz, p_to timestamptz, p_secs int)
@@ -65,12 +70,12 @@ RETURNS TABLE (snapshot_at timestamptz, calls bigint, rows bigint, total_ms floa
                log_max_ms float8, log_events bigint)
 LANGUAGE sql STABLE AS $$
   WITH d AS (
-    SELECT date_bin(make_interval(secs => p_secs), d.snapshot_at, p_from) AS b,
+    SELECT date_bin(make_interval(secs => p_secs), d.snapshot_at - make_interval(secs => d.interval_secs / 2.0), p_from) AS b,
            sum(d.calls)::bigint AS calls, sum(d.rows)::bigint AS rows, sum(d.total_exec_ms) AS total_ms
       FROM pgvigil.statements_delta d
      WHERE d.instance_id = p_instance_id AND d.queryid = p_queryid AND NOT d.reset
        AND (p_datname IS NULL OR d.datname = p_datname)
-       AND d.snapshot_at > p_from AND d.snapshot_at <= p_to
+       AND d.snapshot_at - make_interval(secs => d.interval_secs / 2.0) >= p_from AND d.snapshot_at <= p_to
      GROUP BY 1
   ), l AS (
     SELECT date_bin(make_interval(secs => p_secs), e.snapshot_at, p_from) AS b,

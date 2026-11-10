@@ -19,7 +19,7 @@ function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string,
 
 const LABEL = 240, ROW = 22, LANE = 34, AXIS = 22;
 const colorOf = (outcome: unknown) => outcome === 'failed' ? 'var(--crit)' : outcome === 'running' ? 'var(--accent)'
-  : outcome === 'succeeded' ? 'var(--ok)' : 'var(--warn)';
+  : outcome === 'succeeded' ? 'var(--ok)' : outcome === 'unknown' ? 'var(--muted)' : 'var(--warn)';
 const outcomeBadge = (v: unknown) => {
   const s = String(v ?? '');
   return s === 'failed' ? badge(s, 'crit') : s === 'succeeded' ? badge(s, 'ok') : s ? badge(s, 'warn') : '';
@@ -32,7 +32,9 @@ interface Lane { key: string; label: string; instance: string; instanceId: numbe
 // atOnce: the number of runs going on over time as steps [t, n] (a sweep over starts and ends), and its peak
 export function atOnce(runs: { s: number; e: number }[]): { steps: [number, number][]; peak: number } {
   const ev: [number, number][] = [];
-  for (const x of runs) { ev.push([x.s, 1]); ev.push([Math.max(x.e, x.s), -1]); }
+  // a run of no length (SQL Agent counts whole seconds: a job under a second ends where it starts) lasts 1 ms, as the
+  // cursor counts it: never a negative count, never a peak of 0 under a drawn bar
+  for (const x of runs) { ev.push([x.s, 1]); ev.push([Math.max(x.e, x.s + 1), -1]); }
   ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]);   // an end before a start at the same instant: back to back is not at once
   const steps: [number, number][] = [];
   let n = 0, peak = 0;
@@ -42,7 +44,7 @@ export function atOnce(runs: { s: number; e: number }[]): { steps: [number, numb
 const runningAt = (runs: Run[], t: number) => runs.filter(x => x.s <= t && t < Math.max(x.e, x.s + 1)).length;
 
 // the axis ticks: a step from a fixed ladder giving about eight ticks
-const ladder = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800].map(s => s * 1000);
+const ladder = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800, 1209600, 2592000, 7776000].map(s => s * 1000);
 function ticks(t0: number, t1: number): number[] {
   const step = ladder.find(s => (t1 - t0) / s <= 9) ?? ladder[ladder.length - 1];
   const off = new Date(t0).getTimezoneOffset() * 60000;   // ticks on the local clock's round times
@@ -139,9 +141,11 @@ function drawTimeline(lanes: Lane[], t0: number, t1: number, width: number, flee
   // the time cursor: a line and a label that follow the pointer, or the arrow keys when the drawing has the focus
   const all2 = lanes.flatMap(l => l.runs);
   const cur = svg('line', { y1: AXIS - 2, y2: H, stroke: 'var(--accent)', 'stroke-dasharray': '3 3', visibility: 'hidden' });
-  const tag = el('div', { class: 'meta', 'aria-live': 'polite' }, 'Point at the timeline (or focus it and use the arrow keys) for the time cursor.');
+  // read aloud only on a keyboard move: a pointer crossing the drawing would flood a screen reader
+  const tag = el('div', { class: 'meta', 'aria-live': 'off' }, 'Point at the timeline (or focus it and use the arrow keys) for the time cursor.');
   let at = t0 + span / 2;
-  const move = (t: number) => {
+  const move = (t: number, keyboard = false) => {
+    tag.setAttribute('aria-live', keyboard ? 'polite' : 'off');
     at = Math.max(t0, Math.min(t1, t));
     cur.setAttribute('x1', String(X(at))); cur.setAttribute('x2', String(X(at))); cur.setAttribute('visibility', 'visible');
     const n = runningAt(all2, at);
@@ -155,9 +159,9 @@ function drawTimeline(lanes: Lane[], t0: number, t1: number, width: number, flee
   });
   root.setAttribute('tabindex', '0');
   root.addEventListener('keydown', ev => {
-    if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') { ev.preventDefault(); move(at + (ev.key === 'ArrowLeft' ? -1 : 1) * span / 100); }
+    if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') { ev.preventDefault(); move(at + (ev.key === 'ArrowLeft' ? -1 : 1) * span / 100, true); }
   });
-  root.addEventListener('focus', () => move(at));
+  root.addEventListener('focus', () => move(at, true));
   return el('div', {}, tag, el('div', { class: 'grid-wrap', style: 'overflow-x:auto' }, root));
 }
 
@@ -173,7 +177,8 @@ const stepCols: Col[] = [
   { key: 'duration_s', label: 'took', num: true, fmt: fmtSecs }, { key: 'outcome', fmt: outcomeBadge }, { key: 'message', wide: true },
 ];
 
-export async function jobsTimelineView(ctx: Ctx): Promise<HTMLElement> {
+// keep: under a tag folder of the fleet, only these instances' runs (the lead's wiring passes the folder's filter)
+export async function jobsTimelineView(ctx: Ctx, keep?: (r: Row) => boolean): Promise<HTMLElement> {
   const fleet = !ctx.instance;
   const sec = el('section', {}, el('h2', {}, `Jobs timeline (${rangeLabel(ctx)})`));
   const body = el('div', {}, el('p', { class: 'meta' }, 'Reading...'));
@@ -181,14 +186,18 @@ export async function jobsTimelineView(ctx: Ctx): Promise<HTMLElement> {
   let picked: Lane | null = null;
   const w = window_(ctx), t0 = timeOf(w.from), t1 = timeOf(w.to);
 
+  let seq = 0;   // a reply that arrives after a newer request (a quick filter change) is dropped
   async function draw() {
+    const mine = ++seq;
     body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     try {
       const p: Record<string, string | number | undefined> = { instance: ctx.instance, ...w };
       if (picked) { p.scheduler = picked.scheduler; p.job = picked.jobId; }
       const d = await get<Record<'runs' | 'meta' | 'steps', Table | null>>('jobs/timeline', p);
+      if (mine !== seq) return;
       const now = Math.min(Date.now(), t1);
       let runs = rowsOf(d.runs);
+      if (keep) runs = runs.filter(keep);
       const meta = rowsOf(d.meta)[0] ?? {};
       if (outcome) runs = runs.filter(r => outcome === 'other' ? !['succeeded', 'failed', 'running'].includes(String(r.outcome)) : r.outcome === outcome);
       if (filter) { const f = filter.toLowerCase(); runs = runs.filter(r => String(r.job ?? '').toLowerCase().includes(f)); }
@@ -197,7 +206,7 @@ export async function jobsTimelineView(ctx: Ctx): Promise<HTMLElement> {
       const width = Math.max(600, (sec.clientWidth || body.clientWidth || 1100) - 4);
       const tools = el('div', { class: 'toolbar' });
       const oc = el('select', { 'aria-label': 'Outcome' });
-      for (const [v, l] of [['', 'all outcomes'], ['failed', 'failed'], ['succeeded', 'succeeded'], ['running', 'running'], ['other', 'cancelled or retry']]) {
+      for (const [v, l] of [['', 'all outcomes'], ['failed', 'failed'], ['succeeded', 'succeeded'], ['running', 'running'], ['other', 'cancelled, retry or unknown']]) {
         const o = el('option', { value: v }, l); if (v === outcome) o.selected = true; oc.append(o);
       }
       oc.addEventListener('change', () => { outcome = oc.value; void draw(); });
@@ -229,7 +238,7 @@ export async function jobsTimelineView(ctx: Ctx): Promise<HTMLElement> {
       if (fleet) parts.push(el('p', { class: 'meta' }, 'Open an instance\'s timeline to cut it to one job.'));
       body.replaceChildren(...parts);
     } catch (e) {
-      body.replaceChildren(errorBox(e));
+      if (mine === seq) body.replaceChildren(errorBox(e));
     }
   }
   sec.append(body);

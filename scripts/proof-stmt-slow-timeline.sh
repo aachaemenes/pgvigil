@@ -9,8 +9,9 @@
 # the PostgreSQL sandbox WITHOUT a password and without dbname (the password from ~/.pgpass).
 #
 # What it makes, and drops on every exit path: a throwaway cluster (its own data directory, port SST_PORT, default
-# 5497, no socket directory, stopped and removed) and its own repository database on the sandbox. Nothing else is
-# touched.
+# 5497, no socket directory, stopped and removed) and its own repository database on the sandbox. migrate also makes
+# the cluster-wide roles pgvigil_collector, pgvigil_reader, pgvigil_alerter and pgvigil_auth where they are missing
+# (0008, 0015): those stay after the run, as every pgvigil migrate leaves them. Nothing else is touched.
 #
 # The PostgreSQL side is real: statements run on the throwaway cluster, read by the real collectors (instance,
 # activity, statements, serverlog). The SQL Server side and the jobs of both engines are imported rows in the
@@ -33,7 +34,8 @@
 #  C. Imported: a SQL Server instance S with three slow completions of one shape K (16 hex digits): 6 s OK in Sales,
 #     25 s Abort in Sales, 400 s OK in Finance, program 'erp-app', host 'app1', login 'erp_login'.
 #  [first run, explained: the requests sent no min, so the API's 1 s default hid y's 0.6 s events; the slow/ requests
-#  now send min=500, the cluster's logging floor, as the page does at its 500 ms threshold. The counts below stand.]
+#  now send min=500, the cluster's logging floor (the page's 500 ms choice; its default is 1 s, checked in J6). The
+#  counts below stand.]
 #  D. /api/slow/groups (min=500), the fleet, group=instance: P total 4 (b0 4, failed 0), S total 3 (b1 1, b3 1, b6 1, failed 1,
 #     total_duration_s 431.000); totals total 7 failed 1; dbs: postgres 4, Sales 2, Finance 1. group=result: OK 6,
 #     Abort 1. db=Sales: one group (S) total 2. Instance P, group=text: 2 rows (y's shape 3, x's shape 1).
@@ -53,10 +55,24 @@
 #     T-3 h (ended before the window): S lists 1 run, outcome failed, failed_step '2 load'; with scheduler=sqlagent
 #     &job=J: steps 2 rows (1 succeeded, 2 failed). The fleet: 5 runs.
 #  H. The page's arithmetic (jobs_timeline.ts atOnce, run under node): runs [0,10) [5,15) [20,30) -> peak 2; back to
-#     back [0,10) [10,20) -> peak 1; one run -> peak 1; none -> peak 0.
+#     back [0,10) [10,20) -> peak 1; one run -> peak 1; none -> peak 0; [review fold] a run of no length [100,100]
+#     -> peak 1; [0,50) with two of no length inside at 10 and 20 -> peak 2, no step below 0.
 #  I. 400s: slow/groups min=-1, group=bogus, top=0, tz with ';', db of 129 characters; slow/events value with
 #     null=1, bucket=10, failed=2; stmttrend without queryid or shape, both, queryid=x, shape=XYZ; jobs/timeline
 #     scheduler alone, scheduler=cron, a job on the fleet.
+#
+#  J. [review fold, written before the rerun; imported after D-I so their counts stand]
+#     J1 one more SQL Server event of shape K on S, sp_statement_completed (5.9 s, OK, Sales): the default (calls)
+#        still counts S total 3; events=all counts 4.
+#     J2 a second SQL Server instance S2 with two calls, program_name '' and 'x': group=app on S2 gives the groups
+#        '' and 'x', 1 each; the drill blank=1 matches 1 (not the Total's 2); value=x matches 1.
+#     J3 group=hour, tz=America/Los_Angeles, on S: every label ends 'UTC-8' (PST on this date); totals groups on P's
+#        app grouping (one NULL group) = 1.
+#     J4 the jobs, imported again on S with two more jobs: 'long' running since T-5 min (its state read now) -> one
+#        run, outcome running, end_time NULL; 'dup' running since T-20 min with its finished step 0 row at T-20 min
+#        (succeeded, 60 s) -> one run of 'dup', succeeded. On P a pg_cron run 6 running since T-30 min whose row was
+#        last read 1 h ago -> outcome 'unknown', end_time = that read.
+#     J5 the API's own threshold: slow/groups instance=P without min -> total 1 (x only: y's 0.6 s are under 1 s).
 #
 # Not proven here: a real SQL Server capture or Agent history (see above); the pages in a browser (the slice's
 # report has the shots); pg_cron or pgAgent themselves (not installed on the sandbox).
@@ -275,11 +291,52 @@ for path, p, want in [
 sys.exit(1 if bad else 0)
 PY
 
+echo "--- J. the review fold's cases"
+q "select pgvigil.import_mssql_xe($S, now(), \$j\$[$(ev 1499 5900000 OK Sales | sed 's/"rpc_completed"/"sp_statement_completed"/; s/"sst-1499"/"sst-stmt"/')]\$j\$::jsonb)" >/dev/null
+S2=$(q "select pgvigil.ensure_instance('proof-sst-mssql2-$SUF', 'onprem', '16.0', 160000, false, '{}', 'sqlserver')")
+q "select pgvigil.import_mssql_xe($S2, now(), \$j\$[$(ev 1100 2000000 OK Sales | sed 's/"program_name":"erp-app"/"program_name":""/; s/"sst-1100"/"sst2-a"/'),$(ev 1000 2000000 OK Sales | sed 's/"program_name":"erp-app"/"program_name":"x"/; s/"sst-1000"/"sst2-b"/')]\$j\$::jsonb)" >/dev/null
+JL=0c000000-0000-0000-0000-000000000001; JD=0c000000-0000-0000-0000-000000000002
+MJS="$MJ,{\"kind\":\"job\",\"job_id\":\"$JL\",\"name\":\"long\",\"enabled\":1,\"running_since_utc\":\"$(ts $((T - 300)))\",\"running_after_step\":1},{\"kind\":\"job\",\"job_id\":\"$JD\",\"name\":\"dup\",\"enabled\":1,\"running_since_utc\":\"$(ts $((T - 1200)))\"}"
+q "select pgvigil.import_mssql_jobs($S, now(), \$j\$[$MJS,{\"kind\":\"run\",\"history_id\":31,\"job_id\":\"$JD\",\"job_name\":\"dup\",\"step_id\":0,\"step_name\":\"(Job outcome)\",\"run_status\":1,\"duration_s\":60,\"run_utc\":\"$(ts $((T - 1200)))\",\"message\":\"m31\"},{\"kind\":\"read\",\"cursor\":false}]\$j\$::jsonb)" >/dev/null
+[ "$(q "select count(*) from pgvigil.mssql_jobs where instance_id=$S and running_since is not null")" = 2 ] || fail "J4: the running jobs were not stored"
+q "select pgvigil.import_jobs($P, now(), \$j\$[$JOB$(run 6 30 '' running)]\$j\$::jsonb)" >/dev/null
+q "update pgvigil.job_runs set snapshot_at = now() - interval '1 hour' where instance_id=$P and run_id=6" >/dev/null
+export S2
+python3 -I - <<'PY' || fail "the review fold's API checks (above)"
+import json, os, sys, urllib.parse, urllib.request
+E = os.environ; bad = []
+def get(path, **p):
+    p.setdefault('from', E['FROM']); p.setdefault('to', E['TO'])
+    with urllib.request.urlopen(E['API'] + path + '?' + urllib.parse.urlencode(p)) as r: return json.load(r)
+def rows(t): return [dict(zip(t['columns'], r)) for r in t['rows']] if t else []
+def check(name, got, want):
+    ok = got == want
+    print(('ok   ' if ok else 'FAIL ') + f'{name}: {got!r}' + ('' if ok else f' (want {want!r})'))
+    if not ok: bad.append(name)
+P, S, S2 = int(E['P']), int(E['S']), int(E['S2'])
+d = get('slow/groups', instance=S, min=500); check('J1 calls', rows(d['totals'])[0]['total'], 3)
+d = get('slow/groups', instance=S, min=500, events='all'); check('J1 all', rows(d['totals'])[0]['total'], 4)
+d = get('slow/groups', instance=S2, min=500, group='app'); check('J2 groups', sorted((r['value'], r['total']) for r in rows(d['groups'])), [('', 1), ('x', 1)])
+d = get('slow/events', instance=S2, min=500, group='app', blank=1); check('J2 blank', rows(d['meta'])[0]['matched'], 1)
+d = get('slow/events', instance=S2, min=500, group='app', value='x'); check('J2 x', rows(d['meta'])[0]['matched'], 1)
+d = get('slow/groups', instance=S, min=500, group='hour', tz='America/Los_Angeles'); check('J3 hour', {r['value'].split(' ')[-1] for r in rows(d['groups'])}, {'UTC-8'})
+d = get('slow/groups', instance=P, min=500, group='app'); check('J3 groups with NULL', rows(d['totals'])[0]['groups'], 1)
+r = rows(get('jobs/timeline', instance=S)['runs'])
+check('J4 long', [(x['outcome'], x['end_time']) for x in r if x['job'] == 'long'], [('running', None)])
+check('J4 dup', [x['outcome'] for x in r if x['job'] == 'dup'], ['succeeded'])
+r = rows(get('jobs/timeline', instance=P)['runs'])
+six = [x for x in r if x['run_id'] == '6']
+check('J4 stale', [(x['outcome'], x['end_time'] is not None) for x in six], [('unknown', True)])
+d = get('slow/groups', instance=P); check('J5 default threshold', rows(d['totals'])[0]['total'], 1)
+sys.exit(1 if bad else 0)
+PY
+
 echo "--- H. the page's running-at-once arithmetic (jobs_timeline.ts, under node)"
 [ -x web/node_modules/.bin/esbuild ] || fail "H: web/node_modules is missing (npm ci in web/)"
 web/node_modules/.bin/esbuild web/src/jobs_timeline.ts --bundle --format=esm --platform=neutral --log-level=error --outfile="$WORK/tl.mjs" || fail "H: the bundle"
 got=$(node -e "import('$WORK/tl.mjs').then(m => { const p = r => m.atOnce(r.map(([s, e]) => ({ s, e }))).peak;
-  console.log([p([[0, 10], [5, 15], [20, 30]]), p([[0, 10], [10, 20]]), p([[3, 4]]), p([])].join(',')); })")
-[ "$got" = "2,1,1,0" ] || fail "H peaks: $got"
+  const low = m.atOnce([[0, 50], [10, 10], [20, 20]].map(([s, e]) => ({ s, e }))).steps.some(([, n]) => n < 0);
+  console.log([p([[0, 10], [5, 15], [20, 30]]), p([[0, 10], [10, 20]]), p([[3, 4]]), p([]), p([[100, 100]]), p([[0, 50], [10, 10], [20, 20]]), low].join(',')); })")
+[ "$got" = "2,1,1,0,1,2,false" ] || fail "H peaks: $got"
 echo "H ok: $got"
 echo "PASS: proof-stmt-slow-timeline ($WIRED)"

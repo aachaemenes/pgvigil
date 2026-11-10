@@ -28,11 +28,18 @@ const open = new WeakMap<HTMLTableRowElement, HTMLTableRowElement>();
 export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
   const box = el('div', { class: 'trend' });
   try {
-    const p: Record<string, string | number | undefined> = { instance: k.instance, ...window_(ctx) };
+    const w = window_(ctx);
+    const p: Record<string, string | number | undefined> = { instance: k.instance, ...w };
     if (k.queryid != null) { p.queryid = String(k.queryid); if (k.db) p.db = String(k.db); }
     else { p.shape = String(k.shape); if (k.min) p.min = k.min; }
     const d = await get<Record<'meta' | 'trend', Table | null>>('stmttrend', p);
-    const rows = rowsOf(d.trend), meta = rowsOf(d.meta)[0] ?? {};
+    const meta = rowsOf(d.meta)[0] ?? {};
+    // every interval of the window gets a row: one with nothing has zero counts and no times, so the chart shows a
+    // quiet interval as zero (or a gap) instead of joining the points either side of it
+    const step = Number(meta.secs ?? 60) * 1000, got = new Map(rowsOf(d.trend).map(r => [new Date(String(r.snapshot_at)).getTime(), r]));
+    const zero: Row = k.queryid != null ? { calls: 0, rows: 0, total_ms: 0, log_events: 0 } : { events: 0, failed: 0 };
+    const rows: Row[] = [];
+    for (let t = new Date(w.from).getTime(); t < new Date(w.to).getTime(); t += step) rows.push(got.get(t) ?? { snapshot_at: new Date(t).toISOString(), ...zero });
     // a series with no value in the window is left out (PostgreSQL's log has no rows, CPU or failures)
     const some = (ss: { key: string; label: string }[]) => ss.filter(x => rows.some(r => r[x.key] != null && Number(r[x.key]) !== 0));
     const every = `every ${fmtNum(Number(meta.secs ?? 60) / 60)} min`;
@@ -55,7 +62,7 @@ export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
       : [{ key: 'snapshot_at', label: 'from' }, { key: 'events', num: true }, { key: 'failed', num: true },
          { key: 'mean_ms', label: 'mean', num: true, fmt: msCell }, { key: 'max_ms', label: 'longest', num: true, fmt: msCell },
          { key: 'rows', num: true }, { key: 'mean_cpu_ms', label: 'mean CPU', num: true, fmt: msCell }];
-    box.append(el('details', {}, el('summary', {}, 'The numbers as a table'), grid(rows, cols, 'Nothing in this window.')));
+    box.append(el('details', {}, el('summary', {}, 'The numbers as a table'), grid(rows.filter(r => Number(r.calls ?? r.events ?? 0) > 0), cols, 'Nothing in this window.')));
   } catch (e) {
     box.append(errorBox(e));
   }

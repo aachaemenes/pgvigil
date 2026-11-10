@@ -19,10 +19,15 @@ counts every event of the filter.
 
 - **Group By**: Instance, Database Name, App, Username, Client (without the port PostgreSQL logs), Event Type
   (`server log` or `CloudWatch` for PostgreSQL; the event name for SQL Server), Object Name, Result, Session ID,
-  Text (the statement's shape: its text without literals), Time - Hour, Time - Day (in the browser's time zone) and
-  Engine. DBA Dash's Time - Custom is the page's own range.
+  Text (the statement's shape: its text without literals), Time - Hour, Time - Day (in the browser's time zone; an
+  hour carries its UTC offset, so the hour a clock goes back is two rows) and Engine. A value that is an empty
+  string (a SQL Server client that sends no application name) is its own row, `(empty)`, apart from `(none)`. DBA Dash's Time - Custom is the page's own range.
 - **Database**: the databases with slow events in the range, each with its count; one picked cuts the grid to it.
-- **Top**: 20, 50, 100 or 500 groups, the most events first.
+- **Top**: 20, 50, 100 or 500 groups, the most events first (Time - Hour and Time - Day in time order).
+- **Events**: `calls` (the default) counts SQL Server's rpc and batch completions only; `calls and their statements`
+  adds the statement events (`sql_statement_completed`, `sp_statement_completed`). With the capture's statement
+  events on, one slow procedure call is stored as the call and as its slow statements, so counting both would count
+  its time twice.
 - The page's **Threshold** (100 ms to 1 min, or all logged) applies to the grid too.
 
 Every count is a button: it lists the events of that cell below the grid, the longest first (at most 500, with the
@@ -35,7 +40,8 @@ client, application, result, session and the statement.
   application the activity sampler saw for the same pid while the statement ran, marked `(sampled)`; an event no
   sample caught shows none. Grouped by App, the PostgreSQL events fall in one `(none)` row.
 - Under a tag folder of the fleet, Group By Instance keeps the folder's instances; the other groupings and the All
-  row count the whole fleet, and the page says so.
+  row count the whole fleet, and the page says so. A drilled cell then lists only the folder's instances, and its
+  heading gives both counts (the fleet's, and the folder's listed).
 
 ## A statement's history
 
@@ -50,8 +56,9 @@ minutes; **Hide history** closes it.
 
 `pg_stat_statements` keeps no maximum per interval: the longest run of a Statements row is the longest event of the
 same shape the server log recorded in that interval, so an interval with nothing over `log_min_duration_statement`
-has none. A reset of the statistics between two reads leaves that interval out. The same numbers are in a table
-under the charts.
+has none. A delta is placed at the middle of the period it covers. A reset of the statistics between two reads
+leaves that interval out. An interval with nothing in it is drawn as zero (or as a gap for the times), never as a
+line joining its neighbours. The intervals that had something are in a table under the charts.
 
 ## The jobs timeline
 
@@ -59,30 +66,36 @@ under the charts.
 every run that overlaps the range:
 
 - one row per job (the fleet: grouped under each instance), its runs as bars from start to end: green succeeded,
-  red failed, amber cancelled or retried, blue still running (drawn to now);
+  red failed, amber cancelled or retried, blue still running (drawn to now), grey unknown: a run with no end that no
+  read has seen in the last 15 minutes (the collection stopped) is drawn up to the last time it was seen, never left
+  open;
 - a red count beside a job with failed runs;
 - a **Running at once** lane at the top: how many runs went on at each moment, with its **peak** (two runs back to
   back are not at once);
 - a **time cursor**: point at the drawing (or focus it and use the arrow keys) and it says the time and how many
   jobs were running then;
-- an **Outcome** filter (failed, succeeded, running, cancelled or retry) and a job name filter;
+- an **Outcome** filter (failed, succeeded, running, or cancelled, retry or unknown) and a job name filter;
 - on an instance, a job's name cuts the timeline to that job; a SQL Server job then shows its steps as their own
   rows ("1 : step one", "2 : step two" in red when it failed). pg_cron has no steps, and pgAgent's step log is not
   kept per run (the failed step is on the run);
 - the same runs, and the steps, as tables under the drawing.
 
 A SQL Server run's start is msdb's `run_date` and `run_time` as the collector reads them; its end is the start plus
-the duration. A run that started up to a day before the range and was still going in it is drawn from the range's
-start. At most 5,000 runs are drawn (the newest); the page says when there were more.
+the duration; a run the Agent still reports running is not drawn a second time once its finished row is stored. A
+run that started up to 7 days before the range and was still going in it is drawn from the range's start; one that
+started earlier is not drawn. At most 5,000 runs are drawn (the newest); the page says when there were more.
 
 ## API
 
 | Route | Parameters | Parts |
 |---|---|---|
-| `GET /api/slow/groups` | `instance` (none = the fleet), `from`, `to`, `min` (ms), `db`, `group`, `tz`, `top` | `groups`, `totals`, `dbs` |
-| `GET /api/slow/events` | the same, and `value` (or `null=1`; neither = every group), `bucket` (0-9), `failed=1` | `events`, `meta` |
+| `GET /api/slow/groups` | `instance` (none = the fleet), `from`, `to`, `min` (ms, default 1000), `db`, `group`, `tz`, `top`, `events` (`calls` or `all`) | `groups`, `totals`, `dbs` |
+| `GET /api/slow/events` | the same, and `value` (or `blank=1` for the empty string, or `null=1`; none = every group), `bucket` (0-9), `failed=1` | `events`, `meta` |
 | `GET /api/stmttrend` | `instance`, `from`, `to`, and `queryid` (with `db`) or `shape` (with `min`) | `meta`, `trend` |
 | `GET /api/jobs/timeline` | `instance` (none = the fleet), `from`, `to`, and on an instance `scheduler` with `job` | `runs`, `meta`, `steps` (SQL Server) |
+
+The Statements grid's History button and the Jobs timeline's place in the Jobs folder come with the shell's
+wiring (the routes, the tab and the column).
 
 The SQL lives in migration `0076_slow_events.sql`: the view `pgvigil.slow_events_all` (both engines in one shape),
 `pgvigil.slow_bucket(ms)`, `pgvigil.stmt_trend(...)` and `pgvigil.slow_trend(...)`. It adds no table and no column.

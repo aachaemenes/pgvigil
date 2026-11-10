@@ -217,7 +217,11 @@ export interface SlowGroupsOpts {
 // slowGroupsPanel: the grid and its drill; its own state (group, database, top) lives in the panel, not the hash.
 export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
   const fleet = !ctx.instance;
-  let group = fleet ? 'instance' : 'database', db = '', top = 20;
+  let group = fleet ? 'instance' : 'database', db = '', top = 20, events_ = 'calls';
+  // a reply that arrives after a newer request was sent is dropped (a quick change of Group By, two count clicks)
+  let drawSeq = 0, drillSeq = 0;
+  // the window is taken once per drawing, so a count and its drill read the same window
+  let win = window_(ctx);
   const tz = tzOf(), ms = thresholdOf(ctx);
   const box = el('div', { class: 'slow-groups' });
   const body = el('div'), drill = el('div', { 'aria-live': 'polite' });
@@ -227,19 +231,23 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
     s.addEventListener('change', () => on(s.value));
     return el('label', {}, label + ' ', s);
   };
-  const base = () => ({ instance: ctx.instance, ...window_(ctx), min: ms, tz, group, db: db || undefined });
+  const base = () => ({ instance: ctx.instance, ...win, min: ms, tz, group, db: db || undefined, events: events_ });
   const noneLabel = () => group === 'app' ? '(none: the PostgreSQL log names no application)' : '(none)';
+  const valueLabel = (v: unknown) => v == null ? noneLabel() : v === '' ? '(empty)' : String(v);
 
   async function events(r: Row | null, bucket?: number, failed = false) {
-    const what = (r ? (r.value == null ? noneLabel() : String(r.value)) : 'every group')
+    const what = (r ? valueLabel(r.value) : 'every group')
       + (bucket != null ? `, ${slowBuckets[bucket]}` : '') + (failed ? ', failed' : '');
+    const seq = ++drillSeq, gseq = drawSeq;
     drill.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     try {
       const p: Record<string, string | number | undefined> = { ...base() };
-      if (r) { if (r.value == null) p.null = 1; else p.value = String(r.value); }
+      // the query string cannot carry an empty value (get() drops it): the empty-string group is blank=1
+      if (r) { if (r.value == null) p.null = 1; else if (r.value === '') p.blank = 1; else p.value = String(r.value); }
       if (bucket != null) p.bucket = bucket;
       if (failed) p.failed = 1;
       const d = await get<Record<'events' | 'meta', Table | null>>('slow/events', p);
+      if (seq !== drillSeq || gseq !== drawSeq) return;
       const rows = rowsOf(d.events), m = rowsOf(d.meta)[0] ?? {};
       const cols: Col[] = [
         ...(fleet ? [{ key: 'instance', fmt: (v: unknown, x: Row) => o.instLink ? o.instLink(String(v), x.instance_id) : String(v ?? '') } as Col] : []),
@@ -254,27 +262,33 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
         trendCol(ctx, x => x.shape_key == null ? null : { instance: Number(x.instance_id), shape: x.shape_key, min: ms, label: String(x.statement ?? '').slice(0, 60) }),
       ];
       const shown = o.keep ? rows.filter(o.keep) : rows;
-      drill.replaceChildren(el('h4', {}, `Events: ${what} (${fmtNum(m.matched ?? 0)}${Number(m.matched) > Number(m.shown) ? ', the longest ' + fmtNum(m.shown) + ' listed' : ''})`),
-        grid(shown, cols, 'No event in this cell.'));
+      const counted = `${fmtNum(m.matched ?? 0)}${Number(m.matched) > Number(m.shown) ? ', the longest ' + fmtNum(m.shown) + ' read' : ''}`;
+      // under a tag folder the cell counts the fleet; the list keeps the folder's instances
+      const note = o.keep ? ` (${counted} in the fleet; ${fmtNum(shown.length)} of this folder's instances listed)` : ` (${counted})`;
+      drill.replaceChildren(el('h4', {}, `Events: ${what}${note}`), grid(shown, cols, 'No event of this folder\'s instances in this cell.'));
     } catch (e) {
-      drill.replaceChildren(errorBox(e));
+      if (seq === drillSeq) drill.replaceChildren(errorBox(e));
     }
   }
 
   // a count as a button that fills the events grid (an empty cell stays empty, as in DBA Dash)
   const countBtn = (n: unknown, r: Row | null, bucket?: number, failed = false, crit = false) => {
     if (!Number(n)) return '';
-    const b = el('button', { type: 'button', class: 'link' }, fmtNum(n));
+    const name = `${fmtNum(n)} ${failed ? 'failed ' : ''}events, ${r ? valueLabel(r.value) : 'all groups'}${bucket != null ? ', ' + slowBuckets[bucket] : ''}: list them`;
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': name }, fmtNum(n));
     if (crit) b.style.color = 'var(--crit)';
     b.addEventListener('click', () => { void events(r, bucket, failed); });
     return b;
   };
 
   async function draw() {
+    const seq = ++drawSeq;
+    win = window_(ctx);
     body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     drill.replaceChildren();
     try {
       const d = await get<Record<'groups' | 'totals' | 'dbs', Table | null>>('slow/groups', { ...base(), top: o.keep ? 500 : top });
+      if (seq !== drawSeq) return;
       let rows = rowsOf(d.groups);
       // under a tag folder an instance group is kept when it is one of the folder's (other groups mix instances)
       if (o.keep && group === 'instance') rows = rows.filter(o.keep).slice(0, top);
@@ -283,7 +297,7 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
       const dbs = rowsOf(d.dbs).map(r => [String(r.database), `${String(r.database)} (${fmtNum(r.events)})`] as [string, string]);
       const valueCol: Col = {
         key: 'value', label: slowGroupBy.find(g => g[0] === group)?.[1] ?? group, wide: group === 'text',
-        fmt: (v, r) => v == null ? noneLabel()
+        fmt: (v, r) => v == null || v === '' ? valueLabel(v)
           : group === 'text' ? sqlCell(r.example)
           : group === 'instance' && o.instLink && r.instance_id != null ? o.instLink(String(v), r.instance_id) : String(v),
       };
@@ -309,19 +323,21 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
         el('div', { class: 'toolbar' },
           select('Group By', slowGroupBy, group, v => { group = v; void draw(); }),
           select('Database', [['', 'all databases'], ...dbs], db, v => { db = v; void draw(); }),
-          select('Top', topChoices.map(n => [String(n), String(n)] as [string, string]), String(top), v => { top = Number(v); void draw(); })),
+          select('Top', topChoices.map(n => [String(n), String(n)] as [string, string]), String(top), v => { top = Number(v); void draw(); }),
+          select('Events', [['calls', 'calls (DBA Dash)'], ['all', 'calls and their statements']], events_, v => { events_ = v; void draw(); })),
         o.keep ? el('p', { class: 'meta' }, group === 'instance' ? 'Under a tag folder the grid keeps the folder\'s instances; the All row counts the whole fleet.'
           : 'Under a tag folder only Group By Instance keeps the folder\'s instances: this grouping and the All row count the whole fleet.') : '',
         grid(rows, cols, 'No slow event in this window.'),
         Number(tot.total) ? grid([totalRow], totCols) : '');
     } catch (e) {
-      body.replaceChildren(errorBox(e));
+      if (seq === drawSeq) body.replaceChildren(errorBox(e));
     }
   }
   box.append(el('h3', {}, 'Group by ', whatIsThis('Both engines: the PostgreSQL server log (a statement that finished; the log names no application, '
     + 'so a drilled event shows the application the activity sampler saw for its pid during the run, marked sampled) and the SQL Server slow '
     + 'capture (rpc, batch and statement completions with CPU, reads, writes, rows and the result). Every count opens its events below, '
-    + 'the longest first. Failed: a SQL Server result other than OK (Error, Abort).', 'Slow queries by group')), body, drill);
+    + 'the longest first. Failed: a SQL Server result other than OK (Error, Abort). Events: SQL Server stores a slow procedure call and, '
+    + 'with the statement events on, its slow statements too; calls (the default) counts each call once, as DBA Dash does.', 'Slow queries by group')), body, drill);
   void draw();
   return box;
 }
