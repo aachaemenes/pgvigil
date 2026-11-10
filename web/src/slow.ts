@@ -6,12 +6,18 @@
 // root the fleet's shapes and the slow time per instance. Data from /api/slowqueries. The shell mounts
 // slowView(ctx) on the instance tab and slowFleetView(ctx, keep, instLink) on the root (the lead wires them).
 // The threshold rides in the hash as ms= (read and written here; the router does not carry it).
+// Parity2 task 121 (DBA Dash 04, 16, 81; Darling 13.8 shot 92): a History button under each shape opens its trend
+// (stmt_trend.ts), and slowGroupsPanel is DBA Dash's Slow Queries grid over both engines (/api/slow/groups and
+// /api/slow/events): a free Group By, a database filter, ten duration buckets, Failed and the totals, every count a
+// button that lists its events (time, client, application, user, database, duration, result) below. Both pages here
+// carry it; the SQL Server Slow queries tab (mssql_xe.ts) gets it through the lead's wiring.
 import { planLink } from './plan';
 import { slowCols } from './borrowed';
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
-import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
-import { whatIsThis } from './sqlview';
+import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { sqlCell, whatIsThis } from './sqlview';
+import { trendCol } from './stmt_trend';
 
 type Parts = 'meta' | 'sources' | 'totals' | 'histogram' | 'top' | 'recent' | 'sampled' | 'instances';
 
@@ -81,7 +87,9 @@ function topCols(ctx: Ctx, lead: 'count' | 'total', fleet: boolean, instLink?: (
     { key: 'queryid', label: 'statement', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'statements', instance: Number(r.instance_id), tag: undefined }) },
       v == null ? 'Statements tab' : 'queryid ' + String(v)) },
     { key: 'example', label: 'slowest example', wide: true, fmt: clip },
-    { key: 'shape_key', label: 'plan', fmt: (v, r) => planLink(Number(r.instance_id), { shape: v, stmt: r.example, db: String(r.databases ?? '').split(', ')[0] }) }];
+    { key: 'shape_key', label: 'plan', fmt: (v, r) => planLink(Number(r.instance_id), { shape: v, stmt: r.example, db: String(r.databases ?? '').split(', ')[0] }) },
+    trendCol(ctx, r => r.shape_key == null || r.instance_id == null ? null
+      : { instance: Number(r.instance_id), shape: r.shape_key, min: thresholdOf(ctx), label: String(r.example ?? '').slice(0, 60) })];
   if (fleet) cols.unshift({ key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') });
   return cols;
 }
@@ -132,6 +140,7 @@ export async function slowView(ctx: Ctx): Promise<HTMLElement> {
     tile('total time', msTxt(tot.total_ms) || '0 ms'),
     tile('longest', msTxt(tot.max_ms) || '-'),
     tile('long runs sampled', fmtNum(sampled.length))));
+  sec.append(slowGroupsPanel(ctx));
   sec.append(el('h3', {}, 'Log readers'), fed.length ? grid(fed, sourceCols(false))
     : el('p', { class: 'empty' }, 'No log reader has run on this instance: RDS and Aurora need an aws: block (the logs collection); '
       + 'on-prem the serverlog collection needs logging_collector on and a read door (its last run names what is missing).'));
@@ -165,6 +174,7 @@ export async function slowFleetView(ctx: Ctx, keep?: (r: Row) => boolean, instLi
     tile('instances with slow statements', fmtNum(insts.length)),
     tile('readers skipped or failing', fmtNum(skipped), skipped ? 'warn' : 'ok'),
     tile('instances without a log reader', fmtNum(unread))));
+  sec.append(slowGroupsPanel(ctx, { keep, instLink }));
   sec.append(el('h3', {}, 'Per instance'), grid(insts, [
     { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') }, { key: 'platform' },
     { key: 'statements', label: 'count', num: true }, { key: 'total_ms', label: 'total time', num: true, fmt: msTxt },
@@ -183,4 +193,151 @@ export async function slowFleetView(ctx: Ctx, keep?: (r: Row) => boolean, instLi
   ]),
   grid(src, sourceCols(true, instLink), 'No instance.'));
   return sec;
+}
+
+// ---- DBA Dash's Slow Queries grid: Group By, the database filter, the buckets and the events behind a count ------
+
+// the buckets as DBA Dash names them (pgvigil.slow_bucket, 0076)
+export const slowBuckets = ['<5 sec', '5-10 sec', '10-20 sec', '20-30 sec', '30-60 sec', '1-5 min', '5-10 min', '10-30 min', '30-60 min', '1hr+'];
+// the Group By choices (DBA Dash 04a's menu; Time - Custom is the page's own range)
+export const slowGroupBy: [string, string][] = [
+  ['instance', 'Instance'], ['database', 'Database Name'], ['app', 'App'], ['user', 'Username'], ['client', 'Client'],
+  ['event_type', 'Event Type'], ['object', 'Object Name'], ['result', 'Result'], ['session', 'Session ID'], ['text', 'Text'],
+  ['hour', 'Time - Hour'], ['day', 'Time - Day'], ['engine', 'Engine'],
+];
+const topChoices = [20, 50, 100, 500];
+const secs = (v: unknown) => v == null || v === '' ? '' : fmtNum(v);
+const resultBadge = (v: unknown) => v == null ? '' : badge(String(v), v === 'OK' ? 'ok' : 'crit');
+
+export interface SlowGroupsOpts {
+  keep?: (r: Row) => boolean;                          // a tag folder: only these instances (the fleet root)
+  instLink?: (name: string, id: unknown) => Node;      // an instance name as a link to its tab
+}
+
+// slowGroupsPanel: the grid and its drill; its own state (group, database, top) lives in the panel, not the hash.
+export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
+  const fleet = !ctx.instance;
+  let group = fleet ? 'instance' : 'database', db = '', top = 20, events_ = 'calls';
+  // a reply that arrives after a newer request was sent is dropped (a quick change of Group By, two count clicks)
+  let drawSeq = 0, drillSeq = 0;
+  // the window is taken once per drawing, so a count and its drill read the same window
+  let win = window_(ctx);
+  const tz = tzOf(), ms = thresholdOf(ctx);
+  const box = el('div', { class: 'slow-groups' });
+  const body = el('div'), drill = el('div', { 'aria-live': 'polite' });
+  const select = (label: string, choices: [string, string][], cur: string, on: (v: string) => void) => {
+    const s = el('select', { 'aria-label': label });
+    for (const [v, l] of choices) { const op = el('option', { value: v }, l); if (v === cur) op.selected = true; s.append(op); }
+    s.addEventListener('change', () => on(s.value));
+    return el('label', {}, label + ' ', s);
+  };
+  const base = () => ({ instance: ctx.instance, ...win, min: ms, tz, group, db: db || undefined, events: events_ });
+  const noneLabel = () => group === 'app' ? '(none: the PostgreSQL log names no application)' : '(none)';
+  const valueLabel = (v: unknown) => v == null ? noneLabel() : v === '' ? '(empty)' : String(v);
+
+  async function events(r: Row | null, bucket?: number, failed = false) {
+    const what = (r ? valueLabel(r.value) : 'every group')
+      + (bucket != null ? `, ${slowBuckets[bucket]}` : '') + (failed ? ', failed' : '');
+    const seq = ++drillSeq, gseq = drawSeq;
+    drill.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
+    try {
+      const p: Record<string, string | number | undefined> = { ...base() };
+      // the query string cannot carry an empty value (get() drops it): the empty-string group is blank=1
+      if (r) { if (r.value == null) p.null = 1; else if (r.value === '') p.blank = 1; else p.value = String(r.value); }
+      if (bucket != null) p.bucket = bucket;
+      if (failed) p.failed = 1;
+      const d = await get<Record<'events' | 'meta', Table | null>>('slow/events', p);
+      if (seq !== drillSeq || gseq !== drawSeq) return;
+      const rows = rowsOf(d.events), m = rowsOf(d.meta)[0] ?? {};
+      const cols: Col[] = [
+        ...(fleet ? [{ key: 'instance', fmt: (v: unknown, x: Row) => o.instLink ? o.instLink(String(v), x.instance_id) : String(v ?? '') } as Col] : []),
+        { key: 'database_name', label: 'database' }, { key: 'event_type', label: 'event type' }, { key: 'object_name', label: 'object' },
+        { key: 'at', label: 'time', fmt: fmtTime }, { key: 'duration_ms', label: 'duration', num: true, fmt: msTxt },
+        { key: 'cpu_ms', label: 'CPU', num: true, fmt: msTxt }, { key: 'logical_reads', label: 'logical reads', num: true },
+        { key: 'physical_reads', label: 'physical reads', num: true }, { key: 'writes', num: true }, { key: 'row_count', label: 'rows', num: true },
+        { key: 'user_name', label: 'user' }, { key: 'client' },
+        { key: 'application', label: 'app', fmt: (v, x) => v == null ? '' : x.application_from === 'sample' ? `${String(v)} (sampled)` : String(v) },
+        { key: 'result', fmt: resultBadge }, { key: 'session_id', label: 'session', num: true },
+        { key: 'statement', fmt: v => sqlCell(v) },
+        trendCol(ctx, x => x.shape_key == null ? null : { instance: Number(x.instance_id), shape: x.shape_key, min: ms, label: String(x.statement ?? '').slice(0, 60) }),
+      ];
+      const shown = o.keep ? rows.filter(o.keep) : rows;
+      const counted = `${fmtNum(m.matched ?? 0)}${Number(m.matched) > Number(m.shown) ? ', the longest ' + fmtNum(m.shown) + ' read' : ''}`;
+      // under a tag folder the cell counts the fleet; the list keeps the folder's instances
+      const note = o.keep ? ` (${counted} in the fleet; ${fmtNum(shown.length)} of this folder's instances listed)` : ` (${counted})`;
+      drill.replaceChildren(el('h4', {}, `Events: ${what}${note}`), grid(shown, cols, 'No event of this folder\'s instances in this cell.'));
+    } catch (e) {
+      if (seq === drillSeq) drill.replaceChildren(errorBox(e));
+    }
+  }
+
+  // a count as a button that fills the events grid (an empty cell stays empty, as in DBA Dash)
+  const countBtn = (n: unknown, r: Row | null, bucket?: number, failed = false, crit = false) => {
+    if (!Number(n)) return '';
+    const name = `${fmtNum(n)} ${failed ? 'failed ' : ''}events, ${r ? valueLabel(r.value) : 'all groups'}${bucket != null ? ', ' + slowBuckets[bucket] : ''}: list them`;
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': name }, fmtNum(n));
+    if (crit) b.style.color = 'var(--crit)';
+    b.addEventListener('click', () => { void events(r, bucket, failed); });
+    return b;
+  };
+
+  async function draw() {
+    const seq = ++drawSeq;
+    win = window_(ctx);
+    body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
+    drill.replaceChildren();
+    try {
+      const d = await get<Record<'groups' | 'totals' | 'dbs', Table | null>>('slow/groups', { ...base(), top: o.keep ? 500 : top });
+      if (seq !== drawSeq) return;
+      let rows = rowsOf(d.groups);
+      // under a tag folder an instance group is kept when it is one of the folder's (other groups mix instances)
+      if (o.keep && group === 'instance') rows = rows.filter(o.keep).slice(0, top);
+      else if (o.keep) rows = rows.slice(0, top);
+      const tot = rowsOf(d.totals)[0] ?? {};
+      const dbs = rowsOf(d.dbs).map(r => [String(r.database), `${String(r.database)} (${fmtNum(r.events)})`] as [string, string]);
+      const valueCol: Col = {
+        key: 'value', label: slowGroupBy.find(g => g[0] === group)?.[1] ?? group, wide: group === 'text',
+        fmt: (v, r) => v == null || v === '' ? valueLabel(v)
+          : group === 'text' ? sqlCell(r.example)
+          : group === 'instance' && o.instLink && r.instance_id != null ? o.instLink(String(v), r.instance_id) : String(v),
+      };
+      const cols: Col[] = [valueCol,
+        ...slowBuckets.map((l, i) => ({ key: 'b' + i, label: l, num: true, fmt: (v: unknown, r: Row) => countBtn(v, r, i) } as Col)),
+        { key: 'total', label: 'Total', num: true, fmt: (v, r) => countBtn(v, r) },
+        { key: 'failed', label: 'Failed', num: true, fmt: (v, r) => countBtn(v, r, undefined, true, true) },
+        { key: 'total_duration_s', label: 'Total Duration (sec)', num: true, fmt: secs },
+        { key: 'total_cpu_s', label: 'Total CPU (sec)', num: true, fmt: secs },
+        { key: 'logical_reads', label: 'Logical reads', num: true }, { key: 'physical_reads', label: 'Physical reads', num: true },
+        { key: 'writes', label: 'Writes', num: true },
+      ];
+      if (group === 'text') cols.push(trendCol(ctx, r => r.instance_id == null || r.value == null ? null
+        : { instance: Number(r.instance_id), shape: r.value, min: ms, label: String(r.example ?? '').slice(0, 60) }));
+      const totalRow: Row = { ...tot, value: 'All' };
+      const totCols: Col[] = [{ key: 'value', label: '' },
+        ...slowBuckets.map((l, i) => ({ key: 'b' + i, label: l, num: true, fmt: (v: unknown) => countBtn(v, null, i) } as Col)),
+        { key: 'total', label: 'Total', num: true, fmt: v => countBtn(v, null) },
+        { key: 'failed', label: 'Failed', num: true, fmt: v => countBtn(v, null, undefined, true, true) },
+        { key: 'total_duration_s', label: 'Total Duration (sec)', num: true, fmt: secs }, { key: 'total_cpu_s', label: 'Total CPU (sec)', num: true, fmt: secs },
+        { key: 'groups', label: 'groups', num: true }];
+      body.replaceChildren(
+        el('div', { class: 'toolbar' },
+          select('Group By', slowGroupBy, group, v => { group = v; void draw(); }),
+          select('Database', [['', 'all databases'], ...dbs], db, v => { db = v; void draw(); }),
+          select('Top', topChoices.map(n => [String(n), String(n)] as [string, string]), String(top), v => { top = Number(v); void draw(); }),
+          select('Events', [['calls', 'calls (DBA Dash)'], ['all', 'calls and their statements']], events_, v => { events_ = v; void draw(); })),
+        o.keep ? el('p', { class: 'meta' }, group === 'instance' ? 'Under a tag folder the grid keeps the folder\'s instances; the All row counts the whole fleet.'
+          : 'Under a tag folder only Group By Instance keeps the folder\'s instances: this grouping and the All row count the whole fleet.') : '',
+        grid(rows, cols, 'No slow event in this window.'),
+        Number(tot.total) ? grid([totalRow], totCols) : '');
+    } catch (e) {
+      if (seq === drawSeq) body.replaceChildren(errorBox(e));
+    }
+  }
+  box.append(el('h3', {}, 'Group by ', whatIsThis('Both engines: the PostgreSQL server log (a statement that finished; the log names no application, '
+    + 'so a drilled event shows the application the activity sampler saw for its pid during the run, marked sampled) and the SQL Server slow '
+    + 'capture (rpc, batch and statement completions with CPU, reads, writes, rows and the result). Every count opens its events below, '
+    + 'the longest first. Failed: a SQL Server result other than OK (Error, Abort). Events: SQL Server stores a slow procedure call and, '
+    + 'with the statement events on, its slow statements too; calls (the default) counts each call once, as DBA Dash does.', 'Slow queries by group')), body, drill);
+  void draw();
+  return box;
 }
