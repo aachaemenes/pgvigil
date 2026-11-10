@@ -38,10 +38,15 @@ export function seriesColors(): string[] {
 }
 export const neutralColor = () => getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#868e96';
 const colorAt = (p: string[], i: number) => i < p.length ? p[i] : neutralColor();
+// a #rrggbb colour at an alpha, for a stacked band's fill (any other form is returned as it is)
+const withAlpha = (c: string, a: number) => /^#[0-9a-f]{6}$/i.test(c)
+  ? `rgba(${parseInt(c.slice(1, 3), 16)}, ${parseInt(c.slice(3, 5), 16)}, ${parseInt(c.slice(5, 7), 16)}, ${a})` : c;
 
 // lineChart draws one chart of the named series over snapshot_at.
+// stacked: the series are running totals (the caller sums them), drawn as filled bands from zero, each down to the
+// one below it (uPlot's bands), so a band's height is that series' share and the top line is the total
 export function lineChart(title: string, rows: Row[], series: { key: string; label: string }[],
-                          fmt: (v: number) => string = v => v.toLocaleString()): HTMLElement {
+                          fmt: (v: number) => string = v => v.toLocaleString(), o: { stacked?: boolean } = {}): HTMLElement {
   const box = el('div', { class: 'chart' }, el('h3', {}, title));
   if (rows.length < 2) { box.append(el('p', { class: 'empty' }, 'Not enough snapshots in this window.')); return box; }
   const xs = rows.map(r => new Date(String(r.snapshot_at)).getTime() / 1000);
@@ -55,10 +60,12 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   const palette = seriesColors();
   const opts: uPlot.Options = {
     width: 560, height: 220,
-    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: 2,
+    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: o.stacked ? 1 : 2,
+                                            fill: o.stacked ? withAlpha(colorAt(palette, i), 0.45) : undefined,
                                             value: (_u: uPlot, v: number | null) => v == null ? '' : fmt(v) }))],
+    bands: o.stacked ? series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : undefined,
     axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis }],
-    scales: { x: { time: true } },
+    scales: { x: { time: true }, ...(o.stacked ? { y: { range: (_u: uPlot, _min: number, max: number): uPlot.Range.MinMax => [0, max > 0 ? max * 1.05 : 1] } } : {}) },
   };
   // size to the container once it is in the page
   requestAnimationFrame(() => {

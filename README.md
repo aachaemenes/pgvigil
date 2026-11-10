@@ -8,11 +8,15 @@ Status: phase 3 in progress; wave A merged 2026-11-09 (host and disk, storage, v
 
 ## Screenshots
 
-The demo fleet (`pgvigil demo`): the Summary grid, one row per instance and a coloured cell per check group (collection, activity, replication, jobs, DMS, tables, vacuum, deadlocks and checksums, host, disk, storage, IO, and the version against the release table); an instance's running queries with the blocking chain to its head; the DMS tab with the drain readout.
+The demo fleet (`pgvigil demo`): the Summary (the checks counted over the fleet on top, one row per instance below, colour only where a check is not OK); the Performance summary, one row per server on both engines; a SQL Server instance's running queries with the blocking chain to its head; an Agent job's failed step message, history and definition change; the DMS tab with the drain readout.
 
 ![Summary grid](docs/img/summary.png)
 
+![Performance summary: one row per server](docs/img/performance-summary.png)
+
 ![Running queries with a blocking chain](docs/img/running-queries.png)
+
+![Agent jobs: the failed step's message, the history and the changes](docs/img/jobs.png)
 
 ![DMS tasks with the drain readout](docs/img/dms.png)
 

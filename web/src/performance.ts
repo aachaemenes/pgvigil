@@ -83,7 +83,7 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     box.append(titled(lineChart('Requests', align(g, rowsOf(d.sessions), ['requests', 'blocked', 'sessions']),
       [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions', to('mssql_running')));
     const w = pivotWaits(g, rowsOf(d.waits));
-    box.append(titled(lineChart('Waits', w.rows, w.series, ms_s), 'Waits by category (ms of wait per second, stacked)', to('mssql_waits')));
+    box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), 'Waits by category (ms of wait per second, stacked)', to('mssql_waits')));
     box.append(el('div', { class: 'chart' }, el('h3', {}, 'Transactions and IO'), el('p', { class: 'empty' }, 'not read: not collected on SQL Server yet')));
   } else {
     const cpu = rowsOf(d.cpu);
@@ -95,7 +95,7 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
       [{ key: 'active', label: 'active' }, { key: 'idle_in_txn', label: 'idle in transaction' }, { key: 'waiting_lock', label: 'waiting on a lock' }]), 'Sessions by state', to('counters', { kind: 'sessions' })));
     const wr = rowsOf(d.waits), w = pivotWaits(g, wr);
     const src = wr.length && wr[0].source === 'activity' ? ' - from the activity samples' : '';
-    box.append(titled(lineChart('Waits', w.rows, w.series, ms_s), `Waits by class (ms of wait per second, stacked${src})`, to('waits')));
+    box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), `Waits by class (ms of wait per second, stacked${src})`, to('waits')));
     box.append(titled(lineChart('Transactions', align(g, rowsOf(d.db), ['commits_s', 'rollbacks_s']),
       [{ key: 'commits_s', label: 'commits/s' }, { key: 'rollbacks_s', label: 'rollbacks/s' }]), 'Transactions per second', to('counters', { kind: 'db' })));
     const io = align(g, rowsOf(d.io), ['read_ms', 'write_ms', 'read_mb_s', 'write_mb_s', 'cw_read_ms', 'cw_write_ms', 'cw_read_mb_s', 'cw_write_mb_s']);

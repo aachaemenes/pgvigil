@@ -36,14 +36,17 @@ function strip(runs: Row[]): HTMLElement {
   if (rs.length < 2) return el('p', { class: 'empty' }, 'Too few runs in this range for a duration strip.');
   const W = 640, H = 60, max = Math.max(...rs.map(r => Number(r.duration_s))) || 1;
   const bw = Math.max(1, Math.min(12, W / rs.length - 1));
+  const step = Math.min(W / rs.length, bw + 4);   // a few runs sit together like a sparkline, never spread over the width
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', `0 0 ${W} ${H + 10}`);
+  // its own size, never larger (with only a viewBox it stretched to the page: twice the scale, bars 140 px tall)
+  svg.setAttribute('width', String(W)); svg.setAttribute('height', String(H + 10)); svg.setAttribute('style', 'max-width:100%;height:auto');
   svg.setAttribute('class', 'jobstrip');
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', `durations of ${rs.length} runs, longest ${dur(max)}`);
   rs.forEach((r, i) => {
-    const h = Math.max(1, Number(r.duration_s) / max * H), x = i * (W / rs.length);
+    const h = Math.max(1, Number(r.duration_s) / max * H), x = i * step;
     const bad = r.outcome === 'failed' || r.outcome === 'cancelled';
     const b = document.createElementNS(ns, 'rect');
     b.setAttribute('x', String(x)); b.setAttribute('y', String(H + 10 - h)); b.setAttribute('width', String(bw)); b.setAttribute('height', String(h));
