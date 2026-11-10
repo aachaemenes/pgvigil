@@ -12,11 +12,13 @@
 #                         fetched with gh into the share once)
 #   PGVIGIL_DBADASH_KEEP  1 keeps the DBADash repository database and the login (default: both dropped at the end)
 # Nothing that exists before the run is touched: the DBADash database, the login and the pgvigil database are this run's
-# own (random suffix); in the guest the DBADash folder C:\pgv-dbadash is the proof's and its service runs as a console
-# process for SVC_SECS seconds, never installed as a Windows service.
+# own (random suffix); in the guest the DBADash folder C:\pgv-dbadash is the proof's (kept for re-runs, its service config
+# removed) and its service runs as a console process for SVC_SECS seconds, never installed as a Windows service; only a
+# process started from that folder is ever stopped (another DBADash install in the guest is left alone).
 #
 # Expected (written before the first run):
-#  A. the guest: DBADashConfig SetDestination and Add print "Complete"; the console service creates DBADash_pgv<suf> and
+#  A. the guest: DBADashConfig SetDestination and Add print "Complete"; after the console run the service config (with sa's
+#     password) is removed and no file under C:\pgv-dbadash holds that password; the console service creates DBADash_pgv<suf> and
 #     collects WINSANDBOX: dbo.Instances holds 1 active row (Instance = the guest's @@SERVERNAME), dbo.DBVersionHistory
 #     a version starting 4.24.
 #  B. the login pgv_ddro_<suf> gets SELECT on dbo.Instances, dbo.Summary, dbo.CollectionDates and dbo.DBVersionHistory
@@ -31,9 +33,10 @@
 #     critical count equals the count of 1s in the procedure's row.
 #  E. a status change: as sa, dbo.Summary's DriveStatus set to 1 (Critical) on the sandbox's own cache; a second read;
 #     dbadash_changes() over the last 10 minutes returns exactly one row: Drive Space, was OK, now Critical; the history
-#     holds 2 rows for the instance.
-#  F. the folder: dbadash_repositories() lists sandbox ok, refused and unreachable 'not read' with their reasons; a read
-#     with a configuration that drops 'unreachable' leaves 2 rows (it leaves the tree).
+#     holds 2 rows for the instance (the first read and the change). A third read with nothing changed adds none (F).
+#  F. the folder: dbadash_repositories() stores sandbox ok, refused and unreachable 'not read' with their reasons ('Login
+#     failed', 'connection refused'); a read with a configuration that drops 'unreachable' leaves 2 rows (it leaves the tree)
+#     and, nothing having changed, the history still holds 2 rows.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.local/share/mise/shims:$PATH"
@@ -76,7 +79,7 @@ $dst = 'C:\pgv-dbadash'
 $pw = (Get-Content "$share\sa.txt" -Raw).Trim()
 if (-not (Test-Path "$dst\DBADashService.exe")) { Expand-Archive "$share\$Zip" $dst -Force; 'ok   unzipped' }
 Set-Location $dst
-Get-Process DBADashService -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process DBADashService -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dst\DBADashService.exe" } | Stop-Process -Force
 $a = & .\DBADashConfig.exe -a SetDestination -c "Data Source=mssql-sandbox,1433;Initial Catalog=$Db;User ID=sa;Password=$pw;Encrypt=True;Trust Server Certificate=True" 2>&1 | Out-String
 if ($a -notmatch 'Complete') { "FAIL SetDestination: $a"; exit 1 }
 $b = & .\DBADashConfig.exe -a Add -c 'Data Source=localhost;Integrated Security=True;Encrypt=True;Trust Server Certificate=True' --Replace 2>&1 | Out-String
@@ -88,6 +91,11 @@ Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 "ok   the DBADash service ran $RunSeconds s as a console process"
 $errs = @(Select-String -Path "$dst\svc.out" -Pattern '\[ERR\]|\[FTL\]' | Select-Object -First 5)
 foreach ($e in $errs) { "note $($e.Line)" }
+# the destination connection string (sa's password) lives in the service's config and its backups: removed, then checked
+Get-ChildItem $dst -Recurse -File -Filter '*ServiceConfig*' -ErrorAction SilentlyContinue | Remove-Item -Force
+$left = @(Get-ChildItem $dst -Recurse -File -Include *.json, *.out, *.err, *.txt, *.log -ErrorAction SilentlyContinue | Select-String -SimpleMatch -Pattern $pw -List)
+if ($left.Count) { "FAIL the sa password is still in $($left[0].Path)"; exit 1 }
+'ok   the service config removed; no file under the folder holds the sa password'
 PS1
 out=$(ssh winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File \\\\host.lan\\Data\\pgv-dbadash\\proof-dbadash.ps1 -Db $DDB -Zip $ZIPNAME -RunSeconds $SVC_SECS" 2>&1 | tr -d '\r' | grep -E '^(ok|FAIL|note)' || true)
 echo "$out"
@@ -107,6 +115,8 @@ w2=$(sqro "EXEC dbo.Summary_Upd")
 echo "$w1" | grep -qi 'permission was denied' || fail "the read-only login could INSERT into dbo.Settings: $w1"
 echo "$w2" | grep -qi 'permission was denied' || fail "the read-only login could EXEC dbo.Summary_Upd: $w2"
 sq "EXEC dbo.Summary_Get @ForceRefresh = 1" "$DDB" >/dev/null
+# this run's own repository: the cache is kept a day, so D's un-forced dbo.Summary_Get returns the same cache, never a refresh
+sq "UPDATE dbo.Settings SET SettingValue = '86400' WHERE SettingName = 'SummaryCacheDurationSec'" "$DDB" >/dev/null
 ns=$(sq "SELECT COUNT(*) FROM dbo.Summary" "$DDB")
 [[ "$ns" == 1 ]] || fail "dbo.Summary holds $ns row(s) after the refresh (want 1)"
 echo "ok   B: $RO reads only (INSERT and EXEC dbo.Summary_Upd refused); dbo.Summary_Get @ForceRefresh = 1 as sa: 1 row"
@@ -155,6 +165,8 @@ for l in open(sys.argv[2]).read().splitlines():
     stored[i] = (json.loads(st), ref)
 words = {"1":"Critical","2":"Warning","3":"N/A","4":"OK","5":"Acknowledged","6":"Warning (low)","7":"Information","8":"Disabled"}
 bad = []
+if not rows: bad.append("no SQL Server row in dbo.Summary_Get's output")
+if set(r["InstanceID"] for r in rows) != set(stored): bad.append(f"instances: procedure {sorted(r['InstanceID'] for r in rows)}, stored {sorted(stored)}")
 for r in rows:
     i = r["InstanceID"]
     if i not in stored: bad.append(f"instance {i}: no stored row"); continue
@@ -182,12 +194,17 @@ nh=$(pq "SELECT count(*) FROM pgvigil.dbadash_summary_history WHERE repository =
 echo "ok   E: dbadash_changes: Drive Space was OK, now Critical; 2 history rows"
 
 echo "== F. the folders: 'not read' with the reason; a repository dropped from the configuration leaves the tree =="
-pq "SELECT repository || ' | ' || status || ' | ' || coalesce(reason, '') FROM pgvigil.dbadash_repositories()"
+st=$(pq "SELECT repository || ' | ' || status || ' | ' || coalesce(reason, '') FROM pgvigil.dbadash_repositories()"); echo "$st"
+echo "$st" | grep -qE '^refused \| not read \| .*Login failed' || fail "the stored reason of 'refused' lacks 'Login failed'"
+echo "$st" | grep -qE '^unreachable \| not read \| .*connection refused' || fail "the stored reason of 'unreachable' lacks 'connection refused'"
+echo "$st" | grep -qE '^sandbox \| ok \| $' || fail "sandbox is not stored ok"
 head -n 7 "$WORK/pgvigil.yaml" > "$WORK/two.yaml"
 live "$WORK/two.yaml" >/dev/null
 nr=$(pq "SELECT string_agg(repository || ':' || status, ',' ORDER BY repository) FROM pgvigil.dbadash_repositories()")
 [[ "$nr" == "refused:not read,sandbox:ok" ]] || fail "after dropping 'unreachable': $nr"
-echo "ok   F: after the configuration dropped 'unreachable': $nr"
+nh=$(pq "SELECT count(*) FROM pgvigil.dbadash_summary_history WHERE repository = 'sandbox'")
+[[ "$nh" == 2 ]] || fail "an unchanged read added history: $nh rows (want 2)"
+echo "ok   F: stored reasons checked; after the configuration dropped 'unreachable': $nr; an unchanged read added no history"
 
 echo "Not proven here: the 5-minute loop (dbadash.Run) under 'pgvigil run' and the tree and page in a browser (both are wired"
 echo "into the lead's files at the wave's join); Azure SQL Database rows of a DBADash repository (IsAzure = 1: left out by the"

@@ -11,7 +11,8 @@
 --   dbadash_repositories     one row per configured repository: the last read, ok or 'not read' with the reason.
 --   dbadash_instances        one current row per DBADash instance (is_present false once DBADash no longer lists it).
 --   dbadash_summary          one current row per instance: the status codes (DBADash's numbers) and the detail values.
---   dbadash_summary_history  every read's row, kept under the retention (purge() deletes by snapshot_at: the join).
+--   dbadash_summary_history  the change points: an instance's first read and every read whose statuses changed, kept
+--                            under the retention (purge() deletes by snapshot_at: the wave's join re-creates purge()).
 -- A status code is DBADash's own (DBADashStatusEnum): 1 Critical, 2 Warning, 3 N/A, 4 OK, 5 Acknowledged, 6 Warning
 -- (low), 7 Information, 8 Disabled.
 --
@@ -28,7 +29,7 @@
 --   dbadash_fleet(repository)            every present instance (one repository or all), its worst status and counts.
 --   dbadash_instance(repository, id)     one instance's facts.
 --   dbadash_statuses(repository, id)     one instance's Summary: a row per status, DBADash's header, code, word, detail.
---   dbadash_changes(repository, id, f, t) the reads of the window where a status changed, with the old and new code.
+--   dbadash_changes(repository, id, f, t) the status changes of the window, with the old and new code.
 
 CREATE TABLE IF NOT EXISTS pgvigil.dbadash_repositories (
   repository      text PRIMARY KEY,
@@ -117,7 +118,7 @@ BEGIN
   INSERT INTO pgvigil.dbadash_repositories AS r (repository, is_configured, status, reason, read_at, ok_at, version, refreshed_at, instance_count)
   VALUES (p_repository, true, CASE WHEN v_ok THEN 'ok' ELSE 'not read' END, nullif(p_payload->>'reason', ''), p_snapshot_at,
           CASE WHEN v_ok THEN p_snapshot_at END, p_payload->>'version', (p_payload->>'refreshed_at')::timestamptz,
-          CASE WHEN v_ok THEN jsonb_array_length(coalesce(p_payload->'instances', '[]')) END)
+          CASE WHEN v_ok THEN CASE WHEN jsonb_typeof(p_payload->'instances') = 'array' THEN jsonb_array_length(p_payload->'instances') ELSE 0 END END)
   ON CONFLICT (repository) DO UPDATE SET
     is_configured = true, status = EXCLUDED.status, reason = EXCLUDED.reason, read_at = EXCLUDED.read_at,
     ok_at = coalesce(EXCLUDED.ok_at, r.ok_at),
@@ -125,7 +126,7 @@ BEGIN
     refreshed_at = CASE WHEN v_ok THEN EXCLUDED.refreshed_at ELSE r.refreshed_at END,
     instance_count = CASE WHEN v_ok THEN EXCLUDED.instance_count ELSE r.instance_count END;
 
-  IF NOT v_ok THEN
+  IF NOT v_ok OR jsonb_typeof(p_payload->'instances') IS DISTINCT FROM 'array' THEN
     RETURN;   -- the last rows stay as they were; the repository row says when and why the read failed
   END IF;
 
@@ -158,10 +159,15 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload->'instances') x
                       WHERE (x->>'instance_id')::int = s.instance_id AND jsonb_typeof(x->'statuses') = 'object');
 
+  -- the history keeps change points only: an instance's first read, and a read whose statuses differ from its newest
+  -- history row (288 identical rows a day per instance would say nothing dbadash_changes() needs)
   INSERT INTO pgvigil.dbadash_summary_history (repository, instance_id, snapshot_at, refreshed_at, statuses, details)
   SELECT p_repository, (x->>'instance_id')::int, p_snapshot_at, (x->>'refreshed_at')::timestamptz, x->'statuses', coalesce(x->'details', '{}')
     FROM jsonb_array_elements(p_payload->'instances') x
    WHERE jsonb_typeof(x->'statuses') = 'object'
+     AND (SELECT h.statuses FROM pgvigil.dbadash_summary_history h
+           WHERE h.repository = p_repository AND h.instance_id = (x->>'instance_id')::int
+           ORDER BY h.snapshot_at DESC LIMIT 1) IS DISTINCT FROM x->'statuses'
   ON CONFLICT DO NOTHING;
 END $$;
 

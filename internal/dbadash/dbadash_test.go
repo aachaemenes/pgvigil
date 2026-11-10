@@ -25,7 +25,7 @@ func TestConfigDBADash(t *testing.T) {
   - name: corp
     dsn: env:DBADASH_DSN
   - name: lab
-    dsn: "sqlserver://reader@sql1:1433?database=DBADashDB&fedauth=ActiveDirectoryDefault"
+    dsn: "sqlserver://reader@sql1:1433?database=DBADashDB"
     interval: 2m
 `)
 	if err != nil {
@@ -48,6 +48,10 @@ func TestConfigDBADash(t *testing.T) {
 		"inline ADO password": "dbadash:\n  - name: a\n    dsn: \"server=s;user id=u;Password=p\"\n",
 		"inline pwd":          "dbadash:\n  - name: a\n    dsn: \"server=s;uid=u;PWD=p\"\n",
 		"inline URL password": "dbadash:\n  - name: a\n    dsn: \"sqlserver://u:p@s:1433?database=D\"\n",
+		"spaced ADO password": "dbadash:\n  - name: a\n    dsn: \"server=h;user id=u;password = p\"\n",
+		"spaced PWD":          "dbadash:\n  - name: a\n    dsn: \"Server=h;Uid=u; PWD =p\"\n",
+		"URL query password":  "dbadash:\n  - name: a\n    dsn: \"sqlserver://u@h:1433?database=D&password=p\"\n",
+		"odbc password":       "dbadash:\n  - name: a\n    dsn: \"odbc:server=h;uid=u;Pwd=p\"\n",
 		"twice":               "dbadash:\n  - name: a\n    dsn: env:X\n  - name: A\n    dsn: env:Y\n",
 		"no name":             "dbadash:\n  - dsn: env:X\n",
 		"no dsn":              "dbadash:\n  - name: a\n",

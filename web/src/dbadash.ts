@@ -21,6 +21,14 @@ interface DBADashInstance { instance: Table | null; statuses: Table | null; chan
 // two alarm levels; N/A, Acknowledged, Information and Disabled are shown muted; OK green.
 export const words: Record<number, string> = { 1: 'Critical', 2: 'Warning', 3: 'N/A', 4: 'OK', 5: 'Acknowledged', 6: 'Warning (low)', 7: 'Information', 8: 'Disabled' };
 export const codeClass = (c: unknown) => c === 1 ? 'crit' : c === 2 || c === 6 ? 'warn' : c === 4 ? 'ok' : 'none';
+export const levelWords = ['OK', 'Warning', 'Critical'];
+// ldot: the status dot with its word for a screen reader as well as the eye (the level is never colour alone)
+function ldot(level: number, word: string): HTMLElement {
+  const d = dot(level, word);
+  d.setAttribute('role', 'img');
+  d.setAttribute('aria-label', word);
+  return d;
+}
 export const codeLevel = (c: unknown): 0 | 1 | 2 => c === 1 ? 2 : c === 2 || c === 6 ? 1 : 0;
 const num = (v: unknown) => v == null ? undefined : Number(v);
 
@@ -62,7 +70,7 @@ const repoState = (r: Row) => r.status === 'ok'
 // the fleet grid: one row per instance, one cell per DBADash status in DBADash's column order
 function fleetGrid(ctx: Ctx, rows: Row[], checks: Row[]): HTMLElement {
   const cols: Col[] = [
-    { key: 'level', label: '', fmt: v => dot(Number(v ?? 0)) },
+    { key: 'level', label: 'level', fmt: v => ldot(Number(v ?? 0), levelWords[Number(v ?? 0)]) },
     { key: 'display_name', label: 'instance', fmt: (v, r) => el('a', { href: dbadashHref(ctx, String(r.repository), r.instance_id) }, String(v)) },
     { key: 'repository' },
     { key: 'last_collection', label: 'last collection', fmt: v => v == null ? 'never' : fmtTime(v) },
@@ -175,7 +183,7 @@ async function instanceView(ctx: Ctx, repo: string, id: number): Promise<HTMLEle
 
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* private window */ } }
-const shut = new Set<string>(JSON.parse(lsGet('pgvigil.dbadashShut') ?? '[]') as string[]);
+const shut = new Set<string>((() => { try { return JSON.parse(lsGet('pgvigil.dbadashShut') ?? '[]') as string[]; } catch { return []; } })());
 
 // dbadashFolders: one folder per configured repository, "DBADash: <name> (n)", a status dot rolled up from its
 // instances, a node per SQL Server instance; a repository not read shows 'not read' and the reason under it. redraw is
@@ -201,7 +209,7 @@ export function dbadashFolders(ctx: Ctx, redraw: () => void, filter = ''): HTMLE
     caret.addEventListener('click', () => { if (shut.has(key)) shut.delete(key); else shut.add(key); lsSet('pgvigil.dbadashShut', JSON.stringify([...shut])); redraw(); });
     const lvl = all.reduce<0 | 1 | 2>((a, f) => Math.max(a, Number(f.level ?? 0)) as 0 | 1 | 2, 0);
     const label = el('a', { class: 'folder-name' + (curRepo === name && !curId ? ' on' : ''), href: dbadashHref(ctx, name), title: repoState(r) }, `DBADash: ${name} (${all.length})`);
-    const box = el('div', { class: 'folder' }, el('div', { class: 'folder-head' }, caret, dot(r.status === 'ok' ? lvl : 1, r.status === 'ok' ? '' : 'not read'), label));
+    const box = el('div', { class: 'folder' }, el('div', { class: 'folder-head' }, caret, ldot(r.status === 'ok' ? lvl : 1, r.status === 'ok' ? levelWords[lvl] : 'not read'), label));
     if (!closed) {
       const ul = el('div', { class: 'folder-items' });
       if (r.status !== 'ok') ul.append(el('p', { class: 'error', style: 'padding:.1rem .4rem', role: 'status' }, `not read: ${String(r.reason ?? '')}`));
@@ -209,7 +217,7 @@ export function dbadashFolders(ctx: Ctx, redraw: () => void, filter = ''): HTMLE
         const on = curRepo === name && curId === String(f.instance_id);
         ul.append(el('div', { class: 'tree-inst', style: 'display:flex;align-items:center' },
           el('a', { class: 'inst' + (on ? ' on' : ''), style: 'flex:1;min-width:0', href: dbadashHref(ctx, name, f.instance_id), title: `SQL Server ${String(f.instance)}, from DBADash ${name}` },
-            dot(Number(f.level ?? 0)), String(f.display_name))));
+            ldot(Number(f.level ?? 0), levelWords[Number(f.level ?? 0)]), String(f.display_name))));
       }
       if (r.status === 'ok' && all.length === 0) ul.append(el('p', { class: 'empty', style: 'padding:.1rem .4rem' }, 'No active instance in this repository.'));
       box.append(ul);

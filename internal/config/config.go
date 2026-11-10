@@ -105,16 +105,29 @@ func (d DBADashRepo) Every() time.Duration {
 	return d.Interval.Duration
 }
 
-// inlinePassword says whether an inline connection string carries a password (ADO "password=" / "pwd=", or a URL's
-// user:password@).
+// inlinePassword says whether an inline connection string carries a password: a URL's user:password@ or a password /
+// pwd query key, or an ADO or ODBC segment whose key (trimmed, any case: the driver trims it so) is password or pwd.
 func inlinePassword(v string) bool {
-	l := strings.ToLower(v)
-	if strings.Contains(l, "password=") || strings.Contains(l, "pwd=") {
-		return true
-	}
+	l := strings.ToLower(strings.TrimSpace(v))
 	if i := strings.Index(l, "://"); i >= 0 {
 		rest := l[i+3:]
 		if at := strings.IndexByte(rest, '@'); at >= 0 && strings.Contains(rest[:at], ":") {
+			return true
+		}
+		if q := strings.IndexByte(rest, '?'); q >= 0 {
+			for _, kv := range strings.FieldsFunc(rest[q+1:], func(r rune) bool { return r == '&' || r == ';' }) {
+				k, _, _ := strings.Cut(kv, "=")
+				if k = strings.TrimSpace(k); k == "password" || k == "pwd" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	l = strings.TrimPrefix(l, "odbc:")
+	for _, seg := range strings.Split(l, ";") {
+		k, _, ok := strings.Cut(seg, "=")
+		if k = strings.TrimSpace(k); ok && (k == "password" || k == "pwd") {
 			return true
 		}
 	}

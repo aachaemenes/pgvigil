@@ -11,12 +11,12 @@ dbadash:
   - name: corp                 # the tree folder is "DBADash: corp"
     dsn: env:DBADASH_CORP_DSN  # or file:/etc/pgvigil/dbadash-corp.dsn
   - name: lab
-    dsn: "sqlserver://sql-lab01:1433?database=DBADashDB&fedauth=ActiveDirectoryDefault"
+    dsn: "server=sql-lab01;database=DBADashDB;integrated security=sspi"   # Windows authentication, pgvigil on Windows
     interval: 10m              # default 5m, at least 1m
 ```
 
 - `name` is required, unique (case-insensitive), at most 100 characters, without `/`.
-- `dsn` is a [go-mssqldb](https://github.com/microsoft/go-mssqldb) connection string: the URL form `sqlserver://login:password@host:1433?database=DBADashDB&encrypt=true` or the ADO form `server=host;database=DBADashDB;user id=login;password=...`. A string that holds a password must come through `env:NAME` or `file:/path`, never written inline in the file. Inline is fine without a password (Microsoft Entra ID through `fedauth=`, or Windows authentication on a Windows host).
+- `dsn` is a [go-mssqldb](https://github.com/microsoft/go-mssqldb) connection string: the URL form `sqlserver://login:password@host:1433?database=DBADashDB&encrypt=true` or the ADO form `server=host;database=DBADashDB;user id=login;password=...`. A string that holds a password (a `user:password@` URL, or a `password` / `pwd` key in any spelling) must come through `env:NAME` or `file:/path`, never written inline in the file. Inline is fine without a password: Windows authentication when pgvigil runs on Windows. Microsoft Entra ID logins are not supported (they need the driver's separate Azure AD module and an outbound call to Microsoft's login service, which pgvigil does not make).
 - `interval` is how often the repository is read. DBA Dash refreshes its own Summary cache on its own schedule, so a shorter interval than DBA Dash's refresh adds nothing.
 
 Several repositories are allowed; each one is read on its own, so one that does not answer never delays another.
@@ -66,7 +66,7 @@ DBA Dash's GUI is a desktop application with no URL, so these pages name the ins
 
 ## Storage and retention
 
-Migration 0052: `dbadash_repositories` (one row per configured repository: the last read, ok or `not read` with the reason), `dbadash_instances` and `dbadash_summary` (one current row per instance), and `dbadash_summary_history` (every read, kept under the retention: `pgvigil purge` deletes it by age). A read that fails keeps the last rows as they were. A repository removed from the configuration leaves the tree at the next start.
+Migration 0052: `dbadash_repositories` (one row per configured repository: the last read, ok or `not read` with the reason), `dbadash_instances` and `dbadash_summary` (one current row per instance), and `dbadash_summary_history` (the change points: an instance's first read and every read whose statuses changed; kept under the retention: `pgvigil purge` deletes it by age, and an instance DBA Dash no longer lists once it is older than the retention). A read that fails keeps the last rows as they were. A repository removed from the configuration leaves the tree at the next start.
 
 The API: `GET /api/dbadash` (every repository and instance), `?repo=<name>` (one repository), `?repo=<name>&id=<DBA Dash InstanceID>&from=..&to=..` (one instance and the changes of the window). It reads 0052's functions only.
 
