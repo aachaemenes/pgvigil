@@ -252,10 +252,13 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 mkdir -p "$SHOTS"
 SID=$(P -c "select instance_id from pgvigil.versions_fleet where instance = 'demo-rds-orders01'")
+# the Waits dashboard is shot on an instance that has wait-sampling rows (the demo installs pg_wait_sampling on its on-prem
+# primaries alone): its Wait events over time panel reads waits_over_time, which is empty elsewhere by design
+WSID=$(P -c "select min(instance_id) from pgvigil.wait_sample"); [[ -n "$WSID" ]] || WSID=$SID
 for f in $DASH/*.json; do
-  uid=$(jq -r .uid "$f"); slug=$(basename "$f" .json)
+  uid=$(jq -r .uid "$f"); slug=$(basename "$f" .json); sid=$SID; [[ "$slug" == 12-waits ]] && sid=$WSID
   want=$(jq '[.panels[] | select(.type != "row")] | length' "$f")
-  r=$(timeout 90 node "$WORK/shot.mjs" "$CDP" "$SHOTS/$slug.png" "$G/d/$uid?orgId=1&from=now-7d&to=now&var-instance=$SID&kiosk") || fail "screenshot $slug: the capture failed"
+  r=$(timeout 90 node "$WORK/shot.mjs" "$CDP" "$SHOTS/$slug.png" "$G/d/$uid?orgId=1&from=now-7d&to=now&var-instance=$sid&kiosk") || fail "screenshot $slug: the capture failed"
   # 'No data' only where the demo instance has nothing to show: an RDS instance has no host disks (Counters and IO's two
   # host panels) and no job is running (Jobs' 'Running now')
   case "$slug" in 05-counters-io) nd=2;; 07-jobs) nd=1;; *) nd=0;; esac

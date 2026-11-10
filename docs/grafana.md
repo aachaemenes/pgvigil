@@ -34,7 +34,7 @@ The panels read only the repository's views and read functions (`pgvigil.finding
 
 The query text Grafana shows is the text the collector stored, after the `query_text` policy was applied (`full`, `normalized` or `none`). A site that stores no text sees query ids and no text, in Grafana as in the UI.
 
-Two gaps, named here so nobody looks for them: the repository has no read view for the wait samples over time or for the session counts over time (the UI reads those tables itself). The Waits dashboard therefore shows the waits now and the waits of the range's long statements, and the session panels count connections from `pg_stat_database`.
+Two views exist for Grafana alone (migration 0051; the UI reads the tables behind them itself): `pgvigil.sessions_over_time` (every activity sample's session counts by state, the longest active and idle-in-transaction seconds, the oldest xmin age) behind the Instance overview's Sessions by state over time, and `pgvigil.waits_over_time` (the wait-sampling extension's samples per sample time and event type, the Activity type and idle connections left out, with the average sessions waiting during the sample) behind the Waits dashboard's Wait events over time. An instance without pg_wait_sampling (or Azure's pgms_wait_sampling) has no row in the second: that panel stays empty for it, while the UI's Waits tab falls back to the activity samples; the dashboard's other panels read the activity snapshots and the range's long statements, which every instance has.
 
 ## 1. A reader login for Grafana
 

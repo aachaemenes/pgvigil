@@ -179,6 +179,11 @@ SELECT snapshot_at AS time,
 d.ts("Temp files and deadlocks", f"""
 SELECT snapshot_at AS time, sum(temp_files) AS temp_files, sum(deadlocks) AS deadlocks
   FROM {RATE_DB} WHERE interval_secs > 0 GROUP BY snapshot_at HAVING NOT bool_or(reset) ORDER BY 1""")
+d.ts("Sessions by state over time", f"""
+SELECT snapshot_at AS time, active, idle, idle_in_txn, idle_in_txn_aborted
+  FROM pgvigil.sessions_over_time WHERE instance_id = {I} AND snapshot_at > {TF} AND snapshot_at <= {TT} ORDER BY 1""",
+     w=24, h=7, stack=True,
+     desc="Every session of the instance by state at each activity sample (a minute apart); the sessions waiting on a lock are counted under Running queries and blocking.")
 d.table("Findings", f"""
 SELECT f.severity, f.source, f.setting AS "check", f.value, f.detail, f.suggested, f.at
   FROM pgvigil.findings f WHERE f.instance_id = {I} ORDER BY {SEV_ORDER}, f.source, f.setting""", h=12)
@@ -468,6 +473,11 @@ SELECT snapshot_at, top_blocker, level, pid, blocked_by::text AS blocked_by, blo
 d.table("Long statements of the range with their top wait", f"""
 SELECT first_seen, at_least_secs, pid, state, top_wait, was_blocked, was_blocker, datname, usename, query
   FROM pgvigil.slow_in_window({I}, {TF}, {TT}, 5, 100) ORDER BY at_least_secs DESC""", h=10)
+d.ts("Wait events over time", f"""
+SELECT snapshot_at AS time, event_type AS metric, sessions AS value
+  FROM pgvigil.waits_over_time WHERE instance_id = {I} AND snapshot_at > {TF} AND snapshot_at <= {TT} ORDER BY 1, 2""",
+     w=24, h=7, stack=True,
+     desc="pg_wait_sampling's (or pgms_wait_sampling's) samples: the average sessions waiting on each event type during each sample, the Activity type and idle connections left out. Empty where the extension is not installed; the UI's Waits tab falls back to the activity samples there.")
 d.ts("Deadlocks and recovery conflicts", f"""
 SELECT snapshot_at AS time, sum(deadlocks) AS deadlocks, sum(conflicts) AS conflicts
   FROM {RATE_DB} WHERE interval_secs > 0 GROUP BY snapshot_at HAVING NOT bool_or(reset) ORDER BY 1""", w=24, h=6, bars=True)
