@@ -35,7 +35,7 @@ export async function mssqlConfigView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'value_in_use', label: 'in use', fmt: num },
     // a dynamic option waits for RECONFIGURE, any other for a restart of the service; a value no longer listed waits for nothing
     { key: 'value', label: 'set', fmt: (v, r) => r.pending === true && r.is_present !== false
-      ? el('span', {}, num(v), ' ', badge(r.is_dynamic === true ? 'needs RECONFIGURE' : 'needs a restart', 'warn')) : num(v) },
+      ? el('span', {}, num(v), ' ', badge(r.is_dynamic === true ? 'needs RECONFIGURE' : r.is_dynamic === false ? 'needs a restart' : 'not in use yet', 'warn')) : num(v) },
     { key: 'minimum', fmt: num }, { key: 'maximum', fmt: num },
     { key: 'is_dynamic', label: 'dynamic', fmt: yn }, { key: 'is_advanced', label: 'advanced', fmt: yn },
     { key: 'is_present', label: 'listed', fmt: v => v === false ? 'no longer' : 'yes' },

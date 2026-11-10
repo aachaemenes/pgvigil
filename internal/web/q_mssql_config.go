@@ -9,8 +9,9 @@ import "net/http"
 const sqlMSSQLConfigValues = `
 SELECT name, value, value_in_use, minimum, maximum, is_dynamic, is_advanced, previous_in_use, changed_at, is_present, snapshot_at,
        value IS DISTINCT FROM value_in_use
-       -- the engine resolves a 0 in 'min server memory (MB)' to its own floor (16 in use on a default 2022 server): not pending
-       AND NOT (name = 'min server memory (MB)' AND value = 0) AS pending
+       -- the engine resolves a 0 in 'min server memory (MB)' to its own floor (16 in use on a default 2022 server): not
+       -- pending; a 0 set over a larger value in use (1024, say) still waits for RECONFIGURE and stays pending
+       AND NOT (name = 'min server memory (MB)' AND value = 0 AND value_in_use <= 16) AS pending
   FROM pgvigil.mssql_config
  WHERE instance_id = $1
  ORDER BY name`

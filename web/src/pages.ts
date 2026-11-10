@@ -433,11 +433,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       return bt;
     },
   });
+  const hidden = (e: HTMLElement) => { e.setAttribute('aria-hidden', 'true'); return e; };
   const testCols: Col[] = [
     // the name carries a small mark of its worst count, never a fill: the count cells beside it hold the colour, so a
     // column of red names does not shout the same thing twice (the calm pass: colour only where a value is out of range)
     { key: 'test', label: 'test',
-      fmt: (v, r) => el('span', { class: 'test-name' }, dot(Number(r._worst), ['OK', 'warning', 'critical'][Number(r._worst)]),
+      fmt: (v, r) => el('span', { class: 'test-name' }, hidden(dot(Number(r._worst))),   // the counts' labels name the status
         el('a', { class: 'cell-link', href: href(ctx, { tab: 'checks' }) }, String(v))) },
     countCol('ok', 'instances OK'), countCol('warn', 'instances warning'), countCol('crit', 'instances critical'), countCol('na', 'instances N/A'),
   ];

@@ -192,8 +192,10 @@ pre.sql, code, .grid td.wide, .mono { font-family: ui-monospace, "SF Mono", SFMo
 #tabs { position: sticky; top: var(--head-h, 2.9rem); z-index: 2; }
 /* under 760 px the header scrolls away (position: static above), so the tab row sticks to the top of the window */
 @media (max-width: 760px) { #tabs { top: 0; } }
-/* a control reached by the keyboard is never left under the sticky header and tab row (WCAG 2.2 2.4.11) */
-html { scroll-padding-top: calc(var(--head-h, 2.9rem) + 3rem); }
+/* a control reached by the keyboard is scrolled clear of the sticky header and tab row (WCAG 2.2 2.4.11): both
+   heights are measured (main.ts), the tab row's wraps included; under 760 px only the tab row sticks */
+html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + .5rem); }
+@media (max-width: 760px) { html { scroll-padding-top: calc(var(--tabs-h, 2.5rem) + .5rem); } }
 .grid td.status.ok .cell-link { color: var(--muted); }
 .u-legend { font-size: 12px; color: var(--muted); } .u-legend th, .u-legend .u-label { font-weight: 400; }
 .chart h3 { font-weight: 500; font-size: .95rem; }
