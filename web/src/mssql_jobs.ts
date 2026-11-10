@@ -107,13 +107,19 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const d = await get<Record<'jobs', Table | null>>('jobs/history', { engine, instance: ctx.instance, ...w });
   const jobs = rowsOf(d.jobs);
   const detail = el('div', { class: 'jobdetail' });
+  // a picked job's history and changes reach back a week at least: a daily job has no run in the default hour, and
+  // DBA Dash's history lists a job's newest runs, not the last hour's; the jobs grid above keeps the page's range
+  const week = 7 * 24 * 3600 * 1000, toMs = Date.parse(w.to);
+  const widened = toMs - Date.parse(w.from) < week;
+  const hw = widened ? { from: new Date(toMs - week).toISOString(), to: w.to } : w;
+  const hLabel = widened ? 'last 7 days' : rangeLabel(ctx);
   const pick = async (j: Row) => {
-    detail.replaceChildren(el('h3', {}, `${String(j.name)}: history (${rangeLabel(ctx)})`), el('p', { class: 'meta' }, 'Reading...'));
+    detail.replaceChildren(el('h3', {}, `${String(j.name)}: history (${hLabel})`), el('p', { class: 'meta' }, 'Reading...'));
     try {
       const x = await get<Record<'runs' | 'counts' | 'changes', Table | null>>('jobs/history',
-        { engine, instance: ctx.instance, ...w, scheduler: String(j.scheduler), job: String(j.job_id), part: undefined });
+        { engine, instance: ctx.instance, ...hw, scheduler: String(j.scheduler), job: String(j.job_id), part: undefined });
       const runs = rowsOf(x.runs), c = rowsOf(x.counts)[0] ?? {};
-      detail.replaceChildren(el('h3', {}, `${String(j.name)}: history (${rangeLabel(ctx)})`),
+      detail.replaceChildren(el('h3', {}, `${String(j.name)}: history (${hLabel})`),
         el('div', { class: 'tiles' },
           tile('succeeded', fmtNum(c.succeeded ?? 0)),
           tile('failed', fmtNum(c.failed ?? 0), Number(c.failed) > 0 ? 'crit' : ''),
@@ -123,8 +129,8 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
         strip(runs),
         Number(c.runs ?? 0) > runs.length ? el('p', { class: 'meta' }, `The newest ${fmtNum(runs.length)} of ${fmtNum(c.runs)} runs; the counts cover all of them.`) : '',
         grid(runs, runCols, 'No run of this job started in this range.'),
-        el('h3', {}, `${String(j.name)}: changes`),
-        changes(rowsOf(x.changes), w.from, w.to));
+        el('h3', {}, `${String(j.name)}: changes`),   // every kept version; one changed in the window opens
+        changes(rowsOf(x.changes), hw.from, hw.to));
     } catch (e) { detail.replaceChildren(errorBox(e)); }
   };
   const cols: Col[] = [
