@@ -1,5 +1,5 @@
 // Accessibility check of the web UI with axe-core over a headless Chromium (CDP): every root tab and every
-// tab of two instances, in the light and the dark theme, against the WCAG 2.1 A and AA rules (Section 508
+// tab of two PostgreSQL instances and of two SQL Server instances, in the light and the dark theme, against the WCAG 2.1 A and AA rules (Section 508
 // points at WCAG 2.0 AA; 2.1 AA covers it). Usage:
 //   node scripts/a11y-check.mjs <cdp port> <base url/> <path to axe.min.js> [<json out>]
 //   chromium --headless=new --remote-debugging-port=<p> about:blank &   pgvigil demo ... -serve -listen 127.0.0.1:<port>
@@ -52,6 +52,16 @@ const instTabs = await tabsOf(`#/summary?i=${onprem.instance_id}`);
 const pages = [...rootTabs];
 for (const t of instTabs) { pages.push(t.replace(/i=\d+/, `i=${onprem.instance_id}`)); pages.push(t.replace(/i=\d+/, `i=${cloud.instance_id}`)); }
 for (const t of instTabs) if (/#\/(load|host|summary)\?/.test(t)) pages.push(t.replace(/i=\d+/, `i=${aurora.instance_id}`));
+// a SQL Server instance has its own tabs: every one of them on the demo's primary (the pair's findings) and on the
+// managed instance (no availability group, no Agent jobs: the empty states)
+const sqlPrimary = pick(r => r.engine === 'sqlserver' && String(r.name).endsWith('sql01')) ?? pick(r => r.engine === 'sqlserver');
+const sqlManaged = pick(r => r.engine === 'sqlserver' && String(r.name).endsWith('sql03'));
+let sqlPages = 0;
+for (const x of [sqlPrimary, sqlManaged]) {
+  if (!x) continue;
+  for (const t of await tabsOf(`#/summary?i=${x.instance_id}`)) { pages.push(t.replace(/i=\d+/, `i=${x.instance_id}`)); sqlPages++; }
+}
+console.log(`SQL Server pages in the check: ${sqlPages}`);
 // the drill pages the tab strip does not list: the Compare page (under Statements) on the instance with regressions
 pages.push(`#/compare?i=${regress.instance_id}&w=7d`);
 // the DBADash door's instance page (the demo's repository and its second instance)

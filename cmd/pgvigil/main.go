@@ -36,6 +36,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/sched"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // version is set by the build (-ldflags "-X main.version=...").
@@ -96,7 +97,13 @@ func run(args []string) int {
 		return 2
 	}
 	if err != nil {
-		log.Error("pgvigil failed", "err", err)
+		// a repository error's DETAIL names what the message does not (the two sides of a deadlock, the failing row)
+		var pg *pgconn.PgError
+		if errors.As(err, &pg) && (pg.Detail != "" || pg.Where != "") {
+			log.Error("pgvigil failed", "err", err, "detail", pg.Detail, "where", pg.Where)
+		} else {
+			log.Error("pgvigil failed", "err", err)
+		}
 		var ec interface{ ExitCode() int }
 		if errors.As(err, &ec) {
 			return ec.ExitCode() // 3: a configuration error, which a service manager must not retry

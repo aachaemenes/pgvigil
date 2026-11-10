@@ -20,8 +20,14 @@ WITH inst AS (
          CASE source WHEN 'mssql_running' THEN 'blocking' WHEN 'mssql_xe' THEN 'events' WHEN 'mssql_hadr' THEN 'availability'
                      WHEN 'mssql_storage' THEN 'storage'
                      WHEN 'mssql_jobs' THEN CASE WHEN setting ILIKE '%backup%' OR value = 'mssql_backups' THEN 'backups' ELSE 'jobs' END END AS key
-    FROM pgvigil.findings
-   WHERE source IN ('mssql_running', 'mssql_xe', 'mssql_hadr', 'mssql_jobs', 'mssql_storage') AND severity IN ('critical', 'warning')
+    -- the five SQL Server findings views themselves, as pgvigil.findings maps them (check_name = setting, object =
+    -- value): a filter on the big view's source still scans every PostgreSQL arm of it
+    FROM (SELECT instance_id, severity, check_name AS setting, object AS value, detail, 'mssql_running' AS source FROM pgvigil.mssql_running_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_xe_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_hadr' FROM pgvigil.mssql_hadr_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_jobs' FROM pgvigil.mssql_jobs_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings) u
+   WHERE severity IN ('critical', 'warning')
 ), started AS (
   SELECT DISTINCT ON (m.instance_id) m.instance_id, m.started_at, m.snapshot_at
     FROM pgvigil.mssql_instance m JOIN inst USING (instance_id)

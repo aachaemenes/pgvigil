@@ -38,6 +38,9 @@
 #     shows a smaller store and no holder row for that session. mssql_pvs lists the closed database (accelerated
 #     database recovery is on there: a database with it keeps its row versions in itself, not in tempdb) with a
 #     size of zero or more.
+#  Y. two instances' imports at the same time, sixty calls each, one writing into a month that exists and the other
+#     opening a new month on every call (no server needed): no call fails (before the fixed lock order in
+#     import_mssql_storage every few calls ended in "deadlock detected"), and sixty rows of each are stored.
 #  W. the version store findings, on imported rows (no server needed): eleven reads a minute apart in which the
 #     store grows, generation runs and cleanup stands at zero raise 'the version store grows while cleanup is at
 #     zero' with the holder's session, age and last statement in the detail; one more read in which cleanup moved
@@ -335,5 +338,18 @@ q "select pgvigil.import_mssql_versionstore($xid, '$XT'::timestamptz + interval 
   || fail "X: an older payload put its per-database rows back: $(q "select (select count(*) from pgvigil.mssql_versionstore_db where instance_id=$xid), (select count(*) from pgvigil.mssql_pvs where instance_id=$xid), (select count(*) from pgvigil.mssql_versionstore_sample where instance_id=$xid)")"
 echo "X: OK"
 
+echo "--- Y. two instances import at once, one of them opening a new month on every call"
+ya=$(q "select pgvigil.ensure_instance('proof-mssql-ya-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+yb=$(q "select pgvigil.ensure_instance('proof-mssql-yb-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+YP='[{"kind":"volume","volume":"/data/","total_bytes":1000,"free_bytes":400,"files":1},{"kind":"file","database_id":5,"database_name":"one","database_state":"ONLINE","file_id":1,"file_name":"one_data","type_desc":"ROWS","size_bytes":100,"used_read":0,"growth_bytes":0,"growth_pct":0,"volume":"/data/"}]'
+YA=$(mktemp); YB=$(mktemp)
+( for k in $(seq 1 60); do echo "select pgvigil.import_mssql_storage($ya, now() + interval '$k seconds', '$YP'::jsonb);"; done | psql "$PGVIGIL_REPO_DSN" -XAtq >"$YA" 2>&1 ) &
+( for k in $(seq 1 60); do echo "select pgvigil.import_mssql_storage($yb, now() + interval '$k months', '$YP'::jsonb);"; done | psql "$PGVIGIL_REPO_DSN" -XAtq >"$YB" 2>&1 ) &
+wait
+YE=$(cat "$YA" "$YB" | grep -c ERROR || true); YD=$(cat "$YA" "$YB" | grep ERROR | sort | uniq -c | head -3 || true); rm -f "$YA" "$YB"
+[ "$YE" = 0 ] || fail "Y: $YE import(s) failed: $YD"
+[ "$(q "select (select count(*) from pgvigil.mssql_volume_sample where instance_id=$ya) || '|' || (select count(*) from pgvigil.mssql_volume_sample where instance_id=$yb) || '|' || (select count(*) from pgvigil.mssql_database_size where instance_id=$yb)")" = "60|60|60" ] || fail "Y: rows stored (want 60|60|60)"
+echo "Y: OK"
+
 echo "NOT PROVEN: Windows volumes, SQL Server 2016-2019, Managed Instance, RDS, thousands of databases, a FILESTREAM container"
-echo "proof-mssql-storage: PASS (A-H, V, W, X)"
+echo "proof-mssql-storage: PASS (A-H, V, W, X, Y)"

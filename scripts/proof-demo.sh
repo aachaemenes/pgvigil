@@ -6,11 +6,13 @@
 #   PGVIGIL_PGBIN      a PostgreSQL bin folder with initdb and pg_ctl for the -pgbin part (default: the
 #                      folder of the initdb on the PATH; none = that part is skipped and says so)
 # N = the seed's grid: 7 days at 5 minutes up to the last hour, then every minute (2,065 points when
-# the anchor is on a 5-minute mark, 2,066 when it is not).
+# the anchor is on a 5-minute mark, 2,066 when it is not), plus the seed's catch-up ticks (one a minute from the
+# anchor to the minute the seed returns: at most five).
 # Expected:
-#   instances    12 tagged demo: onprem 3, rds 2, aurora 3, azure 2, cloudsql 2; the non-demo
+#   instances    15 tagged demo: twelve PostgreSQL (onprem 3, rds 2, aurora 3, azure 2, cloudsql 2) and three SQL
+#                Server (sqlserver 2, azuresqlmi 1); the non-demo
 #                instance seeded before the run is untouched after two runs
-#   activity     N summaries per instance; at the latest snapshot blocking_chains() gives
+#   activity     N summaries per PostgreSQL instance, none on a SQL Server one; at the latest snapshot blocking_chains() gives
 #                onprem-erp01 3 waiters (depth up to 2, active head), rds-orders01 6 (depth up to 2,
 #                head running the report), onprem-hr01 2 (head 'idle in transaction'), every other 0
 #   dbstats      N rows per database (onprem-erp01/02: 3 databases, the others 2) = 26 N
@@ -32,10 +34,10 @@
 #                table keeps its last read: older than its database's read on an odd UTC hour, the same on an
 #                even one); table_checks = exactly the four table rows of the overview
 #   settings     one change each on onprem-erp01 (work_mem) and rds-orders01 (log_min_duration_statement)
-#   rerun        "12 replaced"; no instance_id of the first run is left in any table with an instance_id
+#   rerun        "15 replaced"; no instance_id of the first run is left in any table with an instance_id
 #                column; the same counts; a non-demo instance named like a demo one (prefix trap-) makes
 #                the seed refuse with "exist without the demo tag" and stays as it was
-#   api          without a login: instances 12, overview the rows above, activity chains 3,
+#   api          without a login: instances 15, overview the rows above, activity chains 3,
 #                statements >= 10 rows over 7 days, counters db/server/io/sessions rows > 0, dms 2 tasks
 #   pgbin        initdb + start on a free port, seed, serve on -listen 127.0.0.1:0 (the logged URL answers);
 #                within 150 s a live snapshot newer than
@@ -66,16 +68,21 @@ OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed1.log") || { cat "$WORK/seed1.log"
 echo "$OUT"
 FIRST_IDS=$(P -c "select string_agg(instance_id::text, ',') from pgvigil.instances where 'demo' = any(tags)")
 ANCHOR=$(P -c "select max(snapshot_at) from pgvigil.activity_summary")
-N=$(P -c "select case when extract(minute from '$ANCHOR'::timestamptz)::int % 5 = 0 then 2065 else 2066 end")
+# the seed ticks on from its anchor to the current minute before it returns (a minute or two of ticks while the
+# history loads), so N is the number of snapshot times the fleet holds: the grid plus those ticks
+N=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary a join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
+(( N >= 2065 && N <= 2071 )) || fail "the fleet holds $N snapshot times, want the grid's 2065 or 2066 plus at most five catch-up ticks"
 
 check_repo() {
   local got
   got=$(P -c "select string_agg(platform || ' ' || n, ', ' order by platform) from (select platform, count(*) n from pgvigil.instances where 'demo' = any(tags) group by 1) x")
-  [[ "$got" == "aurora 3, azure 2, cloudsql 2, onprem 3, rds 2" ]] || fail "platforms: $got"; ok "instances: $got"
+  [[ "$got" == "aurora 3, azure 2, azuresqlmi 1, cloudsql 2, onprem 3, rds 2, sqlserver 2" ]] || fail "platforms: $got"; ok "instances: $got"
   got=$(P -c "select count(*) from pgvigil.instances where instance_id = $KEEP and not 'demo' = any(tags)")
   [[ "$got" == 1 ]] || fail "the non-demo instance is gone"; ok "non-demo instance kept"
-  got=$(P -c "select count(*) filter (where n <> $N) from (select i.name, count(a.*) n from pgvigil.instances i left join pgvigil.activity_summary a using (instance_id) where 'demo' = any(i.tags) group by 1) x")
-  [[ "$got" == 0 ]] || fail "activity summaries per instance not $N"; ok "activity: $N summaries per instance"
+  got=$(P -c "select count(*) filter (where n <> $N) from (select i.name, count(a.*) n from pgvigil.instances i left join pgvigil.activity_summary a using (instance_id) where 'demo' = any(i.tags) and i.engine = 'postgres' group by 1) x")
+  [[ "$got" == 0 ]] || fail "activity summaries per PostgreSQL instance not $N"; ok "activity: $N summaries per PostgreSQL instance"
+  got=$(P -c "select count(*) from pgvigil.activity_summary a join pgvigil.instances i using (instance_id) where i.engine <> 'postgres'")
+  [[ "$got" == 0 ]] || fail "$got PostgreSQL activity summaries on a SQL Server instance"; ok "activity: none on the SQL Server instances"
   got=$(P -c "select string_agg(name || '=' || n || '/' || d || '/' || coalesce(h, '-'), ' ' order by name) from (
       select i.name, count(c.*) n, coalesce(max(c.depth), 0) d, max(c.head_state) h
         from pgvigil.instances i
@@ -139,7 +146,7 @@ table never vacuumed@demo-aurora-dms01"
 check_api() {
   local got id
   got=$(api instances | python3 -c 'import json,sys; d=json.load(sys.stdin); n=d["columns"].index("tags"); print(sum(1 for r in d["rows"] if "demo" in (r[n] or [])))')
-  [[ "$got" == 12 ]] || fail "api instances: $got"; ok "api instances: 12 demo"
+  [[ "$got" == 15 ]] || fail "api instances: $got"; ok "api instances: 15 demo"
   got=$(api overview | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["columns"]; print("\n".join(sorted(r[c.index("check_name")]+"@"+r[c.index("instance")] for r in d["rows"] if r[c.index("instance")].startswith("demo-") or r[c.index("check_name")]=="check could not run")))')
   [[ "$got" == "$EXPECTED_OVERVIEW" ]] || { echo "$got" >&2; fail "overview rows differ"; }; ok "api overview: the 16 expected demo rows"
   api overview | grep -q '3 deadlock(s)' || fail "overview deadlock detail"; ok "api overview: 3 deadlock(s)"
@@ -161,7 +168,7 @@ check_api
 # a re-run replaces the demo instances and only them
 OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed2.log") || { cat "$WORK/seed2.log" >&2; fail "seed 2"; }
 echo "$OUT"
-grep -q "(12 replaced)" <<<"$OUT" || fail "rerun did not replace 12"
+grep -q "(15 replaced)" <<<"$OUT" || fail "rerun did not replace 15"
 LEFT=0; NT=0
 for t in $(P -c "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_attribute a on a.attrelid = c.oid and a.attname = 'instance_id'
                  where n.nspname = 'pgvigil' and c.relkind in ('r', 'p') and not c.relispartition"); do
@@ -192,7 +199,7 @@ else
   [[ -n "$PORT" ]] || { cat "$WORK/pgbin.log" >&2; fail "pgbin: no serving URL logged"; }
   curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null || fail "pgbin: the logged URL $PORT does not answer"; ok "pgbin: -listen 127.0.0.1:0 serves on the logged port $PORT"
   got=$(api instances | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["rows"]))') || { cat "$WORK/pgbin.log" >&2; fail "pgbin serve"; }
-  [[ "$got" == 12 ]] || fail "pgbin instances: $got"; ok "pgbin: 12 instances served"
+  [[ "$got" == 15 ]] || fail "pgbin instances: $got"; ok "pgbin: 15 instances served"
   id=$(api instances | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["columns"]; print([r[c.index("instance_id")] for r in d["rows"] if r[c.index("name")]=="demo-onprem-erp01"][0])')
   first=$(api "activity?instance=$id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["snapshot_at"])')
   live=""

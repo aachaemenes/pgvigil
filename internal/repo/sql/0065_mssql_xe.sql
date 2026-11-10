@@ -249,9 +249,15 @@ BEGIN
            date_trunc('month', (r->>'event_at')::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS month_at
       FROM jsonb_array_elements(p_payload) r
      WHERE r->>'kind' IN ('deadlock', 'blocked', 'slow', 'attention', 'ag_event') AND r->>'event_at' IS NOT NULL
+     ORDER BY 1, 2
   LOOP
     PERFORM pgvigil.mssql_event_partition(v_m.tbl, v_m.month_at);
   END LOOP;
+  -- The five parents are taken here in the order the loop opens their months (by name). Opening a month takes
+  -- ACCESS EXCLUSIVE on a parent; the inserts below go in another order, and two instances' imports could each
+  -- hold one parent and ask for the other at a month's first event (seen on import_mssql_storage, same shape).
+  LOCK TABLE pgvigil.mssql_ag_events, pgvigil.mssql_attentions, pgvigil.mssql_blocked_reports, pgvigil.mssql_deadlocks,
+             pgvigil.mssql_slow_events IN ROW EXCLUSIVE MODE;
 
   INSERT INTO pgvigil.mssql_deadlocks (instance_id, event_at, event_key, snapshot_at, source, session_name, process_count,
       victim_count, victim_spid, victim_login, victim_program, victim_statement, database_names, object_names, processes,
