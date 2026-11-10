@@ -2,6 +2,7 @@ package demo
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,10 +63,182 @@ func TestFleet(t *testing.T) {
 	if plat["onprem"] != 3 || plat["rds"] != 2 || plat["aurora"] != 3 || plat["azure"] != 2 || plat["cloudsql"] != 2 {
 		t.Fatalf("platforms: %v", plat)
 	}
+	// the three SQL Server instances follow the twelve; the copies of a scale run follow those
 	big := Specs("x-", 30)
-	if big[12].Name != "x-onprem-erp01-001" || big[12].SenderTo != "x-onprem-erp02-001" || big[13].ReceiverOf != "x-onprem-erp01-001" {
-		t.Fatalf("copies: %s %s %s", big[12].Name, big[12].SenderTo, big[13].ReceiverOf)
+	if FleetSize != 15 || big[12].Name != "x-onprem-sql01" || big[13].Name != "x-onprem-sql02" || big[14].Name != "x-azure-sql03" {
+		t.Fatalf("the SQL Server instances: %d, %s %s %s", FleetSize, big[12].Name, big[13].Name, big[14].Name)
 	}
+	for i, s := range big {
+		if (s.Engine == EngineSQLServer) != (i >= 12 && i < 15) {
+			t.Fatalf("%s (index %d): engine %q", s.Name, i, s.Engine)
+		}
+	}
+	if big[15].Name != "x-onprem-erp01-001" || big[15].SenderTo != "x-onprem-erp02-001" || big[16].ReceiverOf != "x-onprem-erp01-001" {
+		t.Fatalf("copies: %s %s %s", big[15].Name, big[15].SenderTo, big[16].ReceiverOf)
+	}
+}
+
+// A SQL Server instance runs its own collections and none of PostgreSQL's, and a PostgreSQL instance none of
+// SQL Server's; the scenarios the walk-through opens are in the batches: the chain with its sleeping head at the
+// anchor on sql01, the wait counters only ever rising, the day's Extended Events twice a minute apart with the same
+// keys, the storage year before the history, and the managed instance without volumes or a slow session.
+func TestMSSQLDemo(t *testing.T) {
+	specs := Specs("demo-", FleetSize)
+	for i, s := range specs[:12] {
+		g := NewGen(s, i, 7, Grid(anchor, 7)[0], anchor)
+		for _, c := range g.Collections() {
+			if strings.HasPrefix(c, "mssql_") {
+				t.Fatalf("%s: collection %s", s.Name, c)
+			}
+		}
+		// the first step and the anchor's carry every collection an instance has
+		for _, b := range append(g.Step(Grid(anchor, 7)[0]), g.Step(anchor)...) {
+			if strings.HasPrefix(b.Collection, "mssql_") {
+				t.Fatalf("%s: a SQL Server batch %s", s.Name, b.Collection)
+			}
+		}
+	}
+	for i, s := range specs[12:] {
+		idx := 12 + i
+		g := NewGen(s, idx, 7, Grid(anchor, 7)[0], anchor)
+		for _, c := range g.Collections() {
+			if !strings.HasPrefix(c, "mssql_") {
+				t.Fatalf("%s: collection %s", s.Name, c)
+			}
+		}
+		batches := run(t, s, idx, 7)
+		seen := map[string]int{}
+		var lastWaits map[string][3]int64
+		var xeKeys []string
+		var atAnchor, storageBefore, volumes, slowStates int
+		for _, b := range batches {
+			if !strings.HasPrefix(b.Collection, "mssql_") {
+				t.Fatalf("%s: a PostgreSQL batch %s", s.Name, b.Collection)
+			}
+			seen[b.Collection]++
+			switch b.Collection {
+			case "mssql_waits":
+				cur := map[string][3]int64{}
+				for _, r := range b.Rows {
+					if r["kind"] == "wait" {
+						c := [3]int64{r["waiting_tasks"].(int64), r["wait_ms"].(int64), r["signal_ms"].(int64)}
+						if c[0] < 0 || c[1] < 0 || c[2] < 0 || c[2] > c[1] {
+							t.Fatalf("%s: %s at %v: tasks, wait and signal %v", s.Name, r["wait_type"], b.At, c)
+						}
+						cur[r["wait_type"].(string)] = c
+					}
+				}
+				for w, v := range lastWaits {
+					if c := cur[w]; c[0] < v[0] || c[1] < v[1] || c[2] < v[2] {
+						t.Fatalf("%s: %s went down at %v: %v after %v", s.Name, w, b.At, c, v)
+					}
+				}
+				lastWaits = cur
+			case "mssql_requests":
+				if b.At.Equal(anchor) {
+					for _, r := range b.Rows {
+						if r["kind"] == "blocking" && r["head_session_id"] == 71 && r["longest_wait_ms"].(int64) > 300000 {
+							atAnchor++
+						}
+					}
+				}
+			case "mssql_xe":
+				keys := ""
+				for _, r := range b.Rows {
+					if r["kind"] == "state" && r["capture"] == "slow" && r["state"] == "not installed" {
+						slowStates++
+					}
+					if k, ok := r["event_key"].(string); ok {
+						keys += k + "@" + r["event_at"].(string) + ";"
+					}
+				}
+				xeKeys = append(xeKeys, keys)
+			case "mssql_storage":
+				if b.At.Before(Grid(anchor, 7)[0]) {
+					storageBefore++
+				}
+				for _, r := range b.Rows {
+					if r["kind"] == "volume" {
+						volumes++
+					}
+				}
+			}
+		}
+		for _, c := range []string{"mssql_instance", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore"} {
+			if seen[c] == 0 {
+				t.Errorf("%s: no %s batch", s.Name, c)
+			}
+		}
+		if len(xeKeys) != 2 || xeKeys[0] != xeKeys[1] || xeKeys[0] == "" {
+			t.Errorf("%s: Extended Events: %d imports, the same events in both: %v", s.Name, len(xeKeys), len(xeKeys) == 2 && xeKeys[0] == xeKeys[1])
+		}
+		if storageBefore < 350 {
+			t.Errorf("%s: %d storage reads before the history, want a year of days", s.Name, storageBefore)
+		}
+		sql01, sql03 := strings.HasSuffix(s.Name, "-sql01"), strings.HasSuffix(s.Name, "-sql03")
+		if (atAnchor == 1) != sql01 {
+			t.Errorf("%s: %d chain head(s) over five minutes at the anchor", s.Name, atAnchor)
+		}
+		if (seen["mssql_jobs"] > 0) != sql01 || (seen["mssql_ag"] > 0) == sql03 || (seen["mssql_backups"] > 0) == sql03 {
+			t.Errorf("%s: jobs %d, ag %d, backups %d batches", s.Name, seen["mssql_jobs"], seen["mssql_ag"], seen["mssql_backups"])
+		}
+		if (volumes == 0) != sql03 || (slowStates == 2) != sql03 {
+			t.Errorf("%s: %d volume rows, %d 'slow not installed' states", s.Name, volumes, slowStates)
+		}
+		// live ticks after the seed: the capture states alone on an ordinary minute (no event twice), and every
+		// twenty minutes the events of the twenty minutes before, none at or before the anchor's last deadlock, so
+		// the findings of the last hour hold while the demo is served; the version store does not outgrow tempdb
+		live := g2(t, s, idx)
+		xeBatch := func(at time.Time) (kinds map[string]int, found bool) {
+			kinds = map[string]int{}
+			for _, b := range live.Step(at) {
+				switch b.Collection {
+				case "mssql_xe":
+					found = true
+					for _, r := range b.Rows {
+						kinds[r["kind"].(string)]++
+						if v, ok := r["event_at"].(string); ok && r["kind"] == "deadlock" {
+							if e, err := time.Parse(time.RFC3339Nano, v); err != nil || !e.After(anchor.Add(-20*time.Minute)) {
+								t.Fatalf("%s: a live deadlock at %v", s.Name, v)
+							}
+						}
+					}
+				case "mssql_versionstore":
+					for _, r := range b.Rows {
+						if r["kind"] == "store" && r["store_kb"].(int64) > r["tempdb_data_kb"].(int64)/2 {
+							t.Fatalf("%s: at %v the version store is %v KB of tempdb's %v", s.Name, at, r["store_kb"], r["tempdb_data_kb"])
+						}
+					}
+				}
+			}
+			return kinds, found
+		}
+		if kinds, found := xeBatch(anchor.Add(time.Minute)); !found || kinds["state"] < 4 || len(kinds) != 1 {
+			t.Errorf("%s: the tick a minute after the anchor: an Extended Events batch %v with %v", s.Name, found, kinds)
+		}
+		for m := 2; m < 20; m++ {
+			live.Step(anchor.Add(time.Duration(m) * time.Minute))
+		}
+		kinds, found := xeBatch(anchor.Add(20 * time.Minute))
+		sql02 := strings.HasSuffix(s.Name, "-sql02")
+		if !found || kinds["state"] < 4 || (kinds["deadlock"] == 1) == sql02 || (kinds["blocked"] == 4) == sql02 || kinds["ag_event"] != 0 {
+			t.Errorf("%s: the tick twenty minutes after the anchor: %v", s.Name, kinds)
+		}
+		for m := 21; m <= 180; m++ { // three hours of serving
+			xeBatch(anchor.Add(time.Duration(m) * time.Minute))
+		}
+	}
+}
+
+// g2 is a generator stepped through the seed's grid, ready for a live tick.
+func g2(t *testing.T, s Spec, idx int) *Gen {
+	t.Helper()
+	grid := Grid(anchor, 7)
+	g := NewGen(s, idx, 7, grid[0], anchor)
+	for _, at := range grid {
+		g.Step(at)
+	}
+	return g
 }
 
 // the latest snapshot carries both chains and the idle head, with the head holding and not waiting
@@ -150,6 +323,43 @@ func TestCountersRise(t *testing.T) {
 					t.Fatalf("%s %s: xact_commit fell %d -> %d at %v", s.Name, k, prev[k], v, b.At)
 				}
 				prev[k] = v
+			}
+		}
+	}
+}
+
+// the chains of the anchor outlast the seed: the catch-up ticks of the minutes after the anchor (and the first
+// page of a serve) still carry every waiter, and the pause begins at the twelfth minute
+func TestChainsOutlastSeed(t *testing.T) {
+	specs := Specs("demo-", 12)
+	grid := Grid(anchor, 1)
+	want := map[string]int{"demo-onprem-erp01": 3, "demo-rds-orders01": 6, "demo-onprem-hr01": 2}
+	for i, s := range specs {
+		w, ok := want[s.Name]
+		if !ok {
+			continue
+		}
+		g := NewGen(s, i, 1, grid[0], anchor)
+		for _, at := range grid {
+			g.Step(at)
+		}
+		for m := 1; m <= 12; m++ {
+			waiters := 0
+			for _, b := range g.Step(anchor.Add(time.Duration(m) * time.Minute)) {
+				if b.Collection != "activity" {
+					continue
+				}
+				for _, r := range b.Rows {
+					if r["kind"] == "session" && r["wait_event_type"] == "Lock" {
+						waiters++
+					}
+				}
+			}
+			if m < 12 && waiters != w {
+				t.Fatalf("%s: %d lock waiter(s) at +%d min, want %d", s.Name, waiters, m, w)
+			}
+			if m == 12 && waiters != 0 {
+				t.Fatalf("%s: %d lock waiter(s) at +12 min, want the pause", s.Name, waiters)
 			}
 		}
 	}

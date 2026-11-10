@@ -177,11 +177,16 @@ func curve(t time.Time) float64 {
 }
 
 // window reports whether t falls in a scenario's window: daily at hourUTC for dur, and the
-// current one that ends at the anchor (so the latest snapshot shows it). ws is the window's start.
-// Past the anchor (the live trickle of 'demo -serve') the current window repeats every dur + 10
-// minutes, so a demo left running shows fresh chains with sane ages instead of one that never ends.
+// current one, open at the anchor and for twelve minutes after it: the seed's catch-up ticks land a few
+// minutes past the anchor, and the newest snapshot (the first page of a fresh serve) must still show it;
+// a seed that takes longer than twelve minutes lands in the pause. Twelve is also near the most the
+// shortest window (20 minutes) allows with its last waiter present at the anchor. A daily window the
+// current one starts in is cut there, and the current chain takes over with its own pids.
+// ws is the window's start. Past the anchor (the live trickle of 'demo -serve') the current window
+// repeats every dur + 10 minutes, so a demo left running shows fresh chains with sane ages instead of
+// one that never ends.
 func (g *Gen) window(t time.Time, hourUTC int, dur time.Duration) (bool, time.Time) {
-	cur := g.end.Add(-dur + 2*time.Minute)
+	cur := g.end.Add(-dur + 12*time.Minute)
 	if !t.Before(cur) {
 		period := dur + 10*time.Minute
 		ws := cur.Add(t.Sub(cur) / period * period)
@@ -207,6 +212,9 @@ func dbOID(i int) int64 {
 
 // Step returns the import batches of the snapshot at t (t after the previous step).
 func (g *Gen) Step(t time.Time) []Batch {
+	if g.Spec.Engine == EngineSQLServer { // its own collections, none of PostgreSQL's (mssql_demo.go)
+		return g.mssqlStep(t)
+	}
 	first := g.prev.IsZero()
 	prev := g.prev
 	if first {
@@ -298,6 +306,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 
 // Collections names what this instance's collector runs (for the collection log).
 func (g *Gen) Collections() []string {
+	if g.Spec.Engine == EngineSQLServer {
+		return g.mssqlCollections()
+	}
 	c := []string{"instance", "databases", "activity", "dbstats", "statements", "replication"}
 	if g.Spec.Cron {
 		c = append(c, "jobs")

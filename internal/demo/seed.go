@@ -18,7 +18,7 @@ import (
 // Options shape a seed.
 type Options struct {
 	Prefix    string    // instance name prefix (default "demo-")
-	Instances int       // fleet size (default 12; more = copies of the twelve, for a scale run)
+	Instances int       // fleet size (default 15: twelve PostgreSQL and three SQL Server; more = copies of the twelve, for a scale run)
 	Days      int       // history length (default 7)
 	Seed      uint64    // the random seed (same seed and anchor = same data)
 	Workers   int       // instances imported in parallel (default 8)
@@ -31,7 +31,7 @@ func (o *Options) defaults() {
 		o.Prefix = "demo-"
 	}
 	if o.Instances <= 0 {
-		o.Instances = len(base)
+		o.Instances = FleetSize
 	}
 	if o.Days <= 0 {
 		o.Days = 7
@@ -133,8 +133,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 	}
 	for i, s := range specs {
 		var id int
-		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, $3, $4, $5, $6)`,
-			s.Name, s.Platform, s.Version, s.VersionNum, s.Replica, s.Tags).Scan(&id); err != nil {
+		engine := "postgres"
+		if s.Engine != "" {
+			engine = s.Engine
+		}
+		if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, $3, $4, $5, $6, $7)`,
+			s.Name, s.Platform, s.Version, s.VersionNum, s.Replica, s.Tags, engine).Scan(&id); err != nil {
 			return nil, st, fmt.Errorf("ensure_instance %s: %w", s.Name, err)
 		}
 		f.gens = append(f.gens, NewGen(s, i, o.Seed, grid[0], o.End))
@@ -169,8 +173,35 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 			err = fmt.Errorf("alerts demo: %w", e)
 		}
 	}
+	if err == nil {
+		err = f.catchUp(ctx, &st)
+	}
 	st.Elapsed = time.Since(began)
 	return f, st, err
+}
+
+// catchUpWindow is how far behind now a seed's anchor may be for the seed to tick up to now: the default anchor is
+// the minute the seed began, a few minutes back by the time the history is in; an anchor set far in the past (a
+// fixed one, for a comparison) is left where it is.
+const catchUpWindow = 30 * time.Minute
+
+// catchUp imports the snapshots of the minutes that passed while the history was imported, so the newest read of
+// every instance is the current minute's when Seed returns: a rule that reads "the last minutes" (a blocking chain
+// in the newest snapshot, a queue over its threshold in every read of the last five) is on the first page a served
+// demo shows, not after its first live tick.
+func (f *Fleet) catchUp(ctx context.Context, st *Stats) error {
+	if time.Since(f.opts.End) > catchUpWindow {
+		return nil
+	}
+	for t := f.last.Add(time.Minute); !t.After(time.Now().UTC().Truncate(time.Minute)); t = f.last.Add(time.Minute) {
+		ts, err := f.Tick(ctx, t)
+		if err != nil {
+			return fmt.Errorf("catch-up tick %s: %w", t.Format(time.RFC3339), err)
+		}
+		st.Imports += ts.Imports
+		st.Rows += ts.Rows
+	}
+	return nil
 }
 
 // Tick imports one more snapshot at t for every instance (the live trickle of 'demo -serve'),
@@ -264,6 +295,9 @@ func (m *importer) steps(ctx context.Context, id int, batches []Batch) error {
 func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.Time) error {
 	for _, c := range g.Collections() {
 		status, note := "ok", ""
+		if why := g.mssqlSkipNote(c); why != "" {
+			status, note = "skipped", why
+		}
 		if c == "host" && !g.hostDoor() {
 			status, note = "skipped", hostSkipNote
 		}

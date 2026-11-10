@@ -2,7 +2,8 @@
 // generated here and handed to the repository through its import functions only, exactly as the
 // collector hands them, so every view, check and page reads demo data the way it reads real data.
 //
-// The fleet is twelve instances across on-prem PostgreSQL, RDS, Aurora, Azure and Cloud SQL, with
+// The fleet is twelve PostgreSQL instances across on-prem, RDS, Aurora, Azure and Cloud SQL and three SQL Server
+// instances (an availability group's primary and secondary, and a managed instance), with
 // seven days of history and the conditions a walk-through needs: two blocking chains and an
 // idle-in-transaction head, a pg_stat_statements reset, a daily load curve, a lagging replica and
 // an inactive slot, a failed pg_cron job, a DMS task over its latency threshold with tables in
@@ -15,7 +16,8 @@ import "fmt"
 // Spec is one synthetic instance and the conditions it shows.
 type Spec struct {
 	Name       string
-	Platform   string // onprem | rds | aurora | azure | cloudsql (platform.Kind values)
+	Engine     string // "" (PostgreSQL) or EngineSQLServer: a SQL Server instance runs only the mssql_ collections
+	Platform   string // onprem | rds | aurora | azure | cloudsql (platform.Kind values); sqlserver | azuresqlmi on a SQL Server
 	Version    string
 	VersionNum int
 	Replica    bool
@@ -75,14 +77,40 @@ var base = []Spec{
 		Load: 0.25, MaxConn: 200, Addr: "10.50.0.12", StmtBroken: true, Tags: []string{"staging", "analytics", "env:staging", "team:analytics"}},
 }
 
-// Specs returns n instances named with prefix: the twelve of the walk-through first, then copies of
-// them (for a scale measurement) numbered from 13, each copy keeping its template's conditions and
-// pointing its replication pair at the copy of the same round.
+// EngineSQLServer is Spec.Engine of a SQL Server instance (pgvigil.instances.engine).
+const EngineSQLServer = "sqlserver"
+
+// mssqlBase is the three SQL Server instances of the walk-through (mssql_demo.go draws them): sql01 the busy
+// primary of an availability group, sql02 its quiet secondary, sql03 a managed instance without some sources.
+var mssqlBase = []Spec{
+	{Name: "onprem-sql01", Engine: EngineSQLServer, Platform: "sqlserver", Version: "Microsoft SQL Server 2022 (RTM-CU16) - 16.0.4165.4 (X64)", VersionNum: 160000,
+		Load: 1.4, Addr: "10.20.3.31", Tags: []string{"prod", "sales", "env:prod", "team:sales"}},
+	{Name: "onprem-sql02", Engine: EngineSQLServer, Platform: "sqlserver", Version: "Microsoft SQL Server 2022 (RTM-CU16) - 16.0.4165.4 (X64)", VersionNum: 160000,
+		Replica: true, Load: 0.3, Addr: "10.20.3.32", Tags: []string{"prod", "sales", "env:prod", "team:sales"}},
+	{Name: "azure-sql03", Engine: EngineSQLServer, Platform: "azuresqlmi", Version: "Microsoft SQL Azure (RTM) - 12.0.2000.8", VersionNum: 120000,
+		Load: 0.6, Addr: "10.40.2.21", Tags: []string{"staging", "ledger", "env:staging", "team:finance"}},
+}
+
+// FleetSize is the walk-through's fleet: the twelve PostgreSQL instances and the three SQL Server ones.
+var FleetSize = len(base) + len(mssqlBase)
+
+// Specs returns n instances named with prefix: the twelve PostgreSQL instances of the walk-through first, then
+// the three SQL Server ones, then copies of the twelve (for a scale measurement) numbered from 001, each copy
+// keeping its template's conditions and pointing its replication pair at the copy of the same round.
 func Specs(prefix string, n int) []Spec {
 	out := make([]Spec, 0, n)
 	for i := 0; i < n; i++ {
-		s := base[i%len(base)]
-		round := i / len(base)
+		var s Spec
+		round := 0
+		switch {
+		case i < len(base):
+			s = base[i]
+		case i < FleetSize:
+			s = mssqlBase[i-len(base)]
+		default:
+			s = base[(i-FleetSize)%len(base)]
+			round = (i-FleetSize)/len(base) + 1
+		}
 		rename := func(name string) string {
 			if name == "" {
 				return ""
