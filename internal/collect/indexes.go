@@ -53,6 +53,9 @@ import (
 // index that covers a redundant or duplicate one is left out of it, so the DO lines never drop both of a pair.
 // Every read runs with search_path = pg_catalog, so the DROP and CREATE lines name the schema whatever the login's
 // search_path is.
+// The fifth read (0056, the inventory) is every index of pg_stat_user_indexes with its definition, size and usage
+// counters: the whole list beside the four problem reads; the import keeps it current and writes one row per index
+// and UTC day from the day's first read.
 type indexesCollector struct{}
 
 func init() { Register(indexesCollector{}) }
@@ -268,6 +271,25 @@ where pidx.indisvalid = false
   and pci.relkind = 'i'
   and pn.nspname not in ('pg_catalog', 'information_schema')`
 
+// indexesInventorySQL: every index of pg_stat_user_indexes (0056): its definition, size and usage counters.
+// last_idx_scan exists from PostgreSQL 16: to_jsonb(s) reads it where it is and NULL below, so one statement serves
+// every version. A partitioned table's own index (relkind 'I') is not in pg_stat_user_indexes; its partitions' indexes
+// are, each marked is_partition. columns is the definition after USING <method>: the key columns, expressions, INCLUDE
+// and predicate as pg_get_indexdef prints them.
+const indexesInventorySQL = `
+SELECT 'inv' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
+       current_database()::text AS datname, s.indexrelid::bigint AS indexrelid, s.relid::bigint AS relid,
+       s.schemaname::text AS schema_name, s.relname::text AS table_name, s.indexrelname::text AS index_name,
+       am.amname::text AS access_method, i.indisunique AS is_unique, i.indisprimary AS is_primary, i.indisvalid AS is_valid,
+       c.relispartition AS is_partition,
+       regexp_replace(pg_get_indexdef(s.indexrelid), '^CREATE (UNIQUE )?INDEX .* USING [a-z0-9_]+ ', '') AS columns,
+       pg_get_indexdef(s.indexrelid) AS index_def, pg_relation_size(s.indexrelid) AS index_bytes,
+       s.idx_scan, s.idx_tup_read, s.idx_tup_fetch, (to_jsonb(s)->>'last_idx_scan')::timestamptz AS last_idx_scan
+  FROM pg_stat_user_indexes s
+  JOIN pg_index i ON i.indexrelid = s.indexrelid
+  JOIN pg_class c ON c.oid = s.indexrelid
+  JOIN pg_am am ON am.oid = c.relam`
+
 // RunInstance reads the connected database on conn and every other connectable database on its own connection, up to
 // tablesMaxDatabases (the tables collection's bound).
 func (indexesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
@@ -307,7 +329,7 @@ func (indexesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platf
 	return out, nil
 }
 
-// indexesRead runs the four reads on one database's connection; any failure fails the database as a whole, so its
+// indexesRead runs the five reads on one database's connection; any failure fails the database as a whole, so its
 // stored rows stay as they were. The connection is this collection's own (RunOnce opens one per run; the other
 // databases' are opened here), so its search_path is set for the reads and not put back.
 func indexesRead(ctx context.Context, conn *pgx.Conn) ([]Row, error) {
@@ -317,6 +339,7 @@ func indexesRead(ctx context.Context, conn *pgx.Conn) ([]Row, error) {
 	out := []Row{}
 	for _, q := range []struct{ name, sql string }{
 		{"database", indexesDBSQL}, {"unused", indexesUnusedSQL}, {"redundant", indexesRedundantSQL}, {"invalid", indexesInvalidSQL},
+		{"inventory", indexesInventorySQL},
 	} {
 		r, err := conn.Query(ctx, q.sql)
 		if err != nil {

@@ -8,7 +8,8 @@ import type { Ctx } from './router';
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
 
-interface IndexesData { state: Table | null; databases: Table | null; indexes: Table | null; findings: Table | null }
+interface IndexesData { state: Table | null; databases: Table | null; indexes: Table | null; findings: Table | null; inventory: Table | null }
+interface IndexesFleetData { fleet: Table | null; unused: Table | null; duplicates: Table | null }
 
 interface AdvQuery { queryid: number; query?: string; cost_before?: number; cost_after?: number; gain_pct?: number; uses_index: boolean; note?: string }
 interface AdvSuggestion { ddl: string; hypothetical_index?: string; estimated_bytes?: number; best_gain_pct?: number; queries: AdvQuery[]; note?: string }
@@ -37,6 +38,58 @@ const indexCols: Col[] = [
   { key: 'undo_sql', label: 'UNDO (the definition)', wide: true },
   { key: 'first_seen', label: 'since', fmt: fmtTime },
 ];
+
+// the inventory (0056, task 71): every index of the instance, one database at a time, a name filter, 500 rows at most
+const kindText = (r: Row) => [r.is_primary ? 'primary key' : r.is_unique ? 'unique' : '', r.is_valid === false ? 'INVALID' : '', r.is_partition ? 'a partition\'s' : '']
+  .filter(Boolean).join(', ');
+const blankNum = (v: unknown) => v == null ? '' : fmtNum(v);
+function inventoryCols(ctx?: Ctx): Col[] {
+  return [
+    { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
+    { key: 'index_name', label: 'index', fmt: (v, r) => {
+      const name = document.createTextNode(String(v ?? ''));
+      if (!ctx) return name;
+      const a = indexLink(ctx, '', r.dbid, r.indexrelid); a.append(name); return a;
+    } },
+    { key: 'access_method', label: 'type', fmt: (v, r) => { const k = kindText(r); return String(v ?? '') + (k ? ` (${k})` : ''); } },
+    { key: 'columns', wide: true },
+    { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes },
+    { key: 'idx_scan', label: 'scans', num: true },
+    { key: 'scans_7d', label: '7 d', num: true, fmt: blankNum },
+    { key: 'scans_30d', label: '30 d', num: true, fmt: blankNum },
+    { key: 'idx_tup_fetch', label: 'rows fetched', num: true },
+    { key: 'last_idx_scan', label: 'last scan', fmt: v => v ? fmtTime(v) : '' },
+    { key: 'problems', fmt: v => v ? badge(String(v), /invalid|duplicate/.test(String(v)) ? 'warn' : '') : '' },
+  ];
+}
+function inventorySection(inv: Row[], ctx?: Ctx): HTMLElement {
+  const sec = el('div', {}, el('h3', {}, `Inventory (${inv.length})`),
+    el('p', { class: 'meta' }, 'Every index the monitoring login can see, read hourly: its size, its scans since the counters started and over the '
+      + 'last 7 and 30 days (one row per index and day; blank until the day rows are that old, or after a counter reset), the rows it returned '
+      + 'and, on PostgreSQL 16 and later, its last scan. A problem index is marked; every name opens the index page.'));
+  if (inv.length === 0) {
+    sec.append(el('p', { class: 'empty' }, 'No inventory read yet: it comes with the hourly indexes collection.'));
+    return sec;
+  }
+  const names = [...new Set(inv.map(r => String(r.datname)))];
+  const pick = el('select', { 'aria-label': 'database of the inventory' }, ...names.map(d => el('option', { value: d }, d))) as HTMLSelectElement;
+  const filter = el('input', { type: 'search', placeholder: 'table or index name', 'aria-label': 'filter the inventory by table or index name' }) as HTMLInputElement;
+  const out = el('div');
+  const draw = () => {
+    const db = pick.value, f = filter.value.trim().toLowerCase();
+    const all = inv.filter(r => String(r.datname) === db
+      && (!f || String(r.table_name ?? '').toLowerCase().includes(f) || String(r.index_name ?? '').toLowerCase().includes(f)));
+    const rows = all.slice(0, 500);
+    out.replaceChildren(
+      el('p', { class: 'meta' }, all.length > rows.length ? `${rows.length} of ${all.length} shown (the largest first): narrow the filter.` : `${all.length} indexes.`),
+      grid(rows, inventoryCols(ctx), 'No index matches.'));
+  };
+  pick.addEventListener('change', draw);
+  filter.addEventListener('input', draw);
+  sec.append(el('p', {}, 'Database ', pick, ' filter ', filter), out);
+  draw();
+  return sec;
+}
 
 // adviseBox: the advisor button for one database and its report.
 function adviseBox(instance: number, dbs: string[]): HTMLElement {
@@ -133,6 +186,7 @@ export async function indexesView(instance: number, ctx?: Ctx): Promise<HTMLElem
       } }),
         `No ${p} index.`));
   }
+  sec.append(inventorySection(rowsOf(d.inventory), ctx));
   sec.append(el('p', { class: 'meta' }, 'The redundant and invalid reads are postgres_dba\'s (BSD-3, Nikolay Samokhvalov); the DO / UNDO lines are '
     + 'its i5 pattern. Run a DO line alone, outside a transaction, in a session where lock_timeout and statement_timeout are 0 '
     + '(DROP INDEX CONCURRENTLY waits for every older transaction). An unused index that covers a redundant or duplicate one is '
@@ -144,8 +198,10 @@ export async function indexesView(instance: number, ctx?: Ctx): Promise<HTMLElem
 // indexesFleetView: the fleet root, per server the counts and the bytes. keep narrows it to a tag folder; instLink makes
 // the instance name a link to its Indexes tab.
 export async function indexesFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
-  let rows = rowsOf((await get<{ fleet: Table | null }>('indexes', {})).fleet);
-  if (keep) rows = rows.filter(keep);
+  const d = await get<IndexesFleetData>('indexes', {});
+  let rows = rowsOf(d.fleet), unused = rowsOf(d.unused), dups = rowsOf(d.duplicates);
+  if (keep) { rows = rows.filter(keep); unused = unused.filter(keep); dups = dups.filter(keep); }
+  const inst = (v: unknown, r: Row) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '');
   const sum = (k: string) => rows.reduce((a, r) => a + Number(r[k] ?? 0), 0);
   const warnNum = (v: unknown) => Number(v) > 0 ? badge(String(v), 'warn') : '0';
   return el('section', {}, el('h2', {}, 'Indexes'),
@@ -157,11 +213,29 @@ export async function indexesFleetView(keep?: (r: Row) => boolean, instLink?: (n
       tile('their size', fmtBytes(sum('bytes')) || '0 B')),
     el('p', { class: 'meta' }, 'Per server: the indexes that cost writes and give nothing back, read hourly on every database.'),
     grid(rows, [
-      { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },
+      { key: 'instance', fmt: inst },
       { key: 'platform' },
+      { key: 'inventory', label: 'indexes', num: true }, { key: 'inventory_bytes', label: 'their size', num: true, fmt: fmtBytes },
       { key: 'invalid', num: true, fmt: warnNum }, { key: 'duplicate', num: true, fmt: warnNum },
       { key: 'redundant', num: true }, { key: 'unused', num: true },
-      { key: 'bytes', label: 'size', num: true, fmt: fmtBytes },
+      { key: 'bytes', label: 'problem size', num: true, fmt: fmtBytes },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
-    ], 'No indexes read yet: the indexes collection runs hourly.'));
+    ], 'No indexes read yet: the indexes collection runs hourly.'),
+    el('h3', {}, `Largest indexes nobody reads (${unused.length})`),
+    el('p', { class: 'meta' }, 'Across the fleet, from the inventory: no scan since the counters started, counted for 7 days at least, on a primary, '
+      + 'not behind a constraint and not a partition\'s; the 50 largest. Each server counts only its own reads: check the replicas and rare jobs before dropping.'),
+    grid(unused, [
+      { key: 'instance', fmt: inst }, { key: 'datname', label: 'database' }, { key: 'schema_name', label: 'schema' },
+      { key: 'table_name', label: 'table' }, { key: 'index_name', label: 'index' },
+      { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes },
+      { key: 'stats_since', label: 'usage counted since', fmt: fmtTime }, { key: 'index_def', label: 'definition', wide: true },
+    ], 'No unread index of a week or more.'),
+    el('h3', {}, `Duplicate indexes (${dups.length})`),
+    el('p', { class: 'meta' }, 'Across the fleet: exactly the columns, operator classes, expressions and predicate of another index on the same table; the 50 largest.'),
+    grid(dups, [
+      { key: 'instance', fmt: inst }, { key: 'datname', label: 'database' }, { key: 'schema_name', label: 'schema' },
+      { key: 'table_name', label: 'table' }, { key: 'index_name', label: 'index' },
+      { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes }, { key: 'idx_scan', label: 'scans', num: true },
+      { key: 'covered_by', label: 'duplicate of' },
+    ], 'No duplicate index.'));
 }

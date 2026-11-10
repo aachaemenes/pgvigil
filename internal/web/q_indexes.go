@@ -17,7 +17,9 @@ import (
 
 // The Indexes tab (task 41): GET /api/indexes?[instance=<id>] (Server.Indexes): with instance, its databases and the
 // unused, redundant, duplicate and invalid indexes the hourly indexes collection found, each with its DROP line and
-// undo as text; without, the fleet root (per instance the counts and the bytes). POST /api/indexes/advise
+// undo as text, and the inventory (0056, task 71: every index with its usage, pgvigil.index_inventory_read); without,
+// the fleet root (per instance the counts and the bytes, the inventory's count and size), the largest indexes nobody
+// reads across the fleet (index_inventory_fleet_unused) and the duplicates across it. POST /api/indexes/advise
 // (Server.IndexAdvisor) runs the index advisor (internal/advisor) on one database of one instance: behind the UI
 // login, with the X-Pgvigil header, through the instance's monitoring login (never the actions login: it writes
 // nothing), refused where the actions door is off (the demo serve has no login). The overview check feeds the
@@ -56,8 +58,23 @@ SELECT f.severity, f.setting, f.value, f.suggested, f.detail, f.at
  WHERE f.instance_id = $1
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, f.setting, f.value`
 
+const sqlIndexesInventory = `SELECT * FROM pgvigil.index_inventory_read($1)`
+
+const sqlIndexesFleetUnused = `SELECT * FROM pgvigil.index_inventory_fleet_unused(50)`
+
+const sqlIndexesFleetDuplicates = `
+SELECT s.instance_id, i.name AS instance, s.dbid, s.indexrelid, s.datname, s.schema_name, s.table_name, s.index_name,
+       s.index_bytes, s.idx_scan, s.covered_by
+  FROM pgvigil.index_state s
+  JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+ WHERE s.is_present AND s.problem = 'duplicate'
+ ORDER BY s.index_bytes DESC NULLS LAST, i.name, s.datname, s.index_name
+ LIMIT 50`
+
 const sqlIndexesFleet = `
 SELECT i.instance_id, i.name AS instance, i.platform,
+       (SELECT count(*) FROM pgvigil.index_inventory v WHERE v.instance_id = i.instance_id AND v.is_present) AS inventory,
+       (SELECT coalesce(sum(v.index_bytes), 0) FROM pgvigil.index_inventory v WHERE v.instance_id = i.instance_id AND v.is_present) AS inventory_bytes,
        count(*) FILTER (WHERE s.problem = 'invalid') AS invalid,
        count(*) FILTER (WHERE s.problem = 'duplicate') AS duplicate,
        count(*) FILTER (WHERE s.problem = 'redundant') AS redundant,
@@ -76,7 +93,7 @@ SELECT i.instance_id, i.name AS instance, i.platform,
 func (s *Server) Indexes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if q.Get("instance") == "" {
-		s.multi(w, r, []part{{"fleet", sqlIndexesFleet, nil}})
+		s.multi(w, r, []part{{"fleet", sqlIndexesFleet, nil}, {"unused", sqlIndexesFleetUnused, nil}, {"duplicates", sqlIndexesFleetDuplicates, nil}})
 		return
 	}
 	id, err := strconv.Atoi(q.Get("instance"))
@@ -89,6 +106,7 @@ func (s *Server) Indexes(w http.ResponseWriter, r *http.Request) {
 		{"databases", sqlIndexesDatabases, []any{id}},
 		{"indexes", sqlIndexesList, []any{id}},
 		{"findings", sqlIndexesFindings, []any{id}},
+		{"inventory", sqlIndexesInventory, []any{id}},
 	})
 }
 
