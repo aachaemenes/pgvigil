@@ -78,17 +78,9 @@ func Replace(ctx context.Context, pool *pgxpool.Pool, prefix string) (int, error
 		                             WHERE 'demo' = ANY (tags) AND starts_with(name, $1)`, prefix).Scan(&ids); err != nil {
 			return fmt.Errorf("find demo instances: %w", err)
 		}
-		// the DBADash door's demo repository is cleared by its own name: the dbadash_* tables carry DBA Dash's
-		// InstanceID, not a pgvigil one, so a delete by the demo's pgvigil ids would hit a real door's rows that share
-		// a number (the history has no foreign key: it is cleared first, then the repository cascades)
-		for _, q := range []string{
-			`DELETE FROM pgvigil.dbadash_summary_history WHERE repository = 'dbadash-demo'`,
-			`DELETE FROM pgvigil.dbadash_repositories WHERE repository = 'dbadash-demo'`,
-		} {
-			if _, err := tx.Exec(ctx, q); err != nil {
-				return fmt.Errorf("clear the dbadash demo: %w", err)
-			}
-		}
+		// the dbadash_* tables carry DBA Dash's InstanceID, not a pgvigil one: they are left out below (a delete by the
+		// demo's pgvigil ids would hit a real door's rows that share a number); SeedDBADash replaces the demo's own
+		// repository by name, in its own transaction, once the seed has gone through
 		n = len(ids)
 		if n == 0 {
 			return nil

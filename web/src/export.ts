@@ -111,6 +111,13 @@ function statusOf(td: Element): Status | undefined {
 const text = (e: Element) => e.querySelector('[data-full]')?.getAttribute('data-full')
   ?? ((e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''));
 
+// a heading's own words, without its 'what is this' button (sqlview.ts): they name a sheet and a CSV file
+const headingText = (e: Element) => {
+  const c = e.cloneNode(true) as Element;
+  c.querySelectorAll('.whatis').forEach(b => b.remove());
+  return text(c);
+};
+
 function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const ths = [...table.querySelectorAll('thead th')];
   const cols = ths.map(text);
@@ -141,7 +148,7 @@ export function sections(root: ParentNode, fallback: string): Section[] {
   let heading = fallback;
   const out: Section[] = [];
   for (const e of root.querySelectorAll('h2, h3, h4, table.grid, table.props')) {
-    if (e.tagName !== 'TABLE') { heading = text(e) || fallback; continue; }
+    if (e.tagName !== 'TABLE') { heading = headingText(e) || fallback; continue; }
     const t = e as HTMLTableElement;
     // a 'the newest 500 of 1,234 samples' line right above the grid rides into the Summary sheet: the rows taken are not all
     const prev = (t.parentElement?.classList.contains('grid-wrap') ? t.parentElement : t).previousElementSibling;

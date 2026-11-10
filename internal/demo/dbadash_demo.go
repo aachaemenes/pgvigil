@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -32,7 +34,28 @@ func dbadashDemoBase() map[string]int {
 }
 
 // SeedDBADash writes the demo repository's hourly reads from start to end.
+// SeedDBADash replaces the demo's DBA Dash repository in ONE transaction: its rows are cleared by name (the dbadash_*
+// tables carry DBA Dash's InstanceID, never a pgvigil id, so Replace leaves them alone) and imported again; a seed that
+// is refused or fails before this point leaves the previous demo repository as it was, and a failure here rolls back.
 func SeedDBADash(ctx context.Context, pool *pgxpool.Pool, start, end time.Time) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		for _, q := range []string{
+			`DELETE FROM pgvigil.dbadash_summary_history WHERE repository = 'dbadash-demo'`, // no foreign key: first
+			`DELETE FROM pgvigil.dbadash_repositories WHERE repository = 'dbadash-demo'`,    // cascades to instances and summary
+		} {
+			if _, err := tx.Exec(ctx, q); err != nil {
+				return fmt.Errorf("clear the dbadash demo: %w", err)
+			}
+		}
+		return seedDBADash(ctx, tx, start, end)
+	})
+}
+
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func seedDBADash(ctx context.Context, pool execer, start, end time.Time) error {
 	type inst struct {
 		id                int
 		name, version, ed string
@@ -99,7 +122,10 @@ func SeedDBADash(ctx context.Context, pool *pgxpool.Pool, start, end time.Time) 
 			return fmt.Errorf("dbadash demo: %w", err)
 		}
 	}
-	_, err := pool.Exec(ctx, `SELECT pgvigil.import_dbadash_configured($1)`, []string{"dbadash-demo"})
+	// the configured set is every repository configured now plus the demo's: a real door stays in the fleet (passing
+	// the demo's name alone marked every other repository unconfigured until its next read)
+	_, err := pool.Exec(ctx, `SELECT pgvigil.import_dbadash_configured(array(
+	  SELECT repository FROM pgvigil.dbadash_repositories WHERE is_configured AND repository <> 'dbadash-demo') || 'dbadash-demo'::text)`)
 	return err
 }
 

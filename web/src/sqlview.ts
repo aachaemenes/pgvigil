@@ -54,6 +54,7 @@ export function openViewer(heading: string, text: string, code = true): void {
 }
 
 // sqlCell is a grid's statement cell: the first n characters on one line; a click (or Enter) opens the whole text.
+// It is the ONLY content of its cell: the export writes the cell as its data-full (export.ts text()).
 // title says what the text is where that is not plain (the last statement of an idle session).
 export function sqlCell(v: unknown, o: { heading?: string; title?: string; n?: number } = {}): HTMLElement | string {
   if (v == null || v === '') return '';

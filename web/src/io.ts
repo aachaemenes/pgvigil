@@ -6,6 +6,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { stmtCols } from './borrowed';
 import { lineChart } from './chart';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid } from './ui';
+import { whatIsThis } from './sqlview';
 
 export interface Window { from: string; to: string }
 
@@ -187,8 +188,7 @@ export async function dmsIOView(win: Window, instance?: number, keep?: (r: Row) 
   const d = await get<Record<'instances' | 'series', Table | null>>('dmsio', { instance, ...win });
   let ris = rowsOf(d.instances), series = rowsOf(d.series);
   if (keep) { ris = ris.filter(keep); series = series.filter(keep); }
-  const box = el('div', {}, el('h3', {}, 'Replication instance IO'),
-    el('p', { class: 'meta' }, 'AWS/DMS storage and network metrics, the newest minute; latency in milliseconds. A queue over 10 or a latency over 20 ms means the instance\'s storage limits the task: more allocated storage (gp2 IOPS grow with size) or a larger class.'),
+  const box = el('div', {}, el('h3', {}, 'Replication instance IO ', whatIsThis('AWS/DMS storage and network metrics, the newest minute; latency in milliseconds. A queue over 10 or a latency over 20 ms means the instance\'s storage limits the task: more allocated storage (gp2 IOPS grow with size) or a larger class.', 'Replication instance IO')),
     grid(ris.filter(r => r.is_present !== false), dmsCols, 'No replication instance IO read yet.'));
   const byRI = new Map<string, Row[]>();
   for (const r of series) {

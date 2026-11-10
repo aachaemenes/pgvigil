@@ -114,7 +114,7 @@ const page = async (hash, sortBy) => {
     await sleep(200);
     order = await ev(col);
   }
-  const grids = await ev(`[...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props')].map(e => e.tagName === 'TABLE' ? { rows: e.querySelectorAll(e.classList.contains('grid') ? 'tbody tr' : 'tr').length, status: [...new Set([...e.querySelectorAll('td.status, td .badge, td .dot')].map(x => ['crit','warn','ok','none'].find(k => x.classList.contains(k))).filter(Boolean))] } : { h: e.textContent.trim() })`);
+  const grids = await ev(`[...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props')].map(e => e.tagName === 'TABLE' ? { rows: e.querySelectorAll(e.classList.contains('grid') ? 'tbody tr' : 'tr').length, status: [...new Set([...e.querySelectorAll('td.status, td .badge, td .dot')].map(x => ['crit','warn','ok','none'].find(k => x.classList.contains(k))).filter(Boolean))] } : { h: (c => (c.querySelectorAll('.whatis').forEach(b => b.remove()), c.textContent.trim()))(e.cloneNode(true)) })`);   // a heading without its 'what is this' button, as the export names a sheet
   return { hash, grids, order, before, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
 };
 await cmd('Page.enable'); await cmd('Runtime.enable');

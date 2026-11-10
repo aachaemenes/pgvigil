@@ -20,6 +20,7 @@ import { rolesFleetView } from './roles';
 import { indexesFleetView } from './indexes';
 import { slowFleetView } from './slow';
 import { customReportView } from './custom';
+import { whatIsThis } from './sqlview';
 
 export type { Ctx };
 const range = window_;
@@ -156,7 +157,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag && !ctx.instance ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const scoped = (rows: Row[]) => ids ? rows.filter(r => ids.has(Number(r.instance_id))) : rows;
   const tasks = scoped(rowsOf(d.tasks)), ris = scoped(rowsOf(d.instances)), tables = rowsOf(d.tables);
-  const sec = el('section', {}, el('h2', {}, 'DMS replication tasks' + (ctx.instance ? '' : scopeLabel(ctx))), el('p', { class: 'meta' }, 'The newest state of each task; the time range applies only to the replication instance IO charts below.'));
+  const sec = el('section', {}, el('h2', {}, 'DMS replication tasks' + (ctx.instance ? '' : scopeLabel(ctx)) + ' ', whatIsThis('The newest state of each task; the time range applies only to the replication instance IO charts below.', 'DMS replication tasks')));
   const taskCols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id, 'dms') },
     { key: 'task_id', label: 'task', fmt: (v, r) => link(String(v), href(ctx, { tab: 'dms', task: String(r.task_arn), taskInstance: Number(r.instance_id) })) },
@@ -170,7 +171,7 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
     { key: 'incoming_changes', label: 'incoming changes', num: true },
     { key: 'elapsed_secs', label: 'full load time', num: true, fmt: fmtSecs },   // ElapsedTimeMillis is the full load's duration on a live task, not the task's age
     { key: 'ri_id', label: 'replication instance' },
-    { key: 'stop_reason', label: 'stop reason', wide: true },
+    { key: 'stop_reason', label: 'stop reason' },   // plain text on one line (a wide cell set it in monospace and wrapped it)
     { key: 'last_failure', label: 'last failure', wide: true },
     { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
     { key: 'is_present', label: 'present', fmt: v => v ? 'yes' : 'gone' },

@@ -253,8 +253,22 @@ check_api() {
 }
 check_api
 
+# a real DBA Dash door whose InstanceID equals a demo pgvigil id (1) and whose repository is configured: a re-seed keeps
+# its rows (expected 1/1/1/1) and keeps it configured (expected t); the demo's own repository comes back with 3 instances
+P -c "insert into pgvigil.dbadash_repositories (repository, status, read_at) values ('real-door', 'ok', now());
+      insert into pgvigil.dbadash_instances (repository, instance_id, instance, display_name, first_seen, snapshot_at) values ('real-door', 1, 'PRODSQL', 'PRODSQL', now(), now());
+      insert into pgvigil.dbadash_summary values ('real-door', 1, now(), now(), '{}', '{}');
+      insert into pgvigil.dbadash_summary_history values ('real-door', 1, now(), now(), '{}', '{}')" >/dev/null
+door() { P -c "select (select count(*) from pgvigil.dbadash_repositories where repository = 'real-door') || '/' || (select count(*) from pgvigil.dbadash_instances where repository = 'real-door')
+  || '/' || (select count(*) from pgvigil.dbadash_summary where repository = 'real-door') || '/' || (select count(*) from pgvigil.dbadash_summary_history where repository = 'real-door')
+  || ' ' || coalesce((select is_configured::text from pgvigil.dbadash_repositories where repository = 'real-door'), 'none')
+  || ' ' || (select count(*) from pgvigil.dbadash_instances where repository = 'dbadash-demo')
+  || ' ' || (select count(*) from pgvigil.dbadash_summary_history where repository = 'dbadash-demo')"; }
 # a re-run replaces the demo instances and only them
 OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed2.log") || { cat "$WORK/seed2.log" >&2; fail "seed 2"; }
+got=$(door); [[ "${got% *}" == "1/1/1/1 true 3" ]] || fail "a real DBA Dash door after a re-seed (rows, configured, demo instances): ${got% *}"
+ok "a real DBA Dash door sharing a demo id: its rows kept and it stays configured over a re-seed"
+DEMO_HIST=${got##* }
 echo "$OUT"
 grep -q "(15 replaced)" <<<"$OUT" || fail "rerun did not replace 15"
 LEFT=0; NT=0
@@ -271,6 +285,8 @@ if "$BIN" demo -config "$CFG" -prefix trap- -instances 1 -days 1 >/dev/null 2>"$
 grep -q "exist without the demo tag" "$WORK/trap.log" || { cat "$WORK/trap.log" >&2; fail "refusal message"; }
 got=$(P -c "select tags::text || '/' || (select count(*) from pgvigil.instances where name like 'trap-%') from pgvigil.instances where instance_id = $TRAP")
 [[ "$got" == "{prod}/1" ]] || fail "trap instance changed: $got"; ok "a non-demo instance with a demo name: refused, untouched"
+got=$(door); [[ "$got" == "1/1/1/1 true 3 $DEMO_HIST" ]] || fail "after a refused seed (door rows, configured, demo instances, demo history): $got, wanted 1/1/1/1 true 3 $DEMO_HIST"
+ok "a refused seed leaves the demo's DBA Dash repository and the real door as they were"
 # the second seed's grid from its own printed anchor and ticks, as the first
 grid_n
 check_repo

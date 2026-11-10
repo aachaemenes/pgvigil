@@ -7,7 +7,7 @@ import type { Ctx } from './router';
 import { get, Row, rowsOf, Table } from './api';
 import { alertCol } from './alerts';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
-import { sqlCell } from './sqlview';
+import { sqlCell, whatIsThis } from './sqlview';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
@@ -152,7 +152,6 @@ export function dmsDrainView(rows: Row[]): HTMLElement {
     { key: 'suspended', label: 'suspended', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : fmtNum(v) },
     { key: 'pending_records', label: 'records pending', num: true },
   ];
-  return el('div', {}, el('h3', {}, 'Drain and validation'),
-    el('p', { class: 'meta' }, 'Speed compares the target latency with the sample 10-30 minutes older (1x = keeping pace). Do not stop or restart a task while it spills to disk.'),
+  return el('div', {}, el('h3', {}, 'Drain and validation ', whatIsThis('Speed compares the target latency with the sample 10-30 minutes older (1x = keeping pace). Do not stop or restart a task while it spills to disk.', 'Drain and validation')),
     grid(rows, cols, 'No running tasks.'));
 }
