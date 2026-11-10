@@ -7,7 +7,7 @@ import (
 
 // bufferCacheDemoRows: hourly (first || t.Minute() == 0)
 func (g *Gen) bufferCacheDemoRows(t time.Time) []Row {
-	if g.Spec.Name != "onprem-erp01" {
+	if !g.is("onprem-erp01") {
 		return []Row{{"kind": "total", "status": "not available",
 			"reason": "pg_buffercache is not installed in the connected database (an opt-in: CREATE EXTENSION pg_buffercache; pg_monitor then reads it)"}}
 	}
@@ -43,9 +43,11 @@ func (g *Gen) bufferCacheDemoRows(t time.Time) []Row {
 
 // tempFilesDemoRows: hourly (first || t.Minute() == 0); the rollup reads the statements and logs rows already stored
 func (g *Gen) tempFilesDemoRows(t time.Time) []Row {
-	data := int64(180) << 30 // 180 GB
-	if g.Spec.Name != "onprem-erp01" {
-		data = int64(24) << 30
+	// erp01 at 180 GB: the long report's temp blocks (gen.go statementRows, about 11 GB an hour at full load) cross the 10 %
+	// rule there; every other instance at 600 GB stays under it (the per-statement info rows stay)
+	data := int64(180) << 30
+	if !g.is("onprem-erp01") {
+		data = int64(600) << 30
 	}
 	return []Row{{"kind": "state", "data_bytes": data + int64(float64(data)*0.0004*t.Sub(g.start).Hours()), "block_size": 8192}}
 }
@@ -66,7 +68,7 @@ func (g *Gen) tempFilesDemoRows(t time.Time) []Row {
 
 // poolerDemoRows: every step on crm01 (the collection is per minute)
 func (g *Gen) poolerDemoRows(t time.Time) []Row {
-	if g.Spec.Name != "aurora-crm01" {
+	if !g.is("aurora-crm01") {
 		return nil
 	}
 	busy := t.After(g.end.Add(-12 * time.Minute))

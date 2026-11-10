@@ -319,7 +319,7 @@ func (g *Gen) Collections() []string {
 		c = append(c, "waits")
 	}
 	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files", "custom")
-	if g.Spec.Name == "aurora-crm01" {
+	if g.is("aurora-crm01") {
 		c = append(c, "pgbouncer")
 	}
 	if g.amcheckOn() {
@@ -987,6 +987,15 @@ func (g *Gen) logRows(t, prev time.Time) []Row {
 			if at := ws.Add(3*time.Minute + time.Second); at.After(prev) && !at.After(t) {
 				ev("lock_wait", at, 2000+int(uint64(hash64(fmt.Sprintf("%s|chainB|%d|ddl", s.Name, ws.Unix())))%60000), "deploy_bot", ddlText(s.App),
 					"process still waiting for AccessExclusiveLock on relation 16702 of database 16384 after 1000.081 ms", 1000.081)
+			}
+		}
+	}
+	if g.is("onprem-erp01") { // the nightly report's temporary files, one every 10 minutes from 01:00 to 03:00 (memory_demo.go: the hour rows' log_files)
+		for at := prev.Truncate(10 * time.Minute).Add(10 * time.Minute); !at.After(t); at = at.Add(10 * time.Minute) {
+			if h := at.Hour(); h >= 1 && h < 3 {
+				size := 200<<20 + int64(noise(s.Name+"tmp", at)*60*(1<<20))
+				ev("temp_file", at, 2000+int(noise(s.Name+"tmppid", at)*60000), "app_"+s.App, g.stmts[stReport].text,
+					fmt.Sprintf("temporary file: path \"base/pgsql_tmp/pgsql_tmp%d.%d\", size %d", 2000+at.Minute(), at.Hour(), size), nil)
 			}
 		}
 	}

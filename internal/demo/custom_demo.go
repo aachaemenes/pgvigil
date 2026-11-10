@@ -22,7 +22,7 @@ func (g *Gen) customDemoRows(t time.Time, first bool) []Row {
 		"rule": "value", "value_column": nil, "compare": ">", "warning": 3.0, "critical": 10.0, "targets": "tags: env:prod"}
 	names := []string{"idle_in_transaction"}
 	checks := []Row{idle}
-	trig := g.Spec.Name == "onprem-erp01"
+	trig := g.is("onprem-erp01")
 	if trig {
 		names = append(names, "disabled_triggers")
 		checks = append(checks, Row{"kind": "check", "check_name": "disabled_triggers", "description": "user triggers that are disabled",
@@ -35,7 +35,7 @@ func (g *Gen) customDemoRows(t time.Time, first bool) []Row {
 
 	if first || t.Minute()%5 == 0 {
 		v := math.Floor(3 * curve(t) * g.Spec.Load * noise(g.Spec.Name+"|idle", t))
-		if g.Spec.Name == "aurora-crm01" {
+		if g.is("aurora-crm01") {
 			if since := t.Sub(g.end.Add(-2 * time.Hour)); since > 0 && since <= 2*time.Hour+10*time.Minute {
 				v += math.Round(14 * since.Hours() / 2)
 			}
