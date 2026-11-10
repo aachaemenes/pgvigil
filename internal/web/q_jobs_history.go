@@ -34,6 +34,7 @@ const msOutcome = `CASE r.run_status WHEN 0 THEN 'failed' WHEN 1 THEN 'succeeded
 
 const sqlJobsGridPG = `
 SELECT j.scheduler, j.job_id::text AS job_id, coalesce(j.job_name, j.job_id::text) AS name, j.active AS enabled, j.schedule,
+       j.datname, j.run_as, left(j.command, 1000) AS command,
        lr.start_time AS last_run_at, lr.outcome AS last_outcome, lr.duration_secs AS last_duration_s,
        lf.start_time AS last_failed_at, lf.failed_step, left(lf.return_message, 4000) AS last_failure,
        CASE WHEN j.is_present AND coalesce(j.active, true) THEN j.next_run END AS next_run,
