@@ -3,7 +3,7 @@
 # sessions exist only where a DBA ran the printed script, the reader stores each event once from a cursor, and the
 # server's own sessions are read and never touched.
 #
-# Needs: docker with a SQL Server container (PGVIGIL_MSSQL_CONTAINER, default mssql-sandbox) reachable on
+# Needs: curl, python3, docker with a SQL Server container (PGVIGIL_MSSQL_CONTAINER, default mssql-sandbox) reachable on
 # PGVIGIL_MSSQL_ADDR (default localhost:1433), its sa password in MSSQL_SA_PASSWORD, psql, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...).
 # The server must have NO event session named pgvigil_* before the run (part A needs a server without them).
@@ -35,7 +35,8 @@
 #     threshold is back at its old value afterwards and the state row carries the threshold read (5).
 #  F. a slow batch over the threshold: one sql_batch_completed row with the proof's marker, duration_ms within 250 ms
 #     of the batch's own measured elapsed time, the login, host and database of the run, and query_hash and
-#     query_plan_hash as 0x and 16 hex digits, the query_hash one that sys.dm_exec_query_stats also holds.
+#     query_plan_hash as 0x and 16 hex digits, the query_hash equal to the one the batch itself read for its slow
+#     statement from sys.dm_exec_query_stats before it ended.
 #  G. an attention from a cancelled query (a client timeout of 2 s on a 30 s wait): one row with the marker statement
 #     and the session id; the state row's counter is at least 1.
 #  H. a second read stores nothing twice: the counts of D, E, F and G are unchanged and the cursors did not move back.
@@ -50,6 +51,13 @@
 #  J. AlwaysOn_health, where Always On is enabled (SKIPPED with its reason where it is not): the 'ag' state row says
 #     running, mssql_ag_events holds as many availability_replica_state_change rows as sa counts in the session's
 #     files for the last 45 days.
+#  P. the pages' API (pgvigil serve on the proof's repository, curl): /api/mssql/xe returns its eight parts, the
+#     captures' states (attention stopped by then), the proof's deadlock, the head statement's group, the bulk
+#     batches as ONE shape of at least 2,000 events, the attention and the two findings; ?part=state returns that
+#     part alone and an unknown part is a 400; the deadlock's detail holds two processes (one victim, both
+#     statements) and two resources with owners and waiters; the .xdl download is the stored graph, byte for byte,
+#     as an attachment named deadlock-<instance>-<time>.xdl; an unknown deadlock is a 404 and a malformed key a 400;
+#     the reports of the head and the 500 slowest events of the bulk shape come back by their keys.
 #  M. nothing else was touched: system_health and AlwaysOn_health (name, running, start time) are the same before and
 #     after (the sandbox is shared: another tool's session that changed meanwhile is named, not judged); the drop
 #     script printed by pgvigil drops exactly the four; the read after it says 'not installed' four times again.
@@ -71,7 +79,7 @@ L1=pgv_xe_$SUF; DB=pgvxe_$SUF; HOSTA=pgvxea$SUF; HOSTB=pgvxeb$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw)
 CFG=$(mktemp); OUT=$(mktemp); DDL=$(mktemp); DROP=$(mktemp); BEFORE=$(mktemp); AFTER=$(mktemp)
-OLD_BPT=; OLD_ADV=; MADE_REPO=; MADE_L1=; MADE_DB=; MADE_SESS=
+OLD_BPT=; OLD_ADV=; MADE_REPO=; MADE_L1=; MADE_DB=; MADE_SESS=; SRVPID=
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # the sa password reaches sqlcmd through the environment, by name: never on a command line another user can list
 export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
@@ -104,7 +112,8 @@ cleanup() {
   if [ -n "$MADE_DB" ]; then sq "IF DB_ID('$DB') IS NOT NULL BEGIN ALTER DATABASE [$DB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$DB]; END" >/dev/null 2>&1 || echo "CLEANUP: database $DB not dropped" >&2; fi
   if [ -n "$MADE_L1" ]; then sq "IF SUSER_ID('$L1') IS NOT NULL DROP LOGIN [$L1];" >/dev/null 2>&1 || echo "CLEANUP: login $L1 not dropped" >&2; fi
   if [ -n "$MADE_REPO" ]; then psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; fi
-  rm -f "$CFG" "$OUT" "$DDL" "$DROP" "$BEFORE" "$AFTER"
+  if [ -n "$SRVPID" ]; then kill "$SRVPID" >/dev/null 2>&1; fi   # the proof's own server, by its own pid
+  rm -f "$CFG" "$OUT" "$DDL" "$DROP" "$BEFORE" "$AFTER" "$CFG.serve" "$OUT.serve" "$OUT.ids" "$OUT.hdr" "$OUT.head" "$OUT.f"
   exit $rc
 }
 trap cleanup EXIT
@@ -261,15 +270,18 @@ echo "E: OK"
 
 echo "--- F. a slow batch over the threshold"
 MARK="pgvxe-slow-$SUF"
-ELAPSED=$(work "$HOSTA" "SET NOCOUNT ON; /* $MARK */ DECLARE @t0 datetime2 = SYSDATETIME(); DECLARE @n bigint; SELECT @n = COUNT_BIG(*) FROM (SELECT TOP (800) name FROM sys.all_columns) a CROSS JOIN sys.all_columns b WHERE a.name < b.name OPTION (MAXDOP 1); SELECT DATEDIFF(millisecond, @t0, SYSDATETIME());" -h -1 -W | grep -oE '^[0-9]+$' | head -1 || true)
-[ -n "$ELAPSED" ] && [ "$ELAPSED" -ge 20 ] || fail "F: the batch's own elapsed time: '$ELAPSED' ms"
+# the batch times itself and, before it ends, reads the query hash of its own slow statement from the plan cache
+# (its own sql_handle, the statement with the most elapsed time): the cache is read in the same second, not later
+work "$HOSTA" "SET NOCOUNT ON; /* $MARK */ DECLARE @t0 datetime2 = SYSDATETIME(); DECLARE @n bigint; SELECT @n = COUNT_BIG(*) FROM (SELECT TOP (800) name FROM sys.all_columns) a CROSS JOIN sys.all_columns b WHERE a.name < b.name OPTION (MAXDOP 1); SELECT 'elapsed=' + CAST(DATEDIFF(millisecond, @t0, SYSDATETIME()) AS varchar(20)); SELECT TOP (1) 'hash=' + CONVERT(varchar(18), qs.query_hash, 1) FROM sys.dm_exec_requests r JOIN sys.dm_exec_query_stats qs ON qs.sql_handle = r.sql_handle WHERE r.session_id = @@SPID ORDER BY qs.total_elapsed_time DESC;" -h -1 -W > "$OUT.f" 2>&1 || true
+ELAPSED=$(sed -n 's/^elapsed=\([0-9]*\)$/\1/p' "$OUT.f" | head -1); SA_QH=$(sed -n 's/^hash=\(0x[0-9A-F]*\)$/\1/p' "$OUT.f" | head -1); rm -f "$OUT.f"
 settle; xe F
 sl() { q "select $1 from pgvigil.mssql_slow_events where instance_id=$iid and event_name='sql_batch_completed' and statement like '%$MARK%'"; }
 [ "$(sl "count(*)")" = 1 ] || fail "F: $(sl "count(*)") completion row(s) with the marker, want 1"
 [ "$(sl "(abs(duration_ms - $ELAPSED) <= 250) || '|' || login_name || '|' || host_name || '|' || database_name || '|' || (query_hash ~ '^0x[0-9A-F]{16}\$') || '|' || (query_plan_hash ~ '^0x[0-9A-F]{16}\$') || '|' || result")" \
   = "true|sa|$HOSTA|$DB|true|true|OK" ] || fail "F: the row (the batch measured $ELAPSED ms): $(sl "duration_ms, login_name, host_name, database_name, query_hash, query_plan_hash, result")"
 QH=$(sl query_hash)
-[ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_query_stats WHERE query_hash = $QH")" -ge 1 ] || fail "F: sys.dm_exec_query_stats has no statement with query_hash $QH"
+[ -n "$SA_QH" ] || fail "F: the batch did not read its own query hash from the plan cache"
+[ "$QH" = "$SA_QH" ] || fail "F: the stored query_hash $QH is not the plan cache's $SA_QH"
 echo "F: OK (the batch measured $ELAPSED ms, stored $(sl "round(duration_ms)") ms, query_hash $QH)"
 
 echo "--- G. an attention from a cancelled query"
@@ -345,6 +357,58 @@ else
   echo "J: SKIPPED (Always On is not enabled on $CT, or its AlwaysOn_health session is not running)"
 fi
 
+echo "--- P. the pages' API over the stored rows"
+PORT=$((20000 + RANDOM % 20000))
+printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG.serve"
+"$BIN" serve -config "$CFG.serve" -dsn env:PGVIGIL_REPO_DSN -listen "127.0.0.1:$PORT" -no-login >"$OUT.serve" 2>&1 & SRVPID=$!
+for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.1; done
+kill -0 "$SRVPID" 2>/dev/null || fail "P: serve exited: $(cat "$OUT.serve")"
+U="http://127.0.0.1:$PORT/api/mssql/xe"
+W="instance=$iid&from=$(date -u -d '-6 hours' +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)"
+# jq-free: python reads the JSON the API returns
+py() { python3 -c "$1" "${@:2}"; }
+curl -fs "$U?$W" > "$OUT" || fail "P: /api/mssql/xe"
+py 'import json, sys
+d = json.load(open(sys.argv[1])); db, hb, mark = sys.argv[2], sys.argv[3], sys.argv[4]
+rows = lambda k: [dict(zip(d[k]["columns"], r)) for r in d[k]["rows"]]
+assert sorted(d) == ["ag_events", "attentions", "blocked", "deadlocks", "findings", "slow_series", "slow_shapes", "state"], sorted(d)
+st = {r["capture"]: r for r in rows("state")}
+assert all(st[c]["state"] == "running" for c in ("deadlocks", "blocked", "slow")) and st["attention"]["state"] == "stopped", st
+dl = [r for r in rows("deadlocks") if r["database_names"] == db]
+assert len(dl) == 1 and dl[0]["has_graph"] is True and dl[0]["process_count"] == 2, dl
+heads = [r for r in rows("blocked") if (r["blocking_statement"] or "").startswith("BEGIN TRAN; UPDATE dbo.dl_a SET v = 10")]
+assert len(heads) == 1 and heads[0]["reports"] >= 1 and heads[0]["head_key"], heads
+bulk = [r for r in rows("slow_shapes") if "pgvxe-bulk" not in (r["shape"] or "") and (r["shape"] or "").startswith("SET NOCOUNT ON; WAITFOR DELAY ?")]
+assert len(bulk) == 1 and int(bulk[0]["events"]) >= 2000, [(r["shape"], r["events"]) for r in rows("slow_shapes")][:8]
+assert sum(int(r["events"]) for r in rows("slow_series")) >= 2001 and len(rows("slow_series")) >= 1
+assert any(mark in (r["statement"] or "") for r in rows("attentions")), rows("attentions")
+names = {r["check_name"] for r in rows("findings")}
+assert "deadlocks in the last hour" in names and "a capture is stopped" in names, names
+print(dl[0]["event_at"], dl[0]["event_key"], heads[0]["head_key"], bulk[0]["shape_key"])' "$OUT" "$DB" "$HOSTB" "$AMARK" > "$OUT.ids" || fail "P: the tabs' data"
+read -r D_AT D_KEY H_KEY S_KEY < "$OUT.ids"
+curl -fs "$U?$W&part=state" | py 'import json, sys; d = json.load(sys.stdin); assert list(d) == ["state"], list(d)' || fail "P: ?part=state"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$U?$W&part=nope")" = 400 ] || fail "P: an unknown part was not refused"
+curl -fs --get "$U/deadlock" --data-urlencode "instance=$iid" --data-urlencode "at=$D_AT" --data-urlencode "key=$D_KEY" > "$OUT" || fail "P: the deadlock's detail"
+py 'import json, sys
+d = json.load(open(sys.argv[1])); r = dict(zip(d["columns"], d["rows"][0]))
+ps = r["processes"]; assert len(ps) == 2 and sum(1 for p in ps if p["victim"]) == 1 and all(p["statement"].startswith("BEGIN TRAN; UPDATE dbo.dl_") for p in ps), ps
+assert len(r["resources"]) == 2 and all(x["owners"] and x["waiters"] for x in r["resources"]), r["resources"]' "$OUT" || fail "P: the deadlock's processes and resources"
+curl -fs -D "$OUT.hdr" --get "$U/deadlock.xdl" --data-urlencode "instance=$iid" --data-urlencode "at=$D_AT" --data-urlencode "key=$D_KEY" > "$OUT" || fail "P: the .xdl download"
+grep -qi '^content-disposition: attachment; filename="deadlock-proof-xe-'"$SUF"'-[0-9]\{8\}-[0-9]\{6\}\.xdl"' "$OUT.hdr" || { cat "$OUT.hdr"; fail "P: the download's header"; }
+[ "$(head -c 10 "$OUT")" = "<deadlock>" ] && [ "$(q "select graph from pgvigil.mssql_deadlocks where instance_id=$iid and database_names='$DB'" | md5sum)" = "$( (cat "$OUT"; echo) | md5sum)" ] || fail "P: the downloaded graph is not the stored one"
+[ "$(curl -s -o /dev/null -w '%{http_code}' --get "$U/deadlock.xdl" --data-urlencode "instance=$iid" --data-urlencode "at=$D_AT" --data-urlencode "key=00-0")" = 404 ] || fail "P: an unknown deadlock was not a 404"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$U/deadlock?instance=$iid&at=x&key=zz")" = 400 ] || fail "P: a bad key was not refused"
+curl -fs "$U/blocked?$W&head=$H_KEY" | py 'import json, sys
+d = json.load(sys.stdin); rs = [dict(zip(d["columns"], r)) for r in d["rows"]]
+assert rs and all(r["blocked_statement"].startswith("UPDATE dbo.dl_a SET v = 11") and r["wait_ms"] >= 5000 for r in rs), rs' || fail "P: the reports of one head"
+curl -fs "$U/slow?$W&shape=$S_KEY" | py 'import json, sys
+d = json.load(sys.stdin); rs = [dict(zip(d["columns"], r)) for r in d["rows"]]
+assert len(rs) == 500 and all(r["host_name"] == sys.argv[1] or "WAITFOR" in r["statement"] for r in rs), len(rs)' "$HOSTB" || fail "P: the events of one shape"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$U/slow?$W&shape=Robert%27)")" = 400 ] || fail "P: a bad shape key was not refused"
+kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
+rm -f "$CFG.serve" "$OUT.serve" "$OUT.ids" "$OUT.hdr"
+echo "P: OK"
+
 echo "--- M. nothing else was touched; the printed drop script drops exactly the four"
 "$BIN" mssql-xe -print -drop -install-id "$ID" > "$DROP"
 sqfile "$DROP" | tee "$OUT"
@@ -382,4 +446,4 @@ grep -q "is not a SQL Server instance" "$OUT" || { cat "$OUT"; fail "O: the refu
 echo "O: OK"
 
 echo "N: NOT PROVEN (the Azure SQL Database and Managed Instance forms, SQL Server 2016-2019, Windows paths of an event file, a live ring buffer overrun)"
-echo "proof-mssql-xe: PASS (A-M, O)"
+echo "proof-mssql-xe: PASS (A-M, O, P)"
