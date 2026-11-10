@@ -10,6 +10,7 @@
 # so AF_INET / AF_INET6 / AF_UNIX stay, no PrivateNetwork, no IPAddressDeny), PrivateUsers (user
 # namespaces are not available on every host and container) and @resources (Go raises its own file
 # limit with prlimit64 at start: filtering it would kill the process).
+export LC_ALL=C.UTF-8   # systemd-analyze's ✗ marks are matched as UTF-8 whatever the caller's locale (a C locale matched nothing and the open-by-design loop ran empty)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MAX=${PGVIGIL_PROOF_MAX_EXPOSURE:-1.5}

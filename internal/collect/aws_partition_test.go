@@ -72,7 +72,8 @@ func TestDMSResourceIDIsPartitionFree(t *testing.T) {
 
 // No Go source of pgvigil names an AWS endpoint, a partition or a region: a government fleet's regions
 // come from the config alone. The scan covers every non-test .go file under the module root except
-// internal/demo, whose synthetic fleet carries example ARNs and regions as data.
+// internal/demo, whose synthetic fleet carries example ARNs and regions as data (web/, docs/ and the built
+// internal/web/dist hold no Go; the skips are by path, so internal/web's Go is scanned).
 func TestNoHardCodedAWSPartition(t *testing.T) {
 	root := filepath.Join("..", "..")
 	forbidden := []string{"arn:aws:", "arn:aws-us-gov:", ".amazonaws.com", "us-east-1", "us-east-2", "us-west-", "us-gov-"}
@@ -82,7 +83,9 @@ func TestNoHardCodedAWSPartition(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if n := d.Name(); n == ".git" || n == "node_modules" || n == "web" || n == "docs" || n == "dist" || n == "demo" {
+			rel, _ := filepath.Rel(root, p)
+			rel = filepath.ToSlash(rel)
+			if n := d.Name(); n == ".git" || n == "node_modules" || rel == "web" || rel == "docs" || rel == "internal/demo" || rel == "internal/web/dist" {
 				return filepath.SkipDir
 			}
 			return nil

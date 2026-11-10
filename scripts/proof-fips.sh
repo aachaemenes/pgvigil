@@ -26,7 +26,8 @@ grep -qF 'fips140 on, enforced (module v1.0.0)' <<<"$e" || fail "GODEBUG=fips140
 [[ "$f" == "pgvigil v0.0.0-fipsproof ("* ]] || fail "the version line no longer starts with pgvigil <version>"
 
 echo "== unit tests under GOFIPS140=v1.0.0 (cmd/pgvigil, internal/web)"
-GOFIPS140=v1.0.0 go test ./cmd/pgvigil/ ./internal/web/ -count=1 2>&1 | tail -2
+GOFIPS140=v1.0.0 go test ./cmd/pgvigil/ ./internal/web/ -count=1 > "$WORK/fips-test.log" 2>&1 || { cat "$WORK/fips-test.log"; fail "the unit tests under GOFIPS140=v1.0.0 failed (output above)"; }
+tail -2 "$WORK/fips-test.log"
 
 if [[ -n "${PGVIGIL_REPO_DSN:-}" ]]; then
   echo "== proof-auth.sh with the FIPS binary (UI login, HTTPS listen)"

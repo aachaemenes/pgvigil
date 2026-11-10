@@ -4,7 +4,8 @@
 # SHA256SUMS file, and a keyless Sigstore signature of that file (the GitHub Actions OIDC identity is the
 # signer, recorded in the public Rekor log) with its bundle for an offline verification, all attached to
 # the GitHub release. Nothing is published from a laptop: a release is reproducible from this file and
-# the tag. docs/airgap.md says how a site without Internet access verifies and installs one.
+# the tag. docs/airgap.md says how a site without Internet access verifies and installs one. The cosign installer
+# is pinned: its v4 line changes the signature assets (bundle only).
 name: release
 
 on:
@@ -59,7 +60,7 @@ jobs:
           python3 -c 'import json,sys; [json.load(open(f))["bomFormat"] == "CycloneDX" or sys.exit(f) for f in sys.argv[1:]]' dist/*.cdx.json
       - name: checksums
         run: (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@v3.10.1   # cosign v2.6.1: --bundle beside --output-signature / --output-certificate; the installer's v4 (cosign v3) drops those two flags and writes the new bundle format only, so a bump is a deliberate change of the assets, never a floating tag
       - name: sign the checksums (keyless), with a bundle for an offline verification
         run: cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle --output-signature dist/SHA256SUMS.sig --output-certificate dist/SHA256SUMS.pem dist/SHA256SUMS
       - name: verify what was just signed, both ways

@@ -37,16 +37,16 @@ Copy the folder as the site's transfer procedure requires. Inside the network, v
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
-cosign verify-blob --bundle SHA256SUMS.bundle \
+cosign verify-blob --offline --bundle SHA256SUMS.bundle \
   --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
 
-The bundle form needs no connection to the transparency log: the log entry is inside the bundle. cosign still needs Sigstore's trust root, which it keeps under `~/.sigstore` after `cosign initialize` on a connected machine; carry that folder across with the release (the release workflow runs the same bundle verification on every release, online; the offline run itself was not exercised by the project, so prove it once on the site's own jump host before relying on it).
+The bundle form needs no connection to the transparency log: the log entry is inside the bundle, and `--offline` makes cosign refuse any network call instead of trying the TUF mirror first. cosign still needs Sigstore's trust root: `cosign initialize` on a connected machine writes it under `~/.sigstore` (that write is what cosign's documentation describes; reading it back offline is how the tool behaves, not a documented promise), so carry that folder across with the release (the release workflow runs the same bundle verification on every release, online; the offline run itself was not exercised by the project, so prove it once on the site's own jump host before relying on it).
 
 ## 3. Install from the copy
 
-Either by hand: put the binary where the service account can run it, create the repository database and the roles (`pgvigil migrate`, `pgvigil roles`, the README's quick start), write the configuration, and install the service with `pgvigil install` (Linux: a hardened systemd unit, `deploy/pgvigil.service`, is written; Windows: a service under the virtual account `NT SERVICE\pgvigil`). Or through the installers from a mirror folder: `PGVIGIL_BASE_URL` points `install.sh` and `install.ps1` at any HTTP folder that holds the release's files, and `PGVIGIL_VERSION` pins the tag; the installers verify the checksum from that folder before they run anything.
+Either by hand: put the binary where the service account can run it, create the repository database and the roles (`pgvigil migrate`, `pgvigil roles`, the README's quick start), write the configuration, and install the service with `pgvigil install` (Linux: a hardened systemd unit, `deploy/pgvigil.service`, is written; Windows: a service under the virtual account `NT SERVICE\pgvigil`). Or through the installers from a mirror folder: `PGVIGIL_BASE_URL` points `install.sh` and `install.ps1` at any HTTP folder that holds the release's files, and `PGVIGIL_VERSION` pins the tag; the installers verify the checksum from that folder before they run anything. The installers fetch the plain build only; a site that wants the FIPS build (`*_fips`, the same folder, its own line in `SHA256SUMS`) installs it by hand as above.
 
 ```sh
 # an HTTP mirror inside the network: the release folder served as it was downloaded

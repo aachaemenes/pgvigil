@@ -199,7 +199,7 @@ cosign verify-blob --signature SHA256SUMS.sig --certificate SHA256SUMS.pem \
   --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/<tag>" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 # the same from the bundle alone (the signature, the certificate and the transparency-log entry in one file; no connection to the log)
-cosign verify-blob --bundle SHA256SUMS.bundle \
+cosign verify-blob --offline --bundle SHA256SUMS.bundle \
   --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/<tag>" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
