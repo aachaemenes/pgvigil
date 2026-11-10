@@ -78,6 +78,10 @@ type Instance struct {
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
 	// accepted: the password of a login that can stop sessions never sits in the file.
 	ActionsDSNRaw string `yaml:"actions_dsn"`
+	// Actions is a SQL Server instance's allow list for the actions door: kill, job_start, job_stop. An action not
+	// named here is off even with an actions_dsn; empty (the default) = nothing. PostgreSQL's cancel and terminate
+	// need no list: its actions_dsn alone turns them on.
+	Actions []string `yaml:"actions"`
 	// Backups tunes the backups collection's rules; nil = the defaults.
 	Backups *Backups `yaml:"backups"`
 	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
@@ -92,6 +96,8 @@ type Instance struct {
 	// login: SHOW only); the pgbouncer collection reads SHOW POOLS, STATS, DATABASES and CONFIG through it. Empty
 	// (the default) = no pooler: no collection, no Pooler tab, no finding.
 	PgBouncerDSNRaw string `yaml:"pgbouncer"`
+	// MSSQLThresholds sets the HA/DR, jobs and backups thresholds of a sqlserver instance (docs/sqlserver-hadr.md).
+	MSSQLThresholds map[string]any `yaml:"mssql_thresholds"`
 }
 
 // DBADashRepo is one DBADash repository of the dbadash: list.
@@ -468,6 +474,9 @@ func (c *Config) Validate() error {
 			default:
 				return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
 			}
+			if len(in.Actions) > 0 {
+				return fmt.Errorf("instance %q: the actions: list is SQL Server's (a PostgreSQL instance's cancel and terminate are on with its actions_dsn)", in.Name)
+			}
 		case EngineSQLServer:
 			switch in.Platform {
 			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi":
@@ -477,10 +486,28 @@ func (c *Config) Validate() error {
 			if v := strings.TrimSpace(in.DSNRaw); !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") && inlinePassword(v) {
 				return fmt.Errorf("instance %q: a sqlserver dsn that carries a password must come through env:NAME or file:/path", in.Name)
 			}
-			// the doors below are PostgreSQL's; SQL Server's own come with its pages
+			// the actions door: another login than the read one, through env: or file: (checked for both engines
+			// below), and an allow list that names only what the door can do
+			if a, d := strings.TrimSpace(in.ActionsDSNRaw), strings.TrimSpace(in.DSNRaw); a != "" && a == d {
+				return fmt.Errorf("instance %q: actions_dsn is the instance's dsn: the actions login must be a login of its own, never the read login", in.Name)
+			}
+			seen := map[string]bool{}
+			for _, a := range in.Actions {
+				switch a {
+				case "kill", "job_start", "job_stop":
+				default:
+					return fmt.Errorf("instance %q: unknown action %q in actions: (kill, job_start, job_stop)", in.Name, a)
+				}
+				if seen[a] {
+					return fmt.Errorf("instance %q: actions: names %s twice", in.Name, a)
+				}
+				seen[a] = true
+			}
+			if len(in.Actions) > 0 && strings.TrimSpace(in.ActionsDSNRaw) == "" {
+				return fmt.Errorf("instance %q: actions: names %s but the instance has no actions_dsn", in.Name, strings.Join(in.Actions, ", "))
+			}
+			// the doors below are PostgreSQL's
 			switch {
-			case strings.TrimSpace(in.ActionsDSNRaw) != "":
-				return fmt.Errorf("instance %q: actions_dsn is not available for engine sqlserver yet", in.Name)
 			case strings.TrimSpace(in.ExplainDSNRaw) != "" || in.ExplainAnalyze:
 				return fmt.Errorf("instance %q: explain_dsn and explain_analyze are PostgreSQL's", in.Name)
 			case strings.TrimSpace(in.PgBouncerDSNRaw) != "":

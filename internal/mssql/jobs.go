@@ -47,14 +47,14 @@ func msdbReadable(ctx context.Context, conn *sql.Conn, table string) error {
 	return nil
 }
 
-// CursorFunc reads how far a source of this instance was read (false: never).
-type CursorFunc func(ctx context.Context, source string) (last int64, ok bool, err error)
+// SeqCursorFunc reads how far a source of this instance was read (false: never).
+type SeqCursorFunc func(ctx context.Context, source string) (last int64, ok bool, err error)
 
 // CursorCollector is what a collector adds when it reads on from where its last read ended. RunOnce calls RunFrom
 // in place of Run when the collector has it; the cursor itself is advanced by the collection's import function,
 // in the transaction that stores the rows.
 type CursorCollector interface {
-	RunFrom(ctx context.Context, conn *sql.Conn, info Info, cursor CursorFunc) ([]collect.Row, error)
+	RunFrom(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursorFunc) ([]collect.Row, error)
 }
 
 const (
@@ -160,7 +160,7 @@ func (c jobsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]co
 }
 
 // RunFrom reads the jobs, their steps and the history past the cursor.
-func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor CursorFunc) ([]collect.Row, error) {
+func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor SeqCursorFunc) ([]collect.Row, error) {
 	for _, t := range []string{"sysjobs", "sysjobhistory"} {
 		if err := msdbReadable(ctx, conn, t); err != nil {
 			return nil, err

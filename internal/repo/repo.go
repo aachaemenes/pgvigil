@@ -203,6 +203,50 @@ func (r *Repo) LogCursor(ctx context.Context, instanceID int, source string) (ti
 	return *t, true, nil
 }
 
+// MSSQLCursor returns how far a SQL Server source was read for an instance (pgvigil.mssql_cursor; found false: never).
+func (r *Repo) MSSQLCursor(ctx context.Context, instanceID int, source string) (fileName string, fileOffset int64, lastEventAt time.Time, lastSeq int64, found bool, err error) {
+	var f *string
+	var off, seq *int64
+	var at *time.Time
+	rows, err := r.pool.Query(ctx, `SELECT file_name, file_offset, last_event_at, last_seq FROM pgvigil.import_mssql_cursor($1, $2)`, instanceID, source)
+	if err != nil {
+		return "", 0, time.Time{}, 0, false, fmt.Errorf("mssql_cursor: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return "", 0, time.Time{}, 0, false, rows.Err()
+	}
+	if err := rows.Scan(&f, &off, &at, &seq); err != nil {
+		return "", 0, time.Time{}, 0, false, fmt.Errorf("mssql_cursor: %w", err)
+	}
+	if f != nil {
+		fileName = *f
+	}
+	if off != nil {
+		fileOffset = *off
+	}
+	if at != nil {
+		lastEventAt = *at
+	}
+	if seq != nil {
+		lastSeq = *seq
+	}
+	return fileName, fileOffset, lastEventAt, lastSeq, true, nil
+}
+
+// MSSQLSeqCursor returns how far a one-number cursor source of a SQL Server instance was read (pgvigil.mssql_hadr_cursor;
+// false: never). The Agent job history reads on from it.
+func (r *Repo) MSSQLSeqCursor(ctx context.Context, instanceID int, source string) (int64, bool, error) {
+	var n *int64
+	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.mssql_hadr_cursor($1, $2)`, instanceID, source).Scan(&n); err != nil {
+		return 0, false, fmt.Errorf("mssql_hadr_cursor: %w", err)
+	}
+	if n == nil {
+		return 0, false, nil
+	}
+	return *n, true, nil
+}
+
 // LogCollection records when a collection ran and how it ended.
 func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, d time.Duration, status, note string) error {
 	_, err := r.pool.Exec(ctx, `SELECT pgvigil.log_collection($1, $2, $3, $4, $5, $6)`,

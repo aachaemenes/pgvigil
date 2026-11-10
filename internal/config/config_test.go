@@ -187,6 +187,9 @@ func TestEngine(t *testing.T) {
 		{Name: "ms-env", Engine: "sqlserver", DSNRaw: "env:MS_DSN", Platform: "azuresqlmi"},
 		{Name: "ms-ado", Engine: "sqlserver", DSNRaw: "server=h;user id=mon;database=master", Platform: "rds"},
 	}}
+	ok.Instances = append(ok.Instances,
+		Instance{Name: "ms-act", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "env:MS_ACT", Actions: []string{"kill", "job_start", "job_stop"}},
+		Instance{Name: "ms-act-none", Engine: "sqlserver", DSNRaw: "env:MS_DSN", ActionsDSNRaw: "file:/run/secrets/ms-act"})
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("a valid two-engine config was rejected: %v", err)
 	}
@@ -199,7 +202,12 @@ func TestEngine(t *testing.T) {
 		"sqlserver platform":   {Name: "a", DSNRaw: "x", Platform: "azuresqldb"},
 		"inline password url":  {Name: "a", Engine: "sqlserver", DSNRaw: "sqlserver://mon:secret@h:1433"},
 		"inline password ado":  {Name: "a", Engine: "sqlserver", DSNRaw: "server=h;user id=mon;password=secret"},
-		"actions door":         {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ActionsDSNRaw: "env:Y"},
+		"actions inline":       {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ActionsDSNRaw: "sqlserver://act@h:1433"},
+		"actions = read login": {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ActionsDSNRaw: "env:X"},
+		"unknown action":       {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ActionsDSNRaw: "env:Y", Actions: []string{"kill", "terminate"}},
+		"action twice":         {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ActionsDSNRaw: "env:Y", Actions: []string{"kill", "kill"}},
+		"actions without dsn":  {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", Actions: []string{"kill"}},
+		"actions on postgres":  {Name: "a", DSNRaw: "env:X", ActionsDSNRaw: "env:Y", Actions: []string{"kill"}},
 		"explain door":         {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ExplainDSNRaw: "env:Y"},
 		"explain analyze":      {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ExplainAnalyze: true},
 		"pooler":               {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", PgBouncerDSNRaw: "env:Y"},

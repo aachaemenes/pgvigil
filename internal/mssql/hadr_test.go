@@ -1,8 +1,6 @@
 package mssql
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,7 +11,6 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
-	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
 func TestHADRCollectorsRegistered(t *testing.T) {
@@ -284,27 +281,6 @@ func hadrStatements(info Info, distributionDB string) map[string]string {
 		"backup databases": backupDatabasesSQL(true), "backup databases without groups": backupDatabasesSQL(false),
 		"backups": backupsSQL, "backup history": backupHistorySQL,
 	}
-}
-
-func liveConn(t *testing.T) (context.Context, *sql.Conn, Info) {
-	t.Helper()
-	dsn := os.Getenv("PGVIGIL_MSSQL_TEST_DSN")
-	if dsn == "" {
-		t.Skip("PGVIGIL_MSSQL_TEST_DSN is not set")
-	}
-	t.Setenv("PGVIGIL_MSSQL_TEST_DSN_RESOLVED", dsn)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	t.Cleanup(cancel)
-	db, conn, err := Connect(ctx, config.Instance{Name: "live", Engine: config.EngineSQLServer, DSNRaw: "env:PGVIGIL_MSSQL_TEST_DSN_RESOLVED"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close(); _ = db.Close() })
-	info, err := Detect(ctx, conn, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ctx, conn, info
 }
 
 // Every statement against a real server (PGVIGIL_MSSQL_TEST_DSN; nothing is written). The statements that need a

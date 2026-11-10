@@ -118,6 +118,11 @@ func TestMonitorSetupSettings(t *testing.T) {
 				if strings.Contains(strings.ToUpper(line), "UPDATE ") || strings.HasPrefix(strings.TrimSpace(line), "//") {
 					continue
 				}
+				// an Extended Events target's option list, ADD TARGET ...(SET filename = ...), is part of a CREATE EVENT
+				// SESSION text a DBA runs on SQL Server: not a session setting, and never a PostgreSQL one
+				if strings.Contains(line, "ADD TARGET ") {
+					continue
+				}
 				for _, m := range setStmt.FindAllStringSubmatch(line, -1) {
 					seen++
 					if !monitorSetupSettings[strings.ToLower(m[1])] {

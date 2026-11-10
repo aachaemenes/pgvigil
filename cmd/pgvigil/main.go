@@ -33,6 +33,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
+	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/sched"
 )
@@ -88,6 +89,8 @@ func run(args []string) int {
 		err = runUninstall(log, args[1:])
 	case "mcp":
 		err = runMCP(ctx, log, args[1:])
+	case "mssql-xe":
+		err = runMSSQLXE(args[1:])
 	default:
 		usage()
 		return 2
@@ -103,8 +106,33 @@ func run(args []string) int {
 	return 0
 }
 
+// runMSSQLXE prints the Extended Events session script of the SQL Server engine for the server's DBA (-print), or
+// the script that drops those sessions (-print -drop). pgvigil never runs either.
+func runMSSQLXE(args []string) error {
+	fs := flag.NewFlagSet("pgvigil mssql-xe", flag.ContinueOnError)
+	doPrint := fs.Bool("print", false, "print the script that creates and starts the sessions")
+	drop := fs.Bool("drop", false, "with -print: the script that drops the sessions instead")
+	id := fs.String("install-id", "main", "the install id in the session names (pgvigil_<install id>_<capture>): 1 to 20 lower-case letters and digits")
+	form := fs.String("form", mssql.XEFormServer, "server (SQL Server, Amazon RDS), azuresqlmi or azuresqldb")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*doPrint {
+		return errors.New("mssql-xe: -print is the only action; pgvigil prints the script and the server's DBA runs it")
+	}
+	script, err := mssql.XEScript(*id, *form)
+	if *drop {
+		script, err = mssql.XEDropScript(*id, *form)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Print(script)
+	return nil
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|mcp|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|mcp|mssql-xe|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector

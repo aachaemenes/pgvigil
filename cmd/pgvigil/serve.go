@@ -17,6 +17,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/engines"
+	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/web"
 )
 
@@ -110,6 +111,13 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		pc.QueryText[in.Name] = in.QueryText
 	}
 	srv.SetPlans(pc)
+	doors := map[string]mssql.Door{}
+	for _, in := range cfg.Instances {
+		if in.Engine == config.EngineSQLServer {
+			doors[in.Name] = mssql.Door{Monitor: in.DSN(), Actions: in.ActionsDSN(), Configured: strings.TrimSpace(in.ActionsDSNRaw) != "", Allow: in.Actions}
+		}
+	}
+	srv.SetMSSQLActions(doors)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}

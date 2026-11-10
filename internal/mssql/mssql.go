@@ -275,7 +275,28 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		logRun(instanceID, "skipped", why)
 		return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
-	rows, err := c.Run(sctx, conn, info)
+	// a collection that reads its source from a cursor imports batch by batch, each batch with its cursor (batch.go)
+	if bc, ok := c.(BatchCollector); ok {
+		return runBatched(ctx, sctx, log, r, in, name, bc, conn, info, instanceID, start, limit)
+	}
+	tctx, tcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+	err = StoreHADRThresholds(tctx, r, instanceID, name, start, in.MSSQLThresholds)
+	tcancel()
+	if err != nil {
+		logRun(instanceID, "error", err.Error())
+		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+	}
+	// a collection that reads on from one sequence number (the Agent job history) asks the repository where it stopped
+	var rows []collect.Row
+	if cc, ok := c.(CursorCollector); ok {
+		rows, err = cc.RunFrom(sctx, conn, info, func(_ context.Context, source string) (int64, bool, error) {
+			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			defer ccancel()
+			return r.MSSQLSeqCursor(cctx, instanceID, source)
+		})
+	} else {
+		rows, err = c.Run(sctx, conn, info)
+	}
 	if errors.Is(err, collect.ErrSkip) {
 		why := strings.TrimSuffix(err.Error(), ": "+collect.ErrSkip.Error())
 		logRun(instanceID, "skipped", why)
