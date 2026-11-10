@@ -25,12 +25,10 @@
 -- A statement is its queryid across the instance's databases and roles (as top_statements groups it); the roles it ran
 -- under ride along (usenames), so the session SETs of task 58 can be shown beside it.
 --
--- One index for the window reads: (instance_id, snapshot_at) on statements_delta. A read bounds the deltas it scans to
--- those ending at most one day after the window's end: a delta that spans a collection gap of more than a day past the
+-- The window reads use each monthly partition's (instance_id, snapshot_at) index (ensure_month_partition, 0002). A read
+-- bounds the deltas it scans to those ending at most one day after the window's end: a delta that spans a collection gap of more than a day past the
 -- window (the collector stopped, or the statement left pg_stat_statements' top set and came back) is left out, and
 -- the window then reads a little low for that statement.
-
-CREATE INDEX IF NOT EXISTS statements_delta_instance_at_idx ON pgvigil.statements_delta (instance_id, snapshot_at);
 
 CREATE OR REPLACE FUNCTION pgvigil.statement_window(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (queryid bigint, datname text, usenames text[], calls float8, total_exec_ms float8, pages float8, deltas_inside bigint)
@@ -76,11 +74,11 @@ LANGUAGE sql STABLE AS $$
   WITH b AS (
     SELECT pgvigil.statement_baseline(p_instance_id, p_from - interval '1 day', p_to - interval '1 day') AS d1,
            pgvigil.statement_baseline(p_instance_id, p_from - interval '7 days', p_to - interval '7 days') AS d7
-  ), c AS (
+  ), c AS MATERIALIZED (   -- each window aggregated once, then joined by hash (not re-read per statement)
     SELECT * FROM pgvigil.statement_window(p_instance_id, p_from, p_to)
-  ), p1 AS (
+  ), p1 AS MATERIALIZED (
     SELECT * FROM pgvigil.statement_window(p_instance_id, p_from - interval '1 day', p_to - interval '1 day') w WHERE w.deltas_inside > 0
-  ), p7 AS (
+  ), p7 AS MATERIALIZED (
     SELECT * FROM pgvigil.statement_window(p_instance_id, p_from - interval '7 days', p_to - interval '7 days') w WHERE w.deltas_inside > 0
   ), r AS (
     SELECT c.queryid, c.datname, c.usenames, c.calls, c.total_exec_ms,
