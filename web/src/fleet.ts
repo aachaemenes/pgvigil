@@ -3,7 +3,8 @@
 import { get, Row, rowsOf, Table } from './api';
 import { versionCell } from './versions';
 
-export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; at: number }
+// mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
+export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 
@@ -12,8 +13,10 @@ export async function fleet(force = false): Promise<Fleet> {
   if (pending) return pending;
   // the versions read is optional: a repository not yet migrated to 0035 (or any failure there) costs the Version
   // column only, never the tree and the Summary
-  pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null }))])
-    .then(([i, c, v]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), at: Date.now() }))
+  // the SQL Server read is optional the same way (a repository before 0064, a failure): its rows then say 'not yet'
+  pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
+    get<{ cells: Table | null; servers: Table | null }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null }))])
+    .then(([i, c, v, m]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
 }
@@ -22,21 +25,26 @@ export function forget() { cache = null; }
 
 // Status groups: one coloured cell each on the Summary grid. A group's checks are the overview's
 // check_group names; activity is read from the instance row's latest session summary.
-export interface Group { key: string; label: string; checks: string[]; tab: string }
+// mssql: the group's key in the SQL Server read (/api/mssql/summary) and the SQL Server tab its cell opens; a group
+// without it is a PostgreSQL check. pg false: a group PostgreSQL has no read for yet.
+export interface Group { key: string; label: string; checks: string[]; tab: string; mssql?: [string, string, string?]; pg?: boolean }   // the third: the group's name on a SQL Server page
 export const groups: Group[] = [
   { key: 'collect', label: 'Collection', checks: ['collection failing', 'collection stale'], tab: 'summary' },
-  { key: 'activity', label: 'Activity', checks: [], tab: 'activity' },
-  { key: 'replication', label: 'Replication', checks: ['replication'], tab: 'replication' },
-  { key: 'jobs', label: 'Jobs', checks: ['jobs', 'jobs report'], tab: 'jobsreport' },
+  { key: 'activity', label: 'Activity', checks: [], tab: 'activity', mssql: ['blocking', 'mssql_running', 'Blocking'] },
+  { key: 'replication', label: 'Replication', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'] },
+  { key: 'jobs', label: 'Jobs', checks: ['jobs', 'jobs report'], tab: 'jobsreport', mssql: ['jobs', 'mssqljobs'] },
   { key: 'custom', label: 'Custom', checks: ['custom'], tab: 'custom' },
   { key: 'dms', label: 'DMS', checks: ['dms'], tab: 'dms' },
   { key: 'tables', label: 'Tables', checks: ['tables'], tab: 'tables' },
   { key: 'vacuum', label: 'Vacuum', checks: ['vacuum'], tab: 'vacuum' },
-  { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters' },
+  { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters', mssql: ['events', 'mssql_deadlocks', 'Deadlocks and blocked reports'] },
   { key: 'host', label: 'Host', checks: ['host', 'pi'], tab: 'host' },   // 'pi': cache starved by the ACU floor (the Capacity section sits on the Host tab)
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
-  { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage' },
-  { key: 'backups', label: 'Backups', checks: ['backups'], tab: 'backups' },
+  { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage', mssql: ['storage', 'mssqlstorage'] },
+  { key: 'backups', label: 'Backups', checks: ['backups'], tab: 'backups', mssql: ['backups', 'mssqlbackups'] },
+  // DBA Dash's Summary columns (plan task 106): SQL Server first; PostgreSQL's reads come with the task
+  { key: 'uptime', label: 'Uptime', checks: [], tab: 'summary', mssql: ['uptime', 'summary'], pg: false },
+  { key: 'dbstate', label: 'Database state', checks: [], tab: 'summary', mssql: ['dbstate', 'mssqlfiles'], pg: false },
   { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption' },
   { key: 'io', label: 'IO', checks: ['io'], tab: 'io' },
   { key: 'roles', label: 'Roles', checks: ['roles'], tab: 'roles' },
@@ -73,14 +81,22 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
   const id = Number(r.instance_id);
   const mine = f.checks.filter(c => Number(c.instance_id) === id);
   const out: Record<string, Cell> = {};
-  // a SQL Server instance has no PostgreSQL collection: only its Collection cell is judged, the rest say so
-  // instead of reading an empty check list as OK (its own checks come with the SQL Server pages)
+  // a SQL Server instance: its Collection cell is judged like any other; a group with a SQL Server read takes its
+  // cell from that read (no stored read of the group yet = 'not yet', never OK); a PostgreSQL-only group says so
   const otherEngine = r.engine != null && r.engine !== 'postgres';
   for (const g of groups) {
     if (otherEngine && g.key !== 'collect') {
-      out[g.key] = { level: 0, n: 0, detail: ['a PostgreSQL check: nothing is collected for it on this engine yet'], none: true, text: 'not yet' };
+      const m = g.mssql ? f.mssql.find(x => Number(x.instance_id) === id && x.key === g.mssql![0]) : undefined;
+      if (!g.mssql) out[g.key] = { level: 0, n: 0, detail: ['a PostgreSQL check: SQL Server has no such thing'], none: true, text: 'n/a' };
+      else if (!m || !m.sampled) out[g.key] = { level: 0, n: 0, detail: ['no read of this group stored for the instance yet'], none: true, text: 'not yet' };
+      else {
+        const crit = Number(m.critical ?? 0), warn = Number(m.warning ?? 0);
+        out[g.key] = { level: crit ? 2 : warn ? 1 : 0, n: crit || warn, detail: Array.isArray(m.detail) ? m.detail.map(String) : [],
+          ...(m.value != null && !crit && !warn ? { text: String(m.value) } : m.value != null ? { text: `${String(m.value)} ${crit ? 'critical' : 'warning'}` } : {}) };
+      }
       continue;
     }
+    if (g.pg === false) { out[g.key] = { level: 0, n: 0, detail: ['not read on PostgreSQL yet'], none: true, text: 'not yet' }; continue; }
     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
     if (g.key === 'version') { out[g.key] = versionCellOf(f, id); continue; }
     const hit = mine.filter(c => g.checks.includes(String(c.check_group)));

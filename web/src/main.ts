@@ -34,6 +34,7 @@ import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
+import { mssqlSummary } from './mssql_summary';
 import { mssqlWaitsView } from './mssql_waits';
 import { mssqlBlocked, mssqlDeadlocks, mssqlSlow, mssqlAgEvents } from './mssql_xe';
 import { hasAvailability, mssqlAvailability } from './mssql_hadr';
@@ -49,7 +50,7 @@ import { exportButtons } from './export';
 type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
-  summary: c => instanceSummary(c), findings: c => findings(c),
+  summary: mssqlSummary, findings: c => findings(c),
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: mssqlSlow,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
@@ -167,13 +168,18 @@ async function render(force = false) {
   }
   const pages = ctx.instance ? (isMssql(engine) ? mssqlPages : instancePages) : rootPages;
   // a page of the other engine (an old link, a tree click from another instance) opens this instance's Summary
-  if (ctx.instance && !pages[ctx.tab]) ctx.tab = 'summary';
+  if (ctx.instance && !pages[ctx.tab]) {
+    ctx.tab = 'summary';
+    history.replaceState(null, '', href(ctx, { tab: 'summary' }));   // the address says the page shown, so a reload does not repeat the fallback
+  }
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
   const strip = group.tabs.filter(k => tabs[k]);
+  // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
+  $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(
-    ...(group.name ? [el('span', { class: 'tab-group' }, group.name + ':')] : []),
+    ...(group.name ? [el('a', { href: href(ctx, { tab: 'summary' }), class: 'tab-back' }, 'Summary'), el('span', { class: 'tab-group', 'aria-hidden': 'true' }, '/ ' + group.name + ':')] : []),
     ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
   // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
   $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));

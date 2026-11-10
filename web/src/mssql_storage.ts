@@ -4,7 +4,7 @@
 // selector (7 to 365) that redraws the size lines, the ring of growth and the growth figures; every volume, database
 // and file in a grid. Data from /api/mssql/storage (mssql_storage, read hourly).
 import { get, Row, rowsOf, Table } from './api';
-import { donutChart, lineChart } from './chart';
+import { donutChart, lineChart, volumeBars } from './chart';
 import { hashParam, hrefWith, series } from './dbinfo';
 import { Ctx } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';
@@ -74,17 +74,14 @@ export async function mssqlStorageView(ctx: Ctx): Promise<HTMLElement> {
     return sec;
   }
 
-  // the rings: each volume used against free, what each database holds; then the growth of a chosen number of days
+  // volumes as bars, used against size; the databases as a pie of what each holds; then the growth of a chosen number of days
   const pies = el('div', { class: 'charts' });
-  for (const v of vols.slice(0, 6)) {
-    if (v.used_bytes == null || v.free_bytes == null) continue;
-    pies.append(donutChart(`Volume ${String(v.volume ?? '')}`,
-      [{ label: 'used', value: Number(v.used_bytes) }, { label: 'free', value: Number(v.free_bytes) }], fmtBytes, 8, true));
-  }
+  const bars = volumeBars('Volumes', vols.filter(v => v.used_bytes != null && v.free_bytes != null)
+    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes) })), fmtBytes);
   pies.append(donutChart('Databases by size', dbs.map(r => ({ label: String(r.database_name ?? ''), value: Number(r.size_bytes ?? 0),
     href: hrefWith(ctx, mssqlFilesTab, { db: String(r.database_name ?? '') }) })), fmtBytes));
   pies.append(donutChart('Data against log', [{ label: 'data files', value: sum('data_bytes') }, { label: 'log files', value: sum('log_bytes') }], fmtBytes, 8, true));
-  sec.append(el('h3', {}, 'Space at a glance'), pies, growthPanel(ctx, d));
+  sec.append(el('h3', {}, 'Space at a glance'), bars, pies, growthPanel(ctx, d));
 
   if (checks.length) sec.append(el('h3', {}, 'Checks'), grid(checks, checkCols));
   sec.append(el('h3', {}, 'Volumes'),

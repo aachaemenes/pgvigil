@@ -156,6 +156,18 @@ func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet
 	if err := checkCollectionNames(cfg); err != nil {
 		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
 	}
+	// mssql_thresholds: the names and values are the SQL Server engine's (config cannot import it), a sqlserver instance's only
+	for _, in := range cfg.Instances {
+		if len(in.MSSQLThresholds) == 0 {
+			continue
+		}
+		if in.Engine != config.EngineSQLServer {
+			return nil, nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds belongs to an engine: sqlserver instance", *path, in.Name)}
+		}
+		if _, err := mssql.ThresholdRows(in.MSSQLThresholds); err != nil {
+			return nil, nil, &configError{fmt.Errorf("config %s: instance %q: mssql_thresholds: %w", *path, in.Name, err)}
+		}
+	}
 	// the custom: list (task 61): read from the same file, validated against the instances, the list the custom collection runs
 	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
 		return nil, nil, &configError{fmt.Errorf("config %s: %w", *path, err)}
