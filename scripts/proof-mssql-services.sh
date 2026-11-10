@@ -38,13 +38,22 @@
 #       cell is not sampled;
 #     - an OLDER read imported after a newer one changes nothing;
 #     - a service missing from a later read is kept and marked not present;
+#     - a service row 'Other (start operation pending)': warning with that status as the value, not 'stopped';
+#     - a disabled Agent, then a read WITHOUT the service list and 0 sessions: still warning 'disabled' (the start
+#       mode is kept), not critical;
+#     - a service list imported late (older than the newest list stored) changes no row: a service a newer read
+#       found gone stays not present;
 #     - the payload without an agent row is refused; so is a PostgreSQL instance.
 #  F. roles: pgvigil_collector may execute import_mssql_services and may not select mssql_health; pgvigil_reader
 #     may select mssql_health, mssql_service and mssql_health_status and may not execute the import.
 #  G. NOT PROVEN HERE: a stopped or disabled Agent on a live server (the container's Agent cannot be stopped
 #     without a restart of the server: part E covers the rule on imported rows), SQL Server on Windows (more
 #     services listed, real dump files with dates), Express, Amazon RDS, Azure SQL Managed Instance (whether it
-#     lists services at all), SQL Server 2016-2019, a login in msdb without VIEW ANY DEFINITION.
+#     lists services at all), SQL Server 2016-2019 (the list without the instant file initialization column on a
+#     build before 2016 SP1 is a unit test of the statement's text only), a login without any access to msdb (msdb
+#     lets every login in as guest, so that branch of the collector never runs here), a dump file with a date
+#     through the live path (the sandbox's one file is undated), mssql_service.last_startup_at against sa's read,
+#     a login with the two narrower SQL Server 2022 rights and not VIEW SERVER STATE (it is skipped).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}" "${MSSQL_SA_PASSWORD:?the sa password of the SQL Server sandbox}"
@@ -188,6 +197,11 @@ imp "$s" "now() - interval '1 hour'" "[$(ag 0)]"; want "$s" agent "0|0|running|t
 s=$(synth gone); imp "$s" "now()" "[$(ag 4),$(svc Running Automatic),{\"kind\":\"service\",\"service_name\":\"SQL Full-text Filter Daemon Launcher (MSSQLSERVER)\",\"startup_type\":\"Manual\",\"status\":\"Running\",\"is_clustered\":\"N\"}]"
 imp "$s" "now() + interval '1 second'" "[$(ag 4),$(svc Running Automatic)]"
 [ "$(q "select string_agg(is_present::text, ',' order by service_name) from pgvigil.mssql_service where instance_id=$s")" = "false,true" ] || fail "E: a service gone from the list"
+# a late, older list (the daemon launcher back in it) must change nothing
+imp "$s" "now() + interval '500 milliseconds'" "[$(ag 4),$(svc Running Automatic),{\"kind\":\"service\",\"service_name\":\"SQL Full-text Filter Daemon Launcher (MSSQLSERVER)\",\"startup_type\":\"Manual\",\"status\":\"Running\",\"is_clustered\":\"N\"}]"
+[ "$(q "select string_agg(is_present::text, ',' order by service_name) from pgvigil.mssql_service where instance_id=$s")" = "false,true" ] || fail "E: a late older list marked a gone service present"
+t=$(synth pending); imp "$t" "now()" "[$(ag 0),$(svc 'Other (start operation pending)' Automatic)]"; want "$t" agent "0|1|other (start operation pending)|true" "a service between states"
+t=$(synth kept); imp "$t" "now()" "[$(ag 0),$(svc Stopped Disabled)]"; imp "$t" "now() + interval '1 second'" "[$(ag 0)]"; want "$t" agent "0|1|disabled|true" "a disabled Agent after a read without the service list"
 if q "select pgvigil.import_mssql_services($s, now() + interval '9 seconds', '[{\"kind\":\"dumps\",\"dump_count\":0}]'::jsonb)" >"$OUT" 2>&1; then fail "E: a payload without an agent row was accepted"; fi
 grep -q "no agent row" "$OUT" || fail "E: the refusal's text: $(cat "$OUT")"
 pgi=$(q "select pgvigil.ensure_instance('proof-svc-pg-$SUF', 'onprem', '17.0', 170000, false, '{}')")

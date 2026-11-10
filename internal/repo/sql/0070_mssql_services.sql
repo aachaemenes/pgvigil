@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_health (
   agent_expected     boolean,
   agent_running      boolean,
   agent_source       text,
+  agent_status       text,
   agent_startup      text,
   agent_sessions     int,
   -- Database Mail: on = the 'Database Mail XPs' value in use; status STARTED / STOPPED as
@@ -52,6 +53,8 @@ DECLARE
   v_running boolean;
   v_source text;
   v_startup text;
+  v_status text;
+  v_last timestamptz;
 BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
     RAISE EXCEPTION 'import_mssql_services: instance % is not a SQL Server instance', p_instance_id;
@@ -64,6 +67,10 @@ BEGIN
   END IF;
   v_svc := EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'service');
 
+  -- the service list is applied whole or not at all: a read older than the newest list stored changes nothing
+  -- (row by row, a late older read would mark a service present again that a newer read found gone)
+  SELECT max(snapshot_at) INTO v_last FROM pgvigil.mssql_service WHERE instance_id = p_instance_id;
+  IF v_svc AND (v_last IS NULL OR p_snapshot_at >= v_last) THEN
   INSERT INTO pgvigil.mssql_service AS s (instance_id, service_name, startup_type, status, process_id, last_startup_at,
       service_account, is_clustered, ifi_enabled, snapshot_at)
   SELECT p_instance_id, r->>'service_name', r->>'startup_type', r->>'status', (r->>'process_id')::int,
@@ -75,28 +82,27 @@ BEGIN
       startup_type = EXCLUDED.startup_type, status = EXCLUDED.status, process_id = EXCLUDED.process_id,
       last_startup_at = EXCLUDED.last_startup_at, service_account = EXCLUDED.service_account,
       is_clustered = EXCLUDED.is_clustered, ifi_enabled = EXCLUDED.ifi_enabled, snapshot_at = EXCLUDED.snapshot_at,
-      is_present = true
-  WHERE s.snapshot_at <= EXCLUDED.snapshot_at;
-  -- a service the server no longer lists stays as last read, marked gone (only when this read listed services)
-  IF v_svc THEN
-    UPDATE pgvigil.mssql_service s SET is_present = false
-     WHERE s.instance_id = p_instance_id AND s.is_present AND s.snapshot_at < p_snapshot_at;
+      is_present = true;
+  -- a service the server no longer lists stays as last read, marked gone
+  UPDATE pgvigil.mssql_service s SET is_present = false
+   WHERE s.instance_id = p_instance_id AND s.is_present AND s.snapshot_at < p_snapshot_at;
   END IF;
 
   -- the Agent's state: the service's own status when the server lists the service, else its sessions
-  SELECT r->>'status' = 'Running', r->>'startup_type' INTO v_running, v_startup
+  SELECT r->>'status', r->>'startup_type' INTO v_status, v_startup
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'service' AND r->>'service_name' LIKE 'SQL Server Agent%' LIMIT 1;
-  IF FOUND THEN
+  IF v_status IS NOT NULL THEN
+    v_running := v_status = 'Running';
     v_source := 'service';
   ELSE
     v_running := (v_a->>'sessions')::int > 0;
     v_source := 'sessions';
   END IF;
 
-  INSERT INTO pgvigil.mssql_health AS h (instance_id, snapshot_at, agent_expected, agent_running, agent_source, agent_startup,
+  INSERT INTO pgvigil.mssql_health AS h (instance_id, snapshot_at, agent_expected, agent_running, agent_source, agent_status, agent_startup,
       agent_sessions, dbmail_on, dbmail_status, dumps_read, dump_count, last_dump_at)
-  VALUES (p_instance_id, p_snapshot_at, (v_a->>'engine_edition')::int IS DISTINCT FROM 4, v_running, v_source, v_startup,
+  VALUES (p_instance_id, p_snapshot_at, (v_a->>'engine_edition')::int IS DISTINCT FROM 4, v_running, v_source, v_status, v_startup,
       (v_a->>'sessions')::int, (v_m->>'xps_in_use')::int = 1,
       CASE WHEN v_m IS NULL OR (v_m->>'xps_in_use')::int IS DISTINCT FROM 1 THEN NULL
            WHEN (v_m->>'queues_seen')::int = 0 THEN NULL
@@ -104,7 +110,10 @@ BEGIN
       v_d IS NOT NULL, (v_d->>'dump_count')::int, (v_d->>'last_dump_at_utc')::timestamptz)
   ON CONFLICT (instance_id) DO UPDATE SET
       snapshot_at = EXCLUDED.snapshot_at, agent_expected = EXCLUDED.agent_expected, agent_running = EXCLUDED.agent_running,
-      agent_source = EXCLUDED.agent_source, agent_startup = EXCLUDED.agent_startup, agent_sessions = EXCLUDED.agent_sessions,
+      agent_source = EXCLUDED.agent_source, agent_status = EXCLUDED.agent_status, agent_sessions = EXCLUDED.agent_sessions,
+      -- a read without the service list (refused, or a build that fails it) keeps the start mode an earlier read
+      -- stored: a disabled Agent stays 'disabled', it does not turn into a critical 'stopped'
+      agent_startup = coalesce(EXCLUDED.agent_startup, h.agent_startup),
       dbmail_on = EXCLUDED.dbmail_on, dbmail_status = EXCLUDED.dbmail_status, dumps_read = EXCLUDED.dumps_read,
       -- a read that could not list the dumps keeps what an earlier read stored
       dump_count = CASE WHEN EXCLUDED.dumps_read THEN EXCLUDED.dump_count ELSE h.dump_count END,
@@ -118,16 +127,20 @@ END $$;
 CREATE OR REPLACE VIEW pgvigil.mssql_health_status AS
 SELECT x.instance_id, x.key, x.sampled, coalesce(x.critical, 0) AS critical, coalesce(x.warning, 0) AS warning, x.value, x.detail
   FROM (
--- SQL Server Agent: stopped is critical, stopped with the service disabled a warning; Express has no Agent
+-- SQL Server Agent: stopped is critical; stopped with the service disabled, or a service between states (start
+-- pending, paused), a warning; Express has no Agent
 SELECT h.instance_id, 'agent'::text AS key, true AS sampled,
-       (h.agent_expected AND NOT h.agent_running AND h.agent_startup IS DISTINCT FROM 'Disabled')::int AS critical,
-       (h.agent_expected AND NOT h.agent_running AND h.agent_startup IS NOT DISTINCT FROM 'Disabled')::int AS warning,
+       (h.agent_expected AND NOT h.agent_running AND coalesce(h.agent_status, 'Stopped') = 'Stopped' AND h.agent_startup IS DISTINCT FROM 'Disabled')::int AS critical,
+       (h.agent_expected AND NOT h.agent_running AND (coalesce(h.agent_status, 'Stopped') <> 'Stopped' OR h.agent_startup IS NOT DISTINCT FROM 'Disabled'))::int AS warning,
        CASE WHEN NOT h.agent_expected THEN 'none (Express)'
-            WHEN h.agent_running THEN 'running' WHEN h.agent_startup = 'Disabled' THEN 'disabled' ELSE 'stopped' END AS value,
+            WHEN h.agent_running THEN 'running'
+            WHEN coalesce(h.agent_status, 'Stopped') <> 'Stopped' THEN lower(h.agent_status)
+            WHEN h.agent_startup = 'Disabled' THEN 'disabled' ELSE 'stopped' END AS value,
        CASE WHEN NOT h.agent_expected THEN ARRAY['SQL Server Express has no SQL Server Agent']
             ELSE ARRAY['SQL Server Agent is ' || CASE WHEN h.agent_running THEN 'running' ELSE 'NOT running: no job runs, no backup, no alert' END
-                       || CASE WHEN h.agent_source = 'service' THEN ' (the service''s own state' || coalesce(', start mode ' || lower(h.agent_startup), '') || ')'
-                               ELSE ' (judged by its sessions: ' || coalesce(h.agent_sessions, 0) || ' open; the server lists no Agent service)' END
+                       || CASE WHEN h.agent_source = 'service' THEN ' (the service''s own state: ' || lower(h.agent_status) || coalesce(', start mode ' || lower(h.agent_startup), '') || ')'
+                               ELSE ' (judged by its sessions: ' || coalesce(h.agent_sessions, 0) || ' open; this read has no state of the Agent service'
+                                    || coalesce(', start mode last read ' || lower(h.agent_startup), '') || ')' END
                        || ', read ' || to_char(h.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC'] END AS detail
   FROM pgvigil.mssql_health h
 UNION ALL

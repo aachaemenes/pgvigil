@@ -25,8 +25,11 @@ func TestServicesCollector(t *testing.T) {
 			t.Errorf("%s: skipped: %s", k, why)
 		}
 	}
+	if strings.Contains(serviceListNoIFI, "instant_file_initialization_enabled") || !strings.Contains(serviceListSQL, "instant_file_initialization_enabled") {
+		t.Error("the two forms of the service list: one names the instant file initialization column, the other must not")
+	}
 	// nothing of the collection writes, runs a procedure or reads a user table
-	for _, q := range []string{serviceListSQL, agentSQL, dbmailSQL, dbmailOffSQL, dumpsSQL} {
+	for _, q := range []string{serviceListSQL, serviceListNoIFI, agentSQL, dbmailSQL, dbmailOffSQL, dumpsSQL} {
 		u := strings.ToUpper(q)
 		for _, bad := range []string{"EXEC ", "EXECUTE", "INSERT ", "UPDATE ", "DELETE ", "XP_", " SP_", ".SP_"} {
 			if strings.Contains(u, bad) {

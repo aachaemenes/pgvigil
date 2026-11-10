@@ -3,6 +3,8 @@ package mssql
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
@@ -35,12 +37,19 @@ func (servicesCollector) Applies(info Info) (bool, string) {
 
 // serviceListSQL: the services the server lists. On Linux that is the Agent alone; a server that lists none
 // (or refuses the view) leaves the Agent's state to its sessions.
-const serviceListSQL = `SELECT 'service' AS kind, CAST(servicename AS nvarchar(256)) AS service_name,
+const serviceListFmt = `SELECT 'service' AS kind, CAST(servicename AS nvarchar(256)) AS service_name,
   CAST(startup_type_desc AS nvarchar(256)) AS startup_type, CAST(status_desc AS nvarchar(256)) AS status, process_id,
   CONVERT(varchar(34), SWITCHOFFSET(last_startup_time, '+00:00'), 127) AS last_startup_at_utc,
   CAST(service_account AS nvarchar(256)) AS service_account, CAST(is_clustered AS nvarchar(1)) AS is_clustered,
-  CAST(instant_file_initialization_enabled AS nvarchar(1)) AS ifi_enabled
+  %s AS ifi_enabled
 FROM sys.dm_server_services`
+
+// The instant file initialization column arrived with SQL Server 2016 SP1 (2014 SP2, 2012 SP4): a build before it
+// refuses the statement that names it, and the list is then read without it.
+var (
+	serviceListSQL   = fmt.Sprintf(serviceListFmt, "CAST(instant_file_initialization_enabled AS nvarchar(1))")
+	serviceListNoIFI = fmt.Sprintf(serviceListFmt, "CAST(NULL AS nvarchar(1))")
+)
 
 // agentSQL: the Agent's own sessions (it names them 'SQLAgent - <what>') and the edition (Express has no Agent).
 const agentSQL = `SELECT 'agent' AS kind,
@@ -80,7 +89,13 @@ func (servicesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 		}
 		rows = append(rows, r...)
 	}
-	part("sys.dm_server_services", serviceListSQL)
+	if svc, err := QueryRows(ctx, conn, serviceListSQL); err == nil {
+		rows = append(rows, svc...)
+	} else if strings.Contains(err.Error(), "instant_file_initialization_enabled") {
+		part("sys.dm_server_services", serviceListNoIFI)
+	} else {
+		rows = append(rows, collect.Row{"kind": "collector_error", "source": "sys.dm_server_services", "message": err.Error()})
+	}
 	if info.MsdbAccess {
 		part("msdb.sys.service_queues", dbmailSQL)
 		// msdb lets every login in as guest, and a guest without VIEW ANY DEFINITION sees no queue: say so
