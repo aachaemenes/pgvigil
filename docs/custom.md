@@ -79,7 +79,8 @@ custom:
 
 The catalogue below takes its list of checks from the ACTIONS of
 [check_postgres](https://bucardo.org/check_postgres/) (Bucardo, BSD-2-Clause): the names and the ideas only. The SQL
-is pgvigil's own, written for a `pg_monitor` login on PostgreSQL 13 and later; no code of check_postgres is copied.
+is pgvigil's own, written for a `pg_monitor` login on PostgreSQL 13 and later (lockwait: 14 and later, it reads
+`pg_locks.waitstart`); no code of check_postgres is copied.
 Copy an entry into `custom:`, then set its `instances:` or `tags:` and tune its thresholds; the defaults below are a
 starting point.
 
@@ -152,7 +153,10 @@ needs. The tables over 20 % dead with at least 10,000 dead rows, the worst first
 ### checkpoint: seconds since the last checkpoint
 
 On a primary, the age of the last checkpoint; on a standby, of the last restart point. Tune it to
-`checkpoint_timeout` (default 5 min).
+`checkpoint_timeout` (default 5 min). An idle server skips its timed checkpoint when no WAL was written since the
+last one, and a standby makes a restart point only from a checkpoint it replays: on an idle primary, or the standby
+of one, the age grows past any threshold without anything being wrong. Give this check to busy instances (`tags:`),
+or raise its thresholds where a server can sit idle for an hour.
 
 ```yaml
   - name: checkpoint
@@ -181,7 +185,9 @@ made in SQL because the identifier has more digits than a threshold keeps.
 ### commitratio: commits as a percent of all transactions
 
 Per database since the statistics reset (cumulative), the lowest first. A low ratio is an application that rolls
-back much of what it starts.
+back much of what it starts. Every custom check run is itself a transaction that is rolled back, in the database the
+instance's DSN connects to: with many checks on a quiet database (often `postgres`), pgvigil's own rollbacks pull
+that database's ratio down. Read that database's row with care, or leave it out (`AND datname <> 'postgres'`).
 
 ```yaml
   - name: commitratio
@@ -302,8 +308,8 @@ sequence the login cannot read, and `pg_monitor` reads none; the server DBA gran
   - name: sequence
     description: the fullest sequence as a percent of its range
     sql: >-
-      SELECT round(100 * CASE WHEN increment_by > 0 THEN (last_value - min_value)::numeric / nullif(max_value - min_value, 0)
-                              ELSE (max_value - last_value)::numeric / nullif(max_value - min_value, 0) END, 2) AS value,
+      SELECT round(100 * CASE WHEN increment_by > 0 THEN (last_value::numeric - min_value) / nullif(max_value::numeric - min_value, 0)
+                              ELSE (max_value::numeric - last_value) / nullif(max_value::numeric - min_value, 0) END, 2) AS value,
              schemaname, sequencename, data_type, last_value, max_value
         FROM pg_sequences WHERE last_value IS NOT NULL AND NOT cycle
        ORDER BY 1 DESC LIMIT 20
