@@ -77,8 +77,8 @@ jobs:
         run: scripts/proof-drill.sh
   gov:
     # government readiness (task 50): the FIPS 140-3 build with the login and TLS proof under it, the service units'
-    # hardening score, the SBOM against the CycloneDX schema; the accessibility proof (scripts/proof-a11y.sh) needs a
-    # browser and stays a local proof
+    # hardening score, the SBOM against the CycloneDX schema; the accessibility proof (scripts/proof-a11y.sh) and the side
+    # tree's render proof (scripts/proof-tree.sh) need a browser and stay local proofs (proof-drill's C the same, skipped above)
     runs-on: ubuntu-latest
     services:
       postgres:

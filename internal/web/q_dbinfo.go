@@ -11,7 +11,9 @@ import (
 //   GET /api/dbinfo?instance=<id>[&db=<dbid>][&from=..&to=..] -> s.DBInfo: every database's facts, the tablespaces,
 //       the size history of the largest databases and tables (db narrows the tables to one database).
 //   GET /api/dbinfo/fleet -> s.DBInfoFleet: the fleet's databases and tables that grew the most over 7 and 30 days.
-// Every part reads a 0046 read function, never a table.
+// Every part reads a 0046 read function, never a table, with one exception: the side tree's `part=databases` (task 65) reads
+// the four columns it shows from pgvigil.databases itself, in dbinfo()'s order, so a folder open does not pay for the
+// page's growth aggregate and per-database reads (the join review of 0a46d48 measured the whole function per open).
 
 // dbinfoMinWindow is the shortest span the size charts draw: the sizes are read hourly, so a shorter range would
 // hold one or two points; the reply says which window it used (series_meta).
@@ -59,8 +61,14 @@ func (s *Server) DBInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sfrom, bucket := seriesWindow(from, to)
+	dbSQL := `SELECT * FROM pgvigil.dbinfo($1)`
+	if r.URL.Query().Get("part") == "databases" {
+		// the side tree's folder: the columns it shows, in dbinfo()'s order, from the table alone
+		dbSQL = `SELECT dbid, datname, is_present, is_template FROM pgvigil.databases
+		          WHERE instance_id = $1 ORDER BY is_present DESC, is_template, size_bytes DESC NULLS LAST, datname`
+	}
 	s.multiPart(w, r, []part{
-		{"databases", `SELECT * FROM pgvigil.dbinfo($1)`, []any{id}},
+		{"databases", dbSQL, []any{id}},
 		{"tablespaces", `SELECT * FROM pgvigil.dbinfo_tablespaces($1)`, []any{id}},
 		{"db_series", `SELECT * FROM pgvigil.database_size_series($1, $2, $3, $4, $5)`, []any{id, sfrom, to, bucket, dbinfoSeriesN}},
 		{"table_series", `SELECT * FROM pgvigil.table_size_series($1, $2, $3, $4, $5, $6)`, []any{id, db, sfrom, to, bucket, dbinfoSeriesN}},
