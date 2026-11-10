@@ -2,7 +2,7 @@ package web
 
 import "net/http"
 
-// The backups API (task 33): one instance's Backups tab and the fleet Backups root. The routes are wired in
+// The backups API (task 33): one instance's Backups tab and the fleet Backups root. The join wires the routes in
 // Handler (GET /api/backups -> s.Backups, GET /api/backups/fleet -> s.BackupsFleet); the overview check below
 // feeds the Summary column Backups (check_group 'backups').
 
@@ -49,7 +49,7 @@ SELECT to_timestamp(floor(extract(epoch FROM snapshot_at) / $4) * $4) AS snapsho
  WHERE snapshot_at > $2 AND prev_at IS NOT NULL
  GROUP BY 1 ORDER BY 1`
 
-// sqlBackupsFindings is the instance's rule hits on its stored reads, the most severe first.
+// sqlBackupsFindings is the instance's rule hits on reads of the last hour, the most severe first.
 const sqlBackupsFindings = `
 SELECT severity, setting, value, suggested, detail, at
   FROM pgvigil.backup_findings
@@ -60,9 +60,9 @@ SELECT severity, setting, value, suggested, detail, at
 const sqlBackupsFleet = `
 SELECT b.instance_id, b.instance, b.platform, b.archive_mode, b.is_replica, b.archiving, b.wal_waiting, b.archive_warn_minutes, b.archived_count, b.failed_count, b.last_archived_time, b.archive_age_s,
        b.archive_lag_bytes, b.archiver_failing, b.retention_days, b.restorable_age_s, b.newest_snapshot_at, b.newest_snapshot_age_s,
-       (SELECT count(*) FROM pgvigil.backup_rule_hits h WHERE h.instance_id = b.instance_id) AS findings,
+       (SELECT count(*) FROM pgvigil.backup_checks h WHERE h.instance_id = b.instance_id) AS findings,
        (SELECT CASE WHEN bool_or(h.severity = 'critical') THEN 'critical' WHEN count(*) > 0 THEN 'warning' END
-          FROM pgvigil.backup_rule_hits h WHERE h.instance_id = b.instance_id) AS worst,
+          FROM pgvigil.backup_checks h WHERE h.instance_id = b.instance_id) AS worst,
        greatest(b.archiver_read_at, b.cloud_read_at) AS snapshot_at
   FROM pgvigil.backup_status b
  ORDER BY b.archiver_failing DESC NULLS LAST, findings DESC, b.instance`

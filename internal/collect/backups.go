@@ -19,7 +19,7 @@ import (
 // backupsCollector reads whether the server's backups keep up, every 5 minutes. On every platform the WAL
 // archiver (pg_stat_archiver, readable by any login): the archived and failed counts, the last archived and
 // last failed WAL file and their times, and the archive lag, the WAL written since the end of the last
-// archived segment (pg_current_wal_lsn; NULL on a standby). Through the AWS door on RDS and Aurora: the
+// archived segment (pg_current_wal_lsn; on a standby the WAL received, else replayed). Through the AWS door on RDS and Aurora: the
 // backup retention days, the LatestRestorableTime (DescribeDBInstances on RDS, DescribeDBClusters on Aurora)
 // and the newest automated and manual snapshots (DescribeDBSnapshots / DescribeDBClusterSnapshots). Read
 // only. pgBackRest and barman are not read: their repositories live outside the server.
@@ -48,20 +48,22 @@ func (b backupsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform
 
 // backupsArchiverSQL reads the archiver. The lag: the current WAL position less the end of the last archived
 // segment (its name is the timeline, then the segment number in two 8-hex halves; a .history, .partial or
-// .backup name keeps the segment's 24 characters or none); NULL on a standby, where pg_current_wal_lsn fails.
+// .backup name keeps the segment's 24 characters or none). The position: pg_current_wal_lsn on a primary; on a standby
+// (where it fails) the last WAL received, else the last replayed, so a standby with archive_mode = always is measured.
 const backupsArchiverSQL = `
 WITH a AS (
-  SELECT s.*, pg_size_bytes(current_setting('wal_segment_size')) AS seg, pg_is_in_recovery() AS rec
-    FROM pg_stat_archiver s
+  SELECT s.*, pg_size_bytes(current_setting('wal_segment_size')) AS seg, r.rec,
+         CASE WHEN r.rec THEN coalesce(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) ELSE pg_current_wal_lsn() END AS lsn
+    FROM pg_stat_archiver s CROSS JOIN (SELECT pg_is_in_recovery() AS rec) r
 )
 SELECT 'archiver' AS kind, 'pg_stat_archiver' AS name, current_setting('archive_mode') AS archive_mode,
        current_setting('archive_timeout') AS archive_timeout,
-       (current_setting('archive_command') <> '' OR coalesce(current_setting('archive_library', true), '') <> '') AS archive_set,
+       (current_setting('archive_command') NOT IN ('', '(disabled)') OR coalesce(current_setting('archive_library', true), '') <> '') AS archive_set,
        a.archived_count, a.last_archived_wal, a.last_archived_time, a.failed_count, a.last_failed_wal, a.last_failed_time,
        a.stats_reset, a.rec AS is_replica, a.seg AS wal_segment_bytes,
-       CASE WHEN NOT a.rec THEN pg_current_wal_lsn()::text END AS current_lsn,
-       CASE WHEN NOT a.rec AND a.last_archived_wal ~ '^[0-9A-F]{24}'
-            THEN greatest(0, (pg_current_wal_lsn() - '0/0'::pg_lsn)
+       a.lsn::text AS current_lsn,
+       CASE WHEN a.lsn IS NOT NULL AND a.last_archived_wal ~ '^[0-9A-F]{24}'
+            THEN greatest(0, (a.lsn - '0/0'::pg_lsn)
                  - (('x' || substr(a.last_archived_wal, 9, 8))::bit(32)::bigint * 4294967296
                     + ('x' || substr(a.last_archived_wal, 17, 8))::bit(32)::bigint * a.seg + a.seg))::bigint
        END AS archive_lag_bytes

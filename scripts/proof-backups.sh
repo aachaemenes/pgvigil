@@ -36,12 +36,20 @@
 #      b6 onprem, on, never archived (last_archived_time NULL), lag 48 MB  -> 'last archive older than 60 min|warning'
 #                                                                             detail 'nothing archived since the stats reset'
 #      b7 onprem, archive_mode off, 90 min, lag 48 MB                      -> nothing
+#      [review fold, expected before the rerun:]
+#      b8 onprem standby, archive_mode always, 90 min, lag 48 MB           -> 'last archive older than 60 min|warning'
+#      b9 onprem, archive_mode off, failed after the last success          -> nothing (a server that stopped archiving
+#                                                                             keeps its old failure; not failing)
 #  C.  seeded cloud rows:
 #      c1 rds    retention 3, automated available 2 h old                  -> 'retention under 7 days|warning' only
 #      c2 rds    retention 0, no snapshot (snapshots_read, count 0)        -> 'retention under 7 days|critical' and
 #                                                                             'no snapshot in 24 h|warning'
 #      c3 aurora retention 7, automated 30 h old, a manual 'creating' 1 h  -> 'no snapshot in 24 h|warning' only
 #      c4 aurora retention 14, automated 3 h old                           -> nothing
+#      [review fold] c5 rds read replica (archiver is_replica) retention 0, no snapshot -> nothing
+#      (a replica with retention > 0 keeps the rules: not seeded)
+#      [review fold] c6 rds retention 3 read 2 hours ago (a stale read)    -> no rule hit in backup_checks or
+#                                                                             backup_findings (backup_rule_hits keeps it)
 #      backup_findings for c1-c4 = their rule hits (4 rows), platforms 'managed'.
 #      c3 re-imported with snapshots_read and only the manual one: the automated row is_present false; then a payload
 #      with only a collector_error: the manual row stays present and the cloud row stays.
@@ -52,21 +60,23 @@
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
-SUF=$RANDOM
-REPO_DB=pgvigil_bkproof_$SUF
 TMP=$(mktemp -d)
+SUF=$(basename "$TMP" | tr -dc 'A-Za-z0-9' | tr 'A-Z' 'a-z')   # unique while the temp directory exists
+REPO_DB=pgvigil_bkproof_$SUF
+CREATED=0
 PGDATA_T=$TMP/data; ARCH=$TMP/arch; FLAG=$TMP/fail
 PORT=$((20000 + RANDOM % 20000))
 CFG=$TMP/pgvigil.yaml
 cleanup() {
   pg_ctl -D "$PGDATA_T" -m immediate stop >/dev/null 2>&1 || true
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || true
+  [ "$CREATED" = 1 ] && psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $REPO_DB" >/dev/null
+CREATED=1
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO_DB"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 
@@ -167,6 +177,7 @@ arch() {
 }
 inst() { q "select pgvigil.ensure_instance('backups-$1-$SUF', '$2', 'proof', 180000, false, '{proof}')"; }
 b1=$(inst b1 onprem); b2=$(inst b2 onprem); b3=$(inst b3 onprem); b4=$(inst b4 onprem); b5=$(inst b5 aurora); b6=$(inst b6 onprem); b7=$(inst b7 onprem)
+b8=$(inst b8 onprem); b9=$(inst b9 onprem)
 arch "$b1" on 90 50331648 60 false
 arch "$b2" on 90 1048576 60 false
 arch "$b3" on 90 50331648 120 false
@@ -174,10 +185,12 @@ arch "$b4" on 90 null 60 true
 arch "$b5" on 2 50331648 60 false failed
 arch "$b6" on null 50331648 60 false
 arch "$b7" off 90 50331648 60 false
+arch "$b8" always 90 50331648 60 true
+arch "$b9" off 2 1048576 60 false failed
 got=$(q "select string_agg(replace(i.name, '-$SUF', '') || '|' || h.check_name || '|' || h.severity, ',' order by i.name)
-           from pgvigil.backup_rule_hits h join pgvigil.instances i using (instance_id) where h.instance_id in ($b1,$b2,$b3,$b4,$b5,$b6,$b7)")
+           from pgvigil.backup_rule_hits h join pgvigil.instances i using (instance_id) where h.instance_id in ($b1,$b2,$b3,$b4,$b5,$b6,$b7,$b8,$b9)")
 echo "  $got"
-[ "$got" = "backups-b1|last archive older than 60 min|warning,backups-b6|last archive older than 60 min|warning" ] || fail "B: rule hits"
+[ "$got" = "backups-b1|last archive older than 60 min|warning,backups-b6|last archive older than 60 min|warning,backups-b8|last archive older than 60 min|warning" ] || fail "B: rule hits"
 [ "$(q "select detail from pgvigil.backup_rule_hits where instance_id=$b6")" = "nothing archived since the stats reset; 48 MB of WAL waiting" ] || fail "B: b6 detail"
 echo "B: OK"
 
@@ -196,11 +209,19 @@ q "select pgvigil.import_backups($c3, now(), '[{\"kind\":\"cloud\",\"name\":\"c3
 q "select pgvigil.import_backups($c4, now(), '[{\"kind\":\"cloud\",\"name\":\"c4-cl\",\"resource_kind\":\"cluster\",\"retention_days\":14,\"latest_restorable_time\":\"$(ago '5 minutes')\"},
      {\"kind\":\"snapshot\",\"name\":\"rds:c4-a\",\"snapshot_type\":\"automated\",\"status\":\"available\",\"created_at\":\"$(ago '3 hours')\"},
      {\"kind\":\"snapshots_read\",\"name\":\"snapshots\",\"count\":1}]')" >/dev/null
+c5=$(inst c5 rds); c6=$(inst c6 rds)
+q "select pgvigil.import_backups($c5, now(), '[{\"kind\":\"archiver\",\"name\":\"pg_stat_archiver\",\"archive_mode\":\"on\",\"archive_set\":true,\"is_replica\":true,\"archived_count\":0,\"failed_count\":0},
+     {\"kind\":\"cloud\",\"name\":\"c5-replica\",\"resource_kind\":\"instance\",\"retention_days\":0},
+     {\"kind\":\"snapshots_read\",\"name\":\"snapshots\",\"count\":0}]')" >/dev/null
+q "select pgvigil.import_backups($c6, now() - interval '2 hours', '[{\"kind\":\"cloud\",\"name\":\"c6-db\",\"resource_kind\":\"instance\",\"retention_days\":3},
+     {\"kind\":\"snapshot\",\"name\":\"rds:c6-a\",\"snapshot_type\":\"automated\",\"status\":\"available\",\"created_at\":\"$(ago '3 hours')\"},
+     {\"kind\":\"snapshots_read\",\"name\":\"snapshots\",\"count\":1}]')" >/dev/null
 got=$(q "select string_agg(replace(i.name, '-$SUF', '') || '|' || h.check_name || '|' || h.severity, ',' order by i.name, h.check_name)
-           from pgvigil.backup_rule_hits h join pgvigil.instances i using (instance_id) where h.instance_id in ($c1,$c2,$c3,$c4)")
+           from pgvigil.backup_checks h join pgvigil.instances i using (instance_id) where h.instance_id in ($c1,$c2,$c3,$c4,$c5,$c6)")
 echo "  $got"
 [ "$got" = "backups-c1|retention under 7 days|warning,backups-c2|no snapshot in 24 h|warning,backups-c2|retention under 7 days|critical,backups-c3|no snapshot in 24 h|warning" ] || fail "C: rule hits"
-[ "$(q "select count(*) || '|' || string_agg(distinct platforms, ',') from pgvigil.backup_findings where instance_id in ($c1,$c2,$c3,$c4)")" = "4|managed" ] || fail "C: findings"
+[ "$(q "select count(*) || '|' || string_agg(distinct platforms, ',') from pgvigil.backup_findings where instance_id in ($c1,$c2,$c3,$c4,$c5,$c6)")" = "4|managed" ] || fail "C: findings"
+[ "$(q "select count(*) from pgvigil.backup_rule_hits where instance_id = $c6 and check_name = 'retention under 7 days'")" = 1 ] || fail "C: c6 stale hit kept in backup_rule_hits"
 [ "$(q "select restorable_age_s from pgvigil.backup_status where instance_id=$c1")" = 600 ] || fail "C: restorable age"
 q "select pgvigil.import_backups($c3, now(), '[{\"kind\":\"cloud\",\"name\":\"c3-cl\",\"resource_kind\":\"cluster\",\"retention_days\":7},
      {\"kind\":\"snapshot\",\"name\":\"c3-manual\",\"snapshot_type\":\"manual\",\"status\":\"available\",\"created_at\":\"$(ago '1 hour')\"},

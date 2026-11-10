@@ -113,8 +113,9 @@ BEGIN
 END $$;
 
 -- One row per active instance with a backups read: the archiver, the cloud side and the newest snapshots.
---   archiver_failing: a failed archive after the last success (or no success at all).
---   archive_age_s: the last archived file's age at the read; wal_waiting: more than one segment of WAL is waiting
+--   archiver_failing: the server archives and a failed archive came after the last success (or no success at all);
+--   a server that stopped archiving keeps its old failure in pg_stat_archiver and is not failing.
+--   archive_age_s: the last archived file's age at the read; wal_waiting: more than one segment of WAL (a standby: received) is waiting
 --   to be archived (the current segment is archived only when it is full or archive_timeout switches it, so an
 --   idle server can have an old last archive and nothing to archive).
 --   archiving: archive_mode is on (or always) with a command or a library set, and the server archives (a standby
@@ -135,7 +136,8 @@ SELECT i.instance_id, i.name AS instance, i.platform,
        a.archived_count, a.failed_count, a.last_archived_wal, a.last_archived_time, a.last_failed_wal, a.last_failed_time,
        a.stats_reset, a.archive_lag_bytes, a.wal_segment_bytes, a.archive_warn_minutes,
        round(extract(epoch FROM a.snapshot_at - a.last_archived_time)::numeric, 0) AS archive_age_s,
-       (a.last_failed_time IS NOT NULL AND (a.last_archived_time IS NULL OR a.last_failed_time > a.last_archived_time)) AS archiver_failing,
+       (a.archive_set AND (a.archive_mode = 'always' OR (a.archive_mode = 'on' AND NOT a.is_replica))
+        AND a.last_failed_time IS NOT NULL AND (a.last_archived_time IS NULL OR a.last_failed_time > a.last_archived_time)) AS archiver_failing,
        (a.archive_lag_bytes > a.wal_segment_bytes) AS wal_waiting,
        a.snapshot_at AS archiver_read_at,
        c.name AS cloud_resource, c.resource_kind, c.retention_days, c.latest_restorable_time, c.earliest_restorable_time, c.backup_window,
@@ -157,6 +159,9 @@ SELECT i.instance_id, i.name AS instance, i.platform,
 --                               WAL archive)
 --   retention under 7 days      warning (critical at 0: automated backups are off)
 --   no snapshot in 24 h         warning: the newest available snapshot (any type) is older than a day, or there is none
+-- The two cloud rules skip an RDS read replica with retention 0: RDS for PostgreSQL cannot back up a replica before
+-- 14.1 and makes it optional from 14.1 (the RDS User Guide, read replica limitations with PostgreSQL), the primary's
+-- backups cover it; a replica with backups turned on keeps both rules. A replica is the archiver row's is_replica.
 CREATE OR REPLACE VIEW pgvigil.backup_rule_hits AS
 SELECT b.instance_id, 'critical' AS severity, 'archiver failing' AS check_name, coalesce(b.last_failed_wal, 'pg_stat_archiver') AS object,
        b.archiver_read_at AS at,
@@ -177,13 +182,14 @@ SELECT b.instance_id, CASE WHEN b.retention_days = 0 THEN 'critical' ELSE 'warni
        CASE WHEN b.retention_days = 0 THEN 'automated backups are off (retention 0 days)'
             ELSE 'backup retention ' || b.retention_days || ' days' END
   FROM pgvigil.backup_status b
- WHERE b.retention_days < 7
+ WHERE b.retention_days < 7 AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
 UNION ALL
 SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.cloud_read_at,
        coalesce('newest snapshot ' || to_char(b.newest_snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC, '
                 || round(b.newest_snapshot_age_s / 3600) || ' h before the read', 'no available snapshot listed')
   FROM pgvigil.backup_status b
- WHERE b.cloud_resource IS NOT NULL AND (b.newest_snapshot_at IS NULL OR b.newest_snapshot_age_s > 86400);
+ WHERE b.cloud_resource IS NOT NULL AND (b.newest_snapshot_at IS NULL OR b.newest_snapshot_age_s > 86400)
+   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0);
 
 -- The overview's backup checks: the rule hits on reads of the last hour (a stale read is the stale check's).
 CREATE OR REPLACE VIEW pgvigil.backup_checks AS
@@ -191,7 +197,8 @@ SELECT h.instance_id, h.severity, h.check_name, h.object, h.at, h.detail
   FROM pgvigil.backup_rule_hits h
  WHERE h.at > now() - interval '1 hour';
 
--- The rules in the findings columns; the join UNION ALLs this into pgvigil.findings.
+-- The rules in the findings columns, on reads of the last hour like the checks (a removed aws: block or an expired
+-- login leaves the last cloud read stored: its findings do not outlive it); the join UNION ALLs this into pgvigil.findings.
 CREATE OR REPLACE VIEW pgvigil.backup_findings AS
 SELECT h.instance_id, h.severity, h.check_name AS setting, h.object || ': ' || h.detail AS value, true AS is_set,
        CASE h.check_name
@@ -208,4 +215,4 @@ SELECT h.instance_id, h.severity, h.check_name AS setting, h.object || ': ' || h
          ELSE 'WAL waits to be archived: a point-in-time recovery would lose what is not yet archived'
        END AS detail,
        'pgvigil backups' AS source, h.at
-  FROM pgvigil.backup_rule_hits h;
+  FROM pgvigil.backup_checks h;
