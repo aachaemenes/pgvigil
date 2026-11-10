@@ -25,6 +25,11 @@
 #      on #/dbinfo exactly one tree node is marked on besides the instance (Storage > Database info).
 #      With the wiring (B): /api/drill/db?part=tables answers with only "tables", /api/dbinfo?part=databases only
 #      "databases", /api/jobs?part=jobs only "jobs"; part=nope is refused with 400 naming the parts.]
+#     [join review fold, expected before the rerun: the Jobs folder lists the first 30 present jobs, then "all N
+#      jobs..." when there are more (crm01 has 4: all of them); the Databases and the Jobs reopen checks count every
+#      tree read (none); last, with every /api/ read answered 401 from the moment demo-rds-orders01's Jobs folder is
+#      opened (not read before), the tree reads that folder exactly once over 2 s and the sign-in form is up (body.signin)
+#      within those 2 s - no read loop.]
 #  B. the Tables tab of demo-onprem-erp01: its table names link to #/table?..db=..&rel=.. and the first opens "Table";
 #     the Jobs and Job report tabs of demo-aurora-crm01 and the root Jobs page link job names to #/job (the root page's
 #     links carry each row's own instance); the Indexes tab of demo-onprem-erp01 links index names to #/index and the
@@ -45,7 +50,7 @@ cleanup() {
 trap cleanup EXIT
 for t in chromium node npm psql; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 if [[ -z "$BIN" ]]; then
-  echo "== build $SRC in a temporary copy (web bundle, then the binary)"
+  echo "== build $(basename "$SRC") in a temporary copy (web bundle, then the binary)"
   rsync -a --exclude node_modules --exclude bin --exclude .git "$SRC/" "$WORK/src/"
   [[ -d "$SRC/web/node_modules" ]] || fail "no web/node_modules in $SRC: run npm ci in web/ first"
   ln -s "$SRC/web/node_modules" "$WORK/src/web/node_modules"
@@ -75,6 +80,9 @@ let id = 0; const wait = new Map(); const reqs = [];
 ws.addEventListener('message', m => {
   const d = JSON.parse(m.data);
   if (d.method === 'Network.requestWillBeSent' && d.params.request.url.includes('/api/')) reqs.push(d.params.request.url.replace(U, ''));
+  // the expired-session check: every paused /api/ read is answered 401, as the server does once a session has ended
+  if (d.method === 'Fetch.requestPaused') ws.send(JSON.stringify({ id: ++id, method: 'Fetch.fulfillRequest', params: { requestId: d.params.requestId, responseCode: 401,
+    responseHeaders: [{ name: 'Content-Type', value: 'application/json' }], body: Buffer.from('{"error":"login required"}').toString('base64') } }));
   if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); }
 });
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
@@ -147,13 +155,14 @@ await ev(H);
 n0 = reqs.length;
 await ev(`__folder(__inst('demo-onprem-erp01'), 'Databases').querySelector('button.caret').click(), 'ok'`); await sleep(200);
 await ev(`__folder(__inst('demo-onprem-erp01'), 'Databases').querySelector('button.caret').click(), 'ok'`); await sleep(400);
-check(since(n0).filter(u => u.startsWith('/api/dbinfo')).length === 0, `reopening Databases reads nothing (${since(n0).join(' ')})`);
+check(since(n0).length === 0, `reopening Databases reads nothing (${since(n0).join(' ')})`);
 // the jobs of crm01
 n0 = reqs.length;
 await ev(`__inst('demo-aurora-crm01').querySelector('button.caret').click(), 'ok'`); await sleep(300);
 await ev(`__folder(__inst('demo-aurora-crm01'), 'Jobs').querySelector('button.caret').click(), 'ok'`);
 const jobNames = await until(`(() => { const t = [...__folder(__inst('demo-aurora-crm01'), 'Jobs').querySelectorAll('a.inst')].slice(1).map(a => a.textContent); return t.length ? t : null; })()`);
-const wantJobs = rows((await get(`jobs?instance=${crm.instance_id}`)).jobs).filter(r => r.is_present).map(r => String(r.job_name ?? r.job_id));
+const allJobs = rows((await get(`jobs?instance=${crm.instance_id}`)).jobs).filter(r => r.is_present).map(r => String(r.job_name ?? r.job_id));
+const wantJobs = allJobs.length > 30 ? [...allJobs.slice(0, 30), `all ${allJobs.length} jobs...`] : allJobs;
 const jr = since(n0);
 check(jr.filter(u => u.startsWith('/api/jobs')).length === 1 && JSON.stringify(jobNames) === JSON.stringify(wantJobs), `Jobs: ${JSON.stringify(jobNames)} = ${JSON.stringify(wantJobs)}, reads ${jr.join(' ')}`);
 await ev(`[...__folder(__inst('demo-aurora-crm01'), 'Jobs').querySelectorAll('a.inst')][1].click(), 'ok'`);
@@ -226,6 +235,20 @@ if (wired !== '1') {
   const bad = await fetch(`${U}/api/jobs?instance=${crm.instance_id}&part=nope`);
   check(bad.status === 400 && /part must be one of/.test(await bad.text()), `part=nope refused (${bad.status})`);
 }
+// ---- last: the session ends while a folder reads (the sign-in stays up afterwards, so nothing runs after this)
+const ord = byName('demo-rds-orders01');
+await go(`#/summary?w=7d`);
+await ev(`(() => { const c = __inst('demo-rds-orders01').querySelector('button.caret'); if (c.getAttribute('aria-expanded') !== 'true') c.click(); return 1; })()`);
+await sleep(300);
+await ev(H);
+await cmd('Fetch.enable', { patterns: [{ urlPattern: '*/api/*' }] });
+const n401 = reqs.length;
+await ev(`__folder(__inst('demo-rds-orders01'), 'Jobs').querySelector('button.caret').click(), 'ok'`);
+await sleep(2000);
+const loopReads = reqs.slice(n401).filter(u => u.startsWith(`/api/jobs?instance=${ord.instance_id}&part=jobs`));
+const signin = await ev(`document.body.classList.contains('signin')`);
+check(loopReads.length === 1 && signin === true, `session ended during a folder read: ${loopReads.length} read(s) of the folder in 2 s, sign-in ${signin ? 'shown' : 'not shown'}`);
+await cmd('Fetch.disable');
 ws.close();
 process.exit(failed ? 1 : 0);
 JS

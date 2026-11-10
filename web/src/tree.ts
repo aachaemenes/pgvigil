@@ -16,7 +16,7 @@
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { Ctx, href, drillHome } from './router';
-import { Fleet, Level, tagsOf, worst } from './fleet';
+import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { hashParam, hrefWith } from './dbinfo';
 import { Col, dot, el, fmtBytes } from './ui';
 
@@ -114,26 +114,38 @@ export function updateTree(f: Fleet, ctx: Ctx) {
 const opened = new Set<string>((() => { try { return JSON.parse(sessionStorage.getItem('pgvigil.treeOpen') ?? '[]') as string[]; } catch { return []; } })());
 function toggle(key: string) {
   if (opened.has(key)) opened.delete(key); else opened.add(key);
+  // closing and opening a folder retries a read that failed (an error is never kept past the user's own retry)
+  if (loads.get(key)?.err) loads.delete(key);
   try { sessionStorage.setItem('pgvigil.treeOpen', JSON.stringify([...opened])); } catch { /* private window */ }
   draw();
 }
 
 // the children a folder loads on its first open: one API read, kept 30 minutes (the databases, tables and jobs
-// collections run hourly; a read past that is redone on the next draw, the old rows shown meanwhile)
-interface Load { at: number; rows?: Row[]; err?: string; pending?: boolean }
+// collections run hourly; a read past that is redone on the next draw, the old rows shown meanwhile). A failed read
+// is kept 30 seconds, or until the folder is closed and opened again, then read again.
+// A read that meets the login (the session expired) keeps a 'login' entry for those 30 seconds too and does not draw:
+// the folder is not read again on every draw (a draw that found no entry would read, meet the login, draw, read ...),
+// and the shell's render, started once with the fleet read dropped from its cache, meets the login on that read and
+// shows the sign-in (a page drawn from the cached fleet, the Summary, would never meet it).
+interface Load { at: number; rows?: Row[]; err?: string; pending?: boolean; login?: boolean }
 const loads = new Map<string, Load>();
-const LOAD_TTL = 1800000;
+const LOAD_TTL = 1800000, ERR_TTL = 30000;
 const TABLES_SHOWN = 15, JOBS_SHOWN = 30;
 function loaded(key: string, read: () => Promise<Row[]>): Load {
   const l = loads.get(key);
-  if (l && (l.pending || Date.now() - l.at < LOAD_TTL)) return l;
+  if (l && (l.pending || Date.now() - l.at < (l.err ? ERR_TTL : LOAD_TTL))) return l;
   const next: Load = { at: Date.now(), pending: true, rows: l?.rows };
   loads.set(key, next);
-  read().then(rows => { loads.set(key, { at: Date.now(), rows }); }, e => {
-    // a session that expired while the folder read: drop the entry and let the shell's render show the sign-in
-    if (e instanceof LoginRequired) { loads.delete(key); rerender(); return; }
+  read().then(rows => { loads.set(key, { at: Date.now(), rows }); draw(); }, e => {
+    if (e instanceof LoginRequired) {
+      loads.set(key, { at: Date.now(), err: 'the session has ended: sign in again', login: true });
+      forget();
+      rerender();
+      return;
+    }
     loads.set(key, { at: Date.now(), err: e instanceof Error ? e.message : String(e) });
-  }).finally(() => draw());
+    draw();
+  });
   return next;
 }
 
@@ -270,7 +282,8 @@ function foldersFor(rows: Row[], keys: string[], level: number, parent: string):
 }
 
 function draw() {
-  if (!last) return;
+  // the sign-in form is up: the tree waits for the next render after the sign-in (no folder read meanwhile)
+  if (!last || document.body.classList.contains('signin')) return;
   const { f, ctx } = last;
   const rootTab = ctx.instance ? 'summary' : ctx.tab;
   const all = el('a', { class: 'tree-root' + (!ctx.instance && !ctx.tag ? ' on' : ''), href: href(ctx, { tab: rootTab, instance: undefined, tag: undefined }) },
@@ -315,9 +328,13 @@ function draw() {
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
   // a redraw replaces every node: a caret that had the keyboard focus gets it back (by its key), so a keyboard or
   // screen-reader user stays where they were after opening a folder and after its children arrive
-  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#tree button.caret')?.dataset.key;
+  // an instance in two tag folders has two carets with one key: the focus goes back to the same copy (its index)
+  const active = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#tree button.caret');
+  const focused = active?.dataset.key;
+  const sameKey = (k: string) => [...list.querySelectorAll<HTMLElement>(`button.caret[data-key="${CSS.escape(k)}"]`)];
+  const copy = focused ? sameKey(focused).indexOf(active!) : -1;
   list.replaceChildren(...out);
-  if (focused) list.querySelector<HTMLElement>(`button.caret[data-key="${CSS.escape(focused)}"]`)?.focus();
+  if (focused) { const all = sameKey(focused); (all[copy] ?? all[0])?.focus(); }
 }
 
 // ---- the instance header's chips
