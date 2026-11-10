@@ -64,6 +64,8 @@ type Options struct {
 	Actions *ActionsConfig
 	// Tags is the config's ui: block (the tree's grouping and value order).
 	Tags TagsUI
+	// AppName is the pool's application_name in pg_stat_activity; "" = pgvigil-serve (pgvigil mcp names itself pgvigil-mcp).
+	AppName string
 }
 
 // Expected is the interval map of the stale check.
@@ -87,6 +89,9 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	}
 	rp := cfg.ConnConfig.RuntimeParams
 	rp["application_name"] = "pgvigil-serve"
+	if o.AppName != "" {
+		rp["application_name"] = o.AppName
+	}
 	rp["default_transaction_read_only"] = "on"
 	rp["statement_timeout"] = "15000"
 	rp["jit"] = "off" // the findings view (sixteen UNION arms of CASE-heavy rules) crosses jit_above_cost: LLVM compiled 1,289 functions per read, 147 s against 3 s without (2026-11-09)

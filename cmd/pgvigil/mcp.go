@@ -58,7 +58,7 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 		return &configError{err}
 	}
 	// no Hosts (no listener), no login (the client's own child process), no actions: read only
-	srv, err := web.Open(ctx, log, dsn, web.Options{Expected: exp})
+	srv, err := web.Open(ctx, log, dsn, web.Options{Expected: exp, AppName: "pgvigil-mcp"})
 	if err != nil {
 		return err
 	}
