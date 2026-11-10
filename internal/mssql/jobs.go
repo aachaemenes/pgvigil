@@ -33,6 +33,20 @@ func (jobsCollector) Applies(info Info) (bool, string) {
 	return true, ""
 }
 
+// msdbReadable asks whether the login may read one table of msdb. Info.MsdbAccess only says the login can enter
+// msdb, which msdb's guest user allows to every login; the right to a table is asked per table, and a login
+// without it is skipped with the missing right instead of failing on a permission error.
+func msdbReadable(ctx context.Context, conn *sql.Conn, table string) error {
+	var ok sql.NullInt64
+	if err := conn.QueryRowContext(ctx, "SELECT HAS_PERMS_BY_NAME(N'msdb.dbo."+table+"', 'OBJECT', 'SELECT')").Scan(&ok); err != nil {
+		return err
+	}
+	if ok.Int64 != 1 {
+		return fmt.Errorf("the login has no access to msdb.dbo.%s (a user in msdb with db_datareader is the missing right): %w", table, collect.ErrSkip)
+	}
+	return nil
+}
+
 // CursorFunc reads how far a source of this instance was read (false: never).
 type CursorFunc func(ctx context.Context, source string) (last int64, ok bool, err error)
 
@@ -132,6 +146,11 @@ func (c jobsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]co
 
 // RunFrom reads the jobs, their steps and the history past the cursor.
 func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor CursorFunc) ([]collect.Row, error) {
+	for _, t := range []string{"sysjobs", "sysjobhistory"} {
+		if err := msdbReadable(ctx, conn, t); err != nil {
+			return nil, err
+		}
+	}
 	rows, err := QueryRows(ctx, conn, jobsSQL)
 	if err != nil {
 		return nil, err

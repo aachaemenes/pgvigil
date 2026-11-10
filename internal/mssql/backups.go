@@ -102,6 +102,9 @@ const backupHistorySQL = `SELECT 'history' AS kind, COUNT_BIG(*) AS backup_sets,
 FROM msdb.dbo.backupset`
 
 func (backupsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+	if err := msdbReadable(ctx, conn, "backupset"); err != nil {
+		return nil, err
+	}
 	rows, err := QueryRows(ctx, conn, backupDatabasesSQL(info.HADREnabled))
 	if err != nil {
 		return nil, err

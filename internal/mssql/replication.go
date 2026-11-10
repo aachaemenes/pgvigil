@@ -12,7 +12,7 @@ import (
 
 // replicationCollector is mssql_replication: transactional, snapshot and merge replication as the DISTRIBUTOR knows
 // it, read from the distribution database's own tables (MSpublications, MSdistribution_agents and its history,
-// MSlogreader_agents, MSsnapshot_agents, MSmerge_agents and theirs) and its view MSdistribution_status for the
+// MSlogreader_agents, MSsnapshot_agents and theirs, MSmerge_agents with MSmerge_sessions) and its view MSdistribution_status for the
 // commands not yet delivered. Nothing is written: no tracer token, no call of a replication procedure. A server
 // that is no distributor returns no row; a publisher whose distributor is another server is read there.
 type replicationCollector struct{}
@@ -102,11 +102,13 @@ OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time
 UNION ALL
 SELECT 'agent', ` + literal(db) + `, 'merge', CAST(a.name AS nvarchar(200)),
   CAST(srv.name AS nvarchar(128)), CAST(a.publisher_db AS nvarchar(128)), CAST(a.publication AS nvarchar(128)),
-  h.runstatus, CAST(LEFT(h.comments, 1000) AS nvarchar(1000)), ` + utcText("h.time") + `, CAST(NULL AS int)
+  h.runstatus, CAST(LEFT(c.comments, 1000) AS nvarchar(1000)), ` + utcText("COALESCE(h.end_time, h.start_time)") + `, CAST(NULL AS int)
 FROM ` + d + `.dbo.MSmerge_agents a
 LEFT JOIN master.sys.servers srv ON srv.server_id = a.publisher_id
-OUTER APPLY (SELECT TOP (1) x.runstatus, x.comments, x.time
-               FROM ` + d + `.dbo.MSmerge_history x WHERE x.agent_id = a.id ORDER BY x.time DESC, x.timestamp DESC) h
+OUTER APPLY (SELECT TOP (1) x.session_id, x.runstatus, x.start_time, x.end_time
+               FROM ` + d + `.dbo.MSmerge_sessions x WHERE x.agent_id = a.id ORDER BY x.session_id DESC) h
+OUTER APPLY (SELECT TOP (1) y.comments
+               FROM ` + d + `.dbo.MSmerge_history y WHERE y.agent_id = a.id AND y.session_id = h.session_id ORDER BY y.timestamp DESC) c
 ORDER BY 3, 4`
 }
 

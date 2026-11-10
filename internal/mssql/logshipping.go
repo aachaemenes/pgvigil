@@ -49,6 +49,9 @@ FROM msdb.dbo.log_shipping_monitor_secondary
 ORDER BY secondary_database`
 
 func (logshippingCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
+	if err := msdbReadable(ctx, conn, "log_shipping_monitor_primary"); err != nil {
+		return nil, err
+	}
 	rows, err := QueryRows(ctx, conn, logshippingPrimarySQL)
 	if err != nil {
 		return nil, err
