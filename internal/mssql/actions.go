@@ -14,9 +14,9 @@ package mssql
 // An action is two steps. Preview reads the target and returns what the user is shown; Execute gets those values
 // back with the user's reason and sends the statement only when the target is still the one shown: a session id
 // whose login time or login differs now belongs to another session and is refused, a job whose name differs is
-// refused. The check and the statement are two statements on two connections a few milliseconds apart; a session
-// id reused inside that window would be missed, which is the residue of keeping the actions login at ALTER ANY
-// CONNECTION alone.
+// refused. Both connections are open and the actions login is checked before that last read, so the read and the
+// statement are two round trips apart on two open connections; a session id reused inside that window would be
+// missed, which is the residue of keeping the actions login at ALTER ANY CONNECTION alone.
 //
 // Off unless the instance has an actions_dsn AND its actions: list names the action.
 
@@ -270,11 +270,11 @@ OUTER APPLY (SELECT TOP (1) ja.start_execution_date, ja.stop_execution_date
 WHERE j.job_id = CAST(@p1 AS uniqueidentifier)`
 
 // serverSQL is readable by any login: the server's name and the time it started (tempdb is created at startup).
-// Two logins that read the same pair reached the same server.
-const serverSQL2 = `SELECT ISNULL(@@SERVERNAME, ''), CONVERT(varchar(33), (SELECT create_date FROM sys.databases WHERE database_id = 2), 126)`
+// Two logins that read the same pair reached the same server. The third value is the login itself.
+const serverSQL2 = `SELECT ISNULL(@@SERVERNAME, ''), CONVERT(varchar(33), (SELECT create_date FROM sys.databases WHERE database_id = 2), 126), SUSER_SNAME()`
 
 // actorSQL is what the actions login says about itself.
-const actorSQL = `SELECT SUSER_SNAME(), @@SPID, CAST(ISNULL(IS_SRVROLEMEMBER('sysadmin'), 0) AS int),
+const actorSQL = `SELECT @@SPID, CAST(ISNULL(IS_SRVROLEMEMBER('sysadmin'), 0) AS int),
   CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'CONTROL SERVER'), 0) AS int)`
 
 // errNoTarget: the session or the job is not there (any more).
@@ -362,12 +362,19 @@ func Preview(ctx context.Context, d Door, instance string, k ActionKind, session
 }
 
 // Execute runs the checks and, when they pass, sends the statement through the actions login. It never returns an
-// error: every way out is a result the caller writes to the audit table.
+// error: every way out is a result the caller writes to the audit table. Refused = nothing was sent; failed = the
+// statement was sent and the server refused it.
+//
+// The order keeps the time between the last look at the target and the statement as short as it can be: both
+// connections are opened and the actions login is checked FIRST, the target is read and compared LAST, and the
+// statement follows on the connection that is already open.
 func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 	if err := ValidateAction(r); err != nil {
 		return refusedAction("%s", err.Error())
 	}
 	stmt := Statement(r.Kind, r.SessionID, r.JobID)
+	// refuse keeps what the check read of the target only when that IS the target shown (t); a refusal before the
+	// read, or because the id now belongs to another session, keeps the request's own values in the audit row
 	refuse := func(t Target, format string, a ...any) ActionResult {
 		res := refusedAction(format, a...)
 		res.Statement, res.Target = stmt, t
@@ -380,83 +387,78 @@ func Execute(ctx context.Context, d Door, r ActionRequest) ActionResult {
 		return refuse(Target{}, "instance %s: the read login's dsn resolved to an empty string", r.Instance)
 	}
 
-	// 1. the target as the read login sees it now
+	// 1. the two connections, and the actions login: another login than the read one, on the same server, and
+	// never one that may do everything. Whether it holds the right for THIS statement is the server's to say: a
+	// login without ALTER ANY CONNECTION or outside SQLAgentOperatorRole gets the server's own error, kept as the
+	// attempt's message
 	mdb, mon, err := openAction(ctx, d.Monitor, "pgvigil-actions-check")
 	if err != nil {
 		return refuse(Target{}, "the read login could not connect to check the target: %v", err)
 	}
 	defer func() { _ = mon.Close(); _ = mdb.Close() }()
+	adb, act, err := openAction(ctx, d.Actions, "pgvigil-actions")
+	if err != nil {
+		return refuse(Target{}, "the actions login could not connect: %v; nothing was sent", err)
+	}
+	defer func() { _ = act.Close(); _ = adb.Close() }()
+	var monName, monStart, monLogin, actName, actStart, actLogin string
+	var actSPID, sysadmin, control int
+	if err := mon.QueryRowContext(ctx, serverSQL2).Scan(&monName, &monStart, &monLogin); err != nil {
+		return refuse(Target{}, "the server check failed: %v", err)
+	}
+	if err := act.QueryRowContext(ctx, serverSQL2).Scan(&actName, &actStart, &actLogin); err != nil {
+		return refuse(Target{}, "the actions login's server check failed: %v; nothing was sent", err)
+	}
+	if monName != actName || monStart != actStart {
+		return refuse(Target{}, "actions_dsn reaches another server than the instance's dsn (%s started %s vs %s started %s): nothing was sent", actName, actStart, monName, monStart)
+	}
+	if err := act.QueryRowContext(ctx, actorSQL).Scan(&actSPID, &sysadmin, &control); err != nil {
+		return refuse(Target{}, "the actions login's own check failed: %v; nothing was sent", err)
+	}
+	switch {
+	case strings.EqualFold(actLogin, monLogin):
+		return refuse(Target{}, "actions_dsn connects as the read login (%s): the actions login must be a login of its own", actLogin)
+	case sysadmin == 1 || control == 1:
+		return refuse(Target{}, "the actions login %s is sysadmin or holds CONTROL SERVER: pgvigil refuses it (docs/sqlserver-actions.md has the grants it needs, and no more)", actLogin)
+	}
+
+	// 2. the target as the read login sees it NOW, compared with the one shown
 	var t Target
 	if r.Kind == ActionKill {
 		t, err = readSession(ctx, mon, r.SessionID)
 		switch {
 		case errors.Is(err, errNoTarget):
-			return refuse(t, "session %d is not connected any more: nothing to kill", r.SessionID)
+			return refuse(Target{}, "session %d is not connected any more: nothing to kill", r.SessionID)
 		case err != nil:
-			return refuse(t, "the target check failed: %v", err)
+			return refuse(Target{}, "the target check failed: %v", err)
 		case !sameSession(t, r.LoginTime, r.Login):
-			return refuse(t, "session id %d now belongs to another session (login %s, logged in %s; the one shown was login %s, logged in %s): the session shown has ended and its id was reused",
+			return refuse(Target{}, "session id %d now belongs to another session (login %s, logged in %s; the one shown was login %s, logged in %s): the session shown has ended and its id was reused",
 				r.SessionID, t.Login, t.LoginTime, r.Login, r.LoginTime)
 		}
 		if why := sessionRefusal(t); why != "" {
 			return refuse(t, "%s", why)
 		}
+		if r.SessionID == actSPID || strings.EqualFold(t.Login, actLogin) {
+			return refuse(t, "session %d belongs to the actions login itself (%s)", r.SessionID, actLogin)
+		}
 	} else {
 		t, err = readJob(ctx, mon, r.JobID)
 		switch {
 		case errors.Is(err, errNoTarget):
-			return refuse(t, "job %s does not exist (any more)", r.JobID)
+			return refuse(Target{}, "job %s does not exist (any more)", r.JobID)
 		case err != nil:
-			return refuse(t, "the target check failed: %v", err)
+			return refuse(Target{}, "the target check failed: %v", err)
 		case t.JobName != r.JobName:
-			return refuse(t, "job %s is now named %q, not %q as shown: read the job again", r.JobID, t.JobName, r.JobName)
+			return refuse(Target{}, "job %s is now named %q, not %q as shown: read the job again", r.JobID, t.JobName, r.JobName)
 		}
 	}
 
-	// 2. the actions login: another login than the read one, on the same server, and never one that may do
-	// everything. Whether it holds the right for THIS statement is the server's to say: a login without ALTER ANY
-	// CONNECTION or outside SQLAgentOperatorRole gets the server's own error, kept as the attempt's message
-	fail := func(format string, a ...any) ActionResult {
-		return ActionResult{Outcome: OutcomeFailed, Detail: fmt.Sprintf(format, a...), Statement: stmt, Target: t}
-	}
-	adb, act, err := openAction(ctx, d.Actions, "pgvigil-actions")
-	if err != nil {
-		return fail("the actions login could not connect: %v", err)
-	}
-	defer func() { _ = act.Close(); _ = adb.Close() }()
-	var monName, monStart, actName, actStart string
-	if err := mon.QueryRowContext(ctx, serverSQL2).Scan(&monName, &monStart); err != nil {
-		return refuse(t, "the server check failed: %v", err)
-	}
-	if err := act.QueryRowContext(ctx, serverSQL2).Scan(&actName, &actStart); err != nil {
-		return fail("the actions login's server check failed: %v", err)
-	}
-	if monName != actName || monStart != actStart {
-		return refuse(t, "actions_dsn reaches another server than the instance's dsn (%s started %s vs %s started %s): nothing was sent", actName, actStart, monName, monStart)
-	}
-	var actLogin string
-	var actSPID, sysadmin, control int
-	if err := act.QueryRowContext(ctx, actorSQL).Scan(&actLogin, &actSPID, &sysadmin, &control); err != nil {
-		return fail("the actions login's own check failed: %v", err)
-	}
-	switch {
-	case strings.EqualFold(actLogin, t.readerLogin):
-		return refuse(t, "actions_dsn connects as the read login (%s): the actions login must be a login of its own", actLogin)
-	case sysadmin == 1 || control == 1:
-		return refuse(t, "the actions login %s is sysadmin or holds CONTROL SERVER: pgvigil refuses it (docs/sqlserver-actions.md has the grants it needs, and no more)", actLogin)
-	}
-	if r.Kind == ActionKill && (r.SessionID == actSPID || strings.EqualFold(t.Login, actLogin)) {
-		return refuse(t, "session %d belongs to the actions login itself (%s)", r.SessionID, actLogin)
-	}
-
-	// 3. the statement: a session id cannot be a parameter of KILL, so every action sends its text as built from a
-	// number (checked above) or a GUID (its form checked by ValidateAction); the audit keeps exactly this text
-	_, err = act.ExecContext(ctx, stmt)
-	if err != nil {
-		res := fail("the server refused %s", stmt)
-		res.ServerMessage = serverMessage(err)
-		res.Detail += ": " + res.ServerMessage
-		return res
+	// 3. the statement, at once, on the connection already open: a session id cannot be a parameter of KILL, so
+	// every action sends its text as built from a number (checked above) or a GUID (its form checked by
+	// ValidateAction); the audit keeps exactly this text
+	if _, err = act.ExecContext(ctx, stmt); err != nil {
+		msg := serverMessage(err)
+		return ActionResult{Outcome: OutcomeFailed, Detail: fmt.Sprintf("the server refused %s: %s", stmt, msg), Statement: stmt, ServerMessage: msg, Target: t}
 	}
 	return ActionResult{Outcome: OutcomeDone, Detail: stmt + " sent", Statement: stmt,
 		ServerMessage: "the server accepted the statement (it returns no message for it)", Target: t}
@@ -508,6 +510,9 @@ func ActionRow(at time.Time, r ActionRequest, res ActionResult) ActionLogRow {
 	t := res.Target
 	if r.Kind == ActionKill {
 		pid := r.SessionID
+		if pid < 0 || pid > 32767 {
+			pid = 0 // a refused request with a number that is no session id: the row must still land (pid is an int)
+		}
 		row.PID = &pid
 		lt := r.LoginTime
 		if t.LoginTime != "" {

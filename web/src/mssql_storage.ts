@@ -84,7 +84,7 @@ export async function mssqlStorageView(ctx: Ctx): Promise<HTMLElement> {
   pies.append(donutChart('Databases by size', dbs.map(r => ({ label: String(r.database_name ?? ''), value: Number(r.size_bytes ?? 0),
     href: hrefWith(ctx, mssqlFilesTab, { db: String(r.database_name ?? '') }) })), fmtBytes));
   pies.append(donutChart('Data against log', [{ label: 'data files', value: sum('data_bytes') }, { label: 'log files', value: sum('log_bytes') }], fmtBytes, 8, true));
-  sec.append(el('h3', {}, 'Space at a glance'), pies, growthPanel(ctx));
+  sec.append(el('h3', {}, 'Space at a glance'), pies, growthPanel(ctx, d));
 
   if (checks.length) sec.append(el('h3', {}, 'Checks'), grid(checks, checkCols));
   sec.append(el('h3', {}, 'Volumes'),
@@ -100,7 +100,7 @@ export async function mssqlStorageView(ctx: Ctx): Promise<HTMLElement> {
 // growthPanel: the days selector over the database sizes: the size lines of the window, a ring of the growth each
 // database holds in it, and the figures. A window longer than the history says how many days it really has.
 const growthDays = [7, 30, 90, 180, 365];
-function growthPanel(ctx: Ctx): HTMLElement {
+function growthPanel(ctx: Ctx, first: Parts): HTMLElement {
   const out = el('div', {});
   const buttons = growthDays.map(n => el('button', { type: 'button', 'aria-pressed': 'false' }, `${n} days`));
   let asked = 0;
@@ -110,7 +110,8 @@ function growthPanel(ctx: Ctx): HTMLElement {
     out.replaceChildren(el('p', { class: 'meta' }, 'Reading the sizes...'));
     let d: Parts;
     try {
-      d = await get<Parts>('mssql/storage', { instance: ctx.instance, days: n });
+      // the tab's own read is the 30-day one: the first draw reuses it
+      d = n === 30 && mine === 1 ? first : await get<Parts>('mssql/storage', { instance: ctx.instance, days: n });
     } catch (e) {
       if (mine === asked) out.replaceChildren(el('p', { class: 'empty' }, 'The sizes could not be read: ' + String((e as Error).message ?? e)));
       return;
@@ -132,6 +133,8 @@ function growthPanel(ctx: Ctx): HTMLElement {
         lineChart(`Database sizes, ${n} days`, ds.rows, ds.series, v => fmtBytes(v)),
         donutChart(`Growth by database, ${n} days`, dbs.map(r => ({ label: String(r.database_name), value: Number(r.grown_bytes ?? 0) })), fmtBytes,
           8, false, 'No database grew in this window.')),
+      el('details', {}, el('summary', {}, `Database sizes, ${n} days: the numbers`),
+        grid(ds.rows, [{ key: 'snapshot_at', label: 'at', fmt: fmtTime }, ...ds.series.map(x => ({ key: x.key, label: x.label, num: true, fmt: fmtBytes }))])),
       el('h4', {}, `Database growth, ${n} days`),
       grid(dbs, [
         { key: 'database_name', label: 'database' },
@@ -169,10 +172,10 @@ const fileCols: Col[] = [
   { key: 'max_size_bytes', label: 'max size', num: true, fmt: maxTxt },
   { key: 'growth_bytes', label: 'growth', num: true, fmt: growthTxt },
   { key: 'volume' },
-  { key: 'physical_name', label: 'path', wide: true },
   { key: 'state_desc', label: 'state', fmt: v => String(v ?? '').toLowerCase() },
   { key: 'size_changed_at', label: 'size changed', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} (was ${fmtBytes(r.previous_size_bytes)})` },
   { key: 'snapshot_at', label: 'read', fmt: fmtTime },
+  { key: 'physical_name', label: 'path' },
 ];
 
 // mssqlFilesView is the Database files tab: one database's files as rings and a grid (?db=<name>; the largest

@@ -83,6 +83,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_database_size (
   files            int
 ) PARTITION BY RANGE (snapshot_at);
 
+-- The pages read one database's or one volume's line over up to a year: an index that starts with the name (each
+-- monthly partition also gets ensure_month_partition's own on instance_id, snapshot_at).
+CREATE INDEX IF NOT EXISTS mssql_database_size_inst_db_idx ON pgvigil.mssql_database_size (instance_id, database_name, snapshot_at);
+CREATE INDEX IF NOT EXISTS mssql_volume_sample_inst_vol_idx ON pgvigil.mssql_volume_sample (instance_id, volume, snapshot_at);
+
 -- payload: {kind:'file', database_id, database_name, database_state, file_id, file_name, type_desc, filegroup,
 --           physical_name, state_desc, size_bytes, used_bytes, used_read (0|1), used_note, max_size_bytes,
 --           growth_bytes, growth_pct, volume},
@@ -127,6 +132,8 @@ BEGIN
     UPDATE pgvigil.mssql_files f SET is_present = false
      WHERE f.instance_id = p_instance_id AND f.is_present AND f.snapshot_at < p_snapshot_at;
 
+    -- a payload imported twice at one snapshot time leaves one row per database, not two
+    DELETE FROM pgvigil.mssql_database_size WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
     INSERT INTO pgvigil.mssql_database_size (instance_id, snapshot_at, database_name, data_bytes, log_bytes, data_used_bytes, log_used_bytes, files)
     SELECT p_instance_id, p_snapshot_at, f.database_name,
            coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc <> 'LOG'), 0), coalesce(sum(f.size_bytes) FILTER (WHERE f.type_desc = 'LOG'), 0),
@@ -152,6 +159,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'volume') THEN
     UPDATE pgvigil.mssql_volumes v SET is_present = false
      WHERE v.instance_id = p_instance_id AND v.is_present AND v.snapshot_at < p_snapshot_at;
+    DELETE FROM pgvigil.mssql_volume_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
     INSERT INTO pgvigil.mssql_volume_sample (instance_id, snapshot_at, volume, total_bytes, free_bytes)
     SELECT p_instance_id, p_snapshot_at, v.volume, v.total_bytes, v.free_bytes
       FROM pgvigil.mssql_volumes v
@@ -174,7 +182,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_versionstore_sample (
   holder_login        text,
   holder_host         text,
   holder_program      text,
-  holder_database     text,
+  holder_database     text,                   -- the session's current database
   holder_is_snapshot  boolean,                -- a snapshot isolation transaction (false: read committed snapshot, a trigger, MARS, an online index build)
   holder_started_at   timestamptz,
   holder_elapsed_s    bigint,
@@ -219,6 +227,7 @@ DECLARE
   v_secs numeric;
   v_gen  numeric;
   v_cln  numeric;
+  v_newer boolean;
 BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
     RAISE EXCEPTION 'import_mssql_versionstore: instance % is not a SQL Server instance', p_instance_id;
@@ -244,6 +253,7 @@ BEGIN
         v_cln := round(((v_s->>'cleanup_raw_kb')::bigint - v_prev.cleanup_raw_kb) / v_secs, 3);
       END IF;
     END IF;
+    DELETE FROM pgvigil.mssql_versionstore_sample WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
     INSERT INTO pgvigil.mssql_versionstore_sample (instance_id, snapshot_at, store_bytes, reserved_bytes, tempdb_data_bytes,
         generation_raw_kb, cleanup_raw_kb, generation_kb_s, cleanup_kb_s, snapshot_tx_count, holder_session_id, holder_login,
         holder_host, holder_program, holder_database, holder_is_snapshot, holder_started_at, holder_elapsed_s, holder_statement)
@@ -254,16 +264,17 @@ BEGIN
         v_h->>'statement');
   END IF;
 
-  -- the two per-database states are replaced whole by a read that carried them (a newer read never loses to an older one)
-  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db')
-     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_versionstore_db d WHERE d.instance_id = p_instance_id AND d.snapshot_at > p_snapshot_at) THEN
+  -- the two per-database states are replaced whole by a read that carried them. A newer read never loses to an
+  -- older one: every read stores its sample row, so a sample past this payload's time means a newer read has been
+  -- imported already (also one that listed no database and left the state empty)
+  v_newer := EXISTS (SELECT 1 FROM pgvigil.mssql_versionstore_sample s WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_snapshot_at);
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db') AND NOT v_newer THEN
     DELETE FROM pgvigil.mssql_versionstore_db WHERE instance_id = p_instance_id;
     INSERT INTO pgvigil.mssql_versionstore_db (instance_id, database_name, reserved_bytes, snapshot_at)
     SELECT DISTINCT ON (r->>'database_name') p_instance_id, r->>'database_name', (r->>'reserved_kb')::bigint * 1024, p_snapshot_at
       FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND r->>'database_name' IS NOT NULL;
   END IF;
-  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'pvs')
-     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_pvs d WHERE d.instance_id = p_instance_id AND d.snapshot_at > p_snapshot_at) THEN
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'pvs') AND NOT v_newer THEN
     DELETE FROM pgvigil.mssql_pvs WHERE instance_id = p_instance_id;
     INSERT INTO pgvigil.mssql_pvs (instance_id, database_name, adr_on, pvs_bytes, online_index_bytes, aborted_tx_count,
         oldest_active_tx_id, oldest_aborted_tx_id, oldest_tx_session_id, oldest_tx_started_at, snapshot_at)

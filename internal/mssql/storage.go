@@ -41,6 +41,7 @@ func (storageCollector) Applies(info Info) (bool, string) {
 
 // filesSQL lists every file with its database's state and whether the login can enter it. SQL Server 2016 SP1+.
 // size, max_size and a size growth are in 8 KB pages; max_size -1 = until the volume is full, 0 = no growth.
+// A database snapshot is left out: sys.master_files lists its sparse files at the source's full size.
 // %s is the volume part: volumeApply with VIEW SERVER STATE, volumeNone without.
 const filesSQL = `SELECT 'file' AS kind, mf.database_id, d.name AS database_name, CAST(d.state_desc AS nvarchar(60)) AS database_state,
   mf.file_id, mf.name AS file_name, CAST(mf.type_desc AS nvarchar(60)) AS type_desc, mf.physical_name,
@@ -55,6 +56,7 @@ const filesSQL = `SELECT 'file' AS kind, mf.database_id, d.name AS database_name
 FROM sys.master_files mf
 JOIN sys.databases d ON d.database_id = mf.database_id
 %s
+WHERE d.source_database_id IS NULL
 ORDER BY mf.database_id, mf.file_id`
 
 const (
@@ -83,14 +85,26 @@ func (storageCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]c
 	}
 	files, vols := storageRows(raw)
 	var failed []string
+	cut := 0 // databases not read because the run's deadline came first
+	// the per-database reads stop a little before the run's deadline: what was read by then is stored (the files
+	// with their allocated sizes, the volumes) and the run is partial, instead of an hour with nothing
+	stop, hasStop := ctx.Deadline()
 	for _, db := range enterable(raw) {
+		if cut > 0 || ctx.Err() != nil || (hasStop && time.Until(stop) < 10*time.Second) {
+			noteUnread(files, db.id, "the run's deadline came before this database's turn")
+			cut++
+			continue
+		}
 		used, err := QueryRows(ctx, conn, fmt.Sprintf(usedSQL, db.quoted))
 		if err != nil {
+			why := "the read of the database failed: " + err.Error()
 			if ctx.Err() != nil {
-				return nil, err // the run's deadline: nothing after it would be read either
+				why = "the run's deadline came during this database's read"
+				cut++
+			} else {
+				failed = append(failed, db.name)
 			}
-			noteUnread(files, db.id, "the read of the database failed: "+err.Error())
-			failed = append(failed, db.name)
+			noteUnread(files, db.id, why)
 			continue
 		}
 		applyUsed(files, db.id, used)
@@ -101,6 +115,10 @@ func (storageCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]c
 	if !info.ViewServerState {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.dm_os_volume_stats",
 			"message": "the login lacks VIEW SERVER STATE: the volumes' total and free space were not read"})
+	}
+	if cut > 0 {
+		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.database_files",
+			"message": fmt.Sprintf("the run's deadline came before the used space of %d database(s) was read: their files are stored with the allocated size", cut)})
 	}
 	if len(failed) > 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.database_files",

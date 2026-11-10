@@ -45,8 +45,14 @@ const titles: Record<Kind, string> = {
 function button(ctx: Ctx, st: MssqlActionsState, kind: Kind, why: string, r: Row, after: () => void): HTMLButtonElement {
   const b = el('button', { type: 'button', class: 'act-' + kind, style: 'font-size:12px;padding:0 .4rem;margin-right:.2rem' }, labels[kind]);
   const reason = why || (st.actions[kind]?.enabled ? '' : st.actions[kind]?.reason || 'actions are off for this instance');
-  if (reason) { b.disabled = true; b.title = reason; }
-  else {
+  if (reason) {
+    // off: the button stays reachable by keyboard so its reason can be read (a disabled button takes no focus)
+    b.setAttribute('aria-disabled', 'true');
+    b.setAttribute('aria-label', `${labels[kind]}: off. ${reason}`);
+    b.title = reason;
+    b.style.opacity = '.55';
+    b.style.cursor = 'not-allowed';
+  } else {
     b.title = titles[kind];
     b.addEventListener('click', () => { void confirmAction(ctx, kind, r, after); });
   }
@@ -88,8 +94,11 @@ async function confirmAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
   const foot = el('div', { style: 'margin-top:.6rem' }, no);
   form.append(foot);
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:40rem', 'aria-label': what }, form);
-  const close = () => { dlg.close(); dlg.remove(); };
-  no.addEventListener('click', close);
+  // every way out (the button, Escape) ends in the dialog's close event: it leaves the page, and once an action
+  // was sent the caller redraws its grid
+  let sent = false;
+  dlg.addEventListener('close', () => { dlg.remove(); if (sent) after(); });
+  no.addEventListener('click', () => dlg.close());
   document.body.append(dlg);
   dlg.showModal();
 
@@ -143,10 +152,11 @@ async function confirmAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
         instance_id: ctx.instance, action: kind, session_id: Number(t.session_id ?? 0), login_time: t.login_time ?? '', login: t.login ?? '',
         job_id: t.job_id ?? '', job_name: t.job_name ?? '', reason: reason.value, confirm: typed.value.trim(),
       });
+      sent = true;
       msg.replaceChildren(badge(out.outcome, 'ok'), ' ', out.detail);
       no.textContent = 'Close';
-      no.addEventListener('click', after, { once: true });
     } catch (e) {
+      sent = true;                       // refused or failed: the row may have changed too
       msg.replaceChildren(badge('not done', 'crit'), ' ', e instanceof Error ? e.message : String(e));
       no.textContent = 'Close';
     }
@@ -160,6 +170,7 @@ const logCols: Col[] = [
   { key: 'action' },
   { key: 'outcome', fmt: outcomeBadge },
   { key: 'statement', wide: true },
+  { key: 'engine', label: 'door', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL routes' },
   { key: 'session_id', label: 'session', num: true, fmt: v => String(v ?? '') },
   { key: 'target_user', label: 'login / owner' },
   { key: 'target_app', label: 'program' },

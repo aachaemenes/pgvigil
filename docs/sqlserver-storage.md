@@ -6,9 +6,9 @@ Two collections of the [SQL Server engine](sqlserver.md) and the three tabs they
 
 What is read:
 
-- Every database file the server lists (`sys.master_files`): its logical name, type (rows, log, FILESTREAM), physical path, state, size, maximum size, and its growth step as a size or as a per cent of the file.
+- Every database file the server lists (`sys.master_files`; a database snapshot is left out, its sparse files are listed at the source's full size): its logical name, type (rows, log, FILESTREAM), physical path, state, size, maximum size, and its growth step as a size or as a per cent of the file.
 - The space used inside each file and its filegroup, read in each ONLINE database the login can enter (`sys.database_files` and `FILEPROPERTY(..., 'SpaceUsed')`). The read is one SELECT run in that database's own context; it changes no session setting. The file's current size comes from the same read, which matters for tempdb: `sys.master_files` keeps tempdb's size at startup.
-- A database the login cannot enter is kept with its allocated size. Its files say `used not read`, with the reason (the login cannot enter the database, the database is restoring or offline, or the read failed).
+- A database the login cannot enter is kept with its allocated size, and so is one whose turn came after the run's five-minute deadline (the run then says `partial`). Its files say `used not read`, with the reason (the login cannot enter the database, the database is restoring or offline, or the read failed).
 - The volumes the files sit on (`sys.dm_os_volume_stats`): mount point, label, file system, total and free space.
 
 What is kept: the current row per file with the previous size and the time the size changed, the current row per volume, each database's data and log size per read, and each volume's total and free space per read. A file or volume the server no longer lists is marked as gone and stays as last read.
@@ -44,8 +44,8 @@ One database at a time, chosen from a list (the largest first): a ring of each f
 | a volume under 10 % free | warning; critical under 5 % | free space over total, per volume |
 | a file at its max size | critical | the file has a maximum, grows, and has reached it |
 | a file within one growth of its max size | warning | at most one growth step is left |
-| a percentage growth on a file over 10 GB | info | the next step is a tenth (or more) of a large file, in one piece |
-| a log file larger than its data files | info | per database, from 1 GiB of log |
+| a percentage growth on a file over 10 GB | info | any per cent growth on a file over 10 GiB: the step grows with the file |
+| a log file larger than its data files | info | per database, from 1 GiB of log (a decision of this build: smaller logs are not raised) |
 
 A file set not to grow has no maximum to reach and raises neither max size finding. A read older than three hours raises nothing; the Collections page says the collection is stale.
 
@@ -57,7 +57,7 @@ What is read:
 
 - The store's size: the `Version Store Size (KB)` counter and the pages reserved in tempdb's files (`version_store_reserved_page_count`), beside the size of tempdb's data files.
 - The generation and cleanup rates. `Version Generation rate (KB/s)` and `Version Cleanup rate (KB/s)` are cumulative counters; the rate stored is the difference between two reads over the seconds between them. The first read after a start, or after the server restarted, has no rate.
-- **The holder**: the oldest active transaction that generates or may read row versions (`sys.dm_tran_active_snapshot_database_transactions`), with its session, login, host, program, database, the transaction's start in UTC, how long it has been open, and its last statement (the session's input buffer). The statement follows the instance's `query_text` policy.
+- **The holder**: the oldest active transaction that generates or may read row versions (`sys.dm_tran_active_snapshot_database_transactions`), with its session, login, host, program, the session's current database, the transaction's start in UTC, how long it has been open, and its last statement (the session's input buffer). The statement follows the instance's `query_text` policy.
 - The store per database (`sys.dm_tran_version_store_space_usage`, from SQL Server 2016 SP2).
 - The persistent version store of accelerated database recovery per database (`sys.dm_tran_persistent_version_store_stats`, from SQL Server 2019): its size, the aborted transactions waiting for the cleaner, and the oldest active transaction with its session where it still runs. A database with accelerated database recovery keeps its row versions in itself, not in tempdb.
 

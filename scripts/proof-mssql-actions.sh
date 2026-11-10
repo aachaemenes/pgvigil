@@ -19,7 +19,8 @@
 #     actions_dsn every action is off with 'has no actions_dsn'.
 #  B. the preview of the proof's own sleeping session (an application login, one open transaction): ok, with its
 #     login, the program, open_transaction_count 1, the last statement holding the proof's marker and the statement
-#     'KILL <id>'; no audit row for a preview.
+#     'KILL <id>'; the login time shown is the server's own UTC login time of that session, within a second; no
+#     audit row for a preview.
 #  C. refusals, each 409, each one audit row with outcome refused, and the session still connected after all of
 #     them: a typed confirmation that is not the session id; the values of another login carried for that session id
 #     ('now belongs to another session'); the instance whose list lacks kill; the instance without an actions_dsn;
@@ -66,22 +67,32 @@ export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 MADE_REPO=; MADE_JOB=; SRVPID=; BG=(); MADE_LOGINS=(); MADE_USERS=()
 sqlcmd_() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -W -h -1 -s '|' "$@"; }
 sq() { sqlcmd_ -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
-# hold <login> <password> <batch>: a session that runs the batch and then sleeps, connected, for three minutes
-hold() { ( { printf '%s\nGO\n' "$3"; sleep 180; } | SQLCMDPASSWORD="$2" docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -U "$1" -d master >/dev/null 2>&1 ) & BG+=($!); }
+# hold <login> <password> <batch>: a session that runs the batch and then sleeps, connected, for three minutes. It
+# runs as its own process group (setsid), so the cleanup ends the whole pipeline, the docker exec too.
+cat > "$TMPD/hold.sh" <<'HOLD'
+{ printf '%s\nGO\n' "$3"; sleep 180; } | docker exec -i -e SQLCMDPASSWORD "$1" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -U "$2" -d master >/dev/null 2>&1
+HOLD
+hold() { SQLCMDPASSWORD="$2" setsid bash "$TMPD/hold.sh" "$CT" "$1" "$3" & BG+=($!); }
 spids() { sq "SELECT ISNULL(STRING_AGG(CAST(session_id AS varchar(10)), ','), '') FROM sys.dm_exec_sessions WHERE login_name = '$1' AND program_name LIKE 'SQLCMD%'"; }
 cleanup() {
   rc=$?
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null || true
-  for p in "${BG[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
+  for p in "${BG[@]:-}"; do [ -n "$p" ] && kill -- "-$p" 2>/dev/null || true; done
   # only what THIS run created
   if [ -n "$MADE_JOB" ]; then sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = '$JOB') BEGIN EXEC msdb.dbo.sp_stop_job @job_name = '$JOB'; END" >/dev/null 2>&1 || true
     sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = '$JOB') EXEC msdb.dbo.sp_delete_job @job_name = '$JOB';" >/dev/null 2>&1 || echo "CLEANUP: job $JOB not deleted" >&2; fi
   for l in "${MADE_USERS[@]:-}"; do [ -n "$l" ] && { sq "IF USER_ID('$l') IS NOT NULL DROP USER [$l];" msdb >/dev/null 2>&1 || echo "CLEANUP: msdb user $l not dropped" >&2; }; done
   for l in "${MADE_LOGINS[@]:-}"; do
     [ -n "$l" ] || continue
-    # a login with a live session cannot be dropped: its sessions (this proof's own) end first
-    sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = '$l'; EXEC (@k);
-        IF SUSER_ID('$l') IS NOT NULL DROP LOGIN [$l];" >/dev/null 2>&1 || echo "CLEANUP: login $l not dropped" >&2
+    # a login with a live session cannot be dropped, and a killed session takes a moment to go: its sessions (this
+    # proof's own) are ended and the drop is tried until it holds, ten times at most
+    gone=
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = '$l'; EXEC (@k);" >/dev/null 2>&1 || true
+      if sq "IF SUSER_ID('$l') IS NOT NULL DROP LOGIN [$l];" >/dev/null 2>&1; then gone=1; break; fi
+      sleep 1
+    done
+    [ -n "$gone" ] || echo "CLEANUP: LOGIN $l WAS NOT DROPPED (drop it by hand; $SYS is a sysadmin login)" >&2
   done
   if [ -n "$MADE_REPO" ]; then psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; fi
   rm -rf "$CFG" "$TMPD"
@@ -97,7 +108,7 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 [ "$(sq "SELECT ISNULL(SUSER_ID('$MON'), 0) + ISNULL(SUSER_ID('$ACT'), 0) + ISNULL(SUSER_ID('$APP'), 0) + ISNULL(SUSER_ID('$APP2'), 0) + ISNULL(SUSER_ID('$NOR'), 0) + ISNULL(SUSER_ID('$SYS'), 0) + (SELECT COUNT(*) FROM msdb.dbo.sysjobs WHERE name = '$JOB')")" = 0 ] \
   || fail "setup: a name of this run exists already (suffix $SUF): run again"
 mk() { sq "CREATE LOGIN [$1] WITH PASSWORD = '$2', CHECK_POLICY = OFF;"; MADE_LOGINS+=("$1"); }
-mk "$MON" "$PMON"; mk "$ACT" "$PACT"; mk "$APP" "$PAPP"; mk "$APP2" "$PAPP2"; mk "$NOR" "$PNOR"; mk "$SYS" "$PSYS"
+mk "$SYS" "$PSYS"; mk "$MON" "$PMON"; mk "$ACT" "$PACT"; mk "$APP" "$PAPP"; mk "$APP2" "$PAPP2"; mk "$NOR" "$PNOR"   # the sysadmin one first: the cleanup drops in this order
 sq "GRANT VIEW SERVER STATE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON];"
 sq "CREATE USER [$MON] FOR LOGIN [$MON]; ALTER ROLE db_datareader ADD MEMBER [$MON];" msdb; MADE_USERS+=("$MON")
 # the actions login: these two things and nothing else
@@ -180,6 +191,7 @@ state() { curl -s -b "$CJ" "$U/api/mssql/actions/state?instance=${IID[$1]}" | jq
 [ "$(state "$I1" '[.actions.kill.enabled, .actions.job_start.enabled, .actions.job_stop.enabled] | join(",")')" = "true,true,true" ] || fail "A: the full instance"
 [ "$(state "$I2" '[.actions.kill.enabled, .actions.job_start.enabled, .actions.job_stop.enabled] | join(",")')" = "false,true,false" ] || fail "A: the [job_start] instance"
 case "$(state "$I2" .actions.kill.reason)" in *"not on the instance's actions: list"*) ;; *) fail "A: the reason on the [job_start] instance";; esac
+[ "$(state "$I3" '[.actions.kill.enabled, .actions.job_start.enabled, .actions.job_stop.enabled] | join(",")')" = "false,false,false" ] || fail "A: the instance without an actions_dsn"
 case "$(state "$I3" .actions.kill.reason)" in *"has no actions_dsn"*) ;; *) fail "A: the reason without an actions_dsn";; esac
 echo "A: OK"
 
@@ -193,6 +205,11 @@ sleep 1
 case "$(jb .target.statement)" in *"pgvproof-target-$SUF"*) ;; *) fail "B: the last statement";; esac
 case "$(jb .target.program)" in SQLCMD*) ;; *) fail "B: the program: $(jb .target.program)";; esac
 LT=$(jb .target.login_time)
+# the login time against the server's own conversion to UTC (its datetimeoffset functions, not the product's
+# minute arithmetic)
+IFS='|' read -r SALT OFFSET <<<"$(sq "SELECT CONVERT(varchar(33), CAST(SWITCHOFFSET(TODATETIMEOFFSET(login_time, DATEPART(tz, SYSDATETIMEOFFSET())), 0) AS datetime2(3)), 126) + 'Z|' + CAST(DATEDIFF(minute, GETUTCDATE(), GETDATE()) AS varchar(10)) FROM sys.dm_exec_sessions WHERE session_id = $T")"
+[ "$(q "select abs(extract(epoch from '$LT'::timestamptz - '$SALT'::timestamptz)) < 1")" = t ] || fail "B: the login time shown ($LT) is not the server's UTC login time ($SALT)"
+echo "  the server's clock is $OFFSET minutes from UTC; its own UTC login time for the session: $SALT"
 [ "$(audit)" = 0 ] || fail "B: a preview wrote an audit row"
 echo "  the session shown: id $T, login $APP, logged in $LT, open transactions 1, program $(jb .target.program)"
 echo "B: OK"
@@ -258,6 +275,8 @@ jstate() { sq "SELECT CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysjobactivity ja
 [ "$(jb '[.ok, .target.job_name, .target.job_owner, .target.job_state] | join("|")')" = "true|$JOB|sa|idle" ] || fail "F: the preview: $(cat "$BODY")"
 echo "  the job shown: $(jq -c .target "$BODY"), statement: $(jb .statement)"
 expect "job_start through a login with no right" "$(post run "$(job_req "$I4" job_start "$JOB" "$JOB")")" 502 failed "the server refused EXEC msdb.dbo.sp_start_job"
+case "$(jb .server_message)" in "Msg 229,"*|"Msg 916,"*) ;; *) fail "F: the server's message for the job_start: $(jb .server_message)";; esac
+[ "$(q "select server_message like 'Msg %' from pgvigil.actions_log where instance_name = '$I4' order by action_id desc limit 1")" = t ] || fail "F: the audit row's server message"
 echo "  the server said: $(jb .server_message)"
 [ "$(jstate)" = idle ] || fail "F: the job runs after a failed start"
 expect "job_start" "$(post run "$(job_req "$I1" job_start "$JOB" "$JOB")")" 200 done "sp_start_job"
@@ -295,5 +314,6 @@ grep -q "actions_log_action_check" "$TMPD/bad.out" || { cat "$TMPD/bad.out" >&2;
 : > "$BODY"
 echo "G: OK"
 
+[ "$OFFSET" != 0 ] || echo "NOT PROVEN: the conversion of a login time to UTC (this server's clock is UTC: local time and UTC are the same here)"
 echo "NOT PROVEN: a Windows login as the actions login, Managed Instance and RDS, a session id reused between the check and KILL"
 echo "proof-mssql-actions: PASS (A-G)"

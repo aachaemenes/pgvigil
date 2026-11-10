@@ -45,8 +45,9 @@ const storeSQL = `SELECT 'store' AS kind,
 
 // holderSQL: SQL Server 2016 SP1+. The oldest active transaction that generates or may read row versions (the
 // lowest transaction sequence number: the one version cleanup cannot pass), its session and its last statement
-// from the input buffer. The begin time is the server's local clock in the DMV: moved to UTC by the server's
-// offset at the read.
+// from the input buffer. database_name is the SESSION's current database, which is where the transaction runs
+// unless the session changed database since. The begin time is the server's local clock in the DMV: moved to UTC
+// by the server's offset at the read.
 const holderSQL = `SELECT TOP (1) 'holder' AS kind, st.session_id, s.login_name, s.host_name, s.program_name,
   DB_NAME(s.database_id) AS database_name, CAST(st.is_snapshot AS int) AS is_snapshot,
   CAST(st.elapsed_time_seconds AS bigint) AS elapsed_s,
@@ -80,13 +81,15 @@ LEFT JOIN sys.dm_tran_active_transactions tx ON tx.transaction_id = p.oldest_act
 LEFT JOIN sys.dm_tran_session_transactions se ON se.transaction_id = tx.transaction_id
 WHERE d.is_accelerated_database_recovery_on = 1 OR p.persistent_version_store_size_kb > 0 OR p.current_aborted_transaction_count > 0`
 
-// hasStoreByDatabase: sys.dm_tran_version_store_space_usage arrived in SQL Server 2016 SP2 (13.0.5026).
+// hasStoreByDatabase: sys.dm_tran_version_store_space_usage arrived in SQL Server 2016 SP2 (13.0.5026). Azure SQL
+// Managed Instance has it whatever its product version says (it reports 12.0).
 func hasStoreByDatabase(info Info) bool {
-	return info.Major > 13 || (info.Major == 13 && info.Build >= 5026)
+	return info.Kind == KindAzureMI || info.Major > 13 || (info.Major == 13 && info.Build >= 5026)
 }
 
-// hasPVS: sys.dm_tran_persistent_version_store_stats arrived with accelerated database recovery in SQL Server 2019.
-func hasPVS(info Info) bool { return info.Major >= 15 }
+// hasPVS: sys.dm_tran_persistent_version_store_stats arrived with accelerated database recovery in SQL Server 2019;
+// Managed Instance has it (accelerated database recovery is always on there).
+func hasPVS(info Info) bool { return info.Kind == KindAzureMI || info.Major >= 15 }
 
 func (versionStoreCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	rows, err := QueryRows(ctx, conn, storeSQL)

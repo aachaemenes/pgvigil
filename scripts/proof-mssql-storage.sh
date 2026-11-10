@@ -43,6 +43,10 @@
 #     zero' with the holder's session, age and last statement in the detail; one more read in which cleanup moved
 #     ends it; a store over a third of tempdb raises its finding; a persistent version store of 2 GiB with aborted
 #     transactions raises its finding, and none without aborted transactions.
+#  X. the imports under a retry and out of order, on imported rows: a storage payload and a version store payload
+#     imported twice at one snapshot time leave one size row per database, one volume sample and one version store
+#     sample; a version store payload OLDER than a read that listed no database does not put its per-database rows
+#     back (the state stays empty).
 #  NOT PROVEN HERE: Windows volumes (drive letters and mounted folders: no Windows SQL Server in this proof), SQL
 #     Server 2016-2019, Managed Instance and RDS, a server with thousands of databases, a FILESTREAM container.
 set -euo pipefail
@@ -140,6 +144,14 @@ SA=$(sa_files "$DB"); GOT=$(repo_files "$DB")
 echo "  sa reads (file|size|used|max|growth|growth %|filegroup):"; echo "$SA" | sed 's/^/    /'
 [ "$(echo "$SA" | wc -l)" = 3 ] || fail "A: sa lists $(echo "$SA" | wc -l) files, not 3"
 [ "$GOT" = "$SA" ] || { echo "  stored:"; echo "$GOT" | sed 's/^/    /'; fail "A: the stored files differ from sa's read"; }
+# the maximum, the growth and the filegroup against what the proof itself asked for in CREATE DATABASE (sa's read
+# above shares the product's arithmetic; these constants do not): file 1 the data file (64 MB max, 8 MB steps), file
+# 2 the log (1 GB max, 4 MB steps, no filegroup), file 3 the second data file (no maximum, 10 per cent, FG2)
+WANT_DEF="1|$((64 * 1048576))|$((8 * 1048576))|0|PRIMARY|ROWS
+2|$((1024 * 1048576))|$((4 * 1048576))|0||LOG
+3||0|10|FG2|ROWS"
+GOT_DEF=$(q "select file_id || '|' || coalesce(max_size_bytes::text, '') || '|' || growth_bytes || '|' || growth_pct || '|' || coalesce(filegroup, '') || '|' || type_desc from pgvigil.mssql_files where instance_id = $iid and database_name = '$DB' order by file_id")
+[ "$GOT_DEF" = "$WANT_DEF" ] || { echo "$GOT_DEF" | sed 's/^/    /'; fail "A: the stored maximum, growth, filegroup or type is not what CREATE DATABASE asked for"; }
 [ "$(q "select count(*) filter (where used_read) || '|' || count(*) filter (where used_note is not null) from pgvigil.mssql_files where instance_id=$iid and database_name='$DB'")" = "3|0" ] || fail "A: used_read"
 [ "$(q "select string_agg(growth_pct::text, ',' order by file_id) from pgvigil.mssql_files where instance_id=$iid and database_name='$DB'")" = "0,0,10" ] \
   || fail "A: growth per cent by file: $(q "select string_agg(growth_pct::text, ',' order by file_id) from pgvigil.mssql_files where instance_id=$iid and database_name='$DB'")"
@@ -171,7 +183,9 @@ echo "B: OK"
 
 echo "--- C. a grown file is larger on the next run, one growth short of its maximum"
 finding() { q "select severity from pgvigil.mssql_storage_findings where instance_id=$iid and check_name='$1' and object='$DB: pv_data1'"; }
-[ -z "$(finding 'a file within one growth of its max size')$(finding 'a file at its max size')" ] || fail "C: a max size finding before the growth"
+# nfind <instance> <check>: how many findings of that name the instance has (a count: a failed query is not 'none')
+nfind() { q "select count(*) from pgvigil.mssql_storage_findings where instance_id=$1 and check_name='$2'"; }
+[ "$(nfind "$iid" 'a file within one growth of its max size')|$(nfind "$iid" 'a file at its max size')" = "0|0" ] || fail "C: a max size finding before the growth"
 sq "ALTER DATABASE [$DB] MODIFY FILE (NAME = pv_data1, SIZE = 56MB);"
 sleep 1
 collect mssql_storage >/dev/null
@@ -187,7 +201,7 @@ echo "--- D. at its maximum"
 sq "ALTER DATABASE [$DB] MODIFY FILE (NAME = pv_data1, SIZE = 64MB);"
 sleep 1
 collect mssql_storage >/dev/null
-[ "$(finding 'a file at its max size')|$(finding 'a file within one growth of its max size')" = "critical|" ] || fail "D: $(q "select severity, check_name, detail from pgvigil.mssql_storage_findings where instance_id=$iid and object like '$DB:%'")"
+[ "$(finding 'a file at its max size')|$(nfind "$iid" 'a file within one growth of its max size')" = "critical|0" ] || fail "D: $(q "select severity, check_name, detail from pgvigil.mssql_storage_findings where instance_id=$iid and object like '$DB:%'")"
 echo "  $(q "select detail from pgvigil.mssql_storage_findings where instance_id=$iid and check_name='a file at its max size' and object='$DB: pv_data1'")"
 echo "D: OK"
 
@@ -288,21 +302,38 @@ vs() { # minutes ago, reserved KB, generation raw, cleanup raw, holder (1|0)
 }
 vfind() { q "select severity || '|' || detail from pgvigil.mssql_storage_findings where instance_id=$sid and check_name='$1'"; }
 for m in 10 9 8 7 6 5 4 3 2 1; do vs "$m" $(( (11 - m) * 10240 )) $(( (11 - m) * 10240 )) 500 1; done
-[ -z "$(vfind 'the version store grows while cleanup is at zero')" ] || fail "W: the finding before ten minutes of reads"
+[ "$(nfind "$sid" 'the version store grows while cleanup is at zero')" = 0 ] || fail "W: the finding before ten minutes of reads"
 vs 0 $((11 * 10240)) $((11 * 10240)) 500 1
 D=$(vfind 'the version store grows while cleanup is at zero')
 echo "  $D"
 case "$D" in "warning|"*"session 77 (app_login, the app)"*"open for 3600 s"*"SELECT held FROM dbo.orders"*) ;; *) fail "W: the grows-while-cleanup-is-at-zero finding or its holder detail";; esac
-[ -z "$(vfind 'the version store over a third of tempdb')" ] || fail "W: a third-of-tempdb finding at 110 MB of 8 GB"
+[ "$(nfind "$sid" 'the version store over a third of tempdb')" = 0 ] || fail "W: a third-of-tempdb finding at 110 MB of 8 GB"
 q "select pgvigil.import_mssql_versionstore($sid, now() + interval '20 seconds', '[{\"kind\":\"store\",\"store_kb\":3145728,\"reserved_kb\":3145728,\"tempdb_data_kb\":8388608,\"generation_raw_kb\":$((12 * 10240)),\"cleanup_raw_kb\":9000,\"snapshot_tx_count\":0}]'::jsonb)" >/dev/null
-[ -z "$(vfind 'the version store grows while cleanup is at zero')" ] || fail "W: the finding stayed after cleanup moved"
+[ "$(nfind "$sid" 'the version store grows while cleanup is at zero')" = 0 ] || fail "W: the finding stayed after cleanup moved"
 case "$(vfind 'the version store over a third of tempdb')" in "warning|"*"3072 MB"*"(37.5 %)"*) ;; *) fail "W: the third-of-tempdb finding: $(vfind 'the version store over a third of tempdb')";; esac
 pvs() { q "select pgvigil.import_mssql_versionstore($sid, now() + interval '$1 seconds', '[{\"kind\":\"pvs\",\"database_name\":\"sales\",\"adr_on\":1,\"pvs_kb\":2097152,\"online_index_kb\":0,\"aborted_tx_count\":$2,\"oldest_active_tx_id\":0,\"oldest_aborted_tx_id\":0},{\"kind\":\"pvs\",\"database_name\":null}]'::jsonb)" >/dev/null; }
 pvs 21 0
-[ -z "$(vfind 'the persistent version store over its threshold with aborted transactions')" ] || fail "W: a persistent version store finding without aborted transactions"
+[ "$(nfind "$sid" 'the persistent version store over its threshold with aborted transactions')" = 0 ] || fail "W: a persistent version store finding without aborted transactions"
 pvs 22 3
 case "$(vfind 'the persistent version store over its threshold with aborted transactions')" in "warning|"*"2048 MB with 3 aborted"*) ;; *) fail "W: the persistent version store finding";; esac
 echo "W: OK"
 
+echo "--- X. the imports under a retry and out of order"
+xid=$(q "select pgvigil.ensure_instance('proof-mssql-retry-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+XT=$(q "select date_trunc('second', now())")
+for _ in 1 2; do
+  q "select pgvigil.import_mssql_storage($xid, '$XT', '[{\"kind\":\"volume\",\"volume\":\"/data/\",\"total_bytes\":1000,\"free_bytes\":400,\"files\":1},
+     {\"kind\":\"file\",\"database_id\":5,\"database_name\":\"one\",\"database_state\":\"ONLINE\",\"file_id\":1,\"file_name\":\"one_data\",\"type_desc\":\"ROWS\",\"size_bytes\":100,\"used_read\":0,\"growth_bytes\":0,\"growth_pct\":0,\"volume\":\"/data/\"}]'::jsonb)" >/dev/null
+  q "select pgvigil.import_mssql_versionstore($xid, '$XT', '[{\"kind\":\"store\",\"store_kb\":10,\"reserved_kb\":10,\"tempdb_data_kb\":1000,\"generation_raw_kb\":5,\"cleanup_raw_kb\":5,\"snapshot_tx_count\":0}]'::jsonb)" >/dev/null
+done
+[ "$(q "select (select count(*) from pgvigil.mssql_database_size where instance_id=$xid) || '|' || (select count(*) from pgvigil.mssql_volume_sample where instance_id=$xid) || '|' || (select count(*) from pgvigil.mssql_versionstore_sample where instance_id=$xid) || '|' || (select count(*) from pgvigil.mssql_files where instance_id=$xid)")" = "1|1|1|1" ] \
+  || fail "X: a payload imported twice left $(q "select (select count(*) from pgvigil.mssql_database_size where instance_id=$xid), (select count(*) from pgvigil.mssql_volume_sample where instance_id=$xid), (select count(*) from pgvigil.mssql_versionstore_sample where instance_id=$xid)") rows (size, volume, version store), want 1 each"
+# a newer read that lists no database (the markers only), then an older payload with rows: the state stays empty
+q "select pgvigil.import_mssql_versionstore($xid, '$XT'::timestamptz + interval '2 minutes', '[{\"kind\":\"store\",\"store_kb\":10,\"reserved_kb\":10,\"tempdb_data_kb\":1000,\"generation_raw_kb\":6,\"cleanup_raw_kb\":6,\"snapshot_tx_count\":0},{\"kind\":\"db\",\"database_name\":null},{\"kind\":\"pvs\",\"database_name\":null}]'::jsonb)" >/dev/null
+q "select pgvigil.import_mssql_versionstore($xid, '$XT'::timestamptz + interval '1 minute', '[{\"kind\":\"store\",\"store_kb\":10,\"reserved_kb\":10,\"tempdb_data_kb\":1000,\"generation_raw_kb\":5,\"cleanup_raw_kb\":5,\"snapshot_tx_count\":0},{\"kind\":\"db\",\"database_name\":\"stale\",\"reserved_kb\":99},{\"kind\":\"pvs\",\"database_name\":\"stale\",\"adr_on\":1,\"pvs_kb\":4194304,\"online_index_kb\":0,\"aborted_tx_count\":9}]'::jsonb)" >/dev/null
+[ "$(q "select (select count(*) from pgvigil.mssql_versionstore_db where instance_id=$xid) || '|' || (select count(*) from pgvigil.mssql_pvs where instance_id=$xid) || '|' || (select count(*) from pgvigil.mssql_versionstore_sample where instance_id=$xid)")" = "0|0|3" ] \
+  || fail "X: an older payload put its per-database rows back: $(q "select (select count(*) from pgvigil.mssql_versionstore_db where instance_id=$xid), (select count(*) from pgvigil.mssql_pvs where instance_id=$xid), (select count(*) from pgvigil.mssql_versionstore_sample where instance_id=$xid)")"
+echo "X: OK"
+
 echo "NOT PROVEN: Windows volumes, SQL Server 2016-2019, Managed Instance, RDS, thousands of databases, a FILESTREAM container"
-echo "proof-mssql-storage: PASS (A-H, V, W)"
+echo "proof-mssql-storage: PASS (A-H, V, W, X)"

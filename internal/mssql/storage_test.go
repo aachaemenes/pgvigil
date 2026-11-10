@@ -62,6 +62,9 @@ func TestVersionStoreVersionGates(t *testing.T) {
 		{16, 4135, true, true},   // 2022
 	} {
 		in := Info{Major: c.major, Build: c.build}
+		if mi := (Info{Kind: KindAzureMI, Major: 12, Build: 2000}); !hasStoreByDatabase(mi) || !hasPVS(mi) {
+			t.Error("Managed Instance (product version 12.0) has both DMVs")
+		}
 		if hasStoreByDatabase(in) != c.byDB || hasPVS(in) != c.pvs {
 			t.Errorf("%d.0.%d: by database %v, pvs %v; want %v, %v", c.major, c.build, hasStoreByDatabase(in), hasPVS(in), c.byDB, c.pvs)
 		}
@@ -342,6 +345,11 @@ func TestActionRow(t *testing.T) {
 	}
 	job := ActionRequest{Instance: "i", Kind: ActionJobStop, JobID: "6F9619FF-8B86-D011-B42D-00C04FC964FF", JobName: "nightly", Reason: "", User: "d\x00ba"}
 	jr := ActionRow(at, job, ActionResult{Outcome: OutcomeFailed, Detail: "refused\x00", Target: Target{JobName: "nightly", JobOwner: "sa"}})
+	huge := kill
+	huge.SessionID = 3000000000
+	if hr := ActionRow(at, huge, ActionResult{Outcome: OutcomeRefused, Detail: "session_id must be a session id"}); hr.PID == nil || *hr.PID != 0 {
+		t.Errorf("a number that is no session id must not reach the int column: %+v", hr.PID)
+	}
 	if jr.PID != nil || jr.BackendStart != nil || jr.Target != "nightly" || jr.TargetID != job.JobID || jr.TargetUser != "sa" ||
 		jr.Reason != "(no reason given)" || jr.UIUser != "dba" || jr.Detail != "refused" {
 		t.Errorf("the job's row: %+v", jr)

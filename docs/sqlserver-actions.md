@@ -30,7 +30,7 @@ CREATE USER [pgvigil_actions] FOR LOGIN [pgvigil_actions];
 ALTER ROLE SQLAgentOperatorRole ADD MEMBER [pgvigil_actions];
 ```
 
-pgvigil refuses an actions login that is `sysadmin` or holds `CONTROL SERVER`, and one that is the read login. `SQLAgentOperatorRole` lets its member start and stop every local job, and read the jobs; that is the smallest role SQL Server has for it.
+pgvigil refuses an actions login that is `sysadmin` or holds `CONTROL SERVER`, and one that is the read login. `SQLAgentOperatorRole` is the smallest role SQL Server has for starting and stopping a job the login does not own, and it carries more than that: its member can also read every local job with its history, enable or disable local jobs and schedules, and delete a local job's history. pgvigil sends none of those; weigh them before you grant the role.
 
 To take the door away again:
 
@@ -69,7 +69,7 @@ A session is never killed from the UI when it is a system session, a session of 
 
 Whether the actions login holds the right for the statement is the server's to say. A login without `ALTER ANY CONNECTION` gets the server's own error (Msg 6102), and the attempt is logged as failed with that message.
 
-The check and the statement run on two connections, a few milliseconds apart. A session id reused inside those milliseconds would not be noticed. That is the cost of keeping the actions login unable to read other sessions.
+Both connections are open and the actions login is checked before the last read of the target, so that read and the statement are two round trips apart. A session id reused inside that gap would not be noticed. That is the cost of keeping the actions login unable to read other sessions.
 
 A kill rolls the session's open transaction back. A long transaction takes about as long to roll back as it took to run, and the session stays visible in that state until it is done.
 
@@ -81,9 +81,9 @@ Every attempt is written to `pgvigil.actions_log` in the repository before the r
 | --- | --- |
 | `done` | The statement was sent and the server accepted it. |
 | `refused` | A check said no. Nothing was sent. |
-| `failed` | The checks passed and the server refused the statement. Its message is in the row. |
+| `failed` | The statement was sent and the server refused it. Its message is in the row. |
 
-If the log cannot be written, nothing is sent. The log is shown on the instance's Actions log tab, with what is on for the instance. Rows are written through one function and nobody but the repository's owner can change or delete them. A request without a UI session never reaches the door (401) and is not logged: there is no user to name.
+Before anything is sent the server checks that the log can be written: the audit login answers and may call the log's function (a repository not yet migrated has none, and the action is refused with that reason). A row that still fails after the statement was sent is reported in the reply and written to the server's own log with its outcome. The log is shown on the instance's Actions log tab, with what is on for the instance. Rows are written through one function and nobody but the repository's owner can change or delete them. A request without a UI session never reaches the door (401) and is not logged: there is no user to name.
 
 The table is the one PostgreSQL's cancel and terminate use; a row says which engine it belongs to.
 

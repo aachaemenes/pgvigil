@@ -164,9 +164,15 @@ func (m *MSSQLActions) Run(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	// the audit door first: an attempt that cannot be written is not made
-	if err := m.a.audit.Ping(ctx); err != nil {
+	// the audit door first: an attempt that cannot be written is not made. The audit login must reach the
+	// repository AND be allowed to call this door's import function (a repository not yet migrated to 0067 has none)
+	var may bool
+	if err := m.a.audit.QueryRow(ctx, sqlMSSQLAuditCheck).Scan(&may); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("the actions log cannot be written (%v): nothing was sent", err))
+		return
+	}
+	if !may {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("the actions log cannot be written: the repository has no pgvigil.import_mssql_actions_log the audit login may call (run 'pgvigil migrate': 0067); nothing was sent"))
 		return
 	}
 	kind := mssql.ActionKind(in.Action)
@@ -214,12 +220,16 @@ func (m *MSSQLActions) Run(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-// sqlMSSQLActionsLog is one SQL Server instance's audit, newest first.
+// sqlMSSQLAuditCheck says whether the audit login may write this door's rows.
+const sqlMSSQLAuditCheck = `SELECT coalesce(has_function_privilege(to_regprocedure('pgvigil.import_mssql_actions_log(int, timestamptz, jsonb)'), 'EXECUTE'), false)`
+
+// sqlMSSQLActionsLog is one SQL Server instance's audit, newest first: every row of the instance, also an attempt
+// made through the PostgreSQL routes against it (refused there; its engine says postgres).
 const sqlMSSQLActionsLog = `
-SELECT action_id, at, ui_user, client, action, outcome, pid AS session_id, backend_start AS login_time, target_user, target_app,
+SELECT action_id, at, ui_user, client, engine, action, outcome, pid AS session_id, backend_start AS login_time, target_user, target_app,
        target_host, target AS job_name, target_id AS job_id, statement, server_message, reason, detail
   FROM pgvigil.actions_log
- WHERE instance_id = $1 AND engine = 'sqlserver'
+ WHERE instance_id = $1
  ORDER BY at DESC, action_id DESC
  LIMIT 500`
 
