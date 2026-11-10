@@ -159,30 +159,43 @@ func TestJobsCursor(t *testing.T) {
 	run := func(ids ...int64) []collect.Row {
 		out := []collect.Row{}
 		for _, id := range ids {
-			out = append(out, collect.Row{"kind": "run", "history_id": id})
+			out = append(out, collect.Row{"kind": "run", "history_id": id, "mark": id * 7})
 		}
 		return out
 	}
+	// where a read starts
 	for _, c := range []struct {
-		what             string
-		last, head       int64
-		runs             []collect.Row
-		wantFrom, wantTo int64
+		what string
+		last int64
+		same bool
+		want int64
 	}{
-		{"a first read", 0, 40, run(31, 35, 40), 0, 40},
-		{"new rows past the cursor", 40, 44, run(41, 44), 40, 44},
-		{"nothing new", 44, 44, nil, 44, 44},
-		{"a batch cut short keeps its own last row", 44, 9000, run(45, 46), 44, 46},
-		{"only rows outside the kept window past the cursor", 44, 50, nil, 44, 44},
-		{"msdb replaced: the numbering started again", 5000, 12, run(3, 12), 0, 12},
-		{"history emptied", 5000, 0, nil, 0, 0},
-		{"msdb replaced, its rows outside the window", 5000, 12, nil, 0, 12},
+		{"a first read", 0, false, 0},
+		{"the row at the cursor is the row that was read: a little behind it", 5000, true, 5000 - jobHistoryOverlap},
+		{"a cursor inside the overlap", 30, true, 0},
+		{"msdb replaced, its numbering already PAST the cursor: the mark differs, from the start", 5000, false, 0},
+		{"the cursor's row purged while the collector was stopped: from the start of the kept window", 5000, false, 0},
 	} {
-		if got := jobsReadFrom(c.last, c.head); got != c.wantFrom {
-			t.Errorf("%s: read from %d; want %d", c.what, got, c.wantFrom)
+		if got := jobsReadFrom(c.last, c.same); got != c.want {
+			t.Errorf("%s: read from %d; want %d", c.what, got, c.want)
 		}
-		if got := jobsNextCursor(c.last, c.head, c.runs); got != c.wantTo {
-			t.Errorf("%s: next cursor %d; want %d", c.what, got, c.wantTo)
+	}
+	// what a batch does to the read position and the cursor
+	for _, c := range []struct {
+		what                         string
+		from, next, mark             int64
+		runs                         []collect.Row
+		wantFrom, wantNext, wantMark int64
+	}{
+		{"a first batch", 0, 0, 0, run(31, 35, 40), 40, 40, 280},
+		{"only the overlap's rows again: the cursor stays, with its mark", 4950, 5000, 35000, run(4990, 5000), 5000, 5000, 35000},
+		{"new rows past the cursor", 4950, 5000, 35000, run(4990, 5000, 5003), 5003, 5003, 35021},
+		{"nothing read", 4950, 5000, 35000, nil, 4950, 5000, 35000},
+		{"after a replaced msdb the cursor moves BACK to what was read", 0, 0, 0, run(3, 12), 12, 12, 84},
+	} {
+		from, next, mark := jobsAdvance(c.from, c.next, c.mark, c.runs)
+		if from != c.wantFrom || next != c.wantNext || mark != c.wantMark {
+			t.Errorf("%s: from %d, cursor %d, mark %d; want %d, %d, %d", c.what, from, next, mark, c.wantFrom, c.wantNext, c.wantMark)
 		}
 	}
 	if !strings.Contains(jobHistorySQL(true), "ORDER BY h.instance_id ASC") || !strings.Contains(jobHistorySQL(false), "ORDER BY h.instance_id DESC") {
@@ -190,6 +203,13 @@ func TestJobsCursor(t *testing.T) {
 	}
 	if !strings.Contains(jobHistorySQL(true), "h.run_status <> 4") {
 		t.Error("a step still in progress must not be stored as a finished run")
+	}
+	// the import stores a row once by msdb's own integers, never by the converted instant (which moves with the
+	// server's offset at the read)
+	for _, col := range []string{"h.run_date, h.run_time", " AS mark"} {
+		if !strings.Contains(jobHistorySQL(true), col) {
+			t.Errorf("the history read lacks %q", col)
+		}
 	}
 }
 
@@ -259,7 +279,7 @@ func hadrStatements(info Info, distributionDB string) map[string]string {
 		"logshipping primary": logshippingPrimarySQL, "logshipping secondary": logshippingSecondarySQL,
 		"replication distributors": replDistributorsSQL, "replication publications": replPublicationsSQL(distributionDB),
 		"replication subscriptions": replSubscriptionsSQL(distributionDB), "replication agents": replAgentsSQL(distributionDB),
-		"jobs": jobsSQL, "job steps": jobStepsSQL, "job history head": jobHistoryHeadSQL,
+		"jobs": jobsSQL, "job steps": jobStepsSQL, "job history mark": jobHistoryMarkSQL,
 		"job history forward": jobHistorySQL(true), "job history newest": jobHistorySQL(false),
 		"backup databases": backupDatabasesSQL(true), "backup databases without groups": backupDatabasesSQL(false),
 		"backups": backupsSQL, "backup history": backupHistorySQL,
@@ -372,5 +392,59 @@ func TestAgentDateTimeLive(t *testing.T) {
 	want, _ := rows[0]["want"].(string)
 	if len(got) < 17 || len(want) < 16 || got[:16] != want[:16] || !strings.HasSuffix(got, "Z") || rows[0]["none"] != nil {
 		t.Errorf("utcText(GETDATE()) = %q; the server's UTC clock says %q; NULL gave %v", got, want, rows[0]["none"])
+	}
+}
+
+// where a backup went, row by row, decided by the server: a NUL backup, an availability group's seeding stream, and
+// the look-alikes that ARE backups (a copy-only snapshot backup through a virtual device, a named copy-only backup
+// through one, a plain full backup to one)
+func TestBackupSinkLive(t *testing.T) {
+	ctx, conn, _ := liveConn(t)
+	rows, err := QueryRows(ctx, conn, `SELECT v.what, `+backupSinkExpr+` AS sink
+FROM (VALUES
+  ('nul',          'L', 0, 0, CAST(NULL AS nvarchar(128)), 2, N'NUL'),
+  ('nul lower',    'D', 0, 0, NULL, 2, N'nul'),
+  ('seeding',      'D', 1, 0, NULL, 7, N'{3D2B8CBA-183F-4AD5-BFD5-584770188291}'),
+  ('vss copy',     'D', 1, 1, NULL, 7, N'{3D2B8CBA-183F-4AD5-BFD5-584770188291}'),
+  ('named vdi',    'D', 1, 0, N'nightly', 7, N'{3D2B8CBA-183F-4AD5-BFD5-584770188291}'),
+  ('vdi full',     'D', 0, 0, NULL, 7, N'{3D2B8CBA-183F-4AD5-BFD5-584770188291}'),
+  ('vdi log',      'L', 1, 0, NULL, 7, N'{3D2B8CBA-183F-4AD5-BFD5-584770188291}'),
+  ('vdi other',    'D', 1, 0, NULL, 7, N'CommVault-stream-1'),
+  ('disk',         'D', 1, 0, NULL, 2, N'/backups/a.bak')
+) v(what, type, is_copy_only, is_snapshot, name, device_type, physical_device_name)
+CROSS APPLY (SELECT v.type AS type, v.is_copy_only AS is_copy_only, v.is_snapshot AS is_snapshot, v.name AS name) bs
+CROSS APPLY (SELECT v.device_type AS device_type, v.physical_device_name AS physical_device_name) mf`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"nul": "nul", "nul lower": "nul", "seeding": "seeding", "vss copy": "backup", "named vdi": "backup",
+		"vdi full": "backup", "vdi log": "backup", "vdi other": "backup", "disk": "backup"}
+	if len(rows) != len(want) {
+		t.Fatalf("%d rows", len(rows))
+	}
+	for _, r := range rows {
+		if what, _ := r["what"].(string); r["sink"] != want[what] {
+			t.Errorf("%s: sink %v; want %s", what, r["sink"], want[what])
+		}
+	}
+}
+
+// backupset.time_zone is local time less UTC in 15-minute units: -32 is eight hours behind, 22 is 05:30 ahead, 127
+// is unknown (then the server's own offset at the read)
+func TestBackupUTCLive(t *testing.T) {
+	ctx, conn, _ := liveConn(t)
+	rows, err := QueryRows(ctx, conn, `SELECT bs.time_zone, `+backupUTC("bs.d")+` AS utc, `+utcText("bs.d")+` AS by_offset
+FROM (VALUES (CAST(-32 AS smallint), CAST('2026-03-01T04:00:00' AS datetime)), (22, '2026-03-01T04:00:00'), (0, '2026-03-01T04:00:00'), (127, '2026-03-01T04:00:00')) bs(time_zone, d)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		want := map[int64]string{-32: "2026-03-01T12:00:00Z", 22: "2026-02-28T22:30:00Z", 0: "2026-03-01T04:00:00Z"}[r["time_zone"].(int64)]
+		if r["time_zone"] == int64(127) {
+			want, _ = r["by_offset"].(string)
+		}
+		if r["utc"] != want {
+			t.Errorf("time_zone %v: %v; want %s", r["time_zone"], r["utc"], want)
+		}
 	}
 }

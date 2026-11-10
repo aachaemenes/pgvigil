@@ -9,7 +9,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from '
 type Parts = 'jobs' | 'running' | 'failed' | 'runs' | 'findings' | 'read';
 
 const outcomeCls = (_: unknown, r: Row) => r.last_outcome === 0 ? 'crit' : r.last_outcome === 3 ? 'warn' : '';
-const outcomeText = (v: unknown) => v === 0 ? 'failed' : v === 1 ? 'succeeded' : v === 2 ? 'retry' : v === 3 ? 'cancelled' : v === 5 ? 'never run' : '';
+const outcomeText = (v: unknown) => v === 0 ? 'failed' : v === 1 ? 'succeeded' : v === 2 ? 'retry' : v === 3 ? 'cancelled' : v === 4 ? 'in progress' : v === 5 ? 'never run' : '';
 
 const jobCols: Col[] = [
   { key: 'name', label: 'job' },
@@ -59,11 +59,12 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     const d = await get<Record<Parts, Table | null>>('mssql/jobs', { instance: ctx.instance, ...window_(ctx) });
     const jobs = rowsOf(d.jobs), running = rowsOf(d.running), failed = rowsOf(d.failed), read = rowsOf(d.read)[0];
     if (!read) {
-      sec.append(el('p', { class: 'empty' }, 'mssql_jobs has not read this server yet. It needs a user in msdb with db_datareader; '
-        + 'the Collections page says so when the login lacks it.'));
+      sec.append(el('p', { class: 'empty' }, 'mssql_jobs has not run on this server yet. It needs a user in msdb with db_datareader.'));
       return sec;
     }
-    if (read.status && read.status !== 'ok') sec.append(el('p', { class: 'meta' }, badge(String(read.status), 'warn'), ` ${String(read.note ?? '')}`));
+    if (read.status && read.status !== 'ok') sec.append(el('p', { class: 'meta' }, badge(String(read.status), 'warn'),
+      ` mssql_jobs: ${String(read.note ?? '')}${read.snapshot_at ? `. What follows is its last read (${fmtTime(read.snapshot_at)}).` : ''}`));
+    if (!read.snapshot_at) return sec;   // never read: only the reason above
     sec.append(el('div', { class: 'tiles' },
       tile('jobs', fmtNum(jobs.length)),
       tile('last outcome failed', fmtNum(jobs.filter(j => j.last_outcome === 0).length), jobs.some(j => j.last_outcome === 0) ? 'crit' : ''),

@@ -32,10 +32,12 @@ const cols: Col[] = [
   { key: 'log_at', label: 'last log', fmt: when('log_from') },
   { key: 'log_age_minutes', label: 'log age', num: true, fmt: minutes },
   { key: 'nul_at', label: 'backup to NUL', fmt: (v, r) => !v ? '' : `${String(r.nul_type ?? '')} ${fmtTime(v)}`, cls: v => v ? 'warn' : '' },
+  // this server's own record of the full backup shown; blank where that backup ran on another replica (open it there)
   { key: 'full_bytes', label: 'full size', num: true, fmt: fmtBytes },
   { key: 'full_compressed_bytes', label: 'compressed', num: true, fmt: fmtBytes },
   { key: 'full_duration_s', label: 'full took', num: true, fmt: fmtSecs },
-  { key: 'full_device', label: 'device', fmt: (v, r) => String(v ?? '') + (r.full_copy_only === true ? ', copy-only' : '') + (r.full_snapshot === true ? ', snapshot' : '') },
+  { key: 'full_device', label: 'device', fmt: (v, r) => v == null ? (r.full_copy_only === true ? 'copy-only' : '')
+    : String(v) + (r.full_copy_only === true ? ', copy-only' : '') + (r.full_snapshot === true ? ', snapshot' : '') },
   { key: 'full_device_name', label: 'to', wide: true },
 ];
 
@@ -44,12 +46,12 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
   try {
     const d = await get<Record<Parts, Table | null>>('mssql/backups', { instance: ctx.instance });
     const dbs = rowsOf(d.databases), lim = rowsOf(d.limits)[0];
+    if (lim?.status && lim.status !== 'ok') sec.append(el('p', { class: 'meta' }, badge(String(lim.status), 'warn'),
+      ` mssql_backups: ${String(lim.note ?? '')}${lim.snapshot_at ? `. What follows is its last read (${fmtTime(lim.snapshot_at)}).` : ''}`));
     if (!lim || !lim.snapshot_at) {
-      sec.append(el('p', { class: 'empty' }, 'mssql_backups has not read this server yet (hourly). It needs a user in msdb with db_datareader; '
-        + 'the Collections page says so when the login lacks it.'));
+      if (!lim?.status) sec.append(el('p', { class: 'empty' }, 'mssql_backups has not run on this server yet (hourly). It needs a user in msdb with db_datareader.'));
       return sec;
     }
-    if (lim.status && lim.status !== 'ok') sec.append(el('p', { class: 'meta' }, badge(String(lim.status), 'warn'), ` ${String(lim.note ?? '')}`));
     const count = (f: (r: Row) => boolean) => dbs.filter(f).length;
     const noFull = count(r => r.full_status === 'never' || r.full_status === 'late');
     const noLog = count(r => r.log_status === 'never' || r.log_status === 'late');
@@ -70,7 +72,7 @@ export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
     sec.append(el('h3', {}, 'Databases'),
       el('p', { class: 'meta' }, 'msdb is each server\'s own record. A database in an availability group shows the newest backup of each type that any '
-        + 'monitored replica took, with the instance it ran on; a group with a replica that is not monitored is not alarmed on. '
+        + 'monitored replica took, with the instance it ran on (its size and device are on that instance\'s tab); a group with a replica that is not monitored is not alarmed on. '
         + 'A backup to the NUL device is no backup and is listed apart.'),
       grid(dbs, cols, 'The last read listed no database.'));
   } catch (e) {

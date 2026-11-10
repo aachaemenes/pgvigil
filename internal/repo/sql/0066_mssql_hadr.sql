@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_ag_state (
   backup_preference         text,
   db_failover               boolean,
   required_sync_secondaries int,
-  primary_replica           text,                -- as the group's state names it; on a secondary too
+  primary_replica           text,                -- as the group's state names it, on a secondary too; the last one known while it names none
   group_health              text,
   listeners                 jsonb,
   cluster                   jsonb,               -- the cluster's members where readable; {"unread": reason} where not
@@ -264,6 +264,7 @@ DECLARE
   v_rows jsonb := pgvigil.mssql_rows(p_payload);
   v_newest boolean;
   v_cluster jsonb;
+  v_known jsonb;
 BEGIN
   v_newest := pgvigil.mssql_hadr_read(p_instance_id, 'mssql_ag', p_snapshot_at,
                 (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'replica'));
@@ -298,6 +299,11 @@ BEGIN
               ELSE (SELECT jsonb_agg(r - 'kind' ORDER BY r->>'member_name') FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'cluster_member') END
     INTO v_cluster;
 
+  -- a group in the middle of a failover names no primary (RESOLVING): the last one known is kept through such a
+  -- read, so the change is still seen when the new primary appears
+  SELECT coalesce(jsonb_object_agg(g.group_id, g.primary_replica), '{}') INTO v_known
+    FROM (SELECT DISTINCT ON (x.group_id) x.group_id, x.primary_replica FROM pgvigil.mssql_ag_state x
+           WHERE x.instance_id = p_instance_id AND x.primary_replica IS NOT NULL) g;
   DELETE FROM pgvigil.mssql_ag_state WHERE instance_id = p_instance_id;
   INSERT INTO pgvigil.mssql_ag_state (instance_id, group_id, replica_server, snapshot_at, group_name, cluster_type, is_distributed,
       is_contained, backup_preference, db_failover, required_sync_secondaries, primary_replica, group_health, listeners, cluster,
@@ -307,7 +313,7 @@ BEGIN
   SELECT DISTINCT ON (r->>'group_id', r->>'replica_server')
          p_instance_id, r->>'group_id', r->>'replica_server', p_snapshot_at, r->>'group_name', r->>'cluster_type',
          (r->>'is_distributed')::int = 1, (r->>'is_contained')::int = 1, r->>'backup_preference', (r->>'db_failover')::int = 1,
-         (r->>'required_sync_secondaries')::int, nullif(r->>'primary_replica', ''), r->>'group_health',
+         (r->>'required_sync_secondaries')::int, coalesce(nullif(r->>'primary_replica', ''), v_known->>(r->>'group_id')), r->>'group_health',
          (SELECT jsonb_agg(l - 'kind' - 'group_id' ORDER BY l->>'dns_name') FROM jsonb_array_elements(v_rows) l
            WHERE l->>'kind' = 'listener' AND l->>'group_id' = r->>'group_id'),
          v_cluster, r->>'replica_id', r->>'endpoint_url', r->>'availability_mode', r->>'failover_mode', r->>'seeding_mode',
@@ -380,7 +386,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_logshipping_state (
   snapshot_at                timestamptz NOT NULL,
   primary_server             text,
   primary_database           text,
-  secondary_server           text,
+  secondary_server           text NOT NULL DEFAULT '',   -- '' on a primary row
   threshold_minutes          int,       -- the configuration's own backup_threshold or restore_threshold
   alert_enabled              boolean,
   last_backup_file           text,
@@ -390,7 +396,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_logshipping_state (
   last_restored_file         text,
   last_restored_at           timestamptz,
   last_restored_latency_min  int,
-  PRIMARY KEY (instance_id, role, database_name)
+  -- a monitor server lists every secondary, and two secondaries usually carry the same database name
+  PRIMARY KEY (instance_id, role, database_name, secondary_server)
 );
 
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_logshipping(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -405,9 +412,10 @@ BEGIN
   INSERT INTO pgvigil.mssql_logshipping_state (instance_id, role, database_name, snapshot_at, primary_server, primary_database,
       secondary_server, threshold_minutes, alert_enabled, last_backup_file, last_backup_at, last_copied_file, last_copied_at,
       last_restored_file, last_restored_at, last_restored_latency_min)
-  SELECT DISTINCT ON (r->>'kind', r->>'database_name') p_instance_id, r->>'kind', r->>'database_name', p_snapshot_at,
+  SELECT DISTINCT ON (r->>'kind', r->>'database_name', coalesce(r->>'secondary_server', ''))
+         p_instance_id, r->>'kind', r->>'database_name', p_snapshot_at,
          r->>'primary_server', coalesce(r->>'primary_database', CASE WHEN r->>'kind' = 'primary' THEN r->>'database_name' END),
-         r->>'secondary_server', (r->>'threshold_minutes')::int, (r->>'alert_enabled')::int = 1, r->>'last_backup_file',
+         coalesce(r->>'secondary_server', ''), (r->>'threshold_minutes')::int, (r->>'alert_enabled')::int = 1, r->>'last_backup_file',
          (r->>'last_backup_utc')::timestamptz, r->>'last_copied_file', (r->>'last_copied_utc')::timestamptz,
          r->>'last_restored_file', (r->>'last_restored_utc')::timestamptz, (r->>'last_restored_latency_min')::int
     FROM jsonb_array_elements(v_rows) r
@@ -439,6 +447,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_replication_state (
 );
 CREATE INDEX IF NOT EXISTS mssql_replication_state_inst_idx ON pgvigil.mssql_replication_state (instance_id);
 
+-- which kind of row a table of the distribution database feeds (the collector's three reads)
+CREATE OR REPLACE FUNCTION pgvigil.mssql_repl_kind(p_table text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE p_table WHEN 'MSpublications' THEN 'publication' WHEN 'MSdistribution_agents' THEN 'subscription'
+                      WHEN 'MSlogreader_agents' THEN 'agent' END
+$$;
+
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_replication(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE v_rows jsonb := pgvigil.mssql_rows(p_payload);
@@ -447,11 +462,13 @@ BEGIN
            (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' IN ('publication', 'subscription', 'agent'))) THEN
     RETURN;
   END IF;
-  -- a distribution database that could not be read this time (a collector_error row names it) keeps its last rows
+  -- a read that failed (a collector_error row names its source: <database>.dbo.<table>, or the database alone when
+  -- the login cannot enter it) keeps the last rows of ITS kind for that database; the kinds that were read are replaced
   DELETE FROM pgvigil.mssql_replication_state s
    WHERE s.instance_id = p_instance_id
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) e
-                      WHERE e->>'kind' = 'collector_error' AND split_part(e->>'source', '.dbo.', 1) = s.distribution_db);
+                      WHERE e->>'kind' = 'collector_error' AND split_part(e->>'source', '.dbo.', 1) = s.distribution_db
+                        AND coalesce(pgvigil.mssql_repl_kind(split_part(e->>'source', '.dbo.', 2)), s.kind) = s.kind);
   INSERT INTO pgvigil.mssql_replication_state (instance_id, snapshot_at, kind, distribution_db, publisher, publisher_db, publication,
       publication_type, articles, subscriber, subscriber_db, subscription_type, agent_type, agent_name, runstatus, status_text,
       last_run_at, latency_ms, delivery_rate, undistributed, est_catchup_s)
@@ -460,9 +477,7 @@ BEGIN
          r->>'agent_type', r->>'agent_name', (r->>'runstatus')::int, r->>'status_text', (r->>'last_run_utc')::timestamptz,
          (r->>'latency_ms')::bigint, (r->>'delivery_rate')::float8, (r->>'undistributed')::bigint, (r->>'est_catchup_s')::float8
     FROM jsonb_array_elements(v_rows) r
-   WHERE r->>'kind' IN ('publication', 'subscription', 'agent') AND r->>'distribution_db' IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) e
-                      WHERE e->>'kind' = 'collector_error' AND split_part(e->>'source', '.dbo.', 1) = r->>'distribution_db');
+   WHERE r->>'kind' IN ('publication', 'subscription', 'agent') AND r->>'distribution_db' IS NOT NULL;
 END $$;
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -501,6 +516,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_job_runs (
   job_name        text,
   step_id         int NOT NULL,           -- 0 = the job's own outcome row
   step_name       text,
+  run_date        int,                    -- msdb's own integers (yyyymmdd, hhmmss, the server's local clock): with
+  run_time        int,                    -- history_id, job_id and step_id they say which row this is, whatever the offset
   run_status      int,                    -- 0 failed, 1 succeeded, 2 retry, 3 cancelled
   duration_s      bigint,
   sql_message_id  int,
@@ -514,17 +531,20 @@ CREATE INDEX IF NOT EXISTS mssql_job_runs_at_idx ON pgvigil.mssql_job_runs (snap
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_jobs_cursor (
   instance_id      int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   last_history_id  bigint NOT NULL,
+  mark             bigint,              -- a checksum of the row at last_history_id as it was read
   updated_at       timestamptz NOT NULL
 );
 
--- mssql_hadr_cursor: how far a source of an instance was read (NULL: never). Sources: 'jobs' (sysjobhistory).
+-- mssql_hadr_cursor: how far a source of an instance was read (NULL: never). Sources: 'jobs' (the newest
+-- sysjobhistory row read) and 'jobs_mark' (that row's mark: msdb replaced under the cursor shows as another mark).
 CREATE OR REPLACE FUNCTION pgvigil.mssql_hadr_cursor(p_instance_id int, p_source text)
 RETURNS bigint LANGUAGE sql STABLE AS $$
-  SELECT c.last_history_id FROM pgvigil.mssql_jobs_cursor c WHERE c.instance_id = p_instance_id AND p_source = 'jobs'
+  SELECT CASE p_source WHEN 'jobs' THEN c.last_history_id WHEN 'jobs_mark' THEN c.mark END
+    FROM pgvigil.mssql_jobs_cursor c WHERE c.instance_id = p_instance_id
 $$;
 
 -- payload: 'job' rows, 'step' rows, 'run' rows (sysjobhistory, each stored once), one 'read' row, and from a cursor
--- read one 'cursor' row {last_history_id}: the cursor moves to it in this transaction
+-- read one 'cursor' row {last_history_id, mark}: the cursor moves to it in this transaction
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_jobs(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -532,6 +552,7 @@ DECLARE
   v_newest boolean;
   v_month timestamptz;
   v_cursor bigint;
+  v_mark bigint;
 BEGIN
   v_newest := pgvigil.mssql_hadr_read(p_instance_id, 'mssql_jobs', p_snapshot_at,
                 (SELECT count(*)::int FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'job'));
@@ -540,23 +561,28 @@ BEGIN
                    FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'run' AND r->>'run_utc' IS NOT NULL LOOP
     PERFORM pgvigil.ensure_month_partition('mssql_job_runs', v_month);
   END LOOP;
-  INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, step_name, run_status,
-      duration_s, sql_message_id, sql_severity, retries, message)
+  -- a row is stored once: the same number, job, step and msdb date and time, within three hours of the instant
+  -- (the instant itself moves by an hour when the server's offset changes between two reads of one row)
+  INSERT INTO pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, step_name, run_date, run_time,
+      run_status, duration_s, sql_message_id, sql_severity, retries, message)
   SELECT DISTINCT ON ((r->>'history_id')::bigint)
          p_instance_id, (r->>'run_utc')::timestamptz, (r->>'history_id')::bigint, r->>'job_id', r->>'job_name', (r->>'step_id')::int,
-         r->>'step_name', (r->>'run_status')::int, (r->>'duration_s')::bigint, (r->>'sql_message_id')::int,
+         r->>'step_name', (r->>'run_date')::int, (r->>'run_time')::int, (r->>'run_status')::int, (r->>'duration_s')::bigint, (r->>'sql_message_id')::int,
          (r->>'sql_severity')::int, (r->>'retries')::int, r->>'message'
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' = 'run' AND r->>'run_utc' IS NOT NULL AND r->>'history_id' IS NOT NULL AND r->>'job_id' IS NOT NULL
      AND r->>'step_id' IS NOT NULL
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs x
-                      WHERE x.instance_id = p_instance_id AND x.snapshot_at = (r->>'run_utc')::timestamptz
-                        AND x.history_id = (r->>'history_id')::bigint);
+                      WHERE x.instance_id = p_instance_id
+                        AND x.snapshot_at BETWEEN (r->>'run_utc')::timestamptz - interval '3 hours' AND (r->>'run_utc')::timestamptz + interval '3 hours'
+                        AND x.history_id = (r->>'history_id')::bigint AND x.job_id = r->>'job_id' AND x.step_id = (r->>'step_id')::int
+                        AND x.run_date IS NOT DISTINCT FROM (r->>'run_date')::int AND x.run_time IS NOT DISTINCT FROM (r->>'run_time')::int);
 
-  SELECT (r->>'last_history_id')::bigint INTO v_cursor FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'cursor' LIMIT 1;
+  SELECT (r->>'last_history_id')::bigint, (r->>'mark')::bigint INTO v_cursor, v_mark
+    FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'cursor' LIMIT 1;
   IF v_cursor IS NOT NULL AND v_newest THEN
-    INSERT INTO pgvigil.mssql_jobs_cursor (instance_id, last_history_id, updated_at) VALUES (p_instance_id, v_cursor, p_snapshot_at)
-    ON CONFLICT (instance_id) DO UPDATE SET last_history_id = EXCLUDED.last_history_id, updated_at = EXCLUDED.updated_at;
+    INSERT INTO pgvigil.mssql_jobs_cursor (instance_id, last_history_id, mark, updated_at) VALUES (p_instance_id, v_cursor, v_mark, p_snapshot_at)
+    ON CONFLICT (instance_id) DO UPDATE SET last_history_id = EXCLUDED.last_history_id, mark = EXCLUDED.mark, updated_at = EXCLUDED.updated_at;
   END IF;
 
   IF NOT v_newest THEN
@@ -621,6 +647,14 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_state (
 );
 CREATE INDEX IF NOT EXISTS mssql_backup_state_ag_idx ON pgvigil.mssql_backup_state (ag_group_id, database_name) WHERE ag_group_id IS NOT NULL;
 
+-- mssql_recreated: whether a database's creation time changed between two reads. The collector converts the
+-- server's local create_date by the offset at the read, so a daylight-saving change moves it by an hour: only a
+-- larger change is another database.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_recreated(p_old timestamptz, p_new timestamptz)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT (p_old IS NULL) <> (p_new IS NULL) OR abs(extract(epoch FROM p_new - p_old)) > 3900
+$$;
+
 -- payload: 'database' rows (every database of the server), 'backup' rows (the newest per database, type and sink:
 -- 'backup', 'nul', or 'seeding' = an availability group's automatic seeding stream, which is not stored), one
 -- 'history' row. A backup the repository has seen stays when msdb no longer lists it (a trimmed history).
@@ -653,43 +687,47 @@ BEGIN
     FROM (SELECT DISTINCT ON (r->>'database_name') r AS d FROM jsonb_array_elements(v_rows) r
            WHERE r->>'kind' = 'database' AND r->>'database_name' IS NOT NULL) dbs
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
-                          AND b->>'backup_type' = 'full' AND b->>'sink' = 'backup' LIMIT 1) ff(f) ON true
+                          AND b->>'backup_type' = 'full' AND b->>'sink' = 'backup'
+                          AND (d->>'created_utc' IS NULL OR (b->>'finish_utc')::timestamptz >= (d->>'created_utc')::timestamptz - interval '1 hour') LIMIT 1) ff(f) ON true
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
-                          AND b->>'backup_type' = 'diff' AND b->>'sink' = 'backup' LIMIT 1) fi(i) ON true
+                          AND b->>'backup_type' = 'diff' AND b->>'sink' = 'backup'
+                          AND (d->>'created_utc' IS NULL OR (b->>'finish_utc')::timestamptz >= (d->>'created_utc')::timestamptz - interval '1 hour') LIMIT 1) fi(i) ON true
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
-                          AND b->>'backup_type' = 'log' AND b->>'sink' = 'backup' LIMIT 1) fl(l) ON true
+                          AND b->>'backup_type' = 'log' AND b->>'sink' = 'backup'
+                          AND (d->>'created_utc' IS NULL OR (b->>'finish_utc')::timestamptz >= (d->>'created_utc')::timestamptz - interval '1 hour') LIMIT 1) fl(l) ON true
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
                           AND b->>'sink' = 'nul' ORDER BY (b->>'finish_utc')::timestamptz DESC LIMIT 1) fn(n) ON true
   ON CONFLICT (instance_id, database_name) DO UPDATE SET
       snapshot_at = EXCLUDED.snapshot_at, is_present = true, state = EXCLUDED.state, recovery_model = EXCLUDED.recovery_model,
       is_snapshot = EXCLUDED.is_snapshot, is_read_only = EXCLUDED.is_read_only, is_standby = EXCLUDED.is_standby,
       ag_group_id = EXCLUDED.ag_group_id, ag_name = EXCLUDED.ag_name, history_from = EXCLUDED.history_from,
-      created_at = EXCLUDED.created_at,
-      -- a database created anew under an old name starts without the old one's backups; otherwise the newer of
-      -- what msdb lists now and what the repository saw before is kept, type by type
-      full_at = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_at ELSE s.full_at END,
-      full_bytes = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_bytes ELSE s.full_bytes END,
-      full_compressed_bytes = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_compressed_bytes ELSE s.full_compressed_bytes END,
-      full_duration_s = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_duration_s ELSE s.full_duration_s END,
-      full_device = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_device ELSE s.full_device END,
-      full_device_name = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_device_name ELSE s.full_device_name END,
-      full_copy_only = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_copy_only ELSE s.full_copy_only END,
-      full_snapshot = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_snapshot ELSE s.full_snapshot END,
-      diff_at = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_at ELSE s.diff_at END,
-      diff_bytes = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_bytes ELSE s.diff_bytes END,
-      diff_compressed_bytes = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_compressed_bytes ELSE s.diff_compressed_bytes END,
-      diff_duration_s = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_duration_s ELSE s.diff_duration_s END,
-      diff_device = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_device ELSE s.diff_device END,
-      diff_device_name = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_device_name ELSE s.diff_device_name END,
-      log_at = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_at ELSE s.log_at END,
-      log_bytes = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_bytes ELSE s.log_bytes END,
-      log_compressed_bytes = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_compressed_bytes ELSE s.log_compressed_bytes END,
-      log_duration_s = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_duration_s ELSE s.log_duration_s END,
-      log_device = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_device ELSE s.log_device END,
-      log_device_name = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_device_name ELSE s.log_device_name END,
-      log_copy_only = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_copy_only ELSE s.log_copy_only END,
-      nul_at = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.nul_at, '-infinity') >= coalesce(s.nul_at, '-infinity') THEN EXCLUDED.nul_at ELSE s.nul_at END,
-      nul_type = CASE WHEN s.created_at IS DISTINCT FROM EXCLUDED.created_at OR coalesce(EXCLUDED.nul_at, '-infinity') >= coalesce(s.nul_at, '-infinity') THEN EXCLUDED.nul_type ELSE s.nul_type END;
+      created_at = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) THEN EXCLUDED.created_at ELSE s.created_at END,
+      -- a database created anew under an old name starts without the old one's backups (msdb keys its history by
+      -- name: a backup that finished before the database was created is the old one's and is not taken above);
+      -- otherwise the newer of what msdb lists now and what the repository saw before is kept, type by type
+      full_at = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_at ELSE s.full_at END,
+      full_bytes = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_bytes ELSE s.full_bytes END,
+      full_compressed_bytes = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_compressed_bytes ELSE s.full_compressed_bytes END,
+      full_duration_s = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_duration_s ELSE s.full_duration_s END,
+      full_device = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_device ELSE s.full_device END,
+      full_device_name = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_device_name ELSE s.full_device_name END,
+      full_copy_only = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_copy_only ELSE s.full_copy_only END,
+      full_snapshot = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.full_at, '-infinity') >= coalesce(s.full_at, '-infinity') THEN EXCLUDED.full_snapshot ELSE s.full_snapshot END,
+      diff_at = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_at ELSE s.diff_at END,
+      diff_bytes = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_bytes ELSE s.diff_bytes END,
+      diff_compressed_bytes = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_compressed_bytes ELSE s.diff_compressed_bytes END,
+      diff_duration_s = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_duration_s ELSE s.diff_duration_s END,
+      diff_device = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_device ELSE s.diff_device END,
+      diff_device_name = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.diff_at, '-infinity') >= coalesce(s.diff_at, '-infinity') THEN EXCLUDED.diff_device_name ELSE s.diff_device_name END,
+      log_at = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_at ELSE s.log_at END,
+      log_bytes = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_bytes ELSE s.log_bytes END,
+      log_compressed_bytes = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_compressed_bytes ELSE s.log_compressed_bytes END,
+      log_duration_s = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_duration_s ELSE s.log_duration_s END,
+      log_device = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_device ELSE s.log_device END,
+      log_device_name = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_device_name ELSE s.log_device_name END,
+      log_copy_only = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.log_at, '-infinity') >= coalesce(s.log_at, '-infinity') THEN EXCLUDED.log_copy_only ELSE s.log_copy_only END,
+      nul_at = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.nul_at, '-infinity') >= coalesce(s.nul_at, '-infinity') THEN EXCLUDED.nul_at ELSE s.nul_at END,
+      nul_type = CASE WHEN pgvigil.mssql_recreated(s.created_at, EXCLUDED.created_at) OR coalesce(EXCLUDED.nul_at, '-infinity') >= coalesce(s.nul_at, '-infinity') THEN EXCLUDED.nul_type ELSE s.nul_type END;
 
   UPDATE pgvigil.mssql_backup_state s SET is_present = false
    WHERE s.instance_id = p_instance_id AND s.is_present AND s.snapshot_at < p_snapshot_at;
@@ -702,7 +740,7 @@ CREATE OR REPLACE VIEW pgvigil.mssql_backup_judged AS
 WITH own AS (
   SELECT s.*, i.name AS instance,
          l.full_backup_hours, l.diff_backup_hours, l.log_backup_minutes, l.new_database_hours, l.nul_backup_days,
-         (SELECT p FROM unnest(l.backup_exclude) p WHERE s.database_name LIKE p LIMIT 1) AS excluded_by
+         (SELECT p FROM unnest(l.backup_exclude) p WHERE s.database_name ILIKE p LIMIT 1) AS excluded_by
     FROM pgvigil.mssql_backup_state s
     JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
     JOIN pgvigil.mssql_hadr_limits l ON l.instance_id = s.instance_id
@@ -856,7 +894,8 @@ SELECT m.instance_id, 'critical', 'mirroring is disconnected or suspended', m.da
   FROM pgvigil.mssql_mirroring_state m
  WHERE m.snapshot_at > now() - interval '5 minutes' AND m.state IN ('DISCONNECTED', 'SUSPENDED')
 UNION ALL
-SELECT s.instance_id, 'warning', 'log shipping is behind its threshold', s.role || ' / ' || s.database_name, s.snapshot_at,
+SELECT s.instance_id, 'warning', 'log shipping is behind its threshold',
+       s.role || ' / ' || s.database_name || CASE WHEN s.secondary_server <> '' THEN ' on ' || s.secondary_server ELSE '' END, s.snapshot_at,
        CASE s.role WHEN 'primary' THEN
          format('primary database %s: the last log backup is from %s, %s minutes before the read; its threshold is %s minutes.', s.database_name,
                 coalesce(to_char(s.last_backup_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'never'),
@@ -900,11 +939,6 @@ WITH failed AS (
      AND r.snapshot_at > now() - interval '31 days'       -- lets the planner prune partitions; the threshold below decides
      AND r.snapshot_at > now() - make_interval(secs => (l.job_failed_hours * 3600)::float8)
    ORDER BY r.instance_id, r.job_id, r.snapshot_at DESC, r.history_id DESC
-), avg_run AS (
-  SELECT r.instance_id, r.job_id, avg(r.duration_s) AS avg_s, count(*) AS runs
-    FROM pgvigil.mssql_job_runs r
-   WHERE r.step_id = 0 AND r.run_status = 1 AND r.snapshot_at > now() - interval '31 days'
-   GROUP BY 1, 2
 ), bk AS (
   SELECT b.* FROM pgvigil.mssql_backup_judged b WHERE b.snapshot_at > now() - interval '130 minutes'
 )
@@ -926,8 +960,10 @@ SELECT j.instance_id, 'info', 'a job runs far longer than its average', j.name, 
        format('job %s has run for %s minutes; its %s successful runs of the last month took %s minutes on average.', j.name,
               round((extract(epoch FROM now() - j.running_since) / 60)::numeric, 1), a.runs, round((a.avg_s / 60)::numeric, 1))
   FROM pgvigil.mssql_jobs j
-  JOIN avg_run a ON a.instance_id = j.instance_id AND a.job_id = j.job_id
   JOIN pgvigil.mssql_hadr_limits l ON l.instance_id = j.instance_id
+  JOIN LATERAL (SELECT avg(r.duration_s) AS avg_s, count(*) AS runs FROM pgvigil.mssql_job_runs r
+                 WHERE r.instance_id = j.instance_id AND r.job_id = j.job_id AND r.step_id = 0 AND r.run_status = 1
+                   AND r.snapshot_at > now() - interval '31 days') a ON true
  WHERE j.running_since IS NOT NULL AND j.snapshot_at > now() - interval '15 minutes' AND a.runs >= 3 AND l.job_long_factor > 0
    AND extract(epoch FROM now() - j.running_since) > a.avg_s * l.job_long_factor
    AND extract(epoch FROM now() - j.running_since) > a.avg_s + l.job_long_min_seconds

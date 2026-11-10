@@ -53,15 +53,16 @@
 #  D. jobs. A job the proof creates that fails at its second step: stored with owner sa, enabled, its schedule's
 #     name, the next run at 23:59 server time in UTC, last outcome failed; its three history rows (step 1 succeeded,
 #     step 2 failed, the outcome row failed) are in mssql_job_runs; 'a job failed' (warning) names step 2 and carries
-#     the step's own message text and the next run. The cursor equals the newest sysjobhistory row read; a second
-#     run reads only what was written since (at most sa's count of rows past the first cursor) and the job still has
-#     exactly three rows. A job that waits is seen running (running_since within 60 s of sa's start time). A login
+#     the step's own message text and the next run. The cursor equals the newest sysjobhistory row read and has its
+#     mark; a second run reads only what was written since plus the 50 rows behind the cursor it re-checks (at most
+#     sa's count of rows past the first cursor + 50) and the job still has exactly three rows. A job that waits is seen running (running_since within 60 s of sa's start time). A login
 #     without a user in msdb (msdb's guest lets it in, so HAS_DBACCESS says yes): mssql_jobs is 'skipped' with 'no
 #     access to msdb.dbo.sysjobs' and the missing right, nothing stored; mssql_backups and mssql_logshipping either
 #     run (msdb grants some tables to public) or are skipped the same way, never an error.
 #  E. mirroring, log shipping, replication on this sandbox: each collection runs as the monitoring login, reads 0
 #     rows and stores nothing; the proof prints NOT PROVEN for each. Their statements are compiled by the server
-#     (SET NOEXEC ON) and RUN as the monitoring login by TestHADRStatementsLive; the replication statements are also
+#     (SET NOEXEC ON) and RUN as the monitoring login by TestHADRStatementsLive (with the backup sink and time-zone
+#     tests: a seeding stream, a NUL backup and their look-alikes told apart; time_zone -32 = UTC + 8 h); the replication statements are also
 #     run against the stand-in database and return its rows (one publication, one subscription with 7 undelivered
 #     commands, three agents).
 #  F. stubbed rows through the import functions on a stub instance: a mirrored database DISCONNECTED -> critical; a
@@ -70,14 +71,18 @@
 #     redo queue is over its threshold' (and no send-queue finding); a group whose primary changes between two reads
 #     -> one row in mssql_ag_failovers and 'the primary of a group changed' (critical); a distributed group stored
 #     as such; a database of a group with one of two replicas monitored and no backup -> info 'backups not judged',
-#     never critical; a backup kept when a later read no longer lists it; an older read imported late changes no
-#     current state; import_mssql_ag refuses a PostgreSQL instance.
+#     never critical; a backup kept when a later read no longer lists it, also
+#     when the database's creation time comes back an hour off; a backup older than its database's creation not
+#     counted for it ('no full backup ever'); a failover still seen across a read that names no primary; two
+#     secondaries carrying one database name kept as two rows; a replication read of which one part failed replaces
+#     the parts that were read; a job history row read twice an hour apart stored once, the cursor with its mark;
+#     an older read imported late changes no current state; import_mssql_ag refuses a PostgreSQL instance.
 #  G. the API: /api/mssql/availability (replicas 2, the proof's failover-free window, findings), /api/mssql/jobs (the
 #     failed run with step 2 and its message) and /api/mssql/backups (the proof's database row) answer 200 with
 #     those rows; ?part=reads answers alone; an unknown part is 400.
 #  NOT PROVEN HERE: a distributed or contained group, a listener, a Windows cluster's members (none on this
 #  sandbox); a real mirrored database, log shipping pair or distributor; the sign of backupset.time_zone on a server
-#  whose clock is not UTC (the containers run in UTC: the offset is 0); SQL Server 2016-2019, RDS, Managed Instance.
+#  whose clock is not UTC on REAL rows (the containers run in UTC; the expression is proven over literal rows); SQL Server 2016-2019, RDS, Managed Instance.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}" "${MSSQL_SA_PASSWORD:?the sa password of the SQL Server sandbox}"
@@ -99,12 +104,16 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 sqn() { local ct=$1 db=$2; shift 2; docker exec -e SQLCMDPASSWORD "$ct" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -W -h -1 -s '|' -d "$db" -Q "SET NOCOUNT ON; $1"; }
 sq() { sqn "$CT1" "${2:-master}" "$1"; }
+# sqin <container>: one statement on stdin (a statement that carries a password is never an argument: an argument is
+# in the process list of this machine and of the container while the call runs)
+sqin() { docker exec -i -e SQLCMDPASSWORD "$1" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -I -W -h -1 -d master -i /dev/stdin; }
 sq2() { sqn "$CT2" "${2:-master}" "$1"; }
-MADE_REPO=; MADE_LM1=; MADE_LM2=; MADE_LB=; MADE_UM1=; MADE_UM2=; MADE_PDB=; MADE_DDB=; IN_AG=; SUSPENDED=; MADE_PDB2=; MADE_J1=; MADE_J2=; MADE_BK=; SRVPID=
+MADE_REPO=; MADE_LM1=; MADE_LM2=; MADE_LB=; MADE_UM1=; MADE_UM2=; MADE_PDB=; MADE_DDB=; IN_AG=; SUSPENDED=; MADE_PDB2=; MADE_J1=; MADE_J2=; MADE_BK=; SRVPID=; LOOP=
 cleanup() {
   rc=$?
   set +e
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
+  [ -n "$LOOP" ] && { kill "$LOOP" 2>/dev/null; wait "$LOOP" 2>/dev/null; }   # its reads hold the monitoring login
   # the waiting job: stopped only where it still runs (sp_stop_job raises on a job that does not), then deleted
   [ -n "$MADE_J2" ] && { sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$J2' AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL) EXEC msdb.dbo.sp_stop_job @job_name = N'$J2';" >/dev/null 2>&1; sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'$J2') EXEC msdb.dbo.sp_delete_job @job_name = N'$J2', @delete_unused_schedule = 1;" >/dev/null 2>&1; [ "$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobs WHERE name = N'$J2'" 2>/dev/null)" = 0 ] || echo "CLEANUP: job $J2 not deleted" >&2; }
   [ -n "$MADE_J1" ] && { sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'$J1') EXEC msdb.dbo.sp_delete_job @job_name = N'$J1', @delete_unused_schedule = 1;" >/dev/null 2>&1 || echo "CLEANUP: job $J1 not deleted" >&2; }
@@ -207,12 +216,13 @@ echo "binary: $WIRED"
 # ---- logins, the proof's databases
 for n in 1 2; do
   if [ $n = 1 ]; then s=sq; else s=sq2; fi
-  $s "CREATE LOGIN [$LM] WITH PASSWORD = '$PM', CHECK_POLICY = OFF;"; eval "MADE_LM$n=1"
+  if [ $n = 1 ]; then ct=$CT1; else ct=$CT2; fi
+  sqin "$ct" <<<"CREATE LOGIN [$LM] WITH PASSWORD = '$PM', CHECK_POLICY = OFF;"; eval "MADE_LM$n=1"
   $s "GRANT VIEW SERVER STATE TO [$LM]; GRANT VIEW ANY DEFINITION TO [$LM];"
   $s "CREATE USER [$LM] FOR LOGIN [$LM];" msdb; eval "MADE_UM$n=1"
   $s "ALTER ROLE db_datareader ADD MEMBER [$LM];" msdb
 done
-sq "CREATE LOGIN [$LB] WITH PASSWORD = '$PB', CHECK_POLICY = OFF;"; MADE_LB=1
+sqin "$CT1" <<<"CREATE LOGIN [$LB] WITH PASSWORD = '$PB', CHECK_POLICY = OFF;"; MADE_LB=1
 sq "GRANT VIEW SERVER STATE TO [$LB]; GRANT VIEW ANY DEFINITION TO [$LB];"
 [ "$(sq "SELECT ISNULL(DB_ID('$PDB'), 0) + ISNULL(DB_ID('$DDB'), 0)")" = 0 ] && [ "$(sq2 "SELECT ISNULL(DB_ID('$PDB'), 0)")" = 0 ] || fail "a database named $PDB or $DDB exists already (a suffix collision): run again"
 sq "CREATE DATABASE [$PDB];"; MADE_PDB=1
@@ -291,9 +301,11 @@ agq="group_name = '$AG'"
   || fail "A: the secondary as the primary sees it: $(q "select role, connected_state, synchronization_health, is_local from pgvigil.mssql_ag_state where instance_id=$I1 and replica_server='$SN2'")"
 [ "$(q "select count(*) from pgvigil.mssql_ag_database_state where instance_id=$I1")" = "$NDRS1" ] || fail "A: the primary's database replica rows (want $NDRS1)"
 [ "$(q "select bool_and(est_data_loss_s >= 0) and bool_and(last_hardened_at > now() - interval '1 day') from pgvigil.mssql_ag_database_state where instance_id=$I1 and $agq and not is_primary_replica")" = t ] || fail "A: the estimates of the secondary's rows on the primary"
-HARD=$(sq "SELECT TOP (1) CONVERT(varchar(19), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), drs.last_hardened_time), 126) FROM sys.dm_hadr_database_replica_states drs WHERE drs.is_local = 0 AND drs.database_id = DB_ID('sandbox')")
-if [ -n "$HARD" ]; then
-  [ "$(q "select abs(extract(epoch from last_hardened_at - '${HARD}Z'::timestamptz)) < 600 from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='sandbox' and not is_local")" = t ] || fail "A: last_hardened_at is not sa's value in UTC"
+IFS='|' read -r HDB HARD <<<"$(sq "SELECT TOP (1) c.database_name, CONVERT(varchar(19), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), drs.last_hardened_time), 126) FROM sys.dm_hadr_database_replica_states drs JOIN sys.availability_groups g ON g.group_id = drs.group_id JOIN sys.availability_databases_cluster c ON c.group_database_id = drs.group_database_id WHERE g.name = N'$AG' AND drs.is_local = 0 AND drs.last_hardened_time IS NOT NULL ORDER BY c.database_name")"
+if [ -n "${HARD:-}" ]; then
+  [ "$(q "select abs(extract(epoch from last_hardened_at - '${HARD}Z'::timestamptz)) < 600 from pgvigil.mssql_ag_database_state where instance_id=$I1 and $agq and database_name='$HDB' and not is_local")" = t ] || fail "A: last_hardened_at of $HDB is not sa's value in UTC"
+else
+  echo "  NOT PROVEN: the last hardened time against sa's own read (the group has no database replica with one)"
 fi
 [ "$(q "select count(*) from pgvigil.mssql_ag_state where instance_id=$I2 and $agq")" = "$NREP" ] || fail "A: the secondary's replica rows"
 [ "$(q "select role || '|' || is_local || '|' || primary_replica from pgvigil.mssql_ag_state where instance_id=$I2 and $agq and replica_server='$SN2'")" = "SECONDARY|true|$SN1" ] || fail "A: the secondary's own row"
@@ -393,7 +405,7 @@ if [ -n "$JOINED" ]; then
   ( for _ in $(seq 1 25); do "$BIN" collect -config "$CFG" -once mssql_ag -instance "$N1" >/dev/null 2>&1 || true; done ) & LOOP=$!
   sleep 0.3
   sq2 "ALTER DATABASE [$PDB] SET HADR RESUME;" >/dev/null; SUSPENDED=
-  wait $LOOP
+  wait $LOOP; LOOP=
   QMAX=$(q "select coalesce(max(greatest(coalesce(log_send_queue_kb, 0), coalesce(redo_queue_kb, 0))), 0) || '|' || coalesce(max(log_send_queue_kb), 0) || '|' || coalesce(max(redo_queue_kb), 0) || '|' || count(distinct snapshot_at) from pgvigil.mssql_ag_sample where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
   IFS='|' read -r QANY QSEND QREDO NREADS <<<"$QMAX"
   if [ "$QANY" -gt 0 ]; then echo "  across the RESUME ($NREADS reads kept): the largest send queue $QSEND KB, the largest redo queue $QREDO KB"; QSEEN="the catch-up's queue seen: send $QSEND KB, redo $QREDO KB"
@@ -448,7 +460,7 @@ echo "  finding: $D"
 [[ $D == "warning|"*"at step 2 (two fails)"*"pgvigil proof $SUF: step two fails"*"Next run ${NEXT/T/ } UTC."* ]] || fail "D: the finding's text"
 R=$(q "select (abs(extract(epoch from running_since - '${RSTART}Z'::timestamptz)) < 60) from pgvigil.mssql_jobs where instance_id=$I1 and name='$J2'")
 [ "$R" = t ] || fail "D: the waiting job is not seen running (sa: started $RSTART)"
-CUR1=$(q "select last_history_id from pgvigil.mssql_jobs_cursor where instance_id=$I1")
+CUR1=$(q "select last_history_id from pgvigil.mssql_jobs_cursor where instance_id=$I1 and mark is not null")
 MAXRUN=$(q "select max(history_id) from pgvigil.mssql_job_runs where instance_id=$I1")
 [ -n "$CUR1" ] && [ "$CUR1" = "$MAXRUN" ] || fail "D: the cursor ($CUR1) is not the newest row read ($MAXRUN)"
 NJ=$(q "select count(*) from pgvigil.mssql_jobs where instance_id=$I1"); NS=$(q "select coalesce(sum(jsonb_array_length(steps)), 0) from pgvigil.mssql_jobs where instance_id=$I1")
@@ -457,8 +469,8 @@ ROWS2=$(sed -n "s/^$N1 mssql_jobs: \([0-9]*\) row.*/\1/p" "$OUT")
 NEW=$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobhistory WHERE instance_id > $CUR1 AND run_status <> 4")
 NJ2=$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobs"); NS2=$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobsteps")
 READ2=$((ROWS2 - NJ2 - NS2 - 2))
-echo "  first run $ROWS1 rows; second run $ROWS2 rows = $NJ2 jobs + $NS2 steps + 2 + $READ2 history row(s); sa counts $NEW past the first cursor"
-[ "$READ2" -ge 0 ] && [ "$READ2" -le "$NEW" ] && [ "$ROWS2" -lt "$ROWS1" ] || fail "D: the second run read history again (stored before: $NJ jobs, $NS steps)"
+echo "  first run $ROWS1 rows; second run $ROWS2 rows = $NJ2 jobs + $NS2 steps + 2 + $READ2 history row(s); sa counts $NEW past the first cursor (a read starts 50 rows behind it)"
+[ "$READ2" -ge 0 ] && [ "$READ2" -le $((NEW + 50)) ] && [ "$ROWS2" -lt "$ROWS1" ] || fail "D: the second run read history again (stored before: $NJ jobs, $NS steps)"
 [ "$(q "select count(*) from pgvigil.mssql_job_runs where instance_id=$I1 and job_id='$JID'")" = 3 ] || fail "D: the job's history rows after the second run"
 sq "EXEC msdb.dbo.sp_stop_job @job_name = N'$J2';" >/dev/null
 # msdb lets every login in through its guest user; what a login without a user of its own may read there is asked
@@ -485,8 +497,8 @@ done
 echo "NOT PROVEN: no mirrored database on this sandbox (mssql_mirroring ran, found none, stored nothing)"
 echo "NOT PROVEN: no log shipping on this sandbox (mssql_logshipping ran, found none, stored nothing)"
 echo "NOT PROVEN: no distributor on this sandbox (mssql_replication ran, found none, stored nothing)"
-PGVIGIL_MSSQL_TEST_DSN="$MSSQL_N1_DSN" PGVIGIL_MSSQL_TEST_DISTRIBUTION="$DDB" go test ./internal/mssql -run 'TestHADRStatementsLive|TestAgentDateTimeLive' -count=1 -v >"$OUT" 2>&1 || { cat "$OUT"; fail "E: the live statement tests on the primary"; }
-grep -E "replication (publications|subscriptions|agents): [0-9]+ row" "$OUT" | sed 's/^ *[a-z_.0-9]*: /  stand-in distribution database: /'
+PGVIGIL_MSSQL_TEST_DSN="$MSSQL_N1_DSN" PGVIGIL_MSSQL_TEST_DISTRIBUTION="$DDB" go test ./internal/mssql -run 'TestHADRStatementsLive|TestAgentDateTimeLive|TestBackupSinkLive|TestBackupUTCLive' -count=1 -v >"$OUT" 2>&1 || { cat "$OUT"; fail "E: the live statement tests on the primary"; }
+grep -E "replication (publications|subscriptions|agents): [0-9]+ row" "$OUT" | sed 's/^ *[a-z_.0-9]*: /  stand-in distribution database: /' || true
 grep -q "replication publications: 1 row" "$OUT" && grep -q "replication subscriptions: 1 row" "$OUT" && grep -q "replication agents: 3 row" "$OUT" || { cat "$OUT"; fail "E: the replication statements over the stand-in database"; }
 PGVIGIL_MSSQL_TEST_DSN="$MSSQL_N2_DSN" go test ./internal/mssql -run 'TestHADRStatementsLive' -count=1 >"$OUT" 2>&1 || { cat "$OUT"; fail "E: the live statement test on the secondary"; }
 # the same statements through the collector's row shaping into the import, against the stand-in, read by hand
@@ -503,6 +515,7 @@ grep -q "is not a SQL Server instance" "$OUT" || fail "F: the refusal's text"
 imp mssql_mirroring "$ST" "now()" '[{"kind":"mirror","database_name":"sales","role":"PRINCIPAL","state":"DISCONNECTED","safety_level":"FULL","partner":"TCP://b:5022","partner_instance":"b","witness":"w","witness_state":"CONNECTED","log_send_queue_kb":4096,"redo_queue_kb":0},
  {"kind":"mirror","database_name":"crm","role":"PRINCIPAL","state":"SYNCHRONIZED","safety_level":"FULL","partner_instance":"b"}]'
 imp mssql_logshipping "$ST" "now()" "[{\"kind\":\"secondary\",\"database_name\":\"sales_ls\",\"secondary_server\":\"c\",\"primary_server\":\"a\",\"primary_database\":\"sales\",\"threshold_minutes\":45,\"alert_enabled\":1,\"last_copied_utc\":\"$(date -u -d '-170 min' +%FT%TZ)\",\"last_restored_utc\":\"$(date -u -d '-180 min' +%FT%TZ)\",\"last_restored_file\":\"sales_1.trn\"},
+ {\"kind\":\"secondary\",\"database_name\":\"sales_ls\",\"secondary_server\":\"d\",\"primary_server\":\"a\",\"primary_database\":\"sales\",\"threshold_minutes\":45,\"alert_enabled\":1,\"last_copied_utc\":\"$(date -u -d '-5 min' +%FT%TZ)\",\"last_restored_utc\":\"$(date -u -d '-4 min' +%FT%TZ)\"},
  {\"kind\":\"primary\",\"database_name\":\"sales\",\"primary_server\":\"a\",\"threshold_minutes\":60,\"alert_enabled\":1,\"last_backup_utc\":\"$(date -u -d '-10 min' +%FT%TZ)\"}]"
 imp mssql_replication "$ST" "now()" "[{\"kind\":\"publication\",\"distribution_db\":\"distribution\",\"publisher\":\"a\",\"publisher_db\":\"sales\",\"publication\":\"pub\",\"publication_type\":\"transactional\",\"articles\":2},
  {\"kind\":\"subscription\",\"distribution_db\":\"distribution\",\"publisher\":\"a\",\"publisher_db\":\"sales\",\"publication\":\"pub\",\"subscriber\":\"s\",\"subscriber_db\":\"copy\",\"subscription_type\":\"push\",\"agent_type\":\"distribution\",\"agent_name\":\"d1\",\"runstatus\":6,\"status_text\":\"login failed\",\"last_run_utc\":\"$(date -u +%FT%TZ)\",\"delivery_rate\":50,\"undistributed\":250000,\"est_catchup_s\":5000},
@@ -522,6 +535,8 @@ F=$(q "select string_agg(check_name, ',' order by check_name) from pgvigil.mssql
 [ "$F" = "the redo queue is over its threshold" ] || fail "F: the availability findings of the stub: $F"
 [ "$(q "select is_distributed || '|' || count(*) from pgvigil.mssql_ag_state where instance_id=$ST and group_name='dag' group by is_distributed")" = "true|2" ] || fail "F: the distributed group"
 [ "$(q "select listeners->0->>'dns_name' from pgvigil.mssql_ag_state where instance_id=$ST and group_name='ag1' limit 1")" = ag1-l ] || fail "F: the listener"
+agp 0.5 "" 100 50   # a read in the middle of a failover: the group names no primary
+[ "$(q "select count(*) from pgvigil.mssql_ag_failovers where instance_id=$ST")|$(q "select distinct primary_replica from pgvigil.mssql_ag_state where instance_id=$ST and group_name='ag1'")" = "0|a" ] || fail "F: a read without a primary lost the last one known"
 agp 0 b 100 50
 [ "$(q "select old_primary || '>' || new_primary from pgvigil.mssql_ag_failovers where instance_id=$ST")" = "a>b" ] || fail "F: the failover event"
 agp 3.5 a 100 50   # an older read imported late: a sample, never the current state, never a second failover
@@ -529,24 +544,40 @@ agp 3.5 a 100 50   # an older read imported late: a sample, never the current st
 F=$(q "select string_agg(severity || ':' || check_name, ',' order by check_name) from pgvigil.mssql_hadr_findings where instance_id=$ST")
 echo "  the stub's HA/DR findings: $F"
 [ "$F" = "warning:a replication agent failed,warning:log shipping is behind its threshold,critical:mirroring is disconnected or suspended,critical:the primary of a group changed,warning:undistributed commands over the threshold" ] || fail "F: the stub's HA/DR findings"
-OLD=$(date -u -d '-40 days' +%FT%TZ); OLDF=$(date -u -d '-3 days' +%FT%TZ)
+[ "$(q "select string_agg(secondary_server, ',' order by secondary_server) from pgvigil.mssql_logshipping_state where instance_id=$ST and role='secondary' and database_name='sales_ls'")" = "c,d" ] || fail "F: two secondaries carrying one database name are not two rows"
+[ "$(q "select object from pgvigil.mssql_hadr_findings where instance_id=$ST and check_name='log shipping is behind its threshold'")" = "secondary / sales_ls on c" ] || fail "F: the log shipping finding names the wrong secondary"
+# a replication read of which one part failed: the parts that were read replace their rows, the failed part keeps its own
+imp mssql_replication "$ST" "now()" "[{\"kind\":\"collector_error\",\"source\":\"distribution.dbo.MSpublications\",\"message\":\"lock request time out\"},
+ {\"kind\":\"subscription\",\"distribution_db\":\"distribution\",\"publisher\":\"a\",\"publisher_db\":\"sales\",\"publication\":\"pub\",\"subscriber\":\"s\",\"subscriber_db\":\"copy\",\"subscription_type\":\"push\",\"agent_type\":\"distribution\",\"agent_name\":\"d1\",\"runstatus\":6,\"status_text\":\"login failed again\",\"last_run_utc\":\"$(date -u +%FT%TZ)\",\"delivery_rate\":50,\"undistributed\":260000,\"est_catchup_s\":5200},
+ {\"kind\":\"agent\",\"distribution_db\":\"distribution\",\"agent_type\":\"logreader\",\"agent_name\":\"lr1\",\"publisher\":\"a\",\"publisher_db\":\"sales\",\"runstatus\":4,\"status_text\":\"idle\"}]"
+[ "$(q "select string_agg(kind || ':' || coalesce(status_text, publication), ',' order by kind) from pgvigil.mssql_replication_state where instance_id=$ST")" = "agent:idle,publication:pub,subscription:login failed again" ] \
+  || fail "F: a partly failed replication read: $(q "select string_agg(kind || ':' || coalesce(status_text, publication), ',' order by kind) from pgvigil.mssql_replication_state where instance_id=$ST")"
+# a job history row read twice across a change of the server's offset (its instant moves an hour) is stored once
+JR='{"kind":"run","history_id":77,"job_id":"J-1","job_name":"j","step_id":0,"run_date":20261101,"run_time":13000,"run_status":1,"duration_s":5,"message":"The job succeeded."'
+imp mssql_jobs "$ST" "now() - interval '2 minutes'" "[$JR,\"run_utc\":\"$(date -u -d '-3 hours' +%FT%TZ)\"}]"
+imp mssql_jobs "$ST" "now() - interval '1 minute'" "[$JR,\"run_utc\":\"$(date -u -d '-2 hours' +%FT%TZ)\"},{\"kind\":\"cursor\",\"last_history_id\":77,\"mark\":4242}]"
+[ "$(q "select count(*) from pgvigil.mssql_job_runs where instance_id=$ST")|$(q "select pgvigil.mssql_hadr_cursor($ST, 'jobs') || '/' || pgvigil.mssql_hadr_cursor($ST, 'jobs_mark')")" = "1|77/4242" ] || fail "F: a history row read twice, or the cursor with its mark"
+OLD=$(date -u -d '-40 days' +%FT%TZ); OLD1=$(date -u -d '-40 days +1 hour' +%FT%TZ); OLDF=$(date -u -d '-3 days' +%FT%TZ); BORN=$(date -u -d '-30 hours' +%FT%TZ); OLDB=$(date -u -d '-20 days' +%FT%TZ)
 imp mssql_backups "$ST" "now() - interval '1 minute'" "[{\"kind\":\"database\",\"database_name\":\"sales\",\"state\":\"ONLINE\",\"recovery_model\":\"FULL\",\"created_utc\":\"$OLD\",\"is_snapshot\":0,\"is_read_only\":0,\"is_standby\":0,\"ag_group_id\":\"$G\",\"ag_name\":\"ag1\"},
  {\"kind\":\"database\",\"database_name\":\"solo\",\"state\":\"ONLINE\",\"recovery_model\":\"SIMPLE\",\"created_utc\":\"$OLD\",\"is_snapshot\":0,\"is_read_only\":0,\"is_standby\":0},
  {\"kind\":\"database\",\"database_name\":\"kept\",\"state\":\"ONLINE\",\"recovery_model\":\"SIMPLE\",\"created_utc\":\"$OLD\",\"is_snapshot\":0,\"is_read_only\":0,\"is_standby\":0},
  {\"kind\":\"database\",\"database_name\":\"tempdb\",\"state\":\"ONLINE\",\"recovery_model\":\"SIMPLE\",\"created_utc\":\"$OLD\"},
  {\"kind\":\"database\",\"database_name\":\"off\",\"state\":\"OFFLINE\",\"recovery_model\":\"FULL\",\"created_utc\":\"$OLD\"},
  {\"kind\":\"database\",\"database_name\":\"snap\",\"state\":\"ONLINE\",\"recovery_model\":\"FULL\",\"created_utc\":\"$OLD\",\"is_snapshot\":1},
+ {\"kind\":\"database\",\"database_name\":\"reborn\",\"state\":\"ONLINE\",\"recovery_model\":\"SIMPLE\",\"created_utc\":\"$BORN\",\"is_snapshot\":0,\"is_read_only\":0,\"is_standby\":0},
+ {\"kind\":\"backup\",\"database_name\":\"reborn\",\"backup_type\":\"full\",\"sink\":\"backup\",\"finish_utc\":\"$OLDB\",\"size_bytes\":5,\"device\":\"disk\"},
  {\"kind\":\"backup\",\"database_name\":\"kept\",\"backup_type\":\"full\",\"sink\":\"backup\",\"finish_utc\":\"$OLDF\",\"size_bytes\":1000,\"device\":\"disk\"},
  {\"kind\":\"history\",\"backup_sets\":1,\"oldest_utc\":\"$OLDF\"}]"
 F=$(q "select string_agg(object || '=' || severity || ':' || check_name, ', ' order by object) from pgvigil.mssql_jobs_findings where instance_id=$ST")
 echo "  the stub's backup findings: $F"
-[ "$F" = "sales=info:backups not judged: a replica of the group is not monitored, solo=critical:no full backup ever" ] || fail "F: the stub's backup findings"
+[ "$F" = "reborn=critical:no full backup ever, sales=info:backups not judged: a replica of the group is not monitored, solo=critical:no full backup ever" ] || fail "F: the stub's backup findings"
 [ "$(q "select string_agg(database_name || ':' || not_judged, ', ' order by database_name) from pgvigil.mssql_backup_judged where instance_id=$ST and not_judged is not null")" \
   = "off:the database is offline, snap:a database snapshot, tempdb:tempdb is never backed up" ] || fail "F: what is not judged"
-# msdb's history trimmed: the next read lists no backup of 'kept'; the repository keeps the one it saw
-imp mssql_backups "$ST" "now()" "[{\"kind\":\"database\",\"database_name\":\"kept\",\"state\":\"ONLINE\",\"recovery_model\":\"SIMPLE\",\"created_utc\":\"$OLD\",\"is_snapshot\":0,\"is_read_only\":0,\"is_standby\":0},{\"kind\":\"history\",\"backup_sets\":0}]"
+# msdb's history trimmed: the next read lists no backup of 'kept'; the repository keeps the one it saw - also when
+# the database's creation time comes back an hour off (the server's offset changed between the two reads)
+imp mssql_backups "$ST" "now()" "[{\"kind\":\"database\",\"database_name\":\"kept\",\"state\":\"ONLINE\",\"recovery_model\":\"SIMPLE\",\"created_utc\":\"$OLD1\",\"is_snapshot\":0,\"is_read_only\":0,\"is_standby\":0},{\"kind\":\"history\",\"backup_sets\":0}]"
 [ "$(q "select (full_at = '$OLDF'::timestamptz) || '|' || full_bytes from pgvigil.mssql_backup_state where instance_id=$ST and database_name='kept'")" = "true|1000" ] || fail "F: a backup once seen was lost when msdb no longer listed it"
-[ "$(q "select count(*) from pgvigil.mssql_backup_state where instance_id=$ST and not is_present")" = 5 ] || fail "F: the databases the server no longer lists are not marked"
+[ "$(q "select count(*) from pgvigil.mssql_backup_state where instance_id=$ST and not is_present")" = 6 ] || fail "F: the databases the server no longer lists are not marked"
 echo "F: OK"
 
 echo "--- G. the API"
@@ -569,7 +600,7 @@ assert rows('limits')[0]['redo_queue_kb'] in (512000, '512000'), rows('limits')
 assert {r['collection'] for r in rows('reads')} == {'mssql_ag', 'mssql_mirroring', 'mssql_logshipping', 'mssql_replication'}, rows('reads')
 assert rows('mirroring') == [] and rows('logshipping') == [] and rows('replication') == []" || fail "G: /api/mssql/availability"
 api "mssql/availability?instance=$ST&from=$FROM&to=$TO" | python3 -c "$PYROWS
-assert len(rows('failovers')) == 1 and len(rows('mirroring')) == 2 and len(rows('logshipping')) == 2 and len(rows('replication')) == 3, d
+assert len(rows('failovers')) == 1 and len(rows('mirroring')) == 2 and len(rows('logshipping')) == 3 and len(rows('replication')) == 3, d
 assert len(rows('findings')) == 5, rows('findings')" || fail "G: /api/mssql/availability of the stub"
 api "mssql/availability?instance=$I1&part=reads" | python3 -c "$PYROWS
 assert list(d.keys()) == ['reads'], d.keys()" || fail "G: ?part=reads"
@@ -589,5 +620,5 @@ assert float(rows('limits')[0]['new_database_hours']) == 0 and float(rows('limit
 kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 echo "G: OK"
 
-echo "NOT PROVEN: a distributed or contained group, a listener, a Windows cluster (none here); a real mirrored database, log shipping pair or distributor; backupset.time_zone's sign off UTC; SQL Server 2016-2019, RDS, Managed Instance"
+echo "NOT PROVEN: a distributed or contained group, a listener, a Windows cluster (none here); a real mirrored database, log shipping pair or distributor; backupset.time_zone on real rows off UTC; SQL Server 2016-2019, RDS, Managed Instance"
 echo "proof-mssql-hadr: PASS (A, B, ${JOINED:+C, }D, E, F, G; $WIRED)"

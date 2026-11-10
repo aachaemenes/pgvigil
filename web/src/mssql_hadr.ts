@@ -139,10 +139,11 @@ function groupKind(r: Row): string {
   return parts.join(', ');
 }
 
-// hasAvailability: whether the instance has anything for the tab (the shell's check before it shows it)
+// hasAvailability: whether the server has an availability group, a mirrored database, log shipping or replication
+// (a read that stored a row); the shell's check before it shows the tab
 export async function hasAvailability(instance: number): Promise<boolean> {
   const d = await get<Record<'reads', Table | null>>('mssql/availability', { instance, part: 'reads' });
-  return rowsOf(d.reads).length > 0;
+  return rowsOf(d.reads).some(r => Number(r.row_count ?? 0) > 0);
 }
 
 export async function mssqlAvailability(ctx: Ctx): Promise<HTMLElement> {
@@ -158,11 +159,14 @@ export async function mssqlAvailability(ctx: Ctx): Promise<HTMLElement> {
 
     sec.append(el('h3', {}, 'Availability groups'));
     if (!replicas.length) {
-      const why = agRead?.status === 'skipped' ? `The collection is skipped: ${String(agRead.note ?? '')}.`
+      const why = agRead?.status === 'skipped' ? `mssql_ag is skipped: ${String(agRead.note ?? '')}.`
+        : agRead?.status === 'error' ? `mssql_ag failed: ${String(agRead.note ?? '')}.`
         : agRead ? 'The last read found no availability group on this server.'
-        : 'mssql_ag has not read this server yet (it runs where Always On is enabled).';
+        : 'mssql_ag has not run on this server yet.';
       sec.append(el('p', { class: 'empty' }, why));
     } else {
+      if (agRead?.status === 'skipped' || agRead?.status === 'error') sec.append(el('p', { class: 'meta' }, badge(String(agRead.status), 'warn'),
+        ` mssql_ag: ${String(agRead.note ?? '')}. What follows is its last read (${fmtTime(replicas[0].snapshot_at)}).`));
       const groups = [...new Set(replicas.map(r => String(r.group_name)))];
       const notOk = dbs.filter(r => r.is_suspended === true || !['SYNCHRONIZED', 'SYNCHRONIZING'].includes(String(r.synchronization_state))).length;
       const sum = (k: string) => dbs.reduce((s, r) => s + Number(r[k] ?? 0), 0);
@@ -216,8 +220,10 @@ export async function mssqlAvailability(ctx: Ctx): Promise<HTMLElement> {
         el('h4', {}, 'Subscriptions'), grid(repl.filter(r => r.kind === 'subscription'), subCols, 'No subscription.'),
         el('h4', {}, 'Log reader, snapshot and merge agents'), grid(repl.filter(r => r.kind === 'agent'), agentCols, 'No agent.'));
     }
-    const partial = reads.filter(r => r.status === 'partial' || r.status === 'error');
-    for (const r of partial) sec.append(el('p', { class: 'meta' }, badge(String(r.status), 'warn'), ` ${String(r.collection)}: ${String(r.note ?? '')}`));
+    // a collection that could not read in full, or at all, says so with its reason; what is shown above is then its last read
+    const notOk = reads.filter(r => r.status === 'partial' || r.status === 'error' || (r.status === 'skipped' && r.collection !== 'mssql_ag'));
+    for (const r of notOk) sec.append(el('p', { class: 'meta' }, badge(String(r.status), 'warn'),
+      ` ${String(r.collection)}: ${String(r.note ?? '')}${r.snapshot_at ? ` (last read ${fmtTime(r.snapshot_at)})` : ''}`));
   } catch (e) {
     sec.append(errorBox(e));
   }

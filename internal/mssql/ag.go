@@ -18,9 +18,10 @@ import (
 
 // utcText is the SELECT expression that turns a column written in the server's local clock into UTC text ending in
 // Z, by the offset the server has at the read (QueryRows' contract: no zone-less text is stored as an instant). A
-// NULL column stays NULL.
+// NULL column stays NULL. The offset is one value read once (the difference of two clock reads can straddle a
+// minute and come out one minute off).
 func utcText(col string) string {
-	return "CONVERT(varchar(33), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), " + col + "), 126) + 'Z'"
+	return "CONVERT(varchar(33), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), " + col + "), 126) + 'Z'"
 }
 
 // isUTCText is utcText for a column the server already keeps in UTC.

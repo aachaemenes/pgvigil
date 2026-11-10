@@ -12,7 +12,7 @@ import (
 // queues, estimates and last times, the queues over the window per database replica (bucketed to about 600 points),
 // the failovers of the window, and the sections that exist only where the server has the feature: database
 // mirroring, log shipping, replication. Then the instance's HA/DR findings and the thresholds in force.
-// ?part=<name> reads one part (the shell's check for what the server has).
+// ?part=<name> reads one part (?part=reads is the shell's check: a row_count above 0 = the server has that feature).
 
 const sqlMSSQLAgReplicas = `
 SELECT group_name, replica_server, is_local, role, primary_replica, availability_mode, failover_mode, connected_state,
@@ -83,12 +83,14 @@ SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_hadr_findings
 const sqlMSSQLHADRLimits = `
 SELECT log_send_queue_kb, redo_queue_kb, repl_undistributed_commands FROM pgvigil.mssql_hadr_limits WHERE instance_id = $1`
 
+// the four collections' last runs: a skipped run stores no read, so the runs lead (collection_dates) and the read
+// (its time and row count) rides beside; row_count says whether the server has the feature at all
 const sqlMSSQLHADRReads = `
-SELECT r.collection, r.snapshot_at, r.row_count, c.status, c.note
-  FROM pgvigil.mssql_hadr_reads r
-  LEFT JOIN pgvigil.collection_dates c ON c.instance_id = r.instance_id AND c.collection = r.collection
- WHERE r.instance_id = $1 AND r.collection IN ('mssql_ag', 'mssql_mirroring', 'mssql_logshipping', 'mssql_replication')
- ORDER BY r.collection`
+SELECT c.collection, c.snapshot_at AS run_at, c.status, c.note, r.snapshot_at, coalesce(r.row_count, 0) AS row_count
+  FROM pgvigil.collection_dates c
+  LEFT JOIN pgvigil.mssql_hadr_reads r ON r.instance_id = c.instance_id AND r.collection = c.collection
+ WHERE c.instance_id = $1 AND c.collection IN ('mssql_ag', 'mssql_mirroring', 'mssql_logshipping', 'mssql_replication')
+ ORDER BY c.collection`
 
 // MSSQLAvailability serves the Availability tab of one SQL Server instance.
 func (s *Server) MSSQLAvailability(w http.ResponseWriter, r *http.Request) {

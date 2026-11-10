@@ -146,5 +146,5 @@ func (replicationCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]
 // replNoAccess is the partial note of a distribution database the login cannot enter: it names the right.
 func replNoAccess(db string) collect.Row {
 	return collect.Row{"kind": "collector_error", "source": db,
-		"message": fmt.Sprintf("the login has no user in the distribution database %s: replication was not read; the missing right is a user there with db_datareader", db)}
+		"message": fmt.Sprintf("the login cannot enter the distribution database %s: replication was not read; the missing right is a user there with db_datareader (or the database sits on a secondary replica that takes no connections: read it on the primary)", db)}
 }

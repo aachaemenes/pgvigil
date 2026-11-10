@@ -12,14 +12,15 @@ import (
 // window, and the job findings.
 //
 // GET /api/mssql/backups?instance=<id> (Server.MSSQLBackups): per database the last full, differential and log
-// backup with where it ran, the three ages at the read against the thresholds in force, why a database is not
-// judged, and the backup findings. The window does not apply: the tab is the state at the last read.
+// backup with where it ran (its size, duration and device where it ran on this server: msdb is each server's own
+// record), the three ages at the read against the thresholds in force, why a database is not judged, and the
+// backup findings. The window does not apply: the tab is the state at the last read.
 
 const sqlMSSQLJobs = `
 SELECT j.name, j.enabled, j.category, j.owner, j.schedule_names, j.schedules, j.enabled_schedules, j.next_run_at,
        j.last_outcome,
        CASE j.last_outcome WHEN 0 THEN 'failed' WHEN 1 THEN 'succeeded' WHEN 2 THEN 'retry' WHEN 3 THEN 'cancelled'
-                           WHEN 5 THEN 'never run' END AS last_outcome_text,
+                           WHEN 4 THEN 'in progress' WHEN 5 THEN 'never run' END AS last_outcome_text,
        j.last_run_at, j.last_duration_s, j.last_message, j.running_since, j.description, j.modified_at, j.steps, j.job_id, j.snapshot_at
   FROM pgvigil.mssql_jobs j
  WHERE j.instance_id = $1
@@ -66,11 +67,13 @@ SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_jobs_findings
  WHERE instance_id = $1 AND check_name IN ('a job failed', 'a job runs far longer than its average')
  ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, at DESC`
 
+// the collection's last run (a skipped run stores no read: its reason is the note) with the last read beside it
 const sqlMSSQLJobsRead = `
-SELECT r.snapshot_at, r.row_count, c.status, c.note, (SELECT last_history_id FROM pgvigil.mssql_jobs_cursor x WHERE x.instance_id = r.instance_id) AS history_cursor
-  FROM pgvigil.mssql_hadr_reads r
-  LEFT JOIN pgvigil.collection_dates c ON c.instance_id = r.instance_id AND c.collection = r.collection
- WHERE r.instance_id = $1 AND r.collection = 'mssql_jobs'`
+SELECT c.snapshot_at AS run_at, c.status, c.note, r.snapshot_at, r.row_count,
+       (SELECT last_history_id FROM pgvigil.mssql_jobs_cursor x WHERE x.instance_id = c.instance_id) AS history_cursor
+  FROM pgvigil.collection_dates c
+  LEFT JOIN pgvigil.mssql_hadr_reads r ON r.instance_id = c.instance_id AND r.collection = c.collection
+ WHERE c.instance_id = $1 AND c.collection = 'mssql_jobs'`
 
 // MSSQLJobs serves the Jobs tab of one SQL Server instance.
 func (s *Server) MSSQLJobs(w http.ResponseWriter, r *http.Request) {
@@ -95,8 +98,18 @@ SELECT b.database_name, b.state, b.recovery_model, b.ag_name, b.replicas_total, 
        b.diff_at, b.diff_from, b.diff_age_hours, b.diff_status,
        b.log_at, b.log_from, b.log_age_minutes, b.log_status,
        b.nul_at, b.nul_type, b.nul_from, b.created_at, b.snapshot_at,
-       s.full_bytes, s.full_compressed_bytes, s.full_duration_s, s.full_device, s.full_device_name, s.full_snapshot,
-       s.diff_bytes, s.diff_duration_s, s.log_bytes, s.log_duration_s, s.log_device
+       -- the size, duration and device are this server's own record: shown only where the backup shown ran here
+       CASE WHEN b.full_from = b.instance THEN s.full_bytes END AS full_bytes,
+       CASE WHEN b.full_from = b.instance THEN s.full_compressed_bytes END AS full_compressed_bytes,
+       CASE WHEN b.full_from = b.instance THEN s.full_duration_s END AS full_duration_s,
+       CASE WHEN b.full_from = b.instance THEN s.full_device END AS full_device,
+       CASE WHEN b.full_from = b.instance THEN s.full_device_name END AS full_device_name,
+       CASE WHEN b.full_from = b.instance THEN s.full_snapshot END AS full_snapshot,
+       CASE WHEN b.diff_from = b.instance THEN s.diff_bytes END AS diff_bytes,
+       CASE WHEN b.diff_from = b.instance THEN s.diff_duration_s END AS diff_duration_s,
+       CASE WHEN b.log_from = b.instance THEN s.log_bytes END AS log_bytes,
+       CASE WHEN b.log_from = b.instance THEN s.log_duration_s END AS log_duration_s,
+       CASE WHEN b.log_from = b.instance THEN s.log_device END AS log_device
   FROM pgvigil.mssql_backup_judged b
   JOIN pgvigil.mssql_backup_state s ON s.instance_id = b.instance_id AND s.database_name = b.database_name
  WHERE b.instance_id = $1
@@ -112,7 +125,7 @@ const sqlMSSQLBackupLimits = `
 SELECT l.full_backup_hours, l.diff_backup_hours, l.log_backup_minutes, l.new_database_hours, l.nul_backup_days,
        array_to_string(l.backup_exclude, ', ') AS backup_exclude,
        (SELECT min(s.history_from) FROM pgvigil.mssql_backup_state s WHERE s.instance_id = l.instance_id) AS history_from,
-       r.snapshot_at, r.row_count, c.status, c.note
+       r.snapshot_at, r.row_count, c.status, c.note, c.snapshot_at AS run_at
   FROM pgvigil.mssql_hadr_limits l
   LEFT JOIN pgvigil.mssql_hadr_reads r ON r.instance_id = l.instance_id AND r.collection = 'mssql_backups'
   LEFT JOIN pgvigil.collection_dates c ON c.instance_id = l.instance_id AND c.collection = 'mssql_backups'

@@ -64,21 +64,30 @@ ORDER BY d.name`
 // backupUTC is a backupset time in UTC by the row's own recorded offset.
 func backupUTC(col string) string {
 	return "CONVERT(varchar(33), CASE WHEN bs.time_zone BETWEEN -48 AND 56 THEN DATEADD(minute, -15 * bs.time_zone, " + col + ")" +
-		" ELSE DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), " + col + ") END, 126) + 'Z'"
+		" ELSE DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), " + col + ") END, 126) + 'Z'"
 }
+
+// backupSinkExpr says where a backupset row (bs) went, by its first media family (mf): 'nul' (the NUL device:
+// nothing was kept), 'seeding' or 'backup'. 'seeding' is the stream of an availability group's automatic seeding,
+// which msdb records as a full, copy-only backup to a virtual device named by a bare GUID, without a backup name
+// and not a snapshot backup (a copy-only VSS snapshot backup has the same device shape and IS a backup: is_snapshot
+// tells them apart).
+const backupSinkExpr = `CASE WHEN UPPER(mf.physical_device_name) IN (N'NUL', N'NUL:') THEN 'nul'
+              WHEN bs.type = 'D' AND bs.is_copy_only = 1 AND bs.is_snapshot = 0 AND mf.device_type IN (7, 107) AND bs.name IS NULL
+                   AND mf.physical_device_name LIKE N'{________-____-____-____-____________}' THEN 'seeding'
+              ELSE 'backup' END`
 
 // backupsSQL: the newest finished backup per database, type (D full, I differential, L log) and sink, of this
 // server's own backups. SQL Server 2016 SP1 and later. The sink is 'backup' (kept somewhere), 'nul' (the NUL
 // device: nothing was kept) or 'seeding': automatic seeding of an availability group streams the database to the
 // new replica as a copy-only full backup to a virtual device named by a bare GUID, and msdb records it like a
-// backup; it is no backup anyone can restore, so it never counts as the last full one.
+// backup; it is no backup anyone can restore, so it never counts as the last full one. Only this server's own
+// rows are read (server_name): a RESTORE writes the source server's rows into msdb, and they are not this server's
+// backups; a server renamed since shows no backup older than its rename.
 var backupsSQL = `WITH b AS (
   SELECT bs.database_name, bs.type, bs.backup_set_id, bs.backup_start_date, bs.backup_finish_date, bs.time_zone,
-         bs.backup_size, bs.compressed_backup_size, bs.is_copy_only, bs.is_snapshot, mf.device_type, mf.physical_device_name,
-         CASE WHEN UPPER(mf.physical_device_name) IN (N'NUL', N'NUL:') THEN 'nul'
-              WHEN bs.type = 'D' AND bs.is_copy_only = 1 AND mf.device_type IN (7, 107) AND bs.name IS NULL
-                   AND mf.physical_device_name LIKE N'{________-____-____-____-____________}' THEN 'seeding'
-              ELSE 'backup' END AS sink
+         bs.backup_size, bs.compressed_backup_size, bs.is_copy_only, bs.is_snapshot, bs.name, mf.device_type, mf.physical_device_name,
+         ` + backupSinkExpr + ` AS sink
     FROM msdb.dbo.backupset bs
    OUTER APPLY (SELECT TOP (1) f.device_type, f.physical_device_name FROM msdb.dbo.backupmediafamily f
                  WHERE f.media_set_id = bs.media_set_id ORDER BY f.family_sequence_number) mf
@@ -105,7 +114,7 @@ ORDER BY 2, 3, 4`
 // how far back msdb's own backup history reaches: "no backup in msdb" is not "never backed up" on a server whose
 // history is trimmed
 const backupHistorySQL = `SELECT 'history' AS kind, COUNT_BIG(*) AS backup_sets,
-  CONVERT(varchar(33), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), MIN(backup_start_date)), 126) + 'Z' AS oldest_utc
+  CONVERT(varchar(33), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MIN(backup_start_date)), 126) + 'Z' AS oldest_utc
 FROM msdb.dbo.backupset`
 
 func (backupsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {

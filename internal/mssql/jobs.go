@@ -58,12 +58,21 @@ type CursorCollector interface {
 }
 
 const (
-	// JobsCursorSource names the sysjobhistory cursor.
+	// JobsCursorSource names the sysjobhistory cursor: the instance_id of the newest row read.
 	JobsCursorSource = "jobs"
+	// JobsMarkSource names the cursor row's mark: a checksum of what that row was. msdb's history numbering starts
+	// again when msdb is replaced (a restore, a new server under the old name); the mark tells "the row at the
+	// cursor is still the row that was read" from "another row has that number now".
+	JobsMarkSource = "jobs_mark"
 	// jobHistoryDays is the kept window: a first read, and a read after a long stop, go back this far and no further.
 	jobHistoryDays = 7
-	// jobHistoryBatch bounds one read; a longer backlog is read on by the next runs.
+	// jobHistoryBatch bounds one statement; a run reads batch after batch until it has caught up.
 	jobHistoryBatch = 5000
+	// jobHistoryBatches bounds one run; a longer backlog is read on by the next runs.
+	jobHistoryBatches = 20
+	// jobHistoryOverlap is how far behind the cursor a read starts: an identity value is allocated before its row
+	// is visible, so a row just below the newest one read can appear late. The import stores a row once.
+	jobHistoryOverlap = 50
 )
 
 // agentDateTime is the datetime of msdb's integer date (yyyymmdd) and time (hhmmss) pair, NULL for a date of 0.
@@ -116,7 +125,11 @@ var jobStepsSQL = `SELECT 'step' AS kind, st.job_id, st.step_id, CAST(st.step_na
 FROM msdb.dbo.sysjobsteps st
 ORDER BY st.job_id, st.step_id`
 
-const jobHistoryHeadSQL = `SELECT ISNULL(MAX(instance_id), 0) AS head FROM msdb.dbo.sysjobhistory`
+// jobHistoryMark is the mark of a sysjobhistory row (h).
+const jobHistoryMark = `CAST(CHECKSUM(CAST(h.job_id AS nvarchar(36)), h.step_id, h.run_date, h.run_time) AS bigint)`
+
+// jobHistoryMarkSQL reads the mark of the row at @p1 (no row: msdb no longer has it).
+const jobHistoryMarkSQL = `SELECT ` + jobHistoryMark + ` AS mark FROM msdb.dbo.sysjobhistory h WHERE h.instance_id = @p1`
 
 // jobHistorySQL reads sysjobhistory past @p1, inside the kept window, oldest first (a cursor read) or newest first
 // (a read without a cursor: the newest batch of the window). Step 0 is the job's own outcome row.
@@ -126,7 +139,8 @@ func jobHistorySQL(forward bool) string {
 		order = "ASC"
 	}
 	return fmt.Sprintf(`SELECT TOP (%d) 'run' AS kind, h.instance_id AS history_id, h.job_id, CAST(j.name AS nvarchar(128)) AS job_name,
-  h.step_id, CAST(h.step_name AS nvarchar(128)) AS step_name, h.run_status,
+  h.step_id, CAST(h.step_name AS nvarchar(128)) AS step_name, h.run_status, h.run_date, h.run_time,
+  `+jobHistoryMark+` AS mark,
   %s AS duration_s,
   %s AS run_utc,
   h.sql_message_id, h.sql_severity, h.retries_attempted AS retries,
@@ -139,7 +153,8 @@ ORDER BY h.instance_id %s`, jobHistoryBatch, agentSeconds("h.run_duration"), utc
 }
 
 // Run is the read without a cursor (a RunOnce that does not know CursorCollector): the newest batch of the kept
-// window every time. The import stores a history row once, so nothing is doubled; it is only read again.
+// window every time. The import stores a history row once (by its number, job, step and msdb's own date and time,
+// not by the converted instant), so nothing is doubled; it is only read again.
 func (c jobsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	return c.RunFrom(ctx, conn, info, nil)
 }
@@ -167,43 +182,69 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor
 		}
 		return append(append(rows, runs...), collect.Row{"kind": "read", "cursor": false}), nil
 	}
-	last, _, err := cursor(ctx, JobsCursorSource)
+	last, haveLast, err := cursor(ctx, JobsCursorSource)
 	if err != nil {
 		return nil, fmt.Errorf("jobs cursor: %w", err)
 	}
-	var head int64
-	if err := conn.QueryRowContext(ctx, jobHistoryHeadSQL).Scan(&head); err != nil {
-		return nil, err
-	}
-	runs, err := QueryRows(ctx, conn, jobHistorySQL(true), jobsReadFrom(last, head))
+	mark, haveMark, err := cursor(ctx, JobsMarkSource)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("jobs cursor mark: %w", err)
 	}
-	rows = append(rows, runs...)
-	return append(rows, collect.Row{"kind": "read", "cursor": true}, collect.Row{"kind": "cursor", "last_history_id": jobsNextCursor(last, head, runs)}), nil
-}
-
-// jobsReadFrom is where a read starts: past the cursor, or from the start when the server's newest history row
-// is below the cursor (msdb was restored or replaced, or its history was emptied: the numbering started again or
-// will go on past the old cursor; either way a read of the kept window from the start loses nothing).
-func jobsReadFrom(last, head int64) int64 {
-	if head < last {
-		return 0
-	}
-	return last
-}
-
-// jobsNextCursor is the cursor after a read: the newest row read; with nothing read, the cursor as it was, or the
-// server's head when that fell below it.
-func jobsNextCursor(last, head int64, runs []collect.Row) int64 {
-	next := jobsReadFrom(last, head)
-	for _, r := range runs {
-		if id, ok := r["history_id"].(int64); ok && id > next {
-			next = id
+	same := false
+	if haveLast && haveMark && last > 0 {
+		var now sql.NullInt64
+		switch err := conn.QueryRowContext(ctx, jobHistoryMarkSQL, last).Scan(&now); {
+		case err == sql.ErrNoRows:
+		case err != nil:
+			return nil, err
+		default:
+			same = now.Valid && now.Int64 == mark
 		}
 	}
-	if len(runs) == 0 && head < last {
-		return head
+	from := jobsReadFrom(last, same)
+	next, nextMark := last, mark
+	if !same {
+		next, nextMark = 0, 0
 	}
-	return next
+	for range jobHistoryBatches {
+		runs, err := QueryRows(ctx, conn, jobHistorySQL(true), from)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, runs...)
+		from, next, nextMark = jobsAdvance(from, next, nextMark, runs)
+		if len(runs) < jobHistoryBatch {
+			break
+		}
+	}
+	return append(rows, collect.Row{"kind": "read", "cursor": true},
+		collect.Row{"kind": "cursor", "last_history_id": next, "mark": nextMark}), nil
+}
+
+// jobsReadFrom is where a read starts: a little behind the cursor while the row at the cursor is still the row
+// that was read (same); from the start of the kept window when it is not - msdb was replaced, or the row was
+// purged while the collector was stopped. A read from the start loses nothing: the import stores a row once.
+func jobsReadFrom(last int64, same bool) int64 {
+	if !same || last <= jobHistoryOverlap {
+		return 0
+	}
+	return last - jobHistoryOverlap
+}
+
+// jobsAdvance moves the read position and the cursor past one batch: the newest row read and its mark.
+func jobsAdvance(from, next, nextMark int64, runs []collect.Row) (int64, int64, int64) {
+	for _, r := range runs {
+		id, ok := r["history_id"].(int64)
+		if !ok {
+			continue
+		}
+		if id > from {
+			from = id
+		}
+		if id >= next {
+			next = id
+			nextMark, _ = r["mark"].(int64)
+		}
+	}
+	return from, next, nextMark
 }
