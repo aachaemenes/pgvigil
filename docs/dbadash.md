@@ -35,7 +35,7 @@ GRANT SELECT ON dbo.CollectionDates  TO pgvigil_dbadash;
 GRANT SELECT ON dbo.DBVersionHistory TO pgvigil_dbadash;
 ```
 
-`db_datareader` works too, and grants more than pgvigil reads. The login needs no EXECUTE: pgvigil runs no DBA Dash procedure (see below), and it writes nothing on the DBA Dash side. `scripts/proof-dbadash.sh` checks that this login is refused an INSERT and the procedure that refreshes the Summary.
+These four grants are the whole right: SELECT on `dbo.Instances`, `dbo.Summary`, `dbo.CollectionDates` and `dbo.DBVersionHistory`, no EXECUTE on any procedure (proven against DBA Dash 4.24.1 by `scripts/proof-dbadash.sh`). `db_datareader` works too, and grants more than pgvigil reads. The login needs no EXECUTE: pgvigil runs no DBA Dash procedure (see below), and it writes nothing on the DBA Dash side. `scripts/proof-dbadash.sh` checks that this login is refused an INSERT and the procedure that refreshes the Summary.
 
 ## What pgvigil reads
 
