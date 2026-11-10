@@ -990,15 +990,6 @@ func (g *Gen) logRows(t, prev time.Time) []Row {
 			}
 		}
 	}
-	if g.is("onprem-erp01") { // the nightly report's temporary files, one every 10 minutes from 01:00 to 03:00 (memory_demo.go: the hour rows' log_files)
-		for at := prev.Truncate(10 * time.Minute).Add(10 * time.Minute); !at.After(t); at = at.Add(10 * time.Minute) {
-			if h := at.Hour(); h >= 1 && h < 3 {
-				size := 200<<20 + int64(noise(s.Name+"tmp", at)*60*(1<<20))
-				ev("temp_file", at, 2000+int(noise(s.Name+"tmppid", at)*60000), "app_"+s.App, g.stmts[stReport].text,
-					fmt.Sprintf("temporary file: path \"base/pgsql_tmp/pgsql_tmp%d.%d\", size %d", 2000+at.Minute(), at.Hour(), size), nil)
-			}
-		}
-	}
 	for _, hm := range [][2]int{{7, 12}, {19, 40}} {
 		at := time.Date(t.Year(), t.Month(), t.Day(), hm[0], hm[1], 0, 0, time.UTC)
 		if at.After(prev) && !at.After(t) {

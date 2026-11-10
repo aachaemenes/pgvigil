@@ -54,5 +54,18 @@ func (g *Gen) serverlogRows(t, prev time.Time) []Row {
 	if night := t.UTC().Truncate(24 * time.Hour).Add(2 * time.Hour); night.After(prev) && !night.After(t) {
 		ev(night, 2000+int(noise(s.Name+"night", night)*60000), literal(g.stmts[stReport].text), 95000+noise(s.Name+"nightms", night)*60000)
 	}
+	if g.is("onprem-erp01") { // the nightly report's temporary files, one every 10 minutes from 01:00 to 03:00 UTC (memory_demo.go: the hour rows' log_files)
+		for at := prev.Truncate(10 * time.Minute).Add(10 * time.Minute); !at.After(t); at = at.Add(10 * time.Minute) {
+			if h := at.UTC().Hour(); h >= 1 && h < 3 {
+				size := 200<<20 + int64(noise(s.Name+"tmp", at)*60*(1<<20))
+				pid := 2000 + int(noise(s.Name+"tmppid", at)*60000)
+				file := "postgresql-" + at.UTC().Format("2006-01-02") + "_000000.log"
+				out = append(out, Row{"kind": "event", "kind_of": "temp_file", "at": at, "pid": pid, "client": fmt.Sprintf("10.20.%d.%d(%d)", pid%5, 40+pid%150, 40000+pid%20000),
+					"usename": "app_" + s.App, "datname": s.DBs[0], "statement": g.stmts[stReport].text,
+					"detail": fmt.Sprintf("temporary file: path \"base/pgsql_tmp/pgsql_tmp%d.%d\", size %d", pid, at.Hour(), size),
+					"source": "serverlog:log:" + file, "event_key": fmt.Sprintf("%016x", hash64(fmt.Sprintf("%s|serverlog|tmp|%d|%d", s.Name, at.UnixNano(), pid)))})
+			}
+		}
+	}
 	return append(out, Row{"kind": "cursor", "source": "serverlog:log", "read_to": t})
 }
