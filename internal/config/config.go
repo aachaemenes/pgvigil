@@ -111,7 +111,12 @@ func inlinePassword(v string) bool {
 	l := strings.ToLower(strings.TrimSpace(v))
 	if i := strings.Index(l, "://"); i >= 0 {
 		rest := l[i+3:]
-		if at := strings.IndexByte(rest, '@'); at >= 0 && strings.Contains(rest[:at], ":") {
+		// the authority ends at the first '/' or '?': an '@' in a query value (user+id=a@corp.com) is no userinfo
+		auth := rest
+		if j := strings.IndexAny(auth, "/?"); j >= 0 {
+			auth = auth[:j]
+		}
+		if at := strings.IndexByte(auth, '@'); at >= 0 && strings.Contains(auth[:at], ":") {
 			return true
 		}
 		if q := strings.IndexByte(rest, '?'); q >= 0 {

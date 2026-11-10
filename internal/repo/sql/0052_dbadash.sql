@@ -27,7 +27,7 @@
 --   dbadash_word(code)                   DBADash's word for a status code.
 --   dbadash_repositories()               every configured repository and its last read.
 --   dbadash_fleet(repository)            every present instance (one repository or all), its worst status and counts.
---   dbadash_instance(repository, id)     one instance's facts.
+--   dbadash_instance(repository, id)     one instance's facts (none for a repository no longer configured).
 --   dbadash_statuses(repository, id)     one instance's Summary: a row per status, DBADash's header, code, word, detail.
 --   dbadash_changes(repository, id, f, t) the status changes of the window, with the old and new code.
 
@@ -224,7 +224,7 @@ LANGUAGE sql STABLE AS $$
          s.refreshed_at, s.snapshot_at, pgvigil.dbadash_level(s.statuses),
          r.status, r.reason, r.read_at, r.ok_at, r.version
     FROM pgvigil.dbadash_instances i
-    JOIN pgvigil.dbadash_repositories r ON r.repository = i.repository
+    JOIN pgvigil.dbadash_repositories r ON r.repository = i.repository AND r.is_configured
     LEFT JOIN pgvigil.dbadash_summary s ON s.repository = i.repository AND s.instance_id = i.instance_id
    WHERE i.repository = p_repository AND i.instance_id = p_instance_id
 $$;

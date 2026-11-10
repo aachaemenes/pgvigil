@@ -39,6 +39,10 @@ func TestConfigDBADash(t *testing.T) {
 		t.Fatalf("env: not resolved: %q", c.DBADash[0].DSN())
 	}
 
+	// an '@' inside a query value is not a userinfo password
+	if _, err := loadYAML(t, "dbadash:\n  - name: a\n    dsn: \"sqlserver://u@h:1433?database=D&user+id=a@corp.com\"\n"); err != nil {
+		t.Errorf("a query value with '@' refused: %v", err)
+	}
 	none, err := loadYAML(t, "")
 	if err != nil || len(none.DBADash) != 0 {
 		t.Fatalf("no dbadash: list must be valid and off: %v %v", none, err)

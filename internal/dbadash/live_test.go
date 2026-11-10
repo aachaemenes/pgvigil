@@ -17,7 +17,8 @@ import (
 //
 //	dbadash <name> <status> instances=<n> statuses=<n> reason=<reason>
 //
-// and, with PGVIGIL_DBADASH_DUMP set to a path, writes the payloads there as JSON for the proof's comparison.
+// and, with PGVIGIL_DBADASH_DUMP set to a path, writes the payloads there as JSON for the proof's comparison. A
+// configuration without a dbadash: list records that none is configured and prints "dbadash (none) configured=0".
 func TestLive(t *testing.T) {
 	path := os.Getenv("PGVIGIL_DBADASH_CONFIG")
 	if path == "" {
@@ -27,15 +28,15 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.DBADash) == 0 {
-		t.Fatal("the configuration lists no dbadash: repository")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	got, err := Once(ctx, log, cfg.Repository.DSN(), cfg.DBADash)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(cfg.DBADash) == 0 {
+		fmt.Println("dbadash (none) configured=0")
 	}
 	for _, r := range cfg.DBADash {
 		p := got[r.Name]
