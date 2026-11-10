@@ -5,7 +5,8 @@
 #
 # Needs: docker with the SQL Server sandbox (PGVIGIL_MSSQL_CONTAINER, default mssql-sandbox, on PGVIGIL_MSSQL_ADDR,
 # default localhost:1433) with SQL Server Agent running, its sa password in MSSQL_SA_PASSWORD, psql, curl, python3, go
-# at the repository root, and PGVIGIL_ADMIN_DSN, a superuser connection to the PostgreSQL sandbox in KEYWORD form.
+# at the repository root, and PGVIGIL_ADMIN_DSN, a superuser connection to the PostgreSQL sandbox in KEYWORD form
+# WITHOUT a password (the password from ~/.pgpass: the DSN is on psql's command line).
 #
 # What it makes, and drops on every exit path (a flag per object; nothing it did not make is touched): its own
 # repository database and a stand-in database for pgAgent; on SQL Server a monitoring login (VIEW SERVER STATE, a
@@ -46,6 +47,10 @@
 #     message), counts succeeded 0 failed 1, 3 versions newest first. engine=pg: job 1 with changes 1; its runs over
 #     seeded durations 10,10,10,10,50 s (succeeded) and one failed: counts succeeded 5, failed 1, running_long 1
 #     (50 > 2 x median 10), median 10.0. engine=x answers 400; scheduler without job answers 400.
+#     [review fold, written before the rerun] With 1,005 more succeeded runs of job 1 (10 s each, written straight into
+#     job_runs): the runs part lists 1,000 rows, the counts cover every run: succeeded 1010, failed 1, running_long 1,
+#     median 10.0; the grid's runs for job 1 = 1011 and its avg_s 10.0, max_s 50.0.
+#  H. [review fold] the masking of every password form a job's text is known to carry (go test TestMaskJobText).
 #
 # Not proven here: a real pg_cron or pgAgent (neither installed on this sandbox); a SQL Server job with an operator
 # notification (no operator is made); the pages in a browser (the shots are the slice's report).
@@ -68,7 +73,8 @@ sqin() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S
 MADE_REPO=; MADE_AGENT=; MADE_LM=; MADE_UM=; MADE_J=; SRVPID=
 cleanup() {
   local rc=$?
-  [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
+  set +e   # every step of the cleanup runs, whatever failed before it
+  [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null || true
   [ -n "$MADE_J" ] && { sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'$J') EXEC msdb.dbo.sp_delete_job @job_name = N'$J', @delete_unused_schedule = 1;" >/dev/null 2>&1; [ "$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobs WHERE name = N'$J'" 2>/dev/null)" = 0 ] || echo "CLEANUP: job $J not deleted" >&2; }
   [ -n "$MADE_UM" ] && { sq "IF USER_ID('$LM') IS NOT NULL DROP USER [$LM];" msdb >/dev/null 2>&1 || echo "CLEANUP: msdb user $LM not dropped" >&2; }
   [ -n "$MADE_LM" ] && { sq "IF SUSER_ID('$LM') IS NOT NULL DROP LOGIN [$LM];" >/dev/null 2>&1 || echo "CLEANUP: login $LM not dropped" >&2; }
@@ -79,6 +85,7 @@ cleanup() {
 }
 trap cleanup EXIT
 command -v go >/dev/null 2>&1 && [ -f go.mod ] || fail "run from the repository root with a go toolchain"
+[[ "$ADMIN_DSN" != *password=* ]] || fail "PGVIGIL_ADMIN_DSN carries a password: keep it in ~/.pgpass (the DSN is on a command line)"
 
 # ---- the binary: the given one where the tree is wired, else a scratch build with the lead's line
 if grep -q '/api/jobs/history' internal/web/web.go; then
@@ -269,7 +276,18 @@ R=$(api "jobs/history?engine=pg&instance=$IP&from=$FROM&to=$TO&scheduler=pg_cron
 j = [x for x in rows('jobs') if x['job_id'] == '1'][0]; c = rows('counts')[0]
 print('%s|%s|%s|%s|%s' % (j['changes'], c['succeeded'], c['failed'], c['running_long'], c['median_s']))")
 echo "  pg job: $R"; [ "$R" = "1|5|1|1|10.0" ] || fail "G: the PostgreSQL job's counts"
+q "insert into pgvigil.job_runs (instance_id, scheduler, job_id, run_id, status, return_message, start_time, end_time, duration_secs, snapshot_at)
+   select $IP, 'pg_cron', 1, 1000 + g, 'succeeded', 'SELECT 1', now() - interval '5 hours' + g * interval '10 seconds',
+          now() - interval '5 hours' + g * interval '10 seconds' + interval '10 seconds', 10, now() from generate_series(1, 1005) g" >/dev/null
+R=$(api "jobs/history?engine=pg&instance=$IP&from=$FROM&to=$TO&scheduler=pg_cron&job=1" | py "
+j = [x for x in rows('jobs') if x['job_id'] == '1'][0]; c = rows('counts')[0]
+print('%d|%s|%s|%s|%s|%s|%s|%s' % (len(rows('runs')), c['succeeded'], c['failed'], c['running_long'], c['median_s'], j['runs'], j['avg_s'], j['max_s']))")
+echo "  pg job with 1,011 runs: $R"; [ "$R" = "1000|1010|1|1|10.0|1011|10.0|50.0" ] || fail "G: the counts over more runs than the grid lists"
 api "jobs/history?engine=x&instance=$IP" 400 >/dev/null
 api "jobs/history?engine=pg&instance=$IP&scheduler=pg_cron" 400 >/dev/null
 echo "G: OK"
+
+echo "--- H. the masking"
+go test ./internal/collect -run 'TestMaskJobText|TestMaskTree' -count=1 >"$OUT" 2>&1 || { cat "$OUT"; fail "H: the masking tests"; }
+echo "H: OK"
 echo "PROOF OK"

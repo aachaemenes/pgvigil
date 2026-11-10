@@ -6,7 +6,7 @@
 // /api/mssql/jobs. jobsPanel is shared with the PostgreSQL page (jobs_pg.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
-import { mssqlFindingCols } from './mssql_hadr';
+import { jsonRows, mssqlFindingCols } from './mssql_hadr';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
 const CUT = 200;
@@ -15,7 +15,9 @@ const CUT = 200;
 export function oneLine(v: unknown): string | Node {
   const s = String(v ?? '').replace(/\s+/g, ' ').trim();
   if (s.length <= CUT) return s;
-  return el('details', { class: 'cut' }, el('summary', {}, s.slice(0, CUT) + '...'), el('pre', { class: 'sql' }, String(v)));
+  // inline, so the cell stays one line until the reader opens it
+  return el('details', { class: 'cut', style: 'display:inline' }, el('summary', { style: 'display:inline;cursor:pointer' }, s.slice(0, CUT) + '...'),
+    el('pre', { class: 'sql' }, String(v)));
 }
 
 // the outcome as a word; a fill only where it is not ok (Few's rule: an OK cell carries no fill)
@@ -79,7 +81,7 @@ function changes(rows: Row[], from: string, to: string): HTMLElement {
   if (!rows.length) { box.append(el('p', { class: 'empty' }, 'No version of this job is kept yet.')); return box; }
   for (const v of rows) {
     const list = (Array.isArray(v.changes) ? v.changes : typeof v.changes === 'string' ? JSON.parse(v.changes) : []) as Change[];
-    const at = String(v.valid_from), inRange = at > from && at <= to;
+    const at = String(v.valid_from), t = Date.parse(at), inRange = t > Date.parse(from) && t <= Date.parse(to);
     const what = Number(v.version_no) === 1 ? 'first seen' : v.dropped ? 'dropped' : `${list.length} field${list.length === 1 ? '' : 's'} changed: ${list.map(c => c.field).join(', ')}`;
     const d = el('details', inRange && Number(v.version_no) > 1 ? { open: '' } : {},
       el('summary', {}, `${fmtTime(at)} - version ${String(v.version_no)} - ${what}`));
@@ -119,9 +121,10 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
           tile('running long (over 2x the median)', fmtNum(c.running_long ?? 0), Number(c.running_long) > 0 ? 'warn' : ''),
           tile('median good run', c.median_s == null ? 'n/a' : dur(c.median_s))),
         strip(runs),
+        Number(c.runs ?? 0) > runs.length ? el('p', { class: 'meta' }, `The newest ${fmtNum(runs.length)} of ${fmtNum(c.runs)} runs; the counts cover all of them.`) : '',
         grid(runs, runCols, 'No run of this job started in this range.'),
         el('h3', {}, `${String(j.name)}: changes`),
-        changes(rowsOf(x.changes), new Date(w.from).toISOString(), new Date(w.to).toISOString()));
+        changes(rowsOf(x.changes), w.from, w.to));
     } catch (e) { detail.replaceChildren(errorBox(e)); }
   };
   const cols: Col[] = [
@@ -133,19 +136,39 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'enabled', fmt: v => v == null ? '' : v ? 'yes' : badge('no', 'warn') },
     { key: 'schedule', fmt: oneLine },
     { key: 'last_run_at', label: 'last run', fmt: fmtTime },
-    { key: 'last_outcome', label: 'outcome', fmt: outcomeBadge },
+    { key: 'last_duration_s', label: 'took', num: true, fmt: dur },
+    { key: 'last_outcome', label: 'outcome', fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
-    { key: 'next_run', label: 'next run', fmt: fmtTime },
+    { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
     { key: 'failures', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : '0' },
+    { key: 'avg_s', label: 'average (good runs)', num: true, fmt: dur },
+    { key: 'max_s', label: 'longest', num: true, fmt: dur },
     { key: 'changes', label: 'changed', num: true, fmt: (v, r) => Number(v) > 0 ? `${fmtNum(v)} (${fmtTime(r.last_change_at)})` : '' },
-    { key: 'dropped_at', label: 'dropped', fmt: v => v ? badge(`dropped ${fmtTime(v)}`, 'warn') : '' },
     ...extra,
   ];
   box.append(grid(jobs, cols, 'No job on this server.'), detail);
   if (jobs.length) detail.append(el('p', { class: 'meta' }, 'Pick a job for its history and changes.'));
   return box;
 }
+
+const outcomeText = (v: unknown) => v === 0 ? 'failed' : v === 1 ? 'succeeded' : v === 2 ? 'retry' : v === 3 ? 'cancelled' : v === 4 ? 'in progress' : v === 5 ? 'never run' : '';
+
+const failedCols: Col[] = [
+  { key: 'run_at', label: 'run', fmt: fmtTime }, { key: 'job' },
+  { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'step name' },
+  { key: 'duration_s', label: 'took', num: true, fmt: fmtSecs },
+  { key: 'sql_message_id', label: 'error', num: true, fmt: v => v == null || Number(v) === 0 ? '' : String(v) },
+  { key: 'message', fmt: oneLine },
+];
+
+const stepCols: Col[] = [
+  { key: 'step_id', label: 'step', num: true }, { key: 'step_name', label: 'name' }, { key: 'subsystem' },
+  { key: 'database_name', label: 'database' }, { key: 'last_outcome', label: 'last outcome', fmt: v => v === 0 ? badge('failed', 'crit') : outcomeText(v) },
+  { key: 'last_run_utc', label: 'last run', fmt: fmtTime }, { key: 'last_duration_s', label: 'took', num: true, fmt: fmtSecs },
+  { key: 'on_success', label: 'on success' }, { key: 'on_fail', label: 'on failure' },
+  { key: 'command', fmt: oneLine },
+];
 
 const runningCols: Col[] = [
   { key: 'name', label: 'job' }, { key: 'running_since', label: 'started', fmt: fmtTime },
@@ -176,7 +199,17 @@ export async function mssqlJobs(ctx: Ctx): Promise<HTMLElement> {
     const findings = rowsOf(d.findings);
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, mssqlFindingCols));
     if (running.length) sec.append(el('h3', {}, 'Running now'), grid(running, runningCols));
-    sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), await jobsPanel(ctx, 'mssql'));
+    sec.append(el('h3', {}, `Jobs (read ${fmtTime(read.snapshot_at)})`), await jobsPanel(ctx, 'mssql', [{ key: 'owner' }, { key: 'category' }]));
+    sec.append(el('h3', {}, 'Failed runs in this range'), grid(failed, failedCols, 'No job failed in this range.'));
+    // the steps of each job as last read, one disclosure per job: reachable by keyboard, named by the job
+    const withSteps = jobs.filter(j => jsonRows(j.steps).length);
+    if (withSteps.length) {
+      sec.append(el('h3', {}, 'Steps'));
+      for (const j of withSteps) {
+        const steps = jsonRows(j.steps);
+        sec.append(el('details', {}, el('summary', {}, `${String(j.name)} (${steps.length} step${steps.length === 1 ? '' : 's'})`), grid(steps, stepCols)));
+      }
+    }
   } catch (e) {
     sec.append(errorBox(e));
   }

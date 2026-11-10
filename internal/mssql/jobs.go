@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -123,7 +122,7 @@ OUTER APPLY (SELECT COUNT(*) AS schedules, SUM(CAST(s.enabled AS int)) AS enable
 ORDER BY j.name`
 
 // jobStepsSQL: one row per step. The command is read for the job's definition (its versions, task 110) and masked
-// before it leaves the collector (maskCommand): a step's command can hold a password.
+// before it leaves the collector (collect.MaskJobText): a step's command can hold a password.
 var jobStepsSQL = `SELECT 'step' AS kind, st.job_id, st.step_id, CAST(st.step_name AS nvarchar(128)) AS step_name,
   CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
   st.retry_attempts, st.retry_interval, CAST(st.output_file_name AS nvarchar(260)) AS output_file, CAST(px.name AS nvarchar(128)) AS proxy,
@@ -196,7 +195,7 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor
 	}
 	for _, st := range steps {
 		if c, ok := st["command"].(string); ok {
-			st["command"] = maskCommand(c)
+			st["command"] = collect.MaskJobText(c)
 		}
 		st["on_success"] = stepAction(st["on_success_action"], st["on_success_step_id"])
 		st["on_fail"] = stepAction(st["on_fail_action"], st["on_fail_step_id"])
@@ -285,24 +284,6 @@ func jobsAdvance(from, next, nextMark int64, runs []collect.Row) (int64, int64, 
 		}
 	}
 	return from, next, nextMark
-}
-
-// Masking of a step's command: a password given to SQL Server (PASSWORD = '...'), to sqlcmd or bcp (-P ...), in a
-// connection string (Password=...; Pwd=...) or to SSIS's dtexec (/DE "...", /Decrypt "...") is replaced by <masked>
-// before the command leaves the collector.
-var (
-	maskTSQLRE = regexp.MustCompile(`(?i)(\b(?:PASSWORD|SECRET)\s*=\s*)(N?'(?:[^']|'')*')`)
-	maskArgRE  = regexp.MustCompile(`(?i)((?:^|\s)-P\s*)("[^"]*"|'[^']*'|\S+)`)
-	maskConnRE = regexp.MustCompile(`(?i)(\b(?:password|pwd)\s*=\s*)("[^"]*"|[^;"'\s]+)`)
-	maskDtsRE  = regexp.MustCompile(`(?i)(/(?:DE|Decrypt)\s+)("[^"]*"|\S+)`)
-)
-
-// maskCommand is a step's command with every password it carries replaced by <masked>.
-func maskCommand(s string) string {
-	s = maskTSQLRE.ReplaceAllString(s, "${1}'<masked>'")
-	s = maskArgRE.ReplaceAllString(s, "${1}<masked>")
-	s = maskConnRE.ReplaceAllString(s, "${1}<masked>")
-	return maskDtsRE.ReplaceAllString(s, "${1}<masked>")
 }
 
 // num is a whole number QueryRows returned (msdb's tinyint, smallint and int columns), false for NULL.

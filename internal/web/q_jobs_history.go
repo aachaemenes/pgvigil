@@ -38,7 +38,7 @@ SELECT j.scheduler, j.job_id::text AS job_id, coalesce(j.job_name, j.job_id::tex
        lr.start_time AS last_run_at, lr.outcome AS last_outcome, lr.duration_secs AS last_duration_s,
        lf.start_time AS last_failed_at, lf.failed_step, left(lf.return_message, 4000) AS last_failure,
        CASE WHEN j.is_present AND coalesce(j.active, true) THEN j.next_run END AS next_run,
-       coalesce(c.runs, 0) AS runs, coalesce(c.failures, 0) AS failures,
+       coalesce(c.runs, 0) AS runs, coalesce(c.failures, 0) AS failures, c.avg_s, c.max_s,
        (SELECT count(*) FROM pgvigil.job_versions v
          WHERE v.instance_id = $1 AND v.scheduler = j.scheduler AND v.job_id = j.job_id::text AND v.version_no > 1
            AND v.valid_from > $2 AND v.valid_from <= $3) AS changes,
@@ -57,7 +57,9 @@ SELECT j.scheduler, j.job_id::text AS job_id, coalesce(j.job_name, j.job_id::tex
                       WHERE r.instance_id = j.instance_id AND r.scheduler = j.scheduler AND r.job_id = j.job_id
                         AND r.status IN ('failed', 'internal error')
                       ORDER BY r.start_time DESC NULLS LAST LIMIT 1) lf ON true
-  LEFT JOIN LATERAL (SELECT count(*) AS runs, count(*) FILTER (WHERE r.status IN ('failed', 'internal error')) AS failures
+  LEFT JOIN LATERAL (SELECT count(*) AS runs, count(*) FILTER (WHERE r.status IN ('failed', 'internal error')) AS failures,
+                            round(avg(r.duration_secs) FILTER (WHERE r.status = 'succeeded')::numeric, 1) AS avg_s,
+                            round(max(r.duration_secs)::numeric, 1) AS max_s
                        FROM pgvigil.job_runs r
                       WHERE r.instance_id = j.instance_id AND r.scheduler = j.scheduler AND r.job_id = j.job_id
                         AND r.start_time > $2 AND r.start_time <= $3) c ON true
@@ -75,17 +77,21 @@ WITH ver AS (
          CASE WHEN j.running_since IS NOT NULL THEN 'running'
               ELSE CASE j.last_outcome WHEN 0 THEN 'failed' WHEN 1 THEN 'succeeded' WHEN 2 THEN 'retry' WHEN 3 THEN 'cancelled'
                                        WHEN 5 THEN 'never run' END END AS last_outcome,
-         j.next_run_at AS next_run, NULL::timestamptz AS dropped_at
+         j.next_run_at AS next_run, NULL::timestamptz AS dropped_at, j.owner, j.category
     FROM pgvigil.mssql_jobs j WHERE j.instance_id = $1
   UNION ALL
-  SELECT ver.job_id, ver.job_name, (ver.definition->>'enabled')::boolean, NULL, NULL, NULL, NULL, NULL, ver.valid_from
+  SELECT ver.job_id, ver.job_name, (ver.definition->>'enabled')::boolean,
+         (SELECT string_agg(x.value->>'runs', '; ' ORDER BY x.key) FROM jsonb_each(ver.definition->'schedules') x), NULL, NULL, NULL, NULL, ver.valid_from,
+         ver.definition->>'owner', ver.definition->>'category'
     FROM ver WHERE ver.dropped AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_jobs j WHERE j.instance_id = $1 AND j.job_id = ver.job_id)
 )
-SELECT 'sqlagent' AS scheduler, j.job_id, j.name, j.enabled, j.schedule, j.last_run_at, j.last_outcome, j.last_duration_s,
+SELECT 'sqlagent' AS scheduler, j.job_id, j.name, j.enabled, j.schedule,
+       coalesce(j.last_run_at, lr.snapshot_at) AS last_run_at, coalesce(j.last_outcome, lr.outcome) AS last_outcome,
+       coalesce(j.last_duration_s, lr.duration_s) AS last_duration_s,
        lf.snapshot_at AS last_failed_at,
        CASE WHEN lf.failed_step_id IS NOT NULL THEN lf.failed_step_id || ' ' || coalesce(lf.failed_step_name, '') END AS failed_step,
        coalesce(lf.failed_message, lf.message) AS last_failure, lf.failed_sql_message_id AS last_failure_error,
-       j.next_run, coalesce(c.runs, 0) AS runs, coalesce(c.failures, 0) AS failures,
+       j.next_run, coalesce(c.runs, 0) AS runs, coalesce(c.failures, 0) AS failures, c.avg_s, c.max_s, j.owner, j.category,
        (SELECT count(*) FROM pgvigil.job_versions v
          WHERE v.instance_id = $1 AND v.scheduler = 'sqlagent' AND v.job_id = j.job_id AND v.version_no > 1
            AND v.valid_from > $2 AND v.valid_from <= $3) AS changes,
@@ -93,25 +99,30 @@ SELECT 'sqlagent' AS scheduler, j.job_id, j.name, j.enabled, j.schedule, j.last_
          WHERE v.instance_id = $1 AND v.scheduler = 'sqlagent' AND v.job_id = j.job_id AND v.version_no > 1) AS last_change_at,
        j.dropped_at
   FROM jobs j
+  -- a dropped job's last run comes from its history (mssql_jobs no longer has it)
+  LEFT JOIN LATERAL (SELECT r.snapshot_at, r.duration_s, ` + msOutcome + ` AS outcome
+                       FROM pgvigil.mssql_job_runs r
+                      WHERE j.dropped_at IS NOT NULL AND r.instance_id = $1 AND r.job_id = j.job_id AND r.step_id = 0
+                      ORDER BY r.snapshot_at DESC LIMIT 1) lr ON true
   LEFT JOIN LATERAL (SELECT r.snapshot_at, r.failed_step_id, r.failed_step_name, r.failed_message, r.message, r.failed_sql_message_id
                        FROM pgvigil.mssql_job_runs r
                       WHERE r.instance_id = $1 AND r.job_id = j.job_id AND r.step_id = 0 AND r.run_status = 0
                       ORDER BY r.snapshot_at DESC LIMIT 1) lf ON true
-  LEFT JOIN LATERAL (SELECT count(*) AS runs, count(*) FILTER (WHERE r.run_status = 0) AS failures
+  LEFT JOIN LATERAL (SELECT count(*) AS runs, count(*) FILTER (WHERE r.run_status = 0) AS failures,
+                            round(avg(r.duration_s) FILTER (WHERE r.run_status = 1)) AS avg_s, max(r.duration_s) AS max_s
                        FROM pgvigil.mssql_job_runs r
                       WHERE r.instance_id = $1 AND r.job_id = j.job_id AND r.step_id = 0
                         AND r.snapshot_at > $2 AND r.snapshot_at <= $3) c ON true
  ORDER BY (j.dropped_at IS NULL) DESC, (j.last_outcome = 'failed') DESC NULLS LAST, j.name`
 
-// the picked job's runs, one shape for both engines ($4 scheduler, $5 job id as text)
+// the picked job's runs in the range, one shape for both engines ($4 scheduler, $5 job id as text), no limit: the
+// runs part takes the newest 1,000 of them (jobRunsLimit), the counts part all of them
 const sqlJobRunsPG = `
 SELECT r.start_time, r.duration_secs AS duration_s, ` + pgOutcome + ` AS outcome, r.failed_step,
        left(r.return_message, 4000) AS message, NULL::int AS sql_message_id, NULL::int AS sql_severity, NULL::int AS retries,
        r.run_id::text AS run_id
   FROM pgvigil.job_runs r
- WHERE r.instance_id = $1 AND r.scheduler = $4 AND r.job_id::text = $5 AND r.start_time > $2 AND r.start_time <= $3
- ORDER BY r.start_time DESC
- LIMIT 1000`
+ WHERE r.instance_id = $1 AND r.scheduler = $4 AND r.job_id::text = $5 AND r.start_time > $2 AND r.start_time <= $3`
 
 const sqlJobRunsMS = `
 SELECT j.running_since AS start_time, extract(epoch FROM j.snapshot_at - j.running_since)::bigint AS duration_s, 'running' AS outcome,
@@ -120,16 +131,17 @@ SELECT j.running_since AS start_time, extract(epoch FROM j.snapshot_at - j.runni
   FROM pgvigil.mssql_jobs j
  WHERE j.instance_id = $1 AND $4 = 'sqlagent' AND j.job_id = $5 AND j.running_since > $2 AND j.running_since <= $3
 UNION ALL
-(SELECT r.snapshot_at, r.duration_s, ` + msOutcome + `,
+SELECT r.snapshot_at, r.duration_s, ` + msOutcome + `,
        CASE WHEN r.failed_step_id IS NOT NULL THEN r.failed_step_id || ' ' || coalesce(r.failed_step_name, '') END,
        coalesce(r.failed_message, r.message), r.failed_sql_message_id, r.failed_sql_severity, r.step_retries, r.history_id::text
   FROM pgvigil.mssql_job_runs r
- WHERE r.instance_id = $1 AND $4 = 'sqlagent' AND r.job_id = $5 AND r.step_id = 0 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
- ORDER BY r.snapshot_at DESC
- LIMIT 1000)
- ORDER BY 1 DESC`
+ WHERE r.instance_id = $1 AND $4 = 'sqlagent' AND r.job_id = $5 AND r.step_id = 0 AND r.snapshot_at > $2 AND r.snapshot_at <= $3`
 
-// the counts over the runs part's rows (the query is wrapped around it)
+// jobRunsLimit is the most runs the history grid lists (the newest); the counts cover every run of the range
+const jobRunsLimit = `
+SELECT * FROM (%s) x ORDER BY x.start_time DESC LIMIT 1000`
+
+// the counts over every run of the range (the runs query is wrapped around it)
 const sqlJobCounts = `
 WITH x AS (%s), m AS (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_s) AS median FROM x WHERE outcome = 'succeeded')
 SELECT count(*) AS runs, count(*) FILTER (WHERE outcome = 'succeeded') AS succeeded,
@@ -171,7 +183,7 @@ func (s *Server) JobsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		parts = append(parts,
-			part{"runs", runs, []any{id, from, to, sch, job}},
+			part{"runs", fmt.Sprintf(jobRunsLimit, runs), []any{id, from, to, sch, job}},
 			part{"counts", fmt.Sprintf(sqlJobCounts, runs), []any{id, from, to, sch, job}},
 			part{"changes", sqlJobChanges, []any{id, sch, job}})
 	}

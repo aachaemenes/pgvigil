@@ -3,7 +3,8 @@
 --
 --   1. pgvigil.mssql_job_runs gets, on a job's outcome row (step 0), the step that failed in that run (its id, its
 --      name, its own message, sql_message_id and sql_severity) and the retries of the run's steps; the import fills
---      them from the step rows of the same run. pgvigil.job_runs gets failed_step and step_result (pgAgent's
+--      them from the step rows of the same run, for the outcome rows of each read (rows stored before 0072 are not
+--      filled: their failed step shows empty). pgvigil.job_runs gets failed_step and step_result (pgAgent's
 --      pga_jobsteplog; pg_cron has no steps). The run tables are extended, not forked.
 --   2. pgvigil.mssql_jobs gets schedule_text (each schedule in words, from the collector).
 --   3. pgvigil.job_versions: one row per version of a job's definition, both engines, keyed by instance, scheduler
@@ -233,6 +234,7 @@ BEGIN
                             AND x.snapshot_at <= r.snapshot_at + make_interval(secs => coalesce(r.duration_s, 0) + 60)
                             AND x.history_id < r.history_id) t ON true
      WHERE r.instance_id = p_instance_id AND r.step_id = 0 AND r.step_retries IS NULL AND r.snapshot_at >= v_from
+       AND o.snapshot_at >= v_from   -- bounds the target's partitions too
        AND o.instance_id = r.instance_id AND o.snapshot_at = r.snapshot_at AND o.history_id = r.history_id
        AND o.job_id = r.job_id AND o.step_id = 0;
   END IF;
@@ -280,7 +282,7 @@ BEGIN
                                    FROM jsonb_array_elements(v_rows) s
                                   WHERE s->>'kind' = 'schedule' AND s->>'job_id' = r->>'job_id'
                                     AND coalesce(s->>'schedule_key', s->>'schedule_name') IS NOT NULL), '{}'::jsonb),
-          'steps', coalesce((SELECT jsonb_object_agg('step ' || lpad(s->>'step_id', 2, '0'),
+          'steps', coalesce((SELECT jsonb_object_agg('step ' || CASE WHEN (s->>'step_id')::int < 10 THEN '0' ELSE '' END || (s->>'step_id'),
                                      jsonb_build_object('name', s->'step_name', 'subsystem', s->'subsystem', 'database', s->'database_name',
                                                         'command', s->'command', 'on success', s->'on_success', 'on failure', s->'on_fail',
                                                         'retries', s->'retry_attempts', 'retry interval (minutes)', s->'retry_interval',

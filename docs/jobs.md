@@ -32,7 +32,7 @@ the range under the grid.
 
 ## History
 
-For the picked job, every run that started in the range (at most 1,000, newest first): start, duration, outcome, the
+For the picked job, the runs that started in the range (the newest 1,000 listed; the counts above them cover every run): start, duration, outcome, the
 step that failed, the message, and on SQL Server msdb's error number, severity and the retries of the run's steps.
 A SQL Server job running now is the first row.
 
@@ -68,10 +68,21 @@ change, and a change undone between two reads is not seen.
 
 ### Passwords
 
-A step's command and a connection string can carry a password. Before the definition leaves the collector,
-`PASSWORD = '...'`, `SECRET = '...'`, `-P <value>` (sqlcmd, bcp), `Password=` and `Pwd=` (connection strings) and
-`/DE` / `/Decrypt` (dtexec) are replaced by `<masked>`; on PostgreSQL the same rules as for a statement's text. The
-command is stored masked; anything that carries a password in another form is stored as read.
+A step's command, a connection string and a run's output can carry a password. Before a job row leaves the collector
+(both engines; `MaskJobText` in internal/collect/jobs.go) the value of each of these is replaced by `<masked>`:
+`PASSWORD = '...'` and `SECRET = '...'`; any `@...password`, `@passwd`, `@...pwd` or `@...secret` parameter
+(`sp_addlinkedsrvlogin`, `sp_addlogin`); a `key = value` whose key holds password, passwd, pwd or secret (connection
+strings, libpq keywords; quoted or not, spaces or not); the `user:password@` of a URI; `-P` (sqlcmd, bcp), `-Password`,
+`-pw`, `-pwd`; the string given to `ConvertTo-SecureString`; the password of `net use \\host\share <password>`;
+dtexec's `/DE` and `/Decrypt`. The command is stored masked (in the job row and in every version). A password in any
+other form is stored as read: keep secrets out of job steps (a credential, a proxy, a vault lookup).
+
+### Known limits
+
+- Outcome rows stored before migration 0072 carry no failed step: the step shows from the first read after it.
+- When pg_cron or pgAgent is removed from a server, the jobs collection stops applying there and no read lists the
+  jobs as gone: their last version stays "present". A server that keeps the scheduler but has no job left marks every
+  job dropped.
 
 ## Rights
 
