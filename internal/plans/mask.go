@@ -59,6 +59,11 @@ func Mask(r *Row, mode string, normalize func(string) string) (ok bool) {
 		r.PlanText = "" // a JSON plan that did not parse cannot be masked: it is not kept
 		return false
 	}
+	if strings.HasPrefix(r.PlanKey, string(r.Source)+":") {
+		// a digest key was computed over the raw text in Build: recomputed over the masked text, so the stored row
+		// carries no hash of a literal (the query_text promise of README: not even its hash)
+		r.PlanKey = digestKey(r.Source, r.Datname, r.Query, r.PlanText, r.CapturedAt)
+	}
 	return true
 }
 

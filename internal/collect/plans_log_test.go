@@ -39,6 +39,13 @@ func TestPlanRowsFromLog(t *testing.T) {
 	if s, _ := r["plan_text"].(string); s == "" {
 		t.Errorf("no plan text in the row: %v", r)
 	}
+	// a duration at or over 1,000,000 ms must print in plain decimal: the auto_explain pattern reads "1000000.5 ms", not "1e+06"
+	big := []Row{{"kind": "event", "kind_of": string(logparse.Plan), "at": at, "duration_ms": 1000000.5, "datname": "orders", "usename": "app", "statement": string(plan)}}
+	if out := planRowsFromLog("serverlog", big, "full"); len(out) != 1 {
+		t.Fatalf("a 1,000,000.5 ms plan must give one row, got %d", len(out))
+	} else if d, _ := out[0]["duration_ms"].(float64); d != 1000000.5 {
+		t.Errorf("duration_ms = %#v, want 1000000.5", out[0]["duration_ms"])
+	}
 	if out := planRowsFromLog("logs", rows, "none"); len(out) != 0 {
 		t.Errorf("none must keep no plan, got %d", len(out))
 	}

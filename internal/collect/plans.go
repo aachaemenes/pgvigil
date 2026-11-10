@@ -197,8 +197,12 @@ func planRowsFromLog(collection string, rows []Row, mode string) []Row {
 		if text == "" || at.IsZero() {
 			continue
 		}
-		dur := "0"
-		if d := row["duration_ms"]; d != nil {
+		dur := "0" // the readers store the duration as a float64; printed in plain decimal (fmt's shortest form turns 1000000 into 1e+06, which the auto_explain pattern does not read)
+		switch d := row["duration_ms"].(type) {
+		case float64:
+			dur = strconv.FormatFloat(d, 'f', -1, 64)
+		case nil:
+		default:
 			dur = fmt.Sprint(d)
 		}
 		datname, _ := row["datname"].(string)

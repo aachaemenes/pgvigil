@@ -243,8 +243,15 @@ func TestMask(t *testing.T) {
 	up := func(s string) string { return "#" + strings.ToUpper(s) + "#" }
 	tb, _ := os.ReadFile("testdata/filter.txt")
 	r := Build(Explained, time.Unix(0, 0), "", "", "select * from t40 where v = 1", string(tb))
+	rawKey := r.PlanKey
 	if !Mask(&r, "normalized", up) {
 		t.Fatal("normalized dropped the row")
+	}
+	if r.PlanKey == rawKey || r.PlanKey != digestKey(Explained, "", r.Query, r.PlanText, time.Unix(0, 0)) {
+		t.Errorf("normalized must recompute a digest key over the masked text: %s (raw %s)", r.PlanKey, rawKey)
+	}
+	if k := Build(Explained, time.Unix(0, 0), "psp:7", "", "q", string(tb)); Mask(&k, "normalized", up) && k.PlanKey != "psp:7" {
+		t.Errorf("an identity key must stay: %s", k.PlanKey)
 	}
 	if !strings.Contains(r.PlanText, "Filter: #(V = 1)#") || !strings.Contains(r.PlanText, "(cost=") || r.Query != "#SELECT * FROM T40 WHERE V = 1#" {
 		t.Errorf("text masked:\n%s\n%s", r.PlanText, r.Query)

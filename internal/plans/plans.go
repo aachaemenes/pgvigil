@@ -96,11 +96,18 @@ func Build(src Source, at time.Time, key, datname, query, planText string) Row {
 		}
 	}
 	if key == "" {
-		h := md5.Sum([]byte(string(src) + "\x00" + datname + "\x00" + r.Query + "\x00" + r.PlanText + "\x00" + at.UTC().Format(time.RFC3339Nano)))
-		key = string(src) + ":" + hex.EncodeToString(h[:])
+		key = digestKey(src, datname, r.Query, r.PlanText, at)
 	}
 	r.PlanKey = key
 	return r
+}
+
+// digestKey is the plan key of a plan without an identity of its own (auto_explain, EXPLAIN): the source and a
+// digest of the database, the query, the plan text and the capture time. Mask recomputes it from the masked text
+// under normalized, so nothing of the raw text, not even its hash, is kept.
+func digestKey(src Source, datname, query, planText string, at time.Time) string {
+	h := md5.Sum([]byte(string(src) + "\x00" + datname + "\x00" + query + "\x00" + planText + "\x00" + at.UTC().Format(time.RFC3339Nano)))
+	return string(src) + ":" + hex.EncodeToString(h[:])
 }
 
 // NormalizeJSON takes EXPLAIN (FORMAT JSON)'s output (an array of one object per statement) or auto_explain's (one
