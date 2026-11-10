@@ -85,7 +85,7 @@ echo "== first install (no instance yet) =="
 insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh" >"$WORK/i1.out" 2>&1 || fail "install.sh failed: $(cat "$WORK/i1.out")"
 grep -q 'checksum verified' "$WORK/i1.out" || fail "no 'checksum verified' line: $(cat "$WORK/i1.out")"
 grep -q 'installed and enabled' "$WORK/i1.out" || fail "the first install did not end with 'installed and enabled': $(cat "$WORK/i1.out")"
-[[ "$(insys /usr/local/bin/pgvigil version)" == "pgvigil $V" ]] || fail "installed binary version: $(insys /usr/local/bin/pgvigil version)"
+[[ "$(insys /usr/local/bin/pgvigil version)" == "pgvigil $V ("* ]] || fail "installed binary version: $(insys /usr/local/bin/pgvigil version)"   # the line goes on with the toolchain and the FIPS state
 insys id -u pgvigil >/dev/null || fail "no system user pgvigil"
 [[ "$(insys stat -c '%a %U:%G' /etc/pgvigil/pgvigil.yaml)" == "640 root:pgvigil" ]] || fail "pgvigil.yaml mode/owner: $(insys stat -c '%a %U:%G' /etc/pgvigil/pgvigil.yaml)"
 [[ "$(insys stat -c '%a %U:%G' /etc/pgvigil/pgvigil.env)" == "640 root:pgvigil" ]] || fail "pgvigil.env mode/owner: $(insys stat -c '%a %U:%G' /etc/pgvigil/pgvigil.env)"

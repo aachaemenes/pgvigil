@@ -88,7 +88,7 @@ export async function extensionsFleetView(keep?: (r: Row) => boolean, instLink?:
     { key: 'available', label: 'package', fmt: yes },
     { key: 'databases', wide: true },
   ];
-  const pick = el('select', {}, el('option', { value: '' }, `every extension (${names.length})`),
+  const pick = el('select', { 'aria-label': 'extension' }, el('option', { value: '' }, `every extension (${names.length})`),
     ...names.map(n => el('option', { value: n }, n)));
   const out = el('div');
   const draw = () => {

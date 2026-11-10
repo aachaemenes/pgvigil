@@ -88,7 +88,7 @@ export async function hostView(ctx: Ctx): Promise<HTMLElement> {
 export async function diskReportView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Disk report'));
   const body = el('div');
-  const pick = el('select', {}, ...[10, 20, 50, 100].map(n => el('option', n === 20 ? { value: String(n), selected: '' } : { value: String(n) },
+  const pick = el('select', { 'aria-label': 'free space threshold' }, ...[10, 20, 50, 100].map(n => el('option', n === 20 ? { value: String(n), selected: '' } : { value: String(n) },
     n === 100 ? 'every volume' : `${n} % free or less`)));
   const cols: Col[] = [
     { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },

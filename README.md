@@ -172,18 +172,33 @@ WAL is written on top of that, about the same volume again as the table and inde
 
 Collectors: one collector polling 1,000 instance entries against one target standing in for the fleet used 94 MB of memory and 0.19 cores on average (about one core in the burst at the start of each minute) and lost no collection; plan one collector per 1,000 instances, or per 500 to halve each one's burst. Each monitored server sees one short connection per collection per interval (9 to 46 ms each on the test target), never a held one. Each collector keeps a pool of connections to the repository at pgx's default size, the CPU count of its host and at least 4 (23 held on the 24-CPU test host); cap it with `pool_max_conns=<n>` in the repository DSN (`...?sslmode=require&pool_max_conns=8` in the URL form, ` pool_max_conns=8` in the keyword form) and size the repository's `max_connections` for the collectors plus the UI (`pgvigil serve` holds at most 8) plus your own sessions, or put a pooler in front of the collectors (PgBouncer in transaction mode suits them: every import is one function call). Ten collectors at the default pool on hosts like the test one would hold about 230 connections.
 
+## Government and regulated fleets
+
+pgvigil is meant for every fleet, government included, and nothing in it bars such a deployment:
+
+- **No connection beyond the servers named and the platform APIs configured**: the collector reaches the monitored servers, the repository and, for an instance with an `aws:` block, that region's AWS APIs; no telemetry, no update check, nothing else ([docs/airgap.md](docs/airgap.md) lists every connection). No AWS endpoint, partition or region is written into the code (`TestNoHardCodedAWSPartition`), so the AWS door resolves `us-gov-west-1` and `us-gov-east-1` to GovCloud (US) from the region alone (`TestAWSEndpointsFollowThePartition`); FIPS endpoints follow the SDK's `AWS_USE_FIPS_ENDPOINT=true`.
+- **FIPS 140-3**: every release carries `*_fips` builds for Linux and Windows made with `GOFIPS140=v1.0.0`: the Go Cryptographic Module v1.0.0 (CMVP certificate #5247) is the only cryptography in them and FIPS mode is on from the first instruction. `pgvigil version` prints `fips140 on (module v1.0.0)` there and `fips140 off` on a plain build; `scripts/proof-fips.sh` proves the build, the unit tests, the UI login and the HTTPS listen under the FIPS binary.
+- **SBOM and signed checksums**: a CycloneDX 1.6 SBOM per target (`*.cdx.json`) beside `SHA256SUMS`, its Sigstore signature and the bundle for an offline verification (the section below; `scripts/proof-sbom.sh` validates one against the schema and against `go list`); [docs/notices.md](docs/notices.md) lists every module in the binary with its licence (`scripts/notices.sh`).
+- **Air-gapped install**: [docs/airgap.md](docs/airgap.md): fetch and verify on a connected machine, carry the folder across, verify again from the bundle, install by hand or from a mirror (`PGVIGIL_BASE_URL`).
+- **Hardened service**: the systemd unit the installer writes (`deploy/pgvigil.service`; the purge unit the same) runs as a non-root account with a read-only file system, no capabilities, no new privileges, no device access, the kernel's tunables, modules, logs and clock protected, `/proc` reduced to its own processes, no namespaces, no SUID files, no writable-and-executable memory, native system calls only through the `@system-service` allow list minus `@privileged`, and Internet and local sockets alone. `systemd-analyze security` scores it 1.4, "OK" (the unhardened unit scored 7.7); `scripts/proof-hardening.sh` checks the score and every directive and names the controls left open and why. On Windows the service runs under its own virtual account `NT SERVICE\pgvigil`.
+- **Section 508**: the web UI is checked against WCAG 2.1 A and AA with axe-core on every root tab and every instance tab in both themes (`scripts/proof-a11y.sh`, axe-core 4.14.0 over a headless Chromium): the first pass found 759 violation nodes (white badge text on the dark theme's light badge colours, the light theme's warn and ok tones, scroll regions the keyboard could not reach, two unlabelled selects); after the fixes 0 nodes over 54 pages in both themes. That covers the rules a tool can judge; keyboard order, focus visibility and screen-reader behaviour need a hand pass and are not claimed.
+
 ## Releases and how to verify one
 
-A tag `v*` runs `.github/workflows/release.yml`: tests, static binaries for Linux (amd64, arm64), Windows (amd64) and macOS (arm64, amd64), a `SHA256SUMS` file, and a keyless [Sigstore](https://www.sigstore.dev/) signature of that file made with the workflow's own GitHub identity (no signing key exists anywhere). To verify a download:
+A tag `v*` runs `.github/workflows/release.yml`: tests, static binaries for Linux (amd64, arm64), Windows (amd64) and macOS (arm64, amd64), FIPS 140-3 builds of the Linux and Windows ones (`*_fips`, the section above), a CycloneDX SBOM per target (`*.cdx.json`), a `SHA256SUMS` file, and a keyless [Sigstore](https://www.sigstore.dev/) signature of that file made with the workflow's own GitHub identity (no signing key exists anywhere), as a signature and certificate pair and as one bundle file. To verify a download:
 
 ```
 sha256sum -c SHA256SUMS --ignore-missing
 cosign verify-blob --signature SHA256SUMS.sig --certificate SHA256SUMS.pem \
   --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/<tag>" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+# the same from the bundle alone (the signature, the certificate and the transparency-log entry in one file; no connection to the log)
+cosign verify-blob --bundle SHA256SUMS.bundle \
+  --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/<tag>" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
 
-The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag.
+The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag; the bundle form is the one for a machine without Internet access ([docs/airgap.md](docs/airgap.md)).
 
 ### PostgreSQL release table
 
