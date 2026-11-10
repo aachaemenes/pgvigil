@@ -27,7 +27,7 @@ export function forget() { cache = null; }
 // check_group names; activity is read from the instance row's latest session summary.
 // mssql: the group's key in the SQL Server read (/api/mssql/summary) and the SQL Server tab its cell opens; a group
 // without it is a PostgreSQL check.
-export interface Group { key: string; label: string; checks: string[]; tab: string; mssql?: [string, string, string?]}   // the third: the group's name on a SQL Server page
+export interface Group { key: string; label: string; checks: string[]; tab: string; mssql?: [string, string, string?]; mssqlOnly?: boolean }   // the third: the group's name on a SQL Server page
 export const groups: Group[] = [
   { key: 'collect', label: 'Collection', checks: ['collection failing', 'collection stale'], tab: 'summary' },
   { key: 'activity', label: 'Activity', checks: [], tab: 'activity', mssql: ['blocking', 'mssql_running', 'Blocking'] },
@@ -45,6 +45,10 @@ export const groups: Group[] = [
   // DBA Dash's Summary columns (plan task 106), both engines
   { key: 'uptime', label: 'Uptime', checks: [], tab: 'summary', mssql: ['uptime', 'summary'] },
   { key: 'dbstate', label: 'Database state', checks: [], tab: 'dbinfo', mssql: ['dbstate', 'mssqlfiles'] },
+  // SQL Server only until the PostgreSQL equivalents are built (the scheduler alive, crash restarts from the log)
+  { key: 'agent', label: 'Agent', checks: [], tab: 'summary', mssql: ['agent', 'mssqljobs', 'SQL Server Agent'], mssqlOnly: true },
+  { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true },
+  { key: 'dumps', label: 'Memory dumps', checks: [], tab: 'summary', mssql: ['dumps', 'summary'], mssqlOnly: true },
   { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption' },
   { key: 'io', label: 'IO', checks: ['io'], tab: 'io' },
   { key: 'roles', label: 'Roles', checks: ['roles'], tab: 'roles' },
@@ -96,6 +100,7 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
       }
       continue;
     }
+    if (g.mssqlOnly) { out[g.key] = { level: 0, n: 0, detail: ['a SQL Server check: nothing is read for it on PostgreSQL'], none: true, text: 'n/a' }; continue; }
     // Uptime on PostgreSQL: the postmaster's start from the instance row, with DBA Dash's default thresholds
     // (critical under 12 hours since the start, warning under 48)
     if (g.key === 'uptime') {
