@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -183,24 +185,30 @@ func runUninstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if h := findApp(); h != 0 { // this session's running app stops first (it holds the files)
-		_, _, _ = pPostMessageW.Call(h, wmQuit, 0, 0)
-	}
+	stopRunningApp() // this session's app and the serve it started hold the files
 	if user {
 		dst := appDir()
-		_ = setRun(registry.CURRENT_USER, "", false)
-		_ = registry.DeleteKey(registry.CURRENT_USER, arpKey)
-		for _, f := range []string{"pgvigil.exe", "pgvigil-app.exe.old"} {
-			_ = os.Remove(filepath.Join(dst, f))
+		var left []string
+		for _, f := range append([]string{"pgvigil.exe"}, oldCopies(dst)...) {
+			if err := os.Remove(filepath.Join(dst, filepath.Base(f))); err != nil && !errors.Is(err, os.ErrNotExist) {
+				left = append(left, filepath.Join(dst, filepath.Base(f)))
+			}
 		}
 		if purge {
-			_ = registry.DeleteKey(registry.CURRENT_USER, userKey)
-			_ = registry.DeleteKey(registry.CURRENT_USER, `Software\pgvigil`)
 			for _, f := range []string{UIConfigName, "app.log", "app.log.1"} {
 				_ = os.Remove(filepath.Join(dst, f))
 			}
 			_ = os.RemoveAll(filepath.Join(dst, "WebView2"))
 		}
+		if len(left) > 0 { // the entries stay: the uninstall can be run again once the files are free
+			return &exitErr{fmt.Errorf("not removed (in use: quit pgvigil and run the uninstall again): %s", strings.Join(left, ", ")), 1}
+		}
+		_ = setRun(registry.CURRENT_USER, "", false)
+		if purge {
+			_ = registry.DeleteKey(registry.CURRENT_USER, userKey)
+			_ = registry.DeleteKey(registry.CURRENT_USER, `Software\pgvigil`)
+		}
+		_ = registry.DeleteKey(registry.CURRENT_USER, arpKey) // last: the entry stays while anything failed
 		removeSelfLater(filepath.Join(dst, "pgvigil-app.exe"), dst)
 		fmt.Println("pgvigil is uninstalled for", os.Getenv("USERNAME"))
 		return nil
@@ -209,13 +217,6 @@ func runUninstall(args []string) error {
 		return &exitErr{errors.New("the machine-wide uninstall needs an elevated prompt; a per-user install: pgvigil-app uninstall -user"), 3}
 	}
 	dst := filepath.Join(os.Getenv("ProgramFiles"), "pgvigil")
-	_ = setRun(registry.LOCAL_MACHINE, "", false)
-	_ = registry.DeleteKey(registry.LOCAL_MACHINE, arpKey)
-	if purge { // the UI config first: the collector's purge removes its folder only when empty
-		_ = os.RemoveAll(filepath.Join(os.Getenv("ProgramData"), "pgvigil", "app"))
-		_ = registry.DeleteKey(registry.LOCAL_MACHINE, policyKey)
-		_ = registry.DeleteKey(registry.LOCAL_MACHINE, `Software\Policies\pgvigil`)
-	}
 	if exe := filepath.Join(dst, "pgvigil.exe"); exists(exe) {
 		a := []string{"uninstall"}
 		if purge {
@@ -223,17 +224,59 @@ func runUninstall(args []string) error {
 		}
 		cmd := exec.Command(exe, a...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Run(); err != nil {
+		if err := cmd.Run(); err != nil { // nothing else is removed yet: the uninstall can be run again
 			return fmt.Errorf("pgvigil uninstall (the collector service): %w", err)
 		}
 	}
-	// pgvigil uninstall cannot delete its own running binary: once it has exited, the app does
-	for _, f := range []string{"pgvigil.exe", "pgvigil.exe.old", "pgvigil-app.exe.old"} {
-		_ = os.Remove(filepath.Join(dst, f))
+	_ = setRun(registry.LOCAL_MACHINE, "", false)
+	if purge {
+		_ = os.RemoveAll(filepath.Join(os.Getenv("ProgramData"), "pgvigil", "app"))
+		_ = registry.DeleteKey(registry.LOCAL_MACHINE, policyKey)
+		_ = registry.DeleteKey(registry.LOCAL_MACHINE, `Software\Policies\pgvigil`)
+		_ = os.Remove(filepath.Join(os.Getenv("ProgramData"), "pgvigil")) // when the collector's purge left it empty
 	}
+	// pgvigil uninstall cannot delete its own running binary: once it has exited, the app does; a file
+	// another session's serve still holds goes at the next restart
+	for _, f := range append([]string{"pgvigil.exe"}, oldCopies(dst)...) {
+		p := filepath.Join(dst, filepath.Base(f))
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := windows.MoveFileEx(u16(p), nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT); err == nil {
+				fmt.Println("in use, removed at the next restart:", p)
+			} else {
+				fmt.Println("not removed:", p, err)
+			}
+		}
+	}
+	_ = registry.DeleteKey(registry.LOCAL_MACHINE, arpKey) // last
 	removeSelfLater(filepath.Join(dst, "pgvigil-app.exe"), dst)
 	fmt.Println("pgvigil is uninstalled for every user (another session's running app keeps its window until it quits)")
 	return nil
+}
+
+// stopRunningApp asks this session's app to quit and waits (15 s at most) for its process to end,
+// so the serve it started has stopped and the files are free.
+func stopRunningApp() {
+	h := findApp()
+	if h == 0 {
+		return
+	}
+	var pid uint32
+	_, _, _ = pGetWindowThreadProcessID.Call(h, uintptr(unsafe.Pointer(&pid)))
+	var ph windows.Handle
+	if pid != 0 {
+		ph, _ = windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+	}
+	_, _, _ = pPostMessageW.Call(h, wmQuit, 0, 0)
+	if ph != 0 {
+		_, _ = windows.WaitForSingleObject(ph, 15000)
+		_ = windows.CloseHandle(ph)
+	}
+}
+
+// oldCopies are the files placeFile moved aside (name.old-<n>) in dir.
+func oldCopies(dir string) []string {
+	m, _ := filepath.Glob(filepath.Join(dir, "*.old-*"))
+	return m
 }
 
 // placeFile copies src to dst; a dst that runs (another session's app) is moved aside first:
@@ -262,10 +305,12 @@ func placeFile(src, dst string) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
+	for _, o := range oldCopies(filepath.Dir(dst)) { // earlier copies, once nothing runs them
+		_ = os.Remove(o)
+	}
 	if exists(dst) {
-		_ = os.Remove(dst + ".old")
 		if err := os.Remove(dst); err != nil {
-			if err := os.Rename(dst, dst+".old"); err != nil {
+			if err := os.Rename(dst, fmt.Sprintf("%s.old-%d", dst, time.Now().UnixNano())); err != nil {
 				_ = os.Remove(tmp)
 				return fmt.Errorf("replace %s: %w", dst, err)
 			}

@@ -102,7 +102,9 @@ func StartServe(ctx context.Context, exe string, args []string, logw io.Writer, 
 		}
 	}
 	found := make(chan string, 1)
+	readDone := make(chan struct{})
 	go func() {
+		defer close(readDone)
 		sc := bufio.NewScanner(stderr)
 		sc.Buffer(make([]byte, 64*1024), 1<<20)
 		sent := false
@@ -118,7 +120,9 @@ func StartServe(ctx context.Context, exe string, args []string, logw io.Writer, 
 			}
 		}
 	}()
-	go func() { s.err = cmd.Wait(); close(s.done) }()
+	// Wait closes the pipe: it runs once the reader has seen its end (the process exited), so the last
+	// lines (why a serve stopped) are always in Tail
+	go func() { <-readDone; s.err = cmd.Wait(); close(s.done) }()
 	t := time.NewTimer(45 * time.Second)
 	defer t.Stop()
 	select {
@@ -126,7 +130,6 @@ func StartServe(ctx context.Context, exe string, args []string, logw io.Writer, 
 		s.URL = u
 		return s, nil
 	case <-s.done:
-		time.Sleep(100 * time.Millisecond) // the reader's last lines
 		return nil, fmt.Errorf("pgvigil serve exited before it listened (%v):\n%s", s.err, s.Tail())
 	case <-t.C:
 		_ = s.Stop()

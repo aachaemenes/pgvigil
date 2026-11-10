@@ -41,8 +41,14 @@
 #      process; the window resized to 1000 x 650 and closed hides it (the app and its serve keep running) and
 #      HKCU Width / Height read 1000 / 650; `-quit` ends the app and its log says it stopped the serve, whose pid
 #      is gone.
+#  C1  as the standard user, on the machine-wide install (no config of its own): `-check` from Program Files
+#      resolves "machine" (Users may read it), starts its serve, GET / 200, stops it, pid gone.
+#  C2  as the standard user, with HKCU AttachURL at a serve the admin runs (127.0.0.1:18091, its desktop
+#      session): `-check` says the serve "runs as another user", does not attach, and starts its own.
 #  B6  `uninstall -purge` as the admin: the service, %ProgramFiles%\pgvigil, the HKLM Run value, the Programs and
 #      Features entry, the policy key and %ProgramData%\pgvigil\app are gone.
+# The guest must hold no pgvigil before the run (the proof refuses it); the admin's own %LOCALAPPDATA%\pgvigil and
+# HKCU\Software\pgvigil are set aside and put back; the cleanup stops and removes only what the proof made.
 # Not proven here: the standard user's own window (a second interactive desktop logon is not scriptable on the
 # sandbox; the window code is the same as B5's), and the CI build on a Windows runner (the release workflow's
 # job, the lead's file).
@@ -85,10 +91,11 @@ function Invoke-Guest([string]$Script, [string]$Name, [switch]$AsStd) {
     } else {
         $o = & ssh -o ConnectTimeout=15 -o LogLevel=ERROR winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File $guestPath" 2>&1
     }
+    $code = $LASTEXITCODE
     $text = ($o | ForEach-Object { "$_".TrimEnd("`r") } | Where-Object { $_ -notmatch '^\*\* ' }) -join "`n"
     Set-Content -LiteralPath (Join-Path $out "$Name.txt") -Value $text
     $text -split "`n" | Where-Object { $_ -match '^(ok|FAIL)' } | ForEach-Object { Write-Host $_ }
-    if ($text -match '(?m)^FAIL') { Fail "guest step $Name (transcript: $(Join-Path $out "$Name.txt"))" }
+    if ($text -match '(?m)^FAIL' -or $code -ne 0) { Fail "guest step $Name, exit $code (transcript: $(Join-Path $out "$Name.txt"))" }
     return $text
 }
 function Need([string]$Text, [string[]]$Lines) {
@@ -153,13 +160,15 @@ New-Item -ItemType Directory -Force -Path $proofDir | Out-Null
 Expand-Archive -LiteralPath "\\host.lan\Data\__TAG__\__ZIP__" -DestinationPath "$proofDir\dist" -Force
 Copy-Item "\\host.lan\Data\__TAG__\ui.yaml" "$proofDir\ui.yaml" -Force
 icacls $proofDir /grant "*S-1-5-32-545:(OI)(CI)RX" | Out-Null
-# leftovers of an earlier run (an app left in the desktop session holds the one-app mutex)
-Get-Process pgvigil-app, pgvigil -ErrorAction SilentlyContinue | Stop-Process -Force
-foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\pgvigil', 'HKLM:\SOFTWARE\Policies\pgvigil') { Remove-Item $k -Recurse -ErrorAction SilentlyContinue }
+# the proof installs and removes pgvigil itself: it refuses a guest where pgvigil is already present,
+# and touches nothing it did not make (an app running anywhere holds the one-app mutex of its session)
+if (Get-Process pgvigil-app -ErrorAction SilentlyContinue) { Fail 'a pgvigil-app runs in the guest: quit it first' }
 if (Get-Service pgvigil -ErrorAction SilentlyContinue) { Fail 'a pgvigil service exists before the proof: remove it first (pgvigil uninstall -purge)' }
 if (Test-Path "$env:ProgramFiles\pgvigil") { Fail "$env:ProgramFiles\pgvigil exists before the proof" }
-Remove-Item "$env:LOCALAPPDATA\pgvigil" -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item 'HKCU:\Software\pgvigil' -Recurse -ErrorAction SilentlyContinue
+foreach ($k in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\pgvigil', 'HKLM:\SOFTWARE\Policies\pgvigil', "$env:ProgramData\pgvigil\app") { if (Test-Path $k) { Fail "$k exists before the proof" } }
+# the admin's own app settings and folder are set aside here and put back by the cleanup
+if (Test-Path "$env:LOCALAPPDATA\pgvigil") { Rename-Item "$env:LOCALAPPDATA\pgvigil" "pgvigil.saved-__TAG__" }
+if (Test-Path 'HKCU:\Software\pgvigil') { & reg.exe export 'HKCU\Software\pgvigil' "$proofDir\hkcu-pgvigil.reg" /y | Out-Null; Remove-Item 'HKCU:\Software\pgvigil' -Recurse }
 $sec = ConvertTo-SecureString '__STDPW__' -AsPlainText -Force
 New-LocalUser -Name '__STD__' -Password $sec -AccountNeverExpires -PasswordNeverExpires | Out-Null
 Add-LocalGroupMember -Group Users -Member '__STD__'
@@ -235,6 +244,7 @@ if (-not (Test-Path "$ui\pgvigil.yaml")) { Fail "no $ui\pgvigil.yaml" }
 $acl = (icacls $ui) -join ' '
 if ($acl -notmatch 'BUILTIN\\Users:\(OI\)\(CI\)\(RX\)' -or $acl -match 'BUILTIN\\Users:\(OI\)\(CI\)\((F|M|W)') { Fail "the UI config folder's ACL: $acl" }
 if ((Reg-Value 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\pgvigil' 'UninstallString') -ne "`"$pf\pgvigil-app.exe`" uninstall") { Fail 'HKLM Programs and Features entry' }
+Set-Content "$proofDir\installed.marker" 'the proof installed pgvigil machine-wide'
 Ok "B1 install (admin): $pf, service pgvigil $($svc.State)/Auto as NT SERVICE\pgvigil, HKLM Run -tray, policy UpdateCheck 0, $ui (Users RX), Programs and Features"
 Copy-Item "$proofDir\ui.yaml" "$ui\pgvigil.yaml" -Force
 Remove-Item "$proofDir\feed-hits.txt" -ErrorAction SilentlyContinue
@@ -268,6 +278,40 @@ Ok "B4 attach: the app used the serve already on 127.0.0.1:18090 and left it run
     $t = Invoke-Guest $admin1 'admin1.ps1'
     Need $t @('B1', 'B2', 'B3', 'B4')
 
+    # ---------- C: a standard user on the machine-wide install, beside another user's serve ----------
+    # the admin's serve on 127.0.0.1:18091 (-no-login) runs in the admin's desktop session: it outlives the SSH call
+    $other = $guestHead + @'
+$cmd = "-NoProfile -WindowStyle Hidden -Command `"& '$env:ProgramFiles\pgvigil\pgvigil.exe' serve -config '$env:ProgramData\pgvigil\app\pgvigil.yaml' -listen 127.0.0.1:18091 -no-login`""
+$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $cmd
+$p = New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName 'pgvigil-proof-other' -Action $a -Principal $p -Force | Out-Null
+Start-ScheduledTask -TaskName 'pgvigil-proof-other'
+$up = $false
+for ($i = 0; $i -lt 40; $i++) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18091/api/health -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep -Milliseconds 500 } }
+if (-not $up) { Fail 'the admin serve on 127.0.0.1:18091 did not answer' }
+$owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId=$((Get-NetTCPConnection -LocalPort 18091 -State Listen).OwningProcess)") -MethodName GetOwner
+Ok "the admin's serve answers on 127.0.0.1:18091 (owner $($owner.Domain)\$($owner.User))"
+'@
+    $null = Invoke-Guest $other 'other.ps1'
+    $std2 = $guestHead + @'
+$pf = "$env:ProgramFiles\pgvigil"
+if (Test-Path "$env:LOCALAPPDATA\pgvigil\pgvigil.yaml") { Fail 'the standard user still has a config of its own' }
+$r = Run-App "$pf\pgvigil-app.exe" @('-check')
+if ($r.Code -ne 0 -or $r.Text -notmatch '\(machine\)' -or $r.Text -notmatch 'check: started http://127\.0\.0\.1:\d+/ pid (\d+)') { Fail "-check as the standard user on the machine install: $($r.Text)" }
+$spid = [int]$Matches[1]
+if ($r.Text -notmatch 'GET / 200' -or -not (Pid-Gone $spid)) { Fail "-check as the standard user on the machine install: $($r.Text)" }
+Ok "C1 a standard user's app from Program Files reads the machine config (Users RX): started, GET / 200, stopped, pid $spid gone"
+New-Item 'HKCU:\Software\pgvigil\App' -Force | Out-Null
+Set-ItemProperty 'HKCU:\Software\pgvigil\App' -Name AttachURL -Value 'http://127.0.0.1:18091/'
+$r = Run-App "$pf\pgvigil-app.exe" @('-check')
+Remove-Item 'HKCU:\Software\pgvigil' -Recurse
+if ($r.Code -ne 0 -or $r.Text -notmatch 'runs as another user' -or $r.Text -match 'check: attached' -or $r.Text -notmatch 'check: started') { Fail "attach to another user's serve: $($r.Text)" }
+Ok "C2 the standard user's app did not attach to the admin's serve on 127.0.0.1:18091 (another user's): it started its own"
+'@
+    $t = Invoke-Guest $std2 'std2.ps1' -AsStd
+    Need $t @('C1', 'C2')
+    $null = & ssh -o ConnectTimeout=15 -o LogLevel=ERROR winsandbox "Stop-ScheduledTask -TaskName pgvigil-proof-other -ErrorAction SilentlyContinue; Get-NetTCPConnection -LocalPort 18091 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id `$_.OwningProcess -Force }; Unregister-ScheduledTask -TaskName pgvigil-proof-other -Confirm:`$false -ErrorAction SilentlyContinue" 2>&1
+
     # ---------- B5: the window, in the admin's desktop session ----------
     # the window checks run inside the desktop session (an SSH session is session 0 and sees no desktop window):
     # desk.ps1 runs there as the logged-on admin (a limited token), writes its ok / FAIL lines to desk.out
@@ -288,7 +332,9 @@ $pf = "$env:ProgramFiles\pgvigil"
 $log = "$env:LOCALAPPDATA\pgvigil\app.log"
 Start-Process "$pf\pgvigil-app.exe"
 $h = [IntPtr]::Zero; $t = ''
-for ($i = 0; $i -lt 60; $i++) { Start-Sleep 1; $h = [PgvWin]::FindWindow('webview', 'pgvigil'); $t = Get-Content $log -Raw -ErrorAction SilentlyContinue; if ($h -ne [IntPtr]::Zero -and $t -match 'serve: http') { break } }
+# the window exists as soon as it is made, WebView2 later: wait for the app's own line, then the serve's
+for ($i = 0; $i -lt 90; $i++) { Start-Sleep 1; $h = [PgvWin]::FindWindow('webview', 'pgvigil'); $t = Get-Content $log -Raw -ErrorAction SilentlyContinue; if ($t -match 'WebView2 could not start' -or ($h -ne [IntPtr]::Zero -and $t -match 'window opened' -and $t -match 'serve: http')) { break } }
+if ($t -match 'WebView2 could not start') { Fail "WebView2 could not start: $t" }
 if ($h -eq [IntPtr]::Zero) { Fail "no pgvigil window; the log: $t" }
 if ($t -notmatch 'window opened 1100x700') { Fail "the log does not say window opened 1100x700: $t" }
 if ($t -notmatch 'serve: (http://127\.0\.0\.1:\d+/) \(started here: true, pid (\d+)\)') { Fail "the log names no started serve: $t" }
@@ -369,17 +415,24 @@ Ok 'B6 uninstall -purge (admin): service, Program Files folder, HKLM Run, Progra
 } finally {
     $cleanup = @'
 $ErrorActionPreference = 'Continue'
-Get-Process pgvigil-app, pgvigil -ErrorAction SilentlyContinue | Stop-Process -Force
+$installed = Test-Path 'C:\__TAG__\installed.marker'
+# only the proof's own processes: under its folder, the standard user's install, or the install it made
+Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'pgvigil-app.exe', 'pgvigil.exe' -and $_.ExecutablePath -and ($_.ExecutablePath -like 'C:\__TAG__\*' -or $_.ExecutablePath -like '*\__STD__\*' -or ($installed -and $_.ExecutablePath -like "$env:ProgramFiles\pgvigil\*")) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Stop-ScheduledTask -TaskName pgvigil-proof-other -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*__TAG__\feed.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-if (Test-Path "$env:ProgramFiles\pgvigil\pgvigil-app.exe") { Start-Process "$env:ProgramFiles\pgvigil\pgvigil-app.exe" -ArgumentList 'uninstall', '-purge' -Wait -NoNewWindow }
-foreach ($t in @('pgvigil-proof-desk')) { Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue }
+if ($installed -and (Test-Path "$env:ProgramFiles\pgvigil\pgvigil-app.exe")) { Start-Process "$env:ProgramFiles\pgvigil\pgvigil-app.exe" -ArgumentList 'uninstall', '-purge' -Wait -NoNewWindow }
+foreach ($t in @('pgvigil-proof-desk', 'pgvigil-proof-other')) { Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue }
 $sid = (Get-LocalUser -Name '__STD__' -ErrorAction SilentlyContinue).SID.Value
 # the standard user's last SSH logon can still hold its profile: its processes go first, then the profile
 Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like '*\__STD__' } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 Remove-LocalUser -Name '__STD__' -ErrorAction SilentlyContinue
 if ($sid) { for ($i = 0; $i -lt 5; $i++) { try { Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid } | Remove-CimInstance -ErrorAction Stop; break } catch { Start-Sleep 3 } } }
+# the admin's own settings and folder back as they were
 Remove-Item 'HKCU:\Software\pgvigil' -Recurse -ErrorAction SilentlyContinue
+if (Test-Path 'C:\__TAG__\hkcu-pgvigil.reg') { & reg.exe import 'C:\__TAG__\hkcu-pgvigil.reg' 2>$null }
+Remove-Item "$env:LOCALAPPDATA\pgvigil" -Recurse -Force -ErrorAction SilentlyContinue   # the proof's window run made this one
+if (Test-Path "$env:LOCALAPPDATA\pgvigil.saved-__TAG__") { Rename-Item "$env:LOCALAPPDATA\pgvigil.saved-__TAG__" 'pgvigil' }
 Start-Sleep 1
 Remove-Item 'C:\__TAG__' -Recurse -Force -ErrorAction SilentlyContinue
 '@ -replace '__TAG__', $tag -replace '__STD__', $stdUser
@@ -390,5 +443,8 @@ Remove-Item 'C:\__TAG__' -Recurse -Force -ErrorAction SilentlyContinue
     & docker rm -f $repoName 2>&1 | Out-Null
     Remove-Item -LiteralPath $shareDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $work 'stdpw'), $script:askpass -Force -ErrorAction SilentlyContinue
+    # the build (about 40 MB): gone; the transcripts stay in PROOF_OUT, or in the temp folder when it is not set
+    if ($env:PROOF_OUT) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+    else { Remove-Item -LiteralPath (Join-Path $work 'dist'), (Join-Path $work "pgvigil-app_${appVersion}_windows_amd64.zip"), (Join-Path $work 'pgvigil') -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($script:failed) { exit 1 }

@@ -54,16 +54,17 @@ The app looks for it in this order: `-config <file>`, the user's `%LOCALAPPDATA%
 
 ## What the app does
 
-- **Start.** One app runs per user session; a second launch shows the running one's window. Unless a serve already answers at the attach address (default `http://127.0.0.1:8080/`, loopback only), the app runs `pgvigil serve -config <the configuration> -listen 127.0.0.1:0`. That serve picks a free port, runs with no console window, and sits in a Windows job object, so it ends with the app even if the app crashes. With `-tray` (the start-at-login entry) the window stays closed until the tray icon is clicked.
+- **Start.** One app runs per user session; a second launch shows the running one's window (a start-at-login launch does not). Unless a serve already answers at the attach address (default `http://127.0.0.1:8080/`, loopback only) and runs as the same Windows user, the app runs `pgvigil serve -config <the configuration> -listen 127.0.0.1:0`. That serve picks a free port, runs with no console window, and sits in a Windows job object, so it ends with the app even if the app crashes. With `-tray` (the start-at-login entry) the window stays closed until the tray icon is clicked.
 - **The window.** It shows the UI. Its size, or the fact that it was maximized, is kept per user (HKCU `Width`, `Height`, `Maximized`) for the next start. Closing the window hides it; the app and its serve keep running in the tray.
 - **The tray menu.** Open pgvigil; Open in the browser; Start at login (the user's own entry: shown checked and greyed when the administrator set it for every user); the update notice, when there is one; Quit.
 - **Quit** (the tray menu, or `pgvigil-app -quit`). The app stops the serve it started; a serve it attached to keeps running.
 - **No WebView2.** If the runtime is missing or cannot start, the app says so and opens the UI in the default browser.
+- **Shared hosts.** The app attaches only to a serve whose process runs as the same Windows user, so on a Remote Desktop host or a jump box it never shows another user's serve, or a process that only answers like one. A serve started with `-no-login` (HKCU `NoLogin`) is still reachable by every user of the machine on its loopback port; keep the UI login on where several people sign in.
 - **Its log.** `%LOCALAPPDATA%\pgvigil\app.log` holds the app's lines and the serve's. WebView2 keeps its data in `%LOCALAPPDATA%\pgvigil\WebView2`.
 
 ## The update check
 
-The update check is the app's only outbound call. Once a day, 30 seconds after the start, the app reads the release feed: `https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, or a mirror. It sends one GET with the header `User-Agent: pgvigil-app/<version>` and nothing else: no machine name, user or install id. When the feed's release is newer than the app, the tray shows a notice and the menu offers to open the release page. Nothing is downloaded or installed by the app. Development builds never show a notice.
+The update check is the only outbound call pgvigil's own code makes in the app. Once a day, 30 seconds after the start, the app reads the release feed: `https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, or a mirror. It sends one GET with the header `User-Agent: pgvigil-app/<version>` and nothing else: no machine name, user or install id. When the feed's release is newer than the app, the tray shows a notice and the menu offers to open the release page. Nothing is downloaded or installed by the app. Development builds never show a notice.
 
 The administrator decides with the policy key `HKLM\Software\Policies\pgvigil\App` (the installer writes it, and Group Policy Preferences or any registry tool can too):
 
@@ -76,7 +77,9 @@ The administrator decides with the policy key `HKLM\Software\Policies\pgvigil\Ap
 
 A user's own choices sit in `HKCU\Software\pgvigil\App`: `UpdateCheck` (0 = off), `AttachURL`, `NoLogin`, the window's `Width`, `Height` and `Maximized`, and `LastUpdateCheck`. A per-user install with `-no-update-check` writes `UpdateCheck` = 0 there.
 
-An air-gapped or government site sets `UpdateCheck` = 0, or points `UpdateFeed` at a mirror on the inside. With the check off, the app makes no network connection beyond loopback (its own serve) and the repository connection the serve makes.
+An air-gapped or government site sets `UpdateCheck` = 0, or points `UpdateFeed` at a mirror on the inside. With the check off, pgvigil's code in the app connects to nothing but loopback (its own serve), and the serve to nothing but the repository. The WebView2 runtime that draws the window is Microsoft's and has network behaviour of its own: SmartScreen checks of the pages it shows, and its own updates through Edge Update. A site governs those with Microsoft's Edge, WebView2 and Edge Update group policies, as for any WebView2 program. The pages the window shows are pgvigil's own, served on loopback.
+
+The GitHub API answers 60 unauthenticated requests an hour per address. A large site behind one address can get "status 403" in `app.log` instead of a notice. A mirror (`UpdateFeed`) avoids that.
 
 ## Checking an install
 
@@ -93,7 +96,7 @@ Start-Process "$env:ProgramFiles\pgvigil\pgvigil-app.exe" -ArgumentList uninstal
 Start-Process "$env:LOCALAPPDATA\pgvigil\pgvigil-app.exe" -ArgumentList uninstall,-user -Wait -NoNewWindow    # per user
 ```
 
-The machine-wide uninstall removes the start-at-login entry, the Programs and Features entry, the collector service (`pgvigil uninstall`) and the two programs. `-purge` also removes the UI configuration, the policy key and the collector's configuration folder. The per-user uninstall removes the user's entries and files, and with `-purge` their settings, log and WebView2 data. The app's own file goes two seconds after it exits, because a running program cannot delete itself. The app in the uninstalling user's session quits first; an app running in another user's session keeps its window until it quits.
+The uninstall first asks the app in its own session to quit, and waits for it and the serve it started. The machine-wide uninstall then removes the collector service (`pgvigil uninstall`), the start-at-login entry, the two programs and, last, the Programs and Features entry. If the collector's uninstall fails, nothing else is removed and the entry stays to run it again. A program file that a serve in another user's session still holds is removed at the next restart, and the uninstall says so. `-purge` also removes the UI configuration, the policy key and the collector's configuration folder. The per-user uninstall removes the user's files and entries, and with `-purge` their settings, log and WebView2 data. If a file is still in use, it says which, exits with 1 and keeps the entries, so it can be run again. The app's own file goes two seconds after it exits, because a running program cannot delete itself. The app in the uninstalling user's session quits first; an app running in another user's session keeps its window until it quits.
 
 ## Building
 

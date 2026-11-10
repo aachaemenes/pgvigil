@@ -146,7 +146,11 @@ var httpClient = &http.Client{Timeout: 20 * time.Second}
 // ensureServe attaches to a serve on the attach URL, or starts one.
 func ensureServe(ctx context.Context, s Settings, logw io.Writer) (*Serve, error) {
 	if Probe(ctx, httpClient, s.AttachURL) {
-		return &Serve{URL: s.AttachURL}, nil
+		mine, err := listenerOwnedByMe(s.AttachURL)
+		if mine {
+			return &Serve{URL: s.AttachURL}, nil
+		}
+		log.Printf("serve: a pgvigil serve answers at %s but runs as another user (%v): not attached, starting this user's own", s.AttachURL, err)
 	}
 	if s.ConfigPath == "" {
 		return nil, errors.New("no serve answers at " + s.AttachURL + " and there is no UI configuration to start one")
@@ -223,6 +227,10 @@ type app struct {
 	taskbar  uint32
 	exe      string
 	quitting bool
+	// creating: WebView2 is being made; its creation runs a message loop of its own, which can call
+	// show and quit again (a tray double-click, -quit): show waits it out, a quit is kept for after
+	creating    bool
+	pendingQuit bool
 
 	mu       sync.Mutex
 	serve    *Serve
@@ -235,7 +243,7 @@ var the *app
 func runApp(cfgFlag string, startInTray bool) int {
 	m, err := windows.CreateMutex(nil, false, u16(mutexName))
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		if h := findApp(); h != 0 {
+		if h := findApp(); h != 0 && !startInTray { // a start-at-login launch never opens the running app's window
 			_, _, _ = pPostMessageW.Call(h, wmShow, 0, 0) // the running app shows its window
 		}
 		return 0
@@ -243,8 +251,11 @@ func runApp(cfgFlag string, startInTray bool) int {
 	if m != 0 {
 		defer func() { _ = windows.CloseHandle(m) }()
 	}
-	// per-monitor DPI: a sharp window and a size kept in real pixels (Windows 10 1703+; older ones keep the default)
-	_, _, _ = pSetProcessDpiAwarenessContext.Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+	// per-monitor DPI: a sharp window and a size kept in real pixels (Windows 10 1703+; on older ones, Server 2016
+	// among them, the call does not exist and the default stays: Find first, as Call would panic)
+	if pSetProcessDpiAwarenessContext.Find() == nil {
+		_, _, _ = pSetProcessDpiAwarenessContext.Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+	}
 	a := &app{logw: openLog()}
 	the = a
 	log.SetOutput(a.logw)
@@ -356,6 +367,10 @@ func (a *app) shutdown() {
 
 // quit saves the window, closes it and ends the loop (the window's own WM_DESTROY posts WM_QUIT).
 func (a *app) quit() {
+	if a.creating { // WebView2's own loop would swallow WM_QUIT: quit once it is made
+		a.pendingQuit = true
+		return
+	}
 	a.mu.Lock()
 	a.quitting = true
 	a.mu.Unlock()
@@ -402,16 +417,30 @@ func (a *app) show() {
 		}
 		return
 	}
+	if a.creating {
+		return // the window is on its way
+	}
 	if a.hwnd == 0 {
 		set := Merge(readChoices()) // the size as last saved
-		a.wv = webview2.NewWithOptions(webview2.WebViewOptions{
-			DataPath:      filepath.Join(appDir(), "WebView2"),
-			AutoFocus:     true,
-			WindowOptions: webview2.WindowOptions{Title: "pgvigil", Width: uint(set.Width), Height: uint(set.Height), Center: true},
-		})
+		if webView2Version() != "" {
+			a.creating = true
+			a.wv = webview2.NewWithOptions(webview2.WebViewOptions{
+				DataPath:      filepath.Join(appDir(), "WebView2"),
+				AutoFocus:     true,
+				WindowOptions: webview2.WindowOptions{Title: "pgvigil", Width: uint(set.Width), Height: uint(set.Height), Center: true},
+			})
+			a.creating = false
+			if a.wv == nil {
+				discardFailedWindow()
+			}
+		}
 		if a.wv == nil {
 			a.noWV = true
 			log.Printf("WebView2 could not start (the Evergreen runtime is missing or broken): the browser shows the UI")
+			if a.pendingQuit {
+				a.quit()
+				return
+			}
 			messageBox("The Microsoft Edge WebView2 runtime is missing or could not start, so pgvigil opens in your browser instead.", mbOK|mbIconWarning)
 			if sv != nil {
 				openExternal(sv.URL)
@@ -439,6 +468,9 @@ func (a *app) show() {
 			a.wv.SetHtml(page("Starting pgvigil", "<p>Starting the pgvigil serve on this machine...</p>"))
 		}
 		log.Printf("window opened %dx%d", set.Width, set.Height)
+		if a.pendingQuit {
+			a.quit()
+		}
 		return
 	}
 	if v, _, _ := pIsIconic.Call(a.hwnd); v != 0 {
@@ -449,13 +481,29 @@ func (a *app) show() {
 	_, _, _ = pSetForegroundWindow.Call(a.hwnd)
 }
 
-// windowProc subclasses the WebView2 window: closing it hides it (the app stays in the tray).
+// discardFailedWindow removes the window go-webview2 made and showed before WebView2 failed: it is
+// left open and its own procedure would end the app when it is closed. Its procedure becomes
+// DefWindowProc, then it is destroyed.
+func discardFailedWindow() {
+	h, _, _ := pFindWindowW.Call(uintptr(unsafe.Pointer(u16("webview"))), uintptr(unsafe.Pointer(u16("pgvigil"))))
+	if h == 0 {
+		return
+	}
+	_, _, _ = pSetWindowLongPtrW.Call(h, gwlpWndProc, pDefWindowProcW.Addr())
+	_, _, _ = pDestroyWindow.Call(h)
+}
+
+// windowProc subclasses the WebView2 window: closing it hides it (the app stays in the tray); the size
+// is kept after every move or resize too (a sign-out sends no WM_CLOSE).
 func windowProc(hwnd, m, wp, lp uintptr) uintptr {
 	a := the
 	if m == wmClose && !a.isQuitting() {
 		a.saveWindow()
 		_, _, _ = pShowWindow.Call(hwnd, swHide)
 		return 0
+	}
+	if m == wmExitSizeMove {
+		a.saveWindow()
 	}
 	r, _, _ := pCallWindowProcW.Call(a.oldProc, hwnd, m, wp, lp)
 	return r
@@ -652,6 +700,13 @@ func trayProc(hwnd, m, wp, lp uintptr) uintptr {
 		return 0
 	case m == wmQuit:
 		a.quit()
+		return 0
+	case m == wmEndSession && wp != 0: // sign-out or shutdown: no WM_CLOSE comes, the process ends after this
+		a.saveWindow()
+		a.mu.Lock()
+		a.quitting = true
+		a.mu.Unlock()
+		a.shutdown()
 		return 0
 	case m == wmUpdate:
 		a.mu.Lock()

@@ -40,6 +40,7 @@ var (
 	pGetCursorPos                  = user32.NewProc("GetCursorPos")
 	pMessageBoxW                   = user32.NewProc("MessageBoxW")
 	pFindWindowW                   = user32.NewProc("FindWindowW")
+	pGetWindowThreadProcessID      = user32.NewProc("GetWindowThreadProcessId")
 	pRegisterWindowMessageW        = user32.NewProc("RegisterWindowMessageW")
 	pSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	pCreateIconIndirect            = user32.NewProc("CreateIconIndirect")
@@ -54,6 +55,8 @@ var (
 
 const (
 	wmDestroy       = 0x0002
+	wmEndSession    = 0x0016
+	wmExitSizeMove  = 0x0232
 	wmClose         = 0x0010
 	wmSetIcon       = 0x0080
 	wmContextMenu   = 0x007B
