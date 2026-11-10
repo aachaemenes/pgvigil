@@ -254,6 +254,8 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("indexes", g.indexRows(t))
 	}
 	add("io", g.ioRows(t))
+	add("pi", g.piDemoRows(t, first))
+	add("serverless", g.serverlessDemoRows(t, first))
 	if !g.Spec.Replica { // a standby does not vacuum: the collector skips both there (logCollections logs it)
 		add("vacuum", g.vacuumRows(t))
 		if first || t.Minute() == 0 {
@@ -295,6 +297,7 @@ func (g *Gen) Collections() []string {
 	// host rides along on every platform: on one without a door the collector logs the skip (logCollections)
 	if g.Spec.Platform == "rds" || g.Spec.Platform == "aurora" {
 		c = append(c, "io")
+		c = append(c, g.piDemoCollections()...)
 	}
 	if g.Spec.Platform == "onprem" {
 		c = append(c, "serverlog")
