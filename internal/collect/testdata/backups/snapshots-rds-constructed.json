@@ -1,0 +1,22 @@
+{
+  "DBSnapshots": [
+    {
+      "DBSnapshotIdentifier": "rds:orders-rds-2026-11-09-03-05",
+      "DBInstanceIdentifier": "orders-rds",
+      "SnapshotCreateTime": "2026-11-09T03:05:10.000Z",
+      "SnapshotType": "automated",
+      "Status": "available",
+      "AllocatedStorage": 100,
+      "Encrypted": true
+    },
+    {
+      "DBSnapshotIdentifier": "orders-before-migration",
+      "DBInstanceIdentifier": "orders-rds",
+      "SnapshotCreateTime": "2026-10-30T12:00:00.000Z",
+      "SnapshotType": "manual",
+      "Status": "available",
+      "AllocatedStorage": 100,
+      "Encrypted": false
+    }
+  ]
+}

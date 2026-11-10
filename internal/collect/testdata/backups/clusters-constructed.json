@@ -1,0 +1,14 @@
+{
+  "DBClusters": [
+    {
+      "DBClusterIdentifier": "dba-lab-pg",
+      "Engine": "aurora-postgresql",
+      "EngineVersion": "17.5",
+      "BackupRetentionPeriod": 1,
+      "PreferredBackupWindow": "07:22-07:52",
+      "EarliestRestorableTime": "2026-11-08T23:01:12.000Z",
+      "LatestRestorableTime": "2026-11-09T22:55:41.000Z",
+      "Status": "available"
+    }
+  ]
+}
