@@ -185,7 +185,9 @@ measure() {  # $1 repository dsn, $2 label
       ms=$(grep -oP 'Execution Time: \K[0-9.]+' "$WORK/e.out")
       # a node the executor pruned at run time prints '(never executed)': it reads nothing (a near-empty day partition
       # can be planned as a Seq Scan and is then never run); only a scan that ran is a full read of a history table
-      grep -v 'never executed' "$WORK/e.out" | grep -qE "$HIST" && fail "D: a Seq Scan on a history table ($q $w)"
+      # one process, no pipe: under pipefail a grep -q that matches early can SIGPIPE the writer and hide the match
+      # (the pattern through the environment: awk -v would turn its \w into a plain w)
+      HIST="$HIST" awk '$0 ~ ENVIRON["HIST"] && !/never executed/ { f = 1 } END { exit !f }' "$WORK/e.out" && fail "D: a Seq Scan on a history table ($q $w)"
       { echo "EXPLAIN (ANALYZE)"; sqlof "${q%%:*}" "$w" "${q#*:}"; } > "$WORK/j.sql"
       jit=$(psql "$1" -XAtq -f "$WORK/j.sql" | grep -oP 'Execution Time: \K[0-9.]+')
       echo "D $2: ${q%%:*} $w: $ms ms as served (jit off); $jit ms with the server's JIT setting"

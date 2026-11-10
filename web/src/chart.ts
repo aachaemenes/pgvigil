@@ -4,17 +4,29 @@ import { el } from './ui';
 
 // live charts, destroyed before the next page is drawn (each holds window listeners)
 const live: uPlot[] = [];
-// fitAxis sizes the value axis to its longest label (uPlot's own axis-autosize demo): a fixed 70 px cut '4,000 ms/s'
+// fitAxis sizes the value axis to its longest label (uPlot's own axis-autosize demo: a fixed 70 px cut '4,000 ms/s'),
+// and every chart of the page takes the widest page's value axis, so stacked charts keep one time axis: when a chart
+// widens it, the charts drawn before it are resized once (setSize recomputes their axes against the new width)
+let widest = 0, realign = 0;
 function fitAxis(u: uPlot, values: string[] | null, axisIdx: number, cycleNum: number): number {
   const a = u.axes[axisIdx] as uPlot.Axis & { _size?: number };
-  if (cycleNum > 1 && a._size) return a._size;
+  if (cycleNum > 1 && a._size) return Math.max(a._size, widest);
   let size = ((a.ticks as { size?: number } | undefined)?.size ?? 10) + (a.gap ?? 5);
   const longest = (values ?? []).reduce((acc, v) => (v.length > acc.length ? v : acc), '');
   if (longest) { u.ctx.font = (a.font as unknown as string[] | undefined)?.[0] ?? u.ctx.font; size += u.ctx.measureText(longest).width / devicePixelRatio; }
-  return Math.ceil(Math.max(size, 40));
+  size = Math.ceil(Math.max(size, 40));
+  if (size > widest) {
+    widest = size;
+    if (!realign) realign = requestAnimationFrame(() => { realign = 0; for (const c of live) c.setSize({ width: c.width, height: c.height }); });
+  }
+  return widest;
 }
 
-export function destroyCharts() { while (live.length) live.pop()!.destroy(); }
+export function destroyCharts() {
+  while (live.length) live.pop()!.destroy();
+  widest = 0;   // the next page measures its own
+  if (realign) { cancelAnimationFrame(realign); realign = 0; }
+}
 
 // The series colours: one categorical order per theme (the stylesheet's --s1..--s8, each set validated for
 // colour-blind separation of neighbours and, on the dark surface, 3:1 contrast), assigned in order and never cycled

@@ -112,7 +112,8 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const week = 7 * 24 * 3600 * 1000, toMs = Date.parse(w.to);
   const widened = toMs - Date.parse(w.from) < week;
   const hw = widened ? { from: new Date(toMs - week).toISOString(), to: w.to } : w;
-  const hLabel = widened ? 'last 7 days' : rangeLabel(ctx);
+  // a preset reads 'last 7 days'; a custom range names the week that ends at its own 'to'
+  const hLabel = !widened ? rangeLabel(ctx) : ctx.range.preset ? 'last 7 days' : `the 7 days to ${fmtTime(w.to)}`;
   const pick = async (j: Row) => {
     detail.replaceChildren(el('h3', {}, `${String(j.name)}: history (${hLabel})`), el('p', { class: 'meta' }, 'Reading...'));
     try {
@@ -128,7 +129,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
           tile('median good run', c.median_s == null ? 'n/a' : dur(c.median_s))),
         strip(runs),
         Number(c.runs ?? 0) > runs.length ? el('p', { class: 'meta' }, `The newest ${fmtNum(runs.length)} of ${fmtNum(c.runs)} runs; the counts cover all of them.`) : '',
-        grid(runs, runCols, 'No run of this job started in this range.'),
+        grid(runs, runCols, j.last_run_at ? `No run of this job started in this window; its last start was ${fmtTime(j.last_run_at)} (the grid above).` : 'No run of this job started in this window.'),
         el('h3', {}, `${String(j.name)}: changes`),   // every kept version; one changed in the window opens
         changes(rowsOf(x.changes), hw.from, hw.to));
     } catch (e) { detail.replaceChildren(errorBox(e)); }
