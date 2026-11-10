@@ -13,6 +13,7 @@ every attempt in the repository.
 The `alerts:` list sits in `pgvigil.yaml` beside the rest:
 
 ```yaml
+alerts_dsn: env:PGVIGIL_ALERTS_DSN   # the sender's login (IN ROLE pgvigil_alerter); default the repository's dsn
 alerts:
   - name: dba-mail                # lower-case letters, digits, '_', '.', '-'; unique
     kind: smtp                    # smtp | webhook | file
@@ -23,6 +24,7 @@ alerts:
     timezone: America/Chicago     # the zone of quiet_hours (default UTC)
     repeat: 24h                   # a standing finding is sent again after this (default 24h; disabled = once; at least 5m)
     recovery: true                # a message when the finding clears (default true)
+    clear_after: 10m              # how long a finding must stay gone before it is resolved (default 10m; 0 = at once)
     smtp:
       host: relay.example.org
       port: 587                   # default 587 (465 with tls: implicit)
@@ -32,6 +34,7 @@ alerts:
       password: file:/etc/pgvigil/smtp.pass   # env:NAME or file:/path only
       from: pgvigil@example.org
       to: [dba-team@example.org]
+      helo: pgvigil01.example.org # the EHLO name (default this host's name)
 
   - name: dba-teams
     kind: webhook
@@ -62,16 +65,26 @@ while the digits inside a name (`orders_idx1`, `orders_idx2`) keep two indexes a
 | new (firing) | A finding at or above the channel's severity, in its scope, that the channel has not sent. |
 | new (escalated) | The finding's severity rose above the one sent. It goes out at once. |
 | still open (repeat) | The repeat interval has passed since the last send. |
-| resolved | The finding is gone: fixed, below the channel's severity, out of its scope, or its instance removed. Sent when `recovery` is on. Otherwise it is closed without a message (the log's outcome `cleared`). |
+| resolved | The finding has been gone from the findings for `clear_after` (default 10 minutes, so a collection gap or a finding at a time window's edge does not send a recovery and a new alert a minute later). Sent when `recovery` is on; otherwise the alert is closed without a message (the log's outcome `cleared`). |
+| closed without a message | The instance was deactivated or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. |
 
-An SMTP message or a webhook post carries up to 50 alerts; more go in the next message of the same pass. A file drop
+A finding that falls below the channel's severity floor but stays (critical to warning on a critical channel) keeps its
+alert open and quiet: no repeat, no recovery. If it rises again it is not sent again until the repeat interval.
+
+An SMTP message or a webhook post carries up to 25 alerts, each line cut at 600 bytes; more go in the next message of
+the same pass. A file drop
 writes one file per alert: `<UTC time>-<event>-<channel>-<key>.json`. Each file is written under a temporary name and
 renamed, so a reader never sees half of one.
 
 A send that fails moves nothing: the next pass owes the same alerts. Inside `pgvigil run`, a failing channel is tried
-again after 1, 2, 4, 8, 16 and then every 30 minutes, and the other channels go on. Two senders (the service and a
-`pgvigil alerts` by hand) never send the same alert twice: a pass holds an advisory lock in the repository, and a
-second sender skips its pass.
+again after 1, 2, 4, 8, 16 and then every 30 minutes, and the other channels go on. Delivery is **at least once**: a
+send that went out but whose record in the repository then failed (the repository unreachable, the process killed) is
+sent again by the next pass. Two senders at the same time (the service and a `pgvigil alerts` by hand) do not both
+send: a pass holds an advisory lock in the repository, and a second sender skips its pass.
+
+One collector sends alerts: name the `alerts:` list in one configuration. A collector without the list leaves the
+channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
+column; renamed, it is a new channel and sends the standing findings again.
 
 ## Destinations and the rules they keep
 
@@ -105,22 +118,36 @@ second sender skips its pass.
 | `pgvigil.alert_log` | Every attempt (monthly partitions): channel, destination, the alerts by event, outcome (`sent`, `failed`, `refused`, `cleared`, `none`) and the error text. |
 | `pgvigil.alert_findings`, `pgvigil.findings_alerts`, `pgvigil.alert_sent` | Findings with their key, and with their alert columns. |
 
-The collector's login reaches these tables only through three functions that run as their owner:
-`import_alert_channels`, `import_alert_due` and `import_alert_log`. This follows the repository's access contract
-(the collector may not read what other instances sent). `import_alert_due` returns the findings that are due to be
-sent and nothing else. The reader login (the UI, Grafana) reads the tables and views.
+The sender connects as `alerts_dsn`, a login in the role `pgvigil_alerter` that migration 0059 creates. The role is a
+member of `pgvigil_reader`, so it reads the findings. It also holds INSERT and UPDATE on the alert tables:
+
+```sql
+CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;
+```
+
+The collector's login (`pgvigil_collector`) gets nothing here. The repository's access contract keeps it away from
+what other instances sent, and it may not call the alert functions. The functions `alert_channels_sync`,
+`alert_mark`, `alert_due` and `alert_record` run as their caller. A reader login may call `alert_due`, which reads
+only what a reader can read anyway, and fails in the others for want of a write privilege. One function runs as the
+owner, `alert_log_partition`: it creates `alert_log`'s month partition for a time within a day of now, nothing else.
+Without `alerts_dsn` the sender uses the repository's dsn: that works when it is the owner (a demo, a one-box
+install), and fails with "permission denied" when it is the collector's login.
 
 ## Proof
 
-`scripts/proof-alerts.sh` runs on a sandbox PostgreSQL with the demo fleet. It starts its own loopback SMTP sink and
-HTTP listener and covers these cases:
+`scripts/proof-alerts.sh` runs on a sandbox PostgreSQL with the demo fleet, as a `pgvigil_alerter` login. It starts
+its own loopback SMTP sink and HTTP listener and covers these cases:
 
+- The role contract: the collector login is refused, a reader cannot write, the alerter reads.
 - No channel: nothing is sent, and the log's `none` row is written.
 - SMTP, webhook and file-drop channels receive the critical findings.
 - A redirect is refused and not followed.
 - An unreachable destination is logged, and the other channels still send.
 - A channel inside its quiet hours holds its alerts.
 - The repeat interval: a finding is sent once over two runs, then again after the interval.
-- Recovery messages are sent, and a channel without recovery closes its alerts without a message.
+- A finding that falls under a channel's severity floor and comes back is held, not resolved and not sent again.
+- Recovery messages are sent, a channel without recovery closes its alerts without a message, and the clear delay
+  holds a recovery until it has passed.
+- A deactivated instance's alerts close without a recovery message.
 - The loop inside `pgvigil run` keeps running past a failing channel.
 - The Alerts API and the Findings column.

@@ -29,10 +29,12 @@ type SMTP struct {
 	Password string   `yaml:"password"`
 	From     string   `yaml:"from"`
 	To       []string `yaml:"to"`
+	Helo     string   `yaml:"helo"` // the name pgvigil greets the relay with (EHLO); default this host's name
 }
 
 type smtpSender struct {
 	host, addr string
+	helo       string
 	mode       string
 	tlsCfg     *tls.Config
 	user, pass string
@@ -83,7 +85,14 @@ func (s *SMTP) build() (sender, error) {
 		}
 		to = append(to, p.Address)
 	}
-	out := &smtpSender{host: host, addr: net.JoinHostPort(host, strconv.Itoa(port)), mode: mode, from: from.Address, to: to}
+	helo := strings.TrimSpace(s.Helo)
+	if helo == "" {
+		helo, _ = os.Hostname()
+	}
+	if helo == "" || strings.ContainsAny(helo, " \t\r\n") {
+		helo = "localhost"
+	}
+	out := &smtpSender{host: host, addr: net.JoinHostPort(host, strconv.Itoa(port)), helo: helo, mode: mode, from: from.Address, to: to}
 	out.tlsCfg = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
 	if s.CAFile != "" {
 		pem, err := os.ReadFile(s.CAFile)
@@ -141,7 +150,7 @@ func (s *smtpSender) send(ctx context.Context, m Message) error {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	if err := c.Hello("pgvigil"); err != nil {
+	if err := c.Hello(s.helo); err != nil {
 		return err
 	}
 	if s.mode == "starttls" {

@@ -5,8 +5,11 @@
 // the configured host and port only, over Go's crypto/tls.
 //
 // The alerts: block sits in pgvigil.yaml beside the rest; config.Load ignores it and this package reads it
-// (LoadFile), so a file without the block runs as before with every channel off.
+// (LoadFile), so a file without the block runs as before with every channel off. The sender connects to the repository
+// as alerts_dsn (a login IN ROLE pgvigil_alerter, migration 0059; default the repository's dsn): the collector's own
+// login may not read the findings.
 //
+//	alerts_dsn: env:PGVIGIL_ALERTS_DSN
 //	alerts:
 //	  - name: dba-mail               # [a-z0-9][a-z0-9_.-]*, unique
 //	    kind: smtp                   # smtp | webhook | file
@@ -17,14 +20,16 @@
 //	    timezone: America/Chicago    # the quiet hours' zone (default UTC)
 //	    repeat: 24h                  # a standing finding is sent again after this (default 24h; disabled = once)
 //	    recovery: true               # a message when the finding clears (default true)
+//	    clear_after: 10m             # a finding gone this long is resolved (default 10m; 0 = at the first pass)
 //	    smtp: {host: relay.example.org, port: 587, tls: starttls, username: env:U, password: file:/p, from: a@b, to: [c@d]}
 //	    webhook: {url: env:TEAMS_URL, format: teams}   # teams | slack | json; the URL through env: or file: only
 //	    file: {dir: /var/spool/pgvigil/alerts}
 //
-// Each pass (every minute inside `pgvigil run`, once for `pgvigil alerts`) records the channels, asks the repository
-// what is owed (pgvigil.import_alert_due: firing, escalated, repeat, resolved, cleared), sends it per channel and
-// records every attempt (pgvigil.import_alert_log). A failed send moves nothing: the next pass owes the same alerts,
-// and the loop waits longer before trying a failing channel again (1, 2, 4 ... 30 minutes).
+// Each pass (every minute inside `pgvigil run`, once for `pgvigil alerts`) records the channels, stamps the open alerts
+// whose finding is gone (pgvigil.alert_mark), asks the repository what is owed (pgvigil.alert_due: firing, escalated,
+// repeat, resolved, cleared), sends it per channel and records every attempt (pgvigil.alert_record). A failed send
+// moves nothing: the next pass owes the same alerts, and the loop waits longer before trying a failing channel again
+// (1, 2, 4 ... 30 minutes). Delivery is at least once: a send whose record then fails is sent again.
 package alerts
 
 import (
@@ -40,6 +45,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/yaml.v3"
@@ -58,6 +64,7 @@ type Channel struct {
 	Timezone    string           `yaml:"timezone"`
 	Repeat      *config.Duration `yaml:"repeat"`
 	Recovery    *bool            `yaml:"recovery"`
+	ClearAfter  *config.Duration `yaml:"clear_after"`
 	SMTP        *SMTP            `yaml:"smtp"`
 	Webhook     *Webhook         `yaml:"webhook"`
 	File        *FileDrop        `yaml:"file"`
@@ -78,6 +85,18 @@ func (c *Channel) RepeatEvery() time.Duration {
 	return c.Repeat.Duration
 }
 
+// DefaultClearAfter is how long a finding must stay gone before its alert is resolved: a collection gap or a finding
+// that flickers at a time window's edge does not send a recovery and a new alert a minute later.
+const DefaultClearAfter = 10 * time.Minute
+
+// ClearAfterEvery returns the clear delay.
+func (c *Channel) ClearAfterEvery() time.Duration {
+	if c.ClearAfter == nil {
+		return DefaultClearAfter
+	}
+	return c.ClearAfter.Duration
+}
+
 // SendsRecovery says whether a cleared finding gets a message.
 func (c *Channel) SendsRecovery() bool { return c.Recovery == nil || *c.Recovery }
 
@@ -90,12 +109,23 @@ func (c *Channel) Destination() string {
 	return c.sender.destination()
 }
 
-type file struct {
-	Alerts []Channel `yaml:"alerts"`
+// Settings is what the configuration file says about alerts: the channels and the sender's login.
+type Settings struct {
+	DSNRaw   string    `yaml:"alerts_dsn"`
+	Channels []Channel `yaml:"alerts"`
 }
 
-// LoadFile reads the alerts: block of the configuration file; no block = no channel (nothing is ever sent).
-func LoadFile(path string) ([]Channel, error) {
+// DSN resolves alerts_dsn; "" = not set (the caller uses the repository's dsn).
+func (s *Settings) DSN() string {
+	if strings.TrimSpace(s.DSNRaw) == "" {
+		return ""
+	}
+	return config.Resolve(strings.TrimSpace(s.DSNRaw))
+}
+
+// LoadFile reads the alerts: block and alerts_dsn of the configuration file; no block = no channel (nothing is ever
+// sent).
+func LoadFile(path string) (*Settings, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("alerts: %w", err)
@@ -103,16 +133,19 @@ func LoadFile(path string) ([]Channel, error) {
 	return Parse(b)
 }
 
-// Parse reads and validates the alerts: block of a configuration file's text.
-func Parse(b []byte) ([]Channel, error) {
-	var f file
-	if err := yaml.Unmarshal(b, &f); err != nil {
+// Parse reads and validates the alerts: block and alerts_dsn of a configuration file's text.
+func Parse(b []byte) (*Settings, error) {
+	var s Settings
+	if err := yaml.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("alerts: %w", err)
 	}
-	if err := Validate(f.Alerts); err != nil {
+	if err := Validate(s.Channels); err != nil {
 		return nil, err
 	}
-	return f.Alerts, nil
+	if v := strings.TrimSpace(s.DSNRaw); v != "" && (strings.HasPrefix(v, "env:") || strings.HasPrefix(v, "file:")) && s.DSN() == "" {
+		return nil, fmt.Errorf("alerts_dsn %s is empty or unreadable", v)
+	}
+	return &s, nil
 }
 
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
@@ -169,6 +202,9 @@ func (c *Channel) validate() error {
 			return err
 		}
 		c.quiet = q
+	}
+	if c.ClearAfter != nil && c.ClearAfter.Duration < 0 {
+		return errors.New("clear_after must be 0 or more")
 	}
 	if c.Repeat != nil && c.Repeat.Duration != 0 && c.Repeat.Duration < 5*time.Minute {
 		return fmt.Errorf("repeat must be at least 5m, or disabled (got %s)", c.Repeat.Duration)
@@ -348,8 +384,24 @@ func (m Message) Summary() string {
 	return s
 }
 
-// Line is one alert as a line of text.
+// maxLine caps one alert's line (a finding's value or detail can be long): an SMTP line stays under RFC 5322's 998
+// octets and a message of maxPerMessage alerts stays well under a Teams or Slack webhook's payload limit.
+const maxLine = 600
+
+// Line is one alert as a line of text, at most maxLine bytes.
 func (a Alert) Line() string {
+	s := a.line()
+	if len(s) <= maxLine {
+		return s
+	}
+	cut := maxLine - len(" ...")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + " ..."
+}
+
+func (a Alert) line() string {
 	ev := strings.ToUpper(a.Event)
 	if a.Event == "resolved" {
 		return fmt.Sprintf("[RESOLVED] %s: %s %s (%s) %s", a.Instance, a.Source, a.Setting, a.Severity, a.Value)
@@ -379,7 +431,7 @@ func (e *refusedError) Error() string { return e.msg }
 func refused(format string, a ...any) error { return &refusedError{fmt.Sprintf(format, a...)} }
 
 // maxPerMessage caps the alerts of one SMTP or webhook message; more go in the next message of the same pass.
-const maxPerMessage = 50
+const maxPerMessage = 25
 
 // sendTimeout bounds one send.
 const sendTimeout = 30 * time.Second
@@ -430,12 +482,13 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	}
 	defer func() { _, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, lockKey) }()
 
-	if err := syncChannels(ctx, conn.Exec, chs, now); err != nil {
-		return res, nil, err
-	}
 	if len(chs) == 0 {
+		// no sync: a collector without an alerts: list leaves the channels another one records as they are
 		err := record(ctx, conn.Exec, now, attempt{Outcome: "none", Error: "no channel configured: nothing sent"})
 		return res, outcome, err
+	}
+	if err := syncChannels(ctx, conn.Exec, chs, now); err != nil {
+		return res, nil, err
 	}
 	var due []map[string]any
 	byName := map[string]*Channel{}
@@ -450,14 +503,18 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 			continue
 		}
 		due = append(due, map[string]any{"name": c.Name, "min_severity": c.MinSeverity, "instances": nonNil(c.Instances),
-			"tags": nonNil(c.Tags), "repeat_secs": int(c.RepeatEvery().Seconds()), "recovery": c.SendsRecovery()})
+			"tags": nonNil(c.Tags), "repeat_secs": int(c.RepeatEvery().Seconds()),
+			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery()})
 	}
 	if len(due) == 0 {
 		return res, outcome, nil
 	}
 	pay, _ := json.Marshal(due)
+	if _, err := conn.Exec(ctx, `SELECT pgvigil.alert_mark($1, $2::jsonb)`, now, string(pay)); err != nil {
+		return res, nil, err
+	}
 	rows, err := conn.Query(ctx, `SELECT channel, event, finding_key, instance_id, instance, severity, source, setting, value,
-	       detail, suggested, finding_at, first_sent_at, send_count FROM pgvigil.import_alert_due($1, $2::jsonb)`, now, string(pay))
+	       detail, suggested, finding_at, first_sent_at, send_count FROM pgvigil.alert_due($1, $2::jsonb)`, now, string(pay))
 	if err != nil {
 		return res, nil, err
 	}
@@ -578,10 +635,10 @@ func syncChannels[T any](ctx context.Context, exec func(context.Context, string,
 		rows = append(rows, map[string]any{"name": c.Name, "kind": c.Kind, "destination": c.Destination(),
 			"min_severity": c.MinSeverity, "instances": nonNil(c.Instances), "tags": nonNil(c.Tags),
 			"quiet_hours": c.QuietHours, "timezone": c.Timezone, "repeat_secs": int(c.RepeatEvery().Seconds()),
-			"recovery": c.SendsRecovery()})
+			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery()})
 	}
 	pay, _ := json.Marshal(rows)
-	_, err := exec(ctx, `SELECT pgvigil.import_alert_channels($1, $2::jsonb)`, now, string(pay))
+	_, err := exec(ctx, `SELECT pgvigil.alert_channels_sync($1, $2::jsonb)`, now, string(pay))
 	return err
 }
 
@@ -599,15 +656,16 @@ func record[T any](ctx context.Context, exec func(context.Context, string, ...an
 		a.Items = []Alert{}
 	}
 	pay, _ := json.Marshal(a)
-	_, err := exec(ctx, `SELECT pgvigil.import_alert_log($1, $2::jsonb)`, at, string(pay))
+	_, err := exec(ctx, `SELECT pgvigil.alert_record($1, $2::jsonb)`, at, string(pay))
 	return err
 }
 
 // ---- the commands ---------------------------------------------------------------------------------------------
 
-// Once runs one pass against the repository (`pgvigil alerts`).
-func Once(ctx context.Context, repoDSN string, chs []Channel) (Result, error) {
-	pool, err := pxpool(ctx, repoDSN)
+// Once runs one pass against the repository (`pgvigil alerts`); dsn is the sender's login (Settings.DSN, else the
+// repository's).
+func Once(ctx context.Context, dsn string, chs []Channel) (Result, error) {
+	pool, err := pxpool(ctx, dsn)
 	if err != nil {
 		return Result{}, err
 	}
@@ -624,10 +682,10 @@ const maxBackoff = 30 * time.Minute
 
 // Run is the loop inside `pgvigil run`: a pass every minute until ctx ends. With no channel it records the 'none'
 // row once and returns: nothing is ever sent.
-func Run(ctx context.Context, log *slog.Logger, repoDSN string, chs []Channel) error {
+func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error {
 	var pool *pgxpool.Pool
 	for pool == nil {
-		p, err := pxpool(ctx, repoDSN)
+		p, err := pxpool(ctx, dsn)
 		if err == nil {
 			pool = p
 			break

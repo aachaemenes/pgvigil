@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func msg(alerts ...Alert) Message {
@@ -46,14 +47,15 @@ alerts:
     kind: file
     file: {dir: /tmp}
 `
-	chs, err := Parse([]byte(good))
+	st, err := Parse([]byte(good))
 	if err != nil {
 		t.Fatal(err)
 	}
+	chs := st.Channels
 	if len(chs) != 3 {
 		t.Fatalf("channels %d", len(chs))
 	}
-	if chs[0].MinSeverity != "warning" || chs[0].RepeatEvery() != DefaultRepeat || !chs[0].SendsRecovery() {
+	if chs[0].MinSeverity != "warning" || chs[0].RepeatEvery() != DefaultRepeat || !chs[0].SendsRecovery() || chs[0].ClearAfterEvery() != DefaultClearAfter {
 		t.Errorf("defaults: %+v", chs[0])
 	}
 	if chs[1].RepeatEvery() != 0 || chs[1].SendsRecovery() || chs[1].Tags[0] != "env:prod" || chs[1].Tags[1] != "Prod" {
@@ -66,8 +68,16 @@ alerts:
 		t.Errorf("smtp destination %q", d)
 	}
 	none, err := Parse([]byte("repository: {dsn: env:X}\n"))
-	if err != nil || len(none) != 0 {
+	if err != nil || len(none.Channels) != 0 || none.DSN() != "" {
 		t.Errorf("no alerts block: %v %v", none, err)
+	}
+	t.Setenv("PGV_TEST_ADSN", "host=x user=pgvigil_alerts")
+	ds, err := Parse([]byte("alerts_dsn: env:PGV_TEST_ADSN\nalerts: [{name: a, kind: file, clear_after: 0, file: {dir: /tmp}}]\n"))
+	if err != nil || ds.DSN() != "host=x user=pgvigil_alerts" || ds.Channels[0].ClearAfterEvery() != 0 {
+		t.Errorf("alerts_dsn and clear_after 0: %+v %v", ds, err)
+	}
+	if _, err := Parse([]byte("alerts_dsn: env:PGV_TEST_UNSET_ADSN\n")); err == nil {
+		t.Error("an alerts_dsn whose variable is unset was accepted")
 	}
 }
 
@@ -91,6 +101,7 @@ func TestParseRefuses(t *testing.T) {
 		"bad tag":                `{name: a, kind: file, tags: ["Env:"], file: {dir: /tmp}}`,
 		"bad webhook format":     `{name: a, kind: webhook, webhook: {url: env:HOME, format: xml}}`,
 		"empty instance":         `{name: a, kind: file, instances: [""], file: {dir: /tmp}}`,
+		"negative clear_after":   `{name: a, kind: file, clear_after: -1m, file: {dir: /tmp}}`,
 		"http webhook off host":  `{name: a, kind: webhook, webhook: {url: env:PGV_TEST_HTTP}}`,
 		"unknown kind":           `{name: a, kind: pager, file: {dir: /tmp}}`,
 		"duplicate channel name": `{name: a, kind: file, file: {dir: /tmp}}, {name: a, kind: file, file: {dir: /tmp}}`,
@@ -104,11 +115,11 @@ func TestParseRefuses(t *testing.T) {
 }
 
 func TestQuiet(t *testing.T) {
-	chs, err := Parse([]byte(`alerts: [{name: a, kind: file, quiet_hours: "22:00-06:30", timezone: America/Chicago, file: {dir: /tmp}}]`))
+	st, err := Parse([]byte(`alerts: [{name: a, kind: file, quiet_hours: "22:00-06:30", timezone: America/Chicago, file: {dir: /tmp}}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &chs[0]
+	c := &st.Channels[0]
 	chi, _ := time.LoadLocation("America/Chicago")
 	for _, tc := range []struct {
 		h, m  int
@@ -120,15 +131,15 @@ func TestQuiet(t *testing.T) {
 		}
 	}
 	day, _ := Parse([]byte(`alerts: [{name: a, kind: file, quiet_hours: "09:00-17:00", file: {dir: /tmp}}]`))
-	if !day[0].Quiet(time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)) || day[0].Quiet(time.Date(2026, 1, 1, 17, 0, 0, 0, time.UTC)) {
+	if !day.Channels[0].Quiet(time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)) || day.Channels[0].Quiet(time.Date(2026, 1, 1, 17, 0, 0, 0, time.UTC)) {
 		t.Error("a same-day window, UTC by default")
 	}
 }
 
 func TestBatches(t *testing.T) {
 	a := make([]Alert, 120)
-	if b := batches(a, false); len(b) != 3 || len(b[2]) != 20 {
-		t.Errorf("120 alerts in messages of 50: %d", len(b))
+	if b := batches(a, false); len(b) != (120+maxPerMessage-1)/maxPerMessage || len(b[len(b)-1]) != 120-(len(b)-1)*maxPerMessage {
+		t.Errorf("120 alerts in messages of %d: %d", maxPerMessage, len(b))
 	}
 	if b := batches(a[:3], true); len(b) != 3 {
 		t.Errorf("per alert: %d", len(b))
@@ -384,6 +395,27 @@ func TestSMTPUnreachable(t *testing.T) {
 	_ = ln.Close()
 	if err := smtpFor(t, addr, "none").send(context.Background(), msg(crit)); err == nil {
 		t.Error("nothing listens: no error")
+	}
+}
+
+func TestLineCap(t *testing.T) {
+	a := crit
+	a.Detail = strings.Repeat("é", 2000) // two bytes a rune: the cut must not split one
+	l := a.Line()
+	if len(l) > maxLine || !strings.HasSuffix(l, " ...") || !utf8.ValidString(l) {
+		t.Errorf("line of %d bytes, valid %v", len(l), utf8.ValidString(l))
+	}
+	if crit.Line() != crit.line() {
+		t.Error("a short line was cut")
+	}
+	// a full message stays well under a webhook's payload limit
+	var m []Alert
+	for range maxPerMessage {
+		m = append(m, a)
+	}
+	b, _ := (&webhookSender{format: "teams"}).payload(msg(m...))
+	if len(b) > 24<<10 {
+		t.Errorf("a full teams message is %d bytes", len(b))
 	}
 }
 
