@@ -37,7 +37,7 @@ SELECT c.status, c.note, c.snapshot_at
 
 const sqlIndexesDatabases = `
 SELECT d.dbid, d.datname, d.indexes, d.index_bytes, d.stats_since, d.is_replica, d.snapshot_at,
-       (SELECT count(*) FROM pgvigil.index_state s WHERE s.instance_id = d.instance_id AND s.dbid = d.dbid AND s.is_present) AS findings
+       (SELECT count(DISTINCT s.indexrelid) FROM pgvigil.index_state s WHERE s.instance_id = d.instance_id AND s.dbid = d.dbid AND s.is_present) AS findings
   FROM pgvigil.index_databases d
  WHERE d.instance_id = $1 AND d.is_present
  ORDER BY d.datname`
@@ -62,7 +62,9 @@ SELECT i.instance_id, i.name AS instance, i.platform,
        count(*) FILTER (WHERE s.problem = 'duplicate') AS duplicate,
        count(*) FILTER (WHERE s.problem = 'redundant') AS redundant,
        count(*) FILTER (WHERE s.problem = 'unused') AS unused,
-       coalesce(sum(s.index_bytes) FILTER (WHERE s.problem IN ('duplicate', 'redundant', 'unused', 'invalid')), 0) AS bytes,
+       -- an index with two problems (unused and redundant) has two rows: its size counts once
+       coalesce((SELECT sum(b.index_bytes) FROM (SELECT DISTINCT ON (x.dbid, x.indexrelid) x.index_bytes FROM pgvigil.index_state x
+                  WHERE x.instance_id = i.instance_id AND x.is_present ORDER BY x.dbid, x.indexrelid) b), 0) AS bytes,
        (SELECT max(d.snapshot_at) FROM pgvigil.index_databases d WHERE d.instance_id = i.instance_id) AS snapshot_at
   FROM pgvigil.instances i
   LEFT JOIN pgvigil.index_state s ON s.instance_id = i.instance_id AND s.is_present
@@ -127,7 +129,8 @@ func (s *Server) IndexAdvisor(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("instance_id and database are required"))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	// under serve's 75 s WriteTimeout, so a slow run's answer still reaches the browser
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	var name string
 	if err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, in.InstanceID).Scan(&name); err != nil {

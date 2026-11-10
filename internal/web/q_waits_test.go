@@ -15,8 +15,10 @@ import (
 
 // TestWaitsSQLLive runs the Waits tab's own statements against a repository (scripts/proof-waits.sh sets
 // PGVIGIL_WAITS_REPO_DSN and WAITS_INSTANCE) and checks every event line "<source> <type>:<event> <samples>" the
-// proof expects (WAITS_EXPECT, one regexp per line, each must match a line) and, with WAITS_TREE, the lock tree lines
-// "<level> <pid> <blocked> <state> <wait>" of the pids it names.
+// proof expects (WAITS_EXPECT, one regexp per line, each must match a line), the series lines "<unix time> <type>
+// <sessions>" (WAITS_SERIES) and the statement lines "<queryid> <samples> <top wait>" (WAITS_QUERIES) the same way,
+// and, with WAITS_TREE, the lock tree lines "<level> <pid> <blocked> <state> <wait>" of the pids it names. WAITS_FROM and
+// WAITS_TO (RFC 3339) set the window; the default is the last hour.
 func TestWaitsSQLLive(t *testing.T) {
 	dsn := os.Getenv("PGVIGIL_WAITS_REPO_DSN")
 	if dsn == "" {
@@ -34,6 +36,16 @@ func TestWaitsSQLLive(t *testing.T) {
 	defer func() { _ = conn.Close(ctx) }()
 	to := time.Now().Add(time.Minute)
 	from := to.Add(-time.Hour)
+	if v := os.Getenv("WAITS_TO"); v != "" {
+		if to, err = time.Parse(time.RFC3339, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v := os.Getenv("WAITS_FROM"); v != "" {
+		if from, err = time.Parse(time.RFC3339, v); err != nil {
+			t.Fatal(err)
+		}
+	}
 	lines := func(sql string, args ...any) []string {
 		rows, err := conn.Query(ctx, sql, args...)
 		if err != nil {
@@ -64,23 +76,45 @@ func TestWaitsSQLLive(t *testing.T) {
 		ev = append(ev, fmt.Sprintf("%s %s:%s %s", f[0], f[1], f[2], f[3]))
 	}
 	t.Logf("events:\n%s", strings.Join(ev, "\n"))
-	if s := lines(sqlWaitsSeries, id, from, to); len(s) == 0 {
+	// snapshot_at|event_type|sessions
+	var se []string
+	for _, l := range lines(sqlWaitsSeries, id, from, to) {
+		f := strings.Split(l, "|")
+		at, err := time.Parse("2006-01-02 15:04:05 -0700 MST", f[0])
+		if err != nil {
+			t.Fatalf("series time %q: %v", f[0], err)
+		}
+		se = append(se, fmt.Sprintf("%d %s %s", at.Unix(), f[1], f[2]))
+	}
+	if len(se) == 0 {
 		t.Error("no series rows")
 	}
-	t.Logf("queries: %d rows", len(lines(sqlWaitsQueries, id, from, to)))
-	for _, want := range strings.Split(strings.TrimSpace(os.Getenv("WAITS_EXPECT")), "\n") {
-		if want == "" {
-			continue
-		}
-		re := regexp.MustCompile(want)
-		ok := false
-		for _, e := range ev {
-			ok = ok || re.MatchString(e)
-		}
-		if !ok {
-			t.Errorf("no event matches %q", want)
+	t.Logf("series:\n%s", strings.Join(se, "\n"))
+	// queryid|samples|wait_secs|top_wait|query
+	var qs []string
+	for _, l := range lines(sqlWaitsQueries, id, from, to) {
+		f := strings.Split(l, "|")
+		qs = append(qs, fmt.Sprintf("%s %s %s", f[0], f[1], f[3]))
+	}
+	t.Logf("queries:\n%s", strings.Join(qs, "\n"))
+	match := func(env, what string, got []string) {
+		for _, want := range strings.Split(strings.TrimSpace(os.Getenv(env)), "\n") {
+			if want == "" {
+				continue
+			}
+			re := regexp.MustCompile(want)
+			ok := false
+			for _, e := range got {
+				ok = ok || re.MatchString(e)
+			}
+			if !ok {
+				t.Errorf("no %s line matches %q", what, want)
+			}
 		}
 	}
+	match("WAITS_EXPECT", "event", ev)
+	match("WAITS_SERIES", "series", se)
+	match("WAITS_QUERIES", "statement", qs)
 	if pids := os.Getenv("WAITS_TREE_PIDS"); pids != "" {
 		var tree []string
 		for _, l := range lines(sqlWaitsLockTree, id, time.Now()) {

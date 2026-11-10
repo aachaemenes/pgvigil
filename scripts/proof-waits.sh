@@ -34,6 +34,11 @@
 #     wait_secs 0.5 and 0.3; at +120 s {X q1 20} (a reset) -> X 20; the same import again at +120 s adds nothing; at
 #     +180 s {X q1 25, Y q2 5} -> X 5 and Y 5 (Y left the profile at +120 s and starts again). Two pgms buckets ->
 #     2 rows source pgms_wait_sampling, wait_secs NULL; imported twice -> still 2 rows.
+#  [review B fold, expected before the rerun:] the seeded events are of type IO (the tab leaves the background Activity
+#     type out) and a key Z (queryid 1) enters at +180 s with 60 samples, so the rows end '... 180 Z 60 0.6'. The Waits
+#     statements over 00:00-00:04 read the series exactly (one-minute steps, every read 60 s): +60 s IO 0.013 sessions
+#     ((0.5 + 0.3) / 60), +120 s IO 0.003, +180 s IO 0.012; the statements '1 135 IO:X' (X's 75 samples over three reads
+#     beat Z's single 60) and '2 35 IO:Y'.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -173,14 +178,19 @@ echo "--- D. import_waits on seeded imports"
 x=$(q "insert into pgvigil.instances (name, platform) values ('proof-waits-x-$SUF', 'onprem') returning instance_id" | head -1)
 imp() { q "select pgvigil.import_waits($x, '2026-11-01 00:00:00+00'::timestamptz + interval '$1 seconds', '$2'::jsonb)" >/dev/null; }
 P='{"kind":"period","ms":10}'
-imp 0   "[$P,{\"kind\":\"profile\",\"event_type\":\"Activity\",\"event\":\"X\",\"queryid\":1,\"count\":100}]"
-imp 60  "[$P,{\"kind\":\"profile\",\"event_type\":\"Activity\",\"event\":\"X\",\"queryid\":1,\"count\":150},{\"kind\":\"profile\",\"event_type\":\"Activity\",\"event\":\"Y\",\"queryid\":2,\"count\":30}]"
-imp 120 "[$P,{\"kind\":\"profile\",\"event_type\":\"Activity\",\"event\":\"X\",\"queryid\":1,\"count\":20}]"
-imp 120 "[$P,{\"kind\":\"profile\",\"event_type\":\"Activity\",\"event\":\"X\",\"queryid\":1,\"count\":20}]"
-imp 180 "[$P,{\"kind\":\"profile\",\"event_type\":\"Activity\",\"event\":\"X\",\"queryid\":1,\"count\":25},{\"kind\":\"profile\",\"event_type\":\"Activity\",\"event\":\"Y\",\"queryid\":2,\"count\":5}]"
+imp 0   "[$P,{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"X\",\"queryid\":1,\"count\":100}]"
+imp 60  "[$P,{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"X\",\"queryid\":1,\"count\":150},{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"Y\",\"queryid\":2,\"count\":30}]"
+imp 120 "[$P,{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"X\",\"queryid\":1,\"count\":20}]"
+imp 120 "[$P,{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"X\",\"queryid\":1,\"count\":20}]"
+imp 180 "[$P,{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"X\",\"queryid\":1,\"count\":25},{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"Y\",\"queryid\":2,\"count\":5},{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"Z\",\"queryid\":1,\"count\":60}]"
 got=$(q "select string_agg(extract(epoch from snapshot_at - '2026-11-01 00:00:00+00')::int || ' ' || event || ' ' || samples || ' ' || wait_secs, ',' order by snapshot_at, event) from pgvigil.wait_sample where instance_id=$x")
 echo "seeded: $got"
-[[ $got == "60 X 50 0.5,60 Y 30 0.3,120 X 20 0.2,180 X 5 0.05,180 Y 5 0.05" ]] || fail "seeded profile rows"
+[[ $got == "60 X 50 0.5,60 Y 30 0.3,120 X 20 0.2,180 X 5 0.05,180 Y 5 0.05,180 Z 60 0.6" ]] || fail "seeded profile rows"
+T0=$(date -u -d '2026-11-01 00:00:00' +%s)
+PGVIGIL_WAITS_REPO_DSN="$PGVIGIL_REPO_DSN" WAITS_INSTANCE=$x WAITS_FROM=2026-11-01T00:00:00Z WAITS_TO=2026-11-01T00:04:00Z \
+  WAITS_SERIES="^$((T0 + 60)) IO 0.013\$"$'\n'"^$((T0 + 120)) IO 0.003\$"$'\n'"^$((T0 + 180)) IO 0.012\$" \
+  WAITS_QUERIES=$'^1 135 IO:X$\n^2 35 IO:Y$' \
+  go test ./internal/web -run TestWaitsSQLLive -count=1 >/dev/null || fail "the Waits series / statements on the seeded rows"
 G='[{"kind":"pgms","start_time":"2026-11-01 01:00:00+00","end_time":"2026-11-01 01:15:00+00","event_type":"IO","event":"DataFileRead","queryid":7,"calls":40},{"kind":"pgms","start_time":"2026-11-01 01:15:00+00","end_time":"2026-11-01 01:30:00+00","event_type":"IO","event":"DataFileRead","queryid":7,"calls":12}]'
 q "select pgvigil.import_waits($x, now(), '$G')" >/dev/null; q "select pgvigil.import_waits($x, now(), '$G')" >/dev/null
 [[ $(q "select count(*) || ' ' || sum(samples) || ' ' || count(wait_secs) from pgvigil.wait_sample where instance_id=$x and source='pgms_wait_sampling'") == "2 52 0" ]] || fail "pgms rows"

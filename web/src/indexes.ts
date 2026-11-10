@@ -127,7 +127,9 @@ export async function indexesView(instance: number): Promise<HTMLElement> {
         `No ${p} index.`));
   }
   sec.append(el('p', { class: 'meta' }, 'The redundant and invalid reads are postgres_dba\'s (BSD-3, Nikolay Samokhvalov); the DO / UNDO lines are '
-    + 'its i5 pattern. DROP INDEX CONCURRENTLY runs alone, outside a transaction, with lock_timeout and statement_timeout at 0.'));
+    + 'its i5 pattern. Run a DO line alone, outside a transaction, in a session where lock_timeout and statement_timeout are 0 '
+    + '(DROP INDEX CONCURRENTLY waits for every older transaction). An unused index that covers a redundant or duplicate one is '
+    + 'not listed as unused: drop one of a pair, never both.'));
   sec.append(adviseBox(instance, dbs.map(r => String(r.datname))));
   return sec;
 }

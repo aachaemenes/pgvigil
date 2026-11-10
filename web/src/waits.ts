@@ -65,7 +65,8 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Waits (${rangeLabel(ctx)})`));
   const source = String(events[0]?.source ?? (st?.status === 'ok' ? 'pg_wait_sampling' : 'activity'));
   sec.append(el('p', { class: 'meta' }, 'Source: ' + (sourceText[source] ?? source) + '. The background processes\' idle '
-    + 'waits between their rounds (the Activity type) are left out.'
+    + 'waits between their rounds (the Activity type) and idle connections waiting for their next command (Client:ClientRead '
+    + 'without a statement) are left out.'
     + (st?.status === 'skipped' ? ` The waits collection is skipped here: ${String(st.note ?? '')}.` : '')
     + (st?.status === 'error' ? ` The waits collection failed: ${String(st.note ?? '')}.` : '')));
   if (events.length === 0) {
@@ -74,10 +75,12 @@ export async function waitsView(ctx: Ctx): Promise<HTMLElement> {
     const total = events.reduce((a, r) => a + Number(r.samples), 0);
     const lock = events.filter(r => r.event_type === 'Lock').reduce((a, r) => a + Number(r.samples), 0);
     const cpu = events.filter(r => r.event_type === 'CPU').reduce((a, r) => a + Number(r.samples), 0);
-    const waitTotal = events.reduce((a, r) => a + Number(r.wait_secs ?? 0), 0);
+    // wait time: the waiting rows only (CPU is working, not waiting); unknown where no row carries a time (pgms, activity)
+    const waiting = events.filter(r => r.event_type !== 'CPU' && r.wait_secs != null);
+    const waitTotal = waiting.reduce((a, r) => a + Number(r.wait_secs), 0);
     sec.append(el('div', { class: 'tiles' },
       tile('samples', fmtNum(total)),
-      tile(source === 'activity' ? 'session samples' : 'wait time', source === 'activity' ? fmtNum(total) : fmtSecs(Math.round(waitTotal))),
+      tile('wait time (not on CPU)', waiting.length ? fmtSecs(Math.round(waitTotal)) : '-'),
       tile('on CPU (no wait event)', total ? fmtNum(Math.round(1000 * cpu / total) / 10) + ' %' : '-'),
       tile('lock waits', total ? fmtNum(Math.round(1000 * lock / total) / 10) + ' %' : '-', lock > 0 ? 'warn' : 'ok')));
     const p = pivot(rowsOf(d.series));

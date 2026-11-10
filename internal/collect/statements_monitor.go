@@ -82,13 +82,11 @@ func (statementsMonitorCollector) Run(ctx context.Context, conn *pgx.Conn, _ pla
 		}
 		return "0"
 	}
-	done := ""
-	if cols["bucket_done"] {
-		done = "AND m.bucket_done"
-	} else {
-		// before bucket_done (pg_stat_monitor 1.x) a bucket is finished once a newer one exists
-		done = fmt.Sprintf("AND m.bucket_start_time < (SELECT max(bucket_start_time) FROM %s.pg_stat_monitor)", quoteIdent(schema))
+	if !cols["bucket_done"] || !cols["toplevel"] {
+		// pg_stat_monitor 1.x has no bucket_done or toplevel, and its queryid and bucket_start_time are text
+		return nil, fmt.Errorf("pg_stat_monitor before 2.0 is not supported (no bucket_done column): %w", ErrSkip)
 	}
+	done := "AND m.bucket_done"
 	q := fmt.Sprintf(statementsMonitorSQL, quoteIdent(schema),
 		pick("shared_blk_read_time", "blk_read_time"), pick("shared_blk_write_time", "blk_write_time"),
 		pick("temp_blk_read_time"), pick("temp_blk_write_time"), pick("wal_bytes"),

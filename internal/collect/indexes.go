@@ -3,6 +3,7 @@ package collect
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,10 +25,19 @@ import (
 //	source and binary forms, with or without modification, are permitted provided that the conditions of the licence
 //	are met (the full text is in THIRD-PARTY-NOTICES.md).
 //
-// The changes: the output columns renamed to pgvigil's, a duplicate flag (exactly equal columns and operator
-// classes) added to the redundant read, the invalid read limited to non-catalog schemas, both read as one row per
-// index, and the undo line keeps CONCURRENTLY for a UNIQUE index too (the original replaces only "CREATE INDEX").
-// The unused read is pgvigil's own (postgres_dba's i1 comes from pgx_scripts, whose licence was not read).
+// The changes: the output columns renamed to pgvigil's, both read as one row per index, with the DO / UNDO lines of
+// postgres_dba's sql/i5_indexes_migration.sql pattern (same licence); the undo keeps CONCURRENTLY for a UNIQUE index
+// too (the original replaces only "CREATE INDEX"). The redundant read: a duplicate flag (equal columns, operator
+// classes, sort options and collations); the shorter index's sort options and collations must lead the longer's
+// (the original compares columns and operator classes only); a partition's index left out (it cannot be dropped alone; it follows its
+// parent's); a unique index counted redundant only to a primary key on the same columns (the original lets a unique
+// index through whenever the other is a primary key, so its DROP removed a uniqueness rule). The invalid read:
+// limited to non-catalog schemas, and a partitioned index left out (an index built ON ONLY the parent stays invalid
+// until every partition's index is attached: a staged build, and neither CONCURRENTLY line would run on it).
+// The unused read is pgvigil's own (postgres_dba's i1 comes from pgx_scripts, whose licence was not read); an unused
+// index that covers a redundant or duplicate one is left out of it, so the DO lines never drop both of a pair.
+// Every read runs with search_path = pg_catalog, so the DROP and CREATE lines name the schema whatever the login's
+// search_path is.
 type indexesCollector struct{}
 
 func init() { Register(indexesCollector{}) }
@@ -101,7 +111,7 @@ index_data as (
     array_to_string(indclass, ', ') as opclasses
   from pg_index i
   join pg_class ci on ci.oid = i.indexrelid and ci.relkind = 'i'
-  where indisvalid = true and ci.relpages > 0
+  where indisvalid = true and ci.relpages > 0 and not ci.relispartition
 ), redundant_indexes as (
   select
     i2.indexrelid as index_id,
@@ -117,7 +127,8 @@ index_data as (
     pg_relation_size(i2.indexrelid) index_size_bytes,
     s.idx_scan as index_usage,
     i2.opclasses,
-    (i1.columns = i2.columns and i1.opclasses = i2.opclasses) as is_duplicate
+    (i1.columns = i2.columns and i1.opclasses = i2.opclasses
+     and i1.indoption::text = i2.indoption::text and i1.indcollation::text = i2.indcollation::text) as is_duplicate
   from
     index_data as i1
     join index_data as i2 on (
@@ -135,11 +146,14 @@ index_data as (
   where
     not i2.indisprimary
     and not (
-        i2.indisunique and not i1.indisprimary
+        i2.indisunique and not (i1.indisprimary and i1.columns = i2.columns)
     )
     and am1.amname = am2.amname
     and i1.columns like (i2.columns || '%')
     and i1.opclasses like (i2.opclasses || '%')
+    -- pgvigil: the sort options and collations of index 2 lead index 1's too ((a, b DESC) is not served by (a, b))
+    and (i1.indoption::text || ' ') like (i2.indoption::text || ' %')
+    and (i1.indcollation::text || ' ') like (i2.indcollation::text || ' %')
     and pg_get_expr(i1.indexprs, i1.indrelid) is not distinct from pg_get_expr(i2.indexprs, i2.indrelid)
     and pg_get_expr(i1.indpred, i1.indrelid) is not distinct from pg_get_expr(i2.indpred, i2.indrelid)
 ), redundant_indexes_fk as (
@@ -189,6 +203,7 @@ select
   index_usage as idx_scan,
   string_agg(distinct reason, ', ') as covered_by,
   string_agg(main_index_def, '; ') as covered_by_def,
+  string_agg(distinct reason_index_id::text, ',') as covered_by_ids,
   index_def,
   supports_fk,
   format('DROP INDEX CONCURRENTLY %s;', index_id::regclass::text) as drop_sql,
@@ -235,6 +250,7 @@ join pg_class as pct on pct.oid = pidx.indrelid
 join pg_am am on am.oid = pci.relam
 left join pg_namespace pn on pn.oid = pct.relnamespace
 where pidx.indisvalid = false
+  and pci.relkind = 'i'
   and pn.nspname not in ('pg_catalog', 'information_schema')`
 
 // RunInstance reads the connected database on conn and every other connectable database on its own connection, up to
@@ -250,8 +266,11 @@ func (indexesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platf
 	}
 	out := []Row{}
 	if len(dbs) > tablesMaxDatabases {
-		out = append(out, Row{"kind": "collector_error", "source": "indexes",
-			"message": fmt.Sprintf("%d databases: the first %d by name are read", len(dbs), tablesMaxDatabases)})
+		// one error row per database left out, so the import keeps its rows as they were instead of marking them gone
+		for _, db := range dbs[tablesMaxDatabases:] {
+			out = append(out, Row{"kind": "collector_error", "source": "indexes:" + db,
+				"message": fmt.Sprintf("%d databases: the first %d by name are read", len(dbs), tablesMaxDatabases)})
+		}
 		dbs = dbs[:tablesMaxDatabases]
 	}
 	for _, db := range dbs {
@@ -274,8 +293,12 @@ func (indexesCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platf
 }
 
 // indexesRead runs the four reads on one database's connection; any failure fails the database as a whole, so its
-// stored rows stay as they were.
+// stored rows stay as they were. The connection is this collection's own (RunOnce opens one per run; the other
+// databases' are opened here), so its search_path is set for the reads and not put back.
 func indexesRead(ctx context.Context, conn *pgx.Conn) ([]Row, error) {
+	if _, err := conn.Exec(ctx, `SET search_path = pg_catalog`); err != nil {
+		return nil, fmt.Errorf("search_path: %w", err)
+	}
 	out := []Row{}
 	for _, q := range []struct{ name, sql string }{
 		{"database", indexesDBSQL}, {"unused", indexesUnusedSQL}, {"redundant", indexesRedundantSQL}, {"invalid", indexesInvalidSQL},
@@ -290,7 +313,28 @@ func indexesRead(ctx context.Context, conn *pgx.Conn) ([]Row, error) {
 		}
 		out = append(out, rows...)
 	}
-	return out, nil
+	return dropCovers(out), nil
+}
+
+// dropCovers leaves out an unused index that covers a redundant or duplicate one of the same read: its own DO line
+// and the covered index's together would leave the columns with no index at all.
+func dropCovers(rows []Row) []Row {
+	covers := map[string]bool{}
+	for _, r := range rows {
+		if ids, ok := r["covered_by_ids"].(string); ok && (r["problem"] == "redundant" || r["problem"] == "duplicate") {
+			for _, id := range strings.Split(ids, ",") {
+				covers[strings.TrimSpace(id)] = true
+			}
+		}
+	}
+	out := rows[:0]
+	for _, r := range rows {
+		if r["problem"] == "unused" && covers[fmt.Sprint(r["indexrelid"])] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // indexesReadOther connects to another database with the instance's DSN and the collector's session settings.

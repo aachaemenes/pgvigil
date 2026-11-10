@@ -34,6 +34,17 @@
 #     as a login IN ROLE pg_monitor, pg_read_all_data the advisor suggests 'CREATE INDEX ON public.t USING btree (a)' and
 #     at least one statement uses the hypothetical index with a positive gain; afterwards t has no index at all; as a
 #     pg_monitor-only login the same suggestion comes back with its statements noted 'permission denied' and untested.
+#  [review C fold, expected before the rerun:]
+#  A2. more seeds in T1, read in the same collect: t5 (a, b) with t5_a scanned and t5_ab never -> 'T1 redundant t5_a >
+#      t5_ab' and NO unused row for t5_ab (an unused index that covers a listed one is left out); the duplicate pair ->
+#      no unused row for the pair's cover; t6 with PRIMARY KEY (a, b) and a UNIQUE index t6_a_uq on (a) -> no row for
+#      t6_a_uq at all (unique: never unused; covered only by a wider primary key: not redundant); t3_asc (a, b)
+#      and t3_mix (a, b DESC) -> no redundant or duplicate row on t3; a partitioned table q (two partitions) with q_a (a)
+#      and q_ab (a, b) -> no redundant row on q or its partitions; a partitioned index p_a built ON ONLY a partitioned
+#      table p -> no invalid row for it. Every drop_sql names the schema ('DROP INDEX CONCURRENTLY public.').
+#      (So A's findings carry a second 'redundant index|info' row, t5_a's, and B's too: the first fold run missed that.)
+#  C2. the unused finding also needs pgvigil to have seen the index unused for 7 days: x is first imported 8 days
+#      before its second import (one finding); v (the same as x, one import only) -> no finding.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -64,13 +75,22 @@ t1 "create table t (id int primary key, a int, b int, c int)"
 t1 "insert into t select g, g % 5000, g % 77, g % 3000 from generate_series(1, 100000) g"
 t1 "create index ix_unused on t (b); create index ix_a on t (a); create index ix_ab on t (a, b); create index ix_c1 on t (c); create index ix_c2 on t (c)"
 psql "$(dsn_for "$T1")" -XAtq -c "create unique index concurrently ix_bad on t (a)" >/dev/null 2>&1 && fail "ix_bad should have failed (a is not unique)"
-t1 "analyze t"
+t1 "create table t5 (a int, b int); insert into t5 select g % 3000, g % 7 from generate_series(1, 50000) g; create index t5_a on t5 (a); create index t5_ab on t5 (a, b)"
+t1 "create table t6 (a int, b int, primary key (a, b)); insert into t6 select g, g % 7 from generate_series(1, 50000) g; create unique index t6_a_uq on t6 (a)"
+t1 "create table t3 (a int, b int); insert into t3 select g % 3000, g % 7 from generate_series(1, 50000) g; create index t3_asc on t3 (a, b); create index t3_mix on t3 (a, b desc)"
+t1 "create table q (a int, b int) partition by range (a); create table q1 partition of q for values from (0) to (5000); create table q2 partition of q for values from (5000) to (10000)"
+t1 "insert into q select g % 10000, g % 7 from generate_series(1, 50000) g; create index q_a on q (a); create index q_ab on q (a, b)"
+t1 "create table p (a int) partition by range (a); create table p1 partition of p for values from (0) to (100); create index p_a on only p (a)"
+t1 "analyze t; analyze t5; analyze t6; analyze t3; analyze q"
 t2 "create table u (id int, v int); insert into u select g, g % 10 from generate_series(1, 1000) g"
 psql "$(dsn_for "$T2")" -XAtq -c "create unique index concurrently ux_bad on u (v)" >/dev/null 2>&1 && fail "ux_bad should have failed"
 # use ix_a and ix_ab (each read in its own session: the counters are flushed when it ends)
 psql "$(dsn_for "$T1")" -XAtq -c "set enable_seqscan = off; set enable_bitmapscan = off" -c "select count(*) from t where a = 5" >/dev/null
 psql "$(dsn_for "$T1")" -XAtq -c "set enable_seqscan = off; set enable_bitmapscan = off" -c "select count(*) from t where a = 5 and b = 5" >/dev/null
+psql "$(dsn_for "$T1")" -XAtq -c "set enable_seqscan = off; set enable_bitmapscan = off" -c "select count(*) from t5 where a = 5" >/dev/null
 sleep 1
+[[ $(t1 "select string_agg(indexrelname || '=' || idx_scan, ',' order by indexrelname) from pg_stat_user_indexes where indexrelname in ('t5_a','t5_ab')") == "t5_a=1,t5_ab=0" ]] || fail "t5 seeding reads"
+[[ $(t1 "select indisvalid from pg_index where indexrelid = 'p_a'::regclass") == f ]] || fail "p_a should be invalid (ON ONLY)"
 used=$(t1 "select string_agg(indexrelname || '=' || idx_scan, ',' order by indexrelname) from pg_stat_user_indexes where indexrelname in ('ix_a','ix_ab')")
 [[ $used == "ix_a=1,ix_ab=1" ]] || fail "the seeding reads did not use ix_a and ix_ab once each: $used"
 
@@ -89,14 +109,17 @@ st=$(q "select status || ' ' || coalesce(note, '') from pgvigil.collection_dates
 [[ $(q "select count(*) from pgvigil.index_databases where instance_id=$iid and is_present and datname in ('$T1','$T2')") == 2 ]] || fail "index_databases"
 rows() { q "select string_agg(case when datname = '$T1' then 'T1' else 'T2' end || ' ' || problem || ' ' || index_name || coalesce(' > ' || covered_by, ''), E'\n' order by datname, problem, index_name) from pgvigil.index_state where instance_id=$iid and is_present and datname in ('$T1','$T2') $1"; }
 echo "index_state (proof databases):"; rows ""
-[[ $(rows "and problem <> 'unused' and problem <> 'duplicate'") == $'T1 invalid ix_bad\nT1 redundant ix_a > ix_ab\nT2 invalid ux_bad' ]] || fail "invalid / redundant rows"
+[[ $(rows "and problem <> 'unused' and problem <> 'duplicate'") == $'T1 invalid ix_bad\nT1 redundant ix_a > public.ix_ab\nT1 redundant t5_a > public.t5_ab\nT2 invalid ux_bad' ]] || fail "invalid / redundant rows"
 dup=$(rows "and problem = 'duplicate'")
-[[ $dup == "T1 duplicate ix_c1 > ix_c2" || $dup == "T1 duplicate ix_c2 > ix_c1" ]] || fail "duplicate row: $dup"
-[[ $(rows "and problem = 'unused' and index_name in ('ix_unused','ix_a','ix_ab','t_pkey','ix_bad')") == "T1 unused ix_unused" ]] || fail "unused rows"
+[[ $dup == "T1 duplicate ix_c1 > public.ix_c2" || $dup == "T1 duplicate ix_c2 > public.ix_c1" ]] || fail "duplicate row: $dup"
+cover=${dup##*public.}
+[[ $(rows "and problem = 'unused' and index_name in ('ix_unused','ix_a','ix_ab','t_pkey','ix_bad','t5_ab','t6_a_uq','t6_pkey','$cover')") == "T1 unused ix_unused" ]] || fail "unused rows (the cover $cover, t5_ab, t6 must not be unused)"
+[[ $(rows "and table_name in ('t3','t6','q','q1','q2','p') and problem <> 'unused'") == "" ]] || fail "rows on t3 / t6 / q / p: $(rows "and table_name in ('t3','t6','q','q1','q2','p') and problem <> 'unused'")"
+[[ $(q "select count(*) from pgvigil.index_state where instance_id=$iid and datname in ('$T1','$T2') and drop_sql not like 'DROP INDEX CONCURRENTLY public.%'") == 0 ]] || fail "drop lines without the schema"
 [[ $(q "select count(*) from pgvigil.index_state where instance_id=$iid and datname in ('$T1','$T2') and (drop_sql not like 'DROP INDEX CONCURRENTLY %' or undo_sql not like 'CREATE %INDEX CONCURRENTLY %')") == 0 ]] || fail "drop / undo lines"
 fnd() { q "select string_agg(setting || '|' || severity || '|' || case when value like '$T1:%' then 'T1' else 'T2' end, ',' order by setting, severity, value) from pgvigil.index_findings where instance_id=$iid and (value like '$T1:%' or value like '$T2:%')"; }
 echo "findings: $(fnd)"
-[[ $(fnd) == "duplicate index|warning|T1,invalid index|warning|T1,invalid index|warning|T2,redundant index|info|T1" ]] || fail "findings A"
+[[ $(fnd) == "duplicate index|warning|T1,invalid index|warning|T1,invalid index|warning|T2,redundant index|info|T1,redundant index|info|T1" ]] || fail "findings A"
 first_red=$(q "select first_seen from pgvigil.index_state where instance_id=$iid and datname='$T1' and problem='redundant'")
 
 echo "--- B. two indexes and a database dropped"
@@ -110,20 +133,23 @@ sleep 1
 [[ $(q "select first_seen from pgvigil.index_state where instance_id=$iid and datname='$T1' and problem='redundant' and is_present") == "$first_red" ]] || fail "redundant first_seen moved"
 [[ $(q "select count(*) from pgvigil.index_state where instance_id=$iid and datname='$T1' and problem='duplicate' and is_present") == 1 ]] || fail "duplicate gone"
 echo "findings: $(fnd)"
-[[ $(fnd) == "duplicate index|warning|T1,redundant index|info|T1" ]] || fail "findings B"
+[[ $(fnd) == "duplicate index|warning|T1,redundant index|info|T1,redundant index|info|T1" ]] || fail "findings B"
 
 echo "--- C. the unused rule on seeded imports"
-seed() { # name, stats_since age, replica, unused bytes
-  local id; id=$(q "insert into pgvigil.instances (name, platform) values ('proof-ix-$1-$SUF', 'onprem') returning instance_id" | head -1)
-  q "select pgvigil.import_indexes($id, now(), jsonb_build_array(
+seed() { # name, stats_since age, replica, unused bytes, [an earlier first import this long ago]
+  local id at; id=$(q "insert into pgvigil.instances (name, platform) values ('proof-ix-$1-$SUF', 'onprem') returning instance_id" | head -1)
+  for at in ${5:+"now() - interval '$5'"} "now()"; do
+  q "select pgvigil.import_indexes($id, $at, jsonb_build_array(
        jsonb_build_object('kind','db','dbid',1,'datname','dbq','indexes',3,'index_bytes',$4,'stats_since',now() - interval '$2','is_replica',$3),
        jsonb_build_object('kind','index','dbid',1,'datname','dbq','indexrelid',100,'problem','unused','schema_name','public','table_name','big',
                           'index_name','big_x','index_bytes',$4,'drop_sql','DROP INDEX CONCURRENTLY big_x;','undo_sql','CREATE INDEX CONCURRENTLY big_x ON big (x);')))" >/dev/null
+  done
   echo "$id"
 }
-x=$(seed x '30 days' false 20971520); y=$(seed y '30 days' true 20971520); z=$(seed z '2 days' false 20971520); w=$(seed w '30 days' false 5242880)
+x=$(seed x '30 days' false 20971520 '8 days'); y=$(seed y '30 days' true 20971520 '8 days'); z=$(seed z '2 days' false 20971520 '8 days')
+w=$(seed w '30 days' false 5242880 '8 days'); v=$(seed v '30 days' false 20971520 '')
 [[ $(q "select string_agg(setting || '|' || severity, ',') from pgvigil.index_findings where instance_id=$x") == "unused index|info" ]] || fail "x finding"
-[[ $(q "select count(*) from pgvigil.index_findings where instance_id in ($y, $z, $w)") == 0 ]] || fail "y / z / w findings: $(q "select instance_id, setting from pgvigil.index_findings where instance_id in ($y, $z, $w)")"
+[[ $(q "select count(*) from pgvigil.index_findings where instance_id in ($y, $z, $w, $v)") == 0 ]] || fail "y / z / w / v findings: $(q "select instance_id, setting from pgvigil.index_findings where instance_id in ($y, $z, $w, $v)")"
 q "select pgvigil.import_indexes($x, now(), '[{\"kind\":\"collector_error\",\"source\":\"indexes:dbq\",\"message\":\"proof\"}]')" >/dev/null
 [[ $(q "select is_present from pgvigil.index_state where instance_id=$x") == t && $(q "select is_present from pgvigil.index_databases where instance_id=$x") == t ]] || fail "rows of a database in error not kept"
 q "delete from pgvigil.instances where name like 'proof-ix-_-$SUF'" >/dev/null

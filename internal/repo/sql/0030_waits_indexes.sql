@@ -384,8 +384,9 @@ END $$;
 
 -- index_findings: the findings view's columns (instance_id, severity, setting, value, is_set, suggested, platforms, detail,
 -- source, at). An invalid index and an exact duplicate warn; a redundant index and an unused one of 10 MB or more are info,
--- the unused one only once the usage counters have counted for 7 days and not on a replica (its own counters see only its
--- own reads; an index the primary uses reads as unused there).
+-- the unused one only once the usage counters have counted for 7 days, pgvigil has seen it unused for 7 days (a new index
+-- for a feature not shipped yet is not "never read"), and not on a replica (its own counters see only its own reads; an
+-- index the primary uses reads as unused there).
 CREATE OR REPLACE VIEW pgvigil.index_findings AS
 WITH k AS (SELECT 10485760::bigint AS unused_bytes_min, interval '7 days' AS unused_window_min)
 SELECT s.instance_id, CASE WHEN s.problem IN ('invalid', 'duplicate') THEN 'warning' ELSE 'info' END AS severity,
@@ -412,4 +413,5 @@ SELECT s.instance_id, CASE WHEN s.problem IN ('invalid', 'duplicate') THEN 'warn
  WHERE s.is_present
    AND (s.problem <> 'unused'
         OR (coalesce(s.index_bytes, 0) >= k.unused_bytes_min AND NOT coalesce(d.is_replica, false)
-            AND d.stats_since IS NOT NULL AND d.stats_since < now() - k.unused_window_min));
+            AND d.stats_since IS NOT NULL AND d.stats_since < now() - k.unused_window_min
+            AND s.first_seen < now() - k.unused_window_min));
