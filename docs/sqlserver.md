@@ -46,6 +46,16 @@ On Azure SQL Database the login block is the first three lines only, run in `mas
 
 A collection that needs a right the login lacks does not fail the instance: it stores what it could read, and its row on the Collections page says `partial` with the missing right.
 
+## Agent, Database Mail and memory dumps (`mssql_services`, every 5 minutes)
+
+Three columns of the Summary, read with the same login:
+
+- **Agent**: is SQL Server Agent running. The service's own state where the server lists it (`sys.dm_server_services`), else whether Agent's sessions are open. Stopped is critical; stopped with the service disabled is a warning; SQL Server Express has no Agent and says so.
+- **DB Mail**: started or stopped, where Database Mail is switched on. `msdb.dbo.sysmail_help_status_sp` asks for CONTROL SERVER or `db_owner` in msdb, so pgvigil makes that procedure's one catalog read itself (does the queue `ExternalMailQueue` receive), which VIEW ANY DEFINITION covers. Stopped is a warning; switched off is shown as `off` and never flagged. A login that cannot see the queue gets `not readable` and a partial run that says why.
+- **Memory dumps**: the dump files the server lists (`sys.dm_server_memory_dumps`). The newest under 48 hours old is critical, under 7 days a warning. A file whose creation time the server cannot tell (SQL Server on Linux lists one dated 1601) is counted and never dated.
+
+Not on Azure SQL Database. Needs VIEW SERVER STATE. The services the server lists are kept in `pgvigil.mssql_service`, the three states in `pgvigil.mssql_health`, the cells' rules in the view `pgvigil.mssql_health_status`. Proof: `scripts/proof-mssql-services.sh` (a stopped Agent is proven on imported rows only; Windows, Express, RDS and Managed Instance are not proven).
+
 ## One run by hand
 
 ```

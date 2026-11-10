@@ -4,7 +4,7 @@ import "net/http"
 
 // The Summary of the SQL Server instances: one row per instance and status group, read from the findings the
 // wave's collections raise (pgvigil.findings, the mssql_* sources) and from what the base collection stores
-// (the server's start time, the databases' states). sampled says whether a collection of the group has ever
+// (the server's start time, the databases' states, the services read). sampled says whether a collection of the group has ever
 // stored a read for the instance: a group nothing was read for is 'not yet', never OK.
 //
 // Uptime follows DBA Dash's defaults: critical under 12 hours since the start, warning under 48.
@@ -69,6 +69,11 @@ SELECT i.instance_id, 'dbstate', d.n IS NOT NULL,
        NULL::text,
        CASE WHEN d.names IS NULL THEN '{}'::text[] ELSE ARRAY[d.names] END
   FROM inst i LEFT JOIN dbs d USING (instance_id)
+UNION ALL
+-- Agent, Database Mail and memory dumps: the rules live in the view (migration 0070)
+SELECT i.instance_id, coalesce(c.key, k.key), coalesce(c.sampled, false), coalesce(c.critical, 0), coalesce(c.warning, 0), c.value, coalesce(c.detail, '{}')
+  FROM inst i CROSS JOIN (VALUES ('agent'), ('dbmail'), ('dumps')) k(key)
+  LEFT JOIN pgvigil.mssql_health_status c ON c.instance_id = i.instance_id AND c.key = k.key
  ORDER BY 1, 2`
 
 // The newest description of each SQL Server instance (the base collection, mssql_instance).
