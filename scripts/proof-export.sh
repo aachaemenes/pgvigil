@@ -15,7 +15,9 @@
 #              rows; styles.xml carries a solid fill in each status colour the Summary grid shows on screen
 #              (ok FFE3F4E6, warn FFFFF1D6, crit FFFDE2E2, 'no sample' FFEEF1F5) and a cell of that sheet is
 #              styled with it; each sheet's data rows = the grid's rows on screen
-#   tables     sheets: Summary, Tables, Biggest tables (the screen's headings); a numeric cell (<v>, no t=) styled
+#   tables     sheets: Summary, Tables, Biggest tables (the screen's headings); Biggest tables sorted by 'total'
+#              on screen first, its sheet's 'table' column in the screen's order and every 'total' still a number
+#              (a page model out of step with the sort turns them to text); a numeric cell (<v>, no t=) styled
 #              with a number format (numFmtId 165 bytes, '#,##0" B"'), a time cell with 168 and a count with 3
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first
@@ -92,17 +94,26 @@ const press = async (label, exts) => {
   }
   throw new Error(`no ${exts.join(' or ')} downloaded after ${label}: ` + await ev(`document.querySelector('#bar .export [role=status]').textContent`));
 };
-const page = async (hash) => {
+const page = async (hash, sortBy) => {
   await cmd('Page.navigate', { url: U + hash }); await sleep(300);
   if (!await settled()) throw new Error('page did not render: ' + hash);
+  let order = null;
+  if (sortBy) {
+    // sort the page's last grid by a column (one click: ascending), so the export must follow the screen's order
+    order = await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].pop(); const hs = [...t.querySelectorAll('thead th')];
+      const th = hs.find(h => h.textContent === ${JSON.stringify(sortBy[0])}); th.click();
+      const j = hs.findIndex(h => h.textContent === ${JSON.stringify(sortBy[1])});
+      return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j].textContent.trim()); })()`);
+    await sleep(200);
+  }
   const grids = await ev(`[...document.querySelectorAll('main h2, main h3, main table.grid, main table.props')].map(e => e.tagName === 'TABLE' ? { rows: e.querySelectorAll(e.classList.contains('grid') ? 'tbody tr' : 'tr').length, status: [...new Set([...e.querySelectorAll('td.status, td .badge, td .dot')].map(x => ['crit','warn','ok','none'].find(k => x.classList.contains(k))).filter(Boolean))] } : { h: e.textContent.trim() })`);
-  return { hash, grids, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
+  return { hash, grids, order, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
 };
 await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
 const out = { instance: one.name };
 out.summary = await page('#/summary');
-out.tables = await page(`#/tables?i=${one.instance_id}`);
+out.tables = await page(`#/tables?i=${one.instance_id}`, ['total', 'table']);
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
@@ -167,6 +178,15 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', re.
         for f, what in ((165, 'bytes'), (168, 'a time'), (3, 'a count')):
             check(any(cx[s]['fmt'] == f for s in nums), f"tables: a numeric cell with numFmt {f} ({what})")
         check('numFmtId="165" formatCode="#,##0&quot; B&quot;"' in st, "tables: numFmt 165 is '#,##0\" B\"'")
+        last = z.read(f'xl/worksheets/sheet{len(gs) + 1}.xml').decode()
+        col = re.findall(r'<c r="D(\d+)"[^>]*t="inlineStr"><is><t xml:space="preserve">([^<]*)</t>', last)
+        got = [t.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"') for r, t in col if r != '1']
+        check(p['order'] and got == p['order'], f"tables: 'Biggest tables' sorted by total on screen, the sheet's table column in the same order ({len(got)} rows)")
+        # the raw values must follow the sort too: a model out of step pairs a row's text with another row's value,
+        # and the cell falls back to text; every 'total' (column E) of the sorted sheet stays a number
+        tot = re.findall(r'<c r="E(\d+)"[^>]*?(/>|><v>|t="inlineStr")', last)
+        numeric = [r for r, k in tot if r != '1' and k == '><v>']
+        check(len(got) > 1 and len(numeric) == len(got), f"tables: the sorted sheet's total column: {len(numeric)} of {len(got)} rows numeric")
     if key == 'summary':
         check(any(cx[s]['fill'] in fill.values() for s in range(len(cx))), "summary: a status fill in styles.xml")
     # CSV
