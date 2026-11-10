@@ -44,6 +44,12 @@ func TestRoutesWithoutDatabase(t *testing.T) {
 		{"/api/findings?instance=0", 400, "instance must be"},
 		{"/api/slow?instance=1&min=bad", 400, "min must be"},
 		{"/api/statements?instance=1&order=bad", 400, "order must be"},
+		{"/api/dbinfo", 400, "instance must be"},
+		{"/api/dbinfo?instance=1&db=0", 400, "db must be"},
+		{"/api/drill/db?instance=1&db=0", 400, "db must be"},
+		{"/api/drill/table?instance=1&db=1&rel=x", 400, "rel must be"},
+		{"/api/drill/job?instance=1&scheduler=Bad!&job=1", 400, "scheduler must be"},
+		{"/api/drill/index?instance=1&db=1", 400, "idx must be"},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()

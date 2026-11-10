@@ -23,13 +23,15 @@ export function rememberInstance(id?: number) { if (id) try { localStorage.setIt
 
 export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', indexes: 'Indexes' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', indexes: 'Indexes', growth: 'Growth' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
-  host: 'Host', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', indexes: 'Indexes', plans: 'Plans', actions: 'Actions log',
+  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', indexes: 'Indexes', plans: 'Plans', actions: 'Actions log',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
+// the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
+export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index' };
 
 export function parse(): Ctx {
   const h = location.hash.replace(/^#\/?/, '');
@@ -43,7 +45,7 @@ export function parse(): Ctx {
   const custom = from && to && !isNaN(Date.parse(from)) && !isNaN(Date.parse(to)) && Date.parse(from) < Date.parse(to);
   const w = q.get('w') ?? '';
   return {
-    tab: tabs[name] ? name : 'summary',
+    tab: tabs[name] || (instance && drillTabs[name]) ? name : 'summary',
     instance,
     tag: q.get('tag') ?? undefined,
     range: custom ? { from, to } : { preset: presets[w] ? w : '1h' },
@@ -77,6 +79,12 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (c.tab === 'dms') { page('task', 'task'); page('taskInstance', 'ti'); }
   if (c.tab === 'statements') { page('order', 'order'); page('minSecs', 'min'); }
   if (c.tab === 'slowqueries') page('ms', 'ms');
+  // the Database info and drill-down pages keep their own parameters (db, rel, scheduler, job, idx) on a link to the
+  // same page, so a range change stays on the same database, table, job or index
+  if (keep && (drillTabs[c.tab] || c.tab === 'dbinfo')) {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
   return `#/${c.tab}?${q}`;
 }
 

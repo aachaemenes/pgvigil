@@ -7,6 +7,7 @@ import { Ctx, href, isLive, rangeLabel, window_ } from './router';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
+import { dbinfoFleetView } from './dbinfo';
 import { backupsFleetView } from './backups';
 import { corruptionFleetView } from './corruption';
 import { extensionsFleetView } from './extensions';
@@ -587,6 +588,13 @@ export async function disks(ctx: Ctx): Promise<HTMLElement> {
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }
+export async function growth(ctx: Ctx): Promise<HTMLElement> {
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await dbinfoFleetView(ctx, ids ? r => ids.has(Number(r.instance_id)) : undefined);
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}
+
 export async function storage(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const view = await storageFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'storage'));
