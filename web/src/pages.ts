@@ -9,7 +9,6 @@ import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
 import { sessionSetsSection } from './sessionsets';
-import { jobLink } from './drill';
 import { backupsFleetView } from './backups';
 import { corruptionFleetView } from './corruption';
 import { extensionsFleetView } from './extensions';
@@ -572,38 +571,6 @@ export async function replication(ctx: Ctx): Promise<HTMLElement> {
 
 // ---- Jobs
 
-const runBadge = (v: unknown) => {
-  const s = String(v ?? '');
-  return s ? badge(s, ['failed', 'internal error', 'aborted'].includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn') : '';
-};
-
-export async function jobs(ctx: Ctx): Promise<HTMLElement> {
-  const need = needInstance(ctx); if (need) return need;
-  const d = await get<Record<'jobs' | 'runs', Table>>('jobs', { instance: ctx.instance, ...range(ctx) });
-  const jobCols: Col[] = [
-    { key: 'scheduler' }, { key: 'job_id', label: 'id', num: true },
-    { key: 'job_name', label: 'name', fmt: (v, r) => jobLink(ctx, String(v ?? r.job_id), r.scheduler, r.job_id) }, { key: 'schedule' },
-    { key: 'active', fmt: v => v == null ? '' : v ? 'yes' : 'no' },
-    { key: 'last_status', label: 'last run', fmt: runBadge },
-    { key: 'last_start', label: 'last start', fmt: fmtTime },
-    { key: 'last_duration_secs', label: 'took', num: true, fmt: fmtSecs },
-    { key: 'next_run', label: 'next run', fmt: fmtTime },
-    { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
-    { key: 'is_present', label: 'present', fmt: v => v ? 'yes' : 'gone' },
-    { key: 'command', wide: true },
-  ];
-  const runCols: Col[] = [
-    { key: 'start_time', label: 'start', fmt: fmtTime },
-    { key: 'duration_secs', label: 'took', num: true, fmt: fmtSecs },
-    { key: 'status', fmt: runBadge },
-    { key: 'scheduler' }, { key: 'job_name', label: 'job', fmt: (v, r) => jobLink(ctx, String(v ?? r.job_id), r.scheduler, r.job_id) },
-    { key: 'run_id', label: 'run', num: true }, { key: 'datname', label: 'db' },
-    { key: 'return_message', label: 'message', wide: true },
-  ];
-  return el('section', {}, el('h2', {}, 'Jobs'),
-    grid(rowsOf(d.jobs), jobCols, 'No scheduled jobs (pg_cron or pgAgent not installed, or nothing scheduled).'),
-    el('h3', {}, `Runs (${rangeLabel(ctx)})`), grid(rowsOf(d.runs), runCols, 'No job runs started in this range.'));
-}
 
 // ---- Logs
 
