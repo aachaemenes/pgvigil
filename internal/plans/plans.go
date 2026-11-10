@@ -148,6 +148,9 @@ func FromLogMessage(at time.Time, datname, usename, msg string) (Row, bool) {
 	}
 	body := untab(m[2])
 	r := Build(AutoExplain, at, "", datname, "", body)
+	if r.Format == "text" && r.Plan != nil {
+		r.PlanText = planOnly(r.PlanText) // the query is kept in its own column; a viewer reads the text as a plan
+	}
 	r.Usename = usename
 	if d, err := strconv.ParseFloat(m[1], 64); err == nil {
 		r.DurationMS = &d
@@ -172,4 +175,15 @@ func untab(s string) string {
 		lines[i] = strings.TrimPrefix(l, "\t")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// planOnly drops the lines before a text plan's first node (auto_explain's "Query Text:" and "Query Parameters:").
+func planOnly(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if isNodeLine(strings.TrimSpace(l)) {
+			return strings.Join(lines[i:], "\n")
+		}
+	}
+	return text
 }

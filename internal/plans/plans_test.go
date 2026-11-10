@@ -142,6 +142,9 @@ func TestFromLogMessage(t *testing.T) {
 	if r.Query != "select count(*)\n  from t40 where v = 1" {
 		t.Errorf("query %q", r.Query)
 	}
+	if !strings.HasPrefix(r.PlanText, "Aggregate  (cost=") {
+		t.Errorf("the stored text keeps the query lines: %.60q", r.PlanText)
+	}
 	var top map[string]any
 	_ = json.Unmarshal(r.Plan, &top)
 	n := nodes(top)

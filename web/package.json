@@ -3,11 +3,14 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "build": "tsc --noEmit && esbuild src/main.ts --bundle --minify --format=esm --target=es2020 --outfile=../internal/web/dist/app.js && cp node_modules/uplot/dist/uPlot.min.css ../internal/web/dist/uplot.css",
-    "check": "tsc --noEmit"
+    "build": "tsc --noEmit && esbuild src/main.ts --bundle --minify --format=esm --target=es2020 --outfile=../internal/web/dist/app.js && cp node_modules/uplot/dist/uPlot.min.css ../internal/web/dist/uplot.css && npm run build:pev2",
+    "check": "tsc --noEmit",
+    "build:pev2": "node -e \"require('fs').rmSync('../internal/web/dist/pev2',{recursive:true,force:true})\" && esbuild vue=vue pev2=pev2 --bundle --splitting --minify --format=esm --target=es2020 --outdir=../internal/web/dist/pev2 --chunk-names=chunk-[hash] --define:process.env.NODE_ENV='\"production\"' --define:__VUE_OPTIONS_API__=true --define:__VUE_PROD_DEVTOOLS__=false --define:__VUE_PROD_HYDRATION_MISMATCH_DETAILS__=false && cp node_modules/pev2/dist/pev2.css node_modules/bootstrap/dist/css/bootstrap.min.css ../internal/web/dist/pev2/ && cp node_modules/@fortawesome/fontawesome-svg-core/styles.css ../internal/web/dist/pev2/fontawesome.css"
   },
   "dependencies": {
-    "uplot": "1.6.32"
+    "pev2": "1.25.0",
+    "uplot": "1.6.32",
+    "vue": "3.5.44"
   },
   "devDependencies": {
     "esbuild": "0.25.12",
