@@ -264,12 +264,33 @@ func classify(e *entry) (Event, bool) {
 		strings.Contains(e.msg, "does not exist") && strings.HasPrefix(e.msg, "role ")):
 		ev.Kind, ev.Detail = AuthFail, e.msg
 	default:
-		// a message no rule above took: the pganalyze classes (classes_pganalyze.go), one event kind each
+		// a message no rule above took: the pganalyze classes (classes_pganalyze.go), one event kind each. The detail
+		// is the server's own message with its DETAIL and HINT lines (a temp file's path and size, a crash's signal,
+		// a conflict's reason, the wraparound hint); a crash's "Failed process was running:" DETAIL is the statement,
+		// so the query-text policy governs it; an autovacuum cancel's CONTEXT names the table.
 		k, _, ok := ClassifyMore(e.level, e.msg)
 		if !ok {
 			return ev, false
 		}
-		ev.Kind, ev.Detail, ev.Statement = k, e.msg, tagged(e.more, "STATEMENT")
+		ev.Kind = k
+		d := []string{e.msg}
+		stmt := tagged(e.more, "STATEMENT")
+		if v := tagged(e.more, "DETAIL"); v != "" {
+			if s, found := strings.CutPrefix(v, "Failed process was running: "); found {
+				stmt = strings.TrimSpace(s + "\n" + stmt)
+			} else {
+				d = append(d, "DETAIL: "+v)
+			}
+		}
+		if v := tagged(e.more, "HINT"); v != "" {
+			d = append(d, "HINT: "+v)
+		}
+		if k == AutovacuumCancel {
+			if v := tagged(e.more, "CONTEXT"); v != "" {
+				d = append(d, "CONTEXT: "+v)
+			}
+		}
+		ev.Detail, ev.Statement = strings.Join(d, "\n"), stmt
 	}
 	return ev, true
 }

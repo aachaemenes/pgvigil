@@ -261,7 +261,11 @@ BEGIN
   RETURN n;
 END $$;
 
--- the log event kinds the two readers store: 0024's five, 0043's plan and corruption, and the fourteen pganalyze classes of 0030
+-- the log event kinds the two readers store: 0024's five, 0043's plan and corruption, and the fourteen pganalyze classes of 0030.
+-- NOT VALID skips the scan of every log_events partition under ACCESS EXCLUSIVE (every stored kind is in the new list, so the
+-- scan would prove nothing: the old list is a subset); VALIDATE CONSTRAINT then marks it validated under SHARE UPDATE EXCLUSIVE
+-- only, on the parent and each partition (PostgreSQL 18.6, tested). 0043's plain ADD stays as shipped.
 ALTER TABLE pgvigil.log_events DROP CONSTRAINT IF EXISTS log_events_kind_check;
 ALTER TABLE pgvigil.log_events ADD CONSTRAINT log_events_kind_check CHECK (kind IN ('slow', 'lock_wait', 'deadlock', 'auth_fail', 'autovacuum', 'plan', 'corruption',
-  'connection_limit', 'connection_lost', 'timeout', 'canceled', 'autovacuum_cancel', 'vacuum_skipped', 'wraparound', 'checkpoint_frequent', 'crash', 'out_of_memory', 'archive_failed', 'standby_conflict', 'serialization_failure', 'temp_file'));
+  'connection_limit', 'connection_lost', 'timeout', 'canceled', 'autovacuum_cancel', 'vacuum_skipped', 'wraparound', 'checkpoint_frequent', 'crash', 'out_of_memory', 'archive_failed', 'standby_conflict', 'serialization_failure', 'temp_file')) NOT VALID;
+ALTER TABLE pgvigil.log_events VALIDATE CONSTRAINT log_events_kind_check;

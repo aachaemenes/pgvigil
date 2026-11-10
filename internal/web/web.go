@@ -22,6 +22,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/logparse"
 )
 
 //go:embed dist
@@ -694,13 +696,15 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 	}
 	var kind *string
 	if v := r.URL.Query().Get("kind"); v != "" {
-		switch v {
-		case "slow", "lock_wait", "deadlock", "auth_fail":
-			kind = &v
-		default:
-			writeErr(w, http.StatusBadRequest, errors.New("kind must be slow, lock_wait, deadlock or auth_fail"))
+		if !logparse.KnownKind(v) {
+			names := make([]string, 0, len(logparse.AllKinds()))
+			for _, k := range logparse.AllKinds() {
+				names = append(names, string(k))
+			}
+			writeErr(w, http.StatusBadRequest, errors.New("kind must be one of "+strings.Join(names, ", ")))
 			return
 		}
+		kind = &v
 	}
 	s.multi(w, r, []part{
 		{"counts", sqlLogCounts, []any{id, from, to}},

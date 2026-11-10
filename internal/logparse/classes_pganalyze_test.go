@@ -1,6 +1,9 @@
 package logparse
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestClassifyMore: the recorded lines were written by PostgreSQL 18 in a throwaway container (2026-11-10, a
 // statement timeout, a lock timeout, a role at its connection limit, a sort spilling with log_temp_files = 0, a
@@ -71,6 +74,59 @@ func TestClassifyMore(t *testing.T) {
 	for _, c := range Classes {
 		if !known[c.Kind] {
 			t.Errorf("class %s: kind %q not in Kinds", c.Name, c.Kind)
+		}
+	}
+}
+
+// TestParsePganalyze runs the classes through the reader itself (classify's default branch): the kind, the detail
+// (the message with its DETAIL and HINT lines, an autovacuum cancel's CONTEXT) and the statement (the STATEMENT
+// line; a crash's "Failed process was running:" DETAIL) per line of testdata/pganalyze-pg18.log, which also carries
+// a deadlock (an earlier case keeps it), a bare duration line and a checkpoint line (both dropped).
+func TestParsePganalyze(t *testing.T) {
+	evs := parseFile(t, "pganalyze-pg18.log")
+	byPID := map[int][]Event{}
+	for _, e := range evs {
+		byPID[e.PID] = append(byPID[e.PID], e)
+	}
+	want := []struct {
+		pid    int
+		kind   Kind
+		detail string // a substring of the detail
+		stmt   string // the whole statement
+	}{
+		{6101, Timeout, "canceling statement due to statement timeout", "select pg_sleep(10) where 1 = 1"},
+		{6102, ConnectionLimit, `too many connections for role "lim"`, ""},
+		{6103, TempFile, `size 1073741824`, "select * from orders where total > 100 order by placed_at"},
+		{6104, SerializationFailure, "could not serialize access due to concurrent update", "update orders set total = 7 where id = 1"},
+		{6105, Canceled, "canceling statement due to user request", "select count(*) from orders where total = 99"},
+		{6107, OutOfMemory, `DETAIL: Failed on request of size 16 in memory context "ExecutorState".`, "select array_agg(x) from generate_series(1, 2000000000) x"},
+		{6108, Wraparound, "HINT: To avoid XID assignment failures", ""},
+		{6109, ArchiveFailed, "DETAIL: The failed archive command was: cp pg_wal/000000010000000000000042", ""},
+		{6110, AutovacuumCancel, `CONTEXT: automatic vacuum of table "shop.public.orders"`, ""},
+		{6111, VacuumSkipped, `skipping vacuum of "orders"`, ""},
+		{6112, CheckpointFrequent, `HINT: Consider increasing the configuration parameter "max_wal_size".`, ""},
+		{6113, ConnectionLost, "unexpected EOF on client connection with an open transaction", ""},
+		{6114, StandbyConflict, "DETAIL: User query might have needed to see row versions that must be removed.", "select * from orders where id = 5"},
+		{6115, Deadlock, "Process 6115 waits for ShareLock", "update orders set total = 1 where id = 2"},
+	}
+	for _, w := range want {
+		es := byPID[w.pid]
+		if len(es) != 1 {
+			t.Errorf("pid %d: %d events, want 1: %+v", w.pid, len(es), es)
+			continue
+		}
+		e := es[0]
+		if e.Kind != w.kind || !strings.Contains(e.Detail, w.detail) || e.Statement != w.stmt {
+			t.Errorf("pid %d: kind %q detail %q statement %q; want %q, a detail with %q, statement %q", w.pid, e.Kind, e.Detail, e.Statement, w.kind, w.detail, w.stmt)
+		}
+	}
+	// the crash: two events (the signal, then the postmaster's terminating line), the failed statement in Statement, not in Detail
+	if cr := byPID[6106]; len(cr) != 2 || cr[0].Kind != Crash || cr[0].Statement != "select crashme('secret-arg')" || strings.Contains(cr[0].Detail, "secret-arg") || cr[1].Kind != Crash {
+		t.Errorf("the crash: %+v", cr)
+	}
+	for _, pid := range []int{6116, 6117} {
+		if len(byPID[pid]) != 0 {
+			t.Errorf("pid %d must give no event: %+v", pid, byPID[pid])
 		}
 	}
 }

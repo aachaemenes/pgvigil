@@ -56,6 +56,36 @@ const (
 )
 
 // Kinds lists every kind this file adds, in order.
+// messageDetail: the kinds whose detail is the server's own message, never statement text (the corruption
+// reader's and these classes'); the collector's text policy keeps such a detail whole and governs the statement.
+var messageDetail = func() map[Kind]bool {
+	m := map[Kind]bool{Corruption: true}
+	for _, k := range Kinds {
+		m[k] = true
+	}
+	return m
+}()
+
+// DetailIsMessage reports whether an event of this kind carries the server's own message as its detail.
+func DetailIsMessage(k Kind) bool { return messageDetail[k] }
+
+// AllKinds lists every kind the two readers emit, the base kinds first, then the pganalyze classes' (the Logs API
+// accepts exactly these as a filter).
+func AllKinds() []Kind {
+	return append([]Kind{Slow, LockWait, Deadlock, AuthFail, Plan, Corruption}, Kinds...)
+}
+
+// KnownKind reports whether s names a kind the readers emit.
+func KnownKind(s string) bool {
+	for _, k := range AllKinds() {
+		if string(k) == s {
+			return true
+		}
+	}
+	return false
+}
+
+// Kinds lists the event kinds the pganalyze classes add, one per class; the join's log_events CHECK lists them.
 var Kinds = []Kind{ConnectionLimit, ConnectionLost, Timeout, Canceled, AutovacuumCancel, VacuumSkipped, Wraparound,
 	CheckpointFrequent, Crash, OutOfMemory, ArchiveFailed, StandbyConflict, SerializationFailure, TempFile}
 

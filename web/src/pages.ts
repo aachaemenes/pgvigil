@@ -498,7 +498,15 @@ export async function jobs(ctx: Ctx): Promise<HTMLElement> {
 
 // ---- Logs
 
-const logKinds: Record<string, string> = { slow: 'slow statements', lock_wait: 'lock waits', deadlock: 'deadlocks', auth_fail: 'failed logins' };
+// every kind the two log readers store (internal/logparse): the four base ones always get a sub-tab, the rest when they have rows in the range
+const logKinds: Record<string, string> = {
+  slow: 'slow statements', lock_wait: 'lock waits', deadlock: 'deadlocks', auth_fail: 'failed logins', plan: 'auto_explain plans', corruption: 'corruption',
+  connection_limit: 'connection limits', connection_lost: 'connections lost', timeout: 'timeouts', canceled: 'cancellations', autovacuum_cancel: 'autovacuum cancelled',
+  vacuum_skipped: 'vacuum skipped', wraparound: 'wraparound', checkpoint_frequent: 'frequent checkpoints', crash: 'crashes', out_of_memory: 'out of memory',
+  archive_failed: 'archiving failed', standby_conflict: 'standby conflicts', serialization_failure: 'serialization failures', temp_file: 'temporary files',
+};
+const logKindsAlways = new Set(['slow', 'lock_wait', 'deadlock', 'auth_fail']);
+const critKinds = new Set(['deadlock', 'crash', 'out_of_memory', 'wraparound', 'corruption']);
 
 export async function logs(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
@@ -508,10 +516,10 @@ export async function logs(ctx: Ctx): Promise<HTMLElement> {
   const total = [...counts.values()].reduce((a, b) => a + b, 0);
   const tabs = el('div', { class: 'subtabs' },
     el('a', { href: href(ctx, { tab: 'logs', logKind: '' }), class: kind ? '' : 'on' }, `all (${total})`),
-    ...Object.entries(logKinds).map(([k, l]) => el('a', { href: href(ctx, { tab: 'logs', logKind: k }), class: k === kind ? 'on' : '' }, `${l} (${counts.get(k) ?? 0})`)));
+    ...Object.entries(logKinds).filter(([k]) => logKindsAlways.has(k) || (counts.get(k) ?? 0) > 0 || k === kind).map(([k, l]) => el('a', { href: href(ctx, { tab: 'logs', logKind: k }), class: k === kind ? 'on' : '' }, `${l} (${counts.get(k) ?? 0})`)));
   const cols: Col[] = [
     { key: 'at', label: 'when', fmt: fmtTime },
-    { key: 'kind', fmt: v => badge(logKinds[String(v)] ?? String(v), v === 'deadlock' ? 'crit' : v === 'slow' ? '' : 'warn') },
+    { key: 'kind', fmt: v => badge(logKinds[String(v)] ?? String(v), critKinds.has(String(v)) ? 'crit' : v === 'slow' || v === 'plan' ? '' : 'warn') },
     { key: 'duration_ms', label: 'ms', num: true },
     { key: 'pid', num: true }, { key: 'datname', label: 'db' }, { key: 'usename', label: 'user' }, { key: 'client' },
     { key: 'statement', wide: true }, { key: 'detail', wide: true },

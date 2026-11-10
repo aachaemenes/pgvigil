@@ -1,0 +1,33 @@
+2026-11-08 11:00:00 UTC:10.0.0.5(40020):app@shop:[6101]:ERROR:  canceling statement due to statement timeout
+2026-11-08 11:00:00 UTC:10.0.0.5(40020):app@shop:[6101]:STATEMENT:  select pg_sleep(10) where 1 = 1
+2026-11-08 11:00:01 UTC:10.0.0.6(40021):lim@shop:[6102]:FATAL:  too many connections for role "lim"
+2026-11-08 11:00:02 UTC:10.0.0.5(40022):app@shop:[6103]:LOG:  temporary file: path "base/pgsql_tmp/pgsql_tmp6103.0", size 1073741824
+2026-11-08 11:00:02 UTC:10.0.0.5(40022):app@shop:[6103]:STATEMENT:  select * from orders where total > 100 order by placed_at
+2026-11-08 11:00:03 UTC:10.0.0.5(40023):app@shop:[6104]:ERROR:  could not serialize access due to concurrent update
+2026-11-08 11:00:03 UTC:10.0.0.5(40023):app@shop:[6104]:STATEMENT:  update orders set total = 7 where id = 1
+2026-11-08 11:00:04 UTC:10.0.0.5(40024):app@shop:[6105]:ERROR:  canceling statement due to user request
+2026-11-08 11:00:04 UTC:10.0.0.5(40024):app@shop:[6105]:STATEMENT:  select count(*) from orders where total = 99
+2026-11-08 11:00:05 UTC::@:[6106]:LOG:  client backend (PID 6190) was terminated by signal 11: Segmentation fault
+2026-11-08 11:00:05 UTC::@:[6106]:DETAIL:  Failed process was running: select crashme('secret-arg')
+2026-11-08 11:00:05 UTC::@:[6106]:LOG:  terminating any other active server processes
+2026-11-08 11:00:06 UTC:10.0.0.5(40025):app@shop:[6107]:ERROR:  out of memory
+2026-11-08 11:00:06 UTC:10.0.0.5(40025):app@shop:[6107]:DETAIL:  Failed on request of size 16 in memory context "ExecutorState".
+2026-11-08 11:00:06 UTC:10.0.0.5(40025):app@shop:[6107]:STATEMENT:  select array_agg(x) from generate_series(1, 2000000000) x
+2026-11-08 11:00:07 UTC:10.0.0.5(40026):app@shop:[6108]:WARNING:  database "shop" must be vacuumed within 9000000 transactions
+2026-11-08 11:00:07 UTC:10.0.0.5(40026):app@shop:[6108]:HINT:  To avoid XID assignment failures, execute a database-wide VACUUM in that database.
+2026-11-08 11:00:08 UTC::@:[6109]:LOG:  archive command failed with exit code 1
+2026-11-08 11:00:08 UTC::@:[6109]:DETAIL:  The failed archive command was: cp pg_wal/000000010000000000000042 /archive/000000010000000000000042
+2026-11-08 11:00:09 UTC::@:[6110]:ERROR:  canceling autovacuum task
+2026-11-08 11:00:09 UTC::@:[6110]:CONTEXT:  automatic vacuum of table "shop.public.orders"
+2026-11-08 11:00:10 UTC::@:[6111]:LOG:  skipping vacuum of "orders" --- lock not available
+2026-11-08 11:00:11 UTC::@:[6112]:LOG:  checkpoints are occurring too frequently (12 seconds apart)
+2026-11-08 11:00:11 UTC::@:[6112]:HINT:  Consider increasing the configuration parameter "max_wal_size".
+2026-11-08 11:00:12 UTC:10.0.0.5(40027):app@shop:[6113]:FATAL:  unexpected EOF on client connection with an open transaction
+2026-11-08 11:00:13 UTC:10.0.0.5(40028):app@shop:[6114]:ERROR:  canceling statement due to conflict with recovery
+2026-11-08 11:00:13 UTC:10.0.0.5(40028):app@shop:[6114]:DETAIL:  User query might have needed to see row versions that must be removed.
+2026-11-08 11:00:13 UTC:10.0.0.5(40028):app@shop:[6114]:STATEMENT:  select * from orders where id = 5
+2026-11-08 11:00:14 UTC:10.0.0.5(40029):app@shop:[6115]:ERROR:  deadlock detected
+2026-11-08 11:00:14 UTC:10.0.0.5(40029):app@shop:[6115]:DETAIL:  Process 6115 waits for ShareLock on transaction 900; blocked by process 6116.
+2026-11-08 11:00:14 UTC:10.0.0.5(40029):app@shop:[6115]:STATEMENT:  update orders set total = 1 where id = 2
+2026-11-08 11:00:15 UTC:10.0.0.5(40030):app@shop:[6116]:LOG:  duration: 5.000 ms
+2026-11-08 11:00:16 UTC:10.0.0.5(40031):app@shop:[6117]:LOG:  checkpoint starting: time

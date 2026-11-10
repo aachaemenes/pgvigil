@@ -142,6 +142,8 @@ func TestTextPolicyKindRules(t *testing.T) {
 			// a corruption event whose CONTEXT carried PL/pgSQL's SQL statement "...": the reader stores the inner SQL
 			// (plain, unwrapped) above the STATEMENT line, so the normalizer masks its literal
 			{"kind": "event", "kind_of": "corruption", "statement": "SELECT secret FROM accounts WHERE ssn = '123-45-6789'\nselect load_accounts()", "detail": "invalid page in block 9 of relation base/16384/16390\nCONTEXT: PL/pgSQL function load_accounts() line 4 at PERFORM"},
+			// a pganalyze class: the detail is the server's message (the size and path stay), the statement follows the policy
+			{"kind": "event", "kind_of": "temp_file", "statement": "SELECT * FROM big WHERE id = 42 ORDER BY v", "detail": "temporary file: path \"base/pgsql_tmp/pgsql_tmp148.1\", size 1073741824"},
 		}
 	}
 	rows := mk()
@@ -166,8 +168,14 @@ func TestTextPolicyKindRules(t *testing.T) {
 	if s, _ := rows[3]["statement"].(string); strings.Contains(s, "123-45") || !strings.Contains(s, "load_accounts") {
 		t.Errorf("normalized on a CONTEXT-born statement: %q", s)
 	}
+	if s, _ := rows[4]["statement"].(string); strings.Contains(s, "42") || rows[4]["detail"] != "temporary file: path \"base/pgsql_tmp/pgsql_tmp148.1\", size 1073741824" {
+		t.Errorf("normalized on a temp_file row: statement %q detail %v", s, rows[4]["detail"])
+	}
 	rows = mk()
 	applyTextPolicy(rows, "none")
+	if rows[4]["detail"] != "temporary file: path \"base/pgsql_tmp/pgsql_tmp148.1\", size 1073741824" || rows[4]["statement"] != nil {
+		t.Errorf("none: a temp_file row keeps its detail and loses its statement: %v", rows[4])
+	}
 	if rows[0]["detail"] != "invalid page in block 3 of relation base/16384/24576" || rows[0]["statement"] != nil {
 		t.Errorf("none: a corruption row keeps its detail and loses its statement: %v", rows[0])
 	}
