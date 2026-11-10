@@ -53,6 +53,8 @@ for (const t of instTabs) { pages.push(t.replace(/i=\d+/, `i=${onprem.instance_i
 for (const t of instTabs) if (/#\/(load|host|summary)\?/.test(t)) pages.push(t.replace(/i=\d+/, `i=${aurora.instance_id}`));
 // the drill pages the tab strip does not list: the Compare page (under Statements) on the instance with regressions
 pages.push(`#/compare?i=${regress.instance_id}&w=7d`);
+// the DBADash door's instance page (the demo's repository and its second instance)
+pages.push('#/dbadash?dr=dbadash-demo&di=2');
 const all = []; let failed = 0; const perRule = new Map();
 for (const theme of ['light', 'dark']) {
   // the theme is remembered per origin: set it on a page of the UI (not on about:blank), and pin the media query too
