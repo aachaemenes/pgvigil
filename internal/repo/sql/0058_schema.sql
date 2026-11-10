@@ -57,12 +57,15 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_objects (
   owner          text,
   acl            text,
   hash           text NOT NULL,
+  def_hash       text,             -- the whole definition's hash (a change past the 20,000-character cut)
   first_seen     timestamptz NOT NULL,
   last_changed   timestamptz,      -- the read that last saw it added or changed
   snapshot_at    timestamptz NOT NULL,
   is_present     boolean NOT NULL DEFAULT true,
   PRIMARY KEY (instance_id, dbid, kind, identity)
 );
+-- a repository that applied an earlier text of 0058 (before def_hash) gets the column when 0058 runs again
+ALTER TABLE pgvigil.schema_objects ADD COLUMN IF NOT EXISTS def_hash text;
 
 CREATE TABLE IF NOT EXISTS pgvigil.schema_changes (
   instance_id    int NOT NULL,
@@ -101,12 +104,18 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_ddl_log (
 CREATE UNIQUE INDEX IF NOT EXISTS schema_ddl_log_key ON pgvigil.schema_ddl_log (instance_id, dbid, log_id, snapshot_at);
 CREATE INDEX IF NOT EXISTS schema_ddl_log_db ON pgvigil.schema_ddl_log (instance_id, dbid, snapshot_at);
 
--- payload: {kind:'db', dbid, datname, read_at, objects, ddl_log, ddl_log_table, ddl_log_note} per database read;
--- {kind:'obj', dbid, datname, object_kind, identity, schema_name, object_name, parent, definition, owner, acl, hash} per
--- object of a database read; {kind:'ddl', dbid, datname, log_id, logged_at, event, command_tag, object_type,
+-- payload (the collector imports per database: one call with a database's event-trigger rows, one with its db row and
+-- objects, then a last call with every collector_error row, a 'seen' row per database read and the 'end' row; one
+-- payload holding them all works the same):
+-- {kind:'db', dbid, datname, read_at, objects, ddl_log, ddl_log_table, ddl_log_note} per database read;
+-- {kind:'obj', dbid, datname, object_kind, identity, schema_name, object_name, parent, definition, owner, acl, hash,
+-- def_hash} per object of a database read; {kind:'ddl', dbid, datname, log_id, logged_at, event, command_tag, object_type,
 -- schema_name, object_identity, role_name, statement} per event-trigger row; {kind:'ddl_cursor', datname, read_to}
 -- when a read stopped at its cap (the cursor moves to it, so the next read goes on); {kind:'collector_error',
--- source:'schema:<datname>'} per database that could not be read (its snapshot stays as it was).
+-- source:'schema:<datname>'} per database that could not be read (its snapshot stays as it was); {kind:'seen', dbid}
+-- per database read (a database imported earlier in the run carries this snapshot_at already, so the update below
+-- leaves it out either way; the row says the database was read); {kind:'end'}: the run is complete, so a database
+-- neither read nor in error is marked gone.
 -- A database's first read (or its first after it was not present) is the baseline: its objects are stored, no change
 -- is recorded. A read older than the database's stored one (a one-off collect beside the daemon) changes nothing.
 CREATE OR REPLACE FUNCTION pgvigil.import_schema(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -146,7 +155,8 @@ BEGIN
   SELECT DISTINCT ON (dbid, kind, identity)
          (r->>'dbid')::bigint AS dbid, r->>'datname' AS datname, r->>'object_kind' AS kind, r->>'identity' AS identity,
          r->>'schema_name' AS schema_name, r->>'object_name' AS object_name, r->>'parent' AS parent,
-         r->>'definition' AS definition, r->>'owner' AS owner, r->>'acl' AS acl, r->>'hash' AS hash
+         r->>'definition' AS definition, r->>'owner' AS owner, r->>'acl' AS acl, r->>'hash' AS hash,
+         r->>'def_hash' AS def_hash
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'obj' AND r->>'dbid' IS NOT NULL AND r->>'object_kind' IS NOT NULL AND r->>'identity' IS NOT NULL
      AND r->>'hash' IS NOT NULL
@@ -208,7 +218,8 @@ BEGIN
         CROSS JOIN LATERAL (VALUES ('definition', o.definition, i.definition), ('owner', o.owner, i.owner),
                                    ('acl', o.acl, i.acl)) a(attribute, before, after)
        WHERE i.dbid = d.dbid AND o.hash <> i.hash AND a.before IS DISTINCT FROM a.after;
-      -- a definition past the cut changed beyond the stored text: the hash differs, the texts do not
+      -- a definition past the cut changed beyond the stored text: its own hash differs, its text does not (whatever
+      -- the owner and ACL did); a row stored without def_hash falls back to the whole hash with owner and ACL equal
       INSERT INTO pgv_schema_diff (instance_id, snapshot_at, prev_at, read_at, prev_read_at, dbid, datname, kind, identity, schema_name,
                                    object_name, parent, change, attribute, before, after)
       SELECT p_instance_id, p_snapshot_at, v_db.snapshot_at, d.read_at, v_db.read_at, i.dbid, i.datname, i.kind, i.identity, i.schema_name,
@@ -217,7 +228,8 @@ BEGIN
         JOIN pgvigil.schema_objects o
           ON o.instance_id = p_instance_id AND o.dbid = i.dbid AND o.kind = i.kind AND o.identity = i.identity AND o.is_present
        WHERE i.dbid = d.dbid AND o.hash <> i.hash AND o.definition IS NOT DISTINCT FROM i.definition
-         AND o.owner IS NOT DISTINCT FROM i.owner AND o.acl IS NOT DISTINCT FROM i.acl;
+         AND CASE WHEN o.def_hash IS NOT NULL AND i.def_hash IS NOT NULL THEN o.def_hash <> i.def_hash
+                  ELSE o.owner IS NOT DISTINCT FROM i.owner AND o.acl IS NOT DISTINCT FROM i.acl END;
       -- a table's columns, indexes, constraints, triggers and owned sequences, a view's triggers and a materialized
       -- view's indexes come and go with it: one row, the parent's
       DELETE FROM pgv_schema_diff c
@@ -231,9 +243,9 @@ BEGIN
     END IF;
 
     INSERT INTO pgvigil.schema_objects AS o (instance_id, dbid, kind, identity, datname, schema_name, object_name, parent,
-                                             definition, owner, acl, hash, first_seen, last_changed, snapshot_at, is_present)
+                                             definition, owner, acl, hash, def_hash, first_seen, last_changed, snapshot_at, is_present)
     SELECT p_instance_id, i.dbid, i.kind, i.identity, i.datname, i.schema_name, i.object_name, i.parent, i.definition,
-           i.owner, i.acl, i.hash, p_snapshot_at, CASE WHEN v_base THEN NULL ELSE p_snapshot_at END, p_snapshot_at, true
+           i.owner, i.acl, i.hash, i.def_hash, p_snapshot_at, CASE WHEN v_base THEN NULL ELSE p_snapshot_at END, p_snapshot_at, true
       FROM pgv_schema_in i WHERE i.dbid = d.dbid
     ON CONFLICT (instance_id, dbid, kind, identity) DO UPDATE SET datname = EXCLUDED.datname,
       schema_name = EXCLUDED.schema_name, object_name = EXCLUDED.object_name, parent = EXCLUDED.parent,
@@ -242,16 +254,21 @@ BEGIN
       last_changed = CASE WHEN v_base THEN o.last_changed
                           WHEN NOT o.is_present OR o.hash <> EXCLUDED.hash THEN EXCLUDED.snapshot_at
                           ELSE o.last_changed END,
-      hash = EXCLUDED.hash, snapshot_at = EXCLUDED.snapshot_at, is_present = true;
+      hash = EXCLUDED.hash, def_hash = EXCLUDED.def_hash, snapshot_at = EXCLUDED.snapshot_at, is_present = true;
     UPDATE pgvigil.schema_objects o SET is_present = false, snapshot_at = p_snapshot_at
      WHERE o.instance_id = p_instance_id AND o.dbid = d.dbid AND o.is_present
        AND NOT EXISTS (SELECT 1 FROM pgv_schema_in i WHERE i.dbid = o.dbid AND i.kind = o.kind AND i.identity = o.identity);
   END LOOP;
 
-  -- a database neither read nor in error: dropped, or no longer connectable; its next read is a new baseline
+  -- the run's last call ('end'): a database neither read nor in error is dropped, or no longer connectable; its next
+  -- read is a new baseline (a database imported by this run's earlier call carries this snapshot_at already)
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'end') THEN
+    RETURN;
+  END IF;
   UPDATE pgvigil.schema_databases s SET is_present = false, snapshot_at = p_snapshot_at
    WHERE s.instance_id = p_instance_id AND s.is_present AND s.snapshot_at < p_snapshot_at
-     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = s.dbid)
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
+                      WHERE r->>'kind' IN ('db', 'seen') AND (r->>'dbid')::bigint = s.dbid)
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
                       WHERE r->>'kind' = 'collector_error' AND r->>'source' = 'schema:' || s.datname);
 END $$;

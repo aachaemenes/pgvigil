@@ -2,7 +2,7 @@
 // login can connect to (schemas, tables and their columns, indexes, constraints, triggers, functions and procedures,
 // views, materialized views, sequences, with their owner and ACL), the changes found between two reads (added,
 // dropped, changed, with the before and after text of the changed attribute), and, where the server's DBA installed the
-// opt-in event trigger, the exact statement beside the change. The database page's Schema section (schemaDbSection)
+// opt-in event trigger, the statement text beside the change. The database page's Schema section (schemaDbSection)
 // is the same for one database. Data from /api/schema; the tab's and the section's calls are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { dbLink } from './dbinfo';
@@ -87,7 +87,7 @@ const ddlCols: Col[] = [
 ];
 
 // changesBlock: the changes grid with a kind-of-change picker and an object filter (both keyboard-reachable, labelled)
-function changesBlock(ctx: Ctx, rows: Row[], withDb: boolean): HTMLElement {
+function changesBlock(ctx: Ctx, rows: Row[], withDb: boolean, countsAbove = true): HTMLElement {
   const pick = el('select', { 'aria-label': 'kind of change' },
     el('option', { value: '' }, 'every change'), el('option', { value: 'dropped' }, 'dropped'),
     el('option', { value: 'changed' }, 'changed'), el('option', { value: 'added' }, 'added')) as HTMLSelectElement;
@@ -97,7 +97,7 @@ function changesBlock(ctx: Ctx, rows: Row[], withDb: boolean): HTMLElement {
     const f = filter.value.trim().toLowerCase(), k = pick.value;
     const shown = rows.filter(r => (!k || r.change === k) && (!f || String(r.identity ?? '').toLowerCase().includes(f)));
     out.replaceChildren(
-      rows.length >= changesCap ? el('p', { class: 'meta' }, `The newest ${fmtNum(changesCap)} changes of the range are listed; the counts above are whole. Narrow the range for older ones.`) : '',
+      rows.length >= changesCap ? el('p', { class: 'meta' }, `The newest ${fmtNum(changesCap)} changes of the range are listed${countsAbove ? '; the counts above are whole' : ''}. Narrow the range for older ones.`) : '',
       grid(shown, changeCols(ctx, withDb), rows.length ? 'No change matches.' : `No schema change found in the range (${rangeLabel(ctx)}).`));
   };
   pick.addEventListener('change', draw);
@@ -157,8 +157,9 @@ const aboutText = 'Read hourly on every database the monitoring login can connec
   + 'A database\'s first read is its baseline; each later read is compared with the one before: an object added, dropped, or '
   + 'changed in its definition, owner or ACL, with the text before and after. A column, index, constraint or trigger added '
   + 'or dropped with its table is shown as the table\'s one row. The schemas of extensions and the catalogs are left out. '
-  + 'The exact statement needs the opt-in event trigger (pgvigil roles prints it; a superuser installs it per database): '
-  + 'where it is installed the statement and its role stand beside the change; elsewhere the change is still found, without them.';
+  + 'The statement text needs the opt-in event trigger (pgvigil roles prints it; a superuser installs it per database): '
+  + 'where it is installed the client\'s query text (every statement sent together) and its role stand beside the change; '
+  + 'elsewhere the change is still found, without them. A text that may carry a password is not kept.';
 
 // schemaView: one instance's Schema tab.
 export async function schemaView(instance: number, ctx: Ctx): Promise<HTMLElement> {
@@ -179,7 +180,7 @@ export async function schemaView(instance: number, ctx: Ctx): Promise<HTMLElemen
     tile('databases', fmtNum(dbs.length)),
     tile('objects', fmtNum(objects)),
     tile(`changes (${rangeLabel(ctx)})`, fmtNum(nChanges), nChanges ? 'warn' : 'ok'),
-    tile('dropped', fmtNum(dropped), dropped ? 'warn' : 'ok'),
+    tile('dropped (not partitions)', fmtNum(dropped), dropped ? 'warn' : 'ok'),
     tile('event trigger', `${installed} of ${dbs.length}`)));
   const findings = rowsOf(d.findings);
   if (findings.length) {
@@ -192,7 +193,7 @@ export async function schemaView(instance: number, ctx: Ctx): Promise<HTMLElemen
     { key: 'datname', label: 'database', fmt: (v, r) => dbLink(ctx, v, r.dbid, instance) },
     { key: 'objects', num: true },
     { key: 'changes', label: 'changes in the range', num: true },
-    { key: 'dropped', label: 'dropped', num: true },
+    { key: 'dropped', label: 'dropped (not partitions)', num: true },
     { key: 'ddl_log', label: 'event trigger', fmt: (v, r) => r.ddl_log_note ? el('span', {}, ddlBadge(v), ` (${String(r.ddl_log_note)})`) : ddlBadge(v) },
     { key: 'first_read', label: 'compared since', fmt: fmtTime },
     { key: 'snapshot_at', label: 'read', fmt: fmtTime },
@@ -201,7 +202,7 @@ export async function schemaView(instance: number, ctx: Ctx): Promise<HTMLElemen
   const ddl = rowsOf(d.ddl);
   if (ddl.length) {
     sec.append(el('h3', {}, `Event trigger log (${rangeLabel(ctx)})`),
-      el('p', { class: 'meta' }, 'Every DDL statement the event trigger logged in the range, the ones the hourly diff cannot see (an object created and dropped between two reads) too.'
+      el('p', { class: 'meta' }, 'Every DDL command the event trigger logged in the range, with the client\'s query text, the ones the hourly diff cannot see (an object created and dropped between two reads) too.'
         + (ddl.length >= ddlCap ? ` The newest ${fmtNum(ddlCap)} are listed.` : '')),
       grid(ddl, ddlCols));
   }
@@ -223,9 +224,13 @@ export async function schemaDbSection(ctx: Ctx, dbid: string | number): Promise<
       db.is_present === false ? ` the database is gone or the login can no longer connect (last read ${fmtTime(db.snapshot_at)}); its earlier changes are below. ` : '',
       `${fmtNum(db.objects)} objects, read ${fmtTime(db.snapshot_at)}, compared since ${fmtTime(db.first_read)}; event trigger: `,
       ddlBadge(db.ddl_log), db.ddl_log_note ? ` (${String(db.ddl_log_note)})` : ''));
-    sec.append(changesBlock(ctx, rowsOf(d.changes), false));
+    sec.append(changesBlock(ctx, rowsOf(d.changes), false, false));
     const ddl = rowsOf(d.ddl);
-    if (ddl.length) sec.append(el('h4', {}, 'Event trigger log'), grid(ddl, ddlCols.filter(c => c.key !== 'datname')));
+    if (ddl.length) {
+      sec.append(el('h4', {}, 'Event trigger log'),
+        ddl.length >= ddlCap ? el('p', { class: 'meta' }, `The newest ${fmtNum(ddlCap)} are listed.`) : '',
+        grid(ddl, ddlCols.filter(c => c.key !== 'datname')));
+    }
     sec.append(el('h4', {}, 'Objects'), objectsBlock(rowsOf(d.objects)));
   } catch (e) {
     sec.append(errorBox(e));

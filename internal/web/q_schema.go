@@ -13,7 +13,8 @@ import (
 // findings (always the instance's); with db, the rest for that database alone plus its objects (the 5,000 first by
 // schema, kind and identity, each row with the database's total). ?part= narrows the reply to one part (the objects
 // picker reads part=objects). The changes list stops at 2,000 and the event trigger's log at 1,000; the databases'
-// counts are whole. The database page's Schema section reads the same with db. No Summary column: the findings reach
+// counts are whole; their 'dropped' counts each object once and leaves out a dropped partition, as the warning finding
+// does (a retention job's routine). The database page's Schema section reads the same with db. No Summary column: the findings reach
 // the Findings through schema_findings.
 
 const sqlSchemaState = `
@@ -25,8 +26,9 @@ const sqlSchemaDatabases = `
 SELECT d.dbid, d.datname, d.objects, d.ddl_log, d.ddl_log_table, d.ddl_log_note, d.first_read, d.snapshot_at, d.is_present,
        (SELECT count(*) FROM pgvigil.schema_changes c
          WHERE c.instance_id = d.instance_id AND c.dbid = d.dbid AND c.snapshot_at > $2 AND c.snapshot_at <= $3) AS changes,
-       (SELECT count(*) FROM pgvigil.schema_changes c
+       (SELECT count(DISTINCT (c.kind, c.identity)) FROM pgvigil.schema_changes c
          WHERE c.instance_id = d.instance_id AND c.dbid = d.dbid AND c.change = 'dropped'
+           AND NOT (c.kind = 'table' AND c.before LIKE '% partition of %')
            AND c.snapshot_at > $2 AND c.snapshot_at <= $3) AS dropped
   FROM pgvigil.schema_databases d
  WHERE d.instance_id = $1 AND ($4::bigint IS NULL AND d.is_present OR d.dbid = $4)
