@@ -621,8 +621,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_backup_state (
 );
 CREATE INDEX IF NOT EXISTS mssql_backup_state_ag_idx ON pgvigil.mssql_backup_state (ag_group_id, database_name) WHERE ag_group_id IS NOT NULL;
 
--- payload: 'database' rows (every database of the server), 'backup' rows (the newest per database, type and to_nul),
--- one 'history' row. A backup the repository has seen stays when msdb no longer lists it (a trimmed history).
+-- payload: 'database' rows (every database of the server), 'backup' rows (the newest per database, type and sink:
+-- 'backup', 'nul', or 'seeding' = an availability group's automatic seeding stream, which is not stored), one
+-- 'history' row. A backup the repository has seen stays when msdb no longer lists it (a trimmed history).
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_backups(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -652,13 +653,13 @@ BEGIN
     FROM (SELECT DISTINCT ON (r->>'database_name') r AS d FROM jsonb_array_elements(v_rows) r
            WHERE r->>'kind' = 'database' AND r->>'database_name' IS NOT NULL) dbs
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
-                          AND b->>'backup_type' = 'full' AND (b->>'to_nul')::int = 0 LIMIT 1) ff(f) ON true
+                          AND b->>'backup_type' = 'full' AND b->>'sink' = 'backup' LIMIT 1) ff(f) ON true
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
-                          AND b->>'backup_type' = 'diff' AND (b->>'to_nul')::int = 0 LIMIT 1) fi(i) ON true
+                          AND b->>'backup_type' = 'diff' AND b->>'sink' = 'backup' LIMIT 1) fi(i) ON true
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
-                          AND b->>'backup_type' = 'log' AND (b->>'to_nul')::int = 0 LIMIT 1) fl(l) ON true
+                          AND b->>'backup_type' = 'log' AND b->>'sink' = 'backup' LIMIT 1) fl(l) ON true
     LEFT JOIN LATERAL (SELECT b FROM jsonb_array_elements(v_rows) b WHERE b->>'kind' = 'backup' AND b->>'database_name' = d->>'database_name'
-                          AND (b->>'to_nul')::int = 1 ORDER BY (b->>'finish_utc')::timestamptz DESC LIMIT 1) fn(n) ON true
+                          AND b->>'sink' = 'nul' ORDER BY (b->>'finish_utc')::timestamptz DESC LIMIT 1) fn(n) ON true
   ON CONFLICT (instance_id, database_name) DO UPDATE SET
       snapshot_at = EXCLUDED.snapshot_at, is_present = true, state = EXCLUDED.state, recovery_model = EXCLUDED.recovery_model,
       is_snapshot = EXCLUDED.is_snapshot, is_read_only = EXCLUDED.is_read_only, is_standby = EXCLUDED.is_standby,

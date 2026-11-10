@@ -32,7 +32,8 @@
 #     false. No row of the instance is partial.
 #  B. backups. The proof's database, in the group, gets a full backup on the primary and a log backup ON THE
 #     SECONDARY. mssql_backup_state of the primary holds the full with sa's finish time (UTC, within 2 s), sa's
-#     backup_size, device disk and the file name; the judged row of the PRIMARY shows the log backup with the
+#     backup_size, device disk and the file name (NOT the copy-only stream to a virtual device that automatic seeding
+#     records in msdb a moment later); the judged row of the PRIMARY shows the log backup with the
 #     secondary's instance name as where it ran (merged by group), replicas 2 of 2. With the defaults the database is
 #     'a new database' and not judged; with the thresholds new_database_hours 0 and log_backup_minutes 0.01 from the
 #     configuration, the finding 'no recent log backup' (warning) names it, its age taken at the read. A log backup
@@ -40,12 +41,15 @@
 #     backup_exclude ['pgvhadr%'] from the configuration takes the database out: not judged 'excluded by the pattern',
 #     no finding. An unknown threshold name in the configuration fails the run with the list of known names.
 #  C. the queue. Data movement of the proof's database is suspended on the secondary: the primary's next read stores
-#     is_suspended for that database replica and raises 'a database is suspended' (critical). After 20 MB of log on
-#     the primary, the next read stores a log send queue of more than 10,000 KB for it (it grew), also as a row of
-#     mssql_ag_sample. After RESUME the queue is back under 1,000 KB within 90 s and the finding is gone (it
-#     drained). If the database cannot be added to the group, C prints 'queue growth NOT PROVEN' and the rest goes on.
-#     The REDO queue is NOT driven here (a suspended secondary receives nothing, so nothing waits to be redone): its
-#     finding is proven over stubbed samples in F.
+#     is_suspended for that database replica and raises 'a database is suspended' (critical). After 150 MB of log on
+#     the primary the next read stores an estimated data loss of 2 s or more for it (the primary's last commit less
+#     the secondary's: it grew), and NO send queue: the DMV reports log_send_queue_size NULL for a suspended replica
+#     (read on SQL Server 2022; so the growth while suspended shows as data loss, not as a queue). Reads taken back to
+#     back across the RESUME then catch the catch-up: the largest send or redo queue among them is above 0 and is in
+#     mssql_ag_sample; if the catch-up finishes between two reads the proof prints 'queue NOT PROVEN' for that line
+#     and goes on. Within 90 s the database is SYNCHRONIZED again with both queues under 1,000 KB and no finding (it
+#     drained). If the database cannot be added to the group, C prints 'queue growth NOT PROVEN' and the rest goes
+#     on. The queue FINDINGS (over the threshold for 5 minutes) are proven over stubbed samples in F.
 #  D. jobs. A job the proof creates that fails at its second step: stored with owner sa, enabled, its schedule's
 #     name, the next run at 23:59 server time in UTC, last outcome failed; its three history rows (step 1 succeeded,
 #     step 2 failed, the outcome row failed) are in mssql_job_runs; 'a job failed' (warning) names step 2 and carries
@@ -101,7 +105,8 @@ cleanup() {
   rc=$?
   set +e
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
-  [ -n "$MADE_J2" ] && { sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'$J2') BEGIN BEGIN TRY EXEC msdb.dbo.sp_stop_job @job_name = N'$J2'; END TRY BEGIN CATCH END CATCH; WAITFOR DELAY '00:00:02'; EXEC msdb.dbo.sp_delete_job @job_name = N'$J2', @delete_unused_schedule = 1; END" >/dev/null 2>&1 || echo "CLEANUP: job $J2 not deleted" >&2; }
+  # the waiting job: stopped only where it still runs (sp_stop_job raises on a job that does not), then deleted
+  [ -n "$MADE_J2" ] && { sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$J2' AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.start_execution_date IS NOT NULL AND a.stop_execution_date IS NULL) EXEC msdb.dbo.sp_stop_job @job_name = N'$J2';" >/dev/null 2>&1; sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'$J2') EXEC msdb.dbo.sp_delete_job @job_name = N'$J2', @delete_unused_schedule = 1;" >/dev/null 2>&1; [ "$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobs WHERE name = N'$J2'" 2>/dev/null)" = 0 ] || echo "CLEANUP: job $J2 not deleted" >&2; }
   [ -n "$MADE_J1" ] && { sq "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'$J1') EXEC msdb.dbo.sp_delete_job @job_name = N'$J1', @delete_unused_schedule = 1;" >/dev/null 2>&1 || echo "CLEANUP: job $J1 not deleted" >&2; }
   [ -n "$SUSPENDED" ] && { sq2 "IF EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states WHERE database_id = DB_ID('$PDB') AND is_local = 1 AND is_suspended = 1) ALTER DATABASE [$PDB] SET HADR RESUME;" >/dev/null 2>&1 || echo "CLEANUP: $PDB was NOT resumed on $CT2" >&2; }
   if [ -n "$IN_AG" ]; then
@@ -110,7 +115,7 @@ cleanup() {
   fi
   if [ -n "$MADE_PDB2" ]; then
     # the secondary's copy is this run's own: seeded from the proof's database, left RESTORING by the removal
-    for _ in 1 2 3 4 5 6; do sq2 "IF DB_ID('$PDB') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states WHERE database_id = DB_ID('$PDB')) DROP DATABASE [$PDB];" >/dev/null 2>&1; [ "$(sq2 "SELECT ISNULL(DB_ID('$PDB'), 0)" 2>/dev/null)" = 0 ] && break; sleep 2; done
+    for _ in $(seq 1 30); do sq2 "IF DB_ID('$PDB') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states WHERE database_id = DB_ID('$PDB')) DROP DATABASE [$PDB];" >/dev/null 2>&1; [ "$(sq2 "SELECT ISNULL(DB_ID('$PDB'), 0)" 2>/dev/null)" = 0 ] && break; sleep 2; done
     [ "$(sq2 "SELECT ISNULL(DB_ID('$PDB'), 0)" 2>/dev/null)" = 0 ] || echo "CLEANUP: database $PDB not dropped on $CT2" >&2
     sq2 "EXEC msdb.dbo.sp_delete_database_backuphistory @database_name = N'$PDB';" >/dev/null 2>&1
   fi
@@ -319,7 +324,12 @@ else
   LOGWHERE=$N1
   echo "  B: the merge of a group's backups over its replicas is NOT PROVEN live (the database is not in the group); F proves it over stubbed rows"
 fi
-IFS='|' read -r FFIN FSIZE <<<"$(sq "SELECT TOP (1) CONVERT(varchar(19), DATEADD(minute, -15 * time_zone, backup_finish_date), 126), CAST(backup_size AS bigint) FROM msdb.dbo.backupset WHERE database_name = N'$PDB' AND type = 'D' ORDER BY backup_set_id DESC")"
+IFS='|' read -r FFIN FSIZE <<<"$(sq "SELECT TOP (1) CONVERT(varchar(19), DATEADD(minute, -15 * time_zone, backup_finish_date), 126), CAST(backup_size AS bigint) FROM msdb.dbo.backupset bs JOIN msdb.dbo.backupmediafamily mf ON mf.media_set_id = bs.media_set_id WHERE bs.database_name = N'$PDB' AND bs.type = 'D' AND mf.physical_device_name = N'$BKF'")"
+if [ -n "$JOINED" ]; then
+  NSEED=$(sq "SELECT COUNT(*) FROM msdb.dbo.backupset bs JOIN msdb.dbo.backupmediafamily mf ON mf.media_set_id = bs.media_set_id WHERE bs.database_name = N'$PDB' AND bs.type = 'D' AND mf.device_type = 7")
+  echo "  msdb holds $NSEED full 'backup' row(s) of $PDB to a virtual device: the automatic seeding stream"
+  [ "$NSEED" -ge 1 ] || fail "B: no seeding row in msdb (the proof's premise)"
+fi
 collect mssql_ag "$N1" >/dev/null; collect mssql_ag "$N2" >/dev/null
 collect mssql_backups "$N1"; if grep -q "partial\|skipped" "$OUT"; then fail "B: the read is partial or skipped"; fi
 collect mssql_backups "$N2" >/dev/null
@@ -362,7 +372,7 @@ config "    mssql_thresholds:
       new_database_hours: 0"
 echo "B: OK"
 
-echo "--- C. the queue grows and drains"
+echo "--- C. a suspended database: the exposure grows, the queue drains"
 if [ -n "$JOINED" ]; then
   SUSPENDED=1
   sq2 "ALTER DATABASE [$PDB] SET HADR SUSPEND;" >/dev/null
@@ -371,25 +381,33 @@ if [ -n "$JOINED" ]; then
   [ "$(q "select is_suspended from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")" = t ] || fail "C: the suspended database replica is not stored as suspended"
   [ "$(q "select severity from pgvigil.mssql_hadr_findings where instance_id=$I1 and check_name='a database is suspended' and object='$AG / $SN2 / $PDB'")" = critical ] \
     || fail "C: no 'a database is suspended' finding: $(q "select check_name, object from pgvigil.mssql_hadr_findings where instance_id=$I1")"
-  Q0=$(q "select coalesce(log_send_queue_kb, 0) from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
-  sq "INSERT dbo.filler (pad) SELECT TOP (2500) 'y' FROM sys.all_columns a CROSS JOIN sys.all_columns b;" "$PDB" >/dev/null
-  sleep 2
+  sq "INSERT dbo.filler (pad) SELECT TOP (18750) 'y' FROM sys.all_columns a CROSS JOIN sys.all_columns b;" "$PDB" >/dev/null
+  sleep 3
   collect mssql_ag "$N1" >/dev/null
-  Q1=$(q "select coalesce(log_send_queue_kb, 0) from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
-  echo "  log send queue of $PDB to $SN2: $Q0 KB suspended, $Q1 KB after 20 MB of log"
-  [ "$Q1" -gt 10000 ] && [ "$Q1" -gt "$Q0" ] || fail "C: the log send queue did not grow"
-  [ "$(q "select max(log_send_queue_kb) from pgvigil.mssql_ag_sample where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")" = "$Q1" ] || fail "C: the sample row"
+  R=$(q "select coalesce(log_send_queue_kb::text, 'null') || '|' || est_data_loss_s || '|' || synchronization_state from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
+  echo "  suspended, after 150 MB of log on the primary: send queue | estimated data loss s | state = $R"
+  IFS='|' read -r SQ LOSS _ <<<"$R"
+  [ "$LOSS" -ge 2 ] || fail "C: the estimated data loss did not grow while suspended"
+  [ "$SQ" = null ] || echo "  (this server reports a send queue for a suspended replica: $SQ KB)"
+  # reads back to back across the RESUME: the catch-up is short
+  ( for _ in $(seq 1 25); do "$BIN" collect -config "$CFG" -once mssql_ag -instance "$N1" >/dev/null 2>&1 || true; done ) & LOOP=$!
+  sleep 0.3
   sq2 "ALTER DATABASE [$PDB] SET HADR RESUME;" >/dev/null; SUSPENDED=
+  wait $LOOP
+  QMAX=$(q "select coalesce(max(greatest(coalesce(log_send_queue_kb, 0), coalesce(redo_queue_kb, 0))), 0) || '|' || coalesce(max(log_send_queue_kb), 0) || '|' || coalesce(max(redo_queue_kb), 0) || '|' || count(distinct snapshot_at) from pgvigil.mssql_ag_sample where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
+  IFS='|' read -r QANY QSEND QREDO NREADS <<<"$QMAX"
+  if [ "$QANY" -gt 0 ]; then echo "  across the RESUME ($NREADS reads kept): the largest send queue $QSEND KB, the largest redo queue $QREDO KB"; QSEEN="the catch-up's queue seen: send $QSEND KB, redo $QREDO KB"
+  else echo "  queue NOT PROVEN: the catch-up finished between two reads ($NREADS reads kept, no queue above 0)"; QSEEN="the catch-up's queue NOT PROVEN"; fi
   for _ in $(seq 1 45); do
     collect mssql_ag "$N1" >/dev/null
-    Q2=$(q "select coalesce(log_send_queue_kb, 0) from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
+    Q2=$(q "select greatest(coalesce(log_send_queue_kb, 0), coalesce(redo_queue_kb, 0)) from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
     S2=$(q "select is_suspended || '|' || synchronization_state from pgvigil.mssql_ag_database_state where instance_id=$I1 and database_name='$PDB' and replica_server='$SN2'")
     [ "$Q2" -lt 1000 ] && [ "$S2" = "false|SYNCHRONIZED" ] && break; sleep 2
   done
   echo "  after RESUME: $Q2 KB, $S2"
   [ "$Q2" -lt 1000 ] && [ "$S2" = "false|SYNCHRONIZED" ] || fail "C: the queue did not drain"
   [ "$(q "select count(*) from pgvigil.mssql_hadr_findings where instance_id=$I1 and object like '%$PDB'")" = 0 ] || fail "C: a finding stays after the drain"
-  echo "C: OK (the log send queue; the redo queue NOT PROVEN live: see F)"
+  echo "C: OK (suspended and found, the data loss grew, drained after RESUME; $QSEEN)"
   sq "ALTER AVAILABILITY GROUP [$AG] REMOVE DATABASE [$PDB];" >/dev/null; IN_AG=
 else
   echo "C: queue growth NOT PROVEN (the proof's database could not be added to $AG; no other database is touched)"
@@ -410,7 +428,12 @@ for _ in $(seq 1 30); do
 done
 [ "$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobhistory h JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id WHERE j.name = N'$J1'")" = 3 ] || fail "D: the job did not write its three history rows (is SQL Server Agent running?)"
 NEXT=$(sq "SELECT CONVERT(varchar(16), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), DATEADD(minute, 23 * 60 + 59, CAST(CAST(GETDATE() AS date) AS datetime))), 126)")
-RSTART=$(sq "SELECT CONVERT(varchar(19), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), a.start_execution_date), 126) FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$J2' AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions)")
+RSTART=
+for _ in $(seq 1 30); do
+  RSTART=$(sq "SELECT ISNULL(CONVERT(varchar(19), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), MAX(a.start_execution_date)), 126), '') FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$J2' AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.stop_execution_date IS NULL")
+  [ -n "$RSTART" ] && break; sleep 1
+done
+[ -n "$RSTART" ] || fail "D: the waiting job did not start within 30 s"
 collect mssql_jobs "$N1"; if grep -q "partial\|skipped" "$OUT"; then fail "D: the read is partial or skipped"; fi
 ROWS1=$(sed -n "s/^$N1 mssql_jobs: \([0-9]*\) row.*/\1/p" "$OUT")
 jq1="instance_id=$I1 and name='$J1'"
@@ -497,7 +520,7 @@ for m in 6 5 4 3 2 1; do agp $m a 600000 50; done
 [ "$(q "select count(*) from pgvigil.mssql_ag_failovers where instance_id=$ST")" = 0 ] || fail "F: a failover without a change of primary"
 F=$(q "select string_agg(check_name, ',' order by check_name) from pgvigil.mssql_hadr_findings where instance_id=$ST and object like 'ag1%'")
 [ "$F" = "the redo queue is over its threshold" ] || fail "F: the availability findings of the stub: $F"
-[ "$(q "select is_distributed || '|' || count(*) from pgvigil.mssql_ag_state where instance_id=$ST and group_name='dag' group by 1")" = "true|2" ] || fail "F: the distributed group"
+[ "$(q "select is_distributed || '|' || count(*) from pgvigil.mssql_ag_state where instance_id=$ST and group_name='dag' group by is_distributed")" = "true|2" ] || fail "F: the distributed group"
 [ "$(q "select listeners->0->>'dns_name' from pgvigil.mssql_ag_state where instance_id=$ST and group_name='ag1' limit 1")" = ag1-l ] || fail "F: the listener"
 agp 0 b 100 50
 [ "$(q "select old_primary || '>' || new_primary from pgvigil.mssql_ag_failovers where instance_id=$ST")" = "a>b" ] || fail "F: the failover event"
@@ -513,7 +536,7 @@ imp mssql_backups "$ST" "now() - interval '1 minute'" "[{\"kind\":\"database\",\
  {\"kind\":\"database\",\"database_name\":\"tempdb\",\"state\":\"ONLINE\",\"recovery_model\":\"SIMPLE\",\"created_utc\":\"$OLD\"},
  {\"kind\":\"database\",\"database_name\":\"off\",\"state\":\"OFFLINE\",\"recovery_model\":\"FULL\",\"created_utc\":\"$OLD\"},
  {\"kind\":\"database\",\"database_name\":\"snap\",\"state\":\"ONLINE\",\"recovery_model\":\"FULL\",\"created_utc\":\"$OLD\",\"is_snapshot\":1},
- {\"kind\":\"backup\",\"database_name\":\"kept\",\"backup_type\":\"full\",\"to_nul\":0,\"finish_utc\":\"$OLDF\",\"size_bytes\":1000,\"device\":\"disk\"},
+ {\"kind\":\"backup\",\"database_name\":\"kept\",\"backup_type\":\"full\",\"sink\":\"backup\",\"finish_utc\":\"$OLDF\",\"size_bytes\":1000,\"device\":\"disk\"},
  {\"kind\":\"history\",\"backup_sets\":1,\"oldest_utc\":\"$OLDF\"}]"
 F=$(q "select string_agg(object || '=' || severity || ':' || check_name, ', ' order by object) from pgvigil.mssql_jobs_findings where instance_id=$ST")
 echo "  the stub's backup findings: $F"

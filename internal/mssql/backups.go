@@ -11,7 +11,8 @@ import (
 // backupsCollector is mssql_backups: per database of the server its state and recovery model (sys.databases), the
 // availability group it belongs to, and from msdb.dbo.backupset the last full, differential and log backup this
 // server took of it: the finish time, the size and compressed size, the duration, the device, and whether it was
-// copy-only. A backup to the NUL device is kept apart: it is no backup, and it is reported as its own row.
+// copy-only. A backup to the NUL device is kept apart: it is no backup, and it is reported as its own row. The
+// stream of an availability group's automatic seeding, which msdb also records, is left out.
 // msdb is each server's own record: the backups another replica of an availability group took are in that
 // replica's msdb, and the repository merges them by group and database name.
 //
@@ -66,24 +67,30 @@ func backupUTC(col string) string {
 		" ELSE DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), " + col + ") END, 126) + 'Z'"
 }
 
-// backupsSQL: the newest finished backup per database, type (D full, I differential, L log) and "to NUL or not",
-// of this server's own backups. SQL Server 2016 SP1 and later.
+// backupsSQL: the newest finished backup per database, type (D full, I differential, L log) and sink, of this
+// server's own backups. SQL Server 2016 SP1 and later. The sink is 'backup' (kept somewhere), 'nul' (the NUL
+// device: nothing was kept) or 'seeding': automatic seeding of an availability group streams the database to the
+// new replica as a copy-only full backup to a virtual device named by a bare GUID, and msdb records it like a
+// backup; it is no backup anyone can restore, so it never counts as the last full one.
 var backupsSQL = `WITH b AS (
   SELECT bs.database_name, bs.type, bs.backup_set_id, bs.backup_start_date, bs.backup_finish_date, bs.time_zone,
          bs.backup_size, bs.compressed_backup_size, bs.is_copy_only, bs.is_snapshot, mf.device_type, mf.physical_device_name,
-         CASE WHEN UPPER(mf.physical_device_name) IN (N'NUL', N'NUL:') THEN 1 ELSE 0 END AS to_nul
+         CASE WHEN UPPER(mf.physical_device_name) IN (N'NUL', N'NUL:') THEN 'nul'
+              WHEN bs.type = 'D' AND bs.is_copy_only = 1 AND mf.device_type IN (7, 107) AND bs.name IS NULL
+                   AND mf.physical_device_name LIKE N'{________-____-____-____-____________}' THEN 'seeding'
+              ELSE 'backup' END AS sink
     FROM msdb.dbo.backupset bs
    OUTER APPLY (SELECT TOP (1) f.device_type, f.physical_device_name FROM msdb.dbo.backupmediafamily f
                  WHERE f.media_set_id = bs.media_set_id ORDER BY f.family_sequence_number) mf
    WHERE bs.type IN ('D', 'I', 'L') AND bs.backup_finish_date IS NOT NULL
      AND bs.server_name IN (@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)))
 ), r AS (
-  SELECT b.*, ROW_NUMBER() OVER (PARTITION BY b.database_name, b.type, b.to_nul ORDER BY b.backup_finish_date DESC, b.backup_set_id DESC) AS rn
+  SELECT b.*, ROW_NUMBER() OVER (PARTITION BY b.database_name, b.type, b.sink ORDER BY b.backup_finish_date DESC, b.backup_set_id DESC) AS rn
     FROM b
 )
 SELECT 'backup' AS kind, CAST(bs.database_name AS nvarchar(128)) AS database_name,
   CASE bs.type WHEN 'D' THEN 'full' WHEN 'I' THEN 'diff' ELSE 'log' END AS backup_type,
-  bs.to_nul,
+  bs.sink,
   ` + backupUTC("bs.backup_finish_date") + ` AS finish_utc,
   DATEDIFF(second, bs.backup_start_date, bs.backup_finish_date) AS duration_s,
   CAST(bs.backup_size AS bigint) AS size_bytes, CAST(bs.compressed_backup_size AS bigint) AS compressed_bytes,
