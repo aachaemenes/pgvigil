@@ -43,12 +43,15 @@ function setsCell(byRole: Map<string, Row[]> | null): (v: unknown, r: Row) => st
     const roles = Array.isArray(r.usenames) ? r.usenames.map(String) : [];
     const sets = roles.flatMap(k => byRole.get(k) ?? []);
     if (sets.length === 0) return 'none';
-    const box = el('span');
-    sets.forEach((x, i) => {
-      if (i) box.append('; ');
-      const t = `${setLabel(x)} (${String(x.rolname)}, ${fmtNum(x.calls_in_window)})`;
-      box.append(x.fires ? badge(t, 'warn') : t);
+    // the planner ones by name, the rest as a count; every SET in the title (the cell stays one line in a wide grid)
+    const all = sets.map(x => `${setLabel(x)} (${String(x.rolname)}, ${fmtNum(x.calls_in_window)})`).join('; ');
+    const box = el('span', { title: all });
+    const planner = sets.filter(x => x.fires), rest = sets.length - planner.length;
+    planner.forEach((x, i) => {
+      if (i) box.append(' ');
+      box.append(badge(`${setLabel(x)} (${fmtNum(x.calls_in_window)})`, 'warn'));
     });
+    if (rest) box.append(`${planner.length ? ' ' : ''}${planner.length ? '+' : ''}${rest} other`);
     return box;
   };
 }
@@ -81,7 +84,8 @@ function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null): Col[
     { key: 'datname', label: 'database' },
     { key: 'usenames', label: 'roles' },
     { key: 'sets', label: 'session SETs of its roles (window)', fmt: setsCell(byRole) },
-    { key: 'query', wide: true },
+    // cut to one line here (23 columns squeeze a wrapping cell into a tall row); the whole text in the title and the history
+    { key: 'query', fmt: v => { const t = String(v ?? ''); return el('span', { title: t }, t.length > 80 ? t.slice(0, 80) + '...' : t); } },
   ];
 }
 
