@@ -4,7 +4,8 @@ import { get, Row, rowsOf, Table } from './api';
 import { versionCell } from './versions';
 
 // mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
-export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; at: number }
+// mssqlFailed: the SQL Server read itself failed (its cells then say so, never 'not yet')
+export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; mssqlFailed: boolean; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 
@@ -15,8 +16,8 @@ export async function fleet(force = false): Promise<Fleet> {
   // column only, never the tree and the Summary
   // the SQL Server read is optional the same way (a repository before 0064, a failure): its rows then say 'not yet'
   pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
-    get<{ cells: Table | null; servers: Table | null; pgdb: Table | null }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null, pgdb: null }))])
-    .then(([i, c, v, m]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), at: Date.now() }))
+    get<{ cells: Table | null; servers: Table | null; pgdb: Table | null; failed?: boolean }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null, pgdb: null, failed: true }))])
+    .then(([i, c, v, m]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), mssqlFailed: m.failed === true, at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
 }
@@ -91,12 +92,25 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
   for (const g of groups) {
     if (otherEngine && g.key !== 'collect') {
       const m = g.mssql ? f.mssql.find(x => Number(x.instance_id) === id && x.key === g.mssql![0]) : undefined;
-      if (!g.mssql) out[g.key] = { level: 0, n: 0, detail: ['a PostgreSQL check: SQL Server has no such thing'], none: true, text: 'n/a' };
-      else if (!m || !m.sampled) out[g.key] = { level: 0, n: 0, detail: ['no read of this group stored for the instance yet'], none: true, text: 'not yet' };
+      const none = (text: string, why: string): Cell => ({ level: 0, n: 0, detail: [why], none: true, text });
+      if (!g.mssql) out[g.key] = none('n/a', 'a PostgreSQL check: SQL Server has no such thing');
+      else if (f.mssqlFailed) out[g.key] = none('read failed', 'the read of the SQL Server status cells failed (GET /api/mssql/summary): this is not the instance\'s state');
+      else if (!m || m.state === 'never') out[g.key] = none('not yet', 'no read of this group stored for the instance yet');
       else {
-        const crit = Number(m.critical ?? 0), warn = Number(m.warning ?? 0);
-        out[g.key] = { level: crit ? 2 : warn ? 1 : 0, n: crit || warn, detail: Array.isArray(m.detail) ? m.detail.map(String) : [],
-          ...(m.value != null && !crit && !warn ? { text: String(m.value) } : m.value != null ? { text: `${String(m.value)} ${crit ? 'critical' : 'warning'}` } : {}) };
+        const crit = Number(m.critical ?? 0), warn = Number(m.warning ?? 0), state = String(m.state ?? 'ok');
+        const detail = Array.isArray(m.detail) ? m.detail.map(String) : [];
+        const age = m.read_at ? `the last read is from ${String(m.read_at).slice(0, 16).replace('T', ' ')} UTC` : 'no read is stored';
+        const why = state === 'stale' ? `${age}: older than three of the collection's intervals` : state === 'failed' ? `the last run failed - ${String(m.err ?? '')}` : '';
+        if (crit || warn) {
+          // a critical or a warning shows whatever the read's state, with the state said beside it
+          const word = crit ? 'critical' : 'warning', late = state === 'stale' ? ', stale' : state === 'failed' ? ', read failed' : '';
+          out[g.key] = { level: crit ? 2 : 1, n: crit || warn, detail: why ? [...detail, why] : detail,
+            text: m.value != null ? `${String(m.value)} ${word}${late}` : late ? `${crit || warn} ${word}${late}` : undefined };
+        } else if (state === 'n/a') out[g.key] = none('n/a', 'the collections of this group do not run on this kind of server');
+        else if (state === 'failed') out[g.key] = none('read failed', why);
+        else if (state === 'stale') out[g.key] = none('stale', why);
+        else if (!m.sampled) out[g.key] = none('not read', detail[0] ?? 'this part was not readable with the login\'s rights');
+        else out[g.key] = { level: 0, n: 0, detail, ...(m.value != null ? { text: String(m.value) } : {}) };
       }
       continue;
     }
@@ -115,7 +129,7 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
     // Database state on PostgreSQL: an invalid database is critical, one that refuses connections a warning
     if (g.key === 'dbstate') {
       const d = f.pgdb.find(x => Number(x.instance_id) === id);
-      if (!d) { out[g.key] = { level: 0, n: 0, detail: ['no database inventory read yet (hourly)'], none: true }; continue; }
+      if (!d) { out[g.key] = f.mssqlFailed ? { level: 0, n: 0, detail: ['the read of the database states failed (GET /api/mssql/summary)'], none: true, text: 'read failed' } : { level: 0, n: 0, detail: ['no database inventory read yet (hourly)'], none: true }; continue; }
       const crit = Number(d.critical ?? 0), warn = Number(d.warning ?? 0);
       out[g.key] = { level: crit ? 2 : warn ? 1 : 0, n: crit || warn, detail: Array.isArray(d.detail) ? d.detail.map(String) : [] };
       continue;

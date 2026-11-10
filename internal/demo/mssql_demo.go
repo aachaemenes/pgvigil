@@ -32,6 +32,9 @@ func (g *Gen) mssqlStep(t time.Time) []Batch {
 	if first || (t.Minute() == 0 && t.Hour()%6 == 0) || t.Equal(g.end) {
 		add("mssql_instance", t, g.mssqlInstanceRows())
 	}
+	if first || t.Minute()%5 == 0 || t.Equal(g.end) {
+		add("mssql_services", t, g.mssqlServicesRows(t))
+	}
 	add("mssql_requests", t, g.mssqlRequestsRows(t))
 	add("mssql_waits", t, g.mssqlWaitsRows(t))
 	add("mssql_ag", t, g.mssqlAgDemoRows(t))
@@ -151,7 +154,7 @@ func (g *Gen) mssqlStorageRows(t time.Time) []Row {
 
 // mssqlCollections names what a SQL Server instance's collector runs (for the collection log).
 func (g *Gen) mssqlCollections() []string {
-	c := []string{"mssql_instance", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore", "mssql_ag"}
+	c := []string{"mssql_instance", "mssql_services", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore", "mssql_ag"}
 	if g.is("-sql01") || g.is("-sql02") {
 		c = append(c, "mssql_backups")
 	}
@@ -167,6 +170,31 @@ func (g *Gen) mssqlSkipNote(collection string) string {
 		return "Always On availability groups are not enabled on this instance"
 	}
 	return ""
+}
+
+// mssqlServicesRows is the mssql_services payload. -sql01: Agent running, Database Mail started, three dump
+// files, the newest three days before the anchor (a warning). -sql02: Database Mail stopped (a warning). -sql03, the
+// managed instance: no service list (the Agent judged by its sessions), no dump.
+func (g *Gen) mssqlServicesRows(_ time.Time) []Row {
+	svc := func(name, startup string, pid int) Row {
+		return Row{"kind": "service", "service_name": name, "startup_type": startup, "status": "Running", "process_id": pid,
+			"last_startup_at_utc": g.mssqlStart().UTC().Format(time.RFC3339), "service_account": `DEMO\svc-sql`, "is_clustered": "N", "ifi_enabled": nil}
+	}
+	mail := func(receiving int) Row {
+		return Row{"kind": "dbmail", "xps_in_use": 1, "queues_seen": 1, "receive_enabled": receiving}
+	}
+	switch {
+	case g.is("-sql03"):
+		return []Row{{"kind": "agent", "sessions": 3, "engine_edition": 8}, mail(1), {"kind": "dumps", "dump_count": 0, "last_dump_at_utc": nil}}
+	case g.is("-sql02"):
+		return []Row{{"kind": "agent", "sessions": 4, "engine_edition": 3}, svc("SQL Server (MSSQLSERVER)", "Automatic", 4212),
+			svc("SQL Server Agent (MSSQLSERVER)", "Automatic", 5120), mail(0), {"kind": "dumps", "dump_count": 0, "last_dump_at_utc": nil}}
+	}
+	engine := svc("SQL Server (MSSQLSERVER)", "Automatic", 3980)
+	engine["ifi_enabled"] = "Y"
+	return []Row{{"kind": "agent", "sessions": 4, "engine_edition": 3}, engine, svc("SQL Server Agent (MSSQLSERVER)", "Automatic", 4876),
+		svc("SQL Full-text Filter Daemon Launcher (MSSQLSERVER)", "Manual", 6012), mail(1),
+		{"kind": "dumps", "dump_count": 3, "last_dump_at_utc": g.end.Add(-72 * time.Hour).UTC().Format(time.RFC3339)}}
 }
 
 // mssqlInstanceRows is the mssql_instance payload: the server's description, a few configuration values and what
