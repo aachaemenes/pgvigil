@@ -23,6 +23,8 @@
 #     4242: after temp_files the hour row has log_files 1 and log_max_file_bytes = that size, and memory_findings for
 #     the instance holds 'temp-file spills' twice: info (queryid 4242, over 1 GB in an hour) and warning (the hour
 #     over 10 % of the data).
+#     [review fold] A late import_temp_files (three hours back) leaves the hour rows from its own hour onward as they
+#     were and adds the 3 older hours its window reaches.
 #  C. the pooler: PgBouncer with pool_size 2 in session mode in front of the first database; four clients of the
 #     application role each hold a session (pg_sleep), so two wait. After about 7 s, collect -once pgbouncer through
 #     the stats_users login: pooler_state 'ok' with the version 'PgBouncer 1.24.1'; one pool row with cl_waiting 2,
@@ -131,6 +133,17 @@ echo "hour: $L (size $SIZE)"; [[ $L == "1|$SIZE" ]] || fail "B: the hour's log f
 F=$(q "select string_agg(severity || '|' || setting, ',' order by severity) from pgvigil.memory_findings where instance_id = $I")
 echo "findings: $F"; [[ $F == "info|temp-file spills,warning|temp-file spills" ]] || fail "B: the temp findings"
 q "select detail from pgvigil.memory_findings where instance_id = $I and severity = 'info'" | grep -q 'statement 4242 ' || fail "B: the info finding names queryid 4242"
+# [review fold, expected before the run] a late read (stamped three hours back) rebuilds its own six hours only: the
+# hour rows from its own hour onward stay as they were. [first run: the count went 7 -> 10 - the late read's window
+# reaches three hours further back and adds those hours, which is right; the newer rows were unchanged. Expected now:
+# the rows from the late read's hour onward identical, exactly 3 rows added.]
+NEWER="select string_agg(snapshot_at || ':' || coalesce(data_bytes, 0) || ':' || coalesce(temp_written_bytes, 0) || ':' || coalesce(log_files, 0), ',' order by snapshot_at)
+         from pgvigil.temp_sample where instance_id = $I and source = 'hour' and snapshot_at >= date_trunc('hour', now() - interval '3 hours')"
+BEFORE=$(q "$NEWER"); NB=$(q "select count(*) from pgvigil.temp_sample where instance_id = $I and source = 'hour'")
+q "select pgvigil.import_temp_files($I, now() - interval '3 hours', '[{\"kind\":\"state\",\"data_bytes\":1,\"block_size\":8192}]'::jsonb)" >/dev/null
+AFTER=$(q "$NEWER"); NA=$(q "select count(*) from pgvigil.temp_sample where instance_id = $I and source = 'hour'")
+echo "late read: hour rows $NB -> $NA; the rows from its hour onward unchanged: $([[ $AFTER == "$BEFORE" ]] && echo yes || echo no)"
+[[ $AFTER == "$BEFORE" && $NA == $((NB + 3)) ]] || fail "B: a late read changed the newer hours"
 
 echo "--- C. the pooler"
 cat > "$WORK/pgbouncer.ini" <<EOF

@@ -6,10 +6,10 @@
 --                        (the relations holding the most buffers, their dirty buffers and usage counts). A relation of
 --                        another database than the connected one keeps its database's name and its file node only.
 --   temp_sample          monthly partitions; the hourly rollup of what the repository already holds: 'statement' rows
---                        (pg_stat_statements' temp_blks_read / temp_blks_written per statement and hour, from
+--                        (pg_stat_statements' temp_blks_read / temp_blks_written per statement, toplevel and hour, from
 --                        statements_delta, in bytes by the instance's block size) and one 'hour' row per hour (the log
---                        readers' 'temporary file' lines: the count, the bytes and the largest file; the statements'
---                        written bytes summed; the instance's data size at that hour). import_temp_files rebuilds the
+--                        readers' 'temporary file' lines: the count, the bytes and the largest file; the top-level
+--                        statements' written bytes summed (a nested statement's bytes are in its caller's too); the instance's data size at that hour). import_temp_files rebuilds the
 --                        last six hours on each read (a log line read late still lands in its hour) and keeps the data
 --                        size an hour was first stored with.
 --   pooler_state         one row per instance with a pgbouncer: DSN: the last read's status ('ok' | 'error') and reason,
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.temp_sample (
   dbid                bigint,
   userid              bigint,
   queryid             bigint,
+  toplevel            boolean,
   datname             text,
   usename             text,
   temp_read_bytes     numeric,
@@ -147,22 +148,24 @@ BEGIN
   CREATE TEMP TABLE pgv_temp_kept ON COMMIT DROP AS
   SELECT snapshot_at, data_bytes FROM pgvigil.temp_sample
    WHERE instance_id = p_instance_id AND source = 'hour' AND snapshot_at >= v_from AND data_bytes IS NOT NULL;
-  DELETE FROM pgvigil.temp_sample WHERE instance_id = p_instance_id AND snapshot_at >= v_from;
+  -- bounded by the read's own hour: a late read (a clock behind, a one-off collect) rebuilds its six hours and leaves
+  -- the newer hours as they were
+  DELETE FROM pgvigil.temp_sample WHERE instance_id = p_instance_id AND snapshot_at >= v_from AND snapshot_at <= v_to;
 
-  INSERT INTO pgvigil.temp_sample (instance_id, snapshot_at, source, dbid, userid, queryid, datname, usename,
+  INSERT INTO pgvigil.temp_sample (instance_id, snapshot_at, source, dbid, userid, queryid, toplevel, datname, usename,
                                    temp_read_bytes, temp_written_bytes)
-  SELECT p_instance_id, date_trunc('hour', d.snapshot_at), 'statement', d.dbid, d.userid, d.queryid,
+  SELECT p_instance_id, date_trunc('hour', d.snapshot_at), 'statement', d.dbid, d.userid, d.queryid, d.toplevel,
          max(d.datname), max(d.usename),
          sum(coalesce(d.temp_blks_read, 0)) * v_block, sum(coalesce(d.temp_blks_written, 0)) * v_block
     FROM pgvigil.statements_delta d
-   WHERE d.instance_id = p_instance_id AND d.snapshot_at >= v_from
-   GROUP BY 2, 4, 5, 6
+   WHERE d.instance_id = p_instance_id AND d.snapshot_at >= v_from AND d.snapshot_at < v_to + interval '1 hour'
+   GROUP BY 2, 4, 5, 6, 7
   HAVING sum(coalesce(d.temp_blks_read, 0)) + sum(coalesce(d.temp_blks_written, 0)) > 0;
 
   INSERT INTO pgvigil.temp_sample (instance_id, snapshot_at, source, temp_written_bytes, log_files, log_bytes, log_max_file_bytes, data_bytes)
   SELECT p_instance_id, h, 'hour',
          (SELECT sum(s.temp_written_bytes) FROM pgvigil.temp_sample s
-           WHERE s.instance_id = p_instance_id AND s.source = 'statement' AND s.snapshot_at = h),
+           WHERE s.instance_id = p_instance_id AND s.source = 'statement' AND s.snapshot_at = h AND s.toplevel IS NOT FALSE),
          l.files, l.bytes, l.max_bytes,
          coalesce((SELECT k.data_bytes FROM pgv_temp_kept k WHERE k.snapshot_at = h), v_data)
     FROM generate_series(v_from, v_to, interval '1 hour') h
