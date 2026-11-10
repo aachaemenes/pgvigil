@@ -19,6 +19,12 @@
 #     with w=7d and rel=; demo-aurora-crm01's Jobs folder opens with exactly 1 /api/jobs read and lists its present jobs;
 #     a job node opens "Job <name>" with w=7d. Closing and opening a folder again makes no read; no /api/tables read at
 #     any point. A search for "rds" leaves only instances whose name holds rds, each with its status dot.
+#     [review fold, expected before the rerun: Tables lists at most 15 tables (16 rows only when the 16th is "all N
+#      tables..."); closing and opening Jobs reads nothing either; every tree read carries part= (databases, tables,
+#      jobs); a caret opened with the keyboard (Enter) keeps the focus after the redraw and after its children arrive;
+#      on #/dbinfo exactly one tree node is marked on besides the instance (Storage > Database info).
+#      With the wiring (B): /api/drill/db?part=tables answers with only "tables", /api/dbinfo?part=databases only
+#      "databases", /api/jobs?part=jobs only "jobs"; part=nope is refused with 400 naming the parts.]
 #  B. the Tables tab of demo-onprem-erp01: its table names link to #/table?..db=..&rel=.. and the first opens "Table";
 #     the Jobs and Job report tabs of demo-aurora-crm01 and the root Jobs page link job names to #/job (the root page's
 #     links carry each row's own instance); the Indexes tab of demo-onprem-erp01 links index names to #/index and the
@@ -80,7 +86,7 @@ const until = async (expr, ms = 12000) => { const t = Date.now(); while (Date.no
 const get = async p => { const j = await (await fetch(U + '/api/' + p)).json(); return j; };
 const rows = t => t ? t.rows.map(r => Object.fromEntries(t.columns.map((c, i) => [c, r[i]]))) : [];
 // the reads a tree folder may make (the Summary's own 30-second refresh is not one of them)
-const since = n => reqs.slice(n).filter(u => /^\/api\/(dbinfo|drill|jobs|tables)/.test(u));
+const since = n => reqs.slice(n).filter(u => /^\/api\/(dbinfo|drill|jobs\?|tables)/.test(u));
 // the tree's helpers in the page: the instance row by name, a caret under a node, the node texts under it
 const H = `
   window.__inst = n => [...document.querySelectorAll('#tree .tree-inst')].find(r => r.querySelector('a.inst')?.textContent === n);
@@ -130,7 +136,8 @@ await sleep(200);
 await ev(`${dbBox}.children[1].querySelector('button.caret').click(), 'ok'`);
 const tabNames = await until(`(() => { const t = [...${dbBox}.children[1].querySelectorAll('a.inst')].slice(1).map(a => a.textContent); return t.length ? t : null; })()`);
 const tr = since(n0);
-check(tr.filter(u => u.startsWith('/api/drill/db')).length === 1 && tr.length === 1 && tabNames && tabNames.length >= 1 && tabNames.length <= 16, `Tables: one read, ${tabNames ? tabNames.length : 0} nodes (${tr.join(' ')})`);
+const tabsOk = tabNames && tabNames.length >= 1 && (tabNames.length <= 15 || (tabNames.length === 16 && tabNames[15].startsWith('all ')));
+check(tr.filter(u => u.startsWith('/api/drill/db')).length === 1 && tr.length === 1 && tabsOk, `Tables: one read, ${tabNames ? tabNames.length : 0} nodes (${tr.join(' ')})`);
 await ev(`[...${dbBox}.children[1].querySelectorAll('a.inst')][1].click(), 'ok'`);
 page = await until(`(() => { const h = document.querySelector('main h2')?.textContent ?? ''; return h.startsWith('Table ') ? JSON.stringify({ h, hash: location.hash }) : null; })()`);
 page = page && JSON.parse(page);
@@ -154,6 +161,31 @@ page = await until(`(() => { const h = document.querySelector('main h2')?.textCo
 page = page && JSON.parse(page);
 check(page && page.h.startsWith(`Job ${jobNames[0]} `) && /w=7d/.test(page.hash) && /[?&]job=\d+/.test(page.hash), `job node -> ${page ? page.h + ' ' + page.hash : 'no page'}`);
 check(!reqs.some(u => u.startsWith('/api/tables')), 'no /api/tables read from the tree');
+// closing and opening Jobs again reads nothing
+n0 = reqs.length;
+await ev(H);
+await ev(`__folder(__inst('demo-aurora-crm01'), 'Jobs').querySelector('button.caret').click(), 'ok'`); await sleep(200);
+await ev(`__folder(__inst('demo-aurora-crm01'), 'Jobs').querySelector('button.caret').click(), 'ok'`); await sleep(400);
+check(since(n0).length === 0, `reopening Jobs reads nothing (${since(n0).join(' ')})`);
+// every tree read names its part (the pages' own reads of the same routes carry the window, from= and to=; the tree's never do)
+const treeReads = reqs.filter(u => /^\/api\/(dbinfo|drill\/db|jobs\?)/.test(u) && !/[?&]from=/.test(u));
+check(treeReads.length >= 3 && treeReads.every(u => /[?&]part=(databases|tables|jobs)(&|$)/.test(u)), `the tree's reads carry part=: ${treeReads.join(' ')}`);
+// the keyboard: Enter on a closed caret keeps the focus there after the redraw and after the children arrive
+await ev(H);
+await ev(`__folder(__inst('demo-onprem-erp01'), 'Jobs').querySelector('button.caret').focus(), 'ok'`);
+await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+await cmd('Input.dispatchKeyEvent', { type: 'char', text: '\r' });
+await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+await until(`(() => { const t = [...__folder(__inst('demo-onprem-erp01'), 'Jobs').querySelectorAll('a.inst, p')].slice(1); return t.length && !t.some(x => x.textContent === 'Loading...'); })()`);
+await sleep(300);
+const foc = await ev(`document.activeElement?.dataset?.key ?? document.activeElement?.tagName`);
+check(foc === `i${erp.instance_id}/jobs`, `Enter on a caret keeps the focus there after the children arrive (${foc})`);
+// one 'on' node on the Database info tab besides the instance
+await go(`#/dbinfo?i=${erp.instance_id}&w=7d`);
+await ev(`(() => { const c = __folder(__inst('demo-onprem-erp01'), 'Storage').querySelector('button.caret'); if (c.getAttribute('aria-expanded') !== 'true') c.click(); return 1; })()`);
+await sleep(300);
+const ons = await ev(`[...document.querySelectorAll('#tree a.inst.on')].map(a => a.textContent)`);
+check(JSON.stringify(ons) === JSON.stringify(['demo-onprem-erp01', 'Database info']), `on #/dbinfo the tree marks ${JSON.stringify(ons)}`);
 // the search
 await ev(`(() => { const s = document.querySelector('#tree input[type=search]'); s.value = 'rds'; s.dispatchEvent(new Event('input')); return 1; })()`);
 await sleep(300);
@@ -185,6 +217,14 @@ if (wired !== '1') {
   const root = await linkCheck(`#/jobs?w=7d`, 'a[href^="#/job?"]', null, 'root Jobs page');
   if (root) check(root.every(h => /[?&]i=\d+/.test(h)), 'root Jobs links name their instance');
   await linkCheck(`#/indexes?i=${erp.instance_id}&w=7d`, 'a[href^="#/index?"]', 'Index ', 'Indexes tab');
+  // the part selector: one part answers alone; an unknown part is refused
+  const keys = async q => Object.keys(await (await fetch(`${U}/api/${q}`)).json()).sort().join(',');
+  const dbid = rows((await get(`dbinfo?instance=${erp.instance_id}`)).databases).find(r => r.datname === 'erp').dbid;
+  check(await keys(`drill/db?instance=${erp.instance_id}&db=${dbid}&part=tables`) === 'tables', 'drill/db part=tables answers tables only');
+  check(await keys(`dbinfo?instance=${erp.instance_id}&part=databases`) === 'databases', 'dbinfo part=databases answers databases only');
+  check(await keys(`jobs?instance=${crm.instance_id}&part=jobs`) === 'jobs', 'jobs part=jobs answers jobs only');
+  const bad = await fetch(`${U}/api/jobs?instance=${crm.instance_id}&part=nope`);
+  check(bad.status === 400 && /part must be one of/.test(await bad.text()), `part=nope refused (${bad.status})`);
 }
 ws.close();
 process.exit(failed ? 1 : 0);

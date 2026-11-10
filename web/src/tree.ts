@@ -9,10 +9,12 @@
 // Under each instance (task 65; DBADash's tree: instance > child folders > database > objects): a caret opens its
 // folders, closed by default: Configuration, Checks, Replication and Storage open their tabs; Databases loads the
 // instance's databases on first open (one /api/dbinfo read), each database a node to its page with a Tables folder
-// that loads that database's largest tables (one /api/drill/db read); Jobs loads its jobs (one /api/jobs read).
+// that loads that database's largest tables (one /api/drill/db read); Jobs loads its jobs (one /api/jobs read). Each
+// read asks only for the part it shows (part=databases | tables | jobs; a server without the part selector answers
+// with the whole page, which still works) and is kept 30 minutes: the lists change hourly.
 // Every link keeps the time range. The search still finds instances; an open instance shows its folders under it.
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
-import { get, Row, rowsOf, Table } from './api';
+import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { Ctx, href, drillHome } from './router';
 import { Fleet, Level, tagsOf, worst } from './fleet';
 import { hashParam, hrefWith } from './dbinfo';
@@ -116,18 +118,22 @@ function toggle(key: string) {
   draw();
 }
 
-// the children a folder loads on its first open: one API read, kept 5 minutes (a Refresh of the page redraws from it)
+// the children a folder loads on its first open: one API read, kept 30 minutes (the databases, tables and jobs
+// collections run hourly; a read past that is redone on the next draw, the old rows shown meanwhile)
 interface Load { at: number; rows?: Row[]; err?: string; pending?: boolean }
 const loads = new Map<string, Load>();
-const LOAD_TTL = 300000;
-const TABLES_SHOWN = 15;
+const LOAD_TTL = 1800000;
+const TABLES_SHOWN = 15, JOBS_SHOWN = 30;
 function loaded(key: string, read: () => Promise<Row[]>): Load {
   const l = loads.get(key);
   if (l && (l.pending || Date.now() - l.at < LOAD_TTL)) return l;
   const next: Load = { at: Date.now(), pending: true, rows: l?.rows };
   loads.set(key, next);
-  read().then(rows => { loads.set(key, { at: Date.now(), rows }); }, e => { loads.set(key, { at: Date.now(), err: e instanceof Error ? e.message : String(e) }); })
-    .finally(() => draw());
+  read().then(rows => { loads.set(key, { at: Date.now(), rows }); }, e => {
+    // a session that expired while the folder read: drop the entry and let the shell's render show the sign-in
+    if (e instanceof LoginRequired) { loads.delete(key); rerender(); return; }
+    loads.set(key, { at: Date.now(), err: e instanceof Error ? e.message : String(e) });
+  }).finally(() => draw());
   return next;
 }
 
@@ -137,7 +143,7 @@ const rowStyle = 'display:flex;align-items:center';
 // caretFor: the open / close button of a node, its state for a screen reader too
 function caretFor(key: string, what: string): HTMLButtonElement {
   const isOpen = opened.has(key);
-  const b = el('button', { type: 'button', class: 'caret', 'aria-expanded': String(isOpen), 'aria-label': `${isOpen ? 'close' : 'open'} ${what}` }, isOpen ? '▾' : '▸');
+  const b = el('button', { type: 'button', class: 'caret', 'data-key': key, 'aria-expanded': String(isOpen), 'aria-label': `${isOpen ? 'close' : 'open'} ${what}` }, isOpen ? '▾' : '▸');
   b.addEventListener('click', () => toggle(key));
   return b;
 }
@@ -155,12 +161,12 @@ function folder(key: string, name: string, depth: number, kids: () => HTMLElemen
   return box;
 }
 
-// loading / failed / empty lines under a folder that reads its children
+// loading / failed / empty lines under a folder that reads its children (announced: a screen reader hears them change)
 function state(l: Load, depth: number, empty: string): HTMLElement | null {
   const st = 'padding:.1rem .4rem;' + nodeStyle(depth);
-  if (l.err) return el('p', { class: 'error', style: st }, 'Could not load: ' + l.err);
-  if (!l.rows) return el('p', { class: 'empty', style: st }, 'Loading...');
-  if (l.rows.length === 0) return el('p', { class: 'empty', style: st }, empty);
+  if (l.err) return el('p', { class: 'error', style: st, role: 'status', 'aria-live': 'polite' }, 'Could not load: ' + l.err);
+  if (!l.rows) return el('p', { class: 'empty', style: st, role: 'status', 'aria-live': 'polite' }, 'Loading...');
+  if (l.rows.length === 0) return el('p', { class: 'empty', style: st, role: 'status', 'aria-live': 'polite' }, empty);
   return null;
 }
 
@@ -174,7 +180,7 @@ function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
 
   const databases = folder(`i${id}/db`, 'Databases', depth, () => {
     const l = loaded(`i${id}/db`, async () => {
-      const d = await get<Record<'databases', Table | null>>('dbinfo', { instance: id });
+      const d = await get<Record<'databases', Table | null>>('dbinfo', { instance: id, part: 'databases' });
       return rowsOf(d.databases).filter(r => r.is_present && !r.is_template);
     });
     const s = state(l, depth + 1, 'No database read yet (hourly).');
@@ -183,7 +189,7 @@ function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
       const dbid = String(r.dbid);
       const tables = folder(`i${id}/db/${dbid}/t`, 'Tables', depth + 2, () => {
         const lt = loaded(`i${id}/db/${dbid}/t`, async () => {
-          const d = await get<Record<'tables', Table | null>>('drill/db', { instance: id, db: dbid });
+          const d = await get<Record<'tables', Table | null>>('drill/db', { instance: id, db: dbid, part: 'tables' });
           return rowsOf(d.tables);
         });
         const st = state(lt, depth + 3, 'No table read in this database.');
@@ -200,21 +206,23 @@ function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
       return folder(`i${id}/db/${dbid}`, String(r.datname), depth + 1, () => [tables],
         hrefWith(ctx, 'db', { db: dbid }, id), here && ctx.tab === 'db' && curDb === dbid);
     });
-  }, tabLink('dbinfo'), here && ctx.tab === 'dbinfo');
+  }, tabLink('dbinfo'), false);
 
   const jobs = folder(`i${id}/jobs`, 'Jobs', depth, () => {
     const l = loaded(`i${id}/jobs`, async () => {
-      const d = await get<Record<'jobs', Table | null>>('jobs', { instance: id });
+      const d = await get<Record<'jobs', Table | null>>('jobs', { instance: id, part: 'jobs' });
       return rowsOf(d.jobs).filter(r => r.is_present);
     });
     const s = state(l, depth + 1, 'No scheduled job.');
     if (s) return [s];
-    return l.rows!.map(r => {
+    const shown = l.rows!.slice(0, JOBS_SHOWN).map(r => {
       const failed = ['failed', 'internal error', 'aborted'].includes(String(r.last_status ?? ''));
       return el('div', { style: nodeStyle(depth + 1) }, leaf(String(r.job_name ?? r.job_id), hrefWith(ctx, 'job', { scheduler: String(r.scheduler), job: String(r.job_id) }, id),
         here && ctx.tab === 'job' && curJob === String(r.job_id) && hashParam('scheduler') === String(r.scheduler),
         `${String(r.scheduler)} job ${String(r.job_id)}${r.last_status ? ', last run ' + String(r.last_status) : ''}`, failed ? 2 : 0));
     });
+    if (l.rows!.length > JOBS_SHOWN) shown.push(el('div', { style: nodeStyle(depth + 1) }, leaf(`all ${l.rows!.length} jobs...`, tabLink('jobs'), false)));
+    return shown;
   }, tabLink('jobs'), here && ctx.tab === 'jobs');
 
   return [
@@ -272,7 +280,7 @@ function draw() {
     const shown = fo.rows.filter(match);
     if (filter && shown.length === 0) return null;
     const shut = collapsed.has(fo.path) && !filter;
-    const caret = el('button', { type: 'button', class: 'caret', 'aria-label': shut ? 'expand' : 'collapse' }, shut ? '▸' : '▾');
+    const caret = el('button', { type: 'button', class: 'caret', 'data-key': 'f:' + fo.path, 'aria-expanded': String(!shut), 'aria-label': `${shut ? 'expand' : 'collapse'} ${fo.label}` }, shut ? '▸' : '▾');
     caret.addEventListener('click', () => {
       if (collapsed.has(fo.path)) collapsed.delete(fo.path); else collapsed.add(fo.path);
       lsSet('pgvigil.collapsed', JSON.stringify([...collapsed]));
@@ -305,7 +313,11 @@ function draw() {
   const out: HTMLElement[] = [all];
   for (const fo of foldersFor(f.instances, ui.group_by, 0, '')) { const e = render(fo, 0); if (e) out.push(e); }
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
+  // a redraw replaces every node: a caret that had the keyboard focus gets it back (by its key), so a keyboard or
+  // screen-reader user stays where they were after opening a folder and after its children arrive
+  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#tree button.caret')?.dataset.key;
   list.replaceChildren(...out);
+  if (focused) list.querySelector<HTMLElement>(`button.caret[data-key="${CSS.escape(focused)}"]`)?.focus();
 }
 
 // ---- the instance header's chips
