@@ -20,6 +20,14 @@ pgvigil's own web UI needs nothing else. Grafana is optional, for a site that al
 
 Each dashboard links to the others through the `pgvigil` menu at the top, keeping the time range and the instance. The instance column of a fleet table opens that instance's overview.
 
+Three of them, as `scripts/proof-grafana.sh` captured them on the demo repository (Grafana 12.4.3, last 7 days, instance `demo-rds-orders01`):
+
+![Fleet summary](../deploy/grafana/screenshots/01-fleet-summary.png)
+
+![Running queries and blocking](../deploy/grafana/screenshots/03-activity-blocking.png)
+
+![Counters and IO: an RDS instance has no host disks, so those two panels show No data](../deploy/grafana/screenshots/05-counters-io.png)
+
 ## What the dashboards read
 
 The panels read only the repository's views and read functions (`pgvigil.findings`, `pgvigil.activity_latest`, `pgvigil.dbstats_rate()`, `pgvigil.top_statements_by()`, `pgvigil.volume_forecast()` and the rest). They never read a table directly, so a later release can change its tables without breaking the dashboards. `scripts/proof-grafana.sh` checks every name in every panel against the catalog.
