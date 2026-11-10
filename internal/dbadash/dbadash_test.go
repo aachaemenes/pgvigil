@@ -56,6 +56,8 @@ func TestConfigDBADash(t *testing.T) {
 		"spaced PWD":          "dbadash:\n  - name: a\n    dsn: \"Server=h;Uid=u; PWD =p\"\n",
 		"URL query password":  "dbadash:\n  - name: a\n    dsn: \"sqlserver://u@h:1433?database=D&password=p\"\n",
 		"odbc password":       "dbadash:\n  - name: a\n    dsn: \"odbc:server=h;uid=u;Pwd=p\"\n",
+		"URL password with ?": "dbadash:\n  - name: a\n    dsn: \"sqlserver://sa:12?x@host:1433?database=D\"\n",
+		"URL password with /": "dbadash:\n  - name: a\n    dsn: \"sqlserver://sa:ab/cd@host:1433\"\n",
 		"twice":               "dbadash:\n  - name: a\n    dsn: env:X\n  - name: A\n    dsn: env:Y\n",
 		"no name":             "dbadash:\n  - dsn: env:X\n",
 		"no dsn":              "dbadash:\n  - name: a\n",

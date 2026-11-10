@@ -30,6 +30,7 @@
 --   dbadash_instance(repository, id)     one instance's facts (none for a repository no longer configured).
 --   dbadash_statuses(repository, id)     one instance's Summary: a row per status, DBADash's header, code, word, detail.
 --   dbadash_changes(repository, id, f, t) the status changes of the window, with the old and new code.
+-- The three per-instance functions answer only for a configured repository (a saved link to a removed one is empty).
 
 CREATE TABLE IF NOT EXISTS pgvigil.dbadash_repositories (
   repository      text PRIMARY KEY,
@@ -260,6 +261,7 @@ LANGUAGE sql STABLE AS $$
          pgvigil.dbadash_detail(c.status_key, s.details), s.refreshed_at, s.snapshot_at
     FROM pgvigil.dbadash_checks() c
     JOIN pgvigil.dbadash_summary s ON s.repository = p_repository AND s.instance_id = p_instance_id
+    JOIN pgvigil.dbadash_repositories r ON r.repository = s.repository AND r.is_configured
    ORDER BY c.ord
 $$;
 
@@ -280,6 +282,7 @@ LANGUAGE sql STABLE AS $$
          (h.statuses->>c.status_key)::int, pgvigil.dbadash_word((h.statuses->>c.status_key)::int)
     FROM h CROSS JOIN pgvigil.dbadash_checks() c
    WHERE h.prev IS NOT NULL AND h.snapshot_at > p_from
+     AND EXISTS (SELECT 1 FROM pgvigil.dbadash_repositories r WHERE r.repository = p_repository AND r.is_configured)
      AND (h.prev->>c.status_key) IS DISTINCT FROM (h.statuses->>c.status_key)
    ORDER BY h.snapshot_at DESC, c.ord
 $$;

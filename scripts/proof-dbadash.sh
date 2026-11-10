@@ -60,7 +60,9 @@ cleanup() {
   if [[ -f "$GUEST/proof-dbadash.ps1" ]]; then
     # the guest's Finish on every path (an ssh drop mid-run would otherwise leave the process and sa's password there)
     printf '%s' "$MSSQL_SA_PASSWORD" > "$GUEST/sa.txt"
-    ssh -o ConnectTimeout=10 winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File \\\\host.lan\\Data\\pgv-dbadash\\proof-dbadash.ps1 -Cleanup" 2>/dev/null | tr -d '\r' | grep -E '^(ok|FAIL|note)' || true
+    fin=$(timeout 120 ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File \\\\host.lan\\Data\\pgv-dbadash\\proof-dbadash.ps1 -Cleanup" 2>/dev/null | tr -d '\r' | grep -E '^(ok|FAIL|note)' || true)
+    echo "$fin"
+    echo "$fin" | grep -qE '^(ok   the service config removed|note)' || echo "WARN: the guest's cleanup did not confirm the config's removal: check C:\\pgv-dbadash for ServiceConfig*.json by hand" >&2
   fi
   rm -f "$GUEST/sa.txt" "$GUEST/proof-dbadash.ps1"; rm -rf "$WORK"
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || true
@@ -90,13 +92,18 @@ $pw = if (Test-Path "$share\sa.txt") { (Get-Content "$share\sa.txt" -Raw).Trim()
 # swallow the ok / FAIL lines)
 $script:finishOk = $true
 function Finish {
-  Get-Process DBADashService -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dst\DBADashService.exe" } | Stop-Process -Force
-  if (-not (Test-Path $dst)) { return }
-  Get-ChildItem $dst -Recurse -File -Filter '*ServiceConfig*' -ErrorAction SilentlyContinue | Remove-Item -Force
-  if (-not $pw) { 'note no sa.txt on the share: the password check was skipped'; return }
-  $left = @(Get-ChildItem $dst -Recurse -File -Include *.json, *.out, *.err, *.txt, *.log, *.bak -ErrorAction SilentlyContinue | Select-String -SimpleMatch -Pattern $pw -List)
-  if ($left.Count) { "FAIL the sa password is still in $($left[0].Path)"; $script:finishOk = $false; return }
-  'ok   the service config removed; no file under the folder holds the sa password'
+  try {
+    Get-Process DBADashService -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dst\DBADashService.exe" } | Stop-Process -Force
+    if (-not (Test-Path $dst)) { return }
+    Get-ChildItem $dst -Recurse -File -Filter '*ServiceConfig*' -ErrorAction SilentlyContinue | Remove-Item -Force
+    if (-not $pw) { 'note no sa.txt on the share: the password check was skipped'; return }
+    $left = @(Get-ChildItem $dst -Recurse -File -Include *.json, *.out, *.err, *.txt, *.log, *.bak -ErrorAction SilentlyContinue | Select-String -SimpleMatch -Pattern $pw -List)
+    if ($left.Count) { "FAIL the sa password is still in $($left[0].Path)"; $script:finishOk = $false; return }
+    'ok   the service config removed; no file under the folder holds the sa password'
+  } catch {
+    "FAIL Finish: $($_.Exception.Message)"
+    $script:finishOk = $false
+  }
 }
 if ($Cleanup) { Finish; if ($script:finishOk) { exit 0 } else { exit 1 } }
 if (-not $pw) { 'FAIL no sa.txt on the share'; exit 1 }
@@ -129,6 +136,7 @@ out=$(ssh winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File \\\\ho
 echo "$out"
 echo "$out" | grep -q '^FAIL' && fail "the guest step failed"
 echo "$out" | grep -q '^ok   the service config removed' || fail "the guest step did not confirm the config's removal"
+rm -f "$GUEST/sa.txt"   # the trap writes it again for its own -Cleanup call
 n=$(sq "SELECT COUNT(*) FROM dbo.Instances WHERE IsActive = 1 AND ISNULL(EngineEdition, 0) <> 5" "$DDB")
 ver=$(sq "SELECT TOP (1) Version FROM dbo.DBVersionHistory ORDER BY DeployDate DESC" "$DDB")
 inst=$(sq "SELECT TOP (1) Instance FROM dbo.Instances WHERE IsActive = 1" "$DDB")
@@ -240,6 +248,7 @@ ni=$(pq "SELECT count(*) FROM pgvigil.dbadash_instance('sandbox', (SELECT min(in
 echo "ok   F: stored reasons checked; after the configuration dropped 'unreachable': $nr; an unchanged read added no history; an emptied list leaves 0 repositories and no instance page"
 
 echo "Not proven here: the 5-minute loop (dbadash.Run) under 'pgvigil run' and the tree and page in a browser (both are wired"
-echo "into the lead's files at the wave's join); Azure SQL Database rows of a DBADash repository (IsAzure = 1: left out by the"
+echo "into the lead's files at the wave's join; the join must call dbadash.Run unconditionally, an empty list included, or an emptied"
+echo "dbadash: list never takes the last repository out of the tree); Azure SQL Database rows of a DBADash repository (IsAzure = 1: left out by the"
 echo "reader, none in the sandbox); a DBADash version other than $ver."
 echo "proof-dbadash: OK (DBADash $ver built $DDB from its release zip; read-only login; statuses equal to dbo.Summary_Get; history; not read with reasons)"
