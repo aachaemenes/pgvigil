@@ -10,9 +10,9 @@ import { Ctx, drillTabs, instanceTabs, rangeLabel, rootTabs, window_ } from './r
 import { Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel } from './ui';
 
 type Status = 'ok' | 'warn' | 'crit' | 'none';
-type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'pct' | 'date';
+type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
 interface Cell { v: string | number; kind: Kind; status?: Status; text: string; stamp?: string }   // stamp: a time's local text for the CSV
-export interface Section { name: string; cols: string[]; rows: Cell[][] }
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string }   // note: the page's 'the newest N of M' line above the grid
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -44,10 +44,14 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
     const d = new Date(raw);
     if (!isNaN(d.getTime())) return { v: excelDate(d), kind: 'date', stamp: localStamp(d) };
   }
+  // a text that only looks like a number (a role or database named '0042', a '+5') is kept as the text it is
+  if (typeof raw === 'string' && /^[+0]\d/.test(raw)) return { v: text, kind: 'text' };
   const n = numeric(raw);
   if (n !== undefined) {
     if (norm(fmtBytes(raw)) === text) return { v: n, kind: 'bytes' };
     if (norm(fmtSecs(raw)) === text) return n >= 0 ? { v: n / 86400, kind: 'secs' } : { v: n, kind: 'nsecs' };
+    const dur = durParse(text);   // a millisecond duration as any tab writes it: the raw value rounds to the text shown
+    if (dur && Math.abs(n - dur.ms) <= dur.tol) return { v: n, kind: 'msecs' };
     // a share: '12.5 %', a growth with its sign ('+3 %'), or one the page rounds to a whole percent
     const pct = new Set([fmtNum(n), (n > 0 ? '+' : '') + fmtNum(n), fmtNum(Math.round(n)), (n > 0 ? '+' : '') + fmtNum(Math.round(n))].map(x => norm(x + ' %')));
     if (pct.has(text)) return { v: n, kind: 'pct' };
@@ -56,9 +60,41 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
   return { v: text, kind: 'text' };
 }
 
-// excelDate: the local wall-clock time the screen shows, as an Excel serial date (days since 1899-12-30).
+// the locale's grouping and decimal characters, learnt from fmtNum (',' and '.' in en-US, U+202F and ',' in fr-FR)
+const sep = (() => { const t = fmtNum(1234567.5); return { group: t[1], dec: t[t.length - 2] }; })();
+// digitsOf: a number as the locale wrote it, back to JavaScript's form ('1,234.5' or '1 234,5' -> '1234.5'); '' = not one
+function digitsOf(t: string): string {
+  const d = t.split(sep.group).join('').split(sep.dec).join('.').replace(/[\s\u202f\u00a0']/g, '');
+  return /^-?\d+(\.\d+)?$/.test(d) ? d : '';
+}
+
+// durParse: a millisecond duration as any tab's formatter writes it ('0.3 ms', '2,500 ms', '3.72 s', '75 s',
+// '1.08 min'; slow.ts, drill.ts, plan.ts and io.ts each round their own way): the milliseconds the text shows and
+// half the unit of its last digit, so a raw value counts as that duration when it rounds to the text.
+export function durParse(text: string): { ms: number; tol: number } | undefined {
+  const m = /^(.+) (ms|s|min)$/.exec(text);   // the number may carry the locale's grouping space
+  if (!m) return undefined;
+  const d = digitsOf(m[1]);
+  if (!d) return undefined;
+  const unit = m[2] === 'min' ? 60000 : m[2] === 's' ? 1000 : 1;
+  const k = (d.split('.')[1] ?? '').length;
+  return { ms: Number(d) * unit, tol: unit * (Math.pow(10, -k) / 2 + 1e-9) };
+}
+
+// fromText: a numeric column (its header carries the 'num' class) of a grid without a page model, read from the
+// text alone: a count in the locale's grouping, or a duration; anything else stays text.
+export function fromText(text: string): Pick<Cell, 'v' | 'kind'> {
+  const dur = durParse(text);
+  if (dur) return { v: dur.ms, kind: 'msecs' };
+  const d = digitsOf(text);
+  if (d && norm(fmtNum(Number(d))) === text) { const n = Number(d); return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' }; }
+  return { v: text, kind: 'text' };
+}
+
+// excelDate: the local wall-clock time the screen shows, as an Excel serial date (days since 1899-12-30), whole
+// seconds (Excel rounds a fraction up in hh:mm:ss, the screen and the CSV cut it: the three agree on the floor).
 export function excelDate(d: Date): number {
-  return (d.getTime() - d.getTimezoneOffset() * 60000) / 86400000 + 25569;
+  return (Math.floor(d.getTime() / 1000) * 1000 - d.getTimezoneOffset() * 60000) / 86400000 + 25569;
 }
 
 const statuses: Status[] = ['crit', 'warn', 'ok', 'none'];
@@ -73,7 +109,9 @@ function statusOf(td: Element): Status | undefined {
 const text = (e: Element) => (e.textContent ?? '').replace(/\s+/g, ' ').trim();
 
 function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
-  const cols = [...table.querySelectorAll('thead th')].map(text);
+  const ths = [...table.querySelectorAll('thead th')];
+  const cols = ths.map(text);
+  const numCol = ths.map(h => h.classList.contains('num'));
   const trs = [...table.querySelectorAll('tbody tr')];
   const m = gridModel(table);
   const data = m?.rows();
@@ -81,7 +119,7 @@ function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const rows = trs.map((tr, i) => [...tr.children].map((td, j) => {
     const t = text(td);
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
-    return { ...(raw === undefined ? { v: t, kind: 'text' as Kind } : typed(raw, t)), status: statusOf(td), text: t };
+    return { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), status: statusOf(td), text: t };
   }));
   return { cols, rows };
 }
@@ -102,7 +140,10 @@ export function sections(root: ParentNode, fallback: string): Section[] {
   for (const e of root.querySelectorAll('h2, h3, h4, table.grid, table.props')) {
     if (e.tagName !== 'TABLE') { heading = text(e) || fallback; continue; }
     const t = e as HTMLTableElement;
-    out.push({ name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)) });
+    // a 'the newest 500 of 1,234 samples' line right above the grid rides into the Summary sheet: the rows taken are not all
+    const prev = (t.parentElement?.classList.contains('grid-wrap') ? t.parentElement : t).previousElementSibling;
+    const note = prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : undefined;
+    out.push({ name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note });
   }
   return out;
 }
@@ -114,8 +155,8 @@ const fillOf: Record<Status, string> = { ok: 'FFE3F4E6', warn: 'FFFFF1D6', crit:
 const fontOf: Record<Status, string> = { ok: 'FF237A35', warn: 'FF9A5A00', crit: 'FFC42626', none: 'FF5D6676' };
 const headFill = 'FFDDE1E8';
 // numFmt ids: 3 is Excel's built-in '#,##0'; 164 on are this file's own
-const fmtId: Record<Kind, number> = { text: 0, int: 3, dec: 164, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169 };
-const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '#,##0.00" %"'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"']];
+const fmtId: Record<Kind, number> = { text: 0, int: 3, dec: 164, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
+const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '#,##0.00" %"'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
 
 const esc = (s: string) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -222,6 +263,16 @@ export function sheetNames(names: string[]): string[] {
 
 export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date }
 
+// timeZone: the browser's zone the times in the file are written in, 'America/Los_Angeles (UTC-08:00 at export)':
+// each time carries its own date's offset (a window across a DST change holds two), so the offset is the export's.
+export function timeZone(at: Date): string {
+  const off = -at.getTimezoneOffset(), sign = off < 0 ? '-' : '+', a = Math.abs(off);
+  let name = '';
+  try { name = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''; } catch { /* no Intl: the offset alone */ }
+  const utc = `UTC${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)} at export`;
+  return (name ? `${name} (${utc})` : utc) + ", the browser's; each time in its own date's offset";
+}
+
 export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uint8Array }[] {
   const names = sheetNames(secs.map(s => s.name));
   const t = (v: string): Cell => ({ v, kind: 'text', text: v });
@@ -229,10 +280,10 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
   const info: Cell[][] = [
     [t('Instance'), t(meta.instance)], [t('Tab'), t(meta.tab)],
     [t('Window'), t(meta.window)], [t('Window from'), d(meta.from)], [t('Window to'), d(meta.to)],
-    [t('Exported at'), d(meta.at)], [t('Source'), t('pgvigil')], [t(''), t('')], [t('Sheet'), t('Rows')],
-    ...secs.map((s, i) => [t(names[i]), { v: s.rows.length, kind: 'int' as Kind, text: '' }]),
+    [t('Exported at'), d(meta.at)], [t('Time zone'), t(timeZone(meta.at))], [t('Source'), t('pgvigil')], [t(''), t('')], [t('Sheet'), t('Rows'), t('Note')],
+    ...secs.map((s, i) => [t(names[i]), { v: s.rows.length, kind: 'int' as Kind, text: '' }, t(s.note ?? '')]),
   ];
-  const sheets: Sheet[] = [{ name: 'Summary', head: ['Item', 'Value'], rows: info, freeze: false },
+  const sheets: Sheet[] = [{ name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, freeze: false },
     ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, freeze: true }))];
   const st = new Styles();
   const enc = new TextEncoder();
@@ -271,6 +322,7 @@ export function csv(s: Section): string {
     if (typeof c.v === 'number') {
       if (c.kind === 'date') return c.stamp ?? '';
       if (c.kind === 'secs') return String(Math.round(c.v * 86400 * 1000) / 1000);
+      if (c.kind === 'msecs') return String(c.v);   // the milliseconds, as the raw value
       return String(c.v);
     }
     return /^[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
