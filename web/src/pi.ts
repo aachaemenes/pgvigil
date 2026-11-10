@@ -94,7 +94,7 @@ function textCell(_v: unknown, r: Row): Node {
 const textStatus: Record<string, string> = {
   whole: 'whole (under the 500-byte cut)', AVAILABLE: 'whole (fetched)', PROCESSING: 'cut (PI still processing)',
   UNAVAILABLE: 'cut (PI has no whole text)', 'no statement id': 'cut (no statement of it in the read)', error: 'cut (the fetch failed)',
-  'not asked (call cap)': 'cut (not asked yet: the hourly call cap)',
+  'not asked (call cap)': 'cut (not asked yet: the hourly call cap)', 'not asked (query_text none)': 'cut (query_text is none)',
 };
 
 const sqlCols: Col[] = [
@@ -158,12 +158,15 @@ export async function capacitySection(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h3', {}, 'Capacity'));
   const sc = rowsOf(d.scaling)[0];
   const series = rowsOf(d.series);
-  if (!sc && !series.length) return el('section', { hidden: '' });   // not Aurora, or never read: the Host tab stays as it was
+  // not Aurora, never read, or a provisioned Aurora instance: the Host tab stays as it was
+  if ((!sc && !series.length) || (sc && sc.class !== 'db.serverless')) return el('section', { hidden: '' });
   const latest = new Map(rowsOf(d.latest).map(r => [String(r.metric), r]));
   const v = (m: string) => latest.get(m)?.value;
   const floor = sc?.min_acu, ceil = sc?.max_acu;
   const acu = v('ServerlessDatabaseCapacity'), hit = v('BufferCacheHitRatio');
-  const onFloor = acu != null && floor != null && Number(acu) <= Number(floor) + 0.01;
+  // on the running floor (0.5 ACU is the least an awake instance runs at: a 0 minimum only adds the pause); a paused
+  // instance (capacity 0) is not "on the floor"
+  const onFloor = acu != null && floor != null && Number(acu) > 0 && Number(acu) <= Math.max(Number(floor), 0.5) + 0.01;
   sec.append(el('div', { class: 'tiles' },
     tile('capacity', acu == null ? '-' : fmtNum(acu) + ' ACU', onFloor ? 'warn' : ''),
     tile('floor / ceiling', floor == null ? '-' : `${fmtNum(floor)} / ${ceil == null ? '?' : fmtNum(ceil)} ACU`),

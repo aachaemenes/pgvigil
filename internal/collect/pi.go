@@ -20,7 +20,9 @@ import (
 // piCollector keeps Performance Insights past its seven days: once an hour, on an RDS or Aurora DB instance with PI
 // on (DescribeDBInstances PerformanceInsightsEnabled, read once an hour), the DB load of the last complete hours
 // (db.load.avg, one point per hour) in total, by wait event and by SQL digest (db.sql_tokenized, the top 25), and the
-// top digests' text. GetResourceMetrics cuts every element at 500 bytes, so a digest at the cut gets the whole text
+// top digests' text, from the last stored hour (the pi cursor in pgvigil.log_cursor, one overlap behind it) up to the
+// last complete hour, capped at PI's own retention: the first read takes PI's whole window, a collector down for
+// hours loses nothing. GetResourceMetrics cuts every element at 500 bytes, so a digest at the cut gets the whole text
 // of its heaviest statement from GetDimensionKeyDetails (group db.sql: the API serves the whole text by the db.sql.id;
 // the heaviest db.sql.id of the digest comes from the same call's db.sql group, or, when none of the digest's
 // statements is in its top 25, from a call filtered on the digest; db.sql_tokenized has no details group). The text rides the
@@ -33,11 +35,12 @@ type piCollector struct{}
 func init() { Register(piCollector{}) }
 
 const (
-	piHours    = 3     // the complete hours read each run: two missed runs lose nothing (an hour read again replaces itself)
-	piTop      = 25    // the GroupBy limit: the top 25 waits and digests (the API's maximum)
-	piTextCut  = 500   // bytes: GetResourceMetrics returns at most this much of an element
-	piMaxCalls = 25    // GetDimensionKeyDetails calls per run at most (one per cut digest)
-	piService  = "RDS" // ServiceType
+	piOverlap  = time.Hour // re-read this far behind the stored cursor (the newest stored hour is read again)
+	piMaxDays  = 7         // the hours read when PI's retention is unknown: its free tier
+	piTop      = 25        // the GroupBy limit: the top 25 waits and digests (the API's maximum)
+	piTextCut  = 500       // bytes: GetResourceMetrics returns at most this much of an element
+	piMaxCalls = 25        // GetDimensionKeyDetails calls per run at most (one per cut digest)
+	piService  = "RDS"     // ServiceType
 )
 
 func (piCollector) Name() string                   { return "pi" }
@@ -109,7 +112,7 @@ func piClientFor(ctx context.Context, a config.AWS) (piAPI, error) {
 	return c, err
 }
 
-func (c piCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
+func (c piCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error) {
 	if ok, why := c.Configured(in); !ok {
 		return nil, fmt.Errorf("%s: %w", why, ErrSkip)
 	}
@@ -124,7 +127,27 @@ func (c piCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platf
 	if err != nil {
 		return nil, err
 	}
-	return piRows(ctx, api, in.AWS.Profile+"|"+in.AWS.Region, id, time.Now())
+	var since time.Time
+	if cursor != nil {
+		t, ok, err := cursor(ctx, piCursorSource)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			since = t
+		}
+	}
+	// under the none policy every text is dropped before the import: the calls that fetch it are not made
+	return piRows(ctx, api, in.AWS.Profile+"|"+in.AWS.Region, id, time.Now(), piOpts{since: since, wantText: in.QueryText != "none"})
+}
+
+// piCursorSource is the log_cursor source the pi collection keeps its last complete hour under.
+const piCursorSource = "pi"
+
+// piOpts: since is the stored cursor (zero: never read), wantText whether the whole-text calls are worth making.
+type piOpts struct {
+	since    time.Time
+	wantText bool
 }
 
 // piText keeps the whole texts fetched, per resource and digest, for the life of the process (a digest's text does
@@ -140,8 +163,9 @@ type piWhole struct{ text, status, sqlID string }
 const piTextKeep = 2000
 
 // piRows returns {kind:'state'} always, and with PI on the {kind:'load'} rows (at, group total|wait|sql, key,
-// wait_type, value) and the {kind:'sql'} rows (tokenized_id, db_id, query, statement, text_status, sql_id).
-func piRows(ctx context.Context, api piAPI, awsKey, id string, now time.Time) ([]Row, error) {
+// wait_type, value), the {kind:'sql'} rows (tokenized_id, db_id, query, statement, text_status, sql_id) and one
+// {kind:'cursor', source:'pi', read_to} row (the end of the hours read).
+func piRows(ctx context.Context, api piAPI, awsKey, id string, now time.Time, o piOpts) ([]Row, error) {
 	d, err := platform.DescribeAWSInstance(ctx, api, awsKey, id, now)
 	if err != nil {
 		return nil, err
@@ -158,7 +182,18 @@ func piRows(ctx context.Context, api piAPI, awsKey, id string, now time.Time) ([
 		return nil, fmt.Errorf("DescribeDBInstances %s: no DbiResourceId", id)
 	}
 	end := now.UTC().Truncate(time.Hour)
-	start := end.Add(-piHours * time.Hour)
+	days := d.PIRetention
+	if days <= 0 {
+		days = piMaxDays
+	}
+	start := end.Add(-time.Duration(days) * 24 * time.Hour) // PI refuses a start before its retention
+	if s := o.since.Add(-piOverlap); !o.since.IsZero() && s.After(start) {
+		start = s
+	}
+	if !start.Before(end) { // the last complete hour is stored already
+		state["hours_read"] = 0
+		return []Row{state}, nil
+	}
 	in := &pi.GetResourceMetricsInput{
 		ServiceType: pitypes.ServiceType(piService), Identifier: aws.String(d.ResourceID),
 		StartTime: aws.Time(start), EndTime: aws.Time(end), PeriodInSeconds: aws.Int32(3600),
@@ -276,6 +311,10 @@ func piRows(ctx context.Context, api piAPI, awsKey, id string, now time.Time) ([
 		piTextMu.Lock()
 		w, ok := piText[ck]
 		piTextMu.Unlock()
+		if !ok && !o.wantText {
+			rows = append(rows, withStatus(r, "not asked (query_text none)"))
+			continue
+		}
 		if !ok {
 			sqlID := stmtOf[g.id].sqlID
 			if sqlID == "" && calls < piMaxCalls {
@@ -316,6 +355,7 @@ func piRows(ctx context.Context, api piAPI, awsKey, id string, now time.Time) ([
 		rows = append(rows, r)
 	}
 	state["hours_read"] = len(total)
+	rows = append(rows, Row{"kind": "cursor", "source": piCursorSource, "read_to": end})
 	return append([]Row{state}, rows...), nil
 }
 
