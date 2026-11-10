@@ -17,8 +17,9 @@
 # process started from that folder is ever stopped (another DBADash install in the guest is left alone).
 #
 # Expected (written before the first run):
-#  A. the guest: DBADashConfig SetDestination and Add print "Complete"; after the console run the service config (with sa's
-#     password) is removed and no file under C:\pgv-dbadash holds that password; the console service creates DBADash_pgv<suf> and
+#  A. the guest: DBADashConfig SetDestination and Add print "Complete"; after the console run, on every path (a finally, and
+#     this script's own trap over ssh when the guest step was cut), the service config (with sa's password) is removed and
+#     no file under C:\pgv-dbadash holds that password; the console service creates DBADash_pgv<suf> and
 #     collects WINSANDBOX: dbo.Instances holds 1 active row (Instance = the guest's @@SERVERNAME), dbo.DBVersionHistory
 #     a version starting 4.24.
 #  B. the login pgv_ddro_<suf> gets SELECT on dbo.Instances, dbo.Summary, dbo.CollectionDates and dbo.DBVersionHistory
@@ -36,7 +37,8 @@
 #     holds 2 rows for the instance (the first read and the change). A third read with nothing changed adds none (F).
 #  F. the folder: dbadash_repositories() stores sandbox ok, refused and unreachable 'not read' with their reasons ('Login
 #     failed', 'connection refused'); a read with a configuration that drops 'unreachable' leaves 2 rows (it leaves the tree)
-#     and, nothing having changed, the history still holds 2 rows.
+#     and, nothing having changed, the history still holds 2 rows; a read with NO dbadash: list leaves dbadash_repositories()
+#     empty and dbadash_instance() of the sandbox instance empty (the last repository leaves the tree).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.local/share/mise/shims:$PATH"
@@ -55,6 +57,13 @@ pq() { psql "$(dsn_db "$PGDB")" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 dsn_db() { python3 -c 'import sys,urllib.parse as u; p=u.urlsplit(sys.argv[1]); print(u.urlunsplit(p._replace(path="/"+sys.argv[2])))' "$ADMIN_DSN" "$1"; }
 urlq() { python3 -c 'import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$1"; }
 cleanup() {
+  if [[ -f "$GUEST/proof-dbadash.ps1" ]]; then
+    # the guest's Finish on every path (an ssh drop mid-run would otherwise leave the process and sa's password there)
+    printf '%s' "$MSSQL_SA_PASSWORD" > "$GUEST/sa.txt"
+    fin=$(timeout 120 ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File \\\\host.lan\\Data\\pgv-dbadash\\proof-dbadash.ps1 -Cleanup" 2>/dev/null | tr -d '\r' | grep -E '^(ok|FAIL|note)' || true)
+    echo "$fin"
+    echo "$fin" | grep -qE '^(ok   the service config removed|note)' || echo "WARN: the guest's cleanup did not confirm the config's removal: check C:\\pgv-dbadash for ServiceConfig*.json by hand" >&2
+  fi
   rm -f "$GUEST/sa.txt" "$GUEST/proof-dbadash.ps1"; rm -rf "$WORK"
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || true
   if [[ "${PGVIGIL_DBADASH_KEEP:-}" != 1 ]]; then
@@ -72,35 +81,62 @@ if [[ ! -f "$ZIP" ]]; then gh release download 4.24.1 -R trimble-oss/dba-dash -p
 ZIPNAME=$(basename "$ZIP")
 printf '%s' "$MSSQL_SA_PASSWORD" > "$GUEST/sa.txt"; chmod 600 "$GUEST/sa.txt"
 cat > "$GUEST/proof-dbadash.ps1" <<'PS1'
-param([string]$Db, [string]$Zip, [int]$RunSeconds)
+param([string]$Db, [string]$Zip, [int]$RunSeconds, [switch]$Cleanup)
 $ErrorActionPreference = 'Stop'
 $share = '\\host.lan\Data\pgv-dbadash'
 $dst = 'C:\pgv-dbadash'
-$pw = (Get-Content "$share\sa.txt" -Raw).Trim()
-if (-not (Test-Path "$dst\DBADashService.exe")) { Expand-Archive "$share\$Zip" $dst -Force; 'ok   unzipped' }
-Set-Location $dst
-Get-Process DBADashService -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dst\DBADashService.exe" } | Stop-Process -Force
-$a = & .\DBADashConfig.exe -a SetDestination -c "Data Source=mssql-sandbox,1433;Initial Catalog=$Db;User ID=sa;Password=$pw;Encrypt=True;Trust Server Certificate=True" 2>&1 | Out-String
-if ($a -notmatch 'Complete') { "FAIL SetDestination: $a"; exit 1 }
-$b = & .\DBADashConfig.exe -a Add -c 'Data Source=localhost;Integrated Security=True;Encrypt=True;Trust Server Certificate=True' --Replace 2>&1 | Out-String
-if ($b -notmatch 'Complete') { "FAIL Add: $b"; exit 1 }
-'ok   DBADashConfig SetDestination and Add: Complete'
-$p = Start-Process -FilePath "$dst\DBADashService.exe" -WorkingDirectory $dst -PassThru -WindowStyle Hidden -RedirectStandardOutput "$dst\svc.out" -RedirectStandardError "$dst\svc.err"
-Start-Sleep -Seconds $RunSeconds
-Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-"ok   the DBADash service ran $RunSeconds s as a console process"
-$errs = @(Select-String -Path "$dst\svc.out" -Pattern '\[ERR\]|\[FTL\]' | Select-Object -First 5)
-foreach ($e in $errs) { "note $($e.Line)" }
-# the destination connection string (sa's password) lives in the service's config and its backups: removed, then checked
-Get-ChildItem $dst -Recurse -File -Filter '*ServiceConfig*' -ErrorAction SilentlyContinue | Remove-Item -Force
-$left = @(Get-ChildItem $dst -Recurse -File -Include *.json, *.out, *.err, *.txt, *.log -ErrorAction SilentlyContinue | Select-String -SimpleMatch -Pattern $pw -List)
-if ($left.Count) { "FAIL the sa password is still in $($left[0].Path)"; exit 1 }
-'ok   the service config removed; no file under the folder holds the sa password'
+$pw = if (Test-Path "$share\sa.txt") { (Get-Content "$share\sa.txt" -Raw).Trim() } else { '' }
+# Finish runs on every path (the finally below, and -Cleanup from the proof's own trap): the proof's console process
+# stopped, the service config and its backups (sa's password) removed, and no file under the folder holding the password.
+# Its verdict is $script:finishOk (a function's text output is its return value, so a caller that tested the call would
+# swallow the ok / FAIL lines)
+$script:finishOk = $true
+function Finish {
+  try {
+    Get-Process DBADashService -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dst\DBADashService.exe" } | Stop-Process -Force
+    if (-not (Test-Path $dst)) { return }
+    Get-ChildItem $dst -Recurse -File -Filter '*ServiceConfig*' -ErrorAction SilentlyContinue | Remove-Item -Force
+    if (-not $pw) { 'note no sa.txt on the share: the password check was skipped'; return }
+    $left = @(Get-ChildItem $dst -Recurse -File -Include *.json, *.out, *.err, *.txt, *.log, *.bak -ErrorAction SilentlyContinue | Select-String -SimpleMatch -Pattern $pw -List)
+    if ($left.Count) { "FAIL the sa password is still in $($left[0].Path)"; $script:finishOk = $false; return }
+    'ok   the service config removed; no file under the folder holds the sa password'
+  } catch {
+    "FAIL Finish: $($_.Exception.Message)"
+    $script:finishOk = $false
+  }
+}
+if ($Cleanup) { Finish; if ($script:finishOk) { exit 0 } else { exit 1 } }
+if (-not $pw) { 'FAIL no sa.txt on the share'; exit 1 }
+$code = 0
+try {
+  if (-not (Test-Path "$dst\DBADashService.exe")) { Expand-Archive "$share\$Zip" $dst -Force; 'ok   unzipped' }
+  Set-Location $dst
+  Get-Process DBADashService -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$dst\DBADashService.exe" } | Stop-Process -Force
+  $a = & .\DBADashConfig.exe -a SetDestination -c "Data Source=mssql-sandbox,1433;Initial Catalog=$Db;User ID=sa;Password=$pw;Encrypt=True;Trust Server Certificate=True" 2>&1 | Out-String
+  if ($a -notmatch 'Complete') { throw "SetDestination: $a" }
+  $b = & .\DBADashConfig.exe -a Add -c 'Data Source=localhost;Integrated Security=True;Encrypt=True;Trust Server Certificate=True' --Replace 2>&1 | Out-String
+  if ($b -notmatch 'Complete') { throw "Add: $b" }
+  'ok   DBADashConfig SetDestination and Add: Complete'
+  $p = Start-Process -FilePath "$dst\DBADashService.exe" -WorkingDirectory $dst -PassThru -WindowStyle Hidden -RedirectStandardOutput "$dst\svc.out" -RedirectStandardError "$dst\svc.err"
+  Start-Sleep -Seconds $RunSeconds
+  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+  "ok   the DBADash service ran $RunSeconds s as a console process"
+  $errs = @(Select-String -Path "$dst\svc.out" -Pattern '\[ERR\]|\[FTL\]' | Select-Object -First 5)
+  foreach ($e in $errs) { "note $($e.Line)" }
+} catch {
+  "FAIL $($_.Exception.Message)"
+  $code = 1
+} finally {
+  Finish
+  if (-not $script:finishOk) { $code = 1 }
+}
+exit $code
 PS1
 out=$(ssh winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File \\\\host.lan\\Data\\pgv-dbadash\\proof-dbadash.ps1 -Db $DDB -Zip $ZIPNAME -RunSeconds $SVC_SECS" 2>&1 | tr -d '\r' | grep -E '^(ok|FAIL|note)' || true)
 echo "$out"
 echo "$out" | grep -q '^FAIL' && fail "the guest step failed"
-rm -f "$GUEST/sa.txt"
+echo "$out" | grep -q '^ok   the service config removed' || fail "the guest step did not confirm the config's removal"
+rm -f "$GUEST/sa.txt"   # the trap writes it again for its own -Cleanup call
 n=$(sq "SELECT COUNT(*) FROM dbo.Instances WHERE IsActive = 1 AND ISNULL(EngineEdition, 0) <> 5" "$DDB")
 ver=$(sq "SELECT TOP (1) Version FROM dbo.DBVersionHistory ORDER BY DeployDate DESC" "$DDB")
 inst=$(sq "SELECT TOP (1) Instance FROM dbo.Instances WHERE IsActive = 1" "$DDB")
@@ -204,9 +240,15 @@ nr=$(pq "SELECT string_agg(repository || ':' || status, ',' ORDER BY repository)
 [[ "$nr" == "refused:not read,sandbox:ok" ]] || fail "after dropping 'unreachable': $nr"
 nh=$(pq "SELECT count(*) FROM pgvigil.dbadash_summary_history WHERE repository = 'sandbox'")
 [[ "$nh" == 2 ]] || fail "an unchanged read added history: $nh rows (want 2)"
-echo "ok   F: stored reasons checked; after the configuration dropped 'unreachable': $nr; an unchanged read added no history"
+head -n 2 "$WORK/pgvigil.yaml" > "$WORK/none.yaml"
+live "$WORK/none.yaml" | grep -q '^dbadash (none) configured=0' || fail "the empty-list read did not run"
+n0=$(pq "SELECT count(*) FROM pgvigil.dbadash_repositories()")
+ni=$(pq "SELECT count(*) FROM pgvigil.dbadash_instance('sandbox', (SELECT min(instance_id) FROM pgvigil.dbadash_summary WHERE repository = 'sandbox'))")
+[[ "$n0" == 0 && "$ni" == 0 ]] || fail "after an emptied dbadash: list: $n0 repository row(s), $ni instance row(s) (want 0 and 0)"
+echo "ok   F: stored reasons checked; after the configuration dropped 'unreachable': $nr; an unchanged read added no history; an emptied list leaves 0 repositories and no instance page"
 
 echo "Not proven here: the 5-minute loop (dbadash.Run) under 'pgvigil run' and the tree and page in a browser (both are wired"
-echo "into the lead's files at the wave's join); Azure SQL Database rows of a DBADash repository (IsAzure = 1: left out by the"
+echo "into the lead's files at the wave's join; the join must call dbadash.Run unconditionally, an empty list included, or an emptied"
+echo "dbadash: list never takes the last repository out of the tree); Azure SQL Database rows of a DBADash repository (IsAzure = 1: left out by the"
 echo "reader, none in the sandbox); a DBADash version other than $ver."
 echo "proof-dbadash: OK (DBADash $ver built $DDB from its release zip; read-only login; statuses equal to dbo.Summary_Get; history; not read with reasons)"

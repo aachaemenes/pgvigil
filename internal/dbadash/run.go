@@ -85,7 +85,8 @@ func (s *Store) ReadOne(ctx context.Context, log *slog.Logger, r config.DBADashR
 	return p, nil
 }
 
-// Once reads every configured repository once (pgvigil collect -once dbadash; the proof) and returns the payloads by name.
+// Once reads every configured repository once (the proof drives it) and returns the payloads by name. An empty list
+// records that no repository is configured (the last one leaves the tree) and reads nothing.
 func Once(ctx context.Context, log *slog.Logger, repoDSN string, repos []config.DBADashRepo) (map[string]Payload, error) {
 	st, err := OpenStore(ctx, repoDSN)
 	if err != nil {
@@ -107,18 +108,19 @@ func Once(ctx context.Context, log *slog.Logger, repoDSN string, repos []config.
 }
 
 // Run reads every configured repository at its interval until ctx is cancelled (pgvigil run starts it beside the
-// scheduler when the dbadash: list is not empty). One goroutine per repository: a slow one never delays another.
+// scheduler). It first records which repositories the configuration lists (an emptied list takes the last one out of
+// the tree) and then, with an empty list, returns. A repository that cannot be opened or recorded at the start (the
+// pgvigil repository down for a moment) is retried every retryEvery until it answers or ctx ends: the door never stops
+// for the life of the process on one failed start. One goroutine per repository: a slow one never delays another.
 func Run(ctx context.Context, log *slog.Logger, repoDSN string, repos []config.DBADashRepo) error {
-	if len(repos) == 0 {
-		return nil
-	}
-	st, err := OpenStore(ctx, repoDSN)
-	if err != nil {
-		return err
+	st := openUntil(ctx, log, repoDSN, repos)
+	if st == nil {
+		return nil // ctx ended before the store answered
 	}
 	defer st.Close()
-	if err := st.Configured(ctx, names(repos)); err != nil {
-		return fmt.Errorf("dbadash configured: %w", err)
+	if len(repos) == 0 {
+		log.Info("dbadash door off: no repository configured")
+		return nil
 	}
 	var wg sync.WaitGroup
 	for _, r := range repos {
@@ -132,6 +134,33 @@ func Run(ctx context.Context, log *slog.Logger, repoDSN string, repos []config.D
 	<-ctx.Done()
 	wg.Wait()
 	return nil
+}
+
+// retryEvery is how long the door waits between attempts to open the store and record the configured repositories.
+const retryEvery = time.Minute
+
+// openUntil opens the store and records the configured repositories, retrying every retryEvery; nil when ctx ends first.
+func openUntil(ctx context.Context, log *slog.Logger, repoDSN string, repos []config.DBADashRepo) *Store {
+	for {
+		st, err := OpenStore(ctx, repoDSN)
+		if err == nil {
+			cerr := st.Configured(ctx, names(repos))
+			if cerr == nil {
+				return st
+			}
+			err = fmt.Errorf("dbadash configured: %w", cerr)
+			st.Close()
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		log.Warn("dbadash door not started, retrying", "in", retryEvery.String(), "err", err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(retryEvery):
+		}
+	}
 }
 
 func loop(ctx context.Context, log *slog.Logger, st *Store, r config.DBADashRepo) {

@@ -27,9 +27,10 @@
 --   dbadash_word(code)                   DBADash's word for a status code.
 --   dbadash_repositories()               every configured repository and its last read.
 --   dbadash_fleet(repository)            every present instance (one repository or all), its worst status and counts.
---   dbadash_instance(repository, id)     one instance's facts.
+--   dbadash_instance(repository, id)     one instance's facts (none for a repository no longer configured).
 --   dbadash_statuses(repository, id)     one instance's Summary: a row per status, DBADash's header, code, word, detail.
 --   dbadash_changes(repository, id, f, t) the status changes of the window, with the old and new code.
+-- The three per-instance functions answer only for a configured repository (a saved link to a removed one is empty).
 
 CREATE TABLE IF NOT EXISTS pgvigil.dbadash_repositories (
   repository      text PRIMARY KEY,
@@ -224,7 +225,7 @@ LANGUAGE sql STABLE AS $$
          s.refreshed_at, s.snapshot_at, pgvigil.dbadash_level(s.statuses),
          r.status, r.reason, r.read_at, r.ok_at, r.version
     FROM pgvigil.dbadash_instances i
-    JOIN pgvigil.dbadash_repositories r ON r.repository = i.repository
+    JOIN pgvigil.dbadash_repositories r ON r.repository = i.repository AND r.is_configured
     LEFT JOIN pgvigil.dbadash_summary s ON s.repository = i.repository AND s.instance_id = i.instance_id
    WHERE i.repository = p_repository AND i.instance_id = p_instance_id
 $$;
@@ -260,6 +261,7 @@ LANGUAGE sql STABLE AS $$
          pgvigil.dbadash_detail(c.status_key, s.details), s.refreshed_at, s.snapshot_at
     FROM pgvigil.dbadash_checks() c
     JOIN pgvigil.dbadash_summary s ON s.repository = p_repository AND s.instance_id = p_instance_id
+    JOIN pgvigil.dbadash_repositories r ON r.repository = s.repository AND r.is_configured
    ORDER BY c.ord
 $$;
 
@@ -280,6 +282,7 @@ LANGUAGE sql STABLE AS $$
          (h.statuses->>c.status_key)::int, pgvigil.dbadash_word((h.statuses->>c.status_key)::int)
     FROM h CROSS JOIN pgvigil.dbadash_checks() c
    WHERE h.prev IS NOT NULL AND h.snapshot_at > p_from
+     AND EXISTS (SELECT 1 FROM pgvigil.dbadash_repositories r WHERE r.repository = p_repository AND r.is_configured)
      AND (h.prev->>c.status_key) IS DISTINCT FROM (h.statuses->>c.status_key)
    ORDER BY h.snapshot_at DESC, c.ord
 $$;

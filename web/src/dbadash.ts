@@ -128,7 +128,7 @@ async function instanceView(ctx: Ctx, repo: string, id: number): Promise<HTMLEle
   const i = rowsOf(d.instance)[0];
   const sec = el('section', {});
   if (!i) {
-    sec.append(el('h2', {}, `DBADash: ${repo}`), el('p', { class: 'empty' }, `DBADash instance ${id} was never read from ${repo}.`));
+    sec.append(el('h2', {}, `DBADash: ${repo}`), el('p', { class: 'empty' }, `DBADash instance ${id} of ${repo}: not in a configured repository, or never read.`));
     return sec;
   }
   const st = rowsOf(d.statuses);

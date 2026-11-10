@@ -39,6 +39,10 @@ func TestConfigDBADash(t *testing.T) {
 		t.Fatalf("env: not resolved: %q", c.DBADash[0].DSN())
 	}
 
+	// an '@' inside a query value is not a userinfo password
+	if _, err := loadYAML(t, "dbadash:\n  - name: a\n    dsn: \"sqlserver://u@h:1433?database=D&user+id=a@corp.com\"\n"); err != nil {
+		t.Errorf("a query value with '@' refused: %v", err)
+	}
 	none, err := loadYAML(t, "")
 	if err != nil || len(none.DBADash) != 0 {
 		t.Fatalf("no dbadash: list must be valid and off: %v %v", none, err)
@@ -52,6 +56,8 @@ func TestConfigDBADash(t *testing.T) {
 		"spaced PWD":          "dbadash:\n  - name: a\n    dsn: \"Server=h;Uid=u; PWD =p\"\n",
 		"URL query password":  "dbadash:\n  - name: a\n    dsn: \"sqlserver://u@h:1433?database=D&password=p\"\n",
 		"odbc password":       "dbadash:\n  - name: a\n    dsn: \"odbc:server=h;uid=u;Pwd=p\"\n",
+		"URL password with ?": "dbadash:\n  - name: a\n    dsn: \"sqlserver://sa:12?x@host:1433?database=D\"\n",
+		"URL password with /": "dbadash:\n  - name: a\n    dsn: \"sqlserver://sa:ab/cd@host:1433\"\n",
 		"twice":               "dbadash:\n  - name: a\n    dsn: env:X\n  - name: A\n    dsn: env:Y\n",
 		"no name":             "dbadash:\n  - dsn: env:X\n",
 		"no dsn":              "dbadash:\n  - name: a\n",
