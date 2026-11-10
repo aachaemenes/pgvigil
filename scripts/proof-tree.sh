@@ -86,7 +86,8 @@ const H = `
   window.__inst = n => [...document.querySelectorAll('#tree .tree-inst')].find(r => r.querySelector('a.inst')?.textContent === n);
   window.__under = (row) => { const out = []; let e = row.nextElementSibling; while (e && !e.classList.contains('tree-inst')) { out.push(e); e = e.nextElementSibling; } return out; };
   window.__folder = (row, name) => window.__under(row).find(b => b.querySelector(':scope > .tree-node')?.textContent.endsWith(name));
-  window.__texts = box => [...box.children].slice(1).map(c => c.querySelector('a.inst, .folder-name, p')?.textContent ?? '');
+  // a child is a node box (its link or name inside) or a state line itself (Loading..., an error): match the child too
+  window.__texts = box => [...box.children].slice(1).map(c => (c.matches('p') ? c : c.querySelector('a.inst, .folder-name'))?.textContent ?? '');
   'ok'`;
 await cmd('Page.enable'); await cmd('Runtime.enable'); await cmd('Network.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -108,7 +109,9 @@ n0 = reqs.length;
 await ev(`__folder(__inst('demo-onprem-erp01'), 'Databases').querySelector('button.caret').click(), 'ok'`);
 const dbNames = await until(`(() => { const t = __texts(__folder(__inst('demo-onprem-erp01'), 'Databases')); return t.length && !t.includes('Loading...') ? t : null; })()`);
 const want = rows((await get(`dbinfo?instance=${erp.instance_id}`)).databases).filter(r => r.is_present && !r.is_template).map(r => r.datname);
-check(JSON.stringify(dbNames) === JSON.stringify(want.map(x => '▸' + x)) || JSON.stringify(dbNames) === JSON.stringify(want), `databases: ${JSON.stringify(dbNames)} = ${JSON.stringify(want)}`);
+const dbOk = JSON.stringify(dbNames) === JSON.stringify(want);
+check(dbOk, `databases: ${JSON.stringify(dbNames)} = ${JSON.stringify(want)}`);
+if (!dbOk) console.log(String(await ev(`__folder(__inst('demo-onprem-erp01'), 'Databases').outerHTML`)).slice(0, 1500));
 const r1 = since(n0).filter(u => u.startsWith('/api/dbinfo'));
 check(r1.length === 1 && since(n0).length === 1, `Databases: one read (${since(n0).join(' ')})`);
 // a database node opens its page
@@ -168,8 +171,10 @@ if (wired !== '1') {
     const keeps = links && links.every(h => /w=7d/.test(h));
     check(!!links && keeps, `${what}: ${links ? links.length : 0} links${keeps ? ', all keep w=7d' : ''}`);
     if (links && want) {
+      const before = await ev(`document.querySelector('main h2')?.textContent ?? ''`);
       await ev(`document.querySelector('main ${sel}').click(), 'ok'`);
-      const h = await until(`(() => { const h = document.querySelector('main h2')?.textContent ?? ''; return h.startsWith(${JSON.stringify(want)}) ? h : null; })()`);
+      // the page the link names: its hash is the link's and a new heading is drawn (the tab's own "Job report" is not it)
+      const h = await until(`(() => { const h = document.querySelector('main h2')?.textContent ?? ''; return location.hash === ${JSON.stringify(links[0])} && h !== ${JSON.stringify(before)} && h.startsWith(${JSON.stringify(want)}) ? h : null; })()`);
       check(!!h, `${what}: the first opens ${h ?? 'nothing'}`);
     }
     return links;
