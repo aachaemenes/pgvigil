@@ -40,7 +40,7 @@ const legacy: Record<string, string> = { overview: 'checks' };
 // rootTabs and instanceTabs still name every page; a group only says which pages share a strip.
 export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'alerts', 'findings', 'instances', 'slowqueries'] },
+  { key: 'main', name: '', tabs: ['summary', 'alerts', 'slowqueries', 'findings', 'instances'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
@@ -49,10 +49,10 @@ export const rootGroups: TabGroup[] = [
   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
 ];
 export const instanceGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'findings', 'logs'] },
+  { key: 'main', name: '', tabs: ['summary', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'memory', 'findings', 'logs'] },
   { key: 'checks', name: 'Checks', tabs: ['corruption', 'vacuum', 'indexes', 'custom'] },
   { key: 'conf', name: 'Configuration', tabs: ['config', 'extensions', 'versions', 'roles', 'schema', 'actions'] },
-  { key: 'perf', name: 'Performance', tabs: ['load', 'counters', 'io', 'host', 'memory', 'pooler'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'pooler'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['storage', 'dbinfo', 'tables'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport'] },

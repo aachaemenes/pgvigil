@@ -5,12 +5,12 @@
 // the Host tab: the ACU against the cluster's floor and ceiling, the buffer cache hit ratio, the reads against the
 // CPU. Data from /api/pi and /api/capacity; the lead wires the tab and the section.
 import { get, Row, rowsOf, Table } from './api';
-import { lineChart } from './chart';
+import { lineChart, neutralColor, seriesColors } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const palette = ['#2f6fdf', '#d9480f', '#2b8a3e', '#ae3ec9', '#e8590c', '#1098ad', '#5c940d', '#e64980', '#868e96'];
+
 const SVG = 'http://www.w3.org/2000/svg';
 
 function svgEl(tag: string, attrs: Record<string, string | number>, ...kids: Node[]): SVGElement {
@@ -29,7 +29,8 @@ function stackedHours(ctx: Ctx, rows: Row[]): HTMLElement {
   const order = new Map<string, number>();
   for (const r of rows) order.set(String(r.wait), (order.get(String(r.wait)) ?? 0) + Number(r.load_avg ?? 0));
   waits.sort((a, b) => a === 'other' ? 1 : b === 'other' ? -1 : (order.get(b)! - order.get(a)!));
-  const colour = (w: string) => w === 'other' ? palette[8] : palette[waits.indexOf(w) % 8];
+  const palette = seriesColors();
+  const colour = (w: string) => w === 'other' || waits.indexOf(w) >= 8 ? neutralColor() : palette[waits.indexOf(w)];
   const hours = [...new Set(rows.map(r => String(r.snapshot_at)))].sort((a, b) => Date.parse(a) - Date.parse(b));
   // bars sit on a time axis (an hour missing from the read leaves its gap), one slot per hour of the span
   const t0 = Date.parse(hours[0]), span = Math.round((Date.parse(hours[hours.length - 1]) - t0) / 3600_000) + 1;

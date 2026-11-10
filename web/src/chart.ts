@@ -6,7 +6,16 @@ import { el } from './ui';
 const live: uPlot[] = [];
 export function destroyCharts() { while (live.length) live.pop()!.destroy(); }
 
-const palette = ['#2f6fdf', '#d9480f', '#2b8a3e', '#ae3ec9', '#e8590c', '#1098ad', '#5c940d', '#c2255c'];
+// The series colours: one categorical order per theme (the stylesheet's --s1..--s8, each set validated for
+// colour-blind separation of neighbours and, on the dark surface, 3:1 contrast), assigned in order and never cycled
+// past the eighth: a ninth series and 'other' take the neutral.
+const fallback = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+export function seriesColors(): string[] {
+  const css = getComputedStyle(document.documentElement);
+  return fallback.map((f, i) => css.getPropertyValue(`--s${i + 1}`).trim() || f);
+}
+export const neutralColor = () => getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#868e96';
+const colorAt = (p: string[], i: number) => i < p.length ? p[i] : neutralColor();
 
 // lineChart draws one chart of the named series over snapshot_at.
 export function lineChart(title: string, rows: Row[], series: { key: string; label: string }[],
@@ -21,9 +30,10 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   const css = getComputedStyle(document.documentElement);
   const fg = css.getPropertyValue('--muted').trim() || '#5d6676', grid = css.getPropertyValue('--line').trim() || '#dde1e8';
   const axis = { stroke: fg, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 } };
+  const palette = seriesColors();
   const opts: uPlot.Options = {
     width: 560, height: 220,
-    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: palette[i % palette.length], width: 1.5,
+    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: 2,
                                             value: (_u: uPlot, v: number | null) => v == null ? '' : fmt(v) }))],
     axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: 70 }],
     scales: { x: { time: true } },
@@ -71,8 +81,9 @@ export function donutChart(title: string, slices: Slice[], fmt: (v: number) => s
     'aria-label': `${title}: ` + parts.map(s => `${s.label} ${fmt(s.value)} (${share(s.value)})`).join(', ') });
   const body = el('tbody');
   let off = 0;
+  const palette = seriesColors();
   parts.forEach((s, i) => {
-    const color = palette[i % palette.length], len = c * s.value / total;
+    const color = colorAt(palette, i), len = c * s.value / total;
     const arc = svg('circle', { cx: '60', cy: '60', r: String(r), fill: 'none', stroke: color, 'stroke-width': String(2 * r),
       'stroke-dasharray': `${len} ${c - len}`, 'stroke-dashoffset': String(-off), transform: 'rotate(-90 60 60)' },
       svg('title', {}, `${s.label}: ${fmt(s.value)} (${share(s.value)})`));

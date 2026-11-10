@@ -233,6 +233,13 @@ mountTree($('tree'));
 setTreeHidden(treeHiddenSaved());
 $('show-tree').addEventListener('click', () => setTreeHidden(false));
 window.addEventListener('hashchange', () => { if (!loginShown) void render(); });
+// the tab row sticks under the header: the header's height (it wraps on a narrow window) is kept in --head-h
+const headEl = document.querySelector('header');
+if (headEl) {
+  const setHead = () => document.documentElement.style.setProperty('--head-h', `${headEl.getBoundingClientRect().height}px`);
+  setHead();
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(setHead).observe(headEl);
+}
 document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined && !loginShown) void render(true); });
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {

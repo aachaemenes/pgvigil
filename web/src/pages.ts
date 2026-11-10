@@ -327,7 +327,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       // a green cell says nothing: the colour is the status, and text is kept for a count, a value or 'no sample'
       // (the link keeps its name for a screen reader and the export)
       const quiet = !c.none && c.level === 0 && !c.text;
-      const a = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u00a0' : cellText(c));
+      const a = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u2713' : cellText(c));
       if (c.detail.length) a.title = c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
       return a;
     },
@@ -422,7 +422,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   clear.addEventListener('click', () => { setPick(null); drawLower(); });
   const countCol = (b: Bucket, label: string): Col => ({
     key: b, label, num: true,
-    cls: v => 'status ' + (b === 'na' ? 'none' : Number(v) === 0 ? (b === 'ok' ? 'none' : 'ok') : b),
+    cls: v => 'status ' + (b === 'na' || Number(v) === 0 ? 'none' : b),
     fmt: (v, r) => {
       const bt = el('button', { type: 'button', class: 'cell-link link', 'aria-pressed': 'false', 'aria-label': `${String(r.test)}: ${String(v)} instance(s) ${words[b]}; show them below` }, String(v));
       countBtns.set(String(r.key) + '|' + b, bt);

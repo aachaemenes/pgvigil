@@ -2,13 +2,14 @@
 // sys.dm_os_wait_stats between two reads a minute apart: the top waits as a stacked chart with its numbers in a
 // table behind it, and every wait type in a grid. The waits of idle background work are stored and listed last,
 // outside the shares and the chart. Data from /api/mssql/waits; the route and the tab's entry are the shell's.
+import { neutralColor, seriesColors } from './chart';
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
 interface WaitsData { state: Table | null; reads: Table | null; events: Table | null; series: Table | null }
 
-const palette = ['#2f6fdf', '#d9480f', '#2b8a3e', '#ae3ec9', '#e8590c', '#1098ad', '#5c940d', '#c2255c', '#868e96'];
+const paletteNow = () => [...seriesColors(), neutralColor()];
 const msSecs = (v: unknown) => v == null ? '' : fmtSecs(Math.round(Number(v) / 1000));
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 
@@ -71,14 +72,14 @@ function stackedChart(title: string, p: { rows: Row[]; types: string[] }): HTMLE
       if (v <= 0) return;
       const h = (H - B - T) * v / max;
       y -= h;
-      pic.append(svg('rect', { x: String(L + i * bw + 0.5), y: String(y), width: String(Math.max(1, bw - 1)), height: String(h), fill: palette[ti % palette.length] },
+      pic.append(svg('rect', { x: String(L + i * bw + 0.5), y: String(y), width: String(Math.max(1, bw - 1)), height: String(h), fill: paletteNow()[Math.min(ti, 8)] },
         svg('title', {}, `${fmtTime(r.snapshot_at)} ${t}: ${fmtNum(v)}`)));
     });
   });
   const legend = el('p', { class: 'meta' });
   p.types.forEach((t, ti) => {
     const sw = el('span', { class: 'swatch', 'aria-hidden': 'true' });
-    sw.style.background = palette[ti % palette.length];
+    sw.style.background = paletteNow()[Math.min(ti, 8)];
     legend.append(sw, ' ' + t + '  ');
   });
   box.append(pic as unknown as HTMLElement, legend);
