@@ -177,11 +177,13 @@ func curve(t time.Time) float64 {
 }
 
 // window reports whether t falls in a scenario's window: daily at hourUTC for dur, and the
-// current one that ends at the anchor (so the latest snapshot shows it). ws is the window's start.
-// Past the anchor (the live trickle of 'demo -serve') the current window repeats every dur + 10
-// minutes, so a demo left running shows fresh chains with sane ages instead of one that never ends.
+// current one, open at the anchor and for twelve minutes after it: the seed's catch-up ticks land a few
+// minutes past the anchor, and the newest snapshot (the first page of a fresh serve) must still show it.
+// ws is the window's start. Past the anchor (the live trickle of 'demo -serve') the current window
+// repeats every dur + 10 minutes, so a demo left running shows fresh chains with sane ages instead of
+// one that never ends.
 func (g *Gen) window(t time.Time, hourUTC int, dur time.Duration) (bool, time.Time) {
-	cur := g.end.Add(-dur + 2*time.Minute)
+	cur := g.end.Add(-dur + 12*time.Minute)
 	if !t.Before(cur) {
 		period := dur + 10*time.Minute
 		ws := cur.Add(t.Sub(cur) / period * period)
