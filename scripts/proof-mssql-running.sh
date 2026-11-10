@@ -236,12 +236,16 @@ wait $PID1 || fail "D: the head session failed: $(cat "$TMPD/head.out")"
 collect mssql_requests "$N1" >/dev/null
 DT=$(latest "$iid")
 [ "$DT" != "$CT2" ] || fail "D: no new snapshot"
-[ "$(q "select (select count(*) from pgvigil.mssql_blocking b where b.instance_id=$iid and b.snapshot_at='$DT' and b.head_session_id in ($S1,$S2,$S3))
-          || '|' || (select count(*) from pgvigil.mssql_requests r where r.instance_id=$iid and r.snapshot_at='$DT' and (r.session_id in ($S1,$S2,$S3) or r.head_session_id in ($S1,$S2,$S3)))
+# by the sessions' own workstation names: a session id is free once its session ends, and on a shared server
+# another proof's session can take it within the second
+MINE="r.host_name in ('$H1','$H2','$H3')"
+[ "$(q "select (select count(*) from pgvigil.mssql_requests r where r.instance_id=$iid and r.snapshot_at='$DT' and $MINE)
+          || '|' || (select count(*) from pgvigil.mssql_blocking b join pgvigil.mssql_requests r on r.instance_id=b.instance_id and r.snapshot_at=b.snapshot_at and r.session_id=b.head_session_id
+                      where b.instance_id=$iid and b.snapshot_at='$DT' and $MINE)
           || '|' || (blocked = (select count(distinct r.session_id) from pgvigil.mssql_requests r where r.instance_id=$iid and r.snapshot_at='$DT' and (r.chain_depth > 0 or r.chain_note is not null)))
           from pgvigil.mssql_requests_summary where instance_id=$iid and snapshot_at='$DT'")" = "0|0|true" ] \
-  || fail "D: after the commit: $(q "select blocked, heads from pgvigil.mssql_requests_summary where instance_id=$iid and snapshot_at='$DT'")"
-[ "$(q "select count(*) from pgvigil.mssql_running_findings where instance_id=$iid and object in ('session $S1','session $S2','session $S3')")" = 0 ] || fail "D: a finding outlived the chain"
+  || fail "D: after the commit: $(q "select session_id, host_name, status, open_tran, head_session_id, chain_depth from pgvigil.mssql_requests r where r.instance_id=$iid and r.snapshot_at='$DT'")"
+[ "$(q "select count(*) from pgvigil.mssql_running_findings f where f.instance_id=$iid and f.check_name='a blocking chain' and f.detail like '%$STMT1%'")" = 0 ] || fail "D: a finding outlived the chain"
 echo "D: OK"
 
 echo "--- E. waits: the differences between two reads"
@@ -302,7 +306,7 @@ if command -v go >/dev/null 2>&1 && [ -f go.mod ]; then
   PGVIGIL_MSSQL_TEST_DSN="$MSSQL_MON_DSN" PGVIGIL_MSSQL_TEST_SESSIONS=$NS go test ./internal/mssql -run 'TestRunningLive|TestRequestsManySessionsLive' -count=1 -v > "$OUT" 2>&1 || { cat "$OUT"; fail "H: the live tests"; }
   grep -q -- "--- PASS: TestRunningLive" "$OUT" && grep -q -- "--- PASS: TestRequestsManySessionsLive" "$OUT" || { cat "$OUT"; fail "H: a live test did not run"; }
   grep -o "MANY-SESSIONS: .*" "$OUT" | sed 's/^/  /'
-  echo "  ESTIMATE, not measured: at 10,000 sessions the read is expected to stay under about 2 s (the DMV joins are hash joins over the session list; DBA Dash's issue 1663 reports 0.3-1.9 s for its read at that size). Measure it before relying on it."
+  echo "  Measured once by hand on this build (PGVIGIL_PROOF_SESSIONS=3000 as sa): 91 to 136 ms. ESTIMATE, not measured: at 10,000 sessions about 0.3 to 0.5 s if the cost stays linear in the session count, as it did from 300 to 3,000. Measure it before relying on it."
   echo "H: OK"
 else
   echo "H: NOT RUN (no go toolchain or not at the repository root)"

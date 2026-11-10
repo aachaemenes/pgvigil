@@ -138,8 +138,9 @@ LEFT JOIN (
            SUM(CAST(dt.log_bytes AS bigint)) AS log_bytes
     FROM sys.dm_tran_session_transactions st
     JOIN sys.dm_tran_active_transactions tat ON tat.transaction_id = st.transaction_id
-    OUTER APPLY (SELECT SUM(d.database_transaction_log_bytes_used) AS log_bytes
-                 FROM sys.dm_tran_database_transactions d WHERE d.transaction_id = st.transaction_id) dt
+    LEFT JOIN (SELECT d.transaction_id, SUM(d.database_transaction_log_bytes_used) AS log_bytes
+               FROM sys.dm_tran_database_transactions d
+               GROUP BY d.transaction_id) dt ON dt.transaction_id = st.transaction_id
     GROUP BY st.session_id
   ) t ON t.session_id = s.session_id
 LEFT JOIN (

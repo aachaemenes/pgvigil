@@ -188,6 +188,10 @@ func TestRequestsSQLText(t *testing.T) {
 		if (kind == KindAzureDB) != strings.Contains(dmv, "s.database_id = DB_ID()") {
 			t.Errorf("%s: the database filter is Azure SQL Database's alone", kind)
 		}
+		// a lookup per transaction made the read quadratic: 1.0 to 1.3 s at 3,000 sessions against 0.1 s grouped once
+		if strings.Contains(dmv, "WHERE d.transaction_id = st.transaction_id") || !strings.Contains(dmv, "GROUP BY d.transaction_id") {
+			t.Errorf("%s: the log bytes of the transactions are read once, grouped, never per transaction", kind)
+		}
 		if !strings.Contains(dmv, "r.session_id = s.session_id") || !strings.Contains(dmv, "tk.request_id = r.request_id") {
 			t.Errorf("%s: sessions, requests and tasks join on session and request ids", kind)
 		}
