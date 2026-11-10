@@ -331,8 +331,8 @@ SELECT d.datname, d.user_tables, d.never_vacuumed, d.never_analyzed, d.big_table
 // sqlFindings lists the findings of every instance ($1 NULL) or one, the most severe first.
 const sqlFindings = `
 SELECT f.instance_id, i.name AS instance, i.platform, f.severity, f.setting, f.value, f.is_set, f.suggested, f.platforms,
-       f.detail, f.source, f.at
-  FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id)
+       f.detail, f.source, f.at, f.alert_first_sent, f.alert_last_sent, f.alert_sends, f.alert_channels
+  FROM pgvigil.findings_alerts f JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND ($1::int IS NULL OR f.instance_id = $1)
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, i.name, f.setting`
 

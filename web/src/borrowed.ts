@@ -5,6 +5,7 @@
 import { tableLink } from './dbinfo';
 import type { Ctx } from './router';
 import { get, Row, rowsOf, Table } from './api';
+import { alertCol } from './alerts';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
@@ -79,6 +80,7 @@ export async function findingsView(instance?: number, keep?: (r: Row) => boolean
     { key: 'detail', wide: true },
     { key: 'platforms', label: 'applies to' },
     { key: 'source' },
+    alertCol,
   ];
   return el('section', {}, el('h2', {}, 'Findings'),
     el('p', { class: 'meta' }, `${crit} critical, ${warn} warning, ${rows.length - crit - warn} advice. Parameters off their recommended range for the platform, from the latest settings read.`),

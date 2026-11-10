@@ -4,6 +4,7 @@
 //	pgvigil run      -config pgvigil.yaml            run every scheduled collection until stopped
 //	pgvigil collect  -config pgvigil.yaml -once instance [-instance name]
 //	pgvigil migrate  -config pgvigil.yaml            apply the repository schema
+//	pgvigil alerts   -config pgvigil.yaml            one pass of the alert channels (the alerts: list)
 //	pgvigil serve    -config pgvigil.yaml [-listen 127.0.0.1:8080] [-tls-cert f -tls-key f]   web UI and JSON API (read only)
 //	pgvigil user     <add|passwd|enable|disable|remove|list> -config pgvigil.yaml [name]        the UI's logins
 //	pgvigil cert     [-hosts a,b] [-out dir]                                                 a self-signed TLS pair
@@ -27,6 +28,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
@@ -63,6 +65,8 @@ func run(args []string) int {
 		err = runCollect(ctx, log, args[1:])
 	case "run":
 		err = runScheduler(ctx, log, args[1:])
+	case "alerts":
+		err = runAlerts(ctx, log, args[1:])
 	case "roles":
 		err = runRoles(args[1:])
 	case "serve":
@@ -99,7 +103,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|mcp|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|mcp|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector
@@ -220,9 +224,18 @@ func checkCollectionNames(cfg *config.Config) error {
 }
 
 func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
-	cfg, _, err := loadConfig(args, true)
+	cfg, fs, err := loadConfig(args, true)
 	if err != nil {
 		return err
+	}
+	// the alerts: list (task 60): the sender runs beside the scheduler as alerts_dsn (a login IN ROLE pgvigil_alerter), else the repository's dsn
+	ast, err := alerts.LoadFile(fs.Lookup("config").Value.String())
+	if err != nil {
+		return &configError{err}
+	}
+	alertsDSN := ast.DSN()
+	if alertsDSN == "" {
+		alertsDSN = cfg.Repository.DSN()
 	}
 	r, err := repo.Open(ctx, cfg.Repository.DSN())
 	if err != nil {
@@ -239,6 +252,11 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	go func() {
 		if err := dbadash.Run(ctx, log, cfg.Repository.DSN(), cfg.DBADash); err != nil {
 			log.Warn("dbadash door stopped", "err", err)
+		}
+	}()
+	go func() {
+		if err := alerts.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
+			log.Warn("alert loop stopped", "err", err)
 		}
 	}()
 	return sched.Run(ctx, log, r, cfg)

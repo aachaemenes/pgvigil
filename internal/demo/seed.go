@@ -164,6 +164,11 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 			err = fmt.Errorf("dbadash demo: %w", e)
 		}
 	}
+	if err == nil {
+		if e := SeedAlerts(ctx, pool, grid[0], o.End); e != nil {
+			err = fmt.Errorf("alerts demo: %w", e)
+		}
+	}
 	st.Elapsed = time.Since(began)
 	return f, st, err
 }

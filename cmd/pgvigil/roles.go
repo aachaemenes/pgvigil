@@ -25,6 +25,9 @@ CREATE ROLE %[1]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_collector;
 -- through pgvigil_auth the password check of the UI login (ui_password_hash); the ui_users table itself
 -- stays the owner's. Grafana, a script or an MCP server takes a login IN ROLE pgvigil_reader alone.
 CREATE ROLE %[2]s LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_reader, pgvigil_auth;
+-- optional: the alert sender's login (the configuration's alerts_dsn; only where an alerts: list names channels):
+-- it reads the findings (pgvigil_reader) and writes the alert tables; the collector's login cannot read the findings.
+-- CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;
 
 -- On each monitored PostgreSQL server: the monitoring login (pg_monitor is all it needs;
 -- on RDS, Aurora, Azure and Cloud SQL prefer the platform's IAM / Entra token login instead of a password)
