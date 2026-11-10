@@ -61,6 +61,22 @@ export async function hasPooler(instance: number): Promise<boolean> {
   return rowsOf(d.state).length > 0;
 }
 
+const known = new Map<number, { has: boolean; at: number }>();
+const KNOWN_FOR = 5 * 60 * 1000;
+
+// poolerKnown answers whether the instance has a pooler read (a pgbouncer: DSN), cached five minutes per instance so the
+// 30 s live render does not ask again; a failed read counts as none until the cache ages out.
+export async function poolerKnown(instance: number): Promise<boolean> {
+  const k = known.get(instance);
+  if (k && Date.now() - k.at < KNOWN_FOR) return k.has;
+  const has = await hasPooler(instance).catch(() => false);
+  known.set(instance, { has, at: Date.now() });
+  return has;
+}
+
+// poolerCached is the cached answer without a read (the tree's Pooler leaf): undefined before the first read.
+export function poolerCached(instance: number): boolean | undefined { return known.get(instance)?.has; }
+
 export async function pooler(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Pooler (${rangeLabel(ctx)})`));
   try {

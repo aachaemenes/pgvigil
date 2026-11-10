@@ -15,6 +15,7 @@
 // Every link keeps the time range. The search still finds instances; an open instance shows its folders under it.
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
+import { poolerCached } from './pooler';
 import { Ctx, href, drillHome } from './router';
 import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { hashParam, hrefWith } from './dbinfo';
@@ -243,7 +244,7 @@ function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
     tabFolder('checks', 'Checks', [['summary', 'Daily checks (summary)'], ['findings', 'Findings']]),
     tabFolder('repl', 'Replication', [['replication', 'Replication'], ['dms', 'DMS']]),
     tabFolder('storage', 'Storage', [['storage', 'Storage'], ['dbinfo', 'Database info'], ['backups', 'Backups']]),
-    tabFolder('memory', 'Memory', [['memory', 'Memory'], ['pooler', 'Pooler']]),
+    tabFolder('memory', 'Memory', poolerCached(id) ? [['memory', 'Memory'], ['pooler', 'Pooler']] : [['memory', 'Memory']]),   // the Pooler leaf only where a pooler read exists
     databases,
     jobs,
   ];

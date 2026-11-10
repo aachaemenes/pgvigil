@@ -20,7 +20,7 @@ import (
 // schemaRows is the hourly schema read at t.
 func (g *Gen) schemaRows(t time.Time) []Row {
 	s := g.Spec
-	erp := s.App == "erp"
+	erp := s.App == "erp" && s.Platform == "onprem" // the erp primary and its standby; the DMS target erp_mirror carries no history
 	alterAt := g.end.Add(-5*24*time.Hour - 25*time.Minute)
 	dropAt := g.end.Add(-10*time.Hour - 40*time.Minute)
 	out := []Row{}

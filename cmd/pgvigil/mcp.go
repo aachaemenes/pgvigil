@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/mcp"
 	"github.com/aachaemenes/pgvigil/internal/web"
@@ -49,6 +50,10 @@ func runMCP(ctx context.Context, log *slog.Logger, args []string) error {
 	if *path != "" {
 		cfg, err := config.Load(*path)
 		if err != nil {
+			return &configError{err}
+		}
+		// the custom: list (task 61): the stale check counts the custom collection where a check applies
+		if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
 			return &configError{err}
 		}
 		exp = expectedIntervals(cfg)
