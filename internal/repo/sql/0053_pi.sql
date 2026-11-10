@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.pi_sql (
 -- payload: rows {kind:'state', db_instance, resource_id, enabled, retention_days, hours_read, note}
 --               {kind:'load', at, group, key, wait_type, value}
 --               {kind:'sql', tokenized_id, db_id, query (the digest), statement (the whole text), text_status, sql_id}
+--               {kind:'cursor', source:'pi', read_to}: the end of the hours read, kept in pgvigil.log_cursor (0012) so the
+--               next run starts one overlap behind it
 CREATE OR REPLACE FUNCTION pgvigil.import_pi(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -107,6 +109,11 @@ BEGIN
     sql_id = CASE WHEN EXCLUDED.digest IS NULL THEN NULL
                   WHEN EXCLUDED.full_text IS NULL AND t.full_text IS NOT NULL THEN t.sql_id ELSE EXCLUDED.sql_id END,
     last_seen = EXCLUDED.last_seen;
+
+  INSERT INTO pgvigil.log_cursor AS c (instance_id, source, read_to)
+  SELECT p_instance_id, r->>'source', (r->>'read_to')::timestamptz
+    FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'cursor' AND r->>'read_to' IS NOT NULL
+  ON CONFLICT (instance_id, source) DO UPDATE SET read_to = greatest(c.read_to, EXCLUDED.read_to), updated_at = now();
 END $$;
 
 -- ---------------------------------------------------------------------------------------------------------

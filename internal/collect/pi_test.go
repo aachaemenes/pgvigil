@@ -75,14 +75,19 @@ type recordedPI struct {
 	rmCalls    []*pi.GetResourceMetricsInput
 	keyCalls   []*pi.GetDimensionKeyDetailsInput
 	describeDB int
-	pageSize   int    // > 0: an unfiltered answer comes in pages of this many series (NextToken the next index)
-	keyStatus  string // set: every GetDimensionKeyDetails answer carries this status (PROCESSING: a cut text)
-	clusterErr int    // the first clusterErr DescribeDBClusters calls fail
-	clusters   int    // DescribeDBClusters calls
+	pageSize   int       // > 0: an unfiltered answer comes in pages of this many series (NextToken the next index)
+	floor      time.Time // set: a StartTime before it is refused, as PI refuses one before its retention
+	dbErr      int       // the first dbErr DescribeDBInstances calls fail
+	keyStatus  string    // set: every GetDimensionKeyDetails answer carries this status (PROCESSING: a cut text)
+	clusterErr int       // the first clusterErr DescribeDBClusters calls fail
+	clusters   int       // DescribeDBClusters calls
 }
 
 func (r *recordedPI) GetResourceMetrics(_ context.Context, in *pi.GetResourceMetricsInput, _ ...func(*pi.Options)) (*pi.GetResourceMetricsOutput, error) {
 	r.rmCalls = append(r.rmCalls, in)
+	if !r.floor.IsZero() && aws.ToTime(in.StartTime).Before(r.floor) {
+		return nil, errors.New("InvalidArgumentException: You can't specify a StartTime that is earlier than 7 days ago")
+	}
 	groups := map[string]bool{}
 	for _, q := range in.MetricQueries {
 		if q.GroupBy != nil {
@@ -167,6 +172,9 @@ func (r *recordedPI) GetDimensionKeyDetails(_ context.Context, in *pi.GetDimensi
 
 func (r *recordedPI) DescribeDBInstances(_ context.Context, _ *rds.DescribeDBInstancesInput, _ ...func(*rds.Options)) (*rds.DescribeDBInstancesOutput, error) {
 	r.describeDB++
+	if r.describeDB <= r.dbErr {
+		return nil, errors.New("Throttling: Rate exceeded")
+	}
 	return &rds.DescribeDBInstancesOutput{DBInstances: []rdstypes.DBInstance{r.db}}, nil
 }
 
@@ -223,8 +231,9 @@ func rowsOfKind(rows []Row, kind string) []Row {
 
 func TestPIRecordedShape(t *testing.T) {
 	api := newRecordedPI(t, true)
-	now := piRecordedNow(t, api)
-	rows, err := piRows(context.Background(), api, "k", "proof-pi-1", now)
+	now := piRecordedNow(t, api) // five minutes past the hour: a window of exactly 7 days from the hour would start before PI's floor
+	api.floor = now.Add(-7 * 24 * time.Hour)
+	rows, err := piRows(context.Background(), api, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,8 +243,15 @@ func TestPIRecordedShape(t *testing.T) {
 		in.PeriodAlignment != pitypes.PeriodAlignmentStartTime || string(in.ServiceType) != "RDS" {
 		t.Errorf("request %+v", in)
 	}
-	if got := aws.ToTime(in.EndTime).Sub(aws.ToTime(in.StartTime)); got != piHours*time.Hour || aws.ToTime(in.EndTime).Minute() != 0 {
-		t.Errorf("window %s ending %s, want %d complete hours", got, aws.ToTime(in.EndTime), piHours)
+	// no cursor: PI's whole retention (7 days) from the first whole hour inside it, up to the last complete hour
+	if got := aws.ToTime(in.EndTime).Sub(aws.ToTime(in.StartTime)); got != 7*24*time.Hour-time.Hour || aws.ToTime(in.EndTime).Minute() != 0 {
+		t.Errorf("window %s ending %s, want 7 days less one hour of complete hours", got, aws.ToTime(in.EndTime))
+	}
+	if aws.ToTime(in.StartTime).Before(api.floor) {
+		t.Errorf("StartTime %s before PI's floor %s", aws.ToTime(in.StartTime), api.floor)
+	}
+	if cur := rowsOfKind(rows, "cursor"); len(cur) != 1 || cur[0]["source"] != "pi" || cur[0]["read_to"] != aws.ToTime(in.EndTime) {
+		t.Errorf("cursor row %v, want read_to %s", cur, aws.ToTime(in.EndTime))
 	}
 	var groups []string
 	for _, q := range in.MetricQueries {
@@ -288,18 +304,31 @@ func TestPIRecordedShape(t *testing.T) {
 		t.Errorf("GetDimensionKeyDetails calls %+v", api.keyCalls)
 	}
 
-	// the next hour: the whole text comes from the process's cache, DescribeDBInstances from its hour's cache
-	if _, err := piRows(context.Background(), api, "k", "proof-pi-1", now.Add(30*time.Minute)); err != nil {
+	// the next hour with the cursor stored at the end of the first read: one overlap behind it, so only the newest hour
+	// is read again; the whole text comes from the process's cache, DescribeDBInstances from its hour's cache
+	end := aws.ToTime(in.EndTime)
+	rows, err = piRows(context.Background(), api, "k", "proof-pi-1", now.Add(30*time.Minute), piOpts{since: end, wantText: true})
+	if err != nil {
 		t.Fatal(err)
+	}
+	in = api.rmCalls[len(api.rmCalls)-1]
+	if aws.ToTime(in.StartTime) != end.Add(-piOverlap) || rowsOfKind(rows, "state")[0]["hours_read"] != 1 {
+		t.Errorf("cursor read: window from %s (want %s), hours_read %v (want 1)", aws.ToTime(in.StartTime), end.Add(-piOverlap), rowsOfKind(rows, "state")[0]["hours_read"])
 	}
 	if len(api.keyCalls) != 1 || api.describeDB != 1 {
 		t.Errorf("second run: %d key-detail calls, %d describes; want 1 and 1 (both cached)", len(api.keyCalls), api.describeDB)
+	}
+	// a cursor already at the last complete hour: nothing to read, the state row alone
+	calls := len(api.rmCalls)
+	rows, err = piRows(context.Background(), api, "k", "proof-pi-1", now.Add(40*time.Minute), piOpts{since: end.Add(time.Hour), wantText: true})
+	if err != nil || len(rows) != 1 || rows[0]["hours_read"] != 0 || len(api.rmCalls) != calls {
+		t.Errorf("nothing new: rows %v, %d more calls", rows, len(api.rmCalls)-calls)
 	}
 }
 
 func TestPIOff(t *testing.T) {
 	api := newRecordedPI(t, false)
-	rows, err := piRows(context.Background(), api, "k", "proof-pi-1", piRecordedNow(t, api))
+	rows, err := piRows(context.Background(), api, "k", "proof-pi-1", piRecordedNow(t, api), piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,13 +340,17 @@ func TestPIOff(t *testing.T) {
 	}
 }
 
-// TestPITextPolicy: the digest and the whole text ride query and statement, so the instance's policy reaches both.
+// TestPITextPolicy: the digest and the whole text ride query and statement, so the instance's policy reaches both;
+// under none the collector makes no text call at all.
 func TestPITextPolicy(t *testing.T) {
 	for _, mode := range []string{"full", "normalized", "none"} {
 		api := newRecordedPI(t, true)
-		rows, err := piRows(context.Background(), api, "k", "proof-pi-1", piRecordedNow(t, api))
+		rows, err := piRows(context.Background(), api, "k", "proof-pi-1", piRecordedNow(t, api), piOpts{wantText: mode != "none"})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if mode == "none" && len(api.keyCalls) != 0 {
+			t.Errorf("none: %d whole-text calls, want 0", len(api.keyCalls))
 		}
 		applyTextPolicy(rows, mode)
 		for _, r := range rowsOfKind(rows, "sql") {
@@ -421,7 +454,7 @@ func TestServerlessRows(t *testing.T) {
 		}
 	}
 
-	// a provisioned instance in a cluster that carries a range (a mixed cluster): no range stored, never "paused"
+	// a provisioned instance in a cluster that carries a range (a mixed cluster): skipped after the describe
 	p := newRecordedPI(t, false)
 	p.db.DBInstanceClass = aws.String("db.r6g.large")
 	var prov []recordedMetric
@@ -431,12 +464,25 @@ func TestServerlessRows(t *testing.T) {
 		}
 	}
 	rows, err := serverlessRows(context.Background(), recordedServerless{&recordedCW{metrics: prov}, p}, "k", "proof-pi-1", now)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrSkip) || !strings.Contains(err.Error(), "provisioned") || len(rows) != 0 {
+		t.Errorf("provisioned instance: rows %v, err %v (want a skip with the reason)", rows, err)
 	}
-	sc := rowsOfKind(rows, "scaling")
-	if note, _ := sc[0]["note"].(string); sc[0]["min_acu"] != nil || sc[0]["max_acu"] != nil || !strings.Contains(note, "provisioned") {
-		t.Errorf("provisioned instance: %v", sc[0])
+}
+
+// TestServerlessDescribeFails: a failed DescribeDBInstances still stores the metrics with the error row, never a skip.
+func TestServerlessDescribeFails(t *testing.T) {
+	now := time.Date(2026, 11, 9, 20, 7, 0, 0, time.UTC)
+	p := newRecordedPI(t, false)
+	p.dbErr = 1
+	rows, err := serverlessRows(context.Background(), recordedServerless{&recordedCW{metrics: serverlessFloor("proof-pi-1", now, false)}, p}, "k", "proof-pi-1", now)
+	if err != nil {
+		t.Fatalf("a failed describe became an error or a skip: %v", err)
+	}
+	if n := len(rowsOfKind(rows, "metric")); n != 20 {
+		t.Errorf("metric rows %d, want 20", n)
+	}
+	if e := rowsOfKind(rows, "collector_error"); len(e) != 1 || !strings.Contains(e[0]["message"].(string), "DescribeDBInstances") || len(rowsOfKind(rows, "scaling")) != 0 {
+		t.Errorf("error row %v, scaling rows %d", e, len(rowsOfKind(rows, "scaling")))
 	}
 }
 
@@ -470,7 +516,7 @@ func TestPITextPaths(t *testing.T) {
 	api := newRecordedPI(t, true)
 	api.keyStatus = "PROCESSING"
 	now := piRecordedNow(t, api)
-	rows, err := piRows(ctx, api, "k", "proof-pi-1", now)
+	rows, err := piRows(ctx, api, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,14 +525,14 @@ func TestPITextPaths(t *testing.T) {
 			t.Errorf("PROCESSING row %v", r["text_status"])
 		}
 	}
-	if _, err := piRows(ctx, api, "k", "proof-pi-1", now.Add(time.Hour)); err != nil || len(api.keyCalls) != 2 {
+	if _, err := piRows(ctx, api, "k", "proof-pi-1", now.Add(time.Hour), piOpts{wantText: true}); err != nil || len(api.keyCalls) != 2 {
 		t.Errorf("a PROCESSING text was kept: %d detail calls over two runs, want 2", len(api.keyCalls))
 	}
 
 	// the bridge series of tok-orders left out of the top statements: the filtered call finds sql-orders-a
 	var kept []string
 	hidden := &hiddenPI{recordedPI: newRecordedPI(t, true)}
-	rows, err = piRows(ctx, hidden, "k", "proof-pi-1", now)
+	rows, err = piRows(ctx, hidden, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,7 +545,7 @@ func TestPITextPaths(t *testing.T) {
 		t.Errorf("filtered lookup: %v, %d filtered calls", kept, hidden.filtered)
 	}
 	hidden2 := &hiddenPI{recordedPI: newRecordedPI(t, true), dropAll: true}
-	rows, err = piRows(ctx, hidden2, "k", "proof-pi-1", now)
+	rows, err = piRows(ctx, hidden2, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +579,7 @@ func TestPITextPaths(t *testing.T) {
 		b.Key.Dimensions = map[string]string{"db.sql.id": fmt.Sprintf("sql-%02d", i), "db.sql.tokenized_id": fmt.Sprintf("tok-%02d", i)}
 		api.metrics.MetricList = append(api.metrics.MetricList, d, b)
 	}
-	rows, err = piRows(ctx, api, "k", "proof-pi-1", now)
+	rows, err = piRows(ctx, api, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +596,7 @@ func TestPITextPaths(t *testing.T) {
 	// paged: the same rows as one page
 	api = newRecordedPI(t, true)
 	api.pageSize = 2
-	rows, err = piRows(ctx, api, "k", "proof-pi-1", now)
+	rows, err = piRows(ctx, api, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +677,7 @@ func TestPIFixtureImport(t *testing.T) {
 
 	api := newRecordedPI(t, true)
 	now := piRecordedNow(t, api)
-	rows, err := piRows(ctx, api, "k", "proof-pi-1", now)
+	rows, err := piRows(ctx, api, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,6 +688,9 @@ func TestPIFixtureImport(t *testing.T) {
 	}
 	if got := val(`SELECT string_agg(dim_group || '=' || n, ',' ORDER BY dim_group) FROM (SELECT dim_group, count(*) n FROM pgvigil.pi_load WHERE instance_id = $1 GROUP BY 1) x`); got != "sql=6,total=3,wait=9" {
 		t.Errorf("pi_load after two imports of one window: %s", got)
+	}
+	if got := val(`SELECT to_char(read_to AT TIME ZONE 'UTC', 'MI:SS') FROM pgvigil.log_cursor WHERE instance_id = $1 AND source = 'pi'`); got != "00:00" {
+		t.Errorf("pi cursor after the import: %s, want an hour boundary", got)
 	}
 	if got := val(`SELECT count(*)::text || '|' || max(length(full_text))::text FROM pgvigil.pi_sql WHERE instance_id = $1`); got != "2|694" {
 		t.Errorf("pi_sql: %s, want 2 digests and the 694-byte whole text", got)
@@ -673,7 +722,7 @@ func TestPIFixtureImport(t *testing.T) {
 	}
 	// PI turned off: the state row says so; the hours already kept stay (they age out with the retention)
 	off := newRecordedPI(t, false)
-	offRows, err := piRows(ctx, off, "k", "proof-pi-1", now)
+	offRows, err := piRows(ctx, off, "k", "proof-pi-1", now, piOpts{wantText: true})
 	if err != nil {
 		t.Fatal(err)
 	}

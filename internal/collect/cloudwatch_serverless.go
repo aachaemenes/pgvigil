@@ -21,9 +21,8 @@ import (
 // the IO collection's cadence (every 5 minutes, 5-minute periods, a 20-minute window so a late or missed run loses
 // nothing): the capacity in ACU, the ACU utilization, the buffer cache hit ratio, the storage reads and the CPU; and,
 // once an hour, the instance's cluster and its Serverless v2 range (the floor and the ceiling). A provisioned Aurora
-// instance answers BufferCacheHitRatio, ReadIOPS and CPUUtilization only (no capacity series, no range): the rows are
-// kept and the range is stored for a db.serverless instance only (a mixed cluster's range is its Serverless v2
-// readers'), so the rule never fires there. A paused Serverless v2 instance (a 0 ACU floor) publishes 0 for
+// instance (any class but db.serverless) has no capacity series and a mixed cluster's range is its Serverless v2
+// readers': its run is skipped with the reason after the describe, so it stores nothing and the rule never fires there. A paused Serverless v2 instance (a 0 ACU floor) publishes 0 for
 // ServerlessDatabaseCapacity, ACUUtilization and CPUUtilization only (the Aurora User Guide, automatic pause): the
 // scaling row's note says so. Read only: one GetMetricData call per run.
 type serverlessCollector struct{}
@@ -132,6 +131,10 @@ func (c serverlessCollector) RunInstance(ctx context.Context, conn *pgx.Conn, in
 // {kind:'metric', dim, metric, stat, unit, at, value}) and its scaling row {kind:'scaling', db_instance, cluster,
 // class, min_acu, max_acu, note}. A failed describe becomes a collector_error row; the metrics still land.
 func serverlessRows(ctx context.Context, api serverlessAPI, awsKey, id string, now time.Time) ([]Row, error) {
+	d, derr := platform.DescribeAWSInstance(ctx, api, awsKey, id, now)
+	if derr == nil && d.Class != serverlessClass {
+		return nil, fmt.Errorf("a provisioned Aurora instance (%s): Serverless v2 capacity is not its: %w", d.Class, ErrSkip)
+	}
 	var queries []cwtypes.MetricDataQuery
 	for i, m := range serverlessMetrics {
 		queries = append(queries, cwtypes.MetricDataQuery{
@@ -187,17 +190,12 @@ func serverlessRows(ctx context.Context, api serverlessAPI, awsKey, id string, n
 		return rows[i]["at"].(time.Time).Before(rows[j]["at"].(time.Time))
 	})
 
-	d, err := platform.DescribeAWSInstance(ctx, api, awsKey, id, now)
-	if err != nil {
-		return append(rows, Row{"kind": "collector_error", "source": "rds", "message": err.Error()}), nil
+	if derr != nil {
+		return append(rows, Row{"kind": "collector_error", "source": "rds", "message": derr.Error()}), nil
 	}
 	sc := Row{"kind": "scaling", "db_instance": id, "cluster": nilIfEmpty(d.Cluster), "class": nilIfEmpty(d.Class)}
 	note := d.ScalingNote
-	switch {
-	case d.Class != serverlessClass:
-		// a provisioned instance (a mixed cluster carries a range for its Serverless v2 readers): the range is not its
-		note = fmt.Sprintf("a provisioned instance (%s): the cluster's Serverless v2 range does not apply to it", d.Class)
-	case d.HasScaling:
+	if d.HasScaling {
 		sc["min_acu"], sc["max_acu"] = d.MinACU, d.MaxACU
 		// a paused instance publishes 0 for ServerlessDatabaseCapacity, ACUUtilization and CPUUtilization, and nothing else
 		if capPoints > 0 && capHigh == 0 {
