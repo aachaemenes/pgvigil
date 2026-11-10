@@ -121,7 +121,7 @@ func XEScript(installID, form string) (string, error) {
 		"  What it makes, one small session per capture:\n"+
 		"    %-34s %s to a ring buffer\n"+
 		"    %-34s blocked_process_report to a ring buffer\n"+
-		"    %-34s rpc_completed and sql_batch_completed over @slow_ms%s\n"+
+		"    %-34s rpc_completed and sql_batch_completed over @slow_ms (and, with\n"+strings.Repeat(" ", 39)+"@slow_statements = 1, sql_statement_completed and sp_statement_completed\n"+strings.Repeat(" ", 39)+"over it)%s\n"+
 		"    %-34s attention to a ring buffer, and an event counter\n\n"+
 		"  A session that already exists under its name is left exactly as it is; one that is stopped is started.\n"+
 		"  Nothing else on the server is changed. To change a session's settings, drop it (the drop script:\n"+
@@ -477,6 +477,11 @@ func (xeCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, op
 
 // readSession reads one running session's target past its cursor and fills the capture's state row.
 func (r *xeRun) readSession(s *xeSession, source string, events []string, state collect.Row) error {
+	if time.Now().After(r.opt.Deadline) {
+		// nothing new is started this late: the cursor waits for the next run
+		state["note"] = "the run's time was up before " + s.name + " was read: the next run reads it"
+		return nil
+	}
 	c := xeContext{source: source, session: s.name, queryText: r.opt.QueryText}
 	if t, ok := s.targets["event_counter"]; ok && t.targetData != "" {
 		var ct xeCounterTarget
@@ -541,7 +546,9 @@ func (r *xeRun) shred(e *xeEvent, wanted map[string]bool, c xeContext, keys *xeK
 	if row == nil {
 		return nil
 	}
-	row["event_key"] = key
+	if _, own := row["event_key"]; !own { // a deadlock is keyed by its graph alone (deadlockKey)
+		row["event_key"] = key
+	}
 	return row
 }
 
@@ -676,7 +683,7 @@ func (r *xeRun) readFile(source, pattern string, events []string, batchTop int, 
 		return err
 	}
 	wanted := nameSet(events)
-	var total, unknown, old int64
+	var total, taken, unknown, old int64
 	var notes []string
 	// floor: after the cursor's file is gone the set is read from its oldest file, and events at or before the
 	// newest event already stored are passed over by their time (the event's key keeps an equal time from doubling)
@@ -733,6 +740,7 @@ func (r *xeRun) readFile(source, pattern string, events []string, batchTop int, 
 				unknown++ // an event the reader does not store: it only moves the cursor
 				continue
 			}
+			taken++
 			e, err := parseEvent(x.data.String)
 			if err != nil {
 				unknown++
@@ -762,9 +770,10 @@ func (r *xeRun) readFile(source, pattern string, events []string, batchTop int, 
 			break
 		}
 	}
-	state["new_events"] = total
+	// a session of the server's own carries mostly events the reader does not want: its count is the wanted ones
+	state["new_events"] = taken
 	if c.source == "product" {
-		state["unknown_events"] = unknown
+		state["new_events"], state["unknown_events"] = total, unknown
 	}
 	if old > 0 {
 		notes = append(notes, fmt.Sprintf("%d event(s) older than %d days were not stored", old, int(xeMaxAge.Hours()/24)))

@@ -89,6 +89,8 @@ How it reads:
 - **From a cursor.** An event file is read past the last block read (the file name and offset); a ring buffer past the newest event read (its time and sequence number). A batch of events and the cursor's new position are stored in one repository transaction, so an event is stored once: a run that dies between two batches loses nothing and repeats nothing. A read takes at most 1,000 events per batch and stops in time for the next run, which goes on from the cursor.
 - **Nothing is shredded on the server.** The reader takes the XML as text (a ring buffer in pieces of 16,000 characters, read once into a variable so the pieces are one consistent copy) and takes it apart on the collector's host. It runs no XQuery on the monitored server.
 - **After a rollover.** The cursor names a file; while that file exists the read goes on through the newer files. When it is gone (the files rolled past it while the collector was down), the reader reads the set again from its oldest file and passes over what it already stored; events that were in the deleted files and never read are lost, and the state row's note says the fallback happened.
+- **A deadlock is one row whatever session carried it.** Its key is its time and its graph. When the product's deadlock session is stopped or dropped and the reader goes back to `system_health`, the deadlocks it already stored are not stored again.
+- **A control character does not cost the read.** A statement's text can hold a character XML forbids (a `CHAR(1)` in a literal). The reader replaces it with U+FFFD before it parses, so one such event does not fail a whole ring buffer.
 - **Unknown events are counted.** An event in a pgvigil session that the reader has no parser for is counted on the state row, not dropped silently.
 
 What is stored, each event once:
@@ -110,7 +112,7 @@ Neither session is ever started, stopped or altered. An `AlwaysOn_health` sessio
 
 - **Deadlocks**: the deadlocks of the range; one opened as its processes and resources with the victim marked; the graph as an `.xdl` download that SSMS opens.
 - **Blocked reports**: one row per blocking statement, the blocking side first; the reports of one statement.
-- **Slow queries**: by statement shape (a procedure call by its procedure, anything else by its text without literals): count, total and worst duration; the events of one shape; a chart of completions over time with its table. The **Attentions** section is below it.
+- **Slow queries**: by statement shape (a procedure call by its procedure; a statement sent through a driver's wrapper such as `sp_executesql` or `sp_prepexec` by the statement inside it; anything else by its text without literals; a call by handle, `sp_execute`, has no text and is named by its query hash): count, total and worst duration; the events of one shape; a chart of completions over time with its table. The **Attentions** section is below it.
 
 ## Findings
 
@@ -125,7 +127,7 @@ Neither session is ever started, stopped or altered. An `AlwaysOn_health` sessio
 
 ## Query text
 
-The instance's `query_text` policy applies. Under `normalized`, statements are stored without literals and the deadlock graph and the blocked-process report XML are not stored (they carry raw text). Under `none`, no statement text is stored at all: slow events group by procedure name only and blocked reports are not grouped by statement.
+The instance's `query_text` policy applies. Under `normalized`, statements are stored without literals and the deadlock graph and the blocked-process report XML are not stored (they carry raw text). Under `none`, no statement text is stored at all: slow events group by procedure name only and blocked reports are not grouped by statement. A shape treats a double-quoted token as an identifier; a client that runs with `QUOTED_IDENTIFIER OFF` and writes string literals in double quotes keeps them in its shapes.
 
 ## What it costs the monitored server
 
@@ -137,6 +139,6 @@ The session definitions are pgvigil's own text. Their shape follows DBA Dash 4.2
 
 ## Proof
 
-`scripts/proof-mssql-xe.sh` runs against a SQL Server container and a PostgreSQL sandbox. It proves: a server without the sessions gives four `not installed` rows and no error, with `system_health`'s deadlocks read; the monitoring login cannot run the script (the error is shown) and the script says `NOT created`; the script run by `sa` creates and starts four sessions and a second run leaves them; a provoked deadlock is stored once with its victim and both statements; a blocked-process report holds the head's statement (the threshold lowered for the proof and put back); a slow batch is stored with its duration and its hashes, the query hash found in `sys.dm_exec_query_stats`; a cancelled query is stored as an attention; a second read stores nothing twice; 2,000 slow events across file rollovers are stored once each, the cursor moving per batch; a cursor on a vanished file falls back without storing anything twice; a stopped session is `stopped` and becomes a finding at the second read; `AlwaysOn_health` is read on an availability group's primary; the server's other sessions are unchanged; the printed drop script drops exactly the four.
+`scripts/proof-mssql-xe.sh` runs against a SQL Server container and a PostgreSQL sandbox. It proves: a server without the sessions gives four `not installed` rows and no error, with `system_health`'s deadlocks read; the monitoring login cannot run the script (the error is shown) and the script says `NOT created`; the script run by `sa` creates and starts four sessions and a second run leaves them; a provoked deadlock is stored once with its victim and both statements, and still once after the reader goes back to `system_health`; a control character inside a statement's text is stored as U+FFFD; the collector's role reads its cursor through its own door; a blocked-process report holds the head's statement (the threshold lowered for the proof and put back); a slow batch is stored with its duration and its hashes, the query hash found in `sys.dm_exec_query_stats`; a cancelled query is stored as an attention; a second read stores nothing twice; 2,000 slow events across file rollovers are stored once each, the cursor moving per batch; a cursor on a vanished file falls back without storing anything twice; a stopped session is `stopped` and becomes a finding at the second read; `AlwaysOn_health` is read on an availability group's primary; the server's other sessions are unchanged; the printed drop script drops exactly the four.
 
 Proven on SQL Server 2022 in a Linux container. Not proven: the Azure SQL Database and Managed Instance forms, SQL Server 2016 to 2019, Amazon RDS, a Windows server's event file paths, and a live ring buffer overrun (the count of events that left a buffer between two reads is checked as arithmetic on the repository).

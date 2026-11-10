@@ -83,14 +83,22 @@ SELECT e.shape_key, max(e.shape) AS shape, count(*) AS events, round(sum(e.durat
  ORDER BY sum(e.duration_ms) DESC NULLS LAST
  LIMIT 200`
 
-// the completions per bucket ($4 seconds wide): the chart's points and the table behind it
+// the completions per bucket ($4 seconds wide), every bucket of the window (an empty one is 0, so the chart's line
+// falls to the floor between two bursts instead of joining them): the chart's points and the table behind it
 const sqlMSSQLXESlowSeries = `
-SELECT to_timestamp(floor(extract(epoch FROM e.event_at) / $4) * $4) AS snapshot_at, count(*) AS events,
-       round(max(e.duration_ms), 1) AS worst_ms, round(sum(e.duration_ms), 1) AS total_ms
-  FROM pgvigil.mssql_slow_events e
- WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3 AND e.event_name IN ('rpc_completed', 'sql_batch_completed')
- GROUP BY 1
- ORDER BY 1`
+WITH b AS (
+  SELECT to_timestamp(g * $4::bigint) AS snapshot_at
+    FROM generate_series(floor(extract(epoch FROM $2::timestamptz) / $4)::bigint, floor(extract(epoch FROM $3::timestamptz) / $4)::bigint) g
+), e AS (
+  SELECT to_timestamp(floor(extract(epoch FROM e.event_at) / $4)::bigint * $4::bigint) AS snapshot_at, count(*) AS events,
+         round(max(e.duration_ms), 1) AS worst_ms, round(sum(e.duration_ms), 1) AS total_ms
+    FROM pgvigil.mssql_slow_events e
+   WHERE e.instance_id = $1 AND e.event_at > $2 AND e.event_at <= $3 AND e.event_name IN ('rpc_completed', 'sql_batch_completed')
+   GROUP BY 1
+)
+SELECT b.snapshot_at, coalesce(e.events, 0) AS events, e.worst_ms, coalesce(e.total_ms, 0) AS total_ms
+  FROM b LEFT JOIN e USING (snapshot_at)
+ ORDER BY b.snapshot_at`
 
 const sqlMSSQLXESlowOne = `
 SELECT e.event_at, e.event_name, e.duration_ms, e.cpu_ms, e.logical_reads, e.physical_reads, e.writes, e.row_count, e.result,

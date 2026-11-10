@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,12 +83,47 @@ func decodeUTF16LE(b []byte) string {
 	return string(utf16.Decode(u))
 }
 
+// xmlCharRef is a numeric character reference.
+var xmlCharRef = regexp.MustCompile(`&#(x[0-9A-Fa-f]{1,8}|[0-9]{1,10});`)
+
+// xmlLegal says whether XML 1.0 allows the character.
+func xmlLegal(c rune) bool {
+	return c == '\t' || c == '\n' || c == '\r' || (c >= 0x20 && c <= 0xD7FF) || (c >= 0xE000 && c <= 0xFFFD) || (c >= 0x10000 && c <= 0x10FFFF)
+}
+
+// xmlClean replaces what XML 1.0 forbids, written raw or as a character reference, with U+FFFD. Extended Events
+// writes a statement's text as it came: a control character inside a literal (CHAR(1), a NUL) would otherwise fail
+// the decoder for the whole document, which for a ring buffer is every event in it.
+func xmlClean(doc string) string {
+	if strings.IndexFunc(doc, func(c rune) bool { return !xmlLegal(c) }) >= 0 {
+		doc = strings.Map(func(c rune) rune {
+			if xmlLegal(c) {
+				return c
+			}
+			return '\uFFFD'
+		}, doc)
+	}
+	if !strings.Contains(doc, "&#") {
+		return doc
+	}
+	return xmlCharRef.ReplaceAllStringFunc(doc, func(ref string) string {
+		body, base := ref[2:len(ref)-1], 10
+		if body[0] == 'x' {
+			body, base = body[1:], 16
+		}
+		if n, err := strconv.ParseInt(body, base, 64); err == nil && n <= 0x10FFFF && xmlLegal(rune(n)) {
+			return ref
+		}
+		return "\uFFFD"
+	})
+}
+
 func parseRing(doc string) (xeRing, error) {
 	var r xeRing
 	if strings.TrimSpace(doc) == "" {
 		return r, nil
 	}
-	if err := xml.Unmarshal([]byte(doc), &r); err != nil {
+	if err := xml.Unmarshal([]byte(xmlClean(doc)), &r); err != nil {
 		return r, fmt.Errorf("the ring buffer's XML: %w", err)
 	}
 	return r, nil
@@ -95,7 +131,7 @@ func parseRing(doc string) (xeRing, error) {
 
 func parseEvent(doc string) (xeEvent, error) {
 	var e xeEvent
-	if err := xml.Unmarshal([]byte(doc), &e); err != nil {
+	if err := xml.Unmarshal([]byte(xmlClean(doc)), &e); err != nil {
 		return e, fmt.Errorf("an event's XML: %w", err)
 	}
 	return e, nil
@@ -202,6 +238,20 @@ func (k *xeKeyer) key(e *xeEvent) string {
 	return h + "-" + strconv.Itoa(n)
 }
 
+// deadlockKey is a deadlock's key: its time and its graph, nothing of the session that carried it. The same deadlock
+// read from pgvigil's session and from system_health (after the product's session was stopped, or before it was
+// created) differs in its actions and in the white space of its XML, never in the graph, so it is stored once.
+func deadlockKey(e *xeEvent, graph string) string {
+	g := strings.Map(func(c rune) rune {
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			return -1
+		}
+		return c
+	}, graph)
+	sum := sha256.Sum256([]byte("deadlock|" + e.Timestamp + "|" + g))
+	return hex.EncodeToString(sum[:16]) + "-0"
+}
+
 // hash16 is a short stable key of a text (a statement shape, a head statement).
 func hash16(s string) string {
 	sum := sha256.Sum256([]byte(s))
@@ -272,11 +322,21 @@ func sqlShape(s string) string {
 			}
 			space = true
 		case c == '/' && i+1 < len(r) && r[i+1] == '*':
+			// T-SQL block comments nest
+			depth := 1
 			i += 2
-			for i < len(r) && (r[i] != '*' || i+1 >= len(r) || r[i+1] != '/') {
-				i++
+			for i < len(r) && depth > 0 {
+				switch {
+				case r[i] == '/' && i+1 < len(r) && r[i+1] == '*':
+					depth++
+					i += 2
+				case r[i] == '*' && i+1 < len(r) && r[i+1] == '/':
+					depth--
+					i += 2
+				default:
+					i++
+				}
 			}
-			i += 2
 			space = true
 		case c == '\'' || ((c == 'N' || c == 'n') && i+1 < len(r) && r[i+1] == '\''):
 			if c != '\'' {
@@ -309,8 +369,8 @@ func sqlShape(s string) string {
 			}
 			put(string(r[i:j]))
 			i = j
-		case c >= '0' && c <= '9':
-			j := i
+		case (c >= '0' && c <= '9') || (c == '$' && i+1 < len(r) && r[i+1] >= '0' && r[i+1] <= '9'):
+			j := i + 1
 			for j < len(r) && (isWord(r[j]) || r[j] == '.') {
 				j++
 			}
@@ -494,6 +554,7 @@ func parseDeadlock(e *xeEvent, c xeContext) collect.Row {
 	if graph == "" {
 		return nil
 	}
+	row["event_key"] = deadlockKey(e, graph)
 	var g dlGraph
 	if err := xml.Unmarshal([]byte(graph), &g); err != nil {
 		// a graph the reader cannot take apart is still a deadlock: stored whole, unparsed
@@ -613,6 +674,37 @@ func parseBlocked(e *xeEvent, c xeContext) collect.Row {
 // rpcWrappers are the procedures a driver calls to run a statement: the statement, not the wrapper, is the shape.
 var rpcWrappers = map[string]bool{"sp_executesql": true, "sp_prepexec": true, "sp_execute": true, "sp_prepare": true, "sp_cursoropen": true, "sp_cursorprepexec": true, "sp_cursorexecute": true}
 
+// wrappedStatement is the statement inside a driver's wrapper call (exec sp_executesql N'<statement>', N'@p int',
+// @p = 5; exec sp_prepexec @h output, N'@p int', N'<statement>', 5): the first string literal of the call that is
+// not a parameter declaration, with its doubled quotes undone. "" when the call carries no statement.
+func wrappedStatement(call string) string {
+	r := []rune(call)
+	for i := 0; i < len(r); i++ {
+		if r[i] != '\'' {
+			continue
+		}
+		var b strings.Builder
+		j := i + 1
+		for j < len(r) {
+			if r[j] == '\'' {
+				if j+1 < len(r) && r[j+1] == '\'' {
+					b.WriteRune('\'')
+					j += 2
+					continue
+				}
+				break
+			}
+			b.WriteRune(r[j])
+			j++
+		}
+		if lit := strings.TrimSpace(b.String()); lit != "" && !strings.HasPrefix(lit, "@") {
+			return lit
+		}
+		i = j
+	}
+	return ""
+}
+
 func parseSlow(e *xeEvent, c xeContext) collect.Row {
 	row, ok := xeBase("slow", e, c)
 	if !ok {
@@ -639,6 +731,11 @@ func parseSlow(e *xeEvent, c xeContext) collect.Row {
 	switch {
 	case object != "" && !rpcWrappers[strings.ToLower(object)]:
 		row["shape"] = object
+	case object != "" && c.textKept():
+		// a driver's wrapper: the shape is the statement it carries; a call by handle (sp_execute) carries none
+		if inner := wrappedStatement(stmt); inner != "" {
+			row["shape"] = sqlShape(inner)
+		}
 	case stmt != "" && c.textKept():
 		row["shape"] = sqlShape(stmt)
 	}

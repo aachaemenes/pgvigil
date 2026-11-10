@@ -10,7 +10,8 @@
 # The proof makes its own repository database, one SQL Server login (VIEW SERVER STATE, VIEW ANY DEFINITION), one
 # database, and the four sessions of ONE random install id, created by sa from the printed script as a DBA would;
 # it drops them all at the end and deletes the event files of its own slow session. Part E lowers the server's
-# 'blocked process threshold (s)' to 5 and puts the old value (and 'show advanced options') back on every exit path.
+# 'blocked process threshold (s)' to 5; the old value (and 'show advanced options') is put back on every exit path
+# from the first time the printed script runs on the server (part B) to the end.
 # No other session is created, altered, stopped or dropped: part M compares system_health and AlwaysOn_health before and after.
 #
 # Expected (written before the first run):
@@ -27,7 +28,7 @@
 #     with the session names, the targets (ring_buffer x3, event_file for slow) and source product.
 #  D. a deadlock the proof provokes between two of its own sessions is stored ONCE (one row whose databases are the
 #     proof's), from the product's session, with one victim, two processes, both statements (each process's own
-#     UPDATE batch), the victim's spid among them, the object each waited on, and the graph XML whole; a second read
+#     UPDATE batch), the victim's spid among them, the object each of the two waited on, and the graph XML whole; a second read
 #     leaves one row. The finding 'deadlocks in the last hour' shows for the instance.
 #  E. a blocked-process report: with the threshold at 5 s, a session blocked about 14 s behind an open transaction
 #     gives at least one stored report whose blocked statement is the waiter's UPDATE, whose blocking statement (the
@@ -58,6 +59,14 @@
 #     statements) and two resources with owners and waiters; the .xdl download is the stored graph, byte for byte,
 #     as an attachment named deadlock-<instance>-<time>.xdl; an unknown deadlock is a 404 and a malformed key a 400;
 #     the reports of the head and the 500 slowest events of the bulk shape come back by their keys.
+#  R. the collector's role (pgvigil_collector) reads a cursor through import_mssql_cursor, is refused the cursor table
+#     itself, and imports a batch.
+#  F and G also carry a control character (0x01) inside the statement's text: the event is stored, with U+FFFD where
+#     the character was and no control character left (SQL Server itself writes the character into the event as the
+#     text '&#1;', taking a '[' before it with it: measured; a character reference of that kind outside a CDATA
+#     section fails the XML decoder, and one such event must not cost the read).
+#  M also: after the drop the reader is back on system_health, which holds the proof's deadlock too; the deadlock
+#     stays ONE row (source product).
 #  M. nothing else was touched: system_health and AlwaysOn_health (name, running, start time) are the same before and
 #     after (the sandbox is shared: another tool's session that changed meanwhile is named, not judged); the drop
 #     script printed by pgvigil drops exactly the four; the read after it says 'not installed' four times again.
@@ -134,6 +143,7 @@ sq "CREATE TABLE dbo.dl_a (id int PRIMARY KEY, v int); CREATE TABLE dbo.dl_b (id
 export MSSQL_MON_DSN="sqlserver://$L1:$P1@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
 export PGVIGIL_MSSQL_XE_BATCH=500
 N1=proof-xe-$SUF; NP=proof-xe-pg-$SUF
+CTL=$'\x01'                                # a control character XML 1.0 forbids, inside two statements' text (parts F, G)
 export PG_MON_DSN="$ADMIN_DSN"
 cat > "$CFG" <<EOF
 repository:
@@ -169,8 +179,11 @@ settle() { sleep 7; }   # the sessions dispatch every 5 seconds
 
 echo "--- A. a server without the sessions"
 SA_SH_DL=$(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'xml_deadlock_report' AND CAST(event_data AS xml).value('(event/@timestamp)[1]', 'datetime2') > DATEADD(day, -45, SYSUTCDATETIME())")
-xe_all A
+xe A
 iid=$(q "select instance_id from pgvigil.instances where name='$N1'")
+[ "$(q "select max(reads_in_state) from pgvigil.mssql_xe_state where instance_id=$iid and capture <> 'ag'")" = 1 ] || fail "A: the first read is not read 1"
+[ "$(q "select count(*) from pgvigil.mssql_xe_findings where instance_id=$iid and check_name='a capture is not installed'")" = 0 ] || fail "A: the finding fired after one read"
+xe_all A
 [ "$(q "select string_agg(capture || '=' || state, ',' order by capture) from pgvigil.mssql_xe_state where instance_id=$iid and capture <> 'ag'")" \
   = "attention=not installed,blocked=not installed,deadlocks=not installed,slow=not installed" ] \
   || fail "A: the state rows: $(q "select capture, state from pgvigil.mssql_xe_state where instance_id=$iid")"
@@ -179,16 +192,15 @@ iid=$(q "select instance_id from pgvigil.instances where name='$N1'")
   || fail "A: system_health deadlocks stored $(q "select count(*) from pgvigil.mssql_deadlocks where instance_id=$iid") , sa counts $SA_SH_DL"
 echo "  system_health deadlock reports of the last 45 days: sa counts $SA_SH_DL, stored $SA_SH_DL"
 [ "$(q "select status from pgvigil.collection_dates where instance_id=$iid and collection='mssql_xe'")" = ok ] || fail "A: collection_dates"
-READS=$(q "select max(reads_in_state) from pgvigil.mssql_xe_state where instance_id=$iid and capture='slow'")
-if [ "$READS" = 1 ]; then
-  [ "$(q "select count(*) from pgvigil.mssql_xe_findings where instance_id=$iid and check_name='a capture is not installed'")" = 0 ] || fail "A: the finding fired after one read"
-  xe A
-fi
 [ "$(q "select severity || '|' || object from pgvigil.mssql_xe_findings where instance_id=$iid and check_name='a capture is not installed'")" = "info|attention, blocked, deadlocks, slow" ] \
   || fail "A: the finding after two reads: $(q "select severity, object from pgvigil.mssql_xe_findings where instance_id=$iid")"
 echo "A: OK"
 
 echo "--- B. the read login alone cannot create a session"
+# from here on the printed script runs on the server: whatever it would make or change is undone on every exit path
+OLD_ADV=$(sq "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'show advanced options'")
+OLD_BPT=$(sq "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'blocked process threshold (s)'")
+MADE_SESS=1
 "$BIN" mssql-xe -print -install-id "$ID" > "$DDL"
 grep -q "CREATE EVENT SESSION \[pgvigil_${ID}_slow\] ON SERVER" "$DDL" || fail "B: the printed script"
 if SQLCMDPASSWORD="$P1" sqfile "$DDL" "$L1" >"$OUT" 2>&1; then cat "$OUT"; fail "B: the monitoring login ran the script"; fi
@@ -200,14 +212,13 @@ if grep -qE '^(created|started): ' "$OUT"; then fail "B: the script claims a ses
 echo "B: OK"
 
 echo "--- C. the printed script, run by sa as the DBA would"
-BPT0=$(sq "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'blocked process threshold (s)'")
+BPT0=$OLD_BPT
 # the DBA's edits of the settings block: a 5 ms threshold, small files so the proof can roll them over
 sed -i -e 's/^DECLARE @slow_ms          int = 1000;/DECLARE @slow_ms          int = 5;/' \
        -e 's/^DECLARE @slow_file_mb     int = 50;/DECLARE @slow_file_mb     int = 1;/' \
        -e 's/^DECLARE @slow_files       int = 4;/DECLARE @slow_files       int = 40;/' \
        -e 's/^DECLARE @slow_memory_kb   int = 4096;/DECLARE @slow_memory_kb   int = 512;/' "$DDL"
 [ "$(grep -cE '^DECLARE @slow_(ms          int = 5|file_mb     int = 1|files       int = 40|memory_kb   int = 512);' "$DDL")" = 4 ] || fail "C: the settings block was not edited"
-MADE_SESS=1
 sqfile "$DDL" | tee "$OUT"
 [ "$(grep -c '^created: pgvigil_'"$ID"'_' "$OUT")" = 4 ] && [ "$(grep -c '^started: pgvigil_'"$ID"'_' "$OUT")" = 4 ] || fail "C: four sessions created and started"
 grep -q "blocked process threshold (s) *$BPT0" "$OUT" || fail "C: the script did not show the threshold in use ($BPT0)"
@@ -238,14 +249,14 @@ dl() { q "select $1 from pgvigil.mssql_deadlocks where instance_id=$iid and data
 [ "$(dl "(select count(*) from jsonb_array_elements(processes) p where (p->>'victim')::boolean and (p->>'spid')::int = victim_spid and p->>'waits_on' like '$DB.dbo.dl_%' and p->>'login' = 'sa' and p->>'host' = '$HOSTA')")" = 1 ] \
   || fail "D: the victim among the processes: $(dl "victim_spid, processes")"
 [ "$(dl "victim_statement like 'BEGIN TRAN; UPDATE dbo.dl_%'")" = t ] || fail "D: the victim's statement"
+[ "$(dl "(select count(distinct p->>'waits_on') from jsonb_array_elements(processes) p where p->>'waits_on' like '$DB.dbo.dl_%' and p->>'waits_mode' is not null)")" = 2 ] \
+  || fail "D: the object each process waited on: $(dl "processes")"
 xe D
 [ "$(dl "count(*)")" = 1 ] || fail "D: stored twice after a second read"
 [ "$(q "select severity from pgvigil.mssql_xe_findings where instance_id=$iid and check_name='deadlocks in the last hour'")" = warning ] || fail "D: the finding"
 echo "D: OK (one deadlock, victim spid $(dl victim_spid))"
 
 echo "--- E. a blocked-process report (threshold 5 s for the proof, the old value back afterwards)"
-OLD_ADV=$(sq "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'show advanced options'")
-OLD_BPT=$BPT0
 sq "EXEC sys.sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null
 HEAD="BEGIN TRAN; UPDATE dbo.dl_a SET v = 10 WHERE id = 1; SELECT @@SPID; WAITFOR DELAY '00:00:16'; ROLLBACK;"
 WAITER="UPDATE dbo.dl_a SET v = 11 WHERE id = 1;"
@@ -265,20 +276,20 @@ echo "  $(bp "count(*)") report(s); head spid $HEAD_SPID, status $(bp "min(block
 sq "EXEC sys.sp_configure 'blocked process threshold (s)', $OLD_BPT; RECONFIGURE; EXEC sys.sp_configure 'show advanced options', $OLD_ADV; RECONFIGURE;" >/dev/null
 [ "$(sq "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'blocked process threshold (s)'")|$(sq "SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'show advanced options'")" = "$OLD_BPT|$OLD_ADV" ] \
   || fail "E: the threshold or 'show advanced options' was not put back"
-OLD_BPT=; OLD_ADV=
 echo "E: OK"
 
 echo "--- F. a slow batch over the threshold"
 MARK="pgvxe-slow-$SUF"
 # the batch times itself and, before it ends, reads the query hash of its own slow statement from the plan cache
 # (its own sql_handle, the statement with the most elapsed time): the cache is read in the same second, not later
-work "$HOSTA" "SET NOCOUNT ON; /* $MARK */ DECLARE @t0 datetime2 = SYSDATETIME(); DECLARE @n bigint; SELECT @n = COUNT_BIG(*) FROM (SELECT TOP (800) name FROM sys.all_columns) a CROSS JOIN sys.all_columns b WHERE a.name < b.name OPTION (MAXDOP 1); SELECT 'elapsed=' + CAST(DATEDIFF(millisecond, @t0, SYSDATETIME()) AS varchar(20)); SELECT TOP (1) 'hash=' + CONVERT(varchar(18), qs.query_hash, 1) FROM sys.dm_exec_requests r JOIN sys.dm_exec_query_stats qs ON qs.sql_handle = r.sql_handle WHERE r.session_id = @@SPID ORDER BY qs.total_elapsed_time DESC;" -h -1 -W > "$OUT.f" 2>&1 || true
+work "$HOSTA" "SET NOCOUNT ON; /* $MARK ctl(${CTL}) */ DECLARE @t0 datetime2 = SYSDATETIME(); DECLARE @n bigint; SELECT @n = COUNT_BIG(*) FROM (SELECT TOP (800) name FROM sys.all_columns) a CROSS JOIN sys.all_columns b WHERE a.name < b.name OPTION (MAXDOP 1); SELECT 'elapsed=' + CAST(DATEDIFF(millisecond, @t0, SYSDATETIME()) AS varchar(20)); SELECT TOP (1) 'hash=' + CONVERT(varchar(18), qs.query_hash, 1) FROM sys.dm_exec_requests r JOIN sys.dm_exec_query_stats qs ON qs.sql_handle = r.sql_handle WHERE r.session_id = @@SPID ORDER BY qs.total_elapsed_time DESC;" -h -1 -W > "$OUT.f" 2>&1 || true
 ELAPSED=$(sed -n 's/^elapsed=\([0-9]*\)$/\1/p' "$OUT.f" | head -1); SA_QH=$(sed -n 's/^hash=\(0x[0-9A-F]*\)$/\1/p' "$OUT.f" | head -1); rm -f "$OUT.f"
 settle; xe F
 sl() { q "select $1 from pgvigil.mssql_slow_events where instance_id=$iid and event_name='sql_batch_completed' and statement like '%$MARK%'"; }
 [ "$(sl "count(*)")" = 1 ] || fail "F: $(sl "count(*)") completion row(s) with the marker, want 1"
 [ "$(sl "(abs(duration_ms - $ELAPSED) <= 250) || '|' || login_name || '|' || host_name || '|' || database_name || '|' || (query_hash ~ '^0x[0-9A-F]{16}\$') || '|' || (query_plan_hash ~ '^0x[0-9A-F]{16}\$') || '|' || result")" \
   = "true|sa|$HOSTA|$DB|true|true|OK" ] || fail "F: the row (the batch measured $ELAPSED ms): $(sl "duration_ms, login_name, host_name, database_name, query_hash, query_plan_hash, result")"
+[ "$(sl "statement ~ ('ctl.?' || U&'\\FFFD') and statement !~ '[\\x01-\\x08]'")" = t ] || fail "F: the control character in the batch's text: $(sl "encode(convert_to(substring(statement from 'ctl.{0,6}'), 'UTF8'), 'hex')")"
 QH=$(sl query_hash)
 [ -n "$SA_QH" ] || fail "F: the batch did not read its own query hash from the plan cache"
 [ "$QH" = "$SA_QH" ] || fail "F: the stored query_hash $QH is not the plan cache's $SA_QH"
@@ -286,12 +297,13 @@ echo "F: OK (the batch measured $ELAPSED ms, stored $(sl "round(duration_ms)") m
 
 echo "--- G. an attention from a cancelled query"
 AMARK="pgvxe-attn-$SUF"
-work "$HOSTA" "/* $AMARK */ WAITFOR DELAY '00:00:30';" -t 2 >/dev/null 2>&1 || true
+work "$HOSTA" "/* $AMARK ctl(${CTL}) */ WAITFOR DELAY '00:00:30';" -t 2 >/dev/null 2>&1 || true
 settle; xe G
 at() { q "select $1 from pgvigil.mssql_attentions where instance_id=$iid and statement like '%$AMARK%'"; }
 [ "$(at "count(*)")" = 1 ] || fail "G: $(at "count(*)") attention row(s) with the marker, want 1"
 [ "$(at "(session_id > 50) || '|' || host_name || '|' || login_name || '|' || (interrupt_us >= 0)")" = "true|$HOSTA|sa|true" ] || fail "G: the row: $(at "session_id, host_name, login_name, interrupt_us")"
 [ "$(q "select counter >= 1 from pgvigil.mssql_xe_state where instance_id=$iid and capture='attention'")" = t ] || fail "G: the counter"
+[ "$(at "statement ~ ('ctl.?' || U&'\\FFFD') and statement !~ '[\\x01-\\x08]'")" = t ] || fail "G: the control character in the cancelled statement: $(at "encode(convert_to(substring(statement from 'ctl.{0,6}'), 'UTF8'), 'hex')")"
 echo "G: OK"
 
 echo "--- H. a second read stores nothing twice"
@@ -403,7 +415,9 @@ d = json.load(sys.stdin); rs = [dict(zip(d["columns"], r)) for r in d["rows"]]
 assert rs and all(r["blocked_statement"].startswith("UPDATE dbo.dl_a SET v = 11") and r["wait_ms"] >= 5000 for r in rs), rs' || fail "P: the reports of one head"
 curl -fs "$U/slow?$W&shape=$S_KEY" | py 'import json, sys
 d = json.load(sys.stdin); rs = [dict(zip(d["columns"], r)) for r in d["rows"]]
-assert len(rs) == 500 and all(r["host_name"] == sys.argv[1] or "WAITFOR" in r["statement"] for r in rs), len(rs)' "$HOSTB" || fail "P: the events of one shape"
+assert len(rs) == 500 and all(r["host_name"] == sys.argv[1] and "pgvxe-bulk" in r["statement"] for r in rs), len(rs)
+ds = [float(r["duration_ms"]) for r in rs]
+assert all(a >= b for a, b in zip(ds, ds[1:])), "not slowest first"' "$HOSTB" || fail "P: the events of one shape"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/slow?$W&shape=Robert%27)")" = 400 ] || fail "P: a bad shape key was not refused"
 kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 rm -f "$CFG.serve" "$OUT.serve" "$OUT.ids" "$OUT.hdr"
@@ -411,11 +425,12 @@ echo "P: OK"
 
 echo "--- M. nothing else was touched; the printed drop script drops exactly the four"
 "$BIN" mssql-xe -print -drop -install-id "$ID" > "$DROP"
+[ "$(grep -c 'DROP EVENT SESSION' "$DROP")" = 4 ] && [ "$(grep -c "DROP EVENT SESSION \[pgvigil_${ID}_[a-z]*\] ON SERVER;" "$DROP")" = 4 ] || fail "M: the drop script drops something that is not one of the four"
 sqfile "$DROP" | tee "$OUT"
 [ "$(grep -c '^dropped: pgvigil_'"$ID"'_' "$OUT")" = 4 ] || fail "M: four sessions dropped"
 [ "$(sq "SELECT COUNT(*) FROM sys.server_event_sessions WHERE name LIKE N'pgvigil[_]%'")" = 0 ] || fail "M: a pgvigil session is left"
 docker exec "$CT" bash -c "rm -f /var/opt/mssql/log/pgvigil_${ID}_slow_0_*.xel"
-MADE_SESS=
+MADE_SESS=; OLD_BPT=; OLD_ADV=
 others > "$AFTER"
 # the two sessions pgvigil reads (system_health, AlwaysOn_health) are there after the proof in the same state, started
 # at the same time (within a second). The sandbox is shared: a session of another tool that came, went or restarted
@@ -430,6 +445,11 @@ CHANGED=$(awk -F'|' 'NR == FNR { run[$1] = $2; at[$1] = $3; next }
 if echo "$CHANGED" | grep -q '^CHANGED: '; then fail "M: system_health or AlwaysOn_health changed during the proof"; fi
 xe M
 [ "$(q "select count(*) from pgvigil.mssql_xe_state where instance_id=$iid and capture <> 'ag' and state = 'not installed'")" = 4 ] || fail "M: the read after the drop"
+# with the product's session gone the reader is back on system_health, which holds the proof's deadlock too: the
+# same deadlock from the other session is the same row, not a second one
+xe_all M
+[ "$(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'xml_deadlock_report' AND CAST(event_data AS nvarchar(max)) LIKE N'%$DB.dbo.dl_a%'")" -ge 1 ] || fail "M: system_health does not hold the proof's deadlock (the check below would prove nothing)"
+[ "$(dl "count(*) || '|' || min(source)")" = "1|product" ] || fail "M: the deadlock read again from system_health: $(dl "count(*), string_agg(source, ',')")"
 echo "M: OK (system_health and AlwaysOn_health unchanged; four sessions dropped by the printed script)"
 
 echo "--- O. the loss arithmetic and the engine guard, on the repository"
@@ -445,5 +465,13 @@ if q "select pgvigil.import_mssql_xe($pid, now(), '[]'::jsonb)" >"$OUT" 2>&1; th
 grep -q "is not a SQL Server instance" "$OUT" || { cat "$OUT"; fail "O: the refusal's text"; }
 echo "O: OK"
 
+echo "--- R. the collector's role reads its cursor through its door and nothing else"
+[ "$(q "set role pgvigil_collector; select count(*) from pgvigil.import_mssql_cursor($iid, 'system_health')" | tail -1)" = 1 ] || fail "R: pgvigil_collector cannot read a cursor through import_mssql_cursor"
+if q "set role pgvigil_collector; select count(*) from pgvigil.mssql_cursor" >"$OUT" 2>&1; then fail "R: pgvigil_collector reads the cursor table itself"; fi
+grep -q "permission denied" "$OUT" || { cat "$OUT"; fail "R: the refusal's text"; }
+q "set role pgvigil_collector; select pgvigil.import_mssql_xe($iid, now() + interval '5 minutes', '[{\"kind\":\"cursor\",\"source\":\"r_check\",\"last_seq\":3}]'::jsonb)" >/dev/null || fail "R: pgvigil_collector cannot import"
+[ "$(q "select last_seq from pgvigil.import_mssql_cursor($iid, 'r_check')")" = 3 ] || fail "R: the cursor the collector's role stored"
+echo "R: OK"
+
 echo "N: NOT PROVEN (the Azure SQL Database and Managed Instance forms, SQL Server 2016-2019, Windows paths of an event file, a live ring buffer overrun)"
-echo "proof-mssql-xe: PASS (A-M, O, P)"
+echo "proof-mssql-xe: PASS (A-M, O, P, R)"

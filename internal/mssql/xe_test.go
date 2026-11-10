@@ -125,7 +125,7 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 			}
 		}
 		// the script changes no server setting and drops nothing
-		for _, bad := range []string{"RECONFIGURE;\n", "DROP EVENT SESSION", "EXEC sys.sp_configure", "EXEC sp_configure"} {
+		for _, bad := range []string{"RECONFIGURE", "DROP EVENT SESSION", "sp_configure"} {
 			for _, line := range strings.Split(script, "\n") {
 				if strings.Contains(line, bad) && !strings.Contains(line, "the DBA''s step") && !strings.HasPrefix(strings.TrimSpace(line), "--") && !strings.Contains(line, "pgvigil mssql-xe -print -drop") {
 					t.Errorf("%s: the script runs %q: %s", form, bad, line)
@@ -302,10 +302,23 @@ func TestParseSlow(t *testing.T) {
 	if none["shape"] != nil || none["shape_key"] != nil {
 		t.Errorf("under none: shape %v, key %v", none["shape"], none["shape_key"])
 	}
-	// a driver's wrapper procedure is not the shape
-	wrapped := parseSlow(mustEvent(t, strings.ReplaceAll(strings.ReplaceAll(fixRPC, "usp_MonthEnd]]", "sp_executesql]]"), "exec dbo.usp_MonthEnd @month=11", "exec sp_executesql N'SELECT 1 WHERE 2 = @p', N'@p int', 5")), fullCtx)
-	if s, _ := wrapped["shape"].(string); !strings.HasPrefix(s, "exec sp_executesql ?") {
-		t.Errorf("a wrapped statement's shape: %q", s)
+	// a driver's wrapper procedure is not the shape: the statement it carries is, whatever the parameter's value
+	wrap := func(object, call string) collect.Row {
+		return parseSlow(mustEvent(t, strings.ReplaceAll(strings.ReplaceAll(fixRPC, "usp_MonthEnd]]", object+"]]"), "exec dbo.usp_MonthEnd @month=11", call)), fullCtx)
+	}
+	w1 := wrap("sp_executesql", "exec sp_executesql N'SELECT a FROM t WHERE id = @p AND n = ''x''',N'@p int',@p=5")
+	w2 := wrap("sp_executesql", "exec sp_executesql N'SELECT a FROM t WHERE id = @p AND n = ''yy''',N'@p int',@p=77")
+	w3 := wrap("sp_executesql", "exec sp_executesql N'DELETE FROM u WHERE k = @p',N'@p int',@p=5")
+	if w1["shape"] != "SELECT a FROM t WHERE id = @p AND n = ?" || w1["shape_key"] != w2["shape_key"] || w1["shape_key"] == w3["shape_key"] || w3["shape"] != "DELETE FROM u WHERE k = @p" {
+		t.Errorf("wrapped statements: %q / %q / %q", w1["shape"], w2["shape"], w3["shape"])
+	}
+	// sp_prepexec carries the parameter declaration before the statement
+	if w := wrap("sp_prepexec", "declare @p1 int set @p1=NULL exec sp_prepexec @p1 output,N'@P0 int',N'SELECT b FROM v WHERE id = @P0',5"); w["shape"] != "SELECT b FROM v WHERE id = @P0" {
+		t.Errorf("sp_prepexec's shape: %q", w["shape"])
+	}
+	// a call by handle carries no statement: no shape, the query hash is what names it
+	if w := wrap("sp_execute", "exec sp_execute 7,5"); w["shape"] != nil || w["shape_key"] != nil {
+		t.Errorf("sp_execute's shape: %v", w["shape"])
 	}
 }
 
@@ -401,6 +414,8 @@ func TestSQLShape(t *testing.T) {
 		"select [a b], \"c d\" from [my db].dbo.t1 where id=@p1 -- 42":                 "select [a b], \"c d\" from [my db].dbo.t1 where id=@p1",
 		"/* 1 */ EXEC dbo.p1 @a = 1.5e3, @b = -2":                                      "EXEC dbo.p1 @a = ?, @b = -?",
 		"UPDATE #t5 SET c = 'unterminated":                                             "UPDATE #t5 SET c = ?",
+		"SELECT 1 /* a /* b */ secret */ FROM t":                                       "SELECT ? FROM t",
+		"SELECT $12.50, $x FROM t":                                                     "SELECT ?, $x FROM t",
 		"":                                                                             "",
 	} {
 		if got := sqlShape(in); got != want {
@@ -646,5 +661,76 @@ func TestXEStatementsShredNothingOnTheServer(t *testing.T) {
 	}
 	if _, isBatch := any(xeCollector{}).(BatchCollector); !isBatch {
 		t.Error("mssql_xe is not a BatchCollector")
+	}
+}
+
+// a parallel deadlock: an exchangeEvent beside an object lock, two victims, a process without an input buffer
+const fixParallelDeadlock = `<event name="xml_deadlock_report" package="sqlserver" timestamp="2026-11-01T08:00:00.001Z"><data name="xml_report"><value><deadlock><victim-list><victimProcess id="p1"/><victimProcess id="p2"/></victim-list><process-list><process id="p1" spid="70" ecid="0" loginname="l1" currentdbname="db1"><executionStack><frame procname="db1.dbo.p_big" line="9">SELECT x FROM dbo.big</frame></executionStack><inputbuf></inputbuf></process><process id="p2" spid="70" ecid="3" loginname="l1" currentdbname="db1"><executionStack/><inputbuf>EXEC dbo.p_big</inputbuf></process><process id="p3" spid="81" loginname="l2" currentdbname="db2"><executionStack/></process></process-list><resource-list><exchangeEvent id="Pipe1" WaitType="e_waitPipeGetRow" nodeId="4"><owner-list><owner id="p2"/></owner-list><waiter-list><waiter id="p1"/></waiter-list></exchangeEvent><objectlock lockPartition="0" objid="5" subresource="FULL" dbid="7" objectname="db1.dbo.big" id="lock9" mode="IX" associatedObjectId="5"><owner-list><owner id="p3" mode="IX"/></owner-list><waiter-list><waiter id="p2" mode="S" requestType="wait"/></waiter-list></objectlock></resource-list></deadlock></value></data></event>`
+
+func TestParseDeadlockShapes(t *testing.T) {
+	row := parseDeadlock(mustEvent(t, fixParallelDeadlock), fullCtx)
+	if row["victim_count"] != 2 || row["process_count"] != 3 || row["victim_spid"] != int64(70) || row["database_names"] != "db1, db2" || row["object_names"] != "db1.dbo.big" {
+		t.Fatalf("the row: %#v", row)
+	}
+	// the first victim has no input buffer: its statement is its stack's frame
+	if row["statement"] != "SELECT x FROM dbo.big" {
+		t.Errorf("the victim's statement: %v", row["statement"])
+	}
+	ps := row["processes"].([]map[string]any)
+	if ps[0]["victim"] != true || ps[1]["victim"] != true || ps[2]["victim"] != false || ps[2]["statement"] != nil || ps[0]["proc"] != "db1.dbo.p_big" || ps[1]["waits_on"] != "db1.dbo.big" || ps[1]["waits_mode"] != "S" {
+		t.Errorf("the processes: %#v", ps)
+	}
+	rs := row["resources"].([]map[string]any)
+	if len(rs) != 2 || rs[0]["type"] != "exchangeEvent" || rs[0]["object"] != nil || rs[1]["type"] != "objectlock" || rs[1]["mode"] != "IX" {
+		t.Errorf("the resources: %#v", rs)
+	}
+}
+
+// The same deadlock read from pgvigil's ring buffer and from system_health's file has one key: the actions, the
+// <type> children and the white space differ, the graph does not.
+func TestDeadlockKeyAcrossSessions(t *testing.T) {
+	product := mustEvent(t, fixDeadlock)
+	other := strings.Replace(fixDeadlock, `<action name="event_sequence" package="package0"><value>7</value></action>`, "", 1)
+	other = strings.Replace(other, `<data name="xml_report"><value>`, `<data name="xml_report"><type name="xml" package="package0"></type><value>`, 1)
+	other = strings.ReplaceAll(other, "\n  <process ", "\n\t<process ")
+	if other == fixDeadlock || !strings.Contains(other, "\n\t<process ") {
+		t.Fatal("the second copy is not different")
+	}
+	a := parseDeadlock(product, fullCtx)
+	b := parseDeadlock(mustEvent(t, other), xeContext{source: "system_health", session: "system_health", queryText: "full"})
+	if a["event_key"] == nil || a["event_key"] != b["event_key"] {
+		t.Errorf("keys: %v / %v", a["event_key"], b["event_key"])
+	}
+	later := parseDeadlock(mustEvent(t, strings.Replace(fixDeadlock, "10:51:44.433Z", "10:51:44.434Z", 1)), fullCtx)
+	if later["event_key"] == a["event_key"] {
+		t.Error("another deadlock a millisecond later has the same key")
+	}
+	changed := parseDeadlock(mustEvent(t, strings.Replace(fixDeadlock, `spid="61"`, `spid="99"`, 1)), fullCtx)
+	if changed["event_key"] == a["event_key"] {
+		t.Error("another graph at the same time has the same key")
+	}
+}
+
+// A control character inside a statement's text does not fail the read: not for the one event, not for the ring
+// buffer that holds it.
+func TestXMLCleanKeepsTheRead(t *testing.T) {
+	for _, bad := range []string{"&#x1;", "&#1;", "&#x0;", "\x01", "&#xFFFE;", "\x0b"} {
+		ring := strings.Replace(fixAttention, "WAITFOR DELAY '00:00:09'", "SELECT 'a"+bad+"b' -- held", 1)
+		r, err := parseRing(ring)
+		if err != nil || len(r.Events) != 1 {
+			t.Fatalf("%q: %v, %d events", bad, err, len(r.Events))
+		}
+		row := parseAttention(&r.Events[0], fullCtx)
+		if s, _ := row["statement"].(string); s != "SELECT 'a�b' -- held" {
+			t.Errorf("%q: the statement %q", bad, s)
+		}
+	}
+	// what XML allows stays as it is: a tab, a line feed, an emoji, each raw or as a reference
+	keep := "a&#x9;b&#10;c&#x1F600;d\te"
+	if got := xmlClean(keep); got != keep {
+		t.Errorf("xmlClean changed legal text: %q", got)
+	}
+	if _, err := parseEvent(strings.Replace(fixBatch, "the report", "the &#x2; report", 1)); err != nil {
+		t.Errorf("a file event with a control character: %v", err)
 	}
 }

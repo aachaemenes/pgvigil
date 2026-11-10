@@ -40,6 +40,8 @@
 --
 -- An event is stored once: the key is (instance_id, event_at, event_key), event_key being the collector's hash of the
 -- event's own XML with a counter for identical events of one block, and a second import of the same event does nothing.
+-- A deadlock's key is its time and its graph alone, so the same deadlock read from pgvigil's session and from
+-- system_health (the product's session stopped or dropped later) is one row, under the source that stored it first.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_cursor (
   instance_id    int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -198,8 +200,10 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_ag_events (
   PRIMARY KEY (instance_id, event_at, event_key)
 ) PARTITION BY RANGE (event_at);
 
--- the cursor of one source (no row: never read)
-CREATE OR REPLACE FUNCTION pgvigil.mssql_cursor_get(p_instance_id int, p_source text,
+-- the cursor of one source (no row: never read). Named import_*: the role contract (apply_roles) makes every import_*
+-- function the collector's door (it runs as the owner and pgvigil_collector may call it), so the collector reads its
+-- cursor through it without any right on the table.
+CREATE OR REPLACE FUNCTION pgvigil.import_mssql_cursor(p_instance_id int, p_source text,
   OUT file_name text, OUT file_offset bigint, OUT last_event_at timestamptz, OUT last_seq bigint)
 RETURNS SETOF record LANGUAGE sql STABLE AS $$
   SELECT c.file_name, c.file_offset, c.last_event_at, c.last_seq
@@ -293,7 +297,10 @@ BEGIN
            WHERE x.instance_id = c.instance_id AND x.session_id = c.session_id
              AND x.event_name IN ('sql_statement_completed', 'sp_statement_completed') AND x.query_hash IS NOT NULL
              AND x.event_at <= c.event_at + interval '10 milliseconds'
-             AND x.event_at >= c.event_at - make_interval(secs => (coalesce(c.duration_ms, 0) / 1000.0 + 0.05)::float8)
+             -- the statement STARTED inside the request: the last statement of the session's previous request, which
+             -- ended a few milliseconds before this one began, is not this request's
+             AND x.event_at - make_interval(secs => (coalesce(x.duration_ms, 0) / 1000.0)::float8)
+                 >= c.event_at - make_interval(secs => (coalesce(c.duration_ms, 0) / 1000.0)::float8) - interval '5 milliseconds'
            ORDER BY x.duration_ms DESC NULLS LAST, x.event_at DESC
            LIMIT 1)
    WHERE c.instance_id = p_instance_id AND c.query_hash IS NULL AND c.session_id IS NOT NULL
@@ -421,7 +428,7 @@ UNION ALL
 SELECT h.instance_id, 'warning', 'blocked-process reports naming the same head statement',
        left(coalesce(nullif(btrim(h.statement), ''), '(no input buffer)'), 200), h.last_at,
        h.reports || ' report(s) in the last hour, ' || h.blocked_sessions || ' blocked session(s), the longest wait '
-         || round(h.worst_wait_ms / 1000.0, 1) || ' s; the blocking session ' || coalesce(h.spid::text, '?') || ' was ' || coalesce(h.status, 'of unknown status')
+         || coalesce(round(h.worst_wait_ms / 1000.0, 1)::text, '?') || ' s; the blocking session ' || coalesce(h.spid::text, '?') || ' was ' || coalesce(h.status, 'of unknown status')
   FROM heads h
 UNION ALL
 SELECT st.instance_id, 'info', 'a capture is not installed', string_agg(st.capture, ', ' ORDER BY st.capture), max(st.snapshot_at),
