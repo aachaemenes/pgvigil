@@ -21,8 +21,11 @@ permissions:
 jobs:
   app:
     # the Windows app (app/, its own module): tested and built on a Windows runner, zipped with the plain pgvigil.exe of
-    # the same source and flags, with its own SBOM; the release job lists both in SHA256SUMS under the one signature
+    # the same source and flags, with its own SBOM; the release job lists both in SHA256SUMS under the one signature.
+    # Read-only token: this job only uploads an artifact, so it holds neither the release's write right nor its OIDC identity
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:

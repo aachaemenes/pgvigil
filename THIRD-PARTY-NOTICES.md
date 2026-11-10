@@ -89,10 +89,11 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ## The Windows app's bundle
 
-`pgvigil-app.exe` (the `app/` module, shipped in `pgvigil-app_<tag>_windows_amd64.zip`) links two modules and embeds one Microsoft file; their full licence texts are in the module cache under the paths named.
+`pgvigil-app.exe` (the `app/` module, shipped in `pgvigil-app_<tag>_windows_amd64.zip`) links three modules and embeds one Microsoft file; their full licence texts are in the module cache under the paths named.
 
 - go-webview2 (https://github.com/jchv/go-webview2), in pgvigil-app.exe: MIT License, Copyright (c) 2020 John Chadwick, some portions Copyright (c) 2017 Serge Zaitsev (`go-webview2@v0.0.0-20260205173254-56598839c808/LICENSE`).
-- go-winloader (https://github.com/jchv/go-winloader), in pgvigil-app.exe: ISC License, Copyright (c) 2021, John Chadwick (`go-winloader@v0.0.0-20250406163304-c1995be93bd1/LICENSE`).
+- go-winloader (https://github.com/jchv/go-winloader), in pgvigil-app.exe: ISC License, Copyright (c) 2021, John Chadwick (`go-winloader@v0.0.0-20250406163304-c1995be93bd1/LICENSE.md`).
+- golang.org/x/sys v0.49.0, in pgvigil-app.exe (and in pgvigil itself, listed with every module in docs/notices.md): BSD 3-Clause License, Copyright 2009 The Go Authors (`golang.org/x/sys@v0.49.0/LICENSE`).
 - WebView2Loader.dll from the Microsoft Edge WebView2 SDK, embedded in pgvigil-app.exe through go-webview2: BSD 3-Clause License, Copyright (C) Microsoft Corporation (`go-webview2@.../webviewloader/sdk/LICENSE.txt`).
 
 ## Read, not copied

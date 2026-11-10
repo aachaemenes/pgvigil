@@ -105,6 +105,28 @@ jobs:
         run: scripts/proof-hardening.sh
       - name: SBOM (CycloneDX 1.6 schema, every module present)
         run: scripts/proof-sbom.sh
+  app:
+    # the Windows app module (app/, its own go.mod): gofmt, vet and lint on both targets, its tests, and a GOOS=windows
+    # build; the release's app job builds and tests it on a Windows runner, this job catches a broken module on every push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+          install-only: true
+      - name: the app module's gates on both targets
+        working-directory: app
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go vet ./... && GOOS=windows go vet ./...
+          go test ./...
+          golangci-lint run ./... && GOOS=windows golangci-lint run ./...
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H=windowsgui" -o /tmp/pgvigil-app.exe .
   lint:
     runs-on: ubuntu-latest
     steps:
