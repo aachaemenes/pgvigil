@@ -67,7 +67,7 @@ func (g *Gen) piDemoRows(t time.Time, first bool) []Row {
 	r2 := func(v float64) float64 { return math.Round(v*1000) / 1000 }
 	out := []Row{
 		{"kind": "state", "db_instance": s.Name, "resource_id": "db-DEMO" + strconv.FormatInt(hash64(s.Name)%1e12, 10),
-			"enabled": true, "retention_days": 7, "hours_read": 3},
+			"enabled": true, "retention_days": 7, "hours_read": 1},
 		{"kind": "load", "at": hour, "group": "total", "key": "", "value": r2(total)},
 	}
 	for _, w := range waits {
