@@ -9,6 +9,9 @@
 #   PGVIGIL_BIN        a build with the alerts command and the /api/alerts route (the lead's wiring; default bin/pgvigil).
 #   python3            the SMTP sink and the HTTP listener.
 #
+# Every sender pass after B prints its exit code, summary line and stderr into the record (pass <tag>: ...); a pass that
+# exits other than 0 or 1 or prints no summary line fails the proof. K grades its rows against the pass's own mark.
+#
 # The demo's findings move while the proof runs (some are defined over the last minutes), so every count below is
 # graded against what the pass itself recorded (its alert_log rows, the alert rows it opened), never against a later
 # read of the findings view. [First form, before the review fold: D graded against the view and failed twice in four
@@ -167,6 +170,18 @@ print(sum(1 for p in glob.glob(d + "/*.json") if os.path.getmtime(p) > t
 PY
 }
 stamp() { sleep 0.01; touch "$WORK/stamp.$1"; sleep 0.01; }
+# one pass of the sender with its exit code, summary line and stderr kept in the record (never >/dev/null: run 1 at the
+# wave F re-merge failed K and could not say why). Exit 1 is the dead and redir channels failing by design and is
+# recorded; any other exit, or no summary line, is a crash of the pass and fails the proof with its text.
+pass() {
+  local tag=$1 rc
+  set +e; "$BIN" alerts -config "$WORK/alerts.yaml" >"$WORK/pass.$tag.out" 2>"$WORK/pass.$tag.err"; rc=$?; set -e
+  echo "pass $tag: exit $rc: $(grep -m1 '^alerts: ' "$WORK/pass.$tag.out" || echo '(no summary line)')"
+  if [[ -s "$WORK/pass.$tag.err" ]]; then sed "s/^/pass $tag stderr: /" "$WORK/pass.$tag.err"; fi
+  if ! { (( rc == 0 || rc == 1 )) && grep -q '^alerts: ' "$WORK/pass.$tag.out"; }; then
+    fail "pass $tag: exit $rc: $(tr '\n' ' ' < "$WORK/pass.$tag.err" | cut -c1-600)"
+  fi
+}
 
 # ---- the repository, the demo, the logins ------------------------------------------------------------------------
 cat > "$WORK/none.yaml" <<EOF
@@ -265,12 +280,12 @@ ok "B: $P1 critical alerts to mail (1 message), hook (1 post), drop, drop2 and g
 
 # ---- C: repeat -----------------------------------------------------------------------------------------------------------
 TC=$(mark)
-"$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+pass C1
 [[ $(q "select coalesce(sum(n_repeat), 0) from pgvigil.alert_log where snapshot_at >= '$TC'") == 0 ]] || fail "C: a repeat before the interval"
 [[ $(q "select count(*) from pgvigil.alert_state where first_sent_at < '$TC' and send_count <> 1") == 0 ]] || fail "C: a row B opened was sent again"
 q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '6 minutes' where channel = 'mail' and cleared_at is null" >/dev/null
 stamp C; TC2=$(mark)
-"$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+pass C2
 R2=$(q "select count(*) from pgvigil.alert_state where channel = 'mail' and cleared_at is null and send_count = 2")
 (( R2 >= 1 )) || fail "C: no mail row repeated"
 [[ $(logsum mail n_repeat "$TC2" sent) == "$R2" ]] || fail "C: mail's repeat rows $(logsum mail n_repeat "$TC2" sent), rows at 2 sends $R2"
@@ -281,12 +296,12 @@ ok "C: sent once in two runs; $R2 repeated to mail after the interval, no other 
 # ---- H: the severity hold under the floor ---------------------------------------------------------------------------------
 xid() { q "update pgvigil.databases set xid_age = $1 where instance_id = $PID and datname = '$PDB'" >/dev/null; }
 xrow() { q "select count(*) filter (where cleared_at is null) || '|' || coalesce(max(send_count) filter (where cleared_at is null), 0) || '|' || count(*) from pgvigil.alert_state where channel = 'mail' and setting = 'database xid age' and instance_id = $PID"; }
-xid 1500000000; TH=$(mark); "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+xid 1500000000; TH=$(mark); pass H1
 [[ $(xrow) == "1|1|1" ]] || fail "H: P's critical xid age not opened on mail: $(xrow)"
-xid 500000000; TH2=$(mark); "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+xid 500000000; TH2=$(mark); pass H2
 [[ $(xrow) == "1|1|1" ]] || fail "H: under the floor the row moved: $(xrow)"
 [[ $(q "select count(*) from pgvigil.alert_log where snapshot_at >= '$TH2' and '$(q "select finding_key from pgvigil.alert_state where channel = 'mail' and setting = 'database xid age' and instance_id = $PID")' = any (keys)") == 0 ]] || fail "H: a send for the held finding"
-xid 1600000000; TH3=$(mark); "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+xid 1600000000; TH3=$(mark); pass H3
 [[ $(xrow) == "1|1|1" ]] || fail "H: back over the floor it was sent again: $(xrow)"
 ok "H: critical -> warning -> critical: one alert, held under the floor, no resolve, no resend"
 
@@ -294,11 +309,11 @@ ok "H: critical -> warning -> critical: one alert, held under the floor, no reso
 q "update pgvigil.instance_state set non_default_settings = (select coalesce(jsonb_agg(x), '[]'::jsonb) from jsonb_array_elements(non_default_settings) x where x->>'name' <> 'autovacuum') where instance_id = $PID" >/dev/null
 AKEY=$(q "select finding_key from pgvigil.alert_state where channel = 'mail' and setting = 'autovacuum' and instance_id = $PID and cleared_at is null")
 [[ -n $AKEY ]] || fail "D: no open mail row of P's autovacuum"
-stamp D0; "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+stamp D0; pass D0
 new_eml "$WORK/stamp.D0" | grep -q "^\[RESOLVED\] $PNAME:" && fail "D: resolved with no collection of $PNAME since the finding went missing"
 [[ $(q "select count(*) || '|' || count(missing_since) from pgvigil.alert_state where finding_key = '$AKEY' and cleared_at is null") == "6|6" ]] || fail "D: the held rows: $(q "select count(*) || '|' || count(missing_since) from pgvigil.alert_state where finding_key = '$AKEY' and cleared_at is null")"
 q "select pgvigil.log_collection($PID, 'instance', clock_timestamp(), 1, 'ok', null)" >/dev/null
-stamp D; "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+stamp D; pass D1
 new_eml "$WORK/stamp.D" | grep -q "^\[RESOLVED\] $PNAME: pg_gather autovacuum" || fail "D: no resolved line in the mail"
 [[ $(hook_events "$WORK/stamp.D" "$AKEY" resolved) == 1 ]] || fail "D: the hook's resolved event"
 [[ $(grep -l "\"finding_key\": \"$AKEY\"" "$WORK"/drop/*-resolved-* 2>/dev/null | wc -l) == 1 ]] || fail "D: drop's resolved file"
@@ -306,7 +321,7 @@ new_eml "$WORK/stamp.D" | grep -q "^\[RESOLVED\] $PNAME: pg_gather autovacuum" |
 [[ $(q "select count(*) from pgvigil.alert_log where channel = 'drop2' and outcome = 'cleared' and '$AKEY' = any (keys)") == 1 ]] || fail "D: drop2's cleared row"
 [[ $(q "select string_agg(channel || ':' || (cleared_at is not null) || ':' || (recovery_sent_at is not null) || ':' || (missing_since is not null), ' ' order by channel) from pgvigil.alert_state where finding_key = '$AKEY'") == "bulk:true:true:true drop:true:true:true drop2:true:false:true grace:false:false:true hook:true:true:true mail:true:true:true" ]] || fail "D: the rows of P's autovacuum: $(q "select string_agg(channel || ':' || (cleared_at is not null) || ':' || (recovery_sent_at is not null) || ':' || (missing_since is not null), ' ' order by channel) from pgvigil.alert_state where finding_key = '$AKEY'")"
 q "update pgvigil.alert_state set missing_since = missing_since - interval '11 minutes' where channel = 'grace' and finding_key = '$AKEY'" >/dev/null
-"$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+pass D2
 [[ $(grep -l "\"finding_key\": \"$AKEY\"" "$WORK"/grace/*-resolved-* 2>/dev/null | wc -l) == 1 ]] || fail "D: grace's resolved file after the clear delay"
 [[ $(q "select (cleared_at is not null) || ':' || (recovery_sent_at is not null) from pgvigil.alert_state where channel = 'grace' and finding_key = '$AKEY'") == "true:true" ]] || fail "D: grace's row"
 ok "D: P's autovacuum held while P went unread, then resolved to mail, hook and drop, cleared silently on drop2, held on grace until its clear delay"
@@ -315,11 +330,14 @@ ok "D: P's autovacuum held while P went unread, then resolved to mail, hook and 
 KN=$(q "select count(*) from pgvigil.alert_state where cleared_at is null and instance_name = '$DEACT'")
 (( KN >= 5 )) || fail "K: $DEACT has $KN open rows"
 q "update pgvigil.instances set is_active = false where name = '$DEACT'" >/dev/null
-stamp K; "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+stamp K; TK=$(mark); pass K
 new_eml "$WORK/stamp.K" | grep -q "^\[RESOLVED\] $DEACT:" && fail "K: a recovery mail for the deactivated $DEACT"
 [[ $(hook_instance "$WORK/stamp.K" "$DEACT") == 0 ]] || fail "K: a hook post for $DEACT"
 [[ $(find "$WORK/drop" "$WORK/grace" -newer "$WORK/stamp.K" -name '*-resolved-*' -print0 | xargs -0 -r grep -l "\"instance\": \"$DEACT\"" | wc -l) == 0 ]] || fail "K: a resolved file for $DEACT"
-[[ $(q "select count(*) || '|' || count(recovery_sent_at) from pgvigil.alert_state where instance_name = '$DEACT' and cleared_at > now() - interval '1 minute'") == "$KN|0" ]] || fail "K: $DEACT's rows: $(q "select count(*) || '|' || count(recovery_sent_at) from pgvigil.alert_state where instance_name = '$DEACT' and cleared_at > now() - interval '1 minute'")"
+# cleared by THIS pass (cleared_at at or after its mark), never 'within the last minute'; on a failure the rows' state
+krows() { q "select count(*) filter (where cleared_at >= '$TK') || '|' || count(recovery_sent_at) filter (where cleared_at >= '$TK') from pgvigil.alert_state where instance_name = '$DEACT'"; }
+kstate() { q "select 'open ' || count(*) filter (where cleared_at is null) || ', of them with missing_since ' || count(missing_since) filter (where cleared_at is null) || ', cleared before the mark ' || count(*) filter (where cleared_at < '$TK') || ', rows in alert_findings ' || (select count(*) from pgvigil.alert_findings f where f.instance = '$DEACT') || ', is_active ' || (select is_active from pgvigil.instances where name = '$DEACT') from pgvigil.alert_state where instance_name = '$DEACT'"; }
+[[ $(krows) == "$KN|0" ]] || fail "K: $DEACT's rows cleared by the pass|with recovery: $(krows), want $KN|0; $(kstate)"
 ok "K: $DEACT deactivated: its $KN alert rows cleared without a message"
 
 # ---- F: the API ------------------------------------------------------------------------------------------------------------
