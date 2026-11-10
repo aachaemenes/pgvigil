@@ -47,7 +47,12 @@ function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
 
 export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<Record<Parts, Table | null>>('performance', { instance: ctx.instance, ...window_(ctx) });
-  const meta = rowsOf(d.meta)[0] ?? {}, g = rowsOf(d.grid);
+  const meta = rowsOf(d.meta)[0] ?? {};
+  // the shared steps: those of the range's grid that hold a sample in any part (a collection read every 15 minutes
+  // in an older stretch would otherwise break every line into dots); every chart takes the same steps
+  const seen = new Set<number>();
+  for (const k of ['cpu', 'sessions', 'waits', 'db', 'io'] as Parts[]) for (const r of rowsOf(d[k])) seen.add(new Date(String(r.snapshot_at)).getTime());
+  const g = rowsOf(d.grid).filter(r => seen.has(new Date(String(r.snapshot_at)).getTime()));
   const ms = meta.engine === 'sqlserver';
   const to = (tab: string, extra: Record<string, string> = {}) => href(ctx, { tab, ...extra });
   const sec = el('section', {}, el('h2', {}, `Performance (${rangeLabel(ctx)})`));
