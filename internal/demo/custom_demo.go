@@ -36,8 +36,8 @@ func (g *Gen) customDemoRows(t time.Time, first bool) []Row {
 	if first || t.Minute()%5 == 0 {
 		v := math.Floor(3 * curve(t) * g.Spec.Load * noise(g.Spec.Name+"|idle", t))
 		if g.is("aurora-crm01") {
-			if since := t.Sub(g.end.Add(-2 * time.Hour)); since > 0 && since <= 2*time.Hour+10*time.Minute {
-				v += math.Round(14 * since.Hours() / 2)
+			if since := t.Sub(g.end.Add(-2 * time.Hour)); since > 0 { // the climb holds at its top past the anchor (the live demo keeps crm01 critical)
+				v += math.Round(14 * math.Min(since.Hours(), 2) / 2)
 			}
 		}
 		st := "ok"
