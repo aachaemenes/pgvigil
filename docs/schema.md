@@ -35,7 +35,7 @@ over the whole text, so a change after the cut still shows.
 **Size:** the collector hands the repository one database at a time (its event-trigger rows, then its objects), and a
 last call that marks a database neither read nor in error as gone; PostgreSQL refuses a jsonb array over 256 MB, so
 one payload for the whole instance would fail near 800,000 objects. A database whose objects come to more than about
-160 MB of text (50,000 long definitions) is reported as a collector error and keeps its snapshot.
+160 MB of text (for example 8,000 views of 20,000 characters) is reported as a collector error and keeps its snapshot.
 
 **Versions:** on PostgreSQL 13 and 14 the trigger a partition inherits from its partitioned table is internal and is
 not read; from 15 on it is its own object. So the same schema gives fewer trigger rows on 13 and 14, and after a
@@ -73,7 +73,7 @@ captured inside the database by an event trigger, and only a superuser can creat
 `pgvigil roles` prints the block, commented out, with the monitoring login filled in, and the server's DBA runs it in
 each database that should be covered:
 
-- the guard: the block runs as one transaction, and its first statement stops it in a database with a
+- the guard: the block runs as one transaction, and the `DO` block after its `BEGIN` stops it in a database with a
   `FOR ALL TABLES` publication (or, on PostgreSQL 15 and later, a publication of the schema `public`). The new table
   would join that publication, and every subscriber without the table would stop applying changes with "logical
   replication target relation "public.pgvigil_ddl_log" does not exist". Create the table on every subscriber first
@@ -87,9 +87,12 @@ each database that should be covered:
   becomes a WARNING, so the capture never fails the DDL it records (a DROP of the log table itself still works), and
   its `lock_timeout` of one second bounds the wait for its own table: a DDL statement behind a lock on the log waits
   at most a second, then runs and is not logged.
-  A statement that may carry a password is not kept: `CREATE` and `ALTER` of a `SERVER`, `USER MAPPING` or
-  `SUBSCRIPTION`, and any query text that names `password` or `secret` (a batch too), are stored as
-  `(statement not kept: it may carry a password)`. pg_monitor cannot read a user mapping's options or a
+  A statement that may carry a password is not kept: the rows of `CREATE` and `ALTER` of a `SERVER`, `USER MAPPING`
+  or `SUBSCRIPTION`, and every row whose query text names `password`, `secret` or `pwd`, holds a URL with a password
+  (`postgresql://user:pw@host`) or holds such a `CREATE` or `ALTER` (the other statements of a batch carry the same
+  text), are stored as `(statement not kept: it may carry a password)`. The rule errs wide: `ADD COLUMN
+  password_hash` loses its text too. The match reads the kept 10,000 characters only, so a batch of thousands of
+  statements costs no more per command than a short one. pg_monitor cannot read a user mapping's options or a
   subscription's connection string, and the log must not hand them over;
   Temporary objects and the commands an extension's script runs are not logged: the snapshot leaves both out, and an
   application that creates a temp table per request would otherwise fill the table;

@@ -52,16 +52,22 @@
 #     each once, and the next read starts at or before the newest row (a capped run's cursor is its last row plus the
 #     hour of overlap, so the cursor itself may stand past the newest row).
 #  G. [join fold] one import per database: MDB3 (200 tables) and MDB4, MDB5 (40 tables each) read once, one table
-#     added to each, then a collect under PGVIGIL_SCHEMA_MAX_PAYLOAD=49152 (each mid database under it, the two
-#     together over it, MDB3 over it): MDB4 and MDB5 each have added|table|public.extra at that read; MDB3 has no
+#     added to each, then a collect under PGVIGIL_SCHEMA_MAX_PAYLOAD=49152 (each mid database's objects under it, MDB3's
+#     over it; MDB's event-trigger rows of the last hour, several MB, go in parts under it): MDB4 and MDB5 each have added|table|public.extra at that read; MDB3 has no
 #     change, its row still present and older than MDB4's; a collect without the cap then finds MDB3's table. With
-#     PGVIGIL_BIN_OLD (a build without RunOnce's batch path) the capped collect fails: one payload for the instance.
+#     PGVIGIL_BIN_OLD (a build without RunOnce's batch path) the capped collect fails: one payload for the instance
+#     (F's rows alone pass the cap).
 #  H. [join fold] the trigger's guards: in MDB6, which has a FOR ALL TABLES publication, the printed block fails and
 #     leaves no pgvigil_ddl_log; in MDB, CREATE SERVER and CREATE USER MAPPING with a password option, a CREATE
 #     SUBSCRIPTION (connect = false) with password= in its connection, and a two-statement batch whose text names a
 #     password leave no 'sekret' in MDB's pgvigil_ddl_log or the repository's schema_ddl_log; the CREATE SERVER row and
 #     the batch's CREATE TABLE row carry '(statement not kept: it may carry a password)'; with the log table held
 #     ACCESS EXCLUSIVE by another session, CREATE TABLE lk returns in under 3 s and lk exists.
+#     [review fold, expected before the run] on PostgreSQL 15+ the block fails in MDB6 too with only a publication FOR
+#     TABLES IN SCHEMA public; a batch 'CREATE TABLE a2; CREATE SUBSCRIPTION ... CONNECTION 'postgresql://app:Hunter2xyz@...''
+#     (no word password) and a lone CREATE USER MAPPING with no password option keep no 'Hunter2xyz' and both their
+#     rows (the batch's CREATE TABLE a2, the mapping) not kept; the lock is seen granted in pg_locks before the timer
+#     starts, and lk has no row in MDB's log (it ran unlogged).
 #  The ACLs above carry PostgreSQL 17's MAINTAIN privilege (m): on 16 and older the expected text lacks it.
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
@@ -284,6 +290,12 @@ psql "$ADMIN_DSN dbname=$MDB6" -XAtq -v ON_ERROR_STOP=1 -c "create publication p
 if psql "$ADMIN_DSN dbname=$MDB6" -XAtq -v ON_ERROR_STOP=1 -f "$DDL" >/dev/null 2>&1; then fail "H: the block installed beside a FOR ALL TABLES publication"; fi
 H0=$(psql "$ADMIN_DSN dbname=$MDB6" -XAt -c "select coalesce(to_regclass('public.pgvigil_ddl_log')::text, 'none') || '|' || (select count(*) from pg_event_trigger where evtname like 'pgvigil_ddl_%')")
 echo "MDB6 after the refused install: $H0"; [[ $H0 == "none|0" ]] || fail "H: the guard left '$H0'"
+if [[ $(psql "$ADMIN_DSN dbname=$MDB6" -XAt -c "show server_version_num") -ge 150000 ]]; then
+  psql "$ADMIN_DSN dbname=$MDB6" -XAtq -v ON_ERROR_STOP=1 -c "drop publication pgv_allp" -c "create publication pgv_schp for tables in schema public" >/dev/null 2>&1
+  if psql "$ADMIN_DSN dbname=$MDB6" -XAtq -v ON_ERROR_STOP=1 -f "$DDL" >/dev/null 2>&1; then fail "H: the block installed beside a publication of the schema public"; fi
+  H0B=$(psql "$ADMIN_DSN dbname=$MDB6" -XAt -c "select coalesce(to_regclass('public.pgvigil_ddl_log')::text, 'none')")
+  echo "MDB6 with a schema publication only: $H0B"; [[ $H0B == none ]] || fail "H: the schema-publication guard"
+fi
 m1 "create foreign data wrapper pgv_fdw"
 m1 "create server pgv_srv foreign data wrapper pgv_fdw options (host 'h', password 'sekret1')"
 m1 "create user mapping for $SU server pgv_srv options (user 'u', password 'sekret2')"
@@ -291,7 +303,19 @@ m1 "alter server pgv_srv options (set password 'sekret5')"
 m1 "create subscription pgv_sub_$SUF connection 'host=localhost dbname=nowhere password=sekret3' publication p with (connect = false)"
 psql "$ADMIN_DSN dbname=$MDB" -XAtq -v ON_ERROR_STOP=1 -c "create table pw1 (i int); comment on table pw1 is 'the password is sekret4'" >/dev/null
 psql "$ADMIN_DSN dbname=$MDB" -XAtq -v ON_ERROR_STOP=1 -c "alter subscription pgv_sub_$SUF disable" -c "alter subscription pgv_sub_$SUF set (slot_name = none)" -c "drop subscription pgv_sub_$SUF" >/dev/null
+psql "$ADMIN_DSN dbname=$MDB" -XAtq -v ON_ERROR_STOP=1 -c "create table a2 (i int); create subscription pgv_sub_$SUF connection 'postgresql://app:Hunter2xyz@localhost/nowhere' publication p with (connect = false)" >/dev/null 2>&1
+psql "$ADMIN_DSN dbname=$MDB" -XAtq -v ON_ERROR_STOP=1 -c "alter subscription pgv_sub_$SUF disable" -c "alter subscription pgv_sub_$SUF set (slot_name = none)" -c "drop subscription pgv_sub_$SUF" >/dev/null
+m1 "create role pgv_um_$SUF"
+m1 "create user mapping for pgv_um_$SUF server pgv_srv options (user 'u')"
+m1 "drop user mapping for pgv_um_$SUF server pgv_srv"
+psql "$ADMIN_DSN" -XAtq -c "drop role pgv_um_$SUF" >/dev/null
 collect
+H5=$(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select count(*) filter (where statement ~ 'Hunter2') || '|' || count(*) filter (where object_identity = 'public.a2' and statement = '(statement not kept: it may carry a password)')
+       || '|' || count(*) filter (where command_tag = 'CREATE USER MAPPING' and object_identity like '%pgv_um_%' and statement = '(statement not kept: it may carry a password)')
+       from public.pgvigil_ddl_log")
+H6=$(q "select count(*) from pgvigil.schema_ddl_log where instance_id = $i and statement ~ 'Hunter2'")
+echo "the URL batch and the lone mapping: with Hunter2|a2 not kept|mapping not kept: $H5; the repository's rows with Hunter2: $H6"
+[[ $H5 == "0|1|1" && $H6 == 0 ]] || fail "H: the URL password or the lone mapping"
 H1=$(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select count(*) filter (where statement ~ 'sekret') || '|' || count(*) filter (where statement = '(statement not kept: it may carry a password)')
        || '|' || string_agg(DISTINCT command_tag, ',' ORDER BY command_tag) filter (where statement = '(statement not kept: it may carry a password)')
        from public.pgvigil_ddl_log")
@@ -304,13 +328,18 @@ echo "MDB's log: with sekret|not kept|tags not kept: $H1; the repository's rows 
   || fail "H: the not-kept tags '$H1'"
 psql "$ADMIN_DSN dbname=$MDB" -XAtq -c "begin" -c "lock table public.pgvigil_ddl_log in access exclusive mode" -c "select pg_sleep(6)" -c "commit" >/dev/null 2>&1 &
 HOLD=$!
-sleep 1
+for _ in $(seq 1 50); do
+  [[ $(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select count(*) from pg_locks where relation = 'public.pgvigil_ddl_log'::regclass and mode = 'AccessExclusiveLock' and granted") == 1 ]] && break
+  sleep 0.1
+done
+[[ $(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select count(*) from pg_locks where relation = 'public.pgvigil_ddl_log'::regclass and mode = 'AccessExclusiveLock' and granted") == 1 ]] \
+  || fail "H: the other session never held the lock"
 t0=$(date +%s%N)
 psql "$ADMIN_DSN dbname=$MDB" -XAtq -v ON_ERROR_STOP=1 -c "create table lk (i int)" >/dev/null 2>&1 || fail "H: CREATE TABLE beside the held lock failed"
 ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 wait $HOLD || true
-H4=$(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select to_regclass('public.lk') is not null")
-echo "CREATE TABLE beside the held lock: $ms ms, lk exists: $H4"
-[[ $ms -lt 3000 && $H4 == t ]] || fail "H: the lock wait"
+H4=$(psql "$ADMIN_DSN dbname=$MDB" -XAt -c "select (to_regclass('public.lk') is not null) || '|' || (select count(*) from public.pgvigil_ddl_log where object_identity = 'public.lk')")
+echo "CREATE TABLE beside the held lock: $ms ms, lk exists|its log rows: $H4"
+[[ $ms -lt 3000 && $H4 == "true|0" ]] || fail "H: the lock wait"
 
 echo "PASS: proof-schema (A the baseline: 6 objects, no change; B CREATE TABLE folded, ALTER COLUMN TYPE integer -> bigint, DROP INDEX with its definition, GRANT's ACL before and after, the two findings; C the event trigger installed: each change with its statement, the REVOKE matched by name, earlier changes untouched; D DROP INDEX and ALTER COLUMN with their statements, a database without the trigger: not installed; E a late read changes nothing, a dropped database drops no object; F a burst of 6,000 log rows read in pages, the statement after it found, no temp-table row, each row kept once; F2 the run cap goes on run by run; G one import per database under a payload cap; H the publication guard, no password kept, a one-second lock wait)"

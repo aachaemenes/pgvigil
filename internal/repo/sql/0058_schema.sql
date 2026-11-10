@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_objects (
   is_present     boolean NOT NULL DEFAULT true,
   PRIMARY KEY (instance_id, dbid, kind, identity)
 );
+-- a repository that applied an earlier text of 0058 (before def_hash) gets the column when 0058 runs again
+ALTER TABLE pgvigil.schema_objects ADD COLUMN IF NOT EXISTS def_hash text;
 
 CREATE TABLE IF NOT EXISTS pgvigil.schema_changes (
   instance_id    int NOT NULL,
@@ -111,7 +113,9 @@ CREATE INDEX IF NOT EXISTS schema_ddl_log_db ON pgvigil.schema_ddl_log (instance
 -- schema_name, object_identity, role_name, statement} per event-trigger row; {kind:'ddl_cursor', datname, read_to}
 -- when a read stopped at its cap (the cursor moves to it, so the next read goes on); {kind:'collector_error',
 -- source:'schema:<datname>'} per database that could not be read (its snapshot stays as it was); {kind:'seen', dbid}
--- per database read; {kind:'end'}: the run is complete, so a database neither read nor in error is marked gone.
+-- per database read (a database imported earlier in the run carries this snapshot_at already, so the update below
+-- leaves it out either way; the row says the database was read); {kind:'end'}: the run is complete, so a database
+-- neither read nor in error is marked gone.
 -- A database's first read (or its first after it was not present) is the baseline: its objects are stored, no change
 -- is recorded. A read older than the database's stored one (a one-off collect beside the daemon) changes nothing.
 CREATE OR REPLACE FUNCTION pgvigil.import_schema(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)

@@ -2,7 +2,7 @@
 // login can connect to (schemas, tables and their columns, indexes, constraints, triggers, functions and procedures,
 // views, materialized views, sequences, with their owner and ACL), the changes found between two reads (added,
 // dropped, changed, with the before and after text of the changed attribute), and, where the server's DBA installed the
-// opt-in event trigger, the exact statement beside the change. The database page's Schema section (schemaDbSection)
+// opt-in event trigger, the statement text beside the change. The database page's Schema section (schemaDbSection)
 // is the same for one database. Data from /api/schema; the tab's and the section's calls are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { dbLink } from './dbinfo';
@@ -157,7 +157,7 @@ const aboutText = 'Read hourly on every database the monitoring login can connec
   + 'A database\'s first read is its baseline; each later read is compared with the one before: an object added, dropped, or '
   + 'changed in its definition, owner or ACL, with the text before and after. A column, index, constraint or trigger added '
   + 'or dropped with its table is shown as the table\'s one row. The schemas of extensions and the catalogs are left out. '
-  + 'The exact statement needs the opt-in event trigger (pgvigil roles prints it; a superuser installs it per database): '
+  + 'The statement text needs the opt-in event trigger (pgvigil roles prints it; a superuser installs it per database): '
   + 'where it is installed the client\'s query text (every statement sent together) and its role stand beside the change; '
   + 'elsewhere the change is still found, without them. A text that may carry a password is not kept.';
 

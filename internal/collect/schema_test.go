@@ -94,7 +94,8 @@ func TestSchemaDDLLogSQL(t *testing.T) {
 		"BEGIN;   -- pgvigil_ddl_log", "COMMIT;  -- pgvigil_ddl_log", "DO $guard$", "WHERE puballtables",
 		"pg_publication_namespace", "set_config('pgvigil.publication_ok', 'on', true)", "SET lock_timeout = '1s'",
 		"'CREATE USER MAPPING'", "'ALTER USER MAPPING'", "'CREATE SERVER'", "'ALTER SERVER'", "'CREATE SUBSCRIPTION'",
-		"'ALTER SUBSCRIPTION'", "current_query() ~* '(password|secret)'", "(statement not kept: it may carry a password)",
+		"'ALTER SUBSCRIPTION'", "(statement not kept: it may carry a password)",
+		"OR q ~* '(password|secret|pwd|://[^[:space:]/@]*:[^[:space:]/@]*@|(create|alter)[[:space:]]+(server|user[[:space:]]+mapping|subscription))'",
 	} {
 		if !strings.Contains(SchemaDDLLogSQL, want) {
 			t.Errorf("SchemaDDLLogSQL lacks %q", want)

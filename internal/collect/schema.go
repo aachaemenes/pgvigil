@@ -214,8 +214,11 @@ SELECT 'ddl' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = curre
 // the schema public), which the new table would join, stopping every subscriber that lacks it. The capture never fails
 // the DDL it records (any error inside it becomes a WARNING) and waits at most one second for its own table (its
 // lock_timeout). The statement kept is the client's query text (every statement sent together, cut at 10,000
-// characters), except where it may carry a password: CREATE and ALTER of a SERVER, USER MAPPING or SUBSCRIPTION, and
-// any text that names a password or a secret, are kept as '(statement not kept: it may carry a password)'.
+// characters), except where it may carry a password: the rows of CREATE and ALTER of a SERVER, USER MAPPING or
+// SUBSCRIPTION, and every row whose kept text names password, secret or pwd, holds a URL with a password
+// (scheme://user:pw@) or holds such a CREATE or ALTER (a batch: its other rows carry the same text), are kept as
+// '(statement not kept: it may carry a password)'. The match runs on the kept 10,000 characters only (a batch of
+// thousands of statements is matched once per command, so its length must not multiply the cost).
 // Temporary objects and the commands an extension's script runs are not logged (the snapshot leaves both out, and a
 // temp table per request would fill the table). <login> is the monitoring login's role.
 const SchemaDDLLogSQL = `BEGIN;   -- pgvigil_ddl_log: one transaction (the guard's error stops the whole block)
@@ -253,7 +256,8 @@ DECLARE r record; q text;
 BEGIN
   q := left(current_query(), 10000);
   IF TG_TAG IN ('CREATE SERVER', 'ALTER SERVER', 'CREATE USER MAPPING', 'ALTER USER MAPPING', 'CREATE SUBSCRIPTION',
-                'ALTER SUBSCRIPTION') OR current_query() ~* '(password|secret)' THEN
+                'ALTER SUBSCRIPTION')
+     OR q ~* '(password|secret|pwd|://[^[:space:]/@]*:[^[:space:]/@]*@|(create|alter)[[:space:]]+(server|user[[:space:]]+mapping|subscription))' THEN
     q := '(statement not kept: it may carry a password)';
   END IF;
   IF TG_EVENT = 'ddl_command_end' THEN
@@ -296,7 +300,7 @@ type BatchRunner interface {
 // next parts go on); an error returned by RunBatches fails the run.
 func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, br BatchRunner,
 	conn *pgx.Conn, info platform.Info, instanceID int, start time.Time) Result {
-	n, parts := 0, 0
+	n, parts := 0, 0 // n: the data rows (the last call's seen and end rows are bookkeeping)
 	status, note := "ok", ""
 	err := br.RunBatches(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
 		return r.LogCursor(ctx, instanceID, source)
@@ -305,9 +309,11 @@ func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.I
 		if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
 			return err
 		}
-		n += len(rows)
 		parts++
 		for _, row := range rows {
+			if k := row["kind"]; k != "seen" && k != "end" {
+				n++
+			}
 			if row["kind"] == "collector_error" && status == "ok" {
 				status, note = "partial", fmt.Sprintf("%v: %v", row["source"], row["message"])
 			}
