@@ -64,7 +64,9 @@ func TestPgBouncerRows(t *testing.T) {
 		{"name": "rep", "pool_size": "20", "reserve_pool_size": "5", "paused": "1"},
 	}
 	conf := []map[string]any{{"key": "max_client_conn", "value": "100", "changeable": "yes"}, {"key": "listen_port", "value": "6432", "changeable": "no"}}
-	rows := pgBouncerRows("PgBouncer 1.24.1", pools, stats, dbs, conf)
+	// SHOW USERS as PgBouncer 1.24.1 prints it: web sets pool_size 4; r sets none and repeats the row above
+	users := []map[string]any{{"name": "admin", "pool_size": nil}, {"name": "web", "pool_size": "        4"}, {"name": "r", "pool_size": "        4"}}
+	rows := pgBouncerRows("PgBouncer 1.24.1", pools, stats, dbs, users, conf)
 
 	by := map[string][]Row{}
 	for _, r := range rows {
@@ -79,12 +81,17 @@ func TestPgBouncerRows(t *testing.T) {
 			len(by["pool"]), len(by["database"]), len(by["stats"]), len(by["config"]))
 	}
 	app := by["pool"][0]
-	if app["database"] != "app" || app["cl_waiting"] != int64(3) || app["maxwait_ms"] != float64(6250) || app["pool_size"] != int64(2) {
-		t.Errorf("app pool: %v (want cl_waiting 3, maxwait_ms 6250, pool_size 2 from SHOW DATABASES)", app)
+	if app["database"] != "app" || app["cl_waiting"] != int64(3) || app["maxwait_ms"] != float64(6250) || app["pool_size"] != int64(4) || app["pool_size_from"] != "user" {
+		t.Errorf("app pool: %v (want cl_waiting 3, maxwait_ms 6250, pool_size 4 from the user web's own size)", app)
 	}
 	rep := by["pool"][1]
-	if rep["cl_active"] != int64(1) || rep["maxwait_ms"] != float64(0) || rep["pool_size"] != int64(20) {
-		t.Errorf("rep pool (text columns): %v", rep)
+	if rep["cl_active"] != int64(1) || rep["maxwait_ms"] != float64(0) || rep["pool_size"] != int64(20) || rep["pool_size_from"] != "database" {
+		t.Errorf("rep pool (text columns; user r's repeated 4 is not its own, the database's 20 stands): %v", rep)
+	}
+	for _, r := range pgBouncerRows(nil, pools, nil, dbs, nil, nil) {
+		if r["kind"] == "pool" && r["database"] == "app" && (r["pool_size"] != int64(2) || r["pool_size_from"] != "database") {
+			t.Errorf("no SHOW USERS: want the database's size 2, got %v", r)
+		}
 	}
 	if d := by["database"][1]; d["reserve_pool"] != int64(5) || d["paused"] != true || d["pool_size"] != int64(20) {
 		t.Errorf("rep database (reserve_pool_size, paused 1): %v", d)

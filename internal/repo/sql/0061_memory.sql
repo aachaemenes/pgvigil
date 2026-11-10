@@ -16,7 +16,7 @@
 --                        the pooler's version, SHOW DATABASES and SHOW CONFIG as read (jsonb), the last ok read.
 --   pooler_sample        monthly partitions; per minute a 'pool' row per pool (SHOW POOLS: clients active and waiting,
 --                        servers active, idle, used, tested, logging in, maxwait in ms, the pool mode and the pool's
---                        size from SHOW DATABASES) and a 'stats' row per database (SHOW STATS: PgBouncer's per-second
+--                        size: the user's own from SHOW USERS where set, else SHOW DATABASES'; pool_size_from says which) and a 'stats' row per database (SHOW STATS: PgBouncer's per-second
 --                        averages of transactions and queries, the average wait and query time, the totals).
 --   memory_findings      the findings view's columns. The UNION arm in pgvigil.findings and the purge lines (the three
 --                        partition parents; pooler_state of an instance not read past the window) are the wave's join:
@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.pooler_sample (
   maxwait_ms         double precision,
   pool_mode          text,
   pool_size          int,
+  pool_size_from     text,                 -- 'user' (the [users] section's own pool_size) | 'database'
   xact_rate          bigint,
   query_rate         bigint,
   avg_wait_us        bigint,
@@ -104,6 +105,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.pooler_sample (
   total_query_count  bigint,
   total_wait_us      bigint
 ) PARTITION BY RANGE (snapshot_at);
+-- memory_findings reads the last minutes of every instance by snapshot_at alone: the partitions' (instance_id,
+-- snapshot_at) index does not serve it before PostgreSQL 18's skip scan
+CREATE INDEX IF NOT EXISTS pooler_sample_at_idx ON pgvigil.pooler_sample (snapshot_at);
 
 -- payload: one {kind:'total', status, reason, total_buffers, used_buffers, dirty_buffers, block_size} and the 'rel' rows
 CREATE OR REPLACE FUNCTION pgvigil.import_buffercache(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -205,11 +209,11 @@ BEGIN
   END IF;
   PERFORM pgvigil.ensure_month_partition('pooler_sample', p_snapshot_at);
   INSERT INTO pgvigil.pooler_sample (instance_id, snapshot_at, kind, database, usr, cl_active, cl_waiting, sv_active, sv_idle, sv_used,
-                                     sv_tested, sv_login, maxwait_ms, pool_mode, pool_size, xact_rate, query_rate, avg_wait_us,
+                                     sv_tested, sv_login, maxwait_ms, pool_mode, pool_size, pool_size_from, xact_rate, query_rate, avg_wait_us,
                                      avg_query_us, total_xact_count, total_query_count, total_wait_us)
   SELECT p_instance_id, p_snapshot_at, r->>'kind', r->>'database', r->>'user', (r->>'cl_active')::int, (r->>'cl_waiting')::int,
          (r->>'sv_active')::int, (r->>'sv_idle')::int, (r->>'sv_used')::int, (r->>'sv_tested')::int, (r->>'sv_login')::int,
-         (r->>'maxwait_ms')::float8, r->>'pool_mode', (r->>'pool_size')::int, (r->>'xact_rate')::bigint, (r->>'query_rate')::bigint,
+         (r->>'maxwait_ms')::float8, r->>'pool_mode', (r->>'pool_size')::int, r->>'pool_size_from', (r->>'xact_rate')::bigint, (r->>'query_rate')::bigint,
          (r->>'avg_wait_us')::bigint, (r->>'avg_query_us')::bigint, (r->>'total_xact_count')::bigint,
          (r->>'total_query_count')::bigint, (r->>'total_wait_us')::bigint
     FROM jsonb_array_elements(p_payload) r

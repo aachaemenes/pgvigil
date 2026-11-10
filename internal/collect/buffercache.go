@@ -17,8 +17,9 @@ import (
 //
 // The view lists every buffer of the server; a buffer's relation is named only for the connected database and the
 // shared catalogs (pg_filenode_relation resolves a file node in the current database alone): a relation of another
-// database keeps its database's name and its file node. The buffers are summed per file node first (the view's rows
-// are buffers; the sum is at most a few thousand rows), and the 50 relations holding the most buffers are kept.
+// database keeps its database's name and its file node. The view is read once: the buffers summed per file node (the
+// view's rows are buffers; the sum is at most a few thousand rows), the totals from those sums, and the 50 relations
+// holding the most buffers kept.
 //
 // Rows by kind:
 //
@@ -59,50 +60,64 @@ SELECT n.nspname::text FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extn
 	if !canRead {
 		return notAvailable("the login cannot read pg_buffercache (grant it pg_monitor)"), nil
 	}
-	var total, used, dirty, blockSize int64
-	if err := conn.QueryRow(ctx, fmt.Sprintf(`
-SELECT count(*), count(relfilenode), count(*) FILTER (WHERE isdirty), current_setting('block_size')::bigint
-  FROM %s`, view)).Scan(&total, &used, &dirty, &blockSize); err != nil {
-		return nil, fmt.Errorf("pg_buffercache totals: %w", err)
-	}
-	out := []Row{{"kind": "total", "status": "ok", "reason": nil, "total_buffers": total, "used_buffers": used,
-		"dirty_buffers": dirty, "block_size": blockSize}}
-	// per file node first (every fork of a relation shares its file node), then named where this database can name it
+	// ONE pass over the view (each read of it walks every buffer header; two reads were two full walks): the buffers
+	// grouped by file node (unused buffers in the NULL group), materialized once; the totals are its sums and the 50
+	// largest file nodes its top rows. Every output row carries the totals; with no relation in the cache there is one
+	// row whose relation columns are NULL.
 	rows, err := conn.Query(ctx, fmt.Sprintf(`
-WITH f AS (
+WITH f AS MATERIALIZED (
   SELECT b.reldatabase, b.reltablespace, b.relfilenode, count(*) AS buffers,
          count(*) FILTER (WHERE b.isdirty) AS dirty, avg(b.usagecount)::float8 AS usage_avg,
          count(*) FILTER (WHERE b.usagecount >= 3) AS usage_hot
     FROM %s b
-   WHERE b.relfilenode IS NOT NULL
    GROUP BY 1, 2, 3
-   ORDER BY 4 DESC
-   LIMIT %d
-), r AS (
+), t AS (
+  SELECT sum(buffers)::bigint AS total, coalesce(sum(buffers) FILTER (WHERE relfilenode IS NOT NULL), 0)::bigint AS used,
+         coalesce(sum(dirty), 0)::bigint AS dirty, current_setting('block_size')::bigint AS block_size
+    FROM f
+), top AS (
   SELECT f.*, CASE WHEN f.reldatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
                    THEN pg_filenode_relation(f.reltablespace, f.relfilenode) END AS rel
-    FROM f
+    FROM f WHERE f.relfilenode IS NOT NULL
+   ORDER BY f.buffers DESC
+   LIMIT %d
 )
-SELECT coalesce(d.datname::text, CASE WHEN r.reldatabase = 0 THEN '(shared catalogs)' END), n.nspname::text, c.relname::text,
+SELECT t.total, t.used, t.dirty, t.block_size,
+       coalesce(d.datname::text, CASE WHEN r.reldatabase = 0 THEN '(shared catalogs)' END), n.nspname::text, c.relname::text,
        c.relkind::text, r.relfilenode::bigint, r.buffers, r.dirty, r.usage_avg, r.usage_hot
-  FROM r
+  FROM t
+  LEFT JOIN top r ON true
   LEFT JOIN pg_database d ON d.oid = r.reldatabase
   LEFT JOIN pg_class c ON c.oid = r.rel
   LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
- ORDER BY r.buffers DESC`, view, bufferCacheTop))
+ ORDER BY r.buffers DESC NULLS LAST`, view, bufferCacheTop))
 	if err != nil {
-		return nil, fmt.Errorf("pg_buffercache by relation: %w", err)
+		return nil, fmt.Errorf("pg_buffercache: %w", err)
 	}
 	defer rows.Close()
+	var out []Row
 	for rows.Next() {
+		var total, used, dirty, blockSize *int64
 		var datname, nsp, relname, relkind *string
-		var filenode, buffers, dirtyN, hot int64
-		var usage float64
-		if err := rows.Scan(&datname, &nsp, &relname, &relkind, &filenode, &buffers, &dirtyN, &usage, &hot); err != nil {
+		var filenode, buffers, dirtyN, hot *int64
+		var usage *float64
+		if err := rows.Scan(&total, &used, &dirty, &blockSize, &datname, &nsp, &relname, &relkind, &filenode, &buffers, &dirtyN, &usage, &hot); err != nil {
 			return nil, err
 		}
-		out = append(out, Row{"kind": "rel", "datname": datname, "schemaname": nsp, "relname": relname, "relkind": relkind,
-			"relfilenode": filenode, "buffers": buffers, "dirty": dirtyN, "usage_avg": usage, "usage_hot": hot})
+		if out == nil {
+			out = []Row{{"kind": "total", "status": "ok", "reason": nil, "total_buffers": total, "used_buffers": used,
+				"dirty_buffers": dirty, "block_size": blockSize}}
+		}
+		if buffers != nil {
+			out = append(out, Row{"kind": "rel", "datname": datname, "schemaname": nsp, "relname": relname, "relkind": relkind,
+				"relfilenode": filenode, "buffers": buffers, "dirty": dirtyN, "usage_avg": usage, "usage_hot": hot})
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return nil, fmt.Errorf("pg_buffercache: the read returned no row")
+	}
+	return out, nil
 }
