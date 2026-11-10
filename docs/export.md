@@ -10,8 +10,9 @@ same way as any browser.
 ## The workbook
 
 - **Summary** is the first sheet: the instance (or `fleet`, or the tag), the tab, the time window (its label,
-  its start and its end), the export time, the time zone every time in the file is written in (the browser's,
-  as `UTC-08:00 (America/Los_Angeles)`), and one line per data sheet with its row count and, when the page said
+  its start and its end), the export time, the time zone the times in the file are written in (the browser's, as
+  `America/Los_Angeles (UTC-08:00 at export)`; each time carries its own date's offset, so a window across a
+  daylight-saving change holds two), and one line per data sheet with its row count and, when the page said
   it shows only the newest N of M rows (the Running queries samples), that note.
 - **One sheet per grid** on the tab, named by the heading (h2, h3 or h4) above the grid on the screen (Excel's
   31-character limit applies, a trailing space cut; a name that repeats gets ` (2)`, and so do `Summary` and
@@ -36,7 +37,7 @@ same way as any browser.
   |-------------------------|-------------------------------------|-----------------------|
   | a size (`117.7 MB`)     | the bytes                           | `#,##0" B"`           |
   | a duration (`1h 1m`)    | the duration as an Excel time       | `[h]:mm:ss`           |
-  | a slow-query time (`3.72 s`, `1.08 min`, `250 ms`) | the duration as an Excel time | `[h]:mm:ss.000` |
+  | a millisecond time (`0.3 ms`, `2,500 ms`, `3.72 s`, `1.08 min`) | the milliseconds | `#,##0.###" ms"` |
   | a negative duration     | the seconds                         | `#,##0" s"`           |
   | a share (`12.5 %`, a growth `+3 %`, a rounded `12 %`) | the percent figure (12.5) | `#,##0.00" %"` |
   | a count (`1,000`)       | the number                          | `#,##0` / `#,##0.00`  |
@@ -55,7 +56,8 @@ same way as any browser.
 
 The same rows: one grid gives one `.csv`; a tab with several grids gives a `.csv.zip` with one CSV per grid,
 numbered in page order and named by the sheet names above. RFC 4180, UTF-8 with a byte-order mark (Excel reads
-the encoding from it), CRLF line ends. Numbers are plain values (bytes, seconds to the millisecond for a slow-query time, the percent figure); times are
+the encoding from it), CRLF line ends. Numbers are plain values (bytes, seconds for a `1h 1m` duration, milliseconds for a millisecond time, the percent
+figure); times are
 `yyyy-mm-dd hh:mm:ss` in the browser's time. A text cell that a spreadsheet program would run as a formula
 (it starts with `=`, `+`, `-`, `@`, a tab or a carriage return: query text, an application name or any other
 value read from a monitored server) is written with a leading apostrophe, the OWASP guard against CSV

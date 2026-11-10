@@ -50,7 +50,8 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
   if (n !== undefined) {
     if (norm(fmtBytes(raw)) === text) return { v: n, kind: 'bytes' };
     if (norm(fmtSecs(raw)) === text) return n >= 0 ? { v: n / 86400, kind: 'secs' } : { v: n, kind: 'nsecs' };
-    if (n >= 0 && norm(msTxt(n)) === text) return { v: n / 86400000, kind: 'msecs' };   // the Slow queries tab's milliseconds
+    const dur = durParse(text);   // a millisecond duration as any tab writes it: the raw value rounds to the text shown
+    if (dur && Math.abs(n - dur.ms) <= dur.tol) return { v: n, kind: 'msecs' };
     // a share: '12.5 %', a growth with its sign ('+3 %'), or one the page rounds to a whole percent
     const pct = new Set([fmtNum(n), (n > 0 ? '+' : '') + fmtNum(n), fmtNum(Math.round(n)), (n > 0 ? '+' : '') + fmtNum(Math.round(n))].map(x => norm(x + ' %')));
     if (pct.has(text)) return { v: n, kind: 'pct' };
@@ -59,22 +60,34 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
   return { v: text, kind: 'text' };
 }
 
-// msTxt: the Slow queries tab's rendering of a millisecond duration (slow.ts keeps its own copy)
-const msTxt = (n: number) => n >= 60000 ? fmtNum(n / 60000) + ' min' : n >= 1000 ? fmtNum(n / 1000) + ' s' : fmtNum(n) + ' ms';
+// the locale's grouping and decimal characters, learnt from fmtNum (',' and '.' in en-US, U+202F and ',' in fr-FR)
+const sep = (() => { const t = fmtNum(1234567.5); return { group: t[1], dec: t[t.length - 2] }; })();
+// digitsOf: a number as the locale wrote it, back to JavaScript's form ('1,234.5' or '1 234,5' -> '1234.5'); '' = not one
+function digitsOf(t: string): string {
+  const d = t.split(sep.group).join('').split(sep.dec).join('.').replace(/[\s\u202f\u00a0']/g, '');
+  return /^-?\d+(\.\d+)?$/.test(d) ? d : '';
+}
+
+// durParse: a millisecond duration as any tab's formatter writes it ('0.3 ms', '2,500 ms', '3.72 s', '75 s',
+// '1.08 min'; slow.ts, drill.ts, plan.ts and io.ts each round their own way): the milliseconds the text shows and
+// half the unit of its last digit, so a raw value counts as that duration when it rounds to the text.
+export function durParse(text: string): { ms: number; tol: number } | undefined {
+  const m = /^(.+) (ms|s|min)$/.exec(text);   // the number may carry the locale's grouping space
+  if (!m) return undefined;
+  const d = digitsOf(m[1]);
+  if (!d) return undefined;
+  const unit = m[2] === 'min' ? 60000 : m[2] === 's' ? 1000 : 1;
+  const k = (d.split('.')[1] ?? '').length;
+  return { ms: Number(d) * unit, tol: unit * (Math.pow(10, -k) / 2 + 1e-9) };
+}
 
 // fromText: a numeric column (its header carries the 'num' class) of a grid without a page model, read from the
-// text alone: a count in the locale's grouping, or one of the millisecond renderings; anything else stays text.
-const sep = (() => { const t = fmtNum(1234567.5); return { group: t[1], dec: t[t.length - 2] }; })();
+// text alone: a count in the locale's grouping, or a duration; anything else stays text.
 export function fromText(text: string): Pick<Cell, 'v' | 'kind'> {
-  const m = /^(-?[\d\s\u202f\u00a0.,']+?)(?: (ms|s|min))?$/.exec(text);
-  if (m) {
-    const n = Number(m[1].split(sep.group).join('').split(sep.dec).join('.').replace(/[\s\u202f\u00a0']/g, ''));
-    const unit = m[2];
-    if (isFinite(n) && (unit ? norm(msTxt(unit === 'min' ? n * 60000 : unit === 's' ? n * 1000 : n)) === text : norm(fmtNum(n)) === text)) {
-      if (unit) return { v: (unit === 'min' ? n * 60000 : unit === 's' ? n * 1000 : n) / 86400000, kind: 'msecs' };
-      return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
-    }
-  }
+  const dur = durParse(text);
+  if (dur) return { v: dur.ms, kind: 'msecs' };
+  const d = digitsOf(text);
+  if (d && norm(fmtNum(Number(d))) === text) { const n = Number(d); return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' }; }
   return { v: text, kind: 'text' };
 }
 
@@ -143,7 +156,7 @@ const fontOf: Record<Status, string> = { ok: 'FF237A35', warn: 'FF9A5A00', crit:
 const headFill = 'FFDDE1E8';
 // numFmt ids: 3 is Excel's built-in '#,##0'; 164 on are this file's own
 const fmtId: Record<Kind, number> = { text: 0, int: 3, dec: 164, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
-const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '#,##0.00" %"'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"'], [170, '[h]:mm:ss.000']];
+const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '#,##0.00" %"'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
 
 const esc = (s: string) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -201,7 +214,7 @@ class Styles {
 // the width a cell's content needs, in Excel's character units
 function widthOf(c: Cell): number {
   if (c.kind === 'date') return 19;
-  if (c.kind === 'secs' || c.kind === 'nsecs' || c.kind === 'msecs') return 13;
+  if (c.kind === 'secs' || c.kind === 'nsecs') return 12;
   if (typeof c.v === 'number') return Math.round(Math.abs(c.v)).toLocaleString('en-US').length + (c.kind === 'int' ? 1 : 4);
   return c.text.length;
 }
@@ -250,12 +263,14 @@ export function sheetNames(names: string[]): string[] {
 
 export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date }
 
-// timeZone: the browser's zone every time in the file is written in: 'UTC-08:00 (America/Los_Angeles)'.
+// timeZone: the browser's zone the times in the file are written in, 'America/Los_Angeles (UTC-08:00 at export)':
+// each time carries its own date's offset (a window across a DST change holds two), so the offset is the export's.
 export function timeZone(at: Date): string {
   const off = -at.getTimezoneOffset(), sign = off < 0 ? '-' : '+', a = Math.abs(off);
   let name = '';
   try { name = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''; } catch { /* no Intl: the offset alone */ }
-  return `UTC${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)}` + (name ? ` (${name})` : '') + ', the browser\'s';
+  const utc = `UTC${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)} at export`;
+  return (name ? `${name} (${utc})` : utc) + ", the browser's; each time in its own date's offset";
 }
 
 export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uint8Array }[] {
@@ -307,7 +322,7 @@ export function csv(s: Section): string {
     if (typeof c.v === 'number') {
       if (c.kind === 'date') return c.stamp ?? '';
       if (c.kind === 'secs') return String(Math.round(c.v * 86400 * 1000) / 1000);
-      if (c.kind === 'msecs') return String(Math.round(c.v * 86400000) / 1000);   // seconds, to the millisecond
+      if (c.kind === 'msecs') return String(c.v);   // the milliseconds, as the raw value
       return String(c.v);
     }
     return /^[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
