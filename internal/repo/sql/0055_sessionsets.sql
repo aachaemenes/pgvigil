@@ -11,9 +11,7 @@
 --                           its calls rose in).
 --   session_sets_sample     the calls each entry gained between two reads (a row only when it gained; the first read
 --                           of an entry counts its calls since the statistics reset; after a reset, the calls since).
---   import_session_sets(i, at, payload)   also refreshes the instance's baseline-compare findings (0054,
---                           refresh_compare_findings) when the read is current (at within the last two hours): the
---                           hourly read of every instance is the compare's clock, so a findings read never computes one.
+--   import_session_sets(i, at, payload)
 --   session_sets_window(i, f, t)   per entry: the calls gained in the window (NULL: none) beside its current row.
 --   sessionsets_findings    the findings view's columns: a planner setting SET (not RESET) by a role's sessions whose
 --                           calls rose in the last 24 hours, on an instance whose last read is 'ok'. The UNION arm in
@@ -66,9 +64,6 @@ DECLARE
   v_state jsonb;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_session_sets'), p_instance_id);
-  IF p_snapshot_at > now() - interval '2 hours' THEN
-    PERFORM pgvigil.refresh_compare_findings(p_instance_id, p_snapshot_at);
-  END IF;
   SELECT r INTO v_state FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'state' LIMIT 1;
   IF v_state IS NULL THEN
     RAISE EXCEPTION 'import_session_sets: the payload has no state row';

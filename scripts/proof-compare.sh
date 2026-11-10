@@ -49,8 +49,10 @@
 #  E. statement_baseline(X, T-30d, T-29d) = 'no baseline'; with one ok 'statements' collection_log row in that window,
 #     'ok'.
 #  F. the cache rows aged to 3 hours: compare_findings for X reads 0 rows (a stale refresh fires nothing).
-#  G. the cache of X emptied, import_session_sets(X, now(), a state-only payload): the cache holds 2 rows again; emptied
-#     again, import_session_sets(X, now() - 3 hours, ...): 0 rows (a historical import does not refresh).
+#  G. the cache of X emptied, import_compare(X, now(), the collector's state row): the cache holds 2 rows again and
+#     compare_state reads 2 findings; emptied again, import_compare(X, now() - 3 hours, ...): 0 rows (a historical
+#     import does not refresh). [The lead's decision 2026-11-09: the refresh is the compare collection's own, no longer
+#     the session_sets import's.]
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -158,14 +160,14 @@ echo "--- F. a stale cache"
 q "update pgvigil.compare_findings_cache set computed_at = now() - interval '3 hours' where instance_id = $x" >/dev/null
 [[ $(q "select count(*) from pgvigil.compare_findings where instance_id = $x") == 0 ]] || fail "F: a stale cache fired"
 
-echo "--- G. the hourly session_sets import refreshes the cache"
+echo "--- G. the hourly compare import refreshes the cache"
 q "delete from pgvigil.compare_findings_cache where instance_id = $x" >/dev/null
-q "select pgvigil.import_session_sets($x, now(), '[{\"kind\": \"state\", \"status\": \"ok\", \"track_utility\": \"on\"}]')" >/dev/null
-G1=$(q "select count(*) from pgvigil.compare_findings where instance_id = $x")
+q "select pgvigil.import_compare($x, now(), '[{\"kind\": \"state\", \"status\": \"ok\"}]')" >/dev/null
+G1=$(q "select count(*) || '|' || (select findings from pgvigil.compare_state where instance_id = $x) from pgvigil.compare_findings where instance_id = $x")
 q "delete from pgvigil.compare_findings_cache where instance_id = $x" >/dev/null
-q "select pgvigil.import_session_sets($x, now() - interval '3 hours', '[{\"kind\": \"state\", \"status\": \"ok\", \"track_utility\": \"on\"}]')" >/dev/null
+q "select pgvigil.import_compare($x, now() - interval '3 hours', '[{\"kind\": \"state\", \"status\": \"ok\"}]')" >/dev/null
 G2=$(q "select count(*) from pgvigil.compare_findings_cache where instance_id = $x")
-echo "current import: $G1 finding(s); historical import: $G2 cache row(s)"
-[[ $G1 == 2 && $G2 == 0 ]] || fail "G: the import refresh read $G1 then $G2"
+echo "current import: $G1 (findings|state); historical import: $G2 cache row(s)"
+[[ $G1 == "2|2" && $G2 == 0 ]] || fail "G: the import refresh read $G1 then $G2"
 
-echo "PASS: proof-compare (A ratios, order, partial; B the two regressions fire and the flat, quiet, new and partial do not; C no baseline; D history; E collection_log baseline; F stale cache; G the session_sets import refreshes)"
+echo "PASS: proof-compare (A ratios, order, partial; B the two regressions fire and the flat, quiet, new and partial do not; C no baseline; D history; E collection_log baseline; F stale cache; G the compare import refreshes)"

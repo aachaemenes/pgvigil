@@ -25,9 +25,13 @@
 --   refresh_compare_findings(i, at)    computes the instance's regressions of the 24 hours to at into
 --                                      compare_findings_cache: a statement whose calls, total time or pages per call
 --                                      rose by a factor of 10 or more against either baseline, with at least 1,000 calls
---                                      in the window (a quiet statement never fires). The hourly session_sets import
---                                      (0055) calls it for a current read: a findings read never computes a compare
---                                      (about 50 ms to 1 s an instance, more with pg_stat_statements.max high).
+--                                      in the window (a quiet statement never fires). The hourly compare collection
+--                                      (internal/collect/compare.go, import_compare below) calls it for a current read:
+--                                      a findings read never computes a compare (about 50 ms to 1 s an instance, more
+--                                      with pg_stat_statements.max high).
+--   import_compare(i, at, payload)     the compare collection's import: the refresh for a current read (at within the
+--                                      last two hours; a backfilled read does not), and compare_state (the last refresh,
+--                                      its findings count).
 --   compare_findings                   the findings view's columns, from the cache rows of the last two hours (a stale
 --                                      cache fires nothing). The UNION arm in pgvigil.findings is the wave's join.
 --
@@ -198,6 +202,26 @@ BEGIN
    WHERE c.calls >= 1000 AND c.max_ratio >= 10;
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;
+END $$;
+
+CREATE TABLE IF NOT EXISTS pgvigil.compare_state (
+  instance_id   int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  refreshed_at  timestamptz NOT NULL,
+  findings      int NOT NULL
+);
+
+CREATE OR REPLACE FUNCTION pgvigil.import_compare(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  n int;
+BEGIN
+  IF p_snapshot_at <= now() - interval '2 hours' THEN
+    RETURN;   -- a backfilled read (the demo's history): the findings are about now
+  END IF;
+  n := pgvigil.refresh_compare_findings(p_instance_id, p_snapshot_at);
+  INSERT INTO pgvigil.compare_state AS s (instance_id, refreshed_at, findings) VALUES (p_instance_id, p_snapshot_at, n)
+  ON CONFLICT (instance_id) DO UPDATE SET refreshed_at = EXCLUDED.refreshed_at, findings = EXCLUDED.findings
+  WHERE s.refreshed_at <= EXCLUDED.refreshed_at;
 END $$;
 
 -- compare_findings: the findings view's columns (instance_id, severity, setting, value, is_set, suggested, platforms,

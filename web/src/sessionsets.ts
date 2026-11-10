@@ -62,7 +62,8 @@ export async function sessionSetsSection(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('p', { class: 'meta' }, 'What the instance\'s sessions SET, SET LOCAL or RESET, from pg_stat_statements\' '
       + 'utility rows (read hourly). The server\'s and the roles\' settings are above; these are the ones the application '
       + 'changes for itself, which a plan measured in another session does not see. A planner setting (enable_*, *_cost, '
-      + 'work_mem, jit, the collapse limits, geqo*, plan_cache_mode, default_statistics_target) SET in the window is a '
+      + 'work_mem, jit, the collapse limits, geqo*, plan_cache_mode, default_statistics_target, effective_cache_size, '
+      + 'hash_mem_multiplier, max_parallel_workers_per_gather) SET in the window is a '
       + 'finding. PostgreSQL 17 and later keep $1 in place of the value. A row present is evidence; no row is inconclusive.'));
     if (!state) {
       sec.append(el('p', { class: 'empty' }, 'The session_sets collection has not read this instance yet.'));

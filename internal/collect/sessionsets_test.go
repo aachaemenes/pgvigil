@@ -55,12 +55,13 @@ func TestParseSessionSet(t *testing.T) {
 // TestIsPlannerSetting: the settled list, and search_path is not on it.
 func TestIsPlannerSetting(t *testing.T) {
 	for _, n := range []string{"enable_hashjoin", "enable_seqscan", "random_page_cost", "cpu_tuple_cost", "jit_above_cost", "work_mem",
-		"jit", "join_collapse_limit", "from_collapse_limit", "geqo", "geqo_threshold", "plan_cache_mode", "default_statistics_target"} {
+		"jit", "join_collapse_limit", "from_collapse_limit", "geqo", "geqo_threshold", "plan_cache_mode", "default_statistics_target",
+		"effective_cache_size", "hash_mem_multiplier", "max_parallel_workers_per_gather"} {
 		if !isPlannerSetting(n) {
 			t.Errorf("%s is a planner setting", n)
 		}
 	}
-	for _, n := range []string{"search_path", "timezone", "application_name", "statement_timeout", "maintenance_work_mem", "all", "jit_provider"} {
+	for _, n := range []string{"search_path", "timezone", "application_name", "statement_timeout", "maintenance_work_mem", "all", "jit_provider", "max_parallel_workers"} {
 		if isPlannerSetting(n) {
 			t.Errorf("%s is not a planner setting", n)
 		}

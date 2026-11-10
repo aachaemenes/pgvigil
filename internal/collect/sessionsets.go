@@ -193,12 +193,14 @@ func unquoteIdent(s string) string {
 	return strings.ToLower(s)
 }
 
-// isPlannerSetting: the settings that change a plan (task 58's list, settled): enable_*, *_cost, work_mem, jit,
-// join_collapse_limit, from_collapse_limit, geqo*, plan_cache_mode, default_statistics_target. search_path is not one
-// (it changes which table a name means, not how a plan is made).
+// isPlannerSetting: the settings that change a plan (task 58's list, settled; the lead added the last three on
+// 2026-11-09): enable_*, *_cost, work_mem, jit, join_collapse_limit, from_collapse_limit, geqo*, plan_cache_mode,
+// default_statistics_target, effective_cache_size, hash_mem_multiplier, max_parallel_workers_per_gather. search_path is
+// not one (it changes which table a name means, not how a plan is made).
 func isPlannerSetting(name string) bool {
 	switch name {
-	case "work_mem", "jit", "join_collapse_limit", "from_collapse_limit", "plan_cache_mode", "default_statistics_target":
+	case "work_mem", "jit", "join_collapse_limit", "from_collapse_limit", "plan_cache_mode", "default_statistics_target",
+		"effective_cache_size", "hash_mem_multiplier", "max_parallel_workers_per_gather":
 		return true
 	}
 	return strings.HasPrefix(name, "enable_") || strings.HasSuffix(name, "_cost") || strings.HasPrefix(name, "geqo")
