@@ -164,7 +164,7 @@ export function foldedGrid(f: Fold): HTMLElement {
   sel.addEventListener('change', () => { st.by = sel.value; st.pick = null; save(); draw(); });
   all.addEventListener('click', () => { st.pick = null; save(); draw(); sel.focus(); });
   draw();
-  return el('div', {}, el('div', { class: 'seg' }, blockedBtn, el('label', {}, 'Group by ', sel), said), holder);
+  return el('div', { class: 'folded' }, el('div', { class: 'seg' }, blockedBtn, el('label', {}, 'Group by ', sel), said), holder);
 }
 
 // ---- the snapshot row: Earlier, the time, Later, Latest, and the picker
