@@ -117,6 +117,56 @@ func (g *Gen) indexRows(t time.Time) []Row {
 		out = append(out, ix(24004, "duplicate", t1, t1+"_status_idx1",
 			fmt.Sprintf("CREATE INDEX %s_status_idx1 ON public.%s USING btree (status)", t1, t1), 180<<20, big, int64(3), t1+"_status_idx", st, false))
 	}
+	return append(out, g.inventoryRows(t)...)
+}
+
+// inventoryRows is the inventory part of the hourly indexes read (0056): every index of every application database,
+// three per main table (the primary key and two secondary ones) and one per small table, with the scans growing per
+// hour of the history; the problem indexes of indexRows ride in it too with the same facts, so the inventory's
+// problems column and the index page agree. relid is tableRows' (16500 + di*1000 + ti*7); the index oids are
+// 25000 + di*100 + ti*10 + k, the problem indexes keep 24001-24004.
+func (g *Gen) inventoryRows(t time.Time) []Row {
+	s := g.Spec
+	hours := math.Max(0, t.Sub(g.start).Hours())
+	load := math.Max(0.25, s.Load)
+	t1, t2 := tables[s.App][0], tables[s.App][1]
+	out := []Row{}
+	inv := func(dbid int64, db string, oid, relid int64, table, name, am, cols string, unique, primary, valid, partition bool, size int64, scans, fetch float64) Row {
+		def := fmt.Sprintf("CREATE %sINDEX %s ON public.%s USING %s %s", map[bool]string{true: "UNIQUE ", false: ""}[unique], name, table, am, cols)
+		return Row{"kind": "inv", "dbid": dbid, "datname": db, "indexrelid": oid, "relid": relid, "schema_name": "public",
+			"table_name": table, "index_name": name, "access_method": am, "is_unique": unique, "is_primary": primary,
+			"is_valid": valid, "is_partition": partition, "columns": cols, "index_def": def, "index_bytes": size,
+			"idx_scan": int64(scans), "idx_tup_read": int64(fetch * 1.2), "idx_tup_fetch": int64(fetch)}
+	}
+	for di, db := range s.DBs {
+		dbid := dbOID(di)
+		for ti, td := range g.tableDefs() {
+			relid := 16500 + int64(di)*1000 + int64(ti)*7
+			base := int64(td.base * 1e6 * load)
+			oid := 25000 + int64(di)*100 + int64(ti)*10
+			rate := float64(900-ti*150) * load // scans an hour on the primary key
+			out = append(out, inv(dbid, db, oid, relid, td.name, td.name+"_pkey", "btree", "(id)", true, true, true, false, base/4, rate*hours, rate*hours*1.5))
+			if ti >= 3 {
+				continue // the small tables: the primary key alone
+			}
+			out = append(out,
+				inv(dbid, db, oid+1, relid, td.name, td.name+"_created_at_idx", "btree", "(created_at DESC)", false, false, true, false, base/6, rate*hours/20, rate*hours*4),
+				inv(dbid, db, oid+2, relid, td.name, td.name+"_status_idx", "btree", "(status)", false, false, true, false, base/9, rate*hours/70, rate*hours*30))
+		}
+	}
+	// the problem indexes of indexRows, the same facts (database 0, tables t1 and t2)
+	dbid, db := dbOID(0), s.DBs[0]
+	r1, r2 := int64(16500), int64(16507)
+	out = append(out,
+		inv(dbid, db, 24001, r1, t1, t1+"_account_id_idx", "btree", "(account_id)", false, false, true, false, 410<<20, 1200, 48000),
+		inv(dbid, db, 24002, r1, t1, t1+"_legacy_ref_idx", "btree", "(legacy_ref)", false, false, true, false, 24<<20, 0, 0),
+		inv(dbid, db, 24005, r1, t1, t1+"_account_created_idx", "btree", "(account_id, created_at DESC)", false, false, true, false, 520<<20, 31000*load*hours/168, 2.4e6*load*hours/168))
+	if g.idx%3 == 0 && !t.Before(g.end.Add(-48*time.Hour)) {
+		out = append(out, inv(dbid, db, 24003, r2, t2, t2+"_parent_amount_idx", "btree", "(parent_id, amount)", false, false, false, false, 6<<20, 0, 0))
+	}
+	if g.idx%4 == 1 {
+		out = append(out, inv(dbid, db, 24004, r1, t1, t1+"_status_idx1", "btree", "(status)", false, false, true, false, 180<<20, 3, 90))
+	}
 	return out
 }
 

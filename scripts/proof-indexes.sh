@@ -45,6 +45,16 @@
 #      (So A's findings carry a second 'redundant index|info' row, t5_a's, and B's too: the first fold run missed that.)
 #  C2. the unused finding also needs pgvigil to have seen the index unused for 7 days: x is first imported 8 days
 #      before its second import (one finding); v (the same as x, one import only) -> no finding.
+#  E. the inventory (0056, task 71; expected before its first run): after A, index_inventory holds one present row per
+#     pg_stat_user_indexes row of T1 and of T2 (the counts equal); ix_a reads '1 true false false (a)' (idx_scan, is_valid, is_unique,
+#     is_primary, columns: a concatenated boolean prints true / false), t_pkey '0 true true true (id)', ix_bad is_valid false, q1_a_idx is_partition true; index_usage_daily
+#     holds the first read's day row for every inventory row (T1 + T2; the day captured once) and a second collect adds none; index_inventory_read lists
+#     'redundant' as ix_a's problem and its scans_7d is NULL (no day row that old), then 1 after a day row 8 days back
+#     with idx_scan 0 is seeded for it; drill_index of ix_ab (no problem row) returns one row with problem NULL and
+#     idx_scan 1 ('true 1 1' concatenated); index_inventory_fleet_unused lists ix_unused for this instance when T1's counters are a week old or more
+#     (the sandbox server's start, or the database's stats_reset; nothing when under a week) and never ix_a (scanned), t_pkey
+#     (a primary key), q1_a_idx (a partition's) or ix_bad (invalid); purge(30) runs. After B: the ix_unused and ix_bad inventory rows is_present false, T2's inventory rows
+#     is_present false, the T1 day-row count for today unchanged.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -123,6 +133,50 @@ echo "findings: $(fnd)"
 [[ $(fnd) == "duplicate index|warning|T1,invalid index|warning|T1,invalid index|warning|T2,redundant index|info|T1,redundant index|info|T1" ]] || fail "findings A"
 first_red=$(q "select first_seen from pgvigil.index_state where instance_id=$iid and datname='$T1' and problem='redundant'")
 
+echo "--- E. the inventory (0056)"
+inv_t1=$(q "select count(*) from pgvigil.index_inventory where instance_id=$iid and datname='$T1' and is_present")
+inv_t2=$(q "select count(*) from pgvigil.index_inventory where instance_id=$iid and datname='$T2' and is_present")
+[[ $inv_t1 == $(t1 "select count(*) from pg_stat_user_indexes") && $inv_t1 -gt 10 ]] || fail "inventory count T1: $inv_t1 vs $(t1 "select count(*) from pg_stat_user_indexes")"
+[[ $inv_t2 == $(t2 "select count(*) from pg_stat_user_indexes") && $inv_t2 -gt 0 ]] || fail "inventory count T2: $inv_t2"
+inv() { q "select $1 from pgvigil.index_inventory where instance_id=$iid and datname='$T1' and index_name='$2'"; }
+[[ $(inv "idx_scan || ' ' || is_valid || ' ' || is_unique || ' ' || is_primary || ' ' || columns" ix_a) == "1 true false false (a)" ]] || fail "ix_a inventory: $(inv "idx_scan || ' ' || is_valid || ' ' || is_unique || ' ' || is_primary || ' ' || columns" ix_a)"
+[[ $(inv "idx_scan || ' ' || is_valid || ' ' || is_unique || ' ' || is_primary || ' ' || columns" t_pkey) == "0 true true true (id)" ]] || fail "t_pkey inventory: $(inv "idx_scan || ' ' || is_valid || ' ' || is_unique || ' ' || is_primary || ' ' || columns" t_pkey)"
+[[ $(inv is_valid ix_bad) == f ]] || fail "ix_bad should read invalid in the inventory"
+[[ $(inv is_partition q1_a_idx) == t ]] || fail "q1_a_idx should read as a partition's index"
+[[ $(inv relid ix_a) == $(t1 "select relid from pg_stat_user_indexes where indexrelname = 'ix_a'") ]] || fail "ix_a relid: $(inv relid ix_a) vs the target's $(t1 "select relid from pg_stat_user_indexes where indexrelname = 'ix_a'")"
+# the day the first collect wrote (captured once: a run crossing 00:00 UTC must not move the day under the checks)
+DAY=$(q "select max(snapshot_at) from pgvigil.index_usage_daily where instance_id=$iid")
+day_rows() { q "select count(*) from pgvigil.index_usage_daily d join pgvigil.index_inventory v using (instance_id, dbid, indexrelid) where d.instance_id=$iid and v.datname in ('$T1','$T2') and d.snapshot_at = '$DAY'"; }
+[[ $(day_rows) == $((inv_t1 + inv_t2)) ]] || fail "day rows: $(day_rows), want $((inv_t1 + inv_t2))"
+"$BIN" collect -config "$CFG" -once indexes || fail "collect indexes (run 1b)"
+[[ $(day_rows) == $((inv_t1 + inv_t2)) ]] || fail "a second read of the day added day rows: $(day_rows)"
+rd() { q "select $1 from pgvigil.index_inventory_read($iid) where datname='$T1' and index_name='$2'"; }
+[[ $(rd problems ix_a) == "redundant" ]] || fail "ix_a problems: $(rd problems ix_a)"
+[[ $(rd "scans_7d is null" ix_a) == t ]] || fail "scans_7d should be unknown without a day row 7 days old"
+q "select pgvigil.ensure_month_partition('index_usage_daily', now() - interval '8 days')" >/dev/null
+q "insert into pgvigil.index_usage_daily (instance_id, snapshot_at, dbid, indexrelid, idx_scan, idx_tup_read, idx_tup_fetch, index_bytes)
+   select instance_id, date_trunc('day', (now() - interval '8 days') at time zone 'utc') at time zone 'utc', dbid, indexrelid, 0, 0, 0, index_bytes
+     from pgvigil.index_inventory where instance_id=$iid and datname='$T1' and index_name='ix_a'" >/dev/null
+[[ $(rd scans_7d ix_a) == 1 ]] || fail "scans_7d after a seeded day row: $(rd scans_7d ix_a)"
+[[ $(rd "scans_30d is null" ix_a) == t ]] || fail "scans_30d should still be unknown"
+ab_db=$(inv dbid ix_ab); ab_id=$(inv indexrelid ix_ab)
+[[ $(q "select (problem is null) || ' ' || idx_scan || ' ' || count(*) over () from pgvigil.drill_index($iid, $ab_db, $ab_id)") == "true 1 1" ]] || fail "drill_index of ix_ab from the inventory: $(q "select problem, idx_scan from pgvigil.drill_index($iid, $ab_db, $ab_id)")"
+a_id=$(inv indexrelid ix_a)
+[[ $(q "select problem || ' ' || idx_scan from pgvigil.drill_index($iid, $ab_db, $a_id)") == "redundant 1" ]] || fail "drill_index of ix_a still its problem row"
+# the fleet's unread list: T1's counters count from the server's start (or the database's stats_reset): a week or more old on a
+# long-running sandbox (ix_unused listed; ix_a scanned, t_pkey a primary key and q1_a_idx a partition's never are), under a week on a
+# fresh one (nothing of this instance)
+since_old=$(q "select stats_since <= now() - interval '7 days' from pgvigil.index_databases where instance_id=$iid and datname='$T1'")
+fu() { q "select count(*) from pgvigil.index_inventory_fleet_unused(1000) where instance_id=$iid and datname='$T1' and index_name in ($1)"; }
+if [[ $since_old == t ]]; then
+  [[ $(fu "'ix_unused'") == 1 ]] || fail "fleet unused should list ix_unused (counters since $(q "select stats_since from pgvigil.index_databases where instance_id=$iid and datname='$T1'"))"
+else
+  [[ $(fu "'ix_unused'") == 0 ]] || fail "fleet unused lists ix_unused though the counters are under a week old"
+fi
+[[ $(fu "'ix_a','t_pkey','q1_a_idx','ix_bad'") == 0 ]] || fail "fleet unused lists a scanned, primary, partition or invalid index: $(q "select string_agg(index_name, ',') from pgvigil.index_inventory_fleet_unused(1000) where instance_id=$iid and index_name in ('ix_a','t_pkey','q1_a_idx','ix_bad')")"
+[[ $(q "select pgvigil.purge(30) >= 0") == t ]] || fail "purge"
+echo "inventory: T1 $inv_t1 indexes, T2 $inv_t2; day rows $(day_rows); ix_a scans_7d $(rd scans_7d ix_a) after the seeded day row"
+
 echo "--- B. two indexes and a database dropped"
 t1 "drop index ix_unused; drop index ix_bad"
 psql "$ADMIN_DSN" -XAtq -c "drop database $T2 with (force)" >/dev/null
@@ -135,6 +189,9 @@ sleep 1
 [[ $(q "select count(*) from pgvigil.index_state where instance_id=$iid and datname='$T1' and problem='duplicate' and is_present") == 1 ]] || fail "duplicate gone"
 echo "findings: $(fnd)"
 [[ $(fnd) == "duplicate index|warning|T1,redundant index|info|T1,redundant index|info|T1" ]] || fail "findings B"
+[[ $(q "select string_agg(index_name || '=' || is_present, ',' order by index_name) from pgvigil.index_inventory where instance_id=$iid and datname='$T1' and index_name in ('ix_unused','ix_bad','ix_a')") == "ix_a=true,ix_bad=false,ix_unused=false" ]] || fail "inventory after the drops: $(q "select string_agg(index_name || '=' || is_present, ',' order by index_name) from pgvigil.index_inventory where instance_id=$iid and datname='$T1' and index_name in ('ix_unused','ix_bad','ix_a')")"
+[[ $(q "select count(*) from pgvigil.index_inventory where instance_id=$iid and datname='$T2' and is_present") == 0 ]] || fail "T2 inventory rows still present"
+[[ $(day_rows) == $((inv_t1 + inv_t2)) ]] || fail "day rows changed on the second day read: $(day_rows)"
 
 echo "--- C. the unused rule on seeded imports"
 seed() { # name, stats_since age, replica, unused bytes, [an earlier first import this long ago]

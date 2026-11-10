@@ -222,7 +222,8 @@ export async function indexPage(ctx: Ctx): Promise<HTMLElement> {
   if (!db || !idx) return missing('a database and an index (db=, idx=)');
   const d = await get<Parts<'index'>>('drill/index', { instance: ctx.instance, db, idx });
   const rows = rowsOf(d.index), x = rows[0];
-  if (!x) return el('section', {}, await crumbs(ctx), el('p', { class: 'empty' }, 'The indexes collection holds no problem for this index (it keeps unused, redundant, duplicate and invalid indexes only).'));
+  if (!x) return el('section', {}, await crumbs(ctx), el('p', { class: 'empty' }, 'The indexes collection holds no row for this index: the inventory is read hourly on every database the monitoring login can connect to.'));
+  const problems = rows.filter(r => r.problem != null);
   const name = `${String(x.schema_name ?? '')}.${String(x.index_name ?? idx)}`;
   const table = `${String(x.schema_name ?? '')}.${String(x.table_name ?? '')}`;
   const nav = x.relid != null ? await crumbs(ctx, { dbid: db, name: x.datname }, { relid: x.relid, name: table }, name)
@@ -230,15 +231,15 @@ export async function indexPage(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, nav, el('h2', {}, `Index ${name}` + (x.is_present ? '' : ' (no longer found)')));
   sec.append(el('div', { class: 'tiles' },
     tile('size', fmtBytes(x.index_bytes) || '-'), tile('table size', fmtBytes(x.table_bytes) || '-'),
-    tile('index scans', fmtNum(x.idx_scan)), tile('problems', rows.map(r => String(r.problem)).join(', '), rows.some(r => r.severity === 'warning') ? 'warn' : '')));
+    tile('index scans', fmtNum(x.idx_scan)), tile('problems', problems.length ? problems.map(r => String(r.problem)).join(', ') : 'none', problems.some(r => r.severity === 'warning') ? 'warn' : '')));
   sec.append(props([
     ['access method', String(x.access_method ?? '')],
     ['scans counted since', x.stats_since ? fmtTime(x.stats_since) : 'unknown'],
     ['this server', x.is_replica ? 'a replica: it counts only its own reads' : 'the primary: it counts only its own reads, not the replicas\''],
-    ['first seen', fmtTime(x.first_seen)], ['read', fmtTime(x.snapshot_at)],
+    ['first seen', fmtTime(x.first_seen)], [x.problem == null ? 'last change (the inventory keeps a quiet index\'s row as it is)' : 'read', fmtTime(x.snapshot_at)],
   ]));
   sec.append(el('h3', {}, 'Definition'), pre(x.index_def));
-  for (const r of rows) {
+  for (const r of problems) {
     sec.append(el('h3', {}, `${String(r.problem)} index`),
       r.finding ? el('p', {}, sevBadge(r.severity), ' ', String(r.finding), r.suggested ? ` Suggested: ${String(r.suggested)}.` : '')
         : el('p', { class: 'meta' }, r.problem === 'unused' ? 'Not a finding yet: an unused index counts once it is 10 MB or more, its counters have run 7 days and the server is not a replica.' : ''));
