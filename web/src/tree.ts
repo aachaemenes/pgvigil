@@ -114,12 +114,27 @@ export function updateTree(f: Fleet, ctx: Ctx) {
 
 // which instance nodes and folders are open: for the browser session only, so a new session starts closed
 const opened = new Set<string>((() => { try { return JSON.parse(sessionStorage.getItem('pgvigil.treeOpen') ?? '[]') as string[]; } catch { return []; } })());
-function toggle(key: string) {
+function flip(key: string) {
   if (opened.has(key)) opened.delete(key); else opened.add(key);
   // closing and opening a folder retries a read that failed (an error is never kept past the user's own retry)
   if (loads.get(key)?.err) loads.delete(key);
   try { sessionStorage.setItem('pgvigil.treeOpen', JSON.stringify([...opened])); } catch { /* private window */ }
-  draw();
+}
+function toggle(key: string) { flip(key); draw(); }
+
+// nameOpens: a click on a node's NAME opens the node too, as a click on its caret does (the caret stays, for
+// opening a node without leaving the page and for the keyboard). A closed node opens and its link is followed; the
+// node whose page is already shown, or a name that is no link, closes again on the next click. A click with a
+// modifier key or another button (a new tab) is the browser's alone. The draw waits for the link's own navigation.
+function nameOpens<T extends HTMLElement>(name: T, isOpen: boolean, on: boolean, change: () => void): T {
+  name.addEventListener('click', ev => {
+    const e = ev as MouseEvent;
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    if (isOpen && !on) return;
+    change();
+    setTimeout(draw, 0);
+  });
+  return name;
 }
 
 // the children a folder loads on its first open: one API read, kept 30 minutes (the databases, tables and jobs
@@ -168,8 +183,10 @@ const leaf = (text: string, to: string, on: boolean, title = '', lvl?: Level) =>
 
 // folder: a caret, a name (a link when it opens a page) and, when open, its children
 function folder(key: string, name: string, depth: number, kids: () => HTMLElement[], to?: string, on = false): HTMLElement {
+  const isOpen = opened.has(key);
   const head = el('div', { class: 'tree-node', style: rowStyle + ';' + nodeStyle(depth) }, caretFor(key, name),
-    to ? el('a', { class: 'inst' + (on ? ' on' : ''), href: to, style: 'flex:1' }, name) : el('span', { class: 'folder-name', style: 'padding:.2rem .4rem' }, name));
+    to ? nameOpens(el('a', { class: 'inst' + (on ? ' on' : ''), href: to, style: 'flex:1' }, name), isOpen, on, () => flip(key))
+       : nameOpens(el('span', { class: 'folder-name', style: 'padding:.2rem .4rem;cursor:pointer;flex:1' }, name), isOpen, true, () => flip(key)));
   const box = el('div', {}, head);
   if (opened.has(key)) box.append(...kids());
   return box;
@@ -297,15 +314,16 @@ function draw() {
     if (filter && shown.length === 0) return null;
     const shut = collapsed.has(fo.path) && !filter;
     const caret = el('button', { type: 'button', class: 'caret', 'data-key': 'f:' + fo.path, 'aria-expanded': String(!shut), 'aria-label': `${shut ? 'expand' : 'collapse'} ${fo.label}` }, shut ? '▸' : '▾');
-    caret.addEventListener('click', () => {
+    const flipFolder = () => {
       if (collapsed.has(fo.path)) collapsed.delete(fo.path); else collapsed.add(fo.path);
       lsSet('pgvigil.collapsed', JSON.stringify([...collapsed]));
-      draw();
-    });
+    };
+    caret.addEventListener('click', () => { flipFolder(); draw(); });
     const text = `${fo.label} (${fo.rows.length})`;
+    const tagOn = !ctx.instance && ctx.tag === fo.tag;
     const label = fo.tag
-      ? el('a', { class: 'folder-name' + (!ctx.instance && ctx.tag === fo.tag ? ' on' : ''), href: href(ctx, { tab: rootTab, instance: undefined, tag: fo.tag }) }, text)
-      : el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), title: depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '' }, text);
+      ? nameOpens(el('a', { class: 'folder-name' + (tagOn ? ' on' : ''), href: href(ctx, { tab: rootTab, instance: undefined, tag: fo.tag }) }, text), !shut, tagOn, flipFolder)
+      : nameOpens(el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), style: 'cursor:pointer', title: depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '' }, text), !shut, true, flipFolder);
     const box = el('div', { class: 'folder', style: depth ? 'margin-left:.8rem' : '' }, el('div', { class: 'folder-head' }, caret, dot(rollup(f, fo.rows)), label));
     if (!shut) {
       const ul = el('div', { class: 'folder-items' });
@@ -317,8 +335,8 @@ function draw() {
           const tab = ctx.instance ? (drillHome[ctx.tab] ?? ctx.tab) : 'summary';   // a drill page's link to another instance lands on its home tab
           const key = `i${id}`;
           ul.append(el('div', { class: 'tree-inst', style: rowStyle }, caretFor(key, String(r.name)),
-            el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), style: 'flex:1;min-width:0', href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
-              dot(worst(f, r)), String(r.name))));
+            nameOpens(el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), style: 'flex:1;min-width:0', href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
+              dot(worst(f, r)), String(r.name)), opened.has(key), id === ctx.instance && ctx.tab === tab, () => flip(key))));
           if (opened.has(key)) ul.append(...instanceFolders(ctx, id, 1));
         }
       }
