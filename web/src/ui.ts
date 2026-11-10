@@ -58,11 +58,19 @@ export interface Col {
   cls?: (v: unknown, row: Record<string, unknown>) => string;   // an extra cell class (a status colour)
 }
 
+// The page model of a rendered grid, kept beside its table for the export (export.ts): the columns and the
+// rows in the order the screen shows them now, their raw values unformatted, so a number exports as a number.
+export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[] }
+const models = new WeakMap<HTMLTableElement, GridModel>();
+export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
+
 // grid renders rows as a sortable table; clicking a header sorts by it.
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
   if (rows.length === 0) return el('p', { class: 'empty' }, empty);
   let sortKey = '', asc = true;
+  let shown = rows;
   const table = el('table', { class: 'grid' });
+  models.set(table, { cols, rows: () => shown });
   const thead = el('thead'), tbody = el('tbody');
   const head = el('tr');
   for (const c of cols) {
@@ -86,6 +94,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
         return asc ? r : -r;
       });
     }
+    shown = data;
     tbody.replaceChildren(...data.map(r => {
       const tr = el('tr');
       for (const c of cols) {
