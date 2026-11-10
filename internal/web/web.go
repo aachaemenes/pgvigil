@@ -87,6 +87,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	rp["application_name"] = "pgvigil-serve"
 	rp["default_transaction_read_only"] = "on"
 	rp["statement_timeout"] = "15000"
+	rp["jit"] = "off" // the findings view (sixteen UNION arms of CASE-heavy rules) crosses jit_above_cost: LLVM compiled 1,289 functions per read, 147 s against 3 s without (2026-11-09)
 	rp["lock_timeout"] = "2000"
 	rp["search_path"] = "pgvigil, pg_catalog"
 	if cfg.MaxConns > 8 {
