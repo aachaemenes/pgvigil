@@ -14,12 +14,16 @@ superuser) on the collector's connection, which is read only (`default_transacti
 statement timeout and a 2 s lock timeout. Each check runs inside its own `BEGIN TRANSACTION READ ONLY` that is always
 rolled back:
 
-- a statement that writes (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, a function that writes, `nextval`) fails with
-  "cannot execute ... in a read-only transaction"; the failure is the check's error, shown on the tab and raised as a
-  finding, and the statement is never retried another way;
+- a write to a table (`INSERT`, `UPDATE`, `DELETE`, a function that writes to a table), DDL, `nextval` and whatever
+  else PostgreSQL refuses in a read-only transaction fails with "cannot execute ... in a read-only transaction"; the
+  failure is the check's error, shown on the tab and raised as a finding, and the statement is never retried another
+  way;
 - a `SET` or `set_config()` inside the check is undone by the rollback, so it cannot change the next check or the
   collector's session;
 - one statement only: the server's extended protocol refuses `SELECT 1; DELETE ...`;
+- a function whose effect lies outside the transaction is not stopped by READ ONLY: `pg_advisory_lock` keeps its
+  lock, `pg_cancel_backend` cancels a session the login may signal; such an effect lasts at most until the end of the
+  run, when the collection's connection is closed. The checks are the DBA's own SQL: review them as such;
 - the check sees what the monitoring login sees: the statistics views in full (`pg_monitor`), the catalogs, and the
   tables the login has been granted. A check that needs more is the server DBA's grant to that login, made by hand.
 
@@ -60,10 +64,14 @@ custom:
   marked gone at that instance's next run (the tab lists it under "Taken off this instance"); to retire every check,
   leave `custom: []` in the file, so the runs go on long enough to mark them gone. While a `custom:` key is present the
   collection visits every instance once a minute, even one no check names (that is how a check taken off it is
-  marked gone); a check runs only when its own cadence is due.
+  marked gone); a check runs only when its own cadence is due, and never more often than the collection itself
+  (`schedules: {custom: 5m}` makes a 1m check a 5m check). A check that is no longer listed anywhere (the collection
+  switched off, or disabled on the instance) leaves the repository with the purge's retention.
 - **The findings.** `custom_findings`: a check whose latest run is `warning` or `critical` (that severity), a check
-  whose latest run failed (warning, with the error), and a check that has not run in two of its cadences (warning:
-  the connection fails, or the collector is stopped).
+  whose latest run failed (warning, with the error), and a check that has not run in two of its cadences while the
+  collection still visits the instance (warning: the collection runs less often than the check, or a run of many slow
+  checks takes longer than the cadence). A collection that stops visiting (switched off, disabled, failing to connect)
+  is the daily checks' "collection stale" or "collection failing", not a finding of each check.
 
 `pgvigil collect -once custom` runs every check that applies, due or not.
 

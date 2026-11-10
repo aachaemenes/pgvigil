@@ -74,9 +74,10 @@ export async function customView(ctx: Ctx): Promise<HTMLElement> {
     tile('not run in 2 cadences', fmtNum(late), late ? 'warn' : 'ok')));
   sec.append(el('p', { class: 'meta' },
     'Each check is the DBA\'s own SQL from the configuration, run by the collector as the instance\'s monitoring login in a read-only '
-    + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a statement that writes fails and is shown as the check\'s error. '
+    + 'transaction that is rolled back, under the collector\'s statement and lock timeouts: a write to a table (or anything else PostgreSQL refuses in a read-only transaction) fails and is shown as the check\'s error. '
     + 'A value check judges its value column (or the column named value, else the first) of the first row; a row-count check judges the rows returned. '
-    + 'Critical is tested before warning; no value (no row, or NULL) judges nothing. At most 100 rows of a run are kept, and only under query_text full.'));
+    + 'Critical is tested before warning; no value (no row, or NULL) judges nothing. At most 100 rows of a run are kept, and only under query_text full. '
+    + 'Not run in 2 cadences: the collection still visits the instance but the check\'s latest run is more than two cadences behind it.'));
   sec.append(el('h3', {}, 'Checks'), grid(checks, checkCols));
 
   const span = Date.parse(w.to) - Date.parse(w.from);

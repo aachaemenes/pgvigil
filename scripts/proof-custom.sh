@@ -25,8 +25,11 @@
 #  D. the chart's series (custom_series over the last hour, 60 s steps, what /api/custom serves): value_n's points sum to
 #     3 runs and the largest is 6 (compare >); the raw runs of value_n in order: 0,3,6. The report (custom_report, the
 #     root's /api/custom): 5 rows, the first critical; tag_dev on b only.
-#  E. not run in two cadences: value_n's runs moved 3 minutes back (its cadence is 1m): custom_status overdue true for
-#     value_n only; custom_findings of a holds 'custom check value_n' '(not run)'.
+#  E. not run in two cadences: value_n's runs moved 3 minutes back (its cadence is 1m) while its last listing stays now
+#     (the collection still visits): custom_status overdue true for value_n only; custom_findings of a holds 'custom check
+#     value_n' '(not run)'. [review fold, expected before the rerun] E2: a collection that stops visiting (switched off,
+#     disabled on the instance, failing to connect) lists nothing: value_n's last listing set back to its last run (3
+#     minutes ago): overdue false, no '(not run)' finding (the old rule, measured from now(), fired here forever).
 #  F. rows_n taken off the list, collect a: custom_checks rows_n is_present false, no finding of rows_n, the report has 4
 #     rows; then custom: [] and a collect of each: every check of a and b gone, the report empty, no custom finding.
 #  G. the catalogue: every check of docs/custom.md (18) on instance a, one collect: 18 results; not one error; cluster_id
@@ -159,6 +162,11 @@ q "update pgvigil.custom_results set snapshot_at = snapshot_at - interval '3 min
 O=$(q "select string_agg(check_name, ',') from pgvigil.custom_status where instance_id = $ia and overdue")
 N=$(q "select count(*) from pgvigil.custom_findings where instance_id = $ia and setting = 'custom check value_n' and value = '(not run)'")
 echo "overdue: $O; not-run findings: $N"; [[ $O == value_n && $N == 1 ]] || fail "E"
+q "update pgvigil.custom_checks c set snapshot_at = (select max(r.snapshot_at) from pgvigil.custom_results r
+     where r.instance_id = c.instance_id and r.check_name = c.check_name) where c.instance_id = $ia and c.check_name = 'value_n'" >/dev/null
+O=$(q "select coalesce(string_agg(check_name, ','), '-') from pgvigil.custom_status where instance_id = $ia and overdue")
+N=$(q "select count(*) from pgvigil.custom_findings where instance_id = $ia and value = '(not run)'")
+echo "E2 a collection that stopped visiting: overdue: $O; not-run findings: $N"; [[ $O == - && $N == 0 ]] || fail "E2"
 
 echo "--- F. a check taken off the list, then custom: []"
 checks_cfg 0

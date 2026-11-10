@@ -2,12 +2,15 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
@@ -135,7 +138,7 @@ func TestNumberAndCell(t *testing.T) {
 	if _, ok, err := numberOf(nil); ok || err != nil {
 		t.Error("NULL is no value and no error")
 	}
-	for _, v := range []any{"abc", "NaN", time.Now(), []byte{1}} {
+	for _, v := range []any{"abc", "NaN", time.Now(), []byte{1}, math.NaN(), math.Inf(1), float32(math.Inf(-1))} {
 		if _, _, err := numberOf(v); err == nil {
 			t.Errorf("numberOf(%T) took a non-number", v)
 		}
@@ -151,6 +154,21 @@ func TestNumberAndCell(t *testing.T) {
 	}
 	if v := cellOf(int64(7)); v != int64(7) {
 		t.Errorf("a number stays a number: %v", v)
+	}
+	u := [16]byte{0x41, 0x09, 0xca, 0xa3, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+	if v := cellOf(u); v != "4109caa3-0001-0203-0405-060708090a0b" {
+		t.Errorf("a uuid cell: %v", v)
+	}
+	for want, iv := range map[string]pgtype.Interval{
+		"1 day 02:00:00":           {Days: 1, Microseconds: 7200e6, Valid: true},
+		"1 year 2 mons 00:00:01.5": {Months: 14, Microseconds: 1500000, Valid: true},
+		"00:00:00":                 {Valid: true},
+		"-00:01:05":                {Microseconds: -65e6, Valid: true},
+		"3 days":                   {Days: 3, Valid: true},
+	} {
+		if v := cellOf(iv); v != want {
+			t.Errorf("an interval cell: %v, want %s", v, want)
+		}
 	}
 	at := time.Date(2026, 11, 10, 9, 0, 0, 0, time.FixedZone("x", 3600))
 	if v := cellOf(at); v != "2026-11-10T08:00:00Z" {
@@ -256,6 +274,24 @@ func TestCustomRunSandbox(t *testing.T) {
 	r = run(CustomCheck{Name: "z", SQL: "SELECT 1 AS value WHERE false", Critical: fp(0)}, "full")
 	if r.Status != "ok" || r.Value != nil || !strings.Contains(r.Note, "no row") {
 		t.Fatalf("no row: %+v", r)
+	}
+	// a non-finite value is the check's error, and the result still marshals (the payload of the whole instance did not)
+	for _, sql := range []string{"SELECT 'NaN'::float8 AS value", "SELECT 'Infinity'::float8 AS value", "SELECT '-Infinity'::float4 AS value"} {
+		r = run(CustomCheck{Name: "f", SQL: sql}, "full")
+		if r.Status != "error" || !strings.Contains(r.Err, "not a finite number") {
+			t.Fatalf("%s: %+v", sql, r)
+		}
+		if _, err := json.Marshal([]Row{r.row("f")}); err != nil {
+			t.Fatalf("%s: the result does not marshal: %v", sql, err)
+		}
+	}
+	// NaN in a kept cell (not the value) is text; uuid and interval cells read as PostgreSQL writes them
+	r = run(CustomCheck{Name: "k", SQL: "SELECT 1 AS value, 'NaN'::float8 AS f, '4109caa3-0001-0203-0405-060708090a0b'::uuid AS u, interval '1 day 2 hours' AS i"}, "full")
+	if r.Status != "ok" || len(r.Cells) != 1 || r.Cells[0][1] != "NaN" || r.Cells[0][2] != "4109caa3-0001-0203-0405-060708090a0b" || r.Cells[0][3] != "1 day 02:00:00" {
+		t.Fatalf("cells: %+v", r)
+	}
+	if _, err := json.Marshal([]Row{r.row("k")}); err != nil {
+		t.Fatalf("the cells do not marshal: %v", err)
 	}
 	// the connection still works after the failures
 	var one int

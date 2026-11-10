@@ -8,10 +8,15 @@ package collect
 // its rows (at most customMaxRows, each cell masked and capped) or its error go to the repository (migration 0060:
 // custom_checks, custom_results, custom_findings).
 //
-// Each check runs inside its own READ ONLY transaction that is always rolled back: a statement that writes fails
-// there ("cannot execute ... in a read-only transaction") and is recorded as the check's error, never retried; a SET
-// the check runs (even default_transaction_read_only) is undone by the rollback before the next check; the extended
-// protocol takes one statement only, so "SELECT 1; DELETE ..." is refused by the server as well.
+// Each check runs inside its own READ ONLY transaction that is always rolled back: a write to a table, a DDL statement,
+// nextval and whatever else PostgreSQL refuses in a read-only transaction fails there ("cannot execute ... in a
+// read-only transaction") and is recorded as the check's error, never retried; a SET the check runs (even
+// default_transaction_read_only) is undone by the rollback before the next check; the extended protocol takes one
+// statement only, so "SELECT 1; DELETE ..." is refused by the server as well. A function whose effect lies outside the
+// transaction (pg_advisory_lock, pg_cancel_backend within the login's own rights) is not stopped by READ ONLY: it
+// lasts until the end of the run, when the collection's connection is closed. The checks are the DBA's own SQL.
+//
+// A check runs no more often than the custom collection itself (every minute unless schedules: custom: says otherwise).
 //
 // The configuration: custom: is read from the same file as the rest (LoadCustomChecks; config.Load ignores the key):
 //
@@ -550,9 +555,9 @@ func numberOf(v any) (f float64, ok bool, err error) {
 	case uint64:
 		return float64(x), true, nil
 	case float32:
-		return float64(x), true, nil
+		return finite(float64(x))
 	case float64:
-		return x, true, nil
+		return finite(x)
 	case bool:
 		if x {
 			return 1, true, nil
@@ -588,6 +593,51 @@ func numberOf(v any) (f float64, ok bool, err error) {
 	return 0, false, fmt.Errorf("a %T is not a number", v)
 }
 
+// finite refuses NaN and the infinities (a threshold cannot judge them, and the payload's JSON cannot carry them).
+func finite(f float64) (float64, bool, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false, fmt.Errorf("the value is %v: not a finite number", f)
+	}
+	return f, true, nil
+}
+
+// intervalText writes an interval as PostgreSQL's default style does ("1 year 2 mons 3 days 04:05:06.5").
+func intervalText(x pgtype.Interval) string {
+	var parts []string
+	if y, mo := x.Months/12, x.Months%12; y != 0 || mo != 0 {
+		if y != 0 {
+			parts = append(parts, fmt.Sprintf("%d year%s", y, plural(int64(y))))
+		}
+		if mo != 0 {
+			parts = append(parts, fmt.Sprintf("%d mon%s", mo, plural(int64(mo))))
+		}
+	}
+	if x.Days != 0 {
+		parts = append(parts, fmt.Sprintf("%d day%s", x.Days, plural(int64(x.Days))))
+	}
+	if us := x.Microseconds; us != 0 || len(parts) == 0 {
+		sign := ""
+		if us < 0 {
+			sign, us = "-", -us
+		}
+		h, m := us/3600e6, us/60e6%60
+		s := float64(us%60e6) / 1e6
+		t := fmt.Sprintf("%s%02d:%02d:%02d", sign, h, m, int64(s))
+		if frac := us % 1e6; frac != 0 {
+			t += strings.TrimRight(fmt.Sprintf(".%06d", frac), "0")
+		}
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, " ")
+}
+
+func plural(n int64) string {
+	if n == 1 || n == -1 {
+		return ""
+	}
+	return "s"
+}
+
 // cellOf turns a result cell into a JSON value: numbers and booleans as they are, everything else as text, masked
 // (a password in a connection string or an ALTER ROLE) and capped.
 func cellOf(v any) any {
@@ -620,6 +670,13 @@ func cellOf(v any) any {
 		return capText(strings.Trim(string(b), `"`), customMaxCell)
 	case time.Time:
 		return x.UTC().Format(time.RFC3339Nano)
+	case [16]byte: // a uuid
+		return fmt.Sprintf("%x-%x-%x-%x-%x", x[0:4], x[4:6], x[6:8], x[8:10], x[10:16])
+	case pgtype.Interval:
+		if !x.Valid {
+			return nil
+		}
+		return intervalText(x)
 	case []byte:
 		return capText(`\x`+hex.EncodeToString(x), customMaxCell)
 	case string:

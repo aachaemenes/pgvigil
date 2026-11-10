@@ -9,7 +9,8 @@
 --   custom_results      every run of every check: its status (ok | warning | critical | error), its value (a value
 --                       check's number, a rows check's row count), the row count, the columns, the rows (at most 100,
 --                       kept under query_text full only), the error, the note and the duration; monthly partitions.
---   custom_status       a view: every present check of every instance with its latest result.
+--   custom_status       a view: every present check of every instance with its latest result and overdue: its latest
+--                       run (or its first listing) more than two of its cadences before the latest run that listed it.
 --   import_custom(i, at, payload)
 --   custom_series(i, f, t, step)   one point per check and step of the window: the value furthest past the check's
 --                       thresholds in the step (the largest for > and >=, the smallest for < and <=, the last otherwise)
@@ -18,8 +19,10 @@
 --                       Custom report at the root (DBADash's custom report shape).
 --   custom_findings     the findings view's columns: a check whose latest run crossed its warning or critical
 --                       threshold, a check whose latest run failed (its error), a check that has not run in two of
---                       its cadences. The UNION arm in pgvigil.findings and the purge lines (custom_results among the
---                       partition parents; custom_checks absent past the window) are the wave's join.
+--                       its cadences while the collection still visits the instance (overdue). The UNION arm in
+--                       pgvigil.findings and the purge lines (custom_results among the partition parents; custom_checks
+--                       not listed within the window, present or not: a collection switched off lists nothing) are the
+--                       wave's join.
 
 CREATE TABLE IF NOT EXISTS pgvigil.custom_checks (
   instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -116,7 +119,10 @@ CREATE OR REPLACE VIEW pgvigil.custom_status AS
 SELECT c.instance_id, c.check_name, c.description, c.sql, c.every_secs, c.rule, c.value_column, c.compare, c.warning,
        c.critical, c.targets, c.first_seen, c.snapshot_at AS listed_at,
        l.snapshot_at AS last_run, l.status, l.value, l.row_count, l.columns, l.rows, l.rows_kept, l.error, l.note, l.duration_ms,
-       coalesce(l.snapshot_at, c.first_seen) < now() - make_interval(secs => 2 * c.every_secs) AS overdue
+       -- not run in two cadences while the collection still visits the instance (listed_at moves at every visit): a
+       -- collection switched off, disabled on the instance or failing to connect lists nothing, so its checks are not
+       -- overdue here (the daily checks' "collection stale" and "collection failing" report the collection itself)
+       coalesce(l.snapshot_at, c.first_seen) < c.snapshot_at - make_interval(secs => 2 * c.every_secs) AS overdue
   FROM pgvigil.custom_checks c
   LEFT JOIN LATERAL (
     SELECT r.* FROM pgvigil.custom_results r
@@ -181,11 +187,11 @@ SELECT s.instance_id, 'warning', 'custom check ' || s.check_name, '(error)', tru
  WHERE s.status = 'error'
 UNION ALL
 SELECT s.instance_id, 'warning', 'custom check ' || s.check_name, '(not run)', true, format('a run every %s', make_interval(secs => s.every_secs)),
-       'all', format('the custom check %s has not run in two of its cadences (every %s): %s', s.check_name,
+       'all', format('the custom check %s has not run in two of its cadences (every %s) while the collection visits the instance: %s', s.check_name,
                      make_interval(secs => s.every_secs),
                      coalesce('its last run was at ' || to_char(s.last_run AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC',
                               'it has never run since it was listed at ' || to_char(s.first_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC')
-                     || '. The custom collection runs every minute on the instance: a failing connection or a stopped collector keeps it from running.'),
+                     || '. The custom collection still visits the instance, but runs less often than the check''s cadence (schedules: custom) or its runs take longer than the cadence (many slow checks).'),
        'pgvigil custom', coalesce(s.last_run, s.first_seen)
   FROM pgvigil.custom_status s
   JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
