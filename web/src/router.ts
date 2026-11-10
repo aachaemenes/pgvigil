@@ -23,11 +23,11 @@ export function rememberInstance(id?: number) { if (id) try { localStorage.setIt
 
 export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
-  host: 'Host', storage: 'Storage', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', actions: 'Actions log',
+  host: 'Host', storage: 'Storage', backups: 'Backups', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', actions: 'Actions log',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 

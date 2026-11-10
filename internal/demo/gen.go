@@ -262,6 +262,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if first || t.Minute()%15 == 0 {
 		add("storage", g.storageRows(t))
 	}
+	if first || t.Minute()%5 == 0 {
+		add("backups", g.backupRows(t))
+	}
 	if t.Equal(g.end) {
 		add("actions_log", g.actionsLogRows())
 	}
@@ -288,7 +291,7 @@ func (g *Gen) Collections() []string {
 	if g.Spec.Platform == "onprem" {
 		c = append(c, "serverlog")
 	}
-	return append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "extensions", "versions", "roles")
+	return append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles")
 }
 
 // ---------------------------------------------------------------- instance

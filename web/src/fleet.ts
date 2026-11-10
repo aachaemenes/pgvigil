@@ -35,6 +35,7 @@ export const groups: Group[] = [
   { key: 'host', label: 'Host', checks: ['host'], tab: 'host' },
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
   { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage' },
+  { key: 'backups', label: 'Backups', checks: ['backups'], tab: 'backups' },
   { key: 'io', label: 'IO', checks: ['io'], tab: 'io' },
   { key: 'roles', label: 'Roles', checks: ['roles'], tab: 'roles' },
   { key: 'version', label: 'Version', checks: [], tab: 'versions' },   // from the versions fleet read, not a check group

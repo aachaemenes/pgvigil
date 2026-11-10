@@ -63,6 +63,8 @@ type Instance struct {
 	// Empty (the default) = no actions on this instance. Only the env:NAME and file:/path forms are
 	// accepted: the password of a login that can stop sessions never sits in the file.
 	ActionsDSNRaw string `yaml:"actions_dsn"`
+	// Backups tunes the backups collection's rules; nil = the defaults.
+	Backups *Backups `yaml:"backups"`
 }
 
 // UI is the ui: block: the tree's folder levels and the order of the values in them.
@@ -181,6 +183,20 @@ func (d *DMS) LatencyWarn() int {
 		return 300
 	}
 	return d.LatencyWarnSecs
+}
+
+// Backups is an instance's backups: block.
+type Backups struct {
+	// ArchiveWarnMinutes is the age of the last archived WAL file past which a finding is raised while WAL waits; 0 = 60.
+	ArchiveWarnMinutes int `yaml:"archive_warn_minutes"`
+}
+
+// ArchiveWarn returns the archive-age threshold in minutes (60 when unset).
+func (b *Backups) ArchiveWarn() int {
+	if b == nil || b.ArchiveWarnMinutes <= 0 {
+		return 60
+	}
+	return b.ArchiveWarnMinutes
 }
 
 // PostgresLogGroup is the CloudWatch log group RDS exports the postgresql log to.
@@ -307,6 +323,9 @@ func (c *Config) Validate() error {
 		}
 		if v := strings.TrimSpace(in.ActionsDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: actions_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
+		}
+		if in.Backups != nil && in.Backups.ArchiveWarnMinutes < 0 {
+			return fmt.Errorf("instance %q: backups.archive_warn_minutes must be 0 or more", in.Name)
 		}
 		if in.AWS != nil && in.AWS.DMS != nil {
 			for _, t := range in.AWS.DMS.Tasks {

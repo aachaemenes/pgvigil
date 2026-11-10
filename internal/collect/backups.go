@@ -28,15 +28,13 @@ type backupsCollector struct{}
 func init() { Register(backupsCollector{}) }
 
 const (
-	// backupArchiveWarnDefault is the age in minutes past which the last archived WAL file is a finding.
-	backupArchiveWarnDefault = 60
 	// backupSnapshotsKept is how many snapshots per type the collection keeps (the newest first).
 	backupSnapshotsKept = 20
 )
 
 // archiveWarnMinutes is the instance's threshold for the archive-age finding; the config value
 // (backups.archive_warn_minutes) is read here once the config carries it, else the default.
-var archiveWarnMinutes = func(config.Instance) int { return backupArchiveWarnDefault }
+var archiveWarnMinutes = func(in config.Instance) int { return in.Backups.ArchiveWarn() }
 
 func (backupsCollector) Name() string                         { return "backups" }
 func (backupsCollector) DefaultInterval() time.Duration       { return 5 * time.Minute }
