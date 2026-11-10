@@ -28,7 +28,9 @@
 #  C. the pooler: PgBouncer with pool_size 2 in session mode in front of the first database; four clients of the
 #     application role each hold a session (pg_sleep), so two wait. After about 7 s, collect -once pgbouncer through
 #     the stats_users login: pooler_state 'ok' with the version 'PgBouncer 1.24.1'; one pool row with cl_waiting 2,
-#     sv_active 2, pool_size 2 and maxwait_ms >= 5000; a 'stats' row for the database; pooler_state.databases names
+#     sv_active 2, pool_size 2 from the database (pool_size_from 'database': the proof's pgbouncer.ini has no [users]
+#     section) and maxwait_ms >= 5000; [join fold] the ini keeps PgBouncer's default ignore_startup_parameters, so the
+#     collector's connection is proven against a stock console; a 'stats' row for the database; pooler_state.databases names
 #     the pool with pool_size 2 and config holds max_client_conn. memory_findings: 'clients waiting on the pooler'
 #     critical (maxwait over 5 s). The 5-minute rules need five minutes of reads: the real read's pool row is copied
 #     to the five minutes before it (the same figures, earlier times), and then 'clients waiting on the pooler' warning
@@ -106,11 +108,17 @@ T2=$(q "select status || '|' || reason from pgvigil.buffercache_sample where ins
 echo "second instance: $T2"; [[ $T2 == "not available|pg_buffercache is not installed"* ]] || fail "A: the second instance's state"
 
 echo "--- B. temp spills"
+# [join fold] the log event is stamped now and temp_files rolls up seconds later: in the last 30 s of an hour the
+# newest hour row could be the next hour's, with no log line; wait the hour out first
+S=$((10#$(date -u +%M) * 60 + 10#$(date -u +%S)))
+if [ "$S" -ge 3570 ]; then echo "(waiting $((3602 - S)) s for the hour to turn)"; sleep $((3602 - S)); fi
 spill() { psql "$APP_DSN" -XAtq -c "set work_mem = '64kB'" \
   -c "select count(*) from (select g as pgv_spill from generate_series(1, 3000000) g order by g desc) x" >/dev/null; }
-spill   # first sighting: the baseline read stores the statement, its delta starts at the next read
+# the statements collection keeps the server's top 500 by execution time: on a shared sandbox that cut moves (99 ms at
+# 01:16, 741 ms at 01:53 with three other proofs running), so the spill runs often enough to stay well above it
+for _ in 1 2 3 4 5 6 7 8; do spill; done   # first sighting: the baseline read stores the statement, its delta starts at the next read
 collect "proof-mem-$SUF" statements >/dev/null
-spill
+spill; spill
 sleep 1
 collect "proof-mem-$SUF" statements >/dev/null
 collect "proof-mem-$SUF" temp_files >/dev/null
@@ -158,7 +166,6 @@ pool_mode = session
 default_pool_size = 2
 max_client_conn = 50
 stats_users = $STATSU
-ignore_startup_parameters = extra_float_digits,options
 EOF
 printf '"%s" "%s"\n"%s" "%s"\n' "$APP" "$APPPW" "$STATSU" "$STATSPW" > "$WORK/userlist.txt"
 chmod 644 "$WORK/pgbouncer.ini" "$WORK/userlist.txt"; chmod 755 "$WORK"
@@ -172,8 +179,8 @@ sleep 7
 collect "proof-mem-$SUF" pgbouncer >/dev/null
 P=$(q "select status || '|' || version from pgvigil.pooler_state where instance_id = $I")
 echo "state: $P"; [[ $P == "ok|PgBouncer 1.24.1"* ]] || fail "C: pooler_state"
-R=$(q "select cl_waiting || '|' || sv_active || '|' || pool_size || '|' || (maxwait_ms >= 5000) from pgvigil.pooler_sample where instance_id = $I and kind = 'pool' and database = '$MDB'")
-echo "pool: $R"; [[ $R == "2|2|2|true" ]] || fail "C: the pool row"
+R=$(q "select cl_waiting || '|' || sv_active || '|' || pool_size || '|' || pool_size_from || '|' || (maxwait_ms >= 5000) from pgvigil.pooler_sample where instance_id = $I and kind = 'pool' and database = '$MDB'")
+echo "pool: $R"; [[ $R == "2|2|2|database|true" ]] || fail "C: the pool row"
 [[ $(q "select count(*) from pgvigil.pooler_sample where instance_id = $I and kind = 'stats' and database = '$MDB'") == 1 ]] || fail "C: the stats row"
 DBS=$(q "select (select x->>'pool_size' from jsonb_array_elements(databases) x where x->>'name' = '$MDB') || '|' ||
               (select count(*) from jsonb_array_elements(config) x where x->>'key' = 'max_client_conn') from pgvigil.pooler_state where instance_id = $I")

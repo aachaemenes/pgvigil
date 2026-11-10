@@ -27,7 +27,10 @@ Each read stores:
 The server names a relation's file only within its own database: a relation of another database keeps that
 database's name and its file node. The chart shows the used, dirty and largest-relation shares over the time range.
 
-The view's read walks every buffer header; on a large shared_buffers it takes a moment, which is why it is hourly.
+Each read of the view walks every buffer header, so the collection reads it once per run: the buffers are grouped by
+relation file in that one pass, and the totals and the 50 largest relations both come from the grouped rows (a few
+thousand at most, so the grouping stays in memory). On a large shared_buffers the walk still takes a moment, which is
+why it is hourly.
 Set `schedules: {buffercache: 6h}` on an instance to read it less often, or `disabled: [buffercache]` to stop it.
 
 ## Temp-file spills
@@ -37,10 +40,17 @@ show them, and the hourly `temp_files` collection rolls them up per hour (the la
 read late still lands in its hour):
 
 - **By statement**: `pg_stat_statements`' `temp_blks_read` and `temp_blks_written` per statement and hour (from the
-  statements collection), in bytes by the server's block size, with the statement's text.
+  statements collection), in bytes by the server's block size, with the statement's text. Only the statements that
+  collection keeps are here: each read takes the server's top 500 by execution time and top 200 by calls, so a
+  statement outside both cuts is missing, and the hour's statement sum is a floor, not a total (the database
+  statistics below count every temp file).
 - **By hour**: those summed, beside the log readers' `temporary file: path ..., size N` lines (the count, the bytes
   and the largest file). The server logs only files at or above `log_temp_files` (`-1`, the default, logs none;
   `0` logs every file). The hour also carries the size of the instance's databases at that hour.
+- The hour's statement sum counts top-level statements only: with `pg_stat_statements.track = all` a statement run
+  inside a function is also counted under the call, and adding both would count its temp files twice. PostgreSQL 13
+  has no `toplevel` column, so there every statement reads as top level: with `track = all` on 13 the hour sum can
+  count a nested spill twice and reach the 10 % warning early (`track = top`, the default, has no nested rows).
 
 **Temp files by database** is the database statistics' view (pg_stat_database's `temp_files` and `temp_bytes` over
 the time range): it counts every temp file, logged or not, which is the closest PostgreSQL has to a TempDB page.
@@ -67,13 +77,17 @@ stats_users = pgvigil_stats
 
 A `stats_users` login may run `SHOW` commands only; PgBouncer itself refuses it `PAUSE`, `RELOAD`, `KILL` and every
 other admin command. The `pgbouncer` collection sends only `SHOW VERSION`, `SHOW POOLS`, `SHOW STATS`,
-`SHOW DATABASES` and `SHOW CONFIG`, every minute, over the simple query protocol the console speaks. An instance
+`SHOW DATABASES`, `SHOW USERS` and `SHOW CONFIG`, every minute, over the simple query protocol the console speaks. An instance
 without `pgbouncer:` is never read for a pooler and has no Pooler tab.
 
 The Pooler tab shows:
 
 - the pools as last read: clients active and waiting, servers active, idle and used, the longest wait, the pool's
-  size and mode;
+  size and mode. The size is the user's own `pool_size` where PgBouncer's `[users]` section sets one (1.17 and
+  later; it wins over the database's `pool_size` and over `default_pool_size`), read from `SHOW USERS`, else the
+  database's from `SHOW DATABASES`; the grid says which. PgBouncer 1.24.1's `SHOW USERS` repeats the row above on a
+  user that sets no size, so a user's value is taken only where it differs from the row above: two users in a row
+  with the same size read as the database's;
 - the clients and servers over the time range (summed over the pools);
 - the per-database rates of `SHOW STATS` (PgBouncer's own per-second averages: queries, transactions, the mean query
   time and the mean client wait) and the totals since the pooler started;

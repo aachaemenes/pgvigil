@@ -21,6 +21,8 @@ import (
 // this collector sends nothing but the fixed SHOW list below (pgBouncerCommands; a test holds it to SHOW). An
 // instance without the DSN is skipped before any connection (ConfigGate): no pooler rows, no Pooler tab, no finding.
 //
+// SHOW USERS is read for the per-user pool sizes; a console that refuses it leaves the database's sizes.
+//
 // The console speaks the simple query protocol only, and takes no SET: the connection is opened with the simple
 // protocol and without the collector's session setup (a pooler has no read-only transaction to set).
 //
@@ -28,7 +30,7 @@ import (
 //
 //	state     status (ok | error), reason, version   (once)
 //	pool      database, user, cl_active, cl_waiting, sv_active, sv_idle, sv_used, sv_tested, sv_login, maxwait_ms,
-//	          pool_mode, pool_size (SHOW DATABASES' pool_size for the pool's database)
+//	          pool_mode, pool_size, pool_size_from (the user's own size from SHOW USERS where set, else SHOW DATABASES')
 //	stats     database, xact_rate, query_rate (per second, PgBouncer's own averages over its stats_period),
 //	          avg_wait_us, avg_query_us, total_xact_count, total_query_count, total_wait_us
 //	database  name, host, port, database, pool_size, min_pool_size, reserve_pool, pool_mode, max_connections,
@@ -61,11 +63,11 @@ func (pgBouncerCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row,
 }
 
 // pgBouncerCommands is every command the collector sends to the console: SHOW only.
-var pgBouncerCommands = struct{ Version, Pools, Stats, Databases, Config string }{
-	Version: "SHOW VERSION", Pools: "SHOW POOLS", Stats: "SHOW STATS", Databases: "SHOW DATABASES", Config: "SHOW CONFIG",
+var pgBouncerCommands = struct{ Version, Pools, Stats, Databases, Users, Config string }{
+	Version: "SHOW VERSION", Pools: "SHOW POOLS", Stats: "SHOW STATS", Databases: "SHOW DATABASES", Users: "SHOW USERS", Config: "SHOW CONFIG",
 }
 
-// pgBouncerTimeout bounds one read (connect and the five SHOWs).
+// pgBouncerTimeout bounds one read (connect and the six SHOWs).
 const pgBouncerTimeout = 15 * time.Second
 
 func (pgBouncerCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
@@ -142,17 +144,38 @@ func (pgBouncerCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platfo
 	if err != nil {
 		return fail(err)
 	}
+	users, err := show(pgBouncerCommands.Users)
+	if err != nil {
+		users = nil // the per-user size is a refinement: without it the database's size stands
+	}
 	conf, err := show(pgBouncerCommands.Config)
 	if err != nil {
 		return fail(err)
 	}
-	return pgBouncerRows(version, pools, stats, dbs, conf), nil
+	return pgBouncerRows(version, pools, stats, dbs, users, conf), nil
 }
 
-// pgBouncerRows shapes the four SHOW results into the collection's rows (a pure function: the test feeds it the
-// columns of PgBouncer 1.18 to 1.24, whose names moved: reserve_pool / reserve_pool_size, maxwait_us since 1.8).
-func pgBouncerRows(version any, pools, stats, dbs, conf []map[string]any) []Row {
+// pgBouncerRows shapes the SHOW results into the collection's rows (a pure function: the test feeds it the columns
+// of PgBouncer 1.18 to 1.24, whose names moved: reserve_pool / reserve_pool_size, maxwait_us since 1.8).
+//
+// A pool's size: the user's own pool_size where the [users] section sets one (PgBouncer 1.17+; measured on 1.24.1, a
+// user's pool_size wins over both default_pool_size and the database's pool_size), else the database's (SHOW
+// DATABASES, which shows default_pool_size where the database sets none). SHOW USERS on 1.24.1 repeats the previous
+// row's pool_size on a user that sets none (measured: users aaa unset, bbb = 3, ccc unset read blank, 3, 3), so a
+// user's value counts only where it differs from the row above it; two users in a row with the same size read as
+// the database's. pool_size_from says which ('user' | 'database').
+func pgBouncerRows(version any, pools, stats, dbs, users, conf []map[string]any) []Row {
 	out := []Row{{"kind": "state", "status": "ok", "reason": nil, "version": version}}
+	userSize := map[string]any{}
+	var prev any
+	for _, u := range users {
+		name, _ := bText(u["name"]).(string)
+		v := bInt(u["pool_size"])
+		if v != nil && v != prev && name != "" {
+			userSize[name] = v
+		}
+		prev = v
+	}
 	poolSize := map[string]any{}
 	for _, d := range dbs {
 		name, _ := bText(d["name"]).(string)
@@ -175,6 +198,10 @@ func pgBouncerRows(version any, pools, stats, dbs, conf []map[string]any) []Row 
 		if db == "pgbouncer" {
 			continue
 		}
+		size, from := poolSize[db], "database"
+		if us, ok := userSize[fmt.Sprint(bText(p["user"]))]; ok {
+			size, from = us, "user"
+		}
 		var maxwaitMS any
 		if s, ok := bNum(p["maxwait"]); ok {
 			us, _ := bNum(p["maxwait_us"])
@@ -183,7 +210,7 @@ func pgBouncerRows(version any, pools, stats, dbs, conf []map[string]any) []Row 
 		out = append(out, Row{"kind": "pool", "database": db, "user": bText(p["user"]),
 			"cl_active": bInt(p["cl_active"]), "cl_waiting": bInt(p["cl_waiting"]), "sv_active": bInt(p["sv_active"]),
 			"sv_idle": bInt(p["sv_idle"]), "sv_used": bInt(p["sv_used"]), "sv_tested": bInt(p["sv_tested"]),
-			"sv_login": bInt(p["sv_login"]), "maxwait_ms": maxwaitMS, "pool_mode": bText(p["pool_mode"]), "pool_size": poolSize[db]})
+			"sv_login": bInt(p["sv_login"]), "maxwait_ms": maxwaitMS, "pool_mode": bText(p["pool_mode"]), "pool_size": size, "pool_size_from": from})
 	}
 	for _, s := range stats {
 		db := bText(s["database"])

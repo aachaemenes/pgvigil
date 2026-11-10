@@ -99,7 +99,7 @@ SELECT snapshot_at, status, reason, version, last_ok, databases, config FROM pgv
 
 const sqlPoolerPools = `
 SELECT p.database, p.usr AS "user", p.cl_active, p.cl_waiting, p.sv_active, p.sv_idle, p.sv_used, p.sv_tested, p.sv_login,
-       p.maxwait_ms, p.pool_mode, p.pool_size, p.snapshot_at
+       p.maxwait_ms, p.pool_mode, p.pool_size, p.pool_size_from, p.snapshot_at
   FROM pgvigil.pooler_sample p
  WHERE p.instance_id = $1 AND p.kind = 'pool'
    AND p.snapshot_at = (SELECT max(x.snapshot_at) FROM pgvigil.pooler_sample x

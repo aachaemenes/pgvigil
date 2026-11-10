@@ -24,6 +24,7 @@ const poolCols: Col[] = [
   { key: 'sv_idle', label: 'servers idle', num: true },
   { key: 'sv_used', label: 'servers used', num: true },
   { key: 'pool_size', label: 'pool size', num: true },
+  { key: 'pool_size_from', label: 'size set by', fmt: v => v === 'user' ? 'the user ([users])' : v === 'database' ? 'the database' : '' },
   { key: 'maxwait_ms', label: 'longest wait', num: true, fmt: ms },
   { key: 'pool_mode', label: 'mode' },
 ];
@@ -40,7 +41,8 @@ const statsCols: Col[] = [
 
 const dbCols: Col[] = [
   { key: 'name', label: 'pooler database' }, { key: 'host' }, { key: 'port', num: true }, { key: 'database', label: 'server database' },
-  { key: 'pool_size', label: 'pool size', num: true }, { key: 'min_pool_size', label: 'min pool', num: true },
+  { key: 'pool_size', label: 'pool size', num: true },
+  { key: 'pool_size_from', label: 'size set by', fmt: v => v === 'user' ? 'the user ([users])' : v === 'database' ? 'the database' : '' }, { key: 'min_pool_size', label: 'min pool', num: true },
   { key: 'reserve_pool', label: 'reserve', num: true }, { key: 'pool_mode', label: 'mode' },
   { key: 'max_connections', label: 'max connections', num: true }, { key: 'current_connections', label: 'connections', num: true },
   { key: 'paused', fmt: yes }, { key: 'disabled', fmt: yes },
@@ -67,8 +69,8 @@ export async function pooler(ctx: Ctx): Promise<HTMLElement> {
     const d = await get<Record<PoolerParts, Table | null>>('pooler', { instance: ctx.instance, ...window_(ctx) });
     const st = rowsOf(d.state)[0];
     if (!st) {
-      sec.append(el('p', { class: 'empty' }, 'No pooler for this instance: its configuration names no pgbouncer: DSN '
-        + '(the pooler\'s admin console, dbname=pgbouncer, as a stats_users login).'));
+      sec.append(el('p', { class: 'empty' }, 'No pooler read for this instance: its configuration names no pgbouncer: DSN (the pooler\'s admin console, '
+        + 'dbname=pgbouncer, as a stats_users login), or the pgbouncer collection has not read it yet.'));
       return sec;
     }
     if (st.status !== 'ok') {
