@@ -1,0 +1,10 @@
+{
+  "DBInstances": [
+    {
+      "DBInstanceIdentifier": "dba-lab-pg-instance-1",
+      "DBClusterIdentifier": "dba-lab-pg",
+      "Engine": "aurora-postgresql",
+      "BackupRetentionPeriod": 1
+    }
+  ]
+}
