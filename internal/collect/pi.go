@@ -186,7 +186,9 @@ func piRows(ctx context.Context, api piAPI, awsKey, id string, now time.Time, o 
 	if days <= 0 {
 		days = piMaxDays
 	}
-	start := end.Add(-time.Duration(days) * 24 * time.Hour) // PI refuses a start before its retention
+	// PI refuses a StartTime earlier than its retention: the first whole hour inside it (end is at or before now, so
+	// end - retention would land up to 59 minutes before now - retention and the call would fail every hour)
+	start := end.Add(-time.Duration(days)*24*time.Hour + time.Hour)
 	if s := o.since.Add(-piOverlap); !o.since.IsZero() && s.After(start) {
 		start = s
 	}

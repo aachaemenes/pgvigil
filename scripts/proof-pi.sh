@@ -18,7 +18,7 @@
 #   AWS_PROFILE default dba-lab; AWS_REGION default us-east-2; CLUSTER default dba-lab-pg; WAIT default 420
 # Expected:
 #   recorded  TestPIRecordedShape, TestPIOff, TestPITextPolicy, TestPIGateAndApplies, TestServerlessRows,
-#             TestDescribeClusterRetry, TestPITextPaths and
+#             TestServerlessDescribeFails, TestDescribeClusterRetry, TestPITextPaths and
 #             TestPIFixtureImport PASS (the last one runs: PGVIGIL_REPO_DSN is the proof's repository)
 #   rules     pi_findings rows (instance|setting), exactly: proof-floor and proof-zero|cache starved by the ACU floor,
 #             proof-floor's value '0.5 ACU (floor 0.5), hit ratio 91.0 %, 850 reads/s at 12.0 % CPU', proof-zero's
@@ -59,7 +59,7 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 echo "--- recorded responses -> repository"
 out=$(go test ./internal/collect -run 'TestPI|TestServerless|TestDescribeClusterRetry' -count=1 -v 2>&1) || { echo "$out" | tail -30; fail "recorded-response tests"; }
 echo "$out" | grep -E '^--- ' || true
-for t in TestPIRecordedShape TestPIOff TestPITextPolicy TestPIGateAndApplies TestServerlessRows TestDescribeClusterRetry TestPITextPaths TestPIFixtureImport; do
+for t in TestPIRecordedShape TestPIOff TestPITextPolicy TestPIGateAndApplies TestServerlessRows TestServerlessDescribeFails TestDescribeClusterRetry TestPITextPaths TestPIFixtureImport; do
   echo "$out" | grep -q -- "--- PASS: $t " || fail "$t did not pass"
 done
 echo "recorded: OK (the PI side from the API reference's shape: not proven live, the lab's PI is off)"
