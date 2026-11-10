@@ -169,7 +169,9 @@ function styles(): Promise<CSSStyleSheet[]> {
 // frame: the viewer fills its host (pev2 sizes itself to its parent's height)
 function frame(): CSSStyleSheet {
   const s = new CSSStyleSheet();
-  s.replaceSync(':host { display: block; } .pgv-mount { display: flex; flex-direction: column; height: 100%; color: #212529; } .pgv-mount > * { flex: 1 1 auto; min-height: 0; }');
+  // the container is styled by the attribute Vue sets on it at mount (it keeps neither a class nor every inline rule)
+  s.replaceSync(':host { display: block; } [data-v-app] { display: flex; flex-direction: column; height: 100%; color: #212529; } '
+    + '.plan-container { flex: 1 1 auto; min-height: 0; }');
   return s;
 }
 
@@ -185,7 +187,7 @@ async function mountPev2(host: HTMLElement, planText: string, query: string): Pr
   const root = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
   root.adoptedStyleSheets = [...css, frame()];
   const mount = document.createElement('div');
-  mount.className = 'pgv-mount';
+  mount.style.height = '100%';
   root.replaceChildren(mount);
   vue.createApp({ render: () => vue.h(pev2.Plan, { planSource: planText, planQuery: query }) }).mount(mount);
 }
