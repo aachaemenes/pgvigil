@@ -167,13 +167,18 @@ async function render(force = false) {
   }
   const pages = ctx.instance ? (isMssql(engine) ? mssqlPages : instancePages) : rootPages;
   // a page of the other engine (an old link, a tree click from another instance) opens this instance's Summary
-  if (ctx.instance && !pages[ctx.tab]) ctx.tab = 'summary';
+  if (ctx.instance && !pages[ctx.tab]) {
+    ctx.tab = 'summary';
+    history.replaceState(null, '', href(ctx, { tab: 'summary' }));   // the address says the page shown, so a reload does not repeat the fallback
+  }
 
   // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
   const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
   const strip = group.tabs.filter(k => tabs[k]);
+  // a folder's strip starts with the way back to the scope's main tabs; the strip is named for a screen reader
+  $('tabs').setAttribute('aria-label', group.name ? group.name + ' pages' : 'Main pages');
   $('tabs').replaceChildren(
-    ...(group.name ? [el('span', { class: 'tab-group' }, group.name + ':')] : []),
+    ...(group.name ? [el('a', { href: href(ctx, { tab: 'summary' }), class: 'tab-back' }, 'Summary'), el('span', { class: 'tab-group', 'aria-hidden': 'true' }, '/ ' + group.name + ':')] : []),
     ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
   // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
   $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));

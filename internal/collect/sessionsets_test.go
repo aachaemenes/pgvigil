@@ -120,7 +120,7 @@ func TestMonitorSetupSettings(t *testing.T) {
 				}
 				// an Extended Events target's option list, ADD TARGET ...(SET filename = ...), is part of a CREATE EVENT
 				// SESSION text a DBA runs on SQL Server: not a session setting, and never a PostgreSQL one
-				if strings.Contains(line, "ADD TARGET ") {
+				if strings.Contains(line, "ADD TARGET ") && strings.Contains(filepath.ToSlash(path), "internal/mssql/") {
 					continue
 				}
 				for _, m := range setStmt.FindAllStringSubmatch(line, -1) {

@@ -7,8 +7,8 @@
 -- (mssql_blocking, mssql_wait_sample, mssql_deadlocks, mssql_blocked_reports, mssql_slow_events, mssql_attentions,
 -- mssql_ag_events, mssql_ag_sample, mssql_job_runs, mssql_volume_sample, mssql_database_size,
 -- mssql_versionstore_sample) and retention steps (mssql_running_purge for the daily partitions of mssql_requests and
--- its text and state tables; mssql_xe_state by snapshot_at; mssql_cursor by updated_at: an instance not read for the
--- whole window starts its sources again; mssql_ag_failovers by at). actions_log stays out of purge (0028's rule).
+-- its text and state tables; mssql_xe_state by snapshot_at; mssql_cursor by updated_at, only for an instance no
+-- collection has reached in the whole window; mssql_ag_failovers by at). actions_log stays out of purge (0028's rule).
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 WITH v AS (
@@ -340,7 +340,10 @@ BEGIN
   n := n + pgvigil.mssql_running_purge(p_days);
   DELETE FROM pgvigil.mssql_xe_state WHERE snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  DELETE FROM pgvigil.mssql_cursor WHERE updated_at < now() - make_interval(days => p_days);
+  -- a cursor goes only with an instance no collection has reached for the whole window: a quiet source (no deadlock
+  -- in a month) of a server still read keeps its place, or its file would be read again from the start
+  DELETE FROM pgvigil.mssql_cursor c WHERE c.updated_at < now() - make_interval(days => p_days)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_log l WHERE l.instance_id = c.instance_id AND l.snapshot_at >= now() - make_interval(days => p_days));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_ag_failovers WHERE at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;

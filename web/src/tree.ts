@@ -401,7 +401,10 @@ function draw() {
       } else {
         for (const r of shown) {
           const id = Number(r.instance_id);
-          const tab = ctx.instance ? (drillHome[ctx.tab] ?? ctx.tab) : 'summary';   // a drill page's link to another instance lands on its home tab
+          // a drill page's link to another instance lands on its home tab; a page outside that instance's main tabs (a
+          // folder's page, a page of the other engine) lands on its Summary: the name is always a way back to the main strip
+          const want = ctx.instance ? (drillHome[ctx.tab] ?? ctx.tab) : 'summary';
+          const tab = groupsFor(r.engine)[0].tabs.includes(want) ? want : 'summary';
           const key = `i${id}`;
           ul.append(el('div', { class: 'tree-inst', style: rowStyle }, caretFor(key, String(r.name)),
             nameOpens(el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), style: 'flex:1;min-width:0', href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },

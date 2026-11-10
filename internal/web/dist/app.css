@@ -161,3 +161,9 @@ h2 { font-size: 1.05rem; } h3 { font-size: 1rem; }
 .seg button.toggle[aria-pressed="true"]::before { content: "[x] "; content: "[x] " / ""; }
 #crumb a { text-decoration: underline; text-underline-offset: .2rem; }   /* told from the crumb text by more than colour (WCAG 1.4.1) */
 #tabs .tab-group { color: var(--muted); margin-right: -.4rem; }
+#tabs .tab-back { text-decoration: underline; text-underline-offset: .25rem; }
+/* volumes as bars (DBA Dash's drive bars): the used share filled, coloured by the free share left */
+.bars-table { width: 100%; max-width: 62rem; } .bars-table th[scope="row"] { font-weight: 400; text-align: left; white-space: nowrap; }
+.bar-cell { width: 45%; min-width: 10rem; }
+.bar { display: block; height: .9rem; background: var(--line); }
+.bar-fill { display: block; height: 100%; background: var(--ok); } .bar-fill.warn { background: var(--warn); } .bar-fill.crit { background: var(--crit); }

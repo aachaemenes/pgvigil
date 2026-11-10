@@ -148,9 +148,14 @@ func (a *Actions) act(w http.ResponseWriter, r *http.Request, kind actions.Kind)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	var name string
-	if err := a.s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1`, in.InstanceID).Scan(&name); err != nil {
+	var name, engine string
+	if err := a.s.pool.QueryRow(ctx, `SELECT name, engine FROM pgvigil.instances WHERE instance_id = $1`, in.InstanceID).Scan(&name, &engine); err != nil {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", in.InstanceID))
+		return
+	}
+	// cancel and terminate are PostgreSQL's: a SQL Server instance has its own door (/api/mssql/actions), said as such
+	if engine != "postgres" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("instance %s is a %s instance: its sessions are ended through the SQL Server actions, not this route; nothing was sent", name, engine))
 		return
 	}
 	// the audit door first: an attempt that cannot be written is not made
