@@ -19,7 +19,7 @@ import { poolerCached } from './pooler';
 import { Ctx, href, drillHome } from './router';
 import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { hashParam, hrefWith } from './dbinfo';
-import { Col, dot, el, fmtBytes } from './ui';
+import { dot, el, fmtBytes } from './ui';
 import { dbadashFolders } from './dbadash';
 
 const UNTAGGED = 'untagged';
@@ -92,29 +92,42 @@ const list = el('div', { class: 'tree-list' });
 search.addEventListener('input', () => { filter = search.value.trim().toLowerCase(); draw(); findNames(search.value.trim()); });
 
 // The same box finds databases and tables by a part of their name across the fleet (/api/search): asked 300 ms
-// after the last key, from two characters; an answer to an older text is dropped. The instances are filtered in the
-// page as before; the found names are listed under the tree, each a link to its page.
-const FOUND_SHOWN = 50;
+// after the last key, from two characters; the read of an older text is aborted (the server's query ends with it),
+// so a typing user holds one connection of the UI pool at most. The instances are filtered in the page as before;
+// the found names are listed under the tree, each a link to its page. One line that stays in the page (said, the
+// live region: never re-created by a draw) tells a screen reader what was found, once per answer.
+const FOUND_SHOWN = 50, FIND_MAX = 128;
 let found: { q: string; rows?: Row[]; err?: string } | null = null;
 let findTimer: number | undefined;
+let findAbort: AbortController | null = null;
+const said = el('p', { class: 'sr-only', role: 'status', 'aria-live': 'polite', style: 'position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden' });
+const say = (t: string) => { if (said.textContent !== t) said.textContent = t; };
 function findNames(q: string) {
   window.clearTimeout(findTimer);
-  if (q.length < 2) { if (found) { found = null; draw(); } return; }
+  findAbort?.abort(); findAbort = null;
+  if ([...q].length < 2 || [...q].length > FIND_MAX) { if (found) { found = null; draw(); } say(''); return; }
   findTimer = window.setTimeout(() => {
     found = { q };
     draw();
-    get('search', { q }).then(t => { if (found?.q === q) { found = { q, rows: rowsOf(t) }; draw(); } })
-      .catch((e: unknown) => {
-        if (found?.q !== q) return;
-        if (e instanceof LoginRequired) { found = null; return; }
-        found = { q, err: e instanceof Error ? e.message : String(e) }; draw();
-      });
+    const ac = findAbort = new AbortController();
+    get('search', { q }, ac.signal).then(t => {
+      if (found?.q !== q || ac.signal.aborted) return;
+      const rows = rowsOf(t);
+      found = { q, rows }; draw();
+      const n = (k: string) => { const c = rows.filter(r => r.kind === k).length; return c > FOUND_SHOWN ? `more than ${FOUND_SHOWN}` : String(c); };
+      say(`${n('database')} databases and ${n('table')} tables found for ${q}`);
+    }).catch((e: unknown) => {
+      if (found?.q !== q || ac.signal.aborted) return;
+      if (e instanceof LoginRequired) { found = null; draw(); return; }
+      found = { q, err: e instanceof Error ? e.message : String(e) }; draw();
+      say('The search failed: ' + found.err);
+    });
   }, 300);
 }
 function foundNames(ctx: Ctx): HTMLElement[] {
   if (!found) return [];
-  const head = (t: string) => el('div', { class: 'folder-head' }, el('span', { class: 'folder-name' }, t));
-  const note = (t: string, cls = 'empty') => el('p', { class: cls, style: 'padding:.1rem .4rem', role: 'status', 'aria-live': 'polite' }, t);
+  const head = (t: string) => el('div', { class: 'folder-head', role: 'heading', 'aria-level': '2' }, el('span', { class: 'folder-name' }, t));
+  const note = (t: string, cls = 'empty') => el('p', { class: cls, style: 'padding:.1rem .4rem' }, t);
   if (found.err) return [head('Databases and tables'), note('Could not search: ' + found.err, 'error')];
   if (!found.rows) return [head('Databases and tables'), note('Searching...')];
   const out: HTMLElement[] = [];
@@ -137,7 +150,7 @@ function foundNames(ctx: Ctx): HTMLElement[] {
 export function mountTree(host: HTMLElement) {
   const hide = el('button', { type: 'button', class: 'tree-hide', title: 'Hide the tree' }, '«');
   hide.addEventListener('click', () => setTreeHidden(true));
-  host.replaceChildren(el('div', { class: 'tree-top' }, search, hide), list);
+  host.replaceChildren(el('div', { class: 'tree-top' }, search, hide), said, list);
 }
 
 export function setTreeHidden(h: boolean) {
@@ -414,20 +427,6 @@ function draw() {
 
 // ---- the instance header's chips
 
-const chipStyle = 'display:inline-block;margin:0 .25rem;padding:0 .45rem;border:1px solid var(--line);border-radius:9px;font-size:12px;font-weight:400';
-
-// tagChips: one chip per tag of an instance, its top-level folder link; a chip set by 'pgvigil tag' says so.
-export function tagChips(ctx: Ctx, r: Row): HTMLElement {
-  const ov = ui.overridden.get(Number(r.instance_id)) ?? new Set<string>();
-  const ps = pairsOf(r).sort((a, b) => a.key.localeCompare(b.key) || cmpValues(a.value, b.value));
-  return el('span', { class: 'tag-chips' }, ...ps.map(t => {
-    const a = el('a', { class: 'tag-chip', style: chipStyle + (ov.has(t.key) ? ';border-style:dashed' : ''), href: href(ctx, { tab: 'summary', instance: undefined, tag: tagText(t) }) }, tagText(t));
-    a.title = ov.has(t.key) ? `set by 'pgvigil tag' (a repository override of the config's ${t.key})` : 'from the config';
-    return a;
-  }));
-}
-
-// ---- the Summary's tag columns and filter
 
 // tagKeys: the keys in use, the group_by keys first in their order, then by name.
 export function tagKeys(rows: Row[]): string[] {
@@ -451,11 +450,6 @@ export function withTagFields(rows: Row[], keys = tagKeys(rows)): Row[] {
     }
     return out;
   });
-}
-
-// tagCols: the Summary columns for withTagFields' fields (the label is the key; the cell shows the values).
-export function tagCols(keys: string[]): Col[] {
-  return keys.map(k => ({ key: 't_' + k, label: k === 'tag' ? 'tags' : k, fmt: (v: unknown) => v == null ? '' : String(v).slice(4) }));
 }
 
 // the filter: one key and one value, kept for the browser session

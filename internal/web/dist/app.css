@@ -120,3 +120,43 @@ table.props { border-collapse: collapse; width: 100%; }
 .swatch { display: inline-block; width: .7rem; height: .7rem; border-radius: 2px; margin-right: .4rem; }
 .seg { display: inline-flex; align-items: center; gap: .3rem; flex-wrap: wrap; margin: .3rem 0 .6rem; }
 .seg button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* The flat pass (2026-11-10): the page is text, a tree and a grid. One type family, one accent, no cards, no
+   rounded corners, no pills; a line only where it separates the shell's three parts and the rows of a grid.
+   Status colours stay where they carry a status. Every text / background pair is one of the pairs checked above,
+   or the same text on a background further from it (scripts/proof-a11y.sh). */
+:root { --bg: #fff; --card: #fff; --side: #fff; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #111213; --card: #111213; --side: #111213; --fg: #d6d6d6; --line: #26282b; }
+}
+:root[data-theme="dark"] { --bg: #111213; --card: #111213; --side: #111213; --fg: #d6d6d6; --line: #26282b; }
+body { font: 13px/1.5 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+.grid-wrap, .chart, .tile, .chain, form.login { border: none; border-radius: 0; background: none; }
+.chart { padding: 0; }
+.chain { border-left: 2px solid var(--crit); }
+.tree-root, .inst, .folder-name, select, button, input, pre.sql, .badge, .swatch, .group { border-radius: 0; }
+.brand { font-size: 1rem; }
+h2 { font-size: 1.05rem; } h3 { font-size: 1rem; }
+#tabs { gap: .1rem 1.2rem; padding: .7rem 1rem .5rem; }
+#tabs a, #tabs a.on { padding: 0; border: none; border-radius: 0; margin: 0; background: none; }
+#tabs a.on { text-decoration: underline; text-underline-offset: .3rem; }
+.subtabs { gap: .1rem 1rem; }
+.subtabs a, .subtabs a.on { padding: 0; border: none; border-radius: 0; background: none; }
+.subtabs a.on { color: var(--accent); text-decoration: underline; text-underline-offset: .25rem; }
+.tree-root, .folder-head { font-weight: 400; }
+.tree-list a.on { background: none; color: var(--accent); font-weight: 600; }
+.grid th { font-weight: 400; }
+.grid td.status .cell-link { font-weight: 400; }
+.badge, .badge.ok, .badge.warn, .badge.crit { background: none; padding: 0; font-weight: 400; font-size: inherit; color: var(--muted); }
+.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.crit { color: var(--crit); }
+.counts .crit, .counts a.crit { color: var(--crit); } .counts .warn, .counts a.warn { color: var(--warn); }
+.seg button { border: none; padding: 0 .2rem; background: none; }
+.seg button[aria-pressed="true"] { text-decoration: underline; text-underline-offset: .25rem; }
+.grid-wrap.tests { max-width: 46rem; max-height: 36vh; overflow-y: auto; margin-bottom: 1.2rem; border-bottom: 1px solid var(--line); }
+.grid-wrap.tests > .grid-wrap { overflow: visible; }
+.grid-wrap.tests td.num .cell-link { text-align: right; width: 100%; }
+.grid-wrap.tests button[aria-pressed="true"] { text-decoration: underline; text-underline-offset: .2rem; font-weight: 600; }
+/* the box is drawn, not named: the second content line gives it an empty alternative text where the browser knows the syntax */
+.seg button.toggle::before { content: "[ ] "; content: "[ ] " / ""; }
+.seg button.toggle[aria-pressed="true"]::before { content: "[x] "; content: "[x] " / ""; }
+#crumb a { text-decoration: underline; text-underline-offset: .2rem; }   /* told from the crumb text by more than colour (WCAG 1.4.1) */

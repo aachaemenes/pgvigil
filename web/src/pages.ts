@@ -2,7 +2,7 @@ import { Activity, DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
+import { cellClass, cells, cellText, Fleet, fleet, groups, levelClass, tagsOf } from './fleet';
 import { Ctx, href, isLive, rangeLabel, window_ } from './router';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 import { diskReportView } from './host';
@@ -17,7 +17,7 @@ import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
 import { longRunsSection } from './window';
 import { actionsCol, actionsState } from './actions';
-import { applyTagFilter, tagCols, tagFilterBar, tagKeys, tagUI, withTagFields } from './tree';
+import { applyTagFilter, tagFilterBar, tagUI } from './tree';
 import { jobsReportFleetView } from './jobsreport';
 import { rolesFleetView } from './roles';
 import { indexesFleetView } from './indexes';
@@ -73,7 +73,6 @@ export async function instances(ctx: Ctx): Promise<HTMLElement> {
   const rows = inTag(ctx, (await fleet()).instances);
   const cols: Col[] = [
     { key: 'name', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
-    { key: 'tags', fmt: v => Array.isArray(v) ? v.join(', ') : '' },
     { key: 'platform' },
     { key: 'server_version', label: 'version', wide: true },
     { key: 'is_replica', label: 'role', fmt: v => v ? 'replica' : 'primary' },
@@ -303,10 +302,9 @@ export { errorBox };
 export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const [f] = await Promise.all([fleet(), tagUI()]);
   const scope = inTag(ctx, f.instances);
-  const keys = tagKeys(scope);
   const filterBar = tagFilterBar(scope);   // built first: it drops a remembered filter this scope no longer carries
   const insts = applyTagFilter(scope);
-  const rows = withTagFields(insts, keys).map(r => {
+  const rows = insts.map(r => {
     const c = cells(f, r);
     const row: Row = { ...r, _cells: c, _worst: Math.max(...Object.values(c).map(x => x.level)) };
     for (const g of groups) row['g_' + g.key] = c[g.key].level * 1000 + c[g.key].n;   // sorts by level, then count
@@ -315,18 +313,21 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   rows.sort((a, b) => Number(b._worst) - Number(a._worst) || String(a.name).localeCompare(String(b.name)));
   const n = [0, 0, 0];
   for (const r of rows) n[Number(r._worst)]++;
-  const tiles = el('div', { class: 'tiles' },
-    tile('Instances', insts.length === scope.length ? String(rows.length) : `${rows.length} of ${scope.length}`),
-    tile('Critical', String(n[2]), n[2] ? 'crit' : 'ok'),
-    tile('Warning', String(n[1]), n[1] ? 'warn' : 'ok'),
-    tile('OK', String(n[0]), 'ok'),
-    tile('Lock waiters now', String(insts.reduce((a, r) => a + Number(r.waiting_lock ?? 0), 0))));
+  // one line of counts where a row of tiles stood: the grid is the page (DBA Dash's Summary)
+  const waiters = insts.reduce((a, r) => a + Number(r.waiting_lock ?? 0), 0);
+  const tiles = el('p', { class: 'meta counts' },
+    `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances: `,
+    el('span', { class: n[2] ? 'crit' : '' }, `${n[2]} critical`), ', ', el('span', { class: n[1] ? 'warn' : '' }, `${n[1]} warning`), `, ${n[0]} OK`,
+    waiters ? `; ${waiters} lock waiters now` : '');
   const statusCol = (g: typeof groups[number]): Col => ({
     key: 'g_' + g.key, label: g.label,
     cls: (_v, r) => 'status ' + cellClass((r._cells as ReturnType<typeof cells>)[g.key]),
     fmt: (_v, r) => {
       const c = (r._cells as ReturnType<typeof cells>)[g.key];
-      const a = el('a', { href: href(ctx, { tab: g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link' }, cellText(c));
+      // a green cell says nothing: the colour is the status, and text is kept for a count, a value or 'no sample'
+      // (the link keeps its name for a screen reader and the export)
+      const quiet = !c.none && c.level === 0 && !c.text;
+      const a = el('a', { href: href(ctx, { tab: g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u00a0' : cellText(c));
       if (c.detail.length) a.title = c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
       return a;
     },
@@ -336,19 +337,116 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     { key: 'name', label: 'instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
     { key: 'platform' },
     { key: 'is_replica', label: 'role', fmt: v => v ? 'replica' : 'primary' },
-    ...tagCols(keys),
+    // no tag columns: tags group the tree at the left and filter this grid (the bar above), as in DBA Dash; a column
+    // per tag key made the grid wide and said what the tree already says
     ...groups.map(statusCol),
     { key: 'total', label: 'sessions', num: true },
     { key: 'waiting_lock', label: 'lock waits', num: true },
     { key: 'activity_at', label: 'last sample', fmt: fmtTime },
   ];
   const broken = f.checks.filter(r => r.instance_id == null);
+  // The test grid (DBA Dash's Summary, its upper grid): one row per check group over the scope the tree gives (the
+  // fleet, a tag folder, the tag filter), with how many instances are OK, warning, critical and not sampled. A
+  // count is a button: it narrows the instance grid below to those instances; the same button again, or 'Clear
+  // filter', shows them all. (No 'acknowledged' count: pgvigil has no acknowledgement of a finding yet.)
+  type Bucket = 'ok' | 'warn' | 'crit' | 'na';
+  const bucketOf = (r: Row, key: string): Bucket => {
+    const c = (r._cells as ReturnType<typeof cells>)[key];
+    return c.none ? 'na' : c.level === 2 ? 'crit' : c.level === 1 ? 'warn' : 'ok';
+  };
+  // the picked count survives the page's 30-second redraw (sessionStorage, as the focused view survives it)
+  let pick: { key: string; label: string; b: Bucket } | null = (() => {
+    try {
+      const p = JSON.parse(sessionStorage.getItem('pgvigil.summaryPick') ?? 'null') as { key?: string; b?: string } | null;
+      const g = p && groups.find(x => x.key === p.key);
+      return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na') ? { key: g.key, label: g.label, b: p.b as Bucket } : null;
+    } catch { return null; }
+  })();
+  const setPick = (p: typeof pick) => {
+    pick = p;
+    try { if (p) sessionStorage.setItem('pgvigil.summaryPick', JSON.stringify({ key: p.key, b: p.b })); else sessionStorage.removeItem('pgvigil.summaryPick'); } catch { /* private window */ }
+  };
+  const lower = el('div', {});
+  const clear = el('button', { type: 'button', class: 'link' }, 'Clear filter');
+  const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'not sampled' };
+  // The focused view (DBA Dash's View > Focused view, the same rules): only what needs a look - the instances with
+  // a warning or a critical status, the tests with one, and the status columns that hold one. Out of it, a status
+  // column in which no instance has a sample is still left out, and a test nobody is sampled for is not listed.
+  let focus = (() => { try { return localStorage.getItem('pgvigil.summaryFocus') === '1'; } catch { return false; } })();
+  const focusBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(focus) }, 'Focused view');
+  const bad = (r: Row, key: string) => { const b = bucketOf(r, key); return b === 'warn' || b === 'crit'; };
+  // its own scroll, as DBA Dash's upper pane: the instance grid below stays on the first screen
+  const upper = el('div', { class: 'grid-wrap tests', tabindex: '0', role: 'region', 'aria-label': 'Tests' });
+  // the instances both grids speak of: all in scope, or in the focused view those with a warning or a critical
+  const base = () => focus ? rows.filter(r => groups.some(g => bad(r, g.key))) : rows;
+  const countBtns = new Map<string, HTMLElement>();
+  const drawLower = () => {
+    const live = groups.filter(g => rows.some(r => focus ? bad(r, g.key) : bucketOf(r, g.key) !== 'na'));
+    const keep = new Set(live.map(g => 'g_' + g.key));
+    let shown = base();
+    const inFocus = shown.length;
+    if (pick && !live.some(g => g.key === pick!.key)) setPick(null);   // its test is not on the page (the focused view, a new scope)
+    if (pick) shown = shown.filter(r => bucketOf(r, pick!.key) === pick!.b);
+    for (const [k, b] of countBtns) b.setAttribute('aria-pressed', String(!!pick && k === pick.key + '|' + pick.b));
+    said.replaceChildren(
+      pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}. ` : focus ? `${inFocus} of ${rows.length} instance(s) need a look. ` : `${rows.length} instance(s). `,
+      ...(pick ? [clear] : []));
+    lower.replaceChildren(grid(shown, cols.filter(c => !c.key.startsWith('g_') || keep.has(c.key)),
+      rows.length === 0 ? 'No instances yet: run the collector.' : pick ? 'No instance matches.' : focus ? 'Nothing needs a look: every sampled check is OK.' : 'No instance matches.'));
+  };
+  // The test grid counts the same instances the grid below lists (in the focused view: those that need a look), so
+  // a count and the rows its click leaves always agree. It is rebuilt only when that set changes (the toggle), never
+  // on a count click: the clicked button keeps the keyboard focus.
+  const drawUpper = () => {
+    const set = base();
+    const tests = groups.map(g => {
+      const n: Record<Bucket, number> = { ok: 0, warn: 0, crit: 0, na: 0 };
+      for (const r of set) n[bucketOf(r, g.key)]++;
+      return { key: g.key, test: g.label, ...n, _worst: n.crit ? 2 : n.warn ? 1 : 0 } as Row;
+    });
+    // the worst test first (critical instances, then warning), so the pane's first rows are the ones to read
+    tests.sort((x, y) => Number(y.crit) - Number(x.crit) || Number(y.warn) - Number(x.warn) || String(x.test).localeCompare(String(y.test)));
+    const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) > 0);
+    countBtns.clear();
+    const g = grid(t, testCols, focus ? 'No test has a warning or a critical instance.' : 'No test has a sampled instance.');
+    g.removeAttribute('tabindex');   // the pane around it is the scroll region the keyboard reaches
+    upper.replaceChildren(g);
+  };
+  focusBtn.addEventListener('click', () => {
+    focus = !focus; focusBtn.setAttribute('aria-pressed', String(focus));
+    try { localStorage.setItem('pgvigil.summaryFocus', focus ? '1' : ''); } catch { /* private window */ }
+    setPick(null);   // a count picked in the other view spoke of another set of instances
+    drawUpper(); drawLower();
+  });
+  clear.addEventListener('click', () => { setPick(null); drawLower(); });
+  const countCol = (b: Bucket, label: string): Col => ({
+    key: b, label, num: true,
+    cls: v => 'status ' + (b === 'na' ? 'none' : Number(v) === 0 ? (b === 'ok' ? 'none' : 'ok') : b),
+    fmt: (v, r) => {
+      const bt = el('button', { type: 'button', class: 'cell-link link', 'aria-pressed': 'false', 'aria-label': `${String(r.test)}: ${String(v)} instance(s) ${words[b]}; show them below` }, String(v));
+      countBtns.set(String(r.key) + '|' + b, bt);
+      bt.addEventListener('click', () => {
+        setPick(pick && pick.key === r.key && pick.b === b ? null : { key: String(r.key), label: String(r.test), b });
+        drawLower();
+      });
+      return bt;
+    },
+  });
+  const testCols: Col[] = [
+    { key: 'test', label: 'test', cls: (_v, r) => 'status ' + levelClass[Number(r._worst)],
+      fmt: v => el('a', { class: 'cell-link', href: href(ctx, { tab: 'checks' }) }, String(v)) },
+    countCol('ok', 'instances OK'), countCol('warn', 'instances warning'), countCol('crit', 'instances critical'), countCol('na', 'instances N/A'),
+  ];
+  drawUpper(); drawLower();
   return el('section', {}, el('h2', {}, 'Summary' + scopeLabel(ctx)),
-    el('p', { class: 'meta' }, 'The state now, one row per instance; a cell opens that instance at the matching tab, its hover lists the checks.'),
     filterBar,
+    el('div', { class: 'seg' }, focusBtn),
     tiles,
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
-    grid(rows, cols, 'No instances yet: run the collector.'));
+    upper,
+    said,
+    lower);
 }
 
 // ---- instance Summary
@@ -365,24 +463,24 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
   const c = cells(f, r);
   const mine = f.checks.filter(x => Number(x.instance_id) === ctx.instance);
   const sec = el('section', {}, el('h2', {}, String(r.name), ' ', badge(String(r.platform ?? ''), ''), ' ', badge(r.is_replica ? 'replica' : 'primary', '')));
-  sec.append(el('div', { class: 'groups' }, ...groups.map(g => {
-    const x = c[g.key];
-    const a = el('a', { class: 'group ' + cellClass(x), href: href(ctx, { tab: g.tab }) },
-      el('span', { class: 'group-l' }, g.label), el('span', { class: 'group-v' }, cellText(x)));
-    if (x.detail.length) a.title = x.detail.join('\n');
-    return a;
-  })));
-  sec.append(el('div', { class: 'tiles' },
-    tile('Sessions', fmtNum(r.total)), tile('Active', fmtNum(r.active)),
-    tile('Idle in txn', fmtNum(r.idle_in_txn), Number(r.idle_in_txn) ? 'warn' : ''),
-    tile('Lock waits', fmtNum(r.waiting_lock), Number(r.waiting_lock) ? 'warn' : ''),
-    tile('Longest active', fmtSecs(r.longest_active_secs) || '0s'),
-    tile('Oldest xmin age', fmtNum(r.oldest_xmin_age)),
-    tile('Failing collections', fmtNum(r.collections_failing), Number(r.collections_failing) ? 'crit' : '')));
+  // one line of statuses where two rows of tiles stood: only the groups that are not OK are named, each a link
+  // to its tab; the session figures are rows of the Instance list below
+  const notOk = groups.filter(g => !c[g.key].none && c[g.key].level > 0);
+  sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? (groups.some(g => c[g.key].none) ? `No warning or critical; no sample for: ${groups.filter(g => c[g.key].none).map(g => g.label).join(', ')}.` : 'Every check group is OK.') : 'Not OK: ',
+    ...notOk.flatMap((g, i) => {
+      const x = c[g.key];
+      const a = el('a', { class: cellClass(x), href: href(ctx, { tab: g.tab }) }, `${g.label} ${cellText(x)}`);
+      if (x.detail.length) a.title = x.detail.join('\n');
+      return i ? [', ', a] : [a];
+    })));
   const two = el('div', { class: 'two' });
   two.append(el('div', {}, el('h3', {}, 'Instance'), props([
     ['version', String(r.server_version ?? '')],
     ['started', fmtTime(r.postmaster_start)],
+    ['sessions', `${fmtNum(r.total)} (${fmtNum(r.active)} active, ${fmtNum(r.idle_in_txn)} idle in transaction, ${fmtNum(r.waiting_lock)} waiting on a lock)`],
+    ['longest active', fmtSecs(r.longest_active_secs) || '0s'],
+    ['oldest xmin age', fmtNum(r.oldest_xmin_age)],
+    ['failing collections', fmtNum(r.collections_failing)],
     ['max connections', fmtNum(r.max_connections)],
     ['data checksums', String(r.data_checksums ?? '')],
     ['pg_stat_statements', r.has_pg_stat_statements ? 'yes' : 'no'],

@@ -106,7 +106,8 @@ function statusOf(td: Element): Status | undefined {
   return b ? pick(b) : undefined;
 }
 
-const text = (e: Element) => (e.textContent ?? '').replace(/\s+/g, ' ').trim();
+// a status cell that shows only its colour (a green Summary cell) carries its words in data-text
+const text = (e: Element) => (e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? '');
 
 function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const ths = [...table.querySelectorAll('thead th')];

@@ -33,7 +33,7 @@ import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_, drillHome } from './router';
-import { mountTree, setTreeHidden, tagChips, treeHiddenSaved, updateTree } from './tree';
+import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 import { exportButtons } from './export';
 
@@ -170,8 +170,7 @@ async function render(force = false) {
     crumb.replaceChildren(
       el('a', { href: href(ctx, { tab: ctx.instance ? 'summary' : ctx.tab, instance: undefined, tag: undefined }) }, 'All instances'),
       ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, 'tag ' + ctx.tag)] : []),
-      ...(ctx.instance ? [' / ', el('b', {}, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []),
-      ...(inst ? [tagChips(ctx, inst)] : []));
+      ...(ctx.instance ? [' / ', el('b', {}, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []));
   } catch (e) {
     if (e instanceof LoginRequired) { showLogin(); return; }
     crumb.replaceChildren(errorBox(e));

@@ -15,11 +15,12 @@ async function body(res: Response): Promise<unknown> {
   return res.json().catch(() => ({ error: res.statusText }));
 }
 
-export async function get<T = Table>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
+// signal: the caller's AbortSignal; an aborted read is cancelled on the server too (the request's context ends its query)
+export async function get<T = Table>(path: string, params: Record<string, string | number | undefined> = {}, signal?: AbortSignal): Promise<T> {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') q.set(k, String(v));
   const url = '/api/' + path + (q.toString() ? '?' + q : '');
-  const res = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+  const res = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin', signal });
   if (res.status === 401) throw new LoginRequired();
   const b = await body(res);
   if (!res.ok) throw new Error((b as { error?: string }).error ?? res.statusText);
