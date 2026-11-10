@@ -45,12 +45,17 @@
 #     before 2016 with flag 1118 off (warning); none of these for 8 even files on 16 CPUs. CPU: twelve records at
 #     96 % total (critical) and twelve at 50 % (nothing); ten reads with 2 runnable tasks per scheduler (warning
 #     'scheduler pressure'); memory 'Available physical memory is low' (warning); grants waiting in 3 of 10 reads
-#     (warning) and in 2 (nothing); a data file at 60 ms over 2,000 reads (warning), at 120 ms (critical), at 60 ms
-#     over 500 reads (nothing); a log at 25 ms over 2,000 writes (warning).
+#     (warning) and in 2 (nothing); ten reads with no runnable task and a work queue in five (warning 'scheduler
+#     pressure', the worker arm); a data file at 60 ms over 2,000 reads (warning), at 120 ms (critical), at 60 ms
+#     over 500 reads (nothing); a log at 25 ms over 2,000 writes (warning); a file of no known type (no VIEW ANY
+#     DEFINITION) at 60 ms over 2,000 reads (nothing).
 #  G. the four import functions refuse a PostgreSQL instance.
 #  X. retries and out of order: a cpu payload imported twice at one time leaves one schedulers row and no doubled
 #     record; a fileio payload older than the stored read stores nothing; a fileio read after a restart (start time
-#     moved, counters lower) stores no difference and the next read does; a cpu read after a restart stores no rate.
+#     moved, counters lower) stores no difference and the next read does; a cpu read after a restart stores no rate
+#     although its counter is higher (the start time alone stops it); a counter missing from one read gets its rate
+#     over its own two-read interval (1,200 over 120 s = 10/s, not 20); every fileio read that took differences keeps
+#     its seconds in mssql_fileio_read, an idle read too. (Added with the review's fold.)
 #  P. the API on the servers' repository: /api/mssql/cpu, /memory, /fileio answer for the first server with rows in
 #     cpu, latest, series, clerks, files; /api/mssql/tempdb lists both servers; /api/performance for the first
 #     server has the parts cpu, db and io with rows; /api/perfsummary's mssql rows carry cpu_avg and mem_total_pct
@@ -81,6 +86,8 @@ export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 MADE_REPO=; MADE_DEMO=; MADE_DB=; MADE_L=(); SRV_PID=; DEMO_PID=
 # sq <container> <sql> [database]: as sa, the password through the environment by name
 sq() { docker exec -e SQLCMDPASSWORD "$1" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -U sa -d "${3:-master}" -Q "SET NOCOUNT ON; $2"; }
+# sqs <container>: as sa, the batch on stdin (a login's password never rides a command line)
+sqs() { docker exec -i -e SQLCMDPASSWORD "$1" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -i /dev/stdin; }
 cleanup() {
   rc=$?
   for p in "$SRV_PID" "$DEMO_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
@@ -106,11 +113,11 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
   echo "repository:"; echo "  dsn: env:PGVIGIL_REPO_DSN"; echo "instances:"
   for i in "${!CTS[@]}"; do
     ct=${CTS[$i]}; addr=${ADDRS[$i]}
-    sq "$ct" "CREATE LOGIN [$L1] WITH PASSWORD = '$P1', CHECK_POLICY = OFF;" >/dev/null; MADE_L+=("$ct:$L1")
+    printf "CREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\n" "$L1" "$P1" | sqs "$ct" >/dev/null; MADE_L+=("$ct:$L1")
     sq "$ct" "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1];" >/dev/null
-    sq "$ct" "CREATE LOGIN [$L3] WITH PASSWORD = '$P3', CHECK_POLICY = OFF;" >/dev/null; MADE_L+=("$ct:$L3")
+    printf "CREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\n" "$L3" "$P3" | sqs "$ct" >/dev/null; MADE_L+=("$ct:$L3")
     sq "$ct" "GRANT VIEW SERVER STATE TO [$L3];" >/dev/null
-    sq "$ct" "CREATE LOGIN [$L2] WITH PASSWORD = '$P2', CHECK_POLICY = OFF;" >/dev/null; MADE_L+=("$ct:$L2")
+    printf "CREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\n" "$L2" "$P2" | sqs "$ct" >/dev/null; MADE_L+=("$ct:$L2")
     export "MS_MON_$i=sqlserver://$L1:$P1@$addr?database=master&encrypt=true&TrustServerCertificate=true"
     export "MS_BARE_$i=sqlserver://$L2:$P2@$addr?database=master&encrypt=true&TrustServerCertificate=true"
     export "MS_VSS_$i=sqlserver://$L3:$P3@$addr?database=master&encrypt=true&TrustServerCertificate=true"
@@ -178,7 +185,8 @@ for i in "${!CTS[@]}"; do
     sq "$ct" "INSERT dbo.pv_rows (pad) SELECT TOP (6000) 'a' FROM sys.all_columns a CROSS JOIN sys.all_columns b; CHECKPOINT;" "$DB" >/dev/null
   fi
   sleep 2
-  collect mssql_fileio "$N" | grep -q "partial" && fail "C: the run is partial: $(cat "$OUT")"
+  collect mssql_fileio "$N" >/dev/null
+  grep -q "partial" "$OUT" && fail "C: the run is partial: $(cat "$OUT")"
   if [ "$i" = 0 ]; then
     GOT=$(q "select string_agg(type_desc || ':' || writes || ':' || write_bytes, ',' order by file_id) from pgvigil.mssql_fileio_sample where instance_id=$iid and database_name='$DB'")
     echo "  the proof database's differences (type:writes:bytes): $GOT"
@@ -257,6 +265,11 @@ q "insert into pgvigil.mssql_memory_sample (instance_id, snapshot_at, physical_k
           case when i = $xi and k = 1 then 'Available physical memory is low' else 'Available physical memory is high' end, 8388608,
           case when k <= (case when i = $xi then 3 else 2 end) then 1 else 0 end, 0, 0, 1048576
      from generate_series(1, 10) k, unnest(array[$xi, $xj]) i" >/dev/null
+xk=$(q "select pgvigil.ensure_instance('proof-perf-k-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+q "insert into pgvigil.mssql_sched_sample (instance_id, snapshot_at, schedulers, runnable_tasks, work_queue, current_workers, max_workers)
+   select $xk, now() - make_interval(mins => k), 4, 0, case when k <= 5 then 3 else 0 end, 576, 576 from generate_series(1, 10) k" >/dev/null
+[ "$(q "select count(*) from pgvigil.mssql_perf_findings where instance_id=$xk and check_name='scheduler pressure' and detail like 'tasks waited in the work queue in 5 of the last 10 reads%'")" = 1 ] \
+  || fail "F: the work queue arm: $(q "select detail from pgvigil.mssql_perf_findings where instance_id=$xk")"
 [ "$(q "select string_agg(instance_id || ':' || check_name, ',' order by check_name) from pgvigil.mssql_perf_findings where check_name in ('scheduler pressure', 'available physical memory is low', 'queries wait for memory grants') and instance_id in ($xi, $xj)")" \
   = "$xi:available physical memory is low,$xi:queries wait for memory grants,$xi:scheduler pressure" ] \
   || fail "F: scheduler / memory: $(q "select string_agg(instance_id || ':' || check_name, ',' order by check_name) from pgvigil.mssql_perf_findings where check_name in ('scheduler pressure', 'available physical memory is low', 'queries wait for memory grants') and instance_id in ($xi, $xj)")"
@@ -265,7 +278,8 @@ q "insert into pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_i
    ($xi, now() - interval '5 minutes', 5, 1, 'd60', 'd60', 'ROWS', 2000, 0, 120000, 0, 0, 0, 60),
    ($xi, now() - interval '5 minutes', 6, 1, 'd120', 'd120', 'ROWS', 2000, 0, 240000, 0, 0, 0, 60),
    ($xi, now() - interval '5 minutes', 7, 1, 'dfew', 'dfew', 'ROWS', 500, 0, 30000, 0, 0, 0, 60),
-   ($xi, now() - interval '5 minutes', 7, 2, 'dfew', 'dlog', 'LOG', 0, 0, 0, 2000, 0, 50000, 60)" >/dev/null
+   ($xi, now() - interval '5 minutes', 7, 2, 'dfew', 'dlog', 'LOG', 0, 0, 0, 2000, 0, 50000, 60),
+   ($xi, now() - interval '5 minutes', 8, 2, 'dnotype', NULL, NULL, 2000, 0, 120000, 0, 0, 0, 60)" >/dev/null
 [ "$(q "select string_agg(severity || ':' || check_name || ':' || object, ',' order by object) from pgvigil.mssql_perf_findings where instance_id=$xi and check_name like 'slow%'")" \
   = "critical:slow data file reads:d120: d120,warning:slow data file reads:d60: d60,warning:slow log writes:dfew: dlog" ] \
   || fail "F: file IO: $(q "select string_agg(severity || ':' || check_name || ':' || object, ',' order by object) from pgvigil.mssql_perf_findings where instance_id=$xi and check_name like 'slow%'")"
@@ -289,7 +303,7 @@ cpuX "$T1" 2026-01-01T00:00:00Z 1000; cpuX "$T1" 2026-01-01T00:00:00Z 1000
 [ "$(q "select (select count(*) from pgvigil.mssql_sched_sample where instance_id=$xr) || '|' || (select count(*) from pgvigil.mssql_cpu_sample where instance_id=$xr)")" = "1|1" ] || fail "X: a cpu payload imported twice"
 cpuX "$T2" 2026-01-01T00:00:00Z 7000
 [ "$(q "select batch_s from pgvigil.mssql_sched_sample where instance_id=$xr and snapshot_at='$T2'")" = 100 ] || fail "X: the rate (6000 batches in 60 s)"
-cpuX "$T3" 2026-11-01T00:00:00Z 50
+cpuX "$T3" 2026-11-01T00:00:00Z 9000
 [ "$(q "select coalesce(batch_s::text, 'null') from pgvigil.mssql_sched_sample where instance_id=$xr and snapshot_at='$T3'")" = null ] || fail "X: a rate across a restart"
 fio() { q "select pgvigil.import_mssql_fileio($xr, '$1', '[{\"kind\":\"state\",\"server_utc\":\"$1\",\"server_start\":\"$2\"},{\"kind\":\"file\",\"database_id\":5,\"file_id\":1,\"database_name\":\"d\",\"file_name\":\"d\",\"type_desc\":\"ROWS\",\"reads\":$3,\"read_bytes\":$3,\"read_stall_ms\":$3,\"writes\":0,\"write_bytes\":0,\"write_stall_ms\":0}]'::jsonb)" >/dev/null; }
 fio "$T1" 2026-01-01T00:00:00Z 100; fio "$T2" 2026-01-01T00:00:00Z 300; fio "$T0" 2026-01-01T00:00:00Z 50
@@ -297,6 +311,17 @@ fio "$T1" 2026-01-01T00:00:00Z 100; fio "$T2" 2026-01-01T00:00:00Z 300; fio "$T0
 fio "$T3" 2026-11-01T00:00:00Z 10
 T4=$(date -u -d '-6 minutes' +%FT%TZ); fio "$T4" 2026-11-01T00:00:00Z 40
 [ "$(q "select string_agg(reads::text, ',' order by snapshot_at) from pgvigil.mssql_fileio_sample where instance_id=$xr")" = "200,30" ] || fail "X: after a restart $(q "select string_agg(reads::text, ',' order by snapshot_at) from pgvigil.mssql_fileio_sample where instance_id=$xr") (want 200,30)"
+T5=$(date -u -d '-5 minutes' +%FT%TZ); fio "$T5" 2026-11-01T00:00:00Z 40   # an idle read: no file moved
+[ "$(q "select string_agg(round(interval_secs)::text || ':' || files, ',' order by snapshot_at) from pgvigil.mssql_fileio_read where instance_id=$xr")" = "60:1,60:1,60:0" ] \
+  || fail "X: the reads' seconds $(q "select string_agg(round(interval_secs)::text || ':' || files, ',' order by snapshot_at) from pgvigil.mssql_fileio_read where instance_id=$xr") (want 60:1,60:1,60:0: T2, T4 and the idle T5)"
+[ "$(q "select count(*) from pgvigil.mssql_fileio_sample where instance_id=$xr")" = 2 ] || fail "X: the idle read stored a difference"
+xm=$(q "select pgvigil.ensure_instance('proof-perf-m-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+cnt() { q "select pgvigil.import_mssql_cpu($xm, '$1', '[{\"kind\":\"state\",\"server_utc\":\"$1\",\"server_start\":\"2026-01-01T00:00:00Z\"},{\"kind\":\"sched\",\"schedulers\":4}$2]'::jsonb)" >/dev/null; }
+cnt "$T1" ',{"kind":"counter","counter":"Batch Requests/sec","value":1000},{"kind":"counter","counter":"Transactions/sec","value":1000}'
+cnt "$T2" ',{"kind":"counter","counter":"Batch Requests/sec","value":2000}'
+cnt "$T3" ',{"kind":"counter","counter":"Batch Requests/sec","value":3000},{"kind":"counter","counter":"Transactions/sec","value":2200}'
+[ "$(q "select batch_s || '|' || transactions_s from pgvigil.mssql_sched_sample where instance_id=$xm and snapshot_at='$T3'")" = "16.667|10" ] \
+  || fail "X: a counter missing from one read: $(q "select batch_s, transactions_s from pgvigil.mssql_sched_sample where instance_id=$xm and snapshot_at='$T3'") (want 16.667|10)"
 echo "X: OK"
 
 echo "--- P. the API on the servers' repository"

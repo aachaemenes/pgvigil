@@ -42,12 +42,13 @@ func (cpuCollector) Applies(info Info) (bool, string) {
 
 // perfApplies is the Applies rule of the performance collections (cpu, memory, fileio): not on Azure SQL Database;
 // the right is VIEW SERVER STATE, or from SQL Server 2022 VIEW SERVER PERFORMANCE STATE, which Detect does not
-// read: a 2022 login without VIEW SERVER STATE is let through and perfState asks the server in the run.
+// read: a 2022 (or Managed Instance) login without VIEW SERVER STATE is let through and perfState asks the server in the run.
 func perfApplies(info Info, what string) (bool, string) {
 	switch {
 	case info.Kind == KindAzureDB:
 		return false, "not on Azure SQL Database: " + what + " there are the host's, not the database's"
-	case !info.ViewServerState && info.Major < 16:
+	// Managed Instance answers 12.0 as its version and runs the current engine: perfState asks it in the run
+	case !info.ViewServerState && info.Major < 16 && info.Kind != KindAzureMI:
 		return false, "the login lacks VIEW SERVER STATE: " + what + " cannot be read"
 	}
 	return true, ""

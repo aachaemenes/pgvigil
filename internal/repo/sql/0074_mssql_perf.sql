@@ -18,6 +18,7 @@
 -- mssql_fileio (every minute):
 --   mssql_fileio_sample   per database file: the reads, bytes and read stall, the writes, bytes and write stall over
 --                         the interval since the read before (the differences of sys.dm_io_virtual_file_stats).
+--   mssql_fileio_read     one row per read that took differences, with its seconds (idle reads included).
 --   mssql_fileio_last     the counters of the last read per file (where the next difference starts).
 --   mssql_perf_counter_last  the same for mssql_cpu's cumulative counters.
 -- mssql_tempdb (hourly):
@@ -27,7 +28,7 @@
 -- mssql_perf_findings     the slice's findings in the findings columns (the join adds the arm to pgvigil.findings).
 --
 -- Partition parents for purge() (the join adds them): mssql_cpu_sample, mssql_sched_sample, mssql_memory_sample,
--- mssql_memory_clerk, mssql_fileio_sample. Until that migration these tables are not purged.
+-- mssql_memory_clerk, mssql_fileio_read, mssql_fileio_sample. Until that migration these tables are not purged.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_cpu_sample (
   instance_id  int NOT NULL,
@@ -119,6 +120,15 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_fileio_sample (
   write_bytes     bigint NOT NULL,
   write_stall_ms  bigint NOT NULL,
   interval_secs   real NOT NULL
+) PARTITION BY RANGE (snapshot_at);
+
+-- one row per read that took differences, idle or not: the seconds a rate over the range divides by (a file with no
+-- IO in an interval stores no mssql_fileio_sample row, and a read where every file was idle would else drop out)
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_fileio_read (
+  instance_id     int NOT NULL,
+  snapshot_at     timestamptz NOT NULL,
+  interval_secs   real NOT NULL,
+  files           int NOT NULL                -- the files with IO in the interval
 ) PARTITION BY RANGE (snapshot_at);
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_fileio_last (
@@ -256,11 +266,13 @@ BEGIN
                       WHERE r->>'kind' = 'counter' AND (r->>'value')::bigint < l.value) THEN
     SELECT extract(epoch FROM v_now - max(l.server_utc)) INTO v_secs FROM pgvigil.mssql_perf_counter_last l WHERE l.instance_id = p_instance_id;
     IF v_secs > 0 THEN
-      SELECT coalesce(jsonb_object_agg(r->>'counter', round((((r->>'value')::bigint - l.value) / v_secs)::numeric, 3)), '{}')
+      -- each counter over its own interval: one missing from the read before still holds an older server_utc
+      SELECT coalesce(jsonb_object_agg(r->>'counter',
+               round((((r->>'value')::bigint - l.value) / extract(epoch FROM v_now - l.server_utc))::numeric, 3)), '{}')
         INTO v_rates
         FROM jsonb_array_elements(p_payload) r
         JOIN pgvigil.mssql_perf_counter_last l ON l.instance_id = p_instance_id AND l.counter = r->>'counter'
-       WHERE r->>'kind' = 'counter';
+       WHERE r->>'kind' = 'counter' AND v_now > l.server_utc;
     ELSE
       v_secs := NULL;
     END IF;
@@ -351,7 +363,15 @@ BEGIN
   END IF;
   -- a restart: the old counters mean nothing
   DELETE FROM pgvigil.mssql_fileio_last l WHERE l.instance_id = p_instance_id AND NOT pgvigil.mssql_same_run(l.server_start, v_start);
+  PERFORM pgvigil.ensure_month_partition('mssql_fileio_read', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_fileio_sample', p_snapshot_at);
+  LOCK TABLE ONLY pgvigil.mssql_fileio_read, ONLY pgvigil.mssql_fileio_sample IN ROW EXCLUSIVE MODE;
+  -- the read's seconds since the read before of the same run of the server (after a restart the state was emptied above)
+  INSERT INTO pgvigil.mssql_fileio_read (instance_id, snapshot_at, interval_secs, files)
+  SELECT p_instance_id, p_snapshot_at, extract(epoch FROM v_now - max(l.server_utc)), 0
+    FROM pgvigil.mssql_fileio_last l
+   WHERE l.instance_id = p_instance_id
+  HAVING max(l.server_utc) < v_now;
   -- a file's difference: a read of it before this one, every counter grown or equal, and some IO in the interval
   INSERT INTO pgvigil.mssql_fileio_sample (instance_id, snapshot_at, database_id, file_id, database_name, file_name, type_desc,
       reads, read_bytes, read_stall_ms, writes, write_bytes, write_stall_ms, interval_secs)
@@ -386,6 +406,9 @@ BEGIN
       read_stall_ms = EXCLUDED.read_stall_ms, writes = EXCLUDED.writes, write_bytes = EXCLUDED.write_bytes,
       write_stall_ms = EXCLUDED.write_stall_ms, snapshot_at = EXCLUDED.snapshot_at, server_utc = EXCLUDED.server_utc,
       server_start = EXCLUDED.server_start;
+  UPDATE pgvigil.mssql_fileio_read r SET files = (SELECT count(*) FROM pgvigil.mssql_fileio_sample s
+                                                   WHERE s.instance_id = p_instance_id AND s.snapshot_at = p_snapshot_at)
+   WHERE r.instance_id = p_instance_id AND r.snapshot_at = p_snapshot_at;
   -- a file the server no longer lists (a dropped database) leaves the state
   DELETE FROM pgvigil.mssql_fileio_last l WHERE l.instance_id = p_instance_id AND l.snapshot_at < p_snapshot_at;
 END $$;
@@ -460,7 +483,8 @@ END $$;
 --   Memory: the OS says available physical memory is low in the newest read (warning); memory grants waiting in
 --     at least three of the last fifteen minutes' reads (warning).
 --   File IO: over the last hour, a data file's reads at 50 ms or more on average with at least 1,000 reads
---     (warning; 100 ms: critical); a log file's writes at 20 ms or more with at least 1,000 writes (warning).
+--     (warning; 100 ms: critical); a log file's writes at 20 ms or more with at least 1,000 writes (warning). A file
+--     whose type was not read (no VIEW ANY DEFINITION) raises nothing: a log read by a log backup is not a data file.
 CREATE OR REPLACE VIEW pgvigil.mssql_perf_findings AS
 SELECT t.instance_id, 'warning'::text AS severity, 'tempdb has fewer data files than recommended'::text AS check_name,
        'tempdb'::text AS object, t.snapshot_at AS at,
@@ -559,4 +583,4 @@ SELECT f.instance_id, CASE WHEN f.type_desc = 'LOG' THEN 'warning' WHEN f.read_m
          WHERE s.snapshot_at > now() - interval '1 hour'
          GROUP BY s.instance_id, s.database_id, s.file_id) f
  WHERE (f.type_desc = 'LOG' AND f.writes >= 1000 AND f.write_ms >= 20)
-    OR (f.type_desc IS DISTINCT FROM 'LOG' AND f.reads >= 1000 AND f.read_ms >= 50);
+    OR (f.type_desc IS NOT NULL AND f.type_desc <> 'LOG' AND f.reads >= 1000 AND f.read_ms >= 50);

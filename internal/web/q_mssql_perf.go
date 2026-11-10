@@ -136,7 +136,7 @@ SELECT to_timestamp(floor(extract(epoch FROM g.snapshot_at) / $4) * $4) AS snaps
  GROUP BY 1, 2 ORDER BY 1, 2`
 
 // sqlMSSQLFileThroughput: MB/s per step for the five files that moved the most bytes over the range, the rest summed.
-// A step's seconds are the reads' intervals in it (each read once).
+// A step's seconds are the reads' intervals in it (each read once, an idle read too).
 const sqlMSSQLFileThroughput = `
 WITH f AS (
   SELECT coalesce(s.database_name, 'database ' || s.database_id) || ': ' || coalesce(s.file_name, 'file ' || s.file_id) AS file, s.*
@@ -145,8 +145,11 @@ WITH f AS (
 ), top AS (
   SELECT file FROM f GROUP BY file ORDER BY sum(read_bytes + write_bytes) DESC, file LIMIT 5
 ), secs AS (
-  SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS step, sum(r.secs) AS secs
-    FROM (SELECT snapshot_at, max(interval_secs) AS secs FROM f GROUP BY snapshot_at) r GROUP BY 1
+  -- every read's seconds, an idle read's too (mssql_fileio_read)
+  SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS step, sum(r.interval_secs) AS secs
+    FROM pgvigil.mssql_fileio_read r
+   WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+   GROUP BY 1
 )
 SELECT x.step AS snapshot_at, CASE WHEN t.file IS NULL THEN '(other)' ELSE x.file END AS file,
        round((sum(x.read_bytes) / max(c.secs) / 1048576.0)::numeric, 3) AS read_mb_s,

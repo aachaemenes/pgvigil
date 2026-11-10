@@ -215,14 +215,14 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
       FROM pgvigil.mssql_memory_sample x
      WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2) m ON true
   LEFT JOIN LATERAL (
-    -- every file's intervals summed; the seconds are each read's once
-    SELECT sum(r.reads) AS reads, sum(r.writes) AS writes, sum(r.read_stall_ms) AS read_stall_ms, sum(r.write_stall_ms) AS write_stall_ms,
-           sum(r.bytes) AS bytes, sum(r.secs) AS secs
+    -- every file's intervals summed; the seconds are each read's once, an idle read's too (mssql_fileio_read)
+    SELECT f.reads, f.writes, f.read_stall_ms, f.write_stall_ms, f.bytes,
+           (SELECT sum(r.interval_secs)::numeric FROM pgvigil.mssql_fileio_read r
+             WHERE r.instance_id = inst.instance_id AND r.snapshot_at > $1 AND r.snapshot_at <= $2) AS secs
       FROM (SELECT sum(f.reads)::numeric AS reads, sum(f.writes)::numeric AS writes, sum(f.read_stall_ms)::numeric AS read_stall_ms,
-                   sum(f.write_stall_ms)::numeric AS write_stall_ms, sum(f.read_bytes + f.write_bytes)::numeric AS bytes, max(f.interval_secs)::numeric AS secs
+                   sum(f.write_stall_ms)::numeric AS write_stall_ms, sum(f.read_bytes + f.write_bytes)::numeric AS bytes
               FROM pgvigil.mssql_fileio_sample f
-             WHERE f.instance_id = inst.instance_id AND f.snapshot_at > $1 AND f.snapshot_at <= $2
-             GROUP BY f.snapshot_at) r) io ON true
+             WHERE f.instance_id = inst.instance_id AND f.snapshot_at > $1 AND f.snapshot_at <= $2) f) io ON true
   LEFT JOIN LATERAL (
     SELECT round(avg(x.requests), 2) AS active_avg, max(x.requests) AS active_max
       FROM pgvigil.mssql_requests_summary x

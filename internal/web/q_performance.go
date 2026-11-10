@@ -169,7 +169,7 @@ SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snaps
  GROUP BY 1 ORDER BY 1`
 
 // sqlPerfMSSQLIO: every file's interval summed per read, then per step: latency = stall over operations, MB/s = bytes
-// over the reads' seconds.
+// over the reads' seconds (mssql_fileio_read: an idle read's seconds count too).
 const sqlPerfMSSQLIO = `
 SELECT to_timestamp(floor(extract(epoch FROM p.snapshot_at) / $4) * $4) AS snapshot_at,
        round((sum(p.read_stall_ms)::numeric / nullif(sum(p.reads), 0)), 2) AS read_ms,
@@ -177,12 +177,13 @@ SELECT to_timestamp(floor(extract(epoch FROM p.snapshot_at) / $4) * $4) AS snaps
        round((sum(p.read_bytes) / nullif(sum(p.secs), 0) / 1048576.0)::numeric, 3) AS read_mb_s,
        round((sum(p.write_bytes) / nullif(sum(p.secs), 0) / 1048576.0)::numeric, 3) AS write_mb_s,
        round((sum(p.reads + p.writes) / nullif(sum(p.secs), 0))::numeric, 1) AS iops
-  FROM (SELECT f.snapshot_at, sum(f.reads) AS reads, sum(f.read_stall_ms) AS read_stall_ms, sum(f.writes) AS writes,
-               sum(f.write_stall_ms) AS write_stall_ms, sum(f.read_bytes) AS read_bytes, sum(f.write_bytes) AS write_bytes,
-               max(f.interval_secs) AS secs
-          FROM pgvigil.mssql_fileio_sample f
-         WHERE f.instance_id = $1 AND f.snapshot_at > $2 AND f.snapshot_at <= $3
-         GROUP BY f.snapshot_at) p
+  FROM (SELECT r.snapshot_at, coalesce(sum(f.reads), 0) AS reads, coalesce(sum(f.read_stall_ms), 0) AS read_stall_ms,
+               coalesce(sum(f.writes), 0) AS writes, coalesce(sum(f.write_stall_ms), 0) AS write_stall_ms,
+               coalesce(sum(f.read_bytes), 0) AS read_bytes, coalesce(sum(f.write_bytes), 0) AS write_bytes, max(r.interval_secs) AS secs
+          FROM pgvigil.mssql_fileio_read r
+          LEFT JOIN pgvigil.mssql_fileio_sample f ON f.instance_id = r.instance_id AND f.snapshot_at = r.snapshot_at
+         WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+         GROUP BY r.snapshot_at) p
  GROUP BY 1 ORDER BY 1`
 
 // Performance is GET /api/performance?instance=N[&from=&to=][&part=...]: one instance's Performance page.

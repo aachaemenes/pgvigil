@@ -65,8 +65,8 @@ const memoryGrantSQL = `SELECT 'grants' AS kind,
   (SELECT SUM(CAST(granted_memory_kb AS bigint)) FROM sys.dm_exec_query_resource_semaphores) AS sem_granted_kb,
   (SELECT SUM(CAST(target_memory_kb AS bigint)) FROM sys.dm_exec_query_resource_semaphores) AS sem_target_kb,
   CAST(COUNT(g.session_id) AS bigint) AS grants,
-  CAST(SUM(CASE WHEN g.grant_time IS NULL THEN 1 ELSE 0 END) AS bigint) AS grants_waiting,
-  MAX(CAST(g.granted_memory_kb AS bigint)) AS max_grant_kb, SUM(CAST(g.granted_memory_kb AS bigint)) AS sum_grant_kb,
+  CAST(ISNULL(SUM(CASE WHEN g.grant_time IS NULL THEN 1 ELSE 0 END), 0) AS bigint) AS grants_waiting,
+  ISNULL(MAX(CAST(g.granted_memory_kb AS bigint)), 0) AS max_grant_kb, ISNULL(SUM(CAST(g.granted_memory_kb AS bigint)), 0) AS sum_grant_kb,
   MAX(CAST(g.requested_memory_kb AS bigint)) AS max_requested_kb
 FROM sys.dm_exec_query_memory_grants g
 WHERE g.session_id <> @@SPID`
