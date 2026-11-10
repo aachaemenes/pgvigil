@@ -19,7 +19,8 @@
 --                       Custom report at the root (DBADash's custom report shape).
 --   custom_findings     the findings view's columns: a check whose latest run crossed its warning or critical
 --                       threshold, a check whose latest run failed (its error), a check that has not run in two of
---                       its cadences while the collection still visits the instance (overdue). The UNION arm in
+--                       its cadences while the collection still visits the instance (overdue); every arm only while
+--                       the check's latest listing is within two of its cadences (at least 5 minutes). The UNION arm in
 --                       pgvigil.findings and the purge lines (custom_results among the partition parents; custom_checks
 --                       not listed within the window, present or not: a collection switched off lists nothing) are the
 --                       wave's join.
@@ -165,6 +166,14 @@ $$;
 -- custom_findings: the findings view's columns (instance_id, severity, setting, value, is_set, suggested, platforms,
 -- detail, source, at)
 CREATE OR REPLACE VIEW pgvigil.custom_findings AS
+WITH s AS (
+  -- one read of custom_status for the three arms; a check whose latest listing is older than two of its cadences (at
+  -- least 5 minutes: the collection's own minute and its jitter) raises nothing: the custom: key removed, the
+  -- collection disabled on the instance or failing to connect (the daily checks report the collection itself)
+  SELECT s.* FROM pgvigil.custom_status s
+    JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+   WHERE s.listed_at >= now() - make_interval(secs => greatest(2 * s.every_secs, 300))
+)
 SELECT s.instance_id, s.status AS severity, 'custom check ' || s.check_name AS setting,
        coalesce(pgvigil.custom_fmt(s.value), '') AS value, true AS is_set,
        format('%s %s', s.compare, pgvigil.custom_fmt(CASE s.status WHEN 'critical' THEN s.critical ELSE s.warning END)) AS suggested,
@@ -176,14 +185,12 @@ SELECT s.instance_id, s.status AS severity, 'custom check ' || s.check_name AS s
               coalesce(s.compare || ' ' || pgvigil.custom_fmt(s.warning), 'none'), coalesce(s.compare || ' ' || pgvigil.custom_fmt(s.critical), 'none'),
               coalesce('. ' || s.description, '')) AS detail,
        'pgvigil custom'::text AS source, s.last_run AS at
-  FROM pgvigil.custom_status s
-  JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+  FROM s
  WHERE s.status IN ('warning', 'critical')
 UNION ALL
 SELECT s.instance_id, 'warning', 'custom check ' || s.check_name, '(error)', true, 'a statement that runs as the monitoring login, read only',
        'all', format('the custom check %s failed at its last run: %s', s.check_name, s.error), 'pgvigil custom', s.last_run
-  FROM pgvigil.custom_status s
-  JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+  FROM s
  WHERE s.status = 'error'
 UNION ALL
 SELECT s.instance_id, 'warning', 'custom check ' || s.check_name, '(not run)', true, format('a run every %s', make_interval(secs => s.every_secs)),
@@ -193,6 +200,5 @@ SELECT s.instance_id, 'warning', 'custom check ' || s.check_name, '(not run)', t
                               'it has never run since it was listed at ' || to_char(s.first_seen AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC')
                      || '. The custom collection still visits the instance, but runs less often than the check''s cadence (schedules: custom) or its runs take longer than the cadence (many slow checks).'),
        'pgvigil custom', coalesce(s.last_run, s.first_seen)
-  FROM pgvigil.custom_status s
-  JOIN pgvigil.instances i ON i.instance_id = s.instance_id AND i.is_active
+  FROM s
  WHERE s.overdue;

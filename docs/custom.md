@@ -9,8 +9,8 @@ report** (every check of the fleet, the worst first).
 
 ## The rights a check runs with
 
-A check runs as the instance's own monitoring login (the `dsn` of the instance: the `pg_monitor` login, never a
-superuser) on the collector's connection, which is read only (`default_transaction_read_only = on`) with a 30 s
+A check runs as the instance's own monitoring login (the `dsn` of the instance: the `pg_monitor` login) on the
+collector's connection, which is read only (`default_transaction_read_only = on`) with a 30 s
 statement timeout and a 2 s lock timeout. Each check runs inside its own `BEGIN TRANSACTION READ ONLY` that is always
 rolled back:
 
@@ -24,6 +24,11 @@ rolled back:
 - a function whose effect lies outside the transaction is not stopped by READ ONLY: `pg_advisory_lock` keeps its
   lock, `pg_cancel_backend` cancels a session the login may signal; such an effect lasts at most until the end of the
   run, when the collection's connection is closed. The checks are the DBA's own SQL: review them as such;
+- READ ONLY does not stop what a server-side right allows: `COPY ... TO PROGRAM` runs inside a read-only transaction
+  for a superuser or a member of `pg_execute_server_program`. So before any check runs, each run reads the login's
+  rights, and the collection refuses to run on the instance (a failed collection naming the right, no check run) when
+  the login is a superuser or a member of `pg_execute_server_program`, `pg_write_server_files` or
+  `pg_read_server_files`: pgvigil's collector never runs with more than `pg_monitor`;
 - the check sees what the monitoring login sees: the statistics views in full (`pg_monitor`), the catalogs, and the
   tables the login has been granted. A check that needs more is the server DBA's grant to that login, made by hand.
 
@@ -60,17 +65,22 @@ custom:
   most 100 rows (each cell masked for passwords and cut at 1000 characters) under `query_text: full`; under
   `normalized` or `none` the rows are not kept (the value and the count are). The runs are kept as long as the other
   samples (`pgvigil purge`).
+- **Where it must match.** A check whose `instances:` and `tags:` together match no instance in `instances:` (a typo
+  such as `env:prd` for `env:prod`) refuses the configuration, as an unknown instance name does.
 - **Off and gone.** Without a `custom:` key the collection is off. A check taken off the list, or off an instance, is
   marked gone at that instance's next run (the tab lists it under "Taken off this instance"); to retire every check,
   leave `custom: []` in the file, so the runs go on long enough to mark them gone. While a `custom:` key is present the
   collection visits every instance once a minute, even one no check names (that is how a check taken off it is
   marked gone); a check runs only when its own cadence is due, and never more often than the collection itself
   (`schedules: {custom: 5m}` makes a 1m check a 5m check). A check that is no longer listed anywhere (the collection
-  switched off, or disabled on the instance) leaves the repository with the purge's retention.
+  switched off, or disabled on the instance) leaves the repository with the purge's retention; it raises no finding
+  once its latest listing is more than two of its cadences old (at least 5 minutes), so a removed `custom:` key clears
+  the Findings and the Summary's Custom column within that time, and `custom: []` clears them at the next run.
 - **The findings.** `custom_findings`: a check whose latest run is `warning` or `critical` (that severity), a check
   whose latest run failed (warning, with the error), and a check that has not run in two of its cadences while the
   collection still visits the instance (warning: the collection runs less often than the check, or a run of many slow
-  checks takes longer than the cadence). A collection that stops visiting (switched off, disabled, failing to connect)
+  checks takes longer than the cadence). Every finding needs the check's latest listing within two of its cadences
+  (at least 5 minutes). A collection that stops visiting (switched off, disabled, failing to connect)
   is the daily checks' "collection stale" or "collection failing", not a finding of each check.
 
 `pgvigil collect -once custom` runs every check that applies, due or not.
@@ -86,8 +96,11 @@ starting point.
 
 ### archive_ready: WAL segments waiting for the archiver
 
-The `.ready` files in `pg_wal/archive_status`: segments the archiver has not archived yet. On RDS and Aurora the
-directory is not readable (an error there; the backups collection reads the archiver instead).
+The `.ready` files in `pg_wal/archive_status`: segments the archiver has not archived yet.
+`pg_ls_archive_statusdir()` is granted to `pg_monitor` like `pg_ls_waldir()`, which pgvigil's storage collection
+reads on every platform. Aurora keeps no WAL in `pg_wal` (the cluster volume holds it), so the count there is
+expected to stay 0; the backups collection reads the archiver itself (`pg_stat_archiver`). Not yet run on RDS or
+Aurora.
 
 ```yaml
   - name: archive_ready
@@ -365,7 +378,9 @@ The oldest database's xid age; PostgreSQL stops assigning transaction IDs at abo
 ### wal_files: pg_wal against max_wal_size
 
 The size of `pg_wal` as a percent of `max_wal_size`: a slot, a failing archiver or a long checkpoint keeps WAL past
-it. On RDS and Aurora the directory is not readable (an error there).
+it. It reads `pg_ls_waldir()` as the storage collection does, on every platform as `pg_monitor`; Aurora keeps no WAL
+in `pg_wal` (its count is 0 there), so on Aurora the check reads 0 and never fires: the Storage tab and the
+replication slots are the read there.
 
 ```yaml
   - name: wal_files

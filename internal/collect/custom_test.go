@@ -84,11 +84,20 @@ custom:
 		"instance":   "custom: [{name: a, sql: SELECT 1, instances: [nope]}]",
 		"tag":        "custom: [{name: a, sql: SELECT 1, tags: ['env:']}]",
 		"rows value": "custom: [{name: a, sql: SELECT 1, rule: rows, value: n}]",
+		"no match":   "custom: [{name: a, sql: SELECT 1, tags: ['env:prd']}]",
 	}
 	for k, y := range bad {
 		if _, _, err := ParseCustomChecks([]byte(y), ins); err == nil {
 			t.Errorf("%s: accepted %s", k, y)
 		}
+	}
+	if _, _, err := ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, tags: ['env:prd']}]"), ins); err == nil ||
+		!strings.Contains(err.Error(), "match no instance") {
+		t.Errorf("a tag no instance carries: %v", err)
+	}
+	// a tag one instance carries, beside an unmatched one, is enough
+	if _, _, err := ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, tags: ['env:prd', billing]}]"), ins); err != nil {
+		t.Errorf("one matching tag: %v", err)
 	}
 	// <> and == are read as != and =
 	cs, _, err := ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, compare: '<>', warning: 1}]"), ins)
@@ -292,6 +301,19 @@ func TestCustomRunSandbox(t *testing.T) {
 	}
 	if _, err := json.Marshal([]Row{r.row("k")}); err != nil {
 		t.Fatalf("the cells do not marshal: %v", err)
+	}
+	if err := customRights(ctx, conn); err != nil {
+		t.Fatalf("a pg_monitor login is refused: %v", err)
+	}
+	if sdsn := os.Getenv("PGVIGIL_CUSTOM_TEST_SUPER_DSN"); sdsn != "" {
+		sc, err := Connect(ctx, config.Instance{Name: "s", DSNRaw: sdsn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sc.Close(ctx) }()
+		if err := customRights(ctx, sc); err == nil || !strings.Contains(err.Error(), "superuser") {
+			t.Fatalf("a superuser login is not refused: %v", err)
+		}
 	}
 	// the connection still works after the failures
 	var one int
