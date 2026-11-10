@@ -33,18 +33,20 @@ export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
     else { p.shape = String(k.shape); if (k.min) p.min = k.min; }
     const d = await get<Record<'meta' | 'trend', Table | null>>('stmttrend', p);
     const rows = rowsOf(d.trend), meta = rowsOf(d.meta)[0] ?? {};
+    // a series with no value in the window is left out (PostgreSQL's log has no rows, CPU or failures)
+    const some = (ss: { key: string; label: string }[]) => ss.filter(x => rows.some(r => r[x.key] != null && Number(r[x.key]) !== 0));
     const every = `every ${fmtNum(Number(meta.secs ?? 60) / 60)} min`;
     box.append(el('p', { class: 'meta' }, `History of ${k.label} (${every}, from ${String(meta.source ?? '')}).`));
     if (k.queryid != null) {
       box.append(el('div', { class: 'charts' },
-        lineChart('Mean and longest run', rows, [{ key: 'mean_ms', label: 'mean' }, { key: 'log_max_ms', label: 'longest (server log)' }], ms),
+        lineChart('Mean and longest run', rows, some([{ key: 'mean_ms', label: 'mean' }, { key: 'log_max_ms', label: 'longest (server log)' }]), ms),
         lineChart('Calls and rows', rows, [{ key: 'calls', label: 'calls' }, { key: 'rows', label: 'rows' }])));
       box.append(el('p', { class: 'meta' }, 'The longest run comes from the server log (statements over log_min_duration_statement of the same shape): '
         + 'pg_stat_statements keeps no maximum per interval, so an interval with nothing logged has none.'));
     } else {
       box.append(el('div', { class: 'charts' },
         lineChart('Mean and longest', rows, [{ key: 'mean_ms', label: 'mean' }, { key: 'max_ms', label: 'longest' }], ms),
-        lineChart('Events and rows', rows, [{ key: 'events', label: 'events' }, { key: 'failed', label: 'failed' }, { key: 'rows', label: 'rows' }])));
+        lineChart('Events and rows', rows, some([{ key: 'events', label: 'events' }, { key: 'failed', label: 'failed' }, { key: 'rows', label: 'rows' }]))));
     }
     const cols: Col[] = k.queryid != null
       ? [{ key: 'snapshot_at', label: 'from' }, { key: 'calls', num: true }, { key: 'rows', num: true },
@@ -74,10 +76,13 @@ export function trendCol(ctx: Ctx, keyOf: (r: Row) => TrendKey | null, label = '
         const was = open.get(tr);
         if (was) { was.remove(); open.delete(tr); b.textContent = 'History'; b.setAttribute('aria-expanded', 'false'); return; }
         const td = el('td', { colspan: String(tr.children.length) }, el('p', { class: 'meta' }, 'Reading...'));
+        // a wide grid scrolls sideways: the panel keeps to the visible width, pinned to its left edge
+        const wrap = tr.closest('.grid-wrap') as HTMLElement | null;
+        const fit = (p: HTMLElement) => { if (wrap?.clientWidth) { p.style.position = 'sticky'; p.style.left = '0'; p.style.width = `${wrap.clientWidth - 24}px`; } return p; };
         const row = el('tr', { class: 'trend-row' }, td);
         tr.after(row); open.set(tr, row);
         b.textContent = 'Hide history'; b.setAttribute('aria-expanded', 'true');
-        void trendPanel(ctx, k).then(p => td.replaceChildren(p));
+        void trendPanel(ctx, k).then(p => td.replaceChildren(fit(p)));
       });
       return b;
     },

@@ -218,12 +218,12 @@ func (s *Server) SlowEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	case q.Get("null") == "1":
 	case q.Has("value"):
-		if v := q.Get("value"); len(v) > 512 {
+		v := q.Get("value")
+		if len(v) > 512 {
 			writeErr(w, http.StatusBadRequest, errors.New("value must be at most 512 characters"))
 			return
-		} else {
-			value = v
 		}
+		value = v
 	default:
 		all = true
 	}
