@@ -21,6 +21,7 @@ import { indexesFleetView } from './indexes';
 import { slowFleetView } from './slow';
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
+import { AckBody, ackDialog, ackHolds, ackWords, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 
 export type { Ctx };
 const range = window_;
@@ -227,30 +228,57 @@ export { errorBox };
 // ---- fleet Summary: one row per instance, one coloured cell per check group (DBADash's Summary tab)
 
 export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
-  const [f] = await Promise.all([fleet(), tagUI()]);
+  // the acknowledgements in force and the Needs-attention rates (task 118); a server without them: no ack, no rate
+  const [f, , ad] = await Promise.all([fleet(), tagUI(), loadAckSafe(['acks', 'attention'])]);
+  const acks = checkAcks(ad);
+  const rates = new Map(rowsOf(ad.attention).map(r => [Number(r.instance_id), r]));
   const scope = inTag(ctx, f.instances);
   const filterBar = tagFilterBar(scope);   // built first: it drops a remembered filter this scope no longer carries
   const insts = applyTagFilter(scope);
+  type Acked = Record<string, Row>;
   const rows = insts.map(r => {
     const c = cells(f, r);
-    const row: Row = { ...r, _cells: c, _worst: Math.max(...Object.values(c).map(x => x.level)) };
-    for (const g of groups) row['g_' + g.key] = c[g.key].level * 1000 + c[g.key].n;   // sorts by level, then count
+    // an acknowledged cell (in force, and for until-change the same text it was given for) loses its colour and its
+    // weight: it is counted as acknowledged, never as warning or critical
+    const acked: Acked = {};
+    for (const g of groups) {
+      const a = acks.get(`${String(r.instance_id)}|${g.key}`);
+      if (a && !c[g.key].none && c[g.key].level > 0 && ackHolds(a, cellText(c[g.key]))) acked[g.key] = a;
+    }
+    const row: Row = { ...r, _cells: c, _acked: acked,
+      _worst: Math.max(0, ...groups.filter(g => !acked[g.key]).map(g => c[g.key].level)) };
+    for (const g of groups) row['g_' + g.key] = acked[g.key] ? -1 : c[g.key].level * 1000 + c[g.key].n;   // sorts by level, then count
     return row;
   });
-  rows.sort((a, b) => Number(b._worst) - Number(a._worst) || String(a.name).localeCompare(String(b.name)));
+  // Sort (Darling's): severity (then name), name, or CPU (the newest host sample, highest first; none last)
+  type SortBy = 'severity' | 'name' | 'cpu';
+  let sortBy: SortBy = (() => { try { const v = localStorage.getItem('pgvigil.summarySort'); return v === 'name' || v === 'cpu' ? v : 'severity'; } catch { return 'severity'; } })();
+  const cpuOf = (r: Row) => { const v = rates.get(Number(r.instance_id))?.cpu_pct; return v == null ? -1 : Number(v); };
+  const sortRows = () => rows.sort((a, b) => sortBy === 'name' ? String(a.name).localeCompare(String(b.name))
+    : sortBy === 'cpu' ? cpuOf(b) - cpuOf(a) || String(a.name).localeCompare(String(b.name))
+    : Number(b._worst) - Number(a._worst) || String(a.name).localeCompare(String(b.name)));
+  sortRows();
   const n = [0, 0, 0];
   for (const r of rows) n[Number(r._worst)]++;
+  const nAck = rows.reduce((a, r) => a + Object.keys(r._acked as Acked).length, 0);
   // one line of counts where a row of tiles stood: the grid is the page (DBA Dash's Summary)
   const waiters = insts.reduce((a, r) => a + Number(r.waiting_lock ?? 0), 0);
   const tiles = el('p', { class: 'meta counts' },
     `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances: `,
-    el('span', { class: n[2] ? 'crit' : '' }, `${n[2]} critical`), ', ', el('span', { class: n[1] ? 'warn' : '' }, `${n[1]} warning`), `, ${n[0]} OK`,
+    el('span', { class: n[2] ? 'crit' : '' }, `${n[2]} critical`), ', ', el('span', { class: n[1] ? 'warn' : '' }, `${n[1]} warning`), `, ${n[0]} OK, ${nAck} check(s) acknowledged`,
     waiters ? `; ${waiters} lock waiters now` : '');
   const statusCol = (g: typeof groups[number]): Col => ({
     key: 'g_' + g.key, label: g.label,
-    cls: (_v, r) => 'status ' + cellClass((r._cells as ReturnType<typeof cells>)[g.key]),
+    cls: (_v, r) => (r._acked as Acked)[g.key] ? 'status none ack' : 'status ' + cellClass((r._cells as ReturnType<typeof cells>)[g.key]),
     fmt: (_v, r) => {
       const c = (r._cells as ReturnType<typeof cells>)[g.key];
+      const ak = (r._acked as Acked)[g.key];
+      if (ak) {
+        // acknowledged: no colour, the reading kept with 'ack:' before it, who and when in its title
+        const l = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}, ${ackWords(ak)}`, 'data-text': 'ack: ' + cellText(c) }, 'ack: ' + cellText(c));
+        l.title = ackWords(ak) + (c.detail.length ? '\n' + c.detail.slice(0, 12).join('\n') : '');
+        return l;
+      }
       // a green cell says nothing: the colour is the status, and text is kept for a count, a value or 'no sample'
       // (the link keeps its name for a screen reader and the export)
       const quiet = !c.none && c.level === 0 && !c.text;
@@ -275,10 +303,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // The test grid (DBA Dash's Summary, its upper grid): one row per check group over the scope the tree gives (the
   // fleet, a tag folder, the tag filter), with how many instances are OK, warning, critical and not sampled. A
   // count is a button: it narrows the instance grid below to those instances; the same button again, or 'Clear
-  // filter', shows them all. (No 'acknowledged' count: pgvigil has no acknowledgement of a finding yet.)
-  type Bucket = 'ok' | 'warn' | 'crit' | 'na';
+  // filter' shows them all; the column of that test moves to the front of the grid (DBA Dash 01a). An acknowledged
+  // cell counts under 'acknowledged', not under its warning or critical (DBA Dash's Acknowledged column).
+  type Bucket = 'ok' | 'warn' | 'crit' | 'na' | 'ack';
   const bucketOf = (r: Row, key: string): Bucket => {
     const c = (r._cells as ReturnType<typeof cells>)[key];
+    if ((r._acked as Acked)[key]) return 'ack';
     return c.none ? 'na' : c.level === 2 ? 'crit' : c.level === 1 ? 'warn' : 'ok';
   };
   // the picked count survives the page's 30-second redraw (sessionStorage, as the focused view survives it)
@@ -286,7 +316,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     try {
       const p = JSON.parse(sessionStorage.getItem('pgvigil.summaryPick') ?? 'null') as { key?: string; b?: string } | null;
       const g = p && groups.find(x => x.key === p.key);
-      return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na') ? { key: g.key, label: g.label, b: p.b as Bucket } : null;
+      return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na' || p.b === 'ack') ? { key: g.key, label: g.label, b: p.b as Bucket } : null;
     } catch { return null; }
   })();
   const setPick = (p: typeof pick) => {
@@ -296,12 +326,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const lower = el('div', {});
   const clear = el('button', { type: 'button', class: 'link' }, 'Clear filter');
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'not sampled' };
+  const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'not sampled', ack: 'acknowledged' };
   // The focused view (DBA Dash's View > Focused view, the same rules): only what needs a look - the instances with
   // a warning or a critical status, the tests with one, and the status columns that hold one. Out of it, a status
   // column in which no instance has a sample is still left out, and a test nobody is sampled for is not listed.
   let focus = (() => { try { return localStorage.getItem('pgvigil.summaryFocus') === '1'; } catch { return false; } })();
-  const focusBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(focus) }, 'Focused view');
+  const focusBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(focus) }, 'Needs attention only');
   const bad = (r: Row, key: string) => { const b = bucketOf(r, key); return b === 'warn' || b === 'crit'; };
   // its own scroll, as DBA Dash's upper pane: the instance grid below stays on the first screen
   const upper = el('div', { class: 'grid-wrap tests', tabindex: '0', role: 'region', 'aria-label': 'Tests' });
@@ -319,7 +349,13 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     said.replaceChildren(
       pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}. ` : focus ? `${inFocus} of ${rows.length} instance(s) need a look. ` : `${rows.length} instance(s). `,
       ...(pick ? [clear] : []));
-    lower.replaceChildren(grid(shown, cols.filter(c => !c.key.startsWith('g_') || keep.has(c.key)),
+    // a picked test's column first after the instance name (DBA Dash 01a: the count's click shows that column)
+    let shownCols = cols.filter(c => !c.key.startsWith('g_') || keep.has(c.key));
+    if (pick) {
+      const pc = shownCols.find(c => c.key === 'g_' + pick!.key);
+      if (pc) { shownCols = shownCols.filter(c => c !== pc); shownCols.splice(shownCols.findIndex(c => c.key === 'name') + 1, 0, pc); }
+    }
+    lower.replaceChildren(grid(shown, shownCols,
       rows.length === 0 ? 'No instances yet: run the collector.' : pick ? 'No instance matches.' : focus ? 'Nothing needs a look: every sampled check is OK.' : 'No instance matches.'));
   };
   // The test grid counts the same instances the grid below lists (in the focused view: those that need a look), so
@@ -328,13 +364,13 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const drawUpper = () => {
     const set = base();
     const tests = groups.map(g => {
-      const n: Record<Bucket, number> = { ok: 0, warn: 0, crit: 0, na: 0 };
+      const n: Record<Bucket, number> = { ok: 0, warn: 0, crit: 0, na: 0, ack: 0 };
       for (const r of set) n[bucketOf(r, g.key)]++;
       return { key: g.key, test: g.label, ...n, _worst: n.crit ? 2 : n.warn ? 1 : 0 } as Row;
     });
     // the worst test first (critical instances, then warning), so the pane's first rows are the ones to read
     tests.sort((x, y) => Number(y.crit) - Number(x.crit) || Number(y.warn) - Number(x.warn) || String(x.test).localeCompare(String(y.test)));
-    const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) > 0);
+    const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) + Number(x.ack) > 0);
     countBtns.clear();
     const g = grid(t, testCols, focus ? 'No test has a warning or a critical instance.' : 'No test has a sampled instance.');
     g.removeAttribute('tabindex');   // the pane around it is the scroll region the keyboard reaches
@@ -349,7 +385,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   clear.addEventListener('click', () => { setPick(null); drawLower(); });
   const countCol = (b: Bucket, label: string): Col => ({
     key: b, label, num: true,
-    cls: v => 'status ' + (b === 'na' || Number(v) === 0 ? 'none' : b),
+    cls: v => 'status ' + (b === 'na' || b === 'ack' || Number(v) === 0 ? 'none' : b),
     fmt: (v, r) => {
       const bt = el('button', { type: 'button', class: 'cell-link link', 'aria-pressed': 'false', 'aria-label': `${String(r.test)}: ${String(v)} instance(s) ${words[b]}; show them below` }, String(v));
       countBtns.set(String(r.key) + '|' + b, bt);
@@ -367,13 +403,61 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     { key: 'test', label: 'test',
       fmt: (v, r) => el('span', { class: 'test-name' }, hidden(dot(Number(r._worst))),   // the counts' labels name the status
         el('a', { class: 'cell-link', href: href(ctx, { tab: 'checks' }) }, String(v))) },
-    countCol('ok', 'instances OK'), countCol('warn', 'instances warning'), countCol('crit', 'instances critical'), countCol('na', 'instances N/A'),
+    countCol('ok', 'instances OK'), countCol('warn', 'instances warning'), countCol('crit', 'instances critical'), countCol('na', 'instances N/A'), countCol('ack', 'acknowledged'),
   ];
-  drawUpper(); drawLower();
+  // ---- Needs attention (Darling's Fleet Overview strip): one line per instance with a warning or a critical cell not
+  // acknowledged, its reasons (blocking / deadlocks of the last 15 minutes as a count and a rate per hour, then the
+  // cells), its band, and Acknowledge (a dialog: the checks of the line, until a time and / or until they change)
+  const strip = el('div', { class: 'attention', role: 'region', 'aria-label': 'Needs attention' });
+  const sortSel = el('select', { 'aria-label': 'Sort' }, ...(['severity', 'name', 'cpu'] as SortBy[]).map(v => el('option', { value: v }, v === 'cpu' ? 'CPU' : v[0].toUpperCase() + v.slice(1))));
+  sortSel.value = sortBy;
+  const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
+  let allLines = false;
+  const drawStrip = () => {
+    const lines = rows.filter(r => Number(r._worst) > 0).map(r => {
+      const c = r._cells as ReturnType<typeof cells>, acked = r._acked as Acked;
+      const open = groups.filter(g => !c[g.key].none && c[g.key].level > 0 && !acked[g.key]);
+      const reasons = open.map(g => `${g.label} ${cellText(c[g.key])}`);
+      const rt = rates.get(Number(r.instance_id));
+      const per = (k: string, label: string) => {
+        const v = Number(rt?.[k] ?? 0), mins = Number(rt?.window_minutes ?? 15);
+        return v > 0 ? `${label} ${v} (${(v * 60 / mins).toFixed(1)}/hr)` : '';
+      };
+      const shown = [per('blocking', 'Blocking'), per('deadlocks', 'Deadlocks'), ...reasons].filter(Boolean);
+      const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellText(c[g.key]) }));
+      const lvl = Number(r._worst);
+      return el('div', { class: 'attention-row', style: `display:flex;gap:.8rem;align-items:baseline;padding:.25rem .5rem;border-left:3px solid var(${lvl === 2 ? '--crit' : '--warn'});margin:.2rem 0` },
+        dot(lvl), el('strong', {}, instLink(ctx, String(r.name), r.instance_id)),
+        el('span', { style: 'flex:1' }, shown.slice(0, 4).join(' \u00b7 ') + (shown.length > 4 ? ` \u00b7 +${shown.length - 4} more` : '')),
+        badge(lvl === 2 ? 'Critical' : 'Warning', lvl === 2 ? 'crit' : 'warn'),
+        writeButton(ad, 'Acknowledge', `Acknowledge ${String(r.name)}: ${reasons.join(', ')}`, () => ackDialog({
+          title: `Acknowledge ${String(r.name)}`,
+          what: `${open.map(g => `${g.label} (${cellText(c[g.key])})`).join(', ')}: each cell loses its colour and is counted as acknowledged. Who and when are kept.`,
+          body, expiry: true, untilChange: true, noteField: 'optional', after: redraw,
+        })));
+    });
+    const ackList = rows.flatMap(r => Object.entries(r._acked as Acked).map(([k, a]) => {
+      const g = groups.find(x => x.key === k)!;
+      return el('li', {}, `${String(r.name)}: ${g.label} (${cellText((r._cells as ReturnType<typeof cells>)[k])}), ${ackWords(a)} `,
+        ad.writable ? endButton(Number(a.ack_id), `Unacknowledge ${String(r.name)} ${g.label}`, redraw, 'Unacknowledge') : null);
+    }));
+    strip.replaceChildren(...[el('h3', {}, 'Needs attention ', whatIsThis('One line per instance with a warning or a critical cell that is not acknowledged: blocking and deadlocks of the last 15 minutes as a count and a rate per hour, then the cells. Acknowledge takes the line\'s cells out of the colour until a time or until the cell changes; they are counted under instances acknowledged.', 'Needs attention')),
+      lines.length ? el('div', {}, ...(allLines ? lines : lines.slice(0, 8)),
+        lines.length > 8 ? (() => { const b = el('button', { type: 'button', class: 'link', 'aria-expanded': String(allLines) }, allLines ? 'Show the first 8' : `Show all ${lines.length}`); b.addEventListener('click', () => { allLines = !allLines; drawStrip(); }); return b; })() : null) : el('p', { class: 'empty' }, rows.length ? 'Nothing needs attention: no warning or critical cell that is not acknowledged.' : 'No instances yet.'),
+      ackList.length ? el('details', {}, el('summary', {}, `${ackList.length} acknowledged check(s)`), el('ul', {}, ...ackList)) : null,
+      ad.writable ? null : el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`)].filter((x): x is NonNullable<typeof x> => x !== null));
+  };
+  sortSel.addEventListener('change', () => {
+    sortBy = sortSel.value as SortBy;
+    try { localStorage.setItem('pgvigil.summarySort', sortBy); } catch { /* private window */ }
+    sortRows(); drawStrip(); drawLower();
+  });
+  drawStrip(); drawUpper(); drawLower();
   return el('section', {}, el('h2', {}, 'Summary' + scopeLabel(ctx)),
-    el('div', { class: 'toolbar' }, filterBar, el('div', { class: 'seg' }, focusBtn)),
+    el('div', { class: 'toolbar' }, filterBar, el('div', { class: 'seg' }, focusBtn), el('label', {}, 'Sort ', sortSel)),
     tiles,
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
+    strip,
     upper,
     said,
     lower);
