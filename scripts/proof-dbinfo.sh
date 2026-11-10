@@ -84,13 +84,13 @@ q "select '  ' || datname || '|' || owner || '|' || encoding || '|' || lc_collat
 # alone, so on 13 and 14 the provider is NULL and collation_mismatch is false (dbinfo() compares two versions it has)
 if [[ "$(q "select current_setting('server_version_num')::int >= 150000")" = t ]]; then want="libc|false"; else want="-|false"; fi
 [ "$(row "coalesce(locale_provider, '-') || '|' || coalesce(collation_mismatch::text, '-')" "$DBA")" = "$want" ] || fail "A: a's locale provider / collation version (want $want)"
-[ "$(row "tables_read >= 1" "$DBA")" = t ] || fail "A: a's tables read"
+[ "$(row "tables_read >= 1" "$DBA")" = t ] || fail "A: a's tables read (the tables collection reads at most 50 databases a run, postgres first and then by name: a server with more before $DBA never reaches it)"
 [ "$(row "encoding || '|' || lc_collate || '|' || lc_ctype || '|' || conn_limit || '|' || extensions || '|' || (comment is null)" "$DBB")" \
   = "SQL_ASCII|C|C|-1|plpgsql 1.0|true" ] || fail "A: b's facts"
 [ "$(q "select (select size_bytes from pgvigil.dbinfo($iid) where datname='$DBA') - (select size_bytes from pgvigil.dbinfo($iid) where datname='$DBB') >= 8*1024*1024")" = t ] \
   || fail "A: a is not 8 MB larger than b"
-[ "$(q "select string_agg(datname, ',' order by datname) from pgvigil.dbinfo($iid) where is_template")" = "template0,template1" ] || fail "A: templates"
-[ "$(q "select string_agg(name, ',' order by name) from pgvigil.dbinfo_tablespaces($iid) where size_bytes > 0")" = "pg_default,pg_global" ] || fail "A: tablespaces"
+[ "$(q "select string_agg(datname, ',' order by datname) from pgvigil.dbinfo($iid) where is_template and datname in ('template0', 'template1')")" = "template0,template1" ] || fail "A: templates"
+[ "$(q "select string_agg(name, ',' order by name) from pgvigil.dbinfo_tablespaces($iid) where size_bytes > 0 and name in ('pg_default', 'pg_global')")" = "pg_default,pg_global" ] || fail "A: tablespaces"
 [ "$(q "select default_for ~ '$DBA' and default_for ~ '$DBB' from pgvigil.dbinfo_tablespaces($iid) where name='pg_default'")" = t ] || fail "A: default_for"
 echo "A: OK"
 

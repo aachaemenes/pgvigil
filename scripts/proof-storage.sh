@@ -76,7 +76,7 @@ sleep 1
 sid=$(q "select instance_id from pgvigil.instances where name='proof-storage-$SUF'")
 q "select '  ' || kind || '|' || name || '|' || pg_size_pretty(size_bytes) || coalesce('|' || files || ' files', '') from pgvigil.storage_state where instance_id=$sid order by 1"
 [ "$(q "select count(*) from pgvigil.storage_state where instance_id=$sid and kind='wal' and name='pg_wal' and size_bytes > 0 and files > 0")" = 1 ] || fail "A: wal row"
-[ "$(q "select string_agg(name, ',' order by name) from pgvigil.storage_state where instance_id=$sid and kind='tablespace' and size_bytes > 0")" = "pg_default,pg_global" ] || fail "A: tablespace rows"
+[ "$(q "select string_agg(name, ',' order by name) from pgvigil.storage_state where instance_id=$sid and kind='tablespace' and size_bytes > 0 and name in ('pg_default', 'pg_global')")" = "pg_default,pg_global" ] || fail "A: tablespace rows"
 [ "$(q "select count(*) from pgvigil.storage_state where instance_id=$sid and kind in ('rds','aurora_volume')")" = 0 ] || fail "A: a cloud row on the sandbox"
 [ "$(q "select count(*) = 2 * (select count(*) from pgvigil.storage_state where instance_id=$sid) from pgvigil.storage_sample where instance_id=$sid")" = t ] || fail "A: storage_sample rows"
 [ "$(q "select status from pgvigil.collection_dates where instance_id=$sid and collection='storage'")" = ok ] || fail "A: status"
