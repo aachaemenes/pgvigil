@@ -96,8 +96,33 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 - golang.org/x/sys v0.49.0, in pgvigil-app.exe (and in pgvigil itself, listed with every module in docs/notices.md): BSD 3-Clause License, Copyright 2009 The Go Authors (`golang.org/x/sys@v0.49.0/LICENSE`).
 - WebView2Loader.dll from the Microsoft Edge WebView2 SDK, embedded in pgvigil-app.exe through go-webview2: BSD 3-Clause License, Copyright (C) Microsoft Corporation (`go-webview2@.../webviewloader/sdk/LICENSE.txt`).
 
+## The SQL Server collections
+
+Each piece below is named in a comment beside it in the file. Where only a shape or an idea was followed, the statement is pgvigil's own; where a list was ported, it is ported as data. DBA Dash's notice is the one at the top of this file.
+
+| What | From | Licence | Where |
+|---|---|---|---|
+| The running-queries snapshot's shape (sessions with a request or an open transaction, the oldest transaction per session, tempdb pages per request, the top three session waits) | DBA Dash 4.24.1, DBADash/SQL/SQLRunningQueries.sql | MIT, Copyright 2022 Trimble, Inc. | internal/mssql/requests.go (requestsTemplate) |
+| The running-jobs filter and the job history read's shape (past a cursor on instance_id, the in-progress status left out) | DBA Dash 4.24.1, DBADash/SQL/SQLRunningJobs.sql and SQLJobHistory.sql | MIT, Copyright 2022 Trimble, Inc. | internal/mssql/jobs.go |
+| The idea of the newest backup per database and type from this server's own msdb.dbo.backupset (the statement is pgvigil's own) | DBA Dash 4.24.1, DBADash/SQL/SQLBackups.sql | MIT, Copyright 2022 Trimble, Inc. | internal/mssql/backups.go |
+| The three reads behind the Agent, Database Mail and memory dump cells and the Agent's session name (the statements are pgvigil's own) | DBA Dash 4.24.1, DBADash/SQL/SQLServerExtraProperties.sql | MIT, Copyright 2022 Trimble, Inc. | internal/mssql/services.go |
+| The shape of the Extended Events sessions (a dedicated deadlock session, the slow session's events, actions and duration predicate, an event_file read from a cursor, the Managed Instance and Azure SQL Database forms); the session text is pgvigil's own | DBA Dash 4.24.1, DBADash/SQL/SQLDeadlockSession.sql, SQLSlowQueriesEventFileSession.sql, SQLSlowQueries.sql, SQLDeadlockSessionAzure.sql | MIT, Copyright 2022 Trimble, Inc. | internal/mssql/xe.go |
+| One session per capture, the blocked-process and attention sessions on a ring buffer with an event_counter beside attention, the five-second dispatch latency | PerformanceMonitor at commit 65bdb5f, DarlingXeSessions.cs and AlwaysOnXeSessions.cs | MIT, Erik Darling, Darling Data, LLC | internal/mssql/xe.go |
+| The wait types of idle background work (the rows marked Ignorable in its wait category table), as data | SQL Server First Responder Kit 8.34, sp_BlitzFirst.sql | MIT, Copyright (c) 2022 Brent Ozar Unlimited | internal/mssql/waits.go (benignWaits) |
+| The wait list grouped by what it points at, as data | DarlingData 6.11, sp_PressureDetector.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/waits.go (waitCategories) |
+
+The MIT licence of each of these sources, with its copyright line above:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 ## Read, not copied
 
 The DBADash door (internal/dbadash, task 55) reads a DBA Dash repository (Trimble, MIT) through SQL against its tables dbo.Instances, dbo.Summary, dbo.CollectionDates and dbo.DBVersionHistory with a read-only login; the table and column names and the status codes (1 Critical, 2 Warning, 3 N/A, 4 OK) are DBA Dash's own, read from the repository DBA Dash 4.24.1 built in the proof; no code of DBA Dash is copied. The SQL Server driver is github.com/microsoft/go-mssqldb (BSD 3-Clause), listed with every module in docs/notices.md.
 
 The waits collection reads pg_wait_sampling's and pgms_wait_sampling's views, the statements collection pg_stat_monitor's, and the index advisor pg_qualstats' and HypoPG's functions, through SQL against the installed extension; no code of theirs is in pgvigil. Their licences (the PostgreSQL licence, each read 2026-11-10 UTC) ask nothing of a program that only queries them; the notice is courtesy: pg_wait_sampling, Copyright (c) 2015-2025, Postgres Professional, Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group, Portions Copyright (c) 1994, The Regents of the University of California; pg_stat_monitor, Portions Copyright (c) 2018-2020, Percona LLC and/or its affiliates, Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group, Portions Copyright (c) 1994, The Regents of the University of California; pg_qualstats, Copyright (c) 2014-2017 Ronan Dunklau, Copyright (c) 2018-2025 The Powa-Team; HypoPG, Portions Copyright (c) 2015-2018, PostgreSQL Global Development Group, Portions Copyright (c) 1994, The Regents of the University of California. The plan reading of depesz's explain.depesz.com and pgMustard informed the plan rules as concepts only; nothing of theirs is copied.
+
+The SQL Server running-queries collection calls sp_WhoIsActive (GPL-3.0) where a server's DBA installed it, with its documented parameters only; no line of it is in pgvigil and pgvigil does not ship it. The storage, version store, availability group, mirroring, log shipping and replication reads are written from Microsoft's documentation of the views and tables.

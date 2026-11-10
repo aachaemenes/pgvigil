@@ -1,6 +1,6 @@
 # SQL Server instances
 
-pgvigil can hold SQL Server instances beside its PostgreSQL fleet as an engine of its own: its own collector, its own tables in the same repository. This page is what exists today, the base; the collections, findings and pages built on it arrive wave by wave and are listed here as they land.
+pgvigil can hold SQL Server instances beside its PostgreSQL fleet as an engine of its own: its own collector, its own tables in the same repository, its own pages. This page is the base every collection stands on (the engine, the configuration, the login) and the list of what is collected; each group of collections has a page of its own.
 
 The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash repository already knows. The engine reads the SQL Server itself.
 
@@ -8,10 +8,32 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 
 - An instance says `engine: sqlserver`; everything else is PostgreSQL, as before.
 - Only SQL Server collections run on a SQL Server instance and only PostgreSQL collections on a PostgreSQL one. A SQL Server collection is named `mssql_<what>`. Naming a collection of the other engine under an instance's `schedules:` or `disabled:` is refused when the file is read.
-- One collection, hourly: `mssql_instance` - the server's own description (version, edition, update level, collation, clustered, Always On enabled), every row of `sys.configurations` with the previous value and the time a value in use changed, and, with VIEW SERVER STATE, the CPU count, memory and start time.
-- Nothing is installed on the monitored server and nothing is written there. The collector's session gives up on a lock after two seconds, loses any deadlock it is part of and reads without shared locks, so it cannot join a blocking chain.
+- The collector asks the server what it is (a server someone runs, Amazon RDS, Azure SQL Managed Instance, Azure SQL Database) and what the login may read (VIEW SERVER STATE, VIEW ANY DEFINITION, msdb) before each collection. A collection that does not apply there is skipped with the reason, never failed.
+- Nothing is installed on the monitored server and nothing is written there. The collector's session gives up on a lock after two seconds, loses any deadlock it is part of and reads without shared locks, so it cannot join a blocking chain. The one door that changes anything is the [actions door](sqlserver-actions.md), off until an instance opens it with a login of its own.
 
-Not yet: running queries and blocking, waits, Extended Events, Always On, mirroring, replication, log shipping, Agent jobs, backups, the SQL Server pages and their actions. A SQL Server instance is a row in the tree and on the Summary; the cells of PostgreSQL checks say `not yet` for it, the fleet pages of PostgreSQL checks (Versions, Corruption, Slow queries' sources) do not list it, and no PostgreSQL finding is raised on it. Azure Synapse Analytics answers on the same protocol and is refused with a clear error: it is not a SQL Server.
+## Collections
+
+Thirteen collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+
+| collection | every | reads | needs | Azure SQL Database | page |
+| --- | --- | --- | --- | --- | --- |
+| `mssql_instance` | 1 hour | the server's description (version, edition, update level, collation, clustered, Always On enabled), every row of `sys.configurations` with the previous value and the time a value in use changed, the CPU count, memory and start time | nothing for the first two; VIEW SERVER STATE for the third (partial without it) | runs | this page |
+| `mssql_services` | 5 min | is SQL Server Agent running, is Database Mail started, the memory dump files | VIEW SERVER STATE | not run | this page |
+| `mssql_requests` | 1 min | what runs now and who blocks whom | VIEW SERVER STATE | runs | [running queries](sqlserver-running.md) |
+| `mssql_waits` | 1 min | the wait counters, as the difference between two reads | VIEW SERVER STATE | runs (the database's own waits) | [running queries](sqlserver-running.md) |
+| `mssql_xe` | 1 min | the Extended Events sessions a DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, cancelled requests, availability group events | VIEW SERVER STATE | runs (database-scoped sessions) | [Extended Events](sqlserver-xe.md) |
+| `mssql_ag` | 1 min | Always On availability groups | Always On enabled, VIEW SERVER STATE, VIEW ANY DEFINITION | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_mirroring` | 1 min | database mirroring | VIEW SERVER STATE for the queues | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_logshipping` | 5 min | msdb's log shipping monitor tables | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_replication` | 5 min | the distribution database, on a distributor | a user in the distribution database with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_jobs` | 5 min | SQL Server Agent: jobs, steps, schedules, what runs now, the history | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_backups` | 1 hour | every database's last full, differential and log backup | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
+| `mssql_storage` | 1 hour | every database file with its size, growth and volume | VIEW ANY DEFINITION; VIEW SERVER STATE for the volumes | not run yet | [storage and row versions](sqlserver-storage.md) |
+| `mssql_versionstore` | 1 min | tempdb's version store and the transaction that holds it | VIEW SERVER STATE | not run yet | [storage and row versions](sqlserver-storage.md) |
+
+Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
+
+Not yet: CPU and the performance counters, memory, the plan cache and Query Store, index and statistics health, DBCC and corruption, the error log, logins and permissions, Azure SQL Database's storage and version store, a proof of Windows authentication, and the `aws:` block (CloudWatch and RDS metrics) on a SQL Server instance. Azure SQL Database's backups are the service's own and are not read. On the Summary a SQL Server instance's cell in a PostgreSQL-only column says `n/a`, and a column with a SQL Server read says `not yet` until a read of its group is stored; the fleet pages of PostgreSQL checks (Versions, Corruption, Slow queries' sources) do not list it, and no PostgreSQL finding is raised on it. Azure Synapse Analytics answers on the same protocol and is refused with a clear error: it is not a SQL Server.
 
 ## Configuration
 
@@ -26,7 +48,7 @@ instances:
 
 The connection string is the driver's own form, `sqlserver://login:password@host:1433?database=master&encrypt=true`, or the ADO form `server=host;user id=login;password=...;database=master`. One that carries a password must come through `env:` or `file:`; an inline password is refused. Windows authentication from a Windows collector host is the driver's (a connection string without a login); it is not proven here.
 
-`actions_dsn`, `explain_dsn`, `explain_analyze`, `pgbouncer`, `aws:` and `backups:` are refused on a SQL Server instance for now.
+`explain_dsn`, `explain_analyze`, `pgbouncer` and `backups:` are PostgreSQL's and refused on a SQL Server instance; the `aws:` block is refused there for now. `actions_dsn` and `actions:` open the [actions door](sqlserver-actions.md); `mssql_thresholds:` sets the availability, jobs and backups thresholds ([the page](sqlserver-hadr.md)).
 
 ## The login
 
