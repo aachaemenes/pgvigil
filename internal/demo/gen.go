@@ -224,6 +224,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("databases", g.databaseRows(t))
 	}
 	add("activity", g.activityRows(t))
+	if g.waitDoor() {
+		add("waits", g.waitRows(t))
+	}
 	add("dbstats", g.dbstatsRows(t, prev))
 	if !g.Spec.StmtBroken && (first || t.Minute()%5 == 0) {
 		add("statements", g.statementRows(t))
@@ -248,6 +251,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("extensions", g.extensionRows(t))
 		add("versions", g.versionRows(t))
 		add("roles", g.roleRows(t))
+		add("indexes", g.indexRows(t))
 	}
 	add("io", g.ioRows(t))
 	if !g.Spec.Replica { // a standby does not vacuum: the collector skips both there (logCollections logs it)
@@ -295,7 +299,10 @@ func (g *Gen) Collections() []string {
 	if g.Spec.Platform == "onprem" {
 		c = append(c, "serverlog")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans")
+	if g.waitDoor() {
+		c = append(c, "waits")
+	}
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes")
 	if g.amcheckOn() {
 		c = append(c, "amcheck")
 	}

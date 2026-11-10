@@ -246,7 +246,12 @@ func classify(e *entry) (Event, bool) {
 		strings.Contains(e.msg, "does not exist") && strings.HasPrefix(e.msg, "role ")):
 		ev.Kind, ev.Detail = AuthFail, e.msg
 	default:
-		return ev, false
+		// a message no rule above took: the pganalyze classes (classes_pganalyze.go), one event kind each
+		k, _, ok := ClassifyMore(e.level, e.msg)
+		if !ok {
+			return ev, false
+		}
+		ev.Kind, ev.Detail, ev.Statement = k, e.msg, tagged(e.more, "STATEMENT")
 	}
 	return ev, true
 }

@@ -95,7 +95,7 @@
     <tr><th>Collection</th><th>Cadence</th><th>Source</th></tr>
     <tr><td>instance</td><td>hourly</td><td>version, recovery state, non-default settings (credentials masked) with a history of changes, extensions</td></tr>
     <tr><td>activity</td><td>1 min</td><td>pg_stat_activity: active and idle-in-transaction sessions, blockers, pg_blocking_pids, blocking chains to the head</td></tr>
-    <tr><td>statements</td><td>5 min</td><td>pg_stat_statements, top by time and by calls, per-interval deltas with reset detection</td></tr>
+    <tr><td>statements</td><td>5 min</td><td>pg_stat_statements, top by time and by calls, per-interval deltas with reset detection; from pg_stat_monitor where pg_stat_statements is absent</td></tr>
     <tr><td>dbstats</td><td>1 min</td><td>pg_stat_database, bgwriter, checkpointer, WAL, as rates</td></tr>
     <tr><td>iostats</td><td>5 min</td><td>pg_stat_io (PG16+) by backend type, object and context, as rates; every minute with <code>schedules: iostats: 1m</code></td></tr>
     <tr><td>replication</td><td>1 min</td><td>pg_stat_replication, wal receiver, slots with retained WAL, subscriptions, conflicts, aurora_replica_status()</td></tr>
@@ -115,6 +115,8 @@
     <tr><td>versions</td><td>hourly</td><td>the server version against a built-in PostgreSQL release table (minors behind, end of life), the last restart and version changes, RDS and Aurora upgrade targets and pending maintenance, collation versions</td></tr>
     <tr><td>io</td><td>5 min</td><td>RDS and Aurora storage IO from CloudWatch: IOPS, latency, throughput, queue depth, burst balance; the DMS replication instances' IO</td></tr>
     <tr><td>roles</td><td>hourly</td><td>pg_roles (never pg_authid), memberships, database, schema and default ACLs per database, pg_hba_file_rules where readable with a checksum and a change history; findings for superusers, CREATEROLE and BYPASSRLS, the monitoring login, a role on every database, a login no rule lets in</td></tr>
+    <tr><td>waits</td><td>1 min</td><td>pg_wait_sampling's profile per event and statement where installed (Azure: pgms_wait_sampling), else the activity samples; the lock tree of the newest snapshot</td></tr>
+    <tr><td>indexes</td><td>hourly</td><td>unused, redundant, duplicate and invalid indexes per database, each with its DROP and undo line as text; an index advisor on demand where pg_qualstats and HypoPG are installed (hypothetical indexes only, nothing created)</td></tr>
   </table></div>
 </div></section>
 

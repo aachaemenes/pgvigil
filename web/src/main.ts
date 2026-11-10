@@ -4,7 +4,7 @@
 import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget } from './fleet';
-import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobs, jobsRoot, logs, replication, roles, slows, statements, counters, activity, storage, backups, corruption, versions } from './pages';
+import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobs, jobsRoot, logs, replication, roles, slows, statements, counters, activity, storage, backups, corruption, versions, indexes } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
 import { storageView } from './storage';
@@ -19,13 +19,15 @@ import { jobsReportView } from './jobsreport';
 import { rolesView } from './roles';
 import { plansView } from './plan';
 import { slowView } from './slow';
+import { waitsView } from './waits';
+import { indexesView } from './indexes';
 import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_ } from './router';
 import { mountTree, setTreeHidden, tagChips, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
   tables: c => tablesView(c.instance!), vacuum: vacuumView, findings, host: hostView, storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),
@@ -35,6 +37,8 @@ const instancePages: Record<string, Render> = {
   jobsreport: jobsReportView,
   roles: c => rolesView(c.instance!),
   slowqueries: slowView,
+  waits: waitsView,
+  indexes: c => indexesView(c.instance!),
   plans: plansView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
