@@ -27,6 +27,7 @@ import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_, drillHome } from './router';
 import { mountTree, setTreeHidden, tagChips, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
+import { exportButtons } from './export';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth };
@@ -133,7 +134,7 @@ async function render(force = false) {
   const bar = $('bar');
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');
   refresh.addEventListener('click', () => { void render(true); });
-  bar.replaceChildren(rangePicker(ctx), refresh,
+  bar.replaceChildren(rangePicker(ctx), refresh, exportButtons(ctx),
     el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })),
     themeButton());
   if (session.login && session.user) {
