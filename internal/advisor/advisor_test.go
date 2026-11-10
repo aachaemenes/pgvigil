@@ -21,6 +21,9 @@ func TestExplainable(t *testing.T) {
 		{"update t set a = 1 where b = $1", 180000, false},
 		{"select 1; select 2", 180000, false},
 		{"select 1;", 180000, true},
+		{"/* a /* nested */ ; */ select 1", 180000, false}, // the ; the server would act on stays in the checked text
+		{"-- note;\nselect 1", 180000, true},
+		{"select 1 -- trailing; comment", 180000, false},
 	} {
 		if got := explainable(c.text, c.version) == ""; got != c.ok {
 			t.Errorf("explainable(%q, %d) = %v, want %v (%s)", c.text, c.version, got, c.ok, explainable(c.text, c.version))

@@ -10,7 +10,7 @@ interface IndexesData { state: Table | null; databases: Table | null; indexes: T
 
 interface AdvQuery { queryid: number; query?: string; cost_before?: number; cost_after?: number; gain_pct?: number; uses_index: boolean; note?: string }
 interface AdvSuggestion { ddl: string; hypothetical_index?: string; estimated_bytes?: number; best_gain_pct?: number; queries: AdvQuery[]; note?: string }
-interface AdvReport { database: string; at: string; skipped?: string; suggestions: AdvSuggestion[]; unoptimised: unknown[]; note: string }
+interface AdvReport { database: string; at: string; skipped?: string; suggestions: AdvSuggestion[]; unoptimised: unknown[]; note: string; cut?: string }
 
 const problemText: Record<string, string> = {
   invalid: 'Invalid: a failed CREATE INDEX CONCURRENTLY or REINDEX. Never read, still written on every change.',
@@ -43,7 +43,7 @@ function adviseBox(instance: number, dbs: string[]): HTMLElement {
   const out = el('div');
   run.addEventListener('click', async () => {
     run.setAttribute('disabled', '');
-    out.replaceChildren(el('p', { class: 'meta' }, 'Planning... (EXPLAIN only, nothing is executed or created)'));
+    out.replaceChildren(el('p', { class: 'meta' }, 'Planning... (EXPLAIN only: no statement is executed, no index is created)'));
     try {
       const rep = await post<AdvReport>('indexes/advise', { instance_id: instance, database: (pick as HTMLSelectElement).value });
       out.replaceChildren(adviceView(rep));
@@ -56,7 +56,7 @@ function adviseBox(instance: number, dbs: string[]): HTMLElement {
   return el('div', {}, el('h3', {}, 'Index advisor'),
     el('p', { class: 'meta' }, 'Where pg_qualstats and HypoPG are installed in the database: pg_qualstats proposes indexes from the '
       + 'predicates it sampled; each is created as a HYPOTHETICAL index in the advisor\'s own session (HypoPG: the planner sees it, '
-      + 'nothing is written), the statements that would use it are EXPLAINed before and after, and the cost difference is the gain. '
+      + 'nothing is written), the statements that would use it are planned with EXPLAIN (not executed) before and after, and the cost difference is the gain. '
       + 'No index is created: a suggestion is for a person to review. EXPLAIN needs SELECT on the tables (pg_read_all_data or a grant).'),
     el('p', {}, 'Database ', pick, ' ', run), out);
 }
@@ -64,6 +64,7 @@ function adviseBox(instance: number, dbs: string[]): HTMLElement {
 export function adviceView(rep: AdvReport): HTMLElement {
   if (rep.skipped) return el('p', { class: 'empty' }, `Not run in ${rep.database}: ${rep.skipped}.`);
   const box = el('div', {}, el('p', { class: 'meta' }, `${rep.database}, ${fmtTime(rep.at)}: ${rep.note}.`));
+  if (rep.cut) box.append(el('p', { class: 'error' }, `Stopped early: ${rep.cut}.`));
   if (rep.suggestions.length === 0) {
     box.append(el('p', { class: 'empty' }, 'pg_qualstats proposes no index: no sampled predicate filters enough rows often enough.'));
   }

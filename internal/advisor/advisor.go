@@ -2,8 +2,9 @@
 // monitored server where pg_qualstats (Ronan Dunklau and the PoWA team, PostgreSQL licence) and HypoPG (PostgreSQL
 // licence) are installed, it asks pg_qualstats_index_advisor() which indexes the predicates it sampled would want,
 // then tests each one in the planner as a HYPOTHETICAL index: hypopg_create_index() adds it to this session's planner
-// only (nothing is written to the catalog or to disk), the statements that would use it are EXPLAINed (never
-// executed) before and after, and the cost difference is the gain shown. The session ends with hypopg_reset().
+// only (nothing is written to the catalog or to disk), the statements that would use it are EXPLAINed (planned, not
+// executed: a STABLE or IMMUTABLE function the planner folds does run while planning, in this read-only session) before
+// and after, and the cost difference is the gain shown. The session ends with hypopg_reset().
 // The advisor never runs a CREATE INDEX: a suggestion is text for a person to review and run.
 //
 // It connects with the instance's monitoring login, read only, under a statement timeout. EXPLAIN needs SELECT on the
@@ -80,10 +81,11 @@ type Report struct {
 	Suggestions []Suggestion      `json:"suggestions"`
 	Unoptimised []json.RawMessage `json:"unoptimised"` // predicates pg_qualstats saw that no index would serve
 	Note        string            `json:"note"`
+	Cut         string            `json:"cut,omitempty"` // the run stopped early, and where
 }
 
 // note is the line every report carries.
-const note = "hypothetical indexes in the planner only (HypoPG); statements EXPLAINed, never executed; no index was created"
+const note = "hypothetical indexes in the planner only (HypoPG); statements planned with EXPLAIN, not executed (functions the planner folds while planning do run, in a read-only session); no index was created"
 
 // Run connects to database (empty = the DSN's own) with dsn and runs the advisor.
 func Run(ctx context.Context, dsn, database string, o Options) (Report, error) {
@@ -172,7 +174,17 @@ func run(ctx context.Context, conn *pgx.Conn, rep Report, o Options) (Report, er
 		if i >= o.MaxIndexes {
 			break
 		}
-		rep.Suggestions = append(rep.Suggestions, testOne(ctx, conn, e, ix.DDL, ix.QueryIDs, o))
+		if ctx.Err() != nil {
+			rep.Cut = fmt.Sprintf("the run's time ran out after %d of %d suggestions: the rest were not tested", i, min(len(adv.Indexes), o.MaxIndexes))
+			break
+		}
+		s := testOne(ctx, conn, e, ix.DDL, ix.QueryIDs, o)
+		if ctx.Err() != nil {
+			// this suggestion's notes are the cut-off's errors, not its own
+			rep.Cut = fmt.Sprintf("the run's time ran out during suggestion %d of %d: it and the rest are not reported", i+1, min(len(adv.Indexes), o.MaxIndexes))
+			break
+		}
+		rep.Suggestions = append(rep.Suggestions, s)
 	}
 	return rep, nil
 }
@@ -248,24 +260,47 @@ func testOne(ctx context.Context, conn *pgx.Conn, e extInfo, ddl string, ids []i
 
 // queryText finds a statement's text: pg_stat_statements' normalised text first ($n for the constants), else
 // pg_qualstats' example query (with its constants, when pg_qualstats samples them).
+//
+// Below PostgreSQL 16 a normalised text ($n) cannot be planned (no GENERIC_PLAN), so there the example, which carries
+// its constants, is tried first. A read that fails says why (a cut-off run, a missing grant), never "no text".
 func queryText(ctx context.Context, conn *pgx.Conn, e extInfo, id int64) (string, string) {
-	var t *string
-	if e.pgss != "" {
+	normalised := func() (*string, error) {
+		if e.pgss == "" {
+			return nil, nil
+		}
+		var t *string
 		err := conn.QueryRow(ctx, fmt.Sprintf(`SELECT query FROM %s.pg_stat_statements
  WHERE queryid = $1 AND dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) LIMIT 1`, ident(e.pgss)), id).Scan(&t)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			t = nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return t, err
+	}
+	example := func() (*string, error) {
+		var t *string
+		err := conn.QueryRow(ctx, fmt.Sprintf(`SELECT %s.pg_qualstats_example_query($1)`, ident(e.qualstats)), id).Scan(&t)
+		return t, err
+	}
+	usable := func(t *string) bool { return t != nil && *t != "" && !strings.HasPrefix(*t, "<insufficient") }
+	first, second := normalised, example
+	if e.version < 160000 {
+		first, second = example, normalised
+	}
+	var errs []string
+	for _, f := range []func() (*string, error){first, second} {
+		t, err := f()
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		if usable(t) {
+			return *t, ""
 		}
 	}
-	if t == nil || *t == "" || strings.HasPrefix(*t, "<insufficient") {
-		if err := conn.QueryRow(ctx, fmt.Sprintf(`SELECT %s.pg_qualstats_example_query($1)`, ident(e.qualstats)), id).Scan(&t); err != nil {
-			t = nil
-		}
+	if len(errs) > 0 {
+		return "", "the statement text could not be read: " + strings.Join(errs, "; ")
 	}
-	if t == nil || *t == "" {
-		return "", "no statement text: neither pg_stat_statements nor a pg_qualstats example has it"
-	}
-	return *t, ""
+	return "", "no statement text: neither pg_stat_statements nor a pg_qualstats example has it"
 }
 
 var (

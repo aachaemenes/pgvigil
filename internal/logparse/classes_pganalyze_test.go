@@ -19,7 +19,15 @@ func TestClassifyMore(t *testing.T) {
 		{"LOG", `temporary file: path "base/pgsql_tmp/pgsql_tmp148.1", size 2457600`, TempFile, "SERVER_TEMP_FILE_CREATED"},
 		{"ERROR", "could not serialize access due to concurrent update", SerializationFailure, "COULD_NOT_SERIALIZE_REPEATABLE_READ"},
 		{"ERROR", "canceling statement due to user request", Canceled, "STATEMENT_CANCELED_USER"},
+		// recorded by the slice's review in a throwaway PostgreSQL 18 container (a backend killed with SIGSEGV)
+		{"LOG", "client backend (PID 83) was terminated by signal 11: Segmentation fault", Crash, "SERVER_CRASHED"},
 		// constructed
+		{"LOG", "client backend (PID 84) was terminated by signal 9: Killed", OutOfMemory, "SERVER_OUT_OF_MEMORY"},
+		{"LOG", "autovacuum worker (PID 85) was terminated by signal 6: Aborted", Crash, "SERVER_CRASHED"},
+		{"ERROR", `database is not accepting commands that assign new transaction IDs to avoid wraparound data loss in database "shop"`, Wraparound, "TXID_WRAPAROUND_ERROR"},
+		{"ERROR", `database is not accepting commands that assign new MultiXactIds to avoid wraparound data loss in database "shop"`, Wraparound, "TXID_WRAPAROUND_ERROR"},
+		{"ERROR", `database is not accepting commands that generate new MultiXactIds to avoid wraparound data loss in database "shop"`, Wraparound, "TXID_WRAPAROUND_ERROR"},
+		{"WARNING", `database "shop" must be vacuumed before 400000 more MultiXactIds are used`, Wraparound, "TXID_WRAPAROUND_WARNING"},
 		{"FATAL", "sorry, too many clients already", ConnectionLimit, "OUT_OF_CONNECTIONS"},
 		{"FATAL", "remaining connection slots are reserved for roles with the SUPERUSER attribute", ConnectionLimit, "OUT_OF_CONNECTIONS"},
 		{"LOG", "server process (PID 4242) was terminated by signal 11: Segmentation fault", Crash, "SERVER_CRASHED"},
@@ -47,6 +55,8 @@ func TestClassifyMore(t *testing.T) {
 		{"ERROR", `duplicate key value violates unique constraint "orders_pkey"`},
 		{"DETAIL", "canceling statement due to statement timeout"},
 		{"LOG", "server process (PID 1) was terminated by signal 15: Terminated"},
+		{"LOG", "client backend (PID 1) was terminated by signal 15: Terminated"},
+		{"LOG", "background worker \"logical replication launcher\" (PID 1) exited with exit code 1"},
 		{"LOG", "database system is ready to accept connections"},
 	} {
 		if k, cl, ok := ClassifyMore(c[0], c[1]); ok {

@@ -39,6 +39,17 @@
 #     statements over 00:00-00:04 read the series exactly (one-minute steps, every read 60 s): +60 s IO 0.013 sessions
 #     ((0.5 + 0.3) / 60), +120 s IO 0.003, +180 s IO 0.012; the statements '1 135 IO:X' (X's 75 samples over three reads
 #     beat Z's single 60) and '2 35 IO:Y'.
+#  [review A fold, expected before the rerun:]
+#  D2. at +240 s {X q1 30, Y q2 1, Z q1 70}: Y fell, so the whole read counts from zero -> rows '240 X 30 0.3, 240 Y 1
+#      0.01, 240 Z 70 0.7' (not X 5 and Z 10).
+#  E. lock_tree on seeded activity snapshots of a scratch instance: a hot-row queue (holder 1000 idle in a transaction,
+#     waiters 1001..1025, waiter k naming 1000..k-1) -> 26 rows in under 2 s, '1 1000 25 idle in transaction' and every
+#     waiter at level 2 with 0 blocked; a prepared transaction (2001 waits on {0}, 2002 on {2001}) -> '1 0 2 prepared
+#     transaction, 2 2001 1 waiting, 3 2002 0 waiting'; two heads (3003 waits on {3001, 3002}) -> 3003 under 3001,
+#     '1 3001 1, 2 3003 0, 1 3002 0'.
+#  F. import_statements_monitor on a scratch instance: a bucket 3 days old is never added; a bucket of 10 calls ->
+#     delta 10, total 10; the statement's statements_current row removed (as the purge does), a bucket of 7 calls ->
+#     delta 7 (deltas sum 17), statements_current 7, total 7.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -191,9 +202,49 @@ PGVIGIL_WAITS_REPO_DSN="$PGVIGIL_REPO_DSN" WAITS_INSTANCE=$x WAITS_FROM=2026-11-
   WAITS_SERIES="^$((T0 + 60)) IO 0.013\$"$'\n'"^$((T0 + 120)) IO 0.003\$"$'\n'"^$((T0 + 180)) IO 0.012\$" \
   WAITS_QUERIES=$'^1 135 IO:X$\n^2 35 IO:Y$' \
   go test ./internal/web -run TestWaitsSQLLive -count=1 >/dev/null || fail "the Waits series / statements on the seeded rows"
+imp 240 "[$P,{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"X\",\"queryid\":1,\"count\":30},{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"Y\",\"queryid\":2,\"count\":1},{\"kind\":\"profile\",\"event_type\":\"IO\",\"event\":\"Z\",\"queryid\":1,\"count\":70}]"
+got=$(q "select string_agg(event || ' ' || samples || ' ' || wait_secs, ',' order by event) from pgvigil.wait_sample where instance_id=$x and snapshot_at = '2026-11-01 00:04:00+00'")
+[[ $got == "X 30 0.3,Y 1 0.01,Z 70 0.7" ]] || fail "whole-read reset: $got"
 G='[{"kind":"pgms","start_time":"2026-11-01 01:00:00+00","end_time":"2026-11-01 01:15:00+00","event_type":"IO","event":"DataFileRead","queryid":7,"calls":40},{"kind":"pgms","start_time":"2026-11-01 01:15:00+00","end_time":"2026-11-01 01:30:00+00","event_type":"IO","event":"DataFileRead","queryid":7,"calls":12}]'
 q "select pgvigil.import_waits($x, now(), '$G')" >/dev/null; q "select pgvigil.import_waits($x, now(), '$G')" >/dev/null
 [[ $(q "select count(*) || ' ' || sum(samples) || ' ' || count(wait_secs) from pgvigil.wait_sample where instance_id=$x and source='pgms_wait_sampling'") == "2 52 0" ]] || fail "pgms rows"
+
+echo "--- E. the lock tree on seeded snapshots"
+e=$(q "insert into pgvigil.instances (name, platform) values ('proof-waits-e-$SUF', 'onprem') returning instance_id" | head -1)
+q "select pgvigil.ensure_month_partition('activity_sample', now())" >/dev/null
+AT=$(q "select date_trunc('second', now())")
+ins() { q "insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, state, wait_event_type, wait_event, blocking_pids) values ($e, '$AT', $1, '$2', $3, $4, $5)" >/dev/null; }
+ins 1000 'idle in transaction' "'Client'" "'ClientRead'" NULL
+for k in $(seq 1001 1025); do ins $k active "'Lock'" "'tuple'" "array(select generate_series(1000, $((k - 1))))"; done
+ins 2001 active "'Lock'" "'transactionid'" "'{0}'"; ins 2002 active "'Lock'" "'relation'" "'{2001}'"
+ins 3001 'idle in transaction' "'Client'" "'ClientRead'" NULL; ins 3002 'idle in transaction' "'Client'" "'ClientRead'" NULL
+ins 3003 active "'Lock'" "'transactionid'" "'{3001,3002}'"
+t0=$(date +%s%N)
+tree=$(q "select count(*) || '|' || string_agg(level || ' ' || pid || ' ' || blocked || ' ' || state, ',' order by top_blocker, path) from pgvigil.lock_tree($e, now())")
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+echo "lock tree: ${tree%%|*} rows in $ms ms"
+[[ $ms -lt 2000 ]] || fail "lock_tree took $ms ms"
+lt() { q "select string_agg(level || ' ' || pid || ' ' || blocked || ' ' || state, ',' order by top_blocker, path) from pgvigil.lock_tree($e, now()) where pid $1"; }
+[[ $(q "select count(*) from pgvigil.lock_tree($e, now()) where pid between 1000 and 1025") == 26 ]] || fail "hot-row rows"
+[[ $(lt "= 1000") == "1 1000 25 idle in transaction" ]] || fail "hot-row holder: $(lt "= 1000")"
+[[ $(q "select count(*) from pgvigil.lock_tree($e, now()) where pid between 1001 and 1025 and level = 2 and blocked = 0") == 25 ]] || fail "hot-row waiters"
+[[ $(lt "in (0, 2001, 2002)") == "1 0 2 prepared transaction,2 2001 1 waiting,3 2002 0 waiting" ]] || fail "prepared transaction: $(lt "in (0, 2001, 2002)")"
+[[ $(lt "in (3001, 3002, 3003)") == "1 3001 1 idle in transaction,2 3003 0 waiting,1 3002 0 idle in transaction" ]] || fail "two heads: $(lt "in (3001, 3002, 3003)")"
+q "delete from pgvigil.activity_sample where instance_id=$e" >/dev/null; q "delete from pgvigil.instances where instance_id=$e" >/dev/null
+
+echo "--- F. import_statements_monitor on seeded buckets"
+m=$(q "insert into pgvigil.instances (name, platform) values ('proof-waits-m-$SUF', 'onprem') returning instance_id" | head -1)
+bk() { echo "{\"kind\":\"bucket\",\"bucket_start\":\"$1\",\"dbid\":5,\"datname\":\"postgres\",\"userid\":10,\"usename\":\"app\",\"queryid\":777,\"toplevel\":true,\"calls\":$2,\"total_exec_ms\":$2,\"rows\":$2,\"query\":\"select 777\"}"; }
+OLD=$(q "select now() - interval '3 days'"); B1=$(q "select now() - interval '5 minutes'"); B2=$(q "select now() - interval '4 minutes'")
+q "select pgvigil.import_statements_monitor($m, now(), '[$(bk "$OLD" 10),$(bk "$B1" 10)]')" >/dev/null
+sd() { q "select coalesce(sum(calls), 0) from pgvigil.statements_delta where instance_id=$m and queryid=777"; }
+[[ $(sd) == 10 && $(q "select calls from pgvigil.statements_monitor_total where instance_id=$m") == 10 ]] || fail "first bucket: delta $(sd)"
+q "delete from pgvigil.statements_current where instance_id=$m and queryid=777" >/dev/null
+q "select pgvigil.import_statements_monitor($m, now() + interval '1 minute', '[$(bk "$B2" 7)]')" >/dev/null
+echo "F: deltas $(sd), current $(q "select calls from pgvigil.statements_current where instance_id=$m and queryid=777"), total $(q "select calls from pgvigil.statements_monitor_total where instance_id=$m")"
+[[ $(sd) == 17 && $(q "select calls from pgvigil.statements_current where instance_id=$m and queryid=777") == 7 && $(q "select calls from pgvigil.statements_monitor_total where instance_id=$m") == 7 ]] || fail "after the purge"
+q "delete from pgvigil.instances where instance_id=$m" >/dev/null
+
 echo "NOT PROVEN (D, live): the pgms_wait_sampling read against an Azure flexible server (none here); its import is proven above"
 q "delete from pgvigil.instances where instance_id=$x" >/dev/null
 echo "PROOF OK"

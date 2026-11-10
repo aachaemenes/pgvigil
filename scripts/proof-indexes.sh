@@ -88,8 +88,9 @@ psql "$(dsn_for "$T2")" -XAtq -c "create unique index concurrently ux_bad on u (
 psql "$(dsn_for "$T1")" -XAtq -c "set enable_seqscan = off; set enable_bitmapscan = off" -c "select count(*) from t where a = 5" >/dev/null
 psql "$(dsn_for "$T1")" -XAtq -c "set enable_seqscan = off; set enable_bitmapscan = off" -c "select count(*) from t where a = 5 and b = 5" >/dev/null
 psql "$(dsn_for "$T1")" -XAtq -c "set enable_seqscan = off; set enable_bitmapscan = off" -c "select count(*) from t5 where a = 5" >/dev/null
-sleep 1
-[[ $(t1 "select string_agg(indexrelname || '=' || idx_scan, ',' order by indexrelname) from pg_stat_user_indexes where indexrelname in ('t5_a','t5_ab')") == "t5_a=1,t5_ab=0" ]] || fail "t5 seeding reads"
+# the counters reach pg_stat_user_indexes shortly after each session ends: wait for them (10 s at most) on a busy sandbox
+for _ in $(seq 20); do [[ $(t1 "select count(*) from pg_stat_user_indexes where (indexrelname in ('ix_a','ix_ab','t5_a') and idx_scan = 1)") == 3 ]] && break; sleep 0.5; done
+[[ $(t1 "select string_agg(indexrelname || '=' || idx_scan, ',' order by indexrelname) from pg_stat_user_indexes where indexrelname in ('t5_a','t5_ab')") == "t5_a=1,t5_ab=0" ]] || fail "t5 seeding reads: $(t1 "select string_agg(indexrelname || '=' || idx_scan, ',' order by indexrelname) from pg_stat_user_indexes where indexrelname in ('t5_a','t5_ab')")"
 [[ $(t1 "select indisvalid from pg_index where indexrelid = 'p_a'::regclass") == f ]] || fail "p_a should be invalid (ON ONLY)"
 used=$(t1 "select string_agg(indexrelname || '=' || idx_scan, ',' order by indexrelname) from pg_stat_user_indexes where indexrelname in ('ix_a','ix_ab')")
 [[ $used == "ix_a=1,ix_ab=1" ]] || fail "the seeding reads did not use ix_a and ix_ab once each: $used"

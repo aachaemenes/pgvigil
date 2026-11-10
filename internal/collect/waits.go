@@ -12,8 +12,8 @@ import (
 
 // waitsCollector reads the wait-event profile of pg_wait_sampling (Postgres Professional, PostgreSQL licence) every
 // minute: the extension samples every backend's wait event each profile_period (10 ms by default) and counts the
-// samples per pid, event and queryid since the profile was last reset. The read sums the pids (a pid is gone once its
-// backend ends; the event and the statement are what matter) and the repository stores the difference between two
+// samples per pid, event and queryid since the profile was last reset. The read sums the pids (an ended backend's
+// entries stay until the reset, and pids are reused; the event and the statement are what matter) and the repository stores the difference between two
 // reads (import_waits, 0030), so a stored row is "how many samples of this wait, for this statement, in this minute".
 //
 // Azure's pgms_wait_sampling (Azure Database for PostgreSQL flexible server, Query Store) is switched on by the server

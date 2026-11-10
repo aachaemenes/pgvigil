@@ -14,8 +14,9 @@
 --      not read). index_findings: the findings view's ten columns (the join puts them under pgvigil.findings).
 -- Retention: wait_sample is monthly partitions (its name joins pgvigil.purge's list at the join); index_state and
 -- index_databases rows no longer present are deleted after the retention (the join's purge deletes);
--- statements_monitor_seen keeps two days of bucket keys and trims itself; statements_monitor_total is one row per
--- statement, like statements_current.
+-- statements_monitor_seen keeps two days of bucket keys and trims itself (a bucket older than that is never added);
+-- statements_monitor_total is one row per statement: the join's purge deletes the rows whose statements_current row it
+-- removed (and the import restarts a total whose current row is gone).
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 1. waits
@@ -55,6 +56,7 @@ CREATE OR REPLACE FUNCTION pgvigil.import_waits(p_instance_id int, p_snapshot_at
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_first   boolean;
+  v_reset   boolean;
   v_period  float8;
   v_month   timestamptz;
 BEGIN
@@ -70,6 +72,11 @@ BEGIN
       FROM jsonb_array_elements(p_payload) r
      WHERE r->>'kind' = 'profile'
      GROUP BY 1, 2, 3;
+    -- a reset (pg_wait_sampling_reset_profile, a restart) restarts every count: any key that fell makes the whole read
+    -- count from zero, so a rare wait whose new count is still above its old one is not stored as new minus old
+    v_reset := EXISTS (SELECT 1 FROM pgv_wait_in i JOIN pgvigil.wait_profile_current c
+                         ON c.instance_id = p_instance_id AND c.event_type = i.event_type AND c.event = i.event AND c.queryid = i.queryid
+                       WHERE i.count < c.count);
     IF NOT v_first THEN
       INSERT INTO pgvigil.wait_sample (instance_id, snapshot_at, interval_secs, source, event_type, event, queryid, samples, wait_secs)
       SELECT p_instance_id, p_snapshot_at, greatest(1, extract(epoch FROM p_snapshot_at - coalesce(c.snapshot_at, l.at)))::int,
@@ -78,7 +85,7 @@ BEGIN
         LEFT JOIN pgvigil.wait_profile_current c
           ON c.instance_id = p_instance_id AND c.event_type = i.event_type AND c.event = i.event AND c.queryid = i.queryid
         CROSS JOIN (SELECT max(snapshot_at) AS at FROM pgvigil.wait_profile_current WHERE instance_id = p_instance_id) l
-        CROSS JOIN LATERAL (SELECT CASE WHEN c.count IS NULL OR i.count < c.count THEN i.count ELSE i.count - c.count END AS samples) d
+        CROSS JOIN LATERAL (SELECT CASE WHEN v_reset OR c.count IS NULL THEN i.count ELSE i.count - c.count END AS samples) d
        WHERE d.samples > 0 AND p_snapshot_at > coalesce(c.snapshot_at, l.at)
       ON CONFLICT (instance_id, snapshot_at, source, event_type, event, queryid) DO NOTHING;
     END IF;
@@ -100,20 +107,25 @@ BEGIN
   END LOOP;
   INSERT INTO pgvigil.wait_sample AS s (instance_id, snapshot_at, interval_secs, source, event_type, event, queryid, samples, wait_secs)
   SELECT p_instance_id, (r->>'end_time')::timestamptz,
-         greatest(1, extract(epoch FROM (r->>'end_time')::timestamptz - (r->>'start_time')::timestamptz))::int,
+         greatest(1, extract(epoch FROM (r->>'end_time')::timestamptz - max((r->>'start_time')::timestamptz)))::int,
          'pgms_wait_sampling', coalesce(r->>'event_type', 'CPU'), coalesce(r->>'event', 'CPU'), coalesce((r->>'queryid')::bigint, 0),
          sum((r->>'calls')::bigint), NULL
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'pgms' AND r->>'end_time' IS NOT NULL AND r->>'start_time' IS NOT NULL
-   GROUP BY 2, 3, 5, 6, 7
+   GROUP BY 2, 5, 6, 7
   ON CONFLICT (instance_id, snapshot_at, source, event_type, event, queryid) DO UPDATE SET samples = EXCLUDED.samples;
 END $$;
 
 -- lock_tree: the blocking tree of one activity snapshot (the newest at or before p_at). After postgres_dba's
--- l2_lock_trees.sql (BSD-3, Copyright (c) 2017, Nikolay Samokhvalov): the heads are sessions some waiter names
--- in its blocking pids that wait on no one; each level below waits on a session of the level above; blocked =
--- how many sessions wait under it, directly or not. Read from activity_sample (only Lock waiters carry
--- blocking_pids, and every named blocker is stored: 0002), so the tree is the one the collector saw.
+-- l2_lock_trees.sql (BSD-3, Copyright (c) 2017, Nikolay Samokhvalov): the heads are sessions some waiter names in its
+-- blocking pids that wait on no one; each level below waits on a session of the level above; blocked = how many sessions
+-- wait under it, directly or not. Read from activity_sample (only Lock waiters carry blocking_pids, and every named
+-- blocker is stored: 0002), so the tree is the one the collector saw. Changed from l2: the walk goes level by level over
+-- SESSIONS, each reached once at its shallowest level (l2 follows every path: a hot-row queue, where each waiter names
+-- the holder and every waiter ahead of it, has 2^(n-1) paths); a waiter named by two sessions of the level above goes
+-- under the lower pid; a blocker absent from the snapshot (pid 0 = a prepared transaction, or a session that ended
+-- between the reads) is a head of its own with state 'prepared transaction' or 'not in the snapshot'; the walk stops at
+-- 50 levels.
 CREATE OR REPLACE FUNCTION pgvigil.lock_tree(p_instance_id int, p_at timestamptz DEFAULT now())
 RETURNS TABLE (snapshot_at timestamptz, top_blocker int, level int, pid int, blocked_by int[], blocked int, state text,
                wait text, xact_start timestamptz, query_start timestamptz, state_change timestamptz, datname text,
@@ -126,25 +138,39 @@ LANGUAGE sql STABLE AS $$
     SELECT s.*, coalesce(s.blocking_pids, '{}') AS bb
       FROM pgvigil.activity_sample s, snap
      WHERE s.instance_id = p_instance_id AND s.snapshot_at = snap.at
-  ), blockers AS (
-    SELECT coalesce(array_agg(DISTINCT b), '{}') AS pids FROM a, unnest(a.bb) b
-  ), tree AS (
-    SELECT a.pid, a.pid AS top_blocker, 1 AS level, ARRAY[a.pid] AS path
-      FROM a, blockers WHERE a.pid = ANY (blockers.pids) AND a.bb = '{}'
+  ), named AS (
+    SELECT DISTINCT b AS pid FROM a, unnest(a.bb) b
+  ), heads AS (
+    SELECT n.pid FROM named n
+     WHERE NOT EXISTS (SELECT 1 FROM a WHERE a.pid = n.pid AND a.bb <> '{}')
+  ), lv(level, frontier, visited) AS (
+    SELECT 1, (SELECT coalesce(array_agg(pid ORDER BY pid), '{}') FROM heads), (SELECT coalesce(array_agg(pid), '{}') FROM heads)
     UNION ALL
-    SELECT a.pid, t.top_blocker, t.level + 1, t.path || a.pid
-      FROM tree t JOIN a ON t.pid = ANY (a.bb) AND NOT a.pid = ANY (t.path)
-     WHERE t.level < 20
-  ), first AS (
-    SELECT DISTINCT ON (pid) * FROM tree ORDER BY pid, level
+    SELECT lv.level + 1, x.nxt, lv.visited || x.nxt
+      FROM lv, LATERAL (SELECT array_agg(a.pid ORDER BY a.pid) AS nxt FROM a
+                         WHERE a.bb && lv.frontier AND NOT a.pid = ANY (lv.visited)) x
+     WHERE x.nxt IS NOT NULL AND lv.level < 50
+  ), node AS (
+    -- each session once, at its level, with its parent: the lowest pid of the level above it waits on
+    SELECT f.pid, lv.level,
+           CASE WHEN lv.level = 1 THEN NULL
+                ELSE (SELECT min(b) FROM a, unnest(a.bb) b WHERE a.pid = f.pid
+                         AND EXISTS (SELECT 1 FROM lv p WHERE p.level = lv.level - 1 AND b = ANY (p.frontier))) END AS parent
+      FROM lv, unnest(lv.frontier) f(pid)
+  ), tree AS (
+    SELECT n.pid, n.pid AS top_blocker, 1 AS level, ARRAY[n.pid] AS path FROM node n WHERE n.parent IS NULL
+    UNION ALL
+    SELECT n.pid, t.top_blocker, n.level, t.path || n.pid FROM tree t JOIN node n ON n.parent = t.pid
   )
-  SELECT a.snapshot_at, f.top_blocker, f.level, a.pid, nullif(a.bb, '{}'),
-         (SELECT count(DISTINCT t.pid)::int FROM tree t WHERE f.pid = ANY (t.path) AND t.pid <> f.pid),
-         CASE WHEN a.wait_event_type = 'Lock' THEN 'waiting' ELSE a.state END,
-         CASE WHEN a.wait_event_type IS NOT NULL THEN a.wait_event_type || ':' || a.wait_event ELSE 'CPU*' END,
-         a.xact_start, a.query_start, a.state_change, a.datname, a.usename, a.application_name, a.query_hash, f.path
-    FROM first f JOIN a ON a.pid = f.pid
-   ORDER BY f.top_blocker, f.path
+  SELECT coalesce(a.snapshot_at, (SELECT at FROM snap)), t.top_blocker, t.level, t.pid, nullif(a.bb, '{}'),
+         (SELECT count(*)::int FROM tree d WHERE t.pid = ANY (d.path) AND d.pid <> t.pid),
+         CASE WHEN a.pid IS NULL AND t.pid = 0 THEN 'prepared transaction'
+              WHEN a.pid IS NULL THEN 'not in the snapshot'
+              WHEN a.wait_event_type = 'Lock' THEN 'waiting' ELSE a.state END,
+         CASE WHEN a.pid IS NULL THEN NULL WHEN a.wait_event_type IS NOT NULL THEN a.wait_event_type || ':' || a.wait_event ELSE 'CPU*' END,
+         a.xact_start, a.query_start, a.state_change, a.datname, a.usename, a.application_name, a.query_hash, t.path
+    FROM tree t LEFT JOIN a ON a.pid = t.pid
+   ORDER BY t.top_blocker, t.path
 $$;
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -216,6 +242,8 @@ BEGIN
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'bucket' AND r->>'bucket_start' IS NOT NULL AND r->>'queryid' IS NOT NULL
      AND r->>'dbid' IS NOT NULL AND r->>'userid' IS NOT NULL
+     -- a bucket older than the seen keys are kept (2 days) is never added: it may have been added and trimmed already
+     AND (r->>'bucket_start')::timestamptz >= p_snapshot_at - interval '2 days'
      AND NOT EXISTS (SELECT 1 FROM pgvigil.statements_monitor_seen s
                       WHERE s.instance_id = p_instance_id AND s.bucket_start = (r->>'bucket_start')::timestamptz);
   IF NOT EXISTS (SELECT 1 FROM pgv_pgsm_in) THEN
@@ -225,6 +253,15 @@ BEGIN
   SELECT DISTINCT p_instance_id, bucket_start, p_snapshot_at FROM pgv_pgsm_in
   ON CONFLICT DO NOTHING;
   DELETE FROM pgvigil.statements_monitor_seen WHERE instance_id = p_instance_id AND bucket_start < p_snapshot_at - interval '2 days';
+
+  -- a statement whose statements_current row the purge removed (idle past the retention) starts its total again: the
+  -- statements import has no baseline for it, so it is entered at zero below and its new buckets become the delta
+  DELETE FROM pgvigil.statements_monitor_total t
+   WHERE t.instance_id = p_instance_id
+     AND EXISTS (SELECT 1 FROM pgv_pgsm_in i WHERE i.dbid = t.dbid AND i.userid = t.userid AND i.queryid = t.queryid AND i.toplevel = t.toplevel)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.statements_current c
+                      WHERE c.instance_id = t.instance_id AND c.dbid = t.dbid AND c.userid = t.userid
+                        AND c.queryid = t.queryid AND c.toplevel = t.toplevel);
 
   SELECT coalesce(min(first_bucket), (SELECT min(bucket_start) FROM pgv_pgsm_in)) INTO v_epoch
     FROM pgvigil.statements_monitor_total WHERE instance_id = p_instance_id;

@@ -8,11 +8,26 @@ import (
 // The log line classes taken from the pganalyze collector's logs/analyze.go (github.com/pganalyze/collector), used
 // under its licence:
 //
-//	Copyright (c) 2016, pganalyze Team <team@pganalyze.com>. All rights reserved. BSD 3-Clause License:
-//	redistribution and use in source and binary forms, with or without modification, are permitted provided that
-//	the conditions of the licence are met (the full text is in THIRD-PARTY-NOTICES.md).
+//	Copyright (c) 2016, pganalyze Team <team@pganalyze.com>
+//	All rights reserved.
+//	Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+//	following conditions are met:
+//	* Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+//	  disclaimer.
+//	* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+//	  following disclaimer in the documentation and/or other materials provided with the distribution.
+//	* Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
+//	  products derived from this software without specific prior written permission.
+//	THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+//	INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+//	DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+//	SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+//	SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+//	WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+//	OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
-// What was taken: the message prefixes (and, where a prefix alone is ambiguous, the regexp) of the classes below,
+// What was taken: the message prefixes (and, where a prefix alone is ambiguous, the regexp) of the classes below
+// (pgvigil's changes are marked in the list: the PostgreSQL 18 wordings and the MultiXact forms),
 // which identify a server log message whatever its log_line_prefix; pganalyze's class name is kept beside each.
 // What was not: its secret marking and redaction, its detail and hint matching, its per-class field extraction,
 // and the classes pgvigil does not store (connection received / authorized / disconnected, checkpoint progress,
@@ -67,12 +82,18 @@ var Classes = []Class{
 	{"WAL_ARCHIVE_COMMAND_FAILED", ArchiveFailed, []string{"archive command"}, regexp.MustCompile(`^archive command (?:failed with exit code (\d+)|was terminated by signal (\d+)(: [\w ]+)?)`)},
 	{"WAL_ARCHIVE_COMMAND_FAILED", ArchiveFailed, []string{"archiver process"}, regexp.MustCompile(`^archiver process \(PID \d+\) exited with exit code \d+`)},
 	{"LOCK_TIMEOUT", Timeout, []string{"canceling statement due to lock timeout"}, nil},
-	{"TXID_WRAPAROUND_WARNING", Wraparound, []string{"database"}, regexp.MustCompile(`^database (with OID (\d+)|"(.+?)") must be vacuumed within (\d+) transactions`)},
-	{"TXID_WRAPAROUND_ERROR", Wraparound, []string{"database is not accepting commands to avoid wraparound data loss in database"}, nil},
-	{"SERVER_CRASHED", Crash, []string{"server process"}, regexp.MustCompile(`^server process \(PID (\d+)\) was terminated by signal (6|11)(: [\w ]+)?`)},
+	// pgvigil: the MultiXact form of the warning too
+	{"TXID_WRAPAROUND_WARNING", Wraparound, []string{"database"}, regexp.MustCompile(`^database (with OID (\d+)|"(.+?)") must be vacuumed (within (\d+) transactions|before (\d+) more MultiXactIds are used)`)},
+	// pgvigil: every wording of the stop - before PostgreSQL 18 "... commands to avoid wraparound data loss ...", from 18
+	// "... commands that assign new transaction IDs (or MultiXactIds) to avoid wraparound data loss ...", and the older
+	// MultiXact "... commands that generate new MultiXactIds ..."
+	{"TXID_WRAPAROUND_ERROR", Wraparound, []string{"database is not accepting commands"}, regexp.MustCompile(`^database is not accepting commands [a-zA-Z ]*?to avoid (?:multixact )?wraparound data loss in database`)},
+	// pgvigil: PostgreSQL 18 names the backend type ("client backend (PID 83) was terminated by signal 11") where
+	// earlier releases say "server process"
+	{"SERVER_CRASHED", Crash, []string{""}, regexp.MustCompile(`^(?:server process|[a-z][a-z ]*(?:backend|worker|process|sender|receiver)) \(PID (\d+)\) was terminated by signal (6|11)(: [\w ]+)?`)},
 	{"SERVER_CRASHED", Crash, []string{"terminating any other active server processes", "all server processes terminated; reinitializing"}, nil},
 	{"SERVER_OUT_OF_MEMORY", OutOfMemory, []string{"out of memory"}, nil},
-	{"SERVER_OUT_OF_MEMORY", OutOfMemory, []string{"server process"}, regexp.MustCompile(`^server process \(PID (\d+)\) was terminated by signal (9)(: [\w ]+)?`)},
+	{"SERVER_OUT_OF_MEMORY", OutOfMemory, []string{""}, regexp.MustCompile(`^(?:server process|[a-z][a-z ]*(?:backend|worker|process|sender|receiver)) \(PID (\d+)\) was terminated by signal (9)(: [\w ]+)?`)},
 	{"SERVER_TEMP_FILE_CREATED", TempFile, []string{"temporary file: path "}, regexp.MustCompile(`^temporary file: path "(.+?)", size (\d+)`)},
 	{"STANDBY_STATEMENT_CANCELED", StandbyConflict, []string{"canceling statement due to conflict with recovery"}, nil},
 	{"COULD_NOT_SERIALIZE_REPEATABLE_READ", SerializationFailure, []string{"could not serialize access due to concurrent update"}, nil},
