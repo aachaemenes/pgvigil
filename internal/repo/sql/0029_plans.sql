@@ -116,12 +116,13 @@ WITH n AS (
     FROM n
    WHERE n.analyzed AND n.loops > 0 AND greatest(n.est, n.act) >= 100
      AND (greatest(n.est, 1) / greatest(n.act, 1) >= 10 OR greatest(n.act, 1) / greatest(n.est, 1) >= 10)
-), est_ok AS (   -- an overestimate under a Limit, a semi or anti join or a subplan is execution stopping early, not a
-                 -- misestimate: those are left out; an underestimate always counts
+), est_ok AS (   -- an overestimate under a Limit, a semi or anti join, a merge join (either side stops when the other runs
+                 -- out) or a subplan is execution stopping early, not a misestimate: those are left out; an underestimate
+                 -- always counts
   SELECT e.* FROM est e
    WHERE e.under >= 10
       OR NOT EXISTS (SELECT 1 FROM n a WHERE e.node_path LIKE a.node_path || '.%'
-                       AND (a.t = 'Limit' OR a.node->>'Join Type' IN ('Semi', 'Anti', 'Right Semi', 'Right Anti')
+                       AND (a.t IN ('Limit', 'Merge Join') OR a.node->>'Join Type' IN ('Semi', 'Anti', 'Right Semi', 'Right Anti')
                             OR a.node->>'Parent Relationship' IN ('SubPlan', 'InitPlan')))
                    AND e.node->>'Parent Relationship' IS DISTINCT FROM 'SubPlan'
 )
@@ -286,7 +287,8 @@ CREATE OR REPLACE FUNCTION pgvigil.import_actions_log(p_instance_id int, p_snaps
 RETURNS void LANGUAGE sql AS $$
   INSERT INTO pgvigil.actions_log (instance_id, instance_name, at, ui_user, client, action, pid, backend_start,
                                    target_user, target_app, reason, outcome, detail, datname, statement)
-  SELECT p_instance_id, x.instance_name, coalesce(x.at, p_snapshot_at), x.ui_user, nullif(x.client, ''), x.action, nullif(x.pid, 0),
+  SELECT p_instance_id, x.instance_name, coalesce(x.at, p_snapshot_at), x.ui_user, nullif(x.client, ''), x.action,
+         CASE WHEN x.action = 'explain_analyze' THEN NULL ELSE x.pid END,   -- a refused cancel keeps its pid 0, as before
          x.backend_start, nullif(x.target_user, ''), nullif(x.target_app, ''), x.reason, x.outcome, nullif(x.detail, ''),
          nullif(x.datname, ''), nullif(x.statement, '')
     FROM jsonb_to_recordset(p_payload) AS x(instance_name text, at timestamptz, ui_user text, client text, action text,

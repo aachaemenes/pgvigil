@@ -80,7 +80,7 @@ func Explain(ctx context.Context, dsn, datname, query string) (Row, error) {
 			return Row{}, fmt.Errorf("plan_cache_mode: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `PREPARE pgvigil_explain AS `+query, mode); err != nil {
-			return Row{}, explainErr(err, datname)
+			return Row{}, explainErr(err, datname, sc.Keyword)
 		}
 		args := strings.TrimSuffix(strings.Repeat("NULL, ", sc.MaxParam), ", ")
 		err = tx.QueryRow(ctx, `EXPLAIN (FORMAT JSON) EXECUTE pgvigil_explain(`+args+`)`, mode).Scan(&plan)
@@ -89,7 +89,7 @@ func Explain(ctx context.Context, dsn, datname, query string) (Row, error) {
 		err = tx.QueryRow(ctx, `EXPLAIN (FORMAT JSON) `+query, mode).Scan(&plan)
 	}
 	if err != nil {
-		return Row{}, explainErr(err, datname)
+		return Row{}, explainErr(err, datname, sc.Keyword)
 	}
 	r := Build(Explained, time.Now(), "", datname, query, plan)
 	if note != "" && r.PlanNote == "" {
@@ -106,18 +106,21 @@ func orDefault(datname string) string {
 }
 
 // explainErr turns the server's refusals into what the user can do about them.
-func explainErr(err error, datname string) error {
+func explainErr(err error, datname, keyword string) error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) {
-		switch pg.Code {
-		case "42501":
+		switch {
+		case pg.Code == "42501" && (keyword == "INSERT" || keyword == "UPDATE" || keyword == "DELETE" || keyword == "MERGE"):
+			return fmt.Errorf("%s: EXPLAIN of an %s checks that statement's own privilege on its table, even without running it, and a "+
+				"monitoring login should not hold a write privilege; plan its SELECT part here, or EXPLAIN it by hand as the application's role", pg.Message, keyword)
+		case pg.Code == "42501":
 			return fmt.Errorf("%s: EXPLAIN checks the statement's privileges and the monitoring login lacks one; pg_monitor alone cannot plan an "+
 				"application's statement: GRANT pg_read_all_data (PostgreSQL 14+) or SELECT on the tables to it, the client DBA's opt-in", pg.Message)
-		case "42P01", "42883", "42703":
+		case pg.Code == "42P01" || pg.Code == "42883" || pg.Code == "42703":
 			return fmt.Errorf("%s (in %s, as the monitoring login: a search_path or a database other than the application's?)", pg.Message, orDefault(datname))
-		case "42P18":
+		case pg.Code == "42P18":
 			return fmt.Errorf("%s: a parameter's type cannot be inferred from the statement, so the generic plan cannot be made", pg.Message)
-		case "57014":
+		case pg.Code == "57014":
 			return fmt.Errorf("planning took longer than %s: cancelled", ExplainTimeout)
 		}
 		return fmt.Errorf("%s (SQLSTATE %s)", pg.Message, pg.Code)

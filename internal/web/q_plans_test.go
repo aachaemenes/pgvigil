@@ -67,12 +67,12 @@ func TestPlanButtons(t *testing.T) {
 	if b := s.planButtons("i1"); !b.Explain || b.Analyze || !strings.Contains(b.AnalyzeReason, "off by default") {
 		t.Errorf("gate off: %+v", b)
 	}
-	s.SetPlans(PlansConfig{Gates: map[string]actions.ExplainGate{"i1": {Enabled: true}, "i2": {Enabled: true}}})
+	s.SetPlans(PlansConfig{Gates: map[string]actions.ExplainGate{"i1": {Enabled: true, DSN: "host=e"}, "i2": {Enabled: true}}})
 	if b := s.planButtons("i1"); !b.Explain || !b.Analyze {
 		t.Errorf("gate on: %+v", b)
 	}
-	if b := s.planButtons("i2"); !b.Explain || b.Analyze || !strings.Contains(b.AnalyzeReason, "no actions_dsn") {
-		t.Errorf("no actions login: %+v", b)
+	if b := s.planButtons("i2"); !b.Explain || b.Analyze || !strings.Contains(b.AnalyzeReason, "no explain_dsn") {
+		t.Errorf("no explain login: %+v", b)
 	}
 	if b := s.planButtons("i3"); b.Explain || !strings.Contains(b.ExplainReason, "no monitoring dsn") {
 		t.Errorf("unknown instance: %+v", b)
@@ -80,8 +80,8 @@ func TestPlanButtons(t *testing.T) {
 }
 
 // TestPlansProof is run by scripts/proof-plans.sh: the real handlers behind a live UI session, the real audit pool on
-// a collector login, the on-demand EXPLAIN through a pg_monitor login, EXPLAIN ANALYZE through a login without
-// SUPERUSER; the monitored server is the proof's throwaway cluster, its superuser (PLANS_SU_DSN) gives the grants
+// a collector login, the on-demand EXPLAIN through a pg_monitor login, EXPLAIN ANALYZE through an explain login
+// with SELECT grants only (and the cancel / terminate login refused for it); the monitored server is the proof's throwaway cluster, its superuser (PLANS_SU_DSN) gives the grants
 // between the steps. Each step logs "ok: ..." for the script.
 func TestPlansProof(t *testing.T) {
 	if os.Getenv("PGVIGIL_PLANS_PROOF") == "" {
@@ -96,7 +96,8 @@ func TestPlansProof(t *testing.T) {
 		return v
 	}
 	mon, act, suDSN, db := env("PLANS_MONITOR_DSN"), env("PLANS_ACTIONS_DSN"), env("PLANS_SU_DSN"), env("PLANS_DB")
-	inst, nodoor, monRole, actRole := env("PLANS_INSTANCE"), env("PLANS_INSTANCE_NODOOR"), env("PLANS_MONITOR_ROLE"), env("PLANS_ACTIONS_ROLE")
+	inst, nodoor, monRole := env("PLANS_INSTANCE"), env("PLANS_INSTANCE_NODOOR"), env("PLANS_MONITOR_ROLE")
+	expDSN, expRole := env("PLANS_EXPLAIN_DSN"), env("PLANS_EXPLAIN_ROLE")
 	pool, err := pgxpool.New(ctx, env("PGVIGIL_REPO_DSN"))
 	if err != nil {
 		t.Fatal(err)
@@ -212,32 +213,37 @@ func TestPlansProof(t *testing.T) {
 	}
 	t.Log("ok: two statements are refused (409)")
 
-	// D. EXPLAIN ANALYZE through the actions door
+	// D. EXPLAIN ANALYZE through the actions door, on the explain login (never the cancel / terminate login)
 	an := func(instance int, stmt, confirm string) map[string]any {
 		return map[string]any{"instance_id": instance, "datname": db, "statement": stmt, "reason": "proof: the plan of the slow report", "confirm": confirm}
 	}
-	gates := func(on bool, timeout time.Duration) {
-		s.SetPlans(PlansConfig{Gates: map[string]actions.ExplainGate{inst: {Enabled: on, Timeout: timeout}, nodoor: {Enabled: true}}})
+	gates := func(on bool, dsn string, timeout time.Duration) {
+		s.SetPlans(PlansConfig{Gates: map[string]actions.ExplainGate{inst: {Enabled: on, DSN: dsn, Configured: dsn != "", Timeout: timeout}, nodoor: {Enabled: true}}})
 	}
-	gates(false, 0)
+	gates(false, expDSN, 0)
 	if code, out = post(a.ExplainAnalyze, an(iid, "select * from t40 where v = 1", "analyze")); code != 409 || !strings.Contains(str(out, "error"), "off by default") {
 		t.Fatalf("gate off: %d %v", code, out)
 	}
 	t.Log("ok: EXPLAIN ANALYZE with the gate off: refused (409)")
-	if code, out = post(a.ExplainAnalyze, an(nid, "select * from t40 where v = 1", "analyze")); code != 409 || !strings.Contains(str(out, "error"), "no actions_dsn") {
-		t.Fatalf("no door: %d %v", code, out)
+	if code, out = post(a.ExplainAnalyze, an(nid, "select * from t40 where v = 1", "analyze")); code != 409 || !strings.Contains(str(out, "error"), "no explain_dsn") {
+		t.Fatalf("no explain login: %d %v", code, out)
 	}
-	t.Log("ok: EXPLAIN ANALYZE on an instance without actions_dsn: refused (409)")
-	gates(true, 0)
+	t.Log("ok: EXPLAIN ANALYZE on an instance without explain_dsn: refused (409)")
+	gates(true, act, 0)
+	if code, out = post(a.ExplainAnalyze, an(iid, "select * from t40 where v = 1", "analyze")); code != 409 || !strings.Contains(str(out, "error"), "member of pg_signal_backend") {
+		t.Fatalf("the cancel / terminate login as the explain login: %d %v", code, out)
+	}
+	t.Log("ok: the cancel / terminate login (pg_signal_backend) named as explain_dsn: refused (409)")
+	gates(true, expDSN, 0)
 	if code, out = post(a.ExplainAnalyze, an(iid, "select * from t40 where v = 1", "yes")); code != 409 || !strings.Contains(str(out, "error"), "confirmation") {
 		t.Fatalf("wrong confirmation: %d %v", code, out)
 	}
 	t.Log("ok: a typed confirmation other than analyze: refused (409)")
 	if code, out = post(a.ExplainAnalyze, an(iid, "select * from t40 where v = 1", "analyze")); code != 502 || !strings.Contains(str(out, "error"), "privileges") {
-		t.Fatalf("actions login without SELECT: %d %v", code, out)
+		t.Fatalf("explain login without SELECT: %d %v", code, out)
 	}
-	t.Log("ok: the actions login without SELECT: failed (502) naming the privilege")
-	grant("GRANT SELECT ON t40 TO " + actRole)
+	t.Log("ok: the explain login without SELECT: failed (502) naming the privilege")
+	grant("GRANT SELECT ON t40 TO " + expRole)
 	if code, out = post(a.ExplainAnalyze, an(iid, "select * from t40 where v = 1", "analyze")); code != 200 || out["plan_id"] == nil {
 		t.Fatalf("explain analyze: %d %v", code, out)
 	}
@@ -246,6 +252,33 @@ func TestPlansProof(t *testing.T) {
 		t.Fatalf("the analyzed plan: %s analyzed=%v rules=%q", src, analyzed, rules)
 	}
 	t.Log("ok: EXPLAIN ANALYZE done (200): stored as explain_analyze, analyzed, the rule 'filter removes most rows'")
+	// a session of another role, and a SELECT that would end it: the explain login may not signal it
+	victim, err := pgx.Connect(ctx, mon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = victim.Close(ctx) }()
+	var vpid int
+	if err := victim.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&vpid); err != nil {
+		t.Fatal(err)
+	}
+	vdone := make(chan error, 1)
+	go func() { _, err := victim.Exec(ctx, `SELECT pg_sleep(20)`); vdone <- err }()
+	time.Sleep(300 * time.Millisecond)
+	if code, out = post(a.ExplainAnalyze, an(iid, "select pg_terminate_backend(pid) from pg_stat_activity where pid = "+itoa(vpid), "analyze")); code != 502 {
+		t.Fatalf("a terminating SELECT: %d %v", code, out)
+	}
+	alive := false
+	_ = su.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)`, vpid).Scan(&alive)
+	select {
+	case err := <-vdone:
+		t.Fatalf("the victim's sleep ended: %v", err)
+	default:
+	}
+	if !alive {
+		t.Fatalf("the victim session %d is gone", vpid)
+	}
+	t.Log("ok: SELECT pg_terminate_backend(<another role's pid>) through the explain login: failed (502), the session lives on (" + str(out, "error") + ")")
 	before = rows40()
 	if code, out = post(a.ExplainAnalyze, an(iid, "with d as (delete from t40 where id = 1 returning *) select * from d", "analyze")); code != 502 || !strings.Contains(str(out, "error"), "tried to write") || rows40() != before {
 		t.Fatalf("a writing CTE: %d %v, rows %d -> %d", code, out, before, rows40())
@@ -255,7 +288,7 @@ func TestPlansProof(t *testing.T) {
 		t.Fatalf("a DELETE: %d %v", code, out)
 	}
 	t.Log("ok: a DELETE: refused (409), SELECT only")
-	gates(true, time.Second)
+	gates(true, expDSN, time.Second)
 	if code, out = post(a.ExplainAnalyze, an(iid, "select pg_sleep(3)", "analyze")); code != 502 || !strings.Contains(str(out, "error"), "timeout") {
 		t.Fatalf("the timeout: %d %v", code, out)
 	}

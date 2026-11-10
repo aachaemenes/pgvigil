@@ -108,10 +108,8 @@ func (s *Server) planButtons(name string) planButtons {
 	switch g := s.plansConfig().Gates[name]; {
 	case !b.Explain:
 		b.AnalyzeReason = b.ExplainReason
-	case a.doors[name].Off(name) != "":
-		b.AnalyzeReason = a.doors[name].Off(name)
-	case !g.Enabled:
-		b.AnalyzeReason = fmt.Sprintf("EXPLAIN ANALYZE is off on instance %s: it executes the statement, so it is turned on per instance in the config (explain_analyze), off by default", name)
+	case g.Off(name) != "":
+		b.AnalyzeReason = g.Off(name)
 	default:
 		b.Analyze = true
 	}
@@ -306,7 +304,9 @@ func (a *Actions) ExplainAnalyze(w http.ResponseWriter, r *http.Request) {
 		res, row = actions.ExplainAnalyze(ctx, a.doors[name], a.s.plansConfig().Gates[name], req)
 	}
 	at := time.Now()
-	payload, err := json.Marshal([]actions.ExplainLogRow{actions.ExplainRow(at, req, res)})
+	audited := req
+	audited.Statement = collect.PolicyText(req.Statement, a.s.plansConfig().QueryText[name]) // the audit follows the query-text policy
+	payload, err := json.Marshal([]actions.ExplainLogRow{actions.ExplainRow(at, audited, res)})
 	if err == nil {
 		_, err = a.audit.Exec(context.WithoutCancel(ctx), actions.ImportSQL, in.InstanceID, at, string(payload))
 	}

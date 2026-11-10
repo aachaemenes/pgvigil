@@ -12,6 +12,7 @@ var exprKeys = map[string]bool{
 	"TID Cond": true, "One-Time Filter": true, "Output": true, "Sort Key": true, "Presorted Key": true, "Group Key": true,
 	"Cache Key": true, "Function Call": true, "Table Function Call": true, "Query Text": true, "Query Parameters": true,
 	"Order By": true, "Run Condition": true, "Hash Key": true, "Repeatable Seed": true, "Sampling Parameters": true,
+	"Window": true, "Conflict Filter": true, "Remote SQL": true, "Partial Key": true,
 }
 
 // Mask applies the instance's query-text policy (config query_text) to a plan row, as the collector's text

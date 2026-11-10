@@ -267,3 +267,25 @@ func TestMask(t *testing.T) {
 		t.Error("full changed the row")
 	}
 }
+
+// The expression keys the review found unmasked (a window frame's offset, ON CONFLICT ... WHERE, a foreign scan's
+// remote SQL): masked in the JSON and in the text form.
+func TestMaskMoreKeys(t *testing.T) {
+	up := func(s string) string { return "#" + strings.ToUpper(s) + "#" }
+	js := `[{"Plan": {"Node Type": "ModifyTable", "Operation": "Insert", "Conflict Filter": "(t.x <> 4242)", "Plan Rows": 1,
+	  "Plans": [{"Node Type": "WindowAgg", "Parent Relationship": "Outer", "Window": "w1 AS (ORDER BY x ROWS BETWEEN '1234'::bigint PRECEDING AND CURRENT ROW)", "Plan Rows": 1,
+	    "Plans": [{"Node Type": "Foreign Scan", "Parent Relationship": "Outer", "Remote SQL": "SELECT x FROM public.t WHERE ((x = 777))", "Plan Rows": 1}]}]}}]`
+	r := Build(Explained, time.Unix(0, 0), "", "", "", js)
+	Mask(&r, "normalized", up)
+	for _, lit := range []string{"(t.x <> 4242)", "'1234'::bigint PRECEDING", "x = 777"} {
+		if strings.Contains(r.PlanText, lit) || strings.Contains(string(r.Plan), lit) {
+			t.Errorf("%q left in the masked plan", lit)
+		}
+	}
+	txt := "WindowAgg  (cost=0.00..1.00 rows=1 width=4)\n  Window: w1 AS (ORDER BY x ROWS BETWEEN '1234'::bigint PRECEDING AND CURRENT ROW)\n  ->  Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"
+	r = Build(Explained, time.Unix(0, 0), "", "", "", txt)
+	Mask(&r, "normalized", up)
+	if !strings.Contains(r.PlanText, "Window: #W1 AS") {
+		t.Errorf("text window not passed through the normalizer: %s", r.PlanText)
+	}
+}

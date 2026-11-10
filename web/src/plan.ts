@@ -99,7 +99,7 @@ function explainForm(ctx: Ctx, b: Buttons, stmt: string, db: string): HTMLElemen
   btnExplain.addEventListener('click', go('plans/explain', {}));
   const btnAnalyze = el('button', { type: 'button', class: 'danger' }, 'EXPLAIN ANALYZE (runs it)') as HTMLButtonElement;
   btnAnalyze.disabled = !b.analyze;
-  btnAnalyze.title = b.analyze ? 'Runs the SELECT through the actions login in a read-only transaction, rolled back, under a timeout; audited' : b.analyze_reason ?? '';
+  btnAnalyze.title = b.analyze ? 'Runs the SELECT through the instance\'s explain login in a read-only transaction, rolled back, under a timeout; audited in the actions log' : b.analyze_reason ?? '';
   btnAnalyze.addEventListener('click', () => {
     const typed = prompt('EXPLAIN ANALYZE executes the statement on the server. Type analyze to run it.');
     if (typed == null) return;

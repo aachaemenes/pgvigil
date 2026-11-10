@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aachaemenes/pgvigil/internal/plans"
 )
 
 // TestPlansQueryShapes: the read follows the installed version's column names, and an unknown shape is a skip.
@@ -49,5 +51,23 @@ func TestPlansRow(t *testing.T) {
 	m := r.Map()
 	if m["plan_key"] != "psp:16384:10:42:7" || m["plan"] == nil {
 		t.Fatalf("map: %v", m)
+	}
+}
+
+// TestMaskPlanReal: the collector's own normalizer takes the literals out of the keys the review named.
+func TestMaskPlanReal(t *testing.T) {
+	js := `[{"Plan": {"Node Type": "ModifyTable", "Conflict Filter": "(t.x <> 4242)", "Plan Rows": 1,
+	  "Plans": [{"Node Type": "WindowAgg", "Parent Relationship": "Outer", "Window": "w1 AS (ORDER BY x ROWS BETWEEN '1234'::bigint PRECEDING AND CURRENT ROW)", "Plan Rows": 1}]}}]`
+	r := plans.Build(plans.Explained, time.Unix(0, 0), "", "", "insert into t values (4242)", js)
+	if !MaskPlan(&r, "normalized") {
+		t.Fatal("normalized dropped the plan")
+	}
+	for _, lit := range []string{"4242", "1234"} {
+		if strings.Contains(r.PlanText, lit) || strings.Contains(string(r.Plan), lit) || strings.Contains(r.Query, lit) {
+			t.Errorf("%s left: %s | %s", lit, r.PlanText, r.Query)
+		}
+	}
+	if PolicyText("select * from t where id = 42", "none") != "select * from t where id = ?" || PolicyText("select 42", "full") != "select 42" {
+		t.Errorf("PolicyText: %q", PolicyText("select * from t where id = 42", "none"))
 	}
 }

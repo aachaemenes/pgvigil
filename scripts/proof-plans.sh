@@ -42,6 +42,15 @@
 #     with t40's rows unchanged; a DELETE 409; pg_sleep(3) under a 1 s gate timeout 502. actions_log then holds for
 #     the door instance done 1 / failed 3 / refused 3 and for the other refused 1, every row action explain_analyze
 #     with the statement, the datname, the UI user and a detail, pid NULL.
+#     [review 1 fold, expected before the rerun: EXPLAIN ANALYZE runs through a login of its own (explain_dsn: the
+#      proof's pgvigil_plexp_<suf>, LOGIN NOSUPERUSER, no role membership), since a read-only transaction does not
+#      stop pg_terminate_backend through the cancel / terminate login. D becomes: gate off 409; the instance without
+#      explain_dsn 409 "no explain_dsn"; the cancel / terminate login (pg_signal_backend) named as explain_dsn 409
+#      "member of pg_signal_backend"; confirmation "yes" 409; the explain login without SELECT 502 naming the
+#      privileges; after GRANT SELECT: 200 as before; "select pg_terminate_backend(pid) from pg_stat_activity where
+#      pid = <a pg_sleep(20) session of the monitoring login>" 502 with that session still in pg_stat_activity and its
+#      sleep running; the writing CTE 502, the DELETE 409, the timeout 502 as before. actions_log: door done 1 /
+#      failed 4 / refused 4, nodoor refused 1, the same columns checked]
 #  E. rights: pgvigil_collector may EXECUTE import_plans; pgvigil_reader may SELECT plans, plan_rule_hits and
 #     plan_findings and EXECUTE plan_rules.
 set -euo pipefail
@@ -50,7 +59,7 @@ BIN=${PGVIGIL_BIN:-bin/pgvigil}
 ADMIN_DSN=${ADMIN_DSN:-$PGVIGIL_REPO_DSN}
 PORT=${PLANS_PORT:-5497}
 SUF=$RANDOM; TAG=pgvplans$SUF
-REPO_DB=pgvigil_plansproof_$SUF; COL=pgvigil_plcol_$SUF; MON=pgvigil_plmon_$SUF; ACT=pgvigil_plact_$SUF; PW=p$RANDOM$RANDOM
+REPO_DB=pgvigil_plansproof_$SUF; COL=pgvigil_plcol_$SUF; MON=pgvigil_plmon_$SUF; ACT=pgvigil_plact_$SUF; EXP=pgvigil_plexp_$SUF; PW=p$RANDOM$RANDOM
 I1=proof-plans-$SUF; I2=proof-plans-nodoor-$SUF
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 TD=$HERE/internal/plans/testdata
@@ -80,7 +89,8 @@ SU="host=localhost port=$PORT user=postgres dbname=postgres sslmode=disable"
 SUDB="host=localhost port=$PORT user=postgres dbname=plansdb sslmode=disable"
 psql "$SU" -XAtq -v ON_ERROR_STOP=1 -c "create database plansdb" \
   -c "create role $MON login password '$PW' in role pg_monitor" \
-  -c "create role $ACT login password '$PW' nosuperuser in role pg_signal_backend"
+  -c "create role $ACT login password '$PW' nosuperuser in role pg_signal_backend" \
+  -c "create role $EXP login password '$PW' nosuperuser"
 psql "$SUDB" -XAtq -v ON_ERROR_STOP=1 -f "$TD/seed.sql" >/dev/null
 echo "seeded plansdb: $(psql "$SUDB" -XAt -c "select count(*) from t40") rows in t40"
 
@@ -163,14 +173,15 @@ echo "--- C and D. the on-demand EXPLAIN and EXPLAIN ANALYZE through the handler
 export PGVIGIL_PLANS_PROOF=1 PLANS_AUDIT_DSN="$COL_DSN" PLANS_SU_DSN="$SU" PLANS_DB=plansdb \
   PLANS_MONITOR_DSN="host=localhost port=$PORT user=$MON password=$PW dbname=postgres sslmode=disable" \
   PLANS_ACTIONS_DSN="host=localhost port=$PORT user=$ACT password=$PW dbname=postgres sslmode=disable" \
-  PLANS_MONITOR_ROLE=$MON PLANS_ACTIONS_ROLE=$ACT PLANS_INSTANCE=$I1 PLANS_INSTANCE_NODOOR=$I2
+  PLANS_EXPLAIN_DSN="host=localhost port=$PORT user=$EXP password=$PW dbname=postgres sslmode=disable" \
+  PLANS_MONITOR_ROLE=$MON PLANS_EXPLAIN_ROLE=$EXP PLANS_INSTANCE=$I1 PLANS_INSTANCE_NODOOR=$I2
 GOOUT=$(go test -count=1 -run 'TestPlansProof$' -v "$HERE/internal/web/" 2>&1) || { echo "$GOOUT" >&2; fail "TestPlansProof failed"; }
 grep -q -- '--- PASS: TestPlansProof' <<<"$GOOUT" || { echo "$GOOUT" >&2; fail "TestPlansProof did not run (skipped?)"; }
 grep -E 'q_plans_test.go:[0-9]+: ok:' <<<"$GOOUT" | sed 's/^ *q_plans_test.go:[0-9]*: //'
 got=$(q "select string_agg(n || ':' || outcome || '=' || c, ' ' order by n, outcome) from (
            select case instance_name when '$I1' then 'door' else 'nodoor' end n, outcome, count(*) c
              from pgvigil.actions_log where instance_name in ('$I1','$I2') group by 1, 2) x")
-[[ "$got" == "door:done=1 door:failed=3 door:refused=3 nodoor:refused=1" ]] || fail "D: actions_log '$got'"
+[[ "$got" == "door:done=1 door:failed=4 door:refused=4 nodoor:refused=1" ]] || fail "D: actions_log '$got'"
 bad=$(q "select count(*) from pgvigil.actions_log where instance_name in ('$I1','$I2')
           and (action <> 'explain_analyze' or pid is not null or statement is null or datname is distinct from 'plansdb' or ui_user = '' or detail is null)")
 [[ "$bad" == 0 ]] || fail "D: $bad audit rows miss the statement, the datname, the user or the detail"

@@ -164,6 +164,16 @@ func plansColumns(m map[string]bool) []string {
 	return out
 }
 
+// PolicyText is a statement as the instance's query-text policy lets the repository keep it outside a plan (the
+// EXPLAIN ANALYZE audit row): the text under full; its shape, literals replaced, under normalized and none (an audit
+// row must say what ran, so none keeps the shape rather than nothing).
+func PolicyText(s, mode string) string {
+	if mode == "normalized" || mode == "none" {
+		return normalizeSQL(s)
+	}
+	return s
+}
+
 // MaskPlan applies an instance's query-text policy (full | normalized | none) to a plan row with the collector's own
 // normalizer: false = the policy keeps no plan. The web's on-demand EXPLAIN and the log readers' plan lines use it.
 func MaskPlan(r *plans.Row, mode string) bool { return plans.Mask(r, mode, normalizeSQL) }

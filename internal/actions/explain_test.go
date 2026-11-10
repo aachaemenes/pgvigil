@@ -41,11 +41,15 @@ func TestExplainAnalyzeRefusals(t *testing.T) {
 		t.Errorf("gate off: %+v", res)
 	}
 	res, _ = ExplainAnalyze(context.Background(), Door{Monitor: "x"}, ExplainGate{Enabled: true}, r)
-	if res.Outcome != Refused || !strings.Contains(res.Detail, "no actions_dsn") {
-		t.Errorf("no door: %+v", res)
+	if res.Outcome != Refused || !strings.Contains(res.Detail, "no explain_dsn") {
+		t.Errorf("no explain login: %+v", res)
+	}
+	res, _ = ExplainAnalyze(context.Background(), Door{Monitor: "x"}, ExplainGate{Enabled: true, Configured: true}, r)
+	if res.Outcome != Refused || !strings.Contains(res.Detail, "resolved to an empty string") {
+		t.Errorf("explain_dsn unresolved: %+v", res)
 	}
 	r.Statement = "update t set v = 1"
-	res, _ = ExplainAnalyze(context.Background(), d, ExplainGate{Enabled: true}, r)
+	res, _ = ExplainAnalyze(context.Background(), d, ExplainGate{Enabled: true, DSN: "host=192.0.2.1 connect_timeout=1"}, r)
 	if res.Outcome != Refused || !strings.Contains(res.Detail, "SELECT statements only") {
 		t.Errorf("update: %+v", res)
 	}
