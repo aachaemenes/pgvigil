@@ -1,0 +1,412 @@
+package collect
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/platform"
+)
+
+// schemaCollector is the hourly schema snapshot (task 59, DBADash's DDL change tracking): per connectable database,
+// one row per object of the database's own schemas (schemas, tables with each column as its own object, indexes,
+// constraints, triggers, functions and procedures, views, materialized views and sequences), each with its definition
+// as text, its owner and its ACL, and a hash of the three. The import (0058, import_schema) diffs the read against the
+// stored one: an object added, dropped, or changed, with the before and after text of the changed attribute.
+//
+// The identity of an object is pg_identify_object()'s (public.t, public.t.col, t_pkey on public.t,
+// public.f(integer)): the same text an event trigger's pg_event_trigger_ddl_commands() and
+// pg_event_trigger_dropped_objects() give, so a captured statement matches its diff row.
+//
+// Left out: the catalog schemas (pg_catalog, information_schema, pg_toast*, pg_temp*), temporary relations, objects
+// that belong to an extension (pg_depend deptype 'e': their DDL is the extension's, its version is the Extensions
+// tab's), aggregates, and PostgreSQL 18's NOT NULL constraints (the column's own definition carries NOT NULL).
+// A function's body is read as text and hashed here (SHA-256, Go's crypto: no md5() on a FIPS server): the
+// definition holds the signature, language, volatility, security and settings, then "body sha256:<16 hex>".
+//
+// Every read is pg_monitor's: the catalogs and pg_get_*def are readable by every role.
+//
+// The opt-in exact statement: SchemaDDLLogSQL is the event trigger the server's DBA installs as a superuser (printed,
+// commented out, by 'pgvigil roles'); where its table pgvigil_ddl_log is present and readable, the collector reads the
+// rows logged since its cursor (one hour of overlap, the import keeps a row once), and the Schema tab shows the
+// statement beside the diff. Where it is absent the database's row says 'not installed'.
+type schemaCollector struct{}
+
+func init() { Register(schemaCollector{}) }
+
+func (schemaCollector) Name() string                   { return "schema" }
+func (schemaCollector) DefaultInterval() time.Duration { return time.Hour }
+func (schemaCollector) Applies(platform.Info) (bool, string) {
+	return true, ""
+}
+
+func (schemaCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row, error) {
+	return nil, fmt.Errorf("schema runs per instance (RunInstance)")
+}
+
+// schemaMaxObjects caps the objects read per database: a database over it is reported as a collector error and its
+// stored snapshot stays as it was (a partial read would show every object past the cap as dropped). A var: tests lower it.
+var schemaMaxObjects = 50000
+
+// schemaMaxDef cuts a stored definition (a long view or default); the hash is taken over the whole text first.
+const schemaMaxDef = 20000
+
+// schemaDDLMax is how many event-trigger rows one run reads per database.
+const schemaDDLMax = 5000
+
+// schemaDBSQL: the database read; read_at is the server's own clock just before the objects are read (the event
+// trigger's logged_at is on the same clock, so a statement is matched to the read that found its change without a
+// second clock's skew).
+const schemaDBSQL = `
+SELECT 'db' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
+       current_database()::text AS datname, now() AS read_at`
+
+// schemaObjectsSQL: every object of the database's own schemas, one row each; $1 is the cap plus one.
+const schemaObjectsSQL = `
+WITH ext AS (SELECT classid, objid FROM pg_depend WHERE deptype = 'e'),
+ns AS (
+  SELECT n.oid, n.nspname, n.nspowner, n.nspacl FROM pg_namespace n
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_(toast|temp_|toast_temp_)'
+     AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_namespace'::regclass AND ext.objid = n.oid)),
+rel AS (
+  SELECT c.oid, c.relname, c.relkind, c.relpersistence, c.relowner, c.relacl, c.reloptions, c.relispartition,
+         c.relrowsecurity, c.reltablespace, c.relpartbound, n.nspname,
+         (pg_identify_object('pg_class'::regclass, c.oid, 0)).identity AS ident
+    FROM pg_class c JOIN ns n ON n.oid = c.relnamespace
+   WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm', 'S', 'i', 'I') AND c.relpersistence <> 't'
+     AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_class'::regclass AND ext.objid = c.oid)),
+obj AS (
+  SELECT 'schema' AS okind, (pg_identify_object('pg_namespace'::regclass, n.oid, 0)).identity AS identity,
+         n.nspname::text AS schema_name, n.nspname::text AS object_name, NULL::text AS parent,
+         'schema'::text AS definition, pg_get_userbyid(n.nspowner)::text AS owner, n.nspacl::text AS acl, NULL::text AS body
+    FROM ns n
+  UNION ALL
+  SELECT 'table', c.ident, c.nspname, c.relname, NULL,
+         concat_ws(' ',
+           CASE c.relkind WHEN 'p' THEN 'partitioned table by ' || pg_get_partkeydef(c.oid) WHEN 'f' THEN 'foreign table'
+                ELSE CASE c.relpersistence WHEN 'u' THEN 'unlogged table' ELSE 'table' END END,
+           CASE WHEN c.relispartition THEN 'partition of ' ||
+             (SELECT h.inhparent::regclass::text FROM pg_inherits h WHERE h.inhrelid = c.oid LIMIT 1) || ' ' || pg_get_expr(c.relpartbound, c.oid) END,
+           CASE WHEN c.reloptions IS NOT NULL THEN 'with (' || array_to_string(c.reloptions, ', ') || ')' END,
+           CASE WHEN c.reltablespace <> 0 THEN 'tablespace ' || (SELECT t.spcname FROM pg_tablespace t WHERE t.oid = c.reltablespace) END,
+           CASE WHEN c.relrowsecurity THEN 'row level security' END),
+         pg_get_userbyid(c.relowner), c.relacl::text, NULL
+    FROM rel c WHERE c.relkind IN ('r', 'p', 'f')
+  UNION ALL
+  SELECT 'column', (pg_identify_object('pg_class'::regclass, c.oid, a.attnum)).identity, c.nspname, a.attname, c.ident,
+         concat_ws(' ', format_type(a.atttypid, a.atttypmod),
+           CASE WHEN a.attcollation <> 0 AND a.attcollation <> (SELECT t.typcollation FROM pg_type t WHERE t.oid = a.atttypid)
+                THEN 'collate ' || (SELECT quote_ident(co.collname) FROM pg_collation co WHERE co.oid = a.attcollation) END,
+           CASE WHEN a.attnotnull THEN 'not null' END,
+           CASE a.attidentity WHEN 'a' THEN 'generated always as identity' WHEN 'd' THEN 'generated by default as identity' END,
+           CASE WHEN a.attgenerated = 's' THEN 'generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') stored'
+                WHEN d.adbin IS NOT NULL THEN 'default ' || pg_get_expr(d.adbin, d.adrelid) END),
+         NULL, a.attacl::text, NULL
+    FROM rel c
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+    LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+   WHERE c.relkind IN ('r', 'p', 'f')
+  UNION ALL
+  SELECT 'index', c.ident, c.nspname, c.relname, t.ident,
+         pg_get_indexdef(c.oid) || CASE WHEN NOT i.indisvalid THEN ' (INVALID)' ELSE '' END, NULL, NULL, NULL
+    FROM rel c JOIN pg_index i ON i.indexrelid = c.oid JOIN rel t ON t.oid = i.indrelid
+   WHERE c.relkind IN ('i', 'I')
+  UNION ALL
+  SELECT 'constraint', (pg_identify_object('pg_constraint'::regclass, k.oid, 0)).identity, c.nspname, k.conname, c.ident,
+         pg_get_constraintdef(k.oid) || CASE WHEN NOT k.convalidated THEN ' NOT VALID' ELSE '' END, NULL, NULL, NULL
+    FROM pg_constraint k JOIN rel c ON c.oid = k.conrelid
+   WHERE k.contype <> 'n'
+  UNION ALL
+  SELECT 'trigger', (pg_identify_object('pg_trigger'::regclass, g.oid, 0)).identity, c.nspname, g.tgname, c.ident,
+         pg_get_triggerdef(g.oid) || CASE g.tgenabled WHEN 'D' THEN ' (DISABLED)' WHEN 'R' THEN ' (REPLICA)' WHEN 'A' THEN ' (ALWAYS)' ELSE '' END,
+         NULL, NULL, NULL
+    FROM pg_trigger g JOIN rel c ON c.oid = g.tgrelid
+   WHERE NOT g.tgisinternal
+  UNION ALL
+  SELECT CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END,
+         (pg_identify_object('pg_proc'::regclass, p.oid, 0)).identity, n.nspname, p.proname, NULL,
+         concat_ws(' ', CASE p.prokind WHEN 'p' THEN 'procedure' WHEN 'w' THEN 'window function' ELSE 'function' END,
+           CASE WHEN p.prokind <> 'p' THEN 'returns ' || pg_get_function_result(p.oid) END,
+           'language ' || l.lanname,
+           CASE p.provolatile WHEN 'i' THEN 'immutable' WHEN 's' THEN 'stable' ELSE 'volatile' END,
+           CASE WHEN p.proisstrict THEN 'strict' END,
+           CASE WHEN p.prosecdef THEN 'security definer' END,
+           CASE WHEN p.proconfig IS NOT NULL THEN 'set ' || array_to_string(p.proconfig, ', ') END),
+         pg_get_userbyid(p.proowner), p.proacl::text, coalesce(p.prosrc, '') || coalesce(' ' || p.probin, '')
+    FROM pg_proc p JOIN ns n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+   WHERE p.prokind IN ('f', 'p', 'w')
+     AND NOT EXISTS (SELECT 1 FROM ext WHERE ext.classid = 'pg_proc'::regclass AND ext.objid = p.oid)
+  UNION ALL
+  SELECT CASE c.relkind WHEN 'm' THEN 'materialized view' ELSE 'view' END, c.ident, c.nspname, c.relname, NULL,
+         pg_get_viewdef(c.oid, true), pg_get_userbyid(c.relowner), c.relacl::text, NULL
+    FROM rel c WHERE c.relkind IN ('v', 'm')
+  UNION ALL
+  SELECT 'sequence', c.ident, c.nspname, c.relname, NULL,
+         concat_ws(' ', 'sequence', format_type(s.seqtypid, NULL), 'start', s.seqstart, 'increment', s.seqincrement,
+           'min', s.seqmin, 'max', s.seqmax, 'cache', s.seqcache, CASE WHEN s.seqcycle THEN 'cycle' END,
+           (SELECT 'owned by ' || (pg_identify_object('pg_class'::regclass, dp.refobjid, dp.refobjsubid)).identity
+              FROM pg_depend dp
+             WHERE dp.classid = 'pg_class'::regclass AND dp.objid = c.oid AND dp.refclassid = 'pg_class'::regclass
+               AND dp.deptype IN ('a', 'i') AND dp.refobjsubid > 0 LIMIT 1)),
+         pg_get_userbyid(c.relowner), c.relacl::text, NULL
+    FROM rel c JOIN pg_sequence s ON s.seqrelid = c.oid
+)
+SELECT 'obj' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
+       current_database()::text AS datname, okind AS object_kind, identity, schema_name, object_name, parent,
+       definition, owner, acl, body
+  FROM obj
+ ORDER BY okind, identity
+ LIMIT $1`
+
+// schemaDDLStateSQL finds the event trigger's table (any schema, public first) and its two event triggers.
+const schemaDDLStateSQL = `
+SELECT (SELECT c.oid::regclass::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = 'pgvigil_ddl_log' AND c.relkind IN ('r', 'p') ORDER BY n.nspname <> 'public', n.nspname LIMIT 1) AS tbl,
+       (SELECT has_table_privilege(c.oid, 'SELECT') FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = 'pgvigil_ddl_log' AND c.relkind IN ('r', 'p') ORDER BY n.nspname <> 'public', n.nspname LIMIT 1) AS readable,
+       (SELECT count(*) FROM pg_event_trigger e
+         WHERE e.evtname IN ('pgvigil_ddl_end', 'pgvigil_ddl_drop') AND e.evtenabled <> 'D')::int AS triggers`
+
+// schemaDDLReadSQL reads the log since the cursor less one hour (a transaction that commits late keeps its earlier
+// clock_timestamp; the import keeps a row once), or the last day on the first read. %s is the table as regclass
+// prints it (quoted by the server).
+const schemaDDLReadSQL = `
+SELECT 'ddl' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
+       current_database()::text AS datname, log_id::bigint AS log_id, logged_at, event::text AS event,
+       command_tag::text AS command_tag, object_type::text AS object_type, schema_name::text AS schema_name,
+       object_identity::text AS object_identity, role_name::text AS role_name, statement::text AS statement
+  FROM %s
+ WHERE logged_at > coalesce($1::timestamptz - interval '1 hour', now() - interval '1 day')
+ ORDER BY logged_at, log_id
+ LIMIT %d`
+
+// SchemaDDLLogSQL is the opt-in event trigger, printed by 'pgvigil roles' for the server's DBA (commented out). It is
+// installed per database, as a superuser (only a superuser creates an event trigger). The capture never blocks the
+// DDL it records: any error inside it becomes a WARNING. <login> is the monitoring login's role.
+const SchemaDDLLogSQL = `CREATE TABLE public.pgvigil_ddl_log (
+  log_id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  logged_at       timestamptz NOT NULL DEFAULT clock_timestamp(),
+  event           text NOT NULL,                 -- ddl_command_end | sql_drop
+  command_tag     text NOT NULL,
+  object_type     text,
+  schema_name     text,
+  object_identity text,                          -- pg_identify_object's text (NULL for GRANT and REVOKE)
+  role_name       text NOT NULL DEFAULT session_user,
+  statement       text                           -- the top-level statement, cut at 10,000 characters
+);
+CREATE INDEX pgvigil_ddl_log_at ON public.pgvigil_ddl_log (logged_at);
+REVOKE ALL ON public.pgvigil_ddl_log FROM PUBLIC;
+GRANT SELECT ON public.pgvigil_ddl_log TO <login>;
+CREATE FUNCTION public.pgvigil_ddl_capture() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp AS $f$
+DECLARE r record;
+BEGIN
+  IF TG_EVENT = 'ddl_command_end' THEN
+    FOR r IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+      INSERT INTO public.pgvigil_ddl_log (event, command_tag, object_type, schema_name, object_identity, statement)
+      VALUES (TG_EVENT, r.command_tag, r.object_type, r.schema_name, r.object_identity, left(current_query(), 10000));
+    END LOOP;
+  ELSE
+    FOR r IN SELECT * FROM pg_event_trigger_dropped_objects() WHERE original LOOP
+      INSERT INTO public.pgvigil_ddl_log (event, command_tag, object_type, schema_name, object_identity, statement)
+      VALUES (TG_EVENT, TG_TAG, r.object_type, r.schema_name, r.object_identity, left(current_query(), 10000));
+    END LOOP;
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'pgvigil_ddl_capture: %', SQLERRM;
+END $f$;
+REVOKE ALL ON FUNCTION public.pgvigil_ddl_capture() FROM PUBLIC;
+CREATE EVENT TRIGGER pgvigil_ddl_end ON ddl_command_end EXECUTE FUNCTION public.pgvigil_ddl_capture();
+CREATE EVENT TRIGGER pgvigil_ddl_drop ON sql_drop EXECUTE FUNCTION public.pgvigil_ddl_capture();
+-- the undo:
+-- DROP EVENT TRIGGER pgvigil_ddl_end; DROP EVENT TRIGGER pgvigil_ddl_drop;
+-- DROP FUNCTION public.pgvigil_ddl_capture(); DROP TABLE public.pgvigil_ddl_log;
+-- the table grows with every DDL statement: keep it in check with, say, a monthly
+-- DELETE FROM public.pgvigil_ddl_log WHERE logged_at < now() - interval '90 days';`
+
+// RunInstance reads the connected database on conn and every other connectable database on its own connection, up to
+// tablesMaxDatabases (the tables collection's bound).
+func (schemaCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error) {
+	dbs, err := tablesDatabases(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	var cur string
+	if err := conn.QueryRow(ctx, `SELECT current_database()::text`).Scan(&cur); err != nil {
+		return nil, err
+	}
+	out := []Row{}
+	if len(dbs) > tablesMaxDatabases {
+		// one error row per database left out, so the import keeps its snapshot as it was instead of marking it gone
+		for _, db := range dbs[tablesMaxDatabases:] {
+			out = append(out, Row{"kind": "collector_error", "source": "schema:" + db,
+				"message": fmt.Sprintf("%d databases: the first %d by name are read", len(dbs), tablesMaxDatabases)})
+		}
+		dbs = dbs[:tablesMaxDatabases]
+	}
+	for _, db := range dbs {
+		var since *time.Time
+		if cursor != nil {
+			if t, ok, err := cursor(ctx, "schema_ddl:"+db); err == nil && ok {
+				since = &t
+			}
+		}
+		var rows []Row
+		if db == cur {
+			rows, err = schemaRead(ctx, conn, since)
+		} else {
+			rows, err = schemaReadOther(ctx, in, db, since)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			out = append(out, Row{"kind": "collector_error", "source": "schema:" + db, "message": err.Error()})
+			continue
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
+}
+
+// schemaRead reads one database: the objects (all or nothing: a failure or a database over the cap fails the database,
+// so its stored snapshot stays), then the event trigger's state and rows (a failure there is noted on the database's
+// row, the objects still count).
+func schemaRead(ctx context.Context, conn *pgx.Conn, since *time.Time) ([]Row, error) {
+	if _, err := conn.Exec(ctx, `SET search_path = pg_catalog`); err != nil {
+		return nil, fmt.Errorf("search_path: %w", err)
+	}
+	r, err := conn.Query(ctx, schemaDBSQL)
+	if err != nil {
+		return nil, fmt.Errorf("database: %w", err)
+	}
+	dbRows, err := rowsToMaps(r)
+	if err != nil || len(dbRows) != 1 {
+		return nil, fmt.Errorf("database: %v", err)
+	}
+	db := dbRows[0]
+	r, err = conn.Query(ctx, schemaObjectsSQL, schemaMaxObjects+1)
+	if err != nil {
+		return nil, fmt.Errorf("objects: %w", err)
+	}
+	objs, err := rowsToMaps(r)
+	if err != nil {
+		return nil, fmt.Errorf("objects: %w", err)
+	}
+	if len(objs) > schemaMaxObjects {
+		return nil, fmt.Errorf("over %d objects: the database is not snapshotted (schemaMaxObjects)", schemaMaxObjects)
+	}
+	schemaFinish(objs)
+	db["objects"] = len(objs)
+
+	ddl, status, table, note := schemaDDL(ctx, conn, since)
+	db["ddl_log"], db["ddl_log_table"] = status, table
+	if note != "" {
+		db["ddl_log_note"] = note
+	}
+	out := make([]Row, 0, len(objs)+len(ddl)+1)
+	out = append(out, db)
+	out = append(out, objs...)
+	return append(out, ddl...), nil
+}
+
+// schemaDDL reads the event trigger's state and its rows since the cursor. status: 'installed', 'not installed' (no
+// pgvigil_ddl_log table), 'no event trigger' (the table without its two enabled event triggers: its rows are still
+// read), 'not readable' (the login lacks SELECT on it).
+func schemaDDL(ctx context.Context, conn *pgx.Conn, since *time.Time) (rows []Row, status, table, note string) {
+	var tbl *string
+	var readable *bool
+	var triggers int
+	if err := conn.QueryRow(ctx, schemaDDLStateSQL).Scan(&tbl, &readable, &triggers); err != nil {
+		return nil, "not installed", "", "the event trigger's state: " + err.Error()
+	}
+	if tbl == nil {
+		return nil, "not installed", "", ""
+	}
+	if readable == nil || !*readable {
+		return nil, "not readable", *tbl, "the monitoring login has no SELECT on " + *tbl
+	}
+	status = "installed"
+	if triggers < 2 {
+		status = "no event trigger"
+	}
+	r, err := conn.Query(ctx, fmt.Sprintf(schemaDDLReadSQL, *tbl, schemaDDLMax), since)
+	if err != nil {
+		return nil, status, *tbl, "read " + *tbl + ": " + err.Error()
+	}
+	rows, err = rowsToMaps(r)
+	if err != nil {
+		return nil, status, *tbl, "read " + *tbl + ": " + err.Error()
+	}
+	return rows, status, *tbl, ""
+}
+
+// schemaFinish turns each object row into its stored shape: a function's body becomes its hash at the end of the
+// definition, the hash of kind, definition, owner and ACL is added, and a definition over schemaMaxDef is cut (after
+// hashing, so a change past the cut still shows as a change).
+func schemaFinish(objs []Row) {
+	for _, o := range objs {
+		def, _ := o["definition"].(string)
+		if body, ok := o["body"].(string); ok {
+			sum := sha256.Sum256([]byte(body))
+			def += " body sha256:" + hex.EncodeToString(sum[:])[:16]
+		}
+		delete(o, "body")
+		owner, _ := o["owner"].(string)
+		acl, _ := o["acl"].(string)
+		kind, _ := o["object_kind"].(string)
+		h := sha256.New()
+		for _, s := range []string{kind, def, owner, acl} {
+			h.Write([]byte(s))
+			h.Write([]byte{0})
+		}
+		o["hash"] = hex.EncodeToString(h.Sum(nil))
+		o["definition"] = schemaCut(def, schemaMaxDef)
+	}
+}
+
+// schemaCut keeps the first limit characters of s (never splitting a character) and says it was cut.
+func schemaCut(s string, limit int) string {
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n == limit {
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String() + " ... (cut at " + fmt.Sprint(limit) + " characters)"
+}
+
+// schemaReadOther connects to another database with the instance's DSN and the collector's session settings.
+func schemaReadOther(ctx context.Context, in config.Instance, db string, since *time.Time) ([]Row, error) {
+	dsn := in.DSN()
+	if dsn == "" {
+		return nil, fmt.Errorf("dsn %q resolved to an empty string", in.DSNRaw)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse dsn: %w", err)
+	}
+	cfg.Database = db
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, sessionSetup); err != nil {
+		return nil, fmt.Errorf("session setup: %w", err)
+	}
+	return schemaRead(ctx, conn, since)
+}
