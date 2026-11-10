@@ -342,6 +342,7 @@ func (c *Config) Validate() error {
 		}
 		if in.Backups != nil && in.Backups.ArchiveWarnMinutes < 0 {
 			return fmt.Errorf("instance %q: backups.archive_warn_minutes must be 0 or more", in.Name)
+		}
 		if v := strings.TrimSpace(in.ExplainDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
 			return fmt.Errorf("instance %q: explain_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}

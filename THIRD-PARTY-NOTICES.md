@@ -43,3 +43,14 @@ THE SOFTWARE.
 ## pgMonitor
 
 pgvigil's pg_hba.conf change detection (a checksum of the rules between two reads) follows the idea of pgMonitor's monitor.pg_hba_checksum (https://github.com/CrunchyData/pgmonitor). No code is copied. pgMonitor is licensed under the Apache License 2.0; Copyright (c) 2017-2025 Crunchy Data Solutions, Inc. and Copyright (c) 2025-2026 Snowflake, Inc.
+
+## pev2 and the plan viewer's bundle
+
+The Plan page draws a plan with pev2 (https://github.com/dalibo/pev2), bundled into `internal/web/dist/pev2/pev2.js` by `web/package.json`'s `build:pev2` and loaded only when a plan is opened, inside a shadow root so its styles never reach the rest of the UI. It is used as published; no code of it is changed.
+
+- pev2 1.25.0 - PostgreSQL License - Copyright (c) 2019, Dalibo. pev2's own build bundles, and so ships with it: d3 7.9.2 (ISC, Copyright 2010-2026 Mike Bostock); d3-flextree 2.1.2 (WTFPL); lodash 4.18.1 (MIT); motion 12.43.0 (MIT); splitpanes 4.1.2 (MIT); vue-tippy 6.8.0 (MIT); @vueuse/core 14.4.0 (MIT); highlight.js 11.12.0 (BSD-3-Clause, Copyright (c) 2006, Ivan Sagalaev); vue-clipboard3 2.0.0 (MIT); humanize-duration 3.35.1 (Unlicense); @fortawesome/vue-fontawesome 3.3.3 (MIT); @fortawesome/fontawesome-svg-core 6.7.2 (MIT); @fortawesome/free-solid-svg-icons 6.7.2 and free-regular-svg-icons 7.3.1 (icons CC BY 4.0, code MIT; Copyright (c) 2024 Fonticons, Inc.).
+- vue 3.5.44 - MIT - Copyright (c) 2018-present, Yuxi (Evan) You - `internal/web/dist/pev2/vue.js` and its chunk.
+- bootstrap 5.3.8 (CSS only) - MIT - Copyright (c) 2011-2025 The Bootstrap Authors - `internal/web/dist/pev2/bootstrap.min.css`, inside the viewer's shadow root only.
+- @fortawesome/fontawesome-svg-core 6.7.2 styles.css - MIT - `internal/web/dist/pev2/fontawesome.css`.
+
+For a review: the bundle makes no request beyond its own three stylesheets and two modules; its strings hold links (pev2's issues page, the PostgreSQL documentation) that run only when clicked; no eval and no new Function, so it fits the content security policy as is; d3-flextree's WTFPL and humanize-duration's Unlicense are unusual licences a legal review may ask about.

@@ -181,10 +181,19 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
 		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
+	// the log readers' auto_explain lines become plan rows too (the plans table, 0029), masked by the instance's
+	// query-text policy before the text policy below empties the log row's own copy under normalized and none
+	extra := planRowsFromLog(name, rows, in.QueryText)
 	applyTextPolicy(rows, in.QueryText)
 	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
 		return Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
+	}
+	if len(extra) > 0 {
+		if err := r.Import(ctx, instanceID, "plans", start, extra); err != nil {
+			_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+			return Result{Err: fmt.Errorf("import plans from %s's %s: %w", in.Name, name, err), Duration: time.Since(start)}
+		}
 	}
 	d := time.Since(start)
 	status, note := "ok", ""

@@ -13,7 +13,7 @@ import (
 // UI passwords), and on each monitored server to create the monitoring login. Nothing is executed: the operator reads it,
 // fills in the passwords or the identity, and runs it.
 func runRoles(args []string) error {
-	collector, reader, monitor, act := "pgvigil_agent", "pgvigil_ui", "pgvigil_monitor", "pgvigil_actions"
+	collector, reader, monitor, act, explain := "pgvigil_agent", "pgvigil_ui", "pgvigil_monitor", "pgvigil_actions", "pgvigil_explain"
 	if len(args) > 0 && args[0] == "-h" {
 		fmt.Fprintln(os.Stderr, "usage: pgvigil roles   prints the CREATE ROLE statements for the repository and the monitored servers")
 		return nil
@@ -43,6 +43,15 @@ CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
 -- CREATE ROLE %[4]s LOGIN PASSWORD '<set-me>' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
 -- GRANT pg_signal_backend TO %[4]s;
 
+-- Optional, per monitored server: the login behind the Plan page's EXPLAIN ANALYZE (it executes the SELECT in a
+-- read-only transaction that is rolled back, under a statement timeout). SELECT grants only: never the actions
+-- login and never pg_signal_backend (a SELECT could call pg_terminate_backend through it; pgvigil refuses such a
+-- login, as it refuses a superuser). Point the instance's explain_dsn at it and set explain_analyze: true; every
+-- attempt is kept in pgvigil.actions_log. The on-demand EXPLAIN without execution needs no login of its own: it
+-- runs as the monitoring login, which may need SELECT on the application's tables for the planner to see them.
+-- CREATE ROLE %[6]s LOGIN PASSWORD '<set-me>' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+-- GRANT pg_read_all_data TO %[6]s;   -- PostgreSQL 14+; older: SELECT on the application's tables
+
 -- Optional, per on-prem monitored server: the read door of the serverlog collection (the server-log files
 -- through pg_ls_logdir(), for the Slow queries view). Run as a superuser on that server; the function serves
 -- only the files pg_ls_logdir() lists. The wide alternative, GRANT EXECUTE ON FUNCTION
@@ -50,7 +59,7 @@ CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
 -- (pg_hba.conf, server.key, pg_authid's password hashes) and is not recommended; pg_read_server_files alone
 -- opens neither. Without a door the collection is skipped with its reason.
 %[5]s
-`, collector, reader, monitor, act, serverlogDoorBlock(monitor))
+`, collector, reader, monitor, act, serverlogDoorBlock(monitor), explain)
 	return nil
 }
 

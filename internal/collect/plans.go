@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/logparse"
 	"github.com/aachaemenes/pgvigil/internal/plans"
 	"github.com/aachaemenes/pgvigil/internal/platform"
 )
@@ -177,3 +178,36 @@ func PolicyText(s, mode string) string {
 // MaskPlan applies an instance's query-text policy (full | normalized | none) to a plan row with the collector's own
 // normalizer: false = the policy keeps no plan. The web's on-demand EXPLAIN and the log readers' plan lines use it.
 func MaskPlan(r *plans.Row, mode string) bool { return plans.Mask(r, mode, normalizeSQL) }
+
+// planRowsFromLog turns the auto_explain events a log reader (logs, serverlog) produced into import_plans rows: the
+// event's duration and plan text rebuilt into the message auto_explain wrote, parsed by internal/plans, masked by
+// the instance's query-text policy (none keeps no plan). Any other collection, or a log batch without plan events,
+// gives nil. The log row itself stays a log_events row of kind plan (its text follows the text policy).
+func planRowsFromLog(collection string, rows []Row, mode string) []Row {
+	if collection != "logs" && collection != "serverlog" {
+		return nil
+	}
+	var out []Row
+	for _, row := range rows {
+		if row["kind"] != "event" || row["kind_of"] != string(logparse.Plan) {
+			continue
+		}
+		text, _ := row["statement"].(string)
+		at, _ := row["at"].(time.Time)
+		if text == "" || at.IsZero() {
+			continue
+		}
+		dur := "0"
+		if d := row["duration_ms"]; d != nil {
+			dur = fmt.Sprint(d)
+		}
+		datname, _ := row["datname"].(string)
+		usename, _ := row["usename"].(string)
+		pr, ok := plans.FromLogMessage(at, datname, usename, "duration: "+dur+" ms  plan:\n"+text)
+		if !ok || !plans.Mask(&pr, mode, normalizeSQL) {
+			continue
+		}
+		out = append(out, pr.Map())
+	}
+	return out
+}
