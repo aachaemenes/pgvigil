@@ -153,7 +153,8 @@ LANGUAGE sql STABLE AS $$
     SELECT p_from - interval '7 days' AS f,
            make_interval(secs => greatest(3600, ceil(extract(epoch FROM p_to - (p_from - interval '7 days')) / 600))) AS step
   )
-  SELECT date_bin(s.step, d.snapshot_at - interval '1 microsecond', s.f) + s.step,
+  -- the step's end that holds the delta (floor arithmetic on epoch seconds: date_bin is PostgreSQL 14+, 13 is supported)
+  SELECT s.f + make_interval(secs => floor(extract(epoch FROM d.snapshot_at - interval '1 microsecond' - s.f) / extract(epoch FROM s.step)) * extract(epoch FROM s.step)) + s.step,
          sum(d.calls)::float8, sum(d.total_exec_ms), sum(d.total_exec_ms) / nullif(sum(d.calls), 0),
          sum(coalesce(d.shared_blks_hit, 0) + coalesce(d.shared_blks_read, 0))::float8 / nullif(sum(d.calls), 0)
     FROM pgvigil.statements_delta d CROSS JOIN s
