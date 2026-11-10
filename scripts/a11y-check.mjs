@@ -55,6 +55,11 @@ for (const t of instTabs) if (/#\/(load|host|summary)\?/.test(t)) pages.push(t.r
 pages.push(`#/compare?i=${regress.instance_id}&w=7d`);
 // the DBADash door's instance page (the demo's repository and its second instance)
 pages.push('#/dbadash?dr=dbadash-demo&di=2');
+// the Memory tab on the instance with pg_buffercache and temp spills, the Pooler tab on the one with a PgBouncer (hidden elsewhere)
+const erp = pick(r => String(r.name).endsWith('onprem-erp01')) ?? onprem;
+const crm = pick(r => String(r.name).endsWith('aurora-crm01')) ?? cloud;
+pages.push(`#/memory?i=${erp.instance_id}`);
+pages.push(`#/pooler?i=${crm.instance_id}`);
 const all = []; let failed = 0; const perRule = new Map();
 for (const theme of ['light', 'dark']) {
   // the theme is remembered per origin: set it on a page of the UI (not on about:blank), and pin the media query too

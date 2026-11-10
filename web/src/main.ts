@@ -23,6 +23,8 @@ import { plansView } from './plan';
 import { slowView } from './slow';
 import { waitsView } from './waits';
 import { compareView } from './compare';
+import { memory } from './memory';
+import { hasPooler, pooler } from './pooler';
 import { indexesView } from './indexes';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
@@ -50,12 +52,14 @@ const instancePages: Record<string, Render> = {
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
   compare: compareView,
+  memory, pooler,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs']);
 const liveInstance = new Set(['summary', 'activity', 'dms', 'host', 'vacuum', 'io']);
 
 let timer: number | undefined;
+const poolerKnown = new Map<number, boolean>();   // per instance: a pooler read exists (a pgbouncer: DSN); the Pooler tab shows only then
 let generation = 0;   // a render that finishes after a newer one started is dropped
 let session: Session = { login: false };
 let loginShown = false;   // the sign-in form is up: a tab switch or a hash change must not rebuild it
@@ -131,7 +135,12 @@ async function render(force = false) {
   const gen = ++generation;
   const ctx = parse();
   rememberInstance(ctx.instance);
-  const tabs = ctx.instance ? instanceTabs : rootTabs;
+  let tabs = ctx.instance ? instanceTabs : rootTabs;
+  // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
+  if (ctx.instance) {
+    if (force || !poolerKnown.has(ctx.instance)) poolerKnown.set(ctx.instance, await hasPooler(ctx.instance).catch(() => false));
+    if (!poolerKnown.get(ctx.instance)) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
+  }
   const pages = ctx.instance ? instancePages : rootPages;
 
   $('tabs').replaceChildren(...Object.entries(tabs).map(([k, label]) =>

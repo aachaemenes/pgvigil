@@ -254,6 +254,11 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("roles", g.roleRows(t))
 		add("indexes", g.indexRows(t))
 		add("session_sets", g.sessionSetRows(t))
+		add("buffercache", g.bufferCacheDemoRows(t))
+		add("temp_files", g.tempFilesDemoRows(t)) // after the statements and logs batches of the same step: the rollup reads them
+	}
+	if rows := g.poolerDemoRows(t); len(rows) > 0 { // every minute, the instance with a pgbouncer: DSN
+		add("pgbouncer", rows)
 	}
 	// the compare collection: one state row at every hourly step and at the seed's end (a snapshot older than two hours is a
 	// no-op in import_compare; the last one fills compare_findings_cache before the first live hour)
@@ -312,7 +317,10 @@ func (g *Gen) Collections() []string {
 	if g.waitDoor() {
 		c = append(c, "waits")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare")
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files")
+	if g.Spec.Name == "aurora-crm01" {
+		c = append(c, "pgbouncer")
+	}
 	if g.amcheckOn() {
 		c = append(c, "amcheck")
 	}

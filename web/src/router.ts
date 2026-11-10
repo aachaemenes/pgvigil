@@ -31,7 +31,7 @@ export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'D
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
-  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', indexes: 'Indexes', plans: 'Plans', actions: 'Actions log',
+  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', plans: 'Plans', actions: 'Actions log',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip

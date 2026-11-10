@@ -243,6 +243,7 @@ function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
     tabFolder('checks', 'Checks', [['summary', 'Daily checks (summary)'], ['findings', 'Findings']]),
     tabFolder('repl', 'Replication', [['replication', 'Replication'], ['dms', 'DMS']]),
     tabFolder('storage', 'Storage', [['storage', 'Storage'], ['dbinfo', 'Database info'], ['backups', 'Backups']]),
+    tabFolder('memory', 'Memory', [['memory', 'Memory'], ['pooler', 'Pooler']]),
     databases,
     jobs,
   ];
