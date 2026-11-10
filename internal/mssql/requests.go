@@ -375,10 +375,10 @@ func shapeRequests(rows []collect.Row) []collect.Row {
 
 // blockerNotes says what a negative blocking_session_id means: there is no session to name as the head.
 var blockerNotes = map[int64]string{
-	-2: "blocked by an orphaned distributed transaction (-2): no session holds it",
-	-3: "blocked by a deferred recovery transaction (-3): no session holds it",
-	-4: "blocked on a latch whose owner could not be determined (-4)",
-	-5: "blocked on a latch any task may release (-5)",
+	-2: "blocked by an orphaned distributed transaction (-2), no session",
+	-3: "blocked by a deferred recovery transaction (-3), no session",
+	-4: "blocked by a latch whose owner the server could not determine (-4), no session",
+	-5: "blocked by a latch any task may release (-5), no session",
 }
 
 // buildChains writes the blocking chain of one snapshot onto its request rows and returns one blocking row per
@@ -513,7 +513,7 @@ func negNote(b int64) string {
 	if n := blockerNotes[b]; n != "" {
 		return n
 	}
-	return fmt.Sprintf("blocked by %d: no session to name", b)
+	return fmt.Sprintf("blocked by %d, no session", b)
 }
 
 // asInt reads an integer the driver or a test handed over.

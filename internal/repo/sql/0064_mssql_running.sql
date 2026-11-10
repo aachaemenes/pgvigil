@@ -409,7 +409,9 @@ SELECT b.instance_id, CASE WHEN b.longest_wait_ms > 300000 THEN 'critical' ELSE 
                                coalesce(b.head_status, '(unknown)'),
                                CASE WHEN b.head_tran_start IS NULL THEN 'no open transaction read'
                                     ELSE 'its transaction open for ' || (b.head_tran_age_ms / 1000) || ' s' END) END,
-              coalesce(left(t.statement, 500), '(text not stored)')) AS detail
+              coalesce(left(t.statement, 500), '(text not stored)'))
+       -- a head that itself waits behind something that is no session is not the holder to kill: say so
+       || coalesce(' Note: ' || b.note || '.', '') AS detail
   FROM pgvigil.mssql_blocking b
   JOIN latest l ON l.instance_id = b.instance_id AND l.snapshot_at = b.snapshot_at
   LEFT JOIN pgvigil.mssql_statement_text t ON t.text_id = b.head_text_id

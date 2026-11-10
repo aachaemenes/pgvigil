@@ -26,6 +26,11 @@ const sessionWaits = (v: unknown) => {
 const statusCell = (v: unknown, r: Row) => v === 'sleeping' && Number(r.open_tran) > 0
   ? badge('sleeping, transaction open', 'warn') : String(v ?? '');
 
+// A head that itself waits behind something that is no session (an orphaned transaction, a latch without an
+// owner) says so beside its badge: it is not the holder to kill.
+const headCell = (r: Row) => r.chain_note == null ? badge('head', 'crit')
+  : el('span', {}, badge('head', 'warn'), ' ' + String(r.chain_note) + ': not the holder, nothing to kill here');
+
 const cols: Col[] = [
   { key: 'session_id', label: 'session', num: true, fmt: v => String(v) },
   { key: 'status', fmt: statusCell },
@@ -33,7 +38,7 @@ const cols: Col[] = [
   { key: 'wait_type', label: 'waiting on', fmt: waitCell },
   { key: 'wait_resource', label: 'wait resource' },
   { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: v => Number(v) ? String(v) : '' },
-  { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? badge('head', 'crit') : String(v) },
+  { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? headCell(r) : String(v) },
   { key: 'database_name', label: 'database' }, { key: 'login_name', label: 'login' }, { key: 'host_name', label: 'host' },
   { key: 'program_name', label: 'program' },
   { key: 'elapsed_ms', label: 'running for', num: true, fmt: ms },
@@ -62,7 +67,7 @@ const cols: Col[] = [
 
 const treeCols: Col[] = [
   { key: 'session_id', label: 'session', fmt: (v, r) => el('span', { style: `padding-left:${Number(r.tree_depth) * 1.2}em` }, (Number(r.tree_depth) > 0 ? '└ ' : '') + String(v)) },
-  { key: 'tree_role', label: 'role', fmt: v => v === 'head' ? badge('head', 'crit') : String(v ?? '') },
+  { key: 'tree_role', label: 'role', fmt: (v, r) => v === 'head' ? headCell(r) : String(v ?? '') },
   { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
   { key: 'status', fmt: statusCell },
   { key: 'wait_type', label: 'waiting on', fmt: waitCell },

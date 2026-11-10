@@ -74,7 +74,7 @@ func TestBuildChainsEdges(t *testing.T) {
 	if len(b) != 1 || b[0]["head_session_id"] != int64(51) || b[0]["victims"] != 1 || b[0]["longest_wait_ms"] != int64(60000) {
 		t.Fatalf("a head that waits on a latch: blocking rows = %v", b)
 	}
-	if n, _ := b[0]["note"].(string); !strings.Contains(n, "the head itself is blocked on a latch") {
+	if n, _ := b[0]["note"].(string); !strings.Contains(n, "the head itself is blocked by a latch any task may release (-5), no session") {
 		t.Errorf("the head's blocking note = %q", n)
 	}
 	if n, _ := m[51]["chain_note"].(string); !strings.Contains(n, "(-5)") || m[51]["chain_depth"] != 0 {
