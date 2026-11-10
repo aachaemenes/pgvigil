@@ -10,9 +10,11 @@ import (
 // collection's last run (collection_dates), the databases it snapshots (objects, the event trigger's state, the changes
 // in the window), the changes of the window with the statement the event trigger captured
 // (pgvigil.schema_changes_window, 0058), the event trigger's own log of the window, and the instance's schema
-// findings; with db, all of it for that database alone plus its objects (the 5,000 first by schema, kind and
-// identity). The database page's Schema section reads the same with db. No Summary column: the findings reach the
-// Findings through schema_findings.
+// findings (always the instance's); with db, the rest for that database alone plus its objects (the 5,000 first by
+// schema, kind and identity, each row with the database's total). ?part= narrows the reply to one part (the objects
+// picker reads part=objects). The changes list stops at 2,000 and the event trigger's log at 1,000; the databases'
+// counts are whole. The database page's Schema section reads the same with db. No Summary column: the findings reach
+// the Findings through schema_findings.
 
 const sqlSchemaState = `
 SELECT c.status, c.note, c.snapshot_at
@@ -20,14 +22,14 @@ SELECT c.status, c.note, c.snapshot_at
  WHERE c.instance_id = $1 AND c.collection = 'schema'`
 
 const sqlSchemaDatabases = `
-SELECT d.dbid, d.datname, d.objects, d.ddl_log, d.ddl_log_table, d.ddl_log_note, d.first_read, d.snapshot_at,
+SELECT d.dbid, d.datname, d.objects, d.ddl_log, d.ddl_log_table, d.ddl_log_note, d.first_read, d.snapshot_at, d.is_present,
        (SELECT count(*) FROM pgvigil.schema_changes c
          WHERE c.instance_id = d.instance_id AND c.dbid = d.dbid AND c.snapshot_at > $2 AND c.snapshot_at <= $3) AS changes,
        (SELECT count(*) FROM pgvigil.schema_changes c
          WHERE c.instance_id = d.instance_id AND c.dbid = d.dbid AND c.change = 'dropped'
            AND c.snapshot_at > $2 AND c.snapshot_at <= $3) AS dropped
   FROM pgvigil.schema_databases d
- WHERE d.instance_id = $1 AND d.is_present AND ($4::bigint IS NULL OR d.dbid = $4)
+ WHERE d.instance_id = $1 AND ($4::bigint IS NULL AND d.is_present OR d.dbid = $4)
  ORDER BY d.datname`
 
 const sqlSchemaChanges = `SELECT * FROM pgvigil.schema_changes_window($1, $2, $3, $4::bigint)`
@@ -40,14 +42,12 @@ SELECT l.snapshot_at AS logged_at, l.datname, l.event, l.command_tag, l.object_t
  LIMIT 1000`
 
 const sqlSchemaObjects = `
-SELECT o.kind, o.identity, o.schema_name, o.object_name, o.parent, o.definition, o.owner, o.acl, o.first_seen, o.last_changed
+SELECT o.kind, o.identity, o.schema_name, o.object_name, o.parent, o.definition, o.owner, o.acl, o.first_seen, o.last_changed,
+       count(*) OVER () AS total
   FROM pgvigil.schema_objects o
  WHERE o.instance_id = $1 AND o.dbid = $2 AND o.is_present
  ORDER BY o.schema_name, o.kind, o.identity
  LIMIT 5000`
-
-const sqlSchemaObjectsTotal = `
-SELECT count(*) AS total FROM pgvigil.schema_objects o WHERE o.instance_id = $1 AND o.dbid = $2 AND o.is_present`
 
 const sqlSchemaFindings = `
 SELECT f.severity, f.setting, f.value, f.suggested, f.detail, f.at
@@ -79,7 +79,7 @@ func (s *Server) Schema(w http.ResponseWriter, r *http.Request) {
 		{"findings", sqlSchemaFindings, []any{id}},
 	}
 	if db != nil {
-		parts = append(parts, part{"objects", sqlSchemaObjects, []any{id, *db}}, part{"objects_total", sqlSchemaObjectsTotal, []any{id, *db}})
+		parts = append(parts, part{"objects", sqlSchemaObjects, []any{id, *db}})
 	}
-	s.multi(w, r, parts)
+	s.multiPart(w, r, parts)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -85,6 +86,9 @@ func TestSchemaDDLLogSQL(t *testing.T) {
 		"GRANT SELECT ON public.pgvigil_ddl_log TO <login>;", "REVOKE ALL ON public.pgvigil_ddl_log FROM PUBLIC;",
 		"-- DROP EVENT TRIGGER pgvigil_ddl_end; DROP EVENT TRIGGER pgvigil_ddl_drop;",
 		"CREATE EVENT TRIGGER pgvigil_ddl_end", "CREATE EVENT TRIGGER pgvigil_ddl_drop",
+		// temporary objects and extension scripts are not logged (the review fold: a temp table per request filled it)
+		"WHERE NOT in_extension AND schema_name IS DISTINCT FROM 'pg_temp'", "WHERE original AND NOT is_temporary",
+		"DELETE only",
 	} {
 		if !strings.Contains(SchemaDDLLogSQL, want) {
 			t.Errorf("SchemaDDLLogSQL lacks %q", want)
@@ -110,6 +114,8 @@ func TestSchemaObjectsSQL(t *testing.T) {
 		"nspname NOT IN ('pg_catalog', 'information_schema')", "'^pg_(toast|temp_|toast_temp_)'", "deptype = 'e'",
 		"relpersistence <> 't'", "k.contype <> 'n'", "NOT g.tgisinternal", "pg_identify_object('pg_class'::regclass, c.oid, a.attnum)",
 		"LIMIT $1",
+		// the review fold: PostgreSQL 18's virtual columns, and the function attributes a CREATE OR REPLACE can change
+		"attgenerated = 'v'", "pg_get_function_arguments(p.oid)", "p.proparallel", "p.proleakproof", "p.procost",
 	} {
 		if !strings.Contains(schemaObjectsSQL, want) {
 			t.Errorf("schemaObjectsSQL lacks %q", want)
@@ -117,5 +123,28 @@ func TestSchemaObjectsSQL(t *testing.T) {
 	}
 	if strings.Contains(schemaObjectsSQL, "md5(") {
 		t.Error("md5() fails on a FIPS server: the body is hashed in Go")
+	}
+}
+
+// TestSchemaDDLCursor: a capped read hands the import a cursor one hour less a microsecond past its last row, so the
+// next read (cursor less one hour, exclusive) starts at that row and goes on instead of re-reading the same window.
+func TestSchemaDDLCursor(t *testing.T) {
+	last := time.Date(2026, 11, 10, 1, 25, 1, 242300000, time.UTC)
+	r := schemaDDLCursor("erp", last)
+	if r["kind"] != "ddl_cursor" || r["datname"] != "erp" {
+		t.Fatalf("row %v", r)
+	}
+	next := r["read_to"].(time.Time).Add(-time.Hour)
+	if !next.Before(last) || last.Sub(next) != time.Microsecond {
+		t.Fatalf("the next read starts after %v, the last row is %v", next, last)
+	}
+	// the page read goes on from the last row by (logged_at, log_id), not by the overlap
+	for _, want := range []string{"(logged_at, log_id) > ($2::timestamptz, $3::bigint)", "ORDER BY logged_at, log_id"} {
+		if !strings.Contains(schemaDDLReadSQL, want) {
+			t.Errorf("schemaDDLReadSQL lacks %q", want)
+		}
+	}
+	if schemaDDLMax < schemaDDLPage {
+		t.Errorf("the run cap %d is under one page %d", schemaDDLMax, schemaDDLPage)
 	}
 }

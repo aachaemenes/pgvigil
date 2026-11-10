@@ -30,8 +30,9 @@
 #       added|index|public.n_y       CREATE INDEX n_y ON n (y)
 #       changed|table|public.t|acl   REVOKE SELECT ON t FROM <login>   (after: the owner's entry alone, not NULL)
 #       added|function|public.f(integer)   CREATE FUNCTION f(i int) ...
-#     and the trigger's own objects added without a statement (table public.pgvigil_ddl_log, its sequence, the function
-#     public.pgvigil_ddl_capture(): created before the trigger existed); B's four changes still have no statement.
+#     and the trigger's own objects added without a statement (table public.pgvigil_ddl_log, the function
+#     public.pgvigil_ddl_capture(): created before the trigger existed; the table's identity sequence folds into the
+#     table [review fold: an owned sequence's parent is its table]); B's four changes still have no statement.
 #  D. DROP INDEX n_y and ALTER TABLE t ALTER COLUMN b TYPE varchar(20) in MDB; CREATE TABLE z (i int) in MDB2 (no
 #     trigger); collect: MDB dropped|index|public.n_y with statement 'DROP INDEX n_y', changed|column|public.t.b
 #     text -> character varying(20) with its ALTER TABLE statement; MDB2 added|table|public.z with no statement and
@@ -40,25 +41,38 @@
 #     MDB's change count and present-object count are unchanged; DROP DATABASE MDB2, collect: MDB2's row is_present
 #     false and no 'dropped' change for its objects (a database gone is not its objects dropped); schema_findings
 #     rows for MDB: one warning, one info.
+#  F. [review fold, expected before the run] the cursor never stalls, and temporary objects are not logged: 6,000 rows
+#     inserted into MDB's pgvigil_ddl_log in one statement as the superuser (object_identity 'public.burst', inside one
+#     second: more than one page of 5,000 inside the read's hour of overlap), then CREATE TABLE w (i int), and in one
+#     session CREATE TEMP TABLE tt (i int) and DROP TABLE tt; collect: MDB's schema_ddl_log holds 6,000 'public.burst'
+#     rows, the CREATE TABLE w row, and no pg_temp row; the change added|table|public.w carries
+#     'CREATE TABLE w (i int)'; a second collect adds no row (each kept once) and MDB's cursor is at the newest row.
+#  The ACLs above carry PostgreSQL 17's MAINTAIN privilege (m): on 16 and older the expected text lacks it.
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 ADMIN_DSN=$PGVIGIL_REPO_DSN
-SUF=$RANDOM
+SUF=$RANDOM$RANDOM
 REPO_DB=pgvigil_schemaproof_$SUF; MDB=pgvigil_schemamon_$SUF; MDB2=pgvigil_schemamon2_$SUF
 MON=pgvigil_schemamonitor_$SUF; MONPW=p$RANDOM$RANDOM
-CFG=$(mktemp); DDL=$(mktemp)
+CFG=$(mktemp); DDL=$(mktemp); ROLES=$(mktemp)
+MADE_DBS=(); MADE_ROLE=
+# the cleanup drops only what this run created (a name taken by another run fails its create and is never dropped)
 cleanup() {
-  rm -f "$CFG" "$DDL"
-  for d in "$REPO_DB" "$MDB" "$MDB2"; do
+  rm -f "$CFG" "$DDL" "$ROLES"
+  for d in "${MADE_DBS[@]}"; do
     psql "$ADMIN_DSN" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1 || true
   done
-  psql "$ADMIN_DSN" -XAtq -c "drop role if exists $MON" >/dev/null 2>&1 || true
+  [[ -n $MADE_ROLE ]] && psql "$ADMIN_DSN" -XAtq -c "drop role if exists $MON" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
-psql "$ADMIN_DSN" -XAtq -c "create database $REPO_DB" -c "create database $MDB" -c "create database $MDB2" \
-  -c "create role $MON login password '$MONPW' in role pg_monitor" >/dev/null
+for d in "$REPO_DB" "$MDB" "$MDB2"; do
+  psql "$ADMIN_DSN" -XAtq -v ON_ERROR_STOP=1 -c "create database $d" >/dev/null || fail "create database $d"
+  MADE_DBS+=("$d")
+done
+psql "$ADMIN_DSN" -XAtq -v ON_ERROR_STOP=1 -c "create role $MON login password '$MONPW' in role pg_monitor" >/dev/null || fail "create role $MON"
+MADE_ROLE=1
 export PGVIGIL_REPO_DSN="$ADMIN_DSN dbname=$REPO_DB"
 export SBX_DSN="$ADMIN_DSN dbname=$MDB user=$MON password=$MONPW"
 SU=$(psql "$ADMIN_DSN" -XAt -c "select current_user")
@@ -119,8 +133,9 @@ echo "warning: $FW"; echo "info: $FI"
 [[ $(q "select is_present from pgvigil.schema_objects where instance_id = $i and datname = '$MDB' and kind = 'index' and identity = 'public.t_b'") == f ]] || fail "B: the dropped index's row"
 
 echo "--- C. the event trigger, then four statements"
-if "$BIN" roles 2>/dev/null | grep -q pgvigil_ddl_capture; then
-  "$BIN" roles | awk '/^-- CREATE TABLE public.pgvigil_ddl_log/,/^-- CREATE EVENT TRIGGER pgvigil_ddl_drop/' | sed 's/^-- //' \
+"$BIN" roles > "$ROLES" 2>/dev/null || true
+if grep -q pgvigil_ddl_capture "$ROLES"; then
+  awk '/^-- CREATE TABLE public.pgvigil_ddl_log/,/^-- CREATE EVENT TRIGGER pgvigil_ddl_drop/' "$ROLES" | sed 's/^-- //' \
     | sed "s/pgvigil_monitor/$MON/g" > "$DDL"
   echo "(the block printed by pgvigil roles)"
 else
@@ -142,7 +157,6 @@ WANT="added|column|public.n.y||ALTER TABLE n ADD COLUMN y text
 added|function|public.f(integer)||CREATE FUNCTION f(i int) RETURNS int LANGUAGE sql AS 'select i'
 added|function|public.pgvigil_ddl_capture()||
 added|index|public.n_y||CREATE INDEX n_y ON n (y)
-added|sequence|public.pgvigil_ddl_log_log_id_seq||
 added|table|public.pgvigil_ddl_log||
 changed|table|public.t|acl|REVOKE SELECT ON t FROM $MON"
 [[ $C == "$WANT" ]] || fail "C: the changes and their statements"
@@ -184,4 +198,27 @@ echo "MDB2 present|dropped changes: $E"; [[ $E == "false|0" ]] || fail "E: the d
 q "select severity || ' | ' || setting || ' | ' || detail from pgvigil.schema_findings where instance_id = $i and value = '$MDB' order by severity desc"
 [[ $(q "select string_agg(severity, ',' order by severity) from pgvigil.schema_findings where instance_id = $i and value = '$MDB'") == "info,warning" ]] || fail "E: the findings of MDB"
 
-echo "PASS: proof-schema (A the baseline: 6 objects, no change; B CREATE TABLE folded, ALTER COLUMN TYPE integer -> bigint, DROP INDEX with its definition, GRANT's ACL before and after, the two findings; C the event trigger installed: each change with its statement, the REVOKE matched by name, earlier changes untouched; D DROP INDEX and ALTER COLUMN with their statements, a database without the trigger: not installed; E a late read changes nothing, a dropped database drops no object)"
+echo "--- F. a burst over one page, a temp table"
+psql "$ADMIN_DSN dbname=$MDB" -XAtq -v ON_ERROR_STOP=1 -c "insert into public.pgvigil_ddl_log (event, command_tag, object_type, schema_name, object_identity, statement)
+  select 'ddl_command_end', 'COMMENT', 'table', 'public', 'public.burst', 'COMMENT ON TABLE burst IS ''' || g || '''' from generate_series(1, 6000) g" >/dev/null
+m1 "CREATE TABLE w (i int)"
+psql "$ADMIN_DSN dbname=$MDB" -XAtq -v ON_ERROR_STOP=1 -c "CREATE TEMP TABLE tt (i int)" -c "DROP TABLE tt" >/dev/null
+collect
+mdbid=$(dbid "$MDB")
+F1=$(q "select count(*) filter (where object_identity = 'public.burst') || '|' || count(*) filter (where statement = 'CREATE TABLE w (i int)')
+          || '|' || count(*) filter (where schema_name = 'pg_temp' or object_identity like 'pg_temp.%')
+          from pgvigil.schema_ddl_log where instance_id = $i and dbid = $mdbid")
+F2=$(q "select coalesce(w.statement, '(none)') from pgvigil.schema_changes_window($i, now() - interval '1 day', now(), $mdbid) w
+         where w.identity = 'public.w' and w.change = 'added'")
+echo "burst|w|temp rows: $F1; public.w: $F2"
+[[ $F1 == "6000|1|0" ]] || fail "F: the log rows '$F1'"
+[[ $F2 == "CREATE TABLE w (i int)" ]] || fail "F: the statement of public.w '$F2'"
+n1=$(q "select count(*) from pgvigil.schema_ddl_log where instance_id = $i and dbid = $mdbid")
+collect
+n2=$(q "select count(*) from pgvigil.schema_ddl_log where instance_id = $i and dbid = $mdbid")
+F3=$(q "select c.read_to = (select max(snapshot_at) from pgvigil.schema_ddl_log where instance_id = $i and dbid = $mdbid)
+          from pgvigil.log_cursor c where c.instance_id = $i and c.source = 'schema_ddl:$MDB'")
+echo "log rows $n1 -> $n2 after a second read; the cursor at the newest row: $F3"
+[[ $n1 == "$n2" && $F3 == t ]] || fail "F: the second read"
+
+echo "PASS: proof-schema (A the baseline: 6 objects, no change; B CREATE TABLE folded, ALTER COLUMN TYPE integer -> bigint, DROP INDEX with its definition, GRANT's ACL before and after, the two findings; C the event trigger installed: each change with its statement, the REVOKE matched by name, earlier changes untouched; D DROP INDEX and ALTER COLUMN with their statements, a database without the trigger: not installed; E a late read changes nothing, a dropped database drops no object; F a burst of 6,000 log rows read in pages, the statement after it found, no temp-table row, each row kept once)"

@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_objects (
   datname        text,
   schema_name    text,
   object_name    text,
-  parent         text,             -- the table's identity, for a column, index, constraint or trigger
+  parent         text,             -- the parent's identity: a column's, index's, constraint's, trigger's or owned sequence's table (or view)
   definition     text,
   owner          text,
   acl            text,
@@ -99,11 +99,13 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_ddl_log (
   statement       text
 ) PARTITION BY RANGE (snapshot_at);
 CREATE UNIQUE INDEX IF NOT EXISTS schema_ddl_log_key ON pgvigil.schema_ddl_log (instance_id, dbid, log_id, snapshot_at);
+CREATE INDEX IF NOT EXISTS schema_ddl_log_db ON pgvigil.schema_ddl_log (instance_id, dbid, snapshot_at);
 
 -- payload: {kind:'db', dbid, datname, read_at, objects, ddl_log, ddl_log_table, ddl_log_note} per database read;
 -- {kind:'obj', dbid, datname, object_kind, identity, schema_name, object_name, parent, definition, owner, acl, hash} per
 -- object of a database read; {kind:'ddl', dbid, datname, log_id, logged_at, event, command_tag, object_type,
--- schema_name, object_identity, role_name, statement} per event-trigger row; {kind:'collector_error',
+-- schema_name, object_identity, role_name, statement} per event-trigger row; {kind:'ddl_cursor', datname, read_to}
+-- when a read stopped at its cap (the cursor moves to it, so the next read goes on); {kind:'collector_error',
 -- source:'schema:<datname>'} per database that could not be read (its snapshot stays as it was).
 -- A database's first read (or its first after it was not present) is the baseline: its objects are stored, no change
 -- is recorded. A read older than the database's stored one (a one-off collect beside the daemon) changes nothing.
@@ -132,9 +134,11 @@ BEGIN
    WHERE r->>'kind' = 'ddl' AND r->>'logged_at' IS NOT NULL AND r->>'log_id' IS NOT NULL AND r->>'dbid' IS NOT NULL
   ON CONFLICT DO NOTHING;
   INSERT INTO pgvigil.log_cursor AS c (instance_id, source, read_to)
-  SELECT p_instance_id, 'schema_ddl:' || (r->>'datname'), max((r->>'logged_at')::timestamptz)
+  SELECT p_instance_id, 'schema_ddl:' || (r->>'datname'),
+         max(CASE r->>'kind' WHEN 'ddl' THEN (r->>'logged_at')::timestamptz ELSE (r->>'read_to')::timestamptz END)
     FROM jsonb_array_elements(p_payload) r
-   WHERE r->>'kind' = 'ddl' AND r->>'logged_at' IS NOT NULL AND r->>'datname' IS NOT NULL
+   WHERE ((r->>'kind' = 'ddl' AND r->>'logged_at' IS NOT NULL) OR (r->>'kind' = 'ddl_cursor' AND r->>'read_to' IS NOT NULL))
+     AND r->>'datname' IS NOT NULL
    GROUP BY r->>'datname'
   ON CONFLICT (instance_id, source) DO UPDATE SET read_to = greatest(c.read_to, EXCLUDED.read_to), updated_at = now();
 
@@ -147,6 +151,10 @@ BEGIN
    WHERE r->>'kind' = 'obj' AND r->>'dbid' IS NOT NULL AND r->>'object_kind' IS NOT NULL AND r->>'identity' IS NOT NULL
      AND r->>'hash' IS NOT NULL
    ORDER BY dbid, kind, identity;
+  -- a new database's objects are not in schema_objects' statistics yet: without these the diff's joins run as nested
+  -- loops over the whole snapshot (minutes at the object cap)
+  CREATE INDEX ON pgv_schema_in (dbid, kind, identity);
+  ANALYZE pgv_schema_in;
   CREATE TEMP TABLE pgv_schema_diff (LIKE pgvigil.schema_changes) ON COMMIT DROP;
 
   FOR d IN SELECT (r->>'dbid')::bigint AS dbid, r->>'datname' AS datname, (r->>'read_at')::timestamptz AS read_at,
@@ -210,10 +218,12 @@ BEGIN
           ON o.instance_id = p_instance_id AND o.dbid = i.dbid AND o.kind = i.kind AND o.identity = i.identity AND o.is_present
        WHERE i.dbid = d.dbid AND o.hash <> i.hash AND o.definition IS NOT DISTINCT FROM i.definition
          AND o.owner IS NOT DISTINCT FROM i.owner AND o.acl IS NOT DISTINCT FROM i.acl;
-      -- a table's columns, indexes, constraints and triggers come and go with it: one row, the table's
+      -- a table's columns, indexes, constraints, triggers and owned sequences, a view's triggers and a materialized
+      -- view's indexes come and go with it: one row, the parent's
       DELETE FROM pgv_schema_diff c
        WHERE c.change IN ('added', 'dropped') AND c.parent IS NOT NULL
-         AND EXISTS (SELECT 1 FROM pgv_schema_diff t WHERE t.kind = 'table' AND t.identity = c.parent AND t.change = c.change);
+         AND EXISTS (SELECT 1 FROM pgv_schema_diff t WHERE t.kind IN ('table', 'view', 'materialized view')
+                        AND t.identity = c.parent AND t.change = c.change);
       IF EXISTS (SELECT 1 FROM pgv_schema_diff) THEN
         PERFORM pgvigil.ensure_month_partition('schema_changes', p_snapshot_at);
         INSERT INTO pgvigil.schema_changes SELECT * FROM pgv_schema_diff;
@@ -248,8 +258,8 @@ END $$;
 
 -- schema_changes_window: the changes of the window (newest first, 2,000 at most), of one database or all (p_dbid NULL),
 -- each with the event trigger's statement that made it: a logged row of the same database whose identity is the
--- object's or its table's (for an ACL change, a GRANT or REVOKE, which the trigger logs without an identity, whose text
--- names the object as a whole word), logged between the read before the change and the read that found it, both on
+-- object's or its table's, the object's own first (for an ACL change, a GRANT or REVOKE, which the trigger logs without
+-- an identity, whose text names the object as a whole word, its schema not checked), logged between the read before the change and the read that found it, both on
 -- the monitored server's clock (read_at; the collector's snapshot times, with a minute of slack, for a read without
 -- it). A row inside that interval wins; one logged up to a minute before it is taken only when none is inside (a
 -- statement whose transaction committed after the earlier read began). The newest of them is shown.
@@ -273,7 +283,7 @@ LANGUAGE sql STABLE AS $$
               OR (c.attribute = 'acl' AND x.object_identity IS NULL AND x.command_tag IN ('GRANT', 'REVOKE')
                   AND x.statement ~* ('(^|[^[:alnum:]_$])"?' || regexp_replace(c.object_name, '([^[:alnum:]_])', '\\\1', 'g') || '"?($|[^[:alnum:]_$])')))
        ORDER BY x.snapshot_at > coalesce(c.prev_read_at, c.prev_at - interval '1 minute', c.snapshot_at - interval '1 day') DESC,
-                (x.object_identity IS NOT NULL) DESC, x.snapshot_at DESC, x.log_id DESC
+                (x.object_identity = c.identity) DESC, (x.object_identity IS NOT NULL) DESC, x.snapshot_at DESC, x.log_id DESC
        LIMIT 1) l ON true
    WHERE c.instance_id = p_instance_id AND c.snapshot_at > p_from AND c.snapshot_at <= p_to
      AND (p_dbid IS NULL OR c.dbid = p_dbid)
@@ -283,30 +293,36 @@ $$;
 
 -- schema_findings: the findings view's columns (instance_id, severity, setting, value, is_set, suggested, platforms,
 -- detail, source, at): per database of an active instance with changes found in the last 24 hours, 'an object dropped'
--- (warning) with the drop count, and 'a definition changed' (info) with the added and changed counts; each names the
--- newest change of its kind.
+-- (warning) with the drop count, and 'a definition changed' (info) with the added, changed and dropped-partition counts;
+-- each names the newest change of its kind. A dropped partition (a retention job's routine) is counted in the info
+-- row, not the warning.
 CREATE OR REPLACE VIEW pgvigil.schema_findings AS
-WITH c AS (
-  SELECT x.instance_id, x.dbid, x.change = 'dropped' AS dropped,
+WITH x AS (
+  SELECT y.*, y.change = 'dropped' AND NOT (y.kind = 'table' AND y.before LIKE '% partition of %') AS warn
+    FROM pgvigil.schema_changes y
+   WHERE y.snapshot_at > now() - interval '1 day'),
+c AS (
+  SELECT x.instance_id, x.dbid, x.warn,
          count(DISTINCT (x.kind, x.identity)) FILTER (WHERE x.change = 'dropped') AS n_dropped,
          count(DISTINCT (x.kind, x.identity)) FILTER (WHERE x.change = 'added') AS n_added,
          count(DISTINCT (x.kind, x.identity)) FILTER (WHERE x.change = 'changed') AS n_changed,
          max(x.snapshot_at) AS newest
-    FROM pgvigil.schema_changes x
-   WHERE x.snapshot_at > now() - interval '1 day'
-   GROUP BY x.instance_id, x.dbid, x.change = 'dropped')
+    FROM x
+   GROUP BY x.instance_id, x.dbid, x.warn)
 SELECT c.instance_id,
-       CASE WHEN c.dropped THEN 'warning' ELSE 'info' END::text AS severity,
-       CASE WHEN c.dropped THEN 'schema: an object dropped' ELSE 'schema: a definition changed' END::text AS setting,
+       CASE WHEN c.warn THEN 'warning' ELSE 'info' END::text AS severity,
+       CASE WHEN c.warn THEN 'schema: an object dropped' ELSE 'schema: a definition changed' END::text AS setting,
        d.datname AS value, true AS is_set,
-       CASE WHEN c.dropped THEN 'confirm the drop was planned: the Schema tab has the definition it had'
+       CASE WHEN c.warn THEN 'confirm the drop was planned: the Schema tab has the definition it had'
             ELSE 'confirm the change was planned: the Schema tab has the before and after' END::text AS suggested,
        'all'::text AS platforms,
-       CASE WHEN c.dropped
+       CASE WHEN c.warn
             THEN format('database %s: %s object(s) dropped in the last 24 hours; the newest: %s %s (found %s).',
                         d.datname, c.n_dropped, n.kind, n.identity, to_char(c.newest AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'))
-            ELSE format('database %s: %s added, %s changed in the last 24 hours; the newest: %s %s %s (found %s).',
-                        d.datname, c.n_added, c.n_changed, n.kind, n.identity,
+            ELSE format('database %s: %s added, %s changed%s in the last 24 hours; the newest: %s %s %s (found %s).',
+                        d.datname, c.n_added, c.n_changed,
+                        CASE WHEN c.n_dropped > 0 THEN format(', %s partition(s) dropped', c.n_dropped) ELSE '' END,
+                        n.kind, n.identity,
                         CASE WHEN n.change = 'changed' THEN n.attribute || ' changed' ELSE n.change END,
                         to_char(c.newest AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"')) END AS detail,
        'pgvigil schema'::text AS source, c.newest AS at
@@ -314,7 +330,6 @@ SELECT c.instance_id,
   JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
   JOIN pgvigil.schema_databases d ON d.instance_id = c.instance_id AND d.dbid = c.dbid AND d.is_present
   CROSS JOIN LATERAL (
-    SELECT y.kind, y.identity, y.change, y.attribute FROM pgvigil.schema_changes y
-     WHERE y.instance_id = c.instance_id AND y.dbid = c.dbid AND y.snapshot_at = c.newest
-       AND (y.change = 'dropped') = c.dropped
-     ORDER BY y.kind = 'table' DESC, y.identity, y.attribute LIMIT 1) n;
+    SELECT x.kind, x.identity, x.change, x.attribute FROM x
+     WHERE x.instance_id = c.instance_id AND x.dbid = c.dbid AND x.snapshot_at = c.newest AND x.warn = c.warn
+     ORDER BY x.kind = 'table' DESC, x.identity, x.attribute LIMIT 1) n;
