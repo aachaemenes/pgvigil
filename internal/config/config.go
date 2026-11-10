@@ -27,6 +27,10 @@ type Config struct {
 	QueryText string `yaml:"query_text"`
 	// UI shapes the web UI's tree: the tag keys it groups by and the order of their values.
 	UI UI `yaml:"ui"`
+	// DBADash lists DBADash repositories (SQL Server databases) pgvigil reads with a read-only login: their SQL
+	// Server instances and the statuses of DBADash's own Summary. Empty (the default) = the door is off. pgvigil
+	// collects nothing from SQL Server itself.
+	DBADash []DBADashRepo `yaml:"dbadash"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`
 }
@@ -73,6 +77,90 @@ type Instance struct {
 	ExplainDSNRaw string `yaml:"explain_dsn"`
 	// ExplainTimeout bounds one EXPLAIN ANALYZE (default 30s, at most 5m).
 	ExplainTimeout Duration `yaml:"explain_timeout"`
+}
+
+// DBADashRepo is one DBADash repository of the dbadash: list.
+type DBADashRepo struct {
+	// Name is the tree folder's name ("DBADash: <name>") and the repository's key in pgvigil; it must be unique.
+	Name string `yaml:"name"`
+	// DSNRaw is a go-mssqldb connection string to the DBADash repository database (sqlserver://login@host:1433?database=DBADashDB
+	// or the ADO form "server=...;database=...;user id=..."), or env:NAME / file:/path. A string that carries a password must
+	// come through env: or file:, never inline in the file.
+	DSNRaw string `yaml:"dsn"`
+	// Interval is how often it is read (default 5m; at least 1m).
+	Interval Duration `yaml:"interval"`
+}
+
+// DefaultDBADashInterval is the read cadence of a DBADash repository.
+const DefaultDBADashInterval = 5 * time.Minute
+
+// DSN resolves the connection string; "" = an unset variable or an unreadable file.
+func (d DBADashRepo) DSN() string { return Resolve(strings.TrimSpace(d.DSNRaw)) }
+
+// Every returns the read interval.
+func (d DBADashRepo) Every() time.Duration {
+	if d.Interval.Duration <= 0 {
+		return DefaultDBADashInterval
+	}
+	return d.Interval.Duration
+}
+
+// inlinePassword says whether an inline connection string carries a password: a URL's user:password@ or a password /
+// pwd query key, or an ADO or ODBC segment whose key (trimmed, any case: the driver trims it so) is password or pwd.
+func inlinePassword(v string) bool {
+	l := strings.ToLower(strings.TrimSpace(v))
+	if i := strings.Index(l, "://"); i >= 0 {
+		rest := l[i+3:]
+		if at := strings.IndexByte(rest, '@'); at >= 0 && strings.Contains(rest[:at], ":") {
+			return true
+		}
+		if q := strings.IndexByte(rest, '?'); q >= 0 {
+			for _, kv := range strings.FieldsFunc(rest[q+1:], func(r rune) bool { return r == '&' || r == ';' }) {
+				k, _, _ := strings.Cut(kv, "=")
+				if k = strings.TrimSpace(k); k == "password" || k == "pwd" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	l = strings.TrimPrefix(l, "odbc:")
+	for _, seg := range strings.Split(l, ";") {
+		k, _, ok := strings.Cut(seg, "=")
+		if k = strings.TrimSpace(k); ok && (k == "password" || k == "pwd") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Config) validateDBADash() error {
+	names := map[string]bool{}
+	for i := range c.DBADash {
+		d := &c.DBADash[i]
+		d.Name = strings.TrimSpace(d.Name)
+		if d.Name == "" {
+			return fmt.Errorf("dbadash[%d]: name is required", i)
+		}
+		if len(d.Name) > 100 || strings.ContainsAny(d.Name, "\t\r\n/") {
+			return fmt.Errorf("dbadash %q: the name must be at most 100 characters, without '/' or a control character", d.Name)
+		}
+		if names[strings.ToLower(d.Name)] {
+			return fmt.Errorf("dbadash %q is listed twice", d.Name)
+		}
+		names[strings.ToLower(d.Name)] = true
+		v := strings.TrimSpace(d.DSNRaw)
+		if v == "" {
+			return fmt.Errorf("dbadash %q: dsn is required", d.Name)
+		}
+		if !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") && inlinePassword(v) {
+			return fmt.Errorf("dbadash %q: a dsn with a password must be env:NAME or file:/path, never inline", d.Name)
+		}
+		if d.Interval.Duration != 0 && d.Interval.Duration < time.Minute {
+			return fmt.Errorf("dbadash %q: interval must be at least 1m (got %s)", d.Name, d.Interval.Duration)
+		}
+	}
+	return nil
 }
 
 // UI is the ui: block: the tree's folder levels and the order of the values in them.
@@ -304,6 +392,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.UI.EnvOrder) == 0 {
 		c.UI.EnvOrder = DefaultEnvOrder
+	}
+	if err := c.validateDBADash(); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	for i := range c.Instances {
