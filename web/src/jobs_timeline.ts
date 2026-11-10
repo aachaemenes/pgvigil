@@ -87,7 +87,8 @@ function drawTimeline(lanes: Lane[], t0: number, t1: number, width: number, flee
     lines.push({ kind: 'job', lane: l });
   }
   const H = AXIS + LANE + lines.length * ROW + 6;
-  const root = svg('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `Jobs timeline: ${lanes.length} jobs, ${all.length} runs, at most ${peak} at once` });
+  // a group, not an img: an img's children are presentational, and the job names are buttons (axe nested-interactive)
+  const root = svg('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'group', 'aria-label': `Jobs timeline: ${lanes.length} jobs, ${all.length} runs, at most ${peak} at once` });
   root.style.display = 'block';
   // the axis and its grid lines
   const span = t1 - t0;
