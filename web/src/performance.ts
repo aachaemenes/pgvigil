@@ -3,6 +3,7 @@
 // a link to the detailed page. Built with chart.ts's lineChart as it is. Data from /api/performance.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { mssqlCpuTab, mssqlFileIOTab, mssqlMemoryTab, mssqlTempdbTab } from './mssql_perf';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { el, fmtBytes, fmtNum } from './ui';
 
@@ -79,12 +80,25 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
   const box = el('div', { class: 'charts' });
   const ms_s = (v: number) => fmtNum(v) + ' ms/s';
   if (ms) {
-    box.append(el('div', { class: 'chart' }, el('h3', {}, 'CPU'), el('p', { class: 'empty' }, 'not read: no CPU collection on SQL Server yet')));
+    const cpu = rowsOf(d.cpu);
+    box.append(cpu.length
+      ? titled(lineChart('CPU', align(g, cpu, ['sql_avg', 'cpu_avg', 'cpu_max']),
+          [{ key: 'sql_avg', label: 'SQL Server %' }, { key: 'cpu_avg', label: 'total %' }, { key: 'cpu_max', label: 'total max %' }], v => fmtNum(v) + ' %'),
+          cpu.some(r => r.machine_read) ? 'CPU (scheduler monitor: SQL Server and the machine)' : 'CPU (scheduler monitor: SQL Server only, a Linux host)', to(mssqlCpuTab))
+      : el('div', { class: 'chart' }, el('h3', {}, el('a', { href: to(mssqlCpuTab) }, 'CPU')),
+          el('p', { class: 'empty' }, 'no CPU read in this range: the mssql_cpu collection runs every minute and needs VIEW SERVER STATE')));
     box.append(titled(lineChart('Requests', align(g, rowsOf(d.sessions), ['requests', 'blocked', 'sessions']),
       [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions', to('mssql_running')));
     const w = pivotWaits(g, rowsOf(d.waits));
     box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), 'Waits by category (ms of wait per second, stacked)', to('mssql_waits')));
-    box.append(el('div', { class: 'chart' }, el('h3', {}, 'Transactions and IO'), el('p', { class: 'empty' }, 'not read: not collected on SQL Server yet')));
+    box.append(titled(lineChart('Transactions', align(g, rowsOf(d.db), ['batch_s', 'transactions_s', 'compiles_s']),
+      [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }]),
+      'Batch requests and transactions per second', to(mssqlCpuTab)));
+    const io = align(g, rowsOf(d.io), ['read_ms', 'write_ms', 'read_mb_s', 'write_mb_s']);
+    box.append(titled(lineChart('IO latency', io, [{ key: 'read_ms', label: 'read ms' }, { key: 'write_ms', label: 'write ms' }], v => fmtNum(v) + ' ms'),
+      'IO latency (all database files)', to(mssqlFileIOTab)));
+    box.append(titled(lineChart('IO throughput', io, [{ key: 'read_mb_s', label: 'read MB/s' }, { key: 'write_mb_s', label: 'write MB/s' }], v => fmtNum(v) + ' MB/s'),
+      'IO throughput (all database files)', to(mssqlFileIOTab)));
   } else {
     const cpu = rowsOf(d.cpu);
     box.append(cpu.length
@@ -107,7 +121,7 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     box.append(titled(lineChart('Temp', align(g, rowsOf(d.db), ['temp_bytes_s']), [{ key: 'temp_bytes_s', label: 'temp bytes/s' }], v => fmtBytes(v) + '/s'), 'Temp usage', to('counters', { kind: 'db' })));
   }
   sec.append(box);
-  const more = ms ? [['Waits', 'mssql_waits'], ['Running queries', 'mssql_running']]
+  const more = ms ? [['CPU', mssqlCpuTab], ['Memory', mssqlMemoryTab], ['File IO', mssqlFileIOTab], ['TempDB', mssqlTempdbTab], ['Waits', 'mssql_waits'], ['Running queries', 'mssql_running']]
     : [['Load', 'load'], ['Counters', 'counters'], ['IO', 'io'], ['Host', 'host'], ['Waits', 'waits'], ['Memory', 'memory'], ['Pooler', 'pooler']];
   const nav = el('p', { class: 'meta' }, 'detail: ');
   more.forEach(([t, tab], i) => { nav.append(el('a', { href: to(tab) }, t)); if (i < more.length - 1) nav.append(' | '); });
