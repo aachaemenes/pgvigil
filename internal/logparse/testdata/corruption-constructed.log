@@ -1,0 +1,26 @@
+2026-11-08 10:00:00 UTC::@:[5101]:ERROR:  found xmin 3000000000 from before relfrozenxid 3100000000
+2026-11-08 10:00:00 UTC::@:[5101]:CONTEXT:  while scanning block 0 offset 1 of relation "public.orders"
+	automatic vacuum of table "app.public.orders"
+2026-11-08 10:00:01 UTC::@:[5102]:ERROR:  found multixact 20 from before relminmxid 30
+2026-11-08 10:00:01 UTC::@:[5102]:CONTEXT:  while scanning block 4 offset 2 of relation "public.items"
+2026-11-08 10:00:02 UTC:10.0.0.5(40001):app@app:[5103]:ERROR:  missing chunk number 0 for toast value 98765 in pg_toast_2619
+2026-11-08 10:00:02 UTC:10.0.0.5(40001):app@app:[5103]:STATEMENT:  select * from pg_statistic
+2026-11-08 10:00:03 UTC:10.0.0.5(40002):app@app:[5104]:WARNING:  page verification failed, calculated checksum 1234 but expected 4321
+2026-11-08 10:00:03 UTC:10.0.0.5(40002):app@app:[5104]:ERROR:  invalid page in block 7 of relation base/16384/16385
+2026-11-08 10:00:03 UTC:10.0.0.5(40002):app@app:[5104]:STATEMENT:  select count(*) from orders
+2026-11-08 10:00:04 UTC:10.0.0.5(40003):app@app:[5105]:ERROR:  could not read block 12 in file "base/16384/16390": read only 0 of 8192 bytes
+2026-11-08 10:00:05 UTC:10.0.0.5(40004):app@app:[5106]:ERROR:  could not access status of transaction 4000000
+2026-11-08 10:00:05 UTC:10.0.0.5(40004):app@app:[5106]:DETAIL:  Could not open file "pg_xact/0003": No such file or directory.
+2026-11-08 10:00:06 UTC::@:[5107]:PANIC:  could not open file "global/pg_control": No such file or directory
+2026-11-08 10:00:07 UTC:10.0.0.5(40005):app@app:[5108]:ERROR:  could not open file "/srv/import/data.csv" for reading: No such file or directory
+2026-11-08 10:00:08 UTC::@:[5109]:LOG:  could not open file "pg_hba.conf": No such file or directory
+2026-11-08 10:00:09 UTC:10.0.0.5(40006):app@app:[5110]:ERROR:  relation "orders_typo" does not exist
+2026-11-08 10:01:00 UTC:10.0.0.5(40007):app@app:[5111]:ERROR:  index "orders_pkey" contains corrupted page at block 41
+2026-11-08 10:01:00 UTC:10.0.0.5(40007):app@app:[5111]:HINT:  Please REINDEX it.
+2026-11-08 10:01:01 UTC:10.0.0.5(40008):app@app:[5112]:ERROR:  MultiXactId 1048577 has not been created yet -- apparent wraparound
+2026-11-08 10:01:02 UTC:10.0.0.5(40009):app@app:[5113]:WARNING:  zeroing out 3 invalid pages among blocks 8..15 of relation "base/16384/16385"
+2026-11-08 10:01:03 UTC:10.0.0.5(40010):app@app:[5114]:WARNING:  ignoring 2 checksum failures among blocks 8..15 of relation "base/16384/16385"
+2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:ERROR:  invalid page in block 9 of relation base/16384/16390
+2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:CONTEXT:  SQL statement "SELECT secret FROM accounts WHERE ssn = '123-45-6789'"
+	PL/pgSQL function load_accounts() line 4 at PERFORM
+2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:STATEMENT:  select load_accounts()

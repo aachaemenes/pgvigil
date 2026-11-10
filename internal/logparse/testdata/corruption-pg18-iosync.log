@@ -1,0 +1,92 @@
+2026-11-09 23:52:35 UTC::@:[999649]:LOG:  database system was shut down at 2026-11-09 23:52:34 UTC
+2026-11-09 23:52:35 UTC::@:[999646]:LOG:  database system is ready to accept connections
+2026-11-09 23:52:35 UTC::@:[999647]:LOG:  checkpoint starting: immediate force wait
+2026-11-09 23:52:35 UTC::@:[999647]:LOG:  checkpoint complete: wrote 133 buffers (0.8%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.002 s; sync files=67, longest=0.001 s, average=0.000 s; distance=1148 kB, estimate=1148 kB; lsn=0/1885550, redo lsn=0/1885420
+2026-11-09 23:52:35 UTC:::1(47550):postgres@postgres:[999668]:LOG:  duration: 0.046 ms  plan:
+	Query Text: set auto_explain.log_min_duration=0; select count(*) from hp where id < 100;
+	Aggregate  (cost=53.50..53.51 rows=1 width=8)
+	  ->  Bitmap Heap Scan on hp  (cost=19.17..51.28 rows=889 width=0)
+	        Recheck Cond: (id < 100)
+	        ->  Bitmap Index Scan on hp_pkey  (cost=0.00..18.95 rows=889 width=0)
+	              Index Cond: (id < 100)
+2026-11-09 23:52:35 UTC:::1(47558):postgres@postgres:[999670]:LOG:  duration: 0.253 ms  plan:
+	{
+	  "Query Text": "set auto_explain.log_min_duration=0; set auto_explain.log_format=json; set auto_explain.log_analyze=on; select count(*) from hp where v like 'x%';",
+	  "Plan": {
+	    "Node Type": "Aggregate",
+	    "Strategy": "Plain",
+	    "Partial Mode": "Simple",
+	    "Parallel Aware": false,
+	    "Async Capable": false,
+	    "Startup Cost": 54.37,
+	    "Total Cost": 54.38,
+	    "Plan Rows": 1,
+	    "Plan Width": 8,
+	    "Actual Startup Time": 0.247,
+	    "Actual Total Time": 0.247,
+	    "Actual Rows": 1.00,
+	    "Actual Loops": 1,
+	    "Disabled": false,
+	    "Plans": [
+	      {
+	        "Node Type": "Seq Scan",
+	        "Parent Relationship": "Outer",
+	        "Parallel Aware": false,
+	        "Async Capable": false,
+	        "Relation Name": "hp",
+	        "Alias": "hp",
+	        "Startup Cost": 0.00,
+	        "Total Cost": 54.34,
+	        "Plan Rows": 13,
+	        "Plan Width": 0,
+	        "Actual Startup Time": 0.009,
+	        "Actual Total Time": 0.184,
+	        "Actual Rows": 2000.00,
+	        "Actual Loops": 1,
+	        "Disabled": false,
+	        "Filter": "(v ~~ 'x%'::text)",
+	        "Rows Removed by Filter": 0
+	      }
+	    ]
+	  }
+	}
+2026-11-09 23:52:35 UTC::@:[999646]:LOG:  received fast shutdown request
+2026-11-09 23:52:35 UTC::@:[999646]:LOG:  aborting any active transactions
+2026-11-09 23:52:35 UTC::@:[999646]:LOG:  background worker "logical replication launcher" (PID 999652) exited with exit code 1
+2026-11-09 23:52:35 UTC::@:[999647]:LOG:  shutting down
+2026-11-09 23:52:35 UTC::@:[999647]:LOG:  checkpoint starting: shutdown immediate
+2026-11-09 23:52:35 UTC::@:[999647]:LOG:  checkpoint complete: wrote 29 buffers (0.2%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=8, longest=0.001 s, average=0.000 s; distance=227 kB, estimate=1056 kB; lsn=0/18BE060, redo lsn=0/18BE060
+2026-11-09 23:52:35 UTC::@:[999646]:LOG:  database system is shut down
+2026-11-09 23:52:35 UTC::@:[999739]:LOG:  database system was shut down at 2026-11-09 23:52:35 UTC
+2026-11-09 23:52:35 UTC::@:[999736]:LOG:  database system is ready to accept connections
+2026-11-09 23:52:35 UTC:::1(47568):postgres@postgres:[999752]:LOG:  page verification failed, calculated checksum 49361 but expected 16954
+2026-11-09 23:52:35 UTC:::1(47568):postgres@postgres:[999752]:STATEMENT:  select count(*) from hp
+2026-11-09 23:52:35 UTC:::1(47568):postgres@postgres:[999752]:LOG:  invalid page in block 0 of relation "base/5/16387"
+2026-11-09 23:52:35 UTC:::1(47568):postgres@postgres:[999752]:STATEMENT:  select count(*) from hp
+2026-11-09 23:52:35 UTC:::1(47568):postgres@postgres:[999752]:ERROR:  invalid page in block 0 of relation "base/5/16387"
+2026-11-09 23:52:35 UTC:::1(47568):postgres@postgres:[999752]:STATEMENT:  select count(*) from hp
+2026-11-09 23:52:35 UTC:::1(47582):postgres@postgres:[999754]:LOG:  page verification failed, calculated checksum 49361 but expected 16954
+2026-11-09 23:52:35 UTC:::1(47582):postgres@postgres:[999754]:STATEMENT:  set ignore_checksum_failure=on; select count(*) from hp
+2026-11-09 23:52:35 UTC:::1(47582):postgres@postgres:[999754]:LOG:  ignoring checksum failure in block 0 of relation "base/5/16387"
+2026-11-09 23:52:35 UTC:::1(47582):postgres@postgres:[999754]:STATEMENT:  set ignore_checksum_failure=on; select count(*) from hp
+2026-11-09 23:52:35 UTC:::1(47582):postgres@postgres:[999754]:WARNING:  ignoring checksum failure in block 0 of relation "base/5/16387"
+2026-11-09 23:52:35 UTC:::1(47596):postgres@postgres:[999756]:LOG:  page verification failed, calculated checksum 30537 but expected 8583
+2026-11-09 23:52:35 UTC:::1(47596):postgres@postgres:[999756]:STATEMENT:  set zero_damaged_pages=on; select count(*) from hp2
+2026-11-09 23:52:35 UTC:::1(47596):postgres@postgres:[999756]:LOG:  invalid page in block 0 of relation "base/5/16403"; zeroing out page
+2026-11-09 23:52:35 UTC:::1(47596):postgres@postgres:[999756]:STATEMENT:  set zero_damaged_pages=on; select count(*) from hp2
+2026-11-09 23:52:35 UTC:::1(47596):postgres@postgres:[999756]:WARNING:  invalid page in block 0 of relation "base/5/16403"; zeroing out page
+2026-11-09 23:52:35 UTC:::1(47602):postgres@postgres:[999758]:LOG:  could not read blocks 20..20 in file "base/5/16395": read only 0 of 8192 bytes
+2026-11-09 23:52:35 UTC:::1(47602):postgres@postgres:[999758]:STATEMENT:  set enable_seqscan=off; set enable_bitmapscan=off; select v from tr where id = 1999
+2026-11-09 23:52:35 UTC:::1(47602):postgres@postgres:[999758]:ERROR:  could not read blocks 20..20 in file "base/5/16395": read only 0 of 8192 bytes
+2026-11-09 23:52:35 UTC:::1(47602):postgres@postgres:[999758]:STATEMENT:  set enable_seqscan=off; set enable_bitmapscan=off; select v from tr where id = 1999
+2026-11-09 23:52:35 UTC:::1(47606):postgres@postgres:[999760]:ERROR:  could not open file "base/5/16408": No such file or directory
+2026-11-09 23:52:35 UTC:::1(47606):postgres@postgres:[999760]:STATEMENT:  select count(*) from gone
+2026-11-09 23:52:35 UTC:::1(47616):postgres@postgres:[999762]:ERROR:  unexpected chunk number 1 (expected 0) for toast value 16416 in pg_toast_16411
+2026-11-09 23:52:35 UTC:::1(47616):postgres@postgres:[999762]:STATEMENT:  select length(v) from tt
+2026-11-09 23:52:35 UTC::@:[999736]:LOG:  received fast shutdown request
+2026-11-09 23:52:35 UTC::@:[999736]:LOG:  aborting any active transactions
+2026-11-09 23:52:35 UTC::@:[999736]:LOG:  background worker "logical replication launcher" (PID 999742) exited with exit code 1
+2026-11-09 23:52:35 UTC::@:[999737]:LOG:  shutting down
+2026-11-09 23:52:35 UTC::@:[999737]:LOG:  checkpoint starting: shutdown immediate
+2026-11-09 23:52:35 UTC::@:[999737]:LOG:  checkpoint complete: wrote 13 buffers (0.1%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=9, longest=0.001 s, average=0.000 s; distance=69 kB, estimate=69 kB; lsn=0/18CF5D0, redo lsn=0/18CF5D0
+2026-11-09 23:52:35 UTC::@:[999736]:LOG:  database system is shut down

@@ -1,5 +1,6 @@
 // Package logparse turns PostgreSQL server log entries into events: slow statements
-// (log_min_duration_statement), lock waits (log_lock_waits), deadlocks and failed logins.
+// (log_min_duration_statement), lock waits (log_lock_waits), deadlocks, failed logins, the plans
+// auto_explain writes, and the messages a damaged page, file or TOAST value leaves (corruption).
 // It reads the RDS / Aurora prefix '%t:%r:%u@%d:[%p]:' and, for an entry that spans lines,
 // takes the continuation lines (a leading tab, or DETAIL / HINT / CONTEXT / STATEMENT lines
 // with the same prefix and pid) as part of the entry before it.
@@ -23,6 +24,12 @@ const (
 	LockWait Kind = "lock_wait"
 	Deadlock Kind = "deadlock"
 	AuthFail Kind = "auth_fail"
+	// Plan is an auto_explain entry ('duration: N ms  plan:'): DurationMS is the statement's time and
+	// Statement the plan as logged (text, JSON, YAML or XML; the text format keeps its indentation).
+	Plan Kind = "plan"
+	// Corruption is a message that only a damaged page, file, TOAST value or transaction status raises:
+	// Detail is the message with its DETAIL / CONTEXT lines, Statement the statement that met it.
+	Corruption Kind = "corruption"
 )
 
 // Event is one parsed log entry of interest.
@@ -50,7 +57,56 @@ var offsetRE = regexp.MustCompile(`^([+-])(\d{2})(\d{2})?$`)
 var (
 	durationRE = regexp.MustCompile(`^duration: ([0-9.]+) ms\s+(?:statement|execute [^:]*|parse [^:]*|bind [^:]*):\s?(.*)$`)
 	lockWaitRE = regexp.MustCompile(`^process \d+ still waiting for .* after ([0-9.]+) ms`)
+	planRE     = regexp.MustCompile(`^duration: ([0-9.]+) ms\s+plan:\s?(.*)$`)
 )
+
+// statementContextRE: a CONTEXT line that quotes statement text (PL/pgSQL's SQL statement "...", a dblink or
+// postgres_fdw remote query, an SQL function's body).
+var statementContextRE = regexp.MustCompile(`SQL statement "|while executing |SQL function "[^"]*" statement \d+`)
+
+// corruptionRE are the messages of a damaged page, file, TOAST value or commit log, as PostgreSQL 12 to 18
+// word them (bufmgr, md.c / smgr, the checksum check, detoast, heap vacuum's freeze checks, slru, multixact, the
+// B-tree page checks). A missing file
+// counts only under the data directory's relation and status paths: a missing file elsewhere (COPY's input,
+// pg_hba.conf) is not damage.
+var corruptionRE = []*regexp.Regexp{
+	regexp.MustCompile(`^page verification failed, calculated checksum \d+ but expected \d+`),
+	regexp.MustCompile(`^ignoring checksum failure in block \d+`),
+	regexp.MustCompile(`^invalid page in block \d+ of relation `),
+	// PostgreSQL 18's combined reads: one message for several damaged blocks of one read
+	regexp.MustCompile(`^\d+ invalid pages among blocks \d+\.\.\d+ of relation `),
+	regexp.MustCompile(`^(zeroing out \d+ invalid pages|ignoring \d+ checksum failures|zeroing \d+ page\(s\) and ignoring \d+ checksum failure\(s\)) among blocks `),
+	regexp.MustCompile(`^index ".*" contains (unexpected zero page|corrupted page) at block \d+`),
+	regexp.MustCompile(`^MultiXactId \d+ (has not been created yet|does no longer exist) -- apparent wraparound`),
+	regexp.MustCompile(`^could not read blocks? \d+(\.\.\d+)? in file `),
+	regexp.MustCompile(`^could not open file "(base|global|pg_tblspc|pg_xact|pg_multixact|pg_subtrans|pg_commit_ts)/`),
+	regexp.MustCompile(`^could not access status of transaction \d+`),
+	regexp.MustCompile(`^(unexpected|missing) chunk number \d+ .*for toast value \d+`),
+	regexp.MustCompile(`^found (xmin|xmax|multixact|update xid) \d+ from before (relfrozenxid|relminmxid|xid cutoff|cutoff multixact)`),
+	regexp.MustCompile(`^uncommitted xmin \d+ from before xid cutoff`),
+}
+
+// isCorruption says whether an entry is a corruption message. At LOG level only the checksum line counts:
+// PostgreSQL 18 writes a LOG copy of each invalid-page, ignored-checksum and short-read message beside the
+// ERROR / WARNING the backend raises (from an I/O worker, or the backend itself), and counting both would
+// count one damaged read twice; 'page verification failed' is LOG-only there, WARNING before 18.
+func isCorruption(level, msg string) bool {
+	switch level {
+	case "WARNING", "ERROR", "FATAL", "PANIC":
+	case "LOG":
+		if !strings.HasPrefix(msg, "page verification failed") {
+			return false
+		}
+	default:
+		return false
+	}
+	for _, re := range corruptionRE {
+		if re.MatchString(msg) {
+			return true
+		}
+	}
+	return false
+}
 
 type entry struct {
 	at                   time.Time
@@ -59,6 +115,7 @@ type entry struct {
 	pid                  int
 	level, msg           string
 	more                 []string // continuation lines and DETAIL / STATEMENT entries of the same pid
+	raw                  []string // the continuation lines as written, less the leading tab (a plan's indentation)
 }
 
 // Parse reads log text written in UTC; see ParseIn.
@@ -88,6 +145,7 @@ func ParseIn(r io.Reader, loc *time.Location) ([]Event, error) {
 		if strings.HasPrefix(line, "\t") {
 			if cur != nil {
 				cur.more = append(cur.more, strings.TrimSpace(line))
+				cur.raw = append(cur.raw, strings.TrimPrefix(line, "\t"))
 			}
 			continue
 		}
@@ -136,6 +194,41 @@ func zoneOf(abbr string, loc *time.Location) *time.Location {
 func classify(e *entry) (Event, bool) {
 	ev := Event{At: e.at, Client: e.client, User: e.user, Database: e.dbname, PID: e.pid, Key: e.key}
 	switch {
+	case e.level == "LOG" && planRE.MatchString(e.msg):
+		m := planRE.FindStringSubmatch(e.msg)
+		ev.Kind, ev.DurationMS = Plan, atof(m[1])
+		ev.Statement = strings.TrimRight(strings.Join(append([]string{m[2]}, e.raw...), "\n"), "\n ")
+		ev.Statement = strings.TrimLeft(ev.Statement, "\n")
+	case isCorruption(e.level, e.msg):
+		// Detail keeps the server's own text (the message, its DETAIL / HINT, the CONTEXT lines that name a block,
+		// a relation or a process); a CONTEXT line that quotes statement text (SQL statement "...", while executing
+		// ...) and a QUERY line go to Statement with the STATEMENT, so the query_text policy governs every statement text.
+		ev.Kind = Corruption
+		d := []string{e.msg}
+		for _, t := range []string{"DETAIL", "HINT"} {
+			if v := tagged(e.more, t); v != "" {
+				d = append(d, t+": "+v)
+			}
+		}
+		var ctx, stmt []string
+		if v := tagged(e.more, "CONTEXT"); v != "" {
+			for _, l := range strings.Split(v, "\n") {
+				if statementContextRE.MatchString(l) {
+					stmt = append(stmt, l)
+				} else {
+					ctx = append(ctx, l)
+				}
+			}
+		}
+		if len(ctx) > 0 {
+			d = append(d, "CONTEXT: "+strings.Join(ctx, "\n"))
+		}
+		for _, t := range []string{"QUERY", "STATEMENT"} {
+			if v := tagged(e.more, t); v != "" {
+				stmt = append(stmt, v)
+			}
+		}
+		ev.Detail, ev.Statement = strings.Join(d, "\n"), strings.Join(stmt, "\n")
 	case e.level == "LOG" && strings.HasPrefix(e.msg, "duration: "):
 		m := durationRE.FindStringSubmatch(e.msg)
 		if m == nil {
