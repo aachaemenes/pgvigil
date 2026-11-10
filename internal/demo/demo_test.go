@@ -328,6 +328,43 @@ func TestCountersRise(t *testing.T) {
 	}
 }
 
+// the chains of the anchor outlast the seed: the catch-up ticks of the minutes after the anchor (and the first
+// page of a serve) still carry every waiter, and the pause begins at the twelfth minute
+func TestChainsOutlastSeed(t *testing.T) {
+	specs := Specs("demo-", 12)
+	grid := Grid(anchor, 1)
+	want := map[string]int{"demo-onprem-erp01": 3, "demo-rds-orders01": 6, "demo-onprem-hr01": 2}
+	for i, s := range specs {
+		w, ok := want[s.Name]
+		if !ok {
+			continue
+		}
+		g := NewGen(s, i, 1, grid[0], anchor)
+		for _, at := range grid {
+			g.Step(at)
+		}
+		for m := 1; m <= 12; m++ {
+			waiters := 0
+			for _, b := range g.Step(anchor.Add(time.Duration(m) * time.Minute)) {
+				if b.Collection != "activity" {
+					continue
+				}
+				for _, r := range b.Rows {
+					if r["kind"] == "session" && r["wait_event_type"] == "Lock" {
+						waiters++
+					}
+				}
+			}
+			if m < 12 && waiters != w {
+				t.Fatalf("%s: %d lock waiter(s) at +%d min, want %d", s.Name, waiters, m, w)
+			}
+			if m == 12 && waiters != 0 {
+				t.Fatalf("%s: %d lock waiter(s) at +12 min, want the pause", s.Name, waiters)
+			}
+		}
+	}
+}
+
 // 'demo -serve' ticks past the anchor for hours: the ramps hold, the chains rotate, ages stay sane
 func TestLiveBounded(t *testing.T) {
 	specs := Specs("demo-", 12)

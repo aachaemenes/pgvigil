@@ -178,7 +178,10 @@ func curve(t time.Time) float64 {
 
 // window reports whether t falls in a scenario's window: daily at hourUTC for dur, and the
 // current one, open at the anchor and for twelve minutes after it: the seed's catch-up ticks land a few
-// minutes past the anchor, and the newest snapshot (the first page of a fresh serve) must still show it.
+// minutes past the anchor, and the newest snapshot (the first page of a fresh serve) must still show it;
+// a seed that takes longer than twelve minutes lands in the pause. Twelve is also near the most the
+// shortest window (20 minutes) allows with its last waiter present at the anchor. A daily window the
+// current one starts in is cut there, and the current chain takes over with its own pids.
 // ws is the window's start. Past the anchor (the live trickle of 'demo -serve') the current window
 // repeats every dur + 10 minutes, so a demo left running shows fresh chains with sane ages instead of
 // one that never ends.
