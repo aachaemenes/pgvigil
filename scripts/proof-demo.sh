@@ -26,8 +26,10 @@
 #                  suspended@aurora-dms01 (the attachments table in 'Error'), deadlocks (24 h)@rds-orders01
 #                  with '3 deadlock(s)', table autovacuum off@onprem-hr01, table bloat@onprem-erp01, table dead
 #                  rows@rds-orders01, table never vacuumed@aurora-dms01; no stale collection, no 'check could not run'
-#   jobs         aurora-crm01 3 jobs, rds-billing01 2
-#   logs         slow, lock_wait, deadlock and auth_fail events; 3 deadlocks in 24 h on rds-orders01
+#   jobs         aurora-crm01 4 jobs (three and the job report's sync-contacts), rds-billing01 4 (two and the job
+#                report's export-ledger and rollup-invoices: internal/demo/jobsreport_demo.go)
+#   logs         slow, lock_wait, deadlock, auth_fail, corruption (the corruption demo) and temp_file (the memory
+#                demo) events; 3 deadlocks in 24 h on rds-orders01
 #   dms          2 tasks, 15 tables, 2 in 'Table error'; the CDC task's drain readout has a rows ETA and a latency
 #                ETA (latency falling, speed over 1x) and is spilling
 #   tables       14 databases, 70 tables present (5 per application database; cloudsql-analytics01's skipped
@@ -102,9 +104,9 @@ check_repo() {
   got=$(P -c "select string_agg(distinct i.name, ',') from pgvigil.statements_delta d join pgvigil.instances i using (instance_id) where d.reset and 'demo' = any(i.tags)")
   [[ "$got" == "demo-rds-orders01" ]] || fail "reset rows on: $got"; ok "statements reset on $got"
   got=$(P -c "select string_agg(i.name || '=' || n, ' ' order by i.name) from (select instance_id, count(*) n from pgvigil.jobs group by 1) j join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
-  [[ "$got" == "demo-aurora-crm01=3 demo-rds-billing01=2" ]] || fail "jobs: $got"; ok "jobs: $got"
+  [[ "$got" == "demo-aurora-crm01=4 demo-rds-billing01=4" ]] || fail "jobs: $got"; ok "jobs: $got"
   got=$(P -c "select string_agg(distinct kind, ',' order by kind) from pgvigil.log_events e join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
-  [[ "$got" == "auth_fail,deadlock,lock_wait,slow" ]] || fail "log kinds: $got"; ok "log kinds: $got"
+  [[ "$got" == "auth_fail,corruption,deadlock,lock_wait,slow,temp_file" ]] || fail "log kinds: $got"; ok "log kinds: $got"
   got=$(P -c "select count(*) from pgvigil.log_events e join pgvigil.instances i using (instance_id) where i.name = 'demo-rds-orders01' and kind = 'deadlock' and snapshot_at > now() - interval '24 hours'")
   [[ "$got" == 3 ]] || fail "deadlock events in 24 h: $got"; ok "deadlock events in 24 h: 3"
   got=$(P -c "select count(*) || '/' || (select count(*) from pgvigil.dms_table_stats) || '/' || (select count(*) from pgvigil.dms_table_stats where table_state = 'Table error') from pgvigil.dms_tasks where is_present")

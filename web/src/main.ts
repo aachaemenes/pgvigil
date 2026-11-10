@@ -42,6 +42,7 @@ import { mssqlBackups } from './mssql_backups';
 import { mssqlJobs } from './mssql_jobs';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
 import { mssqlRowVersionsView } from './mssql_rowversions';
+import { mssqlConfigView } from './mssql_config';
 import { mssqlActionsLogView } from './mssql_actions';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
@@ -54,7 +55,7 @@ const mssqlPages: Record<string, Render> = {
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: mssqlSlow,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
-  rowversions: mssqlRowVersionsView, mssqlactions: mssqlActionsLogView,
+  rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
 };
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView };
 const instancePages: Record<string, Render> = {

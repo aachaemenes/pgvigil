@@ -212,6 +212,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
 	api.HandleFunc("GET /api/mssql/rowversions", s.MSSQLRowVersions)
+	api.HandleFunc("GET /api/mssql/config", s.MSSQLConfig)
 	api.HandleFunc("GET /api/mssql/actions/state", s.MSSQLActionState)
 	api.HandleFunc("POST /api/mssql/actions/preview", s.MSSQLActionPreview)
 	api.HandleFunc("POST /api/mssql/actions/run", s.MSSQLActionRun)

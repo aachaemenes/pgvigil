@@ -62,14 +62,14 @@ export const instanceGroups: TabGroup[] = [
 export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_deadlocks: 'Deadlocks',
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
-  mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlactions: 'Actions log',
+  mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
   { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs'] },
-  { key: 'conf', name: 'Configuration', tabs: ['mssqlactions'] },
+  { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlactions'] },
 ];
 export const isMssql = (engine: unknown) => engine === 'sqlserver';
 export const tabsFor = (engine: unknown) => isMssql(engine) ? mssqlInstanceTabs : instanceTabs;

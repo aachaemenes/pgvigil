@@ -30,7 +30,7 @@ func (g *Gen) mssqlStep(t time.Time) []Batch {
 	}
 	name := g.Spec.Name
 	if first || (t.Minute() == 0 && t.Hour()%6 == 0) || t.Equal(g.end) {
-		add("mssql_instance", t, g.mssqlInstanceRows())
+		add("mssql_instance", t, g.mssqlInstanceRows(t))
 	}
 	if first || t.Minute()%5 == 0 || t.Equal(g.end) {
 		add("mssql_services", t, g.mssqlServicesRows(t))
@@ -199,7 +199,7 @@ func (g *Gen) mssqlServicesRows(_ time.Time) []Row {
 
 // mssqlInstanceRows is the mssql_instance payload: the server's description, a few configuration values and what
 // sys.dm_os_sys_info says of the machine.
-func (g *Gen) mssqlInstanceRows() []Row {
+func (g *Gen) mssqlInstanceRows(t time.Time) []Row {
 	type srv struct {
 		machine, edition, version, level, update, ref, vm string
 		engineEdition, hadr, cpus                         int
@@ -220,10 +220,15 @@ func (g *Gen) mssqlInstanceRows() []Row {
 		return Row{"kind": "config", "name": name, "value": value, "value_in_use": value, "minimum": minimum, "maximum": maximum,
 			"is_dynamic": dynamic, "is_advanced": advanced}
 	}
+	// -sql01: max degree of parallelism was the default 0 until a day before the anchor (a change the tab shows)
+	maxdop := int64(8)
+	if g.is("-sql01") && t.Before(g.end.Add(-24*time.Hour)) {
+		maxdop = 0
+	}
 	rows = append(rows,
 		cfg("max server memory (MB)", s.maxMemMB, 128, 2147483647, 1, 1),
 		cfg("min server memory (MB)", 0, 0, 2147483647, 1, 1),
-		cfg("max degree of parallelism", 8, 0, 32767, 1, 1),
+		cfg("max degree of parallelism", maxdop, 0, 32767, 1, 1),
 		cfg("cost threshold for parallelism", 50, 0, 32767, 1, 1),
 		cfg("optimize for ad hoc workloads", 1, 0, 1, 1, 1),
 		cfg("blocked process threshold (s)", 15, 0, 86400, 1, 1),
@@ -231,6 +236,10 @@ func (g *Gen) mssqlInstanceRows() []Row {
 		cfg("remote admin connections", 1, 0, 1, 1, 0),
 		cfg("xp_cmdshell", 0, 0, 1, 1, 1),
 		cfg("clr enabled", 0, 0, 1, 1, 0))
+	// -sql02: a larger max server memory was set and RECONFIGURE not run: set, not in use yet
+	if g.is("-sql02") {
+		rows[1]["value"] = s.maxMemMB + 10000
+	}
 	return append(rows, Row{"kind": "sysinfo", "cpu_count": s.cpus, "hyperthread_ratio": 2, "physical_memory_kb": s.memKB,
 		"committed_target_kb": s.memKB * 8 / 10, "max_workers_count": 512 + 16*(s.cpus-4), "scheduler_count": s.cpus,
 		"virtual_machine_type": s.vm, "started_at_utc": g.mssqlStart().UTC().Format(time.RFC3339)})
