@@ -14,7 +14,11 @@ export interface Ctx {
   task?: string;         // DMS task ARN
   taskInstance?: number;
   order?: string;        // statements sort
-  minSecs?: number;      // statements: executions seen running at least this long
+  minSecs?: number;      // statements and the running-queries window: executions seen running at least this long
+  st?: string;           // running-queries window: 'active' | 'idle' (idle in transaction); unset = both
+  user?: string;         // running-queries window: the session's user, database and application (exact)
+  db?: string;
+  app?: string;
   ms?: number;           // slow queries: the threshold in milliseconds
 }
 
@@ -56,6 +60,10 @@ export function parse(): Ctx {
     taskInstance: Number(q.get('ti')) || undefined,
     order: q.get('order') ?? undefined,
     minSecs: q.has('min') && Number.isFinite(Number(q.get('min'))) ? Math.min(86400, Math.max(0, Math.trunc(Number(q.get('min'))))) : undefined,
+    st: q.get('st') === 'active' || q.get('st') === 'idle' ? q.get('st')! : undefined,
+    user: q.get('user')?.slice(0, 64) || undefined,
+    db: q.get('db')?.slice(0, 64) || undefined,
+    app: q.get('app')?.slice(0, 64) || undefined,
     ms: q.has('ms') && Number.isFinite(Number(q.get('ms'))) ? Math.min(86400000, Math.max(0, Math.trunc(Number(q.get('ms'))))) : undefined,
   };
 }
@@ -75,7 +83,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   };
   if (c.tab === 'counters') page('kind', 'kind');
   if (c.tab === 'logs') page('logKind', 'lk');
-  if (c.tab === 'activity') page('at', 'at');
+  if (c.tab === 'activity') { page('at', 'at'); page('minSecs', 'min'); page('st', 'st'); page('user', 'user'); page('db', 'db'); page('app', 'app'); }
   if (c.tab === 'dms') { page('task', 'task'); page('taskInstance', 'ti'); }
   if (c.tab === 'statements') { page('order', 'order'); page('minSecs', 'min'); }
   if (c.tab === 'slowqueries') page('ms', 'ms');

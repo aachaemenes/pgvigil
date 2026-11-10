@@ -61,6 +61,11 @@ jobs:
         env:
           PGVIGIL_REPO_DSN: "host=localhost port=5432 user=postgres password=pgvigil dbname=postgres sslmode=disable"
         run: scripts/proof-open.sh
+      - name: long runs and idle transactions over a window (migration 0048; two samples 65 s apart)
+        env:
+          PGVIGIL_REPO_DSN: postgres://postgres:pgvigil@localhost:5432/pgvigil?sslmode=disable
+          ADMIN_DSN: postgres://postgres:pgvigil@localhost:5432/postgres?sslmode=disable
+        run: scripts/proof-window.sh
   gov:
     # government readiness (task 50): the FIPS 140-3 build with the login and TLS proof under it, the service units'
     # hardening score, the SBOM against the CycloneDX schema; the accessibility proof (scripts/proof-a11y.sh) needs a

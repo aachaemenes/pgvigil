@@ -140,7 +140,7 @@ HAVING NOT bool_or(reset)                -- an IO row reset in this interval: no
 SELECT snapshot_at, total, active, idle_in_txn, waiting_lock, active_client_wait,
        longest_active_secs, longest_idle_txn_secs, oldest_xmin_age
   FROM pgvigil.activity_summary
- WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+ WHERE instance_id = $1 AND snapshot_at >= $2 AND snapshot_at <= $3
  ORDER BY snapshot_at`,
 }
 

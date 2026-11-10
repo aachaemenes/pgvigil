@@ -574,21 +574,46 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	s.reply(w, r, t, err)
 }
 
-// slow lists the executions seen running at least ?min= seconds (default 5) between from and to.
+// slow lists the executions seen running, or sitting idle in a transaction, at least ?min= seconds (default 5)
+// between from and to (pgvigil.long_runs_in_window, 0048: an idle session by its idle time, its transaction age
+// beside it); ?state=active|idle, ?user=, ?db= and ?app= narrow the rows (exact matches, 64 characters at most).
 func (s *Server) slow(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	q := r.URL.Query()
 	minSecs := 5
-	if v := r.URL.Query().Get("min"); v != "" {
+	if v := q.Get("min"); v != "" {
 		if minSecs, err = strconv.Atoi(v); err != nil || minSecs < 0 || minSecs > 86400 {
 			writeErr(w, http.StatusBadRequest, errors.New("min must be 0..86400 seconds"))
 			return
 		}
 	}
-	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.slow_in_window($1, $2, $3, $4, 200)`, id, from, to, minSecs)
+	var state, user, db, app *string
+	if v := q.Get("state"); v != "" {
+		if v != "active" && v != "idle" {
+			writeErr(w, http.StatusBadRequest, errors.New("state must be active or idle"))
+			return
+		}
+		state = &v
+	}
+	for _, f := range []struct {
+		name string
+		dst  **string
+	}{{"user", &user}, {"db", &db}, {"app", &app}} {
+		if v := q.Get(f.name); v != "" {
+			if len(v) > 64 || strings.ContainsFunc(v, func(c rune) bool { return c < ' ' || c == 0x7f }) {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("%s must be 1..64 printable characters", f.name))
+				return
+			}
+			val := v
+			*f.dst = &val
+		}
+	}
+	t, err := s.query(r.Context(), `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, $5, $6, $7, $8, 200)`,
+		id, from, to, minSecs, state, user, db, app)
 	s.reply(w, r, t, err)
 }
 

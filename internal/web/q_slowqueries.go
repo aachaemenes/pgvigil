@@ -13,7 +13,7 @@ import (
 // &[tz=<IANA name>]&[limit=<n>] (Server.SlowQueries). Without instance it is the fleet root. The statements
 // come from the server log (the CloudWatch reader on RDS and Aurora, the serverlog reader on-prem: log_events
 // kind slow, through the 0025 views); the instance tab adds the activity sampler's long runs
-// (slow_in_window). The per-day histogram covers the window, never less than the 7 days to its end; the top
+// (long_runs_in_window, active statements only: an idle row is no run). The per-day histogram covers the window, never less than the 7 days to its end; the top
 // lists and the recent list cover the window. No Summary column: slow statements are a view, not a check.
 // The sampler's own grid stays on /api/slow (Server.slow).
 
@@ -115,7 +115,7 @@ func (s *Server) SlowQueries(w http.ResponseWriter, r *http.Request) {
 		secs := max(1, int(math.Ceil(float64(minMS)/1000)))
 		parts = append(parts,
 			part{"recent", sqlSlowRecent, []any{id, from, to, ms}},
-			part{"sampled", `SELECT * FROM pgvigil.slow_in_window($1, $2, $3, $4, 200)`, []any{id, from, to, secs}})
+			part{"sampled", `SELECT * FROM pgvigil.long_runs_in_window($1, $2, $3, $4, 'active', NULL, NULL, NULL, 200)`, []any{id, from, to, secs}})
 	}
 	s.multi(w, r, parts)
 }
