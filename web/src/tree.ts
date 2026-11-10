@@ -126,10 +126,13 @@ function toggle(key: string) { flip(key); draw(); }
 // opening a node without leaving the page and for the keyboard). A closed node opens and its link is followed; the
 // node whose page is already shown, or a name that is no link, closes again on the next click. A click with a
 // modifier key or another button (a new tab) is the browser's alone. The draw waits for the link's own navigation.
-function nameOpens<T extends HTMLElement>(name: T, isOpen: boolean, on: boolean, change: () => void): T {
+// The second click of a double-click is ignored (a double-click opens, as in a desktop tree, and never flips the
+// node back). The name carries the node's key, so a redraw gives the keyboard focus back to it (draw()).
+function nameOpens<T extends HTMLElement>(name: T, key: string, isOpen: boolean, on: boolean, change: () => void): T {
+  name.dataset.nk = key;
   name.addEventListener('click', ev => {
     const e = ev as MouseEvent;
-    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.detail > 1) return;
     if (isOpen && !on) return;
     change();
     setTimeout(draw, 0);
@@ -182,11 +185,12 @@ const leaf = (text: string, to: string, on: boolean, title = '', lvl?: Level) =>
   el('a', { class: 'inst' + (on ? ' on' : ''), href: to, title: title || text }, ...(lvl === undefined ? [] : [dot(lvl)]), text);
 
 // folder: a caret, a name (a link when it opens a page) and, when open, its children
-function folder(key: string, name: string, depth: number, kids: () => HTMLElement[], to?: string, on = false): HTMLElement {
+// shown: the name's link is the page already shown (a click then closes the node) where the name is not the one highlighted
+function folder(key: string, name: string, depth: number, kids: () => HTMLElement[], to?: string, on = false, shown = on): HTMLElement {
   const isOpen = opened.has(key);
   const head = el('div', { class: 'tree-node', style: rowStyle + ';' + nodeStyle(depth) }, caretFor(key, name),
-    to ? nameOpens(el('a', { class: 'inst' + (on ? ' on' : ''), href: to, style: 'flex:1' }, name), isOpen, on, () => flip(key))
-       : nameOpens(el('span', { class: 'folder-name', style: 'padding:.2rem .4rem;cursor:pointer;flex:1' }, name), isOpen, true, () => flip(key)));
+    to ? nameOpens(el('a', { class: 'inst' + (on ? ' on' : ''), href: to, style: 'flex:1' }, name), key, isOpen, shown, () => flip(key))
+       : nameOpens(el('span', { class: 'folder-name', style: 'padding:.2rem .4rem;cursor:pointer;flex:1' }, name), key, isOpen, true, () => flip(key)));
   const box = el('div', {}, head);
   if (opened.has(key)) box.append(...kids());
   return box;
@@ -232,12 +236,12 @@ function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
           shown.push(el('div', { style: nodeStyle(depth + 3) }, leaf(`all ${lt.rows!.length} tables...`, hrefWith(ctx, 'db', { db: dbid }, id), false)));
         }
         return shown;
-      }, hrefWith(ctx, 'db', { db: dbid }, id), false);
+      }, hrefWith(ctx, 'db', { db: dbid }, id), false, here && ctx.tab === 'db' && curDb === dbid);
       // the database node: its page, and under it the Tables folder
       return folder(`i${id}/db/${dbid}`, String(r.datname), depth + 1, () => [tables],
         hrefWith(ctx, 'db', { db: dbid }, id), here && ctx.tab === 'db' && curDb === dbid);
     });
-  }, tabLink('dbinfo'), false);
+  }, tabLink('dbinfo'), false, here && ctx.tab === 'dbinfo');
 
   const jobs = folder(`i${id}/jobs`, 'Jobs', depth, () => {
     const l = loaded(`i${id}/jobs`, async () => {
@@ -319,11 +323,13 @@ function draw() {
       lsSet('pgvigil.collapsed', JSON.stringify([...collapsed]));
     };
     caret.addEventListener('click', () => { flipFolder(); draw(); });
+    // while a filter is typed every folder is drawn open: a click on a name then only follows its link
+    const nameFlip = () => { if (!filter) flipFolder(); };
     const text = `${fo.label} (${fo.rows.length})`;
     const tagOn = !ctx.instance && ctx.tag === fo.tag;
     const label = fo.tag
-      ? nameOpens(el('a', { class: 'folder-name' + (tagOn ? ' on' : ''), href: href(ctx, { tab: rootTab, instance: undefined, tag: fo.tag }) }, text), !shut, tagOn, flipFolder)
-      : nameOpens(el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), style: 'cursor:pointer', title: depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '' }, text), !shut, true, flipFolder);
+      ? nameOpens(el('a', { class: 'folder-name' + (tagOn ? ' on' : ''), href: href(ctx, { tab: rootTab, instance: undefined, tag: fo.tag }) }, text), 'f:' + fo.path, !shut, tagOn, nameFlip)
+      : nameOpens(el('span', { class: 'folder-name' + (fo.muted ? ' muted' : ''), style: 'cursor:pointer', title: depth > 0 ? 'A nested folder: open its top folder for a tag scope' : '' }, text), 'f:' + fo.path, !shut, true, nameFlip);
     const box = el('div', { class: 'folder', style: depth ? 'margin-left:.8rem' : '' }, el('div', { class: 'folder-head' }, caret, dot(rollup(f, fo.rows)), label));
     if (!shut) {
       const ul = el('div', { class: 'folder-items' });
@@ -336,7 +342,7 @@ function draw() {
           const key = `i${id}`;
           ul.append(el('div', { class: 'tree-inst', style: rowStyle }, caretFor(key, String(r.name)),
             nameOpens(el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), style: 'flex:1;min-width:0', href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
-              dot(worst(f, r)), String(r.name)), opened.has(key), id === ctx.instance && ctx.tab === tab, () => flip(key))));
+              dot(worst(f, r)), String(r.name)), key, opened.has(key), id === ctx.instance && ctx.tab === tab && ctx.at == null && ctx.task == null, () => flip(key))));
           if (opened.has(key)) ul.append(...instanceFolders(ctx, id, 1));
         }
       }
@@ -351,9 +357,11 @@ function draw() {
   // a redraw replaces every node: a caret that had the keyboard focus gets it back (by its key), so a keyboard or
   // screen-reader user stays where they were after opening a folder and after its children arrive
   // an instance in two tag folders has two carets with one key: the focus goes back to the same copy (its index)
-  const active = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#tree button.caret');
-  const focused = active?.dataset.key;
-  const sameKey = (k: string) => [...list.querySelectorAll<HTMLElement>(`button.caret[data-key="${CSS.escape(k)}"]`)];
+  // a name that opens its node (nameOpens) gets the focus back the same way, by the node's key on it
+  const active = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#tree button.caret, #tree [data-nk]');
+  const isName = active != null && !active.matches('button.caret');
+  const focused = isName ? active.dataset.nk : active?.dataset.key;
+  const sameKey = (k: string) => [...list.querySelectorAll<HTMLElement>(isName ? `[data-nk="${CSS.escape(k)}"]` : `button.caret[data-key="${CSS.escape(k)}"]`)];
   const copy = focused ? sameKey(focused).indexOf(active!) : -1;
   list.replaceChildren(...out);
   if (focused) { const all = sameKey(focused); (all[copy] ?? all[0])?.focus(); }
