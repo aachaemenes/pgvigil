@@ -20,6 +20,20 @@
 #     grid step, the meta's step_secs is 180; instance=0: HTTP 400.
 #  D. EXPLAIN (ANALYZE) of each fleet statement (1 h and 24 h): the execution time printed; every history table is
 #     read through an index (no Seq Scan node on a *_2026* partition); the 1 h PostgreSQL statement under 500 ms here.
+#  [review fold, expected before the rerun:]
+#  A2. commits/s of every PostgreSQL row with dbstats over an explicit last hour is within 2 % of an independent
+#     average: the sum of dbstats_rate()'s commit deltas over the sum of its distinct reads' seconds.
+#  F. a scratch untagged instance fx-reset, 60 one-minute imports through pgvigil.import_dbstats over a window two
+#     hours back: a restart at minute 30 (postmaster_start moves, xact_commit falls from 2740 to 0; 60 commits a minute
+#     before, 120 after) and a pg_stat_io row whose stats_reset moves at minute 30 (12,800 reads a minute of 8 kB, read
+#     time 0.5 ms each); plus a pgms_wait_sampling Lock row a minute with no time (wait_secs NULL). Over that window:
+#     commits_s 1.50 and tps 1.50 (5,220 commits over the 3,480 s the two segments cover), read_ms 0.50, mb_s 1.67
+#     (before the fold: 3.33, the two segments' bytes over one segment's seconds), wait_source NULL and lock_ms_s NULL
+#     (before: 'wait_sample' and 0.00); tag=untagged then lists exactly fx-reset.
+#  D (fold). The Seq Scan check names the tables (any partition year, and the two plain tables); each statement is
+#     measured as the endpoint runs it (SET jit = off; the endpoint's own transaction) and once with the server's JIT
+#     setting, both printed; the served /api/perfsummary time printed for 1 h and 24 h. With SCALE_N=185 (200
+#     instances): the 1 h PostgreSQL statement without JIT about 150 ms, the endpoint under 0.5 s for 1 h.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -83,6 +97,58 @@ got=$(jq -r '[.pg.rows[], .mssql.rows[]] | map(.[1]) | sort | join(",")' "$WORK/
 [[ $(curl -s -o /dev/null -w '%{http_code}' "$U/perfsummary?part=nope") == 400 ]] || fail "A: part=nope"
 echo "A: tag=staging 4 rows, untagged 0, part=nope 400"
 
+# ---- A2: commits/s against an independent average from dbstats_rate()
+H1=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); H0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+curl -fs "$U/perfsummary?part=pg&from=$H1&to=$H0" > "$WORK/a2.json"
+psql "$REPO" -XAtq -F' ' -c "select i.name, (select round(sum(r.xact_commit)::numeric / nullif((select sum(x.iv) from (select distinct q.snapshot_at, q.interval_secs as iv
+    from pgvigil.dbstats_rate(i.instance_id, '$H1', '$H0') q where not q.reset) x), 0), 2)
+  from pgvigil.dbstats_rate(i.instance_id, '$H1', '$H0') r where not r.reset) from pgvigil.instances i where i.engine = 'postgres' and i.name like 'demo-%'" > "$WORK/a2.ref"
+python3 - "$WORK/a2.json" "$WORK/a2.ref" <<'EOF' || fail "A2: commits/s differs from the dbstats_rate average"
+import json, sys
+d = json.load(open(sys.argv[1])); rows = {r[1]: dict(zip(d['pg']['columns'], r)) for r in d['pg']['rows']}
+bad, n = [], 0
+for line in open(sys.argv[2]):
+    name, ref = line.split()
+    if ref == '': continue
+    got = rows[name]['commits_s']; n += 1
+    if got is None or abs(float(got) - float(ref)) > 0.02 * float(ref): bad.append((name, got, ref))
+print('A2:', n, 'instances within 2 % of the dbstats_rate average' if not bad else bad)
+sys.exit(1 if bad or n == 0 else 0)
+EOF
+
+# ---- F: a restart, a pg_stat_io reset and pgms rows without time on a scratch untagged instance
+psql "$REPO" -XAtq -v ON_ERROR_STOP=1 <<'EOF' || fail "F: seeding"
+insert into pgvigil.instances(name, platform, engine) values ('fx-reset', 'onprem', 'postgres');
+do $$ declare m int; t timestamptz; b timestamptz := date_trunc('minute', now()) - interval '2 hours';
+  fx int := (select instance_id from pgvigil.instances where name = 'fx-reset');
+begin
+  perform pgvigil.ensure_month_partition('wait_sample', b);
+  for m in 0..59 loop
+    t := b + make_interval(mins => m);
+    perform pgvigil.import_dbstats(fx, t, jsonb_build_array(
+      jsonb_build_object('kind', 'db', 'dbid', 1, 'datname', 'fx',
+        'postmaster_start', case when m < 30 then '2026-01-01T00:00:00Z' else '2026-06-01T00:00:00Z' end,
+        'xact_commit', case when m < 30 then 1000 + 60 * m else 120 * (m - 30) end, 'xact_rollback', 0, 'temp_bytes', 0,
+        'deadlocks', 0, 'checksum_failures', 0),
+      jsonb_build_object('kind', 'io', 'backend_type', 'client backend', 'object', 'relation', 'context', 'normal',
+        'stats_reset', case when m < 30 then '2026-01-01T00:00:00Z' else '2026-06-01T00:00:00Z' end,
+        'reads', case when m < 30 then 5000 + 12800 * m else 12800 * (m - 30) end,
+        'read_time', 0.5 * case when m < 30 then 5000 + 12800 * m else 12800 * (m - 30) end,
+        'writes', 0, 'write_time', 0, 'op_bytes', 8192)));
+    insert into pgvigil.wait_sample (instance_id, snapshot_at, interval_secs, source, event_type, event, queryid, samples, wait_secs)
+    values (fx, t, 60, 'pgms_wait_sampling', 'Lock', 'relation', 0, 50, null);
+  end loop;
+end $$;
+EOF
+FB=$(psql "$REPO" -XAtq -c "select to_char((date_trunc('minute', now()) - interval '2 hours 1 minute') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+FE=$(psql "$REPO" -XAtq -c "select to_char((date_trunc('minute', now()) - interval '1 hour') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+curl -fs "$U/perfsummary?tag=untagged&from=$FB&to=$FE" > "$WORK/f.json" || fail "F: perfsummary"
+got=$(jq -c '.pg.columns as $c | [.pg.rows[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add | {instance, commits_s, tps, read_ms, mb_s, wait_source, lock_ms_s}] | .[0], length' "$WORK/f.json" | tr '\n' ' ')
+want='{"instance":"fx-reset","commits_s":1.50,"tps":1.50,"read_ms":0.50,"mb_s":1.67,"wait_source":null,"lock_ms_s":null} 1 '
+[[ "$got" == "$want" ]] || fail "F: got $got want $want"
+[[ $(jq '.mssql.rows | length' "$WORK/f.json") == 0 ]] || fail "F: an untagged SQL Server row"
+echo "F: fx-reset commits_s 1.50, tps 1.50, read_ms 0.50, mb_s 1.67, no wait source; untagged lists fx-reset alone"
+
 # ---- C
 id() { psql "$REPO" -XAtq -c "select instance_id from pgvigil.instances where name = '$1'"; }
 TO=$(date -u +%Y-%m-%dT%H:%M:%SZ); FROM=$(date -u -d '-6 hours' +%Y-%m-%dT%H:%M:%SZ)
@@ -110,22 +176,30 @@ s = s.replace('$4::text', 'NULL::text').replace('$4', 'NULL::text').replace('$3'
 print(s.replace('$1', "(now() - interval '" + sys.argv[2] + "')").replace('$2', 'now()'))
 EOF
 }
+HIST='Seq Scan on (host_sample|activity_s\w*|wait_sample|dbstats|iostats|cloud_io_sample|mssql_\w+)'
 measure() {  # $1 repository dsn, $2 label
   for q in sqlPerfSummaryPG:postgres sqlPerfSummaryMSSQL:sqlserver; do
     for w in "1 hour" "24 hours"; do
-      { echo "EXPLAIN (ANALYZE, BUFFERS)"; sqlof "${q%%:*}" "$w" "${q#*:}"; } > "$WORK/e.sql"
+      { echo "SET jit = off;"; echo "EXPLAIN (ANALYZE, BUFFERS)"; sqlof "${q%%:*}" "$w" "${q#*:}"; } > "$WORK/e.sql"
       psql "$1" -XAtq -f "$WORK/e.sql" > "$WORK/e.out"
       ms=$(grep -oP 'Execution Time: \K[0-9.]+' "$WORK/e.out")
-      grep -qE 'Seq Scan on \w+_2026' "$WORK/e.out" && fail "D: a Seq Scan on a history partition ($q $w)"
-      echo "D $2: ${q%%:*} $w: $ms ms"
-      [[ "$q" == sqlPerfSummaryPG:* && "$w" == "1 hour" && "$2" == "15" ]] && python3 -c "import sys; sys.exit(0 if float('$ms') < 500 else 1)" || [[ ! ("$q" == sqlPerfSummaryPG:* && "$w" == "1 hour" && "$2" == "15") ]] || fail "D: over 500 ms"
+      grep -qE "$HIST" "$WORK/e.out" && fail "D: a Seq Scan on a history table ($q $w)"
+      { echo "EXPLAIN (ANALYZE)"; sqlof "${q%%:*}" "$w" "${q#*:}"; } > "$WORK/j.sql"
+      jit=$(psql "$1" -XAtq -f "$WORK/j.sql" | grep -oP 'Execution Time: \K[0-9.]+')
+      echo "D $2: ${q%%:*} $w: $ms ms as served (jit off); $jit ms with the server's JIT setting"
+      if [[ "$q" == sqlPerfSummaryPG:* && "$w" == "1 hour" && "$2" == "15" ]]; then
+        python3 -c "import sys; sys.exit(0 if float('$ms') < 500 else 1)" || fail "D: over 500 ms"
+      fi
     done
+  done
+  for w in 1 24; do
+    t=$(curl -fs -o /dev/null -w '%{time_total}' "$U/perfsummary?from=$(date -u -d "-$w hours" +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)") || fail "D: served read"
+    echo "D $2: GET /api/perfsummary ${w} h: ${t} s"
   done
 }
 psql "$REPO" -XAtq -c "analyze"
 measure "$REPO" 15
 if [[ -n "${SCALE_N:-}" ]]; then
-  kill "$SRV"; wait "$SRV" 2>/dev/null || true; SRV=""
   "$BIN" demo -dsn "$REPO" -days 1 -instances "$SCALE_N" -prefix scale- > "$WORK/scale.log" 2>&1 || fail "scale seed: $(tail -3 "$WORK/scale.log")"
   psql "$REPO" -XAtq -c "analyze"
   measure "$REPO" "$((SCALE_N + 15))"

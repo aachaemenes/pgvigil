@@ -6,8 +6,8 @@ import (
 
 // The instance Performance page (plan task 108, DBA Dash's Performance tab): GET /api/performance?instance=N[&from=&to=]
 // is one instance's small charts over the range. Every part is cut into the same steps (about 120 over the range, a
-// minute at least) and the part "grid" lists every step, so the page draws all charts on one time axis and a step
-// without a sample is a gap, never a missing point that shifts a line. The instance's engine chooses the parts:
+// minute at least) and the part "grid" lists every step, so the page draws all charts on the same steps (it keeps the
+// steps that hold a sample and breaks the lines where the samples stop for a while). The instance's engine chooses the parts:
 //   PostgreSQL  meta, grid, cpu (host_sample), sessions (activity_summary), waits (wait_sample, else the activity
 //               samples: the Waits tab's two sources), db (dbstats: commits, rollbacks, temp bytes), io (iostats =
 //               pg_stat_io, and CloudWatch's volume figures beside it)
@@ -53,6 +53,7 @@ WITH raw AS (
   SELECT w.snapshot_at, w.event_type, w.event, w.queryid, w.wait_secs, coalesce(w.interval_secs, 60) AS secs
     FROM pgvigil.wait_sample w
    WHERE w.instance_id = $1 AND w.snapshot_at > $2 AND w.snapshot_at <= $3
+     AND w.wait_secs IS NOT NULL   -- pgms_wait_sampling rows (and an unknown period) carry no time: the activity samples then
 ), cover AS (
   SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS bucket, sum(r.secs)::float8 AS secs
     FROM (SELECT DISTINCT snapshot_at, secs FROM raw) r

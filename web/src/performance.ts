@@ -1,6 +1,6 @@
 // The instance Performance page (plan task 108, DBA Dash's Performance tab): small charts over the range on one time
-// axis (every part is cut into the same steps, and a step without a sample is a gap), each chart's title a link to
-// the detailed page. Built with chart.ts's lineChart as it is. Data from /api/performance.
+// axis (every part is cut into the same steps; the lines break where the samples stop for a while), each chart's title
+// a link to the detailed page. Built with chart.ts's lineChart as it is. Data from /api/performance.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
@@ -21,12 +21,17 @@ function align(gridRows: Row[], rows: Row[], keys: string[]): Row[] {
 function pivotWaits(gridRows: Row[], rows: Row[]): { rows: Row[]; series: { key: string; label: string }[] } {
   const tot = new Map<string, number>();
   for (const r of rows) tot.set(String(r.event_type), (tot.get(String(r.event_type)) ?? 0) + Number(r.ms_s));
-  const types = [...tot.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]).slice(0, 8);
+  // the seven largest classes, the rest summed into 'other' so the top of the stack is the total
+  const ranked = [...tot.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  const types = ranked.length > 8 ? [...ranked.slice(0, 7), 'other'] : ranked;
+  const shown = new Set(types);
   const by = new Map<number, Row>();
   for (const r of rows) {
     const t = new Date(String(r.snapshot_at)).getTime();
     if (!by.has(t)) by.set(t, {});
-    by.get(t)![String(r.event_type)] = Number(r.ms_s);
+    const k = shown.has(String(r.event_type)) ? String(r.event_type) : 'other';
+    const row = by.get(t)!;
+    row[k] = Number(row[k] ?? 0) + Number(r.ms_s);
   }
   // stacked: each series is the running total of the classes up to it, so the lines read as a stacked area
   const out = gridRows.map(g => {
@@ -39,6 +44,24 @@ function pivotWaits(gridRows: Row[], rows: Row[]): { rows: Row[]; series: { key:
   return { rows: out, series: types.map(t => ({ key: t, label: t + ' (stacked)' })) };
 }
 
+// sharedSteps: the grid's steps that hold a sample in any part (a collection read every 15 minutes in an older stretch
+// would otherwise break every line into dots), plus one empty step inside each hole more than three times longer than
+// the spacing on both sides of it (a collector that stopped; a sparser stretch is even, so it never breaks): the lines
+// break there instead of joining across it. Every chart takes these steps.
+function sharedSteps(grid: Row[], parts: Row[], stepSecs: number): Row[] {
+  const ms = (r: Row) => new Date(String(r.snapshot_at)).getTime();
+  const seen = new Set(parts.map(ms));
+  const kept = grid.filter(r => seen.has(ms(r)));
+  const gaps = kept.slice(1).map((r, i) => ms(r) - ms(kept[i]));   // gaps[i] lies between kept[i] and kept[i + 1]
+  const out: Row[] = kept.slice(0, 1);
+  for (let i = 1; i < kept.length; i++) {
+    const gap = gaps[i - 1], side = Math.max(gaps[i - 2] ?? 0, gaps[i] ?? 0);
+    if (side > 0 && gap > 3 * side) out.push({ snapshot_at: new Date(ms(kept[i - 1]) + stepSecs * 1000).toISOString() });
+    out.push(kept[i]);
+  }
+  return out;
+}
+
 function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
   const h = chart.querySelector('h3');
   if (h) h.replaceChildren(el('a', { href: link }, text));
@@ -48,11 +71,7 @@ function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
 export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
   const d = await get<Record<Parts, Table | null>>('performance', { instance: ctx.instance, ...window_(ctx) });
   const meta = rowsOf(d.meta)[0] ?? {};
-  // the shared steps: those of the range's grid that hold a sample in any part (a collection read every 15 minutes
-  // in an older stretch would otherwise break every line into dots); every chart takes the same steps
-  const seen = new Set<number>();
-  for (const k of ['cpu', 'sessions', 'waits', 'db', 'io'] as Parts[]) for (const r of rowsOf(d[k])) seen.add(new Date(String(r.snapshot_at)).getTime());
-  const g = rowsOf(d.grid).filter(r => seen.has(new Date(String(r.snapshot_at)).getTime()));
+  const g = sharedSteps(rowsOf(d.grid), (['cpu', 'sessions', 'waits', 'db', 'io'] as Parts[]).flatMap(k => rowsOf(d[k])), Number(meta.step_secs ?? 60));
   const ms = meta.engine === 'sqlserver';
   const to = (tab: string, extra: Record<string, string> = {}) => href(ctx, { tab, ...extra });
   const sec = el('section', {}, el('h2', {}, `Performance (${rangeLabel(ctx)})`));

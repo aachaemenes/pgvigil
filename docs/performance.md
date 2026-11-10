@@ -23,8 +23,20 @@ Thresholds (the page's "thresholds" link): CPU max over 75 % warning, over 90 % 
 warning, over 1,000 critical. A cell past its line carries a fill and the word; every other cell is plain.
 
 Cost: one statement per engine, driven from the instance list, each history table read through its
-`(instance_id, snapshot_at)` index. No index was added (no migration). Measured with `EXPLAIN (ANALYZE)` on the demo
-(`scripts/proof-perfsummary.sh`, part D); the work grows with instances x samples in the range.
+`(instance_id, snapshot_at)` index. No index was added (no migration). The endpoint runs the statements in a
+read-only transaction with `jit = off`: at about 200 instances the plan's cost estimate passes `jit_above_cost`, and
+JIT's compile time (measured 695 ms) is several times the statement's own run (180 ms). Measured with
+`EXPLAIN (ANALYZE)` (`scripts/proof-perfsummary.sh`, part D; `SCALE_N=185` for 200 instances); the work grows with
+instances x samples in the range, so 1,000 instances cost about five times the 200-instance figure.
+
+| | 15 instances (demo) | 200 instances | 1,000 instances (stated: x5 of 200) |
+|---|---|---|---|
+| PostgreSQL statement, 1 h | 6 ms | 86 ms (634 ms with JIT on) | about 0.45 s |
+| PostgreSQL statement, 24 h | 28 ms | 378 ms (877 ms with JIT on) | about 1.9 s |
+| SQL Server statement, 1 h / 24 h | 2 / 8 ms | 5 / 16 ms (3 SQL Server instances in both) | grows with the SQL Server instances only |
+| GET /api/perfsummary, 1 h / 24 h | 0.02 / 0.04 s | 0.07 / 0.38 s | about 0.4 / 1.9 s |
+
+Measured 2026-11-10 on the local PostgreSQL 18 with a one-minute demo history (the scale instances: one day).
 
 ## Performance (instance)
 
