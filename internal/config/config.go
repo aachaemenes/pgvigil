@@ -65,6 +65,14 @@ type Instance struct {
 	ActionsDSNRaw string `yaml:"actions_dsn"`
 	// Backups tunes the backups collection's rules; nil = the defaults.
 	Backups *Backups `yaml:"backups"`
+	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
+	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
+	ExplainAnalyze bool `yaml:"explain_analyze"`
+	// ExplainDSNRaw is the login EXPLAIN ANALYZE runs as: SELECT grants only, never the actions login (a SELECT can
+	// call pg_terminate_backend through pg_signal_backend); env:NAME or file:/path only, as actions_dsn.
+	ExplainDSNRaw string `yaml:"explain_dsn"`
+	// ExplainTimeout bounds one EXPLAIN ANALYZE (default 30s, at most 5m).
+	ExplainTimeout Duration `yaml:"explain_timeout"`
 }
 
 // UI is the ui: block: the tree's folder levels and the order of the values in them.
@@ -145,6 +153,14 @@ func (i Instance) TagPairs() []Tag {
 		}
 	}
 	return out
+}
+
+// ExplainDSN resolves the EXPLAIN ANALYZE login; "" = none configured (or an unset variable / unreadable file).
+func (i Instance) ExplainDSN() string {
+	if i.ExplainDSNRaw == "" {
+		return ""
+	}
+	return Resolve(strings.TrimSpace(i.ExplainDSNRaw))
 }
 
 // ActionsDSN resolves the actions door; "" = none configured (or an unset variable / unreadable file).
@@ -326,6 +342,8 @@ func (c *Config) Validate() error {
 		}
 		if in.Backups != nil && in.Backups.ArchiveWarnMinutes < 0 {
 			return fmt.Errorf("instance %q: backups.archive_warn_minutes must be 0 or more", in.Name)
+		if v := strings.TrimSpace(in.ExplainDSNRaw); v != "" && !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") {
+			return fmt.Errorf("instance %q: explain_dsn must be env:NAME or file:/path, never an inline connection string", in.Name)
 		}
 		if in.AWS != nil && in.AWS.DMS != nil {
 			for _, t := range in.AWS.DMS.Tasks {

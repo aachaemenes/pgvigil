@@ -17,6 +17,7 @@ import { ioView } from './io';
 import { actionsLogView } from './actions';
 import { jobsReportView } from './jobsreport';
 import { rolesView } from './roles';
+import { plansView } from './plan';
 import { slowView } from './slow';
 import { rangePicker } from './rangepicker';
 import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_ } from './router';
@@ -34,6 +35,7 @@ const instancePages: Record<string, Render> = {
   jobsreport: jobsReportView,
   roles: c => rolesView(c.instance!),
   slowqueries: slowView,
+  plans: plansView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs']);

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/actions"
@@ -97,6 +98,13 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
+	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}}
+	for _, in := range cfg.Instances {
+		pc.Gates[in.Name] = actions.ExplainGate{Enabled: in.ExplainAnalyze, DSN: in.ExplainDSN(),
+			Configured: strings.TrimSpace(in.ExplainDSNRaw) != "", Timeout: in.ExplainTimeout.Duration}
+		pc.QueryText[in.Name] = in.QueryText
+	}
+	srv.SetPlans(pc)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}

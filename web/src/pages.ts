@@ -1,4 +1,5 @@
 import { Activity, DMS, get, Row, rowsOf, Table } from './api';
+import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
 import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
@@ -128,6 +129,7 @@ export async function activity(ctx: Ctx): Promise<HTMLElement> {
     { key: 'application_name', label: 'app' },
     { key: 'client' },
     { key: 'query', wide: true, fmt: truncQuery },
+    { key: 'plan_link', label: 'plan', fmt: (_, r) => r.query ? planLink(ctx.instance!, { stmt: r.query, db: r.datname }) : '' },
     actionsCol(ctx, act, () => { location.hash = href(ctx, { tab: 'activity', at: undefined }); }),
   ];
   sec.append(grid(rowsOf(a.sessions), cols, 'No active or idle-in-transaction sessions in this snapshot.'));
@@ -168,7 +170,7 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
     if (Number.isFinite(v)) location.hash = href(ctx, { tab: 'statements', minSecs: Math.min(86400, Math.max(0, Math.trunc(v))) });
   });
   return el('section', {}, el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
-    grid(rowsOf(st), stmtCols(order), 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
+    grid(rowsOf(st), [...stmtCols(order), { key: 'plan_link', label: 'plan', fmt: (_, r) => planLink(ctx.instance!, { queryid: r.queryid, db: r.datname, stmt: r.query }) }], 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
     el('h3', {}, 'Ran at least ', minIn, ' s in this window'),
     el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from its transaction start.'),
     slow instanceof Error ? errorBox(slow) : grid(rowsOf(slow as Table), slowCols, 'Nothing seen running that long in this window.'));

@@ -177,6 +177,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/actions/cancel", s.actions.Cancel)
 	api.HandleFunc("POST /api/actions/terminate", s.actions.Terminate)
 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
+	api.HandleFunc("GET /api/plans", s.Plans)
+	api.HandleFunc("GET /api/plan", s.Plan)
+	api.HandleFunc("POST /api/plans/explain", s.actions.Explain)
+	api.HandleFunc("POST /api/plans/analyze", s.actions.ExplainAnalyze)
 	api.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusNotFound, errors.New("no such endpoint"))
 	})

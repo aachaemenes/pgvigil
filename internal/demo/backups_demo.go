@@ -40,7 +40,7 @@ func (g *Gen) backupRows(t time.Time) []Row {
 		arch["last_archived_wal"] = fmt.Sprintf("00000001%08X%08X", n/256, n%256)
 		arch["last_archived_time"] = last
 		arch["last_failed_wal"] = fmt.Sprintf("00000001%08X%08X", (n-500)/256, (n-500)%256)
-		arch["last_failed_time"] = g.start.Add(36 * time.Hour)
+		arch["last_failed_time"] = g.start.Add(-30 * 24 * time.Hour) // one old failure, before the history: never after the last archive, whatever -days says
 		arch["archive_lag_bytes"] = int64(noise(s.Name+"lag", t) * float64(demoSeg))
 		if has("hr01") {
 			broke := g.end.Add(-3 * time.Hour)

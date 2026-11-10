@@ -6,6 +6,7 @@
 // root the fleet's shapes and the slow time per instance. Data from /api/slowqueries. The shell mounts
 // slowView(ctx) on the instance tab and slowFleetView(ctx, keep, instLink) on the root (the lead wires them).
 // The threshold rides in the hash as ms= (read and written here; the router does not carry it).
+import { planLink } from './plan';
 import { slowCols } from './borrowed';
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
@@ -78,7 +79,8 @@ function topCols(ctx: Ctx, lead: 'count' | 'total', fleet: boolean, instLink?: (
     { key: 'last_at', label: 'last', fmt: fmtTime }, { key: 'databases', label: 'db' }, { key: 'users', label: 'user' },
     { key: 'queryid', label: 'statement', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'statements', instance: Number(r.instance_id), tag: undefined }) },
       v == null ? 'Statements tab' : 'queryid ' + String(v)) },
-    { key: 'example', label: 'slowest example', wide: true, fmt: clip }];
+    { key: 'example', label: 'slowest example', wide: true, fmt: clip },
+    { key: 'shape_key', label: 'plan', fmt: (v, r) => planLink(Number(r.instance_id), { shape: v, stmt: r.example, db: String(r.databases ?? '').split(', ')[0] }) }];
   if (fleet) cols.unshift({ key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') });
   return cols;
 }

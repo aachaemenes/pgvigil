@@ -259,6 +259,9 @@ func (m *importer) logCollections(ctx context.Context, id int, g *Gen, at time.T
 		if (c == "vacuum" || c == "vacuum_tables") && g.Spec.Replica {
 			status, note = "skipped", vacuumSkipNote
 		}
+		if c == "plans" && g.idx%2 == 1 {
+			status, note = "skipped", plansSkipNote
+		}
 		if c == "serverlog" && g.Spec.Replica {
 			status, note = "skipped", serverlogSkipNote
 		}

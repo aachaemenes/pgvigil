@@ -270,6 +270,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 	}
 	if t.Equal(g.end) {
 		add("actions_log", g.actionsLogRows())
+		add("plans", g.planRows())
 	}
 	g.prev = t
 	return out
@@ -294,7 +295,7 @@ func (g *Gen) Collections() []string {
 	if g.Spec.Platform == "onprem" {
 		c = append(c, "serverlog")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles")
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans")
 	if g.amcheckOn() {
 		c = append(c, "amcheck")
 	}

@@ -30,6 +30,11 @@ instances:
     tags: [prod, aurora, env:prod, team:orders]   # plain words (key `tag`) and key:value pairs; `pgvigil tag` overrides them in the repository
     # actions_dsn: env:PROD_WRITER_ACTIONS_DSN  # the cancel / terminate door: the login pgvigil_actions holding pg_signal_backend
     #                                  # only (pgvigil roles prints it); absent = the buttons stay off on this instance
+    # explain_analyze: true            # the Plan page's EXPLAIN ANALYZE on this instance (it executes the SELECT, read-only, rolled back)
+    # explain_dsn: env:PROD_EXPLAIN_DSN # the login it runs as: SELECT grants only, never pgvigil_actions (pgvigil roles prints it)
+    # explain_timeout: 30s              # one EXPLAIN ANALYZE at most (5m is the ceiling)
+    # backups:
+    #   archive_warn_minutes: 60         # the last archived WAL older than this while WAL waits is a finding
     schedules:
       instance: 30m
     # The AWS door of an RDS / Aurora instance: the postgresql log over CloudWatch Logs (logs) and the

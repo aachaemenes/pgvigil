@@ -27,7 +27,7 @@ export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'D
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
-  host: 'Host', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', actions: 'Actions log',
+  host: 'Host', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', plans: 'Plans', actions: 'Actions log',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
