@@ -15,10 +15,15 @@ export function hashParam(name: string): string | undefined {
   return v == null || v === '' ? undefined : v;
 }
 
+// the page parameters of the Database info tab and the drill-down pages: the router keeps them on a link to the same
+// page (a range change), hrefWith sets only the ones it is given
+export const pageKeys = ['db', 'rel', 'scheduler', 'job', 'idx'];
+
 // hrefWith is the router's link to a tab (instance, tag and time range kept) plus page parameters of its own.
 export function hrefWith(ctx: Ctx, tab: string, extra: Record<string, string | number | undefined>, instance = ctx.instance): string {
   const base = href(ctx, { tab, instance, tag: instance ? undefined : ctx.tag });
   const q = new URLSearchParams(base.split('?')[1] ?? '');
+  for (const k of pageKeys) q.delete(k);
   for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== '') q.set(k, String(v));
   return `#/${tab}?${q}`;
 }

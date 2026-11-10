@@ -24,11 +24,12 @@ export const jobLink = (ctx: Ctx, text: string, scheduler: unknown, job: unknown
 export const indexLink = (ctx: Ctx, text: string, dbid: unknown, idx: unknown, instance = ctx.instance) =>
   link(text, hrefWith(ctx, 'index', { db: String(dbid), idx: String(idx) }, instance));
 
-// crumbs: instance > database > table > leaf, each a link but the last, the time range kept.
-async function crumbs(ctx: Ctx, db?: { dbid: unknown; name: unknown }, table?: { relid: unknown; name: string }, leaf?: string): Promise<HTMLElement> {
+// crumbs: instance > [mid >] database > table > leaf, each a link but the last, the time range kept.
+async function crumbs(ctx: Ctx, db?: { dbid: unknown; name: unknown }, table?: { relid: unknown; name: string }, leaf?: string, mid?: Node): Promise<HTMLElement> {
   let inst = 'instance ' + ctx.instance;
   try { const f = await fleet(); const r = f.instances.find(x => Number(x.instance_id) === ctx.instance); if (r) inst = String(r.name); } catch { /* the name is cosmetic */ }
   const parts: (Node | string)[] = [link(inst, href(ctx, { tab: 'summary' }))];
+  if (mid) parts.push(' > ', mid);
   if (db) parts.push(' > ', !table && !leaf ? el('b', {}, String(db.name ?? '')) : dbLink(ctx, db.name, db.dbid));
   if (db && table) parts.push(' > ', !leaf ? el('b', {}, table.name) : tableLink(ctx, table.name, db.dbid, table.relid));
   if (leaf) parts.push(' > ', el('b', {}, leaf));
@@ -184,9 +185,7 @@ export async function jobPage(ctx: Ctx): Promise<HTMLElement> {
   if (!j) return el('section', {}, await crumbs(ctx), el('p', { class: 'empty' }, `No ${sched} job ${job} on this instance.`));
   const runs = rowsOf(d.runs);
   const label = String(j.job_name ?? `job ${job}`);
-  const nav = await crumbs(ctx, undefined, undefined, label);
-  nav.insertBefore(document.createTextNode(' > '), nav.childNodes[1] ?? null);
-  nav.insertBefore(link('Jobs', href(ctx, { tab: 'jobs' })), nav.childNodes[1] ?? null);
+  const nav = await crumbs(ctx, undefined, undefined, label, link('Jobs', href(ctx, { tab: 'jobs' })));
   const sec = el('section', {}, nav, el('h2', {}, `Job ${label} (${sched})` + (j.is_present ? '' : ' (removed)')));
   const failed = runs.filter(r => r.failed).length;
   sec.append(el('div', { class: 'tiles' },

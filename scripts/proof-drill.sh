@@ -18,10 +18,15 @@
 #     come back through drill_table_checks of their table. Every job of job_report: drill_job 1 row; the jobs with a
 #     failure in 7 days have at least one drill_job_runs row with failed true. Every present index_state row:
 #     drill_index returns its problem, with drop_sql and undo_sql set. At least one table has a statement naming it.
+#     [review fold, expected before the rerun: every present row whose problem is not 'unused' carries its finding text
+#      (index_findings joined by name); an unused one may not (the finding waits for 10 MB and 7 days)]
 #     No function raises.
 #  B. every URL of A: 200; db=0, rel=x, idx missing, scheduler 'Bad!': 400 with the parameter's name in the error.
 #  C. the four pages of an on-prem and an RDS instance: the h2 starts with Database / Table / Job / Index, the breadcrumb
 #     nav holds the instance link, and for table and index pages a database link; every breadcrumb href carries w=7d.
+#     [review fold, expected before the rerun: the job page's breadcrumb reads "<instance> > Jobs > <job>"; on the first
+#      table page the range picker set to 24h leaves the page on the same table (the hash keeps db= and rel=, w=24h)]
+#  The last line says PASS only when A, B and C all ran; otherwise "PASS (A only; B, C not proven)".
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -94,6 +99,11 @@ SELECT s.instance_id || ':' || s.datname || '.' || coalesce(s.index_name, '?') |
                                      WHERE x.problem = s.problem AND x.drop_sql IS NOT NULL AND x.undo_sql IS NOT NULL)")
 [[ -z "$bad" ]] || fail "A: indexes: $bad"
 [[ "$(q "select count(*) > 0 from pgvigil.index_state where is_present")" = t ]] || fail "A: the demo has no index_state row"
+bad=$(q "
+SELECT s.instance_id || ':' || s.datname || '.' || coalesce(s.index_name, '?') || ' ' || s.problem FROM pgvigil.index_state s
+ WHERE s.is_present AND s.problem <> 'unused'
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.drill_index(s.instance_id, s.dbid, s.indexrelid) x WHERE x.problem = s.problem AND x.finding IS NOT NULL)")
+[[ -z "$bad" ]] || fail "A: index pages without their finding: $bad"
 echo "  indexes: $(q "select count(*) from pgvigil.index_state where is_present") OK"
 [[ "$(q "select count(*) > 0 from pgvigil.tables t, lateral pgvigil.drill_table_statements(t.instance_id, t.dbid, t.relid, $W, 20) s where t.is_present")" = t ]] \
   || fail "A: no table has a statement naming it"
@@ -163,7 +173,7 @@ const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set
 const ev = async e => (await cmd('Runtime.evaluate', { expression: e, returnByValue: true })).result?.result?.value;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 await cmd('Page.enable'); await cmd('Runtime.enable');
-let failed = 0;
+let failed = 0, rangeDone = false;
 for (const line of list.trim().split('\n')) {
   const [hash, want] = line.split('|');
   await cmd('Page.navigate', { url: U + hash });
@@ -171,19 +181,36 @@ for (const line of list.trim().split('\n')) {
   for (let t = 0; t < 80 && !got; t++) {
     await sleep(150);
     got = await ev(`(() => { const h = document.querySelector('main h2'); if (!h) return null; const nav = document.querySelector('main nav');
-      return JSON.stringify({ h2: h.textContent, crumbs: nav ? [...nav.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')]) : null,
+      return JSON.stringify({ h2: h.textContent, text: nav ? nav.textContent : '', crumbs: nav ? [...nav.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')]) : null,
                               err: document.querySelector('main .error')?.textContent ?? null }); })()`);
   }
   const r = got ? JSON.parse(got) : null;
   const okH = r && r.h2.startsWith(want);
-  const okNav = r && r.crumbs && r.crumbs.length >= (want === 'Table' || want === 'Index' ? 2 : 1) && r.crumbs.every(([, h]) => /[?&]w=7d(&|$)/.test(h));
+  const okNav = r && r.crumbs && r.crumbs.length >= (want === 'Table' || want === 'Index' ? 2 : 1) && r.crumbs.every(([, h]) => /[?&]w=7d(&|$)/.test(h))
+    && !/>\s*>/.test(r.text) && (want !== 'Job' || / > Jobs > \S/.test(r.text));
   if (!okH || !okNav) failed++;
-  console.log(`${okH && okNav ? 'ok  ' : 'FAIL'} ${hash}: ${r ? r.h2 : 'no h2'} | ${r && r.crumbs ? r.crumbs.map(c => c[0]).join(' > ') : 'no breadcrumb'}`);
+  console.log(`${okH && okNav ? 'ok  ' : 'FAIL'} ${hash}: ${r ? r.h2 : 'no h2'} | ${r ? r.text : 'no breadcrumb'}`);
+  if (want === 'Table' && !rangeDone) {
+    rangeDone = true;
+    await ev(`(() => { const s = document.querySelector('#bar select'); s.value = '24h'; s.dispatchEvent(new Event('change')); return 1; })()`);
+    let after = null;
+    for (let t = 0; t < 80; t++) {
+      await sleep(150);
+      after = await ev(`JSON.stringify({ hash: location.hash, h2: document.querySelector('main h2')?.textContent ?? '' })`);
+      const a = JSON.parse(after);
+      if (/w=24h/.test(a.hash) && a.h2.startsWith('Table')) break;
+    }
+    const a = JSON.parse(after);
+    const ok = /w=24h/.test(a.hash) && /[?&]db=\d+/.test(a.hash) && /[?&]rel=\d+/.test(a.hash) && a.h2 === r.h2;
+    if (!ok) failed++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} range 24h on ${hash}: ${a.hash} | ${a.h2}`);
+  }
 }
 ws.close();
 process.exit(failed ? 1 : 0);
 JS
   node "$WORK/render.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$pages" || fail "C: a page did not render as expected"
   echo "C: OK"
+  C_DONE=1
 fi
-echo "proof-drill: PASS"
+if [[ "${C_DONE:-0}" = 1 ]]; then echo "proof-drill: PASS"; else echo "proof-drill: PASS (A only; B, C not proven)"; fi

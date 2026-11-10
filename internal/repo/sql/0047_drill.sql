@@ -19,11 +19,14 @@
 --   drill_job(i, scheduler, job)         the job's report row; drill_job_runs(i, scheduler, job, f, t) its runs.
 --   drill_index(i, db, idx)              the index's rows (one per problem) with the finding's text and the DROP / undo lines.
 -- A database is named by its oid (dbid), a table by (dbid, relid), an index by (dbid, indexrelid): a rename keeps the link.
+-- The ACL, job and slow-query parts are stored by database name: they answer for a present database only, so a dropped
+-- database's page never shows a newer database of the same name.
 
--- the regular expression that matches a name as a whole word (its own special characters escaped)
+-- the regular expression that matches a name as a whole identifier: its own special characters escaped, and no
+-- identifier character (a letter, a digit, _ or $) just before or after it, so x$ and t(1) match and orders$hist does not
 CREATE OR REPLACE FUNCTION pgvigil.word_re(p_name text)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
-  SELECT '\m' || regexp_replace(p_name, '([.^$*+?()\[\]{}|\\-])', '\\\1', 'g') || '\M'
+  SELECT '(?<![[:alnum:]_$])' || regexp_replace(p_name, '([.^$*+?()\[\]{}|\\-])', '\\\1', 'g') || '(?![[:alnum:]_$])'
 $$;
 
 CREATE OR REPLACE FUNCTION pgvigil.drill_db_tables(p_instance_id int, p_dbid bigint)
@@ -60,7 +63,7 @@ $$;
 CREATE OR REPLACE FUNCTION pgvigil.drill_db_acl(p_instance_id int, p_dbid bigint)
 RETURNS TABLE (level text, object text, grantee text, privileges text, grantable text, grantor text, owner text, is_default boolean, snapshot_at timestamptz)
 LANGUAGE sql STABLE AS $$
-  WITH d AS (SELECT datname FROM pgvigil.databases WHERE instance_id = p_instance_id AND dbid = p_dbid)
+  WITH d AS (SELECT datname FROM pgvigil.databases WHERE instance_id = p_instance_id AND dbid = p_dbid AND is_present)
   SELECT 'database', a.datname, a.grantee, a.privileges, nullif(a.grantable, ''), a.grantor, a.owner, a.is_default, a.snapshot_at
     FROM pgvigil.acl_databases a JOIN d USING (datname)
    WHERE a.instance_id = p_instance_id AND a.is_present
@@ -76,7 +79,7 @@ RETURNS SETOF pgvigil.job_report
 LANGUAGE sql STABLE AS $$
   SELECT r.* FROM pgvigil.job_report r
    WHERE r.instance_id = p_instance_id AND r.is_present
-     AND r.datname = (SELECT datname FROM pgvigil.databases WHERE instance_id = p_instance_id AND dbid = p_dbid)
+     AND r.datname = (SELECT datname FROM pgvigil.databases WHERE instance_id = p_instance_id AND dbid = p_dbid AND is_present)
    ORDER BY r.job_name, r.job_id
 $$;
 
@@ -88,7 +91,7 @@ LANGUAGE sql STABLE AS $$
            max(e.snapshot_at) AS last_at, string_agg(DISTINCT e.usename, ', ') AS users
       FROM pgvigil.log_events e
      WHERE e.instance_id = p_instance_id AND e.kind = 'slow' AND e.snapshot_at > p_from AND e.snapshot_at <= p_to
-       AND e.datname = (SELECT datname FROM pgvigil.databases WHERE instance_id = p_instance_id AND dbid = p_dbid)
+       AND e.datname = (SELECT datname FROM pgvigil.databases WHERE instance_id = p_instance_id AND dbid = p_dbid AND is_present)
      GROUP BY e.shape_key
      ORDER BY count(*) DESC, sum(e.duration_ms) DESC
      LIMIT greatest(1, least(coalesce(p_limit, 20), 500)))
@@ -96,6 +99,7 @@ LANGUAGE sql STABLE AS $$
          (SELECT left(e.statement, 4000) FROM pgvigil.log_events e
            WHERE e.instance_id = p_instance_id AND e.kind = 'slow' AND e.shape_key IS NOT DISTINCT FROM g.shape_key
              AND e.snapshot_at > p_from AND e.snapshot_at <= p_to
+             AND e.datname = (SELECT datname FROM pgvigil.databases WHERE instance_id = p_instance_id AND dbid = p_dbid AND is_present)
            ORDER BY e.duration_ms DESC LIMIT 1)
     FROM g
    ORDER BY g.n DESC, g.total DESC
@@ -108,17 +112,13 @@ CREATE OR REPLACE FUNCTION pgvigil.drill_statements(p_instance_id int, p_dbid bi
 RETURNS TABLE (queryid bigint, datname text, usename text, calls double precision, total_exec_ms double precision,
                mean_exec_ms double precision, rows double precision, shared_blks_read double precision, hit_pct numeric, query text)
 LANGUAGE sql STABLE AS $$
-  WITH q AS (
-    SELECT t.queryid FROM pgvigil.statement_text t
-     WHERE t.instance_id = p_instance_id AND p_text_re IS NOT NULL AND t.query ~* p_text_re
-  ), d AS (
+  WITH d AS (
     SELECT d.*,
            greatest(0, extract(epoch FROM least(d.snapshot_at, p_to) - greatest(d.snapshot_at - make_interval(secs => d.interval_secs), p_from)))
              / d.interval_secs AS share
       FROM pgvigil.statements_delta d
      WHERE d.instance_id = p_instance_id
        AND (p_dbid IS NULL OR d.dbid = p_dbid)
-       AND (p_text_re IS NULL OR d.queryid IN (SELECT queryid FROM q))
        AND d.snapshot_at > p_from
        AND d.snapshot_at - make_interval(secs => d.interval_secs) < p_to
   ), a AS (
@@ -128,10 +128,13 @@ LANGUAGE sql STABLE AS $$
       FROM d WHERE d.share > 0
      GROUP BY d.queryid
   )
+  -- the text match runs on the window's statements only, never on the instance's whole retained text
   SELECT a.queryid, a.datname, a.usename, a.calls, a.total_exec_ms, a.total_exec_ms / nullif(a.calls, 0), a.rows, a.shared_blks_read,
          round((100 * a.shared_blks_hit / nullif(a.shared_blks_hit + a.shared_blks_read, 0))::numeric, 1),
          (SELECT t.query FROM pgvigil.statement_text t WHERE t.instance_id = p_instance_id AND t.queryid = a.queryid)
     FROM a
+   WHERE p_text_re IS NULL
+      OR EXISTS (SELECT 1 FROM pgvigil.statement_text t WHERE t.instance_id = p_instance_id AND t.queryid = a.queryid AND t.query ~* p_text_re)
    ORDER BY a.total_exec_ms DESC NULLS LAST, a.queryid
    LIMIT greatest(1, least(coalesce(p_limit, 20), 500))
 $$;
@@ -264,9 +267,12 @@ LANGUAGE sql STABLE AS $$
          f.severity, f.suggested, f.detail, s.is_present, s.first_seen, s.snapshot_at
     FROM pgvigil.index_state s
     LEFT JOIN pgvigil.index_databases d ON d.instance_id = s.instance_id AND d.dbid = s.dbid
-    LEFT JOIN pgvigil.index_findings f ON f.instance_id = s.instance_id AND f.setting = s.problem || ' index'
+    LEFT JOIN pgvigil.index_findings f ON s.is_present AND f.instance_id = s.instance_id AND f.setting = s.problem || ' index'
                                       AND f.value = s.datname || ': ' || coalesce(s.schema_name || '.', '') || coalesce(s.index_name, s.indexrelid::text)
    WHERE s.instance_id = p_instance_id AND s.dbid = p_dbid AND s.indexrelid = p_indexrelid
+     -- a cleared problem (is_present false) shows only when none is present: the index page and the table page agree
+     AND (s.is_present OR NOT EXISTS (SELECT 1 FROM pgvigil.index_state p WHERE p.instance_id = s.instance_id AND p.dbid = s.dbid
+                                                                         AND p.indexrelid = s.indexrelid AND p.is_present))
    ORDER BY s.is_present DESC, CASE s.problem WHEN 'invalid' THEN 0 WHEN 'duplicate' THEN 1 WHEN 'redundant' THEN 2 ELSE 3 END
 $$;
 
