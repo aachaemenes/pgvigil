@@ -11,8 +11,9 @@ same way as any browser.
 
 - **Summary** is the first sheet: the instance (or `fleet`, or the tag), the tab, the time window (its label,
   its start and its end), the export time, and one line per data sheet with its row count.
-- **One sheet per grid** on the tab, named by the heading above the grid on the screen (Excel's 31-character
-  limit applies; a name that repeats gets ` (2)`; the characters `\ / ? * [ ] :` become spaces).
+- **One sheet per grid** on the tab, named by the heading (h2, h3 or h4) above the grid on the screen (Excel's
+  31-character limit applies, a trailing space cut; a name that repeats gets ` (2)`, and so do `Summary` and
+  Excel's reserved `History`; the characters `\ / ? * [ ] :` become spaces).
   Property cards (two-column label / value panels) export too, as `item` / `value` sheets.
 - **The header row is frozen** and the **filter is on** over every data sheet; the column widths follow the
   content (8 to 60 characters).
@@ -34,12 +35,14 @@ same way as any browser.
   | a size (`117.7 MB`)     | the bytes                           | `#,##0" B"`           |
   | a duration (`1h 1m`)    | the duration as an Excel time       | `[h]:mm:ss`           |
   | a negative duration     | the seconds                         | `#,##0" s"`           |
-  | a share (`12.5 %`)      | the percent figure (12.5)           | `#,##0.00" %"`        |
+  | a share (`12.5 %`, a growth `+3 %`, a rounded `12 %`) | the percent figure (12.5) | `#,##0.00" %"` |
   | a count (`1,000`)       | the number                          | `#,##0` / `#,##0.00`  |
   | a time                  | an Excel date in the browser's time | `yyyy-mm-dd hh:mm:ss` |
 
-  A cell a formatter replaced with words (`never`, `no access`, `server start`) keeps the words; an integer
-  past 2^53 (Excel's exact range) stays text so no digit is lost.
+  The comparison is the same in every browser language (a locale that groups thousands with a space, fr-FR
+  among them, gives numbers too). A cell a formatter replaced with words (`never`, `no access`, `server start`)
+  keeps the words; an integer past 2^53 (Excel's exact range) stays text so no digit is lost. A text longer than
+  Excel's 32,767 characters per cell is cut and says so in the cell (the CSV keeps it whole).
 
 ## CSV
 
@@ -68,7 +71,10 @@ export writes raw values, not the formatted text.
 ## Proof
 
 `scripts/proof-export.sh` seeds the demo, serves it, and has a headless Chromium press both buttons on the fleet
-Summary and on an instance's Tables tab; it reads each file back (the frozen pane and the filter in the sheet
-XML, the status fills in `styles.xml` against the colours on the screen, numeric cells with their number
-formats, the sheet names against the screen's headings, the CSV row counts against the grids') and, when
-LibreOffice is installed, opens each workbook with it.
+Summary, an instance's Tables tab (one grid sorted on screen first) and its Roles tab, in en-US and in fr-FR; it
+reads each file back (the frozen pane and the filter in the sheet XML, the status fills in `styles.xml` against
+the colours on the screen, numeric cells with their number formats, the sorted grid's order and its numbers, the
+sheet names against the screen's headings, the CSV row counts against the grids') and, when LibreOffice is
+installed, opens each workbook with it. Not proven here: Microsoft Excel itself (not on the proof machine) and
+Firefox (the proof drives Chromium; Firefox 113+ has the one browser-specific call, `CompressionStream`, and an
+older one gets stored zip entries).

@@ -34,18 +34,24 @@ function numeric(raw: unknown): number | undefined {
 
 // typed: the raw value as the screen shows it. A number is written as a number only when the cell's text is one of
 // ui.ts's renderings of it (so a cell a formatter replaced with words, 'never' or 'no access', stays those words).
+// The page's text is read with its whitespace collapsed (a locale's grouping space, U+202F in fr-FR, becomes a plain
+// space), so each rendering is collapsed the same way before the comparison.
+const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+
 export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'stamp'> {
   if (text === '') return { v: '', kind: 'text' };
-  if (typeof raw === 'string' && isoTime.test(raw) && fmtTime(raw) === text) {
+  if (typeof raw === 'string' && isoTime.test(raw) && norm(fmtTime(raw)) === text) {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) return { v: excelDate(d), kind: 'date', stamp: localStamp(d) };
   }
   const n = numeric(raw);
   if (n !== undefined) {
-    if (fmtBytes(raw) === text) return { v: n, kind: 'bytes' };
-    if (fmtSecs(raw) === text) return n >= 0 ? { v: n / 86400, kind: 'secs' } : { v: n, kind: 'nsecs' };
-    if (fmtNum(raw) + ' %' === text) return { v: n, kind: 'pct' };
-    if (fmtNum(raw) === text || String(raw) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
+    if (norm(fmtBytes(raw)) === text) return { v: n, kind: 'bytes' };
+    if (norm(fmtSecs(raw)) === text) return n >= 0 ? { v: n / 86400, kind: 'secs' } : { v: n, kind: 'nsecs' };
+    // a share: '12.5 %', a growth with its sign ('+3 %'), or one the page rounds to a whole percent
+    const pct = new Set([fmtNum(n), (n > 0 ? '+' : '') + fmtNum(n), fmtNum(Math.round(n)), (n > 0 ? '+' : '') + fmtNum(Math.round(n))].map(x => norm(x + ' %')));
+    if (pct.has(text)) return { v: n, kind: 'pct' };
+    if (norm(fmtNum(raw)) === text || String(raw) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
   }
   return { v: text, kind: 'text' };
 }
@@ -93,8 +99,8 @@ function readProps(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
 export function sections(root: ParentNode, fallback: string): Section[] {
   let heading = fallback;
   const out: Section[] = [];
-  for (const e of root.querySelectorAll('h2, h3, table.grid, table.props')) {
-    if (e.tagName === 'H2' || e.tagName === 'H3') { heading = text(e) || fallback; continue; }
+  for (const e of root.querySelectorAll('h2, h3, h4, table.grid, table.props')) {
+    if (e.tagName !== 'TABLE') { heading = text(e) || fallback; continue; }
     const t = e as HTMLTableElement;
     out.push({ name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)) });
   }
@@ -178,9 +184,11 @@ function sheetXml(sh: Sheet, st: Styles): string {
   const ncol = Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
   const widths = Array.from({ length: ncol }, (_, j) => Math.min(60, Math.max(8, (sh.head[j] ?? '').length + 3, ...sh.rows.map(r => r[j] ? widthOf(r[j]) + 1 : 0))));
   const cell = (ref: string, c: Cell, s: number) => {
-    if (typeof c.v === 'number') return `<c r="${ref}" s="${s}"><v>${c.v}</v></c>`;
+    if (typeof c.v === 'number') return `<c r="${ref}" s="${s}"><v>${String(c.v).toUpperCase()}</v></c>`;
     if (c.v === '') return s ? `<c r="${ref}" s="${s}"/>` : '';
-    return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(c.v)}</t></is></c>`;
+    // Excel holds at most 32,767 characters in a cell (a longer one opens with a repair): the rest is cut, said in the cell
+    const v = c.v.length > 32767 ? c.v.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : c.v;
+    return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
   const hs = st.id('text', undefined, sh.freeze);
   const rows = [`<row r="1">${sh.head.map((h, j) => cell(colName(j) + '1', { v: h, kind: 'text', text: h }, hs)).join('')}</row>`];
@@ -199,13 +207,14 @@ function sheetXml(sh: Sheet, st: Styles): string {
 }
 
 // sheetNames: the screen's heading, cut to Excel's 31 characters without the characters a sheet name refuses,
-// a repeat numbered; 'Summary' is the export's own first sheet.
+// a repeat numbered; 'Summary' is the export's own first sheet and 'History' is a name Excel reserves.
 export function sheetNames(names: string[]): string[] {
-  const used = new Set(['summary']);
+  const used = new Set(['summary', 'history']);
+  const cut = (s: string, n: number) => s.slice(0, n).replace(/[\s']+$/, '');
   return names.map(n => {
-    const base = n.replace(/[\\/?*[\]:]/g, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim().slice(0, 31) || 'Sheet';
+    const base = cut(n.replace(/[\\/?*[\]:]/g, ' ').replace(/^'+|'+$/g, '').replace(/\s+/g, ' ').trim(), 31) || 'Sheet';
     let s = base;
-    for (let i = 2; used.has(s.toLowerCase()); i++) s = base.slice(0, 31 - ` (${i})`.length) + ` (${i})`;
+    for (let i = 2; used.has(s.toLowerCase()); i++) s = cut(base, 31 - ` (${i})`.length) + ` (${i})`;
     used.add(s.toLowerCase());
     return s;
   });

@@ -16,12 +16,17 @@
 #              (ok FFE3F4E6, warn FFFFF1D6, crit FFFDE2E2, 'no sample' FFEEF1F5) and a cell of that sheet is
 #              styled with it; each sheet's data rows = the grid's rows on screen
 #   tables     sheets: Summary, Tables, Biggest tables (the screen's headings); Biggest tables sorted by 'total'
-#              on screen first, its sheet's 'table' column in the screen's order and every 'total' still a number
+#              on screen first (the click changes the order), its sheet's 'table' column in the screen's order and
+#              every 'total' and 'live rows' still a number
 #              (a page model out of step with the sort turns them to text); a numeric cell (<v>, no t=) styled
 #              with a number format (numFmtId 165 bytes, '#,##0" B"'), a time cell with 168 and a count with 3
+#   roles      the instance's Roles tab: the privilege grids sit under h4 headings; every sheet's name follows the
+#              heading above its grid (no 'Memberships (2)' for 'Database privileges')
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first
 #   libre      when soffice is on the machine, each .xlsx converts to CSV headless (the file opens); none = said
+#   languages  all of the above twice: Chromium in en-US and in fr-FR (navigator.language says so; 1234567 shows
+#              without a comma: the locale's grouping space), the numbers numeric in both
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -45,13 +50,6 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/n
 SRV=$!
 for _ in $(seq 1 240); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { cat "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
 grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up in 240 s"; }
-
-echo "== a headless Chromium on CDP $CDP"
-mkdir -p "$WORK/dl"
-chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
-CHR=$!
-for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
-curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 
 # the driver: open a page, count each grid's rows and read the headings, press a button, wait for the download
 cat > "$WORK/drive.mjs" <<'JS'
@@ -97,35 +95,34 @@ const press = async (label, exts) => {
 const page = async (hash, sortBy) => {
   await cmd('Page.navigate', { url: U + hash }); await sleep(300);
   if (!await settled()) throw new Error('page did not render: ' + hash);
-  let order = null;
+  let order = null, before = null;
   if (sortBy) {
-    // sort the page's last grid by a column (one click: ascending), so the export must follow the screen's order
-    order = await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].pop(); const hs = [...t.querySelectorAll('thead th')];
-      const th = hs.find(h => h.textContent === ${JSON.stringify(sortBy[0])}); th.click();
+    // sort the page's last grid by a column (one click: ascending), so the export must follow the screen's order; the
+    // order before the click is kept too: the check needs the click to have changed it
+    const col = `(() => { const t = [...document.querySelectorAll('main table.grid')].pop(); const hs = [...t.querySelectorAll('thead th')];
       const j = hs.findIndex(h => h.textContent === ${JSON.stringify(sortBy[1])});
-      return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j].textContent.trim()); })()`);
+      return [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j].textContent.trim()); })()`;
+    before = await ev(col);
+    await ev(`[...[...document.querySelectorAll('main table.grid')].pop().querySelectorAll('thead th')].find(h => h.textContent === ${JSON.stringify(sortBy[0])}).click()`);
     await sleep(200);
+    order = await ev(col);
   }
-  const grids = await ev(`[...document.querySelectorAll('main h2, main h3, main table.grid, main table.props')].map(e => e.tagName === 'TABLE' ? { rows: e.querySelectorAll(e.classList.contains('grid') ? 'tbody tr' : 'tr').length, status: [...new Set([...e.querySelectorAll('td.status, td .badge, td .dot')].map(x => ['crit','warn','ok','none'].find(k => x.classList.contains(k))).filter(Boolean))] } : { h: e.textContent.trim() })`);
-  return { hash, grids, order, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
+  const grids = await ev(`[...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props')].map(e => e.tagName === 'TABLE' ? { rows: e.querySelectorAll(e.classList.contains('grid') ? 'tbody tr' : 'tr').length, status: [...new Set([...e.querySelectorAll('td.status, td .badge, td .dot')].map(x => ['crit','warn','ok','none'].find(k => x.classList.contains(k))).filter(Boolean))] } : { h: e.textContent.trim() })`);
+  return { hash, grids, order, before, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
 };
 await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
-const out = { instance: one.name };
+const out = { instance: one.name, lang: await ev('navigator.language'), sample: await ev('(1234567).toLocaleString()') };
 out.summary = await page('#/summary');
 out.tables = await page(`#/tables?i=${one.instance_id}`, ['total', 'table']);
+// the Roles tab: grids under h4 headings (the privilege grids)
+out.roles = await page(`#/roles?i=${one.instance_id}`);
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
-echo "== the downloads"
-node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$WORK/dl" > "$WORK/drive.json" || fail "the driver failed"
-ls -1 "$WORK/dl"
-ok "downloaded: $(cd "$WORK/dl" && ls | tr '\n' ' ')"
-
-echo "== the files read back"
-python3 -I - "$WORK/drive.json" "$WORK/dl" <<'PY' || fail "a file did not match its page"
+cat > "$WORK/check.py" <<'PY'
 import csv, io, json, re, sys, zipfile
-d = json.load(open(sys.argv[1])); dl = sys.argv[2]
+d = json.load(open(sys.argv[1])); dl = sys.argv[2]; want = sys.argv[3]
 bad = 0
 def check(cond, msg):
     global bad
@@ -157,7 +154,12 @@ def sheet_rows(z, i):
 def stamp(n, inst, tab, ext):
     return re.fullmatch(re.escape(inst) + '_' + re.escape(tab) + r'_\d{8}-\d{4}_\d{8}-\d{4}' + re.escape(ext), n) is not None
 
-for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance']))):
+print(f"     browser language {d['lang']}, 1234567 shown as {d['sample']!r}")
+check(d['lang'].lower().startswith(want[:2].lower()), f"the browser runs in {want}")
+if want.startswith('fr'):
+    check(',' not in d['sample'], "the fr-FR grouping is not a comma (the locale took)")
+iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
+for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname)):
     p = d[key]; gs = grids(p)
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
@@ -171,6 +173,12 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', re.
         for s in g.get('status', []):
             used = {int(v) for v in re.findall(r' s="(\d+)"', x)}
             check(any(cx[u]['fill'] == fill[s] for u in used if u < len(cx)), f"{key}: '{s}' cells filled {fill[s]} in '{names[i + 1]}'")
+    # each sheet named by the heading above its grid (h2, h3 or h4): the name starts with the heading's first words
+    # (cut at 31 characters, a repeat numbered; the Summary grid's heading meets the export's own Summary sheet)
+    hs = [re.sub(r'[\\/?*\[\]:]', ' ', g['name']).strip()[:24].rstrip() for g in gs]
+    check(all(n.startswith(h) for n, h in zip(names[1:], hs)), f"{key}: sheet names {names[1:]} follow the screen's headings {[g['name'] for g in gs]}")
+    if key == 'roles':
+        check(any(g['name'].endswith('privileges') or 'privileges' in g['name'] for g in gs), "roles: a grid under a privileges (h4) heading on screen")
     if key == 'tables':
         check(names[1:] == [g['name'] for g in gs], f"tables: sheet names {names[1:]} = the screen's headings {[g['name'] for g in gs]}")
         x = ''.join(z.read(f'xl/worksheets/sheet{i + 2}.xml').decode() for i in range(len(gs)))
@@ -181,12 +189,15 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', re.
         last = z.read(f'xl/worksheets/sheet{len(gs) + 1}.xml').decode()
         col = re.findall(r'<c r="D(\d+)"[^>]*t="inlineStr"><is><t xml:space="preserve">([^<]*)</t>', last)
         got = [t.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"') for r, t in col if r != '1']
+        check(p['order'] != p['before'], "tables: the click changed the grid's order on screen")
         check(p['order'] and got == p['order'], f"tables: 'Biggest tables' sorted by total on screen, the sheet's table column in the same order ({len(got)} rows)")
         # the raw values must follow the sort too: a model out of step pairs a row's text with another row's value,
-        # and the cell falls back to text; every 'total' (column E) of the sorted sheet stays a number
-        tot = re.findall(r'<c r="E(\d+)"[^>]*?(/>|><v>|t="inlineStr")', last)
-        numeric = [r for r, k in tot if r != '1' and k == '><v>']
-        check(len(got) > 1 and len(numeric) == len(got), f"tables: the sorted sheet's total column: {len(numeric)} of {len(got)} rows numeric")
+        # and the cell falls back to text; every 'total' (E, bytes) and 'live rows' (I, counts in the millions: the
+        # locale's grouping) of the sorted sheet stays a number
+        for c, what in (('E', 'total'), ('I', 'live rows')):
+            cells = re.findall(r'<c r="' + c + r'(\d+)"[^>]*?(/>|><v>|t="inlineStr")', last)
+            numeric = [r for r, k in cells if r != '1' and k == '><v>']
+            check(len(got) > 1 and len(numeric) == len(got), f"tables: the sorted sheet's {what} column: {len(numeric)} of {len(got)} rows numeric")
     if key == 'summary':
         check(any(cx[s]['fill'] in fill.values() for s in range(len(cx))), "summary: a status fill in styles.xml")
     # CSV
@@ -206,14 +217,29 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', re.
 sys.exit(1 if bad else 0)
 PY
 
-if command -v soffice >/dev/null; then
-  for f in "$WORK"/dl/*.xlsx; do
-    (cd "$WORK" && timeout 120 soffice --headless -env:UserInstallation=file://$WORK/lo --convert-to csv --outdir "$WORK/lo-out" "$f" >/dev/null 2>&1) || fail "LibreOffice could not open $(basename "$f")"
-    [[ -s "$WORK/lo-out/$(basename "${f%.xlsx}").csv" ]] || fail "LibreOffice wrote nothing for $(basename "$f")"
-    ok "LibreOffice opens $(basename "$f")"
-  done
-else
-  echo "not checked: soffice is not on this machine (the file opening in a spreadsheet program)"
-fi
-[[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT"; cp "$WORK"/dl/* "$PGVIGIL_EXPORT_OUT"/; echo "kept in $PGVIGIL_EXPORT_OUT"; }
+# each language: its own Chromium (the page's locale is the browser's), its own downloads, the same checks
+for L in en-US fr-FR; do
+  echo "== a headless Chromium in $L on CDP $CDP"
+  [[ -n "$CHR" ]] && { kill "$CHR" 2>/dev/null || true; wait "$CHR" 2>/dev/null || true; CHR=""; }
+  DL="$WORK/dl-$L"; mkdir -p "$DL"
+  LANGUAGE=${L/-/_} LC_ALL=${L/-/_}.UTF-8 chromium --headless=new --lang=$L --accept-lang=$L --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome-$L" --no-first-run --disable-gpu about:blank > "$WORK/chrome-$L.log" 2>&1 &
+  CHR=$!
+  for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+  curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
+  echo "== the downloads ($L)"
+  node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$DL" > "$WORK/drive-$L.json" || fail "the driver failed ($L)"
+  ok "downloaded ($L): $(cd "$DL" && ls | tr '\n' ' ')"
+  echo "== the files read back ($L)"
+  python3 -I "$WORK/check.py" "$WORK/drive-$L.json" "$DL" "$L" || fail "a file did not match its page ($L)"
+  if command -v soffice >/dev/null; then
+    for f in "$DL"/*.xlsx; do
+      (cd "$WORK" && timeout 120 soffice --headless -env:UserInstallation=file://$WORK/lo --convert-to csv --outdir "$WORK/lo-out-$L" "$f" >/dev/null 2>&1) || fail "LibreOffice could not open $(basename "$f")"
+      [[ -s "$WORK/lo-out-$L/$(basename "${f%.xlsx}").csv" ]] || fail "LibreOffice wrote nothing for $(basename "$f")"
+      ok "LibreOffice opens $(basename "$f") ($L)"
+    done
+  else
+    echo "not checked: soffice is not on this machine (the file opening in a spreadsheet program)"
+  fi
+  [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; echo "kept in $PGVIGIL_EXPORT_OUT/$L"; }
+done
 echo "OK: the Summary and the Tables tab exported to .xlsx and CSV, each file matching its page"
