@@ -164,6 +164,10 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
 		return Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
+	// a collection imported in parts (the schema collection: one call per database, under jsonb's 256 MB limit)
+	if br, ok := c.(BatchRunner); ok {
+		return runBatched(ctx, log, r, in, name, br, conn, info, instanceID, start)
+	}
 	var rows []Row
 	if ir, ok := c.(InstanceRunner); ok {
 		rows, err = ir.RunInstance(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {

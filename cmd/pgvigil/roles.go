@@ -63,10 +63,13 @@ CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
 -- opens neither. Without a door the collection is skipped with its reason.
 %[5]s
 
--- Optional, per monitored database: the exact statement behind a schema change (the Schema tab). An event
--- trigger only a superuser creates, logging each DDL statement into public.pgvigil_ddl_log, which the monitoring
--- login may read; the schema collection reads it where present and says 'not installed' elsewhere. The capture
--- never blocks the DDL it records. Run it in each database to cover, as a superuser:
+-- Optional, per monitored database: the statement text behind a schema change (the Schema tab). An event
+-- trigger only a superuser creates, logging each DDL command with the client's query text (a text that may carry
+-- a password is not kept) into public.pgvigil_ddl_log, which the monitoring login may read; the schema
+-- collection reads it where present and says 'not installed' elsewhere. The capture never fails the DDL it
+-- records and waits at most a second for its table. The block is one transaction and refuses a database with a
+-- FOR ALL TABLES publication (or one of the schema public): the new table would stop every subscriber without
+-- it. Run it in each database to cover, as a superuser:
 %[7]s
 `, collector, reader, monitor, act, serverlogDoorBlock(monitor), explain, schemaDDLBlock(monitor))
 	return nil
