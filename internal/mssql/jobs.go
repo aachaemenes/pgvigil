@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
@@ -100,8 +102,12 @@ var jobsSQL = `SELECT 'job' AS kind, j.job_id, CAST(j.name AS nvarchar(128)) AS 
   CASE WHEN js.last_run_date >= 19000101 THEN ` + agentSeconds("js.last_run_duration") + ` END AS last_duration_s,
   CAST(LEFT(js.last_outcome_message, 4000) AS nvarchar(4000)) AS last_message,
   CASE WHEN act.start_execution_date IS NOT NULL AND act.stop_execution_date IS NULL THEN ` + utcText("act.start_execution_date") + ` END AS running_since_utc,
-  CASE WHEN act.start_execution_date IS NOT NULL AND act.stop_execution_date IS NULL THEN act.last_executed_step_id END AS running_after_step
+  CASE WHEN act.start_execution_date IS NOT NULL AND act.stop_execution_date IS NULL THEN act.last_executed_step_id END AS running_after_step,
+  j.start_step_id, j.notify_level_email, CAST(oe.name AS nvarchar(128)) AS notify_email_operator,
+  j.notify_level_page, CAST(op.name AS nvarchar(128)) AS notify_page_operator, j.notify_level_eventlog, j.delete_level
 FROM msdb.dbo.sysjobs j
+LEFT JOIN msdb.dbo.sysoperators oe ON oe.id = j.notify_email_operator_id
+LEFT JOIN msdb.dbo.sysoperators op ON op.id = j.notify_page_operator_id
 LEFT JOIN msdb.dbo.syscategories c ON c.category_id = j.category_id
 LEFT JOIN msdb.dbo.sysjobservers js ON js.job_id = j.job_id AND js.server_id = 0
 OUTER APPLY (SELECT TOP (1) a.start_execution_date, a.stop_execution_date, a.next_scheduled_run_date, a.last_executed_step_id
@@ -116,14 +122,28 @@ OUTER APPLY (SELECT COUNT(*) AS schedules, SUM(CAST(s.enabled AS int)) AS enable
               WHERE x.job_id = j.job_id) sch
 ORDER BY j.name`
 
-// jobStepsSQL: one row per step. The command text is not read: a step's command can hold a password.
+// jobStepsSQL: one row per step. The command is read for the job's definition (its versions, task 110) and masked
+// before it leaves the collector (maskCommand): a step's command can hold a password.
 var jobStepsSQL = `SELECT 'step' AS kind, st.job_id, st.step_id, CAST(st.step_name AS nvarchar(128)) AS step_name,
+  CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
+  st.retry_attempts, st.retry_interval, CAST(st.output_file_name AS nvarchar(260)) AS output_file, CAST(px.name AS nvarchar(128)) AS proxy,
   CAST(st.subsystem AS nvarchar(40)) AS subsystem, CAST(st.database_name AS nvarchar(128)) AS database_name,
   st.last_run_outcome AS last_outcome,
   ` + utcText(agentDateTime("st.last_run_date", "st.last_run_time")) + ` AS last_run_utc,
   CASE WHEN st.last_run_date >= 19000101 THEN ` + agentSeconds("st.last_run_duration") + ` END AS last_duration_s
 FROM msdb.dbo.sysjobsteps st
+LEFT JOIN msdb.dbo.sysproxies px ON px.proxy_id = st.proxy_id
 ORDER BY st.job_id, st.step_id`
+
+// jobSchedulesSQL: one row per schedule a job has, with msdb's own terms; the collector puts them in words
+// (scheduleWords). schedule_key is the schedule's name and number: two schedules of one job may share a name.
+var jobSchedulesSQL = `SELECT 'schedule' AS kind, x.job_id, s.schedule_id, CAST(s.name AS nvarchar(128)) AS schedule_name,
+  CAST(s.name AS nvarchar(128)) + N' #' + CAST(s.schedule_id AS nvarchar(12)) AS schedule_key, CAST(s.enabled AS int) AS enabled,
+  s.freq_type, s.freq_interval, s.freq_subday_type, s.freq_subday_interval, s.freq_relative_interval, s.freq_recurrence_factor,
+  s.active_start_date, s.active_end_date, s.active_start_time, s.active_end_time
+FROM msdb.dbo.sysjobschedules x
+JOIN msdb.dbo.sysschedules s ON s.schedule_id = x.schedule_id
+ORDER BY x.job_id, s.name, s.schedule_id`
 
 // jobHistoryMark is the mark of a sysjobhistory row (h).
 const jobHistoryMark = `CAST(CHECKSUM(CAST(h.job_id AS nvarchar(36)), h.step_id, h.run_date, h.run_time) AS bigint)`
@@ -174,7 +194,25 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor
 	if err != nil {
 		return nil, err
 	}
+	for _, st := range steps {
+		if c, ok := st["command"].(string); ok {
+			st["command"] = maskCommand(c)
+		}
+		st["on_success"] = stepAction(st["on_success_action"], st["on_success_step_id"])
+		st["on_fail"] = stepAction(st["on_fail_action"], st["on_fail_step_id"])
+		for _, k := range []string{"on_success_action", "on_success_step_id", "on_fail_action", "on_fail_step_id"} {
+			delete(st, k)
+		}
+	}
 	rows = append(rows, steps...)
+	schedules, err := QueryRows(ctx, conn, jobSchedulesSQL)
+	if err != nil {
+		return nil, err
+	}
+	for _, sc := range schedules {
+		sc["runs"] = scheduleWords(sc)
+	}
+	rows = append(rows, schedules...)
 	if cursor == nil {
 		runs, err := QueryRows(ctx, conn, jobHistorySQL(false), int64(0))
 		if err != nil {
@@ -247,4 +285,125 @@ func jobsAdvance(from, next, nextMark int64, runs []collect.Row) (int64, int64, 
 		}
 	}
 	return from, next, nextMark
+}
+
+// Masking of a step's command: a password given to SQL Server (PASSWORD = '...'), to sqlcmd or bcp (-P ...), in a
+// connection string (Password=...; Pwd=...) or to SSIS's dtexec (/DE "...", /Decrypt "...") is replaced by <masked>
+// before the command leaves the collector.
+var (
+	maskTSQLRE = regexp.MustCompile(`(?i)(\b(?:PASSWORD|SECRET)\s*=\s*)(N?'(?:[^']|'')*')`)
+	maskArgRE  = regexp.MustCompile(`(?i)((?:^|\s)-P\s*)("[^"]*"|'[^']*'|\S+)`)
+	maskConnRE = regexp.MustCompile(`(?i)(\b(?:password|pwd)\s*=\s*)("[^"]*"|[^;"'\s]+)`)
+	maskDtsRE  = regexp.MustCompile(`(?i)(/(?:DE|Decrypt)\s+)("[^"]*"|\S+)`)
+)
+
+// maskCommand is a step's command with every password it carries replaced by <masked>.
+func maskCommand(s string) string {
+	s = maskTSQLRE.ReplaceAllString(s, "${1}'<masked>'")
+	s = maskArgRE.ReplaceAllString(s, "${1}<masked>")
+	s = maskConnRE.ReplaceAllString(s, "${1}<masked>")
+	return maskDtsRE.ReplaceAllString(s, "${1}<masked>")
+}
+
+// num is a whole number QueryRows returned (msdb's tinyint, smallint and int columns), false for NULL.
+func num(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int32:
+		return int64(x), true
+	case int16:
+		return int64(x), true
+	case int:
+		return int64(x), true
+	case uint8:
+		return int64(x), true
+	}
+	return 0, false
+}
+
+// stepAction is what a step does when it ends (sysjobsteps.on_success_action / on_fail_action) in words.
+func stepAction(action, step any) string {
+	a, ok := num(action)
+	if !ok {
+		return ""
+	}
+	switch a {
+	case 1:
+		return "quit reporting success"
+	case 2:
+		return "quit reporting failure"
+	case 3:
+		return "go to the next step"
+	case 4:
+		n, _ := num(step)
+		return fmt.Sprintf("go to step %d", n)
+	}
+	return fmt.Sprintf("action %d", a)
+}
+
+// agentClock is msdb's hhmmss time as hh:mm (hh:mm:ss when it has seconds).
+func agentClock(t int64) string {
+	if t%100 != 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", t/10000, t/100%100, t%100)
+	}
+	return fmt.Sprintf("%02d:%02d", t/10000, t/100%100)
+}
+
+var weekdays = []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+
+// scheduleWords puts one msdb.dbo.sysschedules row in words, on the server's clock: "every day every 15 minutes
+// between 00:00 and 23:59:59", "every week on Monday, Friday at 02:10", "every month on the last weekday at 01:00".
+func scheduleWords(r map[string]any) string {
+	ft, _ := num(r["freq_type"])
+	fi, _ := num(r["freq_interval"])
+	rf, _ := num(r["freq_recurrence_factor"])
+	every := func(n int64, one, many string) string {
+		if n <= 1 {
+			return "every " + one
+		}
+		return fmt.Sprintf("every %d %s", n, many)
+	}
+	var day string
+	switch ft {
+	case 1:
+		d, _ := num(r["active_start_date"])
+		t, _ := num(r["active_start_time"])
+		return fmt.Sprintf("once on %04d-%02d-%02d at %s", d/10000, d/100%100, d%100, agentClock(t))
+	case 4:
+		day = every(fi, "day", "days")
+	case 8:
+		var on []string
+		for i, w := range weekdays {
+			if fi&(1<<i) != 0 {
+				on = append(on, w)
+			}
+		}
+		day = every(rf, "week", "weeks") + " on " + strings.Join(on, ", ")
+	case 16:
+		day = every(rf, "month", "months") + fmt.Sprintf(" on day %d", fi)
+	case 32:
+		rel, _ := num(r["freq_relative_interval"])
+		which := map[int64]string{1: "first", 2: "second", 4: "third", 8: "fourth", 16: "last"}[rel]
+		what := map[int64]string{8: "day", 9: "weekday", 10: "weekend day"}[fi]
+		if fi >= 1 && fi <= 7 {
+			what = weekdays[fi-1]
+		}
+		day = every(rf, "month", "months") + " on the " + which + " " + what
+	case 64:
+		return "when SQL Server Agent starts"
+	case 128:
+		return "when the computer is idle"
+	default:
+		return fmt.Sprintf("freq_type %d", ft)
+	}
+	st, _ := num(r["freq_subday_type"])
+	si, _ := num(r["freq_subday_interval"])
+	from, _ := num(r["active_start_time"])
+	to, _ := num(r["active_end_time"])
+	unit := map[int64]string{2: "second", 4: "minute", 8: "hour"}[st]
+	if unit == "" {
+		return day + " at " + agentClock(from)
+	}
+	return day + " " + every(si, unit, unit+"s") + " between " + agentClock(from) + " and " + agentClock(to)
 }
