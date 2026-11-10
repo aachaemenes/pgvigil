@@ -61,8 +61,14 @@ function victimProps(g: DlGraph): HTMLElement | null {
   ]));
 }
 
+// the newest open of each panel: a slower reply of an earlier one (the deadlock opened by itself on load) is dropped
+const opened = new WeakMap<HTMLElement, number>();
+
 async function openDeadlock(ctx: Ctx, row: Row, panel: HTMLElement, focus = true) {
+  const mine = (opened.get(panel) ?? 0) + 1;
+  opened.set(panel, mine);
   const show = (...kids: (Node | string)[]) => {
+    if (opened.get(panel) !== mine) return;
     panel.replaceChildren(el('h3', { tabindex: '-1' }, `The deadlock of ${fmtTime(row.event_at)}`), ...kids);
     if (focus) (panel.firstElementChild as HTMLElement).focus();
   };
@@ -73,15 +79,18 @@ async function openDeadlock(ctx: Ctx, row: Row, panel: HTMLElement, focus = true
     const q = new URLSearchParams({ instance: String(ctx.instance), at: String(row.event_at), key: String(row.event_key) });
     const xdl = `/api/mssql/xe/deadlock.xdl?${q}`;
     // the picture from the XML SQL Server wrote; where the XML is not kept, from the processes the collector took out of it
-    let g: DlGraph | null = null, from = '';
+    let g: DlGraph | null = null, from = '', why = '';
     if (d.has_graph === true) {
-      const res = await fetch(xdl, { credentials: 'same-origin' });
-      if (res.ok) { g = graphFromXml(await res.text()); if (g) from = 'Drawn from the deadlock XML SQL Server wrote.'; }
-    }
+      try {
+        const res = await fetch(xdl, { credentials: 'same-origin' });
+        if (!res.ok) why = `the XML could not be fetched (${res.status} ${res.statusText})`;
+        else if (!(g = graphFromXml(await res.text()))) why = 'the stored XML holds no process this page could read';
+        else from = 'Drawn from the deadlock XML SQL Server wrote.';
+      } catch (e) { why = `the XML could not be fetched (${e instanceof Error ? e.message : String(e)})`; }
+    } else why = 'the XML itself is not kept under this instance\'s query_text policy';
     if (!g) {
       g = graphFromRows(d.processes, d.resources);
-      if (g) from = d.has_graph === true ? 'Drawn from the processes and resources the reader stored: the stored XML holds no process this page could read.'
-        : 'Drawn from the processes and resources the reader stored: the XML itself is not kept under this instance\'s query_text policy.';
+      if (g) from = `Drawn from the processes and resources the reader stored: ${why}.`;
     }
     const save = d.has_graph === true
       ? el('a', { href: xdl, download: '', class: 'button' }, 'Save XML')
@@ -119,14 +128,18 @@ export async function mssqlDeadlocksView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(stateLine(rowsOf(st.state).find(r => r.capture === 'deadlocks')));
     const rows = rowsOf(dl.deadlocks);
     const trend = rowsOf(tr.deadlock_trend);
-    const hours = Math.max(1 / 60, (Date.parse(win.to) - Date.parse(win.from)) / 3600000);
+    // the rate from the trend (every deadlock of its window, not the list's newest 500); the trend reads at most 7 days
+    const trendFrom = Math.max(Date.parse(win.from), Date.parse(win.to) - 7 * 86400000);
+    const hours = Math.max(1 / 60, (Date.parse(win.to) - trendFrom) / 3600000);
+    const inTrend = trend.reduce((a, r) => a + Number(r.deadlocks ?? 0), 0);
     const step = trend.length > 1 ? (Date.parse(String(trend[1].snapshot_at)) - Date.parse(String(trend[0].snapshot_at))) / 60000 : 1;
     sec.append(el('div', { class: 'tiles' },
       tile('deadlocks', fmtNum(rows.length) + (rows.length >= 500 ? '+' : ''), rows.length ? 'warn' : ''),
-      tile('per hour', rows.length ? (Math.round(10 * rows.length / hours) / 10).toLocaleString() : '0'),
+      tile(trendFrom > Date.parse(win.from) ? 'per hour (newest 7 days)' : 'per hour', (Math.round(10 * inTrend / hours) / 10).toLocaleString()),
       tile('last', rows.length ? fmtTime(rows[0].event_at) : '-')));
     if (rows.length) sec.append(el('div', { class: 'charts' }, lineChart(`Deadlocks per ${step >= 60 ? step / 60 + ' h' : Math.round(step) + ' min'}`, trend,
       [{ key: 'deadlocks', label: 'deadlocks' }, { key: 'processes', label: 'processes in them' }])));
+    if (rows.length && trendFrom > Date.parse(win.from)) sec.append(el('p', { class: 'meta' }, 'The chart and the rate read the newest seven days of the range; the list below covers the whole range (its newest 500).'));
     const panel = el('section', { class: 'detail', 'aria-live': 'polite' });
     const open = (r: Row) => {
       const b = el('button', { type: 'button', class: 'link', 'aria-label': `Graph: the deadlock of ${fmtTime(r.event_at)}` }, `Graph (${fmtNum(r.process_count)} processes)`);

@@ -22,8 +22,11 @@ const num = (v: unknown): number | null => v == null || v === '' || isNaN(Number
 // graphFromRows: the collector's processes and resources (mssql_deadlocks.processes / .resources).
 export function graphFromRows(processes: unknown, resources: unknown): DlGraph | null {
   if (!Array.isArray(processes) || processes.length === 0) return null;
-  // an owner or waiter names its process by id; one that carries only a session id is matched by it
-  const bySpid = new Map((processes as Row[]).map(p => [num(p.spid), String(p.process ?? '')]));
+  // an owner or waiter names its process by id; one that carries only a session id is matched by it, unless several
+  // processes share that session id (a parallel query's workers): then it is not guessed and its edge is not drawn
+  const bySpid = new Map<number | null, string>(), shared = new Set<number | null>();
+  for (const p of processes as Row[]) { const k = num(p.spid); if (bySpid.has(k)) shared.add(k); else bySpid.set(k, String(p.process ?? '')); }
+  for (const k of shared) bySpid.delete(k);
   const refs = (v: unknown): DlRef[] => Array.isArray(v)
     ? v.map(x => { const r = x as Row, spid = num(r.spid); return { process: str(r.process) ?? bySpid.get(spid) ?? '', spid, mode: str(r.mode) }; }) : [];
   return {

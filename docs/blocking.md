@@ -25,12 +25,14 @@ idle-in-transaction sessions and every blocker a Lock waiter names). Nothing new
   the oldest root transaction.
 - **Chains by root transaction**: one row per head TRANSACTION (its pid, session start and transaction start): first
   and last capture, samples as root, its state at the last capture and how many captures it was idle in transaction,
-  its transaction's age, victims (at any depth), direct victims, depth, the longest blocked, and its last statement.
+  its transaction's age, victims (at any depth), direct victims, depth (the largest of the victims' shortest distances
+  from the head), the longest blocked, and its last statement.
   The last-seen time opens the Running queries snapshot of that capture.
 - **Who pins the xmin horizon**: now (`vacuum_xmin_holders`: sessions of the latest capture, slots, prepared
   transactions, standbys of the latest vacuum read) and over the range per session: how many captures it held the
   OLDEST session xmin in, its peak xmin age with its state, transaction age and statement at that peak. The tiles
-  count the idle-in-transaction sessions and those that pinned nothing: under READ COMMITTED a session idle between
+  count the idle-in-transaction sessions and those none of whose idle samples had an xmin (decided per sample: an
+  active statement's own xmin does not count): under READ COMMITTED a session idle between
   statements holds its locks and no snapshot, so it does not hold vacuum back; under REPEATABLE READ or SERIALIZABLE
   it does.
 
@@ -40,7 +42,11 @@ age of its statement at the capture (the lock wait itself, `pg_locks.waitstart`,
 Functions (migration 0075): `blocking_history_chains`, `blocking_history_summary`, `blocking_history_episodes`,
 `blocking_history_trend`, `xmin_pins`, `xmin_pins_summary`, each `(instance_id, from, to)` (the trend also takes the
 step in seconds). The chains are worked out set-based from the samples with the same rule as `blocking_chains`
-(0002), and give the same heads, victims and depths for every capture (the proof checks it). Each call reads the
+(0002) and give the same heads and victims for every capture (the proof checks it). On a lock queue, where each waiter
+names the holder and every waiter ahead of it, each victim is at distance 1 from the head (depth 1); `blocking_chains`
+can say depth 2 there. The walk keeps each (head, waiter, distance) once, so a queue of n sessions costs about n x
+depth rows, not one row per path (2^n). The most blocked in a capture counts each waiter once, however many heads it
+is behind. Each call reads the
 range's activity samples of the instance once (the sample tables carry no index; monthly partitions prune the range).
 
 ## SQL Server
@@ -74,7 +80,8 @@ the window is a row, a quiet one with zeros).
 
 `scripts/proof-blocking-history.sh`: a PostgreSQL chain held over three captures counted (head, victims, depth,
 samples as root, idle in transaction, the transaction's age growing; the same rows as `blocking_chains`), a REPEATABLE
-READ head listed as an xmin pin and a READ COMMITTED bystander not; a SQL Server chain over two snapshots in the
+READ head listed as an xmin pin and a READ COMMITTED bystander not; a queue of 20 sessions on one lock counted as one
+chain of 20 direct victims, in under 2 s; a SQL Server chain over two snapshots in the
 trend; a real deadlock made on the SQL Server sandbox, stored, counted in the trend, and drawn by the Deadlocks tab
 in a headless Chromium with its victim, both resources and the four labelled edges.
 

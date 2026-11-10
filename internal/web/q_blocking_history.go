@@ -2,9 +2,12 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // The blocking history of one instance over a window (task 120), on either engine. Read only.
@@ -99,7 +102,11 @@ func (s *Server) BlockingHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	var engine string
 	if err := s.pool.QueryRow(r.Context(), sqlHistoryEngine, id).Scan(&engine); err != nil {
-		writeErr(w, http.StatusNotFound, errors.New("no such instance"))
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, errors.New("no such instance"))
+		} else {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the instance's engine: %w", err))
+		}
 		return
 	}
 	meta := part{"meta", sqlHistoryMeta, []any{engine, from, to, step, cut}}

@@ -33,7 +33,11 @@
 #  B. the xmin horizon over the same three captures: the head (REPEATABLE READ, a snapshot held) is in xmin_pins with
 #     3 captures with an xmin and its state at the peak 'idle in transaction'; the bystander (READ COMMITTED, idle
 #     between statements) is NOT in xmin_pins, and xmin_pins_summary counts it among the idle-in-transaction sessions
-#     that pinned nothing (at least 1). After the head commits and one more capture: 4 captures, the fourth with no
+#     that pinned nothing (at least 1). The head's 'held the oldest xmin' equals the captures where its xmin age is
+#     the largest of its capture (counted from the samples directly). Per sample, in a rolled-back transaction: a
+#     synthetic session seen active with an xmin and then idle in transaction without one counts as an idle session
+#     that pinned nothing, one seen idle in transaction WITH an xmin does not (the counts move by 2 and 1).
+#     After the head commits and one more capture: 4 captures, the fourth with no
 #     chain headed by the head; the summary's captures with blocking equal the captures whose samples hold a Lock
 #     waiter that names a blocker (counted from activity_sample directly), its share that count over 4; the episode
 #     still has 3 samples.
@@ -44,7 +48,7 @@
 #     serve -no-login): for the SQL Server instance the parts meta, trend, deadlock_trend; the trend's steps sum to 2
 #     snapshots, 2 with a blocked session, the most blocked at least 1, a longest wait above 0; deadlock_trend's steps
 #     sum to the repository's count of the instance's deadlocks in the window (at least 1); every step of the window
-#     is a row. For the PostgreSQL instance the parts meta, summary, episodes, trend, xmin_summary, xmin_pins,
+#     is a row (both parts hold floor((to - floor(from / step) * step) / step) + 1 rows). For the PostgreSQL instance the parts meta, summary, episodes, trend, xmin_summary, xmin_pins,
 #     xmin_now, the episode of the head among them; part=nonsense is a 400; a window of 30 days says cut, from_at
 #     seven days before to_at.
 #  D. the pages, in a headless Chromium of the proof's own: the SQL Server Deadlocks tab opens the newest deadlock
@@ -54,6 +58,11 @@
 #     <mode>', each session box with the first line of its statement ('BEGIN TRAN; UPDATE dbo.dl_'), and a Save XML
 #     link whose file starts with <deadlock>. The PostgreSQL Running queries tab shows the Blocking history with
 #     the tiles 4 captures and B's count with blocking, and a chain row of the head's pid; its xmin section lists the head.
+#  E. a lock queue (review 2026-11-10: each waiter names the holder AND every waiter ahead of it, which made a path
+#     walk grow as 2^n): a head holds ACCESS EXCLUSIVE on a table in an open transaction and 20 sessions queue for the
+#     same lock; one more capture: one chain headed by the head with 20 victims, 20 direct, depth 1, 20 blocked in the
+#     capture; blocking_chains names the same head for the same 20 waiters; blocking_history_chains over the proof's
+#     window returns in under 2 s.
 #  NOT PROVEN HERE: a chain under a minute (it falls between captures: the counts are floors, the page says so), a
 #  head that is a background worker (autovacuum), a deadlock of more than two sessions or with a parallel exchange,
 #  Azure SQL Database and Managed Instance, the page's look (looked at by hand against Darling 13.5 and 14.2 / 14.3).
@@ -71,15 +80,16 @@ TMPD=$(mktemp -d); CFG=$TMPD/cfg.yaml; OUT=$TMPD/out
 fail() { echo "FAIL: $*" >&2; exit 1; }
 export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
-MADE_REPO=; MADE_PGDB=; MADE_SDB=; MADE_L1=; SRVPID=; CHRPID=; PG_OPEN=; MS_OPEN=
+MADE_REPO=; MADE_PGDB=; MADE_SDB=; MADE_L1=; SRVPID=; CHRPID=; PG_OPEN=; MS_OPEN=; Q_OPEN=
 sq() { docker exec -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -U sa -C -I -b -W -h -1 -s '|' -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
 cleanup() {
   rc=$?
   set +e
   [ -n "$CHRPID" ] && kill "$CHRPID" 2>/dev/null
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
-  [ -n "$PG_OPEN" ] && { exec 5>&- 6>&- 2>/dev/null; }
-  [ -n "$MS_OPEN" ] && { exec 7>&- 2>/dev/null; }
+  [ -n "$PG_OPEN" ] && { { exec 5>&- 6>&-; } 2>/dev/null; }
+  [ -n "$MS_OPEN" ] && { { exec 7>&-; } 2>/dev/null; }
+  [ -n "$Q_OPEN" ] && { { exec 8>&-; } 2>/dev/null; }
   sleep 1
   if [ -n "$MADE_SDB" ]; then sq "IF DB_ID('$SDB') IS NOT NULL BEGIN ALTER DATABASE [$SDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$SDB]; END" >/dev/null 2>&1 || echo "CLEANUP: SQL Server database $SDB not dropped" >&2; fi
   if [ -n "$MADE_L1" ]; then sq "IF SUSER_ID('$L1') IS NOT NULL DROP LOGIN [$L1];" >/dev/null 2>&1 || echo "CLEANUP: login $L1 not dropped" >&2; fi
@@ -96,12 +106,17 @@ adm -c "create database $PGDB"; MADE_PGDB=1
 export PGVIGIL_REPO_DSN="$ADMIN_DSN dbname=$REPO_DB"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 pq() { psql "$ADMIN_DSN dbname=$PGDB" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
-pq "create table t (id int primary key, v int not null); insert into t values (1, 0), (2, 0)"
+pq "create table t (id int primary key, v int not null); insert into t values (1, 0), (2, 0); create table qt (id int)"
 [ "$(sq "SELECT CASE WHEN DB_ID('$SDB') IS NULL AND SUSER_ID('$L1') IS NULL THEN 1 ELSE 0 END")" = 1 ] || fail "a SQL Server name of this run exists already (suffix $SUF): run again"
 sq "CREATE DATABASE [$SDB];"; MADE_SDB=1
 sq "CREATE TABLE dbo.dl_a (id int NOT NULL PRIMARY KEY, v int NOT NULL); CREATE TABLE dbo.dl_b (id int NOT NULL PRIMARY KEY, v int NOT NULL);
     CREATE TABLE dbo.bl (id int NOT NULL PRIMARY KEY, v int NOT NULL); INSERT dbo.dl_a VALUES (1, 0); INSERT dbo.dl_b VALUES (1, 0); INSERT dbo.bl VALUES (1, 0);" "$SDB"
-sq "CREATE LOGIN [$L1] WITH PASSWORD = '$P1', CHECK_POLICY = OFF;"; MADE_L1=1
+# the login's password reaches the server in a file, never on a command line (ps lists docker exec's arguments)
+umask 077; printf "CREATE LOGIN [%s] WITH PASSWORD = N'%s', CHECK_POLICY = OFF;\n" "$L1" "$P1" > "$TMPD/login.sql"
+docker cp -q "$TMPD/login.sql" "$CT:/tmp/pgvbh_login_$SUF.sql"; rm -f "$TMPD/login.sql"; MADE_L1=1
+rc=0; docker exec -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -U sa -C -b -i "/tmp/pgvbh_login_$SUF.sql" >/dev/null || rc=$?
+docker exec -u 0 "$CT" rm -f "/tmp/pgvbh_login_$SUF.sql"
+[ $rc = 0 ] || fail "the login was not created"
 sq "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1];"
 export MSSQL_MON_DSN="sqlserver://$L1:$P1@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
 export PG_MON_DSN="$ADMIN_DSN dbname=$PGDB"
@@ -173,6 +188,21 @@ BYP=$(pid_of "$APPB")
 [ "$(q "select count(*) from pgvigil.activity_sample where instance_id=$iid and pid=$BYP and state='idle in transaction'")" = 3 ] || fail "B: the bystander was not sampled idle in transaction"
 [ "$(q "select count(*) from pgvigil.xmin_pins($iid, $W) where pid = $BYP")" = 0 ] || fail "B: the READ COMMITTED bystander is listed as pinning the horizon"
 [ "$(q "select idle_in_txn_no_xmin >= 1 from pgvigil.xmin_pins_summary($iid, $W)")" = t ] || fail "B: xmin_pins_summary: $(q "select * from pgvigil.xmin_pins_summary($iid, $W)")"
+PIN=$(q "select count(*) from (select snapshot_at, max(backend_xmin_age) m from pgvigil.activity_sample where instance_id=$iid and backend_xmin_age is not null group by 1) c
+          join pgvigil.activity_sample a on a.instance_id=$iid and a.snapshot_at=c.snapshot_at and a.pid=$HP and a.backend_xmin_age=c.m")
+[ "$(q "select pinned_samples from pgvigil.xmin_pins($iid, $W) where pid = $HP")" = "$PIN" ] || fail "B: the head held the oldest xmin in $PIN capture(s), xmin_pins says $(q "select pinned_samples from pgvigil.xmin_pins($iid, $W) where pid = $HP")"
+SYN=$(psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 <<SQL
+BEGIN;
+CREATE TEMP TABLE before_syn AS SELECT idle_in_txn_sessions s, idle_in_txn_no_xmin n FROM pgvigil.xmin_pins_summary($iid, $W);
+INSERT INTO pgvigil.activity_sample (instance_id, snapshot_at, pid, backend_start, state, backend_xmin_age) VALUES
+  ($iid, now() - interval '20 s', 2000000001, '2026-01-01', 'active', 7),
+  ($iid, now() - interval '10 s', 2000000001, '2026-01-01', 'idle in transaction', NULL),
+  ($iid, now() - interval '20 s', 2000000002, '2026-01-01', 'idle in transaction', 9);
+SELECT (a.idle_in_txn_sessions - b.s) || '|' || (a.idle_in_txn_no_xmin - b.n) FROM pgvigil.xmin_pins_summary($iid, $W) a, before_syn b;
+ROLLBACK;
+SQL
+)
+[ "$SYN" = "2|1" ] || fail "B: per sample, the synthetic sessions moved the counts by $SYN, want 2|1"
 printf 'COMMIT;\n' >&5; printf 'COMMIT;\n' >&6
 for _ in $(seq 1 50); do [ "$(adm -c "select count(*) from pg_stat_activity where pid in ($W1, $W2)")" = 0 ] && break; sleep 0.2; done
 [ "$(pq "select v from t where id = 1")" = 111 ] || fail "B: the three updates did not all commit: v = $(pq "select v from t where id = 1")"
@@ -231,7 +261,10 @@ assert m["engine"] == "sqlserver" and m["cut"] is False, m
 assert sum(r["snapshots"] for r in t) == 2 and sum(r["with_blocking"] for r in t) == 2, t
 assert max(r["blocked_max"] for r in t) >= 1 and max((r["longest_wait_ms"] or 0) for r in t) > 0, t
 assert sum(r["deadlocks"] for r in dt) == ndl and ndl >= 1, (ndl, dt)
-assert len(t) == len(dt) and len(t) >= 2, (len(t), len(dt))
+import datetime as dtm
+f, to, st = dtm.datetime.fromisoformat(m["from_at"]).timestamp(), dtm.datetime.fromisoformat(m["to_at"]).timestamp(), m["step_secs"]
+want = int((to - (f // st) * st) // st) + 1
+assert len(t) == want and len(dt) == want, (len(t), len(dt), want)
 print(f"  trend: {len(t)} steps of {m['step_secs']} s, 2 snapshots with a blocked session; {ndl} deadlock(s) in the window")
 PY
 curl -fs "$U?instance=$iid&from=$T0&to=$T2" > "$TMPD/pg.json" || fail "C: the PostgreSQL history"
@@ -317,4 +350,33 @@ if (fails.length) { console.log('FAIL ' + fails.join('; ')); process.exit(1); }
 JS
 node "$TMPD/look.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$sid" "$iid" "$HP" "$VSPID" "$RAW" || fail "D: the pages"
 echo "D: OK"
+
+echo "--- E. a lock queue of 20 sessions"
+mkfifo "$TMPD/qh"
+PGAPPNAME=pgvbh_qh_$SUF psql "$ADMIN_DSN dbname=$PGDB" -XAtq < "$TMPD/qh" > "$TMPD/qh.out" 2>&1 &
+exec 8>"$TMPD/qh"; Q_OPEN=1
+printf 'BEGIN;\nLOCK TABLE qt IN ACCESS EXCLUSIVE MODE;\n' >&8
+for _ in $(seq 1 50); do QH=$(pid_of "pgvbh_qh_$SUF"); [ -n "$QH" ] && [ "$(adm -c "select state from pg_stat_activity where pid = $QH")" = "idle in transaction" ] && break; sleep 0.2; done
+[ -n "${QH:-}" ] || fail "E: the queue's head did not start: $(cat "$TMPD/qh.out")"
+for i in $(seq 1 20); do
+  # LOCK TABLE runs only inside a transaction block (first run: every waiter was refused at once)
+  PGAPPNAME=pgvbh_q_$SUF psql "$ADMIN_DSN dbname=$PGDB" -XAtq -c "BEGIN" -c "LOCK TABLE qt IN ACCESS EXCLUSIVE MODE" -c "COMMIT" > "$TMPD/q$i.out" 2>&1 &
+  sleep 0.1
+done
+qwait() { adm -c "select count(*) from pg_stat_activity where application_name = 'pgvbh_q_$SUF' and wait_event_type = 'Lock'"; }
+for _ in $(seq 1 100); do [ "$(qwait)" = 20 ] && break; sleep 0.2; done
+[ "$(qwait)" = 20 ] || fail "E: $(qwait) of 20 sessions queued: $(cat "$TMPD"/q*.out | sort | uniq -c | head -3)"
+echo "  the last in the queue names: $(adm -c "select pg_blocking_pids(pid)::text from pg_stat_activity where application_name = 'pgvbh_q_$SUF' order by backend_start desc limit 1")"
+collect activity "$NP"
+QAT=$(q "select max(snapshot_at) from pgvigil.activity_summary where instance_id=$iid")
+T3=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ); W3="'$T0'::timestamptz, '$T3'::timestamptz"
+[ "$(q "select victims || '|' || direct || '|' || depth || '|' || (blocked_in_capture >= 20) from pgvigil.blocking_history_chains($iid, $W3) where snapshot_at = '$QAT' and head_pid = $QH")" = "20|20|1|true" ] \
+  || fail "E: the queue's chain: $(q "select head_pid, victims, direct, depth, blocked_in_capture from pgvigil.blocking_history_chains($iid, $W3) where snapshot_at = '$QAT'")"
+[ "$(q "select count(distinct c.pid) from pgvigil.blocking_chains($iid, '$QAT') c join pgvigil.activity_sample a on a.instance_id=$iid and a.snapshot_at='$QAT' and a.pid=c.pid where c.head_pid = $QH and a.application_name = 'pgvbh_q_$SUF'")" = 20 ] \
+  || fail "E: blocking_chains does not name the same head for the 20"
+MS=$(psql "$PGVIGIL_REPO_DSN" -XAtq -c "select extract(epoch from clock_timestamp() - now()) from (select count(*) from pgvigil.blocking_history_chains($iid, $W3)) x" | head -1)
+[ "$(q "select $MS < 2")" = t ] || fail "E: blocking_history_chains took $MS s"
+printf 'COMMIT;\n' >&8
+for _ in $(seq 1 100); do [ "$(adm -c "select count(*) from pg_stat_activity where application_name = 'pgvbh_q_$SUF'")" = 0 ] && break; sleep 0.2; done
+echo "E: OK (the chain function over the window in $MS s)"
 echo "OK: proof-blocking-history"
