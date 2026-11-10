@@ -6,11 +6,19 @@
 // instance without the key under "(no env)". Values are ordered by ui.env_order (prod first), then by name. A
 // tag is a plain word (key "tag") or key:value; the written form (prod, env:prod) is the tag scope the pages take
 // (#/...?tag=env:prod), so only a top-level folder links: a nested one names a combination no single tag scopes.
+// Under each instance (task 65; DBADash's tree: instance > child folders > database > objects): a caret opens its
+// folders, closed by default: Configuration, Checks, Replication and Storage open their tabs; Databases loads the
+// instance's databases on first open (one /api/dbinfo read), each database a node to its page with a Tables folder
+// that loads that database's largest tables (one /api/drill/db read); Jobs loads its jobs (one /api/jobs read). Each
+// read asks only for the part it shows (part=databases | tables | jobs; a server without the part selector answers
+// with the whole page, which still works) and is kept 30 minutes: the lists change hourly.
+// Every link keeps the time range. The search still finds instances; an open instance shows its folders under it.
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
-import { get, Row, Table } from './api';
+import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { Ctx, href, drillHome } from './router';
 import { Fleet, Level, tagsOf, worst } from './fleet';
-import { Col, dot, el } from './ui';
+import { hashParam, hrefWith } from './dbinfo';
+import { Col, dot, el, fmtBytes } from './ui';
 
 const UNTAGGED = 'untagged';
 
@@ -100,6 +108,133 @@ export function updateTree(f: Fleet, ctx: Ctx) {
   if (!uiAt) void tagUI().then(() => { if (last) draw(); });
 }
 
+// ---- the instance's folders (task 65)
+
+// which instance nodes and folders are open: for the browser session only, so a new session starts closed
+const opened = new Set<string>((() => { try { return JSON.parse(sessionStorage.getItem('pgvigil.treeOpen') ?? '[]') as string[]; } catch { return []; } })());
+function toggle(key: string) {
+  if (opened.has(key)) opened.delete(key); else opened.add(key);
+  try { sessionStorage.setItem('pgvigil.treeOpen', JSON.stringify([...opened])); } catch { /* private window */ }
+  draw();
+}
+
+// the children a folder loads on its first open: one API read, kept 30 minutes (the databases, tables and jobs
+// collections run hourly; a read past that is redone on the next draw, the old rows shown meanwhile)
+interface Load { at: number; rows?: Row[]; err?: string; pending?: boolean }
+const loads = new Map<string, Load>();
+const LOAD_TTL = 1800000;
+const TABLES_SHOWN = 15, JOBS_SHOWN = 30;
+function loaded(key: string, read: () => Promise<Row[]>): Load {
+  const l = loads.get(key);
+  if (l && (l.pending || Date.now() - l.at < LOAD_TTL)) return l;
+  const next: Load = { at: Date.now(), pending: true, rows: l?.rows };
+  loads.set(key, next);
+  read().then(rows => { loads.set(key, { at: Date.now(), rows }); }, e => {
+    // a session that expired while the folder read: drop the entry and let the shell's render show the sign-in
+    if (e instanceof LoginRequired) { loads.delete(key); rerender(); return; }
+    loads.set(key, { at: Date.now(), err: e instanceof Error ? e.message : String(e) });
+  }).finally(() => draw());
+  return next;
+}
+
+const nodeStyle = (depth: number) => `margin-left:${(depth * 0.8).toFixed(1)}rem`;
+const rowStyle = 'display:flex;align-items:center';
+
+// caretFor: the open / close button of a node, its state for a screen reader too
+function caretFor(key: string, what: string): HTMLButtonElement {
+  const isOpen = opened.has(key);
+  const b = el('button', { type: 'button', class: 'caret', 'data-key': key, 'aria-expanded': String(isOpen), 'aria-label': `${isOpen ? 'close' : 'open'} ${what}` }, isOpen ? '▾' : '▸');
+  b.addEventListener('click', () => toggle(key));
+  return b;
+}
+
+// leaf: a link node in the tree, marked on when it is the page shown
+const leaf = (text: string, to: string, on: boolean, title = '', lvl?: Level) =>
+  el('a', { class: 'inst' + (on ? ' on' : ''), href: to, title: title || text }, ...(lvl === undefined ? [] : [dot(lvl)]), text);
+
+// folder: a caret, a name (a link when it opens a page) and, when open, its children
+function folder(key: string, name: string, depth: number, kids: () => HTMLElement[], to?: string, on = false): HTMLElement {
+  const head = el('div', { class: 'tree-node', style: rowStyle + ';' + nodeStyle(depth) }, caretFor(key, name),
+    to ? el('a', { class: 'inst' + (on ? ' on' : ''), href: to, style: 'flex:1' }, name) : el('span', { class: 'folder-name', style: 'padding:.2rem .4rem' }, name));
+  const box = el('div', {}, head);
+  if (opened.has(key)) box.append(...kids());
+  return box;
+}
+
+// loading / failed / empty lines under a folder that reads its children (announced: a screen reader hears them change)
+function state(l: Load, depth: number, empty: string): HTMLElement | null {
+  const st = 'padding:.1rem .4rem;' + nodeStyle(depth);
+  if (l.err) return el('p', { class: 'error', style: st, role: 'status', 'aria-live': 'polite' }, 'Could not load: ' + l.err);
+  if (!l.rows) return el('p', { class: 'empty', style: st, role: 'status', 'aria-live': 'polite' }, 'Loading...');
+  if (l.rows.length === 0) return el('p', { class: 'empty', style: st, role: 'status', 'aria-live': 'polite' }, empty);
+  return null;
+}
+
+// instanceFolders: what opens under an instance node
+function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
+  const here = ctx.instance === id;
+  const tabLink = (tab: string) => href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined });
+  const tabFolder = (k: string, name: string, tabs: [string, string][]) =>
+    folder(`i${id}/${k}`, name, depth, () => tabs.map(([tab, label]) => el('div', { style: nodeStyle(depth + 1) }, leaf(label, tabLink(tab), here && ctx.tab === tab))));
+  const curDb = here ? hashParam('db') : undefined, curRel = here ? hashParam('rel') : undefined, curJob = here ? hashParam('job') : undefined;
+
+  const databases = folder(`i${id}/db`, 'Databases', depth, () => {
+    const l = loaded(`i${id}/db`, async () => {
+      const d = await get<Record<'databases', Table | null>>('dbinfo', { instance: id, part: 'databases' });
+      return rowsOf(d.databases).filter(r => r.is_present && !r.is_template);
+    });
+    const s = state(l, depth + 1, 'No database read yet (hourly).');
+    if (s) return [s];
+    return l.rows!.map(r => {
+      const dbid = String(r.dbid);
+      const tables = folder(`i${id}/db/${dbid}/t`, 'Tables', depth + 2, () => {
+        const lt = loaded(`i${id}/db/${dbid}/t`, async () => {
+          const d = await get<Record<'tables', Table | null>>('drill/db', { instance: id, db: dbid, part: 'tables' });
+          return rowsOf(d.tables);
+        });
+        const st = state(lt, depth + 3, 'No table read in this database.');
+        if (st) return [st];
+        const shown = lt.rows!.slice(0, TABLES_SHOWN).map(t => el('div', { style: nodeStyle(depth + 3) },
+          leaf(`${String(t.schema_name)}.${String(t.table_name)}`, hrefWith(ctx, 'table', { db: dbid, rel: String(t.relid) }, id),
+            here && ctx.tab === 'table' && curDb === dbid && curRel === String(t.relid), `${String(t.schema_name)}.${String(t.table_name)}, ${fmtBytes(t.total_bytes)}`)));
+        if (lt.rows!.length > TABLES_SHOWN) {
+          shown.push(el('div', { style: nodeStyle(depth + 3) }, leaf(`all ${lt.rows!.length} tables...`, hrefWith(ctx, 'db', { db: dbid }, id), false)));
+        }
+        return shown;
+      }, hrefWith(ctx, 'db', { db: dbid }, id), false);
+      // the database node: its page, and under it the Tables folder
+      return folder(`i${id}/db/${dbid}`, String(r.datname), depth + 1, () => [tables],
+        hrefWith(ctx, 'db', { db: dbid }, id), here && ctx.tab === 'db' && curDb === dbid);
+    });
+  }, tabLink('dbinfo'), false);
+
+  const jobs = folder(`i${id}/jobs`, 'Jobs', depth, () => {
+    const l = loaded(`i${id}/jobs`, async () => {
+      const d = await get<Record<'jobs', Table | null>>('jobs', { instance: id, part: 'jobs' });
+      return rowsOf(d.jobs).filter(r => r.is_present);
+    });
+    const s = state(l, depth + 1, 'No scheduled job.');
+    if (s) return [s];
+    const shown = l.rows!.slice(0, JOBS_SHOWN).map(r => {
+      const failed = ['failed', 'internal error', 'aborted'].includes(String(r.last_status ?? ''));
+      return el('div', { style: nodeStyle(depth + 1) }, leaf(String(r.job_name ?? r.job_id), hrefWith(ctx, 'job', { scheduler: String(r.scheduler), job: String(r.job_id) }, id),
+        here && ctx.tab === 'job' && curJob === String(r.job_id) && hashParam('scheduler') === String(r.scheduler),
+        `${String(r.scheduler)} job ${String(r.job_id)}${r.last_status ? ', last run ' + String(r.last_status) : ''}`, failed ? 2 : 0));
+    });
+    if (l.rows!.length > JOBS_SHOWN) shown.push(el('div', { style: nodeStyle(depth + 1) }, leaf(`all ${l.rows!.length} jobs...`, tabLink('jobs'), false)));
+    return shown;
+  }, tabLink('jobs'), here && ctx.tab === 'jobs');
+
+  return [
+    tabFolder('conf', 'Configuration', [['config', 'Configuration'], ['extensions', 'Extensions'], ['versions', 'Versions'], ['roles', 'Roles']]),
+    tabFolder('checks', 'Checks', [['summary', 'Daily checks (summary)'], ['findings', 'Findings']]),
+    tabFolder('repl', 'Replication', [['replication', 'Replication'], ['dms', 'DMS']]),
+    tabFolder('storage', 'Storage', [['storage', 'Storage'], ['dbinfo', 'Database info'], ['backups', 'Backups']]),
+    databases,
+    jobs,
+  ];
+}
+
 const rollup = (f: Fleet, rows: Row[]) => rows.reduce<Level>((a, r) => Math.max(a, worst(f, r)) as Level, 0);
 
 // a folder: its key path (collapse memory), its label, its scope link (top level only), its members, its children
@@ -145,7 +280,7 @@ function draw() {
     const shown = fo.rows.filter(match);
     if (filter && shown.length === 0) return null;
     const shut = collapsed.has(fo.path) && !filter;
-    const caret = el('button', { type: 'button', class: 'caret', 'aria-label': shut ? 'expand' : 'collapse' }, shut ? '▸' : '▾');
+    const caret = el('button', { type: 'button', class: 'caret', 'data-key': 'f:' + fo.path, 'aria-expanded': String(!shut), 'aria-label': `${shut ? 'expand' : 'collapse'} ${fo.label}` }, shut ? '▸' : '▾');
     caret.addEventListener('click', () => {
       if (collapsed.has(fo.path)) collapsed.delete(fo.path); else collapsed.add(fo.path);
       lsSet('pgvigil.collapsed', JSON.stringify([...collapsed]));
@@ -164,8 +299,11 @@ function draw() {
         for (const r of shown) {
           const id = Number(r.instance_id);
           const tab = ctx.instance ? (drillHome[ctx.tab] ?? ctx.tab) : 'summary';   // a drill page's link to another instance lands on its home tab
-          ul.append(el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
-            dot(worst(f, r)), String(r.name)));
+          const key = `i${id}`;
+          ul.append(el('div', { class: 'tree-inst', style: rowStyle }, caretFor(key, String(r.name)),
+            el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), style: 'flex:1;min-width:0', href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
+              dot(worst(f, r)), String(r.name))));
+          if (opened.has(key)) ul.append(...instanceFolders(ctx, id, 1));
         }
       }
       box.append(ul);
@@ -175,7 +313,11 @@ function draw() {
   const out: HTMLElement[] = [all];
   for (const fo of foldersFor(f.instances, ui.group_by, 0, '')) { const e = render(fo, 0); if (e) out.push(e); }
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
+  // a redraw replaces every node: a caret that had the keyboard focus gets it back (by its key), so a keyboard or
+  // screen-reader user stays where they were after opening a folder and after its children arrive
+  const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#tree button.caret')?.dataset.key;
   list.replaceChildren(...out);
+  if (focused) list.querySelector<HTMLElement>(`button.caret[data-key="${CSS.escape(focused)}"]`)?.focus();
 }
 
 // ---- the instance header's chips
