@@ -4,7 +4,7 @@
 import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget } from './fleet';
-import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, counters, activity, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
+import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, counters, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
 import { capacitySection, loadView } from './pi';
@@ -34,6 +34,8 @@ import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
+import { runningView } from './running';
+import { runningFleet } from './running_fleet';
 import { perfSummaryView } from './perfsummary';
 import { performanceView } from './performance';
 import { mssqlSummary } from './mssql_summary';
@@ -60,9 +62,9 @@ const mssqlPages: Record<string, Render> = {
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
 };
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView, running: runningFleet };
 const instancePages: Record<string, Render> = {
-  summary: instanceSummary, performance: performanceView, activity, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
+  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
   host: async c => { const s = await hostView(c); s.append(await capacitySection(c)); return s; },   // the Capacity section (Serverless v2) under the host's own
   storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),
@@ -81,7 +83,7 @@ const instancePages: Record<string, Render> = {
   memory, pooler, custom: customView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
-const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs']);
+const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs', 'running']);
 const liveInstance = new Set(['summary', 'activity', 'dms', 'host', 'vacuum', 'io']);
 
 let timer: number | undefined;

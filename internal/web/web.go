@@ -222,6 +222,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/plan", s.Plan)
 	api.HandleFunc("GET /api/mssql/summary", s.MSSQLSummary)
 	api.HandleFunc("GET /api/mssql/running", s.MssqlRunning)
+	api.HandleFunc("GET /api/running/fleet", s.RunningFleet)
+	api.HandleFunc("GET /api/running/snapshots", s.RunningSnapshots)
 	api.HandleFunc("GET /api/mssql/waits", s.MssqlWaits)
 	api.HandleFunc("GET /api/mssql/availability", s.MSSQLAvailability)
 	api.HandleFunc("GET /api/mssql/jobs", s.MSSQLJobs)
