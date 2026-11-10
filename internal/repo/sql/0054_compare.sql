@@ -1,37 +1,47 @@
 -- 0054_compare: the baseline compare (task 57; DBADash's Object Execution Compare, pg_profile's differential report).
--- No collection and no table: every function reads the statements collection's deltas (statements_delta, 0003).
+-- No collection: every function reads the statements collection's deltas (statements_delta, 0003); one table caches
+-- the findings (compare_findings_cache), refreshed per instance once an hour.
 --
 --   statement_window(i, f, t)          per statement (queryid) of the window: calls, total time, pages (shared blocks
 --                                      hit + read), the databases' and roles' names; each delta scaled by the share of
 --                                      its span inside the window, as top_statements (0003) counts it; deltas_inside
---                                      counts the deltas that END inside the window.
+--                                      counts the deltas that END inside the window, first_end is the first such end.
 --   statement_baseline(i, f, t)        'ok' when the statements collection read the instance in the window (a delta
 --                                      row, or an ok run in collection_log), else 'no baseline'.
 --   statement_compare(i, f, t, n)      the window's statements against the same window one day and seven days earlier:
 --                                      the three figures, mean time and pages per call of each, the ratios, and per
---                                      baseline a status ('ok'; 'not run': the instance was read then and no delta of the
---                                      statement ends inside that window; 'no baseline': nothing was read then), sorted
---                                      by the largest ratio. A baseline only crossed by the start of a delta that ends
---                                      after it is 'not run' with no figures: its share would be a sliver of a delta,
---                                      and a whole window against a sliver reads as a huge ratio (a statement that began
---                                      about one or seven days before the window's start).
+--                                      baseline a status, sorted by the largest ratio:
+--                                        ok           figures and ratios;
+--                                        partial      figures, no ratio: the statement began in that window's second
+--                                                     half (no delta of it ends in the first half, and its text was
+--                                                     first seen after it, when the text is kept): a whole window
+--                                                     against a part of one reads as a rise that did not happen;
+--                                        not run      the instance was read then and no delta of the statement ends
+--                                                     inside that window (a baseline only crossed by the start of a
+--                                                     delta that ends after it is a sliver of that delta: no figures);
+--                                        no baseline  nothing was read then.
 --   statement_history(i, q, f, t)      one statement's calls, time and pages per step over the window and the seven
 --                                      days before it (the Compare tab's row opens it).
---   compare_findings                   the findings view's columns: a statement of the last 24 hours whose calls, total
---                                      time or pages per call rose by a factor of 10 or more against either baseline,
---                                      with at least 1,000 calls in the window (a quiet statement never fires). The
---                                      UNION arm in pgvigil.findings is the wave's join.
+--   refresh_compare_findings(i, at)    computes the instance's regressions of the 24 hours to at into
+--                                      compare_findings_cache: a statement whose calls, total time or pages per call
+--                                      rose by a factor of 10 or more against either baseline, with at least 1,000 calls
+--                                      in the window (a quiet statement never fires). The hourly session_sets import
+--                                      (0055) calls it for a current read: a findings read never computes a compare
+--                                      (about 50 ms to 1 s an instance, more with pg_stat_statements.max high).
+--   compare_findings                   the findings view's columns, from the cache rows of the last two hours (a stale
+--                                      cache fires nothing). The UNION arm in pgvigil.findings is the wave's join.
 --
 -- A statement is its queryid across the instance's databases and roles (as top_statements groups it); the roles it ran
 -- under ride along (usenames), so the session SETs of task 58 can be shown beside it.
 --
 -- The window reads use each monthly partition's (instance_id, snapshot_at) index (ensure_month_partition, 0002). A read
--- bounds the deltas it scans to those ending at most one day after the window's end: a delta that spans a collection gap of more than a day past the
--- window (the collector stopped, or the statement left pg_stat_statements' top set and came back) is left out, and
--- the window then reads a little low for that statement.
+-- bounds the deltas it scans to those ending at most one hour after the window's end: a delta that spans a collection
+-- gap reaching more than an hour past the window (the collector stopped, or the statement left pg_stat_statements' top
+-- set and came back) is left out, and the window then reads a little low for that statement.
 
 CREATE OR REPLACE FUNCTION pgvigil.statement_window(p_instance_id int, p_from timestamptz, p_to timestamptz)
-RETURNS TABLE (queryid bigint, datname text, usenames text[], calls float8, total_exec_ms float8, pages float8, deltas_inside bigint)
+RETURNS TABLE (queryid bigint, datname text, usenames text[], calls float8, total_exec_ms float8, pages float8, deltas_inside bigint,
+               first_end timestamptz)
 LANGUAGE sql STABLE AS $$
   WITH d AS (
     SELECT d.queryid, d.datname, d.usename, d.snapshot_at, d.calls, d.total_exec_ms,
@@ -41,12 +51,12 @@ LANGUAGE sql STABLE AS $$
       FROM pgvigil.statements_delta d
      WHERE d.instance_id = p_instance_id
        AND d.snapshot_at > p_from
-       AND d.snapshot_at < p_to + interval '1 day'
+       AND d.snapshot_at < p_to + interval '1 hour'
        AND d.snapshot_at - make_interval(secs => d.interval_secs) < p_to
   )
   SELECT d.queryid, min(d.datname), array_agg(DISTINCT d.usename ORDER BY d.usename) FILTER (WHERE d.usename IS NOT NULL),
          sum(d.calls * d.share), sum(d.total_exec_ms * d.share), sum(d.pages * d.share),
-         count(*) FILTER (WHERE d.snapshot_at <= p_to)
+         count(*) FILTER (WHERE d.snapshot_at <= p_to), min(d.snapshot_at) FILTER (WHERE d.snapshot_at <= p_to)
     FROM d
    WHERE d.share > 0
    GROUP BY d.queryid
@@ -72,7 +82,8 @@ RETURNS TABLE (queryid bigint, datname text, usenames text[],
                max_ratio float8, max_ratio_of text, query text)
 LANGUAGE sql STABLE AS $$
   WITH b AS (
-    SELECT pgvigil.statement_baseline(p_instance_id, p_from - interval '1 day', p_to - interval '1 day') AS d1,
+    SELECT (p_from - interval '1 day') + (p_to - p_from) / 2 AS d1_half, (p_from - interval '7 days') + (p_to - p_from) / 2 AS d7_half,
+           pgvigil.statement_baseline(p_instance_id, p_from - interval '1 day', p_to - interval '1 day') AS d1,
            pgvigil.statement_baseline(p_instance_id, p_from - interval '7 days', p_to - interval '7 days') AS d7
   ), c AS MATERIALIZED (   -- each window aggregated once, then joined by hash (not re-read per statement)
     SELECT * FROM pgvigil.statement_window(p_instance_id, p_from, p_to)
@@ -83,19 +94,27 @@ LANGUAGE sql STABLE AS $$
   ), r AS (
     SELECT c.queryid, c.datname, c.usenames, c.calls, c.total_exec_ms,
            c.total_exec_ms / nullif(c.calls, 0) AS mean_exec_ms, c.pages, c.pages / nullif(c.calls, 0) AS ppc,
-           CASE WHEN b.d1 = 'no baseline' THEN b.d1 WHEN p1.queryid IS NULL THEN 'not run' ELSE 'ok' END AS d1_status,
+           CASE WHEN b.d1 = 'no baseline' THEN b.d1 WHEN p1.queryid IS NULL THEN 'not run'
+                WHEN p1.first_end > b.d1_half AND coalesce(t.first_seen > b.d1_half, true) THEN 'partial' ELSE 'ok' END AS d1_status,
            p1.calls AS d1_calls, p1.total_exec_ms AS d1_total, p1.total_exec_ms / nullif(p1.calls, 0) AS d1_mean,
            p1.pages / nullif(p1.calls, 0) AS d1_ppc,
-           CASE WHEN b.d7 = 'no baseline' THEN b.d7 WHEN p7.queryid IS NULL THEN 'not run' ELSE 'ok' END AS d7_status,
+           CASE WHEN b.d7 = 'no baseline' THEN b.d7 WHEN p7.queryid IS NULL THEN 'not run'
+                WHEN p7.first_end > b.d7_half AND coalesce(t.first_seen > b.d7_half, true) THEN 'partial' ELSE 'ok' END AS d7_status,
            p7.calls AS d7_calls, p7.total_exec_ms AS d7_total, p7.total_exec_ms / nullif(p7.calls, 0) AS d7_mean,
            p7.pages / nullif(p7.calls, 0) AS d7_ppc
       FROM c CROSS JOIN b
       LEFT JOIN p1 ON p1.queryid = c.queryid
       LEFT JOIN p7 ON p7.queryid = c.queryid
+      LEFT JOIN pgvigil.statement_text t ON t.instance_id = p_instance_id AND t.queryid = c.queryid
   ), x AS (
+    -- a ratio only against an 'ok' baseline
     SELECT r.*,
-           r.calls / nullif(r.d1_calls, 0) AS d1_cr, r.total_exec_ms / nullif(r.d1_total, 0) AS d1_tr, r.ppc / nullif(r.d1_ppc, 0) AS d1_pr,
-           r.calls / nullif(r.d7_calls, 0) AS d7_cr, r.total_exec_ms / nullif(r.d7_total, 0) AS d7_tr, r.ppc / nullif(r.d7_ppc, 0) AS d7_pr
+           CASE WHEN r.d1_status = 'ok' THEN r.calls / nullif(r.d1_calls, 0) END AS d1_cr,
+           CASE WHEN r.d1_status = 'ok' THEN r.total_exec_ms / nullif(r.d1_total, 0) END AS d1_tr,
+           CASE WHEN r.d1_status = 'ok' THEN r.ppc / nullif(r.d1_ppc, 0) END AS d1_pr,
+           CASE WHEN r.d7_status = 'ok' THEN r.calls / nullif(r.d7_calls, 0) END AS d7_cr,
+           CASE WHEN r.d7_status = 'ok' THEN r.total_exec_ms / nullif(r.d7_total, 0) END AS d7_tr,
+           CASE WHEN r.d7_status = 'ok' THEN r.ppc / nullif(r.d7_ppc, 0) END AS d7_pr
       FROM r
   ), m AS (
     -- the largest of the six ratios and which one it is (the first of a tie, in this order)
@@ -140,27 +159,53 @@ LANGUAGE sql STABLE AS $$
    ORDER BY 1
 $$;
 
+-- the cached regressions: one row per firing statement of the instance's last refresh
+CREATE TABLE IF NOT EXISTS pgvigil.compare_findings_cache (
+  instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  queryid      bigint NOT NULL,
+  computed_at  timestamptz NOT NULL,
+  value        text NOT NULL,
+  detail       text NOT NULL,
+  PRIMARY KEY (instance_id, queryid)
+);
+
+-- a baseline's phrase in a finding's text: its figures, or its status alone
+CREATE OR REPLACE FUNCTION pgvigil.compare_phrase(p_label text, p_status text, p_calls float8, p_ppc float8, p_total float8)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT p_label || ': ' || CASE WHEN p_calls IS NULL THEN p_status
+    ELSE format('%s calls, %s pages a call, %s ms%s', round(p_calls::numeric), coalesce(round(p_ppc::numeric)::text, '-'),
+                coalesce(round(p_total::numeric)::text, '-'), CASE WHEN p_status = 'ok' THEN '' ELSE ' (' || p_status || ': no ratio)' END) END
+$$;
+
+-- refresh_compare_findings: the instance's regressions of the 24 hours to p_at (10 or more on a ratio, 1,000 calls or
+-- more in the window; 'partial', 'not run' and 'no baseline' never fire: no ratio); returns the rows kept
+CREATE OR REPLACE FUNCTION pgvigil.refresh_compare_findings(p_instance_id int, p_at timestamptz DEFAULT now())
+RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  n int;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('pgvigil.refresh_compare_findings'), p_instance_id);
+  DELETE FROM pgvigil.compare_findings_cache WHERE instance_id = p_instance_id;
+  INSERT INTO pgvigil.compare_findings_cache (instance_id, queryid, computed_at, value, detail)
+  SELECT p_instance_id, c.queryid, p_at,
+         'x' || round(c.max_ratio::numeric, 1)::text || ' ' || c.max_ratio_of,
+         format('the statement ran %s calls in the 24 hours at %s pages a call and %s ms in all (%s; %s): %s',
+                round(c.calls::numeric), coalesce(round(c.pages_per_call::numeric)::text, '-'), round(c.total_exec_ms::numeric),
+                pgvigil.compare_phrase('1 day earlier', c.d1_status, c.d1_calls, c.d1_pages_per_call, c.d1_total_exec_ms),
+                pgvigil.compare_phrase('7 days earlier', c.d7_status, c.d7_calls, c.d7_pages_per_call, c.d7_total_exec_ms),
+                left(regexp_replace(coalesce(c.query, '(no text)'), '\s+', ' ', 'g'), 200))
+    FROM pgvigil.statement_compare(p_instance_id, p_at - interval '1 day', p_at, 500) c
+   WHERE c.calls >= 1000 AND c.max_ratio >= 10;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
+
 -- compare_findings: the findings view's columns (instance_id, severity, setting, value, is_set, suggested, platforms,
--- detail, source, at). The window is the last 24 hours; a statement fires once, on its largest ratio of 10 or more,
--- with at least 1,000 calls in the window; 'not run' and 'no baseline' never fire (no ratio).
+-- detail, source, at), from the cache rows computed in the last two hours (an instance whose refresh stopped fires nothing)
 CREATE OR REPLACE VIEW pgvigil.compare_findings AS
-WITH k AS (SELECT 10.0::float8 AS ratio_min, 1000.0::float8 AS calls_min),
-c AS (
-  SELECT i.instance_id, s.*
-    FROM pgvigil.instances i
-   CROSS JOIN LATERAL pgvigil.statement_compare(i.instance_id, now() - interval '1 day', now(), 500) s
-   WHERE i.is_active
-)
-SELECT c.instance_id, 'warning'::text AS severity, 'statement ' || c.queryid::text AS setting,
-       'x' || round(c.max_ratio::numeric, 1)::text || ' ' || c.max_ratio_of AS value, true AS is_set,
-       'under x' || k.ratio_min::text || ' of its baseline' AS suggested, 'all'::text AS platforms,
-       format('the statement ran %s calls in the last 24 hours at %s pages a call and %s ms in all (1 day earlier: %s calls, %s pages a call, %s ms; 7 days earlier: %s calls, %s pages a call, %s ms): %s',
-              round(c.calls::numeric), round(c.pages_per_call::numeric), round(c.total_exec_ms::numeric),
-              coalesce(round(c.d1_calls::numeric)::text, c.d1_status), coalesce(round(c.d1_pages_per_call::numeric)::text, '-'),
-              coalesce(round(c.d1_total_exec_ms::numeric)::text, '-'),
-              coalesce(round(c.d7_calls::numeric)::text, c.d7_status), coalesce(round(c.d7_pages_per_call::numeric)::text, '-'),
-              coalesce(round(c.d7_total_exec_ms::numeric)::text, '-'),
-              left(regexp_replace(coalesce(c.query, '(no text)'), '\s+', ' ', 'g'), 200)) AS detail,
-       'pgvigil compare'::text AS source, now() AS at
-  FROM c, k
- WHERE c.calls >= k.calls_min AND c.max_ratio >= k.ratio_min;
+SELECT c.instance_id, 'warning'::text AS severity, 'statement ' || c.queryid::text AS setting, c.value, true AS is_set,
+       'under x10 of its baseline'::text AS suggested, 'all'::text AS platforms, c.detail,
+       'pgvigil compare'::text AS source, c.computed_at AS at
+  FROM pgvigil.compare_findings_cache c
+  JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
+ WHERE c.computed_at > now() - interval '2 hours';

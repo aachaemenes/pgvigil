@@ -13,7 +13,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 interface CompareData { windows: Table | null; rows: Table | null }
 interface HistoryData { history: Table | null }
 
-const ratioMin = 10, callsMin = 1000;
+const ratioMin = 10, callsMin = 1000, limit = 200;
 
 const ms = (v: unknown) => v == null ? '' : fmtNum(Math.round(Number(v) * 100) / 100) + ' ms';
 const whole = (v: unknown) => v == null ? '' : fmtNum(Math.round(Number(v)));
@@ -31,6 +31,7 @@ function baseline(prefix: 'd1' | 'd7'): (v: unknown, r: Row) => string | Node {
     const st = String(r[prefix + '_status'] ?? '');
     if (st === 'no baseline') return badge('no baseline', '');
     if (st === 'not run') return 'not run';
+    if (st === 'partial') return el('span', { title: 'the statement began in this window\'s second half: no ratio' }, whole(v) + ' (partial)');
     return whole(v);
   };
 }
@@ -114,7 +115,7 @@ async function history(ctx: Ctx, r: Row, out: HTMLElement): Promise<void> {
 
 export async function compareView(ctx: Ctx): Promise<HTMLElement> {
   // the SETs column reads the session_sets list beside the compare; its failure leaves the column 'not read'
-  const [d, sets] = await Promise.all([get<CompareData>('compare', { instance: ctx.instance, ...window_(ctx) }),
+  const [d, sets] = await Promise.all([get<CompareData>('compare', { instance: ctx.instance, ...window_(ctx), limit }),
     readSets(ctx).catch(() => null)]);
   const byRole = sets ? setsByRole(sets.sets) : null;
   const windows = rowsOf(d.windows), rows = rowsOf(d.rows);
@@ -122,7 +123,8 @@ export async function compareView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('p', { class: 'meta' }, 'Each statement (its queryid) in the window against the same window one day and seven days '
     + 'earlier: calls, total and mean time, and pages a call (shared blocks hit + read). A ratio of '
     + `${ratioMin} or more on a statement with ${fmtNum(callsMin)} calls or more in the window is marked: it is a regression `
-    + '(the Findings list the last 24 hours\' ones). "not run": the instance was read then and the statement did not run; '
+    + '(the Findings list the last 24 hours\' ones). "partial": the statement began in that window\'s second half, so it has '
+    + 'figures and no ratio; "not run": the instance was read then and the statement did not run; '
     + '"no baseline": nothing was read then. The figures are pg_stat_statements deltas, each scaled by its share of the window. '
     + 'The session SETs column lists what the statement\'s roles SET or RESET in the window (the Configuration tab has them all): '
     + 'a planner setting there means the application planned the statement under it.'));
@@ -131,7 +133,8 @@ export async function compareView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'status', fmt: v => windowText[String(v)] ?? String(v ?? '') },
   ]));
   const regress = rows.filter(r => Number(r.calls) >= callsMin && Number(r.max_ratio) >= ratioMin).length;
-  sec.append(el('p', { class: 'meta' }, `${rows.length} statement(s), ${regress} regression(s).`));
+  sec.append(el('p', { class: 'meta' }, (rows.length >= limit ? `The first ${limit} statements by the largest ratio (the window may hold more)` : `${rows.length} statement(s)`)
+    + `, ${regress} regression(s) among them.`));
   const detail = el('div', { class: 'compare-history', 'aria-live': 'polite' });
   sec.append(grid(rows, cols((r) => { void history(ctx, r, detail); }, byRole),
     'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'), detail);
