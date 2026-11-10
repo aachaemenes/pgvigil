@@ -203,6 +203,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/pi", s.PILoad)
 	api.HandleFunc("GET /api/capacity", s.Capacity)
 	api.HandleFunc("GET /api/waits", s.Waits)
+	api.HandleFunc("GET /api/perfsummary", s.PerfSummary)
+	api.HandleFunc("GET /api/performance", s.Performance)
 	api.HandleFunc("GET /api/indexes", s.Indexes)
 	api.HandleFunc("POST /api/indexes/advise", s.IndexAdvisor)
 	api.HandleFunc("GET /api/dmsio", s.DMSIO)

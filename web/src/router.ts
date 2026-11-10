@@ -27,9 +27,9 @@ export function rememberInstance(id?: number) { if (id) try { localStorage.setIt
 
 export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', perfsummary: 'Performance summary' };
 export const instanceTabs: Record<string, string> = {
-  summary: 'Summary', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
+  summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom',
 };
@@ -40,7 +40,7 @@ const legacy: Record<string, string> = { overview: 'checks' };
 // rootTabs and instanceTabs still name every page; a group only says which pages share a strip.
 export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'alerts', 'slowqueries', 'findings', 'instances'] },
+  { key: 'main', name: '', tabs: ['summary', 'alerts', 'perfsummary', 'slowqueries', 'findings', 'instances'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
@@ -49,7 +49,7 @@ export const rootGroups: TabGroup[] = [
   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
 ];
 export const instanceGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'memory', 'findings', 'logs'] },
+  { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'memory', 'findings', 'logs'] },
   { key: 'checks', name: 'Checks', tabs: ['corruption', 'vacuum', 'indexes', 'custom'] },
   { key: 'conf', name: 'Configuration', tabs: ['config', 'extensions', 'versions', 'roles', 'schema', 'actions'] },
   { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'pooler'] },
@@ -60,12 +60,12 @@ export const instanceGroups: TabGroup[] = [
 // A SQL Server instance has its own pages (the engine of the instance chooses the tab set; a PostgreSQL page is
 // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
 export const mssqlInstanceTabs: Record<string, string> = {
-  summary: 'Summary', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_deadlocks: 'Deadlocks',
+  summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_deadlocks: 'Deadlocks',
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
+  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
   { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs'] },

@@ -4,6 +4,16 @@ import { el } from './ui';
 
 // live charts, destroyed before the next page is drawn (each holds window listeners)
 const live: uPlot[] = [];
+// fitAxis sizes the value axis to its longest label (uPlot's own axis-autosize demo): a fixed 70 px cut '4,000 ms/s'
+function fitAxis(u: uPlot, values: string[] | null, axisIdx: number, cycleNum: number): number {
+  const a = u.axes[axisIdx] as uPlot.Axis & { _size?: number };
+  if (cycleNum > 1 && a._size) return a._size;
+  let size = ((a.ticks as { size?: number } | undefined)?.size ?? 10) + (a.gap ?? 5);
+  const longest = (values ?? []).reduce((acc, v) => (v.length > acc.length ? v : acc), '');
+  if (longest) { u.ctx.font = (a.font as unknown as string[] | undefined)?.[0] ?? u.ctx.font; size += u.ctx.measureText(longest).width / devicePixelRatio; }
+  return Math.ceil(Math.max(size, 40));
+}
+
 export function destroyCharts() { while (live.length) live.pop()!.destroy(); }
 
 // The series colours: one categorical order per theme (the stylesheet's --s1..--s8, each set validated for
@@ -35,7 +45,7 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     width: 560, height: 220,
     series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: 2,
                                             value: (_u: uPlot, v: number | null) => v == null ? '' : fmt(v) }))],
-    axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: 70 }],
+    axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis }],
     scales: { x: { time: true } },
   };
   // size to the container once it is in the page

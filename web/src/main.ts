@@ -34,6 +34,8 @@ import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
+import { perfSummaryView } from './perfsummary';
+import { performanceView } from './performance';
 import { mssqlSummary } from './mssql_summary';
 import { mssqlWaitsView } from './mssql_waits';
 import { mssqlBlocked, mssqlDeadlocks, mssqlSlow, mssqlAgEvents } from './mssql_xe';
@@ -52,15 +54,15 @@ import { exportButtons } from './export';
 type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
-  summary: mssqlSummary, findings: c => findings(c),
+  summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: mssqlSlow,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
 };
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView };
 const instancePages: Record<string, Render> = {
-  summary: instanceSummary, activity, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
+  summary: instanceSummary, performance: performanceView, activity, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
   host: async c => { const s = await hostView(c); s.append(await capacitySection(c)); return s; },   // the Capacity section (Serverless v2) under the host's own
   storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),
