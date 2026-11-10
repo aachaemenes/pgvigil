@@ -1,0 +1,25 @@
+# Grafana datasource provisioning for the pgvigil repository (an example: copy it under
+# /etc/grafana/provisioning/datasources/ and set the four environment variables in Grafana's environment).
+# The login is a member of pgvigil_reader only (docs/grafana.md: the reader login); the dashboards read
+# the repository's views and read functions, never a raw table, and nothing here writes.
+apiVersion: 1
+
+datasources:
+  - name: pgvigil
+    uid: pgvigil
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: ${PGVIGIL_GRAFANA_HOST}
+    user: ${PGVIGIL_GRAFANA_USER}
+    isDefault: false
+    editable: false
+    jsonData:
+      database: ${PGVIGIL_GRAFANA_DATABASE}
+      sslmode: ${PGVIGIL_GRAFANA_SSLMODE}
+      postgresVersion: 1500
+      timescaledb: false
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: ${PGVIGIL_GRAFANA_PASSWORD}

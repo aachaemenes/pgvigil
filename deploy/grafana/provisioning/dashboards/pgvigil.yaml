@@ -1,0 +1,17 @@
+# Grafana dashboard provisioning for pgvigil: copy it under /etc/grafana/provisioning/dashboards/ and the
+# dashboards/ folder to the path below. The dashboards land in a 'pgvigil' folder, read only in the UI
+# (a change is made in the JSON and reloaded, so an upgrade of the files never fights a hand edit).
+apiVersion: 1
+
+providers:
+  - name: pgvigil
+    orgId: 1
+    folder: pgvigil
+    folderUid: pgvigil
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards/pgvigil
+      foldersFromFilesStructure: false
