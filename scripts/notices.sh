@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Writes docs/notices.md: every Go module linked into the pgvigil binary with its licence, from
 # go-licenses (google/go-licenses v1.6.0, confidence 0.9) over ./cmd/pgvigil. Run it after a go.mod change
-# and commit the result; the frontend's one dependency (uPlot) is listed by hand at the end, from
-# web/package.json. THIRD-PARTY-NOTICES.md stays the file for borrowed CODE and ideas (queries, rules,
+# and commit the result; the frontend's dependencies (uPlot; pev2 with vue, bootstrap's CSS and
+# fontawesome's styles for the Plan page) are listed at the end from web/package.json and web/node_modules. THIRD-PARTY-NOTICES.md stays the file for borrowed CODE and ideas (queries, rules,
 # designs); this one is the binary's module inventory for a software review.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,6 +11,8 @@ GOBIN_DIR=$(go env GOBIN); [[ -n "$GOBIN_DIR" ]] || GOBIN_DIR=$(go env GOPATH)/b
 TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
 "$GOBIN_DIR/go-licenses" report ./cmd/pgvigil 2>/dev/null | sort > "$TMP"
 UPLOT=$(sed -n 's/.*"uplot": *"\([^"]*\)".*/\1/p' web/package.json)
+ver() { sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "web/node_modules/$1/package.json" | head -1; }   # the installed version of a web package
+PEV2=$(ver pev2); VUE=$(ver vue); BOOTSTRAP=$(ver bootstrap); FA=$(ver @fortawesome/fontawesome-svg-core)
 {
   echo "# Third-party modules in the pgvigil binary"
   echo
@@ -28,6 +30,10 @@ UPLOT=$(sed -n 's/.*"uplot": *"\([^"]*\)".*/\1/p' web/package.json)
   echo "| Package | Version | Licence |"
   echo "|---|---|---|"
   echo "| \`uplot\` (bundled into \`internal/web/dist/app.js\`) | $UPLOT | MIT |"
+  echo "| \`pev2\` (the plan viewer, bundled into \`internal/web/dist/pev2/pev2.js\`, loaded only on the Plan page; its own bundle's parts are listed in THIRD-PARTY-NOTICES.md) | $PEV2 | PostgreSQL |"
+  echo "| \`vue\` (pev2's framework, \`internal/web/dist/pev2/vue.js\`) | $VUE | MIT |"
+  echo "| \`bootstrap\` (CSS only, inside the viewer's shadow root, \`internal/web/dist/pev2/bootstrap.min.css\`) | $BOOTSTRAP | MIT |"
+  echo "| \`@fortawesome/fontawesome-svg-core\` (styles.css as \`internal/web/dist/pev2/fontawesome.css\`) | $FA | MIT |"
   echo
   echo "pgvigil itself is MIT ([LICENSE](../LICENSE))."
 } > docs/notices.md
