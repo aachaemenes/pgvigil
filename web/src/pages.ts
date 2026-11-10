@@ -327,7 +327,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       // a green cell says nothing: the colour is the status, and text is kept for a count, a value or 'no sample'
       // (the link keeps its name for a screen reader and the export)
       const quiet = !c.none && c.level === 0 && !c.text;
-      const a = el('a', { href: href(ctx, { tab: g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u00a0' : cellText(c));
+      const a = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u00a0' : cellText(c));
       if (c.detail.length) a.title = c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
       return a;
     },

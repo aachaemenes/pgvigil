@@ -34,6 +34,7 @@ import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
+import { mssqlSummary } from './mssql_summary';
 import { mssqlWaitsView } from './mssql_waits';
 import { mssqlBlocked, mssqlDeadlocks, mssqlSlow, mssqlAgEvents } from './mssql_xe';
 import { hasAvailability, mssqlAvailability } from './mssql_hadr';
@@ -49,7 +50,7 @@ import { exportButtons } from './export';
 type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
-  summary: c => instanceSummary(c), findings: c => findings(c),
+  summary: mssqlSummary, findings: c => findings(c),
   mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: mssqlSlow,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,

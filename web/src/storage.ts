@@ -5,7 +5,7 @@
 // fleet's volumes, the soonest full first, and the repository's own size. Data from /api/storage and
 // /api/storage/fleet.
 import { get, Row, rowsOf, Table } from './api';
-import { donutChart, lineChart } from './chart';
+import { donutChart, lineChart, volumeBars } from './chart';
 import { series } from './dbinfo';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
@@ -48,17 +48,14 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
     tile('databases', fmtBytes(rowsOf(d.databases).reduce((a, r) => a + Number(r.size_bytes ?? 0), 0))),
   ));
 
-  // the rings (DBA Dash's pie charts): each volume used against free, what each database holds; then the growth
-  // of a chosen number of days
+  // volumes as bars, used against size (DBA Dash's drive bars); the databases as a pie of what each holds; then
+  // the growth of a chosen number of days
   const pies = el('div', { class: 'charts' });
-  for (const v of vols.slice(0, 6)) {
-    if (v.used_bytes == null || v.free_bytes == null) continue;
-    pies.append(donutChart(`Volume ${String(v.volume ?? '')}${v.holds_data ? ' (data)' : ''}`,
-      [{ label: 'used', value: Number(v.used_bytes) }, { label: 'free', value: Number(v.free_bytes) }], fmtBytes, 8, true));
-  }
+  const bars = volumeBars('Volumes', vols.filter(v => v.used_bytes != null && v.free_bytes != null)
+    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes), note: v.holds_data ? '(data)' : undefined })), fmtBytes);
   pies.append(donutChart('Databases by size',
     rowsOf(d.databases).map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0) })), fmtBytes));
-  sec.append(el('h3', {}, 'Space at a glance'), pies, growthPanel(ctx));
+  sec.append(el('h3', {}, 'Space at a glance'), bars, pies, growthPanel(ctx));
 
   const checks = rowsOf(d.checks);
   if (checks.length) {

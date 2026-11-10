@@ -167,3 +167,4 @@ h2 { font-size: 1.05rem; } h3 { font-size: 1rem; }
 .bar-cell { width: 45%; min-width: 10rem; }
 .bar { display: block; height: .9rem; background: var(--line); }
 .bar-fill { display: block; height: 100%; background: var(--ok); } .bar-fill.warn { background: var(--warn); } .bar-fill.crit { background: var(--crit); }
+.bars-table td { white-space: nowrap; }
