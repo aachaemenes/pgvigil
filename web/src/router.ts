@@ -30,7 +30,7 @@ export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 2
 export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
-  io: 'IO', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
+  io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', indexes: 'Indexes', plans: 'Plans', actions: 'Actions log',
 };
 const legacy: Record<string, string> = { overview: 'checks' };

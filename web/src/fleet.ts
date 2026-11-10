@@ -32,7 +32,7 @@ export const groups: Group[] = [
   { key: 'tables', label: 'Tables', checks: ['tables'], tab: 'tables' },
   { key: 'vacuum', label: 'Vacuum', checks: ['vacuum'], tab: 'vacuum' },
   { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters' },
-  { key: 'host', label: 'Host', checks: ['host'], tab: 'host' },
+  { key: 'host', label: 'Host', checks: ['host', 'pi'], tab: 'host' },   // 'pi': cache starved by the ACU floor (the Capacity section sits on the Host tab)
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
   { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage' },
   { key: 'backups', label: 'Backups', checks: ['backups'], tab: 'backups' },

@@ -28,6 +28,7 @@ SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coales
 // an interval of 0 = disabled there. $2 = the age used when neither names the collection.
 var overviewChecks = []struct{ name, sql string }{
 	IOOverviewCheck,
+	PIOverviewCheck,
 	{"collection failing", `
 SELECT c.instance_id, 'critical' AS severity, 'collection failing' AS check_name, c.collection AS object,
        c.snapshot_at AS at, c.note AS detail
