@@ -60,7 +60,19 @@
 #    characters; the status line begins 'Blocked sessions: 2'.
 # G. Pages C, D and F render in the dark theme too (the same row counts); with PGVIGIL_SHOTS the screenshots of the
 #    fleet page, P1's page, the viewer open, M's page and two demo instances' pages are saved in both themes.
-# NOT PROVEN HERE: the accessibility rules (scripts/proof-a11y.sh walks every tab once wired); the fleet read's cost
+# [review fold, expected before the rerun]
+# H. M also has a snapshot at S - 3 h (one session, nothing blocked); the newest stays S, so A is unchanged.
+#    H1. P1's page at S: 109 (an IO wait whose stale blocking_pids names 100) has an empty 'blocked by' cell.
+#    H2. From P1's page at S-60 s: Later moves the address to at= S; Latest leaves no at= in the address.
+#    H3. #/mssql_running?i=<M>&w=1h&at=<S - 3 h + 10 s>: the heading says 'the hour up to', the snapshot row names
+#        S - 3 h, the sessions grid has 1 row.
+#    H4. The viewer open again: a click 5 px inside its top-left corner (its own padding) leaves it open; a click
+#        on the backdrop 10 px from the window's corner closes it.
+#    H5. The Blocked filter pressed on P1's page; demo-rds-orders01's page opens with it unpressed (one state per
+#        instance).
+# NOT PROVEN HERE: an at= older than the 1,500 snapshots a long range's list keeps (the second widening rule: it
+# needs a day of minute snapshots); the filter and group state across the 30-second redraw;
+# the accessibility rules (scripts/proof-a11y.sh walks every tab once wired); the fleet read's cost
 # at hundreds of instances; a screen reader's reading of the chain tree.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -69,10 +81,10 @@ WORK=$(mktemp -d); DB="pgvigil_runfleet_$RANDOM"; PORT=$((21000 + RANDOM % 9000)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
   rc=$?
-  [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
-  [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true
+  [[ -n "$SRV" ]] && { kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null; } || true
+  [[ -n "$CHR" ]] && { kill "$CHR" 2>/dev/null; wait "$CHR" 2>/dev/null; } || true
   [[ -n "$MADE_DB" ]] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $DB not dropped" >&2; }
-  rm -rf "$WORK"
+  rm -rf "$WORK" || true
   exit $rc
 }
 trap cleanup EXIT
@@ -146,6 +158,10 @@ SELECT pgvigil.import_mssql_requests(:M, :'S'::timestamptz, jsonb_build_array(
   jsonb_build_object('kind', 'request', 'session_id', 55, 'request_id', 0, 'status', 'background', 'command', 'BRKR TASK', 'wait_type', 'BROKER_TRANSMITTER',
     'wait_ms', 999000, 'wait_is_benign', true, 'elapsed_ms', 999000, 'is_user_process', 0),
   jsonb_build_object('kind', 'blocking', 'head_session_id', 51, 'victims', 2, 'longest_wait_ms', 90000)));
+SELECT pgvigil.import_mssql_requests(:M, :'S'::timestamptz - interval '3 hours', jsonb_build_array(
+  jsonb_build_object('kind', 'summary', 'server_utc', :'S'::timestamptz - interval '3 hours', 'source', 'dmv', 'source_note', 'proof', 'memory_grants_pending', 0, 'read_ms', 9),
+  jsonb_build_object('kind', 'request', 'session_id', 61, 'request_id', 0, 'status', 'running', 'command', 'SELECT', 'elapsed_ms', 1500,
+    'login_name', 'report', 'program_name', 'Reports', 'database_name', 'Shop', 'is_user_process', 1)));
 SQL
 echo "S=$S P1=$P1 P2=$P2 P3=$P3 M=$M"
 
@@ -314,6 +330,9 @@ for (const theme of ['light', 'dark']) {
   check(gr?.n === 8, T + `D: the group 'active' opens ${gr?.n} sessions`);
   await ev(`(() => { const sel = document.querySelector('.folded select'); sel.value = ''; sel.dispatchEvent(new Event('change')); })(); 'ok'`);
   await shot('pg-instance', theme);
+  // H1. a stale blocker of a non-Lock wait is no blocker
+  const by109 = await ev(`(() => { const t = document.querySelector('.folded table'); const i = [...t.querySelectorAll('thead th')].map(x => x.textContent).indexOf('blocked by'); const r = [...t.querySelectorAll('tbody tr')].find(x => x.cells[0].textContent === '109'); return r ? r.cells[i].textContent : null; })()`);
+  check(by109 === '', T + `H1: 109's blocked by '${by109}'`);
   // E. the viewer on 101's statement
   await ev(`(() => { const b = ${sessCell(101)}; b.focus(); b.click(); })(); 'ok'`);
   const open = await ev(`(() => { const d = document.querySelector('dialog.sqlview'); return d ? { open: d.open, modal: d.matches(':modal'), len: d.querySelector('pre').textContent.length, inside: d.contains(document.activeElement) } : null; })()`);
@@ -327,10 +346,35 @@ for (const theme of ['light', 'dark']) {
   await sleep(200);
   const closed = await ev(`({ gone: !document.querySelector('dialog.sqlview'), back: document.activeElement === ${sessCell(101)} })`);
   check(closed.gone && closed.back, T + `E: Escape closed it ${JSON.stringify(closed)}`);
+  // H4. a click in the dialog's own padding keeps it; a click on the backdrop closes it
+  await ev(`(() => { const b = ${sessCell(101)}; b.focus(); b.click(); })(); 'ok'`);
+  const box = await ev(`(() => { const r = document.querySelector('dialog.sqlview').getBoundingClientRect(); return { x: r.left + 5, y: r.top + 5 }; })()`);
+  const click = async (x, y) => { for (const type of ['mousePressed', 'mouseReleased']) await cmd('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 }); await sleep(150); };
+  await click(box.x, box.y);
+  const kept = await ev(`!!document.querySelector('dialog.sqlview')?.open`);
+  await click(10, 10);
+  const gone = await ev(`!document.querySelector('dialog.sqlview')`);
+  check(kept && gone, T + `H4: a click in the padding kept it (${kept}), a backdrop click closed it (${gone})`);
   await ev(`${btn('Earlier')}.click(); 'ok'`);
   await until(`new URLSearchParams(location.hash.split('?')[1]).get('at') !== ${JSON.stringify(a.s)}`, 3000);
   const ea = new URLSearchParams((await ev('location.hash')).split('?')[1]).get('at');
   check(ea && iso(ea) === iso(new Date(new Date(a.s).getTime() - 60000)), T + `D: Earlier moves to at=${ea}`);
+  // H2. Later and Latest from S-60 (the page at S-60 rendered first: its snapshot line names S-60)
+  const s60 = new Date(Date.parse(a.s) - 60000).toISOString();
+  await until(`document.querySelector('.snap-time')?.textContent === 'Snapshot ' + new Date(${JSON.stringify(s60)}).toLocaleString(undefined, { hour12: false })`, 8000);
+  await ev(`${btn('Later')}.click(); 'ok'`);
+  await until(`new URLSearchParams(location.hash.split('?')[1]).get('at') !== ${JSON.stringify(ea)}`, 3000);
+  const la = new URLSearchParams((await ev('location.hash')).split('?')[1]).get('at');
+  await until(`document.querySelector('.snap-time')?.textContent === 'Snapshot ' + new Date(${JSON.stringify(a.s)}).toLocaleString(undefined, { hour12: false })`, 8000);
+  await ev(`${btn('Latest')}.click(); 'ok'`);
+  await until(`!new URLSearchParams(location.hash.split('?')[1]).has('at')`, 3000);
+  const lt = new URLSearchParams((await ev('location.hash')).split('?')[1]);
+  check(la && iso(la) === iso(a.s) && !lt.has('at'), T + `H2: Later -> at=${la}, Latest -> at= ${lt.has('at') ? 'still there' : 'gone'}`);
+  // H5. the Blocked filter is one instance's
+  check(await go(`#/activity?i=${a.p1}&w=1h&at=${encodeURIComponent(a.s)}`, `!!document.querySelector('.folded table')`), T + 'H5: P1 page again');
+  await ev(`${bb}.click(); 'ok'`);
+  check(await go(`#/activity?i=${a.dpg}`, `!!document.querySelector('.folded table')`), T + 'H5: the demo page');
+  check(await ev(`${bb}.getAttribute('aria-pressed')`) === 'false', T + 'H5: Blocked unpressed on another instance');
   // F. M's page
   check(await go(`#/mssql_running?i=${a.m}&w=1h&at=${encodeURIComponent(a.s)}`, `!!document.querySelector('.folded table')`), T + 'F: M page rendered');
   const longest = await ev(`Math.max(0, ...[...document.querySelectorAll('main p')].map(p => p.textContent.length))`);
@@ -344,6 +388,12 @@ for (const theme of ['light', 'dark']) {
   const ms = await ev(`document.querySelector('.running-status')?.textContent ?? ''`);
   check(ms.startsWith('Blocked sessions: 2'), T + `F: status '${ms.slice(0, 70)}'`);
   await shot('mssql-instance', theme);
+  // H3. an at= before the range: the hour up to it
+  const old = new Date(Date.parse(a.s) - 3 * 3600e3 + 10e3).toISOString();
+  check(await go(`#/mssql_running?i=${a.m}&w=1h&at=${encodeURIComponent(old)}`, `!!document.querySelector('.folded table')`), T + 'H3: M page at S-3h rendered');
+  const h3 = await ev(`({ h: document.querySelector('main h2')?.textContent ?? '', s: document.querySelector('.snap-time')?.textContent ?? '', n: document.querySelectorAll('.folded table tbody tr').length,
+    want: 'Snapshot ' + new Date(${JSON.stringify(new Date(Date.parse(a.s) - 3 * 3600e3).toISOString())}).toLocaleString(undefined, { hour12: false }) })`);
+  check(h3.h.includes('the hour up to') && h3.s === h3.want && h3.n === 1, T + `H3: ${JSON.stringify(h3)}`);
   // the demo's own instances, for the record
   if (a.shots) {
     await go(`#/activity?i=${a.dpg}`, `!!document.querySelector('.folded table')`); await shot('demo-pg', theme);

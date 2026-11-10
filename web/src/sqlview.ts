@@ -38,8 +38,9 @@ export function openViewer(heading: string, text: string, code = true): void {
   const close = el('button', { type: 'button', class: 'sqlview-close' }, 'Close');
   const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const dlg = el('dialog', { class: 'sqlview', 'aria-labelledby': id,
-    style: 'width:min(64rem,92vw);max-height:90vh;background:var(--card);color:var(--fg);border:1px solid var(--line);padding:1rem' },
-    el('h3', { id, style: 'margin:0' }, heading), pre, el('div', {}, copy, ' ', close, ' ', said));
+    style: 'width:min(64rem,92vw);max-height:90vh;background:var(--card);color:var(--fg);border:1px solid var(--line);padding:0' },
+    // the padding is the inner box's: a click in it is inside the content, never taken for the backdrop below
+    el('div', { style: 'padding:1rem' }, el('h3', { id, style: 'margin:0' }, heading), pre, el('div', {}, copy, ' ', close, ' ', said)));
   copy.addEventListener('click', () => {
     void copyText(text, pre).then(ok => { said.textContent = ok ? `Copied (${text.length.toLocaleString()} characters).` : 'Not copied: select the text and copy it.'; });
   });

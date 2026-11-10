@@ -205,10 +205,12 @@ function snapshotBar(ctx: Ctx, at: string | undefined, steps: Steps): HTMLElemen
 export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   if (!ctx.instance) return el('p', { class: 'empty' }, 'Pick an instance in the tree on the left.');
   const at = ctx.at ?? (isLive(ctx) ? undefined : window_(ctx).to);
-  const [a, act, stepsT] = await Promise.all([
-    get<Activity>('activity', { instance: ctx.instance, at }), actionsState(ctx.instance),
-    // the steps are a convenience: a server without the endpoint (an older build) leaves the buttons off
-    get<{ steps: Table | null }>('running/snapshots', { instance: ctx.instance, at }).catch(() => ({ steps: null }))]);
+  const [a, act] = await Promise.all([get<Activity>('activity', { instance: ctx.instance, at }), actionsState(ctx.instance)]);
+  // the steps around the snapshot the activity read chose, read after it (two parallel reads of 'the newest' can
+  // straddle a new minute's snapshot); a convenience: a server without the endpoint leaves the buttons off
+  const stepsT = a.snapshot_at
+    ? await get<{ steps: Table | null }>('running/snapshots', { instance: ctx.instance, at: a.snapshot_at }).catch(() => ({ steps: null }))
+    : { steps: null };
   const steps: Steps = rowsOf(stepsT.steps)[0] ?? { shown: a.snapshot_at };
   const sec = el('section', {}, el('h2', {}, 'Running queries'), snapshotBar(ctx, at, steps));
   if (!a.snapshot_at) { sec.append(el('p', { class: 'empty' }, 'No activity snapshot for this instance yet.')); return sec; }
@@ -254,7 +256,8 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
 
   const rows = sessions.map(r => {
     const pid = Number(r.pid), head = ch.heads.includes(pid);
-    return { ...r, _blockedby: pidsOf(r.blocking_pids).join(', '), _head: head ? 'head' : ch.headOf.has(pid) ? String(ch.headOf.get(pid)) : isBlocked(r) ? 'cycle' : '',
+    return { ...r, _blockedby: isBlocked(r) ? pidsOf(r.blocking_pids).join(', ') : '',   // a stale blocker of a non-Lock wait is no blocker
+      _head: head ? 'head' : ch.headOf.has(pid) ? String(ch.headOf.get(pid)) : isBlocked(r) ? 'cycle' : '',
       _behind: ch.behind.get(pid) ?? 0, _wait: r.wait_event_type == null ? '' : `${String(r.wait_event_type)}: ${String(r.wait_event ?? '')}` };
   });
   const cols: Col[] = [
@@ -277,7 +280,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
   ];
   const text = (k: string) => (r: Row) => String(r[k] ?? '');
   sec.append(el('h3', {}, 'Sessions'), foldedGrid({
-    store: 'pgvigil.running.pg', rows, cols, empty: 'No active or idle-in-transaction sessions in this snapshot.',
+    store: `pgvigil.running.pg.${ctx.instance}`, rows, cols, empty: 'No active or idle-in-transaction sessions in this snapshot.',
     blocked: ch.blocked, inChain: r => r._head !== '', waiting: isBlocked,
     age: r => r.query_secs == null ? null : Number(r.query_secs), ageLabel: 'longest query age',
     groups: [['database', text('datname')], ['user', text('usename')], ['application', text('application_name')], ['state', text('state')], ['wait', text('_wait')]],

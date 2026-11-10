@@ -131,7 +131,7 @@ function treeRows(rows: Row[], heads: Row[]): Row[] {
 // body draws one snapshot. picked is the snapshot the slider chose; without it the page shows the newest of the
 // window (the list is newest first), which is also the one the API returned. A quiet minute has no row to read
 // its time from, so the time never comes from the rows.
-function body(d: RunningData, picked?: unknown): HTMLElement {
+function body(d: RunningData, instance: number | undefined, picked?: unknown): HTMLElement {
   const box = el('div');
   const rows = rowsOf(d.rows), heads = rowsOf(d.blocking);
   const snaps = rowsOf(d.snapshots);
@@ -157,7 +157,7 @@ function body(d: RunningData, picked?: unknown): HTMLElement {
   const text = (k: string) => (r: Row) => String(r[k] ?? '');
   const inChain = (r: Row) => r.head_session_id != null || r.chain_note != null || Number(r.blocking_session_id) > 0;
   box.append(el('h3', {}, 'Sessions and requests ', whatIsThis(sessionsNote, 'Sessions and requests')), foldedGrid({
-    store: 'pgvigil.running.mssql', rows, cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
+    store: `pgvigil.running.mssql.${instance}`, rows, cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
     blocked: nBlocked, inChain, waiting: r => Number(r.blocking_session_id) > 0,
     age: r => r.elapsed_ms == null ? null : Math.floor(Number(r.elapsed_ms) / 1000), ageLabel: 'longest running for',
     groups: [['database', text('database_name')], ['login', text('login_name')], ['program', text('program_name')], ['status', text('status')], ['wait', text('wait_type')]],
@@ -169,9 +169,15 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
   // at= (the fleet page's row): the snapshot at or before that time; when it is older than the range, the hour up to it
   let win = window_(ctx);
   const at = ctx.at && !isNaN(Date.parse(ctx.at)) ? ctx.at : undefined;
-  const widened = !!at && (Date.parse(at) <= Date.parse(win.from) || Date.parse(at) > Date.parse(win.to));
-  if (at && widened) win = { from: new Date(Date.parse(at) - 3600000).toISOString(), to: new Date(Date.parse(at) + 1000).toISOString() };
-  const d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
+  const hourUpTo = (t: string) => ({ from: new Date(Date.parse(t) - 3600000).toISOString(), to: new Date(Date.parse(t) + 1000).toISOString() });
+  let widened = !!at && (Date.parse(at) <= Date.parse(win.from) || Date.parse(at) > Date.parse(win.to));
+  if (at && widened) win = hourUpTo(at);
+  let d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
+  // at= older than every snapshot the range's list kept (it keeps the newest 1,500, a day of minutes): the hour up to it
+  if (at && !widened && !rowsOf(d.snapshots).some(s => Date.parse(String(s.snapshot_at)) <= Date.parse(at))) {
+    widened = true; win = hourUpTo(at);
+    d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
+  }
   const sec = el('section', {}, el('h2', {}, `Running queries (${widened ? 'the hour up to ' + fmtTime(at) : rangeLabel(ctx)})`));
   const st = rowsOf(d.state)[0];
   if (st && st.status !== 'ok') sec.append(el('p', { class: 'meta' }, `The mssql_requests collection's last run: ${String(st.status)}${st.note ? ' (' + String(st.note) + ')' : ''}.`));
@@ -196,7 +202,7 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
       try {
         const pick = snaps[Number(slider.value)].snapshot_at;
         const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(pick) });
-        if (mine === seq) holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, pick));
+        if (mine === seq) holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, ctx.instance, pick));
       } catch (e) { if (mine === seq) holder.replaceChildren(errorBox(e)); }
     };
     const step = (by: number) => { slider.value = String(Math.min(snaps.length - 1, Math.max(0, Number(slider.value) + by))); void load(); };
@@ -210,7 +216,7 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('p', { class: 'range' }, el('label', { for: 'mssql-snap' }, `Snapshot (${snaps.length} kept in the range${isLive(ctx) && !at ? '' : ', history'}): `),
       prev, ' ', slider, ' ', next, ' ', last, out));
   }
-  holder.append(body(d, start >= 0 && snaps.length ? snaps[start].snapshot_at : at ? null : undefined));   // at= before the first kept snapshot: none to show
+  holder.append(body(d, ctx.instance, start >= 0 && snaps.length ? snaps[start].snapshot_at : at ? null : undefined));   // at= before the first kept snapshot: none to show
   sec.append(holder);
   return sec;
 }
