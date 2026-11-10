@@ -1,0 +1,6 @@
+Index Only Scan using h40_pkey on h40  (cost=0.42..1648.48 rows=49832 width=4) (actual time=0.024..4.718 rows=49999.00 loops=1)
+  Index Cond: (id < 50000)
+  Heap Fetches: 49999
+  Index Searches: 1
+Planning Time: 0.234 ms
+Execution Time: 6.114 ms

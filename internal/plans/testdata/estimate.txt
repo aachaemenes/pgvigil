@@ -1,0 +1,5 @@
+Seq Scan on e40  (cost=0.00..3885.00 rows=1 width=8) (actual time=0.012..5.821 rows=200.00 loops=1)
+  Filter: ((a = 1) AND (b = 1))
+  Rows Removed by Filter: 199800
+Planning Time: 0.187 ms
+Execution Time: 5.849 ms

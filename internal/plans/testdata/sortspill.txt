@@ -1,0 +1,6 @@
+Sort  (cost=49027.64..49527.64 rows=200000 width=49) (actual time=61.928..71.416 rows=200000.00 loops=1)
+  Sort Key: v, id DESC
+  Sort Method: external merge  Disk: 11624kB
+  ->  Seq Scan on t40  (cost=0.00..4062.00 rows=200000 width=49) (actual time=0.011..9.806 rows=200000.00 loops=1)
+Planning Time: 0.255 ms
+Execution Time: 76.729 ms

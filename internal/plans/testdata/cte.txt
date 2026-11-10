@@ -1,0 +1,15 @@
+Aggregate  (cost=13364.00..13364.01 rows=1 width=8) (actual time=45.943..45.946 rows=1.00 loops=1)
+  CTE c
+    ->  Seq Scan on t40  (cost=0.00..4062.00 rows=200000 width=8) (actual time=0.009..11.448 rows=200000.00 loops=1)
+  ->  Hash Join  (cost=4526.00..9296.80 rows=2080 width=0) (actual time=30.373..45.879 rows=2000.00 loops=1)
+        Hash Cond: (b.id = a.id)
+        ->  CTE Scan on c b  (cost=0.00..4000.00 rows=200000 width=4) (actual time=0.012..7.674 rows=200000.00 loops=1)
+              Storage: Disk  Maximum Storage: 3516kB
+        ->  Hash  (cost=4500.00..4500.00 rows=2080 width=4) (actual time=30.347..30.348 rows=2000.00 loops=1)
+              Buckets: 4096  Batches: 1  Memory Usage: 103kB
+              ->  CTE Scan on c a  (cost=0.00..4500.00 rows=2080 width=4) (actual time=0.002..30.068 rows=2000.00 loops=1)
+                    Filter: (v = 1)
+                    Rows Removed by Filter: 198000
+                    Storage: Disk  Maximum Storage: 3516kB
+Planning Time: 0.348 ms
+Execution Time: 46.271 ms

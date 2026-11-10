@@ -1,0 +1,14 @@
+# name|settings|statement  (each run in a rolled-back transaction)
+filter|set max_parallel_workers_per_gather=0|select * from t40 where v = 1
+sortspill|set work_mem='64kB'; set max_parallel_workers_per_gather=0|select * from t40 order by v, id desc
+hashspill|set work_mem='64kB'; set max_parallel_workers_per_gather=0|select a.id from t40 a join t40 b using (id)
+aggspill|set work_mem='64kB'; set enable_sort=off; set max_parallel_workers_per_gather=0|select id, count(*) from t40 group by id
+nestloop|set enable_hashjoin=off; set enable_mergejoin=off; set max_parallel_workers_per_gather=0|select a.id, b.w from t40 a join n40 b on b.id = a.id
+estimate|set max_parallel_workers_per_gather=0|select * from e40 where a = 1 and b = 1
+lossy|set work_mem='64kB'; set enable_seqscan=off; set enable_indexscan=off; set max_parallel_workers_per_gather=0|select count(*) from b40 where v < 500
+heapfetch|set enable_seqscan=off; set enable_bitmapscan=off; set max_parallel_workers_per_gather=0|select id from h40 where id < 50000
+jit|set jit=on; set jit_above_cost=0; set jit_inline_above_cost=0; set jit_optimize_above_cost=0; set max_parallel_workers_per_gather=0|select sum(v), avg(id), max(pad) from t40 where v > 10 and id % 7 = 3
+trigger|set max_parallel_workers_per_gather=0|delete from p40 where id between 1000 and 1300
+workers|set max_parallel_workers=0; set max_parallel_workers_per_gather=2; set parallel_setup_cost=0; set parallel_tuple_cost=0; set min_parallel_table_scan_size=0|select count(*) from t40
+cte|set work_mem='64kB'; set max_parallel_workers_per_gather=0|with c as materialized (select id, v from t40) select count(*) from c a join c b using (id) where a.v = 1
+clean|set max_parallel_workers_per_gather=0|select w from n40 where id = 5

@@ -1,0 +1,7 @@
+Delete on p40  (cost=0.28..19.30 rows=0 width=0) (actual time=0.233..0.234 rows=0.00 loops=1)
+  ->  Index Scan using p40_pkey on p40  (cost=0.28..19.30 rows=301 width=6) (actual time=0.029..0.060 rows=301.00 loops=1)
+        Index Cond: ((id >= 1000) AND (id <= 1300))
+        Index Searches: 1
+Planning Time: 0.232 ms
+Trigger for constraint c40_pid_fkey: time=657.301 calls=301
+Execution Time: 657.875 ms

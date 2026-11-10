@@ -1,0 +1,56 @@
+[
+  {
+    "Plan": {
+      "Node Type": "ModifyTable",
+      "Operation": "Delete",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "p40",
+      "Alias": "p40",
+      "Startup Cost": 0.28,
+      "Total Cost": 19.30,
+      "Plan Rows": 0,
+      "Plan Width": 0,
+      "Actual Startup Time": 0.248,
+      "Actual Total Time": 0.249,
+      "Actual Rows": 0.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Plans": [
+        {
+          "Node Type": "Index Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Scan Direction": "Forward",
+          "Index Name": "p40_pkey",
+          "Relation Name": "p40",
+          "Alias": "p40",
+          "Startup Cost": 0.28,
+          "Total Cost": 19.30,
+          "Plan Rows": 301,
+          "Plan Width": 6,
+          "Actual Startup Time": 0.039,
+          "Actual Total Time": 0.077,
+          "Actual Rows": 301.00,
+          "Actual Loops": 1,
+          "Disabled": false,
+          "Index Cond": "((id >= 1000) AND (id <= 1300))",
+          "Rows Removed by Index Recheck": 0,
+          "Index Searches": 1
+        }
+      ]
+    },
+    "Planning Time": 0.293,
+    "Triggers": [
+      {
+        "Trigger Name": "RI_ConstraintTrigger_a_37035882",
+        "Constraint Name": "c40_pid_fkey",
+        "Relation": "p40",
+        "Time": 608.776,
+        "Calls": 301
+      }
+    ],
+    "Execution Time": 609.119
+  }
+]

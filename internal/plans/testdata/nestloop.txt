@@ -1,0 +1,7 @@
+Nested Loop  (cost=0.42..97305.95 rows=200000 width=8) (actual time=0.026..159.493 rows=200000.00 loops=1)
+  ->  Seq Scan on t40 a  (cost=0.00..4062.00 rows=200000 width=4) (actual time=0.009..11.468 rows=200000.00 loops=1)
+  ->  Index Scan using n40_pkey on n40 b  (cost=0.42..0.47 rows=1 width=8) (actual time=0.001..0.001 rows=1.00 loops=200000)
+        Index Cond: (id = a.id)
+        Index Searches: 200000
+Planning Time: 0.360 ms
+Execution Time: 164.817 ms

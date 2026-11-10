@@ -1,0 +1,126 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Plain",
+      "Partial Mode": "Simple",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 13364.00,
+      "Total Cost": 13364.01,
+      "Plan Rows": 1,
+      "Plan Width": 8,
+      "Actual Startup Time": 45.449,
+      "Actual Total Time": 45.452,
+      "Actual Rows": 1.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Plans": [
+        {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "InitPlan",
+          "Subplan Name": "CTE c",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "t40",
+          "Alias": "t40",
+          "Startup Cost": 0.00,
+          "Total Cost": 4062.00,
+          "Plan Rows": 200000,
+          "Plan Width": 8,
+          "Actual Startup Time": 0.013,
+          "Actual Total Time": 11.471,
+          "Actual Rows": 200000.00,
+          "Actual Loops": 1,
+          "Disabled": false
+        },
+        {
+          "Node Type": "Hash Join",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Join Type": "Inner",
+          "Startup Cost": 4526.00,
+          "Total Cost": 9296.80,
+          "Plan Rows": 2080,
+          "Plan Width": 0,
+          "Actual Startup Time": 29.913,
+          "Actual Total Time": 45.388,
+          "Actual Rows": 2000.00,
+          "Actual Loops": 1,
+          "Disabled": false,
+          "Inner Unique": false,
+          "Hash Cond": "(b.id = a.id)",
+          "Plans": [
+            {
+              "Node Type": "CTE Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "CTE Name": "c",
+              "Alias": "b",
+              "Startup Cost": 0.00,
+              "Total Cost": 4000.00,
+              "Plan Rows": 200000,
+              "Plan Width": 4,
+              "Actual Startup Time": 0.016,
+              "Actual Total Time": 7.619,
+              "Actual Rows": 200000.00,
+              "Actual Loops": 1,
+              "Disabled": false,
+              "Storage": "Disk",
+              "Maximum Storage": 3516
+            },
+            {
+              "Node Type": "Hash",
+              "Parent Relationship": "Inner",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 4500.00,
+              "Total Cost": 4500.00,
+              "Plan Rows": 2080,
+              "Plan Width": 4,
+              "Actual Startup Time": 29.880,
+              "Actual Total Time": 29.881,
+              "Actual Rows": 2000.00,
+              "Actual Loops": 1,
+              "Disabled": false,
+              "Hash Buckets": 4096,
+              "Original Hash Buckets": 4096,
+              "Hash Batches": 1,
+              "Original Hash Batches": 1,
+              "Peak Memory Usage": 103,
+              "Plans": [
+                {
+                  "Node Type": "CTE Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "CTE Name": "c",
+                  "Alias": "a",
+                  "Startup Cost": 0.00,
+                  "Total Cost": 4500.00,
+                  "Plan Rows": 2080,
+                  "Plan Width": 4,
+                  "Actual Startup Time": 0.002,
+                  "Actual Total Time": 29.613,
+                  "Actual Rows": 2000.00,
+                  "Actual Loops": 1,
+                  "Disabled": false,
+                  "Filter": "(v = 1)",
+                  "Rows Removed by Filter": 198000,
+                  "Storage": "Disk",
+                  "Maximum Storage": 3516
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 0.449,
+    "Triggers": [
+    ],
+    "Execution Time": 45.746
+  }
+]

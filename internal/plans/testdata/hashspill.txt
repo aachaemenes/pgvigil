@@ -1,0 +1,8 @@
+Hash Join  (cost=7344.00..16502.00 rows=200000 width=4) (actual time=25.557..66.597 rows=200000.00 loops=1)
+  Hash Cond: (a.id = b.id)
+  ->  Seq Scan on t40 a  (cost=0.00..4062.00 rows=200000 width=4) (actual time=0.009..9.646 rows=200000.00 loops=1)
+  ->  Hash  (cost=4062.00..4062.00 rows=200000 width=4) (actual time=25.336..25.337 rows=200000.00 loops=1)
+        Buckets: 16384  Batches: 32  Memory Usage: 350kB
+        ->  Seq Scan on t40 b  (cost=0.00..4062.00 rows=200000 width=4) (actual time=0.002..12.446 rows=200000.00 loops=1)
+Planning Time: 0.340 ms
+Execution Time: 71.335 ms

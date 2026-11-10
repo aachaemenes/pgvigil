@@ -1,0 +1,8 @@
+Finalize Aggregate  (cost=3103.68..3103.69 rows=1 width=8) (actual time=24.569..24.639 rows=1.00 loops=1)
+  ->  Gather  (cost=3103.67..3103.68 rows=2 width=8) (actual time=24.562..24.632 rows=1.00 loops=1)
+        Workers Planned: 2
+        Workers Launched: 0
+        ->  Partial Aggregate  (cost=3103.67..3103.68 rows=1 width=8) (actual time=16.018..16.019 rows=1.00 loops=1)
+              ->  Parallel Seq Scan on t40  (cost=0.00..2895.33 rows=83333 width=0) (actual time=0.014..10.094 rows=200000.00 loops=1)
+Planning Time: 0.115 ms
+Execution Time: 24.686 ms
