@@ -14,6 +14,10 @@ const rows = inst.rows.map(r => Object.fromEntries(inst.columns.map((c, i) => [c
 const pick = (pred) => rows.find(pred);
 const onprem = pick(r => r.platform === 'onprem') ?? rows[0];
 const cloud = pick(r => r.platform === 'rds') ?? pick(r => r.platform === 'aurora') ?? rows[rows.length - 1];
+// an Aurora instance with Performance Insights and Serverless v2 rows in the demo (the Load tab and the Capacity section render
+// their charts there, not the PI-off paragraph), and the instance with the compare regressions (the Compare drill page)
+const aurora = pick(r => String(r.name).endsWith('aurora-reporting01')) ?? cloud;
+const regress = pick(r => String(r.name).endsWith('rds-orders01')) ?? cloud;
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r));
@@ -46,6 +50,9 @@ const rootTabs = await tabsOf('#/summary');
 const instTabs = await tabsOf(`#/summary?i=${onprem.instance_id}`);
 const pages = [...rootTabs];
 for (const t of instTabs) { pages.push(t.replace(/i=\d+/, `i=${onprem.instance_id}`)); pages.push(t.replace(/i=\d+/, `i=${cloud.instance_id}`)); }
+for (const t of instTabs) if (/#\/(load|host|summary)\?/.test(t)) pages.push(t.replace(/i=\d+/, `i=${aurora.instance_id}`));
+// the drill pages the tab strip does not list: the Compare page (under Statements) on the instance with regressions
+pages.push(`#/compare?i=${regress.instance_id}&w=7d`);
 const all = []; let failed = 0; const perRule = new Map();
 for (const theme of ['light', 'dark']) {
   // the theme is remembered per origin: set it on a page of the UI (not on about:blank), and pin the media query too
