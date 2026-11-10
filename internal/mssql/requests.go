@@ -76,7 +76,8 @@ const requestsPreAzureDBSQL = `SELECT
 // Sessions join requests on session_id and tasks on session_id and request_id, never on a time. Every instant is
 // moved to UTC on the server by its own offset at the read.
 const requestsTemplate = `/* pgvigil mssql_requests: read only. Shape ported from DBA Dash 4.24.1, DBADash/SQL/SQLRunningQueries.sql (MIT, Copyright 2022 Trimble, Inc.) */
-DECLARE @off int = DATEDIFF(minute, GETDATE(), GETUTCDATE());
+/* the server's offset from UTC in minutes, from one read of its clock */
+DECLARE @off int = -DATEPART(TZOFFSET, SYSDATETIMEOFFSET());
 SELECT
   'request' AS kind,
   CAST(s.session_id AS int) AS session_id,
@@ -130,7 +131,8 @@ SELECT
 FROM {{base}}
 LEFT JOIN sys.dm_exec_connections c ON c.session_id = s.session_id AND c.parent_connection_id IS NULL
 LEFT JOIN (
-    /* the session's oldest transaction (MARS can hold several), whether or not a request runs */
+    /* one row per session, whether or not a request runs. A session holds one transaction unless it uses MARS;
+       with several, the start is the oldest one's, the id the lowest and the log bytes their sum */
     SELECT st.session_id, MIN(st.transaction_id) AS transaction_id, MIN(tat.transaction_begin_time) AS tran_begin,
            MAX(CASE WHEN tat.name = 'implicit_transaction' THEN 1 ELSE 0 END) AS is_implicit,
            SUM(CAST(dt.log_bytes AS bigint)) AS log_bytes
@@ -382,14 +384,18 @@ var blockerNotes = map[int64]string{
 // head. The rule: a session is blocked when one of its requests names another session as its blocker; the head of
 // a chain is the session that blocks and is not itself blocked. A blocked row gets head_session_id and chain_depth
 // (1 directly behind the head, 2 behind that); the head's rows get their own session as head_session_id, depth 0,
-// victims (every session behind it, at any depth) and longest_victim_wait_ms. A chain that ends in a negative
-// blocker or closes on itself has no head: its rows get chain_note (and in_cycle) instead. A head whose own row
-// is not in the snapshot still gets its blocking row.
+// victims (every session behind it, at any depth) and longest_victim_wait_ms. A negative blocker (an orphaned
+// transaction, a latch without an owner) is not a session: a session that waits only behind one is not blocked
+// for this rule, so it heads the sessions behind it, and its rows and its blocking row carry the note. A chain
+// that closes on itself has no head: its members get in_cycle and a note, the sessions behind it the note. A
+// head whose own row is not in the snapshot still gets its blocking row.
 func buildChains(rows []collect.Row) []collect.Row {
 	type sess struct {
-		blocker int64
-		waitMs  int64
-		rows    []collect.Row
+		blocker   int64 // the session it waits behind; 0 = none
+		waitMs    int64
+		neg       int64 // a negative blocker (no session), when it waits behind no session
+		negWaitMs int64
+		rows      []collect.Row
 	}
 	byID := map[int64]*sess{}
 	var order []int64
@@ -405,11 +411,16 @@ func buildChains(rows []collect.Row) []collect.Row {
 			order = append(order, id)
 		}
 		s.rows = append(s.rows, r)
-		// MARS: a session can run several requests; the one that waits longest behind another session counts
+		// MARS: a session can run several requests; the one that waits longest behind another SESSION counts. A
+		// negative blocker is not a session: it is kept as a note and never hides a session the row waits behind.
 		if b, ok := asInt(r["blocking_session_id"]); ok && b != 0 && b != id {
 			w, _ := asInt(r["wait_ms"])
-			if s.blocker == 0 || w > s.waitMs {
-				s.blocker, s.waitMs = b, w
+			if b < 0 {
+				if s.blocker == 0 && (s.neg == 0 || w > s.negWaitMs) {
+					s.neg, s.negWaitMs = b, w
+				}
+			} else if s.blocker == 0 || w > s.waitMs {
+				s.blocker, s.waitMs, s.neg = b, w, 0
 			}
 		}
 	}
@@ -428,18 +439,12 @@ func buildChains(rows []collect.Row) []collect.Row {
 		var head int64
 		found, cycle, note := false, false, ""
 		for {
-			if cur < 0 {
-				note = blockerNotes[cur]
-				if note == "" {
-					note = fmt.Sprintf("blocked by %d: no session to name", cur)
-				}
-				if depth > 1 {
-					note = "behind a session that is " + note
-				}
-				break
-			}
 			if visited[cur] {
-				cycle, note = true, "a blocking cycle: a deadlock the server has not resolved yet"
+				// only a session the walk comes back to is a member of the cycle; the others wait behind it
+				cycle, note = cur == id, "a blocking cycle: a deadlock the server has not resolved yet"
+				if !cycle {
+					note = "behind " + note
+				}
 				break
 			}
 			visited[cur] = true
@@ -483,12 +488,31 @@ func buildChains(rows []collect.Row) []collect.Row {
 			for _, r := range s.rows {
 				r["head_session_id"], r["chain_depth"], r["victims"], r["longest_victim_wait_ms"] = id, 0, h.victims, h.longest
 			}
+			if s.neg != 0 {
+				b["note"] = "the head itself is " + negNote(s.neg)
+			}
 		} else {
-			b["note"] = "the head's own row was not in the read: it ended between the read of the requests and of the sessions"
+			b["note"] = "the head's own row was not in the read: it ended between two reads, or the source does not list it (sp_WhoIsActive leaves system sessions out)"
 		}
 		out = append(out, b)
 	}
+	// a session that waits behind no session but behind something that is none: said on its rows, head or not
+	for _, id := range order {
+		if s := byID[id]; s.blocker == 0 && s.neg != 0 {
+			for _, r := range s.rows {
+				r["chain_note"] = negNote(s.neg)
+			}
+		}
+	}
 	return out
+}
+
+// negNote is the note of a negative blocker.
+func negNote(b int64) string {
+	if n := blockerNotes[b]; n != "" {
+		return n
+	}
+	return fmt.Sprintf("blocked by %d: no session to name", b)
 }
 
 // asInt reads an integer the driver or a test handed over.

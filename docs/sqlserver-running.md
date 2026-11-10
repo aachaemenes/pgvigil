@@ -27,8 +27,8 @@ Each snapshot's chain is built from its own rows by one rule:
 - A blocked row carries its head's session and its depth (1 directly behind the head, 2 behind that).
 - The head's row carries the number of sessions behind it, at any depth, and the longest wait among them.
 - A head that is `sleeping` with an open transaction is an application that left its transaction open. Its statement is its last batch: read it, it points at the code that did not commit.
-- A blocker that is not a session has no head to name, and the row says which case it is: `-2` an orphaned distributed transaction, `-3` a deferred recovery transaction, `-4` and `-5` a latch whose owner the server does not name.
-- A chain that closes on itself (a deadlock the server has not resolved yet) is marked as a cycle.
+- A blocker that is not a session is no session to wait behind, and the row says which case it is: `-2` an orphaned distributed transaction, `-3` a deferred recovery transaction, `-4` and `-5` a latch whose owner the server does not name. A session that waits only behind one of these still heads the sessions behind it, and the chain says what the head itself waits on.
+- A chain that closes on itself (a deadlock the server has not resolved yet) is marked as a cycle on its members; the sessions behind it carry a note.
 
 `mssql_blocking` holds one row per snapshot and head: the victims, the longest wait, the head's status, login, host, program, database, its transaction's start and age, and its statement.
 
@@ -84,9 +84,9 @@ From the newest snapshot of an instance, when it is at most five minutes old (`m
 
 | Table | Rows | Kept |
 |---|---|---|
-| `mssql_requests_summary` | one per snapshot | the retention (`purge`) |
+| `mssql_requests_summary` | one per snapshot | as long as its day of `mssql_requests` |
 | `mssql_requests` | one per listed session and snapshot, daily partitions | whole days dropped past the retention |
-| `mssql_statement_text` | one per instance, handle and offsets | until not seen for the retention |
+| `mssql_statement_text` | one per instance, handle and offsets | until not seen for the retention and no kept row names it |
 | `mssql_blocking` | one per head and snapshot, monthly partitions | the retention |
 | `mssql_wait_sample` | one per wait type that moved and read, monthly partitions | the retention |
 

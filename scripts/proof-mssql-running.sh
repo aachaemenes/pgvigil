@@ -45,7 +45,8 @@
 #     collection_dates says skipped with it.
 #  G. the other engine and retention: import_mssql_requests refuses a PostgreSQL instance; a snapshot 40 days old
 #     gets its own day partition, and mssql_running_purge(30) drops that partition and its summary row and keeps
-#     today's.
+#     today's. A text last seen 40 days ago stays while a kept row names it; one no row names is deleted; no
+#     request or blocking row is left naming a text that is gone.
 #  H. the statements on the server and their cost (go test, NOT RUN without a go toolchain): both collections as
 #     the monitoring login (TestRunningLive), and the DMV read timed with PGVIGIL_PROOF_SESSIONS (default 300)
 #     sessions each holding an open transaction (TestRequestsManySessionsLive prints the milliseconds). The cost at
@@ -197,7 +198,8 @@ echo "--- B. sp_WhoIsActive, called where it is installed"
 if [ "$WIA" = 1 ]; then
   [ "$(q "select source_note like '%no EXECUTE permission%' from pgvigil.mssql_requests_summary where instance_id=$iid and snapshot_at='$AT'")" = t ] || fail "B: the DMV read's note does not say why sp_WhoIsActive was not called"
   [ "$(sq "SELECT CASE WHEN USER_ID('$L1') IS NULL THEN 1 ELSE 0 END" master)" = 1 ] || fail "B: a user $L1 exists in master already"
-  sq "CREATE USER [$L1] FOR LOGIN [$L1]; GRANT EXECUTE ON dbo.sp_WhoIsActive TO [$L1];" master; MADE_UM=1
+  MADE_UM=1   # before the call: the name was free one line up, so a half-done call still leaves only this run's user
+  sq "CREATE USER [$L1] FOR LOGIN [$L1]; GRANT EXECUTE ON dbo.sp_WhoIsActive TO [$L1];" master
   collect mssql_requests "$N1"
   if grep -q "partial" "$OUT"; then fail "B: the run says partial: sp_WhoIsActive failed and the DMV read ran"; fi
   BT=$(latest "$iid")
@@ -236,7 +238,7 @@ DT=$(latest "$iid")
 [ "$DT" != "$CT2" ] || fail "D: no new snapshot"
 [ "$(q "select (select count(*) from pgvigil.mssql_blocking b where b.instance_id=$iid and b.snapshot_at='$DT' and b.head_session_id in ($S1,$S2,$S3))
           || '|' || (select count(*) from pgvigil.mssql_requests r where r.instance_id=$iid and r.snapshot_at='$DT' and (r.session_id in ($S1,$S2,$S3) or r.head_session_id in ($S1,$S2,$S3)))
-          || '|' || (blocked = (select count(distinct r.session_id) from pgvigil.mssql_requests r where r.instance_id=$iid and r.snapshot_at='$DT' and r.chain_depth > 0))
+          || '|' || (blocked = (select count(distinct r.session_id) from pgvigil.mssql_requests r where r.instance_id=$iid and r.snapshot_at='$DT' and (r.chain_depth > 0 or r.chain_note is not null)))
           from pgvigil.mssql_requests_summary where instance_id=$iid and snapshot_at='$DT'")" = "0|0|true" ] \
   || fail "D: after the commit: $(q "select blocked, heads from pgvigil.mssql_requests_summary where instance_id=$iid and snapshot_at='$DT'")"
 [ "$(q "select count(*) from pgvigil.mssql_running_findings where instance_id=$iid and object in ('session $S1','session $S2','session $S3')")" = 0 ] || fail "D: a finding outlived the chain"
@@ -282,6 +284,16 @@ q "select pgvigil.mssql_running_purge(30)" >/dev/null
 [ "$(q "select (to_regclass('pgvigil.mssql_requests_$OLD') is null) || '|' || (to_regclass('pgvigil.mssql_requests_$TODAY') is not null) || '|' || (select count(*) from pgvigil.mssql_requests_summary where instance_id=$iid and snapshot_at < now() - interval '30 days')
           || '|' || (select count(*) > 0 from pgvigil.mssql_requests_summary where instance_id=$iid) || '|' || (select count(*) > 0 from pgvigil.mssql_statement_text where instance_id=$iid)")" = "true|true|0|true|true" ] \
   || fail "G: after the purge"
+# a text whose last_seen is past the window stays while a kept row names it (last_seen lags its newest use by up to
+# an hour, and a day partition outlives the window's edge); one that no row names goes
+NT=$(q "select count(*) from pgvigil.mssql_statement_text where instance_id=$iid")
+q "update pgvigil.mssql_statement_text set last_seen = now() - interval '40 days' where instance_id=$iid" >/dev/null
+q "insert into pgvigil.mssql_statement_text (instance_id, sql_handle, stmt_start, stmt_end, first_seen, last_seen, statement) values ($iid, '\\x02ff', 0, -1, now() - interval '41 days', now() - interval '40 days', 'SELECT 1')" >/dev/null
+q "select pgvigil.mssql_running_purge(30)" >/dev/null
+[ "$(q "select count(*) || '|' || count(*) filter (where sql_handle = '\\x02ff') from pgvigil.mssql_statement_text where instance_id=$iid")" = "$NT|0" ] \
+  || fail "G: the text purge: $(q "select count(*), count(*) filter (where sql_handle = '\\x02ff') from pgvigil.mssql_statement_text where instance_id=$iid") (want $NT, 0)"
+[ "$(q "select count(*) from pgvigil.mssql_requests r where r.instance_id=$iid and r.text_id is not null and not exists (select 1 from pgvigil.mssql_statement_text t where t.text_id = r.text_id)")|$(q "select count(*) from pgvigil.mssql_blocking b where b.instance_id=$iid and b.head_text_id is not null and not exists (select 1 from pgvigil.mssql_statement_text t where t.text_id = b.head_text_id)")" = "0|0" ] \
+  || fail "G: a kept row names a purged text"
 echo "G: OK"
 
 echo "--- H. the statements on the server as the monitoring login, and their cost"

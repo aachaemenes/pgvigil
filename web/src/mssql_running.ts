@@ -102,14 +102,16 @@ function treeRows(rows: Row[], heads: Row[]): Row[] {
   return out;
 }
 
-function body(d: RunningData): HTMLElement {
+// body draws one snapshot. picked is the snapshot the slider chose; without it the page shows the newest of the
+// window (the list is newest first), which is also the one the API returned. A quiet minute has no row to read
+// its time from, so the time never comes from the rows.
+function body(d: RunningData, picked?: unknown): HTMLElement {
   const box = el('div');
   const rows = rowsOf(d.rows), heads = rowsOf(d.blocking);
   const snaps = rowsOf(d.snapshots);
-  const at = rows[0]?.snapshot_at ?? heads[0]?.snapshot_at;
-  const sum = snaps.find(s => s.snapshot_at === at) ?? snaps[0];
+  const sum = picked === undefined ? snaps[0] : snaps.find(s => s.snapshot_at === picked);
   if (!sum) { box.append(el('p', { class: 'empty' }, 'No snapshot in this window.')); return box; }
-  const shown = at ?? sum.snapshot_at;
+  const shown = sum.snapshot_at;
   box.append(el('p', { class: 'meta' }, `Snapshot of ${fmtTime(shown)} (the server's own clock: ${fmtTime(sum.server_utc)}), read in ${fmtNum(sum.read_ms)} ms. `
     + `Source: ${sum.source === 'sp_whoisactive' ? 'sp_WhoIsActive, called where the server\'s DBA installed it' : 'the DMVs'} (${String(sum.source_note ?? '')}).`));
   box.append(el('div', { class: 'tiles' },
@@ -154,8 +156,9 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
       say();
       const mine = ++seq;
       try {
-        const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(snaps[Number(slider.value)].snapshot_at) });
-        if (mine === seq) holder.replaceChildren(body({ ...one, snapshots: d.snapshots }));
+        const at = snaps[Number(slider.value)].snapshot_at;
+        const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(at) });
+        if (mine === seq) holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, at));
       } catch (e) { if (mine === seq) holder.replaceChildren(errorBox(e)); }
     };
     const step = (by: number) => { slider.value = String(Math.min(snaps.length - 1, Math.max(0, Number(slider.value) + by))); void load(); };

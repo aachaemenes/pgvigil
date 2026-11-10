@@ -13,7 +13,9 @@
 --                           the input buffer of a sleeping session (its last batch) under its most recent handle.
 --                           statement is NULL where the instance's query_text policy is none: the key is still kept.
 --   mssql_blocking          per snapshot and head of a blocking chain: its victims, the longest wait behind it, the
---                           head's own row values and its statement's text_id (monthly partitions).
+--                           head's own row values and its statement's text_id (monthly partitions). A session that
+--                           waits only behind something that is no session (a negative blocker: an orphaned
+--                           transaction, a latch without an owner) can be a head; note says so.
 --   mssql_running_findings  the findings view's columns (instance_id, severity, check_name, object, at, detail); the
 --                           UNION arm in pgvigil.findings is the wave's join. From the newest snapshot of an
 --                           instance, when it is at most 5 minutes old:
@@ -34,9 +36,11 @@
 -- cleared counter (a counter that went down) stores no difference for that read. is_benign marks the waits of idle
 -- background work, which are stored and kept out of the page's top list.
 --
--- Retention: mssql_blocking and mssql_wait_sample are month partitions for purge()'s parent list;
--- pgvigil.mssql_running_purge(p_days) does the rest (the day partitions, the summary rows, the texts no longer
--- seen, the wait state of an instance not read past the window) and is called from purge().
+-- Retention is NOT wired by this file: purge() is re-created by the wave's join migration, which adds
+-- mssql_blocking and mssql_wait_sample to its month-partition parents and a call of
+-- pgvigil.mssql_running_purge(p_days), which does the rest (the day partitions, the summary rows of the dropped
+-- days, the texts no row refers to any more, the wait state of an instance not read past the window). Until
+-- that migration these tables are not purged.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_statement_text (
   text_id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -285,7 +289,9 @@ BEGIN
   SELECT p_instance_id, p_snapshot_at, v_server, v_s->>'source', v_s->>'source_note',
          (SELECT count(DISTINCT q.session_id) FROM pgvigil.mssql_requests q WHERE q.instance_id = p_instance_id AND q.snapshot_at = p_snapshot_at),
          (SELECT count(*) FROM pgvigil.mssql_requests q WHERE q.instance_id = p_instance_id AND q.snapshot_at = p_snapshot_at AND q.request_id IS NOT NULL),
-         (SELECT count(DISTINCT q.session_id) FROM pgvigil.mssql_requests q WHERE q.instance_id = p_instance_id AND q.snapshot_at = p_snapshot_at AND q.chain_depth > 0),
+         -- blocked: behind a session (depth 1 and deeper) or behind something that is none (a note: a cycle, a negative blocker)
+         (SELECT count(DISTINCT q.session_id) FROM pgvigil.mssql_requests q WHERE q.instance_id = p_instance_id AND q.snapshot_at = p_snapshot_at
+             AND (q.chain_depth > 0 OR q.chain_note IS NOT NULL)),
          (SELECT count(*) FROM pgvigil.mssql_blocking b WHERE b.instance_id = p_instance_id AND b.snapshot_at = p_snapshot_at),
          (SELECT max(b.longest_wait_ms) FROM pgvigil.mssql_blocking b WHERE b.instance_id = p_instance_id AND b.snapshot_at = p_snapshot_at),
          (v_s->>'memory_grants_pending')::int, (v_s->>'read_ms')::int
@@ -326,7 +332,10 @@ BEGIN
   -- rounding at most) and counters that only grew: one that went down was cleared (DBCC SQLPERF) or the server restarted
   v_delta := v_prev.instance_id IS NOT NULL
          AND v_prev.source IS NOT DISTINCT FROM (v_s->>'source')
-         AND (v_start IS NULL OR v_prev.server_start IS NULL OR abs(extract(epoch FROM v_start - v_prev.server_start)) < 120)
+         -- the start time is moved to UTC by the server's offset at the read: a daylight-saving change moves it by
+         -- an hour without a restart (a real restart also lowers the counters, which the next test catches)
+         AND (v_start IS NULL OR v_prev.server_start IS NULL OR abs(extract(epoch FROM v_start - v_prev.server_start)) < 120
+              OR abs(abs(extract(epoch FROM v_start - v_prev.server_start)) - 3600) < 120)
          AND NOT EXISTS (
                SELECT 1 FROM jsonb_array_elements(p_payload) r
                  JOIN pgvigil.mssql_wait_last l ON l.instance_id = p_instance_id AND l.wait_type = r->>'wait_type'
@@ -453,10 +462,16 @@ BEGIN
     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);
     n := n + 1;
   END LOOP;
-  DELETE FROM pgvigil.mssql_requests_summary WHERE snapshot_at < now() - make_interval(days => p_days);
+  -- the summary rows of the days whose partition is gone: a day still kept keeps its summaries (mssql_requests_v joins them)
+  DELETE FROM pgvigil.mssql_requests_summary
+   WHERE snapshot_at < date_trunc('day', (now() - make_interval(days => p_days)) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  -- a text not seen within the window plus the hour its last_seen may lag (the import rewrites it hourly at most)
-  DELETE FROM pgvigil.mssql_statement_text t WHERE t.last_seen < now() - make_interval(days => p_days) - interval '2 hours';
+  -- a text not seen within the window and that no kept row names any more (last_seen lags its newest use by up to
+  -- an hour; a day partition and a month of mssql_blocking outlive the window's edge)
+  DELETE FROM pgvigil.mssql_statement_text t
+   WHERE t.last_seen < now() - make_interval(days => p_days)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_requests q WHERE q.text_id = t.text_id)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_blocking b WHERE b.head_text_id = t.text_id);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_wait_last l
    WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_wait_state s

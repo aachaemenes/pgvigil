@@ -30,7 +30,7 @@ func (waitsCollector) Applies(in Info) (bool, string) {
 // later, Azure SQL Managed Instance, Amazon RDS, Azure SQL Database.
 const waitsStateSQL = `SELECT 'state' AS kind,
   TODATETIMEOFFSET(SYSUTCDATETIME(), 0) AS server_utc,
-  TODATETIMEOFFSET(DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), sqlserver_start_time), 0) AS server_start
+  TODATETIMEOFFSET(DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), sqlserver_start_time), 0) AS server_start
 FROM sys.dm_os_sys_info`
 
 // waitsSQL: every wait type the server has counted. {{dmv}} is sys.dm_os_wait_stats, or on Azure SQL Database

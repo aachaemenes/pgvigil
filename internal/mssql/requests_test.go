@@ -66,30 +66,46 @@ func TestBuildChainsEdges(t *testing.T) {
 		t.Errorf("a session that names itself as its blocker was put in a chain: %v", m[90])
 	}
 
-	// a negative blocker has no session: no head, a note; the session behind it inherits the note
-	rows = []collect.Row{req(60, -2, 1000), req(61, 60, 500)}
-	if b = buildChains(rows); len(b) != 0 {
-		t.Errorf("a chain behind an orphaned transaction got a head: %v", b)
-	}
+	// a negative blocker is not a session: the session that waits behind one still heads the sessions behind it,
+	// with the note on its rows and on its blocking row (the reviewer's case: 51 on a latch, 52 behind 51 for 60 s)
+	rows = []collect.Row{req(51, -5, 200), req(52, 51, 60000)}
+	b = buildChains(rows)
 	m = bySession(rows)
-	if n, _ := m[60]["chain_note"].(string); !strings.Contains(n, "orphaned distributed transaction") {
-		t.Errorf("session 60's note = %q", n)
+	if len(b) != 1 || b[0]["head_session_id"] != int64(51) || b[0]["victims"] != 1 || b[0]["longest_wait_ms"] != int64(60000) {
+		t.Fatalf("a head that waits on a latch: blocking rows = %v", b)
 	}
-	if n, _ := m[61]["chain_note"].(string); !strings.HasPrefix(n, "behind a session that is blocked by an orphaned") {
-		t.Errorf("session 61's note = %q", n)
+	if n, _ := b[0]["note"].(string); !strings.Contains(n, "the head itself is blocked on a latch") {
+		t.Errorf("the head's blocking note = %q", n)
 	}
-	if m[60]["head_session_id"] != nil || m[60]["in_cycle"] != false {
-		t.Errorf("session 60: %v", m[60])
+	if n, _ := m[51]["chain_note"].(string); !strings.Contains(n, "(-5)") || m[51]["chain_depth"] != 0 {
+		t.Errorf("session 51: %v", m[51])
+	}
+	if m[52]["head_session_id"] != int64(51) || m[52]["chain_depth"] != 1 || m[52]["chain_note"] != nil {
+		t.Errorf("session 52: %v", m[52])
+	}
+	// alone, it has no head and no blocking row, only the note
+	rows = []collect.Row{req(60, -2, 1000)}
+	if b = buildChains(rows); len(b) != 0 {
+		t.Errorf("a session behind an orphaned transaction alone got a blocking row: %v", b)
+	}
+	if n, _ := rows[0]["chain_note"].(string); !strings.Contains(n, "orphaned distributed transaction") || rows[0]["head_session_id"] != nil {
+		t.Errorf("session 60: %v", rows[0])
+	}
+	// MARS: one request behind a session, another on a latch for longer: the session decides
+	rows = []collect.Row{req(52, 51, 3000), req(52, -5, 9000), req(51, 0, 0)}
+	b = buildChains(rows)
+	if len(b) != 1 || b[0]["head_session_id"] != int64(51) || rows[0]["chain_depth"] != 1 || rows[1]["chain_note"] != nil {
+		t.Errorf("MARS with a latch wait: blocking %v, rows %v", b, rows[:2])
 	}
 
-	// a cycle (a deadlock not yet resolved) and a session behind it: no head, in_cycle, and the walk ends
+	// a cycle (a deadlock not yet resolved) and a session behind it: no head, the walk ends; in_cycle on the members only
 	rows = []collect.Row{req(60, 61, 1000), req(61, 60, 1000), req(62, 60, 300)}
 	if b = buildChains(rows); len(b) != 0 {
 		t.Errorf("a cycle got a head: %v", b)
 	}
 	for id, r := range bySession(rows) {
-		if r["in_cycle"] != true || r["head_session_id"] != nil {
-			t.Errorf("session %d in a cycle: %v", id, r)
+		if r["in_cycle"] != (id != 62) || r["head_session_id"] != nil || r["chain_note"] == nil {
+			t.Errorf("session %d around a cycle: %v", id, r)
 		}
 	}
 
