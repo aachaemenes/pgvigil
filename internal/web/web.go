@@ -163,6 +163,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/logs", s.logs)
 	api.HandleFunc("GET /api/config", s.config)
 	api.HandleFunc("GET /api/databases", s.databases)
+	api.HandleFunc("GET /api/search", s.search)
 	api.HandleFunc("GET /api/tables", s.tables)
 	api.HandleFunc("GET /api/findings", s.findings)
 	api.HandleFunc("GET /api/alerts", s.Alerts)

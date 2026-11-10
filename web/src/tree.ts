@@ -87,9 +87,52 @@ const collapsed = new Set<string>(JSON.parse(lsGet('pgvigil.collapsed') ?? '[]')
 let filter = '';
 let last: { f: Fleet; ctx: Ctx } | null = null;
 
-const search = el('input', { type: 'search', placeholder: 'Find instance', 'aria-label': 'find instance' });
+const search = el('input', { type: 'search', placeholder: 'Find instance, database, table', 'aria-label': 'find an instance, a database or a table by name' });
 const list = el('div', { class: 'tree-list' });
-search.addEventListener('input', () => { filter = search.value.trim().toLowerCase(); draw(); });
+search.addEventListener('input', () => { filter = search.value.trim().toLowerCase(); draw(); findNames(search.value.trim()); });
+
+// The same box finds databases and tables by a part of their name across the fleet (/api/search): asked 300 ms
+// after the last key, from two characters; an answer to an older text is dropped. The instances are filtered in the
+// page as before; the found names are listed under the tree, each a link to its page.
+const FOUND_SHOWN = 50;
+let found: { q: string; rows?: Row[]; err?: string } | null = null;
+let findTimer: number | undefined;
+function findNames(q: string) {
+  window.clearTimeout(findTimer);
+  if (q.length < 2) { if (found) { found = null; draw(); } return; }
+  findTimer = window.setTimeout(() => {
+    found = { q };
+    draw();
+    get('search', { q }).then(t => { if (found?.q === q) { found = { q, rows: rowsOf(t) }; draw(); } })
+      .catch((e: unknown) => {
+        if (found?.q !== q) return;
+        if (e instanceof LoginRequired) { found = null; return; }
+        found = { q, err: e instanceof Error ? e.message : String(e) }; draw();
+      });
+  }, 300);
+}
+function foundNames(ctx: Ctx): HTMLElement[] {
+  if (!found) return [];
+  const head = (t: string) => el('div', { class: 'folder-head' }, el('span', { class: 'folder-name' }, t));
+  const note = (t: string, cls = 'empty') => el('p', { class: cls, style: 'padding:.1rem .4rem', role: 'status', 'aria-live': 'polite' }, t);
+  if (found.err) return [head('Databases and tables'), note('Could not search: ' + found.err, 'error')];
+  if (!found.rows) return [head('Databases and tables'), note('Searching...')];
+  const out: HTMLElement[] = [];
+  const part = (kind: string, title: string, line: (r: Row) => HTMLElement) => {
+    const rows = found!.rows!.filter(r => r.kind === kind);
+    const more = rows.length > FOUND_SHOWN;
+    out.push(head(`${title} named like "${found!.q}" (${more ? FOUND_SHOWN + '+' : rows.length})`));
+    if (rows.length === 0) out.push(note('None.'));
+    for (const r of rows.slice(0, FOUND_SHOWN)) out.push(el('div', { style: nodeStyle(0) }, line(r)));
+    if (more) out.push(note(`The first ${FOUND_SHOWN}; type more of the name.`));
+  };
+  part('database', 'Databases', r => leaf(`${String(r.datname)}  -  ${String(r.instance)}`,
+    hrefWith(ctx, 'db', { db: String(r.dbid) }, Number(r.instance_id)), false, `database ${String(r.datname)} on ${String(r.instance)}, ${fmtBytes(r.bytes)}`));
+  part('table', 'Tables', r => leaf(`${String(r.schema_name)}.${String(r.table_name)}  -  ${String(r.datname)} on ${String(r.instance)}`,
+    hrefWith(ctx, 'table', { db: String(r.dbid), rel: String(r.relid) }, Number(r.instance_id)), false,
+    `table ${String(r.schema_name)}.${String(r.table_name)} in ${String(r.datname)} on ${String(r.instance)}, ${fmtBytes(r.bytes)}`));
+  return out;
+}
 
 export function mountTree(host: HTMLElement) {
   const hide = el('button', { type: 'button', class: 'tree-hide', title: 'Hide the tree' }, '«');
@@ -353,7 +396,9 @@ function draw() {
   const out: HTMLElement[] = [all];
   for (const fo of foldersFor(f.instances, ui.group_by, 0, '')) { const e = render(fo, 0); if (e) out.push(e); }
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
+  else if (filter && out.length === 1) out.push(el('p', { class: 'empty', style: 'padding:.1rem .4rem' }, 'No instance named like that.'));
   out.push(...dbadashFolders(ctx, draw, filter));
+  out.push(...foundNames(ctx));
   // a redraw replaces every node: a caret that had the keyboard focus gets it back (by its key), so a keyboard or
   // screen-reader user stays where they were after opening a folder and after its children arrive
   // an instance in two tag folders has two carets with one key: the focus goes back to the same copy (its index)
