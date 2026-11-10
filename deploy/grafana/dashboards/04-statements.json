@@ -493,7 +493,7 @@
           "editorMode": "code",
           "rawQuery": true,
           "format": "time_series",
-          "rawSql": "SELECT day::timestamptz AS time, under_1s, s1_to_10 AS \"1-10 s\", s10_to_60 AS \"10-60 s\", over_60s AS \"over 60 s\" FROM pgvigil.slow_histogram($instance, $__timeFrom(), $__timeTo(), 0, 'UTC') ORDER BY 1"
+          "rawSql": "SELECT (day::timestamp AT TIME ZONE 'UTC') AS time, under_1s, s1_to_10 AS \"1-10 s\", s10_to_60 AS \"10-60 s\", over_60s AS \"over 60 s\" FROM pgvigil.slow_histogram($instance, $__timeFrom(), $__timeTo(), 0, 'UTC') ORDER BY 1"
         }
       ],
       "fieldConfig": {

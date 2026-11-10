@@ -47,7 +47,15 @@ ALTER ROLE pgvigil_grafana SET statement_timeout = '30s';
 GRANT CONNECT ON DATABASE pgvigil TO pgvigil_grafana;
 ```
 
-`pgvigil_reader` cannot call the UI's password function or read the UI users, and it cannot write: an INSERT, UPDATE or DELETE fails with permission denied. On RDS and Aurora, IAM authentication works the same way (`GRANT rds_iam TO pgvigil_grafana` and no password), if the site's Grafana supports it. Require TLS for this login in `pg_hba.conf` (`hostssl`) when Grafana runs on another host.
+On PostgreSQL 13 and 14, every role may create objects in the schema `public` unless that is revoked. Close it on such a repository (PostgreSQL 15 and later already have it closed):
+
+```sql
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+```
+
+`pgvigil_reader` cannot call the UI's password function or read the UI users, and it cannot write: an INSERT, UPDATE or DELETE fails with permission denied, and it creates nothing. On RDS and Aurora, IAM authentication works the same way (`GRANT rds_iam TO pgvigil_grafana` and no password), if the site's Grafana supports it. Require TLS for this login in `pg_hba.conf` (`hostssl`) when Grafana runs on another host.
+
+This login is the access boundary, not the dashboards. Any Grafana Viewer can send its own SQL through the datasource (Grafana's query API, or a crafted `var-` URL), so a Viewer reads whatever `pgvigil_reader` reads, raw tables included. "Views and read functions only" describes the panels, not a limit on the Viewers. Give Viewer rights on this datasource only to people who may see the repository.
 
 ## 2. The datasource
 
@@ -97,9 +105,12 @@ news_feed_enabled = false
 - all 13 dashboards load in the `pgvigil` folder;
 - every panel's query runs through Grafana's query API for every demo instance without an error;
 - every panel returns rows for some instance (the one exception is 'Running now', because no job is running in the demo);
-- a write through the reader login is refused;
+- every view a panel reads has rows as the reader (the exception is `job_running`), so a stat that counts an empty view cannot pass as 0;
+- the reader login can create nothing (no CREATE on the database or any schema), and a write through it is refused;
 - a headless Chromium takes a screenshot of every dashboard.
 
 ```sh
 PGVIGIL_ADMIN_DSN="host=127.0.0.1 user=postgres" scripts/proof-grafana.sh
 ```
+
+Keep the password out of `PGVIGIL_ADMIN_DSN` (it shows in the process list): put it in `~/.pgpass` or a file named by `PGPASSFILE`. Only a last line `PROOF OK` (exit 0) means proven; a machine without chromium or node stops before the screenshots with `NOT PROVEN (screens)` and exit 3.

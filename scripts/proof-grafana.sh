@@ -2,18 +2,23 @@
 # Proof of the Grafana dashboard set (deploy/grafana): a demo repository, a reader login, a Grafana container
 # provisioned from deploy/grafana exactly as docs/grafana.md says, every dashboard loaded through Grafana's API,
 # every panel's query run through Grafana for every demo instance, and a screenshot of every dashboard.
-#   PGVIGIL_ADMIN_DSN       a superuser connection without dbname (creates and drops a scratch database and a login)
+#   PGVIGIL_ADMIN_DSN       a superuser connection without dbname (creates and drops a scratch database and a login);
+#                           no password= in it (it shows in ps): ~/.pgpass or PGPASSFILE carries the password
 #   PGVIGIL_BIN             the pgvigil binary (default bin/pgvigil)
 #   PGVIGIL_GRAFANA_IMAGE   the Grafana image (default grafana/grafana-oss:12.4.3)
 #   PGVIGIL_GRAFANA_DBHOST  host:port at which the container (host network) reaches the repository (default 127.0.0.1:5432)
 #   PGVIGIL_GRAFANA_SHOTS   the folder for the screenshots (default bin/grafana-shots; chromium absent = skipped and said)
-# Needs docker, psql, curl, jq, python3; chromium and node for the screenshots.
+# Needs docker, psql, curl, jq, python3; chromium and node for the screenshots (without them: NOT PROVEN (screens), exit 3).
+# Only the last line PROOF OK (exit 0) means proven.
 #
 # Expected (written before the first run):
 #   static     13 dashboards, 13 distinct uids, every one tagged pgvigil; every pgvigil.<name> in a panel's or a
 #              variable's SQL is a view or a function of the repository, none a table (the reader's SELECT on the
 #              tables is not used); no panel without a query
-#   login      a LOGIN role that is a member of pgvigil_reader and of nothing else, no superuser, no CREATE
+#   views      every view a panel reads has rows as the reader after the demo seed, except job_running (no job is
+#              running in the demo): a stat over an empty view (count(*), sum, max) still answers one row
+#   login      a LOGIN role that is a member of pgvigil_reader and of nothing else, no superuser, createrole or createdb,
+#              no CREATE on the database or on any schema (public included: below PG 15 PUBLIC holds it unless revoked)
 #   grafana    /api/health ok; the datasource uid pgvigil provisioned and its health check OK as the reader;
 #              /api/search tag pgvigil = the 13 dashboards, all in the folder pgvigil
 #   variable   the instance variable's query answers 12 rows (the demo fleet)
@@ -85,19 +90,34 @@ done < "$WORK/objects.txt"
 ok "static: every object is a view or a function: $(paste -sd' ' "$WORK/objects.txt")"
 
 # --- the reader login, as docs/grafana.md makes it --------------------------------------------------------
+ROLE=1  # set first: a failed alter below still leaves the role for cleanup's drop role if exists
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 \
   -c "create role $LOGIN login password '$PASS' in role pgvigil_reader" \
-  -c "alter role $LOGIN set default_transaction_read_only = on" -c "alter role $LOGIN set statement_timeout = '30s'" >/dev/null; ROLE=1
+  -c "alter role $LOGIN set default_transaction_read_only = on" -c "alter role $LOGIN set statement_timeout = '30s'" >/dev/null
 P -c "revoke all on database $DB from public; grant connect on database $DB to $LOGIN" >/dev/null
 got=$(P -c "select string_agg(b.rolname, ',') from pg_auth_members m join pg_roles b on b.oid = m.roleid join pg_roles r on r.oid = m.member where r.rolname = '$LOGIN'")
 [[ "$got" == pgvigil_reader ]] || fail "the login's roles: $got"
 got=$(P -c "select rolsuper or rolcreaterole or rolcreatedb from pg_roles where rolname = '$LOGIN'")
 [[ "$got" == f ]] || fail "the login has superuser, createrole or createdb"
-ok "login: $LOGIN is a member of pgvigil_reader only, no superuser, createrole or createdb"
+got=$(P -c "select string_agg(nspname, ',') from pg_namespace where has_schema_privilege('$LOGIN', oid, 'CREATE')")
+[[ -z "$got" ]] || fail "the login can CREATE in schema(s): $got"
+got=$(P -c "select has_database_privilege('$LOGIN', '$DB', 'CREATE')")
+[[ "$got" == f ]] || fail "the login can CREATE in the database"
+ok "login: $LOGIN is a member of pgvigil_reader only, no superuser, createrole or createdb, no CREATE on the database or any schema"
 W=$(psql "host=${DBHOST%:*} port=${DBHOST##*:} user=$LOGIN password=$PASS dbname=$DB" -XAtq \
   -c "begin read write" -c "delete from pgvigil.instances where false" -c "rollback" 2>&1 || true)
 [[ "$W" == *"permission denied"* ]] || fail "a write as the reader was not refused: $W"
 ok "login: a write is refused ($W)"
+# every view a panel reads has rows, read as the reader (a stat's count(*) or sum answers one row over an empty view)
+EMPTYV=""
+while read -r o; do
+  [[ "$(P -c "select c.relkind from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil' and c.relname = '$o'")" == v ]] || continue
+  n=$(psql "host=${DBHOST%:*} port=${DBHOST##*:} user=$LOGIN password=$PASS dbname=$DB" -XAtq -v ON_ERROR_STOP=1 \
+        -c "select count(*) from (select 1 from pgvigil.$o limit 1) x") || fail "view $o: the reader cannot read it"
+  [[ "$n" == 0 ]] && EMPTYV="$EMPTYV $o"
+done < "$WORK/objects.txt"
+[[ "$EMPTYV" == " job_running" ]] || fail "views without a row as the reader:${EMPTYV:- none} (expected only: job_running)"
+ok "views: every view a panel reads has rows as the reader, except job_running (no running job in the demo)"
 
 # --- Grafana, provisioned as docs/grafana.md says ----------------------------------------------------------
 PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
@@ -106,6 +126,7 @@ cp deploy/grafana/provisioning/datasources/pgvigil.yaml "$WORK/prov/datasources/
 cp deploy/grafana/provisioning/dashboards/pgvigil.yaml "$WORK/prov/dashboards/"
 cp $DASH/*.json "$WORK/dash/"
 chmod -R a+rX "$WORK/prov" "$WORK/dash"
+CTUP=1  # set first: a container created but not started is still removed
 docker run -d --name "$CT" --network host \
   -e GF_SERVER_HTTP_ADDR=127.0.0.1 -e GF_SERVER_HTTP_PORT="$PORT" \
   -e GF_SECURITY_ADMIN_PASSWORD="$GFPASS" \
@@ -117,7 +138,7 @@ docker run -d --name "$CT" --network host \
   -v "$WORK/prov/datasources:/etc/grafana/provisioning/datasources:ro" \
   -v "$WORK/prov/dashboards:/etc/grafana/provisioning/dashboards:ro" \
   -v "$WORK/dash:/var/lib/grafana/dashboards/pgvigil:ro" \
-  "$IMAGE" >/dev/null; CTUP=1
+  "$IMAGE" >/dev/null
 G="http://127.0.0.1:$PORT"
 for _ in $(seq 1 90); do curl -fs "$G/api/health" >/dev/null 2>&1 && break; sleep 1; done
 curl -fs "$G/api/health" | jq -e '.database == "ok"' >/dev/null || { docker logs "$CT" 2>&1 | tail -20 >&2; fail "grafana never became healthy"; }
@@ -177,7 +198,7 @@ ok "panels: $PANELS queries answer without an error for every demo instance; eve
 
 # --- screenshots: a headless Chromium driven over CDP (a plain --screenshot fires before Grafana's lazy panels load) ---
 if ! command -v chromium >/dev/null || ! command -v node >/dev/null; then
-  echo "NOT PROVEN (screens): chromium or node is not on this machine"; exit 0
+  echo "NOT PROVEN (screens): chromium or node is not on this machine"; exit 3
 fi
 cat > "$WORK/shot.mjs" <<'JS'
 // node shot.mjs <cdp port> <out.png> <url>: a Grafana dashboard at full height once every panel has loaded;

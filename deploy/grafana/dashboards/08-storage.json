@@ -113,7 +113,7 @@
                 "value": [
                   {
                     "title": "Instance overview",
-                    "url": "/d/pgvigil-instance?var-instance=${__data.fields.instance_id}&${__url_time_range}"
+                    "url": "/d/pgvigil-instance?var-instance=${__data.fields.instance_id}&${__url_time_range}&${datasource:queryparam}"
                   }
                 ]
               }
@@ -431,7 +431,7 @@
                 "value": [
                   {
                     "title": "Instance overview",
-                    "url": "/d/pgvigil-instance?var-instance=${__data.fields.instance_id}&${__url_time_range}"
+                    "url": "/d/pgvigil-instance?var-instance=${__data.fields.instance_id}&${__url_time_range}&${datasource:queryparam}"
                   }
                 ]
               }
