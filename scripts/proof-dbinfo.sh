@@ -99,7 +99,7 @@ adm -c "drop database $DBB with (force)"
 "$BIN" collect -config "$CFG" -once databases >/dev/null || fail "B: collect"
 [ "$(row "is_present" "$DBB")" = f ] || fail "B: b still present"
 [ "$(row "is_present" "$DBA")" = t ] || fail "B: a gone"
-[ "$(q "select string_agg(distinct datname, ',') filter (where datname in ('$DBA', '$DBB')) from pgvigil.database_size_series($iid, now() - interval '1 hour', now(), 3600)")" = "$DBA" ] \
+[ "$(q "select string_agg(distinct datname, ',') filter (where datname in ('$DBA', '$DBB')) from pgvigil.database_size_series($iid, now() - interval '1 hour', now(), 3600, 100000)")" = "$DBA" ] \
   || fail "B: size series"
 echo "B: OK"
 
