@@ -7,6 +7,7 @@ import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { backupsFleetView } from './backups';
+import { corruptionFleetView } from './corruption';
 import { extensionsFleetView } from './extensions';
 import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
@@ -585,6 +586,13 @@ export async function storage(ctx: Ctx): Promise<HTMLElement> {
 export async function backups(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
   const view = await backupsFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'backups'));
+  if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
+  return view;
+}
+
+export async function corruption(ctx: Ctx): Promise<HTMLElement> {
+  const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
+  const view = await corruptionFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'corruption'));
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }

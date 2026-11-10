@@ -130,3 +130,42 @@ func TestTextPolicyOnLogRows(t *testing.T) {
 		t.Error("an identifier with digits must stay whole")
 	}
 }
+
+// A corruption event keeps its detail (the server's message about the damage) under every policy, its statement
+// follows the policy; a plan row loses its statement under normalized and none (plans are stored under full only).
+func TestTextPolicyKindRules(t *testing.T) {
+	mk := func() []Row {
+		return []Row{
+			{"kind": "event", "kind_of": "corruption", "statement": "SELECT * FROM t WHERE id = 42", "detail": "invalid page in block 3 of relation base/16384/24576"},
+			{"kind": "event", "kind_of": "plan", "statement": "Seq Scan on t  (cost=0.00..35.50 rows=2550 width=4)\n  Filter: (id = 42)", "detail": "duration: 812.4 ms"},
+			{"kind": "event", "kind_of": "slow", "statement": "SELECT * FROM t WHERE id = 42", "detail": nil},
+		}
+	}
+	rows := mk()
+	applyTextPolicy(rows, "full")
+	if rows[1]["statement"] == nil || rows[0]["detail"] != "invalid page in block 3 of relation base/16384/24576" {
+		t.Fatalf("full must change nothing: %v", rows)
+	}
+	rows = mk()
+	applyTextPolicy(rows, "normalized")
+	if rows[0]["detail"] != "invalid page in block 3 of relation base/16384/24576" {
+		t.Errorf("normalized changed a corruption detail: %v", rows[0]["detail"])
+	}
+	if s, _ := rows[0]["statement"].(string); strings.Contains(s, "42") {
+		t.Errorf("normalized kept a literal in a corruption row's statement: %q", s)
+	}
+	if rows[1]["statement"] != nil {
+		t.Errorf("normalized kept a plan: %v", rows[1]["statement"])
+	}
+	if s, _ := rows[2]["statement"].(string); strings.Contains(s, "42") {
+		t.Errorf("normalized kept a literal in a slow row: %q", s)
+	}
+	rows = mk()
+	applyTextPolicy(rows, "none")
+	if rows[0]["detail"] != "invalid page in block 3 of relation base/16384/24576" || rows[0]["statement"] != nil {
+		t.Errorf("none: a corruption row keeps its detail and loses its statement: %v", rows[0])
+	}
+	if rows[1]["statement"] != nil || rows[2]["statement"] != nil {
+		t.Errorf("none kept statement text: %v %v", rows[1]["statement"], rows[2]["statement"])
+	}
+}

@@ -28,7 +28,18 @@ func applyTextPolicy(rows []Row, mode string) {
 		return
 	}
 	for _, r := range rows {
+		// two log event kinds are not statement text: a corruption event's detail is the server's own message
+		// about a damaged page, file or chunk (logparse keeps any statement-shaped CONTEXT out of it, in "statement",
+		// which follows the policy below); a plan carries the statement's text and literals and a normalized plan
+		// loses its shape and every number, so plans are stored under full only
+		kind, _ := r["kind_of"].(string)
+		if kind == "plan" {
+			r["statement"] = nil
+		}
 		for _, k := range textPolicyKeys {
+			if k == "detail" && kind == "corruption" {
+				continue
+			}
 			v, ok := r[k]
 			if !ok || v == nil {
 				continue

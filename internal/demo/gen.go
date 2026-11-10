@@ -236,7 +236,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("logs", g.logRows(t, prev))
 	}
 	if g.Spec.Platform == "onprem" && !g.Spec.Replica {
-		add("serverlog", g.serverlogRows(t, prev))
+		add("serverlog", append(g.serverlogRows(t, prev), g.corruptionLogRows(t, prev)...))
 	}
 	if g.Spec.DMS {
 		add("dms", g.dmsRows(t))
@@ -261,6 +261,9 @@ func (g *Gen) Step(t time.Time) []Batch {
 	}
 	if first || t.Minute()%15 == 0 {
 		add("storage", g.storageRows(t))
+	}
+	if g.amcheckOn() && (first || (t.Hour() == 3 && t.Minute() == 0)) {
+		add("amcheck", g.amcheckRows(t))
 	}
 	if first || t.Minute()%5 == 0 {
 		add("backups", g.backupRows(t))
@@ -291,7 +294,11 @@ func (g *Gen) Collections() []string {
 	if g.Spec.Platform == "onprem" {
 		c = append(c, "serverlog")
 	}
-	return append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles")
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles")
+	if g.amcheckOn() {
+		c = append(c, "amcheck")
+	}
+	return c
 }
 
 // ---------------------------------------------------------------- instance
@@ -334,6 +341,7 @@ func (g *Gen) settings(t time.Time) []Row {
 			vals[name] = newV
 		}
 	}
+	g.corruptionSettings(vals)
 	names := make([]string, 0, len(vals))
 	for k := range vals {
 		names = append(names, k)
@@ -370,7 +378,7 @@ func (g *Gen) instanceRows(t time.Time) []Row {
 	return []Row{{
 		"server_version": s.Version, "server_version_num": s.VersionNum, "is_replica": s.Replica,
 		"postmaster_start": g.pmStart, "server_now": t, "time_zone": "UTC", "connected_database": "postgres",
-		"connected_user": "pgvigil_monitor", "server_addr": s.Addr, "server_port": 5432, "data_checksums": "on",
+		"connected_user": "pgvigil_monitor", "server_addr": s.Addr, "server_port": 5432, "data_checksums": g.dataChecksums(),
 		"shared_buffers": "8GB", "max_connections": s.MaxConn, "work_mem": "4MB", "wal_level": "replica",
 		"track_io_timing": "on", "log_min_duration_statement": g.settingValue(t, "log_min_duration_statement"), "database_count": len(g.dbList()),
 		"platform": s.Platform, "has_pg_stat_statements": !s.StmtBroken, "has_pg_cron": s.Cron, "has_pgagent": false,
