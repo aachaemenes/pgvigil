@@ -32,6 +32,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
+	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/sched"
 )
@@ -160,10 +161,10 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	if cfg.Flags.Once == "" {
-		return fmt.Errorf("collect needs -once <collection>; known: %v", collect.Names())
+		return fmt.Errorf("collect needs -once <collection>; known: %v", engines.Names())
 	}
-	if _, ok := collect.Get(cfg.Flags.Once); !ok {
-		return fmt.Errorf("unknown collection %q; known: %v", cfg.Flags.Once, collect.Names())
+	if _, ok := engines.EngineOf(cfg.Flags.Once); !ok {
+		return fmt.Errorf("unknown collection %q; known: %v", cfg.Flags.Once, engines.Names())
 	}
 	// everything that can be wrong in the arguments fails here, before any connection
 	var targets []config.Instance
@@ -182,7 +183,7 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 	defer r.Close()
 	failed := 0
 	for _, in := range targets {
-		res := collect.RunOnce(ctx, log, r, in, cfg.Flags.Once)
+		res := engines.RunOnce(ctx, log, r, in, cfg.Flags.Once)
 		if res.Err != nil {
 			failed++
 			log.Error("collection failed", "instance", in.Name, "collection", cfg.Flags.Once, "err", res.Err)
@@ -199,24 +200,31 @@ func runCollect(ctx context.Context, log *slog.Logger, args []string) error {
 // checkCollectionNames rejects a schedules: or disabled: entry that names no
 // collection; the config package cannot import collect, so the check lives here.
 func checkCollectionNames(cfg *config.Config) error {
-	known := map[string]bool{}
-	for _, n := range collect.Names() {
-		known[n] = true
-	}
 	for n := range cfg.Schedules {
-		if !known[n] {
-			return fmt.Errorf("schedules: unknown collection %q; known: %v", n, collect.Names())
+		if _, ok := engines.EngineOf(n); !ok {
+			return fmt.Errorf("schedules: unknown collection %q; known: %v", n, engines.Names())
 		}
 	}
 	for _, in := range cfg.Instances {
+		// an instance names only its own engine's collections
+		check := func(where, n string) error {
+			e, ok := engines.EngineOf(n)
+			if !ok {
+				return fmt.Errorf("instance %q %s: unknown collection %q; known: %v", in.Name, where, n, engines.Names())
+			}
+			if e != in.Engine {
+				return fmt.Errorf("instance %q %s: %q is a %s collection and the instance's engine is %s", in.Name, where, n, e, in.Engine)
+			}
+			return nil
+		}
 		for n := range in.Schedules {
-			if !known[n] {
-				return fmt.Errorf("instance %q schedules: unknown collection %q; known: %v", in.Name, n, collect.Names())
+			if err := check("schedules", n); err != nil {
+				return err
 			}
 		}
 		for _, n := range in.Disabled {
-			if !known[n] {
-				return fmt.Errorf("instance %q disabled: unknown collection %q; known: %v", in.Name, n, collect.Names())
+			if err := check("disabled", n); err != nil {
+				return err
 			}
 		}
 	}

@@ -73,7 +73,14 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
   const id = Number(r.instance_id);
   const mine = f.checks.filter(c => Number(c.instance_id) === id);
   const out: Record<string, Cell> = {};
+  // a SQL Server instance has no PostgreSQL collection: only its Collection cell is judged, the rest say so
+  // instead of reading an empty check list as OK (its own checks come with the SQL Server pages)
+  const otherEngine = r.engine != null && r.engine !== 'postgres';
   for (const g of groups) {
+    if (otherEngine && g.key !== 'collect') {
+      out[g.key] = { level: 0, n: 0, detail: ['a PostgreSQL check: nothing is collected for it on this engine yet'], none: true, text: 'not yet' };
+      continue;
+    }
     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
     if (g.key === 'version') { out[g.key] = versionCellOf(f, id); continue; }
     const hit = mine.filter(c => g.checks.includes(String(c.check_group)));
@@ -98,7 +105,7 @@ export function worst(f: Fleet, r: Row): Level {
 
 export const levelClass = ['ok', 'warn', 'crit'];
 export const cellClass = (c: Cell) => c.none ? 'none' : levelClass[c.level];
-export const cellText = (c: Cell) => c.none ? 'no sample' : c.text ?? (c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`);
+export const cellText = (c: Cell) => c.none ? c.text ?? 'no sample' : c.text ?? (c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`);
 
 export function tagsOf(r: Row): string[] {
   const t = r.tags;

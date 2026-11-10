@@ -5,7 +5,7 @@ package web
 // counted as failing there, so an error row an earlier build left behind does not alarm for ever.
 const sqlInstances = `
 SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coalesce(tm.tags, i.tags) AS tags, i.last_seen,
-       st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
+       i.engine, st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
        a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at,
        (SELECT count(*) FROM pgvigil.collection_dates c

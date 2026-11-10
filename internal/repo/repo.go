@@ -166,6 +166,18 @@ func (r *Repo) EnsureInstance(ctx context.Context, name, platform, serverVersion
 	return id, nil
 }
 
+// EnsureInstanceEngine is EnsureInstance for an instance of a named engine ("postgres" or "sqlserver"); the repository
+// refuses a name already stored under the other engine.
+func (r *Repo) EnsureInstanceEngine(ctx context.Context, engine, name, platform, serverVersion string, versionNum int, isReplica bool, tags []string) (int, error) {
+	var id int
+	err := r.pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, $3, $4, $5, $6, $7)`,
+		name, platform, serverVersion, versionNum, isReplica, tags, engine).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure_instance %s: %w", name, err)
+	}
+	return id, nil
+}
+
 // Import hands a collection's rows to its import function.
 func (r *Repo) Import(ctx context.Context, instanceID int, collection string, snapshotAt time.Time, rows []map[string]any) error {
 	payload, err := json.Marshal(rows)

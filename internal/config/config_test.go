@@ -177,3 +177,40 @@ func TestTags(t *testing.T) {
 		t.Errorf("TagPairs: %+v", got)
 	}
 }
+
+// An instance is PostgreSQL unless it says sqlserver; a SQL Server instance has its own platform words, takes a
+// password only through env: or file:, and none of PostgreSQL's doors.
+func TestEngine(t *testing.T) {
+	ok := Config{Repository: Repository{DSNRaw: "r"}, Instances: []Instance{
+		{Name: "pg", DSNRaw: "host=x"},
+		{Name: "ms", Engine: "sqlserver", DSNRaw: "sqlserver://mon@h:1433?database=master"},
+		{Name: "ms-env", Engine: "sqlserver", DSNRaw: "env:MS_DSN", Platform: "azuresqlmi"},
+		{Name: "ms-ado", Engine: "sqlserver", DSNRaw: "server=h;user id=mon;database=master", Platform: "rds"},
+	}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("a valid two-engine config was rejected: %v", err)
+	}
+	if ok.Instances[0].Engine != EnginePostgres || ok.Instances[1].Engine != EngineSQLServer {
+		t.Errorf("engines after Validate: %q, %q", ok.Instances[0].Engine, ok.Instances[1].Engine)
+	}
+	bad := map[string]Instance{
+		"unknown engine":       {Name: "a", Engine: "oracle", DSNRaw: "x"},
+		"postgres platform":    {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", Platform: "aurora"},
+		"sqlserver platform":   {Name: "a", DSNRaw: "x", Platform: "azuresqldb"},
+		"inline password url":  {Name: "a", Engine: "sqlserver", DSNRaw: "sqlserver://mon:secret@h:1433"},
+		"inline password ado":  {Name: "a", Engine: "sqlserver", DSNRaw: "server=h;user id=mon;password=secret"},
+		"actions door":         {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ActionsDSNRaw: "env:Y"},
+		"explain door":         {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ExplainDSNRaw: "env:Y"},
+		"explain analyze":      {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", ExplainAnalyze: true},
+		"pooler":               {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", PgBouncerDSNRaw: "env:Y"},
+		"aws block":            {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", AWS: &AWS{}},
+		"backups block":        {Name: "a", Engine: "sqlserver", DSNRaw: "env:X", Backups: &Backups{}},
+		"engine in upper case": {Name: "a", Engine: "SQLServer", DSNRaw: "env:X"},
+	}
+	for name, in := range bad {
+		c := Config{Repository: Repository{DSNRaw: "r"}, Instances: []Instance{in}}
+		if err := c.Validate(); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}

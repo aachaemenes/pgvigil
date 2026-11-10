@@ -43,13 +43,24 @@ type Repository struct {
 // DSN resolves the repository connection string.
 func (r Repository) DSN() string { return Resolve(r.DSNRaw) }
 
+// The engines an instance can be.
+const (
+	EnginePostgres  = "postgres"
+	EngineSQLServer = "sqlserver"
+)
+
 // Instance is one monitored PostgreSQL server (one endpoint; a writer and a
 // reader of the same cluster are two instances).
 type Instance struct {
 	Name string `yaml:"name"`
 	// DSNRaw is a libpq keyword/value or URL connection string, or env:/file: indirection.
 	DSNRaw string `yaml:"dsn"`
-	// Platform is auto (default), onprem, rds, aurora, azure, cloudsql or alloydb.
+	// Engine is the database engine: postgres (the default) or sqlserver. A sqlserver instance takes a go-mssqldb
+	// connection string in dsn (sqlserver://login@host:1433?database=master or the ADO form); one that carries a
+	// password must come through env: or file:. Only that engine's collections run on the instance.
+	Engine string `yaml:"engine"`
+	// Platform is auto (default), onprem, rds, aurora, azure, cloudsql or alloydb; on a sqlserver instance auto,
+	// onprem, rds, azuresqldb or azuresqlmi.
 	Platform string `yaml:"platform"`
 	// Tags are plain words (prod) or key:value pairs (env:prod, team:billing), both in one list; a plain
 	// word is the key "tag". The repository keeps them as written; 'pgvigil tag' overrides a key there.
@@ -432,10 +443,40 @@ func (c *Config) Validate() error {
 		if !validQueryText(in.QueryText) {
 			return fmt.Errorf("instance %q: query_text must be full, normalized or none (got %q)", in.Name, in.QueryText)
 		}
-		switch in.Platform {
-		case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
+		if in.Engine == "" {
+			in.Engine = EnginePostgres
+		}
+		switch in.Engine {
+		case EnginePostgres:
+			switch in.Platform {
+			case "auto", "onprem", "rds", "aurora", "azure", "cloudsql", "alloydb":
+			default:
+				return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
+			}
+		case EngineSQLServer:
+			switch in.Platform {
+			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi":
+			default:
+				return fmt.Errorf("instance %q: unknown platform %q for engine sqlserver (auto, onprem, rds, azuresqldb, azuresqlmi)", in.Name, in.Platform)
+			}
+			if v := strings.TrimSpace(in.DSNRaw); !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") && inlinePassword(v) {
+				return fmt.Errorf("instance %q: a sqlserver dsn that carries a password must come through env:NAME or file:/path", in.Name)
+			}
+			// the doors below are PostgreSQL's; SQL Server's own come with its pages
+			switch {
+			case strings.TrimSpace(in.ActionsDSNRaw) != "":
+				return fmt.Errorf("instance %q: actions_dsn is not available for engine sqlserver yet", in.Name)
+			case strings.TrimSpace(in.ExplainDSNRaw) != "" || in.ExplainAnalyze:
+				return fmt.Errorf("instance %q: explain_dsn and explain_analyze are PostgreSQL's", in.Name)
+			case strings.TrimSpace(in.PgBouncerDSNRaw) != "":
+				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
+			case in.AWS != nil:
+				return fmt.Errorf("instance %q: the aws: block is not available for engine sqlserver yet", in.Name)
+			case in.Backups != nil:
+				return fmt.Errorf("instance %q: the backups: block is PostgreSQL's", in.Name)
+			}
 		default:
-			return fmt.Errorf("instance %q: unknown platform %q", in.Name, in.Platform)
+			return fmt.Errorf("instance %q: unknown engine %q (postgres or sqlserver)", in.Name, in.Engine)
 		}
 		for _, s := range in.Tags {
 			if _, err := ParseTag(s); err != nil {

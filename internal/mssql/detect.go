@@ -1,0 +1,111 @@
+package mssql
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// Kind is what runs the SQL Server; it is the instance's platform in the repository.
+type Kind string
+
+// The kinds of SQL Server instance.
+const (
+	KindServer  Kind = "sqlserver"    // a server someone runs: a machine, a VM, a container
+	KindRDS     Kind = "rdssqlserver" // Amazon RDS for SQL Server
+	KindAzureDB Kind = "azuresqldb"   // Azure SQL Database (one database is the instance)
+	KindAzureMI Kind = "azuresqlmi"   // Azure SQL Managed Instance
+)
+
+// Info is what a connection told about the server and about the login's rights.
+type Info struct {
+	Kind           Kind
+	Version        string // the first line of @@VERSION
+	ProductVersion string // 16.0.4135.4
+	Major          int    // 16 = SQL Server 2022
+	Minor          int
+	Build          int
+	VersionNum     int // Major * 10000 + Minor: 160000
+	Edition        string
+	EngineEdition  int // SERVERPROPERTY('EngineEdition'): 2 Standard, 3 Enterprise, 4 Express, 5 SQL Database, 8 Managed Instance
+	ServerName     string
+	HADREnabled    bool
+	// what the login may read: a collection says "skipped" with the missing right instead of failing
+	ViewServerState   bool
+	ViewAnyDefinition bool
+	MsdbAccess        bool
+}
+
+const detectSQL = `SELECT
+  CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)),
+  CAST(SERVERPROPERTY('Edition') AS nvarchar(128)),
+  CAST(SERVERPROPERTY('EngineEdition') AS int),
+  CAST(ISNULL(@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))) AS nvarchar(128)),
+  CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int),
+  CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE'), 0) AS int),
+  CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION'), 0) AS int),
+  CAST(ISNULL(HAS_DBACCESS('msdb'), 0) AS int),
+  CAST(CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS int),
+  CAST(LEFT(@@VERSION, 400) AS nvarchar(400))`
+
+// Detect reads what the server is and what the login may read. forced is the config's platform: auto (or empty)
+// keeps what the server says, anything else names the kind.
+func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
+	var in Info
+	var pv, ed, name, ver sql.NullString
+	var ee, hadr, vss, vad, msdb, rds sql.NullInt64
+	if err := conn.QueryRowContext(ctx, detectSQL).Scan(&pv, &ed, &ee, &name, &hadr, &vss, &vad, &msdb, &rds, &ver); err != nil {
+		return in, fmt.Errorf("sql server detect: %w", err)
+	}
+	in.ProductVersion, in.Edition, in.ServerName = pv.String, ed.String, name.String
+	in.EngineEdition = int(ee.Int64)
+	in.HADREnabled = hadr.Int64 == 1
+	in.ViewServerState, in.ViewAnyDefinition, in.MsdbAccess = vss.Int64 == 1, vad.Int64 == 1, msdb.Int64 == 1
+	in.Version, _, _ = strings.Cut(ver.String, "\n")
+	in.Version = strings.TrimSpace(in.Version)
+	in.Major, in.Minor, in.Build = parseVersion(in.ProductVersion)
+	in.VersionNum = in.Major*10000 + in.Minor
+	in.Kind = kindOf(in.EngineEdition, rds.Int64 == 1, forced)
+	return in, nil
+}
+
+// kindOf names the platform: the config's word when it gives one, else the engine edition and RDS's own database.
+func kindOf(engineEdition int, hasRDSAdmin bool, forced string) Kind {
+	switch forced {
+	case "onprem":
+		return KindServer
+	case "rds":
+		return KindRDS
+	case "azuresqldb":
+		return KindAzureDB
+	case "azuresqlmi":
+		return KindAzureMI
+	}
+	switch {
+	case engineEdition == 5:
+		return KindAzureDB
+	case engineEdition == 8:
+		return KindAzureMI
+	case hasRDSAdmin:
+		return KindRDS
+	}
+	return KindServer
+}
+
+// parseVersion splits a product version (16.0.4135.4) into major, minor and build; a part it cannot read is 0.
+func parseVersion(v string) (major, minor, build int) {
+	p := strings.Split(strings.TrimSpace(v), ".")
+	at := func(i int) int {
+		if i >= len(p) {
+			return 0
+		}
+		n, err := strconv.Atoi(p[i])
+		if err != nil || n < 0 {
+			return 0
+		}
+		return n
+	}
+	return at(0), at(1), at(2)
+}

@@ -20,6 +20,10 @@ import (
 // query; log rows carry statement and detail (a deadlock's detail quotes the other process's statement).
 var textPolicyKeys = []string{"query", "statement", "detail"}
 
+// ApplyTextPolicy is the instance's query-text policy for another engine's collector package: the same rewrite
+// RunOnce applies to a PostgreSQL collection's rows.
+func ApplyTextPolicy(rows []Row, mode string) { applyTextPolicy(rows, mode) }
+
 // applyTextPolicy rewrites the text columns of rows in place according to mode; an unknown or empty
 // mode is "full" (nothing changes). A row that keys its text by query_hash (activity) gets the hash of
 // the normalized text under normalized, so identical shapes share one query_text row and the raw

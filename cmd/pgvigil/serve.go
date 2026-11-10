@@ -16,6 +16,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/actions"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/web"
 )
 
@@ -141,19 +142,20 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 // configured instance's effective one (0 = disabled there), in seconds.
 func expectedIntervals(cfg *config.Config) web.Expected {
 	e := web.Expected{Defaults: map[string]int{}, Instances: map[string]map[string]int{}}
-	for _, c := range collect.All() {
-		e.Defaults[c.Name()] = int(c.DefaultInterval() / time.Second)
+	all := engines.AllSpecs()
+	for _, c := range all {
+		e.Defaults[c.Name] = int(c.Default / time.Second)
 	}
 	for _, in := range cfg.Instances {
 		m := map[string]int{}
-		for _, c := range collect.All() {
-			// a collection gated off by the instance's config (no aws: block) never writes a row:
-			// 0 keeps the stale check from flagging the row an earlier build left behind
-			if skip, _ := collect.Gated(c, in); skip {
-				m[c.Name()] = 0
+		for _, c := range all {
+			// a collection of another engine, or one gated off by the instance's config (no aws: block), never
+			// writes a row: 0 keeps the stale check from flagging the row an earlier build left behind
+			if skip, _ := engines.Gated(in, c.Name); skip {
+				m[c.Name] = 0
 				continue
 			}
-			m[c.Name()] = int(cfg.Interval(in, c.Name(), c.DefaultInterval()) / time.Second)
+			m[c.Name] = int(cfg.Interval(in, c.Name, c.Default) / time.Second)
 		}
 		e.Instances[in.Name] = m
 	}
