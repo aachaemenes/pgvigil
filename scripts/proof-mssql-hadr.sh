@@ -73,7 +73,7 @@
 #     as such; a database of a group with one of two replicas monitored and no backup -> info 'backups not judged',
 #     never critical; a backup kept when a later read no longer lists it, also
 #     when the database's creation time comes back an hour off; a backup older than its database's creation not
-#     counted for it ('no full backup ever'); a failover still seen across a read that names no primary; two
+#     counted for it ('no full backup ever', its text saying 'created or restored <time>; no full backup since'); a failover still seen across a read that names no primary; two
 #     secondaries carrying one database name kept as two rows; a replication read of which one part failed replaces
 #     the parts that were read; a job history row read twice an hour apart stored once, the cursor with its mark;
 #     an older read imported late changes no current state; import_mssql_ag refuses a PostgreSQL instance.
@@ -571,6 +571,9 @@ imp mssql_backups "$ST" "now() - interval '1 minute'" "[{\"kind\":\"database\",\
 F=$(q "select string_agg(object || '=' || severity || ':' || check_name, ', ' order by object) from pgvigil.mssql_jobs_findings where instance_id=$ST")
 echo "  the stub's backup findings: $F"
 [ "$F" = "reborn=critical:no full backup ever, sales=info:backups not judged: a replica of the group is not monitored, solo=critical:no full backup ever" ] || fail "F: the stub's backup findings"
+D=$(q "select detail from pgvigil.mssql_jobs_findings where instance_id=$ST and object='reborn'")
+echo "  the re-created database's finding: $D"
+[[ $D == "database reborn (simple): created or restored ${BORN:0:10} ${BORN:11:5} UTC; no full backup since"*"is not counted." ]] || fail "F: the finding does not say when the database was created or restored"
 [ "$(q "select string_agg(database_name || ':' || not_judged, ', ' order by database_name) from pgvigil.mssql_backup_judged where instance_id=$ST and not_judged is not null")" \
   = "off:the database is offline, snap:a database snapshot, tempdb:tempdb is never backed up" ] || fail "F: what is not judged"
 # msdb's history trimmed: the next read lists no backup of 'kept'; the repository keeps the one it saw - also when

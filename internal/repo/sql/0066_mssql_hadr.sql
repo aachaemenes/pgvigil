@@ -977,12 +977,14 @@ SELECT b.instance_id, CASE WHEN b.replicas_unseen THEN 'info' ELSE 'critical' EN
                      b.database_name, b.ag_name, CASE WHEN b.full_status = 'never' THEN 'no full backup' ELSE 'no full backup newer than ' || to_char(b.full_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"') END,
                      b.replicas_monitored, b.replicas_total)
             WHEN b.full_status = 'never' THEN
-              format('database %s (%s, created %s) has no full backup in msdb%s%s.', b.database_name, lower(b.recovery_model),
-                     coalesce(to_char(b.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), '?'),
-                     CASE WHEN b.history_from IS NULL THEN ', and msdb holds no backup history at all: never backed up, or the history was deleted'
-                          WHEN b.history_from > b.created_at THEN ', whose history reaches back only to ' || to_char(b.history_from AT TIME ZONE 'UTC', 'YYYY-MM-DD') || ': no backup since then'
-                          ELSE ': it was never backed up on this server' END,
-                     CASE WHEN b.ag_name IS NOT NULL THEN ' (availability group ' || b.ag_name || ', every monitored replica read)' ELSE '' END)
+              -- the creation time is also the time of a restore over the name: say so, so nobody hunts for a lost history
+              format('database %s (%s): created or restored %s; no full backup since%s%s. A backup that finished before that time is of the database as it was before, and is not counted.',
+                     b.database_name, lower(b.recovery_model),
+                     coalesce(to_char(b.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'), 'at an unknown time'),
+                     CASE WHEN b.history_from IS NULL THEN ' (msdb holds no backup history at all: never backed up, or the history was deleted)'
+                          WHEN b.history_from > b.created_at THEN ' that msdb still lists (its history reaches back only to ' || to_char(b.history_from AT TIME ZONE 'UTC', 'YYYY-MM-DD') || ')'
+                          ELSE '' END,
+                     CASE WHEN b.ag_name IS NOT NULL THEN ' on any monitored replica of the availability group ' || b.ag_name ELSE '' END)
             ELSE
               format('database %s: the last full backup finished %s%s, %s hours before the read; the threshold is %s hours.', b.database_name,
                      to_char(b.full_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI "UTC"'),
