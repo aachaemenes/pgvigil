@@ -1,12 +1,24 @@
-// The SQL Server Running queries tab (task 96): one snapshot of what ran on the server (a session that runs a
-// request, holds an open transaction or blocks another), a slider over the kept minutes of the range, and the
-// blocking chains of the snapshot drawn as a tree with the head first. Data from /api/mssql/running; the route
-// and the tab's entry are the shell's.
+// The SQL Server Running queries tab (task 96), in DBA Dash's shape: one snapshot of what ran on the server (a
+// session that runs a request, holds an open transaction or blocks another), ONE LINE per session (a statement
+// shows its first 80 characters and opens whole in the shared viewer), a slider with Earlier and Later over the
+// kept minutes of the range, a 'Blocked (n)' filter, a group-by, and the blocking chains of the snapshot drawn as a
+// tree with the head first. An address with at= (the fleet page's row) opens the snapshot at or before that time.
+// Data from /api/mssql/running; the route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, isLive, rangeLabel, window_ } from './router';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { foldedGrid } from './running';
+import { firstChars, sqlCell, whatIsThis } from './sqlview';
 
 interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null }
+
+// the three notes that were paragraphs on the page: each is the title of a 'what is this' link now
+const chainsNote = 'A head blocks others and waits behind no session: the cause of its chain is its transaction and its last statement, not the object '
+  + 'the others wait on. A sleeping head with an open transaction is an application that left its transaction open; the statement shown is its last batch.';
+const noHeadNote = 'These blocked rows have no head to name (a blocker that is not a session, or a cycle): see the "chain head" column of the sessions.';
+const sessionsNote = 'A session that runs a request, holds an open transaction or blocks another. On a parallel request the CPU, reads and writes are '
+  + 'marked "(coordinator)": the server keeps them for the coordinator task alone, and the sums over the request\'s tasks are beside them. '
+  + 'On a sleeping row the statement is the last batch the session ran.';
 
 const ms = (v: unknown) => v == null ? '' : fmtSecs(Math.floor(Number(v) / 1000));
 const kb = (v: unknown) => v == null ? '' : fmtBytes(Number(v) * 1024);
@@ -25,6 +37,14 @@ const sessionWaits = (v: unknown) => {
 };
 const statusCell = (v: unknown, r: Row) => v === 'sleeping' && Number(r.open_tran) > 0
   ? badge('sleeping, transaction open', 'warn') : String(v ?? '');
+// clip: a long value on one line, whole in the cell's title
+const clip = (n: number) => (v: unknown) => {
+  const s = v == null ? '' : String(v);
+  return s.length > n ? el('span', { title: s }, firstChars(s, n)) : s;
+};
+const sleeping = (r: Row) => r.request_id == null;
+const stmtCell = (v: unknown, r: Row) => sqlCell(v, { heading: `session ${String(r.session_id)}: ${sleeping(r) ? 'last batch' : 'statement'}`,
+  title: sleeping(r) ? 'This session runs no request: the text is the LAST batch it ran, not one running now.' : undefined });
 
 // A head that itself waits behind something that is no session (an orphaned transaction, a latch without an
 // owner) says so beside its badge: it is not the holder to kill.
@@ -36,12 +56,15 @@ const cols: Col[] = [
   { key: 'status', fmt: statusCell },
   { key: 'command' },
   { key: 'wait_type', label: 'waiting on', fmt: waitCell },
-  { key: 'wait_resource', label: 'wait resource' },
+  { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: v => Number(v) ? String(v) : '' },
   { key: 'head_session_id', label: 'chain head', num: true, fmt: (v, r) => v == null ? String(r.chain_note ?? '') : Number(r.chain_depth) === 0 ? headCell(r) : String(v) },
-  { key: 'database_name', label: 'database' }, { key: 'login_name', label: 'login' }, { key: 'host_name', label: 'host' },
-  { key: 'program_name', label: 'program' },
+  { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '' },
   { key: 'elapsed_ms', label: 'running for', num: true, fmt: ms },
+  { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
+  { key: 'database_name', label: 'database' }, { key: 'login_name', label: 'login' }, { key: 'program_name', label: 'program', fmt: clip(40) },
+  { key: 'host_name', label: 'host' },
+  { key: 'statement', fmt: stmtCell },
   { key: 'percent_complete', label: '% done', num: true, fmt: v => Number(v) > 0 ? fmtNum(v) + ' %' : '' },
   { key: 'cpu_ms', label: 'CPU ms', num: true, fmt: coord },
   { key: 'logical_reads', label: 'logical reads', num: true, fmt: coord },
@@ -55,14 +78,12 @@ const cols: Col[] = [
   { key: 'tempdb_current_kb', label: 'tempdb now', num: true, fmt: kb },
   { key: 'tempdb_alloc_kb', label: 'tempdb allocated', num: true, fmt: kb },
   { key: 'open_tran', label: 'open tran', num: true },
-  { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
   { key: 'tran_log_bytes', label: 'log written', num: true, fmt: v => v == null ? '' : fmtBytes(v) },
   { key: 'transaction_id', label: 'transaction id', fmt: v => v == null ? '' : String(v) },
   { key: 'isolation_level', label: 'isolation' },
-  { key: 'session_waits', label: 'the session\'s largest waits (time, count)', fmt: sessionWaits },
-  { key: 'statement', label: 'statement (the last batch, on a sleeping row)', wide: true },
+  { key: 'session_waits', label: 'largest session waits', fmt: v => clip(60)(sessionWaits(v)) },
   { key: 'query_hash', label: 'query hash' }, { key: 'query_plan_hash', label: 'plan hash' },
-  { key: 'sql_handle', label: 'sql handle', wide: true }, { key: 'plan_handle', label: 'plan handle', wide: true },
+  { key: 'sql_handle', label: 'sql handle', fmt: clip(18) }, { key: 'plan_handle', label: 'plan handle', fmt: clip(18) },
 ];
 
 const treeCols: Col[] = [
@@ -71,10 +92,10 @@ const treeCols: Col[] = [
   { key: 'victims', label: 'blocks', num: true, fmt: v => Number(v) > 0 ? badge(String(v), 'warn') : '' },
   { key: 'status', fmt: statusCell },
   { key: 'wait_type', label: 'waiting on', fmt: waitCell },
-  { key: 'wait_resource', label: 'wait resource' },
+  { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
-  { key: 'database_name', label: 'database' }, { key: 'login_name', label: 'login' }, { key: 'program_name', label: 'program' },
-  { key: 'statement', label: 'statement (the last batch, on a sleeping row)', wide: true },
+  { key: 'database_name', label: 'database' }, { key: 'login_name', label: 'login' }, { key: 'program_name', label: 'program', fmt: clip(40) },
+  { key: 'statement', fmt: stmtCell },
 ];
 
 // treeRows orders a snapshot's chain rows as a tree: each head, then the sessions it blocks, depth first, the
@@ -110,45 +131,63 @@ function treeRows(rows: Row[], heads: Row[]): Row[] {
 // body draws one snapshot. picked is the snapshot the slider chose; without it the page shows the newest of the
 // window (the list is newest first), which is also the one the API returned. A quiet minute has no row to read
 // its time from, so the time never comes from the rows.
-function body(d: RunningData, picked?: unknown): HTMLElement {
+function body(d: RunningData, instance: number | undefined, picked?: unknown): HTMLElement {
   const box = el('div');
   const rows = rowsOf(d.rows), heads = rowsOf(d.blocking);
   const snaps = rowsOf(d.snapshots);
   const sum = picked === undefined ? snaps[0] : snaps.find(s => s.snapshot_at === picked);
   if (!sum) { box.append(el('p', { class: 'empty' }, 'No snapshot in this window.')); return box; }
-  const shown = sum.snapshot_at;
-  box.append(el('p', { class: 'meta' }, `Snapshot of ${fmtTime(shown)} (the server's own clock: ${fmtTime(sum.server_utc)}), read in ${fmtNum(sum.read_ms)} ms. `
-    + `Source: ${sum.source === 'sp_whoisactive' ? 'sp_WhoIsActive, called where the server\'s DBA installed it' : 'the DMVs'} (${String(sum.source_note ?? '')}).`));
-  box.append(el('div', { class: 'tiles' },
-    tile('sessions listed', fmtNum(sum.sessions)),
-    tile('requests running', fmtNum(sum.requests)),
-    tile('sessions blocked', fmtNum(sum.blocked), Number(sum.blocked) ? 'warn' : 'ok'),
-    tile('chain heads', fmtNum(sum.heads), Number(sum.heads) ? 'warn' : 'ok'),
-    tile('longest wait behind a head', sum.longest_wait_ms == null ? '-' : ms(sum.longest_wait_ms), Number(sum.longest_wait_ms) > 300000 ? 'crit' : Number(sum.longest_wait_ms) > 30000 ? 'warn' : ''),
-    tile('memory grants pending', fmtNum(sum.memory_grants_pending ?? 0), Number(sum.memory_grants_pending) ? 'warn' : 'ok')));
-  box.append(el('h3', {}, 'Blocking chains'), el('p', { class: 'meta' },
-    'A head blocks others and waits behind no session: the cause of its chain is its transaction and its last statement, not the object '
-    + 'the others wait on. A sleeping head with an open transaction is an application that left its transaction open; the statement shown is its last batch.'),
-    grid(treeRows(rows, heads), treeCols, 'No session was blocked in this snapshot.'));
+  const src = el('span', { title: String(sum.source_note ?? '') }, sum.source === 'sp_whoisactive' ? 'sp_WhoIsActive' : 'the DMVs');
+  // the status line of totals (DBA Dash's 'Blocked Sessions: 2, Blocked Wait Time ...'), then where the read came from
+  const nBlocked = Number(sum.blocked), pending = Number(sum.memory_grants_pending ?? 0);
+  box.append(el('p', { class: 'meta counts running-status' },
+    el('span', { class: nBlocked ? (Number(sum.longest_wait_ms) > 300000 ? 'crit' : 'warn') : '' },
+      `Blocked sessions: ${fmtNum(sum.blocked)}` + (nBlocked ? ` behind ${fmtNum(sum.heads)} head(s), longest wait ${ms(sum.longest_wait_ms) || '0s'}` : '')),
+    `; sessions ${fmtNum(sum.sessions)}, requests ${fmtNum(sum.requests)}; `,
+    el('span', { class: pending ? 'warn' : '' }, `memory grants pending ${fmtNum(pending)}`)));
+  // the snapshot's time as DBA Dash's toolbar has it, and where the read came from
+  box.prepend(el('div', { class: 'picker' }, el('b', { class: 'snap-time', title: `The server's own clock: ${fmtTime(sum.server_utc)}` }, 'Snapshot ' + fmtTime(sum.snapshot_at)),
+    ` read in ${fmtNum(sum.read_ms)} ms from `, src));
+  const tree = treeRows(rows, heads);
   const noHead = rows.filter(r => r.chain_note != null);
-  if (noHead.length) box.append(el('p', { class: 'meta' }, `${noHead.length} blocked row(s) have no head to name (a blocker that is not a session, or a cycle): see the "chain head" column below.`));
-  box.append(el('h3', {}, 'Sessions and requests'), el('p', { class: 'meta' },
-    'A session that runs a request, holds an open transaction or blocks another. On a parallel request the CPU, reads and writes are '
-    + 'marked "(coordinator)": the server keeps them for the coordinator task alone, and the sums over the request\'s tasks are beside them.'),
-    grid(rows, cols, 'Nothing ran and no transaction was open at this snapshot.'));
+  if (tree.length || noHead.length) {
+    box.append(el('h3', {}, 'Blocking chains ', whatIsThis(chainsNote, 'Blocking chains')), grid(tree, treeCols, 'No session was blocked behind a head in this snapshot.'));
+    if (noHead.length) box.append(el('p', { class: 'meta' }, `${noHead.length} blocked row(s) without a head `, whatIsThis(noHeadNote, 'Blocked rows without a head')));
+  }
+  const text = (k: string) => (r: Row) => String(r[k] ?? '');
+  const inChain = (r: Row) => r.head_session_id != null || r.chain_note != null || Number(r.blocking_session_id) > 0;
+  box.append(el('h3', {}, 'Sessions and requests ', whatIsThis(sessionsNote, 'Sessions and requests')), foldedGrid({
+    store: `pgvigil.running.mssql.${instance}`, rows, cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
+    blocked: nBlocked, inChain, waiting: r => Number(r.blocking_session_id) > 0,
+    age: r => r.elapsed_ms == null ? null : Math.floor(Number(r.elapsed_ms) / 1000), ageLabel: 'longest running for',
+    groups: [['database', text('database_name')], ['login', text('login_name')], ['program', text('program_name')], ['status', text('status')], ['wait', text('wait_type')]],
+  }));
   return box;
 }
 
 export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
-  const win = window_(ctx);
-  const d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win });
-  const sec = el('section', {}, el('h2', {}, `Running queries (${rangeLabel(ctx)})`));
+  // at= (the fleet page's row): the snapshot at or before that time; when it is older than the range, the hour up to it
+  let win = window_(ctx);
+  const at = ctx.at && !isNaN(Date.parse(ctx.at)) ? ctx.at : undefined;
+  const hourUpTo = (t: string) => ({ from: new Date(Date.parse(t) - 3600000).toISOString(), to: new Date(Date.parse(t) + 1000).toISOString() });
+  let widened = !!at && (Date.parse(at) <= Date.parse(win.from) || Date.parse(at) > Date.parse(win.to));
+  if (at && widened) win = hourUpTo(at);
+  let d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
+  // at= older than every snapshot the range's list kept (it keeps the newest 1,500, a day of minutes): the hour up to it
+  if (at && !widened && !rowsOf(d.snapshots).some(s => Date.parse(String(s.snapshot_at)) <= Date.parse(at))) {
+    widened = true; win = hourUpTo(at);
+    d = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at });
+  }
+  const sec = el('section', {}, el('h2', {}, `Running queries (${widened ? 'the hour up to ' + fmtTime(at) : rangeLabel(ctx)})`));
   const st = rowsOf(d.state)[0];
   if (st && st.status !== 'ok') sec.append(el('p', { class: 'meta' }, `The mssql_requests collection's last run: ${String(st.status)}${st.note ? ' (' + String(st.note) + ')' : ''}.`));
   const snaps = rowsOf(d.snapshots).reverse();   // oldest first: the slider runs left to right in time
+  // the stop the page opens on: the newest, or with at= the newest at or before it (the one the API returned)
+  let start = snaps.length - 1;
+  if (at) { start = -1; snaps.forEach((s, i) => { if (Date.parse(String(s.snapshot_at)) <= Date.parse(at)) start = i; }); }
   const holder = el('div');
-  if (snaps.length > 1) {
-    const slider = el('input', { type: 'range', id: 'mssql-snap', min: '0', max: String(snaps.length - 1), step: '1', value: String(snaps.length - 1) });
+  if (snaps.length > 1 && start >= 0) {
+    const slider = el('input', { type: 'range', id: 'mssql-snap', min: '0', max: String(snaps.length - 1), step: '1', value: String(start) });
     const out = el('output', { for: 'mssql-snap' });
     const say = () => {
       const s = snaps[Number(slider.value)];
@@ -161,9 +200,9 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
       say();
       const mine = ++seq;
       try {
-        const at = snaps[Number(slider.value)].snapshot_at;
-        const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(at) });
-        if (mine === seq) holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, at));
+        const pick = snaps[Number(slider.value)].snapshot_at;
+        const one = await get<RunningData>('mssql/running', { instance: ctx.instance, ...win, at: String(pick) });
+        if (mine === seq) holder.replaceChildren(body({ ...one, snapshots: d.snapshots }, ctx.instance, pick));
       } catch (e) { if (mine === seq) holder.replaceChildren(errorBox(e)); }
     };
     const step = (by: number) => { slider.value = String(Math.min(snaps.length - 1, Math.max(0, Number(slider.value) + by))); void load(); };
@@ -174,10 +213,10 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     slider.addEventListener('input', say);
     slider.addEventListener('change', () => void load());
     say();
-    sec.append(el('p', { class: 'range' }, el('label', { for: 'mssql-snap' }, `Snapshot (${snaps.length} kept in the range${isLive(ctx) ? '' : ', history'}): `),
+    sec.append(el('p', { class: 'range' }, el('label', { for: 'mssql-snap' }, `Snapshot (${snaps.length} kept in the range${isLive(ctx) && !at ? '' : ', history'}): `),
       prev, ' ', slider, ' ', next, ' ', last, out));
   }
-  holder.append(body(d));
+  holder.append(body(d, ctx.instance, start >= 0 && snaps.length ? snaps[start].snapshot_at : at ? null : undefined));   // at= before the first kept snapshot: none to show
   sec.append(holder);
   return sec;
 }
