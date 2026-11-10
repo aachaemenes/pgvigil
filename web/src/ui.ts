@@ -103,7 +103,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     }));
   }
   draw();
-  return el('div', { class: 'grid-wrap' }, table);
+  return el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
 }
 
 export function badge(text: string, kind: string): HTMLElement {
@@ -128,5 +128,5 @@ export function tile(label: string, value: string, kind = ''): HTMLElement {
 export function props(pairs: [string, string | Node][]): HTMLElement {
   const t = el('table', { class: 'props' });
   for (const [k, v] of pairs) t.append(el('tr', {}, el('th', {}, k), el('td', {}, v)));
-  return el('div', { class: 'grid-wrap' }, t);
+  return el('div', { class: 'grid-wrap', tabindex: '0' }, t);
 }

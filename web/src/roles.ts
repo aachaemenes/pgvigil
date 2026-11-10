@@ -77,7 +77,7 @@ export async function rolesView(instance: number): Promise<HTMLElement> {
   // the ACL grids: one database at a time, picked from the databases read
   const dbacl = rowsOf(d.dbacl), schemaacl = rowsOf(d.schemaacl), defacl = rowsOf(d.defacl);
   const dbs = [...new Set([...dbacl, ...schemaacl, ...defacl].map(r => String(r.datname)))].sort();
-  const pick = el('select', {}, el('option', { value: '' }, `every database (${dbs.length})`), ...dbs.map(n => el('option', { value: n }, n)));
+  const pick = el('select', { 'aria-label': 'database' }, el('option', { value: '' }, `every database (${dbs.length})`), ...dbs.map(n => el('option', { value: n }, n)));
   const acl = el('div');
   const draw = () => {
     const sel = (pick as HTMLSelectElement).value;
@@ -143,7 +143,7 @@ export async function rolesFleetView(keep?: (r: Row) => boolean, instLink?: (nam
   const link = (v: unknown, r: Row) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '');
   const supers = roles.filter(r => r.super && !r.is_platform);
   const noMon = sum.filter(r => r.login_has_pg_monitor === false).length;
-  const which = el('select', {}, el('option', { value: 'super' }, 'superusers'), el('option', { value: 'login' }, 'login roles'),
+  const which = el('select', { 'aria-label': 'which roles' }, el('option', { value: 'super' }, 'superusers'), el('option', { value: 'login' }, 'login roles'),
     el('option', { value: 'all' }, 'superusers and login roles'));
   const out = el('div');
   const draw = () => {

@@ -1,11 +1,12 @@
-:root { --bg: #f4f6f9; --fg: #1d2330; --muted: #5d6676; --line: #dde1e8; --card: #fff; --side: #eef1f5; --accent: #2f6fdf;
-        --crit: #c92a2a; --warn: #c77700; --ok: #2b8a3e; --crit-bg: #fde2e2; --warn-bg: #fff1d6; --ok-bg: #e3f4e6; color-scheme: light; }
+:root { --bg: #f4f6f9; --fg: #1d2330; --muted: #5d6676; --line: #dde1e8; --card: #fff; --side: #eef1f5; --accent: #2b64cf;
+        --crit: #c42626; --warn: #9a5a00; --ok: #237a35; --crit-bg: #fde2e2; --warn-bg: #fff1d6; --ok-bg: #e3f4e6; --badge-fg: #fff; color-scheme: light; }
+/* every text / background pair above and below meets WCAG 2.1 AA (4.5:1): the light warn and ok tones and the accent were darkened for white text on them and for links on the page background; in the dark theme the badge and highlight backgrounds are light, so their text is dark (--badge-fg). scripts/proof-a11y.sh checks every page in both themes. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) { --bg: #14171d; --fg: #e4e7ec; --muted: #9aa3b2; --line: #2c323d; --card: #1b1f27; --side: #171a21; --accent: #6b9cff;
-          --crit: #ff6b6b; --warn: #f0a33a; --ok: #51cf66; --crit-bg: #4a1f22; --warn-bg: #45351a; --ok-bg: #1d3b25; color-scheme: dark; }
+          --crit: #ff6b6b; --warn: #f0a33a; --ok: #51cf66; --crit-bg: #4a1f22; --warn-bg: #45351a; --ok-bg: #1d3b25; --badge-fg: #14171d; color-scheme: dark; }
 }
 :root[data-theme="dark"] { --bg: #14171d; --fg: #e4e7ec; --muted: #9aa3b2; --line: #2c323d; --card: #1b1f27; --side: #171a21; --accent: #6b9cff;
-        --crit: #ff6b6b; --warn: #f0a33a; --ok: #51cf66; --crit-bg: #4a1f22; --warn-bg: #45351a; --ok-bg: #1d3b25; color-scheme: dark; }
+        --crit: #ff6b6b; --warn: #f0a33a; --ok: #51cf66; --crit-bg: #4a1f22; --warn-bg: #45351a; --ok-bg: #1d3b25; --badge-fg: #14171d; color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg);
        display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: auto 1fr; min-height: 100vh; }
@@ -29,7 +30,7 @@ body.signin #tree, body.signin #tabs, body.signin #show-tree { display: none; }
 .folder-name { padding: .05rem .3rem; border-radius: 4px; }
 .folder-items { margin-left: 1.15rem; }
 .tree-list a:hover { background: var(--line); }
-.tree-list a.on { background: var(--accent); color: #fff; }
+.tree-list a.on { background: var(--accent); color: var(--badge-fg); }
 .caret { border: none; background: none; padding: 0 .1rem; width: 1rem; color: var(--muted); }
 .dot { display: inline-block; width: .65rem; height: .65rem; border-radius: 50%; flex: none; background: var(--muted); }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.crit { background: var(--crit); }
@@ -44,7 +45,7 @@ body.signin #tree, body.signin #tabs, body.signin #show-tree { display: none; }
 .brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
 .subtabs { margin-bottom: .8rem; display: flex; flex-wrap: wrap; gap: .3rem; }
 .subtabs a { padding: .15rem .6rem; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); text-decoration: none; background: var(--card); }
-.subtabs a.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+.subtabs a.on { color: var(--badge-fg); background: var(--accent); border-color: var(--accent); }
 #bar { display: flex; gap: .5rem; align-items: center; margin-left: auto; flex-wrap: wrap; }
 select, button { font: inherit; padding: .2rem .5rem; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
 button { cursor: pointer; }
@@ -60,7 +61,7 @@ table.grid { border-collapse: collapse; width: 100%; font-variant-numeric: tabul
 .grid th { cursor: pointer; user-select: none; font-weight: 600; color: var(--muted); position: sticky; top: 0; background: var(--card); }
 .grid .num { text-align: right; }
 .grid td.wide { white-space: normal; max-width: 48rem; font-family: ui-monospace, monospace; font-size: 12px; word-break: break-word; }
-.badge { display: inline-block; padding: 0 .45rem; border-radius: 9px; font-size: 12px; font-weight: 600; color: #fff; background: var(--muted); }
+.badge { display: inline-block; padding: 0 .45rem; border-radius: 9px; font-size: 12px; font-weight: 600; color: var(--badge-fg); background: var(--muted); }
 .badge.crit { background: var(--crit); } .badge.warn { background: var(--warn); }
 .tiles { display: flex; gap: .8rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: .6rem 1rem; min-width: 9rem; }
@@ -80,7 +81,7 @@ form.login { max-width: 22rem; margin: 10vh auto; background: var(--card); borde
 form.login h2 { margin-bottom: 1rem; }
 form.login label { display: block; margin: .7rem 0; color: var(--muted); }
 form.login input { display: block; width: 100%; margin-top: .25rem; padding: .4rem .5rem; color: var(--fg); }
-form.login button { margin-top: .9rem; padding: .4rem 1rem; background: var(--accent); color: #fff; border-color: var(--accent); }
+form.login button { margin-top: .9rem; padding: .4rem 1rem; background: var(--accent); color: var(--badge-fg); border-color: var(--accent); }
 form.login button:disabled { opacity: .6; cursor: default; }
 form.login .error { margin: .8rem 0 0; }
 button.link { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }

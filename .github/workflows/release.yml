@@ -1,7 +1,10 @@
-# Release on a tag v*: the tests, static binaries for Linux, Windows and macOS, a SHA256SUMS file,
-# and a keyless Sigstore signature of that file (the GitHub Actions OIDC identity is the signer,
-# recorded in the public Rekor log), all attached to the GitHub release. Nothing is published
-# from a laptop: a release is reproducible from this file and the tag.
+# Release on a tag v*: the tests, static binaries for Linux, Windows and macOS, FIPS 140-3 builds of the
+# Linux and Windows ones (GOFIPS140=v1.0.0: the Go Cryptographic Module v1.0.0, CMVP certificate #5247,
+# is the only cryptography in them and FIPS mode is on from the start), a CycloneDX SBOM per target, a
+# SHA256SUMS file, and a keyless Sigstore signature of that file (the GitHub Actions OIDC identity is the
+# signer, recorded in the public Rekor log) with its bundle for an offline verification, all attached to
+# the GitHub release. Nothing is published from a laptop: a release is reproducible from this file and
+# the tag. docs/airgap.md says how a site without Internet access verifies and installs one.
 name: release
 
 on:
@@ -17,12 +20,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the SBOM tool reads the module's version from the tag
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - run: go mod verify
       - run: go vet ./... && go test ./...
-      - name: build the binaries
+      - name: build the binaries (plain, then FIPS 140-3 for Linux and Windows)
         run: |
           set -euo pipefail
           V="${GITHUB_REF_NAME}"
@@ -33,13 +38,36 @@ jobs:
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w -X main.version=$V" \
               -o "dist/pgvigil_${V}_${GOOS}_${GOARCH}${ext}" ./cmd/pgvigil
           done
-          (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          for t in linux/amd64 linux/arm64 windows/amd64; do
+            GOOS="${t%/*}"; GOARCH="${t#*/}"; ext=""
+            [ "$GOOS" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOFIPS140=v1.0.0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w -X main.version=$V" \
+              -o "dist/pgvigil_${V}_${GOOS}_${GOARCH}_fips${ext}" ./cmd/pgvigil
+          done
+          "dist/pgvigil_${V}_linux_amd64_fips" version | tee /dev/stderr | grep -qF 'fips140 on (module v1.0.0)'
+          "dist/pgvigil_${V}_linux_amd64" version | tee /dev/stderr | grep -qF 'fips140 off'
+      - name: SBOM per target (CycloneDX 1.6; the FIPS build of a target links the same modules)
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME}"
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0
+          for t in linux/amd64 linux/arm64 windows/amd64 darwin/arm64 darwin/amd64; do
+            GOOS="${t%/*}"; GOARCH="${t#*/}"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" "$(go env GOPATH)/bin/cyclonedx-gomod" app -json -licenses \
+              -main cmd/pgvigil -output "dist/pgvigil_${V}_${GOOS}_${GOARCH}.cdx.json" .
+          done
+          python3 -c 'import json,sys; [json.load(open(f))["bomFormat"] == "CycloneDX" or sys.exit(f) for f in sys.argv[1:]]' dist/*.cdx.json
+      - name: checksums
+        run: (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
       - uses: sigstore/cosign-installer@v3
-      - name: sign the checksums (keyless)
-        run: cosign sign-blob --yes --output-signature dist/SHA256SUMS.sig --output-certificate dist/SHA256SUMS.pem dist/SHA256SUMS
-      - name: verify what was just signed
+      - name: sign the checksums (keyless), with a bundle for an offline verification
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle --output-signature dist/SHA256SUMS.sig --output-certificate dist/SHA256SUMS.pem dist/SHA256SUMS
+      - name: verify what was just signed, both ways
         run: |
           cosign verify-blob --signature dist/SHA256SUMS.sig --certificate dist/SHA256SUMS.pem \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com dist/SHA256SUMS
+          cosign verify-blob --bundle dist/SHA256SUMS.bundle \
             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com dist/SHA256SUMS
       - name: publish the release

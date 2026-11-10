@@ -67,7 +67,7 @@ function histogram(rows: Row[], tz: string): HTMLElement {
       el('td', { class: 'num' }, msTxt(r.total_ms)), el('td', { class: 'num' }, msTxt(r.max_ms))));
   }
   t.append(body);
-  return el('div', {}, legend, el('div', { class: 'grid-wrap' }, t));
+  return el('div', {}, legend, el('div', { class: 'grid-wrap', tabindex: '0' }, t));
 }
 
 // topCols: a shape's figures, its example and the link to the Statements tab of its instance.

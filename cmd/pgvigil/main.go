@@ -54,7 +54,7 @@ func run(args []string) int {
 	var err error
 	switch args[0] {
 	case "version":
-		fmt.Println("pgvigil", version)
+		fmt.Println(versionLine())
 	case "migrate":
 		err = runMigrate(ctx, log, args[1:])
 	case "collect":

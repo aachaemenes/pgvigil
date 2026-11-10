@@ -86,6 +86,7 @@
     <div class="card"><h3>Every platform, one query set</h3><p>On-prem PostgreSQL 13 to 18, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB. Column names come from the server's own catalog, so one query set serves them all.</p></div>
     <div class="card"><h3>Small and static</h3><p>A single static Go binary for Linux, Windows and macOS, no runtime on the target, about 30 MB of memory while polling fifty instances. The web UI is embedded in the same binary.</p></div>
     <div class="card"><h3>Open source, MIT</h3><p>Built in the open on GitHub. Signed release binaries with checksums; dependencies pinned and scanned in CI.</p></div>
+    <div class="card"><h3>Government ready</h3><p>No telemetry and no connection beyond the servers you name and the AWS region you configure (GovCloud included). FIPS 140-3 builds, a CycloneDX SBOM and Sigstore-signed checksums with every release, an air-gapped install procedure, a hardened service unit, and the UI checked against WCAG 2.1 AA.</p></div>
   </div>
 </div></section>
 
@@ -148,7 +149,8 @@ pgvigil serve -config pgvigil.yaml -listen 0.0.0.0:8443 -tls-cert pgvigil.crt -t
     <li>Credentials never sit in the config file and are masked out of every collected text. A switch stores statement text as is, with every literal replaced, or not at all.</li>
     <li>The repository uses three roles: the collector may only call the import functions, the reader may only read, and the UI's password check runs through one SECURITY DEFINER function nobody else can call.</li>
     <li>The web UI has its own login (argon2id hashes, HttpOnly SameSite=Strict cookies, rate limits) and refuses to listen beyond loopback without TLS.</li>
-    <li>Releases are static binaries built by GitHub Actions from a tag, with a SHA256SUMS file signed through Sigstore; modules are pinned and checked by govulncheck in CI.</li>
+    <li>Releases are static binaries built by GitHub Actions from a tag, with a SHA256SUMS file signed through Sigstore (a bundle for offline verification included) and a CycloneDX SBOM per target; modules are pinned and checked by govulncheck in CI.</li>
+    <li>Government and regulated fleets: FIPS 140-3 builds for Linux and Windows (the Go Cryptographic Module v1.0.0, CMVP certificate #5247), an <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/airgap.md">air-gapped install procedure</a>, a hardened systemd unit (systemd-analyze security 1.4), GovCloud (US) through the region alone, every module's licence in <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/notices.md">docs/notices.md</a>, and the web UI checked against WCAG 2.1 A/AA in both themes.</li>
   </ul>
 </div></section>
 </main>
