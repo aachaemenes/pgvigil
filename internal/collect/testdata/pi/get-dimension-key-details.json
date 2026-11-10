@@ -1,0 +1,10 @@
+{
+ "_note": "GetDimensionKeyDetails response in the wire shape of the API reference (API_GetDimensionKeyDetails, API_DimensionKeyDetail; read 2026-11-09): Dimensions of {Dimension, Status AVAILABLE|PROCESSING|UNAVAILABLE, Value}, asked with Group db.sql, GroupIdentifier the db.sql.id, RequestedDimensions [statement]. The statement is synthetic and carries literals (a customer id 4711, a date): the query_text policy test normalizes them away.",
+ "Dimensions": [
+  {
+   "Value": "SELECT o.col00, o.col01, o.col02, o.col03, o.col04, o.col05, o.col06, o.col07, o.col08, o.col09, o.col10, o.col11, o.col12, o.col13, o.col14, o.col15, o.col16, o.col17, o.col18, o.col19, o.col20, o.col21, o.col22, o.col23, o.col24, o.col25, o.col26, o.col27, o.col28, o.col29, o.col30, o.col31, o.col32, o.col33, o.col34, o.col35, o.col36, o.col37, o.col38, o.col39, o.col40, o.col41, o.col42, o.col43, o.col44, o.col45, o.col46, o.col47, o.col48, o.col49, o.col50, o.col51, o.col52, o.col53, o.col54, o.col55, o.col56, o.col57, o.col58, o.col59 FROM orders o JOIN order_lines l ON l.order_id = o.id WHERE o.customer_id = 4711 AND o.created_at > '2025-11-01' ORDER BY o.created_at DESC LIMIT 50",
+   "Dimension": "db.sql.statement",
+   "Status": "AVAILABLE"
+  }
+ ]
+}
