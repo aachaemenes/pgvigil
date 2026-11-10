@@ -22,6 +22,10 @@
 #              with a number format (numFmtId 165 bytes, '#,##0" B"'), a time cell with 168 and a count with 3
 #   roles      the instance's Roles tab: the privilege grids sit under h4 headings; every sheet's name follows the
 #              heading above its grid (no 'Memberships (2)' for 'Database privileges')
+#   activity   the instance's Running queries tab over 7 days: Per sample shows 500 rows; the Summary sheet's row for it
+#              carries 'the newest 500 of N samples'; every workbook's Summary sheet has a Time zone row (UTC+hh:mm)
+#   slow       the fleet's Slow queries tab (24 h): the hand-built Per day table's statements column numeric, a
+#              duration cell with numFmt 170 ([h]:mm:ss.000), no 'x ms / x s / x min' text left in any sheet
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first
 #   libre      when soffice is on the machine, each .xlsx converts to CSV headless (the file opens); none = said
@@ -117,6 +121,10 @@ out.summary = await page('#/summary');
 out.tables = await page(`#/tables?i=${one.instance_id}`, ['total', 'table']);
 // the Roles tab: grids under h4 headings (the privilege grids)
 out.roles = await page(`#/roles?i=${one.instance_id}`);
+// the Running queries tab over 7 days: more than 500 samples, so the page says 'the newest 500 of N'
+out.activity = await page(`#/activity?i=${one.instance_id}&w=7d`);
+// the fleet's Slow queries tab over 24 h: the Per day table is hand-built (no page model), the durations are 'x ms / s / min'
+out.slow = await page('#/slowqueries?w=24h');
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
@@ -159,7 +167,7 @@ check(d['lang'].lower().startswith(want[:2].lower()), f"the browser runs in {wan
 if want.startswith('fr'):
     check(',' not in d['sample'], "the fr-FR grouping is not a comma (the locale took)")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
-for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname)):
+for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname), ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet')):
     p = d[key]; gs = grids(p)
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
@@ -200,6 +208,26 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', ina
             check(len(got) > 1 and len(numeric) == len(got), f"tables: the sorted sheet's {what} column: {len(numeric)} of {len(got)} rows numeric")
     if key == 'summary':
         check(any(cx[s]['fill'] in fill.values() for s in range(len(cx))), "summary: a status fill in styles.xml")
+    first = z.read('xl/worksheets/sheet1.xml').decode()
+    check('>Time zone<' in first and re.search(r'>UTC[-+]\d\d:\d\d', first) is not None, f"{key}: the Summary sheet has a Time zone row with the offset")
+    if key == 'activity':
+        i = next((i for i, g in enumerate(gs) if g['name'] == 'Per sample'), None)
+        check(i is not None and gs[i]['rows'] == 500, f"activity: the Per sample grid shows 500 rows on screen ({gs[i]['rows'] if i is not None else 'no grid'})")
+        row = re.search(r'<row r="\d+"><c [^>]*><is><t[^>]*>Per sample</t></is></c><c [^>]*><v>(\d+)</v></c><c [^>]*><is><t[^>]*>([^<]*)</t>', first)
+        check(row is not None and row.group(1) == '500' and re.search(r'newest 500 of [\d,.\s\u202f\u00a0]*\d', row.group(2)) is not None, f"activity: the Summary's Per sample row carries the 'newest 500 of N' note ({row.group(2)[:60] if row else 'none'})")
+    if key == 'slow':
+        i = next((i for i, g in enumerate(gs) if g['name'].startswith('Per day')), None)
+        check(i is not None and gs[i]['rows'] >= 1, f"slow: a Per day table with rows on screen ({gs[i]['rows'] if i is not None else 'no grid'})")
+        if i is not None:
+            x = z.read(f'xl/worksheets/sheet{i + 2}.xml').decode()
+            cnt = re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', x)
+            numeric = [r for r, k in cnt if r != '1' and k == '><v>']
+            check(len(numeric) == gs[i]['rows'], f"slow: Per day's statements column (no page model): {len(numeric)} of {gs[i]['rows']} rows numeric")
+        allx = ''.join(z.read(f'xl/worksheets/sheet{j + 2}.xml').decode() for j in range(len(gs)))
+        nums = {int(s) for s in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>', allx)}
+        check(any(cx[s]['fmt'] == 170 for s in nums), "slow: a duration cell with numFmt 170 ([h]:mm:ss.000)")
+        texts = [t for t in re.findall(r't="inlineStr"><is><t[^>]*>([^<]*)</t>', allx) if re.fullmatch(r'[\d\s,.\u202f\u00a0]+ (ms|s|min)', t)]
+        check(not texts, f"slow: no duration left as text ({texts[:3]})")
     # CSV
     if p['csv'].endswith('.csv.zip'):
         cz = zipfile.ZipFile(f"{dl}/{p['csv']}")
