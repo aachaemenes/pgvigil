@@ -7,6 +7,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
+import { readSets, setLabel, setsByRole } from './sessionsets';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 interface CompareData { windows: Table | null; rows: Table | null }
@@ -34,7 +35,24 @@ function baseline(prefix: 'd1' | 'd7'): (v: unknown, r: Row) => string | Node {
   };
 }
 
-function cols(onOpen: (r: Row) => void): Col[] {
+// setsCell: the SETs and RESETs the statement's roles ran in the window (task 58), planner ones marked; null = not read
+function setsCell(byRole: Map<string, Row[]> | null): (v: unknown, r: Row) => string | Node {
+  return (_, r) => {
+    if (!byRole) return 'not read';
+    const roles = Array.isArray(r.usenames) ? r.usenames.map(String) : [];
+    const sets = roles.flatMap(k => byRole.get(k) ?? []);
+    if (sets.length === 0) return 'none';
+    const box = el('span');
+    sets.forEach((x, i) => {
+      if (i) box.append('; ');
+      const t = `${setLabel(x)} (${String(x.rolname)}, ${fmtNum(x.calls_in_window)})`;
+      box.append(x.fires ? badge(t, 'warn') : t);
+    });
+    return box;
+  };
+}
+
+function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null): Col[] {
   return [
     { key: 'queryid', label: 'statement', fmt: (v, r) => {
       const b = el('button', { type: 'button', class: 'link', 'aria-label': `Open the history of statement ${String(v)}` }, String(v));
@@ -61,6 +79,7 @@ function cols(onOpen: (r: Row) => void): Col[] {
     { key: 'd7_ppc_ratio', label: 'pages x 7 d', num: true, fmt: ratio },
     { key: 'datname', label: 'database' },
     { key: 'usenames', label: 'roles' },
+    { key: 'sets', label: 'session SETs of its roles (window)', fmt: setsCell(byRole) },
     { key: 'query', wide: true },
   ];
 }
@@ -94,14 +113,19 @@ async function history(ctx: Ctx, r: Row, out: HTMLElement): Promise<void> {
 }
 
 export async function compareView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<CompareData>('compare', { instance: ctx.instance, ...window_(ctx) });
+  // the SETs column reads the session_sets list beside the compare; its failure leaves the column 'not read'
+  const [d, sets] = await Promise.all([get<CompareData>('compare', { instance: ctx.instance, ...window_(ctx) }),
+    readSets(ctx).catch(() => null)]);
+  const byRole = sets ? setsByRole(sets.sets) : null;
   const windows = rowsOf(d.windows), rows = rowsOf(d.rows);
   const sec = el('section', {}, el('h2', {}, `Compare: the statements of ${rangeLabel(ctx)} against one and seven days earlier`));
   sec.append(el('p', { class: 'meta' }, 'Each statement (its queryid) in the window against the same window one day and seven days '
     + 'earlier: calls, total and mean time, and pages a call (shared blocks hit + read). A ratio of '
     + `${ratioMin} or more on a statement with ${fmtNum(callsMin)} calls or more in the window is marked: it is a regression `
     + '(the Findings list the last 24 hours\' ones). "not run": the instance was read then and the statement did not run; '
-    + '"no baseline": nothing was read then. The figures are pg_stat_statements deltas, each scaled by its share of the window.'));
+    + '"no baseline": nothing was read then. The figures are pg_stat_statements deltas, each scaled by its share of the window. '
+    + 'The session SETs column lists what the statement\'s roles SET or RESET in the window (the Configuration tab has them all): '
+    + 'a planner setting there means the application planned the statement under it.'));
   sec.append(grid(windows, [
     { key: 'label', label: 'window' }, { key: 'from_at', label: 'from', fmt: fmtTime }, { key: 'to_at', label: 'to', fmt: fmtTime },
     { key: 'status', fmt: v => windowText[String(v)] ?? String(v ?? '') },
@@ -109,7 +133,7 @@ export async function compareView(ctx: Ctx): Promise<HTMLElement> {
   const regress = rows.filter(r => Number(r.calls) >= callsMin && Number(r.max_ratio) >= ratioMin).length;
   sec.append(el('p', { class: 'meta' }, `${rows.length} statement(s), ${regress} regression(s).`));
   const detail = el('div', { class: 'compare-history', 'aria-live': 'polite' });
-  sec.append(grid(rows, cols((r) => { void history(ctx, r, detail); }),
+  sec.append(grid(rows, cols((r) => { void history(ctx, r, detail); }, byRole),
     'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'), detail);
   return sec;
 }
