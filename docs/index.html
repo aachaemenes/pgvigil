@@ -58,7 +58,7 @@
 <main>
 <div class="wrap hero">
   <h1>Open-source PostgreSQL monitoring, built the way a DBA works</h1>
-  <p class="lead">pgvigil watches your PostgreSQL servers: the daily checks, what is running right now and who is blocking whom, the statements that cost the most, the settings that changed, the jobs that failed, the replication that fell behind. One collector binary, a PostgreSQL repository, a web UI with its own login.</p>
+  <p class="lead">pgvigil watches your PostgreSQL servers: the daily checks, what is running right now and who is blocking whom, the statements that cost the most, the settings that changed, the jobs that failed, the replication that fell behind. SQL Server instances sit beside them in the same tree, with their own collector and their own pages. One collector binary, a PostgreSQL repository, a web UI with its own login.</p>
   <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download the latest release</a>
   <a class="btn" href="https://github.com/aachaemenes/pgvigil#quick-start">Quick start</a>
   <a class="btn" href="https://github.com/aachaemenes/pgvigil">Source on GitHub</a>
@@ -74,6 +74,7 @@
   <h2>Features</h2>
   <div class="cards">
     <div class="card"><h3>Daily checks</h3><p>One overview page: stale or failing collections, replication problems, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in the last 24 hours.</p></div>
+    <div class="card"><h3>SQL Server beside PostgreSQL</h3><p>An instance marked <code>engine: sqlserver</code> gets its own collections and its own tabs: running queries and blocking chains, waits, deadlocks and slow statements from small Extended Events sessions, Always On, mirroring, log shipping and replication, Agent jobs, backups, data and log files, the version store with its holder, the configuration with its changes, and whether Agent and Database Mail are running. On-prem, Amazon RDS, Azure SQL Database and Managed Instance. The read login holds three rights and never sysadmin; it never creates an event session (pgvigil writes the script for your DBA to run), and killing a session or starting a job goes through a second login that is off by default.</p></div>
     <div class="card"><h3>Running queries and blocking chains</h3><p>Every active and idle-in-transaction session, sampled each minute, with the blocking chain walked to its head. Step back through history by snapshot time.</p></div>
     <div class="card"><h3>Top statements</h3><p>pg_stat_statements as deltas per interval, with reset detection, so the top statements over any window are real numbers, not cumulative totals.</p></div>
     <div class="card"><h3>Counters and rates</h3><p>pg_stat_database, the background writer, checkpointer, WAL and pg_stat_io as rates over a window, charted.</p></div>
