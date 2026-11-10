@@ -58,7 +58,8 @@ export function openViewer(heading: string, text: string, code = true): void {
 export function sqlCell(v: unknown, o: { heading?: string; title?: string; n?: number } = {}): HTMLElement | string {
   if (v == null || v === '') return '';
   const text = String(v);
-  const b = el('button', { type: 'button', class: 'link sqlcell', title: o.title ?? 'Show the whole statement',
+  // data-full: the export writes the whole statement, not the 80 characters on screen
+  const b = el('button', { type: 'button', class: 'link sqlcell', 'data-full': text, title: o.title ?? 'Show the whole statement',
     style: 'font-family:ui-monospace,monospace;font-size:12px;text-align:left;white-space:nowrap' }, firstChars(text, o.n ?? 80));
   b.addEventListener('click', ev => { ev.stopPropagation(); openViewer(o.heading ?? 'Statement', text); });
   return b;

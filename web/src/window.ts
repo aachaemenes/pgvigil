@@ -1,5 +1,6 @@
 import { get, rowsOf, Table } from './api';
 import { slowCols } from './borrowed';
+import { whatIsThis } from './sqlview';
 import { planLink } from './plan';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
@@ -14,9 +15,9 @@ export async function longRunsSection(ctx: Ctx): Promise<HTMLElement> {
     get('slow', { ...w, min: minSecs, state: ctx.st, user: ctx.user, db: ctx.db, app: ctx.app }).catch((e: unknown) => e),
     get('counters', { ...w, kind: 'sessions' }).catch((e: unknown) => e)]);
   const box = el('div', { class: 'window' });
-  box.append(el('h3', {}, `Over this window (${rangeLabel(ctx)})`), filters(ctx, minSecs),
-    el('p', { class: 'meta' }, 'From the running-queries samples: an active statement by how long it had run, an idle-in-transaction session by how long it had sat idle '
-      + '(its transaction age beside it; a statement that ran and then sat idle is two rows); a duration is a floor (the statement ended between its last sample and the next), and a run shorter than the sampling interval can go unseen.'));
+  box.append(el('h3', {}, `Over this window (${rangeLabel(ctx)}) `, whatIsThis('From the running-queries samples: an active statement by how long it had run, an idle-in-transaction session by how long it had sat idle '
+      + '(its transaction age beside it; a statement that ran and then sat idle is two rows); a duration is a floor (the statement ended between its last sample and the next), and a run shorter than the sampling interval can go unseen.', 'Over this window')),
+    filters(ctx, minSecs));
   box.append(runs instanceof Error ? errorBox(runs) : grid(rowsOf(runs as Table), runCols(ctx), 'Nothing ran or sat idle in a transaction that long in this window.'));
   box.append(el('h3', {}, 'Per sample'));
   if (samples instanceof Error) box.append(errorBox(samples));

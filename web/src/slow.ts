@@ -11,6 +11,7 @@ import { slowCols } from './borrowed';
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { whatIsThis } from './sqlview';
 
 type Parts = 'meta' | 'sources' | 'totals' | 'histogram' | 'top' | 'recent' | 'sampled' | 'instances';
 
@@ -123,14 +124,14 @@ export async function slowView(ctx: Ctx): Promise<HTMLElement> {
   const meta = rowsOf(d.meta)[0] ?? {}, tot = rowsOf(d.totals)[0] ?? {};
   const n = Number(tot.statements ?? 0);
   const fed = src.filter(s => s.reader != null);
-  const sec = el('section', {}, el('h2', {}, `Slow queries (${rangeLabel(ctx)})`), picker(ctx, ms, ctx.tab));
+  // the log's floor note is the title of a 'what is this' link beside the heading, not a paragraph (one-line pages)
+  const sec = el('section', {}, el('h2', {}, `Slow queries (${rangeLabel(ctx)}) `, whatIsThis(floorNote(src, ms), 'What the log holds')), picker(ctx, ms, ctx.tab));
   sec.append(el('div', { class: 'tiles' },
     tile('slow statements', fmtNum(n), n ? 'warn' : ''),
     tile('shapes', fmtNum(tot.shapes ?? 0)),
     tile('total time', msTxt(tot.total_ms) || '0 ms'),
     tile('longest', msTxt(tot.max_ms) || '-'),
     tile('long runs sampled', fmtNum(sampled.length))));
-  sec.append(el('p', { class: 'meta' }, floorNote(src, ms)));
   sec.append(el('h3', {}, 'Log readers'), fed.length ? grid(fed, sourceCols(false))
     : el('p', { class: 'empty' }, 'No log reader has run on this instance: RDS and Aurora need an aws: block (the logs collection); '
       + 'on-prem the serverlog collection needs logging_collector on and a read door (its last run names what is missing).'));
@@ -138,9 +139,8 @@ export async function slowView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Top by count'), grid(byCount, topCols(ctx, 'count', false), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Top by total time'), grid(byTotal, topCols(ctx, 'total', false), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Newest slow statements'), grid(recent, recentCols, 'No slow statement in this window.'));
-  sec.append(el('h3', {}, 'Long runs seen by the activity sampler'),
-    el('p', { class: 'meta' }, 'From the activity samples, not the log: an execution seen running at least the threshold (whole seconds, at least 1 s); '
-      + 'sampled, so the duration is a floor. It also catches a statement the log missed (still running, or under log_min_duration_statement).'),
+  sec.append(el('h3', {}, 'Long runs seen by the activity sampler ', whatIsThis('From the activity samples, not the log: an execution seen running at least the threshold (whole seconds, at least 1 s); '
+      + 'sampled, so the duration is a floor. It also catches a statement the log missed (still running, or under log_min_duration_statement).', 'Long runs seen by the activity sampler')),
     grid(sampled, slowCols, 'No execution seen running that long in this window.'));
   return sec;
 }
@@ -158,13 +158,13 @@ export async function slowFleetView(ctx: Ctx, keep?: (r: Row) => boolean, instLi
   const n = insts.reduce((a, r) => a + Number(r.statements ?? 0), 0);
   const skipped = src.filter(s => s.status === 'skipped' || s.status === 'error').length;
   const unread = src.filter(s => s.reader == null).length;
-  const sec = el('section', {}, el('h2', {}, `Slow queries (${rangeLabel(ctx)})`), picker(ctx, ms, ctx.tab));
+  // the log's floor note is the title of a 'what is this' link beside the heading, not a paragraph (one-line pages)
+  const sec = el('section', {}, el('h2', {}, `Slow queries (${rangeLabel(ctx)}) `, whatIsThis(floorNote(src, ms), 'What the log holds')), picker(ctx, ms, ctx.tab));
   sec.append(el('div', { class: 'tiles' },
     tile('slow statements', fmtNum(n), n ? 'warn' : ''),
     tile('instances with slow statements', fmtNum(insts.length)),
     tile('readers skipped or failing', fmtNum(skipped), skipped ? 'warn' : 'ok'),
     tile('instances without a log reader', fmtNum(unread))));
-  sec.append(el('p', { class: 'meta' }, floorNote(src, ms)));
   sec.append(el('h3', {}, 'Per instance'), grid(insts, [
     { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') }, { key: 'platform' },
     { key: 'statements', label: 'count', num: true }, { key: 'total_ms', label: 'total time', num: true, fmt: msTxt },

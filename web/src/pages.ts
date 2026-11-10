@@ -1,9 +1,9 @@
-import { Activity, DMS, get, Row, rowsOf, Table } from './api';
+import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
 import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
-import { Ctx, href, isLive, rangeLabel, window_ } from './router';
+import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
@@ -14,8 +14,6 @@ import { corruptionFleetView } from './corruption';
 import { extensionsFleetView } from './extensions';
 import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
-import { longRunsSection } from './window';
-import { actionsCol, actionsState } from './actions';
 import { applyTagFilter, tagFilterBar, tagUI } from './tree';
 import { jobsReportFleetView } from './jobsreport';
 import { rolesFleetView } from './roles';
@@ -38,7 +36,6 @@ function inTag(ctx: Ctx, rows: Row[]): Row[] {
 const scopeLabel = (ctx: Ctx) => ctx.tag ? ` - tag ${ctx.tag}` : '';
 const instLink = (ctx: Ctx, text: string, id: unknown, tab = 'summary') => link(text, href(ctx, { tab, instance: Number(id), tag: undefined, at: undefined, task: undefined, taskInstance: undefined }));
 
-const truncQuery = (v: unknown) => { const s = v == null ? '' : String(v); return s.length > 400 ? s.slice(0, 400) + '...' : s; };
 
 export async function checks(ctx: Ctx): Promise<HTMLElement> {
   const f = await fleet();
@@ -88,77 +85,7 @@ export async function instances(ctx: Ctx): Promise<HTMLElement> {
   return el('section', {}, el('h2', {}, 'Instances' + scopeLabel(ctx)), grid(rows, cols, 'No instances yet: run the collector.'));
 }
 
-export async function activity(ctx: Ctx): Promise<HTMLElement> {
-  const need = needInstance(ctx); if (need) return need;
-  const at = ctx.at ?? (isLive(ctx) ? undefined : range(ctx).to);
-  const [a, act] = await Promise.all([get<Activity>('activity', { instance: ctx.instance, at }), actionsState(ctx.instance)]);
-  const sec = el('section', {}, el('h2', {}, 'Running queries'), snapshotPicker(ctx, at));
-  if (!a.snapshot_at) { sec.append(el('p', { class: 'empty' }, 'No activity snapshot for this instance yet.')); return sec; }
-  const sum = rowsOf(a.summary)[0] ?? {};
-  sec.append(el('p', { class: 'meta' }, `Snapshot ${fmtTime(a.snapshot_at)}: ${fmtNum(sum.total)} sessions, ${fmtNum(sum.active)} active, ` +
-    `${fmtNum(sum.idle_in_txn)} idle in transaction, ${fmtNum(sum.waiting_lock)} waiting on a lock.`));
 
-  const chains = rowsOf(a.chains);
-  sec.append(el('h3', {}, 'Blocking chains'));
-  if (chains.length === 0) sec.append(el('p', { class: 'empty' }, 'No lock waits in this snapshot.'));
-  else {
-    const heads = new Map<number, Row[]>();
-    for (const c of chains) { const h = Number(c.head_pid); if (!heads.has(h)) heads.set(h, []); heads.get(h)!.push(c); }
-    for (const [h, list] of heads) {
-      const first = list[0];
-      const box = el('div', { class: 'chain' },
-        el('div', { class: 'chain-head' }, badge('HEAD', 'crit'), ` pid ${h} - ${first.head_state ?? ''} (${first.head_backend_type ?? ''}) - ${list.length} waiter(s)`
-          + (list.some(x => x.in_cycle) ? ' - cycle' : '')),
-        el('pre', { class: 'sql' }, String(first.head_query ?? '(no statement text)')));
-      for (const w of list) {
-        box.append(el('div', { class: 'chain-w', style: `margin-left:${Number(w.depth) * 1.2}rem` },
-          `pid ${w.pid} depth ${w.depth} - ${w.state ?? ''} ${w.wait_event ?? ''}: `, el('code', {}, truncQuery(w.waiter_query))));
-      }
-      sec.append(box);
-    }
-  }
-
-  sec.append(el('h3', {}, 'Sessions'));
-  const cols: Col[] = [
-    { key: 'pid', num: true, fmt: (v, r) => r.is_blocker ? el('b', {}, String(v)) : String(v) },
-    { key: 'state' },
-    { key: 'wait_event_type', label: 'wait type' },
-    { key: 'wait_event', label: 'wait' },
-    { key: 'blocking_pids', label: 'blocked by' },
-    { key: 'query_secs', label: 'query age', num: true, fmt: fmtSecs },
-    { key: 'xact_secs', label: 'txn age', num: true, fmt: fmtSecs },
-    { key: 'backend_xmin_age', label: 'xmin age', num: true },
-    { key: 'datname', label: 'db' },
-    { key: 'usename', label: 'user' },
-    { key: 'application_name', label: 'app' },
-    { key: 'client' },
-    { key: 'query', wide: true, fmt: truncQuery },
-    { key: 'plan_link', label: 'plan', fmt: (_, r) => r.query ? planLink(ctx.instance!, { stmt: r.query, db: r.datname }) : '' },
-    actionsCol(ctx, act, () => { location.hash = href(ctx, { tab: 'activity', at: undefined }); }),
-  ];
-  sec.append(grid(rowsOf(a.sessions), cols, 'No active or idle-in-transaction sessions in this snapshot.'));
-  sec.append(await longRunsSection(ctx));
-  return sec;
-}
-
-// snapshotPicker moves the page to the snapshot at or before a chosen local time; empty = latest.
-function snapshotPicker(ctx: Ctx, at?: string): HTMLElement {
-  const input = el('input', { type: 'datetime-local', step: '1', 'aria-label': 'snapshot time' });
-  if (at) {
-    const d = new Date(at);
-    input.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
-  }
-  const go = (t?: string) => { location.hash = href(ctx, { tab: 'activity', at: t }); };
-  // the picker has whole seconds and snapshots have fractions: take the end of the chosen second
-  input.addEventListener('change', () => { go(input.value ? new Date(new Date(input.value).getTime() + 999).toISOString() : undefined); });
-  // under a custom range the page shows the range's end: Latest returns to a range that follows now
-  const latest = el('button', { type: 'button', title: isLive(ctx) ? 'The newest snapshot' : 'The newest snapshot (switches the range to the last hour)' }, 'Latest');
-  latest.addEventListener('click', () => {
-    location.hash = isLive(ctx) ? href(ctx, { tab: 'activity', at: undefined }) : href(ctx, { tab: 'activity', at: undefined, range: { preset: '1h' } });
-  });
-  const hist = ctx.at ? ' (history: auto refresh off)' : at ? ' (the end of the custom range: auto refresh off)' : '';
-  return el('div', { class: 'picker' }, 'Snapshot at or before ', input, ' ', latest, hist ? el('span', { class: 'meta' }, hist) : null);
-}
 
 export async function statements(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;

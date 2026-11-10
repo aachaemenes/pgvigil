@@ -7,11 +7,11 @@ import type { Ctx } from './router';
 import { get, Row, rowsOf, Table } from './api';
 import { alertCol } from './alerts';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { sqlCell } from './sqlview';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const never = (v: unknown) => v == null ? 'never' : fmtTime(v);
-const trunc = (v: unknown) => { const s = v == null ? '' : String(v); return s.length > 400 ? s.slice(0, 400) + '...' : s; };
 
 // ---- Tables ---------------------------------------------------------------------------------------------
 
@@ -108,7 +108,7 @@ export function stmtCols(order: string): Col[] {
     { key: 'wal_bytes', label: 'WAL', num: true, fmt: fmtBytes },
   ].filter(c => c.key !== (lead[order] ?? lead.time).key);
   return [lead[order] ?? lead.time, ...rest, { key: 'datname', label: 'db' }, { key: 'usename', label: 'user' },
-    { key: 'queryid' }, { key: 'query', wide: true, fmt: trunc }];
+    { key: 'queryid' }, { key: 'query', label: 'statement', fmt: v => sqlCell(v) }];
 }
 
 export const slowCols: Col[] = [
@@ -123,7 +123,7 @@ export const slowCols: Col[] = [
   { key: 'datname', label: 'db' },
   { key: 'usename', label: 'user' },
   { key: 'application_name', label: 'application' },
-  { key: 'query', wide: true, fmt: trunc },
+  { key: 'query', label: 'statement', fmt: v => sqlCell(v) },   // one line; a click opens the whole text (sqlview.ts)
 ];
 
 // ---- DMS drain ------------------------------------------------------------------------------------------

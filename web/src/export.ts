@@ -106,8 +106,10 @@ function statusOf(td: Element): Status | undefined {
   return b ? pick(b) : undefined;
 }
 
-// a status cell that shows only its colour (a green Summary cell) carries its words in data-text
-const text = (e: Element) => (e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? '');
+// a status cell that shows only its colour (a green Summary cell) carries its words in data-text; a statement cell
+// shown as its first characters (sqlview.ts) carries the whole text in data-full, which the export writes instead
+const text = (e: Element) => e.querySelector('[data-full]')?.getAttribute('data-full')
+  ?? ((e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''));
 
 function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const ths = [...table.querySelectorAll('thead th')];

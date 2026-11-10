@@ -82,6 +82,6 @@ export async function runningFleet(ctx: Ctx): Promise<HTMLElement> {
     if (a) location.hash = a.getAttribute('href')!;
   });
   draw();
-  return el('section', {}, el('h2', {}, 'Running queries' + (ctx.tag ? ` - tag ${ctx.tag}` : '')), filterBar,
-    el('div', { class: 'seg' }, toggle), status, holder);
+  return el('section', {}, el('h2', {}, 'Running queries' + (ctx.tag ? ` - tag ${ctx.tag}` : '')),
+    el('div', { class: 'toolbar' }, filterBar, el('div', { class: 'seg' }, toggle)), status, holder);   // one toolbar row, as the Summary's
 }
