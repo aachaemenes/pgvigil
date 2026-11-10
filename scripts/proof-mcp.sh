@@ -2,7 +2,7 @@
 # Proof of `pgvigil mcp`: the Model Context Protocol door over stdio, as a reader login, against the demo repository.
 #   PGVIGIL_REPO_DSN  a connection as a login that may CREATE DATABASE and CREATE ROLE (the demo repository and the
 #                     reader login are made and dropped)
-# The demo seeds two days: table growth needs more than one day of the tables history.
+# The demo seeds two days (its -dsn by env:, so no password sits on its command line): table growth needs more than one day of the tables history.
 # A scripted client (jq + a FIFO pair) talks newline-delimited JSON-RPC to one `pgvigil mcp` process.
 # Expected:
 #  (1) the owner's login is refused before any message is read: exit 3, "refused", nothing on stdout; (1b) a
@@ -38,7 +38,7 @@ USERNAME=$(psql "$PGVIGIL_REPO_DSN" -XAt -c "select current_user")
 psql "$PGVIGIL_REPO_DSN" -XAtq -c "create database $DB" >/dev/null
 OWNER_DSN="host=$HOST port=$DBPORT user=$USERNAME dbname=$DB sslmode=disable"
 [[ "$PGVIGIL_REPO_DSN" =~ password=([^[:space:]]+) ]] && OWNER_DSN="$OWNER_DSN password=${BASH_REMATCH[1]}"
-"$BIN" demo -dsn "$OWNER_DSN" -instances 3 -days 2 >"$WORK/demo.out" 2>"$WORK/demo.log" || { cat "$WORK/demo.log" >&2; fail "demo seed"; }
+PGVIGIL_PROOF_OWNER_DSN="$OWNER_DSN" "$BIN" demo -dsn env:PGVIGIL_PROOF_OWNER_DSN -instances 3 -days 2 >"$WORK/demo.out" 2>"$WORK/demo.log" || { cat "$WORK/demo.log" >&2; fail "demo seed"; }
 psql "$OWNER_DSN" -XAtq -c "create role $ROLE login password '$PW' in role pgvigil_reader" >/dev/null
 READER_DSN="host=$HOST port=$DBPORT user=$ROLE password=$PW dbname=$DB sslmode=disable"
 

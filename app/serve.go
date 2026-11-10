@@ -99,6 +99,9 @@ func StartServe(ctx context.Context, exe string, args []string, logw io.Writer, 
 	if after != nil {
 		if err := after(cmd); err != nil { // the job object: a failure leaves the serve to Stop alone
 			s.addTail("app: " + err.Error())
+			if logw != nil {
+				_, _ = fmt.Fprintln(logw, "app: the serve is outside the job object (it would outlive a crash of the app):", err)
+			}
 		}
 	}
 	found := make(chan string, 1)

@@ -150,7 +150,7 @@ func ensureServe(ctx context.Context, s Settings, logw io.Writer) (*Serve, error
 		if mine {
 			return &Serve{URL: s.AttachURL}, nil
 		}
-		log.Printf("serve: a pgvigil serve answers at %s but runs as another user (%v): not attached, starting this user's own", s.AttachURL, err)
+		log.Printf("serve: a pgvigil serve answers at %s but is not this user's (%v): not attached, starting this user's own", s.AttachURL, err)
 	}
 	if s.ConfigPath == "" {
 		return nil, errors.New("no serve answers at " + s.AttachURL + " and there is no UI configuration to start one")

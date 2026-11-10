@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeAPI answers the API paths the tools read with fixed tables; every request is recorded.
@@ -275,5 +277,42 @@ func TestLongLine(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	if err != nil || len(lines) != 2 || !strings.Contains(lines[0], "request line over") || !strings.Contains(lines[1], `"id":9`) {
 		t.Errorf("a long line is refused and the session goes on: err %v, out %q", err, out.String())
+	}
+}
+
+// TestServeCancel: a cancel while a tool call is blocked and a second request is queued ends Serve
+// (the reader's line was pending: Serve once waited for an error the reader never sent).
+func TestServeCancel(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		blocked := make(chan struct{}, 1)
+		api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case blocked <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done() // a slow read: it ends only with the request's context
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"cancelled"}`))
+		})
+		s := New(api, "test")
+		pr, pw := io.Pipe() // stdin stays open: no EOF ends the session
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- s.Serve(ctx, pr, io.Discard) }()
+		go func() {
+			_, _ = pw.Write([]byte(call(1, "fleet_summary", `{}`) + "\n" + `{"jsonrpc":"2.0","id":2,"method":"ping"}` + "\n"))
+		}()
+		<-blocked
+		time.Sleep(5 * time.Millisecond) // the second line reaches the reader
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("run %d: Serve after the cancel: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("run %d: Serve did not return within 2 s of the cancel", i)
+		}
+		_ = pw.Close()
 	}
 }

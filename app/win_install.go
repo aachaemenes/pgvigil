@@ -238,14 +238,7 @@ func runUninstall(args []string) error {
 	// pgvigil uninstall cannot delete its own running binary: once it has exited, the app does; a file
 	// another session's serve still holds goes at the next restart
 	for _, f := range append([]string{"pgvigil.exe"}, oldCopies(dst)...) {
-		p := filepath.Join(dst, filepath.Base(f))
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-			if err := windows.MoveFileEx(u16(p), nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT); err == nil {
-				fmt.Println("in use, removed at the next restart:", p)
-			} else {
-				fmt.Println("not removed:", p, err)
-			}
-		}
+		removeOrAtRestart(filepath.Join(dst, filepath.Base(f)))
 	}
 	_ = registry.DeleteKey(registry.LOCAL_MACHINE, arpKey) // last
 	removeSelfLater(filepath.Join(dst, "pgvigil-app.exe"), dst)
@@ -335,7 +328,7 @@ func writeIfAbsent(p, content string) (bool, error) {
 }
 
 func icacls(args ...string) error {
-	out, err := exec.Command("icacls", args...).CombinedOutput()
+	out, err := exec.Command(filepath.Join(system32(), "icacls.exe"), args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("icacls %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -370,13 +363,41 @@ func removeSelfLater(exe, dir string) {
 	}
 	self, _ := os.Executable()
 	if !strings.EqualFold(filepath.Clean(self), filepath.Clean(exe)) {
-		_ = os.Remove(exe)
-		_ = os.Remove(dir) // only when empty
+		// another copy runs it (another user's app on a shared host): removed at the next restart
+		removeOrAtRestart(exe)
+		if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) && elevated() {
+			_ = windows.MoveFileEx(u16(dir), nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT) // after the file, once empty
+		}
 		return
 	}
-	// the command line is given whole: cmd.exe does not read Go's backslash-escaped quotes
-	c := exec.Command("cmd.exe")
+	// the command line is given whole: cmd.exe does not read Go's backslash-escaped quotes; every
+	// program by its System32 path, never through PATH (an install runs elevated)
+	sys := system32()
+	c := exec.Command(filepath.Join(sys, "cmd.exe"))
 	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow,
-		CmdLine: `cmd.exe /d /c "ping -n 3 127.0.0.1 >nul & del /f /q "` + exe + `" & rmdir "` + dir + `" 2>nul"`}
+		CmdLine: `"` + filepath.Join(sys, "cmd.exe") + `" /d /c ""` + filepath.Join(sys, "PING.EXE") + `" -n 3 127.0.0.1 >nul & del /f /q "` + exe + `" & rmdir "` + dir + `" 2>nul"`}
 	_ = c.Start()
+}
+
+// removeOrAtRestart deletes p; a file in use goes at the next restart (elevated), else it is named.
+func removeOrAtRestart(p string) {
+	err := os.Remove(p)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if elevated() {
+		if err := windows.MoveFileEx(u16(p), nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT); err == nil {
+			fmt.Println("in use, removed at the next restart:", p)
+			return
+		}
+	}
+	fmt.Println("not removed (in use):", p, err)
+}
+
+// system32 is %SystemRoot%\System32, from the system, not from the environment.
+func system32() string {
+	if d, err := windows.GetSystemDirectory(); err == nil && d != "" {
+		return d
+	}
+	return `C:\Windows\System32`
 }

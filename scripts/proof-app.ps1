@@ -67,6 +67,7 @@ $pgPw = 'pg' + [guid]::NewGuid().ToString('N').Substring(0, 20)
 $stdUser = 'pgvstd' + (Get-Random -Maximum 999)
 $stdPw = 'Pv1-' + [guid]::NewGuid().ToString('N').Substring(0, 18)
 $script:failed = $false
+$script:askpass = $null   # read in the finally: set here so a failure before the build's end does not throw there
 
 function Fail([string]$Text) { Write-Host "FAIL: $Text"; $script:failed = $true; throw "proof failed: $Text" }
 function Ok([string]$Text) { Write-Host "ok   $Text" }
@@ -289,7 +290,9 @@ Start-ScheduledTask -TaskName 'pgvigil-proof-other'
 $up = $false
 for ($i = 0; $i -lt 40; $i++) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18091/api/health -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep -Milliseconds 500 } }
 if (-not $up) { Fail 'the admin serve on 127.0.0.1:18091 did not answer' }
-$owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId=$((Get-NetTCPConnection -LocalPort 18091 -State Listen).OwningProcess)") -MethodName GetOwner
+$opid = (Get-NetTCPConnection -LocalPort 18091 -State Listen).OwningProcess
+Set-Content "$proofDir\other.pid" $opid   # the serve is stopped by this pid, not by whatever holds the port later
+$owner = Invoke-CimMethod -InputObject (Get-CimInstance Win32_Process -Filter "ProcessId=$opid") -MethodName GetOwner
 Ok "the admin's serve answers on 127.0.0.1:18091 (owner $($owner.Domain)\$($owner.User))"
 '@
     $null = Invoke-Guest $other 'other.ps1'
@@ -305,12 +308,12 @@ New-Item 'HKCU:\Software\pgvigil\App' -Force | Out-Null
 Set-ItemProperty 'HKCU:\Software\pgvigil\App' -Name AttachURL -Value 'http://127.0.0.1:18091/'
 $r = Run-App "$pf\pgvigil-app.exe" @('-check')
 Remove-Item 'HKCU:\Software\pgvigil' -Recurse
-if ($r.Code -ne 0 -or $r.Text -notmatch 'runs as another user' -or $r.Text -match 'check: attached' -or $r.Text -notmatch 'check: started') { Fail "attach to another user's serve: $($r.Text)" }
+if ($r.Code -ne 0 -or $r.Text -notmatch 'is not this user''s \(the listening process \d+ (cannot be opened|runs as)' -or $r.Text -match 'check: attached' -or $r.Text -notmatch 'check: started') { Fail "attach to another user's serve: $($r.Text)" }
 Ok "C2 the standard user's app did not attach to the admin's serve on 127.0.0.1:18091 (another user's): it started its own"
 '@
     $t = Invoke-Guest $std2 'std2.ps1' -AsStd
     Need $t @('C1', 'C2')
-    $null = & ssh -o ConnectTimeout=15 -o LogLevel=ERROR winsandbox "Stop-ScheduledTask -TaskName pgvigil-proof-other -ErrorAction SilentlyContinue; Get-NetTCPConnection -LocalPort 18091 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id `$_.OwningProcess -Force }; Unregister-ScheduledTask -TaskName pgvigil-proof-other -Confirm:`$false -ErrorAction SilentlyContinue" 2>&1
+    $null = & ssh -o ConnectTimeout=15 -o LogLevel=ERROR winsandbox "Stop-ScheduledTask -TaskName pgvigil-proof-other -ErrorAction SilentlyContinue; `$p = Get-Content 'C:\$tag\other.pid' -ErrorAction SilentlyContinue; if (`$p) { Stop-Process -Id ([int]`$p) -Force -ErrorAction SilentlyContinue }; Unregister-ScheduledTask -TaskName pgvigil-proof-other -Confirm:`$false -ErrorAction SilentlyContinue" 2>&1
 
     # ---------- B5: the window, in the admin's desktop session ----------
     # the window checks run inside the desktop session (an SSH session is session 0 and sees no desktop window):
@@ -419,6 +422,7 @@ $installed = Test-Path 'C:\__TAG__\installed.marker'
 # only the proof's own processes: under its folder, the standard user's install, or the install it made
 Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'pgvigil-app.exe', 'pgvigil.exe' -and $_.ExecutablePath -and ($_.ExecutablePath -like 'C:\__TAG__\*' -or $_.ExecutablePath -like '*\__STD__\*' -or ($installed -and $_.ExecutablePath -like "$env:ProgramFiles\pgvigil\*")) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Stop-ScheduledTask -TaskName pgvigil-proof-other -ErrorAction SilentlyContinue
+$op = Get-Content 'C:\__TAG__\other.pid' -ErrorAction SilentlyContinue; if ($op) { Stop-Process -Id ([int]$op) -Force -ErrorAction SilentlyContinue }
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*__TAG__\feed.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 if ($installed -and (Test-Path "$env:ProgramFiles\pgvigil\pgvigil-app.exe")) { Start-Process "$env:ProgramFiles\pgvigil\pgvigil-app.exe" -ArgumentList 'uninstall', '-purge' -Wait -NoNewWindow }
 foreach ($t in @('pgvigil-proof-desk', 'pgvigil-proof-other')) { Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue }
