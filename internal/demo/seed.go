@@ -54,6 +54,8 @@ type Stats struct {
 	Imports   int64
 	Rows      int64
 	Elapsed   time.Duration
+	// Anchor is the end of the seeded history: the catch-up ticks, one a minute, come after it.
+	Anchor time.Time
 }
 
 // Fleet is a seeded fleet: its generators continue from where the seed stopped (Tick).
@@ -177,6 +179,7 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		err = f.catchUp(ctx, &st)
 	}
 	st.Elapsed = time.Since(began)
+	st.Anchor = o.End
 	return f, st, err
 }
 

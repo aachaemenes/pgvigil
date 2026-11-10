@@ -114,8 +114,8 @@ func runDemo(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("demo: %d instance(s) seeded (%d replaced), %d import call(s), %d row(s) in %s\n",
-		st.Instances, st.Replaced, st.Imports, st.Rows, st.Elapsed.Round(time.Millisecond))
+	fmt.Printf("demo: %d instance(s) seeded (%d replaced), %d import call(s), %d row(s) in %s; anchor %s\n",
+		st.Instances, st.Replaced, st.Imports, st.Rows, st.Elapsed.Round(time.Millisecond), st.Anchor.UTC().Format(time.RFC3339))
 	if !*serve {
 		return nil
 	}

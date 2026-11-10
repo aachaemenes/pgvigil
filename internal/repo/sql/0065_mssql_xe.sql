@@ -237,27 +237,30 @@ CREATE OR REPLACE FUNCTION pgvigil.import_mssql_xe(p_instance_id int, p_snapshot
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_m record;
+  v_t record;
 BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
     RAISE EXCEPTION 'import_mssql_xe: instance % is not a SQL Server instance', p_instance_id;
   END IF;
 
-  FOR v_m IN
-    SELECT DISTINCT CASE r->>'kind' WHEN 'deadlock' THEN 'mssql_deadlocks' WHEN 'blocked' THEN 'mssql_blocked_reports'
-                                    WHEN 'slow' THEN 'mssql_slow_events' WHEN 'attention' THEN 'mssql_attentions'
-                                    ELSE 'mssql_ag_events' END AS tbl,
-           date_trunc('month', (r->>'event_at')::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS month_at
-      FROM jsonb_array_elements(p_payload) r
-     WHERE r->>'kind' IN ('deadlock', 'blocked', 'slow', 'attention', 'ag_event') AND r->>'event_at' IS NOT NULL
-     ORDER BY 1, 2
+  -- The five partitioned parents are taken one after the other in name order (the order purge() drops in): for
+  -- each, the months this payload needs are opened (ACCESS EXCLUSIVE on the parent) and then the parent is locked
+  -- for the writes below (ONLY the parent: a drop in purge() holds a partition and asks for its parent). Opening
+  -- every month first and locking afterwards let two imports each hold one parent and ask for the other.
+  FOR v_t IN
+    SELECT * FROM (VALUES ('mssql_ag_events', 'ag_event'), ('mssql_attentions', 'attention'), ('mssql_blocked_reports', 'blocked'),
+                          ('mssql_deadlocks', 'deadlock'), ('mssql_slow_events', 'slow')) x(tbl, kind) ORDER BY tbl
   LOOP
-    PERFORM pgvigil.mssql_event_partition(v_m.tbl, v_m.month_at);
+    FOR v_m IN
+      SELECT DISTINCT date_trunc('month', (r->>'event_at')::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS month_at
+        FROM jsonb_array_elements(p_payload) r
+       WHERE r->>'kind' = v_t.kind AND r->>'event_at' IS NOT NULL
+       ORDER BY 1
+    LOOP
+      PERFORM pgvigil.mssql_event_partition(v_t.tbl, v_m.month_at);
+    END LOOP;
+    EXECUTE format('LOCK TABLE ONLY pgvigil.%I IN ROW EXCLUSIVE MODE', v_t.tbl);
   END LOOP;
-  -- The five parents are taken here in the order the loop opens their months (by name). Opening a month takes
-  -- ACCESS EXCLUSIVE on a parent; the inserts below go in another order, and two instances' imports could each
-  -- hold one parent and ask for the other at a month's first event (seen on import_mssql_storage, same shape).
-  LOCK TABLE pgvigil.mssql_ag_events, pgvigil.mssql_attentions, pgvigil.mssql_blocked_reports, pgvigil.mssql_deadlocks,
-             pgvigil.mssql_slow_events IN ROW EXCLUSIVE MODE;
 
   INSERT INTO pgvigil.mssql_deadlocks (instance_id, event_at, event_key, snapshot_at, source, session_name, process_count,
       victim_count, victim_spid, victim_login, victim_program, victim_statement, database_names, object_names, processes,

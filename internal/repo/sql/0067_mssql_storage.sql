@@ -100,12 +100,14 @@ BEGIN
     RAISE EXCEPTION 'import_mssql_storage: instance % is not a SQL Server instance', p_instance_id;
   END IF;
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_storage'), p_instance_id);
-  PERFORM pgvigil.ensure_month_partition('mssql_volume_sample', p_snapshot_at);
+  -- The two partitioned parents are taken in name order, the order purge() drops in: opening a month takes ACCESS
+  -- EXCLUSIVE on a parent, and the LOCK takes both (the parents ONLY, never their partitions: a drop in purge()
+  -- holds a partition and asks for its parent) before anything is written. Without it an import that opened a
+  -- month held one parent and asked for the other while an import of a month that existed held them the other
+  -- way round, and two instances' imports deadlocked at a month's first read.
   PERFORM pgvigil.ensure_month_partition('mssql_database_size', p_snapshot_at);
-  -- Both parents are taken here in the order the two lines above take them. Opening a month takes ACCESS EXCLUSIVE
-  -- on a parent; without this an import of a month that exists wrote mssql_database_size first and asked for
-  -- mssql_volume_sample second, the opposite order, and two instances' imports deadlocked at a month's first read.
-  LOCK TABLE pgvigil.mssql_volume_sample, pgvigil.mssql_database_size IN ROW EXCLUSIVE MODE;
+  PERFORM pgvigil.ensure_month_partition('mssql_volume_sample', p_snapshot_at);
+  LOCK TABLE ONLY pgvigil.mssql_database_size, ONLY pgvigil.mssql_volume_sample IN ROW EXCLUSIVE MODE;
 
   INSERT INTO pgvigil.mssql_files AS f (instance_id, database_id, file_id, database_name, database_state, file_name, type_desc,
       filegroup, physical_name, state_desc, size_bytes, used_bytes, used_read, used_note, max_size_bytes, growth_bytes, growth_pct,

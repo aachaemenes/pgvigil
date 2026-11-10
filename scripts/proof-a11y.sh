@@ -44,6 +44,8 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 
 echo "== the check"
 node scripts/a11y-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$AXE" "${PGVIGIL_A11Y_OUT:-$WORK/a11y.json}" | tee "$WORK/a11y.txt" || fail "a page did not render or axe did not run on it"
+# the demo has SQL Server instances: a check that walked none of their pages has not checked them
+sqlp=$(sed -n 's/^SQL Server pages in the check: \([0-9]*\)$/\1/p' "$WORK/a11y.txt"); (( ${sqlp:-0} > 0 )) || fail "no SQL Server page was in the check"
 nodes=$(sed -n 's/^total: [0-9]* rule(s), \([0-9]*\) node(s).*/\1/p' "$WORK/a11y.txt")
 [[ -n "$nodes" ]] || fail "no total line"
 (( nodes <= MAX )) || fail "$nodes violation node(s), the proof allows $MAX"

@@ -7,7 +7,7 @@
 #                      folder of the initdb on the PATH; none = that part is skipped and says so)
 # N = the seed's grid: 7 days at 5 minutes up to the last hour, then every minute (2,065 points when
 # the anchor is on a 5-minute mark, 2,066 when it is not), plus the seed's catch-up ticks (one a minute from the
-# anchor to the minute the seed returns: at most five).
+# anchor, which the seed prints, to the minute the seed returns).
 # Expected:
 #   instances    15 tagged demo: twelve PostgreSQL (onprem 3, rds 2, aurora 3, azure 2, cloudsql 2) and three SQL
 #                Server (sqlserver 2, azuresqlmi 1); the non-demo
@@ -68,10 +68,14 @@ OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed1.log") || { cat "$WORK/seed1.log"
 echo "$OUT"
 FIRST_IDS=$(P -c "select string_agg(instance_id::text, ',') from pgvigil.instances where 'demo' = any(tags)")
 ANCHOR=$(P -c "select max(snapshot_at) from pgvigil.activity_summary")
-# the seed ticks on from its anchor to the current minute before it returns (a minute or two of ticks while the
-# history loads), so N is the number of snapshot times the fleet holds: the grid plus those ticks
-N=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary a join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
-(( N >= 2065 && N <= 2071 )) || fail "the fleet holds $N snapshot times, want the grid's 2065 or 2066 plus at most five catch-up ticks"
+# the seed prints its anchor and ticks on from it to the current minute before it returns: N is the grid (2,065
+# points when the anchor is on a 5-minute mark, 2,066 when it is not) plus the snapshot times after the anchor
+SEED_ANCHOR=$(sed -n 's/.*; anchor \([0-9TZ:-]*\)$/\1/p' <<<"$OUT"); [[ -n "$SEED_ANCHOR" ]] || fail "the seed printed no anchor"
+TICKS=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary where snapshot_at > '$SEED_ANCHOR'")
+N=$(P -c "select case when extract(minute from '$SEED_ANCHOR'::timestamptz)::int % 5 = 0 then 2065 else 2066 end + $TICKS")
+(( TICKS <= 30 )) || fail "$TICKS catch-up ticks: the seed stops ticking thirty minutes after its anchor"
+got=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary a join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
+[[ "$got" == "$N" ]] || fail "the fleet holds $got snapshot times, want $N (the grid of anchor $SEED_ANCHOR plus $TICKS tick(s))"
 
 check_repo() {
   local got

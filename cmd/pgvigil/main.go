@@ -97,9 +97,10 @@ func run(args []string) int {
 		return 2
 	}
 	if err != nil {
-		// a repository error's DETAIL names what the message does not (the two sides of a deadlock, the failing row)
+		// a deadlock's or a serialization failure's DETAIL names the two sides, which the message does not; no other
+		// error's detail is logged (a constraint violation's carries the failing row, and rows hold statement text)
 		var pg *pgconn.PgError
-		if errors.As(err, &pg) && (pg.Detail != "" || pg.Where != "") {
+		if errors.As(err, &pg) && (pg.Code == "40P01" || pg.Code == "40001") {
 			log.Error("pgvigil failed", "err", err, "detail", pg.Detail, "where", pg.Where)
 		} else {
 			log.Error("pgvigil failed", "err", err)

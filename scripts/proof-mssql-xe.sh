@@ -59,6 +59,10 @@
 #     statements) and two resources with owners and waiters; the .xdl download is the stored graph, byte for byte,
 #     as an attachment named deadlock-<instance>-<time>.xdl; an unknown deadlock is a 404 and a malformed key a 400;
 #     the reports of the head and the 500 slowest events of the bulk shape come back by their keys.
+#  S. two instances' imports at the same time, sixty calls each, one with a slow completion and one with an
+#     availability group event, every call in a month not opened yet (no server needed): no call fails (with the
+#     months opened first and the parents locked afterwards, half the calls ended in "deadlock detected") and
+#     sixty rows of each are stored.
 #  R. the collector's role (pgvigil_collector) reads a cursor through import_mssql_cursor, is refused the cursor table
 #     itself, and imports a batch.
 #  F and G also carry a control character (0x01) inside the statement's text: the event is stored, with U+FFFD where
@@ -473,5 +477,17 @@ q "set role pgvigil_collector; select pgvigil.import_mssql_xe($iid, now() + inte
 [ "$(q "select last_seq from pgvigil.import_mssql_cursor($iid, 'r_check')")" = 3 ] || fail "R: the cursor the collector's role stored"
 echo "R: OK"
 
+echo "--- S. two instances import at once, each opening a new month on a different event table"
+sa=$(q "select pgvigil.ensure_instance('proof-xe-sa-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+sb=$(q "select pgvigil.ensure_instance('proof-xe-sb-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+SA=$(mktemp); SB=$(mktemp)
+( for k in $(seq 1 60); do echo "select pgvigil.import_mssql_xe($sa, now(), jsonb_build_array(jsonb_build_object('kind', 'slow', 'event_at', now() - interval '$k months', 'event_key', 'slow-$k', 'event_name', 'rpc_completed', 'duration_us', 1000000)));"; done | psql "$PGVIGIL_REPO_DSN" -XAtq >"$SA" 2>&1 ) &
+( for k in $(seq 1 60); do echo "select pgvigil.import_mssql_xe($sb, now(), jsonb_build_array(jsonb_build_object('kind', 'ag_event', 'event_at', now() - interval '$k months', 'event_key', 'ag-$k', 'event_name', 'error_reported')));"; done | psql "$PGVIGIL_REPO_DSN" -XAtq >"$SB" 2>&1 ) &
+wait
+SE=$(cat "$SA" "$SB" | grep -c ERROR || true); SD=$(cat "$SA" "$SB" | grep ERROR | sort | uniq -c | head -3 || true); rm -f "$SA" "$SB"
+[ "$SE" = 0 ] || fail "S: $SE import(s) failed: $SD"
+[ "$(q "select (select count(*) from pgvigil.mssql_slow_events where instance_id=$sa) || '|' || (select count(*) from pgvigil.mssql_ag_events where instance_id=$sb)")" = "60|60" ] || fail "S: rows stored: $(q "select (select count(*) from pgvigil.mssql_slow_events where instance_id=$sa), (select count(*) from pgvigil.mssql_ag_events where instance_id=$sb)") (want 60|60)"
+echo "S: OK"
+
 echo "N: NOT PROVEN (the Azure SQL Database and Managed Instance forms, SQL Server 2016-2019, Windows paths of an event file, a live ring buffer overrun)"
-echo "proof-mssql-xe: PASS (A-M, O, P, R)"
+echo "proof-mssql-xe: PASS (A-M, O, P, R, S)"

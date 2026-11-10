@@ -55,7 +55,7 @@ for (const t of instTabs) if (/#\/(load|host|summary)\?/.test(t)) pages.push(t.r
 // a SQL Server instance has its own tabs: every one of them on the demo's primary (the pair's findings) and on the
 // managed instance (no availability group, no Agent jobs: the empty states)
 const sqlPrimary = pick(r => r.engine === 'sqlserver' && String(r.name).endsWith('sql01')) ?? pick(r => r.engine === 'sqlserver');
-const sqlManaged = pick(r => r.engine === 'sqlserver' && String(r.name).endsWith('sql03'));
+const sqlManaged = pick(r => r.engine === 'sqlserver' && String(r.name).endsWith('sql03') && r !== sqlPrimary);
 let sqlPages = 0;
 for (const x of [sqlPrimary, sqlManaged]) {
   if (!x) continue;
