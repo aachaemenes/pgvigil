@@ -3,6 +3,8 @@
 // on demand where pg_qualstats and HypoPG are installed (a hypothetical index tested in the planner, never a CREATE);
 // and the fleet root, per server the counts and the bytes. Data from /api/indexes and POST /api/indexes/advise; the
 // routes and the tree entry are the shell's.
+import { indexLink } from './drill';
+import type { Ctx } from './router';
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
 
@@ -90,7 +92,7 @@ export function adviceView(rep: AdvReport): HTMLElement {
 }
 
 // indexesView: one instance's Indexes tab.
-export async function indexesView(instance: number): Promise<HTMLElement> {
+export async function indexesView(instance: number, ctx?: Ctx): Promise<HTMLElement> {
   const d = await get<IndexesData>('indexes', { instance });
   const dbs = rowsOf(d.databases), idx = rowsOf(d.indexes), st = rowsOf(d.state)[0];
   const sec = el('section', {}, el('h2', {}, 'Indexes'));
@@ -124,7 +126,11 @@ export async function indexesView(instance: number): Promise<HTMLElement> {
     const rows = idx.filter(r => r.problem === p);
     sec.append(el('h3', {}, `${p[0].toUpperCase()}${p.slice(1)} (${rows.length})`),
       el('p', { class: 'meta' }, problemText[p]),
-      grid(rows, indexCols.map(c => c.key === 'index_name' && problemKind[p] ? { ...c, fmt: (v: unknown) => badge(String(v ?? ''), problemKind[p]) } : c),
+      grid(rows, indexCols.map(c => c.key !== 'index_name' ? c : { ...c, fmt: (v: unknown, r: Row) => {
+        const name: Node = problemKind[p] ? badge(String(v ?? ''), problemKind[p]) : document.createTextNode(String(v ?? ''));
+        if (!ctx) return name;
+        const a = indexLink(ctx, '', r.dbid, r.indexrelid); a.append(name); return a;
+      } }),
         `No ${p} index.`));
   }
   sec.append(el('p', { class: 'meta' }, 'The redundant and invalid reads are postgres_dba\'s (BSD-3, Nikolay Samokhvalov); the DO / UNDO lines are '

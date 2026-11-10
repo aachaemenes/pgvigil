@@ -1,7 +1,9 @@
 // The views borrowed from the DBA toolkits (task 21): Tables, Findings, the Statements sort and the slow
 // executions of a window, and the DMS drain readout. Each takes the instance it shows (Findings: none =
 // the fleet) and reads the API itself, so the shell only mounts it in a tab; the time range comes from
-// the shell (pages.ts hands it over).
+// the shell (pages.ts hands it over); Tables also takes the shell's ctx, so a table name links to its page (task 65).
+import { tableLink } from './dbinfo';
+import type { Ctx } from './router';
 import { get, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 
@@ -12,7 +14,7 @@ const trunc = (v: unknown) => { const s = v == null ? '' : String(v); return s.l
 
 // ---- Tables ---------------------------------------------------------------------------------------------
 
-export async function tablesView(instance: number): Promise<HTMLElement> {
+export async function tablesView(instance: number, ctx?: Ctx): Promise<HTMLElement> {
   const d = await get<{ databases: Table | null; tables: Table | null }>('tables', { instance });
   const dbs = rowsOf(d.databases), tabs = rowsOf(d.tables);
   const dbCols: Col[] = [
@@ -31,7 +33,7 @@ export async function tablesView(instance: number): Promise<HTMLElement> {
     { key: 'checks', fmt: v => v ? badge(String(v), 'warn') : '' },
     { key: 'datname', label: 'db' },
     { key: 'schema_name', label: 'schema' },
-    { key: 'table_name', label: 'table' },
+    { key: 'table_name', label: 'table', fmt: (v, r) => ctx ? tableLink(ctx, String(v ?? ''), r.dbid, r.relid) : String(v ?? '') },
     { key: 'total_bytes', label: 'total', num: true, fmt: fmtBytes },
     { key: 'heap_bytes', label: 'heap', num: true, fmt: fmtBytes },
     { key: 'toast_bytes', label: 'TOAST', num: true, fmt: fmtBytes },

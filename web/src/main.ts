@@ -32,7 +32,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
-  tables: c => tablesView(c.instance!), vacuum: vacuumView, findings, host: hostView, storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),
+  tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, host: hostView, storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),
   extensions: c => extensionsView(c.instance!), versions: c => versionsView(c.instance!),
   io: c => ioView(c.instance!, window_(c), rangeLabel(c)),
   actions: actionsLogView,
@@ -40,7 +40,7 @@ const instancePages: Record<string, Render> = {
   roles: c => rolesView(c.instance!),
   slowqueries: slowView,
   waits: waitsView,
-  indexes: c => indexesView(c.instance!),
+  indexes: c => indexesView(c.instance!, c),
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
 };

@@ -59,7 +59,7 @@ func (s *Server) DBInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sfrom, bucket := seriesWindow(from, to)
-	s.multi(w, r, []part{
+	s.multiPart(w, r, []part{
 		{"databases", `SELECT * FROM pgvigil.dbinfo($1)`, []any{id}},
 		{"tablespaces", `SELECT * FROM pgvigil.dbinfo_tablespaces($1)`, []any{id}},
 		{"db_series", `SELECT * FROM pgvigil.database_size_series($1, $2, $3, $4, $5)`, []any{id, sfrom, to, bucket, dbinfoSeriesN}},

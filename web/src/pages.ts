@@ -8,6 +8,7 @@ import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
+import { jobLink } from './drill';
 import { backupsFleetView } from './backups';
 import { corruptionFleetView } from './corruption';
 import { extensionsFleetView } from './extensions';
@@ -476,7 +477,8 @@ export async function jobs(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
   const d = await get<Record<'jobs' | 'runs', Table>>('jobs', { instance: ctx.instance, ...range(ctx) });
   const jobCols: Col[] = [
-    { key: 'scheduler' }, { key: 'job_id', label: 'id', num: true }, { key: 'job_name', label: 'name' }, { key: 'schedule' },
+    { key: 'scheduler' }, { key: 'job_id', label: 'id', num: true },
+    { key: 'job_name', label: 'name', fmt: (v, r) => jobLink(ctx, String(v ?? r.job_id), r.scheduler, r.job_id) }, { key: 'schedule' },
     { key: 'active', fmt: v => v == null ? '' : v ? 'yes' : 'no' },
     { key: 'last_status', label: 'last run', fmt: runBadge },
     { key: 'last_start', label: 'last start', fmt: fmtTime },
@@ -490,7 +492,7 @@ export async function jobs(ctx: Ctx): Promise<HTMLElement> {
     { key: 'start_time', label: 'start', fmt: fmtTime },
     { key: 'duration_secs', label: 'took', num: true, fmt: fmtSecs },
     { key: 'status', fmt: runBadge },
-    { key: 'scheduler' }, { key: 'job_name', label: 'job', fmt: (v, r) => String(v ?? r.job_id) },
+    { key: 'scheduler' }, { key: 'job_name', label: 'job', fmt: (v, r) => jobLink(ctx, String(v ?? r.job_id), r.scheduler, r.job_id) },
     { key: 'run_id', label: 'run', num: true }, { key: 'datname', label: 'db' },
     { key: 'return_message', label: 'message', wide: true },
   ];
@@ -636,7 +638,7 @@ export async function versions(ctx: Ctx): Promise<HTMLElement> {
 // jobsRoot is the fleet's Jobs page: the failing, missed and over-average jobs of every instance in scope.
 export async function jobsRoot(ctx: Ctx): Promise<HTMLElement> {
   const ids = ctx.tag ? new Set(inTag(ctx, (await fleet()).instances).map(r => Number(r.instance_id))) : null;
-  const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'));
+  const view = await jobsReportFleetView(ids ? r => ids.has(Number(r.instance_id)) : undefined, (name, id) => instLink(ctx, name, id, 'jobsreport'), ctx);
   if (ctx.tag) view.querySelector('h2')?.append(scopeLabel(ctx));
   return view;
 }

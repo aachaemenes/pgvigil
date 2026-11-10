@@ -304,7 +304,7 @@ SELECT datname, owner, encoding, size_bytes, xid_age, mxid_age, can_connect, all
 // sqlTables is one instance's tables in the latest top N per database, the ones with a check first. The
 // checks view (a fleet-wide CTE) is read once per request through the aggregated join, never per table row.
 const sqlTables = `
-SELECT t.datname, t.schema_name, t.table_name, t.total_bytes, t.heap_bytes, t.toast_bytes, t.index_bytes,
+SELECT t.dbid, t.relid, t.datname, t.schema_name, t.table_name, t.total_bytes, t.heap_bytes, t.toast_bytes, t.index_bytes,
        t.n_live_tup, t.n_dead_tup,
        round(100.0 * t.n_dead_tup / nullif(t.n_live_tup + t.n_dead_tup, 0), 1) AS dead_pct,
        round(100.0 * t.relallvisible / nullif(t.relpages, 0), 1) AS all_visible_pct,

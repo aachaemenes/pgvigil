@@ -684,6 +684,33 @@ type part struct {
 	args []any
 }
 
+// onlyPart narrows a page's parts to the one ?part= names (the side tree's folders read one list, task 65); no part
+// = every part; a name the page does not have is refused.
+func onlyPart(r *http.Request, parts []part) ([]part, error) {
+	want := r.URL.Query().Get("part")
+	if want == "" {
+		return parts, nil
+	}
+	names := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p.name == want {
+			return []part{p}, nil
+		}
+		names = append(names, p.name)
+	}
+	return nil, errors.New("part must be one of " + strings.Join(names, ", "))
+}
+
+// multiPart is multi over the part ?part= names (onlyPart), 400 for an unknown one.
+func (s *Server) multiPart(w http.ResponseWriter, r *http.Request, parts []part) {
+	ps, err := onlyPart(r, parts)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.multi(w, r, ps)
+}
+
 // replication: the newest snapshot's objects, the instance's replication checks, and the lag of
 // senders, receivers, slots and Aurora replicas over the window.
 func (s *Server) replication(w http.ResponseWriter, r *http.Request) {
@@ -712,7 +739,7 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	s.multi(w, r, []part{
+	s.multiPart(w, r, []part{
 		{"jobs", sqlJobs, []any{id}},
 		{"runs", sqlJobRuns, []any{id, from, to}},
 	})

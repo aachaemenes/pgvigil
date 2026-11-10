@@ -43,7 +43,7 @@ SELECT d.dbid, d.datname, d.indexes, d.index_bytes, d.stats_since, d.is_replica,
  ORDER BY d.datname`
 
 const sqlIndexesList = `
-SELECT s.datname, s.problem, s.schema_name, s.table_name, s.index_name, s.access_method, s.index_bytes, s.table_bytes,
+SELECT s.dbid, s.indexrelid, s.datname, s.problem, s.schema_name, s.table_name, s.index_name, s.access_method, s.index_bytes, s.table_bytes,
        s.idx_scan, s.covered_by, s.covered_by_def, s.index_def, s.supports_fk, s.drop_sql, s.undo_sql, s.first_seen, s.snapshot_at
   FROM pgvigil.index_state s
  WHERE s.instance_id = $1 AND s.is_present

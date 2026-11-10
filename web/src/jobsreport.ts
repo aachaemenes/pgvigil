@@ -3,7 +3,9 @@
 // row, the next run (pg_cron's from pgvigil's own schedule parser, pgAgent's its own) and a duration trend over
 // the window (at least the last 7 days); at the root every failing, missed or over-average job of the fleet.
 // Data from /api/jobsreport (?instance= for one instance). The shell mounts jobsReportView(ctx) and
-// jobsReportFleetView(keep, instLink) (the lead wires the routes and the tabs).
+// jobsReportFleetView(keep, instLink, ctx) (the lead wires the routes and the tabs); ctx makes each job name a link
+// to its job page (task 65).
+import { jobLink } from './drill';
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
@@ -50,6 +52,10 @@ function status(r: Row): string | Node {
   out.forEach((n, i) => { if (i) span.append(' '); span.append(n); });
   return span;
 }
+
+// withJobLinks: the job name opens the job page (task 65); fleet = each row's own instance
+const withJobLinks = (cols: Col[], ctx?: Ctx, fleet = false): Col[] => !ctx ? cols : cols.map(c => c.key !== 'job_name' ? c
+  : { ...c, fmt: (v: unknown, r: Row) => jobLink(ctx, String(v ?? r.job_id ?? ''), r.scheduler, r.job_id, fleet ? Number(r.instance_id) : ctx.instance) });
 
 const jobCols: Col[] = [
   { key: 'job_name', label: 'job', fmt: (v, r) => String(v ?? r.job_id ?? '') },
@@ -122,7 +128,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
     ]));
   }
-  sec.append(el('h3', {}, 'Jobs'), grid(jobs, jobCols));
+  sec.append(el('h3', {}, 'Jobs'), grid(jobs, withJobLinks(jobCols, ctx)));
   const span = Date.parse(w.to) - Date.parse(from);
   const per = span > 72 * 3600 * 1000 ? 'day' : 'hour';
   const avg = pivot(trend, 'avg_secs'), max = pivot(trend, 'max_secs');
@@ -134,7 +140,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
   if (fl.length) {
     sec.append(el('h3', {}, `Failures per ${per}`), grid(fl, [
       { key: 'snapshot_at', label: per, fmt: fmtTime },
-      { key: 'job_name', label: 'job', fmt: (_v, r) => jobLabel(r) },
+      { key: 'job_name', label: 'job', fmt: (_v, r) => jobLink(ctx, jobLabel(r), r.scheduler, r.job_id) },
       { key: 'failures', label: 'failed', num: true, fmt: fails },
       { key: 'runs', num: true },
     ]));
@@ -144,7 +150,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
 
 // jobsReportFleetView: every failing, missed or over-average job of the fleet, the worst first (keep narrows it to
 // a tag folder; instLink makes the instance name a link to its Job report tab).
-export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node): Promise<HTMLElement> {
+export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?: (name: string, id: unknown) => Node, ctx?: Ctx): Promise<HTMLElement> {
   const d = await get<Record<'counts' | 'jobs', Table | null>>('jobsreport');
   let rows = withRank(rowsOf(d.jobs));
   if (keep) rows = rows.filter(keep);
@@ -163,6 +169,6 @@ export async function jobsReportFleetView(keep?: (r: Row) => boolean, instLink?:
     grid(rows, [
       { key: 'instance', fmt: (v, r) => instLink ? instLink(String(v), r.instance_id) : String(v ?? '') },
       { key: 'platform' },
-      ...jobCols.filter(x => !['datname', 'run_as', 'command', 'runs_30d', 'failures_30d', 'avg_7d_secs', 'max_7d_secs'].includes(x.key)),
+      ...withJobLinks(jobCols, ctx, true).filter(x => !['datname', 'run_as', 'command', 'runs_30d', 'failures_30d', 'avg_7d_secs', 'max_7d_secs'].includes(x.key)),
     ], 'No failing, missed or slow job in the fleet.'));
 }
