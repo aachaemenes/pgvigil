@@ -558,9 +558,13 @@ func (s *Server) limit(v any) any {
 		}
 		return x
 	case string:
+		x = s.scrub(x)
 		if r := []rune(x); len(r) > s.MaxText {
 			return string(r[:s.MaxText]) + fmt.Sprintf(" ... [cut at %d of %d characters]", s.MaxText, len(r))
 		}
+		return x
+	case instanceRef:
+		return map[string]any{"instance_id": s.limit(x.ID), "name": s.limit(x.Name)}
 	}
 	return v
 }

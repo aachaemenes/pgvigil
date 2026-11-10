@@ -5,7 +5,8 @@
 # The demo seeds two days: table growth needs more than one day of the tables history.
 # A scripted client (jq + a FIFO pair) talks newline-delimited JSON-RPC to one `pgvigil mcp` process.
 # Expected:
-#  (1) the owner's login is refused before any message is read: exit 3, "refused", nothing on stdout;
+#  (1) the owner's login is refused before any message is read: exit 3, "refused", nothing on stdout; (1b) a
+#      pgvigil_reader login that also holds DELETE on one repository table is refused the same way;
 #  (2) initialize answers protocolVersion 2025-06-18 (the client's) with serverInfo.name pgvigil and a tools capability;
 #  (3) tools/list names exactly the seven tools, each with an object inputSchema and readOnlyHint true;
 #  (4) every tool answers once, isError false, with its own content: fleet_summary lists the demo's instances,
@@ -25,7 +26,7 @@ cleanup() {
   exec 3>&- 2>/dev/null || true
   [[ -n "$MPID" ]] && kill "$MPID" 2>/dev/null && wait "$MPID" 2>/dev/null || true
   psql "$PGVIGIL_REPO_DSN" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
-  psql "$PGVIGIL_REPO_DSN" -XAtq -c "drop role if exists $ROLE" >/dev/null 2>&1 || true
+  psql "$PGVIGIL_REPO_DSN" -XAtq -c "drop role if exists $ROLE" -c "drop role if exists ${ROLE}_w" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -49,6 +50,14 @@ set -e
 grep -q 'refused' "$WORK/owner.err" || fail "(1) no 'refused' line for the owner's login"
 [[ ! -s "$WORK/owner.out" ]] || fail "(1) the refused run wrote to stdout"
 ok "(1) the owner's login refused (exit 3) before the protocol: $(grep -o 'refused: the login [a-z_0-9]* [^,;]*' "$WORK/owner.err" | head -1)"
+
+# (1b) a reader login given one write grant on any repository table is refused too (not the owner, not a superuser)
+psql "$OWNER_DSN" -XAtq -c "create role ${ROLE}_w login password '$PW' in role pgvigil_reader" -c "grant delete on pgvigil.query_text to ${ROLE}_w" >/dev/null
+set +e
+PGVIGIL_MCP_DSN="host=$HOST port=$DBPORT user=${ROLE}_w password=$PW dbname=$DB sslmode=disable" "$BIN" mcp </dev/null >"$WORK/writer.out" 2>"$WORK/writer.err"; rc=$?
+set -e
+[[ $rc == 3 ]] && grep -q "may change the repository's tables" "$WORK/writer.err" || { cat "$WORK/writer.err" >&2; fail "(1b) a reader with DELETE on pgvigil.query_text: exit $rc, want 3 and the writer reason"; }
+ok "(1b) a reader login with DELETE on one repository table refused (exit 3)"
 
 # the scripted client: requests go in on fd 3, replies come back one line each
 mkfifo "$WORK/in"
@@ -139,7 +148,7 @@ set -e
 ok "(5) a write is refused: the tool is unknown (-32602, read-only), resources/write is not served (-32601), the reader login has no INSERT"
 
 # (6) no credential out, no listener
-if grep -qF "$PW" "$WORK/out.jsonl" "$WORK/mcp.err" "$WORK/owner.err"; then fail "(6) the reader's password reached an output"; fi
+if grep -qF "$PW" "$WORK/out.jsonl" "$WORK/mcp.err" "$WORK/owner.err" "$WORK/writer.err"; then fail "(6) the reader's password reached an output"; fi
 if command -v ss >/dev/null; then
   ss -Hltnp 2>/dev/null | grep -q "pid=$MPID," && fail "(6) pgvigil mcp holds a listening socket"
 fi

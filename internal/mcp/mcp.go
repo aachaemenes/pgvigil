@@ -87,37 +87,66 @@ type response struct {
 }
 
 // Serve reads requests from in until it ends (the client closed the pipe) or ctx is done, and
-// writes each reply to out as one line. Requests are answered in order, one at a time.
+// writes each reply to out as one line. Requests are answered in order, one at a time. A line over
+// MaxLine is answered with -32600 and skipped; the session goes on.
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 64*1024), MaxLine)
-	lines := make(chan []byte)
+	type line struct {
+		b       []byte
+		tooLong bool
+	}
+	lines := make(chan line)
 	errc := make(chan error, 1)
 	go func() {
-		for sc.Scan() {
-			b := append([]byte(nil), sc.Bytes()...)
-			select {
-			case lines <- b:
-			case <-ctx.Done():
+		defer close(lines)
+		br := bufio.NewReaderSize(in, 64*1024)
+		for {
+			var buf []byte
+			tooLong := false
+			var err error
+			for {
+				var chunk []byte
+				chunk, err = br.ReadSlice('\n')
+				if !tooLong && len(buf)+len(chunk) > MaxLine {
+					tooLong, buf = true, nil // the rest of the line is read and dropped
+				}
+				if !tooLong {
+					buf = append(buf, chunk...)
+				}
+				if !errors.Is(err, bufio.ErrBufferFull) {
+					break
+				}
+			}
+			if len(buf) > 0 || tooLong {
+				select {
+				case lines <- line{buf, tooLong}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+				errc <- err
 				return
 			}
 		}
-		errc <- sc.Err()
-		close(lines)
 	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case line, ok := <-lines:
+		case l, ok := <-lines:
 			if !ok {
-				err := <-errc
-				if errors.Is(err, bufio.ErrTooLong) {
-					_ = s.write(out, response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{codeInvalidRequest, fmt.Sprintf("request line over %d bytes", MaxLine)}})
-				}
-				return err
+				return <-errc
 			}
-			if resp, ok := s.Handle(ctx, line); ok {
+			if l.tooLong {
+				if err := s.write(out, response{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{codeInvalidRequest, fmt.Sprintf("request line over %d bytes: skipped", MaxLine)}}); err != nil {
+					return err
+				}
+				continue
+			}
+			if resp, ok := s.Handle(ctx, l.b); ok {
 				if err := s.write(out, resp); err != nil {
 					return err
 				}
@@ -126,12 +155,15 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 }
 
+// write sends one reply line. The scrub has already run on every string the reply carries (the
+// tool results in limit, the error texts in Handle and toolError): scrubbing the encoded line instead
+// would cut through JSON escapes and miss a doubly escaped value.
 func (s *Server) write(out io.Writer, resp response) error {
 	b, err := json.Marshal(resp)
 	if err != nil {
 		b, _ = json.Marshal(response{JSONRPC: "2.0", ID: resp.ID, Error: &rpcError{codeInternal, "reply could not be encoded"}})
 	}
-	b = append([]byte(s.scrub(string(b))), '\n')
+	b = append(b, '\n')
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err = out.Write(b)
@@ -148,7 +180,7 @@ func (s *Server) Handle(ctx context.Context, line []byte) (resp response, ok boo
 		if id == nil {
 			id = json.RawMessage("null")
 		}
-		return response{JSONRPC: "2.0", ID: id, Error: &rpcError{code, msg}}, true
+		return response{JSONRPC: "2.0", ID: id, Error: &rpcError{code, s.scrub(msg)}}, true
 	}
 	if line[0] == '[' {
 		return fail(nil, codeInvalidRequest, "batches are not supported")
@@ -231,27 +263,27 @@ func (s *Server) call(ctx context.Context, params json.RawMessage) (any, *rpcErr
 		d := json.NewDecoder(bytes.NewReader(p.Arguments))
 		d.UseNumber()
 		if err := d.Decode(&args); err != nil {
-			return toolError("arguments must be a JSON object: " + err.Error()), nil
+			return s.toolError("arguments must be a JSON object: " + err.Error()), nil
 		}
 	}
 	for k := range args {
 		if !t.takes(k) {
-			return toolError(fmt.Sprintf("%s takes no argument %q (it takes: %s)", t.Name, k, strings.Join(t.argNames(), ", "))), nil
+			return s.toolError(fmt.Sprintf("%s takes no argument %q (it takes: %s)", t.Name, k, strings.Join(t.argNames(), ", "))), nil
 		}
 	}
 	v, err := t.run(ctx, s, args)
 	if err != nil {
-		return toolError(err.Error()), nil
+		return s.toolError(err.Error()), nil
 	}
 	b, err := json.MarshalIndent(s.limit(v), "", " ")
 	if err != nil {
-		return toolError("the result could not be encoded: " + err.Error()), nil
+		return s.toolError("the result could not be encoded"), nil
 	}
 	return map[string]any{"content": []any{map[string]any{"type": "text", "text": string(b)}}, "isError": false}, nil
 }
 
-func toolError(msg string) map[string]any {
-	return map[string]any{"content": []any{map[string]any{"type": "text", "text": msg}}, "isError": true}
+func (s *Server) toolError(msg string) map[string]any {
+	return map[string]any{"content": []any{map[string]any{"type": "text", "text": s.scrub(msg)}}, "isError": true}
 }
 
 // get runs one GET against the API handler in process and decodes its JSON (numbers kept exact).
@@ -311,19 +343,17 @@ func (r *recorder) status() int {
 }
 
 var (
-	pwKV  = regexp.MustCompile(`(?i)(password\s*=\s*)('(?:[^'\\]|\\.)*'|[^\s"]+)`)
+	// a password= value: quoted, or bare up to a space, quote, comma, semicolon or parenthesis;
+	// a bind placeholder ($1) is statement text, not a secret, and stays
+	pwKV  = regexp.MustCompile(`(?i)(password\s*=\s*)('(?:[^'\\]|\\.)*'|[^\s"',;()$][^\s"',;()]*)`)
 	pwURL = regexp.MustCompile(`(postgres(?:ql)?://[^:/@\s"]+:)[^@\s"]+@`)
 )
 
-// scrub removes the login's password and any password-shaped value from a reply.
+// scrub removes the login's password and any password-shaped value from one decoded string (a value
+// of a tool's result or an error text), before anything is encoded.
 func (s *Server) scrub(text string) string {
 	for _, sec := range s.secrets {
 		text = strings.ReplaceAll(text, sec, "[redacted]")
-		if j, err := json.Marshal(sec); err == nil { // the JSON-escaped form, as it sits in a reply line
-			if e := string(j[1 : len(j)-1]); e != sec {
-				text = strings.ReplaceAll(text, e, "[redacted]")
-			}
-		}
 	}
 	text = pwKV.ReplaceAllString(text, "${1}[redacted]")
 	return pwURL.ReplaceAllString(text, "${1}[redacted]@")

@@ -16,14 +16,15 @@ const sqlReaderCheck = `
 SELECT has_schema_privilege('pgvigil', 'USAGE') AS reads,
        r.rolsuper OR r.rolbypassrls AS superuser,
        has_schema_privilege('pgvigil', 'CREATE') AS creates,
-       has_table_privilege('pgvigil.instances', 'INSERT') OR has_table_privilege('pgvigil.instances', 'UPDATE')
-         OR has_table_privilege('pgvigil.instances', 'DELETE') OR has_table_privilege('pgvigil.instances', 'TRUNCATE') AS writes,
+       EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                  AND has_table_privilege(c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')) AS writes,
        coalesce((SELECT pg_has_role('pgvigil_collector', 'MEMBER') FROM pg_roles WHERE rolname = 'pgvigil_collector'), false) AS collector,
        coalesce((SELECT pg_has_role('pgvigil_auth', 'MEMBER') FROM pg_roles WHERE rolname = 'pgvigil_auth'), false) AS auth
   FROM pg_roles r WHERE r.rolname = current_user`
 
 // CheckReader connects as dsn and refuses a login that can do more than read the repository: a
-// superuser, the schema's owner or anyone with CREATE on it, a login that may change a table, the
+// superuser, the schema's owner or anyone with CREATE on it, a login that may change any table or view of the schema, the
 // collector (its import functions write), or the UI's pgvigil_auth (it reads the password hashes).
 // The door's login is IN ROLE pgvigil_reader and nothing else.
 func CheckReader(ctx context.Context, dsn string) (user string, err error) {

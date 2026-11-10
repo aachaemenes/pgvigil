@@ -26,7 +26,9 @@ func fakeAPI(t *testing.T, seen *[]string) http.Handler {
 		"/api/activity": map[string]any{"snapshot_at": "2026-11-09T10:00:00Z",
 			"summary": tbl([]string{"instance_id", "total"}, []any{1, 5}),
 			"chains":  tbl([]string{"pid", "head_pid", "depth"}, []any{11, 10, 1}, []any{12, 10, 2})},
-		"/api/statements": tbl([]string{"queryid", "query"}, []any{"9007199254740993", "select 1"}),
+		"/api/statements": tbl([]string{"queryid", "query"}, []any{"9007199254740993", "select 1"},
+			[]any{"1", "UPDATE users SET password = $1 WHERE id = $2"}, []any{"2", "ALTER ROLE x PASSWORD 'p\"a<s>s'"},
+			[]any{"3", `select 'pa"ss<w>rd\x' as leaked`}),
 		"/api/tables": map[string]any{
 			"databases": tbl([]string{"datname", "user_tables"}, []any{"app", 3}, []any{"hr", 2}),
 			"tables": tbl([]string{"datname", "schema_name", "table_name"},
@@ -153,7 +155,7 @@ func TestProtocol(t *testing.T) {
 
 func TestTools(t *testing.T) {
 	var seen []string
-	s := New(fakeAPI(t, &seen), "test", "s3cret-pw")
+	s := New(fakeAPI(t, &seen), "test", "s3cret-pw", `pa"ss<w>rd\x`)
 	got, _, raw := exchange(t, s,
 		call(1, "fleet_summary", `{"severity":"critical"}`),
 		call(2, "instance_findings", `{"instance":"alpha"}`),
@@ -179,7 +181,7 @@ func TestTools(t *testing.T) {
 		"1":  {has: []string{`"critical": 1`, `"stale"`}, hasn: []string{`"bloat"`}},
 		"2":  {has: []string{`"work_mem"`, `"stale"`, `"name": "Alpha"`}},
 		"3":  {has: []string{`"heads": 1`, `"head_pid": 10`, `"total": 5`}},
-		"4":  {has: []string{`"order": "io"`, `"9007199254740993"`}},
+		"4":  {has: []string{`"order": "io"`, `"9007199254740993"`, `password = $1 WHERE`, `select '[redacted]' as leaked`}},
 		"5":  {has: []string{`"Seq Scan"`, `"seq scan"`}, hasn: []string{"buttons"}},
 		"6":  {has: []string{`"plan_id": 7`}},
 		"7":  {has: []string{"more than one table matched", "app.public.orders", "hr.public.orders"}},
@@ -213,8 +215,21 @@ func TestTools(t *testing.T) {
 			}
 		}
 	}
-	if strings.Contains(raw, "s3cret-pw") {
-		t.Errorf("the password reached the client")
+	// every line parses, and no form of either password is in it (raw, escaped once, escaped twice)
+	for _, l := range strings.Split(strings.TrimSpace(raw), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Errorf("a reply line does not parse: %v: %s", err, l)
+		}
+	}
+	for _, pw := range []string{"s3cret-pw", `pa"ss<w>rd\x`} {
+		once := string(mustJSON(pw))
+		twice := string(mustJSON(once))
+		for _, form := range []string{pw, once[1 : len(once)-1], twice[1 : len(twice)-1], "pa\\\"ss", "ss\\u003cw"} {
+			if strings.Contains(raw, form) {
+				t.Errorf("a form of the password reached the client: %q", form)
+			}
+		}
 	}
 	var stmts string
 	for _, r := range seen {
@@ -240,6 +255,8 @@ func TestLimitAndScrub(t *testing.T) {
 	}
 	for in, want := range map[string]string{
 		"dsn host=h password=pw12345 user=u": "dsn host=h password=[redacted] user=u",
+		"SET password = $1, x = 2":           "SET password = $1, x = 2",
+		"password=abc\nnext line":            "password=[redacted]\nnext line",
 		"x pw12345 y ab":                     "x [redacted] y ab",
 		"postgresql://u:other@h/db":          "postgresql://u:[redacted]@h/db",
 		"PASSWORD = 'a b' end":               "PASSWORD = [redacted] end",
@@ -253,8 +270,10 @@ func TestLimitAndScrub(t *testing.T) {
 func TestLongLine(t *testing.T) {
 	s := New(http.NotFoundHandler(), "test")
 	var out bytes.Buffer
-	err := s.Serve(context.Background(), strings.NewReader(strings.Repeat("x", MaxLine+10)+"\n"), &out)
-	if err == nil || !strings.Contains(out.String(), "request line over") {
-		t.Errorf("a long line: err %v, out %q", err, out.String())
+	in := strings.Repeat("x", MaxLine+10) + "\n" + `{"jsonrpc":"2.0","id":9,"method":"ping"}` // the last line has no newline
+	err := s.Serve(context.Background(), strings.NewReader(in), &out)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if err != nil || len(lines) != 2 || !strings.Contains(lines[0], "request line over") || !strings.Contains(lines[1], `"id":9`) {
+		t.Errorf("a long line is refused and the session goes on: err %v, out %q", err, out.String())
 	}
 }

@@ -16,6 +16,9 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/web"
 )
 
+// the dispatch line in main.go comes at the join; until then this keeps the branch lint-clean on its own
+var _ = runMCP
+
 // runMCP serves the Model Context Protocol on stdin and stdout for an AI client on this machine:
 //
 //	pgvigil mcp [-dsn env:PGVIGIL_MCP_DSN] [-config pgvigil.yaml]
