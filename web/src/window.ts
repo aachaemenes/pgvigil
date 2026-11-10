@@ -16,7 +16,7 @@ export async function longRunsSection(ctx: Ctx): Promise<HTMLElement> {
   const box = el('div', { class: 'window' });
   box.append(el('h3', {}, `Over this window (${rangeLabel(ctx)})`), filters(ctx, minSecs),
     el('p', { class: 'meta' }, 'From the running-queries samples: an active statement by how long it had run, an idle-in-transaction session by how long it had sat idle '
-      + '(its transaction age beside it); a duration is a floor (the statement ended between its last sample and the next), and a run shorter than the sampling interval can go unseen.'));
+      + '(its transaction age beside it; a statement that ran and then sat idle is two rows); a duration is a floor (the statement ended between its last sample and the next), and a run shorter than the sampling interval can go unseen.'));
   box.append(runs instanceof Error ? errorBox(runs) : grid(rowsOf(runs as Table), runCols(ctx), 'Nothing ran or sat idle in a transaction that long in this window.'));
   box.append(el('h3', {}, 'Per sample'));
   if (samples instanceof Error) box.append(errorBox(samples));
@@ -31,10 +31,10 @@ export async function longRunsSection(ctx: Ctx): Promise<HTMLElement> {
 
 function filters(ctx: Ctx, minSecs: number): HTMLElement {
   const state = el('select', { 'aria-label': 'state' },
-    ...[['', 'active or idle in transaction'], ['active', 'active'], ['idle', 'idle in transaction']].map(([v, l]) =>
+    ...[['', 'any sampled state'], ['active', 'active'], ['idle', 'idle in transaction']].map(([v, l]) =>
       el('option', v === (ctx.st ?? '') ? { value: v, selected: 'selected' } : { value: v }, l)));
   const min = el('input', { type: 'number', min: '0', max: '86400', step: '1', value: String(minSecs), style: 'width:5em', 'aria-label': 'seconds at least' });
-  const text = (name: string, v?: string) => el('input', { type: 'text', maxlength: '64', value: v ?? '', placeholder: name, style: 'width:9em', 'aria-label': name });
+  const text = (name: string, v?: string) => el('input', { type: 'text', maxlength: '64', value: v ?? '', placeholder: name + ' (exact)', title: `the session's ${name}, an exact and case-sensitive match`, style: 'width:10em', 'aria-label': name });
   const user = text('user', ctx.user), db = text('database', ctx.db), app = text('application', ctx.app);
   const apply = el('button', { type: 'button' }, 'Apply');
   const go = () => {

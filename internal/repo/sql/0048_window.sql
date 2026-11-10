@@ -3,10 +3,12 @@
 -- from state_change (how long it has sat idle; its transaction age rides beside it as txn_secs, which is what
 -- slow_in_window reports as the duration), the client address is returned, and the rows can be narrowed by state
 -- ('active', 'idle' = idle in transaction and its aborted form; NULL = both), user, database and application (exact
--- matches). One row per execution seen in the window - a session (pid, backend_start) and its statement
--- (query_start) - at the largest duration any sample saw. Sampled once a minute, so a duration is a floor and a run
--- shorter than the sampling interval can go unseen. slow_in_window stays as it is: the Slow queries tab's sampled
--- section and the Statements tab read it through the same route with the old defaults.
+-- matches). One row per phase of an execution seen in the window - a session (pid, backend_start), its statement
+-- (query_start) and whether it was running or sitting idle - at the largest duration any sample saw, so a statement
+-- that ran and whose session then sat idle in its transaction is two rows (the run, then the idle), each number
+-- matching the state it shows. txn_secs is NULL for a session with no transaction (a plain idle blocker a waiter
+-- named). Sampled once a minute, so a duration is a floor and a run shorter than the sampling interval can go unseen.
+-- slow_in_window stays as it is for its older callers.
 CREATE OR REPLACE FUNCTION pgvigil.long_runs_in_window(p_instance_id int, p_from timestamptz, p_to timestamptz,
                                                        p_min_secs int DEFAULT 5, p_state text DEFAULT NULL,
                                                        p_usename text DEFAULT NULL, p_datname text DEFAULT NULL,
@@ -20,7 +22,8 @@ LANGUAGE sql STABLE AS $$
     SELECT s.*,
            extract(epoch FROM s.snapshot_at - CASE WHEN s.state = 'active' THEN s.query_start
                                                    ELSE coalesce(s.state_change, s.xact_start, s.query_start) END) AS secs,
-           extract(epoch FROM s.snapshot_at - coalesce(s.xact_start, s.query_start)) AS tsecs,
+           extract(epoch FROM s.snapshot_at - s.xact_start) AS tsecs,
+           (s.state = 'active') AS is_active,
            coalesce(s.wait_event_type || ':' || s.wait_event, 'CPU / not waiting') AS wait
       FROM pgvigil.activity_sample s
      WHERE s.instance_id = p_instance_id AND s.snapshot_at >= p_from AND s.snapshot_at <= p_to
@@ -40,7 +43,7 @@ LANGUAGE sql STABLE AS $$
            bool_or(cardinality(s.blocking_pids) > 0) AS was_blocked, bool_or(s.is_blocker) AS was_blocker,
            max(s.query_id) AS query_id, (array_agg(s.query_hash ORDER BY s.snapshot_at DESC))[1] AS query_hash
       FROM s
-     GROUP BY s.pid, s.backend_start, s.query_start
+     GROUP BY s.pid, s.backend_start, s.query_start, s.is_active
   )
   SELECT e.pid, e.backend_start, e.query_start, e.first_seen, e.last_seen, e.samples, e.at_least_secs, e.txn_secs, e.state,
          e.datname, e.usename, e.application_name, e.client, e.top_wait, e.was_blocked, e.was_blocker, e.query_id,
