@@ -1,5 +1,5 @@
 # Grafana datasource provisioning for the pgvigil repository (an example: copy it under
-# /etc/grafana/provisioning/datasources/ and set the four environment variables in Grafana's environment).
+# /etc/grafana/provisioning/datasources/ and set the five environment variables in Grafana's environment).
 # The login is a member of pgvigil_reader only (docs/grafana.md: the reader login); the dashboards read
 # the repository's views and read functions, never a raw table, and nothing here writes.
 apiVersion: 1

@@ -45,7 +45,10 @@ CREATE ROLE pgvigil_grafana LOGIN PASSWORD '<a long random password>' IN ROLE pg
 ALTER ROLE pgvigil_grafana SET default_transaction_read_only = on;
 ALTER ROLE pgvigil_grafana SET statement_timeout = '30s';
 GRANT CONNECT ON DATABASE pgvigil TO pgvigil_grafana;
+REVOKE TEMP ON DATABASE pgvigil FROM PUBLIC;
 ```
+
+The last line matters: PUBLIC holds TEMP on every database by default, so without it a Viewer could fill the server's temp space with temporary tables through the datasource. pgvigil's own imports keep working: they create their temporary tables inside SECURITY DEFINER functions, which run as the repository owner (a database's owner holds TEMP whatever PUBLIC holds).
 
 On PostgreSQL 13 and 14, every role may create objects in the schema `public` unless that is revoked. Close it on such a repository (PostgreSQL 15 and later already have it closed):
 
@@ -53,7 +56,7 @@ On PostgreSQL 13 and 14, every role may create objects in the schema `public` un
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ```
 
-`pgvigil_reader` cannot call the UI's password function or read the UI users, and it cannot write: an INSERT, UPDATE or DELETE fails with permission denied, and it creates nothing. On RDS and Aurora, IAM authentication works the same way (`GRANT rds_iam TO pgvigil_grafana` and no password), if the site's Grafana supports it. Require TLS for this login in `pg_hba.conf` (`hostssl`) when Grafana runs on another host.
+`pgvigil_reader` cannot call the UI's password function or read the UI users, and it cannot write: an INSERT, UPDATE or DELETE fails with permission denied, and it creates nothing, not even a temporary table once TEMP is revoked. On RDS and Aurora, IAM authentication works the same way (`GRANT rds_iam TO pgvigil_grafana` and no password), if the site's Grafana supports it. Require TLS for this login in `pg_hba.conf` (`hostssl`) when Grafana runs on another host.
 
 This login is the access boundary, not the dashboards. Any Grafana Viewer can send its own SQL through the datasource (Grafana's query API, or a crafted `var-` URL), so a Viewer reads whatever `pgvigil_reader` reads, raw tables included. "Views and read functions only" describes the panels, not a limit on the Viewers. Give Viewer rights on this datasource only to people who may see the repository.
 
@@ -80,6 +83,8 @@ sudo install -m 0644 deploy/grafana/provisioning/dashboards/pgvigil.yaml /etc/gr
 sudo systemctl restart grafana-server
 ```
 
+The JSON files are written by `deploy/grafana/gen.py` (`python3 deploy/grafana/gen.py deploy/grafana/dashboards`, the standard library only): change the generator, never a JSON file by hand, and regenerate; the proof reads the JSON. Until the first collection has landed, the repository holds no instance: the `instance` variable has no value, every panel of an instance dashboard shows a query error (there is nothing to put in place of `$instance`) and the fleet dashboards show No data; it clears with the first hourly read.
+
 The dashboards appear in a `pgvigil` folder. They are provisioned read-only (`allowUiUpdates: false`), so a new pgvigil release replaces the JSON without fighting a hand edit. To change a dashboard for the site, save a copy under another uid. With Docker, mount the same three paths, as `scripts/proof-grafana.sh` does.
 
 ## On a closed network
@@ -88,14 +93,21 @@ The dashboards use only Grafana's built-in panels (stat, table, time series, bar
 
 ```ini
 [analytics]
-reporting_enabled = false
-check_for_updates = false
-check_for_plugin_updates = false
+reporting_enabled = false          # anonymous usage counters to stats.grafana.org
+check_for_updates = false          # the Grafana version check against GitHub
+check_for_plugin_updates = false   # plugin updates against grafana.com
 [news]
-news_feed_enabled = false
+news_feed_enabled = false          # the news feed
+[security]
+disable_gravatar = true            # profile images fetched from gravatar.com
+[plugins]
+preinstall_disabled = true         # the preinstalled plugins fetched from the Grafana catalog at start
+public_key_retrieval_disabled = true   # the plugin-signature key download (the built-in key is used)
+[snapshots]
+external_enabled = false           # publishing a snapshot to snapshots.raintank.io
 ```
 
-(or `GF_ANALYTICS_REPORTING_ENABLED=false`, `GF_ANALYTICS_CHECK_FOR_UPDATES=false`, `GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false`, `GF_NEWS_NEWS_FEED_ENABLED=false`).
+(or `GF_ANALYTICS_REPORTING_ENABLED=false`, `GF_ANALYTICS_CHECK_FOR_UPDATES=false`, `GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false`, `GF_NEWS_NEWS_FEED_ENABLED=false`, `GF_SECURITY_DISABLE_GRAVATAR=true`, `GF_PLUGINS_PREINSTALL_DISABLED=true`, `GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED=true`, `GF_SNAPSHOTS_EXTERNAL_ENABLED=false`). Each key and its default is on Grafana's configuration page (read 2026-11-09 for Grafana 12); a site's Grafana may have more doors of its own (an OAuth provider, alerting contact points), which are the site's to review.
 
 ## The proof
 

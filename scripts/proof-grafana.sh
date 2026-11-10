@@ -2,14 +2,16 @@
 # Proof of the Grafana dashboard set (deploy/grafana): a demo repository, a reader login, a Grafana container
 # provisioned from deploy/grafana exactly as docs/grafana.md says, every dashboard loaded through Grafana's API,
 # every panel's query run through Grafana for every demo instance, and a screenshot of every dashboard.
-#   PGVIGIL_ADMIN_DSN       a superuser connection without dbname (creates and drops a scratch database and a login);
-#                           no password= in it (it shows in ps): ~/.pgpass or PGPASSFILE carries the password
+#   PGVIGIL_ADMIN_DSN       a superuser connection in KEYWORD form without dbname (host=... user=...; the proof appends
+#                           dbname= and creates and drops a scratch database and a login); no password= in it (it shows
+#                           in ps): ~/.pgpass or PGPASSFILE carries the password; both are checked before anything runs
 #   PGVIGIL_BIN             the pgvigil binary (default bin/pgvigil)
 #   PGVIGIL_GRAFANA_IMAGE   the Grafana image (default grafana/grafana-oss:12.4.3)
 #   PGVIGIL_GRAFANA_DBHOST  host:port at which the container (host network) reaches the repository (default 127.0.0.1:5432)
 #   PGVIGIL_GRAFANA_SHOTS   the folder for the screenshots (default bin/grafana-shots; chromium absent = skipped and said)
 # Needs docker, psql, curl, jq, python3; chromium and node for the screenshots (without them: NOT PROVEN (screens), exit 3).
-# Only the last line PROOF OK (exit 0) means proven.
+# Only the last line PROOF OK (exit 0) means proven. Not in ci.yml: docker on the host network, chromium over CDP, a demo
+# seed and about 1,300 query-API calls (6-7 minutes); a local proof.
 #
 # Expected (written before the first run):
 #   static     13 dashboards, 13 distinct uids, every one tagged pgvigil; every pgvigil.<name> in a panel's or a
@@ -18,7 +20,8 @@
 #   views      every view a panel reads has rows as the reader after the demo seed, except job_running (no job is
 #              running in the demo): a stat over an empty view (count(*), sum, max) still answers one row
 #   login      a LOGIN role that is a member of pgvigil_reader and of nothing else, no superuser, createrole or createdb,
-#              no CREATE on the database or on any schema (public included: below PG 15 PUBLIC holds it unless revoked)
+#              no CREATE on the database or on any schema (public included: below PG 15 PUBLIC holds it unless revoked),
+#              no TEMP on the database (PUBLIC holds it unless revoked: the doc's REVOKE TEMP is the one the proof runs)
 #   grafana    /api/health ok; the datasource uid pgvigil provisioned and its health check OK as the reader;
 #              /api/search tag pgvigil = the 13 dashboards, all in the folder pgvigil
 #   variable   the instance variable's query answers 12 rows (the demo fleet)
@@ -37,6 +40,8 @@ IMAGE=${PGVIGIL_GRAFANA_IMAGE:-grafana/grafana-oss:12.4.3}
 DBHOST=${PGVIGIL_GRAFANA_DBHOST:-127.0.0.1:5432}
 SHOTS=${PGVIGIL_GRAFANA_SHOTS:-bin/grafana-shots}
 : "${PGVIGIL_ADMIN_DSN:?}"
+[[ "$PGVIGIL_ADMIN_DSN" != *password=* ]] || { echo "FAIL: no password= in PGVIGIL_ADMIN_DSN (it shows in ps): ~/.pgpass or PGPASSFILE" >&2; exit 1; }
+[[ "$PGVIGIL_ADMIN_DSN" != *://* ]] || { echo "FAIL: PGVIGIL_ADMIN_DSN in keyword form (host=... user=...): the proof appends dbname=" >&2; exit 1; }
 for t in docker psql curl jq; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
 SUF=$RANDOM$RANDOM
 DB="pgvigil_it_grafana_$SUF"; LOGIN="pgvigil_gf_$SUF"; CT="pgvigil-grafana-proof-$SUF"
@@ -94,7 +99,7 @@ ROLE=1  # set first: a failed alter below still leaves the role for cleanup's dr
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 \
   -c "create role $LOGIN login password '$PASS' in role pgvigil_reader" \
   -c "alter role $LOGIN set default_transaction_read_only = on" -c "alter role $LOGIN set statement_timeout = '30s'" >/dev/null
-P -c "revoke all on database $DB from public; grant connect on database $DB to $LOGIN" >/dev/null
+P -c "grant connect on database $DB to $LOGIN; revoke temp on database $DB from public" >/dev/null   # as docs/grafana.md section 1
 got=$(P -c "select string_agg(b.rolname, ',') from pg_auth_members m join pg_roles b on b.oid = m.roleid join pg_roles r on r.oid = m.member where r.rolname = '$LOGIN'")
 [[ "$got" == pgvigil_reader ]] || fail "the login's roles: $got"
 got=$(P -c "select rolsuper or rolcreaterole or rolcreatedb from pg_roles where rolname = '$LOGIN'")
@@ -103,7 +108,9 @@ got=$(P -c "select string_agg(nspname, ',') from pg_namespace where has_schema_p
 [[ -z "$got" ]] || fail "the login can CREATE in schema(s): $got"
 got=$(P -c "select has_database_privilege('$LOGIN', '$DB', 'CREATE')")
 [[ "$got" == f ]] || fail "the login can CREATE in the database"
-ok "login: $LOGIN is a member of pgvigil_reader only, no superuser, createrole or createdb, no CREATE on the database or any schema"
+got=$(P -c "select has_database_privilege('$LOGIN', '$DB', 'TEMP')")
+[[ "$got" == f ]] || fail "the login can create temporary tables in the database (TEMP)"
+ok "login: $LOGIN is a member of pgvigil_reader only, no superuser, createrole or createdb, no CREATE on the database or any schema, no TEMP"
 W=$(psql "host=${DBHOST%:*} port=${DBHOST##*:} user=$LOGIN password=$PASS dbname=$DB" -XAtq \
   -c "begin read write" -c "delete from pgvigil.instances where false" -c "rollback" 2>&1 || true)
 [[ "$W" == *"permission denied"* ]] || fail "a write as the reader was not refused: $W"
