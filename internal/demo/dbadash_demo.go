@@ -1,6 +1,7 @@
 // The DBADash door's demo rows (task 55): a recorded DBA Dash Summary of three SQL Server instances in one repository "dbadash-demo",
 // in the shape the live proof read from a DBA Dash 4.24.1 repository (scripts/proof-dbadash.sh; the codes, keys and detail names are
 // DBA Dash's own; the instance names and values are invented), one read an hour over the demo's days through pgvigil.import_dbadash.
+
 package demo
 
 import (
@@ -42,7 +43,7 @@ func SeedDBADash(ctx context.Context, pool *pgxpool.Pool, start, end time.Time) 
 	insts := []inst{
 		{1, "SQLPROD01", "16.0.4135.4", "Enterprise Edition: Core-based Licensing (64-bit)",
 			func(time.Time) map[string]int { return map[string]int{"LogShippingStatus": 4} },
-			func(t time.Time) map[string]any {
+			func(_ time.Time) map[string]any {
 				return map[string]any{"CollectionErrorCount": 0, "SnapshotAgeMin": 1, "SnapshotAgeMax": 2, "DaysSinceLastGoodCheckDB": 3,
 					"LastGoodCheckDBHealthyCount": 14, "LastGoodCheckDBWarningCount": 0, "LastGoodCheckDBCriticalCount": 0,
 					"sqlserver_start_time_utc": ut(end.Add(-41 * 24 * time.Hour)), "IsAgentRunning": true, "MaxIdentityPctUsed": 38.4, "MinIdentityEstimatedDays": 2210}
@@ -55,7 +56,7 @@ func SeedDBADash(ctx context.Context, pool *pgxpool.Pool, start, end time.Time) 
 				}
 				return o
 			},
-			func(t time.Time) map[string]any {
+			func(_ time.Time) map[string]any {
 				return map[string]any{"CollectionErrorCount": 2, "SnapshotAgeMin": 1, "SnapshotAgeMax": 4, "DaysSinceLastGoodCheckDB": 6,
 					"LastGoodCheckDBHealthyCount": 9, "LastGoodCheckDBWarningCount": 0, "LastGoodCheckDBCriticalCount": 0,
 					"sqlserver_start_time_utc": ut(end.Add(-12 * 24 * time.Hour)), "IsAgentRunning": true, "MaxIdentityPctUsed": 81.7, "MinIdentityEstimatedDays": 44}
@@ -68,7 +69,7 @@ func SeedDBADash(ctx context.Context, pool *pgxpool.Pool, start, end time.Time) 
 				}
 				return o
 			},
-			func(t time.Time) map[string]any {
+			func(_ time.Time) map[string]any {
 				return map[string]any{"CollectionErrorCount": 0, "SnapshotAgeMin": 1, "SnapshotAgeMax": 3,
 					"LastGoodCheckDBHealthyCount": 0, "LastGoodCheckDBWarningCount": 0, "LastGoodCheckDBCriticalCount": 37,
 					"MemoryDumpCount": 2, "LastMemoryDumpUTC": ut(end.Add(-6 * 24 * time.Hour)),
