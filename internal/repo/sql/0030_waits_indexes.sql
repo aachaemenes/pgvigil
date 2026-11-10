@@ -245,6 +245,9 @@ BEGIN
            ORDER BY dbid, userid, queryid, toplevel, bucket_start) n;
   IF jsonb_array_length(v_zero) > 0 THEN
     PERFORM pgvigil.import_statements(p_instance_id, least(v_start, p_snapshot_at - interval '1 second'), v_zero);
+    -- import_statements keeps its input in an ON COMMIT DROP temp table: the second call below, in the same
+    -- transaction, would collide with it
+    DROP TABLE IF EXISTS pg_temp.pgv_stmt_in;
   END IF;
 
   INSERT INTO pgvigil.statements_monitor_total AS t (instance_id, dbid, userid, queryid, toplevel, datname, usename, query, first_bucket,
