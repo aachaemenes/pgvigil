@@ -13,6 +13,7 @@
 //	pgvigil tag      -config pgvigil.yaml [-reset] <instance> [key=value[,value...]] [-key] [key]   fix an instance's tags in the repository
 //	pgvigil install   [-bin p] [-config p] [-user a] [-no-start]                             the collector as a service (systemd / Windows)
 //	pgvigil uninstall [-bin p] [-config p] [-user a] [-purge]
+//	pgvigil mcp       [-dsn env:PGVIGIL_MCP_DSN] [-config pgvigil.yaml]                   read-only MCP tools on stdio (reader login)
 //	pgvigil version
 package main
 
@@ -79,6 +80,8 @@ func run(args []string) int {
 		err = runInstall(log, args[1:])
 	case "uninstall":
 		err = runUninstall(log, args[1:])
+	case "mcp":
+		err = runMCP(ctx, log, args[1:])
 	default:
 		usage()
 		return 2
@@ -95,7 +98,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|mcp|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector

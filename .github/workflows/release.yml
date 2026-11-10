@@ -3,8 +3,10 @@
 # is the only cryptography in them and FIPS mode is on from the start), a CycloneDX SBOM per target, a
 # SHA256SUMS file, and a keyless Sigstore signature of that file (the GitHub Actions OIDC identity is the
 # signer, recorded in the public Rekor log) with its bundle for an offline verification, all attached to
-# the GitHub release. Nothing is published from a laptop: a release is reproducible from this file and
-# the tag. docs/airgap.md says how a site without Internet access verifies and installs one. The cosign installer
+# the GitHub release, with the Windows app's zip (pgvigil-app.exe beside a pgvigil.exe built on the Windows
+# runner from the same source and flags; its hash may differ from the Linux-built exe, and the zip's own
+# SHA256SUMS line covers it; not Authenticode-signed, so SmartScreen may warn on first run) and the app's SBOM.
+# Nothing is published from a laptop: a release is reproducible from this file and the tag. docs/airgap.md says how a site without Internet access verifies and installs one. The cosign installer
 # is pinned: its v4 line changes the signature assets (bundle only).
 name: release
 
@@ -17,8 +19,40 @@ permissions:
   id-token: write   # the OIDC token cosign signs with (keyless)
 
 jobs:
+  app:
+    # the Windows app (app/, its own module): tested and built on a Windows runner, zipped with the plain pgvigil.exe of
+    # the same source and flags, with its own SBOM; the release job lists both in SHA256SUMS under the one signature
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+      - name: test and build the Windows app on Windows (the app is its own module; its tests run here, on the target)
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME}"
+          (cd app && go mod verify && go vet ./... && go test ./...)
+          mkdir -p out
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$V" -o out/pgvigil.exe ./cmd/pgvigil
+          (cd app && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -H=windowsgui -X main.version=$V" -o ../out/pgvigil-app.exe .)
+          out/pgvigil-app.exe -version > /dev/null 2>&1 || true   # a windowed program: no console output to check here
+          (cd out && 7z a -tzip "../pgvigil-app_${V}_windows_amd64.zip" pgvigil-app.exe pgvigil.exe)
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0
+          (cd app && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 "$(go env GOPATH)/bin/cyclonedx-gomod" app -json -licenses -main . -output "../pgvigil-app_${V}_windows_amd64.cdx.json" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: |
+            pgvigil-app_*_windows_amd64.zip
+            pgvigil-app_*_windows_amd64.cdx.json
+          if-no-files-found: error
   release:
     runs-on: ubuntu-latest
+    needs: app
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,6 +92,12 @@ jobs:
               -main cmd/pgvigil -output "dist/pgvigil_${V}_${GOOS}_${GOARCH}.cdx.json" .
           done
           python3 -c 'import json,sys; [json.load(open(f))["bomFormat"] == "CycloneDX" or sys.exit(f) for f in sys.argv[1:]]' dist/*.cdx.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: app
+          path: dist
+      - name: the app's zip and its SBOM are in dist (their SHA256SUMS lines follow)
+        run: ls -l dist/pgvigil-app_*_windows_amd64.zip dist/pgvigil-app_*_windows_amd64.cdx.json
       - name: checksums
         run: (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
       - uses: sigstore/cosign-installer@v3.10.1   # cosign v2.6.1: --bundle beside --output-signature / --output-certificate; the installer's v4 (cosign v3) drops those two flags and writes the new bundle format only, so a bump is a deliberate change of the assets, never a floating tag

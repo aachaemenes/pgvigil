@@ -8,8 +8,9 @@ pgvigil runs where nothing may reach out. This page is the procedure for a site 
 - The repository database (one PostgreSQL database that pgvigil owns).
 - On RDS and Aurora instances whose configuration has an `aws:` block: the AWS APIs for that region only (CloudWatch Logs, CloudWatch metrics, RDS Describe calls, DMS Describe calls), through the AWS SDK's endpoint for the region, so `us-gov-west-1` and `us-gov-east-1` resolve to the GovCloud (US) endpoints with nothing to configure beyond the region; FIPS endpoints follow the SDK's `AWS_USE_FIPS_ENDPOINT=true`. No `aws:` block, no AWS call.
 - The browser that opens the web UI, on loopback by default (an HTTPS listen elsewhere needs a certificate and the login).
+- The Windows app (`pgvigil-app.exe`), where it is installed: its own `pgvigil serve` on loopback, and once a day the release feed (`https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, one GET with `User-Agent: pgvigil-app/<version>`, nothing else sent; it notifies, never downloads). Off for every user with `HKLM\Software\Policies\pgvigil\App` `UpdateCheck` = 0 (the machine install's `-no-update-check` writes it), or pointed at an internal mirror with `UpdateFeed`; [docs/app.md](app.md). The WebView2 runtime the window runs in is Microsoft's, with its own policies for its own traffic.
 
-Nothing else: no telemetry, no update check, no download at run time, no DNS name of the project's. The installers (`install.sh`, `install.ps1`) download a release when they run; on an air-gapped network they read a mirror folder instead (below) or are not used at all.
+Nothing else: no telemetry, no update check in the collector or the UI server, no download at run time, no DNS name of the project's. The installers (`install.sh`, `install.ps1`) download a release when they run; on an air-gapped network they read a mirror folder instead (below) or are not used at all.
 
 ## 1. On a connected machine: fetch the release and verify it
 
