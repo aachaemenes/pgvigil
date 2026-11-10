@@ -244,7 +244,7 @@ P1=$(logsum mail n_firing "$TB" sent)
 [[ $(smtp_count) == 1 && $(grep -c '^\[FIRING CRITICAL\]' "$WORK/smtp/1.eml") == "$P1" ]] || fail "B: the mail's firing lines"
 grep -q "^\[FIRING CRITICAL\] $PNAME: pg_gather autovacuum = off" "$WORK/smtp/1.eml" || fail "B: P's autovacuum is not in the mail"
 [[ $(http_count) == 1 ]] || fail "B: the listener holds $(http_count) post(s)"
-[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["alerts"]), {a["event"] for a in d["alerts"]}=={"firing"})' "$WORK/http/1.json") == "$P1 True" ]] || fail "B: the hook's body"
+[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["alerts"]), {a["event"] for a in d["alerts"]}=={"firing"})' "$(find "$WORK/http" -maxdepth 1 -name '*.json')") == "$P1 True" ]] || fail "B: the hook's body"
 [[ ! -e "$WORK/http/elsewhere" ]] || fail "B: the redirect was followed"
 for d in drop drop2 grace; do [[ $(ls "$WORK/$d" | wc -l) == "$P1" ]] || fail "B: $d holds $(ls "$WORK/$d" | wc -l) files"; done
 [[ $(ls "$WORK/night" | wc -l) == 0 ]] || fail "B: night wrote in its quiet hours"
