@@ -96,6 +96,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
 // alertCol: the Findings tab's column - sent, when (the last send) and where (the channels); empty when not sent
 export const alertCol: Col = {
   key: 'alert_last_sent', label: 'alerted',
-  fmt: (v, r) => v == null ? '' : el('span', { title: `first sent ${fmtTime(r.alert_first_sent)}, ${fmtNum(r.alert_sends)} send(s)` },
-    `sent ${fmtTime(v)} to ${list(r.alert_channels)}`),
+  // the whole text in the cell (no title-only detail: a keyboard or screen-reader user reads what is shown)
+  fmt: (v, r) => v == null ? '' :
+    `sent ${fmtTime(v)} to ${list(r.alert_channels)} (first ${fmtTime(r.alert_first_sent)}, ${fmtNum(r.alert_sends)} send(s))`,
 };

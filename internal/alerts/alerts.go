@@ -47,6 +47,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/yaml.v3"
 
@@ -664,6 +665,9 @@ func record[T any](ctx context.Context, exec func(context.Context, string, ...an
 
 // Once runs one pass against the repository (`pgvigil alerts`); dsn is the sender's login (Settings.DSN, else the
 // repository's).
+//
+// With no channel there is nothing to send: the pass only records the 'none' row, and a login that may not write it
+// (the collector's, on an install without alerts_dsn) is no error: nothing was sent either way.
 func Once(ctx context.Context, dsn string, chs []Channel) (Result, error) {
 	pool, err := pxpool(ctx, dsn)
 	if err != nil {
@@ -671,6 +675,10 @@ func Once(ctx context.Context, dsn string, chs []Channel) (Result, error) {
 	}
 	defer pool.Close()
 	res, _, err := Pass(ctx, pool, chs, time.Now(), nil)
+	var pe *pgconn.PgError
+	if err != nil && len(chs) == 0 && errors.As(err, &pe) && pe.Code == "42501" {
+		return res, nil
+	}
 	return res, err
 }
 
@@ -680,9 +688,13 @@ const Every = time.Minute
 // maxBackoff caps how long a failing channel waits before the next try.
 const maxBackoff = 30 * time.Minute
 
-// Run is the loop inside `pgvigil run`: a pass every minute until ctx ends. With no channel it records the 'none'
-// row once and returns: nothing is ever sent.
+// Run is the loop inside `pgvigil run`: a pass every minute until ctx ends. With no channel it logs "alerts off" and
+// returns without touching the repository: nothing is ever sent, and the collector's login needs no alert right.
 func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error {
+	if len(chs) == 0 {
+		log.Info("alerts off: no channel configured, nothing is sent")
+		return nil
+	}
 	var pool *pgxpool.Pool
 	for pool == nil {
 		p, err := pxpool(ctx, dsn)
@@ -698,13 +710,6 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 		}
 	}
 	defer pool.Close()
-	if len(chs) == 0 {
-		if _, _, err := Pass(ctx, pool, nil, time.Now(), nil); err != nil {
-			return err
-		}
-		log.Info("alerts off: no channel configured, nothing is sent")
-		return nil
-	}
 	log.Info("alerts started", "channels", len(chs))
 	type back struct {
 		fails int
