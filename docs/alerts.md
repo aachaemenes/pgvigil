@@ -65,7 +65,7 @@ while the digits inside a name (`orders_idx1`, `orders_idx2`) keep two indexes a
 | new (firing) | A finding at or above the channel's severity, in its scope, that the channel has not sent. |
 | new (escalated) | The finding's severity rose above the one sent. It goes out at once. |
 | still open (repeat) | The repeat interval has passed since the last send. |
-| resolved | The finding has been gone from the findings for `clear_after` (default 10 minutes, so a collection gap or a finding at a time window's edge does not send a recovery and a new alert a minute later). Sent when `recovery` is on; otherwise the alert is closed without a message (the log's outcome `cleared`). |
+| resolved | The finding has been gone from the findings for `clear_after` (default 10 minutes, so a finding at a time window's edge does not send a recovery and a new alert a minute later), **and** the collector has read the instance successfully since the finding went missing. An instance left unread (unreachable, the collector stopped, a gap of any length) holds its alerts open: its time-windowed findings leave the view, but nothing was fixed. Sent when `recovery` is on; otherwise the alert is closed without a message (the log's outcome `cleared`). |
 | closed without a message | The instance was deactivated or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. |
 
 A finding that falls below the channel's severity floor but stays (critical to warning on a critical channel) keeps its
@@ -129,9 +129,12 @@ The collector's login (`pgvigil_collector`) gets nothing here. The repository's 
 what other instances sent, and it may not call the alert functions. The functions `alert_channels_sync`,
 `alert_mark`, `alert_due` and `alert_record` run as their caller. A reader login may call `alert_due`, which reads
 only what a reader can read anyway, and fails in the others for want of a write privilege. One function runs as the
-owner, `alert_log_partition`: it creates `alert_log`'s month partition for a time within a day of now, nothing else.
+owner, `alert_log_partition`: it creates `alert_log`'s month partition for a time within a day of now, nothing else,
+and only for a login in `pgvigil_alerter` (or the schema's owner).
 Without `alerts_dsn` the sender uses the repository's dsn: that works when it is the owner (a demo, a one-box
-install), and fails with "permission denied" when it is the collector's login.
+install), and fails with "permission denied" when it is the collector's login. Only a configuration **with**
+channels needs `alerts_dsn`: without an `alerts:` list, `pgvigil run` logs "alerts off" and never touches the alert
+tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and exits 0 whatever the login.
 
 ## Proof
 

@@ -19,9 +19,12 @@
 # Expected (written before the run; P1 = mail's alerts opened by B's pass):
 #  R. the role contract: the collector login (IN ROLE pgvigil_collector) is refused alert_due and alert_record
 #     (permission denied for the function); a reader login (IN ROLE pgvigil_reader) is refused alert_record (permission
-#     denied for the table alert_log); the alerter login reads alert_due.
-#  A. a configuration without alerts: `pgvigil alerts` prints "no channel configured: nothing sent"; alert_log holds one
-#     row, outcome 'none', channel NULL; alert_channels and alert_state 0 rows (no sync); nothing received.
+#     denied for the table alert_log) and the partition door ("is not the alert sender"); the alerter login reads
+#     alert_due.
+#  A. [join fold] a configuration without alerts and without alerts_dsn whose repository login is the collector's:
+#     `pgvigil alerts` exits 0 with "no channel configured: nothing sent" and writes nothing (alert_log 0 rows).
+#     The same with alerts_dsn (the alerter): "no channel configured: nothing sent"; alert_log holds one row, outcome
+#     'none', channel NULL; alert_channels and alert_state 0 rows (no sync); nothing received.
 #  B. channels at min_severity critical: mail (SMTP, tls none, loopback), hook (webhook json), drop and drop2 (file;
 #     drop2 recovery false), grace (file, the default clear_after 10m); redir (a webhook the listener answers with a
 #     307), dead (a webhook to a closed port), night (a file drop in its quiet hours); mail, hook, drop and drop2 with
@@ -29,21 +32,25 @@
 #     2 of the view's critical count read before; the message holds P1 "[FIRING CRITICAL]" lines among them P's
 #     autovacuum; hook 1 POST of P1, drop, drop2 and grace P1 files each, night 0; the five channels P1 open rows each;
 #     redir 1 refused ("redirect: not followed"), dead 1 failed ("connection refused"), no token in any error or
-#     destination; alert_channels 8 configured.
+#     destination; alert_channels 9 configured. [join fold] bulk (a webhook at min_severity warning on a listener path
+#     of its own): its sent rows carry PB firing, PB > 25, in ceil(PB/25) posts of at most 25 alerts, the posts'
+#     alerts PB in all.
 #  C. a second run at once: no repeat row in any channel, every row B opened still at send_count 1. mail's open rows
 #     moved 6 minutes back (repeat 5m): the third run's mail rows carry n_repeat = mail's rows at send_count 2 (>= 1),
 #     the message as many "[REPEAT CRITICAL]" lines; hook, drop, drop2 and grace no repeat.
 #  H. the severity hold: P's xid age set to 1.5 billion (critical), a run: mail opens it (one more firing). Set to
 #     500 million (warning, under mail's floor), a run: no resolved, its row open, no repeat. Back to 1.6 billion, a
 #     run: no new firing, no escalated (the row is open at critical), its send_count unchanged.
-#  D. P's autovacuum setting back on (the finding gone), a run: mail's message holds "[RESOLVED] P: pg_gather
-#     autovacuum", hook's post an event 'resolved' for it, drop a *-resolved-* file of it; drop2 no resolved file, its
-#     row cleared without recovery (outcome 'cleared'); grace: its row open with missing_since set. grace's
+#  D. P's autovacuum setting back on (the finding gone), a run [join fold]: no collection of P since, so nothing is
+#     resolved: no "[RESOLVED] P" line, its six rows open with missing_since set. A collection of P logged ok, a run:
+#     mail's message holds "[RESOLVED] P: pg_gather autovacuum", hook's post an event 'resolved' for it, drop a
+#     *-resolved-* file of it, bulk resolved; drop2 no resolved file, its row cleared without recovery (outcome
+#     'cleared'); grace: its row open with missing_since set. grace's
 #     missing_since moved 11 minutes back, a run: a resolved file of it in grace, the row cleared with recovery_sent_at.
 #  K. the instance with the most critical findings deactivated (not P), a run: no "[RESOLVED] <it>" line in any new
 #     message, no resolved event of it in a new post or file; its rows on the five channels cleared with
 #     recovery_sent_at NULL.
-#  F. the API (`pgvigil serve -no-login` on loopback): /api/alerts answers 8 channels (all configured), mail, hook,
+#  F. the API (`pgvigil serve -no-login` on loopback): /api/alerts answers 9 channels (all configured), mail, hook,
 #     drop and drop2 with the same open count, grace at least as many [first fold run: grace 5, the others 4: a demo
 #     finding left the view within grace's 10-minute clear delay; the four at clear_after 0 resolved it, grace holds it], a log of the last hour with the 'none', 'sent', 'refused',
 #     'failed' and 'cleared' outcomes; /api/findings: the rows carrying alert_last_sent with mail in alert_channels are
@@ -121,6 +128,10 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(307); self.send_header("Location", "/elsewhere"); self.end_headers(); return
         if self.path.startswith("/elsewhere"):
             open(os.path.join(out, "elsewhere"), "a").write("hit\n")
+        elif self.path.startswith("/bulk"):
+            os.makedirs(os.path.join(out, "bulk"), exist_ok=True)
+            p = os.path.join(out, "bulk", "%d.json" % next(n))
+            open(p + ".tmp", "wb").write(body); os.rename(p + ".tmp", p)
         else:
             p = os.path.join(out, "%d.json" % next(n))
             open(p + ".tmp", "wb").write(body); os.rename(p + ".tmp", p)
@@ -132,10 +143,11 @@ DEAD_PORT=$(freeport)   # nothing listens there
 for _ in $(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/$SMTP_PORT) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/$HTTP_PORT) 2>/dev/null && break; sleep 0.1; done
 export PGV_PROOF_HOOK="http://127.0.0.1:$HTTP_PORT/hook/secret-token"
 export PGV_PROOF_REDIR="http://127.0.0.1:$HTTP_PORT/redirect/secret-token"
+export PGV_PROOF_BULK="http://127.0.0.1:$HTTP_PORT/bulk/secret-token"
 export PGV_PROOF_DEAD="http://127.0.0.1:$DEAD_PORT/hook/secret-token"
 export PGV_PROOF_ALERTS_DSN="$ADMIN_DSN dbname=$REPO_DB user=$ALR password=$PW"
 smtp_count() { find "$WORK/smtp" -name '*.eml' | wc -l; }
-http_count() { find "$WORK/http" -name '*.json' | wc -l; }
+http_count() { find "$WORK/http" -maxdepth 1 -name '*.json' | wc -l; }
 mark() { q "select clock_timestamp()"; }                                  # a run's start, for its log rows
 logsum() { q "select coalesce(sum($2), 0) from pgvigil.alert_log where channel = '$1' and snapshot_at >= '$3' ${4:+and outcome = '$4'}"; }
 new_eml() { find "$WORK/smtp" -name '*.eml' -newer "$1" -print0 | xargs -0 -r cat; }   # messages after a stamp file
@@ -183,10 +195,17 @@ as() { psql "$ADMIN_DSN dbname=$REPO_DB user=$1 password=$PW" -XAt -v ON_ERROR_S
 [[ $(as "$COL" "select count(*) from pgvigil.alert_due(now(), '$CH')") == *"permission denied for function alert_due"* ]] || fail "R: the collector read alert_due"
 [[ $(as "$COL" "select pgvigil.alert_record(now(), '$REC')") == *"permission denied for function alert_record"* ]] || fail "R: the collector called alert_record"
 [[ $(as "$RDR" "select pgvigil.alert_record(now(), '$REC')") == *"permission denied for table alert_log"* ]] || fail "R: a reader wrote alert_log: $(as "$RDR" "select pgvigil.alert_record(now(), '$REC')")"
+[[ $(as "$RDR" "select pgvigil.alert_log_partition(now())") == *"is not the alert sender"* ]] || fail "R: a reader used the partition door"
 [[ $(as "$ALR" "select count(*) > 0 from pgvigil.alert_due(now(), '$CH')") == t ]] || fail "R: the alerter cannot read alert_due"
 ok "R: collector refused, reader cannot write, alerter reads"
 
 # ---- A: no channel ---------------------------------------------------------------------------------------------------
+export PGV_PROOF_COL_DSN="$ADMIN_DSN dbname=$REPO_DB user=$COL password=$PW"
+printf 'repository:\n  dsn: env:PGV_PROOF_COL_DSN\n' > "$WORK/collector.yaml"
+set +e; out=$("$BIN" alerts -config "$WORK/collector.yaml" 2>"$WORK/a0.err"); rc=$?; set -e
+(( rc == 0 )) && [[ $out == *"no channel configured: nothing sent"* ]] || fail "A: as the collector, exit $rc: $out $(cat "$WORK/a0.err")"
+[[ $(q "select count(*) from pgvigil.alert_log") == 0 ]] || fail "A: the collector's run wrote alert_log"
+ok "A: no channel as the collector's login: exit 0, nothing written"
 out=$("$BIN" alerts -config "$WORK/none.yaml")
 [[ $out == *"no channel configured: nothing sent"* ]] || fail "A: the command said: $out"
 [[ $(q "select count(*), count(*) filter (where outcome = 'none' and channel is null) from pgvigil.alert_log") == "1|1" ]] || fail "A: alert_log"
@@ -212,6 +231,7 @@ alerts:
   - {name: grace, kind: file, min_severity: critical, file: {dir: $WORK/grace}}
   - {name: redir, kind: webhook, min_severity: critical, webhook: {url: env:PGV_PROOF_REDIR, format: slack}}
   - {name: dead, kind: webhook, min_severity: critical, webhook: {url: env:PGV_PROOF_DEAD, format: teams}}
+  - {name: bulk, kind: webhook, min_severity: warning, clear_after: 0, webhook: {url: env:PGV_PROOF_BULK, format: json}}
   - {name: night, kind: file, min_severity: critical, quiet_hours: "$(printf %02d $((10#$H0))):00-$(printf %02d $H2):00", file: {dir: $WORK/night}}
 EOF
 TB=$(mark)
@@ -224,20 +244,24 @@ P1=$(logsum mail n_firing "$TB" sent)
 [[ $(smtp_count) == 1 && $(grep -c '^\[FIRING CRITICAL\]' "$WORK/smtp/1.eml") == "$P1" ]] || fail "B: the mail's firing lines"
 grep -q "^\[FIRING CRITICAL\] $PNAME: pg_gather autovacuum = off" "$WORK/smtp/1.eml" || fail "B: P's autovacuum is not in the mail"
 [[ $(http_count) == 1 ]] || fail "B: the listener holds $(http_count) post(s)"
-[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["alerts"]), {a["event"] for a in d["alerts"]}=={"firing"})' "$WORK/http/1.json") == "$P1 True" ]] || fail "B: the hook's body"
+[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["alerts"]), {a["event"] for a in d["alerts"]}=={"firing"})' "$(find "$WORK/http" -maxdepth 1 -name '*.json')") == "$P1 True" ]] || fail "B: the hook's body"
 [[ ! -e "$WORK/http/elsewhere" ]] || fail "B: the redirect was followed"
 for d in drop drop2 grace; do [[ $(ls "$WORK/$d" | wc -l) == "$P1" ]] || fail "B: $d holds $(ls "$WORK/$d" | wc -l) files"; done
 [[ $(ls "$WORK/night" | wc -l) == 0 ]] || fail "B: night wrote in its quiet hours"
 python3 -c 'import json,sys,glob; [json.load(open(p)) for p in glob.glob(sys.argv[1]+"/*.json")]' "$WORK/drop" || fail "B: a dropped file is not JSON"
-[[ $(q "select string_agg(distinct n::text, ',') from (select count(*) n from pgvigil.alert_state where cleared_at is null group by channel) x") == "$P1" ]] || fail "B: the channels' open rows differ"
-[[ $(q "select count(distinct channel) from pgvigil.alert_state") == 5 ]] || fail "B: open rows on other than the five channels"
+[[ $(q "select string_agg(distinct n::text, ',') from (select count(*) n from pgvigil.alert_state where cleared_at is null and channel <> 'bulk' group by channel) x") == "$P1" ]] || fail "B: the channels' open rows differ"
+[[ $(q "select count(distinct channel) from pgvigil.alert_state") == 6 ]] || fail "B: open rows on other than the six channels"
+PB=$(logsum bulk n_firing "$TB" sent)
+(( PB > 25 )) || fail "B: bulk opened $PB, not over 25"
+BULK=$(python3 -c 'import json,sys,glob; n=[len(json.load(open(p))["alerts"]) for p in glob.glob(sys.argv[1]+"/*.json")]; print(len(n), max(n or [0]), sum(n))' "$WORK/http/bulk")
+[[ $BULK == "$(( (PB + 24) / 25 )) 25 $PB" ]] || fail "B: bulk's posts for $PB alerts: $BULK"
 [[ $(q "select outcome || ':' || count(*) from pgvigil.alert_log where channel in ('redir', 'dead') group by outcome order by 1" | tr '\n' ' ') == "failed:1 refused:1 " ]] || fail "B: redir and dead"
 [[ $(q "select error from pgvigil.alert_log where channel = 'redir'") == *"redirect: not followed"* ]] || fail "B: redir's error"
 [[ $(q "select error from pgvigil.alert_log where channel = 'dead'") == *"connection refused"* ]] || fail "B: dead's error"
 [[ $(q "select count(*) from pgvigil.alert_log where error like '%secret-token%'") == 0 ]] || fail "B: an error shows a webhook token"
 [[ $(q "select count(*) from pgvigil.alert_channels where destination like '%secret-token%'") == 0 ]] || fail "B: a destination shows a webhook token"
-[[ $(q "select count(*) from pgvigil.alert_channels where is_configured") == 8 ]] || fail "B: alert_channels"
-ok "B: $P1 critical alerts to mail (1 message), hook (1 post), drop, drop2 and grace; night held, redir refused, dead failed"
+[[ $(q "select count(*) from pgvigil.alert_channels where is_configured") == 9 ]] || fail "B: alert_channels"
+ok "B: $P1 critical alerts to mail (1 message), hook (1 post), drop, drop2 and grace; night held, redir refused, dead failed; bulk $PB alerts in posts of at most 25"
 
 # ---- C: repeat -----------------------------------------------------------------------------------------------------------
 TC=$(mark)
@@ -270,18 +294,22 @@ ok "H: critical -> warning -> critical: one alert, held under the floor, no reso
 q "update pgvigil.instance_state set non_default_settings = (select coalesce(jsonb_agg(x), '[]'::jsonb) from jsonb_array_elements(non_default_settings) x where x->>'name' <> 'autovacuum') where instance_id = $PID" >/dev/null
 AKEY=$(q "select finding_key from pgvigil.alert_state where channel = 'mail' and setting = 'autovacuum' and instance_id = $PID and cleared_at is null")
 [[ -n $AKEY ]] || fail "D: no open mail row of P's autovacuum"
+stamp D0; "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
+new_eml "$WORK/stamp.D0" | grep -q "^\[RESOLVED\] $PNAME:" && fail "D: resolved with no collection of $PNAME since the finding went missing"
+[[ $(q "select count(*) || '|' || count(missing_since) from pgvigil.alert_state where finding_key = '$AKEY' and cleared_at is null") == "6|6" ]] || fail "D: the held rows: $(q "select count(*) || '|' || count(missing_since) from pgvigil.alert_state where finding_key = '$AKEY' and cleared_at is null")"
+q "select pgvigil.log_collection($PID, 'instance', clock_timestamp(), 1, 'ok', null)" >/dev/null
 stamp D; "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
 new_eml "$WORK/stamp.D" | grep -q "^\[RESOLVED\] $PNAME: pg_gather autovacuum" || fail "D: no resolved line in the mail"
 [[ $(hook_events "$WORK/stamp.D" "$AKEY" resolved) == 1 ]] || fail "D: the hook's resolved event"
 [[ $(grep -l "\"finding_key\": \"$AKEY\"" "$WORK"/drop/*-resolved-* 2>/dev/null | wc -l) == 1 ]] || fail "D: drop's resolved file"
 [[ $(ls "$WORK/drop2" | grep -c -- '-resolved-') == 0 ]] || fail "D: drop2 (recovery false) wrote a resolved file"
 [[ $(q "select count(*) from pgvigil.alert_log where channel = 'drop2' and outcome = 'cleared' and '$AKEY' = any (keys)") == 1 ]] || fail "D: drop2's cleared row"
-[[ $(q "select string_agg(channel || ':' || (cleared_at is not null) || ':' || (recovery_sent_at is not null) || ':' || (missing_since is not null), ' ' order by channel) from pgvigil.alert_state where finding_key = '$AKEY'") == "drop:true:true:true drop2:true:false:true grace:false:false:true hook:true:true:true mail:true:true:true" ]] || fail "D: the rows of P's autovacuum: $(q "select string_agg(channel || ':' || (cleared_at is not null) || ':' || (recovery_sent_at is not null) || ':' || (missing_since is not null), ' ' order by channel) from pgvigil.alert_state where finding_key = '$AKEY'")"
+[[ $(q "select string_agg(channel || ':' || (cleared_at is not null) || ':' || (recovery_sent_at is not null) || ':' || (missing_since is not null), ' ' order by channel) from pgvigil.alert_state where finding_key = '$AKEY'") == "bulk:true:true:true drop:true:true:true drop2:true:false:true grace:false:false:true hook:true:true:true mail:true:true:true" ]] || fail "D: the rows of P's autovacuum: $(q "select string_agg(channel || ':' || (cleared_at is not null) || ':' || (recovery_sent_at is not null) || ':' || (missing_since is not null), ' ' order by channel) from pgvigil.alert_state where finding_key = '$AKEY'")"
 q "update pgvigil.alert_state set missing_since = missing_since - interval '11 minutes' where channel = 'grace' and finding_key = '$AKEY'" >/dev/null
 "$BIN" alerts -config "$WORK/alerts.yaml" >/dev/null 2>&1 || true
 [[ $(grep -l "\"finding_key\": \"$AKEY\"" "$WORK"/grace/*-resolved-* 2>/dev/null | wc -l) == 1 ]] || fail "D: grace's resolved file after the clear delay"
 [[ $(q "select (cleared_at is not null) || ':' || (recovery_sent_at is not null) from pgvigil.alert_state where channel = 'grace' and finding_key = '$AKEY'") == "true:true" ]] || fail "D: grace's row"
-ok "D: P's autovacuum resolved to mail, hook and drop, cleared silently on drop2, held on grace until its clear delay"
+ok "D: P's autovacuum held while P went unread, then resolved to mail, hook and drop, cleared silently on drop2, held on grace until its clear delay"
 
 # ---- K: an instance deactivated: cleared without a message ------------------------------------------------------------------
 KN=$(q "select count(*) from pgvigil.alert_state where cleared_at is null and instance_name = '$DEACT'")
@@ -308,7 +336,7 @@ def rows(t):
     return [dict(zip(t["columns"], r)) for r in t["rows"]] if t and "columns" in t else (t or [])
 ch, op, lg = rows(a["channels"]), rows(a["open"]), rows(a["log"])
 names = sorted(c["name"] for c in ch)
-assert names == ["dead", "drop", "drop2", "grace", "hook", "mail", "night", "redir"], names
+assert names == ["bulk", "dead", "drop", "drop2", "grace", "hook", "mail", "night", "redir"], names
 assert all(c["is_configured"] for c in ch), ch
 counts = {c: sum(1 for r in op if r["channel"] == c) for c in ("mail", "hook", "drop", "drop2", "grace")}
 # grace (clear_after 10m) may hold a finding that left the view in the last 10 minutes, which the four at 0 resolved

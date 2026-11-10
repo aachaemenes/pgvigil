@@ -27,14 +27,18 @@
 -- roles` prints it). The collector login (pgvigil_collector) gets nothing here. The functions run as their caller
 -- (apply_roles grants them to pgvigil_reader as well: a reader can call alert_due, which reads what it may read
 -- anyway, and fails in the others for want of a write privilege). The one owner's door is alert_log_partition (SECURITY
--- DEFINER): it creates alert_log's partition for the month of a time within a day of now(), nothing else.
+-- DEFINER): it creates alert_log's partition for the month of a time within a day of now(), nothing else, and only
+-- for a session user in pgvigil_alerter or in the schema's owner (apply_roles grants every function to
+-- pgvigil_reader after each migrate, so the check is in the body, not in a REVOKE).
 --   alert_channels_sync(at, channels)   records the configured channels.
 --   alert_mark(at, channels)            stamps missing_since on the open rows whose finding left the view (on an
 --                                       active instance), and clears the stamp of the ones that came back.
 --   alert_due(at, channels)             what is due now per channel: 'firing' (a matching finding with no open row),
 --                                       'escalated' (its severity rose above the one sent), 'repeat' (the repeat
 --                                       interval passed since the last send), 'resolved' (the finding has been gone
---                                       for the channel's clear delay; 'cleared' when the channel sends no recovery),
+--                                       for the channel's clear delay and the instance had an ok collection since it
+--                                       went missing: an instance left unread holds its alerts; 'cleared' when the
+--                                       channel sends no recovery),
 --                                       and 'cleared' without a message when the instance left (inactive or removed)
 --                                       or the channel's scope no longer covers it. A finding still present below the
 --                                       channel's severity floor holds its open row: no repeat, no recovery.
@@ -148,6 +152,10 @@ $$;
 CREATE OR REPLACE FUNCTION pgvigil.alert_log_partition(p_at timestamptz)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp AS $$
 BEGIN
+  IF NOT (pg_has_role(session_user, 'pgvigil_alerter', 'MEMBER')
+          OR pg_has_role(session_user, (SELECT n.nspowner FROM pg_namespace n WHERE n.nspname = 'pgvigil'), 'MEMBER')) THEN
+    RAISE EXCEPTION 'alert_log_partition: % is not the alert sender', session_user USING ERRCODE = '42501';
+  END IF;
   IF p_at IS NULL OR p_at < now() - interval '1 day' OR p_at > now() + interval '1 day' THEN
     RAISE EXCEPTION 'alert_log_partition: % is not within a day of now()', p_at;
   END IF;
@@ -239,7 +247,11 @@ LANGUAGE sql STABLE AS $$
     FROM s
    WHERE NOT EXISTS (SELECT 1 FROM sc WHERE sc.channel = s.channel AND sc.finding_key = s.finding_key)
      AND (NOT s.instance_active OR s.present
-          OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)))
+          OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)
+              -- and the collector read the instance since: a finding that left the view because its instance went
+              -- unread (unreachable, the collector down, a time window running past the last sample) is held
+              AND EXISTS (SELECT 1 FROM pgvigil.collection_dates d
+                           WHERE d.instance_id = s.instance_id AND d.status = 'ok' AND d.snapshot_at > s.missing_since)))
   ORDER BY 1, 2, 6, 5
 $$;
 
