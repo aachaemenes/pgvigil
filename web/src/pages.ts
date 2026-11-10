@@ -19,6 +19,7 @@ import { jobsReportFleetView } from './jobsreport';
 import { rolesFleetView } from './roles';
 import { indexesFleetView } from './indexes';
 import { slowFleetView } from './slow';
+import { trendCol } from './stmt_trend';
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 
@@ -104,7 +105,8 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
     if (Number.isFinite(v)) location.hash = href(ctx, { tab: 'statements', minSecs: Math.min(86400, Math.max(0, Math.trunc(v))) });
   });
   return el('section', {}, el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
-    grid(rowsOf(st), [...stmtCols(order), { key: 'plan_link', label: 'plan', fmt: (_, r) => planLink(ctx.instance!, { queryid: r.queryid, db: r.datname, stmt: r.query }) }], 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
+    grid(rowsOf(st), [...stmtCols(order), { key: 'plan_link', label: 'plan', fmt: (_, r) => planLink(ctx.instance!, { queryid: r.queryid, db: r.datname, stmt: r.query }) },
+      trendCol(ctx, r => r.queryid == null ? null : { instance: ctx.instance!, queryid: r.queryid, db: r.datname, label: String(r.query ?? '').slice(0, 60) })], 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
     el('h3', {}, 'Ran at least ', minIn, ' s in this window'),
     el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from when it went idle (the Running queries tab filters these by state, user, database and application).'),
     slow instanceof Error ? errorBox(slow) : grid(rowsOf(slow as Table), slowCols, 'Nothing seen running that long in this window.'));

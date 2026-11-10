@@ -3,7 +3,7 @@
 // and the page under it.
 import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
-import { fleet, forget } from './fleet';
+import { fleet, forget, tagsOf } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, counters, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
@@ -21,7 +21,8 @@ import { actionsLogView } from './actions';
 import { jobsReportView } from './jobsreport';
 import { rolesView } from './roles';
 import { plansView } from './plan';
-import { slowView } from './slow';
+import { slowGroupsPanel, slowView } from './slow';
+import { jobsTimelineView } from './jobs_timeline';
 import { waitsView } from './waits';
 import { compareView } from './compare';
 import { memory } from './memory';
@@ -57,12 +58,20 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
-  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: mssqlSlow,
+  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+  jobstimeline: jobsTimelineView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
 };
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView, running: runningFleet };
+// the fleet Jobs timeline under a tag folder keeps that folder's instances (as the fleet Slow queries page does)
+const jobsTimelineFleet: Render = async c => {
+  if (!c.tag) return jobsTimelineView(c);
+  const ids = new Set((await fleet()).instances
+    .filter(r => c.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(c.tag!)).map(r => Number(r.instance_id)));
+  return jobsTimelineView(c, r => ids.has(Number(r.instance_id)));
+};
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
@@ -80,7 +89,7 @@ const instancePages: Record<string, Render> = {
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
   compare: compareView,
-  memory, pooler, custom: customView,
+  memory, pooler, custom: customView, jobstimeline: jobsTimelineView,
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now
 const liveRoot = new Set(['summary', 'checks', 'dms', 'jobs', 'running']);
