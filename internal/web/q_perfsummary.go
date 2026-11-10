@@ -16,7 +16,9 @@ import (
 //
 // What a column is, per engine:
 //   cpu_*            PostgreSQL: host_sample.cpu_pct (system_stats or CloudWatch); no sample in the range = NULL (the
-//                    page says 'no host read'). SQL Server: no CPU collection yet = NULL ('not read').
+//                    page says 'no host read'). SQL Server: mssql_cpu_sample, the scheduler monitor's machine CPU
+//                    (100 - idle; on a Linux host, where the record has no idle figure, the SQL Server process's
+//                    share); cpu_sql_avg is the SQL Server process's own share (NULL on PostgreSQL).
 //   cpu_hist         the samples of the range in ten buckets of 10 % (the last one holds 90 to 100).
 //   active_*         PostgreSQL: activity_summary.active; SQL Server: mssql_requests_summary.requests.
 //   *_ms_s           milliseconds of wait per second of the range, by class. PostgreSQL: wait_sample by event type
@@ -27,9 +29,17 @@ import (
 //                    SQL Server: mssql_wait_sample by category, the idle background waits left out.
 //   signal_pct       SQL Server only: the part of the wait time spent runnable, waiting for a CPU.
 //   commits_s ...    PostgreSQL: dbstats, the counters' rise per restart epoch (0010) summed over the databases.
+//                    SQL Server: tps is Databases _Total Transactions/sec and batch_s Batch Requests/sec
+//                    (mssql_sched_sample, each read's rate weighed by its interval); commits_s, rollbacks_s and
+//                    temp_bytes_s are NULL.
 //   read_ms ...      PostgreSQL: iostats (pg_stat_io, PostgreSQL 16+; a time of 0 with operations = track_io_timing
 //                    off = NULL), else CloudWatch's ReadLatency / WriteLatency / *Throughput (cloud_io_sample),
-//                    each column on its own; latency_source and io_source name which. SQL Server: not collected = NULL.
+//                    each column on its own; latency_source and io_source name which. SQL Server: mssql_fileio_sample
+//                    over every database file (sys.dm_io_virtual_file_stats), source 'virtual_file_stats'.
+//   mem_*            SQL Server only (NULL on PostgreSQL), mssql_memory_sample: mem_total_pct is Total over Target
+//                    Server Memory at the newest read, ple_min the lowest Page life expectancy of the range,
+//                    grants_waiting_max the most queries waiting for a memory grant at one read, mem_available_pct
+//                    the OS's available physical memory at the newest read.
 //   now_*            the newest snapshot inside the range (a preset range ends now): the longest running statement,
 //                    the oldest open transaction, the sessions blocked.
 
@@ -61,6 +71,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((1000 * w.other_s / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((1000 * w.total_s / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        NULL::numeric AS signal_pct,
+       NULL::numeric AS cpu_sql_avg, NULL::numeric AS batch_s, NULL::numeric AS mem_total_pct, NULL::bigint AS ple_min,
+       NULL::int AS grants_waiting_max, NULL::numeric AS mem_available_pct,
        round(d.commits / nullif(d.secs, 0), 2) AS commits_s,
        round(d.rollbacks / nullif(d.secs, 0), 2) AS rollbacks_s,
        round((d.commits + d.rollbacks) / nullif(d.secs, 0), 2) AS tps,
@@ -160,7 +172,8 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
 // latch categories; Parallelism beside PostgreSQL's IPC; the client and query category beside Client.
 const sqlPerfSummaryMSSQL = sqlPerfScope + `
 SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
-       NULL::bigint AS cpu_samples, NULL::numeric AS cpu_avg, NULL::numeric AS cpu_max, NULL::int[] AS cpu_hist, NULL::numeric AS cpu_hot_pct,
+       h.cpu_samples, h.cpu_avg, h.cpu_max, h.cpu_hist,
+       round(100.0 * (h.cpu_hist[8] + h.cpu_hist[9] + h.cpu_hist[10]) / nullif(h.cpu_samples, 0), 1) AS cpu_hot_pct,
        a.active_avg, a.active_max,
        CASE WHEN w.covered_secs > 0 THEN 'mssql_wait_sample' END AS wait_source,
        round((w.lock_ms / nullif(w.covered_secs, 0))::numeric, 2) AS lock_ms_s,
@@ -171,10 +184,45 @@ SELECT inst.instance_id, inst.instance, inst.engine, inst.platform,
        round((w.other_ms / nullif(w.covered_secs, 0))::numeric, 2) AS other_ms_s,
        round((w.total_ms / nullif(w.covered_secs, 0))::numeric, 2) AS total_ms_s,
        round((100 * w.signal_ms / nullif(w.total_ms, 0))::numeric, 1) AS signal_pct,
-       NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, NULL::numeric AS tps, NULL::numeric AS temp_bytes_s,
-       NULL::text AS latency_source, NULL::text AS io_source, NULL::numeric AS read_ms, NULL::numeric AS write_ms, NULL::numeric AS mb_s,
+       h.cpu_sql_avg, t.batch_s, m.mem_total_pct, m.ple_min, m.grants_waiting_max, m.mem_available_pct,
+       NULL::numeric AS commits_s, NULL::numeric AS rollbacks_s, t.tps, NULL::numeric AS temp_bytes_s,
+       CASE WHEN io.reads + io.writes > 0 THEN 'virtual_file_stats' END AS latency_source,
+       CASE WHEN io.secs > 0 THEN 'virtual_file_stats' END AS io_source,
+       round((io.read_stall_ms / nullif(io.reads, 0))::numeric, 2) AS read_ms, round((io.write_stall_ms / nullif(io.writes, 0))::numeric, 2) AS write_ms,
+       round((io.bytes / nullif(io.secs, 0) / 1048576.0)::numeric, 2) AS mb_s,
        n.now_at, n.longest_stmt_secs AS now_longest_stmt_secs, n.oldest_xact_secs AS now_oldest_xact_secs, n.blocked AS now_blocked
   FROM inst
+  LEFT JOIN LATERAL (
+    -- the scheduler monitor's records: the machine's CPU (100 - idle) and the SQL Server process's share
+    SELECT count(*) AS cpu_samples, round(avg(coalesce(100 - s.idle_pct, s.sql_pct)), 1) AS cpu_avg, max(coalesce(100 - s.idle_pct, s.sql_pct))::numeric AS cpu_max,
+           round(avg(s.sql_pct), 1) AS cpu_sql_avg,
+           ARRAY[count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) < 10), count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 10 AND coalesce(100 - s.idle_pct, s.sql_pct) < 20),
+                 count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 20 AND coalesce(100 - s.idle_pct, s.sql_pct) < 30), count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 30 AND coalesce(100 - s.idle_pct, s.sql_pct) < 40),
+                 count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 40 AND coalesce(100 - s.idle_pct, s.sql_pct) < 50), count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 50 AND coalesce(100 - s.idle_pct, s.sql_pct) < 60),
+                 count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 60 AND coalesce(100 - s.idle_pct, s.sql_pct) < 70), count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 70 AND coalesce(100 - s.idle_pct, s.sql_pct) < 80),
+                 count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 80 AND coalesce(100 - s.idle_pct, s.sql_pct) < 90), count(*) FILTER (WHERE coalesce(100 - s.idle_pct, s.sql_pct) >= 90)]::int[] AS cpu_hist
+      FROM pgvigil.mssql_cpu_sample s
+     WHERE s.instance_id = inst.instance_id AND s.snapshot_at > $1 AND s.snapshot_at <= $2) h ON true
+  LEFT JOIN LATERAL (
+    SELECT round((sum(x.transactions_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.transactions_s IS NOT NULL), 0))::numeric, 2) AS tps,
+           round((sum(x.batch_s * x.interval_secs) / nullif(sum(x.interval_secs) FILTER (WHERE x.batch_s IS NOT NULL), 0))::numeric, 2) AS batch_s
+      FROM pgvigil.mssql_sched_sample x
+     WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2 AND x.interval_secs > 0) t ON true
+  LEFT JOIN LATERAL (
+    SELECT min(x.ple) AS ple_min, max(greatest(x.grants_pending, x.grants_waiting, x.sem_waiting)) AS grants_waiting_max,
+           (array_agg(round((100.0 * x.total_kb / nullif(x.target_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_total_pct,
+           (array_agg(round((100.0 * x.available_kb / nullif(x.physical_kb, 0))::numeric, 1) ORDER BY x.snapshot_at DESC))[1] AS mem_available_pct
+      FROM pgvigil.mssql_memory_sample x
+     WHERE x.instance_id = inst.instance_id AND x.snapshot_at > $1 AND x.snapshot_at <= $2) m ON true
+  LEFT JOIN LATERAL (
+    -- every file's intervals summed; the seconds are each read's once
+    SELECT sum(r.reads) AS reads, sum(r.writes) AS writes, sum(r.read_stall_ms) AS read_stall_ms, sum(r.write_stall_ms) AS write_stall_ms,
+           sum(r.bytes) AS bytes, sum(r.secs) AS secs
+      FROM (SELECT sum(f.reads)::numeric AS reads, sum(f.writes)::numeric AS writes, sum(f.read_stall_ms)::numeric AS read_stall_ms,
+                   sum(f.write_stall_ms)::numeric AS write_stall_ms, sum(f.read_bytes + f.write_bytes)::numeric AS bytes, max(f.interval_secs)::numeric AS secs
+              FROM pgvigil.mssql_fileio_sample f
+             WHERE f.instance_id = inst.instance_id AND f.snapshot_at > $1 AND f.snapshot_at <= $2
+             GROUP BY f.snapshot_at) r) io ON true
   LEFT JOIN LATERAL (
     SELECT round(avg(x.requests), 2) AS active_avg, max(x.requests) AS active_max
       FROM pgvigil.mssql_requests_summary x

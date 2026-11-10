@@ -13,7 +13,7 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 
 ## Collections
 
-Thirteen collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Seventeen collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -30,10 +30,14 @@ Thirteen collections. `every` is the default; an instance's `schedules:` changes
 | `mssql_backups` | 1 hour | every database's last full, differential and log backup | a user in msdb with db_datareader | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_storage` | 1 hour | every database file with its size, growth and volume | VIEW ANY DEFINITION; VIEW SERVER STATE for the volumes | not run yet | [storage and row versions](sqlserver-storage.md) |
 | `mssql_versionstore` | 1 min | tempdb's version store and the transaction that holds it | VIEW SERVER STATE | not run yet | [storage and row versions](sqlserver-storage.md) |
+| `mssql_cpu` | 1 min | CPU (the scheduler monitor ring buffer), scheduler pressure, batch requests / compilations / transactions per second | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE is enough) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
+| `mssql_memory` | 1 min | the machine's and the server's memory, the memory clerks, memory grants, Page life expectancy | as `mssql_cpu` | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
+| `mssql_fileio` | 1 min | read and write latency and bytes per database file, as the difference between two reads | as `mssql_cpu`; VIEW ANY DEFINITION for the files' names and types (partial without it) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
+| `mssql_tempdb` | 1 hour | tempdb's layout: files, sizes, growth, the CPU count, trace flags 1117 / 1118, memory-optimized metadata | public; VIEW SERVER STATE for the CPU count and volumes (partial without it) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 
-Not yet: CPU and the performance counters, memory, the plan cache and Query Store, index and statistics health, DBCC and corruption, the error log, logins and permissions, Azure SQL Database's storage and version store, a proof of Windows authentication, and the `aws:` block (CloudWatch and RDS metrics) on a SQL Server instance. Azure SQL Database's backups are the service's own and are not read. On the Summary a SQL Server instance's cell in a PostgreSQL-only column says `n/a`, and a column with a SQL Server read says `not yet` until a read of its group is stored; the fleet pages of PostgreSQL checks (Versions, Corruption, Slow queries' sources) do not list it, and no PostgreSQL finding is raised on it. Azure Synapse Analytics answers on the same protocol and is refused with a clear error: it is not a SQL Server.
+Not yet: the performance counters beyond the ones named below, the plan cache and Query Store, index and statistics health, DBCC and corruption, the error log, logins and permissions, Azure SQL Database's storage and version store, a proof of Windows authentication, and the `aws:` block (CloudWatch and RDS metrics) on a SQL Server instance. Azure SQL Database's backups are the service's own and are not read. On the Summary a SQL Server instance's cell in a PostgreSQL-only column says `n/a`, and a column with a SQL Server read says `not yet` until a read of its group is stored; the fleet pages of PostgreSQL checks (Versions, Corruption, Slow queries' sources) do not list it, and no PostgreSQL finding is raised on it. Azure Synapse Analytics answers on the same protocol and is refused with a clear error: it is not a SQL Server.
 
 ## Configuration
 
@@ -77,6 +81,35 @@ Three columns of the Summary, read with the same login:
 - **Memory dumps**: the dump files the server lists (`sys.dm_server_memory_dumps`). The newest under 48 hours old is critical, under 7 days a warning. A file whose creation time the server cannot tell (SQL Server on Linux lists one dated 1601) is counted and never dated.
 
 Not on Azure SQL Database. Needs VIEW SERVER STATE. The services the server lists are kept in `pgvigil.mssql_service`, the three states in `pgvigil.mssql_health`, the cells' rules in the view `pgvigil.mssql_health_status`. Proof: `scripts/proof-mssql-services.sh` (a stopped Agent is proven on imported rows only; Windows, Express, RDS and Managed Instance are not proven).
+
+## CPU, memory, file IO and tempdb
+
+Four collections behind the Performance page's CPU, Transactions and IO charts, the Performance summary's SQL Server CPU, transactions, IO latency and memory columns, and four pages of an instance: **CPU** and **Memory** and **File IO** (the Performance group), **TempDB** (the Storage group; at the root, every SQL Server instance's TempDB row).
+
+| DMV | what is read | SQL Server | right (Microsoft's page) | Managed Instance | Azure SQL Database |
+| --- | --- | --- | --- | --- | --- |
+| `sys.dm_os_ring_buffers` (RING_BUFFER_SCHEDULER_MONITOR) | each minute's SQL Server CPU % and idle %; the last 256 records | 2016 SP1+ | VIEW SERVER STATE; 2022+: VIEW SERVER PERFORMANCE STATE | yes | not run (the host's) |
+| `sys.dm_os_schedulers` | runnable tasks, work queue, pending IO, workers of the VISIBLE ONLINE schedulers | 2016 SP1+ | as above | yes | not run |
+| `sys.dm_os_performance_counters` | Batch Requests/sec, SQL (Re-)Compilations/sec, Transactions/sec (cumulative: stored as rates); Target / Total / Stolen / Database Cache Memory, Memory Grants Pending / Outstanding, Page life expectancy (as read) | 2016 SP1+ | as above | yes | not run |
+| `sys.dm_os_sys_memory`, `sys.dm_os_process_memory` | physical and available memory, the OS's memory state; the process's working set and its low-memory flag | 2016 SP1+ | as above | yes | not on Azure SQL Database (Microsoft's pages list SQL Server and Managed Instance only) |
+| `sys.dm_os_sys_info` | CPU count, committed and target memory, the memory model (`sql_memory_model_desc`: 2016 SP1+) | 2016 SP1+ | as above | yes | not run |
+| `sys.dm_os_memory_clerks` | the 25 largest clerk types by `pages_kb` (2012+) and the total | 2016 SP1+ | as above | yes | not run |
+| `sys.dm_exec_query_resource_semaphores`, `sys.dm_exec_query_memory_grants` | granted and waiting queries, granted / target KB; the largest and the summed grant at the read | 2016 SP1+ | as above | yes | not run |
+| `sys.dm_io_virtual_file_stats(NULL, NULL)` | per file: reads, bytes, read stall; writes, bytes, write stall (cumulative: stored as differences) | 2016 SP1+ | as above | yes | not run (its ids are the elastic pool's there) |
+| `tempdb.sys.database_files`, `DBCC TRACESTATUS`, `SERVERPROPERTY('IsTempDBMetadataMemoryOptimized')` | tempdb's files as they are now, flags 1117 / 1118, memory-optimized metadata (2019+; not on Managed Instance) | 2016 SP1+ | public | yes | not run (tempdb is the service's) |
+
+What the pages show (the shapes of Darling's CPU, Memory, File I/O and I/O Trends tabs and DBA Dash's Performance, Memory and TempDB):
+
+- **CPU**: SQL Server %, the other processes' % and the total per step; the scheduler pressure tiles at the newest read with a verdict (NORMAL / ELEVATED / HIGH: runnable tasks per scheduler, the work queue, workers against max worker threads); the scheduler and workers trend; batch requests, transactions, compilations and recompilations per second.
+- **Memory**: physical, available, utilization, total and target server memory, buffer pool, plan cache, stolen, Page life expectancy, grants waiting, the OS's memory state and the memory model; max server memory against physical; the memory trend, PLE, grants and grant sizes; the memory clerks' trend with a picker (the five largest drawn first, up to ten) and every clerk's current, max, avg and min.
+- **File IO**: read and write latency per database and file type (the five with the most stall, the rest as `(other)`), read and write MB/s for the five busiest files, every file's operations, latency, bytes and path over the range.
+- **TempDB**: DBA Dash's grid (# data files, insufficient files, recommended minimum, # log files, even size, even growth, sizes, growth, volumes, CPU count, T1117, T1118, trace flags required, memory-optimized metadata) and the files.
+
+The checks (in Findings and on each page): tempdb with fewer data files than recommended (Microsoft's tempdb page: as many as the logical processors up to eight, then eight; more by fours only while allocation contention stays), data files of different sizes or growth (warning), a data file growing by per cent (info), trace flags 1117 / 1118 off before SQL Server 2016 (warning; from 2016 they are no longer required); the CPU at 90 % or more over 15 minutes (95 %: critical); one runnable task per scheduler, or a work queue, over 15 minutes (scheduler pressure); the OS saying available physical memory is low; queries waiting for memory grants in 3 of 15 minutes; a data file's reads at 50 ms or more (100 ms: critical) or a log's writes at 20 ms or more, over the last hour with 1,000 operations.
+
+SQL Server on Linux writes the scheduler monitor's idle figure as 0 in every record: on a Linux host the other processes' share and the machine's total are not read, the pages draw the SQL Server process's CPU alone and say so, and the CPU check weighs that.
+
+Proof: `scripts/proof-mssql-perf.sh`, against the SQL Server sandbox pair (SQL Server 2022 on Linux, both servers) as a login with VIEW SERVER STATE and VIEW ANY DEFINITION, a login with VIEW SERVER STATE alone and a login with neither, compared with what `sa` reads; the checks' thresholds, retries, late reads and a restart on imported rows; the API; and a two-day demo. Not proven: SQL Server 2016-2019, Windows, Managed Instance, RDS, a login holding only VIEW SERVER PERFORMANCE STATE, a real memory grant wait, a ring buffer after a real restart.
 
 ## One run by hand
 
