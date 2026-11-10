@@ -73,6 +73,7 @@ jobs:
       - name: the drill-down pages (migration 0047; A the read functions, B the API; C needs a browser and stays local)
         env:
           PGVIGIL_ADMIN_DSN: "host=localhost port=5432 user=postgres password=pgvigil dbname=postgres sslmode=disable"
+          PGVIGIL_PROOF_NO_RENDER: "1"   # the runner has a chromium that aborts at start; C runs locally
         run: scripts/proof-drill.sh
   gov:
     # government readiness (task 50): the FIPS 140-3 build with the login and TLS proof under it, the service units'

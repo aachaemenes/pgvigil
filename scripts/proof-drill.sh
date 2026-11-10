@@ -6,7 +6,8 @@
 #      `pgvigil serve` (needs the routes: the lead's join; before it "NOT PROVEN (B)", or PGVIGIL_BIN = a wired build).
 #   C. a render check: a headless Chromium opens a database, a table, a job and an index page of two instances with
 #      the range w=7d; each page draws its heading and its breadcrumb, whose links keep w=7d (needs the routes and the
-#      bundle wired, and chromium and node; else "NOT PROVEN (C)").
+#      bundle wired, and chromium and node; else "NOT PROVEN (C)"; PGVIGIL_PROOF_NO_RENDER=1 skips it where a chromium
+#      exists but cannot run, as on the CI runner).
 #
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database (the throwaway one).
 #
@@ -143,8 +144,12 @@ fi
 echo "--- C. a render check"
 if [[ "$B_DONE" != 1 ]]; then
   echo "NOT PROVEN (C): no routes in this binary"
+elif [[ "${PGVIGIL_PROOF_NO_RENDER:-}" = 1 ]]; then
+  echo "NOT PROVEN (C): the render check is skipped (PGVIGIL_PROOF_NO_RENDER=1; CI sets it: the runner's chromium aborts at start)"
+  C_WHY="skipped by PGVIGIL_PROOF_NO_RENDER"
 elif ! command -v chromium >/dev/null || ! command -v node >/dev/null; then
   echo "NOT PROVEN (C): chromium or node is not on this machine"
+  C_WHY="no chromium or node"
 else
   pages=$(q "
     WITH inst AS (SELECT DISTINCT ON (platform) instance_id FROM pgvigil.instances WHERE is_active AND platform IN ('onprem', 'rds') ORDER BY platform, instance_id)
@@ -162,6 +167,7 @@ else
   chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
   CHR=$!
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+  curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 || { tail -5 "$WORK/chrome.log" >&2; fail "C: chromium did not start (no CDP answer on $CDP in 30 s; its log above)"; }
   cat > "$WORK/render.mjs" <<'JS'
 const [port, U, list] = process.argv.slice(2);
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -213,4 +219,4 @@ JS
   echo "C: OK"
   C_DONE=1
 fi
-if [[ "${C_DONE:-0}" = 1 ]]; then echo "proof-drill: PASS"; elif [[ "$B_DONE" = 1 ]]; then echo "proof-drill: PASS (A, B; C not proven: no chromium)"; else echo "proof-drill: PASS (A only; B, C not proven)"; fi
+if [[ "${C_DONE:-0}" = 1 ]]; then echo "proof-drill: PASS"; elif [[ "$B_DONE" = 1 ]]; then echo "proof-drill: PASS (A, B; C not proven: ${C_WHY:-no chromium})"; else echo "proof-drill: PASS (A only; B, C not proven)"; fi

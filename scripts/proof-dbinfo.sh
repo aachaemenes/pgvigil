@@ -18,7 +18,7 @@
 #     [first run: plpgsql is an extension of every database: a lists 'pg_trgm 1.6, plpgsql 1.0' (2), b 'plpgsql 1.0' (1);
 #      the expectation missed it, the read is right]
 #     can_connect true, size_bytes >= 8 MB more than dbinfo_b_<suf>'s (a 10 MB table), locale_provider libc,
-#     collation_mismatch false, tables_read >= 1.
+#     collation_mismatch false (PostgreSQL 15 and later; on 13 and 14 the provider is NULL and the mismatch false: no datcollversion there), tables_read >= 1.
 #     dbinfo_b_<suf>: encoding SQL_ASCII, lc_collate C, lc_ctype C, conn_limit -1, no extension (count 0), comment NULL.
 #     template0 and template1 listed with is_template true; dbinfo_tablespaces lists pg_default and pg_global with
 #     size_bytes > 0 and pg_default's default_for naming both proof databases.
@@ -80,7 +80,10 @@ q "select '  ' || datname || '|' || owner || '|' || encoding || '|' || lc_collat
   = "$OWN|UTF8|7|true|false|pg_default|true|proof database a" ] || fail "A: a's facts"
 [ "$(row "tablespace_bytes > 0" "$DBA")" = t ] || fail "A: a's tablespace size"
 [ "$(row "extension_count || '|' || (extensions ~ '^pg_trgm [0-9.]+, plpgsql [0-9.]+$')" "$DBA")" = "2|true" ] || fail "A: a's extensions"
-[ "$(row "locale_provider || '|' || collation_mismatch" "$DBA")" = "libc|false" ] || fail "A: a's locale provider / collation version"
+# the collation version exists from PostgreSQL 15 (datlocprovider, datcollversion): the versions collection reads it there
+# alone, so on 13 and 14 the provider is NULL and collation_mismatch is false (dbinfo() compares two versions it has)
+if [[ "$(q "select current_setting('server_version_num')::int >= 150000")" = t ]]; then want="libc|false"; else want="-|false"; fi
+[ "$(row "coalesce(locale_provider, '-') || '|' || coalesce(collation_mismatch::text, '-')" "$DBA")" = "$want" ] || fail "A: a's locale provider / collation version (want $want)"
 [ "$(row "tables_read >= 1" "$DBA")" = t ] || fail "A: a's tables read"
 [ "$(row "encoding || '|' || lc_collate || '|' || lc_ctype || '|' || conn_limit || '|' || extensions || '|' || (comment is null)" "$DBB")" \
   = "SQL_ASCII|C|C|-1|plpgsql 1.0|true" ] || fail "A: b's facts"
