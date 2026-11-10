@@ -4,7 +4,7 @@
 // days, the tablespaces, the size history of the largest databases and tables; at the root the fleet's top
 // growers over 7 and 30 days. Data from /api/dbinfo and /api/dbinfo/fleet.
 import { get, Row, rowsOf, Table } from './api';
-import { lineChart } from './chart';
+import { donutChart, lineChart } from './chart';
 import { Ctx, href, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';
 
@@ -124,6 +124,14 @@ export async function dbinfoView(ctx: Ctx): Promise<HTMLElement> {
     db ? el('span', {}, `the largest of ${dbName} (`, link('every database', hrefWith(ctx, 'dbinfo', {})), ')')
       : 'the largest of the instance; pick a database to narrow them: ',
     ...(db ? [] : user.slice(0, 12).flatMap((r, i) => [i ? ', ' : '', link(String(r.datname), hrefWith(ctx, 'dbinfo', { db: String(r.dbid) }))])));
+  // the rings: what each database, table and tablespace holds now (the tables: the newest size of each charted one)
+  const newest = (x: { rows: Row[]; series: { key: string; label: string }[] }) => x.series.map(k => ({
+    label: k.label, value: Number([...x.rows].reverse().find(r => r[k.key] != null)?.[k.key] ?? 0) }));
+  sec.append(el('h3', {}, 'Space at a glance'), el('div', { class: 'charts' },
+    donutChart('Databases by size', user.map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0),
+      href: hrefWith(ctx, 'db', { db: String(r.dbid) }) })), fmtBytes),
+    donutChart(db ? `Largest tables of ${dbName}` : 'Largest tables of the instance', newest(ts), fmtBytes),
+    donutChart('Tablespaces', rowsOf(d.tablespaces).map(r => ({ label: String(r.name ?? ''), value: Number(r.size_bytes ?? 0) })), fmtBytes)));
   sec.append(el('h3', {}, 'Size history'), scope, el('div', { class: 'charts' },
     lineChart('Databases (the largest ' + ds.series.length + ')', ds.rows, ds.series, v => fmtBytes(v)),
     lineChart('Tables (the largest ' + ts.series.length + ')', ts.rows, ts.series, v => fmtBytes(v))));

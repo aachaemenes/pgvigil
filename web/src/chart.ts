@@ -36,3 +36,58 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   });
   return box;
 }
+
+// One share of a donutChart: its label, its value, the page it opens (optional).
+export interface Slice { label: string; value: number; href?: string }
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svg(tag: string, attrs: Record<string, string>, ...kids: (Node | string)[]): SVGElement {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  for (const k of kids) e.append(k);
+  return e;
+}
+
+// donutChart draws shares of a whole as a ring with the same numbers in a table beside it (DBA Dash's pie charts). The
+// ring is one named image; the table is its accessible form and tells the slices apart by label, size and share, never
+// by colour alone. Slices are drawn largest first unless keepOrder; past max the smallest fold into 'other'. A slice
+// with an href opens its page from the ring and from the table.
+export function donutChart(title: string, slices: Slice[], fmt: (v: number) => string = v => v.toLocaleString(),
+                           max = 8, keepOrder = false): HTMLElement {
+  const box = el('div', { class: 'chart donut' }, el('h3', {}, title));
+  let parts = slices.filter(s => isFinite(s.value) && s.value > 0);
+  if (!keepOrder) parts = [...parts].sort((a, b) => b.value - a.value);
+  const total = parts.reduce((a, s) => a + s.value, 0);
+  if (!parts.length) { box.append(el('p', { class: 'empty' }, 'Nothing to show yet.')); return box; }
+  if (parts.length > max) {
+    const rest = parts.slice(max - 1);
+    parts = [...parts.slice(0, max - 1), { label: `other (${rest.length})`, value: rest.reduce((a, s) => a + s.value, 0) }];
+  }
+  const share = (v: number) => (100 * v / total).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' %';
+  const r = 42, c = 2 * Math.PI * r;
+  const ring = svg('svg', { viewBox: '0 0 120 120', role: 'img',
+    'aria-label': `${title}: ` + parts.map(s => `${s.label} ${fmt(s.value)} (${share(s.value)})`).join(', ') });
+  const body = el('tbody');
+  let off = 0;
+  parts.forEach((s, i) => {
+    const color = palette[i % palette.length], len = c * s.value / total;
+    const arc = svg('circle', { cx: '60', cy: '60', r: String(r), fill: 'none', stroke: color, 'stroke-width': '20',
+      'stroke-dasharray': `${len} ${c - len}`, 'stroke-dashoffset': String(-off), transform: 'rotate(-90 60 60)' },
+      svg('title', {}, `${s.label}: ${fmt(s.value)} (${share(s.value)})`));
+    off += len;
+    // the ring's own links stay out of the tab order: the table's link is the keyboard's way in
+    ring.append(s.href ? svg('a', { href: s.href, tabindex: '-1', 'aria-label': s.label }, arc) : arc);
+    const sw = el('span', { class: 'swatch', 'aria-hidden': 'true' });
+    sw.style.background = color;
+    body.append(el('tr', {},
+      el('td', {}, sw, s.href ? el('a', { href: s.href }, s.label) : s.label),
+      el('td', { class: 'num' }, fmt(s.value)), el('td', { class: 'num' }, share(s.value))));
+  });
+  const mid = svg('text', { x: '60', y: '64', 'text-anchor': 'middle', class: 'donut-total' }, fmt(total));
+  ring.append(mid);
+  box.append(el('div', { class: 'donut-body' }, ring as unknown as HTMLElement,
+    el('table', { class: 'legend' },
+      el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'share of ' + fmt(total)), el('th', { scope: 'col', class: 'num' }, 'size'), el('th', { scope: 'col', class: 'num' }, 'share'))),
+      body)));
+  return box;
+}

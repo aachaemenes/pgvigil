@@ -5,7 +5,8 @@
 // fleet's volumes, the soonest full first, and the repository's own size. Data from /api/storage and
 // /api/storage/fleet.
 import { get, Row, rowsOf, Table } from './api';
-import { lineChart } from './chart';
+import { donutChart, lineChart } from './chart';
+import { series } from './dbinfo';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
 
@@ -46,6 +47,18 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
     tile('temp files (24 h)', temp.temp_bytes_24h == null ? '-' : fmtBytes(temp.temp_bytes_24h)),
     tile('databases', fmtBytes(rowsOf(d.databases).reduce((a, r) => a + Number(r.size_bytes ?? 0), 0))),
   ));
+
+  // the rings (DBA Dash's pie charts): each volume used against free, what each database holds; then the growth
+  // of a chosen number of days
+  const pies = el('div', { class: 'charts' });
+  for (const v of vols.slice(0, 6)) {
+    if (v.used_bytes == null || v.free_bytes == null) continue;
+    pies.append(donutChart(`Volume ${String(v.volume ?? '')}${v.holds_data ? ' (data)' : ''}`,
+      [{ label: 'used', value: Number(v.used_bytes) }, { label: 'free', value: Number(v.free_bytes) }], fmtBytes, 8, true));
+  }
+  pies.append(donutChart('Databases by size',
+    rowsOf(d.databases).map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0) })), fmtBytes));
+  sec.append(el('h3', {}, 'Space at a glance'), pies, growthPanel(ctx));
 
   const checks = rowsOf(d.checks);
   if (checks.length) {
@@ -102,6 +115,58 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
     lineChart(aur ? 'Aurora cluster volume' : 'Tablespaces', s,
       aur ? [{ key: 'aurora_volume_bytes', label: 'VolumeBytesUsed' }] : [{ key: 'tablespace_bytes', label: 'all tablespaces' }], v => fmtBytes(v))));
   return sec;
+}
+
+// growthPanel: the days selector (7 to 365) over the database sizes: the size lines of the window, a ring of the
+// growth each database holds in it, and the numbers. The sizes are read hourly (/api/dbinfo's series of the largest
+// databases); a window longer than the history says how many days it really has.
+const growthDays = [7, 30, 90, 180, 365];
+function growthPanel(ctx: Ctx): HTMLElement {
+  const out = el('div', {});
+  const buttons = growthDays.map(n => el('button', { type: 'button', 'aria-pressed': 'false' }, `${n} days`));
+  let asked = 0;
+  const show = async (n: number, b: HTMLButtonElement) => {
+    buttons.forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+    const mine = ++asked, to = new Date();
+    out.replaceChildren(el('p', { class: 'meta' }, 'Reading the sizes...'));
+    let d: Record<'db_series', Table | null>;
+    try {
+      d = await get<Record<'db_series', Table | null>>('dbinfo',
+        { instance: ctx.instance, from: new Date(to.getTime() - n * 86400e3).toISOString(), to: to.toISOString() });
+    } catch (e) {
+      if (mine === asked) out.replaceChildren(el('p', { class: 'empty' }, 'The sizes could not be read: ' + String((e as Error).message ?? e)));
+      return;
+    }
+    if (mine !== asked) return;          // a later click answered first
+    const ds = series(rowsOf(d.db_series), r => String(r.datname), 'size_bytes');
+    if (ds.rows.length < 2) { out.replaceChildren(el('p', { class: 'empty' }, 'Not enough size history yet: the databases collection runs hourly.')); return; }
+    const t0 = Date.parse(String(ds.rows[0].snapshot_at)), t1 = Date.parse(String(ds.rows[ds.rows.length - 1].snapshot_at));
+    const span = Math.max((t1 - t0) / 86400e3, 1 / 24);
+    const rows: Row[] = ds.series.map(x => {
+      const vals = ds.rows.map(r => r[x.key]).filter(v => v != null).map(Number);
+      const first = vals[0], last = vals[vals.length - 1];
+      return { datname: x.label, first_bytes: first, last_bytes: last, grown_bytes: last - first, per_day: (last - first) / span };
+    });
+    const signed = (v: unknown) => v == null ? '' : Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : fmtBytes(v);
+    out.replaceChildren(
+      el('p', { class: 'meta' }, `The largest ${ds.series.length} databases over ${fmtNum(span)} days of history`
+        + (span < n - 1 ? ` (the ${n}-day window holds no more yet)` : '') + '. Grown: the newest size minus the oldest of the window.'),
+      el('div', { class: 'charts' },
+        lineChart(`Database sizes, ${n} days`, ds.rows, ds.series, v => fmtBytes(v)),
+        donutChart(`Growth by database, ${n} days`, rows.map(r => ({ label: String(r.datname), value: Number(r.grown_bytes) })), fmtBytes)),
+      grid(rows, [
+        { key: 'datname', label: 'database' },
+        { key: 'first_bytes', label: 'at the start', num: true, fmt: fmtBytes },
+        { key: 'last_bytes', label: 'now', num: true, fmt: fmtBytes },
+        { key: 'grown_bytes', label: 'grown', num: true, fmt: signed },
+        { key: 'per_day', label: 'per day', num: true, fmt: signed },
+      ]));
+  };
+  buttons.forEach((b, i) => b.addEventListener('click', () => { void show(growthDays[i], b); }));
+  const box = el('div', {}, el('h3', {}, 'Database growth'),
+    el('div', { class: 'seg', role: 'group', 'aria-label': 'Days of growth' }, el('span', { class: 'meta' }, 'Window:'), ...buttons), out);
+  void show(30, buttons[1]);
+  return box;
 }
 
 // storageFleetView: the fleet's volumes, the soonest full first (keep narrows it to a tag folder; instLink makes
