@@ -4,7 +4,7 @@
 import { get, LoginRequired, post, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget } from './fleet';
-import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobs, jobsRoot, logs, replication, roles, slows, statements, counters, activity, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
+import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, counters, activity, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
 import { capacitySection, loadView } from './pi';
@@ -40,6 +40,7 @@ import { mssqlBlocked, mssqlDeadlocks, mssqlSlow, mssqlAgEvents } from './mssql_
 import { hasAvailability, mssqlAvailability } from './mssql_hadr';
 import { mssqlBackups } from './mssql_backups';
 import { mssqlJobs } from './mssql_jobs';
+import { jobsPgView } from './jobs_pg';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
 import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlConfigView } from './mssql_config';
@@ -59,7 +60,7 @@ const mssqlPages: Record<string, Render> = {
 };
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView };
 const instancePages: Record<string, Render> = {
-  summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
+  summary: instanceSummary, activity, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
   host: async c => { const s = await hostView(c); s.append(await capacitySection(c)); return s; },   // the Capacity section (Serverless v2) under the host's own
   storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),

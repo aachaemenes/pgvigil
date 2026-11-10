@@ -115,8 +115,11 @@ func b2i(b bool) int {
 	return 0
 }
 
-// mssqlJobsDemoRows: four jobs on the primary. 'ETL - load orders' failed at its second step at 02:10 UTC today
-// (the finding); 'DBA - index maintenance' runs now when t falls in its nightly window. The history rows are sent
+// mssqlJobsDemoRows: four jobs on the primary (and a fifth until 20 hours before the anchor). 'ETL - load orders' failed at its second step at 02:10 UTC today
+// (the finding); 'DBA - index maintenance' runs now when t falls in its nightly window. The definitions' history
+// (task 110): a day before the anchor 'DBA - full backups' moves from 00:15 to 00:30 (a changed schedule) and the
+// second step of 'ETL - load orders' takes a larger batch (a changed step command); 'DBA - purge old archive' is
+// on the server until 20 hours before the anchor and then gone (a dropped job). The history rows are sent
 // for the last two days on every read (the import stores each once) without a cursor row, as a read without one.
 func (g *Gen) mssqlJobsDemoRows(t time.Time) []Row {
 	if !g.is("-sql01") {
@@ -135,6 +138,10 @@ func (g *Gen) mssqlJobsDemoRows(t time.Time) []Row {
 		{"0a000000-0000-0000-0000-000000000004", "ETL - load orders", "nightly 02:10", 2, 10, 95, 2},
 	}
 	var rows []Row
+	changed := !t.Before(g.end.Add(-24 * time.Hour))
+	if t.Before(g.end.Add(-20 * time.Hour)) {
+		jobs = append(jobs, job{"0a000000-0000-0000-0000-000000000005", "DBA - purge old archive", "nightly 03:30", 3, 30, 120, 0})
+	}
 	hid := func(at time.Time, j, step int) int64 { return at.Unix()/60*10 + int64(j)*3 + int64(step) }
 	for ji, j := range jobs {
 		last := time.Date(t.Year(), t.Month(), t.Day(), j.hour, j.min, 0, 0, time.UTC)
@@ -154,16 +161,41 @@ func (g *Gen) mssqlJobsDemoRows(t time.Time) []Row {
 		}
 		r := Row{"kind": "job", "job_id": j.id, "name": j.name, "enabled": 1, "category": "Database Maintenance", "owner": "sa",
 			"schedules": 1, "enabled_schedules": 1, "schedule_names": j.sched, "next_run_utc": z(last.Add(every)),
-			"last_outcome": outcome, "last_run_utc": z(last), "last_duration_s": j.durS, "last_message": msg}
+			"last_outcome": outcome, "last_run_utc": z(last), "last_duration_s": j.durS, "last_message": msg,
+			"start_step_id": 1, "notify_level_email": 2, "notify_email_operator": "DBA team", "notify_level_eventlog": 2, "delete_level": 0}
+		// the schedule in words: the backups' start moved a day before the anchor
+		runs := "every day at " + fmt.Sprintf("%02d:%02d", j.hour, j.min)
+		if j.hour < 0 {
+			runs = "every day every 15 minutes between 00:00 and 23:59:59"
+		}
+		if j.name == "DBA - full backups" && !changed {
+			runs = "every day at 00:15"
+		}
+		rows = append(rows, Row{"kind": "schedule", "job_id": j.id, "schedule_name": j.sched, "schedule_key": j.sched + " #" + j.id[len(j.id)-2:],
+			"enabled": 1, "runs": runs})
+		cmd := map[string]string{"DBA - log backups": "EXECUTE dbo.DatabaseBackup @Databases = 'USER_DATABASES', @BackupType = 'LOG', @Directory = N'\\\\demo-bak01\\sql'",
+			"DBA - full backups":      "EXECUTE dbo.DatabaseBackup @Databases = 'ALL_DATABASES', @BackupType = 'FULL', @Directory = N'\\\\demo-bak01\\sql'",
+			"DBA - index maintenance": "EXECUTE dbo.IndexOptimize @Databases = 'USER_DATABASES', @FragmentationLevel2 = 30",
+			"ETL - load orders":       "EXEC etl.stage_orders;", "DBA - purge old archive": "DELETE TOP (50000) FROM archive.dbo.orders_2019;"}[j.name]
 		if running {
 			r["running_since_utc"], r["running_after_step"] = z(last), 0
 			r["last_run_utc"] = z(last.Add(-every))
 		}
+		onOK := "quit reporting success"
+		if j.failStep == 2 {
+			onOK = "go to the next step"
+		}
 		rows = append(rows, r, Row{"kind": "step", "job_id": j.id, "step_id": 1, "step_name": "run", "subsystem": "TSQL", "database_name": "master",
-			"last_outcome": 1, "last_run_utc": z(last), "last_duration_s": j.durS})
+			"last_outcome": 1, "last_run_utc": z(last), "last_duration_s": j.durS, "command": cmd, "on_success": onOK,
+			"on_fail": "quit reporting failure", "retry_attempts": 0, "retry_interval": 0})
+		mergeCmd := "EXEC etl.merge_orders @batch = 5000;"
+		if changed {
+			mergeCmd = "EXEC etl.merge_orders @batch = 20000;"
+		}
 		if j.failStep == 2 {
 			rows = append(rows, Row{"kind": "step", "job_id": j.id, "step_id": 2, "step_name": "merge into orders", "subsystem": "TSQL",
-				"database_name": "Sales", "last_outcome": 0, "last_run_utc": z(last.Add(60 * time.Second)), "last_duration_s": 35})
+				"database_name": "Sales", "last_outcome": 0, "last_run_utc": z(last.Add(60 * time.Second)), "last_duration_s": 35,
+				"command": mergeCmd, "on_success": "quit reporting success", "on_fail": "quit reporting failure", "retry_attempts": 2, "retry_interval": 5})
 		}
 		// history: the last two days of the nightly jobs, the last three hours of the 15-minute one
 		back := 48 * time.Hour

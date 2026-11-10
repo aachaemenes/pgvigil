@@ -16,6 +16,10 @@ package demo
 //     the missed rule never sees a gap on this job.; rollup-invoices '*/10 * * * *' stopped running
 //     50 minutes before the anchor -> "job schedule missed" (critical)
 
+// The definitions' history (task 110), a day before the anchor: sync-contacts' schedule is rewritten from
+// '*/20 * * * *' to '0,20,40 * * * *' (the same minutes: its runs and its stories do not move) and export-ledger's
+// command gains an argument. The failed runs carry pg_cron's own return_message.
+
 import (
 	"time"
 
@@ -48,7 +52,14 @@ func (g *Gen) reportJobs() []reportJob {
 func (g *Gen) jobReportRows(t, prev time.Time) []Row {
 	s := g.Spec
 	out := g.jobRows(t, prev)
+	changed := !t.Before(g.end.Add(-24 * time.Hour))
 	for _, j := range g.reportJobs() {
+		if changed && j.name == "sync-contacts" {
+			j.schedule = "0,20,40 * * * *"
+		}
+		if changed && j.name == "export-ledger" {
+			j.command = "CALL billing.export_ledger(full_refresh => false)"
+		}
 		out = append(out, Row{"kind": "job", "scheduler": "pg_cron", "job_id": j.id, "job_name": j.name, "schedule": j.schedule,
 			"command": j.command, "datname": s.DBs[0], "run_as": "postgres", "active": true, "nodename": "localhost", "nodeport": 5432})
 		// the slow run: the latest scheduled start whose 6x run still ends by the anchor
