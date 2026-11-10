@@ -31,6 +31,8 @@ func TestRoutesWithoutDatabase(t *testing.T) {
 		{"/api/statements?instance=1&from=bad", 400, "from:"},
 		{"/api/statements?instance=1&from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z", 400, "from must be before to"},
 		{"/api/statements?instance=1&from=2025-01-01T00:00:00Z&to=2026-01-01T00:00:00Z", 400, "longer than 31 days"},
+		{"/api/dbinfo?instance=1&from=2025-01-01T00:00:00Z&to=2026-01-01T00:00:00Z", 400, "longer than 31 days"},
+		{"/api/dbinfo?instance=1&part=db_series&from=2024-01-01T00:00:00Z&to=2026-01-01T00:00:00Z", 400, "longer than 366 days"},
 		{"/api/statements?instance=1&limit=9999", 400, "limit must be"},
 		{"/api/counters?instance=1&kind=disk", 400, "kind must be"},
 		{"/api/dms?instance=zero", 400, "instance must be"},

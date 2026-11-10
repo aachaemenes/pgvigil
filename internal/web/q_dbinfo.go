@@ -50,7 +50,12 @@ func seriesWindow(from, to time.Time) (time.Time, int) {
 
 // DBInfo is one instance's Database info tab.
 func (s *Server) DBInfo(w http.ResponseWriter, r *http.Request) {
-	id, from, to, err := params(r, true)
+	// the database size series alone (the Storage tab's days selector) reads up to a year; the page 31 days
+	longest := maxWindow
+	if r.URL.Query().Get("part") == "db_series" {
+		longest = maxSeriesWindow
+	}
+	id, from, to, err := paramsMax(r, true, longest)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

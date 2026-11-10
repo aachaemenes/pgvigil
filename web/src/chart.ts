@@ -32,6 +32,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   requestAnimationFrame(() => {
     opts.width = Math.max(300, holder.clientWidth || 560);
     if (!holder.isConnected) return;     // the page was replaced before this frame
+    // a panel that redraws itself (the Storage tab's days selector) leaves its old charts off the page: free them
+    for (let i = live.length - 1; i >= 0; i--) if (!live[i].root.isConnected) live.splice(i, 1)[0].destroy();
     live.push(new uPlot(opts, data, holder));
   });
   return box;
@@ -51,14 +53,14 @@ function svg(tag: string, attrs: Record<string, string>, ...kids: (Node | string
 // donutChart draws shares of a whole as a ring with the same numbers in a table beside it (DBA Dash's pie charts). The
 // ring is one named image; the table is its accessible form and tells the slices apart by label, size and share, never
 // by colour alone. Slices are drawn largest first unless keepOrder; past max the smallest fold into 'other'. A slice
-// with an href opens its page from the ring and from the table.
+// with an href opens its page from its name in the table.
 export function donutChart(title: string, slices: Slice[], fmt: (v: number) => string = v => v.toLocaleString(),
-                           max = 8, keepOrder = false): HTMLElement {
+                           max = 8, keepOrder = false, empty = 'Nothing to show yet.'): HTMLElement {
   const box = el('div', { class: 'chart donut' }, el('h3', {}, title));
   let parts = slices.filter(s => isFinite(s.value) && s.value > 0);
   if (!keepOrder) parts = [...parts].sort((a, b) => b.value - a.value);
   const total = parts.reduce((a, s) => a + s.value, 0);
-  if (!parts.length) { box.append(el('p', { class: 'empty' }, 'Nothing to show yet.')); return box; }
+  if (!parts.length) { box.append(el('p', { class: 'empty' }, empty)); return box; }
   if (parts.length > max) {
     const rest = parts.slice(max - 1);
     parts = [...parts.slice(0, max - 1), { label: `other (${rest.length})`, value: rest.reduce((a, s) => a + s.value, 0) }];
@@ -75,8 +77,9 @@ export function donutChart(title: string, slices: Slice[], fmt: (v: number) => s
       'stroke-dasharray': `${len} ${c - len}`, 'stroke-dashoffset': String(-off), transform: 'rotate(-90 60 60)' },
       svg('title', {}, `${s.label}: ${fmt(s.value)} (${share(s.value)})`));
     off += len;
-    // the ring's own links stay out of the tab order: the table's link is the keyboard's way in
-    ring.append(s.href ? svg('a', { href: s.href, tabindex: '-1', 'aria-label': s.label }, arc) : arc);
+    // the ring is one image (no control inside an image: WCAG's nested-interactive); a slice's page opens from its
+    // name in the table
+    ring.append(arc);
     const sw = el('span', { class: 'swatch', 'aria-hidden': 'true' });
     sw.style.background = color;
     body.append(el('tr', {},
@@ -87,7 +90,7 @@ export function donutChart(title: string, slices: Slice[], fmt: (v: number) => s
   ring.append(mid);
   box.append(el('div', { class: 'donut-body' }, ring as unknown as HTMLElement,
     el('table', { class: 'legend' },
-      el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'share of ' + fmt(total)), el('th', { scope: 'col', class: 'num' }, 'size'), el('th', { scope: 'col', class: 'num' }, 'share'))),
+      el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'name'), el('th', { scope: 'col', class: 'num' }, 'size'), el('th', { scope: 'col', class: 'num' }, 'share'))),
       body)));
   return box;
 }

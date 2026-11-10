@@ -132,7 +132,7 @@ function growthPanel(ctx: Ctx): HTMLElement {
     let d: Record<'db_series', Table | null>;
     try {
       d = await get<Record<'db_series', Table | null>>('dbinfo',
-        { instance: ctx.instance, from: new Date(to.getTime() - n * 86400e3).toISOString(), to: to.toISOString() });
+        { instance: ctx.instance, part: 'db_series', from: new Date(to.getTime() - n * 86400e3).toISOString(), to: to.toISOString() });
     } catch (e) {
       if (mine === asked) out.replaceChildren(el('p', { class: 'empty' }, 'The sizes could not be read: ' + String((e as Error).message ?? e)));
       return;
@@ -147,19 +147,20 @@ function growthPanel(ctx: Ctx): HTMLElement {
       const first = vals[0], last = vals[vals.length - 1];
       return { datname: x.label, first_bytes: first, last_bytes: last, grown_bytes: last - first, per_day: (last - first) / span };
     });
-    const signed = (v: unknown) => v == null ? '' : Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : fmtBytes(v);
     out.replaceChildren(
       el('p', { class: 'meta' }, `The largest ${ds.series.length} databases over ${fmtNum(span)} days of history`
         + (span < n - 1 ? ` (the ${n}-day window holds no more yet)` : '') + '. Grown: the newest size minus the oldest of the window.'),
       el('div', { class: 'charts' },
         lineChart(`Database sizes, ${n} days`, ds.rows, ds.series, v => fmtBytes(v)),
-        donutChart(`Growth by database, ${n} days`, rows.map(r => ({ label: String(r.datname), value: Number(r.grown_bytes) })), fmtBytes)),
+        donutChart(`Growth by database, ${n} days`, rows.map(r => ({ label: String(r.datname), value: Number(r.grown_bytes) })), fmtBytes,
+          8, false, 'No database grew in this window.')),
+      el('h4', {}, `Database growth, ${n} days`),
       grid(rows, [
         { key: 'datname', label: 'database' },
         { key: 'first_bytes', label: 'at the start', num: true, fmt: fmtBytes },
         { key: 'last_bytes', label: 'now', num: true, fmt: fmtBytes },
-        { key: 'grown_bytes', label: 'grown', num: true, fmt: signed },
-        { key: 'per_day', label: 'per day', num: true, fmt: signed },
+        { key: 'grown_bytes', label: 'grown', num: true, fmt: fmtBytes },
+        { key: 'per_day', label: 'per day', num: true, fmt: fmtBytes },
       ]));
   };
   buttons.forEach((b, i) => b.addEventListener('click', () => { void show(growthDays[i], b); }));

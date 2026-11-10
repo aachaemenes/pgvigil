@@ -327,8 +327,20 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
-// params reads instance (required), from and to (RFC 3339, default the last hour).
+// maxWindow is the longest window a page reads; maxSeriesWindow the longest of a size series (hourly rows, bucketed
+// to about 300 points whatever the span).
+const (
+	maxWindow       = 31 * 24 * time.Hour
+	maxSeriesWindow = 366 * 24 * time.Hour
+)
+
+// params reads instance (required), from and to (RFC 3339, default the last hour); the window at most 31 days.
 func params(r *http.Request, needInstance bool) (id int, from, to time.Time, err error) {
+	return paramsMax(r, needInstance, maxWindow)
+}
+
+// paramsMax is params with the longest window the caller allows.
+func paramsMax(r *http.Request, needInstance bool, longest time.Duration) (id int, from, to time.Time, err error) {
 	q := r.URL.Query()
 	if needInstance {
 		id, err = strconv.Atoi(q.Get("instance"))
@@ -351,8 +363,8 @@ func params(r *http.Request, needInstance bool) (id int, from, to time.Time, err
 	if !from.Before(to) {
 		return 0, from, to, errors.New("from must be before to")
 	}
-	if to.Sub(from) > 31*24*time.Hour {
-		return 0, from, to, errors.New("window longer than 31 days")
+	if to.Sub(from) > longest {
+		return 0, from, to, fmt.Errorf("window longer than %d days", int(longest.Hours()/24))
 	}
 	return id, from, to, nil
 }

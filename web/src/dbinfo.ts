@@ -130,7 +130,7 @@ export async function dbinfoView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Space at a glance'), el('div', { class: 'charts' },
     donutChart('Databases by size', user.map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0),
       href: hrefWith(ctx, 'db', { db: String(r.dbid) }) })), fmtBytes),
-    donutChart(db ? `Largest tables of ${dbName}` : 'Largest tables of the instance', newest(ts), fmtBytes),
+    donutChart(db ? `The largest ${ts.series.length} tables of ${dbName}` : `The largest ${ts.series.length} tables of the instance`, newest(ts), fmtBytes),
     donutChart('Tablespaces', rowsOf(d.tablespaces).map(r => ({ label: String(r.name ?? ''), value: Number(r.size_bytes ?? 0) })), fmtBytes)));
   sec.append(el('h3', {}, 'Size history'), scope, el('div', { class: 'charts' },
     lineChart('Databases (the largest ' + ds.series.length + ')', ds.rows, ds.series, v => fmtBytes(v)),
