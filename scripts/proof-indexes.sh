@@ -48,7 +48,7 @@
 #  E. the inventory (0056, task 71; expected before its first run): after A, index_inventory holds one present row per
 #     pg_stat_user_indexes row of T1 and of T2 (the counts equal); ix_a reads '1 true false false (a)' (idx_scan, is_valid, is_unique,
 #     is_primary, columns: a concatenated boolean prints true / false), t_pkey '0 true true true (id)', ix_bad is_valid false, q1_a_idx is_partition true; index_usage_daily
-#     holds today's row for every inventory row (T1 + T2) and a second collect adds none; index_inventory_read lists
+#     holds the first read's day row for every inventory row (T1 + T2; the day captured once) and a second collect adds none; index_inventory_read lists
 #     'redundant' as ix_a's problem and its scans_7d is NULL (no day row that old), then 1 after a day row 8 days back
 #     with idx_scan 0 is seeded for it; drill_index of ix_ab (no problem row) returns one row with problem NULL and
 #     idx_scan 1 ('true 1 1' concatenated); index_inventory_fleet_unused lists ix_unused for this instance when T1's counters are a week old or more
@@ -144,8 +144,9 @@ inv() { q "select $1 from pgvigil.index_inventory where instance_id=$iid and dat
 [[ $(inv is_valid ix_bad) == f ]] || fail "ix_bad should read invalid in the inventory"
 [[ $(inv is_partition q1_a_idx) == t ]] || fail "q1_a_idx should read as a partition's index"
 [[ $(inv relid ix_a) == $(t1 "select relid from pg_stat_user_indexes where indexrelname = 'ix_a'") ]] || fail "ix_a relid: $(inv relid ix_a) vs the target's $(t1 "select relid from pg_stat_user_indexes where indexrelname = 'ix_a'")"
-today="date_trunc('day', now() at time zone 'utc') at time zone 'utc'"
-day_rows() { q "select count(*) from pgvigil.index_usage_daily d join pgvigil.index_inventory v using (instance_id, dbid, indexrelid) where d.instance_id=$iid and v.datname in ('$T1','$T2') and d.snapshot_at = $today"; }
+# the day the first collect wrote (captured once: a run crossing 00:00 UTC must not move the day under the checks)
+DAY=$(q "select max(snapshot_at) from pgvigil.index_usage_daily where instance_id=$iid")
+day_rows() { q "select count(*) from pgvigil.index_usage_daily d join pgvigil.index_inventory v using (instance_id, dbid, indexrelid) where d.instance_id=$iid and v.datname in ('$T1','$T2') and d.snapshot_at = '$DAY'"; }
 [[ $(day_rows) == $((inv_t1 + inv_t2)) ]] || fail "day rows: $(day_rows), want $((inv_t1 + inv_t2))"
 "$BIN" collect -config "$CFG" -once indexes || fail "collect indexes (run 1b)"
 [[ $(day_rows) == $((inv_t1 + inv_t2)) ]] || fail "a second read of the day added day rows: $(day_rows)"

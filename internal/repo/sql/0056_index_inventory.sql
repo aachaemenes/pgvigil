@@ -138,11 +138,13 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
                       WHERE r->>'kind' = 'index' AND (r->>'dbid')::bigint = s.dbid AND (r->>'indexrelid')::bigint = s.indexrelid
                         AND r->>'problem' = s.problem);
-  -- and its inventory rows not in this read (a dropped index); a payload with a db row and no inv rows at all is 0030's
-  -- shape (an older collector): the inventory is left alone
+  -- and its inventory rows not in this read (a dropped index). A payload with db rows and no inv rows is 0030's shape (an
+  -- older collector) only when a db row counts indexes (the inventory is then left alone); a database read with zero user
+  -- indexes sends no inv row either, and its inventory rows go absent (review 71, finding 2)
   UPDATE pgvigil.index_inventory v SET is_present = false, snapshot_at = p_snapshot_at
    WHERE v.instance_id = p_instance_id AND v.is_present
-     AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'inv')
+     AND (EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'inv')
+          OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND coalesce((r->>'indexes')::int, 0) > 0))
      AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND (r->>'dbid')::bigint = v.dbid)
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
                       WHERE r->>'kind' = 'inv' AND (r->>'dbid')::bigint = v.dbid AND (r->>'indexrelid')::bigint = v.indexrelid);
@@ -161,8 +163,9 @@ BEGIN
 END $$;
 
 -- the inventory of one instance (or one of its databases) with the scans over the last 7 and 30 days (NULL without a day
--- row that old, or after a counter went backwards) and the problems the collection lists for the index
-CREATE OR REPLACE FUNCTION pgvigil.index_inventory_read(p_instance_id int, p_dbid bigint DEFAULT NULL)
+-- row that old, or after a counter went backwards) and the problems the collection lists for the index; the largest first,
+-- p_limit rows at most (the UI reads one database at a time: 10,000 rows were 5.5 MB of JSON in review 71)
+CREATE OR REPLACE FUNCTION pgvigil.index_inventory_read(p_instance_id int, p_dbid bigint DEFAULT NULL, p_limit int DEFAULT 2000)
 RETURNS TABLE (dbid bigint, indexrelid bigint, datname text, schema_name text, table_name text, index_name text, relid bigint,
                access_method text, is_unique boolean, is_primary boolean, is_valid boolean, is_partition boolean, columns text,
                index_def text, index_bytes bigint, idx_scan bigint, idx_tup_read bigint, idx_tup_fetch bigint, last_idx_scan timestamptz,
@@ -186,7 +189,8 @@ LANGUAGE sql STABLE AS $$
                           AND d.snapshot_at <= now() - interval '30 days'
                         ORDER BY d.snapshot_at DESC LIMIT 1) d30 ON true
    WHERE v.instance_id = p_instance_id AND v.is_present AND (p_dbid IS NULL OR v.dbid = p_dbid)
-   ORDER BY v.datname, v.schema_name, v.table_name, v.index_bytes DESC NULLS LAST, v.index_name
+   ORDER BY v.index_bytes DESC NULLS LAST, v.datname, v.schema_name, v.table_name, v.index_name
+   LIMIT greatest(p_limit, 1)
 $$;
 
 -- the fleet root: the largest indexes nobody reads (no scan since the counters started, counted for 7 days at least, on a
@@ -226,9 +230,12 @@ LANGUAGE sql STABLE AS $$
     LEFT JOIN pgvigil.index_findings f ON s.is_present AND f.instance_id = s.instance_id AND f.setting = s.problem || ' index'
                                       AND f.value = s.datname || ': ' || coalesce(s.schema_name || '.', '') || coalesce(s.index_name, s.indexrelid::text)
    WHERE s.instance_id = p_instance_id AND s.dbid = p_dbid AND s.indexrelid = p_indexrelid
-     -- a cleared problem (is_present false) shows only when none is present: the index page and the table page agree
-     AND (s.is_present OR NOT EXISTS (SELECT 1 FROM pgvigil.index_state p WHERE p.instance_id = s.instance_id AND p.dbid = s.dbid
-                                                                         AND p.indexrelid = s.indexrelid AND p.is_present))
+     -- a cleared problem (is_present false) shows only when none is present AND the inventory has no present row: an index
+     -- alive and read (its problem cleared) comes from the inventory below, never from the stale row (review 71, finding 1)
+     AND (s.is_present OR (NOT EXISTS (SELECT 1 FROM pgvigil.index_state p WHERE p.instance_id = s.instance_id AND p.dbid = s.dbid
+                                                                           AND p.indexrelid = s.indexrelid AND p.is_present)
+                           AND NOT EXISTS (SELECT 1 FROM pgvigil.index_inventory v2 WHERE v2.instance_id = s.instance_id AND v2.dbid = s.dbid
+                                                                                 AND v2.indexrelid = s.indexrelid AND v2.is_present)))
   UNION ALL
   SELECT v.dbid, v.indexrelid, v.datname, v.schema_name, v.table_name, v.relid, v.index_name, NULL::text, v.access_method, v.index_bytes,
          (SELECT t.total_bytes FROM pgvigil.tables t WHERE t.instance_id = v.instance_id AND t.dbid = v.dbid AND t.relid = v.relid AND t.is_present LIMIT 1),
@@ -236,7 +243,9 @@ LANGUAGE sql STABLE AS $$
     FROM pgvigil.index_inventory v
     LEFT JOIN pgvigil.index_databases d ON d.instance_id = v.instance_id AND d.dbid = v.dbid
    WHERE v.instance_id = p_instance_id AND v.dbid = p_dbid AND v.indexrelid = p_indexrelid
-     AND NOT EXISTS (SELECT 1 FROM pgvigil.index_state s WHERE s.instance_id = v.instance_id AND s.dbid = v.dbid AND s.indexrelid = v.indexrelid)
+     -- the inventory row when no PRESENT problem row exists; its absent row only when index_state has no row at all
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.index_state s WHERE s.instance_id = v.instance_id AND s.dbid = v.dbid AND s.indexrelid = v.indexrelid AND s.is_present)
+     AND (v.is_present OR NOT EXISTS (SELECT 1 FROM pgvigil.index_state s WHERE s.instance_id = v.instance_id AND s.dbid = v.dbid AND s.indexrelid = v.indexrelid))
   ) u
    ORDER BY u.is_present DESC, CASE u.problem WHEN 'invalid' THEN 0 WHEN 'duplicate' THEN 1 WHEN 'redundant' THEN 2 WHEN 'unused' THEN 3 ELSE 4 END
 $$;

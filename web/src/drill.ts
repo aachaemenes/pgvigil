@@ -236,7 +236,7 @@ export async function indexPage(ctx: Ctx): Promise<HTMLElement> {
     ['access method', String(x.access_method ?? '')],
     ['scans counted since', x.stats_since ? fmtTime(x.stats_since) : 'unknown'],
     ['this server', x.is_replica ? 'a replica: it counts only its own reads' : 'the primary: it counts only its own reads, not the replicas\''],
-    ['first seen', fmtTime(x.first_seen)], ['read', fmtTime(x.snapshot_at)],
+    ['first seen', fmtTime(x.first_seen)], [x.problem == null ? 'last change (the inventory keeps a quiet index\'s row as it is)' : 'read', fmtTime(x.snapshot_at)],
   ]));
   sec.append(el('h3', {}, 'Definition'), pre(x.index_def));
   for (const r of problems) {

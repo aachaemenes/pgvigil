@@ -274,15 +274,15 @@ where pidx.indisvalid = false
 // indexesInventorySQL: every index of pg_stat_user_indexes (0056): its definition, size and usage counters.
 // last_idx_scan exists from PostgreSQL 16: to_jsonb(s) reads it where it is and NULL below, so one statement serves
 // every version. A partitioned table's own index (relkind 'I') is not in pg_stat_user_indexes; its partitions' indexes
-// are, each marked is_partition. columns is the definition after USING <method>: the key columns, expressions, INCLUDE
-// and predicate as pg_get_indexdef prints them.
+// are, each marked is_partition. columns is the definition after the FIRST ' USING <method> ': the key columns, expressions,
+// INCLUDE and predicate as pg_get_indexdef prints them (a name holding ' USING x ' would cut it short: index_def is whole).
 const indexesInventorySQL = `
 SELECT 'inv' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, s.indexrelid::bigint AS indexrelid, s.relid::bigint AS relid,
        s.schemaname::text AS schema_name, s.relname::text AS table_name, s.indexrelname::text AS index_name,
        am.amname::text AS access_method, i.indisunique AS is_unique, i.indisprimary AS is_primary, i.indisvalid AS is_valid,
        c.relispartition AS is_partition,
-       regexp_replace(pg_get_indexdef(s.indexrelid), '^CREATE (UNIQUE )?INDEX .* USING [a-z0-9_]+ ', '') AS columns,
+       regexp_replace(pg_get_indexdef(s.indexrelid), '^CREATE (UNIQUE )?INDEX .*? USING [a-z0-9_]+ ', '') AS columns,
        pg_get_indexdef(s.indexrelid) AS index_def, pg_relation_size(s.indexrelid) AS index_bytes,
        s.idx_scan, s.idx_tup_read, s.idx_tup_fetch, (to_jsonb(s)->>'last_idx_scan')::timestamptz AS last_idx_scan
   FROM pg_stat_user_indexes s

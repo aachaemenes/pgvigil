@@ -17,7 +17,8 @@ import (
 
 // The Indexes tab (task 41): GET /api/indexes?[instance=<id>] (Server.Indexes): with instance, its databases and the
 // unused, redundant, duplicate and invalid indexes the hourly indexes collection found, each with its DROP line and
-// undo as text, and the inventory (0056, task 71: every index with its usage, pgvigil.index_inventory_read); without,
+// undo as text, and with db=<dbid> that database's inventory (0056, task 71: every index with its usage, the 2,000 largest
+// through pgvigil.index_inventory_read, with the database's total); without instance,
 // the fleet root (per instance the counts and the bytes, the inventory's count and size), the largest indexes nobody
 // reads across the fleet (index_inventory_fleet_unused) and the duplicates across it. POST /api/indexes/advise
 // (Server.IndexAdvisor) runs the index advisor (internal/advisor) on one database of one instance: behind the UI
@@ -58,7 +59,9 @@ SELECT f.severity, f.setting, f.value, f.suggested, f.detail, f.at
  WHERE f.instance_id = $1
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, f.setting, f.value`
 
-const sqlIndexesInventory = `SELECT * FROM pgvigil.index_inventory_read($1)`
+const sqlIndexesInventory = `SELECT * FROM pgvigil.index_inventory_read($1, $2, 2000)`
+
+const sqlIndexesInventoryTotal = `SELECT count(*) AS total FROM pgvigil.index_inventory v WHERE v.instance_id = $1 AND v.dbid = $2 AND v.is_present`
 
 const sqlIndexesFleetUnused = `SELECT * FROM pgvigil.index_inventory_fleet_unused(50)`
 
@@ -101,13 +104,23 @@ func (s *Server) Indexes(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive instance_id"))
 		return
 	}
-	s.multi(w, r, []part{
+	parts := []part{
 		{"state", sqlIndexesState, []any{id}},
 		{"databases", sqlIndexesDatabases, []any{id}},
 		{"indexes", sqlIndexesList, []any{id}},
 		{"findings", sqlIndexesFindings, []any{id}},
-		{"inventory", sqlIndexesInventory, []any{id}},
-	})
+	}
+	// the inventory one database at a time (db=<dbid>): the 2,000 largest and the database's total (review 71: 10,000 rows
+	// were 5.5 MB of JSON)
+	if q.Get("db") != "" {
+		db, err := strconv.ParseInt(q.Get("db"), 10, 64)
+		if err != nil || db <= 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("db must be a positive database oid"))
+			return
+		}
+		parts = append(parts, part{"inventory", sqlIndexesInventory, []any{id, db}}, part{"inventory_total", sqlIndexesInventoryTotal, []any{id, db}})
+	}
+	s.multi(w, r, parts)
 }
 
 // dbNameRE bounds the database a caller may name (a catalog name, at most 63 bytes).

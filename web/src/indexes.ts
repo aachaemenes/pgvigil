@@ -8,7 +8,8 @@ import type { Ctx } from './router';
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
 
-interface IndexesData { state: Table | null; databases: Table | null; indexes: Table | null; findings: Table | null; inventory: Table | null }
+interface IndexesData { state: Table | null; databases: Table | null; indexes: Table | null; findings: Table | null }
+interface InventoryData { inventory: Table | null; inventory_total: Table | null }
 interface IndexesFleetData { fleet: Table | null; unused: Table | null; duplicates: Table | null }
 
 interface AdvQuery { queryid: number; query?: string; cost_before?: number; cost_after?: number; gain_pct?: number; uses_index: boolean; note?: string }
@@ -62,32 +63,41 @@ function inventoryCols(ctx?: Ctx): Col[] {
     { key: 'problems', fmt: v => v ? badge(String(v), /invalid|duplicate/.test(String(v)) ? 'warn' : '') : '' },
   ];
 }
-function inventorySection(inv: Row[], ctx?: Ctx): HTMLElement {
-  const sec = el('div', {}, el('h3', {}, `Inventory (${inv.length})`),
+// one database at a time: /api/indexes?instance=&db= returns that database's 2,000 largest indexes and its total
+function inventorySection(instance: number, dbs: Row[], ctx?: Ctx): HTMLElement {
+  const sec = el('div', {}, el('h3', {}, 'Inventory'),
     el('p', { class: 'meta' }, 'Every index the monitoring login can see, read hourly: its size, its scans since the counters started and over the '
       + 'last 7 and 30 days (one row per index and day; blank until the day rows are that old, or after a counter reset), the rows it returned '
-      + 'and, on PostgreSQL 16 and later, its last scan. A problem index is marked; every name opens the index page.'));
-  if (inv.length === 0) {
+      + 'and, on PostgreSQL 16 and later, its last scan. The largest first, one database at a time; a problem index is marked; every name opens the index page.'));
+  if (dbs.length === 0) {
     sec.append(el('p', { class: 'empty' }, 'No inventory read yet: it comes with the hourly indexes collection.'));
     return sec;
   }
-  const names = [...new Set(inv.map(r => String(r.datname)))];
-  const pick = el('select', { 'aria-label': 'database of the inventory' }, ...names.map(d => el('option', { value: d }, d))) as HTMLSelectElement;
+  const pick = el('select', { 'aria-label': 'database of the inventory' }, ...dbs.map(d => el('option', { value: String(d.dbid) }, String(d.datname)))) as HTMLSelectElement;
   const filter = el('input', { type: 'search', placeholder: 'table or index name', 'aria-label': 'filter the inventory by table or index name' }) as HTMLInputElement;
   const out = el('div');
+  let rows: Row[] = [], total = 0;
   const draw = () => {
-    const db = pick.value, f = filter.value.trim().toLowerCase();
-    const all = inv.filter(r => String(r.datname) === db
-      && (!f || String(r.table_name ?? '').toLowerCase().includes(f) || String(r.index_name ?? '').toLowerCase().includes(f)));
-    const rows = all.slice(0, 500);
-    out.replaceChildren(
-      el('p', { class: 'meta' }, all.length > rows.length ? `${rows.length} of ${all.length} shown (the largest first): narrow the filter.` : `${all.length} indexes.`),
-      grid(rows, inventoryCols(ctx), 'No index matches.'));
+    const f = filter.value.trim().toLowerCase();
+    const all = rows.filter(r => !f || String(r.table_name ?? '').toLowerCase().includes(f) || String(r.index_name ?? '').toLowerCase().includes(f));
+    const shown = all.slice(0, 500);
+    const note = shown.length < total ? `${shown.length} of ${total} indexes shown, the largest first${all.length > shown.length ? ': narrow the filter' : (rows.length < total ? ' (the 2,000 largest were read)' : '')}.` : `${total} indexes.`;
+    out.replaceChildren(el('p', { class: 'meta' }, note), grid(shown, inventoryCols(ctx), 'No index matches.'));
   };
-  pick.addEventListener('change', draw);
+  const load = async () => {
+    out.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
+    try {
+      const d = await get<InventoryData>('indexes', { instance, db: pick.value });
+      rows = rowsOf(d.inventory); total = Number(rowsOf(d.inventory_total)[0]?.total ?? rows.length);
+      draw();
+    } catch (e) {
+      out.replaceChildren(el('p', { class: 'error' }, 'Error: ' + (e instanceof Error ? e.message : String(e))));
+    }
+  };
+  pick.addEventListener('change', () => { void load(); });
   filter.addEventListener('input', draw);
   sec.append(el('p', {}, 'Database ', pick, ' filter ', filter), out);
-  draw();
+  void load();
   return sec;
 }
 
@@ -186,7 +196,7 @@ export async function indexesView(instance: number, ctx?: Ctx): Promise<HTMLElem
       } }),
         `No ${p} index.`));
   }
-  sec.append(inventorySection(rowsOf(d.inventory), ctx));
+  sec.append(inventorySection(instance, dbs, ctx));
   sec.append(el('p', { class: 'meta' }, 'The redundant and invalid reads are postgres_dba\'s (BSD-3, Nikolay Samokhvalov); the DO / UNDO lines are '
     + 'its i5 pattern. Run a DO line alone, outside a transaction, in a session where lock_timeout and statement_timeout are 0 '
     + '(DROP INDEX CONCURRENTLY waits for every older transaction). An unused index that covers a redundant or duplicate one is '
