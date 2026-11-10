@@ -24,7 +24,7 @@ import { indexesView } from './indexes';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
-import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_ } from './router';
+import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_, drillHome } from './router';
 import { mountTree, setTreeHidden, tagChips, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 
@@ -128,7 +128,7 @@ async function render(force = false) {
   const pages = ctx.instance ? instancePages : rootPages;
 
   $('tabs').replaceChildren(...Object.entries(tabs).map(([k, label]) =>
-    el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab ? 'on' : '' }, label)));
+    el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '' }, label)));   // a drill page marks its home tab
 
   const bar = $('bar');
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');

@@ -8,7 +8,8 @@
 #      top growers, the size series.
 #   D. the API through `pgvigil serve` when the binary has the routes (after the lead's join); "NOT PROVEN (D)" before.
 #
-#   PGVIGIL_REPO_DSN   a superuser connection to the sandbox; the proof makes its own repository database, a login and two
+#   PGVIGIL_REPO_DSN   a superuser connection to the sandbox in KEYWORD form (host=... user=... dbname=...: the proof appends
+#                      dbname= to it); the proof makes its own repository database, a login and two
 #                      databases, and drops them at the end; nothing that exists before the run is touched.
 #
 # Expected (written before the first run):

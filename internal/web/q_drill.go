@@ -42,7 +42,7 @@ func (s *Server) DrillDB(w http.ResponseWriter, r *http.Request) {
 	}
 	sfrom, bucket := seriesWindow(from, to)
 	s.multi(w, r, []part{
-		{"facts", `SELECT * FROM pgvigil.dbinfo($1) WHERE dbid = $2`, []any{id, db}},
+		{"facts", `SELECT * FROM pgvigil.dbinfo($1, $2)`, []any{id, db}},
 		{"series", `SELECT * FROM pgvigil.drill_db_series($1, $2, $3, $4, $5)`, []any{id, db, sfrom, to, bucket}},
 		{"tables", `SELECT * FROM pgvigil.drill_db_tables($1, $2)`, []any{id, db}},
 		{"extensions", `SELECT * FROM pgvigil.drill_db_extensions($1, $2)`, []any{id, db}},

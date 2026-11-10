@@ -36,6 +36,8 @@ export const instanceTabs: Record<string, string> = {
 const legacy: Record<string, string> = { overview: 'checks' };
 // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
 export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index' };
+// the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
+export const drillHome: Record<string, string> = { db: 'dbinfo', table: 'dbinfo', index: 'dbinfo', job: 'jobs' };
 
 export function parse(): Ctx {
   const h = location.hash.replace(/^#\/?/, '');
@@ -43,7 +45,7 @@ export function parse(): Ctx {
   const q = new URLSearchParams(qs ?? '');
   const name = legacy[p] ?? p;
   // an instance-only tab without i (an old bookmark) opens the instance last viewed in this browser
-  const instance = Number(q.get('i')) || (instanceTabs[name] && !rootTabs[name] && !q.get('tag') ? Number(lsGet('pgvigil.instance')) || undefined : undefined);
+  const instance = Number(q.get('i')) || ((instanceTabs[name] || drillTabs[name]) && !rootTabs[name] && !q.get('tag') ? Number(lsGet('pgvigil.instance')) || undefined : undefined);
   const tabs = instance ? instanceTabs : rootTabs;
   const from = q.get('from') ?? undefined, to = q.get('to') ?? undefined;
   const custom = from && to && !isNaN(Date.parse(from)) && !isNaN(Date.parse(to)) && Date.parse(from) < Date.parse(to);
@@ -60,10 +62,11 @@ export function parse(): Ctx {
     taskInstance: Number(q.get('ti')) || undefined,
     order: q.get('order') ?? undefined,
     minSecs: q.has('min') && Number.isFinite(Number(q.get('min'))) ? Math.min(86400, Math.max(0, Math.trunc(Number(q.get('min'))))) : undefined,
-    st: q.get('st') === 'active' || q.get('st') === 'idle' ? q.get('st')! : undefined,
-    user: q.get('user')?.slice(0, 64) || undefined,
-    db: q.get('db')?.slice(0, 64) || undefined,
-    app: q.get('app')?.slice(0, 64) || undefined,
+    // the running-queries window's filters ride the activity tab alone (a drill page's db= is an oid, not a name)
+    st: name === 'activity' && (q.get('st') === 'active' || q.get('st') === 'idle') ? q.get('st')! : undefined,
+    user: name === 'activity' ? q.get('user')?.slice(0, 64) || undefined : undefined,
+    db: name === 'activity' ? q.get('db')?.slice(0, 64) || undefined : undefined,
+    app: name === 'activity' ? q.get('app')?.slice(0, 64) || undefined : undefined,
     ms: q.has('ms') && Number.isFinite(Number(q.get('ms'))) ? Math.min(86400000, Math.max(0, Math.trunc(Number(q.get('ms'))))) : undefined,
   };
 }

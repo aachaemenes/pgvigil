@@ -213,4 +213,4 @@ JS
   echo "C: OK"
   C_DONE=1
 fi
-if [[ "${C_DONE:-0}" = 1 ]]; then echo "proof-drill: PASS"; else echo "proof-drill: PASS (A only; B, C not proven)"; fi
+if [[ "${C_DONE:-0}" = 1 ]]; then echo "proof-drill: PASS"; elif [[ "$B_DONE" = 1 ]]; then echo "proof-drill: PASS (A, B; C not proven: no chromium)"; else echo "proof-drill: PASS (A only; B, C not proven)"; fi

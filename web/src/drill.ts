@@ -1,5 +1,5 @@
-// The drill-down pages (task 48; DBADash's per-object drill-down), reached from the Database info tab, the Growth
-// root, the Jobs and Indexes tabs: a database page, a table page, a job page and an index page, each under a
+// The drill-down pages (task 48; DBADash's per-object drill-down), reached from the Database info tab and the Growth
+// root today (the Tables, Jobs and Indexes tabs and the tree's database and job nodes link here with the tree task): a database page, a table page, a job page and an index page, each under a
 // breadcrumb instance > database > table that keeps the time range. Their parameters ride on the hash
 // (#/db?i=..&db=<dbid>, #/table?..&db=&rel=<relid>, #/job?..&scheduler=&job=, #/index?..&db=&idx=<indexrelid>).
 // Data from /api/drill/{db,table,job,index}.
@@ -18,7 +18,7 @@ const ms = (v: unknown) => v == null ? '' : fmtNum(Math.round(Number(v) * 10) / 
 const qtext = (v: unknown) => { const s = v == null ? '(no statement text: the query-text policy, or not read yet)' : String(v); return s.length > 600 ? s.slice(0, 600) + '...' : s; };
 const pre = (v: unknown) => el('pre', { class: 'sql' }, String(v ?? ''));
 
-// jobLink and indexLink open the job and index pages (for the Jobs, Job report and Indexes tabs to use).
+// jobLink and indexLink open the job and index pages (exported for the Jobs, Job report and Indexes tabs and the tree; wired with the tree task).
 export const jobLink = (ctx: Ctx, text: string, scheduler: unknown, job: unknown, instance = ctx.instance) =>
   link(text, hrefWith(ctx, 'job', { scheduler: String(scheduler), job: String(job) }, instance));
 export const indexLink = (ctx: Ctx, text: string, dbid: unknown, idx: unknown, instance = ctx.instance) =>

@@ -8,7 +8,7 @@
 // (#/...?tag=env:prod), so only a top-level folder links: a nested one names a combination no single tag scopes.
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
 import { get, Row, Table } from './api';
-import { Ctx, href } from './router';
+import { Ctx, href, drillHome } from './router';
 import { Fleet, Level, tagsOf, worst } from './fleet';
 import { Col, dot, el } from './ui';
 
@@ -163,7 +163,7 @@ function draw() {
       } else {
         for (const r of shown) {
           const id = Number(r.instance_id);
-          const tab = ctx.instance ? ctx.tab : 'summary';
+          const tab = ctx.instance ? (drillHome[ctx.tab] ?? ctx.tab) : 'summary';   // a drill page's link to another instance lands on its home tab
           ul.append(el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
             dot(worst(f, r)), String(r.name)));
         }

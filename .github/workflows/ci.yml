@@ -66,6 +66,14 @@ jobs:
           PGVIGIL_REPO_DSN: postgres://postgres:pgvigil@localhost:5432/pgvigil?sslmode=disable
           ADMIN_DSN: postgres://postgres:pgvigil@localhost:5432/postgres?sslmode=disable
         run: scripts/proof-window.sh
+      - name: database information (migration 0046, 0050; the Database info tab's data and API)
+        env:
+          PGVIGIL_REPO_DSN: "host=localhost port=5432 user=postgres password=pgvigil dbname=postgres sslmode=disable"
+        run: scripts/proof-dbinfo.sh
+      - name: the drill-down pages (migration 0047; A the read functions, B the API; C needs a browser and stays local)
+        env:
+          PGVIGIL_ADMIN_DSN: "host=localhost port=5432 user=postgres password=pgvigil dbname=postgres sslmode=disable"
+        run: scripts/proof-drill.sh
   gov:
     # government readiness (task 50): the FIPS 140-3 build with the login and TLS proof under it, the service units'
     # hardening score, the SBOM against the CycloneDX schema; the accessibility proof (scripts/proof-a11y.sh) needs a
