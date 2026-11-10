@@ -29,6 +29,7 @@ async function copyText(text: string, from: HTMLElement): Promise<boolean> {
 // openViewer shows a whole text: monospace and wrapped for a statement (code), the page's own font for a note.
 export function openViewer(heading: string, text: string, code = true): void {
   document.querySelector('dialog.sqlview')?.remove();   // one viewer at a time
+  const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;   // the focus goes back there on close
   const id = 'sqlview-h' + (++seq);
   const pre = el('pre', { class: 'sql', tabindex: '0', role: 'region', 'aria-labelledby': id,
     style: 'white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:65vh;margin:.6rem 0;padding:.6rem;'
@@ -45,7 +46,7 @@ export function openViewer(heading: string, text: string, code = true): void {
   close.addEventListener('click', () => dlg.close());
   // a click on the backdrop (the dialog element itself, outside its content box) closes it
   dlg.addEventListener('click', ev => { if (ev.target === dlg) dlg.close(); });
-  dlg.addEventListener('close', () => dlg.remove());
+  dlg.addEventListener('close', () => { dlg.remove(); if (back?.isConnected) back.focus(); });
   document.body.append(dlg);
   dlg.showModal();
   copy.focus();

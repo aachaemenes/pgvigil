@@ -144,8 +144,10 @@ function body(d: RunningData, picked?: unknown): HTMLElement {
     el('span', { class: nBlocked ? (Number(sum.longest_wait_ms) > 300000 ? 'crit' : 'warn') : '' },
       `Blocked sessions: ${fmtNum(sum.blocked)}` + (nBlocked ? ` behind ${fmtNum(sum.heads)} head(s), longest wait ${ms(sum.longest_wait_ms) || '0s'}` : '')),
     `; sessions ${fmtNum(sum.sessions)}, requests ${fmtNum(sum.requests)}; `,
-    el('span', { class: pending ? 'warn' : '' }, `memory grants pending ${fmtNum(pending)}`),
-    `; snapshot ${fmtTime(sum.snapshot_at)} (the server's clock ${fmtTime(sum.server_utc)}), read in ${fmtNum(sum.read_ms)} ms from `, src));
+    el('span', { class: pending ? 'warn' : '' }, `memory grants pending ${fmtNum(pending)}`)));
+  // the snapshot's time as DBA Dash's toolbar has it, and where the read came from
+  box.prepend(el('div', { class: 'picker' }, el('b', { class: 'snap-time', title: `The server's own clock: ${fmtTime(sum.server_utc)}` }, 'Snapshot ' + fmtTime(sum.snapshot_at)),
+    ` read in ${fmtNum(sum.read_ms)} ms from `, src));
   const tree = treeRows(rows, heads);
   const noHead = rows.filter(r => r.chain_note != null);
   if (tree.length || noHead.length) {
