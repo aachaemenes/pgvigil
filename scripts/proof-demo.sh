@@ -18,14 +18,14 @@
 #   dbstats      N rows per database (onprem-erp01/02: 3 databases, the others 2) = 26 N
 #   statements   statements_info at every 5-minute snapshot on 11 instances (none on
 #                cloudsql-analytics02); reset rows on rds-orders01 only
-#   overview     exactly these demo rows (check@instance):
-#                  collection failing@cloudsql-analytics02 (statements), replay lag@onprem-erp01,
-#                  replay lag@onprem-erp02, inactive slot retaining WAL@rds-billing01,
-#                  job failed@aurora-crm01 x2, DMS CDC latency@aurora-dms01, DMS changes on disk@aurora-dms01,
-#                  DMS tables in error@aurora-dms01, DMS validation failures@aurora-dms01, DMS validation
-#                  suspended@aurora-dms01 (the attachments table in 'Error'), deadlocks (24 h)@rds-orders01
-#                  with '3 deadlock(s)', table autovacuum off@onprem-hr01, table bloat@onprem-erp01, table dead
-#                  rows@rds-orders01, table never vacuumed@aurora-dms01; no stale collection, no 'check could not run'
+#   overview     exactly the 67 demo rows of EXPECTED_OVERVIEW_FIXED below (check@instance), one per finding the
+#                demo's scenarios raise across every overview check the waves added (io, pi, host, disk, storage,
+#                backups, corruption, custom, roles, indexes, jobs report, vacuum, beside the first ones); 'job
+#                failed'@aurora-crm01 x6 (refresh-sales-mv twice, sync-contacts four times); plus 'vacuum waiting
+#                on a lock'@rds-orders01 only when the newest vacuum read is in minutes 30-35 (vacuum_demo.go), and
+#                'CPU over 90 % for 10 minutes'@onprem-erp01 only while its host samples cover the rule's last 10
+#                minutes (5 readings over 8 minutes: about 2 minutes after the seed returns; host_demo.go);
+#                deadlocks (24 h)@rds-orders01 with '3 deadlock(s)'; no stale collection, no 'check could not run'
 #   jobs         aurora-crm01 4 jobs (three and the job report's sync-contacts), rds-billing01 4 (two and the job
 #                report's export-ledger and rollup-invoices: internal/demo/jobsreport_demo.go)
 #   logs         slow, lock_wait, deadlock, auth_fail, corruption (the corruption demo) and temp_file (the memory
@@ -37,7 +37,7 @@
 #                even one); table_checks = exactly the four table rows of the overview
 #   settings     one change each on onprem-erp01 (work_mem) and rds-orders01 (log_min_duration_statement)
 #   rerun        "15 replaced"; no instance_id of the first run is left in any table with an instance_id
-#                column; the same counts; a non-demo instance named like a demo one (prefix trap-) makes
+#                column (the dbadash_* tables aside: theirs is DBA Dash's InstanceID, not a pgvigil instance); the same counts; a non-demo instance named like a demo one (prefix trap-) makes
 #                the seed refuse with "exist without the demo tag" and stays as it was
 #   api          without a login: instances 15, overview the rows above, activity chains 3,
 #                statements >= 10 rows over 7 days, counters db/server/io/sessions rows > 0, dms 2 tasks
@@ -72,10 +72,13 @@ FIRST_IDS=$(P -c "select string_agg(instance_id::text, ',') from pgvigil.instanc
 ANCHOR=$(P -c "select max(snapshot_at) from pgvigil.activity_summary")
 # the seed prints its anchor and ticks on from it to the current minute before it returns: N is the grid (2,065
 # points when the anchor is on a 5-minute mark, 2,066 when it is not) plus the snapshot times after the anchor
-SEED_ANCHOR=$(sed -n 's/.*; anchor \([0-9TZ:-]*\)$/\1/p' <<<"$OUT"); [[ -n "$SEED_ANCHOR" ]] || fail "the seed printed no anchor"
-TICKS=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary where snapshot_at > '$SEED_ANCHOR'")
-N=$(P -c "select case when extract(minute from '$SEED_ANCHOR'::timestamptz)::int % 5 = 0 then 2065 else 2066 end + $TICKS")
-(( TICKS <= 30 )) || fail "$TICKS catch-up ticks: the seed stops ticking thirty minutes after its anchor"
+grid_n() {
+  SEED_ANCHOR=$(sed -n 's/.*; anchor \([0-9TZ:-]*\)$/\1/p' <<<"$OUT"); [[ -n "$SEED_ANCHOR" ]] || fail "the seed printed no anchor"
+  TICKS=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary where snapshot_at > '$SEED_ANCHOR'")
+  N=$(P -c "select case when extract(minute from '$SEED_ANCHOR'::timestamptz)::int % 5 = 0 then 2065 else 2066 end + $TICKS")
+  (( TICKS <= 30 )) || fail "$TICKS catch-up ticks: the seed stops ticking thirty minutes after its anchor"
+}
+grid_n
 got=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary a join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
 [[ "$got" == "$N" ]] || fail "the fleet holds $got snapshot times, want $N (the grid of anchor $SEED_ANCHOR plus $TICKS tick(s))"
 
@@ -133,28 +136,94 @@ PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 "$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" 2>"$WORK/serve.log" & SPID=$!
 for _ in $(seq 50); do curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
 api() { curl -fsS "http://127.0.0.1:$PORT/api/$1"; }
-EXPECTED_OVERVIEW="DMS CDC latency@demo-aurora-dms01
+EXPECTED_OVERVIEW_FIXED="BurstBalance@demo-rds-orders01
+DMS CDC latency@demo-aurora-dms01
 DMS changes on disk@demo-aurora-dms01
 DMS tables in error@demo-aurora-dms01
 DMS validation failures@demo-aurora-dms01
 DMS validation suspended@demo-aurora-dms01
+DiskQueueDepth@demo-rds-orders01
+ReadLatency@demo-rds-orders01
+archiver failing@demo-onprem-hr01
+cache starved by the ACU floor@demo-aurora-reporting01
 collection failing@demo-cloudsql-analytics02
+corruption: amcheck bt_index_check@demo-onprem-hr01
+corruption: corruption in the log@demo-onprem-hr01
+corruption: ignore_checksum_failure@demo-cloudsql-analytics02
+custom@demo-aurora-crm01
+custom@demo-onprem-erp01
 deadlocks (24 h)@demo-rds-orders01
+disk free under 10 %@demo-onprem-erp02
+disk free under 10 %@demo-onprem-hr01
+disk free under 10 %@demo-rds-orders01
+duplicate index@demo-aurora-crm01
+duplicate index@demo-azure-portal02
+duplicate index@demo-onprem-erp02
 inactive slot retaining WAL@demo-rds-billing01
+invalid index@demo-aurora-dms01
+invalid index@demo-azure-portal02
+invalid index@demo-onprem-erp01
+invalid index@demo-rds-orders01
 job failed@demo-aurora-crm01
 job failed@demo-aurora-crm01
+job failed@demo-aurora-crm01
+job failed@demo-aurora-crm01
+job failed@demo-aurora-crm01
+job failed@demo-aurora-crm01
+job failing repeatedly@demo-aurora-crm01
+job run over twice its average@demo-rds-billing01
+job schedule missed@demo-rds-billing01
+last archive older than 60 min@demo-onprem-hr01
+no snapshot in 24 h@demo-aurora-reporting01
 replay lag@demo-onprem-erp01
 replay lag@demo-onprem-erp02
+retention under 7 days@demo-aurora-dms01
+retention under 7 days@demo-rds-orders01
+role: BYPASSRLS@demo-aurora-reporting01
+role: BYPASSRLS@demo-cloudsql-analytics02
+role: BYPASSRLS@demo-rds-orders01
+role: CREATEROLE@demo-aurora-crm01
+role: CREATEROLE@demo-azure-portal02
+role: CREATEROLE@demo-onprem-erp02
+role: pg_monitor@demo-azure-portal02
+role: pg_monitor@demo-rds-billing01
+role: superuser@demo-azure-portal01
+role: superuser@demo-onprem-erp01
+role: superuser@demo-rds-billing01
+swap used@demo-onprem-hr01
+swap used@demo-rds-orders01
 table autovacuum off@demo-onprem-hr01
 table bloat@demo-onprem-erp01
 table dead rows@demo-rds-orders01
-table never vacuumed@demo-aurora-dms01"
+table never vacuumed@demo-aurora-dms01
+table over vacuum threshold@demo-rds-orders01
+volume full within 30 days@demo-onprem-erp02
+volume full within 30 days@demo-rds-orders01
+volume under 10 % free@demo-onprem-erp02
+volume under 10 % free@demo-onprem-hr01
+volume under 10 % free@demo-rds-orders01
+wraparound@demo-onprem-hr01"
+# vacuum_demo.go: rds-orders01's manual VACUUM waits on a lock in minutes 30 to 35 of every hour, and vacuum_running
+# keeps a read for 10 minutes: the row is expected only when the newest vacuum read is in that window
+expected_overview() {
+  local v; v=$(P -c "select count(*) from pgvigil.vacuum_state s join pgvigil.instances i using (instance_id)
+                      where i.name = 'demo-rds-orders01' and s.snapshot_at > now() - interval '10 minutes'
+                        and extract(minute from s.snapshot_at)::int between 30 and 35")
+  # host_demo.go: erp01's CPU sits at 99 %; the rule needs 5 readings spanning 8 minutes inside the last 10, so after the
+  # seed returns (plain serve does not tick) the row holds only while erp01's newest host sample is about 2 minutes old
+  local c; c=$(P -c "select count(*) >= 5 and max(h.snapshot_at) - min(h.snapshot_at) >= interval '8 minutes'
+                      from pgvigil.host_sample h join pgvigil.instances i using (instance_id)
+                     where i.name = 'demo-onprem-erp01' and h.snapshot_at > now() - interval '10 minutes' and h.cpu_pct is not null")
+  { echo "$EXPECTED_OVERVIEW_FIXED"; if [[ "$v" == 1 ]]; then echo "vacuum waiting on a lock@demo-rds-orders01"; fi
+    if [[ "$c" == t ]]; then echo "CPU over 90 % for 10 minutes@demo-onprem-erp01"; fi; } | LC_ALL=C python3 -c 'import sys; print("\n".join(sorted(sys.stdin.read().split("\n")[:-1])))'
+}
 check_api() {
   local got id
   got=$(api instances | python3 -c 'import json,sys; d=json.load(sys.stdin); n=d["columns"].index("tags"); print(sum(1 for r in d["rows"] if "demo" in (r[n] or [])))')
   [[ "$got" == 15 ]] || fail "api instances: $got"; ok "api instances: 15 demo"
   got=$(api overview | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["columns"]; print("\n".join(sorted(r[c.index("check_name")]+"@"+r[c.index("instance")] for r in d["rows"] if r[c.index("instance")].startswith("demo-") or r[c.index("check_name")]=="check could not run")))')
-  [[ "$got" == "$EXPECTED_OVERVIEW" ]] || { echo "$got" >&2; fail "overview rows differ"; }; ok "api overview: the 16 expected demo rows"
+  local want; want=$(expected_overview)
+  [[ "$got" == "$want" ]] || { diff <(echo "$want") <(echo "$got") >&2; fail "overview rows differ"; }; ok "api overview: the $(wc -l <<<"$want") expected demo rows"
   api overview | grep -q '3 deadlock(s)' || fail "overview deadlock detail"; ok "api overview: 3 deadlock(s)"
   id=$(P -c "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
   got=$(api "activity?instance=$id" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["chains"]["rows"]))')
@@ -176,8 +245,10 @@ OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed2.log") || { cat "$WORK/seed2.log"
 echo "$OUT"
 grep -q "(15 replaced)" <<<"$OUT" || fail "rerun did not replace 15"
 LEFT=0; NT=0
+# the dbadash_* tables' instance_id is DBA Dash's own InstanceID, not a pgvigil instance (0052_dbadash.sql): the demo's
+# DBA Dash repository carries ids 1 to 3 on every run, so they are not part of this sweep
 for t in $(P -c "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_attribute a on a.attrelid = c.oid and a.attname = 'instance_id'
-                 where n.nspname = 'pgvigil' and c.relkind in ('r', 'p') and not c.relispartition"); do
+                 where n.nspname = 'pgvigil' and c.relkind in ('r', 'p') and not c.relispartition and c.relname not like 'dbadash\_%'"); do
   LEFT=$((LEFT + $(P -c "select count(*) from pgvigil.$t where instance_id in ($FIRST_IDS)"))); NT=$((NT + 1))
 done
 [[ "$LEFT" == 0 ]] || fail "rows of the first run left: $LEFT"; ok "rerun: no row of the first run left in $NT tables"
@@ -187,8 +258,8 @@ if "$BIN" demo -config "$CFG" -prefix trap- -instances 1 -days 1 >/dev/null 2>"$
 grep -q "exist without the demo tag" "$WORK/trap.log" || { cat "$WORK/trap.log" >&2; fail "refusal message"; }
 got=$(P -c "select tags::text || '/' || (select count(*) from pgvigil.instances where name like 'trap-%') from pgvigil.instances where instance_id = $TRAP")
 [[ "$got" == "{prod}/1" ]] || fail "trap instance changed: $got"; ok "a non-demo instance with a demo name: refused, untouched"
-ANCHOR=$(P -c "select max(snapshot_at) from pgvigil.activity_summary")
-N=$(P -c "select case when extract(minute from '$ANCHOR'::timestamptz)::int % 5 = 0 then 2065 else 2066 end")
+# the second seed's grid from its own printed anchor and ticks, as the first
+grid_n
 check_repo
 check_api
 kill "$SPID"; wait "$SPID" 2>/dev/null || true; SPID=""
