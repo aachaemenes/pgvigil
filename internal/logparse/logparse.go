@@ -60,9 +60,33 @@ var (
 	planRE     = regexp.MustCompile(`^duration: ([0-9.]+) ms\s+plan:\s?(.*)$`)
 )
 
-// statementContextRE: a CONTEXT line that quotes statement text (PL/pgSQL's SQL statement "...", a dblink or
-// postgres_fdw remote query, an SQL function's body).
-var statementContextRE = regexp.MustCompile(`SQL statement "|while executing |SQL function "[^"]*" statement \d+`)
+// copyContextRE: COPY's error context names the table and the line (and column) and then quotes the row's data;
+// the data is cut, the position kept.
+var copyContextRE = regexp.MustCompile(`^(COPY \S+, line \d+(?:, column \S+)?): "`)
+
+// splitContext sorts a corruption event's CONTEXT lines: a line that carries statement text goes to the statement
+// WITHOUT its wrapper, so the query-text policy's normalizer sees plain SQL and masks its literals (PL/pgSQL's
+// `SQL statement "..."`, postgres_fdw's `remote SQL command: ...`; dblink's `while executing ...` names only the
+// connection and rides along); a COPY line keeps its position and loses the quoted row data; everything else (a
+// block, a relation, a process, a PL/pgSQL function and line, `SQL function "f" statement N`) stays in the detail.
+func splitContext(v string) (ctx, stmt []string) {
+	for _, l := range strings.Split(v, "\n") {
+		switch {
+		case strings.HasPrefix(l, `SQL statement "`) && strings.HasSuffix(l, `"`) && len(l) > len(`SQL statement ""`):
+			stmt = append(stmt, l[len(`SQL statement "`):len(l)-1])
+		case strings.HasPrefix(l, "remote SQL command: "):
+			stmt = append(stmt, strings.TrimPrefix(l, "remote SQL command: "))
+		case strings.HasPrefix(l, "while executing "):
+			stmt = append(stmt, l)
+		default:
+			if m := copyContextRE.FindStringSubmatch(l); m != nil {
+				l = m[1]
+			}
+			ctx = append(ctx, l)
+		}
+	}
+	return ctx, stmt
+}
 
 // corruptionRE are the messages of a damaged page, file, TOAST value or commit log, as PostgreSQL 12 to 18
 // word them (bufmgr, md.c / smgr, the checksum check, detoast, heap vacuum's freeze checks, slru, multixact, the
@@ -212,13 +236,7 @@ func classify(e *entry) (Event, bool) {
 		}
 		var ctx, stmt []string
 		if v := tagged(e.more, "CONTEXT"); v != "" {
-			for _, l := range strings.Split(v, "\n") {
-				if statementContextRE.MatchString(l) {
-					stmt = append(stmt, l)
-				} else {
-					ctx = append(ctx, l)
-				}
-			}
+			ctx, stmt = splitContext(v)
 		}
 		if len(ctx) > 0 {
 			d = append(d, "CONTEXT: "+strings.Join(ctx, "\n"))

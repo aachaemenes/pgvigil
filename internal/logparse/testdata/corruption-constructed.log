@@ -24,3 +24,9 @@
 2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:CONTEXT:  SQL statement "SELECT secret FROM accounts WHERE ssn = '123-45-6789'"
 	PL/pgSQL function load_accounts() line 4 at PERFORM
 2026-11-08 10:01:04 UTC:10.0.0.5(40011):app@app:[5115]:STATEMENT:  select load_accounts()
+2026-11-08 10:01:05 UTC:10.0.0.5(40012):app@app:[5116]:ERROR:  invalid page in block 2 of relation base/16384/16391
+2026-11-08 10:01:05 UTC:10.0.0.5(40012):app@app:[5116]:CONTEXT:  COPY accounts, line 3, column ssn: "123-45-6789,John Doe"
+2026-11-08 10:01:05 UTC:10.0.0.5(40012):app@app:[5116]:STATEMENT:  COPY accounts FROM STDIN
+2026-11-08 10:01:06 UTC:10.0.0.5(40013):app@app:[5117]:ERROR:  invalid page in block 7 of relation base/16384/16392
+2026-11-08 10:01:06 UTC:10.0.0.5(40013):app@app:[5117]:CONTEXT:  remote SQL command: SELECT secret FROM accounts WHERE ssn = '987-65-4321'
+2026-11-08 10:01:06 UTC:10.0.0.5(40013):app@app:[5117]:STATEMENT:  select * from remote_accounts

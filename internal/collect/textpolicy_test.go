@@ -139,6 +139,9 @@ func TestTextPolicyKindRules(t *testing.T) {
 			{"kind": "event", "kind_of": "corruption", "statement": "SELECT * FROM t WHERE id = 42", "detail": "invalid page in block 3 of relation base/16384/24576"},
 			{"kind": "event", "kind_of": "plan", "statement": "Seq Scan on t  (cost=0.00..35.50 rows=2550 width=4)\n  Filter: (id = 42)", "detail": "duration: 812.4 ms"},
 			{"kind": "event", "kind_of": "slow", "statement": "SELECT * FROM t WHERE id = 42", "detail": nil},
+			// a corruption event whose CONTEXT carried PL/pgSQL's SQL statement "...": the reader stores the inner SQL
+			// (plain, unwrapped) above the STATEMENT line, so the normalizer masks its literal
+			{"kind": "event", "kind_of": "corruption", "statement": "SELECT secret FROM accounts WHERE ssn = '123-45-6789'\nselect load_accounts()", "detail": "invalid page in block 9 of relation base/16384/16390\nCONTEXT: PL/pgSQL function load_accounts() line 4 at PERFORM"},
 		}
 	}
 	rows := mk()
@@ -159,6 +162,9 @@ func TestTextPolicyKindRules(t *testing.T) {
 	}
 	if s, _ := rows[2]["statement"].(string); strings.Contains(s, "42") {
 		t.Errorf("normalized kept a literal in a slow row: %q", s)
+	}
+	if s, _ := rows[3]["statement"].(string); strings.Contains(s, "123-45") || !strings.Contains(s, "load_accounts") {
+		t.Errorf("normalized on a CONTEXT-born statement: %q", s)
 	}
 	rows = mk()
 	applyTextPolicy(rows, "none")

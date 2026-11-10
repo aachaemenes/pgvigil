@@ -4,7 +4,7 @@ package demo
 // plan texts written the way EXPLAIN and auto_explain print them, so the plan rules of 0029 run on them as on a
 // captured plan.
 //
-// Wiring (the lead's, in gen.go):
+// Wired in gen.go at the join:
 //   Step:        beside actions_log, inside `if t.Equal(g.end) {`:  add("plans", g.planRows())
 //   Collections: append "plans" to the final list: ..., "extensions", "versions", "roles", "plans")
 //   seed.go:     on every instance the collector's plans run reads pg_store_plans; where it is absent (odd idx)

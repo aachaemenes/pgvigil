@@ -4,7 +4,7 @@ package demo
 // event rows, kind_of 'corruption'), amcheck's daily runs (the shape import_amcheck takes) and the two instance
 // values the Corruption column reads (data_checksums, the developer settings).
 //
-// Wiring (the lead's, in gen.go):
+// Wired in gen.go at the join:
 //   Step:        in the serverlog branch, after serverlogRows:   add("serverlog", g.corruptionLogRows(t, prev))
 //                (or append its rows to the serverlog batch: one batch per collection and step is the usual shape)
 //                after the storage block:  if g.amcheckOn() && (first || (t.Hour() == 3 && t.Minute() == 0)) { add("amcheck", g.amcheckRows(t)) }

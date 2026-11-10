@@ -3,7 +3,7 @@ package demo
 // Wait-sampling and index rows for the demo fleet (task 41: the waits and indexes collections): the shapes import_waits
 // and import_indexes take.
 //
-// Wiring (the lead's, in gen.go):
+// Wired in gen.go at the join:
 //   Step:        after add("activity", ...):           if g.waitDoor() { add("waits", g.waitRows(t)) }
 //                inside `if first || t.Minute() == 0 {` next to extensions, versions and roles:  add("indexes", g.indexRows(t))
 //   Collections: before the final return:              if g.waitDoor() { c = append(c, "waits") }

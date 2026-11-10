@@ -1,21 +1,24 @@
 // The Corruption views (task 34): per instance the three settings that decide whether damage is seen (data
 // checksums, ignore_checksum_failure, zero_damaged_pages), the server log's corruption events of 30 days, amcheck's
 // newest run per database and check (an opt-in collection: off until the instance's schedules name it) with its last
-// runs, and the corruption findings; and the fleet root, one row per instance. corruptionCell is the Summary column's
-// reading of a fleet row. Each view reads /api/corruption itself; the routes and the tree entry are the shell's.
+// runs, and the corruption findings; and the fleet root, one row per instance. corruptionCell is the Corruption root's
+// reading of a fleet row (the Summary column is fed by the findings' warning and critical rows, so both agree: checksums
+// off is a warning on a self-managed server only). Each view reads /api/corruption itself; the routes and the tree
+// entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtTime, grid, tile } from './ui';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const n = (v: unknown) => Number(v ?? 0);
 const onBad = (v: unknown) => v === 'on' ? badge('on', 'crit') : String(v ?? '');
-const checksums = (v: unknown, r: Row) => v == null ? '' : v === 'off' ? badge('off', r.platform === 'aurora' ? '' : 'warn') : String(v);
+const checksums = (v: unknown, r: Row) => v == null ? '' : v === 'off' ? badge('off', r.platform === 'onprem' ? 'warn' : '') : String(v);
 const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'corrupt' ? 'crit' : v === 'error' || v === 'partial' ? 'warn' : '');
 
 export type CorruptionLevel = 0 | 1 | 2;   // ok, warning, critical (the Summary grid's levels)
 
 // corruptionCell: critical on a corruption message in the log in 24 h, amcheck damage, ignore_checksum_failure or
-// zero_damaged_pages on; warning when checksums are off (not Aurora: its storage checks its own pages);
+// zero_damaged_pages on; warning when checksums are off on a self-managed server (a managed platform's storage checks
+// its own pages: the findings view says info there, none on Aurora);
 // an instance with no read is 'none'.
 export function corruptionCell(r: Row): { level: CorruptionLevel; text: string; detail: string[]; none?: boolean } {
   if (r.snapshot_at == null) return { level: 0, text: 'no sample', detail: [], none: true };
@@ -25,7 +28,7 @@ export function corruptionCell(r: Row): { level: CorruptionLevel; text: string; 
   if (n(r.amcheck_corrupt) > 0) { level = 2; d.push(`amcheck found ${r.amcheck_corrupt} damaged relation(s)`); }
   if (r.ignore_checksum_failure === 'on') { level = 2; d.push('ignore_checksum_failure is on'); }
   if (r.zero_damaged_pages === 'on') { level = 2; d.push('zero_damaged_pages is on'); }
-  if (r.data_checksums === 'off' && r.platform !== 'aurora') { level = Math.max(level, 1) as CorruptionLevel; d.push('data checksums are off'); }
+  if (r.data_checksums === 'off' && r.platform === 'onprem') { level = Math.max(level, 1) as CorruptionLevel; d.push('data checksums are off'); }
   const text = level === 2 ? (n(r.events_24h) > 0 ? `${r.events_24h} message(s)` : 'damage') : level === 1 ? 'no checksums' : 'ok';
   return { level, text, detail: d };
 }
