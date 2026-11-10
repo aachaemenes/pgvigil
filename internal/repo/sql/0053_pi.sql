@@ -89,20 +89,23 @@ BEGIN
   ON CONFLICT (instance_id, dim_group, dim_key, snapshot_at) DO UPDATE SET
     wait_type = EXCLUDED.wait_type, load_avg = EXCLUDED.load_avg, read_at = EXCLUDED.read_at;
 
-  -- a text the policy emptied (none) empties the stored one too; a run that could not fetch the whole text keeps
-  -- the one fetched before
+  -- a text the policy emptied (none) empties the stored one, its status and its statement id too; a run that could
+  -- not fetch the whole text keeps the one fetched before with its status and statement id
   INSERT INTO pgvigil.pi_sql AS t (instance_id, tokenized_id, db_id, digest, full_text, text_status, sql_id, first_seen, last_seen)
   SELECT DISTINCT ON (r->>'tokenized_id')
-         p_instance_id, r->>'tokenized_id', r->>'db_id', r->>'query', r->>'statement', r->>'text_status', r->>'sql_id', p_snapshot_at, p_snapshot_at
+         p_instance_id, r->>'tokenized_id', r->>'db_id', r->>'query', r->>'statement',
+         CASE WHEN r->>'query' IS NOT NULL THEN r->>'text_status' END, CASE WHEN r->>'query' IS NOT NULL THEN r->>'sql_id' END,
+         p_snapshot_at, p_snapshot_at
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'sql' AND r->>'tokenized_id' IS NOT NULL
   ON CONFLICT (instance_id, tokenized_id) DO UPDATE SET
     db_id = coalesce(EXCLUDED.db_id, t.db_id),
     digest = EXCLUDED.digest,
     full_text = CASE WHEN EXCLUDED.digest IS NULL THEN NULL ELSE coalesce(EXCLUDED.full_text, t.full_text) END,
-    text_status = CASE WHEN EXCLUDED.full_text IS NULL AND t.full_text IS NOT NULL AND EXCLUDED.digest IS NOT NULL
-                       THEN t.text_status ELSE EXCLUDED.text_status END,
-    sql_id = CASE WHEN EXCLUDED.full_text IS NULL AND EXCLUDED.digest IS NOT NULL THEN t.sql_id ELSE EXCLUDED.sql_id END,
+    text_status = CASE WHEN EXCLUDED.digest IS NULL THEN NULL
+                       WHEN EXCLUDED.full_text IS NULL AND t.full_text IS NOT NULL THEN t.text_status ELSE EXCLUDED.text_status END,
+    sql_id = CASE WHEN EXCLUDED.digest IS NULL THEN NULL
+                  WHEN EXCLUDED.full_text IS NULL AND t.full_text IS NOT NULL THEN t.sql_id ELSE EXCLUDED.sql_id END,
     last_seen = EXCLUDED.last_seen;
 END $$;
 
@@ -171,25 +174,28 @@ END $$;
 -- ---------------------------------------------------------------------------------------------------------
 
 -- "cache starved by the ACU floor", over the last hour (the k row): the instance's capacity never left the cluster's
--- minimum (every ServerlessDatabaseCapacity datapoint within 0.01 ACU of MinCapacity, at least 6 of them: half an
--- hour of 5-minute periods awake), its BufferCacheHitRatio averaged under 95 %, and its storage reads high
+-- running floor (every ServerlessDatabaseCapacity datapoint, from above and from below, within 0.01 ACU of MinCapacity,
+-- or of 0.5 ACU when MinCapacity is under it: 0.5 is the least an awake instance runs at, a 0 minimum only adds the
+-- pause; at least 6 datapoints: half an hour of 5-minute periods awake), its BufferCacheHitRatio averaged under 95 %, and its storage reads high
 -- (ReadIOPS at 200 a second or more) while the CPU stayed low (CPUUtilization under 30 %): Serverless v2 scales on CPU,
 -- memory and network, never on storage waits, so a working set larger than the floor's buffer cache is read from
 -- storage again and again while the capacity stays put. The three figures are in the value and the detail.
 CREATE OR REPLACE VIEW pgvigil.pi_findings AS
 WITH k AS (SELECT interval '1 hour' AS win, 0.01::float8 AS floor_slack, 6 AS cap_points_min, 95.0::float8 AS hit_min,
-                  200.0::float8 AS read_iops_high, 30.0::float8 AS cpu_low),
+                  200.0::float8 AS read_iops_high, 30.0::float8 AS cpu_low,
+                  0.5::float8 AS running_min),
 m AS (
-  SELECT s.instance_id, s.metric, avg(s.value) AS mean, max(s.value) AS high, count(*) AS points, max(s.snapshot_at) AS at
+  SELECT s.instance_id, s.metric, avg(s.value) AS mean, max(s.value) AS high, min(s.value) AS low, count(*) AS points,
+         max(s.snapshot_at) AS at
     FROM pgvigil.serverless_sample s JOIN pgvigil.instances i USING (instance_id), k
    WHERE i.is_active AND s.snapshot_at > now() - k.win AND s.value IS NOT NULL
    GROUP BY s.instance_id, s.metric
 ),
 w AS (
-  SELECT c.instance_id, c.min_acu, c.max_acu, c.cluster,
-         cap.high AS cap_high, cap.points AS cap_points, hit.mean AS hit, rd.mean AS read_iops, cpu.mean AS cpu,
+  SELECT c.instance_id, c.min_acu, c.max_acu, c.cluster, greatest(c.min_acu, k.running_min) AS run_floor,
+         cap.high AS cap_high, cap.low AS cap_low, cap.points AS cap_points, hit.mean AS hit, rd.mean AS read_iops, cpu.mean AS cpu,
          greatest(cap.at, hit.at, rd.at, cpu.at) AS at
-    FROM pgvigil.serverless_scaling c
+    FROM k, pgvigil.serverless_scaling c
     JOIN m cap ON cap.instance_id = c.instance_id AND cap.metric = 'ServerlessDatabaseCapacity'
     JOIN m hit ON hit.instance_id = c.instance_id AND hit.metric = 'BufferCacheHitRatio'
     JOIN m rd  ON rd.instance_id  = c.instance_id AND rd.metric  = 'ReadIOPS'
@@ -197,20 +203,23 @@ w AS (
    WHERE c.min_acu IS NOT NULL
 )
 SELECT w.instance_id, 'warning'::text AS severity, 'cache starved by the ACU floor'::text AS setting,
-       trim(to_char(w.cap_high, 'FM9990.0')) || ' ACU (floor ' || trim(to_char(w.min_acu, 'FM9990.0')) || '), hit ratio '
+       trim(to_char(w.cap_high, 'FM9990.0')) || ' ACU (floor ' || trim(to_char(w.min_acu, 'FM9990.0'))
+         || CASE WHEN w.run_floor > w.min_acu THEN ', running ' || trim(to_char(w.run_floor, 'FM9990.0')) ELSE '' END || '), hit ratio '
          || round(w.hit::numeric, 1)::text || ' %, ' || round(w.read_iops::numeric)::text || ' reads/s at '
          || round(w.cpu::numeric, 1)::text || ' % CPU' AS value,
        true AS is_set,
-       'a minimum ACU above ' || trim(to_char(w.min_acu, 'FM9990.0')) || ' (the ceiling is '
+       'a minimum ACU above ' || trim(to_char(w.run_floor, 'FM9990.0')) || ' (the ceiling is '
          || coalesce(trim(to_char(w.max_acu, 'FM9990.0')), 'unknown') || ')' AS suggested,
        'aurora'::text AS platforms,
-       'over the last hour the capacity sat on the cluster''s minimum of ' || trim(to_char(w.min_acu, 'FM9990.0'))
-         || ' ACU, the buffer cache hit ratio averaged ' || round(w.hit::numeric, 1)::text || ' % (under ' || k.hit_min::text
+       'over the last hour the capacity sat on the cluster''s ' || CASE WHEN w.run_floor > w.min_acu
+         THEN 'running floor of ' || trim(to_char(w.run_floor, 'FM9990.0')) || ' ACU (the minimum is ' || trim(to_char(w.min_acu, 'FM9990.0'))
+              || ': a 0 minimum only adds the pause)' ELSE 'minimum of ' || trim(to_char(w.min_acu, 'FM9990.0')) || ' ACU' END
+         || ', the buffer cache hit ratio averaged ' || round(w.hit::numeric, 1)::text || ' % (under ' || k.hit_min::text
          || ' %) and storage reads averaged ' || round(w.read_iops::numeric)::text || ' a second while the CPU averaged '
          || round(w.cpu::numeric, 1)::text || ' %: the working set does not fit the floor''s cache, and Serverless v2 '
          || 'scales on CPU, memory and network, never on storage waits, so the capacity stays at the floor'
          || coalesce(' (cluster ' || w.cluster || ')', '') AS detail,
        'pgvigil pi'::text AS source, w.at
   FROM w, k
- WHERE w.cap_points >= k.cap_points_min AND w.cap_high <= w.min_acu + k.floor_slack
+ WHERE w.cap_points >= k.cap_points_min AND w.cap_high <= w.run_floor + k.floor_slack AND w.cap_low >= w.run_floor - k.floor_slack
    AND w.hit < k.hit_min AND w.read_iops >= k.read_iops_high AND w.cpu < k.cpu_low;

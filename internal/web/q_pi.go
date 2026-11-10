@@ -23,8 +23,9 @@ SELECT db_instance, resource_id, enabled, retention_days, hours_read, note, snap
   FROM pgvigil.pi_state s
  WHERE instance_id = $1`
 
-// piHours: the PI hours that overlap the window [$2, $3) (an hour row is keyed by its start).
-const piHours = `l.instance_id = $1 AND l.snapshot_at + interval '1 hour' > $2 AND l.snapshot_at < $3`
+// piHours: the PI hours that overlap the window [$2, $3) (an hour row is keyed by its start; the bound on the column
+// itself, so the (instance_id, snapshot_at) index serves both ends).
+const piHours = `l.instance_id = $1 AND l.snapshot_at > $2::timestamptz - interval '1 hour' AND l.snapshot_at < $3`
 
 // sqlPITotal is the hourly DB load (average active sessions) over the window.
 const sqlPITotal = `

@@ -29,6 +29,7 @@ type AWSInstance struct {
 	ScalingNote   string // why the range is unknown (DescribeDBClusters failed or the cluster is not Serverless v2)
 	DescribedAt   time.Time
 	ClusterReadAt time.Time
+	clusterFailed bool // the last DescribeDBClusters failed: the next call reads the cluster again
 }
 
 // AWSDescriber is the slice of the RDS client the lookup calls; a recorded set in a test.
@@ -46,12 +47,22 @@ var (
 )
 
 // DescribeAWSInstance returns the instance's answer, read again when the cached one is older than AWSDescribeTTL.
-// A cluster read that fails leaves HasScaling false with the reason; the instance read failing is the error.
-func DescribeAWSInstance(ctx context.Context, api AWSDescriber, id string, now time.Time) (AWSInstance, error) {
+// The cache is keyed by awsKey (the client's profile and region: an identifier is unique only in its account and
+// region) and the identifier. A cluster read that fails leaves HasScaling false with the reason and is tried again
+// on the next call (a throttled describe must not hide the range for an hour); the instance read failing is the error.
+func DescribeAWSInstance(ctx context.Context, api AWSDescriber, awsKey, id string, now time.Time) (AWSInstance, error) {
+	key := awsKey + "|" + id
 	awsInstMu.Lock()
-	c, ok := awsInstCache[id]
+	c, ok := awsInstCache[key]
 	awsInstMu.Unlock()
 	if ok && now.Sub(c.DescribedAt) < AWSDescribeTTL {
+		if !c.clusterFailed {
+			return c, nil
+		}
+		c.describeCluster(ctx, api, now)
+		awsInstMu.Lock()
+		awsInstCache[key] = c
+		awsInstMu.Unlock()
 		return c, nil
 	}
 	di, err := api.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{DBInstanceIdentifier: aws.String(id)})
@@ -67,25 +78,32 @@ func DescribeAWSInstance(ctx context.Context, api AWSDescriber, id string, now t
 	if d.PerformanceInsightsRetentionPeriod != nil {
 		out.PIRetention = int(*d.PerformanceInsightsRetentionPeriod)
 	}
-	if out.Cluster != "" {
-		dc, err := api.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{DBClusterIdentifier: aws.String(out.Cluster)})
-		switch {
-		case err != nil:
-			out.ScalingNote = fmt.Sprintf("DescribeDBClusters %s: %v", out.Cluster, err)
-		case len(dc.DBClusters) == 0:
-			out.ScalingNote = fmt.Sprintf("DescribeDBClusters %s: no such cluster", out.Cluster)
-		case dc.DBClusters[0].ServerlessV2ScalingConfiguration == nil:
-			out.ScalingNote = "the cluster has no Serverless v2 range (provisioned instances only)"
-		default:
-			s := dc.DBClusters[0].ServerlessV2ScalingConfiguration
-			out.MinACU, out.MaxACU, out.HasScaling = aws.ToFloat64(s.MinCapacity), aws.ToFloat64(s.MaxCapacity), true
-		}
-		out.ClusterReadAt = now
-	}
+	out.describeCluster(ctx, api, now)
 	awsInstMu.Lock()
-	awsInstCache[id] = out
+	awsInstCache[key] = out
 	awsInstMu.Unlock()
 	return out, nil
+}
+
+// describeCluster reads the cluster's Serverless v2 range into the answer (no cluster: nothing to read).
+func (out *AWSInstance) describeCluster(ctx context.Context, api AWSDescriber, now time.Time) {
+	if out.Cluster == "" {
+		return
+	}
+	out.MinACU, out.MaxACU, out.HasScaling, out.ScalingNote, out.clusterFailed = 0, 0, false, "", false
+	dc, err := api.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{DBClusterIdentifier: aws.String(out.Cluster)})
+	switch {
+	case err != nil:
+		out.ScalingNote, out.clusterFailed = fmt.Sprintf("DescribeDBClusters %s: %v", out.Cluster, err), true
+	case len(dc.DBClusters) == 0:
+		out.ScalingNote = fmt.Sprintf("DescribeDBClusters %s: no such cluster", out.Cluster)
+	case dc.DBClusters[0].ServerlessV2ScalingConfiguration == nil:
+		out.ScalingNote = "the cluster has no Serverless v2 range (provisioned instances only)"
+	default:
+		sc := dc.DBClusters[0].ServerlessV2ScalingConfiguration
+		out.MinACU, out.MaxACU, out.HasScaling = aws.ToFloat64(sc.MinCapacity), aws.ToFloat64(sc.MaxCapacity), true
+	}
+	out.ClusterReadAt = now
 }
 
 // ForgetAWSInstances empties the cache (tests).

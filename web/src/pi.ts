@@ -10,7 +10,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-const palette = ['#2f6fdf', '#d9480f', '#2b8a3e', '#ae3ec9', '#e8590c', '#1098ad', '#5c940d', '#c2255c', '#868e96'];
+const palette = ['#2f6fdf', '#d9480f', '#2b8a3e', '#ae3ec9', '#e8590c', '#1098ad', '#5c940d', '#e64980', '#868e96'];
 const SVG = 'http://www.w3.org/2000/svg';
 
 function svgEl(tag: string, attrs: Record<string, string | number>, ...kids: Node[]): SVGElement {
@@ -31,6 +31,8 @@ function stackedHours(ctx: Ctx, rows: Row[]): HTMLElement {
   waits.sort((a, b) => a === 'other' ? 1 : b === 'other' ? -1 : (order.get(b)! - order.get(a)!));
   const colour = (w: string) => w === 'other' ? palette[8] : palette[waits.indexOf(w) % 8];
   const hours = [...new Set(rows.map(r => String(r.snapshot_at)))].sort((a, b) => Date.parse(a) - Date.parse(b));
+  // bars sit on a time axis (an hour missing from the read leaves its gap), one slot per hour of the span
+  const t0 = Date.parse(hours[0]), span = Math.round((Date.parse(hours[hours.length - 1]) - t0) / 3600_000) + 1;
   const by = new Map<string, Map<string, number>>();
   for (const r of rows) {
     const h = String(r.snapshot_at);
@@ -41,7 +43,7 @@ function stackedHours(ctx: Ctx, rows: Row[]): HTMLElement {
   const peak = Math.max(...totals, 0.001);
   const W = 640, H = 220, left = 48, bottom = 24, top = 8;
   const plotW = W - left - 8, plotH = H - bottom - top;
-  const step = plotW / hours.length, barW = Math.max(2, step * 0.8);
+  const step = plotW / span, barW = Math.max(0.5, step * 0.8);   // never wider than its slot: no bar covers the next
   const css = getComputedStyle(document.documentElement);
   const fg = css.getPropertyValue('--muted').trim() || '#5d6676', line = css.getPropertyValue('--line').trim() || '#dde1e8';
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'group', 'aria-label': 'DB load by wait per hour; each bar opens its hour' });
@@ -51,7 +53,8 @@ function stackedHours(ctx: Ctx, rows: Row[]): HTMLElement {
       svgEl('text', { x: left - 4, y: y + 4, 'text-anchor': 'end', 'font-size': 10, fill: fg }, document.createTextNode(fmtNum(Math.round(peak * f * 100) / 100))));
   }
   hours.forEach((h, i) => {
-    const x = left + i * step + (step - barW) / 2;
+    const slot = Math.round((Date.parse(h) - t0) / 3600_000);
+    const x = left + slot * step + (step - barW) / 2;
     const segs = by.get(h)!;
     const heaviest = [...segs.entries()].sort((a, b) => b[1] - a[1])[0];
     const start = new Date(h), end = new Date(start.getTime() + 3600_000);
@@ -91,6 +94,7 @@ function textCell(_v: unknown, r: Row): Node {
 const textStatus: Record<string, string> = {
   whole: 'whole (under the 500-byte cut)', AVAILABLE: 'whole (fetched)', PROCESSING: 'cut (PI still processing)',
   UNAVAILABLE: 'cut (PI has no whole text)', 'no statement id': 'cut (no statement of it in the read)', error: 'cut (the fetch failed)',
+  'not asked (call cap)': 'cut (not asked yet: the hourly call cap)',
 };
 
 const sqlCols: Col[] = [
@@ -118,13 +122,13 @@ export async function loadView(ctx: Ctx): Promise<HTMLElement> {
       + 'and needs pi:GetResourceMetrics and pi:GetDimensionKeyDetails beside the rds: reads (Configuration shows a skip and its reason).'));
     return sec;
   }
+  const total = rowsOf(d.total);
   if (st.enabled === false) {
-    sec.append(el('p', { class: 'empty' }, `Performance Insights is off on ${String(st.db_instance ?? 'this instance')}: there is no DB load to keep. `
+    sec.append(el('p', { class: 'empty' }, `Performance Insights is off on ${String(st.db_instance ?? 'this instance')}: no new DB load is read. `
       + 'Turn it on in the instance\'s settings (the free tier keeps 7 days; pgvigil keeps the hourly load for its own retention).'));
     if (st.kept_from) sec.append(el('p', { class: 'meta' }, `Hours kept from before: ${fmtTime(st.kept_from)} to ${fmtTime(st.kept_to)}.`));
-    return sec;
+    if (!total.length) return sec;   // the kept hours of this window still show below
   }
-  const total = rowsOf(d.total);
   const peak = total.reduce((m, r) => Math.max(m, Number(r.load_avg ?? 0)), 0);
   const mean = total.length ? total.reduce((s, r) => s + Number(r.load_avg ?? 0), 0) / total.length : null;
   sec.append(el('div', { class: 'tiles' },
@@ -162,7 +166,7 @@ export async function capacitySection(ctx: Ctx): Promise<HTMLElement> {
   const onFloor = acu != null && floor != null && Number(acu) <= Number(floor) + 0.01;
   sec.append(el('div', { class: 'tiles' },
     tile('capacity', acu == null ? '-' : fmtNum(acu) + ' ACU', onFloor ? 'warn' : ''),
-    tile('floor / ceiling', floor == null ? '-' : `${fmtNum(floor)} / ${fmtNum(ceil)} ACU`),
+    tile('floor / ceiling', floor == null ? '-' : `${fmtNum(floor)} / ${ceil == null ? '?' : fmtNum(ceil)} ACU`),
     tile('buffer cache hit ratio', hit == null ? '-' : fmtNum(Math.round(Number(hit) * 10) / 10) + ' %', hit != null && Number(hit) < 95 ? 'warn' : ''),
     tile('ACU utilization', v('ACUUtilization') == null ? '-' : fmtNum(Math.round(Number(v('ACUUtilization')))) + ' %'),
   ));
@@ -178,7 +182,8 @@ export async function capacitySection(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('div', { class: 'charts' },
     lineChart('Capacity (ACU) against the floor and the ceiling', withRange, [{ key: 'acu', label: 'capacity' }, { key: 'floor', label: 'floor' }, { key: 'ceiling', label: 'ceiling' }]),
     lineChart('Buffer cache hit ratio %', series, [{ key: 'hit_pct', label: 'hit ratio' }]),
-    lineChart('Storage reads / s against CPU %', series, [{ key: 'read_iops', label: 'reads / s' }, { key: 'cpu_pct', label: 'CPU %' }]),
+    lineChart('Storage reads / s', series, [{ key: 'read_iops', label: 'reads / s' }]),
+    lineChart('CPU %', series, [{ key: 'cpu_pct', label: 'CPU' }]),
   ));
   return sec;
 }

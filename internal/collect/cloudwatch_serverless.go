@@ -22,13 +22,16 @@ import (
 // nothing): the capacity in ACU, the ACU utilization, the buffer cache hit ratio, the storage reads and the CPU; and,
 // once an hour, the instance's cluster and its Serverless v2 range (the floor and the ceiling). A provisioned Aurora
 // instance answers BufferCacheHitRatio, ReadIOPS and CPUUtilization only (no capacity series, no range): the rows are
-// kept and the rule needs the range, so it never fires there. A paused Serverless v2 instance (a 0 ACU floor)
-// publishes CPUUtilization only: the scaling row's note says so. Read only: one GetMetricData call per run.
+// kept and the range is stored for a db.serverless instance only (a mixed cluster's range is its Serverless v2
+// readers'), so the rule never fires there. A paused Serverless v2 instance (a 0 ACU floor) publishes 0 for
+// ServerlessDatabaseCapacity, ACUUtilization and CPUUtilization only (the Aurora User Guide, automatic pause): the
+// scaling row's note says so. Read only: one GetMetricData call per run.
 type serverlessCollector struct{}
 
 func init() { Register(serverlessCollector{}) }
 
 const (
+	serverlessClass  = "db.serverless"  // DBInstanceClass of a Serverless v2 instance
 	serverlessPeriod = 300              // seconds per datapoint, as the IO collection reads them
 	serverlessWindow = 20 * time.Minute // four periods
 )
@@ -122,13 +125,13 @@ func (c serverlessCollector) RunInstance(ctx context.Context, conn *pgx.Conn, in
 	if err != nil {
 		return nil, err
 	}
-	return serverlessRows(ctx, api, id, time.Now())
+	return serverlessRows(ctx, api, in.AWS.Profile+"|"+in.AWS.Region, id, time.Now())
 }
 
 // serverlessRows reads the five series of one DB instance over the window (one row per datapoint:
 // {kind:'metric', dim, metric, stat, unit, at, value}) and its scaling row {kind:'scaling', db_instance, cluster,
 // class, min_acu, max_acu, note}. A failed describe becomes a collector_error row; the metrics still land.
-func serverlessRows(ctx context.Context, api serverlessAPI, id string, now time.Time) ([]Row, error) {
+func serverlessRows(ctx context.Context, api serverlessAPI, awsKey, id string, now time.Time) ([]Row, error) {
 	var queries []cwtypes.MetricDataQuery
 	for i, m := range serverlessMetrics {
 		queries = append(queries, cwtypes.MetricDataQuery{
@@ -147,6 +150,7 @@ func serverlessRows(ctx context.Context, api serverlessAPI, id string, now time.
 	}
 	var rows []Row
 	answered := map[string]bool{}
+	capPoints, capHigh := 0, 0.0
 	for {
 		res, err := api.GetMetricData(ctx, in)
 		if err != nil {
@@ -163,6 +167,10 @@ func serverlessRows(ctx context.Context, api serverlessAPI, id string, now time.
 					break
 				}
 				answered[m.name] = true
+				if m.name == "ServerlessDatabaseCapacity" {
+					capPoints++
+					capHigh = max(capHigh, r.Values[j])
+				}
 				rows = append(rows, Row{"kind": "metric", "dim": id, "metric": m.name, "stat": m.stat, "unit": m.unit,
 					"at": r.Timestamps[j].UTC(), "value": r.Values[j]})
 			}
@@ -179,18 +187,24 @@ func serverlessRows(ctx context.Context, api serverlessAPI, id string, now time.
 		return rows[i]["at"].(time.Time).Before(rows[j]["at"].(time.Time))
 	})
 
-	d, err := platform.DescribeAWSInstance(ctx, api, id, now)
+	d, err := platform.DescribeAWSInstance(ctx, api, awsKey, id, now)
 	if err != nil {
 		return append(rows, Row{"kind": "collector_error", "source": "rds", "message": err.Error()}), nil
 	}
 	sc := Row{"kind": "scaling", "db_instance": id, "cluster": nilIfEmpty(d.Cluster), "class": nilIfEmpty(d.Class)}
-	if d.HasScaling {
-		sc["min_acu"], sc["max_acu"] = d.MinACU, d.MaxACU
-	}
 	note := d.ScalingNote
-	if d.HasScaling && answered["CPUUtilization"] && !answered["ServerlessDatabaseCapacity"] {
-		note = fmt.Sprintf("only CPUUtilization answered over the last %s: the instance was paused (a paused Serverless v2 instance publishes CPUUtilization only)", serverlessWindow)
-	} else if len(answered) == 0 {
+	switch {
+	case d.Class != serverlessClass:
+		// a provisioned instance (a mixed cluster carries a range for its Serverless v2 readers): the range is not its
+		note = fmt.Sprintf("a provisioned instance (%s): the cluster's Serverless v2 range does not apply to it", d.Class)
+	case d.HasScaling:
+		sc["min_acu"], sc["max_acu"] = d.MinACU, d.MaxACU
+		// a paused instance publishes 0 for ServerlessDatabaseCapacity, ACUUtilization and CPUUtilization, and nothing else
+		if capPoints > 0 && capHigh == 0 {
+			note = fmt.Sprintf("paused: ServerlessDatabaseCapacity 0 over the last %s (a paused instance publishes 0 for capacity, ACU and CPU only)", serverlessWindow)
+		}
+	}
+	if len(answered) == 0 {
 		note = fmt.Sprintf("no AWS/RDS datapoint for %s over the last %s (stopped, or a wrong identifier)", id, serverlessWindow)
 	}
 	sc["note"] = nilIfEmpty(note)

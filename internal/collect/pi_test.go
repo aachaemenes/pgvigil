@@ -3,8 +3,11 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,6 +75,10 @@ type recordedPI struct {
 	rmCalls    []*pi.GetResourceMetricsInput
 	keyCalls   []*pi.GetDimensionKeyDetailsInput
 	describeDB int
+	pageSize   int    // > 0: an unfiltered answer comes in pages of this many series (NextToken the next index)
+	keyStatus  string // set: every GetDimensionKeyDetails answer carries this status (PROCESSING: a cut text)
+	clusterErr int    // the first clusterErr DescribeDBClusters calls fail
+	clusters   int    // DescribeDBClusters calls
 }
 
 func (r *recordedPI) GetResourceMetrics(_ context.Context, in *pi.GetResourceMetricsInput, _ ...func(*pi.Options)) (*pi.GetResourceMetricsOutput, error) {
@@ -82,12 +89,27 @@ func (r *recordedPI) GetResourceMetrics(_ context.Context, in *pi.GetResourceMet
 			groups[aws.ToString(q.GroupBy.Group)] = true
 		}
 	}
+	filter := map[string]string{}
+	limit := 0
+	for _, q := range in.MetricQueries {
+		for k, v := range q.Filter {
+			filter[k] = v
+		}
+		if q.GroupBy != nil && len(q.Filter) > 0 {
+			limit = int(aws.ToInt32(q.GroupBy.Limit))
+		}
+	}
 	out := &pi.GetResourceMetricsOutput{Identifier: in.Identifier}
 	for _, m := range r.metrics.MetricList {
-		keep := len(m.Key.Dimensions) == 0
+		keep := len(m.Key.Dimensions) == 0 && len(filter) == 0
 		for k := range m.Key.Dimensions {
 			if g := k[:strings.LastIndex(k, ".")]; groups[g] {
 				keep = true
+			}
+		}
+		for k, v := range filter { // a filtered query: only the series of that dimension value
+			if m.Key.Dimensions[k] != v {
+				keep = false
 			}
 		}
 		if !keep {
@@ -103,6 +125,26 @@ func (r *recordedPI) GetResourceMetrics(_ context.Context, in *pi.GetResourceMet
 		}
 		out.MetricList = append(out.MetricList, kd)
 	}
+	if limit > 0 { // the heaviest first, as PI ranks a grouped answer, cut at the limit
+		load := func(k pitypes.MetricKeyDataPoints) (s float64) {
+			for _, p := range k.DataPoints {
+				s += aws.ToFloat64(p.Value)
+			}
+			return s
+		}
+		sort.SliceStable(out.MetricList, func(i, j int) bool { return load(out.MetricList[i]) > load(out.MetricList[j]) })
+		if len(out.MetricList) > limit {
+			out.MetricList = out.MetricList[:limit]
+		}
+	}
+	if r.pageSize > 0 && len(filter) == 0 {
+		from, _ := strconv.Atoi(aws.ToString(in.NextToken))
+		to := min(from+r.pageSize, len(out.MetricList))
+		if to < len(out.MetricList) {
+			out.NextToken = aws.String(strconv.Itoa(to))
+		}
+		out.MetricList = out.MetricList[from:to]
+	}
 	return out, nil
 }
 
@@ -110,8 +152,15 @@ func (r *recordedPI) GetDimensionKeyDetails(_ context.Context, in *pi.GetDimensi
 	r.keyCalls = append(r.keyCalls, in)
 	out := &pi.GetDimensionKeyDetailsOutput{}
 	for _, d := range r.details.Dimensions {
+		st, v := d.Status, d.Value
+		if r.keyStatus != "" {
+			st = r.keyStatus
+			if st == "PROCESSING" { // PI returns the cut text while it processes the whole one
+				v = v[:piTextCut]
+			}
+		}
 		out.Dimensions = append(out.Dimensions, pitypes.DimensionKeyDetail{Dimension: aws.String(d.Dimension),
-			Status: pitypes.DetailStatus(d.Status), Value: aws.String(d.Value)})
+			Status: pitypes.DetailStatus(st), Value: aws.String(v)})
 	}
 	return out, nil
 }
@@ -122,6 +171,10 @@ func (r *recordedPI) DescribeDBInstances(_ context.Context, _ *rds.DescribeDBIns
 }
 
 func (r *recordedPI) DescribeDBClusters(_ context.Context, _ *rds.DescribeDBClustersInput, _ ...func(*rds.Options)) (*rds.DescribeDBClustersOutput, error) {
+	r.clusters++
+	if r.clusters <= r.clusterErr {
+		return nil, errors.New("Throttling: Rate exceeded")
+	}
 	if r.cluster == nil {
 		return &rds.DescribeDBClustersOutput{}, nil
 	}
@@ -171,7 +224,7 @@ func rowsOfKind(rows []Row, kind string) []Row {
 func TestPIRecordedShape(t *testing.T) {
 	api := newRecordedPI(t, true)
 	now := piRecordedNow(t, api)
-	rows, err := piRows(context.Background(), api, "proof-pi-1", now)
+	rows, err := piRows(context.Background(), api, "k", "proof-pi-1", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +289,7 @@ func TestPIRecordedShape(t *testing.T) {
 	}
 
 	// the next hour: the whole text comes from the process's cache, DescribeDBInstances from its hour's cache
-	if _, err := piRows(context.Background(), api, "proof-pi-1", now.Add(30*time.Minute)); err != nil {
+	if _, err := piRows(context.Background(), api, "k", "proof-pi-1", now.Add(30*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if len(api.keyCalls) != 1 || api.describeDB != 1 {
@@ -246,7 +299,7 @@ func TestPIRecordedShape(t *testing.T) {
 
 func TestPIOff(t *testing.T) {
 	api := newRecordedPI(t, false)
-	rows, err := piRows(context.Background(), api, "proof-pi-1", piRecordedNow(t, api))
+	rows, err := piRows(context.Background(), api, "k", "proof-pi-1", piRecordedNow(t, api))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +315,7 @@ func TestPIOff(t *testing.T) {
 func TestPITextPolicy(t *testing.T) {
 	for _, mode := range []string{"full", "normalized", "none"} {
 		api := newRecordedPI(t, true)
-		rows, err := piRows(context.Background(), api, "proof-pi-1", piRecordedNow(t, api))
+		rows, err := piRows(context.Background(), api, "k", "proof-pi-1", piRecordedNow(t, api))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -317,16 +370,17 @@ type recordedServerless struct {
 }
 
 // serverlessFloor makes the floor shape for one instance: four 5-minute periods (the window's) at 0.5 ACU (the floor), a 91 %
-// hit ratio, 850 reads a second at 12 % CPU; paused leaves only CPUUtilization.
+// hit ratio, 850 reads a second at 12 % CPU; paused is what AWS documents for a paused instance (the Aurora User
+// Guide, automatic pause): 0 for ServerlessDatabaseCapacity, ACUUtilization and CPUUtilization, nothing else.
 func serverlessFloor(id string, now time.Time, paused bool) []recordedMetric {
 	var out []recordedMetric
 	start := now.Add(-serverlessWindow).Truncate(serverlessPeriod * time.Second)
 	for at := start; at.Before(now.Add(-serverlessPeriod * time.Second)); at = at.Add(serverlessPeriod * time.Second) {
 		vals := map[string]float64{"ServerlessDatabaseCapacity": 0.5, "ACUUtilization": 99, "BufferCacheHitRatio": 91, "ReadIOPS": 850, "CPUUtilization": 12}
+		if paused {
+			vals = map[string]float64{"ServerlessDatabaseCapacity": 0, "ACUUtilization": 0, "CPUUtilization": 0}
+		}
 		for m, v := range vals {
-			if paused && m != "CPUUtilization" {
-				continue
-			}
 			out = append(out, recordedMetric{Metric: m, Dims: map[string]string{"DBInstanceIdentifier": id}, Value: v, At: at})
 		}
 	}
@@ -338,7 +392,7 @@ func TestServerlessRows(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		p := newRecordedPI(t, false)
 		api := recordedServerless{&recordedCW{metrics: serverlessFloor("proof-pi-1", now, paused)}, p}
-		rows, err := serverlessRows(context.Background(), api, "proof-pi-1", now)
+		rows, err := serverlessRows(context.Background(), api, "k", "proof-pi-1", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -352,7 +406,7 @@ func TestServerlessRows(t *testing.T) {
 		}
 		note, _ := sc[0]["note"].(string)
 		if paused {
-			if len(per) != 1 || per["CPUUtilization"] != 4 || !strings.Contains(note, "paused") {
+			if len(per) != 3 || per["ServerlessDatabaseCapacity"] != 4 || !strings.HasPrefix(note, "paused") {
 				t.Errorf("paused: metrics %v, note %q", per, note)
 			}
 			continue
@@ -366,6 +420,175 @@ func TestServerlessRows(t *testing.T) {
 			}
 		}
 	}
+
+	// a provisioned instance in a cluster that carries a range (a mixed cluster): no range stored, never "paused"
+	p := newRecordedPI(t, false)
+	p.db.DBInstanceClass = aws.String("db.r6g.large")
+	var prov []recordedMetric
+	for _, m := range serverlessFloor("proof-pi-1", now, false) {
+		if m.Metric != "ServerlessDatabaseCapacity" && m.Metric != "ACUUtilization" {
+			prov = append(prov, m)
+		}
+	}
+	rows, err := serverlessRows(context.Background(), recordedServerless{&recordedCW{metrics: prov}, p}, "k", "proof-pi-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := rowsOfKind(rows, "scaling")
+	if note, _ := sc[0]["note"].(string); sc[0]["min_acu"] != nil || sc[0]["max_acu"] != nil || !strings.Contains(note, "provisioned") {
+		t.Errorf("provisioned instance: %v", sc[0])
+	}
+}
+
+// TestDescribeClusterRetry: a failed DescribeDBClusters is read again on the next call, the instance answer stays
+// cached; the same identifier under another profile or region is its own entry.
+func TestDescribeClusterRetry(t *testing.T) {
+	now := time.Date(2026, 11, 9, 20, 7, 0, 0, time.UTC)
+	p := newRecordedPI(t, false)
+	p.clusterErr = 1
+	d, err := platform.DescribeAWSInstance(context.Background(), p, "k", "proof-pi-1", now)
+	if err != nil || d.HasScaling || !strings.Contains(d.ScalingNote, "Throttling") {
+		t.Fatalf("first read: %+v %v", d, err)
+	}
+	d, err = platform.DescribeAWSInstance(context.Background(), p, "k", "proof-pi-1", now.Add(5*time.Minute))
+	if err != nil || !d.HasScaling || d.MinACU != 0.5 || p.describeDB != 1 || p.clusters != 2 {
+		t.Fatalf("second read: %+v %v (describes %d, cluster reads %d)", d, err, p.describeDB, p.clusters)
+	}
+	if _, err = platform.DescribeAWSInstance(context.Background(), p, "k", "proof-pi-1", now.Add(10*time.Minute)); err != nil || p.clusters != 2 {
+		t.Errorf("third read re-read the cluster: %d reads", p.clusters)
+	}
+	if _, err = platform.DescribeAWSInstance(context.Background(), p, "other|eu-west-1", "proof-pi-1", now.Add(10*time.Minute)); err != nil || p.describeDB != 2 {
+		t.Errorf("another profile shared the cache: %d describes", p.describeDB)
+	}
+}
+
+// TestPITextPaths: a PROCESSING answer is not kept (asked again next run); a cut digest none of whose statements is
+// in the top 25 finds its heaviest statement by a filtered call, and one with none at all says so; past the call cap
+// a digest is "not asked"; a paged answer keeps the total once.
+func TestPITextPaths(t *testing.T) {
+	ctx := context.Background()
+	api := newRecordedPI(t, true)
+	api.keyStatus = "PROCESSING"
+	now := piRecordedNow(t, api)
+	rows, err := piRows(ctx, api, "k", "proof-pi-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rowsOfKind(rows, "sql") {
+		if r["tokenized_id"] == "tok-orders" && (r["text_status"] != "PROCESSING" || len(r["statement"].(string)) != piTextCut) {
+			t.Errorf("PROCESSING row %v", r["text_status"])
+		}
+	}
+	if _, err := piRows(ctx, api, "k", "proof-pi-1", now.Add(time.Hour)); err != nil || len(api.keyCalls) != 2 {
+		t.Errorf("a PROCESSING text was kept: %d detail calls over two runs, want 2", len(api.keyCalls))
+	}
+
+	// the bridge series of tok-orders left out of the top statements: the filtered call finds sql-orders-a
+	var kept []string
+	hidden := &hiddenPI{recordedPI: newRecordedPI(t, true)}
+	rows, err = piRows(ctx, hidden, "k", "proof-pi-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rowsOfKind(rows, "sql") {
+		if r["tokenized_id"] == "tok-orders" {
+			kept = append(kept, r["text_status"].(string), r["sql_id"].(string))
+		}
+	}
+	if strings.Join(kept, ",") != "AVAILABLE,sql-orders-a" || hidden.filtered != 1 {
+		t.Errorf("filtered lookup: %v, %d filtered calls", kept, hidden.filtered)
+	}
+	hidden2 := &hiddenPI{recordedPI: newRecordedPI(t, true), dropAll: true}
+	rows, err = piRows(ctx, hidden2, "k", "proof-pi-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rowsOfKind(rows, "sql") {
+		if r["tokenized_id"] == "tok-orders" && r["text_status"] != "no statement id" {
+			t.Errorf("no statement at all: %v", r["text_status"])
+		}
+	}
+
+	// 30 cut digests: the cap stops the calls, the rest are "not asked"
+	api = newRecordedPI(t, true)
+	var base struct {
+		Key struct {
+			Metric     string            `json:"Metric"`
+			Dimensions map[string]string `json:"Dimensions"`
+		} `json:"Key"`
+		DataPoints []struct {
+			Timestamp float64  `json:"Timestamp"`
+			Value     *float64 `json:"Value"`
+		} `json:"DataPoints"`
+	}
+	for _, m := range api.metrics.MetricList {
+		if m.Key.Dimensions["db.sql_tokenized.id"] == "tok-orders" {
+			base = m
+		}
+	}
+	for i := 0; i < 30; i++ {
+		d := base
+		d.Key.Dimensions = map[string]string{"db.sql_tokenized.id": fmt.Sprintf("tok-%02d", i), "db.sql_tokenized.statement": base.Key.Dimensions["db.sql_tokenized.statement"]}
+		b := base
+		b.Key.Dimensions = map[string]string{"db.sql.id": fmt.Sprintf("sql-%02d", i), "db.sql.tokenized_id": fmt.Sprintf("tok-%02d", i)}
+		api.metrics.MetricList = append(api.metrics.MetricList, d, b)
+	}
+	rows, err = piRows(ctx, api, "k", "proof-pi-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notAsked := 0
+	for _, r := range rowsOfKind(rows, "sql") {
+		if r["text_status"] == "not asked (call cap)" {
+			notAsked++
+		}
+	}
+	if len(api.keyCalls) != piMaxCalls || notAsked != 31-piMaxCalls {
+		t.Errorf("call cap: %d detail calls (want %d), %d not asked (want %d)", len(api.keyCalls), piMaxCalls, notAsked, 31-piMaxCalls)
+	}
+
+	// paged: the same rows as one page
+	api = newRecordedPI(t, true)
+	api.pageSize = 2
+	rows, err = piRows(ctx, api, "k", "proof-pi-1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := map[string]int{}
+	for _, r := range rowsOfKind(rows, "load") {
+		n[r["group"].(string)]++
+	}
+	if n["total"] != 3 || n["wait"] != 9 || n["sql"] != 6 || len(api.rmCalls) < 3 {
+		t.Errorf("paged: %v over %d calls", n, len(api.rmCalls))
+	}
+}
+
+// hiddenPI keeps the db.sql series of tok-orders out of the unfiltered answer (they are not in the top statements)
+// and serves them to the filtered call only; dropAll serves them to neither.
+type hiddenPI struct {
+	*recordedPI
+	dropAll  bool
+	filtered int
+}
+
+func (h *hiddenPI) GetResourceMetrics(ctx context.Context, in *pi.GetResourceMetricsInput, o ...func(*pi.Options)) (*pi.GetResourceMetricsOutput, error) {
+	isFiltered := len(in.MetricQueries) == 1 && len(in.MetricQueries[0].Filter) > 0
+	if isFiltered {
+		h.filtered++
+	}
+	out, err := h.recordedPI.GetResourceMetrics(ctx, in, o...)
+	if err != nil {
+		return nil, err
+	}
+	keep := out.MetricList[:0]
+	for _, m := range out.MetricList {
+		if m.Key.Dimensions["db.sql.tokenized_id"] == "tok-orders" && (h.dropAll || !isFiltered) {
+			continue
+		}
+		keep = append(keep, m)
+	}
+	out.MetricList = keep
+	return out, nil
 }
 
 // TestPIFixtureImport (PGVIGIL_REPO_DSN): the recorded rows through import_pi and import_serverless twice store
@@ -408,7 +631,7 @@ func TestPIFixtureImport(t *testing.T) {
 
 	api := newRecordedPI(t, true)
 	now := piRecordedNow(t, api)
-	rows, err := piRows(ctx, api, "proof-pi-1", now)
+	rows, err := piRows(ctx, api, "k", "proof-pi-1", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,9 +663,17 @@ func TestPIFixtureImport(t *testing.T) {
 	if got := val(`SELECT text_status || '|' || length(full_text)::text FROM pgvigil.pi_sql WHERE instance_id = $1 AND tokenized_id = 'tok-orders'`); got != "AVAILABLE|694" {
 		t.Errorf("whole text after a run without it: %s", got)
 	}
+	// the policy turned to none: the text, its status and its statement id go together
+	none := []Row{{"kind": "sql", "tokenized_id": "tok-orders", "query": nil, "statement": nil, "text_status": "AVAILABLE", "sql_id": "sql-orders-a"}}
+	if err := r.Import(ctx, id, "pi", now.Add(150*time.Minute), none); err != nil {
+		t.Fatal(err)
+	}
+	if got := val(`SELECT coalesce(full_text, '-') || '|' || coalesce(text_status, '-') || '|' || coalesce(sql_id, '-') FROM pgvigil.pi_sql WHERE instance_id = $1 AND tokenized_id = 'tok-orders'`); got != "-|-|-" {
+		t.Errorf("after a run under none: %s, want no text, no status, no statement id", got)
+	}
 	// PI turned off: the state row says so; the hours already kept stay (they age out with the retention)
 	off := newRecordedPI(t, false)
-	offRows, err := piRows(ctx, off, "proof-pi-1", now)
+	offRows, err := piRows(ctx, off, "k", "proof-pi-1", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +685,7 @@ func TestPIFixtureImport(t *testing.T) {
 	}
 
 	sapi := recordedServerless{&recordedCW{metrics: serverlessFloor("proof-pi-1", now, false)}, newRecordedPI(t, true)}
-	srows, err := serverlessRows(ctx, sapi, "proof-pi-1", now)
+	srows, err := serverlessRows(ctx, sapi, "k", "proof-pi-1", now)
 	if err != nil {
 		t.Fatal(err)
 	}

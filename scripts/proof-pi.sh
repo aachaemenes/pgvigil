@@ -17,29 +17,34 @@
 #                      pgvigil_proof_pi_<n> and drops it at the end)
 #   AWS_PROFILE default dba-lab; AWS_REGION default us-east-2; CLUSTER default dba-lab-pg; WAIT default 420
 # Expected:
-#   recorded  TestPIRecordedShape, TestPIOff, TestPITextPolicy, TestPIGateAndApplies, TestServerlessRows and
+#   recorded  TestPIRecordedShape, TestPIOff, TestPITextPolicy, TestPIGateAndApplies, TestServerlessRows,
+#             TestDescribeClusterRetry, TestPITextPaths and
 #             TestPIFixtureImport PASS (the last one runs: PGVIGIL_REPO_DSN is the proof's repository)
-#   rules     pi_findings rows (instance|setting), exactly: proof-floor|cache starved by the ACU floor, its value
-#             '0.5 ACU (floor 0.5), hit ratio 91.0 %, 850 reads/s at 12.0 % CPU'; none for proof-scaled (one period
-#             at 2 ACU), proof-hit (98 % hits), proof-cpu (70 % CPU), proof-quiet (40 reads a second), proof-few (4
-#             capacity datapoints), proof-prov (no Serverless v2 range), proof-old (the floor shape 2 hours ago)
+#   rules     pi_findings rows (instance|setting), exactly: proof-floor and proof-zero|cache starved by the ACU floor,
+#             proof-floor's value '0.5 ACU (floor 0.5), hit ratio 91.0 %, 850 reads/s at 12.0 % CPU', proof-zero's
+#             '0.5 ACU (floor 0.0, running 0.5), ...' (a 0 minimum: an awake instance runs at 0.5 at least); none for
+#             proof-scaled (one period at 2 ACU), proof-hit (98 % hits), proof-cpu (70 % CPU), proof-quiet (40 reads
+#             a second), proof-few (4 capacity datapoints), proof-prov (no Serverless v2 range), proof-old (the floor
+#             shape 2 hours ago), proof-raised (the floor raised to 2 ACU half an hour ago: 6 periods at 0.5, then 6 at 2)
 #   server    /api/pi for proof-pi: state enabled, total 3 hours, waits 9 rows (3 waits x 3 hours), sql 2 rows, the
 #             first tok-orders at 70.0 % of the load with its 694-byte whole text; /api/pi for proof-pioff: state
 #             enabled false, total 0; /api/capacity for proof-floor: scaling 0.5 / 16, series >= 1, latest 5 metrics,
 #             findings 1; /api/capacity for proof-pioff: scaling 0 rows, series 0
 #   live      collection_dates pi ok and pi_state enabled false with the 'off' note (the express shape has PI off);
 #             serverless ok with a serverless_scaling row (cluster dba-lab-pg, min 0, max 4); after WAIT awake,
-#             ServerlessDatabaseCapacity, ACUUtilization and BufferCacheHitRatio rows, or CPUUtilization alone with the
-#             paused note (a paused instance publishes CPUUtilization only): either way stated in the output
+#             ServerlessDatabaseCapacity, ACUUtilization and BufferCacheHitRatio rows (awake), or the paused note with
+#             capacity 0 (a paused instance publishes 0 for capacity, ACU and CPU only: the Aurora User Guide): either
+#             way stated in the output
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
 PROFILE=${AWS_PROFILE:-dba-lab}; REGION=${AWS_REGION:-us-east-2}; CLUSTER=${CLUSTER:-dba-lab-pg}; WAIT=${WAIT:-420}
 DB=pgvigil_proof_pi_$RANDOM
-CFG=$(mktemp); LOG=$(mktemp); SCRATCH=$(mktemp -d); SRVPID=
+CFG=$(mktemp); LOG=$(mktemp); SCRATCH=$(mktemp -d); SRVPID=; CREATED=
 cleanup() {
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null || true
-  rm -rf "$CFG" "$LOG" "$SCRATCH"
+  rm -rf "$CFG" "$LOG" "$LOG.body" "$SCRATCH"
+  [ -n "$CREATED" ] || return 0   # the drop only for the database this run created (a name taken by another run is not ours)
   local err
   err=$(psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" 2>&1) \
     || { echo "cleanup: database $DB not dropped: $err" >&2; exit 1; }
@@ -47,13 +52,14 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null
+CREATED=1
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
 q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 
 echo "--- recorded responses -> repository"
-out=$(go test ./internal/collect -run 'TestPI|TestServerless' -count=1 -v 2>&1) || { echo "$out" | tail -30; fail "recorded-response tests"; }
+out=$(go test ./internal/collect -run 'TestPI|TestServerless|TestDescribeClusterRetry' -count=1 -v 2>&1) || { echo "$out" | tail -30; fail "recorded-response tests"; }
 echo "$out" | grep -E '^--- ' || true
-for t in TestPIRecordedShape TestPIOff TestPITextPolicy TestPIGateAndApplies TestServerlessRows TestPIFixtureImport; do
+for t in TestPIRecordedShape TestPIOff TestPITextPolicy TestPIGateAndApplies TestServerlessRows TestDescribeClusterRetry TestPITextPaths TestPIFixtureImport; do
   echo "$out" | grep -q -- "--- PASS: $t " || fail "$t did not pass"
 done
 echo "recorded: OK (the PI side from the API reference's shape: not proven live, the lab's PI is off)"
@@ -82,8 +88,11 @@ scaling() { # <id> <min or null> <max or null>
 }
 FLO=$(inst proof-floor); SCA=$(inst proof-scaled); HIT=$(inst proof-hit); CPU=$(inst proof-cpu)
 QUI=$(inst proof-quiet); FEW=$(inst proof-few); PRO=$(inst proof-prov); OLD=$(inst proof-old)
+ZER=$(inst proof-zero); RAI=$(inst proof-raised)
 for id in $FLO $SCA $HIT $CPU $QUI $FEW $OLD; do scaling "$id" 0.5 16; done
 scaling "$PRO" null null
+scaling "$ZER" 0 4
+scaling "$RAI" 2 16
 window "$FLO" 2 8 0.5 91 850 12
 window "$SCA" 2 8 0.5 91 850 12 2
 window "$HIT" 2 8 0.5 98 850 12
@@ -92,15 +101,20 @@ window "$QUI" 2 8 0.5 91 40 12
 window "$FEW" 2 4 0.5 91 850 12
 window "$PRO" 2 8 0.5 91 850 12
 window "$OLD" 120 8 0.5 91 850 12
-IDS="$FLO, $SCA, $HIT, $CPU, $QUI, $FEW, $PRO, $OLD"
+window "$ZER" 2 8 0.5 91 850 12
+window "$RAI" 32 6 0.5 91 850 12   # 0.5 ACU from 57 to 32 minutes ago, then the raise:
+window "$RAI" 2 6 2 91 850 12      # 2 ACU from 27 to 2 minutes ago
+IDS="$FLO, $SCA, $HIT, $CPU, $QUI, $FEW, $PRO, $OLD, $ZER, $RAI"
 GOT=$(q "select i.name || '|' || f.setting from pgvigil.pi_findings f join pgvigil.instances i using (instance_id) where i.instance_id in ($IDS)" | sort)
-WANT='proof-floor|cache starved by the ACU floor'
+WANT=$(printf '%s\n' 'proof-floor|cache starved by the ACU floor' 'proof-zero|cache starved by the ACU floor' | sort)
 if [[ "$GOT" != "$WANT" ]]; then echo "got:"; echo "$GOT"; echo "want:"; echo "$WANT"; fail "pi_findings rows differ"; fi
 VAL=$(q "select value from pgvigil.pi_findings where instance_id = $FLO")
 [ "$VAL" = '0.5 ACU (floor 0.5), hit ratio 91.0 %, 850 reads/s at 12.0 % CPU' ] || fail "the finding's value: $VAL"
+VAL=$(q "select value from pgvigil.pi_findings where instance_id = $ZER")
+[ "$VAL" = '0.5 ACU (floor 0.0, running 0.5), hit ratio 91.0 %, 850 reads/s at 12.0 % CPU' ] || fail "the 0-floor finding's value: $VAL"
 q "select i.name || ': ' || f.value || ' -> ' || f.suggested from pgvigil.pi_findings f join pgvigil.instances i using (instance_id) where i.instance_id in ($IDS)"
 q "select detail from pgvigil.pi_findings where instance_id = $FLO"
-echo "rules: OK (1 finding; one period at 2 ACU, 98 % hits, 70 % CPU, 40 reads a second, 4 datapoints, no range and a window 2 hours old raise none)"
+echo "rules: OK (2 findings, one on a 0 minimum; one period at 2 ACU, 98 % hits, 70 % CPU, 40 reads a second, 4 datapoints, no range, a window 2 hours old and a floor raised mid-window raise none)"
 
 echo "--- server: /api/pi and /api/capacity"
 PI=$(inst proof-pi); OFF=$(inst proof-pioff)
@@ -233,9 +247,9 @@ live_read
 have() { [ "$(q "select count(*) from pgvigil.serverless_sample where instance_id = $LID and metric = '$1'")" -ge 1 ]; }
 if have ServerlessDatabaseCapacity && have ACUUtilization && have BufferCacheHitRatio; then
   echo "live: the three Serverless metrics answer"
-elif have CPUUtilization && q "select note from pgvigil.serverless_scaling where instance_id = $LID" | grep -q paused; then
-  echo "live: only CPUUtilization answered: the instance was paused (stated)"
+elif q "select note from pgvigil.serverless_scaling where instance_id = $LID" | grep -q '^paused'; then
+  echo "live: ServerlessDatabaseCapacity 0 over the window: the instance was paused (stated)"
 else
-  fail "neither the three Serverless metrics nor the paused shape"
+  fail "neither the three Serverless metrics nor the paused shape (capacity 0)"
 fi
 echo "proof-pi: OK (recorded, rules, server, live)"

@@ -21,8 +21,9 @@ import (
 // on (DescribeDBInstances PerformanceInsightsEnabled, read once an hour), the DB load of the last complete hours
 // (db.load.avg, one point per hour) in total, by wait event and by SQL digest (db.sql_tokenized, the top 25), and the
 // top digests' text. GetResourceMetrics cuts every element at 500 bytes, so a digest at the cut gets the whole text
-// of one of its statements from GetDimensionKeyDetails (group db.sql: the API serves the whole text by the db.sql.id,
-// read in the same call with its db.sql.tokenized_id; db.sql_tokenized has no details group). The text rides the
+// of its heaviest statement from GetDimensionKeyDetails (group db.sql: the API serves the whole text by the db.sql.id;
+// the heaviest db.sql.id of the digest comes from the same call's db.sql group, or, when none of the digest's
+// statements is in its top 25, from a call filtered on the digest; db.sql_tokenized has no details group). The text rides the
 // rows' query (the digest) and statement (the whole text) keys, so the instance's query_text policy applies to both
 // before the import. PI off: one state row saying so, nothing else (the Load tab shows it). Read only:
 // pi:GetResourceMetrics, pi:GetDimensionKeyDetails (one call per cut digest, the answer kept for the process) and
@@ -123,11 +124,12 @@ func (c piCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platf
 	if err != nil {
 		return nil, err
 	}
-	return piRows(ctx, api, id, time.Now())
+	return piRows(ctx, api, in.AWS.Profile+"|"+in.AWS.Region, id, time.Now())
 }
 
 // piText keeps the whole texts fetched, per resource and digest, for the life of the process (a digest's text does
-// not change; only an AVAILABLE answer is kept, so a PROCESSING one is asked again next hour).
+// not change; only an AVAILABLE answer is kept, so a PROCESSING one is asked again next hour), at most piTextKeep
+// of them (the map starts over past it: the repository keeps every text the import stored).
 var (
 	piTextMu sync.Mutex
 	piText   = map[string]piWhole{}
@@ -135,10 +137,12 @@ var (
 
 type piWhole struct{ text, status, sqlID string }
 
+const piTextKeep = 2000
+
 // piRows returns {kind:'state'} always, and with PI on the {kind:'load'} rows (at, group total|wait|sql, key,
 // wait_type, value) and the {kind:'sql'} rows (tokenized_id, db_id, query, statement, text_status, sql_id).
-func piRows(ctx context.Context, api piAPI, id string, now time.Time) ([]Row, error) {
-	d, err := platform.DescribeAWSInstance(ctx, api, id, now)
+func piRows(ctx context.Context, api piAPI, awsKey, id string, now time.Time) ([]Row, error) {
+	d, err := platform.DescribeAWSInstance(ctx, api, awsKey, id, now)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +252,8 @@ func piRows(ctx context.Context, api piAPI, id string, now time.Time) ([]Row, er
 		in.NextToken = res.NextToken
 	}
 
-	// the digests, heaviest first; a digest at the cut gets its whole text (at most piMaxCalls calls a run)
+	// the digests, heaviest first; a digest at the cut gets its whole text (at most piMaxCalls calls a run, the
+	// filtered statement lookup and the details call each counted)
 	list := make([]*digest, 0, len(digests))
 	for _, g := range digests {
 		list = append(list, g)
@@ -262,45 +267,80 @@ func piRows(ctx context.Context, api piAPI, id string, now time.Time) ([]Row, er
 	calls := 0
 	for _, g := range list {
 		r := Row{"kind": "sql", "tokenized_id": g.id, "db_id": nilIfEmpty(g.dbID), "query": nilIfEmpty(g.text)}
-		switch {
-		case len(g.text) < piTextCut:
+		if len(g.text) < piTextCut-3 { // under the cut (3 bytes of slack: a cut that lands inside a multi-byte character)
 			r["text_status"] = "whole"
-		case stmtOf[g.id].sqlID == "":
-			r["text_status"] = "no statement id"
-		default:
+			rows = append(rows, r)
+			continue
+		}
+		ck := d.ResourceID + "|" + g.id
+		piTextMu.Lock()
+		w, ok := piText[ck]
+		piTextMu.Unlock()
+		if !ok {
 			sqlID := stmtOf[g.id].sqlID
-			ck := d.ResourceID + "|" + g.id
-			piTextMu.Lock()
-			w, ok := piText[ck]
-			piTextMu.Unlock()
-			if !ok && calls < piMaxCalls {
+			if sqlID == "" && calls < piMaxCalls {
+				// none of the digest's statements is in the top 25 statements (many light literal variants): ask for
+				// the heaviest statement of exactly this digest
 				calls++
-				w, err = piWholeText(ctx, api, d.ResourceID, sqlID)
-				if err != nil {
-					rows = append(rows, Row{"kind": "collector_error", "source": "pi", "message": err.Error()})
-					r["text_status"] = "error"
-					rows = append(rows, r)
+				if sqlID, err = piStatementOf(ctx, api, d.ResourceID, g.id, start, end); err != nil {
+					rows = append(rows, Row{"kind": "collector_error", "source": "pi", "message": err.Error()}, withStatus(r, "error"))
 					continue
 				}
-				if w.status == "AVAILABLE" {
-					piTextMu.Lock()
-					piText[ck] = w
-					piTextMu.Unlock()
+				if sqlID == "" {
+					rows = append(rows, withStatus(r, "no statement id"))
+					continue
 				}
 			}
-			if w.status == "" {
-				r["text_status"] = "not asked (call cap)"
-				break
+			if sqlID == "" || calls >= piMaxCalls {
+				rows = append(rows, withStatus(r, "not asked (call cap)"))
+				continue
 			}
-			r["text_status"], r["sql_id"] = w.status, sqlID
-			if w.text != "" {
-				r["statement"] = w.text
+			calls++
+			if w, err = piWholeText(ctx, api, d.ResourceID, sqlID); err != nil {
+				rows = append(rows, Row{"kind": "collector_error", "source": "pi", "message": err.Error()}, withStatus(r, "error"))
+				continue
 			}
+			if w.status == "AVAILABLE" {
+				piTextMu.Lock()
+				if len(piText) >= piTextKeep { // a bound on the process's memory: the repository keeps every text anyway
+					piText = map[string]piWhole{}
+				}
+				piText[ck] = w
+				piTextMu.Unlock()
+			}
+		}
+		r["text_status"], r["sql_id"] = w.status, w.sqlID
+		if w.text != "" {
+			r["statement"] = w.text
 		}
 		rows = append(rows, r)
 	}
 	state["hours_read"] = len(total)
 	return append([]Row{state}, rows...), nil
+}
+
+func withStatus(r Row, status string) Row { r["text_status"] = status; return r }
+
+// piStatementOf finds the heaviest statement (db.sql.id) of one digest over the window: GetResourceMetrics grouped by
+// db.sql, filtered on the digest (a filter on a dimension of the grouped group), limit 1.
+func piStatementOf(ctx context.Context, api piAPI, resourceID, tokenizedID string, start, end time.Time) (string, error) {
+	res, err := api.GetResourceMetrics(ctx, &pi.GetResourceMetricsInput{
+		ServiceType: pitypes.ServiceType(piService), Identifier: aws.String(resourceID),
+		StartTime: aws.Time(start), EndTime: aws.Time(end), PeriodInSeconds: aws.Int32(3600),
+		PeriodAlignment: pitypes.PeriodAlignmentStartTime,
+		MetricQueries: []pitypes.MetricQuery{{Metric: aws.String("db.load.avg"),
+			GroupBy: &pitypes.DimensionGroup{Group: aws.String("db.sql"), Dimensions: []string{"db.sql.id", "db.sql.tokenized_id"}, Limit: aws.Int32(1)},
+			Filter:  map[string]string{"db.sql.tokenized_id": tokenizedID}}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("pi:GetResourceMetrics db.sql of digest %s: %w", tokenizedID, err)
+	}
+	for _, m := range res.MetricList {
+		if m.Key != nil && m.Key.Dimensions["db.sql.id"] != "" && m.Key.Dimensions["db.sql.tokenized_id"] == tokenizedID {
+			return m.Key.Dimensions["db.sql.id"], nil
+		}
+	}
+	return "", nil
 }
 
 // piWholeText asks GetDimensionKeyDetails for the whole text of one statement (group db.sql, its db.sql.id).
