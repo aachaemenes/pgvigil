@@ -11,7 +11,10 @@ import (
 
 // databasesCollector is the hourly inventory of databases: size, owner,
 // encoding and collation, connection limit, tablespace, transaction-id age
-// (the wraparound headroom check), and whether the monitoring login may connect.
+// (the wraparound headroom check), whether the monitoring login may connect, and the database's comment
+// (pg_shdescription, readable by every role). The Database info tab (0046) joins these facts with the
+// locale and collation versions (the versions collection), the tablespace sizes (storage) and the
+// installed extensions (extensions) rather than reading them a second time here.
 // pg_database_size walks every relation file, which is why it is hourly here and
 // not in the per-minute counters.
 type databasesCollector struct{}
@@ -40,6 +43,7 @@ SELECT d.oid::bigint                                   AS dbid,
        age(d.datfrozenxid)                             AS xid_age,
        mxid_age(d.datminmxid)                          AS mxid_age,
        has_database_privilege(d.datname, 'CONNECT')    AS can_connect,
+       left(shobj_description(d.oid, 'pg_database'), 1000) AS comment,
        CASE WHEN d.datallowconn AND (has_database_privilege(d.datname, 'CONNECT')
                                      OR pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER'))
             THEN pg_database_size(d.oid) END           AS size_bytes
