@@ -78,6 +78,17 @@ func Replace(ctx context.Context, pool *pgxpool.Pool, prefix string) (int, error
 		                             WHERE 'demo' = ANY (tags) AND starts_with(name, $1)`, prefix).Scan(&ids); err != nil {
 			return fmt.Errorf("find demo instances: %w", err)
 		}
+		// the DBADash door's demo repository is cleared by its own name: the dbadash_* tables carry DBA Dash's
+		// InstanceID, not a pgvigil one, so a delete by the demo's pgvigil ids would hit a real door's rows that share
+		// a number (the history has no foreign key: it is cleared first, then the repository cascades)
+		for _, q := range []string{
+			`DELETE FROM pgvigil.dbadash_summary_history WHERE repository = 'dbadash-demo'`,
+			`DELETE FROM pgvigil.dbadash_repositories WHERE repository = 'dbadash-demo'`,
+		} {
+			if _, err := tx.Exec(ctx, q); err != nil {
+				return fmt.Errorf("clear the dbadash demo: %w", err)
+			}
+		}
 		n = len(ids)
 		if n == 0 {
 			return nil
@@ -87,6 +98,7 @@ SELECT c.relname FROM pg_class c
   JOIN pg_namespace ns ON ns.oid = c.relnamespace
   JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'instance_id' AND NOT a.attisdropped
  WHERE ns.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND c.relname <> 'instances'
+   AND c.relname NOT LIKE 'dbadash\_%'
  ORDER BY c.relname`)
 		if err != nil {
 			return err
