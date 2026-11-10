@@ -38,7 +38,7 @@ const indexCols: Col[] = [
 
 // adviseBox: the advisor button for one database and its report.
 function adviseBox(instance: number, dbs: string[]): HTMLElement {
-  const pick = el('select', {}, ...dbs.map(d => el('option', { value: d }, d)));
+  const pick = el('select', { 'aria-label': 'database to advise on' }, ...dbs.map(d => el('option', { value: d }, d)));
   const run = el('button', { type: 'button' }, 'Test the suggested indexes');
   const out = el('div');
   run.addEventListener('click', async () => {
