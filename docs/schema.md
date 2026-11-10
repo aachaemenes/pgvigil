@@ -20,7 +20,8 @@ Each object also keeps its owner and its ACL as text (empty means the built-in d
 or trigger takes its owner from its table, so its own owner is left empty. An object is known by
 `pg_identify_object()`'s identity (`public.orders`, `public.orders.amount`, `orders_pkey on public.orders`,
 `public.f(integer)`), which is the same text an event trigger reports. A hash of the kind, definition, owner and ACL
-tells whether the object changed.
+tells whether the object changed; a second hash of the definition alone catches a change past the cut below even
+when the owner or ACL changed in the same hour.
 
 These are left out: the catalog schemas (`pg_catalog`, `information_schema`, `pg_toast*`, `pg_temp*`), temporary
 relations, every object that belongs to an extension (that DDL is the extension's, and its version is on the
@@ -30,6 +31,16 @@ where FIPS mode disables `md5()`. A definition longer than 20,000 characters is 
 over the whole text, so a change after the cut still shows.
 
 **Rights:** pg_monitor, nothing more. The catalogs and the `pg_get_*def` functions are readable by every role.
+
+**Size:** the collector hands the repository one database at a time (its event-trigger rows, then its objects), and a
+last call that marks a database neither read nor in error as gone; PostgreSQL refuses a jsonb array over 256 MB, so
+one payload for the whole instance would fail near 800,000 objects. A database whose objects come to more than about
+160 MB of text (50,000 long definitions) is reported as a collector error and keeps its snapshot.
+
+**Versions:** on PostgreSQL 13 and 14 the trigger a partition inherits from its partitioned table is internal and is
+not read; from 15 on it is its own object. So the same schema gives fewer trigger rows on 13 and 14, and after a
+`pg_upgrade` from 14 to 15 or later that keeps the database OIDs, the next read shows every partition's inherited
+trigger as added. Only PostgreSQL 18 ran the proof.
 
 ## What a change is
 
@@ -62,17 +73,31 @@ captured inside the database by an event trigger, and only a superuser can creat
 `pgvigil roles` prints the block, commented out, with the monitoring login filled in, and the server's DBA runs it in
 each database that should be covered:
 
+- the guard: the block runs as one transaction, and its first statement stops it in a database with a
+  `FOR ALL TABLES` publication (or, on PostgreSQL 15 and later, a publication of the schema `public`). The new table
+  would join that publication, and every subscriber without the table would stop applying changes with "logical
+  replication target relation "public.pgvigil_ddl_log" does not exist". Create the table on every subscriber first
+  and uncomment the block's `set_config('pgvigil.publication_ok', 'on', true)` line, or leave that database out. A FOR ALL TABLES publication
+  created after the install takes the table too;
 - the table `public.pgvigil_ddl_log` (log id, time, event, command tag, object type, schema, object identity, role,
-  and the statement, cut at 10,000 characters). Its owner may read it, plus the monitoring login (`GRANT SELECT`);
+  and the client's query text: every statement sent together in one query, cut at 10,000 characters, so a batch's
+  rows all carry the whole batch). Its owner may read it, plus the monitoring login (`GRANT SELECT`);
   PUBLIC gets nothing;
 - the function `public.pgvigil_ddl_capture()`: `SECURITY DEFINER`, with a fixed `search_path`. Any error inside it
-  becomes a WARNING, so the capture never blocks the DDL it records (a DROP of the log table itself still works).
+  becomes a WARNING, so the capture never fails the DDL it records (a DROP of the log table itself still works), and
+  its `lock_timeout` of one second bounds the wait for its own table: a DDL statement behind a lock on the log waits
+  at most a second, then runs and is not logged.
+  A statement that may carry a password is not kept: `CREATE` and `ALTER` of a `SERVER`, `USER MAPPING` or
+  `SUBSCRIPTION`, and any query text that names `password` or `secret` (a batch too), are stored as
+  `(statement not kept: it may carry a password)`. pg_monitor cannot read a user mapping's options or a
+  subscription's connection string, and the log must not hand them over;
   Temporary objects and the commands an extension's script runs are not logged: the snapshot leaves both out, and an
   application that creates a temp table per request would otherwise fill the table;
 - the event triggers `pgvigil_ddl_end` (`ddl_command_end`) and `pgvigil_ddl_drop` (`sql_drop`);
 - the undo (`DROP EVENT TRIGGER`, `DROP FUNCTION`, `DROP TABLE`), and a `DELETE` line to keep the table small. The
   table grows with every DDL statement and pgvigil never deletes from it. Purge it with DELETE only: a TRUNCATE,
-  VACUUM FULL or ALTER of the table locks it, and every DDL statement in the database waits behind that lock.
+  VACUUM FULL or ALTER of the table locks it, and every DDL statement in the database waits up to a second behind
+  that lock and then goes unlogged.
 
 The collector reads the log rows newer than its cursor (`schema_ddl:<database>` in `log_cursor`), with one hour of
 overlap so that a transaction committed late is not missed. It reads in pages of 5,000 by (logged time, log id), up to
@@ -105,11 +130,12 @@ under every policy.
 
 ## The UI
 
-- **Schema** (instance tab): tiles for the databases, objects, changes and drops in the range, and in how many
+- **Schema** (instance tab): tiles for the databases, objects, changes and drops in the range (a dropped partition
+  is not counted as a drop, as in the findings), and in how many
   databases the trigger is installed; the instance's schema findings; the databases (objects, changes and drops in
   the range, the trigger's state, the read the comparison starts from); the changes of the range, with a picker for
   the kind of change and a filter on the object's name; the trigger's own log for the range (which includes what the
-  hourly diff cannot see); and the objects of one database at a time, with a kind picker and a name filter (the
+  hourly diff cannot see; the database page's section says so too when it holds the newest 1,000); and the objects of one database at a time, with a kind picker and a name filter (the
   first 5,000 by schema, kind and name are read, and 500 are shown). The tiles count every change of the range; the
   list holds the newest 2,000 and the trigger's log the newest 1,000, each saying so when full. A long definition,
   before, after or statement opens in place (a disclosure the keyboard reaches).

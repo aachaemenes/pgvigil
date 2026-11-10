@@ -76,7 +76,7 @@ func TestSchemaCut(t *testing.T) {
 	}
 }
 
-// TestSchemaDDLLogSQL: the opt-in block names both events, never blocks the DDL it records, grants the login a read
+// TestSchemaDDLLogSQL: the opt-in block names both events, never fails the DDL it records, grants the login a read
 // and nothing more, and carries its undo.
 func TestSchemaDDLLogSQL(t *testing.T) {
 	for _, want := range []string{
@@ -89,6 +89,12 @@ func TestSchemaDDLLogSQL(t *testing.T) {
 		// temporary objects and extension scripts are not logged (the review fold: a temp table per request filled it)
 		"WHERE NOT in_extension AND schema_name IS DISTINCT FROM 'pg_temp'", "WHERE original AND NOT is_temporary",
 		"DELETE only",
+		// the join review's fold: one transaction behind the publication guard, a one-second lock wait at most, no
+		// password kept
+		"BEGIN;   -- pgvigil_ddl_log", "COMMIT;  -- pgvigil_ddl_log", "DO $guard$", "WHERE puballtables",
+		"pg_publication_namespace", "set_config('pgvigil.publication_ok', 'on', true)", "SET lock_timeout = '1s'",
+		"'CREATE USER MAPPING'", "'ALTER USER MAPPING'", "'CREATE SERVER'", "'ALTER SERVER'", "'CREATE SUBSCRIPTION'",
+		"'ALTER SUBSCRIPTION'", "current_query() ~* '(password|secret)'", "(statement not kept: it may carry a password)",
 	} {
 		if !strings.Contains(SchemaDDLLogSQL, want) {
 			t.Errorf("SchemaDDLLogSQL lacks %q", want)
@@ -148,3 +154,77 @@ func TestSchemaDDLCursor(t *testing.T) {
 		t.Errorf("the run cap %d is under one page %d", schemaDDLMax, schemaDDLPage)
 	}
 }
+
+// TestSchemaDefHash: the definition's own hash is kept beside the whole hash, so a change past the cut is seen when the
+// owner changes in the same read (the join review: the fourth diff INSERT needed owner and ACL equal).
+func TestSchemaDefHash(t *testing.T) {
+	long1, long2 := strings.Repeat("x", schemaMaxDef+10)+"1", strings.Repeat("x", schemaMaxDef+10)+"2"
+	a := Row{"object_kind": "view", "definition": long1, "owner": "app"}
+	b := Row{"object_kind": "view", "definition": long2, "owner": "dba"}
+	c := Row{"object_kind": "view", "definition": long1, "owner": "dba"}
+	schemaFinish([]Row{a, b, c})
+	if a["definition"] != b["definition"] || a["def_hash"] == b["def_hash"] || len(a["def_hash"].(string)) != 64 {
+		t.Fatalf("def_hash: %v, %v", a["def_hash"], b["def_hash"])
+	}
+	if a["def_hash"] != c["def_hash"] || a["hash"] == c["hash"] {
+		t.Fatal("an owner change alone moved def_hash, or kept the whole hash")
+	}
+}
+
+// TestSchemaSplit: the event trigger's rows go in parts under the cap, in order, every row once, a row over the cap a
+// part of its own; the estimate grows with the text.
+func TestSchemaSplit(t *testing.T) {
+	var rows []Row
+	for i := 0; i < 100; i++ {
+		rows = append(rows, Row{"kind": "ddl", "log_id": int64(i), "statement": strings.Repeat("s", 100)})
+	}
+	rows = append(rows, Row{"kind": "ddl", "log_id": int64(100), "statement": strings.Repeat("s", 5000)})
+	one := schemaPayloadSize(rows[:1])
+	if one < 100 || schemaPayloadSize(rows[:2]) != 2*one {
+		t.Fatalf("estimate %d", one)
+	}
+	parts := schemaSplit(rows, 10*one)
+	n := 0
+	for i, p := range parts {
+		if len(p) > 1 && schemaPayloadSize(p) > 10*one {
+			t.Errorf("part %d is %d over %d", i, schemaPayloadSize(p), 10*one)
+		}
+		for _, r := range p {
+			if r["log_id"] != int64(n) {
+				t.Fatalf("part %d: log_id %v, want %d", i, r["log_id"], n)
+			}
+			n++
+		}
+	}
+	if n != len(rows) || len(parts) != 11 || len(parts[10]) != 1 {
+		t.Fatalf("%d rows in %d parts (last %d)", n, len(parts), len(parts[len(parts)-1]))
+	}
+	if len(schemaSplit(nil, 10)) != 0 {
+		t.Error("no rows, a part")
+	}
+}
+
+// TestSchemaPayloadCap: the default cap stays well under PostgreSQL's 256 MB jsonb array limit, and an object row at
+// the definition cut is counted at its size (50,000 such rows pass the cap: such a database is an error, not a failed
+// instance).
+func TestSchemaPayloadCap(t *testing.T) {
+	if schemaMaxPayload >= 268435455*3/4 {
+		t.Fatalf("cap %d is near the jsonb limit", schemaMaxPayload)
+	}
+	r := Row{"kind": "obj", "object_kind": "view", "definition": strings.Repeat("x", schemaMaxDef)}
+	if n := schemaPayloadSize([]Row{r}); n < schemaMaxDef || 50000*n <= schemaMaxPayload {
+		t.Fatalf("a cut row is %d bytes; 50,000 of them %d against the cap %d", n, 50000*n, schemaMaxPayload)
+	}
+	t.Setenv("PGVIGIL_SCHEMA_MAX_PAYLOAD", "4096")
+	if schemaEnvInt("PGVIGIL_SCHEMA_MAX_PAYLOAD", schemaMaxPayload) != 4096 {
+		t.Error("the proof's override is not read")
+	}
+	t.Setenv("PGVIGIL_SCHEMA_MAX_PAYLOAD", "-1")
+	if schemaEnvInt("PGVIGIL_SCHEMA_MAX_PAYLOAD", schemaMaxPayload) != schemaMaxPayload {
+		t.Error("a bad override replaced the cap")
+	}
+}
+
+// runBatched is RunOnce's batch path, wired in collect.go by the wave's join (the slice does not own collect.go); the
+// proof's section G runs it end to end.
+var _ = runBatched

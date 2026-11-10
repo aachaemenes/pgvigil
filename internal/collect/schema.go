@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/platform"
+	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
 // schemaCollector is the hourly schema snapshot (task 59, DBADash's DDL change tracking): per connectable database,
@@ -59,7 +63,7 @@ var schemaMaxObjects = 50000
 const schemaMaxDef = 20000
 
 // schemaDDLPage is one page of the event-trigger read; schemaDDLMax caps the rows one run reads per database (vars:
-// tests lower them). A run that reaches the cap hands the import a cursor just before its last row, so the next run
+// tests lower them; PGVIGIL_SCHEMA_DDL_MAX lowers the cap for the proof). A run that reaches the cap hands the import a cursor just before its last row, so the next run
 // goes on from there (the one hour of overlap would otherwise re-read the same full window for ever).
 var (
 	schemaDDLPage = 5000
@@ -205,11 +209,31 @@ SELECT 'ddl' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = curre
  LIMIT %d`
 
 // SchemaDDLLogSQL is the opt-in event trigger, printed by 'pgvigil roles' for the server's DBA (commented out). It is
-// installed per database, as a superuser (only a superuser creates an event trigger). The capture never blocks the
-// DDL it records: any error inside it becomes a WARNING. Temporary objects and the commands an extension's script runs
-// are not logged (the snapshot leaves both out, and a temp table per request would fill the table). <login> is the
-// monitoring login's role.
-const SchemaDDLLogSQL = `CREATE TABLE public.pgvigil_ddl_log (
+// installed per database, as a superuser (only a superuser creates an event trigger), in one transaction: the guard at
+// its top stops the whole block in a database with a FOR ALL TABLES publication (or, PostgreSQL 15+, a publication of
+// the schema public), which the new table would join, stopping every subscriber that lacks it. The capture never fails
+// the DDL it records (any error inside it becomes a WARNING) and waits at most one second for its own table (its
+// lock_timeout). The statement kept is the client's query text (every statement sent together, cut at 10,000
+// characters), except where it may carry a password: CREATE and ALTER of a SERVER, USER MAPPING or SUBSCRIPTION, and
+// any text that names a password or a secret, are kept as '(statement not kept: it may carry a password)'.
+// Temporary objects and the commands an extension's script runs are not logged (the snapshot leaves both out, and a
+// temp table per request would fill the table). <login> is the monitoring login's role.
+const SchemaDDLLogSQL = `BEGIN;   -- pgvigil_ddl_log: one transaction (the guard's error stops the whole block)
+-- SELECT set_config('pgvigil.publication_ok', 'on', true);   -- only after public.pgvigil_ddl_log exists on every subscriber
+DO $guard$
+DECLARE n bigint;
+BEGIN
+  IF coalesce(current_setting('pgvigil.publication_ok', true), '') = 'on' THEN RETURN; END IF;
+  SELECT count(*) INTO n FROM pg_catalog.pg_publication WHERE puballtables;
+  IF n = 0 AND to_regclass('pg_catalog.pg_publication_namespace') IS NOT NULL THEN   -- PostgreSQL 15+
+    EXECUTE 'SELECT count(*) FROM pg_catalog.pg_publication_namespace p JOIN pg_catalog.pg_namespace s ON s.oid = p.pnnspid'
+         || ' WHERE s.nspname = ''public''' INTO n;
+  END IF;
+  IF n > 0 THEN
+    RAISE EXCEPTION 'pgvigil_ddl_log: a publication of all tables (or of the schema public) exists here; the new table would join it and stop every subscriber without it. Create public.pgvigil_ddl_log on each subscriber first and run the block with its set_config line uncommented, or do not install.';
+  END IF;
+END $guard$;
+CREATE TABLE public.pgvigil_ddl_log (
   log_id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   logged_at       timestamptz NOT NULL DEFAULT clock_timestamp(),
   event           text NOT NULL,                 -- ddl_command_end | sql_drop
@@ -218,25 +242,30 @@ const SchemaDDLLogSQL = `CREATE TABLE public.pgvigil_ddl_log (
   schema_name     text,
   object_identity text,                          -- pg_identify_object's text (NULL for GRANT and REVOKE)
   role_name       text NOT NULL DEFAULT session_user,
-  statement       text                           -- the top-level statement, cut at 10,000 characters
+  statement       text                           -- the client's query text (every statement sent together), cut at 10,000 characters
 );
 CREATE INDEX pgvigil_ddl_log_at ON public.pgvigil_ddl_log (logged_at);
 REVOKE ALL ON public.pgvigil_ddl_log FROM PUBLIC;
 GRANT SELECT ON public.pgvigil_ddl_log TO <login>;
 CREATE FUNCTION public.pgvigil_ddl_capture() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp AS $f$
-DECLARE r record;
+SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s' AS $f$
+DECLARE r record; q text;
 BEGIN
+  q := left(current_query(), 10000);
+  IF TG_TAG IN ('CREATE SERVER', 'ALTER SERVER', 'CREATE USER MAPPING', 'ALTER USER MAPPING', 'CREATE SUBSCRIPTION',
+                'ALTER SUBSCRIPTION') OR current_query() ~* '(password|secret)' THEN
+    q := '(statement not kept: it may carry a password)';
+  END IF;
   IF TG_EVENT = 'ddl_command_end' THEN
     FOR r IN SELECT * FROM pg_event_trigger_ddl_commands()
               WHERE NOT in_extension AND schema_name IS DISTINCT FROM 'pg_temp' LOOP
       INSERT INTO public.pgvigil_ddl_log (event, command_tag, object_type, schema_name, object_identity, statement)
-      VALUES (TG_EVENT, r.command_tag, r.object_type, r.schema_name, r.object_identity, left(current_query(), 10000));
+      VALUES (TG_EVENT, r.command_tag, r.object_type, r.schema_name, r.object_identity, q);
     END LOOP;
   ELSE
     FOR r IN SELECT * FROM pg_event_trigger_dropped_objects() WHERE original AND NOT is_temporary LOOP
       INSERT INTO public.pgvigil_ddl_log (event, command_tag, object_type, schema_name, object_identity, statement)
-      VALUES (TG_EVENT, TG_TAG, r.object_type, r.schema_name, r.object_identity, left(current_query(), 10000));
+      VALUES (TG_EVENT, TG_TAG, r.object_type, r.schema_name, r.object_identity, q);
     END LOOP;
   END IF;
 EXCEPTION WHEN OTHERS THEN
@@ -245,30 +274,128 @@ END $f$;
 REVOKE ALL ON FUNCTION public.pgvigil_ddl_capture() FROM PUBLIC;
 CREATE EVENT TRIGGER pgvigil_ddl_end ON ddl_command_end EXECUTE FUNCTION public.pgvigil_ddl_capture();
 CREATE EVENT TRIGGER pgvigil_ddl_drop ON sql_drop EXECUTE FUNCTION public.pgvigil_ddl_capture();
+COMMIT;  -- pgvigil_ddl_log
 -- the undo:
 -- DROP EVENT TRIGGER pgvigil_ddl_end; DROP EVENT TRIGGER pgvigil_ddl_drop;
 -- DROP FUNCTION public.pgvigil_ddl_capture(); DROP TABLE public.pgvigil_ddl_log;
 -- the table grows with every DDL statement: keep it in check with, say, a monthly
 -- DELETE FROM public.pgvigil_ddl_log WHERE logged_at < now() - interval '90 days';
--- (DELETE only: a TRUNCATE, VACUUM FULL or ALTER of the table locks it, and every DDL statement waits behind that)`
+-- (DELETE only: a TRUNCATE, VACUUM FULL or ALTER of the table locks it, and every DDL statement waits up to a second
+-- behind that, then runs without its log row)
+-- a FOR ALL TABLES publication created later takes the table too: create it on every subscriber first`
 
-// RunInstance reads the connected database on conn and every other connectable database on its own connection, up to
-// tablesMaxDatabases (the tables collection's bound).
-func (schemaCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error) {
+// BatchRunner is an InstanceRunner whose rows go to the import in parts, one import call each, in order (RunOnce
+// calls runBatched for it): a collection too large for one jsonb payload (PostgreSQL refuses an array over 256 MB; the
+// schema collection reaches that near 800,000 objects) imports part by part and never holds the whole instance.
+type BatchRunner interface {
+	RunBatches(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc, emit func([]Row) error) error
+}
+
+// runBatched is RunOnce's path for a BatchRunner: each part through the instance's text policy into the import, the
+// collection's log line from the parts' collector_error rows. A part's failed import is the collector's to report (the
+// next parts go on); an error returned by RunBatches fails the run.
+func runBatched(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, br BatchRunner,
+	conn *pgx.Conn, info platform.Info, instanceID int, start time.Time) Result {
+	n, parts := 0, 0
+	status, note := "ok", ""
+	err := br.RunBatches(ctx, conn, info, in, func(ctx context.Context, source string) (time.Time, bool, error) {
+		return r.LogCursor(ctx, instanceID, source)
+	}, func(rows []Row) error {
+		applyTextPolicy(rows, in.QueryText)
+		if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
+			return err
+		}
+		n += len(rows)
+		parts++
+		for _, row := range rows {
+			if row["kind"] == "collector_error" && status == "ok" {
+				status, note = "partial", fmt.Sprintf("%v: %v", row["source"], row["message"])
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+		return Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
+	}
+	d := time.Since(start)
+	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
+	log.Debug("collected", "instance", in.Name, "collection", name, "rows", n, "imports", parts, "ms", d.Milliseconds())
+	return Result{Rows: n, Duration: d}
+}
+
+// schemaMaxPayload caps one import call's payload, estimated (schemaPayloadSize), well under PostgreSQL's 256 MB jsonb
+// array limit. A database whose objects pass it is a collector error (its stored snapshot stays); its event-trigger
+// rows go in parts under it. PGVIGIL_SCHEMA_MAX_PAYLOAD (bytes) lowers it for the proof.
+var schemaMaxPayload = 160 << 20
+
+// schemaEnvInt reads a positive integer override from the environment (the proof's hidden caps).
+func schemaEnvInt(name string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(name)); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
+
+// schemaPayloadSize estimates a part's size as jsonb holds it: each key and string value, plus a fixed cost per value
+// and per row.
+func schemaPayloadSize(rows []Row) int {
+	n := 0
+	for _, r := range rows {
+		n += 16
+		for k, v := range r {
+			n += len(k) + 8
+			if s, ok := v.(string); ok {
+				n += len(s)
+			} else {
+				n += 16
+			}
+		}
+	}
+	return n
+}
+
+// schemaSplit cuts rows into parts of at most limit bytes each (a row over it is a part of its own).
+func schemaSplit(rows []Row, limit int) [][]Row {
+	var parts [][]Row
+	start, size := 0, 0
+	for i, r := range rows {
+		rs := schemaPayloadSize([]Row{r})
+		if i > start && size+rs > limit {
+			parts = append(parts, rows[start:i])
+			start, size = i, 0
+		}
+		size += rs
+	}
+	if start < len(rows) {
+		parts = append(parts, rows[start:])
+	}
+	return parts
+}
+
+// RunBatches reads the connected database on conn and every other connectable database on its own connection, up to
+// tablesMaxDatabases (the tables collection's bound), and hands the import each database on its own: its event-trigger
+// rows (in parts under schemaMaxPayload, the cursor row in the last), then its database row and objects. The last call
+// carries every database's collector_error row, a 'seen' row per database read and the 'end' row: only that call
+// marks a database neither read nor in error as gone.
+func (schemaCollector) RunBatches(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, cursor CursorFunc, emit func([]Row) error) error {
+	maxPayload := schemaEnvInt("PGVIGIL_SCHEMA_MAX_PAYLOAD", schemaMaxPayload)
 	dbs, err := tablesDatabases(ctx, conn)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var cur string
 	if err := conn.QueryRow(ctx, `SELECT current_database()::text`).Scan(&cur); err != nil {
-		return nil, err
+		return err
 	}
-	out := []Row{}
+	final := []Row{}
+	dbErr := func(db, msg string) {
+		final = append(final, Row{"kind": "collector_error", "source": "schema:" + db, "message": msg})
+	}
 	if len(dbs) > tablesMaxDatabases {
 		// one error row per database left out, so the import keeps its snapshot as it was instead of marking it gone
 		for _, db := range dbs[tablesMaxDatabases:] {
-			out = append(out, Row{"kind": "collector_error", "source": "schema:" + db,
-				"message": fmt.Sprintf("%d databases: the first %d by name are read", len(dbs), tablesMaxDatabases)})
+			dbErr(db, fmt.Sprintf("%d databases: the first %d by name are read", len(dbs), tablesMaxDatabases))
 		}
 		dbs = dbs[:tablesMaxDatabases]
 	}
@@ -280,21 +407,70 @@ func (schemaCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platfo
 			}
 		}
 		var rows []Row
+		var readErr error
 		if db == cur {
-			rows, err = schemaRead(ctx, conn, since)
+			rows, readErr = schemaRead(ctx, conn, since)
 		} else {
-			rows, err = schemaReadOther(ctx, in, db, since)
+			rows, readErr = schemaReadOther(ctx, in, db, since)
 		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+		if readErr != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var objs, ddl []Row
+		for _, r := range rows {
+			switch r["kind"] {
+			case "ddl", "ddl_cursor":
+				ddl = append(ddl, r)
+			default:
+				objs = append(objs, r)
 			}
-			// the event trigger's rows read beside a failed object read still go in: the import keeps them
-			out = append(out, rows...)
-			out = append(out, Row{"kind": "collector_error", "source": "schema:" + db, "message": err.Error()})
+		}
+		// the event trigger's rows go in even beside a failed object read; a failed part stops the rest (the cursor
+		// moves with what was imported, so a later part never skips an earlier one)
+		for _, part := range schemaSplit(ddl, maxPayload) {
+			if err := emit(part); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				dbErr(db, "import of the event trigger's rows: "+err.Error())
+				break
+			}
+		}
+		switch {
+		case readErr != nil:
+			dbErr(db, readErr.Error())
+			continue
+		case schemaPayloadSize(objs) > maxPayload:
+			dbErr(db, fmt.Sprintf("about %d MB of definitions, over the %d MB one import takes: the database is not snapshotted",
+				schemaPayloadSize(objs)>>20, maxPayload>>20))
 			continue
 		}
+		if err := emit(objs); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			dbErr(db, "import: "+err.Error())
+			continue
+		}
+		if len(objs) > 0 {
+			final = append(final, Row{"kind": "seen", "dbid": objs[0]["dbid"], "datname": db})
+		}
+	}
+	return emit(append(final, Row{"kind": "end"}))
+}
+
+// RunInstance is the one-payload form (RunOnce without the batch path, and the tests): every part in one slice. A
+// whole over schemaMaxPayload fails, as PostgreSQL would refuse it.
+func (c schemaCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error) {
+	var out []Row
+	if err := c.RunBatches(ctx, conn, info, in, cursor, func(rows []Row) error {
 		out = append(out, rows...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if n, limit := schemaPayloadSize(out), schemaEnvInt("PGVIGIL_SCHEMA_MAX_PAYLOAD", schemaMaxPayload); n > limit {
+		return nil, fmt.Errorf("the instance's schema read is about %d MB in one payload, over the %d MB one import takes (RunOnce's batch path imports per database)", n>>20, limit>>20)
 	}
 	return out, nil
 }
@@ -377,7 +553,9 @@ func schemaDDL(ctx context.Context, conn *pgx.Conn, since *time.Time) (rows []Ro
 	if triggers < 2 {
 		status = "no event trigger"
 	}
-	q := fmt.Sprintf(schemaDDLReadSQL, *tbl, schemaDDLPage)
+	maxRows := schemaEnvInt("PGVIGIL_SCHEMA_DDL_MAX", schemaDDLMax)
+	pageRows := min(schemaDDLPage, maxRows)
+	q := fmt.Sprintf(schemaDDLReadSQL, *tbl, pageRows)
 	var afterAt *time.Time
 	var afterID *int64
 	for {
@@ -390,7 +568,7 @@ func schemaDDL(ctx context.Context, conn *pgx.Conn, since *time.Time) (rows []Ro
 			return rows, status, *tbl, "read " + *tbl + ": " + err.Error()
 		}
 		rows = append(rows, page...)
-		if len(page) < schemaDDLPage {
+		if len(page) < pageRows {
 			return rows, status, *tbl, ""
 		}
 		last := page[len(page)-1]
@@ -400,10 +578,10 @@ func schemaDDL(ctx context.Context, conn *pgx.Conn, since *time.Time) (rows []Ro
 			return rows, status, *tbl, "read " + *tbl + ": a row without logged_at or log_id"
 		}
 		afterAt, afterID = &at, &id
-		if len(rows) >= schemaDDLMax {
+		if len(rows) >= maxRows {
 			dat, _ := last["datname"].(string)
 			rows = append(rows, schemaDDLCursor(dat, at))
-			return rows, status, *tbl, fmt.Sprintf("over %d rows in one read: the rest comes with the next runs", schemaDDLMax)
+			return rows, status, *tbl, fmt.Sprintf("over %d rows in one read: the rest comes with the next runs", maxRows)
 		}
 	}
 }
@@ -434,6 +612,9 @@ func schemaFinish(objs []Row) {
 			h.Write([]byte{0})
 		}
 		o["hash"] = hex.EncodeToString(h.Sum(nil))
+		// the definition's own hash: a change past the cut is seen even when the owner or ACL changed with it
+		dh := sha256.Sum256([]byte(def))
+		o["def_hash"] = hex.EncodeToString(dh[:])
 		o["definition"] = schemaCut(def, schemaMaxDef)
 	}
 }
