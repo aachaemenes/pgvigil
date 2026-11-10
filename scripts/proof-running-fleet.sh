@@ -306,16 +306,16 @@ for (const theme of ['light', 'dark']) {
   await ev(`${bb}.click(); 'ok'`);
   const br = await rowsOf('.folded table');
   check(br?.n === 6, T + `D: Blocked pressed leaves ${br?.n} rows`);
-  await ev(`${bb}.click(); const s = document.querySelector('.folded select'); s.value = 'state'; s.dispatchEvent(new Event('change')); 'ok'`);
+  await ev(`${bb}.click(); (() => { const sel = document.querySelector('.folded select'); sel.value = 'state'; sel.dispatchEvent(new Event('change')); })(); 'ok'`);
   const groups = await ev(`[...document.querySelectorAll('.folded table tbody tr')].map(r => r.cells[0].textContent + '=' + r.cells[1].textContent)`);
   check(JSON.stringify(groups) === JSON.stringify(['active=8', 'idle in transaction=1']), T + `D: grouped by state ${JSON.stringify(groups)}`);
   await ev(`document.querySelector('.folded table tbody tr button').click(); 'ok'`);
   const gr = await rowsOf('.folded table');
   check(gr?.n === 8, T + `D: the group 'active' opens ${gr?.n} sessions`);
-  await ev(`const s = document.querySelector('.folded select'); s.value = ''; s.dispatchEvent(new Event('change')); 'ok'`);
+  await ev(`(() => { const sel = document.querySelector('.folded select'); sel.value = ''; sel.dispatchEvent(new Event('change')); })(); 'ok'`);
   await shot('pg-instance', theme);
   // E. the viewer on 101's statement
-  await ev(`const b = ${sessCell(101)}; b.focus(); b.click(); 'ok'`);
+  await ev(`(() => { const b = ${sessCell(101)}; b.focus(); b.click(); })(); 'ok'`);
   const open = await ev(`(() => { const d = document.querySelector('dialog.sqlview'); return d ? { open: d.open, modal: d.matches(':modal'), len: d.querySelector('pre').textContent.length, inside: d.contains(document.activeElement) } : null; })()`);
   check(open && open.open && open.modal && open.len === a.long101.length && open.inside, T + `E: the viewer ${JSON.stringify(open)} (whole statement ${a.long101.length})`);
   await shot('viewer', theme);
