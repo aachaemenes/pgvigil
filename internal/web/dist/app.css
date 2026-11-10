@@ -160,3 +160,4 @@ h2 { font-size: 1.05rem; } h3 { font-size: 1rem; }
 .seg button.toggle::before { content: "[ ] "; content: "[ ] " / ""; }
 .seg button.toggle[aria-pressed="true"]::before { content: "[x] "; content: "[x] " / ""; }
 #crumb a { text-decoration: underline; text-underline-offset: .2rem; }   /* told from the crumb text by more than colour (WCAG 1.4.1) */
+#tabs .tab-group { color: var(--muted); margin-right: -.4rem; }

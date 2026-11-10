@@ -6,7 +6,7 @@
 // server is untouched and nothing leaves the browser but the file the user saves. The workbook is written here
 // (SpreadsheetML in a zip): no library, no dependency in the bundle.
 import { fleet } from './fleet';
-import { Ctx, drillTabs, instanceTabs, rangeLabel, rootTabs, window_ } from './router';
+import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, rangeLabel, rootTabs, window_ } from './router';
 import { Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel } from './ui';
 
 type Status = 'ok' | 'warn' | 'crit' | 'none';
@@ -395,7 +395,7 @@ async function metaOf(ctx: Ctx): Promise<Meta> {
     try { const r = (await fleet()).instances.find(x => Number(x.instance_id) === ctx.instance); if (r) instance = String(r.name); } catch { /* the id stands */ }
   }
   const w = window_(ctx);
-  const tab = (ctx.instance ? instanceTabs[ctx.tab] ?? drillTabs[ctx.tab] : rootTabs[ctx.tab]) ?? ctx.tab;
+  const tab = (ctx.instance ? instanceTabs[ctx.tab] ?? mssqlInstanceTabs[ctx.tab] ?? drillTabs[ctx.tab] : rootTabs[ctx.tab]) ?? ctx.tab;
   return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date() };
 }
 

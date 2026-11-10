@@ -44,7 +44,8 @@ await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
 const tabsOf = async (hash) => {
   await cmd('Page.navigate', { url: U + hash }); await sleep(300); await settled();
-  return await ev(`[...document.querySelectorAll('#tabs a')].map(a => a.getAttribute('href'))`);
+  // every page of the scope: the strip shows one group of tabs, its data-all lists them all
+  return await ev(`(() => { const t = document.querySelector('#tabs'); return t.dataset.all ? JSON.parse(t.dataset.all) : [...t.querySelectorAll('a')].map(a => a.getAttribute('href')); })()`);
 };
 const rootTabs = await tabsOf('#/summary');
 const instTabs = await tabsOf(`#/summary?i=${onprem.instance_id}`);

@@ -32,12 +32,29 @@ import { schemaView } from './schema';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
-import { href, instanceTabs, isLive, parse, rangeLabel, rememberInstance, rootTabs, window_, drillHome } from './router';
+import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
+import { mssqlRunningView } from './mssql_running';
+import { mssqlWaitsView } from './mssql_waits';
+import { mssqlBlocked, mssqlDeadlocks, mssqlSlow, mssqlAgEvents } from './mssql_xe';
+import { hasAvailability, mssqlAvailability } from './mssql_hadr';
+import { mssqlBackups } from './mssql_backups';
+import { mssqlJobs } from './mssql_jobs';
+import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
+import { mssqlRowVersionsView } from './mssql_rowversions';
+import { mssqlActionsLogView } from './mssql_actions';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
 import { el } from './ui';
 import { exportButtons } from './export';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
+// a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
+const mssqlPages: Record<string, Render> = {
+  summary: c => instanceSummary(c), findings: c => findings(c),
+  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: mssqlSlow,
+  availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
+  mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+  rowversions: mssqlRowVersionsView, mssqlactions: mssqlActionsLogView,
+};
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
@@ -138,15 +155,28 @@ async function render(force = false) {
   const gen = ++generation;
   const ctx = parse();
   rememberInstance(ctx.instance);
-  let tabs = ctx.instance ? instanceTabs : rootTabs;
-  // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
-  if (ctx.instance) {
+  // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
+  const engine = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance)?.engine : undefined;
+  let tabs = ctx.instance ? tabsFor(engine) : rootTabs;
+  if (ctx.instance && isMssql(engine)) {
+    // the Availability tab only where one of its collections has stored a read
+    if (!(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+  } else if (ctx.instance) {
+    // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
   }
-  const pages = ctx.instance ? instancePages : rootPages;
+  const pages = ctx.instance ? (isMssql(engine) ? mssqlPages : instancePages) : rootPages;
+  // a page of the other engine (an old link, a tree click from another instance) opens this instance's Summary
+  if (ctx.instance && !pages[ctx.tab]) ctx.tab = 'summary';
 
-  $('tabs').replaceChildren(...Object.entries(tabs).map(([k, label]) =>
-    el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '' }, label)));   // a drill page marks its home tab
+  // the strip: the tabs of the page's group only (the scope's main tabs, or a tree folder's), the folder named first
+  const group = groupOf(ctx.instance ? groupsFor(engine) : rootGroups, ctx.tab);
+  const strip = group.tabs.filter(k => tabs[k]);
+  $('tabs').replaceChildren(
+    ...(group.name ? [el('span', { class: 'tab-group' }, group.name + ':')] : []),
+    ...strip.map(k => el('a', { href: href(ctx, { tab: k }), class: k === ctx.tab || k === drillHome[ctx.tab] ? 'on' : '', ...(k === ctx.tab || k === drillHome[ctx.tab] ? { 'aria-current': 'page' } : {}) }, tabs[k])));   // a drill page marks its home tab
+  // every page of the scope, for a check that walks them all (scripts/a11y-check.mjs)
+  $('tabs').dataset.all = JSON.stringify(Object.keys(tabs).map(k => href(ctx, { tab: k })));
 
   const bar = $('bar');
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');

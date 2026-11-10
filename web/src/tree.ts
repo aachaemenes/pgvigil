@@ -16,7 +16,7 @@
 // Also the helpers the Summary and the instance header use: tag columns and a tag filter, and tag chips.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { poolerCached } from './pooler';
-import { Ctx, href, drillHome } from './router';
+import { Ctx, href, drillHome, groupsFor, isMssql, rootGroups, rootTabs, tabsFor } from './router';
 import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { hashParam, hrefWith } from './dbinfo';
 import { dot, el, fmtBytes } from './ui';
@@ -262,11 +262,14 @@ function state(l: Load, depth: number, empty: string): HTMLElement | null {
 }
 
 // instanceFolders: what opens under an instance node
-function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
+function instanceFolders(ctx: Ctx, id: number, depth: number, engine?: unknown): HTMLElement[] {
   const here = ctx.instance === id;
   const tabLink = (tab: string) => href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined });
   const tabFolder = (k: string, name: string, tabs: [string, string][]) =>
     folder(`i${id}/${k}`, name, depth, () => tabs.map(([tab, label]) => el('div', { style: nodeStyle(depth + 1) }, leaf(label, tabLink(tab), here && ctx.tab === tab))));
+  const instanceTabs = tabsFor(engine), instanceGroups = groupsFor(engine);
+  // a SQL Server instance: its tab groups only (its databases and jobs are pages, not tree nodes yet)
+  if (isMssql(engine)) return instanceGroups.filter(g => g.key !== 'main').map(g => tabFolder(g.key, g.name, g.tabs.map(t => [t, instanceTabs[t]] as [string, string])));
   const curDb = here ? hashParam('db') : undefined, curRel = here ? hashParam('rel') : undefined, curJob = here ? hashParam('job') : undefined;
 
   const databases = folder(`i${id}/db`, 'Databases', depth, () => {
@@ -316,15 +319,19 @@ function instanceFolders(ctx: Ctx, id: number, depth: number): HTMLElement[] {
     return shown;
   }, tabLink('jobs'), here && ctx.tab === 'jobs');
 
-  return [
-    tabFolder('conf', 'Configuration', [['config', 'Configuration'], ['extensions', 'Extensions'], ['versions', 'Versions'], ['roles', 'Roles']]),
-    tabFolder('checks', 'Checks', [['summary', 'Daily checks (summary)'], ['findings', 'Findings']]),
-    tabFolder('repl', 'Replication', [['replication', 'Replication'], ['dms', 'DMS']]),
-    tabFolder('storage', 'Storage', [['storage', 'Storage'], ['dbinfo', 'Database info'], ['backups', 'Backups']]),
-    tabFolder('memory', 'Memory', poolerCached(id) ? [['memory', 'Memory'], ['pooler', 'Pooler']] : [['memory', 'Memory']]),   // the Pooler leaf only where a pooler read exists
-    databases,
-    jobs,
-  ];
+  // one folder per tab group of router.ts (the strip shows the same tabs once inside); the Pooler leaf only where a
+  // pooler read exists; Jobs is the folder above, with its jobs under it
+  const groupFolders = instanceGroups.filter(g => g.key !== 'main' && g.key !== 'jobs').map(g =>
+    tabFolder(g.key, g.name, g.tabs.filter(t => t !== 'pooler' || poolerCached(id)).map(t => [t, instanceTabs[t]] as [string, string])));
+  return [...groupFolders, databases, jobs];
+}
+
+// scopeFolders: the folders of the fleet or of a tag folder (the scope the page is in), each a short list of pages
+function scopeFolders(ctx: Ctx): HTMLElement[] {
+  const scope = ctx.instance ? undefined : ctx.tag;
+  return rootGroups.filter(g => g.key !== 'main').map(g =>
+    folder(`r/${g.key}`, g.name, 0, () => g.tabs.map(t => el('div', { style: nodeStyle(1) },
+      leaf(rootTabs[t], href(ctx, { tab: t, instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined }), !ctx.instance && ctx.tab === t)))));
 }
 
 const rollup = (f: Fleet, rows: Row[]) => rows.reduce<Level>((a, r) => Math.max(a, worst(f, r)) as Level, 0);
@@ -399,14 +406,14 @@ function draw() {
           ul.append(el('div', { class: 'tree-inst', style: rowStyle }, caretFor(key, String(r.name)),
             nameOpens(el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), style: 'flex:1;min-width:0', href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
               dot(worst(f, r)), String(r.name)), key, opened.has(key), id === ctx.instance && ctx.tab === tab && ctx.at == null && ctx.task == null, () => flip(key))));
-          if (opened.has(key)) ul.append(...instanceFolders(ctx, id, 1));
+          if (opened.has(key)) ul.append(...instanceFolders(ctx, id, 1, r.engine));
         }
       }
       box.append(ul);
     }
     return box;
   };
-  const out: HTMLElement[] = [all];
+  const out: HTMLElement[] = [all, ...(filter ? [] : scopeFolders(ctx))];
   for (const fo of foldersFor(f.instances, ui.group_by, 0, '')) { const e = render(fo, 0); if (e) out.push(e); }
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
   else if (filter && out.length === 1) out.push(el('p', { class: 'empty', style: 'padding:.1rem .4rem' }, 'No instance named like that.'));

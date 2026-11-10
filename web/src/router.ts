@@ -34,6 +34,52 @@ export const instanceTabs: Record<string, string> = {
   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
+
+// The tab strip stays short: a scope's main tabs, and every other page under a folder of the tree with its own short
+// row of tabs (DBA Dash's Configuration / Checks / HA/DR / Storage / Jobs folders). A page's address does not change:
+// rootTabs and instanceTabs still name every page; a group only says which pages share a strip.
+export interface TabGroup { key: string; name: string; tabs: string[] }
+export const rootGroups: TabGroup[] = [
+  { key: 'main', name: '', tabs: ['summary', 'alerts', 'findings', 'instances', 'slowqueries'] },
+  { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
+  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles'] },
+  { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
+  { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'indexes'] },
+  { key: 'jobs', name: 'Jobs', tabs: ['jobs'] },
+  { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+];
+export const instanceGroups: TabGroup[] = [
+  { key: 'main', name: '', tabs: ['summary', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'findings', 'logs'] },
+  { key: 'checks', name: 'Checks', tabs: ['corruption', 'vacuum', 'indexes', 'custom'] },
+  { key: 'conf', name: 'Configuration', tabs: ['config', 'extensions', 'versions', 'roles', 'schema', 'actions'] },
+  { key: 'perf', name: 'Performance', tabs: ['load', 'counters', 'io', 'host', 'memory', 'pooler'] },
+  { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'dms'] },
+  { key: 'storage', name: 'Storage', tabs: ['storage', 'dbinfo', 'tables'] },
+  { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport'] },
+];
+// A SQL Server instance has its own pages (the engine of the instance chooses the tab set; a PostgreSQL page is
+// never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
+export const mssqlInstanceTabs: Record<string, string> = {
+  summary: 'Summary', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_deadlocks: 'Deadlocks',
+  mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
+  mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlactions: 'Actions log',
+};
+export const mssqlInstanceGroups: TabGroup[] = [
+  { key: 'main', name: '', tabs: ['summary', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
+  { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
+  { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions'] },
+  { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs'] },
+  { key: 'conf', name: 'Configuration', tabs: ['mssqlactions'] },
+];
+export const isMssql = (engine: unknown) => engine === 'sqlserver';
+export const tabsFor = (engine: unknown) => isMssql(engine) ? mssqlInstanceTabs : instanceTabs;
+export const groupsFor = (engine: unknown) => isMssql(engine) ? mssqlInstanceGroups : instanceGroups;
+
+// groupOf: the group whose strip a page shows (a drill page: its home tab's); a page in no group shows the main one
+export function groupOf(groups: TabGroup[], tab: string): TabGroup {
+  const t = drillHome[tab] ?? tab;
+  return groups.find(g => g.tabs.includes(t)) ?? groups[0];
+}
 // the drill-down pages of one instance (drill.ts): reached by links, not shown in the tab strip
 export const drillTabs: Record<string, string> = { db: 'Database', table: 'Table', job: 'Job', index: 'Index', compare: 'Compare' };
 // the tab a drill page belongs to: marked in the strip, and where the tree's link to another instance lands
@@ -45,13 +91,13 @@ export function parse(): Ctx {
   const q = new URLSearchParams(qs ?? '');
   const name = legacy[p] ?? p;
   // an instance-only tab without i (an old bookmark) opens the instance last viewed in this browser
-  const instance = Number(q.get('i')) || ((instanceTabs[name] || drillTabs[name]) && !rootTabs[name] && !q.get('tag') ? Number(lsGet('pgvigil.instance')) || undefined : undefined);
+  const instance = Number(q.get('i')) || ((instanceTabs[name] || mssqlInstanceTabs[name] || drillTabs[name]) && !rootTabs[name] && !q.get('tag') ? Number(lsGet('pgvigil.instance')) || undefined : undefined);
   const tabs = instance ? instanceTabs : rootTabs;
   const from = q.get('from') ?? undefined, to = q.get('to') ?? undefined;
   const custom = from && to && !isNaN(Date.parse(from)) && !isNaN(Date.parse(to)) && Date.parse(from) < Date.parse(to);
   const w = q.get('w') ?? '';
   return {
-    tab: tabs[name] || (instance && drillTabs[name]) ? name : 'summary',
+    tab: tabs[name] || (instance && (drillTabs[name] || mssqlInstanceTabs[name])) ? name : 'summary',
     instance,
     tag: q.get('tag') ?? undefined,
     range: custom ? { from, to } : { preset: presets[w] ? w : '1h' },
