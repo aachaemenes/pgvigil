@@ -18,13 +18,16 @@
 #   dbstats      N rows per database (onprem-erp01/02: 3 databases, the others 2) = 26 N
 #   statements   statements_info at every 5-minute snapshot on 11 instances (none on
 #                cloudsql-analytics02); reset rows on rds-orders01 only
-#   overview     exactly the 67 demo rows of EXPECTED_OVERVIEW_FIXED below (check@instance), one per finding the
+#   overview     exactly the 60 demo rows of EXPECTED_OVERVIEW_FIXED below (check@instance), one per finding the
 #                demo's scenarios raise across every overview check the waves added (io, pi, host, disk, storage,
 #                backups, corruption, custom, roles, indexes, jobs report, vacuum, beside the first ones); 'job
-#                failed'@aurora-crm01 x6 (refresh-sales-mv twice, sync-contacts four times); plus 'vacuum waiting
+#                failed'@aurora-crm01 once per failed run: refresh-sales-mv twice and sync-contacts four times at the
+#                anchor, once more for each 20-minute mark the catch-up ticks pass (jobsreport_demo.go); 'job run over twice
+#                its average'@rds-billing01 only while no export-ledger run after the anchor is stored (the
+#                demo's next normal run ends it); plus 'vacuum waiting
 #                on a lock'@rds-orders01 only when the newest vacuum read is in minutes 30-35 (vacuum_demo.go), and
 #                'CPU over 90 % for 10 minutes'@onprem-erp01 only while its host samples cover the rule's last 10
-#                minutes (5 readings over 8 minutes: about 2 minutes after the seed returns; host_demo.go);
+#                minutes (5 readings over 8 minutes: 1 to 2 minutes after the last catch-up tick; host_demo.go);
 #                deadlocks (24 h)@rds-orders01 with '3 deadlock(s)'; no stale collection, no 'check could not run'
 #   jobs         aurora-crm01 4 jobs (three and the job report's sync-contacts), rds-billing01 4 (two and the job
 #                report's export-ledger and rollup-invoices: internal/demo/jobsreport_demo.go)
@@ -75,7 +78,7 @@ ANCHOR=$(P -c "select max(snapshot_at) from pgvigil.activity_summary")
 grid_n() {
   SEED_ANCHOR=$(sed -n 's/.*; anchor \([0-9TZ:-]*\)$/\1/p' <<<"$OUT"); [[ -n "$SEED_ANCHOR" ]] || fail "the seed printed no anchor"
   TICKS=$(P -c "select count(distinct snapshot_at) from pgvigil.activity_summary where snapshot_at > '$SEED_ANCHOR'")
-  N=$(P -c "select case when extract(minute from '$SEED_ANCHOR'::timestamptz)::int % 5 = 0 then 2065 else 2066 end + $TICKS")
+  N=$(P -c "select case when extract(minute from '$SEED_ANCHOR'::timestamptz at time zone 'UTC')::int % 5 = 0 then 2065 else 2066 end + $TICKS")
   (( TICKS <= 30 )) || fail "$TICKS catch-up ticks: the seed stops ticking thirty minutes after its anchor"
 }
 grid_n
@@ -101,7 +104,7 @@ check_repo() {
   got=$(P -c "select count(*) from pgvigil.dbstats d join pgvigil.instances i using (instance_id) where 'demo' = any(i.tags)")
   [[ "$got" == $((26 * N)) ]] || fail "dbstats rows $got, want $((26 * N))"; ok "dbstats: $got rows"
   got=$(P -c "select count(*) from (select i.name, (select count(*) from pgvigil.statements_info s where s.instance_id = i.instance_id) n,
-      (select count(*) from pgvigil.activity_summary a where a.instance_id = i.instance_id and extract(minute from a.snapshot_at)::int % 5 = 0) m
+      (select count(*) from pgvigil.activity_summary a where a.instance_id = i.instance_id and extract(minute from a.snapshot_at at time zone 'UTC')::int % 5 = 0) m
       from pgvigil.instances i where 'demo' = any(i.tags)) x where n = m and n > 0")
   [[ "$got" == 11 ]] || fail "statements_info on $got instance(s), want 11"; ok "statements: 11 instances at every 5-minute snapshot"
   got=$(P -c "select string_agg(distinct i.name, ',') from pgvigil.statements_delta d join pgvigil.instances i using (instance_id) where d.reset and 'demo' = any(i.tags)")
@@ -164,14 +167,7 @@ invalid index@demo-aurora-dms01
 invalid index@demo-azure-portal02
 invalid index@demo-onprem-erp01
 invalid index@demo-rds-orders01
-job failed@demo-aurora-crm01
-job failed@demo-aurora-crm01
-job failed@demo-aurora-crm01
-job failed@demo-aurora-crm01
-job failed@demo-aurora-crm01
-job failed@demo-aurora-crm01
 job failing repeatedly@demo-aurora-crm01
-job run over twice its average@demo-rds-billing01
 job schedule missed@demo-rds-billing01
 last archive older than 60 min@demo-onprem-hr01
 no snapshot in 24 h@demo-aurora-reporting01
@@ -208,22 +204,39 @@ wraparound@demo-onprem-hr01"
 expected_overview() {
   local v; v=$(P -c "select count(*) from pgvigil.vacuum_state s join pgvigil.instances i using (instance_id)
                       where i.name = 'demo-rds-orders01' and s.snapshot_at > now() - interval '10 minutes'
-                        and extract(minute from s.snapshot_at)::int between 30 and 35")
+                        and extract(minute from s.snapshot_at at time zone 'UTC')::int between 30 and 35") || fail "the vacuum window query"; [[ "$v" =~ ^[0-9]+$ ]] || fail "the vacuum window query answered '$v'"
+  # 'job failed'@aurora-crm01, one row per failed run of the last day: refresh-sales-mv's two (gen.go jobRows: its hourly
+  # :05 runs in [anchor - 7 h, anchor - 5 h)) and every sync-contacts run ('*/20', 1 s when it fails) that starts at or
+  # after anchor - 80 min and has ended by the seed's last tick (jobsreport_demo.go): four at the anchor, five when the
+  # catch-up ticks pass the next 20-minute mark
+  local f; f=$(P -c "select 2 + count(*) from (select max(snapshot_at) last from pgvigil.activity_summary) l,
+                      generate_series((date_trunc('hour', '$SEED_ANCHOR'::timestamptz at time zone 'UTC') at time zone 'UTC') - interval '2 hours', l.last, interval '20 minutes') g
+                     where g >= '$SEED_ANCHOR'::timestamptz - interval '80 minutes' and g + interval '1 second' <= l.last") || fail "the crm01 job failures query"; [[ "$f" =~ ^[0-9]+$ ]] || fail "the crm01 job failures query answered '$f'"
+  # jobsreport_demo.go: export-ledger ('15 * * * *', 30 s) ran 6x as long in its last run up to the anchor; the first
+  # normal run after the anchor ends the row, so it is expected only while no run started after the anchor is stored
+  local x; x=$(P -c "select count(*) from pgvigil.job_runs r join pgvigil.jobs j using (instance_id, scheduler, job_id)
+                      join pgvigil.instances i using (instance_id)
+                     where i.name = 'demo-rds-billing01' and j.job_name = 'export-ledger' and r.start_time > '$SEED_ANCHOR'") || fail "the export-ledger runs after the anchor query"; [[ "$x" =~ ^[0-9]+$ ]] || fail "the export-ledger runs after the anchor query answered '$x'"
   # host_demo.go: erp01's CPU sits at 99 %; the rule needs 5 readings spanning 8 minutes inside the last 10, so after the
   # seed returns (plain serve does not tick) the row holds only while erp01's newest host sample is about 2 minutes old
   local c; c=$(P -c "select count(*) >= 5 and max(h.snapshot_at) - min(h.snapshot_at) >= interval '8 minutes'
                       from pgvigil.host_sample h join pgvigil.instances i using (instance_id)
-                     where i.name = 'demo-onprem-erp01' and h.snapshot_at > now() - interval '10 minutes' and h.cpu_pct is not null")
+                     where i.name = 'demo-onprem-erp01' and h.snapshot_at > now() - interval '10 minutes' and h.cpu_pct is not null") || fail "erp01's CPU window query"; [[ "$c" =~ ^[tf]$ ]] || fail "erp01's CPU window query answered '$c'"
   { echo "$EXPECTED_OVERVIEW_FIXED"; if [[ "$v" == 1 ]]; then echo "vacuum waiting on a lock@demo-rds-orders01"; fi
-    if [[ "$c" == t ]]; then echo "CPU over 90 % for 10 minutes@demo-onprem-erp01"; fi; } | LC_ALL=C python3 -c 'import sys; print("\n".join(sorted(sys.stdin.read().split("\n")[:-1])))'
+    if [[ "$c" == t ]]; then echo "CPU over 90 % for 10 minutes@demo-onprem-erp01"; fi
+    for _ in $(seq "$f"); do echo "job failed@demo-aurora-crm01"; done
+    if [[ "$x" == 0 ]]; then echo "job run over twice its average@demo-rds-billing01"; fi; } | LC_ALL=C python3 -c 'import sys; print("\n".join(sorted(sys.stdin.read().split("\n")[:-1])))'
 }
 check_api() {
   local got id
   got=$(api instances | python3 -c 'import json,sys; d=json.load(sys.stdin); n=d["columns"].index("tags"); print(sum(1 for r in d["rows"] if "demo" in (r[n] or [])))')
   [[ "$got" == 15 ]] || fail "api instances: $got"; ok "api instances: 15 demo"
+  local want want2; want=$(expected_overview)
   got=$(api overview | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["columns"]; print("\n".join(sorted(r[c.index("check_name")]+"@"+r[c.index("instance")] for r in d["rows"] if r[c.index("instance")].startswith("demo-") or r[c.index("check_name")]=="check could not run")))')
-  local want; want=$(expected_overview)
-  [[ "$got" == "$want" ]] || { diff <(echo "$want") <(echo "$got") >&2; fail "overview rows differ"; }; ok "api overview: the $(wc -l <<<"$want") expected demo rows"
+  want2=$(expected_overview)
+  # a clock-bound row whose window closed during the read (erp01's CPU, about 1-2 minutes after the last tick): the API
+  # answered at one edge or the other, each an exact list
+  [[ "$got" == "$want" || "$got" == "$want2" ]] || { diff <(echo "$want2") <(echo "$got") >&2; fail "overview rows differ"; }; ok "api overview: the $(wc -l <<<"$want") expected demo rows"
   api overview | grep -q '3 deadlock(s)' || fail "overview deadlock detail"; ok "api overview: 3 deadlock(s)"
   id=$(P -c "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
   got=$(api "activity?instance=$id" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["chains"]["rows"]))')
