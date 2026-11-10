@@ -84,16 +84,19 @@ SELECT n.nspname,
 		toplevel = "s.toplevel"
 	}
 	// the text filter is a first cut (leading comments allowed); parseSessionSet decides. The monitor's own session
-	// setup (collect.go's SETs on every connection) is not the application's and is left out. Under the cap the rows
-	// that name a planner setting come first: a per-request SET of a custom setting (one row per value on PG 16 and
-	// older) must not push them out.
+	// setup (collect.go's sessionSetup, run on every connection) is not the application's: those settings are left
+	// out under the monitor's role alone (monitorSetupSettings), every other SET of that role is kept, so a login the
+	// application shares with the monitor still shows the application's SETs (pg_stat_statements has no
+	// application_name to tell them apart; the application's own SET of one of those four under the shared login is
+	// lost with them). Under the cap the rows that name a planner setting come first: a per-request SET of a custom
+	// setting (one row per value on PG 16 and older) must not push them out.
 	rows, err := conn.Query(ctx, fmt.Sprintf(`
-SELECT s.dbid::bigint, d.datname::text, s.userid::bigint, r.rolname::text, s.queryid, %s, s.calls, left(s.query, 2000)
+SELECT s.dbid::bigint, d.datname::text, s.userid::bigint, r.rolname::text, s.queryid, %s, s.calls, left(s.query, 2000),
+       s.userid = (SELECT oid FROM pg_roles WHERE rolname = current_user) AS own
   FROM %s.pg_stat_statements s
   LEFT JOIN pg_database d ON d.oid = s.dbid
   LEFT JOIN pg_roles r ON r.oid = s.userid
  WHERE s.query ~* '^\s*(/\*.*?\*/\s*|--[^\n]*\n\s*)*(set|reset)\y' AND s.queryid IS NOT NULL
-   AND s.userid <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
  ORDER BY (s.query ~* '(set|reset)\s+((local|session)\s+)?"?(enable_|[a-z_]*_cost\y|work_mem\y|jit\y|geqo|join_collapse_limit|from_collapse_limit|plan_cache_mode|default_statistics_target|effective_cache_size|hash_mem_multiplier|max_parallel_workers_per_gather)') DESC,
           s.calls DESC
  LIMIT %d`, toplevel, quoteIdent(schema), sessionSetsMaxRows))
@@ -105,13 +108,13 @@ SELECT s.dbid::bigint, d.datname::text, s.userid::bigint, r.rolname::text, s.que
 	for rows.Next() {
 		var dbid, userid, queryid, calls int64
 		var datname, rolname *string
-		var top bool
+		var top, own bool
 		var query string
-		if err := rows.Scan(&dbid, &datname, &userid, &rolname, &queryid, &top, &calls, &query); err != nil {
+		if err := rows.Scan(&dbid, &datname, &userid, &rolname, &queryid, &top, &calls, &query, &own); err != nil {
 			return nil, err
 		}
 		p, ok := parseSessionSet(query)
-		if !ok {
+		if !ok || (own && monitorSetupSettings[p.Setting]) {
 			continue
 		}
 		var value any = p.Value
@@ -136,10 +139,77 @@ type sessionSet struct {
 	Planner bool
 }
 
+// monitorSetupSettings are the settings of the monitor's own session setup (collect.go's sessionSetup), read from
+// that text so the two cannot drift: under the monitor's role these rows are its own, not the application's.
+var monitorSetupSettings = func() map[string]bool {
+	m := map[string]bool{}
+	for _, stmt := range strings.Split(sessionSetup, ";") {
+		if p, ok := parseSessionSet(stmt); ok {
+			m[p.Setting] = true
+		}
+	}
+	return m
+}()
+
+// stripComments drops the comments of one statement text (a leading hint, a trailing note, a sqlcommenter suffix):
+// -- to the end of its line and /* */ (nested, as the server reads them), each replaced by a space; a marker inside a
+// quoted value ('a -- b') or a quoted name ("x/*y*/") is text and stays.
+func stripComments(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); {
+		c := text[i]
+		switch {
+		case c == '\'' || c == '"':
+			j := i + 1
+			for j < len(text) {
+				if text[j] == c {
+					if j+1 < len(text) && text[j+1] == c { // a doubled quote inside the literal
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			if j < len(text) {
+				j++ // the closing quote
+			}
+			b.WriteString(text[i:j])
+			i = j
+		case c == '-' && i+1 < len(text) && text[i+1] == '-':
+			j := strings.IndexByte(text[i:], '\n')
+			if j < 0 {
+				j = len(text) - i
+			}
+			b.WriteByte(' ')
+			i += j
+		case c == '/' && i+1 < len(text) && text[i+1] == '*':
+			depth, j := 1, i+2
+			for j < len(text) && depth > 0 {
+				switch {
+				case text[j] == '/' && j+1 < len(text) && text[j+1] == '*':
+					depth++
+					j += 2
+				case text[j] == '*' && j+1 < len(text) && text[j+1] == '/':
+					depth--
+					j += 2
+				default:
+					j++
+				}
+			}
+			b.WriteByte(' ')
+			i = j
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
+}
+
 var (
-	// comments anywhere (a leading hint, a trailing note, a sqlcommenter suffix): the text keeps them, the value must not
-	setComment = regexp.MustCompile(`(?s)/\*.*?\*/|--[^\n]*`)
-	setSpace   = regexp.MustCompile(`\s+`)
+	setSpace = regexp.MustCompile(`\s+`)
 	// SET [SESSION | LOCAL] name {= | TO} value; a name is an identifier, a quoted one, or a qualified pair
 	setAssign = regexp.MustCompile(`(?is)^set\s+(?:(session|local)\s+)?("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*(?:\.[a-z_][a-z0-9_$]*)?)\s*(?:=|\bto\b)\s*(.*?)\s*;?\s*$`)
 	// SET [SESSION | LOCAL] TIME ZONE value, SCHEMA value, NAMES value: the three spellings of timezone, search_path and client_encoding
@@ -152,7 +222,7 @@ var (
 // SET ROLE, SET SESSION AUTHORIZATION and anything else that is not a setting change give false. SET x TO DEFAULT is
 // a RESET (it restores the role's or the server's value).
 func parseSessionSet(text string) (sessionSet, bool) {
-	s := strings.TrimSpace(setComment.ReplaceAllString(text, " "))
+	s := strings.TrimSpace(stripComments(text))
 	if m := resetCmd.FindStringSubmatch(s); m != nil {
 		name := unquoteIdent(m[1])
 		if name == "session" || name == "role" { // RESET SESSION AUTHORIZATION is not a setting (and does not match), RESET ROLE neither

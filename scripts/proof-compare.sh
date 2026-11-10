@@ -53,6 +53,12 @@
 #     compare_state reads 2 findings; emptied again, import_compare(X, now() - 3 hours, ...): 0 rows (a historical
 #     import does not refresh). [The lead's decision 2026-11-09: the refresh is the compare collection's own, no longer
 #     the session_sets import's.]
+#  H. [join review fold, expected before the run] 600 quiet statements (2001..2600) seeded ahead of the real regressions:
+#     1 call an hour all 8 days at 1 page a call, then 100,000 pages a call in the last 24 hours (a pages-a-call ratio of
+#     100,000, above 102's 29,018, at 24 calls a day: under the 1,000-call gate). refresh_compare_findings(X) still
+#     returns 2 and compare_findings for X is still exactly 101 and 102 (the gate is applied to every row, not to a
+#     top-500-by-ratio cut). The control: the first 500 rows of statement_compare(X, ..., 500) hold 0 rows that pass the
+#     gate (the shape the review found: a cap before the gate dropped both regressions).
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -170,4 +176,18 @@ G2=$(q "select count(*) from pgvigil.compare_findings_cache where instance_id = 
 echo "current import: $G1 (findings|state); historical import: $G2 cache row(s)"
 [[ $G1 == "2|2" && $G2 == 0 ]] || fail "G: the import refresh read $G1 then $G2"
 
-echo "PASS: proof-compare (A ratios, order, partial; B the two regressions fire and the flat, quiet, new and partial do not; C no baseline; D history; E collection_log baseline; F stale cache; G the compare import refreshes)"
+echo "--- H. 600 quiet statements with larger ratios do not push a real regression out"
+# (the same row shape as pg_temp.seed, which lived in the seeding session: 1 call an hour at 1 ms, 1 page a call before,
+# 100,000 pages a call in the last 24 hours, 80 % hit)
+q "insert into pgvigil.statements_delta (instance_id, snapshot_at, interval_secs, dbid, datname, userid, usename, queryid,
+                                         toplevel, calls, total_exec_ms, shared_blks_hit, shared_blks_read)
+   select $x, '$T'::timestamptz - make_interval(hours => k), 3600, 5, 'app', 10, 'app_user', qid, true, 1, 1,
+          (case when k < 24 then 100000 else 1 end) * 0.8, (case when k < 24 then 100000 else 1 end) * 0.2
+     from generate_series(2001, 2600) qid, generate_series(0, 191) k" >/dev/null
+H0=$(q "select count(*) from pgvigil.statement_compare($x, '$T'::timestamptz - interval '1 day', '$T', 500) where calls >= 1000 and max_ratio >= 10")
+H1=$(q "select pgvigil.refresh_compare_findings($x)")
+H2=$(q "select string_agg(setting, ',' order by setting) from pgvigil.compare_findings where instance_id = $x")
+echo "control (gate after a 500-row cut): $H0 row(s); refresh kept $H1; findings: $H2"
+[[ $H0 == 0 && $H1 == 2 && $H2 == "statement 101,statement 102" ]] || fail "H: the quiet statements changed the findings ($H0, $H1, $H2)"
+
+echo "PASS: proof-compare (A ratios, order, partial; B the two regressions fire and the flat, quiet, new and partial do not; C no baseline; D history; E collection_log baseline; F stale cache; G the compare import refreshes; H 600 quiet high-ratio statements leave the findings as they are)"

@@ -52,12 +52,35 @@ func TestParseSessionSet(t *testing.T) {
 		{"SET application_name = ''", true, sessionSet{Command: "SET", Setting: "application_name", Value: ""}},
 		{"-- hint\nSET enable_hashjoin = off", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Value: "off", Planner: true}},
 		{"settle_up()", false, sessionSet{}},
+		// the join review's texts: a comment marker inside a quoted value or name is text; a nested block comment
+		{"SET x.y = 'a -- b'", true, sessionSet{Command: "SET", Setting: "x.y", Value: "a -- b"}},
+		{"SET app.note = 'x /* y */ z'", true, sessionSet{Command: "SET", Setting: "app.note", Value: "x /* y */ z"}},
+		{"SET app.note = 'it''s -- fine' -- really", true, sessionSet{Command: "SET", Setting: "app.note", Value: "it's -- fine"}},
+		{`SET "odd--name" = 1 /* note */`, true, sessionSet{Command: "SET", Setting: "odd--name", Value: "1"}},
+		{"/* a /* nested */ b */ SET jit = off", true, sessionSet{Command: "SET", Setting: "jit", Value: "off", Planner: true}},
+		{"SET work_mem = '64MB' -- 'quoted' in a comment", true, sessionSet{Command: "SET", Setting: "work_mem", Value: "64MB", Planner: true}},
 	}
 	for _, c := range cases {
 		got, ok := parseSessionSet(c.text)
 		if ok != c.ok || got != c.want {
 			t.Errorf("parseSessionSet(%q) = %+v, %v; want %+v, %v", c.text, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// TestMonitorSetupSettings: the four settings of collect.go's session setup, read from its text, and nothing else.
+func TestMonitorSetupSettings(t *testing.T) {
+	want := map[string]bool{"default_transaction_read_only": true, "statement_timeout": true, "lock_timeout": true, "application_name": true}
+	if len(monitorSetupSettings) != len(want) {
+		t.Errorf("monitorSetupSettings = %v; want %v", monitorSetupSettings, want)
+	}
+	for n := range want {
+		if !monitorSetupSettings[n] {
+			t.Errorf("%s is the monitor's own session setup", n)
+		}
+	}
+	if monitorSetupSettings["enable_hashjoin"] {
+		t.Errorf("enable_hashjoin is never the monitor's own")
 	}
 }
 

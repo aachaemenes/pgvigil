@@ -183,7 +183,9 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- refresh_compare_findings: the instance's regressions of the 24 hours to p_at (10 or more on a ratio, 1,000 calls or
--- more in the window; 'partial', 'not run' and 'no baseline' never fire: no ratio); returns the rows kept
+-- more in the window; 'partial', 'not run' and 'no baseline' never fire: no ratio); returns the rows kept. The
+-- compare is read whole (no row cap before the gate): a cap by ratio first let quiet statements with large ratios
+-- (a few calls at a new pages-a-call figure) use up the rows ahead of a real regression (the join review).
 CREATE OR REPLACE FUNCTION pgvigil.refresh_compare_findings(p_instance_id int, p_at timestamptz DEFAULT now())
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE
@@ -199,7 +201,7 @@ BEGIN
                 pgvigil.compare_phrase('1 day earlier', c.d1_status, c.d1_calls, c.d1_pages_per_call, c.d1_total_exec_ms),
                 pgvigil.compare_phrase('7 days earlier', c.d7_status, c.d7_calls, c.d7_pages_per_call, c.d7_total_exec_ms),
                 left(regexp_replace(coalesce(c.query, '(no text)'), '\s+', ' ', 'g'), 200))
-    FROM pgvigil.statement_compare(p_instance_id, p_at - interval '1 day', p_at, 500) c
+    FROM pgvigil.statement_compare(p_instance_id, p_at - interval '1 day', p_at, NULL) c   -- LIMIT NULL: every row, then the gate
    WHERE c.calls >= 1000 AND c.max_ratio >= 10;
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;

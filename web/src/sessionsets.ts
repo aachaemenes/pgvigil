@@ -43,12 +43,15 @@ export async function readSets(ctx: Ctx): Promise<{ state?: Row; sets: Row[] }> 
   return { state: rowsOf(d.state)[0], sets: rowsOf(d.sets) };
 }
 
-// setsByRole: the SETs and RESETs that ran in the window (calls gained), by role, planner ones first
+// setsKey: a role in a database (a role's SETs in another database are not a statement's here)
+export const setsKey = (rolname: unknown, datname: unknown): string => `${String(rolname ?? '')}\u0000${String(datname ?? '')}`;
+
+// setsByRole: the SETs and RESETs that ran in the window (calls gained), by role and database, planner ones first
 export function setsByRole(sets: Row[]): Map<string, Row[]> {
   const m = new Map<string, Row[]>();
   for (const r of sets) {
     if (r.calls_in_window == null || Number(r.calls_in_window) <= 0) continue;
-    const k = String(r.rolname ?? '');
+    const k = setsKey(r.rolname, r.datname);
     if (!m.has(k)) m.set(k, []);
     m.get(k)!.push(r);
   }
@@ -63,8 +66,11 @@ export async function sessionSetsSection(ctx: Ctx): Promise<HTMLElement> {
       + 'utility rows (read hourly). The server\'s and the roles\' settings are above; these are the ones the application '
       + 'changes for itself, which a plan measured in another session does not see. A planner setting (enable_*, *_cost, '
       + 'work_mem, jit, the collapse limits, geqo*, plan_cache_mode, default_statistics_target, effective_cache_size, '
-      + 'hash_mem_multiplier, max_parallel_workers_per_gather) SET in the window is a '
-      + 'finding. PostgreSQL 17 and later keep $1 in place of the value. A row present is evidence; no row is inconclusive.'));
+      + 'hash_mem_multiplier, max_parallel_workers_per_gather) SET in the window to a value that is not the server\'s is a '
+      + 'finding (a SET back to the server\'s value changes no plan). PostgreSQL 17 and later keep $1 in place of the value. '
+      + 'The monitor\'s own session setup (its four SETs on every connection) is left out under its role; its other SETs stay, '
+      + 'so a login the application shares with the monitor still shows the application\'s. '
+      + 'A row present is evidence; no row is inconclusive.'));
     if (!state) {
       sec.append(el('p', { class: 'empty' }, 'The session_sets collection has not read this instance yet.'));
       return sec;

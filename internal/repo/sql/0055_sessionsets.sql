@@ -16,9 +16,13 @@
 --                           stored row adds nothing (a one-off collect beside the daemon).
 --   import_session_sets(i, at, payload)
 --   session_sets_window(i, f, t)   per entry: the calls gained in the window (NULL: none) beside its current row.
---   sessionsets_findings    the findings view's columns: a planner setting SET (not RESET) by a role's sessions whose
---                           calls rose in the last 24 hours, on an instance whose last read is 'ok'. The UNION arm in
---                           pgvigil.findings and the purge lines are the wave's join.
+--   sessionsets_findings    the findings view's columns: a planner setting SET (not RESET) to a value that is not the
+--                           server's (session_set_is_server_value) by a role's sessions whose calls rose in the last
+--                           24 hours, on an instance whose last read is 'ok'. The UNION arm in pgvigil.findings and
+--                           the purge lines are the wave's join.
+--
+-- The monitor's own session setup (the four SETs every pgvigil connection runs) is left out under the monitor's role
+-- by the collector; every other SET of that role is kept (a login the application shares with the monitor).
 
 CREATE TABLE IF NOT EXISTS pgvigil.session_sets_state (
   instance_id    int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -121,7 +125,35 @@ BEGIN
   WHERE s.last_seen <= EXCLUDED.last_seen;
 END $$;
 
--- every entry of the instance, with the calls it gained in the window (NULL: none), the planner ones first
+-- server_setting_value: the server's value of a setting as the repository knows it: the instance's non-default
+-- settings (the instance collection, server-level sources), else the built-in default this rule knows (the boolean
+-- planner settings enable_*, jit and geqo: on); NULL = unknown (a numeric setting at its default, a role's ALTER ROLE
+-- SET, which the instance collection does not read)
+CREATE OR REPLACE FUNCTION pgvigil.server_setting_value(p_instance_id int, p_name text)
+RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT coalesce(
+    (SELECT x->>'value' FROM pgvigil.instance_state s, jsonb_array_elements(coalesce(s.non_default_settings, '[]'::jsonb)) x
+      WHERE s.instance_id = p_instance_id AND x->>'name' = p_name LIMIT 1),
+    CASE WHEN p_name LIKE 'enable\_%' OR p_name IN ('jit', 'geqo') THEN 'on' END)
+$$;
+
+-- session_set_is_server_value: true when a session's value is the server's own (a boolean by its meaning: on, true,
+-- yes and 1 are one value, off, false, no and 0 the other; anything else as text, case and surrounding space aside,
+-- so '64MB' and '65536' are not the same to this read); false when they differ or either is unknown (a hidden value,
+-- PostgreSQL 17+). A SET back to the server's value changes no plan: it fires nothing (the join review's point).
+CREATE OR REPLACE FUNCTION pgvigil.session_set_is_server_value(p_instance_id int, p_name text, p_value text)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  WITH v AS (SELECT lower(trim(p_value)) AS a, lower(trim(pgvigil.server_setting_value(p_instance_id, p_name))) AS b)
+  SELECT CASE
+    WHEN a IS NULL OR b IS NULL THEN false
+    WHEN a IN ('on', 'off', 'true', 'false', 'yes', 'no', '1', '0') AND b IN ('on', 'off', 'true', 'false', 'yes', 'no', '1', '0')
+      THEN (a IN ('on', 'true', 'yes', '1')) = (b IN ('on', 'true', 'yes', '1'))
+    ELSE a = b END
+    FROM v
+$$;
+
+-- every entry of the instance, with the calls it gained in the window (NULL: none), the planner ones first; fires =
+-- a planner setting SET (not RESET) to a value that is not the server's, by sessions that ran it in the window
 CREATE OR REPLACE FUNCTION pgvigil.session_sets_window(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (rolname text, datname text, command text, setting text, value text, value_hidden boolean, planner boolean,
                calls_in_window bigint, calls bigint, first_seen timestamptz, last_seen timestamptz, last_grew timestamptz,
@@ -130,6 +162,7 @@ LANGUAGE sql STABLE AS $$
   SELECT s.rolname, s.datname, s.command, s.setting, s.value, s.value_hidden, s.planner,
          g.calls, s.calls, s.first_seen, s.last_seen, s.last_grew, s.queryid, s.query,
          s.planner AND s.command <> 'RESET' AND coalesce(g.calls, 0) > 0
+           AND NOT pgvigil.session_set_is_server_value(s.instance_id, s.setting, s.value)
     FROM pgvigil.session_sets s
     LEFT JOIN LATERAL (
       SELECT sum(x.calls)::bigint AS calls FROM pgvigil.session_sets_sample x
@@ -140,7 +173,7 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- sessionsets_findings: the findings view's columns (instance_id, severity, setting, value, is_set, suggested, platforms,
--- detail, source, at)
+-- detail, source, at); a SET to the server's own value fires nothing (session_set_is_server_value)
 CREATE OR REPLACE VIEW pgvigil.sessionsets_findings AS
 SELECT s.instance_id, 'warning'::text AS severity, s.setting,
        coalesce(s.value, CASE WHEN s.value_hidden THEN '(value hidden: PostgreSQL 17+ keeps $1)' ELSE '(value not kept)' END) AS value,
@@ -156,4 +189,5 @@ SELECT s.instance_id, 'warning'::text AS severity, s.setting,
     SELECT sum(x.calls)::bigint AS calls FROM pgvigil.session_sets_sample x
      WHERE x.instance_id = s.instance_id AND x.dbid = s.dbid AND x.userid = s.userid AND x.queryid = s.queryid
        AND x.toplevel = s.toplevel AND x.snapshot_at > now() - interval '1 day') g
- WHERE s.planner AND s.command <> 'RESET' AND g.calls > 0;
+ WHERE s.planner AND s.command <> 'RESET' AND g.calls > 0
+   AND NOT pgvigil.session_set_is_server_value(s.instance_id, s.setting, s.value);
