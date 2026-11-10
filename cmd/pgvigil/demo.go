@@ -21,7 +21,7 @@ import (
 
 // runDemo seeds a repository with the synthetic demo fleet, and with -serve serves it:
 //
-//	pgvigil demo -config pgvigil.yaml [-dsn env:NAME] [-seed 1] [-instances 12] [-days 7]
+//	pgvigil demo -config pgvigil.yaml [-dsn env:NAME] [-seed 1] [-instances 15] [-days 7]
 //	pgvigil demo -serve [-listen 127.0.0.1:8080] [-open] (-config f | -pgbin <dir> [-pgdata <dir>])
 //
 // The repository login must own the schema (demo migrates it and replaces the instances tagged

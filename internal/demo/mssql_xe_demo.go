@@ -40,13 +40,13 @@ func mssqlXERows(name string, end time.Time, rng *rand.Rand) []Row {
 	// three deadlocks: 20 minutes, 5 hours and 19 hours ago
 	for i, ago := range []time.Duration{20 * time.Minute, 5 * time.Hour, 19 * time.Hour} {
 		at := end.Add(-ago)
-		a, b := 61+i*4, 63+i*4
+		a, b := 101+i*4, 103+i*4
 		stmtA := "UPDATE dbo.OrderLine SET qty = qty - 1 WHERE order_id = 18841 AND line = 2"
 		stmtB := "UPDATE dbo.Stock SET on_hand = on_hand - 1 WHERE sku = N'BX-2210'"
 		proc := func(spid int, victim bool, login, stmt, waitsOn string) map[string]any {
 			return map[string]any{"process": fmt.Sprintf("process%x", spid*4099), "spid": spid, "victim": victim, "login": login,
 				"host": "app-" + strconv.Itoa(1+spid%3), "program": "orders-api", "database": "Sales", "isolation": "read committed (2)",
-				"status": "suspended", "trancount": 2, "wait_resource": "KEY: 7:72057594049593344 (8194443284a0)", "wait_ms": 2500 + spid,
+				"status": "suspended", "trancount": 2, "wait_resource": "KEY: 5:72057594049593344 (8194443284a0)", "wait_ms": 2500 + spid,
 				"lock_mode": "X", "transaction": "user_transaction", "log_used": 368, "statement": stmt, "waits_on": waitsOn, "waits_mode": "X"}
 		}
 		res := func(object, index string, owner, waiter int) map[string]any {
@@ -68,7 +68,7 @@ func mssqlXERows(name string, end time.Time, rng *rand.Rand) []Row {
 	for i := 0; i < 4; i++ {
 		at := end.Add(-40*time.Minute + time.Duration(i)*15*time.Second)
 		rows = append(rows, Row{"kind": "blocked", "event_at": ts(at), "event_key": key(), "event_name": "blocked_process_report",
-			"session_name": "pgvigil_demo_blocked", "database_name": "Sales", "wait_resource": "KEY: 7:72057594050183168 (61a06abd401c)",
+			"session_name": "pgvigil_demo_blocked", "database_name": "Sales", "wait_resource": "KEY: 5:72057594050183168 (61a06abd401c)",
 			"wait_ms": 15000 * (i + 1), "lock_mode": "U", "blocked_spid": 88 + i%2, "blocked_login": "orders_app", "blocked_host": "app-2",
 			"blocked_program": "orders-api", "blocked_statement": "UPDATE dbo.Customer SET last_order = SYSDATETIME() WHERE customer_id = 5521",
 			"blocking_spid": 72, "blocking_status": "sleeping", "blocking_trancount": 1, "blocking_login": "credit_svc", "blocking_host": "batch-1",
@@ -130,12 +130,12 @@ func mssqlXERows(name string, end time.Time, rng *rand.Rand) []Row {
 		f := end.Add(-30 * time.Minute)
 		step := func(d time.Duration, prev, cur string, failover bool) Row {
 			return Row{"kind": "ag_event", "event_at": ts(f.Add(d)), "event_key": key(), "event_name": "availability_replica_state_change",
-				"ag_name": "ag_sales", "replica_name": "sql01", "previous_state": prev, "current_state": cur, "is_failover": failover}
+				"ag_name": "ag_sales", "replica_name": "DEMO-SQL01", "previous_state": prev, "current_state": cur, "is_failover": failover}
 		}
 		rows = append(rows,
 			Row{"kind": "ag_event", "event_at": ts(f.Add(-2 * time.Second)), "event_key": key(), "event_name": "error_reported", "ag_name": nil,
 				"error_number": 35206, "severity": 10, "family": "connection", "is_failover": false,
-				"message": "A connection timeout has occurred on a previously established connection to availability replica 'sql02'."},
+				"message": "A connection timeout has occurred on a previously established connection to availability replica 'DEMO-SQL02'."},
 			step(0, "SECONDARY_NORMAL", "RESOLVING_PENDING_FAILOVER", true),
 			step(300*time.Millisecond, "RESOLVING_PENDING_FAILOVER", "RESOLVING_NORMAL", false),
 			step(900*time.Millisecond, "RESOLVING_NORMAL", "PRIMARY_PENDING", false),

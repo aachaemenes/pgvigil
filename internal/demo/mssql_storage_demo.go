@@ -27,7 +27,12 @@ func mssqlDemoFiles(name string) []mssqlDemoFile {
 	case strings.HasSuffix(name, "-sql01"):
 		return []mssqlDemoFile{
 			{"Sales", "Sales_data", "ROWS", "PRIMARY", `E:\Data\Sales.mdf`, `E:\`, 210, 388, 0.91, 0, 0, 10}, // a per cent growth on a large file
-			{"Sales", "Sales_archive", "ROWS", "ARCHIVE", `E:\Data\Sales_archive.ndf`, `E:\`, 120, 164, 0.97, 0, 4096, 0},
+			{"Sales_archive", "Sales_archive_data", "ROWS", "PRIMARY", `E:\Data\Sales_archive.mdf`, `E:\`, 120, 164, 0.97, 0, 4096, 0},
+			{"Sales_archive", "Sales_archive_log", "LOG", "", `L:\Log\Sales_archive_log.ldf`, `L:\`, 4, 4, 0.10, 0, 512, 0},
+			{"staging_import", "staging_import", "ROWS", "PRIMARY", `E:\Data\staging_import.mdf`, `E:\`, 3, 3, 0.60, 0, 512, 0},
+			{"staging_import", "staging_import_log", "LOG", "", `L:\Log\staging_import_log.ldf`, `L:\`, 1, 9, 0.93, 0, 512, 0}, // no log backup: the log grows
+			{"scratch_etl", "scratch_etl", "ROWS", "PRIMARY", `E:\Data\scratch_etl.mdf`, `E:\`, 1, 1, 0.40, 0, 256, 0},
+			{"scratch_etl", "scratch_etl_log", "LOG", "", `L:\Log\scratch_etl_log.ldf`, `L:\`, 0.25, 0.25, 0.10, 0, 64, 0},
 			{"Sales", "Sales_log", "LOG", "", `L:\Log\Sales_log.ldf`, `L:\`, 24, 32, 0.22, 0, 1024, 0},
 			{"Orders", "Orders_data", "ROWS", "PRIMARY", `E:\Data\Orders.mdf`, `E:\`, 61, 93, 0.88, 96, 4096, 0}, // one growth from its maximum
 			{"Orders", "Orders_log", "LOG", "", `L:\Log\Orders_log.ldf`, `L:\`, 8, 12, 0.35, 0, 1024, 0},
@@ -50,8 +55,11 @@ func mssqlDemoFiles(name string) []mssqlDemoFile {
 		}
 	case strings.HasSuffix(name, "-sql02"):
 		return []mssqlDemoFile{
-			{"Catalog", "Catalog_data", "ROWS", "PRIMARY", `D:\Data\Catalog.mdf`, `D:\`, 44, 51, 0.83, 0, 1024, 0},
-			{"Catalog", "Catalog_log", "LOG", "", `D:\Log\Catalog_log.ldf`, `D:\`, 6, 6, 0.12, 0, 512, 0},
+			// the group's two databases, as on the primary, and one of its own
+			{"Sales", "Sales_data", "ROWS", "PRIMARY", `D:\Data\Sales.mdf`, `D:\`, 210, 388, 0.91, 0, 4096, 0},
+			{"Sales", "Sales_log", "LOG", "", `D:\Log\Sales_log.ldf`, `D:\`, 24, 32, 0.22, 0, 1024, 0},
+			{"Sales_archive", "Sales_archive_data", "ROWS", "PRIMARY", `D:\Data\Sales_archive.mdf`, `D:\`, 120, 164, 0.97, 0, 4096, 0},
+			{"Sales_archive", "Sales_archive_log", "LOG", "", `D:\Log\Sales_archive_log.ldf`, `D:\`, 4, 4, 0.10, 0, 512, 0},
 			{"Vault", "Vault_data", "ROWS", "PRIMARY", `D:\Data\Vault.mdf`, `D:\`, 12, 14, 0.70, 0, 512, 0}, // the read login has no user there
 			{"Vault", "Vault_log", "LOG", "", `D:\Log\Vault_log.ldf`, `D:\`, 2, 2, 0, 0, 256, 0},
 			{"tempdb", "tempdev", "ROWS", "PRIMARY", `D:\TempDB\tempdb.mdf`, `D:\`, 8, 8, 0.25, 0, 512, 0},
@@ -63,7 +71,7 @@ func mssqlDemoFiles(name string) []mssqlDemoFile {
 
 // the volumes: total GiB and what besides the database files sits on them (backups, the OS), in GiB
 var mssqlDemoVolumes = map[string][2]float64{
-	`E:\`: {800, 46}, `L:\`: {120, 4}, `T:\`: {80, 2}, `C:\`: {120, 71}, `D:\`: {250, 38},
+	`E:\`: {800, 46}, `L:\`: {120, 4}, `T:\`: {80, 2}, `C:\`: {120, 71}, `D:\`: {900, 38},
 	"/var/opt/mssql/data/": {200, 12}, "/var/opt/mssql/log/": {100, 3},
 }
 
@@ -154,11 +162,12 @@ func mssqlVersionStoreRows(name string, t, end time.Time) []Row {
 		clean = (int64(held.Unix()/60))*genPerMin - baseKB // cleanup stopped when the holder started
 		store = baseKB + heldMins*genPerMin
 		// the last twenty minutes a batch load doubles the churn: the store passes a third of tempdb
-		if left := int64(end.Sub(t) / time.Minute); left < 20 {
+		// (the load ends at the anchor: on the live ticks after it the store grows at the writers' own rate again)
+		if left := max(int64(end.Sub(t)/time.Minute), 0); left < 20 {
 			store += (20 - left) * 600000
 			gen += (20 - left) * 600000
 		}
-		rows = append(rows, Row{"kind": "holder", "session_id": 71, "login_name": "report_svc", "host_name": "RPT-APP02",
+		rows = append(rows, Row{"kind": "holder", "session_id": 97, "login_name": "report_svc", "host_name": "RPT-APP02",
 			"program_name": "Reporting Scheduler", "database_name": "Sales", "is_snapshot": 1,
 			"started_at_utc": held.UTC().Format(time.RFC3339), "elapsed_s": int64(t.Sub(held) / time.Second),
 			"statement": "SET TRANSACTION ISOLATION LEVEL SNAPSHOT; BEGIN TRANSACTION; SELECT region, SUM(amount) FROM dbo.order_lines WHERE order_date >= @from GROUP BY region;"})

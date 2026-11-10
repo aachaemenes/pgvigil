@@ -1,6 +1,7 @@
 package demo
 
 import (
+	"encoding/json"
 	"math/rand/v2"
 	"strconv"
 	"strings"
@@ -53,30 +54,82 @@ func (g *Gen) mssqlStep(t time.Time) []Batch {
 	if !t.Before(g.end.Add(-3 * time.Hour)) { // the rates are differences between two reads: the last three hours, in order
 		add("mssql_versionstore", t, mssqlVersionStoreRows(name, t, g.end))
 	}
-	// Extended Events: the day's events twice a minute apart at the seed's end (an event is stored once; a capture's
-	// state must be seen twice before its finding fires), then the capture states alone on every live tick
 	if t.Equal(g.end.Add(-time.Minute)) || !t.Before(g.end) {
-		rows := mssqlXERows(name, g.end, rand.New(rand.NewPCG(uint64(hash64(name)), 97)))
-		// the secondary takes no writes: no deadlock and no blocked-process report there, and of the slow completions
-		// only the report's SELECT
-		keep := rows[:0:0]
-		for _, r := range rows {
-			kind, _ := r["kind"].(string)
-			stmt, _ := r["statement"].(string)
-			switch {
-			case t.After(g.end) && kind != "state":
-			case g.is("-sql02") && (kind == "deadlock" || kind == "blocked" || (kind == "slow" && !strings.HasPrefix(stmt, "SELECT"))):
-			default:
-				keep = append(keep, r)
-			}
-		}
-		add("mssql_xe", t, keep)
+		add("mssql_xe", t, g.mssqlXEDemoRows(t))
 	}
 	g.prev = t
 	return out
 }
 
-// mssqlStorageRows is mssqlStorageRows of the instance; the managed instance shows no host volumes.
+// mssqlXEPeriod is how often a live tick carries new events.
+const mssqlXEPeriod = 20 * time.Minute
+
+// mssqlXEDemoRows is the mssql_xe payload at t. The day's events go in twice a minute apart at the seed's end (an
+// event is stored once; a capture's state must be seen twice before its finding fires). A live tick after the
+// anchor carries the capture states, and every twenty minutes the events of the twenty minutes before it: one
+// deadlock, the blocked-process reports of the one head statement and the slow completions, so the findings that
+// count the last hour stay on the page while the demo is served. The failover happened once: its finding is shown
+// for an hour, as it would be.
+func (g *Gen) mssqlXEDemoRows(t time.Time) []Row {
+	name := g.Spec.Name
+	live := t.After(g.end)
+	asOf, fresh := g.end, false
+	if live && t.Sub(g.end)%mssqlXEPeriod == 0 {
+		asOf, fresh = t, true
+	}
+	rows := mssqlXERows(name, asOf, rand.New(rand.NewPCG(uint64(hash64(name)), 97)))
+	keep := rows[:0:0]
+	for _, r := range rows {
+		kind, _ := r["kind"].(string)
+		stmt, _ := r["statement"].(string)
+		var at time.Time
+		if v, ok := r["event_at"].(string); ok {
+			at, _ = time.Parse(time.RFC3339Nano, v)
+		}
+		from := asOf.Add(-mssqlXEPeriod)
+		switch {
+		case kind == "state":
+			keep = append(keep, r)
+		// the secondary takes no writes: no deadlock and no blocked-process report there, and of the slow
+		// completions only the report's SELECT
+		case g.is("-sql02") && (kind == "deadlock" || kind == "blocked" || (kind == "slow" && !strings.HasPrefix(stmt, "SELECT"))):
+		case !live:
+			keep = append(keep, r)
+		case !fresh:
+		case kind == "blocked", kind == "slow" && at.After(from), kind == "deadlock" && at.Equal(from):
+			keep = append(keep, r)
+		}
+	}
+	if !g.is("-sql03") {
+		return keep
+	}
+	// the managed instance's one application database is Ledger: the events name it, not the pair's Sales
+	b, err := json.Marshal(keep)
+	if err != nil {
+		return keep
+	}
+	var renamed []Row
+	if json.Unmarshal([]byte(strings.ReplaceAll(string(b), "Sales", "Ledger")), &renamed) != nil {
+		return keep
+	}
+	return renamed
+}
+
+// mssqlFailoverAt is when the availability group's primary moved to DEMO-SQL01: 30 minutes before the anchor, the
+// time of the role changes in AlwaysOn_health (mssql_xe_demo.go).
+func (g *Gen) mssqlFailoverAt() time.Time { return g.end.Add(-30 * time.Minute) }
+
+// mssqlStart is when the SQL Server last started: the instance's start, or an hour before the history where a long
+// history (-days over 41) begins before it, so no counter is ever read before the server was up.
+func (g *Gen) mssqlStart() time.Time {
+	if !g.pmStart.Before(g.start) {
+		return g.start.Add(-time.Hour)
+	}
+	return g.pmStart
+}
+
+// mssqlStorageRows is mssqlStorageRows of the instance. The managed instance shows no host volumes, and its files
+// are blobs of the service's storage account, not paths of a machine.
 func (g *Gen) mssqlStorageRows(t time.Time) []Row {
 	rows := mssqlStorageRows(g.Spec.Name, t, g.end)
 	if !g.is("-sql03") {
@@ -84,9 +137,14 @@ func (g *Gen) mssqlStorageRows(t time.Time) []Row {
 	}
 	out := rows[:0:0]
 	for _, r := range rows {
-		if r["kind"] != "volume" {
-			out = append(out, r)
+		if r["kind"] == "volume" {
+			continue
 		}
+		if p, ok := r["physical_name"].(string); ok {
+			r["physical_name"] = "https://demomi03.blob.core.windows.net/data/" + p[strings.LastIndex(p, "/")+1:]
+		}
+		delete(r, "volume")
+		out = append(out, r)
 	}
 	return out
 }
@@ -147,7 +205,7 @@ func (g *Gen) mssqlInstanceRows() []Row {
 		cfg("clr enabled", 0, 0, 1, 1, 0))
 	return append(rows, Row{"kind": "sysinfo", "cpu_count": s.cpus, "hyperthread_ratio": 2, "physical_memory_kb": s.memKB,
 		"committed_target_kb": s.memKB * 8 / 10, "max_workers_count": 512 + 16*(s.cpus-4), "scheduler_count": s.cpus,
-		"virtual_machine_type": s.vm, "started_at_utc": g.pmStart.UTC().Format(time.RFC3339)})
+		"virtual_machine_type": s.vm, "started_at_utc": g.mssqlStart().UTC().Format(time.RFC3339)})
 }
 
 // The statements of the running-queries snapshots.
@@ -181,10 +239,17 @@ func (g *Gen) mssqlChain(t time.Time) (bool, time.Time) {
 		}
 		return false, time.Time{}
 	}
-	if t.Hour()%3 == 0 && t.Minute() >= 20 && t.Minute() < 30 {
+	// a chain of the history that would run into the anchor's is left out: one chain cannot restart its own wait
+	if t.Hour()%3 == 0 && t.Minute() >= 20 && t.Minute() < 30 && mssqlHistoryChain(t.Truncate(time.Hour), g.end) {
 		return true, t.Truncate(time.Hour).Add(20*time.Minute - 15*time.Second)
 	}
 	return false, time.Time{}
+}
+
+// mssqlHistoryChain says whether the hour (a multiple of three) has its ten-minute chain: every such hour whose
+// chain is over five minutes before the anchor's begins.
+func mssqlHistoryChain(hour, end time.Time) bool {
+	return hour.Add(30 * time.Minute).Before(end.Add(-mssqlChainLead - 5*time.Minute))
 }
 
 // mssqlRequestsRows is the mssql_requests payload at t (0064): the request rows with their chain already on them,
@@ -250,13 +315,13 @@ func (g *Gen) mssqlRequestsRows(t time.Time) []Row {
 				"cpu_ms": 16, "reads": 2, "writes": 1, "logical_reads": 44, "sql_handle": mssqlHandleHead, "stmt_start": -1, "stmt_end": -1,
 				"head_session_id": 71, "chain_depth": 0, "victims": 2, "longest_victim_wait_ms": waited}),
 			set(base(84, "suspended", "svc_orders", "OrderEntry", "Sales"), map[string]any{"request_id": 0, "command": "UPDATE", "wait_type": "LCK_M_U",
-				"wait_ms": waited, "wait_resource": "KEY: 7:72057594043432960 (8194443284a0)", "blocking_session_id": 71, "open_tran": 1,
+				"wait_ms": waited, "wait_resource": "KEY: 5:72057594043432960 (8194443284a0)", "blocking_session_id": 71, "open_tran": 1,
 				"transaction_id": 88054400, "tran_start": ago(waited), "tran_log_bytes": 0, "elapsed_ms": waited, "start_time": ago(waited), "cpu_ms": 0,
 				"reads": 0, "writes": 0, "logical_reads": 6, "dop": 1, "task_count": 1, "sql_handle": mssqlHandleVictim1, "stmt_start": 0, "stmt_end": -1,
 				"plan_handle": "0x0600050084C3F2A0" + mssqlPlanTail, "stmt_query_hash": "0x2C61D04E9B37A8F1", "stmt_plan_hash": "0x77A2096CE41D3B50",
 				"head_session_id": 71, "chain_depth": 1}),
 			set(base(92, "suspended", "svc_web", "Storefront", "Sales"), map[string]any{"request_id": 0, "command": "SELECT", "wait_type": "LCK_M_S",
-				"wait_ms": w2, "wait_resource": "KEY: 7:72057594043432960 (61a06abd401c)", "blocking_session_id": 84, "open_tran": 0, "elapsed_ms": w2,
+				"wait_ms": w2, "wait_resource": "KEY: 5:72057594043432960 (61a06abd401c)", "blocking_session_id": 84, "open_tran": 0, "elapsed_ms": w2,
 				"start_time": ago(w2), "cpu_ms": 0, "reads": 0, "writes": 0, "logical_reads": 2, "dop": 1, "task_count": 1, "sql_handle": mssqlHandleVictim2,
 				"stmt_start": 0, "stmt_end": -1, "plan_handle": "0x0600050092D4A3B1" + mssqlPlanTail, "stmt_query_hash": "0x5E90A73B1C48D2F6",
 				"stmt_plan_hash": "0x3D15B8F27A609CE4", "head_session_id": 71, "chain_depth": 2}),
@@ -273,23 +338,26 @@ func (g *Gen) mssqlRequestsRows(t time.Time) []Row {
 func (g *Gen) mssqlWaitsRows(t time.Time) []Row {
 	// load minutes since the server started: whole hours at the hour's load, then the minutes of the running hour
 	var loadMin float64
-	h := g.pmStart.Truncate(time.Hour)
+	started := g.mssqlStart()
+	h := started.Truncate(time.Hour)
 	for ; h.Add(time.Hour).Before(t); h = h.Add(time.Hour) {
 		loadMin += 60 * (0.4 + 0.6*curve(h))
 	}
 	loadMin += t.Sub(h).Minutes() * (0.4 + 0.6*curve(h))
 	loadMin *= g.Spec.Load
-	idleMin := t.Sub(g.pmStart).Minutes()
+	idleMin := t.Sub(started).Minutes()
 
-	var chains int64 // sql01's chains that have ended by t, in the seeded history and after the anchor
+	// sql01's chains that have ended by t: the ten-minute ones of the history (the first victim waited 615 s, the
+	// second 606) and the anchor's 22-minute ones on the live ticks (1,335 s and 1,326 s)
+	var short, long int64
 	if g.is("-sql01") {
 		for d := g.start.Truncate(3 * time.Hour); d.Before(t); d = d.Add(3 * time.Hour) {
-			if e := d.Add(30 * time.Minute); d.Hour()%3 == 0 && !e.Before(g.start) && !e.After(t) && e.Before(g.end.Add(-mssqlChainLead)) {
-				chains++
+			if e := d.Add(30 * time.Minute); !e.Before(g.start) && !e.After(t) && mssqlHistoryChain(d, g.end) {
+				short++
 			}
 		}
 		if since := t.Sub(g.end.Add(-mssqlChainLead)); since >= mssqlChainLength {
-			chains += 1 + int64((since-mssqlChainLength)/mssqlChainPeriod)
+			long = 1 + int64((since-mssqlChainLength)/mssqlChainPeriod)
 		}
 	}
 	type wait struct {
@@ -309,7 +377,7 @@ func (g *Gen) mssqlWaitsRows(t time.Time) []Row {
 		{"XE_TIMER_EVENT", "", true, 12, 60000, 1},
 		{"HADR_WORK_QUEUE", "", true, 240, 240000, 30},
 	}
-	out := []Row{{"kind": "state", "server_utc": t, "server_start": g.pmStart, "source": "sys.dm_os_wait_stats"}}
+	out := []Row{{"kind": "state", "server_utc": t, "server_start": started, "source": "sys.dm_os_wait_stats"}}
 	for _, w := range waits {
 		if g.is("-sql03") && (w.name == "HADR_SYNC_COMMIT" || w.name == "HADR_WORK_QUEUE") {
 			continue
@@ -325,10 +393,18 @@ func (g *Gen) mssqlWaitsRows(t time.Time) []Row {
 		}
 		out = append(out, r)
 	}
-	if chains > 0 {
+	if n := short + long; n > 0 {
+		longest := func(shortMS, longMS int64) int64 {
+			if long > 0 {
+				return longMS
+			}
+			return shortMS
+		}
 		out = append(out,
-			Row{"kind": "wait", "wait_type": "LCK_M_U", "category": "Locking", "waiting_tasks": chains, "wait_ms": chains * 615000, "signal_ms": chains, "max_wait_ms": 1335000, "is_benign": false},
-			Row{"kind": "wait", "wait_type": "LCK_M_S", "category": "Locking", "waiting_tasks": chains, "wait_ms": chains * 606000, "signal_ms": chains, "max_wait_ms": 1326000, "is_benign": false})
+			Row{"kind": "wait", "wait_type": "LCK_M_U", "category": "Locking", "waiting_tasks": n, "wait_ms": short*615000 + long*1335000,
+				"signal_ms": n, "max_wait_ms": longest(615000, 1335000), "is_benign": false},
+			Row{"kind": "wait", "wait_type": "LCK_M_S", "category": "Locking", "waiting_tasks": n, "wait_ms": short*606000 + long*1326000,
+				"signal_ms": n, "max_wait_ms": longest(606000, 1326000), "is_benign": false})
 	}
 	return out
 }

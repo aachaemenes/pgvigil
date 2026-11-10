@@ -40,11 +40,19 @@ func (g *Gen) demoRedoKB(t time.Time) int64 {
 }
 
 func (g *Gen) mssqlAgDemoRows(t time.Time) []Row {
-	primary, secondary := g.is("-sql01"), g.is("-sql02")
-	if !primary && !secondary {
+	sql01, sql02 := g.is("-sql01"), g.is("-sql02")
+	if !sql01 && !sql02 {
 		return nil
 	}
-	const p, s = "DEMO-SQL01", "DEMO-SQL02"
+	// the failover of the walk-through: DEMO-SQL02 was the primary until 30 minutes before the anchor, DEMO-SQL01 is
+	// since. The minute read sees the primary change (mssql_ag_failovers) at the time AlwaysOn_health's events of
+	// the Extended Events payload say it did.
+	after := !t.Before(g.mssqlFailoverAt())
+	primary := sql01 == after
+	p, s := "DEMO-SQL01", "DEMO-SQL02" // the primary's and the secondary's server names at t
+	if !after {
+		p, s = s, p
+	}
 	replica := func(name string, local bool, role any, mode string, visible bool) Row {
 		r := Row{"kind": "replica", "group_id": demoAgID, "group_name": "ag_sales", "cluster_type": "WSFC", "is_distributed": 0,
 			"is_contained": 0, "backup_preference": "SECONDARY", "db_failover": 1, "primary_replica": p, "replica_server": name,
@@ -77,16 +85,16 @@ func (g *Gen) mssqlAgDemoRows(t time.Time) []Row {
 	var rows []Row
 	if primary {
 		rows = append(rows, replica(p, true, "PRIMARY", "SYNCHRONOUS_COMMIT", true), replica(s, false, "SECONDARY", "SYNCHRONOUS_COMMIT", true))
-		for _, d := range []string{"sales", "sales_archive"} {
+		for _, d := range []string{"Sales", "Sales_archive"} {
 			q := int64(0)
-			if d == "sales" {
+			if d == "Sales" {
 				q = redo
 			}
 			rows = append(rows, db(d, p, true, true, 0), db(d, s, false, false, q))
 		}
 	} else {
 		rows = append(rows, replica(p, false, nil, "SYNCHRONOUS_COMMIT", false), replica(s, true, "SECONDARY", "SYNCHRONOUS_COMMIT", true))
-		rows = append(rows, db("sales", s, false, true, redo), db("sales_archive", s, false, true, 0))
+		rows = append(rows, db("Sales", s, false, true, redo), db("Sales_archive", s, false, true, 0))
 	}
 	rows = append(rows, listener)
 	for _, m := range []string{p, s, "DEMO-FSW"} {
@@ -155,7 +163,7 @@ func (g *Gen) mssqlJobsDemoRows(t time.Time) []Row {
 			"last_outcome": 1, "last_run_utc": z(last), "last_duration_s": j.durS})
 		if j.failStep == 2 {
 			rows = append(rows, Row{"kind": "step", "job_id": j.id, "step_id": 2, "step_name": "merge into orders", "subsystem": "TSQL",
-				"database_name": "sales", "last_outcome": 0, "last_run_utc": z(last.Add(60 * time.Second)), "last_duration_s": 35})
+				"database_name": "Sales", "last_outcome": 0, "last_run_utc": z(last.Add(60 * time.Second)), "last_duration_s": 35})
 		}
 		// history: the last two days of the nightly jobs, the last three hours of the 15-minute one
 		back := 48 * time.Hour
@@ -222,15 +230,20 @@ func (g *Gen) mssqlBackupsDemoRows(t time.Time) []Row {
 		lastLog = lastLog.Add(-15 * time.Minute)
 	}
 	rows := []Row{dbRow("master", "SIMPLE", false, old), dbRow("model", "FULL", false, old), dbRow("msdb", "SIMPLE", false, old),
-		dbRow("tempdb", "SIMPLE", false, z(g.pmStart)), dbRow("sales", "FULL", true, old), dbRow("sales_archive", "FULL", true, old)}
+		dbRow("tempdb", "SIMPLE", false, z(g.pmStart)), dbRow("Sales", "FULL", true, old), dbRow("Sales_archive", "FULL", true, old)}
 	for _, d := range []string{"master", "model", "msdb"} {
 		rows = append(rows, bk(d, "full", lastFull.Add(-7*time.Minute), 6<<20, 2))
 	}
 	if secondary {
-		rows = append(rows, bk("sales", "full", lastFull, 84<<30, 410), bk("sales_archive", "full", lastFull.Add(3*time.Minute), 12<<30, 70))
+		// a full backup on a secondary replica is copy-only: SQL Server takes no other there
+		copyOnly := func(r Row) Row { r["is_copy_only"] = 1; return r }
+		rows = append(rows, copyOnly(bk("Sales", "full", lastFull, 84<<30, 410)), copyOnly(bk("Sales_archive", "full", lastFull.Add(3*time.Minute), 12<<30, 70)),
+			dbRow("Vault", "SIMPLE", false, old), bk("Vault", "full", lastFull.Add(6*time.Minute), 3<<30, 20))
 	}
 	if primary {
-		rows = append(rows, bk("sales", "log", lastLog, 180<<20, 4), bk("sales_archive", "log", lastLog, 2<<20, 1),
+		rows = append(rows, bk("Sales", "log", lastLog, 180<<20, 4), bk("Sales_archive", "log", lastLog, 2<<20, 1),
+			dbRow("Orders", "FULL", false, old), bk("Orders", "full", lastFull.Add(9*time.Minute), 20<<30, 95), bk("Orders", "log", lastLog, 40<<20, 1),
+			dbRow("Reporting", "SIMPLE", false, old), bk("Reporting", "full", lastFull.Add(12*time.Minute), 11<<30, 60),
 			dbRow("staging_import", "FULL", false, z(g.start.Add(-30*24*time.Hour))), bk("staging_import", "full", lastFull.Add(5*time.Minute), 3<<30, 25),
 			dbRow("scratch_etl", "SIMPLE", false, z(t.Add(-5*time.Hour))))
 	}

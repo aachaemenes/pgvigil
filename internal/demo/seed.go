@@ -173,8 +173,35 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 			err = fmt.Errorf("alerts demo: %w", e)
 		}
 	}
+	if err == nil {
+		err = f.catchUp(ctx, &st)
+	}
 	st.Elapsed = time.Since(began)
 	return f, st, err
+}
+
+// catchUpWindow is how far behind now a seed's anchor may be for the seed to tick up to now: the default anchor is
+// the minute the seed began, a few minutes back by the time the history is in; an anchor set far in the past (a
+// fixed one, for a comparison) is left where it is.
+const catchUpWindow = 30 * time.Minute
+
+// catchUp imports the snapshots of the minutes that passed while the history was imported, so the newest read of
+// every instance is the current minute's when Seed returns: a rule that reads "the last minutes" (a blocking chain
+// in the newest snapshot, a queue over its threshold in every read of the last five) is on the first page a served
+// demo shows, not after its first live tick.
+func (f *Fleet) catchUp(ctx context.Context, st *Stats) error {
+	if time.Since(f.opts.End) > catchUpWindow {
+		return nil
+	}
+	for t := f.last.Add(time.Minute); !t.After(time.Now().UTC().Truncate(time.Minute)); t = f.last.Add(time.Minute) {
+		ts, err := f.Tick(ctx, t)
+		if err != nil {
+			return fmt.Errorf("catch-up tick %s: %w", t.Format(time.RFC3339), err)
+		}
+		st.Imports += ts.Imports
+		st.Rows += ts.Rows
+	}
+	return nil
 }
 
 // Tick imports one more snapshot at t for every instance (the live trickle of 'demo -serve'),

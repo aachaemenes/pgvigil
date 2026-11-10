@@ -85,10 +85,14 @@ func TestFleet(t *testing.T) {
 func TestMSSQLDemo(t *testing.T) {
 	specs := Specs("demo-", FleetSize)
 	for i, s := range specs[:12] {
-		if i > 1 {
-			break // two PostgreSQL instances are enough to see no mssql_ batch
+		g := NewGen(s, i, 7, Grid(anchor, 7)[0], anchor)
+		for _, c := range g.Collections() {
+			if strings.HasPrefix(c, "mssql_") {
+				t.Fatalf("%s: collection %s", s.Name, c)
+			}
 		}
-		for _, b := range run(t, s, i, 1) {
+		// the first step and the anchor's carry every collection an instance has
+		for _, b := range append(g.Step(Grid(anchor, 7)[0]), g.Step(anchor)...) {
 			if strings.HasPrefix(b.Collection, "mssql_") {
 				t.Fatalf("%s: a SQL Server batch %s", s.Name, b.Collection)
 			}
@@ -104,7 +108,7 @@ func TestMSSQLDemo(t *testing.T) {
 		}
 		batches := run(t, s, idx, 7)
 		seen := map[string]int{}
-		var lastWaits map[string]int64
+		var lastWaits map[string][3]int64
 		var xeKeys []string
 		var atAnchor, storageBefore, volumes, slowStates int
 		for _, b := range batches {
@@ -114,15 +118,19 @@ func TestMSSQLDemo(t *testing.T) {
 			seen[b.Collection]++
 			switch b.Collection {
 			case "mssql_waits":
-				cur := map[string]int64{}
+				cur := map[string][3]int64{}
 				for _, r := range b.Rows {
 					if r["kind"] == "wait" {
-						cur[r["wait_type"].(string)] = r["wait_ms"].(int64)
+						c := [3]int64{r["waiting_tasks"].(int64), r["wait_ms"].(int64), r["signal_ms"].(int64)}
+						if c[0] < 0 || c[1] < 0 || c[2] < 0 || c[2] > c[1] {
+							t.Fatalf("%s: %s at %v: tasks, wait and signal %v", s.Name, r["wait_type"], b.At, c)
+						}
+						cur[r["wait_type"].(string)] = c
 					}
 				}
 				for w, v := range lastWaits {
-					if cur[w] < v {
-						t.Fatalf("%s: %s went down at %v: %d after %d", s.Name, w, b.At, cur[w], v)
+					if c := cur[w]; c[0] < v[0] || c[1] < v[1] || c[2] < v[2] {
+						t.Fatalf("%s: %s went down at %v: %v after %v", s.Name, w, b.At, c, v)
 					}
 				}
 				lastWaits = cur
@@ -177,15 +185,47 @@ func TestMSSQLDemo(t *testing.T) {
 		if (volumes == 0) != sql03 || (slowStates == 2) != sql03 {
 			t.Errorf("%s: %d volume rows, %d 'slow not installed' states", s.Name, volumes, slowStates)
 		}
-		// a live tick after the seed: the capture states alone, no event twice
-		for _, b := range g2(t, s, idx).Step(anchor.Add(time.Minute)) {
-			if b.Collection == "mssql_xe" {
-				for _, r := range b.Rows {
-					if r["kind"] != "state" {
-						t.Fatalf("%s: a live tick carries a %v row of Extended Events", s.Name, r["kind"])
+		// live ticks after the seed: the capture states alone on an ordinary minute (no event twice), and every
+		// twenty minutes the events of the twenty minutes before, none at or before the anchor's last deadlock, so
+		// the findings of the last hour hold while the demo is served; the version store does not outgrow tempdb
+		live := g2(t, s, idx)
+		xeBatch := func(at time.Time) (kinds map[string]int, found bool) {
+			kinds = map[string]int{}
+			for _, b := range live.Step(at) {
+				switch b.Collection {
+				case "mssql_xe":
+					found = true
+					for _, r := range b.Rows {
+						kinds[r["kind"].(string)]++
+						if v, ok := r["event_at"].(string); ok && r["kind"] == "deadlock" {
+							if e, err := time.Parse(time.RFC3339Nano, v); err != nil || !e.After(anchor.Add(-20*time.Minute)) {
+								t.Fatalf("%s: a live deadlock at %v", s.Name, v)
+							}
+						}
+					}
+				case "mssql_versionstore":
+					for _, r := range b.Rows {
+						if r["kind"] == "store" && r["store_kb"].(int64) > r["tempdb_data_kb"].(int64)/2 {
+							t.Fatalf("%s: at %v the version store is %v KB of tempdb's %v", s.Name, at, r["store_kb"], r["tempdb_data_kb"])
+						}
 					}
 				}
 			}
+			return kinds, found
+		}
+		if kinds, found := xeBatch(anchor.Add(time.Minute)); !found || kinds["state"] < 4 || len(kinds) != 1 {
+			t.Errorf("%s: the tick a minute after the anchor: an Extended Events batch %v with %v", s.Name, found, kinds)
+		}
+		for m := 2; m < 20; m++ {
+			live.Step(anchor.Add(time.Duration(m) * time.Minute))
+		}
+		kinds, found := xeBatch(anchor.Add(20 * time.Minute))
+		sql02 := strings.HasSuffix(s.Name, "-sql02")
+		if !found || kinds["state"] < 4 || (kinds["deadlock"] == 1) == sql02 || (kinds["blocked"] == 4) == sql02 || kinds["ag_event"] != 0 {
+			t.Errorf("%s: the tick twenty minutes after the anchor: %v", s.Name, kinds)
+		}
+		for m := 21; m <= 180; m++ { // three hours of serving
+			xeBatch(anchor.Add(time.Duration(m) * time.Minute))
 		}
 	}
 }
