@@ -68,7 +68,7 @@ export async function sessionSetsSection(ctx: Ctx): Promise<HTMLElement> {
       + 'work_mem, jit, the collapse limits, geqo*, plan_cache_mode, default_statistics_target, effective_cache_size, '
       + 'hash_mem_multiplier, max_parallel_workers_per_gather) SET in the window to a value that is not the server\'s is a '
       + 'finding (a SET back to the server\'s value changes no plan). PostgreSQL 17 and later keep $1 in place of the value. '
-      + 'The monitor\'s own session setup (its four SETs on every connection) is left out under its role; its other SETs stay, '
+      + 'The SETs pgvigil itself runs (its session setup, the index read\'s search_path, the Explain\'s plan_cache_mode) are left out under its role; its other SETs stay, '
       + 'so a login the application shares with the monitor still shows the application\'s. '
       + 'A row present is evidence; no row is inconclusive.'));
     if (!state) {

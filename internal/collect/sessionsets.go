@@ -83,13 +83,13 @@ SELECT n.nspname,
 	if hasToplevel {
 		toplevel = "s.toplevel"
 	}
-	// the text filter is a first cut (leading comments allowed); parseSessionSet decides. The monitor's own session
-	// setup (collect.go's sessionSetup, run on every connection) is not the application's: those settings are left
-	// out under the monitor's role alone (monitorSetupSettings), every other SET of that role is kept, so a login the
-	// application shares with the monitor still shows the application's SETs (pg_stat_statements has no
-	// application_name to tell them apart; the application's own SET of one of those four under the shared login is
-	// lost with them). Under the cap the rows that name a planner setting come first: a per-request SET of a custom
-	// setting (one row per value on PG 16 and older) must not push them out.
+	// the text filter is a first cut (leading comments allowed); parseSessionSet decides. The SETs pgvigil itself runs
+	// on the instance (monitorSetupSettings) are not the application's: those settings are left out under the
+	// monitor's role alone, every other SET of that role is kept, so a login the application shares with the monitor
+	// still shows the application's SETs (pg_stat_statements has no application_name to tell them apart; the
+	// application's own SET of one of those settings under the shared login is lost with them). Under the cap the rows
+	// that name a planner setting come first: a per-request SET of a custom setting (one row per value on PG 16 and
+	// older) must not push them out.
 	rows, err := conn.Query(ctx, fmt.Sprintf(`
 SELECT s.dbid::bigint, d.datname::text, s.userid::bigint, r.rolname::text, s.queryid, %s, s.calls, left(s.query, 2000),
        s.userid = (SELECT oid FROM pg_roles WHERE rolname = current_user) AS own
@@ -139,10 +139,12 @@ type sessionSet struct {
 	Planner bool
 }
 
-// monitorSetupSettings are the settings of the monitor's own session setup (collect.go's sessionSetup), read from
-// that text so the two cannot drift: under the monitor's role these rows are its own, not the application's.
+// monitorSetupSettings are the settings pgvigil itself SETs on a monitored instance: its session setup (collect.go's
+// sessionSetup, read from that text so the two cannot drift), the index read's search_path (indexes.go) and the
+// Explain action's plan_cache_mode (plans/explain.go; its statement_timeout is the setup's). Under the monitor's role
+// these rows are its own, not the application's. TestMonitorSetupSettings scans the sources for any other SET.
 var monitorSetupSettings = func() map[string]bool {
-	m := map[string]bool{}
+	m := map[string]bool{"search_path": true, "plan_cache_mode": true}
 	for _, stmt := range strings.Split(sessionSetup, ";") {
 		if p, ok := parseSessionSet(stmt); ok {
 			m[p.Setting] = true
@@ -153,7 +155,9 @@ var monitorSetupSettings = func() map[string]bool {
 
 // stripComments drops the comments of one statement text (a leading hint, a trailing note, a sqlcommenter suffix):
 // -- to the end of its line and /* */ (nested, as the server reads them), each replaced by a space; a marker inside a
-// quoted value ('a -- b') or a quoted name ("x/*y*/") is text and stays.
+// quoted value ('a -- b') or a quoted name ("x/*y*/") is text and stays. An E'...' string's backslash escapes and a
+// $$...$$ string are not read as quoting here (a marker inside them is dropped): a setting's value in those forms
+// has not been seen, and the earlier regexp did the same.
 func stripComments(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))

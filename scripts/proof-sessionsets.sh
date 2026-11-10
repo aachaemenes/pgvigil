@@ -26,24 +26,27 @@
 #     a collect with nothing new adds no sample row of the role.
 #     [first run: the sample count was the instance's, and other sessions on the shared sandbox ran SETs between the reads
 #     (25 -> 29); the count is now the proof's role's alone.]
-#  E. the monitor's own role has no row for its session setup (default_transaction_read_only, statement_timeout,
-#     lock_timeout, application_name: not the application's), and [join review fold] its other SETs are kept: the
-#     monitor's login runs SET enable_hashjoin = off once, and after the collect the monitor's role has exactly one
-#     enable_hashjoin row (a login the application shares with the monitor still shows the application's SETs);
+#  E. the monitor's own role has no row for the SETs pgvigil itself runs (its session setup default_transaction_read_only,
+#     statement_timeout, lock_timeout, application_name; the Explain's SET LOCAL plan_cache_mode = force_generic_plan,
+#     which the monitor's login runs here inside a rolled-back transaction [the fold review's blocker]: 0 rows), and
+#     [join review fold] its other SETs are kept: the monitor's login runs SET enable_hashjoin = off once, and after
+#     the collect the monitor's role has exactly one enable_hashjoin row (a login the application shares with the
+#     monitor still shows the application's SETs);
 #     the role runs SET enable_hashjoin TO DEFAULT, collect: a row command RESET for enable_hashjoin, and the role's
 #     findings are still exactly enable_hashjoin (the SET of A and B, not the RESET); a late import_session_sets
 #     (snapshot one hour before the last read, the entry at 99 calls) adds no sample of the role (count unchanged) and
 #     leaves calls at 5.
 #  F. [join review fold, expected before the run] the value against the server's (the PG 16 shape, where the text keeps
-#     the value; the sandbox is 18, so the rows come in through import_session_sets as a current read): five rows of
-#     the role, calls 7 each, queryids 9001..9005: enable_hashjoin = on, enable_hashjoin = off, enable_hashjoin = true,
-#     jit = off, jit = on, with instance_state.non_default_settings holding jit = off. session_sets_window fires:
-#     9001 false (the server's own value), 9002 true, 9003 false (true is on), 9004 false (the server's jit is off),
-#     9005 true; sessionsets_findings of the role: enable_hashjoin (A's, hidden value), enable_hashjoin (9002) and jit
-#     (9005), never a row whose value is on, true or jit's off.
+#     the value; the sandbox is 18, so the rows come in through import_session_sets as a current read): seven rows of
+#     the role, calls 7 each, queryids 9001..9007: enable_hashjoin = on, enable_hashjoin = off, enable_hashjoin = true,
+#     jit = off, jit = on, enable_partitionwise_join = on, enable_partitionwise_join = off, with
+#     instance_state.non_default_settings holding jit = off. session_sets_window fires: 9001 false (the server's own
+#     value), 9002 true, 9003 false (true is on), 9004 false (the server's jit is off), 9005 true, 9006 true (its
+#     default is off: the fold review), 9007 false; sessionsets_findings of the role: enable_hashjoin (A's, hidden
+#     value), enable_hashjoin (9002), enable_partitionwise_join (9006) and jit (9005), never a row at the server's value.
 #  C. ALTER DATABASE <monitored> SET pg_stat_statements.track_utility = off, collect: state 'not available', the reason
-#     starts 'pg_stat_statements.track_utility is off', track_utility 'off'; the stored rows stay (8 for the role: A's
-#     two, E's RESET row, F's five); sessionsets_findings for the instance: 0 rows.
+#     starts 'pg_stat_statements.track_utility is off', track_utility 'off'; the stored rows stay (10 for the role: A's
+#     two, E's RESET row, F's seven); sessionsets_findings for the instance: 0 rows.
 #  D. track_utility back on and pg_stat_statements dropped from the monitored database, collect: state 'not available',
 #     the reason 'pg_stat_statements is not installed in the connected database'; findings 0.
 set -euo pipefail
@@ -115,11 +118,11 @@ echo "samples $n1 -> $n2, calls_in_window $cw"
 [[ $n1 == "$n2" && $cw == 5 ]] || fail "B: a read with nothing new added samples ($n1 -> $n2) or the window reads $cw"
 
 echo "--- E. the monitor's rows, TO DEFAULT, a late read"
-psql "$SBX_DSN" -XAtq -c "SET enable_hashjoin = off" >/dev/null
+psql "$SBX_DSN" -XAtq -c "SET enable_hashjoin = off" -c "BEGIN; SET LOCAL plan_cache_mode = force_generic_plan; ROLLBACK" >/dev/null
 psql "$APP_DSN" -XAtq -c "SET enable_hashjoin TO DEFAULT" >/dev/null
 collect
 E1=$(q "select count(*) from pgvigil.session_sets where instance_id = $i and rolname = '$MON'
-          and setting in ('default_transaction_read_only', 'statement_timeout', 'lock_timeout', 'application_name')")
+          and setting in ('default_transaction_read_only', 'statement_timeout', 'lock_timeout', 'application_name', 'plan_cache_mode')")
 E0=$(q "select count(*) from pgvigil.session_sets where instance_id = $i and rolname = '$MON' and setting = 'enable_hashjoin'")
 E2=$(q "select string_agg(command, ',' order by command) from pgvigil.session_sets where instance_id = $i and rolname = '$APP' and setting = 'enable_hashjoin'")
 E3=$(q "select string_agg(setting, ',') from pgvigil.sessionsets_findings where instance_id = $i and detail like '%role $APP %'")
@@ -143,22 +146,24 @@ Fp=$(q "select json_build_array(json_build_object('kind', 'state', 'status', 'ok
           json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', 9002, 'toplevel', true, 'command', 'SET', 'setting', 'enable_hashjoin', 'value', 'off', 'value_hidden', false, 'planner', true, 'calls', 7, 'query', 'SET enable_hashjoin = off'),
           json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', 9003, 'toplevel', true, 'command', 'SET', 'setting', 'enable_hashjoin', 'value', 'true', 'value_hidden', false, 'planner', true, 'calls', 7, 'query', 'SET enable_hashjoin = true'),
           json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', 9004, 'toplevel', true, 'command', 'SET', 'setting', 'jit', 'value', 'off', 'value_hidden', false, 'planner', true, 'calls', 7, 'query', 'SET jit = off'),
-          json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', 9005, 'toplevel', true, 'command', 'SET', 'setting', 'jit', 'value', 'on', 'value_hidden', false, 'planner', true, 'calls', 7, 'query', 'SET jit = on'))
+          json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', 9005, 'toplevel', true, 'command', 'SET', 'setting', 'jit', 'value', 'on', 'value_hidden', false, 'planner', true, 'calls', 7, 'query', 'SET jit = on'),
+          json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', 9006, 'toplevel', true, 'command', 'SET', 'setting', 'enable_partitionwise_join', 'value', 'on', 'value_hidden', false, 'planner', true, 'calls', 7, 'query', 'SET enable_partitionwise_join = on'),
+          json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', 9007, 'toplevel', true, 'command', 'SET', 'setting', 'enable_partitionwise_join', 'value', 'off', 'value_hidden', false, 'planner', true, 'calls', 7, 'query', 'SET enable_partitionwise_join = off'))
         from pgvigil.session_sets where instance_id = $i and rolname = '$APP' and setting = 'enable_hashjoin' and command = 'SET'")
 q "select pgvigil.import_session_sets($i, now(), '$Fp'::jsonb)" >/dev/null
 F1=$(q "select string_agg(queryid || ':' || fires, ',' order by queryid) from pgvigil.session_sets_window($i, now() - interval '1 hour', now())
-         where rolname = '$APP' and queryid between 9001 and 9005")
+         where rolname = '$APP' and queryid between 9001 and 9007")
 F2=$(q "select string_agg(setting || '=' || value, ',' order by setting, value) from pgvigil.sessionsets_findings where instance_id = $i and detail like '%role $APP %'")
 echo "fires: $F1; findings of the role: $F2"
-[[ $F1 == "9001:false,9002:true,9003:false,9004:false,9005:true" ]] || fail "F: fires '$F1'"
-[[ $F2 == "enable_hashjoin=(value hidden: PostgreSQL 17+ keeps \$1),enable_hashjoin=off,jit=on" ]] || fail "F: findings '$F2'"
+[[ $F1 == "9001:false,9002:true,9003:false,9004:false,9005:true,9006:true,9007:false" ]] || fail "F: fires '$F1'"
+[[ $F2 == "enable_hashjoin=(value hidden: PostgreSQL 17+ keeps \$1),enable_hashjoin=off,enable_partitionwise_join=on,jit=on" ]] || fail "F: findings '$F2'"
 
 echo "--- C. track_utility off for the monitored database"
 psql "$ADMIN_DSN" -XAtq -c "alter database $MDB set pg_stat_statements.track_utility = off" >/dev/null
 collect
 C=$(q "select status || '|' || (reason like 'pg_stat_statements.track_utility is off%') || '|' || track_utility from pgvigil.session_sets_state where instance_id = $i")
 echo "$C"; [[ $C == "not available|true|off" ]] || fail "C: state '$C'"
-[[ $(q "select count(*) from pgvigil.session_sets where instance_id = $i and rolname = '$APP'") == 8 ]] || fail "C: the stored rows did not stay"
+[[ $(q "select count(*) from pgvigil.session_sets where instance_id = $i and rolname = '$APP'") == 10 ]] || fail "C: the stored rows did not stay"
 [[ $(q "select count(*) from pgvigil.sessionsets_findings where instance_id = $i") == 0 ]] || fail "C: a finding with track_utility off"
 
 echo "--- D. pg_stat_statements absent"

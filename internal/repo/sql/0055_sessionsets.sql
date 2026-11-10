@@ -21,8 +21,9 @@
 --                           24 hours, on an instance whose last read is 'ok'. The UNION arm in pgvigil.findings and
 --                           the purge lines are the wave's join.
 --
--- The monitor's own session setup (the four SETs every pgvigil connection runs) is left out under the monitor's role
--- by the collector; every other SET of that role is kept (a login the application shares with the monitor).
+-- The SETs pgvigil itself runs on the instance (its session setup, the index read's search_path, the Explain's
+-- plan_cache_mode) are left out under the monitor's role by the collector; every other SET of that role is kept (a
+-- login the application shares with the monitor).
 
 CREATE TABLE IF NOT EXISTS pgvigil.session_sets_state (
   instance_id    int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -127,14 +128,16 @@ END $$;
 
 -- server_setting_value: the server's value of a setting as the repository knows it: the instance's non-default
 -- settings (the instance collection, server-level sources), else the built-in default this rule knows (the boolean
--- planner settings enable_*, jit and geqo: on); NULL = unknown (a numeric setting at its default, a role's ALTER ROLE
--- SET, which the instance collection does not read)
+-- planner settings: enable_partitionwise_join and enable_partitionwise_aggregate off, every other enable_*, jit and
+-- geqo on; pg_settings.boot_val on 11 through 18); NULL = unknown (a numeric setting at its default, a role's ALTER
+-- ROLE SET, which the instance collection does not read)
 CREATE OR REPLACE FUNCTION pgvigil.server_setting_value(p_instance_id int, p_name text)
 RETURNS text LANGUAGE sql STABLE AS $$
   SELECT coalesce(
     (SELECT x->>'value' FROM pgvigil.instance_state s, jsonb_array_elements(coalesce(s.non_default_settings, '[]'::jsonb)) x
       WHERE s.instance_id = p_instance_id AND x->>'name' = p_name LIMIT 1),
-    CASE WHEN p_name LIKE 'enable\_%' OR p_name IN ('jit', 'geqo') THEN 'on' END)
+    CASE WHEN p_name IN ('enable_partitionwise_join', 'enable_partitionwise_aggregate') THEN 'off'
+         WHEN p_name LIKE 'enable\_%' OR p_name IN ('jit', 'geqo') THEN 'on' END)
 $$;
 
 -- session_set_is_server_value: true when a session's value is the server's own (a boolean by its meaning: on, true,
