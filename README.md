@@ -167,7 +167,22 @@ The frontend is TypeScript under `web/`, built into `internal/web/dist/` (commit
 
 A site that runs DBA Dash for SQL Server sees DBA Dash's instances and its Summary statuses beside the PostgreSQL fleet, read from the DBA Dash repository with a read-only login (SELECT on four tables, no procedure; [docs/dbadash.md](docs/dbadash.md)): a `dbadash:` list in the configuration names each repository, the collector reads it every 5 minutes, the tree gains a folder per repository with a node per SQL Server instance and the DBADash tab shows the statuses in DBA Dash's own words with a change history. Through this door pgvigil collects nothing from SQL Server: DBA Dash is that product there, and a repository that is unreachable or refuses the login shows as not read with the reason.
 
-SQL Server as an engine of its own has its base in place: an instance says `engine: sqlserver`, a least-privilege login (VIEW SERVER STATE, VIEW ANY DEFINITION, msdb read) runs the first collection, `mssql_instance` (the server's description and every `sys.configurations` value with its previous value and change time), and nothing of one engine runs on the other; the collections and pages on it are being built. The login, the configuration and what is not there yet: [docs/sqlserver.md](docs/sqlserver.md).
+SQL Server is an engine of its own: an instance says `engine: sqlserver`, a least-privilege login (VIEW SERVER STATE, VIEW ANY DEFINITION, a user in msdb with db_datareader; never sysadmin) runs thirteen read-only collections, nothing of one engine runs on the other, and a SQL Server instance has its own tabs (Running queries, Slow queries, Waits, Deadlocks, Blocked reports, Availability, Backups, Jobs, Storage, Database files, Row versions, Configuration). A collection the server's kind or the login's rights do not allow is skipped with the reason. The login, the configuration and what is not there yet: [docs/sqlserver.md](docs/sqlserver.md).
+
+| Collection | Cadence | Source | Page |
+|---|---|---|---|
+| mssql_instance | hourly | SERVERPROPERTY, sys.configurations with the previous value, sys.dm_os_sys_info | [sqlserver](docs/sqlserver.md) |
+| mssql_services | 5 min | sys.dm_server_services, Agent's sessions, Database Mail's queue, sys.dm_server_memory_dumps | [sqlserver](docs/sqlserver.md) |
+| mssql_requests | 1 min | sessions, requests and blocking chains from the DMVs, or sp_WhoIsActive where a DBA installed it | [running](docs/sqlserver-running.md) |
+| mssql_waits | 1 min | sys.dm_os_wait_stats (Azure SQL Database: sys.dm_db_wait_stats) as the difference between two reads | [running](docs/sqlserver-running.md) |
+| mssql_xe | 1 min | Extended Events sessions the DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, attentions, AlwaysOn_health | [xe](docs/sqlserver-xe.md) |
+| mssql_ag, mssql_mirroring | 1 min | availability groups, database mirroring | [hadr](docs/sqlserver-hadr.md) |
+| mssql_logshipping, mssql_replication, mssql_jobs | 5 min | msdb's log shipping monitor, the distribution database, SQL Server Agent | [hadr](docs/sqlserver-hadr.md) |
+| mssql_backups | hourly | msdb.dbo.backupset, judged across an availability group's replicas | [hadr](docs/sqlserver-hadr.md) |
+| mssql_storage | hourly | sys.master_files and the volumes | [storage](docs/sqlserver-storage.md) |
+| mssql_versionstore | 1 min | tempdb's version store and its holder | [storage](docs/sqlserver-storage.md) |
+
+Ending a session and starting or stopping an Agent job are an opt-in door with a login of its own: [docs/sqlserver-actions.md](docs/sqlserver-actions.md).
 
 ## Grafana (optional)
 
