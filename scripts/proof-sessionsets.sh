@@ -9,8 +9,11 @@
 #                      database alone (ALTER DATABASE), never for the server.
 #
 # Expected (written before the first run):
-#  A. the role runs SET enable_hashjoin = off three times and SET search_path = public once (one session), then
-#     collect -once session_sets: session_sets_state 'ok', track_utility 'on'; the role's rows, as
+#  [58 review fold, expected before the rerun: a first read of an instance counts nothing (its pg_stat_statements may
+#   hold months of history), so A starts with a baseline collect before the role's SETs: then the role's entries are new
+#   since an ok read and count. A's figures stay as below. New section E, before C.]
+#  A. a baseline collect; the role runs SET enable_hashjoin = off three times and SET search_path = public once (one
+#     session), then collect -once session_sets: session_sets_state 'ok', track_utility 'on'; the role's rows, as
 #     command|setting|value|value_hidden|planner|calls:
 #       SET|enable_hashjoin||true|true|3      (PostgreSQL 17+ keeps $1 for the value: the sandbox is 18)
 #       SET|search_path||true|false|1
@@ -23,8 +26,13 @@
 #     a collect with nothing new adds no sample row of the role.
 #     [first run: the sample count was the instance's, and other sessions on the shared sandbox ran SETs between the reads
 #     (25 -> 29); the count is now the proof's role's alone.]
+#  E. the monitor's own role has no row (its session setup is not the application's); the role runs SET enable_hashjoin
+#     TO DEFAULT, collect: a row command RESET for enable_hashjoin, and the role's findings are still exactly
+#     enable_hashjoin (the SET of A and B, not the RESET); a late import_session_sets (snapshot one hour before the last
+#     read, the entry at 99 calls) adds no sample of the role (count unchanged) and leaves calls at 5.
 #  C. ALTER DATABASE <monitored> SET pg_stat_statements.track_utility = off, collect: state 'not available', the reason
-#     starts 'pg_stat_statements.track_utility is off', track_utility 'off'; the stored rows stay (2 for the role);
+#     starts 'pg_stat_statements.track_utility is off', track_utility 'off'; the stored rows stay (3 for the role: E's
+#     RESET row joined the two; the first fold run read 3 against the old 2, the expectation's, not the code's);
 #     sessionsets_findings for the instance: 0 rows.
 #  D. track_utility back on and pg_stat_statements dropped from the monitored database, collect: state 'not available',
 #     the reason 'pg_stat_statements is not installed in the connected database'; findings 0.
@@ -65,7 +73,8 @@ i=$(q "select instance_id from pgvigil.instances where name = 'proof-sets-$SUF'"
 rows() { q "select command || '|' || setting || '|' || coalesce(value, '') || '|' || value_hidden || '|' || planner || '|' || calls
               from pgvigil.session_sets s where s.instance_id = $i and s.rolname = '$APP' order by setting"; }
 
-echo "--- A. three SET enable_hashjoin and one SET search_path"
+echo "--- A. a baseline read, then three SET enable_hashjoin and one SET search_path"
+collect
 psql "$APP_DSN" -XAtq -c "SET enable_hashjoin = off" -c "SET enable_hashjoin = off" -c "SET enable_hashjoin = off" \
   -c "SET search_path = public" >/dev/null
 collect
@@ -95,12 +104,30 @@ cw=$(q "select calls_in_window from pgvigil.session_sets_window($i, now() - inte
 echo "samples $n1 -> $n2, calls_in_window $cw"
 [[ $n1 == "$n2" && $cw == 5 ]] || fail "B: a read with nothing new added samples ($n1 -> $n2) or the window reads $cw"
 
+echo "--- E. the monitor's rows, TO DEFAULT, a late read"
+E1=$(q "select count(*) from pgvigil.session_sets where instance_id = $i and rolname = '$MON'")
+psql "$APP_DSN" -XAtq -c "SET enable_hashjoin TO DEFAULT" >/dev/null
+collect
+E2=$(q "select string_agg(command, ',' order by command) from pgvigil.session_sets where instance_id = $i and rolname = '$APP' and setting = 'enable_hashjoin'")
+E3=$(q "select string_agg(setting, ',') from pgvigil.sessionsets_findings where instance_id = $i and detail like '%role $APP %'")
+ns1=$(q "select count(*) from pgvigil.session_sets_sample x join pgvigil.session_sets s using (instance_id, dbid, userid, queryid, toplevel) where x.instance_id = $i and s.rolname = '$APP'")
+late=$(q "select json_build_array(json_build_object('kind', 'state', 'status', 'ok', 'track_utility', 'on'),
+            json_build_object('kind', 'set', 'dbid', dbid, 'userid', userid, 'rolname', rolname, 'datname', datname, 'queryid', queryid,
+                              'toplevel', toplevel, 'command', command, 'setting', setting, 'value', value, 'value_hidden', value_hidden,
+                              'planner', planner, 'calls', 99, 'query', query))
+          from pgvigil.session_sets where instance_id = $i and rolname = '$APP' and setting = 'enable_hashjoin' and command = 'SET'")
+q "select pgvigil.import_session_sets($i, (select last_seen from pgvigil.session_sets where instance_id = $i and rolname = '$APP' and setting = 'enable_hashjoin' and command = 'SET') - interval '1 hour', '$late'::jsonb)" >/dev/null
+ns2=$(q "select count(*) from pgvigil.session_sets_sample x join pgvigil.session_sets s using (instance_id, dbid, userid, queryid, toplevel) where x.instance_id = $i and s.rolname = '$APP'")
+cl=$(q "select calls from pgvigil.session_sets where instance_id = $i and rolname = '$APP' and setting = 'enable_hashjoin' and command = 'SET'")
+echo "monitor rows $E1; enable_hashjoin commands $E2; findings $E3; samples $ns1 -> $ns2 after a late read; calls $cl"
+[[ $E1 == 0 && $E2 == "RESET,SET" && $E3 == "enable_hashjoin" && $ns1 == "$ns2" && $cl == 5 ]] || fail "E"
+
 echo "--- C. track_utility off for the monitored database"
 psql "$ADMIN_DSN" -XAtq -c "alter database $MDB set pg_stat_statements.track_utility = off" >/dev/null
 collect
 C=$(q "select status || '|' || (reason like 'pg_stat_statements.track_utility is off%') || '|' || track_utility from pgvigil.session_sets_state where instance_id = $i")
 echo "$C"; [[ $C == "not available|true|off" ]] || fail "C: state '$C'"
-[[ $(q "select count(*) from pgvigil.session_sets where instance_id = $i and rolname = '$APP'") == 2 ]] || fail "C: the stored rows did not stay"
+[[ $(q "select count(*) from pgvigil.session_sets where instance_id = $i and rolname = '$APP'") == 3 ]] || fail "C: the stored rows did not stay"
 [[ $(q "select count(*) from pgvigil.sessionsets_findings where instance_id = $i") == 0 ]] || fail "C: a finding with track_utility off"
 
 echo "--- D. pg_stat_statements absent"
@@ -111,4 +138,4 @@ D=$(q "select status || '|' || reason from pgvigil.session_sets_state where inst
 echo "$D"; [[ $D == "not available|pg_stat_statements is not installed in the connected database" ]] || fail "D: state '$D'"
 [[ $(q "select count(*) from pgvigil.sessionsets_findings where instance_id = $i") == 0 ]] || fail "D: a finding without the extension"
 
-echo "PASS: proof-sessionsets (A the planner SET found with calls 3 and fires, search_path listed and silent; B growth and no growth; C track_utility off: not available, no finding; D extension absent: not available)"
+echo "PASS: proof-sessionsets (A the planner SET found with calls 3 and fires, search_path listed and silent; B growth and no growth; E the monitor's rows, TO DEFAULT, a late read; C track_utility off: not available, no finding; D extension absent: not available)"

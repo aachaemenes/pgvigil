@@ -42,6 +42,15 @@ func TestParseSessionSet(t *testing.T) {
 		{"RESET ROLE", false, sessionSet{}},
 		{"RESET SESSION AUTHORIZATION", false, sessionSet{}},
 		{"SELECT set_config($1, $2, $3)", false, sessionSet{}},
+		// the 58 review's texts: a trailing comment, a $n inside a list, DEFAULT, an empty literal, a leading -- comment
+		{"SET enable_hashjoin = $1 -- c", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Hidden: true, Planner: true}},
+		{"SET enable_hashjoin = off /*traceparent='00-ab'*/", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Value: "off", Planner: true}},
+		{"SET search_path = $1, public", true, sessionSet{Command: "SET", Setting: "search_path", Hidden: true}},
+		{"SET enable_hashjoin = $1, $2", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Hidden: true, Planner: true}},
+		{"SET enable_hashjoin TO DEFAULT", true, sessionSet{Command: "RESET", Setting: "enable_hashjoin", Planner: true}},
+		{"SET LOCAL work_mem = default", true, sessionSet{Command: "RESET", Setting: "work_mem", Planner: true}},
+		{"SET application_name = ''", true, sessionSet{Command: "SET", Setting: "application_name", Value: ""}},
+		{"-- hint\nSET enable_hashjoin = off", true, sessionSet{Command: "SET", Setting: "enable_hashjoin", Value: "off", Planner: true}},
 		{"settle_up()", false, sessionSet{}},
 	}
 	for _, c := range cases {

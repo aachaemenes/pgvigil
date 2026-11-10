@@ -36,8 +36,10 @@ function baseline(prefix: 'd1' | 'd7'): (v: unknown, r: Row) => string | Node {
   };
 }
 
-// setsCell: the SETs and RESETs the statement's roles ran in the window (task 58), planner ones marked; null = not read
-function setsCell(byRole: Map<string, Row[]> | null): (v: unknown, r: Row) => string | Node {
+// setsCell: the SETs and RESETs the statement's roles ran in the window (task 58), planner ones marked; null = not read.
+// The rest are counted on a button that writes the whole list into the region under the grid (keyboard and screen
+// reader reach it; a title alone does not).
+function setsCell(byRole: Map<string, Row[]> | null, out: HTMLElement): (v: unknown, r: Row) => string | Node {
   return (_, r) => {
     if (!byRole) return 'not read';
     const roles = Array.isArray(r.usenames) ? r.usenames.map(String) : [];
@@ -51,12 +53,21 @@ function setsCell(byRole: Map<string, Row[]> | null): (v: unknown, r: Row) => st
       if (i) box.append(' ');
       box.append(badge(`${setLabel(x)} (${fmtNum(x.calls_in_window)})`, 'warn'));
     });
-    if (rest) box.append(`${planner.length ? ' ' : ''}${planner.length ? '+' : ''}${rest} other`);
+    if (rest) {
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `List the ${sets.length} session SETs of statement ${String(r.queryid)}'s roles` },
+        `${planner.length ? '+' : ''}${rest} other`);
+      b.addEventListener('click', () => {
+        out.replaceChildren(el('h3', { tabindex: '-1' }, `Session SETs of the roles of statement ${String(r.queryid)} in the window`),
+          el('ul', {}, ...sets.map(x => el('li', {}, `${setLabel(x)} (${String(x.rolname)}, ${fmtNum(x.calls_in_window)} calls)${x.fires ? ': a planner setting changed by the sessions' : ''}`))));
+        (out.querySelector('h3') as HTMLElement | null)?.focus();
+      });
+      box.append(planner.length ? ' ' : '', b);
+    }
     return box;
   };
 }
 
-function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null): Col[] {
+function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null, out: HTMLElement): Col[] {
   return [
     { key: 'queryid', label: 'statement', fmt: (v, r) => {
       const b = el('button', { type: 'button', class: 'link', 'aria-label': `Open the history of statement ${String(v)}` }, String(v));
@@ -83,7 +94,7 @@ function cols(onOpen: (r: Row) => void, byRole: Map<string, Row[]> | null): Col[
     { key: 'd7_ppc_ratio', label: 'pages x 7 d', num: true, fmt: ratio },
     { key: 'datname', label: 'database' },
     { key: 'usenames', label: 'roles' },
-    { key: 'sets', label: 'session SETs of its roles (window)', fmt: setsCell(byRole) },
+    { key: 'sets', label: 'session SETs of its roles (window)', fmt: setsCell(byRole, out) },
     // cut to one line here (23 columns squeeze a wrapping cell into a tall row); the whole text in the title and the history
     { key: 'query', fmt: v => { const t = String(v ?? ''); return el('span', { title: t }, t.length > 80 ? t.slice(0, 80) + '...' : t); } },
   ];
@@ -140,7 +151,7 @@ export async function compareView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('p', { class: 'meta' }, (rows.length >= limit ? `The first ${limit} statements by the largest ratio (the window may hold more)` : `${rows.length} statement(s)`)
     + `, ${regress} regression(s) among them.`));
   const detail = el('div', { class: 'compare-history', 'aria-live': 'polite' });
-  sec.append(grid(rows, cols((r) => { void history(ctx, r, detail); }, byRole),
+  sec.append(grid(rows, cols((r) => { void history(ctx, r, detail); }, byRole, detail),
     'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'), detail);
   return sec;
 }

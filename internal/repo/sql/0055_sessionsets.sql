@@ -9,8 +9,11 @@
 --                           17+, or the query_text policy dropped it), whether it is a planner setting, the cumulative
 --                           calls, first_seen, last_seen (the last read that listed it) and last_grew (the last read
 --                           its calls rose in).
---   session_sets_sample     the calls each entry gained between two reads (a row only when it gained; the first read
---                           of an entry counts its calls since the statistics reset; after a reset, the calls since).
+--   session_sets_sample     the calls each entry gained between two reads (a row only when it gained; after a reset,
+--                           the calls since). An entry first seen counts its calls only when the instance had an
+--                           earlier ok read (the entry is new since then); on the instance's first read nothing is
+--                           counted (its pg_stat_statements may hold months of history). A read older than an entry's
+--                           stored row adds nothing (a one-off collect beside the daemon).
 --   import_session_sets(i, at, payload)
 --   session_sets_window(i, f, t)   per entry: the calls gained in the window (NULL: none) beside its current row.
 --   sessionsets_findings    the findings view's columns: a planner setting SET (not RESET) by a role's sessions whose
@@ -61,9 +64,12 @@ CREATE INDEX IF NOT EXISTS session_sets_sample_at_idx ON pgvigil.session_sets_sa
 CREATE OR REPLACE FUNCTION pgvigil.import_session_sets(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-  v_state jsonb;
+  v_state   jsonb;
+  v_prev_ok boolean;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_session_sets'), p_instance_id);
+  SELECT EXISTS (SELECT 1 FROM pgvigil.session_sets_state s
+                  WHERE s.instance_id = p_instance_id AND s.status = 'ok' AND s.snapshot_at < p_snapshot_at) INTO v_prev_ok;
   SELECT r INTO v_state FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'state' LIMIT 1;
   IF v_state IS NULL THEN
     RAISE EXCEPTION 'import_session_sets: the payload has no state row';
@@ -89,20 +95,22 @@ BEGIN
      AND r->>'setting' IS NOT NULL AND r->>'command' IS NOT NULL AND r->>'calls' IS NOT NULL
    ORDER BY dbid, userid, queryid, toplevel, (r->>'calls')::bigint DESC;
 
-  -- the calls gained since the last read: a new entry counts all of its calls, a fall (a reset) counts the calls since
+  -- the calls gained since the last read: a fall (a reset) counts the calls since; a new entry counts its calls only
+  -- after an earlier ok read of the instance; a read older than the stored row counts nothing
   INSERT INTO pgvigil.session_sets_sample (instance_id, snapshot_at, dbid, userid, queryid, toplevel, calls)
   SELECT p_instance_id, p_snapshot_at, i.dbid, i.userid, i.queryid, i.toplevel,
          CASE WHEN c.calls IS NULL OR i.calls < c.calls THEN i.calls ELSE i.calls - c.calls END
     FROM pgv_sets_in i
     LEFT JOIN pgvigil.session_sets c
       ON c.instance_id = p_instance_id AND c.dbid = i.dbid AND c.userid = i.userid AND c.queryid = i.queryid AND c.toplevel = i.toplevel
-   WHERE i.calls > 0 AND (c.calls IS NULL OR i.calls <> c.calls)
+   WHERE i.calls > 0
+     AND ((c.calls IS NULL AND v_prev_ok) OR (c.calls IS NOT NULL AND i.calls <> c.calls AND c.last_seen <= p_snapshot_at))
   ON CONFLICT DO NOTHING;
 
   INSERT INTO pgvigil.session_sets AS s (instance_id, dbid, userid, queryid, toplevel, datname, rolname, command, setting, value,
                                          value_hidden, planner, calls, first_seen, last_seen, last_grew, query)
   SELECT p_instance_id, i.dbid, i.userid, i.queryid, i.toplevel, i.datname, i.rolname, i.command, i.setting, i.value,
-         i.value_hidden, i.planner, i.calls, p_snapshot_at, p_snapshot_at, CASE WHEN i.calls > 0 THEN p_snapshot_at END, i.query
+         i.value_hidden, i.planner, i.calls, p_snapshot_at, p_snapshot_at, CASE WHEN i.calls > 0 AND v_prev_ok THEN p_snapshot_at END, i.query
     FROM pgv_sets_in i
   ON CONFLICT (instance_id, dbid, userid, queryid, toplevel) DO UPDATE SET
     datname = coalesce(EXCLUDED.datname, s.datname), rolname = coalesce(EXCLUDED.rolname, s.rolname),

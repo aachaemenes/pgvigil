@@ -83,14 +83,19 @@ SELECT n.nspname,
 	if hasToplevel {
 		toplevel = "s.toplevel"
 	}
-	// the text filter is a first cut (a leading comment allowed); parseSessionSet decides
+	// the text filter is a first cut (leading comments allowed); parseSessionSet decides. The monitor's own session
+	// setup (collect.go's SETs on every connection) is not the application's and is left out. Under the cap the rows
+	// that name a planner setting come first: a per-request SET of a custom setting (one row per value on PG 16 and
+	// older) must not push them out.
 	rows, err := conn.Query(ctx, fmt.Sprintf(`
 SELECT s.dbid::bigint, d.datname::text, s.userid::bigint, r.rolname::text, s.queryid, %s, s.calls, left(s.query, 2000)
   FROM %s.pg_stat_statements s
   LEFT JOIN pg_database d ON d.oid = s.dbid
   LEFT JOIN pg_roles r ON r.oid = s.userid
- WHERE s.query ~* '^\s*(/\*.*?\*/\s*)*(set|reset)\y' AND s.queryid IS NOT NULL
- ORDER BY s.calls DESC
+ WHERE s.query ~* '^\s*(/\*.*?\*/\s*|--[^\n]*\n\s*)*(set|reset)\y' AND s.queryid IS NOT NULL
+   AND s.userid <> (SELECT oid FROM pg_roles WHERE rolname = current_user)
+ ORDER BY (s.query ~* '(set|reset)\s+((local|session)\s+)?"?(enable_|[a-z_]*_cost\y|work_mem\y|jit\y|geqo|join_collapse_limit|from_collapse_limit|plan_cache_mode|default_statistics_target|effective_cache_size|hash_mem_multiplier|max_parallel_workers_per_gather)') DESC,
+          s.calls DESC
  LIMIT %d`, toplevel, quoteIdent(schema), sessionSetsMaxRows))
 	if err != nil {
 		return nil, fmt.Errorf("pg_stat_statements utility rows: %w", err)
@@ -110,8 +115,8 @@ SELECT s.dbid::bigint, d.datname::text, s.userid::bigint, r.rolname::text, s.que
 			continue
 		}
 		var value any = p.Value
-		if p.Value == "" || (!p.Planner && in.QueryText != "" && in.QueryText != "full") {
-			value = nil
+		if p.Hidden || p.Command == "RESET" || (!p.Planner && in.QueryText != "" && in.QueryText != "full") {
+			value = nil // an empty literal ('') is a value and is kept
 		}
 		out = append(out, Row{
 			"kind": "set", "dbid": dbid, "datname": datname, "userid": userid, "rolname": rolname,
@@ -126,26 +131,28 @@ SELECT s.dbid::bigint, d.datname::text, s.userid::bigint, r.rolname::text, s.que
 type sessionSet struct {
 	Command string // SET | SET LOCAL | RESET
 	Setting string // lower case; 'all' for RESET ALL
-	Value   string // as written, quotes removed; empty for RESET or a hidden value
-	Hidden  bool   // the text carries $n for the value (pg_stat_statements on PostgreSQL 17 and later)
+	Value   string // as written, quotes removed, comments dropped; empty for RESET or a hidden value
+	Hidden  bool   // the value carries a $n (pg_stat_statements on PostgreSQL 17 and later normalizes it)
 	Planner bool
 }
 
 var (
-	setLeadingComment = regexp.MustCompile(`^\s*(/\*.*?\*/\s*)*`)
-	setSpace          = regexp.MustCompile(`\s+`)
+	// comments anywhere (a leading hint, a trailing note, a sqlcommenter suffix): the text keeps them, the value must not
+	setComment = regexp.MustCompile(`(?s)/\*.*?\*/|--[^\n]*`)
+	setSpace   = regexp.MustCompile(`\s+`)
 	// SET [SESSION | LOCAL] name {= | TO} value; a name is an identifier, a quoted one, or a qualified pair
 	setAssign = regexp.MustCompile(`(?is)^set\s+(?:(session|local)\s+)?("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*(?:\.[a-z_][a-z0-9_$]*)?)\s*(?:=|\bto\b)\s*(.*?)\s*;?\s*$`)
 	// SET [SESSION | LOCAL] TIME ZONE value, SCHEMA value, NAMES value: the three spellings of timezone, search_path and client_encoding
 	setSpecial = regexp.MustCompile(`(?is)^set\s+(?:(session|local)\s+)?(time\s+zone|schema|names)\s+(.*?)\s*;?\s*$`)
 	resetCmd   = regexp.MustCompile(`(?is)^reset\s+("(?:[^"]|"")+"|[a-z_][a-z0-9_$]*(?:\.[a-z_][a-z0-9_$]*)?)\s*;?\s*$`)
-	paramRef   = regexp.MustCompile(`^\$\d+$`)
+	paramRef   = regexp.MustCompile(`\$\d+`)
 )
 
 // parseSessionSet reads one pg_stat_statements text. SET TRANSACTION, SET SESSION CHARACTERISTICS, SET CONSTRAINTS,
-// SET ROLE, SET SESSION AUTHORIZATION and anything else that is not a setting change give false.
+// SET ROLE, SET SESSION AUTHORIZATION and anything else that is not a setting change give false. SET x TO DEFAULT is
+// a RESET (it restores the role's or the server's value).
 func parseSessionSet(text string) (sessionSet, bool) {
-	s := strings.TrimSpace(setLeadingComment.ReplaceAllString(text, ""))
+	s := strings.TrimSpace(setComment.ReplaceAllString(text, " "))
 	if m := resetCmd.FindStringSubmatch(s); m != nil {
 		name := unquoteIdent(m[1])
 		if name == "session" || name == "role" { // RESET SESSION AUTHORIZATION is not a setting (and does not match), RESET ROLE neither
@@ -174,8 +181,11 @@ func newSessionSet(scope, name, raw string) sessionSet {
 		p.Command = "SET LOCAL"
 	}
 	v := strings.TrimSpace(raw)
+	if strings.EqualFold(v, "default") {
+		return sessionSet{Command: "RESET", Setting: name, Planner: p.Planner}
+	}
 	if paramRef.MatchString(v) {
-		p.Hidden = true
+		p.Hidden = true // the value, or part of it, is a $n: not known
 		return p
 	}
 	if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' && !strings.Contains(v, ",") {

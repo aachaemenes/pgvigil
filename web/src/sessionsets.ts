@@ -12,7 +12,7 @@ interface SessionSetsData { state: Table | null; sets: Table | null }
 
 // valueText: the value as the text kept it, or why it is not there
 export function valueText(r: Row): string {
-  if (r.value != null) return String(r.value);
+  if (r.value != null) return r.value === '' ? "'' (empty)" : String(r.value);
   if (r.command === 'RESET') return '';
   return r.value_hidden ? '(hidden: PostgreSQL 17+ keeps $1)' : '(not kept: query_text policy)';
 }
@@ -28,7 +28,7 @@ const cols: Col[] = [
   { key: 'rolname', label: 'role' },
   { key: 'datname', label: 'database' },
   { key: 'command' },
-  { key: 'setting', fmt: (v, r) => r.planner ? el('strong', {}, String(v)) : String(v ?? '') },
+  { key: 'setting', fmt: (v, r) => r.planner ? el('span', {}, el('strong', {}, String(v)), ' (planner)') : String(v ?? '') },
   { key: 'value', fmt: (_, r) => valueText(r) },
   { key: 'calls_in_window', label: 'calls in the window', num: true, fmt: v => v == null ? '' : fmtNum(v) },
   { key: 'calls', label: 'calls since the reset', num: true },
