@@ -61,13 +61,19 @@ var (
 )
 
 // corruptionRE are the messages of a damaged page, file, TOAST value or commit log, as PostgreSQL 12 to 18
-// word them (bufmgr, md.c / smgr, the checksum check, detoast, heap vacuum's freeze checks, slru). A missing file
+// word them (bufmgr, md.c / smgr, the checksum check, detoast, heap vacuum's freeze checks, slru, multixact, the
+// B-tree page checks). A missing file
 // counts only under the data directory's relation and status paths: a missing file elsewhere (COPY's input,
 // pg_hba.conf) is not damage.
 var corruptionRE = []*regexp.Regexp{
 	regexp.MustCompile(`^page verification failed, calculated checksum \d+ but expected \d+`),
 	regexp.MustCompile(`^ignoring checksum failure in block \d+`),
 	regexp.MustCompile(`^invalid page in block \d+ of relation `),
+	// PostgreSQL 18's combined reads: one message for several damaged blocks of one read
+	regexp.MustCompile(`^\d+ invalid pages among blocks \d+\.\.\d+ of relation `),
+	regexp.MustCompile(`^(zeroing out \d+ invalid pages|ignoring \d+ checksum failures|zeroing \d+ page\(s\) and ignoring \d+ checksum failure\(s\)) among blocks `),
+	regexp.MustCompile(`^index ".*" contains (unexpected zero page|corrupted page) at block \d+`),
+	regexp.MustCompile(`^MultiXactId \d+ (has not been created yet|does no longer exist) -- apparent wraparound`),
 	regexp.MustCompile(`^could not read blocks? \d+(\.\.\d+)? in file `),
 	regexp.MustCompile(`^could not open file "(base|global|pg_tblspc|pg_xact|pg_multixact|pg_subtrans|pg_commit_ts)/`),
 	regexp.MustCompile(`^could not access status of transaction \d+`),

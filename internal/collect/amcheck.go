@@ -16,7 +16,8 @@ import (
 // The amcheck collection (task 34): an opt-in check that READS DATA. In each connectable database where the amcheck
 // extension is installed and the monitoring login was granted EXECUTE on its functions, it runs bt_index_check on
 // every valid B-tree index and, on PostgreSQL 14+ with amcheck 1.3+, verify_heapam on every table, materialized view
-// and TOAST table, smallest first, until the run's budget. Both read every page of the relation they check (an
+// and TOAST table, in oid order from a start point that moves each day, until the run's budget (so a database larger
+// than one run's budget is covered over several runs). Both read every page of the relation they check (an
 // AccessShareLock, no write): on a large database that is real I/O, which is why the collection is off until the
 // instance's own schedules name it, and why a grant is the client DBA's choice:
 //
@@ -25,8 +26,13 @@ import (
 //	GRANT EXECUTE ON FUNCTION verify_heapam(regclass, boolean, boolean, text, bigint, bigint) TO <login>;
 //
 // A database without the extension or the grant is a 'skipped' row with the reason; a relation the check reports
-// damage in (SQLSTATE XX001 / XX002, or verify_heapam rows) counts as corrupt with its first messages; a relation it
-// could not finish (a timeout, a lock, a dropped relation) counts as an error.
+// damage in (SQLSTATE XX001 / XX002, a missing relation file 58P01, or verify_heapam rows) counts as corrupt with its
+// first messages; a relation dropped since the list is passed over; one it could not finish (a timeout, a lock)
+// counts as not finished.
+//
+// The service's scheduler runs a collection at its start and then every interval; amcheck reads its last run's time
+// (the cursor import_amcheck keeps) and skips until the interval has passed, so a restart of pgvigil does not start
+// another full read.
 func init() { Register(amcheckCollector{}) }
 
 type amcheckCollector struct{}
@@ -62,7 +68,17 @@ func (amcheckCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row, e
 
 // RunInstance checks conn's database and every other connectable one (its own short connection), up to
 // tablesMaxDatabases, within amcheckBudget.
-func (amcheckCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
+func (amcheckCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc) ([]Row, error) {
+	if cursor != nil {
+		last, ok, err := cursor(ctx, "amcheck")
+		if err != nil {
+			return nil, fmt.Errorf("amcheck cursor: %w", err)
+		}
+		if iv := in.Schedules["amcheck"].Duration; ok && iv > 0 && time.Since(last) < iv*9/10 {
+			return nil, fmt.Errorf("the last run started %s; the next is due from %s: %w", last.UTC().Format(time.RFC3339),
+				last.Add(iv*9/10).UTC().Format(time.RFC3339), ErrSkip)
+		}
+	}
 	dbs, err := tablesDatabases(ctx, conn)
 	if err != nil {
 		return nil, err
@@ -129,22 +145,23 @@ SELECT quote_ident(n.nspname)::text, e.extversion::text,
   FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
  WHERE e.extname = 'amcheck'`
 
-// amcheckIndexesSQL: every valid, ready B-tree index of a permanent or unlogged relation, smallest first.
+// amcheckIndexesSQL: every valid, ready B-tree index of a permanent or unlogged relation (relkind 'i': a partitioned
+// index, 'I', has no storage and bt_index_check refuses it), by oid.
 const amcheckIndexesSQL = `
 SELECT c.oid::bigint, quote_ident(n.nspname) || '.' || quote_ident(c.relname)
   FROM pg_index i
   JOIN pg_class c ON c.oid = i.indexrelid
   JOIN pg_namespace n ON n.oid = c.relnamespace
   JOIN pg_am a ON a.oid = c.relam
- WHERE a.amname = 'btree' AND i.indisvalid AND i.indisready AND c.relpersistence <> 't'
- ORDER BY pg_relation_size(c.oid), c.oid`
+ WHERE a.amname = 'btree' AND c.relkind = 'i' AND i.indisvalid AND i.indisready AND c.relpersistence <> 't'
+ ORDER BY c.oid`
 
-// amcheckTablesSQL: every table, materialized view and TOAST table of a permanent or unlogged relation, smallest first.
+// amcheckTablesSQL: every table, materialized view and TOAST table of a permanent or unlogged relation, by oid.
 const amcheckTablesSQL = `
 SELECT c.oid::bigint, quote_ident(n.nspname) || '.' || quote_ident(c.relname)
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE c.relkind IN ('r', 'm', 't') AND c.relpersistence <> 't'
- ORDER BY pg_relation_size(c.oid), c.oid`
+ ORDER BY c.oid`
 
 type amRel struct {
 	oid  int64
@@ -179,9 +196,9 @@ func amcheckDB(ctx context.Context, conn *pgx.Conn, info platform.Info, db strin
 		if err != nil {
 			return nil, fmt.Errorf("indexes: %w", err)
 		}
-		out = append(out, amcheckRun(ctx, db, "bt_index_check", rels, deadline, func(r amRel) ([]string, error) {
+		out = append(out, amcheckRun(ctx, db, "bt_index_check", rels, amcheckStart(time.Now(), len(rels)), deadline, func(r amRel) ([]string, error) {
 			_, err := conn.Exec(ctx, fmt.Sprintf("SELECT %s.bt_index_check($1::regclass, false)", q), r.oid)
-			return nil, err
+			return nil, amcheckGone(ctx, conn, r, err)
 		}))
 	}
 	switch {
@@ -196,14 +213,14 @@ func amcheckDB(ctx context.Context, conn *pgx.Conn, info platform.Info, db strin
 		if err != nil {
 			return nil, fmt.Errorf("tables: %w", err)
 		}
-		out = append(out, amcheckRun(ctx, db, "verify_heapam", rels, deadline, func(r amRel) ([]string, error) {
+		out = append(out, amcheckRun(ctx, db, "verify_heapam", rels, amcheckStart(time.Now(), len(rels)), deadline, func(r amRel) ([]string, error) {
 			rows, err := conn.Query(ctx, fmt.Sprintf(`SELECT coalesce('block ' || blkno || coalesce(' offset ' || offnum, '') || coalesce(' attribute ' || attnum, '') || ': ', '') || msg
   FROM %s.verify_heapam($1::regclass, false, false, 'none') LIMIT %d`, q, amcheckHeapRows), r.oid)
 			if err != nil {
-				return nil, err
+				return nil, amcheckGone(ctx, conn, r, err)
 			}
 			msgs, err := pgx.CollectRows(rows, pgx.RowTo[string])
-			return msgs, err
+			return msgs, amcheckGone(ctx, conn, r, err)
 		}))
 	}
 	return out, nil
@@ -221,11 +238,40 @@ func amcheckRels(ctx context.Context, conn *pgx.Conn, sql string) ([]amRel, erro
 	})
 }
 
-// amcheckRun runs check over rels until deadline and returns the run row. check returns the messages of damage
-// (verify_heapam's rows) or an error: SQLSTATE XX001 (data corrupted) and XX002 (index corrupted) are damage, a
-// relation dropped since the list (42P01) is passed over, anything else is an error of that relation.
-func amcheckRun(ctx context.Context, db, name string, rels []amRel, deadline time.Time, check func(amRel) ([]string, error)) Row {
-	start := time.Now()
+// errAmcheckGone marks a relation dropped between the list and its check.
+var errAmcheckGone = errors.New("relation dropped since the list")
+
+// amcheckGone turns an error of a relation that no longer exists into errAmcheckGone (amcheck raises XX000 "could not
+// open relation with OID" for it, not 42P01); damage codes and errors of a relation still there pass unchanged.
+func amcheckGone(ctx context.Context, conn *pgx.Conn, r amRel, err error) error {
+	var pe *pgconn.PgError
+	if err == nil || (errors.As(err, &pe) && amcheckDamage(pe.Code)) || ctx.Err() != nil {
+		return err
+	}
+	var exists bool
+	if e := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_class WHERE oid = $1::oid)`, r.oid).Scan(&exists); e == nil && !exists {
+		return errAmcheckGone
+	}
+	return err
+}
+
+// amcheckDamage: data corrupted (XX001), index corrupted (XX002), a relation's file missing (58P01, undefined_file).
+func amcheckDamage(code string) bool { return code == "XX001" || code == "XX002" || code == "58P01" }
+
+// amcheckStart is the position the run starts at among n relations: it moves each UTC day (a step coprime to most n),
+// so a database whose relations do not fit in one run's budget is covered over the following runs.
+func amcheckStart(now time.Time, n int) int {
+	if n == 0 {
+		return 0
+	}
+	return int((now.Unix() / 86400 * 7919) % int64(n))
+}
+
+// amcheckRun runs check over rels from position start (wrapping) until deadline and returns the run row. check returns
+// the messages of damage (verify_heapam's rows) or an error: amcheckDamage's codes are damage, errAmcheckGone (and
+// 42P01) is passed over, anything else is a relation not finished.
+func amcheckRun(ctx context.Context, db, name string, rels []amRel, start int, deadline time.Time, check func(amRel) ([]string, error)) Row {
+	began := time.Now()
 	var checked, corrupt, errs int
 	problems := []map[string]string{}
 	add := func(rel, msg string) {
@@ -234,9 +280,10 @@ func amcheckRun(ctx context.Context, db, name string, rels []amRel, deadline tim
 		}
 	}
 	note := ""
-	for i, r := range rels {
+	for i := range rels {
+		r := rels[(start+i)%len(rels)]
 		if ctx.Err() != nil || time.Now().After(deadline) {
-			note = fmt.Sprintf("the run's budget (%s) was reached: %d of %d relations not checked this run", amcheckBudget, len(rels)-i, len(rels))
+			note = fmt.Sprintf("the run's budget (%s) was reached: %d of %d relations not checked this run (the next run starts at another point)", amcheckBudget, len(rels)-i, len(rels))
 			break
 		}
 		msgs, err := check(r)
@@ -250,11 +297,11 @@ func amcheckRun(ctx context.Context, db, name string, rels []amRel, deadline tim
 			for _, m := range msgs {
 				add(r.name, m)
 			}
-		case errors.As(err, &pe) && (pe.Code == "XX001" || pe.Code == "XX002"):
+		case errors.As(err, &pe) && amcheckDamage(pe.Code):
 			checked++
 			corrupt++
 			add(r.name, pe.Message+detailOf(pe))
-		case errors.As(err, &pe) && pe.Code == "42P01":
+		case errors.Is(err, errAmcheckGone) || errors.As(err, &pe) && pe.Code == "42P01":
 			// dropped between the list and its check
 		default:
 			errs++
@@ -272,7 +319,7 @@ func amcheckRun(ctx context.Context, db, name string, rels []amRel, deadline tim
 	}
 	return Row{"kind": "run", "datname": db, "check_name": name, "status": status, "checked": checked, "total": len(rels),
 		"corrupt": corrupt, "errors": errs, "problems": problems, "note": nilIfEmpty(note),
-		"duration_ms": time.Since(start).Milliseconds()}
+		"duration_ms": time.Since(began).Milliseconds()}
 }
 
 func detailOf(pe *pgconn.PgError) string {

@@ -14,19 +14,19 @@ const statusBadge = (v: unknown) => badge(String(v ?? ''), v === 'corrupt' ? 'cr
 
 export type CorruptionLevel = 0 | 1 | 2;   // ok, warning, critical (the Summary grid's levels)
 
-// corruptionCell: critical on a corruption event in 24 h, amcheck damage, ignore_checksum_failure or
+// corruptionCell: critical on a corruption message in the log in 24 h, amcheck damage, ignore_checksum_failure or
 // zero_damaged_pages on; warning when checksums are off (not Aurora: its storage checks its own pages);
 // an instance with no read is 'none'.
 export function corruptionCell(r: Row): { level: CorruptionLevel; text: string; detail: string[]; none?: boolean } {
   if (r.snapshot_at == null) return { level: 0, text: 'no sample', detail: [], none: true };
   const d: string[] = [];
   let level: CorruptionLevel = 0;
-  if (n(r.events_24h) > 0) { level = 2; d.push(`${r.events_24h} corruption event(s) in the log in 24 h`); }
+  if (n(r.events_24h) > 0) { level = 2; d.push(`${r.events_24h} corruption message(s) in the log in 24 h`); }
   if (n(r.amcheck_corrupt) > 0) { level = 2; d.push(`amcheck found ${r.amcheck_corrupt} damaged relation(s)`); }
   if (r.ignore_checksum_failure === 'on') { level = 2; d.push('ignore_checksum_failure is on'); }
   if (r.zero_damaged_pages === 'on') { level = 2; d.push('zero_damaged_pages is on'); }
   if (r.data_checksums === 'off' && r.platform !== 'aurora') { level = Math.max(level, 1) as CorruptionLevel; d.push('data checksums are off'); }
-  const text = level === 2 ? (n(r.events_24h) > 0 ? `${r.events_24h} event(s)` : 'damage') : level === 1 ? 'no checksums' : 'ok';
+  const text = level === 2 ? (n(r.events_24h) > 0 ? `${r.events_24h} message(s)` : 'damage') : level === 1 ? 'no checksums' : 'ok';
   return { level, text, detail: d };
 }
 
@@ -36,9 +36,9 @@ const fleetCols = (instLink?: (name: string, id: unknown) => Node): Col[] => [
   { key: 'data_checksums', label: 'checksums', fmt: checksums },
   { key: 'ignore_checksum_failure', label: 'ignore_checksum_failure', fmt: onBad },
   { key: 'zero_damaged_pages', label: 'zero_damaged_pages', fmt: onBad },
-  { key: 'events_24h', label: 'events 24 h', num: true, fmt: v => n(v) > 0 ? badge(String(v), 'crit') : '' },
-  { key: 'events_7d', label: 'events 7 d', num: true, fmt: v => n(v) > 0 ? String(v) : '' },
-  { key: 'last_event', label: 'last event', fmt: v => v == null ? '' : fmtTime(v) },
+  { key: 'events_24h', label: 'log messages 24 h', num: true, fmt: v => n(v) > 0 ? badge(String(v), 'crit') : '' },
+  { key: 'events_7d', label: 'log messages 7 d', num: true, fmt: v => n(v) > 0 ? String(v) : '' },
+  { key: 'last_event', label: 'last message', fmt: v => v == null ? '' : fmtTime(v) },
   { key: 'amcheck_last_run', label: 'amcheck run', fmt: v => v == null ? 'not scheduled' : fmtTime(v) },
   { key: 'amcheck_checked', label: 'relations checked', num: true },
   { key: 'amcheck_corrupt', label: 'damaged', num: true, fmt: v => n(v) > 0 ? badge(String(v), 'crit') : '' },
@@ -78,8 +78,8 @@ export async function corruptionView(instance: number): Promise<HTMLElement> {
     tile('data checksums', String(st.data_checksums ?? '?'), st.data_checksums === 'off' && st.platform !== 'aurora' ? 'warn' : ''),
     tile('ignore_checksum_failure', String(st.ignore_checksum_failure ?? '?'), st.ignore_checksum_failure === 'on' ? 'crit' : ''),
     tile('zero_damaged_pages', String(st.zero_damaged_pages ?? '?'), st.zero_damaged_pages === 'on' ? 'crit' : ''),
-    tile('log events 24 h', String(st.events_24h ?? 0), n(st.events_24h) > 0 ? 'crit' : ''),
-    tile('log events 7 d', String(st.events_7d ?? 0), n(st.events_7d) > 0 ? 'warn' : ''),
+    tile('log messages 24 h', String(st.events_24h ?? 0), n(st.events_24h) > 0 ? 'crit' : ''),
+    tile('log messages 7 d', String(st.events_7d ?? 0), n(st.events_7d) > 0 ? 'warn' : ''),
     tile('amcheck damaged', st.amcheck_last_run == null ? 'not run' : String(st.amcheck_corrupt ?? 0), n(st.amcheck_corrupt) > 0 ? 'crit' : '')));
   if (cell.detail.length) sec.append(el('p', { class: 'meta' }, cell.detail.join('; ') + '.'));
   const f = rowsOf(d.findings);
@@ -87,7 +87,7 @@ export async function corruptionView(instance: number): Promise<HTMLElement> {
     { key: 'value' }, { key: 'suggested', wide: true }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime }]));
 
   sec.append(el('h3', {}, 'Server log events (30 days)'),
-    el('p', { class: 'meta' }, 'Messages only damage raises: a failed page checksum, an invalid page header, a short read, a missing relation or status file, a missing TOAST chunk, a transaction id from before the table\'s freeze horizon. Read from the server log where pgvigil reads it (the logs or serverlog collection).'),
+    el('p', { class: 'meta' }, 'Messages only damage raises: a failed page checksum, an invalid page header, a short read, a missing relation or status file, a damaged index page, a missing TOAST chunk, a transaction or multixact id from before the table\'s freeze horizon. One damaged read can write two (the checksum line beside the error). Read from the server log where pgvigil reads it (the logs or serverlog collection); under query_text none the message itself is not kept.'),
     grid(rowsOf(d.events), [
       { key: 'at', label: 'time', fmt: fmtTime }, { key: 'class', fmt: v => badge(String(v ?? ''), 'crit') },
       { key: 'message', wide: true }, { key: 'relation_path', label: 'file' }, { key: 'datname', label: 'database' },
@@ -95,7 +95,7 @@ export async function corruptionView(instance: number): Promise<HTMLElement> {
     ], 'No corruption message in the server log in 30 days (or the log is not read on this instance).'));
 
   sec.append(el('h3', {}, 'amcheck'),
-    el('p', { class: 'meta' }, 'bt_index_check on every B-tree index and verify_heapam (PostgreSQL 14+) on every table, per database where the amcheck extension is installed and the monitoring login was granted EXECUTE. It reads every page it checks, so it runs only when the instance\'s schedules name amcheck.'),
+    el('p', { class: 'meta' }, 'bt_index_check on every B-tree index and verify_heapam (PostgreSQL 14+) on every table, per database where the amcheck extension is installed and the monitoring login was granted EXECUTE. It reads every page it checks, so it runs only when the instance\'s schedules name amcheck, and a restart of pgvigil does not run it again before its interval. A run that reaches its budget goes on from another point next time; damage stays reported until a complete run of that database is clean.'),
     grid(rowsOf(d.amcheck), [
       { key: 'datname', label: 'database' }, { key: 'check_name', label: 'check' }, { key: 'status', fmt: statusBadge },
       { key: 'checked', num: true, fmt: (v, r) => `${v ?? 0} / ${r.total ?? 0}` }, { key: 'corrupt', label: 'damaged', num: true },

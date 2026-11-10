@@ -145,11 +145,13 @@ func TestCorruptionRecorded(t *testing.T) {
 
 // corruption-constructed.log is written by hand (the messages PostgreSQL's source raises that the recording could
 // not produce: the freeze checks, a missing chunk, the pre-18 WARNING and short read, the commit log, a PANIC) with
-// three lines that must not count: a missing COPY input file, a missing pg_hba.conf at LOG, an unknown relation.
+// three lines that must not count: a missing COPY input file, a missing pg_hba.conf at LOG, an unknown relation; then
+// the B-tree page check, the multixact wraparound and two of PostgreSQL 18's combined-read messages (read from its
+// message catalogue, not produced).
 func TestCorruptionConstructed(t *testing.T) {
 	evs := parseFile(t, "corruption-constructed.log")
 	c := byKind(evs, Corruption)
-	want := []int{5101, 5102, 5103, 5104, 5104, 5105, 5106, 5107}
+	want := []int{5101, 5102, 5103, 5104, 5104, 5105, 5106, 5107, 5111, 5112, 5113, 5114}
 	if len(c) != len(want) || len(evs) != len(want) {
 		t.Fatalf("got %d corruption of %d events, want %d: %+v", len(c), len(evs), len(want), evs)
 	}
@@ -166,5 +168,29 @@ func TestCorruptionConstructed(t *testing.T) {
 	}
 	if c[2].Statement != "select * from pg_statistic" || c[2].Database != "app" {
 		t.Errorf("the missing chunk: %+v", c[2])
+	}
+}
+
+// corruption-pg18-multiblock.log is recorded from a PostgreSQL 18.6 cluster without checksums: two page headers of
+// one combined read made invalid (one ERROR "2 invalid pages among blocks", its per-block LOG lines not counted), an
+// index page zeroed, two more headers read with zero_damaged_pages (one WARNING each).
+func TestCorruptionMultiBlock(t *testing.T) {
+	c := byKind(parseFile(t, "corruption-pg18-multiblock.log"), Corruption)
+	want := []string{
+		`2 invalid pages among blocks 3..6 of relation "base/5/16384"`,
+		`index "zp_pkey" contains unexpected zero page at block 2`,
+		`invalid page in block 2 of relation "base/5/16397"; zeroing out page`,
+		`invalid page in block 3 of relation "base/5/16397"; zeroing out page`,
+	}
+	if len(c) != len(want) {
+		t.Fatalf("%d corruption events, want %d: %+v", len(c), len(want), c)
+	}
+	for i, w := range want {
+		if first := strings.SplitN(c[i].Detail, "\n", 2)[0]; first != w {
+			t.Errorf("corruption %d = %q, want %q", i, first, w)
+		}
+	}
+	if !strings.Contains(c[0].Detail, "HINT: See server log for the other 1 invalid block(s).") {
+		t.Errorf("the combined read's hint: %q", c[0].Detail)
 	}
 }

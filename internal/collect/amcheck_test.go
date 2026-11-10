@@ -12,7 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/platform"
 )
+
+var platformInfoNone = platform.Info{}
 
 func TestAmcheckGate(t *testing.T) {
 	c := amcheckCollector{}
@@ -67,9 +70,21 @@ func TestAmcheckRunStatus(t *testing.T) {
 			return nil, nil
 		}, far, "ok", [3]int{2, 0, 0}},
 		{"budget", func(amRel) ([]string, error) { return nil, nil }, time.Now().Add(-time.Second), "partial", [3]int{0, 0, 0}},
+		{"gone since the list", func(r amRel) ([]string, error) {
+			if r.oid == 1 {
+				return nil, errAmcheckGone
+			}
+			return nil, nil
+		}, far, "ok", [3]int{2, 0, 0}},
+		{"file missing", func(r amRel) ([]string, error) {
+			if r.oid == 3 {
+				return nil, &pgconn.PgError{Code: "58P01", Message: `could not open file "base/5/16400": No such file or directory`}
+			}
+			return nil, nil
+		}, far, "corrupt", [3]int{3, 1, 0}},
 	}
 	for _, c := range cases {
-		r := amcheckRun(context.Background(), "db", "bt_index_check", rels, c.dl, c.check)
+		r := amcheckRun(context.Background(), "db", "bt_index_check", rels, 0, c.dl, c.check)
 		got := [3]int{r["checked"].(int), r["corrupt"].(int), r["errors"].(int)}
 		if r["status"] != c.status || got != c.counts || r["total"] != 3 {
 			t.Errorf("%s: %v %v total %v, want %s %v", c.name, r["status"], got, r["total"], c.status, c.counts)
@@ -121,5 +136,41 @@ func TestCorruptionBothReaders(t *testing.T) {
 				t.Errorf("a plan without its text: %v", r["statement"])
 			}
 		}
+	}
+}
+
+// The start point moves by day and covers every position; a run from it visits each relation once, wrapping.
+func TestAmcheckRotation(t *testing.T) {
+	seen := map[int]bool{}
+	day := time.Date(2026, 11, 1, 3, 0, 0, 0, time.UTC)
+	for d := 0; d < 40; d++ {
+		seen[amcheckStart(day.Add(time.Duration(d)*24*time.Hour), 7)] = true
+	}
+	if len(seen) != 7 {
+		t.Errorf("40 days reached %d of 7 start points", len(seen))
+	}
+	var order []int64
+	rels := []amRel{{1, "a"}, {2, "b"}, {3, "c"}, {4, "d"}}
+	amcheckRun(context.Background(), "db", "x", rels, 2, time.Now().Add(time.Hour), func(r amRel) ([]string, error) {
+		order = append(order, r.oid)
+		return nil, nil
+	})
+	if fmt.Sprint(order) != "[3 4 1 2]" {
+		t.Errorf("visit order %v, want [3 4 1 2]", order)
+	}
+	if amcheckStart(day, 0) != 0 {
+		t.Error("no relation: start 0")
+	}
+}
+
+// A run inside the interval since the last one is skipped (a service restart does not start another full read).
+func TestAmcheckSkipsInsideInterval(t *testing.T) {
+	in := config.Instance{Schedules: map[string]config.Duration{"amcheck": {Duration: 24 * time.Hour}}}
+	cur := func(context.Context, string) (time.Time, bool, error) {
+		return time.Now().Add(-2 * time.Hour), true, nil
+	}
+	_, err := amcheckCollector{}.RunInstance(context.Background(), nil, platformInfoNone, in, cur)
+	if !errors.Is(err, ErrSkip) || !strings.Contains(err.Error(), "the next is due from") {
+		t.Errorf("inside the interval: %v", err)
 	}
 }

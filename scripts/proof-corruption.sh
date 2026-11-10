@@ -51,7 +51,18 @@
 #        verify_heapam 'corrupt', corrupt 1, the problem on public.ah; corruption_findings for N gains
 #        'amcheck bt_index_check' and 'amcheck verify_heapam' (critical).
 #  E. rights: pgvigil_collector may run import_amcheck; pgvigil_reader may read corruption_findings,
-#     corruption_events, corruption_summary, amcheck_runs and amcheck_latest.
+#     corruption_events, corruption_summary, amcheck_runs, amcheck_latest and amcheck_state.
+#  [review 1 fold, expected before the rerun]
+#  A also: TestCorruptionMultiBlock (a recorded PG 18 combined read with two bad headers = one event, a zeroed index
+#     page, two zero_damaged_pages WARNINGs: 4 events); the constructed file 12 of 15 entries.
+#  C: the log finding's value now starts '3 message(s)' (messages, not damaged reads).
+#  D: the instance schedule is amcheck: 1s through D4 (the collector skips a run inside 90% of its interval since the
+#     last run's start, so D2 -> D3 -> D4 each wait 1 s); amproof also holds a partitioned table pt (pt_pkey, relkind
+#     'I', not checked; its partition's index is): D3 still 'ok' with checked = total = the count of relkind 'i' B-trees.
+#  D5 the schedule set to 24h: an immediate collect -once amcheck is 'skipped' with "the next is due from" and adds no
+#     amcheck_runs row; the corrupt finding stays.
+#  A relation dropped between the list and its check, and a missing relation file (58P01) as damage, are proven by the
+#  unit tests only (TestAmcheckRunStatus); the start point's rotation by TestAmcheckRotation.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -72,7 +83,7 @@ command -v initdb >/dev/null && command -v pg_ctl >/dev/null && command -v pytho
 
 echo "--- A. the recorded lines through both parsers"
 go test -count=1 -run 'TestCorruption' ./internal/logparse/ >/dev/null || fail "A: logparse"
-go test -count=1 -run 'TestCorruptionBothReaders|TestAmcheck' ./internal/collect/ >/dev/null || fail "A: the two readers"
+go test -count=1 -run 'TestCorruptionBothReaders|TestAmcheck' ./internal/collect/ >/dev/null || fail "A: the two readers and the amcheck units"
 echo "A ok"
 
 echo "--- the monitored servers: W on $PW (checksums on), N on $PN (checksums off)"
@@ -173,7 +184,7 @@ sleep 0.3
 "$BIN" collect -config "$CFG" -once instance >/dev/null || fail "collect instance"
 FW=$(q "select string_agg(setting || ':' || severity, ',' order by setting) from pgvigil.corruption_findings where instance_id=$PW_ID")
 [[ $FW == "corruption in the log:critical,ignore_checksum_failure:critical,zero_damaged_pages:critical" ]] || fail "C W findings: $FW"
-[[ $(q "select value from pgvigil.corruption_findings where instance_id=$PW_ID and setting='corruption in the log'") == "3 event(s)"* ]] \
+[[ $(q "select value from pgvigil.corruption_findings where instance_id=$PW_ID and setting='corruption in the log'") == "3 message(s)"* ]] \
   || fail "C: the log finding's value"
 FN=$(q "select string_agg(setting || ':' || severity || ':' || value, ',' order by setting) from pgvigil.corruption_findings where instance_id=$PN_ID")
 [[ $FN == "data_checksums:warning:off" ]] || fail "C N findings: $FN"
@@ -186,6 +197,8 @@ n "create database $AMDB"
 na "create extension amcheck;
     create table ai(id int); insert into ai select generate_series(1, 1000); insert into ai values (168496141); create index ai_idx on ai(id);
     create table ah(id int, v text); insert into ah select g, 'row ' || g from generate_series(1, 50) g;
+    create table pt(id int primary key) partition by range (id); create table pt1 partition of pt for values from (0) to (100);
+    insert into pt select generate_series(0, 99);
     checkpoint"
 runs() { q "select string_agg(datname || '/' || check_name || ':' || status, ',' order by datname, check_name) from pgvigil.amcheck_latest where instance_id=$PN_ID"; }
 amcollect() { "$BIN" collect -config "$CFG" -once amcheck 2>&1 || true; }
@@ -196,7 +209,7 @@ OUT=$(amcollect)
 echo "D1 ok: skipped without a schedule"
 
 config "    schedules:
-      amcheck: 24h"
+      amcheck: 1s"
 amcollect >/dev/null
 note() { q "select note from pgvigil.amcheck_latest where instance_id=$PN_ID and datname='$1' and check_name='$2'"; }
 [[ $(runs) == "$AMDB/bt_index_check:skipped,$AMDB/verify_heapam:skipped,postgres/bt_index_check:skipped,postgres/verify_heapam:skipped" ]] \
@@ -211,7 +224,7 @@ na "grant execute on function bt_index_check(regclass, boolean) to $MON;
 sleep 1   # a new run time
 amcollect >/dev/null
 NIDX=$(na "select count(*) from pg_index i join pg_class c on c.oid = i.indexrelid join pg_am a on a.oid = c.relam
-           where a.amname = 'btree' and i.indisvalid and i.indisready and c.relpersistence <> 't'")
+           where a.amname = 'btree' and c.relkind = 'i' and i.indisvalid and i.indisready and c.relpersistence <> 't'")
 NTAB=$(na "select count(*) from pg_class where relkind in ('r', 'm', 't') and relpersistence <> 't'")
 row() { q "select status || '|' || checked || '|' || total || '|' || corrupt from pgvigil.amcheck_latest where instance_id=$PN_ID and datname='$AMDB' and check_name='$1'"; }
 [[ $(row bt_index_check) == "ok|$NIDX|$NIDX|0" ]] || fail "D3 bt_index_check: $(row bt_index_check), want ok|$NIDX|$NIDX|0"
@@ -248,9 +261,19 @@ FN=$(q "select string_agg(setting || ':' || severity, ',' order by setting) from
 [[ $FN == "amcheck bt_index_check:critical,amcheck verify_heapam:critical,data_checksums:warning" ]] || fail "D4 findings: $FN"
 echo "D4 ok: $(q "select check_name || ': ' || (problems->0->>'message') from pgvigil.amcheck_latest where instance_id=$PN_ID and datname='$AMDB' order by check_name")"
 
+echo "--- D5. inside the interval: skipped"
+config "    schedules:
+      amcheck: 24h"
+NRUNS=$(q "select count(*) from pgvigil.amcheck_runs where instance_id=$PN_ID")
+OUT=$(amcollect)
+[[ $OUT == *"the next is due from"* ]] || fail "D5: $OUT"
+[[ $(q "select count(*) from pgvigil.amcheck_runs where instance_id=$PN_ID") == "$NRUNS" ]] || fail "D5: a run inside the interval"
+[[ $(q "select count(*) from pgvigil.corruption_findings where instance_id=$PN_ID and setting like 'amcheck %'") == 2 ]] || fail "D5: the findings"
+echo "D5 ok: ${OUT##*skipped: }"
+
 echo "--- E. rights"
 [[ $(q "select has_function_privilege('pgvigil_collector', 'pgvigil.import_amcheck(int, timestamptz, jsonb)', 'EXECUTE')") == t ]] || fail "E collector"
-for v in corruption_findings corruption_events corruption_summary amcheck_runs amcheck_latest; do
+for v in corruption_findings corruption_events corruption_summary amcheck_runs amcheck_latest amcheck_state; do
   [[ $(q "select has_table_privilege('pgvigil_reader', 'pgvigil.$v', 'SELECT')") == t ]] || fail "E reader $v"
 done
 echo "E ok"

@@ -1,0 +1,17 @@
+2026-11-10 00:06:52 UTC::@:[1217588]:LOG:  invalid page in block 3 of relation "base/5/16384"
+2026-11-10 00:06:52 UTC::@:[1217588]:CONTEXT:  I/O worker executing I/O on behalf of process 1217600
+2026-11-10 00:06:52 UTC::@:[1217588]:LOG:  invalid page in block 4 of relation "base/5/16384"
+2026-11-10 00:06:52 UTC::@:[1217588]:CONTEXT:  I/O worker executing I/O on behalf of process 1217600
+2026-11-10 00:06:52 UTC:::1(35552):postgres@postgres:[1217600]:ERROR:  2 invalid pages among blocks 3..6 of relation "base/5/16384"
+2026-11-10 00:06:52 UTC:::1(35552):postgres@postgres:[1217600]:DETAIL:  Block 3 held the first invalid page.
+2026-11-10 00:06:52 UTC:::1(35552):postgres@postgres:[1217600]:HINT:  See server log for the other 1 invalid block(s).
+2026-11-10 00:06:52 UTC:::1(35552):postgres@postgres:[1217600]:STATEMENT:  select count(*) from mb
+2026-11-10 00:06:52 UTC:::1(35566):postgres@postgres:[1217604]:ERROR:  index "zp_pkey" contains unexpected zero page at block 2
+2026-11-10 00:06:52 UTC:::1(35566):postgres@postgres:[1217604]:HINT:  Please REINDEX it.
+2026-11-10 00:06:52 UTC:::1(35566):postgres@postgres:[1217604]:STATEMENT:  set enable_seqscan=off; set enable_bitmapscan=off; select v from zp where id = 500
+2026-11-10 00:06:52 UTC::@:[1217588]:LOG:  invalid page in block 2 of relation "base/5/16397"; zeroing out page
+2026-11-10 00:06:52 UTC::@:[1217588]:CONTEXT:  I/O worker executing I/O on behalf of process 1217608
+2026-11-10 00:06:52 UTC:::1(35568):postgres@postgres:[1217608]:WARNING:  invalid page in block 2 of relation "base/5/16397"; zeroing out page
+2026-11-10 00:06:52 UTC::@:[1217588]:LOG:  invalid page in block 3 of relation "base/5/16397"; zeroing out page
+2026-11-10 00:06:52 UTC::@:[1217588]:CONTEXT:  I/O worker executing I/O on behalf of process 1217608
+2026-11-10 00:06:52 UTC:::1(35568):postgres@postgres:[1217608]:WARNING:  invalid page in block 3 of relation "base/5/16397"; zeroing out page
