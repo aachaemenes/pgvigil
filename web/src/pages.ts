@@ -12,6 +12,7 @@ import { corruptionFleetView } from './corruption';
 import { extensionsFleetView } from './extensions';
 import { versionsFleetView } from './versions';
 import { dmsIOView } from './io';
+import { longRunsSection } from './window';
 import { actionsCol, actionsState } from './actions';
 import { applyTagFilter, tagCols, tagFilterBar, tagKeys, tagUI, withTagFields } from './tree';
 import { jobsReportFleetView } from './jobsreport';
@@ -134,6 +135,7 @@ export async function activity(ctx: Ctx): Promise<HTMLElement> {
     actionsCol(ctx, act, () => { location.hash = href(ctx, { tab: 'activity', at: undefined }); }),
   ];
   sec.append(grid(rowsOf(a.sessions), cols, 'No active or idle-in-transaction sessions in this snapshot.'));
+  sec.append(await longRunsSection(ctx));
   return sec;
 }
 
@@ -173,7 +175,7 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
   return el('section', {}, el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
     grid(rowsOf(st), [...stmtCols(order), { key: 'plan_link', label: 'plan', fmt: (_, r) => planLink(ctx.instance!, { queryid: r.queryid, db: r.datname, stmt: r.query }) }], 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
     el('h3', {}, 'Ran at least ', minIn, ' s in this window'),
-    el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from its transaction start.'),
+    el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from when it went idle (the Running queries tab filters these by state, user, database and application).'),
     slow instanceof Error ? errorBox(slow) : grid(rowsOf(slow as Table), slowCols, 'Nothing seen running that long in this window.'));
 }
 
