@@ -48,13 +48,12 @@ function filters(ctx: Ctx, minSecs: number): HTMLElement {
 }
 
 function runCols(ctx: Ctx): Col[] {
-  const rest = slowCols.filter(c => c.key !== 'at_least_secs' && c.key !== 'query');
+  const rest = slowCols.filter(c => c.key !== 'at_least_secs');
   return [
     { key: 'at_least_secs', label: 'ran or idle for', num: true, fmt: fmtSecs },
     { key: 'txn_secs', label: 'txn age', num: true, fmt: fmtSecs },
     ...rest,
     { key: 'client' },
-    { key: 'query', wide: true, fmt: v => String(v ?? '').slice(0, 300) },
     { key: 'plan_link', label: 'plan', fmt: (_, r) => r.query ? planLink(ctx.instance!, { stmt: r.query, db: r.datname }) : '' },
     { key: 'last_seen', label: 'snapshot', fmt: v => el('a', { href: href(ctx, { tab: 'activity', at: String(v) }) }, 'open') },
   ];
