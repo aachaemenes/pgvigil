@@ -255,6 +255,11 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("indexes", g.indexRows(t))
 		add("session_sets", g.sessionSetRows(t))
 	}
+	// the compare collection: one state row at every hourly step and at the seed's end (a snapshot older than two hours is a
+	// no-op in import_compare; the last one fills compare_findings_cache before the first live hour)
+	if first || t.Minute() == 0 || t.Equal(g.end) {
+		add("compare", []Row{{"kind": "state", "status": "ok"}})
+	}
 	add("io", g.ioRows(t))
 	add("pi", g.piDemoRows(t, first))
 	add("serverless", g.serverlessDemoRows(t, first))
@@ -307,7 +312,7 @@ func (g *Gen) Collections() []string {
 	if g.waitDoor() {
 		c = append(c, "waits")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets")
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare")
 	if g.amcheckOn() {
 		c = append(c, "amcheck")
 	}
