@@ -9,6 +9,7 @@ import { lineChart } from './chart';
 import { fleet } from './fleet';
 import { Ctx, href, window_, rangeLabel } from './router';
 import { dbLink, grownTxt, hashParam, hrefWith, link, tableLink } from './dbinfo';
+import { schemaDbSection } from './schema';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 
 type Parts<K extends string> = Record<K, Table | null>;
@@ -115,6 +116,7 @@ export async function dbPage(ctx: Ctx): Promise<HTMLElement> {
 
   sec.append(el('h3', {}, `Top statements by total time (${rangeLabel(ctx)})`), grid(rowsOf(d.statements), stmtCols,
     'No statement in this database in the range (pg_stat_statements, the statements collection).'));
+  sec.append(await schemaDbSection(ctx, db));
   return sec;
 }
 

@@ -27,6 +27,7 @@ import { memory } from './memory';
 import { hasPooler, pooler } from './pooler';
 import { customView } from './custom';
 import { indexesView } from './indexes';
+import { schemaView } from './schema';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
@@ -50,6 +51,7 @@ const instancePages: Record<string, Render> = {
   slowqueries: slowView,
   waits: waitsView,
   indexes: c => indexesView(c.instance!, c),
+  schema: c => schemaView(c.instance!, c),
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
   compare: compareView,

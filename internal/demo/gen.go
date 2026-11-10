@@ -255,6 +255,7 @@ func (g *Gen) Step(t time.Time) []Batch {
 		add("roles", g.roleRows(t))
 		add("indexes", g.indexRows(t))
 		add("session_sets", g.sessionSetRows(t))
+		add("schema", g.schemaRows(t))
 		add("buffercache", g.bufferCacheDemoRows(t))
 		add("temp_files", g.tempFilesDemoRows(t)) // after the statements and logs batches of the same step: the rollup reads them
 	}
@@ -318,7 +319,7 @@ func (g *Gen) Collections() []string {
 	if g.waitDoor() {
 		c = append(c, "waits")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files", "custom")
+	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files", "custom", "schema")
 	if g.is("aurora-crm01") {
 		c = append(c, "pgbouncer")
 	}

@@ -59,8 +59,20 @@ CREATE ROLE %[3]s LOGIN PASSWORD '<set-me>' IN ROLE pg_monitor;
 -- (pg_hba.conf, server.key, pg_authid's password hashes) and is not recommended; pg_read_server_files alone
 -- opens neither. Without a door the collection is skipped with its reason.
 %[5]s
-`, collector, reader, monitor, act, serverlogDoorBlock(monitor), explain)
+
+-- Optional, per monitored database: the exact statement behind a schema change (the Schema tab). An event
+-- trigger only a superuser creates, logging each DDL statement into public.pgvigil_ddl_log, which the monitoring
+-- login may read; the schema collection reads it where present and says 'not installed' elsewhere. The capture
+-- never blocks the DDL it records. Run it in each database to cover, as a superuser:
+%[7]s
+`, collector, reader, monitor, act, serverlogDoorBlock(monitor), explain, schemaDDLBlock(monitor))
 	return nil
+}
+
+// schemaDDLBlock is the schema collection's event trigger, commented out, with the monitoring login filled in.
+func schemaDDLBlock(login string) string {
+	text := strings.ReplaceAll(collect.SchemaDDLLogSQL, "<login>", login)
+	return "-- " + strings.ReplaceAll(text, "\n", "\n-- ")
 }
 
 // serverlogDoorBlock is the serverlog read door's statement, commented out, with the monitoring login filled in.

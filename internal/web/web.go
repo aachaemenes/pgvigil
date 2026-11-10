@@ -171,6 +171,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/sessionsets", s.SessionSets)
 	api.HandleFunc("GET /api/memory", s.Memory)
 	api.HandleFunc("GET /api/pooler", s.Pooler)
+	api.HandleFunc("GET /api/schema", s.Schema)
 	api.HandleFunc("GET /api/host", s.Host)
 	api.HandleFunc("GET /api/disks", s.Disks)
 	api.HandleFunc("GET /api/storage", s.Storage)
