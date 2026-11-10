@@ -8,6 +8,7 @@ package mssql
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/microsoft/go-mssqldb" // the sqlserver driver (BSD-3)
+	mssqldb "github.com/microsoft/go-mssqldb" // the sqlserver driver (BSD-3)
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -25,8 +26,13 @@ import (
 // Prefix starts the name of every SQL Server collection.
 const Prefix = "mssql_"
 
-// RunTimeout bounds one collection run on one instance, the connection included.
+// RunTimeout bounds the SQL Server side of one collection run on one instance: the connection, the detection and
+// the collection's statements; a collector that is a Timeouter names its own. The repository writes of the run are not under it (repoTimeout).
 const RunTimeout = 60 * time.Second
+
+// repoTimeout bounds each repository write of a run. It starts when the write starts, so a run that used up
+// RunTimeout on the SQL Server side still stores its error row.
+const repoTimeout = 30 * time.Second
 
 // Collector is one SQL Server collection type.
 type Collector interface {
@@ -38,6 +44,20 @@ type Collector interface {
 	Applies(Info) (ok bool, why string)
 	// Run executes the collection on an open connection.
 	Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error)
+}
+
+// Timeouter is what a collector adds when one run needs more (or must take less) than RunTimeout on the SQL
+// Server side: a reader of an Extended Events file, a pass over every database.
+type Timeouter interface {
+	Timeout() time.Duration
+}
+
+// runTimeout is the SQL Server side's deadline for one run of a collector.
+func runTimeout(c Collector) time.Duration {
+	if t, ok := c.(Timeouter); ok && t.Timeout() > 0 {
+		return t.Timeout()
+	}
+	return RunTimeout
 }
 
 var registry = map[string]Collector{}
@@ -130,8 +150,23 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	return db, conn, nil
 }
 
-// QueryRows runs one statement and returns its rows keyed by the result's column names as written: text and
-// decimal values as strings, times in UTC, NULL as nil.
+// QueryRows runs one statement and returns its rows keyed by the result's column names as written. The contract
+// every collector builds on, by the column's SQL Server type:
+//
+//   - char, varchar, nchar, nvarchar, text, ntext, xml: a string.
+//   - decimal, numeric, money, smallmoney: a string of the number as the server wrote it ("12.345").
+//   - bit, tinyint, smallint, int, bigint, real, float: the Go value the driver gives (bool, int64, float64).
+//   - uniqueidentifier: the canonical text, upper case (6F9619FF-8B86-D011-B42D-00C04FC964FF).
+//   - binary, varbinary, image, timestamp / rowversion and any other value the driver hands over as bytes
+//     (a handle, a hash, context_info): "0x" and upper-case hex, the form SSMS prints and a 0x literal takes.
+//   - datetimeoffset: a time.Time in UTC; it is the only time type that says which instant it means.
+//   - datetime, datetime2, smalldatetime: ZONE-LESS text, 2026-11-10T07:00:00.1234567 (the fraction without its
+//     trailing zeros); date: 2026-11-10; time: 07:00:00.1234567. They are whatever clock the column was written
+//     in, which for almost every DMV and msdb column is the SERVER'S LOCAL time; the driver cannot know, so
+//     nothing here pretends they are UTC. A collector that stores an instant converts on the SQL Server side, in
+//     its SELECT (a UTC column where the DMV has one, the server's offset or AT TIME ZONE ... AT TIME ZONE 'UTC'
+//     where it does not), and returns a datetimeoffset or text ending in Z.
+//   - NULL: nil.
 func QueryRows(ctx context.Context, conn *sql.Conn, query string, args ...any) ([]collect.Row, error) {
 	rs, err := conn.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -141,6 +176,16 @@ func QueryRows(ctx context.Context, conn *sql.Conn, query string, args ...any) (
 	cols, err := rs.Columns()
 	if err != nil {
 		return nil, err
+	}
+	types, err := rs.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+	kinds := make([]string, len(cols))
+	for i := range kinds {
+		if i < len(types) {
+			kinds[i] = strings.ToUpper(types[i].DatabaseTypeName())
+		}
 	}
 	var out []collect.Row
 	for rs.Next() {
@@ -154,60 +199,99 @@ func QueryRows(ctx context.Context, conn *sql.Conn, query string, args ...any) (
 		}
 		row := make(collect.Row, len(cols))
 		for i, c := range cols {
-			switch v := vals[i].(type) {
-			case []byte:
-				row[c] = string(v)
-			case time.Time:
-				row[c] = v.UTC()
-			default:
-				row[c] = v
-			}
+			row[c] = rowValue(kinds[i], vals[i])
 		}
 		out = append(out, row)
 	}
 	return out, rs.Err()
 }
 
-// RunOnce runs one SQL Server collection against one instance and stores the rows.
+// rowValue turns one scanned value into what QueryRows promises for the column's type (the driver's
+// DatabaseTypeName, upper case).
+func rowValue(dbType string, v any) any {
+	switch x := v.(type) {
+	case []byte:
+		switch dbType {
+		case "DECIMAL", "NUMERIC", "MONEY", "SMALLMONEY":
+			return string(x)
+		case "UNIQUEIDENTIFIER":
+			var u mssqldb.UniqueIdentifier
+			if err := u.Scan(x); err == nil {
+				return u.String()
+			}
+		}
+		return "0x" + strings.ToUpper(hex.EncodeToString(x))
+	case time.Time:
+		switch dbType {
+		case "DATETIMEOFFSET":
+			return x.UTC()
+		case "DATE":
+			return x.Format("2006-01-02")
+		case "TIME":
+			return x.Format("15:04:05.9999999")
+		}
+		return x.Format("2006-01-02T15:04:05.9999999")
+	}
+	return v
+}
+
+// RunOnce runs one SQL Server collection against one instance and stores the rows. The SQL Server side runs
+// under RunTimeout; every repository write gets its own repoTimeout on a context the run's deadline (and a
+// shutdown's cancel) does not cut, so a run that timed out is recorded as an error instead of leaving the
+// previous ok row in place.
 func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string) collect.Result {
 	c, ok := Get(name)
 	if !ok {
 		return collect.Result{Err: fmt.Errorf("unknown collection %q; known: %v", name, Names())}
 	}
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, RunTimeout)
+	limit := runTimeout(c)
+	sctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	db, conn, err := Connect(ctx, in)
+	logRun := func(instanceID int, status, note string) {
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+		defer rcancel()
+		if err := r.LogCollection(rctx, instanceID, name, start, time.Since(start), status, note); err != nil {
+			log.Warn("the collection's result was not recorded", "instance", in.Name, "collection", name, "status", status, "err", err)
+		}
+	}
+	db, conn, err := Connect(sctx, in)
 	if err != nil {
-		return collect.Result{Err: err, Duration: time.Since(start)}
+		return collect.Result{Err: timeoutNote(sctx, limit, err), Duration: time.Since(start)}
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
 
-	info, err := Detect(ctx, conn, in.Platform)
+	info, err := Detect(sctx, conn, in.Platform)
 	if err != nil {
-		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, err), Duration: time.Since(start)}
+		return collect.Result{Err: fmt.Errorf("%s: %w", in.Name, timeoutNote(sctx, limit, err)), Duration: time.Since(start)}
 	}
-	instanceID, err := r.EnsureInstanceEngine(ctx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+	ectx, ecancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+	instanceID, err := r.EnsureInstanceEngine(ectx, config.EngineSQLServer, in.Name, string(info.Kind), info.Version, info.VersionNum, false, in.Tags)
+	ecancel()
 	if err != nil {
 		return collect.Result{Err: err, Duration: time.Since(start)}
 	}
 	if ok, why := c.Applies(info); !ok {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+		logRun(instanceID, "skipped", why)
 		return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
-	rows, err := c.Run(ctx, conn, info)
+	rows, err := c.Run(sctx, conn, info)
 	if errors.Is(err, collect.ErrSkip) {
 		why := strings.TrimSuffix(err.Error(), ": "+collect.ErrSkip.Error())
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "skipped", why)
+		logRun(instanceID, "skipped", why)
 		return collect.Result{Duration: time.Since(start), Note: " (skipped: " + why + ")"}
 	}
 	if err != nil {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+		err = timeoutNote(sctx, limit, err)
+		logRun(instanceID, "error", err.Error())
 		return collect.Result{Err: fmt.Errorf("%s on %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	collect.ApplyTextPolicy(rows, in.QueryText)
-	if err := r.Import(ctx, instanceID, name, start, rows); err != nil {
-		_ = r.LogCollection(ctx, instanceID, name, start, time.Since(start), "error", err.Error())
+	ictx, icancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+	err = r.Import(ictx, instanceID, name, start, rows)
+	icancel()
+	if err != nil {
+		logRun(instanceID, "error", err.Error())
 		return collect.Result{Err: fmt.Errorf("import %s from %s: %w", name, in.Name, err), Duration: time.Since(start)}
 	}
 	d := time.Since(start)
@@ -218,9 +302,17 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 			break
 		}
 	}
-	_ = r.LogCollection(ctx, instanceID, name, start, d, status, note)
+	logRun(instanceID, status, note)
 	log.Debug("collected", "instance", in.Name, "collection", name, "rows", len(rows), "ms", d.Milliseconds())
 	return collect.Result{Rows: len(rows), Duration: d, Note: partialNote(status, note)}
+}
+
+// timeoutNote says so when an error is the run's own deadline: the driver's text for it names no cause.
+func timeoutNote(sctx context.Context, limit time.Duration, err error) error {
+	if errors.Is(sctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("the run hit its %d s timeout on the SQL Server side: %w", int(limit.Seconds()), err)
+	}
+	return err
 }
 
 func partialNote(status, note string) string {

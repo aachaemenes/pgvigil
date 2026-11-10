@@ -214,3 +214,32 @@ func TestEngine(t *testing.T) {
 		}
 	}
 }
+
+// A connection string written into the file is refused when it carries a password, wherever the password sits and
+// whatever it holds; an '@' inside a query value is not a password.
+func TestInlinePassword(t *testing.T) {
+	for dsn, want := range map[string]bool{
+		"sqlserver://mon:secret@h:1433":                      true,
+		"sqlserver://sa:Pa=ss@host":                          true,
+		"sqlserver://sa:Pa=ss@host:1433?database=master":     true,
+		"sqlserver://sa:p@ss@host/instance":                  true,
+		"sqlserver://sa:pa/ss@host":                          true,
+		"sqlserver://sa:p=a/ss@host":                         true,
+		"sqlserver://h:1433?database=master&password=secret": true,
+		"sqlserver://h:1433?database=master;pwd=secret":      true,
+		"server=h;user id=mon; Password =secret":             true,
+		"odbc:server=h;user id=mon;pwd=secret":               true,
+		"sqlserver://mon@h:1433?database=master":             false,
+		"sqlserver://h:1433?user+id=a@corp.com":              false,
+		"sqlserver://h:1433/instance?user+id=a@corp.com":     false,
+		"sqlserver://mon@h:1433?app+name=a:b@c":              false,
+		"sqlserver://h?database=master":                      false,
+		"server=h;user id=mon;database=master":               false,
+		"server=h;user id=mon;app name=password keeper;":     false,
+		"postgres://mon@h:5432/db?sslmode=require":           false,
+	} {
+		if got := inlinePassword(dsn); got != want {
+			t.Errorf("inlinePassword(%q) = %v; want %v", dsn, got, want)
+		}
+	}
+}

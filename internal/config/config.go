@@ -126,10 +126,25 @@ func inlinePassword(v string) bool {
 	l := strings.ToLower(strings.TrimSpace(v))
 	if i := strings.Index(l, "://"); i >= 0 {
 		rest := l[i+3:]
-		// userinfo: the text before the first '@' holds ':' and no '=' (an '@' inside a query value, user+id=a@corp.com,
-		// comes after a key=; a raw password holding '?' or '/' before the '@' is still refused)
-		if at := strings.IndexByte(rest, '@'); at >= 0 && strings.Contains(rest[:at], ":") && !strings.Contains(rest[:at], "=") {
-			return true
+		// the authority ends at the first '/' or '?'; its userinfo is the text before its LAST '@' (a password may
+		// hold '@' or '='), and a ':' there starts a password
+		auth := rest
+		if e := strings.IndexAny(rest, "/?"); e >= 0 {
+			auth = rest[:e]
+		}
+		if at := strings.LastIndexByte(auth, '@'); at >= 0 {
+			if strings.Contains(auth[:at], ":") {
+				return true
+			}
+		} else if at := strings.IndexByte(rest, '@'); at >= 0 && strings.Contains(rest[:at], ":") {
+			// no '@' in the authority: a raw password holding '/' or '?' cut it short (sa:pa/ss@host). The text
+			// before the first '@' is then userinfo unless its first '=' follows a '?': that is an '@' inside a
+			// query value (host:1433?user+id=a@corp.com)
+			seg := rest[:at]
+			eq, qm := strings.IndexByte(seg, '='), strings.IndexByte(seg, '?')
+			if eq < 0 || qm < 0 || qm > eq {
+				return true
+			}
 		}
 		if q := strings.IndexByte(rest, '?'); q >= 0 {
 			for _, kv := range strings.FieldsFunc(rest[q+1:], func(r rune) bool { return r == '&' || r == ';' }) {

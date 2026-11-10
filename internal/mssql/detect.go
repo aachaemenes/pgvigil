@@ -29,7 +29,7 @@ type Info struct {
 	Build          int
 	VersionNum     int // Major * 10000 + Minor: 160000
 	Edition        string
-	EngineEdition  int // SERVERPROPERTY('EngineEdition'): 2 Standard, 3 Enterprise, 4 Express, 5 SQL Database, 8 Managed Instance
+	EngineEdition  int // SERVERPROPERTY('EngineEdition'): 2 Standard, 3 Enterprise, 4 Express, 5 SQL Database, 8 Managed Instance, 9 Azure SQL Edge (kept as a server); 6 and 11 (Synapse) are refused
 	ServerName     string
 	HADREnabled    bool
 	// what the login may read: a collection says "skipped" with the missing right instead of failing
@@ -61,6 +61,9 @@ func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	}
 	in.ProductVersion, in.Edition, in.ServerName = pv.String, ed.String, name.String
 	in.EngineEdition = int(ee.Int64)
+	if err := supported(in.EngineEdition); err != nil {
+		return in, err
+	}
 	in.HADREnabled = hadr.Int64 == 1
 	in.ViewServerState, in.ViewAnyDefinition, in.MsdbAccess = vss.Int64 == 1, vad.Int64 == 1, msdb.Int64 == 1
 	in.Version, _, _ = strings.Cut(ver.String, "\n")
@@ -69,6 +72,16 @@ func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	in.VersionNum = in.Major*10000 + in.Minor
 	in.Kind = kindOf(in.EngineEdition, rds.Int64 == 1, forced)
 	return in, nil
+}
+
+// supported refuses the engine editions that answer on the SQL Server protocol and are not a SQL Server: Azure
+// Synapse's dedicated (6) and serverless (11) pools have neither the DMVs nor msdb the collections read.
+func supported(engineEdition int) error {
+	switch engineEdition {
+	case 6, 11:
+		return fmt.Errorf("sql server detect: engine edition %d is Azure Synapse Analytics, which pgvigil's SQL Server engine does not monitor (no sys.dm_os_sys_info, no msdb); remove the instance or point it at a SQL Server", engineEdition)
+	}
+	return nil
 }
 
 // kindOf names the platform: the config's word when it gives one, else the engine edition and RDS's own database.
