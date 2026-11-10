@@ -1,0 +1,5 @@
+Seq Scan on t40  (cost=0.00..4562.00 rows=2080 width=49) (actual time=0.013..8.957 rows=2000.00 loops=1)
+  Filter: (v = 1)
+  Rows Removed by Filter: 198000
+Planning Time: 0.184 ms
+Execution Time: 9.049 ms

@@ -1,0 +1,10 @@
+Aggregate  (cost=5568.68..5568.69 rows=1 width=72) (actual time=94.071..94.072 rows=1.00 loops=1)
+  ->  Seq Scan on t40  (cost=0.00..5562.00 rows=891 width=49) (actual time=85.513..92.938 rows=25428.00 loops=1)
+        Filter: ((v > 10) AND ((id % 7) = 3))
+        Rows Removed by Filter: 174572
+Planning Time: 0.318 ms
+JIT:
+  Functions: 5
+  Options: Inlining true, Optimization true, Expressions true, Deforming true
+  Timing: Generation 0.190 ms (Deform 0.062 ms), Inlining 33.423 ms, Optimization 31.506 ms, Emission 20.579 ms, Total 85.697 ms
+Execution Time: 105.269 ms

@@ -1,0 +1,10 @@
+Aggregate  (cost=7132.97..7132.98 rows=1 width=8) (actual time=18.434..18.436 rows=1.00 loops=1)
+  ->  Bitmap Heap Scan on b40  (cost=1118.01..6882.09 rows=100350 width=0) (actual time=1.818..15.696 rows=100000.00 loops=1)
+        Recheck Cond: (v < 500)
+        Rows Removed by Index Recheck: 74304
+        Heap Blocks: exact=862 lossy=2587
+        ->  Bitmap Index Scan on b40_v  (cost=0.00..1092.92 rows=100350 width=0) (actual time=1.733..1.734 rows=100000.00 loops=1)
+              Index Cond: (v < 500)
+              Index Searches: 1
+Planning Time: 0.398 ms
+Execution Time: 18.501 ms

@@ -1,0 +1,5 @@
+Index Scan using n40_pkey on n40  (cost=0.42..8.44 rows=1 width=4) (actual time=0.013..0.013 rows=1.00 loops=1)
+  Index Cond: (id = 5)
+  Index Searches: 1
+Planning Time: 0.245 ms
+Execution Time: 0.042 ms

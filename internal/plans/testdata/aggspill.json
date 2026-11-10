@@ -1,0 +1,48 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Hashed",
+      "Partial Mode": "Simple",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 46062.00,
+      "Total Cost": 54312.00,
+      "Plan Rows": 200000,
+      "Plan Width": 12,
+      "Actual Startup Time": 36.885,
+      "Actual Total Time": 100.807,
+      "Actual Rows": 200000.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Group Key": ["id"],
+      "Planned Partitions": 4,
+      "HashAgg Batches": 341,
+      "Peak Memory Usage": 169,
+      "Disk Usage": 7120,
+      "Plans": [
+        {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "t40",
+          "Alias": "t40",
+          "Startup Cost": 0.00,
+          "Total Cost": 4062.00,
+          "Plan Rows": 200000,
+          "Plan Width": 4,
+          "Actual Startup Time": 0.012,
+          "Actual Total Time": 11.313,
+          "Actual Rows": 200000.00,
+          "Actual Loops": 1,
+          "Disabled": false
+        }
+      ]
+    },
+    "Planning Time": 0.206,
+    "Triggers": [
+    ],
+    "Execution Time": 105.999
+  }
+]

@@ -1,0 +1,6 @@
+HashAggregate  (cost=46062.00..54312.00 rows=200000 width=12) (actual time=34.973..97.623 rows=200000.00 loops=1)
+  Group Key: id
+  Planned Partitions: 4  Batches: 341  Memory Usage: 169kB  Disk Usage: 7120kB
+  ->  Seq Scan on t40  (cost=0.00..4062.00 rows=200000 width=4) (actual time=0.016..10.290 rows=200000.00 loops=1)
+Planning Time: 0.191 ms
+Execution Time: 102.519 ms

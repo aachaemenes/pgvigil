@@ -1,0 +1,30 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Only Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "Forward",
+      "Index Name": "h40_pkey",
+      "Relation Name": "h40",
+      "Alias": "h40",
+      "Startup Cost": 0.42,
+      "Total Cost": 1648.48,
+      "Plan Rows": 49832,
+      "Plan Width": 4,
+      "Actual Startup Time": 0.024,
+      "Actual Total Time": 5.654,
+      "Actual Rows": 49999.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Index Cond": "(id < 50000)",
+      "Rows Removed by Index Recheck": 0,
+      "Heap Fetches": 49999,
+      "Index Searches": 1
+    },
+    "Planning Time": 0.216,
+    "Triggers": [
+    ],
+    "Execution Time": 7.307
+  }
+]

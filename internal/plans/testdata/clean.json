@@ -1,0 +1,29 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "Forward",
+      "Index Name": "n40_pkey",
+      "Relation Name": "n40",
+      "Alias": "n40",
+      "Startup Cost": 0.42,
+      "Total Cost": 8.44,
+      "Plan Rows": 1,
+      "Plan Width": 4,
+      "Actual Startup Time": 0.012,
+      "Actual Total Time": 0.013,
+      "Actual Rows": 1.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Index Cond": "(id = 5)",
+      "Rows Removed by Index Recheck": 0,
+      "Index Searches": 1
+    },
+    "Planning Time": 0.198,
+    "Triggers": [
+    ],
+    "Execution Time": 0.041
+  }
+]

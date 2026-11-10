@@ -1,0 +1,26 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "t40",
+      "Alias": "t40",
+      "Startup Cost": 0.00,
+      "Total Cost": 4562.00,
+      "Plan Rows": 2080,
+      "Plan Width": 49,
+      "Actual Startup Time": 0.013,
+      "Actual Total Time": 8.514,
+      "Actual Rows": 2000.00,
+      "Actual Loops": 1,
+      "Disabled": false,
+      "Filter": "(v = 1)",
+      "Rows Removed by Filter": 198000
+    },
+    "Planning Time": 0.145,
+    "Triggers": [
+    ],
+    "Execution Time": 8.598
+  }
+]
