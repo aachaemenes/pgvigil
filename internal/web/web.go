@@ -181,6 +181,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/backups/fleet", s.BackupsFleet)
 	api.HandleFunc("GET /api/corruption", s.Corruption)
 	api.HandleFunc("GET /api/vacuum", s.Vacuum)
+	api.HandleFunc("GET /api/dbadash", s.DBADash)
 	api.HandleFunc("GET /api/jobsreport", s.JobsReport)
 	api.HandleFunc("GET /api/extensions", s.Extensions)
 	api.HandleFunc("GET /api/roles", s.Roles)

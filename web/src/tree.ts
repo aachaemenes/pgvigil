@@ -19,6 +19,7 @@ import { Ctx, href, drillHome } from './router';
 import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { hashParam, hrefWith } from './dbinfo';
 import { Col, dot, el, fmtBytes } from './ui';
+import { dbadashFolders } from './dbadash';
 
 const UNTAGGED = 'untagged';
 
@@ -326,6 +327,7 @@ function draw() {
   const out: HTMLElement[] = [all];
   for (const fo of foldersFor(f.instances, ui.group_by, 0, '')) { const e = render(fo, 0); if (e) out.push(e); }
   if (f.instances.length === 0) out.push(el('p', { class: 'empty' }, 'No instances yet: run the collector.'));
+  out.push(...dbadashFolders(ctx, draw, filter));
   // a redraw replaces every node: a caret that had the keyboard focus gets it back (by its key), so a keyboard or
   // screen-reader user stays where they were after opening a folder and after its children arrive
   // an instance in two tag folders has two carets with one key: the focus goes back to the same copy (its index)

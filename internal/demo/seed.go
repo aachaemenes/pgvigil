@@ -158,6 +158,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 		return nil
 	})
+	if err == nil {
+		// the DBADash door's recorded repository rides the same seed (dbadash_demo.go), after the fleet's history
+		if e := SeedDBADash(ctx, pool, grid[0], o.End); e != nil {
+			err = fmt.Errorf("dbadash demo: %w", e)
+		}
+	}
 	st.Elapsed = time.Since(began)
 	return f, st, err
 }

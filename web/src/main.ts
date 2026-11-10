@@ -10,6 +10,7 @@ import { hostView } from './host';
 import { storageView } from './storage';
 import { backupsView } from './backups';
 import { corruptionView } from './corruption';
+import { dbadashView } from './dbadash';
 import { vacuumView } from './vacuum';
 import { extensionsView } from './extensions';
 import { versionsView } from './versions';
@@ -30,7 +31,7 @@ import { el } from './ui';
 import { exportButtons } from './export';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, activity, statements, counters, replication, jobs, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, host: hostView, storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),

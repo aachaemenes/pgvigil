@@ -29,6 +29,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 	"github.com/aachaemenes/pgvigil/internal/sched"
 )
@@ -231,5 +232,10 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	if !ok {
 		return fmt.Errorf("repository schema is behind this binary (needs %s): run 'pgvigil migrate' as the repository owner", latest)
 	}
+	go func() {
+		if err := dbadash.Run(ctx, log, cfg.Repository.DSN(), cfg.DBADash); err != nil {
+			log.Warn("dbadash door stopped", "err", err)
+		}
+	}()
 	return sched.Run(ctx, log, r, cfg)
 }
