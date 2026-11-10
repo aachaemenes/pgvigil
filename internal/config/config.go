@@ -77,6 +77,10 @@ type Instance struct {
 	ExplainDSNRaw string `yaml:"explain_dsn"`
 	// ExplainTimeout bounds one EXPLAIN ANALYZE (default 30s, at most 5m).
 	ExplainTimeout Duration `yaml:"explain_timeout"`
+	// PgBouncerDSNRaw is the pooler's admin console in front of this instance (dbname=pgbouncer, a stats_users
+	// login: SHOW only); the pgbouncer collection reads SHOW POOLS, STATS, DATABASES and CONFIG through it. Empty
+	// (the default) = no pooler: no collection, no Pooler tab, no finding.
+	PgBouncerDSNRaw string `yaml:"pgbouncer"`
 }
 
 // DBADashRepo is one DBADash repository of the dbadash: list.
@@ -251,6 +255,14 @@ func (i Instance) ExplainDSN() string {
 		return ""
 	}
 	return Resolve(strings.TrimSpace(i.ExplainDSNRaw))
+}
+
+// PgBouncerDSN resolves the pooler's admin console; "" = none configured (or an unset variable / unreadable file).
+func (i Instance) PgBouncerDSN() string {
+	if strings.TrimSpace(i.PgBouncerDSNRaw) == "" {
+		return ""
+	}
+	return Resolve(strings.TrimSpace(i.PgBouncerDSNRaw))
 }
 
 // ActionsDSN resolves the actions door; "" = none configured (or an unset variable / unreadable file).
