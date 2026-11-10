@@ -18,7 +18,7 @@ function statusCell(r: Row): Node {
   const span = el('span');
   if (!s) span.append(badge('never run', 'warn'));
   else span.append(badge(s, s === 'critical' || s === 'error' ? 'crit' : s === 'warning' ? 'warn' : 'ok'));
-  if (r.overdue && s) span.append(' ', badge('not run in 2 cadences', 'warn'));
+  if (r.overdue) span.append(' ', badge('not run in 2 cadences', 'warn'));
   return span;
 }
 const num = (v: unknown) => v == null ? '' : fmtNum(v);

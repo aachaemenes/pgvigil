@@ -16,6 +16,11 @@ package collect
 // transaction (pg_advisory_lock, pg_cancel_backend within the login's own rights) is not stopped by READ ONLY: it
 // lasts until the end of the run, when the collection's connection is closed. The checks are the DBA's own SQL.
 //
+// READ ONLY does not stop what a server-side right allows: COPY ... TO PROGRAM runs inside a read-only transaction for
+// a superuser or a member of pg_execute_server_program. So before any check runs, each run reads the login's rights
+// (customRights) and refuses the whole collection on the instance when the login is a superuser or a member of
+// pg_execute_server_program, pg_write_server_files or pg_read_server_files: the collector never exceeds pg_monitor.
+//
 // A check runs no more often than the custom collection itself (every minute unless schedules: custom: says otherwise).
 //
 // The configuration: custom: is read from the same file as the rest (LoadCustomChecks; config.Load ignores the key):
@@ -236,6 +241,18 @@ func ParseCustomChecks(b []byte, instances []config.Instance) (checks []CustomCh
 		if err := out[i].validate(i, known); err != nil {
 			return nil, true, err
 		}
+		// a check whose instances and tags match no configured instance (env:prd for env:prod) would never run, never
+		// be listed and raise nothing: refused as an unknown instance is
+		matched := false
+		for _, in := range instances {
+			if out[i].AppliesTo(in) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return nil, true, fmt.Errorf("custom %q: its instances and tags (%s) match no instance in the instances: list", out[i].Name, out[i].Targets())
+		}
 		if seen[out[i].Name] {
 			return nil, true, fmt.Errorf("custom %q is listed twice", out[i].Name)
 		}
@@ -330,6 +347,11 @@ func (cc *customCollector) due(inst string, c CustomCheck, now time.Time) bool {
 // and one result row per check run now.
 func (cc *customCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
 	checks := CustomFor(in)
+	if len(checks) > 0 {
+		if err := customRights(ctx, conn); err != nil {
+			return nil, err
+		}
+	}
 	names := make([]string, 0, len(checks))
 	for _, c := range checks {
 		names = append(names, c.Name)
@@ -354,6 +376,38 @@ func (cc *customCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ pl
 		}
 	}
 	return rows, nil
+}
+
+// customRightsSQL reads the session login's rights beyond pg_monitor that READ ONLY does not stop.
+const customRightsSQL = `SELECT r.rolsuper,
+       pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER'),
+       pg_has_role(current_user, 'pg_write_server_files', 'MEMBER'),
+       pg_has_role(current_user, 'pg_read_server_files', 'MEMBER')
+  FROM pg_roles r WHERE r.rolname = current_user`
+
+// customRights refuses a login with more than the collector's standing right (pg_monitor) for the DBA's own SQL.
+func customRights(ctx context.Context, conn *pgx.Conn) error {
+	var super, prog, write, read bool
+	if err := conn.QueryRow(ctx, customRightsSQL).Scan(&super, &prog, &write, &read); err != nil {
+		return fmt.Errorf("custom: reading the login's rights: %w", err)
+	}
+	var too []string
+	if super {
+		too = append(too, "superuser")
+	}
+	if prog {
+		too = append(too, "pg_execute_server_program")
+	}
+	if write {
+		too = append(too, "pg_write_server_files")
+	}
+	if read {
+		too = append(too, "pg_read_server_files")
+	}
+	if len(too) > 0 {
+		return fmt.Errorf("custom checks refused on this instance: the login is %s; the custom checks run the DBA's own SQL and run only as a login without it (pg_monitor; a read-only transaction does not stop COPY ... TO PROGRAM)", strings.Join(too, ", "))
+	}
+	return nil
 }
 
 // customResult is one run of one check.

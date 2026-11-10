@@ -6,7 +6,8 @@
 #   PGVIGIL_REPO_DSN   a superuser connection to the sandbox; the proof makes its own repository database, a monitored
 #                      database and a pg_monitor login, all with a random suffix, and drops them at the end.
 #   PGVIGIL_BIN        the binary (default bin/pgvigil); it must carry the join's wiring (loadConfig calls
-#                      collect.LoadCustomChecks), else step A fails with "no custom: list" (the collection is off).
+#                      collect.LoadCustomChecks): without it collect -once custom exits 0 with "skipped", registers no
+#                      instance, and step A stops on "A: no instance registered".
 #
 # Expected (written before the first run):
 #  0. go test -run TestCustomRunSandbox as the pg_monitor login: PASS (a value check at warning, a rows check over 100
@@ -33,6 +34,12 @@
 #     minutes ago): overdue false, no '(not run)' finding (the old rule, measured from now(), fired here forever).
 #  F. rows_n taken off the list, collect a: custom_checks rows_n is_present false, no finding of rows_n, the report has 4
 #     rows; then custom: [] and a collect of each: every check of a and b gone, the report empty, no custom finding.
+#  F2. [join review fold, expected before the run] the checks back on the list, a collect: a's error findings are back;
+#     then the custom: key removed (the collection off, nothing listed): the findings stay while the latest listing is
+#     within two cadences (at least 5 minutes), and with the listings set 11 minutes back (past two 5-minute cadences, the default) every custom finding of a and b
+#     is gone (0), the threshold and error arms included.
+#  H. [join review fold, expected before the run] an instance whose DSN is a superuser, with a check on it: collect -once
+#     custom on it fails (non-zero) naming 'superuser', and no custom result is stored for it.
 #  G. the catalogue: every check of docs/custom.md (18) on instance a, one collect: 18 results; not one error; cluster_id
 #     critical (the placeholder id is not the sandbox's).
 #     [review 2 fold, expected before the rerun] the monitored database first gets rows for the checks that returned
@@ -128,6 +135,7 @@ checks_cfg 1
 "$BIN" migrate -config "$CFG" >/dev/null
 collect "$A"; collect "$B"
 ia=$(q "select instance_id from pgvigil.instances where name = '$A'"); ib=$(q "select instance_id from pgvigil.instances where name = '$B'")
+[[ -n $ia && -n $ib ]] || fail "A: no instance registered: PGVIGIL_BIN lacks the custom: wiring (collect.LoadCustomChecks in loadConfig)"
 LA=$(latest "$ia"); echo "$LA"
 [[ $LA == $'err_div|error\nrows_n|ok|0\nvalue_n|ok|0\nwrite_try|error' ]] || fail "A: a's results"
 e1=$(q "select error from pgvigil.custom_status where instance_id = $ia and check_name = 'err_div'")
@@ -195,6 +203,18 @@ NR=$(q "select count(*) from pgvigil.custom_report() where instance in ('$A', '$
 NF=$(q "select count(*) from pgvigil.custom_findings where instance_id in ($ia, $ib)")
 echo "present: $P; report rows: $NR; findings: $NF"; [[ $P == 0 && $NR == 0 && $NF == 0 ]] || fail "F: custom: []"
 
+echo "--- F2. the custom: key removed"
+checks_cfg 0
+collect "$A"; collect "$B"
+NF1=$(q "select count(*) from pgvigil.custom_findings where instance_id in ($ia, $ib)")
+head_cfg
+"$BIN" collect -config "$CFG" -once custom -instance "$A" >/dev/null 2>&1 || fail "F2: collect without the key"
+NF2=$(q "select count(*) from pgvigil.custom_findings where instance_id in ($ia, $ib)")
+q "update pgvigil.custom_checks set snapshot_at = snapshot_at - interval '11 minutes' where instance_id in ($ia, $ib)" >/dev/null
+NF3=$(q "select count(*) from pgvigil.custom_findings where instance_id in ($ia, $ib)")
+echo "findings: listed $NF1; key removed $NF2; listings 11 minutes old $NF3"
+[[ $NF1 -ge 3 && $NF2 == "$NF1" && $NF3 == 0 ]] || fail "F2"
+
 echo "--- G. the catalogue of docs/custom.md"
 head_cfg; echo "custom:" >> "$CFG"
 awk '/^```yaml$/ {on = 1; next} /^```$/ {on = 0} on' docs/custom.md | awk '/^  - name: idle_in_transaction/ {skip = 1} /^  - name: / && !/idle_in_transaction/ {skip = 0} !skip' \
@@ -230,4 +250,21 @@ for c in txn_idle lockwait locks; do
   v=$(q "select coalesce(pgvigil.custom_fmt(value), '-') from pgvigil.custom_status where instance_id = $ia and check_name = '$c'")
   echo "$c: $v"; [[ $v != - ]] || fail "G: $c computed no value on its row"
 done
+
+echo "--- H. a superuser login is refused"
+export SU_DSN="$ADMIN_DSN dbname=$MDB"
+head_cfg
+cat >> "$CFG" <<EOF
+  - name: proof-custom-su-$SUF
+    dsn: env:SU_DSN
+custom:
+  - name: su_check
+    sql: SELECT 1 AS value
+    instances: [proof-custom-su-$SUF]
+EOF
+set +e; OUT=$("$BIN" collect -config "$CFG" -once custom -instance "proof-custom-su-$SUF" 2>&1); rc=$?; set -e
+isu=$(q "select instance_id from pgvigil.instances where name = 'proof-custom-su-$SUF'")
+NRS=$(q "select count(*) from pgvigil.custom_results where instance_id = ${isu:-0}")
+echo "exit $rc; results $NRS; $(grep -o 'custom checks refused[^;]*' <<<"$OUT" | head -1)"
+[[ $rc != 0 && $OUT == *"the login is superuser"* && $NRS == 0 ]] || fail "H: a superuser login"
 echo "PASS: proof-custom"
