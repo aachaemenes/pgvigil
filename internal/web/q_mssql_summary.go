@@ -74,10 +74,26 @@ SELECT DISTINCT ON (m.instance_id) m.instance_id, m.snapshot_at, m.machine_name,
   JOIN pgvigil.instances i ON i.instance_id = m.instance_id AND i.engine = 'sqlserver' AND i.is_active
  ORDER BY m.instance_id, m.snapshot_at DESC`
 
-// MSSQLSummary serves GET /api/mssql/summary: the status cells and the description of every SQL Server instance.
+// The database state of the PostgreSQL instances, for the same Summary column: a database left invalid by an
+// interrupted DROP DATABASE (datconnlimit -2, PostgreSQL 15 and later) is critical; one that refuses connections
+// (datallowconn off, not a template) is a warning, since it can be deliberate and it stops being vacuumed.
+const sqlPGDatabaseState = `
+SELECT d.instance_id, count(*)::int AS n,
+       count(*) FILTER (WHERE d.conn_limit = -2)::int AS critical,
+       count(*) FILTER (WHERE d.conn_limit IS DISTINCT FROM -2 AND NOT d.allow_conn)::int AS warning,
+       coalesce(array_agg(d.datname || CASE WHEN d.conn_limit = -2 THEN ' is invalid (an interrupted DROP DATABASE)' ELSE ' refuses connections (datallowconn off)' END
+                          ORDER BY d.datname) FILTER (WHERE d.conn_limit = -2 OR NOT d.allow_conn), '{}') AS detail
+  FROM pgvigil.databases d
+  JOIN pgvigil.instances i ON i.instance_id = d.instance_id AND i.engine = 'postgres' AND i.is_active
+ WHERE d.is_present AND NOT d.is_template
+ GROUP BY d.instance_id`
+
+// MSSQLSummary serves GET /api/mssql/summary: the status cells and the description of every SQL Server instance, and
+// the database state of the PostgreSQL ones (the Summary column both engines share).
 func (s *Server) MSSQLSummary(w http.ResponseWriter, r *http.Request) {
 	s.multiPart(w, r, []part{
 		{"cells", sqlMSSQLSummaryCells, nil},
 		{"servers", sqlMSSQLSummaryServers, nil},
+		{"pgdb", sqlPGDatabaseState, nil},
 	})
 }

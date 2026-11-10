@@ -4,7 +4,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { versionCell } from './versions';
 
 // mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
-export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; at: number }
+export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 
@@ -15,8 +15,8 @@ export async function fleet(force = false): Promise<Fleet> {
   // column only, never the tree and the Summary
   // the SQL Server read is optional the same way (a repository before 0064, a failure): its rows then say 'not yet'
   pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
-    get<{ cells: Table | null; servers: Table | null }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null }))])
-    .then(([i, c, v, m]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), at: Date.now() }))
+    get<{ cells: Table | null; servers: Table | null; pgdb: Table | null }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null, pgdb: null }))])
+    .then(([i, c, v, m]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
 }
@@ -26,8 +26,8 @@ export function forget() { cache = null; }
 // Status groups: one coloured cell each on the Summary grid. A group's checks are the overview's
 // check_group names; activity is read from the instance row's latest session summary.
 // mssql: the group's key in the SQL Server read (/api/mssql/summary) and the SQL Server tab its cell opens; a group
-// without it is a PostgreSQL check. pg false: a group PostgreSQL has no read for yet.
-export interface Group { key: string; label: string; checks: string[]; tab: string; mssql?: [string, string, string?]; pg?: boolean }   // the third: the group's name on a SQL Server page
+// without it is a PostgreSQL check.
+export interface Group { key: string; label: string; checks: string[]; tab: string; mssql?: [string, string, string?]}   // the third: the group's name on a SQL Server page
 export const groups: Group[] = [
   { key: 'collect', label: 'Collection', checks: ['collection failing', 'collection stale'], tab: 'summary' },
   { key: 'activity', label: 'Activity', checks: [], tab: 'activity', mssql: ['blocking', 'mssql_running', 'Blocking'] },
@@ -42,9 +42,9 @@ export const groups: Group[] = [
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
   { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage', mssql: ['storage', 'mssqlstorage'] },
   { key: 'backups', label: 'Backups', checks: ['backups'], tab: 'backups', mssql: ['backups', 'mssqlbackups'] },
-  // DBA Dash's Summary columns (plan task 106): SQL Server first; PostgreSQL's reads come with the task
-  { key: 'uptime', label: 'Uptime', checks: [], tab: 'summary', mssql: ['uptime', 'summary'], pg: false },
-  { key: 'dbstate', label: 'Database state', checks: [], tab: 'summary', mssql: ['dbstate', 'mssqlfiles'], pg: false },
+  // DBA Dash's Summary columns (plan task 106), both engines
+  { key: 'uptime', label: 'Uptime', checks: [], tab: 'summary', mssql: ['uptime', 'summary'] },
+  { key: 'dbstate', label: 'Database state', checks: [], tab: 'dbinfo', mssql: ['dbstate', 'mssqlfiles'] },
   { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption' },
   { key: 'io', label: 'IO', checks: ['io'], tab: 'io' },
   { key: 'roles', label: 'Roles', checks: ['roles'], tab: 'roles' },
@@ -96,7 +96,25 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
       }
       continue;
     }
-    if (g.pg === false) { out[g.key] = { level: 0, n: 0, detail: ['not read on PostgreSQL yet'], none: true, text: 'not yet' }; continue; }
+    // Uptime on PostgreSQL: the postmaster's start from the instance row, with DBA Dash's default thresholds
+    // (critical under 12 hours since the start, warning under 48)
+    if (g.key === 'uptime') {
+      const t = r.postmaster_start == null ? NaN : Date.parse(String(r.postmaster_start));
+      if (isNaN(t)) { out[g.key] = { level: 0, n: 0, detail: ['no start time read yet'], none: true }; continue; }
+      const h = Math.max(0, (Date.now() - t) / 3600000), level: Level = h < 12 ? 2 : h < 48 ? 1 : 0;
+      const age = h < 48 ? `${Math.floor(h)} h` : `${Math.floor(h / 24)} d`;
+      out[g.key] = { level, n: level ? 1 : 0, text: level ? `${age} ${level === 2 ? 'critical' : 'warning'}` : age,
+        detail: [`PostgreSQL started ${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC (critical under 12 hours, warning under 48)`] };
+      continue;
+    }
+    // Database state on PostgreSQL: an invalid database is critical, one that refuses connections a warning
+    if (g.key === 'dbstate') {
+      const d = f.pgdb.find(x => Number(x.instance_id) === id);
+      if (!d) { out[g.key] = { level: 0, n: 0, detail: ['no database inventory read yet (hourly)'], none: true }; continue; }
+      const crit = Number(d.critical ?? 0), warn = Number(d.warning ?? 0);
+      out[g.key] = { level: crit ? 2 : warn ? 1 : 0, n: crit || warn, detail: Array.isArray(d.detail) ? d.detail.map(String) : [] };
+      continue;
+    }
     if (g.key === 'activity') { out[g.key] = activityCell(r); continue; }
     if (g.key === 'version') { out[g.key] = versionCellOf(f, id); continue; }
     const hit = mine.filter(c => g.checks.includes(String(c.check_group)));
