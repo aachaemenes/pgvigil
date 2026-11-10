@@ -99,7 +99,7 @@ func SeedAlerts(ctx context.Context, pool *pgxpool.Pool, start, end time.Time) e
 	}
 	sort.SliceStable(sends, func(i, j int) bool { return sends[i].at.Before(sends[j].at) })
 	// the history's month partitions, made as the owner (alert_record's own door makes only the current month's)
-	for m := start; !m.After(end.AddDate(0, 1, 0)); m = m.AddDate(0, 1, 0) {
+	for m := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, time.UTC); !m.After(end); m = m.AddDate(0, 1, 0) { // from the first of start's month: AddDate from the 29th-31st skips a short month
 		if _, err := pool.Exec(ctx, `SELECT pgvigil.ensure_month_partition('alert_log', $1)`, m); err != nil {
 			return err
 		}
