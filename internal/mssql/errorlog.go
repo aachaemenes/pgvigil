@@ -596,8 +596,8 @@ func (errorLogCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 
 	// which files: the archives where the login may list them, else the current log
 	files, scope := []int{0}, "all archives"
-	switch {
-	case info.Kind == KindRDS:
+	switch info.Kind {
+	case KindRDS:
 		scope = "current log only"
 		notes = append(notes, "Amazon RDS: the current log only is read (rdsadmin.dbo.rds_read_error_log)")
 	default:
