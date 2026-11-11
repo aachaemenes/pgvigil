@@ -3,6 +3,10 @@
 // first. The rows are the server-level non-default settings plus every setting whose file value waits for a restart
 // (the instance collection's detail list). Data: /api/pgconfig. The Configuration page calls pgConfigSection with the
 // names changed in its range, which it marks.
+// Above it the best-practice grid (DBA Dash's coloured Configuration grid, for PostgreSQL): every setting a rule
+// covers with the value in use as a status cell - green where the rule is met, yellow where a warning or an advice
+// rule is broken, red where a critical one is, grey where the rule is not for this platform - worst first. The same
+// colour sits on the setting's value in the Settings grid. Data: the same read's 'rules' table (0099).
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
@@ -21,11 +25,53 @@ const valueCell = (v: unknown): string | Node => {
   return s.length <= CUT ? s : el('span', { title: s, 'data-full': s }, s.slice(0, CUT) + '...');
 };
 
+const rank: Record<string, number> = { crit: 0, warn: 1, ok: 2, none: 3 };
+const statusOfRule = (r: Row | undefined): string => { const s = String(r?.status ?? ''); return s in rank ? s : ''; };
+const verdict = (r: Row): string => {
+  switch (statusOfRule(r)) {
+    case 'crit': return 'deviates: critical';
+    case 'warn': return r.severity === 'info' ? 'deviates: advice' : 'deviates: warning';
+    case 'ok': return 'meets the rule';
+    default: return 'not for this platform';
+  }
+};
+
+// bestPractice: the grid of rule-covered settings, worst first; nothing when the store predates the rules read.
+function bestPractice(rules: Row[]): HTMLElement[] {
+  if (!rules.length) return [];
+  const sorted = [...rules].sort((a, b) => (rank[statusOfRule(a)] ?? 9) - (rank[statusOfRule(b)] ?? 9) || String(a.setting).localeCompare(String(b.setting)));
+  const n = (k: string) => rules.filter(r => statusOfRule(r) === k).length;
+  const cols: Col[] = [
+    { key: 'setting' },
+    { key: 'value', label: 'value in use', cls: (_v, r) => { const s = statusOfRule(r); return s ? 'status ' + s : ''; },
+      fmt: (v, r) => { const c = valueCell(v); return r.is_set === true ? c : el('span', { title: 'the built-in default: nothing sets it' }, c, ' (default)'); } },
+    { key: 'suggested', label: 'best practice', fmt: valueCell },
+    { key: 'status', label: 'verdict', fmt: (_v, r) => verdict(r) },
+    { key: 'detail', label: 'what the rule guards against', wide: true },
+    { key: 'platforms', label: 'rule applies to' },
+  ];
+  return [
+    el('h3', {}, 'Best practice'),
+    el('p', { class: 'meta' }, `${fmtNum(rules.length)} settings carry a rule: ${fmtNum(n('crit'))} critical, ${fmtNum(n('warn'))} warning or advice, `
+      + `${fmtNum(n('ok'))} meet their rule, ${fmtNum(n('none'))} not for this platform. Green: the value in use meets the rule. Yellow: a warning or `
+      + 'an advice rule is broken. Red: a critical rule is broken. Grey: the rule is not meant for this platform. Values are in the '
+      + "setting's base unit (ms, s, kB, MB, 8 kB pages), as the rules compare them. The rules are pg_gather's parameter "
+      + "recommendations and pgvigil's own; a broken one is also a finding."),
+    grid(sorted, cols),
+  ];
+}
+
 export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()): Promise<HTMLElement> {
-  const box = el('div', {}, el('h3', {}, 'Settings'));
-  let rows: Row[];
-  try { rows = rowsOf((await get<{ settings: Table | null }>('pgconfig', { instance: ctx.instance })).settings); }
-  catch (e) { box.append(errorBox(e)); return box; }
+  const box = el('div', {});
+  let rows: Row[], rules: Row[];
+  try {
+    const d = await get<{ settings: Table | null; rules?: Table | null }>('pgconfig', { instance: ctx.instance });
+    rows = rowsOf(d.settings); rules = rowsOf(d.rules ?? null);
+  } catch (e) { box.append(el('h3', {}, 'Settings'), errorBox(e)); return box; }
+  box.append(...bestPractice(rules), el('h3', {}, 'Settings'));
+  const ruleOf = new Map(rules.map(r => [String(r.setting), r]));
+  // a setting a rule covers carries the rule's colour on its value here too (grey 'not for this platform' stays plain)
+  const valueCls = (_v: unknown, r: Row) => { const s = statusOfRule(ruleOf.get(String(r.name))); return s && s !== 'none' ? 'status ' + s : ''; };
   if (!rows.length) { box.append(el('p', { class: 'empty' }, 'No non-default settings recorded.')); return box; }
   const detail = rows.some(r => r.detail_read === true);
   const pending = rows.filter(r => r.pending_restart === true).length;
@@ -33,7 +79,7 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
   const name = (v: unknown) => changed.has(String(v)) ? el('b', { title: 'changed in this range' }, String(v) + ' *') : String(v ?? '');
   const cols: Col[] = detail ? [
     { key: 'name', label: 'setting', fmt: name },
-    { key: 'value', fmt: valueCell },
+    { key: 'value', fmt: valueCell, cls: valueCls },
     { key: 'unit' },
     { key: 'default_value', label: 'default', fmt: valueCell },
     { key: 'source' },
@@ -42,7 +88,7 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
     { key: 'category' },
   ] : [
     { key: 'name', label: 'setting', fmt: name },
-    { key: 'value', fmt: valueCell },
+    { key: 'value', fmt: valueCell, cls: valueCls },
   ];
   box.append(
     el('p', { class: 'meta' }, `${fmtNum(nonDefault)} non-default setting(s) at the server level`
