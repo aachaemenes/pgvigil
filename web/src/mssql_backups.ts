@@ -10,8 +10,10 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, pro
 type Parts = 'databases' | 'findings' | 'limits';
 
 // a status is its word and its colour, never the colour alone
-const statusCls = (v: unknown) => v === 'never' ? 'crit' : v === 'late' ? 'warn' : '';
-const critIfFull = (v: unknown) => v === 'never' || v === 'late' ? 'crit' : '';
+// the word's colour: never red, late amber (red for a full backup), ok green, not judged grey; a date and an age take their status's colour
+const statusCls = (v: unknown) => v === 'never' ? 'crit' : v === 'late' ? 'warn' : v === 'ok' ? 'ok' : v === 'not judged' ? 'status none' : '';
+const critIfFull = (v: unknown) => v === 'late' ? 'crit' : statusCls(v);
+const follows = (status: string, full = false) => (v: unknown, r: Row) => v == null || v === '' ? '' : full ? critIfFull(r[status]) : statusCls(r[status]);
 const hours = (v: unknown) => v == null ? '' : Number(v) >= 48 ? fmtNum(Math.round(Number(v) / 2.4) / 10) + ' d' : fmtNum(Math.round(Number(v) * 10) / 10) + ' h';
 const minutes = (v: unknown) => v == null ? '' : fmtSecs(Number(v) * 60);
 // when: the time, and on an availability group the instance whose msdb holds the backup
@@ -24,13 +26,13 @@ const cols: Col[] = [
     cls: (_, r) => r.replicas_unseen === true ? 'warn' : '' },
   { key: 'not_judged', label: 'judged', fmt: v => v ? `no: ${String(v)}` : 'yes' },
   { key: 'full_status', label: 'full', cls: critIfFull },
-  { key: 'full_at', label: 'last full', fmt: when('full_from') },
-  { key: 'full_age_hours', label: 'full age', num: true, fmt: hours },
+  { key: 'full_at', label: 'last full', fmt: when('full_from'), cls: follows('full_status', true) },
+  { key: 'full_age_hours', label: 'full age', num: true, fmt: hours, cls: follows('full_status', true) },
   { key: 'diff_status', label: 'differential', cls: statusCls },
-  { key: 'diff_at', label: 'last differential', fmt: when('diff_from') },
+  { key: 'diff_at', label: 'last differential', fmt: when('diff_from'), cls: follows('diff_status') },
   { key: 'log_status', label: 'log', cls: statusCls },
-  { key: 'log_at', label: 'last log', fmt: when('log_from') },
-  { key: 'log_age_minutes', label: 'log age', num: true, fmt: minutes },
+  { key: 'log_at', label: 'last log', fmt: when('log_from'), cls: follows('log_status') },
+  { key: 'log_age_minutes', label: 'log age', num: true, fmt: minutes, cls: follows('log_status') },
   { key: 'nul_at', label: 'backup to NUL', fmt: (v, r) => !v ? '' : `${String(r.nul_type ?? '')} ${fmtTime(v)}`, cls: v => v ? 'warn' : '' },
   // this server's own record of the full backup shown; blank where that backup ran on another replica (open it there)
   { key: 'full_bytes', label: 'full size', num: true, fmt: fmtBytes },

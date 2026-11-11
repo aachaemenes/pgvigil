@@ -97,4 +97,4 @@ The table is the one PostgreSQL's cancel and terminate use; a row says which eng
 - A job the proof creates is started and stopped, with the log rows.
 - Everything the proof made is dropped.
 
-Proven on SQL Server 2022 in a Linux container. Not proven: a Windows login as the actions login, Managed Instance, RDS.
+Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([versions](sqlserver.md#versions)). Not proven: a Windows login as the actions login, Managed Instance, RDS.

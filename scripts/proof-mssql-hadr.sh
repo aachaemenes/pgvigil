@@ -8,6 +8,9 @@
 # ag_sandbox, with automatic seeding), SQL Server Agent running on the first, the sa password of both in
 # MSSQL_SA_PASSWORD, psql, curl, python3, a go toolchain at the repository root, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...).
+# Needs too: more than 50 rows of SQL Server Agent job history in msdb before the run (a server in use has them, a
+# new container has none). Part D expects the second jobs read to return fewer rows than the first, and the read
+# starts 50 rows behind its cursor: with less history than that both reads return the same rows.
 #
 # What it makes, and drops at the end on every exit path (a flag per object; nothing it did not make is touched):
 # its own repository database; on each node a monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, a user in
@@ -468,8 +471,10 @@ collect mssql_jobs "$N1"
 ROWS2=$(sed -n "s/^$N1 mssql_jobs: \([0-9]*\) row.*/\1/p" "$OUT")
 NEW=$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobhistory WHERE instance_id > $CUR1 AND run_status <> 4")
 NJ2=$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobs"); NS2=$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobsteps")
-READ2=$((ROWS2 - NJ2 - NS2 - 2))
-echo "  first run $ROWS1 rows; second run $ROWS2 rows = $NJ2 jobs + $NS2 steps + 2 + $READ2 history row(s); sa counts $NEW past the first cursor (a read starts 50 rows behind it)"
+# (the read also returns one row per schedule a job has: counted here, or each one would pass for a history row)
+NC2=$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobschedules x JOIN msdb.dbo.sysschedules s ON s.schedule_id = x.schedule_id")
+READ2=$((ROWS2 - NJ2 - NS2 - NC2 - 2))
+echo "  first run $ROWS1 rows; second run $ROWS2 rows = $NJ2 jobs + $NS2 steps + $NC2 schedule(s) + 2 + $READ2 history row(s); sa counts $NEW past the first cursor (a read starts 50 rows behind it)"
 [ "$READ2" -ge 0 ] && [ "$READ2" -le $((NEW + 50)) ] && [ "$ROWS2" -lt "$ROWS1" ] || fail "D: the second run read history again (stored before: $NJ jobs, $NS steps)"
 [ "$(q "select count(*) from pgvigil.mssql_job_runs where instance_id=$I1 and job_id='$JID'")" = 3 ] || fail "D: the job's history rows after the second run"
 sq "EXEC msdb.dbo.sp_stop_job @job_name = N'$J2';" >/dev/null

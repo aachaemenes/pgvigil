@@ -110,9 +110,9 @@ export function excelDate(d: Date): number {
 
 const statuses: Status[] = ['crit', 'warn', 'ok', 'none'];
 // statusOf: the colour of a cell: a status cell (the Summary grid's), else a badge or a dot in it, else the class the
-// page's own rule gave the cell (a Col's cls without 'status': 'warn' on a late backup, 'crit' on a suspended replica).
-// The stylesheet draws only the first two today: a cell that carries just the rule's class shows its word plain on the
-// screen and is coloured in the file, by the page's own verdict.
+// page's own rule gave the cell without 'status'. ui.ts turns a Col's bare cls (ok, warn, crit) into a status cell, so
+// no page draws the third kind today; it stays for a page that sets the class on a cell itself, and proof-export.sh's
+// driver gives two cells one so the branch stays tested.
 export function statusOf(td: Element): Status | undefined {
   const pick = (e: Element) => statuses.find(k => e.classList.contains(k));
   if (td.classList.contains('status')) return td.classList.contains('ack') ? 'ack' : pick(td);

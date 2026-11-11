@@ -10,11 +10,13 @@ const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit
 const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 // under 10 % free a warning badge, under 5 % critical
 const freeTxt = (v: unknown) => v == null ? '' : Number(v) < 10 ? badge(pctTxt(v), Number(v) < 5 ? 'crit' : 'warn') : pctTxt(v);
+// the free cells in the colour of the volume's own rule (under 5 % critical, under 10 % a warning, else OK), as the export writes them
+const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : Number(r.free_pct) < 5 ? 'crit' : Number(r.free_pct) < 10 ? 'warn' : 'ok';
 
 const diskCols: Col[] = [
   { key: 'mount_point', label: 'volume' },
-  { key: 'free_pct', label: 'free', num: true, fmt: freeTxt },
-  { key: 'free_bytes', label: 'free size', num: true, fmt: fmtBytes },
+  { key: 'free_pct', label: 'free', num: true, fmt: freeTxt, cls: freeCls },
+  { key: 'free_bytes', label: 'free size', num: true, fmt: fmtBytes, cls: freeCls },
   { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
   { key: 'total_bytes', label: 'size', num: true, fmt: fmtBytes },
   { key: 'holds_data', label: 'data directory', fmt: v => v ? 'yes' : '' },

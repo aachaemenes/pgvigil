@@ -29,6 +29,7 @@ import { waitsView } from './waits';
 import { compareView } from './compare';
 import { memory } from './memory';
 import { pooler, poolerKnown } from './pooler';
+import { pgauditView } from './pgaudit';
 import { customView } from './custom';
 import { indexesView } from './indexes';
 import { schemaView } from './schema';
@@ -56,7 +57,12 @@ import { mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from 
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
 import { mssqlPropertiesView } from './mssql_properties';
+import { mssqlAuditView } from './mssql_audit';
+import { mssqlChecksFleetView, mssqlChecksView } from './mssql_checks';
+import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
 import { mssqlProcsView } from './mssql_procs';
+import { mssqlPlanCacheView } from './mssql_plancache';
+import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
@@ -80,7 +86,8 @@ const mssqlPages: Record<string, Render> = {
   mssqlcpu: mssqlCpuView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
-  mssqlprocs: mssqlProcsView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView,
+  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
+  mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
 };
 // a fleet page under a tag folder keeps that folder's instances (as the fleet Slow queries page does): the Jobs timeline, TempDB
 const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
@@ -91,7 +98,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), about: aboutView };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, about: aboutView };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
@@ -109,7 +116,7 @@ const instancePages: Record<string, Render> = {
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
   compare: compareView,
-  memory, pooler, custom: customView, jobstimeline: jobsTimelineView,
+  memory, pooler, audit: pgauditView, custom: customView, jobstimeline: jobsTimelineView,
   connections: connectionsView, dbchanges: c => dbChangesView(c),
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now

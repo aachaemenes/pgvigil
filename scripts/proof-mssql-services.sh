@@ -6,6 +6,9 @@
 # Needs: docker with a SQL Server container (PGVIGIL_MSSQL_CONTAINER, default mssql-sandbox) reachable from this
 # machine on PGVIGIL_MSSQL_ADDR (default localhost:1433), its sa password in MSSQL_SA_PASSWORD, psql, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...).
+# Needs too: Database Mail switched on ('Database Mail XPs' 1 in use) for part D. A login with no user in msdb is
+# told "partial" only where Database Mail is on and its queue is the thing it could not see; on a server with
+# Database Mail off (a new container) that run is not partial and D fails at its first check.
 # The proof makes its own repository database, three SQL Server logins (random suffix, random passwords) and a user
 # for one of them in msdb, and drops them at the end, on every exit path. Part B stops Database Mail's queue
 # (msdb.dbo.sysmail_stop_sp) and starts it again, on every exit path; it runs only where Database Mail is switched

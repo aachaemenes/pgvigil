@@ -1,4 +1,4 @@
-import { tileWall } from './tiles';
+import { level, tileLimits, tileWall } from './tiles';
 import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
@@ -84,7 +84,8 @@ export async function instances(ctx: Ctx): Promise<HTMLElement> {
     { key: 'total', label: 'sessions', num: true },
     { key: 'active', num: true },
     { key: 'idle_in_txn', label: 'idle in txn', num: true },
-    { key: 'waiting_lock', label: 'lock waits', num: true },
+    // the instance tile's own limits (tiles.ts blocked): 1 a warning, 5 critical
+    { key: 'waiting_lock', label: 'lock waits', num: true, cls: v => { const l = level(v, tileLimits.blocked); return l == null ? '' : ['ok', 'warn', 'crit'][l]; } },
     { key: 'longest_active_secs', label: 'longest active', num: true, fmt: fmtSecs },
     { key: 'oldest_xmin_age', label: 'oldest xmin age', num: true },
     { key: 'collections_failing', label: 'failing', num: true },
@@ -317,6 +318,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     // per tag key made the grid wide and said what the tree already says
     ...groups.map(statusCol),
     { key: 'total', label: 'sessions', num: true },
+    // no colour here: the Activity cell judges lock waits, and acknowledging it takes the line out of the colour
     { key: 'waiting_lock', label: 'lock waits', num: true },
     { key: 'activity_at', label: 'last sample', fmt: fmtTime },
   ];

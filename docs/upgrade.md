@@ -99,10 +99,10 @@ whole upgrade. When the release carries one, the installer-first order still arr
 
 1. The installer replaces the binary and restarts the service.
 2. The new binary finds the schema behind and ends (the message above); systemd starts it again every 10 seconds.
-3. The installer looks at the service for five seconds. Most often the first start has already failed by then: it
-   prints `the service did not come up` with the unit's status and exits with an error, although the binary is
-   installed. If it looks before the first start has failed, it prints `pgvigil is installed and running` instead.
-   Either way `journalctl -u pgvigil` names the file and `pgvigil migrate`.
+3. The installer calls the service running only after it stayed up for four seconds. The first start has failed
+   well before that, so it ends with an error in one line: `the service did not come up: the repository schema is
+   behind this binary (needs <file>)`, followed by what is already done (the binary and the service are installed)
+   and the one command left (`pgvigil migrate` as the repository owner). `journalctl -u pgvigil` names the same file.
 4. Once the owner has run `pgvigil migrate`, the next start finds the schema current and the service runs. Nothing
    was written in between, and nothing is lost.
 
@@ -151,8 +151,8 @@ on each (the numbers are PostgreSQL 16's):
 - **The way back.** The owner's dump, restored by the owner into a second database, held every table's row count and
   row hash from before the upgrade, and v0.3.0, reinstalled from the mirror, collected on it.
 - **The installer first.** On that restored store the installer for this build replaced the binary and ended with
-  `the service did not come up` (exit 1); the status it prints did not say why, the journal did (the file and
-  `pgvigil migrate`). After the owner's `migrate` the unit came up by itself at its next restart, and the rows outside
+  `the service did not come up` (exit 1), naming the migration file and `pgvigil migrate` in that same line, as the
+  journal did. After the owner's `migrate` the unit came up by itself at its next restart, and the rows outside
   the live instance were the counts from before.
 
 Not proven here: Windows; a start from a version older than v0.3.0 (the one release that carries the installer); a

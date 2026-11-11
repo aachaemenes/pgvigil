@@ -7,12 +7,14 @@
 // Server instance), and the page says which sections it compared and how far back each store reaches. The picks ride
 // in the hash (m, a, b, dba, dbb, ta, tb, all), so a diff is a link, and the last ones are kept in this browser.
 // Data: /api/diff (part=databases: the databases behind the two pickers).
+// The file also holds the text diff (lineDiff, textDiffView: code view, side by side, inline) and the structured compare of
+// two job definitions (definitionView, definitionCompare) that the Jobs and Configuration pages draw (task 154): its second half.
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href, window_ } from './router';
 import { fleet } from './fleet';
 import { hashParam } from './dbinfo';
-import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, copyText, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
 type Mode = 'i' | 't' | 'd';
 interface Picks { m: Mode; a?: number; b?: number; dba?: string; dbb?: string; ta?: string; tb?: string; all: boolean }
@@ -322,4 +324,256 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   }
   if (wantFocus) requestAnimationFrame(() => { if (result.isConnected) result.focus(); });
   return sec;
+}
+
+// ---- The text diff and the structured compare (task 154; DBA Dash's Job DDL History: Code View, Side by Side Diff,
+// Inline Diff, Copy Left / Right, and its 'Compare Info' window). Two texts are compared line by line (the longest
+// common run of lines stays, the rest is removed on the left and added on the right); inside a changed pair of
+// lines the words that differ are boxed. A removed line carries '-' and an added one '+', so the change never rides
+// on colour alone. The views' styles travel with this file (one <style> element, the page's own colour variables).
+// Used by the Jobs pages (mssql_jobs.ts: a job's versions) and the configuration pages.
+
+export interface DiffLine { op: ' ' | '-' | '+'; a?: number; b?: number; text: string; other?: string }
+
+// lcs: for two lists, which items of a stay (keepA[i] = the index in b it pairs with, -1 = removed). Past
+// LCS_CELLS cells the common head and tail alone are kept (a job script is hundreds of lines, never that large).
+const LCS_CELLS = 4_000_000;
+function lcs<T>(a: T[], b: T[]): Int32Array {
+  const keep = new Int32Array(a.length).fill(-1);
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) { keep[head] = head; head++; }
+  let ta = a.length - 1, tb = b.length - 1;
+  while (ta >= head && tb >= head && a[ta] === b[tb]) { keep[ta] = tb; ta--; tb--; }
+  const n = ta - head + 1, m = tb - head + 1;
+  if (n <= 0 || m <= 0 || n * m > LCS_CELLS) return keep;
+  // len[i][j] = the longest common run of a[head+i..] and b[head+j..]
+  const w = m + 1, len = new Uint32Array((n + 1) * w);
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+    len[i * w + j] = a[head + i] === b[head + j] ? len[(i + 1) * w + j + 1] + 1 : Math.max(len[(i + 1) * w + j], len[i * w + j + 1]);
+  }
+  for (let i = 0, j = 0; i < n && j < m;) {
+    if (a[head + i] === b[head + j]) { keep[head + i] = head + j; i++; j++; }
+    else if (len[(i + 1) * w + j] >= len[i * w + j + 1]) i++; else j++;
+  }
+  return keep;
+}
+
+const linesOf = (s: string): string[] => s === '' ? [] : s.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n');
+
+// lineDiff: the lines of a and b in the order a reader meets them; within a change the removed lines come before
+// the added ones, and the i-th removed line names the i-th added one as its 'other' (the pair whose words are compared)
+export function lineDiff(a: string, b: string): DiffLine[] {
+  const la = linesOf(a), lb = linesOf(b), keep = lcs(la, lb), out: DiffLine[] = [];
+  let j = 0;
+  const flush = (dels: DiffLine[], adds: DiffLine[]) => {
+    dels.forEach((d, k) => { if (adds[k]) { d.other = adds[k].text; adds[k].other = d.text; } });
+    out.push(...dels, ...adds);
+  };
+  let dels: DiffLine[] = [], adds: DiffLine[] = [];
+  for (let i = 0; i <= la.length; i++) {
+    const to = i < la.length ? keep[i] : lb.length;
+    if (to < 0) { dels.push({ op: '-', a: i + 1, text: la[i] }); continue; }
+    for (; j < to; j++) adds.push({ op: '+', b: j + 1, text: lb[j] });
+    flush(dels, adds); dels = []; adds = [];
+    if (i < la.length) { out.push({ op: ' ', a: i + 1, b: j + 1, text: la[i] }); j++; }
+  }
+  return out;
+}
+
+// words: a line as its words, the spaces between them and its signs, each a token
+const words = (s: string): string[] => s.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]/gu) ?? [];
+
+// marked: one side of a changed pair of lines, its tokens that the other side lacks boxed (<del> on the removed
+// side, <ins> on the added one). A line of over 2,000 tokens is shown plain.
+function marked(text: string, other: string | undefined, side: '-' | '+'): (string | Node)[] {
+  if (other === undefined) return [text];
+  const mine = words(text), theirs = words(other);
+  if (mine.length > 2000 || theirs.length > 2000) return [text];
+  const keep = side === '-' ? lcs(mine, theirs) : (() => { const k = lcs(theirs, mine), back = new Int32Array(mine.length).fill(-1); k.forEach((v, i) => { if (v >= 0) back[v] = i; }); return back; })();
+  const out: (string | Node)[] = [];
+  let run = '', runChanged = false;
+  const push = () => { if (run !== '') out.push(runChanged ? el(side === '-' ? 'del' : 'ins', { class: 'w' }, run) : run); run = ''; };
+  mine.forEach((t, i) => {
+    const changed = keep[i] < 0;
+    if (changed !== runChanged) { push(); runChanged = changed; }
+    run += t;
+  });
+  push();
+  return out;
+}
+
+const DIFF_CSS = `
+.tdiff { border: 1px solid var(--line); overflow: auto; max-height: 36rem; background: var(--card); }
+.tdiff table { border-collapse: collapse; width: 100%; font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+.tdiff td { padding: 0 .4rem; vertical-align: top; white-space: pre-wrap; word-break: break-word; }
+.tdiff td.ln { width: 1%; text-align: right; color: var(--muted); white-space: nowrap; user-select: none; border-right: 1px solid var(--line); }
+.tdiff td.mk { width: 1%; white-space: nowrap; user-select: none; font-weight: 600; }
+.tdiff td.del { background: var(--crit-bg); } .tdiff td.add { background: var(--ok-bg); }
+.tdiff td.del.mk { color: var(--crit); } .tdiff td.add.mk { color: var(--ok); }
+.tdiff td.gap { background: var(--bg); }
+.tdiff .w { text-decoration: none; outline: 1px solid currentColor; outline-offset: -1px; border-radius: 2px; }
+.tdiff del.w { color: var(--crit); } .tdiff ins.w { color: var(--ok); }
+.tdiff.side td.tx { width: 49%; }
+.defcmp { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-start; }
+.defcmp > div { flex: 1 1 26rem; min-width: 0; }
+.defview table { border-collapse: collapse; width: 100%; margin-bottom: .6rem; }
+.defview th, .defview td { text-align: left; vertical-align: top; padding: .2rem .5rem; border-bottom: 1px solid var(--line); }
+.defview td.chg { background: var(--crit-bg); }
+.defview td.chg::after { content: " *"; color: var(--crit); font-weight: 600; }
+.defview pre.sql { margin: 0; }
+.seg label { margin-right: 1rem; white-space: nowrap; }
+`;
+function diffStyles() {
+  if (document.getElementById('pgvigil-tdiff-css')) return;
+  const st = el('style', { id: 'pgvigil-tdiff-css' }, DIFF_CSS);
+  document.head.append(st);
+}
+
+export type DiffMode = 'code' | 'side' | 'inline';
+const modeKey = 'pgvigil.diffview';
+const modeLabels: [DiffMode, string][] = [['code', 'Code view'], ['side', 'Side by side diff'], ['inline', 'Inline diff']];
+let diffSeq = 0;
+
+// diffCounts: the lines a diff adds and removes
+export function diffCounts(d: DiffLine[]): { added: number; removed: number } {
+  return { added: d.filter(x => x.op === '+').length, removed: d.filter(x => x.op === '-').length };
+}
+
+function codeTable(text: string): HTMLElement {
+  const t = el('table', { 'aria-label': 'the script' });
+  linesOf(text).forEach((l, i) => t.append(el('tr', {}, el('td', { class: 'ln' }, String(i + 1)), el('td', { class: 'tx' }, l))));
+  return el('div', { class: 'tdiff code', tabindex: '0' }, t);
+}
+
+function inlineTable(d: DiffLine[], left: string, right: string): HTMLElement {
+  const t = el('table', { 'aria-label': `inline diff: lines of ${left} marked -, lines of ${right} marked +` });
+  for (const x of d) {
+    const k = x.op === '-' ? 'del' : x.op === '+' ? 'add' : '';
+    const tx = el('td', { class: `tx ${k}`.trim() });
+    tx.append(...(x.op === ' ' ? [x.text] : marked(x.text, x.other, x.op)));
+    t.append(el('tr', { 'data-op': x.op }, el('td', { class: 'ln' }, x.a ? String(x.a) : ''), el('td', { class: 'ln' }, x.b ? String(x.b) : ''),
+      el('td', { class: `mk ${k}`.trim() }, x.op === ' ' ? '' : x.op), tx));
+  }
+  return el('div', { class: 'tdiff inline', tabindex: '0' }, t);
+}
+
+function sideTable(d: DiffLine[], left: string, right: string): HTMLElement {
+  const t = el('table', { 'aria-label': `side by side diff: ${left} on the left, ${right} on the right` });
+  t.append(el('tr', {}, el('th', { colspan: '3', scope: 'col', style: 'text-align:left;padding:.2rem .4rem' }, left),
+    el('th', { colspan: '3', scope: 'col', style: 'text-align:left;padding:.2rem .4rem' }, right)));
+  const cell = (x: DiffLine | undefined, side: '-' | '+'): HTMLElement[] => {
+    if (!x) return [el('td', { class: 'ln gap' }), el('td', { class: 'mk gap' }), el('td', { class: 'tx gap' })];
+    const k = x.op === '-' ? 'del' : x.op === '+' ? 'add' : '';
+    const tx = el('td', { class: `tx ${k}`.trim() });
+    tx.append(...(x.op === ' ' ? [x.text] : marked(x.text, x.other, side)));
+    return [el('td', { class: 'ln' }, String(side === '-' ? x.a ?? '' : x.b ?? '')), el('td', { class: `mk ${k}`.trim() }, x.op === ' ' ? '' : x.op), tx];
+  };
+  for (let i = 0; i < d.length;) {
+    if (d[i].op === ' ') { t.append(el('tr', { 'data-op': ' ' }, ...cell(d[i], '-'), ...cell(d[i], '+'))); i++; continue; }
+    const dels: DiffLine[] = [], adds: DiffLine[] = [];
+    while (i < d.length && d[i].op === '-') dels.push(d[i++]);
+    while (i < d.length && d[i].op === '+') adds.push(d[i++]);
+    for (let k = 0; k < Math.max(dels.length, adds.length); k++) t.append(el('tr', { 'data-op': dels[k] && adds[k] ? '~' : dels[k] ? '-' : '+' }, ...cell(dels[k], '-'), ...cell(adds[k], '+')));
+  }
+  return el('div', { class: 'tdiff side', tabindex: '0' }, t);
+}
+
+// textDiffView: two texts under the three views and the two copies. prev undefined = nothing to compare with (a
+// first version): the code view, and an inline diff in which every line is added. The view picked is kept in this
+// browser. left / right name the two sides (a version and the one before it).
+export function textDiffView(prev: string | undefined, cur: string, left: string, right: string): HTMLElement {
+  diffStyles();
+  const box = el('div', { class: 'textdiff' });
+  const d = lineDiff(prev ?? '', cur), n = diffCounts(d);
+  let mode: DiffMode = 'side';
+  try { const m = localStorage.getItem(modeKey); if (m === 'code' || m === 'side' || m === 'inline') mode = m; } catch { /* private window */ }
+  if (prev === undefined && mode === 'side') mode = 'code';
+  const body = el('div');
+  const draw = () => body.replaceChildren(mode === 'code' ? codeTable(cur) : mode === 'inline' ? inlineTable(d, left, right) : sideTable(d, left, right));
+  const name = `tdiff-mode-${++diffSeq}`;
+  const seg = el('fieldset', { class: 'filters seg' }, el('legend', {}, 'View'), ...modeLabels.map(([k, label]) => {
+    const id = `${name}-${k}`, rb = el('input', { type: 'radio', name, id, value: k });
+    rb.checked = mode === k;
+    if (k === 'side' && prev === undefined) { rb.disabled = true; rb.title = 'the first version has nothing before it'; }
+    rb.addEventListener('change', () => { if (!rb.checked) return; mode = k; try { localStorage.setItem(modeKey, k); } catch { /* private window */ } draw(); });
+    return el('label', { for: id }, rb, ' ' + label);
+  }));
+  const said = el('span', { class: 'meta', role: 'status' });
+  const copy = (label: string, text: string | undefined) => {
+    const b = el('button', { type: 'button' }, label);
+    if (text === undefined) { b.disabled = true; b.title = 'the first version has nothing before it'; }
+    else b.addEventListener('click', () => { void copyText(text).then(ok => { said.textContent = ok ? `${label}: copied.` : `${label}: the browser refused the copy.`; }); });
+    return b;
+  };
+  box.append(el('div', { class: 'toolbar' }, seg, copy('Copy left', prev), copy('Copy right', cur),
+    el('span', { class: 'meta' }, prev === undefined ? `${fmtNum(n.added)} line(s)` : n.added + n.removed === 0 ? 'the two scripts are the same'
+      : `${fmtNum(n.added)} line(s) added, ${fmtNum(n.removed)} removed`), said), body);
+  draw();
+  return box;
+}
+
+// ---- a job's definition as its page, and two definitions side by side (DBA Dash's job Info window and Compare Info)
+
+type Def = Record<string, unknown>;
+const isObj = (v: unknown): v is Def => typeof v === 'object' && v !== null && !Array.isArray(v);
+const asDef = (v: unknown): Def => { if (typeof v === 'string') { try { v = JSON.parse(v); } catch { return {}; } } return isObj(v) ? v : {}; };
+// a key holds a table when every value under it is an object (steps, schedules)
+const isTable = (v: unknown) => isObj(v) && Object.keys(v).length > 0 && Object.values(v).every(isObj);
+const show = (v: unknown): string => v == null ? '' : typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v);
+const valueNode = (v: unknown): string | Node => { const s = show(v); return s.includes('\n') || s.length > 80 ? el('pre', { class: 'sql' }, s) : s; };
+// info: the scalar fields of a definition, a nested object of scalars under 'key / field'
+function info(d: Def): [string, unknown][] {
+  const out: [string, unknown][] = [];
+  for (const [k, v] of Object.entries(d)) {
+    if (isTable(v)) continue;
+    if (isObj(v)) for (const [k2, v2] of Object.entries(v)) out.push([`${k} / ${k2}`, v2]); else out.push([k, v]);
+  }
+  return out;
+}
+
+// definitionView: one definition as the job's page: its fields, then a table per part (steps, schedules). With
+// other (the definition it is compared with) every cell whose value differs from the other side's, and every cell
+// of a row the other side lacks, is marked: tinted, with a '*'.
+export function definitionView(def: unknown, other?: unknown): HTMLElement {
+  diffStyles();
+  const d = asDef(def), o = other === undefined ? undefined : asDef(other);
+  const box = el('div', { class: 'defview' });
+  const oInfo = new Map(o ? info(o) : []);
+  const mark = (changed: boolean): Record<string, string> => changed ? { class: 'chg', title: 'differs from the other side' } : {};
+  const it = el('table', { 'aria-label': 'the job' });
+  for (const [k, v] of info(d)) it.append(el('tr', {}, el('th', { scope: 'row' }, k), el('td', mark(!!o && show(oInfo.get(k)) !== show(v)), valueNode(v))));
+  // a field only the other side has: an empty, marked row here, so the two panes line up
+  if (o) for (const [k] of oInfo) if (!info(d).some(([x]) => x === k)) it.append(el('tr', {}, el('th', { scope: 'row' }, k), el('td', mark(true), '')));
+  box.append(el('h4', {}, 'Info'), el('div', { class: 'grid-wrap', tabindex: '0' }, it));
+  const parts = new Set([...Object.keys(d).filter(k => isTable(d[k])), ...(o ? Object.keys(o).filter(k => isTable(o[k])) : [])]);
+  for (const part of parts) {
+    const rows = isObj(d[part]) ? d[part] as Record<string, Def> : {}, oRows = o && isObj(o[part]) ? o[part] as Record<string, Def> : {};
+    const keys = [...new Set([...Object.keys(rows), ...(o ? Object.keys(oRows) : [])])].sort();
+    const fields = [...new Set(keys.flatMap(k => [...Object.keys(rows[k] ?? {}), ...Object.keys(oRows[k] ?? {})]))];
+    const t = el('table', { 'aria-label': part });
+    t.append(el('tr', {}, el('th', { scope: 'col' }, part.replace(/s$/, '')), ...fields.map(f => el('th', { scope: 'col' }, f))));
+    for (const k of keys) {
+      const r = rows[k], x = oRows[k];
+      if (!r) { t.append(el('tr', {}, el('th', { scope: 'row' }, ''), ...fields.map(() => el('td', mark(true), '')))); continue; }
+      t.append(el('tr', {}, el('th', { scope: 'row' }, k), ...fields.map(f => el('td', mark(!!o && (!x || show(x[f]) !== show(r[f]))), valueNode(r[f])))));
+    }
+    box.append(el('h4', {}, part.charAt(0).toUpperCase() + part.slice(1)), el('div', { class: 'grid-wrap', tabindex: '0' }, t));
+  }
+  return box;
+}
+
+// definitionCompare: two definitions in two panes, the changed cells marked on both sides
+export function definitionCompare(prev: unknown, cur: unknown, left: string, right: string): HTMLElement {
+  diffStyles();
+  return el('div', { class: 'defcmp' },
+    el('div', {}, el('h4', {}, left), definitionView(prev, cur)),
+    el('div', {}, el('h4', {}, right), definitionView(cur, prev)));
+}
+
+// changedText: an old and a new value on one line, the words that differ boxed (a setting's change)
+export function changedText(oldV: string, newV: string): HTMLElement {
+  diffStyles();
+  const s = el('span', { class: 'tdiff', style: 'border:0;background:none;display:inline' });
+  s.append(el('span', {}, ...marked(oldV, newV, '-')), ' -> ', el('span', {}, ...marked(newV, oldV, '+')));
+  return s;
 }

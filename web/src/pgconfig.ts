@@ -10,6 +10,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
+import { changedText } from './diff';
 
 // what a change of a server-level value (the file's, as this grid lists) needs before it is in use, from
 // pg_settings.context: a session-settable one (user, superuser) takes the file's value at a reload and can also be
@@ -70,7 +71,7 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
     const d = await get<{ settings: Table | null; rules?: Table | null }>('pgconfig', { instance: ctx.instance });
     rows = rowsOf(d.settings); rules = rowsOf(d.rules ?? null);
   } catch (e) { box.append(el('h3', {}, 'Settings'), errorBox(e)); return box; }
-  box.append(...bestPractice(rules), el('h3', {}, 'Settings'));
+  box.append(...bestPractice(rules), ...await changeLog(ctx), el('h3', {}, 'Settings'));
   const ruleOf = new Map(rules.map(r => [String(r.setting), r]));
   // a setting a rule covers carries the rule's colour on its value here too (grey 'not for this platform' stays plain)
   const valueCls = (_v: unknown, r: Row) => { const s = statusOfRule(ruleOf.get(String(r.name))); return s && s !== 'none' ? 'status ' + s : ''; };
@@ -111,4 +112,20 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
           + 'came from a collector older than them.')),
     grid(rows, cols, 'No non-default settings recorded.'));
   return box;
+}
+
+// changeLog (task 154): every setting change of the instance with the old value's valid from / to, beside the
+// Best practice grid. A server without the route says so; the page stands.
+async function changeLog(ctx: Ctx): Promise<HTMLElement[]> {
+  const h = el('h3', {}, 'Setting change log');
+  try {
+    const d = await get<{ changes: Table | null }>('config/changes', { instance: ctx.instance });
+    return [h, el('p', { class: 'meta' }, 'Each value that was replaced: valid from the change that set it to the change that replaced it. "(default)": not set, the built-in default. A value seen at the first read began before it.'),
+      grid(rowsOf(d.changes), [
+        { key: 'name', label: 'setting' },
+        { key: 'value', label: 'change', wide: true, fmt: (v, r) => changedText(v == null ? '(default)' : String(v), r.new_value == null ? '(default)' : String(r.new_value)) },
+        { key: 'valid_from', label: 'valid from', fmt: (v, r) => v == null ? (r.first_read ? '(at or before the first read)' : '') : fmtTime(v) },
+        { key: 'valid_to', label: 'valid to', fmt: fmtTime },
+      ], 'No setting has changed since pgvigil first read this server.')];
+  } catch (e) { return [h, errorBox(e)]; }
 }

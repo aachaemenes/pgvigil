@@ -126,17 +126,17 @@ func runReportTo(ctx context.Context, args []string, stdout io.Writer) error {
 	for i, f := range files {
 		list[i] = f.name
 	}
-	fmt.Fprintf(stdout, "pgvigil report: wrote %s (%d files, %d bytes)\n  %s\n", target, len(files), size, strings.Join(list, ", "))
+	_, _ = fmt.Fprintf(stdout, "pgvigil report: wrote %s (%d files, %d bytes)\n  %s\n", target, len(files), size, strings.Join(list, ", "))
 	if legend := m.legend(); len(legend) > 0 {
-		fmt.Fprintln(stdout, "Instance names are written as the names on the left; this list is printed here only, it is not in the zip:")
+		_, _ = fmt.Fprintln(stdout, "Instance names are written as the names on the left; this list is printed here only, it is not in the zip:")
 		for _, l := range legend {
-			fmt.Fprintln(stdout, "  "+l)
+			_, _ = fmt.Fprintln(stdout, "  "+l)
 		}
 	}
 	if m.unresolved > 0 {
-		fmt.Fprintf(stdout, "%s\n", unresolvedNote(m.unresolved))
+		_, _ = fmt.Fprintf(stdout, "%s\n", unresolvedNote(m.unresolved))
 	}
-	fmt.Fprintf(stdout, "Nothing was sent. Read the files, then attach the zip to a mail to %s.\n", supportAddress)
+	_, _ = fmt.Fprintf(stdout, "Nothing was sent. Read the files, then attach the zip to a mail to %s.\n", supportAddress)
 	return nil
 }
 
@@ -285,7 +285,7 @@ func osRelease() string {
 // key this list does not know (a new one, a misspelt one) is masked, never shown.
 var keepKeys = map[string]bool{
 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
-	"explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
+	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
 	// alerts:
 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
 	"clear_after": true, "port": true, "tls": true, "format": true,
@@ -304,7 +304,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
 var knownKeys = map[string]bool{
 	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
-	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "explain_dsn": true, "explain_timeout": true,
+	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
 	"latency_warn_secs": true, "archive_warn_minutes": true,
@@ -436,7 +436,7 @@ func (m *masker) walk(n *yaml.Node, path string, keep bool) {
 			k, v := n.Content[i], n.Content[i+1]
 			m.neutral(k)
 			key := k.Value
-			if k.Kind != yaml.ScalarNode || !identLike.MatchString(key) || !(keep || knownKeys[key]) {
+			if k.Kind != yaml.ScalarNode || !identLike.MatchString(key) || (!keep && !knownKeys[key]) {
 				m.learn("", key)
 				m.maskedKey++
 				*k = yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: fmt.Sprintf("<masked-key-%d>", m.maskedKey), Anchor: k.Anchor}
@@ -959,12 +959,12 @@ func (m *masker) legend() []string {
 	return append(out, rest...)
 }
 
-// oneLine puts a text on one line, cut to max characters.
-func oneLine(s string, max int) string {
+// oneLine puts a text on one line, cut to limit characters.
+func oneLine(s string, limit int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) > max {
+	if utf8.RuneCountInString(s) > limit {
 		r := []rune(s)
-		s = string(r[:max]) + " ... (cut)"
+		s = string(r[:limit]) + " ... (cut)"
 	}
 	return s
 }
@@ -1002,7 +1002,7 @@ func (m *masker) readRepository(ctx context.Context, dsn string, maxErr int) rep
 	if err != nil {
 		return none("no connection: " + oneLine(m.text(err.Error()), 600))
 	}
-	defer conn.Close(context.Background())
+	defer func() { _ = conn.Close(context.Background()) }()
 	why := func(err error) string {
 		var pg *pgconn.PgError
 		if errors.As(err, &pg) && pg.Code == "42501" {

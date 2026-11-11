@@ -11,12 +11,12 @@
 #     SUSPECT, EMERGENCY, OFFLINE and ONLINE, then its next run logged as an error: dbstate = failed|true|2|0| with
 #     the two names in the detail and the run's note in err; storage (the same collection) = failed.
 #     With only the OFFLINE and ONLINE databases on another instance, read now: dbstate = ok|true|0|1|.
-#  D. never: an instance nothing ran on: every one of the twelve keys is never, none critical or warning.
+#  D. never: an instance nothing ran on: every one of the thirteen keys is never, none critical or warning.
 #  E. skipped: mssql_jobs logged as skipped and nothing else: jobs = n/a; blocking = never.
 #  F. clock skew: the server's start time ten minutes AHEAD of the repository: uptime = ok|true|1|0|0 h.
 #  G. one collection of a group fresh and another failed (mssql_ag ok now, mssql_replication error now):
 #     availability = ok.
-#  H. the response carries exactly twelve keys per SQL Server instance (qs: Query Store, task 129) and no row for a PostgreSQL instance.
+#  H. the response carries exactly thirteen keys per SQL Server instance (qs: Query Store, task 129; audit: SQL Server Audit, task 158) and no row for a PostgreSQL instance.
 #  NOT PROVEN HERE: the page's own wording of these states (web/src/fleet.ts: 'stale', 'read failed', 'n/a', 'not
 #  yet', a flag with ', stale' beside it) and the failed-fetch text - a browser render; a configured interval other
 #  than the collector's default; the PostgreSQL database-state part (pgdb).
@@ -82,14 +82,14 @@ want "$c" dbstate "failed|true|2|0|" "C a failed run"
 [[ "$(cell "$c" dbstate err)" == *"mssql_storage: the proof's failed run"* ]] || fail "C: err: $(cell "$c" dbstate err)"
 [[ "$(cell "$c" storage state)" == failed ]] || fail "C: storage state: $(cell "$c" storage state)"
 want "$c2" dbstate "ok|true|0|1|" "C offline only"
-for k in blocking events availability backups jobs storage uptime dbstate agent dbmail dumps qs; do
+for k in blocking events availability backups jobs storage uptime dbstate agent dbmail dumps qs audit; do
   got=$(cell "$d" $k); [[ "$got" == never\|*\|0\|0\| ]] || fail "D: $k on an instance nothing ran on: '$got'"
-done; echo "ok   D never: twelve keys, none flagged"
+done; echo "ok   D never: thirteen keys, none flagged"
 want "$e" jobs "n/a|true|0|0|" "E skipped"; [[ "$(cell "$e" blocking state)" == never ]] || fail "E: blocking"
 want "$f" uptime "ok|true|1|0|0 h" "F clock skew"
 [[ "$(cell "$g" availability state)" == ok ]] || fail "G: availability state: $(cell "$g" availability state)"; echo "ok   G one fresh, one failed: availability = ok"
 got=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cells"]; c=d["columns"]; i=c.index("instance_id"); n={}
 for r in d["rows"]: n[r[i]]=n.get(r[i],0)+1
 print(len(n), sorted(set(n.values())), int(sys.argv[2]) in n)' "$WORK/sum.json" "$pg")
-[[ "$got" == "8 [12] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 8 instances x 12 keys, no PostgreSQL row"
+[[ "$got" == "8 [13] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 8 instances x 13 keys (the audit cell since 158's join), no PostgreSQL row"
 echo "proof-mssql-summary: PASS (A-H)"

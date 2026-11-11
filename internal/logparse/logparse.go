@@ -357,8 +357,13 @@ func classifyInto(e *entry, ev *Event) bool {
 
 // classifyError takes a WARNING / ERROR / FATAL / PANIC entry no rule classified as an Error event: the message with
 // its DETAIL and HINT, the CONTEXT lines that do not quote statement text (splitContext), and the statement text
-// (the quoted CONTEXT lines, QUERY, STATEMENT) apart. A LOG entry no rule took is not stored.
+// (the quoted CONTEXT lines, QUERY, STATEMENT) apart. A LOG entry no rule took is not stored, and neither is one of
+// pgaudit's entries at any level (pgaudit.log_level can write them as WARNING): they carry statement text, and the
+// audit reader takes them (audit.go).
 func classifyError(e *entry, ev *Event) bool {
+	if strings.HasPrefix(e.msg, auditPrefix) {
+		return false
+	}
 	switch e.level {
 	case "WARNING", "ERROR", "FATAL", "PANIC":
 	default:
