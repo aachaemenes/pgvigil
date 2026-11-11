@@ -50,7 +50,7 @@ A window's list is exact for the plans that were stored. A query that stayed und
 | Azure SQL Managed Instance, Amazon RDS | as their engine version |
 | Azure SQL Database | not yet: the collection is skipped |
 
-Proven on SQL Server 2022 only (`scripts/proof-mssql-querystore.sh`). The column sets of 2016, 2017 and 2019 follow Microsoft's documentation and have not been run; nor have Amazon RDS, a managed instance, or a secondary replica that is not readable.
+Proven on SQL Server 2017, 2019, 2022 and 2025 (`scripts/proof-mssql-querystore.sh`, [versions](sqlserver.md#versions)). The column set of 2016 follows Microsoft's documentation and has not been run; nor have Amazon RDS, a managed instance, or a secondary replica that is not readable.
 
 ## The statement text and the plan XML
 
