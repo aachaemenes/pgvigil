@@ -59,7 +59,7 @@ The names come from `OBJECT_NAME`, which waits behind a schema change on the obj
 - The rule for the differences is the procedures' rule: the first read sets; an index new to the list, or one whose counters went down (the metadata left the cache and came back), gives its whole count; nothing is negative.
 - The names (schema, table, index, type) are read from each database's own catalog, for the 500 objects per database with the most lock wait. A database the login cannot enter leaves `object <id>` and `index <id>` on the page.
 - The list is cut at the 20,000 partitions with the most lock wait. After a cut read, a partition new to the list sets its counters and gives nothing, so a cut never invents a wait.
-- Not collected: the page latch and page IO latch counters of the same view (a latch is not a lock; the Waits tab has `PAGELATCH` and `PAGEIOLATCH`), and memory-optimized tables, which the view does not list.
+- Not collected: the page latch and page IO latch counters of the same view (a latch is not a lock; the Waits tab has `PAGELATCH` and `PAGEIOLATCH`), the system base tables (object ids 1 to 100, which no catalog view names), and memory-optimized tables, which the view does not list.
 
 ## Running queries at the root: memory grants and tempdb waits
 

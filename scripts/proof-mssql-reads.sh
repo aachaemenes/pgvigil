@@ -12,6 +12,8 @@
 #                            own SQL Server container (MSSQL_IMAGE, default mcr.microsoft.com/mssql/server:2022-latest)
 #                            with a throwaway sa password made here, and removes it at the end.
 #   PGVIGIL_SKIP_PG13=1      leaves part M out (it starts and removes a postgres:13 container of its own).
+#   PGVIGIL_NO_MSSQL=1       the parts that need no SQL Server only (the migration, D on stored rows, G, X): no
+#                            container, no login; the last line says so and is NOT the proof's PASS.
 # The binary must carry the routes /api/mssql/properties, /waitinfo, /procs and /indexlocks (the lead's wiring in
 # web.go): the proof stops at its first API read when it does not.
 # The proof makes, and drops on every exit path: its own repository database (pgvigil_p4s2_reads_<n>), on the SQL
@@ -77,11 +79,12 @@
 #     changes nothing. In all: 100:15:1500,100:4:400,101:6:60,100:1:100,102:2:20,100:4:400,100:2:200,103:10:1000
 #     (object:executions:CPU us) and read rows with 1,0,2,2,1,1,0,1 procedures, 300 s each.
 #     indexes, six reads: the first sets; grown 2 > 5 waits gives 3 (300 ms) and an index new to the list its whole
-#     count with its escalations; after a RESTART lower counters give the whole count 1, never -4; a read marked cut
-#     gives its difference; an index new AFTER the cut read gives nothing, and its difference 2 on the next read; two
-#     partitions of one index, new after a complete read, are summed (3 waits, 11 ms). In all:
-#     200:3:300:0:0,201:3:30:2:1,200:1:10:0:0,200:1:10:0:0,202:2:20:0:0,203:3:11:0:0 (object:row lock waits:ms:
-#     escalation attempts:escalations) and read rows with 2,1,1,0,2 indexes.
+#     count with its escalations; after a RESTART lower counters give the whole count 1, never -4, and HIGHER
+#     counters (3 > 4 waits) their whole count 4, not the difference 1; a read marked cut gives its difference; an
+#     index new AFTER the cut read gives nothing, and its difference 2 on the next read; two partitions of one index,
+#     new after a complete read, are summed (3 waits, 11 ms). In all:
+#     200:3:300:0:0,201:3:30:2:1,200:1:10:0:0,201:4:40:3:2,200:1:10:0:0,202:2:20:0:0,203:3:11:0:0 (object:row lock
+#     waits:ms:escalation attempts:escalations) and read rows with 2,2,1,0,2 indexes.
 #     No row of either store carries a figure below zero.
 #     properties, three reads: the first logs nothing; the second logs exactly cpu_count 4 > 8 (tempdb's size moved
 #     100 > 200 and is not logged: track false; MAXDOP did not move and keeps its 'since'); a third read without a
@@ -116,7 +119,7 @@ P1=$(pw); P2=$(pw); P3=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; MADE_PG13=; SRV_PID=; GRANT_PID=; HOLD_PID=
-CT=${PGVIGIL_MSSQL_CONTAINER:-}; OWN=
+CT=${PGVIGIL_MSSQL_CONTAINER:-}; OWN=; NOMS=${PGVIGIL_NO_MSSQL:-}
 PG13=pgv-p4s2-pg13-$SUF
 # sq <sql> [database]: as sa, the password through the environment by name
 sq() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
@@ -151,7 +154,10 @@ fi
 [ -x "$BIN" ] || fail "no binary at $BIN"
 
 echo "--- the SQL Server"
-if [ -n "$CT" ]; then
+if [ -n "$NOMS" ]; then
+  echo "  NOT USED (PGVIGIL_NO_MSSQL=1): the parts A, B, C, E, F, P and D's real grant are not run"
+  ADDR=none
+elif [ -n "$CT" ]; then
   ADDR=${PGVIGIL_MSSQL_ADDR:-localhost:1433}
   : "${MSSQL_SA_PASSWORD:?the sa password of the sandbox PGVIGIL_MSSQL_CONTAINER names}"
   echo "  the existing sandbox $CT ($ADDR)"
@@ -164,10 +170,12 @@ else
   MADE_CT=1
   echo "  its own container $CT ($ADDR)"
 fi
-export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
-for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
-sq "SELECT 1" >/dev/null 2>&1 || fail "the SQL Server in $CT does not answer"
-echo "  $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)) + ' ' + CAST(SERVERPROPERTY('Edition') AS varchar(80))")"
+if [ -z "$NOMS" ]; then
+  export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
+  for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
+  sq "SELECT 1" >/dev/null 2>&1 || fail "the SQL Server in $CT does not answer"
+  echo "  $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)) + ' ' + CAST(SERVERPROPERTY('Edition') AS varchar(80))")"
+fi
 
 adm() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
 adm -c "create database $REPO_DB"; MADE_REPO=1
@@ -176,8 +184,10 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 
 # the three logins, the proof database with its tables and its first procedure
 mklogin() { printf "CREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\n" "$1" "$2" | sqs >/dev/null; MADE_L+=("$1"); }
-mklogin "$L1" "$P1"; mklogin "$L2" "$P2"; mklogin "$L3" "$P3"
-sq "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1]; GRANT CONNECT ANY DATABASE TO [$L1]; GRANT VIEW SERVER STATE TO [$L3];" >/dev/null
+if [ -z "$NOMS" ]; then
+  mklogin "$L1" "$P1"; mklogin "$L2" "$P2"; mklogin "$L3" "$P3"
+  sq "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1]; GRANT CONNECT ANY DATABASE TO [$L1]; GRANT VIEW SERVER STATE TO [$L3];" >/dev/null
+fi
 export MS_MON="sqlserver://$L1:$P1@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
 export MS_BARE="sqlserver://$L2:$P2@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
 export MS_VSS="sqlserver://$L3:$P3@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
@@ -187,12 +197,14 @@ export MS_VSS="sqlserver://$L3:$P3@$ADDR?database=master&encrypt=true&TrustServe
   printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_BARE\n' "$NB"
   printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_VSS\n' "$NV"
 } > "$CFG"
+if [ -z "$NOMS" ]; then
 sq "CREATE DATABASE [$DB]; ALTER DATABASE [$DB] SET RECOVERY SIMPLE;" >/dev/null; MADE_DB=1
 sq "CREATE TABLE dbo.pv_rows (id int IDENTITY PRIMARY KEY, pad char(100) NOT NULL DEFAULT 'x');
     INSERT dbo.pv_rows (pad) SELECT TOP (2000) 'a' FROM sys.all_columns a CROSS JOIN sys.all_columns b;
     CREATE TABLE dbo.pv_lock (id int NOT NULL CONSTRAINT PK_pv_lock PRIMARY KEY CLUSTERED, v int NOT NULL, pad char(200) NOT NULL DEFAULT 'x');
     INSERT dbo.pv_lock (id, v) SELECT TOP (6000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)), 0 FROM sys.all_columns a CROSS JOIN sys.all_columns b;" "$DB" >/dev/null
 sq "CREATE PROCEDURE dbo.pv_work @n int AS BEGIN SET NOCOUNT ON; DECLARE @c int; SELECT @c = COUNT(*) FROM dbo.pv_rows WHERE id <= @n; END" "$DB" >/dev/null
+fi
 "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate on the main repository"
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&1 || { cat "$OUT" >&2; return 1; }; cat "$OUT"; }
 
@@ -235,6 +247,7 @@ win() { echo "from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' 
 objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
 near() { awk -v a="$1" -v b="$2" -v t="${3:-0.002}" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d <= t) }'; }
 
+if [ -z "$NOMS" ]; then   # A, B and C need the server
 echo "--- A. mssql_properties as the monitoring login"
 # hand <T-SQL scalar>: sa's own read, NULL as nothing
 hand() { sq "SELECT ISNULL(CAST(($1) AS varchar(256)), '')"; }
@@ -405,6 +418,7 @@ IFS='|' read -r E_W _ E_ATT E_ESC <<<"$WANT"
 collect mssql_indexlocks "$NV" > "$WORK/vssix.out"
 echo "  VIEW SERVER STATE alone: $(tr '\n' ' ' < "$WORK/vssix.out")"
 echo "C: OK"
+fi
 
 echo "--- D. the fleet Running queries row"
 xf=$(q "select pgvigil.ensure_instance('proof-reads-fleet-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
@@ -420,6 +434,8 @@ curl -fs "$U/running/fleet" > "$WORK/fleet.json" || fail "D: /api/running/fleet"
 frow() { objs "$WORK/fleet.json" rows | jq -r --argjson i "$1" '.[] | select(.instance_id == $i) | [.max_grant_kb, .sum_grant_kb, .tempdb_waits, .tempdb_wait_ms, .tempdb_alloc_waits, .tempdb_alloc_wait_ms] | map(if . == null then "null" else tostring end) | join("|")'; }
 [ "$(frow "$xf")" = "4096|5120|2|800|1|500" ] || fail "D: the stored snapshot's row: $(frow "$xf"), want 4096|5120|2|800|1|500"
 [ "$(frow "$pgi")" = "null|null|null|null|null|null" ] || fail "D: a PostgreSQL row: $(frow "$pgi")"
+D_NOTE="D on stored rows only"
+if [ -z "$NOMS" ]; then   # the real grant, E and F need the server
 docker exec -e SQLCMDPASSWORD "$CT" bash -c "/opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -U sa -H pgvgrant$SUF -h -1 -Q 'SET NOCOUNT ON; SELECT TOP (1000000) a.object_id, NEWID() AS n FROM sys.all_columns a CROSS JOIN sys.all_columns b ORDER BY n' | (sleep 60; cat >/dev/null)" >/dev/null 2>&1 & GRANT_PID=$!
 grant_now() { sq "SELECT ISNULL(MAX(CAST(r.granted_query_memory AS bigint) * 8), 0) FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.host_name = 'pgvgrant$SUF' AND r.wait_type = 'ASYNC_NETWORK_IO'"; }
 H=0; for _ in $(seq 1 40); do H=$(grant_now); [ "$H" -gt 0 ] && break; sleep 1; done
@@ -465,6 +481,9 @@ for c in mssql_procstats mssql_indexlocks; do
   collect $c "$NB" | grep -q "skipped: the login lacks VIEW SERVER STATE" || fail "F: $c on the bare login: $(cat "$OUT")"
 done
 echo "F: OK"
+else
+  echo "D: OK (stored rows; the real grant NOT RUN)"
+fi
 
 echo "--- G. the imports refuse a PostgreSQL instance"
 for c in properties procstats indexlocks; do
@@ -505,15 +524,15 @@ iimp() { q "select pgvigil.import_mssql_indexlocks($xi, '$(UT "$1")', ('[{\"kind
 irow() { echo ",{\"kind\":\"index\",\"database_id\":5,\"object_id\":$1,\"index_id\":$2,\"partition_number\":$3,\"database_name\":\"appdb\",\"schema_name\":\"dbo\",\"table_name\":\"t$1\",\"index_name\":\"ix$2\",\"index_type\":\"CLUSTERED\",\"row_lock_waits\":$4,\"row_lock_wait_ms\":$5,\"page_lock_waits\":0,\"page_lock_wait_ms\":0,\"escalation_attempts\":$6,\"escalations\":$7}"; }
 iimp 3000 $ST1 false "$(irow 200 1 1 2 100 0 0)"
 iimp 2700 $ST1 false "$(irow 200 1 1 5 400 0 0)$(irow 201 2 1 3 30 2 1)"
-iimp 2400 $ST2 false "$(irow 200 1 1 1 10 0 0)"
+iimp 2400 $ST2 false "$(irow 200 1 1 1 10 0 0)$(irow 201 2 1 4 40 3 2)"
 iimp 2100 $ST2 true "$(irow 200 1 1 2 20 0 0)"
 iimp 1800 $ST2 false "$(irow 200 1 1 2 20 0 0)$(irow 202 1 1 7 70 0 0)"
 iimp 1500 $ST2 false "$(irow 200 1 1 2 20 0 0)$(irow 202 1 1 9 90 0 0)$(irow 203 1 1 1 5 0 0)$(irow 203 1 2 2 6 0 0)"
 GOT=$(q "select string_agg(object_id || ':' || row_lock_waits || ':' || row_lock_wait_ms || ':' || escalation_attempts || ':' || escalations, ',' order by snapshot_at, object_id) from pgvigil.mssql_indexlock_sample where instance_id=$xi")
-WANT="200:3:300:0:0,201:3:30:2:1,200:1:10:0:0,200:1:10:0:0,202:2:20:0:0,203:3:11:0:0"
+WANT="200:3:300:0:0,201:3:30:2:1,200:1:10:0:0,201:4:40:3:2,200:1:10:0:0,202:2:20:0:0,203:3:11:0:0"
 [ "$GOT" = "$WANT" ] || fail "X: indexes: $GOT, want $WANT"
 GOT=$(q "select string_agg(indexes::text, ',' order by snapshot_at) from pgvigil.mssql_indexlock_read where instance_id=$xi")
-[ "$GOT" = "2,1,1,0,2" ] || fail "X: the indexes' read rows: $GOT"
+[ "$GOT" = "2,2,1,0,2" ] || fail "X: the indexes' read rows: $GOT"
 NEG=$(q "select (select count(*) from pgvigil.mssql_proc_sample where least(executions, cpu_us, duration_us, logical_reads, physical_reads, logical_writes) < 0)
               + (select count(*) from pgvigil.mssql_indexlock_sample where least(row_lock_waits, row_lock_wait_ms, page_lock_waits, page_lock_wait_ms, escalation_attempts, escalations) < 0)")
 [ "$NEG" = 0 ] || fail "X: $NEG rows carry a figure below zero"
@@ -544,10 +563,16 @@ OLD=$((40 * 86400))
 q "select pgvigil.import_mssql_procstats($xo, '$(UT $OLD)', ('[{\"kind\":\"state\",\"server_utc\":\"$(UT $OLD)\",\"server_start\":\"$ST1\",\"server_local\":\"$(LT_ $OLD)\"}' || '$(prow 100 $((OLD + 100)) 10 1000)' || ']')::jsonb)" >/dev/null
 q "insert into pgvigil.mssql_property_change (instance_id, name, label, old_value, new_value, changed_at) values ($xr, 'maxdop', 'maxdop', '8', '0', now() - interval '40 days')" >/dev/null
 PURGED=$(q "select pgvigil.mssql_reads_purge(30)")
-AFTER=$(q "select (select count(*) from pgvigil.mssql_property_change where instance_id=$xr) || '|' || (select count(*) from pgvigil.mssql_proc_state where instance_id=$xo) || '|' || (select count(*) from pgvigil.mssql_proc_last where instance_id=$xo) || '|' || (select count(*) from pgvigil.mssql_proc_state where instance_id in ($xp, $iid)) || '|' || (select count(*) > 0 from pgvigil.mssql_proc_last where instance_id=$xp)")
-[ "$PURGED|$AFTER" = "3|1|0|0|2|true" ] || fail "X: the purge removed $PURGED rows and left $AFTER (want 3 and 1|0|0|2|true)"
+KEPT=$([ -n "$NOMS" ] && echo 1 || echo 2)   # the states read today: X's own, and the server's from B
+AFTER=$(q "select (select count(*) from pgvigil.mssql_property_change where instance_id=$xr) || '|' || (select count(*) from pgvigil.mssql_proc_state where instance_id=$xo) || '|' || (select count(*) from pgvigil.mssql_proc_last where instance_id=$xo) || '|' || (select count(*) from pgvigil.mssql_proc_state where instance_id in ($xp, ${iid:-0})) || '|' || (select count(*) > 0 from pgvigil.mssql_proc_last where instance_id=$xp)")
+[ "$PURGED|$AFTER" = "3|1|0|0|$KEPT|true" ] || fail "X: the purge removed $PURGED rows and left $AFTER (want 3 and 1|0|0|$KEPT|true)"
 echo "X: OK"
 
+if [ -n "$NOMS" ]; then
+  echo "NOT RUN (PGVIGIL_NO_MSSQL=1): A, B, C, E, F, P and D's real grant, every one of which needs a SQL Server"
+  echo "proof-mssql-reads: the parts without a SQL Server passed ($M_NOTE, D on stored rows, G, X); this is NOT the proof's PASS"
+  exit 0
+fi
 echo "--- P. the API"
 W=$(win)
 curl -fs "$U/mssql/properties?instance=$iid" > "$WORK/props.json" || fail "P: /api/mssql/properties"

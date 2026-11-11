@@ -30,8 +30,8 @@ import (
 // the cut read did not list.
 //
 // Not read: the page latch and page IO latch counters of the same function (Darling's Locking page shows them; a
-// latch is not a lock, and the Waits page has PAGELATCH and PAGEIOLATCH), and memory-optimized tables, which the
-// function does not list.
+// latch is not a lock, and the Waits page has PAGELATCH and PAGEIOLATCH), the system base tables (object ids 1 to
+// 100), and memory-optimized tables, which the function does not list.
 //
 // Rights as mssql_cpu (perfApplies). Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed
 // Instance; not on Azure SQL Database.
@@ -56,6 +56,8 @@ const (
 )
 
 // indexLocksSQL: the partitions with a lock wait or an escalation attempt, the most lock wait first. %d is the cap + 1.
+// Object ids 1 to 100 are the system base tables (sysrscols, sysallocunits ...): no catalog view names them and no
+// DBA can change them; a temporary table's id is negative and stays in.
 const indexLocksSQL = `SELECT TOP (%d) 'index' AS kind, CAST(os.database_id AS int) AS database_id, CAST(os.object_id AS bigint) AS object_id,
   CAST(os.index_id AS int) AS index_id, CAST(os.partition_number AS int) AS partition_number,
   CAST(DB_NAME(os.database_id) AS nvarchar(128)) AS database_name,
@@ -64,7 +66,8 @@ const indexLocksSQL = `SELECT TOP (%d) 'index' AS kind, CAST(os.database_id AS i
   SUM(CAST(os.index_lock_promotion_attempt_count AS bigint)) AS escalation_attempts,
   SUM(CAST(os.index_lock_promotion_count AS bigint)) AS escalations
 FROM sys.dm_db_index_operational_stats(NULL, NULL, NULL, NULL) os
-WHERE os.row_lock_wait_count > 0 OR os.page_lock_wait_count > 0 OR os.index_lock_promotion_attempt_count > 0
+WHERE (os.row_lock_wait_count > 0 OR os.page_lock_wait_count > 0 OR os.index_lock_promotion_attempt_count > 0)
+  AND os.object_id NOT BETWEEN 1 AND 100
 GROUP BY os.database_id, os.object_id, os.index_id, os.partition_number
 ORDER BY SUM(CAST(os.row_lock_wait_in_ms AS bigint)) + SUM(CAST(os.page_lock_wait_in_ms AS bigint)) DESC,
   os.database_id, os.object_id, os.index_id, os.partition_number`
