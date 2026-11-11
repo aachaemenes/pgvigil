@@ -10,9 +10,16 @@ import (
 )
 
 func TestProven(t *testing.T) {
-	for v, want := range map[string]bool{"4.24.1": true, "4.24.1.0": true, " 4.24.1.3 ": true, "4.24.10": false, "4.24.0": false, "4.25.0": false, "": false} {
-		if got := Proven(v); got != want {
-			t.Errorf("Proven(%q) = %v, want %v", v, got, want)
+	cases := []struct {
+		version string
+		want    bool
+	}{
+		{"4.24.1", true}, {"4.24.1.0", true}, {" 4.24.1.3 ", true}, // the padded one: Proven trims the version row
+		{"4.24.10", false}, {"4.24.0", false}, {"4.25.0", false}, {"", false},
+	}
+	for _, c := range cases {
+		if got := Proven(c.version); got != c.want {
+			t.Errorf("Proven(%q) = %v, want %v", c.version, got, c.want)
 		}
 	}
 }
