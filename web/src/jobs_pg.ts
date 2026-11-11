@@ -2,6 +2,8 @@
 // (the shared grid of mssql_jobs.ts with the database, the user, the command and the job page link), the picked job's
 // history and changes, and every run of the range as the old page had it (pages.ts jobs(): nothing it showed is
 // lost). Data from /api/jobs/history?engine=pg and /api/jobs. The lead points the 'jobs' tab here.
+// Task 154: the shared panel carries the versions (pg_cron's and pgAgent's scripts with their diffs) and the status
+// against the job thresholds; Start / Stop is SQL Server's alone (pg_cron and pgAgent have no such call).
 import { get, Row, rowsOf, Table } from './api';
 import { jobLink } from './drill';
 import { jobsPanel, oneLine } from './mssql_jobs';
