@@ -13,7 +13,7 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 
 ## Collections
 
-Twenty collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Twenty-one collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -37,6 +37,7 @@ Twenty collections. `every` is the default; an instance's `schedules:` changes i
 | `mssql_properties` | 1 hour | what the instance is (server, processors, memory, tempdb's layout, host) and every change of a value | public; VIEW SERVER STATE for the processor, memory and host rows (partial without it) | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 | `mssql_procstats` | 5 min | what each stored procedure did between two reads: calls, CPU, duration, reads | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE); CONNECT ANY DATABASE and VIEW ANY DEFINITION for the names in other databases | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 | `mssql_indexlocks` | 5 min | row and page lock waits and lock escalations per index, as the difference between two reads | as `mssql_procstats` | not run | [properties, procedures, index locks](sqlserver-reads.md) |
+| `mssql_querystore` | 1 hour | each database's Query Store: state, top queries per interval, forced plans, tuning recommendations | VIEW SERVER STATE, CONNECT ANY DATABASE (VIEW ANY DEFINITION for object names) | not run | [Query Store](sqlserver-querystore.md) |
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 

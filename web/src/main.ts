@@ -53,6 +53,7 @@ import { jobsPgView } from './jobs_pg';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
 import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
+import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlProcsView } from './mssql_procs';
@@ -76,6 +77,7 @@ const mssqlPages: Record<string, Render> = {
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+  mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
   mssqlprocs: mssqlProcsView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView,
 };

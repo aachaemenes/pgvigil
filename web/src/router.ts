@@ -81,13 +81,13 @@ export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_deadlocks: 'Deadlocks',
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
-  mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', counters: 'Metrics',
+  mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlprocs', 'mssqlindexlocks'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlprocs', 'mssqlindexlocks'] },
   { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlproperties', 'mssqlactions'] },
@@ -167,6 +167,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     for (const k of ['sg', 'sdb', 'suser', 'scl']) for (const v of cur.getAll(k)) q.append(k, v);
   }
   if (c.tab === 'slowqueries') page('ms', 'ms');
+  // the Query Store page's view, sort and database (mssql_querystore.ts) stay on its own links
+  if (keep && c.tab === 'mssqlqs') {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['qs', 'qo', 'qdb']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
   // the Database info and drill-down pages keep their own parameters (db, rel, scheduler, job, idx) on a link to the
   // same page, so a range change stays on the same database, table, job or index
   if (keep && (drillTabs[c.tab] || c.tab === 'dbinfo')) {

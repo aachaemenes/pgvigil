@@ -19,7 +19,8 @@ WITH inst AS (
          ('availability', ARRAY['mssql_ag', 'mssql_mirroring', 'mssql_logshipping', 'mssql_replication']),
          ('backups', ARRAY['mssql_backups']), ('jobs', ARRAY['mssql_jobs']), ('storage', ARRAY['mssql_storage', 'mssql_versionstore']),
          ('uptime', ARRAY['mssql_instance']), ('dbstate', ARRAY['mssql_storage']),
-         ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services'])
+         ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services']),
+         ('qs', ARRAY['mssql_querystore'])
 ), runs AS (
   -- the last run of each of the group's collections (collection_dates keeps one row per collection): old = older
   -- than three of its intervals, the rule of the daily check 'collection stale' ($1 the intervals, $2 the age for
@@ -105,6 +106,11 @@ WITH inst AS (
   SELECT i.instance_id, k.key, coalesce(c.sampled, false), coalesce(c.critical, 0), coalesce(c.warning, 0), c.value, coalesce(c.detail, '{}')
     FROM inst i CROSS JOIN (VALUES ('agent'), ('dbmail'), ('dumps')) k(key)
     LEFT JOIN pgvigil.mssql_health_status c ON c.instance_id = i.instance_id AND c.key = k.key
+  UNION ALL
+  -- Query Store: the databases whose store is in the ERROR state (critical), read-only or off though asked for
+  -- (warning); the rules live in the view (migration 0083)
+  SELECT i.instance_id, 'qs', coalesce(c.sampled, false), coalesce(c.critical, 0), coalesce(c.warning, 0), c.value, coalesce(c.detail, '{}')
+    FROM inst i LEFT JOIN pgvigil.mssql_querystore_status c ON c.instance_id = i.instance_id
 )
 SELECT c.instance_id, c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
        c.value, c.detail, st.read_at, st.err

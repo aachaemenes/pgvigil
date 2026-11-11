@@ -43,6 +43,7 @@ func (g *Gen) mssqlStep(t time.Time) []Batch {
 	add("mssql_fileio", t, g.mssqlFileIODemoRows(t))
 	if first || t.Minute() == 0 || t.Equal(g.end) {
 		add("mssql_tempdb", t, g.mssqlTempdbDemoRows())
+		add("mssql_querystore", t, g.mssqlQueryStoreDemoRows(t))
 	}
 	if first || t.Minute()%5 == 0 {
 		add("mssql_jobs", t, g.mssqlJobsDemoRows(t))
@@ -160,7 +161,7 @@ func (g *Gen) mssqlStorageRows(t time.Time) []Row {
 
 // mssqlCollections names what a SQL Server instance's collector runs (for the collection log).
 func (g *Gen) mssqlCollections() []string {
-	c := []string{"mssql_instance", "mssql_services", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore", "mssql_ag", "mssql_cpu", "mssql_memory", "mssql_fileio", "mssql_tempdb"}
+	c := []string{"mssql_instance", "mssql_services", "mssql_requests", "mssql_waits", "mssql_xe", "mssql_storage", "mssql_versionstore", "mssql_ag", "mssql_cpu", "mssql_memory", "mssql_fileio", "mssql_tempdb", "mssql_querystore"}
 	if g.is("-sql01") || g.is("-sql02") {
 		c = append(c, "mssql_backups")
 	}
