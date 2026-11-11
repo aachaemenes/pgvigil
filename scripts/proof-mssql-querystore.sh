@@ -60,6 +60,10 @@
 #     auto nothing; a store not read nothing. The status row: critical 1, warning 4, value '7 of 10 on'.
 #  Z. the import refuses a PostgreSQL instance; the collector role may execute the import and the cursor and the
 #     reader may not execute the import; the reader may select the views.
+#  V. 0083 on PostgreSQL 13 (the stopped container PG13_PROOF, default pgv-pg13-proof on 127.0.0.1:5413 with trust;
+#     where there is none the proof starts a postgres:13 container of its own and removes it): a fresh database
+#     migrates without error, X's first payload imported twice leaves 1|1|2|2|5 and the plan cursor 11, and Y's
+#     payload gives the same judgements as on the repository's own PostgreSQL. PGVIGIL_SKIP_PG13=1 leaves it out.
 #  P. the API: every part of /api/mssql/querystore answers; an unknown order, an over-long db, a query route
 #     without db and a plan that does not exist answer 400, 400, 400 and 404.
 #  DEMO. a two-day demo: DEMO-SQL01's top list has at least 8 queries; its regressed part for the last hour lists
@@ -84,6 +88,7 @@ P1=$(pw); P2=$(pw); P3=$(pw)
 WORK=$(mktemp -d); CFG=$WORK/cfg.yaml; OUT=$WORK/out
 fail() { echo "FAIL: $*" >&2; exit 1; }
 MADE_REPO=; MADE_DEMO=; MADE_DBS=(); MADE_L=(); MADE_CT=; SRV_PID=; DEMO_PID=
+V13=; V13DB=pgvigil_p4s1_qs13_$SUF; MADE_13=; PG13_STOP=; PG13_RM=
 CT=${PGVIGIL_MSSQL_CONTAINER:-mssql-sandbox}; ADDR=${PGVIGIL_MSSQL_ADDR:-localhost:1433}
 freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127.0.0.1|\[::1\]|\*|0.0.0.0):$p " || { echo "$p"; return; }; done; }
 # sq <sql> [database]: as sa, the password through the environment by name
@@ -105,6 +110,9 @@ cleanup() {
       sq "IF SUSER_ID('$l') IS NOT NULL DROP LOGIN [$l];" >/dev/null 2>&1 || echo "CLEANUP: login $l not dropped" >&2
     done
   fi
+  [ -n "$MADE_13" ] && { psql "$V13" -XAtq -c "drop database if exists $V13DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $V13DB on PostgreSQL 13 not dropped" >&2; }
+  [ -n "$PG13_STOP" ] && { docker stop "$PG13_STOP" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_STOP not stopped" >&2; }
+  [ -n "$PG13_RM" ] && { docker rm -f "$PG13_RM" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_RM not removed" >&2; }
   for d in "$REPO_DB:$MADE_REPO" "$DEMO_DB:$MADE_DEMO"; do
     [ -n "${d#*:}" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists ${d%%:*} with (force)" >/dev/null 2>&1 || echo "CLEANUP: database ${d%%:*} not dropped" >&2; }
   done
@@ -468,10 +476,12 @@ echo "X: OK"
 echo "--- Y. the judgements"
 xj=$(q "select pgvigil.ensure_instance('proof-qs-y-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
 st() { echo "{\"kind\":\"store\",\"database_name\":\"$1\",\"database_state\":\"ONLINE\",\"database_read_only\":0,\"read\":${7:-1},\"desired_state\":\"$2\",\"actual_state\":\"$3\",\"readonly_reason\":$4,\"current_mb\":$5,\"max_mb\":100,\"cleanup_mode\":\"$6\",\"can_read\":1}"; }
-imp "$xj" "$(date -u +%FT%TZ)" "[$(st e_error READ_WRITE ERROR 0 10 AUTO),$(st f_full READ_WRITE READ_ONLY 65536 100 OFF),$(st g_replica READ_WRITE READ_ONLY 8 10 AUTO),$(st h_rodb READ_WRITE READ_ONLY 1 10 AUTO),$(st i_both READ_WRITE READ_ONLY 65544 100 AUTO),$(st j_asked READ_ONLY READ_ONLY 0 10 AUTO),$(st k_off READ_WRITE OFF 0 0 AUTO),$(st l_offok OFF OFF 0 0 AUTO),$(st m_near READ_WRITE READ_WRITE 0 95 OFF),$(st n_auto READ_WRITE READ_WRITE 0 95 AUTO),$(st o_notread READ_WRITE READ_ONLY 65536 100 OFF 0)]"
+YPAY="[$(st e_error READ_WRITE ERROR 0 10 AUTO),$(st f_full READ_WRITE READ_ONLY 65536 100 OFF),$(st g_replica READ_WRITE READ_ONLY 8 10 AUTO),$(st h_rodb READ_WRITE READ_ONLY 1 10 AUTO),$(st i_both READ_WRITE READ_ONLY 65544 100 AUTO),$(st j_asked READ_ONLY READ_ONLY 0 10 AUTO),$(st k_off READ_WRITE OFF 0 0 AUTO),$(st l_offok OFF OFF 0 0 AUTO),$(st m_near READ_WRITE READ_WRITE 0 95 OFF),$(st n_auto READ_WRITE READ_WRITE 0 95 AUTO),$(st o_notread READ_WRITE READ_ONLY 65536 100 OFF 0)]"
+YWANT="e_error:critical,f_full:warning,g_replica:-,h_rodb:-,i_both:warning,j_asked:warning,k_off:warning,l_offok:-,m_near:info,n_auto:-,o_notread:-"
+imp "$xj" "$(date -u +%FT%TZ)" "$YPAY"
 JY=$(q "select string_agg(database_name || ':' || coalesce(severity, '-'), ',' order by database_name) from pgvigil.mssql_qs_store_status where instance_id=$xj")
 echo "  $JY"
-[ "$JY" = "e_error:critical,f_full:warning,g_replica:-,h_rodb:-,i_both:warning,j_asked:warning,k_off:warning,l_offok:-,m_near:info,n_auto:-,o_notread:-" ] || fail "Y: the judgements: $JY"
+[ "$JY" = "$YWANT" ] || fail "Y: the judgements: $JY"
 [ "$(q "select critical || '|' || warning || '|' || value || '|' || sampled || '|' || array_length(detail, 1) from pgvigil.mssql_querystore_status where instance_id=$xj")" = "1|4|7 of 10 on|true|5" ] \
   || fail "Y: the status row: $(q "select critical || '|' || warning || '|' || value || '|' || sampled || '|' || array_length(detail, 1) from pgvigil.mssql_querystore_status where instance_id=$xj")"
 [ "$(q "select string_agg(severity || ':' || check_name || ':' || object, ',' order by object) from pgvigil.mssql_querystore_findings where instance_id=$xj")" \
@@ -490,6 +500,35 @@ SIG="pgvigil.import_mssql_querystore(int, timestamptz, jsonb)"
   || fail "Z: the roles: $(q "select has_function_privilege('pgvigil_collector', '$SIG', 'execute'), has_function_privilege('pgvigil_reader', '$SIG', 'execute'), has_function_privilege('pgvigil_collector', 'pgvigil.mssql_hadr_cursor(int, text)', 'execute'), has_table_privilege('pgvigil_reader', 'pgvigil.mssql_qs_runtime', 'select'), has_table_privilege('pgvigil_reader', 'pgvigil.mssql_querystore_status', 'select'), has_table_privilege('pgvigil_collector', 'pgvigil.mssql_qs_plan', 'select')")"
 echo "Z: OK"
 
+echo "--- V. 0083 on PostgreSQL 13"
+V_NOTE=
+if [ -n "${PGVIGIL_SKIP_PG13:-}" ]; then
+  echo "V: SKIPPED (PGVIGIL_SKIP_PG13 is set)"; V_NOTE=", V NOT RUN"
+else
+  PG13_PROOF=${PG13_PROOF:-pgv-pg13-proof}; P13=${PG13_PORT:-5413}
+  case "$(docker inspect -f '{{.State.Running}}' "$PG13_PROOF" 2>/dev/null || echo missing)" in
+    true) ;;
+    false) docker start "$PG13_PROOF" >/dev/null || fail "V: $PG13_PROOF did not start"; PG13_STOP=$PG13_PROOF ;;
+    *) P13=$(freeport 25413 25450); PG13_RM=pgv-p4s1-pg13-$SUF
+       docker run -d --name "$PG13_RM" -p "127.0.0.1:$P13:5432" -e POSTGRES_HOST_AUTH_METHOD=trust postgres:13 >/dev/null || fail "V: a postgres:13 container did not start" ;;
+  esac
+  V13="host=127.0.0.1 port=$P13 user=postgres dbname=postgres sslmode=disable"
+  for _ in $(seq 1 150); do psql "$V13" -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 0.2; done
+  psql "$V13" -XAtqc "create database $V13DB" >/dev/null || fail "V: PostgreSQL 13 did not answer on port $P13"; MADE_13=1
+  printf 'repository:\n  dsn: env:V13_REPO\ninstances: []\n' > "$WORK/v13.yaml"
+  V13_REPO="${V13% dbname=postgres sslmode=disable} dbname=$V13DB sslmode=disable" "$BIN" migrate -config "$WORK/v13.yaml" > "$OUT" 2>&1 || { cat "$OUT" >&2; fail "V: migrate on PostgreSQL 13"; }
+  v13() { psql "${V13% dbname=postgres sslmode=disable} dbname=$V13DB sslmode=disable" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
+  [ "$(v13 "select current_setting('server_version_num')::int / 10000")" = 13 ] || fail "V: not PostgreSQL 13"
+  va=$(v13 "select pgvigil.ensure_instance('proof-qs-13a', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+  vb=$(v13 "select pgvigil.ensure_instance('proof-qs-13b', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+  v13 "select pgvigil.import_mssql_querystore($va, '$R1', '$PL1'::jsonb)" >/dev/null
+  v13 "select pgvigil.import_mssql_querystore($va, '$R1', '$PL1'::jsonb)" >/dev/null
+  v13 "select pgvigil.import_mssql_querystore($vb, now(), '$YPAY'::jsonb)" >/dev/null
+  GOT13=$(v13 "select (select count(*) from pgvigil.mssql_qs_interval where instance_id=$va) || '|' || (select count(*) from pgvigil.mssql_qs_runtime where instance_id=$va) || '|' || (select count(*) from pgvigil.mssql_qs_plan where instance_id=$va) || '|' || (select count(*) from pgvigil.mssql_qs_query where instance_id=$va) || '|' || (select sum(executions) from pgvigil.mssql_qs_runtime where instance_id=$va) || '|' || pgvigil.mssql_hadr_cursor($va, 'qs_plan:7:a:b') || '|' || (select string_agg(database_name || ':' || coalesce(severity, '-'), ',' order by database_name) from pgvigil.mssql_qs_store_status where instance_id=$vb) || '|' || (select critical || '/' || warning || '/' || value from pgvigil.mssql_querystore_status where instance_id=$vb)")
+  [ "$GOT13" = "1|1|2|2|5|11|$YWANT|1/4/7 of 10 on" ] || fail "V: on PostgreSQL 13: $GOT13"
+  echo "V: OK (PostgreSQL $(v13 "show server_version"))"
+fi
+
 echo "--- P. the API"
 curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: the page's read"
 [ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
@@ -505,7 +544,7 @@ echo "P: OK"
 if [ -n "${PGVIGIL_SKIP_DEMO:-}" ]; then
   echo "DEMO: SKIPPED (PGVIGIL_SKIP_DEMO is set)"
   echo "NOT PROVEN HERE: the demo's rows (skipped); SQL Server 2016-2019, RDS, Managed Instance, Azure SQL Database, a real tuning recommendation, a real ERROR store, a really cleared store, the run's bounds, the interval floor's access path, a browser render"
-  echo "proof-mssql-querystore: A-H, X, Y, Z, P green; DEMO NOT RUN"
+  echo "proof-mssql-querystore: A-H, X, Y, Z, P green${V_NOTE:-, V green}; DEMO NOT RUN"
   exit 0
 fi
 
@@ -530,7 +569,7 @@ echo "  sql01: top $(objs "$WORK/d.json" top | jq length), forced $(objs "$WORK/
   || fail "DEMO: the forced plans: $(objs "$WORK/d.json" forced | jq -c '[.[] | {database_name, plan_id, force_failure_count}]')"
 [ "$(objs "$WORK/d.json" tuning | jq '[.[] | select(.rec_name == "PR_1" and .rec_state == "Active" and .is_present == true)] | length')" = 1 ] || fail "DEMO: the recommendation"
 [ "$(objs "$WORK/d.json" state | jq -r '[.[] | select(.database_name == "Reporting")] | .[0] | .actual_state + "|" + .severity')" = "READ_ONLY|warning" ] || fail "DEMO: Reporting's store"
-DF=$(dq "select string_agg(check_name || ':' || object, ',' order by check_name) from pgvigil.mssql_querystore_findings where instance_id=$s1")
+DF=$(dq "select string_agg(check_name || ':' || object, ',' order by check_name collate \"C\") from pgvigil.mssql_querystore_findings where instance_id=$s1")
 [ "$DF" = "Query Store is read-only:Reporting,a forced plan fails:Orders: query 31, plan 44" ] || fail "DEMO: sql01's findings: $DF"
 [ "$(dq "select string_agg(instance_id || ':' || critical || ':' || warning, ',' order by instance_id) from pgvigil.mssql_querystore_status where instance_id in ($s1, $s2)")" = "$s1:0:1,$s2:0:0" ] \
   || fail "DEMO: the status rows: $(dq "select string_agg(instance_id || ':' || critical || ':' || warning, ',' order by instance_id) from pgvigil.mssql_querystore_status where instance_id in ($s1, $s2)")"
@@ -538,4 +577,4 @@ curl -fs "$D/mssql/querystore/plan.sqlplan?instance=$s1&db=Sales&plan=7" | head 
 echo "DEMO: OK"
 
 echo "NOT PROVEN HERE: SQL Server 2016-2019, RDS, Managed Instance, Azure SQL Database, a real tuning recommendation, a real ERROR store, a really cleared store, the run's bounds, the interval floor's access path, a browser render"
-echo "proof-mssql-querystore: PASS (A-H, X, Y, Z, P, DEMO)"
+if [ -n "$V_NOTE" ]; then echo "proof-mssql-querystore: A-H, X, Y, Z, P, DEMO green$V_NOTE"; else echo "proof-mssql-querystore: PASS (A-H, X, Y, Z, V, P, DEMO)"; fi
