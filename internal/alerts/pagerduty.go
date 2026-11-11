@@ -161,6 +161,10 @@ func pagerDutyEvent(key string, a Alert) map[string]any {
 	if a.FindingAt != nil {
 		details["finding_at"] = a.FindingAt.UTC().Format(time.RFC3339)
 	}
+	if a.URL != "" {
+		details["url"] = a.URL
+		ev["links"] = []map[string]string{{"href": a.URL, "text": "the alert's page in pgvigil"}}
+	}
 	ev["payload"] = map[string]any{
 		"summary":        summary,
 		"source":         source,

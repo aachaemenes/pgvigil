@@ -1,7 +1,7 @@
 package web
 
 // Alert rules (task 131; Darling's Alert Rules and Threshold Overrides). GET /api/alertrules?[from=&to=]
-// [&part=rules|state|log|catalog|sender] reads the store of 0085: the rules (live, and the ones ended in the window)
+// [&part=rules|state|log|catalog|sender|inforce] reads the store of 0085: the rules (live, and the ones ended in the window)
 // with where each is in force and fires, what the alert sender last made of every rule in force (alert_rule_state),
 // the window's attempts (alert_rule_log), the metrics a rule may name, and whether a sender judges the rules at all.
 // POST /api/alertrules makes, edits or switches one rule and POST /api/alertrules/end ends one, both the way of
@@ -100,6 +100,38 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
 
 // AlertRules is GET /api/alertrules: the rules, their state, the window's attempts, the metric catalogue and the
 // sender's line; whether writes are on, and why not.
+// sqlThresholdsInForce (task 151, K07.07): every threshold in force per active instance - the alert rule the sender
+// judges each metric's series by (alert_rules_effective: an instance's rule over a tag's over the fleet's), with the
+// rules it overrides on that instance - and, on a SQL Server instance, the HA/DR, jobs and backups thresholds of
+// mssql_hadr_limits (0066), each marked 'file' where the configuration sets it (mssql_thresholds) and 'default'
+// where it does not: those are read only here, the file is their source.
+const sqlThresholdsInForce = `
+SELECT i.instance_id, i.name AS instance, i.engine, 'rule' AS source, e.metric AS what, c.family_label, c.label, c.unit,
+       e.database, e.rule_id, e.name AS rule_name, e.scope, coalesce(e.tag, e.instance_name) AS target, e.op,
+       e.warning, e.critical, e.for_minutes, NULL::text AS value,
+       (SELECT string_agg('rule ' || o.rule_id || ' (' || o.scope || coalesce(' ' || coalesce(o.tag, o.instance_name), '') || ')', ', '
+                          ORDER BY o.level DESC, o.rule_id DESC)
+          FROM pgvigil.alert_rule_scope o
+         WHERE o.instance_id = e.instance_id AND o.metric = e.metric AND coalesce(o.database, '') = coalesce(e.database, '')
+           AND o.rule_id <> e.rule_id) AS overrides,
+       coalesce(t.tags, '{}'::text[]) AS tags
+  FROM pgvigil.alert_rules_effective e
+  JOIN pgvigil.instances i ON i.instance_id = e.instance_id
+  LEFT JOIN pgvigil.metric_catalog c ON c.key = e.metric
+  LEFT JOIN pgvigil.instance_tags_merged t ON t.instance_id = i.instance_id
+UNION ALL
+SELECT i.instance_id, i.name, i.engine, CASE WHEN f.value IS NOT NULL THEN 'file' ELSE 'default' END, 'mssql.' || l.key,
+       'SQL Server HA/DR, jobs and backups', l.key, NULL, NULL, NULL, NULL, 'instance', i.name, NULL, NULL, NULL, NULL,
+       l.value, NULL, coalesce(t.tags, '{}'::text[])
+  FROM pgvigil.mssql_hadr_limits h
+  JOIN pgvigil.instances i ON i.instance_id = h.instance_id AND i.is_active
+  CROSS JOIN LATERAL jsonb_each_text(to_jsonb(h) - 'instance_id') l
+  LEFT JOIN LATERAL (SELECT to_jsonb(x) -> l.key AS value FROM pgvigil.mssql_hadr_thresholds x
+                      WHERE x.instance_id = h.instance_id AND to_jsonb(x) -> l.key <> 'null'::jsonb) f ON true
+  LEFT JOIN pgvigil.instance_tags_merged t ON t.instance_id = i.instance_id
+ ORDER BY 2, 4 DESC, 5, 9 NULLS FIRST
+ LIMIT 5000`
+
 func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
 	_, from, to, err := params(r, false)
 	if err != nil {
@@ -112,6 +144,7 @@ func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
 		{"log", sqlAlertRuleLog, []any{from, to}},
 		{"catalog", sqlAlertRuleCatalog, nil},
 		{"sender", sqlAlertRuleSender, nil},
+		{"inforce", sqlThresholdsInForce, nil},
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)

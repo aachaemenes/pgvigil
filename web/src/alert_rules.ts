@@ -7,16 +7,18 @@
 // /api/alertrules and /api/alertrules/end write it behind the UI login (api.post carries the X-Pgvigil header). Every
 // write opens a dialog that says what it does; the server answers with the rule's id or the reason it refused. An
 // edit ends the rule and writes its successor, so the table is its own history. ruleDialog is also the Metrics page's
-// 'threshold' dialog (metrics.ts). The route and the root tab are the shell's.
+// 'threshold' dialog (metrics.ts). The route and the root tab are the shell's. Task 151 (K07.07): Thresholds in force,
+// every threshold each instance is judged by, a rule's line opening an override for the instance or one of its tags.
 import { get, post, Row, rowsOf, Table } from './api';
 import { fleet, tagsOf } from './fleet';
 import { Ctx, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, showMenu } from './ui';
 
 export interface RulesDoor { writable: boolean; reason?: string; user: string }
 interface RulesData extends RulesDoor {
   rules?: Table | null; state?: Table | null; log?: Table | null; catalog?: Table | null; sender?: Table | null;
+  inforce?: Table | null;
 }
 interface RuleResult { outcome: string; detail: string; rule_id?: number | null }
 
@@ -70,6 +72,7 @@ export interface RuleDialog {
   metric?: string;            // a new rule for this metric (the Metrics grid's 'New threshold'): the metric is fixed
   prefill?: Row;              // a new rule starting from these values (op, warning, critical, for_minutes): an override
   instanceId?: number;        // the scope a new rule starts with: this instance
+  tag?: string;               // or this tag (an override for a tag, opened from a threshold's line)
   database?: string;          // a new rule for this database's series
   after: () => void;
 }
@@ -118,10 +121,11 @@ export async function ruleDialog(o: RuleDialog) {
   const warn = num(p?.warning), crit = num(p?.critical);
   const mins = el('input', { type: 'number', min: '0', max: '1440', step: '1', style: 'width:5em', value: String(p?.for_minutes ?? 5) });
   const scope = el('select', {}, el('option', { value: 'fleet' }, 'every instance'), el('option', { value: 'tag' }, 'one tag'), el('option', { value: 'instance' }, 'one instance'));
-  scope.value = String(r?.scope ?? (o.instanceId ? 'instance' : 'fleet'));
+  scope.value = String(r?.scope ?? (o.instanceId ? 'instance' : o.tag ? 'tag' : 'fleet'));
   const tags = [...new Set(insts.flatMap(tagsOf))].sort();
   const tagSel = el('select', {}, ...tags.map(t => el('option', { value: t }, t)));
   if (r?.tag != null) { if (!tags.includes(String(r.tag))) tagSel.append(el('option', { value: String(r.tag) }, String(r.tag))); tagSel.value = String(r.tag); }
+  else if (o.tag) { if (!tags.includes(o.tag)) tagSel.append(el('option', { value: o.tag }, o.tag)); tagSel.value = o.tag; }
   const instSel = el('select', {});
   const db = el('input', { type: 'text', maxlength: '200', value: String(r?.database ?? o.database ?? '') });
   const note = el('textarea', { rows: '2', maxlength: '500', style: 'width:100%' });
@@ -318,7 +322,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
   endedBtn.addEventListener('click', () => { showEnded = !showEnded; endedBtn.setAttribute('aria-pressed', String(showEnded)); draw(); });
   if (all.length) {
     draw();
-    sec.append(el('h3', {}, 'Rules'), el('div', { class: 'seg' }, endedBtn), wrap);
+    sec.append(el('h3', { class: 'alert-rules-rules' }, 'Rules'), el('div', { class: 'seg' }, endedBtn), wrap);
   }
 
   const stateCols: Col[] = [
@@ -347,5 +351,54 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'detail', wide: true },
   ];
   sec.append(el('h3', {}, `Rule log ${rangeLabel(ctx)}`), grid(log, logCols, 'No rule was made, edited, switched or ended in the time range.'));
+  sec.append(inForceView(d, rowsOf(d.inforce)));
   return sec;
+}
+
+// thresholdLine: a threshold's rule as one line with its numbers ("above 80 / 95 % for 5 min")
+export function thresholdLine(r: Row): string {
+  if (r.source !== 'rule') return String(r.value ?? '');
+  return conditionWords(r);
+}
+
+// inForceView (task 151, K07.07): every threshold in force per instance - the alert rule each metric is judged by on
+// it, with the rules it overrides there, and a SQL Server instance's HA/DR, jobs and backups thresholds (the file's,
+// or the default: read only, the configuration is their source). The number of a rule's line opens its menu: an
+// override for this instance, an override for one of its tags, or the rule itself.
+function inForceView(door: RulesDoor, rows: Row[]): HTMLElement {
+  const insts = [...new Set(rows.map(r => String(r.instance)))].sort();
+  const sel = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'every instance'), ...insts.map(n => el('option', { value: n }, n)));
+  const wrap = el('div', {});
+  const menu = (r: Row, at: HTMLElement) => {
+    const items: [string, () => void][] = [];
+    const prefill: Row = { op: r.op, warning: r.warning, critical: r.critical, for_minutes: r.for_minutes };
+    if (door.writable) {
+      items.push([`Override for ${String(r.instance)}`, () => { void ruleDialog({ door, metric: String(r.what), prefill, instanceId: Number(r.instance_id), database: r.database == null ? undefined : String(r.database), after: redraw }); }]);
+      for (const t of (Array.isArray(r.tags) ? r.tags : []).map(String)) items.push([`Override for tag ${t}`, () => { void ruleDialog({ door, metric: String(r.what), prefill, tag: t, database: r.database == null ? undefined : String(r.database), after: redraw }); }]);
+    }
+    items.push([`Rule ${String(r.rule_id)} on the Rules grid`, () => { document.querySelector('.alert-rules-rules')?.scrollIntoView(); }]);
+    const box = at.getBoundingClientRect();
+    showMenu(box.left, box.bottom, items, at);
+  };
+  const cols: Col[] = [
+    { key: 'instance' },
+    { key: 'source', label: 'from', fmt: v => badge(v === 'rule' ? 'alert rule' : v === 'file' ? 'configuration file' : 'default', v === 'rule' ? 'ok' : '') },
+    { key: 'what', label: 'threshold', fmt: (v, r) => r.source === 'rule' ? `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` : String(r.label ?? v) },
+    { key: 'database', fmt: v => String(v ?? '') },
+    { key: 'op', label: 'rule', fmt: (_v, r) => {
+      const line = thresholdLine(r);
+      if (r.source !== 'rule') return el('span', { title: 'read only: mssql_thresholds in the configuration file sets it (docs/sqlserver-hadr.md)' }, line);
+      const b = el('button', { type: 'button', class: 'link', 'aria-haspopup': 'menu', 'aria-label': `${line}: override for this instance or a tag` }, line);
+      b.addEventListener('click', () => menu(r, b));
+      return b;
+    } },
+    { key: 'scope', label: 'in force by', fmt: (v, r) => r.source === 'rule' ? `rule ${String(r.rule_id)}${r.rule_name != null ? ` ${String(r.rule_name)}` : ''} (${scopeWords(v, r.target)})` : r.source === 'file' ? 'mssql_thresholds' : 'built in' },
+    { key: 'overrides', label: 'overrides here', wide: true, fmt: v => String(v ?? '') },
+  ];
+  const draw = () => wrap.replaceChildren(grid(rows.filter(r => !sel.value || r.instance === sel.value), cols,
+    'No threshold in force: no alert rule covers an active instance, and no SQL Server instance is in the fleet.'));
+  sel.addEventListener('change', draw);
+  draw();
+  return el('div', {}, el('h3', {}, 'Thresholds in force ', whatIsThis('Every threshold an active instance is judged by: per metric the alert rule in force on it (an instance\'s rule over a tag\'s over the fleet\'s) with the wider rules it overrides there, and on a SQL Server instance the HA/DR, jobs and backups thresholds (set by mssql_thresholds in the configuration file, else the default; read only here). Click a rule\'s line for an override on this instance or on one of its tags: the override is a narrower rule, made in the rule form.', 'Thresholds in force')),
+    el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel)), wrap);
 }

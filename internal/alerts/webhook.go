@@ -22,7 +22,7 @@ import (
 // followed: the send is refused (the destination is the configured one or none).
 type Webhook struct {
 	URL    string `yaml:"url"`
-	Format string `yaml:"format"`  // teams | slack | json (default json)
+	Format string `yaml:"format"`  // teams | slack | discord | googlechat | json (default json)
 	CAFile string `yaml:"ca_file"` // a PEM bundle of the CA that signed the endpoint's certificate (an internal CA)
 }
 
@@ -57,8 +57,8 @@ func (w *Webhook) build() (sender, error) {
 	if f == "" {
 		f = "json"
 	}
-	if f != "teams" && f != "slack" && f != "json" {
-		return nil, fmt.Errorf("webhook.format must be teams, slack or json (got %q)", f)
+	if !webhookFormats[f] {
+		return nil, fmt.Errorf("webhook.format must be teams, slack, discord, googlechat or json (got %q)", f)
 	}
 	tcfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if w.CAFile != "" {
@@ -88,6 +88,27 @@ func (w *Webhook) build() (sender, error) {
 func (s *webhookSender) destination() string { return hostOf(s.u) + " (" + s.format + ")" }
 
 func (s *webhookSender) perAlert() bool { return false }
+
+// webhookFormats are the bodies a webhook posts.
+var webhookFormats = map[string]bool{"teams": true, "slack": true, "discord": true, "googlechat": true, "json": true}
+
+// Text limits of the chat formats: Discord's content holds 2000 characters, a Google Chat message 4096; the budget
+// leaves room for the headline (at most maxLine bytes) and the line breaks, and counts bytes (never fewer than
+// characters), so a message never reaches the limit and no alert line is ever cut to fit.
+const (
+	discordLimit    = 2000
+	googleChatLimit = 4096
+)
+
+func (s *webhookSender) budget() int {
+	switch s.format {
+	case "discord":
+		return discordLimit - maxLine - 8
+	case "googlechat":
+		return googleChatLimit - maxLine - 8
+	}
+	return 0
+}
 
 func (s *webhookSender) send(ctx context.Context, m Message) error {
 	body, err := s.payload(m)
@@ -123,6 +144,23 @@ func (s *webhookSender) send(ctx context.Context, m Message) error {
 func (s *webhookSender) payload(m Message) ([]byte, error) {
 	switch s.format {
 	case "slack":
+		var b strings.Builder
+		b.WriteString("*" + m.Summary() + "*")
+		for _, a := range m.Alerts {
+			b.WriteString("\n" + a.Line())
+		}
+		return json.Marshal(map[string]any{"text": b.String()})
+	case "discord":
+		// an incoming webhook's content; allowed_mentions empty: a finding's text never pings @everyone or a role
+		var b strings.Builder
+		b.WriteString("**" + m.Summary() + "**")
+		for _, a := range m.Alerts {
+			b.WriteString("\n" + a.Line())
+		}
+		return json.Marshal(map[string]any{"content": b.String(), "username": "pgvigil",
+			"allowed_mentions": map[string]any{"parse": []string{}}})
+	case "googlechat":
+		// a space's incoming webhook takes a text message (*bold* is Chat's own markup)
 		var b strings.Builder
 		b.WriteString("*" + m.Summary() + "*")
 		for _, a := range m.Alerts {
