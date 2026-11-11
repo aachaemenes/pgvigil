@@ -12,7 +12,7 @@ import { Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel } from './ui';
 
 type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
-interface Cell { v: string | number; kind: Kind; status?: Status; text: string; stamp?: string }   // stamp: a time's local text for the CSV
+interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; text: string; stamp?: string }   // link: the screen draws the cell as a link   // stamp: a time's local text for the CSV
 export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string }   // note: the page's 'the newest N of M' line above the grid
 
 // ---- reading the page -----------------------------------------------------------------------------------
@@ -54,7 +54,7 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
     if (dur && Math.abs(n - dur.ms) <= dur.tol) return { v: n, kind: 'msecs' };
     // a share: '12.5 %', a growth with its sign ('+3 %'), or one the page rounds to a whole percent
     const pct = new Set([fmtNum(n), (n > 0 ? '+' : '') + fmtNum(n), fmtNum(Math.round(n)), (n > 0 ? '+' : '') + fmtNum(Math.round(n))].map(x => norm(x + ' %')));
-    if (pct.has(text)) return { v: n, kind: 'pct' };
+    if (pct.has(text)) return { v: n / 100, kind: 'pct' };   // a share under a percent format: Excel's own percent, 12.5 % = 0.125
     if (norm(fmtNum(raw)) === text || String(raw) === text) return { v: n, kind: Number.isInteger(n) ? 'int' : 'dec' };
   }
   return { v: text, kind: 'text' };
@@ -107,6 +107,9 @@ function statusOf(td: Element): Status | undefined {
   return b ? pick(b) : undefined;
 }
 
+// linkOf: a plain cell the screen draws as a link (a name that opens its page); a status cell keeps its status colours
+const linkOf = (td: Element) => !td.classList.contains('status') && !!td.querySelector('a[href]') || undefined;
+
 // a status cell that shows only its colour (a green Summary cell) carries its words in data-text; a statement cell
 // shown as its first characters (sqlview.ts) carries the whole text in data-full, which the export writes instead
 const text = (e: Element) => e.querySelector('[data-full]')?.getAttribute('data-full')
@@ -131,7 +134,7 @@ function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const rows = trs.map((tr, i) => [...tr.children].map((td, j) => {
     const t = text(td);
     const raw = data && data.length === trs.length && keys[j] ? data[i][keys[j]!.key] : undefined;
-    return { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), status: statusOf(td), text: t };
+    return { ...(raw !== undefined ? typed(raw, t) : numCol[j] ? fromText(t) : { v: t, kind: 'text' as Kind }), status: statusOf(td), link: linkOf(td), text: t };
   }));
   return { cols, rows };
 }
@@ -173,9 +176,10 @@ export function sections(root: ParentNode, fallback: string): Section[] {
 const fillOf: Record<Status, string> = { ok: 'FF006638', warn: 'FFE49325', crit: 'FFAB1F26', none: 'FFE0E1E9', ack: 'FF1B6AA3' };
 const fontOf: Record<Status, string> = { ok: 'FFFFFFFF', warn: 'FF1D1300', crit: 'FFFFFFFF', none: 'FF004F83', ack: 'FFFFFFFF' };
 const headFill = 'FF0063A3';
+const bandFill = 'FFF1F1F6', linkFont = 'FF004F83';   // DBA Dash's alternate row and its link text
 // numFmt ids: 3 is Excel's built-in '#,##0'; 164 on are this file's own
 const fmtId: Record<Kind, number> = { text: 0, int: 3, dec: 164, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
-const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '#,##0.00" %"'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
+const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '0.0#%'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
 
 const esc = (s: string) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -204,9 +208,9 @@ class Styles {
     if (i === undefined) { i = this.fonts.push(`<font>${bold ? '<b/>' : ''}<sz val="11"/><color rgb="${argb}"/><name val="Calibri"/></font>`) - 1; this.fontIds.set(k, i); }
     return i;
   }
-  id(kind: Kind, status?: Status, head = false): number {
-    const fill = head ? this.fill(headFill) : status ? this.fill(fillOf[status]) : 0;
-    const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], status !== 'none') : 0;
+  id(kind: Kind, status?: Status, head = false, band = false, link = false): number {
+    const fill = head ? this.fill(headFill) : status ? this.fill(fillOf[status]) : band ? this.fill(bandFill) : 0;
+    const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], status !== 'none') : link ? this.font(linkFont, false) : 0;
     const k = `${fmtId[kind]}|${fill}|${font}`;
     let i = this.xfs.get(k);
     if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }
@@ -238,7 +242,29 @@ function widthOf(c: Cell): number {
   return c.text.length;
 }
 
-interface Sheet { name: string; head: string[]; rows: Cell[][]; freeze: boolean }
+interface Sheet { name: string; head: string[]; rows: Cell[][]; freeze: boolean; table?: number }   // table: the id of its Excel table part
+
+// tableHead: an Excel table wants every column named, each name once (case ignored): an empty heading becomes
+// 'Column n', a repeat gets ' (2)'. The header cells carry the same words, or Excel repairs the file.
+export function tableHead(head: string[], ncol: number): string[] {
+  const used = new Set<string>();
+  return Array.from({ length: ncol }, (_, j) => {
+    const base = (head[j] ?? '').slice(0, 250) || `Column ${j + 1}`;
+    let s = base;
+    for (let i = 2; used.has(s.toLowerCase()); i++) s = `${base} (${i})`;
+    used.add(s.toLowerCase());
+    return s;
+  });
+}
+
+// tableXml: the grid as a real Excel table (sortable, filterable, named), with no table style: the cells keep their own colours.
+function tableXml(id: number, head: string[], nrow: number): string {
+  const ref = `A1:${colName(head.length - 1)}${nrow + 1}`;
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    + `<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="Table${id}" displayName="Table${id}" ref="${ref}" totalsRowShown="0">`
+    + `<autoFilter ref="${ref}"/><tableColumns count="${head.length}">${head.map((h, j) => `<tableColumn id="${j + 1}" name="${esc(h)}"/>`).join('')}</tableColumns>`
+    + '<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="0" showColumnStripes="0"/></table>';
+}
 
 function sheetXml(sh: Sheet, st: Styles): string {
   const ncol = Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
@@ -251,8 +277,15 @@ function sheetXml(sh: Sheet, st: Styles): string {
     return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
   const hs = st.id('text', undefined, sh.freeze);
-  const rows = [`<row r="1">${sh.head.map((h, j) => cell(colName(j) + '1', { v: h, kind: 'text', text: h }, hs)).join('')}</row>`];
-  sh.rows.forEach((r, i) => rows.push(`<row r="${i + 2}">${r.map((c, j) => cell(colName(j) + (i + 2), c, st.id(c.kind, c.status))).join('')}</row>`));
+  const head = sh.table ? tableHead(sh.head, ncol) : sh.head;
+  const rows = [`<row r="1">${head.map((h, j) => cell(colName(j) + '1', { v: h, kind: 'text', text: h }, hs)).join('')}</row>`];
+  // a grid's rows are banded as DBA Dash's export (every second row), under the cells' own colours; a table's cells are all written
+  const blank: Cell = { v: '', kind: 'text', text: '' };
+  sh.rows.forEach((r, i) => {
+    const band = sh.freeze && i % 2 === 1;
+    const cs = sh.table ? Array.from({ length: ncol }, (_, j) => r[j] ?? blank) : r;
+    rows.push(`<row r="${i + 2}">${cs.map((c, j) => cell(colName(j) + (i + 2), c, st.id(c.kind, c.status, false, band, c.link))).join('')}</row>`);
+  });
   const last = `${colName(ncol - 1)}${sh.rows.length + 1}`;
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
@@ -262,7 +295,7 @@ function sheetXml(sh: Sheet, st: Styles): string {
     + '<sheetFormatPr defaultRowHeight="15"/>'
     + `<cols>${widths.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`
     + `<sheetData>${rows.join('')}</sheetData>`
-    + (sh.freeze ? `<autoFilter ref="A1:${last}"/>` : '')
+    + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : sh.freeze ? `<autoFilter ref="A1:${last}"/>` : '')
     + '</worksheet>';
 }
 
@@ -302,11 +335,19 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
   ];
   const sheets: Sheet[] = [{ name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, freeze: false },
     ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, freeze: true }))];
+  // every grid with rows is an Excel table (a table needs a data row: an empty grid keeps the plain filter)
+  let tables = 0;
+  for (const sh of sheets) if (sh.freeze && sh.rows.length > 0) sh.table = ++tables;
   const st = new Styles();
   const enc = new TextEncoder();
   const files = sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh, st)) }));
   const x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
-  const filters = sheets.map((sh, i) => sh.freeze
+  const ncolOf = (sh: Sheet) => Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
+  const tableFiles = sheets.flatMap((sh, i) => sh.table ? [
+    { name: `xl/tables/table${sh.table}.xml`, data: enc.encode(tableXml(sh.table, tableHead(sh.head, ncolOf(sh)), sh.rows.length)) },
+    { name: `xl/worksheets/_rels/sheet${i + 1}.xml.rels`, data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${sh.table}.xml"/></Relationships>`) }] : []);
+  const filters = sheets.map((sh, i) => sh.freeze && !sh.table
     ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${esc(sh.name.replace(/'/g, "''"))}'!$A$1:$${colName(Math.max(sh.head.length, 1) - 1)}$${sh.rows.length + 1}</definedName>` : '').join('');
   return [
     { name: '[Content_Types].xml', data: enc.encode(x + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -314,6 +355,7 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
       + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
       + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
       + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')
+      + sheets.map(sh => sh.table ? `<Override PartName="/xl/tables/table${sh.table}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>` : '').join('')
       + '</Types>') },
     { name: '_rels/.rels', data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
       + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>') },
@@ -324,7 +366,7 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
       + sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
       + `<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`) },
     { name: 'xl/styles.xml', data: enc.encode(st.xml()) },   // after the sheets: they register the styles they use
-    ...files,
+    ...files, ...tableFiles,
   ];
 }
 
