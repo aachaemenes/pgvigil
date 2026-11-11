@@ -297,7 +297,9 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       const v = r[c.key];
       const out = fmtCell(c, r);
       const base = c.num ? 'num' : c.wide ? 'wide' : '';
-      const extra = c.cls ? c.cls(v, r) : '';
+      const own = c.cls ? c.cls(v, r) : '';
+      // a rule's bare class (a Col's cls: 'warn', 'crit', 'ok') is a status cell: app.css draws only td.status.*
+      const extra = /^(ok|warn|crit)$/.test(own) ? 'status ' + own : own;
       const cl = [base, extra].filter(Boolean).join(' ');
       const td = el('td', cl ? { class: cl } : {});
       if (c.wide && typeof out === 'string') td.title = out;
@@ -335,6 +337,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       // every row, the ones past the grid's page built off the screen (the grid itself stays as drawn)
       void copyText(header() + '\n' + tsv(models.get(table)!.allRows!())).then(done(shown.length + ' rows'));
     }]);
+    // the grid tools (gridtools.ts) add their lines to this menu: the copies with the colours, the columns, the groups, the bars
+    wrap.dispatchEvent(new CustomEvent('pgvigil:gridmenu', { bubbles: true, detail: { table, td, items } }));
     e.preventDefault();
     const r = (e.target as Element).getBoundingClientRect();
     const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;

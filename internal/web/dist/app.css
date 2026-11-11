@@ -249,7 +249,8 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 :root:not([data-status="quiet"]) .grid > thead th button, :root:not([data-status="quiet"]) .grid > thead th a { color: var(--st-on); }
 :root:not([data-status="quiet"]) .grid > thead th .filter-btn, :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { color: var(--st-on); }
 :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { text-decoration: underline; }
-:root:not([data-status="quiet"]) .grid td.status:not(:has(.cell-link)) { padding: .35rem .6rem; }
+/* a status cell that holds plain text (no link filling it) keeps the grid's own padding, in the solid and the quiet style */
+.grid td.status:not(:has(.cell-link)) { padding: .35rem .6rem; }
 /* a chart's menu button in its heading, and the line that says what the menu did */
 .chart-menu { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 .35rem; font: inherit; line-height: 1; }
 .chart-menu:hover, .chart-menu:focus-visible { color: var(--fg); }
