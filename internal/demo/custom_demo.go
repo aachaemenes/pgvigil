@@ -7,8 +7,8 @@ import (
 
 // customDemoRows are two custom checks over the demo's history (DBADash's custom checks; pgvigil's custom collection):
 //   - idle_in_transaction on every primary (a value check every 5 minutes, warning > 3, critical > 10): a small count
-//     that follows the load, and on aurora-crm01 a climb through the last two hours past warning to critical (an
-//     application that leaves transactions open);
+//     that follows the load and stays at or under the warning line, and on aurora-crm01 a climb through the last two
+//     hours past warning to critical (an application that leaves transactions open);
 //   - disabled_triggers on onprem-erp01 only (a row-count check every hour, warning > 0): none until six hours before
 //     the anchor, then two triggers a load switched off and did not switch back on.
 //
@@ -34,7 +34,9 @@ func (g *Gen) customDemoRows(t time.Time, first bool) []Row {
 	out := append([]Row{{"kind": "state", "checks": names}}, checks...)
 
 	if first || t.Minute()%5 == 0 {
-		v := math.Floor(3 * curve(t) * g.Spec.Load * noise(g.Spec.Name+"|idle", t))
+		// the load and the noise alone stay at or under the warning line (3): a busy primary such as rds-orders01
+		// (load 2.0) would cross it at some 5-minute marks near the daily peak, a finding the demo does not tell
+		v := math.Min(3, math.Floor(3*curve(t)*g.Spec.Load*noise(g.Spec.Name+"|idle", t)))
 		if g.is("aurora-crm01") {
 			if since := t.Sub(g.end.Add(-2 * time.Hour)); since > 0 { // the climb holds at its top past the anchor (the live demo keeps crm01 critical)
 				v += math.Round(14 * math.Min(since.Hours(), 2) / 2)

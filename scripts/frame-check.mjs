@@ -1,7 +1,8 @@
 // The shared frame's browser checks (proof-frame.sh): a grid's column filter, its copy menu and the clipboard, a grid
 // inside a grid's row, the Summary's Tests pane header, a chart legend's isolation, the crosshair readout, the auto
 // refresh select, the filtered CSV export, a grid past its page, a pie's wedges, the status colours, the range
-// control with its calendar periods and display time zone, and the time strip above an event grid.
+// control with its calendar periods and display time zone, the time strip above an event grid, and a new page opened at
+// its top.
 //   node scripts/frame-check.mjs <cdp port> <base url/> <download folder>
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base, dl] = process.argv.slice(2);
@@ -365,6 +366,27 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
     && !!esc && esc.said === whole && esc.drawn === drawn(n) && esc.dim === 0,
     s0 ? `${n} log events, ${s0.steps} steps, ${s0.drawn} drawn; a drag over steps 30-59: '${dragged?.said}' (wanted ${right}), ${dragged?.drawn} drawn, ${dragged?.dim} steps dimmed; Whole range: ${back?.drawn} drawn, ${back?.dim} dimmed; keys to steps 3-5: '${keyed?.said}' (wanted ${mid}), ${keyed?.drawn} drawn, ${keyed?.dim} dimmed; Escape: ${esc?.drawn} drawn`
        : `no strip on the Log events page (${n} events from the API)`);
+}
+
+// P. a link to another page opens that page at its top, wherever the reader stood on the page before (Allen
+// 2026-11-11: 'when I click on something it takes me down to the page and I have to scroll all the way up'): the
+// fleet Summary scrolled to its end, the lowest link in it to another page clicked like a reader would
+{   // its own scope
+  await go('#/summary');
+  const low = await ev(`(() => { const path = h => h.split('?')[0] + '|' + (new URLSearchParams(h.split('?')[1] ?? '').get('i') ?? '');
+    const here = path(location.hash), ls = [...document.querySelectorAll('main a[href^="#/"]')].filter(a => path(a.getAttribute('href')) !== here);
+    const a = ls[ls.length - 1]; if (!a) return null; a.scrollIntoView({ block: 'end' });
+    return { href: a.getAttribute('href'), y: Math.round(window.scrollY), tall: document.documentElement.scrollHeight > innerHeight + 200 }; })()`);
+  let after = null;
+  if (low) {
+    await ev(`(() => { const a = [...document.querySelectorAll('main a[href^="#/"]')].filter(x => x.getAttribute('href') === ${JSON.stringify(low.href)}).pop();
+      a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); return 'ok'; })()`);
+    for (let i = 0; i < 40; i++) { await sleep(250); if (await ev(`location.hash === ${JSON.stringify(low.href)} && !!document.querySelector('main section, main .grid-box, main .chart') && !document.querySelector('main > p.empty[role=status]')`)) break; }
+    await sleep(600);
+    after = await ev(`({ hash: location.hash, y: Math.round(window.scrollY) })`);
+  }
+  check('P new page at its top', !!low && low.tall && low.y > 0 && !!after && after.hash === low.href && after.y === 0,
+    low ? `the Summary ${low.tall ? 'taller' : 'NOT taller'} than the window, scrolled to ${low.y} px; '${low.href}' clicked: ${after?.hash === low.href ? 'opened' : 'NOT opened'}, the new page at ${after?.y} px` : 'no link to another page on the Summary');
 }
 
 ws.close();

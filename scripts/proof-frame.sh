@@ -38,6 +38,8 @@
 #                 drag over steps 30-59: '<from> to <to>: k of n rows.' with k the API's count for that half, k drawn, 30
 #                 steps dimmed, 'Whole range' offered; its click: all rows, none dimmed; Home, three right, two with Shift,
 #                 Enter: the rows of steps 3-5, 57 dimmed; Escape: all rows again
+#   P new page at its top  the fleet Summary (taller than the window) scrolled to its end; the lowest link in it to
+#                 another page clicked: that page opens at scrollY 0
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
