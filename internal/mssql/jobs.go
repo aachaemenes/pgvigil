@@ -127,7 +127,7 @@ ORDER BY j.name`
 // jobStepsSQL: one row per step. The command is read for the job's definition (its versions, task 110) and masked
 // before it leaves the collector (collect.MaskJobText): a step's command can hold a password.
 var jobStepsSQL = `SELECT 'step' AS kind, st.job_id, st.step_id, CAST(st.step_name AS nvarchar(128)) AS step_name,
-  CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, CAST(LEN(st.command) AS int) AS command_chars, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
+  CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, CAST(DATALENGTH(st.command) / 2 AS int) AS command_chars, st.flags, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
   st.retry_attempts, st.retry_interval, CAST(st.output_file_name AS nvarchar(260)) AS output_file, CAST(px.name AS nvarchar(128)) AS proxy,
   CAST(st.subsystem AS nvarchar(40)) AS subsystem, CAST(st.database_name AS nvarchar(128)) AS database_name,
   st.last_run_outcome AS last_outcome,
@@ -211,12 +211,12 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor
 	// the script of each job, from the masked steps and the schedules' own terms
 	for _, j := range rows {
 		id, _ := j["job_id"].(string)
-		j["script"] = agentScript(j, rowsOfJob(steps, id), rowsOfJob(schedules, id))
+		j["script"], j["script_format"] = agentScript(j, rowsOfJob(steps, id), rowsOfJob(schedules, id)), AgentScriptFormat
 	}
 	for _, st := range steps {
 		st["on_success"] = stepAction(st["on_success_action"], st["on_success_step_id"])
 		st["on_fail"] = stepAction(st["on_fail_action"], st["on_fail_step_id"])
-		for _, k := range []string{"on_success_action", "on_success_step_id", "on_fail_action", "on_fail_step_id", "command_chars"} {
+		for _, k := range []string{"on_success_action", "on_success_step_id", "on_fail_action", "on_fail_step_id", "command_chars", "flags"} {
 			delete(st, k)
 		}
 	}
@@ -296,6 +296,10 @@ func jobsAdvance(from, next, nextMark int64, runs []collect.Row) (int64, int64, 
 	return from, next, nextMark
 }
 
+// AgentScriptFormat numbers the way agentScript writes a script: a change to the builder takes the next number, so
+// the repository rewrites the newest version's script in place instead of storing a version of every job (0094).
+const AgentScriptFormat = 1
+
 // rowsOfJob is the rows of one job, in the order they were read (steps by step_id, schedules by name).
 func rowsOfJob(rows []collect.Row, jobID string) []collect.Row {
 	var out []collect.Row
@@ -368,7 +372,8 @@ func agentScript(job collect.Row, steps, schedules []collect.Row) string {
 	for _, st := range steps {
 		stepName, _ := st["step_name"].(string)
 		fmt.Fprintf(&b, "\n-- step %d: %s\n", n(st["step_id"]), oneLine.Replace(stepName))
-		if c, _ := st["command"].(string); n(st["command_chars"]) > 8000 && n(st["command_chars"]) > int64(len([]rune(c))) {
+		// the length of the command as stored (masking lengthens the text read, never what was cut)
+		if n(st["command_chars"]) > 8000 {
 			fmt.Fprintf(&b, "-- the command is %d characters long: the first 8,000 are below\n", n(st["command_chars"]))
 		}
 		p := []string{"@job_name = " + name, fmt.Sprintf("@step_id = %d", n(st["step_id"])), "@step_name = " + tsqlN(st["step_name"]),
@@ -379,7 +384,8 @@ func agentScript(job collect.Row, steps, schedules []collect.Row) string {
 		p = append(p, "@command = "+tsqlN(st["command"]),
 			fmt.Sprintf("@on_success_action = %d", n(st["on_success_action"])), fmt.Sprintf("@on_success_step_id = %d", n(st["on_success_step_id"])),
 			fmt.Sprintf("@on_fail_action = %d", n(st["on_fail_action"])), fmt.Sprintf("@on_fail_step_id = %d", n(st["on_fail_step_id"])),
-			fmt.Sprintf("@retry_attempts = %d", n(st["retry_attempts"])), fmt.Sprintf("@retry_interval = %d", n(st["retry_interval"])))
+			fmt.Sprintf("@retry_attempts = %d", n(st["retry_attempts"])), fmt.Sprintf("@retry_interval = %d", n(st["retry_interval"])),
+			fmt.Sprintf("@flags = %d", n(st["flags"])))
 		if o, ok := text(st["output_file"]); ok {
 			p = append(p, "@output_file_name = "+tsqlN(o))
 		}

@@ -124,13 +124,15 @@ function versions(rows: Row[], jobName: string): HTMLElement {
       if (!cur.kept || (before && !before.kept)) parts.push(el('p', { class: 'meta' },
         'No script is kept for ' + (!cur.kept ? 'this version' : 'the version before') + ' (it was stored before scripts were): its definition is shown as text in its place.'));
       if (v.dropped) parts.push(el('p', { class: 'meta' }, 'The read of this time no longer listed the job: the script is the last one seen.'));
-      parts.push(textDiffView(before?.text, cur.text, prev ? label(prev) : 'nothing before', label(v)));
+      // the list holds the newest 200 versions: the oldest listed may have one before it that is not listed
+      if (!prev && Number(v.version_no) > 1) parts.push(el('p', { class: 'meta' }, `Version ${String(Number(v.version_no) - 1)} is past the newest ${fmtNum(rows.length)} listed: this version is shown alone.`));
+      parts.push(textDiffView(before?.text, cur.text, prev ? label(prev) : 'nothing listed before', label(v)));
     } else if (view === 'info') {
       parts.push(el('p', { class: 'meta' }, `The job as it was from ${fmtTime(v.valid_from)}` + (rows[i - 1] ? ` to ${fmtTime(rows[i - 1].valid_from)}.` : v.dropped ? ' (dropped then).' : ' (in force).')),
         definitionView(defOf(v)));
     } else if (view === 'compare') {
       parts.push(prev ? definitionCompare(defOf(prev), defOf(v), `${jobName} previous, ${label(prev)}`, `${jobName}, ${label(v)}`)
-        : el('p', { class: 'empty' }, 'The first version has nothing before it.'));
+        : el('p', { class: 'empty' }, Number(v.version_no) > 1 ? 'The version before this one is past the versions listed.' : 'The first version has nothing before it.'));
       if (prev) parts.push(el('p', { class: 'meta' }, 'A cell marked * differs from the other side.'));
     } else {
       const list = changeList(v);
@@ -145,7 +147,8 @@ function versions(rows: Row[], jobName: string): HTMLElement {
   };
   const list = rows.map((v, i) => {
     const prev = rows[i + 1];
-    const n = prev && !v.dropped ? diffCounts(lineDiff(scriptOf(prev).text, scriptOf(v).text)) : undefined;
+    // a count only between two kept scripts: against a definition shown as text it would count the format, not a change
+    const n = prev && !v.dropped && scriptOf(prev).kept && scriptOf(v).kept ? diffCounts(lineDiff(scriptOf(prev).text, scriptOf(v).text)) : undefined;
     return { _i: i, version_no: v.version_no, valid_from: v.valid_from, valid_to: rows[i - 1]?.valid_from ?? null, dropped: v.dropped,
       what: what(v), lines: n ? `+${n.added} -${n.removed}` : '' };
   });

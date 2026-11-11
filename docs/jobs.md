@@ -74,7 +74,13 @@ Like DBA Dash's Job DDL History, every version also keeps the whole job as one s
 
 A version is stored when the definition's fields change, and also when only the script does. A version kept before
 migration 0094 has no script: the first read after it fills the newest version's script in place; older ones show
-their definition as text instead, and the page says so.
+their definition as text instead, and the page says so. Each script carries the number of the format it was written
+in: when a pgvigil upgrade writes scripts another way, the newest version's script is rewritten in place, not stored as
+a new version of every job (the diff across that version then also shows the change of format).
+
+What the script does not carry: pgAgent's job class (written as class 1) and its exceptions (`pga_exception`); a
+change to either is not seen. On SQL Server it carries every parameter of the job, its steps (with `@flags`) and its
+schedules that msdb holds, but not the job's target servers beyond the local one (multi-server administration).
 
 Under the job's history the versions are listed with valid from / to; for the one picked:
 

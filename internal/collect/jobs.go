@@ -194,7 +194,7 @@ func (jobsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info
 			}
 			// the job's script, from the masked row
 			if r["kind"] == "job" {
-				r["script"] = jobScript(r)
+				r["script"], r["script_format"] = jobScript(r), JobScriptFormat
 			}
 		}
 	}()
@@ -217,6 +217,10 @@ func (jobsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info
 //   pgAgent   the DO block pgAdmin writes for a job: the job, then an INSERT per step and per schedule, the
 //             schedule's minutes, hours, weekdays, month days and months as pgAgent's boolean arrays
 
+// JobScriptFormat numbers the way jobScript writes a script: a change to the builder takes the next number, so the
+// repository rewrites the newest version's script in place instead of storing a version of every job (0094).
+const JobScriptFormat = 1
+
 // sqlLit is a text as a PostgreSQL string literal.
 func sqlLit(s string) string {
 	if strings.Contains(s, `\`) {
@@ -228,7 +232,8 @@ func sqlLit(s string) string {
 // dollarQuoted is a text between dollar quotes whose tag the text does not hold.
 func dollarQuoted(s, tag string) string {
 	t := "$" + tag + "$"
-	for i := 1; strings.Contains(s, t); i++ {
+	// a text that holds the tag, or ends in it without its last '$' (that end and the closing tag would make one)
+	for i := 1; strings.Contains(s, t) || strings.HasSuffix(s, t[:len(t)-1]); i++ {
 		t = fmt.Sprintf("$%s%d$", tag, i)
 	}
 	return t + s + t
@@ -344,7 +349,9 @@ func agentJobScript(def map[string]any) string {
 		return "NULL"
 	}
 	b.WriteString("-- pgAgent job: " + strings.NewReplacer("\r", " ", "\n", " ").Replace(textOf(def["name"])) + "\n")
-	b.WriteString("DO $pgagent$\nDECLARE\n    jid integer;\nBEGIN\n")
+	head := b.String()
+	b.Reset()
+	b.WriteString("\nDECLARE\n    jid integer;\nBEGIN\n")
 	b.WriteString("INSERT INTO pgagent.pga_job (jobjclid, jobname, jobdesc, jobhostagent, jobenabled)\nVALUES (\n")
 	b.WriteString("    1,\n    " + sqlLit(textOf(def["name"])) + ",\n    " + sqlLit(textOf(def["description"])) + ",\n    " +
 		sqlLit(textOf(def["host agent"])) + ",\n    " + yes(def["enabled"]) + ")\nRETURNING jobid INTO jid;\n")
@@ -370,8 +377,9 @@ func agentJobScript(def map[string]any) string {
 		b.WriteString("    " + bitsArray(sc.v["minutes"], 60, 0) + ",\n    " + bitsArray(sc.v["hours"], 24, 0) + ",\n    " +
 			bitsArray(sc.v["weekdays"], 7, 1) + ",\n    " + bitsArray(sc.v["month days"], 32, 1) + ",\n    " + bitsArray(sc.v["months"], 12, 1) + ");\n")
 	}
-	b.WriteString("END\n$pgagent$;\n")
-	return b.String()
+	b.WriteString("END\n")
+	// the block's own quote, never one its text holds (a step that carries a script copied from this page)
+	return head + "DO " + dollarQuoted(b.String(), "pgagent") + ";\n"
 }
 
 // jobScript is the script of one job row (kind 'job'), by its scheduler.

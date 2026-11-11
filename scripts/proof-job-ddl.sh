@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proof of job scripts and configuration history in DBA Dash's shape (task 154; migration 0094, internal/mssql/jobs.go,
-# internal/mssql/traceflags.go, internal/collect/jobs.go, internal/web/q_config_history.go).
+# the collector mssql_traceflags in it, internal/collect/jobs.go, internal/web/q_config_history.go from the wiring).
 #
 # Needs: docker (it starts its own SQL Server container, SQL Server Agent on, a throwaway sa password made here and
 # never printed; PGVIGIL_MSSQL_IMAGE, default mcr.microsoft.com/mssql/server:2022-latest), psql, curl, python3, go at
@@ -30,6 +30,16 @@
 #     /api/mssql/traceflags answer with the rows of B, C and D; /api/jobs/thresholds answers levels and status
 #     (POST on a -no-login server is 403: thresholds need the UI login).
 #  G. go test of the packages it changed, go vet, tsc.
+#  H. [review fold, written before its first run] the script builders' cases, as tests written into a scratch copy
+#     (the slice owns no test file): cronScript named and unnamed, a backslash in a name (E''), a command holding
+#     $cmd$ and one ending in $cmd (the quote still closes where it should), $pgagent$ inside a pgAgent step (the
+#     DO block's quote takes another tag), month day 'last' and weekday base 1 in the boolean arrays; agentScript
+#     with two schedules, start_step_id 2 (sp_update_job), a command of 9,000 characters (the note), a quote in a
+#     name, @flags. Each script of H that PostgreSQL can parse (pg_cron's and pgAgent's) parses: EXPLAIN-free, as a
+#     DO block or a SELECT prepared against stand-in functions.
+#  I. [review fold] thresholds: a set at each level gives job_status that level; inherit at the job level falls to the
+#     instance's; {"fail_24h_warn":"abc"} and 0 and 2000000 are refused (outcome refused, no cast error); a script of
+#     another format with the same definition is rewritten in place (no new version).
 set -euo pipefail
 export PATH=$HOME/.local/share/mise/shims:$PATH
 : "${PGVIGIL_ADMIN_DSN:?a superuser keyword DSN of the PostgreSQL, no password, no dbname}"
@@ -183,4 +193,99 @@ go vet ./internal/mssql ./internal/collect ./internal/web >"$OUT" 2>&1 || { cat 
 go test ./internal/mssql ./internal/collect ./internal/web -count=1 >"$OUT" 2>&1 || { tail -30 "$OUT"; fail "G: tests"; }
 if [ -x web/node_modules/.bin/tsc ]; then (cd web && node_modules/.bin/tsc --noEmit) || fail "G: tsc"; else echo "  tsc: not checked (no web/node_modules)"; fi
 echo "G: OK"
+echo "--- H. the script builders"
+H=$WORK/h; mkdir -p "$H"; tar --exclude=./web/node_modules --exclude=./.git -cf - . | tar -C "$H" -xf -
+cat > "$H/internal/collect/zz_proof_script_test.go" <<'GO'
+package collect
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestProofCronScript(t *testing.T) {
+	s := cronScript(Row{"job_id": int64(1), "job_name": `a\b`, "schedule": "0 3 * * *", "command": "SELECT '$cmd$'; -- $cmd", "datname": "app", "run_as": "u", "active": true})
+	if !strings.Contains(s, `job_name => E'a\\b'`) {
+		t.Fatalf("backslash name: %s", s)
+	}
+	if !strings.Contains(s, "command  => $cmd1$SELECT '$cmd$'; -- $cmd$cmd1$") {
+		t.Fatalf("command quote: %s", s)
+	}
+	u := cronScript(Row{"job_id": int64(2), "schedule": "* * * * *", "command": "SELECT 1", "active": false})
+	if !strings.Contains(u, "cron.schedule(") || !strings.Contains(u, "active false") {
+		t.Fatalf("unnamed: %s", u)
+	}
+	if d := dollarQuoted("exit $code", "code"); d != "$code1$exit $code$code1$" {
+		t.Fatalf("a text ending in the tag: %s", d)
+	}
+}
+
+func TestProofAgentScript(t *testing.T) {
+	def := map[string]any{"name": "j", "enabled": true,
+		"steps":     map[string]any{"s #2": map[string]any{"kind": "SQL", "on error": "fail", "command": "SELECT 'DO $pgagent$'"}},
+		"schedules": map[string]any{"m #1": map[string]any{"enabled": true, "minutes": "0", "hours": "3", "weekdays": "1,7", "month days": "1,last", "months": "any"}}}
+	s := agentJobScript(def)
+	if !strings.Contains(s, "DO $pgagent1$") || !strings.HasSuffix(s, "$pgagent1$;\n") {
+		t.Fatalf("outer quote: %s", s)
+	}
+	if !strings.Contains(s, "'{t,f,f,f,f,f,t}'::boolean[]") {
+		t.Fatalf("weekdays base 1: %s", s)
+	}
+	if !strings.Contains(s, "'{t,"+strings.Repeat("f,", 30)+"t}'::boolean[]") {
+		t.Fatalf("month day last: %s", s)
+	}
+}
+GO
+cat > "$H/internal/mssql/zz_proof_script_test.go" <<'GO'
+package mssql
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/aachaemenes/pgvigil/internal/collect"
+)
+
+func TestProofAgentScript(t *testing.T) {
+	job := collect.Row{"name": "it's", "enabled": int64(1), "start_step_id": int64(2), "last_outcome": int64(1)}
+	steps := []collect.Row{{"step_id": int64(1), "step_name": "a", "subsystem": "TSQL", "command": strings.Repeat("x", 8000), "command_chars": int64(9000), "flags": int64(8)},
+		{"step_id": int64(2), "step_name": "b", "subsystem": "TSQL", "command": "SELECT 1"}}
+	scheds := []collect.Row{{"schedule_name": "s1", "runs": "every day at 01:00"}, {"schedule_name": "s2", "runs": "every day at 02:00"}}
+	s := agentScript(job, steps, scheds)
+	for _, want := range []string{"@job_name = N'it''s'", "-- the command is 9000 characters long", "@flags = 8", "sp_update_job", "@start_step_id = 2", "@name = N's1'", "@name = N's2'", "sp_add_jobserver"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in:\n%s", want, s)
+		}
+	}
+	if strings.Count(s, "sp_add_jobschedule") != 2 {
+		t.Fatalf("two schedules: %s", s)
+	}
+}
+GO
+(cd "$H" && go test ./internal/collect ./internal/mssql -run 'TestProof' -count=1) >"$OUT" 2>&1 || { cat "$OUT"; fail "H: the builders"; }
+# the PostgreSQL scripts parse: the pgAgent one as a DO block in a transaction rolled back over the stand-in schema
+q "select script from pgvigil.job_versions where instance_id=$IA and scheduler='pgagent' order by valid_from desc limit 1" > "$WORK/pga.sql"
+psql "$PG_AGENT_DSN" -XAtq -v ON_ERROR_STOP=1 -c "BEGIN" -f "$WORK/pga.sql" -c "SELECT count(*) FROM pgagent.pga_job" -c "ROLLBACK" >"$OUT" 2>&1 || { cat "$OUT"; fail "H: the pgAgent script does not run"; }
+grep -qx 2 "$OUT" || { cat "$OUT"; fail "H: the pgAgent script did not make the job"; }
+echo "H: OK"
+
+echo "--- I. thresholds, the script format"
+th() { q "select pgvigil.import_job_threshold(now(), '$1'::jsonb)->>'outcome'"; }
+lvl() { q "select level || '|' || status from pgvigil.job_status($IS) where job_name='$J'"; }
+[ "$(lvl)" = "default|ok" ] || [ "$(lvl)" = "default|none" ] || fail "I: default ($(lvl))"
+[ "$(th '{"op":"set","level":"root","ui_user":"p","fail_7d_warn":1}')" = done ] || fail "I: root"
+[ "$(lvl | cut -d'|' -f1)" = root ] || fail "I: root level ($(lvl))"
+[ "$(th "{\"op\":\"set\",\"level\":\"instance\",\"instance_id\":$IS,\"ui_user\":\"p\",\"fail_7d_crit\":1}")" = done ] || fail "I: instance"
+[ "$(lvl | cut -d'|' -f1)" = instance ] || fail "I: instance level ($(lvl))"
+[ "$(th "{\"op\":\"set\",\"level\":\"job\",\"instance_id\":$IS,\"job_name\":\"$J\",\"ui_user\":\"p\",\"since_ok_warn_min\":100000}")" = done ] || fail "I: job"
+[ "$(lvl | cut -d'|' -f1)" = job ] || fail "I: job level ($(lvl))"
+[ "$(th "{\"op\":\"inherit\",\"level\":\"job\",\"instance_id\":$IS,\"job_name\":\"$J\",\"ui_user\":\"p\"}")" = done ] || fail "I: inherit"
+[ "$(lvl | cut -d'|' -f1)" = instance ] || fail "I: after inherit ($(lvl))"
+for v in '"abc"' 0 2000000; do [ "$(th "{\"op\":\"set\",\"level\":\"root\",\"ui_user\":\"p\",\"fail_24h_warn\":$v}")" = refused ] || fail "I: $v not refused"; done
+N0=$(q "select count(*) $vq")
+q "update pgvigil.job_versions set script_format = 0, script = script || '-- old format' where (instance_id, scheduler, job_id, version_no) = ($IS, 'sqlagent', '$JID', 3)" >/dev/null
+collect mssql_jobs "$NS"
+[ "$(q "select count(*) $vq")" = "$N0" ] || fail "I: a format change made a version"
+[ "$(q "select (script not like '%-- old format') || '|' || script_format $vq and version_no=3")" = "true|1" ] || fail "I: the script rewritten in place"
+echo "I: OK"
 echo "PROOF OK"

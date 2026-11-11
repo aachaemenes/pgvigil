@@ -5,9 +5,10 @@
 --      sp_add_jobschedule; pg_cron: cron.schedule_in_database; pgAgent: pgAdmin's DO block), written by the
 --      collector and stored with every version. job_version_track stores a new version when the definition's hash
 --      differs, as before, and now also when the script differs from the one kept (a change the definition's
---      fields do not carry: a schedule's start date, say). A version kept before this file has no script: the first
---      read after it fills the newest version's script in place, without a new version; older versions stay
---      without one. import_jobs and import_mssql_jobs (0072's bodies) hand the script over.
+--      fields do not carry: a step's flags, say) in the same format. A version kept before this file has no script,
+--      and a version whose script is of another format (the collector's builder changed): the first read after it
+--      rewrites the newest version's script in place, without a new version; older versions keep theirs.
+--      import_jobs and import_mssql_jobs (0072's bodies) hand the script and its format over.
 --   2. pgvigil.mssql_config_history: every value of sys.configurations a read saw, with valid_from and valid_to
 --      (NULL = in force). It is written by a trigger on pgvigil.mssql_config, so import_mssql_instance (0063) is
 --      not re-created here. The rows 0063 holds are carried over: the value in force, and where 0063 kept one, the
@@ -31,6 +32,7 @@
 -- pgvigil.mssql_config (a row per instance and option, written hourly), new tables.
 
 ALTER TABLE pgvigil.job_versions ADD COLUMN IF NOT EXISTS script text;
+ALTER TABLE pgvigil.job_versions ADD COLUMN IF NOT EXISTS script_format int;   -- the builder's format number (the collector's *ScriptFormat)
 
 -- job_version_track: one read's definitions against the versions kept. p_defs = [{scheduler, job_id, job_name,
 -- definition, script}]; p_schedulers = the schedulers this read covers (a job of one of them that p_defs does not
@@ -48,40 +50,45 @@ BEGIN
   WITH d AS (
     SELECT DISTINCT ON (e->>'scheduler', e->>'job_id')
            e->>'scheduler' AS scheduler, e->>'job_id' AS job_id, e->>'job_name' AS job_name,
-           coalesce(jsonb_strip_nulls(e->'definition'), '{}'::jsonb) AS def, nullif(e->>'script', '') AS script
+           coalesce(jsonb_strip_nulls(e->'definition'), '{}'::jsonb) AS def, nullif(e->>'script', '') AS script,
+           CASE WHEN e->>'script_format' ~ '^[0-9]{1,6}$' THEN (e->>'script_format')::int END AS script_format
       FROM jsonb_array_elements(coalesce(p_defs, '[]'::jsonb)) e
      WHERE e->>'job_id' IS NOT NULL AND e->>'scheduler' = ANY (p_schedulers)
      ORDER BY e->>'scheduler', e->>'job_id'
   ), cur AS (
     SELECT DISTINCT ON (v.scheduler, v.job_id) v.scheduler, v.job_id, v.job_name, v.version_no, v.def_hash, v.definition, v.dropped,
-           v.script, v.valid_from
+           v.script, v.script_format, v.valid_from
       FROM pgvigil.job_versions v
      WHERE v.instance_id = p_instance_id AND v.scheduler = ANY (p_schedulers)
      ORDER BY v.scheduler, v.job_id, v.valid_from DESC
   ), fill AS (
-    -- the newest version was kept without a script (before 0094, or by a collector older than the script) and the
-    -- definition is the same: the script is filled in place, it is no change
-    UPDATE pgvigil.job_versions v SET script = d.script
+    -- the newest version was kept without a script (before 0094, or by a collector older than the script) or with
+    -- one of another format, and the definition is the same: the script is written in place, it is no change
+    UPDATE pgvigil.job_versions v SET script = d.script, script_format = d.script_format
       FROM d JOIN cur ON cur.scheduler = d.scheduler AND cur.job_id = d.job_id
      WHERE v.instance_id = p_instance_id AND v.scheduler = cur.scheduler AND v.job_id = cur.job_id AND v.valid_from = cur.valid_from
-       AND NOT cur.dropped AND cur.def_hash = md5(d.def::text) AND cur.script IS NULL AND d.script IS NOT NULL
+       AND NOT cur.dropped AND cur.def_hash = md5(d.def::text) AND d.script IS NOT NULL
+       AND (cur.script IS NULL OR cur.script_format IS DISTINCT FROM d.script_format) AND cur.script IS DISTINCT FROM d.script
     RETURNING 1
   )
-  INSERT INTO pgvigil.job_versions (instance_id, scheduler, job_id, valid_from, version_no, job_name, def_hash, definition, dropped, changes, script)
+  INSERT INTO pgvigil.job_versions (instance_id, scheduler, job_id, valid_from, version_no, job_name, def_hash, definition, dropped, changes, script,
+                                    script_format)
   -- a job seen for the first time, a definition with another hash, another script, a job that came back
   SELECT p_instance_id, d.scheduler, d.job_id, p_at, coalesce(cur.version_no, 0) + 1, d.job_name, md5(d.def::text), d.def, false,
          CASE WHEN cur.job_id IS NULL THEN NULL
               ELSE pgvigil.job_def_diff(cur.definition, d.def)
                    || CASE WHEN cur.dropped THEN '[{"field": "job", "old": "dropped", "new": "present"}]'::jsonb ELSE '[]'::jsonb END END,
          -- a read without a script (an older collector) keeps the script of the version before while the definition is the same
-         coalesce(d.script, CASE WHEN cur.def_hash = md5(d.def::text) THEN cur.script END)
+         coalesce(d.script, CASE WHEN cur.def_hash = md5(d.def::text) THEN cur.script END),
+         CASE WHEN d.script IS NOT NULL THEN d.script_format WHEN cur.def_hash = md5(d.def::text) THEN cur.script_format END
     FROM d LEFT JOIN cur ON cur.scheduler = d.scheduler AND cur.job_id = d.job_id
    WHERE cur.job_id IS NULL OR cur.dropped OR cur.def_hash <> md5(d.def::text)
-      OR (cur.script IS NOT NULL AND d.script IS NOT NULL AND cur.script <> d.script)
+      -- the script alone changed, in the format it was kept in
+      OR (cur.script IS NOT NULL AND d.script IS NOT NULL AND cur.script <> d.script AND cur.script_format IS NOT DISTINCT FROM d.script_format)
   UNION ALL
   -- a job this read no longer lists: kept, marked dropped at this read, with the last script seen
   SELECT p_instance_id, cur.scheduler, cur.job_id, p_at, cur.version_no + 1, cur.job_name, cur.def_hash, cur.definition, true,
-         '[{"field": "job", "old": "present", "new": "dropped"}]'::jsonb, cur.script
+         '[{"field": "job", "old": "present", "new": "dropped"}]'::jsonb, cur.script, cur.script_format
     FROM cur
    WHERE NOT cur.dropped AND NOT EXISTS (SELECT 1 FROM d WHERE d.scheduler = cur.scheduler AND d.job_id = cur.job_id);
   GET DIAGNOSTICS n = ROW_COUNT;
@@ -129,7 +136,7 @@ BEGIN
   -- the definitions of this read against the versions kept (the newest read only)
   IF v_newest THEN
     PERFORM pgvigil.job_version_track(p_instance_id, p_snapshot_at, ARRAY['pg_cron', 'pgagent'],
-      (SELECT jsonb_agg(jsonb_build_object('scheduler', r->>'scheduler', 'job_id', r->>'job_id', 'job_name', r->>'job_name', 'script', r->'script',
+      (SELECT jsonb_agg(jsonb_build_object('scheduler', r->>'scheduler', 'job_id', r->>'job_id', 'job_name', r->>'job_name', 'script', r->'script', 'script_format', r->'script_format',
                 'definition', CASE WHEN jsonb_typeof(r->'definition') = 'object' THEN r->'definition'
                                    ELSE jsonb_build_object('name', r->'job_name', 'schedule', r->'schedule', 'command', r->'command',
                                                            'database', r->'datname', 'username', r->'run_as', 'active', r->'active') END))
@@ -233,7 +240,7 @@ BEGIN
 
   -- each job's definition against the versions kept
   PERFORM pgvigil.job_version_track(p_instance_id, p_snapshot_at, ARRAY['sqlagent'],
-    (SELECT jsonb_agg(jsonb_build_object('scheduler', 'sqlagent', 'job_id', r->>'job_id', 'job_name', r->>'name', 'script', r->'script', 'definition',
+    (SELECT jsonb_agg(jsonb_build_object('scheduler', 'sqlagent', 'job_id', r->>'job_id', 'job_name', r->>'name', 'script', r->'script', 'script_format', r->'script_format', 'definition',
         jsonb_build_object(
           'name', r->'name', 'enabled', (r->>'enabled')::int = 1, 'owner', r->'owner', 'category', r->'category',
           'description', r->'description', 'start step', r->'start_step_id',
@@ -313,17 +320,20 @@ CREATE TRIGGER mssql_config_track AFTER INSERT OR UPDATE ON pgvigil.mssql_config
   FOR EACH ROW EXECUTE FUNCTION pgvigil.mssql_config_track();
 
 -- what 0063 holds, carried over once: where it kept a change, the value before it (closed at the change, its start
--- unknown) and the value since; else the value as it stands, since the read that is known (first_read: it may be older)
+-- unknown) and the value since; else the value as it stands, since the read that is known (first_read: it may be older).
+-- An option no longer listed keeps its last value too, closed at the instance's newest read (the read that missed it).
 INSERT INTO pgvigil.mssql_config_history (instance_id, name, valid_from, valid_to, value, value_in_use, first_read)
 SELECT c.instance_id, c.name, NULL, c.changed_at, NULL, c.previous_in_use, false
   FROM pgvigil.mssql_config c
  WHERE c.changed_at IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_config_history h WHERE h.instance_id = c.instance_id AND h.name = c.name);
 INSERT INTO pgvigil.mssql_config_history (instance_id, name, valid_from, valid_to, value, value_in_use, first_read)
-SELECT c.instance_id, c.name, coalesce(c.changed_at, c.snapshot_at), NULL, c.value, c.value_in_use, c.changed_at IS NULL
+SELECT c.instance_id, c.name, coalesce(c.changed_at, c.snapshot_at),
+       CASE WHEN NOT c.is_present THEN greatest(coalesce(c.changed_at, c.snapshot_at),
+                                                (SELECT max(x.snapshot_at) FROM pgvigil.mssql_config x WHERE x.instance_id = c.instance_id)) END,
+       c.value, c.value_in_use, c.changed_at IS NULL
   FROM pgvigil.mssql_config c
- WHERE c.is_present
-   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_config_history h WHERE h.instance_id = c.instance_id AND h.name = c.name AND h.valid_to IS NULL);
+ WHERE NOT EXISTS (SELECT 1 FROM pgvigil.mssql_config_history h WHERE h.instance_id = c.instance_id AND h.name = c.name AND h.valid_to IS NULL);
 
 -- config_change_log: every setting change of one instance (NULL: of every instance), newest first, both engines.
 -- A row is a value that was replaced: the value, what replaced it, and the time the old value was in force
@@ -574,8 +584,12 @@ BEGIN
     FOREACH k IN ARRAY v_keys LOOP
       IF p_payload->>k IS NOT NULL THEN
         -- the table's own bounds: a count up to a million, minutes up to ten years
-        IF p_payload->>k !~ '^[0-9]{1,7}$' OR (p_payload->>k)::int < 1
-           OR (p_payload->>k)::int > (CASE WHEN k LIKE '%\_min' THEN 5256000 ELSE 1000000 END) THEN
+        -- the shape first, the number only then: one expression may cast before it tests
+        IF p_payload->>k !~ '^[0-9]{1,7}$' THEN
+          v_why := format('%s must be a whole number from 1 to %s, or null', k, CASE WHEN k LIKE '%\_min' THEN 5256000 ELSE 1000000 END);
+          EXIT;
+        END IF;
+        IF (p_payload->>k)::int < 1 OR (p_payload->>k)::int > (CASE WHEN k LIKE '%\_min' THEN 5256000 ELSE 1000000 END) THEN
           v_why := format('%s must be a whole number from 1 to %s, or null', k, CASE WHEN k LIKE '%\_min' THEN 5256000 ELSE 1000000 END);
           EXIT;
         END IF;
