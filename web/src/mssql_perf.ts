@@ -236,10 +236,11 @@ const tempdbCols = (fleet: boolean, ctx: Ctx): Col[] => [
 ];
 
 // mssqlTempdbView: one instance's tempdb layout, its files and its checks; at the root (no instance) every SQL
-// Server instance's row.
-export async function mssqlTempdbView(ctx: Ctx): Promise<HTMLElement> {
+// Server instance's row (keep: a tag folder's instances only).
+export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Promise<HTMLElement> {
   const d = await get<Record<'layout' | 'files' | 'checks', Table | null>>('mssql/tempdb', ctx.instance ? { instance: ctx.instance } : {});
-  const layout = rowsOf(d.layout), files = rowsOf(d.files), checks = rowsOf(d.checks);
+  const k = keep ?? (() => true);
+  const layout = rowsOf(d.layout).filter(k), files = rowsOf(d.files).filter(k), checks = rowsOf(d.checks).filter(k);
   const fleet = !ctx.instance;
   const sec = el('section', {}, el('h2', {}, 'TempDB'),
     el('p', { class: 'meta' }, 'Microsoft\'s guidance: with eight logical processors or fewer, as many data files as processors; with more, eight, '

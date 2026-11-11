@@ -56,7 +56,8 @@
 #  A. the audit: ack_log's rows read add:done=<the rows of acks> add:refused=1 end:done=1, at least as many done adds
 #     as the proof made through the API [run 6: 71 against a count of 69: the counter was a variable that
 #     MUTE=$(add ...) incremented in a subshell; then a file; at the fold the acks rows, which the page's adds join],
-#     every row with ui_user the proof user and client 127.0.0.1; every acks row has created_by the proof user.
+#     every row with ui_user the proof user and client 127.0.0.1, or the demo seed's (demo, client 'demo seed'); every acks
+#     row has created_by the proof user or demo.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -418,5 +419,5 @@ GOT=$(q "select string_agg(op || ':' || outcome || '=' || c, ' ' order by op, ou
 # every row names who and from where: the proof's own requests (its user, 127.0.0.1) and the demo seed's (demo, 'demo seed')
 [[ $(q "select count(*) from pgvigil.ack_log where not ((ui_user = '$UIUSER' and client = '127.0.0.1') or (ui_user = 'demo' and client = 'demo seed'))") == 0 ]] || fail "A: an ack_log row without the user or the client"
 [[ $(q "select count(*) from pgvigil.acks where created_by not in ('$UIUSER', 'demo')") == 0 ]] || fail "A: an acks row without its maker"
-ok "A: ack_log $GOT, every row $UIUSER from 127.0.0.1"
+ok "A: ack_log $GOT, every row $UIUSER from 127.0.0.1 or the demo seed's (demo, client demo seed)"
 echo "PASS: proof-ack"

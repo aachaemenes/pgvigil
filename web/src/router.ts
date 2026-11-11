@@ -44,7 +44,7 @@ export const rootGroups: TabGroup[] = [
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
-  { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'indexes'] },
+  { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'indexes', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
 ];

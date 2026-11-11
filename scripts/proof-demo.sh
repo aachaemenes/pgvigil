@@ -264,10 +264,25 @@ door() { P -c "select (select count(*) from pgvigil.dbadash_repositories where r
   || ' ' || coalesce((select is_configured::text from pgvigil.dbadash_repositories where repository = 'real-door'), 'none')
   || ' ' || (select count(*) from pgvigil.dbadash_instances where repository = 'dbadash-demo')
   || ' ' || (select count(*) from pgvigil.dbadash_summary_history where repository = 'dbadash-demo')"; }
+# a real instance with an open alert older than every demo alert, and a real user named demo who silenced it from the UI:
+# a re-seed's acknowledgements stay on the demo fleet (expected '1/1/0 true/true 7': the real silence open with its log row,
+# no acknowledgement or note on the real alert, both seeded rules scoped to tag demo, the seed's own 7 rows)
+KEEPNAME=$(P -c "select name from pgvigil.instances where instance_id = $KEEP")
+P -c "insert into pgvigil.alert_state (channel, finding_key, instance_id, instance_name, severity, first_sent_at, last_sent_at)
+      values ('ops', 'realkey1', $KEEP, '$KEEPNAME', 'critical', now() - interval '30 days', now())" >/dev/null
+P -c "select pgvigil.import_ack(now(), jsonb_build_object('op','add','ui_user','demo','client','10.0.0.5','kind','silence','instance_name','$KEEPNAME','note','real'))" >/dev/null
+acks_real() { P -c "select (select count(*) from pgvigil.acks where instance_name = '$KEEPNAME' and kind = 'silence' and ended_at is null and client = '10.0.0.5')
+  || '/' || (select count(*) from pgvigil.ack_log where instance_name = '$KEEPNAME' and client = '10.0.0.5')
+  || '/' || (select count(*) from pgvigil.acks where finding_key = 'realkey1')
+  || ' ' || (select bool_and(tag = 'demo')::text from pgvigil.acks where client = 'demo seed' and kind = 'mute')
+  || '/' || (select bool_and(tag = 'demo')::text from pgvigil.acks where client = 'demo seed' and kind = 'noise')
+  || ' ' || (select count(*) from pgvigil.acks where client = 'demo seed')"; }
 # a re-run replaces the demo instances and only them
 OUT=$("$BIN" demo -config "$CFG" 2>"$WORK/seed2.log") || { cat "$WORK/seed2.log" >&2; fail "seed 2"; }
 got=$(door); [[ "${got% *}" == "1/1/1/1 true 3" ]] || fail "a real DBA Dash door after a re-seed (rows, configured, demo instances): ${got% *}"
 ok "a real DBA Dash door sharing a demo id: its rows kept and it stays configured over a re-seed"
+acks=$(acks_real); [[ "$acks" == "1/1/0 true/true 7" ]] || fail "a real instance's alert and a real user demo's silence after a re-seed (silence/log/acks on the alert, rule tags, seed rows): $acks, wanted 1/1/0 true/true 7"
+ok "a re-seed's acknowledgements stay on the demo fleet: the real user demo's silence and log kept, the real alert untouched, the rules tagged demo"
 DEMO_HIST=${got##* }
 echo "$OUT"
 grep -q "(15 replaced)" <<<"$OUT" || fail "rerun did not replace 15"

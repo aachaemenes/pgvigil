@@ -1,7 +1,7 @@
 // The shell: a header (brand, where you are, the time range, refresh, theme, the user), the instance
 // tree on the left, a tab strip (root tabs for the fleet or a tag, instance tabs for one instance)
 // and the page under it.
-import { get, LoginRequired, post, Session } from './api';
+import { get, LoginRequired, post, Row, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget, tagsOf } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, counters, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
@@ -67,14 +67,16 @@ const mssqlPages: Record<string, Render> = {
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
 };
-// the fleet Jobs timeline under a tag folder keeps that folder's instances (as the fleet Slow queries page does)
-const jobsTimelineFleet: Render = async c => {
-  if (!c.tag) return jobsTimelineView(c);
+// a fleet page under a tag folder keeps that folder's instances (as the fleet Slow queries page does): the Jobs timeline, TempDB
+const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
+  if (!c.tag) return undefined;
   const ids = new Set((await fleet()).instances
     .filter(r => c.tag === 'untagged' ? tagsOf(r).length === 0 : tagsOf(r).includes(c.tag!)).map(r => Number(r.instance_id)));
-  return jobsTimelineView(c, r => ids.has(Number(r.instance_id)));
+  return r => ids.has(Number(r.instance_id));
 };
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: mssqlTempdbView };
+const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
+const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
@@ -170,18 +172,21 @@ async function signOut() {
   showLogin('Signed out.');
 }
 
-let shownPage = '';   // the page main shows or is loading: tab | instance | tag
+let shownPage = '';   // the page main shows or is loading: the whole hash (tab, instance, tag, range, filters)
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
   const gen = ++generation;
   const ctx = parse();
   rememberInstance(ctx.instance);
-  // another page (tab, instance or tag folder): say so at once instead of leaving the old page on screen while the
-  // new one reads; the same page's refresh keeps its content (no flicker every 30 s)
-  const pageKey = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
+  // another page or another range / filter of it: say so at once instead of leaving the old grids on screen while the
+  // new ones read (an export in that gap took the old page); the same hash's refresh keeps its content (no flicker every
+  // 30 s). The status node goes in empty and gets its text a frame later, so a screen reader announces it.
+  const pageKey = location.hash;
   if (pageKey !== shownPage) {
-    $('main').replaceChildren(el('p', { class: 'empty', role: 'status' }, 'Loading...'));
+    const note = el('p', { class: 'empty', role: 'status' });
+    $('main').replaceChildren(note);
+    requestAnimationFrame(() => { note.textContent = 'Loading...'; });
     shownPage = pageKey;
   }
   // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
