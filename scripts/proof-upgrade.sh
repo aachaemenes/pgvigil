@@ -378,8 +378,11 @@ PY
 }
 got=$(compare "$WORK/before.all" "$WORK/after.all" strict "$APPLIED" 2>&1) || fail "row counts changed over the migrate: $got"
 ok "migrate applied $APPLIED files in $MIGMS ms (the store's $OLDFILES to this tree's $NFILES), a second one 0; this build refused to run before it (exit 1); row counts kept: $got; the rows themselves, in the columns $OLD had: the same md5 per table in all $NHASH tables that hold rows ($NEMPTY hold none)"
-insys sh -c 'cd /root && ./pgvigil install' >"$WORK/i4.out" 2>&1 || fail "./pgvigil install of $NEW: $(cat "$WORK/i4.out")"
+# the stamp BEFORE the install restarts the unit (stopped since the start of E, so nothing else writes in between): each
+# collection first runs up to 10 s after the start, and 'install' returns half a second or more after it, so a stamp read
+# after it would miss an hourly collection that had already run
 T1=$(rq "select now()")
+insys sh -c 'cd /root && ./pgvigil install' >"$WORK/i4.out" 2>&1 || fail "./pgvigil install of $NEW: $(cat "$WORK/i4.out")"
 grep -q 'installed and running' "$WORK/i4.out" || fail "the install of $NEW did not end with 'installed and running': $(cat "$WORK/i4.out")"
 [[ "$(insys /usr/local/bin/pgvigil version)" == "pgvigil $NEW ("* ]] || fail "the installed binary after the upgrade: $(insys /usr/local/bin/pgvigil version)"
 insys sh -c 'sha256sum /etc/pgvigil/pgvigil.yaml /etc/pgvigil/pgvigil.env' | cmp -s - "$WORK/cfg.before" || fail "the upgrade changed the config or the env file"
@@ -551,6 +554,7 @@ else
   grep -q 'installed and running' "$WORK/i6.out" || fail "the installer-first upgrade ended with exit 0 without 'installed and running': $(tail -n 5 "$WORK/i6.out")"
   SAID="exit 0 with 'installed and running' (it looked before the first start had failed)"
 fi
+echo "     the installer's last lines, as the operator sees them:"; tail -n 8 "$WORK/i6.out" | cut -c1-220 | sed 's/^/     | /'
 [[ "$(insys /usr/local/bin/pgvigil version)" == "pgvigil $NEW ("* ]] || fail "the installer-first upgrade left the binary at $(insys /usr/local/bin/pgvigil version)"
 NAMED=no; grep -q "pgvigil migrate" "$WORK/i6.out" && NAMED=yes
 sleep 12
