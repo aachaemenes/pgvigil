@@ -2,13 +2,16 @@
 // session that runs a request, holds an open transaction or blocks another), ONE LINE per session (a statement
 // shows its first 80 characters and opens whole in the shared viewer), a slider with Earlier and Later over the
 // kept minutes of the range, a 'Blocked (n)' filter, a group-by, and the blocking chains of the snapshot drawn as a
-// tree with the head first. An address with at= (the fleet page's row) opens the snapshot at or before that time.
+// tree with the head first (the head's login time, last request end, open transactions and log used beside it), and
+// the blocking of the whole range below (blocked sessions and the longest wait per step, blocking_history.ts). An
+// address with at= (the fleet page's row) opens the snapshot at or before that time.
 // Data from /api/mssql/running; the route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, isLive, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { foldedGrid } from './running';
 import { firstChars, sqlCell, whatIsThis } from './sqlview';
+import { mssqlBlockingTrend } from './blocking_history';
 
 interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null }
 
@@ -86,6 +89,9 @@ const cols: Col[] = [
   { key: 'sql_handle', label: 'sql handle', fmt: clip(18) }, { key: 'plan_handle', label: 'plan handle', fmt: clip(18) },
 ];
 
+// headOnly: a column the tree fills on a head's row alone
+const headOnly = (f: (v: unknown) => string) => (v: unknown, r: Row) => r.tree_role === 'head' && v != null ? f(v) : '';
+
 const treeCols: Col[] = [
   { key: 'session_id', label: 'session', fmt: (v, r) => el('span', { style: `padding-left:${Number(r.tree_depth) * 1.2}em` }, (Number(r.tree_depth) > 0 ? '└ ' : '') + String(v)) },
   { key: 'tree_role', label: 'role', fmt: (v, r) => v === 'head' ? headCell(r) : String(v ?? '') },
@@ -94,6 +100,12 @@ const treeCols: Col[] = [
   { key: 'wait_type', label: 'waiting on', fmt: waitCell },
   { key: 'wait_resource', label: 'wait resource', fmt: clip(60) },
   { key: 'tran_age_ms', label: 'transaction open for', num: true, fmt: ms },
+  // the head's own columns (Darling 13.5): when it logged in, when its last request ended (a sleeping head: how long
+  // the application has left it), its open transactions and the log its transaction wrote
+  { key: 'login_time', label: 'login time', fmt: headOnly(v => fmtTime(v)) },
+  { key: 'last_request_end', label: 'last request ended', fmt: headOnly(v => fmtTime(v)) },
+  { key: 'open_tran', label: 'open transactions', num: true, fmt: headOnly(v => fmtNum(v)) },
+  { key: 'tran_log_bytes', label: 'log used', num: true, fmt: headOnly(v => fmtBytes(v)) },
   { key: 'database_name', label: 'database' }, { key: 'login_name', label: 'login' }, { key: 'program_name', label: 'program', fmt: clip(40) },
   { key: 'statement', fmt: stmtCell },
 ];
@@ -218,5 +230,7 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
   }
   holder.append(body(d, ctx.instance, start >= 0 && snaps.length ? snaps[start].snapshot_at : at ? null : undefined));   // at= before the first kept snapshot: none to show
   sec.append(holder);
+  // blocking over the range, beside the one snapshot (task 120): the blocked sessions and the longest wait per step
+  sec.append(await mssqlBlockingTrend(ctx));
   return sec;
 }

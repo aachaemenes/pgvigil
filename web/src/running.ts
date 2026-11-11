@@ -3,7 +3,9 @@
 // between Earlier and Later buttons, a 'Blocked (n)' filter, a group-by that folds the grid into counted groups,
 // and the blocking chains as an indented tree with the head first. Cancel and Terminate go through the actions
 // door, the plan link opens the statement's plans, and the window half (what ran at least N seconds over the range)
-// stays below. Data: /api/activity (the snapshot) and /api/running/snapshots (the steps).
+// stays below, under the blocking history of the range (blocking_history.ts: the chains of the samples with their
+// denominator, and who pinned the xmin horizon). Data: /api/activity (the snapshot), /api/running/snapshots (the
+// steps) and /api/blocking/history.
 //
 // The chain rules (the same as pgvigil.blocking_chains and the fleet page):
 //   blocked     a session whose wait_event_type is Lock and that names a blocker; no other wait is blocking
@@ -16,6 +18,7 @@ import { planLink } from './plan';
 import { Ctx, href, isLive, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { longRunsSection } from './window';
+import { pgBlockingHistory } from './blocking_history';
 import { sqlCell, whatIsThis } from './sqlview';
 
 const TAB = 'activity';
@@ -285,6 +288,8 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
     age: r => r.query_secs == null ? null : Number(r.query_secs), ageLabel: 'longest query age',
     groups: [['database', text('datname')], ['user', text('usename')], ['application', text('application_name')], ['state', text('state')], ['wait', text('_wait')]],
   }));
-  sec.append(await longRunsSection(ctx));
+  // the chains over the range with their denominator, and who pinned the xmin horizon (task 120)
+  const [hist, longRuns] = await Promise.all([pgBlockingHistory(ctx), longRunsSection(ctx)]);
+  sec.append(hist, longRuns);
   return sec;
 }
