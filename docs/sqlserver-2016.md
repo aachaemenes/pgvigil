@@ -8,9 +8,11 @@ server, not against the containers the other versions are proven on (`scripts/pr
 
 Proven on SQL Server 2016 SP3 (13.0.7050.2, SP3 CU1 GDR), Developer edition, on Windows Server 2019 Datacenter, one
 server, by `scripts/proof-mssql-2016.sh` (below). The collector needed no change for 2016. Five of the SQL Server
-proofs did: their own comparisons read things SQL Server 2017 introduced (`STRING_AGG`, `sys.dm_os_host_info`, Query
-Store's wait statistics) or an event file by its Linux path, and each now reads the 2016 form where the server has
-no newer one; what they compare on 2017 and later is unchanged.
+proofs did (actions, perf, reads, querystore, xe): their own setup and comparisons used things SQL Server 2017
+introduced (`STRING_AGG`, `sys.dm_os_host_info`, Query Store's wait statistics) or read an event file by its Linux
+path. Each now takes a form 2016 has (FOR XML PATH, `sys.dm_os_windows_info` before 2017, the server's own log
+folder, the wait statistics only from 2017); on 2017 and later they compare the same values as before, and the five
+changed proofs pass on SQL Server 2017 containers too.
 
 ## What collects on 2016
 
@@ -21,7 +23,9 @@ Every SQL Server collection runs on 2016 without a statement the server does not
 server` (the server is not in a Windows cluster). The collector connects over TLS and stores the server as version
 130000.
 
-What the proofs compared on this server against `sa`'s own reads, and found equal:
+What the proofs compared on this server against `sa`'s own reads, and found equal or within each proof's stated
+bound (a rate against the counter's rise, the plan cache within 5 %, file IO counters at or below a later read, a
+volume's free bytes within 2 %, a slow batch's duration within 250 ms):
 
 - the instance and its configuration;
 - SQL Server Agent, Database Mail and memory dumps;
@@ -30,22 +34,24 @@ What the proofs compared on this server against `sa`'s own reads, and found equa
   instance's Log folder, across rollovers), attentions;
 - the database files and the volume they sit on (drive `C:\`: total and free bytes);
 - CPU (the idle per cent is compared on Windows; on Linux it is not stored), memory, file IO and tempdb;
-- the server's properties (33 values against `sa`'s reads);
+- the server's properties (33 values against `sa`'s reads; on 2016 the host's platform is Windows by rule on both
+  sides and its release is read from `sys.dm_os_windows_info` on both);
 - Query Store: the stores' options and the top list per statement (executions, duration, CPU, reads, the largest
-  memory grant; the wait time is 0 on both sides on 2016, see below);
+  memory grant). On 2016 the server keeps no wait statistics: the collector stores a wait time of 0 and there is
+  nothing on the server to compare it with (see below);
 - the actions through the separate actions login: a session's preview and kill, an Agent job started and stopped,
   the refusals and the audit rows.
 
 Where 2016 lacks something the collector reads on later versions, the collector asks first, by the version or by
-the server's column list, and never fails on it:
+the server's column list, or drops what an older version cannot give; it never fails on it:
 
 | What | On 2016 | Why |
 | --- | --- | --- |
 | The host (`mssql_properties`: platform, distribution, release) | platform Windows and the release from `sys.dm_os_windows_info`; no distribution | `sys.dm_os_host_info` arrived in SQL Server 2017; before it the engine runs on Windows only |
 | Query Store wait statistics (`mssql_querystore`) | the wait mode is not stored; every plan's wait time is stored as 0 | `sys.query_store_wait_stats` and `wait_stats_capture_mode_desc` arrived in 2017 |
 | Query Store plan forcing type and automatic tuning | not read | `plan_forcing_type` and `sys.dm_db_tuning_recommendations` arrived in 2017 |
-| An availability group's `cluster_type` and `required_synchronized_secondaries_to_commit` | read as NULL | the columns arrived in 2017 |
-| tempdb's memory-optimized metadata | n/a | `SERVERPROPERTY('IsTempDBMetadataMemoryOptimized')` answers from 2019; before it the collector stores no value |
+| An availability group's `cluster_type` and `required_synchronized_secondaries_to_commit` | NULL by the version guard (the statement compiles on this server; without a group it is not run) | the columns arrived in 2017 |
+| tempdb's memory-optimized metadata | no value (n/a) | `SERVERPROPERTY('IsTempDBMetadataMemoryOptimized')` answers from 2019; the collector reads it and stores no value before 2019 |
 | `sys.dm_os_sys_info` socket and core counts, `sys.dm_tran_version_store_space_usage` | read | they arrived in 2016 SP2 (the collector asks the column list and the build); this server is SP3 |
 
 ## What does not, and why
@@ -53,8 +59,9 @@ the server's column list, and never fails on it:
 - **Availability groups on 2016 need a Windows Server Failover Cluster.** The clusterless group (`CLUSTER_TYPE =
   NONE`) the other versions are proven with arrived in SQL Server 2017, so a single 2016 server has Always On off
   and `mssql_ag` skips with that reason. The group's statements are still compiled by the 2016 server (`SET NOEXEC
-  ON`, the live test `TestHADRStatementsLive`), and the mirroring, log shipping, replication, job and backup
-  statements run.
+  ON`, the live test `TestHADRStatementsLive`). Mirroring, log shipping, jobs, backups (the form without groups) and
+  the replication distributors read also run; the replication publications, subscriptions and agents are compiled
+  only (the server has no distribution database).
 - **The Windows power plan, as a least-privilege login**: not read on this server (`xp_regread() returned error 5,
   'Access is denied.'`); the property says so in its note. Seen on 2016; not checked on a Windows host of another
   version.
@@ -74,8 +81,9 @@ the server's column list, and never fails on it:
   skipped on a real server; a columnstore rowset with lock waits.
 - A login holding only VIEW SERVER PERFORMANCE STATE; a real memory grant wait; a ring buffer after a real restart.
 - A Query Store in the ERROR state or really cleared, the bounds of one run, the access path of the interval floor.
+- Thousands of databases, a FILESTREAM container, a live ring buffer overrun of an Extended Events capture.
 - That a collector session never waits behind a writer (no collection of the base reads a user table); the many
-  sessions load test (`TestRequestsManySessionsLive`, skipped); the pages in a browser.
+  sessions load test (`TestRequestsManySessionsLive`, skipped); the pages in a browser and their accessibility.
 
 The proofs print their own "not proven here" lines, written for the container sandbox; some still name "SQL Server
 2016-2019" and "Windows" (volumes, event file paths). On this server those proofs ran and passed.
@@ -100,10 +108,12 @@ toolchain and a PostgreSQL superuser connection) against one SQL Server 2016 ser
 - **R**: the SQL Server proofs of `proof-mssql-versions.sh` run against the server. They reach their server's `sa`
   side through `docker exec <container> sqlcmd -S localhost`; the wrapper puts a `docker` of its own first on their
   PATH that sends those calls to a sqlcmd in a tools container on the proof machine (Microsoft's SQL Server image,
-  only its sqlcmd) with `-S` pointed at the server. Two calls have no network form and are translated: a file a
-  proof copies into its container goes into the tools container, and the deletion of a proof's own event files
-  under the Linux log folder deletes them in the server's Log folder through `xp_cmdshell`, which is switched on for
-  that one call when it is off and switched off again in the same batch (a server setting changed for a moment).
+  only its sqlcmd) with `-S` pointed at the server; a `bash -c` line that runs sqlcmd gets the same `-S`, and the
+  removal of a proof's temporary file under /tmp happens in the tools container. Two calls have no network form and
+  are translated: a file a proof copies into its container goes into the tools container, and the deletion of a
+  proof's own event files under the Linux log folder deletes them in the server's Log folder through `xp_cmdshell`,
+  which is switched on for that one call when it is off and switched off again in the same batch (a server setting
+  changed for a moment). Any other call into the container fails the proof that made it.
 - **S**: `proof-mssql-summary.sh` once.
 
 The proof that needs an availability group of two replicas (`proof-mssql-hadr.sh`) is not run on a server where
