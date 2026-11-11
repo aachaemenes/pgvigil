@@ -47,6 +47,8 @@ type Server struct {
 	actions *Actions
 	// tags is the config's ui: block for GET /api/tags (q_tags.go).
 	tags TagsUI
+	// version is this binary's version line for the About page (GET /api/health); "" = not said.
+	version string
 }
 
 // Options shape a Server beyond its repository connection.
@@ -66,6 +68,8 @@ type Options struct {
 	Tags TagsUI
 	// AppName is the pool's application_name in pg_stat_activity; "" = pgvigil-serve (pgvigil mcp names itself pgvigil-mcp).
 	AppName string
+	// Version is this binary's version line (`pgvigil version`): the About page shows it and puts it into a problem report's mail.
+	Version string
 }
 
 // Expected is the interval map of the stale check.
@@ -108,7 +112,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 		pool.Close()
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
-	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags}
+	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags, version: o.Version}
 	if o.Login {
 		var n int64
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_user_count()`).Scan(&n); err != nil {
@@ -432,7 +436,9 @@ func paramsMax(r *http.Request, needInstance bool, longest time.Duration) (id in
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	t, err := s.query(r.Context(), `SELECT (SELECT max(version) FROM pgvigil.schema_version) AS schema_version, now() AS server_now`)
+	// version and repository_version are the About page's (web/src/about.ts): this binary's version line and the repository's server version
+	t, err := s.query(r.Context(), `SELECT (SELECT max(version) FROM pgvigil.schema_version) AS schema_version, now() AS server_now,
+       $1::text AS version, current_setting('server_version') AS repository_version`, s.version)
 	s.reply(w, r, t, err)
 }
 
