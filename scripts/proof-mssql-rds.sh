@@ -250,7 +250,7 @@ run_ok() { # run_ok <collection>: runs it, and says whether it stored a read wit
 }
 eq() { # eq <collection> <stored> <hand>: the verdict of an exact comparison; an empty side is a failed read
   if [ -z "$2" ] || [ -z "$3" ]; then VERDICT[$1]="FAIL"; bad "B: $1: an empty side (stored '$2', the master user reads '$3')"; return; fi
-  if [ "$2" = "$3" ]; then VERDICT[$1]="PASS"; { [ -n "${4:-}" ] && { [ "$2" = 0 ] || [ "$2" = "(none)" ]; }; } && VERDICT[$1]="PASS (${4})"; else VERDICT[$1]="FAIL"; bad "B: $1 stored '$(cut -c1-300 <<<"$2")', the master user reads '$(cut -c1-300 <<<"$3")'"; fi; }
+  if [ "$2" = "$3" ]; then VERDICT[$1]="PASS"; if [ -n "${4:-}" ] && { [ "$2" = 0 ] || [ "$2" = "(none)" ]; }; then VERDICT[$1]="PASS (${4})"; fi; else VERDICT[$1]="FAIL"; bad "B: $1 stored '$(cut -c1-300 <<<"$2")', the master user reads '$(cut -c1-300 <<<"$3")'"; fi; }
 # bracket <collection> <before> <after> <stored> [<key that must be stored>]: every stored key lies between the
 # reads before and after (each number), every key counted before is stored
 bracket() {
