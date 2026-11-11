@@ -174,6 +174,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/diff", s.Diff)
 	api.HandleFunc("GET /api/tablesize", s.TableSize)
 	api.HandleFunc("GET /api/pgconfig", s.PGConfig)
+	api.HandleFunc("GET /api/pg/dboptions", s.PGDBOptions)
+	api.HandleFunc("GET /api/pg/dboptions/fleet", s.PGDBOptionsFleet)
 	api.HandleFunc("GET /api/tiles", s.Tiles)
 	api.HandleFunc("GET /api/dbchanges", s.DBChanges)
 	api.HandleFunc("GET /api/findings", s.findings)

@@ -11,6 +11,7 @@
 --   task 148 (day-one checks, 0090): the mssql_checks_findings arm; nothing for purge() (no table grows by the month).
 --   task 149 (readers, 0091): the mssql_readers_findings arm; mssql_errorlog, mssql_health_components and mssql_trace_events
 --   among purge()'s parents; the stale-cursor DELETE keeps 'errorlog:search'; mssql_errorlog_search_set owner-only.
+--   task 163 (PostgreSQL database options, 0104): the pg_override_findings and pg_dboption_findings arms; nothing for purge().
 -- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new name.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -104,6 +105,10 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_querystore', at FROM pgvigil.mssql_querystore_findings
     UNION ALL
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pgaudit_findings
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_override_findings
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_dboption_findings
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_audit', at FROM pgvigil.mssql_audit_findings
     UNION ALL
