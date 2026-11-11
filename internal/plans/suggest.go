@@ -444,9 +444,7 @@ func Hypo(ctx context.Context, dsn, datname, query, ddl string) (HypoResult, err
 	cost := func(name string) (float64, string, error) {
 		var plan string
 		if sc.MaxParam > 0 {
-			// the extended protocol takes ONE statement: tx.Exec without arguments would use the simple protocol, which
-			// runs every statement of the text (a stored text that fools ScanSQL could COMMIT the read-only transaction)
-			if _, err := tx.Conn().PgConn().ExecParams(ctx, `PREPARE `+name+` AS `+query, nil, nil, nil, nil).Close(); err != nil {
+			if err := prepareOne(ctx, tx, name, query); err != nil {
 				return 0, "", explainErr(err, datname, sc.Keyword)
 			}
 			args := strings.TrimSuffix(strings.Repeat("NULL, ", sc.MaxParam), ", ")

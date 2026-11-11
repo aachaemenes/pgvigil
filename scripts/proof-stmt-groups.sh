@@ -53,7 +53,9 @@
 #  G. [review fold, written before the rerun] G1 a stored plan (PA's plan) whose text is
 #     "SELECT $1::int, name'\'; COMMIT; BEGIN READ WRITE; CREATE TABLE pwn(); COMMIT; --'" (one statement to ScanSQL
 #     when the e of name is read as an E'' escape, several to the server): the check answers 502, outcome failed, its
-#     detail naming "cannot insert multiple commands into a prepared statement"; no table pwn in appa. G2 a check of PA
+#     detail naming "cannot insert multiple commands into a prepared statement"; no table pwn in appa. [the join's review,
+#     expected before the rerun: ScanSQL now refuses this text itself ("the text holds more than one statement"); the
+#     detail may name either refusal, no table pwn is the hard check, and the server's layer has its own Go test] G2 a check of PA
 #     sent with a ddl other than suggestion 0's: 409 "changed since the page read it". actions_log hypo_index rows then:
 #     done 1, failed 1, refused 4.
 #     F4 a delta of queryid 4444 at T-29 min covering 120 s (half inside [T-30 min, T]): 10 calls 100 ms -> the window
@@ -438,7 +440,9 @@ SQL
 PI=$(head -n 1 <<< "$PI")
 [ "$(q "select query from pgvigil.plans where plan_id = $PI")" = "$INJ" ] || fail "G1: the stored text is not the crafted one"
 c=$(post plans/hypo "{\"plan_id\":$PI,\"n\":0,\"reason\":\"proof check of the index\"}")
-[ "$c" = 502 ] && grep -q "cannot insert multiple commands into a prepared statement" "$WORK/body" || fail "G1: $c $(cat "$WORK/body")"
+# the refusal comes from ScanSQL ("more than one statement") or, for a text it misses, from the server
+# (internal/plans TestPrepareOneStatement proves that layer alone): either way 502 and nothing made
+[ "$c" = 502 ] && grep -qE "more than one statement|cannot insert multiple commands into a prepared statement" "$WORK/body" || fail "G1: $c $(cat "$WORK/body")"
 [ "$(su "select count(*) from pg_class where relname = 'pwn'" appa)" = 0 ] || fail "G1: the table pwn was created"
 c=$(post plans/hypo "{\"plan_id\":$PA,\"n\":0,\"ddl\":\"CREATE INDEX CONCURRENTLY ON big (id)\",\"reason\":\"proof check of the index\"}")
 [ "$c" = 409 ] && grep -q "changed since the page read it" "$WORK/body" || fail "G2: $c $(cat "$WORK/body")"

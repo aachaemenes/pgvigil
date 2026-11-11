@@ -83,32 +83,55 @@ export async function copyText(t: string): Promise<boolean> {
 // '18m 0s' milliseconds or seconds): a filter compares what the reader sees. A size or a duration is read into one
 // scale (bytes; seconds), so '>500 MB' or '>10m' compares across the cell's own units; a bare number compares with the
 // number shown ('>5' on '1.5 GB' is false). Commas are thousands separators. null = not a number.
-const sizeUnits: Record<string, number> = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 };
+const sizeUnits: Record<string, number> = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4, pb: 1024 ** 5 };
 const timeUnits: Record<string, number> = { ms: 0.001, s: 1, m: 60, min: 60, h: 3600, d: 86400 };
 interface Reading { n: number; scale: 'size' | 'time' | 'plain' }
-function reading(text: string): Reading | null {
-  const t = text.replace(/,/g, '').trim().toLowerCase();
-  const parts = [...t.matchAll(/(-?\d+(?:\.\d+)?)\s*(tb|gb|mb|kb|b|ms|min|s|m|h|d)?\b/g)];
+// fmtNum writes a bare number in the browser's locale ('1,234.5', '1.234,5', '1 234,5'); fmtBytes and fmtSecs write a
+// unit's number with a '.' and no grouping. plainNumber reads the locale's form back.
+const localeMarks = (() => {
+  const parts = new Intl.NumberFormat(undefined).formatToParts(1234567.5);
+  return { group: parts.find(p => p.type === 'group')?.value ?? ',', decimal: parts.find(p => p.type === 'decimal')?.value ?? '.' };
+})();
+function plainNumber(text: string): number | null {
+  const t = text.split(localeMarks.group).join('').replace(/[\u00a0\u202f]/g, '').split(localeMarks.decimal).join('.');
+  const m = /-?\d+(?:\.\d+)?/.exec(t);
+  return m ? Number(m[0]) : null;
+}
+// what the reader TYPES, in any form ('1000.5', '1,000.5', '1.000,5', '1000,5'): of '.' and ',' the last one present is
+// the decimal mark and the other groups; a lone ',' is the decimal mark only where the locale writes it so. The result
+// is written with '.' and no grouping, the form reading() takes for a unit's number.
+function typedNumber(text: string): string {
+  const t = text.replace(/[\s\u00a0\u202f]+(?=\d)/g, '');
+  const dot = t.lastIndexOf('.'), comma = t.lastIndexOf(',');
+  if (dot >= 0 && comma >= 0) return dot > comma ? t.replace(/,/g, '') : t.replace(/\./g, '').replace(',', '.');
+  if (comma >= 0) return localeMarks.decimal === ',' && t.indexOf(',') === comma ? t.replace(',', '.') : t.replace(/,/g, '');
+  return t;
+}
+function reading(text: string, typed = false): Reading | null {
+  const t = text.trim().toLowerCase();
+  const parts = [...t.matchAll(/(\d+(?:\.\d+)?)\s*(pb|tb|gb|mb|kb|b|ms|min|s|m|h|d)?\b/g)];
   if (!parts.length) return null;
+  const neg = /^-/.test(t) ? -1 : 1;   // fmtSecs puts one sign before every part ('-5m 3s' is -303 s)
   const u = parts[0][2];
-  if (u && u in sizeUnits) return { n: Number(parts[0][1]) * sizeUnits[u], scale: 'size' };
+  if (u && u in sizeUnits) return { n: neg * Number(parts[0][1]) * sizeUnits[u], scale: 'size' };
   if (u && u in timeUnits) {   // '18m 0s', '1h 2m': every part summed
     let sec = 0;
     for (const p of parts) { if (!p[2] || !(p[2] in timeUnits)) break; sec += Number(p[1]) * timeUnits[p[2]]; }
-    return { n: sec, scale: 'time' };
+    return { n: neg * sec, scale: 'time' };
   }
-  return { n: Number(parts[0][1]), scale: 'plain' };
+  const n = typed ? Number(/-?\d+(?:\.\d+)?/.exec(t)?.[0] ?? NaN) : plainNumber(t);
+  return n == null || Number.isNaN(n) ? null : { n, scale: 'plain' };
 }
 // a filter's test on one cell's words: '>5', '<10', '>=', '<=', '=3', '>500 MB', '<10m' compare a number column as
 // shown (reading()); anything else is a case-insensitive part of the words ('!x' = does not contain x)
 export function passes(f: string, words: string, num: boolean): boolean {
   const m = num ? /^(>=|<=|>|<|=)\s*(.+)$/.exec(f) : null;
-  const want = m ? reading(m[2]) : null;
+  const want = m ? reading(typedNumber(m[2]), true) : null;
   if (m && want) {
     const got = reading(words);
     if (!got) return false;                                    // an empty or 'n/a' cell is not a number
-    const lead = /-?\d+(?:\.\d+)?/.exec(words.replace(/,/g, ''));   // a bare number: the first number the cell shows
-    const v = want.scale === 'plain' ? (lead ? Number(lead[0]) : NaN) : got.scale === want.scale ? got.n : NaN;
+    // a bare number compares with the first number the cell shows; a unit compares within its own class
+    const v = want.scale === 'plain' ? (got.scale === 'plain' ? got.n : Number(/-?\d+(?:\.\d+)?/.exec(words)?.[0] ?? NaN)) : got.scale === want.scale ? got.n : NaN;
     if (Number.isNaN(v)) return false;
     const x = want.n, eq = Math.abs(v - x) <= 1e-9 * Math.max(1, Math.abs(x));
     return m[1] === '>' ? v > x && !eq : m[1] === '<' ? v < x && !eq : m[1] === '>=' ? v > x || eq : m[1] === '<=' ? v < x || eq : eq;
@@ -252,7 +275,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     // a grid inside a grid's row (a statement's History) answers for itself; the outer grid does not replace its menu
     if ((e.target as Element).closest('.grid-wrap') !== wrap) return;
     e.stopPropagation();
-    const td = (e.target as Element).closest('tbody td');
+    const hit = (e.target as Element).closest('tbody td');
+    const td = hit && hit.parentElement?.parentElement === tbody && !hit.parentElement.classList.contains('trend-row') ? hit : null;
     const items: [string, () => void][] = [];
     if (td) {
       items.push(['Copy cell', () => { void copyText(cellText(td)).then(done('the cell')); }]);

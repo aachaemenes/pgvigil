@@ -307,5 +307,7 @@ ok "E: the four routes equal their functions; a 20-day range cut to 7 days; thre
 
 echo "--- F. purge"
 q "select pgvigil.purge(30)" >/dev/null || fail "F: purge"
-ok "F: purge(30) runs (smoke: the new series are not in its list yet)"
+got=$(q "select count(*) from unnest(array['table_activity','conn_sources']) t where position(quote_literal(t) in pg_get_functiondef('pgvigil.purge(int)'::regprocedure)) > 0")
+[[ "$got" == 2 ]] || fail "F: purge() names $got of table_activity and conn_sources (0082)"
+ok "F: purge(30) runs and names table_activity and conn_sources among its parents (0082)"
 echo "PASS proof-tables-conn"

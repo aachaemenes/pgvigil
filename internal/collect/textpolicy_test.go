@@ -211,3 +211,19 @@ func TestTextPolicyErrorAndMessage(t *testing.T) {
 		t.Errorf("none kept text: %v", rows[0])
 	}
 }
+
+// the join's review: the message rule is the log events' alone; a collector_error's message is the reason the run's
+// note names (a missing right, a failed read) and stays under every mode, as an AlwaysOn event's message does
+func TestTextPolicyMessageOnEventsOnly(t *testing.T) {
+	rows := []Row{
+		{"kind": "collector_error", "source": "amcheck", "message": "permission denied for function bt_index_check"},
+		{"kind": "event", "kind_of": "slow", "message": "duration: ... ms"},
+	}
+	applyTextPolicy(rows, "none")
+	if rows[0]["message"] != "permission denied for function bt_index_check" {
+		t.Errorf("none removed a collector_error's reason: %v", rows[0]["message"])
+	}
+	if rows[1]["message"] != nil {
+		t.Errorf("none kept a log event's message: %v", rows[1]["message"])
+	}
+}

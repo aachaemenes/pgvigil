@@ -110,9 +110,11 @@ for (const h of [`#/statements?i=${idOf('demo-onprem-erp01')}&w=1d`, `#/slowquer
     b.click(); for (let i = 0; i < 30 && !document.querySelector('tr.trend-row table.grid'); i++) await new Promise(r => setTimeout(r, 200));
     const inner = document.querySelector('tr.trend-row table.grid'); if (!inner) return null;
     const outer = inner.closest('tr.trend-row').closest('table.grid');
-    const td = inner.querySelector('tbody td');
+    const td = inner.querySelector(':scope > tbody > tr > td');   // its own body: the outer tbody holds the inner thead too
     td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
-    [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Copy row').click(); await new Promise(r => setTimeout(r, 300));
+    const rowItem = [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Copy row');
+    if (!rowItem) return { page: location.hash, rowHead: false, allLines: -1, outerRows: 0, why: 'the inner cell menu: ' + [...document.querySelectorAll('.menu button')].map(b => b.textContent).join('|') + ' (td in ' + td.closest('table').className + ', row parent ' + td.parentElement.parentElement.tagName + ')' };
+    rowItem.click(); await new Promise(r => setTimeout(r, 300));
     const row = await navigator.clipboard.readText();
     const otd = outer.querySelector('tbody tr:not(.trend-row) td');
     otd.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
@@ -123,7 +125,7 @@ for (const h of [`#/statements?i=${idOf('demo-onprem-erp01')}&w=1d`, `#/slowquer
   })()`);
   if (nested) break;
 }
-check('F nested grid', !!nested && nested.rowHead && nested.allLines === nested.outerRows + 1, nested ? `${nested.page}: the inner row copies the inner header ${nested.rowHead}; outer copy ${nested.allLines} lines for ${nested.outerRows} rows` : 'no History panel with a grid was found');
+check('F nested grid', !!nested && nested.rowHead && nested.allLines === nested.outerRows + 1, nested ? (nested.why ?? `${nested.page}: the inner row copies the inner header ${nested.rowHead}; outer copy ${nested.allLines} lines for ${nested.outerRows} rows`) : 'no History panel with a grid was found');
 
 // G. the Summary's Tests pane keeps its header in view while it scrolls, and is one tab stop
 await go('#/summary');

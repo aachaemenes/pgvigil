@@ -183,6 +183,7 @@ func TestScanSQL(t *testing.T) {
 		// an e that ends a word is not the E of an escape string: name'\' is the identifier name then the string '\'
 		{"SELECT $1::int, name'\\'; COMMIT", "SELECT", 1, true, false},
 		{"select e'a\\'; drop table t'", "SELECT", 0, false, false},
+		{"SELECT $1::int, foo$e'\\'; COMMIT; --'", "SELECT", 1, true, false},
 	}
 	for _, c := range cases {
 		s := ScanSQL(c.in)

@@ -45,7 +45,8 @@ func applyTextPolicy(rows []Row, mode string) {
 		// digit or an @, but a free-text message can still carry words: none stores no message. An 'error' event's
 		// detail quotes the server's DETAIL / CONTEXT lines (Key (email)=(...), Failing row contains (...)), which the
 		// SQL normalizer cannot mask: normalized stores none of it (the message shape groups the event).
-		if _, has := r["message"]; has && mode == "none" {
+		// (log events only: a collector_error's message is the reason the run's note names, an AlwaysOn event's the server's)
+		if _, has := r["message"]; has && mode == "none" && r["kind"] == "event" {
 			r["message"] = nil
 		}
 		if kind == "error" && mode == "normalized" {

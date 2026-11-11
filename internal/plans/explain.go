@@ -79,9 +79,7 @@ func Explain(ctx context.Context, dsn, datname, query string) (Row, error) {
 		if _, err := tx.Exec(ctx, `SET LOCAL plan_cache_mode = force_generic_plan`, mode); err != nil {
 			return Row{}, fmt.Errorf("plan_cache_mode: %w", err)
 		}
-		// the extended protocol, so the server takes one statement only: pgx sends an Exec without arguments over the
-		// simple protocol (it runs every statement of the text), whatever the mode option says
-		if _, err := tx.Conn().PgConn().ExecParams(ctx, `PREPARE pgvigil_explain AS `+query, nil, nil, nil, nil).Close(); err != nil {
+		if err := prepareOne(ctx, tx, "pgvigil_explain", query); err != nil {
 			return Row{}, explainErr(err, datname, sc.Keyword)
 		}
 		args := strings.TrimSuffix(strings.Repeat("NULL, ", sc.MaxParam), ", ")
@@ -127,5 +125,14 @@ func explainErr(err error, datname, keyword string) error {
 		}
 		return fmt.Errorf("%s (SQLSTATE %s)", pg.Message, pg.Code)
 	}
+	return err
+}
+
+// prepareOne prepares a stored statement's text as name over the extended protocol, which takes ONE statement: the
+// server refuses a text of several ("cannot insert multiple commands into a prepared statement"), whatever ScanSQL
+// made of it. pgx sends an Exec without arguments over the simple protocol, which runs every statement of the text (a
+// crafted text could COMMIT the read-only transaction and write), so tx.Exec is never used for it.
+func prepareOne(ctx context.Context, tx pgx.Tx, name, query string) error {
+	_, err := tx.Conn().PgConn().ExecParams(ctx, `PREPARE `+name+` AS `+query, nil, nil, nil, nil).Close()
 	return err
 }
