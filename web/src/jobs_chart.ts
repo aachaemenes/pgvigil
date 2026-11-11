@@ -17,7 +17,7 @@ export interface JobChartOptions {
 }
 
 const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(Math.round(Number(v) * 10) / 10) + ' s' : fmtSecs(v);
-const bucketLabel = (secs: number) => secs % 86400 === 0 ? `${secs / 86400} d` : secs % 3600 === 0 ? `${secs / 3600} h` : `${Math.round(secs / 60)} min`;
+const bucketLabel = (secs: number) => secs >= 86400 ? `${+(secs / 86400).toFixed(1)} d` : secs >= 5400 ? `${+(secs / 3600).toFixed(1)} h` : `${Math.round(secs / 60)} min`;
 
 export function jobChartSection(d: JobChartParts, o: JobChartOptions): HTMLElement {
   const box = el('div', { class: 'jobcharts' });
@@ -34,11 +34,14 @@ export function jobChartSection(d: JobChartParts, o: JobChartOptions): HTMLEleme
       return { snapshot_at: r.snapshot_at, s_ok: ok, s_bad: ok + bad, s_other: ok + bad + other } as Row;
     });
     const anyOther = series.some(r => Number(r.other ?? 0) > 0);
+    // the durations as drawn: a bucket without a finished run sits at 0. A daily job has one bucket with a run among
+    // many without: left empty, those points stand alone and a line chart draws nothing at all
+    const drawn = series.map(r => ({ snapshot_at: r.snapshot_at, avg_s: Number(r.avg_s ?? 0), max_s: Number(r.max_s ?? 0) } as Row));
     box.append(
       el('p', { class: 'meta' }, `${fmtNum(total)} run(s) of ${what} in buckets of ${bucketLabel(Number(meta.step_secs ?? 60))}. `
-        + 'A bucket without a run counts 0 and has no duration; a run that took 0 s still shows in the run count.'),
+        + 'A bucket without a run counts 0 and draws its duration at 0; a run that took 0 s still shows in the run count; a run still going is counted and has no duration yet.'),
       el('div', { class: 'charts' },
-        lineChart(`Duration of ${what}`, series, [{ key: 'avg_s', label: 'average' }, { key: 'max_s', label: 'longest' }], v => dur(v)),
+        lineChart(`Duration of ${what}`, drawn, [{ key: 'avg_s', label: 'average' }, { key: 'max_s', label: 'longest' }], v => dur(v)),
         lineChart(`Runs of ${what}`, stacked,
           [{ key: 's_ok', label: 'succeeded' }, { key: 's_bad', label: 'failed' },
            ...(anyOther ? [{ key: 's_other', label: 'other (cancelled, retry, running)' }] : [])],
@@ -66,7 +69,8 @@ export function jobChartSection(d: JobChartParts, o: JobChartOptions): HTMLEleme
     { key: 'last_run_at', label: 'last run', fmt: fmtTime },
     ...(o.engine === 'mssql' ? [{ key: '_pick', label: 'history', fmt: (_v: unknown, r: Row) => pickCell(r) } as Col] : []),
   ];
-  box.append(el('h4', {}, 'Steps'),
+  // a heading of the charts' own level (each chart's title is an h3): the grid is their sibling, not a part of the last chart
+  box.append(el('h3', {}, o.step != null ? `Steps (the charts and the runs show step ${o.step})` : 'Steps'),
     grid(stats, cols, 'No run of this job in this range.'),
     el('p', { class: 'meta' }, o.engine === 'mssql'
       ? 'One row per step with a run in the range; the first row is the job\'s own outcome. A step\'s button cuts the charts, the counts and the runs below to that step\'s rows.'

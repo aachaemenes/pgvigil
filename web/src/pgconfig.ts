@@ -7,10 +7,18 @@ import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
-// what a change of a setting needs, from pg_settings.context
+// what a change of a server-level value (the file's, as this grid lists) needs before it is in use, from
+// pg_settings.context: a session-settable one (user, superuser) takes the file's value at a reload and can also be
+// SET in one session; a backend one is read when a session starts
 const needs: Record<string, string> = {
-  postmaster: 'a restart', sighup: 'a reload', superuser: 'a session (superuser)', user: 'a session',
-  backend: 'a new session', 'superuser-backend': 'a new session (superuser)', internal: 'cannot be changed',
+  postmaster: 'restart', sighup: 'reload', superuser: 'reload, or SET (superuser)', user: 'reload, or SET',
+  backend: 'reload, new sessions', 'superuser-backend': 'reload, new sessions', internal: 'fixed',
+};
+// a value as the cell shows it: a long one cut at 60 characters, whole in its title and in a copy or an export
+const CUT = 60;
+const valueCell = (v: unknown): string | Node => {
+  const s = v == null ? '' : String(v);
+  return s.length <= CUT ? s : el('span', { title: s, 'data-full': s }, s.slice(0, CUT) + '...');
 };
 
 export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()): Promise<HTMLElement> {
@@ -25,22 +33,23 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
   const name = (v: unknown) => changed.has(String(v)) ? el('b', { title: 'changed in this range' }, String(v) + ' *') : String(v ?? '');
   const cols: Col[] = detail ? [
     { key: 'name', label: 'setting', fmt: name },
-    { key: 'value', wide: true },
+    { key: 'value', fmt: valueCell },
     { key: 'unit' },
-    { key: 'default_value', label: 'default', wide: true },
+    { key: 'default_value', label: 'default', fmt: valueCell },
     { key: 'source' },
-    { key: 'context', label: 'a change needs', fmt: v => v == null ? '' : `${needs[String(v)] ?? String(v)} (${String(v)})` },
+    { key: 'context', label: 'a change needs', fmt: v => v == null ? '' : el('span', { title: `pg_settings.context: ${String(v)}` }, needs[String(v)] ?? String(v)) },
     { key: 'pending_restart', label: 'pending restart', fmt: v => v === true ? badge('pending restart', 'warn') : '' },
     { key: 'category' },
   ] : [
     { key: 'name', label: 'setting', fmt: name },
-    { key: 'value', wide: true },
+    { key: 'value', fmt: valueCell },
   ];
   box.append(
     el('p', { class: 'meta' }, `${fmtNum(nonDefault)} non-default setting(s) at the server level`
       + (detail ? `, ${fmtNum(pending)} waiting for a restart (listed first)` : '') + `; read ${fmtTime(rows[0].snapshot_at)}. `
       + (detail
-        ? 'Value and default are in the setting\'s own unit. Source: where the value in use comes from. Pending restart: '
+        ? 'Value and default are in the setting\'s own unit. Source: where the value in use comes from. A change needs: what a new '
+          + 'value in the file takes before it is in use (a restart; a reload; "or SET": a session can also set its own). Pending restart: '
           + 'at the last reload the configuration file held another value than the running server, which takes it at '
           + 'the next restart (such a setting can still read source "default"; PostgreSQL keeps the mark until a restart '
           + 'or until the file names the running value again). A setting marked * changed in this range.'

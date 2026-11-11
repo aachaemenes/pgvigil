@@ -102,6 +102,34 @@
 #      false), then RESETs and reloads (still false, in no file). The Configuration page's sentence and docs/diff.md
 #      now say how long the mark stays]
 #  G. PostgreSQL 13: every migration through 0086 applies to a fresh database and seed.sql prints EXPECT_SEED there.
+#  [review fold (four headless runs, 03:26-03:39), expected before run 4:
+#   S  S1d / S1c the series by database (d 10, d2 5) and by client (c 13, c2 2). S2 a second database whose newest
+#      read is ten hours back (its read failed in the newest run): t4 is listed at that read (S2r: 10 hours), with no
+#      growth; S2i: only the asked instances (4 rows for this one, 0 for instance 0) and the top 2 by size t2, t1.
+#      S3 two jobs named dup with ids 9, 10 against 1, 2: both pairs the same (the ids ordered as numbers). S4 a
+#      database no longer read since three hours ago is one row 'only a', one first read four hours ago one row
+#      'only b', neither lists an object (S4f 0 objects, 2 database rows); a table dropped and re-created is
+#      'different', 're-created (owner and ACL not compared)', with the definition named too when it differs; the
+#      identical rows are then 6. S5 goes through import_instance (a payload without the detail list, then with it;
+#      S5h: no change-history row). S6 the hours each store reaches back (jobs 5 and 4, schema 240, changes 8).
+#   A  the counts beside each grid equal the rows listed; two databases of one instance: mode databases, the one
+#      table, settings and jobs not compared; more refusals (at_b alone, db_a alone, two databases at two times,
+#      db_a / db_b on SQL Server); a side without a read for a store: that section not compared, no row of it.
+#   B  to AT_M (after the schema reads, before the instance read and the job import): 0 settings, 0 jobs, t_new.
+#   C  the chart by each of the four dimensions against the grid by that dimension.
+#   D  instances=<the first instance>: its rows alone, meta 1 PostgreSQL instance, 1 read, 0 SQL Server; a folder of
+#      the second instance and a seeded SQL Server one: no row, 1 / 0 / 1; instances=1,x: 400.
+#   E  run 2's step 2 takes 4 s: the three buckets read 0.0, 4.0, 0.0 (average and longest); step_secs 240; the
+#      steps' average 1.3, longest 4, shortest 0, total 4 on the outcome row and step 2; step=2 lists msdb's rows
+#      32, 22, 12 with the failed-step cell on the two failed ones alone and the durations 0, 4, 0.
+#   F  the stored value is compared as it is (the masked names read '<masked>' on both sides); a skipped live part
+#      is named in the last line.]
+#  [run 5 graded (the box: PostgreSQL 18.6, PostgreSQL 13.23 as this proof's own container): PROOF OK. S 94 lines,
+#   A-G every line as written above, the review fold's new expectations included, at their first full run.]
+#  [run 4 graded (the box, the folded code): S stopped on the ORDER of two pairs of lines, S1d and S1c: they were
+#   ordered by the printed text, which the server's collation sorts ('d2' before 'd' on the box's en_US, after it on
+#   the laptop). Every value was as expected, and so were all the fold's other new lines. The three by-dimension
+#   reads now order by their sum, largest first; no value changed. A-G did not run in run 4.]
 #  [run 1 graded: S green at the first run (68 lines); the setup then stopped at 'VACUUM cannot run inside a
 #   transaction block': the setup's psql -c held several statements, which run as one transaction. The VACUUMs are
 #   now their own calls; no expectation changed]
@@ -132,11 +160,13 @@ undo_evt() {
   sleep 0.5
 }
 # with13 <command>: run it with the throwaway PostgreSQL 13 password in its environment (part G's own container)
-with13() { if [ -n "$PW13" ]; then PGPASSWORD=$PW13 "$@"; else "$@"; fi; }
+# (a subshell: a failure inside it must not leave the password in the environment the cleanup runs in)
+with13() { if [ -n "$PW13" ]; then ( export PGPASSWORD=$PW13; "$@" ); else "$@"; fi; }
 adm() { psql "$ADMIN_DSN" -XAtq -v ON_ERROR_STOP=1 "$@"; }
 cleanup() {
   local rc=$?
   set +e   # every step of the cleanup runs, whatever failed before it
+  unset PGPASSWORD PG13_REPO_DSN   # the sandbox's password comes from ~/.pgpass, never from part G's container
   # shellcheck disable=SC2086
   [ -n "$BG" ] && kill $BG 2>/dev/null
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
@@ -159,8 +189,8 @@ cleanup() {
 trap cleanup EXIT
 for t in psql curl python3 go; do command -v $t >/dev/null 2>&1 || fail "$t is not on this machine"; done
 [ -f go.mod ] || fail "run from the repository (go.mod not found)"
-[[ "$ADMIN_DSN" != *password=* ]] || fail "PGVIGIL_ADMIN_DSN carries a password: keep it in ~/.pgpass (the DSN is on a command line)"
-[[ "${PGVIGIL_PG13_DSN:-}" != *password=* ]] || fail "PGVIGIL_PG13_DSN carries a password: keep it in ~/.pgpass"
+[[ "$ADMIN_DSN" != *password=* && "$ADMIN_DSN" != *://* ]] || fail "PGVIGIL_ADMIN_DSN must be a keyword DSN without a password (the DSN is on a command line): keep the password in ~/.pgpass"
+[[ "${PGVIGIL_PG13_DSN:-}" != *password=* && "${PGVIGIL_PG13_DSN:-}" != *://* ]] || fail "PGVIGIL_PG13_DSN must be a keyword DSN without a password: keep it in ~/.pgpass"
 
 # ---- the one binary: this tree where it is wired, else a scratch copy with the lead's three route lines
 if grep -q '"GET /api/diff"' internal/web/web.go; then
@@ -232,12 +262,12 @@ select pgvigil.ensure_month_partition('mssql_job_runs', :'t0'::timestamptz - x *
 insert into pgvigil.conn_sources (instance_id, snapshot_at, application_name, usename, datname, client, total, active, idle, idle_in_txn, waiting_lock, other) values
   (:sc, :'m0'::timestamptz + interval '10 seconds', 'X', 'u1', 'd', 'c', 2, 0, 2, 0, 0, 0),
   (:sc, :'m0'::timestamptz + interval '10 seconds', 'X', 'u2', 'd', 'c', 1, 0, 1, 0, 0, 0),
-  (:sc, :'m0'::timestamptz + interval '10 seconds', 'Y', 'u1', 'd', 'c', 1, 0, 1, 0, 0, 0),
+  (:sc, :'m0'::timestamptz + interval '10 seconds', 'Y', 'u1', 'd', 'c2', 1, 0, 1, 0, 0, 0),
   (:sc, :'m0'::timestamptz + interval '40 seconds', 'X', 'u1', 'd', 'c', 3, 0, 3, 0, 0, 0),
   (:sc, :'m0'::timestamptz + interval '70 seconds', '', '', '', '', 0, 0, 0, 0, 0, 0),
   (:sc, :'m0'::timestamptz + interval '130 seconds', 'X', 'u1', 'd', 'c', 2, 0, 2, 0, 0, 0),
-  (:sc, :'m0'::timestamptz + interval '130 seconds', 'Y', 'u1', 'd', 'c', 1, 0, 1, 0, 0, 0),
-  (:sc, :'m0'::timestamptz + interval '130 seconds', 'Z', 'u1', 'd', 'c', 5, 0, 5, 0, 0, 0);
+  (:sc, :'m0'::timestamptz + interval '130 seconds', 'Y', 'u1', 'd', 'c2', 1, 0, 1, 0, 0, 0),
+  (:sc, :'m0'::timestamptz + interval '130 seconds', 'Z', 'u1', 'd2', 'c', 5, 0, 5, 0, 0, 0);
 select 'S1|' || extract(epoch from bucket - :'m0'::timestamptz)::int || '|' || coalesce(source, '(other)') || '|' || folded || '|' || conns || '|' || reads || '|' || peak || '|' || avg_conns || '|' || sources || '|' || rank
   from pgvigil.conn_sources_series(:sc, :'m0'::timestamptz - interval '1 minute', :'m0'::timestamptz + interval '5 minutes', 'application', 60, 2)
  order by bucket, rank;
@@ -249,18 +279,27 @@ select 'S1g|' || w.application_name || '|' || w.avg_total || '|' || w.peak_total
  order by 1;
 select 'S1u|' || source || '|' || sum(conns)
   from pgvigil.conn_sources_series(:sc, :'m0'::timestamptz - interval '1 minute', :'m0'::timestamptz + interval '5 minutes', 'user', 60, 1000)
- group by source order by 1;
+ group by source order by sum(conns) desc;
+select 'S1d|' || source || '|' || sum(conns)
+  from pgvigil.conn_sources_series(:sc, :'m0'::timestamptz - interval '1 minute', :'m0'::timestamptz + interval '5 minutes', 'database', 60, 1000)
+ group by source order by sum(conns) desc;
+select 'S1c|' || source || '|' || sum(conns)
+  from pgvigil.conn_sources_series(:sc, :'m0'::timestamptz - interval '1 minute', :'m0'::timestamptz + interval '5 minutes', 'client', 60, 1000)
+ group by source order by sum(conns) desc;
 
 -- S2: table sizes
 insert into pgvigil.tables (instance_id, dbid, relid, datname, schema_name, table_name, snapshot_at, total_bytes, heap_bytes, toast_bytes, index_bytes, n_live_tup, first_seen) values
   (:st, 5, 101, 'db', 'public', 't1', :'h0'::timestamptz - interval '1 hour', 9000, 6000, 1000, 2000, 90, :'h0'::timestamptz - interval '72 hours'),
   (:st, 5, 102, 'db', 'public', 't2', :'h0'::timestamptz - interval '1 hour', 20200, 200, 0, 20000, 3, :'h0'::timestamptz - interval '10 hours'),
-  (:st, 5, 103, 'db', 'public', 't3', :'h0'::timestamptz, 50, 40, 0, 10, 5, :'h0'::timestamptz - interval '1 hour');
+  (:st, 5, 103, 'db', 'public', 't3', :'h0'::timestamptz, 50, 40, 0, 10, 5, :'h0'::timestamptz - interval '1 hour'),
+  -- a second database whose read failed in the newest run: its newest read is the one ten hours back
+  (:st, 6, 201, 'db2', 'public', 't4', :'h0'::timestamptz - interval '10 hours', 700, 600, 0, 100, 7, :'h0'::timestamptz - interval '72 hours');
 insert into pgvigil.table_sizes (instance_id, snapshot_at, dbid, relid, total_bytes, n_live_tup) values
   (:st, :'h0'::timestamptz - interval '72 hours', 5, 101, 1000, 10),
   (:st, :'h0'::timestamptz - interval '30 hours', 5, 101, 2000, 20),
   (:st, :'h0'::timestamptz - interval '10 hours', 5, 101, 5000, 50),
   (:st, :'h0'::timestamptz - interval '10 hours', 5, 102, 20000, 1),
+  (:st, :'h0'::timestamptz - interval '10 hours', 6, 201, 700, 7),
   (:st, :'h0'::timestamptz - interval '1 hour', 5, 101, 9000, 90),
   (:st, :'h0'::timestamptz - interval '1 hour', 5, 102, 20200, 3),
   (:st, :'h0'::timestamptz - interval '1 hour', 5, 103, 50, 5);
@@ -269,6 +308,11 @@ select 'S2a|' || table_name || '|' || total_bytes || '|' || coalesce(heap_bytes:
   from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '24 hours', :'h0'::timestamptz, 1000000, 'size') where instance_id = :st order by table_name;
 select 'S2s|' || string_agg(table_name, ',' order by ordinality) from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '24 hours', :'h0'::timestamptz, 1000000, 'size') with ordinality where instance_id = :st;
 select 'S2g|' || string_agg(table_name, ',' order by ordinality) from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '24 hours', :'h0'::timestamptz, 1000000, 'growth') with ordinality where instance_id = :st;
+select 'S2r|' || table_name || '|' || round(extract(epoch from (:'h0'::timestamptz - read_at)) / 3600)::int
+  from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '24 hours', :'h0'::timestamptz, 1000000, 'size') where instance_id = :st order by table_name;
+select 'S2i|' || (select count(*) from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '24 hours', :'h0'::timestamptz, 1000000, 'size', array[:st]::int[]))
+       || '|' || (select count(*) from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '24 hours', :'h0'::timestamptz, 1000000, 'size', array[0]::int[]))
+       || '|' || (select string_agg(table_name, ',' order by ordinality) from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '24 hours', :'h0'::timestamptz, 2, 'size', array[:st]::int[]) with ordinality);
 select 'S2b|' || table_name || '|' || coalesce(base_bytes::text, '-') || '|' || coalesce(growth_bytes::text, '-') || '|' || coalesce(in_window::text, '-') || '|' || coalesce(days::text, '-') || '|' || coalesce(bytes_per_day::text, '-')
   from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '5 days', :'h0'::timestamptz, 1000000, 'size') where instance_id = :st order by table_name;
 select 'S2c|' || count(*) from pgvigil.table_size_fleet(:'h0'::timestamptz - interval '30 minutes', :'h0'::timestamptz, 1000000, 'size') where instance_id = :st;
@@ -296,18 +340,24 @@ insert into pgvigil.job_versions (instance_id, scheduler, job_id, valid_from, ve
   (:s1, 'sqlagent', 'DDD', :'t0'::timestamptz - interval '5 hours', 1, 'only-a', 'h4', '{"name": "only-a", "enabled": true}', false, NULL),
   (:s2, 'sqlagent', 'BBB', :'t0'::timestamptz - interval '4 hours', 1, 'backup', 'h5',
    '{"name": "backup", "enabled": true, "schedules": {"nightly #40": {"enabled": true, "runs": "every day at 01:00"}}, "steps": {"step 01": {"name": "full", "command": "BACKUP DATABASE a"}}}', false, NULL),
-  (:s2, 'sqlagent', 'EEE', :'t0'::timestamptz - interval '4 hours', 1, 'purge', 'h6', '{"name": "purge", "enabled": true}', false, NULL);
+  (:s2, 'sqlagent', 'EEE', :'t0'::timestamptz - interval '4 hours', 1, 'purge', 'h6', '{"name": "purge", "enabled": true}', false, NULL),
+  -- two jobs of one name on each side, the ids 9 and 10 against 1 and 2: paired in the order of the ids as numbers
+  (:s1, 'sqlagent', '9', :'t0'::timestamptz - interval '5 hours', 1, 'dup', 'h7', '{"name": "dup", "n": "first"}', false, NULL),
+  (:s1, 'sqlagent', '10', :'t0'::timestamptz - interval '5 hours', 1, 'dup', 'h8', '{"name": "dup", "n": "second"}', false, NULL),
+  (:s2, 'sqlagent', '1', :'t0'::timestamptz - interval '4 hours', 1, 'dup', 'h7', '{"name": "dup", "n": "first"}', false, NULL),
+  (:s2, 'sqlagent', '2', :'t0'::timestamptz - interval '4 hours', 1, 'dup', 'h8', '{"name": "dup", "n": "second"}', false, NULL);
 select 'S3j|' || job_name || '|' || status || '|' || coalesce((select string_agg((f->>'field') || '=' || coalesce(f->>'a', '-') || '>' || coalesce(f->>'b', '-'), ';') from jsonb_array_elements(fields) f), '-')
   from pgvigil.diff_jobs(:s1, NULL, :s2, NULL);
 select 'S3k|' || job_name || '|' || status || '|' || coalesce((select string_agg((f->>'field') || '=' || coalesce(f->>'a', '-') || '>' || coalesce(f->>'b', '-'), ';') from jsonb_array_elements(fields) f), '-')
   from pgvigil.diff_jobs(:s1, :'t0'::timestamptz - interval '3 hours', :s1, NULL);
 select 'S3s|' || jsonb_array_length(pgvigil.diff_job_fields(a.definition, b.definition, false)) || '|' || jsonb_array_length(pgvigil.diff_job_fields(a.definition, b.definition, true))
   from pgvigil.diff_jobs_at(:s1, NULL) a, pgvigil.diff_jobs_at(:s2, NULL) b where a.job_name = 'backup' and b.job_name = 'backup';
--- the job chart's rows (part E reads them through the API): three runs, two steps each, every one 0 s
+-- the job chart's rows (part E reads them through the API): three runs, two steps each, every one 0 s but run 2's
+-- step 2 (4 s, and so the run)
 insert into pgvigil.mssql_job_runs (instance_id, snapshot_at, history_id, job_id, job_name, step_id, step_name, run_status, duration_s, retries, message,
                                     failed_step_id, failed_step_name, failed_message, step_retries)
 select :s1, :'t0'::timestamptz - (7 - 2 * k) * interval '1 hour', 10 * k + s.step_no, 'JOB1', 'chart job', s.step_id, s.step_name,
-       case when s.step_id = 1 or k = 2 then 1 else 0 end, 0, 0, 'run ' || k || ' ' || s.step_name,
+       case when s.step_id = 1 or k = 2 then 1 else 0 end, case when k = 2 and s.step_id <> 1 then 4 else 0 end, 0, 'run ' || k || ' ' || s.step_name,
        case when s.step_id = 0 and k <> 2 then 2 end, case when s.step_id = 0 and k <> 2 then 'two' end,
        case when s.step_id = 0 and k <> 2 then 'run ' || k || ' two' end, case when s.step_id = 0 then 0 end
   from generate_series(1, 3) k, (values (1, 1, 'one'), (2, 2, 'two'), (3, 0, '(Job outcome)')) s(step_no, step_id, step_name);
@@ -315,7 +365,10 @@ select :s1, :'t0'::timestamptz - (7 - 2 * k) * interval '1 hour', 10 * k + s.ste
 -- S4: schema objects and their changes
 insert into pgvigil.schema_databases (instance_id, dbid, datname, snapshot_at, first_read, objects, is_present) values
   (:p1, 1, 'app', :'t0', :'t0'::timestamptz - interval '10 days', 6, true), (:p1, 2, 'onlya', :'t0', :'t0'::timestamptz - interval '10 days', 3, true),
-  (:p2, 7, 'app', :'t0', :'t0'::timestamptz - interval '10 days', 5, true), (:p2, 8, 'onlyb', :'t0', :'t0'::timestamptz - interval '10 days', 4, true);
+  (:p2, 7, 'app', :'t0', :'t0'::timestamptz - interval '10 days', 5, true), (:p2, 8, 'onlyb', :'t0', :'t0'::timestamptz - interval '10 days', 4, true),
+  -- one database no longer read since three hours ago, one first read four hours ago
+  (:p1, 3, 'dropped_db', :'t0'::timestamptz - interval '3 hours', :'t0'::timestamptz - interval '10 days', 9, false),
+  (:p1, 4, 'new_db', :'t0', :'t0'::timestamptz - interval '4 hours', 5, true);
 insert into pgvigil.schema_objects (instance_id, dbid, kind, identity, datname, schema_name, object_name, parent, definition, owner, acl, hash, def_hash, first_seen, snapshot_at, is_present) values
   (:p1, 1, 'schema', 'public', 'app', 'public', 'public', NULL, 'schema', 'o', NULL, 'h-s', 'd-s', :'t0'::timestamptz - interval '10 days', :'t0', true),
   (:p1, 1, 'table', 'public.t1', 'app', 'public', 't1', NULL, 'table', 'o', NULL, 'h-t1', 'd-t1', :'t0'::timestamptz - interval '10 days', :'t0', true),
@@ -325,6 +378,8 @@ insert into pgvigil.schema_objects (instance_id, dbid, kind, identity, datname, 
   (:p1, 1, 'function', 'public.f(integer)', 'app', 'public', 'f', NULL, 'f v1', 'alice', NULL, 'h-f1', 'd-f1', :'t0'::timestamptz - interval '10 days', :'t0', true),
   (:p1, 1, 'view', 'public.v', 'app', 'public', 'v', NULL, 'select 1', 'o', NULL, 'h-v1', 'd-v', :'t0'::timestamptz - interval '10 days', :'t0', true),
   (:p1, 1, 'table', 'public.gone', 'app', 'public', 'gone', NULL, 'table', 'o', NULL, 'h-g', 'd-g', :'t0'::timestamptz - interval '10 days', :'t0'::timestamptz - interval '7 hours', false),
+  (:p1, 3, 'table', 'public.d1', 'dropped_db', 'public', 'd1', NULL, 'table', 'o', NULL, 'h-d1', 'd-d1', :'t0'::timestamptz - interval '10 days', :'t0'::timestamptz - interval '4 hours', true),
+  (:p1, 4, 'table', 'public.z0', 'new_db', 'public', 'z0', NULL, 'table', 'o', NULL, 'h-z0', 'd-z0', :'t0'::timestamptz - interval '4 hours', :'t0', true),
   (:p2, 7, 'schema', 'public', 'app', 'public', 'public', NULL, 'schema', 'o', NULL, 'h-s', 'd-s', :'t0'::timestamptz - interval '10 days', :'t0', true),
   (:p2, 7, 'table', 'public.t1', 'app', 'public', 't1', NULL, 'table', 'o', NULL, 'h-t1', 'd-t1', :'t0'::timestamptz - interval '10 days', :'t0', true),
   (:p2, 7, 'column', 'public.t1.extra', 'app', 'public', 'extra', 'public.t1', 'text', 'o', NULL, 'h-t1x', 'd-t1x', :'t0'::timestamptz - interval '10 days', :'t0', true),
@@ -355,21 +410,34 @@ select :p1, :'t0'::timestamptz - c.h * interval '1 hour', 1, 'app', c.kind, c.id
     (8, 'table', 'public.early', NULL, 'added', NULL, NULL, 'def early'),
     (3, 'sequence', 'public.s', NULL, 'changed', 'acl', NULL, '{r=U/o}')
   ) c(h, kind, identity, parent, change, attribute, before, after);
+-- a change inside a database first read inside the range: the database is one row, its objects none
+insert into pgvigil.schema_changes (instance_id, snapshot_at, dbid, datname, kind, identity, schema_name, object_name, change, after)
+values (:p1, :'t0'::timestamptz - interval '3 hours', 4, 'new_db', 'table', 'public.z', 'public', 'z', 'added', 'def z');
 select 'S4c|' || kind || '|' || identity || '|' || status || '|' || coalesce(differs, '-') || '|' || coalesce(children::text, '-') || '|' || coalesce(a_definition, '-') || '|' || coalesce(b_definition, '-')
        || '|' || coalesce(a_owner, '-') || '>' || coalesce(b_owner, '-')
   from pgvigil.diff_schema_snapshots(:p1, :'t0'::timestamptz - interval '6 hours', :'t0'::timestamptz - interval '90 minutes') order by kind, identity;
 select 'S4d|' || status || '|' || count(*) from pgvigil.diff_schema_snapshots(:p1, :'t0'::timestamptz - interval '6 hours', :'t0'::timestamptz - interval '90 minutes', 'app', true) group by status order by status;
 select 'S4e|' || count(*) from pgvigil.diff_schema_snapshots(:p1, :'t0'::timestamptz - interval '6 hours', :'t0'::timestamptz - interval '90 minutes', 'nope', true);
+select 'S4f|' || count(*) filter (where kind <> 'database' and coalesce(datname_a, datname_b) in ('dropped_db', 'new_db')) || '|' || count(*) filter (where kind = 'database')
+  from pgvigil.diff_schema_snapshots(:p1, :'t0'::timestamptz - interval '6 hours', :'t0'::timestamptz - interval '90 minutes', NULL, true);
 
 -- S5: the settings' detail
-insert into pgvigil.instance_state (instance_id, snapshot_at, non_default_settings)
-values (:sf, :'t0', '[{"name": "work_mem", "value": "8192"}, {"name": "fsync", "value": "off"}]');
+-- through import_instance (0086's one plpgsql body: it runs here, on PostgreSQL 13 too): a payload without the detail
+-- list (an older collector), then one with it; the same non-default list both times, so no change-history row
+\o /dev/null
+select pgvigil.import_instance(:sf, :'t0'::timestamptz - interval '1 hour', '[{"platform": "onprem", "server_version_num": 160000, "max_connections": 100,
+  "non_default_settings": [{"name": "work_mem", "value": "8192"}, {"name": "fsync", "value": "off"}]}]');
+\o
 select 'S5a|' || name || '|' || value || '|' || coalesce(unit, '-') || '|' || detail_read || '|' || non_default from pgvigil.pg_config_settings(:sf);
-update pgvigil.instance_state set settings_detail = '[
+\o /dev/null
+select pgvigil.import_instance(:sf, :'t0', '[{"platform": "onprem", "server_version_num": 160000, "max_connections": 100,
+  "non_default_settings": [{"name": "work_mem", "value": "8192"}, {"name": "fsync", "value": "off"}],
+  "settings_detail": [
   {"name": "work_mem", "value": "8192", "unit": "kB", "boot_val": "4096", "source": "configuration file", "context": "user", "pending_restart": false, "category": "Resource Usage / Memory"},
   {"name": "fsync", "value": "off", "unit": null, "boot_val": "on", "source": "configuration file", "context": "sighup", "pending_restart": false, "category": "Write-Ahead Log / Settings"},
-  {"name": "max_connections", "value": "100", "unit": null, "boot_val": "100", "source": "default", "context": "postmaster", "pending_restart": true, "category": "Connections and Authentication / Connection Settings"}]'
- where instance_id = :sf;
+  {"name": "max_connections", "value": "100", "unit": null, "boot_val": "100", "source": "default", "context": "postmaster", "pending_restart": true, "category": "Connections and Authentication / Connection Settings"}]}]');
+\o
+select 'S5h|' || count(*) from pgvigil.instance_setting_history where instance_id = :sf;
 select 'S5b|' || name || '|' || value || '|' || coalesce(unit, '-') || '|' || default_value || '|' || source || '|' || context || '|' || restart_needed || '|' || pending_restart || '|' || non_default || '|' || category
   from pgvigil.pg_config_settings(:sf);
 
@@ -383,9 +451,12 @@ select 'S5c|' || name || '|' || coalesce(a_value, '-') || '|' || coalesce(b_valu
 select 'S5d|' || name || '|' || coalesce(a_value, '-') || '|' || coalesce(b_value, '-') || '|' || status from pgvigil.diff_settings(:sf, :'t0'::timestamptz - interval '150 minutes', :sf, NULL);
 
 -- S6: the two sides
-select 'S6|' || side || '|' || engine || '|' || (at is null) || '|' || (settings_read is not null) || '|' || (settings_from is null) || '|' || (jobs_from is not null) || '|' || (schema_read is null)
+-- the hours each store reaches back from t0 (jobs: the oldest and the newest version; schema: the oldest first read and the oldest change)
+select 'S6|' || side || '|' || engine || '|' || (at is null) || '|' || (settings_read is not null) || '|' || (settings_from is null) || '|'
+       || round(extract(epoch from (:'t0'::timestamptz - jobs_from)) / 3600)::int || '|' || round(extract(epoch from (:'t0'::timestamptz - jobs_read)) / 3600)::int || '|' || (schema_read is null)
   from pgvigil.diff_sides(:s1, :'t0'::timestamptz - interval '3 hours', :s2, NULL);
-select 'S6p|' || side || '|' || engine || '|' || schema_databases || '|' || (schema_from is not null) || '|' || (schema_changes_from is not null) || '|' || (settings_from is not null)
+select 'S6p|' || side || '|' || engine || '|' || schema_databases || '|' || round(extract(epoch from (:'t0'::timestamptz - schema_from)) / 3600)::int || '|'
+       || coalesce(round(extract(epoch from (:'t0'::timestamptz - schema_changes_from)) / 3600)::int::text, '-') || '|' || (settings_from is not null)
   from pgvigil.diff_sides(:p1, NULL, :p2, NULL);
 SQL
 cat > "$WORK/seed.expect" <<'EOF'
@@ -403,14 +474,25 @@ S1g|Y|0.5|1|true
 S1g|Z|1.3|5|true
 S1u|u1|14
 S1u|u2|1
+S1d|d|10
+S1d|d2|5
+S1c|c|13
+S1c|c2|2
 S2a|t1|9000|6000|2000|7000|70|false|1.21|5793|58
 S2a|t2|20200|200|20000|200|2|true|0.38|533|5
 S2a|t3|50|-|-|-|-|-|-|-|-
-S2s|t2,t1,t3
-S2g|t1,t2,t3
+S2a|t4|700|600|-|-|-|-|-|-|-
+S2s|t2,t1,t4,t3
+S2g|t1,t2,t4,t3
+S2r|t1|1
+S2r|t2|1
+S2r|t3|1
+S2r|t4|10
+S2i|4|0|t2,t1
 S2b|t1|1000|8000|true|2.96|2704
 S2b|t2|20000|200|true|0.38|533
 S2b|t3|-|-|-|-|-
+S2b|t4|-|-|-|-|-
 S2c|0
 S2d|t1|5000|4000|false
 S2d|t2|20000|200|false
@@ -422,9 +504,13 @@ S3b|cost threshold for parallelism|50|50|same
 S3b|max degree of parallelism|2|8|different
 S3c|0|2
 S3j|backup|different|steps / step 01 / command=BACKUP DATABASE a WITH COMPRESSION>BACKUP DATABASE a
+S3j|dup|same|-
+S3j|dup|same|-
 S3j|only-a|only a|-
 S3j|purge|only b|-
 S3k|backup|different|steps / step 01 / command=BACKUP DATABASE a>BACKUP DATABASE a WITH COMPRESSION
+S3k|dup|same|-
+S3k|dup|same|-
 S3k|only-a|same|-
 S3k|purge|only a|-
 S3s|5|1
@@ -434,22 +520,28 @@ S4a|app|app|schema|public|same|-|-
 S4a|app|app|table|public.t1|same|-|-
 S4a|app|app|table|public.t_a|only a|-|2
 S4a|app|app|view|public.v|different|acl|-
+S4a|new_db|-|database|new_db|only a|-|5
 S4a|onlya|-|database|onlya|only a|-|3
 S4a|-|onlyb|database|onlyb|only b|-|4
 S4b|5|only a|2
+S4c|database|dropped_db|only a|no longer read at B (dropped, or not connectable)|9|-|-|->-
+S4c|database|new_db|only b|first read inside the range (no snapshot at A)|5|-|-|->-
 S4c|function|public.f(integer)|different|definition, owner|-|f v0|f v1|carol>alice
 S4c|sequence|public.s|different|acl|-|-|-|->-
 S4c|table|public.big|different|definition|-|cut|cut|->-
 S4c|table|public.n1|only b|-|1|-|def n1|->-
 S4c|table|public.old|only a|-|1|def old|-|->-
-S4c|table|public.re2|different|definition|-|def A|def B|->-
-S4d|different|4
+S4c|table|public.re|different|re-created (owner and ACL not compared)|-|def re|def re|->-
+S4c|table|public.re2|different|definition, re-created (owner and ACL not compared)|-|def A|def B|->-
+S4d|different|5
 S4d|only a|1
 S4d|only b|1
-S4d|same|7
+S4d|same|6
 S4e|0
+S4f|0|2
 S5a|fsync|off|-|false|true
 S5a|work_mem|8192|-|false|true
+S5h|0
 S5b|max_connections|100|-|100|default|postmaster|true|true|false|Connections and Authentication / Connection Settings
 S5b|fsync|off|-|on|configuration file|sighup|false|false|true|Write-Ahead Log / Settings
 S5b|work_mem|8192|kB|4096|configuration file|user|false|false|true|Resource Usage / Memory
@@ -458,10 +550,10 @@ S5c|max_wal_size|2048|-|only a
 S5c|work_mem|4096|8192|different
 S5d|fsync|off|off|same
 S5d|work_mem|6144|8192|different
-S6|a|sqlserver|false|true|true|true|true
-S6|b|sqlserver|true|true|true|true|true
-S6p|a|postgres|2|true|true|true
-S6p|b|postgres|2|true|false|true
+S6|a|sqlserver|false|true|true|5|1|true
+S6|b|sqlserver|true|true|true|4|4|true
+S6p|a|postgres|3|240|8|true
+S6p|b|postgres|2|240|-|true
 EOF
 # seed <psql connection>: run seed.sql there and grade its output against the expected text
 seed() {
@@ -495,6 +587,7 @@ adm -c "alter database $D1 set work_mem = '6MB'"
 collect schema "$NA"
 d1 "drop table t_temp"
 sleep 1.1; collect schema "$NA"
+sleep 1.1; AT_M=$(stamp); sleep 1.1   # after the schema reads, before the setting and the job change are read
 collect instance "$NA"
 NOW=$(date -u +%s); ts() { date -u -d "@$1" +%FT%TZ; }
 RUNS=""; for i in 1 2 3 4; do st=$((NOW - 3600 + i * 600)); RUNS+=",{\"kind\":\"run\",\"scheduler\":\"pg_cron\",\"job_id\":1,\"run_id\":$i,\"status\":\"succeeded\",\"return_message\":\"SELECT 1\",\"start_time\":\"$(ts $st)\",\"end_time\":\"$(ts $st)\",\"duration_secs\":0}"; done
@@ -519,7 +612,8 @@ def rows(k):
     t = d.get(k) or {'columns': [], 'rows': []}
     return [dict(zip(t['columns'], r)) for r in t['rows']]
 $1"; }
-EA=$(enc "$AT_A"); EB=$(enc "$AT_B")
+EA=$(enc "$AT_A"); EB=$(enc "$AT_B"); EM=$(enc "$AT_M")
+SP1=$(q "select instance_id from pgvigil.instances where name = 'seed-pg1-$SUF'"); SCF=$(q "select instance_id from pgvigil.instances where name = 'seed-cfg-$SUF'")
 
 echo "--- A. two instances as last read"
 if server_level "$SRC_MWM"; then ST_MWM=different; else ST_MWM="only b"; fi
@@ -528,6 +622,12 @@ KIDS=$(q "select count(*) from pgvigil.schema_objects where instance_id = $IA an
 R=$(api "diff?a=$IA&b=$IB&db_a=$D1&db_b=$D2" | py "
 s, j, o = rows('settings'), rows('jobs'), rows('schema')
 m = rows('meta')[0]
+# the counts beside each grid are of the differences listed (the identical rows are counted too, and not listed)
+for part, listed in (('settings_counts', s), ('jobs_counts', j), ('schema_counts', o)):
+    c = rows(part)
+    assert sum(r['n'] for r in c if r['status'] != 'same') == len(listed), (part, c, len(listed))
+assert sum(r['n'] for r in rows('settings_counts') if r['status'] == 'same') >= 1 and sum(r['n'] for r in rows('jobs_counts') if r['status'] == 'same') == 1, 'the identical rows are counted'
+assert all(r['compared'] for r in rows('coverage')), rows('coverage')
 print('%s|%d:%s' % (m['mode'], len(s), ','.join('%s=%s/%s/%s' % (r['name'], r['a_value'], r['b_value'], r['status']) for r in s)))
 print('%d:%s' % (len(j), ','.join('%s/%s/%s/%s' % (r['job_name'], r['status'], r['a_job_id'], r['b_job_id']) + ''.join('/%s=%s>%s' % (f['field'], f['a'], f['b']) for f in r['fields']) for r in j)))
 print('%d:%s' % (len(o), ','.join('%s/%s/%s/%s/%s/%s' % (r['kind'], r['identity'], r['status'], r['children'], r['datname_a'], r['datname_b']) for r in o)))")
@@ -543,10 +643,29 @@ print('%s|%s|%d|%d|%d' % ('/'.join('%s=%s' % (r['job_name'], r['status']) for r 
       sum(1 for r in s if r['status'] != 'same'), sum(1 for r in o if r['status'] == 'same'), sum(1 for r in o if r['status'] != 'same')))")
 echo "  all=1: $R"
 [ "$R" = "nightly=different/weekly=same|6144/6144/same|1|$SAME_OBJ|1" ] || fail "A: all=1 (the identical job, work_mem the same, $SAME_OBJ identical objects)"
+# two databases of one instance: the first instance read both target databases (its schema collection reads every
+# database of the server), so its own view of them differs by the same one table
+R=$(api "diff?a=$IA&b=$IA&db_a=$D1&db_b=$D2" | py "
+o = rows('schema'); c = {r['section']: r['compared'] for r in rows('coverage')}
+print('%s|%s|%s|%s|%d:%s' % (rows('meta')[0]['mode'], 'settings' in d or 'jobs' in d, c['settings'] or c['jobs'], c['schema'], len(o), ','.join('%s/%s/%s/%s' % (r['kind'], r['identity'], r['status'], r['children']) for r in o)))")
+echo "  two databases of one instance: $R"
+[ "$R" = "databases|False|False|True|1:table/public.t_only_a/only a/$KIDS" ] || fail "A: the databases mode"
 api "diff?a=$IA&b=$SID1" 400 >/dev/null
 api "diff?a=$IA&b=$IB&at_a=$EA" 400 >/dev/null
 api "diff?a=$IA&b=$IA" 400 >/dev/null
+api "diff?a=$IA&b=$IA&at_b=$EB" 400 >/dev/null
+api "diff?a=$IA&b=$IB&db_a=$D1" 400 >/dev/null
+api "diff?a=$IA&b=$IA&at_a=$EA&db_a=$D1&db_b=$D2" 400 >/dev/null
+api "diff?a=$SID1&b=$SID1&db_a=x&db_b=y" 400 >/dev/null
+api "diff?a=$SID1&b=$SID2&db_a=x&db_b=y" 400 >/dev/null
 api "diff?a=$IA&b=999999999" 404 >/dev/null
+# a side with no read for a store: that section is not compared, and no row of it comes back (the seeded
+# seed-pg1 has schema snapshots and no instance read; seed-cfg an instance read and no schema snapshot)
+R=$(api "diff?a=$SP1&b=$SCF" | py "
+c = {r['section']: (r['compared'], r['note']) for r in rows('coverage')}
+print('%s|%s|%s|%s|%s|%s' % (c['settings'][0], 'side A' in c['settings'][1], c['schema'][0], 'side B' in c['schema'][1], 'settings' in d or 'schema' in d, c['jobs'][0]))")
+echo "  a side without a read: $R"
+[ "$R" = "False|True|False|True|False|True" ] || fail "A: a section one side has no read for must not be compared"
 R=$(api "diff?a=$SID1&b=$SID2" | py "
 c = {r['section']: r['compared'] for r in rows('coverage')}
 print('%s|%d|%d|%s|%s|%s' % (rows('meta')[0]['engine'], len(rows('settings')), len(rows('jobs')), 'schema' in d, c['schema'], c['settings'] and c['jobs']))")
@@ -570,11 +689,16 @@ echo "$R" | sed 's/^/  /'
 R=$(api "diff?a=$IA&b=$IA&at_a=$EA&db_a=$D1" | py "print(','.join(sorted('%s/%s' % (r['identity'], r['status']) for r in rows('schema'))))")
 echo "  to the newest read: $R"
 [ "$R" = "public.t_after/only b,public.t_new/only b" ] || fail "B: without at_b the table created after AT_B shows too"
+# up to AT_M (after the schema reads, before the instance read and the job import): the table alone. A handler that
+# passed 'now' for the later time to the settings or the jobs would list their changes here
+R=$(api "diff?a=$IA&b=$IA&at_a=$EA&at_b=$EM&db_a=$D1" | py "print('%d|%d|%s' % (len(rows('settings')), len(rows('jobs')), ','.join('%s/%s' % (r['identity'], r['status']) for r in rows('schema'))))")
+echo "  to AT_M: $R"
+[ "$R" = "0|0|public.t_new/only b" ] || fail "B: the later time must bound the settings and the jobs too"
 api "diff?a=$IA&b=$IA&at_a=$EB&at_b=$EA" 400 >/dev/null
 echo "B: OK"
 
 echo "--- C. connections over time"
-for i in 1 2 3; do (echo "select 1;"; sleep 90) | PGAPPNAME=pvdg_idle_$SUF psql "$DG_A_DSN" -XAtq >/dev/null 2>&1 & BG="$BG $!"; done
+for i in 1 2 3; do (echo "select 1;"; sleep 30) | PGAPPNAME=pvdg_idle_$SUF psql "$DG_A_DSN" -XAtq >/dev/null 2>&1 & BG="$BG $!"; done
 IDLE_PIDS=$BG
 appcount() { psql "$ADMIN_DSN" -XAt -c "select count(*) from pg_stat_activity where application_name = 'pvdg_idle_$SUF'"; }
 for _ in $(seq 1 50); do [ "$(appcount)" = 3 ] && break; sleep 0.1; done
@@ -584,6 +708,7 @@ collect connections "$NA"; H1=$(appcount); sleep 1.2
 collect connections "$NA"; H2=$(appcount); sleep 1.2
 # shellcheck disable=SC2086
 kill $IDLE_PIDS 2>/dev/null || true
+BG=   # killed here: the cleanup must not signal these pids again (a later process could have taken one)
 for _ in $(seq 1 50); do [ "$(appcount)" = 0 ] && break; sleep 0.1; done
 collect connections "$NA"; H3=$(appcount)
 R=$(q "select string_agg(conns::text, ',' order by bucket) || '|' || count(*) from pgvigil.conn_sources_series($IA, '-infinity', 'infinity', 'application', 1, 1000000) where source = 'pvdg_idle_$SUF'")
@@ -596,9 +721,10 @@ R=$(q "select bool_and(w.avg_total = s.avg1 and w.peak_total = s.peak) || '|' ||
 [ "$R" = "true|true" ] || fail "C: the series' totals against the grid's ($R)"
 EC0=$(enc "$C0"); ENOW=$(enc "$(stamp)")
 TOTAL=$(q "select sum(total) from pgvigil.conn_sources where instance_id = $IA and snapshot_at > '$C0'")
-R=$(api "connections?instance=$IA&from=$EC0&to=$ENOW&by=application&chart=application" | py "
+for dim in application:application_name user:usename database:datname client:client; do
+R=$(api "connections?instance=$IA&from=$EC0&to=$ENOW&by=${dim%%:*}&chart=${dim%%:*}" | py "
 from decimal import Decimal, ROUND_HALF_UP
-g = {r['application_name']: r for r in rows('sources')}
+g = {r['${dim##*:}']: r for r in rows('sources')}
 m = rows('series_meta')[0]
 ser = {}
 for r in rows('series'):
@@ -607,8 +733,9 @@ for r in rows('series'):
 named = [k for k in ser if not k[1]]
 ok = all((Decimal(ser[k][0]) / Decimal(ser[k][1])).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP) == Decimal(str(g[k[0]]['avg_total'])) and ser[k][2] == g[k[0]]['peak_total'] for k in named)
 print('%s|%s|%s|%s|%d' % (m['step_secs'], m['dim'], 1 <= len(named) <= 8, ok, sum(a[0] for a in ser.values())))")
-echo "  the API's chart: $R (conn_sources' total $TOTAL)"
-[ "$R" = "60|application|True|True|$TOTAL" ] || fail "C: the API's series against the grid and the stored total"
+echo "  the API's chart by ${dim%%:*}: $R (conn_sources' total $TOTAL)"
+[ "$R" = "60|${dim%%:*}|True|True|$TOTAL" ] || fail "C: the API's series by ${dim%%:*} against the grid and the stored total"
+done
 api "connections?instance=$IA&chart=nonsense" 400 >/dev/null
 echo "C: OK"
 
@@ -635,8 +762,13 @@ done
 EXPM=$(q "select count(*) filter (where engine = 'postgres') || '|' || count(*) filter (where engine = 'sqlserver') from pgvigil.instances where is_active")
 R=$(api "tablesize?from=$ED0&to=$ENOW" | py "m = rows('meta')[0]; print('%s|%s' % (m['pg_instances'], m['mssql_instances'])); assert m['instances_read'] == 1 and m['top'] == 100 and m['order'] == 'size', m")
 [ "$R" = "$EXPM" ] || fail "D: meta $R against the hand count $EXPM"
+R=$(api "tablesize?from=$ED0&to=$ENOW&top=500&instances=$IA" | py "m = rows('meta')[0]; t = rows('tables'); print('%s|%s|%s|%s|%s' % (len(t) > 0 and all(r['instance_id'] == $IA for r in t), m['pg_instances'], m['instances_read'], m['mssql_instances'], m['narrowed']))")
+[ "$R" = "True|1|1|0|True" ] || fail "D: instances= narrows the rows and the counts to that instance ($R)"
+R=$(api "tablesize?from=$ED0&to=$ENOW&instances=$IB,$SID1" | py "m = rows('meta')[0]; print('%d|%s|%s|%s' % (len(rows('tables')), m['pg_instances'], m['instances_read'], m['mssql_instances']))")
+[ "$R" = "0|1|0|1" ] || fail "D: a folder whose PostgreSQL instance has no table read ($R)"
 api "tablesize?top=7" 400 >/dev/null
 api "tablesize?order=x" 400 >/dev/null
+api "tablesize?instances=1,x" 400 >/dev/null
 echo "D: OK"
 
 echo "--- E. the job chart and the step cut"
@@ -645,16 +777,18 @@ JQ="jobs/history?engine=mssql&instance=$SID1&from=$FROM&to=$TO&scheduler=sqlagen
 R=$(api "$JQ" | py "
 c, s, st = rows('counts')[0], rows('series'), rows('stats')
 hit = [r for r in s if r['runs'] > 0]
-print('%s/%s/%s|%d/%d|%d|%s|%s|%s' % (c['runs'], c['failed'], c['succeeded'], sum(r['runs'] for r in s), sum(r['failed'] for r in s), len(hit),
-      all(float(r['avg_s']) == 0 and float(r['max_s']) == 0 for r in hit), all(r['avg_s'] is None for r in s if r['runs'] == 0) and len(s) > len(hit),
-      ';'.join('%s:%s/%s/%s' % (r['step_id'], r['step_name'], r['failed'], r['succeeded']) for r in st)))")
+print('%s/%s/%s|%d/%d|%d|%s|%s|%s|%s' % (c['runs'], c['failed'], c['succeeded'], sum(r['runs'] for r in s), sum(r['failed'] for r in s), len(hit),
+      ','.join('%.1f/%.1f' % (float(r['avg_s']), float(r['max_s'])) for r in hit), all(r['avg_s'] is None for r in s if r['runs'] == 0) and len(s) > len(hit),
+      rows('series_meta')[0]['step_secs'],
+      ';'.join('%s:%s/%s/%s/%.1f/%d/%d/%d' % (r['step_id'], r['step_name'], r['failed'], r['succeeded'], float(r['avg_s']), float(r['max_s']), float(r['min_s']), float(r['total_s'])) for r in st)))")
 echo "  the job: $R"
-[ "$R" = "3/2/1|3/2|3|True|True|0:(job outcome)/2/1;1:one/0/3;2:two/2/1" ] || fail "E: the SQL Server job's counts, series and steps"
+[ "$R" = "3/2/1|3/2|3|0.0/0.0,4.0/4.0,0.0/0.0|True|240|0:(job outcome)/2/1/1.3/4/0/4;1:one/0/3/0.0/0/0/0;2:two/2/1/1.3/4/0/4" ] || fail "E: the SQL Server job's counts, series and steps"
 R=$(api "$JQ&step=2" | py "
 r, c = rows('runs'), rows('counts')[0]
-print('%d|%s|%s|%s/%s|%d|%s' % (len(r), ','.join(x['outcome'] for x in r), all(x['failed_step'] == '2 two' for x in r), c['failed'], c['succeeded'], sum(x['runs'] for x in rows('series')), rows('series_meta')[0]['step']))")
+print('%d|%s|%s|%s|%s|%s/%s|%d|%s' % (len(r), ','.join(x['outcome'] for x in r), ','.join(x['run_id'] for x in r), ','.join(str(x['failed_step']) for x in r), ','.join('%d' % x['duration_s'] for x in r),
+      c['failed'], c['succeeded'], sum(x['runs'] for x in rows('series')), rows('series_meta')[0]['step']))")
 echo "  step 2: $R"
-[ "$R" = "3|failed,succeeded,failed|True|2/1|3|2" ] || fail "E: the step cut"
+[ "$R" = "3|failed,succeeded,failed|32,22,12|2 two,None,2 two|0,4,0|2/1|3|2" ] || fail "E: the step cut"
 R=$(api "$JQ&step=1" | py "print('%s|%s' % (','.join(x['outcome'] for x in rows('runs')), rows('counts')[0]['failed']))")
 [ "$R" = "succeeded,succeeded,succeeded|0" ] || fail "E: step 1 ($R)"
 PQ="jobs/history?engine=pg&instance=$IA&from=$FROM&to=$TO&scheduler=pg_cron&job=1"
@@ -672,10 +806,16 @@ echo "--- F. the settings' detail"
 HANDQ="select name || '|' || case when name in ('primary_conninfo','archive_command','restore_command','archive_cleanup_command','recovery_end_command','ssl_passphrase_command','ssl_key_file') then '<masked>' else setting end
               || '|' || coalesce(unit, '-') || '|' || coalesce(boot_val, '-') || '|' || source || '|' || context || '|' || pending_restart || '|' || category
          from pg_settings where source in ('configuration file','command line','environment variable','global','database') or pending_restart order by name"
-GOTQ="select name || '|' || case when value = '<masked>' then '<masked>' else value end || '|' || coalesce(unit, '-') || '|' || coalesce(default_value, '-') || '|' || source || '|' || context || '|' || pending_restart || '|' || category
+GOTQ="select name || '|' || value || '|' || coalesce(unit, '-') || '|' || coalesce(default_value, '-') || '|' || source || '|' || context || '|' || pending_restart || '|' || category
         from pgvigil.pg_config_settings($IA) order by name"
+F_NOTE=
 if [ "${PGVIGIL_PROOF_NO_ALTER_SYSTEM:-}" = 1 ] || [ "$(adm -c "select count(*) from pg_file_settings where name = 'event_source'")" != 0 ] || [ "$(evt_pending)" != f ]; then
   PEND="not proven: event_source is already set in a configuration file here or already reads pending restart, or PGVIGIL_PROOF_NO_ALTER_SYSTEM=1"
+  F_NOTE=" (F's LIVE PENDING RESTART NOT PROVEN: see part F)"
+  # a run of this proof that was killed (no trap ran) leaves its own value behind: say how it is taken out
+  if [ "$(adm -c "select count(*) from pg_file_settings where name = 'event_source' and setting like 'pgvigil\_proof\_%'")" != 0 ]; then
+    echo "  event_source is set to a value of this proof (a killed run left it). Its undo, by hand: ALTER SYSTEM SET event_source = '$(adm -c "show event_source")'; SELECT pg_reload_conf(); ALTER SYSTEM RESET event_source; SELECT pg_reload_conf();"
+  fi
 else
   echo "  the one server setting, before: event_source = $(adm -c "show event_source"), in no configuration file, not pending. Its undo: ALTER SYSTEM SET event_source = '<that value>'; SELECT pg_reload_conf(); ALTER SYSTEM RESET event_source; SELECT pg_reload_conf();"
   MADE_EVT=1
@@ -739,4 +879,4 @@ else
   with13 seed "$DSN13 dbname=$DB13" G
   echo "G: OK (server_version_num $V13: every migration through 0086 applied; seed.sql prints the expected text)"
 fi
-echo "PROOF OK$G_NOTE"
+echo "PROOF OK$F_NOTE$G_NOTE"

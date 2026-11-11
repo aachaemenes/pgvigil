@@ -27,9 +27,10 @@ import (
 //            seconds. SQL Server stores msdb's step rows; pg_cron has no steps and pgAgent's step log rides on the
 //            run, so a PostgreSQL job has the outcome row alone
 //   series   the range in buckets (series_meta: their width), every bucket a row, an empty one with zero counts:
-//            runs, succeeded, failed, other, and the average and longest seconds (NULL without a run), so the chart
-//            has a point where every run took 0 s
-//   &step=<n> (SQL Server; n > 0) cuts runs, counts and series to that step's own rows; engine=pg with step is 400
+//            runs, succeeded, failed, other, and the average and longest seconds of the finished runs (NULL without
+//            one), so the chart has a point where every run took 0 s
+//   &step=<n> (SQL Server; n > 0) cuts runs, counts and series to that step's own rows (a run's failed_step is then
+//            filled only where that step failed); engine=pg with step is 400
 
 // pgOutcome is a pg_cron or pgAgent run's status as one of succeeded, failed, cancelled, running.
 const pgOutcome = `CASE WHEN r.status = 'succeeded' THEN 'succeeded'
@@ -144,9 +145,10 @@ SELECT j.running_since AS start_time, extract(epoch FROM j.snapshot_at - j.runni
  WHERE j.instance_id = $1 AND $4 = 'sqlagent' AND j.job_id = $5 AND j.running_since > $2 AND j.running_since <= $3
    AND $6::int IS NULL
 UNION ALL
--- the job's outcome rows (step 0) with the step that failed, or with a step picked that step's own rows
+-- the job's outcome rows (step 0) with the step that failed, or with a step picked that step's own rows (the
+-- 'step that failed' cell then only on the rows where that step failed)
 SELECT r.snapshot_at, r.duration_s, ` + msOutcome + `,
-       CASE WHEN r.step_id > 0 THEN r.step_id || ' ' || coalesce(r.step_name, '')
+       CASE WHEN r.step_id > 0 THEN CASE WHEN r.run_status = 0 THEN r.step_id || ' ' || coalesce(r.step_name, '') END
             WHEN r.failed_step_id IS NOT NULL THEN r.failed_step_id || ' ' || coalesce(r.failed_step_name, '') END,
        CASE WHEN r.step_id > 0 THEN r.message ELSE coalesce(r.failed_message, r.message) END,
        CASE WHEN r.step_id > 0 THEN r.sql_message_id ELSE r.failed_sql_message_id END,
@@ -196,21 +198,31 @@ SELECT 0 AS step_id, '(job outcome)' AS step_name,
 HAVING count(*) > 0`
 
 // the runs of the range in buckets of $7 seconds (the runs query is wrapped around it), every bucket of the range a
-// row: a bucket without a run counts 0 and has no duration. snapshot_at is the bucket's start (the chart's x).
+// row: a bucket without a run counts 0 and has no duration. snapshot_at is the bucket's start (the chart's x). Each
+// run is given its bucket first and the buckets are joined on equality: one pass over the runs, whatever their
+// number. A run still going (a SQL Server job running at the read) counts in 'other' and stays out of the
+// durations: its time so far is not a duration.
 const sqlJobSeries = `
-WITH x AS (%s), b AS (
-  SELECT g AS snapshot_at
+WITH x AS (%s), g AS (
+  SELECT to_timestamp(floor(extract(epoch FROM x.start_time) / $7::int) * $7::int) AS snapshot_at,
+         count(*) AS runs,
+         count(*) FILTER (WHERE x.outcome = 'succeeded') AS succeeded,
+         count(*) FILTER (WHERE x.outcome = 'failed') AS failed,
+         count(*) FILTER (WHERE coalesce(x.outcome, '') NOT IN ('succeeded', 'failed')) AS other,
+         round(avg(x.duration_s) FILTER (WHERE coalesce(x.outcome, '') <> 'running')::numeric, 1) AS avg_s,
+         round(max(x.duration_s) FILTER (WHERE coalesce(x.outcome, '') <> 'running')::numeric, 1) AS max_s
+    FROM x
+   WHERE x.start_time IS NOT NULL
+   GROUP BY 1
+), b AS (
+  SELECT k AS snapshot_at
     FROM generate_series(to_timestamp(floor(extract(epoch FROM $2::timestamptz) / $7::int) * $7::int), $3::timestamptz,
-                         make_interval(secs => $7::int)) g
+                         make_interval(secs => $7::int)) k
 )
-SELECT b.snapshot_at, count(x.start_time) AS runs,
-       count(x.start_time) FILTER (WHERE x.outcome = 'succeeded') AS succeeded,
-       count(x.start_time) FILTER (WHERE x.outcome = 'failed') AS failed,
-       count(x.start_time) FILTER (WHERE x.outcome NOT IN ('succeeded', 'failed')) AS other,
-       round(avg(x.duration_s)::numeric, 1) AS avg_s, round(max(x.duration_s)::numeric, 1) AS max_s
+SELECT b.snapshot_at, coalesce(g.runs, 0) AS runs, coalesce(g.succeeded, 0) AS succeeded, coalesce(g.failed, 0) AS failed,
+       coalesce(g.other, 0) AS other, g.avg_s, g.max_s
   FROM b
-  LEFT JOIN x ON x.start_time >= b.snapshot_at AND x.start_time < b.snapshot_at + make_interval(secs => $7::int)
- GROUP BY b.snapshot_at
+  LEFT JOIN g ON g.snapshot_at = b.snapshot_at
  ORDER BY b.snapshot_at`
 
 // jobSeriesStep is the series' bucket width in seconds: about 120 buckets over the range, a whole number of minutes.

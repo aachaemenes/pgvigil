@@ -26,7 +26,8 @@ const blank = (v: unknown) => v == null ? '' : v === '' ? '(none)' : String(v);
 function loadChart(): string {
   try { const v = localStorage.getItem(keyChart) ?? ''; return dims.some(d => d[0] === v) ? v : 'application'; } catch { return 'application'; }
 }
-const bucketLabel = (secs: number) => secs % 3600 === 0 ? `${secs / 3600} h` : `${Math.round(secs / 60)} min`;
+// a bucket's width in the largest unit that reads well: 60 s '1 min', 2,040 s '34 min', 8,940 s '2.5 h'
+const bucketLabel = (secs: number) => secs >= 86400 ? `${+(secs / 86400).toFixed(1)} d` : secs >= 5400 ? `${+(secs / 3600).toFixed(1)} h` : `${Math.round(secs / 60)} min`;
 
 // seriesChart: the series part (one row per bucket and source, in rank order) as a stacked chart. lineChart's stacked
 // bands take running totals, so each bucket's values are summed here in rank order: the largest source is the lowest

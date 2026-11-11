@@ -17,7 +17,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 type Mode = 'i' | 't' | 'd';
 interface Picks { m: Mode; a?: number; b?: number; dba?: string; dbb?: string; ta?: string; tb?: string; all: boolean }
 const keys = ['m', 'a', 'b', 'dba', 'dbb', 'ta', 'tb', 'all'];
-const modes: [Mode, string][] = [['i', 'Two instances'], ['t', 'One instance at two times'], ['d', 'Two databases of one instance']];
+const modes: [Mode, string][] = [['i', 'Two instances'], ['t', 'One instance at two times'], ['d', 'Two databases of one instance (PostgreSQL)']];
 const lsKey = 'pgvigil.diff';
 let focusResult = false;   // the Compare button asked for this render: the result takes the focus
 
@@ -61,9 +61,10 @@ function diffHref(ctx: Ctx, p: Picks): string {
   return `#/diff?${q}`;
 }
 
-// complete: the picks are enough for a diff; the reason when they are not
-function incomplete(p: Picks): string {
-  if (!p.a) return 'Pick instance A.';
+// incomplete: why the picks are not enough for a diff ('' = they are); engine = instance A's
+function incomplete(p: Picks, engine?: string): string {
+  if (!p.a) return p.m === 'i' ? 'Pick instance A.' : 'Pick the instance.';
+  if (p.m === 'd' && engine === 'sqlserver') return 'Two databases are compared by their schema objects, which the repository holds for PostgreSQL only: pick a PostgreSQL instance.';
   if (p.m === 'i') {
     if (!p.b) return 'Pick instance B.';
     if (p.b === p.a) return 'A and B are the same instance: pick another B, or compare it at two times.';
@@ -100,15 +101,18 @@ function longText(v: unknown): string | Node {
 
 function sidesBlock(sides: Row[], mode: string): HTMLElement {
   const t = (v: unknown) => v == null ? 'none' : fmtTime(v);
+  // a store's newest read, and under it how far back it reaches
+  const two = (top: string, under: string): string | Node => under ? el('span', {}, top, el('br'), el('span', { class: 'meta' }, under)) : top;
   const cols: Col[] = [
     { key: 'side', label: 'side', fmt: v => String(v ?? '').toUpperCase() },
     { key: 'instance' },
     { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' },
     { key: 'at', label: 'as of', fmt: v => v == null ? 'the newest read' : fmtTime(v) },
-    { key: 'settings_read', label: 'settings read', fmt: (v, r) => t(v) + (r.settings_from ? ` (history from ${fmtTime(r.settings_from)})` : r.engine === 'sqlserver' ? ' (one earlier value per setting)' : '') },
-    { key: 'jobs_read', label: 'newest job version', fmt: (v, r) => t(v) + (r.jobs_from ? ` (versions from ${fmtTime(r.jobs_from)})` : '') },
-    { key: 'schema_read', label: 'schema read', fmt: (v, r) => r.engine === 'sqlserver' ? 'not collected' : t(v)
-      + (v != null ? ` (${fmtNum(r.schema_databases)} database(s), first read ${fmtTime(r.schema_from)}` + (mode === 'snapshots' ? `, changes held from ${r.schema_changes_from ? fmtTime(r.schema_changes_from) : 'none yet'}` : '') + ')' : '') },
+    { key: 'settings_read', label: 'settings read', fmt: (v, r) => two(t(v), v == null ? '' : r.settings_from ? `history from ${fmtTime(r.settings_from)}` : r.engine === 'sqlserver' ? 'one earlier value per setting' : '') },
+    { key: 'jobs_read', label: 'newest job version', fmt: (v, r) => two(t(v), r.jobs_from ? `versions from ${fmtTime(r.jobs_from)}` : '') },
+    { key: 'schema_read', label: 'schema read', fmt: (v, r) => r.engine === 'sqlserver' ? 'not collected' : two(t(v),
+      v == null ? '' : `${fmtNum(r.schema_databases)} database(s), first read ${fmtTime(r.schema_from)}`
+        + (mode === 'snapshots' ? `; changes held from ${r.schema_changes_from ? fmtTime(r.schema_changes_from) : 'none yet'}` : '')) },
   ];
   return grid(sides, cols, 'No such instance.');
 }
@@ -148,7 +152,8 @@ function jobsBlock(d: Record<string, Table | null>, note: string): HTMLElement {
     grid(rowsOf(d.jobs), cols, 'No job differs.'));
 }
 
-function schemaBlock(d: Record<string, Table | null>, cap: number, note: string): HTMLElement {
+// narrow: the picks leave a database to pick (the cap's sentence then says so)
+function schemaBlock(d: Record<string, Table | null>, cap: number, note: string, narrow: boolean): HTMLElement {
   const rows = rowsOf(d.schema);
   const total = rowsOf(d.schema_counts).reduce((a, r) => a + Number(r.n ?? 0), 0);
   // one side of an object: what differs there, or the whole definition of an object only that side has
@@ -168,19 +173,23 @@ function schemaBlock(d: Record<string, Table | null>, cap: number, note: string)
     { key: 'identity', label: 'object' },
     { key: 'status', fmt: statusCell },
     { key: 'differs', label: 'what differs', fmt: (v, r) => r.status === 'different' ? String(v ?? '')
-      : Number(r.children) > 0 ? (r.kind === 'database' ? `the database (${fmtNum(r.children)} objects)` : `with its ${fmtNum(r.children)} columns, indexes, constraints and triggers`)
-        : r.kind === 'database' ? 'the database' : '' },
+      // a database on one side only: why (one instance at two times), and its object count
+      : r.kind === 'database' ? `the database${Number(r.children) > 0 ? ` (${fmtNum(r.children)} objects)` : ''}${v ? ': ' + String(v) : ''}`
+        : Number(r.children) > 0 ? `with its ${fmtNum(r.children)} dependent object(s) (columns, indexes, constraints, triggers, owned sequences)` : '' },
     { key: 'a_definition', label: 'A', fmt: side('a') },
     { key: 'b_definition', label: 'B', fmt: side('b') },
   ];
   return el('div', {}, el('h3', {}, 'Schema objects'),
     el('p', { class: 'meta' }, `${countsText(d.schema_counts)}. Compared: ${note}.`
-      + (total > rows.length ? ` The first ${fmtNum(rows.length)} of ${fmtNum(total)} rows (the cap is ${fmtNum(cap)}): pick one database to narrow it.` : '')),
+      + (total > rows.length ? ` The first ${fmtNum(rows.length)} of ${fmtNum(total)} rows (the cap is ${fmtNum(cap)})`
+        + (narrow ? ': pick a database on each side to narrow it.' : '; the counts cover every row.') : '')),
     grid(rows, cols, 'No schema object differs.'));
 }
 
 export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Diff'));
+  // the Compare button's wish holds for this render alone, however it ends
+  const wantFocus = focusResult; focusResult = false;
   const p = loadPicks(ctx);
   const insts = (await fleet()).instances.map(r => ({ id: Number(r.instance_id), name: String(r.name ?? ''), engine: String(r.engine ?? 'postgres') }))
     .sort((x, y) => x.name.localeCompare(y.name));
@@ -226,7 +235,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   allBox.addEventListener('change', () => { p.all = allBox.checked; sync(false); });
   const go = el('button', { type: 'button' }, 'Compare');
   const hint = el('span', { class: 'meta', role: 'status' });
-  const field = (forId: string, label: string, control: HTMLElement) => el('label', { for: forId, style: 'white-space: nowrap' }, label + ' ', control);
+  const field = (forId: string, label: string, control: HTMLElement) => el('label', { for: forId, style: 'white-space: nowrap' }, el('span', {}, label + ' '), control);
   const fA = field('diff-a', 'A', selA.s), fB = field('diff-b', 'B', selB.s);
   const fDbA = field('diff-dba', 'Database of A', dbA), fDbB = field('diff-dbb', 'Database of B', dbB);
   const fTA = field('diff-ta', 'A: as of', tA), fTB = field('diff-tb', 'B: as of (empty: the newest read)', tB);
@@ -236,36 +245,39 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   let dbSeq = 0;
   async function fillDatabases() {
     const mine = ++dbSeq, a = p.a, b = p.m === 'i' ? p.b : p.a;
+    // a pick the list does not hold (a database no longer read, a list that could not be read) stays a pick and is
+    // marked: it is never dropped for a wider comparison than the one asked for
     const set = (s: HTMLSelectElement, names: string[], cur: string | undefined, none: string) => {
-      s.replaceChildren(el('option', { value: '' }, none), ...names.map(n => el('option', { value: n }, n)));
-      s.value = cur && names.includes(cur) ? cur : '';
+      s.replaceChildren(el('option', { value: '' }, none), ...names.map(n => el('option', { value: n }, n)),
+        ...(cur && !names.includes(cur) ? [el('option', { value: cur }, `${cur} (no schema snapshot now)`)] : []));
+      s.value = cur ?? '';
     };
-    let rows: Row[] = [];
+    let rows: Row[] = [], failed = '';
     if (a && b && engineOf(a) !== 'sqlserver') {
-      try { rows = rowsOf((await get<{ databases: Table | null }>('diff', { a, b, part: 'databases' })).databases); } catch { rows = []; }
+      try { rows = rowsOf((await get<{ databases: Table | null }>('diff', { a, b, part: 'databases' })).databases); }
+      catch (e) { failed = `The databases could not be listed (${e instanceof Error ? e.message : String(e)}). `; }
     }
     if (mine !== dbSeq) return;
     const namesOf = (id?: number) => rows.filter(r => Number(r.instance_id) === id).map(r => String(r.datname));
     const none = p.m === 'i' ? '(all, paired by name)' : p.m === 't' ? '(all databases)' : '(pick a database)';
     set(dbA, namesOf(a), p.dba, none); set(dbB, namesOf(b), p.dbb, none);
-    if (dbA.value === '') p.dba = undefined;
-    if (dbB.value === '') p.dbb = undefined;
-    hint.textContent = incomplete(p);
+    hint.textContent = failed + incomplete(p, engineOf(p.a));
   }
   // sync: the form shows the fields its mode uses; the picks are remembered
   function sync(refill = true) {
     selA.fill(); selB.fill();
+    (fA.firstChild as HTMLElement).textContent = p.m === 'i' ? 'A ' : 'Instance ';
     fB.hidden = p.m !== 'i';
     fDbB.hidden = p.m === 't';
     fTA.hidden = fTB.hidden = p.m !== 't';
     const sql = engineOf(p.a) === 'sqlserver';
     fDbA.hidden = sql && p.m !== 'd'; if (sql && p.m !== 'd') fDbB.hidden = true;
-    hint.textContent = incomplete(p);
+    hint.textContent = incomplete(p, engineOf(p.a));
     try { localStorage.setItem(lsKey, JSON.stringify({ m: p.m, a: String(p.a ?? ''), b: String(p.b ?? ''), dba: p.dba ?? '', dbb: p.dbb ?? '', all: p.all ? '1' : '' })); } catch { /* private window */ }
     if (refill) void fillDatabases();
   }
   go.addEventListener('click', () => {
-    const why = incomplete(p);
+    const why = incomplete(p, engineOf(p.a));
     if (why) { hint.textContent = why; return; }
     focusResult = true;
     const to = diffHref(ctx, p);
@@ -274,7 +286,8 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   });
   sec.append(modeBox, form,
     el('p', { class: 'meta' }, 'Two instances are compared as each was last read; one instance at two times from its change histories; '
-      + 'two databases of one instance by their schema objects. Differences only, unless identical rows are asked for.'));
+      + 'two databases of one instance by their schema objects. Settings and jobs compare on PostgreSQL and on SQL Server; schema '
+      + 'objects on PostgreSQL only (the repository holds none of a SQL Server instance). Differences only, unless identical rows are asked for.'));
   sync(false);
   await fillDatabases();
 
@@ -282,8 +295,9 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   const result = el('div', { tabindex: '-1', role: 'region', 'aria-label': 'Diff result' });
   sec.append(result);
   const asked = keys.some(k => hashParam(k) !== undefined);
-  if (!asked || incomplete(p)) {
-    result.append(el('p', { class: 'empty' }, asked ? incomplete(p) : 'Pick the two sides and press Compare.'));
+  const why = incomplete(p, engineOf(p.a));
+  if (!asked || why) {
+    result.append(el('p', { class: 'empty' }, asked ? why : 'Pick the two sides and press Compare.'));
     return sec;
   }
   try {
@@ -301,10 +315,10 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
       ...skipped.map((r, i) => el('span', {}, (i ? '; ' : '') + `${String(r.section)} (${String(r.note)})`)), '.'));
     if (compared('settings')) result.append(settingsBlock(d, String(meta.engine ?? 'postgres'), note('settings')));
     if (compared('jobs')) result.append(jobsBlock(d, note('jobs')));
-    if (compared('schema')) result.append(schemaBlock(d, Number(meta.schema_cap ?? 1000), note('schema')));
+    if (compared('schema')) result.append(schemaBlock(d, Number(meta.schema_cap ?? 1000), note('schema'), p.m !== 'd' && !p.dba));
   } catch (e) {
     result.append(errorBox(e));
   }
-  if (focusResult) { focusResult = false; requestAnimationFrame(() => { if (result.isConnected) result.focus(); }); }
+  if (wantFocus) requestAnimationFrame(() => { if (result.isConnected) result.focus(); });
   return sec;
 }

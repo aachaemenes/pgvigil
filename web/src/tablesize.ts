@@ -6,6 +6,7 @@ import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href, rangeLabel, window_ } from './router';
 import { tableLink } from './dbinfo';
+import { fleet } from './fleet';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid } from './ui';
 
 const tops = [20, 50, 100, 500];
@@ -28,14 +29,16 @@ export async function tableSizeView(ctx: Ctx, keep?: (r: Row) => boolean): Promi
   const body = el('div');
   let seq = 0;
   async function draw() {
-    const mine = ++seq, wantTop = top;
+    const mine = ++seq;
     let d: { tables: Table | null; meta: Table | null };
-    // under a tag folder the fleet's largest are read wide and cut here, so the folder still gets its own top rows
-    try { d = await get<{ tables: Table | null; meta: Table | null }>('tablesize', { ...window_(ctx), top: keep ? 500 : wantTop, order }); }
-    catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }
+    try {
+      // under a tag folder the read is of the folder's own instances: its top rows and its counts, not the fleet's
+      // cut down (an empty folder asks for instance 0, which no instance has)
+      const ids = keep ? (await fleet()).instances.filter(keep).map(r => Number(r.instance_id)) : undefined;
+      d = await get<{ tables: Table | null; meta: Table | null }>('tablesize', { ...window_(ctx), top, order, instances: ids ? (ids.join(',') || '0') : undefined });
+    } catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }
     if (mine !== seq) return;
-    let rows = rowsOf(d.tables);
-    if (keep) rows = rows.filter(keep).slice(0, wantTop);
+    const rows = rowsOf(d.tables);
     const m = rowsOf(d.meta)[0] ?? {};
     const pg = Number(m.pg_instances ?? 0), read = Number(m.instances_read ?? 0), ms = Number(m.mssql_instances ?? 0);
     const cols: Col[] = [
@@ -57,13 +60,13 @@ export async function tableSizeView(ctx: Ctx, keep?: (r: Row) => boolean): Promi
       { key: 'read_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
-      read < pg ? el('p', { class: 'meta' }, badge(`No table read in this range on ${fmtNum(pg - read)} of ${fmtNum(pg)} PostgreSQL instance(s)`, 'warn'),
+      read < pg ? el('p', { class: 'meta' }, badge(`No table read in this range on ${fmtNum(pg - read)} of ${fmtNum(pg)} PostgreSQL instance(s)${keep ? ' of this folder' : ''}`, 'warn'),
         ': the tables collection runs hourly; a shorter range than an hour can fall between two reads.') : '',
       el('p', { class: 'meta' }, `${fmtNum(rows.length)} table(s) of ${fmtNum(read)} PostgreSQL instance(s)`
-        + (keep ? ' in this folder' : '') + `, each at its newest read of the range (the newest of all: ${fmtTime(m.newest_read) || 'none'}). `
-        + 'Size: the table with its TOAST and indexes. Growth: against the read at the start of the range (a table or an instance first read inside it: from that read on). '
+        + (keep ? ' in this folder' : '') + `, each database at its newest read of the range (the newest of all: ${fmtTime(m.newest_read) || 'none'}). `
+        + 'Size: the table with its TOAST and indexes. Growth: against the read at the start of the range (an instance first read inside it, or a table that joined the list later: from its first read on). '
         + 'The repository holds the largest tables of each database (the tables collection\'s top N), so a smaller table is not here. '
-        + (ms > 0 ? `PostgreSQL only: the ${fmtNum(ms)} SQL Server instance(s) are not covered (the repository holds no table sizes of a SQL Server instance; its Storage page has the database and file sizes).` : 'PostgreSQL only.')),
+        + (ms > 0 ? `PostgreSQL only: the ${fmtNum(ms)} SQL Server instance(s)${keep ? ' of this folder' : ''} are not covered (the repository holds no table sizes of a SQL Server instance; its Storage page has the database and file sizes).` : 'PostgreSQL only.')),
       grid(rows, cols, 'No table read in this range.'));
   }
   topSel.addEventListener('change', () => { top = Number(topSel.value); lsSet('pgvigil.tableSizeTop', String(top)); void draw(); });

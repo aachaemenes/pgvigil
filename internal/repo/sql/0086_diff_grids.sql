@@ -175,26 +175,31 @@ $$;
 -- 3. the fleet's table sizes
 -- ---------------------------------------------------------------------------------------------------------
 
--- table_size_fleet: the tables of every active PostgreSQL instance at its newest table read of the window, the
--- largest (p_order 'size') or the fastest growing (p_order 'growth') first, p_top rows.
+-- table_size_fleet: the tables of every active PostgreSQL instance (p_instances: only these), each database at its
+-- newest table read of the window, the largest (p_order 'size') or the fastest growing (p_order 'growth') first,
+-- p_top rows.
 --   The store: table_sizes holds an hourly point per table in the tables collection's top N of its database, so a
---   table outside that top N is not here, and neither is a table the newest read no longer lists.
---   The base of the growth: the instance's last read at or before p_from (two days back at most); an instance first
---   read inside the window, or a table that joined the top N later, counts from its first read inside the window
---   (in_window true: the growth covers less than the window). One read only = no growth (NULL).
+--   table outside that top N is not here, and neither is a table its database's newest read no longer lists.
+--   The newest read: the instance's newest read of the window; a database that read left out (its own read failed
+--   that hour) is taken at its newest read of the day before it, and read_at says which read a row is.
+--   The base of the growth: the instance's last read at or before p_from (two days back at most), else its first
+--   read inside the window. A table absent from that read (it joined the top N later) counts from its own first read
+--   after it. in_window true: the base lies inside the window, so the growth covers less than the window. One read
+--   only = no growth (NULL).
 --   days = read_at - base_at; bytes_per_day and rows_per_day are the growth over those days.
---   heap, TOAST and index sizes come from pgvigil.tables when it still holds that same read (the newest read of all).
--- Two index range reads per instance (the newest read, the base read) and one more per table absent from the base
--- read; never the whole window.
+--   heap, TOAST and index sizes come from pgvigil.tables when it still holds that same read (the newest read of all);
+--   a table whose pgvigil.tables row is gone keeps its sizes and is named by its ids.
+-- Per instance: one day's range read for the databases' newest reads, the base read once, and one lookup per table
+-- absent from the base read; never the whole window.
 CREATE OR REPLACE FUNCTION pgvigil.table_size_fleet(p_from timestamptz, p_to timestamptz, p_top int DEFAULT 100,
-                                                    p_order text DEFAULT 'size')
+                                                    p_order text DEFAULT 'size', p_instances int[] DEFAULT NULL)
 RETURNS TABLE (instance_id int, instance text, platform text, dbid bigint, relid bigint, datname text, schema_name text,
                table_name text, total_bytes bigint, heap_bytes bigint, toast_bytes bigint, index_bytes bigint,
                n_live_tup bigint, read_at timestamptz, base_at timestamptz, base_bytes bigint, base_rows bigint,
                in_window boolean, growth_bytes bigint, growth_rows bigint, days numeric, bytes_per_day numeric,
                rows_per_day numeric)
 LANGUAGE sql STABLE AS $$
-WITH i AS (
+WITH i AS MATERIALIZED (
   SELECT x.instance_id, x.name, x.platform,
          (SELECT max(s.snapshot_at) FROM pgvigil.table_sizes s
            WHERE s.instance_id = x.instance_id AND s.snapshot_at > p_from AND s.snapshot_at <= p_to) AS read_at,
@@ -204,17 +209,33 @@ WITH i AS (
                     WHERE s.instance_id = x.instance_id AND s.snapshot_at > p_from AND s.snapshot_at <= p_to)) AS base_at
     FROM pgvigil.instances x
    WHERE x.is_active AND coalesce(x.engine, 'postgres') = 'postgres'
-), n AS (
-  SELECT i.instance_id, i.name, i.platform, i.read_at, i.base_at, s.dbid, s.relid, s.total_bytes, s.n_live_tup
-    FROM i JOIN pgvigil.table_sizes s ON s.instance_id = i.instance_id AND s.snapshot_at = i.read_at
-   WHERE i.read_at IS NOT NULL AND s.total_bytes IS NOT NULL
+     AND (p_instances IS NULL OR x.instance_id = ANY (p_instances))
+), dbr AS MATERIALIZED (
+  -- each database at its own newest read within the day that ends at the instance's newest read
+  SELECT i.instance_id, x.dbid, x.db_read_at
+    FROM i CROSS JOIN LATERAL (
+      SELECT s.dbid, max(s.snapshot_at) AS db_read_at
+        FROM pgvigil.table_sizes s
+       WHERE s.instance_id = i.instance_id AND s.snapshot_at > greatest(p_from, i.read_at - interval '1 day')
+         AND s.snapshot_at <= i.read_at
+       GROUP BY s.dbid) x
+   WHERE i.read_at IS NOT NULL
+), n AS MATERIALIZED (
+  SELECT i.instance_id, i.name, i.platform, d.db_read_at AS read_at, i.base_at, s.dbid, s.relid, s.total_bytes, s.n_live_tup
+    FROM dbr d
+    JOIN i ON i.instance_id = d.instance_id
+    JOIN pgvigil.table_sizes s ON s.instance_id = d.instance_id AND s.snapshot_at = d.db_read_at AND s.dbid = d.dbid
+   WHERE s.total_bytes IS NOT NULL
+), b AS MATERIALIZED (
+  -- the base read of each instance, read once (the join below is then on the table's ids, never per table over the store)
+  SELECT i.instance_id, s.dbid, s.relid, s.snapshot_at, s.total_bytes, s.n_live_tup
+    FROM i JOIN pgvigil.table_sizes s ON s.instance_id = i.instance_id AND s.snapshot_at = i.base_at
+   WHERE i.read_at IS NOT NULL AND i.base_at < i.read_at AND s.total_bytes IS NOT NULL
 ), w AS (
   SELECT n.*, coalesce(b.snapshot_at, l.snapshot_at) AS t_base_at, coalesce(b.total_bytes, l.total_bytes) AS base_bytes,
          CASE WHEN b.snapshot_at IS NOT NULL THEN b.n_live_tup ELSE l.n_live_tup END AS base_rows
     FROM n
-    LEFT JOIN pgvigil.table_sizes b
-      ON b.instance_id = n.instance_id AND b.snapshot_at = n.base_at AND b.dbid = n.dbid AND b.relid = n.relid
-     AND b.total_bytes IS NOT NULL AND n.base_at < n.read_at
+    LEFT JOIN b ON b.instance_id = n.instance_id AND b.dbid = n.dbid AND b.relid = n.relid AND b.snapshot_at < n.read_at
     LEFT JOIN LATERAL (
       SELECT z.snapshot_at, z.total_bytes, z.n_live_tup
         FROM pgvigil.table_sizes z
@@ -226,7 +247,8 @@ WITH i AS (
          round((extract(epoch FROM w.read_at - w.t_base_at) / 86400.0)::numeric, 2) AS days
     FROM w
 )
-SELECT o.instance_id, o.name, o.platform, o.dbid, o.relid, t.datname, t.schema_name, t.table_name, o.total_bytes,
+SELECT o.instance_id, o.name, o.platform, o.dbid, o.relid, coalesce(t.datname, '(database ' || o.dbid || ')'),
+       coalesce(t.schema_name, ''), coalesce(t.table_name, '(table ' || o.relid || ')'), o.total_bytes,
        CASE WHEN t.snapshot_at = o.read_at THEN t.heap_bytes END, CASE WHEN t.snapshot_at = o.read_at THEN t.toast_bytes END,
        CASE WHEN t.snapshot_at = o.read_at THEN t.index_bytes END,
        o.n_live_tup, o.read_at, o.t_base_at, o.base_bytes, o.base_rows, o.t_base_at > p_from,
@@ -236,9 +258,9 @@ SELECT o.instance_id, o.name, o.platform, o.dbid, o.relid, t.datname, t.schema_n
        CASE WHEN extract(epoch FROM o.read_at - o.t_base_at) > 0
             THEN round((o.growth_rows * 86400.0 / extract(epoch FROM o.read_at - o.t_base_at))::numeric, 0) END
   FROM o
-  JOIN pgvigil.tables t ON t.instance_id = o.instance_id AND t.dbid = o.dbid AND t.relid = o.relid
- ORDER BY CASE WHEN p_order = 'growth' THEN o.growth_bytes END DESC NULLS LAST, o.total_bytes DESC, o.name, t.datname,
-          t.schema_name, t.table_name
+  LEFT JOIN pgvigil.tables t ON t.instance_id = o.instance_id AND t.dbid = o.dbid AND t.relid = o.relid
+ ORDER BY CASE WHEN p_order = 'growth' THEN o.growth_bytes END DESC NULLS LAST, o.total_bytes DESC, o.name,
+          t.datname, t.schema_name, t.table_name, o.relid
  LIMIT greatest(p_top, 1)
 $$;
 
@@ -307,17 +329,17 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- diff_job_fields: the fields that differ between two job definitions, [{field, a, b}] by field (jsonb_flat's
--- paths). p_strip_ids: between two servers the ' #<id>' a schedule's or a step's key ends in is taken out of the path
--- (two servers number the same schedule differently); two keys that then read the same are compared as one, their
--- values joined by ' | '.
+-- paths). p_strip_ids: between two servers the ' #<id>' that ends a schedule's or a step's key (the path's second
+-- part under 'schedules' or 'steps', nowhere else) is taken out of the path: two servers number the same schedule
+-- differently. Two keys that then read the same are compared as one, their values joined by ' | '.
 CREATE OR REPLACE FUNCTION pgvigil.diff_job_fields(p_a jsonb, p_b jsonb, p_strip_ids boolean)
 RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
   WITH a AS (
-    SELECT CASE WHEN p_strip_ids THEN regexp_replace(f.path, ' #[0-9]+( / |$)', '\1', 'g') ELSE f.path END AS path,
+    SELECT CASE WHEN p_strip_ids THEN regexp_replace(f.path, '^((schedules|steps) / .*?) #[0-9]+( / |$)', '\1\3') ELSE f.path END AS path,
            string_agg(f.value, ' | ' ORDER BY f.value) AS value
       FROM pgvigil.jsonb_flat(p_a) f GROUP BY 1
   ), b AS (
-    SELECT CASE WHEN p_strip_ids THEN regexp_replace(f.path, ' #[0-9]+( / |$)', '\1', 'g') ELSE f.path END AS path,
+    SELECT CASE WHEN p_strip_ids THEN regexp_replace(f.path, '^((schedules|steps) / .*?) #[0-9]+( / |$)', '\1\3') ELSE f.path END AS path,
            string_agg(f.value, ' | ' ORDER BY f.value) AS value
       FROM pgvigil.jsonb_flat(p_b) f GROUP BY 1
   )
@@ -327,8 +349,9 @@ RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- diff_jobs: side a's jobs against side b's. One instance at two times: a job is matched by its scheduler and id.
--- Two instances: by scheduler and name (a job without a name: its command), and among jobs of one name by their
--- order (the ids of two servers say nothing about each other). status: 'same', 'different' (fields = what differs),
+-- Two instances: by scheduler and name (a job without a name: its command), and among jobs of one name by the
+-- order of their ids, a number before a longer number (9 before 10; the ids of two servers say nothing more about
+-- each other, so two same-named jobs created in another order on the other server pair crosswise). status: 'same', 'different' (fields = what differs),
 -- 'only a', 'only b'.
 CREATE OR REPLACE FUNCTION pgvigil.diff_jobs(p_a int, p_at_a timestamptz, p_b int, p_at_b timestamptz)
 RETURNS TABLE (scheduler text, job_name text, a_job_id text, b_job_id text, status text, fields jsonb,
@@ -338,12 +361,14 @@ LANGUAGE sql STABLE AS $$
   WITH a AS (
     SELECT j.*, CASE WHEN p_a = p_b THEN j.job_id
                      ELSE coalesce(j.job_name, j.definition->>'command', '') || ' #'
-                          || row_number() OVER (PARTITION BY j.scheduler, coalesce(j.job_name, j.definition->>'command', '') ORDER BY j.job_id) END AS k
+                          || row_number() OVER (PARTITION BY j.scheduler, coalesce(j.job_name, j.definition->>'command', '')
+                                               ORDER BY length(j.job_id), j.job_id) END AS k
       FROM pgvigil.diff_jobs_at(p_a, p_at_a) j
   ), b AS (
     SELECT j.*, CASE WHEN p_a = p_b THEN j.job_id
                      ELSE coalesce(j.job_name, j.definition->>'command', '') || ' #'
-                          || row_number() OVER (PARTITION BY j.scheduler, coalesce(j.job_name, j.definition->>'command', '') ORDER BY j.job_id) END AS k
+                          || row_number() OVER (PARTITION BY j.scheduler, coalesce(j.job_name, j.definition->>'command', '')
+                                               ORDER BY length(j.job_id), j.job_id) END AS k
       FROM pgvigil.diff_jobs_at(p_b, p_at_b) j
   ), m AS (
     SELECT coalesce(a.scheduler, b.scheduler) AS scheduler, coalesce(b.job_name, a.job_name) AS job_name,
@@ -412,18 +437,23 @@ LANGUAGE sql STABLE AS $$
            a.acl AS a_acl, b.acl AS b_acl
       FROM oa a FULL JOIN ob b ON b.a_name = a.a_name AND b.kind = a.kind AND b.identity = a.identity
   ), top AS (
-    SELECT j.datname_a, j.identity, j.status FROM j
+    SELECT DISTINCT j.datname_a, j.identity, j.status FROM j
      WHERE j.kind IN ('table', 'view', 'materialized view') AND j.status IN ('only a', 'only b')
   ), k AS (
-    SELECT j.*, j.parent IS NOT NULL AND j.status IN ('only a', 'only b')
-                AND EXISTS (SELECT 1 FROM top t WHERE t.datname_a = j.datname_a AND t.identity = j.parent AND t.status = j.status) AS is_folded
+    -- joins, not a subquery per row: a side with thousands of objects of its own stays one pass
+    SELECT j.*, t.identity IS NOT NULL AS is_folded
       FROM j
+      LEFT JOIN top t ON j.parent IS NOT NULL AND j.status IN ('only a', 'only b')
+                     AND t.datname_a = j.datname_a AND t.identity = j.parent AND t.status = j.status
+  ), kids AS (
+    SELECT k.datname_a, k.parent, count(*)::int AS n FROM k WHERE k.is_folded GROUP BY k.datname_a, k.parent
   )
   SELECT k.datname_a, k.datname_b, k.kind, k.identity, k.schema_name, k.object_name, k.parent, k.status, k.differs,
          k.a_definition, k.b_definition, k.a_owner, k.b_owner, k.a_acl, k.b_acl,
          CASE WHEN k.kind IN ('table', 'view', 'materialized view') AND k.status IN ('only a', 'only b')
-              THEN (SELECT count(*)::int FROM k c WHERE c.is_folded AND c.datname_a = k.datname_a AND c.parent = k.identity) END
+              THEN coalesce(c.n, 0) END
     FROM k
+    LEFT JOIN kids c ON c.datname_a = k.datname_a AND c.parent = k.identity
    WHERE NOT k.is_folded
   UNION ALL
   SELECT p.a_name, p.b_name, 'database', coalesce(p.a_name, p.b_name), NULL, coalesce(p.a_name, p.b_name), NULL,
@@ -439,28 +469,43 @@ $$;
 --   added first                           'only b' (its definition as last stored inside the window)
 --   dropped last                          'only a' (its definition at the start: the first change's 'before')
 --   otherwise, per attribute (definition, owner, acl): the first change's 'before' against the last change's
---   'after'; equal on all three = no row (changed and changed back, or dropped and re-created the same: 'same' when
---   identical rows are asked for), unless a definition changed past the stored 20,000 characters (its texts read the
---   same: it still counts as 'different').
+--   'after'; equal on all three = no row (changed and changed back: 'same' when identical rows are asked for),
+--   unless a definition changed past the stored 20,000 characters (its texts read the same: it still counts as
+--   'different').
+--   dropped and re-created inside the window: always 'different', marked 're-created (owner and ACL not compared)':
+--   the history of a drop and of an add carries the definition alone, so the new object's owner and ACL cannot be
+--   set against the old one's; its definition is compared as above.
 --   A column, index, constraint, trigger or owned sequence netted to the same side as its table is folded into the
---   table's row (children).
--- p_all adds, as 'same', those netted-out objects and every object first seen at or before p_at_a with no change in
--- the window that is still present or was dropped after p_at_b. p_db narrows to one database by name.
+--   table's row; children counts the ones with a change of their own in the window (a child that came or went in
+--   the same read as its table has no row of its own: the import folds it).
+--   A database is compared only when its snapshot covers both times. One first read inside the window (a new
+--   database, one that became readable, or the instance's first schema read) has no snapshot at p_at_a: one row,
+--   kind 'database', 'only b'. One no longer read by p_at_b (dropped, or no longer connectable) is one row 'only a'.
+--   differs says which, children is its object count as last read; neither lists its objects.
+-- p_all adds, as 'same', the netted-out objects and every object first seen at or before p_at_a with no change in
+-- the window that is still present or was dropped after p_at_b (an object dropped and re-created AFTER p_at_b is
+-- missed there: its first_seen is the re-creation's). p_db narrows to one database by name.
 -- The history starts at each database's first read (schema_databases.first_read) and ends at the repository's
--- retention: a p_at_a before either compares from there, and diff_sides says where that is.
+-- retention: diff_sides says where that is.
 CREATE OR REPLACE FUNCTION pgvigil.diff_schema_snapshots(p_instance_id int, p_at_a timestamptz, p_at_b timestamptz,
                                                          p_db text DEFAULT NULL, p_all boolean DEFAULT false)
 RETURNS TABLE (datname_a text, datname_b text, kind text, identity text, schema_name text, object_name text, parent text,
                status text, differs text, a_definition text, b_definition text, a_owner text, b_owner text, a_acl text,
                b_acl text, children int)
 LANGUAGE sql STABLE AS $$
-  WITH c AS (
-    SELECT x.dbid, coalesce(d.datname, x.datname) AS datname, x.kind, x.identity, x.schema_name, x.object_name, x.parent,
+  WITH dbs AS (
+    -- at_a / at_b: the database's snapshot covers that time (first read by then, and still read after it)
+    SELECT d.dbid, d.datname, d.objects,
+           d.first_read <= p_at_a AND (d.is_present OR d.snapshot_at > p_at_a) AS at_a,
+           d.first_read <= p_at_b AND (d.is_present OR d.snapshot_at > p_at_b) AS at_b
+      FROM pgvigil.schema_databases d
+     WHERE d.instance_id = p_instance_id AND (p_db IS NULL OR d.datname = p_db)
+  ), c AS (
+    SELECT x.dbid, d.datname, x.kind, x.identity, x.schema_name, x.object_name, x.parent,
            x.snapshot_at, x.change, x.attribute, x.before, x.after
       FROM pgvigil.schema_changes x
-      LEFT JOIN pgvigil.schema_databases d ON d.instance_id = x.instance_id AND d.dbid = x.dbid
+      JOIN dbs d ON d.dbid = x.dbid AND d.at_a AND d.at_b
      WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_at_a AND x.snapshot_at <= p_at_b
-       AND (p_db IS NULL OR coalesce(d.datname, x.datname) = p_db)
   ), n AS (
     SELECT c.dbid, c.kind, c.identity,
            (array_agg(c.datname ORDER BY c.snapshot_at DESC))[1] AS datname,
@@ -469,6 +514,7 @@ LANGUAGE sql STABLE AS $$
            (array_agg(c.parent ORDER BY c.snapshot_at DESC))[1] AS parent,
            (array_agg(c.change ORDER BY c.snapshot_at, c.change))[1] AS first_change,
            (array_agg(c.change ORDER BY c.snapshot_at DESC, c.change))[1] AS last_change,
+           bool_or(c.change = 'dropped') AND bool_or(c.change = 'added') AS both_ways,
            -- the definition at the start: the 'before' of the first row that carries one (a drop, or a definition change)
            (array_agg(c.before ORDER BY c.snapshot_at) FILTER (WHERE c.change = 'dropped' OR c.attribute = 'definition'))[1] AS a_def,
            (array_agg(c.after ORDER BY c.snapshot_at DESC) FILTER (WHERE c.change = 'added' OR c.attribute = 'definition'))[1] AS b_def,
@@ -487,40 +533,62 @@ LANGUAGE sql STABLE AS $$
            CASE WHEN n.first_change = 'added' AND n.last_change = 'dropped' THEN NULL
                 WHEN n.first_change = 'added' THEN 'only b'
                 WHEN n.last_change = 'dropped' THEN 'only a'
-                ELSE 'different' END AS status,
-           nullif(concat_ws(', ',
-             CASE WHEN n.def_rows > 0 AND (n.a_def IS DISTINCT FROM n.b_def OR n.past_cut) THEN 'definition' END,
-             CASE WHEN n.owner_rows > 0 AND n.a_owner IS DISTINCT FROM n.b_owner THEN 'owner' END,
-             CASE WHEN n.acl_rows > 0 AND n.a_acl IS DISTINCT FROM n.b_acl THEN 'acl' END), '') AS differs
+                ELSE 'different' END AS net
       FROM n
+  ), s2 AS (
+    -- an object at both ends: what differs between them; re-created = dropped and added again in between
+    SELECT s.*, s.net = 'different' AND s.both_ways AS recreated,
+           nullif(concat_ws(', ',
+             CASE WHEN s.def_rows > 0 AND (s.a_def IS DISTINCT FROM s.b_def OR s.past_cut) THEN 'definition' END,
+             CASE WHEN NOT s.both_ways AND s.owner_rows > 0 AND s.a_owner IS DISTINCT FROM s.b_owner THEN 'owner' END,
+             CASE WHEN NOT s.both_ways AND s.acl_rows > 0 AND s.a_acl IS DISTINCT FROM s.b_acl THEN 'acl' END,
+             CASE WHEN s.net = 'different' AND s.both_ways THEN 're-created (owner and ACL not compared)' END), '') AS what
+      FROM s
+  ), top AS (
+    SELECT DISTINCT s2.dbid, s2.identity, s2.net FROM s2
+     WHERE s2.kind IN ('table', 'view', 'materialized view') AND s2.net IN ('only a', 'only b')
   ), k AS (
     -- an object at both ends whose changes net to nothing is 'same': a row only when identical rows are asked for
-    SELECT s.dbid, s.datname, s.kind, s.identity, s.schema_name, s.object_name, s.parent, s.differs, s.a_def, s.b_def,
-           s.a_owner, s.b_owner, s.a_acl, s.b_acl,
-           CASE WHEN s.status = 'different' AND s.differs IS NULL THEN 'same' ELSE s.status END AS status,
-           s.parent IS NOT NULL AND s.status IN ('only a', 'only b')
-             AND EXISTS (SELECT 1 FROM s t WHERE t.dbid = s.dbid AND t.kind IN ('table', 'view', 'materialized view')
-                            AND t.identity = s.parent AND t.status = s.status) AS is_folded
-      FROM s
-     WHERE s.status IS NOT NULL AND (s.status <> 'different' OR s.differs IS NOT NULL OR p_all)
+    SELECT s2.dbid, s2.datname, s2.kind, s2.identity, s2.schema_name, s2.object_name, s2.parent, s2.what AS differs,
+           s2.a_def, s2.b_def, s2.a_owner, s2.b_owner, s2.a_acl, s2.b_acl, s2.recreated,
+           CASE WHEN s2.net = 'different' AND s2.what IS NULL THEN 'same' ELSE s2.net END AS status,
+           t.identity IS NOT NULL AS is_folded
+      FROM s2
+      LEFT JOIN top t ON s2.parent IS NOT NULL AND s2.net IN ('only a', 'only b')
+                     AND t.dbid = s2.dbid AND t.identity = s2.parent AND t.net = s2.net
+     WHERE s2.net IS NOT NULL AND (s2.net <> 'different' OR s2.what IS NOT NULL OR p_all)
+  ), kids AS (
+    SELECT k.dbid, k.parent, count(*)::int AS n FROM k WHERE k.is_folded GROUP BY k.dbid, k.parent
   )
   SELECT k.datname, k.datname, k.kind, k.identity, k.schema_name, k.object_name, k.parent, k.status,
          CASE WHEN k.status = 'different' THEN k.differs END,
          CASE WHEN k.status IN ('only a', 'different') THEN k.a_def END, CASE WHEN k.status IN ('only b', 'different') THEN k.b_def END,
-         CASE WHEN k.status = 'different' THEN k.a_owner END, CASE WHEN k.status = 'different' THEN k.b_owner END,
-         CASE WHEN k.status = 'different' THEN k.a_acl END, CASE WHEN k.status = 'different' THEN k.b_acl END,
+         CASE WHEN k.status = 'different' AND NOT k.recreated THEN k.a_owner END,
+         CASE WHEN k.status = 'different' AND NOT k.recreated THEN k.b_owner END,
+         CASE WHEN k.status = 'different' AND NOT k.recreated THEN k.a_acl END,
+         CASE WHEN k.status = 'different' AND NOT k.recreated THEN k.b_acl END,
          CASE WHEN k.kind IN ('table', 'view', 'materialized view') AND k.status IN ('only a', 'only b')
-              THEN (SELECT count(*)::int FROM k x WHERE x.is_folded AND x.dbid = k.dbid AND x.parent = k.identity) END
+              THEN coalesce(kc.n, 0) END
     FROM k
+    LEFT JOIN kids kc ON kc.dbid = k.dbid AND kc.parent = k.identity
    WHERE NOT k.is_folded
   UNION ALL
   SELECT o.datname, o.datname, o.kind, o.identity, o.schema_name, o.object_name, o.parent, 'same', NULL,
          NULL, NULL, NULL, NULL, NULL, NULL, NULL
     FROM pgvigil.schema_objects o
+    JOIN dbs d ON d.dbid = o.dbid AND d.at_a AND d.at_b
    WHERE p_all AND o.instance_id = p_instance_id AND o.first_seen <= p_at_a
      AND (o.is_present OR o.snapshot_at > p_at_b)
-     AND (p_db IS NULL OR o.datname = p_db)
      AND NOT EXISTS (SELECT 1 FROM c WHERE c.dbid = o.dbid AND c.kind = o.kind AND c.identity = o.identity)
+  UNION ALL
+  -- a database whose snapshot covers one of the two times only
+  SELECT CASE WHEN d.at_a THEN d.datname END, CASE WHEN d.at_b THEN d.datname END, 'database', d.datname, NULL, d.datname, NULL,
+         CASE WHEN d.at_a THEN 'only a' ELSE 'only b' END,
+         CASE WHEN d.at_a THEN 'no longer read at B (dropped, or not connectable)'
+              ELSE 'first read inside the range (no snapshot at A)' END,
+         NULL, NULL, NULL, NULL, NULL, NULL, d.objects
+    FROM dbs d
+   WHERE d.at_a <> d.at_b
 $$;
 
 -- diff_sides: the two sides of a diff, each with its instance, engine, as-of time (NULL = as last read) and, per

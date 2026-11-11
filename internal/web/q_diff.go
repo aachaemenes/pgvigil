@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,7 +23,8 @@ import (
 //	           the change histories. db_a narrows the schema part to one database.
 //	databases  a = b without at_a, db_a and db_b two different databases: their schema objects as last read.
 //
-// Both sides are one engine (400 otherwise). The reply: sides (pgvigil.diff_sides: each side's instance, as-of time
+// Both sides are one engine (400 otherwise); db_a and db_b on SQL Server are refused (no schema objects are held).
+// A section one side has no read for is not compared, and coverage says why. The reply: sides (pgvigil.diff_sides: each side's instance, as-of time
 // and how far back each store reaches), meta (mode, engine, all, the schema cap), databases (each side's databases
 // with a schema snapshot, for the page's pickers), coverage (per section: compared or not, and why), and per
 // compared section its rows and a count per status: settings, jobs, schema. Differences only unless all=1. The
@@ -162,20 +164,69 @@ func (s *Server) Diff(w http.ResponseWriter, r *http.Request) {
 	}
 	engine := engines[a]
 	pg := engine == "postgres"
+	// the schema parts exist on PostgreSQL alone: a request that names them on SQL Server would compare nothing
+	if !pg && (mode == "databases" || dbA != "" || dbB != "") {
+		bad("db_a and db_b pick schema databases, which the repository holds for PostgreSQL only: nothing to compare on SQL Server")
+		return
+	}
+
+	// the two sides first: a store one side has never been read into is not compared (its rows would all read
+	// 'only in' the other side, a difference that is not one)
+	sides, err := s.query(r.Context(), `SELECT * FROM pgvigil.diff_sides($1, $2, $3, $4)`, a, atA, b, atB)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("sides: %w", err))
+		return
+	}
+	cov := diffCoverage(mode, engine)
+	unread := func(col, what string) string {
+		ci, si, ni := -1, -1, -1
+		for i, c := range sides.Columns {
+			switch c {
+			case col:
+				ci = i
+			case "side":
+				si = i
+			case "instance":
+				ni = i
+			}
+		}
+		for _, row := range sides.Rows {
+			if ci >= 0 && si >= 0 && ni >= 0 && row[ci] == nil {
+				return fmt.Sprintf("side %s (%v) has no %s yet: nothing to compare with", strings.ToUpper(fmt.Sprint(row[si])), row[ni], what)
+			}
+		}
+		return ""
+	}
+	if mode != "databases" {
+		if why := unread("settings_read", "settings read"); why != "" {
+			cov.set("settings", false, why)
+		}
+		// no job version on a side is a fact of its own (a server without a scheduler has none): compared, and said
+		if why := unread("jobs_read", "job version"); why != "" {
+			cov.note("jobs", "; "+why+" (a server without a scheduler has none, and so has one whose jobs collection has not run)")
+		}
+	}
+	if pg {
+		if why := unread("schema_read", "schema read"); why != "" {
+			cov.set("schema", false, why)
+		}
+	}
 
 	parts := []part{
-		{"sides", `SELECT * FROM pgvigil.diff_sides($1, $2, $3, $4)`, []any{a, atA, b, atB}},
 		{"meta", `SELECT $1::text AS mode, $2::text AS engine, $3::boolean AS "all", $4::int AS schema_cap`, []any{mode, engine, all, diffSchemaCap}},
 		{"databases", sqlDiffDatabases, []any{a, b}},
 	}
-	if mode != "databases" {
+	if cov.compared("settings") {
 		parts = append(parts,
 			part{"settings", `SELECT * FROM pgvigil.diff_settings($1, $2, $3, $4) WHERE $5::boolean OR status <> 'same'`, []any{a, atA, b, atB, all}},
-			part{"settings_counts", `SELECT status, count(*) AS n FROM pgvigil.diff_settings($1, $2, $3, $4) GROUP BY status ORDER BY status`, []any{a, atA, b, atB}},
+			part{"settings_counts", `SELECT status, count(*) AS n FROM pgvigil.diff_settings($1, $2, $3, $4) GROUP BY status ORDER BY status`, []any{a, atA, b, atB}})
+	}
+	if cov.compared("jobs") {
+		parts = append(parts,
 			part{"jobs", `SELECT * FROM pgvigil.diff_jobs($1, $2, $3, $4) WHERE $5::boolean OR status <> 'same'`, []any{a, atA, b, atB, all}},
 			part{"jobs_counts", `SELECT status, count(*) AS n FROM pgvigil.diff_jobs($1, $2, $3, $4) GROUP BY status ORDER BY status`, []any{a, atA, b, atB}})
 	}
-	if pg {
+	if cov.compared("schema") {
 		src, args := sqlDiffSchemaNow, []any{a, b, nullIfEmpty(dbA), nullIfEmpty(dbB), all}
 		if mode == "snapshots" {
 			end := time.Now()
@@ -189,7 +240,7 @@ func (s *Server) Diff(w http.ResponseWriter, r *http.Request) {
 			part{"schema_counts", fmt.Sprintf(sqlDiffSchemaCounts, src), args})
 	}
 
-	out := map[string]*table{}
+	out := map[string]*table{"sides": sides}
 	for _, p := range parts {
 		t, err := s.query(r.Context(), p.sql, p.args...)
 		if err != nil {
@@ -198,7 +249,7 @@ func (s *Server) Diff(w http.ResponseWriter, r *http.Request) {
 		}
 		out[p.name] = t
 	}
-	out["coverage"] = diffCoverage(mode, engine)
+	out["coverage"] = cov.table()
 	s.reply(w, r, out, nil)
 }
 
@@ -210,41 +261,78 @@ func nullIfEmpty(v string) *string {
 	return &v
 }
 
-// diffCoverage says, per section, whether this diff compares it and what the store behind it holds: the page prints
-// it, so a section that is absent is never read as 'no difference'.
-func diffCoverage(mode, engine string) *table {
-	t := &table{Columns: []string{"section", "compared", "note"}, Rows: [][]any{}}
-	add := func(section string, compared bool, note string) {
-		t.Rows = append(t.Rows, []any{section, compared, note})
+// coverage says, per section, whether this diff compares it and what the store behind it holds: the page prints
+// it, so a section that is absent is never read as 'no difference'. The handler builds it before any section is
+// read and reads only the sections it marks compared.
+type coverage struct{ rows [][]any }
+
+func (c *coverage) add(section string, compared bool, note string) {
+	c.rows = append(c.rows, []any{section, compared, note})
+}
+
+// set replaces a section's verdict and note.
+func (c *coverage) set(section string, compared bool, note string) {
+	for _, r := range c.rows {
+		if r[0] == section {
+			r[1], r[2] = compared, note
+		}
 	}
+}
+
+// note adds to a section's note.
+func (c *coverage) note(section, more string) {
+	for _, r := range c.rows {
+		if r[0] == section {
+			r[2] = fmt.Sprint(r[2]) + more
+		}
+	}
+}
+
+func (c *coverage) compared(section string) bool {
+	for _, r := range c.rows {
+		if r[0] == section {
+			return r[1] == true
+		}
+	}
+	return false
+}
+
+func (c *coverage) table() *table {
+	return &table{Columns: []string{"section", "compared", "note"}, Rows: c.rows}
+}
+
+// diffCoverage is the coverage the mode and the engine give; the handler then takes out a section one side has no
+// read for.
+func diffCoverage(mode, engine string) *coverage {
+	c := &coverage{rows: [][]any{}}
 	pg := engine == "postgres"
 	if mode == "databases" {
-		add("settings", false, "one instance: its settings are the same on both sides")
-		add("jobs", false, "one instance: its jobs are the same on both sides")
+		c.add("settings", false, "one instance: its settings are the same on both sides")
+		c.add("jobs", false, "one instance: its jobs are the same on both sides")
 	} else {
 		switch {
 		case pg && mode == "snapshots":
-			add("settings", true, "the server-level non-default settings, rolled back through the change history (one read an hour; it starts at the instance's first read)")
+			c.add("settings", true, "the settings the hourly instance read lists (set in a configuration file, on the command line, or by ALTER DATABASE for the database the collector connects to), rolled back through the change history, which starts at the instance's first read")
 		case pg:
-			add("settings", true, "the server-level non-default settings of each instance's newest read; a setting only one side lists is at its default on the other")
+			c.add("settings", true, "the settings each instance's newest read lists (set in a configuration file, on the command line, or by ALTER DATABASE for the database the collector connects to); 'only in' one side means the other side does not SET it there, and its running value can still be the same (a default written out in a file, a role's own setting)")
 		case mode == "snapshots":
-			add("settings", true, "sys.configurations' values in use; the repository keeps ONE earlier value per setting, so a time before the change before last shows the value of that change")
+			c.add("settings", true, "sys.configurations' values in use; the repository keeps ONE earlier value per setting, so a time before the change before last shows the value of that change")
 		default:
-			add("settings", true, "sys.configurations' values in use at each instance's newest read")
+			c.add("settings", true, "sys.configurations' values in use at each instance's newest read")
 		}
 		if mode == "snapshots" {
-			add("jobs", true, "each job's definition as it was at each time (every version is kept); matched by scheduler and job id")
+			c.add("jobs", true, "each job's definition as it was at each time (every version is kept); matched by scheduler and job id")
 		} else {
-			add("jobs", true, "each job's newest definition; matched by scheduler and name, the ids of a schedule or step left out of the comparison")
+			c.add("jobs", true, "each job's newest definition; matched by scheduler and name, the ids of a schedule or step left out of the comparison")
 		}
 	}
 	switch {
 	case !pg:
-		add("schema", false, "the repository holds no schema objects of a SQL Server instance: nothing to compare")
+		c.add("schema", false, "the repository holds no schema objects of a SQL Server instance: nothing to compare")
 	case mode == "snapshots":
-		add("schema", true, "the schema collection's change history between the two times (hourly reads; it starts at each database's first read and ends at the repository's retention)")
+		c.add("schema", true, "the schema collection's change history between the two times (hourly reads); a database is compared when its snapshot covers both times, else it is one row; older changes end at the repository's retention")
 	default:
-		add("schema", true, "the schema collection's newest snapshot of each side; an object is matched by kind and identity")
+		c.add("schema", true, "the schema collection's newest snapshot of each side; an object is matched by kind and identity; a database the collection could not snapshot (over its object cap, not connectable) is not on its side")
 	}
-	return t
+	return c
 }
