@@ -19,11 +19,12 @@ import (
 //	events    the entries kept as rows in the window (ROLE, DDL, the SETs that matter), newest first, 1,000 at most
 //	signins   the failed sign-ins of the window (the log readers' auth_fail events), newest first, 500 at most
 //	counts    the counted entries of the window (READ, WRITE, FUNCTION, MISC, the other SETs) per role, database, class,
-//	          command and object
+//	          command and object, the 2,000 largest. The counts are per UTC hour, a row stamped with its hour's start:
+//	          every hour that overlaps the window is taken whole (the hour the window starts in and the one it ends in)
 //	hours     the same entries per hour (snapshot_at) and class (a chart's series)
 //
-// ?part= reads one part. GET /api/pgaudit with no instance (Server.PgAuditFleet) is the fleet's cell: one row per
-// active PostgreSQL instance the collection has read.
+// ?part= reads one part. GET /api/pgaudit with no instance is the fleet's cell (part instances): one row per active
+// PostgreSQL instance the collection has read.
 
 const sqlPgAuditHealth = `SELECT * FROM pgvigil.pgaudit_health WHERE instance_id = $1`
 
@@ -60,7 +61,7 @@ SELECT snapshot_at AS at, usename, datname, client, class, command, object_type,
        row_count, statement, parameters, pid
   FROM pgvigil.pgaudit_events
  WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
- ORDER BY snapshot_at DESC, statement_id DESC, substatement_id DESC
+ ORDER BY snapshot_at DESC, pid, statement_id DESC, substatement_id DESC, event_key
  LIMIT 1000`
 
 const sqlPgAuditSignins = `
@@ -74,15 +75,15 @@ const sqlPgAuditCounts = `
 SELECT nullif(usename, '') AS usename, nullif(datname, '') AS datname, class, command, nullif(object_type, '') AS object_type,
        nullif(object_name, '') AS object_name, sum(entries)::bigint AS entries, min(snapshot_at) AS first_hour, max(snapshot_at) AS last_hour
   FROM pgvigil.pgaudit_counts
- WHERE instance_id = $1 AND snapshot_at > date_trunc('hour', $2::timestamptz) AND snapshot_at <= $3
+ WHERE instance_id = $1 AND snapshot_at > $2::timestamptz - interval '1 hour' AND snapshot_at < $3
  GROUP BY usename, datname, class, command, object_type, object_name
- ORDER BY sum(entries) DESC, usename, datname, class, command, object_name
+ ORDER BY sum(entries) DESC, usename, datname, class, command, object_type, object_name
  LIMIT 2000`
 
 const sqlPgAuditHours = `
 SELECT snapshot_at, class, sum(entries)::bigint AS entries
   FROM pgvigil.pgaudit_counts
- WHERE instance_id = $1 AND snapshot_at > date_trunc('hour', $2::timestamptz) AND snapshot_at <= $3
+ WHERE instance_id = $1 AND snapshot_at > $2::timestamptz - interval '1 hour' AND snapshot_at < $3
  GROUP BY snapshot_at, class
  ORDER BY snapshot_at, class`
 

@@ -45,7 +45,10 @@ CREATE TABLE IF NOT EXISTS pgvigil.pgaudit_state (
   log_source         text,                      -- the reader's source ('serverlog:<directory>', 'cloudwatch:<group>')
   keep_text          boolean NOT NULL DEFAULT false,
   entries_read       bigint,                    -- audit entries in the last read (the overlap's re-read included)
-  last_entry_at      timestamptz                -- the newest audit entry any read has seen
+  last_entry_at      timestamptz,               -- the newest audit entry any read has seen
+  forged_lines       bigint,                    -- lines in the last read that have pgaudit's form and are not pgaudit's
+  forged_at          timestamptz,               -- the newest such line any read has met
+  forged_by          text                       -- its user@database
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.pgaudit_settings (
@@ -118,6 +121,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.pgaudit_rules (
   min_count       int NOT NULL DEFAULT 1 CHECK (min_count >= 1),
   window_minutes  int NOT NULL DEFAULT 1440 CHECK (window_minutes BETWEEN 1 AND 44640),
   severity        text NOT NULL DEFAULT 'warning' CHECK (severity IN ('info', 'warning', 'critical')),
+  CHECK (what <> 'AUTH_FAIL' OR command_like IS NULL),   -- a failed sign-in has no command
   is_enabled      boolean NOT NULL DEFAULT true,
   note            text
 );
@@ -145,7 +149,7 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- payload: one {kind:'state', loaded, preload_libraries, log_where, log_read, log_read_reason, log_source, keep_text,
---   entries_read, last_entry_at}; {kind:'setting', scope, datname, rolname, name, value, source} rows;
+--   entries_read, last_entry_at, forged_lines, forged_at, forged_by}; {kind:'setting', scope, datname, rolname, name, value, source} rows;
 --   {kind:'event', at, audit_type, class, command, object_type, object_name, target_role, usename, datname, client, pid,
 --   statement_id, substatement_id, row_count, statement, parameters, source, event_key} rows;
 --   {kind:'count', source, sec, usename, datname, class, command, object_type, object_name, entries} rows (one per
@@ -165,16 +169,20 @@ BEGIN
   -- the state and the settings: the newest read wins (a one-off collect beside the daemon may arrive late)
   IF NOT EXISTS (SELECT 1 FROM pgvigil.pgaudit_state s WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_snapshot_at) THEN
     INSERT INTO pgvigil.pgaudit_state AS s (instance_id, snapshot_at, loaded, preload_libraries, log_where, log_read, log_read_reason,
-                                            log_source, keep_text, entries_read, last_entry_at)
+                                            log_source, keep_text, entries_read, last_entry_at, forged_lines, forged_at, forged_by)
     VALUES (p_instance_id, p_snapshot_at, coalesce((v_state->>'loaded')::boolean, false), v_state->>'preload_libraries',
             v_state->>'log_where', coalesce(v_state->>'log_read', 'not read'), v_state->>'log_read_reason', v_state->>'log_source',
-            coalesce((v_state->>'keep_text')::boolean, false), (v_state->>'entries_read')::bigint, (v_state->>'last_entry_at')::timestamptz)
+            coalesce((v_state->>'keep_text')::boolean, false), (v_state->>'entries_read')::bigint, (v_state->>'last_entry_at')::timestamptz,
+            (v_state->>'forged_lines')::bigint, (v_state->>'forged_at')::timestamptz, v_state->>'forged_by')
     ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, loaded = EXCLUDED.loaded,
       preload_libraries = EXCLUDED.preload_libraries, log_where = EXCLUDED.log_where, log_read = EXCLUDED.log_read,
       log_read_reason = EXCLUDED.log_read_reason, log_source = EXCLUDED.log_source, keep_text = EXCLUDED.keep_text,
       entries_read = EXCLUDED.entries_read,
       last_entry_at = CASE WHEN EXCLUDED.last_entry_at IS NULL THEN s.last_entry_at
-                           ELSE greatest(coalesce(s.last_entry_at, EXCLUDED.last_entry_at), EXCLUDED.last_entry_at) END;
+                           ELSE greatest(coalesce(s.last_entry_at, EXCLUDED.last_entry_at), EXCLUDED.last_entry_at) END,
+      forged_lines = EXCLUDED.forged_lines,
+      forged_at = CASE WHEN EXCLUDED.forged_at IS NULL OR s.forged_at > EXCLUDED.forged_at THEN s.forged_at ELSE EXCLUDED.forged_at END,
+      forged_by = CASE WHEN EXCLUDED.forged_at IS NULL OR s.forged_at > EXCLUDED.forged_at THEN s.forged_by ELSE EXCLUDED.forged_by END;
     DELETE FROM pgvigil.pgaudit_settings WHERE instance_id = p_instance_id;
     INSERT INTO pgvigil.pgaudit_settings (instance_id, scope, datname, rolname, name, value, source, snapshot_at)
     SELECT DISTINCT ON (r->>'scope', coalesce(r->>'datname', ''), coalesce(r->>'rolname', ''), r->>'name')
@@ -245,7 +253,12 @@ BEGIN
     LEFT JOIN pgvigil.pgaudit_count_secs s
       ON s.instance_id = p_instance_id AND s.source = i.source AND s.sec = i.sec AND s.usename = i.usename AND s.datname = i.datname
      AND s.class = i.class AND s.command = i.command AND s.object_type = i.object_type AND s.object_name = i.object_name
-   WHERE i.entries > coalesce(s.entries, 0);
+   WHERE i.entries > coalesce(s.entries, 0)
+     -- a second the guard has already let go of (behind its source's cursor less 30 minutes) is never counted again:
+     -- a late import (a one-off collect beside the daemon) would otherwise add it whole
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.log_cursor c
+                      WHERE c.instance_id = p_instance_id AND c.source LIKE 'pgaudit:%'
+                        AND 'pgaudit:' || i.source LIKE c.source || ':%' AND i.sec < c.read_to - interval '30 minutes');
 
   INSERT INTO pgvigil.pgaudit_count_secs AS s (instance_id, source, sec, usename, datname, class, command, object_type, object_name, entries)
   SELECT p_instance_id, c.source, c.sec, c.usename, c.datname, c.class, c.command, c.object_type, c.object_name, c.entries
@@ -273,10 +286,11 @@ BEGIN
     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'cursor' AND r->>'source' LIKE 'pgaudit:%'
   ON CONFLICT (instance_id, source) DO UPDATE SET read_to = greatest(c.read_to, EXCLUDED.read_to), updated_at = now();
 
+  -- per source: a source no longer read (log_directory changed) holds nothing back for the others
   DELETE FROM pgvigil.pgaudit_count_secs s
-   WHERE s.instance_id = p_instance_id
-     AND s.sec < (SELECT min(c.read_to) FROM pgvigil.log_cursor c
-                   WHERE c.instance_id = p_instance_id AND c.source LIKE 'pgaudit:%') - interval '30 minutes';
+   USING pgvigil.log_cursor c
+   WHERE s.instance_id = p_instance_id AND c.instance_id = p_instance_id AND c.source LIKE 'pgaudit:%'
+     AND 'pgaudit:' || s.source LIKE c.source || ':%' AND s.sec < c.read_to - interval '30 minutes';
 END $$;
 
 -- pgaudit_health: the status cell of an instance and the facts behind it.
@@ -332,7 +346,8 @@ SELECT i.instance_id, r.rule_id, r.name, r.what, r.severity, r.min_count, r.wind
          WHERE r.what <> 'AUTH_FAIL' AND a.instance_id = i.instance_id AND a.class = r.what
            AND a.snapshot_at > now() - make_interval(mins => r.window_minutes)
            AND (r.command_like IS NULL OR a.command ILIKE r.command_like)
-           AND (r.object_like IS NULL OR a.object_name ILIKE r.object_like)
+           AND (r.object_like IS NULL OR a.object_name ILIKE r.object_like OR a.target_role ILIKE r.object_like
+                OR EXISTS (SELECT 1 FROM unnest(string_to_array(a.target_role, ', ')) g(n) WHERE g.n ILIKE r.object_like))
         UNION ALL
         SELECT l.snapshot_at,
                to_char(l.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC ' || coalesce(nullif(l.usename, ''), '?') || '@' || coalesce(nullif(l.datname, ''), '?')
@@ -394,15 +409,35 @@ SELECT h.instance_id, 'info', 'pgaudit extension', 'not created in ' || x.list, 
              GROUP BY e.datname HAVING NOT bool_or(e.name = 'pgaudit')) d) x
  WHERE h.loaded AND h.status = 'ok' AND x.list IS NOT NULL
    AND EXISTS (SELECT 1 FROM pgvigil.pgaudit_settings s CROSS JOIN LATERAL regexp_split_to_table(lower(coalesce(s.value, '')), ',') c(v)
-                WHERE s.instance_id = h.instance_id AND s.name = 'pgaudit.log' AND btrim(c.v) IN ('ddl', 'all'))
+                WHERE s.instance_id = h.instance_id AND s.name = 'pgaudit.log' AND btrim(c.v) IN ('ddl', 'all')
+                  AND NOT EXISTS (SELECT 1 FROM regexp_split_to_table(lower(coalesce(s.value, '')), ',') x(v) WHERE btrim(x.v) = '-ddl'))
+UNION ALL
+-- no statement text: the names the rules match are not read
+SELECT h.instance_id, 'info', 'pgaudit.log_statement', 'off', true, 'on', 'all',
+       'pgaudit.log_statement off: the entries carry no statement, so no role, grantee or setting is named and the rules that need a name (the SET rules, any rule with an object pattern) cannot fire.',
+       'pgvigil pgaudit', h.snapshot_at
+  FROM pgvigil.pgaudit_health h JOIN pgvigil.instances i ON i.instance_id = h.instance_id AND i.is_active
+ WHERE h.loaded AND h.status = 'ok'
+   AND EXISTS (SELECT 1 FROM pgvigil.pgaudit_settings s WHERE s.instance_id = h.instance_id AND s.scope = 'server'
+                  AND s.name = 'pgaudit.log_statement' AND lower(s.value) IN ('off', 'false', 'no', '0'))
+UNION ALL
+-- a line that has pgaudit's form and is not pgaudit's (a session's own RAISE)
+SELECT st.instance_id, 'warning', 'imitated audit line', coalesce(st.forged_by, '?'), true, 'find who raised it', 'all',
+       format('A server-log line has the form of a pgaudit entry and is not one (it carries the CONTEXT of a session''s own RAISE): newest %s by %s. It is neither stored nor counted as an audit entry.',
+              to_char(st.forged_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC', coalesce(st.forged_by, '?')),
+       'pgvigil pgaudit', st.forged_at
+  FROM pgvigil.pgaudit_state st JOIN pgvigil.instances i ON i.instance_id = st.instance_id AND i.is_active
+ WHERE st.forged_at > now() - interval '1 day'
 UNION ALL
 -- the rules that fire
 SELECT r.instance_id, r.severity, 'audit rule: ' || r.name,
-       r.hits || CASE r.what WHEN 'AUTH_FAIL' THEN ' failed sign-in' ELSE ' ' || r.what || ' entr' END
-         || CASE WHEN r.what = 'AUTH_FAIL' THEN CASE WHEN r.hits = 1 THEN '' ELSE 's' END ELSE CASE WHEN r.hits = 1 THEN 'y' ELSE 'ies' END END
-         || ' in the last ' || CASE WHEN r.window_minutes % 1440 = 0 THEN (r.window_minutes / 1440) || ' day(s)'
-                                    WHEN r.window_minutes % 60 = 0 THEN (r.window_minutes / 60) || ' hour(s)'
-                                    ELSE r.window_minutes || ' minute(s)' END,
+       -- one wording whatever the count: an alert's key replaces the numbers, so the words must not change with them
+       CASE r.what WHEN 'AUTH_FAIL' THEN 'failed sign-ins' ELSE r.what || ' entries' END || ': ' || r.hits
+         || ' in the last ' || CASE WHEN r.window_minutes = 60 THEN 'hour'
+                                    WHEN r.window_minutes % 1440 = 0 AND r.window_minutes > 1440 THEN (r.window_minutes / 1440) || ' days'
+                                    WHEN r.window_minutes % 60 = 0 THEN (r.window_minutes / 60) || ' hours'
+                                    WHEN r.window_minutes = 1 THEN 'minute'
+                                    ELSE r.window_minutes || ' minutes' END,
        true, 'review them on the Audit page', 'all',
        'Newest first: ' || array_to_string(r.sample, '; ') || CASE WHEN r.hits > 5 THEN format(' ... and %s more', r.hits - 5) ELSE '' END,
        'pgvigil pgaudit', r.last_at

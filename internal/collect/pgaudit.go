@@ -29,22 +29,33 @@ import (
 // Aurora: the log group in CloudWatch Logs, logs.go) from a cursor of its own ('pgaudit:' + the reader's source).
 // ROLE and DDL entries become rows (who, when, database, command, object), and so does a SET or a RESET (pgaudit.log's
 // misc_set) of a setting that changes who the session is, what is audited or logged, or what the server enforces
-// (auditSetIsRow). Every other entry is only counted: READ, WRITE, FUNCTION and MISC, and every other SET, per
+// (auditIsRow). Every other entry is only counted: READ, WRITE, FUNCTION and MISC, and every other SET, per
 // setting name (an application's SET search_path, a pooler's SET application_name and this collector's own four
 // session settings run with every connection: as rows they would bury the ones that matter). The statement text and
-// the parameters of a row are kept only when the instance's config says pgaudit_text: true, and then under the
+// the parameters of a row are kept only when the instance's config says audit_text: true, and then under the
 // instance's query_text policy (normalized masks the literals and keeps no parameters, none keeps nothing); a
 // counted entry never keeps text.
 //
 // Counting once: like the log readers, each run re-reads an overlap behind its cursor. A row is dropped on the
 // re-read by its key; a count has no key, so the collector counts per second and per source (the log file or
 // stream) and the import adds only what a second gained over what it had counted (pgvigil.pgaudit_count_secs,
-// 0100). For that a read always starts at a whole second, so every second it reads but the newest is whole.
+// 0100): a second read again in full counts what it counted before or more, a second read from its middle counts
+// less and changes nothing. For that a read starts at a whole second, and one second (pgauditGuard) before the
+// second it has to count again: backends stamp their lines before they write them, so at a second's edge a line
+// can sit a few lines before one stamped earlier, and a read that began exactly at the edge would miss it. An entry
+// cut by the end of a read (its last lines not written yet) is left to the next read, which has it whole: taken
+// twice it could be a count the first time and a row the second.
+//
+// Not pgaudit's: a session can raise a message that has the form of an audit entry (RAISE LOG 'AUDIT: ...'). The
+// server writes such a message with its CONTEXT and STATEMENT lines, which pgaudit's own never have; the parser marks
+// it Forged and it is neither a row nor a count: the state row carries how many the read met, the newest and whose.
+// The last entry of a read has nothing after it yet, so while it is younger than pgauditSettle it waits for the next
+// read, which sees what follows it.
 //
 // Rows by kind:
 //
 //	state    loaded, preload_libraries, log_where, log_read (ok | off | not read), log_read_reason, log_source,
-//	         keep_text, entries_read, last_entry_at                                               (one)
+//	         keep_text, entries_read, last_entry_at, forged_lines, forged_at, forged_by           (one)
 //	setting  scope (server | database | role | role in database), datname, rolname, name, value, source
 //	event    at, audit_type, class, command, object_type, object_name, target_role, usename, datname, client, pid,
 //	         statement_id, substatement_id, row_count, statement, parameters, source, event_key
@@ -57,9 +68,15 @@ type pgauditCollector struct{}
 
 func init() { Register(pgauditCollector{}) }
 
-// pgauditMaxEvents is the CloudWatch read's cap per run: audit lines are many (one per statement under read or write
-// auditing), so it is ten times the log reader's.
-const pgauditMaxEvents = 200000
+const (
+	// pgauditMaxEvents is the CloudWatch read's cap per run: audit lines are many (one per statement under read or
+	// write auditing), so it is ten times the log reader's.
+	pgauditMaxEvents = 200000
+	// pgauditGuard is how far before the second it must count again a read starts (the collector's comment).
+	pgauditGuard = time.Second
+	// pgauditSettle is how old a read's last entry must be to be taken without the line that follows it.
+	pgauditSettle = 5 * time.Second
+)
 
 func (pgauditCollector) Name() string                   { return "pgaudit" }
 func (pgauditCollector) DefaultInterval() time.Duration { return time.Minute }
@@ -97,6 +114,17 @@ SELECT 'setting' AS kind,
  WHERE c.cfg LIKE 'pgaudit.%'
  ORDER BY 2, 3, 4, 5`
 
+// pgauditPlaceholderSQL: without the library a pgaudit.* line of postgresql.conf (or of ALTER SYSTEM) is a
+// placeholder: pg_settings does not list it, current_setting returns it. Read only when the library is not loaded.
+const pgauditPlaceholderSQL = `
+SELECT 'setting' AS kind, 'server' AS scope, '' AS datname, '' AS rolname, n AS name, current_setting(n, true) AS value,
+       'not loaded: a placeholder' AS source
+  FROM unnest(ARRAY['pgaudit.log', 'pgaudit.log_catalog', 'pgaudit.log_client', 'pgaudit.log_level', 'pgaudit.log_parameter',
+                    'pgaudit.log_parameter_max_size', 'pgaudit.log_relation', 'pgaudit.log_rows', 'pgaudit.log_statement',
+                    'pgaudit.log_statement_once', 'pgaudit.role']) n
+ WHERE current_setting(n, true) IS NOT NULL
+ ORDER BY 5`
+
 // pgauditLogSQL: the settings that say where the log goes; pg_settings leaves out the ones the login may not read
 // (log_directory and log_filename need pg_read_all_settings) instead of raising an error.
 const pgauditLogSQL = `
@@ -109,7 +137,11 @@ func (pgauditCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 		return nil, fmt.Errorf("pgaudit loaded: %w", err)
 	}
 	var out []Row
-	for _, q := range []string{pgauditServerSQL, pgauditScopedSQL} {
+	settings := []string{pgauditServerSQL, pgauditScopedSQL}
+	if !loaded {
+		settings = []string{pgauditPlaceholderSQL, pgauditScopedSQL}
+	}
+	for _, q := range settings {
 		r, err := conn.Query(ctx, q)
 		if err != nil {
 			return nil, fmt.Errorf("pgaudit settings: %w", err)
@@ -138,7 +170,7 @@ func (pgauditCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 		return nil, err
 	}
 
-	keepText := in.PgAuditText
+	keepText := in.AuditText
 	state := Row{"kind": "state", "loaded": loaded, "keep_text": keepText, "log_where": pgauditLogWhere(info, in, set)}
 	if v, ok := set["shared_preload_libraries"]; ok {
 		state["preload_libraries"] = v
@@ -151,7 +183,13 @@ func (pgauditCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 	agg := newAuditAgg(keepText, keepText && (in.QueryText == "" || in.QueryText == "full"))
 	source, readTo, extra, why, err := pgauditRead(ctx, conn, info, in, cursor, agg)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// a read that failed part-way (a file gone, CloudWatch refusing) stores nothing of the log and leaves the
+		// cursor where it was; the settings read above stand, and the run ends partial with the reason
+		state["log_read"], state["log_read_reason"] = "not read", err.Error()
+		return append(out, state, Row{"kind": "collector_error", "source": "pgaudit", "message": err.Error()}), nil
 	}
 	if why != "" {
 		state["log_read"], state["log_read_reason"] = "not read", why
@@ -160,6 +198,9 @@ func (pgauditCollector) RunInstance(ctx context.Context, conn *pgx.Conn, info pl
 	state["log_read"], state["log_source"], state["entries_read"] = "ok", source, agg.entries
 	if !agg.newest.IsZero() {
 		state["last_entry_at"] = agg.newest.UTC()
+	}
+	if state["forged_lines"] = agg.forged; agg.forged > 0 {
+		state["forged_at"], state["forged_by"] = agg.forgedAt.UTC(), agg.forgedBy
 	}
 	out = append(out, state)
 	out = append(out, agg.rows()...)
@@ -196,15 +237,11 @@ func pgauditLogWhere(info platform.Info, in config.Instance, set map[string]stri
 // it read, or why the log is not read here (the health rows are stored either way).
 func pgauditRead(ctx context.Context, conn *pgx.Conn, info platform.Info, in config.Instance, cursor CursorFunc, agg *auditAgg) (source string, readTo time.Time, extra []Row, why string, err error) {
 	start := func(source string) (time.Time, error) {
-		from := time.Now().Add(-logsFirstRead)
 		t, ok, err := cursor(ctx, "pgaudit:"+source)
 		if err != nil {
 			return time.Time{}, err
 		}
-		if ok {
-			from = t.Add(-logsOverlap)
-		}
-		return from.Truncate(time.Second), nil // a whole second: see the collector's comment on counting once
+		return pgauditFrom(t, ok, time.Now()), nil
 	}
 	switch info.Kind {
 	case platform.RDS, platform.Aurora:
@@ -232,7 +269,8 @@ func pgauditRead(ctx context.Context, conn *pgx.Conn, info platform.Info, in con
 		if err != nil {
 			return "", time.Time{}, nil, "", err
 		}
-		return source, pgauditCloudwatch(evs, source, from, loc, len(evs) >= pgauditMaxEvents, agg), nil, "", nil
+		readTo, extra := pgauditCloudwatch(evs, source, from, loc, len(evs) >= pgauditMaxEvents, agg)
+		return source, readTo, extra, "", nil
 	case platform.OnPrem:
 		var s serverlogSettings
 		err := conn.QueryRow(ctx, `
@@ -243,7 +281,7 @@ SELECT current_setting('logging_collector'), current_setting('log_destination'),
 			Scan(&s.Collector, &s.Destination, &s.Directory, &s.Prefix, &s.TimeZone, &s.CanList, &s.CanRead, &s.Door)
 		if err != nil {
 			// log_directory is not readable without pg_read_all_settings: a reason, not a failed run
-			return "", time.Time{}, nil, "the log settings are not readable by the monitoring login (GRANT pg_monitor TO <login>): " + err.Error(), nil
+			return "", time.Time{}, nil, "the log settings could not be read (log_directory needs GRANT pg_monitor TO <login>): " + err.Error(), nil
 		}
 		if why := s.check(); why != "" {
 			return "", time.Time{}, nil, why, nil
@@ -270,11 +308,38 @@ SELECT current_setting('logging_collector'), current_setting('log_destination'),
 	return "", time.Time{}, nil, fmt.Sprintf("the log readers cover on-prem servers and RDS / Aurora; on %s the audit settings are read, the audit lines are not", info.Kind), nil
 }
 
+// pgauditFrom is where a read starts: one overlap behind the cursor (an hour back on the first read), at a whole
+// second, one guard second earlier (the collector's comment on counting once).
+func pgauditFrom(cursor time.Time, found bool, now time.Time) time.Time {
+	from := now.Add(-logsFirstRead)
+	if found {
+		from = cursor.Add(-logsOverlap)
+	}
+	return from.Truncate(time.Second).Add(-pgauditGuard)
+}
+
+// pgauditReadTo is the cursor after a read that started at from and whose newest line (or the line after one it
+// had to skip) is last. A read that took everything there was: last. A read that hit its cap: one overlap past
+// last, so the next starts a guard second before last's second - unless that is no later than this read's own
+// start (the cap was spent inside the first two seconds), where the cursor goes one second on instead and stalled
+// says so: the next read then starts a second later, whatever the log holds.
+func pgauditReadTo(from, last time.Time, full bool) (readTo time.Time, stalled bool) {
+	switch {
+	case last.IsZero():
+		return from, false
+	case !full && last.After(from):
+		return last, false
+	case !full:
+		return from, false
+	case last.Truncate(time.Second).Before(from.Add(pgauditGuard + time.Second)):
+		return from.Add(pgauditGuard + time.Second + logsOverlap), true
+	}
+	return last.Add(logsOverlap), false
+}
+
 // pgauditServerlog reads the audit lines of the stderr files written since from (a whole second), oldest first, up
-// to maxBytes, into agg, and returns how far it read: serverlogRows' walk and cursor rule (the newest line read; a
-// run that hit maxBytes one overlap past its last line, so the next starts at that line's second). One more case
-// than there: when a single second holds more log than maxBytes, the next read would start at that second again for
-// ever, so the cursor goes one second on and a collector_error row says what was left unread.
+// to maxBytes, into agg, and returns how far it read: serverlogRows' walk, the cursor by pgauditReadTo. A run that
+// had to move its cursor on without having read everything before it adds a collector_error row that says so.
 func pgauditServerlog(ctx context.Context, dir logDir, lp *linePrefix, z *logZone, source string, from time.Time, maxBytes int64, agg *auditAgg) (time.Time, []Row, error) {
 	files, err := dir.List(ctx)
 	if err != nil {
@@ -338,19 +403,14 @@ func pgauditServerlog(ctx context.Context, dir logDir, lp *linePrefix, z *logZon
 			break
 		}
 	}
-	readTo := from
-	switch {
-	case full && !skipTo.IsZero():
-		readTo = skipTo.Add(logsOverlap)
-	case full && !last.IsZero() && !last.Truncate(time.Second).After(from):
-		// the whole budget went into from's own second
-		readTo = from.Add(time.Second + logsOverlap)
+	if full && !skipTo.IsZero() { // past a line longer than the budget: the line after it stands for the newest read
+		last = skipTo
+	}
+	readTo, stalled := pgauditReadTo(from, last, full)
+	if stalled {
 		extra = append(extra, Row{"kind": "collector_error", "source": "pgaudit", "message": fmt.Sprintf(
-			"more than %d MB of server log in the second %s: the rest of that second is not read", maxBytes>>20, from.UTC().Format(time.RFC3339))})
-	case full && !last.IsZero():
-		readTo = last.Add(logsOverlap)
-	case last.After(from):
-		readTo = last
+			"more than %d MB of server log in the two seconds from %s, or a line longer than that: what is left of them is not read",
+			maxBytes>>20, from.UTC().Format(time.RFC3339))})
 	}
 	if z.misses > 0 {
 		extra = append(extra, Row{"kind": "collector_error", "source": "pgaudit", "message": fmt.Sprintf(
@@ -360,9 +420,9 @@ func pgauditServerlog(ctx context.Context, dir logDir, lp *linePrefix, z *logZon
 }
 
 // pgauditCloudwatch reads the audit lines of the fetched events, stream by stream, into agg and returns how far the
-// read went: logRows' cursor rule (the earliest of the streams' latest events; a full batch one overlap past its
-// last event).
-func pgauditCloudwatch(evs []cwEvent, source string, from time.Time, loc *time.Location, full bool, agg *auditAgg) time.Time {
+// read went: logRows' cursor rule for a batch that took everything (the earliest of the streams' latest events),
+// pgauditReadTo for a full one.
+func pgauditCloudwatch(evs []cwEvent, source string, from time.Time, loc *time.Location, full bool, agg *auditAgg) (time.Time, []Row) {
 	byStream := map[string][]cwEvent{}
 	latest := map[string]time.Time{}
 	var last time.Time
@@ -376,8 +436,13 @@ func pgauditCloudwatch(evs []cwEvent, source string, from time.Time, loc *time.L
 		}
 	}
 	readTo := from
+	var extra []Row
 	if full {
-		readTo = last.Add(logsOverlap)
+		var stalled bool
+		if readTo, stalled = pgauditReadTo(from, last, true); stalled {
+			extra = append(extra, Row{"kind": "collector_error", "source": "pgaudit", "message": fmt.Sprintf(
+				"more than %d log events in the two seconds from %s: what is left of them is not read", len(evs), from.UTC().Format(time.RFC3339))})
+		}
 	} else {
 		first := true
 		for _, t := range latest {
@@ -405,7 +470,7 @@ func pgauditCloudwatch(evs []cwEvent, source string, from time.Time, loc *time.L
 		src := source + ":" + s
 		_ = logparse.ScanAudit(strings.NewReader(b.String()), loc, func(e logparse.AuditEntry) { agg.add(src, s, e) })
 	}
-	return readTo
+	return readTo, extra
 }
 
 // auditCountKey is one count: a second of one source, and who did what to what.
@@ -419,54 +484,80 @@ type auditCountKey struct {
 // key for every other one.
 type auditAgg struct {
 	keepText, keepParams bool
+	now                  time.Time // the read's time: what pgauditSettle is measured from
 	events               []Row
 	counts               map[auditCountKey]int64
 	entries              int64
 	newest               time.Time
+	forged               int64     // entries that have pgaudit's form and are not pgaudit's
+	forgedAt             time.Time // the newest of them
+	forgedBy             string    // its user@database
 }
 
 func newAuditAgg(keepText, keepParams bool) *auditAgg {
-	return &auditAgg{keepText: keepText, keepParams: keepParams, counts: map[auditCountKey]int64{}}
+	return &auditAgg{keepText: keepText, keepParams: keepParams, now: time.Now(), counts: map[auditCountKey]int64{}}
 }
 
-// auditIsRow says whether an entry is kept as a row: every ROLE and DDL entry, and a SET or RESET of a setting
-// auditSetIsRow names. setting is the entry's setting name as logparse.AuditTarget read it ("" when the statement
-// was not logged: such a SET is counted).
-func auditIsRow(class, setting string) bool {
+// auditIsRow says whether an entry is kept as a row: every ROLE and DDL entry, and a SET or RESET that matters to
+// an audit. setting and role are what logparse.AuditTarget read from the statement ("" when it was not logged:
+// such a SET is counted).
+//
+// The SETs kept: the audit itself (pgaudit.*); what reaches the server log (every log_* setting: a session may set
+// them only as a superuser or by a grant); what the server enforces on the session (row_security,
+// session_replication_role: triggers and rules off; allow_system_table_mods); and SET SESSION AUTHORIZATION to a
+// named role (a superuser acting as another role). Counted, not kept: SET SESSION AUTHORIZATION DEFAULT and its
+// RESET (the session's own role back: some poolers send it with every release of a connection), SET ROLE (an
+// application that takes a role per request does it thousands of times an hour; the count's object names the role
+// taken) and every other setting.
+func auditIsRow(class, setting, role string) bool {
 	switch class {
 	case logparse.AuditRole, logparse.AuditDDL:
 		return true
 	case logparse.AuditMiscSet:
-		return auditSetIsRow(setting)
+		switch {
+		case setting == "session_authorization":
+			return role != ""
+		case setting == "row_security", setting == "session_replication_role", setting == "allow_system_table_mods":
+			return true
+		}
+		return strings.HasPrefix(setting, "pgaudit.") || strings.HasPrefix(setting, "log_")
 	}
 	return false
-}
-
-// auditSetIsRow names the settings whose SET or RESET in a session is kept as a row: the session's identity as only
-// a superuser changes it (session_authorization), the audit itself (pgaudit.*), what reaches the server log
-// (log_statement, log_min_messages, log_min_error_statement, log_min_duration_statement) and what the server
-// enforces on the session (row_security, session_replication_role: triggers and rules off). SET ROLE is not among
-// them: an application that takes a role per request does it thousands of times an hour, so it is counted, with the
-// role it takes in the count's object.
-func auditSetIsRow(setting string) bool {
-	switch setting {
-	case "session_authorization", "row_security", "session_replication_role",
-		"log_statement", "log_min_messages", "log_min_error_statement", "log_min_duration_statement":
-		return true
-	}
-	return strings.HasPrefix(setting, "pgaudit.")
 }
 
 // add takes one entry of a source (source: the row's source column; part: the log file or stream, which keys the
 // row with the entry's own key as the log readers key an event).
 func (a *auditAgg) add(source, part string, e logparse.AuditEntry) {
+	switch {
+	case e.Forged:
+		a.forged++
+		if e.At.After(a.forgedAt) {
+			a.forgedAt, a.forgedBy = e.At, e.User+"@"+e.Database
+		}
+		return
+	case e.Truncated:
+		return // the next read has the entry whole
+	case e.Last && a.now.Sub(e.At) < pgauditSettle:
+		return // the next read sees the line after it
+	}
 	a.entries++
 	if e.At.After(a.newest) {
 		a.newest = e.At
 	}
 	class := e.LogClass()
 	objType, objName, role := logparse.AuditTarget(e)
-	if !auditIsRow(class, objName) {
+	if class == logparse.AuditMiscSet && objName == "" {
+		// pgaudit 13 to 16 write the whole text of a multi-statement string on each entry of it, so several SETs can
+		// be this entry's. When one of them is an audit matter the entry is kept under it: every entry of that string
+		// is, so such a SET is reported more than once and never missed.
+		for _, o := range logparse.AuditTargets(e) {
+			if auditIsRow(class, o.Name, o.Role) {
+				objType, objName, role = o.Type, o.Name, o.Role
+				break
+			}
+		}
+	}
+	if !auditIsRow(class, objName, role) {
 		if class == logparse.AuditMiscSet && objName == "role" && role != "" {
 			objName = "role = " + role // a role's name, not a value: who the session became
 		}

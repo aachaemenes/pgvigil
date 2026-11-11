@@ -38,7 +38,8 @@ entries carry no object type and no object name (the event triggers that supply 
   collection reads it.
 
 The collection reads the log on a pass of its own, from a cursor of its own. A server without pgaudit costs one
-catalog read a minute and no log read.
+catalog read a minute and no log read. The entries are read at whatever level `pgaudit.log_level` writes them, and
+the log readers never keep one as a log event, so its statement is not stored by that road either.
 
 `csvlog` and `jsonlog` files are not read (stderr only, as the log readers). On Azure, Cloud SQL and AlloyDB the
 settings are read and the entries are not.
@@ -63,9 +64,12 @@ four session settings on every connection it makes. So a `SET` is a row only whe
 what is audited or logged, or what the server enforces:
 
 - `pgaudit.*` (the audit itself);
-- `session_authorization` (a superuser acting as another role);
-- `log_statement`, `log_min_messages`, `log_min_error_statement`, `log_min_duration_statement` (what reaches the log);
-- `row_security`, `session_replication_role` (row-level security, triggers and rules).
+- `session_authorization` to a named role (a superuser acting as another role; `DEFAULT` and `RESET` give the
+  session's own role back and are counted);
+- every `log_*` setting (what reaches the log);
+- `row_security`, `session_replication_role`, `allow_system_table_mods` (what the server enforces).
+
+A setting's name is read case-blind, with or without quotes, as the server reads it.
 
 Every other `SET` is counted by its setting's name. `SET ROLE` is counted too, with the role taken in the count's
 object (`role = admin`): an application that takes a role per request does it thousands of times an hour.
@@ -80,6 +84,13 @@ names none, pgvigil reads the names from the statement before the statement is d
 - `SET` / `RESET`: the setting's name, never its value; `SET SESSION AUTHORIZATION` also gives the role taken.
 
 These are identifiers. A literal is never read into them.
+
+pgaudit 18 writes each statement's own text. Earlier releases write the whole text of a multi-statement string on
+every entry of it (`SET a = 1; SET b = 2` sent as one query gives two entries with that text). There pgvigil reads
+the statement that matches the entry's command (the `GRANT` of a `GRANT` entry, never the `CREATE TABLE` before it);
+where several match and differ, the entry gets no object from the text. A string that holds a `SET` of one of the
+settings listed under SET above keeps each of its `SET` entries as a row under that setting: reported once per `SET`
+in the string, never missed.
 
 **The object of a count.** A session entry of a `SELECT` or of DML names its relation only with
 `pgaudit.log_relation = on`; object auditing (`pgaudit.role`) always names it. Without either the counts are per
@@ -99,10 +110,10 @@ default pgvigil stores none of it: no statement, no parameters, for any class.
 instances:
   - name: billing-primary
     dsn: env:BILLING_DSN
-    pgaudit_text: true      # keep the statement text of the entries stored as rows
+    audit_text: true      # keep the statement text of the entries stored as rows
 ```
 
-With `pgaudit_text: true` the rows keep their statement, and their parameters where `pgaudit.log_parameter`
+With `audit_text: true` the rows keep their statement, and their parameters where `pgaudit.log_parameter`
 writes them. Three limits stay:
 
 - a counted entry never keeps text, with or without the switch;
@@ -118,7 +129,7 @@ Switching it off again stops new text; the rows already stored keep theirs until
 | cell | means |
 | --- | --- |
 | `off` - not loaded | pgaudit is not in `shared_preload_libraries` and nothing sets a `pgaudit.*` value |
-| `ok` - the classes | loaded and logging: the server's `pgaudit.log`, the role of object auditing, and how many databases and roles set their own |
+| `ok` - the classes | loaded and logging: the server's `pgaudit.log`, the role of object auditing, and how many database- and role-level settings log something |
 | `warning` - loaded, logging nothing | loaded, and `pgaudit.log` names no class at the server, on any database or on any role, and `pgaudit.role` names no role |
 | `warning` - set, not loaded | something sets a `pgaudit.*` value and the library is not loaded: nothing is audited |
 
@@ -129,7 +140,9 @@ Findings (they reach the Findings tab and the alert channels like any other):
   library not loaded;
 - **log_parameter on: statement parameters reach the log** (warning), at the server, on a database or on a role:
   every bound value of an audited statement is written in clear to the log and to every place the log is shipped;
-- **pgaudit extension not created in ...** (info): DDL is audited and these databases' entries carry no object.
+- **pgaudit extension not created in ...** (info): DDL is audited and these databases' entries carry no object;
+- **pgaudit.log_statement off** (info): the entries carry no statement, so no role, grantee or setting is named and
+  the rules that need a name cannot fire.
 
 ## Alert rules
 
@@ -160,16 +173,27 @@ INSERT INTO pgvigil.pgaudit_rules (name, what, object_like, min_count, window_mi
 VALUES ('the payments role changed', 'ROLE', 'payments%', 1, 1440, 'critical');
 ```
 
-`what` is `ROLE`, `DDL`, `MISC_SET` or `AUTH_FAIL`; `command_like` and `object_like` are `LIKE` patterns, case-blind
-(for `AUTH_FAIL`, `object_like` matches the login name); `window_minutes` is at most 31 days. A rule applies to
-every PostgreSQL instance.
+`what` is `ROLE`, `DDL`, `MISC_SET` or `AUTH_FAIL`; `command_like` and `object_like` are `LIKE` patterns, case-blind.
+`object_like` matches the object's name or the role named (the grantee of a `GRANT`), so the last example sees a
+change of the role and a grant to it; for `AUTH_FAIL` it matches the login name, and `command_like` is not used.
+`window_minutes` is at most 31 days. A rule applies to every PostgreSQL instance.
+
+The names come from the statement text. With `pgaudit.log_statement = off` pgaudit writes none: a `ROLE` entry then
+names no role and a `SET` no setting, every `SET` is counted without a name, and the rules on `SET` and any rule with
+`object_like` cannot fire. That setting is a finding of its own.
 
 ## Limits
 
 - The entries are as complete as the log: a log line the reader cannot place (a `log_line_prefix` without a time or
   the process id) is not read, and the collection says why on the Audit tab.
+- The first read of an instance goes back one hour; what the log held before that is not read.
 - One run reads at most 64 MB of log files (200,000 CloudWatch events); a busier server is read over several runs.
-- A second that holds more than 64 MB of log is read up to that size, and the run is marked partial.
-- The hours of the counts are UTC hours.
-- Not proven on RDS or Aurora: the CloudWatch path shares the log reader's fetch and cursor rule and has run only
-  against recorded events.
+- The Audit tab lists the 1,000 newest rows, the 500 newest failed sign-ins and the 2,000 largest count groups of
+  its window; its tile and chart count every entry.
+- Two seconds that hold more than 64 MB of log between them are read up to that size, and the collection's run is
+  recorded as partial with that reason.
+- An entry whose last lines are not written yet when a read ends is taken by the next read.
+- The hours of the counts are UTC hours, and a page's window takes whole every hour it overlaps (the hour it starts
+  in and the hour it ends in).
+- Not proven on RDS or Aurora: the CloudWatch path shares the log reader's fetch and cursor rule and has not run
+  against a live log group.

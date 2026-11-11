@@ -42,20 +42,35 @@
 #     No event row is by the monitoring login: its four session SETs per connection are counted (pgaudit_counts holds
 #     MISC_SET / SET rows with object SETTING statement_timeout and lock_timeout for it), as is every SET of a
 #     setting that is not an audit matter.
+#     [Run 3, box job s157-proof3, 13:42 PST, PostgreSQL 16 + pgaudit 16.1, repository PostgreSQL 13: A, B and C's four
+#     rows as expected (0100 applies on 13); the line above failed: all 16 of the monitoring login's SETs were counted
+#     under default_transaction_read_only. Cause: pgaudit 16.1 writes the whole text of a multi-statement string on
+#     every entry of it (pgvigil's session setup is one such string), and the reader took the text's first statement
+#     whatever the entry's command. Fixed in logparse (AuditTargets: the statements that match the entry's command;
+#     several that differ name no object). Expected since, by pgaudit release: 18 writes each statement's own text,
+#     so the line above stands; before 18 the monitoring login's SETs are counted with no setting name.]
+#  C2. one string of two statements, 'set statement_timeout = 0; set pgaudit.log_relation = on', sent as one query.
+#     pgaudit 18: one more MISC_SET row, object pgaudit.log_relation (and statement_timeout counted). Before 18: two
+#     more rows, both under pgaudit.log_relation (each entry carries the whole text: reported twice, never missed).
 #  D. counting once. As <app>: 400 SELECTs of t (a marked literal in each), collect, pg_rotate_logfile(), 600 more,
 #     collect: pgaudit_counts sums to exactly 1,000 for role <app>, class READ, command SELECT, object TABLE public.t.
 #     Two more collects change neither that sum nor the number of event rows (the overlap is read again and gains
 #     nothing). pgaudit_count_secs holds the same 1,000 over more than one source (the two log files).
-#  E. the opt-in. Instance 1 has no pgaudit_text: a dump of the whole repository (pg_dump, data only) holds none of
+#  E. the opt-in. Instance 1 has no audit_text: a dump of the whole repository (pg_dump, data only) holds none of
 #     the marks (the statements' comments, the SELECTs' literal, the role's password): grep 0. Then instance 2 (the
-#     same server, pgaudit_text: true) reads the same log: its CREATE ROLE row's statement holds its mark and not the
+#     same server, audit_text: true) reads the same log: its CREATE ROLE row's statement holds its mark and not the
 #     password, its GRANT row's statement holds its mark, its counts read 1,000 too; the dump still holds neither the
 #     SELECTs' literal nor the password (a counted entry never keeps text): grep 0 for both.
 #  F. the rules. pgaudit_findings holds 'audit rule: role or privilege change' for instance 1 (value '2 ROLE entries
 #     in the last 1 day(s)', the detail naming GRANT and CREATE ROLE) and 'audit rule: audit setting changed by a
 #     session' (value '1 MISC_SET entry in the last 1 day(s)').
 #     [Before run 2, from run 1's row listing: the door's own REVOKE ... FROM PUBLIC and GRANT ... TO <login> are
-#     audited ROLE entries as well, so the value is '4 ROLE entries in the last 1 day(s)'.] Twelve sign-ins with a wrong password, collect
+#     audited ROLE entries as well, so the value is '4 ROLE entries in the last 1 day(s)'.]
+#     [With C2 the setting rule counts C's row and C2's: '2 MISC_SET entries' on pgaudit 18, '3' before 18.]
+#     [Before run 6 the window's wording changed in 0100, nothing else: 'in the last 24 hours' for '1 day(s)', 'in
+#     the last hour' for '1 hour(s)'; the three values are graded in the new words.]
+#     [Review fold, before run 6: the words no longer change with the count ('ROLE entries: 4 in the last 24 hours',
+#     'failed sign-ins: 12 in the last hour'): an alert's key replaces the numbers, and 'entry' / 'entries' made two keys.] Twelve sign-ins with a wrong password, collect
 #     serverlog: the finding 'audit rule: failed sign-ins' (value '12 failed sign-ins in the last 1 hour(s)'). The
 #     rule switched off (UPDATE pgaudit_rules): the finding gone; on again: back.
 #  G. the API (pgvigil serve -no-login). /api/pgaudit?instance=<1>: health.cell is the view's; events holds the four
@@ -67,27 +82,44 @@
 #  I. a server without pgaudit (the repository server itself as instance 3): status 'off', cell 'not loaded',
 #     log_read 'off', no finding. ALTER ROLE ... SET pgaudit.log = 'all' there: status 'warning', cell 'set, not
 #     loaded', the finding 'shared_preload_libraries' whose detail starts 'pgaudit settings without pgaudit'.
-#  Z. both containers and their volumes are gone (docker ps -a and docker volume ls read back: 0 of the proof's).
+#  J. [added before run 5] audit entries at WARNING. pgaudit.log_client on and pgaudit.log_level = warning (pgaudit
+#     then writes its lines at WARNING), a marked CREATE TABLE t3 and a marked SELECT as the superuser; collect
+#     serverlog, collect pgaudit. The log reader's events of instance 1 hold no row whose detail, statement or message
+#     carries 'AUDIT:' or the mark (an audit line is not an error event at any level); pgaudit_events holds the CREATE
+#     TABLE of public.t3 (the audit reader takes a WARNING-level entry); the repository's dump holds the mark nowhere.
+#  K. [review fold, before run 6] an imitation: as the app login, DO $$ BEGIN RAISE LOG 'AUDIT: SESSION,1,1,ROLE,
+#     CREATE ROLE,,,create role <mark>,<none>'; END $$ (log_min_messages lowered for it by the superuser): no
+#     pgaudit_events row names the mark; pgaudit_findings holds 'imitated audit line' with value <app>@<test db>.
+#  I2. [review fold] on the server without pgaudit, ALTER SYSTEM SET pgaudit.log = 'ddl' and a reload (a
+#     placeholder pg_settings does not list): the cell stays 'set, not loaded' and the settings hold the server row.
+#  Z. both containers and their volumes are gone: the ids docker run returned and their volumes read back, 0 left,
+#     else the run fails (review fold before run 6: Z printed and could not fail). Not proven by this proof:
+#     parameters (pgaudit.log_parameter is off when the log is read, so every parameters column is NULL either way).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PG=${PGAUDIT_PG:-18}; RPG=${PGAUDIT_REPO_PG:-$PG}
-SUF=$RANDOM$RANDOM
+SUF=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
 MON_CT=pgvaud$SUF-mon; REPO_CT=pgvaud$SUF-repo; IMG=pgvigil-proof-pgaudit:$PG
 SUPW=s$RANDOM$RANDOM$RANDOM; MON=pgvaud_mon_$SUF; MONPW=m$RANDOM$RANDOM$RANDOM
 APP=pgvaud_app_$SUF; APPPW=PWSECRET$SUF
 TDB=pgvaud_db_$SUF; REPO_DB=pgvigil_auditproof_$SUF
 I1=proof-audit-$SUF; I2=proof-audit-text-$SUF; I3=proof-audit-none-$SUF
-MROLE=MARK${SUF}ROLE; MGRANT=MARK${SUF}GRANT; MDROP=MARK${SUF}DROP; MLIT=MARKLIT$SUF
-WORK=$(mktemp -d); SRV=""
+MROLE=MARK${SUF}ROLE; MGRANT=MARK${SUF}GRANT; MDROP=MARK${SUF}DROP; MLIT=MARKLIT$SUF; MLVL=MARKLVL$SUF
+WORK=$(mktemp -d); SRV=""; CIDS=()
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
 cleanup() {
+  local rc=$? left vols=""   # the run's own status, before any command here changes $?
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
-  docker rm -f -v "$MON_CT" "$REPO_CT" >/dev/null 2>&1 || true
+  for c in "${CIDS[@]}"; do vols+=" $(docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$c" 2>/dev/null)"; done
+  [[ ${#CIDS[@]} -gt 0 ]] && docker rm -f -v "${CIDS[@]}" >/dev/null 2>&1
   rm -rf "$WORK"
-  local left
-  left=$(docker ps -aq --filter "name=pgvaud$SUF" | wc -l)
-  echo "Z: containers of this proof left: $left"
+  left=0
+  for c in "${CIDS[@]}"; do docker inspect "$c" >/dev/null 2>&1 && left=$((left + 1)); done
+  for v in $vols; do docker volume inspect "$v" >/dev/null 2>&1 && left=$((left + 1)); done
+  echo "Z: containers and volumes of this proof left: $left"
+  [[ $left -eq 0 ]] || { echo "FAIL: Z: $left left" >&2; rc=1; }
+  exit $rc
 }
 trap cleanup EXIT
 for t in docker psql curl python3; do command -v "$t" >/dev/null || fail "$t is not on this machine"; done
@@ -112,9 +144,11 @@ MPORT=$(freeport); RPORT=$(freeport); WPORT=$(freeport)
 echo "--- the audited server (PostgreSQL $PG, pgaudit preloaded) on $MPORT, the repository server (PostgreSQL $RPG) on $RPORT"
 docker run -d --name "$MON_CT" -e POSTGRES_PASSWORD="$SUPW" -p "127.0.0.1:$MPORT:5432" "$IMG" \
   postgres -c shared_preload_libraries=pgaudit -c logging_collector=on -c "log_line_prefix=%m [%p] %q%u@%d " \
-  -c log_timezone=America/Los_Angeles >/dev/null || fail "the audited server's container did not start"
-docker run -d --name "$REPO_CT" -e POSTGRES_PASSWORD="$SUPW" -p "127.0.0.1:$RPORT:5432" "postgres:$RPG" >/dev/null \
+  -c log_timezone=America/Los_Angeles > "$WORK/mon.id" || fail "the audited server's container did not start"
+CIDS+=("$(cat "$WORK/mon.id")")
+docker run -d --name "$REPO_CT" -e POSTGRES_PASSWORD="$SUPW" -p "127.0.0.1:$RPORT:5432" "postgres:$RPG" > "$WORK/repo.id" \
   || fail "the repository server's container did not start"
+CIDS+=("$(cat "$WORK/repo.id")")
 SU="host=127.0.0.1 port=$MPORT user=postgres password=$SUPW dbname=postgres sslmode=disable"
 RSU="host=127.0.0.1 port=$RPORT user=postgres password=$SUPW dbname=postgres sslmode=disable"
 up() {   # the image restarts the server once after its first start: two answers a second apart
@@ -148,7 +182,7 @@ instances:
     dsn: env:MON_DSN
   - name: $I2
     dsn: env:MON_DSN
-    pgaudit_text: true
+    audit_text: true
   - name: $I3
     dsn: env:RMON_DSN
 EOF
@@ -224,9 +258,19 @@ show() { q "select class, command, object_type, object_name, target_role, usenam
 [[ $(q "select count(*) from pgvigil.log_cursor where instance_id = $P and source = 'pgaudit:serverlog:log'") == 1 ]] \
   || fail "C cursor: $(q "select source from pgvigil.log_cursor where instance_id = $P")"
 [[ $(q "select count(*) from pgvigil.pgaudit_events where instance_id = $P and usename = '$MON'") == 0 ]] || fail "C: the monitoring login's own SETs are rows: $(show "$P")"
-OWN=$(q "select string_agg(distinct object_name, ',' order by object_name) from pgvigil.pgaudit_counts where instance_id = $P and usename = '$MON' and class = 'MISC_SET' and command = 'SET' and object_type = 'SETTING' and object_name in ('statement_timeout', 'lock_timeout')")
-[[ "$OWN" == "lock_timeout,statement_timeout" ]] || fail "C: the monitoring login's SETs are not counted by setting: '$OWN' ($(q "select usename, class, command, object_type, object_name, sum(entries) from pgvigil.pgaudit_counts where instance_id = $P group by 1, 2, 3, 4, 5"))"
-ok "C: CREATE ROLE, GRANT, DROP TABLE and SET each found once ($(q "select count(*) from pgvigil.pgaudit_events where instance_id = $P") rows in all)"
+OWN=$(q "select coalesce(string_agg(distinct object_name, ',' order by object_name), 'none') from pgvigil.pgaudit_counts where instance_id = $P and usename = '$MON' and class = 'MISC_SET' and command = 'SET'")
+if [[ $PG -ge 18 ]]; then WANT_OWN="application_name,default_transaction_read_only,lock_timeout,statement_timeout"; SETROWS=2; else WANT_OWN=""; SETROWS=3; fi
+[[ "$OWN" == "$WANT_OWN" ]] || fail "C: the monitoring login's SETs are counted under '$OWN', want '$WANT_OWN' ($(q "select usename, class, command, object_type, object_name, sum(entries) from pgvigil.pgaudit_counts where instance_id = $P group by 1, 2, 3, 4, 5"))"
+ok "C: CREATE ROLE, GRANT, DROP TABLE and SET each found once ($(q "select count(*) from pgvigil.pgaudit_events where instance_id = $P") rows in all); the monitoring login's SETs counted under '$OWN'"
+
+echo "--- C2. two statements in one string"
+sut -c "set statement_timeout = 0; set pgaudit.log_relation = on" >/dev/null
+sleep 0.6
+collect "$I1"
+[[ $(ev "$P" "class = 'MISC_SET' and command = 'SET' and object_name = 'pgaudit.log_relation'") == $((SETROWS - 1)) ]] \
+  || fail "C2: $(ev "$P" "class = 'MISC_SET' and object_name = 'pgaudit.log_relation'") rows for pgaudit.log_relation, want $((SETROWS - 1)) ($(show "$P"))"
+[[ $(ev "$P" "class = 'MISC_SET' and object_name = 'statement_timeout'") == 0 ]] || fail "C2: statement_timeout is a row"
+ok "C2: the audit setting inside a two-statement string is kept ($((SETROWS - 1)) row(s) on pgaudit for PostgreSQL $PG)"
 
 echo "--- D. 1,000 SELECTs counted once"
 APP_DSN="host=127.0.0.1 port=$MPORT user=$APP password=$APPPW dbname=$TDB sslmode=disable"
@@ -243,6 +287,7 @@ collect "$I1"; collect "$I1"
 [[ $(q "select count(*) from pgvigil.pgaudit_events where instance_id = $P and usename = 'postgres' and datname = '$TDB'") == \
    $(q "select count(*) from pgvigil.pgaudit_events where instance_id = $P and usename = 'postgres' and datname = '$TDB' and snapshot_at >= '$START'") ]] || fail "D: rows outside the run"
 [[ $(ev "$P" "class = 'ROLE' and command = 'CREATE ROLE'") == 1 && $(ev "$P" "class = 'DDL' and command = 'DROP TABLE' and object_type = 'TABLE'") == 1 ]] || fail "D: a re-read doubled a row"
+[[ $(q "select count(*) from pgvigil.pgaudit_events where instance_id = $P") == "$N1" ]] || fail "D: two more reads changed the number of rows ($N1 before)"
 SECS=$(q "select sum(entries) || '|' || (count(distinct source) > 1)::text from pgvigil.pgaudit_count_secs where instance_id = $P and usename = '$APP' and class = 'READ' and object_name = 'public.t'")
 [[ "$SECS" == "1000|true" ]] || fail "D: the per-second guard reads $SECS"
 ok "D: 1,000 READ entries of $APP on public.t, unchanged by two more reads ($N1 event rows before them)"
@@ -269,19 +314,19 @@ dump
 for m in "$MLIT" "$APPPW"; do
   [[ $(hits "$m") == 0 ]] || fail "E: $m is in the repository with the opt-in ($(hits "$m") lines)"
 done
-ok "E: with pgaudit_text the rows keep their statement ($(q "select statement from pgvigil.pgaudit_events where instance_id = $T and command = 'CREATE ROLE' and object_name = '$APP'")); the SELECTs' literal and the password are nowhere"
+ok "E: with audit_text the rows keep their statement ($(q "select statement from pgvigil.pgaudit_events where instance_id = $T and command = 'CREATE ROLE' and object_name = '$APP'")); the SELECTs' literal and the password are nowhere"
 
 echo "--- F. the rules"
 fval() { q "select value from pgvigil.pgaudit_findings where instance_id = $1 and setting = 'audit rule: $2'"; }
-[[ $(fval "$P" 'role or privilege change') == "4 ROLE entries in the last 1 day(s)" ]] || fail "F role rule: '$(fval "$P" 'role or privilege change')' ($(show "$P"))"
+[[ $(fval "$P" 'role or privilege change') == "ROLE entries: 4 in the last 24 hours" ]] || fail "F role rule: '$(fval "$P" 'role or privilege change')' ($(show "$P"))"
 [[ $(q "select (detail like '%GRANT%' and detail like '%CREATE ROLE%')::text from pgvigil.pgaudit_findings where instance_id = $P and setting = 'audit rule: role or privilege change'") == true ]] || fail "F: the role rule's detail"
-[[ $(fval "$P" 'audit setting changed by a session') == "1 MISC_SET entry in the last 1 day(s)" ]] || fail "F set rule: '$(fval "$P" 'audit setting changed by a session')'"
+[[ $(fval "$P" 'audit setting changed by a session') == "MISC_SET entries: $SETROWS in the last 24 hours" ]] || fail "F set rule: '$(fval "$P" 'audit setting changed by a session')'"
 for _ in $(seq 1 12); do
   psql "host=127.0.0.1 port=$MPORT user=$APP password=wrong$RANDOM dbname=$TDB sslmode=disable" -XAtqc 'select 1' >/dev/null 2>&1 && fail "F: a wrong password signed in"
 done
 sleep 0.6
 collect "$I1" serverlog
-[[ $(fval "$P" 'failed sign-ins') == "12 failed sign-ins in the last 1 hour(s)" ]] \
+[[ $(fval "$P" 'failed sign-ins') == "failed sign-ins: 12 in the last hour" ]] \
   || fail "F sign-in rule: '$(fval "$P" 'failed sign-ins')' ($(q "select count(*) from pgvigil.log_events where instance_id = $P and kind = 'auth_fail'") auth_fail events)"
 q "update pgvigil.pgaudit_rules set is_enabled = false where name = 'failed sign-ins'" >/dev/null
 [[ -z $(fval "$P" 'failed sign-ins') ]] || fail "F: a rule switched off still fires"
@@ -303,9 +348,9 @@ def rows(part):
     return [dict(zip(t["columns"], r)) for r in (t["rows"] or [])]
 h = rows("health")[0]
 ev = rows("events")
-wanted = [("ROLE", "CREATE ROLE"), ("ROLE", "GRANT"), ("DDL", "DROP TABLE"), ("MISC_SET", "SET")]
-found = sum(1 for w in wanted if sum(1 for e in ev if (e["class"], e["command"]) == w and e["datname"].startswith("pgvaud_db_")
-                                    and (e["object_type"] or "") != "INDEX") == 1)
+wanted = [("ROLE", "CREATE ROLE", None), ("ROLE", "GRANT", None), ("DDL", "DROP TABLE", "public.t2"), ("MISC_SET", "SET", "pgaudit.log_catalog")]
+found = sum(1 for w in wanted if sum(1 for e in ev if (e["class"], e["command"]) == w[:2] and e["datname"].startswith("pgvaud_db_")
+                                    and (w[2] is None or e["object_name"] == w[2])) == 1)
 text = sum(1 for e in ev if e["statement"] is not None or e["parameters"] is not None)
 reads = sum(c["entries"] for c in rows("counts") if c["usename"] == app and c["class"] == "READ" and c["object_name"] == "public.t")
 rules = rows("rules")
@@ -341,5 +386,39 @@ collect "$I3"
 [[ $(health "$N") == "warning|set, not loaded" ]] || fail "I set: $(health "$N")"
 [[ $(finding "$N" shared_preload_libraries 'pgaudit settings without pgaudit') == 1 ]] || fail "I: no finding for a setting without the library"
 ok "I: off without pgaudit; a pgaudit.* value without the library is a finding"
+
+echo "--- J. audit entries written at WARNING"
+su "alter system set pgaudit.log_client = on"; su "alter system set pgaudit.log_level = 'warning'"; reload
+# with log_client on the server sends each entry to the client as a WARNING: psql's stderr is not kept
+sut -c "create table public.t3 (id int) /* $MLVL */" -c "select count(*) from public.t where note <> '$MLVL'" >/dev/null 2>&1 || fail "J: the statements failed"
+sleep 0.6
+[[ $(docker exec "$MON_CT" bash -c 'cat "$PGDATA"/log/*.log' | grep -c "WARNING:  AUDIT: .*$MLVL") -ge 2 ]] || fail "J: the server log holds no WARNING-level audit line with the mark"
+collect "$I1" serverlog
+collect "$I1"
+LEAK=$(q "select count(*) from pgvigil.log_events where instance_id = $P and (coalesce(detail, '') || ' ' || coalesce(statement, '') || ' ' || coalesce(message, '')) ~ 'AUDIT:|$MLVL'")
+[[ "$LEAK" == 0 ]] || fail "J: $LEAK log event(s) carry an audit line: $(q "select kind, level, left(detail, 120) from pgvigil.log_events where instance_id = $P and detail like '%AUDIT:%' limit 3")"
+[[ $(ev "$P" "class = 'DDL' and command = 'CREATE TABLE' and object_name = 'public.t3'") == 1 ]] || fail "J: the audit reader did not take the WARNING-level entry ($(show "$P" | tail -3))"
+dump
+[[ $(hits "$MLVL") == 0 ]] || fail "J: the mark is in the repository ($(hits "$MLVL") lines)"
+ok "J: audit lines at WARNING are read as audit entries and are no log event"
+
+echo "--- K. an imitated audit line"
+MFAKE=fake$SUF
+su "alter role $APP set log_min_messages = 'log'"
+psql "$APP_DSN" -XAtq -c "do \$\$ begin raise log 'AUDIT: SESSION,1,1,ROLE,CREATE ROLE,,,create role $MFAKE,<none>'; end \$\$" >/dev/null 2>&1 || fail "K: the DO block failed"
+sleep 0.6
+collect "$I1"; sleep 6; collect "$I1"   # the read's last entry waits for the line after it
+[[ $(q "select count(*) from pgvigil.pgaudit_events where instance_id = $P and coalesce(object_name, '') like '%$MFAKE%'") == 0 ]] || fail "K: the imitation is a row"
+[[ $(q "select value from pgvigil.pgaudit_findings where instance_id = $P and setting = 'imitated audit line'") == "$APP@$TDB" ]] \
+  || fail "K: no finding for the imitation ($(q "select forged_lines, forged_by from pgvigil.pgaudit_state where instance_id = $P"))"
+ok "K: the imitation is no entry and is a finding"
+
+echo "--- I2. a placeholder without the library"
+psql "$RSU" -XAtq -v ON_ERROR_STOP=1 -c "alter role pgvaud_none_$SUF reset pgaudit.log" -c "alter system set pgaudit.log = 'ddl'" -c "select pg_reload_conf()" >/dev/null
+sleep 0.6; collect "$I3"
+[[ $(health "$N") == "warning|set, not loaded" ]] || fail "I2: $(health "$N")"
+[[ $(q "select count(*) from pgvigil.pgaudit_settings where instance_id = $N and scope = 'server' and name = 'pgaudit.log' and value = 'ddl'") == 1 ]] || fail "I2: the placeholder is not stored"
+psql "$RSU" -XAtq -c "alter system reset pgaudit.log" -c "select pg_reload_conf()" >/dev/null
+ok "I2: a server-level pgaudit value without the library is seen"
 
 echo "PASS: proof-pgaudit (audited server PostgreSQL $PG, repository PostgreSQL $RPG)"
