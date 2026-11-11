@@ -441,6 +441,7 @@ type auditReader struct {
 
 // auditRead is what one audit's read found.
 type auditRead struct {
+	waiting   bool  // never read, and no file of the audit is known to be open: nothing was read
 	listed    int64 // events stored as rows
 	counted   int64 // events counted per hour
 	overCap   int64 // kept events counted because the run's row cap was reached
@@ -681,6 +682,7 @@ func (rd *auditReader) read(ctx context.Context, a *auditDef) (auditRead, error)
 		// (an audit of every SELECT can keep gigabytes of them). (file, NULL) is refused by the reader, so the
 		// file's own path is the pattern of this one read.
 		if a.current == "" {
+			res.waiting = true
 			res.notes = append(res.notes, "never read, and no file of this audit is known to be open (it is not started, or the state view is not readable): its events are read from the first file it is seen writing")
 			return res, nil
 		}
@@ -889,6 +891,9 @@ func (auditCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info,
 			}
 			res, err := rd.read(ctx, a)
 			a.readState = "read"
+			if res.waiting {
+				a.readState = "waiting"
+			}
 			if err != nil {
 				a.readState = "error"
 				res.notes = append(res.notes, err.Error())

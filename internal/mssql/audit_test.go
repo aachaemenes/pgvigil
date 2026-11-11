@@ -529,7 +529,7 @@ func TestAuditReadTextCapAndNeverStarted(t *testing.T) {
 	b := auditTestDef()
 	b.current = ""
 	res, err = g.reader(false).read(context.Background(), b)
-	if err != nil || len(g.calls) != 0 || len(g.batches) != 0 || len(res.notes) != 1 || !strings.Contains(res.notes[0], "never read") {
+	if err != nil || !res.waiting || len(g.calls) != 0 || len(g.batches) != 0 || len(res.notes) != 1 || !strings.Contains(res.notes[0], "never read") {
 		t.Errorf("a stopped audit never read: %+v %v, %d calls", res, err, len(g.calls))
 	}
 	// an audit without a file path cannot be read

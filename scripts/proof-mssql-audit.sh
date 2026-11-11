@@ -32,8 +32,8 @@
 #     specification with six groups, FAILED_LOGIN_GROUP among them; a database specification that records SELECT
 #     and INSERT on one table by public; a second audit <off> that is never started. The first read is not partial
 #     and stores: two audits; <main> started, target file, on failure CONTINUE, queue delay 1000, 4 MB, 8 rollover
-#     files, the file sa reads in sys.dm_server_audit_status, read_state 'read'; <off> stopped with a note that it
-#     was never read; the server specification switched on with 6 actions under <main>'s GUID; the database
+#     files, the file sa reads in sys.dm_server_audit_status, read_state 'read'; <off> stopped, read_state 'waiting'
+#     with a note that it was never read; the server specification switched on with 6 actions under <main>'s GUID; the database
 #     specification with 'SELECT' and 'INSERT' on dbo.<table> by public; mssql_audit_read says the list, the state
 #     and the specifications were read, the events are readable by the right this version asks for, and no statement
 #     text is stored. The Summary cell reads '1 of 2 started', a warning. Findings: 'an audit is defined and not
@@ -70,6 +70,8 @@
 #     does not; 9 failed sign-ins raise nothing, 10 a warning, 100 a critical; an ADD MEMBER to a server role
 #     raises 'a server role gained a member'; an audit missing from a later complete read goes absent, from a read
 #     that could not list the audits it stays and keeps its target; an OLDER read imported late changes nothing; a
+#     stopped audit raises 'an audit is defined and not started' and the cell's warning, keeps its 'since' over a
+#     second read and clears both when it is started; a
 #     database's specification stays while the database is skipped and goes absent when the database is gone; an
 #     Application log audit is stored as 'not readable'; a PostgreSQL instance is refused.
 #  H. roles: pgvigil_collector may execute import_mssql_audit and may not select mssql_audit_events; pgvigil_reader
@@ -78,11 +80,14 @@
 #     unknown category and an unknown part are refused with 400.
 #  P. the API on the server's rows: audits has <main> and <off>; specs has the two specifications, the database one
 #     with 'INSERT on dbo.<table> by public'; counted has SELECT on the table with 1,000 events; by_category has 13
-#     failed sign-ins; the series' failed sign-ins add up to 13 and its reads to 1,000.
+#     failed sign-ins; the series' failed sign-ins add up to 13 and its reads to 1,000; the skipped instance has no
+#     read row and its state part says 'skipped' with the reason.
 #  S. (only with PGVIGIL_SHOTS) in a headless Chromium at 1600 wide, light and dark: the Audit page shows <main>
 #     'started' and <off> 'not started' in the audits grid, the database specification's actions, the failed
-#     sign-in rows, the SELECT count of 1,000, and for the health-only login the words 'health only'. Screenshots
-#     audit-<view>-<theme>.png.
+#     sign-in rows, the SELECT count of 1,000, and for the health-only login the words 'health only'; no row of the
+#     audits grid or of the events grid is taller than 100 px (corrected after the first look: a long file path and
+#     a sign-in's reason wrapped in a squeezed cell and their rows were 110 to 150 px tall; the first run's checks
+#     did not see it). Screenshots audit-<view>-<theme>.png, the audits grid's right end among them.
 #  NOT PROVEN HERE: an Application or Security log target on a live server (SQL Server on Linux has the file target
 #  only: G stores the row), a failed audit on a live server, SQL Server 2016-2019 (CONTROL SERVER), Amazon RDS
 #  (msdb.dbo.rds_fn_get_audit_file: written from AWS's page), Azure SQL Managed Instance (a URL target is named as
@@ -109,7 +114,9 @@ MARK=pvmarkddl$SUF; MARK2=pvmarksel$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw); P2=$(pw); P3=$(pw); PNEW=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
-freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
+# the listening sockets are read once into a variable: 'ss | grep -q' under pipefail would call a taken port free
+# whenever grep left before ss had finished writing
+freeport() { local l p; l=$(ss -ltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$l" || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; MADE_PG13=; MADE_AUD=; SRV_PID=; CHR_PID=
 CT=${PGVIGIL_MSSQL_CONTAINER:-}; OWN=; NOMS=${PGVIGIL_NO_MSSQL:-}
 PG13=pgv-audit-pg13-$SUF
@@ -267,7 +274,7 @@ iid=$(iid_of "$N")
 arow() { q "select state || '|' || coalesce(target, '') || '|' || coalesce(on_failure, '') || '|' || coalesce(queue_delay_ms::text, '') || '|' || coalesce(max_file_size_mb::text, '') || '|' || coalesce(max_rollover_files::text, '') || '|' || coalesce(current_file, '') || '|' || coalesce(read_state, '') from pgvigil.mssql_audit where instance_id=$1 and name='$2' and is_present"; }
 [ "$(q "select count(*) from pgvigil.mssql_audit where instance_id=$iid and is_present")" = 2 ] || fail "A: audits stored (want 2): $(q "select string_agg(name || ':' || state, ', ') from pgvigil.mssql_audit where instance_id=$iid")"
 [ "$(arow "$iid" "$AUD")" = "started|file|CONTINUE|1000|4|8|$SA_FILE|read" ] || fail "A: $AUD is '$(arow "$iid" "$AUD")', want 'started|file|CONTINUE|1000|4|8|$SA_FILE|read'"
-[ "$(q "select state || '|' || target || '|' || read_state || '|' || (read_note like '%never read%') from pgvigil.mssql_audit where instance_id=$iid and name='$AUDOFF'")" = "stopped|file|read|true" ] \
+[ "$(q "select state || '|' || target || '|' || read_state || '|' || (read_note like '%never read%') from pgvigil.mssql_audit where instance_id=$iid and name='$AUDOFF'")" = "stopped|file|waiting|true" ] \
   || fail "A: $AUDOFF is '$(q "select state, target, read_state, read_note from pgvigil.mssql_audit where instance_id=$iid and name='$AUDOFF'")'"
 [ "$(q "select is_enabled || '|' || cardinality(action_names) || '|' || ('FAILED_LOGIN_GROUP' = any (action_names)) || '|' || (upper(audit_guid) = upper('$SA_GUID')) from pgvigil.mssql_audit_spec where instance_id=$iid and scope='server' and name='$SPEC' and is_present")" = "true|6|true|true" ] \
   || fail "A: the server specification: $(q "select is_enabled, action_names, audit_guid from pgvigil.mssql_audit_spec where instance_id=$iid and scope='server'")"
@@ -417,11 +424,22 @@ imp "$s" "now() + interval '1 second'" "[$(rd),$(au a_ok $G1 started),$(sp serve
 [ "$(nfind "$s" 'no audit covers sign-in failures')|$(q "select string_agg(name || '=' || is_present, ',' order by name) from pgvigil.mssql_audit where instance_id=$s")" = "0|a_bad=false,a_log=false,a_ok=true" ] \
   || fail "G: after the second read: covers $(nfind "$s" 'no audit covers sign-in failures'), audits $(q "select string_agg(name || '=' || is_present, ',' order by name) from pgvigil.mssql_audit where instance_id=$s")"
 [ "$(q "select string_agg(name || '=' || is_present, ',' order by name) from pgvigil.mssql_audit_spec where instance_id=$s")" = "s_off=true,s_on=false,s_orphan=false" ] || fail "G: the specifications after the second read: $(q "select string_agg(name || '=' || is_present, ',' order by name) from pgvigil.mssql_audit_spec where instance_id=$s")"
-# a read that could not list the audits keeps what is stored; an older read changes nothing
-imp "$s" "now() + interval '2 seconds'" "[$(rd false false),{\"kind\":\"audit\",\"audit_id\":65536,\"name\":\"a_ok\",\"state\":\"started\",\"status\":\"STARTED\",\"read_state\":\"not read\"}]"
+# a read that could not list the audits keeps what is stored: an audit it does not name stays (it may be a stopped
+# one, which the state view alone never lists), and one it names keeps its target and GUID; an older read changes nothing
+imp "$s" "now() + interval '2 seconds'" "[$(rd false false)]"
+[ "$(q "select is_present || '|' || target from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")" = "true|file" ] || fail "G: a read without the list marked an audit absent: $(q "select is_present, target from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")"
+imp "$s" "now() + interval '3 seconds'" "[$(rd false false),{\"kind\":\"audit\",\"audit_id\":65536,\"name\":\"a_ok\",\"state\":\"started\",\"status\":\"STARTED\",\"read_state\":\"not read\"}]"
 [ "$(q "select is_present || '|' || target || '|' || audit_guid from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")|$(nfind "$s" 'no audit covers sign-in failures')" = "true|file|$G1|0" ] || fail "G: a read without the list changed the stored audit: $(q "select is_present, target, audit_guid from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")"
 imp "$s" "now() - interval '1 hour'" "[$(rd),$(au a_ok $G1 stopped)]"
 [ "$(q "select state from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")" = started ] || fail "G: an older read imported late changed the state"
+# a stopped audit raises its finding and the cell's warning; started again, both clear and 'since' moves
+imp "$s" "now() + interval '4 seconds'" "[$(rd),$(au a_ok $G1 stopped)]"
+[ "$(nfind "$s" 'an audit is defined and not started' a_ok)|$(cell "$s")" = "1|0|1|0 of 1 started" ] || fail "G: a stopped audit: $(nfind "$s" 'an audit is defined and not started' a_ok) finding(s), cell '$(cell "$s")'"
+SINCE=$(q "select state_since from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")
+imp "$s" "now() + interval '5 seconds'" "[$(rd),$(au a_ok $G1 stopped)]"
+[ "$(q "select state_since from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")" = "$SINCE" ] || fail "G: 'since' moved while the state did not"
+imp "$s" "now() + interval '6 seconds'" "[$(rd),$(au a_ok $G1 started)]"
+[ "$(nfind "$s" 'an audit is defined and not started')|$(cell "$s")|$(q "select state_since > '$SINCE' from pgvigil.mssql_audit where instance_id=$s and name='a_ok'")" = "0|0|0|1 started|t" ] || fail "G: a started audit: $(nfind "$s" 'an audit is defined and not started') finding(s), cell '$(cell "$s")'"
 # a database's specification: kept while the database is skipped, absent when the database is gone
 s=$(synth dbs)
 imp "$s" "now()" "[$(rd true true '["d1","d2"]'),$(au a1 $G1 started),$(sp database '"d1"' sp1 $G1 true SELECT),$(sp database '"d2"' sp2 $G1 true SELECT)]"
@@ -465,7 +483,7 @@ objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transp
 echo "--- Y. the API on imported rows"
 s=$(q "select instance_id from pgvigil.instances where name='proof-audit-synth-$SUF-once'")
 curl -fs "$U/mssql/audit?instance=$s&$(win)" > "$WORK/y.json" || fail "Y: /api/mssql/audit"
-[ "$(jq -r 'keys | sort | join(",")' "$WORK/y.json")" = "audits,by_category,counted,counted_by_category,events,findings,read,series,specs,status" ] || fail "Y: the parts: $(jq -r 'keys | join(",")' "$WORK/y.json")"
+[ "$(jq -r 'keys | sort | join(",")' "$WORK/y.json")" = "audits,by_category,counted,counted_by_category,events,findings,read,series,specs,state,status" ] || fail "Y: the parts: $(jq -r 'keys | join(",")' "$WORK/y.json")"
 [ "$(objs "$WORK/y.json" events | jq -r 'map(.category + ":" + .action + ":" + .object_name) | join(",")')" = "role:ADD MEMBER:sysadmin" ] || fail "Y: the events: $(objs "$WORK/y.json" events)"
 [ "$(objs "$WORK/y.json" counted | jq -r 'map(.action_id + ":" + (.events | tostring)) | sort | join(",")')" = "IN:5,SL:12" ] || fail "Y: the counted: $(objs "$WORK/y.json" counted)"
 [ "$(curl -fs "$U/mssql/audit?instance=$s&$(win)&category=role&part=events" | jq '.events.rows | length')|$(curl -fs "$U/mssql/audit?instance=$s&$(win)&category=ddl&part=events" | jq '.events.rows | length')" = "1|0" ] || fail "Y: the category filter"
@@ -483,11 +501,17 @@ curl -fs "$U/mssql/audit?instance=$iid&$(win)" > "$WORK/p.json" || fail "P: /api
 [ "$(objs "$WORK/p.json" series | jq -r '(map(.failed_signins) | add | tostring) + "|" + (map(.reads) | add | tostring) + "|" + (map(.writes) | add | tostring)')" = "13|1000|3" ] || fail "P: the series' sums: $(objs "$WORK/p.json" series)"
 [ "$(curl -fs "$U/mssql/audit?instance=$iid&$(win)&category=failed%20sign-in&part=events" | jq '.events.rows | length')" = 13 ] || fail "P: the failed sign-ins through the category filter"
 [ "$(curl -fs "$U/mssql/audit?instance=$hid&part=read" | jq -r '.read as $t | $t.rows[0][($t.columns | index("events_readable"))]')" = false ] || fail "P: the health-only instance's read part"
+# a skipped instance (the login with neither right) has no read row; its collection's last run says why
+bid=$(iid_of "$NB")
+[ "$(curl -fs "$U/mssql/audit?instance=$bid" | jq -r '(.read.rows | length | tostring) + "|" + (.state as $t | $t.rows[0][($t.columns | index("status"))]) + "|" + ((.state as $t | $t.rows[0][($t.columns | index("note"))]) | test("neither VIEW ANY DEFINITION") | tostring)')" = "0|skipped|true" ] || fail "P: the skipped instance's state part: $(curl -fs "$U/mssql/audit?instance=$bid&part=state")"
 echo "P: OK"
 
 if [ -n "${PGVIGIL_SHOTS:-}" ]; then
   echo "--- S. the Audit page in a headless Chromium, both themes, 1600 wide"
-  curl -fs "http://127.0.0.1:$PORT/app.js" | grep -q 'Audit specifications' || fail "S: the served bundle has no Audit page: run 'npm run build' in web/ before the proof (the binary embeds internal/web/dist)"
+  # the bundle is saved first and searched as a file: under pipefail 'curl | grep -q' fails whenever grep finds its
+  # match and leaves before curl has written the whole body (the second run failed here on a served, correct bundle)
+  curl -fs "http://127.0.0.1:$PORT/app.js" -o "$WORK/app.js" || fail "S: the UI serves no app.js"
+  grep -q 'Audit specifications' "$WORK/app.js" || fail "S: the served bundle has no Audit page: run 'npm run build' in web/ before the proof (the binary embeds internal/web/dist)"
   mkdir -p "$PGVIGIL_SHOTS"
   CDP=$(freeport 19270 19300) || fail "S: no free port for Chromium"
   # shellcheck disable=SC2086  # PGVIGIL_CHROMIUM_FLAGS is a list of flags (--no-sandbox where Chromium runs as root)
@@ -545,12 +569,20 @@ for (const theme of ['light', 'dark']) {
     return { n: rowsOf(t).length, main: m ? [text(t, m, 'state'), text(t, m, 'target'), text(t, m, 'on failure')].join('|') : null, delay: m ? text(t, m, 'queue delay (ms)') : null,
              off: o ? text(t, o, 'state') : null, events: m ? text(t, m, 'its events') : null };`);
   check(au.n === 2 && au.main === 'started|file|continue' && num(au.delay) === 1000 && au.off === 'not started' && /^read /.test(au.events ?? ''), T + `the audits grid: ${JSON.stringify(au)}`);
+  const tall = col => pv(`const t = gridOf(${JSON.stringify(col)}); return Math.max(0, ...rowsOf(t).map(r => r.getBoundingClientRect().height));`);
+  const auTall = await tall('on failure');
+  check(auTall > 0 && auTall <= 100, T + `the audits grid's tallest row is ${Math.round(auTall)} px (at most 100)`);
   const sp = await pv(`const t = gridOf('what it records'); const r = rowWith(t, 'specification', ${JSON.stringify(a.dbspec)}); return r ? text(t, r, 'what it records') + '|' + text(t, r, 'scope') : null;`);
   check(sp === `INSERT on dbo.pv_t by public, SELECT on dbo.pv_t by public|database ${a.db}`, T + `the database specification: ${sp}`);
   await shot('health', theme);
+  // the file columns stand at the right end of a wide grid: a second picture with the grid scrolled to them
+  await pv(`const t = gridOf('on failure'); t.scrollIntoView({ block: 'center' }); const w = t.closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
+  await sleep(200); await shot('health-right', theme);
   const evs = await pv(`const t = gridOf('for login / user'); const rs = rowsOf(t); return { n: rs.length, failed: rs.filter(r => text(t, r, 'category') === 'failed sign-ins' && text(t, r, 'login') === ${JSON.stringify(a.lnew)}).length,
     reason: (rs.map(r => text(t, r, 'reason')).find(x => /18456/.test(x ?? '')) ?? '') };`);
-  check(evs.failed === 13 && /Login failed for user/.test(evs.reason) && /state 8/.test(evs.reason), T + `the listed events: ${evs.n} rows, ${evs.failed} failed sign-ins of the login, reason '${evs.reason.slice(0, 90)}'`);
+  check(evs.failed === 13 && /^Password did not match/.test(evs.reason) && /error 18456, state 8/.test(evs.reason), T + `the listed events: ${evs.n} rows, ${evs.failed} failed sign-ins of the login, reason '${evs.reason.slice(0, 110)}'`);
+  const evTall = await tall('for login / user');
+  check(evTall > 0 && evTall <= 100, T + `the events grid's tallest row is ${Math.round(evTall)} px (at most 100)`);
   const ct = await pv(`const t = gridOf('hours with events'); const r = rowsOf(t).find(r => text(t, r, 'action') === 'SELECT' && text(t, r, 'object') === 'dbo.pv_t'); return r ? { events: text(t, r, 'events'), login: text(t, r, 'login') } : null;`);
   check(ct && num(ct.events) === 1000 && ct.login === 'sa', T + `the counted SELECTs on dbo.pv_t: ${JSON.stringify(ct)}`);
   await pv(`gridOf('for login / user').scrollIntoView({ block: 'start' }); return 'ok';`); await sleep(200); await shot('events', theme);
@@ -574,7 +606,7 @@ JS
     '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, hid: $hid, aud: $aud, off: $off, dbspec: $dbspec, lnew: $lnew, right: $right}')
   node "$WORK/ui.mjs" "$ARGS" || fail "S: the page"
   kill "$CHR_PID" 2>/dev/null || true; wait "$CHR_PID" 2>/dev/null || true; CHR_PID=
-  echo "S: OK (eight screenshots in $PGVIGIL_SHOTS: audit-<view>-<theme>.png)"; S_NOTE=", S"
+  echo "S: OK (ten screenshots in $PGVIGIL_SHOTS: audit-<view>-<theme>.png)"; S_NOTE=", S"
 else
   echo "--- S. the page in a browser: NOT RUN (PGVIGIL_SHOTS names no folder)"; S_NOTE=""
 fi

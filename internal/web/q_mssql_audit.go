@@ -11,6 +11,7 @@ import (
 //
 // GET /api/mssql/audit?instance=<id>&[from=&to=][&category=][&part=] (Server.MSSQLAudit):
 //
+//	state     the mssql_audit collection's last run (ok, partial, skipped or error, with its note)
 //	read      what the last read could read (the audit list, the state view, the events and the right they ask for)
 //	status    the Summary cell 'audit'
 //	findings  the instance's audit findings
@@ -151,6 +152,7 @@ func (s *Server) MSSQLAudit(w http.ResponseWriter, r *http.Request) {
 		category = c
 	}
 	s.multiPart(w, r, []part{
+		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_audit"}}},
 		{"read", sqlMSSQLAuditRead, []any{id}},
 		{"status", sqlMSSQLAuditStatus, []any{id}},
 		{"findings", sqlMSSQLAuditFindings, []any{id}},

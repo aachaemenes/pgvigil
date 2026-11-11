@@ -13,7 +13,8 @@
 --                        log, security log, url, external monitor), on-failure action, queue delay, the file
 --                        settings, the file written now and its size; read_state says what became of its events
 --                        (read | no right | not readable | not read | error) with read_note, and last_event_at is
---                        the newest event read. An audit gone from the server is kept, is_present false, 30 days.
+--                        the newest event read ('waiting': never read and not started, so there is no file to
+--                        start at). An audit gone from the server is kept, is_present false, 30 days.
 --   mssql_audit_spec     per instance, scope (server | database), database and name: the audit it belongs to (by
 --                        GUID), switched on or off, its actions as JSON (action, class, object, principal, result,
 --                        is_group) and their names as an array.
@@ -88,7 +89,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_audit (
   log_file_name       text,
   current_file        text,
   file_size_bytes     bigint,
-  read_state          text,              -- read | no right | not readable | not read | error
+  read_state          text,              -- read | waiting | no right | not readable | not read | error
   read_note           text,
   new_events          bigint,            -- events the last read stored as rows
   counted_events      bigint,            -- events the last read counted

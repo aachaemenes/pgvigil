@@ -14,13 +14,17 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, tile } from 
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlAuditTab = 'mssqlaudit';
 
-type Part = 'read' | 'status' | 'findings' | 'audits' | 'specs' | 'by_category' | 'events' | 'counted' | 'counted_by_category' | 'series';
+type Part = 'state' | 'read' | 'status' | 'findings' | 'audits' | 'specs' | 'by_category' | 'events' | 'counted' | 'counted_by_category' | 'series';
 type Parts = Record<Part, Table | null>;
 
 const text = (v: unknown) => v == null ? '' : String(v);
 const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
-// prose in a grid cell: wraps inside a block that keeps its width in a narrow window
-const prose = (v: unknown) => v == null || v === '' ? '' : el('span', { style: 'display:inline-block;min-width:16rem;max-width:40rem;white-space:normal' }, text(v));
+// prose in a grid cell: wraps inside a block that keeps its own width (a grid wider than the page squeezes a plain
+// wrapping cell to a few characters and its row grows to hundreds of pixels)
+const PROSE = 'display:inline-block;min-width:22rem;max-width:40rem;white-space:normal';
+const prose = (v: unknown) => v == null || v === '' ? '' : el('span', { style: PROSE }, text(v));
+// a path's last element, for a Windows or a Linux path
+const baseName = (v: unknown) => text(v).replace(/^.*[\\/]/, '');
 
 const CATEGORIES = ['failed sign-in', 'audit', 'role', 'permission', 'principal', 'ddl'];
 const categoryLabel: Record<string, string> = {
@@ -43,17 +47,19 @@ function readCell(v: unknown, r: Row): string | Node {
   const note = text(r.read_note);
   switch (text(v)) {
     case 'read':
-      return el('span', {}, badge('read', 'ok'), ` ${fmtNum(r.new_events ?? 0)} listed, ${fmtNum(r.counted_events ?? 0)} counted at the last read`, note ? `. ${note}` : '');
+      return el('span', { style: PROSE }, badge('read', 'ok'), ` ${fmtNum(r.new_events ?? 0)} listed, ${fmtNum(r.counted_events ?? 0)} counted at the last read`, note ? `. ${note}` : '');
+    case 'waiting':
+      return el('span', { style: PROSE }, badge('nothing read yet', ''), ` ${note}`);
     case 'no right':
-      return el('span', {}, badge('health only', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('health only', ''), ` ${note}`);
     case 'not readable':
-      return el('span', {}, badge('not readable through T-SQL', ''), ` ${note}`);
+      return el('span', { style: PROSE }, badge('not readable through T-SQL', ''), ` ${note}`);
     case 'error':
-      return el('span', {}, badge('read failed', 'warn'), ` ${note}`);
+      return el('span', { style: PROSE }, badge('read failed', 'warn'), ` ${note}`);
     case '':
       return '';
   }
-  return el('span', {}, badge('not read', ''), ` ${note}`);
+  return el('span', { style: PROSE }, badge('not read', ''), ` ${note}`);
 }
 
 const fileLimit = (r: Row): string => {
@@ -74,7 +80,8 @@ const auditCols: Col[] = [
   { key: 'specifications', num: true },
   { key: 'last_event_at', label: 'last event read', fmt: fmtTime },
   { key: 'read_state', label: 'its events', fmt: readCell },
-  { key: 'current_file', label: 'file written now', wide: true, fmt: (v, r) => text(v) || text(r.log_file_path) },
+  { key: 'log_file_path', label: 'folder' },
+  { key: 'current_file', label: 'file written now', fmt: baseName },
   { key: 'file_size_bytes', label: 'file size', num: true, fmt: fmtBytes },
   { key: 'max_file_size_mb', label: 'file limits', fmt: (_, r) => fileLimit(r) },
   { key: 'predicate', label: 'filter', wide: true },
@@ -92,7 +99,7 @@ const specCols: Col[] = [
 ];
 
 const findingCols: Col[] = [
-  { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'finding' }, { key: 'object', wide: true },
+  { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'finding' }, { key: 'object' },
   { key: 'detail', fmt: prose }, { key: 'at', fmt: fmtTime },
 ];
 
@@ -106,10 +113,16 @@ const eventCols: Col[] = [
   { key: 'database_name', label: 'database' },
   { key: 'object_name', label: 'object', fmt: (v, r) => [text(r.schema_name), text(v)].filter(Boolean).join('.') },
   { key: 'client_ip', label: 'from' }, { key: 'application' }, { key: 'host' },
-  { key: 'reason', fmt: (v, r) => prose(r.error_state != null ? `${text(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})` : v) },
+  { key: 'reason', fmt: (v, r) => prose(r.error_state != null ? `${reasonOf(v)} (error ${text(r.error_number)}, state ${text(r.error_state)})` : reasonOf(v)) },
   { key: 'statement', wide: true },
   { key: 'audit_name', label: 'audit' },
 ];
+
+// A failed sign-in's reason without what its row already shows in columns of their own: the login in front
+// ("Login failed for user 'x'. Reason: ") and the client's address behind ("[CLIENT: 10.0.0.9]").
+function reasonOf(v: unknown): string {
+  return text(v).replace(/^Login failed for user '.*?'\.\s*Reason:\s*/, '').replace(/\s*\[CLIENT:[^\]]*\]\s*$/, '');
+}
 
 const countedCols: Col[] = [
   { key: 'category' }, { key: 'action' },
@@ -128,13 +141,17 @@ const seriesCols: Col[] = [
   { key: 'other_counted', label: 'other counted', num: true },
 ];
 
-// what the last read could read, in words
-function readNote(read: Row | undefined, audits: Row[]): HTMLElement {
+// what the last read could read, in words. state: the collection's last run (a skipped or failed run says why).
+function readNote(read: Row | undefined, audits: Row[], state: Row | undefined): HTMLElement {
+  const run = state && state.status !== 'ok' ? ` The mssql_audit collection's last run (${fmtTime(state.snapshot_at)}): ${text(state.status)}${state.note ? ' - ' + text(state.note) : ''}.` : '';
   if (!read) {
+    if (state && state.status === 'skipped') {
+      return el('p', { class: 'meta' }, badge('not read', ''), ` The audit of this instance is not read: ${text(state.note)}.`);
+    }
     return el('p', { class: 'meta' }, badge('not read yet', ''),
-      ' The audit reader (mssql_audit, every five minutes) has not read this instance yet. It needs VIEW ANY DEFINITION for the audits and their specifications, and VIEW SERVER STATE for which of them is started.');
+      ' The audit reader (mssql_audit, every five minutes) has not read this instance yet. It needs VIEW ANY DEFINITION for the audits and their specifications, and VIEW SERVER STATE for which of them is started.' + run);
   }
-  const p = el('p', { class: 'meta' }, `Read ${fmtTime(read.snapshot_at)}. `);
+  const p = el('p', { class: 'meta' }, `Read ${fmtTime(read.snapshot_at)}.${run} `);
   if (read.defs_read !== true) p.append(badge('audit list not readable', 'warn'), ' The login lacks VIEW ANY DEFINITION: only the audits the server runs now are known, without their target and specifications. ');
   if (read.state_read !== true) p.append(badge('state not readable', 'warn'), ' The login lacks VIEW SERVER STATE: which audit is started is judged by its switch alone. ');
   const fileAudits = audits.filter(a => a.target === 'file').length;
@@ -155,10 +172,11 @@ function readNote(read: Row | undefined, audits: Row[]): HTMLElement {
   return p;
 }
 
-async function eventsBlock(ctx: Ctx, win: { from: string; to: string }, category: string, first?: Table | null): Promise<HTMLElement> {
+// why: what to say under an empty list when the events are not read at all
+async function eventsBlock(ctx: Ctx, win: { from: string; to: string }, category: string, why: string, first?: Table | null): Promise<HTMLElement> {
   const t = first !== undefined ? first : (await get<Parts>('mssql/audit', { instance: ctx.instance, ...win, part: 'events', category })).events;
   const rows = rowsOf(t);
-  const empty = category ? `No ${categoryLabel[category] ?? category} event in this window.` : 'No listed event in this window.';
+  const empty = (category ? `No ${categoryLabel[category] ?? category} event in this window.` : 'No listed event in this window.') + why;
   return el('div', {}, stripGrid('Audit events', win, rows, 'event_at', eventCols, empty, 1000));
 }
 
@@ -173,7 +191,7 @@ export async function mssqlAuditView(ctx: Ctx): Promise<HTMLElement> {
     const findings = rowsOf(d.findings), byCat = rowsOf(d.by_category), countedCat = rowsOf(d.counted_by_category);
 
     if (findings.length) sec.append(el('section', {}, el('h3', {}, 'Findings'), grid(findings, findingCols)));
-    sec.append(readNote(read, audits));
+    sec.append(readNote(read, audits, rowsOf(d.state)[0]));
     if (!read) return sec;
 
     // the health
@@ -206,11 +224,15 @@ export async function mssqlAuditView(ctx: Ctx): Promise<HTMLElement> {
       if (c === category) o.selected = true;
       sel.append(o);
     }
-    const holder = el('div', { 'aria-live': 'polite' }, await eventsBlock(ctx, win, category, d.events));
+    const why = read.events_readable === true ? '' : ` The audit files are not read: the login lacks ${text(read.events_right)}.`;
+    const holder = el('div', { 'aria-live': 'polite' }, await eventsBlock(ctx, win, category, why, d.events));
+    let asked = 0;   // the newest choice wins: an older read that answers late is dropped
     sel.addEventListener('change', () => {
+      const mine = ++asked;
       categoryOf.set(instance, sel.value);
       holder.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
-      eventsBlock(ctx, win, sel.value).then(b => holder.replaceChildren(b), e => holder.replaceChildren(errorBox(e)));
+      eventsBlock(ctx, win, sel.value, why).then(b => { if (mine === asked) holder.replaceChildren(b); },
+        e => { if (mine === asked) holder.replaceChildren(errorBox(e)); });
     });
     sec.append(el('h3', {}, 'Listed events'),
       el('p', { class: 'meta' }, 'Kept one row each: failed sign-ins, changes of role membership, permissions, logins and passwords, DDL '
@@ -221,7 +243,7 @@ export async function mssqlAuditView(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, 'Everything else an audit records - reads, writes, executions, sign-ins, batches - is counted per hour, login, '
         + 'database, object and action, and no row and no statement of it is kept. The counts of the hours this window touches, the 500 largest. '
         + '"Denied or failed" counts the actions whose permission check failed.'),
-      grid(rowsOf(d.counted), countedCols, 'No counted event in these hours.'));
+      grid(rowsOf(d.counted), countedCols, 'No counted event in these hours.' + why));
 
     const series = rowsOf(d.series);
     sec.append(lineChart('Audit events per hour', series, [
