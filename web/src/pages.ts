@@ -1,3 +1,4 @@
+import { tileWall } from './tiles';
 import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
@@ -505,6 +506,7 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
       if (x.detail.length) a.title = x.detail.join('\n');
       return i ? [', ', a] : [a];
     })));
+  sec.append(await tileWall(ctx).catch(e => errorBox(e)));
   const two = el('div', { class: 'two' });
   two.append(el('div', {}, el('h3', {}, 'Instance'), props([
     ['version', String(r.server_version ?? '')],

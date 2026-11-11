@@ -257,6 +257,10 @@ func (g *Gen) Step(t time.Time) []Batch {
 	if first || t.Minute() == 0 {
 		add("tables", g.tableRows(t, first))
 	}
+	if first || t.Minute()%5 == 0 {
+		add("table_activity", g.tableActivityRows(t))
+	}
+	add("connections", g.connectionRows(t))
 	if first || t.Minute() == 0 {
 		add("extensions", g.extensionRows(t))
 		add("versions", g.versionRows(t))
@@ -330,7 +334,7 @@ func (g *Gen) Collections() []string {
 	if g.waitDoor() {
 		c = append(c, "waits")
 	}
-	c = append(c, "tables", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files", "custom", "schema")
+	c = append(c, "tables", "table_activity", "connections", "vacuum", "vacuum_tables", "host", "storage", "backups", "extensions", "versions", "roles", "plans", "indexes", "session_sets", "compare", "buffercache", "temp_files", "custom", "schema")
 	if g.is("aurora-crm01") {
 		c = append(c, "pgbouncer")
 	}
