@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install - pgvigil</title>
+<meta name="description" content="Try pgvigil on a demo fleet in a minute, install it as a service with one line on Linux or Windows, or set it up by hand.">
+<link rel="canonical" href="https://pgvigil.com/install.html">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="bar">
+  <a class="brand" href="./">pgvigil</a>
+  <nav class="links" aria-label="Site">
+    <a href="features.html">Features</a>
+    <a href="install.html" aria-current="page">Install</a>
+    <a href="security.html">Security</a>
+    <a href="https://github.com/aachaemenes/pgvigil#readme">Docs</a>
+    <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
+    <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
+  </nav>
+  <details class="menu"><summary>Menu</summary><nav aria-label="Site">
+    <a href="features.html">Features</a>
+    <a href="install.html" aria-current="page">Install</a>
+    <a href="security.html">Security</a>
+    <a href="https://github.com/aachaemenes/pgvigil#readme">Docs</a>
+    <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
+    <a href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
+  </nav></details>
+</div></header>
+
+<main id="main">
+<div class="wrap page-head">
+  <h1>Install</h1>
+  <p>Try it on a demo fleet first, then install the collector as a service. Nothing is installed on the servers you watch.</p>
+</div>
+
+<section class="plain"><div class="wrap text">
+  <h2>Try the demo</h2>
+  <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and unzip a portable PostgreSQL beside it. One command builds a throwaway demo fleet of PostgreSQL and SQL Server servers with a week of history and opens it in its own window. No admin rights, no Docker.</p>
+<pre><code>pgvigil demo -pgbin &lt;the portable PostgreSQL bin folder&gt; -serve -open</code></pre>
+</div></section>
+
+<section class="plain"><div class="wrap text">
+  <h2>Install as a service</h2>
+  <p>One line fetches the release, checks its checksum and installs the collector as a service. Run it again to upgrade.</p>
+<pre><code># Linux: a system account and a systemd unit
+curl -fsSL https://pgvigil.com/install.sh | sh
+
+# Windows, in an elevated PowerShell: a service under NT SERVICE\pgvigil
+irm https://pgvigil.com/install.ps1 | iex</code></pre>
+</div></section>
+
+<section class="plain"><div class="wrap text">
+  <h2>Set it up by hand</h2>
+  <ol class="steps">
+    <li>Download the file for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and check it against <code>SHA256SUMS</code>; the <a href="https://github.com/aachaemenes/pgvigil#releases-and-how-to-verify-one">README</a> shows the two commands.</li>
+    <li>Create an empty database on any PostgreSQL 13 or later server for pgvigil's history, and copy <code>pgvigil.example.yaml</code>. Passwords come from the environment or a file, never from the config.</li>
+    <li>Create the tables, the logins and the first web user.</li>
+    <li>Start the collector and the web page, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
+  </ol>
+<pre><code>pgvigil migrate -config pgvigil.yaml
+pgvigil roles                       # prints the CREATE ROLE statements to run
+pgvigil user add admin -config pgvigil.yaml
+pgvigil run -config pgvigil.yaml
+pgvigil serve -config pgvigil.yaml -listen 0.0.0.0:8443 -tls-cert pgvigil.crt -tls-key pgvigil.key</code></pre>
+  <p>Adding servers, the SQL Server login, the cloud settings and every option are in the <a href="https://github.com/aachaemenes/pgvigil#readme">documentation</a>. For a site with no internet access, follow the <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/airgap.md">offline install</a>.</p>
+</div></section>
+
+<div class="wrap next"><a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a> <a class="btn" href="security.html">Security</a></div>
+</main>
+
+<footer><div class="wrap">
+  <p><a href="https://github.com/aachaemenes/pgvigil">GitHub</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/releases">Releases</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/LICENSE">MIT licence</a></p>
+  <p>pgvigil is an independent open-source project by Allen Achaemenes. It is not affiliated with Trimble, Inc., DBA Dash or the PostgreSQL Global Development Group.</p>
+</div></footer>
+</body>
+</html>
