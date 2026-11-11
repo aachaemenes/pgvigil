@@ -279,11 +279,15 @@ sq "CREATE TABLE dbo.pv_fill (id int IDENTITY PRIMARY KEY, pad char(4000) NOT NU
 sq "DBCC SHRINKFILE (pgv149_data, 8) WITH NO_INFOMSGS;" "$DB" >/dev/null
 sleep 1
 TB="DECLARE @p nvarchar(260) = (SELECT path FROM sys.traces WHERE is_default = 1); DECLARE @b nvarchar(260) = LEFT(@p, LEN(@p) - CHARINDEX(N'/', REVERSE(@p))) + N'/log.trc';"
+# the trace is written to its file in buffers: sa's read waits for the shrink, the last event seeded (once it is in
+# the file, everything before it is)
+HSQ="$TB SELECT CONVERT(varchar(23), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), StartTime), 121) + '|' + CAST(COUNT(*) OVER () AS varchar(5)) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass = 116 AND CAST(TextData AS nvarchar(4000)) LIKE N'%SHRINKFILE%'"
+HS=; for w in $(seq 1 60); do HS=$(sq "$HSQ"); [ -n "$HS" ] && break; sleep 1; done
+[ "$(echo "$HS" | cut -d'|' -f2)" = 1 ] || fail "T2: sa does not find one DBCC SHRINKFILE in the trace within 60 s: '$HS'"
+echo "  T2: the shrink was in the trace file after ${w} s"
 HG=$(sq "$TB SELECT CAST(SUM(CASE WHEN EventClass = 92 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN EventClass = 93 THEN 1 ELSE 0 END) AS varchar(10)) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass IN (92, 93)")
 HGT=$(sq "$TB SELECT TOP (1) CONVERT(varchar(23), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), StartTime), 121) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass = 92 ORDER BY StartTime DESC, EventSequence DESC")
-HS=$(sq "$TB SELECT CONVERT(varchar(23), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), StartTime), 121) + '|' + CAST(COUNT(*) OVER () AS varchar(5)) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass = 116 AND CAST(TextData AS nvarchar(4000)) LIKE N'%SHRINKFILE%'")
 [ "$(echo "$HG" | cut -d'|' -f1)" -ge 1 ] 2>/dev/null || fail "T2: sa counts no data growth of $DB in the trace: $HG"
-[ "$(echo "$HS" | cut -d'|' -f2)" = 1 ] || fail "T2: sa does not find one DBCC SHRINKFILE in the trace: $HS"
 collect mssql_defaulttrace "$NF"
 tq() { q "select $1 from pgvigil.mssql_trace_events where instance_id = $IF and $2"; }
 eq "T2: data|log growths of $DB" "$(tq "count(*) filter (where kind = 'data growth') || '|' || count(*) filter (where kind = 'log growth')" "database_name = '$DB'")" "$HG"
