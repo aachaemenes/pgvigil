@@ -65,7 +65,7 @@ func (databasesCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.In
 // idle-in-transaction sessions, so the idle connections a pool holds, the bulk of most servers' connections, are
 // counted here. A login without pg_read_all_stats (pg_monitor) sees other users' sessions without their state or
 // client: they count under 'other' with an empty client. Over connSourcesMax sources a read folds the smallest
-// into one '(other sources)' row.
+// into one row named '(other sources)' in all four dimensions, so a grouping by any of them shows it apart.
 type connectionsCollector struct{}
 
 func init() { Register(connectionsCollector{}) }
@@ -98,9 +98,9 @@ WITH g AS (
 )
 SELECT 'source' AS kind,
        CASE WHEN rn <= %[1]d THEN application_name ELSE '(other sources)' END AS application_name,
-       CASE WHEN rn <= %[1]d THEN usename ELSE '' END AS usename,
-       CASE WHEN rn <= %[1]d THEN datname ELSE '' END AS datname,
-       CASE WHEN rn <= %[1]d THEN client ELSE '' END AS client,
+       CASE WHEN rn <= %[1]d THEN usename ELSE '(other sources)' END AS usename,
+       CASE WHEN rn <= %[1]d THEN datname ELSE '(other sources)' END AS datname,
+       CASE WHEN rn <= %[1]d THEN client ELSE '(other sources)' END AS client,
        sum(total)::int AS total, sum(active)::int AS active, sum(idle)::int AS idle, sum(idle_in_txn)::int AS idle_in_txn,
        sum(waiting_lock)::int AS waiting_lock, sum(other)::int AS other
   FROM r

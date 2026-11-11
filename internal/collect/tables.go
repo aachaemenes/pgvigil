@@ -281,7 +281,7 @@ type tableActivityCollector struct{}
 
 func init() { Register(tableActivityCollector{}) }
 
-// tableActivityPerDB is how many tables per counter and database are read (a var: tests lower it).
+// tableActivityPerDB is how many tables per counter and database are read.
 var tableActivityPerDB = 100
 
 func (tableActivityCollector) Name() string                   { return "table_activity" }

@@ -4,7 +4,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { window_ } from './router';
-import { badge, Col, el, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 import { donutChart } from './chart';
 
 const dims: [string, string, string][] = [['application', 'application_name', 'application'], ['user', 'usename', 'user'],
@@ -36,8 +36,13 @@ export async function connectionsView(ctx: Ctx): Promise<HTMLElement> {
       });
       return el('label', { for: 'conn-by-' + k, style: 'margin-right: 1.2rem; white-space: nowrap' }, cb, ' ' + label);
     }));
+  let seq = 0;
   async function draw() {
-    const d = await get<{ sources: Table | null; meta: Table | null }>('connections', { instance: ctx.instance, ...window_(ctx), by: by.join(',') });
+    const mine = ++seq, want = [...by];
+    let d: { sources: Table | null; meta: Table | null };
+    try { d = await get<{ sources: Table | null; meta: Table | null }>('connections', { instance: ctx.instance, ...window_(ctx), by: want.join(',') }); }
+    catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }
+    if (mine !== seq) return;   // a newer grouping was chosen while this one loaded: its columns would not fit these rows
     const rows = rowsOf(d.sources), meta = rowsOf(d.meta)[0] ?? {};
     const nowTotal = rows.reduce((a, r) => a + Number(r.now_total ?? 0), 0);
     const cols: Col[] = [

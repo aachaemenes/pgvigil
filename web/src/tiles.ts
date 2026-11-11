@@ -50,7 +50,8 @@ export async function tileWall(ctx: Ctx): Promise<HTMLElement> {
   const one = (label: string, value: unknown, text: string, l: number | null, help: string) => {
     const e = tile(label, value == null ? 'not read' : text, kindOf(l));
     e.setAttribute('title', `${help} (${words(l)})`);
-    e.setAttribute('aria-label', `${label}: ${value == null ? 'not read' : text}, ${words(l)}`);
+    // the colour's meaning as text for a screen reader (the tile's own text is read as it is)
+    e.append(el('span', { style: 'position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden' }, `, ${words(l)}`));
     return e;
   };
   const idleL = Math.max(level(t.idle_in_txn, tileLimits.idleInTxn) ?? -1, Number(t.idle_in_txn) > 0 ? level(t.longest_idle_txn_secs, tileLimits.idleTxnSecs) ?? -1 : -1);

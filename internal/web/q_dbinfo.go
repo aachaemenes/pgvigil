@@ -92,9 +92,14 @@ func (s *Server) DBInfoFleet(w http.ResponseWriter, r *http.Request) {
 // The busiest tables and the database changes (task 127; pgwatch's Tables Overview, DBA Dash's New Databases and
 // Deleted Databases). Routes, wired in Handler:
 //   GET /api/tables/top?instance=<id>[&from=..&to=..][&n=5..50] -> s.TablesTop: the top n tables by sequential scans,
-//       inserts, updates and deletes over the window (pgvigil.table_activity_top; each row carries its four ranks).
+//       inserts, updates and deletes over the window (pgvigil.table_activity_top; each row carries its four ranks),
+//       the window cut to its last tablesTopMaxWindow (meta.from_at says where it starts).
 //   GET /api/dbchanges[?instance=<id>][&days=1..366] -> s.DBChanges: the databases created and dropped in the last
 //       days (default 30), both engines, newest first (pgvigil.database_changes); no instance = the fleet.
+
+// tablesTopMaxWindow: table_activity_top orders every read of the window per table; 1,000 tables read every 5 minutes
+// take about 3 s over 7 days and 25 s over 31 (past the pool's statement timeout), so a longer range is cut.
+const tablesTopMaxWindow = 7 * 24 * time.Hour
 
 // TablesTop is one instance's busiest tables over the window.
 func (s *Server) TablesTop(w http.ResponseWriter, r *http.Request) {
@@ -110,10 +115,13 @@ func (s *Server) TablesTop(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if to.Sub(from) > tablesTopMaxWindow {
+		from = to.Add(-tablesTopMaxWindow)
+	}
 	s.multi(w, r, []part{
 		{"tables", `SELECT * FROM pgvigil.table_activity_top($1, $2, $3, $4)`, []any{id, from, to, n}},
 		{"meta", `
-SELECT $4::int AS n,
+SELECT $4::int AS n, $2::timestamptz AS from_at, $3::timestamptz AS to_at,
        (SELECT count(DISTINCT a.snapshot_at) FROM pgvigil.table_activity a
          WHERE a.instance_id = $1 AND a.snapshot_at > $2 AND a.snapshot_at <= $3) AS reads,
        (SELECT max(a.snapshot_at) FROM pgvigil.table_activity a

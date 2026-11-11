@@ -7,7 +7,7 @@ import type { Ctx } from './router';
 import { window_ } from './router';
 import { get, Row, rowsOf, Table } from './api';
 import { alertCol } from './alerts';
-import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { sqlCell, whatIsThis } from './sqlview';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
@@ -69,7 +69,7 @@ export async function tablesView(instance: number, ctx?: Ctx): Promise<HTMLEleme
     el('p', { class: 'meta' }, 'The biggest tables of each database, read hourly. "Never" means no vacuum or analyze recorded since the statistics reset.'
       + (unused ? ` ${unused} of them UNUSED: no sequential or index scan since the statistics reset.` : '')),
     grid(dbs, dbCols, 'No table read yet: the tables collection runs hourly.'),
-    ctx ? await busiestView(instance, ctx) : '',
+    ctx ? await busiestView(instance, ctx).catch(e => errorBox(e)) : '',
     el('h3', {}, 'Biggest tables'),
     grid(tabs, tCols, 'No tables yet.'));
 }
@@ -90,8 +90,13 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
     const t = `${String(r.schema_name ?? '')}.${String(v ?? '')}`;
     return tableLink(ctx, t, r.dbid, r.relid);
   };
+  let seq = 0;
   async function draw() {
-    const d = await get<{ tables: Table | null; meta: Table | null }>('tables/top', { instance, ...window_(ctx), n });
+    const mine = ++seq, want = n;
+    let d: { tables: Table | null; meta: Table | null };
+    try { d = await get<{ tables: Table | null; meta: Table | null }>('tables/top', { instance, ...window_(ctx), n: want }); }
+    catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }
+    if (mine !== seq) return;   // a newer choice was made while this one loaded
     const rows = rowsOf(d.tables), meta = rowsOf(d.meta)[0] ?? {};
     const part = (title: string, rank: string, lead: Col, extra: Col[]) => {
       const rs = rows.filter(r => r[rank] != null && Number(r[rank]) <= n).sort((a, b) => Number(a[rank]) - Number(b[rank]));
@@ -100,7 +105,7 @@ export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLEleme
     };
     const pctHot = (v: unknown, r: Row) => Number(r.n_tup_upd) > 0 ? fmtNum(Math.round(1000 * Number(v ?? 0) / Number(r.n_tup_upd)) / 10) + ' %' : '';
     body.replaceChildren(
-      el('p', { class: 'meta' }, `Over the window: the sum of the rises between the table activity reads (every 5 minutes; ${fmtNum(meta.reads)} in the window, the newest `
+      el('p', { class: 'meta' }, `Over ${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)} (at most the last 7 days of the range): the sum of the rises between the table activity reads (every 5 minutes; ${fmtNum(meta.reads)} in the window, the newest `
         + `${fmtTime(meta.last_read) || 'none'}), the read before the window as the base. A table read first inside the window counts from that read (counted from). `
         + 'A statistics reset counts what the counter rose by since it.'),
       el('div', { class: 'top-n' },

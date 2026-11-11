@@ -53,8 +53,11 @@ BEGIN
 END $$;
 
 -- table_activity_top: per table, the sum of its read-to-read rises over the window; the read before the window's
--- start (up to a day back) is the base of the first rise. A counter that fell (a statistics reset, a crash, a
--- failover) counts its new value for that step (what it rose by since the reset); resets says how many steps did.
+-- start (up to a day back) is the base of the first rise. A step is a reset when a counter fell (a statistics reset,
+-- a crash, a failover): it counts each counter's new value (what it rose by since the reset); resets says how many
+-- steps were. A reset whose counters climb past their old values within one 5-minute step is not seen (that step
+-- counts the difference: low). The database's stats_reset cannot mark it: from PostgreSQL 15 a single table's reset
+-- moves it too, so it does not say which tables were reset.
 -- A table first read inside the window (it joined the busiest set later) counts from that read on: an
 -- understatement, said by first_at. rank_* is the table's place by each measure (NULL when it did not move);
 -- a row comes back when any of the four ranks is within p_n.
@@ -77,23 +80,26 @@ WITH base AS (
     FROM pgvigil.table_activity a
    WHERE a.instance_id = p_instance_id AND a.snapshot_at >= (SELECT at FROM base) AND a.snapshot_at <= p_to
   WINDOW w AS (PARTITION BY a.dbid, a.relid ORDER BY a.snapshot_at)
+), x AS (
+  SELECT r.*, (r.p_at IS NOT NULL AND (r.seq_scan < r.p_seq OR coalesce(r.idx_scan, 0) < coalesce(r.p_idx, 0)
+               OR r.n_tup_ins < r.p_ins OR r.n_tup_upd < r.p_upd OR r.n_tup_del < r.p_del)) AS is_reset
+    FROM r
 ), d AS (
   SELECT r.dbid, r.relid,
          (array_agg(r.datname ORDER BY r.snapshot_at DESC))[1] AS datname,
          (array_agg(r.schema_name ORDER BY r.snapshot_at DESC))[1] AS schema_name,
          (array_agg(r.table_name ORDER BY r.snapshot_at DESC))[1] AS table_name,
-         sum(CASE WHEN r.seq_scan >= r.p_seq THEN r.seq_scan - r.p_seq ELSE r.seq_scan END) FILTER (WHERE r.p_at IS NOT NULL) AS seq_scan,
-         sum(CASE WHEN r.seq_tup_read >= r.p_seqtup THEN r.seq_tup_read - r.p_seqtup ELSE r.seq_tup_read END) FILTER (WHERE r.p_at IS NOT NULL) AS seq_tup_read,
-         sum(CASE WHEN r.idx_scan >= r.p_idx THEN r.idx_scan - r.p_idx ELSE r.idx_scan END) FILTER (WHERE r.p_at IS NOT NULL) AS idx_scan,
-         sum(CASE WHEN r.n_tup_ins >= r.p_ins THEN r.n_tup_ins - r.p_ins ELSE r.n_tup_ins END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_ins,
-         sum(CASE WHEN r.n_tup_upd >= r.p_upd THEN r.n_tup_upd - r.p_upd ELSE r.n_tup_upd END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_upd,
-         sum(CASE WHEN r.n_tup_del >= r.p_del THEN r.n_tup_del - r.p_del ELSE r.n_tup_del END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_del,
-         sum(CASE WHEN r.n_tup_hot_upd >= r.p_hot THEN r.n_tup_hot_upd - r.p_hot ELSE r.n_tup_hot_upd END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_hot_upd,
+         sum(CASE WHEN r.is_reset THEN r.seq_scan ELSE r.seq_scan - r.p_seq END) FILTER (WHERE r.p_at IS NOT NULL) AS seq_scan,
+         sum(CASE WHEN r.is_reset THEN r.seq_tup_read ELSE r.seq_tup_read - r.p_seqtup END) FILTER (WHERE r.p_at IS NOT NULL) AS seq_tup_read,
+         sum(CASE WHEN r.is_reset THEN r.idx_scan ELSE r.idx_scan - r.p_idx END) FILTER (WHERE r.p_at IS NOT NULL) AS idx_scan,
+         sum(CASE WHEN r.is_reset THEN r.n_tup_ins ELSE r.n_tup_ins - r.p_ins END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_ins,
+         sum(CASE WHEN r.is_reset THEN r.n_tup_upd ELSE r.n_tup_upd - r.p_upd END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_upd,
+         sum(CASE WHEN r.is_reset THEN r.n_tup_del ELSE r.n_tup_del - r.p_del END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_del,
+         sum(CASE WHEN r.is_reset THEN r.n_tup_hot_upd ELSE r.n_tup_hot_upd - r.p_hot END) FILTER (WHERE r.p_at IS NOT NULL) AS n_tup_hot_upd,
          min(r.snapshot_at) AS first_at, max(r.snapshot_at) AS last_at,
          count(*) FILTER (WHERE r.p_at IS NOT NULL)::int AS steps,
-         count(*) FILTER (WHERE r.p_at IS NOT NULL AND (r.seq_scan < r.p_seq OR r.idx_scan < r.p_idx OR r.n_tup_ins < r.p_ins
-                                                         OR r.n_tup_upd < r.p_upd OR r.n_tup_del < r.p_del))::int AS resets
-    FROM r
+         count(*) FILTER (WHERE r.is_reset)::int AS resets
+    FROM x r
    GROUP BY r.dbid, r.relid
 ), k AS (
   SELECT d.*,
@@ -254,7 +260,7 @@ $$;
 --   instance's first read (first_seen), created between the read before (created_after) and that read; dropped when a
 --   read no longer listed it (is_present false), between its last read (last_seen) and the next read
 --   (dropped_by), with the size of its last read.
---   SQL Server: sys.databases.create_date (the backups collection's created_at, UTC; a database created anew under an
+--   SQL Server (tempdb, re-created at every start, and database snapshots left out): sys.databases.create_date (the backups collection's created_at, UTC; a database created anew under an
 --   old name shows its new date), and dropped when the backups read no longer lists it; its size is the newest
 --   data + log size the storage collection read for that name, dropped_by the first storage read after last_seen that
 --   did not list it.
@@ -300,6 +306,7 @@ SELECT i.instance_id, i.name, i.engine, 'new', s.database_name, s.created_at, s.
        NULL::text
   FROM pgvigil.mssql_backup_state s JOIN i USING (instance_id)
  WHERE i.engine = 'sqlserver' AND s.created_at > (SELECT at FROM since) AND NOT coalesce(s.is_snapshot, false)
+   AND s.database_name <> 'tempdb'
 UNION ALL
 -- SQL Server: dropped
 SELECT i.instance_id, i.name, i.engine, 'dropped', s.database_name, s.snapshot_at, s.created_at, NULL::timestamptz,
@@ -314,5 +321,6 @@ SELECT i.instance_id, i.name, i.engine, 'dropped', s.database_name, s.snapshot_a
        NULL::text
   FROM pgvigil.mssql_backup_state s JOIN i USING (instance_id)
  WHERE i.engine = 'sqlserver' AND NOT s.is_present AND s.snapshot_at > (SELECT at FROM since)
+   AND NOT coalesce(s.is_snapshot, false) AND s.database_name <> 'tempdb'
  ORDER BY 6 DESC, 2, 5
 $$;

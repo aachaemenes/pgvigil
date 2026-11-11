@@ -4,7 +4,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { href } from './router';
-import { badge, Col, el, fmtBytes, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtTime, grid } from './ui';
 
 const dayChoices = [7, 30, 90, 365];
 
@@ -16,16 +16,22 @@ export async function dbChangesView(ctx: Ctx, keep?: (r: Row) => boolean): Promi
   const sel = el('select', { 'aria-label': 'Days' }, ...dayChoices.map(d => el('option', { value: String(d) }, `last ${d} days`)));
   sel.value = String(days);
   const body = el('div');
+  let seq = 0;
   async function draw() {
-    const d = await get<{ changes: Table | null }>('dbchanges', { instance: ctx.instance, days });
+    const mine = ++seq, want = days;
+    let d: { changes: Table | null };
+    try { d = await get<{ changes: Table | null }>('dbchanges', { instance: ctx.instance, days: want }); }
+    catch (e) { if (mine === seq) body.replaceChildren(errorBox(e)); return; }
+    if (mine !== seq) return;
     let rows = rowsOf(d.changes);
     if (keep) rows = rows.filter(keep);
     const created = rows.filter(r => r.change === 'new'), dropped = rows.filter(r => r.change === 'dropped');
     const inst: Col[] = ctx.instance ? [] : [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'dbinfo', instance: Number(r.instance_id), tag: undefined }) }, String(v ?? '')) },
       { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' }];
-    const gone = new Set(dropped.map(r => `${String(r.instance_id)}/${String(r.datname)}`));
+    // a database dropped after it was created (a later one re-created under the same name is not)
+    const goneAt = (r: Row) => dropped.some(x => x.instance_id === r.instance_id && x.datname === r.datname && Date.parse(String(x.at)) >= Date.parse(String(r.at)));
     const newCols: Col[] = [...inst,
-      { key: 'datname', label: 'database', fmt: (v, r) => gone.has(`${String(r.instance_id)}/${String(v)}`)
+      { key: 'datname', label: 'database', fmt: (v, r) => goneAt(r)
         ? el('span', {}, String(v ?? ''), ' ', badge('dropped since', 'warn')) : String(v ?? '') },
       { key: 'at', label: 'created', fmt: (_v, r) => r.created_at != null ? fmtTime(r.created_at)
         : el('span', { title: 'PostgreSQL keeps no creation time: created between these two reads' },
@@ -46,7 +52,7 @@ export async function dbChangesView(ctx: Ctx, keep?: (r: Row) => boolean): Promi
       el('p', { class: 'meta' }, `${created.length} created and ${dropped.length} dropped in the last ${days} days. `
         + 'SQL Server: the creation time is the server\'s own (sys.databases); PostgreSQL keeps none, so a new database shows '
         + 'the two hourly reads it was created between. Dropped: between the last read that listed it and the next; '
-        + 'the size is its last read.'),
+        + 'the size is its last read. PostgreSQL rows older than the repository\'s retention (purge days) are gone; SQL Server ones stay.'),
       el('h3', {}, 'New databases'), grid(created, newCols, `No database created in the last ${days} days.`),
       el('h3', {}, 'Dropped databases'), grid(dropped, dropCols, `No database dropped in the last ${days} days.`));
   }

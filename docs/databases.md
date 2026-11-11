@@ -14,8 +14,11 @@ share) and **rows deleted** over the page's time range (pgwatch's Tables Overvie
 - Per database it keeps the 100 tables that lead each counter (cumulatively since the statistics reset); with fewer
   tables than that every table is read, idle ones included, so a table's first rise has a base.
 - The window's number is the sum of the rises between consecutive reads, the read just before the window (up to a
-  day back) being the base. A counter that fell (a statistics reset, a crash, a failover) counts its new value for
-  that step. A table first read inside the window (it joined a busy database's top 100 late) counts from that read:
+  day back) being the base. A step is a reset when a counter fell (a statistics reset, a crash, a failover): it counts
+  the new values. A reset whose counters climb past their old values within one 5-minute step is not seen, and that
+  step counts low (the database's `stats_reset` cannot mark it: from PostgreSQL 15 a single table's reset moves it).
+- A range longer than 7 days is cut to its last 7 (the section says which span it shows): the read orders every
+  5-minute read of every table, and a month of 1,000 tables takes longer than the page's statement timeout. A table first read inside the window (it joined a busy database's top 100 late) counts from that read:
   the "counted from" column says so.
 - The ranks are instance-wide: every database's tables compete.
 
@@ -39,7 +42,8 @@ four by default), with its states, over the page's time range (pghero's connecti
   window's connections.
 - A login without `pg_monitor` (or `pg_read_all_stats`) sees other users' sessions without their state or client:
   they count as "state not shown".
-- Over 500 sources at one read the smallest are folded into one "(other sources)" row.
+- Over 500 sources at one read the smallest are folded into one row named "(other sources)" in all four columns,
+  so it stays apart whatever the grouping.
 
 ## The tile wall (instance Summary)
 
@@ -65,20 +69,22 @@ lose the last commits, no corruption), data checksums off and `wal_level = minim
 
 Both engines, newest first, over the last 7, 30, 90 or 365 days (DBA Dash's New Databases and Deleted Databases).
 
-- **SQL Server**: the creation time is the server's own (`sys.databases.create_date`, from the `mssql_backups`
+- **SQL Server** (tempdb, re-created at every start, and database snapshots left out): the creation time is the server's own (`sys.databases.create_date`, from the `mssql_backups`
   collection); a database created anew under an old name shows its new date. Dropped: the backups read no longer
   lists it; its size is the last data + log size the storage collection read; dropped by: the first storage read
   that no longer listed it.
 - **PostgreSQL** keeps no creation time. A database is new when the hourly `databases` collection first saw it after
   the instance's first read; it was created between the read before and that read. Dropped: a read no longer lists
   it; it went between its last read and the next one, and its size is the size of its last read. A database created
-  and dropped between two hourly reads is never seen.
+  and dropped between two hourly reads is never seen. PostgreSQL rows older than the repository's retention (the
+  purge days) are gone with the history behind them; SQL Server's stay, so a range past the retention shows the two
+  engines differently.
 
 ## API
 
 | route | parameters | parts |
 | --- | --- | --- |
-| `GET /api/tables/top` | `instance`, `from`, `to`, `n` (1-50, default 10) | `tables` (each row with its four ranks), `meta` |
+| `GET /api/tables/top` | `instance`, `from`, `to` (at most the last 7 days used), `n` (1-50, default 10) | `tables` (each row with its four ranks), `meta` (n, from_at, to_at, reads) |
 | `GET /api/connections` | `instance`, `from`, `to`, `by` (comma list of application, user, database, client) | `sources`, `meta` |
 | `GET /api/tiles` | `instance`, `from`, `to` | `tiles` |
 | `GET /api/dbchanges` | `instance` (none = the fleet), `days` (1-366, default 30) | `changes`, `meta` |
