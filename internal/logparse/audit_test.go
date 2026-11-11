@@ -84,7 +84,7 @@ const auditLog = "2026-11-11 12:00:00 UTC:10.0.0.5(54321):app@shop:[1234]:LOG:  
 	"2026-11-11 12:00:02.250 PST:[local]:postgres@postgres:[77]:LOG:  AUDIT: OBJECT,5,1,READ,SELECT,TABLE,public.account,select * from account where id = $1,\"7\"\n" +
 	"2026-11-11 12:00:02 UTC:10.0.0.5(54321):app@shop:[1234]:ERROR:  relation \"nope\" does not exist at character 15\n" +
 	"2026-11-11 12:00:02 UTC:10.0.0.5(54321):app@shop:[1234]:STATEMENT:  select * from nope\n" +
-	"2026-11-11 12:00:03 UTC:10.0.0.5(54321):app@shop:[1234]:WARNING:  AUDIT: SESSION,3,1,MISC_SET,SET,,,set pgaudit.log = 'none',<not logged>\n"
+	"2026-11-11 12:00:03 UTC:10.0.0.5(54321):app@shop:[1234]:WARNING:  AUDIT: SESSION,3,1,MISC,SET,,,set pgaudit.log = 'none',<not logged>\n"
 
 func TestScanAudit(t *testing.T) {
 	la, err := time.LoadLocation("America/Los_Angeles")
@@ -120,7 +120,7 @@ func TestScanAudit(t *testing.T) {
 	}
 	// pgaudit.log_level warning: the level is not part of what makes a line an entry
 	d := got[3]
-	if d.Class != "MISC_SET" || d.Command != "SET" || d.Statement != "set pgaudit.log = 'none'" {
+	if d.Class != "MISC" || d.LogClass() != "MISC_SET" || d.Command != "SET" || d.Statement != "set pgaudit.log = 'none'" {
 		t.Errorf("entry 3: %+v", d)
 	}
 	// ParseIn takes none of them as an event of its own kinds, but for the WARNING-level one, which it keeps as an error
@@ -129,6 +129,78 @@ func TestScanAudit(t *testing.T) {
 		if strings.HasPrefix(ev.Detail, "AUDIT: ") && ev.Level == "LOG" {
 			t.Errorf("ParseIn took a LOG-level AUDIT line: %+v", ev)
 		}
+	}
+}
+
+// The lines pgaudit 18.0 wrote on PostgreSQL 18.6 for the statements the proof runs (box job s157-rawlog, 2026-11-11),
+// under the on-prem reader's rewrite. What they settle: a SET and a RESET carry the class MISC though pgaudit.log
+// named misc_set and not misc; a GRANT on a table names the object type and no object; a role's password is cut
+// with everything after it; a DROP TABLE writes one entry per dropped object, all under one statement id.
+const pgaudit18Log = `2026-11-11 21:34:57.550 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,1,1,DDL,CREATE EXTENSION,,,create extension pgaudit,<not logged>
+2026-11-11 21:34:57.558 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,2,1,DDL,CREATE TABLE,TABLE,public.t,"create table public.t (id int, note text)",<not logged>
+2026-11-11 21:34:57.562 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,3,1,DDL,CREATE TABLE,TABLE,public.t2,create table public.t2 (id int primary key),<not logged>
+2026-11-11 21:34:57.562 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,3,1,DDL,CREATE INDEX,INDEX,public.t2_pkey,create table public.t2 (id int primary key),<not logged>
+2026-11-11 21:34:57.573 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,4,1,ROLE,CREATE ROLE,,,create role app1 login password <REDACTED>,<not logged>
+2026-11-11 21:34:57.574 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,5,1,ROLE,GRANT,TABLE,,grant select on public.t to app1,<not logged>
+2026-11-11 21:34:57.576 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,6,1,ROLE,GRANT ROLE,,,grant pg_monitor to app1,<not logged>
+2026-11-11 21:34:57.578 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,7,1,DDL,DROP TABLE,TABLE,public.t2,drop table public.t2,<not logged>
+2026-11-11 21:34:57.578 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,7,1,DDL,DROP TABLE,TABLE CONSTRAINT,t2_id_not_null on public.t2,drop table public.t2,<not logged>
+2026-11-11 21:34:57.578 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,7,1,DDL,DROP TABLE,TABLE CONSTRAINT,t2_pkey on public.t2,drop table public.t2,<not logged>
+2026-11-11 21:34:57.578 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,7,1,DDL,DROP TABLE,INDEX,public.t2_pkey,drop table public.t2,<not logged>
+2026-11-11 21:34:57.580 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,8,1,MISC,SET,,,set pgaudit.log_catalog = off,<not logged>
+2026-11-11 21:34:57.580 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,9,1,MISC,SET,,,set role app1,<not logged>
+2026-11-11 21:34:57.580 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,10,1,MISC,RESET,,,reset role,<not logged>
+2026-11-11 21:34:57.580 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,11,1,READ,SELECT,TABLE,public.t,select note from public.t where id = 1,<not logged>
+2026-11-11 21:34:57.580 UTC::postgres@postgres:[104]:LOG:  AUDIT: SESSION,12,1,MISC,SET,,,SET statement_timeout = '30s',<not logged>
+`
+
+func TestPgaudit18Lines(t *testing.T) {
+	got, err := ParseAudit(strings.NewReader(pgaudit18Log), time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		logClass, command, objType, objName, role string
+	}{
+		{"DDL", "CREATE EXTENSION", "", "", ""},
+		{"DDL", "CREATE TABLE", "TABLE", "public.t", ""},
+		{"DDL", "CREATE TABLE", "TABLE", "public.t2", ""},
+		{"DDL", "CREATE INDEX", "INDEX", "public.t2_pkey", ""},
+		{"ROLE", "CREATE ROLE", "ROLE", "app1", ""},
+		{"ROLE", "GRANT", "TABLE", "public.t", "app1"},
+		{"ROLE", "GRANT ROLE", "ROLE", "pg_monitor", "app1"},
+		{"DDL", "DROP TABLE", "TABLE", "public.t2", ""},
+		{"DDL", "DROP TABLE", "TABLE CONSTRAINT", "t2_id_not_null on public.t2", ""},
+		{"DDL", "DROP TABLE", "TABLE CONSTRAINT", "t2_pkey on public.t2", ""},
+		{"DDL", "DROP TABLE", "INDEX", "public.t2_pkey", ""},
+		{"MISC_SET", "SET", "SETTING", "pgaudit.log_catalog", ""},
+		{"MISC_SET", "SET", "SETTING", "role", "app1"},
+		{"MISC_SET", "RESET", "SETTING", "role", ""},
+		{"READ", "SELECT", "TABLE", "public.t", ""},
+		{"MISC_SET", "SET", "SETTING", "statement_timeout", ""},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%d entries, want %d", len(got), len(want))
+	}
+	keys := map[string]bool{}
+	for i, w := range want {
+		e := got[i]
+		typ, obj, role := AuditTarget(e)
+		if e.LogClass() != w.logClass || e.Command != w.command || typ != w.objType || obj != w.objName || role != w.role {
+			t.Errorf("entry %d = %s / %s / %s / %s / %s, want %+v", i, e.LogClass(), e.Command, typ, obj, role, w)
+		}
+		if e.User != "postgres" || e.Database != "postgres" || e.PID != 104 || e.Client != "" {
+			t.Errorf("entry %d prefix: %+v", i, e)
+		}
+		// the four entries of one DROP TABLE share their time, pid and ids: the object keeps their keys apart
+		if keys[e.Key] {
+			t.Errorf("entry %d repeats a key: %s", i, e.Key)
+		}
+		keys[e.Key] = true
+	}
+	// the class of the line itself stays as pgaudit wrote it
+	if got[11].Class != "MISC" || got[14].LogClass() != "READ" {
+		t.Errorf("classes: %s %s", got[11].Class, got[14].LogClass())
 	}
 }
 
@@ -161,12 +233,21 @@ func TestAuditTarget(t *testing.T) {
 		{"MISC_SET", "set time zone 'UTC'", "", "", "SETTING", "timezone", ""},
 		{"MISC_SET", "RESET ALL", "", "", "SETTING", "all", ""},
 		{"MISC_SET", "reset pgaudit.log", "", "", "SETTING", "pgaudit.log", ""},
-		// another class is left as pgaudit wrote it, and so is an entry without its statement
+		// another class is left as pgaudit wrote it (a MISC entry that is no SET among them), and so is an entry
+		// without its statement
+		{"MISC", "SET CONSTRAINTS ALL DEFERRED", "", "", "", "", ""},
 		{"DDL", "create table t (a int)", "", "", "", "", ""},
 		{"READ", "select * from t", "TABLE", "public.t", "TABLE", "public.t", ""},
 		{"ROLE", "", "", "", "", "", ""},
 	} {
-		typ, obj, role := AuditTarget(AuditEntry{Class: c.class, Statement: c.stmt, ObjectType: c.objType, ObjectName: c.objName})
+		e := AuditEntry{Class: c.class, Statement: c.stmt, ObjectType: c.objType, ObjectName: c.objName}
+		if c.class == "MISC_SET" { // as the line carries it
+			e.Class, e.Command = "MISC", "SET"
+			if strings.HasPrefix(strings.ToUpper(c.stmt), "RESET") {
+				e.Command = "RESET"
+			}
+		}
+		typ, obj, role := AuditTarget(e)
 		if typ != c.wantType || obj != c.wantObj || role != c.wantRole {
 			t.Errorf("AuditTarget(%s %q) = %q, %q, %q; want %q, %q, %q", c.class, c.stmt, typ, obj, role, c.wantType, c.wantObj, c.wantRole)
 		}
@@ -188,7 +269,7 @@ func TestAuditTargetKeepsNoLiteral(t *testing.T) {
 		}
 	}
 	for _, stmt := range []string{"SET app.tenant = 'LEAK'", "SET app.tenant TO LEAK", "SET SESSION app.tenant = $$LEAK$$"} {
-		_, obj, role := AuditTarget(AuditEntry{Class: "MISC_SET", Statement: stmt})
+		_, obj, role := AuditTarget(AuditEntry{Class: "MISC", Command: "SET", Statement: stmt})
 		if obj != "app.tenant" || role != "" {
 			t.Errorf("%q: object %q role %q", stmt, obj, role)
 		}

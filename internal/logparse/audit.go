@@ -13,10 +13,11 @@ import (
 //	LOG:  AUDIT: SESSION,1,1,DDL,CREATE TABLE,TABLE,public.account,"create table account (id int, name text)",<not logged>
 //
 // The fields after 'AUDIT: ' are CSV: the audit type (SESSION, or OBJECT for pgaudit.role's object auditing), the
-// statement id and the substatement id (counted per backend), the class (READ, WRITE, FUNCTION, ROLE, DDL, MISC,
-// MISC_SET), the command tag, the object type and name (where pgaudit knows them: a SELECT's or a DML's relations, a
-// DDL's object once the extension's event triggers exist in the database), the statement text, the parameters and,
-// with pgaudit.log_rows, the row count. A field that holds a comma, a double quote or a line break is double-quoted
+// statement id and the substatement id (counted per backend), the class (READ, WRITE, FUNCTION, ROLE, DDL, MISC),
+// the command tag, the object type and name (where pgaudit knows them: a SELECT's or a DML's relations, a DDL's
+// object once the extension's event triggers exist in the database), the statement text, the parameters and, with
+// pgaudit.log_rows, the row count. pgaudit.log's class misc_set is not a class of the line: a SET or a RESET is
+// written with the class MISC whichever of misc and misc_set turned it on (pgaudit 18.0; LogClass names it). A field that holds a comma, a double quote or a line break is double-quoted
 // and a quote inside it doubled; a statement of several lines continues on tab-led lines like any other entry.
 // The statement is '<not logged>' under pgaudit.log_statement = off and '<previously logged>' for the later entries
 // of one statement under pgaudit.log_statement_once; the parameters are '<none>', '<not logged>' (pgaudit.log_parameter
@@ -26,7 +27,7 @@ import (
 // classifyInto takes); ScanAudit reads them.
 const Audit Kind = "audit"
 
-// The classes pgaudit writes.
+// The classes of pgaudit.log. A line carries every one but MISC_SET (LogClass).
 const (
 	AuditRead     = "READ"
 	AuditWrite    = "WRITE"
@@ -36,6 +37,15 @@ const (
 	AuditMisc     = "MISC"
 	AuditMiscSet  = "MISC_SET"
 )
+
+// LogClass is the pgaudit.log class an entry belongs to: the line's own class, but MISC_SET for a SET or a RESET,
+// which pgaudit writes as MISC.
+func (e AuditEntry) LogClass() string {
+	if e.Class == AuditMisc && (e.Command == "SET" || e.Command == "RESET") {
+		return AuditMiscSet
+	}
+	return e.Class
+}
 
 // AuditEntry is one pgaudit line.
 type AuditEntry struct {
@@ -238,14 +248,15 @@ func ParseAudit(r io.Reader, loc *time.Location) ([]AuditEntry, error) {
 //   - GRANT / REVOKE: the object after ON ('TABLE public.account' is type TABLE, name public.account; a longer form
 //     stays as written: 'ALL TABLES IN SCHEMA app') or, for a role membership, the roles granted (type ROLE); role
 //     is the grantee list after TO / FROM;
-//   - SET / RESET (class MISC_SET): object type SETTING and the setting's name, never its value; SET ROLE and SET
+//   - SET / RESET (LogClass MISC_SET): object type SETTING and the setting's name, never its value; SET ROLE and SET
 //     SESSION AUTHORIZATION are the settings role and session_authorization with the role they take in role.
 //
 // An entry whose object pgaudit named keeps it; an entry without statement text (pgaudit.log_statement off) gives
 // nothing more.
 func AuditTarget(e AuditEntry) (objectType, objectName, role string) {
 	objectType, objectName = e.ObjectType, e.ObjectName
-	if e.Statement == "" || (e.Class != AuditRole && e.Class != AuditMiscSet) {
+	class := e.LogClass()
+	if e.Statement == "" || (class != AuditRole && class != AuditMiscSet) {
 		return objectType, objectName, ""
 	}
 	t := sqlTokens(e.Statement)
@@ -254,7 +265,7 @@ func AuditTarget(e AuditEntry) (objectType, objectName, role string) {
 	}
 	var typ, name string
 	switch {
-	case e.Class == AuditMiscSet:
+	case class == AuditMiscSet:
 		typ, name, role = setTarget(t)
 	case t[0].is("GRANT") || t[0].is("REVOKE"):
 		typ, name, role = grantTarget(t)
