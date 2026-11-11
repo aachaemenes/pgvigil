@@ -6,6 +6,9 @@
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a PostgreSQL 14+ cluster as a superuser. The proof makes a repository
 #                      database, a target database and three logins, all named pgvigil_s3rules_*_<random>, and drops
 #                      them at the end. The target instance is that same cluster, read through the target database.
+#                      Not dropped: the cluster-wide group roles pgvigil_collector, pgvigil_reader, pgvigil_alerter
+#                      and pgvigil_auth, which `pgvigil migrate` makes on a cluster that lacks them (another
+#                      repository on the cluster may hold them).
 #   PGVIGIL_BIN        a pgvigil binary to use; default: the proof builds one into its temp folder (go build) and uses
 #                      it throughout. Its serve must wire GET /api/metrics, /api/metrics/series, /api/alertrules and
 #                      POST /api/alertrules, /api/alertrules/end (the lead's wiring in web.go; part B fails without).
@@ -69,6 +72,34 @@
 #  A. the audit. alert_rule_log holds, by the proof user and from 127.0.0.1, exactly the done and refused attempts
 #     the proof made through the API (counted from the HTTP answers), plus R's two by 'proof-r'; every alert_rules
 #     row was created by one of the two.
+#  [Review fold, expected before run 5:]
+#  R. also: the reader may INSERT into neither alert_rule_state nor alert_rule_fired (has_table_privilege false, false).
+#  G. note: the hand rate re-types the rule of 0004's dbstats_rate (a delta per read over integer seconds, no point
+#     across a reset), so G proves the grid's summing, windowing and database cut, not that rule (proof-dbstats.sh's).
+#  S. the rule is 'above 2 (warning), 6 (critical)', so one figure falls between the two: max 7 critical, min 0 ok,
+#     avg 2.6 warning, current 0 ok.
+#  F. five sessions are held (the count is the cluster's: a margin of four against sessions of others ending); the
+#     60 s test reads the span floored, as the product compares it (a span of 59.6 s is pending). After the rule fired
+#     a sixth session is held, so the finding's 'last sample' changes: a read and a pass add no firing, repeat or
+#     resolved file (one alert stays open under one key).
+#  D. first a fleet rule on database.commits_s above 1e12 (the summed series): then the database's row is 'warning'
+#     under its own rule, the summed series 'ok' under the fleet rule, the grid without db shows rule_scope fleet and
+#     with db=<target> rule_scope instance and rule_database = the target: the database's rule overrides nothing on
+#     the instance's series, and the fleet rule is not shown as the database's threshold. With db=postgres (a
+#     database no rule names) the row shows no rule and no rule state, though the fleet rule stands.
+#  H. the hold, seeded on an instance of its own with the sender's function called at chosen times (no sends). Idle in
+#     transaction 9 from T-200 to T-150 minutes; a rule above 3 (warning) / 5 (critical) for 10 minutes. Judged at
+#     T-150: critical, not held, threshold 5. Judged at T-60 with no sample since: critical, HELD, threshold still 5.
+#     Samples at 9 again from T-5 to T: alert_rule_eval alone reads 'pending' (the window holds five minutes of them);
+#     alert_rules_run at T reads critical, not held, 'since' still the T-150 run, the finding listed, fired 1 (a gap is
+#     not a recovery and not a new firing). The rule edited to critical 8: judged again, critical under the successor,
+#     whose fired record reads 1 (carried over) and whose 'since' is still the T-150 run. One sample at 0: ok, no
+#     finding.
+#     [Run 5 graded (the box): everything to E green; H stopped at its third check: the query for the samples-alone
+#     state named the instance and not the metric, and the fleet rules of parts T and D cover the seeded instance too
+#     (four rows came back, the rule's own reading 'pending' as expected). H's reads now name the metric or setting.]
+#  A pass also fails the proof when its summary line says 'alert rules not judged'.
+#  V. PostgreSQL 13 runs the add branch of import_alert_rule only (edit, end, enable and disable run on the 14+ server).
 #  V. PostgreSQL 13. Every migration applies to a fresh database on a postgres:13 container. Seeded there (30
 #     activity samples a minute apart, idle in transaction 5 for the newest 10, else 2): metric_grid reads
 #     5 | 2 | 3 | 5 | 30; every family's metric_points runs (240 rows in all: the sessions family's); a fleet rule
@@ -154,8 +185,7 @@ CFG=$WORK/cfg.yaml
 (( $(q "select current_setting('server_version_num')::int / 10000") >= 14 )) || fail "PGVIGIL_ADMIN_DSN is not PostgreSQL 14 or newer"
 ok "migrate applied 0085 on PostgreSQL $(q "select current_setting('server_version')")"
 
-HOST=$(q "select coalesce(host(inet_server_addr()), 'localhost')"); DBPORT=$(q "select current_setting('port')")
-dsn() { echo "host=$HOST port=$DBPORT user=$1 password=$PW dbname=$REPO sslmode=disable"; }
+dsn() { echo "$PGVIGIL_ADMIN_DSN dbname=$REPO user=$1 password=$PW"; }   # the admin's own route to the server, as another login
 psql "$PGVIGIL_REPO_DSN" -XAtq -c "create role $COL login password '$PW' in role pgvigil_collector" \
   -c "create role $ALR login password '$PW' in role pgvigil_alerter" \
   -c "create role $RDR login password '$PW' in role pgvigil_reader" >/dev/null
@@ -180,6 +210,7 @@ out=$(as "$ALR" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"u
 [[ $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog") == 62 ]] || fail "R: the reader's metric_catalog: $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog")"
 out=$(as "$RDR" -c "select pgvigil.alert_rules_run(now())")
 [[ $out == *"permission denied for table alert_rule_state"* || $out == *"permission denied for table alert_rule_fired"* ]] || fail "R: the reader ran alert_rules_run: $out"
+[[ $(as "$RDR" -c "select has_table_privilege('pgvigil.alert_rule_state', 'INSERT'), has_table_privilege('pgvigil.alert_rule_fired', 'INSERT')") == "f|f" ]] || fail "R: the reader may write the sender's tables"
 ok "R: the collector writes rules only through import_alert_rule; the alerter judges and stores the state, writes no rule; the reader reads"
 
 # ---- the first reads: the instances exist, the series have points ------------------------------------------------------
@@ -326,20 +357,20 @@ q "insert into pgvigil.mssql_requests_summary (instance_id, snapshot_at, source,
 sleep 1.1; TO2=$(now_utc)
 [[ $(getj "metrics?instance=$MSID&from=$FROM&to=$TO2" "$WORK/gm.json") == 200 ]] || fail "S: GET /api/metrics: $(cat "$WORK/gm.json")"
 five "$WORK/gm.json" requests.blocked "7|0|2.6|0|5" "the seeded SQL Server series"
-api alertrules "{\"metric\":\"requests.blocked\",\"op_dir\":\"above\",\"warning\":5,\"critical\":6,\"for_minutes\":0,\"scope\":\"instance\",\"instance_id\":$MSID}" 200
+api alertrules "{\"metric\":\"requests.blocked\",\"op_dir\":\"above\",\"warning\":2,\"critical\":6,\"for_minutes\":0,\"scope\":\"instance\",\"instance_id\":$MSID}" 200
 getj "metrics?instance=$MSID&from=$FROM&to=$TO2" "$WORK/gm.json" >/dev/null
 got="$(cell "$WORK/gm.json" requests.blocked max_status) $(cell "$WORK/gm.json" requests.blocked min_status) $(cell "$WORK/gm.json" requests.blocked avg_status) $(cell "$WORK/gm.json" requests.blocked current_status) $(cell "$WORK/gm.json" requests.blocked rule_scope)"
-[[ $got == "critical ok ok ok instance" ]] || fail "S: the statuses and scope read '$got'"
+[[ $got == "critical ok warning ok instance" ]] || fail "S: the statuses and scope read '$got'"
 fams() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["grid"]; c=d["columns"]; print(" ".join(sorted({r[c.index("family")] for r in d["rows"]})))' "$1"; }
 [[ $(fams "$WORK/gm.json") == "cpu host memory requests scheduler" ]] || fail "S: the SQL Server grid's families: $(fams "$WORK/gm.json")"
 [[ $(fams "$WORK/ga.json") == "database host io server sessions" ]] || fail "S: the PostgreSQL grid's families: $(fams "$WORK/ga.json")"
-ok "S: requests.blocked reads 7 / 0 / 2.6 / 0 over 5 samples; against above 5 / 6 the max is critical and the rest ok; each engine lists its own families"
+ok "S: requests.blocked reads 7 / 0 / 2.6 / 0 over 5 samples; against above 2 / 6 the max is critical, the average warning, the rest ok; each engine lists its own families"
 
 # ---- F: fires once, clears once ----------------------------------------------------------------------------------------
 pass() {   # one sender pass; a channel failure or a rule evaluation that failed fails the proof
   local tag=$1 rc
   set +e; "$BIN" alerts -config "$CFG" >"$WORK/pass.$tag.out" 2>"$WORK/pass.$tag.err"; rc=$?; set -e
-  if (( rc != 0 )) || ! grep -q '^alerts: ' "$WORK/pass.$tag.out" || grep -q 'alert rules' "$WORK/pass.$tag.err"; then
+  if (( rc != 0 )) || ! grep -q '^alerts: ' "$WORK/pass.$tag.out" || grep -q 'alert rules not judged' "$WORK/pass.$tag.out"; then
     fail "pass $tag: exit $rc: $(cat "$WORK/pass.$tag.out") $(tr '\n' ' ' < "$WORK/pass.$tag.err" | cut -c1-600)"
   fi
 }
@@ -351,7 +382,7 @@ for f in glob.glob(sys.argv[1] + "/*.json"):
     if d.get("event") == sys.argv[2] and d.get("setting") == sys.argv[3]: n += 1
 print(n)' "$WORK/drop" "$1" "$2"
 }
-state_of() { q "select state || ' ' || coalesce(extract(epoch from sample_at - beyond_since)::int, -1) || ' ' || rule_id
+state_of() { q "select state || ' ' || coalesce(floor(extract(epoch from sample_at - beyond_since))::int, -1) || ' ' || rule_id
                   from pgvigil.alert_rule_state where instance_id = $1 and metric = '$2' and database = '${3:-}'"; }
 IDLE='Sessions: idle in transaction'
 collect activity
@@ -361,20 +392,21 @@ FRULE=$(last_id)
 # each held session is a psql reading a named pipe this script keeps open: nothing else is left running to wait for
 # [run 2: the sessions were fed by '(echo ...; sleep 900) | psql'; the sleeps outlived their psql and the exit trap's
 #  wait sat on them for up to 15 minutes after the last line, holding whatever lock the caller ran the proof under]
-for i in 1 2 3; do
-  mkfifo "$WORK/hold$i"
-  PGAPPNAME=$HOLDAPP psql "$TGT_DSN" -XAtq < "$WORK/hold$i" >/dev/null 2>&1 & HOLD="$HOLD $!"
-  exec {fd}> "$WORK/hold$i"; HOLDFDS+=("$fd")
+hold() {   # hold <n>: one more session idle in transaction
+  mkfifo "$WORK/hold$1"
+  PGAPPNAME=$HOLDAPP psql "$TGT_DSN" -XAtq < "$WORK/hold$1" >/dev/null 2>&1 & HOLD="$HOLD $!"
+  exec {fd}> "$WORK/hold$1"; HOLDFDS+=("$fd")
   echo "begin; select 1;" >&"$fd"
-done
+}
+for i in 1 2 3 4 5; do hold "$i"; done
 held() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAt -c "select count(*) from pg_stat_activity where application_name = '$HOLDAPP' and state = 'idle in transaction'"; }
-for n in $(seq 1 100); do [[ $(held) == 3 ]] && break; [[ $n == 100 ]] && fail "F: the three sessions are not idle in transaction ($(held))"; sleep 0.1; done
+for n in $(seq 1 100); do [[ $(held) == 5 ]] && break; [[ $n == 100 ]] && fail "F: the five sessions are not idle in transaction ($(held))"; sleep 0.1; done
 : > "$WORK/f.log"; FIRED=""
 for i in $(seq 1 45); do
   collect activity; pass "f$i"
   read -r STATE SPAN RID <<<"$(state_of "$AID" sessions.idle_in_txn)"
   NF=$(files firing "$IDLE")
-  echo "$i $STATE $SPAN $NF" >> "$WORK/f.log"
+  echo "$i $STATE $SPAN $NF value=$(q "select value from pgvigil.alert_rule_state where instance_id = $AID and metric = 'sessions.idle_in_txn'") over $((N0 + 1))" >> "$WORK/f.log"
   [[ $RID == "$FRULE" ]] || fail "F: the state row is rule '$RID', expected $FRULE ($(cat "$WORK/f.log" | tr '\n' ';'))"
   if [[ $STATE == warning ]]; then FIRED=$i; break; fi
   [[ $STATE == pending ]] || fail "F: state '$STATE' while the sessions are held ($(tr '\n' ';' < "$WORK/f.log"))"
@@ -387,6 +419,14 @@ done
 (( SPAN >= 60 && NF == 1 )) || fail "F: at the firing pass: span $SPAN s, $NF firing file(s)"
 for i in 1 2; do sleep 2; collect activity; pass "fa$i"; done
 [[ $(files firing "$IDLE") == 1 && $(files repeat "$IDLE") == 0 ]] || fail "F: after two more passes: $(files firing "$IDLE") firing, $(files repeat "$IDLE") repeat file(s)"
+# the sample changes while the rule fires (a sixth session): the same alert, nothing sent
+V1=$(q "select value from pgvigil.alert_rule_state where instance_id = $AID and metric = 'sessions.idle_in_txn'")
+hold 6
+for n in $(seq 1 100); do [[ $(held) == 6 ]] && break; [[ $n == 100 ]] && fail "F: the sixth session is not idle in transaction ($(held))"; sleep 0.1; done
+collect activity; pass fb1
+V2=$(q "select value from pgvigil.alert_rule_state where instance_id = $AID and metric = 'sessions.idle_in_txn'")
+[[ $V2 != "$V1" ]] || fail "F: the sample did not change with a sixth session held ($V1)"
+[[ "$(files firing "$IDLE") $(files repeat "$IDLE") $(files escalated "$IDLE") $(files resolved "$IDLE")" == "1 0 0 0" ]] || fail "F: a changed sample ($V1 to $V2) sent something: firing repeat escalated resolved = $(files firing "$IDLE") $(files repeat "$IDLE") $(files escalated "$IDLE") $(files resolved "$IDLE")"
 release
 for n in $(seq 1 100); do [[ $(held) == 0 ]] && break; [[ $n == 100 ]] && fail "F: the held sessions did not end"; sleep 0.1; done
 collect activity; pass fr1
@@ -398,7 +438,7 @@ sleep 1; collect activity; pass fr2
 sleep 1; collect activity; pass fr3
 [[ $(files resolved "$IDLE") == 1 && $(files firing "$IDLE") == 1 ]] || fail "F: at the end $(files firing "$IDLE") firing and $(files resolved "$IDLE") resolved file(s)"
 [[ $(q "select fired from pgvigil.alert_rule_fired where rule_id = $FRULE") == 1 ]] || fail "F: alert_rule_fired: $(q "select fired from pgvigil.alert_rule_fired where rule_id = $FRULE")"
-ok "F: pending for $((FIRED - 1)) pass(es), fired at pass $FIRED with a span of $SPAN s, one firing file, one resolved file after the release and a read"
+ok "F: pending for $((FIRED - 1)) pass(es), fired at pass $FIRED with a span of $SPAN s, one firing file, none more when the sample moved from $V1 to $V2, one resolved file after the release and a read"
 
 # ---- T: a tag's rule wins over the fleet's, both ways --------------------------------------------------------------------
 api alertrules '{"metric":"sessions.total","op_dir":"above","warning":100000,"for_minutes":0,"scope":"fleet"}' 200; TF1=$(last_id)
@@ -424,18 +464,24 @@ ok "T: B fires under its tag's rule where the fleet's would not; A is quiet unde
 
 # ---- D: a database rule ------------------------------------------------------------------------------------------------
 DSET="Database: commits [$TGT]"
+api alertrules '{"metric":"database.commits_s","op_dir":"above","warning":1e12,"for_minutes":0,"scope":"fleet"}' 200; DF=$(last_id)
 api alertrules "{\"metric\":\"database.commits_s\",\"op_dir\":\"above\",\"warning\":-1,\"for_minutes\":0,\"scope\":\"instance\",\"instance_id\":$AID,\"database\":\"$TGT\"}" 200; D1=$(last_id)
 for _ in 1 2; do tq "select 1" >/dev/null; sleep 1.2; collect dbstats; done
 pass d1
 read -r STATE _ RID <<<"$(state_of "$AID" database.commits_s "$TGT")"
 [[ $STATE == warning && $RID == "$D1" ]] || fail "D: the database's state row: '$STATE' rule '$RID'"
-[[ -z $(state_of "$AID" database.commits_s) ]] || fail "D: the instance's summed series has a state row: $(state_of "$AID" database.commits_s)"
+read -r STATE _ RID <<<"$(state_of "$AID" database.commits_s)"
+[[ $STATE == ok && $RID == "$DF" ]] || fail "D: the instance's summed series: '$STATE' rule '$RID' (the fleet rule is $DF, the database's $D1)"
 TO4=$(date -u -d '+2 seconds' +%Y-%m-%dT%H:%M:%SZ)
 getj "metrics?instance=$AID&from=$FROM&to=$TO4&db=$TGT" "$WORK/dd.json" >/dev/null; getj "metrics?instance=$AID&from=$FROM&to=$TO4" "$WORK/da.json" >/dev/null
-[[ "$(cell "$WORK/dd.json" database.commits_s rule_database) $(cell "$WORK/dd.json" database.commits_s current_status)" == "$TGT warning" ]] || fail "D: the database cut's row: $(cell "$WORK/dd.json" database.commits_s rule_database) $(cell "$WORK/dd.json" database.commits_s current_status)"
-[[ -z $(cell "$WORK/da.json" database.commits_s rule_id) ]] || fail "D: the summed row shows the database's rule"
+got="$(cell "$WORK/dd.json" database.commits_s rule_id) $(cell "$WORK/dd.json" database.commits_s rule_scope) $(cell "$WORK/dd.json" database.commits_s rule_database) $(cell "$WORK/dd.json" database.commits_s current_status) $(cell "$WORK/dd.json" database.commits_s rule_state)"
+[[ $got == "$D1 instance $TGT warning warning" ]] || fail "D: the database cut's row reads '$got'"
+got="$(cell "$WORK/da.json" database.commits_s rule_id) $(cell "$WORK/da.json" database.commits_s rule_scope) $(cell "$WORK/da.json" database.commits_s rule_state)"
+[[ $got == "$DF fleet ok" ]] || fail "D: the summed row reads '$got' (the fleet rule is $DF)"
+[[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO4&db=postgres&family=database" "$WORK/dp.json") == 200 ]] || fail "D: GET /api/metrics db=postgres: $(cat "$WORK/dp.json")"
+[[ $(cell "$WORK/dp.json" database.commits_s database) == postgres && -z "$(cell "$WORK/dp.json" database.commits_s rule_id)$(cell "$WORK/dp.json" database.commits_s rule_state)$(cell "$WORK/dp.json" database.commits_s current_status)" ]] || fail "D: a database no rule names shows a rule: $(cell "$WORK/dp.json" database.commits_s rule_id) $(cell "$WORK/dp.json" database.commits_s rule_state) $(cell "$WORK/dp.json" database.commits_s current_status)"
 [[ $(files firing "$DSET") == 1 ]] || fail "D: $(files firing "$DSET") firing file(s) of '$DSET'"
-ok "D: the rule on $TGT's own series fires for it alone; the summed row carries no rule"
+ok "D: the rule on $TGT's own series fires for it alone; the summed series stays under the fleet rule, which is not shown as the database's"
 
 # ---- E: edit, switch, end ------------------------------------------------------------------------------------------------
 api alertrules "{\"op\":\"edit\",\"rule_id\":$D1,\"metric\":\"database.commits_s\",\"op_dir\":\"above\",\"warning\":1e12,\"for_minutes\":0,\"scope\":\"instance\",\"instance_id\":$AID,\"database\":\"$TGT\"}" 200; D2=$(last_id)
@@ -456,6 +502,42 @@ api alertrules/end "{\"rule_id\":$D2}" 200
 api alertrules/end "{\"rule_id\":$D2}" 409; body_has "was ended" || fail "E: the second end: $(cat "$WORK/body")"
 ok "E: an edit ends the rule and writes its successor; off = in force nowhere; a second disable and a second end are refused"
 
+# ---- H: the hold, seeded ---------------------------------------------------------------------------------------------
+HID=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)
+         values ('proof-rules-h-$SUF', 'self-managed', '{}', now(), now(), true, 'postgres') returning instance_id" | head -1)
+T0=$(q "select now()")
+seed_idle() {   # seed_idle <from minutes ago> <to minutes ago> <value>: a sample a minute
+  q "insert into pgvigil.activity_summary (instance_id, snapshot_at, total, active, idle, idle_in_txn, idle_in_txn_aborted, waiting_lock,
+                                           active_client_wait, longest_active_secs, longest_idle_txn_secs, oldest_xmin_age, max_connections)
+     select $HID, '$T0'::timestamptz - m * interval '1 minute', 20, 1, 5, $3, 0, 0, 0, 1, 1, 1, 100 from generate_series($2, $1) m" >/dev/null
+}
+judge() { q "select pgvigil.alert_rules_run('$T0'::timestamptz + interval '$1')" >/dev/null; }
+hrow() { q "select state || ' ' || held || ' ' || threshold || ' ' || (since = '$T0'::timestamptz - interval '150 minutes') || ' ' || rule_id
+              from pgvigil.alert_rule_state where instance_id = $HID and metric = 'sessions.idle_in_txn'"; }
+seed_idle 200 150 9
+api alertrules "{\"name\":\"proof hold\",\"metric\":\"sessions.idle_in_txn\",\"op_dir\":\"above\",\"warning\":3,\"critical\":5,\"for_minutes\":10,\"scope\":\"instance\",\"instance_id\":$HID}" 200; H1=$(last_id)
+judge '-150 minutes'
+[[ $(hrow) == "critical false 5 true $H1" ]] || fail "H: judged at T-150: '$(hrow)'"
+judge '-60 minutes'
+[[ $(hrow) == "critical true 5 true $H1" ]] || fail "H: judged at T-60 with no sample since: '$(hrow)'"
+seed_idle 5 0 9
+[[ $(q "select state from pgvigil.alert_rule_eval('$T0') where instance_id = $HID and metric = 'sessions.idle_in_txn'") == pending ]] || fail "H: the samples alone at T read '$(q "select state from pgvigil.alert_rule_eval('$T0') where instance_id = $HID and metric = 'sessions.idle_in_txn'")', expected pending"
+judge '0'
+[[ $(hrow) == "critical false 5 true $H1" ]] || fail "H: judged at T after the gap: '$(hrow)'"
+[[ $(q "select count(*) from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and setting = '$IDLE' and severity = 'critical'") == 1 ]] || fail "H: the finding is not listed after the gap"
+[[ $(q "select fired from pgvigil.alert_rule_fired where rule_id = $H1") == 1 ]] || fail "H: fired reads $(q "select fired from pgvigil.alert_rule_fired where rule_id = $H1") after the gap"
+api alertrules "{\"op\":\"edit\",\"rule_id\":$H1,\"name\":\"proof hold\",\"metric\":\"sessions.idle_in_txn\",\"op_dir\":\"above\",\"warning\":3,\"critical\":8,\"for_minutes\":10,\"scope\":\"instance\",\"instance_id\":$HID}" 200; H2=$(last_id)
+judge '1 second'
+[[ $(hrow) == "critical false 8 true $H2" ]] || fail "H: judged after the edit: '$(hrow)' (the successor is $H2)"
+[[ $(q "select fired from pgvigil.alert_rule_fired where rule_id = $H2") == 1 ]] || fail "H: the successor's fired record reads '$(q "select fired from pgvigil.alert_rule_fired where rule_id = $H2")'"
+q "insert into pgvigil.activity_summary (instance_id, snapshot_at, total, active, idle, idle_in_txn, idle_in_txn_aborted, waiting_lock,
+                                         active_client_wait, longest_active_secs, longest_idle_txn_secs, oldest_xmin_age, max_connections)
+   values ($HID, '$T0'::timestamptz + interval '2 seconds', 20, 1, 5, 0, 0, 0, 0, 1, 1, 1, 100)" >/dev/null
+judge '2 seconds'
+[[ $(q "select state || ' ' || held from pgvigil.alert_rule_state where instance_id = $HID and metric = 'sessions.idle_in_txn'") == "ok false" ]] || fail "H: after a sample inside the value: '$(q "select state || ' ' || held from pgvigil.alert_rule_state where instance_id = $HID and metric = 'sessions.idle_in_txn'")'"
+[[ $(q "select count(*) from pgvigil.alert_findings where instance_id = $HID and source = 'alert rule' and setting = '$IDLE'") == 0 ]] || fail "H: the finding stays after the recovery"
+ok "H: held with no sample, still critical when the samples come back beyond the value after a 145-minute gap (the samples alone read pending), not a new firing, an edit keeps it and its record; one sample inside recovers it"
+
 # ---- A: the audit --------------------------------------------------------------------------------------------------------
 DONE=$(grep -c '^done$' "$WORK/api.log" || true); REFUSED=$(grep -c '^refused$' "$WORK/api.log" || true)
 got=$(q "select string_agg(outcome || '=' || n, ' ' order by outcome) from (select outcome, count(*) n from pgvigil.alert_rule_log where ui_user = '$UIUSER' group by 1) x")
@@ -468,7 +550,7 @@ ok "A: the log holds the $DONE done and $REFUSED refused attempts of $UIUSER fro
 # ---- V: PostgreSQL 13 ----------------------------------------------------------------------------------------------------
 if [[ ${PGVIGIL_SKIP_PG13:-0} == 1 ]]; then
   echo "NOT PROVEN ON POSTGRESQL 13: PGVIGIL_SKIP_PG13=1 (part V skipped)"
-  echo "proof-alert-rules: R B G S F T D E A green on PostgreSQL $(q "select current_setting('server_version')"); V NOT RUN"
+  echo "proof-alert-rules: R B G S F T D E H A green on PostgreSQL $(q "select current_setting('server_version')"); V NOT RUN"
   exit 0
 fi
 command -v docker >/dev/null || fail "V: docker is not on this machine (PGVIGIL_SKIP_PG13=1 skips part V and says so)"
@@ -510,4 +592,4 @@ got=$(v "select pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"
 [[ $(v "select severity, setting from pgvigil.alert_findings where source = 'alert rule'") == "critical|Sessions: idle in transaction" ]] || fail "V: the finding on PostgreSQL 13"
 docker rm -f "$PG13" >/dev/null 2>&1 || true; PG13=""
 ok "V: PostgreSQL 13: every migration applies; the grid 5 / 2 / 3 / 5 over 30 samples, the nine families read, a rule added, judged critical and listed as a finding"
-echo "proof-alert-rules: R B G S F T D E A V green"
+echo "proof-alert-rules: R B G S F T D E H A V green"

@@ -106,9 +106,11 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
       fmt: (v, r) => {
         if (v == null) return '';
         const st = r[key.replace('_value', '_status')];
-        const t = el('span', { class: 'cell-link' }, fmtMetric(v, r.unit));
-        if (st != null) t.title = `${String(st)}: the threshold is ${conditionWords(r)}`;
-        return st != null ? t : fmtMetric(v, r.unit);
+        if (st == null) return fmtMetric(v, r.unit);
+        // the status is a word in the cell too (never the colour alone; a copy or an export carries it)
+        const t = el('span', { class: 'cell-link' }, fmtMetric(v, r.unit) + (st === 'ok' ? '' : ` (${String(st)})`));
+        t.title = `${String(st)}: the threshold is ${conditionWords(r)}`;
+        return t;
       },
     });
     const cols: Col[] = [
@@ -145,6 +147,8 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
       sel.value = mdb ?? '';
       sel.addEventListener('change', () => { location.hash = link(kind, sel.value || undefined); });
       tools.append(el('label', {}, 'Database ', sel));
+      // a rule without a database judges the summed series only: it is not shown as one database's threshold
+      if (mdb) tools.append(el('span', { class: 'meta' }, `The thresholds shown for ${mdb} are the rules that name that database; a rule without a database watches all databases summed, and shows under 'all databases'.`));
     }
     box.append(grid(famRows, cols, 'No counter in this family.'));
     sec.append(head, tools, said, box, chartsBox);

@@ -16,9 +16,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
 )
@@ -85,10 +88,12 @@ SELECT c.key, c.engine, c.family, c.family_label, c.metric, c.label, c.unit, c.p
   FROM pgvigil.metric_catalog c
  ORDER BY CASE c.engine WHEN 'postgres' THEN 1 WHEN 'sqlserver' THEN 2 ELSE 3 END, c.family_sort, c.sort`
 
-// sqlAlertRuleSender: does anything judge the rules? The sender's newest evaluation, the channels configured, and
-// the sender's newest pass of any kind (a pass with no channel judges nothing)
+// sqlAlertRuleSender: does anything judge the rules? The sender's newest evaluation and how old it is by the
+// repository's clock (a sender that stopped leaves its last states standing: the page says how old they are), the
+// channels configured, and the sender's newest pass of any kind (a pass with no channel judges nothing)
 const sqlAlertRuleSender = `
 SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated_at,
+       (SELECT extract(epoch FROM now() - max(s.evaluated_at))::int FROM pgvigil.alert_rule_state s) AS evaluated_secs_ago,
        (SELECT count(*) FROM pgvigil.alert_channels c WHERE c.is_configured) AS channels,
        (SELECT max(l.snapshot_at) FROM pgvigil.alert_log l WHERE l.snapshot_at > now() - interval '1 day') AS last_pass_at,
        (SELECT count(*) FROM pgvigil.alert_rules_effective) AS in_force`
@@ -193,13 +198,18 @@ func (s *Server) alertRuleWrite(w http.ResponseWriter, r *http.Request, forced s
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	pay, err := alerts.RulePayload(in, forced, func(id int) string {
-		var name string
-		if err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1 AND is_active`, id).Scan(&name); err != nil {
-			return ""
+	// an instance rule's instance, read here: no such active instance is the request's fault (400, said by
+	// RulePayload), a repository that could not answer is not (500)
+	var instName string
+	if in.Scope == "instance" && in.InstanceID > 0 && in.InstanceID <= math.MaxInt32 {
+		err := s.pool.QueryRow(ctx, `SELECT name FROM pgvigil.instances WHERE instance_id = $1 AND is_active`, in.InstanceID).Scan(&instName)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			s.log.Warn("alert rule: the instance could not be read", "instance_id", in.InstanceID, "err", err)
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("the instance could not be read: %v", err))
+			return
 		}
-		return name
-	})
+	}
+	pay, err := alerts.RulePayload(in, forced, func(int) string { return instName })
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

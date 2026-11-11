@@ -3,7 +3,9 @@ package alerts
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
@@ -92,7 +94,7 @@ func RulePayload(in RuleRequest, forced string, inst func(id int) string) (map[s
 		}
 		pay["tag"] = t.String() // the written form pgvigil.instance_tags_merged holds
 	case "instance":
-		if in.InstanceID <= 0 {
+		if in.InstanceID <= 0 || in.InstanceID > math.MaxInt32 {
 			return nil, errors.New("an instance rule names its instance_id")
 		}
 		name := inst(in.InstanceID)
@@ -104,9 +106,17 @@ func RulePayload(in RuleRequest, forced string, inst func(id int) string) (map[s
 		return nil, errors.New("scope must be fleet, tag or instance")
 	}
 	pay["scope"] = in.Scope
-	for k, v := range map[string]string{"database": in.Database, "name": in.Name, "note": in.Note} {
-		if v = strings.TrimSpace(v); v != "" {
-			pay[k] = v
+	// the store's own limits (alert_rules' checks), said here as a request's fault rather than as the store's refusal
+	for _, f := range []struct {
+		key, val string
+		max      int
+	}{{"database", in.Database, 200}, {"name", in.Name, 100}, {"note", in.Note, 500}} {
+		v := strings.TrimSpace(f.val)
+		if utf8.RuneCountInString(v) > f.max {
+			return nil, fmt.Errorf("%s must be at most %d characters", f.key, f.max)
+		}
+		if v != "" {
+			pay[f.key] = v
 		}
 	}
 	return pay, nil

@@ -51,14 +51,17 @@ row in the repository, shown here for the instance in view and on the **Alert ru
 
 - *New threshold* opens the rule form with the metric fixed and this instance as what it covers; change *Covers* to
   a tag or to every instance to set it wider.
-- The thresholds a row shows are the rule **in force** for this instance: its own rule over its tag's over the
-  fleet's. With a database picked, a rule naming that database comes first.
+- The thresholds a row shows are the rule **in force** for the series in view, the one the sender judges it by: for
+  the instance's series its own rule over its tag's over the fleet's. With a database picked, the Database family's
+  rows show only the rules that **name that database**: a rule without a database watches all databases summed and
+  never one of them, so it is not shown as that database's threshold (pick *all databases* to see it).
 - *Edit* edits that rule where it lives. Editing a fleet rule from one instance's grid changes it for the fleet; the
   form says what the rule covers. *Override here* leaves the wider rule alone and adds this instance's own.
 - The grid colours by the thresholds whether or not anything sends alerts. The alerts need a channel
   ([alerts.md](alerts.md)): the sender judges the rules in its pass.
 
-Edits need the UI login; without it the grid is read only and says why.
+Edits need the UI login and the actions door's audit login ([alerts.md](alerts.md)); without them the grid is read
+only and says why.
 
 ## The chart
 
@@ -77,9 +80,15 @@ The grid, a row's chart and the rule's evaluation read the same function (`pgvig
 so the three agree. The page reads each family with its own request: over a long range one family that is slow or
 fails shows its error under its own heading, and the others still draw.
 
+A limit to know: the Database family summed over all databases reads every database's counters of the range, as the
+Counters charts did. On a server with very many databases a long range can pass the page's 15-second read limit
+(measured: about 150 databases over 31 days); the family then shows that error. A shorter range reads, and so does
+one database picked above the grid, which reads that database's rows alone.
+
 ## Proof
 
-`scripts/proof-alert-rules.sh`, parts G and S: the grid's max, min, average, newest value and sample count of
+`scripts/proof-alert-rules.sh`, parts G, S and D: the grid's max, min, average, newest value and sample count of
 *Sessions: active sessions* and of *Database: commits* (summed, and for one database) equal hand queries on the
-stored samples; a seeded SQL Server series reads its known figures and is coloured against a rule's values; each
-engine lists its own families.
+stored samples; a seeded SQL Server series reads its known figures and is coloured critical, warning and ok against
+a rule's two values; each engine lists its own families; a database's row shows its own rule and never a rule
+without a database.

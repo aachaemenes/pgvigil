@@ -159,10 +159,16 @@ export async function ruleDialog(o: RuleDialog) {
     el('label', {}, 'Name (optional) ', name),
     el('label', {}, 'Note (optional)', el('br'), note),
   ];
-  // a number field holding something that is not a number reads empty: it must not pass as 'no value'
-  const valid = () => metricSel.value !== '' && (warn.value.trim() !== '' || crit.value.trim() !== '')
-    && !warn.validity.badInput && !crit.validity.badInput && mins.validity.valid
-    && (scope.value !== 'tag' || tagSel.value !== '') && (scope.value !== 'instance' || instSel.value !== '');
+  // what Save still needs, in words ('' = nothing). A number field holding something that is not a number reads
+  // empty: it must not pass as 'no value'; empty minutes are asked for, never saved as the store's default.
+  const invalid = () => [
+    metricSel.value === '' ? 'a metric' : '',
+    warn.validity.badInput || crit.validity.badInput ? 'numbers in warning and critical'
+      : warn.value.trim() === '' && crit.value.trim() === '' ? 'a warning or a critical value' : '',
+    mins.value.trim() === '' || !mins.validity.valid ? 'whole minutes from 0 to 1440' : '',
+    scope.value === 'tag' && tagSel.value === '' ? 'a tag' : '',
+    scope.value === 'instance' && instSel.value === '' ? 'an instance' : '',
+  ].filter(Boolean).join(', ');
   const body = () => {
     const m = meta();
     return {
@@ -179,28 +185,39 @@ export async function ruleDialog(o: RuleDialog) {
   formDialog(r ? `Edit alert rule ${String(r.rule_id)}` : 'New alert rule',
     r ? 'Saving ends this rule and writes its successor (the old row stays with who ended it and when). The alert sender judges the new rule from its next pass.'
       : 'The alert sender judges the rule from its next pass; a firing rule is sent through the alert channels like any finding. A tag or an instance rule overrides a wider rule on the same metric.',
-    'Save', () => post<RuleResult>('alertrules', body()), o.after, fields, valid, [metricSel, warn, crit, mins, scope, tagSel, instSel]);
+    'Save', () => post<RuleResult>('alertrules', body()), o.after, fields, invalid, [metricSel, warn, crit, mins, scope, tagSel, instSel]);
 }
 
-// formDialog: a modal with what the write does, its fields, Save / Back, and the server's answer in place
+// formDialog: a modal with what the write does, its fields, Save / Back, and the server's answer in place. invalid
+// says what Save still needs ('' = nothing): the form shows it, so a disabled Save is never unexplained. One dialog
+// makes one write: after a save the button stays off (a change typed into the still-open form would otherwise be a
+// second rule), and it is off while a save is on its way.
 function formDialog(title: string, what: string, go: string, run: () => Promise<RuleResult>, after: () => void,
-  fields: HTMLElement[] = [], valid: () => boolean = () => true, watch: HTMLElement[] = []) {
+  fields: HTMLElement[] = [], invalid: () => string = () => '', watch: HTMLElement[] = []) {
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const ok = el('button', { type: 'submit' }, go);
   const no = el('button', { type: 'button' }, 'Back');
+  const need = el('p', { class: 'meta' });   // not a live region: it changes with every key
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const check = () => { ok.disabled = !valid(); };
+  let busy = false, done = false;
+  const check = () => {
+    const w = done ? '' : invalid();
+    need.textContent = w ? `${go} needs ${w}.` : '';
+    ok.disabled = busy || done || w !== '';
+  };
   for (const w of watch) { w.addEventListener('input', check); w.addEventListener('change', check); }
   check();
   const form = el('form', { method: 'dialog' }, el('h3', {}, title), el('p', {}, what),
-    ...fields.map(f => el('div', { style: 'margin:.3rem 0' }, f)), msg, el('div', { style: 'margin-top:.6rem' }, ok, ' ', no));
+    ...fields.map(f => el('div', { style: 'margin:.3rem 0' }, f)), need, msg, el('div', { style: 'margin-top:.6rem' }, ok, ' ', no));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:44rem', 'aria-label': title }, form);
-  let done = false;
-  const close = () => { dlg.close(); dlg.remove(); if (done) after(); };
-  no.addEventListener('click', close);
-  dlg.addEventListener('cancel', () => { dlg.remove(); if (done) after(); });
+  // the dialog leaves the page; after a save the page is read again, else the focus goes back where it came from
+  const leave = () => { dlg.remove(); if (done) after(); else if (opener?.isConnected) opener.focus(); };
+  no.addEventListener('click', () => { dlg.close(); leave(); });
+  dlg.addEventListener('cancel', leave);
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
-    ok.disabled = true;
+    if (busy || done) return;
+    busy = true; check();
     msg.textContent = 'Saving...';
     try {
       const res = await run();
@@ -208,8 +225,10 @@ function formDialog(title: string, what: string, go: string, run: () => Promise<
       msg.replaceChildren(badge(res.outcome, 'ok'), ' ', res.detail);
       no.textContent = 'Close';
     } catch (e) {
+      // a refusal leaves the form as typed: correct it and save again
       msg.replaceChildren(badge('not saved', 'crit'), ' ', e instanceof Error ? e.message : String(e));
-      ok.disabled = !valid();   // a refusal leaves the form as typed: correct it and save again
+    } finally {
+      busy = false; check();
     }
   });
   document.body.append(dlg);
@@ -236,11 +255,15 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
   const firing = state.filter(r => r.state === 'warning' || r.state === 'critical').length;
   const newRule = () => ruleButton(d, 'New rule', 'New rule', () => { void ruleDialog({ door: d, after: redraw }); });
   // who judges the rules: the alert sender, with at least one channel
-  const judged = sender.evaluated_at != null
-    ? `The alert sender last judged the rules ${fmtTime(sender.evaluated_at)}.`
-    : Number(sender.channels ?? 0) === 0
+  const noChannel = Number(sender.channels ?? 0) === 0, ago = Number(sender.evaluated_secs_ago ?? 0);
+  const judged = sender.evaluated_at == null
+    ? noChannel
       ? 'No alert channel is configured, so no sender runs and the rules are not judged: a channel is named in the configuration\'s alerts: list (docs/alerts.md).'
-      : 'The alert sender has not judged the rules yet (its pass runs once a minute inside pgvigil run).';
+      : 'The alert sender has not judged the rules yet (its pass runs once a minute inside pgvigil run).'
+    : ago > 180
+      // the sender stopped (or its channels went): its last states are still in the store, and are not the state now
+      ? `The alert sender last judged the rules ${fmtTime(sender.evaluated_at)}, ${fmtSecs(ago)} ago: no pass has run since, so the states below are from then.${noChannel ? ' No alert channel is configured.' : ''}`
+      : `The alert sender last judged the rules ${fmtTime(sender.evaluated_at)}.`;
   sec.append(el('p', { class: 'meta' }, live.length
     ? `${live.length} rule(s) live${off ? ` (${off} switched off)` : ''}, ${firing} firing on an instance. ${judged} `
     : `No alert rule yet. ${judged} `, what()));
@@ -275,7 +298,9 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'scope', label: 'covers', fmt: (v, r) => scopeWords(v, r.tag ?? r.instance_name) },
       { key: 'database', fmt: v => String(v ?? '') },
       { key: 'in_force', label: 'in force on', num: true, fmt: (v, r) => r.live && r.enabled ? `${fmtNum(v)} of ${fmtNum(r.covers)}` : '' },
-      { key: 'firing', label: 'state', fmt: (v, r) => !r.live || !r.enabled ? '' : r.evaluated_at == null ? 'not judged yet'
+      { key: 'firing', label: 'state', fmt: (v, r) => !r.live || !r.enabled ? ''
+        : Number(r.covers) === 0 ? 'covers no instance' : Number(r.in_force) === 0 ? 'in force nowhere: a narrower rule overrides it on every instance it covers'
+        : r.evaluated_at == null ? 'not judged yet'
         : Number(v) > 0 ? el('span', {}, badge(`${fmtNum(v)} firing`, 'crit'), ` ${String(r.firing_on ?? '')}`)
         : [Number(r.pending) ? `${fmtNum(r.pending)} pending` : '', Number(r.nodata) ? `${fmtNum(r.nodata)} without data` : ''].filter(Boolean).join(', ') || badge('ok', 'ok') },
       { key: 'last_fired_at', label: 'last fired', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} on ${String(r.last_instance ?? '')} (${fmtNum(r.fired)} in all)` },

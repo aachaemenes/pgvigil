@@ -22,11 +22,13 @@
 --   alert_rules_effective the rule in force per instance, metric and series: an instance's own rule wins over a tag's,
 --                         a tag's over the fleet's (two tags of one instance: the newer rule). A rule that names a
 --                         database is that database's series and overrides nothing at the instance level.
---   alert_rule_eval(at)   the state of every rule in force, read only: critical or warning once every sample of the
---                         last n minutes is beyond the value (measured sample to sample, never by the clock alone),
---                         pending while it is beyond for less, ok, or nodata (no sample newer than the family's limit).
+--   alert_rule_eval(at)   the state of every rule in force as the samples alone give it, read only: critical or
+--                         warning once every sample of the last n minutes is beyond the value (measured sample to
+--                         sample, never by the clock alone), pending while it is beyond for less, ok, or nodata (no
+--                         sample newer than the family's limit).
 --   alert_rule_state      the alert sender's last evaluation (alert_rules_run, called at the start of every pass). A
---                         firing rule whose series stops keeps its state (held): no data is not a recovery.
+--                         firing series whose samples stop keeps its state (held), and keeps it when they come back
+--                         beyond the value after any gap: only a sample inside the value is a recovery.
 --   alert_rule_fired      per rule: when it last began to fire and how often.
 --   alert_rule_findings   the firing rows as findings (source 'alert rule'); alert_findings (0059) gains them, so the
 --                         channels, repeats, recoveries, mutes, silences and acknowledgements of 0059 and 0073 apply
@@ -128,6 +130,49 @@ BEGIN
         ('longest_idle_txn_secs', s.longest_idle_txn_secs::double precision),
         ('oldest_xmin_age', s.oldest_xmin_age::double precision)) AS v(metric, value)
      WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from AND s.snapshot_at <= p_to AND v.value IS NOT NULL;
+  ELSIF p_family = 'database' AND p_database IS NOT NULL THEN
+    -- one database's series reads that database's rows alone (dbstats_rate reads every database of the instance
+    -- before a filter on the name can apply: 150 databases over 31 days ran past the page's 15 s). The same rule as
+    -- dbstats_rate: a delta per read (pgvigil.delta), an interval with a reset gives no point.
+    RETURN QUERY
+    WITH w AS (
+      SELECT d.snapshot_at, d.numbackends,
+             extract(epoch FROM d.snapshot_at - lag(d.snapshot_at) OVER k)::int AS interval_secs,
+             (d.stats_reset IS DISTINCT FROM lag(d.stats_reset) OVER k) AS reset,
+             d.xact_commit, lag(d.xact_commit) OVER k AS p1, d.xact_rollback, lag(d.xact_rollback) OVER k AS p2,
+             d.blks_read, lag(d.blks_read) OVER k AS p3, d.blks_hit, lag(d.blks_hit) OVER k AS p4,
+             d.tup_returned, lag(d.tup_returned) OVER k AS p5, d.tup_fetched, lag(d.tup_fetched) OVER k AS p6,
+             d.tup_inserted, lag(d.tup_inserted) OVER k AS p7, d.tup_updated, lag(d.tup_updated) OVER k AS p8,
+             d.tup_deleted, lag(d.tup_deleted) OVER k AS p9, d.temp_bytes, lag(d.temp_bytes) OVER k AS p12,
+             d.deadlocks, lag(d.deadlocks) OVER k AS p13
+        FROM pgvigil.dbstats d
+       WHERE d.instance_id = p_instance_id AND d.datname = p_database
+         AND d.snapshot_at > p_from - p_lookback AND d.snapshot_at <= p_to
+      WINDOW k AS (PARTITION BY d.dbid ORDER BY d.snapshot_at)
+    ), r AS (
+      SELECT w.snapshot_at, max(w.interval_secs) AS secs,
+             sum(pgvigil.delta(w.xact_commit, w.p1, w.reset)) AS c, sum(pgvigil.delta(w.xact_rollback, w.p2, w.reset)) AS rb,
+             sum(pgvigil.delta(w.blks_read, w.p3, w.reset)) AS br, sum(pgvigil.delta(w.blks_hit, w.p4, w.reset)) AS bh,
+             sum(pgvigil.delta(w.tup_returned, w.p5, w.reset) + pgvigil.delta(w.tup_fetched, w.p6, w.reset)) AS tr,
+             sum(pgvigil.delta(w.tup_inserted, w.p7, w.reset) + pgvigil.delta(w.tup_updated, w.p8, w.reset)
+                 + pgvigil.delta(w.tup_deleted, w.p9, w.reset)) AS tw,
+             sum(pgvigil.delta(w.temp_bytes, w.p12, w.reset)) AS tb, sum(pgvigil.delta(w.deadlocks, w.p13, w.reset)) AS dl,
+             sum(w.numbackends) AS nb
+        FROM w
+       WHERE w.interval_secs > 0 AND w.snapshot_at > p_from
+       GROUP BY w.snapshot_at
+      HAVING NOT bool_or(w.reset)
+    )
+    SELECT r.snapshot_at, v.metric, v.value
+      FROM r
+      CROSS JOIN LATERAL (VALUES
+        ('commits_s', (r.c / r.secs)::double precision), ('rollbacks_s', (r.rb / r.secs)::double precision),
+        ('blks_read_s', (r.br / r.secs)::double precision), ('blks_hit_s', (r.bh / r.secs)::double precision),
+        ('cache_hit_pct', (100.0 * r.bh / nullif(r.bh + r.br, 0))::double precision),
+        ('tup_read_s', (r.tr / r.secs)::double precision), ('tup_written_s', (r.tw / r.secs)::double precision),
+        ('temp_bytes_s', (r.tb / r.secs)::double precision), ('deadlocks', r.dl::double precision),
+        ('backends', r.nb::double precision)) AS v(metric, value)
+     WHERE v.value IS NOT NULL;
   ELSIF p_family = 'database' THEN
     RETURN QUERY
     WITH r AS (
@@ -136,7 +181,7 @@ BEGIN
              sum(d.tup_returned + d.tup_fetched) AS tr, sum(d.tup_inserted + d.tup_updated + d.tup_deleted) AS tw,
              sum(d.temp_bytes) AS tb, sum(d.deadlocks) AS dl, sum(d.numbackends) AS nb
         FROM pgvigil.dbstats_rate(p_instance_id, p_from, p_to, p_lookback) d
-       WHERE d.interval_secs > 0 AND (p_database IS NULL OR d.datname = p_database)
+       WHERE d.interval_secs > 0
        GROUP BY d.snapshot_at
       HAVING NOT bool_or(d.reset)              -- a database reset in this interval: no point, not a dip
     )
@@ -362,18 +407,18 @@ SELECT DISTINCT ON (s.instance_id, s.metric, coalesce(s.database, '')) s.*
   FROM pgvigil.alert_rule_scope s
  ORDER BY s.instance_id, s.metric, coalesce(s.database, ''), s.level DESC, s.rule_id DESC;
 
--- metric_rule: the thresholds in force for one metric of one instance as the Metrics grid and a row's chart show
--- them: the most specific rule covering the instance; for one database's series (p_database) a rule naming that
--- database first, then the instance's, a tag's, the fleet's. No row = no threshold.
+-- metric_rule: the thresholds in force for one series of one instance as the Metrics grid and a row's chart show
+-- them: the rule the sender judges that series by (alert_rules_effective). For the instance's own series (p_database
+-- NULL) that is the most specific rule naming no database; for one database's series the most specific rule naming
+-- that database. A rule without a database watches the summed series only, so it is never shown as a database's
+-- threshold. No row = no threshold.
 CREATE OR REPLACE FUNCTION pgvigil.metric_rule(p_instance_id int, p_key text, p_database text DEFAULT NULL)
 RETURNS TABLE (rule_id bigint, rule_name text, op text, warning double precision, critical double precision, for_minutes int,
                rule_scope text, rule_target text, rule_database text)
 LANGUAGE sql STABLE AS $$
-  SELECT s.rule_id, s.name, s.op, s.warning, s.critical, s.for_minutes, s.scope, coalesce(s.tag, s.instance_name), s.database
-    FROM pgvigil.alert_rule_scope s
-   WHERE s.instance_id = p_instance_id AND s.metric = p_key AND (s.database IS NULL OR s.database = p_database)
-   ORDER BY (s.database IS NOT NULL) DESC, s.level DESC, s.rule_id DESC
-   LIMIT 1
+  SELECT e.rule_id, e.name, e.op, e.warning, e.critical, e.for_minutes, e.scope, coalesce(e.tag, e.instance_name), e.database
+    FROM pgvigil.alert_rules_effective e
+   WHERE e.instance_id = p_instance_id AND e.metric = p_key AND e.database IS NOT DISTINCT FROM p_database
 $$;
 
 -- metric_status: one figure against a row's thresholds: critical, warning or ok; NULL without a figure or a threshold
@@ -428,7 +473,7 @@ BEGIN
            c.family_sort, c.sort
       FROM pgvigil.metric_catalog c
       LEFT JOIN a ON a.metric = c.metric
-      LEFT JOIN LATERAL pgvigil.metric_rule(p_instance_id, c.key, p_database) t ON true
+      LEFT JOIN LATERAL pgvigil.metric_rule(p_instance_id, c.key, CASE WHEN c.per_database THEN p_database END) t ON true
      WHERE c.family = f.family AND c.engine IN (v_engine, 'any');
   END LOOP;
 END $$;
@@ -445,13 +490,16 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
   SELECT CASE WHEN p IS NULL THEN NULL ELSE trim_scale(round(p::numeric, 3))::text END
 $$;
 
--- alert_rule_eval: every rule in force, judged at p_at. One read of a family's points per instance and series; the
--- window reaches the longest rule's minutes plus an hour back, so a run that began before it still counts as long
--- enough. A level holds when the newest sample is fresh and beyond its value and the unbroken run of samples beyond
--- it spans the rule's minutes (first to newest sample: a single late sample never fires a rule by the clock alone).
+-- alert_rule_eval: every rule in force, judged at p_at on the samples alone. One read of a family's points per
+-- instance and series; the window reaches the longest rule's minutes plus an hour back. A level holds when the newest
+-- sample is fresh and beyond its value and the unbroken run of samples beyond it spans the rule's minutes (first to
+-- newest sample: a single late sample never fires a rule by the clock alone). Per level it also says whether the
+-- newest sample is beyond it and when a sample was last inside it (in the window): alert_rules_run needs both to keep
+-- a firing series firing across a gap longer than the window.
 CREATE OR REPLACE FUNCTION pgvigil.alert_rule_eval(p_at timestamptz)
 RETURNS TABLE (rule_id bigint, instance_id int, metric text, database text, state text, value double precision,
-               threshold double precision, sample_at timestamptz, beyond_since timestamptz)
+               threshold double precision, sample_at timestamptz, beyond_since timestamptz,
+               crit_beyond boolean, crit_within_at timestamptz, warn_beyond boolean, warn_within_at timestamptz)
 LANGUAGE plpgsql STABLE SET jit = off AS $$
 #variable_conflict use_column
 DECLARE
@@ -475,7 +523,7 @@ BEGIN
        WHERE e.instance_id = g.instance_id AND c.family = g.family AND e.database IS NOT DISTINCT FROM g.database
          AND l.thr IS NOT NULL
     ), j AS (
-      SELECT lv.*, z.last_at, z.last_value,
+      SELECT lv.*, z.last_at, z.last_value, z.last_within,
              (SELECT min(p2.at) FROM p p2
                WHERE p2.metric = lv.m AND (z.last_within IS NULL OR p2.at > z.last_within)) AS run_from
         FROM lv
@@ -488,26 +536,45 @@ BEGIN
              (j.last_at IS NOT NULL AND p_at - j.last_at <= make_interval(secs => j.fresh_secs)) AS fresh,
              (j.run_from IS NOT NULL AND j.last_at - j.run_from >= make_interval(mins => j.for_minutes)) AS long_enough
         FROM j
+    ), x AS (
+      SELECT k.rule_id, k.key,
+             CASE WHEN NOT bool_or(k.fresh) THEN 'nodata'
+                  WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'critical') THEN 'critical'
+                  WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'warning') THEN 'warning'
+                  WHEN bool_or(k.run_from IS NOT NULL) THEN 'pending'
+                  ELSE 'ok' END AS st,
+             max(k.last_value) AS last_value, max(k.last_at) AS last_at,
+             max(k.thr) FILTER (WHERE k.sev = 'critical') AS crit_thr, max(k.thr) FILTER (WHERE k.sev = 'warning') AS warn_thr,
+             min(k.run_from) FILTER (WHERE k.sev = 'critical') AS crit_from, min(k.run_from) FILTER (WHERE k.sev = 'warning') AS warn_from,
+             bool_or(k.run_from IS NOT NULL) FILTER (WHERE k.sev = 'critical') AS crit_run,
+             max(k.last_within) FILTER (WHERE k.sev = 'critical') AS crit_in,
+             bool_or(k.run_from IS NOT NULL) FILTER (WHERE k.sev = 'warning') AS warn_run,
+             max(k.last_within) FILTER (WHERE k.sev = 'warning') AS warn_in
+        FROM k
+       GROUP BY k.rule_id, k.key
     )
-    SELECT k.rule_id, g.instance_id, k.key, g.database,
-           CASE WHEN NOT bool_or(k.fresh) THEN 'nodata'
-                WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'critical') THEN 'critical'
-                WHEN bool_or(k.fresh AND k.long_enough) FILTER (WHERE k.sev = 'warning') THEN 'warning'
-                WHEN bool_or(k.run_from IS NOT NULL) THEN 'pending'
-                ELSE 'ok' END,
-           max(k.last_value),
-           coalesce(max(k.thr) FILTER (WHERE k.sev = 'critical' AND k.fresh AND k.long_enough),
-                    max(k.thr) FILTER (WHERE k.sev = 'warning'), max(k.thr)),
-           max(k.last_at),
-           coalesce(min(k.run_from) FILTER (WHERE k.sev = 'critical' AND k.fresh AND k.long_enough),
-                    min(k.run_from) FILTER (WHERE k.sev = 'warning'), min(k.run_from))
-      FROM k
-     GROUP BY k.rule_id, k.key;
+    SELECT x.rule_id, g.instance_id, x.key, g.database, x.st, x.last_value,
+           -- the value and the run of the level the state names (no level reached: the lower one set)
+           CASE x.st WHEN 'critical' THEN x.crit_thr WHEN 'warning' THEN x.warn_thr ELSE coalesce(x.warn_thr, x.crit_thr) END,
+           x.last_at,
+           CASE x.st WHEN 'critical' THEN x.crit_from WHEN 'warning' THEN x.warn_from ELSE coalesce(x.warn_from, x.crit_from) END,
+           x.crit_run, x.crit_in, x.warn_run, x.warn_in
+      FROM x;
   END LOOP;
 END $$;
 
 -- alert_rules_run: the sender's evaluation, stored (one row per rule in force, instance and series); rows of a rule
--- no longer in force are removed. Returns the rows firing. Called at the start of every alert pass.
+-- no longer in force are removed. Returns the rows firing. Called at the start of every alert pass. What the samples
+-- say (alert_rule_eval) is joined with what the series was at the last pass, because a firing series does not stop
+-- firing for want of samples:
+--   no fresh sample          the row keeps its level and is marked held; under a rule that changed meanwhile (an edit,
+--                            a narrower rule) it keeps the level its last sample has under the rule now in force
+--   a gap, then samples      samples that come back beyond the value after a gap longer than the window read
+--                            'pending' by themselves (the run's start is out of the window): the row keeps its level
+--                            as long as no sample came inside that level since it was last judged (under a rule
+--                            that changed meanwhile: as long as the window holds no sample inside the new level)
+-- It recovers when a sample inside the value arrives. 'Began to fire' is the series' move from not firing to firing,
+-- whatever rule is in force on it: an edit of a firing rule is not a new firing, and keeps the row's 'since'.
 CREATE OR REPLACE FUNCTION pgvigil.alert_rules_run(p_at timestamptz)
 RETURNS int LANGUAGE plpgsql SET jit = off AS $$
 DECLARE
@@ -515,38 +582,53 @@ DECLARE
 BEGIN
   WITH e AS MATERIALIZED (
     SELECT * FROM pgvigil.alert_rule_eval(p_at)
-  ), old AS MATERIALIZED (
-    SELECT s.instance_id, s.metric, s.database, s.rule_id, s.state FROM pgvigil.alert_rule_state s
+  ), j AS MATERIALIZED (
+    SELECT e.*, coalesce(e.database, '') AS db, r.op, r.warning AS r_warn, r.critical AS r_crit,
+           o.state AS o_state, o.rule_id AS o_rule, o.since AS o_since, o.beyond_since AS o_beyond,
+           o.sample_at AS o_sample_at, o.value AS o_value,
+           coalesce(o.state IN ('warning', 'critical'), false) AS o_firing
+      FROM e
+      JOIN pgvigil.alert_rules r ON r.rule_id = e.rule_id
+      LEFT JOIN pgvigil.alert_rule_state o
+        ON o.instance_id = e.instance_id AND o.metric = e.metric AND o.database = coalesce(e.database, '')
+  ), fin AS MATERIALIZED (
+    SELECT j.*,
+           CASE
+             WHEN j.state = 'critical' THEN 'critical'
+             WHEN j.state = 'nodata' AND j.o_firing AND j.o_rule = j.rule_id THEN j.o_state
+             WHEN j.state = 'nodata' AND j.o_firing AND pgvigil.alert_beyond(j.op, j.o_value, j.r_crit) THEN 'critical'
+             WHEN j.state = 'nodata' AND j.o_firing AND pgvigil.alert_beyond(j.op, j.o_value, j.r_warn) THEN 'warning'
+             WHEN j.o_firing AND j.o_state = 'critical' AND j.crit_beyond
+                  AND (j.crit_within_at IS NULL OR (j.o_rule = j.rule_id AND j.crit_within_at <= j.o_sample_at)) THEN 'critical'
+             WHEN j.state = 'warning' THEN 'warning'
+             WHEN j.o_firing AND j.warn_beyond
+                  AND (j.warn_within_at IS NULL OR (j.o_rule = j.rule_id AND j.warn_within_at <= j.o_sample_at)) THEN 'warning'
+             ELSE j.state END AS new_state
+      FROM j
   ), up AS (
     INSERT INTO pgvigil.alert_rule_state AS s (instance_id, metric, database, rule_id, state, held, value, threshold,
                                                sample_at, beyond_since, since, evaluated_at)
-    SELECT e.instance_id, e.metric, coalesce(e.database, ''), e.rule_id, e.state, false, e.value, e.threshold,
-           e.sample_at, e.beyond_since, p_at, p_at
-      FROM e
+    SELECT fin.instance_id, fin.metric, fin.db, fin.rule_id, fin.new_state,
+           (fin.state = 'nodata' AND fin.new_state IN ('warning', 'critical')),
+           coalesce(fin.value, fin.o_value),
+           CASE fin.new_state WHEN 'critical' THEN fin.r_crit WHEN 'warning' THEN fin.r_warn ELSE fin.threshold END,
+           coalesce(fin.sample_at, fin.o_sample_at),
+           -- a row that stays at its level keeps the run's first start (the window slides past it; a held row has none)
+           CASE WHEN fin.o_state = fin.new_state AND fin.new_state IN ('warning', 'critical')
+                THEN least(fin.o_beyond, fin.beyond_since) ELSE fin.beyond_since END,
+           CASE WHEN fin.o_state = fin.new_state THEN fin.o_since ELSE p_at END,
+           p_at
+      FROM fin
     ON CONFLICT (instance_id, metric, database) DO UPDATE SET
-      -- a firing rule whose series went quiet keeps its state: no data is not a recovery
-      held = (EXCLUDED.state = 'nodata' AND s.state IN ('warning', 'critical') AND s.rule_id = EXCLUDED.rule_id),
-      state = CASE WHEN EXCLUDED.state = 'nodata' AND s.state IN ('warning', 'critical') AND s.rule_id = EXCLUDED.rule_id
-                   THEN s.state ELSE EXCLUDED.state END,
-      since = CASE WHEN s.rule_id = EXCLUDED.rule_id
-                        AND (s.state = EXCLUDED.state OR (EXCLUDED.state = 'nodata' AND s.state IN ('warning', 'critical')))
-                   THEN s.since ELSE EXCLUDED.since END,
-      value = coalesce(EXCLUDED.value, s.value), threshold = coalesce(EXCLUDED.threshold, s.threshold),
-      sample_at = coalesce(EXCLUDED.sample_at, s.sample_at),
-      -- a run longer than the evaluation window keeps its first start (the window slides past it), and so does a held row
-      beyond_since = CASE WHEN s.rule_id = EXCLUDED.rule_id AND s.state IN ('warning', 'critical')
-                               AND EXCLUDED.state IN (s.state, 'nodata')
-                          THEN least(s.beyond_since, EXCLUDED.beyond_since) ELSE EXCLUDED.beyond_since END,
-      rule_id = EXCLUDED.rule_id, evaluated_at = EXCLUDED.evaluated_at
-    RETURNING s.instance_id, s.metric, s.database, s.rule_id, s.state
-  ), began AS (         -- the rows that began to fire in this run
-    SELECT up.rule_id, max(i.name) AS instance, count(*) AS n
-      FROM up
-      JOIN pgvigil.instances i ON i.instance_id = up.instance_id
-      LEFT JOIN old ON old.instance_id = up.instance_id AND old.metric = up.metric AND old.database = up.database
-                   AND old.rule_id = up.rule_id
-     WHERE up.state IN ('warning', 'critical') AND coalesce(old.state, 'ok') NOT IN ('warning', 'critical')
-     GROUP BY up.rule_id
+      rule_id = EXCLUDED.rule_id, state = EXCLUDED.state, held = EXCLUDED.held, value = EXCLUDED.value,
+      threshold = EXCLUDED.threshold, sample_at = EXCLUDED.sample_at, beyond_since = EXCLUDED.beyond_since,
+      since = EXCLUDED.since, evaluated_at = EXCLUDED.evaluated_at
+    RETURNING s.instance_id
+  ), began AS (         -- the series that began to fire in this run
+    SELECT fin.rule_id, max(i.name) AS instance, count(*) AS n
+      FROM fin JOIN pgvigil.instances i ON i.instance_id = fin.instance_id
+     WHERE fin.new_state IN ('warning', 'critical') AND NOT fin.o_firing
+     GROUP BY fin.rule_id
   )
   INSERT INTO pgvigil.alert_rule_fired AS f (rule_id, last_fired_at, last_instance, fired)
   SELECT b.rule_id, p_at, b.instance, b.n FROM began b
@@ -711,6 +793,10 @@ BEGIN
                 CASE WHEN v_op = 'edit' THEN v_old.enabled ELSE true END,
                 CASE WHEN v_op = 'edit' THEN v_id END, v_user, p_at, v_client)
         RETURNING rule_id INTO v_new;
+        IF v_op = 'edit' THEN     -- the successor is the same rule to its reader: when it last fired goes with it
+          INSERT INTO pgvigil.alert_rule_fired (rule_id, last_fired_at, last_instance, fired)
+          SELECT v_new, f.last_fired_at, f.last_instance, f.fired FROM pgvigil.alert_rule_fired f WHERE f.rule_id = v_id;
+        END IF;
         v_done := CASE v_op WHEN 'edit' THEN format('rule %s replaced by rule %s', v_id, v_new) ELSE 'added' END;
       END IF;
     EXCEPTION
