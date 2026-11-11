@@ -6,16 +6,25 @@
 //   #/dbadash?dr=<repo>            one repository
 //   #/dbadash?dr=<repo>&di=<id>    one DBADash instance: its statuses, the last collection, the repository it came from,
 //                                  and the status changes of the window
+//   #/dbadash?dr=<repo>&di=<id>&dp=<page>[&ds=<snapshot>]  one of DBADash's own screens for the instance (task 75):
+//                                  ONE call of DBADash's procedure for it (Performance Summary, Running Queries and a
+//                                  snapshot's sessions, Backups, Agent Jobs, Drives, DB Space, Configuration, SQL Agent
+//                                  Alerts), every result set a grid; Kill on a session and Start / Stop on a job go
+//                                  through the actions door of the SQL Server instance pgvigil monitors under the same
+//                                  @@SERVERNAME (mssql_actions.ts), off with the reason when there is none
 // The tree's folders ("DBADash: <repository>", a node per SQL Server instance) are dbadashFolders, which the shell's
 // tree.ts draws below the PostgreSQL folders. A DBADash GUI has no URL: the page names the instance and the repository
 // and links nowhere outside pgvigil.
 import { get, LoginRequired, Row, rowsOf, Table } from './api';
+import { mssqlJobCol, mssqlKillCol } from './mssql_actions';
 import { Ctx, href, window_ } from './router';
 import { hashParam } from './dbinfo';
-import { badge, Col, dot, el, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, dot, el, errorBox, fmtTime, grid, props, tile } from './ui';
 
 interface DBADashData { repositories: Table | null; fleet: Table | null; checks: Table | null }
-interface DBADashInstance { instance: Table | null; statuses: Table | null; changes: Table | null }
+interface DBADashInstance { instance: Table | null; statuses: Table | null; changes: Table | null; pgvigil?: Table | null }
+interface PageSet { columns: { name: string; type: string }[]; rows: unknown[][]; truncated?: boolean }
+interface PageReply { page: string; title: string; procedure: string; version: string; proven: boolean; note?: string; results: PageSet[]; ms: number }
 
 // DBADash's codes (DBADashStatusEnum) and pgvigil's colour for each: 1 Critical, 2 Warning, 6 Warning (low) are the
 // two alarm levels; N/A, Information and Disabled are shown muted; Acknowledged muted and marked (blue in the solid
@@ -46,13 +55,27 @@ export async function dbadashData(force = false): Promise<DBADashData> {
 }
 
 // dbadashHref: the page's link (the time range kept; no instance or tag scope: DBADash instances are not pgvigil's)
-export function dbadashHref(ctx: Ctx, repo?: string, id?: unknown): string {
+export function dbadashHref(ctx: Ctx, repo?: string, id?: unknown, page?: string, snapshot?: string): string {
   const base = href(ctx, { tab: 'dbadash', instance: undefined, tag: undefined });
   const q = new URLSearchParams(base.split('?')[1] ?? '');
-  for (const k of ['dr', 'di']) q.delete(k);
+  for (const k of ['dr', 'di', 'dp', 'ds']) q.delete(k);
   if (repo) q.set('dr', repo);
   if (repo && id != null) q.set('di', String(id));
+  if (repo && id != null && page) q.set('dp', page);
+  if (repo && id != null && page && snapshot) q.set('ds', snapshot);
   return `#/dbadash?${q}`;
+}
+
+// the instance page's screens: the Summary (task 55's read of dbo.Summary) and DBADash's procedures, in task 75's order
+const screens: [string, string][] = [['', 'Summary'], ['performance', 'Performance Summary'], ['running', 'Running Queries'], ['backups', 'Backups'],
+  ['jobs', 'Agent Jobs'], ['drives', 'Drives'], ['dbfiles', 'DB Space'], ['configuration', 'Configuration'], ['alerts', 'SQL Agent Alerts']];
+function screenNav(ctx: Ctx, repo: string, id: number, cur: string): HTMLElement {
+  return el('nav', { class: 'subtabs', 'aria-label': 'DBADash screens' }, ...screens.map(([k, label]) => {
+    const on = k === cur || (cur === 'sessions' && k === 'running');
+    const a = el('a', { href: dbadashHref(ctx, repo, id, k || undefined), class: on ? 'on' : '' }, label);
+    if (on) a.setAttribute('aria-current', 'page');
+    return a;
+  }), ' ');
 }
 
 // the Summary cell of one status: DBADash's word, its detail as the title, coloured by the code
@@ -87,7 +110,8 @@ function fleetGrid(ctx: Ctx, rows: Row[], checks: Row[]): HTMLElement {
 
 // dbadashView: the page (#/dbadash with dr and di as above)
 export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
-  const repo = hashParam('dr'), id = hashParam('di');
+  const repo = hashParam('dr'), id = hashParam('di'), page = hashParam('dp');
+  if (repo && id && page) return pageView(ctx, repo, Number(id), page, hashParam('ds'));
   if (repo && id) return instanceView(ctx, repo, Number(id));
   const d = await dbadashData(true);
   const repos = rowsOf(d.repositories).filter(r => !repo || r.repository === repo);
@@ -133,7 +157,7 @@ async function instanceView(ctx: Ctx, repo: string, id: number): Promise<HTMLEle
     return sec;
   }
   const st = rowsOf(d.statuses);
-  sec.append(el('h2', {}, String(i.display_name), ' ', el('span', { class: 'meta' }, `(SQL Server, from DBADash: ${repo})`)));
+  sec.append(el('h2', {}, String(i.display_name), ' ', el('span', { class: 'meta' }, `(SQL Server, from DBADash: ${repo})`)), screenNav(ctx, repo, id, ''));
   if (i.repository_status !== 'ok') {
     sec.append(el('p', { class: 'error', role: 'status' }, `The repository was not read at its last try (${fmtTime(i.repository_read_at)}): ${String(i.repository_reason ?? '')}. The statuses below are from ${i.repository_ok_at ? fmtTime(i.repository_ok_at) : 'no read'}.`));
   }
@@ -177,6 +201,81 @@ async function instanceView(ctx: Ctx, repo: string, id: number): Promise<HTMLEle
       { key: 'old_word', label: 'was', cls: (_v, r) => 'status ' + codeClass(num(r.old_code)), fmt: v => String(v ?? 'none') },
       { key: 'new_word', label: 'now', cls: (_v, r) => 'status ' + codeClass(num(r.new_code)), fmt: v => String(v ?? 'none') },
     ], 'No status changed in the window.'));
+  return sec;
+}
+
+// ---- DBADash's own screens (task 75): one procedure call, its result sets as grids
+
+const numTypes = new Set(['INT', 'BIGINT', 'SMALLINT', 'TINYINT', 'DECIMAL', 'NUMERIC', 'FLOAT', 'REAL', 'MONEY', 'SMALLMONEY']);
+// a DBADash status column (FullBackupStatus, JobStatus ...): its code with DBADash's word and colour
+const isStatusCol = (c: { name: string; type: string }) => /Status$/.test(c.name) && (c.type === 'INT' || c.type === 'TINYINT' || c.type === 'SMALLINT');
+// a snapshot time of RunningQueriesSummary_Get (UTC, as DBADash keeps it) as the sessions page's ds= value
+const asUTC = (v: unknown) => String(v ?? '').replace(' ', 'T') + 'Z';
+
+function setRows(set: PageSet): { cols: Col[]; rows: Row[] } {
+  const names: string[] = [];
+  for (const c of set.columns) {
+    let n = c.name || '(no name)', k = 2;
+    while (names.includes(n)) n = `${c.name}_${k++}`;
+    names.push(n);
+  }
+  const cols: Col[] = set.columns.map((c, i) => {
+    const key = names[i];
+    if (isStatusCol(c)) {
+      return { key, label: c.name, cls: (v: unknown) => 'status ' + codeClass(num(v)), fmt: (v: unknown) => statusCell(num(v), c.name) };
+    }
+    return { key, label: c.name, num: numTypes.has(c.type), wide: c.type === 'NVARCHAR' || c.type === 'VARCHAR' || c.type === 'XML' };
+  });
+  const rows = set.rows.map(r => Object.fromEntries(names.map((n, i) => [n, r[i]])) as Row);
+  return { cols, rows };
+}
+
+async function pageView(ctx: Ctx, repo: string, id: number, page: string, snapshot?: string): Promise<HTMLElement> {
+  const w = window_(ctx);
+  const sec = el('section', {});
+  const head = await get<DBADashInstance>('dbadash', { repo, id, from: w.from, to: w.to }).catch(() => null);
+  const i = head ? rowsOf(head.instance)[0] : undefined;
+  const pg = head ? rowsOf(head.pgvigil)[0] : undefined;
+  sec.append(el('h2', {}, i ? String(i.display_name) : `DBADash instance ${id}`, ' ', el('span', { class: 'meta' }, `(SQL Server, from DBADash: ${repo})`)),
+    screenNav(ctx, repo, id, page));
+  let d: PageReply;
+  try {
+    d = await get<PageReply>('dbadash', { repo, id, page, from: w.from, to: w.to, ...(snapshot ? { snapshot } : {}) });
+  } catch (e) {
+    sec.append(errorBox(e));
+    return sec;
+  }
+  sec.append(el('h3', {}, d.title, page === 'sessions' ? (snapshot ? ` at ${fmtTime(snapshot)}` : ' (the latest snapshot)') : ''),
+    el('p', { class: 'meta' }, `DBADash's own ${d.procedure}, called now for this instance through the repository's read login (${d.ms} ms); DBADash ${d.version || '(no version row)'}.`));
+  if (!d.proven) sec.append(el('p', { class: 'error', role: 'status' }, d.note ?? 'not proven on this DBADash version'));
+  // the actions: the SQL Server instance pgvigil monitors under the same @@SERVERNAME, or off with the reason
+  const pid = pg ? Number(pg.instance_id) : undefined;
+  const noDoor = `${i ? String(i.instance) : 'this instance'} is not a SQL Server instance pgvigil monitors (an instances: entry with engine: sqlserver, its actions_dsn and actions: list; docs/dbadash.md): no action is sent from this page`;
+  const after = () => { location.hash = location.hash; window.dispatchEvent(new HashChangeEvent('hashchange')); };
+  let actCol: Col | undefined;
+  if (page === 'sessions' || page === 'jobs') {
+    if (pid) {
+      const actx = { ...ctx, instance: pid };
+      actCol = page === 'sessions' ? await mssqlKillCol(actx, after) : await mssqlJobCol(actx, after);
+      sec.append(el('p', { class: 'meta' }, `Actions go through the actions door of pgvigil's own instance ${String(pg?.name)}${Number(pg?.matches) > 1 ? ` (one of ${String(pg?.matches)} with this server name)` : ''}; every attempt is kept in its Actions log.`));
+    } else {
+      actCol = { key: '_actions', label: 'action', fmt: () => { const b = el('button', { type: 'button', 'aria-disabled': 'true', style: 'font-size:12px;padding:0 .4rem;opacity:.55;cursor:not-allowed', title: noDoor }, page === 'sessions' ? 'Kill' : 'Start / Stop'); b.setAttribute('aria-label', 'off. ' + noDoor); return b; } };
+      sec.append(el('p', { class: 'meta' }, noDoor + '.'));
+    }
+  }
+  if (!d.results.length) sec.append(el('p', { class: 'empty' }, 'The procedure returned no result set.'));
+  d.results.forEach((set, n) => {
+    const { cols, rows } = setRows(set);
+    if (page === 'running') {
+      const at = cols.find(c => c.key === 'SnapshotDateUTC');
+      if (at) at.fmt = v => el('a', { href: dbadashHref(ctx, repo, id, 'sessions', asUTC(v)), title: 'the sessions of this snapshot' }, fmtTime(asUTC(v)));
+    }
+    if (actCol && n === 0) cols.push(actCol);
+    if (d.results.length > 1) sec.append(el('h4', {}, `Result set ${n + 1}`));
+    if (set.truncated) sec.append(el('p', { class: 'meta' }, 'The first 5000 rows of this result set.'));
+    sec.append(grid(rows, cols, 'No rows.'));
+  });
+  if (page === 'running') sec.append(el('p', {}, el('a', { href: dbadashHref(ctx, repo, id, 'sessions') }, 'The latest snapshot\'s sessions')));
   return sec;
 }
 
