@@ -17,12 +17,20 @@ import (
 // queries of each of its intervals by duration, CPU, logical reads, memory grant and waits, every forced plan with
 // its failure count and reason, and the automatic tuning recommendations with their state.
 //
-// The store is read in two steps, never by a scan of sys.query_store_runtime_stats over its whole history:
+// The store is read in two steps, so its history never leaves the server and the text, the plans and the plan XML
+// are never joined for more than the plans that matter:
 //
-//  1. the intervals to read come from sys.query_store_runtime_stats_interval (one row per interval), from the
-//     newest interval the repository holds for the database (read again: it was open) and seven days back at most;
+//  1. the intervals to read come from sys.query_store_runtime_stats_interval (one row per interval; its index on
+//     end_time is a seek): from the newest interval the repository holds for the database (read again: it was
+//     open), the oldest first, qsMaxIntervals a run, seven days back at most. A backlog is read over several runs;
 //  2. sys.query_store_runtime_stats and sys.query_store_wait_stats are read for those interval ids alone, summed
-//     per plan and interval, and only the plans in an interval's top lists leave the server (the candidate set).
+//     per plan and interval on the server, and only the plans in an interval's top lists leave it (the candidate
+//     set).
+//
+// What step 2 costs the server: the wait statistics are clustered by interval, the runtime statistics by plan
+// (plan_id, runtime_stats_interval_id, execution_type; read on SQL Server 2022), so the filter on the interval
+// cannot seek there and SQL Server reads the store's runtime statistics table through once per run, as SSMS's
+// own Query Store reports and sp_QuickieStore do. That table is bounded by the store's MAX_STORAGE_SIZE_MB.
 //
 // The text, the plan's properties and the plan XML are then read for the candidate plans by their ids. A plan's XML
 // is read once: the repository says which plans it already holds.
@@ -35,7 +43,7 @@ import (
 // yet (one database is the instance there; the per-database pass is a later wave). Nothing is written on the
 // server: each read is one SELECT run through that database's sys.sp_executesql, which changes no session
 // setting. The collector's own statements run inside the database and are captured by its Query Store like any
-// other session's (three to six short statements a run).
+// other session's (two to seven short statements per database a run).
 type queryStoreCollector struct{}
 
 func init() { Register(queryStoreCollector{}) }
@@ -50,7 +58,7 @@ func (queryStoreCollector) Applies(info Info) (bool, string) {
 	switch {
 	case info.Kind == KindAzureDB:
 		return false, "not yet on Azure SQL Database (the per-database pass runs through other databases' sys.sp_executesql)"
-	case info.Kind == KindServer && info.Major > 0 && info.Major < 13:
+	case info.Kind != KindAzureMI && info.Major > 0 && info.Major < 13:
 		return false, "Query Store arrived in SQL Server 2016"
 	case !info.ViewServerState:
 		return false, "the login lacks VIEW SERVER STATE: the Query Store views of a database need VIEW DATABASE STATE, which it gives in every database the login can enter"
@@ -64,17 +72,23 @@ const (
 	// qsFirstRead is how far back a database's first read goes; qsMaxBack how far any read goes.
 	qsFirstRead = 24 * time.Hour
 	qsMaxBack   = 7 * 24 * time.Hour
-	// qsMaxIntervals bounds one read of one database (a 1-minute interval length over seven days is 10,080 rows).
+	// qsMaxIntervals bounds one read of one database (a 1-minute interval length over seven days is 10,080 rows):
+	// the oldest intervals due come first, and the next run reads on from the newest of them.
 	qsMaxIntervals = 200
 	// qsPlanXMLPerRun bounds the plan XML one run of one database carries; qsPlanXMLMaxBytes one plan's XML.
 	qsPlanXMLPerRun   = 100
 	qsPlanXMLMaxBytes = 4 << 20
 	// qsPlanXMLRunBytes bounds the plan XML one run carries over every database, as the server sizes it (two bytes
-	// a character); qsMaxRows the rows of one run. A run that reaches either leaves the rest to the next run, which
-	// reads on from the repository's cursors: a first read of a busy server arrives over a few runs, not as one
-	// payload the repository's write would time out on.
+	// a character). A plan put off by either XML bound is stored without its XML and is asked for again the next
+	// time it is among an interval's candidates (or while it is forced).
 	qsPlanXMLRunBytes = 64 << 20
-	qsMaxRows         = 60000
+	// qsMaxRows: a run that already carries this many rows takes no further database (one database adds at most
+	// qsMaxIntervals intervals of 5 x qsTopN plans each). The databases left over come first in the next run: a
+	// first read of a busy server arrives over a few runs, not as one payload the repository's write would time
+	// out on.
+	qsMaxRows = 60000
+	// qsMaxTuning bounds the recommendations read per database.
+	qsMaxTuning = 200
 	// qsSinceSource and qsPlanSource name the repository's cursors (pgvigil.mssql_hadr_cursor, 0083): the newest
 	// interval stored for a database as epoch seconds, and the plan hash of a plan whose XML needs no read.
 	qsSinceSource = "qs_since:"
@@ -119,13 +133,14 @@ func qsOptionCols(info Info) string {
 // Managed Instance has them whatever its product version says.
 func qsHasWaits(info Info) bool { return info.Kind == KindAzureMI || info.Major >= 14 }
 
-// qsIntervalsSQL: step one. The store's intervals that ended after @since, the newest first.
+// qsIntervalsSQL: step one. The store's intervals that ended after @since, the oldest first: a backlog longer than
+// @max is read over several runs, each going on from the newest interval the one before stored.
 const qsIntervalsSQL = `SELECT TOP (@max) i.runtime_stats_interval_id AS interval_id, i.start_time AS interval_start, i.end_time AS interval_end
 FROM sys.query_store_runtime_stats_interval i
 WHERE i.end_time > @since
-ORDER BY i.runtime_stats_interval_id DESC`
+ORDER BY i.end_time, i.runtime_stats_interval_id`
 
-// qsCandidatesSQL: step two. The runtime statistics of the intervals from @first on, summed per plan and interval
+// qsCandidatesSQL: step two. The runtime statistics of the intervals @first to @last, summed per plan and interval
 // (a plan has a row per execution type: regular, aborted, exception), ranked inside each interval by total
 // duration, CPU, logical reads, the largest memory grant and total wait time; a plan in the first @top of any list
 // is kept. tot_* are the interval's totals over every plan, so the page can say what share the kept plans are.
@@ -147,7 +162,7 @@ const qsCandidatesSQL = `WITH rs AS (
          MAX(r.max_dop) AS max_dop,
          MIN(r.first_execution_time) AS first_execution, MAX(r.last_execution_time) AS last_execution
     FROM sys.query_store_runtime_stats r
-   WHERE r.runtime_stats_interval_id >= @first
+   WHERE r.runtime_stats_interval_id BETWEEN @first AND @last
    GROUP BY r.plan_id, r.runtime_stats_interval_id
 ), %s, ranked AS (
   SELECT rs.*, ISNULL(ws.wait_ms, 0) AS wait_ms, ws.top_wait,
@@ -182,7 +197,7 @@ const (
 	qsWaitsCTE = `w0 AS (
   SELECT w.plan_id, w.runtime_stats_interval_id AS interval_id, w.wait_category_desc, SUM(w.total_query_wait_time_ms) AS ms
     FROM sys.query_store_wait_stats w
-   WHERE w.runtime_stats_interval_id >= @first
+   WHERE w.runtime_stats_interval_id BETWEEN @first AND @last
    GROUP BY w.plan_id, w.runtime_stats_interval_id, w.wait_category_desc
 ), ws AS (
   SELECT x.plan_id, x.interval_id, SUM(x.ms) AS wait_ms, MAX(CASE WHEN x.rn = 1 THEN x.wait_category_desc END) AS top_wait
@@ -223,7 +238,7 @@ FROM sys.database_automatic_tuning_options o`
 
 // qsTuningSQL: the automatic tuning recommendations. 2017+. state and details are JSON documents the server
 // writes; details holds ids and measurements and the script that would force the plan, no statement text.
-const qsTuningSQL = `SELECT TOP (200) CAST(r.name AS nvarchar(4000)) AS rec_name, CAST(r.type AS nvarchar(128)) AS rec_type, CAST(r.reason AS nvarchar(4000)) AS reason,
+const qsTuningSQL = `SELECT TOP (@max) CAST(r.name AS nvarchar(4000)) AS rec_name, CAST(r.type AS nvarchar(128)) AS rec_type, CAST(r.reason AS nvarchar(4000)) AS reason,
   CONVERT(varchar(33), r.valid_since, 126) + 'Z' AS valid_since, CONVERT(varchar(33), r.last_refresh, 126) + 'Z' AS last_refresh,
   CAST(JSON_VALUE(r.state, '$.currentValue') AS nvarchar(60)) AS rec_state, CAST(JSON_VALUE(r.state, '$.reason') AS nvarchar(128)) AS state_reason,
   CAST(r.is_executable_action AS int) AS is_executable, CAST(r.is_revertable_action AS int) AS is_revertable,
@@ -265,6 +280,22 @@ func (c queryStoreCollector) Run(ctx context.Context, conn *sql.Conn, info Info)
 	return c.RunFrom(ctx, conn, info, nil)
 }
 
+// qsTurn is one database the run can enter: where its store row is, and the newest interval the repository holds
+// for it (0: none).
+type qsTurn struct {
+	name, quoted string
+	state        collect.Row
+	last         int64
+	hasLast      bool
+}
+
+// qsOldestFirst orders the databases to read: the one the repository holds least of first (never read, then the
+// oldest newest interval), by name among equals. A run cut by its deadline or its row bound leaves the databases
+// it did not reach; with this order they are the first of the next run, never the same tail every time.
+func qsOldestFirst(turns []qsTurn) {
+	sort.SliceStable(turns, func(i, j int) bool { return turns[i].last < turns[j].last })
+}
+
 // RunFrom reads every database's store state and, where a store holds data, its intervals on from the newest one
 // the repository holds.
 func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursorFunc) ([]collect.Row, error) {
@@ -275,13 +306,14 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 	now := time.Now().UTC()
 	out := make([]collect.Row, 0, 4*len(dbs)+1)
 	var failed []string
-	cut, stopWhy := 0, ""
+	var turns []qsTurn
+	// noAccess and entered count the databases of the server's users (database ids above 4): any login enters msdb
+	// through its guest user, which says nothing about the stores that matter
 	noAccess, entered := 0, 0
-	xmlBudget := int64(qsPlanXMLRunBytes)
-	stop, hasStop := ctx.Deadline()
 	for _, d := range dbs {
 		name, _ := d["database_name"].(string)
 		quoted, _ := d["quoted_name"].(string)
+		id, _ := d["database_id"].(int64)
 		state := collect.Row{"kind": "store", "database_id": d["database_id"], "database_name": name, "database_state": d["database_state"],
 			"database_read_only": d["is_read_only"]}
 		out = append(out, state)
@@ -290,11 +322,29 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 				state["note"] = "not read: the database is " + strings.ToLower(ds)
 			} else {
 				state["note"] = "not read: the login cannot enter the database (CONNECT ANY DATABASE, or a user in the database, is the missing right)"
-				noAccess++
+				if id > 4 {
+					noAccess++
+				}
 			}
 			continue
 		}
-		entered++
+		if id > 4 {
+			entered++
+		}
+		t := qsTurn{name: name, quoted: quoted, state: state}
+		if cursor != nil {
+			// a repository that does not answer ends the run: nothing read from here on could be stored
+			if t.last, t.hasLast, err = cursor(ctx, qsSinceSource+name); err != nil {
+				return nil, fmt.Errorf("the repository's cursor of %s: %w", name, err)
+			}
+		}
+		turns = append(turns, t)
+	}
+	qsOldestFirst(turns)
+	cut, stopWhy := 0, ""
+	xmlBudget := int64(qsPlanXMLRunBytes)
+	stop, hasStop := ctx.Deadline()
+	for _, t := range turns {
 		if stopWhy == "" {
 			switch {
 			case ctx.Err() != nil || (hasStop && time.Until(stop) < 15*time.Second):
@@ -304,32 +354,32 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 			}
 		}
 		if stopWhy != "" {
-			state["note"] = "not read: " + stopWhy + " before this database's turn; the next run reads on"
+			t.state["note"] = "not read: " + stopWhy + " before this database's turn; it comes first in the next run"
 			cut++
 			continue
 		}
-		rows, err := qsDatabase(ctx, conn, info, cursor, name, quoted, state, now, &xmlBudget)
+		rows, err := qsDatabase(ctx, conn, info, cursor, t, now, &xmlBudget)
 		out = append(out, rows...)
 		if err != nil {
 			if ctx.Err() != nil {
-				state["note"] = "not read whole: the run's deadline came during this database's read"
+				t.state["note"] = "not read whole: the run's deadline came during this database's read"
 				stopWhy = "the run's deadline came"
 				cut++
 				continue
 			}
-			state["note"] = "the read of the store failed: " + err.Error()
-			failed = append(failed, name)
+			t.state["note"] = "the read of the store failed: " + err.Error()
+			failed = append(failed, t.name)
 		}
 	}
 	if cut > 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.query_store_runtime_stats",
-			"message": fmt.Sprintf("%s before the Query Store of %d database(s) was read; the next run reads on", stopWhy, cut)})
+			"message": fmt.Sprintf("%s before the Query Store of %d database(s) was read; they come first in the next run", stopWhy, cut)})
 	}
-	// a login that can enter no database at all reads no store: say which right is missing (one database kept
-	// closed to the login is a choice, and only its row says so)
+	// a login that can enter none of the users' databases reads no store that matters: say which right is missing
+	// (one database kept closed to the login is a choice, and only its row says so)
 	if noAccess > 0 && entered == 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.databases",
-			"message": fmt.Sprintf("the login cannot enter any of the %d database(s) a Query Store can be in: GRANT CONNECT ANY DATABASE (with VIEW SERVER STATE) lets it read each store", noAccess)})
+			"message": fmt.Sprintf("the login cannot enter any of the %d user database(s): GRANT CONNECT ANY DATABASE (with VIEW SERVER STATE) lets it read each Query Store", noAccess)})
 	}
 	if len(failed) > 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.database_query_store_options",
@@ -338,10 +388,15 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 	return out, nil
 }
 
-// qsDatabase reads one database: the options into state, then the intervals, the candidate plans, their
-// properties and XML, the automatic tuning options and recommendations. Rows read before an error are returned
-// with it.
-func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursorFunc, name, quoted string, state collect.Row, now time.Time, xmlBudget *int64) ([]collect.Row, error) {
+// qsDatabase reads one database: the options into the store row, the automatic tuning options, then the
+// intervals, the candidate plans and their properties, the plan XML and the recommendations.
+//
+// A database's intervals are complete or absent: an interval's runtime rows are returned only together with the
+// plan rows that name their queries (the import moves the database's cursor past what it stores). An error
+// before that point returns the tuning options alone and the next run reads the same intervals again; an error
+// after it (the plan XML, the recommendations) keeps what is complete.
+func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursorFunc, t qsTurn, now time.Time, xmlBudget *int64) ([]collect.Row, error) {
+	name, quoted, state := t.name, t.quoted, t.state
 	opt, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsOptionsSQL, qsOptionCols(info)), "")
 	if err != nil {
 		return nil, err
@@ -358,45 +413,43 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 		state["note"] = "the store's contents were not read: the login lacks VIEW DATABASE STATE in this database"
 		return nil, nil
 	}
-	var out []collect.Row
+	var pre []collect.Row // what stands on its own: the tuning options
 	if qsHasWaits(info) {
 		tuning, err := qsRead(ctx, conn, quoted, qsTuningOptionsSQL, "")
 		if err != nil {
-			return out, err
+			return pre, err
 		}
 		for _, r := range tuning {
 			r["kind"], r["database_name"] = "tuning_option", name
 		}
-		out = append(out, tuning...)
+		pre = append(pre, tuning...)
 	}
 	if a, _ := opt[0]["actual_state"].(string); a != "READ_WRITE" && a != "READ_ONLY" {
-		return out, nil // OFF or ERROR: no data to read
+		return pre, nil // OFF or ERROR: no data to read
 	}
 	since := now.Add(-qsFirstRead)
-	if cursor != nil {
-		last, ok, err := cursor(ctx, qsSinceSource+name)
-		if err != nil {
-			return out, err
-		}
-		if ok {
-			since = time.Unix(last, 0).UTC()
-		}
+	if t.hasLast {
+		since = time.Unix(t.last, 0).UTC()
 	}
 	if floor := now.Add(-qsMaxBack); since.Before(floor) {
 		since = floor
 	}
 	ivs, err := qsRead(ctx, conn, quoted, qsIntervalsSQL, "@since datetimeoffset(7), @max int", sql.Named("since", since), sql.Named("max", qsMaxIntervals))
 	if err != nil {
-		return out, err
+		return pre, err
 	}
 	planIDs := map[int64]bool{}
+	var data []collect.Row
 	if len(ivs) > 0 {
-		first := int64(0)
+		first, last := int64(0), int64(0)
 		byID := map[int64]collect.Row{}
 		for _, iv := range ivs {
 			id, _ := iv["interval_id"].(int64)
 			if first == 0 || id < first {
 				first = id
+			}
+			if id > last {
+				last = id
 			}
 			iv["kind"], iv["database_name"] = "interval", name
 			byID[id] = iv
@@ -405,16 +458,17 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 		if qsHasWaits(info) {
 			waits = qsWaitsCTE
 		}
-		cands, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsCandidatesSQL, waits), "@first bigint, @top int", sql.Named("first", first), sql.Named("top", qsTopN))
+		cands, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsCandidatesSQL, waits), "@first bigint, @last bigint, @top int",
+			sql.Named("first", first), sql.Named("last", last), sql.Named("top", qsTopN))
 		if err != nil {
-			return out, err
+			return pre, err
 		}
-		out = append(out, qsRuntimeRows(name, ivs, byID, cands, planIDs)...)
+		data = qsRuntimeRows(name, ivs, byID, cands, planIDs)
 	}
-	// the candidate plans' properties and text, and every forced plan; then the tuning recommendations
+	// the candidate plans' properties and text, and every forced plan
 	plans, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsPlansSQL, qsForcingCol(info), qsIDList(planIDs)), "")
 	if err != nil {
-		return out, err
+		return pre, err
 	}
 	var want []int64
 	sizes := map[int64]int64{}
@@ -426,13 +480,26 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 		case size == 0:
 		case size > qsPlanXMLMaxBytes:
 			p["xml_note"] = fmt.Sprintf("the plan XML is %d bytes: over the %d MB a plan may take, not stored", size, qsPlanXMLMaxBytes>>20)
-		case !qsPlanStored(ctx, cursor, name, id, p["plan_hash_n"]):
-			want = append(want, id)
-			sizes[id] = size
+		default:
+			if err := ctx.Err(); err != nil {
+				return pre, err
+			}
+			stored, err := qsPlanStored(ctx, cursor, name, id, p["plan_hash_n"])
+			if err != nil {
+				return pre, err // the repository does not answer: one failed lookup, not one per plan
+			}
+			if !stored {
+				want = append(want, id)
+				sizes[id] = size
+			}
 		}
 	}
-	// a marker: the plan read succeeded, so a plan the repository holds as forced and this read does not list is no longer forced
-	out = append(append(out, plans...), collect.Row{"kind": "forced_read", "database_name": name})
+	// Complete from here. The marker says the plan read succeeded: a plan the repository holds as forced and this
+	// read does not list is no longer forced. It also carries the instance's text policy to the import: kind_of
+	// 'plan' is the policy's word for a plan document, whose statement column it empties unless the policy is
+	// full, and the import then drops the plan XML an earlier, wider policy stored for the database.
+	out := append(append(append(pre, data...), plans...),
+		collect.Row{"kind": "forced_read", "kind_of": "plan", "database_name": name, "statement": "kept"})
 	sort.Slice(want, func(i, j int) bool { return want[i] > want[j] }) // the newest plans first when the run's share is cut
 	ids := map[int64]bool{}
 	for _, id := range want {
@@ -440,7 +507,7 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 			break
 		}
 		if sizes[id] > *xmlBudget {
-			continue // a later run reads it: the repository does not hold it yet
+			continue // stored without its XML: asked for again the next time the plan is a candidate
 		}
 		*xmlBudget -= sizes[id]
 		ids[id] = true
@@ -451,20 +518,25 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 			return out, err
 		}
 		for _, x := range xml {
-			// kind_of 'plan' is the text policy's word for a plan document: its statement column is kept under
-			// the full policy only (a showplan carries the statement's text and the compiled parameter values)
+			// kind_of 'plan': its statement column is kept under the full policy only (a showplan carries the
+			// statement's text and the compiled parameter values)
 			out = append(out, collect.Row{"kind": "plan_xml", "kind_of": "plan", "database_name": name, "plan_id": x["plan_id"], "statement": x["plan_xml"]})
 		}
 	}
 	if qsHasWaits(info) {
-		recs, err := qsRead(ctx, conn, quoted, qsTuningSQL, "")
+		recs, err := qsRead(ctx, conn, quoted, qsTuningSQL, "@max int", sql.Named("max", qsMaxTuning))
 		if err != nil {
 			return out, err
 		}
 		for _, r := range recs {
 			r["kind"], r["database_name"] = "tuning", name
 		}
-		out = append(append(out, recs...), collect.Row{"kind": "tuning_read", "database_name": name})
+		out = append(out, recs...)
+		// the marker says the list is whole: a stored recommendation it does not hold is gone. A list cut at
+		// its bound says nothing about the ones past it.
+		if len(recs) < qsMaxTuning {
+			out = append(out, collect.Row{"kind": "tuning_read", "database_name": name})
+		}
 	}
 	return out, nil
 }
@@ -478,7 +550,7 @@ func qsRuntimeRows(name string, ivs []collect.Row, byID map[int64]collect.Row, c
 		id, _ := c["interval_id"].(int64)
 		iv, ok := byID[id]
 		if !ok {
-			continue // an interval older than the ones asked for (the id filter is a floor, the list is capped)
+			continue // an interval between @first and @last that the interval read did not list
 		}
 		if _, has := iv["executions"]; !has {
 			iv["plans"], iv["executions"], iv["duration_us"] = c["tot_plans"], c["tot_executions"], c["tot_duration_us"]
@@ -498,14 +570,17 @@ func qsRuntimeRows(name string, ivs []collect.Row, byID map[int64]collect.Row, c
 
 // qsPlanStored asks the repository whether it holds this plan's XML already (or looked at it within a day and
 // kept none under the instance's text policy): the stored plan's hash must be this plan's, since a cleared store
-// numbers its plans again from 1.
-func qsPlanStored(ctx context.Context, cursor SeqCursorFunc, name string, planID int64, hash any) bool {
+// numbers its plans again from 1. An error is the repository not answering.
+func qsPlanStored(ctx context.Context, cursor SeqCursorFunc, name string, planID int64, hash any) (bool, error) {
 	if cursor == nil {
-		return false
+		return false, nil
 	}
 	want, isNum := hash.(int64)
 	got, ok, err := cursor(ctx, qsPlanSource+strconv.FormatInt(planID, 10)+":"+name)
-	return err == nil && ok && isNum && got == want
+	if err != nil {
+		return false, fmt.Errorf("the repository's cursor of plan %d in %s: %w", planID, name, err)
+	}
+	return ok && isNum && got == want, nil
 }
 
 // qsForcingCol: plan_forcing_type_desc from SQL Server 2017.

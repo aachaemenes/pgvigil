@@ -2,20 +2,20 @@
 # Proof of the SQL Server Query Store collection (migration 0083, internal/mssql/querystore.go), its API
 # (internal/web/q_mssql_querystore.go) and its demo rows, against ONE SQL Server (real Query Stores) and the demo.
 #
-# Needs: docker, psql, curl, jq, iconv, sha256sum, go (unless PGVIGIL_BIN names a built binary), and
+# Needs: docker, psql, curl, jq, iconv, sha256sum, ss, od, go (unless PGVIGIL_BIN names a built binary), and
 #   PGVIGIL_ADMIN_DSN   a superuser connection to a PostgreSQL in KEYWORD form, without dbname (PGVIGIL_REPO_DSN is
 #                       taken when it is not set).
 # The SQL Server: with MSSQL_SA_PASSWORD set, the container PGVIGIL_MSSQL_CONTAINER (default mssql-sandbox) reachable
 # on PGVIGIL_MSSQL_ADDR (default localhost:1433); without it the proof starts its own container of
 # PGVIGIL_MSSQL_IMAGE (default mcr.microsoft.com/mssql/server:2022-latest) with a throwaway sa password and removes
 # it at the end. The proof builds ONE binary into its temp folder and uses it throughout. It makes two repository
-# databases (pgvigil_p4s1_qs_*, pgvigil_p4s1_qsdemo_*), three logins and three databases (pgvproof_p4s1_qs*) on the
+# databases (pgvigil_p4s1_qs_*, pgvigil_p4s1_qsdemo_*), three logins and four databases (pgvproof_p4s1_qs*) on the
 # server, and drops them at the end, on every exit path. It changes no server setting.
 # PGVIGIL_SKIP_DEMO=1 leaves the demo part out (the last line then says so and does not say PASS for it).
 #
 # Expected (written before the first run):
 #  A. store state. As the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE), after
-#     `collect -once mssql_querystore`: for each of the three proof databases the stored desired state, actual
+#     `collect -once mssql_querystore`: for the first and the third proof database (the second at E) the stored desired state, actual
 #     state, read-only reason, max size, interval length, capture mode, cleanup mode, wait statistics mode, flush
 #     interval, stale threshold and max plans per query equal sa's read of sys.database_query_store_options in
 #     that database. The first has its store on (READ_WRITE, 1-minute intervals), the third OFF / OFF with no
@@ -28,22 +28,32 @@
 #     figure (ties by query id).
 #  C. a forced plan that fails. A plan forced for a fifth procedure whose index is then dropped: the stored plan is
 #     forced, its failure count equals sa's and is at least 1, its reason equals sa's (NO_INDEX); the finding
-#     'a forced plan fails' names it; the API's forced part lists it.
+#     'a forced plan fails' names it (the query ran eleven seconds and more after its forced plan last did); the
+#     API's forced part lists it.
 #  D. a regression. A sixth procedure runs 50 times with an index in one interval; the index is dropped after the
 #     interval's end and it runs 50 times again: the API's regressed part for the five minutes from that interval
 #     end lists the procedure's new plan with new_plan true, 50 executions now and 50 before, and a duration
-#     ratio of 1.5 or more; the query route gives its two plans and a series row per interval and plan.
+#     ratio of 1.5 or more; the query route gives its two plans (100 executions together) and series rows of both.
 #  E. a read-only store. The second database's store is filled past MAX_STORAGE_SIZE_MB = 1 until SQL Server sets
 #     it READ_ONLY: the stored reason equals sa's (65536), the store is judged warning with a verdict naming the
 #     max size, the finding 'Query Store is read-only' names the database, mssql_querystore_status counts it, and
-#     the Summary's 'qs' cell of the instance reads warning 1 or more.
+#     the Summary's 'qs' cell of the instance reads warning 1 or more; the stored intervals' executions and plan
+#     counts equal sa's sums over the store.
+#  T. the totals and the cut. A fourth database with a 100 MB store runs 700 different statements and its store is
+#     then set READ_ONLY (frozen: both reads see the same rows). It holds more plans per interval than the list
+#     keeps: the stored intervals' executions and plan counts equal sa's sums over EVERY plan of the store, and
+#     the kept runtime rows are fewer than those plan runs and at least 50 (the cut is real, the totals whole).
+#     (Corrected after the second run: this was first asked of E's 1 MB store, which SQL Server set read-only
+#     after 14 plans: nothing to cut there.)
 #  F. the text policy. The same server collected under query_text normalized and none: under full a stored text
 #     carries the workload's literal 'pv-secret-7781' and plan XML is stored; under normalized no stored text
 #     carries the literal, one carries "a.pad = ?", and no plan XML is stored (state 'policy'); under none no text
 #     at all and no plan XML. A second run of the full instance reads no stored plan's XML again (its
-#     xml_checked_at stays).
+#     xml_checked_at stays). Last of the server parts (after H): the full instance collected once under
+#     query_text none loses every stored plan XML of the proof database, and the download answers 404.
 #  G. rights. A login without VIEW SERVER STATE: the run is skipped naming the right. A login with VIEW SERVER
-#     STATE and no way into the databases: the proof databases are listed 'not read' naming CONNECT ANY DATABASE.
+#     STATE and no way into the databases: the proof databases are listed 'not read' naming CONNECT ANY DATABASE,
+#     and the run says partial naming the grant (msdb, which any login enters as guest, does not count).
 #  H. the .sqlplan download of the first procedure's plan is byte for byte sa's query_plan (SHA-256 of the UTF-16
 #     text on both sides) with a .sqlplan file name; the same plan under the none instance answers 404.
 # Then, without a server:
@@ -53,7 +63,11 @@
 #     qs_since (the newest interval's start as epoch seconds) and qs_plan (the plan's hash while its XML is stored,
 #     or was looked at under the policy within a day; NULL otherwise) answer, and jobs / jobs_mark still do; a
 #     plan number that arrives with another hash loses its XML and its cursor, and the old runtime rows do not
-#     join the new query's text; a database a later read no longer lists leaves the state.
+#     join the new query's text; an interval of a database whose plan read did not run (no marker) is not stored
+#     and the cursor stays, and is stored with the marker; a plan number that arrives with the SAME plan hash under
+#     another query loses its XML too; a marker whose policy probe is empty drops the database's stored XML (the
+#     download then answers 404); a database a later read no longer lists leaves the state and its recommendation
+#     is marked gone.
 #  Y. the judgements on written stores: ERROR critical; READ_ONLY by size warning; READ_ONLY as a secondary or in
 #     a read-only database nothing; READ_ONLY by size on a secondary warning; READ_ONLY as asked for warning;
 #     OFF though asked for warning; OFF and not asked for nothing; 95 of 100 MB with cleanup off info, with cleanup
@@ -64,10 +78,12 @@
 #     where there is none the proof starts a postgres:13 container of its own and removes it): a fresh database
 #     migrates without error, X's first payload imported twice leaves 1|1|2|2|5 and the plan cursor 11, and Y's
 #     payload gives the same judgements as on the repository's own PostgreSQL. PGVIGIL_SKIP_PG13=1 leaves it out.
-#  P. the API: every part of /api/mssql/querystore answers; an unknown order, an over-long db, a query route
-#     without db and a plan that does not exist answer 400, 400, 400 and 404.
-#  DEMO. a two-day demo: DEMO-SQL01's top list has at least 8 queries; its regressed part for the last hour lists
-#     query 1's plan 12 as a new plan at 1.5 times or more; forced lists Orders' plan 44 with at least 17 failures
+#  P. the API: every part of /api/mssql/querystore answers; view=state answers state and checks only; an unknown
+#     order, an over-long db, a query route without db, one with a malformed hash, one without a hash, an unknown
+#     view and an unknown part answer 400; a plan that does not exist answers 404.
+#  DEMO. a two-day demo: DEMO-SQL01's top list has at least 8 queries; its regressed part for the two hours from
+#     the hour plan 12 first ran in (read from the stored rows, not the wall clock) lists query 1's plan 12 as a
+#     new plan at 1.5 times or more; forced lists Orders' plan 44 with at least 17 failures
 #     and Sales' plan 5; tuning lists the recommendation PR_1; Reporting's store is READ_ONLY and judged warning;
 #     the findings name both; the status row reads warning 1 for sql01 and 0 for sql02 (a secondary replica's
 #     read-only store); plan 7's .sqlplan downloads and is a ShowPlanXML document.
@@ -78,11 +94,12 @@
 #     render of the page.
 set -euo pipefail
 ADMIN_DSN=${PGVIGIL_ADMIN_DSN:-${PGVIGIL_REPO_DSN:?PGVIGIL_ADMIN_DSN: a superuser connection without dbname}}
-for t in psql curl jq docker iconv sha256sum; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+for t in psql curl jq docker iconv sha256sum ss od head; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+[ -n "${PGVIGIL_BIN:-}" ] || command -v go >/dev/null || { echo "FAIL: go is not on this machine and PGVIGIL_BIN names no binary" >&2; exit 1; }
 SUF=$RANDOM
 REPO_DB=pgvigil_p4s1_qs_$SUF; DEMO_DB=pgvigil_p4s1_qsdemo_$SUF
 L1=pgv_qs_$SUF; L2=pgv_qsbare_$SUF; L3=pgv_qsvss_$SUF
-DB1=pgvproof_p4s1_qs_$SUF; DB2=pgvproof_p4s1_qsfull_$SUF; DB3=pgvproof_p4s1_qsoff_$SUF
+DB1=pgvproof_p4s1_qs_$SUF; DB2=pgvproof_p4s1_qsfull_$SUF; DB3=pgvproof_p4s1_qsoff_$SUF; DB4=pgvproof_p4s1_qsmany_$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw); P2=$(pw); P3=$(pw)
 WORK=$(mktemp -d); CFG=$WORK/cfg.yaml; OUT=$WORK/out
@@ -92,9 +109,9 @@ V13=; V13DB=pgvigil_p4s1_qs13_$SUF; MADE_13=; PG13_STOP=; PG13_RM=
 CT=${PGVIGIL_MSSQL_CONTAINER:-mssql-sandbox}; ADDR=${PGVIGIL_MSSQL_ADDR:-localhost:1433}
 freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127.0.0.1|\[::1\]|\*|0.0.0.0):$p " || { echo "$p"; return; }; done; }
 # sq <sql> [database]: as sa, the password through the environment by name
-sq() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
+sq() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -r0 -I -W -h -1 -s '|' -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
 # sqs [database]: as sa, the batch on stdin (a login's password never rides a command line)
-sqs() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -d "${1:-master}" -i /dev/stdin; }
+sqs() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -r0 -I -U sa -d "${1:-master}" -i /dev/stdin; }
 cleanup() {
   rc=$?
   for p in "$SRV_PID" "$DEMO_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
@@ -111,7 +128,10 @@ cleanup() {
     done
   fi
   [ -n "$MADE_13" ] && { psql "$V13" -XAtq -c "drop database if exists $V13DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $V13DB on PostgreSQL 13 not dropped" >&2; }
-  [ -n "$PG13_STOP" ] && { docker stop "$PG13_STOP" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_STOP not stopped" >&2; }
+  # the shared container is stopped again only when no other proof has a database open in it
+  if [ -n "$PG13_STOP" ] && [ "$(psql "$V13" -XAtqc "select count(*) from pg_database where datname not in ('postgres', 'template0', 'template1')" 2>/dev/null)" = 0 ]; then
+    docker stop "$PG13_STOP" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_STOP not stopped" >&2
+  fi
   [ -n "$PG13_RM" ] && { docker rm -f "$PG13_RM" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_RM not removed" >&2; }
   for d in "$REPO_DB:$MADE_REPO" "$DEMO_DB:$MADE_DEMO"; do
     [ -n "${d#*:}" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists ${d%%:*} with (force)" >/dev/null 2>&1 || echo "CLEANUP: database ${d%%:*} not dropped" >&2; }
@@ -131,10 +151,9 @@ fi
 # the SQL Server: the sandbox named, or a container of the proof's own
 if [ -z "${MSSQL_SA_PASSWORD:-}" ]; then
   export MSSQL_SA_PASSWORD; MSSQL_SA_PASSWORD=$(pw)
-  CT=pgv-p4s1-qs-$SUF; MPORT=$(freeport 21433 21470); ADDR=127.0.0.1:$MPORT
+  CT=pgv-p4s1-qs-$SUF; MPORT=$(freeport 21433 21470); ADDR=127.0.0.1:$MPORT; MADE_CT=1
   docker run -d --name "$CT" -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_PID=Developer -p "127.0.0.1:$MPORT:1433" \
     "${PGVIGIL_MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}" >/dev/null || fail "the SQL Server container did not start"
-  MADE_CT=1
   export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
   for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
   sq "SELECT 1" >/dev/null 2>&1 || { docker logs --tail 20 "$CT" >&2; fail "the SQL Server container never answered"; }
@@ -170,12 +189,12 @@ collect() { "$BIN" collect -config "$CFG" -once mssql_querystore -instance "$1" 
 IDX="WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE)"
 
 echo "--- the databases and the workload"
-sq "CREATE DATABASE [$DB1]; ALTER DATABASE [$DB1] SET RECOVERY SIMPLE;" >/dev/null; MADE_DBS+=("$DB1")
-sq "CREATE DATABASE [$DB2]; ALTER DATABASE [$DB2] SET RECOVERY SIMPLE;" >/dev/null; MADE_DBS+=("$DB2")
-sq "CREATE DATABASE [$DB3]; ALTER DATABASE [$DB3] SET RECOVERY SIMPLE;" >/dev/null; MADE_DBS+=("$DB3")
+MADE_DBS=("$DB1" "$DB2" "$DB3" "$DB4")
+for d in "${MADE_DBS[@]}"; do sq "CREATE DATABASE [$d]; ALTER DATABASE [$d] SET RECOVERY SIMPLE;" >/dev/null; done
 sq "ALTER DATABASE [$DB1] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60, MAX_STORAGE_SIZE_MB = 100, WAIT_STATS_CAPTURE_MODE = ON);" >/dev/null
 sq "ALTER DATABASE [$DB2] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60, MAX_STORAGE_SIZE_MB = 1, SIZE_BASED_CLEANUP_MODE = OFF);" >/dev/null
 sq "ALTER DATABASE [$DB3] SET QUERY_STORE = OFF;" >/dev/null
+sq "ALTER DATABASE [$DB4] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60, MAX_STORAGE_SIZE_MB = 100);" >/dev/null
 sqs "$DB1" >/dev/null <<SQL
 CREATE TABLE dbo.pv_orders (id int IDENTITY PRIMARY KEY, cust int NOT NULL, pad char(200) NOT NULL);
 INSERT dbo.pv_orders (cust, pad)
@@ -290,6 +309,9 @@ SELECT TOP (1) @q = q.query_id, @p = p.plan_id FROM sys.query_store_query q JOIN
 EXEC sys.sp_query_store_force_plan @q, @p;
 DROP INDEX IX_pv_f ON dbo.pv_f;
 GO
+SQL
+sleep 11   # the finding's rule: the query's last run is more than ten seconds after its forced plan's
+sqs "$DB1" >/dev/null <<'SQL'
 EXEC dbo.pv_forced 3;
 EXEC sys.sp_recompile N'dbo.pv_forced';
 GO 3
@@ -325,7 +347,7 @@ GO 50
 SQL
 EDGE=$(sq "SELECT CONVERT(varchar(19), CAST(MAX(end_time) AT TIME ZONE 'UTC' AS datetime2(0)), 126) + 'Z|' + CAST(DATEDIFF(ms, SYSDATETIMEOFFSET(), MAX(end_time)) AS varchar(20)) FROM sys.query_store_runtime_stats_interval" "$DB1")
 T=${EDGE%%|*}; WAITMS=${EDGE#*|}
-[ "$WAITMS" -gt -1000 ] && [ "$WAITMS" -le 61000 ] || fail "D: the open interval ends in $WAITMS ms ($T): not a one-minute interval"
+[ "$WAITMS" -le 61000 ] || fail "D: the newest interval ends in $WAITMS ms ($T): not a one-minute interval"
 echo "  the first 50 ran before $T; waiting $(( WAITMS / 1000 + 3 )) s for the interval to end"
 sleep $(( (WAITMS > 0 ? WAITMS : 0) / 1000 + 3 ))
 sqs "$DB1" >/dev/null <<'SQL'
@@ -383,7 +405,42 @@ CELL=$(objs "$WORK/sum.json" cells | jq -c --argjson i "$iid" '[.[] | select(.in
 [ "$CELL" != null ] || fail "E: /api/mssql/summary has no 'qs' cell: the Summary wiring (q_mssql_summary.go, the lead's) is not on this tree"
 [ "$(echo "$CELL" | jq '.sampled == true and .warning >= 1 and .critical == 0')" = true ] || fail "E: the Summary's qs cell: $CELL"
 echo "  the Summary's qs cell: $(echo "$CELL" | jq -c '{state, critical, warning, value}')"
+# satot <database>: sa's sums over EVERY plan of the store: intervals with a plan run | executions | plan runs
+satot() { sq "SELECT CAST(COUNT(*) AS varchar(20)) + '|' + CAST(ISNULL(SUM(x.execs), 0) AS varchar(30)) + '|' + CAST(ISNULL(SUM(x.plans), 0) AS varchar(20)) FROM (SELECT r.runtime_stats_interval_id, SUM(r.count_executions) AS execs, COUNT(DISTINCT r.plan_id) AS plans FROM sys.query_store_runtime_stats r GROUP BY r.runtime_stats_interval_id) x" "$1"; }
+gottot() { q "select count(*) || '|' || coalesce(sum(executions), 0) || '|' || coalesce(sum(plans), 0) from pgvigil.mssql_qs_interval where instance_id=$iid and database_name='$1' and plans is not null"; }
+[ "$(gottot "$DB2")" = "$(satot "$DB2")" ] || fail "E: the full store's totals: stored $(gottot "$DB2"), sa reads $(satot "$DB2") (intervals|executions|plan runs)"
+echo "  the full store's intervals|executions|plan runs: $(gottot "$DB2") = sa's"
 echo "E: OK"
+
+echo "--- T. the totals over every plan, and the cut"
+sqs "$DB4" >/dev/null <<'SQL'
+CREATE TABLE dbo.pv_t (id int IDENTITY PRIMARY KEY, v varchar(40) NOT NULL);
+INSERT dbo.pv_t (v) SELECT TOP (200) CAST(NEWID() AS varchar(40)) FROM sys.all_columns;
+GO
+SET NOCOUNT ON;
+DECLARE @i int = 0, @s nvarchar(max), @n int;
+WHILE @i < 700 BEGIN
+  SET @s = N'SELECT @n = COUNT(*) FROM dbo.pv_t a JOIN dbo.pv_t b ON b.id = a.id WHERE a.id > ' + CAST(@i AS nvarchar(10))
+         + N' AND a.v <> ''' + REPLACE(CAST(NEWID() AS nvarchar(36)), N'-', N'') + N'''';
+  EXEC sys.sp_executesql @s, N'@n int OUTPUT', @n = @n OUTPUT;
+  SET @i += 1;
+END;
+EXEC sys.sp_query_store_flush_db;
+GO
+SQL
+sq "ALTER DATABASE [$DB4] SET QUERY_STORE (OPERATION_MODE = READ_ONLY);" >/dev/null
+collect "$N" >/dev/null
+SAT=$(satot "$DB4"); GOTT=$(gottot "$DB4")
+KEPT=$(q "select count(*) from pgvigil.mssql_qs_runtime where instance_id=$iid and database_name='$DB4'")
+MAXP=$(q "select coalesce(max(plans), 0) from pgvigil.mssql_qs_interval where instance_id=$iid and database_name='$DB4'")
+echo "  intervals|executions|plan runs: stored $GOTT, sa $SAT; runtime rows kept $KEPT; the largest interval holds $MAXP plans"
+[ "$GOTT" = "$SAT" ] || fail "T: the intervals' totals over every plan: stored $GOTT, sa reads $SAT"
+[ "${SAT##*|}" -ge 700 ] || fail "T: sa counts ${SAT##*|} plan runs: the 700 statements were not captured"
+[ "$MAXP" -gt 250 ] || fail "T: no interval holds more than 250 plans ($MAXP): the cut has nothing to cut"
+[ "$KEPT" -ge 50 ] && [ "$KEPT" -lt "${SAT##*|}" ] || fail "T: $KEPT runtime rows kept of ${SAT##*|} plan runs: the cut did not apply, or nothing was kept"
+[ "$(q "select coalesce(max(n), 0) <= 250 from (select count(*) as n from pgvigil.mssql_qs_runtime where instance_id=$iid and database_name='$DB4' group by snapshot_at) x")" = t ] \
+  || fail "T: an interval keeps more than 250 plans (five lists of 50)"
+echo "T: OK"
 
 echo "--- F. the text policy"
 collect "$NN" >/dev/null; collect "$NO" >/dev/null
@@ -408,9 +465,9 @@ echo "F: OK"
 
 echo "--- G. rights"
 collect "$NB" | grep -q "skipped: the login lacks VIEW SERVER STATE" || fail "G: the bare login: $(cat "$OUT")"
-collect "$NV" >/dev/null
+collect "$NV" | grep -q "partial: sys.databases: the login cannot enter any of the .* user database(s): GRANT CONNECT ANY DATABASE" || fail "G: VIEW SERVER STATE without a way in: $(cat "$OUT")"
 inv=$(q "select instance_id from pgvigil.instances where name='$NV'")
-[ "$(q "select count(*) || '|' || count(*) filter (where not options_read and note like '%CONNECT ANY DATABASE%') from pgvigil.mssql_qs_store where instance_id=$inv and database_name in ('$DB1', '$DB2', '$DB3')")" = "3|3" ] \
+[ "$(q "select count(*) || '|' || count(*) filter (where not options_read and note like '%CONNECT ANY DATABASE%') from pgvigil.mssql_qs_store where instance_id=$inv and database_name in ('$DB1', '$DB2', '$DB3', '$DB4')")" = "4|4" ] \
   || fail "G: VIEW SERVER STATE without a way in: $(q "select database_name, options_read, note from pgvigil.mssql_qs_store where instance_id=$inv")"
 [ "$(q "select count(*) from pgvigil.mssql_qs_runtime where instance_id=$inv")" = 0 ] || fail "G: runtime rows were stored for a login that cannot enter a database"
 echo "G: OK"
@@ -425,11 +482,22 @@ head -c 12 "$WORK/plan.sqlplan" | grep -q '<ShowPlanXML' || fail "H: the file is
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/querystore/plan.sqlplan?instance=$ino&db=$DB1&plan=${HP%%|*}")" = 404 ] || fail "H: the none instance serves a plan"
 echo "H: OK ($(wc -c < "$WORK/plan.sqlplan") bytes)"
 
+echo "--- F2. the policy tightened: full, then none, on the same instance"
+sed "/name: $N\$/,/dsn:/ s/dsn: env:MS_MON/dsn: env:MS_MON\n    query_text: none/" "$CFG" > "$WORK/cfg-none.yaml"
+grep -A3 "name: $N\$" "$WORK/cfg-none.yaml" | grep -q "query_text: none" || fail "F2: the second config does not set query_text none on $N"
+HADXML=$(q "select count(plan_xml) from pgvigil.mssql_qs_plan where instance_id=$iid and database_name='$DB1'")
+"$BIN" collect -config "$WORK/cfg-none.yaml" -once mssql_querystore -instance "$N" > "$OUT" 2>&1 || { cat "$OUT" >&2; fail "F2: the run under none"; }
+[ "$HADXML" -ge 5 ] && [ "$(q "select count(plan_xml) || '|' || count(*) filter (where xml_state = 'stored') from pgvigil.mssql_qs_plan where instance_id=$iid and database_name='$DB1'")" = "0|0" ] \
+  || fail "F2: $HADXML plan XML before; after the run under none: $(q "select count(plan_xml) || '|' || count(*) filter (where xml_state = 'stored') from pgvigil.mssql_qs_plan where instance_id=$iid and database_name='$DB1'") (XML|stored)"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/querystore/plan.sqlplan?instance=$iid&db=$DB1&plan=${HP%%|*}")" = 404 ] || fail "F2: the plan still downloads after the policy was tightened"
+echo "F2: OK ($HADXML plan XML dropped)"
+
 echo "=== without a server"
 echo "--- X. written payloads"
 xi=$(q "select pgvigil.ensure_instance('proof-qs-x-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
 I1=$(date -u -d '-3 hours' +%FT%H:00:00Z); I1E=$(date -u -d '-2 hours' +%FT%H:00:00Z); I2=$I1E; I2E=$(date -u -d '-1 hours' +%FT%H:00:00Z)
-R0=$(date -u -d '-240 minutes' +%FT%TZ); R1=$(date -u -d '-50 minutes' +%FT%TZ); R2=$(date -u -d '-40 minutes' +%FT%TZ); R3=$(date -u -d '-30 minutes' +%FT%TZ); R4=$(date -u -d '-20 minutes' +%FT%TZ)
+R0=$(date -u -d '-240 minutes' +%FT%TZ); R1=$(date -u -d '-50 minutes' +%FT%TZ); R2=$(date -u -d '-40 minutes' +%FT%TZ); R3=$(date -u -d '-30 minutes' +%FT%TZ)
+code() { curl -s -o /dev/null -w '%{http_code}' "$U/$1"; }
 imp() { q "select pgvigil.import_mssql_querystore($1, '$2', '$3'::jsonb)" >/dev/null; }
 STORE='{"kind":"store","database_id":5,"database_name":"a:b","database_state":"ONLINE","database_read_only":0,"read":1,"desired_state":"READ_WRITE","actual_state":"READ_WRITE","readonly_reason":0,"current_mb":10,"max_mb":100,"cleanup_mode":"AUTO","can_read":1}'
 plan() { echo "{\"kind\":\"plan\",\"database_name\":\"a:b\",\"plan_id\":$1,\"query_id\":$2,\"query_hash_hex\":\"$3\",\"plan_hash_hex\":\"0x0B\",\"plan_hash_n\":$4,\"is_forced\":$5,\"forcing_type\":\"MANUAL\",\"force_failure_count\":$6,\"force_failure_reason\":\"NO_INDEX\",\"plan_count\":1,\"plan_xml_bytes\":40,\"query\":\"$7\"}"; }
@@ -469,8 +537,34 @@ imp "$xi" "$R3" "[$STORE,$(plan 7 3 0xFF 99 0 0 'SELECT 2'),{\"kind\":\"forced_r
   || fail "X: the old runtime rows join the new statement's text"
 [ "$(curl -fs "$U/mssql/querystore?instance=$xi&from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u +%FT%TZ)&part=top" | jq -c '[.top | .columns as $c | .rows[] | [.[($c | index("query_id"))], .[($c | index("executions"))], .[($c | index("query"))]]]')" = '[[3,14,null]]' ] \
   || fail "X: the top list over the written rows: $(curl -fs "$U/mssql/querystore?instance=$xi&from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u +%FT%TZ)&part=top" | jq -c '.top.rows')"
-imp "$xi" "$R4" "[$(echo "$STORE" | sed 's/"a:b"/"c"/')]"
-[ "$(q "select string_agg(database_name, ',') from pgvigil.mssql_qs_store where instance_id=$xi")" = c ] || fail "X: a database the read no longer lists stays in the state"
+# an interval of a database whose plan read did not run (no marker): not stored, the cursor stays; with the marker: stored
+I3=$I2E; I3E=$(date -u +%FT%H:00:00Z); TK=29
+tk() { TK=$((TK - 1)); TS=$(date -u -d "-$TK minutes" +%FT%TZ); }   # each import a minute after the one before
+MARK='{"kind":"forced_read","database_name":"a:b"}'
+tk; imp "$xi" "$TS" "[$STORE,$(iv 3 "$I3" "$I3E"),$(rt "$I3" 8 7)]"
+[ "$(q "select count(*) from pgvigil.mssql_qs_interval where instance_id=$xi and snapshot_at='$I3'")|$(cur 'qs_since:a:b')" = "0|$(date -u -d "$I2" +%s)" ] \
+  || fail "X: an interval without its database's marker was stored, or the cursor moved: $(q "select count(*) from pgvigil.mssql_qs_interval where instance_id=$xi and snapshot_at='$I3'")|$(cur 'qs_since:a:b')"
+tk; imp "$xi" "$TS" "[$STORE,$(iv 3 "$I3" "$I3E"),$(rt "$I3" 8 7),$(plan 8 3 0x0A 13 0 0 'SELECT 1'),$MARK,{\"kind\":\"plan_xml\",\"kind_of\":\"plan\",\"database_name\":\"a:b\",\"plan_id\":8,\"statement\":\"<ShowPlanXML><a/></ShowPlanXML>\"}]"
+[ "$(q "select count(*) from pgvigil.mssql_qs_interval where instance_id=$xi and snapshot_at='$I3'")|$(cur 'qs_since:a:b')|$(cur 'qs_plan:8:a:b')" = "1|$(date -u -d "$I3" +%s)|13" ] \
+  || fail "X: the interval with its marker: $(q "select count(*) from pgvigil.mssql_qs_interval where instance_id=$xi and snapshot_at='$I3'")|$(cur 'qs_since:a:b')|$(cur 'qs_plan:8:a:b')"
+[ "$(code "mssql/querystore/plan.sqlplan?instance=$xi&db=a%3Ab&plan=8")" = 200 ] || fail "X: plan 8's stored XML does not download"
+# the same plan hash under another query (two statements can share a plan hash): the XML is the old statement's and goes
+tk; imp "$xi" "$TS" "[$STORE,$(plan 8 5 0xEE 13 0 0 'SELECT 8'),$MARK]"
+[ "$(q "select coalesce(xml_state, '-') || '|' || (plan_xml is null) || '|' || query_id from pgvigil.mssql_qs_plan where instance_id=$xi and plan_id=8")|$(cur 'qs_plan:8:a:b')" = "-|true|5|null" ] \
+  || fail "X: a plan number under the same plan hash and another query keeps its XML: $(q "select xml_state, plan_xml is null, query_id from pgvigil.mssql_qs_plan where instance_id=$xi and plan_id=8")|$(cur 'qs_plan:8:a:b')"
+# the policy's probe: a marker whose statement came back empty drops the database's stored XML
+tk; imp "$xi" "$TS" "[$STORE,$(plan 8 5 0xEE 13 0 0 'SELECT 8'),$MARK,{\"kind\":\"plan_xml\",\"kind_of\":\"plan\",\"database_name\":\"a:b\",\"plan_id\":8,\"statement\":\"<ShowPlanXML><b/></ShowPlanXML>\"}]"
+tk; imp "$xi" "$TS" "[$STORE,$(plan 8 5 0xEE 13 0 0 'SELECT 8'),{\"kind\":\"forced_read\",\"kind_of\":\"plan\",\"database_name\":\"a:b\",\"statement\":\"kept\"}]"
+[ "$(q "select xml_state || '|' || (plan_xml is not null) from pgvigil.mssql_qs_plan where instance_id=$xi and plan_id=8")" = "stored|true" ] || fail "X: a marker whose probe was kept (the full policy) dropped the XML"
+tk; imp "$xi" "$TS" "[$STORE,$(plan 8 5 0xEE 13 0 0 'SELECT 8'),{\"kind\":\"forced_read\",\"kind_of\":\"plan\",\"database_name\":\"a:b\",\"statement\":null}]"
+[ "$(q "select xml_state || '|' || (plan_xml is null) from pgvigil.mssql_qs_plan where instance_id=$xi and plan_id=8")|$(code "mssql/querystore/plan.sqlplan?instance=$xi&db=a%3Ab&plan=8")" = "policy|true|404" ] \
+  || fail "X: a marker whose probe came back empty keeps the XML: $(q "select xml_state, plan_xml is null from pgvigil.mssql_qs_plan where instance_id=$xi and plan_id=8")|$(code "mssql/querystore/plan.sqlplan?instance=$xi&db=a%3Ab&plan=8")"
+# a recommendation, then a read that no longer lists the database
+tk; imp "$xi" "$TS" "[$STORE,{\"kind\":\"tuning\",\"database_name\":\"a:b\",\"rec_name\":\"PR_1\",\"rec_type\":\"FORCE_LAST_GOOD_PLAN\",\"rec_state\":\"Active\",\"score\":50},{\"kind\":\"tuning_read\",\"database_name\":\"a:b\"}]"
+[ "$(q "select is_present from pgvigil.mssql_qs_tuning where instance_id=$xi and rec_name='PR_1'")" = t ] || fail "X: the recommendation was not stored"
+tk; imp "$xi" "$TS" "[$(echo "$STORE" | sed 's/"a:b"/"c"/')]"
+[ "$(q "select string_agg(database_name, ',') from pgvigil.mssql_qs_store where instance_id=$xi")|$(q "select is_present from pgvigil.mssql_qs_tuning where instance_id=$xi and rec_name='PR_1'")" = "c|f" ] \
+  || fail "X: a database the read no longer lists: the state $(q "select string_agg(database_name, ',') from pgvigil.mssql_qs_store where instance_id=$xi"), its recommendation present $(q "select is_present from pgvigil.mssql_qs_tuning where instance_id=$xi and rec_name='PR_1'")"
 echo "X: OK"
 
 echo "--- Y. the judgements"
@@ -535,30 +629,35 @@ curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: t
 [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
 [ "$(objs "$WORK/all.json" series | jq 'length >= 2')" = true ] && [ "$(objs "$WORK/all.json" state | jq 'length >= 3')" = true ] || fail "P: series or state is short"
-code() { curl -s -o /dev/null -w '%{http_code}' "$U/$1"; }
+[ "$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=state" | jq -r 'keys | join(",")')|$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=tuning" | jq -r 'keys | join(",")')" = "checks,state|checks,state,tuning,tuning_options" ] \
+  || fail "P: a view's parts: $(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=state" | jq -r 'keys | join(",")')|$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=tuning" | jq -r 'keys | join(",")')"
 LONG=$(printf 'x%.0s' $(seq 1 129))
-[ "$(code "mssql/querystore?instance=$iid&order=bogus")|$(code "mssql/querystore?instance=$iid&db=$LONG")|$(code "mssql/querystore/query?instance=$iid&query=1")|$(code "mssql/querystore/query?instance=$iid&db=$DB1&query=1&hash=zz")|$(code "mssql/querystore/plan.sqlplan?instance=$iid&db=$DB1&plan=999999999")|$(code "mssql/querystore?instance=$iid&part=nothing")" = "400|400|400|400|404|400" ] \
-  || fail "P: the refusals: $(code "mssql/querystore?instance=$iid&order=bogus")|$(code "mssql/querystore?instance=$iid&db=$LONG")|$(code "mssql/querystore/query?instance=$iid&query=1")|$(code "mssql/querystore/query?instance=$iid&db=$DB1&query=1&hash=zz")|$(code "mssql/querystore/plan.sqlplan?instance=$iid&db=$DB1&plan=999999999")|$(code "mssql/querystore?instance=$iid&part=nothing")"
+REF="$(code "mssql/querystore?instance=$iid&order=bogus")|$(code "mssql/querystore?instance=$iid&db=$LONG")|$(code "mssql/querystore/query?instance=$iid&query=1&hash=0x0000000000000001")|$(code "mssql/querystore/query?instance=$iid&db=$DB1&query=1&hash=zz")|$(code "mssql/querystore/query?instance=$iid&db=$DB1&query=1")|$(code "mssql/querystore?instance=$iid&view=bogus")|$(code "mssql/querystore?instance=$iid&part=nothing")|$(code "mssql/querystore/plan.sqlplan?instance=$iid&db=$DB1&plan=999999999")"
+[ "$REF" = "400|400|400|400|400|400|400|404" ] || fail "P: the refusals: $REF (order, long db, no db, bad hash, no hash, view, part; then the unknown plan)"
 echo "P: OK"
 
 if [ -n "${PGVIGIL_SKIP_DEMO:-}" ]; then
   echo "DEMO: SKIPPED (PGVIGIL_SKIP_DEMO is set)"
   echo "NOT PROVEN HERE: the demo's rows (skipped); SQL Server 2016-2019, RDS, Managed Instance, Azure SQL Database, a real tuning recommendation, a real ERROR store, a really cleared store, the run's bounds, the interval floor's access path, a browser render"
-  echo "proof-mssql-querystore: A-H, X, Y, Z, P green${V_NOTE:-, V green}; DEMO NOT RUN"
+  echo "proof-mssql-querystore: A-H, T, F2, X, Y, Z, P green${V_NOTE:-, V green}; DEMO NOT RUN"
   exit 0
 fi
 
 echo "--- DEMO. a two-day demo"
 adm -c "create database $DEMO_DB"; MADE_DEMO=1
 DPORT=$(freeport 18331 18370)
-"$BIN" demo -dsn "$ADMIN_DSN dbname=$DEMO_DB" -days 2 -serve -listen "127.0.0.1:$DPORT" > "$WORK/demo.log" 2>&1 & DEMO_PID=$!
+PGV_DEMO_DSN="$ADMIN_DSN dbname=$DEMO_DB" "$BIN" demo -dsn env:PGV_DEMO_DSN -days 2 -serve -listen "127.0.0.1:$DPORT" > "$WORK/demo.log" 2>&1 & DEMO_PID=$!
 for _ in $(seq 1 600); do grep -q "demo serving" "$WORK/demo.log" && break; kill -0 $DEMO_PID 2>/dev/null || break; sleep 1; done
 grep -q "demo serving" "$WORK/demo.log" || { tail -5 "$WORK/demo.log" >&2; fail "DEMO: the demo never served"; }
 D=http://127.0.0.1:$DPORT/api
 dq() { psql "$ADMIN_DSN dbname=$DEMO_DB" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 s1=$(dq "select instance_id from pgvigil.instances where name like '%-sql01'"); s2=$(dq "select instance_id from pgvigil.instances where name like '%-sql02'")
 [ "$(dq "select count(*) from pgvigil.mssql_qs_store where instance_id=$s1")" -ge 1 ] || fail "DEMO: the demo carries no Query Store rows: the seed's wiring (mssql_demo.go, the lead's) is not on this tree"
-DW="from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"; D1="from=$(date -u -d '-1 hour' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"
+DW="from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"
+# the hour plan 12 first ran in, from the stored rows (the demo's anchor is its seed's start, not this clock)
+RH0=$(dq "select to_char(min(snapshot_at) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') from pgvigil.mssql_qs_runtime where instance_id=$s1 and database_name='Sales' and plan_id=12")
+[ -n "$RH0" ] || fail "DEMO: no stored row of Sales' plan 12"
+D1="from=$RH0&to=$(date -u -d "$RH0 + 2 hours" +%FT%TZ)"
 curl -fs "$D/mssql/querystore?instance=$s1&$DW" > "$WORK/d.json" || fail "DEMO: the page's read"
 curl -fs "$D/mssql/querystore?instance=$s1&$D1&part=regressed" > "$WORK/dr.json" || fail "DEMO: the regressed part"
 echo "  sql01: top $(objs "$WORK/d.json" top | jq length), forced $(objs "$WORK/d.json" forced | jq length), tuning $(objs "$WORK/d.json" tuning | jq length), regressed (1 h) $(objs "$WORK/dr.json" regressed | jq length)"
@@ -577,4 +676,4 @@ curl -fs "$D/mssql/querystore/plan.sqlplan?instance=$s1&db=Sales&plan=7" | head 
 echo "DEMO: OK"
 
 echo "NOT PROVEN HERE: SQL Server 2016-2019, RDS, Managed Instance, Azure SQL Database, a real tuning recommendation, a real ERROR store, a really cleared store, the run's bounds, the interval floor's access path, a browser render"
-if [ -n "$V_NOTE" ]; then echo "proof-mssql-querystore: A-H, X, Y, Z, P, DEMO green$V_NOTE"; else echo "proof-mssql-querystore: PASS (A-H, X, Y, Z, V, P, DEMO)"; fi
+if [ -n "$V_NOTE" ]; then echo "proof-mssql-querystore: A-H, T, F2, X, Y, Z, P, DEMO green$V_NOTE"; else echo "proof-mssql-querystore: PASS (A-H, T, F2, X, Y, Z, V, P, DEMO)"; fi

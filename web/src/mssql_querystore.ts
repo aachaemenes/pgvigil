@@ -18,7 +18,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './
 export const mssqlQueryStoreTab = 'mssqlqs';
 
 type Parts = 'state' | 'totals' | 'series' | 'top' | 'regressed' | 'forced' | 'tuning' | 'tuning_options' | 'checks';
-type QS = Record<Parts, Table | null>;
+type QS = Partial<Record<Parts, Table | null>>;   // the page asks for its view's parts: the others are absent
 
 const views: [string, string][] = [['top', 'Top'], ['regressed', 'Regressed'], ['forced', 'Forced plans'], ['tuning', 'Tuning'], ['state', 'Store state']];
 const orders: [string, string, string][] = [
@@ -29,8 +29,8 @@ const orders: [string, string, string][] = [
 const text = (v: unknown) => v == null ? '' : String(v);
 const dur = (v: unknown) => {
   if (v == null || v === '') return '';
-  const n = Number(v);
-  return n >= 60000 ? fmtNum(n / 60000) + ' min' : n >= 1000 ? fmtNum(n / 1000) + ' s' : fmtNum(n) + ' ms';
+  const n = Number(v), a = Math.abs(n);
+  return a >= 60000 ? fmtNum(n / 60000) + ' min' : a >= 1000 ? fmtNum(n / 1000) + ' s' : fmtNum(n) + ' ms';
 };
 const mb = (v: unknown) => v == null || v === '' ? '' : fmtNum(v) + ' MB';
 const times = (v: unknown) => v == null || v === '' ? '' : fmtNum(v) + ' x';
@@ -83,6 +83,11 @@ function pivot(rows: Row[], keyCol: string, valCol: string): { rows: Row[]; keys
   return { rows: [...by.values()].sort((a, b) => Date.parse(text(a.snapshot_at)) - Date.parse(text(b.snapshot_at))), keys };
 }
 
+// numbersOf: the table behind a chart (a chart alone tells a screen reader nothing).
+function numbersOf(rows: Row[], cols: Col[]): HTMLElement {
+  return el('details', {}, el('summary', {}, 'The charts\' numbers as a table'), grid(rows, cols, 'No interval in this range.'));
+}
+
 function openButton(label: string, name: string, onOpen: () => void): HTMLElement {
   const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: ${name}` }, label);
   b.addEventListener('click', onOpen);
@@ -102,15 +107,20 @@ function planFile(ctx: Ctx, db: unknown, planId: unknown, state: unknown, note: 
   }
   if (state === 'policy') return 'not stored: this instance\'s query_text policy is not "full"';
   if (state === 'too large') return text(note) || 'not stored: the plan is too large';
-  return inStore === false ? 'the plan is no longer in the store' : 'not read yet (the next run reads it)';
+  return inStore === false ? 'the plan is no longer in the store' : 'not read yet (read when the plan is next among an interval\'s top plans)';
 }
 
 // ---- one query: its text, its plans in the window, their line per interval
 
+let opening = 0;   // the newest Open wins: an older answer that arrives late is dropped
+
 async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
+  const mine = ++opening;
+  panel.show(el('p', { class: 'meta' }, `Reading query ${text(row.query_id)} of ${text(row.database_name)} ...`));
   try {
     const d = await get<Record<'query' | 'plans' | 'series', Table | null>>('mssql/querystore/query', {
-      instance: ctx.instance, ...window_(ctx), db: text(row.database_name), query: text(row.query_id), hash: text(row.query_hash) || undefined });
+      instance: ctx.instance, ...window_(ctx), db: text(row.database_name), query: text(row.query_id), hash: text(row.query_hash) });
+    if (mine !== opening) return;
     const q = rowsOf(d.query)[0], plans = rowsOf(d.plans), series = rowsOf(d.series);
     const cols: Col[] = [
       { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
@@ -141,18 +151,24 @@ async function openQuery(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPane
         ['query', `${text(row.query_id)}${q?.object_name ? ' in ' + text(q.object_name) : ''}`],
         ['query hash', text(row.query_hash)],
         ['parameterization', text(q?.parameterization).toLowerCase() || '-'],
-        ['plans', `${fmtNum(plans.length)} ran in this window; the store holds ${q?.plan_count == null ? '?' : fmtNum(q.plan_count)}`],
+        ['plans', `${fmtNum(plans.length)} in this range's stored rows; the store holds ${q?.plan_count == null ? '?' : fmtNum(q.plan_count)}`],
         ['last execution', fmtTime(q?.last_execution)],
       ]),
       el('pre', { class: 'sql', tabindex: '0' }, text(q?.query) || '(no statement text is stored: the query_text policy of this instance is "none", or the query left the store)'),
       el('h4', {}, 'Plans'),
-      grid(plans, cols, 'No plan of this query ran in this window.'),
+      grid(plans, cols, 'No stored row of this query in this range.'),
       charts,
-      el('p', { class: 'meta' }, 'One point = one interval of the store. A plan with a line that starts where another ends replaced it; '
-        + 'two lines at once are two plans in use (parameter-sensitive, or one per SET options).'),
+      numbersOf(series, [
+        { key: 'snapshot_at', label: 'interval from', fmt: fmtTime }, { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
+        { key: 'executions', num: true }, { key: 'avg_duration_ms', label: 'avg duration', num: true, fmt: dur },
+        { key: 'avg_cpu_ms', label: 'avg CPU', num: true, fmt: dur }, { key: 'avg_logical_reads', label: 'avg logical reads', num: true },
+      ]),
+      el('p', { class: 'meta' }, 'One point = one interval of the store in which the plan was among the interval\'s top plans. A line that starts where another ends '
+        + 'is most often a plan that replaced another; a gap can also be an interval the plan ran in under every cut. '
+        + 'Two lines at once are two plans in use (parameter-sensitive, or one per SET options).'),
     );
   } catch (e) {
-    panel.show(errorBox(e));
+    if (mine === opening) panel.show(errorBox(e));
   }
 }
 
@@ -189,7 +205,7 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
     { key: 'object_name', label: 'object' },
     { key: 'executions', num: true },
     { key: 'duration_ms', label: 'total duration', num: true, fmt: dur },
-    ...(totalKey ? [{ key: 'share', label: 'share', num: true, fmt: (_: unknown, r: Row) => share(r[totalKey], whole) }] as Col[] : []),
+    ...(totalKey ? [{ key: 'share', label: `share of all ${orders.find(o => o[0] === order)![1]}`, num: true, fmt: (_: unknown, r: Row) => share(r[totalKey], whole) }] as Col[] : []),
     { key: 'avg_duration_ms', label: 'avg duration', num: true, fmt: dur },
     { key: 'max_duration_ms', label: 'max duration', num: true, fmt: dur },
     { key: 'cpu_ms', label: 'total CPU', num: true, fmt: dur },
@@ -216,6 +232,10 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
   out.push(el('div', { class: 'charts' },
     lineChart('The store over time: duration and CPU of every plan', series, [{ key: 'duration_ms', label: 'duration' }, { key: 'cpu_ms', label: 'CPU' }], v => dur(v)),
     lineChart('The store over time: executions', series, [{ key: 'executions', label: 'executions' }])));
+  out.push(numbersOf(series, [
+    { key: 'snapshot_at', label: 'from', fmt: fmtTime }, { key: 'executions', num: true }, { key: 'duration_ms', label: 'duration', num: true, fmt: dur },
+    { key: 'cpu_ms', label: 'CPU', num: true, fmt: dur }, { key: 'logical_reads', label: 'logical reads', num: true }, { key: 'wait_ms', label: 'wait time', num: true, fmt: dur },
+  ]));
   return out;
 }
 
@@ -228,7 +248,7 @@ function regressedView(ctx: Ctx, d: QS): HTMLElement[] {
     { key: 'database_name', label: 'database' }, { key: 'query_id', label: 'query', num: true, fmt: v => text(v) },
     openCol(ctx, panel),
     { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
-    { key: 'new_plan', label: 'new plan', fmt: v => v ? badge('new plan', 'warn') : '' },
+    { key: 'new_plan', label: 'plan seen before', fmt: v => v ? badge('not seen before', 'warn') : 'yes' },
     { key: 'forced', fmt: v => v ? badge('forced', 'ok') : '' },
     { key: 'extra_duration_ms', label: 'extra duration', num: true, fmt: dur },
     { key: 'avg_duration_ms', label: 'avg duration', num: true, fmt: dur },
@@ -246,10 +266,10 @@ function regressedView(ctx: Ctx, d: QS): HTMLElement[] {
     { key: 'query', label: 'statement', fmt: stmt },
   ];
   return [
-    el('p', { class: 'meta' }, `A plan whose average duration or CPU in this range (${rangeLabel(ctx)}) is 1.5 times its query's average in the range of equal length before it, or more. `
-      + 'The query\'s average before is over all its plans, so a new plan is weighed against what the query cost before it; "extra duration" is what the difference cost over the range\'s executions. '
-      + 'A query that was in no interval\'s first 50 before has no figure to be weighed against and is not listed.'),
-    grid(rows, cols, 'No regressed plan in this range: every plan that ran is within 1.5 times its query\'s average before, or the range before holds no interval of the store.'),
+    el('p', { class: 'meta' }, `A plan whose average duration or CPU in this range (${rangeLabel(ctx)}) is 1.5 times its query's average in the range of equal length before it, or more, and at least 1 ms. `
+      + 'The query\'s average before is over all its stored plans, so a plan not seen before is weighed against what the query cost then; "extra duration" is what the difference cost over the range\'s executions. '
+      + 'Only the stored rows are compared (each interval\'s top plans): "not seen before" means the plan is in no stored row of the range before, and a query that was in no interval\'s top plans before has no figure to be weighed against and is not listed.'),
+    grid(rows, cols, 'No regressed plan among the stored rows of this range: each is within 1.5 times its query\'s average before, or the range before holds no stored row of its query.'),
     panel.box,
   ];
 }
@@ -290,12 +310,12 @@ function tuningView(d: QS): HTMLElement[] {
   const optCols: Col[] = [
     { key: 'database_name', label: 'database' }, { key: 'option_name', label: 'option' },
     { key: 'desired_state', label: 'desired', fmt: v => text(v).toLowerCase() },
-    { key: 'actual_state', label: 'actual', fmt: v => text(v).toLowerCase(), cls: (v, r) => v !== r.desired_state && r.desired_state !== 'DEFAULT' ? 'status warn' : '' },
+    { key: 'actual_state', label: 'actual', fmt: v => text(v).toLowerCase() },
     { key: 'reason', label: 'why' }, { key: 'snapshot_at', label: 'read', fmt: fmtTime },
   ];
   const recCols: Col[] = [
     { key: 'database_name', label: 'database' }, { key: 'rec_type', label: 'type' },
-    { key: 'rec_state', label: 'state', fmt: (v, r) => r.is_present ? text(v) : badge('no longer listed', '') },
+    { key: 'rec_state', label: 'state', fmt: (v, r) => r.is_present ? text(v) : `${text(v) || '?'} (no longer listed)` },
     { key: 'state_reason', label: 'state reason' },
     { key: 'score', num: true },
     { key: 'reason', wide: true },
@@ -313,9 +333,10 @@ function tuningView(d: QS): HTMLElement[] {
   return [
     el('p', { class: 'meta' }, 'SQL Server 2017 and later: the server\'s own plan-regression recommendations (sys.dm_db_tuning_recommendations) and each database\'s automatic tuning options. '
       + 'With FORCE_LAST_GOOD_PLAN on the server applies a recommendation itself and reverts it when it does not help; with it off the script is the DBA\'s to run. '
-      + 'The list is the server\'s memory: a restart empties it, and a recommendation the server stopped listing inside the range stays here marked so.'),
+      + 'The list is the server\'s memory: a restart empties it, and a recommendation the server stopped listing inside the range stays here marked so. '
+      + 'The statement beside a recommendation is the store\'s current query of that number.'),
     el('h3', {}, 'Recommendations'),
-    grid(recs, recCols, 'No automatic tuning recommendation: SQL Server has seen no plan regression it would correct (or the server is SQL Server 2016).'),
+    grid(recs, recCols, 'No automatic tuning recommendation is listed for this range.'),
     el('h3', {}, 'Automatic tuning options'),
     grid(opts, optCols, 'No automatic tuning option read (SQL Server 2016 has none).'),
   ];
@@ -330,7 +351,8 @@ function stateView(d: QS): HTMLElement[] {
   const cols: Col[] = [
     { key: 'database_name', label: 'database' },
     { key: 'severity', label: 'status', cls: stateCls,
-      fmt: (v, r) => !r.options_read ? badge('not read', '') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok') },
+      fmt: (v, r) => !r.options_read ? badge('not read', '') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn')
+        : v === 'info' ? badge('note', '') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok') },
     { key: 'desired_state', label: 'desired state', fmt: lower },
     { key: 'actual_state', label: 'actual state', fmt: lower, cls: stateCls },
     { key: 'readonly_reasons', label: 'read-only reason', fmt: (v, r) => text(v) || (Number(r.readonly_reason) ? `reason ${text(r.readonly_reason)}` : '') },
@@ -341,7 +363,7 @@ function stateView(d: QS): HTMLElement[] {
     { key: 'max_plans_per_query', label: 'max plans per query', num: true },
     { key: 'current_mb', label: 'current size MB', num: true },
     { key: 'max_mb', label: 'max size MB', num: true },
-    { key: 'used_pct', label: 'used', num: true, fmt: v => v == null ? '' : fmtNum(v) + ' %', cls: v => Number(v) >= 90 ? 'status warn' : '' },
+    { key: 'used_pct', label: 'used', num: true, fmt: v => v == null ? '' : fmtNum(v) + ' %' },
     { key: 'flush_interval_s', label: 'flush interval (sec)', num: true },
     { key: 'interval_minutes', label: 'interval length (min)', num: true },
     { key: 'policy_execution_count', label: 'policy execution count', num: true },
@@ -354,7 +376,8 @@ function stateView(d: QS): HTMLElement[] {
   ];
   return [
     el('p', { class: 'meta' }, 'One row per database (master and tempdb have no Query Store). Critical: the store is in the ERROR state. Warning: it is read-only '
-      + '(unless the database itself is read-only or a secondary replica), or off though a state was asked for. A store that is off because nobody asked for it is a choice, not a fault.'),
+      + '(unless the database itself is read-only or a secondary replica), or off though a state was asked for. Note: a store at 90 % of its max size with size-based cleanup off. '
+      + 'A store that is off because nobody asked for it is a choice, not a fault.'),
     grid(rows, cols, 'No database read.'),
   ];
 }
@@ -367,7 +390,7 @@ export async function mssqlQueryStoreView(ctx: Ctx): Promise<HTMLElement> {
   const db = (hq.get('qdb') ?? '').slice(0, 128);
   const sec = el('section', {}, el('h2', {}, `Query Store (${rangeLabel(ctx)})`));
   try {
-    const d = await get<QS>('mssql/querystore', { instance: ctx.instance, ...window_(ctx), db: db || undefined, order });
+    const d = await get<QS>('mssql/querystore', { instance: ctx.instance, ...window_(ctx), db: db || undefined, order, view });
     const state = rowsOf(d.state), checks = rowsOf(d.checks);
     if (!state.length) {
       sec.append(el('p', { class: 'empty' }, 'No Query Store read yet: the mssql_querystore collection runs hourly, on SQL Server 2016 and later, and needs VIEW SERVER STATE '
@@ -400,5 +423,6 @@ export async function mssqlQueryStoreView(ctx: Ctx): Promise<HTMLElement> {
   } catch (e) {
     sec.append(errorBox(e));
   }
+  refocus = '';   // a control this draw did not rebuild (an empty view) must not take the focus at a later draw
   return sec;
 }

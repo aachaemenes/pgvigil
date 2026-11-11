@@ -13,8 +13,9 @@
 --   mssql_qs_query          a query of the store: its hash, object and text (the instance's text policy applied
 --                           before it was sent).
 --   mssql_qs_plan           a plan: its hash, its forcing state with the failure count and reason, its showplan XML
---                           (stored under the 'full' text policy only: a showplan carries the statement and the
---                           compiled parameter values).
+--                           (kept under the 'full' text policy only: a showplan carries the statement and the
+--                           compiled parameter values; a policy tightened later drops the stored XML at the
+--                           database's next read).
 --   mssql_qs_tuning         the automatic tuning recommendations (sys.dm_db_tuning_recommendations) and their state.
 -- mssql_querystore_findings the slice's findings in the findings columns (the join adds the arm to pgvigil.findings).
 -- mssql_querystore_status   the Summary's 'QS' cell, one row per instance (the shape of mssql_health_status).
@@ -237,7 +238,9 @@ RETURNS bigint LANGUAGE sql STABLE AS $$
   END
 $$;
 
--- payload (internal/mssql/querystore.go writes it; a database's rows are complete or absent):
+-- payload (internal/mssql/querystore.go writes it). A database's intervals are complete or absent: its interval and
+-- runtime rows come only together with its plan rows and its forced_read marker, and the import stores them and
+-- moves the database's cursor only when the marker is there:
 --   {kind:'store', database_id, database_name, database_state, database_read_only (0|1), read (1 = the options were
 --     read), note, desired_state, actual_state, readonly_reason, current_mb, max_mb, flush_interval_s,
 --     interval_minutes, stale_days, max_plans_per_query, capture_mode, cleanup_mode, wait_stats_mode,
@@ -253,8 +256,11 @@ $$;
 --     is_forced (0|1), forcing_type, force_failure_count, force_failure_reason, is_parallel, is_trivial,
 --     count_compiles, compatibility_level, initial_compile, last_compile, plan_last_execution, query_last_execution,
 --     parameterization, plan_count, plan_xml_bytes, xml_note, query}
---   {kind:'forced_read', database_name}               the plan read ran: a stored forced plan it does not list is no
---                                                     longer forced
+--   {kind:'forced_read', database_name[, statement]}  the plan read ran: a stored forced plan it does not list is no
+--                                                     longer forced. statement is the text policy's probe: present
+--                                                     and NULL = the policy keeps no plan XML, and the XML stored
+--                                                     for the database under an earlier policy is dropped; absent
+--                                                     (a payload without the probe) changes nothing
 --   {kind:'plan_xml', database_name, plan_id, statement}   statement = the showplan XML, NULL when the text policy
 --                                                     keeps none
 --   {kind:'tuning', database_name, rec_name, rec_type, reason, valid_since, last_refresh, rec_state, state_reason,
@@ -267,6 +273,7 @@ RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   v_rows   jsonb := pgvigil.mssql_rows(p_payload);
   v_month  timestamptz;
+  v_whole  text[];   -- the databases whose plan read ran (the marker): only their intervals are stored
 BEGIN
   -- the engine check, the advisory lock and "an older read arriving late stores nothing" (0066)
   IF NOT pgvigil.mssql_hadr_read(p_instance_id, 'mssql_querystore', p_snapshot_at,
@@ -287,6 +294,8 @@ BEGIN
     PERFORM pgvigil.ensure_month_partition('mssql_qs_runtime', v_month);
   END LOOP;
   LOCK TABLE ONLY pgvigil.mssql_qs_interval, ONLY pgvigil.mssql_qs_runtime IN ROW EXCLUSIVE MODE;
+  SELECT coalesce(array_agg(DISTINCT r->>'database_name'), '{}') INTO v_whole
+    FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'forced_read' AND r->>'database_name' IS NOT NULL;
 
   -- the stores: a database the read lists is written whole (a row that was not read loses its options: the page
   -- says "not read" and why, never an hour-old state under a new time); newest_interval is the cursor and stays
@@ -320,6 +329,10 @@ BEGIN
     DELETE FROM pgvigil.mssql_qs_tuning_option o
      WHERE o.instance_id = p_instance_id
        AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_qs_store s WHERE s.instance_id = p_instance_id AND s.database_name = o.database_name);
+    -- its recommendations are no longer listed by anything: no tuning_read marker will ever come for it
+    UPDATE pgvigil.mssql_qs_tuning t SET is_present = false
+     WHERE t.instance_id = p_instance_id AND t.is_present
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_qs_store s WHERE s.instance_id = p_instance_id AND s.database_name = t.database_name);
   END IF;
 
   -- the automatic tuning options of each database whose store was read without a note (a read that stopped early
@@ -336,8 +349,9 @@ BEGIN
   ON CONFLICT (instance_id, database_name, option_name) DO UPDATE SET
       desired_state = EXCLUDED.desired_state, actual_state = EXCLUDED.actual_state, reason = EXCLUDED.reason, snapshot_at = EXCLUDED.snapshot_at;
 
-  -- the queries and the plans. A query or plan number whose hash changed belongs to another statement now (the
-  -- store was cleared): the row starts again, its XML with it.
+  -- the queries and the plans. A query number whose hash changed, or a plan number whose plan hash, query or
+  -- query hash changed, belongs to another statement now (the store was cleared): the row starts again, its XML
+  -- with it (two statements can share a plan hash, so the plan hash alone does not say "the same plan").
   INSERT INTO pgvigil.mssql_qs_query AS q (instance_id, database_name, query_id, query_hash, object_name, query_text, parameterization,
       plan_count, last_execution, first_seen, snapshot_at)
   SELECT DISTINCT ON (r->>'database_name', (r->>'query_id')::bigint) p_instance_id, r->>'database_name', (r->>'query_id')::bigint,
@@ -366,14 +380,18 @@ BEGIN
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' = 'plan' AND r->>'database_name' IS NOT NULL AND r->>'plan_id' IS NOT NULL AND r->>'query_id' IS NOT NULL
   ON CONFLICT (instance_id, database_name, plan_id) DO UPDATE SET
-      first_seen = CASE WHEN p.plan_hash_n IS DISTINCT FROM EXCLUDED.plan_hash_n THEN EXCLUDED.first_seen ELSE p.first_seen END,
-      plan_xml = CASE WHEN p.plan_hash_n IS DISTINCT FROM EXCLUDED.plan_hash_n THEN NULL ELSE p.plan_xml END,
+      first_seen = CASE WHEN (p.plan_hash_n, p.query_id, p.query_hash) IS DISTINCT FROM (EXCLUDED.plan_hash_n, EXCLUDED.query_id, EXCLUDED.query_hash)
+                        THEN EXCLUDED.first_seen ELSE p.first_seen END,
+      plan_xml = CASE WHEN (p.plan_hash_n, p.query_id, p.query_hash) IS DISTINCT FROM (EXCLUDED.plan_hash_n, EXCLUDED.query_id, EXCLUDED.query_hash)
+                        OR EXCLUDED.xml_state IS NOT NULL THEN NULL ELSE p.plan_xml END,
       xml_state = CASE WHEN EXCLUDED.xml_state IS NOT NULL THEN EXCLUDED.xml_state
-                       WHEN p.plan_hash_n IS DISTINCT FROM EXCLUDED.plan_hash_n OR p.xml_state = 'too large' THEN NULL ELSE p.xml_state END,
-      xml_checked_at = CASE WHEN p.plan_hash_n IS DISTINCT FROM EXCLUDED.plan_hash_n THEN NULL ELSE p.xml_checked_at END,
+                       WHEN (p.plan_hash_n, p.query_id, p.query_hash) IS DISTINCT FROM (EXCLUDED.plan_hash_n, EXCLUDED.query_id, EXCLUDED.query_hash)
+                            OR p.xml_state = 'too large' THEN NULL ELSE p.xml_state END,
+      xml_checked_at = CASE WHEN (p.plan_hash_n, p.query_id, p.query_hash) IS DISTINCT FROM (EXCLUDED.plan_hash_n, EXCLUDED.query_id, EXCLUDED.query_hash)
+                            THEN NULL ELSE p.xml_checked_at END,
       forced_seen = CASE WHEN NOT EXCLUDED.is_forced THEN NULL
-                         WHEN p.is_forced AND p.plan_hash_n IS NOT DISTINCT FROM EXCLUDED.plan_hash_n THEN p.forced_seen
-                         ELSE EXCLUDED.forced_seen END,
+                         WHEN p.is_forced AND NOT ((p.plan_hash_n, p.query_id, p.query_hash) IS DISTINCT FROM (EXCLUDED.plan_hash_n, EXCLUDED.query_id, EXCLUDED.query_hash))
+                         THEN p.forced_seen ELSE EXCLUDED.forced_seen END,
       query_id = EXCLUDED.query_id, query_hash = EXCLUDED.query_hash, plan_hash = EXCLUDED.plan_hash, plan_hash_n = EXCLUDED.plan_hash_n,
       is_forced = EXCLUDED.is_forced, forcing_type = EXCLUDED.forcing_type, force_failure_count = EXCLUDED.force_failure_count,
       force_failure_reason = EXCLUDED.force_failure_reason, is_parallel = EXCLUDED.is_parallel, is_trivial = EXCLUDED.is_trivial,
@@ -387,6 +405,13 @@ BEGIN
    WHERE p.instance_id = p_instance_id AND p.is_forced AND p.snapshot_at < p_snapshot_at
      AND p.database_name IN (SELECT r->>'database_name' FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'forced_read');
 
+  -- the text policy keeps no plan XML (the marker's probe came back empty): what an earlier, wider policy stored
+  -- for the database goes, and the download of it with it
+  UPDATE pgvigil.mssql_qs_plan p SET plan_xml = NULL, xml_state = 'policy', xml_checked_at = p_snapshot_at
+   WHERE p.instance_id = p_instance_id AND p.plan_xml IS NOT NULL
+     AND p.database_name IN (SELECT r->>'database_name' FROM jsonb_array_elements(v_rows) r
+                              WHERE r->>'kind' = 'forced_read' AND r ? 'statement' AND r->>'statement' IS NULL);
+
   -- the showplan XML: stored, or looked at and kept none under the text policy
   UPDATE pgvigil.mssql_qs_plan p
      SET plan_xml = x.xml, xml_state = CASE WHEN x.xml IS NULL THEN 'policy' ELSE 'stored' END, xml_checked_at = p_snapshot_at
@@ -396,16 +421,20 @@ BEGIN
            WHERE r->>'kind' = 'plan_xml' AND r->>'database_name' IS NOT NULL AND r->>'plan_id' IS NOT NULL) x
    WHERE p.instance_id = p_instance_id AND p.database_name = x.database_name AND p.plan_id = x.plan_id;
 
-  -- the intervals: one read again (it was open) is replaced whole, its runtime rows with it
+  -- the intervals of the databases whose plan read ran (v_whole): one read again (it was open) is replaced whole,
+  -- its runtime rows with it. An interval of a database without the marker is not stored and the cursor stays: the
+  -- next run reads it again, with its plans.
   DELETE FROM pgvigil.mssql_qs_runtime t
    USING (SELECT DISTINCT r->>'database_name' AS database_name, (r->>'interval_start')::timestamptz AS at
             FROM jsonb_array_elements(v_rows) r
-           WHERE r->>'kind' = 'interval' AND r->>'database_name' IS NOT NULL AND r->>'interval_start' IS NOT NULL) x
+           WHERE r->>'kind' = 'interval' AND r->>'database_name' = ANY (v_whole) AND r->>'interval_start' IS NOT NULL
+             AND r->>'interval_end' IS NOT NULL) x
    WHERE t.instance_id = p_instance_id AND t.database_name = x.database_name AND t.snapshot_at = x.at;
   DELETE FROM pgvigil.mssql_qs_interval t
    USING (SELECT DISTINCT r->>'database_name' AS database_name, (r->>'interval_start')::timestamptz AS at
             FROM jsonb_array_elements(v_rows) r
-           WHERE r->>'kind' = 'interval' AND r->>'database_name' IS NOT NULL AND r->>'interval_start' IS NOT NULL) x
+           WHERE r->>'kind' = 'interval' AND r->>'database_name' = ANY (v_whole) AND r->>'interval_start' IS NOT NULL
+             AND r->>'interval_end' IS NOT NULL) x
    WHERE t.instance_id = p_instance_id AND t.database_name = x.database_name AND t.snapshot_at = x.at;
   INSERT INTO pgvigil.mssql_qs_interval (instance_id, snapshot_at, database_name, interval_id, interval_end, plans, executions,
       duration_us, cpu_us, logical_reads, wait_ms, read_at)
@@ -414,7 +443,7 @@ BEGIN
          (r->>'executions')::bigint, (r->>'duration_us')::bigint, (r->>'cpu_us')::bigint, (r->>'logical_reads')::bigint,
          (r->>'wait_ms')::bigint, p_snapshot_at
     FROM jsonb_array_elements(v_rows) r
-   WHERE r->>'kind' = 'interval' AND r->>'database_name' IS NOT NULL AND r->>'interval_start' IS NOT NULL AND r->>'interval_end' IS NOT NULL;
+   WHERE r->>'kind' = 'interval' AND r->>'database_name' = ANY (v_whole) AND r->>'interval_start' IS NOT NULL AND r->>'interval_end' IS NOT NULL;
   -- a runtime row belongs to an interval of this payload; its query and hashes come from the payload's plan row
   INSERT INTO pgvigil.mssql_qs_runtime (instance_id, snapshot_at, interval_end, database_name, plan_id, query_id, query_hash, plan_hash_n,
       executions, failed, duration_us, cpu_us, logical_reads, physical_reads, logical_writes, row_count, max_duration_us,
@@ -439,7 +468,8 @@ BEGIN
   UPDATE pgvigil.mssql_qs_store s SET newest_interval = greatest(s.newest_interval, x.newest)
     FROM (SELECT r->>'database_name' AS database_name, max((r->>'interval_start')::timestamptz) AS newest
             FROM jsonb_array_elements(v_rows) r
-           WHERE r->>'kind' = 'interval' AND r->>'interval_start' IS NOT NULL AND r->>'interval_end' IS NOT NULL
+           WHERE r->>'kind' = 'interval' AND r->>'database_name' = ANY (v_whole) AND r->>'interval_start' IS NOT NULL
+             AND r->>'interval_end' IS NOT NULL
            GROUP BY 1) x
    WHERE s.instance_id = p_instance_id AND s.database_name = x.database_name;
 
@@ -505,8 +535,10 @@ SELECT s.*,
 -- The findings of the slice. A read older than three hours raises nothing: the Collections page says the
 -- collection is stale.
 --   the stores' judgements above, and
---   a forced plan fails (warning): a plan is forced and SQL Server could not use it (force_failure_count above 0),
---     with the last failure's reason; the query runs with another plan.
+--   a forced plan fails (warning): a plan is forced, SQL Server has failed to force it (force_failure_count above
+--     0; the counter starts again only when the plan is forced anew, so it alone says "failed once, some time") AND
+--     the query's last execution is later than the forced plan's by more than ten seconds (or the forced plan never
+--     ran): the query runs with another plan now. A forcing that works again runs the forced plan and clears it.
 CREATE OR REPLACE VIEW pgvigil.mssql_querystore_findings AS
 SELECT s.instance_id, s.severity,
        CASE WHEN s.actual_state = 'ERROR' THEN 'Query Store in the ERROR state'
@@ -518,13 +550,17 @@ SELECT s.instance_id, s.severity,
  WHERE s.severity IS NOT NULL AND s.snapshot_at > now() - interval '3 hours'
 UNION ALL
 SELECT p.instance_id, 'warning', 'a forced plan fails', p.database_name || ': query ' || p.query_id || ', plan ' || p.plan_id, p.snapshot_at,
-       format('plan %s is forced (%s) for query %s%s and SQL Server could not use it %s time(s); the last reason: %s. The query runs with another plan.',
+       format('plan %s is forced (%s) for query %s%s and SQL Server could not use it %s time(s) since it was forced; the last reason: %s. '
+              || 'The query last ran %s and the forced plan %s: the query runs with another plan.',
               p.plan_id, lower(coalesce(p.forcing_type, 'manual')), p.query_id, coalesce(' in ' || q.object_name, ''),
-              p.force_failure_count, coalesce(p.force_failure_reason, 'not given'))
+              p.force_failure_count, coalesce(p.force_failure_reason, 'not given'),
+              coalesce(to_char(q.last_execution AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC', 'at a time that was not read'),
+              coalesce('last ran ' || to_char(p.last_execution AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC', 'has no execution on record'))
   FROM pgvigil.mssql_qs_plan p
   LEFT JOIN pgvigil.mssql_qs_query q ON q.instance_id = p.instance_id AND q.database_name = p.database_name AND q.query_id = p.query_id
                                     AND q.query_hash IS NOT DISTINCT FROM p.query_hash
- WHERE p.is_forced AND p.force_failure_count > 0 AND p.snapshot_at > now() - interval '3 hours';
+ WHERE p.is_forced AND p.force_failure_count > 0 AND p.snapshot_at > now() - interval '3 hours'
+   AND (p.last_execution IS NULL OR q.last_execution IS NULL OR p.last_execution < q.last_execution - interval '10 seconds');
 
 -- The Summary's 'QS' cell, one row per instance with a store read (the shape of mssql_health_status, 0070):
 -- critical and warning count the databases whose store is judged so; value says how many stores are on.
@@ -538,7 +574,7 @@ SELECT s.instance_id, 'qs'::text AS key, bool_or(s.options_read) AS sampled,
             THEN (array_agg(s.database_name || ': ' || s.verdict ORDER BY s.severity, s.database_name)
                     FILTER (WHERE s.severity IN ('critical', 'warning')))[1:12]
             WHEN NOT bool_or(s.options_read) THEN '{}'::text[]
-            ELSE ARRAY[format('Query Store is on in %s of the %s databases read, each in the state asked for%s (read %s UTC)',
+            ELSE ARRAY[format('Query Store is on in %s of the %s databases read; no store is in the ERROR state, read-only by a fault or off against its setting%s (read %s UTC)',
                               count(*) FILTER (WHERE s.options_read AND s.actual_state IN ('READ_WRITE', 'READ_ONLY')), count(*) FILTER (WHERE s.options_read),
                               CASE WHEN count(*) FILTER (WHERE NOT s.options_read) > 0
                                    THEN '; ' || count(*) FILTER (WHERE NOT s.options_read) || ' database(s) not read' ELSE '' END,

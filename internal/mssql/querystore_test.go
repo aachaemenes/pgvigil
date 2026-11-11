@@ -39,6 +39,8 @@ func TestQueryStoreApplies(t *testing.T) {
 		{"SQL Server 2016", Info{Kind: KindServer, Major: 13, ViewServerState: true}, true, ""},
 		{"SQL Server 2014", Info{Kind: KindServer, Major: 12, ViewServerState: true}, false, "2016"},
 		{"a managed instance, whatever its version says", Info{Kind: KindAzureMI, Major: 12, ViewServerState: true}, true, ""},
+		{"Amazon RDS on SQL Server 2014", Info{Kind: KindRDS, Major: 12, ViewServerState: true}, false, "2016"},
+		{"Amazon RDS on SQL Server 2019", Info{Kind: KindRDS, Major: 15, ViewServerState: true}, true, ""},
 		{"Azure SQL Database", Info{Kind: KindAzureDB, Major: 12, ViewServerState: true}, false, "Azure SQL Database"},
 		{"no VIEW SERVER STATE", Info{Kind: KindServer, Major: 16}, false, "VIEW SERVER STATE"},
 	} {
@@ -79,13 +81,15 @@ func TestQSOptionColsByVersion(t *testing.T) {
 	}
 }
 
-// The store is never read whole: both the runtime statistics and the wait statistics are read from the oldest
-// interval asked for on, and the plans by their ids.
+// The reads are bounded on the server: the intervals by the cursor's time, the oldest first and a fixed number a
+// run; the runtime and the wait statistics by the first and last interval of that list; the plans by their ids.
+// (What the filter costs SQL Server inside its own store is not something a test of the text can see: the
+// collector's comment says what the store's indexes allow.)
 func TestQSReadsAreBounded(t *testing.T) {
 	stmt := strings.Join(strings.Fields(strings.ReplaceAll(qsCandidatesSQL, "%s", qsWaitsCTE)), " ")
 	for _, want := range []string{
-		"FROM sys.query_store_runtime_stats r WHERE r.runtime_stats_interval_id >= @first",
-		"FROM sys.query_store_wait_stats w WHERE w.runtime_stats_interval_id >= @first",
+		"FROM sys.query_store_runtime_stats r WHERE r.runtime_stats_interval_id BETWEEN @first AND @last",
+		"FROM sys.query_store_wait_stats w WHERE w.runtime_stats_interval_id BETWEEN @first AND @last",
 		"k.rn_duration <= @top OR k.rn_cpu <= @top OR k.rn_reads <= @top OR k.rn_memory <= @top OR (k.rn_wait <= @top AND k.wait_ms > 0)",
 	} {
 		if !strings.Contains(stmt, want) {
@@ -96,16 +100,33 @@ func TestQSReadsAreBounded(t *testing.T) {
 		t.Errorf("sys.query_store_runtime_stats is read %d times, want once", n)
 	}
 	iv := strings.Join(strings.Fields(qsIntervalsSQL), " ")
-	if !strings.Contains(iv, "SELECT TOP (@max)") || !strings.Contains(iv, "WHERE i.end_time > @since") {
-		t.Errorf("the interval statement is not bounded: %s", iv)
+	if !strings.Contains(iv, "SELECT TOP (@max)") || !strings.HasSuffix(iv, "WHERE i.end_time > @since ORDER BY i.end_time, i.runtime_stats_interval_id") {
+		t.Errorf("the interval statement is not the oldest intervals after the cursor, a bounded number: %s", iv)
 	}
 	plans := strings.Join(strings.Fields(qsPlansSQL), " ")
 	if !strings.HasSuffix(plans, "WHERE p.is_forced_plan = 1 OR p.plan_id IN (%[2]s)") {
 		t.Errorf("the plan statement does not read by plan id: %s", plans[len(plans)-80:])
 	}
+	if !strings.Contains(qsTuningSQL, "SELECT TOP (@max)") {
+		t.Error("the recommendations are read without a bound")
+	}
 	// without wait statistics (2016) the statement still has its ws relation, empty
 	if no := strings.ReplaceAll(qsCandidatesSQL, "%s", qsNoWaitsCTE); strings.Contains(no, "query_store_wait_stats") || !strings.Contains(no, "LEFT JOIN ws") {
 		t.Error("the 2016 form of the candidate statement reads the wait statistics, or lost its ws relation")
+	}
+}
+
+// The databases the repository holds least of are read first, by name among equals: the ones a cut run left out
+// lead the next run.
+func TestQSOldestFirst(t *testing.T) {
+	turns := []qsTurn{{name: "a", last: 300, hasLast: true}, {name: "b"}, {name: "c", last: 100, hasLast: true}, {name: "d"}, {name: "e", last: 300, hasLast: true}}
+	qsOldestFirst(turns)
+	var got []string
+	for _, x := range turns {
+		got = append(got, x.name)
+	}
+	if strings.Join(got, ",") != "b,d,c,a,e" {
+		t.Errorf("the read order is %v, want b,d,c,a,e (never read first, then the oldest, by name among equals)", got)
 	}
 }
 
@@ -199,7 +220,8 @@ func TestQSRuntimeRows(t *testing.T) {
 }
 
 // A plan's XML is not read again when the repository holds the plan under the same hash; another hash under the
-// plan's number (a cleared store), no answer, an error or no cursor at all means: read it.
+// plan's number (a cleared store), no answer or no cursor at all means: read it. A cursor that fails is an error
+// (the repository does not answer), never a silent "read it".
 func TestQSPlanStored(t *testing.T) {
 	ctx := context.Background()
 	var asked string
@@ -209,22 +231,27 @@ func TestQSPlanStored(t *testing.T) {
 			return answer, ok, err
 		}
 	}
-	if !qsPlanStored(ctx, cursor(-77, true, nil), "db:1", 12, int64(-77)) {
-		t.Error("the same hash: the plan counts as not stored")
+	if stored, err := qsPlanStored(ctx, cursor(-77, true, nil), "db:1", 12, int64(-77)); !stored || err != nil {
+		t.Errorf("the same hash: stored %v, err %v", stored, err)
 	}
 	if asked != "qs_plan:12:db:1" {
 		t.Errorf("the cursor source is %q", asked)
 	}
-	for name, got := range map[string]bool{
-		"another hash":   qsPlanStored(ctx, cursor(5, true, nil), "db", 12, int64(-77)),
-		"never read":     qsPlanStored(ctx, cursor(0, false, nil), "db", 12, int64(0)),
-		"a cursor error": qsPlanStored(ctx, cursor(-77, true, errors.New("down")), "db", 12, int64(-77)),
-		"no cursor":      qsPlanStored(ctx, nil, "db", 12, int64(-77)),
-		"no hash read":   qsPlanStored(ctx, cursor(0, true, nil), "db", 12, nil),
+	for name, c := range map[string]struct {
+		cursor SeqCursorFunc
+		hash   any
+	}{
+		"another hash": {cursor(5, true, nil), int64(-77)},
+		"never read":   {cursor(0, false, nil), int64(0)},
+		"no cursor":    {nil, int64(-77)},
+		"no hash read": {cursor(0, true, nil), nil},
 	} {
-		if got {
-			t.Errorf("%s: the plan counts as stored", name)
+		if stored, err := qsPlanStored(ctx, c.cursor, "db", 12, c.hash); stored || err != nil {
+			t.Errorf("%s: stored %v, err %v", name, stored, err)
 		}
+	}
+	if stored, err := qsPlanStored(ctx, cursor(-77, true, errors.New("down")), "db", 12, int64(-77)); stored || err == nil || !strings.Contains(err.Error(), "down") {
+		t.Errorf("a cursor error: stored %v, err %v", stored, err)
 	}
 }
 
@@ -240,12 +267,16 @@ func TestQSTextPolicy(t *testing.T) {
 			{"kind": "tuning", "database_name": "db", "rec_name": "PR_1", "reason": "Average query CPU time changed", "script": "exec sp_query_store_force_plan @query_id = 1, @plan_id = 7",
 				"rec_details": `{"planForceDetails":{"queryId":1}}`},
 			{"kind": "collector_error", "source": "sys.query_store_runtime_stats", "message": "the run's deadline came"},
+			{"kind": "forced_read", "kind_of": "plan", "database_name": "db", "statement": "kept"},
 		}
 	}
 	full := rows()
 	collect.ApplyTextPolicy(full, "full")
 	if full[0]["query"] != "SELECT * FROM dbo.t WHERE name = N'secret' AND id = 42" || full[1]["statement"] != "<ShowPlanXML>secret</ShowPlanXML>" {
 		t.Errorf("full changed the text: %v %v", full[0]["query"], full[1]["statement"])
+	}
+	if full[4]["statement"] != "kept" {
+		t.Errorf("full emptied the marker's policy probe: %v", full[4]["statement"])
 	}
 	for _, mode := range []string{"normalized", "none"} {
 		r := rows()
@@ -271,6 +302,10 @@ func TestQSTextPolicy(t *testing.T) {
 		}
 		if r[3]["message"] != "the run's deadline came" {
 			t.Errorf("%s changed the collector_error: %v", mode, r[3])
+		}
+		// the marker's probe: present and empty tells the import the policy keeps no plan XML
+		if v, has := r[4]["statement"]; !has || v != nil {
+			t.Errorf("%s left the marker's policy probe as %v (present %v)", mode, v, has)
 		}
 	}
 }

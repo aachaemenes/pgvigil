@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 )
 
 // The Query Store page of a SQL Server instance (task 129; DBA Dash's Query Store Top Queries, Forced Plans and
@@ -15,18 +18,20 @@ import (
 // A window takes every interval of the store that OVERLAPS it (an interval is 60 minutes unless the database says
 // otherwise, a day at most): the last hour at 10:20 is the intervals 09:00 and 10:00.
 //
-//   GET /api/mssql/querystore?instance=N[&from=&to=][&db=<database>][&order=...][&part=...]
+//   GET /api/mssql/querystore?instance=N[&from=&to=][&db=<database>][&order=...][&view=...][&part=...]
+//       view = top | regressed | forced | tuning | state reads state, checks and that view's own parts only (the
+//       page asks so); without it every part is read.
 //       state     one row per database: the store's options, its judgement and why (the Store state tab);
 //       totals    the window's totals over EVERY plan of the store (the interval rows) and the kept plans' share;
 //       series    those totals per step, for the chart;
 //       top       the queries of the window, the first 100 by order = duration (default) | cpu | reads | memory |
 //                 waits | executions;
 //       regressed a plan whose average duration or CPU in the window is 1.5 times its query's average in the
-//                 window of equal length before it (over all the query's plans), or more;
+//                 window of equal length before it (over all the query's plans), or more, and at least 1 ms;
 //       forced    every forced plan with its failure count and reason;
 //       tuning, tuning_options   the automatic tuning recommendations and the databases' options;
 //       checks    the slice's findings of the instance.
-//   GET /api/mssql/querystore/query?instance=N&db=<database>&query=<id>[&hash=0x...][&from=&to=]
+//   GET /api/mssql/querystore/query?instance=N&db=<database>&query=<id>&hash=0x...[&from=&to=]
 //       query (text and properties), plans (each plan of the query that ran in the window), series (per interval
 //       and plan).
 //   GET /api/mssql/querystore/plan.sqlplan?instance=N&db=<database>&plan=<id>
@@ -67,7 +72,9 @@ SELECT count(*) AS intervals, count(DISTINCT iv.database_name) AS databases, min
        coalesce((SELECT rt.logical_reads FROM rt), 0) AS kept_logical_reads, coalesce((SELECT rt.wait_ms FROM rt), 0) AS kept_wait_ms
   FROM iv`
 
-// sqlMSSQLQSSeries: the store's totals over every plan, per step ($5 seconds) by the interval's start.
+// sqlMSSQLQSSeries: the store's totals over every plan, per step ($5 seconds) by the interval's start. The step is
+// a minute (every interval its own point) or whole hours (mssqlQSStep): a step that is no multiple of the
+// interval's length would hold one interval, then two, and draw a steady load as a zigzag.
 var sqlMSSQLQSSeries = `
 SELECT to_timestamp(floor(extract(epoch FROM i.snapshot_at) / $5) * $5) AS snapshot_at,
        coalesce(sum(i.executions), 0) AS executions, round(coalesce(sum(i.duration_us), 0) / 1000.0, 1) AS duration_ms,
@@ -113,12 +120,14 @@ SELECT g.database_name, g.query_id, g.query_hash, q.object_name, q.query_text AS
                                     AND q.query_hash IS NOT DISTINCT FROM g.query_hash
  ORDER BY CASE $5::text WHEN 'cpu' THEN g.cpu_us WHEN 'reads' THEN g.logical_reads WHEN 'memory' THEN g.max_memory_pages
                         WHEN 'waits' THEN g.wait_ms WHEN 'executions' THEN g.executions ELSE g.duration_us END DESC NULLS LAST,
-          g.database_name, g.query_id
+          g.database_name, g.query_id, g.query_hash
  LIMIT 100`
 
 // sqlMSSQLQSRegressed: now = the intervals that overlap the window; before = the intervals that ended inside the
 // window of equal length before it (no interval is in both). A row per plan that ran now, against its query's
-// average before over all the query's plans; new_plan = the plan did not run before.
+// average before over all the query's plans; new_plan = the plan is in no stored row of the window before (it did
+// not run then, or ran under every cut). A figure counts when its average before is above zero and its average
+// now is at least 1 ms: a trivial statement at 0 before and 0 now is no regression, nor is 10 to 16 microseconds.
 var sqlMSSQLQSRegressed = `
 WITH now_ AS (
   SELECT r.database_name, r.query_id, r.query_hash, r.plan_id, r.plan_hash_n,
@@ -154,8 +163,9 @@ SELECT n.database_name, n.query_id, n.query_hash, n.plan_id, q.object_name, q.qu
   LEFT JOIN pgvigil.mssql_qs_plan p ON p.instance_id = $1 AND p.database_name = n.database_name AND p.plan_id = n.plan_id
                                    AND p.plan_hash_n IS NOT DISTINCT FROM n.plan_hash_n
  WHERE n.executions > 0 AND b.executions > 0
-   AND (n.duration_us / n.executions >= 1.5 * (b.duration_us / b.executions) OR n.cpu_us / n.executions >= 1.5 * (b.cpu_us / b.executions))
- ORDER BY extra_duration_ms DESC NULLS LAST, n.database_name, n.query_id, n.plan_id
+   AND ((b.duration_us > 0 AND n.duration_us / n.executions >= 1000 AND n.duration_us / n.executions >= 1.5 * (b.duration_us / b.executions))
+     OR (b.cpu_us > 0 AND n.cpu_us / n.executions >= 1000 AND n.cpu_us / n.executions >= 1.5 * (b.cpu_us / b.executions)))
+ ORDER BY extra_duration_ms DESC NULLS LAST, n.database_name, n.query_id, n.query_hash, n.plan_id
  LIMIT 200`
 
 // sqlMSSQLQSForced: every forced plan of the databases the last read listed ($2 the database, NULL = all).
@@ -170,16 +180,18 @@ SELECT p.database_name, p.query_id, p.plan_id, q.object_name, q.query_text AS qu
  WHERE p.instance_id = $1 AND p.is_forced AND ($2::text IS NULL OR p.database_name = $2)
  ORDER BY p.force_failure_count DESC NULLS LAST, p.database_name, p.query_id, p.plan_id`
 
-// sqlMSSQLQSTuning: the recommendations the server lists now, and the ones it stopped listing inside the window
-// ($2 its start).
+// sqlMSSQLQSTuning: the recommendations the server lists now (first seen by the window's end), and the ones it
+// stopped listing inside the window ($2 its start, $3 its end). The statement is the store's current query of
+// that number: the server's list carries no hash to match it by.
 const sqlMSSQLQSTuning = `
 SELECT t.database_name, t.rec_name, t.rec_type, t.reason, t.rec_state, t.state_reason, t.score, t.valid_since, t.last_refresh,
        t.is_executable, t.is_revertable, t.executed_at, t.executed_by, t.reverted_at, t.reverted_by, t.query_id,
-       t.regressed_plan_id, t.recommended_plan_id, q.object_name, q.query_text AS query, t.script, t.rec_details,
+       t.regressed_plan_id, t.recommended_plan_id, q.object_name, q.query_text AS query, t.script,
        t.is_present, t.first_seen, t.snapshot_at
   FROM pgvigil.mssql_qs_tuning t
   LEFT JOIN pgvigil.mssql_qs_query q ON q.instance_id = t.instance_id AND q.database_name = t.database_name AND q.query_id = t.query_id
- WHERE t.instance_id = $1 AND (t.is_present OR t.snapshot_at > $2) AND ($3::text IS NULL OR t.database_name = $3)
+ WHERE t.instance_id = $1 AND t.first_seen <= $3 AND (t.is_present OR (t.snapshot_at > $2 AND t.snapshot_at <= $3))
+   AND ($4::text IS NULL OR t.database_name = $4)
  ORDER BY t.is_present DESC, t.score DESC NULLS LAST, t.last_refresh DESC NULLS LAST, t.database_name, t.rec_name
  LIMIT 500`
 
@@ -194,15 +206,15 @@ SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_querystore_fi
  WHERE instance_id = $1
  ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
 
-// one query ($4 the database, $5 the query id, $6 its hash or NULL)
+// one query ($2 the database, $3 the query id, $4 its hash: a cleared store gives the id to another statement)
 const sqlMSSQLQSQueryOne = `
 SELECT q.database_name, q.query_id, q.query_hash, q.object_name, q.query_text AS query, q.parameterization, q.plan_count,
        q.last_execution, q.first_seen, q.snapshot_at
   FROM pgvigil.mssql_qs_query q
- WHERE q.instance_id = $1 AND q.database_name = $2 AND q.query_id = $3 AND ($4::text IS NULL OR q.query_hash = $4)`
+ WHERE q.instance_id = $1 AND q.database_name = $2 AND q.query_id = $3 AND q.query_hash = $4`
 
 const qsQueryWindow = `r.instance_id = $1 AND r.snapshot_at < $3 AND r.interval_end > $2 AND r.snapshot_at > $2::timestamptz - interval '1 day'
-     AND r.database_name = $4 AND r.query_id = $5 AND ($6::text IS NULL OR r.query_hash = $6)`
+     AND r.database_name = $4 AND r.query_id = $5 AND r.query_hash = $6`
 
 // the query's plans that ran in the window, each with what the store says of the plan (the same plan hash: a
 // number reused after a clear is another plan)
@@ -244,7 +256,24 @@ SELECT p.plan_xml, i.name, p.query_id
 // mssqlQSOrders are the Top list's orders; the first is the default.
 var mssqlQSOrders = []string{"duration", "cpu", "reads", "memory", "waits", "executions"}
 
-var mssqlQSHash = regexp.MustCompile(`^0x[0-9A-Fa-f]{1,16}$`)
+// mssqlQSViews: the parts each view of the page reads beside state and checks.
+var mssqlQSViews = map[string][]string{
+	"top": {"totals", "series", "top"}, "regressed": {"regressed"}, "forced": {"forced"},
+	"tuning": {"tuning", "tuning_options"}, "state": {},
+}
+
+// a query or plan hash as the store writes it and QueryRows stores it: 0x and sixteen hex digits
+var mssqlQSHash = regexp.MustCompile(`^0[xX][0-9A-Fa-f]{16}$`)
+
+// mssqlQSStep is the series' step: a minute while the window draws about 120 points at that width, whole hours
+// beyond it (an interval is 60 minutes unless the database says otherwise).
+func mssqlQSStep(secs float64) int {
+	step := perfStep(secs)
+	if step <= 60 {
+		return 60
+	}
+	return (step + 3599) / 3600 * 3600
+}
 
 // mssqlQSDatabase reads the db= of a Query Store route (a SQL Server database name: 128 characters); "" = none given.
 func mssqlQSDatabase(r *http.Request, required bool) (string, error) {
@@ -254,6 +283,8 @@ func mssqlQSDatabase(r *http.Request, required bool) (string, error) {
 		return "", errors.New("db must name the database")
 	case len([]rune(db)) > 128:
 		return "", errors.New("db is longer than a database name")
+	case !utf8.ValidString(db) || strings.ContainsRune(db, 0):
+		return "", errors.New("db is not a database name")
 	}
 	return db, nil
 }
@@ -266,7 +297,7 @@ func orNull(s string) any {
 	return s
 }
 
-// MSSQLQueryStore is GET /api/mssql/querystore?instance=N[&from=&to=][&db=][&order=][&part=...].
+// MSSQLQueryStore is GET /api/mssql/querystore?instance=N[&from=&to=][&db=][&order=][&view=][&part=...].
 func (s *Server) MSSQLQueryStore(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {
@@ -283,26 +314,38 @@ func (s *Server) MSSQLQueryStore(w http.ResponseWriter, r *http.Request) {
 	if order == "" {
 		order = mssqlQSOrders[0]
 	}
-	known := false
-	for _, o := range mssqlQSOrders {
-		known = known || o == order
-	}
-	if !known {
+	if !slices.Contains(mssqlQSOrders, order) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("order must be one of %v", mssqlQSOrders))
 		return
 	}
 	win := []any{id, from, to, db}
-	s.multiPart(w, r, []part{
+	parts := []part{
 		{"state", sqlMSSQLQSState, []any{id}},
 		{"totals", sqlMSSQLQSTotals, win},
-		{"series", sqlMSSQLQSSeries, []any{id, from, to, db, perfStep(to.Sub(from).Seconds())}},
+		{"series", sqlMSSQLQSSeries, []any{id, from, to, db, mssqlQSStep(to.Sub(from).Seconds())}},
 		{"top", sqlMSSQLQSTop, []any{id, from, to, db, order}},
 		{"regressed", sqlMSSQLQSRegressed, win},
 		{"forced", sqlMSSQLQSForced, []any{id, db}},
-		{"tuning", sqlMSSQLQSTuning, []any{id, from, db}},
+		{"tuning", sqlMSSQLQSTuning, win},
 		{"tuning_options", sqlMSSQLQSTuningOptions, []any{id, db}},
 		{"checks", sqlMSSQLQSChecks, []any{id}},
-	})
+	}
+	// a view reads its own parts: the Store state tab does not run the top list over the window
+	if view := r.URL.Query().Get("view"); view != "" {
+		own, ok := mssqlQSViews[view]
+		if !ok {
+			writeErr(w, http.StatusBadRequest, errors.New("view must be one of top, regressed, forced, tuning, state"))
+			return
+		}
+		kept := parts[:0:0]
+		for _, p := range parts {
+			if p.name == "state" || p.name == "checks" || slices.Contains(own, p.name) {
+				kept = append(kept, p)
+			}
+		}
+		parts = kept
+	}
+	s.multiPart(w, r, parts)
 }
 
 // mssqlQSNumber reads a positive id parameter (a query or plan number of the store).
@@ -314,8 +357,9 @@ func mssqlQSNumber(r *http.Request, name string) (int64, error) {
 	return n, nil
 }
 
-// MSSQLQueryStoreQuery is GET /api/mssql/querystore/query?instance=N&db=&query=<id>[&hash=0x...][&from=&to=]: one
-// query's text, its plans in the window and their line per interval.
+// MSSQLQueryStoreQuery is GET /api/mssql/querystore/query?instance=N&db=&query=<id>&hash=0x...[&from=&to=]: one
+// query's text, its plans in the window and their line per interval. The hash is part of the query's name: after
+// a cleared store the id alone would mix two statements.
 func (s *Server) MSSQLQueryStoreQuery(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {
@@ -332,14 +376,12 @@ func (s *Server) MSSQLQueryStoreQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	var hash any
-	if h := r.URL.Query().Get("hash"); h != "" {
-		if !mssqlQSHash.MatchString(h) {
-			writeErr(w, http.StatusBadRequest, errors.New("hash must be the query's hash (0x and hex digits)"))
-			return
-		}
-		hash = h
+	hash := r.URL.Query().Get("hash")
+	if !mssqlQSHash.MatchString(hash) {
+		writeErr(w, http.StatusBadRequest, errors.New("hash must be the query's hash (0x and sixteen hex digits)"))
+		return
 	}
+	hash = "0x" + strings.ToUpper(hash[2:])
 	win := []any{id, from, to, db, query, hash}
 	s.multiPart(w, r, []part{
 		{"query", sqlMSSQLQSQueryOne, []any{id, db, query, hash}},

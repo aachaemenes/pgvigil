@@ -10,8 +10,8 @@ import (
 // interval and its open one, the plans, the automatic tuning rows. The collection runs hourly, so a seed of two
 // days stores 48 intervals per database.
 //
-//	-sql01  Sales and Orders with Query Store on. Sales: a procedure's statement that changed plan an hour before
-//	        the anchor and runs five times slower since (the Regressed view; SQL Server's own recommendation to
+//	-sql01  Sales and Orders with Query Store on. Sales: a procedure's statement that changed plan at the top of the
+//	        hour before the anchor's and runs five times slower since (the Regressed view; SQL Server's own recommendation to
 //	        force the plan before, on the Tuning view), a parallel report with a forced plan. Orders: a forced plan
 //	        SQL Server cannot use since its index was dropped (the finding 'a forced plan fails'). Reporting: a
 //	        store that filled its 100 MB and went read-only (the Summary's QS cell reads Warning). The other
