@@ -13,7 +13,7 @@ None of the three runs on Azure SQL Database.
 To name procedures and indexes in every database, the monitoring login takes one more grant than [the base login](sqlserver.md#the-login):
 
 ```sql
-GRANT CONNECT ANY DATABASE TO [pgvigil_monitor];   -- SQL Server 2014 and later; it enters a database, it reads no table
+GRANT CONNECT ANY DATABASE TO [pgvigil_monitor];   -- SQL Server 2014 and later; pgvigil reads no table, and the login holds in each database what public holds there
 ```
 
 Without it the counters are still stored, under the object's id.

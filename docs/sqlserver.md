@@ -65,7 +65,7 @@ A SQL login or a Windows login with four things and no more; never sysadmin.
 CREATE LOGIN [pgvigil_monitor] WITH PASSWORD = '<a long random password>';
 GRANT VIEW SERVER STATE TO [pgvigil_monitor];
 GRANT VIEW ANY DEFINITION TO [pgvigil_monitor];
-GRANT CONNECT ANY DATABASE TO [pgvigil_monitor];   -- SQL Server 2014 and later: the names of procedures and indexes in every database; it enters a database and reads no table
+GRANT CONNECT ANY DATABASE TO [pgvigil_monitor];   -- SQL Server 2014 and later: the names of procedures and indexes in every database; pgvigil reads no table, and the login holds in each database what public holds there
 -- a server, Amazon RDS and Azure SQL Managed Instance only (Azure SQL Database has no msdb):
 USE msdb;
 CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];

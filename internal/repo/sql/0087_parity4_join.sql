@@ -1,4 +1,5 @@
--- 0087: the join of parity4, first part (tasks 130 and 131; 129 and 132 bring their own join file when they land),
+-- 0087: the join of parity4, first part (tasks 130 and 131; 129 brings its own join file, 0088; 132 needs none: 0086 adds no
+-- table and no function purge() or apply_roles() must name),
 -- built from 0082's purge() and 0069's apply_roles() (never edited by hand).
 -- purge() re-created with four more monthly partition parents - mssql_indexlock_read, mssql_indexlock_sample,
 -- mssql_proc_read and mssql_proc_sample (0084, task 130) - and one more retention step, pgvigil.mssql_reads_purge

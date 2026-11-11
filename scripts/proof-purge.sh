@@ -10,6 +10,9 @@
 # names exactly the three old partitions (dbstats_, iostats_, serverstats_ of the month 100 days back)
 # and leaves 6; `purge -days 30` prints "3 partitions and rows removed" (no row-level series holds a row
 # older than 30 days here) and leaves the three current-month partitions; a second run removes 0.
+# Then the whole list: no partitioned parent of the schema unnamed by purge() (or mssql_running_purge(), the day
+# partitions of mssql_requests); an old-month partition made for every other parent, all dropped by purge -days 30; the
+# reader holds EXECUTE on none of the eight owner-only functions: 'ok   every partitioned parent named by purge(); ...'.
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -49,4 +52,26 @@ after=$(parts)
 [ "$after" = "dbstats_$cur,iostats_$cur,serverstats_$cur" ] || fail "partitions after the purge: $after"
 out2=$("$BIN" purge -config "$CFG" -days 30)
 case "$out2" in "purge -days 30: 0 partitions and rows removed in "*) ;; *) fail "second purge output: $out2" ;; esac
+# the whole list: every partitioned parent of the schema is named by purge() or mssql_running_purge() (the day
+# partitions of mssql_requests); an old-month partition of every other parent is dropped by purge -days 30; the
+# reader may execute none of the owner-only functions
+unnamed=$(q "select coalesce(string_agg(p.relname, ',' order by p.relname), '') from pg_class p join pg_namespace n on n.oid = p.relnamespace
+  where n.nspname = 'pgvigil' and p.relkind = 'p'
+    and position(quote_literal(p.relname) in pg_get_functiondef('pgvigil.purge(int)'::regprocedure)) = 0
+    and position(quote_literal(p.relname) in pg_get_functiondef('pgvigil.mssql_running_purge(int)'::regprocedure)) = 0")
+[ -z "$unnamed" ] || fail "partitioned parents purge() does not name: $unnamed"
+nparents=$(q "select count(*) from pg_class p join pg_namespace n on n.oid = p.relnamespace where n.nspname = 'pgvigil' and p.relkind = 'p' and p.relname <> 'mssql_requests'")
+q "select count(pgvigil.ensure_month_partition(p.relname, now() - interval '100 days')) from pg_class p join pg_namespace n on n.oid = p.relnamespace
+  where n.nspname = 'pgvigil' and p.relkind = 'p' and p.relname <> 'mssql_requests'" >/dev/null
+made=$(q "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil' and c.relispartition and c.relname like '%\_$old'")
+[ "$made" = "$nparents" ] || fail "old-month partitions made: $made of $nparents parents"
+"$BIN" purge -config "$CFG" -days 30 >/dev/null
+left=$(q "select coalesce(string_agg(c.relname, ',' order by c.relname), '') from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'pgvigil' and c.relispartition and c.relname like '%\_$old'")
+[ -z "$left" ] || fail "old-month partitions purge -days 30 left: $left"
+owner_only="'apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition', 'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge'"
+found=$(q "select count(distinct proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ($owner_only)")
+[ "$found" = "8" ] || fail "owner-only functions found: $found of 8"
+granted=$(q "select coalesce(string_agg(distinct proname, ','), '') from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ($owner_only) and has_function_privilege('pgvigil_reader', p.oid, 'EXECUTE')")
+[ -z "$granted" ] || fail "the reader may execute owner-only functions: $granted"
+echo "ok   every partitioned parent named by purge(); $nparents old-month partitions made and dropped; the reader holds none of the 8 owner-only functions"
 echo "proof-purge: OK (old month $old dropped, current month $cur kept)"
