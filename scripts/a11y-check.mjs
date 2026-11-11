@@ -71,6 +71,9 @@ const erp = pick(r => String(r.name).endsWith('onprem-erp01')) ?? onprem;
 const crm = pick(r => String(r.name).endsWith('aurora-crm01')) ?? cloud;
 pages.push(`#/memory?i=${erp.instance_id}`);
 pages.push(`#/pooler?i=${crm.instance_id}`);
+// the pooler traced (task 128): the Pooler tab with clients, servers and a trace, and Running queries' pooler marks
+const hr = pick(r => String(r.name).endsWith('onprem-hr01')) ?? onprem;
+pages.push(`#/pooler?i=${hr.instance_id}`, `#/activity?i=${hr.instance_id}`);
 const all = []; let failed = 0; const perRule = new Map();
 for (const theme of ['light', 'dark']) {
   // the theme is remembered per origin: set it on a page of the UI (not on about:blank), and pin the media query too

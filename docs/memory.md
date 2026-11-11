@@ -77,7 +77,7 @@ stats_users = pgvigil_stats
 
 A `stats_users` login may run `SHOW` commands only; PgBouncer itself refuses it `PAUSE`, `RELOAD`, `KILL` and every
 other admin command. The `pgbouncer` collection sends only `SHOW VERSION`, `SHOW POOLS`, `SHOW STATS`,
-`SHOW DATABASES`, `SHOW USERS` and `SHOW CONFIG`, every minute, over the simple query protocol the console speaks. An instance
+`SHOW DATABASES`, `SHOW USERS`, `SHOW CONFIG`, `SHOW CLIENTS` and `SHOW SERVERS` ([who waits in the pooler and for which backend](pooler.md)), every minute, over the simple query protocol the console speaks. An instance
 without `pgbouncer:` is never read for a pooler and has no Pooler tab.
 
 The Pooler tab shows:

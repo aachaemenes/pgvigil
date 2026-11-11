@@ -186,6 +186,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
+		// a PgBouncer in front of one instance, derived from its activity (pooler_demo.go, task 128)
+		if e := SeedPooler(ctx, pool, o.Prefix, grid[0].Add(-time.Minute), o.End); e != nil {
+			err = fmt.Errorf("pooler demo: %w", e)
+		}
+	}
+	if err == nil {
 		err = f.catchUp(ctx, &st)
 	}
 	st.Elapsed = time.Since(began)
@@ -232,6 +238,9 @@ func (f *Fleet) Tick(ctx context.Context, t time.Time) (Stats, error) {
 		}
 		return imp.logCollections(ctx, f.ids[i], f.gens[i], t)
 	})
+	if err == nil {
+		err = SeedPooler(ctx, f.pool, f.opts.Prefix, f.last, t)
+	}
 	f.last = t
 	st.Instances = len(f.gens)
 	st.Elapsed = time.Since(began)

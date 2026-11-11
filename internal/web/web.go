@@ -186,6 +186,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/xe/blocked", s.MSSQLXEBlocked)
 	api.HandleFunc("GET /api/mssql/xe/slow", s.MSSQLXESlow)
 	api.HandleFunc("GET /api/pooler", s.Pooler)
+	api.HandleFunc("GET /api/pooler/conns", s.PoolerConns)
 	api.HandleFunc("GET /api/schema", s.Schema)
 	api.HandleFunc("GET /api/host", s.Host)
 	api.HandleFunc("GET /api/disks", s.Disks)
