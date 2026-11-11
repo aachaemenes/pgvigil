@@ -148,9 +148,12 @@
 #     and the power plan's cell 'not read' on a Linux host; Procedures shows the proof's procedure with 11
 #     executions under dbo, and its name opens it read by read (2 reads); Index locks shows PK_pv_lock on pv_lock
 #     with at least 1 row lock wait, 1 escalation attempt and 1 escalation; Waits shows the forced lock wait's type with both
-#     rates and a description; the fleet Running queries row of the stored snapshot reads 4.0 MB, 5.0 MB, 2, 800, 1,
-#     500 and a PostgreSQL row's six cells are empty. Ten screenshots are saved (reads-<page>-<theme>.png) for the
-#     look against the tools' shots.
+#     rates and a description, the grid has one row per wait type of the window, no row taller than 320 px and a
+#     description column at least 300 px wide (corrected after the first look: the column had collapsed to one
+#     character and a row was thousands of pixels tall; the first run's checks did not see it); the fleet Running
+#     queries row of the stored snapshot reads 4.0 MB, 5.0 MB, 2, 800, 1, 500 and a PostgreSQL row's six cells are
+#     empty. Fourteen screenshots are saved (reads-<page>-<theme>.png; the Waits grid and the fleet grid's right end
+#     have a picture of their own) for the look against the tools' shots.
 #  NOT PROVEN HERE: a real power plan (a Windows SQL Server), a real tempdb page latch wait, SQL Server 2016-2019
 #  (the older sys.dm_os_sys_info), Amazon RDS, Azure SQL Managed Instance, a list long enough to be cut on a real
 #  server, a database skipped on a real server (a schema change held across the read), a columnstore rowset with
@@ -830,6 +833,13 @@ for (const theme of ['light', 'dark']) {
   const w = await pv(`const t = gridOf('wait time (ms/sec/core)'); const tr = rowWith(t, 'wait type', ${JSON.stringify(a.lck)}); return tr ? { rate: text(t, tr, 'wait time (ms/sec)'), core: text(t, tr, 'wait time (ms/sec/core)'), desc: text(t, tr, 'description') } : null;`);
   check(w && w.rate !== '' && w.core !== '' && (w.desc ?? '').length > 40, T + `Waits: ${a.lck} ${JSON.stringify(w)?.slice(0, 160)}`);
   await shot('waits', theme);
+  // the grid's layout: every wait type of the window is a row, and no row is taller than a wrapped description needs
+  // (a description column squeezed to one character made a row thousands of pixels tall: the first look found it)
+  const lay = await pv(`const t = gridOf('wait time (ms/sec/core)'); const rs = rowsOf(t); const d = cell(t, rs[0], 'description');
+    return { n: rs.length, tallest: Math.max(0, ...rs.map(r => r.getBoundingClientRect().height)), desc: d ? d.getBoundingClientRect().width : 0 };`);
+  check(lay.n === a.waits && lay.tallest <= 320 && lay.desc >= 300, T + `Waits: ${lay.n} rows (the API has ${a.waits}), the tallest ${Math.round(lay.tallest)} px, the description column ${Math.round(lay.desc)} px wide`);
+  await pv(`const t = gridOf('wait time (ms/sec/core)'); t.scrollIntoView({ block: 'start' }); const w = t.closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
+  await sleep(200); await shot('waits-grid', theme);
 
   check(await go('#/running', 'max memory grant'), T + 'the fleet Running queries page rendered with the grant columns');
   const f = await pv(`const t = gridOf('max memory grant'); const tr = rowWith(t, 'instance', ${JSON.stringify(a.fleet)}); const pg = rowWith(t, 'instance', ${JSON.stringify(a.pg)});
@@ -837,16 +847,20 @@ for (const theme of ['light', 'dark']) {
     return { ms: tr ? six.map(c => text(t, tr, c)).join('|') : null, pg: pg ? six.map(c => text(t, pg, c)).join('|') : null };`);
   check(f.ms === '4.0 MB|5.0 MB|2|800|1|500' && f.pg === '|||||', T + `the fleet row of the stored snapshot '${f.ms}' (want 4.0 MB|5.0 MB|2|800|1|500), a PostgreSQL row '${f.pg}' (want six empty cells)`);
   await shot('fleet', theme);
+  // the new columns stand at the right end of a wide grid: a second picture with the grid scrolled to them
+  await pv(`const w = gridOf('max memory grant').closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
+  await sleep(200); await shot('fleet-right', theme);
 }
 ws.close();
 process.exit(fails ? 1 : 0);
 JS
   ARGS=$(jq -nc --arg cdp "$CDP" --arg u "http://127.0.0.1:$PORT" --arg shots "$PGVIGIL_SHOTS" --arg db "$DB" --argjson iid "$iid" --arg fleet "proof-reads-fleet-$SUF" --arg pg "proof-reads-pg-$SUF" --arg lck "$LT" \
     --argjson linux "$([ "$HOSTP" = Linux ] && echo true || echo false)" \
-    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck, linux: $linux}')
+    --argjson waits "$(curl -fs "$U/mssql/waits?instance=$iid&$(win)" | jq '.events.rows | length')" \
+    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck, linux: $linux, waits: $waits}')
   node "$WORK/ui.mjs" "$ARGS" || fail "S: the pages"
   kill "$CHR_PID" 2>/dev/null || true; wait "$CHR_PID" 2>/dev/null || true; CHR_PID=
-  echo "S: OK (ten screenshots in $PGVIGIL_SHOTS: reads-<page>-<theme>.png)"; S_NOTE=", S"
+  echo "S: OK (fourteen screenshots in $PGVIGIL_SHOTS: reads-<page>-<theme>.png)"; S_NOTE=", S"
 else
   echo "--- S. the pages in a browser: NOT RUN (PGVIGIL_SHOTS names no folder)"; S_NOTE=""
 fi

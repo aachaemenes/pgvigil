@@ -34,7 +34,9 @@ const rateCols: Col[] = [
   { key: 'ms_per_sec', label: 'wait time (ms/sec)', num: true, fmt: rate },
   { key: 'ms_per_sec_core', label: 'wait time (ms/sec/core)', num: true, fmt: rate },
 ];
-const descCol: Col = { key: 'description', wide: true };
+// the text wraps inside a block of its own width: left to the table, a column of wrapping text in a grid wider than
+// the page shrinks to one character and its row grows thousands of pixels tall
+const descCol: Col = { key: 'description', fmt: v => el('span', { style: 'display:inline-block;min-width:28rem;max-width:44rem;white-space:normal' }, String(v ?? '')) };
 const idleText = 'Idle background work: a system task waiting for something to do. Kept, and never ranked.';
 
 // describe gives each wait row its rates and its description: the type's own text; else, for a wait of idle

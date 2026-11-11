@@ -47,7 +47,8 @@ export async function mssqlPropertiesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'grp', label: 'group' },
     { key: 'label', label: 'property' },
     { key: 'value', fmt: v => v == null ? el('span', { class: 'meta' }, 'not read') : shown(v) },
-    { key: 'note', wide: true },
+    // prose, in the page's own font, wrapping inside a block that keeps its width in a narrow window
+    { key: 'note', fmt: v => v == null ? '' : el('span', { style: 'display:inline-block;min-width:16rem;max-width:40rem;white-space:normal' }, String(v)) },
     { key: 'since', label: 'has this value since', fmt: (v, r) => r.value == null ? '' : fmtTime(v) },
   ];
   sec.append(grid(props, cols));
