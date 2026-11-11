@@ -12,7 +12,7 @@
 #   PGVIGIL_LAB_PROOF        the proof's tag value: every resource carries the tag pgvigil-proof=<value> (required)
 #   PGVIGIL_LAB_AWS_PROFILE  the AWS CLI profile (required for up, allow, status, down)
 #   PGVIGIL_LAB_AWS_REGION   the region (required for up, allow, status, down)
-#   PGVIGIL_LAB_DIR          the state folder, default .lab (git-ignored: add it to .git/info/exclude)
+#   PGVIGIL_LAB_DIR          the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE     the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
 #
 # What up makes, each tagged: one security group in the default VPC (no ingress until 'allow'), one DB instance
@@ -39,20 +39,29 @@ need_aws() {
 }
 aw() { aws --profile "$PGVIGIL_LAB_AWS_PROFILE" --region "$PGVIGIL_LAB_AWS_REGION" "$@"; }
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
+# load: the state file, which names the account scope up used; a call under another profile, region or tag would read
+# the wrong place and could say 0 left while the instance runs, so it is refused
 load() { [ -r "$STATE" ] || fail "no state file $STATE (run up first)"; # shellcheck disable=SC1090
-  . "$STATE"; }
-ip_ok() { [[ $1 =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
-  local o; for o in "${BASH_REMATCH[@]:1}"; do [ "$o" -le 255 ] || return 1; done
-  [ "$1" != 0.0.0.0 ]; }
+  . "$STATE"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git check-ignore -q "$STATE" || fail "$STATE is not git-ignored (it holds passwords)"; fi
+  [ -z "${PGVIGIL_LAB_AWS_PROFILE:-}" ] || [ "$PGVIGIL_LAB_AWS_PROFILE" = "${LAB_PROFILE:-}" ] || fail "the state file was made with profile '${LAB_PROFILE:-}', not '$PGVIGIL_LAB_AWS_PROFILE'"
+  [ -z "${PGVIGIL_LAB_AWS_REGION:-}" ] || [ "$PGVIGIL_LAB_AWS_REGION" = "${LAB_REGION:-}" ] || fail "the state file was made with region '${LAB_REGION:-}', not '$PGVIGIL_LAB_AWS_REGION'"
+  [ -z "${PGVIGIL_LAB_PROOF:-}" ] || [ "$PGVIGIL_LAB_PROOF" = "${LAB_PROOF:-}" ] || fail "the state file was made with tag '${LAB_PROOF:-}', not '$PGVIGIL_LAB_PROOF'"; }
+# one IPv4 address, no leading zeros (00.0.0.0 would slip past a text compare), never 0.0.0.0
+ip_ok() { local oct='(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
+  [[ $1 =~ ^$oct\.$oct\.$oct\.$oct$ ]] && [ "$1" != 0.0.0.0 ]; }
 
 case $CMD in
 up)
   need_aws
   [ ! -e "$STATE" ] || fail "$STATE exists: this lab is up (status) or was not taken down (down)"
-  mkdir -p "$DIR"; chmod 700 "$DIR"
+  mkdir -p "$DIR"; chmod 700 "$DIR"; printf '*\n' > "$DIR/.gitignore"   # the folder ignores itself on any clone
   SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
   ID=pgv-proof-$SUF; SGN=pgv-proof-$SUF
   ( umask 077; cat > "$STATE" <<EOF
+LAB_PROFILE=$PGVIGIL_LAB_AWS_PROFILE
+LAB_REGION=$PGVIGIL_LAB_AWS_REGION
+LAB_PROOF=$PGVIGIL_LAB_PROOF
 RDS_ID=$ID
 RDS_SG_NAME=$SGN
 RDS_SG=
@@ -91,7 +100,11 @@ PY
   if ! aw rds create-db-instance --cli-input-json "file://$REQ" --query 'DBInstance.[DBInstanceIdentifier,DBInstanceStatus,EngineVersion]' --output text 2>"$ERR"; then
     rm -f "$REQ"
     echo "REFUSED: the create call of $ID failed; AWS said:" >&2; cat "$ERR" >&2; rm -f "$ERR"
-    aw ec2 delete-security-group --group-id "$SG" && echo "removed: security group $SG"
+    # a create the client saw fail can still have been accepted (a retry after a timeout): then nothing is removed
+    if aw rds describe-db-instances --db-instance-identifier "$ID" >/dev/null 2>&1; then
+      echo "the instance $ID exists despite the error: run down" >&2; exit 3; fi
+    aw ec2 delete-security-group --group-id "$SG" || { echo "the security group $SG is left: run down" >&2; exit 3; }
+    echo "removed: security group $SG"
     rm -f "$STATE"
     exit 3
   fi
@@ -118,20 +131,27 @@ logins)
   [ -n "$RDS_HOST" ] || fail "the state file has no endpoint yet (up has not finished)"
   command -v docker >/dev/null || fail "docker is not on this machine (sqlcmd runs from $SQLCMD_IMAGE)"
   export SQLCMDPASSWORD="$ADMIN_PW"
-  docker run --rm -i -e SQLCMDPASSWORD "$SQLCMD_IMAGE" /opt/mssql-tools18/bin/sqlcmd -S "tcp:$RDS_HOST,$RDS_PORT" -U "$ADMIN_USER" -d master -C -b -l 60 -h -1 -W -i /dev/stdin <<SQL
+  docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$RDS_HOST,$RDS_PORT" -U "$ADMIN_USER" -d master -C -b -l 60 -h -1 -W -i /dev/stdin <<SQL
 SET NOCOUNT ON;
 IF SUSER_ID(N'$MON_USER') IS NULL CREATE LOGIN [$MON_USER] WITH PASSWORD = N'$MON_PW', CHECK_POLICY = OFF;
 GRANT VIEW SERVER STATE TO [$MON_USER];
 GRANT VIEW ANY DEFINITION TO [$MON_USER];
-GRANT CONNECT ANY DATABASE TO [$MON_USER];
 GO
+-- no CONNECT ANY DATABASE: the RDS master user does not hold it and cannot grant it (Msg 4613, Grantor does not
+-- have GRANT permission); the login gets a user in msdb here and in each database it is to read (the proof makes one)
+-- msdb: the master user is in no role there and may not add a member to db_datareader (Msg 15151); it may make a
+-- user and grant SELECT on the three Agent tables it holds WITH GRANT OPTION (sysjobs, sysjobhistory, sysjobactivity)
 USE msdb;
 IF USER_ID(N'$MON_USER') IS NULL CREATE USER [$MON_USER] FOR LOGIN [$MON_USER];
-ALTER ROLE db_datareader ADD MEMBER [$MON_USER];
+GRANT SELECT ON dbo.sysjobs TO [$MON_USER];
+GRANT SELECT ON dbo.sysjobhistory TO [$MON_USER];
+GRANT SELECT ON dbo.sysjobactivity TO [$MON_USER];
 GO
+-- no user in model (which would carry it into every database made later): the master user cannot enter model (Msg 916)
 SELECT 'logins: ' + N'$MON_USER' + ' holds ' + STRING_AGG(permission_name, ', ') WITHIN GROUP (ORDER BY permission_name)
 FROM sys.server_permissions WHERE grantee_principal_id = SUSER_ID(N'$MON_USER') AND state = 'G';
-SELECT 'logins: msdb db_datareader member ' + CAST(IS_ROLEMEMBER('db_datareader', N'$MON_USER') AS varchar(2)) FROM msdb.sys.database_principals WHERE name = N'$MON_USER';
+SELECT 'logins: in msdb SELECT on ' + STRING_AGG(OBJECT_NAME(major_id), ', ') WITHIN GROUP (ORDER BY OBJECT_NAME(major_id))
+FROM sys.database_permissions WHERE grantee_principal_id = USER_ID(N'$MON_USER') AND permission_name = 'SELECT' AND state = 'G';
 SQL
   ;;
 status)
@@ -144,20 +164,30 @@ status)
   ;;
 down)
   need_aws; load
-  if aw rds describe-db-instances --db-instance-identifier "$RDS_ID" >/dev/null 2>&1; then
-    aw rds delete-db-instance --db-instance-identifier "$RDS_ID" --skip-final-snapshot --delete-automated-backups --query 'DBInstance.DBInstanceStatus' --output text
+  ST=$(aw rds describe-db-instances --db-instance-identifier "$RDS_ID" --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null || true)
+  if [ -n "$ST" ]; then
+    # a down cut during its wait finds the instance deleting: it waits again instead of deleting twice
+    [ "$ST" = deleting ] || aw rds delete-db-instance --db-instance-identifier "$RDS_ID" --skip-final-snapshot --delete-automated-backups --query 'DBInstance.DBInstanceStatus' --output text
     echo "deleting: $RDS_ID (no final snapshot, automated backups deleted); waiting"
     aw rds wait db-instance-deleted --db-instance-identifier "$RDS_ID" || aw rds wait db-instance-deleted --db-instance-identifier "$RDS_ID"
   fi
+  # an up cut between the group's create and the state file's line leaves RDS_SG empty: found by its name and tag
+  [ -n "$RDS_SG" ] || RDS_SG=$(aw ec2 describe-security-groups --filters "Name=group-name,Values=$RDS_SG_NAME" "Name=tag:pgvigil-proof,Values=$PGVIGIL_LAB_PROOF" --query 'SecurityGroups[0].GroupId' --output text)
+  [ "$RDS_SG" != None ] || RDS_SG=
   if [ -n "$RDS_SG" ] && aw ec2 describe-security-groups --group-ids "$RDS_SG" >/dev/null 2>&1; then
     # the instance's network interface lets go of the group a little after the instance is gone
     for _ in $(seq 1 30); do aw ec2 delete-security-group --group-id "$RDS_SG" 2>/dev/null && break; sleep 10; done
   fi
   # the listing read back: the instance, the group, anything else that carries the tag, and backups of the instance
-  LEFT_DB=$(aw rds describe-db-instances --query "length(DBInstances[?DBInstanceIdentifier=='$RDS_ID'])" --output text)
+  LEFT_DB=$(aw rds describe-db-instances --filters "Name=db-instance-id,Values=$RDS_ID" --query 'length(DBInstances)' --output text)
   LEFT_SG=$(aw ec2 describe-security-groups --filters "Name=tag:pgvigil-proof,Values=$PGVIGIL_LAB_PROOF" --query 'length(SecurityGroups)' --output text)
-  LEFT_BK=$(aw rds describe-db-instance-automated-backups --query "length(DBInstanceAutomatedBackups[?DBInstanceIdentifier=='$RDS_ID'])" --output text)
-  LEFT_SN=$(aw rds describe-db-snapshots --query "length(DBSnapshots[?DBInstanceIdentifier=='$RDS_ID'])" --output text)
+  if [ -n "$RDS_SG" ]; then LEFT_SG=$((LEFT_SG + $(aw ec2 describe-security-groups --filters "Name=group-id,Values=$RDS_SG" --query 'length(SecurityGroups)' --output text))); fi
+  # an instance with no automated backups answers DBInstanceAutomatedBackupNotFound: that is 0; any other error stops
+  BKERR=$(mktemp)
+  if BK=$(aw rds describe-db-instance-automated-backups --db-instance-identifier "$RDS_ID" --query 'length(DBInstanceAutomatedBackups)' --output text 2>"$BKERR"); then LEFT_BK=$BK
+  elif grep -q DBInstanceAutomatedBackupNotFound "$BKERR"; then LEFT_BK=0; else fail "the automated backups could not be read: $(cat "$BKERR")"; fi
+  rm -f "$BKERR"
+  LEFT_SN=$(aw rds describe-db-snapshots --db-instance-identifier "$RDS_ID" --query 'length(DBSnapshots)' --output text)
   LEFT_TAG=$(aw resourcegroupstaggingapi get-resources --tag-filters "Key=pgvigil-proof,Values=$PGVIGIL_LAB_PROOF" --query 'ResourceTagMappingList[].ResourceARN' --output text)
   echo "read back: instances $LEFT_DB, security groups $LEFT_SG, automated backups $LEFT_BK, snapshots $LEFT_SN; tagged resources listed: ${LEFT_TAG:-none}"
   [ "$LEFT_DB|$LEFT_SG|$LEFT_BK|$LEFT_SN" = "0|0|0|0" ] || fail "something is left (above): the state file $STATE stays"

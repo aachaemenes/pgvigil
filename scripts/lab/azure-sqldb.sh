@@ -18,7 +18,7 @@
 #                                free limit with AutoPause when it is used up (nothing is billed); basic: the Basic
 #                                tier (billed per day; its server-state DMVs need the server admin, not VIEW DATABASE
 #                                STATE, so the proof's least-privilege user reads less there)
-#   PGVIGIL_LAB_DIR              the state folder, default .lab (git-ignored: add it to .git/info/exclude)
+#   PGVIGIL_LAB_DIR              the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE         the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
 #   AZ                           the Azure CLI, default az on the PATH
 #
@@ -29,7 +29,7 @@
 # /dev/urandom and written only to the mode-600 state file <dir>/azure-sqldb.env; the server goes in through a
 # mode-600 request body that is removed right after the call, never on a command line, in the output or a log.
 # down deletes the server (its database and firewall rules with it), reads the listing back (the server, and every
-# resource of the group that carries the tag) and removes the state file only when nothing is left.
+# resource of the subscription that carries the tag) and removes the state file only when nothing is left.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 DIR=${PGVIGIL_LAB_DIR:-.lab}
@@ -46,20 +46,38 @@ need_az() {
 }
 az_() { "$AZ" "$@" --subscription "$PGVIGIL_LAB_AZ_SUBSCRIPTION" --only-show-errors; }
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
+# load: the state file, which names the scope up used; a call under another subscription, group or tag would read
+# the wrong place and could say 0 left while the server runs, so it is refused
 load() { [ -r "$STATE" ] || fail "no state file $STATE (run up first)"; # shellcheck disable=SC1090
-  . "$STATE"; }
-ip_ok() { [[ $1 =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
-  local o; for o in "${BASH_REMATCH[@]:1}"; do [ "$o" -le 255 ] || return 1; done
-  [ "$1" != 0.0.0.0 ]; }
+  . "$STATE"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git check-ignore -q "$STATE" || fail "$STATE is not git-ignored (it holds passwords)"; fi
+  [ -z "${PGVIGIL_LAB_AZ_SUBSCRIPTION:-}" ] || [ "$PGVIGIL_LAB_AZ_SUBSCRIPTION" = "${LAB_SUBSCRIPTION:-}" ] || fail "the state file was made with subscription '${LAB_SUBSCRIPTION:-}', not '$PGVIGIL_LAB_AZ_SUBSCRIPTION'"
+  [ -z "${PGVIGIL_LAB_AZ_GROUP:-}" ] || [ "$PGVIGIL_LAB_AZ_GROUP" = "${LAB_GROUP:-}" ] || fail "the state file was made with group '${LAB_GROUP:-}', not '$PGVIGIL_LAB_AZ_GROUP'"
+  [ -z "${PGVIGIL_LAB_PROOF:-}" ] || [ "$PGVIGIL_LAB_PROOF" = "${LAB_PROOF:-}" ] || fail "the state file was made with tag '${LAB_PROOF:-}', not '$PGVIGIL_LAB_PROOF'"; }
+# one IPv4 address, no leading zeros (00.0.0.0 could be read as 0.0.0.0, every Azure service), never 0.0.0.0
+ip_ok() { local oct='(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])'
+  [[ $1 =~ ^$oct\.$oct\.$oct\.$oct$ ]] && [ "$1" != 0.0.0.0 ]; }
+# fw_clear: delete every firewall rule of the server; the listing is an assignment, so a failed read stops the script
+# instead of leaving old rules in place
+fw_clear() { local rules r; rules=$(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].name' -o tsv)
+  for r in $rules; do az_ sql server firewall-rule delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$r"; echo "removed: firewall rule $r"; done; }
 
 case $CMD in
 up)
   need_az; : "${PGVIGIL_LAB_AZ_REGION:?the region}"
   case $TIER in free|basic) ;; *) fail "PGVIGIL_LAB_AZ_TIER is free or basic" ;; esac
   [ ! -e "$STATE" ] || fail "$STATE exists: this lab is up (status) or was not taken down (down)"
-  mkdir -p "$DIR"; chmod 700 "$DIR"
+  # a region can refuse new SQL servers for a subscription (ProvisioningDisabled), and the server's create then fails
+  # minutes after it was accepted: the region's capability is read first and a restricted region is refused here
+  ED=$([ "$TIER" = free ] && echo GeneralPurpose || echo Basic)
+  CAP=$(az_ sql db list-editions -l "$PGVIGIL_LAB_AZ_REGION" --edition "$ED" --query '[0].status' -o tsv)
+  case $CAP in Available|Default) ;; *) fail "the region $PGVIGIL_LAB_AZ_REGION refuses $ED for this subscription ($CAP): $(az_ sql db list-editions -l "$PGVIGIL_LAB_AZ_REGION" --edition "$ED" --query '[0].reason' -o tsv)" ;; esac
+  mkdir -p "$DIR"; chmod 700 "$DIR"; printf '*\n' > "$DIR/.gitignore"   # the folder ignores itself on any clone
   SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
   ( umask 077; cat > "$STATE" <<EOF
+LAB_SUBSCRIPTION=$PGVIGIL_LAB_AZ_SUBSCRIPTION
+LAB_GROUP=$PGVIGIL_LAB_AZ_GROUP
+LAB_PROOF=$PGVIGIL_LAB_PROOF
 AZ_SERVER=pgv-proof-$SUF
 AZ_HOST=pgv-proof-$SUF.database.windows.net
 AZ_PORT=1433
@@ -86,14 +104,16 @@ PY
   rm -f "$BODY"
   for _ in $(seq 1 60); do
     st=$(az_ sql server show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$AZ_SERVER" --query state -o tsv 2>/dev/null || true)
-    [ "$st" = Ready ] && break; sleep 10
+    [ "$st" = Ready ] && break
+    # an accepted create that failed later is only in the activity log
+    why=$(az_ monitor activity-log list -g "$PGVIGIL_LAB_AZ_GROUP" --offset 1h --query "[?ends_with(resourceId, '/servers/$AZ_SERVER') && status.value=='Failed'] | [0].properties.statusMessage" -o tsv 2>/dev/null || true)
+    [ -z "$why" ] || fail "the create of $AZ_SERVER failed after it was accepted: $why"
+    sleep 10
   done
   [ "${st:-}" = Ready ] || fail "the server $AZ_SERVER is not Ready after 10 min (state '${st:-none}'); down removes it"
   echo "made: logical server $AZ_SERVER in $PGVIGIL_LAB_AZ_GROUP ($PGVIGIL_LAB_AZ_REGION), tag pgvigil-proof=$PGVIGIL_LAB_PROOF, TLS 1.2+"
   # a server made through the API has no firewall rule; any rule found (another tool's default) is removed
-  for r in $(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].name' -o tsv); do
-    az_ sql server firewall-rule delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$r"; echo "removed: firewall rule $r"
-  done
+  fw_clear
   if [ "$TIER" = free ]; then
     az_ sql db create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" -e GeneralPurpose -f Gen5 -c 1 \
       --compute-model Serverless --min-capacity 0.5 --auto-pause-delay 60 --use-free-limit true \
@@ -109,12 +129,13 @@ allow)
   need_az; load; shift
   [ $# -ge 1 ] || fail "allow <ip> [<ip> ...]: one address at least"
   for a in "$@"; do ip_ok "$a" || fail "not one IPv4 address: $a (a range or 0.0.0.0 is never admitted)"; done
-  for r in $(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].name' -o tsv); do
-    az_ sql server firewall-rule delete -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$r"
-  done
+  fw_clear >/dev/null
   n=0; for a in "$@"; do n=$((n + 1))
     az_ sql server firewall-rule create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "pgv-reader-$n" --start-ip-address "$a" --end-ip-address "$a" >/dev/null
   done
+  # the door read back: exactly the addresses given, each a single address
+  GOT=$(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].[startIpAddress,endIpAddress]' -o tsv | awk '{ print ($1 == $2 ? $1 : "RANGE " $1 "-" $2) }' | sort -u)
+  [ "$GOT" = "$(printf '%s\n' "$@" | sort -u)" ] || fail "the firewall reads '$(tr '\n' ' ' <<<"$GOT")', not the addresses given: run allow again or down"
   echo "allowed: $AZ_SERVER admits $(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].[startIpAddress,endIpAddress]' -o tsv | awk '{ printf "%s%s", (NR > 1 ? " " : ""), ($1 == $2 ? $1 : $1 "-" $2) }') only"
   ;;
 logins)
@@ -125,11 +146,11 @@ logins)
   export SQLCMDPASSWORD="$ADMIN_PW"
   ok=
   for _ in $(seq 1 12); do
-    if docker run --rm -e SQLCMDPASSWORD "$SQLCMD_IMAGE" /opt/mssql-tools18/bin/sqlcmd -S "tcp:$AZ_HOST,$AZ_PORT" -U "$ADMIN_USER" -d "$AZ_DB" -C -b -l 60 -h -1 -W -Q "SET NOCOUNT ON; SELECT 1" >/dev/null 2>&1; then ok=1; break; fi
+    if docker run --rm -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$AZ_HOST,$AZ_PORT" -U "$ADMIN_USER" -d "$AZ_DB" -C -b -l 60 -h -1 -W -Q "SET NOCOUNT ON; SELECT 1" >/dev/null 2>&1; then ok=1; break; fi
     sleep 15
   done
   [ -n "$ok" ] || fail "the database did not answer the admin login in 3 minutes (is this machine's address allowed?)"
-  docker run --rm -i -e SQLCMDPASSWORD "$SQLCMD_IMAGE" /opt/mssql-tools18/bin/sqlcmd -S "tcp:$AZ_HOST,$AZ_PORT" -U "$ADMIN_USER" -d "$AZ_DB" -C -b -l 60 -h -1 -W -i /dev/stdin <<SQL
+  docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$AZ_HOST,$AZ_PORT" -U "$ADMIN_USER" -d "$AZ_DB" -C -b -l 60 -h -1 -W -i /dev/stdin <<SQL
 SET NOCOUNT ON;
 IF USER_ID(N'$MON_USER') IS NULL CREATE USER [$MON_USER] WITH PASSWORD = N'$MON_PW';
 ELSE ALTER USER [$MON_USER] WITH PASSWORD = N'$MON_PW';
@@ -146,7 +167,7 @@ SQL
 status)
   need_az
   echo "tag pgvigil-proof=$PGVIGIL_LAB_PROOF (the whole subscription):"
-  az_ resource list --tag "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[].[type,name]' -o tsv | sed 's/^/  /'
+  az_ resource list --tag "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[].[type,resourceGroup,name]' -o tsv | sed 's/^/  /'
   if [ -r "$STATE" ]; then load
     az_ sql db show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" --query '[name,status,currentServiceObjectiveName,useFreeLimit]' -o tsv 2>/dev/null | sed 's/^/  database: /' || true
     az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].[name,startIpAddress,endIpAddress]' -o tsv 2>/dev/null | sed 's/^/  firewall: /' || true
