@@ -56,7 +56,7 @@ SELECT l.jlgjobid::bigint AS job_id, sl.jsljlgid::bigint AS run_id, sl.jslid::bi
   LEFT JOIN pgagent.pga_jobstep st ON st.jstid = sl.jsljstid
  WHERE sl.jslstart > now() - interval '1 day' OR sl.jslstatus = 'r'`
 
-func (jobStepsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info) ([]Row, error) {
+func (jobStepsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Info) ([]Row, error) {
 	rows, err := conn.Query(ctx, fmt.Sprintf(jobStepsSQL, maskSQL("sl.jsloutput")))
 	if err != nil {
 		return nil, fmt.Errorf("pgagent.pga_jobsteplog: %w", err)
@@ -332,13 +332,15 @@ SELECT st.jstname, st.jstkind::text, st.jstdbname, st.jstconnstr, st.jstcode, sl
 		return jobRefused("step %q has no code to find its session by", deref(stepName))
 	}
 	// the step's session: active, on the step's database, running the step's code (pg_stat_activity cuts the text at
-	// track_activity_query_size: a cut text counts when the code starts with it), started no earlier than the step
+	// track_activity_query_size: a cut text counts when the code starts with it; current_setting() gives that size with
+	// its unit, '1kB', so the bytes come from pg_settings), started no earlier than the step
 	rows, err := mon.Query(ctx, `
 SELECT a.pid, a.backend_start, a.usename, a.application_name, coalesce(r.rolsuper, false)
   FROM pg_stat_activity a LEFT JOIN pg_roles r ON r.oid = a.usesysid
  WHERE a.backend_type = 'client backend' AND a.state = 'active' AND a.pid <> pg_backend_pid()
    AND a.datname = $1 AND a.query_start >= $2::timestamptz - interval '2 seconds'
-   AND (a.query = $3 OR (octet_length(a.query) >= current_setting('track_activity_query_size')::int - 4 AND starts_with($3, a.query)))`,
+   AND (a.query = $3 OR (octet_length(a.query) >= (SELECT s.setting::int FROM pg_settings s WHERE s.name = 'track_activity_query_size') - 4
+        AND starts_with($3, a.query)))`,
 		deref(db), stepStart, deref(code))
 	if err != nil {
 		return jobRefused("the session search failed: %v", err)
