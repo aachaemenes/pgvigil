@@ -21,20 +21,21 @@ import (
 
 const sqlMSSQLIxDatabases = `
 SELECT b.database_id, b.database_name AS database, b.read_at, b.note, b.usage_since, b.usage_reason, round(b.usage_days::numeric, 1) AS usage_days,
-       b.judged, b.guard, b.readable_secondary, b.restore_read, b.indexes, b.capped, b.server_start, b.created_at, b.last_restore
+       b.judged, b.guard, b.readable_secondary, b.restore_read, b.auto_close, b.reset_at, b.indexes, b.capped, b.server_start, b.created_at, b.last_restore
   FROM pgvigil.mssql_index_db_status b
  WHERE b.instance_id = $1
  ORDER BY b.database_name`
 
 const sqlMSSQLIxIndexes = `
 SELECT x.database_id, x.database_name AS database, x.object_id, x.index_id, x.schema_name, x.table_name, x.index_name, x.index_type,
-       x.is_unique, x.is_primary_key, x.is_unique_constraint, x.is_disabled, x.ignore_dup_key, x.fill_factor, x.compression, x.partitions,
+       x.is_unique, x.is_primary_key, x.is_unique_constraint, x.fk_referenced, x.is_disabled, x.ignore_dup_key, x.fill_factor, x.compression, x.partitions,
        array_to_string(x.key_columns, ', ') AS keys, array_to_string(x.include_columns, ', ') AS includes, x.filter_definition,
        x.row_count, round(x.size_kb / 1024.0, 1) AS size_mb, x.user_seeks, x.user_scans, x.user_lookups,
        x.user_seeks + x.user_scans + x.user_lookups AS reads, x.user_updates AS writes, x.last_read, x.last_write,
        v.rule, v.severity, v.detail, v.script, v.keeper,
        pgvigil.mssql_index_definition(x.index_type, x.is_unique, x.is_primary_key, x.is_unique_constraint, x.schema_name, x.table_name, x.index_name,
-                                      x.key_columns, x.include_columns, x.filter_definition, x.fill_factor, x.compression, b.online_index_builds, false) AS definition
+                                      x.key_columns, x.include_columns, x.filter_definition, x.fill_factor, x.compression, x.ignore_dup_key,
+                                      x.allow_row_locks, x.allow_page_locks, x.no_recompute, b.online_index_builds, false) AS definition
   FROM pgvigil.mssql_index x
   JOIN pgvigil.mssql_index_db b ON b.instance_id = x.instance_id AND b.database_name = x.database_name
   LEFT JOIN pgvigil.mssql_index_verdicts($1) v ON v.database_name = x.database_name AND v.object_id = x.object_id AND v.index_id = x.index_id

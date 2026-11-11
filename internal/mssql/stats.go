@@ -149,7 +149,7 @@ func (c statsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]c
 
 // RunBatches reads the databases one by one, each stored as a batch of its own with the run's state row, then the
 // list of the databases the server has.
-func (c statsCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, opt BatchOptions, _ CursorFunc, emit EmitFunc) error {
+func (c statsCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, opt BatchOptions, cursor CursorFunc, emit EmitFunc) error {
 	if err := perfState(ctx, conn, info, "sys.dm_db_partition_stats"); err != nil {
 		return err
 	}
@@ -173,12 +173,17 @@ func (c statsCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Inf
 	var firstErr error
 	names := make([]string, 0, len(dbs))
 	closed, cut, noProps := 0, 0, 0
-	for _, db := range rotate(dbs, time.Now(), c.DefaultInterval()) {
+	if dbs, err = oldestFirst(ctx, dbs, "st:", cursor); err != nil {
+		return err
+	}
+	for _, db := range dbs {
 		names = append(names, db.name)
 		// the statistics' own 'db' row: the index read's dates are not this collection's
 		row := collect.Row{"kind": "db", "database_id": db.id, "database_name": db.name, "database_state": db.state, "read": false, "note": nil}
 		batch := []collect.Row{st, row}
 		switch {
+		case db.secondary:
+			row["note"] = "not read: a secondary replica of an availability group here; its statistics are the primary's (read there)"
 		case !db.canEnter:
 			row["note"] = whyNotEntered(db)
 			if db.state == "ONLINE" {

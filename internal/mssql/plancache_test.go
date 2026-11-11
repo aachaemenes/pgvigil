@@ -1,6 +1,9 @@
 package mssql
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,10 +32,10 @@ func TestPlanCacheQuery(t *testing.T) {
 }
 
 func TestPlanCacheKey(t *testing.T) {
-	if k := planCacheKey(collect.Row{"query_hash": "0xABCDEF0123456789"}); k != "0xABCDEF0123456789" {
+	if k := planCacheKey(collect.Row{"query_hash_hex": "0xABCDEF0123456789"}); k != "0xABCDEF0123456789" {
 		t.Errorf("a hash: %s", k)
 	}
-	k := planCacheKey(collect.Row{"query_hash": "0x0000000000000000", "sql_handle": "0x0200AB", "stmt_start": int64(44)})
+	k := planCacheKey(collect.Row{"query_hash_hex": "0x0000000000000000", "sql_handle": "0x0200AB", "stmt_start": int64(44)})
 	if k != "0x0200AB:44" {
 		t.Errorf("no hash: %s, want handle:offset", k)
 	}
@@ -90,18 +93,31 @@ func TestIndexColumns(t *testing.T) {
 	}
 }
 
-func TestRotate(t *testing.T) {
-	dbs := []userDB{{id: 5}, {id: 6}, {id: 7}}
-	seen := map[int64]bool{}
-	for h := 0; h < 3; h++ {
-		r := rotate(dbs, time.Unix(int64(h)*21600, 0), 6*time.Hour)
-		if len(r) != 3 {
-			t.Fatalf("rotate lost a database: %v", r)
-		}
-		seen[r[0].id] = true
+func TestOldestFirst(t *testing.T) {
+	dbs := []userDB{{id: 5, name: "a"}, {id: 6, name: "b"}, {id: 7, name: "c"}, {id: 8, name: "d"}}
+	now := time.Now()
+	read := map[string]time.Time{"ix:a": now, "ix:c": now.Add(-time.Hour)} // b and d never read
+	asked := 0
+	got, err := oldestFirst(context.Background(), dbs, "ix:", func(_ context.Context, src string) (Cursor, error) {
+		asked++
+		at, ok := read[src]
+		return Cursor{Found: ok, LastEventAt: at}, nil
+	})
+	if err != nil || asked != 4 {
+		t.Fatalf("err %v, %d cursors read", err, asked)
 	}
-	if len(seen) != 3 {
-		t.Errorf("three runs started at %d different databases, want 3", len(seen))
+	var ids []int64
+	for _, d := range got {
+		ids = append(ids, d.id)
+	}
+	if fmt.Sprint(ids) != "[6 8 7 5]" {
+		t.Errorf("order %v, want never read (by id), then the oldest read: [6 8 7 5]", ids)
+	}
+	if same, _ := oldestFirst(context.Background(), dbs, "ix:", nil); len(same) != 4 || same[0].id != 5 {
+		t.Errorf("no cursor: the server's order is kept: %v", same)
+	}
+	if _, err := oldestFirst(context.Background(), dbs, "ix:", func(context.Context, string) (Cursor, error) { return Cursor{}, errors.New("down") }); err == nil {
+		t.Error("a repository that does not answer is not an error")
 	}
 }
 

@@ -51,7 +51,20 @@
 #     K1:15,K1:5,K1:2,K3:7,K1:3,K2:10 (a statement new after a CUT read and compiled before it gives nothing, then its
 #     difference; one compiled after it its whole count; lower counters give their whole count), read rows with
 #     1,1,2,2 keys and capped f,t,f,f; the late read changes nothing.
-#  P. the API: /api/mssql/plancache and /api/mssql/indexes answer every part; an unknown part is refused with 400.
+#     [Added with the review fold, before the run that had it: K4, compiled before the cut read and run once, its run
+#     ending after that read's clock, gives its whole count 1; the samples are K1:15,K1:5,K1:2,K3:7,K4:1,K1:3,K2:10
+#     and the read rows 1,1,3,2.]
+#  R. the index rules on imported rows (a 30-day window), written with the review fold before its first run: the kept
+#     index of a key subset with no read (A1) is never called unused (its rule is 'same leading column', no text); the
+#     subset's text merges [c] into A1 with DROP_EXISTING, then disables B1; in a chain A2 < B2 < C2, A2's text merges
+#     [q] into B2 and B2 (itself kept for A2) has no text; a merge into a keeper with MIXED compression gives no text;
+#     a unique index a foreign key is bound to, beside a unique constraint on the same key, is 'duplicate constraint'
+#     with no text; a merge into a unique keeper with IGNORE_DUP_KEY = ON keeps it ON; an index of an AUTO_CLOSE
+#     database is not judged ('the usage window is not known: AUTO_CLOSE is on'); a second read with lower counters
+#     makes the window 'usage counters reset' and not judged; both databases have their read cursor.
+#  P. the API: /api/mssql/plancache and /api/mssql/indexes answer with exactly their parts (10 and 8 names); an
+#     unknown part is refused with 400. Step A also holds CPU and duration in ms to PostgreSQL's rounding of sa's
+#     rise, and C and D hold the workload's own numbers (4 seeks, 1 write, 20,000 modifications).
 #  NOT PROVEN HERE: SQL Server 2016-2019 (proof-mssql-versions.sh runs the SQL Server proofs on them once this proof
 #  is on its list), RDS, Managed Instance, a list cut on a real server, a server with more databases than one run
 #  reaches, the pages in a browser, the per-day missing-index finding (its threshold needs days of uptime).
@@ -88,7 +101,7 @@ cleanup() {
   rm -rf "$WORK" || true
   exit $rc
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT; trap 'exit 143' TERM; trap 'exit 130' INT
 
 echo "--- the binary"
 BIN=${PGVIGIL_BIN:-}
@@ -121,8 +134,9 @@ export MS_BARE="sqlserver://$L2:$P2@$ADDR?database=master&encrypt=true&TrustServ
 { echo "repository:"; echo "  dsn: env:PGVIGIL_REPO_DSN"; echo "instances:"
   printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_MON\n' "$N"
   printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_BARE\n' "$NB"; } > "$CFG"
+MADE_DB=1   # before the batch: a half-made pair is still this run's to drop (the drops are guarded)
 sq "CREATE DATABASE [$DPC]; ALTER DATABASE [$DPC] SET RECOVERY SIMPLE; ALTER DATABASE [$DPC] SET QUERY_STORE = OFF;
-    CREATE DATABASE [$DQS]; ALTER DATABASE [$DQS] SET RECOVERY SIMPLE; ALTER DATABASE [$DQS] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE);" >/dev/null; MADE_DB=1
+    CREATE DATABASE [$DQS]; ALTER DATABASE [$DQS] SET RECOVERY SIMPLE; ALTER DATABASE [$DQS] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE);" >/dev/null
 sq "CREATE TABLE dbo.pv_t (id int IDENTITY PRIMARY KEY, grp int NOT NULL, pad char(100) NOT NULL DEFAULT 'x');
     INSERT dbo.pv_t (grp) SELECT TOP (20000) ABS(CHECKSUM(NEWID())) % 10 FROM sys.all_columns a CROSS JOIN sys.all_columns b;
     CREATE TABLE dbo.pv_ix (id int NOT NULL CONSTRAINT PK_pv_ix PRIMARY KEY CLUSTERED, a int NOT NULL, b int NOT NULL, c int NOT NULL, pad char(50) NOT NULL DEFAULT 'x');
@@ -172,7 +186,9 @@ TOP=$(objs "$WORK/pc.json" top | jq -c '.[0]')
 echo "  the API's first row for $DPC: $(jq -c '{query_key, executions, cpu_ms, duration_ms, logical_reads, q: (.query // "" | .[0:60])}' <<<"$TOP")"
 [ "$(jq -r '.query_key' <<<"$TOP")" = "$HASH" ] || fail "A: the top statement is not the heavy one: $TOP"
 [ "$(jq -r '"\(.executions)|\(.logical_reads)"' <<<"$TOP")" = "7|$((R1 - R0))" ] || fail "A: the top row's figures: $TOP"
-awk -v a="$(jq -r '.cpu_ms' <<<"$TOP")" -v b="$((C1 - C0))" 'BEGIN { exit !(a == sprintf("%.1f", b / 1000) + 0) }' || fail "A: CPU ms $(jq -r '.cpu_ms' <<<"$TOP") against $((C1 - C0)) us"
+# CPU and duration in ms with PostgreSQL's own rounding (awk's differs at a half)
+WMS=$(q "select round($((C1 - C0)) / 1000.0, 1) || '|' || round($((D1 - D0)) / 1000.0, 1)")
+[ "$(jq -r '"\(.cpu_ms)|\(.duration_ms)"' <<<"$TOP" | sed 's/\.0|/|/; s/\.0$//')" = "$(sed 's/\.0|/|/; s/\.0$//' <<<"$WMS")" ] || fail "A: CPU|duration ms $(jq -r '"\(.cpu_ms)|\(.duration_ms)"' <<<"$TOP"), want $WMS"
 jq -e '.query == "SELECT COUNT_BIG(*) FROM dbo.pv_t a CROSS JOIN dbo.pv_t b WHERE a.grp = @g AND b.id < 3000 OPTION (MAXDOP 1)"' <<<"$TOP" >/dev/null || fail "A: the top row's text is not the statement's: $TOP"
 QSH=$(sq "SELECT TOP (1) CONVERT(varchar(20), qs.query_hash, 1) FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE N'(@v int)%pvqsstmt%'")
 curl -fs "$U/mssql/plancache?instance=$iid&$(win)" > "$WORK/pc_all.json"; curl -fs "$U/mssql/plancache?instance=$iid&$(win)&scope=noqs" > "$WORK/pc_noqs.json"
@@ -204,7 +220,7 @@ collect mssql_indexes "$N"
 US=$(sq "SELECT (SELECT CAST(user_seeks AS varchar(20)) FROM sys.dm_db_index_usage_stats WHERE database_id = DB_ID() AND object_id = OBJECT_ID('dbo.pv_ix') AND index_id = INDEXPROPERTY(OBJECT_ID('dbo.pv_ix'), 'ix_ab', 'IndexID')) + '|' + (SELECT CAST(user_updates AS varchar(20)) FROM sys.dm_db_index_usage_stats WHERE database_id = DB_ID() AND object_id = OBJECT_ID('dbo.pv_ix') AND index_id = INDEXPROPERTY(OBJECT_ID('dbo.pv_ix'), 'ix_c', 'IndexID'))" "$DPC")
 ST=$(q "select (select user_seeks from pgvigil.mssql_index where instance_id=$iid and database_name='$DPC' and index_name='ix_ab') || '|' || (select user_updates from pgvigil.mssql_index where instance_id=$iid and database_name='$DPC' and index_name='ix_c')")
 echo "  ix_ab seeks | ix_c writes: stored $ST, sa reads $US"
-[ "$ST" = "$US" ] || fail "C: usage stored $ST, sa reads $US"
+[ "$ST" = "$US" ] && [ "$US" = "4|1" ] || fail "C: usage stored $ST, sa reads $US, the workload makes 4|1"
 G=$(q "select judged || '|' || guard from pgvigil.mssql_index_db_status where instance_id=$iid and database_name='$DPC'")
 echo "  guard: $G"
 [[ $G == "false|too early:"* ]] || fail "C: the guard on a fresh server: $G"
@@ -235,7 +251,7 @@ collect mssql_stats "$N"
 MOD=$(sq "SELECT CAST(sp.modification_counter AS varchar(20)) FROM sys.stats s CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp WHERE s.object_id = OBJECT_ID('dbo.pv_ix') AND s.name = 'st_b'" "$DPC")
 SR=$(q "select modifications || '|' || props_read || '|' || array_to_string(flags, ',') from pgvigil.mssql_stat_status where instance_id=$iid and database_name='$DPC' and stats_name='st_b'")
 echo "  st_b: stored modifications|props|flags $SR, sa's modification_counter $MOD"
-[ "$SR" = "$MOD|true|NORECOMPUTE" ] || fail "D: st_b $SR, sa's counter $MOD"
+[ "$SR" = "$MOD|true|NORECOMPUTE" ] && [ "$MOD" = 20000 ] || fail "D: st_b $SR, sa's counter $MOD (the workload changes 20000 rows)"
 q "update pgvigil.mssql_stat set last_updated = snapshot_at - interval '40 days' where instance_id=$iid and database_name='$DPC' and stats_name='st_b'" >/dev/null
 SR=$(q "select severity || '|' || array_to_string(flags, ',') from pgvigil.mssql_stat_status where instance_id=$iid and database_name='$DPC' and stats_name='st_b'")
 [ "$SR" = "warning|stale,NORECOMPUTE" ] || fail "D: st_b 40 days old: $SR"
@@ -258,25 +274,60 @@ UT() { date -u -d "@$((NOW - $1))" +%FT%TZ; }
 LT_() { date -u -d "@$((NOW - $1 - 28800))" +%FT%T; }
 xp=$(q "select pgvigil.ensure_instance('proof-s150-x-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
 pimp() { q "select pgvigil.import_mssql_plancache($xp, '$(UT "$1")', ('[{\"kind\":\"state\",\"server_utc\":\"$(UT "$1")\",\"server_start\":\"2026-01-01T00:00:00Z\",\"server_local\":\"$(LT_ "$1")\",\"capped\":$2}' || '$3' || ']')::jsonb)" >/dev/null; }
-srow() { echo ",{\"kind\":\"stmt\",\"plan_handle\":\"0x06$1\",\"stmt_start\":0,\"stmt_end\":-1,\"creation_time\":\"$(LT_ "$3")\",\"query_key\":\"$2\",\"database_id\":5,\"database_name\":\"appdb\",\"execution_count\":$4,\"worker_us\":$(($4 * 100))}"; }
+srow() { echo ",{\"kind\":\"stmt\",\"plan_handle\":\"0x06$1\",\"stmt_start\":0,\"stmt_end\":-1,\"creation_time\":\"$(LT_ "$3")\",\"query_key\":\"$2\",\"database_id\":5,\"database_name\":\"appdb\",\"execution_count\":$4,\"worker_us\":$(($4 * 100))${5:+,\"last_execution\":\"$(LT_ "${5:-0}")\",\"last_elapsed_us\":${6:-0}}}"; }
 pimp 1500 false "$(srow 01 K1 4000 10)"
 pimp 1200 false "$(srow 01 K1 4000 25)"
 pimp 900 true "$(srow 01 K1 4000 30)"
-pimp 600 false "$(srow 01 K1 4000 32)$(srow 02 K2 4000 50)$(srow 03 K3 700 7)"
+pimp 600 false "$(srow 01 K1 4000 32)$(srow 02 K2 4000 50)$(srow 03 K3 700 7)$(srow 04 K4 1000 1 950 100000000)"   # K4: compiled before the cut read, run once 950 s ago for 100 s: ended after it
 pimp 300 false "$(srow 01 K1 4000 3)$(srow 02 K2 4000 60)"
 pimp 1200 false "$(srow 01 K1 4000 999)"   # the second read again, late
 GOT=$(q "select string_agg(query_key || ':' || executions, ',' order by snapshot_at, query_key) from pgvigil.mssql_pc_sample where instance_id=$xp")
-[ "$GOT" = "K1:15,K1:5,K1:2,K3:7,K1:3,K2:10" ] || fail "X: samples $GOT"
+[ "$GOT" = "K1:15,K1:5,K1:2,K3:7,K4:1,K1:3,K2:10" ] || fail "X: samples $GOT"
 GOT=$(q "select string_agg(statements || '/' || capped, ',' order by snapshot_at) from pgvigil.mssql_pc_read where instance_id=$xp")
-[ "$GOT" = "1/false,1/true,2/false,2/false" ] || fail "X: read rows $GOT"
+[ "$GOT" = "1/false,1/true,3/false,2/false" ] || fail "X: read rows $GOT"
 echo "X: OK"
 
+echo "--- R. the index rules on imported rows"
+xi=$(q "select pgvigil.ensure_instance('proof-s150-r-$SUF', 'sqlserver', 'x', 160000, false, '{}', 'sqlserver')")
+D30=$(date -u -d '-30 days' +%FT%TZ)
+# ix <object> <index id> <name> <keys json> <includes json> <reads> [extra fields]
+ix() { echo ",{\"kind\":\"index\",\"database_name\":\"$DBN\",\"database_id\":7,\"object_id\":$1,\"index_id\":$2,\"schema_name\":\"dbo\",\"table_name\":\"t$1\",\"index_name\":\"$3\",\"index_type\":\"NONCLUSTERED\",\"key_columns\":$4,\"include_columns\":$5,\"user_seeks\":$6,\"user_updates\":0,\"compression\":\"NONE\",\"table_created\":\"$D30\",\"table_modified\":\"$D30\"${7:-}}"; }
+# imp <seconds ago> <database> <auto_close> <rows>
+imp() { q "select pgvigil.import_mssql_indexes($xi, '$(UT "$1")', ('[{\"kind\":\"state\",\"server_utc\":\"$(UT "$1")\",\"server_start\":\"$D30\"},{\"kind\":\"db\",\"database_name\":\"$2\",\"database_id\":7,\"database_state\":\"ONLINE\",\"created_at\":\"$D30\",\"restore_read\":true,\"auto_close\":$3,\"read\":true}' || '$4' || ']')::jsonb)" >/dev/null; }
+DBN=rdb
+ROWS="$(ix 1 2 A1 '["[x]","[y]"]' '[]' 0)$(ix 1 3 B1 '["[x]"]' '["[c]"]' 5000)"
+ROWS+="$(ix 2 2 A2 '["[p]"]' '["[q]"]' 1)$(ix 2 3 B2 '["[p]","[r]"]' '[]' 1)$(ix 2 4 C2 '["[p]","[r]","[s]"]' '[]' 1)"
+ROWS+="$(ix 3 2 D3 '["[m]"]' '["[n]"]' 1)$(ix 3 3 E3 '["[m]","[o]"]' '[]' 1 ',"compression":"MIXED"')"
+ROWS+="$(ix 4 2 UQ4 '["[k]"]' '[]' 1 ',"is_unique":1,"is_unique_constraint":1')$(ix 4 3 UX4 '["[k]"]' '[]' 1 ',"is_unique":1,"fk_referenced":1')"
+ROWS+="$(ix 5 2 UXK5 '["[k1]","[k2]"]' '[]' 1 ',"is_unique":1,"ignore_dup_key":1')$(ix 5 3 IXK5 '["[k1]"]' '["[p]"]' 1)"
+imp 7200 rdb false "$ROWS"
+DBN=adb; imp 7200 adb true "$(ix 9 2 U9 '["[z]"]' '[]' 0)"
+rv() { q "select coalesce((select v.rule || '|' || coalesce(v.keeper, '') || '|' || coalesce(v.script, '') from pgvigil.mssql_index_verdicts($xi) v join pgvigil.mssql_index x on x.instance_id=$xi and x.database_name=v.database_name and x.object_id=v.object_id and x.index_id=v.index_id where x.index_name='$1'), 'none')"; }
+q "select x.index_name || ': ' || v.rule || ' / ' || coalesce(v.keeper, '-') || ' / ' || replace(coalesce(v.script, '(no text)'), chr(10), ' + ') from pgvigil.mssql_index_verdicts($xi) v join pgvigil.mssql_index x on x.instance_id=$xi and x.database_name=v.database_name and x.object_id=v.object_id and x.index_id=v.index_id order by 1" | sed 's/^/  /'
+V=$(rv A1); [[ $V == "same leading column||" ]] || fail "R: A1, the kept index of a merge with no read, is named: $V"
+V=$(rv B1); [[ $V == "key subset|A1|CREATE NONCLUSTERED INDEX [A1] ON [dbo].[t1] ([x], [y]) INCLUDE ([c]) WITH (DROP_EXISTING = ON,"*$'\n'"ALTER INDEX [B1] ON [dbo].[t1] DISABLE;" ]] || fail "R: B1: $V"
+V=$(rv A2); [[ $V == "key subset|B2|CREATE NONCLUSTERED INDEX [B2] ON [dbo].[t2] ([p], [r]) INCLUDE ([q])"*"ALTER INDEX [A2] ON [dbo].[t2] DISABLE;" ]] || fail "R: A2: $V"
+V=$(rv B2); [ "$V" = "key subset|C2|" ] || fail "R: B2, kept in place of A2, has a text: $V"
+V=$(rv D3); [ "$V" = "key subset|E3|" ] || fail "R: D3, its merge cannot be written (MIXED), has a text: $V"
+V=$(rv UX4); [ "$V" = "duplicate constraint|UQ4|" ] || fail "R: UX4, a foreign key's index: $V"
+V=$(rv IXK5); [[ $V == "key subset|UXK5|CREATE UNIQUE NONCLUSTERED INDEX [UXK5]"*"INCLUDE ([p])"*"IGNORE_DUP_KEY = ON"*"ALTER INDEX [IXK5] ON [dbo].[t5] DISABLE;" ]] || fail "R: IXK5: $V"
+V=$(rv U9); [ "$V" = none ] || fail "R: an index of an AUTO_CLOSE database is judged: $V"
+G=$(q "select judged || '|' || guard from pgvigil.mssql_index_db_status where instance_id=$xi and database_name='adb'")
+[[ $G == "false|the usage window is not known: AUTO_CLOSE is on"* ]] || fail "R: the AUTO_CLOSE guard: $G"
+# a reset between two reads: B1's counters went down
+DBN=rdb; imp 3600 rdb false "$(ix 1 2 A1 '["[x]","[y]"]' '[]' 0)$(ix 1 3 B1 '["[x]"]' '["[c]"]' 10)"
+G=$(q "select judged || '|' || usage_reason from pgvigil.mssql_index_db_status where instance_id=$xi and database_name='rdb'")
+[ "$G" = "false|usage counters reset (the database was closed or taken offline)" ] || fail "R: the reset: $G"
+[ "$(q "select count(*) from pgvigil.mssql_cursor where instance_id=$xi and source in ('ix:rdb', 'ix:adb')")" = 2 ] || fail "R: the read cursors"
+echo "R: OK"
+
 echo "--- P. the API's parts"
+declare -A PARTS=([plancache]="databases duplicates findings health reads series singles state top totals" [indexes]="databases findings indexes missing state stats statsdbs verdicts")
 for r in plancache indexes; do
   curl -fs "$U/mssql/$r?instance=$iid&$(win)" > "$WORK/p.json" || fail "P: /api/mssql/$r"
-  jq -e 'to_entries | all(.value != null)' "$WORK/p.json" >/dev/null || fail "P: /api/mssql/$r has an empty part: $(jq -c 'to_entries | map(select(.value == null) | .key)' "$WORK/p.json")"
+  [ "$(jq -r 'keys | join(" ")' "$WORK/p.json")" = "${PARTS[$r]}" ] || fail "P: /api/mssql/$r parts $(jq -r 'keys | join(" ")' "$WORK/p.json"), want ${PARTS[$r]}"
   [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/$r?instance=$iid&part=nosuch")" = 400 ] || fail "P: an unknown part of $r"
 done
 echo "P: OK"
 echo "NOT PROVEN HERE: SQL Server 2016-2019, RDS, Managed Instance, a list cut on a real server, a server with more databases than one run reaches, the pages in a browser, the per-day missing-index finding"
-echo "proof-mssql-plancache-indexes: PASS (A, B, C, D, F, X, P)"
+echo "proof-mssql-plancache-indexes: PASS (A, B, C, D, F, X, R, P)"

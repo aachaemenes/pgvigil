@@ -45,9 +45,11 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
     }
     if (mine !== seq) return;
     const dbs = rowsOf(d.databases);
-    sel.replaceChildren(el('option', { value: '' }, 'every database'), ...dbs.filter(r => r.database_id != null).map(r => {
-      const o = el('option', { value: String(r.database_id) }, String(r.database));
-      if (String(r.database_id) === database) o.selected = true;
+    const opts = dbs.filter(r => r.database_id != null).map(r => [String(r.database_id), String(r.database)] as [string, string]);
+    if (database && !opts.some(o => o[0] === database)) opts.push([database, `database ${database} (not listed now)`]);
+    sel.replaceChildren(el('option', { value: '' }, 'every database'), ...opts.map(([id, name]) => {
+      const o = el('option', { value: id }, name);
+      if (id === database) o.selected = true;
       return o;
     }));
     const out: (Node | string)[] = [];
@@ -92,7 +94,7 @@ export async function mssqlIndexesView(ctx: Ctx): Promise<HTMLElement> {
       'No statistic is flagged.'));
     const cols: Col[] = [
       { key: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' }, { key: 'index_name', label: 'index' },
-      { key: 'index_type', label: 'type', fmt: v => String(v ?? '').toLowerCase() }, { key: 'rule', fmt: (v, r) => v ? sev(r.severity) : '' },
+      { key: 'index_type', label: 'type', fmt: v => String(v ?? '').toLowerCase() }, { key: 'rule', fmt: (v, r) => v ? badge(String(v), r.severity === 'warning' ? 'warn' : 'info') : '' },
       { key: 'keys' }, { key: 'includes' }, { key: 'filter_definition', label: 'filter' },
       { key: 'is_unique', label: 'unique', fmt: yes }, { key: 'is_primary_key', label: 'PK', fmt: yes }, { key: 'ignore_dup_key', label: 'IGNORE_DUP_KEY', fmt: yes },
       { key: 'size_mb', label: 'size (MB)', num: true }, { key: 'row_count', label: 'rows', num: true },

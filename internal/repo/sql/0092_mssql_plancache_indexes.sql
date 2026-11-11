@@ -8,7 +8,8 @@
 -- the counters; a statement seen before and not lower than before gives now minus before; one that went DOWN gives
 -- its whole count; one the read before did not list gives its whole count, unless that read was cut at the
 -- collector's lists (capped) and the statement was compiled before that read's clock: then it may only have been
--- past the cut, and it sets its counters and gives nothing. Nothing is ever negative.
+-- past the cut, and it sets its counters and gives nothing - except a statement run once whose run ended after that
+-- clock (the read before could not have counted it), which gives its whole count. Nothing is ever negative.
 --   mssql_pc_text      one text per query key (the query hash, or handle:offset where the server gave no hash), sent
 --                      by the collector once in a while, the instance's text policy applied before it was sent.
 --   mssql_pc_database  the instance's databases with their Query Store switch (the page's scope).
@@ -176,8 +177,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_pc_list (
 -- payload: one {kind:'state', server_utc, server_start, server_local, capped, cached}; the 'stmt' rows {plan_handle,
 -- sql_handle, stmt_start, stmt_end, creation_time, query_key, database_id, database_name, execution_count, worker_us,
 -- elapsed_us, logical_reads, physical_reads, logical_writes, row_count, spills, max_grant_kb, max_used_grant_kb,
--- max_dop}: the server's cumulative counters per statement of a cached plan (creation_time and server_local without
--- a zone, in the server's own clock); the 'text' rows {query_key, database_id, object_name, query}; the 'database'
+-- max_dop, last_execution, last_elapsed_us}: the server's cumulative counters per statement of a cached plan
+-- (creation_time, last_execution - when the last run started - and server_local without a zone, in the server's own
+-- clock); the 'text' rows {query_key, database_id, object_name, query}; the 'database'
 -- rows {database_id, database_name, query_store_on, database_state}.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_plancache(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
@@ -192,6 +194,16 @@ DECLARE
   v_restart  boolean;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_plancache'), p_instance_id);
+  -- the texts first: they stand on their own, and the collector does not send a text again within the hour.
+  -- One per key; the words follow the policy the read was sent under (none: the stored words go too).
+  INSERT INTO pgvigil.mssql_pc_text AS t (instance_id, query_key, database_id, object_name, query, snapshot_at, seen_at)
+  SELECT DISTINCT ON (r->>'query_key') p_instance_id, r->>'query_key', (r->>'database_id')::int, r->>'object_name', r->>'query', p_snapshot_at, p_snapshot_at
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'text' AND r->>'query_key' IS NOT NULL
+   ORDER BY r->>'query_key'
+  ON CONFLICT (instance_id, query_key) DO UPDATE SET
+      database_id = EXCLUDED.database_id, object_name = coalesce(EXCLUDED.object_name, t.object_name),
+      query = EXCLUDED.query, snapshot_at = greatest(EXCLUDED.snapshot_at, t.snapshot_at), seen_at = greatest(EXCLUDED.seen_at, t.seen_at);
   SELECT * INTO v_prev FROM pgvigil.mssql_pc_state WHERE instance_id = p_instance_id;
   IF FOUND AND (v_prev.server_utc >= v_now OR v_prev.snapshot_at >= p_snapshot_at) THEN
     RETURN;  -- an older read arriving late (or the same read again): the counters stored are newer
@@ -199,7 +211,7 @@ BEGIN
   CREATE TEMP TABLE IF NOT EXISTS pgv_mssql_pc_in (
     plan_handle text, stmt_start int, stmt_end int, creation_time timestamp, database_id int, database_name text, query_key text,
     execution_count bigint, worker_us bigint, elapsed_us bigint, logical_reads bigint, physical_reads bigint, logical_writes bigint,
-    row_count bigint, spills bigint, max_grant_kb bigint, max_used_grant_kb bigint, max_dop bigint,
+    row_count bigint, spills bigint, max_grant_kb bigint, max_used_grant_kb bigint, max_dop bigint, last_end timestamp,
     PRIMARY KEY (plan_handle, stmt_start, stmt_end, creation_time)) ON COMMIT DROP;
   TRUNCATE pgv_mssql_pc_in;
   INSERT INTO pgv_mssql_pc_in
@@ -208,7 +220,8 @@ BEGIN
          coalesce((r->>'database_id')::int, 0), r->>'database_name', r->>'query_key', (r->>'execution_count')::bigint,
          coalesce((r->>'worker_us')::bigint, 0), coalesce((r->>'elapsed_us')::bigint, 0), coalesce((r->>'logical_reads')::bigint, 0),
          coalesce((r->>'physical_reads')::bigint, 0), coalesce((r->>'logical_writes')::bigint, 0), coalesce((r->>'row_count')::bigint, 0),
-         coalesce((r->>'spills')::bigint, 0), (r->>'max_grant_kb')::bigint, (r->>'max_used_grant_kb')::bigint, (r->>'max_dop')::bigint
+         coalesce((r->>'spills')::bigint, 0), (r->>'max_grant_kb')::bigint, (r->>'max_used_grant_kb')::bigint, (r->>'max_dop')::bigint,
+         (r->>'last_execution')::timestamp + make_interval(secs => coalesce((r->>'last_elapsed_us')::bigint, 0) / 1e6)
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'stmt' AND r->>'plan_handle' IS NOT NULL AND r->>'stmt_start' IS NOT NULL AND r->>'stmt_end' IS NOT NULL
      AND r->>'creation_time' IS NOT NULL AND r->>'query_key' IS NOT NULL AND r->>'execution_count' IS NOT NULL
@@ -247,10 +260,13 @@ BEGIN
                    -- diff: the statement was in the read before and grew. whole: it counts lower than before (again from
                    -- zero); or it was not in the read before, and that read was complete (or the server restarted
                    -- since): it was compiled after it; or that read was cut and the statement was compiled at or after
-                   -- its clock. none: not in a cut read although compiled earlier: it only sets its counters.
+                   -- its clock, or has run once and that run ENDED after its clock (a run is counted when it ends: the
+                   -- read before could not have held it). none: not in a cut read although it may have been past the
+                   -- cut: it only sets its counters.
              CROSS JOIN LATERAL (SELECT CASE WHEN l.instance_id IS NOT NULL AND f.execution_count >= l.execution_count THEN 'diff'
                                              WHEN l.instance_id IS NOT NULL OR v_restart OR NOT v_prev.capped THEN 'whole'
                                              WHEN f.creation_time >= v_prev.server_local THEN 'whole'
+                                             WHEN f.execution_count = 1 AND f.last_end >= v_prev.server_local THEN 'whole'
                                              ELSE 'none' END AS mode) g) d
      WHERE d.executions > 0
      GROUP BY d.database_id, d.query_key;
@@ -282,15 +298,6 @@ BEGIN
   ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, server_utc = EXCLUDED.server_utc,
       server_start = EXCLUDED.server_start, server_local = EXCLUDED.server_local, capped = EXCLUDED.capped, cached = EXCLUDED.cached;
 
-  -- the texts: one per key; a text that came without its words (the policy 'none', an encrypted module) keeps what is stored
-  INSERT INTO pgvigil.mssql_pc_text AS t (instance_id, query_key, database_id, object_name, query, snapshot_at, seen_at)
-  SELECT DISTINCT ON (r->>'query_key') p_instance_id, r->>'query_key', (r->>'database_id')::int, r->>'object_name', r->>'query', p_snapshot_at, p_snapshot_at
-    FROM jsonb_array_elements(p_payload) r
-   WHERE r->>'kind' = 'text' AND r->>'query_key' IS NOT NULL
-   ORDER BY r->>'query_key'
-  ON CONFLICT (instance_id, query_key) DO UPDATE SET
-      database_id = EXCLUDED.database_id, object_name = coalesce(EXCLUDED.object_name, t.object_name),
-      query = coalesce(EXCLUDED.query, t.query), snapshot_at = EXCLUDED.snapshot_at, seen_at = EXCLUDED.seen_at;
   -- a key still in the cache keeps its text past the retention: marked once a day, not with every read
   UPDATE pgvigil.mssql_pc_text t SET seen_at = p_snapshot_at
    WHERE t.instance_id = p_instance_id AND t.seen_at < p_snapshot_at - interval '1 day'
@@ -310,7 +317,7 @@ END $$;
 
 -- payload: one {kind:'state', server_utc, server_start}; the 'health' rows (one per database: mssql_pc_health's
 -- columns); the 'single_use' rows {database_id, database_name, plan_kind, size_bytes, query} and the 'duplicate' rows
--- {database_id, database_name, query_hash, plans, statements, executions, query}, each list in the server's order.
+-- {database_id, database_name, query_hash_hex, plans, statements, executions, query}, each list in the server's order.
 -- A read replaces the one before whole.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_plancache_health(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
@@ -338,7 +345,7 @@ BEGIN
   INSERT INTO pgvigil.mssql_pc_list (instance_id, list, ord, database_id, database_name, plan_kind, size_bytes, query_hash, plans, statements,
       executions, query, snapshot_at)
   SELECT p_instance_id, r->>'kind', row_number() OVER (PARTITION BY r->>'kind' ORDER BY n), (r->>'database_id')::int, r->>'database_name',
-         r->>'plan_kind', (r->>'size_bytes')::bigint, r->>'query_hash', (r->>'plans')::bigint, (r->>'statements')::bigint,
+         r->>'plan_kind', (r->>'size_bytes')::bigint, r->>'query_hash_hex', (r->>'plans')::bigint, (r->>'statements')::bigint,
          (r->>'executions')::bigint, r->>'query', p_snapshot_at
     FROM jsonb_array_elements(p_payload) WITH ORDINALITY AS e(r, n)
    WHERE r->>'kind' IN ('single_use', 'duplicate');
@@ -354,7 +361,9 @@ END $$;
 --     last 24 hours on a server up for more than a day: the cache is flushed or under memory pressure, or the
 --     statements recompile.
 --   single-use plans (warning over 75 % of the database's compiled plans, info over 10 %).
---   one statement compiled into many plans (warning over 75 % of the database's cached statements, info over 5 %).
+--   one statement compiled into many plans (warning over 75 % of the database's cached statements, info over 5 %):
+--     statements of a query hash with more than one cached ad hoc or prepared plan (a statement inside several
+--     procedures shares its hash and is not counted).
 CREATE OR REPLACE VIEW pgvigil.mssql_plancache_findings AS
 SELECT t.instance_id, 'warning'::text AS severity, 'most cached plans are recent'::text AS check_name, 'plan cache'::text AS object, t.snapshot_at AS at,
        format('%s of the %s cached statements (%s %%) were compiled in the last 24 hours, %s in the last 4 and %s in the last hour; the oldest is from %s UTC and the server has been up since %s UTC. '
@@ -398,12 +407,14 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_index_db (
   read_at              timestamptz,            -- the read that last read its indexes; NULL = never
   database_state       text,
   note                 text,                   -- why the indexes were not read, or what was left out
-  server_start         timestamptz,
+  server_start         timestamptz,            -- the dates below are those of the read at read_at
   created_at           timestamptz,
   last_restore         timestamptz,            -- NULL: never restored on this server, or not read (restore_read)
   restore_read         boolean NOT NULL DEFAULT false,   -- the login may read msdb.dbo.restorehistory
-  usage_since          timestamptz,            -- the latest of the three dates: where the usage counters begin
-  usage_reason         text,                   -- server start | database restored | database created
+  reset_at             timestamptz,            -- the counters went down after this read: the database was closed or taken offline
+  auto_close           boolean NOT NULL DEFAULT false,   -- AUTO_CLOSE is on: the counters go each time the database closes
+  usage_since          timestamptz,            -- where the usage counters begin; NULL = not known
+  usage_reason         text,                   -- server start | database restored | database created | counters reset | why not known
   readable_secondary   boolean NOT NULL DEFAULT false,   -- the primary of an availability group with a readable secondary
   online_index_builds  boolean NOT NULL DEFAULT false,   -- the edition builds indexes online
   indexes              int,
@@ -424,11 +435,15 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_index (
   is_unique             boolean NOT NULL DEFAULT false,
   is_primary_key        boolean NOT NULL DEFAULT false,
   is_unique_constraint  boolean NOT NULL DEFAULT false,
+  fk_referenced         boolean NOT NULL DEFAULT false,   -- a foreign key is bound to this index
   is_disabled           boolean NOT NULL DEFAULT false,
   is_hypothetical       boolean NOT NULL DEFAULT false,
   has_filter            boolean NOT NULL DEFAULT false,
   filter_definition     text,
   ignore_dup_key        boolean NOT NULL DEFAULT false,
+  allow_row_locks       boolean NOT NULL DEFAULT true,
+  allow_page_locks      boolean NOT NULL DEFAULT true,
+  no_recompute          boolean NOT NULL DEFAULT false,   -- the index's statistic: STATISTICS_NORECOMPUTE
   fill_factor           int,                   -- 0 = the server's default (full pages)
   key_columns           text[] NOT NULL DEFAULT '{}',     -- in key order, each name quoted, a descending one with ' DESC'
   include_columns       text[] NOT NULL DEFAULT '{}',     -- by name, each name quoted
@@ -478,43 +493,54 @@ $$;
 
 -- An index's definition as T-SQL, for the inventory's 'definition' column and for a merged definition (the text a
 -- DBA reads; pgvigil runs none of it). A primary key or a unique constraint is written as its ALTER TABLE; any
--- other rowstore index as CREATE INDEX with the four options spelled out: ONLINE as the edition allows, the
--- index's own fill factor (0 is 100) and compression, SORT_IN_TEMPDB = OFF. p_drop_existing: the statement replaces
--- the index of that name. An index that is no rowstore index, or whose partitions differ in compression, has no
--- text here (NULL): its options cannot be written in one line.
+-- other rowstore index as CREATE INDEX. The options pgvigil reads are written as the index has them: FILLFACTOR (0
+-- is 100), DATA_COMPRESSION, IGNORE_DUP_KEY, ALLOW_ROW_LOCKS, ALLOW_PAGE_LOCKS, STATISTICS_NORECOMPUTE; ONLINE as the
+-- edition allows and SORT_IN_TEMPDB = OFF. Not read, so not written: OPTIMIZE_FOR_SEQUENTIAL_KEY, the filegroup or
+-- partition scheme (the page says to check them). p_drop_existing: the statement replaces the index of that name. An
+-- index that is no rowstore index, or whose partitions differ in compression, has no text here (NULL): its options
+-- cannot be written in one line.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_index_definition(p_index_type text, p_is_unique boolean, p_is_primary_key boolean, p_is_unique_constraint boolean,
     p_schema text, p_table text, p_index text, p_keys text[], p_includes text[], p_filter text, p_fill_factor int, p_compression text,
+    p_ignore_dup_key boolean, p_allow_row_locks boolean, p_allow_page_locks boolean, p_no_recompute boolean,
     p_online boolean, p_drop_existing boolean)
 RETURNS text LANGUAGE sql IMMUTABLE AS $$
   SELECT CASE
     WHEN p_index_type NOT IN ('CLUSTERED', 'NONCLUSTERED') OR coalesce(cardinality(p_keys), 0) = 0 OR p_index IS NULL OR p_table IS NULL THEN NULL
     WHEN coalesce(p_compression, 'NONE') NOT IN ('NONE', 'ROW', 'PAGE') THEN NULL
     WHEN (p_is_primary_key OR p_is_unique_constraint) AND NOT p_drop_existing THEN
-      format('ALTER TABLE %s.%s ADD CONSTRAINT %s %s %s (%s) WITH (FILLFACTOR = %s, DATA_COMPRESSION = %s);',
+      format('ALTER TABLE %s.%s ADD CONSTRAINT %s %s %s (%s) WITH (%s);',
              pgvigil.mssql_qname(coalesce(p_schema, 'dbo')), pgvigil.mssql_qname(p_table), pgvigil.mssql_qname(p_index),
-             CASE WHEN p_is_primary_key THEN 'PRIMARY KEY' ELSE 'UNIQUE' END, p_index_type, array_to_string(p_keys, ', '),
-             CASE WHEN coalesce(p_fill_factor, 0) = 0 THEN 100 ELSE p_fill_factor END, coalesce(p_compression, 'NONE'))
+             CASE WHEN p_is_primary_key THEN 'PRIMARY KEY' ELSE 'UNIQUE' END, p_index_type, array_to_string(p_keys, ', '), o.opts)
     ELSE
-      format('CREATE %s%s INDEX %s ON %s.%s (%s)%s%s WITH (%sONLINE = %s, FILLFACTOR = %s, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = %s);',
+      format('CREATE %s%s INDEX %s ON %s.%s (%s)%s%s WITH (%s%s);',
              CASE WHEN p_is_unique THEN 'UNIQUE ' ELSE '' END, p_index_type, pgvigil.mssql_qname(p_index),
              pgvigil.mssql_qname(coalesce(p_schema, 'dbo')), pgvigil.mssql_qname(p_table), array_to_string(p_keys, ', '),
              CASE WHEN coalesce(cardinality(p_includes), 0) > 0 THEN ' INCLUDE (' || array_to_string(p_includes, ', ') || ')' ELSE '' END,
              CASE WHEN nullif(p_filter, '') IS NOT NULL THEN ' WHERE ' || p_filter ELSE '' END,
              CASE WHEN p_drop_existing THEN 'DROP_EXISTING = ON, ' ELSE '' END,
-             CASE WHEN p_online THEN 'ON' ELSE 'OFF' END,
-             CASE WHEN coalesce(p_fill_factor, 0) = 0 THEN 100 ELSE p_fill_factor END, coalesce(p_compression, 'NONE'))
+             format('ONLINE = %s, SORT_IN_TEMPDB = OFF, ', CASE WHEN p_online THEN 'ON' ELSE 'OFF' END) || o.opts)
   END
+  FROM (SELECT format('FILLFACTOR = %s, DATA_COMPRESSION = %s, IGNORE_DUP_KEY = %s, ALLOW_ROW_LOCKS = %s, ALLOW_PAGE_LOCKS = %s, STATISTICS_NORECOMPUTE = %s',
+                      CASE WHEN coalesce(p_fill_factor, 0) = 0 THEN 100 ELSE p_fill_factor END, coalesce(p_compression, 'NONE'),
+                      CASE WHEN p_ignore_dup_key THEN 'ON' ELSE 'OFF' END, CASE WHEN coalesce(p_allow_row_locks, true) THEN 'ON' ELSE 'OFF' END,
+                      CASE WHEN coalesce(p_allow_page_locks, true) THEN 'ON' ELSE 'OFF' END, CASE WHEN p_no_recompute THEN 'ON' ELSE 'OFF' END) AS opts) o
 $$;
 
 -- payload, one call per batch of the collector, every batch with the run's {kind:'state', server_utc, server_start,
 -- online_index_builds}:
 --   a database's batch: one {kind:'db', database_id, database_name, database_state, created_at, last_restore,
---     restore_read, readable_secondary, read, note, capped, indexes} and, when read is true, its 'index' rows
---     (mssql_index's columns; key_columns and include_columns as arrays). The database's stored indexes are replaced
---     by a batch that read them and kept by one that did not.
+--     restore_read, auto_close, readable_secondary, read, note, capped, indexes} and, when read is true, its 'index'
+--     rows (mssql_index's columns; key_columns and include_columns as arrays). A batch that read the database replaces
+--     its stored indexes, its dates and its usage window, and writes the read's time as the cursor 'ix:<database>'
+--     (the collector reads the oldest first next time); one that did not keeps all of them and takes only the note.
 --   the run's last batch: {kind:'databases', names:[...]} (a stored database the server no longer lists goes, with
 --     its indexes) and, when the missing-index read succeeded, the 'missing' rows in the server's order with
 --     {kind:'missing_read'} (the stored requests are replaced).
+-- The usage window: the counters of sys.dm_db_index_usage_stats begin again when the server starts, when the database
+-- is restored, created or attached, and when it is shut down (AUTO_CLOSE, OFFLINE and back, a detach). The first
+-- three are dates the collector reads. A shutdown leaves no date: the import sees it when an index's counters went
+-- DOWN since the read before (reset_at = that read: the reset came after it), and a database with AUTO_CLOSE on has no
+-- known window at all. A shutdown after which every index read since has passed its old counters is not seen.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_indexes(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -523,53 +549,83 @@ DECLARE
   v_online boolean := coalesce((v_s->>'online_index_builds')::boolean, false);
   v_db     jsonb;
   v_name   text;
+  v_read   boolean;
   v_made   timestamptz;
   v_rest   timestamptz;
+  v_reset  timestamptz;
+  v_auto   boolean;
   v_since  timestamptz;
+  v_prev   pgvigil.mssql_index_db;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('pgvigil.import_mssql_indexes'), p_instance_id);
+  CREATE TEMP TABLE IF NOT EXISTS pgv_mssql_ix_in (LIKE pgvigil.mssql_index) ON COMMIT DROP;
   FOR v_db IN SELECT r FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'db' AND r->>'database_name' IS NOT NULL LOOP
     v_name := v_db->>'database_name';
+    v_read := coalesce((v_db->>'read')::boolean, false);
+    SELECT * INTO v_prev FROM pgvigil.mssql_index_db b WHERE b.instance_id = p_instance_id AND b.database_name = v_name;
     -- an older read arriving late changes nothing of the database
-    CONTINUE WHEN EXISTS (SELECT 1 FROM pgvigil.mssql_index_db b
-                           WHERE b.instance_id = p_instance_id AND b.database_name = v_name AND b.snapshot_at > p_snapshot_at);
+    CONTINUE WHEN v_prev.instance_id IS NOT NULL AND v_prev.snapshot_at > p_snapshot_at;
+    IF NOT v_read THEN
+      -- not read this time: the note, nothing else (the dates and the window stay those of the indexes stored)
+      INSERT INTO pgvigil.mssql_index_db AS b (instance_id, database_name, database_id, snapshot_at, database_state, note)
+      VALUES (p_instance_id, v_name, (v_db->>'database_id')::int, p_snapshot_at, v_db->>'database_state', v_db->>'note')
+      ON CONFLICT (instance_id, database_name) DO UPDATE SET database_id = EXCLUDED.database_id, snapshot_at = EXCLUDED.snapshot_at,
+          database_state = EXCLUDED.database_state, note = EXCLUDED.note;
+      CONTINUE;
+    END IF;
+    TRUNCATE pgv_mssql_ix_in;
+    INSERT INTO pgv_mssql_ix_in (instance_id, database_name, object_id, index_id, database_id, schema_name, table_name, index_name, index_type,
+        is_unique, is_primary_key, is_unique_constraint, fk_referenced, is_disabled, is_hypothetical, has_filter, filter_definition, ignore_dup_key,
+        allow_row_locks, allow_page_locks, no_recompute, fill_factor, key_columns, include_columns, row_count, size_kb, partitions, compression,
+        user_seeks, user_scans, user_lookups, user_updates, last_read, last_write, table_created, table_modified, snapshot_at)
+    SELECT DISTINCT ON ((r->>'object_id')::bigint, (r->>'index_id')::int)
+           p_instance_id, v_name, (r->>'object_id')::bigint, (r->>'index_id')::int, (r->>'database_id')::int, r->>'schema_name', r->>'table_name',
+           r->>'index_name', r->>'index_type', coalesce((r->>'is_unique')::int, 0) = 1, coalesce((r->>'is_primary_key')::int, 0) = 1,
+           coalesce((r->>'is_unique_constraint')::int, 0) = 1, coalesce((r->>'fk_referenced')::int, 0) = 1, coalesce((r->>'is_disabled')::int, 0) = 1,
+           coalesce((r->>'is_hypothetical')::int, 0) = 1, coalesce((r->>'has_filter')::int, 0) = 1, r->>'filter_definition',
+           coalesce((r->>'ignore_dup_key')::int, 0) = 1, coalesce((r->>'allow_row_locks')::int, 1) = 1, coalesce((r->>'allow_page_locks')::int, 1) = 1,
+           coalesce((r->>'no_recompute')::int, 0) = 1, (r->>'fill_factor')::int,
+           CASE WHEN jsonb_typeof(r->'key_columns') = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(r->'key_columns')) ELSE '{}' END,
+           CASE WHEN jsonb_typeof(r->'include_columns') = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(r->'include_columns')) ELSE '{}' END,
+           (r->>'row_count')::bigint, (r->>'size_kb')::bigint, (r->>'partitions')::int, r->>'compression',
+           coalesce((r->>'user_seeks')::bigint, 0), coalesce((r->>'user_scans')::bigint, 0), coalesce((r->>'user_lookups')::bigint, 0),
+           coalesce((r->>'user_updates')::bigint, 0), (r->>'last_read')::timestamptz, (r->>'last_write')::timestamptz,
+           (r->>'table_created')::timestamptz, (r->>'table_modified')::timestamptz, p_snapshot_at
+      FROM jsonb_array_elements(p_payload) r
+     WHERE r->>'kind' = 'index' AND r->>'database_name' = v_name AND r->>'object_id' IS NOT NULL AND r->>'index_id' IS NOT NULL
+     ORDER BY 3, 4;
     v_made := (v_db->>'created_at')::timestamptz;
     v_rest := (v_db->>'last_restore')::timestamptz;
-    v_since := greatest(v_start, v_made, v_rest);   -- greatest() skips a date that was not read
+    v_auto := coalesce((v_db->>'auto_close')::boolean, false);
+    -- a reset since the read before: an index of both reads whose counters went down
+    v_reset := v_prev.reset_at;
+    IF v_prev.read_at IS NOT NULL AND EXISTS (
+         SELECT 1 FROM pgv_mssql_ix_in n
+           JOIN pgvigil.mssql_index o ON o.instance_id = p_instance_id AND o.database_name = v_name AND o.object_id = n.object_id AND o.index_id = n.index_id
+          WHERE n.user_seeks < o.user_seeks OR n.user_scans < o.user_scans OR n.user_lookups < o.user_lookups OR n.user_updates < o.user_updates) THEN
+      v_reset := v_prev.read_at;
+    END IF;
+    v_since := CASE WHEN v_auto THEN NULL ELSE greatest(v_start, v_made, v_rest, v_reset) END;   -- greatest() skips a date not read
     INSERT INTO pgvigil.mssql_index_db AS b (instance_id, database_name, database_id, snapshot_at, read_at, database_state, note, server_start,
-        created_at, last_restore, restore_read, usage_since, usage_reason, readable_secondary, online_index_builds, indexes, capped)
-    VALUES (p_instance_id, v_name, (v_db->>'database_id')::int, p_snapshot_at,
-            CASE WHEN (v_db->>'read')::boolean THEN p_snapshot_at END, v_db->>'database_state', v_db->>'note', v_start, v_made, v_rest,
-            coalesce((v_db->>'restore_read')::boolean, false), v_since,
-            CASE WHEN v_since IS NULL THEN NULL WHEN v_since = v_rest THEN 'database restored' WHEN v_since = v_made THEN 'database created' ELSE 'server start' END,
+        created_at, last_restore, restore_read, reset_at, auto_close, usage_since, usage_reason, readable_secondary, online_index_builds, indexes, capped)
+    VALUES (p_instance_id, v_name, (v_db->>'database_id')::int, p_snapshot_at, p_snapshot_at, v_db->>'database_state', v_db->>'note', v_start, v_made, v_rest,
+            coalesce((v_db->>'restore_read')::boolean, false), v_reset, v_auto, v_since,
+            CASE WHEN v_auto THEN 'not known: AUTO_CLOSE is on, and the counters go each time the database closes'
+                 WHEN v_since IS NULL THEN NULL
+                 WHEN v_since = v_reset THEN 'usage counters reset (the database was closed or taken offline)'
+                 WHEN v_since = v_rest THEN 'database restored' WHEN v_since = v_made THEN 'database created' ELSE 'server start' END,
             coalesce((v_db->>'readable_secondary')::boolean, false), v_online, (v_db->>'indexes')::int, coalesce((v_db->>'capped')::boolean, false))
     ON CONFLICT (instance_id, database_name) DO UPDATE SET
-        database_id = EXCLUDED.database_id, snapshot_at = EXCLUDED.snapshot_at, read_at = coalesce(EXCLUDED.read_at, b.read_at),
-        database_state = EXCLUDED.database_state, note = EXCLUDED.note, server_start = EXCLUDED.server_start, created_at = EXCLUDED.created_at,
-        last_restore = EXCLUDED.last_restore, restore_read = EXCLUDED.restore_read, usage_since = EXCLUDED.usage_since,
+        database_id = EXCLUDED.database_id, snapshot_at = EXCLUDED.snapshot_at, read_at = EXCLUDED.read_at, database_state = EXCLUDED.database_state,
+        note = EXCLUDED.note, server_start = EXCLUDED.server_start, created_at = EXCLUDED.created_at, last_restore = EXCLUDED.last_restore,
+        restore_read = EXCLUDED.restore_read, reset_at = EXCLUDED.reset_at, auto_close = EXCLUDED.auto_close, usage_since = EXCLUDED.usage_since,
         usage_reason = EXCLUDED.usage_reason, readable_secondary = EXCLUDED.readable_secondary, online_index_builds = EXCLUDED.online_index_builds,
-        indexes = coalesce(EXCLUDED.indexes, b.indexes), capped = CASE WHEN EXCLUDED.read_at IS NULL THEN b.capped ELSE EXCLUDED.capped END;
-    IF (v_db->>'read')::boolean THEN
-      DELETE FROM pgvigil.mssql_index WHERE instance_id = p_instance_id AND database_name = v_name;
-      INSERT INTO pgvigil.mssql_index (instance_id, database_name, object_id, index_id, database_id, schema_name, table_name, index_name, index_type,
-          is_unique, is_primary_key, is_unique_constraint, is_disabled, is_hypothetical, has_filter, filter_definition, ignore_dup_key, fill_factor,
-          key_columns, include_columns, row_count, size_kb, partitions, compression, user_seeks, user_scans, user_lookups, user_updates,
-          last_read, last_write, table_created, table_modified, snapshot_at)
-      SELECT DISTINCT ON ((r->>'object_id')::bigint, (r->>'index_id')::int)
-             p_instance_id, v_name, (r->>'object_id')::bigint, (r->>'index_id')::int, (r->>'database_id')::int, r->>'schema_name', r->>'table_name',
-             r->>'index_name', r->>'index_type', coalesce((r->>'is_unique')::int, 0) = 1, coalesce((r->>'is_primary_key')::int, 0) = 1,
-             coalesce((r->>'is_unique_constraint')::int, 0) = 1, coalesce((r->>'is_disabled')::int, 0) = 1, coalesce((r->>'is_hypothetical')::int, 0) = 1,
-             coalesce((r->>'has_filter')::int, 0) = 1, r->>'filter_definition', coalesce((r->>'ignore_dup_key')::int, 0) = 1, (r->>'fill_factor')::int,
-             CASE WHEN jsonb_typeof(r->'key_columns') = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(r->'key_columns')) ELSE '{}' END,
-             CASE WHEN jsonb_typeof(r->'include_columns') = 'array' THEN ARRAY(SELECT jsonb_array_elements_text(r->'include_columns')) ELSE '{}' END,
-             (r->>'row_count')::bigint, (r->>'size_kb')::bigint, (r->>'partitions')::int, r->>'compression',
-             coalesce((r->>'user_seeks')::bigint, 0), coalesce((r->>'user_scans')::bigint, 0), coalesce((r->>'user_lookups')::bigint, 0),
-             coalesce((r->>'user_updates')::bigint, 0), (r->>'last_read')::timestamptz, (r->>'last_write')::timestamptz,
-             (r->>'table_created')::timestamptz, (r->>'table_modified')::timestamptz, p_snapshot_at
-        FROM jsonb_array_elements(p_payload) r
-       WHERE r->>'kind' = 'index' AND r->>'database_name' = v_name AND r->>'object_id' IS NOT NULL AND r->>'index_id' IS NOT NULL
-       ORDER BY 3, 4;
-    END IF;
+        indexes = EXCLUDED.indexes, capped = EXCLUDED.capped;
+    DELETE FROM pgvigil.mssql_index WHERE instance_id = p_instance_id AND database_name = v_name;
+    INSERT INTO pgvigil.mssql_index SELECT * FROM pgv_mssql_ix_in;
+    INSERT INTO pgvigil.mssql_cursor AS c (instance_id, source, last_event_at, updated_at)
+    VALUES (p_instance_id, 'ix:' || v_name, p_snapshot_at, now())
+    ON CONFLICT (instance_id, source) DO UPDATE SET last_event_at = EXCLUDED.last_event_at, updated_at = EXCLUDED.updated_at;
   END LOOP;
 
   -- the run's last batch: the databases the server lists now, and the missing-index requests
@@ -580,6 +636,8 @@ BEGIN
        AND EXISTS (SELECT 1 FROM pgvigil.mssql_index_db b
                     WHERE b.instance_id = x.instance_id AND b.database_name = x.database_name AND b.snapshot_at < p_snapshot_at
                       AND NOT (v_db->'names') ? b.database_name);
+    DELETE FROM pgvigil.mssql_cursor c
+     WHERE c.instance_id = p_instance_id AND c.source LIKE 'ix:%' AND NOT (v_db->'names') ? substr(c.source, 4);
     DELETE FROM pgvigil.mssql_index_db b
      WHERE b.instance_id = p_instance_id AND b.snapshot_at < p_snapshot_at AND NOT (v_db->'names') ? b.database_name;
   END IF;
@@ -604,7 +662,7 @@ END $$;
 CREATE OR REPLACE VIEW pgvigil.mssql_index_db_status AS
 SELECT b.*, u.usage_days, coalesce(u.usage_days > 7, false) AS judged,
        CASE WHEN b.read_at IS NULL THEN NULL
-            WHEN u.usage_days IS NULL THEN 'the usage window is not known (no start date was read): no index is called unused'
+            WHEN u.usage_days IS NULL THEN 'the usage window is ' || coalesce(b.usage_reason, 'not known (no start date was read)') || ': no index is called unused'
             ELSE CASE WHEN u.usage_days <= 7 THEN 'too early: ' ELSE '' END
                  || format('the usage counters cover %s day(s), since %s (%s UTC)', round(u.usage_days::numeric, 1), b.usage_reason,
                            to_char(b.usage_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'))
@@ -613,37 +671,40 @@ SELECT b.*, u.usage_days, coalesce(u.usage_days > 7, false) AS judged,
                          ELSE '.' END
                  || CASE WHEN b.readable_secondary THEN ' This is the primary of an availability group with a readable secondary: reads on the secondary are counted there, not here.' ELSE '' END
                  || CASE WHEN NOT b.restore_read THEN ' The restore history was not read (msdb.dbo.restorehistory): a restore since then would make the window shorter.' ELSE '' END
+                 || ' A shutdown of the database (taken offline, closed) also starts the counters again; pgvigil sees one only when a counter went down between two reads.'
        END AS guard
   FROM pgvigil.mssql_index_db b
  CROSS JOIN LATERAL (SELECT extract(epoch FROM b.read_at - b.usage_since) / 86400.0 AS usage_days) u;
 
 -- One row per index a rule names, for one instance. Judged: enabled, real (not hypothetical) rowstore indexes with
--- a key; the duplicate rules compare NONCLUSTERED indexes of one table with each other (a primary key or a unique
--- constraint that is nonclustered takes part as the one to keep, never as the one to disable); the clustered index
--- is compared with nothing. An index gets ONE rule, the first that names it:
---   exact duplicate           the same key columns in the same order and direction, the same included columns and
---                             the same filter as another index. Kept: a constraint first, then a unique index, then
---                             the most read, then the lower index id. Text: DISABLE.
---   duplicate constraint      the same, and both back a primary key or a unique constraint: for review, no text (a
---                             foreign key may reference either).
---   key subset                not unique, and its key columns are the leading key columns of another index with the
---                             same filter; kept: the closest such index. Text: the kept index's definition with this
---                             one's included columns merged in (when it lacks any), then DISABLE. Not raised when the
---                             kept index is a constraint that would need included columns.
---   same keys, other includes the same key columns and filter as another index, other included columns. Text: the
---                             kept index's merged definition, then DISABLE.
---   constraint doubled        the same key columns as a unique constraint, with included columns the constraint
---                             cannot hold. Text: this index made UNIQUE, then the constraint dropped; for a primary
---                             key no text.
---   unused, written           (usage window over 7 days, table older than 7 days) a non-unique nonclustered index
---                             with no seek, scan or lookup and 10,000 or more writes. Text: DISABLE. Warning.
+-- a key; the duplicate rules compare NONCLUSTERED indexes of one table with each other; the clustered index is
+-- compared with nothing. PINNED: an index that backs a primary key or a unique constraint, or that a foreign key is
+-- bound to: it is kept first and is never the one a rule disables. An index gets ONE rule, the first that names it:
+--   exact duplicate           the same key columns in the same order and direction, the same included columns, the
+--                             same filter and the same IGNORE_DUP_KEY as another index. Kept: a pinned index first,
+--                             then a unique index, then the most read, then the lower index id. Text: DISABLE.
+--   duplicate constraint      the same, and this one is pinned too: for review, no text (a foreign key may be bound
+--                             to either).
+--   key subset                not unique and not pinned, and its key columns are the leading key columns of another
+--                             index with the same filter; kept: the closest such index.
+--   same keys, other includes not pinned, the same key columns and filter as another index, other included columns.
+--                             For both: text = the kept index rebuilt with this one's included columns merged in (when
+--                             it lacks any), then DISABLE. NO text when the merge is needed and cannot be written (the
+--                             kept index is pinned, or has partitions of mixed compression), or when this index is itself
+--                             kept in place of another one (the two merges must be read together).
+--   constraint doubled        the same key columns as a unique constraint, plus included columns a constraint cannot
+--                             hold. Text: this index made UNIQUE, then the constraint dropped - only when both have the
+--                             same IGNORE_DUP_KEY and no foreign key is bound to the constraint; for a primary key none.
+--   unused, written           (usage window over 7 days, table older than 7 days) a non-unique nonclustered index that
+--                             is not kept in place of another, with no seek, scan or lookup and 10,000 or more writes.
+--                             Text: DISABLE. Warning.
 --   unused                    the same with fewer writes. Text: DISABLE.
 --   written, seldom read      10,000 or more writes, under 10,000 reads, ten times more writes than reads. No text.
 --   same keys, another order  the same leading column and the same set of key columns as another index, in another
 --                             order. For review, no text.
 --   same leading column       shares its first key column with another index of the table. For review, no text.
 -- script is T-SQL for a DBA to read, test and run; pgvigil runs none of it. A disabled index comes back with
--- ALTER INDEX ... REBUILD.
+-- ALTER INDEX ... REBUILD. keeper names the index kept instead, for the rules that keep one.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_index_verdicts(p_instance_id int)
 RETURNS TABLE (database_name text, object_id bigint, index_id int, rule text, severity text, detail text, script text, keeper text)
 LANGUAGE sql STABLE AS $$
@@ -653,9 +714,10 @@ WITH d AS (
    WHERE s.instance_id = p_instance_id AND s.read_at IS NOT NULL
 ), i AS (
   SELECT x.database_name, x.object_id, x.index_id, x.schema_name, x.table_name, x.index_name, x.index_type, x.is_unique, x.is_primary_key,
-         x.is_unique_constraint, x.filter_definition, x.fill_factor, x.key_columns, x.include_columns, x.compression, x.size_kb,
-         x.table_created, x.table_modified, x.snapshot_at,
+         x.is_unique_constraint, x.fk_referenced, x.filter_definition, x.fill_factor, x.key_columns, x.include_columns, x.compression, x.size_kb,
+         x.ignore_dup_key, x.allow_row_locks, x.allow_page_locks, x.no_recompute, x.table_created, x.table_modified, x.snapshot_at,
          (x.is_primary_key OR x.is_unique_constraint) AS is_constraint,
+         (x.is_primary_key OR x.is_unique_constraint OR x.fk_referenced) AS pinned,
          x.user_seeks + x.user_scans + x.user_lookups AS reads, x.user_updates AS writes,
          n.key_names, (SELECT array_agg(k ORDER BY k) FROM unnest(n.key_names) k) AS key_set,
          pgvigil.mssql_qname(coalesce(x.schema_name, 'dbo')) || '.' || pgvigil.mssql_qname(x.table_name) AS qtable,
@@ -669,25 +731,24 @@ WITH d AS (
 ), ex AS (
   SELECT n.database_name, n.object_id, n.index_id, first_value(n.index_id) OVER w AS keeper_id, row_number() OVER w AS rn
     FROM nc n
-  WINDOW w AS (PARTITION BY n.database_name, n.object_id, n.key_columns, n.include_columns, n.filter_definition
-               ORDER BY n.is_constraint DESC, n.is_unique DESC, n.reads DESC, n.index_id)
+  WINDOW w AS (PARTITION BY n.database_name, n.object_id, n.key_columns, n.include_columns, n.filter_definition, n.ignore_dup_key
+               ORDER BY n.pinned DESC, n.is_constraint DESC, n.is_unique DESC, n.reads DESC, n.index_id)
 ), live AS (   -- the nonclustered indexes no exact duplicate replaces
   SELECT n.* FROM nc n JOIN ex e ON e.database_name = n.database_name AND e.object_id = n.object_id AND e.index_id = n.index_id AND e.rn = 1
 ), sub AS (
   SELECT DISTINCT ON (a.database_name, a.object_id, a.index_id) a.database_name, a.object_id, a.index_id, b.index_id AS keeper_id
     FROM live a
     JOIN live b ON b.database_name = a.database_name AND b.object_id = a.object_id AND b.index_id <> a.index_id
-   WHERE NOT a.is_unique AND NOT a.is_constraint
+   WHERE NOT a.is_unique AND NOT a.pinned
      AND b.filter_definition IS NOT DISTINCT FROM a.filter_definition
      AND cardinality(b.key_columns) > cardinality(a.key_columns)
      AND b.key_columns[1:cardinality(a.key_columns)] = a.key_columns
-     AND (NOT b.is_constraint OR a.include_columns <@ (b.key_names || b.include_columns))
-   ORDER BY a.database_name, a.object_id, a.index_id, cardinality(b.key_columns), b.is_constraint DESC, b.is_unique DESC, b.reads DESC, b.index_id
+   ORDER BY a.database_name, a.object_id, a.index_id, cardinality(b.key_columns), b.pinned DESC, b.is_unique DESC, b.reads DESC, b.index_id
 ), kd AS (
   SELECT l.database_name, l.object_id, l.index_id, first_value(l.index_id) OVER w AS keeper_id, row_number() OVER w AS rn
     FROM live l
   WINDOW w AS (PARTITION BY l.database_name, l.object_id, l.key_columns, l.filter_definition
-               ORDER BY l.is_constraint DESC, l.is_unique DESC, l.reads DESC, l.index_id)
+               ORDER BY l.pinned DESC, l.is_constraint DESC, l.is_unique DESC, l.reads DESC, l.index_id)
 ), oo AS (
   SELECT DISTINCT ON (a.database_name, a.object_id, a.index_id) a.database_name, a.object_id, a.index_id, b.index_id AS keeper_id
     FROM live a
@@ -699,12 +760,18 @@ WITH d AS (
   SELECT l.database_name, l.object_id, l.index_id,
          count(*) OVER (PARTITION BY l.database_name, l.object_id, l.key_names[1]) - 1 AS others
     FROM live l
+), kept AS (   -- the indexes another one's included columns are merged into: never disabled themselves, never merged
+                -- away in the same pass. (An exact duplicate's kept index has the same included columns as the one
+                -- disabled: whatever serves it serves both, so it is not held back.)
+  SELECT DISTINCT s.database_name, s.object_id, s.keeper_id AS index_id FROM sub s
+  UNION SELECT k.database_name, k.object_id, k.keeper_id FROM kd k WHERE k.rn > 1
 ), j AS (   -- every judged index with what each rule found for it
   SELECT a.*, d.usage_days, d.judged, d.usage_reason, d.usage_since, d.readable_secondary, d.online_index_builds, d.read_at,
          CASE WHEN e.rn > 1 THEN e.keeper_id END AS ex_keeper, s.keeper_id AS sub_keeper,
          CASE WHEN kd.rn > 1 THEN kd.keeper_id END AS kd_keeper, oo.keeper_id AS oo_other, coalesce(ld.others, 0) AS lead_others,
-         -- an 'unused' verdict needs a window and a table both over 7 days old at the read
-         (d.judged AND a.index_type = 'NONCLUSTERED' AND NOT a.is_unique AND NOT a.is_constraint
+         (kp.index_id IS NOT NULL) AS is_keeper,
+         -- an 'unused' verdict needs a window and a table both over 7 days old at the read, and an index nothing else depends on
+         (d.judged AND a.index_type = 'NONCLUSTERED' AND NOT a.is_unique AND NOT a.pinned AND kp.index_id IS NULL
           AND (a.table_created IS NULL OR a.table_created < d.read_at - interval '7 days')) AS usage_judged
     FROM i a
     JOIN d ON d.database_name = a.database_name
@@ -713,12 +780,13 @@ WITH d AS (
     LEFT JOIN kd ON kd.database_name = a.database_name AND kd.object_id = a.object_id AND kd.index_id = a.index_id
     LEFT JOIN oo ON oo.database_name = a.database_name AND oo.object_id = a.object_id AND oo.index_id = a.index_id
     LEFT JOIN ld ON ld.database_name = a.database_name AND ld.object_id = a.object_id AND ld.index_id = a.index_id
+    LEFT JOIN kept kp ON kp.database_name = a.database_name AND kp.object_id = a.object_id AND kp.index_id = a.index_id
 ), r AS (
   SELECT j.*,
-         CASE WHEN j.ex_keeper IS NOT NULL AND j.is_constraint THEN 'duplicate constraint'
+         CASE WHEN j.ex_keeper IS NOT NULL AND j.pinned THEN 'duplicate constraint'
               WHEN j.ex_keeper IS NOT NULL THEN 'exact duplicate'
               WHEN j.sub_keeper IS NOT NULL THEN 'key subset'
-              WHEN j.kd_keeper IS NOT NULL AND NOT j.is_constraint THEN 'same keys, other includes'
+              WHEN j.kd_keeper IS NOT NULL AND NOT j.pinned THEN 'same keys, other includes'
               WHEN j.usage_judged AND j.reads = 0 AND j.writes >= 10000 THEN 'unused, written'
               WHEN j.usage_judged AND j.reads = 0 THEN 'unused'
               WHEN j.usage_judged AND j.writes >= 10000 AND j.reads < 10000 AND j.writes >= 10 * j.reads THEN 'written, seldom read'
@@ -729,14 +797,16 @@ WITH d AS (
     FROM j
 ), o AS (
   SELECT r.*, k.index_name AS keeper_name, k.qindex AS keeper_q, k.is_constraint AS keeper_constraint, k.is_primary_key AS keeper_pk,
+         k.fk_referenced AS keeper_fk, k.ignore_dup_key AS keeper_idk,
          -- the rule's name once the kept index is known: the same keys as a CONSTRAINT with other includes is its own rule
          CASE WHEN r.rule0 = 'same keys, other includes' AND k.is_constraint THEN 'constraint doubled' ELSE r.rule0 END AS rule,
-         -- the kept index with this one's included columns merged in, when it lacks any of them
-         CASE WHEN r.rule0 IN ('key subset', 'same keys, other includes') AND NOT k.is_constraint
-                   AND NOT r.include_columns <@ (k.key_names || k.include_columns)
+         -- the kept index lacks some of this one's included columns: they must be merged in before this one goes
+         (r.rule0 IN ('key subset', 'same keys, other includes') AND NOT r.include_columns <@ (k.key_names || k.include_columns)) AS needs_merge,
+         CASE WHEN r.rule0 IN ('key subset', 'same keys, other includes') AND NOT k.pinned
               THEN pgvigil.mssql_index_definition(k.index_type, k.is_unique, false, false, k.schema_name, k.table_name, k.index_name, k.key_columns,
                      ARRAY(SELECT DISTINCT c FROM unnest(k.include_columns || r.include_columns) c WHERE c <> ALL (k.key_names) ORDER BY c),
-                     k.filter_definition, k.fill_factor, k.compression, r.online_index_builds, true) END AS merged,
+                     k.filter_definition, k.fill_factor, k.compression, k.ignore_dup_key, k.allow_row_locks, k.allow_page_locks, k.no_recompute,
+                     r.online_index_builds, true) END AS merged,
          format('ALTER INDEX %s ON %s DISABLE;', r.qindex, r.qtable) AS disable_line,
          CASE WHEN r.usage_days IS NOT NULL
               THEN format('%s day(s) of usage counters, since %s', round(r.usage_days::numeric, 1), r.usage_reason) END AS win
@@ -746,11 +816,11 @@ WITH d AS (
 SELECT o.database_name, o.object_id, o.index_id, o.rule,
        CASE o.rule WHEN 'exact duplicate' THEN 'warning' WHEN 'unused, written' THEN 'warning' ELSE 'info' END AS severity,
        CASE o.rule
-         WHEN 'exact duplicate' THEN format('the same key columns, included columns and filter as %s, which is kept (%s). Every write to the table maintains both.',
-              o.keeper_name, CASE WHEN o.keeper_constraint THEN 'it backs a constraint' ELSE 'unique first, then the most read' END)
-         WHEN 'duplicate constraint' THEN format('backs a constraint on the same key columns as %s: one of the two is redundant. For review: a foreign key may reference either.', o.keeper_name)
+         WHEN 'exact duplicate' THEN format('the same key columns, included columns, filter and IGNORE_DUP_KEY as %s, which is kept (%s). Every write to the table maintains both.',
+              o.keeper_name, CASE WHEN o.keeper_constraint THEN 'it backs a constraint' WHEN o.keeper_fk THEN 'a foreign key is bound to it' ELSE 'unique first, then the most read' END)
+         WHEN 'duplicate constraint' THEN format('the same key columns as %s, and both back a constraint or have a foreign key bound to them: one of the two is redundant. For review: a foreign key may be bound to either.', o.keeper_name)
          WHEN 'key subset' THEN format('its key columns (%s) are the leading key columns of %s, which serves the same seeks%s.', array_to_string(o.key_columns, ', '), o.keeper_name,
-              CASE WHEN o.merged IS NOT NULL THEN ' once this index''s included columns are merged into it' ELSE '' END)
+              CASE WHEN o.needs_merge THEN ' once this index''s included columns are merged into it' ELSE '' END)
          WHEN 'same keys, other includes' THEN format('the same key columns and filter as %s with other included columns: one index with both sets of included columns serves both.', o.keeper_name)
          WHEN 'constraint doubled' THEN format('the same key columns as the %s %s, plus included columns a constraint cannot hold: this index, made unique, enforces the same rule.',
               CASE WHEN o.keeper_pk THEN 'primary key' ELSE 'unique constraint' END, o.keeper_name)
@@ -766,22 +836,30 @@ SELECT o.database_name, o.object_id, o.index_id, o.rule,
             || CASE WHEN o.table_modified > o.read_at - interval '7 days'
                     THEN format(' The table was last altered %s UTC: SQL Server keeps no creation date for an index, and one created since then has had less time than the window.',
                                 to_char(o.table_modified AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')) ELSE '' END
-          WHEN o.rule IN ('exact duplicate', 'key subset', 'same keys, other includes') AND o.usage_judged AND o.reads = 0
-            THEN format(' It also had no read in %s.', o.win)
+          WHEN o.rule IN ('key subset', 'same keys, other includes') AND o.is_keeper
+            THEN ' It is also the index kept in place of another one: the two merges must be read together, so no text is given.'
+          WHEN o.rule IN ('key subset', 'same keys, other includes') AND o.needs_merge AND o.merged IS NULL
+            THEN format(' The merged definition of %s cannot be written here (it backs a constraint or a foreign key, or its partitions differ in compression): no text is given.', o.keeper_name)
+          WHEN o.rule = 'constraint doubled' AND (o.keeper_fk OR o.keeper_idk IS DISTINCT FROM o.ignore_dup_key) AND NOT o.keeper_pk
+            THEN ' A foreign key is bound to the constraint, or the two differ in IGNORE_DUP_KEY: no text is given.'
           ELSE '' END AS detail,
-       CASE o.rule
-         WHEN 'exact duplicate' THEN o.disable_line
-         WHEN 'key subset' THEN coalesce(o.merged || E'\n', '') || o.disable_line
-         WHEN 'same keys, other includes' THEN coalesce(o.merged || E'\n', '') || o.disable_line
-         WHEN 'constraint doubled' THEN
-           CASE WHEN NOT o.keeper_pk THEN
+       CASE
+         WHEN o.rule = 'exact duplicate' THEN o.disable_line
+         WHEN o.rule IN ('key subset', 'same keys, other includes') THEN
+           CASE WHEN o.is_keeper THEN NULL
+                WHEN o.needs_merge AND o.merged IS NULL THEN NULL
+                WHEN o.needs_merge THEN o.merged || E'\n' || o.disable_line
+                ELSE o.disable_line END
+         WHEN o.rule = 'constraint doubled' THEN
+           CASE WHEN NOT o.keeper_pk AND NOT o.keeper_fk AND o.keeper_idk IS NOT DISTINCT FROM o.ignore_dup_key THEN
              pgvigil.mssql_index_definition(o.index_type, true, false, false, o.schema_name, o.table_name, o.index_name, o.key_columns, o.include_columns,
-                                            o.filter_definition, o.fill_factor, o.compression, o.online_index_builds, true)
+                                            o.filter_definition, o.fill_factor, o.compression, o.ignore_dup_key, o.allow_row_locks, o.allow_page_locks,
+                                            o.no_recompute, o.online_index_builds, true)
              || E'\n' || format('ALTER TABLE %s DROP CONSTRAINT %s;', o.qtable, o.keeper_q) END
-         WHEN 'unused, written' THEN o.disable_line
-         WHEN 'unused' THEN o.disable_line
+         WHEN o.rule IN ('unused, written', 'unused') THEN o.disable_line
        END AS script,
-       o.keeper_name AS keeper
+       CASE WHEN o.rule IN ('exact duplicate', 'duplicate constraint', 'key subset', 'same keys, other includes', 'constraint doubled', 'same keys, another order')
+            THEN o.keeper_name END AS keeper
   FROM o
 $$;
 
@@ -937,6 +1015,10 @@ BEGIN
         FROM jsonb_array_elements(p_payload) r
        WHERE r->>'kind' = 'stat' AND r->>'database_name' = v_name AND r->>'object_id' IS NOT NULL AND r->>'stats_id' IS NOT NULL
        ORDER BY 3, 4;
+      -- the read's time as the cursor 'st:<database>': the collector reads the oldest first next time
+      INSERT INTO pgvigil.mssql_cursor AS c (instance_id, source, last_event_at, updated_at)
+      VALUES (p_instance_id, 'st:' || v_name, p_snapshot_at, now())
+      ON CONFLICT (instance_id, source) DO UPDATE SET last_event_at = EXCLUDED.last_event_at, updated_at = EXCLUDED.updated_at;
     END IF;
   END LOOP;
   SELECT r INTO v_db FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'databases' AND jsonb_typeof(r->'names') = 'array' LIMIT 1;

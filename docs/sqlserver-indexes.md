@@ -61,9 +61,14 @@ The usage counters are kept in memory. They start again whenever:
 
 - the server starts;
 - a database is restored;
-- a database is created or attached.
+- a database is created or attached;
+- a database is shut down: taken offline and back, detached, or closed by AUTO_CLOSE.
 
-The start of a database's window is the latest of those three dates, and the page says which one it was. **No index is called unused before the window is seven days long**: the page says "too early". Under 14 days, an unused verdict carries a warning, because a weekly or monthly job may not have run yet. On an availability group's primary with a readable secondary, reads made on the secondary are counted there and not here. SQL Server keeps no creation date for an index, so the table's last change is named when it is recent.
+The start of a database's window is the latest of the dates pgvigil can read (server start, last restore, create date), and the page says which one it was. A shutdown leaves no date. pgvigil sees one when an index's counters went down between two reads, and then the window starts at the read before. A database with AUTO_CLOSE on has no known window, and none of its indexes is judged unused. A shutdown after which every counter grew past its old value before the next read is not seen. **No index is called unused before the window is seven days long, or while its table is younger than seven days**: the page says "too early". Under 14 days, an unused verdict carries a warning, because a weekly or monthly job may not have run yet. On an availability group's primary with a readable secondary, reads made on the secondary are counted there and not here. A database that is a secondary replica on the server read is not read at all: its indexes are the primary's.
+
+Memory-optimized tables are left out: the usage counters do not count their indexes, and DISABLE does not apply to them.
+
+An index that backs a primary key or a unique constraint, or that a foreign key is bound to, is never the one a rule disables. An index another one's included columns are to be merged into is never called unused, and has no text of its own while that merge stands. SQL Server keeps no creation date for an index, so the table's last change is named when it is recent.
 
 ### The rules
 
@@ -71,14 +76,14 @@ The start of a database's window is the latest of those three dates, and the pag
 |---|---|---|
 | exact duplicate | the same keys, includes and filter as another index; a constraint is kept first, then a unique index, then the most read | `ALTER INDEX ... DISABLE` |
 | duplicate constraint | two constraints on the same keys | none: a foreign key may reference either |
-| key subset | its keys are the leading keys of another index | the kept index with this one's includes merged in (`DROP_EXISTING`), then `DISABLE` |
-| same keys, other includes | the same keys and filter, other includes | the merged definition, then `DISABLE` |
+| key subset | its keys are the leading keys of another index | the kept index with this one's includes merged in (`DROP_EXISTING`) when it lacks any, then `DISABLE`; no text when the merge cannot be written (the kept index backs a constraint or a foreign key, or its partitions differ in compression) |
+| same keys, other includes | the same keys and filter, other includes | as for a key subset |
 | constraint doubled | the keys of a unique constraint, plus includes | this index made `UNIQUE`, then the constraint dropped |
 | unused, written / unused | no seek, scan or lookup in a window over 7 days (10,000 or more writes: a warning) | `DISABLE` |
 | written, seldom read | 10,000 or more writes, under 10,000 reads, ten times more writes than reads | none |
 | same keys, another order / same leading column | for review | none |
 
-A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `SORT_IN_TEMPDB` and `DATA_COMPRESSION`. A disabled index comes back with `ALTER INDEX ... REBUILD`. Findings are raised per database: exact duplicates, unused indexes that are written, unused indexes, and redundant indexes.
+A merged definition spells out `ONLINE` (as the edition allows), `FILLFACTOR`, `SORT_IN_TEMPDB` and `DATA_COMPRESSION`, and keeps the index's `IGNORE_DUP_KEY`, `ALLOW_ROW_LOCKS`, `ALLOW_PAGE_LOCKS` and `STATISTICS_NORECOMPUTE`. pgvigil does not read `OPTIMIZE_FOR_SEQUENTIAL_KEY` or the filegroup: check both before running the text. A disabled index comes back with `ALTER INDEX ... REBUILD`. Findings are raised per database: exact duplicates, unused indexes that are written, unused indexes, and redundant indexes.
 
 ### Missing-index requests
 
@@ -105,17 +110,20 @@ For each database the read stores:
 
 ## What the proof shows
 
-`scripts/proof-mssql-plancache-indexes.sh` runs against a SQL Server 2022 container that it starts and removes. It shows:
+`scripts/proof-mssql-plancache-indexes.sh` runs against a SQL Server 2022 container that it starts and removes (or an existing sandbox it is given). It shows:
 
 - A seeded workload's top statement equals a hand read of `sys.dm_exec_query_stats`.
 - An exact duplicate and a key subset are found on a fresh server, and an unused index is **not**: the guard says "too early".
 - Once the stored window is moved back 10 days in the proof's own repository, the unused index is found, with its DISABLE line.
 - The stored modification count of a NORECOMPUTE statistic equals the DMV's. Moved back 40 days, the statistic is stale.
 - The import's rules hold for a cut read, counters that went down and a late read.
+- The index rules hold on crafted rows: a kept index is never called unused, chained merges give no text, a foreign key's index is never disabled, IGNORE_DUP_KEY survives a merge, an AUTO_CLOSE database is not judged, and a counter reset shortens the window.
 
 It does not show:
 
 - SQL Server 2016 to 2019.
 - RDS or Managed Instance.
-- A list cut on a real server.
+- A list cut on a real server, or a server with more databases than one run reaches.
+- An availability group, or a memory-optimized table.
+- The per-day missing-index finding (it needs days of uptime).
 - The pages in a browser.

@@ -50,9 +50,12 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
     }
     if (mine !== seq) return;
     const dbs = rowsOf(d.databases), top = rowsOf(d.top), reads = rowsOf(d.reads)[0], tot = rowsOf(d.totals)[0] ?? {};
-    sel.replaceChildren(el('option', { value: '' }, 'every database'), ...dbs.map(r => {
-      const o = el('option', { value: String(r.database_id) }, `${String(r.database_name)}${r.query_store_on ? ' (Query Store on)' : ''}`);
-      if (String(r.database_id) === database) o.selected = true;
+    // a database remembered from before that the instance no longer lists stays in the list, so it can be left
+    const opts = dbs.map(r => [String(r.database_id), `${String(r.database_name)}${r.query_store_on ? ' (Query Store on)' : ''}`] as [string, string]);
+    if (database && !opts.some(o => o[0] === database)) opts.push([database, `database ${database} (not listed now)`]);
+    sel.replaceChildren(el('option', { value: '' }, 'every database'), ...opts.map(([id, name]) => {
+      const o = el('option', { value: id }, name);
+      if (id === database) o.selected = true;
       return o;
     }));
     const out: (Node | string)[] = [];
@@ -77,7 +80,7 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         lineChart('CPU and duration, ms per second', series, [{ key: 'cpu_ms_s', label: 'CPU ms/s' }, { key: 'duration_ms_s', label: 'duration ms/s' }])));
       const cols: Col[] = [
         { key: 'database' },
-        { key: 'query_store_on', label: 'Query Store', fmt: v => v ? 'on' : 'off' },
+        { key: 'query_store_on', label: 'Query Store', fmt: v => v == null ? 'not read' : v ? 'on' : 'off' },
         { key: 'object_name', label: 'module' },
         { key: 'query', label: 'statement', fmt: text, wide: true },
         { key: 'executions', num: true },

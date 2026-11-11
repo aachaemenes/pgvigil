@@ -36,7 +36,8 @@ import (
 // The database is the one the plan was compiled in (sys.dm_exec_plan_attributes' dbid); the resource database's
 // own statements (32767) are left out. The text is read apart, by the statement's handle and offsets, for at most
 // planCacheTextsPerRun statements a run whose text this process has not sent in the last planCacheTextEvery: the
-// repository keeps one text per query hash, so a statement's text travels once, not every five minutes. The text
+// repository keeps one text per query hash, so a statement's text travels once an hour, not every five minutes (a
+// text whose import failed is sent again within the hour; one under the policy 'none' replaces the stored words). The text
 // follows the instance's query-text policy before it is stored (none: no text). OBJECT_NAME waits behind a schema
 // change on the object; the session gives up on a lock after two seconds and the texts are then read without the
 // module's name.
@@ -68,7 +69,7 @@ const (
 	// planCacheTextsPerRun bounds the statement texts one run reads; planCacheTextEvery is how long a text this
 	// process sent is not sent again; planCacheTextMax is the most characters of one text.
 	planCacheTextsPerRun = 200
-	planCacheTextEvery   = 6 * time.Hour
+	planCacheTextEvery   = time.Hour
 	planCacheTextMax     = 8000
 )
 
@@ -82,12 +83,14 @@ const planCacheDatabasesSQL = `SELECT 'database' AS kind, CAST(d.database_id AS 
 FROM sys.databases d`
 
 // planCacheSQL: the candidate set, the most CPU first. {{grant}}, {{used}}, {{spills}} and {{dop}} are the columns
-// newer servers have, or 0. The handles and hashes ride as 0x text (QueryRows); creation_time is the server's own
-// clock without a zone, as the DMV writes it.
+// newer servers have, or 0. The handles and hashes ride as 0x text (QueryRows; the hashes as *_hex: the text policy
+// rewrites a column named query_hash); creation_time and last_execution are the server's own clock without a zone,
+// as the DMV writes them; last_execution is when the last run STARTED, last_elapsed_us how long it took.
 const planCacheSQL = `WITH s AS (
   SELECT qs.plan_handle, qs.sql_handle, qs.statement_start_offset, qs.statement_end_offset, qs.creation_time,
          qs.query_hash, qs.query_plan_hash, qs.execution_count, qs.total_worker_time, qs.total_elapsed_time,
          qs.total_logical_reads, qs.total_physical_reads, qs.total_logical_writes, qs.total_rows,
+         qs.last_execution_time, qs.last_elapsed_time,
          {{grant}} AS max_grant_kb, {{used}} AS max_used_grant_kb, {{spills}} AS total_spills, {{dop}} AS max_dop,
          ROW_NUMBER() OVER (ORDER BY qs.total_worker_time DESC, qs.plan_handle, qs.statement_start_offset) AS rn_cpu,
          ROW_NUMBER() OVER (ORDER BY qs.total_elapsed_time DESC, qs.plan_handle, qs.statement_start_offset) AS rn_duration,
@@ -97,23 +100,29 @@ const planCacheSQL = `WITH s AS (
          ROW_NUMBER() OVER (ORDER BY {{spills}} DESC, qs.plan_handle, qs.statement_start_offset) AS rn_spills,
          COUNT_BIG(*) OVER () AS cached
     FROM sys.dm_exec_query_stats qs
+), k AS (
+  -- the candidate set; listed counts it before the resource database's statements leave it, so the cut is judged
+  -- on the lists alone
+  SELECT s.*, COUNT_BIG(*) OVER () AS listed
+    FROM s
+   WHERE s.rn_cpu <= @top OR s.rn_duration <= @top OR s.rn_reads <= @top OR s.rn_executions <= @top
+      OR (s.rn_grant <= @top AND s.max_grant_kb > 0) OR (s.rn_spills <= @top AND s.total_spills > 0)
 )
-SELECT 'stmt' AS kind, s.plan_handle AS plan_handle, s.sql_handle AS sql_handle,
-  CAST(s.statement_start_offset AS int) AS stmt_start, CAST(s.statement_end_offset AS int) AS stmt_end, s.creation_time AS creation_time,
-  s.query_hash AS query_hash, s.query_plan_hash AS plan_hash,
+SELECT 'stmt' AS kind, k.plan_handle AS plan_handle, k.sql_handle AS sql_handle,
+  CAST(k.statement_start_offset AS int) AS stmt_start, CAST(k.statement_end_offset AS int) AS stmt_end, k.creation_time AS creation_time,
+  k.query_hash AS query_hash_hex, k.query_plan_hash AS plan_hash_hex,
   CAST(pa.dbid AS int) AS database_id, CAST(DB_NAME(pa.dbid) AS nvarchar(128)) AS database_name,
-  CAST(s.execution_count AS bigint) AS execution_count, CAST(s.total_worker_time AS bigint) AS worker_us,
-  CAST(s.total_elapsed_time AS bigint) AS elapsed_us, CAST(s.total_logical_reads AS bigint) AS logical_reads,
-  CAST(s.total_physical_reads AS bigint) AS physical_reads, CAST(s.total_logical_writes AS bigint) AS logical_writes,
-  CAST(s.total_rows AS bigint) AS row_count, CAST(s.total_spills AS bigint) AS spills,
-  CAST(s.max_grant_kb AS bigint) AS max_grant_kb, CAST(s.max_used_grant_kb AS bigint) AS max_used_grant_kb, CAST(s.max_dop AS bigint) AS max_dop,
-  CAST(s.cached AS bigint) AS cached
-FROM s
-OUTER APPLY (SELECT TOP (1) CAST(a.value AS int) AS dbid FROM sys.dm_exec_plan_attributes(s.plan_handle) a WHERE a.attribute = N'dbid') pa
-WHERE (s.rn_cpu <= @top OR s.rn_duration <= @top OR s.rn_reads <= @top OR s.rn_executions <= @top
-       OR (s.rn_grant <= @top AND s.max_grant_kb > 0) OR (s.rn_spills <= @top AND s.total_spills > 0))
-  AND ISNULL(pa.dbid, 0) <> 32767
-ORDER BY s.rn_cpu`
+  CAST(k.execution_count AS bigint) AS execution_count, CAST(k.total_worker_time AS bigint) AS worker_us,
+  CAST(k.total_elapsed_time AS bigint) AS elapsed_us, CAST(k.total_logical_reads AS bigint) AS logical_reads,
+  CAST(k.total_physical_reads AS bigint) AS physical_reads, CAST(k.total_logical_writes AS bigint) AS logical_writes,
+  CAST(k.total_rows AS bigint) AS row_count, CAST(k.total_spills AS bigint) AS spills,
+  CAST(k.max_grant_kb AS bigint) AS max_grant_kb, CAST(k.max_used_grant_kb AS bigint) AS max_used_grant_kb, CAST(k.max_dop AS bigint) AS max_dop,
+  k.last_execution_time AS last_execution, CAST(k.last_elapsed_time AS bigint) AS last_elapsed_us,
+  CAST(k.cached AS bigint) AS cached, CAST(k.listed AS bigint) AS listed
+FROM k
+OUTER APPLY (SELECT TOP (1) CAST(a.value AS int) AS dbid FROM sys.dm_exec_plan_attributes(k.plan_handle) a WHERE a.attribute = N'dbid') pa
+WHERE ISNULL(pa.dbid, 0) <> 32767
+ORDER BY k.rn_cpu`
 
 // planCacheQuery fills planCacheSQL with the optional columns the server has (have: sys.all_columns' names).
 func planCacheQuery(have map[string]bool) string {
@@ -158,7 +167,7 @@ var zeroHash = regexp.MustCompile(`^0x0+$`)
 // planCacheKey is what a statement's samples are summed under: its query hash, or for a statement the server gave
 // no hash its handle and start offset.
 func planCacheKey(r collect.Row) string {
-	h, _ := r["query_hash"].(string)
+	h, _ := r["query_hash_hex"].(string)
 	if h != "" && !zeroHash.MatchString(h) {
 		return h
 	}
@@ -298,26 +307,35 @@ func (planCacheCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		return nil, err
 	}
 	var notes []collect.Row
-	cached := int64(len(stmts))
+	cached, listed := int64(len(stmts)), int64(len(stmts))
 	for _, s := range stmts {
 		if n, _ := s["cached"].(int64); n > cached {
 			cached = n
 		}
+		if n, _ := s["listed"].(int64); n > listed {
+			listed = n
+		}
 		delete(s, "cached")
+		delete(s, "listed")
 		s["query_key"] = planCacheKey(s)
 	}
-	// cut: the cache holds more statements than one list keeps and not all of them left the server. (The resource
-	// database's own statements are counted in the cache and never sent: on a cache just over the list's size that
-	// alone reads as a cut, which only makes the import careful, never wrong.)
-	capped := cached > planCacheTopN && cached > int64(len(stmts))
+	// cut: the cache holds statements none of the lists kept. After a cut read the import counts a statement new to the
+	// list whole only when it can tell it was not in that read: compiled after its clock, or run once and ended after
+	// it; any other new statement only sets its counters, so a cut costs a statement's first interval, never a count twice.
+	capped := cached > listed
 	for _, s := range out {
 		s["capped"], s["cached"] = capped, cached
 	}
 	if capped {
 		notes = append(notes, collect.Row{"kind": "collector_error", "source": "sys.dm_exec_query_stats",
-			"message": fmt.Sprintf("the plan cache holds %d statements: the %d in the first %d by CPU, duration, reads, executions, grant or spills are stored", cached, len(stmts), planCacheTopN)})
+			"message": fmt.Sprintf("the plan cache holds %d statements: the %d in the first %d by CPU, duration, reads, executions, grant or spills are stored", cached, listed, planCacheTopN)})
 	}
-	picked := planCacheSent.pick(info.ServerName, stmts, time.Now(), planCacheTextsPerRun)
+	// the memory of the texts sent is per server and run of it: two servers cloned from one image share a name
+	server := info.ServerName
+	if len(out) > 0 {
+		server += fmt.Sprintf("|%v", out[0]["server_start"])
+	}
+	picked := planCacheSent.pick(server, stmts, time.Now(), planCacheTextsPerRun)
 	if len(picked) > 0 {
 		texts, err := QueryRows(ctx, conn, planCacheTextQuery(planCacheTextValues(picked), true))
 		if err != nil && isLockTimeout(err) {
@@ -330,7 +348,7 @@ func (planCacheCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		}
 		if err != nil {
 			// the counters are whole without the texts: they are stored, and the texts are asked for again next time
-			planCacheSent.unpick(info.ServerName, picked)
+			planCacheSent.unpick(server, picked)
 			notes = append(notes, collect.Row{"kind": "collector_error", "source": "sys.dm_exec_sql_text", "message": "the statement texts were not read: " + err.Error()})
 		} else {
 			out = append(out, planCacheTextRows(picked, texts)...)
@@ -346,8 +364,9 @@ func (planCacheCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 //   - sys.dm_exec_cached_plans (compiled plans only): the plans and their size; the single-use plans (ad hoc and
 //     prepared plans used once) and their size; the plans by kind.
 //   - sys.dm_exec_query_stats: the cached statements; how many were compiled in the last 24 hours, 4 hours and hour
-//     and when the oldest was; the statements whose query hash has more than one cached plan in the database (the
-//     same statement compiled again and again, most often because its literals are not parameters).
+//     and when the oldest was; the statements whose query hash has more than one cached ad hoc or prepared plan in
+//     the database (the same statement compiled again and again, most often because its literals are not
+//     parameters; a statement that is in several procedures shares its hash and is not counted).
 //   - two lists: the planCacheListN largest single-use plans with the start of their text, and the planCacheListN
 //     query hashes with the most cached plans with one statement of each.
 //
@@ -362,7 +381,7 @@ type planCacheHealthCollector struct{}
 func (planCacheHealthCollector) Name() string                   { return Prefix + "plancache_health" }
 func (planCacheHealthCollector) DefaultInterval() time.Duration { return time.Hour }
 
-// Timeout: three passes over the plan cache, each asking sys.dm_exec_plan_attributes per plan.
+// Timeout: four passes over the plan cache, each asking sys.dm_exec_plan_attributes per plan.
 func (planCacheHealthCollector) Timeout() time.Duration { return 3 * time.Minute }
 
 func (planCacheHealthCollector) Applies(info Info) (bool, string) {
@@ -395,34 +414,31 @@ WHERE cp.cacheobjtype = N'Compiled Plan' AND pa.dbid <> 32767
 GROUP BY pa.dbid`
 
 // planCacheStatementsSQL: the cached statements per database: how recently they were compiled, and how many belong
-// to a query hash with more than one cached plan. oldest_compile is moved to UTC by the server's offset now.
+// to a query hash with more than one cached ad hoc or prepared plan (the same statement compiled again for other
+// literals or SET options; one statement in several procedures shares a hash and is not that). One pass over the
+// view: the plans per hash come from a window (the highest DENSE_RANK of the plan handle within the hash), so the
+// counts are of one read and can never disagree. oldest_compile is moved to UTC by the server's offset now.
 var planCacheStatementsSQL = `WITH q AS (
-  SELECT pa.dbid, qs.query_hash, qs.plan_handle, qs.creation_time
+  SELECT pa.dbid, qs.query_hash, qs.creation_time,
+         CASE WHEN cp.objtype IN (N'Adhoc', N'Prepared') AND qs.query_hash <> 0x0000000000000000
+              THEN DENSE_RANK() OVER (PARTITION BY pa.dbid, qs.query_hash, CASE WHEN cp.objtype IN (N'Adhoc', N'Prepared') THEN 1 ELSE 0 END ORDER BY qs.plan_handle) END AS plan_rank
     FROM sys.dm_exec_query_stats qs
+    JOIN sys.dm_exec_cached_plans cp ON cp.plan_handle = qs.plan_handle
     ` + fmt.Sprintf(planCacheDBIDApply, "qs.plan_handle") + `
    WHERE pa.dbid <> 32767
-), h AS (
-  SELECT q.dbid, q.query_hash, COUNT(DISTINCT q.plan_handle) AS plans, COUNT_BIG(*) AS statements
-    FROM q WHERE q.query_hash <> 0x0000000000000000
-   GROUP BY q.dbid, q.query_hash
-), d AS (
-  SELECT h.dbid, SUM(CASE WHEN h.plans > 1 THEN h.statements ELSE 0 END) AS duplicate_statements,
-         SUM(CASE WHEN h.plans > 1 THEN CAST(1 AS bigint) ELSE 0 END) AS duplicate_hashes
-    FROM h GROUP BY h.dbid
-), c AS (
-  SELECT q.dbid, COUNT_BIG(*) AS statements,
-         SUM(CASE WHEN q.creation_time >= DATEADD(hour, -24, GETDATE()) THEN CAST(1 AS bigint) ELSE 0 END) AS compiled_24h,
-         SUM(CASE WHEN q.creation_time >= DATEADD(hour, -4, GETDATE()) THEN CAST(1 AS bigint) ELSE 0 END) AS compiled_4h,
-         SUM(CASE WHEN q.creation_time >= DATEADD(hour, -1, GETDATE()) THEN CAST(1 AS bigint) ELSE 0 END) AS compiled_1h,
-         MIN(q.creation_time) AS oldest
-    FROM q GROUP BY q.dbid
+), w AS (
+  SELECT q.*, MAX(q.plan_rank) OVER (PARTITION BY q.dbid, q.query_hash) AS hash_plans FROM q
 )
-SELECT 'statements' AS kind, CAST(c.dbid AS int) AS database_id, CAST(DB_NAME(c.dbid) AS nvarchar(128)) AS database_name,
-  CAST(c.statements AS bigint) AS statements, CAST(c.compiled_24h AS bigint) AS compiled_24h, CAST(c.compiled_4h AS bigint) AS compiled_4h,
-  CAST(c.compiled_1h AS bigint) AS compiled_1h,
-  TODATETIMEOFFSET(DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), c.oldest), 0) AS oldest_compile,
-  CAST(ISNULL(d.duplicate_statements, 0) AS bigint) AS duplicate_statements, CAST(ISNULL(d.duplicate_hashes, 0) AS bigint) AS duplicate_hashes
-FROM c LEFT JOIN d ON d.dbid = c.dbid`
+SELECT 'statements' AS kind, CAST(w.dbid AS int) AS database_id, CAST(DB_NAME(w.dbid) AS nvarchar(128)) AS database_name,
+  COUNT_BIG(*) AS statements,
+  SUM(CASE WHEN w.creation_time >= DATEADD(hour, -24, GETDATE()) THEN CAST(1 AS bigint) ELSE 0 END) AS compiled_24h,
+  SUM(CASE WHEN w.creation_time >= DATEADD(hour, -4, GETDATE()) THEN CAST(1 AS bigint) ELSE 0 END) AS compiled_4h,
+  SUM(CASE WHEN w.creation_time >= DATEADD(hour, -1, GETDATE()) THEN CAST(1 AS bigint) ELSE 0 END) AS compiled_1h,
+  ` + utcOf("MIN(w.creation_time)") + ` AS oldest_compile,
+  SUM(CASE WHEN w.plan_rank IS NOT NULL AND w.hash_plans > 1 THEN CAST(1 AS bigint) ELSE 0 END) AS duplicate_statements,
+  CAST(COUNT(DISTINCT CASE WHEN w.plan_rank IS NOT NULL AND w.hash_plans > 1 THEN w.query_hash END) AS bigint) AS duplicate_hashes
+FROM w
+GROUP BY w.dbid`
 
 // planCacheSingleUseSQL: the largest single-use plans.
 var planCacheSingleUseSQL = `SELECT TOP (@top) 'single_use' AS kind, CAST(pa.dbid AS int) AS database_id, CAST(DB_NAME(pa.dbid) AS nvarchar(128)) AS database_name,
@@ -434,22 +450,28 @@ OUTER APPLY sys.dm_exec_sql_text(cp.plan_handle) t
 WHERE cp.cacheobjtype = N'Compiled Plan' AND cp.usecounts = 1 AND cp.objtype IN (N'Adhoc', N'Prepared') AND pa.dbid <> 32767
 ORDER BY cp.size_in_bytes DESC, cp.plan_handle`
 
-// planCacheDuplicatesSQL: the query hashes with the most cached plans, each with its most executed statement's text.
+// planCacheDuplicatesSQL: the query hashes with the most cached ad hoc and prepared plans, each with its most executed
+// statement's text; one pass over the view, as planCacheStatementsSQL.
 var planCacheDuplicatesSQL = `WITH q AS (
-  SELECT pa.dbid, qs.query_hash, qs.plan_handle, qs.sql_handle, qs.statement_start_offset AS s, qs.statement_end_offset AS e, qs.execution_count,
+  SELECT pa.dbid, qs.query_hash, qs.sql_handle, qs.statement_start_offset AS s, qs.statement_end_offset AS e, qs.execution_count,
+         DENSE_RANK() OVER (PARTITION BY pa.dbid, qs.query_hash ORDER BY qs.plan_handle) AS plan_rank,
          ROW_NUMBER() OVER (PARTITION BY pa.dbid, qs.query_hash ORDER BY qs.execution_count DESC, qs.plan_handle, qs.statement_start_offset) AS rn
     FROM sys.dm_exec_query_stats qs
+    JOIN sys.dm_exec_cached_plans cp ON cp.plan_handle = qs.plan_handle
     ` + fmt.Sprintf(planCacheDBIDApply, "qs.plan_handle") + `
-   WHERE qs.query_hash <> 0x0000000000000000 AND pa.dbid <> 32767
+   WHERE qs.query_hash <> 0x0000000000000000 AND cp.objtype IN (N'Adhoc', N'Prepared') AND pa.dbid <> 32767
 ), h AS (
-  SELECT q.dbid, q.query_hash, COUNT(DISTINCT q.plan_handle) AS plans, COUNT_BIG(*) AS statements, SUM(q.execution_count) AS executions
-    FROM q GROUP BY q.dbid, q.query_hash HAVING COUNT(DISTINCT q.plan_handle) > 1
+  SELECT q.*, MAX(q.plan_rank) OVER (PARTITION BY q.dbid, q.query_hash) AS plans,
+         COUNT_BIG(*) OVER (PARTITION BY q.dbid, q.query_hash) AS statements,
+         SUM(q.execution_count) OVER (PARTITION BY q.dbid, q.query_hash) AS executions
+    FROM q
 )
 SELECT TOP (@top) 'duplicate' AS kind, CAST(h.dbid AS int) AS database_id, CAST(DB_NAME(h.dbid) AS nvarchar(128)) AS database_name,
-  h.query_hash AS query_hash, CAST(h.plans AS bigint) AS plans, CAST(h.statements AS bigint) AS statements, CAST(h.executions AS bigint) AS executions,
-  CAST(LEFT(SUBSTRING(t.text, q.s / 2 + 1, (CASE WHEN q.e = -1 THEN DATALENGTH(t.text) ELSE q.e END - q.s) / 2 + 1), ` + fmt.Sprint(planCacheListText) + `) AS nvarchar(max)) AS query
-FROM h JOIN q ON q.dbid = h.dbid AND q.query_hash = h.query_hash AND q.rn = 1
-OUTER APPLY sys.dm_exec_sql_text(q.sql_handle) t
+  h.query_hash AS query_hash_hex, CAST(h.plans AS bigint) AS plans, CAST(h.statements AS bigint) AS statements, CAST(h.executions AS bigint) AS executions,
+  CAST(LEFT(SUBSTRING(t.text, h.s / 2 + 1, (CASE WHEN h.e = -1 THEN DATALENGTH(t.text) ELSE h.e END - h.s) / 2 + 1), ` + fmt.Sprint(planCacheListText) + `) AS nvarchar(max)) AS query
+FROM h
+OUTER APPLY sys.dm_exec_sql_text(h.sql_handle) t
+WHERE h.rn = 1 AND h.plans > 1
 ORDER BY h.plans DESC, h.executions DESC, h.query_hash`
 
 // planCacheHealthRows joins the two per-database reads into one 'health' row per database, in the databases' order.

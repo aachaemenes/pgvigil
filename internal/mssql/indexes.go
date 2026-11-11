@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -88,14 +89,17 @@ func utcOf(expr string) string {
 
 // userDatabasesSQL lists the user databases (no system database, no database snapshot) with what the per-database
 // reads need: the name quoted by the server, whether the login can enter it, when it was created, when it was last
-// restored and whether it is the primary of an availability group with a readable secondary. {{restore}} and
-// {{secondary}} are filled by userDatabasesQuery.
+// restored, whether AUTO_CLOSE is on (a closed database loses its usage counters), whether it is the primary of an
+// availability group with a readable secondary and whether it is a secondary replica here. {{restore}},
+// {{secondary}} and {{local}} are filled by userDatabasesQuery.
 var userDatabasesSQL = `SELECT CAST(d.database_id AS int) AS database_id, CAST(d.name AS nvarchar(128)) AS database_name, QUOTENAME(d.name) AS quoted_name,
   CAST(d.state_desc AS nvarchar(60)) AS database_state,
   CAST(CASE WHEN d.state = 0 AND HAS_DBACCESS(d.name) = 1 THEN 1 ELSE 0 END AS int) AS can_enter,
   ` + utcOf("d.create_date") + ` AS created_at,
   {{restore}} AS last_restore,
-  CAST({{secondary}} AS int) AS readable_secondary
+  CAST(d.is_auto_close_on AS int) AS auto_close,
+  CAST({{secondary}} AS int) AS readable_secondary,
+  CAST({{local}} AS int) AS local_secondary
 FROM sys.databases d
 WHERE d.database_id > 4 AND d.source_database_id IS NULL
 ORDER BY d.database_id`
@@ -106,19 +110,21 @@ var (
       JOIN sys.availability_replicas ar ON ar.group_id = rs.group_id AND ar.replica_id <> rs.replica_id
      WHERE rs.database_id = d.database_id AND rs.is_local = 1 AND rs.is_primary_replica = 1
        AND ar.secondary_role_allow_connections > 0) THEN 1 ELSE 0 END`
+	userDBLocalSecondary = `CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states rs
+     WHERE rs.database_id = d.database_id AND rs.is_local = 1 AND rs.is_primary_replica = 0) THEN 1 ELSE 0 END`
 )
 
 // userDatabasesQuery fills userDatabasesSQL: with the restore history when the login may read it, with the
 // availability group's replicas when Always On is enabled.
 func userDatabasesQuery(restore, hadr bool) string {
-	r, s := "CAST(NULL AS datetimeoffset)", "0"
+	r, s, l := "CAST(NULL AS datetimeoffset)", "0", "0"
 	if restore {
 		r = userDBRestoreExpr
 	}
 	if hadr {
-		s = userDBSecondary
+		s, l = userDBSecondary, userDBLocalSecondary
 	}
-	return strings.NewReplacer("{{restore}}", r, "{{secondary}}", s).Replace(userDatabasesSQL)
+	return strings.NewReplacer("{{restore}}", r, "{{secondary}}", s, "{{local}}", l).Replace(userDatabasesSQL)
 }
 
 // userDB is one database of a per-database pass.
@@ -128,7 +134,10 @@ type userDB struct {
 	quoted   string
 	state    string
 	canEnter bool
-	row      collect.Row // what the database's 'db' row starts from
+	// secondary: a secondary replica of an availability group here: its indexes are the primary's, read there, and
+	// its usage counters are only the reads made on this replica
+	secondary bool
+	row       collect.Row // what the database's 'db' row starts from
 }
 
 // userDatabases reads the databases of a per-database pass. restoreRead says whether msdb's restore history was
@@ -153,21 +162,37 @@ func userDatabases(ctx context.Context, conn *sql.Conn, info Info) (dbs []userDB
 		state, _ := r["database_state"].(string)
 		enter, _ := r["can_enter"].(int64)
 		secondary, _ := r["readable_secondary"].(int64)
-		dbs = append(dbs, userDB{id: id, name: name, quoted: quoted, state: state, canEnter: enter == 1 && quoted != "",
+		local, _ := r["local_secondary"].(int64)
+		autoClose, _ := r["auto_close"].(int64)
+		dbs = append(dbs, userDB{id: id, name: name, quoted: quoted, state: state, canEnter: enter == 1 && quoted != "", secondary: local == 1,
 			row: collect.Row{"kind": "db", "database_id": id, "database_name": name, "database_state": state, "created_at": r["created_at"],
-				"last_restore": r["last_restore"], "restore_read": restoreRead, "readable_secondary": secondary == 1, "read": false, "note": nil}})
+				"last_restore": r["last_restore"], "restore_read": restoreRead, "readable_secondary": secondary == 1, "auto_close": autoClose == 1,
+				"read": false, "note": nil}})
 	}
 	return dbs, restoreRead, nil
 }
 
-// rotate returns the databases starting at another one each run (the clock in steps of every), so a deadline that
-// cuts a run short never cuts the same databases.
-func rotate(dbs []userDB, now time.Time, every time.Duration) []userDB {
-	if len(dbs) < 2 || every <= 0 {
-		return dbs
+// oldestFirst orders the databases of a pass: the one the repository holds the oldest read of first (never read
+// first of all), by id among equals; a deadline that cuts a run short leaves the databases that come first in the
+// next run. The repository writes when it last read each database as the cursor <prefix><name> (0092). A cursor
+// that cannot be read (no repository: the plain Run) keeps the server's order.
+func oldestFirst(ctx context.Context, dbs []userDB, prefix string, cursor CursorFunc) ([]userDB, error) {
+	if cursor == nil || len(dbs) < 2 {
+		return dbs, nil
 	}
-	start := int((now.Unix() / int64(every.Seconds())) % int64(len(dbs)))
-	return append(append([]userDB{}, dbs[start:]...), dbs[:start]...)
+	last := make(map[int64]time.Time, len(dbs))
+	for _, d := range dbs {
+		c, err := cursor(ctx, prefix+d.name)
+		if err != nil {
+			return nil, err
+		}
+		if c.Found {
+			last[d.id] = c.LastEventAt
+		}
+	}
+	out := append([]userDB{}, dbs...)
+	sort.SliceStable(out, func(a, b int) bool { return last[out[a].id].Before(last[out[b].id]) })
+	return out, nil
 }
 
 // whyNotEntered says why a database's catalog is not read.
@@ -187,7 +212,9 @@ var indexesSQL = `SELECT TOP (@cap) 'index' AS kind, CAST(i.object_id AS bigint)
   CAST(i.is_unique_constraint AS int) AS is_unique_constraint, CAST(i.is_disabled AS int) AS is_disabled,
   CAST(i.is_hypothetical AS int) AS is_hypothetical, CAST(i.has_filter AS int) AS has_filter,
   CAST(i.filter_definition AS nvarchar(4000)) AS filter_definition, CAST(i.ignore_dup_key AS int) AS ignore_dup_key,
-  CAST(i.fill_factor AS int) AS fill_factor,
+  CAST(i.fill_factor AS int) AS fill_factor, CAST(i.allow_row_locks AS int) AS allow_row_locks, CAST(i.allow_page_locks AS int) AS allow_page_locks,
+  CAST(ISNULL(st.no_recompute, 0) AS int) AS no_recompute,
+  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.foreign_keys fk WHERE fk.referenced_object_id = i.object_id AND fk.key_index_id = i.index_id) THEN 1 ELSE 0 END AS int) AS fk_referenced,
   (SELECT c.name AS n, CAST(ic.is_descending_key AS int) AS d
      FROM sys.index_columns ic JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
     WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.key_ordinal > 0
@@ -211,14 +238,18 @@ LEFT JOIN (SELECT p.object_id, p.index_id, COUNT(*) AS partitions,
                   CASE WHEN MIN(p.data_compression_desc) = MAX(p.data_compression_desc) THEN MIN(p.data_compression_desc) ELSE N'MIXED' END AS compression
              FROM sys.partitions p GROUP BY p.object_id, p.index_id) pt ON pt.object_id = i.object_id AND pt.index_id = i.index_id
 LEFT JOIN sys.dm_db_index_usage_stats us ON us.database_id = DB_ID() AND us.object_id = i.object_id AND us.index_id = i.index_id
+LEFT JOIN sys.stats st ON st.object_id = i.object_id AND st.stats_id = i.index_id
 WHERE o.is_ms_shipped = 0 AND o.type IN ('U', 'V') AND i.index_id > 0
+  -- memory-optimized tables: sys.dm_db_index_usage_stats does not count their indexes, and ALTER INDEX ... DISABLE
+  -- and CREATE INDEX do not apply to them
+  AND NOT EXISTS (SELECT 1 FROM sys.tables mt WHERE mt.object_id = o.object_id AND mt.is_memory_optimized = 1)
 ORDER BY ISNULL(ps.reserved_kb, 0) DESC, i.object_id, i.index_id`
 
 // missingIndexSQL: the server's missing-index requests, the most benefit first. benefit is the figure sp_BlitzIndex
 // ranks by: the times the optimizer wanted the index, times the cost of the queries that did, times the share of
 // that cost it expected to save.
 var missingIndexSQL = `SELECT TOP (@top) 'missing' AS kind, CAST(d.database_id AS int) AS database_id, CAST(DB_NAME(d.database_id) AS nvarchar(128)) AS database_name,
-  CAST(d.object_id AS bigint) AS object_id, CAST(d.statement AS nvarchar(520)) AS table_ref,
+  CAST(d.object_id AS bigint) AS object_id, CAST(d.statement AS nvarchar(4000)) AS table_ref,
   CAST(d.equality_columns AS nvarchar(4000)) AS equality_columns, CAST(d.inequality_columns AS nvarchar(4000)) AS inequality_columns,
   CAST(d.included_columns AS nvarchar(4000)) AS included_columns,
   CAST(s.user_seeks AS bigint) AS user_seeks, CAST(s.user_scans AS bigint) AS user_scans, CAST(s.unique_compiles AS bigint) AS compiles,
@@ -295,7 +326,7 @@ func (c indexesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 // RunBatches reads the databases one by one, each stored as a batch of its own with the run's state row, then the
 // missing-index requests and the list of the databases the server has (the repository drops what is no longer
 // there).
-func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, opt BatchOptions, _ CursorFunc, emit EmitFunc) error {
+func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info, opt BatchOptions, cursor CursorFunc, emit EmitFunc) error {
 	if err := perfState(ctx, conn, info, "sys.dm_db_index_usage_stats"); err != nil {
 		return err
 	}
@@ -316,10 +347,15 @@ func (c indexesCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 	var firstErr error
 	names := make([]string, 0, len(dbs))
 	closed, cut := 0, 0
-	for _, db := range rotate(dbs, time.Now(), c.DefaultInterval()) {
+	if dbs, err = oldestFirst(ctx, dbs, "ix:", cursor); err != nil {
+		return err
+	}
+	for _, db := range dbs {
 		names = append(names, db.name)
 		batch := []collect.Row{st, db.row}
 		switch {
+		case db.secondary:
+			db.row["note"] = "not read: a secondary replica of an availability group here; its indexes are the primary's (read there), and the usage counters here count only this replica's reads"
 		case !db.canEnter:
 			db.row["note"] = whyNotEntered(db)
 			if db.state == "ONLINE" {
