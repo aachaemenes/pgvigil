@@ -5,6 +5,7 @@
 // the server answers with the row's id or the reason it refused. Who and when are the server's (the session's user).
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, el, fmtTime } from './ui';
+import { fromInput, toInput } from './tz';
 
 export interface AckData {
   writable: boolean; reason?: string; user: string;
@@ -138,7 +139,7 @@ export function ackDialog(o: AckDialog) {
     fields.push(el('p', { class: 'meta' }, 'An alert matches when every field filled matches (check: its source or setting; text: in its source, setting or value).'),
       el('span', {}, el('label', {}, 'Check ', m.check), ' ', el('label', {}, 'Tag ', m.tag), ' ', el('label', {}, 'Text ', m.text)));
   }
-  const local = (t: Date) => new Date(t.getTime() - t.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const local = (t: Date) => toInput(t);
   const from = el('input', { type: 'datetime-local', 'aria-label': 'from' }), to = el('input', { type: 'datetime-local', 'aria-label': 'to' });
   if (o.blackout) {
     const n = new Date(); from.value = local(n); to.value = local(new Date(n.getTime() + 2 * 3600000));
@@ -152,7 +153,7 @@ export function ackDialog(o: AckDialog) {
     if (o.matchFields) {
       x.check_key = m.check.value.trim() || undefined; x.tag = m.tag.value.trim() || undefined; x.match_text = m.text.value.trim() || undefined;
     }
-    if (o.blackout) { x.starts_at = new Date(from.value).toISOString(); x.until = new Date(to.value).toISOString(); }
+    if (o.blackout) { x.starts_at = fromInput(from.value).toISOString(); x.until = fromInput(to.value).toISOString(); }
     return x;
   });
   const valid = () => (o.noteField !== 'required' && o.noteField !== 'label') || note.value.trim().length > 0;

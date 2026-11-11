@@ -254,3 +254,18 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 .chart-menu { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 .35rem; font: inherit; line-height: 1; }
 .chart-menu:hover, .chart-menu:focus-visible { color: var(--fg); }
 .chart-note { margin-left: .4rem; font-size: 12px; font-weight: 400; }
+/* the range control (rangepicker.ts): a button that names the range, the display zone's offset beside it, and a panel
+   under the button: quick ranges and calendar periods side by side, then a start and an end, then the zone chooser */
+.range { position: relative; }
+.range-btn::after { content: ' \25BE'; color: var(--muted); }
+.range-zone-tag { white-space: nowrap; }
+.range-panel { position: absolute; top: calc(100% + .35rem); left: 0; z-index: 40; width: min(36rem, calc(100vw - 1rem)); display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1.2rem;
+               padding: .7rem .9rem; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
+.range-panel fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.range-panel legend { padding: 0; margin-bottom: .25rem; font-size: .78rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.range-panel .range-pick, .range-panel .range-zone { grid-column: 1 / -1; margin: 0; }
+.range-panel .range-zone select { max-width: 100%; }
+.range-item { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; width: 100%; padding: .25rem .5rem; border: 1px solid transparent; background: none; color: inherit; text-align: left; }
+.range-item:hover, .range-item:focus-visible { background: var(--side); }
+.range-item[aria-pressed="true"] { border-color: var(--accent); }
+@media (max-width: 34rem) { .range-panel { grid-template-columns: 1fr; } }

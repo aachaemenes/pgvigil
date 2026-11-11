@@ -7,6 +7,7 @@
 // The lead mounts jobsTimelineView(ctx) as its own page reached from the Jobs folder.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
+import { fmt, offsetMin } from './tz';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -47,12 +48,12 @@ const runningAt = (runs: Run[], t: number) => runs.filter(x => x.s <= t && t < M
 const ladder = [60, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800, 1209600, 2592000, 7776000].map(s => s * 1000);
 function ticks(t0: number, t1: number): number[] {
   const step = ladder.find(s => (t1 - t0) / s <= 9) ?? ladder[ladder.length - 1];
-  const off = new Date(t0).getTimezoneOffset() * 60000;   // ticks on the local clock's round times
+  const off = -offsetMin(new Date(t0)) * 60000;   // ticks on the display zone's round times
   const out: number[] = [];
   for (let t = Math.ceil((t0 - off) / step) * step + off; t <= t1; t += step) out.push(t);
   return out;
 }
-const tickLabel = (t: number, span: number) => new Date(t).toLocaleString(undefined, span > 2 * 86400000
+const tickLabel = (t: number, span: number) => fmt(new Date(t), span > 2 * 86400000
   ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false } : { hour: '2-digit', minute: '2-digit', hour12: false });
 
 function lanesOf(runs: Row[], now: number): Lane[] {
@@ -149,7 +150,7 @@ function drawTimeline(lanes: Lane[], t0: number, t1: number, width: number, flee
     at = Math.max(t0, Math.min(t1, t));
     cur.setAttribute('x1', String(X(at))); cur.setAttribute('x2', String(X(at))); cur.setAttribute('visibility', 'visible');
     const n = runningAt(all2, at);
-    tag.textContent = `${new Date(at).toLocaleString(undefined, { hour12: false })}: ${n} job${n === 1 ? '' : 's'} running`;
+    tag.textContent = `${fmt(new Date(at))}: ${n} job${n === 1 ? '' : 's'} running`;
   };
   root.append(cur);
   root.addEventListener('mousemove', ev => {

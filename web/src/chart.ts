@@ -1,6 +1,7 @@
 import uPlot from 'uplot';
 import { Row } from './api';
 import { copyText, el, saveBlob, showMenu } from './ui';
+import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
 
 // live charts, destroyed before the next page is drawn (each holds window listeners)
 const live: uPlot[] = [];
@@ -66,6 +67,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     bands: o.stacked ? series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : undefined,
     axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis }],
     plugins: [tooltipPlugin(fmt, !!o.stacked)],
+    // the time axis and the legend's time on the display zone's clock (the browser's own needs nothing)
+    ...(zoneChoice() === 'local' ? {} : { tzDate: (ts: number) => uPlot.tzDate(new Date(ts * 1000), zoneChoice()) }),
     scales: { x: { time: true }, ...(o.stacked ? { y: { range: (_u: uPlot, _min: number, max: number): uPlot.Range.MinMax => [0, max > 0 ? max * 1.05 : 1] } } : {}) },
   };
   // size to the container once it is in the page
@@ -84,19 +87,15 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
 
 // chartMenu: a chart's own menu (DBA Dash's chart menu, Darling's): the picture, or the numbers under it, copied or saved.
 // The button in the chart's heading opens it (the keyboard's way) and so does a right-click on the plot. The numbers are
-// the series shown, a row per point, the time in local 'YYYY-MM-DD HH:MM:SS'; a stacked chart gives each band's own value.
+// the series shown, a row per point, the time as 'YYYY-MM-DD HH:MM:SS' in the display zone; a stacked chart gives each
+// band's own value.
 function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) {
   const head = box.querySelector('h3');
   if (!head) return;
   const note = el('span', { class: 'meta chart-note', role: 'status' });
   const btn = el('button', { type: 'button', class: 'chart-menu', 'aria-haspopup': 'menu', 'aria-label': `Chart menu: ${title}`, title: 'Copy or save this chart' }, '\u22EF') as HTMLButtonElement;
   const say = (t: string) => { note.textContent = t; };
-  const two = (n: number) => String(n).padStart(2, '0');
-  const stamp = (d: Date) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
-  const fileName = (ext: string) => {
-    const d = new Date(), slug = title.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'chart';
-    return `${slug}_${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}.${ext}`;
-  };
+  const fileName = (ext: string) => `${title.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'chart'}_${fileStamp(new Date())}.${ext}`;
   const shown = () => u.series.map((s, j) => ({ s, j })).filter(x => x.j > 0 && x.s.show);
   const table = (sep: string): { text: string; rows: number } => {
     const q = (v: string) => sep === ',' && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
@@ -176,7 +175,7 @@ function tooltipPlugin(fmt: (v: number) => string, stacked = false): uPlot.Plugi
       setCursor: u => {
         const { left, top, idx } = u.cursor;
         if (idx == null || left == null || left < 0 || top == null) { tip.hidden = true; return; }
-        const t = new Date((u.data[0][idx] as number) * 1000).toLocaleString(undefined, { hour12: false });
+        const t = fmtZone(new Date((u.data[0][idx] as number) * 1000));
         const lines = u.series.slice(1).map((s, j) => {
           const tot = u.data[j + 1][idx], below = stacked && j > 0 ? u.data[j][idx] : 0;
           const v = tot == null ? null : (tot as number) - ((below as number | null) ?? 0);

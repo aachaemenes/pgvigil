@@ -7,6 +7,7 @@
 // (SpreadsheetML in a zip): no library, no dependency in the bundle.
 import { fleet } from './fleet';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, rangeLabel, rootTabs, window_ } from './router';
+import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
 import { Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel } from './ui';
 
 type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
@@ -16,8 +17,7 @@ export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: 
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
-const pad = (n: number, w = 2) => String(n).padStart(w, '0');
-const localStamp = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const localStamp = stamp;   // 'YYYY-MM-DD HH:MM:SS' on the display zone's clock (tz.ts): what the screen shows
 const isoTime = /^\d{4}-\d\d-\d\dT/;
 const numText = /^-?\d+(\.\d+)?([eE][-+]?\d+)?$/;
 
@@ -91,10 +91,11 @@ export function fromText(text: string): Pick<Cell, 'v' | 'kind'> {
   return { v: text, kind: 'text' };
 }
 
-// excelDate: the local wall-clock time the screen shows, as an Excel serial date (days since 1899-12-30), whole
-// seconds (Excel rounds a fraction up in hh:mm:ss, the screen and the CSV cut it: the three agree on the floor).
+// excelDate: the wall-clock time the screen shows (the display zone's), as an Excel serial date (days since
+// 1899-12-30), whole seconds (Excel rounds a fraction up in hh:mm:ss, the screen and the CSV cut it: the three agree on
+// the floor).
 export function excelDate(d: Date): number {
-  return (Math.floor(d.getTime() / 1000) * 1000 - d.getTimezoneOffset() * 60000) / 86400000 + 25569;
+  return (Math.floor(d.getTime() / 1000) * 1000 + offsetMin(d) * 60000) / 86400000 + 25569;
 }
 
 const statuses: Status[] = ['crit', 'warn', 'ok', 'none'];
@@ -281,14 +282,12 @@ export function sheetNames(names: string[]): string[] {
 
 export interface Meta { instance: string; tab: string; from: Date; to: Date; window: string; at: Date }
 
-// timeZone: the browser's zone the times in the file are written in, 'America/Los_Angeles (UTC-08:00 at export)':
-// each time carries its own date's offset (a window across a DST change holds two), so the offset is the export's.
+// timeZone: the zone the times in the file are written in, 'America/Los_Angeles (UTC-08:00 at export)': the display
+// zone (the browser's unless another was chosen in the range panel). Each time carries its own date's offset (a window
+// across a DST change holds two), so the offset is the export's.
 export function timeZone(at: Date): string {
-  const off = -at.getTimezoneOffset(), sign = off < 0 ? '-' : '+', a = Math.abs(off);
-  let name = '';
-  try { name = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''; } catch { /* no Intl: the offset alone */ }
-  const utc = `UTC${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)} at export`;
-  return (name ? `${name} (${utc})` : utc) + ", the browser's; each time in its own date's offset";
+  const whose = zoneChoice() === 'local' ? "the browser's" : 'the display zone chosen in the range panel';
+  return `${zoneName()} (${offsetLabel(at)} at export), ${whose}; each time in its own date's offset`;
 }
 
 export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uint8Array }[] {
@@ -403,7 +402,6 @@ export async function zip(files: { name: string; data: Uint8Array }[], at = new 
 // ---- the buttons ------------------------------------------------------------------------------------------
 
 const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
-const fileStamp = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
 
 async function metaOf(ctx: Ctx): Promise<Meta> {
   let instance = ctx.tag ? 'tag ' + ctx.tag : 'fleet';

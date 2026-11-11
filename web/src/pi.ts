@@ -7,6 +7,7 @@
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart, neutralColor, seriesColors } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
+import { fmtClock } from './tz';
 import { badge, Col, el, fmtNum, fmtTime, grid, props, tile } from './ui';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
@@ -73,7 +74,7 @@ function stackedHours(ctx: Ctx, rows: Row[]): HTMLElement {
     svg.append(a);
     if (hours.length <= 12 || i % Math.ceil(hours.length / 12) === 0) {
       svg.append(svgEl('text', { x: x + barW / 2, y: H - 6, 'text-anchor': 'middle', 'font-size': 10, fill: fg },
-        document.createTextNode(start.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }))));
+        document.createTextNode(fmtClock(start, { hour: '2-digit', minute: '2-digit', hour12: false }))));
     }
   });
   const legend = el('ul', { class: 'legend', 'aria-label': 'waits', style: 'list-style:none;display:flex;flex-wrap:wrap;gap:4px 14px;padding:0;margin:4px 0 0' },

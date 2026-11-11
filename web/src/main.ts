@@ -33,6 +33,7 @@ import { schemaView } from './schema';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
 import { rangePicker } from './rangepicker';
+import { fmtClock } from './tz';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
 import { runningView } from './running';
@@ -254,8 +255,13 @@ async function render(force = false) {
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');
   refresh.addEventListener('click', () => { void render(true); });
   const livePage = (ctx.instance ? liveInstance : liveRoot).has(ctx.tab) && isLive(ctx) && !ctx.at;
-  bar.replaceChildren(rangePicker(ctx), refresh, refreshSelect(livePage), exportButtons(ctx),
-    el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })),
+  // the range control is one node for the life of the page: a refresh while its panel is open must not close it or
+  // take the focus out of it, so only what follows it in the bar is rebuilt
+  const range = rangePicker(ctx, () => { void render(); });
+  if (bar.firstChild !== range) bar.replaceChildren(range);
+  while (range.nextSibling) range.nextSibling.remove();
+  bar.append(refresh, refreshSelect(livePage), exportButtons(ctx),
+    el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + fmtClock(new Date())),
     statusStyleButton(), themeButton());
   if (session.login && session.user) {
     const out = el('button', { type: 'button', class: 'link' }, 'Sign out');

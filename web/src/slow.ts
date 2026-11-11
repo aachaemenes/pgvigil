@@ -21,6 +21,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './
 import { sqlCell, whatIsThis } from './sqlview';
 import { trendCol } from './stmt_trend';
 import { lineChart } from './chart';
+import { zoneName } from './tz';
 
 type Parts = 'meta' | 'sources' | 'totals' | 'histogram' | 'top' | 'recent' | 'sampled' | 'instances';
 
@@ -117,7 +118,7 @@ const recentCols: Col[] = [
   { key: 'statement', wide: true, fmt: clip },
 ];
 
-const tzOf = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } };
+const tzOf = () => zoneName();   // the display zone (tz.ts): the server cuts its hours and days on that clock
 
 function floorNote(src: Row[], ms: number): string {
   const floors = [...new Set(src.map(s => s.log_min_duration_statement).filter(v => v != null).map(String))];

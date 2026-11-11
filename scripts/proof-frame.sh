@@ -21,6 +21,12 @@
 #   K pies        every pie on Storage: k slice(s) for k row(s), none stroked, 1.0000 turn(s)
 #   L colours     solid by default: an OK cell rgb(0, 102, 56), a grid header rgb(0, 99, 163), 'Colours: solid'; one click:
 #                 data-status quiet, the OK cell unfilled, stored 'quiet', kept on another page; a second click: solid again
+#   N range       the panel: 'Quick ranges|Calendar periods|A start and an end', 12 ranges, the zone chooser, inside the
+#                 window; zone Asia/Tokyo: the tag UTC+09:00, a range of 12:00-13:00 UTC in the inputs as 2026-01-15T21:00
+#                 and T22:00, the button's window text as the zone writes it, an end typed as 23:00 applied as 14:00Z;
+#                 Yesterday: 24 h ending at the zone's midnight, no w=; Today: w=today, 'Range: Today', from the zone's
+#                 midnight, the page live; after a reload the tag and the stored zone stand; Escape closes the panel with
+#                 the focus on its button; Browser time: the browser's own offset, stored 'local'; a click outside closes it
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -53,4 +59,4 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 
 echo "== the checks"
 node scripts/frame-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$WORK/dl" || fail "a case did not hold"
-echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, chart menu, paging, pies, colours"
+echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, chart menu, paging, pies, colours, range and zone"

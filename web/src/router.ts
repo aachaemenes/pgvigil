@@ -2,6 +2,8 @@
 // With i the tab is one of the instance tabs, without it one of the root (fleet) tabs.
 // The time range rides on every link, so a tab change keeps it.
 
+import { fmt, parts, zonedToUtc } from './tz';
+
 export interface Range { preset?: string; from?: string; to?: string }
 export interface Ctx {
   tab: string;
@@ -26,6 +28,22 @@ function lsGet(k: string): string | null { try { return localStorage.getItem(k);
 export function rememberInstance(id?: number) { if (id) try { localStorage.setItem('pgvigil.instance', String(id)); } catch { /* private window */ } }
 
 export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
+// Calendar periods that end now: they follow now like a preset, from the start of the day, the week (Monday) or the
+// month on the display zone's clock (tz.ts). A period that has ended (yesterday, the week or month before) is a fixed
+// from / to the range panel writes.
+export const periods: Record<string, string> = { today: 'today', wtd: 'week to date', mtd: 'month to date' };
+export const MAX_RANGE_MS = 31 * 86400e3;   // the longest window the server reads (internal/web maxWindow)
+// periodStart: where a period of the instant `now` begins; back = whole periods earlier (1 = the one before)
+export function periodStart(p: string, now: Date, back = 0): Date {
+  const n = parts(now);
+  if (p === 'mtd') return zonedToUtc(n.y, n.mo - back, 1);
+  if (p === 'wtd') return zonedToUtc(n.y, n.mo, n.d - ((n.wd + 6) % 7) - 7 * back);
+  return zonedToUtc(n.y, n.mo, n.d - back);
+}
+// capRange: a window cut at its start to the server's longest (a 31-day month with a fall-back hour is an hour over)
+export function capRange(from: Date, to: Date): { from: Date; to: Date } {
+  return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
+}
 
 export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases' };
 export const instanceTabs: Record<string, string> = {
@@ -102,7 +120,7 @@ export function parse(): Ctx {
     tab: tabs[name] || (instance && (drillTabs[name] || mssqlInstanceTabs[name])) ? name : 'summary',
     instance,
     tag: q.get('tag') ?? undefined,
-    range: custom ? { from, to } : { preset: presets[w] ? w : '1h' },
+    range: custom ? { from, to } : { preset: presets[w] || periods[w] ? w : '1h' },
     kind: q.get('kind') ?? 'db',
     logKind: q.get('lk') ?? undefined,
     at: q.get('at') ?? undefined,
@@ -156,18 +174,23 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   return `#/${c.tab}?${q}`;
 }
 
-// window gives the API's from/to: a preset ends now, a custom range is fixed.
+// window gives the API's from/to: a preset or a calendar period ends now, a custom range is fixed.
 export function window_(ctx: Ctx): { from: string; to: string } {
   if (ctx.range.from && ctx.range.to) return { from: new Date(ctx.range.from).toISOString(), to: new Date(ctx.range.to).toISOString() };
-  const to = new Date();
-  return { from: new Date(to.getTime() - (presets[ctx.range.preset ?? '1h'] ?? 3600) * 1000).toISOString(), to: to.toISOString() };
+  const to = new Date(), p = ctx.range.preset ?? '1h';
+  if (periods[p]) {
+    // a period seconds old (just past midnight) still reads a minute, so no page is asked for an empty window
+    const w = capRange(new Date(Math.min(periodStart(p, to).getTime(), to.getTime() - 60000)), to);
+    return { from: w.from.toISOString(), to: w.to.toISOString() };
+  }
+  return { from: new Date(to.getTime() - (presets[p] ?? 3600) * 1000).toISOString(), to: to.toISOString() };
 }
 
 export function rangeLabel(ctx: Ctx): string {
-  if (ctx.range.preset) return 'last ' + ctx.range.preset;
-  const f = (s?: string) => new Date(s ?? '').toLocaleString(undefined, { hour12: false });
+  if (ctx.range.preset) return periods[ctx.range.preset] ?? 'last ' + ctx.range.preset;
+  const f = (s?: string) => fmt(new Date(s ?? ''));
   return `${f(ctx.range.from)} to ${f(ctx.range.to)}`;
 }
 
-// isLive: a preset range follows now (auto refresh); a custom range is history.
+// isLive: a preset range or a calendar period follows now (auto refresh); a custom range is history.
 export function isLive(ctx: Ctx): boolean { return !!ctx.range.preset; }

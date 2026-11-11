@@ -1,4 +1,6 @@
 // DOM helpers and formatters. Data is always set as text, never parsed as HTML.
+import { fmt } from './tz';
+
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K, attrs: Record<string, string> = {}, ...kids: (Node | string | null | undefined)[]
 ): HTMLElementTagNameMap[K] {
@@ -11,7 +13,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(
 export function fmtTime(v: unknown): string {
   if (typeof v !== 'string') return v == null ? '' : String(v);
   const d = new Date(v);
-  return isNaN(d.getTime()) ? v : d.toLocaleString(undefined, { hour12: false });
+  return isNaN(d.getTime()) ? v : fmt(d);
 }
 
 export function fmtSecs(v: unknown): string {

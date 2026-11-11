@@ -15,6 +15,7 @@ import { suggestBox } from './plan';
 import { lineChart } from './chart';
 import { Ctx, window_ } from './router';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
+import { fmt as fmtZone } from './tz';
 
 export interface TrendKey {
   instance: number;
@@ -127,7 +128,7 @@ async function lagBox(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
       const table = rs.map((r, i) => ({ ...r, label: labels[i] ?? '', change: i === 0 ? '' : vs(r.mean_ms, now.mean_ms), calls_change: i === 0 ? '' : vs(r.calls, now.calls) }));
       body = grid(table, [
         { key: 'label', label: 'window' },
-        { key: 'from_at', label: 'from', fmt: v => new Date(String(v)).toLocaleString() },
+        { key: 'from_at', label: 'from', fmt: v => fmtZone(new Date(String(v)), {}) },
         { key: 'calls', num: true, fmt: (v, r) => Number(r.instance_snapshots ?? 0) === 0 ? 'no data' : fmtNum(Math.round(Number(v ?? 0))) },
         { key: 'calls_change', label: 'now vs then', num: true },
         { key: 'mean_ms', label: 'time per call', num: true, fmt: msCell },

@@ -26,6 +26,7 @@ import { longRunsSection } from './window';
 import { pgBlockingHistory } from './blocking_history';
 import { sqlCell, whatIsThis } from './sqlview';
 import { poolerConns, poolerKnown, STALE_MS } from './pooler';
+import { fromInput, toInput } from './tz';
 
 const TAB = 'activity';
 const idleNote = 'This session is idle in a transaction: the text is the LAST statement it ran, not one running now.';
@@ -188,12 +189,9 @@ function snapshotBar(ctx: Ctx, at: string | undefined, steps: Steps): HTMLElemen
     return b;
   };
   const input = el('input', { type: 'datetime-local', step: '1', 'aria-label': 'snapshot at or before' });
-  if (at) {
-    const d = new Date(at);
-    input.value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
-  }
+  if (at) input.value = toInput(new Date(at), true);
   // the picker has whole seconds and snapshots have fractions: take the end of the chosen second
-  input.addEventListener('change', () => { go(input.value ? new Date(new Date(input.value).getTime() + 999).toISOString() : undefined); });
+  input.addEventListener('change', () => { const t = input.value ? fromInput(input.value) : undefined; go(t && !isNaN(t.getTime()) ? new Date(t.getTime() + 999).toISOString() : undefined); });
   // under a custom range the page shows the range's end: Latest returns to a range that follows now
   const latest = el('button', { type: 'button', title: isLive(ctx) ? 'The newest snapshot' : 'The newest snapshot (switches the range to the last hour)' }, 'Latest');
   latest.addEventListener('click', () => {
