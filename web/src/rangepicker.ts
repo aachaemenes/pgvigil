@@ -39,11 +39,13 @@ export function rangePicker(ctx: Ctx, onZone: () => void): HTMLElement {
     btn.addEventListener('click', () => { if (panel) close(false); else open(); });
     const r = root = el('div', { class: 'range' }, btn, zoneTag);
     // Escape closes the panel and returns to the button; a click or a Tab that leaves the control closes it too, and so
-    // does a resize (the panel was placed for the window as it was)
+    // do a resize (the panel was placed for the window as it was) and another address (the browser's Back or a link
+    // followed by the keyboard: the panel belongs to the page it was opened on; a refresh of the same page keeps it)
     r.addEventListener('keydown', e => { if (e.key === 'Escape' && panel) { e.preventDefault(); e.stopPropagation(); close(true); } });
     r.addEventListener('focusout', e => { const to = e.relatedTarget as Node | null; if (panel && to && !r.contains(to)) close(false); });
     document.addEventListener('mousedown', e => { if (panel && !r.contains(e.target as Node)) close(false); });
     window.addEventListener('resize', () => close(false));
+    window.addEventListener('hashchange', () => close(false));
   }
   sync();
   return root;

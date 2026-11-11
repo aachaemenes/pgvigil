@@ -91,7 +91,8 @@ for (const theme of ['light', 'dark']) {
     const ok = await settled();
     if (!ok) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}`); continue; }
     if (open === 'range') {
-      const shown = await ev(`(async () => { document.querySelector('#bar [aria-haspopup="dialog"]')?.click(); await new Promise(r => setTimeout(r, 300)); return !!document.querySelector('#bar [role="dialog"]'); })()`, true);
+      // opened only when it is closed (a second click would close it)
+      const shown = await ev(`(async () => { if (!document.querySelector('#bar [role="dialog"]')) document.querySelector('#bar [aria-haspopup="dialog"]')?.click(); await new Promise(r => setTimeout(r, 300)); return !!document.querySelector('#bar [role="dialog"]'); })()`, true);
       if (!shown) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}: the range panel did not open`); continue; }
     }
     await cmd('Runtime.evaluate', { expression: axeSrc });
