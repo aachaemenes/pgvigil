@@ -155,8 +155,12 @@
 #     description column at least 300 px wide (corrected after the first look: the column had collapsed to one
 #     character and a row was thousands of pixels tall; the first run's checks did not see it); the fleet Running
 #     queries row of the stored snapshot reads 4.0 MB, 5.0 MB, 2, 800, 1, 500 and a PostgreSQL row's six cells are
-#     empty. Fourteen screenshots are saved (reads-<page>-<theme>.png; the Waits grid and the fleet grid's right end
-#     have a picture of their own) for the look against the tools' shots.
+#     empty. The Backups tab of the stored snapshot's instance (one database whose full backup went to a path of about
+#     110 characters, stored through import_mssql_backups) shows its row one line tall (40 px at most) with the 'to'
+#     cell cut by an ellipsis (its text wider than its box), the whole path its title and its text (added in task 166:
+#     the path had wrapped in a 14rem cell and every row was about three lines tall). Eighteen screenshots are saved
+#     (reads-<page>-<theme>.png; the Waits grid and the right ends of the fleet and Backups grids have a picture of
+#     their own) for the look against the tools' shots.
 #  NOT PROVEN HERE: a real power plan (a Windows SQL Server), a real tempdb page latch wait, SQL Server 2016-2019
 #  (the older sys.dm_os_sys_info), Amazon RDS, Azure SQL Managed Instance, a list long enough to be cut on a real
 #  server, a database skipped on a real server (a schema change held across the read), a columnstore rowset with
@@ -182,7 +186,9 @@ N=proof-reads-$SUF; NB=proof-readsbare-$SUF; NV=proof-readsvss-$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw); P2=$(pw); P3=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
-freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
+# the listening sockets are read once into a variable: 'ss | grep -q' under pipefail would call a taken port free
+# whenever grep left before ss had finished writing
+freeport() { local l p; l=$(ss -ltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$l" || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; MADE_PG13=; SRV_PID=; GRANT_PID=; HOLD_PID=; CHR_PID=; SORTING=
 CT=${PGVIGIL_MSSQL_CONTAINER:-}; OWN=; NOMS=${PGVIGIL_NO_MSSQL:-}
 PG13=pgv-p4s2-pg13-$SUF
@@ -577,7 +583,9 @@ echo "E: OK"
 
 echo "--- F. a login with neither right"
 for c in mssql_procstats mssql_indexlocks; do
-  collect $c "$NB" | grep -q "skipped: the login lacks VIEW SERVER STATE" || fail "F: $c on the bare login: $(cat "$OUT")"
+  # the run's output is searched in its file: 'collect | grep -q' under pipefail fails when grep leaves first
+  collect $c "$NB" >/dev/null || fail "F: $c on the bare login failed: $(cat "$OUT")"
+  grep -q "skipped: the login lacks VIEW SERVER STATE" "$OUT" || fail "F: $c on the bare login: $(cat "$OUT")"
 done
 echo "F: OK"
 else
@@ -763,9 +771,21 @@ echo "P: OK"
 
 if [ -n "${PGVIGIL_SHOTS:-}" ]; then
   echo "--- S. the pages in a headless Chromium, both themes, 1600 wide"
-  # the binary embeds internal/web/dist: a bundle built before the pages existed serves none of them
-  curl -fs "http://127.0.0.1:$PORT/app.js" | grep -q 'max executions /min' || fail "S: the served bundle has no Procedures page: run 'npm run build' in web/ before the proof (the binary embeds internal/web/dist)"
+  # the binary embeds internal/web/dist: a bundle built before the pages existed serves none of them. The bundle is
+  # saved first and searched as a file: under pipefail 'curl | grep -q' fails whenever grep finds its match and
+  # leaves before curl has written the whole body (158's run 2 failed so on a served, correct bundle)
+  curl -fs "http://127.0.0.1:$PORT/app.js" -o "$WORK/app.js" || fail "S: the UI serves no app.js"
+  grep -q 'max executions /min' "$WORK/app.js" || fail "S: the served bundle has no Procedures page: run 'npm run build' in web/ before the proof (the binary embeds internal/web/dist)"
   mkdir -p "$PGVIGIL_SHOTS"
+  # the Backups tab's row: a stored read of the stored snapshot's instance, one database and its full backup to a long path
+  BKPATH=/var/opt/mssql/backups/proof-reads-$SUF/a-folder-with-a-long-name/one-level-more/pv_bk_FULL_20261111_150000.bak
+  BKP=$(jq -nc --arg p "$BKPATH" --arg now "$(date -u +%FT%TZ)" --arg made "$(date -u -d '30 days ago' +%FT%TZ)" \
+    '[{kind: "database", database_name: "pv_bk", state: "ONLINE", recovery_model: "SIMPLE", created_utc: $made},
+      {kind: "backup", database_name: "pv_bk", backup_type: "full", sink: "backup", finish_utc: $now, size_bytes: 1048576,
+       compressed_bytes: 524288, duration_s: 3, device: "disk", device_name: $p, is_copy_only: 0, is_snapshot: 0},
+      {kind: "history", oldest_utc: $made}]')
+  q "select pgvigil.import_mssql_backups($xf, now(), '$BKP')" >/dev/null || fail "S: the stored backups read"
+  [ "$(q "select full_device_name from pgvigil.mssql_backup_state where instance_id = $xf and database_name = 'pv_bk'")" = "$BKPATH" ] || fail "S: the stored backup's path"
   CDP=$(freeport 19222 19260) || fail "S: no free port for Chromium"
   # shellcheck disable=SC2086  # PGVIGIL_CHROMIUM_FLAGS is a list of flags (--no-sandbox where Chromium runs as root)
   chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu ${PGVIGIL_CHROMIUM_FLAGS:-} about:blank > "$WORK/chrome.log" 2>&1 & CHR_PID=$!
@@ -857,17 +877,28 @@ for (const theme of ['light', 'dark']) {
   // the new columns stand at the right end of a wide grid: a second picture with the grid scrolled to them
   await pv(`const w = gridOf('max memory grant').closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
   await sleep(200); await shot('fleet-right', theme);
+
+  // the Backups tab: a path stays on one line, cut by an ellipsis, the whole path the cell's title and text
+  check(await go(`#/mssqlbackups?i=${a.xf}`, 'to'), T + 'Backups rendered');
+  const bk = await pv(`const t = gridOf('to'); const tr = rowWith(t, 'database', 'pv_bk'); const c = cell(t, tr, 'to'); const sp = c?.querySelector('span[title]');
+    return tr ? { h: tr.getBoundingClientRect().height, title: sp?.title ?? null, text: c.textContent.trim(), cut: sp ? sp.scrollWidth > sp.clientWidth : false } : null;`);
+  const whole = !!bk && bk.title === a.bkpath && bk.text === a.bkpath;
+  check(!!bk && bk.h <= 40 && bk.cut && whole, T + `Backups: pv_bk's row ${Math.round(bk?.h ?? 0)} px tall (40 at most), the path cut ${bk?.cut}, its title and text the whole path ${whole}`);
+  await shot('backups', theme);
+  await pv(`const w = gridOf('to').closest('.grid-wrap'); if (w) w.scrollLeft = w.scrollWidth; return 'ok';`);
+  await sleep(200); await shot('backups-right', theme);
 }
 ws.close();
 process.exit(fails ? 1 : 0);
 JS
   ARGS=$(jq -nc --arg cdp "$CDP" --arg u "http://127.0.0.1:$PORT" --arg shots "$PGVIGIL_SHOTS" --arg db "$DB" --argjson iid "$iid" --arg fleet "proof-reads-fleet-$SUF" --arg pg "proof-reads-pg-$SUF" --arg lck "$LT" \
+    --argjson xf "$xf" --arg bkpath "$BKPATH" \
     --argjson linux "$([ "$HOSTP" = Linux ] && echo true || echo false)" \
     --argjson waits "$(curl -fs "$U/mssql/waits?instance=$iid&$(win)" | jq '.events.rows | length')" \
-    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck, linux: $linux, waits: $waits}')
+    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck, linux: $linux, waits: $waits, xf: $xf, bkpath: $bkpath}')
   node "$WORK/ui.mjs" "$ARGS" || fail "S: the pages"
   kill "$CHR_PID" 2>/dev/null || true; wait "$CHR_PID" 2>/dev/null || true; CHR_PID=
-  echo "S: OK (fourteen screenshots in $PGVIGIL_SHOTS: reads-<page>-<theme>.png)"; S_NOTE=", S"
+  echo "S: OK (eighteen screenshots in $PGVIGIL_SHOTS: reads-<page>-<theme>.png)"; S_NOTE=", S"
 else
   echo "--- S. the pages in a browser: NOT RUN (PGVIGIL_SHOTS names no folder)"; S_NOTE=""
 fi

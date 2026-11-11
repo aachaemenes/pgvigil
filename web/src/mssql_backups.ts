@@ -40,7 +40,10 @@ const cols: Col[] = [
   { key: 'full_duration_s', label: 'full took', num: true, fmt: fmtSecs },
   { key: 'full_device', label: 'device', fmt: (v, r) => v == null ? (r.full_copy_only === true ? 'copy-only' : '')
     : String(v) + (r.full_copy_only === true ? ', copy-only' : '') + (r.full_snapshot === true ? ', snapshot' : '') },
-  { key: 'full_device_name', label: 'to', wide: true },
+  // a path stays on one line: cut with an ellipsis, the whole path in the cell's title and in its text (so a copy or an
+  // export takes all of it); a wrapping path made every row about three lines tall
+  { key: 'full_device_name', label: 'to', fmt: v => v == null || v === '' ? '' : el('span', { class: 'mono', title: String(v),
+    style: 'display:block;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px' }, String(v)) },
 ];
 
 export async function mssqlBackups(ctx: Ctx): Promise<HTMLElement> {
