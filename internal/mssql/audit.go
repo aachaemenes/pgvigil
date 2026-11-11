@@ -34,8 +34,11 @@ import (
 // The rights, from Microsoft's pages (read 2026-11-11) and measured on SQL Server 2022:
 //
 //   - the audits and their specifications: VIEW ANY DEFINITION (or ALTER ANY SERVER AUDIT; on SQL Server 2022 the
-//     narrower VIEW ANY SECURITY DEFINITION is enough). Without it the catalog views list nothing and raise no error.
+//     narrower VIEW ANY SECURITY DEFINITION reads them too). Without it the catalog views list nothing and raise no
+//     error.
 //   - which audit is started: VIEW SERVER STATE (on SQL Server 2022 the narrower VIEW SERVER SECURITY STATE).
+//   - the collection runs only for a login the connection's detection finds holding VIEW ANY DEFINITION or VIEW
+//     SERVER STATE (Applies): a login with only the narrow 2022 pair is skipped, though it could read the views.
 //   - the events: sys.fn_get_audit_file asks for CONTROL SERVER up to SQL Server 2019 and for VIEW SERVER SECURITY
 //     AUDIT from SQL Server 2022. A login without it reads the health only: that is said in every audit's row
 //     (read_state 'no right'), it is not an error and the run is not partial.
@@ -308,32 +311,49 @@ var auditCountedActions = map[string]string{
 	"TXBG": "transaction", "TXCM": "transaction", "TXRB": "transaction", "UNDO": "transaction",
 }
 
+// auditMaint is the server's own answer, for an ALTER on a table, to "is this routine work": the first words of
+// the statement when they are an index or statistics command or TRUNCATE TABLE (auditMaintSQL), else empty.
+// Measured on SQL Server 2022: CREATE / ALTER / DROP INDEX, CREATE / UPDATE / DROP STATISTICS and TRUNCATE TABLE
+// are each written as ALTER on class U (the table), never as a statistics class; an index and statistics job or an
+// ETL that truncates its staging tables would otherwise fill the listed DDL.
+const (
+	auditMaintTruncate = "TRUNCATE TABLE"
+	auditTelemetry     = "telemetry_xevents" // the server's own telemetry service re-creates this event session
+)
+
 // auditCategory classifies one record by its action id and class type (both as the server wrote them, padded or
-// not): the category, and whether the event is kept as a row. DDL inside tempdb and on statistics is routine (a
-// temporary table, an automatic statistic) and is counted.
-func auditCategory(actionID, classType, database string) (category string, keep bool) {
+// not), its database and object, and maint (auditMaint): the category, whether the event is kept as a row, and
+// the action's name when it is not the action id's own (a counted maintenance command). DDL inside tempdb, on
+// statistics, index and statistics commands, TRUNCATE TABLE (a write) and the telemetry service's own event
+// session are routine and counted.
+func auditCategory(actionID, classType, database, object, maint string) (category string, keep bool, name string) {
 	a, c := strings.ToUpper(strings.TrimSpace(actionID)), strings.ToUpper(strings.TrimSpace(classType))
 	if cat, ok := auditKeptActions[a]; ok {
 		if cat == auditDDL {
-			switch c {
-			case "A", "SA", "DA", "DU":
-				return auditChange, true
-			case "ST":
-				return auditDDL, false
-			}
-			if strings.EqualFold(strings.TrimSpace(database), "tempdb") {
-				return auditDDL, false
+			switch {
+			case c == "A" || c == "SA" || c == "DA" || c == "DU":
+				return auditChange, true, ""
+			case c == "ST":
+				return auditDDL, false, ""
+			case a == "AL" && c == "U" && maint == auditMaintTruncate:
+				return "write", false, auditMaintTruncate
+			case a == "AL" && c == "U" && maint != "":
+				return "maintenance", false, maint
+			case c == "SE" && strings.EqualFold(strings.TrimSpace(object), auditTelemetry):
+				return "maintenance", false, "telemetry session " + auditName(auditActionNames, a)
+			case strings.EqualFold(strings.TrimSpace(database), "tempdb"):
+				return auditDDL, false, ""
 			}
 		}
-		return cat, true
+		return cat, true, ""
 	}
 	if cat, ok := auditCountedActions[a]; ok {
-		return cat, false
+		return cat, false, ""
 	}
 	if strings.HasPrefix(a, "TR") && len(a) == 4 && (strings.HasSuffix(a, "C") || strings.HasSuffix(a, "S")) {
-		return "transaction", false // the TRANSACTION ... STARTING / COMPLETED pairs
+		return "transaction", false, "" // the TRANSACTION ... STARTING / COMPLETED pairs
 	}
-	return "other", false
+	return "other", false, ""
 }
 
 // auditTextActions is the SQL list of the kept action ids, as the reader's statement names them: the text of a
@@ -411,7 +431,7 @@ const auditColumnsSQL = `SELECT CAST(c.name AS nvarchar(128)) AS name FROM %[1]s
 
 // auditFileFmt reads at most @p2 records of an audit's file set, in the function's own order (file by file, buffer
 // by buffer). %[1]s the reader function, %[2]s the optional columns, %[3]s the starting point (default, default or
-// @p4, @p5: the function then starts at the first record of the buffer after that offset), %[4]s the action ids
+// @p4, @p5: the function then starts at the first record of the buffer after that offset), %[5]s auditMaintSQL, %[4]s the action ids
 // whose statement is taken when @p3 = 1. A failed sign-in's "statement" is the server's message, always taken.
 const auditFileFmt = `SELECT TOP (@p2) CONVERT(varchar(33), event_time, 126) + 'Z' AS event_at,
   CAST(sequence_number AS int) AS seq, CAST(action_id AS varchar(4)) AS action_id, CAST(succeeded AS int) AS succeeded,
@@ -425,8 +445,23 @@ const auditFileFmt = `SELECT TOP (@p2) CONVERT(varchar(33), event_time, 126) + '
   CASE WHEN action_id IN ('LGIF', 'DBAF') OR (@p3 = 1 AND action_id IN (%[4]s)) THEN CAST(statement AS nvarchar(4000)) END AS statement,
   CASE WHEN action_id IN ('LGIF', 'DBAF', 'AUSC', 'AUSF') THEN CAST(additional_information AS nvarchar(4000)) END AS additional_information,
   CAST(file_name AS nvarchar(260)) AS file_name, CAST(audit_file_offset AS bigint) AS file_offset,
+  %[5]s AS maint,
   %[2]s
 FROM %[1]s(@p1, %[3]s)`
+
+// auditMaintSQL names an ALTER on a table by the first words of its statement when it is routine work (auditMaint):
+// only those words leave the server, never the statement. The record's statement starts at the statement itself
+// (measured: a comment before it and the batch's earlier statements are not in it); tabs and line breaks count as
+// spaces, and a pattern that two spaces defeat leaves the event listed, never lost.
+const auditMaintSQL = `CAST(CASE WHEN action_id = 'AL' AND class_type = 'U' THEN
+    CASE WHEN UPPER(LEFT(LTRIM(REPLACE(REPLACE(REPLACE(statement, CHAR(9), ' '), CHAR(10), ' '), CHAR(13), ' ')), 60)) LIKE 'CREATE%INDEX%' THEN 'CREATE INDEX'
+         WHEN UPPER(LEFT(LTRIM(REPLACE(REPLACE(REPLACE(statement, CHAR(9), ' '), CHAR(10), ' '), CHAR(13), ' ')), 60)) LIKE 'ALTER INDEX%' THEN 'ALTER INDEX'
+         WHEN UPPER(LEFT(LTRIM(REPLACE(REPLACE(REPLACE(statement, CHAR(9), ' '), CHAR(10), ' '), CHAR(13), ' ')), 60)) LIKE 'DROP INDEX%' THEN 'DROP INDEX'
+         WHEN UPPER(LEFT(LTRIM(REPLACE(REPLACE(REPLACE(statement, CHAR(9), ' '), CHAR(10), ' '), CHAR(13), ' ')), 60)) LIKE 'CREATE STATISTICS%' THEN 'CREATE STATISTICS'
+         WHEN UPPER(LEFT(LTRIM(REPLACE(REPLACE(REPLACE(statement, CHAR(9), ' '), CHAR(10), ' '), CHAR(13), ' ')), 60)) LIKE 'UPDATE STATISTICS%' THEN 'UPDATE STATISTICS'
+         WHEN UPPER(LEFT(LTRIM(REPLACE(REPLACE(REPLACE(statement, CHAR(9), ' '), CHAR(10), ' '), CHAR(13), ' ')), 60)) LIKE 'DROP STATISTICS%' THEN 'DROP STATISTICS'
+         WHEN UPPER(LEFT(LTRIM(REPLACE(REPLACE(REPLACE(statement, CHAR(9), ' '), CHAR(10), ' '), CHAR(13), ' ')), 60)) LIKE 'TRUNCATE TABLE%' THEN 'TRUNCATE TABLE'
+    END END AS varchar(20))`
 
 // auditReader is what reads one audit's files; the query is a field so that a test drives the loop with canned rows.
 type auditReader struct {
@@ -552,9 +587,9 @@ func cutRunes(s string, n int) string {
 
 // auditCountKey is one hourly count's key.
 type auditCountKey struct {
-	hour                                              time.Time
-	category, action, login, database, schema, object string
-	ok                                                bool
+	hour                                                    time.Time
+	category, action, name, login, database, schema, object string
+	ok                                                      bool
 }
 
 // auditBatch turns the records of whole buffers into a batch: the kept events as rows, the others as hourly counts.
@@ -563,19 +598,20 @@ type auditCountKey struct {
 func (rd *auditReader) auditBatch(a *auditDef, rows []collect.Row, floor time.Time, res *auditRead) []collect.Row {
 	batch := make([]collect.Row, 0, 64)
 	counts := map[auditCountKey]int64{}
-	var prev collect.Row // the last kept event of this buffer, for a record written as several rows
+	var prev collect.Row // the event of the record before, kept with its text: a record written as several rows
 	bufFile, bufOff, ordinal := "", int64(-1), 0
 	for _, x := range rows {
 		file := rowText(x, "file_name")
 		off, _ := asInt(x["file_offset"])
 		if file != bufFile || off != bufOff {
-			bufFile, bufOff, ordinal, prev = file, off, 0, nil
+			bufFile, bufOff, ordinal = file, off, 0 // the key's place counts within one buffer
 		}
 		if seq, _ := asInt(x["seq"]); seq > 1 {
-			// the rest of a long record: its text joins the event it belongs to, and it is no event of its own
-			if prev != nil && rd.text {
-				if s, ok := prev["statement"].(string); ok && len(s) < auditStatementMax {
-					prev["statement"] = cutRunes(s+collect.MaskJobText(rowText(x, "statement")), auditStatementMax)
+			// the rest of a long record: its text joins the event it belongs to (raw: the whole text is masked once,
+			// below, so a secret cut between two rows is masked too), and it is no event of its own
+			if prev != nil {
+				if s, ok := prev["statement"].(string); ok && len(s) < 2*auditStatementMax {
+					prev["statement"] = s + rowText(x, "statement")
 				}
 			}
 			continue
@@ -586,7 +622,9 @@ func (rd *auditReader) auditBatch(a *auditDef, rows []collect.Row, floor time.Ti
 		if err != nil {
 			continue
 		}
-		if !floor.IsZero() && !at.After(floor) {
+		// after the cursor's file was gone: what is older than the newest event read before was read before. An
+		// event at that very time is kept (the files left are newer than the gone one; a key keeps a re-read event once)
+		if !floor.IsZero() && at.Before(floor) {
 			continue
 		}
 		if at.After(res.lastEvent) {
@@ -595,14 +633,17 @@ func (rd *auditReader) auditBatch(a *auditDef, rows []collect.Row, floor time.Ti
 		action := strings.ToUpper(strings.TrimSpace(rowText(x, "action_id")))
 		class := strings.ToUpper(strings.TrimSpace(rowText(x, "class_type")))
 		database := rowText(x, "database_name")
-		category, keep := auditCategory(action, class, database)
+		category, keep, name := auditCategory(action, class, database, rowText(x, "object_name"), rowText(x, "maint"))
+		if name == "" {
+			name = auditName(auditActionNames, action)
+		}
 		okN, _ := asInt(x["succeeded"])
 		if keep && res.listed >= int64(auditRowCap) {
 			keep = false
 			res.overCap++
 		}
 		if !keep {
-			counts[auditCountKey{hour: at.UTC().Truncate(time.Hour), category: category, action: action, login: rowText(x, "login_name"),
+			counts[auditCountKey{hour: at.UTC().Truncate(time.Hour), category: category, action: action, name: name, login: rowText(x, "login_name"),
 				database: database, schema: rowText(x, "schema_name"), object: rowText(x, "object_name"), ok: okN == 1}]++
 			res.counted++
 			continue
@@ -630,13 +671,18 @@ func (rd *auditReader) auditBatch(a *auditDef, rows []collect.Row, floor time.Ti
 		}
 		if rd.text && category != auditFailedLogin {
 			if s := rowText(x, "statement"); strings.TrimSpace(s) != "" {
-				// SQL Server writes a password as '******' in the record; any other credential form is masked here,
-				// before the text leaves the collector
-				ev["statement"] = collect.MaskJobText(cutRunes(s, auditStatementMax))
+				ev["statement"] = s // masked and cut below, once the rows of a long record are joined
 				prev = ev
 			}
 		}
 		batch = append(batch, ev)
+	}
+	// a listed event's text: masked once it is whole, then cut. SQL Server writes a password as '******' in the
+	// record; any other credential form is masked here, before the text leaves the collector.
+	for _, ev := range batch {
+		if st, ok := ev["statement"].(string); ok {
+			ev["statement"] = cutRunes(collect.MaskJobText(st), auditStatementMax)
+		}
 	}
 	keys := make([]auditCountKey, 0, len(counts))
 	for k := range counts {
@@ -647,13 +693,13 @@ func (rd *auditReader) auditBatch(a *auditDef, rows []collect.Row, floor time.Ti
 		if !x.hour.Equal(y.hour) {
 			return x.hour.Before(y.hour)
 		}
-		xs := strings.Join([]string{x.category, x.action, x.login, x.database, x.schema, x.object, strconv.FormatBool(x.ok)}, "\x00")
-		ys := strings.Join([]string{y.category, y.action, y.login, y.database, y.schema, y.object, strconv.FormatBool(y.ok)}, "\x00")
+		xs := strings.Join([]string{x.category, x.action, x.name, x.login, x.database, x.schema, x.object, strconv.FormatBool(x.ok)}, "\x00")
+		ys := strings.Join([]string{y.category, y.action, y.name, y.login, y.database, y.schema, y.object, strconv.FormatBool(y.ok)}, "\x00")
 		return xs < ys
 	})
 	for _, k := range keys {
 		batch = append(batch, collect.Row{"kind": "audit_count", "hour_at": k.hour.Format(time.RFC3339), "audit_name": a.name,
-			"audit_guid": a.guid, "category": k.category, "action_id": k.action, "action": auditName(auditActionNames, k.action),
+			"audit_guid": a.guid, "category": k.category, "action_id": k.action, "action": k.name,
 			"login_name": k.login, "database_name": k.database, "schema_name": k.schema, "object_name": k.object,
 			"succeeded": k.ok, "n": counts[k]})
 	}
@@ -672,6 +718,9 @@ func (rd *auditReader) read(ctx context.Context, a *auditDef) (auditRead, error)
 		return res, err
 	}
 	res.lastEvent = cur.LastEventAt
+	// stored: where the repository's cursor stands. Every batch names it as its start, and the import stores the
+	// batch only while the cursor is still there (another run reading the same audit at the same time is refused).
+	stored := cur
 	wide := auditPattern(a.logPath, a.logName)
 	if wide == "" {
 		return res, fmt.Errorf("the audit %s names no file path", a.name)
@@ -699,7 +748,8 @@ func (rd *auditReader) read(ctx context.Context, a *auditDef) (auditRead, error)
 			if err != nil && cur.FileName != "" && auditCursorGone(err) && ctx.Err() == nil {
 				// the file the cursor names was rolled away: the set is read again from its oldest file and the
 				// records at or before the newest event already read are passed over by their time
-				res.notes = append(res.notes, fmt.Sprintf("the cursor's file %s is gone: the files were read again from the oldest, by event time", baseName(cur.FileName)))
+				res.notes = append(res.notes, fmt.Sprintf("the cursor's file %s is gone (rolled away before it was read to its end, or removed): "+
+					"any event written to it after the last read is lost; the files left were read from the oldest, by event time", baseName(cur.FileName)))
 				floor = cur.LastEventAt
 				pattern, cur = wide, Cursor{LastEventAt: cur.LastEventAt}
 				continue
@@ -724,10 +774,16 @@ func (rd *auditReader) read(ctx context.Context, a *auditDef) (auditRead, error)
 		last := rows[len(rows)-1]
 		off, _ := asInt(last["file_offset"])
 		cur = Cursor{Found: true, FileName: rowText(last, "file_name"), FileOffset: off, LastEventAt: res.lastEvent}
-		batch = append(batch, cur.Row(source))
+		crow := cur.Row(source)
+		crow["from_file"], crow["from_offset"] = nil, nil
+		if stored.Found && stored.FileName != "" {
+			crow["from_file"], crow["from_offset"] = stored.FileName, stored.FileOffset
+		}
+		batch = append(batch, crow)
 		if err := rd.emit(batch); err != nil {
 			return res, fmt.Errorf("import a batch of %s: %w", a.name, err)
 		}
+		stored = cur
 		pattern = wide // the first read's one file is behind the cursor now: the next batch reads the whole set past it
 		if !more {
 			break
@@ -764,7 +820,8 @@ func auditFileQuery(fn string, have map[string]bool, fromCursor bool) string {
 	if fromCursor {
 		start = "@p4, @p5"
 	}
-	return fmt.Sprintf(auditFileFmt, fn, auditOptionalColumns(have), start, auditTextActions)
+	// the maintenance answer goes in as an argument: its LIKE patterns hold % signs
+	return fmt.Sprintf(auditFileFmt, fn, auditOptionalColumns(have), start, auditTextActions, auditMaintSQL)
 }
 
 // auditSpecRows folds the per-action rows of a specifications read into one row per specification.
@@ -789,6 +846,31 @@ func auditSpecRows(scope, database string, rows []collect.Row) []collect.Row {
 		}
 	}
 	return out
+}
+
+// auditReadStateOf says why an audit's events are not read this run ("" = they are read): its target, the login's
+// right, or a run whose time is up (behind: the next run reads it).
+func auditReadStateOf(a *auditDef, rights auditRights, timeUp bool) string {
+	state, _ := auditReadNote(a, rights, timeUp)
+	return state
+}
+
+// auditReadNote is auditReadStateOf with the sentence the audit's row carries.
+func auditReadNote(a *auditDef, rights auditRights, timeUp bool) (state, note string) {
+	target := auditTarget(a.typ, rowText(a.row, "type_desc"))
+	switch {
+	case a.typ == "":
+		return "not read", "the login cannot list the audits (VIEW ANY DEFINITION): the target of this audit is not known"
+	case a.typ == "AL" || a.typ == "SL":
+		return "not readable", "the Windows " + target + " is not readable through T-SQL: its events are in the Event Viewer of the server"
+	case a.typ != "FL":
+		return "not read", "a " + target + " target is not read by pgvigil"
+	case !rights.events:
+		return "no right", "the login lacks " + rights.eventsRight + ": the audit's health is read, its events are not"
+	case timeUp:
+		return "behind", "the run's time was up before this audit was read: the next run reads it"
+	}
+	return "", ""
 }
 
 // RunBatches reads the health, then every FILE audit's events past its cursor, then stores the health rows with
@@ -862,48 +944,49 @@ func (auditCollector) RunBatches(ctx context.Context, conn *sql.Conn, info Info,
 		}
 		return QueryRows(ctx, conn, auditFileQuery(fn, have, cur.FileName != ""), args...)
 	}
+	// every file audit gets an equal share of the time left, so that one audit's backlog cannot keep the audits after
+	// it from being read (each still reads at least one batch per run)
+	toRead := 0
+	for _, id := range order {
+		if auditReadStateOf(audits[id], rights, false) == "" {
+			toRead++
+		}
+	}
 	for _, id := range order {
 		a := audits[id]
-		target := auditTarget(a.typ, rowText(a.row, "type_desc"))
-		switch {
-		case a.typ == "":
-			a.readState, a.readNote = "not read", "the login cannot list the audits (VIEW ANY DEFINITION): the target of this audit is not known"
-		case a.typ == "AL" || a.typ == "SL":
-			a.readState, a.readNote = "not readable", "the Windows "+target+" is not readable through T-SQL: its events are in the Event Viewer of the server"
-		case a.typ != "FL":
-			a.readState, a.readNote = "not read", "a "+target+" target is not read by pgvigil"
-		case !rights.events:
-			a.readState, a.readNote = "no right", "the login lacks "+rights.eventsRight+": the audit's health is read, its events are not"
-		case time.Now().After(opt.Deadline):
-			a.readState, a.readNote = "read", "the run's time was up before this audit was read: the next run reads it"
-		default:
-			if have == nil {
-				have = map[string]bool{}
-				cols, err := QueryRows(ctx, conn, fmt.Sprintf(auditColumnsSQL, catalog, fn))
-				if err != nil || len(cols) == 0 {
-					for _, c := range auditBaseColumns { // the catalog does not list the function: the columns every version has
-						have[c] = true
-					}
-				}
-				for _, c := range cols {
-					have[strings.ToLower(rowText(c, "name"))] = true
+		now := time.Now()
+		a.readState, a.readNote = auditReadNote(a, rights, now.After(opt.Deadline))
+		if a.readState != "" {
+			continue
+		}
+		if have == nil {
+			have = map[string]bool{}
+			cols, err := QueryRows(ctx, conn, fmt.Sprintf(auditColumnsSQL, catalog, fn))
+			if err != nil || len(cols) == 0 {
+				for _, c := range auditBaseColumns { // the catalog does not list the function: the columns every version has
+					have[c] = true
 				}
 			}
-			res, err := rd.read(ctx, a)
-			a.readState = "read"
-			if res.waiting {
-				a.readState = "waiting"
+			for _, c := range cols {
+				have[strings.ToLower(rowText(c, "name"))] = true
 			}
-			if err != nil {
-				a.readState = "error"
-				res.notes = append(res.notes, err.Error())
-				fail(a.name, err)
-			}
-			a.readNote = strings.Join(res.notes, "; ")
-			a.row["new_events"], a.row["counted_events"] = res.listed, res.counted
-			if !res.lastEvent.IsZero() {
-				a.row["last_event_at"] = res.lastEvent.UTC().Format(time.RFC3339Nano)
-			}
+		}
+		rd.deadline = now.Add(opt.Deadline.Sub(now) / time.Duration(max(toRead, 1)))
+		toRead--
+		res, err := rd.read(ctx, a)
+		a.readState = "read"
+		if res.waiting {
+			a.readState = "waiting"
+		}
+		if err != nil {
+			a.readState = "error"
+			res.notes = append(res.notes, err.Error())
+			fail(a.name, err)
+		}
+		a.readNote = strings.Join(res.notes, "; ")
+		a.row["new_events"], a.row["counted_events"] = res.listed, res.counted
+		if !res.lastEvent.IsZero() {
+			a.row["last_event_at"] = res.lastEvent.UTC().Format(time.RFC3339Nano)
 		}
 	}
 

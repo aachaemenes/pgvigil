@@ -50,6 +50,8 @@ function readCell(v: unknown, r: Row): string | Node {
       return el('span', { style: PROSE }, badge('read', 'ok'), ` ${fmtNum(r.new_events ?? 0)} listed, ${fmtNum(r.counted_events ?? 0)} counted at the last read`, note ? `. ${note}` : '');
     case 'waiting':
       return el('span', { style: PROSE }, badge('nothing read yet', ''), ` ${note}`);
+    case 'behind':
+      return el('span', { style: PROSE }, badge('behind', 'warn'), ` ${note}`);
     case 'no right':
       return el('span', { style: PROSE }, badge('health only', ''), ` ${note}`);
     case 'not readable':
@@ -159,6 +161,9 @@ function readNote(read: Row | undefined, audits: Row[], state: Row | undefined):
     p.append(`The login may read the audit files (${text(read.events_right)}). `);
   } else if (fileAudits > 0) {
     p.append(badge('health only', ''), ` The login lacks ${text(read.events_right)}: the health of ${fmtNum(fileAudits)} file audit(s) is read, their events are not. This is the login's choice of rights, not a failure of the collection. `);
+  } else if (read.defs_read !== true) {
+    // without the audit list the targets are not known: nothing can be said about file audits
+    p.append(badge('health only', ''), ` The login lacks ${text(read.events_right)}: no audit's events are read. `);
   } else {
     p.append(`The login lacks ${text(read.events_right)}; no audit on this server writes to a file. `);
   }
@@ -197,18 +202,28 @@ export async function mssqlAuditView(ctx: Ctx): Promise<HTMLElement> {
     // the health
     const started = audits.filter(a => a.state === 'started').length, failed = audits.filter(a => a.state === 'failed').length;
     const stopped = audits.filter(a => a.state === 'stopped').length;
+    const switchedOn = audits.filter(a => a.state === 'started' || a.state === 'enabled').length;
+    const stateRead = read.state_read === true;
+    // a category's events: its listed rows plus what a read counted because it was over its row cap
     const n = (cat: string) => Number(byCat.find(r => r.category === cat)?.events ?? 0);
+    const listed = (cat: string) => Number(byCat.find(r => r.category === cat)?.listed ?? 0);
+    const overCap = byCat.reduce((a, r) => a + Number(r.counted_over ?? 0), 0);
     const counted = countedCat.reduce((a, r) => a + Number(r.events ?? 0), 0);
+    // no audit's events were read at the last read and the window holds none: the event figures are unknown, not 0
+    const unread = !audits.some(a => a.read_state === 'read' || a.read_state === 'behind' || a.read_state === 'error') && counted === 0 && byCat.length === 0;
+    const ev = (v: number) => unread ? 'not read' : fmtNum(v);
     sec.append(el('div', { class: 'tiles' },
-      tile('audits started', `${fmtNum(started)} of ${fmtNum(audits.length)}`),
+      // without the state view only the audits' switches are known: which of them runs is not
+      stateRead ? tile('audits started', `${fmtNum(started)} of ${fmtNum(audits.length)}`)
+        : tile('audits switched on (state not readable)', `${fmtNum(switchedOn)} of ${fmtNum(audits.length)}`),
       // a tile that marks something to look at says it in words too, never by its colour alone
       tile('audits not started', stopped ? `${fmtNum(stopped)} not started` : 'none', stopped ? 'warn' : ''),
-      tile('audits failed', failed ? `${fmtNum(failed)} failed` : 'none', failed ? 'crit' : ''),
-      tile('failed sign-ins', fmtNum(n('failed sign-in'))),
-      tile('audit changes', fmtNum(n('audit'))),
-      tile('role, permission and login changes', fmtNum(n('role') + n('permission') + n('principal'))),
-      tile('DDL listed', fmtNum(n('ddl'))),
-      tile('events counted (hours of the window)', fmtNum(counted))));
+      tile('audits failed', !stateRead ? 'not known' : failed ? `${fmtNum(failed)} failed` : 'none', failed ? 'crit' : ''),
+      tile('failed sign-ins', ev(n('failed sign-in'))),
+      tile('audit changes', ev(n('audit'))),
+      tile('role, permission and login changes', ev(n('role') + n('permission') + n('principal'))),
+      tile('DDL listed', ev(listed('ddl'))),
+      tile('events counted (hours of the window)', ev(counted))));
 
     sec.append(el('h3', {}, 'Server audits'),
       grid(audits, auditCols, read.defs_read === true ? 'No server audit is defined on this server.' : 'No audit is known: the login cannot list them, and the server runs none now.'));
@@ -220,7 +235,7 @@ export async function mssqlAuditView(ctx: Ctx): Promise<HTMLElement> {
     // the events
     const sel = el('select', { 'aria-label': 'Category of the listed events' }, el('option', { value: '' }, 'every category'));
     for (const c of CATEGORIES) {
-      const o = el('option', { value: c }, `${categoryLabel[c]} (${fmtNum(n(c))})`);
+      const o = el('option', { value: c }, `${categoryLabel[c]} (${fmtNum(listed(c))})`);
       if (c === category) o.selected = true;
       sel.append(o);
     }
@@ -236,7 +251,10 @@ export async function mssqlAuditView(ctx: Ctx): Promise<HTMLElement> {
     });
     sec.append(el('h3', {}, 'Listed events'),
       el('p', { class: 'meta' }, 'Kept one row each: failed sign-ins, changes of role membership, permissions, logins and passwords, DDL '
-        + '(but DDL inside tempdb and on statistics, which is counted) and changes of the audit itself. The newest 1,000 of the window. '),
+        + '(but DDL inside tempdb and on statistics, which is counted) and changes of the audit itself. The newest 1,000 of the window. '
+        + 'One read lists at most 20,000 events of an audit and counts the rest: they are in the figures above, in the chart and under '
+        + 'Counted events, not in this list.',
+        overCap > 0 ? el('span', { class: 'warn' }, ` In this window ${fmtNum(overCap)} such event(s) were counted and not listed.`) : ''),
       el('p', { class: 'meta' }, el('label', {}, 'Show ', sel)), holder);
 
     sec.append(el('h3', {}, 'Counted events'),
@@ -246,6 +264,10 @@ export async function mssqlAuditView(ctx: Ctx): Promise<HTMLElement> {
       grid(rowsOf(d.counted), countedCols, 'No counted event in these hours.' + why));
 
     const series = rowsOf(d.series);
+    if (unread) {
+      sec.append(el('h3', {}, 'Audit events per hour'), el('p', { class: 'empty' }, 'No audit\'s events are read on this instance: there is nothing to chart.' + why));
+      return sec;
+    }
     sec.append(lineChart('Audit events per hour', series, [
       { key: 'failed_signins', label: 'failed sign-ins' }, { key: 'changes', label: 'changes listed' },
       { key: 'reads', label: 'reads counted' }, { key: 'writes', label: 'writes counted' }, { key: 'other_counted', label: 'other counted' }]),

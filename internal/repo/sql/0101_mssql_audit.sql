@@ -36,15 +36,21 @@
 --     'an audit specification has no audit on this server'   warning (a restored or failed-over database: its
 --                                                     specification names an audit GUID the server does not have)
 --     'no audit covers sign-in failures'              info, per instance
---     'failed sign-ins in the last hour'              10 or more: warning; 100 or more: critical
---     'an audit or its specification was changed'     in the last hour: warning; an audit shut down on failure: critical
+--     'failed sign-ins in the last hour'              10 or more: warning; 100 or more: critical (with the ones a read
+--                                                     counted over its row cap); object 'sign-ins', the names in detail
+--     'an audit or its specification was changed'     in the last hour: warning; an audit shut down on failure: critical;
+--                                                     object 'audit' (an alert is keyed by its object)
 --     'a server role gained a member'                 in the last hour: warning
 --     'security changes in the last hour'             role, permission and principal events: info
---   The health findings need a read in the last 20 minutes: a server not read lately fires none of them.
+--   The health findings need a read in the last 20 minutes: a server not read lately fires none of them. An audit
+--   that is 'enabled' (switched on, the state view not readable) counts as switched on for what it covers.
 --
 -- An event is stored once: its key is the audit file's name, the buffer's offset and the record's place in the
 -- buffer, and a second import of the same record does nothing. A batch is one call: its events, its counts and its
--- cursor row are stored together or not at all, so a count is never added twice.
+-- cursor row are stored together or not at all. The cursor row also says where the batch STARTED (from_file,
+-- from_offset): the import takes a lock on that source and stores the batch only when the stored cursor is still
+-- there. A second run that read the same buffers at the same time (a `collect -once` beside the service) is
+-- refused with a message and stores nothing, so a count is never added twice and the cursor never moves back.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_audit_read (
   instance_id        int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -145,15 +151,17 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_audit_events (
   PRIMARY KEY (instance_id, event_at, event_key)
 ) PARTITION BY RANGE (event_at);
 CREATE INDEX IF NOT EXISTS mssql_audit_events_cat_idx ON pgvigil.mssql_audit_events (instance_id, category, event_at);
+-- the findings read the last hour of every instance at once
+CREATE INDEX IF NOT EXISTS mssql_audit_events_at_idx ON pgvigil.mssql_audit_events (event_at);
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_audit_counts (
   instance_id    int NOT NULL,
   hour_at        timestamptz NOT NULL,
-  count_key      text NOT NULL,     -- md5 of the columns below it: one row per hour and combination
+  count_key      text NOT NULL,     -- md5 of the columns below it but n: one row per hour and combination
   audit_name     text NOT NULL,
-  category       text NOT NULL,     -- read | write | execute | sign-in | sign-out | batch | transaction | other, or a kept category
+  category       text NOT NULL,     -- read | write | execute | sign-in | sign-out | batch | transaction | maintenance | other, or a kept category
   action_id      text NOT NULL,
-  action         text,
+  action         text NOT NULL DEFAULT '',   -- the action's name; a counted maintenance command names itself (CREATE INDEX)
   login_name     text NOT NULL DEFAULT '',
   database_name  text NOT NULL DEFAULT '',
   schema_name    text NOT NULL DEFAULT '',
@@ -177,10 +185,34 @@ DECLARE
   v_state  boolean;
   v_dbs    text[];
   v_skip   text[];
+  v_c      record;
+  v_file   text;
+  v_off    bigint;
+  v_there  boolean;
 BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
     RAISE EXCEPTION 'import_mssql_audit: instance % is not a SQL Server instance', p_instance_id;
   END IF;
+
+  -- A batch says where it started. One lock per source (in name order), then the stored cursor must still be at
+  -- that start: another run that read the same buffers has moved it, and this batch would add its counts again.
+  FOR v_c IN
+    SELECT DISTINCT ON (r->>'source') r->>'source' AS source, r->>'from_file' AS from_file, (r->>'from_offset')::bigint AS from_offset
+      FROM jsonb_array_elements(p_payload) WITH ORDINALITY AS t(r, n)
+     WHERE r->>'kind' = 'cursor' AND r->>'source' IS NOT NULL
+     ORDER BY r->>'source', n
+  LOOP
+    PERFORM pg_advisory_xact_lock(p_instance_id, hashtext('mssql_audit:' || v_c.source));
+    v_file := NULL; v_off := NULL;
+    SELECT c.file_name, c.file_offset INTO v_file, v_off
+      FROM pgvigil.mssql_cursor c WHERE c.instance_id = p_instance_id AND c.source = v_c.source;
+    v_there := FOUND;
+    -- never read (no row): the batch must be a first read. Read before: file and offset must be the batch's start.
+    IF (NOT v_there AND v_c.from_file IS NOT NULL)
+       OR (v_there AND (v_file IS DISTINCT FROM v_c.from_file OR v_off IS DISTINCT FROM v_c.from_offset)) THEN
+      RAISE EXCEPTION 'import_mssql_audit: the cursor of % is not where this batch started (another run read the same audit at the same time): nothing of the batch was stored', v_c.source;
+    END IF;
+  END LOOP;
 
   -- the two partitioned parents in name order (the order purge() drops in): the months this payload needs are
   -- opened, then the parent is locked for the writes below (0065's rule)
@@ -217,19 +249,19 @@ BEGIN
   INSERT INTO pgvigil.mssql_audit_counts AS c (instance_id, hour_at, count_key, audit_name, category, action_id, action,
       login_name, database_name, schema_name, object_name, succeeded, n, snapshot_at)
   SELECT p_instance_id, x.hour_at,
-         md5(concat_ws(E'\x1f', x.audit_name, x.category, x.action_id, x.login_name, x.database_name, x.schema_name, x.object_name, x.succeeded::text)),
-         x.audit_name, x.category, x.action_id, max(x.action), x.login_name, x.database_name, x.schema_name, x.object_name,
+         md5(concat_ws(E'\x1f', x.audit_name, x.category, x.action_id, x.action, x.login_name, x.database_name, x.schema_name, x.object_name, x.succeeded::text)),
+         x.audit_name, x.category, x.action_id, x.action, x.login_name, x.database_name, x.schema_name, x.object_name,
          x.succeeded, sum(x.n), p_snapshot_at
     FROM (SELECT date_trunc('hour', (r->>'hour_at')::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour_at,
                  coalesce(r->>'audit_name', '') AS audit_name, coalesce(r->>'category', 'other') AS category,
-                 r->>'action_id' AS action_id, r->>'action' AS action, coalesce(r->>'login_name', '') AS login_name,
+                 r->>'action_id' AS action_id, coalesce(r->>'action', '') AS action, coalesce(r->>'login_name', '') AS login_name,
                  coalesce(r->>'database_name', '') AS database_name, coalesce(r->>'schema_name', '') AS schema_name,
                  coalesce(r->>'object_name', '') AS object_name, coalesce((r->>'succeeded')::boolean, true) AS succeeded,
                  (r->>'n')::bigint AS n
             FROM jsonb_array_elements(p_payload) r
            WHERE r->>'kind' = 'audit_count' AND r->>'hour_at' IS NOT NULL AND r->>'action_id' IS NOT NULL
              AND (r->>'n')::bigint > 0) x
-   GROUP BY x.hour_at, x.audit_name, x.category, x.action_id, x.login_name, x.database_name, x.schema_name, x.object_name, x.succeeded
+   GROUP BY x.hour_at, x.audit_name, x.category, x.action_id, x.action, x.login_name, x.database_name, x.schema_name, x.object_name, x.succeeded
   ON CONFLICT (instance_id, hour_at, count_key) DO UPDATE SET n = c.n + EXCLUDED.n, snapshot_at = EXCLUDED.snapshot_at;
 
   INSERT INTO pgvigil.mssql_cursor AS c (instance_id, source, file_name, file_offset, last_event_at, last_seq, updated_at)
@@ -316,6 +348,14 @@ BEGIN
     UPDATE pgvigil.mssql_audit a SET is_present = false, snapshot_at = p_snapshot_at
      WHERE a.instance_id = p_instance_id AND a.is_present
        AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'audit' AND r->>'name' = a.name);
+  ELSE
+    -- the catalog was not readable: an audit this read does not name may be stopped, failed or dropped (the state
+    -- view lists only the audits the server runs). It stays, and its state is no longer known.
+    UPDATE pgvigil.mssql_audit a
+       SET state = 'unknown', state_since = CASE WHEN a.state = 'unknown' THEN a.state_since ELSE p_snapshot_at END,
+           status = NULL, snapshot_at = p_snapshot_at
+     WHERE a.instance_id = p_instance_id AND a.is_present
+       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'audit' AND r->>'name' = a.name);
   END IF;
 
   -- the specifications: the server's when they were read; a database's when that database was asked in this run. A
@@ -358,18 +398,31 @@ BEGIN
    WHERE s.instance_id = p_instance_id AND NOT s.is_present AND s.snapshot_at < p_snapshot_at - interval '30 days';
 END $$;
 
+-- an event of the category 'audit' that is a change of an audit or a specification: created, altered or dropped, an
+-- audit shut down on failure, or an audit switched off. Measured on SQL Server 2022: an ordinary restart of the
+-- server writes 'event enabled' and no 'event disabled', so it is no change.
+CREATE OR REPLACE FUNCTION pgvigil.mssql_audit_is_change(p_action_id text, p_reason text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT p_action_id IN ('CR', 'AL', 'DR', 'AUSF') OR (p_action_id = 'AUSC' AND coalesce(p_reason, '') ILIKE '%disabled%')
+$$;
+
 -- The Summary cell 'audit', one row per instance that was read: critical = an audit failed, warning = an audit is
 -- defined and not started; value the cell's words; detail one sentence per audit and what the login could not read.
+-- Without the state view only the audits' switches are known ('enabled'): the cell then counts the audits switched
+-- on and says so; with neither the list nor the state view nothing was read and the cell is not sampled.
 CREATE OR REPLACE VIEW pgvigil.mssql_audit_status AS
-SELECT r.instance_id, 'audit'::text AS key, true AS sampled,
+SELECT r.instance_id, 'audit'::text AS key, (r.defs_read OR r.state_read) AS sampled,
        (coalesce(a.failed, 0) > 0)::int AS critical,
        (coalesce(a.failed, 0) = 0 AND coalesce(a.stopped, 0) > 0)::int AS warning,
-       CASE WHEN coalesce(a.n, 0) = 0 THEN CASE WHEN r.defs_read THEN 'none' ELSE 'not listed' END
+       CASE WHEN NOT (r.defs_read OR r.state_read) THEN NULL
+            WHEN coalesce(a.n, 0) = 0 THEN CASE WHEN r.defs_read THEN 'none' ELSE 'not listed' END
+            WHEN NOT r.state_read THEN a.switched_on || ' of ' || a.n || ' switched on'
             WHEN a.started = a.n THEN a.n || ' started'
             ELSE a.started || ' of ' || a.n || ' started' END
          || CASE WHEN coalesce(a.unread, 0) > 0 THEN ', events not read' ELSE '' END AS value,
        coalesce(a.lines, '{}'::text[])
          || CASE WHEN NOT r.defs_read THEN ARRAY['the login cannot list the audits (VIEW ANY DEFINITION): only the audits the server runs now are known'] ELSE '{}'::text[] END
+         || CASE WHEN NOT r.state_read THEN ARRAY['the login cannot read which audit runs (VIEW SERVER STATE): an audit that is switched on may still have failed'] ELSE '{}'::text[] END
          || CASE WHEN coalesce(a.n, 0) = 0 AND r.defs_read THEN ARRAY['no server audit is defined on this server'] ELSE '{}'::text[] END
          || CASE WHEN coalesce(a.unread, 0) > 0
                  THEN ARRAY['the events of ' || a.unread || ' file audit(s) are not read: the login lacks ' || coalesce(r.events_right, 'the right')
@@ -379,9 +432,11 @@ SELECT r.instance_id, 'audit'::text AS key, true AS sampled,
   FROM pgvigil.mssql_audit_read r
   LEFT JOIN (
     SELECT x.instance_id, count(*) AS n, count(*) FILTER (WHERE x.state = 'started') AS started,
+           count(*) FILTER (WHERE x.state IN ('started', 'enabled')) AS switched_on,
            count(*) FILTER (WHERE x.state = 'stopped') AS stopped, count(*) FILTER (WHERE x.state = 'failed') AS failed,
            count(*) FILTER (WHERE x.read_state = 'no right') AS unread,
-           array_agg(x.name || ': ' || x.state || coalesce(', ' || x.target, '') || coalesce(', on failure ' || lower(x.on_failure), '')
+           array_agg(x.name || ': ' || CASE x.state WHEN 'stopped' THEN 'not started' WHEN 'enabled' THEN 'switched on' ELSE x.state END
+                     || coalesce(', ' || x.target, '') || coalesce(', on failure ' || lower(x.on_failure), '')
                      || coalesce(', last event ' || to_char(x.last_event_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', '')
                      ORDER BY x.name) AS lines
       FROM pgvigil.mssql_audit x
@@ -389,6 +444,9 @@ SELECT r.instance_id, 'audit'::text AS key, true AS sampled,
      GROUP BY x.instance_id
   ) a USING (instance_id);
 
+-- object is fixed per finding (or the audit's, the specification's or the role's own name): an alert is keyed by
+-- it, so a name that changes from one evaluation to the next (the login with the most failures) belongs in detail.
+-- An audit that is 'enabled' (switched on; the state view was not readable) counts as on for what it covers.
 CREATE OR REPLACE VIEW pgvigil.mssql_audit_findings AS
 WITH fresh AS (
   SELECT r.* FROM pgvigil.mssql_audit_read r WHERE r.snapshot_at > now() - interval '20 minutes'
@@ -398,6 +456,13 @@ WITH fresh AS (
   SELECT s.* FROM pgvigil.mssql_audit_spec s JOIN fresh f USING (instance_id) WHERE s.is_present
 ), ev AS (
   SELECT e.* FROM pgvigil.mssql_audit_events e WHERE e.event_at > now() - interval '1 hour'
+), over AS (
+  -- failed sign-ins a read counted because it was over its row cap, in the hours that overlap the last hour (an
+  -- hourly count cannot be cut finer: this may take up to an hour more)
+  SELECT c.instance_id, sum(c.n) AS n
+    FROM pgvigil.mssql_audit_counts c
+   WHERE c.category = 'failed sign-in' AND c.hour_at > now() - interval '2 hours'
+   GROUP BY c.instance_id
 ), failed AS (
   SELECT e.instance_id, count(*) AS n, count(DISTINCT e.login_name) AS logins, max(e.event_at) AS last_at,
          (array_agg(e.login_name ORDER BY e.event_at DESC))[1] AS last_login,
@@ -415,8 +480,7 @@ WITH fresh AS (
                     || coalesce(' ' || nullif(e.object_name, ''), '') || coalesce(' (' || e.reason || ')', '')
                     ORDER BY e.event_at DESC))[1] AS last_change
     FROM ev e
-   WHERE e.category = 'audit'
-     AND (e.action_id IN ('CR', 'AL', 'DR', 'AUSF') OR (e.action_id = 'AUSC' AND e.reason ILIKE '%disabled%'))
+   WHERE e.category = 'audit' AND pgvigil.mssql_audit_is_change(e.action_id, e.reason)
    GROUP BY e.instance_id
 ), sec AS (
   SELECT e.instance_id, count(*) AS n, max(e.event_at) AS last_at,
@@ -428,8 +492,9 @@ WITH fresh AS (
 )
 SELECT au.instance_id, 'warning'::text AS severity, 'an audit is defined and not started'::text AS check_name,
        au.name AS object, au.snapshot_at AS at,
-       'the server audit ' || au.name || ' is defined and switched off since ' || to_char(au.state_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')
-         || ' UTC: nothing its specifications name is recorded. ALTER SERVER AUDIT ' || quote_ident(au.name) || ' WITH (STATE = ON) is the DBA''s step' AS detail
+       'the server audit ' || au.name || ' is defined and switched off (seen so since ' || to_char(au.state_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')
+         || ' UTC' || coalesce('; last modified ' || to_char(au.modified_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', '')
+         || '): nothing its specifications name is recorded. ALTER SERVER AUDIT ' || quote_ident(au.name) || ' WITH (STATE = ON) is the DBA''s step' AS detail
   FROM au WHERE au.state = 'stopped'
 UNION ALL
 SELECT au.instance_id, 'critical', 'an audit failed', au.name, au.snapshot_at,
@@ -442,9 +507,9 @@ UNION ALL
 SELECT sp.instance_id, 'warning', 'an audit specification is switched off',
        CASE WHEN sp.scope = 'database' THEN sp.database_name || ': ' ELSE '' END || sp.name, sp.snapshot_at,
        'the ' || sp.scope || ' audit specification ' || sp.name || CASE WHEN sp.scope = 'database' THEN ' of ' || sp.database_name ELSE '' END
-         || ' is defined and switched off while its audit ' || au.name || ' is started: its ' || cardinality(sp.action_names)
-         || ' action(s) are not recorded'
-  FROM sp JOIN au ON au.instance_id = sp.instance_id AND au.audit_guid = sp.audit_guid AND au.state = 'started'
+         || ' is defined and switched off while its audit ' || au.name || ' is ' || CASE au.state WHEN 'started' THEN 'started' ELSE 'switched on' END
+         || ': its ' || cardinality(sp.action_names) || ' action(s) are not recorded'
+  FROM sp JOIN au ON au.instance_id = sp.instance_id AND au.audit_guid = sp.audit_guid AND au.state IN ('started', 'enabled')
  WHERE NOT sp.is_enabled
 UNION ALL
 SELECT sp.instance_id, 'warning', 'an audit specification has no audit on this server',
@@ -456,24 +521,28 @@ SELECT sp.instance_id, 'warning', 'an audit specification has no audit on this s
  WHERE f.defs_read AND NOT EXISTS (SELECT 1 FROM au WHERE au.instance_id = sp.instance_id AND au.audit_guid = sp.audit_guid)
 UNION ALL
 SELECT f.instance_id, 'info', 'no audit covers sign-in failures', 'FAILED_LOGIN_GROUP', f.snapshot_at,
-       'no started server audit has an enabled specification with FAILED_LOGIN_GROUP: a failed sign-in is recorded '
+       'no server audit that is switched on has an enabled specification with FAILED_LOGIN_GROUP: a failed sign-in is recorded '
          || 'only in the error log, and only while the server''s login auditing writes failures there'
   FROM fresh f
  WHERE f.defs_read AND f.specs_read
-   AND NOT EXISTS (SELECT 1 FROM sp JOIN au ON au.instance_id = sp.instance_id AND au.audit_guid = sp.audit_guid AND au.state = 'started'
+   AND NOT EXISTS (SELECT 1 FROM sp JOIN au ON au.instance_id = sp.instance_id AND au.audit_guid = sp.audit_guid AND au.state IN ('started', 'enabled')
                     WHERE sp.instance_id = f.instance_id AND sp.scope = 'server' AND sp.is_enabled
                       AND 'FAILED_LOGIN_GROUP' = ANY (sp.action_names))
 UNION ALL
-SELECT x.instance_id, CASE WHEN x.n >= 100 THEN 'critical' ELSE 'warning' END, 'failed sign-ins in the last hour',
-       coalesce(x.top_login, 'sign-ins'), x.last_at,
-       x.n || ' failed sign-in(s) in the last hour for ' || x.logins || ' login name(s); most for ' || coalesce(x.top_login, '?')
-         || '; the last one ' || coalesce(x.last_login, '?') || coalesce(' from ' || x.last_ip, '')
-  FROM failed x WHERE x.n >= 10
+SELECT i.instance_id, CASE WHEN i.n >= 100 THEN 'critical' ELSE 'warning' END, 'failed sign-ins in the last hour',
+       'sign-ins', coalesce(i.last_at, now()),
+       i.n || ' failed sign-in(s) in the last hour' || coalesce(' for ' || i.logins || ' login name(s); most for ' || i.top_login
+         || '; the last one ' || coalesce(i.last_login, '?') || coalesce(' from ' || i.last_ip, ''), '')
+         || CASE WHEN i.over_n > 0 THEN '; ' || i.over_n || ' of them were counted and not listed (over one read''s row cap)' ELSE '' END
+  FROM (SELECT instance_id, coalesce(x.n, 0) + coalesce(o.n, 0) AS n, coalesce(o.n, 0) AS over_n, x.logins, x.top_login, x.last_login,
+               x.last_ip, x.last_at
+          FROM failed x FULL JOIN over o USING (instance_id)) i
+ WHERE i.n >= 10
 UNION ALL
 SELECT c.instance_id, CASE WHEN c.shut THEN 'critical' ELSE 'warning' END, 'an audit or its specification was changed',
-       coalesce(c.objects, 'audit'), c.last_at,
+       'audit', c.last_at,
        c.n || ' change(s) of an audit or an audit specification in the last hour' || CASE WHEN c.shut THEN ', an audit shut down on failure among them' ELSE '' END
-         || coalesce('; the last one ' || c.last_change, '')
+         || coalesce(' (' || c.objects || ')', '') || coalesce('; the last one ' || c.last_change, '')
   FROM changed c
 UNION ALL
 SELECT e.instance_id, 'warning', 'a server role gained a member', coalesce(e.object_name, 'server role'), max(e.event_at),

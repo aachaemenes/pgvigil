@@ -3,6 +3,7 @@ package mssql
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -40,8 +41,9 @@ func TestAuditCollector(t *testing.T) {
 	all := []string{auditRightsSQL, auditDefsSQL, auditStatusSQL, auditServerSpecsSQL, auditDatabaseSpecsSQL, auditDatabasesSQL,
 		auditFileQuery("sys.fn_get_audit_file", map[string]bool{"client_ip": true}, true)}
 	for _, q := range all {
-		// the rights question names the permission ALTER ANY SERVER AUDIT inside a string: it is not a statement
-		u := strings.ReplaceAll(strings.ToUpper(q), "'ALTER ANY SERVER AUDIT'", "''")
+		// a word inside a string literal (a permission's name, a command the maintenance answer names) is no
+		// statement: the literals are taken out before the scan
+		u := regexp.MustCompile(`'(?:[^']|'')*'`).ReplaceAllString(strings.ToUpper(q), "''")
 		for _, bad := range []string{"EXEC ", "EXECUTE ", "INSERT ", "UPDATE ", "DELETE ", "ALTER ", "CREATE ", "DROP ", "XP_", " SP_", ".SP_"} {
 			if strings.Contains(u, bad) {
 				t.Errorf("a statement holds %q: %s", bad, q)
@@ -151,42 +153,53 @@ func TestAuditCategory(t *testing.T) {
 		action, class, db string
 		category          string
 		keep              bool
+		object, maint     string
+		name              string
 	}{
-		{"LGIF", "LX", "", auditFailedLogin, true},
-		{"DBAF", "US", "appdb", auditFailedLogin, true},
-		{"APRL", "SG", "master", auditRole, true},
-		{"DPRL", "RL", "appdb", auditRole, true},
-		{"G   ", "SR", "master", auditPermission, true}, // the server pads an action id to four characters
-		{"RWC", "U ", "appdb", auditPermission, true},
-		{"TO", "U", "appdb", auditPermission, true},
-		{"PWR", "SL", "master", auditPrincipal, true},
-		{"LGDA", "SL", "master", auditPrincipal, true},
-		{"CR  ", "SL", "master", auditDDL, true},
-		{"DR", "U", "appdb", auditDDL, true},
-		{"AL", "A ", "master", auditChange, true}, // ALTER SERVER AUDIT
-		{"CR", "SA", "master", auditChange, true}, // a server audit specification
-		{"DR", "DA", "appdb", auditChange, true},  // a database audit specification
-		{"AUSC", "A", "", auditChange, true},      // the audit started or stopped
-		{"CR", "U", "tempdb", auditDDL, false},    // a temporary table: counted
-		{"CR", "ST", "appdb", auditDDL, false},    // an automatic statistic: counted
-		{"SL", "U", "appdb", "read", false},
-		{"IN", "U", "appdb", "write", false},
-		{"UP", "U", "appdb", "write", false},
-		{"DL", "U", "appdb", "write", false},
-		{"EX", "P", "appdb", "execute", false},
-		{"LGIS", "LX", "", "sign-in", false},
-		{"LGO", "LX", "", "sign-out", false},
-		{"BCM", "DB", "appdb", "batch", false},
-		{"TXCM", "DB", "appdb", "transaction", false},
-		{"TRBC", "DB", "appdb", "transaction", false},
-		{"TRO", "U", "appdb", auditDDL, true}, // a transfer between schemas is a kept action, not a transaction pair
-		{"DBCC", "DB", "appdb", "other", false},
-		{"ZZZZ", "", "", "other", false},
+		{"LGIF", "LX", "", auditFailedLogin, true, "", "", ""},
+		{"DBAF", "US", "appdb", auditFailedLogin, true, "", "", ""},
+		{"APRL", "SG", "master", auditRole, true, "", "", ""},
+		{"DPRL", "RL", "appdb", auditRole, true, "", "", ""},
+		{"G   ", "SR", "master", auditPermission, true, "", "", ""}, // the server pads an action id to four characters
+		{"RWC", "U ", "appdb", auditPermission, true, "", "", ""},
+		{"TO", "U", "appdb", auditPermission, true, "", "", ""},
+		{"PWR", "SL", "master", auditPrincipal, true, "", "", ""},
+		{"LGDA", "SL", "master", auditPrincipal, true, "", "", ""},
+		{"CR  ", "SL", "master", auditDDL, true, "", "", ""},
+		{"DR", "U", "appdb", auditDDL, true, "", "", ""},
+		{"AL", "A ", "master", auditChange, true, "", "", ""}, // ALTER SERVER AUDIT
+		{"CR", "SA", "master", auditChange, true, "", "", ""}, // a server audit specification
+		{"DR", "DA", "appdb", auditChange, true, "", "", ""},  // a database audit specification
+		{"AUSC", "A", "", auditChange, true, "", "", ""},      // the audit started or stopped
+		{"CR", "U", "tempdb", auditDDL, false, "", "", ""},    // a temporary table: counted
+		{"CR", "ST", "appdb", auditDDL, false, "", "", ""},    // a statistics class: counted (the server writes ALTER on U for statistics commands: below)
+		{"SL", "U", "appdb", "read", false, "", "", ""},
+		{"IN", "U", "appdb", "write", false, "", "", ""},
+		{"UP", "U", "appdb", "write", false, "", "", ""},
+		{"DL", "U", "appdb", "write", false, "", "", ""},
+		{"EX", "P", "appdb", "execute", false, "", "", ""},
+		{"LGIS", "LX", "", "sign-in", false, "", "", ""},
+		{"LGO", "LX", "", "sign-out", false, "", "", ""},
+		{"BCM", "DB", "appdb", "batch", false, "", "", ""},
+		{"TXCM", "DB", "appdb", "transaction", false, "", "", ""},
+		{"TRBC", "DB", "appdb", "transaction", false, "", "", ""},
+		{"TRO", "U", "appdb", auditDDL, true, "", "", ""}, // a transfer between schemas is a kept action, not a transaction pair
+		{"DBCC", "DB", "appdb", "other", false, "", "", ""},
+		{"ZZZZ", "", "", "other", false, "", "", ""},
+		// measured on SQL Server 2022: index and statistics commands and TRUNCATE are ALTER on the table; the server names
+		// the command (auditMaintSQL) and only those words leave it
+		{"AL", "U", "appdb", "maintenance", false, "t", "CREATE INDEX", "CREATE INDEX"},
+		{"AL", "U", "appdb", "maintenance", false, "t", "UPDATE STATISTICS", "UPDATE STATISTICS"},
+		{"AL", "U", "appdb", "write", false, "t", "TRUNCATE TABLE", "TRUNCATE TABLE"},
+		{"AL", "U", "appdb", auditDDL, true, "t", "", ""},                // ALTER TABLE ... ADD: listed
+		{"AL", "SC", "appdb", auditDDL, true, "dbo", "CREATE INDEX", ""}, // a maint answer only counts on a table
+		{"CR", "SE", "master", "maintenance", false, "telemetry_xevents", "", "telemetry session CREATE"},
+		{"CR", "SE", "master", auditDDL, true, "capture_logins", "", ""}, // any other event session: listed
 	}
 	for _, c := range cases {
-		cat, keep := auditCategory(c.action, c.class, c.db)
-		if cat != c.category || keep != c.keep {
-			t.Errorf("auditCategory(%q, %q, %q) = %q, %v; want %q, %v", c.action, c.class, c.db, cat, keep, c.category, c.keep)
+		cat, keep, name := auditCategory(c.action, c.class, c.db, c.object, c.maint)
+		if cat != c.category || keep != c.keep || name != c.name {
+			t.Errorf("auditCategory(%q, %q, %q, %q, %q) = %q, %v, %q; want %q, %v, %q", c.action, c.class, c.db, c.object, c.maint, cat, keep, name, c.category, c.keep, c.name)
 		}
 	}
 	// every kept action has the server's name, and the reader's statement names every kept action
@@ -380,6 +393,13 @@ func TestAuditReadBatches(t *testing.T) {
 	if n := len(f.batches[0]); n != 3 || f.batches[0][2]["kind"] != CursorKind {
 		t.Errorf("the first batch: two events and its cursor, got %d rows", n)
 	}
+	// each batch names the cursor it started from: none for the first read, then the first batch's end
+	if c := f.batches[0][2]; c["from_file"] != nil || c["from_offset"] != nil {
+		t.Errorf("the first read's batch names a start: %v / %v", c["from_file"], c["from_offset"])
+	}
+	if c := f.batches[1][len(f.batches[1])-1]; c["kind"] != CursorKind || c["from_file"] != "/a/sec_G_0_2.sqlaudit" || c["from_offset"] != int64(16384) {
+		t.Errorf("the second batch's start: %v", c)
+	}
 	if !strings.HasPrefix(f.calls[0], "/a/sec_G_0_2.sqlaudit|4||") {
 		t.Errorf("the first read must name the file written now and no cursor: %s", f.calls[0])
 	}
@@ -447,6 +467,8 @@ func TestAuditReadBatches(t *testing.T) {
 	// the cursor's file is rolled away: the set is read again from its oldest file and only what is newer than the
 	// newest event already read is stored
 	f.add("/a/sec_G_0_3.sqlaudit", 16384, "2026-11-11T10:30:00.0000000Z", "DR", "SL", "sa", "master", "late_but_old", "DROP LOGIN x")
+	// at the very time of the newest event read before (the floor): an unread record of a newer file, kept
+	f.add("/a/sec_G_0_3.sqlaudit", 16384, "2026-11-11T11:00:05.0000000Z", "DR", "SL", "sa", "master", "same_tick", "DROP LOGIN y")
 	f.add("/a/sec_G_0_3.sqlaudit", 16384, "2026-11-11T12:00:00.0000000Z", "DR", "SL", "sa", "master", "app_login", "DROP LOGIN app_login")
 	f.gone = map[string]bool{"/a/sec_G_0_1.sqlaudit": true, "/a/sec_G_0_2.sqlaudit": true}
 	f.batches = nil
@@ -455,11 +477,17 @@ func TestAuditReadBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs = f.kinds("audit_event")
-	if len(evs) != 1 || evs[0]["object_name"] != "app_login" || evs[0]["action"] != "DROP" || res.listed != 1 {
-		t.Errorf("after the cursor's file was gone: %v (listed %d)", evs, res.listed)
+	if len(evs) != 2 || evs[0]["object_name"] != "same_tick" || evs[1]["object_name"] != "app_login" || evs[1]["action"] != "DROP" || res.listed != 2 {
+		t.Errorf("after the cursor's file was gone (want same_tick and app_login, not late_but_old): %v (listed %d)", evs, res.listed)
 	}
-	if len(res.notes) != 1 || !strings.Contains(res.notes[0], "is gone") {
+	if len(res.notes) != 1 || !strings.Contains(res.notes[0], "is gone") || !strings.Contains(res.notes[0], "lost") {
 		t.Errorf("notes: %v", res.notes)
+	}
+	// the re-read's batch names where the repository's cursor stood (the gone file), not where the read began
+	for _, r := range f.kinds(CursorKind) {
+		if r["from_file"] != "/a/sec_G_0_2.sqlaudit" || r["from_offset"] != int64(32768) {
+			t.Errorf("the re-read's cursor row names its start as %v / %v, want the stored cursor", r["from_file"], r["from_offset"])
+		}
 	}
 	if cur := f.cursors[auditSource(a.guid)]; cur.FileName != "/a/sec_G_0_3.sqlaudit" || !cur.LastEventAt.Equal(time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)) {
 		t.Errorf("the cursor after the re-read: %+v", cur)
@@ -474,9 +502,10 @@ func TestAuditReadTextCapAndNeverStarted(t *testing.T) {
 	f.add(file, 16384, "2026-11-11T10:00:00.0000000Z", "LGIF", "LX", "ghost", "", "", "Login failed for user 'ghost'. Reason: Could not find a login matching the name provided. [CLIENT: 10.0.0.9]")
 	f.recs[0]["succeeded"] = int64(0)
 	f.recs[0]["additional_information"] = "<action_info><error>0x00004818</error><state>5</state><PasswordFirstNibbleHash>6</PasswordFirstNibbleHash></action_info>"
-	f.add(file, 16384, "2026-11-11T10:00:01.0000000Z", "CR", "CD", "sa", "master", "cred", "CREATE CREDENTIAL cred WITH IDENTITY = 'u', SECRET = 'hunter2'")
-	// the same record's second row (a statement over 4,000 characters is written as several rows)
-	f.add(file, 16384, "2026-11-11T10:00:01.0000000Z", "CR", "CD", "sa", "master", "cred", " /* the rest */")
+	// a secret cut between the two rows of one record (a statement over 4,000 characters is written as several rows):
+	// neither piece alone holds both quotes, so the text is masked once it is whole
+	f.add(file, 16384, "2026-11-11T10:00:01.0000000Z", "CR", "CD", "sa", "master", "cred", "CREATE CREDENTIAL cred WITH IDENTITY = 'u', SECRET = 'hun")
+	f.add(file, 16384, "2026-11-11T10:00:01.0000000Z", "CR", "CD", "sa", "master", "cred", "ter2' /* the rest */")
 	f.recs[2]["seq"] = int64(2)
 	f.add(file, 16384, "2026-11-11T10:00:02.0000000Z", "APRL", "SG", "sa", "master", "sysadmin", "ALTER SERVER ROLE sysadmin ADD MEMBER app_login")
 	f.recs[3]["target_login"] = "app_login"
@@ -508,7 +537,7 @@ func TestAuditReadTextCapAndNeverStarted(t *testing.T) {
 		}
 	}
 	st := fmt.Sprint(evs[1]["statement"])
-	if strings.Contains(st, "hunter2") || !strings.Contains(st, "<masked>") || !strings.HasSuffix(st, "/* the rest */") {
+	if strings.Contains(st, "hun") || strings.Contains(st, "ter2") || !strings.Contains(st, "<masked>") || !strings.HasSuffix(st, "/* the rest */") {
 		t.Errorf("the statement must be masked and joined with its second row: %q", st)
 	}
 	counts := f.kinds("audit_count")
@@ -573,6 +602,10 @@ func TestAuditSpecRowsAndQuery(t *testing.T) {
 		!strings.Contains(next, "CAST(host_name AS nvarchar(128)) AS host_name") {
 		t.Errorf("a later read's statement: %s", next)
 	}
+	if strings.Contains(first, "%!") || strings.Contains(next, "%!") || !strings.Contains(first, "LIKE 'CREATE%INDEX%' THEN 'CREATE INDEX'") ||
+		!strings.Contains(first, "LIKE 'TRUNCATE TABLE%' THEN 'TRUNCATE TABLE'") || !strings.Contains(first, "AS maint,") {
+		t.Errorf("the maintenance answer did not survive the statement's format: %s", first)
+	}
 	if !strings.Contains(first, "@p3 = 1 AND action_id IN (") || strings.Contains(first, "N'SL'") || strings.Contains(first, "N'IN'") {
 		t.Error("the statement text of a counted action must never be taken off the server")
 	}
@@ -584,5 +617,97 @@ func TestAuditSpecRowsAndQuery(t *testing.T) {
 	}
 	if !auditCursorGone(mssqldb.Error{Number: 33225}) || auditCursorGone(mssqldb.Error{Number: 33224}) || auditCursorGone(nil) {
 		t.Error("only 33225 says the cursor's file is gone")
+	}
+}
+
+func TestAuditReadDeadlineAndKeys(t *testing.T) {
+	defer func(b, c int) { auditBatchRows, auditRowCap = b, c }(auditBatchRows, auditRowCap)
+	auditRowCap = 1000
+	build := func() *auditFake {
+		f := &auditFake{}
+		for i, off := range []int64{16384, 20480, 24576, 28672} { // four buffers of three records
+			for j := 0; j < 3; j++ {
+				f.add("/a/sec_G_0_2.sqlaudit", off, fmt.Sprintf("2026-11-11T10:0%d:0%d.0000000Z", i, j), "CR", "SL", "sa", "master", fmt.Sprintf("l%d%d", i, j), "")
+			}
+		}
+		return f
+	}
+	keys := func(f *auditFake) map[string]string {
+		out := map[string]string{}
+		for _, e := range f.kinds("audit_event") {
+			out[fmt.Sprint(e["object_name"])] = fmt.Sprint(e["event_key"])
+		}
+		return out
+	}
+	// the same records read in batches of one buffer and in one batch: every event has the same key (a key counts
+	// its place within its buffer, never within the batch)
+	auditBatchRows = 3
+	small := build()
+	if _, err := small.reader(false).read(context.Background(), auditTestDef()); err != nil {
+		t.Fatal(err)
+	}
+	auditBatchRows = 100
+	whole := build()
+	if _, err := whole.reader(false).read(context.Background(), auditTestDef()); err != nil {
+		t.Fatal(err)
+	}
+	ks, kw := keys(small), keys(whole)
+	if len(ks) != 12 || len(kw) != 12 || len(small.batches) != 4 || len(whole.batches) != 1 {
+		t.Fatalf("keys %d / %d, batches %d / %d; want 12 / 12 and 4 / 1", len(ks), len(kw), len(small.batches), len(whole.batches))
+	}
+	for name, k := range ks {
+		if kw[name] != k {
+			t.Errorf("%s: key %s in batches of one buffer, %s in one batch", name, k, kw[name])
+		}
+	}
+	// a run whose time is up after its first batch stops there: one batch stored with its cursor, the note says so
+	auditBatchRows = 3
+	late := build()
+	rd := late.reader(false)
+	rd.deadline = time.Now().Add(-time.Second)
+	res, err := rd.read(context.Background(), auditTestDef())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(late.batches) != 1 || res.listed != 3 {
+		t.Errorf("a run out of time: %d batches, %d listed; want 1 and 3", len(late.batches), res.listed)
+	}
+	if c := late.cursors[auditSource(auditTestDef().guid)]; c.FileOffset != 16384 {
+		t.Errorf("the cursor after the cut run: %+v", c)
+	}
+	found := false
+	for _, n := range res.notes {
+		found = found || strings.Contains(n, "time was up")
+	}
+	if !found {
+		t.Errorf("notes: %v", res.notes)
+	}
+}
+
+func TestAuditReadStateOf(t *testing.T) {
+	all := auditRights{defs: true, state: true, events: true, eventsRight: "VIEW SERVER SECURITY AUDIT"}
+	none := auditRights{defs: true, state: true, eventsRight: "CONTROL SERVER"}
+	def := func(typ string) *auditDef { return &auditDef{typ: typ, row: collect.Row{}} }
+	cases := []struct {
+		a      *auditDef
+		rights auditRights
+		timeUp bool
+		want   string
+		note   string
+	}{
+		{def("FL"), all, false, "", ""},
+		{def("FL"), all, true, "behind", "time was up"},
+		{def("FL"), none, false, "no right", "lacks CONTROL SERVER"},
+		{def("AL"), all, false, "not readable", "Event Viewer"},
+		{def("SL"), none, false, "not readable", "Event Viewer"}, // a Windows log is never read, with the right or not
+		{def("UL"), all, false, "not read", "url target"},
+		{def("EM"), all, false, "not read", "external monitor target"},
+		{def(""), all, false, "not read", "VIEW ANY DEFINITION"},
+	}
+	for _, c := range cases {
+		state, note := auditReadNote(c.a, c.rights, c.timeUp)
+		if state != c.want || !strings.Contains(note, c.note) || auditReadStateOf(c.a, c.rights, c.timeUp) != c.want {
+			t.Errorf("type %q, events %v, time up %v: %q %q; want %q with %q", c.a.typ, c.rights.events, c.timeUp, state, note, c.want, c.note)
+		}
 	}
 }

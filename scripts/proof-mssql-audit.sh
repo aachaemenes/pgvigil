@@ -9,7 +9,8 @@
 #   PGVIGIL_ADMIN_DSN        a superuser connection to a PostgreSQL in KEYWORD form, no dbname (host=... user=...).
 #                            It rides psql's command line: no password in it (PGPASSWORD or ~/.pgpass carries one).
 #   PGVIGIL_MSSQL_CONTAINER  an existing SQL Server sandbox container, with PGVIGIL_MSSQL_ADDR (default
-#                            localhost:1433) and its sa password in MSSQL_SA_PASSWORD. NOT set: the proof starts its
+#                            localhost:1433) and its sa password in MSSQL_SA_PASSWORD; it must hold no server audit
+#                            (the proof's counts are the server's: it refuses to start otherwise). NOT set: the proof starts its
 #                            own SQL Server container (MSSQL_IMAGE, default mcr.microsoft.com/mssql/server:2022-latest,
 #                            MSSQL_MEMORY_LIMIT_MB 2048) with a throwaway sa password made here, and removes it.
 #   PGVIGIL_SKIP_PG13=1      leaves part M out (it starts and removes a postgres:13 container of its own).
@@ -44,24 +45,30 @@
 #     many buffer edges) stores each ONCE: one CREATE of a SQL LOGIN named so by sa; one GRANT for that login; one
 #     ADD MEMBER to the role for that login; one failed sign-in of that login, not succeeded, error 18456 state 8,
 #     with the server's reason and the client's address; one CREATE of a TABLE of that name; and counts of exactly
-#     1,000 SELECT and 3 INSERT on the audited table by sa. No row holds statement text and a dump of the whole
+#     1,000 SELECT and 3 INSERT on the audited table by sa. An index created on the new table, its statistics updated
+#     and the table truncated (each recorded by the server as an ALTER of the table) are counted - 'CREATE INDEX' and
+#     'UPDATE STATISTICS' as maintenance, 'TRUNCATE TABLE' as a write, once each - and the new table's only listed
+#     DDL is its CREATE (added after the review: maintenance commands filled the listed DDL). No row holds statement text and a dump of the whole
 #     repository does not hold the marker (grep 0). A read again stores nothing new: the same 1,000.
 #     The same server read as three more instances that opt in (audit_text: true): under query_text full the CREATE
 #     TABLE's row holds the marker; under normalized it holds the statement without the marker; under none it holds
 #     no statement and text_stored is false. None of them holds the SELECTs' text: counts only. The DDL's marker is
-#     stored for the instance under full alone (on every audit record of that one CREATE TABLE).
+#     stored for the instance under full alone, on every audit record of that one CREATE TABLE: as many as sa's own
+#     read of the file finds with the marker. (Corrected after the fold's first box run, which expected two: the
+#     ALTER of the schema measured beside a CREATE TABLE belongs to DATABASE_OBJECT_CHANGE_GROUP, which this
+#     specification does not name, so here the server writes one record; runs 1 and 3 showed no such row either.)
 #  D. a stopped audit. sa stops <main> (ALTER SERVER AUDIT ... STATE = OFF): the next read stores it as stopped,
 #     raises 'an audit is defined and not started' for it and 'no audit covers sign-in failures', the cell reads
 #     '0 of 2 started'; the ALTER of the audit is listed once (ALTER on a SERVER AUDIT named <main>, by sa) and
 #     'an audit or its specification was changed' is raised. sa starts it again: the next read stores it as started
 #     on a new file, both findings of <main> clear (<off> keeps its own), and the events of the new file are read
-#     across the file change: the audit's second 'event enabled' is listed.
+#     across the file change, by reading on (no 'is gone' note): the audit's second 'event enabled' is listed.
 #  E. the rights. A login with VIEW SERVER STATE and VIEW ANY DEFINITION and NOT the audit right: the run is neither
 #     partial nor skipped; both audits are stored with read_state 'no right' naming the right; no event and no
 #     count is stored for it; the cell says 'events not read' and is not critical; collection_dates says ok. A login
 #     with neither right: skipped, naming both.
 #  F. the sign-in rule. Twelve more wrong passwords (13 failed sign-ins within the hour): 'failed sign-ins in the
-#     last hour' is a warning naming 13 and the login; 13 rows are stored.
+#     last hour' is a warning, its object 'sign-ins' and its detail naming 13 and the login; 13 rows are stored.
 #  G. without a server, on imported rows: an event imported twice is one row; a count imported in two calls adds up
 #     (5 + 7 = 12) and two rows of one key in one call are summed (2 + 3); an audit in state failed raises 'an
 #     audit failed' (critical) and the cell is critical; a specification whose GUID no audit has raises 'an audit
@@ -73,14 +80,22 @@
 #     stopped audit raises 'an audit is defined and not started' and the cell's warning, keeps its 'since' over a
 #     second read and clears both when it is started; a
 #     database's specification stays while the database is skipped and goes absent when the database is gone; an
-#     Application log audit is stored as 'not readable'; a PostgreSQL instance is refused.
+#     Application log audit is stored as 'not readable'; a PostgreSQL instance is refused. Added after the review:
+#     a batch whose cursor row names a start other than the stored cursor (a second run that read the same buffers)
+#     is refused and stores nothing (the count stays 5, then 12, the cursor never moves back); without the audit
+#     list an audit the read does not name goes 'unknown' and its 'an audit failed' clears; without the state view an
+#     audit 'enabled' covers sign-in failures, its specification switched off raises its finding, and the cell reads
+#     '1 of 1 switched on'; 12 failed sign-ins a read counted over its row cap raise the warning and say so.
 #  H. roles: pgvigil_collector may execute import_mssql_audit and may not select mssql_audit_events; pgvigil_reader
 #     may select the five tables and two views and may not execute the import.
 #  Y. the API on G's imported rows: /api/mssql/audit gives the parts; category=role keeps only that category; an
-#     unknown category and an unknown part are refused with 400.
+#     unknown category and an unknown part are refused with 400; a window that ends on the counts' own hour holds
+#     none of them and one that ends an hour later holds both (added after the review: the hour edge counted the
+#     next hour).
 #  P. the API on the server's rows: audits has <main> and <off>; specs has the two specifications, the database one
 #     with 'INSERT on dbo.<table> by public'; counted has SELECT on the table with 1,000 events; by_category has 13
-#     failed sign-ins; the series' failed sign-ins add up to 13 and its reads to 1,000; the skipped instance has no
+#     failed sign-ins; the series' failed sign-ins add up to 13, its reads to 1,000 and its writes to 4 (3 INSERT and
+#     the TRUNCATE); the skipped instance has no
 #     read row and its state part says 'skipped' with the reason.
 #  S. (only with PGVIGIL_SHOTS) in a headless Chromium at 1600 wide, light and dark: the Audit page shows <main>
 #     'started' and <off> 'not started' in the audits grid, the database specification's actions, the failed
@@ -91,8 +106,10 @@
 #  NOT PROVEN HERE: an Application or Security log target on a live server (SQL Server on Linux has the file target
 #  only: G stores the row), a failed audit on a live server, SQL Server 2016-2019 (CONTROL SERVER), Amazon RDS
 #  (msdb.dbo.rds_fn_get_audit_file: written from AWS's page), Azure SQL Managed Instance (a URL target is named as
-#  not read), Azure SQL Database (the collection is skipped), a cursor file rolled away on a live server (a unit
-#  test), a record over 4,000 characters, the page's accessibility (proof-a11y).
+#  not read), Azure SQL Database (the collection is skipped), a cursor file rolled away on a live server, a run that
+#  dies between two batches and two runs at once on a live server (unit tests and part G hold their rules), a record
+#  over 4,000 characters, a read made while the audit is writing (every read here follows a pause), the page's
+#  accessibility (proof-a11y).
 set -euo pipefail
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
 for t in psql pg_dump curl jq ss; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
@@ -103,7 +120,7 @@ if [ -n "${PGVIGIL_SHOTS:-}" ] && [ -z "${PGVIGIL_NO_MSSQL:-}" ]; then
   for t in chromium node; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine (PGVIGIL_SHOTS asks for the page)" >&2; exit 1; }; done
 fi
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-SUF=$RANDOM
+SUF=$(od -An -N3 -tu4 /dev/urandom | tr -d ' ')   # up to 16.7 million: two runs on one box never share a name
 WORK=$(mktemp -d); CFG=$WORK/cfg.yaml; OUT=$WORK/out
 REPO_DB=pgvigil_audit_$SUF
 DB=pgvproof_audit_$SUF
@@ -117,7 +134,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # the listening sockets are read once into a variable: 'ss | grep -q' under pipefail would call a taken port free
 # whenever grep left before ss had finished writing
 freeport() { local l p; l=$(ss -ltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$l" || { echo "$p"; return; }; done; return 1; }
-MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; MADE_PG13=; MADE_AUD=; SRV_PID=; CHR_PID=
+MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; MADE_PG13=; MADE_AUD=; MADE_ADIR=; SRV_PID=; CHR_PID=; LEFT=
+# left <what>: a thing the cleanup could not remove; the run then ends red whatever it proved
+left() { echo "CLEANUP: $*" >&2; LEFT=1; }
 CT=${PGVIGIL_MSSQL_CONTAINER:-}; OWN=; NOMS=${PGVIGIL_NO_MSSQL:-}
 PG13=pgv-audit-pg13-$SUF
 # sq <sql> [database]: as sa, the password through the environment by name
@@ -137,23 +156,24 @@ cleanup() {
   for p in "$SRV_PID" "$CHR_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   [ -n "$CHR_PID" ] && { wait "$CHR_PID" 2>/dev/null || true; }
   if [ -n "$MADE_CT" ]; then
-    docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2   # only the container this run made
+    docker rm -f -v "$CT" >/dev/null 2>&1 || left "container $CT not removed"   # only the container this run made
   elif [ -z "$NOMS" ] && [ -n "$CT" ]; then
     # on a sandbox that stays: the audit first (a database with a specification cannot simply go), then the rest
-    if [ -n "$MADE_AUD" ]; then drop_audit >/dev/null 2>&1 || echo "CLEANUP: the audits of this run were not all dropped ($AUD, $AUDOFF, $SPEC, $DBSPEC)" >&2; fi
-    if [ -n "$MADE_DB" ]; then sq "IF DB_ID('$DB') IS NOT NULL BEGIN ALTER DATABASE [$DB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$DB]; END" >/dev/null 2>&1 || echo "CLEANUP: database $DB not dropped" >&2; fi
+    if [ -n "$MADE_AUD" ]; then drop_audit >/dev/null 2>&1 || left "the audits of this run were not all dropped ($AUD, $AUDOFF, $SPEC, $DBSPEC)"; fi
+    if [ -n "$MADE_DB" ]; then sq "IF DB_ID('$DB') IS NOT NULL BEGIN ALTER DATABASE [$DB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$DB]; END" >/dev/null 2>&1 || left "database $DB not dropped"; fi
     for l in "${MADE_L[@]:-}"; do
       [ -n "$l" ] || continue
-      sq "IF SUSER_ID('$l') IS NOT NULL DROP LOGIN [$l];" >/dev/null 2>&1 || echo "CLEANUP: login $l not dropped" >&2
+      sq "IF SUSER_ID('$l') IS NOT NULL DROP LOGIN [$l];" >/dev/null 2>&1 || left "login $l not dropped"
     done
-    docker exec "$CT" rm -rf "$ADIR" >/dev/null 2>&1 || echo "CLEANUP: the audit folder $ADIR was not removed" >&2
+    if [ -n "$MADE_ADIR" ]; then docker exec "$CT" rm -rf "$ADIR" >/dev/null 2>&1 || left "the audit folder $ADIR was not removed"; fi
   fi
-  [ -n "$MADE_PG13" ] && { docker rm -f -v "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
-  [ -n "$MADE_REPO" ] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
-  rm -rf "$WORK" || echo "CLEANUP: $WORK not removed" >&2
+  [ -n "$MADE_PG13" ] && { docker rm -f -v "$PG13" >/dev/null 2>&1 || left "container $PG13 not removed"; }
+  [ -n "$MADE_REPO" ] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || left "database $REPO_DB not dropped"; }
+  rm -rf "$WORK" || left "$WORK not removed"
   if command -v docker >/dev/null 2>&1; then
     echo "cleanup: containers of this run left: $(docker ps -a --format '{{.Names}}' | grep -c -E "^(pgv-audit-mssql-$SUF|$PG13)\$" || true)"
   fi
+  if [ -n "$LEFT" ] && [ "$rc" = 0 ]; then echo "FAIL: the cleanup left something behind (the CLEANUP lines above)" >&2; rc=3; fi
   exit $rc
 }
 trap cleanup EXIT
@@ -256,8 +276,11 @@ fi
 
 if [ -z "$NOMS" ]; then
 echo "--- A. the health"
+# the proof's counts and findings are the server's: on a sandbox that already holds an audit they would not be
+[ "$(sq "SELECT COUNT(*) FROM sys.server_audits")" = 0 ] || fail "A: the SQL Server holds $(sq "SELECT COUNT(*) FROM sys.server_audits") server audit(s) already: the proof needs a server without one (its own container, or a clean sandbox)"
+docker exec "$CT" test ! -e "$ADIR" || fail "A: the audit folder $ADIR is there already (another run's)"
 docker exec "$CT" mkdir -p "$ADIR" || fail "A: the audit folder $ADIR"
-MADE_AUD=1
+MADE_ADIR=1; MADE_AUD=1   # drop_audit drops by name only what exists, and the names carry this run's suffix
 sq "CREATE SERVER AUDIT [$AUD] TO FILE (FILEPATH = '$ADIR', MAXSIZE = 4 MB, MAX_ROLLOVER_FILES = 8) WITH (QUEUE_DELAY = 1000, ON_FAILURE = CONTINUE);
     CREATE SERVER AUDIT [$AUDOFF] TO FILE (FILEPATH = '$ADIR', MAXSIZE = 2 MB, MAX_ROLLOVER_FILES = 2) WITH (QUEUE_DELAY = 1000, ON_FAILURE = CONTINUE);
     CREATE SERVER AUDIT SPECIFICATION [$SPEC] FOR SERVER AUDIT [$AUD] ADD (FAILED_LOGIN_GROUP), ADD (SERVER_PRINCIPAL_CHANGE_GROUP),
@@ -295,10 +318,17 @@ mklogin "$LNEW" "$PNEW"
 sq "GRANT VIEW ANY DATABASE TO [$LNEW]; ALTER SERVER ROLE [processadmin] ADD MEMBER [$LNEW];" >/dev/null
 badlogin "$LNEW"
 sq "CREATE TABLE dbo.pv_made (id int NOT NULL, note varchar(40) NOT NULL DEFAULT '$MARK');" "$DB" >/dev/null
+sq "CREATE INDEX ix_pv_made ON dbo.pv_made (id);" "$DB" >/dev/null
+sq "UPDATE STATISTICS dbo.pv_made;" "$DB" >/dev/null
+sq "TRUNCATE TABLE dbo.pv_made;" "$DB" >/dev/null
 sq "DECLARE @i int = 0, @c int; WHILE @i < 1000 BEGIN SELECT @c = COUNT(*) FROM dbo.pv_t WHERE v <> -1 OR '$MARK2' = 'x'; SET @i += 1; END;
     INSERT dbo.pv_t (v) VALUES (11); INSERT dbo.pv_t (v) VALUES (12); INSERT dbo.pv_t (v) VALUES (13);" "$DB" >/dev/null
 sleep 3   # the audit's queue delay is one second
 SA_SEL=$(sq "SELECT COUNT(*) FROM sys.fn_get_audit_file('$ADIR/$AUD*.sqlaudit', default, default) WHERE action_id = 'SL' AND object_name = 'pv_t'")
+# the audit records whose statement holds the DDL's marker: those of the one CREATE TABLE (how many depends on the
+# specification's groups: the ALTER of the schema it also writes belongs to DATABASE_OBJECT_CHANGE_GROUP)
+SA_MARK=$(sq "SELECT COUNT(*) FROM sys.fn_get_audit_file('$ADIR/$AUD*.sqlaudit', default, default) WHERE statement LIKE '%$MARK%'")
+[ "$SA_MARK" -ge 1 ] || fail "B: sa finds no audit record of the CREATE TABLE"
 echo "  sa reads $SA_SEL SELECT record(s) on pv_t in the audit file"
 PGVIGIL_MSSQL_AUDIT_BATCH=200 collect "$N"
 if grep -q "partial\|skipped" "$OUT"; then fail "B: the run says partial or skipped"; fi
@@ -311,7 +341,10 @@ ev() { q "select count(*) from pgvigil.mssql_audit_events e where e.instance_id=
 [ "$(ev "category='ddl' and action='CREATE' and class_name='TABLE' and object_name='pv_made' and database_name='$DB'")" = 1 ] || fail "B: the CREATE TABLE (want once): $(q "select string_agg(action || '/' || coalesce(class_name, '') || '/' || coalesce(object_name, ''), '; ') from pgvigil.mssql_audit_events where instance_id=$iid and category='ddl'")"
 cnt() { q "select coalesce(sum(n), 0) from pgvigil.mssql_audit_counts where instance_id=$1 and action_id='$2' and object_name='pv_t' and database_name='$DB' and login_name='sa' and succeeded"; }
 [ "$(cnt "$iid" SL)|$(cnt "$iid" IN)" = "1000|3" ] || fail "B: the counts on pv_t: SELECT $(cnt "$iid" SL), INSERT $(cnt "$iid" IN); want 1000 and 3 (sa's own read of the file: $SA_SEL SELECT)"
-[ "$(q "select count(*) from pgvigil.mssql_audit_counts where instance_id=$iid and category not in ('read', 'write')")" = 0 ] || fail "B: counts of another category: $(q "select string_agg(category || ':' || action_id || ':' || n, '; ') from pgvigil.mssql_audit_counts where instance_id=$iid and category not in ('read', 'write')")"
+[ "$(q "select count(*) from pgvigil.mssql_audit_counts where instance_id=$iid and category not in ('read', 'write', 'maintenance')")" = 0 ] || fail "B: counts of another category: $(q "select string_agg(category || ':' || action_id || ':' || n, '; ') from pgvigil.mssql_audit_counts where instance_id=$iid and category not in ('read', 'write', 'maintenance')")"
+mnt() { q "select coalesce(sum(n), 0) from pgvigil.mssql_audit_counts where instance_id=$iid and category='$1' and action_id='AL' and action='$2' and object_name='pv_made' and database_name='$DB'"; }
+[ "$(mnt maintenance 'CREATE INDEX')|$(mnt maintenance 'UPDATE STATISTICS')|$(mnt write 'TRUNCATE TABLE')|$(ev "category='ddl' and object_name='pv_made'")" = "1|1|1|1" ] \
+  || fail "B: the maintenance commands (want each counted once and the CREATE TABLE the one listed DDL of pv_made): counted $(q "select string_agg(category || '/' || action || ':' || n, '; ') from pgvigil.mssql_audit_counts where instance_id=$iid and object_name='pv_made'"), listed $(q "select string_agg(action_id || '/' || coalesce(class_type, ''), '; ') from pgvigil.mssql_audit_events where instance_id=$iid and object_name='pv_made'")"
 [ "$(q "select count(*) from pgvigil.mssql_audit_events where instance_id=$iid and statement is not null")" = 0 ] || fail "B: statement text is stored without the opt-in"
 # nothing of the statement text anywhere in the repository: one marker is in the CREATE TABLE's DEFAULT, the other in every SELECT
 pg_dump "$PGVIGIL_REPO_DSN" --data-only > "$WORK/dump1.sql" 2>"$WORK/dump1.err" || { cat "$WORK/dump1.err" >&2; fail "B: pg_dump of the repository"; }
@@ -337,6 +370,7 @@ pg_dump "$PGVIGIL_REPO_DSN" --data-only > "$WORK/dump2.sql" 2>"$WORK/dump2.err" 
 [ "$(grep -c "$MARK2" "$WORK/dump2.sql" || true)" = 0 ] || fail "B: after the opt-in the dump holds the SELECTs' marker on $(grep -c "$MARK2" "$WORK/dump2.sql" || true) line(s)"
 # (one CREATE TABLE is several audit records - the table, its schema, its default - so the DDL's marker is on more than one row)
 [ "$(grep -c "$MARK" "$WORK/dump2.sql" || true)" -ge 1 ] && [ "$(q "select count(*) from pgvigil.mssql_audit_events e join pgvigil.instances i using (instance_id) where e.statement like '%$MARK%' and i.name <> '$NT'")" = 0 ] \
+  && [ "$(q "select count(*) from pgvigil.mssql_audit_events e join pgvigil.instances i using (instance_id) where e.statement like '%$MARK%' and i.name = '$NT'")" = "$SA_MARK" ] \
   || fail "B: the DDL's marker must be stored for the instance under full alone: $(q "select string_agg(i.name || ':' || e.action_id || '/' || coalesce(e.class_type, ''), '; ') from pgvigil.mssql_audit_events e join pgvigil.instances i using (instance_id) where e.statement like '%$MARK%'")"
 echo "B: OK (the opt-in: full holds the marker, normalized 'DEFAULT ?', none nothing; a counted SELECT's text nowhere)"
 
@@ -361,6 +395,7 @@ collect "$N" >/dev/null
   || fail "D: the findings after the start: $(q "select string_agg(check_name || ' [' || object || ']', '; ') from pgvigil.mssql_audit_findings where instance_id=$iid")"
 [ "$(cell "$iid")" = "0|1|1 of 2 started" ] || fail "D: the cell after the start is '$(cell "$iid")'"
 [ "$(ev "category='audit' and action_id='AUSC' and reason='event enabled'")" = 2 ] || fail "D: the second start is not read across the file change: $(q "select string_agg(to_char(event_at, 'HH24:MI:SS') || ' ' || coalesce(reason, ''), '; ' order by event_at) from pgvigil.mssql_audit_events where instance_id=$iid and action_id='AUSC'")"
+[ "$(q "select coalesce(read_note, '') not like '%is gone%' from pgvigil.mssql_audit where instance_id=$iid and name='$AUD'")" = t ] || fail "D: the read across the file change took the fallback for a gone file: $(q "select read_note from pgvigil.mssql_audit where instance_id=$iid and name='$AUD'")"
 echo "D: OK (stopped: its finding, 'no audit covers sign-in failures' and '0 of 2 started'; the ALTER listed once; started again on $(basename "$SA_FILE2"): cleared)"
 
 echo "--- E. the rights"
@@ -375,7 +410,7 @@ hid=$(iid_of "$NH")
 [ "$(cell "$hid")" = "0|1|1 of 2 started, events not read" ] || fail "E: the health-only cell is '$(cell "$hid")'"
 [ "$(q "select status from pgvigil.collection_dates where instance_id=$hid and collection='mssql_audit'")" = ok ] || fail "E: collection_dates of the health-only login: $(q "select status, note from pgvigil.collection_dates where instance_id=$hid and collection='mssql_audit'")"
 collect "$NB"
-grep -q "skipped: the login has neither VIEW ANY DEFINITION" "$OUT" || fail "E: a login with neither right is not skipped with the rights named"
+grep -q "skipped: the login has neither VIEW ANY DEFINITION .* nor VIEW SERVER STATE" "$OUT" || fail "E: a login with neither right is not skipped with both rights named"
 echo "E: OK (without $WANT_RIGHT: the health of 2 audits, 'no right' on both, no event, status ok; with neither right: skipped)"
 
 echo "--- F. the sign-in rule"
@@ -383,10 +418,10 @@ for _ in $(seq 1 12); do badlogin "$LNEW"; done
 sleep 3
 collect "$N" >/dev/null
 [ "$(ev "category='failed sign-in' and login_name='$LNEW'")" = 13 ] || fail "F: failed sign-ins stored: $(ev "category='failed sign-in'") (want 13)"
-[ "$(q "select severity || '|' || (detail like '13 failed sign-in(s)%') || '|' || (object like '$LNEW (13)') from pgvigil.mssql_audit_findings where instance_id=$iid and check_name='failed sign-ins in the last hour'")" = "warning|true|true" ] \
+[ "$(q "select severity || '|' || (detail like '13 failed sign-in(s)%') || '|' || object || '|' || (detail like '%most for $LNEW (13)%') from pgvigil.mssql_audit_findings where instance_id=$iid and check_name='failed sign-ins in the last hour'")" = "warning|true|sign-ins|true" ] \
   || fail "F: the finding: $(q "select severity, object, detail from pgvigil.mssql_audit_findings where instance_id=$iid and check_name='failed sign-ins in the last hour'")"
 [ "$(nfind "$iid" 'a server role gained a member' processadmin)|$(nfind "$iid" 'security changes in the last hour')" = "1|1" ] || fail "F: the role and security findings: $(q "select string_agg(check_name || ' [' || object || ']', '; ') from pgvigil.mssql_audit_findings where instance_id=$iid")"
-echo "F: OK (13 failed sign-ins: a warning naming $LNEW (13))"
+echo "F: OK (13 failed sign-ins: a warning on 'sign-ins' naming $LNEW (13))"
 else
   A_NOTE="A, B, D, E, F NOT RUN"
 fi
@@ -459,7 +494,36 @@ s=$(synth signin)
 signins() { q "select pgvigil.import_mssql_audit($s, now(), (select jsonb_agg(jsonb_build_object('kind', 'audit_event', 'event_at', to_char((now() - interval '10 minutes') at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), 'event_key', 'f' || g, 'category', 'failed sign-in', 'action_id', 'LGIF', 'succeeded', false, 'login_name', 'ghost')) from generate_series($1, $2) g))" >/dev/null; }
 signins 1 9; [ "$(nfind "$s" 'failed sign-ins in the last hour')" = 0 ] || fail "G: 9 failed sign-ins raised the finding"
 signins 10 10; [ "$(q "select severity from pgvigil.mssql_audit_findings where instance_id=$s and check_name='failed sign-ins in the last hour'")" = warning ] || fail "G: 10 failed sign-ins: not a warning"
-signins 11 100; [ "$(q "select severity || '|' || object from pgvigil.mssql_audit_findings where instance_id=$s and check_name='failed sign-ins in the last hour'")" = "critical|ghost (100)" ] || fail "G: 100 failed sign-ins: not critical"
+signins 11 100; [ "$(q "select severity || '|' || object || '|' || (detail like '%most for ghost (100)%') from pgvigil.mssql_audit_findings where instance_id=$s and check_name='failed sign-ins in the last hour'")" = "critical|sign-ins|true" ] || fail "G: 100 failed sign-ins: not critical on 'sign-ins'"
+# failed sign-ins a read counted over its row cap count too
+s=$(synth overcap)
+imp "$s" "now()" "[{\"kind\":\"audit_count\",\"hour_at\":\"$(nowz '1 minute')\",\"audit_name\":\"a1\",\"category\":\"failed sign-in\",\"action_id\":\"LGIF\",\"login_name\":\"ghost\",\"succeeded\":false,\"n\":12}]"
+[ "$(q "select severity || '|' || (detail like '12 failed sign-in(s)%12 of them were counted and not listed%') from pgvigil.mssql_audit_findings where instance_id=$s and check_name='failed sign-ins in the last hour'")" = "warning|true" ] || fail "G: 12 failed sign-ins counted over a row cap: $(q "select severity, detail from pgvigil.mssql_audit_findings where instance_id=$s")"
+# a batch must start where the stored cursor stands: a second run that read the same buffers is refused, whole
+s=$(synth overlap)
+cnt1() { echo "{\"kind\":\"audit_count\",\"hour_at\":\"$HZ\",\"audit_name\":\"a1\",\"category\":\"read\",\"action_id\":\"SL\",\"login_name\":\"u\",\"database_name\":\"d\",\"object_name\":\"t\",\"succeeded\":true,\"n\":$1}"; }
+curj() { echo "{\"kind\":\"cursor\",\"source\":\"audit:X\",\"file_name\":\"f1\",\"file_offset\":$1,\"last_seq\":0,\"from_file\":$2,\"from_offset\":$3}"; }
+olap() { q "select coalesce(sum(n), 0) || '|' || (select file_offset from pgvigil.mssql_cursor where instance_id=$s and source='audit:X') from pgvigil.mssql_audit_counts where instance_id=$s"; }
+refused() { if q "select pgvigil.import_mssql_audit($s, now(), \$j\$$1\$j\$::jsonb)" >"$OUT" 2>&1; then fail "G: $2 was accepted"; fi; grep -q "is not where this batch started" "$OUT" || fail "G: $2: the refusal's text: $(cat "$OUT")"; }
+imp "$s" "now()" "[$(cnt1 5),$(curj 100 null null)]"
+refused "[$(cnt1 5),$(curj 100 null null)]" "a first read imported again"
+[ "$(olap)" = "5|100" ] || fail "G: after the repeated first read: $(olap), want 5|100"
+imp "$s" "now()" "[$(cnt1 7),$(curj 200 '"f1"' 100)]"
+refused "[$(cnt1 7),$(curj 200 '"f1"' 100)]" "a batch imported again"
+refused "[$(cnt1 3),$(curj 150 '"f1"' 100)]" "a late batch of an older run"
+[ "$(olap)" = "12|200" ] || fail "G: the counts or the cursor after the refused batches: $(olap), want 12|200 (never doubled, never back)"
+# without the audit list an audit the read does not name is no longer known: its 'failed' clears
+s=$(synth unknown); G3=AAAAAAAA-0000-0000-0000-000000000003
+imp "$s" "now()" "[$(rd),$(au a_x $G3 failed '"file"' '"RUNTIME_FAIL"')]"
+[ "$(nfind "$s" 'an audit failed' a_x)" = 1 ] || fail "G: a failed audit raised nothing"
+imp "$s" "now() + interval '1 second'" "[$(rd false false)]"
+[ "$(q "select state || '|' || is_present from pgvigil.mssql_audit where instance_id=$s and name='a_x'")|$(nfind "$s" 'an audit failed')" = "unknown|true|0" ] || fail "G: without the list: $(q "select state, is_present from pgvigil.mssql_audit where instance_id=$s and name='a_x'"), $(nfind "$s" 'an audit failed') 'failed' finding(s)"
+# without the state view an audit is 'enabled': it covers what its specifications name
+s=$(synth nostate); G4=AAAAAAAA-0000-0000-0000-000000000004
+RDNS='{"kind":"read","defs_read":true,"state_read":false,"specs_read":true,"db_specs_right":true,"events_right":"VIEW SERVER SECURITY AUDIT","events_readable":true,"text_stored":false,"databases_listed":true,"databases_read":[],"databases_skipped":[]}'
+imp "$s" "now()" "[$RDNS,$(au a_e $G4 enabled),$(sp server null s_cover $G4 true FAILED_LOGIN_GROUP),$(sp server null s_off $G4 false AUDIT_CHANGE_GROUP)]"
+[ "$(nfind "$s" 'no audit covers sign-in failures')|$(nfind "$s" 'an audit specification is switched off' s_off)|$(cell "$s")" = "0|1|0|0|1 of 1 switched on" ] \
+  || fail "G: without the state view: covers $(nfind "$s" 'no audit covers sign-in failures'), switched off $(nfind "$s" 'an audit specification is switched off' s_off), cell '$(cell "$s")'"
 pgi=$(q "select pgvigil.ensure_instance('proof-audit-pg-$SUF', 'onprem', '17.0', 170000, false, '{}')")
 if q "select pgvigil.import_mssql_audit($pgi, now(), '[]'::jsonb)" >"$OUT" 2>&1; then fail "G: a PostgreSQL instance was accepted"; fi
 grep -q "not a SQL Server instance" "$OUT" || fail "G: the PostgreSQL refusal's text: $(cat "$OUT")"
@@ -476,6 +540,8 @@ PORT=$(freeport 18340 18380) || fail "no free port for the UI"
 U=http://127.0.0.1:$PORT/api
 for _ in $(seq 1 40); do curl -fs "$U/health" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs "$U/health" >/dev/null || { cat "$WORK/serve.log" >&2; fail "the UI did not serve"; }
+# the answer must be this run's server: one that lost its port to another run has exited by now
+kill -0 "$SRV_PID" 2>/dev/null || { cat "$WORK/serve.log" >&2; fail "the UI exited (its port was taken?): the answers on $PORT are not this run's"; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/audit?instance=1")" != 404 ] || fail "the binary has no route /api/mssql/audit (the wiring in web.go)"
 win() { echo "from=$(date -u -d '-6 hours' +%FT%TZ)&to=$(date -u -d '+1 minute' +%FT%TZ)"; }
 objs() { jq -c --arg p "$2" '.[$p] as $t | [$t.rows[] | [$t.columns, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
@@ -488,6 +554,12 @@ curl -fs "$U/mssql/audit?instance=$s&$(win)" > "$WORK/y.json" || fail "Y: /api/m
 [ "$(objs "$WORK/y.json" counted | jq -r 'map(.action_id + ":" + (.events | tostring)) | sort | join(",")')" = "IN:5,SL:12" ] || fail "Y: the counted: $(objs "$WORK/y.json" counted)"
 [ "$(curl -fs "$U/mssql/audit?instance=$s&$(win)&category=role&part=events" | jq '.events.rows | length')|$(curl -fs "$U/mssql/audit?instance=$s&$(win)&category=ddl&part=events" | jq '.events.rows | length')" = "1|0" ] || fail "Y: the category filter"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/audit?instance=$s&category=nonsense")|$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/audit?instance=$s&part=nonsense")" = "400|400" ] || fail "Y: an unknown category or part is not refused with 400"
+# the hour edge: a window that ends on the counts' own hour holds none of them, one that ends an hour later both
+HH=$(q "select to_char(date_trunc('hour', '$HZ'::timestamptz at time zone 'UTC'), 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+HB=$(q "select to_char(date_trunc('hour', '$HZ'::timestamptz at time zone 'UTC') - interval '1 hour', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+HA=$(q "select to_char(date_trunc('hour', '$HZ'::timestamptz at time zone 'UTC') + interval '1 hour', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+[ "$(curl -fs "$U/mssql/audit?instance=$s&from=$HB&to=$HH&part=counted" | jq '.counted.rows | length')|$(curl -fs "$U/mssql/audit?instance=$s&from=$HB&to=$HA&part=counted" | jq '.counted.rows | length')" = "0|2" ] \
+  || fail "Y: the hour edge: a window ending at $HH lists $(curl -fs "$U/mssql/audit?instance=$s&from=$HB&to=$HH&part=counted" | jq '.counted.rows | length') count(s) (want 0), one ending at $HA lists $(curl -fs "$U/mssql/audit?instance=$s&from=$HB&to=$HA&part=counted" | jq '.counted.rows | length') (want 2)"
 echo "Y: OK"
 
 if [ -z "$NOMS" ]; then
@@ -498,7 +570,7 @@ curl -fs "$U/mssql/audit?instance=$iid&$(win)" > "$WORK/p.json" || fail "P: /api
 [ "$(objs "$WORK/p.json" specs | jq 'length')" = 2 ] || fail "P: specifications (want 2)"
 [ "$(objs "$WORK/p.json" counted | jq -r 'map(select(.action_id == "SL" and .object_name == "pv_t"))[0].events')" = 1000 ] || fail "P: the counted SELECTs: $(objs "$WORK/p.json" counted)"
 [ "$(objs "$WORK/p.json" by_category | jq -r 'map(select(.category == "failed sign-in"))[0].events')" = 13 ] || fail "P: by_category: $(objs "$WORK/p.json" by_category)"
-[ "$(objs "$WORK/p.json" series | jq -r '(map(.failed_signins) | add | tostring) + "|" + (map(.reads) | add | tostring) + "|" + (map(.writes) | add | tostring)')" = "13|1000|3" ] || fail "P: the series' sums: $(objs "$WORK/p.json" series)"
+[ "$(objs "$WORK/p.json" series | jq -r '(map(.failed_signins) | add | tostring) + "|" + (map(.reads) | add | tostring) + "|" + (map(.writes) | add | tostring)')" = "13|1000|4" ] || fail "P: the series' sums: $(objs "$WORK/p.json" series)"
 [ "$(curl -fs "$U/mssql/audit?instance=$iid&$(win)&category=failed%20sign-in&part=events" | jq '.events.rows | length')" = 13 ] || fail "P: the failed sign-ins through the category filter"
 [ "$(curl -fs "$U/mssql/audit?instance=$hid&part=read" | jq -r '.read as $t | $t.rows[0][($t.columns | index("events_readable"))]')" = false ] || fail "P: the health-only instance's read part"
 # a skipped instance (the login with neither right) has no read row; its collection's last run says why
@@ -612,7 +684,7 @@ else
 fi
 fi
 
-echo "NOT PROVEN HERE: an Application or Security log target and a failed audit on a live server, SQL Server 2016-2019 (CONTROL SERVER), Amazon RDS, Azure SQL Managed Instance, a cursor file rolled away on a live server, a record over 4,000 characters, the page's accessibility (proof-a11y)"
+echo "NOT PROVEN HERE: an Application or Security log target and a failed audit on a live server, SQL Server 2016-2019 (CONTROL SERVER), Amazon RDS, Azure SQL Managed Instance, a cursor file rolled away on a live server, a run that dies between two batches and two runs at once on a live server (G and the unit tests hold their rules), a record over 4,000 characters, a read while the audit is writing, the page's accessibility (proof-a11y)"
 if [ -n "$NOMS" ]; then
   echo "proof-mssql-audit: the server-less parts only ($M_NOTE, G, H, Y) - NOT the proof's PASS"
 else
