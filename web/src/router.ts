@@ -49,7 +49,7 @@ export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'D
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
-  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
+  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
@@ -69,7 +69,7 @@ export const rootGroups: TabGroup[] = [
 export const instanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'memory', 'findings', 'logs'] },
   { key: 'checks', name: 'Checks', tabs: ['corruption', 'vacuum', 'indexes', 'custom'] },
-  { key: 'conf', name: 'Configuration', tabs: ['config', 'extensions', 'versions', 'roles', 'schema', 'actions'] },
+  { key: 'conf', name: 'Configuration', tabs: ['config', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
   { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['storage', 'dbinfo', 'dbchanges', 'tables'] },

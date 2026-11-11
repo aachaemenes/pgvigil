@@ -29,6 +29,7 @@ import { waitsView } from './waits';
 import { compareView } from './compare';
 import { memory } from './memory';
 import { pooler, poolerKnown } from './pooler';
+import { pgauditView } from './pgaudit';
 import { customView } from './custom';
 import { indexesView } from './indexes';
 import { schemaView } from './schema';
@@ -109,7 +110,7 @@ const instancePages: Record<string, Render> = {
   plans: plansView,
   dbinfo: dbinfoView, db: dbPage, table: tablePage, job: jobPage, index: indexPage,
   compare: compareView,
-  memory, pooler, custom: customView, jobstimeline: jobsTimelineView,
+  memory, pooler, audit: pgauditView, custom: customView, jobstimeline: jobsTimelineView,
   connections: connectionsView, dbchanges: c => dbChangesView(c),
 };
 // pages that show the state now refresh every 30 s while the tab is visible and the range follows now

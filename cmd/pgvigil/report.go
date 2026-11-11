@@ -285,7 +285,7 @@ func osRelease() string {
 // key this list does not know (a new one, a misspelt one) is masked, never shown.
 var keepKeys = map[string]bool{
 	"engine": true, "platform": true, "query_text": true, "interval": true, "explain_analyze": true, "hypo_index": true,
-	"explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
+	"audit_text": true, "explain_timeout": true, "archive_warn_minutes": true, "latency_warn_secs": true, "region": true,
 	// alerts:
 	"kind": true, "min_severity": true, "quiet_hours": true, "timezone": true, "repeat": true, "recovery": true,
 	"clear_after": true, "port": true, "tls": true, "format": true,
@@ -304,7 +304,7 @@ var keepTrees = map[string]bool{"schedules": true, "mssql_thresholds": true, "di
 var knownKeys = map[string]bool{
 	"repository": true, "dsn": true, "instances": true, "schedules": true, "query_text": true, "ui": true, "dbadash": true,
 	"name": true, "engine": true, "platform": true, "tags": true, "disabled": true, "aws": true, "actions_dsn": true,
-	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "explain_dsn": true, "explain_timeout": true,
+	"actions": true, "backups": true, "explain_analyze": true, "hypo_index": true, "audit_text": true, "explain_dsn": true, "explain_timeout": true,
 	"pgbouncer": true, "mssql_thresholds": true, "interval": true, "group_by": true, "env_order": true, "region": true,
 	"profile": true, "cluster": true, "db_instance": true, "log_group": true, "dms": true, "tasks": true,
 	"latency_warn_secs": true, "archive_warn_minutes": true,
