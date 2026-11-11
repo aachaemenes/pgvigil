@@ -77,7 +77,7 @@ while the digits inside a name (`orders_idx1`, `orders_idx2`) keep two indexes a
 | new (escalated) | The finding's severity rose above the one sent. It goes out at once. |
 | still open (repeat) | The repeat interval has passed since the last send. |
 | resolved | The finding has been gone from the findings for `clear_after` (default 10 minutes, so a finding at a time window's edge does not send a recovery and a new alert a minute later), **and** the collector has read the instance successfully since the finding went missing. An instance left unread (unreachable, the collector stopped, a gap of any length) holds its alerts open: its time-windowed findings leave the view, but nothing was fixed. Sent when `recovery` is on; otherwise the alert is closed without a message (the log's outcome `cleared`). |
-| closed without a message | The instance was deactivated or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. |
+| closed without a message | The instance was deactivated or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. PagerDuty and Opsgenie are the exception: they close their incident, or it would stay open for good. |
 
 A finding that falls below the channel's severity floor but stays (critical to warning on a critical channel) keeps its
 alert open and quiet: no repeat, no recovery. If it rises again it is not sent again until the repeat interval.
@@ -97,12 +97,13 @@ One collector sends alerts: name the `alerts:` list in one configuration. A coll
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
 column; renamed, it is a new channel and sends the standing findings again.
 
-## The address of an alert, templates, the send cap, Send test (task 151)
+## The address of an alert, templates, the send cap, Send test
 
 - **Every alert carries the address of its page.** With `alerts_base_url` set (the UI's address as a reader opens it:
   `https://host[:port][/path]`, no query; `env:` and `file:` work), every alert line ends with
-  `<base>/#/alert?k=<finding key>&t=<first send, Unix seconds>`. The address is added after the line is cut at 600 bytes,
-  so it is never cut; a template that places `{url}` itself gets it once. The JSON body, the file drop, PagerDuty
+  `<base>/#/alert?k=<finding key>&t=<first send, Unix seconds>` (the address at most 200 bytes). The address is added
+  after the line is cut at 600 bytes, so it is never cut. A template that places `{url}` itself keeps it where it
+  stands while the line fits; a longer line is cut and the whole address follows it, once. The JSON body, the file drop, PagerDuty
   (`links` and `custom_details.url`) and Opsgenie (`details.url`) carry it as a field too. Without the setting no link is
   sent, and the Alerts tab says so.
 - **Templates.** `templates: {subject: {...}, line: {...}}` per channel, each keyed by `firing`, `escalated`, `repeat` or
@@ -111,7 +112,9 @@ column; renamed, it is a new channel and sends the standing findings again.
   Placeholders: `{event}`, `{severity}`, `{instance}`, `{source}`, `{setting}`, `{value}`, `{detail}`, `{suggested}`,
   `{first_sent}`, `{finding_at}` (UTC, RFC 3339), `{sends}`, `{url}`, `{channel}`, and in a subject only `{count}` (the
   alerts in the message) and `{summary}` (the built-in headline). An unknown placeholder, an unknown event or a line
-  break in a subject stops the command with exit code 3. A message of several events takes the subject of its leading
+  break in a subject stops the command with exit code 3, and so does a template where nothing would use it: on a file
+  drop (it writes the alert's fields), or a line template on a `json` webhook (its body carries the fields; a subject
+  template is its `summary`). A message of several events takes the subject of its leading
   one: a firing or escalated alert, else a repeat, else the recoveries. The Alerts tab shows which templates a channel
   has, never their text.
 - **The send cap.** `max_per_hour: n` (1 to 100000; 0 = none) caps the alerts a channel sends in any 60 minutes, counted
@@ -122,8 +125,9 @@ column; renamed, it is a new channel and sends the standing findings again.
   (`pgvigil.alert_tests`, through the actions door like an acknowledgement: the UI login and the audit login). The
   sender's next pass, within a minute while `pgvigil run` is up, sends it to that channel and records the
   destination's answer. The serve process never holds a channel's secret. A test goes out whatever the quiet hours,
-  back-off or cap. PagerDuty and Opsgenie get the test and its resolve at once, so no incident stays open. A channel
-  takes one waiting request at a time. A request no sender answered within the hour reads *no answer*: no running
+  back-off or cap. PagerDuty and Opsgenie get the test and its resolve at once, so no incident stays open (on Opsgenie
+  the close waits, up to about 10 seconds, for Opsgenie to have created the test alert). A channel takes one waiting
+  request at a time, and one test in two minutes: a test reaches a real destination. A request no sender answered within the hour reads *no answer*: no running
   sender names that channel. The send log shows the attempt as outcome `test` (or `failed` / `refused`).
 
 ## Alert rules on a charted metric
@@ -195,7 +199,7 @@ database that is later dropped stays held until someone ends the rule.
   Events API v2 event: firing, escalated and repeat trigger, a recovery resolves, all under one dedup key per instance
   and finding (`pgvigil:<instance>:<finding>`, hashed past 255 bytes), so PagerDuty keeps one incident per finding and
   closes it when the finding clears - also when the finding is cleared without a fix (the instance deactivated or
-  removed, the channel no longer covering it), which on the other kinds sends nothing; `recovery: false` is refused
+  removed, the channel no longer covering it), which on the other kinds but Opsgenie sends nothing; `recovery: false` is refused
   for this kind. The routing key (the service's
   integration key) comes through `env:` or `file:` and is never shown or logged; the URL may name
   events.pagerduty.com (the default) or events.eu.pagerduty.com only. A 429 or a 5xx is a failed send: the channel waits 1, 2, 4 ... 30 minutes and the next pass sends again.
@@ -235,35 +239,43 @@ database that is later dropped stays held until someone ends the rule.
   the firing's window, from half an hour before it to half an hour after it cleared; the *now* switch points them at the
   last hour instead. *Export* keeps the page as a workbook (the report); *Copy link* copies its address. There is no
   chart drawn on the page itself: the Metrics and Performance links open the instance's charts on the firing's window.
-- **The fix statement** (`pgvigil.finding_fix`) is given for a PostgreSQL setting finding whose suggested value is one
-  word: `ALTER SYSTEM SET <setting> = '<value>'; SELECT pg_reload_conf();` (a setting of context `postmaster` takes a
+- **The fix statement** (`pgvigil.finding_fix`) is given for a PostgreSQL setting finding on one of the settings
+  pgvigil reads per instance (real, changeable parameters: never `data_checksums`, never an extension's name) whose
+  suggested value is one word: `ALTER SYSTEM SET <setting> = '<value>'; SELECT pg_reload_conf();` (a setting of context `postmaster` takes a
   restart besides; on Aurora and RDS the parameter group holds it), and for a maintenance statement the finding's
   detail spells out (REINDEX, CREATE / DROP INDEX, ALTER TABLE / INDEX, VACUUM, ANALYZE). Otherwise none: the detail
-  says what to do. pgvigil runs nothing; the statement is advice.
+  says what to do; an alert rule's finding gets none. pgvigil runs nothing; the statement is advice.
 - **Triage on the open alerts**: a box per row and an *all shown* box that ticks every row the grid shows; the actions
   act on the ticked rows (acknowledge, clear, notes, close, and **Dismiss with a reason**: "tolerable for this server",
   "controlled elsewhere", "a known pattern of this system", "a test or lab instance" or any text up to 500
   characters). A dismissed alert leaves the grid; *Show dismissed* brings it back with who dismissed it and why, and the
-  alert's page has *Undismiss*. A dismissal changes what the grid shows, never what is sent: a mute or an
+  alert's page has *Undismiss*. A dismissal never ends by itself: a later firing of the same finding stays dismissed
+  until someone ends it. A dismissal changes what the grid shows, never what is sent: a mute or an
   acknowledgement holds the sends. Every dismissal and its end is in the acknowledge log (kind `dismiss`). Each row's
   alert opens its page, and the *fix* column copies the fix statement.
 - **Mute rules** carry an instance field, a **start** (blank = at once; until it passes the rule reads *upcoming* and
   holds nothing: a quiet window set ahead of planned work) and an end (no expiry, hours after the start, or a time).
   **Edit** ends the rule and writes its successor in one step (the successor's row says which rule it replaces, the
-  old one which replaced it; a paused rule stays paused), as alert rules are edited. **Pause** keeps the rule and holds
+  old one which replaced it; a paused rule stays paused), as alert rules are edited. An edit keeps the rule's instance
+  unless another is picked; widening it to every instance takes *Any instance* and a box ticked by hand, so a rule on
+  an instance removed since never widens to the fleet by an edit. **Pause** keeps the rule and holds
   nothing until **Resume**. Known patterns are edited the same way; they hold nothing, so they have no pause. Each
-  step is an acknowledge log row (`edit`, `pause`, `resume`).
+  step is in the acknowledge log: an edit as three rows (the successor's `add`, the old rule's `end`, the `edit`),
+  a pause and a resume as one each.
 - **Alert history** (the Alerts tab, the range): every firing open at some time in the range, newest first: fired,
-  cleared, how it ended (*resolved*: a recovery was sent; *closed without a message*: its instance retired, the channel
-  no longer covers it, or recovery is off), severity, instance, the alert (a link to its page), the value last sent,
+  cleared, how it ended (*resolved*: a recovery was sent; *cleared without a fix*: its instance retired, the channel no
+  longer covers it, or recovery is off - PagerDuty and Opsgenie closed their incident, the other kinds sent nothing),
+  severity, instance, the alert (a link to its page), the value last sent,
   the threshold (an alert rule's value; a finding's suggested value while the finding stands), the channels, the sends.
-  A firing is the channels' alerts of one finding grouped while their send periods overlap. The history is as long as
+  A firing is the channels' alerts of one finding grouped while their send periods overlap; an alert still open on a
+  channel the configuration no longer names leaves the history (nothing moves it again). The history is as long as
   purge keeps the cleared alerts.
 - **Thresholds in force** (the Alert rules page): every threshold each active instance is judged by. Per metric the
   alert rule in force on it (an instance's rule over a tag's over the fleet's) with the wider rules it overrides there;
   on a SQL Server instance the HA/DR, jobs and backups thresholds, marked *configuration file* where `mssql_thresholds`
   sets them and *default* where it does not (read only: the file is their source). Click a rule's line for an
-  **override for this instance** or **for one of its tags**: the rule form opens with the metric and the numbers
+  override that would be in force: on a fleet rule, **for this instance** or **for one of its tags**; on a tag rule,
+  for this instance; an instance's own rule opens to be edited. The rule form opens with the metric and the numbers
   filled. The built-in findings' own limits (the setting rules, vacuum, storage ...) are not listed here; they are in
   each finding's detail.
 
@@ -357,18 +369,18 @@ its own loopback SMTP sink and HTTP listener and covers these cases:
 - A deactivated instance's alerts close without a recovery message.
 - The loop inside `pgvigil run` keeps running past a failing channel.
 - The Alerts API and the Findings column.
-- Task 151, on the same loopback listener with `alerts_base_url` set: an Opsgenie channel (one create per alert under
+- On the same loopback listener with `alerts_base_url` set: an Opsgenie channel (one create per alert under
   its alias with the page's address, the key only in its header; the close of a resolved alert and of each alert of a
-  deactivated instance), Discord and Google Chat (every post within its text limit, every alert line once, with its
-  page's address; Discord's mentions off), a send cap (3 sent, the rest held and logged, still held through the hour,
-  3 more once it passed), SMTP templates (the subject's count, the lines); the alert's page through the API (the card,
-  the fix statement, two firings, the sends), dismiss through the door (401, 403, no reason, done, again, the
+  deactivated instance; a 401 that echoes the key is logged with the key replaced), Discord and Google Chat (every post
+  within its text limit, as many alert lines as alerts, each ending with its page's address; Discord's mentions off),
+  a send cap (3 sent, the rest held and logged, still held through the hour, up to 3 more once it passed), SMTP templates (the subject's count, the lines); the alert's page through the API (the card,
+  the fix statement and its refusals, two firings, the sends), dismiss through the door (401, 403, no reason, done, again, the
   history's mark, the end, the log), a mute rule set ahead (holds nothing until its start), edited, paused and resumed,
   and Send test (refused while one waits and for an unconfigured channel; sent by the next pass, Opsgenie's test closed
   at once, answered and logged).
 
-Opsgenie, Discord and Google Chat are proven on the loopback listener only: no test account of theirs was made (the
-release's decision D7). A real send to them is not proven.
+Opsgenie, Discord and Google Chat are proven on the loopback listener only: no test account of theirs was made. A
+real send to them is not proven, and neither is how Opsgenie orders a create and an immediate close of the same alias.
 
 `scripts/proof-alerts-live.sh` sends to REAL destinations (run it only against test ones): a finding of its own fires
 to an SMTP server, a Teams Workflows webhook, a Slack webhook and PagerDuty, its recovery follows on all four, and a

@@ -29,7 +29,7 @@ func TestBaseURL(t *testing.T) {
 			t.Errorf("%q: got %q, %v; want %q", raw, got, err, want)
 		}
 	}
-	for _, raw := range []string{"ftp://x.example.org", "pgvigil.example.org", "https://u:p@x.example.org", "https://x.example.org/?a=1", "https://x.example.org/#/alerts"} {
+	for _, raw := range []string{"ftp://x.example.org", "pgvigil.example.org", "https://u:p@x.example.org", "https://x.example.org/?a=1", "https://x.example.org/#/alerts", "https://x.example.org/" + strings.Repeat("p", 300)} {
 		if _, err := parseBaseURL(raw); err == nil {
 			t.Errorf("%q accepted", raw)
 		}
@@ -64,14 +64,25 @@ func TestTemplates(t *testing.T) {
 		"{subject: {firing: '   '}}":              "is empty",
 		"{line: {repeat: '{severity} {nope_1}'}}": "unknown placeholder {nope_1}",
 	}
+	t.Setenv("PGV_TEST_SL", "https://hooks.example.org/x")
 	for tpl, want := range bad {
-		_, err := Parse([]byte("alerts: [{name: d, kind: file, file: {dir: " + t.TempDir() + "}, templates: " + tpl + "}]"))
+		_, err := Parse([]byte("alerts: [{name: d, kind: webhook, webhook: {url: env:PGV_TEST_SL, format: slack}, templates: " + tpl + "}]"))
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", tpl, err, want)
 		}
 	}
+	// where nothing would use a template, it is refused: a file drop, a json webhook's line
+	if _, err := Parse([]byte("alerts: [{name: d, kind: file, file: {dir: /tmp}, templates: {subject: {firing: x}}}]")); err == nil || !strings.Contains(err.Error(), "a file drop writes") {
+		t.Errorf("templates on a file drop: %v", err)
+	}
+	if _, err := Parse([]byte("alerts: [{name: d, kind: webhook, webhook: {url: env:PGV_TEST_SL}, templates: {line: {firing: x}}}]")); err == nil || !strings.Contains(err.Error(), "json webhook") {
+		t.Errorf("a line template on a json webhook: %v", err)
+	}
+	if _, err := Parse([]byte("alerts: [{name: d, kind: webhook, webhook: {url: env:PGV_TEST_SL}, templates: {subject: {firing: x}}}]")); err != nil {
+		t.Errorf("a subject template on a json webhook: %v", err)
+	}
 	st, err := Parse([]byte(`alerts_base_url: https://p.example.org
-alerts: [{name: d, kind: file, file: {dir: ` + t.TempDir() + `}, templates: {
+alerts: [{name: d, kind: webhook, webhook: {url: env:PGV_TEST_SL, format: slack}, templates: {
   subject: {firing: "{severity}: {setting} on {instance} ({count} in all)", resolved: "OK: {instance}"},
   line: {firing: "{instance} {setting} = {value} see {url}", repeat: "still {instance} {setting} after {sends} send(s)"}}}]`))
 	if err != nil {
@@ -109,6 +120,13 @@ alerts: [{name: d, kind: file, file: {dir: ` + t.TempDir() + `}, templates: {
 	}
 	if m := (Message{Alerts: []Alert{rep}}); m.Summary() != "pgvigil: 1 still open" {
 		t.Errorf("summary %q", m.Summary())
+	}
+	// a template that placed {url} after a long value: the line is cut and the whole address follows, once
+	long := fire
+	long.Value = strings.Repeat("v", 2000)
+	long = c.decorate(long, now)
+	if l := long.Line(); !strings.HasSuffix(l, " ... "+long.URL) || strings.Count(l, "https://") != 1 {
+		t.Errorf("a long templated line: %d bytes, ends %q", len(l), l[max(0, len(l)-120):])
 	}
 }
 
@@ -246,7 +264,7 @@ func TestChatBudgets(t *testing.T) {
 	var alerts []Alert
 	for i := 0; i < 30; i++ {
 		alerts = append(alerts, Alert{Event: "firing", FindingKey: strings.Repeat("a", 31) + string(rune('a'+i%26)), Instance: "erp01", Severity: "warning", Source: "s",
-			Setting: "x", Value: strings.Repeat("v", 450) + " @everyone"})
+			Setting: "x", Value: strings.Repeat("v", 450) + " @everyone <users/all>"})
 	}
 	for i, path := range []string{"/discord", "/gchat"} {
 		c := &st.Channels[i]
@@ -278,6 +296,11 @@ func TestChatBudgets(t *testing.T) {
 		}
 		if len(posts[path]) < 2 {
 			t.Errorf("%s: %d post(s): the budget did not split", path, len(posts[path]))
+		}
+	}
+	for _, p := range posts["/gchat"] {
+		if txt, _ := p["text"].(string); strings.Contains(txt, "<users/") {
+			t.Errorf("google chat: a mention left whole")
 		}
 	}
 	if am, _ := posts["/discord"][0]["allowed_mentions"].(map[string]any); am == nil || len(am["parse"].([]any)) != 0 {

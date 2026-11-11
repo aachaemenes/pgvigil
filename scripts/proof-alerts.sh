@@ -64,24 +64,25 @@
 #  E. the loop inside `pgvigil run` (an instance: a sandbox database of the proof's own) with the channels dead and
 #     drop3 (a file drop scoped to the proof's instance) only, for about 70 s: dead logs at least one more 'failed' row
 #     with its error, the process still runs at the end, its log says "alerts: channel failed".
-#  W. task 151 (K07, migration 0093), a configuration of its own with alerts_base_url https://pgvigil.example.org and
+#  W. task 151 (K07, migration 0093). Its passes expect exit 0 (every W channel answers; W7 exit 1), not the exit 1
+#     of the passes above. A configuration of its own with alerts_base_url https://pgvigil.example.org and
 #     five channels at min_severity critical, clear_after 0: og (opsgenie, the listener's /og), dc (webhook discord),
 #     gc (webhook googlechat, the token in its query), capped (file, max_per_hour 3), tplmail (smtp with a subject and a
-#     line template). P's autovacuum (critical) set again first. PW = og's firing in W1's pass (PW >= 4).
-#     W1 one pass, exit 0, the summary names 'held by max_per_hour': og PW create requests, each 'GenieKey <key>',
+#     line template). P's autovacuum (critical) set again first. NW = og's firing in W1's pass (NW >= 4).
+#     W1 one pass, exit 0, the summary names 'held by max_per_hour': og NW create requests, each 'GenieKey <key>' (the key in no body),
 #     alias pgvigil:<instance>:<finding key>, priority P1, details.url https://pgvigil.example.org/#/alert?k=<key>&t=;
-#     dc and gc PW alert lines in all, each post within 2000 (dc) / 4096 (gc) characters, more than one post when the
+#     dc and gc NW alert lines in all, each post within 2000 (dc) / 4096 (gc) characters, more than one post when the
 #     lines need it, dc's allowed_mentions.parse empty, every line ending in its page's address; capped 3 files, its
-#     log a 'sent' row of 3 and a 'capped' row of PW - 3; tplmail's messages 'Subject: PGV <n> new on tplmail' with the
-#     n summing to PW and PW 'TPL critical' lines; alert_channels records og as opsgenie, capped's cap 3, tplmail's
+#     log 'sent' rows of 3 in all and a 'capped' row of NW - 3; tplmail's messages 'Subject: PGV <n> new on tplmail'
+#     with the n summing to NW and NW 'TPL critical' lines; alert_channels records og as opsgenie, capped's cap 3, tplmail's
 #     templates 'subject firing, line firing, subject resolved' and the link base; no key or token in any error or
 #     destination.
-#  W2 a pass: capped still 3 files and a second 'capped' row of PW - 3 (nothing of the hour left); its sent rows moved
-#     61 minutes back, a pass: capped min(PW, 6) files.
-#  W3 pgvigil.finding_fix: work_mem 64MB on a setting finding -> "ALTER SYSTEM SET work_mem = '64MB'; SELECT
+#  W2 a pass: capped still 3 files, nothing sent, a 'capped' row of what it owes (og's open alerts it holds no row
+#     of, read after the pass); its sent rows moved 61 minutes back, a pass: capped sends min(3, that) more.
+#  W3 pgvigil.finding_fix: autovacuum on on P's setting finding -> "ALTER SYSTEM SET autovacuum = 'on'; SELECT
 #     pg_reload_conf();"; a detail with "VACUUM (ANALYZE) public.t;" -> that statement; a detail with a 635-character
-#     REINDEX -> 635 characters; a suggested value of two words, a SQL Server finding, a setting name with a ';' -> NULL;
-#     over every demo finding without an error.
+#     REINDEX -> 635 characters; data_checksums, an extension's name, a value of two words, a SQL Server finding, a
+#     setting name with a ';', an alert rule -> NULL; over every demo finding without an error.
 #     The API (`pgvigil serve` with the UI login on loopback): /api/alerts?k=<P's autovacuum> answers the card (the
 #     finding standing, its fix "ALTER SYSTEM SET autovacuum = 'on'; SELECT pg_reload_conf();", threshold 'on'), two
 #     firings (B's resolved, W's open) and the sends that carried it; POST /api/alerts/dismiss: no session 401, no
@@ -95,8 +96,10 @@
 #     create and a close of alias pgvigil:pgvigil:test-<id>, the request answered 'sent', alert_log outcome 'test' for
 #     og; dc's test: a '[TEST] pgvigil:' line.
 #  W5 P's autovacuum gone and P read, a pass: og a close of P's alias, dc and gc a '[RESOLVED] P' line, tplmail a
-#     'Subject: PGV resolved P'. W6 a second instance with open og alerts deactivated, a pass: og closes each of its
-#     aliases (as many as its open og rows), dc, gc and tplmail say nothing of it.
+#     'Subject: PGV resolved <an instance>' (a firing in the same message: 'PGV <n> new on tplmail'). W6 a second
+#     instance with open og alerts deactivated, a pass: og closes each of its aliases (as many as its open og rows),
+#     dc, gc and tplmail say nothing of it. W7 an Opsgenie channel whose listener answers 401 with the key in its body:
+#     exit 1, its log row 'failed' with 401 and '<api key>' and never the key, the key in no output of the command.
 set -euo pipefail
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
@@ -164,6 +167,9 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_PUT(self): self.do_POST()
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if self.path.startswith("/ogbad"):
+            self.send_response(401); self.end_headers()
+            self.wfile.write(('{"message":"Key ' + self.headers.get("Authorization", "") + ' is invalid"}').encode()); return
         for pre, code in (("/og", 202), ("/discord", 204), ("/gchat", 200)):
             if self.path.startswith(pre):
                 import json as _j
@@ -476,23 +482,15 @@ wpass() {
   if [[ -s "$WORK/wpass.$tag.err" ]]; then sed "s/^/pass $tag stderr: /" "$WORK/wpass.$tag.err"; fi
   { (( rc == 0 )) && grep -q '^alerts: ' "$WORK/wpass.$tag.out"; } || fail "pass $tag: exit $rc, want 0 with a summary line: $(tr '\n' ' ' < "$WORK/wpass.$tag.err" | cut -c1-600)"
 }
-# the listener's records of one route newer than a stamp, as JSON lines
-recs() { python3 - "$WORK/http/$1" "$2" <<'PY'
-import json, os, sys, glob
-d, st = sys.argv[1:3]; t = os.path.getmtime(st)
-for p in sorted(glob.glob(d + "/*.json")):
-    if os.path.getmtime(p) > t: print(open(p).read())
-PY
-}
 q "update pgvigil.instance_state set non_default_settings = coalesce(non_default_settings, '[]'::jsonb) || '[{\"name\": \"autovacuum\", \"value\": \"off\"}]' where instance_id = $PID" >/dev/null
 
 # W1: the first pass
 stamp W1; TW=$(mark)
 wpass W1
 grep -q 'held by max_per_hour' "$WORK/wpass.W1.out" || fail "W1: the summary does not name the cap"
-PW=$(logsum og n_firing "$TW" sent)
-(( PW >= 4 )) || fail "W1: og opened $PW alerts, want 4 or more"
-python3 - "$WORK/http" "$WORK/stamp.W1" "$PW" "$OGKEY" "$BASE" <<'PY' || fail "W1: the listener's requests"
+NW=$(logsum og n_firing "$TW" sent)
+(( NW >= 4 )) || fail "W1: og opened $NW alerts, want 4 or more"
+python3 - "$WORK/http" "$WORK/stamp.W1" "$NW" "$OGKEY" "$BASE" <<'PY' || fail "W1: the listener's requests"
 import json, os, sys, glob
 d, st, PW, key, base = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5]
 t = os.path.getmtime(st)
@@ -500,6 +498,7 @@ def recs(sub): return [json.load(open(p)) for p in sorted(glob.glob(f"{d}/{sub}/
 og = recs("og")
 assert len(og) == PW and all(r["method"] == "POST" and r["path"] == "/og/v2/alerts" for r in og), [(r["method"], r["path"]) for r in og]
 assert all(r["auth"] == "GenieKey " + key for r in og), "auth"
+assert not any(key in json.dumps(r["body"]) for r in og), "the key in a request body"
 for r in og:
     b = r["body"]
     assert b["priority"] == "P1" and b["alias"].startswith("pgvigil:" + b["entity"] + ":"), b
@@ -510,12 +509,14 @@ for sub, field, limit in (("discord", "content", 2000), ("gchat", "text", 4096))
     lines = [l for p in ps for l in p["body"][field].split("\n")[1:]]
     assert len(lines) == PW, (sub, len(lines), PW, len(ps))
     assert all(len(p["body"][field]) <= limit for p in ps), (sub, [len(p["body"][field]) for p in ps])
-    assert all(f"{base}/#/alert?k=" in l for l in lines), (sub, [l for l in lines if base not in l][:2])
+    import re
+    end = re.compile(re.escape(base) + r"/#/alert\?k=[0-9a-f]{32}&t=[0-9]+$")
+    assert all(end.search(l) for l in lines), (sub, [l for l in lines if not end.search(l)][:2])
     if sub == "discord": assert all(p["body"]["allowed_mentions"] == {"parse": []} for p in ps), "allowed_mentions"
     print(f"W1: {sub} {len(ps)} post(s), {len(lines)} lines, longest {max(len(p['body'][field]) for p in ps)} characters")
 print(f"W1: og {len(og)} creates")
 PY
-python3 - "$WORK/smtp" "$WORK/stamp.W1" "$PW" "$BASE" <<'PY' || fail "W1: tplmail's messages"
+python3 - "$WORK/smtp" "$WORK/stamp.W1" "$NW" "$BASE" <<'PY' || fail "W1: tplmail's messages"
 import os, sys, glob, re
 d, st, PW, base = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]; t = os.path.getmtime(st)
 ms = [open(p, errors="replace").read() for p in glob.glob(d + "/*.eml") if os.path.getmtime(p) > t]
@@ -526,21 +527,25 @@ assert len(tpl) == PW and all(l.endswith(tuple("0123456789")) and f" {base}/#/al
 print(f"W1: tplmail {len(ms)} message(s), {len(tpl)} TPL lines")
 PY
 [[ $(ls "$WORK/capped" | wc -l) == 3 ]] || fail "W1: capped holds $(ls "$WORK/capped" | wc -l) files"
-[[ $(logsum capped n_firing "$TW" sent) == 3 && $(logsum capped n_firing "$TW" capped) == $((PW - 3)) ]] || fail "W1: capped's log: sent $(logsum capped n_firing "$TW" sent), capped $(logsum capped n_firing "$TW" capped), PW $PW"
+[[ $(logsum capped n_firing "$TW" sent) == 3 && $(logsum capped n_firing "$TW" capped) == $((NW - 3)) ]] || fail "W1: capped's log: sent $(logsum capped n_firing "$TW" sent), capped $(logsum capped n_firing "$TW" capped), PW $NW"
 [[ $(q "select kind || '|' || (select max_per_hour from pgvigil.alert_channels where name = 'capped') || '|' || (select templates from pgvigil.alert_channels where name = 'tplmail') from pgvigil.alert_channels where name = 'og'") == "opsgenie|3|subject firing, line firing, subject resolved" ]] || fail "W1: alert_channels: $(q "select name, kind, max_per_hour, templates, link_base from pgvigil.alert_channels where is_configured")"
 [[ $(q "select count(*) from pgvigil.alert_channels where is_configured and link_base = '$BASE'") == 5 ]] || fail "W1: the link base is not recorded on the five channels"
 [[ $(q "select count(*) from pgvigil.alert_log where error like '%secret-token%' or error like '%$OGKEY%' or destination like '%secret-token%' or destination like '%$OGKEY%'") == 0 ]] || fail "W1: a key or a token in the log"
 [[ $(q "select count(*) from pgvigil.alert_channels where destination like '%secret-token%' or destination like '%$OGKEY%'") == 0 ]] || fail "W1: a key or a token in a destination"
-ok "W1: $PW critical alerts to og (one create each, alias and page address), dc and gc (within their text limits), tplmail (its templates); capped sent 3 and held $((PW - 3))"
+ok "W1: $NW critical alerts to og (one create each, alias and page address), dc and gc (within their text limits), tplmail (its templates); capped sent 3 and held $((NW - 3))"
 
 # W2: the cap holds through the hour, and lets 3 more go when the hour has passed
+# graded against W2's own records [review 4: a demo finding moving between W1 and W2 changes what capped owes]:
+# capped owes what og holds open and capped does not, read right after the pass
 TW2=$(mark); wpass W2
-[[ $(ls "$WORK/capped" | wc -l) == 3 && $(logsum capped n_firing "$TW2" capped) == $((PW - 3)) && $(logsum capped n_firing "$TW2" sent) == 0 ]] || fail "W2: capped: $(ls "$WORK/capped" | wc -l) files, capped $(logsum capped n_firing "$TW2" capped), sent $(logsum capped n_firing "$TW2" sent)"
+OWE=$(q "select count(distinct finding_key) from pgvigil.alert_state o where o.channel = 'og' and o.cleared_at is null and not exists (select 1 from pgvigil.alert_state c where c.channel = 'capped' and c.cleared_at is null and c.finding_key = o.finding_key)")
+CAP2=$(logsum capped n_firing "$TW2" capped)
+[[ $(ls "$WORK/capped" | wc -l) == 3 && $CAP2 == "$OWE" && $(logsum capped n_firing "$TW2" sent) == 0 ]] || fail "W2: capped: $(ls "$WORK/capped" | wc -l) files, held $CAP2 of $OWE owed, sent $(logsum capped n_firing "$TW2" sent)"
 q "update pgvigil.alert_log set snapshot_at = snapshot_at - interval '61 minutes' where channel = 'capped' and outcome = 'sent'" >/dev/null
-wpass W2b
-WANT=$(( PW < 6 ? PW : 6 ))
-[[ $(ls "$WORK/capped" | wc -l) == "$WANT" ]] || fail "W2: capped holds $(ls "$WORK/capped" | wc -l) files after the hour, want $WANT"
-ok "W2: the cap held every alert while the hour was used, then sent $((WANT - 3)) more"
+TW2b=$(mark); wpass W2b
+SENT2=$(logsum capped n_firing "$TW2b" sent)
+{ (( SENT2 == (CAP2 < 3 ? CAP2 : 3) )) && [[ $(ls "$WORK/capped" | wc -l) == $((3 + SENT2)) ]]; } || fail "W2: after the hour capped sent $SENT2 (held $CAP2), holds $(ls "$WORK/capped" | wc -l) files"
+ok "W2: the cap held all $CAP2 owed while the hour was used, then sent $SENT2 more"
 
 # W3: the API - the page, dismiss, mute rules (serve with the UI login; the audit login is the repository's dsn)
 # a fixed length: \$RANDOM alone can make one shorter than the login's minimum [s151-proof2: 'user add' refused it]
@@ -559,8 +564,18 @@ curl -s -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"u
 # finding_fix's two branches and its refusals [s151-proof1: a {1,400} bound in its pattern (PostgreSQL allows 255) failed
 # every /api/alerts read at the first finding taking the detail branch]
 LONGD="rebuild it: REINDEX INDEX CONCURRENTLY public.$(printf 'x%.0s' $(seq 1 600)); then ANALYZE"
-[[ $(q "select pgvigil.finding_fix('postgres', 'work_mem', true, '64MB', null) || '|' || coalesce(pgvigil.finding_fix('postgres', 'x', false, null, 'run VACUUM (ANALYZE) public.t; then look again'), 'null') || '|' || length(pgvigil.finding_fix('postgres', 'x', null, null, '$LONGD')) || '|' || coalesce(pgvigil.finding_fix('postgres', 'work_mem', true, 'at least 64MB', 'nothing to run'), 'null') || '|' || coalesce(pgvigil.finding_fix('sqlserver', 'max degree', true, '4', null), 'null') || '|' || coalesce(pgvigil.finding_fix('postgres', 'a; drop', true, 'on', null), 'null')") == "ALTER SYSTEM SET work_mem = '64MB'; SELECT pg_reload_conf();|VACUUM (ANALYZE) public.t;|635|null|null|null" ]] || fail "W3: finding_fix: $(q "select pgvigil.finding_fix('postgres', 'work_mem', true, '64MB', null), pgvigil.finding_fix('postgres', 'x', false, null, 'run VACUUM (ANALYZE) public.t; then look again'), length(pgvigil.finding_fix('postgres', 'x', null, null, '$LONGD'))" 2>&1)"
-NFIX=$(q "select count(*) from pgvigil.findings y join pgvigil.instances i using (instance_id) where pgvigil.finding_fix(i.engine, y.setting, y.is_set, y.suggested, y.detail) is not null" 2>&1) || fail "W3: finding_fix over the demo's findings: $NFIX"
+FX() { q "select coalesce(pgvigil.finding_fix($1), 'null')"; }
+[[ $(FX "'postgres', 'pg_gather', $PID, 'autovacuum', true, 'on', null") == "ALTER SYSTEM SET autovacuum = 'on'; SELECT pg_reload_conf();" ]] || fail "W3: finding_fix, a setting: $(FX "'postgres', 'pg_gather', $PID, 'autovacuum', true, 'on', null" 2>&1)"
+[[ $(FX "'postgres', 'x', $PID, 'x', false, null, 'run VACUUM (ANALYZE) public.t; then look again'") == "VACUUM (ANALYZE) public.t;" ]] || fail "W3: finding_fix, a statement in the detail"
+[[ $(q "select length(pgvigil.finding_fix('postgres', 'x', $PID, 'x', null, null, '$LONGD'))") == 635 ]] || fail "W3: finding_fix, a long statement"
+# never a statement that cannot run: a parameter no ALTER SYSTEM changes (data_checksums), an extension's name, a
+# two-word value, a SQL Server finding, a name with a ';', an alert rule's detail [review 2 should-fix 1]
+for args in "'postgres', 'pg_gather', $PID, 'data_checksums', true, 'on', null" "'postgres', 'pgvigil', $PID, 'amcheck', true, 'keep', null" \
+            "'postgres', 'pg_gather', $PID, 'work_mem', true, 'at least 64MB', 'nothing to run'" "'sqlserver', 'config', $PID, 'max degree', true, '4', null" \
+            "'postgres', 'pg_gather', $PID, 'a; drop', true, 'on', null" "'postgres', 'alert rule', $PID, 'x', null, null, 'alert rule 3 \"ANALYZE lag\" (every instance): x; held'"; do
+  [[ $(FX "$args") == null ]] || fail "W3: finding_fix gave a statement for ($args): $(FX "$args")"
+done
+NFIX=$(q "select count(*) from pgvigil.findings y join pgvigil.instances i using (instance_id) where pgvigil.finding_fix(i.engine, y.source, y.instance_id, y.setting, y.is_set, y.suggested, y.detail) is not null" 2>&1) || fail "W3: finding_fix over the demo's findings: $NFIX"
 echo "W3: finding_fix gives a statement for $NFIX of the demo's findings"
 curl -s -b "$JAR" "$U/api/alerts?k=$AKEY" -o "$WORK/card.json"
 python3 - "$WORK/card.json" <<'PY' || fail "W3: the alert's page: $(head -c 800 "$WORK/card.json")"
@@ -579,7 +594,7 @@ DIS="{\"op\":\"add\",\"finding_key\":\"$AKEY\",\"reason\":\"tolerable for this s
 [[ $(code -b "$JAR" -H 'Content-Type: application/json' -d "$DIS" "$U/api/alerts/dismiss") == 403 ]] || fail "W3: dismiss without the header: $(cat "$WORK/body")"
 { [[ $(wpost alerts/dismiss "{\"op\":\"add\",\"finding_key\":\"$AKEY\",\"reason\":\" \"}") == 409 ]] && grep -q 'needs a reason' "$WORK/body"; } || fail "W3: a dismissal without a reason: $(cat "$WORK/body")"
 [[ $(wpost alerts/dismiss "$DIS") == 200 ]] || fail "W3: dismiss: $(cat "$WORK/body")"
-DID=$(idof dismiss_id)
+DID=$(idof dismiss_id) || fail "W: no dismiss_id in the answer: $(cat "$WORK/body")"
 { [[ $(wpost alerts/dismiss "$DIS") == 409 ]] && grep -q 'already dismissed' "$WORK/body"; } || fail "W3: a second dismissal: $(cat "$WORK/body")"
 HF=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ); HT=$(date -u -d '+5 minutes' +%Y-%m-%dT%H:%M:%SZ)
 hist() { curl -s -b "$JAR" "$U/api/alerts?part=$1&from=$HF&to=$HT" -o "$WORK/h.json"; python3 - "$WORK/h.json" "$1" "$AKEY" <<'PY'
@@ -600,10 +615,10 @@ TM=$(mark)
 hold() { q "select coalesce(pgvigil.ack_hold($1, '$PNAME', coalesce((select tags from pgvigil.instance_tags_merged where instance_id = $PID), '{}'), '$AKEY', 'pg_gather', 'autovacuum', 'off')::text, 'none')"; }
 mstate() { curl -s -b "$JAR" "$U/api/alerts?part=mutes" -o "$WORK/m.json"; python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["mutes"]; r=[dict(zip(t["columns"],x)) for x in t["rows"]]; print(next((x["state"] for x in r if str(x["ack_id"])==sys.argv[2]), "absent"))' "$WORK/m.json" "$1"; }
 [[ $(wpost ack "{\"kind\":\"mute\",\"check_key\":\"autovacuum\",\"starts_at\":\"$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)\"}") == 200 ]] || fail "W3: the upcoming mute rule: $(cat "$WORK/body")"
-M1=$(idof ack_id)
+M1=$(idof ack_id) || fail "W: no ack_id in the answer: $(cat "$WORK/body")"
 [[ $(mstate "$M1") == upcoming && $(hold "now()") == none && $(hold "now() + interval '2 hours'") == "$M1" ]] || fail "W3: the upcoming rule: $(mstate "$M1"), holds now $(hold "now()"), at +2 h $(hold "now() + interval '2 hours'")"
 [[ $(wpost alerts/mute "{\"op\":\"edit\",\"ack_id\":$M1,\"check_key\":\"autovacuum\",\"match_text\":\"off\"}") == 200 ]] || fail "W3: the edit: $(cat "$WORK/body")"
-M2=$(idof ack_id)
+M2=$(idof ack_id) || fail "W: no ack_id in the answer: $(cat "$WORK/body")"
 [[ $M2 != "$M1" && $(q "select (select ended_at is not null from pgvigil.acks where ack_id = $M1) || '|' || (select replaces from pgvigil.acks where ack_id = $M2)") == "true|$M1" && $(hold "now()") == "$M2" ]] || fail "W3: after the edit: M1 $M1 M2 $M2, $(q "select ack_id, ended_at, replaces, starts_at from pgvigil.acks where ack_id in ($M1, $M2)"), holds $(hold "now()")"
 [[ $(wpost alerts/mute "{\"op\":\"pause\",\"ack_id\":$M2}") == 200 && $(hold "now()") == none && $(mstate "$M2") == paused ]] || fail "W3: the pause: $(cat "$WORK/body"), holds $(hold "now()"), $(mstate "$M2")"
 { [[ $(wpost alerts/mute "{\"op\":\"pause\",\"ack_id\":$M2}") == 409 ]] && grep -q 'already paused' "$WORK/body"; } || fail "W3: a second pause: $(cat "$WORK/body")"
@@ -614,7 +629,7 @@ ok "W3: a mute rule set ahead holds nothing until its start; edited (its success
 
 # W4: Send test
 [[ $(wpost alerts/test '{"channel":"og"}') == 200 ]] || fail "W4: the og test: $(cat "$WORK/body")"
-TID=$(idof test_id)
+TID=$(idof test_id) || fail "W: no test_id in the answer: $(cat "$WORK/body")"
 { [[ $(wpost alerts/test '{"channel":"og"}') == 409 ]] && grep -q 'still waits' "$WORK/body"; } || fail "W4: a second og test: $(cat "$WORK/body")"
 { [[ $(wpost alerts/test '{"channel":"mail"}') == 409 ]] && grep -q 'is not configured' "$WORK/body"; } || fail "W4: a test of an unconfigured channel: $(cat "$WORK/body")"
 [[ $(wpost alerts/test '{"channel":"dc"}') == 200 ]] || fail "W4: the dc test: $(cat "$WORK/body")"
@@ -626,7 +641,7 @@ d, st, tid = sys.argv[1:4]; t = os.path.getmtime(st)
 def recs(sub): return [json.load(open(p)) for p in sorted(glob.glob(f"{d}/{sub}/*.json")) if os.path.getmtime(p) > t]
 alias = f"pgvigil:pgvigil:test-{tid}"
 og = [r for r in recs("og") if alias in urllib.parse.unquote(r["path"]) or r["body"].get("alias") == alias]
-assert [(r["method"], urllib.parse.unquote(r["path"].split("?")[0])) for r in og] == [("POST", "/og/v2/alerts"), ("POST", f"/og/v2/alerts/{alias}/close")], og
+assert [(r["method"], urllib.parse.unquote(r["path"].split("?")[0])) for r in og] == [("POST", "/og/v2/alerts"), ("POST", f"/og/v2/alerts/{alias}/close")], [(r["method"], r["path"]) for r in og]
 dc = [l for r in recs("discord") for l in r["body"]["content"].split("\n") if l.startswith("[TEST] pgvigil: a test message on channel dc")]
 assert len(dc) == 1, dc
 print("W4: og create + close of", alias, "; dc", dc[0][:80])
@@ -635,7 +650,10 @@ PY
 ok "W4: Send test asked through the door (a second one and an unconfigured channel refused), sent by the next pass (og: the test and its close), answered and logged"
 
 # W5: P's autovacuum clears
+# the order D keeps: a pass marks the finding missing, then a read of P, then the pass that resolves it [s151-proof3:
+# the read before the marking pass resolved nothing - a read must come after the finding went missing]
 q "update pgvigil.instance_state set non_default_settings = (select coalesce(jsonb_agg(x), '[]'::jsonb) from jsonb_array_elements(non_default_settings) x where x->>'name' <> 'autovacuum') where instance_id = $PID" >/dev/null
+wpass W5a
 q "select pgvigil.log_collection($PID, 'instance', clock_timestamp(), 1, 'ok', null)" >/dev/null
 stamp W5; wpass W5
 python3 - "$WORK/http" "$WORK/smtp" "$WORK/stamp.W5" "$PNAME" "$AKEY" <<'PY' || fail "W5: the recoveries"
@@ -649,7 +667,14 @@ for sub, field in (("discord", "content"), ("gchat", "text")):
     assert n == 1, (sub, n)
 ms = [open(p, errors="replace").read() for p in glob.glob(sd + "/*.eml") if os.path.getmtime(p) > t]
 hit = [m for m in ms if f"\n[RESOLVED] {pn}: pg_gather autovacuum" in m.replace("\r", "")]
-assert len(hit) == 1 and any(l.startswith("Subject: PGV ") for l in hit[0].splitlines()), [m[:300] for m in ms]
+import re
+subj = [l for l in hit[0].splitlines() if l.startswith("Subject: ")] if len(hit) == 1 else []
+# the message's leading event names its subject: with no firing line in it, the resolved template
+assert len(hit) == 1 and len(subj) == 1, [m[:300] for m in ms]
+if not any(l.startswith("TPL ") for l in hit[0].splitlines()):
+    assert re.fullmatch(r"Subject: PGV resolved \S+", subj[0].strip()), subj
+else:
+    assert re.fullmatch(r"Subject: PGV \d+ new on tplmail", subj[0].strip()), subj
 print("W5: og closed", key[:8], "; dc, gc and tplmail resolved; tplmail's subject:", [l for l in hit[0].splitlines() if l.startswith("Subject:")][0])
 PY
 ok "W5: P's autovacuum resolved: og closed its alias, dc, gc and tplmail sent the recovery"
@@ -669,9 +694,26 @@ assert len(closes) == kn and all("cleared without a fix" in r["body"]["note"] fo
 for sub, field in (("discord", "content"), ("gchat", "text")):
     assert not any(f"] {inst}:" in l or l.startswith(f"TPL critical {inst} ") for r in recs(sub) for l in r["body"][field].split("\n")), sub
 ms = [open(p, errors="replace").read() for p in glob.glob(sd + "/*.eml") if os.path.getmtime(p) > t]
-assert not any(f"] {inst}:" in m for m in ms), "tplmail"
+assert not any(f"] {inst}:" in m or f"\nTPL critical {inst} " in m.replace("\r", "") for m in ms), "tplmail"
 print("W6:", inst, "closed on og:", len(closes))
 PY
 ok "W6: $DEACT2 deactivated: og closed its $KN2 alerts, dc, gc and tplmail sent nothing"
+
+# W7: Opsgenie's error path - a 401 that echoes the key back: the log, the summary and stderr never carry it
+cat > "$WORK/wbad.yaml" <<EOF
+repository:
+  dsn: env:PGVIGIL_REPO_DSN
+alerts_dsn: env:PGV_PROOF_ALERTS_DSN
+alerts:
+  - {name: ogbad, kind: opsgenie, min_severity: critical, opsgenie: {api_key: env:PGV_PROOF_OG, url: "http://127.0.0.1:$HTTP_PORT/ogbad"}}
+EOF
+TW7=$(mark)
+set +e; "$BIN" alerts -config "$WORK/wbad.yaml" >"$WORK/w7.out" 2>"$WORK/w7.err"; rc=$?; set -e
+(( rc == 1 )) || fail "W7: exit $rc, want 1 (ogbad's send failed)"
+ERR7=$(q "select string_agg(error, ' | ') from pgvigil.alert_log where channel = 'ogbad' and outcome = 'failed' and snapshot_at >= '$TW7'")
+SHOWN7=$(printf '%s' "$ERR7" | sed "s/$OGKEY/<the key>/g")
+[[ $ERR7 == *"401"* && $ERR7 == *"<api key>"* && $ERR7 != *"$OGKEY"* ]] || fail "W7: ogbad's logged error: $SHOWN7"
+if grep -qF "$OGKEY" "$WORK/w7.out" "$WORK/w7.err"; then fail "W7: the key in the command's output"; fi
+ok "W7: Opsgenie answered 401 with the key in its body: logged as failed with the key replaced, never in the output"
 
 echo "PROOF OK: alerts"

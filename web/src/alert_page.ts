@@ -24,9 +24,12 @@ function hashParam(name: string): string | null {
   return new URLSearchParams(location.hash.split('?')[1] ?? '').get(name);
 }
 
-// alertHref: the address of an alert's page (the same form the sender writes into a message)
-export function alertHref(key: unknown, at?: unknown): string {
-  const q = new URLSearchParams({ k: String(key ?? '') });
+// alertHref: the address of an alert's page (the same form the sender writes into a message); with ctx the page's
+// time range and tag ride along, as on every link (router.ts)
+export function alertHref(key: unknown, at?: unknown, ctx?: Ctx): string {
+  const base = ctx ? href(ctx, { tab: 'alert', instance: undefined }) : '#/alert?';
+  const q = new URLSearchParams(base.split('?')[1] ?? '');
+  q.set('k', String(key ?? ''));
   const t = at == null ? NaN : Date.parse(String(at));
   if (Number.isFinite(t)) q.set('t', String(Math.floor(t / 1000)));
   return `#/alert?${q}`;
@@ -123,8 +126,15 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
     linksBox.replaceChildren(instanceId ? instanceLinks(ctx, instanceId, head.engine ?? card?.engine, view === 'firing' ? win : null, o?.fired_at, head.source)
       : el('p', { class: 'meta' }, 'The instance is no longer in the repository.'));
   };
-  bFiring.addEventListener('click', () => { view = 'firing'; drawLinks(); });
-  bNow.addEventListener('click', () => { view = 'now'; drawLinks(); });
+  // the view rides in the address (v=now), so a range change, a reload and Copy link keep it
+  const keepView = () => {
+    const [path, qs] = location.hash.split('?');
+    const q = new URLSearchParams(qs ?? '');
+    if (view === 'now') q.set('v', 'now'); else q.delete('v');
+    history.replaceState(null, '', `${path}?${q}`);
+  };
+  bFiring.addEventListener('click', () => { view = 'firing'; keepView(); drawLinks(); });
+  bNow.addEventListener('click', () => { view = 'now'; keepView(); drawLinks(); });
   drawLinks();
 
   const door = await loadAckSafe(['log'], {});
@@ -148,7 +158,7 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(dismissBar(door, key, dismissed));
 
   const occCols: Col[] = [
-    { key: 'fired_at', label: 'fired', fmt: (v, r) => el('a', { href: alertHref(key, v), 'aria-label': `open firing ${String(r.occurrence)}` }, fmtTime(v)) },
+    { key: 'fired_at', label: 'fired', fmt: (v, r) => el('a', { href: alertHref(key, v, ctx), title: `firing ${String(r.occurrence)}` }, fmtTime(v)) },
     { key: 'cleared_at', label: 'cleared', fmt: fmtTime },
     { key: 'status', fmt: statusBadge },
     { key: 'severity', fmt: sevBadge },
@@ -184,26 +194,32 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
 }
 
 function copyLinkButton(): HTMLElement {
+  const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const b = el('button', { type: 'button', title: 'Copy the address of this page' }, 'Copy link');
-  b.addEventListener('click', async () => { b.textContent = (await copyText(location.href)) ? 'Link copied' : 'Copy refused'; });
-  return b;
+  b.addEventListener('click', async () => { said.textContent = (await copyText(location.href)) ? ' Link copied.' : ' The browser refused the copy.'; });
+  return el('span', {}, b, said);
 }
 
 // dismissBar: dismiss the alert with a reason, or end its dismissal
 function dismissBar(door: AckData, key: string, dismissed: Row | undefined): HTMLElement {
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
+  const said = el('span', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   const bar = el('div', { class: 'seg' });
-  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, redraw); }));
+  if (dismissed) bar.append(writeButton(door, 'Undismiss', 'Undismiss this alert', () => { void dismissEnd(key, said, redraw); }));
   else bar.append(writeButton(door, 'Dismiss', 'Dismiss this alert with a reason', () => dismissDialog([key], redraw)));
-  return bar;
+  return el('div', {}, bar, said);
 }
 
-async function dismissEnd(key: string, after: () => void) {
-  const d = await get<{ dismissed: Table | null }>('alerts', { part: 'dismissed' });
-  const row = rowsOf(d.dismissed).find(r => r.finding_key === key && r.live);
-  if (!row) { after(); return; }
+// dismissEnd: the dismissal of the alert ended, every outcome said beside the button
+async function dismissEnd(key: string, said: HTMLElement, after: () => void) {
+  let row: Row | undefined;
+  try {
+    const d = await get<{ dismissed: Table | null }>('alerts', { part: 'dismissed' });
+    row = rowsOf(d.dismissed).find(r => r.finding_key === key && r.live);
+  } catch (e) { said.textContent = ' Not ended: the dismissals could not be read: ' + (e instanceof Error ? e.message : String(e)); return; }
+  if (!row) { said.textContent = ' This alert is no longer dismissed (someone ended it): the page is read again.'; window.setTimeout(after, 1500); return; }
   if (!window.confirm('Undismiss this alert? It shows on the open-alerts grid again; the dismissal stays in the store with who ended it.')) return;
-  try { await post('alerts/dismiss', { op: 'end', dismiss_id: Number(row.dismiss_id) }); } catch (e) { window.alert(e instanceof Error ? e.message : String(e)); }
+  try { await post('alerts/dismiss', { op: 'end', dismiss_id: Number(row.dismiss_id) }); } catch (e) { said.textContent = ' Not ended: ' + (e instanceof Error ? e.message : String(e)); return; }
   after();
 }
 
@@ -217,7 +233,8 @@ export function dismissDialog(keys: string[], after: () => void) {
   const other = el('input', { type: 'text', maxlength: '500', 'aria-label': 'another reason', style: 'width:100%' });
   const ok = el('button', { type: 'submit' }, 'Dismiss'), no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const reason = () => (sel.value || other.value).trim();
+  // a typed reason wins over the list's pick: the text box is always there to be typed in
+  const reason = () => (other.value.trim() || sel.value).trim();
   const check = () => { ok.disabled = reason() === ''; };
   sel.addEventListener('change', check); other.addEventListener('input', check);
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Dismiss ${keys.length} alert(s)`),

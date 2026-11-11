@@ -57,7 +57,7 @@ function testCell(ad: AckData, r: Row, redraw: () => void): HTMLElement {
       window.setTimeout(redraw, 2000);
     } catch (e) { said.textContent = ' not asked: ' + (e instanceof Error ? e.message : String(e)); b.disabled = false; }
   });
-  if (!r.is_configured) { b.disabled = true; b.title = 'the configuration no longer names this channel'; }
+  if (!r.is_configured) { b.disabled = true; if (ad.writable) b.title = 'the configuration no longer names this channel'; }
   const last = r.last_test_at == null ? '' : ` last: ${String(r.last_test_outcome)} ${fmtTime(r.last_test_done ?? r.last_test_at)} (${String(r.last_test_by ?? '')})` + (r.last_test_error ? `: ${String(r.last_test_error)}` : '');
   return el('span', { style: 'white-space:nowrap' }, b, last ? el('span', { class: 'meta' }, last) : '', said);
 }
@@ -112,16 +112,32 @@ const logCols: Col[] = [
 export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Alerts'));
   let d: AlertsData;
+  // the channels, open alerts and send log are the page; the parts task 151 added are read on their own, so a slow or
+  // failing one (an older server, a timeout) leaves its section saying so and the rest of the page standing
+  const optional = ['history', 'tests', 'dismissed', 'mutes', 'fixes'] as const;
+  const missing: Record<string, string> = {};
   try {
-    d = await get<AlertsData>('alerts', window_(ctx));
+    const [core, ...opt] = await Promise.all([
+      get<AlertsData>('alerts', { ...window_(ctx), part: 'channels' }).then(async c => ({ ...c,
+        ...await get<AlertsData>('alerts', { ...window_(ctx), part: 'open' }),
+        ...await get<AlertsData>('alerts', { ...window_(ctx), part: 'log' }) })),
+      ...optional.map(p => get<AlertsData>('alerts', { ...window_(ctx), part: p }).catch((e: unknown) => {
+        missing[p] = e instanceof Error ? e.message : String(e);
+        return {} as Partial<AlertsData>;
+      })),
+    ]);
+    d = Object.assign({}, core, ...opt) as AlertsData;
   } catch (e) {
     sec.append(errorBox(e));
     return sec;
   }
+  const notRead = (p: string) => missing[p] ? el('p', { class: 'meta' }, `Not read: ${missing[p]}`) : '';
   const ad = await loadAckSafe(['acks', 'alerts', 'suppressed', 'log'], window_(ctx));
   const f = await fleet().catch(() => null);
   const chans = rowsOf(d.channels), open = rowsOf(d.open), log = rowsOf(d.log);
-  const fixes = new Map(rowsOf(d.fixes).map(r => [String(r.finding_key), String(r.fix)]));
+  const fixes = new Map(rowsOf(d.fixes).filter(r => r.fix != null).map(r => [String(r.finding_key), String(r.fix)]));
+  // a finding's suggested value is its threshold in the history while the finding stands
+  const suggested = new Map(rowsOf(d.fixes).filter(r => r.suggested != null).map(r => [String(r.finding_key), String(r.suggested)]));
   const dismissed = new Map(rowsOf(d.dismissed).filter(r => r.live).map(r => [String(r.finding_key), r]));
   const base = chans.find(r => r.is_configured && r.link_base)?.link_base;
   const configured = chans.filter(r => r.is_configured);
@@ -144,13 +160,14 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     grid(chans, channelCols(ad, redraw), 'No channel recorded: the alert sender has not run with a channel configured.'));
   sec.append(el('h3', {}, 'Open alerts'));
   if (ad.alerts == null) sec.append(grid(open, openCols, 'No open alert: nothing sent is still standing.'));
-  else sec.append(triageView(ad, triage, redraw, fixes, dismissed));
-  sec.append(historyView(ctx, rowsOf(d.history)));
+  else sec.append(triageView(ctx, ad, triage, redraw, fixes, dismissed));
+  if (missing.dismissed || missing.fixes) sec.append(notRead('dismissed'), notRead('fixes'));
+  sec.append(historyView(ctx, rowsOf(d.history).map(r => r.threshold == null && suggested.has(String(r.finding_key)) ? { ...r, threshold: suggested.get(String(r.finding_key)) } : r)), notRead('history'));
   sec.append(serversView(ad, f?.instances ?? [], redraw));
-  if (d.mutes != null) sec.append(mutesView(ad, rowsOf(d.mutes), 'mute', f?.instances ?? [], redraw), mutesView(ad, rowsOf(d.mutes), 'noise', f?.instances ?? [], redraw));
+  if (d.mutes != null) sec.append(mutesView(ctx, ad, rowsOf(d.mutes), 'mute', f?.instances ?? [], redraw), mutesView(ctx, ad, rowsOf(d.mutes), 'noise', f?.instances ?? [], redraw));
   else sec.append(rulesView(ad, 'mute', redraw), rulesView(ad, 'noise', redraw));
   sec.append(el('h3', {}, `Send tests ${rangeLabel(ctx)} `, whatIsThis('A Send test asks the alert sender for a test message on one channel: its next pass (within a minute while pgvigil run is up) sends it, whatever the quiet hours, back-off or cap, and records the destination\'s answer here and in the send log. PagerDuty and Opsgenie get the test and its resolve at once. A request no sender answered within the hour reads no answer: no sender holds that channel.', 'Send test')),
-    grid(rowsOf(d.tests), testCols, 'No test was asked in the time range.'));
+    missing.tests ? notRead('tests') : grid(rowsOf(d.tests), testCols, 'No test was asked in the time range.'));
   sec.append(el('h3', {}, `Held sends ${rangeLabel(ctx)} `, whatIsThis('What a mute, a silence or a blackout kept from a channel: the alert, the channel, the first and last pass of the sender that held it, and how many passes.', 'Held sends')),
     grid(rowsOf(ad.suppressed), heldCols, 'Nothing held in the time range.'));
   sec.append(el('h3', {}, `Send log ${rangeLabel(ctx)}`),
@@ -180,7 +197,7 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
     { key: 'status', fmt: v => badge(String(v ?? ''), v === 'open' ? 'crit' : v === 'resolved' ? 'ok' : '') },
     { key: 'severity', fmt: sevBadge },
     { key: 'instance' },
-    { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.fired_at) }, [r.source, v].filter(x => x != null && x !== '').map(String).join(': ')) },
+    { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.fired_at, ctx) }, [r.source, v].filter(x => x != null && x !== '').map(String).join(': ')) },
     { key: 'value', fmt: v => oneLine(v) },
     { key: 'threshold', fmt: v => String(v ?? '') },
     { key: 'channels', fmt: v => list(v) },
@@ -188,7 +205,7 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
     { key: 'occurrence', label: 'firing', num: true },
     { key: 'dismissed', fmt: v => v ? 'dismissed' : '' },
   ];
-  return el('div', {}, el('h3', {}, `Alert history ${rangeLabel(ctx)} `, whatIsThis('Every firing of an alert that was open at some time in the range: when it was first sent, when it cleared (on every channel), how it ended (resolved: a recovery was sent; closed without a message: its instance retired, the channel no longer covers it, or recovery is off), the value last sent and the threshold (an alert rule\'s value, a finding\'s suggested value while it stands). A firing is the channels\' alerts of one finding grouped while their periods overlap. The history is as long as the purge window keeps the cleared alerts.', 'Alert history')),
+  return el('div', {}, el('h3', {}, `Alert history ${rangeLabel(ctx)} `, whatIsThis('Every firing of an alert that was open at some time in the range: when it was first sent, when it cleared (on every channel), how it ended (resolved: a recovery was sent; cleared without a fix: its instance retired, the channel no longer covers it, or recovery is off - PagerDuty and Opsgenie closed their incident, the other kinds sent nothing), the value last sent and the threshold (an alert rule\'s value, a finding\'s suggested value while it stands). A firing is the channels\' alerts of one finding grouped while their periods overlap. The history is as long as the purge window keeps the cleared alerts.', 'Alert history')),
     grid(rows, cols, 'No alert was open in the time range.'));
 }
 
@@ -199,15 +216,19 @@ const oneLine = (v: unknown): HTMLElement | string => {
 };
 
 // triageView: one row per open alert; a box per row and DBA Dash's four actions on the rows ticked
-function triageView(ad: AckData, all: Row[], redraw: () => void, fixes: Map<string, string> = new Map(), dismissed: Map<string, Row> = new Map()): HTMLElement {
+function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes: Map<string, string> = new Map(), dismissed: Map<string, Row> = new Map()): HTMLElement {
   let showClosed = false, showDismissed = false;
   const picked = new Set<string>();
   const shown = () => all.filter(r => (showClosed || r.close_id == null) && (showDismissed || !dismissed.has(String(r.finding_key))));
+  // the rows the grid draws now: its own column filters drop rows from the drawing, the Show toggles from shown()
+  const boxes = (): HTMLInputElement[] => Array.from(wrap.querySelectorAll<HTMLInputElement>('input[type=checkbox][data-key]'));
+  const drawnKeys = () => new Set(boxes().map(b => String(b.dataset.key)));
   const wrap = el('div', {});
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const pickedRows = () => all.filter(r => picked.has(String(r.finding_key)));
+  // an action takes the ticked rows still drawn: a row hidden since by a filter or a Show toggle is left alone
+  const pickedRows = () => { const on = drawnKeys(); return all.filter(r => picked.has(String(r.finding_key)) && on.has(String(r.finding_key))); };
   const act = (label: string, run: () => void) => writeButton(ad, label, label + ' (the ticked alerts)', () => {
-    if (!picked.size) { said.textContent = 'Tick one or more alerts first.'; return; }
+    if (!pickedRows().length) { said.textContent = 'Tick one or more alerts first.'; return; }
     run();
   });
   const ackSel = act('Acknowledge alerts', () => ackDialog({
@@ -232,35 +253,35 @@ function triageView(ad: AckData, all: Row[], redraw: () => void, fixes: Map<stri
     dismissDialog(keys, redraw);
   });
   const closedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, 'Show closed');
-  const dismissedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, `Show dismissed (${dismissed.size})`);
-  // tick all: every row the grid shows now (closed and dismissed rows only while shown)
+  const dismissedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, `Show dismissed (${all.filter(r => dismissed.has(String(r.finding_key))).length})`);
+  // tick all: every row the grid draws now (its filters and the Show toggles respected; nothing redrawn)
   const allBox = el('input', { type: 'checkbox', 'aria-label': 'tick every alert shown' });
+  const syncAll = () => {
+    const bs = boxes();
+    allBox.checked = bs.length > 0 && bs.every(b => b.checked);
+    allBox.indeterminate = !allBox.checked && bs.some(b => b.checked);
+  };
   allBox.addEventListener('change', () => {
     picked.clear();
-    if (allBox.checked) for (const r of shown()) picked.add(String(r.finding_key));
-    said.textContent = `${picked.size} ticked.`;
-    draw();
+    for (const b of boxes()) { b.checked = allBox.checked; if (b.checked) picked.add(String(b.dataset.key)); }
+    said.textContent = `${pickedRows().length} ticked.`;
   });
   const draw = () => {
     const rows = shown();
-    allBox.checked = rows.length > 0 && rows.every(r => picked.has(String(r.finding_key)));
-    allBox.indeterminate = !allBox.checked && rows.some(r => picked.has(String(r.finding_key)));
     const cols: Col[] = [
       { key: '_pick', label: 'select', fmt: (_v, r) => {
-        const b = el('input', { type: 'checkbox', 'aria-label': `select ${String(r.instance)} ${String(r.setting ?? r.source ?? '')}` });
+        const b = el('input', { type: 'checkbox', 'data-key': String(r.finding_key), 'aria-label': `select ${String(r.instance)} ${String(r.setting ?? r.source ?? '')}` });
         b.checked = picked.has(String(r.finding_key));
         b.addEventListener('change', () => {
           if (b.checked) picked.add(String(r.finding_key)); else picked.delete(String(r.finding_key));
-          said.textContent = `${picked.size} ticked.`;
-          const vis = shown();
-          allBox.checked = vis.length > 0 && vis.every(x => picked.has(String(x.finding_key)));
-          allBox.indeterminate = !allBox.checked && vis.some(x => picked.has(String(x.finding_key)));
+          said.textContent = `${pickedRows().length} ticked.`;
+          syncAll();
         });
         return b;
       } },
       { key: 'severity', fmt: sevBadge },
       { key: 'instance' },
-      { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.first_sent_at), 'aria-label': `open the alert's page: ${String(r.instance)} ${String(v ?? r.source ?? '')}` },
+      { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.first_sent_at, ctx), title: 'open the alert\'s page' },
         oneLine([r.source, v].filter(x => x != null && x !== '').map(String).join(': '))) },
       // one line per row: the value clipped, whole in its title
       { key: 'value', fmt: v => oneLine(v) },
@@ -286,7 +307,11 @@ function triageView(ad: AckData, all: Row[], redraw: () => void, fixes: Map<stri
           body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }))) },
     ];
     wrap.replaceChildren(grid(rows, cols, all.length ? 'Every open alert is closed or dismissed: Show closed and Show dismissed list them.' : 'No open alert: nothing sent is still standing.'));
+    syncAll();
   };
+  // a filter or sort of the grid redraws its rows: the box follows what is drawn
+  wrap.addEventListener('input', () => queueMicrotask(syncAll));
+  wrap.addEventListener('click', () => queueMicrotask(syncAll));
   closedBtn.addEventListener('click', () => { showClosed = !showClosed; closedBtn.setAttribute('aria-pressed', String(showClosed)); draw(); });
   dismissedBtn.addEventListener('click', () => { showDismissed = !showDismissed; dismissedBtn.setAttribute('aria-pressed', String(showDismissed)); draw(); });
   draw();
@@ -371,7 +396,7 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
 
 // mutesView: the mute rules (held sends still logged) or the known patterns (a label beside the alert, nothing held),
 // with the rules that start later, the paused ones and the successor of an edit (K07.09)
-function mutesView(ad: AckData, all: Row[], kind: 'mute' | 'noise', insts: Row[], redraw: () => void): HTMLElement {
+function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', insts: Row[], redraw: () => void): HTMLElement {
   const rows = all.filter(r => r.kind === kind);
   let showEnded = false;
   const word = kind === 'mute' ? 'mute rule' : 'known pattern';
@@ -391,7 +416,7 @@ function mutesView(ad: AckData, all: Row[], kind: 'mute' | 'noise', insts: Row[]
       { key: 'instance' },
       { key: 'tag' },
       { key: 'match_text', label: 'text' },
-      { key: 'finding_key', label: 'one alert', fmt: v => v == null ? '' : el('a', { href: alertHref(v) }, 'yes') },
+      { key: 'finding_key', label: 'one alert', fmt: v => v == null ? '' : el('a', { href: alertHref(v, undefined, ctx) }, 'yes') },
       { key: 'note', label: kind === 'noise' ? 'label' : 'note', wide: true },
       { key: 'starts_at', label: 'starts', fmt: (v, r) => v == null ? `at once (${fmtTime(r.created_at)})` : fmtTime(v) },
       { key: 'until', fmt: v => v == null ? 'no expiry' : fmtTime(v) },
@@ -426,7 +451,13 @@ function muteDialog(o: MuteDialog) {
   const check = text(r?.check_key, 'check'), tag = text(r?.tag, 'tag'), match = text(r?.match_text, 'text');
   const inst = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'any instance'),
     ...o.insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
-  if (r?.instance_id != null) inst.value = String(r.instance_id);
+  // the rule's own instance stays picked even when the instance list lacks it (removed since, or the list not read):
+  // an edit never widens a rule to every instance unless 'any instance' is picked by hand
+  const KEEP = 'keep';
+  if (r?.instance != null && r.instance !== '') {
+    if (r.instance_id != null && o.insts.some(i => String(i.instance_id) === String(r.instance_id))) inst.value = String(r.instance_id);
+    else { inst.append(el('option', { value: KEEP }, `${String(r.instance)} (kept: not in the instance list now)`)); inst.value = KEEP; }
+  }
   const tagList = el('datalist', { id: 'mute-tags' }, ...[...new Set(o.insts.flatMap(tagsOf))].sort().map(t => el('option', { value: t })));
   tag.setAttribute('list', 'mute-tags');
   const note = el('textarea', { rows: '2', maxlength: '2000', style: 'width:100%', 'aria-label': o.kind === 'noise' ? 'label' : 'note' });
@@ -440,7 +471,14 @@ function muteDialog(o: MuteDialog) {
   const untilSel = el('select', { 'aria-label': 'until' }, ...untilHours.map(([t, h]) => el('option', { value: String(h) }, t)));
   const untilAt = el('input', { type: 'datetime-local', 'aria-label': 'until time' });
   if (r?.until != null) { untilSel.value = '-1'; untilAt.value = toInput(new Date(String(r.until))); } else { untilSel.value = o.kind === 'mute' && !r ? '24' : '0'; untilAt.value = toInput(new Date(Date.now() + 86400e3)); }
-  const sync = () => { starts.disabled = startNow.checked; untilAt.hidden = untilSel.value !== '-1'; checkOk(); };
+  const widen = el('input', { type: 'checkbox', 'aria-label': 'match every instance' });
+  const widenBox = el('label', { hidden: '' }, widen, ' match every instance (the rule names one now)');
+  widen.addEventListener('change', () => checkOk());
+  const sync = () => {
+    starts.disabled = startNow.checked; untilAt.hidden = untilSel.value !== '-1';
+    widenBox.hidden = !(r && r.instance != null && r.instance !== '' && inst.value === '');
+    checkOk();
+  };
   const ok = el('button', { type: 'submit' }, r ? 'Save the edit' : 'Save'), no = el('button', { type: 'button' }, 'Back');
   const need = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
@@ -453,6 +491,7 @@ function muteDialog(o: MuteDialog) {
   };
   const invalid = (): string => {
     if (!check.value.trim() && !tag.value.trim() && !match.value.trim() && !inst.value && r?.finding_key == null) return 'a check, an instance, a tag or a text (a rule matching every alert is refused)';
+    if (r && r.instance != null && r.instance !== '' && inst.value === '' && !widen.checked) return 'the box "match every instance" ticked (the rule names an instance now; Any instance widens it to the whole fleet)';
     if (o.kind === 'noise' && !note.value.trim()) return 'a label';
     if (!startNow.checked && isNaN(startAt().getTime())) return 'a start time';
     const u = untilOf();
@@ -465,7 +504,7 @@ function muteDialog(o: MuteDialog) {
   for (const x of [inst, untilSel, startNow]) x.addEventListener('change', sync);
   const fields: HTMLElement[] = [
     el('p', { class: 'meta' }, 'An alert matches when every field filled matches (check: its source or setting; text: in its source, setting or value).' + (r?.finding_key != null ? ' This rule names one alert: that stays.' : '')),
-    el('span', {}, el('label', {}, 'Check ', check), ' ', el('label', {}, 'Instance ', inst)),
+    el('span', {}, el('label', {}, 'Check ', check), ' ', el('label', {}, 'Instance ', inst), ' ', widenBox),
     el('span', {}, el('label', {}, 'Tag ', tag), tagList, ' ', el('label', {}, 'Text ', match)),
     el('label', {}, o.kind === 'noise' ? 'Label (shown beside matching alerts)' : 'Note (optional)', el('br'), note),
     el('span', {}, el('label', {}, startNow, ' start at once'), ' ', el('label', {}, 'or at ', starts)),
@@ -486,14 +525,16 @@ function muteDialog(o: MuteDialog) {
     busy = true; checkOk(); msg.textContent = 'Saving...';
     const u = untilOf();
     const body: Record<string, unknown> = {
-      instance_id: inst.value ? Number(inst.value) : undefined, check_key: check.value.trim() || undefined, tag: tag.value.trim() || undefined,
+      instance_id: inst.value && inst.value !== KEEP ? Number(inst.value) : undefined,
+      any_instance: r && inst.value === '' ? true : undefined,
+      check_key: check.value.trim() || undefined, tag: tag.value.trim() || undefined,
       match_text: match.value.trim() || undefined, note: note.value.trim() || undefined,
       starts_at: startNow.checked ? undefined : startAt().toISOString(), until: u ? u.toISOString() : undefined,
     };
     try {
       const res = r
         ? await post<{ outcome: string; detail: string }>('alerts/mute', { op: 'edit', ack_id: Number(r.ack_id), ...body })
-        : await addAck({ kind: o.kind, ...body } as Parameters<typeof addAck>[0]);
+        : await addAck({ kind: o.kind, ...body, any_instance: undefined } as Parameters<typeof addAck>[0]);
       done = true;
       msg.replaceChildren(badge(res.outcome, 'ok'), ' ', res.detail);
       no.textContent = 'Close';

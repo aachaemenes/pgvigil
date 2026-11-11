@@ -21,7 +21,8 @@
 -- Writes from the UI: pgvigil.import_alert_test, pgvigil.import_alert_dismiss and pgvigil.import_ack_change (the
 -- actions door's audit login: apply_roles makes every import_* SECURITY DEFINER and grants it to pgvigil_collector),
 -- behind the UI login, as import_ack. The sender (pgvigil_alerter) reads the test requests (alert_tests_due) and
--- answers them (alert_test_record). alert_tests is purged after the purge window (the join's purge() line);
+-- answers them (alert_test_record). alert_tests is purged after the purge window (a purge() line of the release's
+-- join, 0110);
 -- alert_dismissals is an audit like acks and is not purged.
 
 ALTER TABLE pgvigil.alert_channels DROP CONSTRAINT IF EXISTS alert_channels_kind_check;
@@ -41,6 +42,7 @@ ALTER TABLE pgvigil.ack_log ADD CONSTRAINT ack_log_op_check CHECK (op IN ('add',
 ALTER TABLE pgvigil.acks ADD COLUMN IF NOT EXISTS paused_at timestamptz;
 ALTER TABLE pgvigil.acks ADD COLUMN IF NOT EXISTS paused_by text;
 ALTER TABLE pgvigil.acks ADD COLUMN IF NOT EXISTS replaces bigint REFERENCES pgvigil.acks (ack_id);
+CREATE INDEX IF NOT EXISTS acks_replaces_idx ON pgvigil.acks (replaces) WHERE replaces IS NOT NULL;
 
 -- alert_channels_sync: 0059's, with max_per_hour, templates and link_base
 CREATE OR REPLACE FUNCTION pgvigil.alert_channels_sync(p_at timestamptz, p_payload jsonb)
@@ -80,7 +82,8 @@ $$;
 
 -- import_ack_change: an edit, a pause or a resume of a mute rule or a known pattern from the UI (the actions door's
 -- audit login). p_payload: {op: edit | pause | resume, ack_id, ui_user, client}, and for edit the rule's fields as
--- import_ack takes them (instance_id, instance_name, check_key, tag, match_text, note, starts_at, until). An edit is
+-- import_ack takes them (instance_id, instance_name, check_key, tag, match_text, note, starts_at, until) and
+-- any_instance (true: the successor matches every instance; without it and without an instance the old one stays). An edit is
 -- import_ack's add of the successor (replaces = the old rule, its pause kept) and its end of the old rule, in one call:
 -- a refused add ends nothing. Pause and resume are mute rules' only (a known pattern holds nothing). Every attempt
 -- leaves an ack_log row. Returns {outcome, detail, ack_id} (ack_id: the successor of an edit).
@@ -128,8 +131,13 @@ BEGIN
   ELSIF v_why IS NULL AND v_op = 'resume' THEN
     UPDATE pgvigil.acks SET paused_at = NULL, paused_by = NULL WHERE ack_id = v_id;
   ELSIF v_why IS NULL AND v_op = 'edit' THEN
+    -- the old rule's instance stays unless the edit names another or asks for every instance (any_instance): an
+    -- instance removed since (instance_id NULL, its name kept) never widens to the whole fleet by an edit
     v_add := jsonb_strip_nulls(jsonb_build_object('op', 'add', 'ui_user', v_user, 'client', v_client, 'kind', v_row.kind,
-               'instance_id', p_payload->'instance_id', 'instance_name', p_payload->'instance_name',
+               'instance_id', CASE WHEN p_payload ? 'instance_name' OR (p_payload->>'any_instance')::boolean IS TRUE
+                                   THEN p_payload->'instance_id' ELSE to_jsonb(v_row.instance_id) END,
+               'instance_name', CASE WHEN p_payload ? 'instance_name' OR (p_payload->>'any_instance')::boolean IS TRUE
+                                     THEN p_payload->'instance_name' ELSE to_jsonb(v_row.instance_name) END,
                'check_key', p_payload->'check_key', 'tag', p_payload->'tag', 'match_text', p_payload->'match_text',
                'note', p_payload->'note', 'starts_at', p_payload->'starts_at', 'until', p_payload->'until'));
     IF coalesce(btrim(v_add->>'check_key'), '') = '' AND coalesce(btrim(v_add->>'tag'), '') = ''
@@ -176,15 +184,22 @@ CREATE TABLE IF NOT EXISTS pgvigil.alert_tests (
   error         text
 );
 CREATE INDEX IF NOT EXISTS alert_tests_due_idx ON pgvigil.alert_tests (requested_at) WHERE done_at IS NULL;
+CREATE INDEX IF NOT EXISTS alert_tests_channel_idx ON pgvigil.alert_tests (channel, requested_at DESC);
 COMMENT ON TABLE pgvigil.alert_tests IS 'Send test requests from the Alerts page and the sender''s answers; written through import_alert_test and alert_test_record only.';
-GRANT SELECT, UPDATE ON pgvigil.alert_tests TO pgvigil_alerter;
+GRANT SELECT, UPDATE (done_at, outcome, error) ON pgvigil.alert_tests TO pgvigil_alerter;
 
 -- the window a request waits for a sender: past it the page says no sender answered
 CREATE OR REPLACE FUNCTION pgvigil.alert_test_window()
 RETURNS interval LANGUAGE sql IMMUTABLE AS $$ SELECT interval '1 hour' $$;
 
+-- the least time between two tests of one channel (one answered or waiting)
+CREATE OR REPLACE FUNCTION pgvigil.alert_test_gap()
+RETURNS interval LANGUAGE sql IMMUTABLE AS $$ SELECT interval '2 minutes' $$;
+
 -- import_alert_test: one Send test request {ui_user, client, channel}; refused (and recorded) when the channel is
--- not configured or a request of it already waits. Returns {outcome, detail, test_id}.
+-- not configured, a request of it already waits, or one was asked in the last alert_test_gap (a test reaches a
+-- real destination, PagerDuty and Opsgenie included: the door never lets a login page someone in a loop). Returns
+-- {outcome, detail, test_id}.
 CREATE OR REPLACE FUNCTION pgvigil.import_alert_test(p_at timestamptz, p_payload jsonb)
 RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -208,9 +223,12 @@ BEGIN
     v_why := format('channel %s is not configured (the sender''s last record of its alerts: list)', v_chan);
   ELSIF v_wait.test_id IS NOT NULL THEN
     v_why := format('a test of %s asked by %s at %s still waits for the sender', v_chan, v_wait.requested_by, v_wait.requested_at);
+  ELSIF EXISTS (SELECT 1 FROM pgvigil.alert_tests t WHERE t.channel = v_chan AND t.outcome IS DISTINCT FROM 'refused'
+                   AND t.requested_at > p_at - pgvigil.alert_test_gap()) THEN
+    v_why := format('%s had a test in the last %s: one test per channel in that time', v_chan, pgvigil.alert_test_gap());
   END IF;
   INSERT INTO pgvigil.alert_tests (channel, requested_by, requested_at, client, done_at, outcome, error)
-  VALUES (coalesce(v_chan, ''), v_user, p_at, v_client, CASE WHEN v_why IS NOT NULL THEN p_at END,
+  VALUES (left(coalesce(v_chan, ''), 63), left(v_user, 200), p_at, left(v_client, 100), CASE WHEN v_why IS NOT NULL THEN p_at END,
           CASE WHEN v_why IS NOT NULL THEN 'refused' END, v_why)
   RETURNING test_id INTO v_id;
   RETURN jsonb_build_object('outcome', CASE WHEN v_why IS NULL THEN 'done' ELSE 'refused' END,
@@ -319,12 +337,16 @@ END $$;
 -- ---- history ------------------------------------------------------------------------------------------------------
 -- alert_occurrences: per finding key, the channel rows of alert_state grouped into firings: a row whose first send
 -- comes after every earlier row of the key has cleared starts a new occurrence. An occurrence is open while any of its
--- rows is open; it ended 'resolved' when a recovery was sent on any channel, else 'closed without a message' (the
--- instance retired, the channel narrowed, recovery off). The history is as long as alert_state keeps cleared rows
--- (purge()'s window).
+-- rows is open; it ended 'resolved' when a recovery was sent on any channel, else 'cleared without a fix' (the
+-- instance retired, the channel narrowed, recovery off: PagerDuty and Opsgenie closed their incident, the other kinds
+-- sent nothing). The history is as long as alert_state keeps cleared rows (purge()'s window).
 CREATE OR REPLACE VIEW pgvigil.alert_occurrences AS
 WITH r AS (
+  -- an open row on a channel the configuration no longer names is never moved again (alert_due owes the configured
+  -- channels only): it leaves the history rather than hold a firing open for good
   SELECT s.*, coalesce(s.cleared_at, 'infinity'::timestamptz) AS end_at FROM pgvigil.alert_state s
+   WHERE s.cleared_at IS NOT NULL
+      OR EXISTS (SELECT 1 FROM pgvigil.alert_channels c WHERE c.name = s.channel AND c.is_configured)
 ), g AS (
   SELECT r.*, CASE WHEN r.first_sent_at > max(r.end_at) OVER (PARTITION BY r.finding_key ORDER BY r.first_sent_at, r.channel
                                                              ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
@@ -341,22 +363,27 @@ SELECT o.finding_key, o.occurrence::int AS occurrence, max(o.instance_id) AS ins
        CASE WHEN bool_or(o.cleared_at IS NULL) THEN NULL ELSE max(o.cleared_at) END AS cleared_at,
        CASE WHEN bool_or(o.cleared_at IS NULL) THEN 'open'
             WHEN bool_or(o.recovery_sent_at IS NOT NULL) THEN 'resolved'
-            ELSE 'closed without a message' END AS status,
+            ELSE 'cleared without a fix' END AS status,
        min(o.missing_since) FILTER (WHERE o.cleared_at IS NULL) AS missing_since,
        array_agg(DISTINCT o.channel ORDER BY o.channel) AS channels, sum(o.send_count)::int AS sends
   FROM o
  GROUP BY o.finding_key, o.occurrence;
 
 -- finding_fix: the statement that fixes a finding, NULL when there is none to give (the detail says what to do):
--- a PostgreSQL setting finding (is_set) whose suggested value is one word gets ALTER SYSTEM and the reload (a
--- setting of context postmaster takes a restart besides: the page says so beside the line); a finding whose detail spells out one maintenance statement
--- (REINDEX, CREATE / DROP INDEX, ALTER TABLE / INDEX, VACUUM, ANALYZE) gets that statement.
-CREATE OR REPLACE FUNCTION pgvigil.finding_fix(p_engine text, p_setting text, p_is_set boolean, p_suggested text, p_detail text)
-RETURNS text LANGUAGE sql IMMUTABLE AS $$
+-- a PostgreSQL setting finding (is_set) on one of the settings pgvigil reads per instance (pgvigil.instance_settings:
+-- real, changeable parameters - never data_checksums, never an extension's name) whose suggested value is one word
+-- gets ALTER SYSTEM and the reload (a setting of context postmaster takes a restart besides: the page says so beside
+-- the line); a finding whose detail spells out one maintenance statement (REINDEX, CREATE / DROP INDEX, ALTER TABLE /
+-- INDEX, VACUUM, ANALYZE) gets that statement; an alert rule's finding gets none (its detail holds the rule's name).
+CREATE OR REPLACE FUNCTION pgvigil.finding_fix(p_engine text, p_source text, p_instance_id int, p_setting text,
+                                               p_is_set boolean, p_suggested text, p_detail text)
+RETURNS text LANGUAGE sql STABLE AS $$
   SELECT CASE
+    WHEN p_source = 'alert rule' THEN NULL
     WHEN coalesce(p_engine, 'postgres') = 'postgres' AND p_is_set IS TRUE
          AND p_setting ~ '^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$'
          AND p_suggested ~ '^[A-Za-z0-9_.+-]{1,40}$'
+         AND EXISTS (SELECT 1 FROM pgvigil.instance_settings x WHERE x.instance_id = p_instance_id AND x.name = p_setting)
       THEN format('ALTER SYSTEM SET %s = %L; SELECT pg_reload_conf();', p_setting, p_suggested)
     -- (no bound over 255 in a PostgreSQL regular expression: the length is cut after the match)
     ELSE left(substring(p_detail FROM '((?:REINDEX|CREATE (?:UNIQUE )?INDEX|DROP INDEX|ALTER (?:TABLE|INDEX)|VACUUM|ANALYZE)\M[^;]+;)'), 1000)

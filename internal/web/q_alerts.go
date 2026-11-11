@@ -68,21 +68,16 @@ SELECT l.snapshot_at AS at, l.channel, l.kind, l.destination, l.outcome, l.n_fir
  LIMIT 1000`
 
 // alertThreshold: an alert rule's value reads "above 10 for 5 min; last sample 12" (0085): its threshold is the first
-// two words; a finding's is its suggested value while the finding stands
-const alertThreshold = `CASE WHEN o.source = 'alert rule' THEN substring(o.value FROM '^((?:above|below) [^ ]+)') ELSE f.suggested END`
+// two words
+const alertThreshold = `CASE WHEN o.source = 'alert rule' THEN substring(o.value FROM '^((?:above|below) [^ ]+)') END`
 
-// sqlAlertHistory: every firing open at some point of the window [$1, $2), newest first
-// (the findings view is read once, never per row: it is the expensive read of the page)
+// sqlAlertHistory: every firing open at some point of the window [$1, $2), newest first; a finding's suggested value
+// (its threshold while it stands) comes with the fixes part, so the findings view is not read here
 const sqlAlertHistory = `
-WITH f AS MATERIALIZED (
-  SELECT DISTINCT ON (x.finding_key) x.finding_key, x.suggested FROM pgvigil.alert_findings x
-   WHERE x.source <> 'alert rule' ORDER BY x.finding_key
-)
 SELECT o.fired_at, o.cleared_at, o.status, o.severity, o.instance_id, o.instance, o.source, o.setting, o.value,
        ` + alertThreshold + ` AS threshold, o.channels, o.sends, o.occurrence, o.finding_key, o.missing_since,
        d.dismiss_id IS NOT NULL AS dismissed
   FROM pgvigil.alert_occurrences o
-  LEFT JOIN f ON f.finding_key = o.finding_key
   LEFT JOIN pgvigil.alert_dismissals d ON d.finding_key = o.finding_key AND d.ended_at IS NULL
  WHERE o.fired_at < $2 AND (o.cleared_at IS NULL OR o.cleared_at >= $1)
  ORDER BY o.fired_at DESC
@@ -125,30 +120,41 @@ SELECT a.ack_id, a.kind, a.instance_id, a.instance_name AS instance, a.check_key
  ORDER BY a.kind, (a.ended_at IS NULL AND (a.until IS NULL OR a.until > $1)) DESC, a.created_at DESC
  LIMIT 1000`
 
-// sqlAlertFixes: the fix statement of every open alert that has one (the findings view read once)
+// sqlAlertFixes: per standing finding that an alert carries (any alert_state row of its key), its fix statement
+// (pgvigil.finding_fix) and its suggested value: the open alerts' fix column and the history's threshold read
+// pgvigil.findings once here
 const sqlAlertFixes = `
-WITH k AS (SELECT DISTINCT s.finding_key FROM pgvigil.alert_state s WHERE s.cleared_at IS NULL),
+WITH k AS (SELECT DISTINCT s.finding_key FROM pgvigil.alert_state s),
 fx AS MATERIALIZED (
-  SELECT pgvigil.alert_finding_key(y.instance_id, y.source, y.setting, y.value) AS finding_key,
-         pgvigil.finding_fix(i.engine, y.setting, y.is_set, y.suggested, y.detail) AS fix
+  SELECT pgvigil.alert_finding_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested,
+         pgvigil.finding_fix(i.engine, y.source, y.instance_id, y.setting, y.is_set, y.suggested, y.detail) AS fix,
+         pgvigil.severity_rank(y.severity) AS sev
     FROM pgvigil.findings y
     JOIN pgvigil.instances i ON i.instance_id = y.instance_id AND i.is_active
 )
-SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix
+SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix, fx.suggested
   FROM fx JOIN k ON k.finding_key = fx.finding_key
- WHERE fx.fix IS NOT NULL
- ORDER BY fx.finding_key`
+ WHERE fx.fix IS NOT NULL OR fx.suggested IS NOT NULL
+ ORDER BY fx.finding_key, fx.sev DESC`
 
 // The alert's page (k=<finding key>): the finding as it stands now (none = gone from the findings) with its fix
 const sqlAlertCard = `
-SELECT f.finding_key, f.instance_id, f.instance, f.severity, f.source, f.setting, f.value, f.suggested, f.detail, f.at,
-       i.engine, x.is_set, pgvigil.finding_fix(i.engine, f.setting, x.is_set, f.suggested, f.detail) AS fix,
+WITH f AS MATERIALIZED (
+  SELECT pgvigil.alert_finding_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.instance_id, y.severity,
+         y.source, y.setting, y.value, y.suggested, y.detail, y.at, y.is_set
+    FROM pgvigil.findings y
+  UNION ALL
+  SELECT pgvigil.alert_finding_key(r.instance_id, r.source, r.setting, r.value), r.instance_id, r.severity, r.source,
+         r.setting, r.value, r.suggested, r.detail, r.at, r.is_set
+    FROM pgvigil.alert_rule_findings r
+)
+SELECT f.finding_key, f.instance_id, i.name AS instance, f.severity, f.source, f.setting, f.value, f.suggested, f.detail,
+       f.at, i.engine, f.is_set, pgvigil.finding_fix(i.engine, f.source, f.instance_id, f.setting, f.is_set, f.suggested, f.detail) AS fix,
        CASE WHEN f.source = 'alert rule' THEN substring(f.value FROM '^((?:above|below) [^ ]+)') ELSE f.suggested END AS threshold
-  FROM pgvigil.alert_findings f
-  JOIN pgvigil.instances i ON i.instance_id = f.instance_id
-  LEFT JOIN LATERAL (SELECT y.is_set FROM pgvigil.findings y WHERE y.instance_id = f.instance_id AND y.source = f.source
-                        AND y.setting IS NOT DISTINCT FROM f.setting AND y.value IS NOT DISTINCT FROM f.value LIMIT 1) x ON true
+  FROM f
+  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
  WHERE f.finding_key = $1
+ ORDER BY pgvigil.severity_rank(f.severity) DESC
  LIMIT 1`
 
 // every firing of the alert, newest first, with the open one's per-channel state
@@ -334,7 +340,7 @@ func (s *Server) AlertDismiss(w http.ResponseWriter, r *http.Request) {
 }
 
 // AlertMute is POST /api/alerts/mute {op: edit|pause|resume, ack_id} (edit: with the rule's fields, as POST /api/ack
-// takes them: instance_id, check_key, tag, match_text, note, starts_at, until).
+// takes them: instance_id, check_key, tag, match_text, note, starts_at, until, and any_instance).
 func (s *Server) AlertMute(w http.ResponseWriter, r *http.Request) {
 	s.alertDoor(w, r, "import_ack_change", func(ctx context.Context, pay map[string]any) error {
 		var in struct {
@@ -347,6 +353,9 @@ func (s *Server) AlertMute(w http.ResponseWriter, r *http.Request) {
 			Note       string     `json:"note"`
 			StartsAt   *time.Time `json:"starts_at"`
 			Until      *time.Time `json:"until"`
+			// AnyInstance: the edited rule matches every instance; without it and without instance_id the old
+			// rule's instance stays (an instance removed since is never widened to the fleet by an edit)
+			AnyInstance bool `json:"any_instance"`
 		}
 		if err := doorBody(r, &in); err != nil {
 			return err
@@ -360,6 +369,12 @@ func (s *Server) AlertMute(w http.ResponseWriter, r *http.Request) {
 		pay["op"], pay["ack_id"] = in.Op, in.AckID
 		if in.Op != "edit" {
 			return nil
+		}
+		if in.AnyInstance && in.InstanceID > 0 {
+			return errors.New("any_instance and instance_id name two scopes: send one")
+		}
+		if in.AnyInstance {
+			pay["any_instance"] = true
 		}
 		if in.InstanceID > 0 {
 			var name string

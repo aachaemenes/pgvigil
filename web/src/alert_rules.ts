@@ -351,7 +351,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'detail', wide: true },
   ];
   sec.append(el('h3', {}, `Rule log ${rangeLabel(ctx)}`), grid(log, logCols, 'No rule was made, edited, switched or ended in the time range.'));
-  sec.append(inForceView(d, rowsOf(d.inforce)));
+  sec.append(inForceView(d, rowsOf(d.inforce), all));
   return sec;
 }
 
@@ -364,19 +364,33 @@ export function thresholdLine(r: Row): string {
 // inForceView (task 151, K07.07): every threshold in force per instance - the alert rule each metric is judged by on
 // it, with the rules it overrides there, and a SQL Server instance's HA/DR, jobs and backups thresholds (the file's,
 // or the default: read only, the configuration is their source). The number of a rule's line opens its menu: an
-// override for this instance, an override for one of its tags, or the rule itself.
-function inForceView(door: RulesDoor, rows: Row[]): HTMLElement {
+// override for this instance, an override for one of its tags, or the rule itself. Only an override that would be in
+// force is offered: an instance rule beats a tag rule and a tag rule beats the fleet's (0085), so a tag override is
+// offered over a fleet rule only, and an instance's own rule is edited, not overridden.
+function inForceView(door: RulesDoor, rows: Row[], rules: Row[]): HTMLElement {
   const insts = [...new Set(rows.map(r => String(r.instance)))].sort();
   const sel = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'every instance'), ...insts.map(n => el('option', { value: n }, n)));
   const wrap = el('div', {});
   const menu = (r: Row, at: HTMLElement) => {
     const items: [string, () => void][] = [];
     const prefill: Row = { op: r.op, warning: r.warning, critical: r.critical, for_minutes: r.for_minutes };
+    const db = r.database == null ? undefined : String(r.database);
+    const rule = rules.find(x => String(x.rule_id) === String(r.rule_id) && x.live);
     if (door.writable) {
-      items.push([`Override for ${String(r.instance)}`, () => { void ruleDialog({ door, metric: String(r.what), prefill, instanceId: Number(r.instance_id), database: r.database == null ? undefined : String(r.database), after: redraw }); }]);
-      for (const t of (Array.isArray(r.tags) ? r.tags : []).map(String)) items.push([`Override for tag ${t}`, () => { void ruleDialog({ door, metric: String(r.what), prefill, tag: t, database: r.database == null ? undefined : String(r.database), after: redraw }); }]);
+      if (r.scope === 'instance') {
+        if (rule) items.push([`Edit rule ${String(r.rule_id)} (${String(r.instance)}'s own)`, () => { void ruleDialog({ door, rule, after: redraw }); }]);
+      } else {
+        items.push([`Override for ${String(r.instance)}`, () => { void ruleDialog({ door, metric: String(r.what), prefill, instanceId: Number(r.instance_id), database: db, after: redraw }); }]);
+      }
+      if (r.scope === 'fleet') {
+        for (const t of (Array.isArray(r.tags) ? r.tags : []).map(String)) items.push([`Override for tag ${t} (every instance of it)`, () => { void ruleDialog({ door, metric: String(r.what), prefill, tag: t, database: db, after: redraw }); }]);
+      }
+      if (r.scope === 'tag' && rule) items.push([`Edit rule ${String(r.rule_id)} (tag ${String(r.target)})`, () => { void ruleDialog({ door, rule, after: redraw }); }]);
     }
-    items.push([`Rule ${String(r.rule_id)} on the Rules grid`, () => { document.querySelector('.alert-rules-rules')?.scrollIntoView(); }]);
+    items.push([`Rule ${String(r.rule_id)} on the Rules grid`, () => {
+      const h = document.querySelector<HTMLElement>('.alert-rules-rules');
+      if (h) { h.tabIndex = -1; h.scrollIntoView(); h.focus(); }
+    }]);
     const box = at.getBoundingClientRect();
     showMenu(box.left, box.bottom, items, at);
   };
@@ -399,6 +413,6 @@ function inForceView(door: RulesDoor, rows: Row[]): HTMLElement {
     'No threshold in force: no alert rule covers an active instance, and no SQL Server instance is in the fleet.'));
   sel.addEventListener('change', draw);
   draw();
-  return el('div', {}, el('h3', {}, 'Thresholds in force ', whatIsThis('Every threshold an active instance is judged by: per metric the alert rule in force on it (an instance\'s rule over a tag\'s over the fleet\'s) with the wider rules it overrides there, and on a SQL Server instance the HA/DR, jobs and backups thresholds (set by mssql_thresholds in the configuration file, else the default; read only here). Click a rule\'s line for an override on this instance or on one of its tags: the override is a narrower rule, made in the rule form.', 'Thresholds in force')),
+  return el('div', {}, el('h3', {}, 'Thresholds in force ', whatIsThis('Every threshold an active instance is judged by: per metric the alert rule in force on it (an instance\'s rule over a tag\'s over the fleet\'s) with the wider rules it overrides there, and on a SQL Server instance the HA/DR, jobs and backups thresholds (set by mssql_thresholds in the configuration file, else the default; read only here). Click a rule\'s line for an override: on a fleet rule, for this instance or one of its tags; on a tag rule, for this instance; an instance\'s own rule is edited. The override is a narrower rule, made in the rule form.', 'Thresholds in force')),
     el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel)), wrap);
 }
