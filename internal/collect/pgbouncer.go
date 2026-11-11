@@ -173,17 +173,56 @@ func (pgBouncerCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platfo
 	clients, cerr := show(pgBouncerCommands.Clients)
 	servers, serr := show(pgBouncerCommands.Servers)
 	if cerr == nil && serr == nil {
-		out = append(out, pgBouncerConnRows(clients, servers)...)
+		out = append(out, pgBouncerConnRows(clients, servers, time.Now())...)
 	}
 	return out, nil
 }
 
 // pgBouncerConnRows shapes SHOW CLIENTS and SHOW SERVERS (task 128). The columns by version: wait and wait_us (the
 // seconds and the microsecond part of the current wait) since 1.8, application_name since 1.12, remote_pid on a
-// server row the backend's pid; connect_time and request_time come as text ('2026-11-10 23:12:40 UTC') or a time.
-// A client's state on 1.21+ is active, waiting, idle, active_cancel_req or waiting_cancel_req; older ones say active
-// for an idle client, so on those every client is kept up to the cap.
-func pgBouncerConnRows(clients, servers []map[string]any) []Row {
+// server row the backend's pid. A client's state on 1.21+ is active, waiting, idle, active_cancel_req or
+// waiting_cancel_req; older ones say active for an idle client, so on those every client is kept up to the cap.
+//
+// The cap keeps first the clients paired with a server (link set: at most as many as the servers; they name the
+// application each server serves), then the longest waits, then the oldest requests.
+//
+// connect_time and request_time are text in the POOLER HOST's local time with its zone abbreviation
+// ('2026-11-10 15:12:40 PST'; PgBouncer's admin.c formats them through localtime, and writes now for a time never
+// set), which time.Parse cannot place (an abbreviation it does not know reads as offset zero). The offset comes from
+// the pooler's own clock instead: the console's newest request is this collector's own SHOW CLIENTS, made at now, so
+// now minus its wall-clock time, rounded to 15 minutes, is the pooler's offset from UTC. Without that row (or a
+// reading more than 5 minutes off a 15-minute step) the times are stored only where the zone says UTC or GMT, else nil.
+func pgBouncerConnRows(clients, servers []map[string]any, now time.Time) []Row {
+	offset, known := time.Duration(0), false
+	var newest time.Time
+	for _, c := range clients {
+		if bText(c["database"]) != "pgbouncer" {
+			continue
+		}
+		if w, _, ok := bWall(c["request_time"]); ok && w.After(newest) {
+			newest = w
+		}
+	}
+	if !newest.IsZero() {
+		d := now.UTC().Sub(newest)
+		r := d.Round(15 * time.Minute)
+		if diff := d - r; diff < 5*time.Minute && diff > -5*time.Minute {
+			offset, known = r, true
+		}
+	}
+	at := func(v any) any {
+		w, zone, ok := bWall(v)
+		if !ok {
+			return nil
+		}
+		switch {
+		case known:
+			return w.Add(offset).Format(time.RFC3339)
+		case zone == "UTC" || zone == "GMT" || zone == "Z":
+			return w.Format(time.RFC3339)
+		}
+		return nil
+	}
 	conn := func(kind string, c map[string]any) Row {
 		var wait any
 		if s, ok := bNum(c["wait"]); ok {
@@ -192,7 +231,7 @@ func pgBouncerConnRows(clients, servers []map[string]any) []Row {
 		}
 		r := Row{"kind": kind, "database": bText(c["database"]), "user": bText(c["user"]), "state": bText(c["state"]),
 			"application_name": bText(c["application_name"]), "addr": bText(c["addr"]), "port": bInt(c["port"]),
-			"connect_time": bTime(c["connect_time"]), "request_time": bTime(c["request_time"]), "wait_us": wait,
+			"connect_time": at(c["connect_time"]), "request_time": at(c["request_time"]), "wait_us": wait,
 			"ptr": bText(c["ptr"]), "link": bText(c["link"])}
 		if kind == "server" {
 			r["remote_pid"] = bInt(c["remote_pid"])
@@ -211,9 +250,18 @@ func pgBouncerConnRows(clients, servers []map[string]any) []Row {
 		}
 		kept = append(kept, conn("client", c))
 	}
-	// the longest waits first, then the oldest request: the cap cuts the least telling rows
+	linked := func(r Row) bool { l, _ := r["link"].(string); return strings.TrimSpace(l) != "" }
 	wt := func(r Row) int64 { v, _ := r["wait_us"].(int64); return v }
-	sort.SliceStable(kept, func(i, j int) bool { return wt(kept[i]) > wt(kept[j]) })
+	req := func(r Row) string { v, _ := r["request_time"].(string); return v }
+	sort.SliceStable(kept, func(i, j int) bool {
+		if a, b := linked(kept[i]), linked(kept[j]); a != b {
+			return a
+		}
+		if a, b := wt(kept[i]), wt(kept[j]); a != b {
+			return a > b
+		}
+		return req(kept[i]) < req(kept[j])
+	})
 	if len(kept) > pgBouncerClientCap {
 		kept = kept[:pgBouncerClientCap]
 	}
@@ -233,28 +281,25 @@ func pgBouncerConnRows(clients, servers []map[string]any) []Row {
 	return append(out, srv...)
 }
 
-// bTime: the console's timestamp columns as RFC 3339 text, or nil (blank on a connection that has made no request).
-func bTime(v any) any {
-	switch x := v.(type) {
-	case nil:
-		return nil
-	case time.Time:
-		if x.IsZero() {
-			return nil
+// bWall reads a console timestamp's wall clock (as if UTC) and its zone text: '2026-11-10 15:12:40 PST' gives
+// 15:12:40 and 'PST'. A time.Time (a console that sends a typed value) is taken as it is, its zone 'Z'.
+func bWall(v any) (time.Time, string, bool) {
+	if t, ok := v.(time.Time); ok {
+		if t.IsZero() {
+			return time.Time{}, "", false
 		}
-		return x.UTC().Format(time.RFC3339)
+		return t.UTC(), "Z", true
 	}
 	s, _ := bText(v).(string)
 	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
+	if len(s) < 19 {
+		return time.Time{}, "", false
 	}
-	for _, layout := range []string{"2006-01-02 15:04:05 MST", "2006-01-02 15:04:05", time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC().Format(time.RFC3339)
-		}
+	t, err := time.Parse("2006-01-02 15:04:05", s[:19])
+	if err != nil {
+		return time.Time{}, "", false
 	}
-	return nil
+	return t, strings.TrimSpace(s[19:]), true
 }
 
 // pgBouncerRows shapes the SHOW results into the collection's rows (a pure function: the test feeds it the columns

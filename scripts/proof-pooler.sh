@@ -8,6 +8,8 @@
 #                      lead's wiring in web.go) and a current bundle
 #   PGB_IMAGE          the PgBouncer image (default edoburu/pgbouncer:v1.26.1-p0), run on the host network with the
 #                      proof's own pgbouncer.ini and killed by its own name at the end
+#   PGB_UPSTREAM       host:port the PgBouncer reaches the sandbox at (default 127.0.0.1:5432: the sandbox of
+#                      PGVIGIL_REPO_DSN must listen there, or the pooler cannot connect and A fails)
 # The proof makes, and drops on every exit path: its own repository database, one monitored database (one table), a
 # pg_monitor login and an application role (random suffix and passwords); its own PgBouncer container, pgvigil serve,
 # Chromium and psql clients, stopped by their names and pids. It changes no server setting.
@@ -15,10 +17,12 @@
 # Expected (written before the first run):
 #  A. PgBouncer 1.26.1 in transaction mode, pool_size 3, in front of the monitored database. A holder (application
 #     pgvpool_h_<n>) opens a transaction through the pooler, updates row 1 and stays idle in it: it keeps one server.
+#     [review fold] One more client (application pgvpool_i_<n>) connects through the pooler, runs SELECT 1 and stays
+#     connected outside a transaction: idle, counted and not stored.
 #     Then 19 clients (application pgvpool_w_<n>) each update row 1 through the pooler: two get the other two servers
 #     and wait on the holder's lock (one on its transactionid, one on the tuple behind the first), 17 wait in the
 #     pooler. After 6 s, collect -once pgbouncer and collect -once activity. In the repository:
-#     - the read's conns row: clients_read 20, clients_kept 20 (none idle), servers_read 3;
+#     - the read's conns row: clients_read 21, clients_kept 20 (the idle one counted, not kept), servers_read 3;
 #     - 17 client rows 'waiting' (each wait_us > 0, application pgvpool_w_<n>) and 3 'active';
 #     - 3 server rows whose remote_pids are exactly the pids pg_stat_activity holds for the application role in the
 #       monitored database (a hand read at the same moment);
@@ -26,12 +30,15 @@
 #     - pooler_conns: the holder's server has role 'head', backend_state 'idle in transaction', paired_application
 #       pgvpool_h_<n>; the other two servers role 'blocked', backend_wait_type Lock, head_pid = the holder's pid (from
 #       pg_stat_activity by its application); head_via_pooler true and head_client_application pgvpool_h_<n> on both;
+#       [review fold] backend_match 'matched' on all three; the clients' connect_time within 5 minutes of now (the
+#       pooler's local time placed by its own clock);
 #       the 3 active clients carry a backend_pid, the 17 waiting none. [first run, 2026-11-10: the holder's
 #       backend_wait_type read 'Client' where this line expected none: PostgreSQL shows an idle-in-transaction session
 #       waiting on Client: ClientRead. Expected now: the head's wait type 'Client'.]
-#  B. the API (pgvigil serve -no-login): /api/pooler/conns for the instance: read clients_read 20 and an activity_at
+#  B. the API (pgvigil serve -no-login): /api/pooler/conns for the instance: read clients_read 21 and an activity_at
 #     within two minutes of read_at; clients 20 rows, 17 waiting; servers 3; trace one row for the database and role:
-#     clients_waiting 17, servers 3, servers_active 3, servers_blocked 2, servers_heading 1, head_pids [holder];
+#     clients_waiting 17, servers 3, servers_active 3, servers_blocked 2, servers_heading 1, head_pids [holder] (the
+#     heads its BLOCKED servers wait behind), heading_pids [holder] (its own server that heads), servers_elsewhere 0;
 #     heads one row: head_pid holder, servers_behind 2, clients_waiting 17, head_state 'idle in transaction',
 #     head_via_pooler true. part=nonsense answers 400; at = a day before every read gives an empty read part.
 #  C. the pages in a headless Chromium: the Pooler tab shows the trace line with '17 client(s) waiting' and 'behind
@@ -42,8 +49,9 @@
 #  D. the import's edges: the same read imported again leaves 1 conns row and 23 client and server rows (replaced, not
 #     doubled); a later payload without conns rows (an older collector, a console refusing SHOW CLIENTS) stores none,
 #     and pooler_read_at for that later time still gives the proof's read (within two minutes) and pooler_conns its rows.
-#  NOT PROVEN HERE: a pooler with thousands of idle clients (the cap of 1000 is unit-tested in pgbouncer_test.go only),
-#  PgBouncer before 1.21 (no 'idle' client state: every client is kept up to the cap), session mode, a server pool
+#  NOT PROVEN HERE: a pooler with thousands of clients (the cap of 1000 and its order are unit-tested in
+#  pgbouncer_test.go, TestPgBouncerConnCap), a pooler routing to another host (the login and database match is read,
+#  not run), a pooler in another time zone (TestPgBouncerConnTimes), PgBouncer before 1.21 (no 'idle' client state: every client is kept up to the cap), session mode, a server pool
 #  through TLS, the page's look (looked at by hand against pgbouncer-pages.md's console reads), PostgreSQL 13 (0081 is
 #  migrated there by hand: the CI matrix's lowest version).
 set -euo pipefail
@@ -51,20 +59,22 @@ cd "$(dirname "$0")/.."
 : "${PGVIGIL_REPO_DSN:?}"
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 PGB_IMAGE=${PGB_IMAGE:-edoburu/pgbouncer:v1.26.1-p0}
+PGB_UPSTREAM=${PGB_UPSTREAM:-127.0.0.1:5432}
 ADMIN_DSN=$PGVIGIL_REPO_DSN
 SUF=$RANDOM
 REPO_DB=pgvigil_poolproof_$SUF; MDB=pgvpool_db_$SUF
 MON=pgvpool_mon_$SUF; MONPW=p$RANDOM$RANDOM; APP=pgvpool_app_$SUF; APPPW=p$RANDOM$RANDOM
 STATSU=pgvpool_stats_$SUF; STATSPW=p$RANDOM$RANDOM
-HAPP=pgvpool_h_$SUF; WAPP=pgvpool_w_$SUF
+HAPP=pgvpool_h_$SUF; WAPP=pgvpool_w_$SUF; IAPP=pgvpool_i_$SUF
 PGBNAME=pgvigil-proof-pool-$SUF; PGBPORT=$((30000 + RANDOM % 20000))
 while ss -ltnH "sport = :$PGBPORT" | grep -q .; do PGBPORT=$((30000 + RANDOM % 20000)); done
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
-SRVPID=; CHRPID=; HOLD_OPEN=; CLIENTS=()
+SRVPID=; CHRPID=; HOLD_OPEN=; IDLE_OPEN=; CLIENTS=()
 cleanup() {
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null || true
   [ -n "$CHRPID" ] && kill "$CHRPID" 2>/dev/null || true
   [ -n "$HOLD_OPEN" ] && exec 8>&- 2>/dev/null || true
+  [ -n "$IDLE_OPEN" ] && exec 9>&- 2>/dev/null || true
   for p in "${CLIENTS[@]}"; do kill "$p" 2>/dev/null || true; done
   docker kill "$PGBNAME" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || true
@@ -101,7 +111,7 @@ collect() { "$BIN" collect -config "$CFG" -instance "proof-pool-$SUF" -once "$1"
 echo "--- A. a real PgBouncer: 20 clients on a pool of 3, one holder in a lock"
 cat > "$WORK/pgbouncer.ini" <<EOF
 [databases]
-$MDB = host=127.0.0.1 port=5432 dbname=$MDB pool_size=3
+$MDB = host=${PGB_UPSTREAM%:*} port=${PGB_UPSTREAM##*:} dbname=$MDB pool_size=3
 [pgbouncer]
 listen_addr = 127.0.0.1
 listen_port = $PGBPORT
@@ -127,6 +137,12 @@ for _ in $(seq 1 50); do
   [ -n "$HP" ] && break; sleep 0.2
 done
 [ -n "$HP" ] || fail "A: the holder is not idle in transaction: $(cat "$WORK/hold.out")"
+mkfifo "$WORK/idle"
+PGAPPNAME=$IAPP psql "$POOLED" -XAtq < "$WORK/idle" > "$WORK/idle.out" 2>&1 & CLIENTS+=($!)
+exec 9>"$WORK/idle"; IDLE_OPEN=1
+printf 'SELECT 1;\n' >&9
+for _ in $(seq 1 50); do grep -q '^1$' "$WORK/idle.out" && break; sleep 0.1; done
+grep -q '^1$' "$WORK/idle.out" || fail "A: the idle client's SELECT 1 did not run through the pooler: $(cat "$WORK/idle.out")"
 for _ in $(seq 1 19); do
   PGAPPNAME=$WAPP psql "$POOLED" -XAtq -c "UPDATE public.pgv_pool_t SET v = v + 1 WHERE id = 1" >/dev/null 2>&1 & CLIENTS+=($!)
 done
@@ -136,7 +152,7 @@ collect activity
 SVPIDS=$(adm "select string_agg(pid::text, ',' order by pid) from pg_stat_activity where datname = '$MDB' and usename = '$APP'")
 I=$(q "select instance_id from pgvigil.instances where name = 'proof-pool-$SUF'")
 R=$(q "select clients_read || '|' || clients_kept || '|' || servers_read from pgvigil.pooler_conn_sample where instance_id = $I and kind = 'conns'")
-echo "conns: $R (holder pid $HP; backends $SVPIDS)"; [ "$R" = "20|20|3" ] || fail "A: the conns row"
+echo "conns: $R (holder pid $HP; backends $SVPIDS)"; [ "$R" = "21|20|3" ] || fail "A: the conns row"
 R=$(q "select count(*) filter (where state = 'waiting' and wait_us > 0 and application_name = '$WAPP') || '|' || count(*) filter (where state = 'active')
          from pgvigil.pooler_conn_sample where instance_id = $I and kind = 'client'")
 echo "clients waiting|active: $R"; [ "$R" = "17|3" ] || fail "A: the client rows"
@@ -152,6 +168,11 @@ echo "servers traced: $R"
 R=$(q "select count(*) filter (where state = 'active' and backend_pid is not null) || '|' || count(*) filter (where state = 'waiting' and backend_pid is null)
          from pgvigil.pooler_conns($I, now()) where kind = 'client'")
 echo "clients with|without a backend: $R"; [ "$R" = "3|17" ] || fail "A: the clients' backends"
+R=$(q "select count(*) filter (where backend_match = 'matched') from pgvigil.pooler_conns($I, now()) where kind = 'server'")
+echo "servers matched by pid, login and database: $R"; [ "$R" = 3 ] || fail "A: the backend match"
+R=$(q "select count(*) filter (where connect_time between now() - interval '5 minutes' and now() + interval '1 minute') || '|' || count(*)
+         from pgvigil.pooler_conn_sample where instance_id = $I and kind = 'client'")
+echo "clients' connect_time near now: $R"; [ "$R" = "20|20" ] || fail "A: the pooler's times are not placed at now"
 echo "A: OK"
 
 echo "--- B. the API"
@@ -168,13 +189,13 @@ d = json.load(open(sys.argv[1])); hp = int(sys.argv[2]); db, usr = sys.argv[3], 
 rows = lambda p: [dict(zip(d[p]["columns"], r)) for r in d[p]["rows"]]
 assert sorted(d) == ["clients", "heads", "read", "servers", "trace"], sorted(d)
 r = rows("read")[0]
-assert r["clients_read"] == 20 and r["activity_at"] is not None, r
+assert r["clients_read"] == 21 and r["activity_at"] is not None, r
 assert abs((dt.datetime.fromisoformat(r["activity_at"]) - dt.datetime.fromisoformat(r["read_at"])).total_seconds()) <= 120, r
 c = rows("clients"); assert len(c) == 20 and sum(x["state"] == "waiting" for x in c) == 17, c
 assert len(rows("servers")) == 3, rows("servers")
 t = rows("trace"); assert len(t) == 1, t
 t = t[0]
-want = dict(database=db, user=usr, clients_waiting=17, servers=3, servers_active=3, servers_blocked=2, servers_heading=1, head_pids=[hp])
+want = dict(database=db, user=usr, clients_waiting=17, servers=3, servers_active=3, servers_blocked=2, servers_heading=1, head_pids=[hp], heading_pids=[hp], servers_elsewhere=0)
 assert all(t[k] == v for k, v in want.items()), (t, want)
 h = rows("heads"); assert len(h) == 1, h
 h = h[0]
@@ -188,9 +209,9 @@ echo "B: OK"
 
 echo "--- C. the pages in a headless Chromium"
 CDP=$((PORT + 1)); while ss -ltnH "sport = :$CDP" | grep -q .; do CDP=$((CDP + 1)); done
-chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.out" 2>&1 &
+chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.out" 2>&1 & CHRPID=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
-CHRPID=$(pgrep -o -f -- "--user-data-dir=$WORK/chrome") || fail "C: chromium did not start: $(cat "$WORK/chrome.out")"
+curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 || fail "C: chromium did not start: $(cat "$WORK/chrome.out")"
 cat > "$WORK/look.mjs" <<'JS'
 const [port, U, iid, hp, happ] = process.argv.slice(2);
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();

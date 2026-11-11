@@ -21,6 +21,12 @@
 --                        blocking_chains its role (head | blocked | in a cycle) and its chain's head with the head's
 --                        state, application and last statement; head_via_pooler says whether the head is itself one
 --                        of this pooler's servers, with the application of the client paired with it.
+--                        A server's backend is matched by pid AND by its login and server database (the pooler's
+--                        database name mapped through SHOW DATABASES): a pooler can also route to another host (a
+--                        replica, another instance, a second pooler), whose pids say nothing about this instance.
+--                        backend_match: 'matched' | 'not in the sample' (no session of that pid: idle between
+--                        transactions, or another host's backend) | 'another backend' (the pid is here, with another
+--                        login or database: not this server's backend).
 --
 -- A backend that is idle between transactions is not in the activity sample (it samples active and idle-in-transaction
 -- sessions and blockers): its backend_state is NULL and the page says 'not in the sample'. The pooler read and the
@@ -119,10 +125,11 @@ RETURNS timestamptz LANGUAGE sql STABLE AS $$
 $$;
 
 -- a read's clients and servers joined to the backends they run on (see the header)
+DROP FUNCTION IF EXISTS pgvigil.pooler_conns(int, timestamptz);
 CREATE OR REPLACE FUNCTION pgvigil.pooler_conns(p_instance_id int, p_at timestamptz)
 RETURNS TABLE (read_at timestamptz, activity_at timestamptz, kind text, database text, usr text, state text,
                application_name text, addr text, port int, connect_time timestamptz, request_time timestamptz, wait_us bigint,
-               ptr text, link text, backend_pid int, paired_application text, paired_addr text,
+               ptr text, link text, backend_pid int, backend_match text, paired_application text, paired_addr text,
                backend_state text, backend_wait_type text, backend_wait text, backend_query_secs double precision,
                backend_xact_secs double precision, blocking_pids int[], role text, head_pid int, head_state text,
                head_application text, head_query text, head_via_pooler boolean, head_client_application text,
@@ -140,11 +147,14 @@ BEGIN
    WHERE a.instance_id = p_instance_id AND a.snapshot_at BETWEEN v_read - interval '2 minutes' AND v_read + interval '2 minutes'
    ORDER BY abs(extract(epoch FROM a.snapshot_at - v_read)), a.snapshot_at DESC LIMIT 1;
   RETURN QUERY
-  WITH conn AS (
-    SELECT c.* FROM pgvigil.pooler_conn_sample c
+  WITH dbmap AS (
+    SELECT d->>'name' AS name, nullif(d->>'database', '') AS dbname
+      FROM pgvigil.pooler_state ps, jsonb_array_elements(coalesce(ps.databases, '[]'::jsonb)) d
+     WHERE ps.instance_id = p_instance_id
+  ), conn AS (
+    SELECT c.*, coalesce((SELECT m.dbname FROM dbmap m WHERE m.name = c.database LIMIT 1), c.database) AS server_db
+      FROM pgvigil.pooler_conn_sample c
      WHERE c.instance_id = p_instance_id AND c.snapshot_at = v_read AND c.kind IN ('client', 'server')
-  ), srv AS (
-    SELECT * FROM conn WHERE conn.kind = 'server'
   ), cli AS (
     SELECT * FROM conn WHERE conn.kind = 'client'
   ), ch AS (
@@ -152,40 +162,53 @@ BEGIN
   ), heads AS (
     SELECT DISTINCT ch.head_pid FROM ch WHERE ch.head_pid IS NOT NULL
   ), act AS (
-    SELECT s.pid, s.state, s.wait_event_type, s.wait_event, s.blocking_pids, s.application_name, s.query_hash,
+    SELECT s.pid, s.state, s.wait_event_type, s.wait_event, s.blocking_pids, s.application_name, s.query_hash, s.usename, s.datname,
            extract(epoch FROM v_act - s.query_start)::float8 AS query_secs, extract(epoch FROM v_act - s.xact_start)::float8 AS xact_secs
       FROM pgvigil.activity_sample s
      WHERE s.instance_id = p_instance_id AND s.snapshot_at = v_act
+  ), srv AS (
+    -- each server with its backend's match: the pid, the login and the server database must all agree
+    SELECT c.*, a.pid AS apid,
+           CASE WHEN a.pid IS NOT NULL THEN 'matched'
+                WHEN EXISTS (SELECT 1 FROM act z WHERE z.pid = c.remote_pid) THEN 'another backend'
+                WHEN c.remote_pid IS NOT NULL THEN 'not in the sample' END AS bmatch
+      FROM conn c
+      LEFT JOIN act a ON a.pid = c.remote_pid AND a.usename IS NOT DISTINCT FROM c.usr AND a.datname IS NOT DISTINCT FROM c.server_db
+     WHERE c.kind = 'server'
   ), x AS (
     SELECT c.kind, c.database, c.usr, c.state, c.application_name, c.addr, c.port, c.connect_time, c.request_time, c.wait_us,
            c.ptr, c.link,
            CASE WHEN c.kind = 'server' THEN c.remote_pid ELSE (SELECT s.remote_pid FROM srv s WHERE s.ptr = c.link LIMIT 1) END AS pid,
+           CASE WHEN c.kind = 'server' THEN (SELECT s.apid FROM srv s WHERE s.ptr = c.ptr LIMIT 1)
+                ELSE (SELECT s.apid FROM srv s WHERE s.ptr = c.link LIMIT 1) END AS apid,
+           CASE WHEN c.kind = 'server' THEN (SELECT s.bmatch FROM srv s WHERE s.ptr = c.ptr LIMIT 1)
+                ELSE (SELECT s.bmatch FROM srv s WHERE s.ptr = c.link LIMIT 1) END AS bmatch,
            CASE WHEN c.kind = 'server' THEN (SELECT k.application_name FROM cli k WHERE k.ptr = c.link LIMIT 1) END AS paired_app,
            CASE WHEN c.kind = 'server' THEN (SELECT k.addr FROM cli k WHERE k.ptr = c.link LIMIT 1)
                 ELSE (SELECT s.addr FROM srv s WHERE s.ptr = c.link LIMIT 1) END AS paired_addr
       FROM conn c
   )
   SELECT v_read, v_act, x.kind, x.database, x.usr, x.state, x.application_name, x.addr, x.port, x.connect_time, x.request_time,
-         x.wait_us, x.ptr, x.link, x.pid, x.paired_app, x.paired_addr,
+         x.wait_us, x.ptr, x.link, x.pid, x.bmatch, x.paired_app, x.paired_addr,
          a.state, a.wait_event_type, a.wait_event, a.query_secs, a.xact_secs,
          CASE WHEN a.wait_event_type = 'Lock' THEN a.blocking_pids END,
-         CASE WHEN x.pid IS NULL OR a.pid IS NULL THEN NULL
-              WHEN EXISTS (SELECT 1 FROM heads h WHERE h.head_pid = x.pid) THEN 'head'
-              WHEN EXISTS (SELECT 1 FROM ch WHERE ch.pid = x.pid AND ch.in_cycle AND ch.head_pid IS NULL) THEN 'in a cycle'
-              WHEN EXISTS (SELECT 1 FROM ch WHERE ch.pid = x.pid) THEN 'blocked' END,
+         CASE WHEN a.pid IS NULL THEN NULL
+              WHEN EXISTS (SELECT 1 FROM heads h WHERE h.head_pid = a.pid) THEN 'head'
+              WHEN EXISTS (SELECT 1 FROM ch WHERE ch.pid = a.pid AND ch.in_cycle AND ch.head_pid IS NULL) THEN 'in a cycle'
+              WHEN EXISTS (SELECT 1 FROM ch WHERE ch.pid = a.pid) THEN 'blocked' END,
          hd.head_pid, hd.head_state, ha.application_name, hd.head_query,
-         hd.head_pid IS NOT NULL AND EXISTS (SELECT 1 FROM srv s WHERE s.remote_pid = hd.head_pid),
-         (SELECT k.application_name FROM srv s JOIN cli k ON k.ptr = s.link WHERE s.remote_pid = hd.head_pid LIMIT 1),
+         hd.head_pid IS NOT NULL AND EXISTS (SELECT 1 FROM srv s WHERE s.apid = hd.head_pid),
+         (SELECT k.application_name FROM srv s JOIN cli k ON k.ptr = s.link WHERE s.apid = hd.head_pid LIMIT 1),
          (SELECT q.query FROM pgvigil.query_text q WHERE q.query_hash = a.query_hash)
     FROM x
-    LEFT JOIN act a ON a.pid = x.pid
+    LEFT JOIN act a ON a.pid = x.apid
     -- the chain's head: the backend itself when it heads a chain, else the lowest head its waits lead to
     LEFT JOIN LATERAL (
-      SELECT x.pid AS head_pid, a.state AS head_state, (SELECT q.query FROM pgvigil.query_text q WHERE q.query_hash = a.query_hash) AS head_query
-       WHERE EXISTS (SELECT 1 FROM heads h WHERE h.head_pid = x.pid)
+      SELECT a.pid AS head_pid, a.state AS head_state, (SELECT q.query FROM pgvigil.query_text q WHERE q.query_hash = a.query_hash) AS head_query
+       WHERE EXISTS (SELECT 1 FROM heads h WHERE h.head_pid = a.pid)
       UNION ALL
       SELECT ch.head_pid, ch.head_state, ch.head_query FROM ch
-       WHERE ch.pid = x.pid AND ch.head_pid IS NOT NULL AND NOT EXISTS (SELECT 1 FROM heads h WHERE h.head_pid = x.pid)
+       WHERE ch.pid = a.pid AND ch.head_pid IS NOT NULL AND NOT EXISTS (SELECT 1 FROM heads h WHERE h.head_pid = a.pid)
       ORDER BY 1 LIMIT 1) hd ON true
     LEFT JOIN act ha ON ha.pid = hd.head_pid
    ORDER BY CASE x.kind WHEN 'client' THEN 0 ELSE 1 END, x.wait_us DESC NULLS LAST, x.database, x.usr, x.pid;

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,38 +28,8 @@ import (
 // holds, a read is replaced, not doubled (import_pgbouncer replaces its clients and servers; the pool rows are kept
 // once per read). The live tick calls it for the minute it imports.
 func SeedPooler(ctx context.Context, pool *pgxpool.Pool, prefix string, from, to time.Time) error {
-	var id int
-	err := pool.QueryRow(ctx, `
-SELECT i.instance_id FROM pgvigil.instances i
-  LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE s.state = 'idle in transaction' AND s.is_blocker) AS idle_heads,
-                            count(*) FILTER (WHERE s.wait_event_type = 'Lock') AS waits
-                       FROM pgvigil.activity_sample s WHERE s.instance_id = i.instance_id) a ON true
- WHERE 'demo' = ANY (i.tags) AND starts_with(i.name, $1) AND coalesce(i.engine, 'postgres') = 'postgres'
- ORDER BY a.idle_heads DESC, a.waits DESC, i.name LIMIT 1`, prefix).Scan(&id)
+	id, size, err := poolerPick(ctx, pool, prefix)
 	if err != nil {
-		return fmt.Errorf("pick the pooler's instance: %w", err)
-	}
-	// the pool sizes: the most sessions a pool held in one snapshot of the history
-	size := map[[2]string]int{}
-	rows, err := pool.Query(ctx, `
-SELECT datname, usename, max(n) FROM (
-  SELECT snapshot_at, coalesce(datname, '') AS datname, coalesce(usename, '') AS usename, count(*) AS n
-    FROM pgvigil.activity_sample WHERE instance_id = $1 AND coalesce(backend_type, 'client backend') = 'client backend'
-   GROUP BY 1, 2, 3) x GROUP BY 1, 2`, id)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var db, usr string
-		var n int
-		if err := rows.Scan(&db, &usr, &n); err != nil {
-			rows.Close()
-			return err
-		}
-		size[[2]string{db, usr}] = min(n, demoPoolSize)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
 
@@ -70,7 +41,7 @@ SELECT datname, usename, max(n) FROM (
 	}
 	snaps := map[time.Time][]sess{}
 	var times []time.Time
-	rows, err = pool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 SELECT a.snapshot_at, s.pid, coalesce(s.datname, ''), coalesce(s.usename, ''), coalesce(s.application_name, ''), coalesce(s.client, ''),
        coalesce(s.state, ''), coalesce(s.wait_event_type = 'Lock', false), coalesce(s.is_blocker, false), coalesce(s.query_start, a.snapshot_at)
   FROM pgvigil.activity_summary a
@@ -217,6 +188,70 @@ SELECT a.snapshot_at, s.pid, coalesce(s.datname, ''), coalesce(s.usename, ''), c
 
 // demoPoolSize is the demo pooler's largest pool: small enough that a chain fills it.
 const demoPoolSize = 4
+
+// poolerPicked holds each prefix's pick (the instance and its pool sizes), made once: the live tick runs every
+// minute and must not read the whole activity history each time, nor move the pooler to another instance.
+var poolerPicked = struct {
+	sync.Mutex
+	m map[string]poolerChoice
+}{m: map[string]poolerChoice{}}
+
+type poolerChoice struct {
+	id   int
+	size map[[2]string]int
+}
+
+// poolerPick returns the prefix's instance and pool sizes, from the cache while that instance is still the prefix's
+// demo instance (a re-seed replaces the instances: then it is picked again).
+func poolerPick(ctx context.Context, pool *pgxpool.Pool, prefix string) (int, map[[2]string]int, error) {
+	poolerPicked.Lock()
+	defer poolerPicked.Unlock()
+	if c, ok := poolerPicked.m[prefix]; ok {
+		var still bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pgvigil.instances WHERE instance_id = $1 AND 'demo' = ANY (tags) AND starts_with(name, $2))`,
+			c.id, prefix).Scan(&still); err != nil {
+			return 0, nil, err
+		}
+		if still {
+			return c.id, c.size, nil
+		}
+	}
+	var id int
+	err := pool.QueryRow(ctx, `
+SELECT i.instance_id FROM pgvigil.instances i
+  LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE s.state = 'idle in transaction' AND s.is_blocker) AS idle_heads,
+                            count(*) FILTER (WHERE s.wait_event_type = 'Lock') AS waits
+                       FROM pgvigil.activity_sample s WHERE s.instance_id = i.instance_id) a ON true
+ WHERE 'demo' = ANY (i.tags) AND starts_with(i.name, $1) AND coalesce(i.engine, 'postgres') = 'postgres'
+ ORDER BY a.idle_heads DESC, a.waits DESC, i.name LIMIT 1`, prefix).Scan(&id)
+	if err != nil {
+		return 0, nil, fmt.Errorf("pick the pooler's instance: %w", err)
+	}
+	// the pool sizes: the most sessions a pool held in one snapshot of the history, at most demoPoolSize
+	size := map[[2]string]int{}
+	rows, err := pool.Query(ctx, `
+SELECT datname, usename, max(n) FROM (
+  SELECT snapshot_at, coalesce(datname, '') AS datname, coalesce(usename, '') AS usename, count(*) AS n
+    FROM pgvigil.activity_sample WHERE instance_id = $1 AND coalesce(backend_type, 'client backend') = 'client backend'
+   GROUP BY 1, 2, 3) x GROUP BY 1, 2`, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var db, usr string
+		var n int
+		if err := rows.Scan(&db, &usr, &n); err != nil {
+			return 0, nil, err
+		}
+		size[[2]string{db, usr}] = min(n, demoPoolSize)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+	poolerPicked.m[prefix] = poolerChoice{id: id, size: size}
+	return id, size, nil
+}
 
 func sortedKeys(m map[string]int) []string {
 	out := make([]string, 0, len(m))

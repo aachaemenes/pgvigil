@@ -17,8 +17,10 @@ import (
 //	servers  the servers, each with its backend's state, wait, ages, role in a chain (head | blocked | in a cycle) and
 //	         its chain's head, and the application of the client it serves
 //	trace    one row per pool (database, user) with a client waiting or a server whose backend is in a chain: the
-//	         waiting clients and the longest wait, the servers, how many are busy and blocked, and the heads behind it
-//	heads    one row per head that a pooler server's backend waits behind (or is): its pid, state, application, last
+//	         waiting clients and the longest wait, the servers, how many are busy and blocked, the heads its blocked
+//	         servers wait behind (head_pids), its own servers that head a chain (heading_pids), and the servers whose
+//	         pid is a session of another login or database here (servers_elsewhere: not this instance's backend)
+//	heads    one row per head that a blocked pooler server's backend waits behind: its pid, state, application, last
 //	         statement, whether the head is itself a pooler server and whose, the servers behind it and the clients
 //	         waiting in the pools those servers belong to
 //
@@ -35,12 +37,12 @@ SELECT c.snapshot_at AS read_at,
 
 const sqlPoolerConnClients = `
 SELECT database, usr AS "user", state, application_name, addr, port, connect_time, request_time, wait_us, backend_pid,
-       paired_addr, backend_state, backend_wait_type, backend_wait, backend_query_secs, blocking_pids, role, head_pid, head_state
+       backend_match, paired_addr, backend_state, backend_wait_type, backend_wait, backend_query_secs, blocking_pids, role, head_pid, head_state
   FROM pgvigil.pooler_conns($1, $2) WHERE kind = 'client'`
 
 const sqlPoolerConnServers = `
 SELECT database, usr AS "user", state, application_name, addr, port, connect_time, request_time, backend_pid,
-       paired_application, paired_addr, backend_state, backend_wait_type, backend_wait, backend_query_secs, backend_xact_secs,
+       backend_match, paired_application, paired_addr, backend_state, backend_wait_type, backend_wait, backend_query_secs, backend_xact_secs,
        blocking_pids, role, head_pid, head_state, head_application, head_query, head_via_pooler, head_client_application,
        backend_query
   FROM pgvigil.pooler_conns($1, $2) WHERE kind = 'server'`
@@ -55,7 +57,9 @@ SELECT c.database, c.usr AS "user",
        count(*) FILTER (WHERE c.kind = 'server' AND c.state LIKE 'active%') AS servers_active,
        count(*) FILTER (WHERE c.kind = 'server' AND c.role IN ('blocked', 'in a cycle')) AS servers_blocked,
        count(*) FILTER (WHERE c.kind = 'server' AND c.role = 'head') AS servers_heading,
-       array_agg(DISTINCT c.head_pid) FILTER (WHERE c.kind = 'server' AND c.head_pid IS NOT NULL) AS head_pids
+       array_agg(DISTINCT c.head_pid) FILTER (WHERE c.kind = 'server' AND c.role IN ('blocked', 'in a cycle') AND c.head_pid IS NOT NULL) AS head_pids,
+       array_agg(DISTINCT c.backend_pid) FILTER (WHERE c.kind = 'server' AND c.role = 'head') AS heading_pids,
+       count(*) FILTER (WHERE c.kind = 'server' AND c.backend_match = 'another backend') AS servers_elsewhere
   FROM c
  GROUP BY c.database, c.usr
 HAVING count(*) FILTER (WHERE c.kind = 'client' AND c.state LIKE 'waiting%') > 0
@@ -66,10 +70,10 @@ const sqlPoolerConnHeads = `
 WITH c AS (SELECT * FROM pgvigil.pooler_conns($1, $2)),
 w AS (SELECT database, usr, count(*) AS waiting, max(wait_us) AS longest_wait_us
         FROM c WHERE kind = 'client' AND state LIKE 'waiting%' GROUP BY database, usr),
-s AS (SELECT * FROM c WHERE kind = 'server' AND head_pid IS NOT NULL)
+s AS (SELECT * FROM c WHERE kind = 'server' AND role IN ('blocked', 'in a cycle') AND head_pid IS NOT NULL)
 SELECT s.head_pid, max(s.head_state) AS head_state, max(s.head_application) AS head_application, max(s.head_query) AS head_query,
        bool_or(s.head_via_pooler) AS head_via_pooler, max(s.head_client_application) AS head_client_application,
-       count(*) FILTER (WHERE s.role IN ('blocked', 'in a cycle')) AS servers_behind,
+       count(*) AS servers_behind,
        array_agg(DISTINCT s.database || '/' || s.usr) AS pools,
        (SELECT coalesce(sum(w.waiting), 0) FROM w WHERE (w.database, w.usr) IN (SELECT x.database, x.usr FROM s x WHERE x.head_pid = s.head_pid)) AS clients_waiting,
        (SELECT max(w.longest_wait_us) FROM w WHERE (w.database, w.usr) IN (SELECT x.database, x.usr FROM s x WHERE x.head_pid = s.head_pid)) AS longest_wait_us

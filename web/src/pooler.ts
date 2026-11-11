@@ -61,23 +61,35 @@ const confCols: Col[] = [{ key: 'key', label: 'setting' }, { key: 'value', wide:
 export type ConnParts = 'read' | 'clients' | 'servers' | 'trace' | 'heads';
 
 // poolerConns reads the clients, servers and trace of the pooler read nearest at (within two minutes, else the newest
-// before it); null when the endpoint fails (a server without it).
+// before it); null only when the server has no such endpoint (an older build): any other error is thrown.
 export async function poolerConns(instance: number, at: string): Promise<Record<ConnParts, Table | null> | null> {
-  return get<Record<ConnParts, Table | null>>('pooler/conns', { instance, at }).catch(() => null);
+  try {
+    return await get<Record<ConnParts, Table | null>>('pooler/conns', { instance, at });
+  } catch (e) {
+    if (e instanceof Error && e.message === 'no such endpoint') return null;
+    throw e;
+  }
 }
+
+// STALE_MS: a pooler read further than this from the page's time is not the pooler as it was then
+export const STALE_MS = 120 * 1000;
 
 const pids = (v: unknown): string => Array.isArray(v) ? v.join(', ') : typeof v === 'string' ? v.replace(/[{}]/g, '').split(',').join(', ') : '';
 const waitUs = (v: unknown) => v == null ? '' : us(v);
 const stateCell = (v: unknown) => String(v ?? '').startsWith('waiting') ? badge(String(v), 'warn') : String(v ?? '');
 const roleCell = (v: unknown) => v === 'head' ? badge('head', 'crit') : v === 'blocked' ? badge('blocked', 'warn') : String(v ?? '');
-const backendCell = (v: unknown, r: Row) => r.backend_pid == null ? '' : r.backend_state == null
-  ? el('span', { class: 'meta', title: 'Not in the activity snapshot: the backend was idle between transactions (only active and idle-in-transaction sessions are sampled)' }, 'not in the sample')
-  : String(v ?? '');
+const backendCell = (v: unknown, r: Row) => r.backend_pid == null ? ''
+  : r.backend_match === 'another backend'
+    ? el('span', { class: 'meta', title: 'This pid is a session of another login or database on this instance: the server connects elsewhere (a replica, another instance, a second pooler)' }, 'another backend')
+    : r.backend_state == null
+      ? el('span', { class: 'meta', title: 'Not in the activity snapshot: the backend was idle between transactions (only active and idle-in-transaction sessions are sampled), or it runs on another host' }, 'not in the sample')
+      : String(v ?? '');
 const waitCell = (_v: unknown, r: Row) => r.backend_wait_type == null ? ''
   : r.backend_wait_type === 'Lock' ? badge(`Lock: ${String(r.backend_wait ?? '')}`, 'warn') : `${String(r.backend_wait_type)}: ${String(r.backend_wait ?? '')}`;
 
-function runningLink(ctx: Ctx, at: unknown, pid: unknown): HTMLElement | string {
+function runningLink(ctx: Ctx, at: unknown, pid: unknown, r?: Row): HTMLElement | string {
   if (pid == null) return '';
+  if (r && r.backend_match != null && r.backend_match !== 'matched') return String(pid);   // not a session of this instance's snapshot
   return el('a', { href: href(ctx, { tab: 'activity', at: at == null ? undefined : String(at) }), title: 'Open Running queries at the activity snapshot paired with this read' }, `pid ${String(pid)}`);
 }
 
@@ -89,6 +101,12 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
   }
   const actAt = read.activity_at;
   const out: HTMLElement[] = [];
+  const asOf = window_(ctx).to;
+  const behind = new Date(asOf).getTime() - new Date(String(read.read_at)).getTime();
+  if (behind > STALE_MS) {
+    out.push(el('p', { class: 'meta' }, badge('stale', 'warn'), ` The newest read of the clients and servers is ${fmtSecs(behind / 1000)} older than the page's time `
+      + `(${fmtTime(asOf)}): the pooler was not read since. What follows is the pooler as it was at ${fmtTime(read.read_at)}.`));
+  }
   const pairing = actAt == null
     ? 'No activity snapshot within two minutes of this read: the servers\' backends are not joined.'
     : `Pooler read ${fmtTime(read.read_at)}, joined to the activity snapshot of ${fmtTime(actAt)}. In transaction mode which client a server serves can change between the two.`;
@@ -103,13 +121,15 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
     for (const t of trace) {
       const busy = `${fmtNum(t.servers_active)} of ${fmtNum(t.servers)} server(s) busy`;
       const blocked = Number(t.servers_blocked) > 0 ? `, ${fmtNum(t.servers_blocked)} of them blocked on a lock` : '';
-      const hp = pids(t.head_pids);
+      const hp = pids(t.head_pids), own = pids(t.heading_pids);
       lines.append(el('li', {},
         el('b', {}, `${String(t.database)}/${String(t.user)}`), ': ',
         Number(t.clients_waiting) > 0 ? badge(`${fmtNum(t.clients_waiting)} client(s) waiting`, 'warn') : '0 clients waiting',
         Number(t.clients_waiting) > 0 ? ` (longest ${us(t.longest_wait_us)})` : '',
         `; ${busy}${blocked}`,
-        hp ? `; behind head pid ${hp}` : Number(t.clients_waiting) > 0 ? '; no server\'s backend waits on a lock: the pool is busy, not blocked' : ''));
+        hp ? `; behind head pid ${hp}` : Number(t.clients_waiting) > 0 ? '; no server\'s backend waits on a lock: the pool is busy, not blocked' : '',
+        own ? `; its own server (pid ${own}) heads a chain` : '',
+        Number(t.servers_elsewhere) > 0 ? `; ${fmtNum(t.servers_elsewhere)} server(s) whose pid is another login's session here (not this instance's backends)` : ''));
     }
     out.push(lines);
     if (heads.length) {
@@ -142,7 +162,7 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
       { key: 'addr', label: 'client address', fmt: (v, r) => v == null ? '' : `${String(v)}:${String(r.port ?? '')}` },
       { key: 'request_time', label: 'last request', fmt: fmtTime },
       { key: 'connect_time', label: 'connected', fmt: fmtTime },
-      { key: 'backend_pid', label: 'served by backend', fmt: v => runningLink(ctx, actAt, v) },
+      { key: 'backend_pid', label: 'served by backend', fmt: (v, r) => runningLink(ctx, actAt, v, r) },
       { key: 'backend_state', label: 'backend state', fmt: backendCell },
       { key: 'role', label: 'in a chain', fmt: roleCell },
       { key: 'head_pid', label: 'chain head', fmt: (v, r) => r.role === 'head' ? '' : runningLink(ctx, actAt, v) },
@@ -150,7 +170,7 @@ export function connSections(ctx: Ctx, d: Record<ConnParts, Table | null>): HTML
   out.push(el('h3', {}, 'Servers (SHOW SERVERS)'),
     el('p', { class: 'meta' }, 'remote_pid is the backend\'s pid in PostgreSQL: the bridge from the pooler to Running queries and the blocking chain.'),
     grid(servers, [
-      { key: 'backend_pid', label: 'backend pid (remote_pid)', fmt: v => runningLink(ctx, actAt, v) },
+      { key: 'backend_pid', label: 'backend pid (remote_pid)', fmt: (v, r) => runningLink(ctx, actAt, v, r) },
       { key: 'state', label: 'pooler state' },
       { key: 'paired_application', label: 'serving client', fmt: (v, r) => v == null && r.paired_addr == null ? '' : `${String(v ?? '')}${r.paired_addr ? ` (${String(r.paired_addr)})` : ''}` },
       { key: 'database' }, { key: 'user' },
@@ -199,7 +219,7 @@ export async function pooler(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Pooler (${rangeLabel(ctx)})`));
   try {
     const w = window_(ctx);
-    const [d, conns] = await Promise.all([get<Record<PoolerParts, Table | null>>('pooler', { instance: ctx.instance, ...w }), poolerConns(ctx.instance!, w.to)]);
+    const [d, conns] = await Promise.all([get<Record<PoolerParts, Table | null>>('pooler', { instance: ctx.instance, ...w }), poolerConns(ctx.instance!, w.to).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)))]);
     const st = rowsOf(d.state)[0];
     if (!st) {
       sec.append(el('p', { class: 'empty' }, 'No pooler read for this instance: its configuration names no pgbouncer: DSN (the pooler\'s admin console, '
@@ -226,7 +246,9 @@ export async function pooler(ctx: Ctx): Promise<HTMLElement> {
     const findings = rowsOf(d.findings);
     if (findings.length) sec.append(el('h3', {}, 'Findings'), grid(findings, findingCols));
     sec.append(el('h3', {}, 'Pools (SHOW POOLS)'), grid(pools, poolCols, 'No pool at the last read.'));
-    if (conns) sec.append(...connSections(ctx, conns));
+    // a failed read of the clients and servers shows its error in their place; the pools above stand
+    if (conns instanceof Error) sec.append(el('h3', {}, 'Clients and servers (SHOW CLIENTS, SHOW SERVERS)'), errorBox(conns));
+    else if (conns) sec.append(...connSections(ctx, conns));
     sec.append(lineChart('Clients and servers', rowsOf(d.series), [
       { key: 'cl_active', label: 'clients active' }, { key: 'cl_waiting', label: 'clients waiting' },
       { key: 'sv_active', label: 'servers active' }, { key: 'sv_idle', label: 'servers idle' },

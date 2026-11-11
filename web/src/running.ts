@@ -25,7 +25,7 @@ import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { longRunsSection } from './window';
 import { pgBlockingHistory } from './blocking_history';
 import { sqlCell, whatIsThis } from './sqlview';
-import { poolerConns, poolerKnown } from './pooler';
+import { poolerConns, poolerKnown, STALE_MS } from './pooler';
 
 const TAB = 'activity';
 const idleNote = 'This session is idle in a transaction: the text is the LAST statement it ran, not one running now.';
@@ -222,9 +222,13 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
     : { steps: null };
   const steps: Steps = rowsOf(stepsT.steps)[0] ?? { shown: a.snapshot_at };
   // the pooler read of the same minute, where the instance has a pooler (task 128); a failed read leaves the page as it was
-  const pc = a.snapshot_at && await poolerKnown(ctx.instance).catch(() => false) ? await poolerConns(ctx.instance, String(a.snapshot_at)) : null;
+  // only a read within two minutes of the snapshot: an older one says nothing of these sessions (pids are reused)
+  const pcAny = a.snapshot_at && await poolerKnown(ctx.instance).catch(() => false)
+    ? await poolerConns(ctx.instance, String(a.snapshot_at)).catch(() => null) : null;
+  const readAt = rowsOf(pcAny?.read ?? null)[0]?.read_at;
+  const pc = readAt != null && Math.abs(new Date(String(readAt)).getTime() - new Date(String(a.snapshot_at)).getTime()) <= STALE_MS ? pcAny : null;
   const viaPooler = new Map<number, Row>();
-  for (const r of rowsOf(pc?.servers ?? null)) if (r.backend_pid != null) viaPooler.set(Number(r.backend_pid), r);
+  for (const r of rowsOf(pc?.servers ?? null)) if (r.backend_pid != null && r.backend_match === 'matched') viaPooler.set(Number(r.backend_pid), r);
   const sec = el('section', {}, el('h2', {}, 'Running queries'), snapshotBar(ctx, at, steps));
   if (!a.snapshot_at) { sec.append(el('p', { class: 'empty' }, 'No activity snapshot for this instance yet.')); return sec; }
   const sum = rowsOf(a.summary)[0] ?? {};

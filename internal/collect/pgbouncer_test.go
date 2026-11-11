@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"fmt"
 	"math/big"
 	"os"
 	"reflect"
@@ -128,8 +129,9 @@ func TestBNum(t *testing.T) {
 // kept, the longest wait comes first and is wait + wait_us, a server keeps its remote_pid, the timestamps come out as
 // RFC 3339 whether the console sent text or a time, and the conns row counts what was read and kept.
 func TestPgBouncerConnRows(t *testing.T) {
+	now := time.Date(2026, 11, 10, 23, 13, 2, 0, time.UTC)
 	clients := []map[string]any{
-		{"database": "pgbouncer", "user": "mon", "state": "active"},
+		{"database": "pgbouncer", "user": "mon", "state": "active", "request_time": "2026-11-10 23:13:00 UTC"},
 		{"database": "app", "user": "web", "state": "active", "application_name": "api", "addr": "10.0.0.5", "port": int64(53410),
 			"connect_time": "2026-11-10 23:12:40 UTC", "request_time": "2026-11-10 23:12:40 UTC", "wait": int64(0), "wait_us": int64(0),
 			"ptr": "0x1", "link": "0xs1"},
@@ -142,21 +144,21 @@ func TestPgBouncerConnRows(t *testing.T) {
 		{"database": "app", "user": "web", "state": "active", "application_name": "api", "remote_pid": int64(2017329), "ptr": "0xs1", "link": "0x1",
 			"connect_time": time.Date(2026, 11, 10, 23, 12, 40, 0, time.UTC)},
 	}
-	rows := pgBouncerConnRows(clients, servers)
+	rows := pgBouncerConnRows(clients, servers, now)
 	if len(rows) != 5 {
 		t.Fatalf("rows: %d, want 5 (conns, 3 clients, 1 server): %v", len(rows), rows)
 	}
 	if c := rows[0]; c["kind"] != "conns" || c["clients_read"] != 4 || c["clients_kept"] != 3 || c["servers_read"] != 1 {
 		t.Errorf("conns row: %v", c)
 	}
-	if r := rows[1]; r["application_name"] != "batch" || r["wait_us"] != int64(1250000) || r["state"] != "waiting" {
+	if r := rows[1]; r["link"] != "0xs1" || r["connect_time"] != "2026-11-10T23:12:40Z" || r["port"] != int64(53410) {
+		t.Errorf("first client (paired with a server: kept first): %v", r)
+	}
+	if r := rows[2]; r["application_name"] != "batch" || r["wait_us"] != int64(1250000) || r["state"] != "waiting" {
 		t.Errorf("first client (the longest wait): %v", r)
 	}
-	if r := rows[2]; r["wait_us"] != int64(15991) {
-		t.Errorf("second client: %v", r)
-	}
-	if r := rows[3]; r["link"] != "0xs1" || r["connect_time"] != "2026-11-10T23:12:40Z" || r["port"] != int64(53410) {
-		t.Errorf("the active client: %v", r)
+	if r := rows[3]; r["wait_us"] != int64(15991) {
+		t.Errorf("third client: %v", r)
 	}
 	if r := rows[4]; r["kind"] != "server" || r["remote_pid"] != int64(2017329) || r["connect_time"] != "2026-11-10T23:12:40Z" || r["link"] != "0x1" {
 		t.Errorf("the server: %v", r)
@@ -164,7 +166,63 @@ func TestPgBouncerConnRows(t *testing.T) {
 	if _, ok := rows[1]["remote_pid"]; ok {
 		t.Error("a client row carries remote_pid (only a server's is the backend pid)")
 	}
-	if bTime("") != nil || bTime(nil) != nil {
-		t.Error("a blank timestamp is not nil")
+}
+
+// The pooler's times are its host's local wall clock: the offset comes from the console's own newest request (this
+// collector's SHOW CLIENTS, made at now). Without that row only a UTC or GMT zone is stored.
+func TestPgBouncerConnTimes(t *testing.T) {
+	now := time.Date(2026, 11, 10, 23, 13, 3, 0, time.UTC)
+	c := func(zone string) []map[string]any {
+		return []map[string]any{
+			{"database": "pgbouncer", "state": "active", "request_time": "2026-11-10 15:13:00 " + zone},
+			{"database": "app", "state": "waiting", "connect_time": "2026-11-10 15:12:40 " + zone, "ptr": "0x2"},
+		}
+	}
+	if r := pgBouncerConnRows(c("PST"), nil, now)[1]; r["connect_time"] != "2026-11-10T23:12:40Z" {
+		t.Errorf("PST pooler: connect_time %v, want 23:12:40Z", r["connect_time"])
+	}
+	if r := pgBouncerConnRows(c("+04"), nil, now.Add(-12*time.Hour))[1]; r["connect_time"] != "2026-11-10T11:12:40Z" {
+		t.Errorf("+04 pooler (its clock 15:13 at 11:13 UTC): connect_time %v", r["connect_time"])
+	}
+	noOwn := c("PST")[1:]
+	if r := pgBouncerConnRows(noOwn, nil, now)[1]; r["connect_time"] != nil {
+		t.Errorf("PST without the console's own row: %v, want nil", r["connect_time"])
+	}
+	utc := []map[string]any{{"database": "app", "state": "waiting", "connect_time": "2026-11-10 23:12:40 UTC"}}
+	if r := pgBouncerConnRows(utc, nil, now)[1]; r["connect_time"] != "2026-11-10T23:12:40Z" {
+		t.Errorf("UTC without the console's own row: %v", r["connect_time"])
+	}
+	odd := c("PST")
+	odd[0]["request_time"] = "2026-11-10 14:52:00 PST" // 21 minutes past a 15-minute step: no offset trusted
+	if r := pgBouncerConnRows(odd, nil, now)[1]; r["connect_time"] != nil {
+		t.Errorf("an offset off the 15-minute steps: %v, want nil", r["connect_time"])
+	}
+}
+
+// The cap: 1000 clients kept of 1200 waiting plus 5 paired and 50 idle; the paired ones survive the cut, the rest are
+// the longest waits; clients_read counts every client but the console's own.
+func TestPgBouncerConnCap(t *testing.T) {
+	var cl []map[string]any
+	for i := 0; i < 1200; i++ {
+		cl = append(cl, map[string]any{"database": "app", "state": "waiting", "wait": int64(0), "wait_us": int64(i + 1), "ptr": fmt.Sprintf("0xw%d", i)})
+	}
+	for i := 0; i < 5; i++ {
+		cl = append(cl, map[string]any{"database": "app", "state": "active", "wait": int64(0), "wait_us": int64(0), "ptr": fmt.Sprintf("0xa%d", i), "link": fmt.Sprintf("0xs%d", i)})
+	}
+	for i := 0; i < 50; i++ {
+		cl = append(cl, map[string]any{"database": "app", "state": "idle", "ptr": fmt.Sprintf("0xi%d", i)})
+	}
+	rows := pgBouncerConnRows(cl, nil, time.Now())
+	if c := rows[0]; c["clients_read"] != 1255 || c["clients_kept"] != 1000 {
+		t.Fatalf("conns: %v", c)
+	}
+	kept := rows[1:]
+	for i := 0; i < 5; i++ {
+		if kept[i]["link"] == nil || kept[i]["state"] != "active" {
+			t.Errorf("row %d: a paired client should come first: %v", i, kept[i])
+		}
+	}
+	if kept[5]["wait_us"] != int64(1200) || kept[999]["wait_us"] != int64(206) {
+		t.Errorf("the waits kept: first %v, last %v; want 1200 .. 206", kept[5]["wait_us"], kept[999]["wait_us"])
 	}
 }
