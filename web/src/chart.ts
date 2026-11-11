@@ -64,7 +64,10 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     width: 560, height: 220,
     series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: o.stacked ? 1 : 2,
                                             fill: o.stacked ? withAlpha(colorAt(palette, i), 0.45) : undefined,
-                                            value: (_u: uPlot, v: number | null) => v == null ? '' : fmt(v) }))],
+                                            // stacked: the data are running totals, the legend (the screen reader's form) gives the
+                                            // band's own value, as the tooltip does
+                                            value: (u: uPlot, v: number | null, si: number, idx: number | null) => v == null ? ''
+                                              : fmt(o.stacked && si > 1 && idx != null ? v - (Number(u.data[si - 1][idx] ?? 0)) : v) }))],
     bands: o.stacked ? series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : undefined,
     axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis }],
     plugins: [tooltipPlugin(fmt, !!o.stacked)],

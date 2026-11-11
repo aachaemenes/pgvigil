@@ -11,6 +11,7 @@ import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
 import { sessionSetsSection } from './sessionsets';
+import { pgConfigSection } from './pgconfig';
 import { backupsFleetView } from './backups';
 import { corruptionFleetView } from './corruption';
 import { extensionsFleetView } from './extensions';
@@ -678,9 +679,8 @@ export async function config(ctx: Ctx): Promise<HTMLElement> {
                 { key: 'old_value', label: 'old', wide: true, fmt: v => v == null ? '(default)' : String(v) },
                 { key: 'new_value', label: 'new', wide: true, fmt: v => v == null ? '(default)' : String(v) }],
          'No setting changed in this range.'));
-  sec.append(el('h3', {}, 'Non-default settings'),
-    grid(rowsOf(d.settings), [{ key: 'name', label: 'setting', fmt: v => changed.has(String(v)) ? el('b', { title: 'changed in this range' }, String(v) + ' *') : String(v) },
-                              { key: 'value', wide: true }], 'No non-default settings recorded.'));
+  // the settings with their unit, default, source, what a change needs and pending restart (pgconfig.ts, task 132)
+  sec.append(await pgConfigSection(ctx, changed));
   sec.append(await sessionSetsSection(ctx));
   return sec;
 }

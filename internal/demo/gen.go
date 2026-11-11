@@ -397,6 +397,47 @@ func (g *Gen) settings(t time.Time) []Row {
 	return out
 }
 
+// settingMeta is what pg_settings says of each demo setting beside its value: unit, compiled-in value, context and
+// category (task 132: the Configuration tab's columns).
+var settingMeta = map[string][4]string{
+	"checkpoint_timeout":         {"s", "300", "sighup", "Write-Ahead Log / Checkpoints"},
+	"effective_cache_size":       {"8kB", "524288", "user", "Query Tuning / Planner Cost Constants"},
+	"log_min_duration_statement": {"ms", "-1", "superuser", "Reporting and Logging / When to Log"},
+	"maintenance_work_mem":       {"kB", "65536", "user", "Resource Usage / Memory"},
+	"max_connections":            {"", "100", "postmaster", "Connections and Authentication / Connection Settings"},
+	"max_wal_size":               {"MB", "1024", "sighup", "Write-Ahead Log / Checkpoints"},
+	"random_page_cost":           {"", "4", "user", "Query Tuning / Planner Cost Constants"},
+	"shared_buffers":             {"8kB", "16384", "postmaster", "Resource Usage / Memory"},
+	"shared_preload_libraries":   {"", "", "postmaster", "Client Connection Defaults / Shared Library Preloading"},
+	"track_io_timing":            {"", "off", "superuser", "Statistics / Cumulative Query and Index Statistics"},
+	"wal_level":                  {"", "replica", "postmaster", "Write-Ahead Log / Settings"},
+	"work_mem":                   {"kB", "4096", "user", "Resource Usage / Memory"},
+}
+
+// settingsDetail is settings(t) in the instance collection's detail shape; the fleet's first instance also has one
+// setting edited in its file and waiting for a restart (its source still reads 'default').
+func (g *Gen) settingsDetail(t time.Time) []Row {
+	out := []Row{}
+	for _, r := range g.settings(t) {
+		name, _ := r["name"].(string)
+		m, ok := settingMeta[name]
+		if !ok {
+			m = [4]string{"", "", "sighup", ""}
+		}
+		d := Row{"name": name, "value": r["value"], "boot_val": m[1], "source": "configuration file", "context": m[2],
+			"pending_restart": false, "category": m[3]}
+		if m[0] != "" {
+			d["unit"] = m[0]
+		}
+		out = append(out, d)
+	}
+	if g.idx == 0 {
+		out = append(out, Row{"name": "max_worker_processes", "value": "8", "boot_val": "8", "source": "default",
+			"context": "postmaster", "pending_restart": true, "category": "Resource Usage / Asynchronous Behavior"})
+	}
+	return out
+}
+
 // settingValue is one setting of settings(t): the instance_state column follows the Configuration tab's value,
 // a SettingEdit included.
 func (g *Gen) settingValue(t time.Time, name string) string {
@@ -426,6 +467,7 @@ func (g *Gen) instanceRows(t time.Time) []Row {
 		"track_io_timing": "on", "log_min_duration_statement": g.settingValue(t, "log_min_duration_statement"), "database_count": len(g.dbList()),
 		"platform": s.Platform, "has_pg_stat_statements": !s.StmtBroken, "has_pg_cron": s.Cron, "has_pgagent": false,
 		"has_wait_sampling": false, "has_log_fdw": false, "extensions": ext, "non_default_settings": g.settings(t),
+		"settings_detail": g.settingsDetail(t),
 	}}
 }
 

@@ -45,7 +45,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
@@ -60,9 +60,9 @@ export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
-  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles'] },
+  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
-  { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'dbchanges', 'indexes', 'mssqltempdb'] },
+  { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'tablesize', 'dbchanges', 'indexes', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
 ];
@@ -176,6 +176,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (keep && c.tab === 'dbadash') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['dr', 'di']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
+  // the Diff page's picks (diff.ts: mode, the two sides, their databases and times, identical rows) stay on a range change
+  if (keep && c.tab === 'diff') {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['m', 'a', 'b', 'dba', 'dbb', 'ta', 'tb', 'all']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   return `#/${c.tab}?${q}`;
 }

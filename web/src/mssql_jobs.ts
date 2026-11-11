@@ -9,6 +9,7 @@ import { Ctx, rangeLabel, window_ } from './router';
 import { jsonRows, mssqlFindingCols } from './mssql_hadr';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 import { jobAckCell, jobAcks, loadAckSafe } from './ack';
+import { jobChartSection } from './jobs_chart';
 
 const CUT = 200;
 
@@ -121,25 +122,33 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const hw = widened ? { from: new Date(toMs - week).toISOString(), to: w.to } : w;
   // a preset reads 'last 7 days'; a custom range names the week that ends at its own 'to'
   const hLabel = !widened ? rangeLabel(ctx) : ctx.range.preset ? 'last 7 days' : `the 7 days to ${fmtTime(w.to)}`;
-  const pick = async (j: Row) => {
-    detail.replaceChildren(el('h3', {}, `${String(j.name)}: history (${hLabel})`), el('p', { class: 'meta' }, 'Reading...'));
+  // step: the step the history is cut to (SQL Server; jobs_chart.ts's step grid asks for it), unset = the job's own runs.
+  // refocus: the pick came from a button inside the detail, which this redraw replaces: the new heading takes the focus
+  let pickSeq = 0;
+  const pick = async (j: Row, step?: number, refocus = false) => {
+    const mine = ++pickSeq;   // a later pick wins over a slower earlier one
+    const title = `${String(j.name)}${step != null ? `, step ${step}` : ''}: history (${hLabel})`;
+    const head = () => { const h = el('h3', { tabindex: '-1' }, title); if (refocus) requestAnimationFrame(() => { if (h.isConnected) h.focus(); }); return h; };
+    detail.replaceChildren(el('h3', {}, title), el('p', { class: 'meta' }, 'Reading...'));
     try {
-      const x = await get<Record<'runs' | 'counts' | 'changes', Table | null>>('jobs/history',
-        { engine, instance: ctx.instance, ...hw, scheduler: String(j.scheduler), job: String(j.job_id), part: undefined });
+      const x = await get<Record<'runs' | 'counts' | 'changes' | 'stats' | 'series' | 'series_meta', Table | null>>('jobs/history',
+        { engine, instance: ctx.instance, ...hw, scheduler: String(j.scheduler), job: String(j.job_id), step, part: undefined });
+      if (mine !== pickSeq) return;
       const runs = rowsOf(x.runs), c = rowsOf(x.counts)[0] ?? {};
-      detail.replaceChildren(el('h3', {}, `${String(j.name)}: history (${hLabel})`),
+      detail.replaceChildren(head(),
         el('div', { class: 'tiles' },
           tile('succeeded', fmtNum(c.succeeded ?? 0)),
           tile('failed', fmtNum(c.failed ?? 0), Number(c.failed) > 0 ? 'crit' : ''),
           tile('cancelled', fmtNum(c.cancelled ?? 0), Number(c.cancelled) > 0 ? 'warn' : ''),
           tile('running long (over 2x the median)', fmtNum(c.running_long ?? 0), Number(c.running_long) > 0 ? 'warn' : ''),
           tile('median good run', c.median_s == null ? 'n/a' : dur(c.median_s))),
+        jobChartSection(x, { engine, step, onStep: s => { void pick(j, s, true); } }),
         strip(runs),
         Number(c.runs ?? 0) > runs.length ? el('p', { class: 'meta' }, `The newest ${fmtNum(runs.length)} of ${fmtNum(c.runs)} runs; the counts cover all of them.`) : '',
         grid(runs, runCols, j.last_run_at ? `No run of this job started in this window; its last start was ${fmtTime(j.last_run_at)} (the grid above).` : 'No run of this job started in this window.'),
         el('h3', {}, `${String(j.name)}: changes`),   // every kept version; one changed in the window opens
         changes(rowsOf(x.changes), hw.from, hw.to));
-    } catch (e) { detail.replaceChildren(errorBox(e)); }
+    } catch (e) { if (mine === pickSeq) detail.replaceChildren(errorBox(e)); }
   };
   const cols: Col[] = [
     { key: 'name', label: 'job', fmt: (v, r) => {
