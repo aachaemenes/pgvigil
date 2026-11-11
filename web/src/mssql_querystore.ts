@@ -37,6 +37,9 @@ const times = (v: unknown) => v == null || v === '' ? '' : fmtNum(v) + ' x';
 const yes = (v: unknown) => v == null ? '' : v ? 'yes' : 'no';
 const sevBadge = (v: unknown) => badge(text(v), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const stmt = (v: unknown) => v == null || v === '' ? '(no text stored)' : sqlCell(v);
+// a tinted cell (class 'status warn' / 'status crit') has no padding of its own: the stylesheet gives it to the
+// cell's .cell-link, so a tinted cell's content rides one (bare text sat against the cell's top and side)
+const tinted = (s: string | Node) => el('span', { class: 'cell-link' }, s);
 
 function hashQS(): URLSearchParams { return new URLSearchParams(location.hash.split('?')[1] ?? ''); }
 
@@ -253,10 +256,10 @@ function regressedView(ctx: Ctx, d: QS): HTMLElement[] {
     { key: 'extra_duration_ms', label: 'extra duration', num: true, fmt: dur },
     { key: 'avg_duration_ms', label: 'avg duration', num: true, fmt: dur },
     { key: 'before_avg_duration_ms', label: 'before', num: true, fmt: dur },
-    { key: 'duration_ratio', label: 'duration x', num: true, fmt: times, cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
+    { key: 'duration_ratio', label: 'duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
     { key: 'avg_cpu_ms', label: 'avg CPU', num: true, fmt: dur },
     { key: 'before_avg_cpu_ms', label: 'CPU before', num: true, fmt: dur },
-    { key: 'cpu_ratio', label: 'CPU x', num: true, fmt: times, cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
+    { key: 'cpu_ratio', label: 'CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
     { key: 'avg_logical_reads', label: 'avg logical reads', num: true },
     { key: 'before_avg_logical_reads', label: 'reads before', num: true },
     { key: 'executions', num: true }, { key: 'before_executions', label: 'executions before', num: true },
@@ -284,7 +287,7 @@ function forcedView(ctx: Ctx, d: QS): HTMLElement[] {
     { key: 'object_name', label: 'object' },
     { key: 'query', label: 'statement', fmt: stmt },
     { key: 'forcing_type', label: 'plan forcing', fmt: v => text(v).toLowerCase() },
-    { key: 'force_failure_count', label: 'force failures', num: true, cls: v => Number(v) > 0 ? 'status warn' : '' },
+    { key: 'force_failure_count', label: 'force failures', num: true, fmt: v => Number(v) > 0 ? tinted(fmtNum(v)) : fmtNum(v), cls: v => Number(v) > 0 ? 'status warn' : '' },
     { key: 'force_failure_reason', label: 'last force failure' },
     { key: 'plan_count', label: 'plans of the query', num: true },
     { key: 'plan_last_execution', label: 'last execution (plan)', fmt: fmtTime },
@@ -318,7 +321,7 @@ function tuningView(d: QS): HTMLElement[] {
     { key: 'rec_state', label: 'state', fmt: (v, r) => r.is_present ? text(v) : `${text(v) || '?'} (no longer listed)` },
     { key: 'state_reason', label: 'state reason' },
     { key: 'score', num: true },
-    { key: 'reason', wide: true },
+    { key: 'reason' },   // one line: a 'wide' cell among seventeen columns wrapped at every word (a row 135 px tall)
     { key: 'query_id', label: 'query', num: true, fmt: v => text(v) },
     { key: 'regressed_plan_id', label: 'regressed plan', num: true, fmt: v => text(v) },
     { key: 'recommended_plan_id', label: 'recommended plan', num: true, fmt: v => text(v) },
@@ -351,10 +354,13 @@ function stateView(d: QS): HTMLElement[] {
   const cols: Col[] = [
     { key: 'database_name', label: 'database' },
     { key: 'severity', label: 'status', cls: stateCls,
-      fmt: (v, r) => !r.options_read ? badge('not read', '') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn')
-        : v === 'info' ? badge('note', '') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok') },
+      fmt: (v, r) => {
+        const b = !r.options_read ? badge('not read', '') : v === 'critical' ? badge('critical', 'crit') : v === 'warning' ? badge('warning', 'warn')
+          : v === 'info' ? badge('note', '') : r.actual_state === 'OFF' ? 'off' : badge('OK', 'ok');
+        return stateCls(v, r) ? tinted(b) : b;
+      } },
     { key: 'desired_state', label: 'desired state', fmt: lower },
-    { key: 'actual_state', label: 'actual state', fmt: lower, cls: stateCls },
+    { key: 'actual_state', label: 'actual state', fmt: (v, r) => stateCls(v, r) ? tinted(lower(v)) : lower(v), cls: stateCls },
     { key: 'readonly_reasons', label: 'read-only reason', fmt: (v, r) => text(v) || (Number(r.readonly_reason) ? `reason ${text(r.readonly_reason)}` : '') },
     { key: 'capture_mode', label: 'query capture mode', fmt: lower },
     { key: 'cleanup_mode', label: 'size-based cleanup', fmt: lower },
@@ -370,15 +376,26 @@ function stateView(d: QS): HTMLElement[] {
     { key: 'policy_stale_hours', label: 'policy stale threshold (hrs)', num: true },
     { key: 'policy_compile_cpu_ms', label: 'policy total compile time (ms)', num: true },
     { key: 'policy_exec_cpu_ms', label: 'policy total execution CPU time (ms)', num: true },
-    { key: 'note', label: 'not read because', wide: true },   // a judgement's sentence is in the Checks grid above: here it made the row 280 px tall
+    // a judgement's sentence is in the grid under this one (here it made the row 280 px tall); the note stays on
+    // one line: a 'wide' cell among twenty-two columns wraps at every word
+    { key: 'note', label: 'not read because' },
     { key: 'newest_interval', label: 'newest interval stored', fmt: fmtTime },
     { key: 'snapshot_at', label: 'read', fmt: fmtTime },
   ];
+  // a flagged store's sentence, said by the view itself: the Checks above carry it only while the store's read is
+  // under three hours old (the findings view), and the grid's colour has no such limit
+  const flagged = rows.filter(r => r.severity != null && text(r.verdict) !== '');
   return [
     el('p', { class: 'meta' }, 'One row per database (master and tempdb have no Query Store). Critical: the store is in the ERROR state. Warning: it is read-only '
       + '(unless the database itself is read-only or a secondary replica), or off though a state was asked for. Note: a store at 90 % of its max size with size-based cleanup off. '
-      + 'A store that is off because nobody asked for it is a choice, not a fault. The Checks above say what each warning means.'),
+      + 'A store that is off because nobody asked for it is a choice, not a fault. What each flagged state means is listed under the grid.'),
     grid(rows, cols, 'No database read.'),
+    ...(flagged.length ? [el('h3', {}, 'What each flagged state means'), grid(flagged, [
+      { key: 'database_name', label: 'database' },
+      { key: 'severity', label: 'status', fmt: v => v === 'info' ? badge('note', '') : sevBadge(v) },
+      { key: 'verdict', label: 'what it means', wide: true },
+      { key: 'snapshot_at', label: 'read', fmt: fmtTime },
+    ], '')] : []),
   ];
 }
 

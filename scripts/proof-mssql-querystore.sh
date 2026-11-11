@@ -79,7 +79,9 @@
 #     migrates without error, X's first payload imported twice leaves 1|1|2|2|5 and the plan cursor 11, and Y's
 #     payload gives the same judgements as on the repository's own PostgreSQL. PGVIGIL_SKIP_PG13=1 leaves it out.
 #  P. the API: every part of /api/mssql/querystore answers; the series is in whole hours on a window over two
-#     hours and in minutes on an hour's window; view=state answers state and checks only; an unknown
+#     hours (the UTC hour: the server runs with TZ=UTC) and in minutes on an hour's window: on the hour around
+#     part D's interval edge it has exactly one point per minute in which a stored interval starts (the
+#     repository's own count, at least two), one of them off the whole hour; view=state answers state and checks only; an unknown
 #     order, an over-long db, a query route without db, one with a malformed hash, one without a hash, an unknown
 #     view and an unknown part answer 400; a plan that does not exist answers 404.
 #  DEMO. a two-day demo: DEMO-SQL01's top list has at least 8 queries; its regressed part for the two hours from
@@ -276,7 +278,7 @@ paste -d'|' <(echo "$HAND") <(echo "$REP") | while IFS='|' read -r so sq_ se sd 
   done
 done
 PORT=$(freeport 18290 18330)
-"$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" -no-login > "$WORK/serve.log" 2>&1 & SRV_PID=$!
+TZ=UTC "$BIN" serve -config "$CFG" -listen "127.0.0.1:$PORT" -no-login > "$WORK/serve.log" 2>&1 & SRV_PID=$!   # UTC: part P reads the hour off the API's timestamps
 U=http://127.0.0.1:$PORT/api
 for _ in $(seq 1 40); do curl -fs "$U/health" >/dev/null 2>&1 && break; sleep 0.25; done
 curl -fs "$U/health" >/dev/null || { cat "$WORK/serve.log" >&2; fail "the UI did not serve"; }
@@ -630,10 +632,16 @@ curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: t
 [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
 [ "$(objs "$WORK/all.json" state | jq 'length >= 3')" = true ] || fail "P: state is short"
-# the series: whole hours on this window of over two hours (a step that is no multiple of the interval's length draws a zigzag), a minute on an hour's window
+# the series: whole hours on this window of over two hours (a step that is no multiple of the interval's length draws a zigzag)
 [ "$(objs "$WORK/all.json" series | jq 'length >= 1 and all(.[]; .snapshot_at | test("T[0-9]{2}:00:00"))')" = true ] || fail "P: the series of the long window is not in whole hours: $(objs "$WORK/all.json" series | jq -c '[.[].snapshot_at]')"
-W1="from=$(date -u -d '-55 minutes' +%FT%TZ)&to=$(date -u -d '+5 minutes' +%FT%TZ)"
-[ "$(curl -fs "$U/mssql/querystore?instance=$iid&$W1&part=series" | jq '.series.rows | length >= 2')" = true ] || fail "P: the series of an hour's window has fewer than two one-minute points"
+# a minute on an hour's window, taken around part D's interval edge (3,600 s, whenever part P runs): one point per minute in which a stored
+# interval starts, counted in the repository; D's two one-minute intervals are a minute apart, so one point is off the whole hour
+TE=$(date -u -d "$T" +%s); W1="from=$(date -u -d "@$((TE - 1800))" +%FT%TZ)&to=$(date -u -d "@$((TE + 1800))" +%FT%TZ)"
+curl -fs "$U/mssql/querystore?instance=$iid&$W1&part=series" > "$WORK/series1.json" || fail "P: the series of an hour's window ($W1)"
+WANT1=$(q "select count(distinct date_trunc('minute', snapshot_at)) from pgvigil.mssql_qs_interval where instance_id = $iid and snapshot_at < to_timestamp($((TE + 1800))) and interval_end > to_timestamp($((TE - 1800)))")
+GOT1=$(objs "$WORK/series1.json" series | jq -c '[.[].snapshot_at]')
+[ "$(echo "$GOT1" | jq --argjson n "${WANT1:-0}" '($n >= 2) and (length == $n) and any(.[]; test("T[0-9]{2}:00:00") | not)')" = true ] \
+  || fail "P: the series of an hour's window ($W1) is not one point per minute with a stored interval: $GOT1 against $WANT1 such minute(s)"
 [ "$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=state" | jq -r 'keys | join(",")')|$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=tuning" | jq -r 'keys | join(",")')" = "checks,state|checks,state,tuning,tuning_options" ] \
   || fail "P: a view's parts: $(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=state" | jq -r 'keys | join(",")')|$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=tuning" | jq -r 'keys | join(",")')"
 LONG=$(printf 'x%.0s' $(seq 1 129))
