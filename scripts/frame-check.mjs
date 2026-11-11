@@ -142,9 +142,9 @@ check('G tests pane', !!tests && (tests.scrolled === 0 || Math.abs(tests.headerO
 const live = await ev(`(async () => { const s = document.querySelector('#bar select[aria-label^="Auto refresh"]'); if (!s) return null;
   const n = s.options.length; s.value = '0'; s.dispatchEvent(new Event('change')); await new Promise(r => setTimeout(r, 300));
   const v = localStorage.getItem('pgvigil.refresh'); localStorage.removeItem('pgvigil.refresh'); return { n, v, disabled: s.disabled }; })()`);
-await go(`#/counters?i=${idOf('demo-onprem-erp01')}`);
+await go(`#/performance?i=${idOf('demo-onprem-erp01')}`);
 const still = await ev(`document.querySelector('#bar select[aria-label*="refresh"]')?.disabled ?? null`);
-check('H refresh', !!live && live.n === 5 && live.v === '0' && !live.disabled && still === true, live ? `${live.n} choices on the Summary, Off stored '${live.v}'; disabled on Counters: ${still}` : 'no select on the Summary');
+check('H refresh', !!live && live.n === 5 && live.v === '0' && !live.disabled && still === true, live ? `${live.n} choices on the Summary, Off stored '${live.v}'; disabled on Performance: ${still}` : 'no select on the Summary');
 
 // I. a legend's double-click isolates and restores; the readout follows the cursor
 const iso = await ev(`(async () => {
@@ -159,11 +159,11 @@ const iso = await ev(`(async () => {
 })()`);
 check('I chart', iso.one === 1 && iso.all === iso.n && iso.tip >= 2, `isolate ${iso.one} of ${iso.n}, restore ${iso.all}; readout ${iso.tip} line(s)`);
 
-// M. a chart's menu (still on the Counters page of case I): the button in the chart's heading opens four choices; 'Copy
+// M. a chart's menu (still on the Performance page of case I): the button in the chart's heading opens four choices; 'Copy
 // data' puts the shown series on the clipboard, a row per point under a header of 'time' and the series' names, the
 // time in local 'YYYY-MM-DD HH:MM:SS', and the chart says how many points it copied
 const cm = await ev(`(async () => {
-  const b = document.querySelector('main .chart button.chart-menu'); if (!b) return { why: 'no chart menu button on the Counters page' };
+  const b = document.querySelector('main .chart button.chart-menu'); if (!b) return { why: 'no chart menu button on the Performance page' };
   b.click(); await new Promise(r => setTimeout(r, 150));
   const items = [...document.querySelectorAll('.menu button')].map(x => x.textContent);
   const copy = [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Copy data');
@@ -292,7 +292,7 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
   const live = await ev(`(() => { const f = d => new Date(d).toLocaleString(undefined, { hour12: false, timeZone: 'Asia/Tokyo' });
     return { text: ${rangeBtn}.textContent, title: ${rangeBtn}.title, want: f(${midnight}) + ' to ', refresh: !!document.querySelector('#bar select[aria-label="Auto refresh of a live page"]') }; })()`);
   // a chart and a grid under the zone, on a fixed day so both zones read the same points
-  await go(`#/counters?i=${erp}&${day}`);
+  await go(`#/performance?i=${erp}&${day}`);
   const chartTokyo = await chartClock();
   const logsApi = await (await fetch(`${base}api/logs?instance=${erp}&${day}`)).json();
   const firstAt = logsApi.events.rows[0]?.[logsApi.events.columns.indexOf('at')];
@@ -309,7 +309,7 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
     return { tag: document.querySelector('#bar .range-zone-tag').textContent, want: 'UTC' + (m < 0 ? '-' : '+') + two(Math.floor(a / 60)) + ':' + two(a % 60), stored: localStorage.getItem('pgvigil.tz') }; })()`);
   await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); 'ok'`); await sleep(150);
   const shut = await ev(`!${rangePanel}`);
-  await go(`#/counters?i=${erp}&${day}`);
+  await go(`#/performance?i=${erp}&${day}`);
   const chartLocal = await chartClock();
   await send('Emulation.setTimezoneOverride', { timezoneId: '' });
   const ahead = chartTokyo && chartLocal ? (chartTokyo.tipMin - chartLocal.tipMin + 1440) % 1440 : -1;   // Tokyo is 17 h ahead of Los Angeles in November and 16 h in its summer

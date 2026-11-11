@@ -13,7 +13,7 @@
 #   E unit filter '>500 MB' on Memory's 'size in cache' keeps exactly the cells shown over 500 MB, some rows dropped
 #   F nested grid in a History panel: the inner 'Copy row' carries the inner header; the outer copy leaves the panel out
 #   G tests pane  the Summary's Tests pane scrolled: its header within 2 px of the pane's top; one tab stop
-#   H refresh     five choices on the Summary, Off stored as 0; the select disabled on Counters (not a live page)
+#   H refresh     five choices on the Summary, Off stored as 0; the select disabled on Performance (not a live page)
 #   I chart       a legend's double-click shows one series, a second shows all; the readout has a time and values
 #   M chart menu  'Copy image|Save image|Copy data|Export data (CSV)'; Copy data: a header of time and the series' names,
 #                 a row per point, the time as YYYY-MM-DD HH:MM:SS; the chart says 'Copied <n> points'
