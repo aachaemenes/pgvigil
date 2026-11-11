@@ -177,7 +177,18 @@ is copied.
 `scripts/proof-mssql-readers.sh` runs against a SQL Server container of its own. Its clock is set to
 America/Los_Angeles, so the server's local time is not UTC. Its header lists every expected result.
 
-RESULT-PENDING
+Result (2026-11-11, SQL Server 2022 16.0.4315.2 in a container on Linux, the server's clock 480 minutes behind UTC;
+the repository on PostgreSQL 18, the migration chain also on PostgreSQL 13): PASS.
+
+- A severity 17 error was stored once, at the server's own time to the millisecond and that time moved by the offset.
+- After two cycles of the log, an error in archive 1 was stored once, and a line the instance's own string found was
+  marked as its own.
+- A login that may read a log file but not list the archives stored the current log only and said so; a login with
+  no right at all was "no right", and its run was ok.
+- The default trace: 3 data and 11 log growths of a seeded database, equal to sa's count; a DBCC SHRINKFILE once by
+  sa, dated to the millisecond; a table's create and drop. A second read stored nothing more.
+- system_health: 400 sessions behind one lock, with max worker threads at 128, gave a QUERY_PROCESSING result in
+  WARNING with 43 pending tasks. It was stored once with its finding.
 
 Not proven here: a Windows SQL Server (its backslash paths are unit-tested), SQL Server 2017 and 2019, Amazon RDS,
 Azure SQL Managed Instance, a growth slower than 1 s, and the corruption, IO and scheduler figures of a real server in
