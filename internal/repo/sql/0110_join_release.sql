@@ -8,6 +8,7 @@
 --   task 150 (plan cache, indexes, statistics, 0092): three arms (mssql_plancache_findings, mssql_indexes_findings,
 --   mssql_stats_findings); purge() with mssql_pc_read / mssql_pc_sample and pgvigil.mssql_plancache_purge(); apply_roles()
 --   with mssql_plancache_purge on the owner-only list (it deletes).
+--   task 148 (day-one checks, 0090): the mssql_checks_findings arm; nothing for purge() (no table grows by the month).
 -- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new name.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -109,6 +110,8 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_indexes', at FROM pgvigil.mssql_indexes_findings
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_stats', at FROM pgvigil.mssql_stats_findings
+    UNION ALL
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_checks', at FROM pgvigil.mssql_checks_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
