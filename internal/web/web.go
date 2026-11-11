@@ -225,6 +225,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/roles", s.Roles)
 	api.HandleFunc("GET /api/versions", s.Versions)
 	api.HandleFunc("GET /api/io", s.IO)
+	api.HandleFunc("GET /api/pgdepth", s.PgDepth)
 	api.HandleFunc("GET /api/pi", s.PILoad)
 	api.HandleFunc("GET /api/capacity", s.Capacity)
 	api.HandleFunc("GET /api/waits", s.Waits)

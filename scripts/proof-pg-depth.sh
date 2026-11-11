@@ -332,7 +332,7 @@ EOF
   [[ $(q "select readable || ' ' || coalesce(last_value::text, 'NULL') from pgvigil.sequence_state where instance_id = $MIN and datname = 'tgt' and seq_name = 's_int' and is_present") == "false NULL" ]] || fail "the pg_monitor-only login's s_int row: $(q "select readable, last_value from pgvigil.sequence_state where instance_id = $MIN and seq_name = 's_int'")"
   [[ -z $(fnd 'sequence near its maximum' '' min) ]] || fail "a sequence finding with no readable sequence"
   [[ $(fnd 'SECURITY DEFINER without search_path' "value like 'tgt:%'" min | wc -l) == 2 ]] || fail "the pg_monitor-only login's catalog checks"
-  ok "D: the six tgt findings raised; s_int / s_big equal the hand read"
+  ok "D: the eight tgt findings raised; s_int / s_big equal the hand read"
   t "alter sequence s_int as bigint; alter table tc alter column id type bigint; delete from nv where a <= 0" >/dev/null
   # the SECURITY DEFINER and NOT VALID rows' own fix lines, run as written (a function, a procedure, a table, a domain)
   while IFS= read -r fix; do [[ -n $fix ]] && { t "$fix" >/dev/null || fail "the fix line '$fix' failed"; }; done < <(q "select fix_sql from pgvigil.db_checks where instance_id = $IID and datname = 'tgt' and check_kind in ('secdef', 'notvalid') and is_present order by check_kind, object")

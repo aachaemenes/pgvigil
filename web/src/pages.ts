@@ -6,6 +6,7 @@ import { lineChart } from './chart';
 import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
+import { functionsView, statementDepthView } from './statements';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
@@ -102,8 +103,11 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
   const minSecs = ctx.minSecs ?? 5;
   const w = { instance: ctx.instance, ...range(ctx) };
   // the slow read and the filter panel's read are separate: a failure of either shows under its own heading, the top statements stay
-  const [st, slow, groups] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs }).catch((e: unknown) => e),
-    readStmtGroups(ctx).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)))]);
+  const [st, slow, groups, depth, funcs] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs }).catch((e: unknown) => e),
+    readStmtGroups(ctx).catch((e: unknown) => e instanceof Error ? e : new Error(String(e))),
+    // the depth sections (task 155): a failed read is an error box in its own place, the top statements stay
+    statementDepthView(ctx.instance!, range(ctx), rangeLabel(ctx)).catch((e: unknown) => errorBox(e)),
+    functionsView(ctx.instance!, range(ctx), rangeLabel(ctx)).catch((e: unknown) => errorBox(e))]);
   const sortBar = el('div', { class: 'subtabs' }, ...statementOrders.map(([k, l]) =>
     el('a', { href: href(ctx, { tab: 'statements', order: k }), class: k === order ? 'on' : '' }, 'by ' + l)),
     el('a', { href: href(ctx, { tab: 'compare' }) }, 'compare with 1 and 7 days earlier'));
@@ -120,6 +124,7 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
   return el('section', {}, stmtGroupsSection(groups, stmtRowCols, `Statements by database, user and client host (${rangeLabel(ctx)})`),
     el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
     grid(rowsOf(st), [...cols, ...stmtRowCols], 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
+    depth, funcs,
     el('h3', {}, 'Ran at least ', minIn, ' s in this window'),
     el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from when it went idle (the Running queries tab filters these by state, user, database and application).'),
     slow instanceof Error ? errorBox(slow) : grid(rowsOf(slow as Table), slowCols, 'Nothing seen running that long in this window.'));
