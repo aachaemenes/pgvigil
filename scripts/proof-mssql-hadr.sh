@@ -8,6 +8,9 @@
 # ag_sandbox, with automatic seeding), SQL Server Agent running on the first, the sa password of both in
 # MSSQL_SA_PASSWORD, psql, curl, python3, a go toolchain at the repository root, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...).
+# Needs too: more than 50 rows of SQL Server Agent job history in msdb before the run (a server in use has them, a
+# new container has none). Part D expects the second jobs read to return fewer rows than the first, and the read
+# starts 50 rows behind its cursor: with less history than that both reads return the same rows.
 #
 # What it makes, and drops at the end on every exit path (a flag per object; nothing it did not make is touched):
 # its own repository database; on each node a monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, a user in

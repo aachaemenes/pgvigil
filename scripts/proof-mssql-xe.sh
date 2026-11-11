@@ -6,6 +6,9 @@
 # Needs: curl, python3, docker with a SQL Server container (PGVIGIL_MSSQL_CONTAINER, default mssql-sandbox) reachable on
 # PGVIGIL_MSSQL_ADDR (default localhost:1433), its sa password in MSSQL_SA_PASSWORD, psql, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...).
+# Needs too: the container's own user is root. sqfile copies each script in as a file only its owner reads and
+# sqlcmd opens it as the container's user: on the 2019 and later images, which run as the user mssql unless told
+# otherwise (docker run --user root, a compose file's user: root), part B fails at that read.
 # The server must have NO event session named pgvigil_* before the run (part A needs a server without them).
 # The proof makes its own repository database, one SQL Server login (VIEW SERVER STATE, VIEW ANY DEFINITION), one
 # database, and the four sessions of ONE random install id, created by sa from the printed script as a DBA would;
