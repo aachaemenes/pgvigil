@@ -221,3 +221,24 @@ func TestCorruptionMultiBlock(t *testing.T) {
 		t.Errorf("the combined read's hint: %q", c[0].Detail)
 	}
 }
+
+// pgaudit.log_level = warning writes the audit entries at WARNING: they are not error events (their statement text
+// would be stored with them), while a server WARNING beside them still is.
+func TestAuditLineIsNoErrorEvent(t *testing.T) {
+	log := "2026-11-11 12:00:00 UTC:10.0.0.5(54321):app@shop:[1234]:WARNING:  AUDIT: SESSION,1,1,READ,SELECT,TABLE,public.account,\"select * from account\n" +
+		"\twhere name = 'Smith'\",<not logged>\n" +
+		"2026-11-11 12:00:01 UTC:10.0.0.5(54321):app@shop:[1234]:WARNING:  there is no transaction in progress\n" +
+		"2026-11-11 12:00:02 UTC:10.0.0.5(54321):app@shop:[1234]:WARNING:  AUDIT: OBJECT,2,1,WRITE,INSERT,TABLE,public.account,insert into account values (1),<none>\n"
+	evs, err := Parse(strings.NewReader(log))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Kind != Error || evs[0].Detail != "there is no transaction in progress" {
+		t.Fatalf("events: %+v, want the one server warning", evs)
+	}
+	for _, ev := range evs {
+		if strings.Contains(ev.Detail+ev.Statement+ev.Message, "Smith") || strings.Contains(ev.Detail+ev.Statement+ev.Message, "AUDIT") {
+			t.Errorf("an audit entry's text is in an event: %+v", ev)
+		}
+	}
+}

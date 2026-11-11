@@ -20,6 +20,9 @@ const runBadge = (v: unknown, r: Row) => {
 };
 // a short run keeps its tenths; a long one reads as minutes and hours
 const dur = (v: unknown) => v == null ? '' : Number(v) < 60 ? fmtNum(v) + ' s' : fmtSecs(v);
+// the value cells in the colour of the rule that judges them: the last start by the last run's outcome, the streak by its own thresholds
+const runCls = (v: unknown, r: Row) => { const s = String(r.last_status ?? ''); return !v || !s ? '' : failed.includes(s) ? 'crit' : s === 'succeeded' ? 'ok' : 'warn'; };
+const streakCls = (v: unknown) => Number(v) >= 3 ? 'crit' : Number(v) > 0 ? 'warn' : 'ok';   // as streak(): no value reads 0
 const streak = (v: unknown) => Number(v) >= 3 ? badge(fmtNum(v), 'crit') : Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
 const fails = (v: unknown) => Number(v) > 0 ? badge(fmtNum(v), 'warn') : '0';
 const weekMs = 7 * 24 * 3600 * 1000;
@@ -63,10 +66,10 @@ const jobCols: Col[] = [
   { key: 'status_rank', label: 'status', num: true, fmt: (_v, r) => status(r) },
   { key: 'schedule', fmt: (v, r) => String(v ?? '') + (r.schedule_note ? ` (${String(r.schedule_note)})` : '') },
   { key: 'last_status', label: 'last run', fmt: runBadge },
-  { key: 'last_start', label: 'last start', fmt: fmtTime },
+  { key: 'last_start', label: 'last start', fmt: fmtTime, cls: runCls },
   { key: 'last_duration_secs', label: 'took', num: true, fmt: dur },
   { key: 'next_run', label: 'next run', fmt: (v, r) => r.active === false || r.is_present === false ? '' : fmtTime(v) },
-  { key: 'fail_streak', label: 'failed in a row', num: true, fmt: streak },
+  { key: 'fail_streak', label: 'failed in a row', num: true, fmt: streak, cls: streakCls },
   { key: 'runs_7d', label: 'runs 7 d', num: true },
   { key: 'failures_7d', label: 'failed 7 d', num: true, fmt: fails },
   { key: 'avg_7d_secs', label: 'avg 7 d', num: true, fmt: dur },

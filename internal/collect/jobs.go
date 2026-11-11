@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -190,6 +192,10 @@ func (jobsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info
 			if d, ok := r["definition"]; ok {
 				r["definition"] = maskTree(d)
 			}
+			// the job's script, from the masked row
+			if r["kind"] == "job" {
+				r["script"], r["script_format"] = jobScript(r), JobScriptFormat
+			}
 		}
 	}()
 	if info.HasPgAgent {
@@ -201,4 +207,186 @@ func (jobsCollector) Run(ctx context.Context, conn *pgx.Conn, info platform.Info
 		}
 	}
 	return out, nil
+}
+
+// The job as one script (task 154; what DBA Dash keeps as a job's DDL): every job row carries 'script', the
+// statements that make the job again, built from the row as it leaves the collector (so a password is <masked> in
+// the script too). The repository stores it with every version of the job, and two versions compare as text.
+//   pg_cron   one cron.schedule_in_database call, a named argument per line (a job without a name: cron.schedule,
+//             which takes the schedule and the command only; its database, user and state follow as a comment)
+//   pgAgent   the DO block pgAdmin writes for a job: the job, then an INSERT per step and per schedule, the
+//             schedule's minutes, hours, weekdays, month days and months as pgAgent's boolean arrays
+
+// JobScriptFormat numbers the way jobScript writes a script: a change to the builder takes the next number, so the
+// repository rewrites the newest version's script in place instead of storing a version of every job (0094).
+const JobScriptFormat = 1
+
+// sqlLit is a text as a PostgreSQL string literal.
+func sqlLit(s string) string {
+	if strings.Contains(s, `\`) {
+		return "E'" + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// dollarQuoted is a text between dollar quotes whose tag the text does not hold.
+func dollarQuoted(s, tag string) string {
+	t := "$" + tag + "$"
+	// a text that holds the tag, or ends in it without its last '$' (that end and the closing tag would make one)
+	for i := 1; strings.Contains(s, t) || strings.HasSuffix(s, t[:len(t)-1]); i++ {
+		t = fmt.Sprintf("$%s%d$", tag, i)
+	}
+	return t + s + t
+}
+
+func textOf(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// cronScript is a pg_cron job row as its script.
+func cronScript(r Row) string {
+	var b strings.Builder
+	name, cmd := textOf(r["job_name"]), textOf(r["command"])
+	active := "true"
+	if a, ok := r["active"].(bool); ok && !a {
+		active = "false"
+	}
+	if name == "" {
+		fmt.Fprintf(&b, "-- pg_cron job %v (no name)\n", r["job_id"])
+		b.WriteString("SELECT cron.schedule(\n    schedule => " + sqlLit(textOf(r["schedule"])) + ",\n    command  => " + dollarQuoted(cmd, "cmd") + ");\n")
+		b.WriteString("-- as read: database " + sqlLit(textOf(r["datname"])) + ", username " + sqlLit(textOf(r["run_as"])) + ", active " + active + "\n")
+		return b.String()
+	}
+	b.WriteString("-- pg_cron job: " + strings.NewReplacer("\r", " ", "\n", " ").Replace(name) + "\n")
+	b.WriteString("SELECT cron.schedule_in_database(\n")
+	b.WriteString("    job_name => " + sqlLit(name) + ",\n")
+	b.WriteString("    schedule => " + sqlLit(textOf(r["schedule"])) + ",\n")
+	b.WriteString("    command  => " + dollarQuoted(cmd, "cmd") + ",\n")
+	b.WriteString("    database => " + sqlLit(textOf(r["datname"])) + ",\n")
+	b.WriteString("    username => " + sqlLit(textOf(r["run_as"])) + ",\n")
+	b.WriteString("    active   => " + active + ");\n")
+	return b.String()
+}
+
+// keyed is one named part of a pgAgent definition: the key is "<name> #<id>".
+type keyed struct {
+	name string
+	id   int
+	v    map[string]any
+}
+
+// partsOf is the steps or the schedules of a pgAgent definition in the order of their ids.
+func partsOf(v any) []keyed {
+	m, _ := v.(map[string]any)
+	out := make([]keyed, 0, len(m))
+	for k, e := range m {
+		p := keyed{name: k}
+		if i := strings.LastIndex(k, " #"); i >= 0 {
+			p.name = k[:i]
+			p.id, _ = strconv.Atoi(k[i+2:])
+		}
+		p.v, _ = e.(map[string]any)
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].id != out[j].id {
+			return out[i].id < out[j].id
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+// bitsArray is pgAgent's boolean array of n elements from the positions the collector read ("0,30", "any" = none
+// set; base = the position of the first element; "last" = the 32nd month day).
+func bitsArray(v any, n, base int) string {
+	set := make([]bool, n)
+	for _, p := range strings.Split(textOf(v), ",") {
+		p = strings.TrimSpace(p)
+		i := -1
+		if p == "last" {
+			i = n - 1
+		} else if x, err := strconv.Atoi(p); err == nil {
+			i = x - base
+		}
+		if i >= 0 && i < n {
+			set[i] = true
+		}
+	}
+	var b strings.Builder
+	b.WriteString("'{")
+	for i, s := range set {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if s {
+			b.WriteByte('t')
+		} else {
+			b.WriteByte('f')
+		}
+	}
+	b.WriteString("}'::boolean[]")
+	return b.String()
+}
+
+// agentJobScript is a pgAgent job's definition as its script.
+func agentJobScript(def map[string]any) string {
+	var b strings.Builder
+	yes := func(v any) string {
+		if x, ok := v.(bool); ok && !x {
+			return "false"
+		}
+		return "true"
+	}
+	// a time the collector wrote as 'YYYY-MM-DD HH24:MI:SS UTC', NULL where the definition has none
+	ts := func(v any) string {
+		if s := textOf(v); s != "" {
+			return sqlLit(s) + "::timestamptz"
+		}
+		return "NULL"
+	}
+	b.WriteString("-- pgAgent job: " + strings.NewReplacer("\r", " ", "\n", " ").Replace(textOf(def["name"])) + "\n")
+	head := b.String()
+	b.Reset()
+	b.WriteString("\nDECLARE\n    jid integer;\nBEGIN\n")
+	b.WriteString("INSERT INTO pgagent.pga_job (jobjclid, jobname, jobdesc, jobhostagent, jobenabled)\nVALUES (\n")
+	b.WriteString("    1,\n    " + sqlLit(textOf(def["name"])) + ",\n    " + sqlLit(textOf(def["description"])) + ",\n    " +
+		sqlLit(textOf(def["host agent"])) + ",\n    " + yes(def["enabled"]) + ")\nRETURNING jobid INTO jid;\n")
+	for _, st := range partsOf(def["steps"]) {
+		kind := map[string]string{"SQL": "s", "batch": "b"}[textOf(st.v["kind"])]
+		if kind == "" {
+			kind = textOf(st.v["kind"])
+		}
+		onerr := map[string]string{"fail": "f", "succeed": "s", "ignore": "i"}[textOf(st.v["on error"])]
+		if onerr == "" {
+			onerr = textOf(st.v["on error"])
+		}
+		b.WriteString("\n-- step: " + strings.NewReplacer("\r", " ", "\n", " ").Replace(st.name) + "\n")
+		b.WriteString("INSERT INTO pgagent.pga_jobstep (jstjobid, jstname, jstenabled, jstkind, jstdbname, jstconnstr, jstonerror, jstcode)\nVALUES (\n")
+		b.WriteString("    jid,\n    " + sqlLit(st.name) + ",\n    " + yes(st.v["enabled"]) + ",\n    " + sqlLit(kind) + ",\n    " +
+			sqlLit(textOf(st.v["database"])) + ",\n    " + sqlLit(textOf(st.v["connection"])) + ",\n    " + sqlLit(onerr) + ",\n    " +
+			dollarQuoted(textOf(st.v["command"]), "code") + ");\n")
+	}
+	for _, sc := range partsOf(def["schedules"]) {
+		b.WriteString("\n-- schedule: " + strings.NewReplacer("\r", " ", "\n", " ").Replace(sc.name) + "\n")
+		b.WriteString("INSERT INTO pgagent.pga_schedule (jscjobid, jscname, jscenabled, jscstart, jscend, jscminutes, jschours, jscweekdays, jscmonthdays, jscmonths)\nVALUES (\n")
+		b.WriteString("    jid,\n    " + sqlLit(sc.name) + ",\n    " + yes(sc.v["enabled"]) + ",\n    " + ts(sc.v["start"]) + ",\n    " + ts(sc.v["end"]) + ",\n")
+		b.WriteString("    " + bitsArray(sc.v["minutes"], 60, 0) + ",\n    " + bitsArray(sc.v["hours"], 24, 0) + ",\n    " +
+			bitsArray(sc.v["weekdays"], 7, 1) + ",\n    " + bitsArray(sc.v["month days"], 32, 1) + ",\n    " + bitsArray(sc.v["months"], 12, 1) + ");\n")
+	}
+	b.WriteString("END\n")
+	// the block's own quote, never one its text holds (a step that carries a script copied from this page)
+	return head + "DO " + dollarQuoted(b.String(), "pgagent") + ";\n"
+}
+
+// jobScript is the script of one job row (kind 'job'), by its scheduler.
+func jobScript(r Row) string {
+	if textOf(r["scheduler"]) == "pgagent" {
+		def, _ := r["definition"].(map[string]any)
+		return agentJobScript(def)
+	}
+	return cronScript(r)
 }

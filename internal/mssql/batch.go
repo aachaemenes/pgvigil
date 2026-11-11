@@ -56,6 +56,9 @@ type BatchOptions struct {
 	// QueryText is the instance's query-text policy (full, normalized, none) for text a collector nests inside a
 	// row (a deadlock's processes); the top-level statement columns are rewritten by the emit.
 	QueryText string
+	// AuditText is the instance's audit_text switch: the audit reader stores a listed event's statement text only
+	// with it (and then under QueryText).
+	AuditText bool
 	// Deadline is when the collector stops starting new batches: the run's deadline less a margin for the last
 	// batch's read.
 	Deadline time.Time
@@ -94,7 +97,7 @@ func runBatched(ctx, sctx context.Context, log *slog.Logger, st batchStore, in c
 	}
 	n, batches := 0, 0
 	status, note := "ok", ""
-	opt := BatchOptions{QueryText: in.QueryText, Deadline: start.Add(limit - batchMargin)}
+	opt := BatchOptions{QueryText: in.QueryText, AuditText: in.AuditText, Deadline: start.Add(limit - batchMargin)}
 	if dl, ok := sctx.Deadline(); ok && dl.Add(-batchMargin).Before(opt.Deadline) {
 		opt.Deadline = dl.Add(-batchMargin)
 	}

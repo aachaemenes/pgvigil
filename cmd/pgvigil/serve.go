@@ -98,7 +98,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	srv, err := web.Open(ctx, log, d, web.Options{Expected: expectedIntervals(cfg), Hosts: hosts, Login: !*noLogin, TLS: useTLS,
 		SessionTTL: time.Duration(*sessionHours) * time.Hour,
 		Actions:    &web.ActionsConfig{LogDSN: cfg.Repository.DSN(), Doors: actions.DoorsFromConfig(cfg)},
-		Tags:       web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}})
+		Tags:       web.TagsUI{GroupBy: cfg.UI.GroupBy, EnvOrder: cfg.UI.EnvOrder}, Version: versionLine()})
 	if err != nil {
 		_ = ln.Close()
 		return err

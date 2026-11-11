@@ -47,6 +47,8 @@ type Server struct {
 	actions *Actions
 	// tags is the config's ui: block for GET /api/tags (q_tags.go).
 	tags TagsUI
+	// version is this binary's version line for the About page (GET /api/health); "" = not said.
+	version string
 }
 
 // Options shape a Server beyond its repository connection.
@@ -66,6 +68,8 @@ type Options struct {
 	Tags TagsUI
 	// AppName is the pool's application_name in pg_stat_activity; "" = pgvigil-serve (pgvigil mcp names itself pgvigil-mcp).
 	AppName string
+	// Version is this binary's version line (`pgvigil version`): the About page shows it and puts it into a problem report's mail.
+	Version string
 }
 
 // Expected is the interval map of the stale check.
@@ -108,7 +112,7 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 		pool.Close()
 		return nil, fmt.Errorf("repository ping: %w", err)
 	}
-	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags}
+	s := &Server{pool: pool, log: log, expected: o.Expected, hosts: hostSet(o.Hosts), tls: o.TLS, tags: o.Tags, version: o.Version}
 	if o.Login {
 		var n int64
 		if err := pool.QueryRow(ctx, `SELECT pgvigil.ui_user_count()`).Scan(&n); err != nil {
@@ -187,12 +191,14 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/compare", s.Compare)
 	api.HandleFunc("GET /api/sessionsets", s.SessionSets)
 	api.HandleFunc("GET /api/memory", s.Memory)
+	api.HandleFunc("GET /api/mssql/audit", s.MSSQLAudit)
 	api.HandleFunc("GET /api/mssql/xe", s.MSSQLXE)
 	api.HandleFunc("GET /api/mssql/xe/deadlock", s.MSSQLXEDeadlock)
 	api.HandleFunc("GET /api/mssql/xe/deadlock.xdl", s.MSSQLXEDeadlockXDL)
 	api.HandleFunc("GET /api/blocking/history", s.BlockingHistory)
 	api.HandleFunc("GET /api/mssql/xe/blocked", s.MSSQLXEBlocked)
 	api.HandleFunc("GET /api/mssql/xe/slow", s.MSSQLXESlow)
+	api.HandleFunc("GET /api/pgaudit", s.PgAudit)
 	api.HandleFunc("GET /api/pooler", s.Pooler)
 	api.HandleFunc("GET /api/pooler/conns", s.PoolerConns)
 	api.HandleFunc("GET /api/schema", s.Schema)
@@ -240,9 +246,16 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/rowversions", s.MSSQLRowVersions)
 	api.HandleFunc("GET /api/mssql/config", s.MSSQLConfig)
 	api.HandleFunc("GET /api/mssql/properties", s.MSSQLProperties)
+	api.HandleFunc("GET /api/mssql/checks", s.MSSQLChecks)
+	api.HandleFunc("GET /api/mssql/checks/fleet", s.MSSQLChecksFleet)
 	api.HandleFunc("GET /api/mssql/waitinfo", s.MSSQLWaitInfo)
 	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
+	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
+	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
+	api.HandleFunc("GET /api/mssql/errorlog", s.MSSQLErrorLog)
+	api.HandleFunc("GET /api/mssql/defaulttrace", s.MSSQLDefaultTrace)
+	api.HandleFunc("GET /api/mssql/syshealth", s.MSSQLSysHealth)
 	api.HandleFunc("GET /api/mssql/actions/state", s.MSSQLActionState)
 	api.HandleFunc("POST /api/mssql/actions/preview", s.MSSQLActionPreview)
 	api.HandleFunc("POST /api/mssql/actions/run", s.MSSQLActionRun)
@@ -256,6 +269,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/availability", s.MSSQLAvailability)
 	api.HandleFunc("GET /api/mssql/jobs", s.MSSQLJobs)
 	api.HandleFunc("GET /api/jobs/history", s.JobsHistory)
+	api.HandleFunc("GET /api/config/changes", s.ConfigChanges)
+	api.HandleFunc("GET /api/mssql/config/fleet", s.MSSQLConfigFleet)
+	api.HandleFunc("GET /api/mssql/traceflags", s.MSSQLTraceFlags)
+	api.HandleFunc("GET /api/jobs/thresholds", s.JobThresholds)
+	api.HandleFunc("POST /api/jobs/thresholds", s.JobThresholdWrite)
 	api.HandleFunc("GET /api/slow/groups", s.SlowGroups)
 	api.HandleFunc("GET /api/slow/events", s.SlowEvents)
 	api.HandleFunc("GET /api/slow/percentiles", s.SlowPercentiles)
@@ -432,7 +450,9 @@ func paramsMax(r *http.Request, needInstance bool, longest time.Duration) (id in
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	t, err := s.query(r.Context(), `SELECT (SELECT max(version) FROM pgvigil.schema_version) AS schema_version, now() AS server_now`)
+	// version and repository_version are the About page's (web/src/about.ts): this binary's version line and the repository's server version
+	t, err := s.query(r.Context(), `SELECT (SELECT max(version) FROM pgvigil.schema_version) AS schema_version, now() AS server_now,
+       $1::text AS version, current_setting('server_version') AS repository_version`, s.version)
 	s.reply(w, r, t, err)
 }
 
