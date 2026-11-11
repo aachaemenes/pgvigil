@@ -39,13 +39,13 @@
 <section class="plain"><div class="wrap text">
   <h2>Try the demo</h2>
   <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and unzip a portable PostgreSQL beside it. One command builds a throwaway demo fleet of PostgreSQL and SQL Server servers with a week of history and opens it in its own window. No admin rights, no Docker.</p>
-<pre><code>pgvigil demo -pgbin &lt;the portable PostgreSQL bin folder&gt; -serve -open</code></pre>
+<pre tabindex="0"><code>pgvigil demo -pgbin &lt;the portable PostgreSQL bin folder&gt; -serve -open</code></pre>
 </div></section>
 
 <section class="plain"><div class="wrap text">
   <h2>Install as a service</h2>
   <p>One line fetches the release, checks its checksum and installs the collector as a service. Run it again to upgrade.</p>
-<pre><code># Linux: a system account and a systemd unit
+<pre tabindex="0"><code># Linux: a system account and a systemd unit
 curl -fsSL https://pgvigil.com/install.sh | sh
 
 # Windows, in an elevated PowerShell: a service under NT SERVICE\pgvigil
@@ -60,7 +60,7 @@ irm https://pgvigil.com/install.ps1 | iex</code></pre>
     <li>Create the tables, the logins and the first web user.</li>
     <li>Start the collector and the web page, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
   </ol>
-<pre><code>pgvigil migrate -config pgvigil.yaml
+<pre tabindex="0"><code>pgvigil migrate -config pgvigil.yaml
 pgvigil roles                       # prints the CREATE ROLE statements to run
 pgvigil user add admin -config pgvigil.yaml
 pgvigil run -config pgvigil.yaml

@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 OUT="${1:-.proof-site}"; shift || true
 WORK=$(mktemp -d); PORT=$((23000 + RANDOM % 8000)); CDP=$((PORT + 1)); SRV=""; CHR=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
-cleanup() { [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true; [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true; rm -rf "$WORK"; }
+cleanup() { [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true; [[ -n "$CHR" ]] && { kill "$CHR" 2>/dev/null; wait "$CHR" 2>/dev/null; } || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 for t in python3 chromium node npm; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 (cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1) || fail "npm install axe-core failed"
