@@ -6,7 +6,12 @@
 //
 // trendCol(ctx, keyOf) is the grid column; keyOf picks the statement of a row (null = no button on that row).
 // The Slow queries pages (slow.ts) use it; the Statements grid gets it through the lead's wiring (borrowed.ts).
+//
+// parity3 task 125 (pgwatch's Query ID drill, shot 52, and its Time Lag Comparison): a pg_stat_statements row's panel
+// shows calls, time per call and the buffers per interval, a compare of the window with one day earlier and with a
+// chosen lag (1 h / 1 d / 7 d / a date; /api/stmtlag), and the statement's suggested index (plan.ts suggestBox).
 import { get, Row, rowsOf, Table } from './api';
+import { suggestBox } from './plan';
 import { lineChart } from './chart';
 import { Ctx, window_ } from './router';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
@@ -45,11 +50,22 @@ export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
     const every = `every ${fmtNum(Number(meta.secs ?? 60) / 60)} min`;
     box.append(el('p', { class: 'meta' }, `History of ${k.label} (${every}, from ${String(meta.source ?? '')}).`));
     if (k.queryid != null) {
+      // per call: the interval's buffers over its calls (an interval with no call has none)
+      for (const r of rows) {
+        const c = Number(r.calls ?? 0);
+        r.hit_per_call = c > 0 ? Number(r.shared_blks_hit ?? 0) / c : null;
+        r.read_per_call = c > 0 ? Number(r.shared_blks_read ?? 0) / c : null;
+      }
       box.append(el('div', { class: 'charts' },
-        lineChart('Mean and longest run', rows, some([{ key: 'mean_ms', label: 'mean' }, { key: 'log_max_ms', label: 'longest (server log)' }]), ms),
-        lineChart('Calls and rows', rows, [{ key: 'calls', label: 'calls' }, { key: 'rows', label: 'rows' }])));
+        lineChart('Calls', rows, [{ key: 'calls', label: 'calls' }]),
+        lineChart('Time per call and longest run', rows, some([{ key: 'mean_ms', label: 'per call' }, { key: 'log_max_ms', label: 'longest (server log)' }]), ms),
+        lineChart('Buffers', rows, some([{ key: 'shared_blks_hit', label: 'shared hit' }, { key: 'shared_blks_read', label: 'shared read' },
+          { key: 'temp_blks_written', label: 'temp written' }])),
+        lineChart('Buffers per call', rows, some([{ key: 'hit_per_call', label: 'hit / call' }, { key: 'read_per_call', label: 'read / call' }])),
+        lineChart('Rows', rows, [{ key: 'rows', label: 'rows' }])));
       box.append(el('p', { class: 'meta' }, 'The longest run comes from the server log (statements over log_min_duration_statement of the same shape): '
-        + 'pg_stat_statements keeps no maximum per interval, so an interval with nothing logged has none.'));
+        + 'pg_stat_statements keeps no maximum per interval, so an interval with nothing logged has none. A buffer is 8 kB.'));
+      box.append(await lagBox(ctx, k), await suggestBox({ instance: k.instance, queryid: k.queryid, db: k.db }));
     } else {
       box.append(el('div', { class: 'charts' },
         lineChart('Mean and longest', rows, [{ key: 'mean_ms', label: 'mean' }, { key: 'max_ms', label: 'longest' }], ms),
@@ -58,6 +74,8 @@ export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
     const cols: Col[] = k.queryid != null
       ? [{ key: 'snapshot_at', label: 'from' }, { key: 'calls', num: true }, { key: 'rows', num: true },
          { key: 'mean_ms', label: 'mean', num: true, fmt: msCell }, { key: 'total_ms', label: 'total', num: true, fmt: msCell },
+         { key: 'shared_blks_hit', label: 'hit', num: true }, { key: 'shared_blks_read', label: 'read', num: true },
+         { key: 'temp_blks_written', label: 'temp written', num: true },
          { key: 'log_max_ms', label: 'longest (log)', num: true, fmt: msCell }, { key: 'log_events', label: 'logged runs', num: true }]
       : [{ key: 'snapshot_at', label: 'from' }, { key: 'events', num: true }, { key: 'failed', num: true },
          { key: 'mean_ms', label: 'mean', num: true, fmt: msCell }, { key: 'max_ms', label: 'longest', num: true, fmt: msCell },
@@ -66,6 +84,59 @@ export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
   } catch (e) {
     box.append(errorBox(e));
   }
+  return box;
+}
+
+const lagChoices: [string, number][] = [['1 h', 3600], ['1 d', 86400], ['7 d', 604800]];
+const dayLag = new Map<string, string>(); // the chosen lag per statement, kept while the page lives
+
+// lagBox: the window against one day earlier (day over day) and against a chosen lag or date (pgwatch's Time Lag
+// Comparison); a compared window with no snapshot says "no data", never zero.
+async function lagBox(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
+  const box = el('div', { class: 'lag' });
+  const key = `${k.instance}:${String(k.queryid)}:${String(k.db ?? '')}`;
+  const draw = async (choice: string) => {
+    dayLag.set(key, choice);
+    const w = window_(ctx);
+    const p: Record<string, string | number | undefined> = { instance: k.instance, ...w, queryid: String(k.queryid), db: k.db ? String(k.db) : undefined };
+    if (choice.startsWith('at:')) p.at = new Date(choice.slice(3)).toISOString(); else p.lag = Number(choice);
+    const bar = el('div', { class: 'subtabs', role: 'group', 'aria-label': 'Compare with' }, el('span', { class: 'meta', style: 'align-self:center' }, 'Compare with'),
+      ...lagChoices.map(([l, secs]) => {
+        const a = el('a', { href: '#', class: choice === String(secs) ? 'on' : '', 'aria-pressed': String(choice === String(secs)) }, l + ' earlier');
+        a.addEventListener('click', ev => { ev.preventDefault(); void draw(String(secs)); });
+        return a;
+      }));
+    const dateIn = el('input', { type: 'datetime-local', 'aria-label': 'Compare with the window starting at', value: choice.startsWith('at:') ? choice.slice(3) : '' }) as HTMLInputElement;
+    dateIn.addEventListener('change', () => { if (dateIn.value) void draw('at:' + dateIn.value); });
+    bar.append(el('label', { class: 'meta', style: 'align-self:center' }, 'or from ', dateIn));
+    let body: HTMLElement;
+    try {
+      const d = await get<Record<'lag', Table | null>>('stmtlag', p);
+      const rs = rowsOf(d.lag);
+      const now = rs[0] ?? {};
+      const labels = ['this window', 'one day earlier', choice.startsWith('at:') ? 'from the chosen time' : `${lagChoices.find(c => String(c[1]) === choice)?.[0] ?? ''} earlier`];
+      const vs = (v: unknown, base: unknown) => {
+        if (v == null || base == null || Number(v) === 0) return '';
+        const x = 100 * (Number(base) - Number(v)) / Number(v);
+        return (x > 0 ? '+' : '') + fmtNum(Math.round(x)) + ' %';
+      };
+      const table = rs.map((r, i) => ({ ...r, label: labels[i] ?? '', change: i === 0 ? '' : vs(r.mean_ms, now.mean_ms), calls_change: i === 0 ? '' : vs(r.calls, now.calls) }));
+      body = grid(table, [
+        { key: 'label', label: 'window' },
+        { key: 'from_at', label: 'from', fmt: v => new Date(String(v)).toLocaleString() },
+        { key: 'calls', num: true, fmt: (v, r) => Number(r.instance_snapshots ?? 0) === 0 ? 'no data' : fmtNum(v ?? 0) },
+        { key: 'calls_change', label: 'now vs then', num: true },
+        { key: 'mean_ms', label: 'time per call', num: true, fmt: msCell },
+        { key: 'change', label: 'now vs then', num: true },
+        { key: 'total_ms', label: 'total', num: true, fmt: msCell },
+        { key: 'shared_blks_read', label: 'read', num: true }, { key: 'shared_blks_hit', label: 'hit', num: true },
+        { key: 'snapshots', label: 'its snapshots', num: true },
+      ]);
+    } catch (e) { body = errorBox(e); }
+    box.replaceChildren(el('h4', {}, 'Then and now'), bar, body,
+      el('p', { class: 'meta' }, '"now vs then": this window against that one (+ = it is higher now). "no data": pgvigil read no statements then (not collected or purged).'));
+  };
+  await draw(dayLag.get(key) ?? '3600');
   return box;
 }
 
