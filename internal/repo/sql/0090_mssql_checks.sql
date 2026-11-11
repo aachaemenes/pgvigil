@@ -3,11 +3,11 @@
 -- the repository stores the value WITH its verdict, so a page can show every option a rule covers, met or not
 -- (DBA Dash colours its Configuration and DB Options grids this way; pgvigil.setting_rules, 0099, is the
 -- PostgreSQL side).
---   mssql_check_area       per area of the read, whether it was read and why not: config, traceflags, build,
---                          dboptions, dbstate, logspace, checkdb, corruption, alerts (mssql_checks), identity
+--   mssql_check_area       per area of the read, whether it was read and why not: config, build, dboptions,
+--                          dbstate, logspace, checkdb, corruption, alerts (mssql_checks), identity (mssql_identity),
+--                          traceflags (mssql_traceflags: 0094's import_mssql_traceflags writes its row and findings)
 --   mssql_check_finding    every rule that is broken now, with its rule (the source tool and its check) and number
 --   mssql_server_option    every sys.configurations option: value in use, default, advised value, verdict
---   mssql_trace_flag       the global trace flags (and the advised ones that are off), kept when gone
 --   mssql_database_option  every database: each option's value (options) and the options that deviate (deviations)
 --   mssql_build            the instance's build against the catalogue: updates behind, support ends
 --   mssql_suspect_page     msdb.dbo.suspect_pages as last read
@@ -16,10 +16,12 @@
 --                          per database whether it was scanned
 -- Views: mssql_checks_findings (the findings columns: the join adds the arm to pgvigil.findings),
 -- mssql_checks_status (one Summary cell per area), mssql_option_risks (the fleet's risk counts per instance).
+-- The trace flags have one store, 0094's mssql_trace_flags and mssql_trace_flag_history (the collection
+-- mssql_traceflags, judged by checks.go's rules); the checks' grid of them is 0094's view mssql_trace_flag_checks.
 -- An area the login could not read keeps what an earlier read stored: its rows, its findings and the time of the
 -- last read that did read it. No table grows by the month: each holds the current state, and a row no longer present
--- (an option, a database, a trace flag turned off) is kept marked so for 30 days (a trace flag a year) and then
--- deleted by the import itself; purge() has nothing to do here.
+-- (an option, a database) is kept marked so for 30 days and then deleted by the import itself; purge() has nothing
+-- to do here.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_check_area (
   instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -59,20 +61,6 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_server_option (
   snapshot_at    timestamptz NOT NULL,
   is_present     boolean NOT NULL DEFAULT true,
   PRIMARY KEY (instance_id, name)
-);
-
-CREATE TABLE IF NOT EXISTS pgvigil.mssql_trace_flag (
-  instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
-  flag         int NOT NULL,
-  is_on        boolean NOT NULL,          -- on globally; false = an advised flag that is off
-  status       text NOT NULL CHECK (status IN ('ok', 'warn', 'crit', 'none')),
-  severity     text,
-  rule         text,
-  detail       text,
-  first_seen   timestamptz NOT NULL,      -- since when the flag has been in its present state
-  snapshot_at  timestamptz NOT NULL,
-  is_present   boolean NOT NULL DEFAULT true,   -- false = no longer on (and not an advised flag): kept as history
-  PRIMARY KEY (instance_id, flag)
 );
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_database_option (
@@ -192,16 +180,17 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_identity_scan (
 
 -- payload of mssql_checks, by row kind: 'area' {area, read, note}; 'finding' {area, check_name, object, severity,
 -- rule, value, explain}; 'server_option' {name, value_in_use, value_set, default_value, advised, status, severity,
--- rule, explain}; 'trace_flag' {flag, is_on, status, severity, rule, explain}; 'database' {database_id,
--- database_name, state, is_system, is_snapshot, options, deviations}; 'build' {known, exact, newer, status, branch,
--- update_name, release_date, mainstream_end, extended_end, newest_build, newest_branch, newest_release_date, behind,
--- cus_behind, catalogue, note}; 'suspect_page' {database_id, database_name, file_id, page_id, event_type, event,
--- error_count, last_update_utc}; 'alert', 'operator', 'agent_alerting'. A read older than the newest one stored
+-- rule, explain}; 'database' {database_id, database_name, state, is_system, is_snapshot, options, deviations};
+-- 'build' {known, exact, newer, status, branch, update_name, release_date, mainstream_end, extended_end,
+-- newest_build, newest_branch, newest_release_date, behind, cus_behind, catalogue, note}; 'suspect_page'
+-- {database_id, database_name, file_id, page_id, event_type, event, error_count, last_update_utc}; 'alert',
+-- 'operator', 'agent_alerting'. A read older than the newest one stored
 -- changes nothing; the same read twice leaves the same rows.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_checks(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-  v_areas CONSTANT text[] := ARRAY['config', 'traceflags', 'build', 'dboptions', 'dbstate', 'logspace', 'checkdb', 'corruption', 'alerts'];
+  -- traceflags is mssql_traceflags' (0094): a payload's rows of it are not this import's
+  v_areas CONSTANT text[] := ARRAY['config', 'build', 'dboptions', 'dbstate', 'logspace', 'checkdb', 'corruption', 'alerts'];
   v_read text[];
 BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
@@ -256,23 +245,6 @@ BEGIN
      WHERE o.instance_id = p_instance_id AND o.is_present AND o.snapshot_at < p_snapshot_at;
     DELETE FROM pgvigil.mssql_server_option o
      WHERE o.instance_id = p_instance_id AND NOT o.is_present AND o.snapshot_at < p_snapshot_at - interval '30 days';
-  END IF;
-
-  IF 'traceflags' = ANY (v_read) THEN
-    INSERT INTO pgvigil.mssql_trace_flag AS t (instance_id, flag, is_on, status, severity, rule, detail, first_seen, snapshot_at)
-    SELECT DISTINCT ON ((r->>'flag')::int) p_instance_id, (r->>'flag')::int, coalesce((r->>'is_on')::int, 0) = 1,
-           coalesce(r->>'status', 'none'), r->>'severity', r->>'rule', r->>'explain', p_snapshot_at, p_snapshot_at
-      FROM jsonb_array_elements(p_payload) r
-     WHERE r->>'kind' = 'trace_flag' AND r->>'flag' IS NOT NULL
-     ORDER BY (r->>'flag')::int
-    ON CONFLICT (instance_id, flag) DO UPDATE SET
-        first_seen = CASE WHEN t.is_on IS DISTINCT FROM EXCLUDED.is_on OR NOT t.is_present THEN EXCLUDED.first_seen ELSE t.first_seen END,
-        is_on = EXCLUDED.is_on, status = EXCLUDED.status, severity = EXCLUDED.severity, rule = EXCLUDED.rule,
-        detail = EXCLUDED.detail, snapshot_at = EXCLUDED.snapshot_at, is_present = true;
-    UPDATE pgvigil.mssql_trace_flag t SET is_present = false
-     WHERE t.instance_id = p_instance_id AND t.is_present AND t.snapshot_at < p_snapshot_at;
-    DELETE FROM pgvigil.mssql_trace_flag t
-     WHERE t.instance_id = p_instance_id AND NOT t.is_present AND t.snapshot_at < p_snapshot_at - interval '365 days';
   END IF;
 
   IF 'dboptions' = ANY (v_read) THEN
