@@ -8,11 +8,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gopkg.in/yaml.v3"
+
+	"github.com/aachaemenes/pgvigil/internal/alerts"
+	"github.com/aachaemenes/pgvigil/internal/collect"
+	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
 // The values the tests seed into a configuration: none of them may be in any file of a report.
@@ -33,6 +39,7 @@ var seedLeaks = []string{
 	"T0SEED", "x9SEEDtokenSEED", "abc123SEED", "SEEDsigSEED99", "Commented-0ut-secret", "acme-secret-literal",
 	"corp.example", "slack.example", "azure.example", "orders01", "erp01", "envhost", "pgvigil_owner", "monitor_login",
 	"acme-prod", "billing", "prodsite7", "acme-orders-cluster", "oncall-slack", "stuck orders", "pgvigil_acme",
+	"acme_staging", "Summer2026x",
 }
 
 // seedConfig is a configuration with a secret in every place one can sit: an inline keyword string, an inline URL,
@@ -68,6 +75,8 @@ instances:
     dsn: file:` + ado + `
     mssql_thresholds:
       backup_full_warn_hours: 30
+      backup_exclude: [acme_staging%, tempdb]
+      password: Summer2026x
 alerts:
   - name: oncall-slack
     kind: webhook
@@ -122,6 +131,8 @@ func TestReportMasksTheConfig(t *testing.T) {
 		"env_order: [<masked>, <masked>]", "password: <masked>",
 		// a tag is written env:prod: data, never read as an env: indirection (env:prodsite7 was shown, with a note, before the fix)
 		"tags: [<masked>, <masked>, <masked>]",
+		// under the thresholds only a number is a setting: the database patterns and a password: line put there by mistake are not
+		"backup_exclude: [<masked>, <masked>]",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the masked config lacks %q:\n%s", want, got)
@@ -140,7 +151,10 @@ func TestReportMasksTheConfig(t *testing.T) {
 	// an unset variable says so; a key that is no plain name and a value of another shape under a kept key are masked
 	odd := m.config([]byte("repository:\n  dsn: env:PGVIGIL_TEST_REPORT_UNSET\n\"postgres://u:KeyLeak-1234@h/d\": 1\ninstances: [{name: a, platform: \"postgres://u:ShapeLeak-1234@h/d\"}]\n"), nil)
 	noLeak(t, "the odd config", odd, "KeyLeak-1234", "ShapeLeak-1234")
-	for _, want := range []string{"env:PGVIGIL_TEST_REPORT_UNSET # NOT set in the environment of this command", "<masked-key>: <masked>", "platform: <masked>"} {
+	if m.unresolved != 1 {
+		t.Errorf("unresolved after one unset variable: %d, want 1", m.unresolved)
+	}
+	for _, want := range []string{"env:PGVIGIL_TEST_REPORT_UNSET # NOT set in the environment of this command", "<masked-key-1>: <masked>", "platform: <masked>"} {
 		if !strings.Contains(odd, want) {
 			t.Errorf("the odd config lacks %q:\n%s", want, odd)
 		}
@@ -156,10 +170,19 @@ func TestReportMasksTheConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	typedCfg := readZip(t, out)["config.yaml"]
-	noLeak(t, "the mistyped config", typedCfg, "TypeLea")
-	if !strings.Contains(typedCfg, "# configuration check: ") || !strings.Contains(typedCfg, "cannot unmarshal") {
+	noLeak(t, "the mistyped config", typedCfg, "TypeLea", dir2) // nor the file's own path, which the loader names
+	if !strings.Contains(typedCfg, "# configuration check: config <the configuration file>: ") || !strings.Contains(typedCfg, "cannot unmarshal") {
 		t.Errorf("the mistyped config's check line: %s", typedCfg)
 	}
+	// a backquote inside the value: the mask runs from the first to the last backquote of the line
+	if err := os.WriteFile(typed, []byte("repository: \"pw`Secret123xyz\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out2 := filepath.Join(dir2, "typed2.zip")
+	if err := runReportTo(context.Background(), []string{"-config", typed, "-out", out2}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	noLeak(t, "the mistyped config with a backquote", readZip(t, out2)["config.yaml"], "Secr", "pw`")
 	// a file that is not YAML is not copied in any form
 	bad := m.config([]byte("repository:\n  dsn: [unclosed password=BadYaml-1234\n"), nil)
 	noLeak(t, "the not-YAML note", bad, "BadYaml-1234")
@@ -183,9 +206,7 @@ func TestReportScrubsErrorText(t *testing.T) {
 			"failed to connect to `user=<masked> database=<masked>`: <ip>:5432 (<masked>): server error: FATAL: password authentication failed for user \"<masked>\""},
 		{`Post "` + seedSlackURL + `": dial tcp: lookup hooks.slack.example: no such host`,
 			`Post "<masked>": dial tcp: lookup <masked>: no such host`},
-		// the alias stands for the name as a word of its own; inside a longer word only the database's name (orders) goes
-		{"instance acme-orders-db01: the statement timed out (acme-orders-db01x is another word)",
-			"instance instance-1: the statement timed out (acme-<masked>-db01x is another word)"},
+		{"instance acme-orders-db01: the statement timed out", "instance instance-1: the statement timed out"},
 		// values the configuration does not hold
 		{"cannot parse postgres://someone:hunter2hunter2@other.host.example/db", "cannot parse postgres://<masked>@other.host.example/db"},
 		{"dial tcp 192.168.7.9:1433: connect: connection refused; password=abc12345 host=h9.example", "dial tcp <ip>:1433: connect: connection refused; password=<masked> host=<masked>"},
@@ -196,6 +217,14 @@ func TestReportScrubsErrorText(t *testing.T) {
 		if got := m.text(c.in); got != c.want {
 			t.Errorf("text(%q)\n got %q\nwant %q", c.in, got, c.want)
 		}
+	}
+	// the alias stands for the name as a word of its own, not for the start of a longer word
+	if got := m.text("acme-orders-db01x is another word"); strings.Contains(got, "instance-1") {
+		t.Errorf("the alias was written inside a longer word: %q", got)
+	}
+	// a literal of a custom check's statement comes back in the server's message
+	if got := m.text(`invalid input syntax for type integer: "acme-secret-literal"`); got != `invalid input syntax for type integer: "<masked>"` {
+		t.Errorf("the statement's literal: %q", got)
 	}
 	// with -names the instance names stay; the secrets go as before
 	k := newMasker(true)
@@ -226,6 +255,9 @@ func TestReportDSNParts(t *testing.T) {
 		{"sqlserver://u4name:p4secret@h4.example:1433?database=d4name&password=q4secret", []string{"p4secret", "q4secret"}, []string{"u4name", "h4.example", "d4name"}},
 		{"sqlserver://u5name:p5/sec?ret@h5.example:1433?database=d5name", []string{"p5/sec?ret"}, []string{"u5name"}},
 		{"https://hooks.example/services/AAA/BBB?sig=SSSS", []string{"services/AAA/BBB?sig=SSSS", "SSSS"}, []string{"hooks.example"}},
+		// a ';' inside a quoted or braced value does not end it (the quote doubled stands for itself)
+		{`server=h6.example;user id=u6name;password="pa;ss6""word";database=d6name`, []string{`pa;ss6"word`}, []string{"h6.example", "u6name", "d6name"}},
+		{"odbc:server=h7.example;uid=u7name;pwd={pa;ss}}7word};database=d7name", []string{"pa;ss}7word"}, []string{"h7.example", "u7name", "d7name"}},
 	} {
 		sec, ids := dsnParts(c.dsn)
 		for _, w := range c.secrets {
@@ -339,6 +371,136 @@ func TestReportZip(t *testing.T) {
 	if strings.Contains(stdout.String(), "instance-1 =") {
 		t.Errorf("-names printed a list of aliases:\n%s", stdout.String())
 	}
+
+	// -dsn as env:NAME: what the variable holds is a secret like the file's
+	t.Setenv("PGVIGIL_TEST_REPORT_FLAGDSN", "postgres://flagenv_x:"+seedFlagPass+"@127.0.0.1:1/flagenvdb_x")
+	viaEnv := filepath.Join(dir, "env.zip")
+	if err := runReportTo(context.Background(), []string{"-config", cfg, "-out", viaEnv, "-dsn", "env:PGVIGIL_TEST_REPORT_FLAGDSN"}, io.Discard); err != nil {
+		t.Fatalf("report -dsn env:: %v", err)
+	}
+	for name, body := range readZip(t, viaEnv) {
+		noLeak(t, "-dsn env: "+name, body, "acme", "flagenv_x", "flagenvdb_x")
+	}
+}
+
+// What stays out of error text by its shape or by the order of the passes, whatever the configuration knows.
+func TestReportScrubShapes(t *testing.T) {
+	// an instance named after its host's first label: the host goes whole, with and without -names
+	cfg := []byte("instances:\n  - name: orders07\n    dsn: postgres://u7name:P7-secret-pw@orders07.corp7.example:5432/db7name\n")
+	for _, keep := range []bool{false, true} {
+		m := newMasker(keep)
+		m.config(cfg, nil)
+		got := m.text("unable to open tcp connection with host 'orders07.corp7.example:1433': dial tcp 10.0.0.5:1433: i/o timeout; x509: certificate is valid for orders07.corp7.example")
+		want := "unable to open tcp connection with host '<masked>:1433': dial tcp <ip>:1433: i/o timeout; x509: certificate is valid for <masked>"
+		if got != want {
+			t.Errorf("-names %v: the host of an instance named after it\n got %q\nwant %q", keep, got, want)
+		}
+	}
+	// the connection strings did not resolve where the command runs (a service's variables): the names in the
+	// messages are unknown, their shape is not
+	m := newMasker(false)
+	m.config([]byte("instances:\n  - name: n1x\n    dsn: env:PGVIGIL_TEST_REPORT_NOPE\n"), nil)
+	if m.unresolved != 1 {
+		t.Errorf("unresolved: %d, want 1", m.unresolved)
+	}
+	for _, c := range []struct{ in, want string }{
+		{`FATAL: password authentication failed for user "monitor_login"`, `FATAL: password authentication failed for user "<masked>"`},
+		{`FATAL: database "orders" does not exist`, `FATAL: database "<masked>" does not exist`},
+		{`FATAL: role "app_rw" does not exist`, `FATAL: role "<masked>" does not exist`},
+		{`no pg_hba.conf entry for host "10.1.2.3", user "x1", database "y1", no encryption`, `no pg_hba.conf entry for host "<masked>", user "<masked>", database "<masked>", no encryption`},
+		{`mssql: Login failed for user 'sa_app'.`, `mssql: Login failed for user '<masked>'.`},
+		{`Cannot open database "erp" requested by the login`, `Cannot open database "<masked>" requested by the login`},
+		{`database "postgres" does not exist`, `database "postgres" does not exist`},
+		// an IPv6 address, a credential whose name carries a prefix
+		{"dial tcp [fd12:3456::5]:5432: connect: connection refused (fe80::1 and 2001:db8:0:1:2:3:4:5)", "dial tcp [<ip>]:5432: connect: connection refused (<ip> and <ip>)"},
+		{"PGPASSWORD=hunter2x aws_secret_access_key=AKIAxyz12345 db_password: s3cretpw client_secret=abc.def", "PGPASSWORD=<masked> aws_secret_access_key=<masked> db_password: <masked> client_secret=<masked>"},
+		// a cast and a clock time are no address
+		{`ERROR: invalid input at 1::int, now()::date, 'f'::bool at 12:30:45`, `ERROR: invalid input at 1::int, now()::date, 'f'::bool at 12:30:45`},
+	} {
+		if got := m.text(c.in); got != c.want {
+			t.Errorf("text(%q)\n got %q\nwant %q", c.in, got, c.want)
+		}
+	}
+}
+
+// An anchor, an alias and a key of the reader's own naming are not copied; what is left is still YAML.
+func TestReportMasksNamesOfTheFile(t *testing.T) {
+	t.Setenv("PGVIGIL_TEST_REPORT_ACTIONS", "postgres://anch_user:Anchor-pw-12345@anchhost.corp.example:5432/anchdb")
+	m := newMasker(false)
+	got := m.config([]byte("x-acme-prod: &acme_prod_orders\n  dsn: env:PGVIGIL_TEST_REPORT_ACTIONS\nrepository: *acme_prod_orders\nacme-site-notes: !acme {owner: jdoe}\ninstances: []\n"), nil)
+	noLeak(t, "the config with an anchor", got, "acme", "jdoe", "Anchor-pw-12345", "anchhost")
+	for _, want := range []string{"<masked-key-1>: &a1", "repository: *a1", "<masked-key-2>:", "<masked-key-3>: <masked>", "dsn: env:PGVIGIL_TEST_REPORT_ACTIONS # set"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the config with an anchor lacks %q:\n%s", want, got)
+		}
+	}
+	var back map[string]any
+	if err := yaml.Unmarshal([]byte(got), &back); err != nil {
+		t.Fatalf("not YAML: %v\n%s", err, got)
+	}
+}
+
+// knownKeys holds every key the configuration's types read: a key added to them and not to the list would be written
+// as <masked-key-N> in every report.
+func TestReportKnowsEveryConfigKey(t *testing.T) {
+	seen := map[reflect.Type]bool{}
+	var walk func(reflect.Type)
+	walk = func(ty reflect.Type) {
+		for ty.Kind() == reflect.Pointer || ty.Kind() == reflect.Slice || ty.Kind() == reflect.Map {
+			ty = ty.Elem()
+		}
+		if ty.Kind() != reflect.Struct || seen[ty] {
+			return
+		}
+		seen[ty] = true
+		for i := 0; i < ty.NumField(); i++ {
+			f := ty.Field(i)
+			tag := strings.Split(f.Tag.Get("yaml"), ",")[0]
+			if tag == "-" || !f.IsExported() {
+				continue
+			}
+			if tag != "" && !knownKeys[tag] {
+				t.Errorf("%s.%s: the key %q is not in knownKeys", ty.Name(), f.Name, tag)
+			}
+			walk(f.Type)
+		}
+	}
+	for _, v := range []any{config.Config{}, alerts.Settings{}, collect.CustomCheck{}} {
+		walk(reflect.TypeOf(v))
+	}
+	if len(seen) < 8 {
+		t.Errorf("only %d types walked: the walk does not reach the configuration's types", len(seen))
+	}
+	for k := range keepKeys {
+		if !knownKeys[k] {
+			t.Errorf("keepKeys holds %q, which knownKeys does not", k)
+		}
+		if secretKey(k) {
+			t.Errorf("keepKeys holds %q, which names a secret", k)
+		}
+	}
+	for k := range keepTrees {
+		if !knownKeys[k] {
+			t.Errorf("keepTrees holds %q, which knownKeys does not", k)
+		}
+	}
+}
+
+// The second session's connection string carries the read-only settings in both forms.
+func TestReportReadOnlySession(t *testing.T) {
+	for in, want := range map[string]string{
+		"host=h user=u":          "host=h user=u default_transaction_read_only=on statement_timeout=10000 lock_timeout=2000 connect_timeout=10",
+		"postgres://u@h/d":       "postgres://u@h/d?default_transaction_read_only=on&statement_timeout=10000&lock_timeout=2000&connect_timeout=10",
+		"postgresql://u@h/d?a=b": "postgresql://u@h/d?a=b&default_transaction_read_only=on&statement_timeout=10000&lock_timeout=2000&connect_timeout=10",
+	} {
+		if got := readOnlySession(in); got != want {
+			t.Errorf("readOnlySession(%q) = %q, want %q", in, got, want)
+		}
+		c, err := pgconnParse(readOnlySession(in))
+		if err != nil || c["default_transaction_read_only"] != "on" || c["statement_timeout"] != "10000" {
+			t.Errorf("readOnlySession(%q): the driver reads %v, %v", in, c, err)
+		}
+	}
 }
 
 // A configuration file that is not there still gives a report (the version, and why the rest is missing); a bad
@@ -359,6 +521,23 @@ func TestReportWithoutAConfigAndUsage(t *testing.T) {
 	if !strings.HasPrefix(files["version.txt"], versionLine()+"\n") {
 		t.Errorf("version.txt: %s", files["version.txt"])
 	}
+	// a variable that is not set where the command runs: said on the terminal and in the zip's README
+	unset := filepath.Join(dir, "unset.yaml")
+	if err := os.WriteFile(unset, []byte("repository:\n  dsn: env:PGVIGIL_TEST_REPORT_NOPE\ninstances: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var said bytes.Buffer
+	unsetZip := filepath.Join(dir, "unset.zip")
+	if err := runReportTo(context.Background(), []string{"-config", unset, "-out", unsetZip}, &said); err != nil {
+		t.Fatalf("report with an unset variable: %v", err)
+	}
+	if !strings.Contains(said.String(), "1 value(s) behind env: or file: could not be read") || !strings.Contains(readZip(t, unsetZip)["README.txt"], "1 value(s) behind env: or file: could not be read") {
+		t.Errorf("an unset variable is not said: terminal %q", said.String())
+	}
+	// an argument is never repeated in the error: a connection string typed without its -dsn
+	if err := runReportTo(context.Background(), []string{"postgres://u:ArgLeak-12345@h/d"}, io.Discard); err == nil || strings.Contains(err.Error(), "ArgLeak") {
+		t.Errorf("an argument: %v, want a usage error that does not repeat it", err)
+	}
 	for _, args := range [][]string{{"-errors", "0"}, {"-errors", "5001"}, {"extra"}, {"-no-such-flag"}} {
 		p := filepath.Join(dir, "usage.zip")
 		err := runReportTo(context.Background(), append([]string{"-out", p}, args...), io.Discard)
@@ -370,4 +549,13 @@ func TestReportWithoutAConfigAndUsage(t *testing.T) {
 			t.Errorf("%v: a zip was written", args)
 		}
 	}
+}
+
+// pgconnParse is what the PostgreSQL driver makes of a connection string's session settings.
+func pgconnParse(dsn string) (map[string]string, error) {
+	c, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return c.RuntimeParams, nil
 }

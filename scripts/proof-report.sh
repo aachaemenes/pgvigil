@@ -3,11 +3,17 @@
 # configuration and in its error notes, and the About page's 'Report a problem' link in a headless Chromium.
 #
 #   PGVIGIL_ADMIN_DSN        keyword-form connection to a cluster as a login that may create a database and a role
-#                            (the proof creates pgvigil_proof_report_<n> and two logins proofrep_*_<n>, and drops them)
-#   PGVIGIL_PROOF_NO_RENDER  1 = skip part C (a runner whose chromium does not start); the last line says so
+#                            (the proof creates pgvigil_proof_report_<n> and two logins proofrep_*_<n>, and drops them;
+#                            the four NOLOGIN roles a first `pgvigil migrate` creates on a cluster stay, as after any
+#                            migrate). The cluster must let that login and the two new ones in without a password
+#                            (trust): the proof puts a seeded password into the repository's string and gives the new
+#                            logins none.
+#   PGVIGIL_PROOF_NO_RENDER  1 = skip part C (a runner whose chromium does not start); the last line says so. Nothing
+#                            else skips it: a missing tool or a bundle without the page fails the proof.
 #
-# Needs go, psql, unzip and sha256sum; part C also chromium and node, and the web bundle built from this tree
-# (cd web && npm ci && npm run build) before the run: the proof builds one binary and uses it throughout.
+# Needs go, psql, unzip, awk and sha256sum; part C also chromium, node, curl, ss, setsid and timeout, and the web bundle
+# built from this tree (cd web && npm ci && npm run build) before the run: the proof builds one binary and uses it
+# throughout.
 #
 # The seeded values (each carries the run's own tag): the repository password in env:PGVIGIL_REPO_DSN, an inline
 # instance password, a Slack-shaped and a Teams-shaped webhook address (path token and sig=; each through an env:
@@ -46,17 +52,26 @@
 #   A14 connects (where strace is installed and the admin connection names an IPv4 host) every connect() call of the
 #                command goes to the repository's address: no monitored server, no webhook, no name lookup; else
 #                'NOT PROVEN (A14)' with the reason
-#   C  about     (headless Chromium, the wired bundle) the bar's About link opens #/about; the page's 'Report a problem'
-#                link is mailto:support@pgvigil.com with the subject 'pgvigil problem report (v0.0.0-proof143)' and a
-#                body holding 'pgvigil: <the version line>', 'Repository: PostgreSQL <version>, migration <level>',
-#                'Monitored: 1 x PostgreSQL 16.4 (rds); 1 x PostgreSQL 18.0 (onprem)' and 'Browser: <the user agent>';
-#                no instance name and no address of this server in it; the page shows the same lines, the support
-#                address and the private vulnerability link; every request the page made went to this server
-#                (nothing sent elsewhere), and none was a POST
+#   A15 unset    one webhook variable unset (a login shell without the service's variables): exit 0; the terminal and
+#                the zip's README.txt say '1 value(s) behind env: or file: could not be read'; config.yaml marks it
+#                'NOT set'; the check line says the address is 'empty or unreadable'; the webhook note keeps the host
+#                the scrub no longer knows and loses its token by shape: 'Post "https://hooks.slack.example/<masked>"';
+#                the secrets grep 0
+#   C  about     (headless Chromium, the wired bundle; a SQL Server instance added to the repository first) the bar's
+#                About link opens #/about; the page's 'Report a problem' link is mailto:support@pgvigil.com with the
+#                subject 'pgvigil problem report (v0.0.0-proof143)' and a body holding 'pgvigil: <the version line>',
+#                'Repository: PostgreSQL <version>, migration <level>', 'Monitored: 1 x PostgreSQL 16.4 (rds); 1 x
+#                PostgreSQL 18.0 (onprem); 1 x SQL Server 16.0.4135.4 (onprem)' (the build number alone of the
+#                server's long version line) and 'Browser: <the user agent>'; no instance name and no address of this
+#                server in it; the page shows the same lines, the support address and the private vulnerability link;
+#                'Copy these lines' says 'Copied.' and the clipboard holds the lines; with both controls clicked,
+#                every request the page made went to this server (nothing sent elsewhere), and none was a POST
+#   C2 degraded  the repository dropped under the running server: the About page still opens, says Version 'not read'
+#                and Monitored 'not read', and its mail link still goes to support@pgvigil.com with those words
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
-for t in go psql unzip sha256sum; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+for t in go psql unzip awk sha256sum; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
 TAG=$RANDOM$RANDOM
 WORK=$(mktemp -d); DB=pgvigil_proof_report_$TAG; COLL=proofrep_coll_$TAG; READER=proofrep_read_$TAG
 PORT=$((31000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
@@ -65,7 +80,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 cleanup() {
   # the browser runs in a process group of its own (setsid below): the whole group goes, so no helper of it outlives the run
-  if [[ -n "$CHR" ]]; then kill -TERM -- "-$CHR" 2>/dev/null || kill "$CHR" 2>/dev/null || true; fi
+  # and is waited for (5 s, then KILL), so nothing of it still writes into the folder removed below
+  if [[ -n "$CHR" ]]; then
+    kill -TERM -- "-$CHR" 2>/dev/null || kill "$CHR" 2>/dev/null || true
+    for _ in $(seq 1 50); do kill -0 -- "-$CHR" 2>/dev/null || break; sleep 0.1; done
+    kill -KILL -- "-$CHR" 2>/dev/null || true
+    wait "$CHR" 2>/dev/null || true
+  fi
   if [[ -n "$SRV" ]]; then kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true; fi
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $COLL" -c "drop role if exists $READER" >/dev/null 2>&1 || true
@@ -150,7 +171,7 @@ grep -qF "support@pgvigil.com" <<<"$OUT" || fail "A1: the support address is not
 ok "A1 run: exit 0, 6 files, the two names on the terminal only, 'Nothing was sent.'"
 
 [[ $(stat -c %a "$Z") == 600 ]] || fail "A2: the zip's mode is $(stat -c %a "$Z"), want 600"
-LIST=$(unzip -Z1 "$Z" | sort | tr '\n' ' ')
+LIST=$(unzip -Z1 "$Z" | LC_ALL=C sort | tr '\n' ' ')
 [[ "$LIST" == "README.txt collection-errors.txt config.yaml instances.txt repository.txt version.txt " ]] || fail "A2: the zip holds: $LIST"
 ok "A2 zip: mode 600, the six files"
 
@@ -181,10 +202,13 @@ ok "A6 instances: instance-1 (postgres onprem 18.0), instance-id$oid (postgres r
 E=$(unz "$Z" collection-errors.txt)
 [[ $(grep -cxF "3 row(s)" <<<"$E") == 2 ]] || fail "A7: not '3 row(s)' in both parts: $E"
 WANT1='failed to connect to `user=<masked> database=<masked>`: <ip>:5432 (<masked>): server error: FATAL: password authentication failed for user "<masked>" (the string was host=<masked> password=<masked>)'
-[[ $(grep -cP "^instance-1\tactivity\t[0-9: -]+\t1200\t" <<<"$E") == 2 ]] || fail "A7: instance-1's activity rows: $E"
-[[ $(grep -cF -- "$WANT1" <<<"$E") == 2 ]] || fail "A7: the connection note is not as expected: $E"
-[[ $(grep -cF "instance instance-id$oid: canceling statement due to statement timeout" <<<"$E") == 2 ]] || fail "A7: the other instance's note: $E"
-grep -qF 'Post "<masked>": dial tcp: lookup <masked>: no such host; then <masked> was refused; the repository string held <masked>' <<<"$E" || fail "A7: the webhook note: $E"
+WANT2='Post "<masked>": dial tcp: lookup <masked>: no such host; then <masked> was refused; the repository string held <masked>'
+WANT3="instance instance-id$oid: canceling statement due to statement timeout"
+# rows of an instance and a collection whose note field (the fifth) is exactly the text wanted
+notes() { awk -F'\t' -v i="$1" -v c="$2" -v w="$3" '$1 == i && $2 == c && $5 == w' <<<"$E" | wc -l; }
+[[ $(notes instance-1 activity "$WANT1") == 2 ]] || fail "A7: the connection note is not exactly as expected: $E"
+[[ $(notes instance-1 statements "$WANT2") == 2 ]] || fail "A7: the webhook note is not exactly as expected: $E"
+[[ $(notes "instance-id$oid" activity "$WANT3") == 2 ]] || fail "A7: the other instance's note is not exactly as expected: $E"
 ok "A7 errors: 3 rows in both parts, the notes masked as expected"
 
 C=$(unz "$Z" config.yaml)
@@ -207,7 +231,7 @@ ok "A9 again: exit 1, the zip unchanged"
 ZN=$WORK/named.zip
 OUTN=$("$BIN" report -config "$CFG" -out "$ZN" -names) || fail "A10: report -names exited $?"
 ALLN=$(unz "$ZN")
-clean "the -names zip" "$ALLN" "${SECRETS[@]}" "$HOST" "$LOGIN" "$DBNAME" "10.20.30.40"
+clean "the -names zip" "$ALLN" "${SECRETS[@]}" "${NAMES[@]:2}"
 unz "$ZN" config.yaml | grep -qF "name: $NAME1" || fail "A10: -names: config.yaml lacks the instance name"
 unz "$ZN" collection-errors.txt | grep -qF "instance $NAME2: canceling statement" || fail "A10: -names: the note lacks the instance name"
 grep -q "instance-1 = " <<<"$OUTN" && fail "A10: -names printed an alias list"
@@ -255,19 +279,30 @@ else
   A_DONE="A1-A13; A14 not proven: $A14_WHY"
 fi
 
-C_WHY=""
+ZU=$WORK/unset.zip
+OUTU=$(env -u PROOFREP_SLACK_URL "$BIN" report -config "$CFG" -out "$ZU") || fail "A15: report with a variable unset exited $?"
+NOTE_U="1 value(s) behind env: or file: could not be read"
+grep -qF "$NOTE_U" <<<"$OUTU" || fail "A15: the terminal does not say that a value could not be read: $OUTU"
+unz "$ZU" README.txt | grep -qF "$NOTE_U" || fail "A15: README.txt does not say that a value could not be read"
+CU=$(unz "$ZU" config.yaml)
+grep -qF "url: env:PROOFREP_SLACK_URL # NOT set in the environment of this command" <<<"$CU" || fail "A15: config.yaml does not mark the variable NOT set: $CU"
+grep -qF "# configuration check: " <<<"$CU" && grep -qF "is empty or unreadable" <<<"$CU" || fail "A15: the check line does not say the address is empty or unreadable: $CU"
+E=$(unz "$ZU" collection-errors.txt)
+WANTU='Post "https://hooks.slack.example/<masked>": dial tcp: lookup <masked>: no such host; then <masked> was refused; the repository string held <masked>'
+[[ $(notes instance-1 statements "$WANTU") == 2 ]] || fail "A15: the webhook note with its address unknown is not exactly as expected: $E"
+clean "the zip made with a variable unset" "$(unz "$ZU")" "${SECRETS[@]}" "T0PROOF" "B0PROOF"
+ok "A15 unset: said on the terminal and in README.txt, marked NOT set, the note's token out by its shape"
+
 if [[ "${PGVIGIL_PROOF_NO_RENDER:-}" == 1 ]]; then
   C_WHY="skipped by PGVIGIL_PROOF_NO_RENDER"
-elif ! command -v chromium >/dev/null || ! command -v node >/dev/null; then
-  C_WHY="chromium or node is not on this machine"
-elif ! grep -qF "Report a problem" internal/web/dist/app.js; then
-  C_WHY="the web bundle does not hold the About page (cd web && npm ci && npm run build, with the page wired into router.ts and main.ts)"
-fi
-if [[ -n "$C_WHY" ]]; then
   echo "NOT PROVEN (C): $C_WHY"
-  echo "proof-report: PASS ($A_DONE; C not proven: $C_WHY)"
+  echo "proof-report: PASS ($A_DONE, A15; C not proven: $C_WHY)"
   exit 0
 fi
+for t in chromium node curl ss setsid timeout; do command -v $t >/dev/null || fail "C: $t is not on this machine (PGVIGIL_PROOF_NO_RENDER=1 skips part C)"; done
+grep -qF "Report a problem" internal/web/dist/app.js || fail "C: the web bundle does not hold the About page (cd web && npm ci && npm run build, with the page wired into router.ts and main.ts)"
+# a SQL Server instance for the page: its version is the first line of @@VERSION, and the mail carries the build alone
+q "select pgvigil.ensure_instance('proofrep-sql-db03', 'onprem', 'Microsoft SQL Server 2022 (RTM-CU14) (KB5038325) - 16.0.4135.4 (X64) ', 0, false, '{}'::text[], 'sqlserver')" >/dev/null
 
 echo "== C. the About page on 127.0.0.1:$PORT, a headless Chromium on CDP $CDP"
 for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p is in use: run again"; done
@@ -275,15 +310,15 @@ for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p 
 SRV=$!
 for _ in $(seq 1 100); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; kill -0 $SRV 2>/dev/null || { cat "$WORK/serve.log"; fail "serve died"; }; sleep 0.2; done
 curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null || { tail -5 "$WORK/serve.log"; fail "serve did not come up"; }
-command -v setsid >/dev/null || fail "setsid is not on this machine"
-setsid chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 < /dev/null &
+setsid chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu --disable-crash-reporter about:blank > "$WORK/chrome.log" 2>&1 < /dev/null &
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium did not start: its CDP port never answered (PGVIGIL_PROOF_NO_RENDER=1 skips part C)"
 cat > "$WORK/about-check.mjs" <<'EOF'
-// node about-check.mjs <cdp port> <base url/> <version line> <short version> <server version> <migration> <name 1> <name 2>
-const [port, base, vline, ver, srvver, level, name1, name2] = process.argv.slice(2);
+// node about-check.mjs <cdp port> <base url/> <version line> <short version> <server version> <migration> <name 1> <name 2> [degraded]
+const [port, base, vline, ver, srvver, level, name1, name2, mode] = process.argv.slice(2);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+setTimeout(() => { console.log('FAIL C: no answer from the browser in 90 s'); process.exit(1); }, 90000);
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
 const ws = new WebSocket(tabs.find(t => t.type === 'page').webSocketDebuggerUrl); await new Promise(r => ws.onopen = r);
 let id = 0; const pend = new Map(); const requests = [];
@@ -301,17 +336,15 @@ const ev = async e => {
 let failed = 0;
 const check = (name, okay, detail) => { console.log(`${okay ? 'ok  ' : 'FAIL'} ${name}: ${detail}`); if (!okay) failed++; };
 await send('Network.enable');
+await send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: base.replace(/\/$/, '') });
+await send('Emulation.setFocusEmulationEnabled', { enabled: true });
 await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
-await send('Page.navigate', { url: base + '#/summary' });
-let link = false;
-for (let i = 0; i < 60 && !link; i++) { await sleep(250); link = await ev(`!![...document.querySelectorAll('#bar a')].find(a => a.textContent === 'About')`); }
-check('C bar', link, "the bar's About link on the Summary page");
-if (link) await ev(`[...document.querySelectorAll('#bar a')].find(a => a.textContent === 'About').click()`);
-let shown = false;
-for (let i = 0; i < 60 && !shown; i++) { await sleep(250); shown = await ev(`[...document.querySelectorAll('main h2')].some(h => h.textContent === 'About pgvigil')`); }
-const hash = await ev('location.hash');
-check('C page', shown && hash.startsWith('#/about'), `the About page at ${hash}`);
-const p = await ev(`(() => {
+const aboutShown = async () => {
+  let shown = false;
+  for (let i = 0; i < 60 && !shown; i++) { await sleep(250); shown = await ev(`[...document.querySelectorAll('main h2')].some(h => h.textContent === 'About pgvigil')`); }
+  return shown;
+};
+const read = () => ev(`(() => {
   const links = [...document.querySelectorAll('main a')];
   const mail = links.find(a => a.textContent === 'Report a problem');
   return {
@@ -319,16 +352,40 @@ const p = await ev(`(() => {
     pre: document.querySelector('main pre')?.textContent ?? '',
     props: [...document.querySelectorAll('main table.props tr')].map(tr => tr.children[0].textContent + '=' + tr.children[1].textContent),
     support: links.some(a => a.getAttribute('href') === 'mailto:support@pgvigil.com' && a.textContent === 'support@pgvigil.com'),
-    security: links.find(a => a.textContent === 'Report a vulnerability on GitHub')?.getAttribute('href') ?? '',
+    security: links.find(a => a.textContent.startsWith('Report a vulnerability on GitHub'))?.getAttribute('href') ?? '',
   };
 })()`);
-const m = /^mailto:([^?]+)\?subject=([^&]*)&body=(.*)$/.exec(p.href);
-check('C mailto', !!m && m[1] === 'support@pgvigil.com', `'Report a problem' is a mailto link to ${m ? m[1] : '(none: ' + p.href.slice(0, 60) + ')'}`);
-const subject = m ? decodeURIComponent(m[2]) : '', body = m ? decodeURIComponent(m[3]) : '';
+const mailOf = href => { const m = /^mailto:([^?]+)\?subject=([^&]*)&body=(.*)$/.exec(href); return m ? { to: m[1], subject: decodeURIComponent(m[2]), body: decodeURIComponent(m[3]) } : null; };
+if (mode === 'degraded') {
+  // the repository is gone under the server: a fresh load of the page (the query makes it one)
+  await send('Page.navigate', { url: base + '?degraded=1#/about' });
+  const shown = await aboutShown();
+  check('C2 page', shown, 'the About page opens with the repository gone');
+  const d = await read(), dm = mailOf(d.href);
+  check('C2 props', d.props.includes('Version=not read') && d.props.includes('Monitored=not read'), `the page says ${d.props.filter(x => /^(Version|Monitored)=/.test(x)).join(', ') || '(no rows)'}`);
+  const dl = dm ? dm.body.split('\r\n') : [];
+  check('C2 mailto', !!dm && dm.to === 'support@pgvigil.com' && dl.includes('pgvigil: version not read') && dl.includes('Repository: version not read, migration not read') && dl.includes('Monitored: not read'),
+    dm ? `the mail to ${dm.to} says version, repository and instances were not read` : 'no mailto link');
+  check('C2 support', d.support, 'the support address is still a link');
+  ws.close();
+  process.exit(failed ? 1 : 0);
+}
+await send('Page.navigate', { url: base + '#/summary' });
+let link = false;
+for (let i = 0; i < 60 && !link; i++) { await sleep(250); link = await ev(`!![...document.querySelectorAll('#bar a')].find(a => a.textContent === 'About')`); }
+check('C bar', link, "the bar's About link on the Summary page");
+if (link) await ev(`[...document.querySelectorAll('#bar a')].find(a => a.textContent === 'About').click()`);
+const shown = await aboutShown();
+const hash = await ev('location.hash');
+check('C page', shown && hash.startsWith('#/about'), `the About page at ${hash}`);
+const p = await read();
+const m0 = mailOf(p.href);
+check('C mailto', !!m0 && m0.to === 'support@pgvigil.com', `'Report a problem' is a mailto link to ${m0 ? m0.to : '(none: ' + p.href.slice(0, 60) + ')'}`);
+const subject = m0 ? m0.subject : '', body = m0 ? m0.body : '';
 check('C subject', subject === `pgvigil problem report (${ver})`, `the subject '${subject}'`);
 const lines = body.split('\r\n');
 const want = [`pgvigil: ${vline}`, `Repository: PostgreSQL ${srvver}, migration ${level.replace(/\.sql$/, '')}`,
-  'Monitored: 1 x PostgreSQL 16.4 (rds); 1 x PostgreSQL 18.0 (onprem)', `Browser: ${p.ua}`];
+  'Monitored: 1 x PostgreSQL 16.4 (rds); 1 x PostgreSQL 18.0 (onprem); 1 x SQL Server 16.0.4135.4 (onprem)', `Browser: ${p.ua}`];
 for (const w of want) check('C body', lines.includes(w), `the line '${w}'`);
 check('C body start', lines[0] === 'What happened, what you expected instead, and the page it was on:', `the first line '${lines[0]}'`);
 const origin = new URL(base);
@@ -338,6 +395,19 @@ check('C page lines', p.pre === body.replace(/\r\n/g, '\n'), 'the page shows the
 check('C props', p.props.includes(`Version=${vline}`), `the page's Version row: ${p.props.find(x => x.startsWith('Version=')) ?? '(none)'}`);
 check('C support', p.support, 'the support address is a mailto link of its own');
 check('C security', p.security === 'https://github.com/aachaemenes/pgvigil/security/advisories/new', `the vulnerability link ${p.security}`);
+// both controls used before the requests are counted: the copy button, and the mail link with its navigation held
+// back (a mailto would only hand over to a mail program, which this machine has none of)
+const copied = await ev(`(async () => {
+  [...document.querySelectorAll('main button')].find(b => b.textContent === 'Copy these lines').click();
+  await new Promise(r => setTimeout(r, 500));
+  document.addEventListener('click', e => { if (e.target.closest && e.target.closest('a[href^="mailto:"]')) e.preventDefault(); }, true);
+  [...document.querySelectorAll('main a')].find(a => a.textContent === 'Report a problem').click();
+  await new Promise(r => setTimeout(r, 1500));
+  let clip = ''; try { clip = await navigator.clipboard.readText(); } catch (e) { clip = 'unreadable: ' + e; }
+  return { said: (document.querySelector('main [role=status]')?.textContent ?? '').trim(), clip, hash: location.hash };
+})()`);
+check('C copy', copied.said === 'Copied.' && copied.clip === body.replace(/\r\n/g, '\n'), `'Copy these lines' says '${copied.said}', the clipboard ${copied.clip === body.replace(/\r\n/g, '\n') ? 'holds the lines' : 'does not hold the lines'}`);
+check('C stays', copied.hash.startsWith('#/about'), `after both clicks the page is still ${copied.hash}`);
 const away = requests.filter(r => !r.url.startsWith(base) && !r.url.startsWith('data:') && r.url !== 'about:blank');
 const posts = requests.filter(r => r.method !== 'GET');
 check('C nothing sent', away.length === 0 && posts.length === 0 && requests.length > 0,
@@ -345,5 +415,11 @@ check('C nothing sent', away.length === 0 && posts.length === 0 && requests.leng
 ws.close();
 process.exit(failed ? 1 : 0);
 EOF
-node "$WORK/about-check.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$VLINE" "$VER" "$SRVVER" "$LEVEL" "$NAME1" "$NAME2" || fail "C: a check of the About page did not hold"
-echo "proof-report: PASS ($A_DONE, C)"
+timeout 120 node "$WORK/about-check.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$VLINE" "$VER" "$SRVVER" "$LEVEL" "$NAME1" "$NAME2" || fail "C: a check of the About page did not hold (or the browser did not answer in time)"
+
+echo "== C2. the same page with the repository gone"
+psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database $DB with (force)" >/dev/null
+set +e; curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; rc=$?; set -e
+[[ $rc != 0 ]] || fail "C2: /api/health still answers with the repository dropped"
+timeout 120 node "$WORK/about-check.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$VLINE" "$VER" "$SRVVER" "$LEVEL" "$NAME1" "$NAME2" degraded || fail "C2: the About page with the repository gone did not hold"
+echo "proof-report: PASS ($A_DONE, A15, C, C2)"
