@@ -34,16 +34,31 @@ The first check proves each file is the one the checksums name; the second prove
 
 ## 2. Carry the folder across
 
+Before the copy, on the connected machine, write Sigstore's trust root out as three key files and put them in the folder (once per cosign trust root):
+
+```sh
+cosign initialize
+python3 - ~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json <<'PY'
+import json, sys, textwrap
+d = json.load(open(sys.argv[1]))
+pem = lambda raw, kind: "-----BEGIN %s-----\n%s\n-----END %s-----\n" % (kind, "\n".join(textwrap.wrap(raw, 64)), kind)
+open("fulcio.pem", "w").write("".join(pem(c["rawBytes"], "CERTIFICATE") for ca in d["certificateAuthorities"] for c in ca["certChain"]["certificates"]))
+open("rekor.pub", "w").write(pem([t for t in d["tlogs"] if t.get("baseUrl") == "https://rekor.sigstore.dev"][0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
+open("ctfe.pub", "w").write(pem([t for t in d["ctlogs"] if "end" not in t["publicKey"].get("validFor", {})][0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
+PY
+```
+
 Copy the folder as the site's transfer procedure requires. Inside the network, verify again before anything runs:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
-cosign verify-blob --offline --bundle SHA256SUMS.bundle \
+SIGSTORE_ROOT_FILE=fulcio.pem SIGSTORE_REKOR_PUBLIC_KEY=rekor.pub SIGSTORE_CT_LOG_PUBLIC_KEY_FILE=ctfe.pub \
+  cosign verify-blob --offline --bundle SHA256SUMS.bundle \
   --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/$TAG" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
 
-The bundle form needs no connection to the transparency log: the log entry is inside the bundle, and `--offline` makes cosign refuse any network call instead of trying the TUF mirror first. cosign still needs Sigstore's trust root: `cosign initialize` on a connected machine writes it under `~/.sigstore` (that write is what cosign's documentation describes; reading it back offline is how the tool behaves, not a documented promise), so carry that folder across with the release (the release workflow runs the same bundle verification on every release, online; the offline run itself was not exercised by the project, so prove it once on the site's own jump host before relying on it).
+The bundle carries the signature, the certificate and the transparency-log entry, so no connection to the log is needed. cosign (v2.6.1, the version the release workflow pins) still wants Sigstore's trust root and, even with `--offline`, tries to refresh it from the TUF mirror when it has only its cache (`~/.sigstore`): on a host with no route out that fails ("error updating to TUF remote mirror"), and `--trusted-root` is refused for this bundle format. The three files are that trust root's own keys (Fulcio's certificates, Rekor's key, the certificate log's key, one key per file), which cosign reads through these variables instead. `scripts/proof-upgrade.sh` runs this check on a network with no route out and an empty home folder: the release verifies, another tag's identity is refused, and the same command without the three files is refused. A new Sigstore trust root layout would change the python lines above, not the check.
 
 ## 3. Install from the copy
 

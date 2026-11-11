@@ -145,6 +145,8 @@ curl -fsSL https://pgvigil.com/install.sh | sh          # Linux (POSIX sh; sudo 
 irm https://pgvigil.com/install.ps1 | iex               # Windows, elevated PowerShell
 ```
 
+A release that carries new migration files wants the schema first: [docs/upgrade.md](docs/upgrade.md) gives the order (fetch with `PGVIGIL_NO_SERVICE=1`, stop, dump, `migrate` as the owner, `./pgvigil install`); re-running the installer first also arrives, but it reports `the service did not come up` until the owner has migrated.
+
 `PGVIGIL_VERSION=v0.2.0` pins a tag, `PGVIGIL_BASE_URL` points at a mirror of the release folder (air-gapped sites), `PGVIGIL_NO_SERVICE=1` only downloads and verifies the binary into the current folder. The scripts are `deploy/install.sh` and `deploy/install.ps1` (served from pgvigil.com as the same files); read them first if you like.
 
 What `pgvigil install` does (and `pgvigil uninstall` undoes; `-purge` also removes the installer's own files, their folder when nothing else is in it, and the binary; `uninstall` takes the same `-bin`, `-config` and `-user` as the install did). The config's folder belongs to the installer (it sets its permissions and `-purge` empties it), so `-config` must sit in a folder named `pgvigil`, or one that is new or holds only the installer's files; a flat `/etc/pgvigil.yaml` is refused.
@@ -153,7 +155,7 @@ What `pgvigil install` does (and `pgvigil uninstall` undoes; `-purge` also remov
 - Windows: the binary to `%ProgramFiles%\pgvigil\pgvigil.exe` (the installer script adds the folder to the machine PATH); `%ProgramData%\pgvigil\pgvigil.yaml` (the template points the repository at `file:...\repo.dsn` beside it, one line, empty until you fill it) with the folder readable by SYSTEM, Administrators and the service's own account only; the service `pgvigil` under the virtual account `NT SERVICE\pgvigil` (no password to keep), automatic start, restarted on failure. Started once the config names an instance (each instance DSN as `file:` beside the config: a service has no shell environment). Logs: `%ProgramData%\pgvigil\logs\pgvigil.log` (the service may write only under `logs\`, so a deleted log is made again and the config stays out of its reach; no rotation yet). A configuration error stops the service without a retry; a runtime failure is retried after 10, 30 and 60 s. `uninstall` leaves the PATH entry.
 - macOS and the BSDs: the binary and the config template only; run `pgvigil run -config ...` under launchd or your init.
 
-Proofs: `scripts/proof-install.sh` (a Debian container running systemd, a mock release server, a throwaway repository: checksum refusal, install without an instance, the upgrade path starting the service as `pgvigil`, uninstall, purge) and `scripts/proof-install-windows.sh` (the same on a Windows VM over SSH).
+Proofs: `scripts/proof-install.sh` (a Debian container running systemd, a mock release server, a throwaway repository: checksum refusal, install without an instance, the upgrade path starting the service as `pgvigil`, uninstall, purge), `scripts/proof-install-windows.sh` (the same on a Windows VM over SSH) and `scripts/proof-upgrade.sh` (a store made by the released v0.3.0 upgraded by this build on PostgreSQL 13, 16 and 18, on a network with no route out: every table's row count and row hash kept, the service back under the collector login, every page rendered, the way back from the owner's dump).
 
 Other commands: `pgvigil user list | passwd | disable | enable | remove`, `pgvigil serve -no-login` (loopback only), `pgvigil serve -session-hours 8`, `pgvigil demo` (the section below), `pgvigil mcp` (the AI door below).
 
@@ -244,12 +246,12 @@ cosign verify-blob --signature SHA256SUMS.sig --certificate SHA256SUMS.pem \
   --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/<tag>" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 # the same from the bundle alone (the signature, the certificate and the transparency-log entry in one file; no connection to the log)
-cosign verify-blob --offline --bundle SHA256SUMS.bundle \
+cosign verify-blob --bundle SHA256SUMS.bundle \
   --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/<tag>" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
 
-The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag; the bundle form is the one for a machine without Internet access ([docs/airgap.md](docs/airgap.md)).
+The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag. On a machine without Internet access the bundle form also needs Sigstore's trust root as three key files carried with the release (cosign refreshes its trust root over the network otherwise, `--offline` or not): [docs/airgap.md](docs/airgap.md) step 2 has the commands, and `scripts/proof-upgrade.sh` runs them on a network with no route out.
 
 ### PostgreSQL release table
 
