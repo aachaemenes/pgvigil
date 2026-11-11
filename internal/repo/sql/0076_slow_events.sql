@@ -60,7 +60,8 @@ RETURNS int LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
               ELSE 9 END
 $$;
 
--- stmt_trend: snapshot_at is the start of each interval (date_bin from p_from); an interval with no delta has no row.
+-- stmt_trend: snapshot_at is the start of each interval (binned from p_from by floor arithmetic on epoch seconds, date_bin's
+-- result: date_bin is PostgreSQL 14+, 13 is supported); an interval with no delta has no row.
 -- A delta is binned at the middle of the period it covers (its snapshot_at is that period's end), so its calls fall
 -- in the same interval as the log events of the same runs.
 -- A reset delta (the statistics were reset between two reads) is left out: its counters are not a difference.
@@ -70,7 +71,7 @@ RETURNS TABLE (snapshot_at timestamptz, calls bigint, rows bigint, total_ms floa
                log_max_ms float8, log_events bigint)
 LANGUAGE sql STABLE AS $$
   WITH d AS (
-    SELECT date_bin(make_interval(secs => p_secs), d.snapshot_at - make_interval(secs => d.interval_secs / 2.0), p_from) AS b,
+    SELECT p_from + make_interval(secs => floor(extract(epoch FROM d.snapshot_at - make_interval(secs => d.interval_secs / 2.0) - p_from) / p_secs) * p_secs) AS b,
            sum(d.calls)::bigint AS calls, sum(d.rows)::bigint AS rows, sum(d.total_exec_ms) AS total_ms
       FROM pgvigil.statements_delta d
      WHERE d.instance_id = p_instance_id AND d.queryid = p_queryid AND NOT d.reset
@@ -78,7 +79,7 @@ LANGUAGE sql STABLE AS $$
        AND d.snapshot_at - make_interval(secs => d.interval_secs / 2.0) >= p_from AND d.snapshot_at <= p_to
      GROUP BY 1
   ), l AS (
-    SELECT date_bin(make_interval(secs => p_secs), e.snapshot_at, p_from) AS b,
+    SELECT p_from + make_interval(secs => floor(extract(epoch FROM e.snapshot_at - p_from) / p_secs) * p_secs) AS b,
            max(e.duration_ms) AS log_max_ms, count(*) AS log_events
       FROM pgvigil.log_events e
      WHERE e.instance_id = p_instance_id AND e.kind = 'slow'
@@ -99,7 +100,7 @@ CREATE OR REPLACE FUNCTION pgvigil.slow_trend(p_instance_id int, p_shape_key tex
 RETURNS TABLE (snapshot_at timestamptz, events bigint, failed bigint, mean_ms numeric, max_ms numeric, rows bigint,
                mean_cpu_ms numeric)
 LANGUAGE sql STABLE AS $$
-  SELECT date_bin(make_interval(secs => p_secs), e.at, p_from), count(*), count(*) FILTER (WHERE e.failed),
+  SELECT p_from + make_interval(secs => floor(extract(epoch FROM e.at - p_from) / p_secs) * p_secs), count(*), count(*) FILTER (WHERE e.failed),
          round(avg(e.duration_ms), 3), max(e.duration_ms), sum(e.row_count)::bigint, round(avg(e.cpu_ms), 3)
     FROM pgvigil.slow_events_all e
    WHERE e.instance_id = p_instance_id AND e.shape_key = p_shape_key
