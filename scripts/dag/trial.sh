@@ -3,7 +3,9 @@
 # (CLUSTER_TYPE = NONE) availability groups of SQL Server on Linux containers? Four containers on one Docker network:
 # d1a + d1b carry ag1 (database dagdb), d2a + d2b carry ag2 (no database: the distributed group seeds it); dag1 is the
 # distributed group over ag1 and ag2, each side's LISTENER_URL the primary node's mirroring endpoint (there is no
-# listener without a cluster). Throwaway: no published port; every container and the network of the run removed on any
+# listener without a cluster). d2a and d2b get a database of their own first (dagpad, in no group), so dagdb's
+# database id on the second group differs from its id on the first: what reads a distributed group's rows by
+# database id is then proven against two different ids. Throwaway: no published port; every container and the network of the run removed on any
 # exit, and only what this run made (a tag that is taken ends the run before anything is touched).
 #
 #   scripts/dag/trial.sh              form the lab, check it, remove it
@@ -27,7 +29,8 @@
 #   ag1       d1a sees ag1 with d1a PRIMARY and d1b a CONNECTED SECONDARY; dagdb SYNCHRONIZED and HEALTHY on d1b
 #   ag2       d2a sees ag2 with d2a PRIMARY and d2b a CONNECTED SECONDARY, before the distributed group is made
 #   dag1      CREATE on d1a and JOIN on d2a succeed; d1a lists dag1 with is_distributed = 1
-#   seeded    dagdb arrives on d2a (the forwarder) and on d2b by automatic seeding, HEALTHY on both
+#   seeded    dagdb arrives on d2a (the forwarder) and on d2b by automatic seeding, HEALTHY on both, under another
+#             database id than on d1a
 #   flow      a row written on d1a is read on d2b (through d1a -> d2a -> d2b) within 60 s
 #   roles     d1a sees dag1 with ag1 PRIMARY and ag2 a CONNECTED SECONDARY; d2a sees dag1 with ag2 a CONNECTED SECONDARY
 #   then the line 'DAG FORMED' (a caller greps it; the cleanup's line follows it) and exit 0.
@@ -171,7 +174,9 @@ step "ag1 database: full recovery and a first backup" d1a "ALTER DATABASE dagdb 
 step "ag1 database: a table" d1a "CREATE TABLE dagdb.dbo.t (id int IDENTITY PRIMARY KEY, at datetime2 NOT NULL DEFAULT sysutcdatetime(), note varchar(60));"
 step "ag1 create" d1a "CREATE AVAILABILITY GROUP ag1 WITH (CLUSTER_TYPE = NONE) FOR DATABASE dagdb REPLICA ON $(REPL d1a), $(REPL d1b);"
 step "ag1 join" d1b "ALTER AVAILABILITY GROUP ag1 JOIN WITH (CLUSTER_TYPE = NONE); ALTER AVAILABILITY GROUP ag1 GRANT CREATE ANY DATABASE;"
-echo "== ag2 on d2a + d2b, no database"
+echo "== ag2 on d2a + d2b, no database of the group (dagpad on each takes the database id dagdb has on d1a)"
+step "ag2 filler database on d2a" d2a "CREATE DATABASE dagpad;"
+step "ag2 filler database on d2b" d2b "CREATE DATABASE dagpad;"
 step "ag2 create" d2a "CREATE AVAILABILITY GROUP ag2 WITH (CLUSTER_TYPE = NONE) FOR REPLICA ON $(REPL d2a), $(REPL d2b);"
 step "ag2 join" d2b "ALTER AVAILABILITY GROUP ag2 JOIN WITH (CLUSTER_TYPE = NONE); ALTER AVAILABILITY GROUP ag2 GRANT CREATE ANY DATABASE;"
 step "ag2 seeding right" d2a "ALTER AVAILABILITY GROUP ag2 GRANT CREATE ANY DATABASE;"
@@ -200,6 +205,11 @@ for _ in $(seq 1 72); do
   sleep 5
 done
 echo "  dagdb on d2a: $a; on d2b: $b"
+if [[ $ok == 1 ]]; then
+  ids="$(Q d1a "SELECT CAST(DB_ID('dagdb') AS varchar(10))")|$(Q d2a "SELECT CAST(DB_ID('dagdb') AS varchar(10))")|$(Q d2b "SELECT CAST(DB_ID('dagdb') AS varchar(10))")"
+  echo "  dagdb's database id on d1a | d2a | d2b: $ids"
+  [[ "${ids%%|*}" != "$(cut -d'|' -f2 <<<"$ids")" ]] || { echo "FAIL: dagdb has the same database id on d1a and on d2a (the filler database did not take it)"; exit 1; }
+fi
 if [[ $ok != 1 ]]; then
   Q d2a "SELECT TOP 5 'seeding d2a: ' + ISNULL(current_state, '-') + ' ' + ISNULL(failure_state_desc, '-') FROM sys.dm_hadr_automatic_seeding ORDER BY start_time DESC" || true
   Q d1a "SELECT TOP 5 'seeding d1a: ' + ISNULL(current_state, '-') + ' ' + ISNULL(failure_state_desc, '-') FROM sys.dm_hadr_automatic_seeding ORDER BY start_time DESC" || true
