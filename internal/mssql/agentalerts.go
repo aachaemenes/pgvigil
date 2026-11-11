@@ -78,8 +78,17 @@ func runAgentAlerts(ctx context.Context, conn *sql.Conn, info Info, c *checksRun
 	if fs, ferr := QueryRows(ctx, conn, failSafeSQL); ferr != nil {
 		note = "the fail-safe operator was not read (sp_MSgetalertinfo: " + ferr.Error() + ")"
 	} else if len(fs) == 1 {
-		fsRead = true
-		failSafe, _ = fs[0]["FailSafeOperator"].(string)
+		// the procedure names the column AlertFailSafeOperator; a row without it is not read, never 'none set'
+		v, has := fs[0]["AlertFailSafeOperator"]
+		if !has {
+			v, has = fs[0]["FailSafeOperator"]
+		}
+		if has {
+			fsRead = true
+			failSafe, _ = v.(string)
+		} else {
+			note = "the fail-safe operator was not read: sp_MSgetalertinfo returned no AlertFailSafeOperator column"
+		}
 	}
 	c.add(alerts...)
 	c.add(ops...)

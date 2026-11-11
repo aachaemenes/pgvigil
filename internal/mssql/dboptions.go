@@ -119,10 +119,11 @@ ORDER BY d.name`
 // logSpaceSQL: every database's log size and the share of it in use, in one call. VIEW SERVER STATE.
 const logSpaceSQL = `DBCC SQLPERF(LOGSPACE) WITH NO_INFOMSGS`
 
-// vlfSQL: the virtual log files of every ONLINE database. SQL Server 2016 SP2 and later.
+// vlfSQL: the virtual log files of every ONLINE database the login can enter (one it cannot would fail the whole
+// statement). SQL Server 2016 SP2 and later.
 const vlfSQL = `SELECT d.database_id, CAST(COUNT(*) AS bigint) AS vlf_count
 FROM sys.databases d CROSS APPLY sys.dm_db_log_info(d.database_id) li
-WHERE d.state = 0
+WHERE d.state = 0 AND HAS_DBACCESS(d.name) = 1
 GROUP BY d.database_id`
 
 // suspectPagesSQL: the pages SQL Server could not read, as msdb keeps them (1,000 rows at most). The time is the
@@ -362,23 +363,26 @@ var databaseRules = []dbRule{
 		}
 		min, _ := d.num("checkdb_age_min")
 		days := min / 1440
+		// a grace of half a day past each threshold: a weekly CHECKDB is 7 days old when the next one starts
 		switch {
-		case days >= checkdbCritDays:
-			return sevCritical, "sp_Blitz 68", fmt.Sprintf("the last good DBCC CHECKDB is %d days old (critical at %d)", days, checkdbCritDays)
-		case days >= checkdbWarnDays:
-			return sevWarning, "dbachecks LastGoodCheckDb", fmt.Sprintf("the last good DBCC CHECKDB is %d days old (warning at %d)", days, checkdbWarnDays)
+		case min >= checkdbCritDays*1440+checkdbGraceMin:
+			return sevCritical, "sp_Blitz 68", fmt.Sprintf("the last good DBCC CHECKDB is %d days old (critical past %d)", days, checkdbCritDays)
+		case min >= checkdbWarnDays*1440+checkdbGraceMin:
+			return sevWarning, "dbachecks LastGoodCheckDb", fmt.Sprintf("the last good DBCC CHECKDB is %d days old (warning past %d)", days, checkdbWarnDays)
 		}
 		return "", "", ""
 	}},
 }
 
 // The thresholds of the log and CHECKDB rules: log used per cent (dbachecks' 75; 90 is pgvigil's own), the age of
-// the last good CHECKDB in days (dbachecks' 7, sp_Blitz's 14) and the days a new database may go unchecked (dbatools).
+// the last good CHECKDB in days (dbachecks' 7, sp_Blitz's 14) with half a day's grace (pgvigil's own) and the days a
+// new database may go unchecked (dbatools).
 const (
 	logWarnPct      = 75
 	logCritPct      = 90
 	checkdbWarnDays = 7
 	checkdbCritDays = 14
+	checkdbGraceMin = 12 * 60
 	checkdbNewDays  = 7
 )
 
@@ -646,7 +650,10 @@ func suspectPageRows(raw []collect.Row) (rows []collect.Row, findings []checkFin
 //
 // Rights: the login must be able to enter the database (CONNECT ANY DATABASE, or a user there) and see its
 // tables' definitions (VIEW ANY DEFINITION). Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL
-// Managed Instance; not on Azure SQL Database. A column that counts down (a negative increment) is not weighed.
+// Managed Instance; not on Azure SQL Database. The share used is of the range the column can count through: from 0,
+// or from its seed when the seed is negative (IDENTITY(-2147483648, 1) doubles an int's range). A column that counts
+// down (a negative increment) is not weighed. A login that can enter none of the user databases leaves the area
+// not read, with the reason.
 type identityCollector struct{}
 
 func init() { Register(identityCollector{}) }
@@ -678,24 +685,29 @@ ORDER BY d.name`
 const IdentityFloorPct = 10
 
 // identitySQL runs inside one database: the count of identity columns of its user tables and the fullest of them.
-// The share is the last value over the type's largest (tinyint 255, smallint 32767, int 2147483647, bigint
-// 9223372036854775807, decimal and numeric 10^precision - 1). One row always comes back: the count, and NULLs
-// when no column is at the floor. %s is the database's name from QUOTENAME on the server; %d the floor.
+// The type's largest value (tinyint 255, smallint 32767, int 2147483647, bigint 9223372036854775807, decimal and
+// numeric 10^precision - 1) is returned exactly, as text; the share is taken in float: (last - base) / (largest -
+// base), base the seed when it is negative, else 0. One row always comes back: the count, and NULLs when no column
+// is at the floor. %s is the database's name from QUOTENAME on the server; %d the floor.
 const identitySQL = `EXEC %s.sys.sp_executesql N'SELECT t.columns_total, q.schema_name, q.table_name, q.column_name, q.type_name, q.last_value, q.max_value, q.pct_used
 FROM (SELECT COUNT(*) AS columns_total FROM sys.identity_columns c JOIN sys.objects o ON o.object_id = c.object_id AND o.type = ''U'') t
 LEFT JOIN (
   SELECT TOP (50) s.name AS schema_name, o.name AS table_name, c.name AS column_name, ty.name AS type_name,
-    CAST(CAST(c.last_value AS decimal(38, 0)) AS varchar(40)) AS last_value, CAST(CAST(m.max_value AS decimal(38, 0)) AS varchar(40)) AS max_value,
-    CAST(CAST(CAST(c.last_value AS decimal(38, 0)) AS float) * 100 / m.max_value AS decimal(9, 2)) AS pct_used
+    CAST(CAST(c.last_value AS decimal(38, 0)) AS varchar(40)) AS last_value, m.max_text AS max_value,
+    CAST((CAST(CAST(c.last_value AS decimal(38, 0)) AS float) - b.base) * 100 / (m.max_value - b.base) AS decimal(9, 2)) AS pct_used
   FROM sys.identity_columns c
   JOIN sys.objects o ON o.object_id = c.object_id AND o.type = ''U''
   JOIN sys.schemas s ON s.schema_id = o.schema_id
   JOIN sys.types ty ON ty.user_type_id = c.system_type_id
   CROSS APPLY (SELECT CASE ty.name WHEN ''tinyint'' THEN CAST(255 AS float) WHEN ''smallint'' THEN CAST(32767 AS float)
       WHEN ''int'' THEN CAST(2147483647 AS float) WHEN ''bigint'' THEN CAST(9223372036854775807 AS float)
-      ELSE POWER(CAST(10 AS float), c.precision) - 1 END AS max_value) m
+      ELSE POWER(CAST(10 AS float), c.precision) - 1 END AS max_value,
+    CAST(CASE ty.name WHEN ''tinyint'' THEN ''255'' WHEN ''smallint'' THEN ''32767'' WHEN ''int'' THEN ''2147483647''
+      WHEN ''bigint'' THEN ''9223372036854775807'' ELSE REPLICATE(''9'', c.precision) END AS varchar(40)) AS max_text) m
+  CROSS APPLY (SELECT CASE WHEN CAST(c.seed_value AS decimal(38, 0)) < 0 THEN CAST(CAST(c.seed_value AS decimal(38, 0)) AS float)
+      ELSE CAST(0 AS float) END AS base) b
   WHERE c.last_value IS NOT NULL AND CAST(c.increment_value AS decimal(38, 0)) > 0
-    AND CAST(CAST(c.last_value AS decimal(38, 0)) AS float) * 100 / m.max_value >= %d
+    AND (CAST(CAST(c.last_value AS decimal(38, 0)) AS float) - b.base) * 100 / (m.max_value - b.base) >= %d
   ORDER BY pct_used DESC, s.name, o.name
 ) q ON 1 = 1'`
 
@@ -712,7 +724,7 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 	}
 	c := &checksRun{}
 	var failed []string
-	cut := 0
+	cut, noRight, scanned := 0, 0, 0
 	stop, hasStop := ctx.Deadline()
 	for _, db := range dbs {
 		name, _ := db["database_name"].(string)
@@ -723,6 +735,7 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 			if st, _ := db["state"].(string); st != "ONLINE" {
 				scan["note"] = "not scanned: the database is " + strings.ToLower(st)
 			} else {
+				noRight++
 				scan["note"] = "not scanned: the login cannot enter the database"
 			}
 			c.add(scan)
@@ -746,6 +759,7 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 			continue
 		}
 		rows, fs := identityRows(name, raw)
+		scanned++
 		scan["scanned"], scan["listed"] = 1, len(rows)
 		if len(raw) > 0 {
 			scan["columns_total"] = raw[0]["columns_total"]
@@ -754,13 +768,24 @@ func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]
 		c.add(rows...)
 		c.find(fs...)
 	}
-	note := ""
-	switch {
-	case cut > 0:
-		note = fmt.Sprintf("the run's deadline came before %d database(s) were scanned", cut)
-	case len(failed) > 0:
-		note = fmt.Sprintf("%d database(s) were not scanned (%s)", len(failed), firstFew(failed, 5))
+	// a login that could enter none of the online user databases has read nothing: the area is not read, with the right
+	// it lacks (green '0 of 0 columns' would say every column is fine)
+	if scanned == 0 && noRight > 0 && cut == 0 && len(failed) == 0 {
+		why := fmt.Sprintf("the login can enter none of the %d online user database(s): CONNECT ANY DATABASE (or a user in each) is needed", noRight)
+		c.unread(AreaIdentity, "sys.identity_columns", why)
+		return c.rows, nil
 	}
+	var notes []string
+	if cut > 0 {
+		notes = append(notes, fmt.Sprintf("the run's deadline came before %d database(s) were scanned", cut))
+	}
+	if len(failed) > 0 {
+		notes = append(notes, fmt.Sprintf("%d database(s) were not scanned (%s)", len(failed), firstFew(failed, 5)))
+	}
+	if noRight > 0 {
+		notes = append(notes, fmt.Sprintf("%d database(s) were not scanned: the login cannot enter them", noRight))
+	}
+	note := strings.Join(notes, "; ")
 	if note != "" {
 		c.add(collect.Row{"kind": "collector_error", "source": "sys.identity_columns", "message": note})
 	}

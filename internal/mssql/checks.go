@@ -19,7 +19,8 @@ import (
 //     against the best-practice rules of serverOptionRules; a value at its default or its best practice is 'ok',
 //     a deviation 'warn' (a warning or an advice rule) or 'crit' (a critical rule).
 //   - traceflags: every global trace flag (DBCC TRACESTATUS(-1)) with what it does and whether it belongs on.
-//   - build: the build against the catalogue of builds (builds.go's list): updates behind, support ended or ending.
+//   - build: the build against the catalogue of builds (buildCatalogue, at the end of this file): updates behind,
+//     support ended or ending.
 //   - dboptions and dbstate: every database's options (sys.databases) against databaseRules; its state and access.
 //   - logspace: log used per database (DBCC SQLPERF(LOGSPACE)), why the log cannot clear, virtual log files.
 //   - checkdb: the last good DBCC CHECKDB per database (DATABASEPROPERTYEX LastGoodCheckDbTime).
@@ -136,7 +137,7 @@ func (checksCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]co
 	if err != nil {
 		return nil, err
 	}
-	m := machineFacts{EngineEdition: info.EngineEdition, Kind: info.Kind, Major: info.Major}
+	m := machineFacts{EngineEdition: info.EngineEdition, Edition: info.Edition, Kind: info.Kind, Major: info.Major}
 	cfgNote := ""
 	if perf {
 		if si, serr := readSysInfo(ctx, conn); serr == nil {
@@ -168,7 +169,9 @@ func (checksCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]co
 	b := judgeBuild(info, now)
 	c.add(b.row())
 	c.find(b.findings(info)...)
-	c.add(areaRow(AreaBuild, b.Known, b.Note))
+	// read whether or not the catalogue could weigh it: a build no longer weighed (a major the catalogue lacks after
+	// an upgrade) must clear the old findings, not keep them
+	c.add(areaRow(AreaBuild, true, b.Note))
 
 	// the databases: options, state, last good CHECKDB (one read of sys.databases), then the logs
 	runDatabases(ctx, conn, info, perf, c)
@@ -188,6 +191,7 @@ FROM sys.configurations ORDER BY name`
 type machineFacts struct {
 	CPUs, NUMANodes, PhysMB int64
 	EngineEdition           int
+	Edition                 string // SERVERPROPERTY('Edition'): Web edition has no backup compression
 	Kind                    Kind
 	Major                   int
 	MaxMemMB                int64 // 'max server memory (MB)' in use, for the rule on min server memory
@@ -285,7 +289,7 @@ var serverOptionRules = map[string]func(v int64, m machineFacts) optionVerdict{
 		return met("")
 	},
 	"backup compression default": func(v int64, m machineFacts) optionVerdict {
-		if v == 0 && m.EngineEdition != 4 {
+		if v == 0 && m.EngineEdition != 4 && !strings.Contains(m.Edition, "Web") { // Express and Web cannot compress a backup
 			return broken(sevInfo, "1", "sp_Blitz 116", "backup compression default is 0: a backup that does not ask for compression is written whole")
 		}
 		return met("")
@@ -579,8 +583,10 @@ type buildRow struct {
 // BuildsAsOf is the version and date of the catalogue's source.
 const BuildsAsOf = "SQL Server First Responder Kit 8.34 (2026-07-02)"
 
-// builds is the catalogue, newest first within a major. Where the source lists one build twice (a re-release
-// under the same number) the first, newer row is kept.
+// builds is the catalogue, newest first within a major. Where the source lists one build number twice, the row
+// released first is kept: the second row is a later re-release under the same number (CU23 v2, a GDR on top), or a
+// slip of the source that names the next update with the build of the one before (14.0.3257 CU18 / CU19, 15.0.4073
+// CU8 / CU8 GDR), and a server on that build runs the update first released with it.
 var builds = parseBuilds(buildCatalogue)
 
 func parseBuilds(text string) map[int][]buildRow {
@@ -602,11 +608,15 @@ func parseBuilds(text string) map[int][]buildRow {
 		if err1 != nil || err2 != nil {
 			panic("build catalogue: " + line)
 		}
+		row := buildRow{Major: major, Build: build, Branch: f[2], Name: f[6], Release: day(f[3]), Mainstream: day(f[4]), Extended: day(f[5])}
 		rows := out[major]
 		if n := len(rows); n > 0 && rows[n-1].Build == build {
+			if row.Release.Before(rows[n-1].Release) {
+				rows[n-1] = row
+			}
 			continue
 		}
-		out[major] = append(rows, buildRow{Major: major, Build: build, Branch: f[2], Name: f[6], Release: day(f[3]), Mainstream: day(f[4]), Extended: day(f[5])})
+		out[major] = append(rows, row)
 	}
 	for _, rows := range out {
 		sort.SliceStable(rows, func(i, j int) bool { return rows[i].Build > rows[j].Build })
@@ -643,7 +653,7 @@ func judgeBuild(info Info, now time.Time) buildVerdict {
 		v.Note = "the service patches itself: its build is not weighed against the catalogue"
 		return v
 	}
-	rows := builds[info.Major]
+	rows := sameBranch(builds[info.Major], info.Build)
 	if len(rows) == 0 {
 		v.Note = fmt.Sprintf("the catalogue (%s) has no build of major version %d", BuildsAsOf, info.Major)
 		return v
@@ -666,9 +676,12 @@ func judgeBuild(info Info, now time.Time) buildVerdict {
 		v.Own, v.Exact = &rows[i], rows[i].Build == info.Build
 		break
 	}
-	if v.Own == nil { // older than the catalogue's oldest build of the major
+	switch {
+	case v.Own == nil: // older than the catalogue's oldest build of the major
 		v.Own = &rows[len(rows)-1]
 		v.Note = fmt.Sprintf("build %d is older than the catalogue's oldest build of the major: the support dates are those of %s", info.Build, v.Own.Branch)
+	case !v.Exact:
+		v.Note = fmt.Sprintf("build %d is not in the catalogue (%s): it is placed after %s, build %d; its own release date is not known", info.Build, BuildsAsOf, v.Own.Branch, v.Own.Build)
 	}
 	v.Status = "ok"
 	if v.Behind > 0 {
@@ -686,9 +699,30 @@ func (v buildVerdict) support() buildVerdict {
 }
 
 // isCU says whether a branch is a cumulative update or a service pack: 'CU4 GDR', 'GDR' and 'RTM GDR' are
-// security releases.
+// security releases, 'CU23 v2' a re-release of an update already counted, a CTP or an RC a preview.
 func isCU(branch string) bool {
-	return !strings.Contains(branch, "GDR") && !strings.HasPrefix(branch, "CTP") && !strings.HasPrefix(branch, "RC")
+	return !strings.Contains(branch, "GDR") && !strings.Contains(branch, " v") && !strings.HasPrefix(branch, "CTP") && !strings.HasPrefix(branch, "RC")
+}
+
+// azureFeaturePack names SQL Server 2016's Azure Feature Pack builds: a branch of their own, numbered above SP3's
+// GDR builds and released in parallel with them.
+const azureFeaturePack = "Azure Feature Pack"
+
+// sameBranch is the major's catalogue as the build at hand weighs it: the Azure Feature Pack builds count only for
+// a server that runs one of them (a server on SP3 GDR is not behind them).
+func sameBranch(rows []buildRow, build int) []buildRow {
+	for _, r := range rows {
+		if r.Build == build && strings.Contains(r.Branch, azureFeaturePack) {
+			return rows
+		}
+	}
+	out := make([]buildRow, 0, len(rows))
+	for _, r := range rows {
+		if !strings.Contains(r.Branch, azureFeaturePack) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (v buildVerdict) row() collect.Row {
@@ -718,13 +752,17 @@ func (v buildVerdict) findings(info Info) []checkFinding {
 	var out []checkFinding
 	obj := info.ProductVersion
 	if v.Behind > 0 {
-		sev := sevInfo
-		if v.Newest.Release.Sub(v.Own.Release) > behindWarnDays*24*time.Hour {
+		// the level weighs the age of the instance's own build: a build the catalogue does not list has no known date,
+		// so it is advice whatever the build it is placed after
+		sev, on := sevInfo, fmt.Sprintf("%s (released %s)", v.Own.Branch, v.Own.Release.Format(day))
+		if !v.Exact {
+			on = fmt.Sprintf("build %d, which the catalogue does not list (placed after %s, build %d)", info.Build, v.Own.Branch, v.Own.Build)
+		} else if v.Newest.Release.Sub(v.Own.Release) > behindWarnDays*24*time.Hour {
 			sev = sevWarning
 		}
 		out = append(out, checkFinding{Area: AreaBuild, Check: "updates behind", Object: obj, Severity: sev, Rule: "sp_Blitz 217",
-			Value: strconv.Itoa(v.Behind), Explain: fmt.Sprintf("SQL Server %s is on %s (released %s): %d newer build(s), %d of them cumulative updates; the newest is %s, build %d, released %s (catalogue: %s)",
-				majorName(info.Major), v.Own.Branch, v.Own.Release.Format(day), v.Behind, v.CUs, v.Newest.Branch, v.Newest.Build, v.Newest.Release.Format(day), BuildsAsOf)})
+			Value: strconv.Itoa(v.Behind), Explain: fmt.Sprintf("SQL Server %s is on %s: %d newer build(s), %d of them cumulative updates; the newest is %s, build %d, released %s (catalogue: %s)",
+				majorName(info.Major), on, v.Behind, v.CUs, v.Newest.Branch, v.Newest.Build, v.Newest.Release.Format(day), BuildsAsOf)})
 	}
 	left := int(v.Own.Extended.Sub(v.now).Hours() / 24)
 	switch {

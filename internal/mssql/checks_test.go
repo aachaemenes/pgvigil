@@ -73,6 +73,7 @@ func TestServerOptionRules(t *testing.T) {
 		{"remote admin connections", 1, big, "ok", "", "", ""},
 		{"backup compression default", 0, big, "warn", "info", "sp_Blitz 116", "1"},
 		{"backup compression default", 0, machineFacts{EngineEdition: 4, Kind: KindServer}, "ok", "", "", ""},
+		{"backup compression default", 0, machineFacts{EngineEdition: 2, Edition: "Web Edition (64-bit)", Kind: KindServer}, "ok", "", "", ""},
 		{"Agent XPs", 1, big, "ok", "", "", ""},
 		{"Agent XPs", 0, big, "ok", "", "", ""},
 		{"blocked process threshold (s)", 3, big, "warn", "warning", "blocked process threshold", ""},
@@ -184,6 +185,18 @@ func TestBuildCatalogue(t *testing.T) {
 	if n != 211 { // 214 lines, three builds listed twice
 		t.Errorf("%d builds, want 211", n)
 	}
+	// a build listed twice keeps the row released first
+	want := map[[2]int]string{{14, 3257}: "RTM CU18", {15, 4073}: "CU8", {16, 4236}: "CU23 v2"}
+	for k, branch := range want {
+		for _, r := range builds[k[0]] {
+			if r.Build == k[1] && r.Branch != branch {
+				t.Errorf("%d.0.%d kept %q, want %q (the row released first)", k[0], k[1], r.Branch, branch)
+			}
+		}
+	}
+	if isCU("CU23 v2") || isCU("CU4 GDR") || isCU("RC0") || !isCU("CU25") || !isCU("SP3") {
+		t.Error("isCU: a re-release, a security release and a preview are not cumulative updates")
+	}
 }
 
 func TestJudgeBuild(t *testing.T) {
@@ -238,6 +251,18 @@ func TestJudgeBuild(t *testing.T) {
 	info = Info{Kind: KindServer, Major: 14, Build: 3530, ProductVersion: "14.0.3530.1"}
 	if got := checks(judgeBuild(info, time.Date(2027, 7, 4, 0, 0, 0, 0, time.UTC)).findings(info)); got != "support ending/warning" {
 		t.Errorf("2017 near its end: %s", got)
+	}
+	// SQL Server 2016 SP3 GDR, fully patched: the Azure Feature Pack builds above it are another branch
+	info = Info{Kind: KindServer, Major: 13, Build: 6490, ProductVersion: "13.0.6490.1"}
+	if v = judgeBuild(info, now); v.Behind != 0 || !v.Exact || v.Newest.Build != 6490 {
+		t.Errorf("2016 SP3 GDR 6490: behind %d, newest %v", v.Behind, v.Newest)
+	}
+	// a build the catalogue does not list (an RTM GDR of 2019): advice, the text says so and never borrows a date
+	info = Info{Kind: KindServer, Major: 15, Build: 2120, ProductVersion: "15.0.2120.1"}
+	v = judgeBuild(info, now)
+	fs := v.findings(info)
+	if v.Exact || len(fs) == 0 || fs[0].Severity != "info" || !strings.Contains(fs[0].Explain, "does not list") || !strings.Contains(v.Note, "not in the catalogue") {
+		t.Errorf("2019 build 2120: %+v %+v", v, fs)
 	}
 	// a managed service and an unknown major are not weighed
 	for _, in := range []Info{{Kind: KindAzureMI, Major: 12}, {Kind: KindServer, Major: 18, Build: 100}} {
@@ -296,6 +321,7 @@ func TestDatabaseRules(t *testing.T) {
 		{collect.Row{"vlf_count": int64(1000)}, "vlf_count", "warn", "warning", AreaLog, "sp_Blitz 69"},
 		{collect.Row{"checkdb_never": int64(1)}, "last_good_checkdb", "crit", "critical", AreaCheckDB, "sp_Blitz 68"},
 		{collect.Row{"checkdb_age_min": int64(8 * 1440)}, "last_good_checkdb", "warn", "warning", AreaCheckDB, "dbachecks LastGoodCheckDb"},
+		{collect.Row{"checkdb_age_min": int64(7*1440 + 12*60)}, "last_good_checkdb", "warn", "warning", AreaCheckDB, "dbachecks LastGoodCheckDb"},
 		{collect.Row{"checkdb_age_min": int64(15 * 1440)}, "last_good_checkdb", "crit", "critical", AreaCheckDB, "sp_Blitz 68"},
 	}
 	for _, c := range cases {
@@ -320,6 +346,7 @@ func TestDatabaseRules(t *testing.T) {
 		{"log_used_pct": float64(74.9)},
 		{"vlf_count": int64(199)},
 		{"checkdb_age_min": int64(6 * 1440)},
+		{"checkdb_age_min": int64(7*1440 + 60)}, // a weekly CHECKDB running now: inside the half day's grace
 		{"is_snapshot": int64(1), "auto_close": int64(1), "page_verify": "NONE"},
 	}
 	for _, over := range quiet {

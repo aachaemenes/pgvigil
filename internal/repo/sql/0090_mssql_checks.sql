@@ -17,7 +17,9 @@
 -- Views: mssql_checks_findings (the findings columns: the join adds the arm to pgvigil.findings),
 -- mssql_checks_status (one Summary cell per area), mssql_option_risks (the fleet's risk counts per instance).
 -- An area the login could not read keeps what an earlier read stored: its rows, its findings and the time of the
--- last read that did read it. No table here grows by the month: every one holds the current state.
+-- last read that did read it. No table grows by the month: each holds the current state, and a row no longer present
+-- (an option, a database, a trace flag turned off) is kept marked so for 30 days (a trace flag a year) and then
+-- deleted by the import itself; purge() has nothing to do here.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_check_area (
   instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -188,43 +190,6 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_identity_scan (
   PRIMARY KEY (instance_id, database_name)
 );
 
--- import_mssql_check_rows: what the two collections share. It stores the payload's 'area' rows and replaces the
--- findings of the areas this payload READ (an area not read keeps its findings; a finding still raised keeps its
--- first_seen). p_areas: the areas the collection owns; a row of another area is ignored. Returns the areas read.
-CREATE OR REPLACE FUNCTION pgvigil.import_mssql_check_rows(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb, p_areas text[])
-RETURNS text[] LANGUAGE plpgsql AS $$
-DECLARE
-  v_read text[];
-BEGIN
-  INSERT INTO pgvigil.mssql_check_area AS a (instance_id, area, is_read, note, snapshot_at, read_at)
-  SELECT DISTINCT ON (r->>'area') p_instance_id, r->>'area', coalesce((r->>'read')::int, 0) = 1, r->>'note', p_snapshot_at,
-         CASE WHEN coalesce((r->>'read')::int, 0) = 1 THEN p_snapshot_at END
-    FROM jsonb_array_elements(p_payload) r
-   WHERE r->>'kind' = 'area' AND r->>'area' = ANY (p_areas)
-   ORDER BY r->>'area'
-  ON CONFLICT (instance_id, area) DO UPDATE SET
-      is_read = EXCLUDED.is_read, note = EXCLUDED.note, snapshot_at = EXCLUDED.snapshot_at,
-      read_at = coalesce(EXCLUDED.read_at, a.read_at);
-  SELECT coalesce(array_agg(a.area), '{}') INTO v_read
-    FROM pgvigil.mssql_check_area a
-   WHERE a.instance_id = p_instance_id AND a.area = ANY (p_areas) AND a.is_read AND a.snapshot_at = p_snapshot_at;
-
-  INSERT INTO pgvigil.mssql_check_finding AS f (instance_id, area, check_name, object, rule, severity, value, detail, first_seen, snapshot_at)
-  SELECT DISTINCT ON (r->>'area', r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''))
-         p_instance_id, r->>'area', r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''), r->>'severity',
-         r->>'value', r->>'explain', p_snapshot_at, p_snapshot_at
-    FROM jsonb_array_elements(p_payload) r
-   WHERE r->>'kind' = 'finding' AND r->>'area' = ANY (v_read) AND r->>'check_name' IS NOT NULL
-     AND r->>'severity' IN ('critical', 'warning', 'info')
-   ORDER BY r->>'area', r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''),
-            CASE r->>'severity' WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END
-  ON CONFLICT (instance_id, area, check_name, object, rule) DO UPDATE SET
-      severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail, snapshot_at = EXCLUDED.snapshot_at;
-  DELETE FROM pgvigil.mssql_check_finding f
-   WHERE f.instance_id = p_instance_id AND f.area = ANY (v_read) AND f.snapshot_at < p_snapshot_at;
-  RETURN v_read;
-END $$;
-
 -- payload of mssql_checks, by row kind: 'area' {area, read, note}; 'finding' {area, check_name, object, severity,
 -- rule, value, explain}; 'server_option' {name, value_in_use, value_set, default_value, advised, status, severity,
 -- rule, explain}; 'trace_flag' {flag, is_on, status, severity, rule, explain}; 'database' {database_id,
@@ -247,7 +212,34 @@ BEGIN
               WHERE a.instance_id = p_instance_id AND a.area = ANY (v_areas) AND a.snapshot_at > p_snapshot_at) THEN
     RETURN;  -- an older read arriving late
   END IF;
-  v_read := pgvigil.import_mssql_check_rows(p_instance_id, p_snapshot_at, p_payload, v_areas);
+  -- the 'area' rows; then the findings of the areas this payload READ are replaced (an area not read keeps its
+  -- findings; a finding still raised keeps its first_seen)
+  INSERT INTO pgvigil.mssql_check_area AS a (instance_id, area, is_read, note, snapshot_at, read_at)
+  SELECT DISTINCT ON (r->>'area') p_instance_id, r->>'area', coalesce((r->>'read')::int, 0) = 1, r->>'note', p_snapshot_at,
+         CASE WHEN coalesce((r->>'read')::int, 0) = 1 THEN p_snapshot_at END
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'area' AND r->>'area' = ANY (v_areas)
+   ORDER BY r->>'area'
+  ON CONFLICT (instance_id, area) DO UPDATE SET
+      is_read = EXCLUDED.is_read, note = EXCLUDED.note, snapshot_at = EXCLUDED.snapshot_at,
+      read_at = coalesce(EXCLUDED.read_at, a.read_at);
+  SELECT coalesce(array_agg(a.area), '{}') INTO v_read
+    FROM pgvigil.mssql_check_area a
+   WHERE a.instance_id = p_instance_id AND a.area = ANY (v_areas) AND a.is_read AND a.snapshot_at = p_snapshot_at;
+
+  INSERT INTO pgvigil.mssql_check_finding AS f (instance_id, area, check_name, object, rule, severity, value, detail, first_seen, snapshot_at)
+  SELECT DISTINCT ON (r->>'area', r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''))
+         p_instance_id, r->>'area', r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''), r->>'severity',
+         r->>'value', r->>'explain', p_snapshot_at, p_snapshot_at
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'finding' AND r->>'area' = ANY (v_read) AND r->>'check_name' IS NOT NULL
+     AND r->>'severity' IN ('critical', 'warning', 'info')
+   ORDER BY r->>'area', r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''),
+            CASE r->>'severity' WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END
+  ON CONFLICT (instance_id, area, check_name, object, rule) DO UPDATE SET
+      severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail, snapshot_at = EXCLUDED.snapshot_at;
+  DELETE FROM pgvigil.mssql_check_finding f
+   WHERE f.instance_id = p_instance_id AND f.area = ANY (v_read) AND f.snapshot_at < p_snapshot_at;
 
   IF 'config' = ANY (v_read) THEN
     INSERT INTO pgvigil.mssql_server_option AS o (instance_id, name, value_in_use, value_set, default_value, advised, status, severity, rule, detail, snapshot_at)
@@ -262,6 +254,8 @@ BEGIN
         detail = EXCLUDED.detail, snapshot_at = EXCLUDED.snapshot_at, is_present = true;
     UPDATE pgvigil.mssql_server_option o SET is_present = false
      WHERE o.instance_id = p_instance_id AND o.is_present AND o.snapshot_at < p_snapshot_at;
+    DELETE FROM pgvigil.mssql_server_option o
+     WHERE o.instance_id = p_instance_id AND NOT o.is_present AND o.snapshot_at < p_snapshot_at - interval '30 days';
   END IF;
 
   IF 'traceflags' = ANY (v_read) THEN
@@ -277,6 +271,8 @@ BEGIN
         detail = EXCLUDED.detail, snapshot_at = EXCLUDED.snapshot_at, is_present = true;
     UPDATE pgvigil.mssql_trace_flag t SET is_present = false
      WHERE t.instance_id = p_instance_id AND t.is_present AND t.snapshot_at < p_snapshot_at;
+    DELETE FROM pgvigil.mssql_trace_flag t
+     WHERE t.instance_id = p_instance_id AND NOT t.is_present AND t.snapshot_at < p_snapshot_at - interval '365 days';
   END IF;
 
   IF 'dboptions' = ANY (v_read) THEN
@@ -289,9 +285,18 @@ BEGIN
      ORDER BY r->>'database_name'
     ON CONFLICT (instance_id, database_name) DO UPDATE SET
         database_id = EXCLUDED.database_id, state = EXCLUDED.state, is_system = EXCLUDED.is_system, is_snapshot = EXCLUDED.is_snapshot,
-        options = EXCLUDED.options, deviations = EXCLUDED.deviations, snapshot_at = EXCLUDED.snapshot_at, is_present = true;
+        -- a read that could not read the logs keeps the log values and their cells an earlier read stored
+        options = CASE WHEN 'logspace' = ANY (v_read) THEN EXCLUDED.options
+                       ELSE EXCLUDED.options || coalesce((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(d.options) e
+                                                           WHERE e.key IN ('log_size_mb', 'log_used_pct', 'vlf_count') AND NOT EXCLUDED.options ? e.key), '{}') END,
+        deviations = CASE WHEN 'logspace' = ANY (v_read) THEN EXCLUDED.deviations
+                          ELSE EXCLUDED.deviations || coalesce((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(d.deviations) e
+                                                                 WHERE e.key IN ('log_used_pct', 'vlf_count') AND NOT EXCLUDED.deviations ? e.key), '{}') END,
+        snapshot_at = EXCLUDED.snapshot_at, is_present = true;
     UPDATE pgvigil.mssql_database_option d SET is_present = false
      WHERE d.instance_id = p_instance_id AND d.is_present AND d.snapshot_at < p_snapshot_at;
+    DELETE FROM pgvigil.mssql_database_option d
+     WHERE d.instance_id = p_instance_id AND NOT d.is_present AND d.snapshot_at < p_snapshot_at - interval '30 days';
   END IF;
 
   INSERT INTO pgvigil.mssql_build AS b (instance_id, snapshot_at, known, exact, newer, status, branch, update_name, release_date,
@@ -352,9 +357,9 @@ END $$;
 -- payload of mssql_identity: 'area' {area 'identity', read, note}; 'identity_scan' {database_name, scanned,
 -- columns_total, listed, note}; 'identity' {database_name, schema_name, table_name, column_name, type_name,
 -- last_value, max_value, pct_used, status}; 'finding'. The columns of a database this read scanned are replaced
--- by the read's; a database not scanned keeps its columns and their findings do not move. The rate: the anchor is
--- the value of the first read (moved up to the value before this read once it is over seven days old, or when the
--- value went down: a reseed); per_day and days_left need an anchor an hour old or more.
+-- by the read's; a database not scanned keeps its columns and their findings. The rate: the anchor is the value of
+-- the first read (moved to the read before once it is over seven days old; to the new value when the value went
+-- down: a reseed); per_day and days_left need an anchor an hour old or more.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_identity(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -402,8 +407,11 @@ BEGIN
    ORDER BY r->>'database_name', r->>'schema_name', r->>'table_name', r->>'column_name'
   ON CONFLICT (instance_id, database_name, schema_name, table_name, column_name) DO UPDATE SET
       type_name = EXCLUDED.type_name, max_value = EXCLUDED.max_value, pct_used = EXCLUDED.pct_used, status = EXCLUDED.status,
-      anchor_value = CASE WHEN EXCLUDED.last_value < c.last_value OR c.anchor_at < EXCLUDED.snapshot_at - interval '7 days' THEN c.last_value ELSE c.anchor_value END,
-      anchor_at = CASE WHEN EXCLUDED.last_value < c.last_value OR c.anchor_at < EXCLUDED.snapshot_at - interval '7 days' THEN c.snapshot_at ELSE c.anchor_at END,
+      -- a value that went down (a reseed) anchors at the new value; an anchor over seven days old moves to the read before
+      anchor_value = CASE WHEN EXCLUDED.last_value < c.last_value THEN EXCLUDED.last_value
+                          WHEN c.anchor_at < EXCLUDED.snapshot_at - interval '7 days' THEN c.last_value ELSE c.anchor_value END,
+      anchor_at = CASE WHEN EXCLUDED.last_value < c.last_value THEN EXCLUDED.snapshot_at
+                       WHEN c.anchor_at < EXCLUDED.snapshot_at - interval '7 days' THEN c.snapshot_at ELSE c.anchor_at END,
       last_value = EXCLUDED.last_value, snapshot_at = EXCLUDED.snapshot_at;
   -- a column of a scanned database that this read no longer lists (dropped, reseeded under the floor)
   DELETE FROM pgvigil.mssql_identity_column c
@@ -419,12 +427,14 @@ BEGIN
    WHERE c.instance_id = p_instance_id AND c.database_name = x.database_name AND c.schema_name = x.schema_name
      AND c.table_name = x.table_name AND c.column_name = x.column_name;
 
-  -- the findings: the scanned databases' are replaced, a database not scanned keeps its own
+  -- the findings follow the columns: one whose column is gone, or no longer past a threshold, is deleted; a database
+  -- not scanned keeps its columns and so its findings; a dropped database's went with its columns above. The read's
+  -- own findings are upserted below.
   DELETE FROM pgvigil.mssql_check_finding f
    WHERE f.instance_id = p_instance_id AND f.area = 'identity'
-     AND split_part(f.object, '.', 1) = ANY (v_scanned)
-     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
-                      WHERE r->>'kind' = 'finding' AND r->>'area' = 'identity' AND r->>'object' = f.object);
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_identity_column c
+                      WHERE c.instance_id = f.instance_id AND c.status <> 'ok'
+                        AND c.database_name || '.' || c.schema_name || '.' || c.table_name || '.' || c.column_name = f.object);
   INSERT INTO pgvigil.mssql_check_finding AS f (instance_id, area, check_name, object, rule, severity, value, detail, first_seen, snapshot_at)
   SELECT DISTINCT ON (r->>'check_name', r->>'object', coalesce(r->>'rule', ''))
          p_instance_id, 'identity', r->>'check_name', r->>'object', coalesce(r->>'rule', ''), r->>'severity', r->>'value', r->>'explain',
@@ -447,16 +457,18 @@ BEGIN
 END $$;
 
 -- The findings of the two collections in the findings columns (check_name, object, at, detail as the other SQL
--- Server arms have them; rule and value beside them). A read older than three of its collection's intervals raises
--- nothing: the Collections page says the collection is stale (three hours for the hourly checks, eighteen for the
--- six-hourly identity scan). The detail ends with the rule and the number, so every page that lists a finding
--- shows both.
+-- Server arms have them; rule and value beside them). A collection whose last run covering the area is older than
+-- three of its intervals raises nothing: the Collections page says the collection is stale (three hours for the
+-- hourly checks, eighteen for the six-hourly identity scan). A finding of an area the last run could not read stays:
+-- it is the last thing known, and the area's cell says it is not read now. The detail ends with the rule and the
+-- number, so every page that lists a finding shows both.
 CREATE OR REPLACE VIEW pgvigil.mssql_checks_findings AS
 SELECT f.instance_id, f.severity, f.check_name, f.object, f.snapshot_at AS at,
        f.detail || ' [rule: ' || f.rule || coalesce('; value: ' || nullif(f.value, ''), '') || ']' AS detail,
        f.area, f.rule, f.value, f.first_seen
   FROM pgvigil.mssql_check_finding f
- WHERE f.snapshot_at > now() - CASE WHEN f.area = 'identity' THEN interval '18 hours' ELSE interval '3 hours' END;
+  JOIN pgvigil.mssql_check_area a ON a.instance_id = f.instance_id AND a.area = f.area
+ WHERE a.snapshot_at > now() - CASE WHEN f.area = 'identity' THEN interval '18 hours' ELSE interval '3 hours' END;
 
 -- One Summary cell per area and instance, in the shape of mssql_health_status (0070): sampled = the area has been
 -- read, critical and warning = the count of findings at that level, value the cell's word, detail the sentences
@@ -477,7 +489,8 @@ SELECT a.instance_id, a.area AS key, a.read_at IS NOT NULL AS sampled,
                                                     WHEN b.behind = 0 THEN 'newest' ELSE b.behind::text || ' behind' END
                                           FROM pgvigil.mssql_build b WHERE b.instance_id = a.instance_id)
             ELSE coalesce(x.n, 0)::text || ' deviation' || CASE WHEN coalesce(x.n, 0) = 1 THEN '' ELSE 's' END END AS value,
-       coalesce(x.detail, CASE WHEN a.read_at IS NULL AND a.note IS NOT NULL THEN ARRAY[a.note] ELSE '{}'::text[] END) AS detail,
+       CASE WHEN NOT a.is_read AND a.note IS NOT NULL THEN ARRAY['not read now: ' || a.note] || coalesce(x.detail, '{}'::text[])
+            ELSE coalesce(x.detail, '{}'::text[]) END AS detail,
        a.is_read, a.note, a.snapshot_at, a.read_at
   FROM pgvigil.mssql_check_area a
   LEFT JOIN LATERAL (

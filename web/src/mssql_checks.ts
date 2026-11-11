@@ -4,10 +4,12 @@
 //
 // A value at its default or its best practice is green, a deviation yellow (a warning or an advice rule) or red (a
 // critical rule); grey where no rule covers it. The colour never stands alone: every coloured cell carries its
-// verdict as its title, and a column of words beside it says the same.
+// verdict as its title, and on the instance page a column of words in the same row says it too (the fleet pivot,
+// one column per instance, has the title and the 'differs' column only).
 //
 // The instance page's views ride its hash (cv=summary|options|databases|flags|build|alerts|identity|findings), and
-// the databases view a risk filter (risk=<option key>): the fleet's risk counts link there.
+// the databases view a risk filter (risk=<key>[,<key>...], a key optionally key:value - the option deviates and has
+// that value): the fleet's risk counts link there.
 import { get, Row, rowsOf, Table } from './api';
 import type { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props } from './ui';
@@ -91,8 +93,12 @@ export async function mssqlChecksView(ctx: Ctx): Promise<HTMLElement> {
 function summaryView(areas: Row[], findings: Row[]): HTMLElement[] {
   const cols: Col[] = [
     { key: 'area', fmt: v => link(areaNames[String(v)] ?? String(v), x => x.set('cv', areaView[String(v)] ?? 'summary')) },
-    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true ? '' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
-      fmt: (v, r) => r.sampled !== true ? el('span', { class: 'meta' }, 'not read') : titled(String(v ?? ''), Array.isArray(r.detail) ? r.detail.map(String).join('\n') : '') },
+    // an area the last run could not read is not coloured: its findings are the last known, its cell says so
+    { key: 'value', label: 'state', cls: (_v, r) => r.sampled !== true || r.is_read !== true ? '' : statusCls(Number(r.critical) ? 'crit' : Number(r.warning) ? 'warn' : 'ok'),
+      fmt: (v, r) => r.sampled !== true ? el('span', { class: 'meta' }, 'not read')
+        : titled(r.is_read !== true ? `not read now (last read ${fmtTime(r.read_at)}): ${String(v ?? '')}` : String(v ?? ''), Array.isArray(r.detail) ? r.detail.map(String).join('\n') : '') },
+    { key: 'verdict', fmt: (_v, r) => r.sampled !== true ? '' : r.is_read !== true ? 'not read now'
+        : Number(r.critical) ? `${String(r.critical)} critical` : Number(r.warning) ? `${String(r.warning)} warning` : 'every rule met' },
     { key: 'critical', num: true }, { key: 'warning', num: true },
     { key: 'note', label: 'not read because, or left out', wide: true },
     { key: 'read_at', label: 'read', fmt: fmtTime },
@@ -130,7 +136,11 @@ function optionsView(rows: Row[]): HTMLElement[] {
 
 // one row per database, one column per option: a deviating cell coloured and titled with its rule (DBA Dash's DB Options)
 function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[] {
-  const shown = risk ? dbs.filter(d => d.is_present !== false && dev(d)[risk]) : dbs;
+  // risk: keys, any of which deviates; key:value also asks the option to hold that value
+  const wants = risk ? risk.split(',').map(x => x.split(':')) : [];
+  const hit = (d: Row) => wants.some(([k, v]) => dev(d)[k] && (v === undefined || String(opts(d)[k]) === v));
+  const shown = risk ? dbs.filter(d => d.is_present !== false && hit(d)) : dbs;
+  const labelOf = (k: string) => String(columns.find(c => c.key === k)?.label ?? k);
   const cols: Col[] = [{ key: 'database_name', label: 'database', fmt: (v, r) => r.is_present === false ? `${String(v)} (gone)` : String(v ?? '') }];
   for (const c of columns) {
     const key = String(c.key);
@@ -144,11 +154,13 @@ function databasesView(dbs: Row[], columns: Row[], risk: string): HTMLElement[] 
       },
     });
   }
-  cols.push({ key: 'deviation_count', label: 'deviations', num: true, fmt: (_v, r) => String(Object.keys(dev(r)).length) });
-  const label = columns.find(c => c.key === risk)?.label;
+  // the colours in words: every deviating option of the row with its verdict
+  cols.push({ key: 'deviation_text', label: 'deviates', wide: true,
+    fmt: (_v, r) => Object.entries(dev(r)).map(([k, x]) => `${labelOf(k)}: ${verdict(x.status, x.severity).replace('deviates: ', '')}`).join('; ') || 'none' });
+  const label = wants.map(([k, v]) => labelOf(k) + (v === undefined ? '' : ` ${v}`)).join(' or ');
   return [
     el('p', { class: 'meta' }, risk
-      ? el('span', {}, `${fmtNum(shown.length)} database(s) whose ${String(label ?? risk)} deviates. `, link('All databases', x => x.delete('risk')))
+      ? el('span', {}, `${fmtNum(shown.length)} database(s) whose ${label} deviates. `, link('All databases', x => x.delete('risk')))
       : `${fmtNum(dbs.length)} databases. Green: the value meets its rule. Yellow: a warning or an advice rule is broken. Red: a critical `
         + 'rule is broken. Uncoloured: a column shown, not judged. A cell\'s title says the rule and why; hover a heading-less value for what '
         + 'it is held to.'),
@@ -161,7 +173,7 @@ const dev = (r: Row): Record<string, Record<string, unknown>> => (r.deviations &
 const flatten = (r: Row): Row => {
   const out: Row = { ...r };
   for (const [k, v] of Object.entries(opts(r))) out['opt_' + k] = v;
-  out.deviation_count = Object.keys(dev(r)).length;
+  out.deviation_text = Object.keys(dev(r)).join(' ');
   return out;
 };
 
@@ -208,6 +220,7 @@ function alertsView(alerts: Row[], ops: Row[], g: Row | undefined): HTMLElement[
       { key: 'name' }, { key: 'severity', num: true }, { key: 'message_id', label: 'error', num: true },
       { key: 'enabled', cls: v => v === true ? 'status ok' : 'status warn', fmt: yn },
       { key: 'notifies', label: 'operators notified', num: true, cls: (v, r) => r.enabled === true && Number(v) === 0 && r.has_job !== true ? 'status warn' : '' },
+      { key: 'verdict', fmt: (_v, r) => r.enabled !== true ? 'disabled' : Number(r.notifies) === 0 && r.has_job !== true ? 'tells nobody' : 'in order' },
       { key: 'has_job', label: 'starts a job', fmt: yn }, { key: 'include_event_description', label: 'error text in the message', fmt: yn },
       { key: 'occurrence_count', label: 'raised', num: true }, { key: 'last_occurrence_at', label: 'last raised', fmt: fmtTime },
     ], 'No alert is defined: a severe error is written to the log and nobody is told.'),
@@ -226,11 +239,13 @@ function identityView(cols: Row[], scans: Row[]): HTMLElement[] {
   return [
     el('p', { class: 'meta' }, `${fmtNum(scans.length - unscanned.length)} database(s) scanned, ${fmtNum(unscanned.length)} not (each says why below). `
       + 'Listed: the identity columns at 10 % of their type\'s range or more. Yellow from 75 %, red from 90 %: at the limit every insert fails. '
-      + 'The rate is taken against a read up to seven days back.'),
+      + 'The rate is taken against a read up to seven days back.'
+      + (cols.length >= 500 ? ' The 500 fullest columns are listed; the area cell counts every one.' : '')),
     grid(cols, [
       { key: 'database_name', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
       { key: 'column_name', label: 'column' }, { key: 'type_name', label: 'type' },
       { key: 'pct_used', label: '% used', num: true, cls: (_v, r) => statusCls(r.status), fmt: fmtNum },
+      { key: 'status', label: 'verdict', fmt: v => v === 'crit' ? 'critical (90 % and more)' : v === 'warn' ? 'warning (75 % and more)' : 'under 75 %' },
       { key: 'last_value', label: 'last value', num: true, fmt: fmtNum }, { key: 'max_value', label: 'limit', num: true, fmt: fmtNum },
       { key: 'per_day', label: 'per day', num: true, fmt: fmtNum }, { key: 'days_left', label: 'days left', num: true, fmt: fmtNum },
     ], 'No identity column at 10 % of its range or more.'),
@@ -257,8 +272,8 @@ function findingsGrid(rows: Row[]): HTMLElement {
 // instance, the odd value coloured by its verdict.
 const risks: [string, string, string][] = [   // the column, its heading, the database grid's option key behind it
   ['page_verify', 'Page verify not optimal', 'page_verify'], ['auto_close', 'Auto close', 'auto_close'], ['auto_shrink', 'Auto shrink', 'auto_shrink'],
-  ['stats_off', 'Stats off', 'auto_update_stats'], ['old_compat', 'Old compat level', 'compatibility_level'], ['trustworthy', 'Trustworthy', 'trustworthy'],
-  ['no_indirect_checkpoint', 'No indirect checkpoints', 'target_recovery_secs'], ['delayed_durability', 'Delayed durability', 'delayed_durability'],
+  ['stats_off', 'Stats off', 'auto_create_stats,auto_update_stats'], ['old_compat', 'Old compat level', 'compatibility_level'], ['trustworthy', 'Trustworthy', 'trustworthy'],
+  ['no_indirect_checkpoint', 'No indirect checkpoints', 'target_recovery_secs:0'], ['delayed_durability', 'Delayed durability', 'delayed_durability'],
   ['not_online', 'Not online', 'state'], ['not_multi_user', 'Not multi user', 'user_access'], ['vlf_high', 'VLF count high', 'vlf_count'],
 ];
 
@@ -267,7 +282,7 @@ export async function mssqlChecksFleetView(_ctx: Ctx): Promise<HTMLElement> {
   let d: FleetParts;
   try { d = await get<FleetParts>('mssql/checks/fleet'); } catch (e) { sec.append(errorBox(e)); return sec; }
   const rs = rowsOf(d.risks);
-  const to = (iid: unknown, view: string, risk = '') => `#/${mssqlChecksTab}?i=${String(iid)}&cv=${view}${risk ? '&risk=' + risk : ''}`;
+  const to = (iid: unknown, view: string, risk = '') => `#/${mssqlChecksTab}?i=${String(iid)}&cv=${view}${risk ? '&risk=' + encodeURIComponent(risk) : ''}`;
   const count = (key: string, risk: string): Col => ({
     key, label: risks.find(x => x[0] === key)?.[1] ?? key, num: true,
     cls: (v, r) => r.databases_read_at == null ? '' : Number(v) > 0 ? 'status warn' : 'status ok',
@@ -278,10 +293,11 @@ export async function mssqlChecksFleetView(_ctx: Ctx): Promise<HTMLElement> {
     { key: 'user_databases', label: 'user databases', num: true },
     ...risks.map(([k, , risk]) => count(k, risk)),
     { key: 'max_vlf', label: 'max VLF count', num: true, fmt: fmtNum },
-    { key: 'option_critical', label: 'options critical', num: true, cls: v => Number(v) > 0 ? 'status crit' : 'status ok',
-      fmt: (v, r) => Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
-    { key: 'option_warning', label: 'options warning', num: true, cls: v => Number(v) > 0 ? 'status warn' : 'status ok',
-      fmt: (v, r) => Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
+    // an instance whose options were never read has no count to colour
+    { key: 'option_critical', label: 'options critical', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status crit' : 'status ok',
+      fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
+    { key: 'option_warning', label: 'options warning', num: true, cls: (v, r) => r.options_read_at == null ? '' : Number(v) > 0 ? 'status warn' : 'status ok',
+      fmt: (v, r) => r.options_read_at == null ? 'not read' : Number(v) > 0 ? el('a', { href: to(r.instance_id, 'options') }, fmtNum(v)) : '0' },
     { key: 'option_advice', label: 'options off their default', num: true, fmt: fmtNum },
     { key: 'databases_read_at', label: 'read', fmt: v => v == null ? 'not yet' : fmtTime(v) },
   ];

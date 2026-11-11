@@ -35,7 +35,9 @@ SELECT f.area, f.severity, f.check_name, f.object, f.rule, f.value, f.detail, f.
 // the worst first, then by name; an option no longer listed last
 const sqlMSSQLChecksOptions = `
 SELECT o.name, o.value_in_use, o.value_set, o.default_value, o.advised, o.status, o.severity, o.rule, o.detail,
-       o.value_set IS DISTINCT FROM o.value_in_use AS pending, o.is_present, o.snapshot_at
+       o.value_set IS DISTINCT FROM o.value_in_use
+       -- the engine resolves a 0 in 'min server memory (MB)' to its own floor (16): not pending (q_mssql_config.go)
+       AND NOT (o.name = 'min server memory (MB)' AND o.value_set = 0 AND o.value_in_use <= 16) AS pending, o.is_present, o.snapshot_at
   FROM pgvigil.mssql_server_option o
  WHERE o.instance_id = $1
  ORDER BY o.is_present DESC, CASE o.status WHEN 'crit' THEN 0 WHEN 'warn' THEN 1 WHEN 'ok' THEN 2 ELSE 3 END,

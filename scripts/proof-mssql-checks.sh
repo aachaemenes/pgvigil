@@ -12,7 +12,8 @@
 # The binary must carry the routes /api/mssql/checks and /api/mssql/checks/fleet (the lead's wiring in web.go): the
 # proof stops at its first API read when it does not.
 # What it makes, and removes on every exit path the shell can catch: its own SQL Server container (SQL Server Agent
-# on, a throwaway sa password made here, never printed), its own repository database pgvigil_p148_<n>. Inside the
+# on, the zone America/Los_Angeles so a server-local time differs from UTC, a throwaway sa password made here, never
+# printed), its own repository database pgvigil_p148_<n>. Inside the
 # container (gone with it): two logins, three databases, one operator, ten alerts, one trace flag, one server
 # option, one row in msdb.dbo.suspect_pages. A proof killed with kill -9 leaves them: the container is
 # pgv-p148-mssql-<n> and the database pgvigil_p148_<n>, both named in the first lines of the output.
@@ -23,7 +24,8 @@
 #     sys.configurations; mssql_database_option as many as sa counts in sys.databases; every area of the nine is
 #     read; mssql_build is known (the catalogue has 2022) and, where sa's build is newer than the catalogue's newest
 #     (4255), newer; the image's untouched options: 'cost threshold for parallelism' 5 is a warning (sp_Blitz 188),
-#     'xp_cmdshell' 0 is ok.
+#     'xp_cmdshell' 0 is ok. The server's clock is not UTC (GETDATE() differs from GETUTCDATE()), so F's 'within the
+#     last hour' fails if a local time is stored as UTC.
 #  B. a database with AUTO_CLOSE on: its auto_close cell deviates ('warn', sp_Blitz 12), the finding 'auto close'
 #     names it, the dboptions area cell counts a warning, mssql_option_risks.auto_close = 1 and the fleet API's
 #     risks say 1; SET AUTO_CLOSE OFF and the next read: the cell has no deviation, the finding is gone, the count 0.
@@ -52,7 +54,12 @@
 #     'suspect pages' names it, critical, and the corruption area cell counts it; the row deleted: cleared.
 #  I. the container's Agent has no operator and no alert: the findings 'no operator' and 'no alerts for severity 19
 #     to 25' and 'no alerts for corruption errors' are raised (warning each); an operator and alerts for severities
-#     19-25 and errors 823-825 that notify it: all three gone; the alerts and the operator deleted: back.
+#     19-25 and errors 823-825 that notify it: all three gone; the alerts and the operator deleted: back. Read as sa
+#     (an instance of its own): the fail-safe operator is readable, 'no fail-safe operator' is raised (info) on the new
+#     server. Whether the monitoring login may read it is printed, not asserted. [Changed after the fold's first run,
+#     which also set the operator with master.dbo.sp_MSsetalertinfo and expected it stored: on the Linux image the
+#     procedure returns 0 and writes nothing (xp_instance_regread of AlertFailSafeOperator is NULL right after it,
+#     AlertNotificationMethod stays 0), so the set is not proven here.]
 #  J. a table with a tinyint identity at 200 (78 % of 255) in the proof's database: `collect -once mssql_identity`
 #     lists it 'warn' with a finding; at 240 (94 %): 'crit'; the table dropped: the column and the finding gone,
 #     the scan row says scanned.
@@ -60,7 +67,9 @@
 #     dboptions, dbstate, checkdb and corruption areas are read; logspace and alerts are not, each with its reason.
 #     [Changed after run 5, which expected corruption not read: msdb's guest user lets the public role read
 #     msdb.dbo.suspect_pages (the read succeeded as that login), while sysnotifications refused it (Msg 229).]
-#     mssql_identity is skipped naming VIEW ANY DEFINITION.
+#     mssql_identity is skipped naming VIEW ANY DEFINITION. A login with VIEW ANY DEFINITION and no right to enter
+#     a user database: mssql_identity says partial and the identity area is not read, its note naming CONNECT ANY
+#     DATABASE (the run would otherwise read as '0 of 0 columns', green).
 #  L. the API: GET /api/mssql/checks?instance=N answers the fourteen parts; the databases part's deviations for the
 #     auto-close database say 'warn' while it is seeded; the options part's cross db ownership chaining row says
 #     the status the table holds; the fleet's options part holds every instance's options.
@@ -79,10 +88,10 @@ WORK=$(mktemp -d); CFG=$WORK/cfg.yaml; OUT=$WORK/out
 REPO_DB=pgvigil_p148_$SUF
 CT=pgv-p148-mssql-$SUF
 DB=pgvp148_$SUF; DBLOG=pgvp148log_$SUF; DBNEW=pgvp148new_$SUF
-L1=pgv_chk_$SUF; L2=pgv_chkbare_$SUF
-N=proof-checks-$SUF; NB=proof-checksbare-$SUF
+L1=pgv_chk_$SUF; L2=pgv_chkbare_$SUF; L3=pgv_chkdef_$SUF
+N=proof-checks-$SUF; NB=proof-checksbare-$SUF; NV=proof-checksdef-$SUF; NS=proof-checkssa-$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
-P1=$(pw); P2=$(pw)
+P1=$(pw); P2=$(pw); P3=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_CT=; SRV_PID=
@@ -111,7 +120,7 @@ export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 MPORT=$(freeport 22433 22499) || fail "no free port for the SQL Server container"
 ADDR=127.0.0.1:$MPORT
 MADE_CT=1
-docker run -d --name "$CT" -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_AGENT_ENABLED=true -p "127.0.0.1:$MPORT:1433" \
+docker run -d --name "$CT" -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_AGENT_ENABLED=true -e TZ=America/Los_Angeles -p "127.0.0.1:$MPORT:1433" \
   "${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}" >/dev/null || fail "docker run of the SQL Server container"
 # sq <sql> [database]: as sa, the password through the environment by name
 # sqlcmd writes a server error to stdout: on a failure the output goes to stderr, so a caller's >/dev/null hides nothing
@@ -132,12 +141,14 @@ echo "  $PV"
 # the Agent's own sessions: the alerts read needs msdb and the Agent's tables, not the Agent running; waited for a while
 for _ in $(seq 1 30); do [ "$(sq "SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE program_name LIKE 'SQLAgent%'")" -gt 0 ] && break; sleep 2; done
 
-printf "CREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\nCREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\nGO\n" "$L1" "$P1" "$L2" "$P2" | sqs >/dev/null
-sq "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1]; GRANT CONNECT ANY DATABASE TO [$L1];" >/dev/null
+printf "CREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\nCREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\nCREATE LOGIN [%s] WITH PASSWORD = '%s', CHECK_POLICY = OFF;\nGO\n" "$L1" "$P1" "$L2" "$P2" "$L3" "$P3" | sqs >/dev/null
+sq "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1]; GRANT CONNECT ANY DATABASE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L3];" >/dev/null
 sq "CREATE USER [$L1] FOR LOGIN [$L1]; ALTER ROLE db_datareader ADD MEMBER [$L1];" msdb >/dev/null
 sq "CREATE DATABASE [$DB]; ALTER DATABASE [$DB] SET RECOVERY SIMPLE;" >/dev/null
 export MS_MON="sqlserver://$L1:$P1@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
 export MS_BARE="sqlserver://$L2:$P2@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
+export MS_DEF="sqlserver://$L3:$P3@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
+export MS_SA="sqlserver://sa:$MSSQL_SA_PASSWORD@$ADDR?database=master&encrypt=true&TrustServerCertificate=true"
 
 adm() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
 adm -c "create database $REPO_DB"; MADE_REPO=1
@@ -147,6 +158,8 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
   echo "repository:"; echo "  dsn: env:PGVIGIL_REPO_DSN"; echo "instances:"
   printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_MON\n' "$N"
   printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_BARE\n' "$NB"
+  printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_DEF\n' "$NV"
+  printf '  - name: %s\n    engine: sqlserver\n    dsn: env:MS_SA\n' "$NS"
 } > "$CFG"
 "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "${2:-$N}" > "$OUT" 2>&1 || { cat "$OUT" >&2; return 1; }; cat "$OUT"; }
@@ -166,7 +179,9 @@ WANT_NEWER=$([ "$BUILD" -gt 4255 ] && echo true || echo false)   # a boolean joi
 opt() { q "select status || '|' || coalesce(rule, '') from pgvigil.mssql_server_option where instance_id = $I and name = '$1'"; }
 [ "$(opt 'cost threshold for parallelism')" = "warn|sp_Blitz 188" ] || fail "A: cost threshold: $(opt 'cost threshold for parallelism')"
 [ "$(opt xp_cmdshell)" = "ok|" ] || fail "A: xp_cmdshell: $(opt xp_cmdshell)"
-echo "  $NCFG options, $NDB databases, build $BUILD (newer than the catalogue: $WANT_NEWER)"
+OFFS=$(sq "SELECT DATEDIFF(minute, GETUTCDATE(), GETDATE())")
+[ "$OFFS" != 0 ] || fail "A: the server's clock is UTC (TZ not taken): F could not catch a local time stored as UTC"
+echo "  $NCFG options, $NDB databases, build $BUILD (newer than the catalogue: $WANT_NEWER), server clock UTC$OFFS min"
 echo "A: OK"
 
 # cell <database> <option key>: the deviation's status, or 'none'
@@ -299,6 +314,11 @@ echo "H: OK"
 echo "--- I. Agent alerts and operators"
 agent3() { echo "$(finding 'no operator' 'SQL Server Agent')/$(finding 'no alerts for severity 19 to 25' 'SQL Server Agent')/$(finding 'no alerts for corruption errors' 'SQL Server Agent')"; }
 [ "$(agent3)" = "1|warning/1|warning/1|warning" ] || fail "I: a new server: $(agent3)"
+echo "  the monitoring login reads the fail-safe operator: $(q "select failsafe_read from pgvigil.mssql_agent_alerting where instance_id = $I")"
+chk "$NS"
+IS=$(q "select instance_id from pgvigil.instances where name = '$NS'")
+fsafe() { q "select a.failsafe_read || '|' || coalesce(a.failsafe_operator, '') || '|' || (select count(*) from pgvigil.mssql_check_finding f where f.instance_id = $IS and f.check_name = 'no fail-safe operator') from pgvigil.mssql_agent_alerting a where a.instance_id = $IS"; }
+[ "$(fsafe)" = "true||1" ] || fail "I: as sa on a new server: $(fsafe) (read|operator|finding)"
 {
   echo "EXEC msdb.dbo.sp_add_operator @name = N'pgvp_dba', @enabled = 1, @email_address = N'dba@example.invalid';"
   for s in 19 20 21 22 23 24 25; do echo "EXEC msdb.dbo.sp_add_alert @name = N'pgvp sev $s', @severity = $s, @include_event_description_in = 1; EXEC msdb.dbo.sp_add_notification @alert_name = N'pgvp sev $s', @operator_name = N'pgvp_dba', @notification_method = 1;"; done
@@ -343,6 +363,11 @@ IB=$(q "select instance_id from pgvigil.instances where name = '$NB'")
 [ "$(q "select count(*) from pgvigil.mssql_check_area where instance_id = $IB and not is_read and note is not null")" = 2 ] || fail "K: a reason missing"
 collect mssql_identity "$NB" >/dev/null
 grep -q "VIEW ANY DEFINITION" "$OUT" || fail "K: mssql_identity not skipped with the right named: $(cat "$OUT")"
+collect mssql_identity "$NV" >/dev/null || fail "K: mssql_identity as the login that may enter no database failed"
+grep -q partial "$OUT" || fail "K: that run does not say partial: $(cat "$OUT")"
+IV=$(q "select instance_id from pgvigil.instances where name = '$NV'")
+[ "$(q "select is_read || '|' || (note like '%CONNECT ANY DATABASE%') from pgvigil.mssql_check_area where instance_id = $IV and area = 'identity'")" = "false|true" ] \
+  || fail "K: the identity area: $(q "select is_read || ' ' || coalesce(note, '') from pgvigil.mssql_check_area where instance_id = $IV and area = 'identity'")"
 echo "K: OK"
 
 echo "--- M. the imports' refusals"
