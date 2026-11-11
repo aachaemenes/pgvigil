@@ -180,9 +180,11 @@ for ver in "${VERSIONS[@]}"; do
 done
 
 # two ports per version, chosen here, one after the other (the versions start in parallel); freeport runs in a
-# command substitution, so the caller adds what it took to TAKEN
+# command substitution, so the caller adds what it took to TAKEN. A port another container publishes is taken too,
+# whether that container runs or not: docker keeps the port of a container that stopped with the machine, ss does
+# not show it, and docker run then refuses it ("port is already allocated")
 declare -A PORT_A PORT_B
-TAKEN=" "
+TAKEN=" $(docker ps -a --format '{{.Ports}}' | grep -oE '[0-9.:\[\]]*:[0-9]+->' | grep -oE '[0-9]+->' | tr -d '>-' | tr '\n' ' ') "
 freeport() {
   local port
   for port in $(seq 21500 21599); do
