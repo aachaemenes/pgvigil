@@ -24,7 +24,7 @@ import { badge, Col, dot, el, errorBox, fmtTime, grid, props, tile } from './ui'
 interface DBADashData { repositories: Table | null; fleet: Table | null; checks: Table | null }
 interface DBADashInstance { instance: Table | null; statuses: Table | null; changes: Table | null; pgvigil?: Table | null }
 interface PageSet { columns: { name: string; type: string }[]; rows: unknown[][]; truncated?: boolean }
-interface PageReply { page: string; title: string; procedure: string; version: string; proven: boolean; note?: string; results: PageSet[]; ms: number }
+interface PageReply { page: string; title: string; procedure: string; version: string; proven: boolean; note?: string; results: PageSet[]; ms: number; instance?: string; machine?: string }
 
 // DBADash's codes (DBADashStatusEnum) and pgvigil's colour for each: 1 Critical, 2 Warning, 6 Warning (low) are the
 // two alarm levels; N/A, Information and Disabled are shown muted; Acknowledged muted and marked (blue in the solid
@@ -233,7 +233,9 @@ function setRows(set: PageSet): { cols: Col[]; rows: Row[] } {
 async function pageView(ctx: Ctx, repo: string, id: number, page: string, snapshot?: string): Promise<HTMLElement> {
   const w = window_(ctx);
   const sec = el('section', {});
-  const head = await get<DBADashInstance>('dbadash', { repo, id, from: w.from, to: w.to }).catch(() => null);
+  // the instance's facts and pgvigil's own instance of the same server; a failed read leaves the actions off (said below)
+  const head = await get<DBADashInstance>('dbadash', { repo, id, from: w.from, to: w.to })
+    .catch((e: unknown) => { if (e instanceof LoginRequired) throw e; return null; });
   const i = head ? rowsOf(head.instance)[0] : undefined;
   const pg = head ? rowsOf(head.pgvigil)[0] : undefined;
   sec.append(el('h2', {}, i ? String(i.display_name) : `DBADash instance ${id}`, ' ', el('span', { class: 'meta' }, `(SQL Server, from DBADash: ${repo})`)),
@@ -242,25 +244,34 @@ async function pageView(ctx: Ctx, repo: string, id: number, page: string, snapsh
   try {
     d = await get<PageReply>('dbadash', { repo, id, page, from: w.from, to: w.to, ...(snapshot ? { snapshot } : {}) });
   } catch (e) {
+    if (e instanceof LoginRequired) throw e;
     sec.append(errorBox(e));
     return sec;
   }
   sec.append(el('h3', {}, d.title, page === 'sessions' ? (snapshot ? ` at ${fmtTime(snapshot)}` : ' (the latest snapshot)') : ''),
     el('p', { class: 'meta' }, `DBADash's own ${d.procedure}, called now for this instance through the repository's read login (${d.ms} ms); DBADash ${d.version || '(no version row)'}.`));
   if (!d.proven) sec.append(el('p', { class: 'error', role: 'status' }, d.note ?? 'not proven on this DBADash version'));
-  // the actions: the SQL Server instance pgvigil monitors under the same @@SERVERNAME, or off with the reason
-  const pid = pg ? Number(pg.instance_id) : undefined;
-  const noDoor = `${i ? String(i.instance) : 'this instance'} is not a SQL Server instance pgvigil monitors (an instances: entry with engine: sqlserver, its actions_dsn and actions: list; docs/dbadash.md): no action is sent from this page`;
-  const after = () => { location.hash = location.hash; window.dispatchEvent(new HashChangeEvent('hashchange')); };
+  // the actions: the SQL Server instance pgvigil monitors under the same server name AND machine name (a host renamed
+  // without sp_dropserver keeps its old @@SERVERNAME, which a new server may carry), on the latest snapshot only (a past
+  // snapshot's session id may belong to another session now); otherwise off with the reason
+  const same = (a: unknown, b: unknown) => a != null && b != null && String(a) !== '' && String(a).toUpperCase() === String(b).toUpperCase();
+  let why = '';
+  if (!head) why = 'the instance\'s pgvigil match could not be read: reload the page';
+  else if (!pg) why = `${i ? String(i.instance) : 'this instance'} is not a SQL Server instance pgvigil monitors (an instances: entry with engine: sqlserver, its actions_dsn and actions: list; docs/dbadash.md)`;
+  else if (!same(d.instance, pg.server_name) || !same(d.machine, pg.machine_name)) {
+    why = `DBA Dash knows this server as ${d.instance || '?'} on machine ${d.machine || '(none recorded)'}, pgvigil's instance ${String(pg.name)} as ${String(pg.server_name ?? '?')} on machine ${String(pg.machine_name ?? '?')}: they may be two servers under one name`;
+  } else if (page === 'sessions' && snapshot) why = 'Kill is offered on the latest snapshot only: a past snapshot\'s session id may belong to another session now';
+  const after = () => { window.dispatchEvent(new HashChangeEvent('hashchange')); };
   let actCol: Col | undefined;
   if (page === 'sessions' || page === 'jobs') {
-    if (pid) {
-      const actx = { ...ctx, instance: pid };
+    const label = page === 'sessions' ? 'Kill' : 'Start / Stop';
+    if (!why && pg) {
+      const actx = { ...ctx, instance: Number(pg.instance_id) };
       actCol = page === 'sessions' ? await mssqlKillCol(actx, after) : await mssqlJobCol(actx, after);
-      sec.append(el('p', { class: 'meta' }, `Actions go through the actions door of pgvigil's own instance ${String(pg?.name)}${Number(pg?.matches) > 1 ? ` (one of ${String(pg?.matches)} with this server name)` : ''}; every attempt is kept in its Actions log.`));
+      sec.append(el('p', { class: 'meta' }, `Actions go through the actions door of pgvigil's own instance ${String(pg.name)}${Number(pg.matches) > 1 ? ` (one of ${String(pg.matches)} with this server name)` : ''}; every attempt is kept in its Actions log.`));
     } else {
-      actCol = { key: '_actions', label: 'action', fmt: () => { const b = el('button', { type: 'button', 'aria-disabled': 'true', style: 'font-size:12px;padding:0 .4rem;opacity:.55;cursor:not-allowed', title: noDoor }, page === 'sessions' ? 'Kill' : 'Start / Stop'); b.setAttribute('aria-label', 'off. ' + noDoor); return b; } };
-      sec.append(el('p', { class: 'meta' }, noDoor + '.'));
+      actCol = { key: '_actions', label: 'action', fmt: () => { const b = el('button', { type: 'button', 'aria-disabled': 'true', style: 'font-size:12px;padding:0 .4rem;opacity:.55;cursor:not-allowed', title: why }, label); b.setAttribute('aria-label', `${label}: off. ${why}`); return b; } };
+      sec.append(el('p', { class: 'meta' }, `No action from this page: ${why}.`));
     }
   }
   if (!d.results.length) sec.append(el('p', { class: 'empty' }, 'The procedure returned no result set.'));

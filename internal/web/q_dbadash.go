@@ -67,8 +67,8 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := strconv.Atoi(idv)
-	if err != nil || id <= 0 {
-		writeErr(w, http.StatusBadRequest, errors.New("id must be a positive DBADash InstanceID"))
+	if err != nil || id <= 0 || id > dbadash.MaxInstanceID {
+		writeErr(w, http.StatusBadRequest, errors.New("id must be a DBADash InstanceID (1 to 2147483647)"))
 		return
 	}
 	_, from, to, err := params(r, false)
@@ -84,13 +84,14 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// sqlDBADashPgvigil is the SQL Server instance pgvigil monitors itself under the DBADash instance's @@SERVERNAME (the
-// actions buttons' door); more than one = the lowest instance_id, said by the count.
+// sqlDBADashPgvigil is the active SQL Server instance pgvigil monitors itself under the DBADash instance's server name
+// (the actions buttons' door); more than one = the lowest instance_id, said by the count. Its machine name goes to the
+// page, which acts only when DBADash's own MachineName for the instance (on the sessions and jobs pages) is the same.
 const sqlDBADashPgvigil = `
-SELECT i.instance_id, i.name, count(*) OVER () AS matches
+SELECT i.instance_id, i.name, m.server_name, m.machine_name, count(*) OVER () AS matches
   FROM pgvigil.dbadash_instances d
   JOIN pgvigil.mssql_instance m ON upper(m.server_name) = upper(d.instance)
-  JOIN pgvigil.instances i ON i.instance_id = m.instance_id AND i.engine = 'sqlserver'
+  JOIN pgvigil.instances i ON i.instance_id = m.instance_id AND i.engine = 'sqlserver' AND i.is_active
  WHERE d.repository = $1 AND d.instance_id = $2
  ORDER BY i.instance_id
  LIMIT 1`
@@ -117,8 +118,8 @@ func (s *Server) dbadashPage(w http.ResponseWriter, r *http.Request, repo *strin
 		return
 	}
 	id, err := strconv.Atoi(idv)
-	if err != nil || id <= 0 {
-		writeErr(w, http.StatusBadRequest, errors.New("id must be a positive DBADash InstanceID"))
+	if err != nil || id <= 0 || id > dbadash.MaxInstanceID {
+		writeErr(w, http.StatusBadRequest, errors.New("id must be a DBADash InstanceID (1 to 2147483647)"))
 		return
 	}
 	a := dbadash.PageArgs{InstanceID: id}

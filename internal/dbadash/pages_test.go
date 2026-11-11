@@ -115,6 +115,10 @@ func TestImportMappings(t *testing.T) {
 		if !contains(m.Insert, "NOT EXISTS") || !contains(m.Insert, "pgvigil."+m.Table) || !contains(m.Stored, "pgvigil."+m.Table) {
 			t.Errorf("%s: the insert must skip a stored row and write its own table", m.Key)
 		}
+		// insertBatch passes $3 only to an insert that says it takes the facts: the driver refuses a count that differs
+		if contains(m.Insert, "$3") != m.Facts {
+			t.Errorf("%s: the insert uses $3 = %v but Facts = %v", m.Key, contains(m.Insert, "$3"), m.Facts)
+		}
 	}
 	if _, err := Import(context.Background(), nil, " ", "x", ImportOptions{}); err == nil {
 		t.Error("an empty source dsn was used")

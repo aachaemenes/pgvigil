@@ -31,6 +31,9 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
+// MaxInstanceID is the largest DBADash InstanceID (an int column).
+const MaxInstanceID = 2147483647
+
 // ProvenVersion is the DBADash version the pages and the import are proven on.
 const ProvenVersion = "4.24.1"
 
@@ -155,6 +158,11 @@ type PageReply struct {
 	Note      string      `json:"note,omitempty"`
 	Results   []ResultSet `json:"results"`
 	Millis    int64       `json:"ms"`
+	// Instance and Machine are DBADash's @@SERVERNAME and SERVERPROPERTY('MachineName') of the instance, on the pages
+	// that carry actions (sessions, jobs): the page acts only when both equal the pgvigil instance's own (a host renamed
+	// without sp_dropserver keeps its old @@SERVERNAME, which a new server may now carry)
+	Instance string `json:"instance,omitempty"`
+	Machine  string `json:"machine,omitempty"`
 }
 
 // MaxPageRows caps one result set (DBADash's own RunningQueriesSummary_Get stops at 2000).
@@ -206,14 +214,18 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 	if !ok {
 		return PageReply{}, fmt.Errorf("unknown DBADash page %q", page)
 	}
-	if a.InstanceID <= 0 {
-		return PageReply{}, errors.New("a page needs a DBADash InstanceID")
+	if a.InstanceID <= 0 || a.InstanceID > MaxInstanceID {
+		return PageReply{}, errors.New("a page needs a DBADash InstanceID (1 to 2147483647)")
 	}
 	if def.Window && (a.From.IsZero() || a.To.IsZero() || !a.From.Before(a.To)) {
 		return PageReply{}, errors.New("the page needs a time range (from before to)")
 	}
 	if strings.TrimSpace(dsn) == "" {
 		return PageReply{}, errors.New("the dsn resolved to nothing (an unset env: variable or an unreadable file:)")
+	}
+	if l := strings.ToLower(dsn); strings.Contains(l, "guid conversion") || strings.Contains(l, "guid+conversion") || strings.Contains(l, "guid%20conversion") {
+		// the driver then hands a uniqueidentifier back already reordered, and a job id on the page would be wrong
+		return PageReply{}, errors.New("the dsn sets 'guid conversion': remove it (the pages read job ids in the driver's default order)")
 	}
 	ctx, cancel := context.WithTimeout(ctx, PageTimeout)
 	defer cancel()
@@ -235,6 +247,13 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 	out.Proven = Proven(out.Version)
 	if !out.Proven {
 		out.Note = fmt.Sprintf("not proven on DBADash %s: the pages are proven on %s", orNone(out.Version), ProvenVersion)
+	}
+	if def.Key == "sessions" || def.Key == "jobs" {
+		var inst, machine sql.NullString
+		if err := conn.QueryRowContext(ctx, `SELECT Instance, MachineName FROM dbo.Instances WHERE InstanceID = @id`, sql.Named("id", a.InstanceID)).Scan(&inst, &machine); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return PageReply{}, fmt.Errorf("dbo.Instances: %w", err)
+		}
+		out.Instance, out.Machine = inst.String, machine.String
 	}
 	start := time.Now()
 	rs, err := callProc(ctx, conn, def.Procedure, def.args(a))

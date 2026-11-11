@@ -15,8 +15,8 @@ import (
 
 // TestLivePages calls every DBADash page once for one instance (scripts/proof-dbadash-door.sh drives it; skipped
 // without PGVIGIL_DBADASH_PAGE_DSN). PGVIGIL_DBADASH_PAGE_ID is the DBADash InstanceID, PGVIGIL_DBADASH_PAGE_FROM and
-// _TO the window (RFC 3339), PGVIGIL_DBADASH_PAGE_DIR the folder each page's reply is written to as <page>.json. It
-// prints one line per page:
+// _TO the window (RFC 3339), PGVIGIL_DBADASH_PAGE_SNAPSHOT (RFC 3339, optional) the sessions page's snapshot,
+// PGVIGIL_DBADASH_PAGE_DIR the folder each page's reply is written to as <page>.json. It prints one line per page:
 //
 //	page <key> ok|error version=<v> proven=<bool> sets=<n> rows=<n,n,...> err=<message>
 func TestLivePages(t *testing.T) {
@@ -33,11 +33,17 @@ func TestLivePages(t *testing.T) {
 	if err1 != nil || err2 != nil {
 		t.Fatal("PGVIGIL_DBADASH_PAGE_FROM / _TO must be RFC 3339 times")
 	}
+	var snap time.Time
+	if v := os.Getenv("PGVIGIL_DBADASH_PAGE_SNAPSHOT"); v != "" {
+		if snap, err = time.Parse(time.RFC3339Nano, v); err != nil {
+			t.Fatal("PGVIGIL_DBADASH_PAGE_SNAPSHOT: ", err)
+		}
+	}
 	dir := os.Getenv("PGVIGIL_DBADASH_PAGE_DIR")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	for _, p := range Pages {
-		out, err := PageDSN(ctx, dsn, p.Key, PageArgs{InstanceID: id, From: from, To: to})
+		out, err := PageDSN(ctx, dsn, p.Key, PageArgs{InstanceID: id, From: from, To: to, Snapshot: snap})
 		state, msg := "ok", ""
 		if err != nil {
 			state, msg = "error", strings.ReplaceAll(err.Error(), "\n", " ")
