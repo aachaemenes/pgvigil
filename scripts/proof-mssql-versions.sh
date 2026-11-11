@@ -3,10 +3,11 @@
 # run against a pair of containers of each version's image, the pair joined in a clusterless availability group.
 # A column or a statement a version does not have shows as a failed proof of that version.
 #
-# Needs: docker (a missing image is pulled), psql, curl, jq, python3, ss, flock, timeout, od, a go toolchain at the
-# repository root (ONE binary is built and handed to every proof as PGVIGIL_BIN; PGVIGIL_BIN names a built one
-# instead, and go is needed all the same: three proofs build or test with it), 4 GB of memory per SQL Server (two
-# per version, PGVIGIL_VERSIONS_PARALLEL versions at once), and
+# Needs: docker (a missing image is pulled), psql, pg_dump (the audit proof), curl, jq, python3, ss, flock, timeout,
+# od, a go toolchain at the repository root (ONE binary is built and handed to every proof as PGVIGIL_BIN;
+# PGVIGIL_BIN names a built one instead, and go is needed all the same: three proofs build or test with it), 4 GB of
+# memory per SQL Server (two per version, a third while the checks proof runs its own; PGVIGIL_VERSIONS_PARALLEL
+# versions at once), and
 #   PGVIGIL_ADMIN_DSN          a superuser connection to a PostgreSQL in KEYWORD form, no dbname and no password in
 #                              it (host=... user=...); the proofs that ask for PGVIGIL_REPO_DSN get it with
 #                              dbname=postgres.
@@ -14,12 +15,17 @@
 #   PGVIGIL_MSSQL_VERSIONS     the versions, default "2017 2019 2022 2025"; a version's image is
 #                              <PGVIGIL_MSSQL_IMAGE_REPO>:<version>-latest (default mcr.microsoft.com/mssql/server)
 #   PGVIGIL_VERSION_PROOFS     the proofs run on each version, default "base services running xe hadr storage perf
-#                              reads querystore actions" (scripts/proof-mssql-<name>.sh). proof-mssql-summary.sh
+#                              reads querystore actions audit plancache-indexes checks" (scripts/proof-mssql-<name>.sh).
+#                              Each gets the version's pair (PGVIGIL_MSSQL_CONTAINER and the rest) and its image
+#                              (MSSQL_IMAGE and PGVIGIL_MSSQL_IMAGE): the checks proof takes no container and starts a
+#                              server of that image of its own; the others take the pair. proof-mssql-summary.sh
 #                              needs no SQL Server and runs once.
 #   PGVIGIL_VERSIONS_PARALLEL  versions run at once, default 2 (the proofs measure durations: four versions at
 #                              once on eight CPUs made their timing checks fail). One proof never runs on two
-#                              versions at the same time (a lock per proof, and one lock for reads and querystore:
-#                              their runs look for a free port in the same range), and one pair boots at a time.
+#                              versions at the same time (a lock per proof, and one lock for reads, querystore,
+#                              audit, plancache-indexes and checks: their runs look for a free port in overlapping
+#                              ranges), and one pair boots at a time. The load average at the start
+#                              and at the end is printed under the matrix and kept in summary.md.
 #   PGVIGIL_VERSIONS_TIMEOUT   seconds one proof may take, default 2400; a proof over it is ended and FAILS.
 #   PGVIGIL_VERSIONS_WHOISACTIVE  a local copy of sp_WhoIsActive.sql (Adam Machanic's procedure; this script
 #                              fetches nothing): it is installed in master on node a of every version, and the
@@ -45,8 +51,9 @@
 # 2017 image, which ships sqlcmd under /opt/mssql-tools only, a link /opt/mssql-tools18/bin/sqlcmd inside the
 # container (the proofs call that path). Where sp_WhoIsActive.sql was named: that procedure in master on node a.
 # What the proofs it runs make is theirs to remove, and each says what in its own header: their repository
-# databases on the same PostgreSQL, logins and databases inside this run's containers, and (reads, querystore) a
-# postgres:13 container of their own.
+# databases on the same PostgreSQL, logins and databases inside this run's containers, (reads, querystore) a
+# postgres:13 container of their own, and (checks) a SQL Server container of the version's image of its own
+# (pgv-p148-mssql-<n>: a checks proof killed after its TERM leaves it, and the label does not find it).
 # Every exit path the shell can catch removes all of it (the end, a failed check, INT, TERM: a running proof is
 # ended through its own cleanup first, and a proof that has not ended 120 s after its TERM is killed: what that
 # proof made on the PostgreSQL side, its repository databases and a postgres:13 container of its own, then stays,
@@ -101,14 +108,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection to a PostgreSQL in keyword form, no dbname}"
-for t in docker psql curl jq python3 ss flock timeout od; do command -v "$t" >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+for t in docker psql pg_dump curl jq python3 ss flock timeout od; do command -v "$t" >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
 # go always: with a built binary named, three proofs still need it (base and running skip a part without it, hadr fails)
 command -v go >/dev/null || { echo "FAIL: go is not on this machine (the proofs build and test with it, whatever PGVIGIL_BIN names)" >&2; exit 1; }
 # what would turn a cell green without its proof: refused, never unset behind the caller's back
 [ -z "${PGVIGIL_NO_MSSQL:-}" ] || { echo "FAIL: PGVIGIL_NO_MSSQL is set: proof-mssql-reads.sh would leave out every SQL Server part and still exit 0; unset it" >&2; exit 1; }
 case ${GODEBUG:-} in *x509negativeserial*) echo "FAIL: GODEBUG carries x509negativeserial: check C must read the build's own setting; unset it" >&2; exit 1 ;; esac
 read -r -a VERSIONS <<<"${PGVIGIL_MSSQL_VERSIONS:-2017 2019 2022 2025}"
-read -r -a PROOFS <<<"${PGVIGIL_VERSION_PROOFS:-base services running xe hadr storage perf reads querystore actions}"
+read -r -a PROOFS <<<"${PGVIGIL_VERSION_PROOFS:-base services running xe hadr storage perf reads querystore actions audit plancache-indexes checks}"
 IMAGE_REPO=${PGVIGIL_MSSQL_IMAGE_REPO:-mcr.microsoft.com/mssql/server}
 PARALLEL=${PGVIGIL_VERSIONS_PARALLEL:-2}; PTIMEOUT=${PGVIGIL_VERSIONS_TIMEOUT:-2400}
 [[ $PARALLEL =~ ^[1-9][0-9]*$ && $PTIMEOUT =~ ^[1-9][0-9]*$ ]] || { echo "FAIL: PGVIGIL_VERSIONS_PARALLEL and PGVIGIL_VERSIONS_TIMEOUT are whole numbers above 0" >&2; exit 1; }
@@ -191,11 +198,14 @@ published_ports() {
 }
 declare -A PORT_A PORT_B
 TAKEN=" $(published_ports) "
+# The listening sockets are read once into a variable: 'ss | grep -q' under pipefail calls a taken port free
+# whenever grep leaves before ss has written everything (task 158's proof run 2 met it).
 freeport() {
-  local port
+  local port listening
+  listening=$(ss -ltn)
   for port in $(seq 21500 21599); do
     case $TAKEN in *" $port "*) continue ;; esac
-    ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$port " && continue
+    grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$port " <<<"$listening" && continue
     echo "$port"; return 0
   done
   return 1
@@ -296,7 +306,7 @@ start_pair() {
     # server's certificate has a negative serial number (recorded, never a verdict: the server makes the number)
     if out=$(GODEBUG=x509negativeserial=0 "$BIN" collect -config "$CFG" -once mssql_instance -instance "$ct" 2>&1); then
       echo "$ct no" >> "$OUT/$ver/negative-serial.txt"
-    elif printf '%s\n' "$out" | grep -q 'x509: negative serial number'; then
+    elif grep -q 'x509: negative serial number' <<<"$out"; then
       echo "$ct yes" >> "$OUT/$ver/negative-serial.txt"
     else
       printf '%s\n' "$out" | mask
@@ -407,12 +417,16 @@ run_proof() {
   local ver=$1 name=$2 yy=${1:2:2} rc=0 t0 note lock
   local a="pgvv${yy}a-$SUF" b="pgvv${yy}b-$SUF" log="$OUT/$1/$2.log"
   local addr_a="127.0.0.1:${PORT_A[$ver]}" addr_b="127.0.0.1:${PORT_B[$ver]}"
-  # reads and querystore take their UI port from one range (18290-18330): one lock for the two
-  case $name in reads|querystore) lock=ui-18290 ;; *) lock=$name ;; esac
+  # reads and querystore take their UI port from 18290-18330 (querystore's demo from 18331-18370), audit,
+  # plancache-indexes and checks from 18340-18380 (checks its own server's port from 22433-22499 too): the ranges
+  # overlap, so the five share one lock
+  case $name in reads|querystore|audit|plancache-indexes|checks) lock=ui-18290 ;; *) lock=$name ;; esac
   exec 9>"$LOCKS/$lock.lock"; flock 9
   if [ -e "$OUT/stop" ]; then exec 9>&-; return 0; fi
   t0=$SECONDS
+  # the image too: a proof that takes no container (checks) starts a server of the version's image of its own
   PGVIGIL_BIN="$BIN" PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=postgres" PGVIGIL_MSSQL_AG="$AG" \
+    MSSQL_IMAGE="$IMAGE_REPO:$ver-latest" PGVIGIL_MSSQL_IMAGE="$IMAGE_REPO:$ver-latest" \
     PGVIGIL_MSSQL_CONTAINER="$a" PGVIGIL_MSSQL_ADDR="$addr_a" PGVIGIL_MSSQL_CONTAINER2="$b" PGVIGIL_MSSQL_ADDR2="$addr_b" \
     PGVIGIL_MSSQL_CONTAINERS="$a $b" PGVIGIL_MSSQL_ADDRS="$addr_a $addr_b" \
     timeout -k 120 "$PTIMEOUT" bash "scripts/proof-mssql-$name.sh" >"$log" 2>&1 9>&- &
@@ -454,7 +468,8 @@ run_version() {
   done
 }
 
-echo "proof-mssql-versions: ${VERSIONS[*]} x ${PROOFS[*]}; $PARALLEL at once; logs in $OUT; this run's label $RUN_LABEL"
+LOAD0=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo unknown)
+echo "proof-mssql-versions: ${VERSIONS[*]} x ${PROOFS[*]}; $PARALLEL at once; logs in $OUT; this run's label $RUN_LABEL; load average $LOAD0 on $(nproc) CPUs"
 vi=0
 for ver in "${VERSIONS[@]}"; do
   while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do wait -n || true; done
@@ -482,6 +497,8 @@ BAD=0
     printf '| %s |' "$name"; for ver in "${VERSIONS[@]}"; do printf ' %s |' "$(cell "$ver" "$name")"; done; printf '\n'
   done
 } > "$OUT/summary.md"
+# the proofs measure durations: the load they ran under goes with the matrix (several runs may share the machine)
+printf '\nLoad average (1, 5, 15 min) on %s CPUs: %s at the start, %s at the end.\n' "$(nproc)" "$LOAD0" "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo unknown)" >> "$OUT/summary.md"
 cat "$OUT/summary.md"
 echo "--- what the passed proofs themselves left out or name as not proven (a PASS is a proof's exit code)"
 for ver in "${VERSIONS[@]}"; do
