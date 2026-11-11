@@ -20,7 +20,7 @@
     <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
     <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
   </nav>
-  <details class="menu"><summary>Menu</summary><nav aria-label="Site">
+  <details class="menu"><summary>Menu</summary><nav aria-label="Site menu">
     <a href="features.html">Features</a>
     <a href="install.html">Install</a>
     <a href="security.html" aria-current="page">Security</a>
@@ -40,8 +40,8 @@
   <h2>The servers it watches</h2>
   <ul class="list">
     <li>PostgreSQL is read through a <code>pg_monitor</code> login, in read-only sessions with statement and lock timeouts. SQL Server is read through a login with view and read rights only, never sysadmin.</li>
-    <li>Nothing is installed on a watched server: no agent, no service. Optional extensions are used where you already have them.</li>
-    <li>Cancelling or ending a session, and starting or stopping a SQL Server job, are off by default. Turned on, they run through a separate login that can do only that, and every use is logged.</li>
+    <li>No agent and no service runs on a watched server. A few optional pieces are created by the DBA from scripts pgvigil prints, each documented: small Extended Events sessions on SQL Server, an event trigger that records schema changes, and a function that lets it read the server log on your own PostgreSQL servers. Extensions are used where you already have them.</li>
+    <li>Cancelling or ending a session, and starting or stopping a SQL Server job, are off by default. Turned on, they run through a separate login kept for those actions, and every use is logged. On SQL Server that login needs SQLAgentOperatorRole, which also lets it read and switch jobs on and off; <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-actions.md">the actions page</a> lists every right.</li>
   </ul>
 </div></section>
 
@@ -49,7 +49,7 @@
   <h2>The data it keeps</h2>
   <ul class="list">
     <li>Passwords never sit in the config file and are masked out of every statement text it stores. You choose whether statement text is kept as is, with every literal replaced, or not at all.</li>
-    <li>Its own database uses three roles: the collector can only add data, the web page can only read, and the sign-in check runs through one function nobody else can call.</li>
+    <li>Its own database gives each part its own role: the collector adds data only through its import functions, the web page reads (and records each action it runs), the alert sender holds a login of its own, and the sign-in check runs through one function nobody else can call.</li>
     <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
   </ul>
 </div></section>
@@ -66,7 +66,7 @@
 <section class="plain"><div class="wrap text">
   <h2>Releases and regulated sites</h2>
   <ul class="list">
-    <li>Every release is built by GitHub Actions from a tag, with a SHA256SUMS file signed through Sigstore and an SBOM for each platform; dependencies are pinned and scanned for known vulnerabilities.</li>
+    <li>Every release is built by GitHub Actions from a tag, with a SHA256SUMS file signed through Sigstore and an SBOM for each platform; the Go modules are pinned and scanned for known vulnerabilities.</li>
     <li>FIPS 140-3 builds for Linux and Windows on the Go Cryptographic Module (CMVP certificate #5247), an <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/airgap.md">offline install</a>, a hardened systemd unit and AWS GovCloud through the region setting.</li>
     <li>The web page is checked against WCAG 2.1 AA in both themes. Every dependency's licence is in <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/notices.md">the notices</a>.</li>
   </ul>

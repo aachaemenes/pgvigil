@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Install - pgvigil</title>
-<meta name="description" content="Try pgvigil on a demo fleet in a minute, install it as a service with one line on Linux or Windows, or set it up by hand.">
+<meta name="description" content="Try pgvigil on a demo fleet, install it as a service with one line on Linux or Windows, or set it up by hand.">
 <link rel="canonical" href="https://pgvigil.com/install.html">
 <link rel="stylesheet" href="site.css">
 </head>
@@ -20,7 +20,7 @@
     <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
     <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
   </nav>
-  <details class="menu"><summary>Menu</summary><nav aria-label="Site">
+  <details class="menu"><summary>Menu</summary><nav aria-label="Site menu">
     <a href="features.html">Features</a>
     <a href="install.html" aria-current="page">Install</a>
     <a href="security.html">Security</a>
@@ -38,8 +38,8 @@
 
 <section class="plain"><div class="wrap text">
   <h2>Try the demo</h2>
-  <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and unzip a portable PostgreSQL beside it. One command builds a throwaway demo fleet of PostgreSQL and SQL Server servers with a week of history and opens it in its own window. No admin rights, no Docker.</p>
-<pre tabindex="0"><code>pgvigil demo -pgbin &lt;the portable PostgreSQL bin folder&gt; -serve -open</code></pre>
+  <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and point it at the bin folder of any PostgreSQL install (on Windows an unzipped portable PostgreSQL will do). One command builds a throwaway demo fleet of PostgreSQL and SQL Server servers with a week of history and opens it in its own window. No admin rights, no Docker.</p>
+<pre tabindex="0"><code>pgvigil demo -pgbin &lt;a PostgreSQL bin folder&gt; -serve -open</code></pre>
 </div></section>
 
 <section class="plain"><div class="wrap text">
@@ -57,7 +57,7 @@ irm https://pgvigil.com/install.ps1 | iex</code></pre>
   <ol class="steps">
     <li>Download the file for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and check it against <code>SHA256SUMS</code>; the <a href="https://github.com/aachaemenes/pgvigil#releases-and-how-to-verify-one">README</a> shows the two commands.</li>
     <li>Create an empty database on any PostgreSQL 13 or later server for pgvigil's history, and copy <code>pgvigil.example.yaml</code>. Passwords come from the environment or a file, never from the config.</li>
-    <li>Create the tables, the logins and the first web user.</li>
+    <li>Create the tables, the logins and the first web user. The login that owns pgvigil's database needs CREATEROLE: <code>migrate</code> creates pgvigil's own roles.</li>
     <li>Start the collector and the web page, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
   </ol>
 <pre tabindex="0"><code>pgvigil migrate -config pgvigil.yaml

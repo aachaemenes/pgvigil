@@ -12,6 +12,7 @@
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://pgvigil.com/img/summary.png">
 <link rel="stylesheet" href="site.css">
+<script>/* the old one-page site's sections now have pages of their own */ (function () { var m = { '#features': 'features.html', '#collects': 'features.html', '#install': 'install.html', '#security': 'security.html' }; if (m[location.hash]) location.replace(m[location.hash]); })();</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -25,7 +26,7 @@
     <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
     <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
   </nav>
-  <details class="menu"><summary>Menu</summary><nav aria-label="Site">
+  <details class="menu"><summary>Menu</summary><nav aria-label="Site menu">
     <a href="features.html">Features</a>
     <a href="install.html">Install</a>
     <a href="security.html">Security</a>
@@ -53,7 +54,7 @@
 <div class="wrap">
   <div class="row">
     <div class="row-text"><h2>The whole fleet on one page</h2>
-      <p>Every check counted across your servers at the top, one row per server below, colour only where something needs you. Pick a tag or a folder and the page narrows to it.</p></div>
+      <p>One row per server with CPU, waits and IO side by side, sortable by any column, coloured only past a threshold. The Summary above counts every check across the fleet; pick a tag or a folder and both narrow to it.</p></div>
     <figure class="shot"><a href="img/performance-summary.png"><img src="img/performance-summary.png" width="1600" height="900" loading="lazy" alt="Performance summary: one sortable row per server with CPU, waits by class and IO"></a></figure>
   </div>
   <div class="row flip">
@@ -63,12 +64,12 @@
   </div>
   <div class="row">
     <div class="row-text"><h2>Performance over time</h2>
-      <p>CPU, sessions, waits, transactions and IO on one time axis. Choose any range or a calendar period such as yesterday or last week; every chart opens its detail.</p></div>
+      <p>CPU, sessions, waits, transactions and IO on one time axis. Choose any range or a calendar period such as yesterday or the previous week; every chart opens its detail.</p></div>
     <figure class="shot"><a href="img/performance.png"><img src="img/performance.png" width="1600" height="900" loading="lazy" alt="An instance's Performance page: CPU, sessions, waits and transactions on one time axis"></a></figure>
   </div>
   <div class="row flip">
     <div class="row-text"><h2>Jobs, backups and storage</h2>
-      <p>Agent, pg_cron and pgAgent jobs with the failed step's own error message, backups and how old they are, and every volume with its growth and the days until it is full.</p></div>
+      <p>SQL Server Agent, pg_cron and pgAgent jobs with the failed step's own error message, backups and how old they are, and every volume with its growth and the days until it is full.</p></div>
     <figure class="shot"><a href="img/jobs.png"><img src="img/jobs.png" width="1600" height="900" loading="lazy" alt="Agent jobs: the failed step's error message on each run, the history and the definition's changes"></a></figure>
   </div>
   <div class="row">
@@ -82,15 +83,15 @@
   <div class="grid2">
     <div>
       <h2>Where it runs</h2>
-      <p><strong>PostgreSQL 13 to 18</strong> on your own servers, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.</p>
-      <p><strong>SQL Server</strong> tested on SQL Server 2022; earlier versions, Amazon RDS and Azure SQL are not tested yet.</p>
+      <p><strong>PostgreSQL 13 to 18</strong>, tested on your own servers and on Amazon Aurora. Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB are recognised and read; not all of them are tested yet.</p>
+      <p><strong>SQL Server</strong> tested on SQL Server 2022 on Linux. Windows hosts, Windows sign-in, earlier versions, Amazon RDS and Azure SQL are not tested yet.</p>
       <p>The program is one file for Linux, Windows or macOS. The history lives in a PostgreSQL database you choose.</p>
     </div>
     <div>
       <h2>What it does not do</h2>
       <ul class="list">
-        <li>It never writes to a server it watches. Ending a session or starting a job is off until you turn it on, through its own login, and every use is logged.</li>
-        <li>It installs no agent on your database servers and has no telemetry: the collector talks only to the servers you name.</li>
+        <li>Its collector never writes to a server it watches. Ending a session or starting a job is off until you turn it on, through a login kept for that alone, and every use is logged.</li>
+        <li>No agent runs on your database servers, and there is no telemetry: it talks to your servers, its own database, the cloud APIs you configure and your alert channels, nothing else.</li>
         <li>It is not a hosted service: you run it, and the data stays in your own database.</li>
         <li>It watches databases, not Kubernetes or your applications.</li>
       </ul>

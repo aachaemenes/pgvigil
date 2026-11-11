@@ -20,7 +20,7 @@
     <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
     <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
   </nav>
-  <details class="menu"><summary>Menu</summary><nav aria-label="Site">
+  <details class="menu"><summary>Menu</summary><nav aria-label="Site menu">
     <a href="features.html" aria-current="page">Features</a>
     <a href="install.html">Install</a>
     <a href="security.html">Security</a>
@@ -38,51 +38,51 @@
 
 <section class="plain"><div class="wrap"><div class="grid2">
   <div>
-    <h3>The fleet at a glance</h3>
+    <h2 class="h3">The fleet at a glance</h2>
     <p>The Summary counts every check across the fleet and lists one row per server. The Performance summary puts CPU, waits and IO of every server side by side. Tags such as prod or team:billing group the tree and filter every fleet page.</p>
   </div>
   <div>
-    <h3>Running queries and blocking</h3>
+    <h2 class="h3">Running queries and blocking</h2>
     <p>Every session each minute, the blocking chain to its head, the head's last statement, and the waits of each victim. Earlier minutes stay one click away. Cancel or end a session from the page when you turn that on.</p>
   </div>
   <div>
-    <h3>Statements and slow queries</h3>
-    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, with each statement's trend. Slow statements, deadlocks and failed logins from the server log; on SQL Server from small Extended Events sessions.</p>
+    <h2 class="h3">Statements and slow queries</h2>
+    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, with each statement's trend. Slow statements, deadlocks and failed logins from the PostgreSQL server log; on SQL Server, deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script.</p>
   </div>
   <div>
-    <h3>Performance and metrics</h3>
+    <h2 class="h3">Performance and metrics</h2>
     <p>CPU, sessions, waits, transactions and IO on one time axis, a Metrics grid with the current, minimum, maximum and average of every counter, host CPU and memory, and IO by type.</p>
   </div>
   <div>
-    <h3>Jobs and backups</h3>
+    <h2 class="h3">Jobs and backups</h2>
     <p>SQL Server Agent, pg_cron and pgAgent jobs: every run, the failed step's error message, a timeline, and the definition's changes. Backups and WAL archiving with their age, and RDS and Aurora snapshots.</p>
   </div>
   <div>
-    <h3>Storage and growth</h3>
+    <h2 class="h3">Storage and growth</h2>
     <p>Every volume with its growth per day and the days until it is full, the largest tables across the fleet, database sizes over time, and on SQL Server the data and log files, TempDB and the version store.</p>
   </div>
   <div>
-    <h3>Replication and availability</h3>
+    <h2 class="h3">Replication and availability</h2>
     <p>Streaming and logical replication, slots and the WAL they hold, Aurora replicas; on SQL Server Always On, mirroring, log shipping and replication.</p>
   </div>
   <div>
-    <h3>Configuration and changes</h3>
+    <h2 class="h3">Configuration and changes</h2>
     <p>Settings with a history of every change, server properties, roles and permissions, schema changes, and a side-by-side diff of two servers or of one server at two times.</p>
   </div>
   <div>
-    <h3>Health checks</h3>
+    <h2 class="h3">Health checks</h2>
     <p>Vacuum and wraparound, unused and duplicate indexes, versions against the release calendar, extensions out of date, corruption signs, and your own SQL as a check with its own thresholds.</p>
   </div>
   <div>
-    <h3>Alerts and exports</h3>
+    <h2 class="h3">Alerts and exports</h2>
     <p>A rule on any metric for a server, a tag or the fleet, sent by email, Teams, Slack, a webhook or a file. Every grid exports to Excel with its colours, or to CSV.</p>
   </div>
   <div>
-    <h3>Cloud</h3>
+    <h2 class="h3">Cloud</h2>
     <p>On RDS and Aurora the server log from CloudWatch, storage IO, Performance Insights kept past its seven days, and AWS DMS tasks with their lag and how long they need to catch up.</p>
   </div>
   <div>
-    <h3>If you already run other tools</h3>
+    <h2 class="h3">If you already run other tools</h2>
     <p>A site that runs DBA Dash sees its SQL Server instances in the same tree. Grafana can read the same database through ready-made dashboards. An AI assistant on the same machine can read it through a read-only MCP server.</p>
   </div>
 </div></div></section>

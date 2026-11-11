@@ -12,7 +12,7 @@
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 72px; }   /* an anchor never lands under the sticky header */
 body {
   margin: 0; background: var(--bg); color: var(--fg);
   font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -87,9 +87,15 @@ pre { background: var(--soft); border: 1px solid var(--line); border-radius: 8px
 p code, li code { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: .05rem .3rem; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 1.2rem 2.4rem; }
 .grid2 h3 { margin-top: .4rem; }
+section.plain h2.h3 { font-size: 1.08rem; margin: .4rem 0 .4rem; letter-spacing: 0; }   /* a group's heading: the page's second level, drawn small */
 .next { padding: 2.6rem 0 4rem; border-top: 1px solid var(--line); }
 
 footer { border-top: 1px solid var(--line); color: var(--muted); font-size: .92rem; }
 footer .wrap { padding-top: 1.8rem; padding-bottom: 2.6rem; }
 footer p { margin: 0 0 .45rem; }
 footer a { color: var(--muted); }
+
+@media print {
+  :root { --bg: #fff; --fg: #000; --muted: #333; --soft: #f4f4f4; --line: #ccc; --accent: #000; }   /* dark scheme or not, paper is light */
+  header.top, .menu, .actions, .next, .skip { display: none !important; }
+}
