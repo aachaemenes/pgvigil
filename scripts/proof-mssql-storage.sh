@@ -102,7 +102,10 @@ sq "ALTER DATABASE [$DB] SET RECOVERY SIMPLE; ALTER DATABASE [$DB] SET ALLOW_SNA
 # accelerated database recovery on the closed database only: with it on, a database's row versions go to its own
 # persistent version store and not to tempdb, and part V measures tempdb's
 sq "CREATE DATABASE [$DBC];"; MADE_DBC=1
-sq "ALTER DATABASE [$DBC] SET ACCELERATED_DATABASE_RECOVERY = ON;"
+# (accelerated database recovery arrived in SQL Server 2019: before it the closed database stays a plain one and
+# part V expects no persistent version store row at all)
+MAJ=$(sq "SELECT CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)), 4) AS int)")
+if [ "$MAJ" -ge 15 ]; then sq "ALTER DATABASE [$DBC] SET ACCELERATED_DATABASE_RECOVERY = ON;"; fi
 sq "CREATE LOGIN [$L1] WITH PASSWORD = '$P1', CHECK_POLICY = OFF;"; MADE_L1=1
 sq "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1];"
 sq "CREATE LOGIN [$L2] WITH PASSWORD = '$P2', CHECK_POLICY = OFF;"; MADE_L2=1
@@ -141,12 +144,21 @@ repo_files() { q "select file_id || '|' || size_bytes || '|' || coalesce(used_by
       from pgvigil.mssql_files where instance_id = $iid and database_name = '$1' and is_present order by file_id"; }
 
 echo "--- A. mssql_storage as the least-privilege login"
+# sa reads the files before AND after the collector does: a database's used pages move by themselves (a new
+# database's most of all), so the used bytes the collector stored are held between the two reads, each file's own;
+# every other column is compared exactly with the read taken after it
+SA0=$(sa_files "$DB")
 collect mssql_storage
 iid=$(q "select instance_id from pgvigil.instances where name='$N1'")
 SA=$(sa_files "$DB"); GOT=$(repo_files "$DB")
-echo "  sa reads (file|size|used|max|growth|growth %|filegroup):"; echo "$SA" | sed 's/^/    /'
+echo "  sa reads (file|size|used|max|growth|growth %|filegroup), after the collector's read:"; echo "$SA" | sed 's/^/    /'
 [ "$(echo "$SA" | wc -l)" = 3 ] || fail "A: sa lists $(echo "$SA" | wc -l) files, not 3"
-[ "$GOT" = "$SA" ] || { echo "  stored:"; echo "$GOT" | sed 's/^/    /'; fail "A: the stored files differ from sa's read"; }
+but_used() { awk -F'|' -v OFS='|' '{ $3 = "-"; print }'; }
+[ "$(echo "$GOT" | but_used)" = "$(echo "$SA" | but_used)" ] || { echo "  stored:"; echo "$GOT" | sed 's/^/    /'; fail "A: the stored files differ from sa's read"; }
+USED_OFF=$(paste -d'|' <(echo "$SA0" | cut -d'|' -f1,3) <(echo "$SA" | cut -d'|' -f1,3) <(echo "$GOT" | cut -d'|' -f1,3) \
+  | awk -F'|' '{ lo = ($2 + 0 < $4 + 0) ? $2 + 0 : $4 + 0; hi = ($2 + 0 < $4 + 0) ? $4 + 0 : $2 + 0
+                 if ($1 != $3 || $1 != $5 || $2 == "" || $4 == "" || $6 == "" || $6 + 0 < lo || $6 + 0 > hi) printf " %s (stored %s, sa %s before and %s after)", $1, $6, $2, $4 }')
+[ -z "$USED_OFF" ] || { echo "  stored:"; echo "$GOT" | sed 's/^/    /'; fail "A: the stored used bytes are not between sa's two reads: file$USED_OFF"; }
 # the maximum, the growth and the filegroup against what the proof itself asked for in CREATE DATABASE (sa's read
 # above shares the product's arithmetic; these constants do not): file 1 the data file (64 MB max, 8 MB steps), file
 # 2 the log (1 GB max, 4 MB steps, no filegroup), file 3 the second data file (no maximum, 10 per cent, FG2)
@@ -281,7 +293,12 @@ HSTART=$(sq "SELECT CONVERT(varchar(19), started, 126) FROM dbo.pv_holder" "$DB"
 [ "$(q "select bool_and(abs(extract(epoch from holder_started_at - '${HSTART}Z'::timestamptz)) < 90 and holder_elapsed_s between 1 and 60) from pgvigil.mssql_versionstore_sample where instance_id=$iid and holder_session_id = $HSPID")" = t ] \
   || fail "V: the holder's start or elapsed time: $(q "select holder_started_at, holder_elapsed_s from pgvigil.mssql_versionstore_sample where instance_id=$iid and holder_session_id = $HSPID") against $HSTART"
 [ "$(q "select (reserved_bytes > 0) from pgvigil.mssql_versionstore_db where instance_id=$iid and database_name='$DB'")" = t ] || fail "V: mssql_versionstore_db does not list the proof's database"
-[ "$(q "select adr_on || '|' || (pvs_bytes >= 0) from pgvigil.mssql_pvs where instance_id=$iid and database_name='$DBC'")" = "true|true" ] || fail "V: mssql_pvs: $(q "select * from pgvigil.mssql_pvs where instance_id=$iid")"
+if [ "$MAJ" -ge 15 ]; then
+  [ "$(q "select adr_on || '|' || (pvs_bytes >= 0) from pgvigil.mssql_pvs where instance_id=$iid and database_name='$DBC'")" = "true|true" ] || fail "V: mssql_pvs: $(q "select * from pgvigil.mssql_pvs where instance_id=$iid")"
+else
+  [ "$(q "select count(*) from pgvigil.mssql_pvs where instance_id=$iid")" = 0 ] || fail "V: mssql_pvs holds a row on a server before SQL Server 2019: $(q "select * from pgvigil.mssql_pvs where instance_id=$iid")"
+  echo "  SQL Server $MAJ.x: no accelerated database recovery before 2019, mssql_pvs is empty as it must be"
+fi
 echo "  the holder commits (50 s after it started); cleanup runs once a minute"
 wait "${BG[0]}" || fail "V: the holder's batch failed"
 wait "${BG[1]}" || fail "V: the writer's batch failed"

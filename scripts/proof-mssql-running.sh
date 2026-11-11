@@ -5,6 +5,8 @@
 # Needs: docker with a SQL Server container (PGVIGIL_MSSQL_CONTAINER, default mssql-sandbox) reachable from this
 # machine on PGVIGIL_MSSQL_ADDR (default localhost:1433), its sa password in MSSQL_SA_PASSWORD, psql, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...).
+# Needs for part B: sp_WhoIsActive in master. Without it the proof says so ("sp_WhoIsActive path NOT PROVEN: not
+# installed") and its last line reads "B not proven"; the exit code is 0 all the same.
 # The proof makes its own repository database, its own SQL Server database (one table, two rows), two logins
 # (random suffix, random passwords) and, in part B only, a user for one of them in master with EXECUTE on
 # sp_WhoIsActive; it drops every one of them at the end, on every exit path, and nothing else. It changes no server

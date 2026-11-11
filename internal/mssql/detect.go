@@ -24,10 +24,10 @@ type Info struct {
 	Kind           Kind
 	Version        string // the first line of @@VERSION
 	ProductVersion string // 16.0.4135.4
-	Major          int    // 16 = SQL Server 2022
+	Major          int    // 13 = SQL Server 2016, 14 = 2017, 15 = 2019, 16 = 2022, 17 = 2025; Azure SQL Managed Instance and Azure SQL Database answer 12 whatever engine they run (the collections ask Kind before Major)
 	Minor          int
 	Build          int
-	VersionNum     int // Major * 10000 + Minor: 160000
+	VersionNum     int // Major * 10000 + Minor: 160000 on SQL Server 2022, 170000 on 2025
 	Edition        string
 	EngineEdition  int // SERVERPROPERTY('EngineEdition'): 2 Standard, 3 Enterprise, 4 Express, 5 SQL Database, 8 Managed Instance, 9 Azure SQL Edge (kept as a server); 6 and 11 (Synapse) are refused
 	ServerName     string
