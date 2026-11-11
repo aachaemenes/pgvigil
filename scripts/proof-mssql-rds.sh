@@ -317,7 +317,7 @@ if run_ok mssql_procstats; then sq "$PSQL_" > "$WORK/p-a.txt"
   PX=$(q "select coalesce(max(execution_count), 0) from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID and object_id=$POBJ")
   HX=$(sq "SELECT ISNULL(MAX(execution_count), 0) FROM sys.dm_exec_procedure_stats WHERE database_id = $FDBID AND object_id = $POBJ")
   if [ "$HX" = 0 ] && [ "$PX" = 0 ]; then
-    [[ ${VERDICT[mssql_procstats]} == PASS* ]] && VERDICT[mssql_procstats]="${VERDICT[mssql_procstats]}; the proof's procedure NOT PROVEN: the server kept no plan for it (the master user's own read shows none either)"
+    if [[ ${VERDICT[mssql_procstats]} == PASS* ]]; then VERDICT[mssql_procstats]="${VERDICT[mssql_procstats]}; the proof's procedure NOT PROVEN: the server kept no plan for it (the master user's own read shows none either)"; fi
   elif [ "$PX" -ge 5 ]; then :
   else VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: the proof's procedure (database $FDBID, object $POBJ) stored with $PX execution(s), want 5 or more; stored for that database: '$(q "select string_agg(object_id || ':' || execution_count, ',') from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID")'; the DMV: '$(sq "SELECT CAST(object_id AS varchar(12)) + ':' + CAST(execution_count AS varchar(20)) + ':' + CONVERT(varchar(130), plan_handle, 1) FROM sys.dm_exec_procedure_stats WHERE database_id = $FDBID" | tr '\n' ',')'"
   fi

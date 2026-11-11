@@ -253,7 +253,7 @@ else
   if command -v chromium >/dev/null; then
     page() { timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/$1?i=$iid&w=1h" 2>/dev/null; }
     text() { python3 -c 'import sys,re,html; t=re.sub(r"<(script|style)[^>]*>.*?</\1>","",sys.stdin.read(),flags=re.S); print(html.unescape(re.sub(r"<[^>]+>"," ",t)))'; }
-    page summary > "$WORK/p-summary.html"
+    page summary > "$WORK/p-summary.html" || true
     T=$(text < "$WORK/p-summary.html")
     grep -q 'azuresqldb' <<<"$T" || bad "C: the Summary page does not show the platform badge azuresqldb"
     if grep -qE 'not read yet:[^.]*(Availability|Backups|Jobs|Storage|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store)' <<<"$T"; then
