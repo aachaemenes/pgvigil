@@ -13,7 +13,7 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 
 ## Collections
 
-Twenty-one collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Twenty-two collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -38,6 +38,7 @@ Twenty-one collections. `every` is the default; an instance's `schedules:` chang
 | `mssql_procstats` | 5 min | what each stored procedure did between two reads: calls, CPU, duration, reads | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE); CONNECT ANY DATABASE and VIEW ANY DEFINITION for the names in other databases | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 | `mssql_indexlocks` | 5 min | row and page lock waits and lock escalations per index, as the difference between two reads | as `mssql_procstats` | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 | `mssql_querystore` | 1 hour | each database's Query Store: state, top queries per interval, forced plans, tuning recommendations | VIEW SERVER STATE, CONNECT ANY DATABASE (VIEW ANY DEFINITION for object names) | not run | [Query Store](sqlserver-querystore.md) |
+| `mssql_audit` | 5 min | the server audits, their server and database specifications and their state; the events of a file audit read forward from a cursor (role, permission, DDL and audit changes and failed sign-ins as rows, the rest counted) | VIEW ANY DEFINITION and VIEW SERVER STATE; VIEW SERVER SECURITY AUDIT for the events (2022) | skipped (its blob target is not built) | [SQL Server Audit](sqlserver-audit.md) |
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 
@@ -56,7 +57,7 @@ instances:
 
 The connection string is the driver's own form, `sqlserver://login:password@host:1433?database=master&encrypt=true`, or the ADO form `server=host;user id=login;password=...;database=master`. One that carries a password must come through `env:` or `file:`; an inline password is refused. Windows authentication from a Windows collector host is the driver's (a connection string without a login); it is not proven here.
 
-`explain_dsn`, `explain_analyze`, `pgbouncer` and `backups:` are PostgreSQL's and refused on a SQL Server instance; the `aws:` block is refused there for now. `actions_dsn` and `actions:` open the [actions door](sqlserver-actions.md); `mssql_thresholds:` sets the availability, jobs and backups thresholds ([the page](sqlserver-hadr.md)).
+`explain_dsn`, `explain_analyze`, `pgbouncer` and `backups:` are PostgreSQL's and refused on a SQL Server instance; the `aws:` block is refused there for now. `actions_dsn` and `actions:` open the [actions door](sqlserver-actions.md); `mssql_thresholds:` sets the availability, jobs and backups thresholds ([the page](sqlserver-hadr.md)); `audit_text: true` keeps the statement text of the audit events stored as rows (off by default: it can carry data; [SQL Server Audit](sqlserver-audit.md)).
 
 ## The login
 

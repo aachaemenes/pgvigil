@@ -71,9 +71,6 @@ type Instance struct {
 	// QueryText overrides the file-level query_text for this instance (full | normalized | none);
 	// Validate fills it from the file-level value when empty.
 	QueryText string `yaml:"query_text"`
-	// AuditText lets the audit readers store the statement text of the audit events they list (it can carry data);
-	// false (the default) = who, when and what object only. The text then follows query_text.
-	AuditText bool `yaml:"audit_text"`
 	// AWS names the RDS / Aurora resource for the log reader (CloudWatch Logs); nil = no AWS door.
 	AWS *AWS `yaml:"aws"`
 	// ActionsDSNRaw is the actions door: the connection string of the login pgvigil_actions (GRANT

@@ -3,7 +3,9 @@
 -- own migration, 0090-0104).
 --   task 157 (pgaudit, 0100): pgvigil.findings gains the pgaudit_findings arm; purge() gains the two monthly partition
 --   parents pgaudit_events and pgaudit_counts, the per-second counts, the health rows and the pgaudit: log cursors.
--- The view is 0099's with the new arm; purge() is 0088's with the new lines.
+--   task 158 (SQL Server Audit, 0101): the mssql_audit_findings arm; mssql_audit_counts and mssql_audit_events among
+--   purge()'s monthly partition parents (the two small tables are trimmed inside the import).
+-- The view is 0099's with the new arms; purge() is 0088's with the new lines.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
@@ -96,6 +98,8 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_querystore', at FROM pgvigil.mssql_querystore_findings
     UNION ALL
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pgaudit_findings
+    UNION ALL
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_audit', at FROM pgvigil.mssql_audit_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
@@ -121,7 +125,7 @@ BEGIN
                          'table_activity', 'conn_sources', 'pooler_conn_sample',
                          'mssql_indexlock_read', 'mssql_indexlock_sample', 'mssql_proc_read', 'mssql_proc_sample',
                          'mssql_qs_interval', 'mssql_qs_runtime',
-                         'pgaudit_events', 'pgaudit_counts')
+                         'pgaudit_events', 'pgaudit_counts', 'mssql_audit_counts', 'mssql_audit_events')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
