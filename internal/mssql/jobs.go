@@ -538,7 +538,7 @@ func (traceFlagsCollector) Applies(info Info) (bool, string) {
 	return true, ""
 }
 
-const traceFlagsSQL = `DBCC TRACESTATUS(-1) WITH NO_INFOMSGS`
+// traceFlagsSQL is checks.go's (one statement, both collections read it)
 
 func (traceFlagsCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
 	flags, err := QueryRows(ctx, conn, traceFlagsSQL)
