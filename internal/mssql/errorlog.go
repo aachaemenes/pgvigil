@@ -200,8 +200,27 @@ func errorLogNoise(lower string) bool {
 	return false
 }
 
-// errorLogHeader is the first of the two lines the server writes for an error.
-var errorLogHeader = regexp.MustCompile(`^Error: (\d{1,10}), Severity: (\d{1,3}), State: (\d{1,5})\.?\s*$`)
+// errorLogHeader is the line the server writes for an error: alone it is the first of two lines (the message
+// follows under the same time and process); with text after the state it is the whole error in one line (the terse
+// form, "Error: 802, Severity: 17, State: 2. (Params:). The error is printed in terse mode ..."). A severity of -1
+// is the server's own (18052).
+var errorLogHeader = regexp.MustCompile(`^Error: (\d{1,10}), Severity: (-?\d{1,3}), State: (\d{1,5})\.?(.*)$`)
+
+// errorLogLone says whether a line is an error's first line, waiting for its message.
+func errorLogLone(text string) bool {
+	m := errorLogHeader.FindStringSubmatch(text)
+	return m != nil && strings.TrimSpace(m[4]) == ""
+}
+
+// errorLogOverlap is how far before the cursor every read starts: the log is not always in time order (a server under
+// memory pressure has written lines dated up to five minutes before the line above them, measured on SQL Server 2022),
+// and xp_readerrorlog with a start time hands over the lines after the last line dated before it, so a read that
+// started at the cursor would lose them. What is read again is stored once (the row's key and the import's rule).
+const errorLogOverlap = 30 * time.Minute
+
+// errorLogOffsetMark names, in the error log's cursor row, that its file_offset holds the server's offset from UTC
+// (minutes) at the read that wrote it.
+const errorLogOffsetMark = "offset"
 
 // errorLogLine is one line as the server hands it over: at is the server's local clock, read as if it were UTC.
 type errorLogLine struct {
@@ -289,21 +308,23 @@ type errorLogShred struct {
 	search  errorLogSearch
 	offset  time.Duration
 	pending *errorLogLine // an 'Error: ...' line waiting for its message
-	keyAt   time.Time
 	keySeen map[string]int
 	scanned int64
-	kept    int64
+	kept    int64     // the kept lines newer than the cursor (the overlap read again is not counted)
+	after   time.Time // the cursor the read started from, as an instant (zero: the first read)
 	newest  time.Time // the newest line passed over, as an instant
 }
 
 // localText is the server's local time as the log wrote it, to the millisecond.
 func localText(t time.Time) string { return t.Format("2006-01-02T15:04:05.000") }
 
-// key is the row's key: the local time, the process and the text, with a counter for identical lines of one instant.
-// A read starts at the cursor's time and so always sees every line of an instant: the counter is the same each time.
+// key is the row's key: the local time, the process and the text, with a counter for the same line written twice at
+// one instant. The counter runs over the whole read (the log is not always in time order, so the lines of one instant
+// need not be together); a read starts half an hour before the cursor and so sees every line of an instant it saw
+// before: the counter is the same each time.
 func (s *errorLogShred) key(at time.Time, process, text string) string {
-	if !at.Equal(s.keyAt) || s.keySeen == nil {
-		s.keyAt, s.keySeen = at, map[string]int{}
+	if s.keySeen == nil {
+		s.keySeen = map[string]int{}
 	}
 	h := hash16(localText(at) + "|" + process + "|" + text)
 	n := s.keySeen[h]
@@ -330,7 +351,7 @@ func (s *errorLogShred) add(l errorLogLine) []collect.Row {
 			out = append(out, row)
 		}
 	}
-	if errorLogHeader.MatchString(l.text) {
+	if errorLogLone(l.text) {
 		s.pending = &l
 		return out
 	}
@@ -340,7 +361,11 @@ func (s *errorLogShred) add(l errorLogLine) []collect.Row {
 	return out
 }
 
-// flush returns the row of an error line still waiting for its message at the end of a read.
+// flush returns the row of an error line still waiting for its message at the end of an archive (its message never
+// comes). At the end of the current log the line is dropped instead (drop): the server may not have written its
+// message yet, and the next read, which starts before the cursor, reads the two together.
+func (s *errorLogShred) drop() { s.pending = nil }
+
 func (s *errorLogShred) flush() []collect.Row {
 	p := s.pending
 	s.pending = nil
@@ -373,15 +398,23 @@ func (s *errorLogShred) row(l errorLogLine, header *errorLogLine) collect.Row {
 	}
 	key := s.key(l.at, l.process, keyText) // every candidate takes its place in the count, kept or not
 	v := judgeErrorLogLine(l.text, sev, s.search)
+	// an error's own line under severity 17 (a first line whose message never came, the terse form) is what
+	// sp_LogHunter's 'Severity: 1[0-8]' pattern takes out; a line the instance's own strings found stays
+	if header == nil && errorLogHeader.MatchString(l.text) && sev < 17 && !v.custom {
+		return nil
+	}
 	if !v.keep {
 		return nil
 	}
-	s.kept++
+	inst := l.at.Add(-s.offset)
+	if s.after.IsZero() || inst.After(s.after) {
+		s.kept++
+	}
 	text := l.text
 	if r := []rune(text); len(r) > errorLogTextMax {
 		text = string(r[:errorLogTextMax]) + " ..."
 	}
-	return collect.Row{"kind": "line", "log_at": l.at.Add(-s.offset).UTC().Format(time.RFC3339Nano), "line_key": key,
+	return collect.Row{"kind": "line", "log_at": inst.UTC().Format(time.RFC3339Nano), "line_key": key,
 		"logged_local": localText(l.at), "process": strOrNil(l.process), "error_number": number, "severity": severity,
 		"error_state": state, "class": v.class, "matched": v.matched, "custom": v.custom, "archive": l.archive, "message": text}
 }
@@ -406,15 +439,18 @@ func noRightError(err error) bool {
 	return false
 }
 
-// errorLogClockSQL: the server's local clock and its offset from UTC in minutes.
-const errorLogClockSQL = `SELECT CONVERT(varchar(23), GETDATE(), 126) AS local_now, DATEDIFF(minute, GETUTCDATE(), GETDATE()) AS off_min`
+// errorLogClockSQL: the server's local clock and its offset from UTC in minutes, from one reading of the clock
+// (GETDATE and GETUTCDATE are two readings, which a minute's turn can split).
+const errorLogClockSQL = `DECLARE @n datetimeoffset = SYSDATETIMEOFFSET();
+SELECT CONVERT(varchar(23), CAST(@n AS datetime2(3)), 126) AS local_now, DATEPART(TZOFFSET, @n) AS off_min`
 
 // The reads of one log file. @p1 is the archive (0: the current log), @p2 the start as local time text (ISO 8601).
 const (
 	errorLogXpSQL = `DECLARE @a int = @p1, @s datetime = CONVERT(datetime, @p2, 126);
 EXEC master.dbo.xp_readerrorlog @a, 1, NULL, NULL, @s, NULL, N'asc';`
-	errorLogRdsSQL = `DECLARE @a int = @p1, @s datetime = CONVERT(datetime, @p2, 126);
-EXEC rdsadmin.dbo.rds_read_error_log @a, 1, NULL, NULL, @s, NULL, N'asc';`
+	// Amazon RDS documents the index and the type only: the whole file comes back and the start is applied here
+	errorLogRdsSQL = `DECLARE @a int = @p1;
+EXEC rdsadmin.dbo.rds_read_error_log @index = @a, @type = 1;`
 	errorLogSpSQL = `DECLARE @a int = @p1;
 EXEC sys.sp_readerrorlog @a, 1;`
 )
@@ -431,6 +467,25 @@ func serverClock(ctx context.Context, conn *sql.Conn) (localNow time.Time, offse
 		return time.Time{}, 0, fmt.Errorf("the server's clock %q: %w", now, err)
 	}
 	return t, time.Duration(off) * time.Minute, nil
+}
+
+// errorLogStart is where a read starts (the server's local clock) and the cursor's instant the read's count of new
+// lines is made from. The first read goes errorLogFirstRead back. After it: the cursor's instant moved back to the
+// local clock by the offset of the read that wrote it or by today's, whichever is earlier (after a clock set forward
+// the stored offset gives the time the lines were written in; after a clock set back today's reads the hour again),
+// less errorLogOverlap.
+func errorLogStart(cur Cursor, localNow time.Time, offset time.Duration) (start, after time.Time) {
+	if !cur.Found || cur.LastEventAt.IsZero() {
+		return localNow.Add(-errorLogFirstRead), time.Time{}
+	}
+	at := cur.LastEventAt.UTC()
+	start = at.Add(offset)
+	if cur.FileName == errorLogOffsetMark {
+		if s := at.Add(time.Duration(cur.FileOffset) * time.Minute); s.Before(start) {
+			start = s
+		}
+	}
+	return start.Add(-errorLogOverlap), at
 }
 
 // errorLogArchive is one row of sp_enumerrorlogs.
@@ -534,10 +589,7 @@ func (errorLogCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 		return err
 	}
 	search := parseErrorLogSearch(searchCur)
-	start := localNow.Add(-errorLogFirstRead)
-	if cur.Found && !cur.LastEventAt.IsZero() {
-		start = cur.LastEventAt.UTC().Add(offset)
-	}
+	start, after := errorLogStart(cur, localNow, offset)
 	state := readerStateRow(errorLogSource, readerRead, "")
 	state["search_count"], state["search_only"] = len(search.shown), search.only
 	var notes []string
@@ -563,13 +615,19 @@ func (errorLogCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 	}
 	state["scope"] = scope
 
-	sh := &errorLogShred{search: search, offset: offset}
+	sh := &errorLogShred{search: search, offset: offset, after: after}
+	nowInstant := localNow.Add(-offset)
 	var batch []collect.Row
 	sinceEmit := 0
 	send := func() error {
 		rows := batch
 		if !sh.newest.IsZero() {
-			rows = append(rows, Cursor{LastEventAt: sh.newest}.Row(errorLogSource))
+			// never past the server's now: after a clock set back, the hour read again carries instants an hour ahead
+			newest := sh.newest
+			if newest.After(nowInstant) {
+				newest = nowInstant
+			}
+			rows = append(rows, Cursor{FileName: errorLogOffsetMark, FileOffset: int64(offset / time.Minute), LastEventAt: newest}.Row(errorLogSource))
 		}
 		batch, sinceEmit = nil, 0
 		if len(rows) == 0 {
@@ -591,11 +649,15 @@ func (errorLogCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 				importErr = err
 				return err
 			}
-			if time.Now().After(opt.Deadline) {
-				timeUp = true
-			}
 		}
 		return nil
+	}
+	// the run's time is looked at on every line the server sends, those passed over too
+	stop := func() bool {
+		if !timeUp && time.Now().After(opt.Deadline) {
+			timeUp = true
+		}
+		return timeUp
 	}
 
 	noRight := false
@@ -603,9 +665,16 @@ func (errorLogCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 		if timeUp {
 			break
 		}
-		err := readErrorLogFile(ctx, conn, info, n, start, take, func() bool { return timeUp })
+		err := readErrorLogFile(ctx, conn, info, n, start, take, stop)
 		if importErr != nil {
 			return importErr
+		}
+		// an error line without its message: at the end of an archive the message never comes; at the end of the
+		// current log, after a fault or when the time is up, the next read takes the two together
+		if err == nil && n > 0 && !timeUp {
+			batch = append(batch, sh.flush()...)
+		} else {
+			sh.drop()
 		}
 		switch {
 		case err == nil:
@@ -616,7 +685,6 @@ func (errorLogCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 			// cannot open: the others are still read
 			notes = append(notes, fmt.Sprintf("archive %d could not be read (%v)", n, err))
 		default:
-			batch = append(batch, sh.flush()...)
 			if serr := send(); serr != nil {
 				return serr
 			}
@@ -633,9 +701,10 @@ func (errorLogCollector) RunBatches(ctx context.Context, conn *sql.Conn, info In
 		st["search_count"], st["search_only"] = len(search.shown), search.only
 		return emit([]collect.Row{st})
 	}
-	batch = append(batch, sh.flush()...)
+	sh.drop()
 	if timeUp {
-		notes = append(notes, "the run's time was up before the log was read to its end: the next run goes on from the cursor")
+		notes = append(notes, "the run's time was up before the log was read to its end: the next run goes on from the cursor"+
+			" (without EXECUTE on xp_readerrorlog every read hands over the whole file and passes over what is before the cursor)")
 	}
 	state["scanned"], state["stored"], state["newest_at"] = sh.scanned, sh.kept, instantText(sh.newest)
 	if sh.newest.IsZero() && cur.Found {
@@ -653,12 +722,14 @@ var errErrorLogNoRight = errors.New("no right to read the error log")
 // early (the run's time is up).
 func readErrorLogFile(ctx context.Context, conn *sql.Conn, info Info, archive int, start time.Time,
 	take func(errorLogLine) error, stop func() bool) error {
-	startText := localText(start)
-	query := errorLogXpSQL
 	if info.Kind == KindRDS {
-		query = errorLogRdsSQL
+		_, err := scanErrorLog(ctx, conn, errorLogRdsSQL, archive, start, take, stop, archive)
+		if err != nil && noRightError(err) {
+			return errErrorLogNoRight
+		}
+		return err
 	}
-	n, err := scanErrorLog(ctx, conn, query, archive, time.Time{}, take, stop, archive, startText)
+	n, err := scanErrorLog(ctx, conn, errorLogXpSQL, archive, time.Time{}, take, stop, archive, localText(start))
 	if err == nil || n > 0 || !noRightError(err) {
 		return err
 	}
@@ -697,6 +768,9 @@ func scanErrorLog(ctx context.Context, conn *sql.Conn, query string, archive int
 			last = t
 		}
 		if t.IsZero() || (!from.IsZero() && t.Before(from)) {
+			if stop() {
+				return n, nil
+			}
 			continue
 		}
 		if err := take(errorLogLine{at: t, process: strings.TrimSpace(process.String), text: strings.TrimRight(text.String, " \r\n\t"), archive: archive}); err != nil {

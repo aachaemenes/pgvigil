@@ -193,7 +193,9 @@ func (sysHealthCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 	}
 	t, ok := s.targets["event_file"]
 	if !ok {
-		return failed(errors.New("system_health has no event_file target on this server: this reader takes the component results from the file only"))
+		// a session a DBA changed, or a platform that writes it to a ring buffer only: not a failed read
+		return emit([]collect.Row{readerStateRow(sysHealthSource, readerOff,
+			"system_health has no event_file target on this server: this reader takes the component results from the file only")})
 	}
 	var ft xeFileTarget
 	if err := xml.Unmarshal([]byte(t.targetData), &ft); err != nil || ft.File.Name == "" {

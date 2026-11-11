@@ -27,14 +27,25 @@ The server does not run one search per string. The first read goes seven days ba
   between two reads and a cycle of the log are not seen.
 - **How.** `xp_readerrorlog <file>, 1, NULL, NULL, <start>, NULL, 'asc'`. When EXECUTE on it is refused, the reader
   falls back to `sys.sp_readerrorlog` (securityadmin, or on 2022 and later VIEW SERVER STATE or VIEW ANY ERROR LOG).
-  That call hands over the whole file, and the lines before the cursor are passed over. Amazon RDS uses
-  `rdsadmin.dbo.rds_read_error_log` with the same arguments and reads the current log only.
+  That call hands over the whole file, and the lines before the start are passed over here. Amazon RDS uses
+  `rdsadmin.dbo.rds_read_error_log @index, @type` (the arguments its documentation names) the same way and reads the
+  current log only.
+- **Where a read starts.** Half an hour before the cursor. The log is not always in time order: a server under memory
+  pressure wrote lines dated up to five minutes before the line above them. `xp_readerrorlog` with a start time hands
+  over only the lines after the last line dated before the start, so a read that started at the cursor would lose
+  them. What is read again is stored once. The cursor keeps the server's offset of the read that wrote it, and the
+  start uses the earlier of that offset and today's. A clock set forward (spring) and a clock set back (autumn) both
+  lose nothing, and the cursor never runs ahead of the server's now.
+- **The terse form.** An error the server could not format is one line, `Error: 802, Severity: 17, State: 2.
+  (Params:). The error is printed in terse mode ...`. It is read as a whole error with its numbers.
 - **What is kept.**
   - Any error of severity 17 or higher.
   - A line that one of sp_LogHunter's search strings finds, unless its noise list names the line.
   - A line one of the instance's own strings finds.
 
-  The match ignores case, as `xp_readerrorlog`'s own search does. The server writes an error as two lines, `Error:
+  An error's own line under severity 17 (a first line whose message never came, the terse form) is left out, as
+  sp_LogHunter's `Severity: 1[0-8]` pattern does, unless one of the instance's own strings found it. The match
+  ignores case, as `xp_readerrorlog`'s own search does. The server writes an error as two lines, `Error:
   n, Severity: s, State: t.` and the message under it at the same time by the same process. They are one row: the
   message with its number, severity and state. A line is stored once, whatever it matched (`matched` lists every
   string it matched).
@@ -50,7 +61,8 @@ line holds, and by severity 17 or higher.
 
 ### The instance's own search strings
 
-Up to 50 strings of 1 to 200 characters per instance, set by the repository's owner:
+Up to 50 strings of 1 to 200 characters per instance (one per spelling without regard to case), set by the
+repository's owner:
 
 ```sql
 SELECT pgvigil.mssql_errorlog_search_set('<instance name>', ARRAY['payroll', 'Login failed for user ''etl'''], false);
@@ -69,11 +81,14 @@ rollover) unless `default trace enabled` is 0. The reader keeps:
   took and the size change.
 - DBCC commands (116), with who ran them, the command's name and its text. FREEPROCCACHE with a plan handle (one plan)
   is told apart from FREEPROCCACHE (the whole cache), and SQLPERF with CLEAR (the wait or latch counters reset) from
-  the other SQLPERF calls. pgvigil's own calls are left out by the program name.
+  the other SQLPERF calls. The command is named by its first word, never by a word in its arguments. pgvigil's own
+  calls are left out by the program name its session carries (pgvigil, or the one the dsn names).
 - DDL, meaning objects created, dropped and altered (46, 47, 164), committed, outside tempdb, statistics left out.
 
-The cursor is the time and the sequence number of the last event read, plus the trace file current at the end of the
-read. The next read opens that file and the ones after it. When that file has been rolled away, the set is read again
+The cursor is the time the last event read was written and its sequence number, plus the trace file current at the
+end of the read. A growth or a shrink is written when it ends and stamped with the time it began, so the order is the
+write time (its end), and the stored time is when it began. The cursor's time goes back on the server's clock as the
+error log's does (the earlier of the stored and today's offset). The next read opens that file and the ones after it. When that file has been rolled away, the set is read again
 from its oldest file by the same time. The state carries the oldest event the files still hold, which is how far back
 the trace reaches on that server.
 
@@ -92,14 +107,14 @@ result of four components. Each has a state (CLEAN, WARNING, ERROR) and its figu
 
 The reader takes the results from the session's event file, past a cursor of its own. The Extended Events reader
 (`mssql_xe`) keeps another one for the deadlock reports in the same files. The long lists of a QUERY_PROCESSING result
-(top waits, CPU-intensive requests) are not stored. A session whose only target is a ring buffer is not read, and the
-state says so.
+(top waits, CPU-intensive requests) are not stored. A session without an event file target (a DBA changed it, or the platform writes it to a ring
+buffer only) is not read: the state is off and says so.
 
 ## Findings
 
 | Finding | Severity | When |
 |---|---|---|
-| error log: errors of severity 17 or higher | warning; critical at 20 or higher | in the last 24 hours |
+| error log: errors of severity 17 or higher | warning; critical at 20 or higher, or when one of them is a corruption line | in the last 24 hours |
 | error log: corruption reported | critical | a line of that class (under severity 17) in the last 24 hours |
 | error log: memory pressure / slow or failed IO / scheduler or worker thread trouble reported | warning | the same, by class |
 | default trace: slow file growth | warning | a growth over 1 s in the last 24 hours, per database and file kind |
@@ -112,8 +127,8 @@ state says so.
 | system_health: dump requests | critical | in the last 24 hours |
 | system_health: an unresolvable deadlock occurred / deadlocked schedulers | critical | in the last 24 hours |
 | system_health: tasks waiting for a worker | warning | 10 or more pending tasks in a result of the last hour |
-| system_health: long IO or IO latch timeouts | warning | in the last 24 hours |
-| system_health: out of memory | critical | an out-of-memory exception or a pool out of memory in the last 24 hours |
+| system_health: long IO or IO latch timeouts | warning | long IOs in the last 24 hours, or IO latch timeouts the counter gained in them (it runs from the server's start) |
+| system_health: out of memory | critical | out-of-memory exceptions the counter gained in the last 24 hours (it runs from the server's start), or a pool out of memory |
 | a SQL Server reader could not read its source | warning | the state failed, read in the last 30 minutes |
 | a SQL Server reader's source is switched off | info | the state off |
 | a SQL Server reader lacks its right | info | the state no right, one row per instance naming the readers |

@@ -335,3 +335,88 @@ func TestSysHealthParserRegistered(t *testing.T) {
 		}
 	}
 }
+
+// The terse form (one line, the error and its text; the review's sample from a sandbox archive) is a whole error: at
+// severity 17 it is kept with its numbers, under 17 it is noise; a severity of -1 is read; an error line whose
+// message never came is dropped at the end of the current log and kept at the end of an archive only when it is 17+.
+func TestErrorLogTerse(t *testing.T) {
+	sh := &errorLogShred{}
+	rows := shredAll(sh,
+		lines("2026-11-10T01:17:13.67", "spid30s", "Error: 802, Severity: 17, State: 2. (Params:). The error is printed in terse mode because there was error during formatting. Tracing, ETW, notifications etc are skipped."),
+		lines("2026-11-10T01:17:13.67", "spid31s", "Error: 17300, Severity: 16, State: 1. (Params:). The error is printed in terse mode because there was error during formatting. Tracing, ETW, notifications etc are skipped."),
+		lines("2026-11-10T01:17:14", "spid32s", "Error: 18052, Severity: -1, State: 0."),
+		lines("2026-11-10T01:17:15", "spid33s", "Error: 18052, Severity: -1, State: 0. (Params:). The error is printed in terse mode"))
+	if len(rows) != 1 || rows[0]["error_number"] != int64(802) || rows[0]["severity"] != 17 {
+		t.Fatalf("rows %v, want the one severity 17 terse error", rows)
+	}
+	sh = &errorLogShred{}
+	sh.add(lines("2026-11-10T01:00:00", "spid9", "Error: 823, Severity: 24, State: 2.")[0])
+	sh.drop()
+	if got := sh.flush(); len(got) != 0 {
+		t.Errorf("a dropped error line came back: %v", got)
+	}
+}
+
+// Lines out of time order (the log under memory pressure): the same line at one instant before and after a line of
+// another instant gets two keys, never the same one twice.
+func TestErrorLogKeyOutOfOrder(t *testing.T) {
+	sh := &errorLogShred{}
+	x := "Autogrow of file 'x' in database 'y' was cancelled by user or timed out"
+	rows := shredAll(sh, lines("2026-11-10T12:00:00", "spid9", x), lines("2026-11-10T11:58:00", "spid9", x), lines("2026-11-10T12:00:00", "spid9", x))
+	seen := map[any]bool{}
+	for _, r := range rows {
+		if seen[r["line_key"]] {
+			t.Fatalf("a key twice: %v", r["line_key"])
+		}
+		seen[r["line_key"]] = true
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows %d, want 3", len(rows))
+	}
+}
+
+// Where a read starts: the first read a week back; after it half an hour before the cursor on the server's clock,
+// by the earlier of the stored and today's offset (a clock set forward and a clock set back both lose nothing).
+func TestErrorLogStart(t *testing.T) {
+	now := time.Date(2027, 3, 14, 3, 3, 0, 0, time.UTC)
+	if s, after := errorLogStart(Cursor{}, now, -7*time.Hour); !s.Equal(now.Add(-errorLogFirstRead)) || !after.IsZero() {
+		t.Errorf("first read: %v %v", s, after)
+	}
+	// spring: the last line 01:55 PST (09:55Z) read at -480; today -420
+	spring := Cursor{Found: true, FileName: errorLogOffsetMark, FileOffset: -480, LastEventAt: time.Date(2027, 3, 14, 9, 55, 0, 0, time.UTC)}
+	if s, _ := errorLogStart(spring, now, -7*time.Hour); s.Format("15:04") != "01:25" {
+		t.Errorf("spring: start %s, want 01:25 (01:55 PST less the overlap)", s.Format("15:04"))
+	}
+	// fall: the last line 01:59 PDT (08:59Z) read at -420; today -480
+	fall := Cursor{Found: true, FileName: errorLogOffsetMark, FileOffset: -420, LastEventAt: time.Date(2027, 11, 7, 8, 59, 0, 0, time.UTC)}
+	if s, _ := errorLogStart(fall, now, -8*time.Hour); s.Format("15:04") != "00:29" {
+		t.Errorf("fall: start %s, want 00:29 (00:59 PST less the overlap)", s.Format("15:04"))
+	}
+	// a cursor without the stored offset: today's
+	old := Cursor{Found: true, LastEventAt: time.Date(2027, 3, 14, 9, 55, 0, 0, time.UTC)}
+	if s, _ := errorLogStart(old, now, -7*time.Hour); s.Format("15:04") != "02:25" {
+		t.Errorf("no stored offset: start %s, want 02:25", s.Format("15:04"))
+	}
+}
+
+// A keyword in the arguments names nothing; the first word does.
+func TestDBCCCommandFirstWord(t *testing.T) {
+	for in, want := range map[string]string{
+		"DBCC CHECKDB(N'WritePageAudit')":                  "DBCC CHECKDB",
+		"DBCC SHOW_STATISTICS('dbo.FreeProcCacheLog', ix)": "DBCC SHOW_STATISTICS",
+		"DBCC INPUTBUFFER(@session_id) WITH NO_INFOMSGS":   "DBCC INPUTBUFFER",
+	} {
+		if got := dbccCommand(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A growth's cursor time is when it was written (its end), not its stamp.
+func TestTraceRowWriteTime(t *testing.T) {
+	_, wrote, _, ok := traceRow(collect.Row{"event_class": int64(93), "local_at": "2026-11-11T17:09:01.66", "wrote_local": "2026-11-11T17:10:01.697",
+		"seq": int64(106301)}, 0)
+	if !ok || wrote.Format("15:04:05.000") != "17:10:01.697" {
+		t.Errorf("wrote %v, want 17:10:01.697", wrote)
+	}
+}

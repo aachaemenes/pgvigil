@@ -33,12 +33,12 @@ SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_readers_findi
  ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, at DESC`
 
 const sqlMSSQLErrorLogLines = `
-SELECT e.log_at, e.logged_local, e.severity, e.error_number, e.error_state, e.class, e.message, e.process, e.matched,
+SELECT e.log_at, to_char(e.logged_local, 'YYYY-MM-DD HH24:MI:SS.MS') AS logged_local, e.severity, e.error_number, e.error_state, e.class, e.message, e.process, e.matched,
        e.custom, e.archive
   FROM pgvigil.mssql_errorlog e
  WHERE e.instance_id = $1 AND e.log_at > $2 AND e.log_at <= $3
    AND ($4::text IS NULL OR e.class = $4)
-   AND ($5::text IS NULL OR strpos(lower(coalesce(e.message, '')), lower($5)) > 0)
+   AND ($5::text IS NULL OR strpos(lower(coalesce(e.message, '')), lower($5)) > 0 OR e.error_number::text = $5)
    AND ($6::int IS NULL OR e.severity >= $6)
  ORDER BY e.log_at DESC, e.line_key DESC
  LIMIT 1000`
@@ -102,11 +102,12 @@ SELECT t.event_at, t.sub AS action, t.database_name, t.object_name, t.object_typ
  ORDER BY t.event_at DESC, t.event_key DESC
  LIMIT 1000`
 
-// the newest result of each component in the last day (the server writes one every five minutes)
+// the newest result of each component at the window's end, at most a day before it (the server writes one every
+// five minutes)
 const sqlMSSQLHealthLatest = `
 SELECT DISTINCT ON (h.component) h.component, h.state, h.event_at, h.detail
   FROM pgvigil.mssql_health_components h
- WHERE h.instance_id = $1 AND h.event_at > now() - interval '1 day'
+ WHERE h.instance_id = $1 AND h.event_at <= $2 AND h.event_at > $2::timestamptz - interval '1 day'
  ORDER BY h.component, h.event_at DESC`
 
 const sqlMSSQLHealthIssues = `
@@ -173,15 +174,16 @@ SELECT h.event_at, h.state, h.detail->>'lastNotification' AS last_notification,
  ORDER BY h.event_at DESC
  LIMIT 500`
 
-// per bucket of $4 seconds, every bucket of the window: the results not CLEAN, the most pending tasks, the long IOs,
-// SQL Server's and the machine's CPU
+// per bucket of $4 seconds, every bucket of the window: the results stored, those not CLEAN (no value where the bucket
+// holds none: a read that stored nothing is not a clean one), the most pending tasks, the long IOs, SQL Server's and
+// the machine's CPU
 const sqlMSSQLHealthSeries = `
 WITH b AS (
   SELECT to_timestamp(g * $4::bigint) AS snapshot_at
     FROM generate_series(floor(extract(epoch FROM $2::timestamptz) / $4)::bigint, floor(extract(epoch FROM $3::timestamptz) / $4)::bigint) g
 ), h AS (
   SELECT to_timestamp(floor(extract(epoch FROM h.event_at) / $4)::bigint * $4::bigint) AS snapshot_at,
-         count(*) FILTER (WHERE h.state <> 'CLEAN') AS not_clean,
+         count(*) AS results, count(*) FILTER (WHERE h.state <> 'CLEAN') AS not_clean,
          max(pgvigil.mssql_health_num(h.detail, 'pendingTasks')) FILTER (WHERE h.component = 'QUERY_PROCESSING') AS pending_tasks,
          sum(pgvigil.mssql_health_num(h.detail, 'intervalLongIos')) FILTER (WHERE h.component = 'IO_SUBSYSTEM') AS long_ios,
          max(pgvigil.mssql_health_num(h.detail, 'sqlCpuUtilization')) FILTER (WHERE h.component = 'SYSTEM') AS sql_cpu,
@@ -190,7 +192,7 @@ WITH b AS (
    WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3
    GROUP BY 1
 )
-SELECT b.snapshot_at, coalesce(h.not_clean, 0) AS not_clean, h.pending_tasks, h.long_ios, h.sql_cpu, h.system_cpu
+SELECT b.snapshot_at, coalesce(h.results, 0) AS results, h.not_clean, h.pending_tasks, h.long_ios, h.sql_cpu, h.system_cpu
   FROM b LEFT JOIN h USING (snapshot_at)
  ORDER BY b.snapshot_at`
 
@@ -217,6 +219,10 @@ func (s *Server) MSSQLErrorLog(w http.ResponseWriter, r *http.Request) {
 	if v := strings.TrimSpace(q.Get("q")); v != "" {
 		if utf8.RuneCountInString(v) > 200 {
 			writeErr(w, http.StatusBadRequest, errors.New("q is 200 characters at most"))
+			return
+		}
+		if !utf8.ValidString(v) || strings.IndexFunc(v, func(c rune) bool { return c < 0x20 || c == 0x7f }) >= 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("q must be text without control characters"))
 			return
 		}
 		text = v
@@ -271,7 +277,7 @@ func (s *Server) MSSQLSysHealth(w http.ResponseWriter, r *http.Request) {
 	s.multiPart(w, r, []part{
 		{"state", sqlMSSQLReaderState, []any{id}},
 		{"findings", sqlMSSQLReaderFindings, []any{id}},
-		{"latest", sqlMSSQLHealthLatest, []any{id}},
+		{"latest", sqlMSSQLHealthLatest, []any{id, to}},
 		{"issues", sqlMSSQLHealthIssues, []any{id, from, to}},
 		{"system", sqlMSSQLHealthSystem, []any{id, from, to}},
 		{"query_processing", sqlMSSQLHealthQP, []any{id, from, to}},

@@ -46,7 +46,14 @@
 #     'default trace: a DBCC SHRINK command ran' for FULL (info).
 #  H. system_health. 1. FULL's read: state 'read', scope event_file; the stored results equal, per component, sa's
 #     count of sp_server_diagnostics_component_result events up to the newest stored one; all four components there.
-#     CURRENT and BARE: 'no right' naming VIEW SERVER STATE. 2. @@H2@@
+#     CURRENT and BARE: 'no right' naming VIEW SERVER STATE. 2. the warning. The container runs with max worker threads 128 (set and restarted before L). sa
+#     waits for a QUERY_PROCESSING result, then one session holds a lock and 400 sessions wait on it (the workers run
+#     out) for the whole of the next five-minute interval and 30 s more; the sessions are ended. (Measured on the box
+#     in two experiments before this was written: such a starved interval gave a QUERY_PROCESSING result in WARNING,
+#     35 pending tasks, the oldest waiting 289 s; a memory eater in the container never gave a RESOURCE warning.)
+#     sa reads at least one QUERY_PROCESSING result not CLEAN. FULL's next read stores it exactly once, its event_at
+#     equal to sa's timestamp_utc to the millisecond, its state and pending tasks equal; the findings hold
+#     'system_health: a component is not clean' for QUERY_PROCESSING (warning for WARNING, critical for ERROR).
 #     3. A second read stores no more of them.
 #  A. the API on FULL's rows: /api/mssql/errorlog with q=marker A gives one line of severity 17; with sev=17 it is
 #     there and with class=corruption it is not; the search part holds the own string; class=nope, sev=99 and a q of
@@ -71,8 +78,11 @@
 #        memory|RESOURCE; warning|a SQL Server reader could not read its source|defaulttrace; info|a SQL Server
 #        reader's source is switched off|syshealth; info|a SQL Server reader lacks its right|errorlog.
 #        Not in it: a line 30 hours old, a growth of 900 ms, a FREEPROCCACHE with a plan handle, an older SYSTEM result
-#        with non-yielding tasks, a state read 40 minutes ago, a figure that is no number.
-#     3. mssql_errorlog_search_set: three strings with a duplicate give 2 and the cursor row holds them with offset 1;
+#        with non-yielding tasks, a state read 40 minutes ago, a figure that is no number. (Restated with the review
+#        fold, before any run that had it: the out-of-memory count is the counter's growth inside the window, so the
+#        rows hold a RESOURCE result 20 minutes old with 0 exceptions before the one with 1.)
+#     3. mssql_errorlog_search_set: four strings with two duplicates (one by its spaces, one by its case) give 2, the
+#        first spelling kept, and the cursor row holds them with offset 1;
 #        51 strings, a string of 201 characters and an unknown instance are refused; an empty list gives 0 and removes
 #        the row. A batch's cursor row for 'errorlog:search' does not touch it.
 #     4. a reader's state: a late state row changes nothing; the same state again keeps state_since; a read without an
@@ -145,6 +155,11 @@ else
   for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
   sq "SELECT 1" >/dev/null 2>&1 || fail "the SQL Server in $CT does not answer"
   echo "  $CT ($ADDR): $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)) + ' ' + CAST(SERVERPROPERTY('Edition') AS varchar(80))")"
+  # H2 starves the workers: max worker threads at its lowest, in force after a restart
+  sq "EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'max worker threads', 128; RECONFIGURE;" >/dev/null
+  docker restart "$CT" >/dev/null || fail "the restart of $CT"
+  for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
+  eq "the most workers after the restart" "$(sq "SELECT max_workers_count FROM sys.dm_os_sys_info")" 128
   OFF=$(sq "SELECT DATEDIFF(minute, GETUTCDATE(), GETDATE())")
   case $OFF in -480|-420) echo "  the server's clock is $OFF minutes from UTC" ;; *) fail "L1: the server's offset is $OFF, want -480 or -420 (TZ=America/Los_Angeles)" ;; esac
 fi
@@ -299,7 +314,28 @@ H1=$(hcount)
 eq "H1: the results per component" "$(mine)" "$H1"
 [ "$(echo "$H1" | tr ',' '\n' | wc -l)" = 4 ] || fail "H1: not four components: $H1"
 echo "H1: OK ($H1)"
-@@H2_BODY@@
+# H2: a starved interval of the workers
+QPNEWEST="SELECT CONVERT(varchar(23), MAX(timestamp_utc), 121) FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result' AND CAST(event_data AS nvarchar(max)) LIKE N'%QUERY_PROCESSING%'"
+T0=$(sq "$QPNEWEST")
+for _ in $(seq 1 40); do T1=$(sq "$QPNEWEST"); [ "$T1" != "$T0" ] && break; sleep 10; done
+[ "$T1" != "$T0" ] || fail "H2: no new QUERY_PROCESSING result within 400 s (the newest $T0)"
+NEXT=$(( $(date -u -d "$T1" +%s) + 300 ))
+sq "CREATE TABLE dbo.pv_hold (id int PRIMARY KEY, v int NOT NULL); INSERT dbo.pv_hold VALUES (1, 0);" "$DB" >/dev/null
+docker exec -d -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -C -U sa -d "$DB" -Q "BEGIN TRAN; UPDATE dbo.pv_hold SET v = 1 WHERE id = 1; WAITFOR DELAY '00:09:00'; ROLLBACK;"
+sleep 2
+docker exec -d -e SQLCMDPASSWORD "$CT" bash -c "for i in \$(seq 1 400); do $SQLCMD -S localhost -C -U sa -d $DB -l 600 -t 700 -Q 'SELECT v FROM dbo.pv_hold WHERE id = 1' >/dev/null 2>&1 & done; wait"
+echo "  H2: 400 sessions wait on one lock from $(date -u +%T) UTC to the result due at $(date -u -d "@$NEXT" +%T) and 30 s more"
+while [ "$(date -u +%s)" -lt $((NEXT + 30)) ]; do sleep 10; done
+docker exec "$CT" bash -c 'for p in /proc/[0-9]*; do tr "\0" " " < $p/cmdline 2>/dev/null | grep -q "^/opt/mssql-tools18/bin/sqlcmd" && kill ${p#/proc/}; done' >/dev/null 2>&1 || true
+for _ in $(seq 1 36); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 5; done
+sq "SELECT 1" >/dev/null 2>&1 || fail "H2: the SQL Server does not answer 3 minutes after the sessions were ended"
+HQ=$(sq "SELECT TOP (1) CONVERT(varchar(23), timestamp_utc, 121) + '|' + x.s + '|' + ISNULL(x.p, '') FROM (SELECT timestamp_utc, CAST(event_data AS xml) AS e FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result') f CROSS APPLY (SELECT f.e.value('(/event/data[@name=\"component\"]/text)[1]', 'varchar(30)') AS c, f.e.value('(/event/data[@name=\"state\"]/text)[1]', 'varchar(20)') AS s, f.e.value('(/event/data[@name=\"data\"]/value/queryProcessing/@pendingTasks)[1]', 'varchar(20)') AS p) x WHERE x.c = 'QUERY_PROCESSING' AND x.s <> 'CLEAN' ORDER BY f.timestamp_utc DESC")
+[ -n "$HQ" ] || fail "H2: sa reads no QUERY_PROCESSING result that is not CLEAN after the starved interval"
+collect mssql_syshealth "$NF"
+eq "H2: the result (time|state|pending|rows)" "$(q "select to_char(event_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS') || '|' || state || '|' || coalesce(detail->>'pendingTasks', '') || '|' || count(*) over () from pgvigil.mssql_health_components where instance_id = $IF and component = 'QUERY_PROCESSING' and event_at = '$(echo "$HQ" | cut -d'|' -f1)+00'")" "$HQ|1"
+WANTSEV=warning; [ "$(echo "$HQ" | cut -d'|' -f2)" = ERROR ] && WANTSEV=critical
+eq "H2: the finding" "$(q "select severity from pgvigil.mssql_readers_findings where instance_id = $IF and check_name = 'system_health: a component is not clean' and object = 'QUERY_PROCESSING'")" "$WANTSEV"
+echo "H2: OK (QUERY_PROCESSING $(echo "$HQ" | cut -d'|' -f2) at $(echo "$HQ" | cut -d'|' -f1) UTC, $(echo "$HQ" | cut -d'|' -f3) pending tasks; findings: $(q "select string_agg(check_name, '; ') from pgvigil.mssql_readers_findings where instance_id = $IF and check_name like 'system_health%'"))"
 N2=$(mine); collect mssql_syshealth "$NF"
 eq "H3: the results after another read" "$(mine | sed 's/:[0-9]*//g')" "$(echo "$N2" | sed 's/:[0-9]*//g')"
 eq "H3: the results equal sa's count again" "$(mine)" "$(hcount)"
@@ -330,7 +366,7 @@ eq "A: dbcc_summary SHRINKFILE runs|logins" "$(api defaulttrace part=dbcc_summar
 api defaulttrace part=growth_summary | jq -r '.growth_summary.rows[] | @json' | grep -q "\"$DB\",\"data growth\"" || fail "A: growth_summary has no data growth of $DB"
 eq "A: ddl rows of pv_ddl" "$(api defaulttrace part=ddl | jq -r '[.ddl.rows[] | select(.[3] == "pv_ddl")] | length')" 2
 eq "A: syshealth latest components" "$(api syshealth part=latest | jq -r '[.latest.rows[][0]] | sort | join(",")')" "IO_SUBSYSTEM,QUERY_PROCESSING,RESOURCE,SYSTEM"
-@@A_ISSUE@@
+eq "A: syshealth issues hold the QUERY_PROCESSING result" "$(api syshealth part=issues | jq -r '[.issues.rows[] | select(.[1] == "QUERY_PROCESSING")] | length > 0')" true
 echo "A: OK"
 kill "$SRV_PID" 2>/dev/null || true; SRV_PID=
 fi
@@ -364,7 +400,7 @@ comp() { printf '{"kind":"component","event_key":"%s","event_at":"%s","component
 stt() { printf '{"kind":"state","reader":"%s","state":"%s","note":"%s"}' "$1" "$2" "$3"; }
 imp "[$(line s17 '1 hour' 17 general 'sev 17'),$(line s21 '50 minutes' 21 general 'sev 21'),$(line cor '1 hour' 0 corruption 'page damaged'),$(line mem '1 hour' 0 memory 'paged out'),$(line old '30 hours' 24 corruption 'old')]"
 imp "[$(tr_ g1 '1 hour' 92 'data growth' null db1 1500000),$(tr_ g2 '1 hour' 92 'data growth' null db2 900000),$(tr_ s1 '1 hour' 94 'data shrink' null db1 0),$(tr_ d1 '1 hour' 116 dbcc '"DBCC FREEPROCCACHE"' db1 0),$(tr_ d2 '1 hour' 116 dbcc '"DBCC FREEPROCCACHE (plan handle)"' db1 0),$(tr_ d3 '1 hour' 116 dbcc '"DBCC SHRINKFILE"' db1 0),$(tr_ d4 '1 hour' 116 dbcc '"DBCC SQLPERF (CLEAR)"' master 0)]"
-imp "[$(comp q1 '10 minutes' QUERY_PROCESSING WARNING '{"pendingTasks":12,"oldestPendingTaskWaitingTime":3000,"hasDeadlockedSchedulersOccurred":1}'),$(comp r1 '10 minutes' RESOURCE ERROR '{"outOfMemoryExceptions":1,"lastNotification":"RESOURCE_MEMPHYSICAL_LOW"}'),$(comp y1 '20 minutes' SYSTEM CLEAN '{"nonYieldingTasksReported":5}'),$(comp y2 '10 minutes' SYSTEM CLEAN '{"BadPagesDetected":2,"sickSpinlockType":"LOCK_HASH","latchWarnings":"x"}'),$(comp i1 '10 minutes' IO_SUBSYSTEM CLEAN '{"intervalLongIos":3,"ioLatchTimeouts":0}')]"
+imp "[$(comp r0 '20 minutes' RESOURCE CLEAN '{"outOfMemoryExceptions":0}'),$(comp q1 '10 minutes' QUERY_PROCESSING WARNING '{"pendingTasks":12,"oldestPendingTaskWaitingTime":3000,"hasDeadlockedSchedulersOccurred":1}'),$(comp r1 '10 minutes' RESOURCE ERROR '{"outOfMemoryExceptions":1,"lastNotification":"RESOURCE_MEMPHYSICAL_LOW"}'),$(comp y1 '20 minutes' SYSTEM CLEAN '{"nonYieldingTasksReported":5}'),$(comp y2 '10 minutes' SYSTEM CLEAN '{"BadPagesDetected":2,"sickSpinlockType":"LOCK_HASH","latchWarnings":"x"}'),$(comp i1 '10 minutes' IO_SUBSYSTEM CLEAN '{"intervalLongIos":3,"ioLatchTimeouts":0}')]"
 q "select pgvigil.import_mssql_readers($XI, now() - interval '40 minutes', '[$(stt errorlog failed 'old failure')]'::jsonb)" >/dev/null
 imp "[$(stt errorlog 'no right' 'no EXECUTE'),$(stt defaulttrace failed 'the read failed'),$(stt syshealth off 'stopped')]"
 WANT='critical|error log: corruption reported|corruption
@@ -391,7 +427,7 @@ GOT=$(q "select severity || '|' || check_name || '|' || object from pgvigil.mssq
 echo "X2: OK (19 findings, none from the rows the windows leave out)"
 # 3. the instance's own search strings
 XN="s149-x-$SUF"
-eq "X3: three strings with a duplicate" "$(q "select pgvigil.mssql_errorlog_search_set('$XN', array['a', 'b', ' a '], true)")" 2
+eq "X3: four strings with two duplicates" "$(q "select pgvigil.mssql_errorlog_search_set('$XN', array['a', 'b', ' a ', 'A'], true)")" 2
 eq "X3: the cursor row" "$(q "select file_name || '|' || file_offset from pgvigil.mssql_cursor where instance_id = $XI and source = 'errorlog:search'")" '["a", "b"]|1'
 for bad in "array(select 's' || g from generate_series(1, 51) g)" "array[repeat('x', 201)]"; do
   if q "select pgvigil.mssql_errorlog_search_set('$XN', $bad, false)" >/dev/null 2>&1; then fail "X3: $bad was taken"; fi

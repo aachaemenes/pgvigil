@@ -19,9 +19,12 @@ const findingCols: Col[] = [
   { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
 ];
 
-// the findings of one reader's page (the instance's others are on the Findings page)
-function findingsOf(t: Part, prefix: string[]): HTMLElement | null {
-  const rows = rowsOf(t).filter(r => prefix.some(p => text(r.check_name).startsWith(p)));
+// the findings of one reader's page (the instance's others are on the Findings page): the page's own checks, and the
+// readers' state findings that name this page's reader
+function findingsOf(t: Part, prefix: string[], reader: string): HTMLElement | null {
+  const rows = rowsOf(t).filter(r => text(r.check_name).startsWith('a SQL Server reader')
+    ? text(r.object).split(', ').includes(reader)
+    : prefix.some(p => text(r.check_name).startsWith(p)));
   return rows.length ? el('section', {}, el('h3', {}, 'Findings'), grid(rows, findingCols)) : null;
 }
 
@@ -31,11 +34,14 @@ const readerName: Record<string, string> = { errorlog: 'error log', defaulttrace
 function readerNote(t: Part, reader: string): HTMLElement {
   const st = rowsOf(t).find(r => r.reader === reader);
   const what = readerName[reader] ?? reader;
-  if (!st) return el('p', { class: 'meta' }, badge('not read yet', ''), ` The ${what} reader (every 5 minutes) has not read this instance yet.`);
+  if (!st) {
+    return el('p', { class: 'meta' }, badge('not read yet', ''), ` The ${what} reader (every 5 minutes) has not read this instance yet. `
+      + 'Azure SQL Database has none of these sources: there it never runs (the Summary\'s collection panel says why).');
+  }
   const read = `read ${fmtTime(st.snapshot_at)}`;
   switch (st.state) {
     case 'no right':
-      return el('p', { class: 'meta' }, badge('no right', 'warn'), ` Not read, for lack of a right - not a failure: ${text(st.note)} (${read}).`);
+      return el('p', { class: 'meta' }, badge('no right', 'warn'), ` Not read, for lack of a right - not a failure: ${text(st.note)} (checked ${fmtTime(st.snapshot_at)}).`);
     case 'off':
       return el('p', { class: 'meta' }, badge('off', 'warn'), ` ${text(st.note)} (${read}).`);
     case 'failed':
@@ -88,7 +94,7 @@ export async function mssqlErrorLogView(ctx: Ctx): Promise<HTMLElement> {
   const win = window_(ctx);
   try {
     const d = await get<Record<string, Part>>('mssql/errorlog', { instance: ctx.instance, ...win });
-    const f = findingsOf(d.findings, ['error log', 'a SQL Server reader']);
+    const f = findingsOf(d.findings, ['error log'], 'errorlog');
     if (f) sec.append(f);
     sec.append(readerNote(d.state, 'errorlog'), searchNote(d.search));
     const classes = rowsOf(d.classes);
@@ -165,7 +171,7 @@ export async function mssqlDefaultTraceView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Default trace (${rangeLabel(ctx)})`));
   try {
     const d = await get<Record<string, Part>>('mssql/defaulttrace', { instance: ctx.instance, ...window_(ctx) });
-    const f = findingsOf(d.findings, ['default trace', 'a SQL Server reader']);
+    const f = findingsOf(d.findings, ['default trace'], 'defaulttrace');
     if (f) sec.append(f);
     sec.append(readerNote(d.state, 'defaulttrace'));
     sec.append(el('h3', {}, 'File growths and shrinks'),
@@ -237,7 +243,7 @@ export async function mssqlSysHealthView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `System health (${rangeLabel(ctx)})`));
   try {
     const d = await get<Record<string, Part>>('mssql/syshealth', { instance: ctx.instance, ...window_(ctx) });
-    const f = findingsOf(d.findings, ['system_health', 'a SQL Server reader']);
+    const f = findingsOf(d.findings, ['system_health'], 'syshealth');
     if (f) sec.append(f);
     sec.append(readerNote(d.state, 'syshealth'),
       el('p', { class: 'meta' }, 'SQL Server checks four parts of itself every five minutes (sp_server_diagnostics) and its system_health session '
@@ -251,7 +257,9 @@ export async function mssqlSysHealthView(ctx: Ctx): Promise<HTMLElement> {
     const series = rowsOf(d.series);
     sec.append(lineChart('Results not CLEAN and pending tasks', series, [{ key: 'not_clean', label: 'results not CLEAN' }, { key: 'pending_tasks', label: 'pending tasks' }]),
       lineChart('CPU from the SYSTEM component (%)', series, [{ key: 'sql_cpu', label: 'SQL Server' }, { key: 'system_cpu', label: 'the machine' }]));
-    sec.append(el('h3', {}, 'Results that were not CLEAN'), grid(rowsOf(d.issues), issueCols, 'Every result in this window was CLEAN.'));
+    const stored = series.reduce((n, r) => n + Number(r.results ?? 0), 0);
+    sec.append(el('h3', {}, 'Results that were not CLEAN'), grid(rowsOf(d.issues), issueCols,
+      stored > 0 ? 'Every result in this window was CLEAN.' : 'No system_health result is stored for this window (the state above says why).'));
     sec.append(el('h3', {}, 'SYSTEM'), el('p', { class: 'meta' }, 'Counters since the server started: a non-zero bad-page, access-violation, non-yielding or latch-warning figure stays until the server restarts.'),
       grid(rowsOf(d.system), systemCols, 'No SYSTEM result in this window.'));
     sec.append(el('h3', {}, 'RESOURCE (memory)'), grid(rowsOf(d.resource), resourceCols, 'No RESOURCE result in this window.'));

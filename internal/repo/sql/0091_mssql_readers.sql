@@ -253,7 +253,10 @@ BEGIN
   IF v_id IS NULL THEN
     RAISE EXCEPTION 'mssql_errorlog_search_set: no SQL Server instance named %', p_instance;
   END IF;
-  SELECT coalesce(array_agg(DISTINCT btrim(s)), '{}') INTO v_list FROM unnest(coalesce(p_strings, '{}')) s WHERE btrim(s) <> '';
+  -- one string per spelling without regard to case, as the match is made: the first one given is kept
+  SELECT coalesce(array_agg(d.s ORDER BY d.n), '{}') INTO v_list
+    FROM (SELECT DISTINCT ON (lower(btrim(x))) btrim(x) AS s, n FROM unnest(coalesce(p_strings, '{}')) WITH ORDINALITY u(x, n)
+           WHERE btrim(x) <> '' ORDER BY lower(btrim(x)), n) d;
   IF EXISTS (SELECT 1 FROM unnest(v_list) s WHERE length(s) > 200) THEN
     RAISE EXCEPTION 'mssql_errorlog_search_set: a search string is 200 characters at most';
   END IF;
@@ -282,7 +285,7 @@ WITH el AS (
     FROM pgvigil.mssql_errorlog e
    WHERE e.log_at > now() - interval '24 hours'
 ), sev AS (
-  SELECT el.instance_id, max(el.severity) AS worst, count(*) AS n, max(el.log_at) AS last_at,
+  SELECT el.instance_id, max(el.severity) AS worst, bool_or(el.class = 'corruption') AS corruption, count(*) AS n, max(el.log_at) AS last_at,
          (array_agg('error ' || coalesce(el.error_number::text, '?') || ', severity ' || el.severity || ': ' || left(coalesce(el.message, ''), 300)
                     ORDER BY el.severity DESC, el.log_at DESC))[1] AS worst_line
     FROM el
@@ -360,24 +363,39 @@ WITH el AS (
     FROM hc
    WHERE hc.component = 'QUERY_PROCESSING'
    GROUP BY hc.instance_id
+), grown AS (
+  -- ioLatchTimeouts and outOfMemoryExceptions count from the server's start (they carry no 'interval' in their
+  -- name, as intervalLongIos does): what a window saw is the newest less the oldest of it, and a server restarted
+  -- inside it (the newest lower) counts the newest whole
+  SELECT hc.instance_id, hc.component,
+         (array_agg(coalesce(pgvigil.mssql_health_num(hc.detail, c.name), 0) ORDER BY hc.event_at))[1] AS first_n,
+         (array_agg(coalesce(pgvigil.mssql_health_num(hc.detail, c.name), 0) ORDER BY hc.event_at DESC))[1] AS last_n,
+         max(hc.event_at) AS last_at
+    FROM hc
+    JOIN (VALUES ('IO_SUBSYSTEM', 'ioLatchTimeouts'), ('RESOURCE', 'outOfMemoryExceptions')) c(component, name) ON c.component = hc.component
+   GROUP BY hc.instance_id, hc.component
 ), io AS (
   SELECT hc.instance_id, sum(pgvigil.mssql_health_num(hc.detail, 'intervalLongIos')) AS long_ios,
-         max(pgvigil.mssql_health_num(hc.detail, 'ioLatchTimeouts')) AS latch_timeouts, max(hc.event_at) AS last_at
+         max(g.n) AS latch_timeouts, max(hc.event_at) AS last_at
     FROM hc
+    LEFT JOIN (SELECT instance_id, CASE WHEN last_n < first_n THEN last_n ELSE last_n - first_n END AS n
+                 FROM grown WHERE component = 'IO_SUBSYSTEM') g ON g.instance_id = hc.instance_id
    WHERE hc.component = 'IO_SUBSYSTEM'
-     AND (pgvigil.mssql_health_num(hc.detail, 'intervalLongIos') > 0 OR pgvigil.mssql_health_num(hc.detail, 'ioLatchTimeouts') > 0)
    GROUP BY hc.instance_id
+  HAVING coalesce(sum(pgvigil.mssql_health_num(hc.detail, 'intervalLongIos')), 0) > 0 OR coalesce(max(g.n), 0) > 0
 ), oom AS (
-  SELECT hc.instance_id, max(pgvigil.mssql_health_num(hc.detail, 'outOfMemoryExceptions')) AS exceptions,
+  SELECT hc.instance_id, max(g.n) AS exceptions,
          bool_or(pgvigil.mssql_health_num(hc.detail, 'isAnyPoolOutOfMemory') > 0) AS pool, max(hc.event_at) AS last_at
     FROM hc
+    LEFT JOIN (SELECT instance_id, CASE WHEN last_n < first_n THEN last_n ELSE last_n - first_n END AS n
+                 FROM grown WHERE component = 'RESOURCE') g ON g.instance_id = hc.instance_id
    WHERE hc.component = 'RESOURCE'
-     AND (pgvigil.mssql_health_num(hc.detail, 'outOfMemoryExceptions') > 0 OR pgvigil.mssql_health_num(hc.detail, 'isAnyPoolOutOfMemory') > 0)
    GROUP BY hc.instance_id
+  HAVING coalesce(max(g.n), 0) > 0 OR bool_or(pgvigil.mssql_health_num(hc.detail, 'isAnyPoolOutOfMemory') > 0)
 ), st AS (
   SELECT s.* FROM pgvigil.mssql_reader_state s WHERE s.snapshot_at > now() - interval '30 minutes'
 )
-SELECT sev.instance_id, CASE WHEN sev.worst >= 20 THEN 'critical' ELSE 'warning' END AS severity,
+SELECT sev.instance_id, CASE WHEN sev.worst >= 20 OR sev.corruption THEN 'critical' ELSE 'warning' END AS severity,
        'error log: errors of severity 17 or higher'::text AS check_name, ('severity ' || sev.worst)::text AS object, sev.last_at AS at,
        sev.n || ' error(s) of severity 17 or higher in the error log in the last 24 hours; the worst: ' || sev.worst_line AS detail
   FROM sev

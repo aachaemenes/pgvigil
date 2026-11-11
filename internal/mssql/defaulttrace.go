@@ -60,7 +60,7 @@ const defaultTraceFirstRead = 7 * 24 * time.Hour
 // defaultTraceGateSQL: may the login read the trace, is the trace switched on, and the server's clock.
 const defaultTraceGateSQL = `SELECT CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER TRACE'), 0) AS int) AS can_read,
   CAST(ISNULL((SELECT TOP (1) CAST(value_in_use AS int) FROM sys.configurations WHERE name = N'default trace enabled'), 0) AS int) AS enabled,
-  CONVERT(varchar(23), GETDATE(), 126) AS local_now, DATEDIFF(minute, GETUTCDATE(), GETDATE()) AS off_min`
+  CONVERT(varchar(23), CAST(SYSDATETIMEOFFSET() AS datetime2(3)), 126) AS local_now, DATEPART(TZOFFSET, SYSDATETIMEOFFSET()) AS off_min`
 
 const defaultTracePathSQL = `SELECT TOP (1) CAST(path AS nvarchar(260)) FROM sys.traces WHERE is_default = 1 AND path IS NOT NULL`
 
@@ -68,9 +68,14 @@ const defaultTracePathSQL = `SELECT TOP (1) CAST(path AS nvarchar(260)) FROM sys
 const defaultTraceOldestSQL = `SELECT TOP (1) CONVERT(varchar(23), StartTime, 126) FROM sys.fn_trace_gettable(@p1, DEFAULT) WHERE StartTime IS NOT NULL`
 
 // defaultTraceReadSQL reads at most @p4 events past the cursor: @p1 the file to start at, @p2 the cursor's time as
-// the server's local time (ISO 8601), @p3 its sequence number. TextData is the DBCC command's text.
+// the server's local time (ISO 8601), @p3 its sequence number. The order and the cursor are the time an event was
+// WRITTEN: a growth or a shrink is written when it ends and stamped with the time it began (StartTime; EndTime is
+// its end), every other event the reader keeps has no EndTime. A cursor on StartTime would pass over a long growth
+// written after a later-stamped event was read. TextData is the DBCC command's text. pgvigil's own DBCC calls are
+// left out by the session's own program name (the dsn may name another than pgvigil).
 const defaultTraceReadSQL = `DECLARE @s datetime = CONVERT(datetime, @p2, 126);
 SELECT TOP (@p4) CAST(t.EventClass AS int) AS event_class, CONVERT(varchar(23), t.StartTime, 126) AS local_at,
+  CONVERT(varchar(23), COALESCE(t.EndTime, t.StartTime), 126) AS wrote_local,
   CAST(ISNULL(t.EventSequence, 0) AS bigint) AS seq, CAST(t.Duration AS bigint) AS duration_us, CAST(t.IntegerData AS bigint) AS pages,
   CAST(t.DatabaseName AS nvarchar(128)) AS database_name, CAST(t.FileName AS nvarchar(260)) AS file_name,
   CAST(COALESCE(t.SessionLoginName, t.LoginName) AS nvarchar(128)) AS login_name, CAST(t.HostName AS nvarchar(128)) AS host_name,
@@ -79,12 +84,12 @@ SELECT TOP (@p4) CAST(t.EventClass AS int) AS event_class, CONVERT(varchar(23), 
   CAST(t.TextData AS nvarchar(4000)) AS text_data
 FROM sys.fn_trace_gettable(@p1, DEFAULT) t
 LEFT JOIN sys.trace_subclass_values v ON v.trace_event_id = t.EventClass AND v.trace_column_id = 28 AND v.subclass_value = t.ObjectType
-WHERE (t.StartTime > @s OR (t.StartTime = @s AND ISNULL(t.EventSequence, 0) > @p3))
+WHERE (COALESCE(t.EndTime, t.StartTime) > @s OR (COALESCE(t.EndTime, t.StartTime) = @s AND ISNULL(t.EventSequence, 0) > @p3))
   AND (t.EventClass IN (92, 93, 94, 95)
-       OR (t.EventClass = 116 AND ISNULL(t.ApplicationName, N'') <> N'pgvigil')
+       OR (t.EventClass = 116 AND ISNULL(t.ApplicationName, N'') <> ISNULL(APP_NAME(), N'pgvigil'))
        OR (t.EventClass IN (46, 47, 164) AND t.EventSubClass = 1 AND ISNULL(t.DatabaseID, 0) <> 2
            AND ISNULL(t.ObjectType, 0) NOT IN (21587, 17747)))
-ORDER BY t.StartTime, t.EventSequence`
+ORDER BY COALESCE(t.EndTime, t.StartTime), t.EventSequence`
 
 // traceKinds names the event classes the reader stores.
 var traceKinds = map[int64]string{92: "data growth", 93: "log growth", 94: "data shrink", 95: "log shrink", 116: "dbcc",
@@ -98,34 +103,28 @@ var (
 	dbccSpace      = regexp.MustCompile(`\s+`)
 )
 
-// dbccCommand names the command of a DBCC event's text: the ones a DBA wants to know about by their own name (a
-// FREEPROCCACHE with a plan handle evicts one plan and is told apart from the one that empties the cache; SQLPERF
-// with CLEAR is the one that resets the wait or latch statistics), any other by its first word.
+// dbccCommand names the command of a DBCC event's text by its first word: the ones a DBA wants to know about by
+// their own name, a FREEPROCCACHE with a plan handle (one plan) told apart from the one that empties the cache, and a
+// SQLPERF with CLEAR (the wait or latch statistics reset) from the other SQLPERF calls. A keyword inside a name in
+// the arguments (CHECKDB(N'WritePageAudit')) names nothing.
 func dbccCommand(text string) string {
 	u := strings.ToUpper(dbccSpace.ReplaceAllString(strings.TrimSpace(text), " "))
-	switch {
-	case strings.Contains(u, "FREEPROCCACHE"):
-		if dbccPlanHandle.MatchString(u) {
+	m := dbccName.FindStringSubmatch(u)
+	if m == nil {
+		return "DBCC"
+	}
+	args := u[len(m[0]):]
+	switch m[1] {
+	case "FREEPROCCACHE":
+		if dbccPlanHandle.MatchString("FREEPROCCACHE" + args) {
 			return "DBCC FREEPROCCACHE (plan handle)"
 		}
-		return "DBCC FREEPROCCACHE"
-	case strings.Contains(u, "FREESYSTEMCACHE"):
-		return "DBCC FREESYSTEMCACHE"
-	case strings.Contains(u, "DROPCLEANBUFFERS"):
-		return "DBCC DROPCLEANBUFFERS"
-	case strings.Contains(u, "SHRINKDATABASE"):
-		return "DBCC SHRINKDATABASE"
-	case strings.Contains(u, "SHRINKFILE"):
-		return "DBCC SHRINKFILE"
-	case strings.Contains(u, "WRITEPAGE"):
-		return "DBCC WRITEPAGE"
-	case strings.Contains(u, "SQLPERF") && strings.Contains(u, "CLEAR"):
-		return "DBCC SQLPERF (CLEAR)"
+	case "SQLPERF":
+		if strings.Contains(args, "CLEAR") {
+			return "DBCC SQLPERF (CLEAR)"
+		}
 	}
-	if m := dbccName.FindStringSubmatch(u); m != nil {
-		return "DBCC " + m[1]
-	}
-	return "DBCC"
+	return "DBCC " + m[1]
 }
 
 // traceBasePath turns the trace file written now (.../log_12.trc) into the name that reads the whole set
@@ -138,7 +137,8 @@ func traceBasePath(current string) string {
 	return current[:i+1] + "log.trc"
 }
 
-// traceRow turns one row of the read into the payload's row. offset is the server's local time less UTC.
+// traceRow turns one row of the read into the payload's row. offset is the server's local time less UTC. It returns
+// the time the event was written (the cursor's; local) and its sequence number beside the row.
 func traceRow(r collect.Row, offset time.Duration) (collect.Row, time.Time, int64, bool) {
 	class, ok := asInt(r["event_class"])
 	kind := traceKinds[class]
@@ -149,6 +149,12 @@ func traceRow(r collect.Row, offset time.Duration) (collect.Row, time.Time, int6
 	}
 	seq, _ := asInt(r["seq"])
 	spid, _ := asInt(r["session_id"])
+	wrote := at
+	if w, ok := r["wrote_local"].(string); ok {
+		if t, err := time.Parse("2006-01-02T15:04:05.999", w); err == nil {
+			wrote = t
+		}
+	}
 	out := collect.Row{"kind": "trace", "trace_kind": kind, "event_class": class,
 		"event_at": at.Add(-offset).UTC().Format(time.RFC3339Nano), "logged_local": localText(at),
 		"event_key":     hash16(localText(at) + "|" + strconv.FormatInt(seq, 10) + "|" + strconv.FormatInt(class, 10) + "|" + strconv.FormatInt(spid, 10)),
@@ -163,7 +169,7 @@ func traceRow(r collect.Row, offset time.Duration) (collect.Row, time.Time, int6
 	default:
 		out["file_name"], out["duration_us"], out["pages"] = r["file_name"], r["duration_us"], r["pages"]
 	}
-	return out, at, seq, true
+	return out, wrote, seq, true
 }
 
 // RunBatches reads the trace past its cursor in batches, each stored with the cursor moved.
@@ -208,13 +214,22 @@ func (defaultTraceCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ I
 	if err != nil {
 		return err
 	}
+	// the cursor's instant back on the server's clock: by the offset of the read that wrote it or by today's,
+	// whichever is earlier (after a clock set forward the stored one is the clock the events were written in; after
+	// a clock set back today's reads the hour again, and the key stores it once)
 	startAt, startSeq, file := localNow.Add(-defaultTraceFirstRead), int64(0), base
 	if cur.Found && !cur.LastEventAt.IsZero() {
-		startAt, startSeq = cur.LastEventAt.UTC().Add(offset), cur.LastSeq
+		at := cur.LastEventAt.UTC()
+		startAt, startSeq = at.Add(offset), cur.LastSeq
+		if s := at.Add(time.Duration(cur.FileOffset) * time.Minute); s.Before(startAt) {
+			startAt, startSeq = s, cur.LastSeq
+		}
 		if cur.FileName != "" {
 			file = cur.FileName
 		}
 	}
+	nowInstant := localNow.Add(-offset)
+	offMinutes := int64(offset / time.Minute)
 	state := readerStateRow(defaultTraceSource, readerRead, "")
 	var notes []string
 	var scanned int64
@@ -234,6 +249,14 @@ func (defaultTraceCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ I
 			return failed("the default trace could not be read", err)
 		}
 		if len(rows) == 0 {
+			// nothing past the cursor in an older file set (the log folder moved, the old files stayed): the file
+			// written now is the next read's start
+			if scanned == 0 && file != path.String && cur.Found {
+				c := Cursor{FileName: path.String, FileOffset: offMinutes, LastEventAt: cur.LastEventAt, LastSeq: cur.LastSeq}
+				if err := emit([]collect.Row{c.Row(defaultTraceSource)}); err != nil {
+					return fmt.Errorf("import the default trace's cursor: %w", err)
+				}
+			}
 			break
 		}
 		batch := make([]collect.Row, 0, len(rows)+1)
@@ -252,9 +275,15 @@ func (defaultTraceCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ I
 			break
 		}
 		newest = startAt.Add(-offset)
+		cseq := startSeq
+		if newest.After(nowInstant) {
+			// never past the server's now (the hour read again after a clock set back): the next read starts at now
+			// and reads the whole instant again
+			newest, cseq = nowInstant, 0
+		}
 		caughtUp := len(rows) < defaultTraceBatch
 		// a read that reached the end leaves the file written now as the next read's start
-		next := Cursor{FileName: file, LastEventAt: newest, LastSeq: startSeq}
+		next := Cursor{FileName: file, FileOffset: offMinutes, LastEventAt: newest, LastSeq: cseq}
 		if caughtUp {
 			next.FileName = path.String
 		}
