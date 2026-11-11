@@ -211,9 +211,11 @@ for i in "${!CTS[@]}"; do
   SAT=$(sq "$ct" "SELECT CAST(SUM(CASE WHEN type_desc = 'ROWS' THEN 1 ELSE 0 END) AS varchar(5)) + '|' + CAST(SUM(CASE WHEN type_desc = 'LOG' THEN 1 ELSE 0 END) AS varchar(5)) + '|' + CAST(SUM(CASE WHEN type_desc = 'ROWS' THEN CAST(size AS bigint) * 8192 ELSE 0 END) AS varchar(20)) + '|' + CAST((SELECT cpu_count FROM sys.dm_os_sys_info) AS varchar(5)) + '|' + CASE WHEN MIN(CASE WHEN type_desc = 'ROWS' THEN size END) = MAX(CASE WHEN type_desc = 'ROWS' THEN size END) THEN 'true' ELSE 'false' END FROM tempdb.sys.database_files")
   IFS='|' read -r SND SNL SBYTES SCPU SEVEN <<<"$SAT"
   REC=$(( SCPU < 8 ? SCPU : 8 )); INS=$([ "$SND" -lt "$REC" ] && echo true || echo false)
-  MO=$(sq "$ct" "SELECT CASE WHEN CAST(SERVERPROPERTY('IsTempDBMetadataMemoryOptimized') AS int) = 1 THEN 'true' ELSE 'false' END")
+  # (memory-optimized tempdb metadata arrived in SQL Server 2019: before it the server has no such property and
+  # the collector stores no value, which both sides say as n/a)
+  MO=$(sq "$ct" "SELECT CASE WHEN SERVERPROPERTY('IsTempDBMetadataMemoryOptimized') IS NULL THEN 'n/a' WHEN CAST(SERVERPROPERTY('IsTempDBMetadataMemoryOptimized') AS int) = 1 THEN 'true' ELSE 'false' END")
   WANT="$SND|$SNL|$SBYTES|$SCPU|$REC|$INS|$SEVEN|false|false|false|$MO"
-  GOTT=$(q "select data_files || '|' || log_files || '|' || data_bytes || '|' || cpu_count || '|' || recommended_files || '|' || insufficient_files || '|' || even_size || '|' || tf1117 || '|' || tf1118 || '|' || flags_required || '|' || memopt_metadata from pgvigil.mssql_tempdb where instance_id=$iid")
+  GOTT=$(q "select data_files || '|' || log_files || '|' || data_bytes || '|' || cpu_count || '|' || recommended_files || '|' || insufficient_files || '|' || even_size || '|' || tf1117 || '|' || tf1118 || '|' || flags_required || '|' || coalesce(memopt_metadata::text, 'n/a') from pgvigil.mssql_tempdb where instance_id=$iid")
   echo "  tempdb (data|log|bytes|cpus|recommended|insufficient|even|1117|1118|flags required|memopt): $GOTT"
   [ "$GOTT" = "$WANT" ] || fail "D: tempdb $GOTT, sa reads $WANT"
   [ "$(q "select count(*) from pgvigil.mssql_tempdb_files where instance_id=$iid")" = $((SND + SNL)) ] || fail "D: the file rows"
