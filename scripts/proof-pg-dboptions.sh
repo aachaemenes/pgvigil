@@ -61,6 +61,8 @@
 #     the read within the xids used since; ok on a fresh server; dbo_x frozen (VACUUM FREEZE) and a few xids used after:
 #     in a transaction rolled back, with the stored freeze age set just above dbo_x's age, dbo_x is ok and every older
 #     database warn (at least one each), and an age written as 1.2 billion is crit.
+#     [Run 5, box job s163-proof5, 15:40 PST: C green up to the instance read, which read 262144 warn as expected; the
+#     flag came back as psql's 't' for 'true': the query casts it to text since.]
 #     [Run 4, box job s163-proof4, 15:39 PST: C's hand read differed only in 'timezone' against the stored 'TimeZone':
 #     the comparison is case-blind on the name since, the spelling checked on its own.]
 #     [Run 2, box job s163-proof2, 15:18 PST: the freeze age of 100 found no database at or past it ('warn 0 0': a
@@ -391,7 +393,7 @@ for V in $VERSIONS; do
   rules_text
   collect "$V" instance
   WM=$(q "select value || ' ' || status from pgvigil.pg_setting_rules($ID) where setting = 'work_mem'")
-  WF=$(q "select server_from_override from pgvigil.pg_override_rules($ID) where scope = 'all roles' and setting = 'work_mem'")
+  WF=$(q "select server_from_override::text from pgvigil.pg_override_rules($ID) where scope = 'all roles' and setting = 'work_mem'")
   [[ "$WM $WF" == "262144 warn true" ]] || fail "C: after an instance read the server's work_mem and the override's flag read '$WM $WF', expected '262144 warn true'"
   ok "C: an instance read takes ALTER ROLE ALL SET work_mem as the server's (262144, yellow); the override says its server value is read under it"
 
