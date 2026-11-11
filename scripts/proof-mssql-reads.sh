@@ -100,8 +100,8 @@
 #     stay; it returns the rows it removed (3).
 #  Y. the API on X's imported rows (no server needed, so every statement of the four handlers runs in the short
 #     mode too): /api/mssql/procs gives p100 26 executions and 2.6 ms of CPU, p103 10, p101 6, p102 2, the most
-#     duration first; p100 at 0.65 executions a minute over the 2,400 s its eight reads cover, 3.00 a minute in its
-#     busiest read, 0.100 ms of CPU a run, 5 reads; one database with 4 procedures and 44 executions; a series of 8
+#     duration first; p100 at 0.65 executions a minute over the 2,400 s the instance's eight reads cover, 3.00 a
+#     minute in its busiest read, 0.100 ms of CPU a run, in 5 of the reads; one database with 4 procedures and 44 executions; a series of 8
 #     steps whose executions per second add up to 44 / 300; database= keeps 4 rows, an unknown database none and a
 #     series of zeros; db_id= and object= give p100's reads newest first (2, 4, 1, 4, 15); a db_id that is no number
 #     and an unknown part are refused with 400. /api/mssql/indexlocks gives t200.ix1 5 waits and 320 ms, t201.ix2 7
@@ -130,6 +130,10 @@
 set -euo pipefail
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
 for t in psql curl jq docker; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
+# the pages are asked for (PGVIGIL_SHOTS): their tools are checked now, not after every other part has passed
+if [ -n "${PGVIGIL_SHOTS:-}" ] && [ -z "${PGVIGIL_NO_MSSQL:-}" ]; then
+  for t in chromium node; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine (PGVIGIL_SHOTS asks for the pages)" >&2; exit 1; }; done
+fi
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SUF=$RANDOM
 WORK=$(mktemp -d); CFG=$WORK/cfg.yaml; OUT=$WORK/out
@@ -151,6 +155,7 @@ sqs() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S 
 cleanup() {
   rc=$?
   for p in "$SRV_PID" "$GRANT_PID" "$HOLD_PID" "$CHR_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
+  [ -n "$CHR_PID" ] && { wait "$CHR_PID" 2>/dev/null || true; }   # Chromium writes its profile folder until it is gone
   if [ -n "$MADE_CT" ]; then
     docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2   # only the container this run made
   else
@@ -162,7 +167,7 @@ cleanup() {
   fi
   [ -n "$MADE_PG13" ] && { docker rm -f "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
   [ -n "$MADE_REPO" ] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
-  rm -rf "$WORK"
+  rm -rf "$WORK" || echo "CLEANUP: $WORK not removed" >&2
   exit $rc
 }
 trap cleanup EXIT
@@ -178,7 +183,7 @@ fi
 
 echo "--- the SQL Server"
 if [ -n "$NOMS" ]; then
-  echo "  NOT USED (PGVIGIL_NO_MSSQL=1): the parts A, B, C, E, F, P and D's real grant are not run"
+  echo "  NOT USED (PGVIGIL_NO_MSSQL=1): the parts A, B, C, E, F, P, S and D's real grant are not run"
   ADDR=none
 elif [ -n "$CT" ]; then
   ADDR=${PGVIGIL_MSSQL_ADDR:-localhost:1433}
@@ -604,7 +609,7 @@ YP=$(objs "$WORK/yprocs.json" procs | jq -r '.[] | select(.object_name == "p100"
 YS=$(objs "$WORK/yprocs.json" series | jq -r '(length | tostring) + "|" + ([.[] | .executions_s] | add | tostring)')
 [ "${YS%%|*}" = 8 ] && near "${YS#*|}" "$(awk 'BEGIN { printf "%.5f", 44 / 300 }')" 0.005 || fail "Y: the procedures' series: $YS (want 8 steps whose executions per second add up to 44 / 300)"
 [ "$(curl -fs "$U/mssql/procs?instance=$xp&$W&database=appdb" | jq '.procs.rows | length')" = 4 ] || fail "Y: database=appdb"
-[ "$(curl -fs "$U/mssql/procs?instance=$xp&$W&database=no_such_db" | jq '(.procs.rows | length) + ([.series.rows[] | .[1]] | add // 0 | . * 1000 | round)')" = 0 ] || fail "Y: an unknown database keeps rows or a series above zero"
+[ "$(curl -fs "$U/mssql/procs?instance=$xp&$W&database=no_such_db" | jq -r '"\(.procs.rows | length)|\(.series.rows | length)|\([.series.rows[] | .[1]] | add // 0 | . * 1000 | round)"')" = "0|8|0" ] || fail "Y: an unknown database: rows|steps|the series' sum is not 0|8|0"
 [ "$(curl -fs "$U/mssql/procs?instance=$xp&$W&db_id=5&object=100&part=intervals" | jq -r '.intervals as $t | ($t.columns | index("executions")) as $i | [$t.rows[] | .[$i]] | map(tostring) | join(",")')" = "2,4,1,4,15" ] || fail "Y: p100 read by read (newest first)"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/procs?instance=$xp&$W&db_id=x&object=1")" = 400 ] || fail "Y: a db_id that is no number was not refused"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/procs?instance=$xp&$W&part=nope")" = 400 ] || fail "Y: an unknown part was not refused"
@@ -626,7 +631,7 @@ YW=$(jq -r '"\(.cores.rows | length)|\(.rates.rows | length)|\(.types.rows | len
 [ "$YW" = "0|0|true|7" ] || fail "Y: waitinfo for an instance without waits or schedulers: $YW (want 0|0|true|7)"
 [ "$(objs "$WORK/ywi.json" families | jq -r '.[0].prefix')" = LCK_M_ ] || fail "Y: the families' order"
 # a wait sample and a schedulers row by hand: 6,000 ms over a 60 s read on 4 schedulers = 100 ms/sec, 25 per core
-q "select pgvigil.ensure_month_partition('mssql_wait_sample', now()), pgvigil.ensure_month_partition('mssql_sched_sample', now())" >/dev/null
+q "select pgvigil.ensure_month_partition('mssql_wait_sample', now() - interval '5 minutes'), pgvigil.ensure_month_partition('mssql_sched_sample', now() - interval '6 minutes')" >/dev/null
 q "insert into pgvigil.mssql_wait_sample (instance_id, snapshot_at, wait_type, is_benign, waiting_tasks, wait_ms, signal_ms, interval_secs) values
      ($xp, now() - interval '5 minutes', 'LCK_M_U', false, 2, 6000, 10, 60), ($xp, now() - interval '5 minutes', 'WRITELOG', false, 9, 300, 3, 60);
    insert into pgvigil.mssql_sched_sample (instance_id, snapshot_at, schedulers, cpu_count) values ($xp, now() - interval '6 minutes', 4, 4)" >/dev/null
@@ -637,7 +642,7 @@ YR=$(objs "$WORK/ywi2.json" rates | jq -r '[.[] | "\(.wait_type):\(.ms_per_sec *
 echo "Y: OK"
 
 if [ -n "$NOMS" ]; then
-  echo "NOT RUN (PGVIGIL_NO_MSSQL=1): A, B, C, E, F, P and D's real grant, every one of which needs a SQL Server"
+  echo "NOT RUN (PGVIGIL_NO_MSSQL=1): A, B, C, E, F, P, S and D's real grant, every one of which needs a SQL Server"
   echo "proof-mssql-reads: the parts without a SQL Server passed ($M_NOTE, D on stored rows, G, X, Y); this is NOT the proof's PASS"
   exit 0
 fi
@@ -667,7 +672,8 @@ echo "P: OK"
 
 if [ -n "${PGVIGIL_SHOTS:-}" ]; then
   echo "--- S. the pages in a headless Chromium, both themes, 1600 wide"
-  for t in chromium node; do command -v $t >/dev/null || fail "S: $t is not on this machine (PGVIGIL_SHOTS asks for the pages)"; done
+  # the binary embeds internal/web/dist: a bundle built before the pages existed serves none of them
+  curl -fs "http://127.0.0.1:$PORT/app.js" | grep -q 'max executions /min' || fail "S: the served bundle has no Procedures page: run 'npm run build' in web/ before the proof (the binary embeds internal/web/dist)"
   mkdir -p "$PGVIGIL_SHOTS"
   CDP=$(freeport 19222 19260) || fail "S: no free port for Chromium"
   # shellcheck disable=SC2086  # PGVIGIL_CHROMIUM_FLAGS is a list of flags (--no-sandbox where Chromium runs as root)
@@ -719,47 +725,51 @@ for (const theme of ['light', 'dark']) {
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
   const T = `[${theme}] `;
 
-  check(await go(`#/mssqlproperties?i=${a.iid}`, 'property'), T + 'Properties rendered');
+  check(await go(`#/mssqlproperties?i=${a.iid}&w=6h`, 'property'), T + 'Properties rendered');
   const p = await pv(`const t = gridOf('property'); return { n: rowsOf(t).length, cpu: text(t, rowWith(t, 'property', 'Logical CPUs'), 'value'), plan: text(t, rowWith(t, 'property', 'Power plan'), 'value') };`);
-  check(p.n === 35 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (p.plan ?? '') !== '', T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
+  // on a Linux host the power plan is not read and the cell says so; elsewhere it names a plan
+  check(p.n === 35 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (a.linux ? p.plan === 'not read' : !!p.plan && p.plan !== 'not read'), T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
   await shot('properties', theme);
 
-  check(await go(`#/mssqlprocs?i=${a.iid}`, 'total duration (sec)'), T + 'Procedures rendered');
+  check(await go(`#/mssqlprocs?i=${a.iid}&w=6h`, 'total duration (sec)'), T + 'Procedures rendered');
   const pr = await pv(`const t = gridOf('total duration (sec)'); const tr = rowsOf(t).find(r => text(t, r, 'name') === 'pv_work' && text(t, r, 'database') === ${JSON.stringify(a.db)}); return tr ? { ex: text(t, tr, 'executions'), sch: text(t, tr, 'schema') } : null;`);
   check(pr && pr.ex === '11' && pr.sch === 'dbo', T + `Procedures: pv_work's row ${JSON.stringify(pr)} (want 11 executions under dbo)`);
-  await pv(`const t = gridOf('total duration (sec)'); const tr = rowsOf(t).find(r => text(t, r, 'name') === 'pv_work' && text(t, r, 'database') === ${JSON.stringify(a.db)}); cell(t, tr, 'name').querySelector('button').click(); return 'ok';`);
+  await pv(`const t = gridOf('total duration (sec)'); const tr = rowsOf(t).find(r => text(t, r, 'name') === 'pv_work' && text(t, r, 'database') === ${JSON.stringify(a.db)}); cell(t, tr, 'name')?.querySelector('button')?.click(); return 'ok';`);
   const drilled = await until(`(() => { ${fns} return rowsOf(gridOf('interval')).length === 2 && [...document.querySelectorAll('main h3')].some(h => h.textContent.includes('pv_work, read by read')); })()`);
   check(drilled, T + 'Procedures: the name opens the procedure read by read (2 reads)');
   await shot('procedures', theme);
 
-  check(await go(`#/mssqlindexlocks?i=${a.iid}`, 'row lock waits'), T + 'Index locks rendered');
-  const ix = await pv(`const t = gridOf('row lock waits'); const tr = rowWith(t, 'index', 'PK_pv_lock'); return tr ? { table: text(t, tr, 'table'), waits: text(t, tr, 'row lock waits'), esc: text(t, tr, 'escalations') } : null;`);
-  check(ix && ix.table === 'pv_lock' && Number(ix.waits) >= 1 && Number(ix.esc) >= 1, T + `Index locks: PK_pv_lock's row ${JSON.stringify(ix)}`);
+  check(await go(`#/mssqlindexlocks?i=${a.iid}&w=6h`, 'row lock waits'), T + 'Index locks rendered');
+  const ix = await pv(`const t = gridOf('row lock waits'); const tr = rowsOf(t).find(r => text(t, r, 'index') === 'PK_pv_lock' && text(t, r, 'database') === ${JSON.stringify(a.db)}); return tr ? { table: text(t, tr, 'table'), waits: text(t, tr, 'row lock waits'), esc: text(t, tr, 'escalations') } : null;`);
+  const num = v => Number(String(v ?? '').replace(/[^0-9]/g, '') || NaN);   // a count as the page groups it (1,000)
+  check(ix && ix.table === 'pv_lock' && num(ix.waits) >= 1 && num(ix.esc) >= 1, T + `Index locks: PK_pv_lock's row ${JSON.stringify(ix)}`);
   await shot('indexlocks', theme);
 
-  check(await go(`#/mssql_waits?i=${a.iid}`, 'wait time (ms/sec/core)'), T + 'Waits rendered with the rate columns');
+  check(await go(`#/mssql_waits?i=${a.iid}&w=6h`, 'wait time (ms/sec/core)'), T + 'Waits rendered with the rate columns');
   const w = await pv(`const t = gridOf('wait time (ms/sec/core)'); const tr = rowWith(t, 'wait type', ${JSON.stringify(a.lck)}); return tr ? { rate: text(t, tr, 'wait time (ms/sec)'), core: text(t, tr, 'wait time (ms/sec/core)'), desc: text(t, tr, 'description') } : null;`);
   check(w && w.rate !== '' && w.core !== '' && (w.desc ?? '').length > 40, T + `Waits: ${a.lck} ${JSON.stringify(w)?.slice(0, 160)}`);
   await shot('waits', theme);
 
   check(await go('#/running', 'max memory grant'), T + 'the fleet Running queries page rendered with the grant columns');
   const f = await pv(`const t = gridOf('max memory grant'); const tr = rowWith(t, 'instance', ${JSON.stringify(a.fleet)}); const pg = rowWith(t, 'instance', ${JSON.stringify(a.pg)});
-    return { ms: tr ? ['max memory grant', 'sum of memory grants', 'tempdb latch waits', 'tempdb latch wait (ms)', 'tempdb allocation waits', 'tempdb allocation wait (ms)'].map(c => text(t, tr, c)).join('|') : null,
-             pg: pg ? ['max memory grant', 'tempdb latch waits'].map(c => text(t, pg, c)).join('|') : null };`);
-  check(f.ms === '4.0 MB|5.0 MB|2|800|1|500' && f.pg === '|', T + `the fleet row of the stored snapshot '${f.ms}' (want 4.0 MB|5.0 MB|2|800|1|500), a PostgreSQL row '${f.pg}' (want empty cells)`);
+    const six = ['max memory grant', 'sum of memory grants', 'tempdb latch waits', 'tempdb latch wait (ms)', 'tempdb allocation waits', 'tempdb allocation wait (ms)'];
+    return { ms: tr ? six.map(c => text(t, tr, c)).join('|') : null, pg: pg ? six.map(c => text(t, pg, c)).join('|') : null };`);
+  check(f.ms === '4.0 MB|5.0 MB|2|800|1|500' && f.pg === '|||||', T + `the fleet row of the stored snapshot '${f.ms}' (want 4.0 MB|5.0 MB|2|800|1|500), a PostgreSQL row '${f.pg}' (want six empty cells)`);
   await shot('fleet', theme);
 }
 ws.close();
 process.exit(fails ? 1 : 0);
 JS
   ARGS=$(jq -nc --arg cdp "$CDP" --arg u "http://127.0.0.1:$PORT" --arg shots "$PGVIGIL_SHOTS" --arg db "$DB" --argjson iid "$iid" --arg fleet "proof-reads-fleet-$SUF" --arg pg "proof-reads-pg-$SUF" --arg lck "$LT" \
-    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck}')
+    --argjson linux "$([ "$HOSTP" = Linux ] && echo true || echo false)" \
+    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck, linux: $linux}')
   node "$WORK/ui.mjs" "$ARGS" || fail "S: the pages"
-  kill "$CHR_PID" 2>/dev/null || true; CHR_PID=
+  kill "$CHR_PID" 2>/dev/null || true; wait "$CHR_PID" 2>/dev/null || true; CHR_PID=
   echo "S: OK (ten screenshots in $PGVIGIL_SHOTS: reads-<page>-<theme>.png)"; S_NOTE=", S"
 else
   echo "--- S. the pages in a browser: NOT RUN (PGVIGIL_SHOTS names no folder)"; S_NOTE=""
 fi
+[ -n "$S_NOTE" ] && PAGES="" || PAGES=", the pages in a browser (part S was not run)"
 
-echo "NOT PROVEN HERE: a real power plan (Windows), a real tempdb page latch wait, SQL Server 2016-2019, RDS, Managed Instance, a daylight-saving change, a list cut on a real server, the pages' accessibility (proof-a11y)"
+echo "NOT PROVEN HERE: a real power plan (Windows), a real tempdb page latch wait, SQL Server 2016-2019, RDS, Managed Instance, a daylight-saving change, a list cut on a real server, the pages' accessibility (proof-a11y)$PAGES"
 echo "proof-mssql-reads: PASS ($M_NOTE, $A_NOTE, B, C, $D_NOTE, E, F, G, X, Y, P$S_NOTE; SQL Server $([ -n "$OWN" ] && echo "in its own container" || echo "sandbox $CT"))"
