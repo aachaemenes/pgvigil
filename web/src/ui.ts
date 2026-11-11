@@ -64,27 +64,113 @@ export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[] }
 const models = new WeakMap<HTMLTableElement, GridModel>();
 export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
 
-// grid renders rows as a sortable table; clicking a header sorts by it.
+// a cell's words as the screen means them: a statement shown as its first characters carries the whole text in
+// data-full, a colour-only status cell its words in data-text (export.ts reads cells the same way)
+export function cellText(e: Element): string {
+  return e.querySelector('[data-full]')?.getAttribute('data-full')
+    ?? ((e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''));
+}
+
+// copyText puts text on the clipboard (the async API on a secure origin, a hidden textarea elsewhere)
+export async function copyText(t: string): Promise<void> {
+  try { await navigator.clipboard.writeText(t); return; } catch { /* not a secure origin, or refused: the fallback */ }
+  const ta = el('textarea', { 'aria-hidden': 'true', style: 'position:fixed;left:-9999px' }) as HTMLTextAreaElement;
+  ta.value = t; document.body.append(ta); ta.select();
+  try { document.execCommand('copy'); } finally { ta.remove(); }
+}
+
+// a filter's test on one cell's words: '>5', '<10', '>=', '<=', '=3' compare a number column numerically; anything
+// else is a case-insensitive part of the words ('!x' = does not contain x)
+function passes(f: string, words: string, raw: unknown, num: boolean): boolean {
+  const m = num ? /^(>=|<=|>|<|=)\s*(-?[\d.]+)$/.exec(f) : null;
+  if (m && raw != null && raw !== '') {
+    const v = Number(raw), x = Number(m[2]);
+    return m[1] === '>' ? v > x : m[1] === '<' ? v < x : m[1] === '>=' ? v >= x : m[1] === '<=' ? v <= x : v === x;
+  }
+  const w = words.toLowerCase();
+  return f.startsWith('!') ? !w.includes(f.slice(1).toLowerCase()) : w.includes(f.toLowerCase());
+}
+
+// one small menu at a time (the grids' copy menu): Escape, a click elsewhere or a choice closes it and gives the focus back
+let openMenu: { box: HTMLElement; back: HTMLElement | null } | null = null;
+function closeMenu() { if (!openMenu) return; const m = openMenu; openMenu = null; m.box.remove(); m.back?.focus(); }
+document.addEventListener('mousedown', e => { if (openMenu && !openMenu.box.contains(e.target as Node)) closeMenu(); });
+// a page change or a scroll leaves no menu behind (the page under it is gone or has moved)
+const dropMenu = () => { if (openMenu) { openMenu.box.remove(); openMenu = null; } };
+window.addEventListener('hashchange', dropMenu);
+window.addEventListener('scroll', dropMenu, true);
+function showMenu(x: number, y: number, items: [string, () => void][], back: HTMLElement | null) {
+  closeMenu();
+  const box = el('div', { class: 'menu', role: 'menu', style: `left:${x}px;top:${y}px` });
+  for (const [label, act] of items) {
+    const b = el('button', { type: 'button', role: 'menuitem' }, label);
+    b.addEventListener('click', () => { closeMenu(); act(); });
+    box.append(b);
+  }
+  box.addEventListener('keydown', e => {
+    const bs = [...box.querySelectorAll('button')], i = bs.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'Escape') { e.preventDefault(); closeMenu(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); bs[(i + 1) % bs.length].focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); bs[(i - 1 + bs.length) % bs.length].focus(); }
+  });
+  document.body.append(box);
+  openMenu = { box, back };
+  (box.querySelector('button') as HTMLButtonElement).focus();
+}
+
+// grid renders rows as a sortable table; clicking a header sorts by it. Every grid also has (Darling's grids):
+// a filter per column (the funnel button in its header opens the filter row; '>5', '<10', '!text' as in passes()),
+// and a copy menu (right-click, or the menu key / Shift+F10 on the grid): the cell, its row, or every row shown, as
+// tab-separated text with the headers. The export and the copy take the rows the filter leaves.
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
   if (rows.length === 0) return el('p', { class: 'empty' }, empty);
   let sortKey = '', asc = true;
   let shown = rows;
+  const filters = new Map<string, string>();
   const table = el('table', { class: 'grid' });
   models.set(table, { cols, rows: () => shown });
   const thead = el('thead'), tbody = el('tbody');
-  const head = el('tr');
+  const head = el('tr'), filterRow = el('tr', { class: 'filters', hidden: '' });
+  const inputs = new Map<string, HTMLInputElement>();
+  const filterBtns: HTMLButtonElement[] = [];
   for (const c of cols) {
-    const th = el('th', c.num ? { class: 'num' } : {}, c.label ?? c.key);
+    const name = c.label ?? c.key;
+    const fb = el('button', { type: 'button', class: 'filter-btn', title: 'Filter ' + name, 'aria-label': 'Filter ' + name, 'aria-expanded': 'false' }) as HTMLButtonElement;   // its glyph is CSS (::before), so a header's text stays its label
+    filterBtns.push(fb);
+    fb.addEventListener('click', e => {
+      e.stopPropagation();
+      const open = filterRow.hasAttribute('hidden');
+      if (open) filterRow.removeAttribute('hidden');
+      for (const b of filterBtns) b.setAttribute('aria-expanded', String(open || !filterRow.hasAttribute('hidden')));
+      inputs.get(c.key)!.focus();
+    });
+    const th = el('th', c.num ? { class: 'num' } : {}, name, fb);
     th.addEventListener('click', () => {
       asc = sortKey === c.key ? !asc : true; sortKey = c.key;
       draw();
     });
     head.append(th);
+    const inp = el('input', { type: 'search', class: 'filter', 'aria-label': 'Filter ' + name, placeholder: c.num ? '>, <, =' : 'contains' }) as HTMLInputElement;
+    inp.addEventListener('input', () => {
+      const v = inp.value.trim();
+      if (v) filters.set(c.key, v); else filters.delete(c.key);
+      fb.classList.toggle('on', !!v);
+      draw();
+    });
+    inputs.set(c.key, inp);
+    filterRow.append(el('td', c.num ? { class: 'num' } : {}, inp));
   }
-  thead.append(head);
+  thead.append(head, filterRow);
   table.append(thead, tbody);
+  const fmtCell = (c: Col, r: Record<string, unknown>) => { const v = r[c.key]; return c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v)); };
+  const words = (out: string | Node) => typeof out === 'string' ? out : cellText(el('span', {}, out instanceof Node ? out.cloneNode(true) : String(out)));
+  const count = el('p', { class: 'meta filter-count', role: 'status' });
   function draw() {
-    const data = [...rows];
+    let data = [...rows];
+    if (filters.size) {
+      const active = cols.filter(c => filters.has(c.key));
+      data = data.filter(r => active.every(c => passes(filters.get(c.key)!, words(fmtCell(c, r)), r[c.key], !!c.num)));
+    }
     if (sortKey) {
       const col = cols.find(c => c.key === sortKey)!;
       data.sort((a, b) => {
@@ -95,11 +181,12 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       });
     }
     shown = data;
+    count.textContent = filters.size ? `${data.length} of ${rows.length} rows shown (filtered)` : '';
     tbody.replaceChildren(...data.map(r => {
       const tr = el('tr');
       for (const c of cols) {
         const v = r[c.key];
-        const out = c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v));
+        const out = fmtCell(c, r);
         const base = c.num ? 'num' : c.wide ? 'wide' : '';
         const extra = c.cls ? c.cls(v, r) : '';
         const cl = [base, extra].filter(Boolean).join(' ');
@@ -112,7 +199,23 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     }));
   }
   draw();
-  return el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
+  const wrap = el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
+  const tsv = (trs: Element[]) => trs.map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
+  const header = () => cols.map(c => c.label ?? c.key).join('\t');
+  wrap.addEventListener('contextmenu', e => {
+    const td = (e.target as Element).closest('tbody td');
+    const items: [string, () => void][] = [];
+    if (td) {
+      items.push(['Copy cell', () => { void copyText(cellText(td)); }]);
+      items.push(['Copy row', () => { void copyText(header() + '\n' + tsv([td.parentElement!])); }]);
+    }
+    items.push([filters.size ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => { void copyText(header() + '\n' + tsv([...tbody.children])); }]);
+    e.preventDefault();
+    const r = (e.target as Element).getBoundingClientRect();
+    const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;
+    showMenu(x, y, items, (td as HTMLElement | null) ?? wrap);
+  });
+  return el('div', { class: 'grid-box' }, count, wrap);
 }
 
 export function badge(text: string, kind: string): HTMLElement {

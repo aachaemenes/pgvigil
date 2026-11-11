@@ -65,6 +65,7 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
                                             value: (_u: uPlot, v: number | null) => v == null ? '' : fmt(v) }))],
     bands: o.stacked ? series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : undefined,
     axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis }],
+    plugins: [tooltipPlugin(fmt)],
     scales: { x: { time: true }, ...(o.stacked ? { y: { range: (_u: uPlot, _min: number, max: number): uPlot.Range.MinMax => [0, max > 0 ? max * 1.05 : 1] } } : {}) },
   };
   // size to the container once it is in the page
@@ -73,9 +74,52 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     if (!holder.isConnected) return;     // the page was replaced before this frame
     // a panel that redraws itself (the Storage tab's days selector) leaves its old charts off the page: free them
     for (let i = live.length - 1; i >= 0; i--) if (!live[i].root.isConnected) live.splice(i, 1)[0].destroy();
-    live.push(new uPlot(opts, data, holder));
+    const u = new uPlot(opts, data, holder);
+    live.push(u);
+    isolateOnDoubleClick(u);
   });
   return box;
+}
+
+// a legend entry: a click shows or hides its series (uPlot's own); a double-click shows that series alone, and a
+// second double-click on the one series left shows them all again (Darling's charts)
+function isolateOnDoubleClick(u: uPlot) {
+  u.root.querySelectorAll('.u-legend .u-series').forEach((row, i) => {
+    if (i === 0) return;   // the time column
+    row.addEventListener('dblclick', e => {
+      e.preventDefault();
+      const alone = u.series.every((s, j) => j === 0 || (j === i) === !!s.show);
+      u.batch(() => { for (let j = 1; j < u.series.length; j++) u.setSeries(j, { show: alone || j === i }); });
+    });
+  });
+}
+
+// the crosshair's readout: the time and each shown series' value beside the cursor (the legend above carries the
+// same values for a screen reader; this box is for the eye and is hidden from assistive technology)
+function tooltipPlugin(fmt: (v: number) => string): uPlot.Plugin {
+  let tip: HTMLElement;
+  return {
+    hooks: {
+      init: u => { tip = el('div', { class: 'u-tip', 'aria-hidden': 'true', hidden: '' }); u.over.append(tip); },
+      setCursor: u => {
+        const { left, top, idx } = u.cursor;
+        if (idx == null || left == null || left < 0 || top == null) { tip.hidden = true; return; }
+        const t = new Date((u.data[0][idx] as number) * 1000).toLocaleString(undefined, { hour12: false });
+        const lines = u.series.slice(1).map((s, j) => {
+          const v = u.data[j + 1][idx];
+          const c = typeof s.stroke === 'function' ? (s.stroke as unknown as (u: uPlot, i: number) => string)(u, j + 1) : String(s.stroke ?? '');
+          return s.show && v != null ? el('div', {}, el('span', { class: 'u-tip-key', style: `background:${c}` }), `${s.label}: ${fmt(v as number)}`) : null;
+        }).filter((x): x is HTMLDivElement => x !== null);
+        if (!lines.length) { tip.hidden = true; return; }
+        tip.replaceChildren(el('div', { class: 'u-tip-time' }, t), ...lines);
+        tip.hidden = false;
+        const w = u.over.clientWidth, flip = left > w / 2;
+        tip.style.left = flip ? '' : `${left + 12}px`;
+        tip.style.right = flip ? `${w - left + 12}px` : '';
+        tip.style.top = `${Math.max(0, top - 10)}px`;
+      },
+    },
+  };
 }
 
 // One share of a donutChart: its label, its value, the page it opens (optional).

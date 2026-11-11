@@ -114,13 +114,13 @@ const text = (e: Element) => e.querySelector('[data-full]')?.getAttribute('data-
 // a heading's own words, without its 'what is this' button (sqlview.ts): they name a sheet and a CSV file
 const headingText = (e: Element) => {
   const c = e.cloneNode(true) as Element;
-  c.querySelectorAll('.whatis').forEach(b => b.remove());
+  c.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove());
   return text(c);
 };
 
 function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const ths = [...table.querySelectorAll('thead th')];
-  const cols = ths.map(text);
+  const cols = ths.map(headingText);   // a header's words without its filter button (ui.ts grid)
   const numCol = ths.map(h => h.classList.contains('num'));
   const trs = [...table.querySelectorAll('tbody tr')];
   const m = gridModel(table);
@@ -151,8 +151,13 @@ export function sections(root: ParentNode, fallback: string): Section[] {
     if (e.tagName !== 'TABLE') { heading = headingText(e) || fallback; continue; }
     const t = e as HTMLTableElement;
     // a 'the newest 500 of 1,234 samples' line right above the grid rides into the Summary sheet: the rows taken are not all
-    const prev = (t.parentElement?.classList.contains('grid-wrap') ? t.parentElement : t).previousElementSibling;
-    const note = prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : undefined;
+    // ui.ts grid: table in .grid-wrap in .grid-box, whose first child is the 'n of m rows shown (filtered)' line
+    const wrap = t.parentElement?.classList.contains('grid-wrap') ? t.parentElement : t;
+    const box = wrap.parentElement?.classList.contains('grid-box') ? wrap.parentElement : wrap;
+    const prev = box.previousElementSibling;
+    const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
+    const notes = [prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered/.test(filtered) ? filtered : ''].filter(Boolean);
+    const note = notes.length ? notes.join('; ') : undefined;
     out.push({ name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note });
   }
   return out;

@@ -206,3 +206,18 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 .seg button.toggle::before { content: ""; display: inline-block; width: .8rem; height: .8rem; margin-right: .4rem; vertical-align: -.1rem;
   border: 1px solid var(--muted); border-radius: 2px; box-sizing: border-box; }
 .seg button.toggle[aria-pressed="true"]::before { content: ""; background: var(--accent); border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--bg); }
+/* the shared frame (ui.ts grid, chart.ts): the filter button in a header, the filter row, the copy menu, the crosshair readout */
+.grid th .filter-btn::before { content: "\25BE"; }
+.grid th .filter-btn { border: none; background: none; color: var(--muted); padding: 0 .15rem; margin-left: .25rem; font-size: .8em; cursor: pointer; opacity: .55; }
+.grid th:hover .filter-btn, .grid th .filter-btn:focus-visible, .grid th .filter-btn.on { opacity: 1; }
+.grid th .filter-btn.on { color: var(--accent); }
+.grid tr.filters td { padding: .2rem .4rem; background: var(--card); }
+.grid tr.filters input.filter { width: 100%; min-width: 5rem; box-sizing: border-box; font: inherit; font-size: 12px; padding: .1rem .3rem; border: 1px solid var(--line); border-radius: 3px; background: var(--bg); color: var(--fg); }
+.grid-box .filter-count:empty { display: none; }
+.menu { position: fixed; z-index: 50; display: flex; flex-direction: column; min-width: 11rem; padding: .25rem 0; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
+.menu button { border: none; background: none; color: inherit; text-align: left; padding: .35rem .8rem; font: inherit; cursor: pointer; }
+.menu button:hover, .menu button:focus-visible { background: var(--side); outline: none; }
+.u-tip { position: absolute; z-index: 10; pointer-events: none; padding: .3rem .5rem; font-size: 12px; white-space: nowrap; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
+.u-tip-time { color: var(--muted); margin-bottom: .15rem; }
+.u-tip-key { display: inline-block; width: .6rem; height: .6rem; margin-right: .35rem; border-radius: 2px; vertical-align: 0; }
+.u-legend .u-series { cursor: pointer; }

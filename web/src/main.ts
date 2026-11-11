@@ -118,6 +118,15 @@ function applyTheme(t: string) {
 applyTheme(lsGet('pgvigil.theme') ?? 'auto');
 // under 'auto' a change of the system's light / dark setting redraws the page, so the charts take the new colours
 window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if ((lsGet('pgvigil.theme') ?? 'auto') === 'auto' && !loginShown) void render(); });
+// ---- auto refresh: how often a live page reads again (Darling's interval select; Off pauses it), remembered per browser
+const refreshChoices: [string, string][] = [['30', '30 s'], ['60', '1 min'], ['300', '5 min'], ['900', '15 min'], ['0', 'Off (paused)']];
+function refreshSecs(): number { const v = Number(lsGet('pgvigil.refresh') ?? '30'); return refreshChoices.some(([k]) => Number(k) === v) ? v : 30; }
+function refreshSelect(): HTMLElement {
+  const sel = el('select', { 'aria-label': 'Auto refresh of a live page', title: 'Auto refresh of a live page' }) as HTMLSelectElement;
+  for (const [k, label] of refreshChoices) sel.append(el('option', { value: k, ...(Number(k) === refreshSecs() ? { selected: '' } : {}) }, 'Auto refresh: ' + label));
+  sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
+  return sel;
+}
 function themeButton(): HTMLElement {
   const cur = lsGet('pgvigil.theme') ?? 'auto';
   const b = el('button', { type: 'button', title: 'Theme: auto follows the system' }, 'Theme: ' + cur);
@@ -220,7 +229,7 @@ async function render(force = false) {
   const bar = $('bar');
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');
   refresh.addEventListener('click', () => { void render(true); });
-  bar.replaceChildren(rangePicker(ctx), refresh, exportButtons(ctx),
+  bar.replaceChildren(rangePicker(ctx), refresh, refreshSelect(), exportButtons(ctx),
     el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })),
     themeButton());
   if (session.login && session.user) {
@@ -256,8 +265,8 @@ async function render(force = false) {
   destroyCharts();
   $('main').replaceChildren(view);
   const live = ctx.instance ? liveInstance : liveRoot;
-  if (live.has(ctx.tab) && isLive(ctx) && !ctx.at) {
-    timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, 30000);
+  if (live.has(ctx.tab) && isLive(ctx) && !ctx.at && refreshSecs() > 0) {
+    timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, refreshSecs() * 1000);
   }
 }
 
@@ -274,7 +283,7 @@ const setBand = () => {
 };
 setBand();
 if (typeof ResizeObserver !== 'undefined') { const ro = new ResizeObserver(setBand); if (headEl) ro.observe(headEl); if (tabsEl) ro.observe(tabsEl); }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined && !loginShown) void render(true); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined && !loginShown && refreshSecs() > 0) void render(true); });
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
 (async () => {
   try { session = await get<Session>('session'); } catch (e) { if (e instanceof LoginRequired) { showLogin(); return; } }
