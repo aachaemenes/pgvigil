@@ -103,10 +103,108 @@ SELECT snapshot_at, checkpoints_timed, checkpoints_req,
  WHERE interval_secs > 0
  ORDER BY snapshot_at`
 
-// sqlIOState is what the page needs to say why a panel is empty: the platform, the version (pg_stat_io from 16)
-// and track_io_timing.
+// sqlIOCheckpointTotals is the checkpointer's counters summed over the window (the intervals across a stats reset
+// left out): timed and requested checkpoints, the write and sync time and the buffers written. Before 17 they are
+// pg_stat_bgwriter's, from 17 pg_stat_checkpointer's (num_timed, num_requested, write_time, sync_time,
+// buffers_written: the dbstats collection reads the view the version has). The counters count a checkpoint that WAL
+// volume forced as requested; the log's start line tells the two apart (sqlIOCheckpointCauses).
+const sqlIOCheckpointTotals = `
+SELECT sum(checkpoints_timed) AS timed, sum(checkpoints_req) AS requested,
+       round((sum(checkpoint_write_time) / 1000)::numeric, 3) AS write_secs,
+       round((sum(checkpoint_sync_time) / 1000)::numeric, 3) AS sync_secs,
+       sum(buffers_checkpoint) AS buffers, count(*) AS intervals
+  FROM pgvigil.serverstats_rate($1, $2, $3, make_interval(secs => $4))
+ WHERE interval_secs > 0 AND NOT reset`
+
+// sqlIOCheckpointLines: the log's checkpoint lines (log_checkpoints; kind 'checkpoint' since 0079) of the window and
+// the hour before it (a start before the window pairs with its completion inside it); $1 instance, $2 from, $3 to
+// (typed: '$2 - interval' alone resolves $2 as an interval).
+const sqlIOCheckpointLines = `
+WITH c AS (
+  SELECT e.snapshot_at, e.pid, e.detail,
+         substring(e.detail FROM '^(checkpoint|restartpoint) ') AS what,
+         substring(e.detail FROM '^(?:checkpoint|restartpoint) (starting|complete):') AS phase
+    FROM pgvigil.log_events e
+   WHERE e.instance_id = $1 AND e.kind = 'checkpoint' AND e.snapshot_at > $2::timestamptz - interval '1 hour' AND e.snapshot_at <= $3::timestamptz
+)`
+
+// checkpointCause names a start line's flags (in a column called flags) by the cause pgBadger charts: shutdown, end of
+// recovery, wal (xlog before PostgreSQL 10), time, otherwise requested (a CHECKPOINT command, immediate / fast, force:
+// CREATE DATABASE, a base backup, pg_start_backup).
+const checkpointCause = `CASE WHEN flags IS NULL THEN 'start not read'
+            WHEN flags ~ '\mshutdown\M' THEN 'shutdown'
+            WHEN flags ~ '\mend-of-recovery\M' THEN 'end of recovery'
+            WHEN flags ~ '\m(wal|xlog)\M' THEN 'wal'
+            WHEN flags ~ '\mtime\M' THEN 'time'
+            ELSE 'requested' END`
+
+// sqlIOCheckpointCauses counts the start lines of the window by cause.
+const sqlIOCheckpointCauses = sqlIOCheckpointLines + `,
+s AS (SELECT c.what, btrim(substring(c.detail FROM 'starting:(.*)$')) AS flags FROM c WHERE c.phase = 'starting' AND c.snapshot_at > $2::timestamptz)
+SELECT s.what, ` + checkpointCause + ` AS cause, count(*) AS checkpoints
+  FROM s
+ GROUP BY 1, 2
+ ORDER BY 3 DESC, 1, 2`
+
+// sqlIOCheckpointLog is one row per completed checkpoint of the window, newest first (at most 200): its start, the
+// flags and cause, and the figures of the complete line (buffers and their share of shared_buffers, WAL files added /
+// removed / recycled, write, sync and total seconds, distance and estimate; PostgreSQL 13 to 18 write the same fields,
+// 18 adds the SLRU buffers and the LSNs, not read here). The start is the complete line's own 'STARTED:' line where
+// the parser read both lines in one pass (paired in log order, exact with a whole-seconds prefix too); otherwise the
+// latest start line of the same process within a day before it and after that process's previous completion, looked
+// up through log_events_at for these 200 rows only (two back-to-back checkpoints read in different passes, with a
+// whole-seconds prefix, can pair wrong here: a stated limit); none = 'start not read'.
+const sqlIOCheckpointLog = `
+WITH d AS (
+  SELECT e.snapshot_at, e.pid, e.detail,
+         substring(e.detail FROM '^(checkpoint|restartpoint) ') AS what,
+         (substring(e.detail FROM '\nSTARTED: (\S+)'))::timestamptz AS st_at,
+         substring(e.detail FROM '\nSTARTED: \S+ ?([^\n]*)') AS st_flags
+    FROM pgvigil.log_events e
+   WHERE e.instance_id = $1 AND e.kind = 'checkpoint' AND e.snapshot_at > $2::timestamptz AND e.snapshot_at <= $3::timestamptz
+     AND e.detail ~ '^(checkpoint|restartpoint) complete:'
+   ORDER BY e.snapshot_at DESC
+   LIMIT 200
+),
+p AS (
+  SELECT d.*, coalesce(d.st_at, fb.snapshot_at) AS started_at,
+         coalesce(d.st_flags, btrim(substring(fb.detail FROM 'starting:(.*)$'))) AS flags
+    FROM d
+    LEFT JOIN LATERAL (
+      SELECT x.snapshot_at, x.detail
+        FROM pgvigil.log_events x
+       WHERE d.st_at IS NULL AND x.instance_id = $1 AND x.kind = 'checkpoint' AND x.pid = d.pid
+         AND x.snapshot_at <= d.snapshot_at AND x.snapshot_at > d.snapshot_at - interval '1 day'
+         AND x.detail LIKE d.what || ' starting:%'
+         AND x.snapshot_at > coalesce((
+               SELECT max(y.snapshot_at) FROM pgvigil.log_events y
+                WHERE y.instance_id = $1 AND y.kind = 'checkpoint' AND y.pid = d.pid
+                  AND y.snapshot_at < d.snapshot_at AND y.snapshot_at > d.snapshot_at - interval '1 day'
+                  AND y.detail LIKE d.what || ' complete:%'), '-infinity')
+       ORDER BY x.snapshot_at DESC
+       LIMIT 1) fb ON true
+)
+SELECT d.snapshot_at AS completed_at, d.started_at, d.what, d.flags, ` + checkpointCause + ` AS cause,
+       (substring(d.detail FROM 'wrote (\d+) buffers'))::bigint AS buffers,
+       (substring(d.detail FROM 'buffers \(([0-9.]+)%\)'))::numeric AS buffers_pct,
+       (regexp_match(d.detail, '(\d+) WAL file\(s\) added, (\d+) removed, (\d+) recycled'))[1]::int AS wal_added,
+       (regexp_match(d.detail, '(\d+) WAL file\(s\) added, (\d+) removed, (\d+) recycled'))[2]::int AS wal_removed,
+       (regexp_match(d.detail, '(\d+) WAL file\(s\) added, (\d+) removed, (\d+) recycled'))[3]::int AS wal_recycled,
+       (substring(d.detail FROM 'write=([0-9.]+) s'))::numeric AS write_secs,
+       (substring(d.detail FROM 'sync=([0-9.]+) s'))::numeric AS sync_secs,
+       (substring(d.detail FROM 'total=([0-9.]+) s'))::numeric AS total_secs,
+       (substring(d.detail FROM 'distance=(\d+) kB'))::bigint AS distance_kb,
+       (substring(d.detail FROM 'estimate=(\d+) kB'))::bigint AS estimate_kb
+  FROM p d
+ ORDER BY d.snapshot_at DESC`
+
+// sqlIOState is what the page needs to say why a panel is empty: the platform, the version (pg_stat_io from 16),
+// track_io_timing, and log_checkpoints where it is not the default (on from PostgreSQL 15, off before).
 const sqlIOState = `
-SELECT i.platform, st.server_version_num, st.track_io_timing, st.snapshot_at
+SELECT i.platform, st.server_version_num, st.track_io_timing, st.snapshot_at,
+       (SELECT x ->> 'value'
+          FROM jsonb_array_elements(CASE WHEN jsonb_typeof(st.non_default_settings) = 'array' THEN st.non_default_settings ELSE '[]' END) x
+         WHERE x ->> 'name' = 'log_checkpoints' LIMIT 1) AS log_checkpoints_set
   FROM pgvigil.instances i LEFT JOIN pgvigil.instance_state st USING (instance_id)
  WHERE i.instance_id = $1`
 
@@ -120,7 +218,8 @@ SELECT severity, setting, value, suggested, platforms, detail, source, at
  ORDER BY 1, 2`
 
 // IO is one instance's IO tab: the platform's storage metrics (CloudWatch), pg_stat_io, pg_stat_database's IO
-// time, the checkpointer, the top statements by IO and the IO findings, over from..to.
+// time, the checkpointer (its counters, and the log's checkpoint lines with their causes and times: parity3 task
+// 126), the top statements by IO and the IO findings, over from..to.
 func (s *Server) IO(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {
@@ -137,6 +236,9 @@ func (s *Server) IO(w http.ResponseWriter, r *http.Request) {
 		{"pgio_by", sqlIOByKind, []any{id, from, to, io}},
 		{"dbtime", sqlIODBTime, []any{id, from, to, db}},
 		{"checkpoints", sqlIOCheckpoints, []any{id, from, to, db}},
+		{"checkpoint_totals", sqlIOCheckpointTotals, []any{id, from, to, db}},
+		{"checkpoint_causes", sqlIOCheckpointCauses, []any{id, from, to}},
+		{"checkpoint_log", sqlIOCheckpointLog, []any{id, from, to}},
 		{"statements", `SELECT * FROM pgvigil.top_statements_by($1, $2, $3, 'io', 20)`, []any{id, from, to}},
 		{"findings", sqlIOFindings, []any{id}},
 	})

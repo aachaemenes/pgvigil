@@ -124,9 +124,11 @@ func TestParsePganalyze(t *testing.T) {
 	if cr := byPID[6106]; len(cr) != 2 || cr[0].Kind != Crash || cr[0].Statement != "select crashme('secret-arg')" || strings.Contains(cr[0].Detail, "secret-arg") || cr[1].Kind != Crash {
 		t.Errorf("the crash: %+v", cr)
 	}
-	for _, pid := range []int{6116, 6117} {
-		if len(byPID[pid]) != 0 {
-			t.Errorf("pid %d must give no event: %+v", pid, byPID[pid])
-		}
+	if len(byPID[6116]) != 0 {
+		t.Errorf("pid 6116 must give no event: %+v", byPID[6116])
+	}
+	// a checkpoint's progress line is a Checkpoint event since 0079 (the IO page's causes and times)
+	if ck := byPID[6117]; len(ck) != 1 || ck[0].Kind != Checkpoint || ck[0].Detail != "checkpoint starting: time" {
+		t.Errorf("pid 6117 must give one checkpoint event: %+v", ck)
 	}
 }

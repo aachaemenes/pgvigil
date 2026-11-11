@@ -1,0 +1,20 @@
+2026-11-10 10:00:00 UTC::@:[900]:LOG:  checkpoint starting: time
+2026-11-10 10:00:30 UTC::@:[900]:LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.302 s, sync=0.004 s, total=0.317 s; sync files=2, longest=0.003 s, average=0.002 s; distance=0 kB, estimate=0 kB
+2026-11-10 10:01:00 UTC::@:[900]:LOG:  checkpoint starting: immediate force wait
+2026-11-10 10:01:01 UTC::@:[900]:LOG:  checkpoint complete: wrote 12794 buffers (78.1%), wrote 2 SLRU buffers; 0 WAL file(s) added, 3 removed, 14 recycled; write=0.107 s, sync=0.169 s, total=0.358 s; sync files=740, longest=0.002 s, average=0.001 s; distance=283369 kB, estimate=431721 kB; lsn=99/9C2EC5F0, redo lsn=99/9A601258
+2026-11-10 10:02:00 UTC::@:[901]:LOG:  restartpoint starting: wal
+2026-11-10 10:03:00 UTC:10.0.0.5(40001):app@shop:[1001]:ERROR:  duplicate key value violates unique constraint "orders_pkey"
+2026-11-10 10:03:00 UTC:10.0.0.5(40001):app@shop:[1001]:DETAIL:  Key (id)=(42) already exists.
+2026-11-10 10:03:00 UTC:10.0.0.5(40001):app@shop:[1001]:STATEMENT:  insert into orders values (42, 'secret')
+2026-11-10 10:03:05 UTC:10.0.0.5(40002):app@shop:[1002]:ERROR:  duplicate key value violates unique constraint "items_pkey"
+2026-11-10 10:03:05 UTC:10.0.0.5(40002):app@shop:[1002]:DETAIL:  Key (id)=(7) already exists.
+2026-11-10 10:03:06 UTC:10.0.0.5(40003):app@shop:[1003]:WARNING:  there is no transaction in progress
+2026-11-10 10:03:07 UTC:10.0.0.5(40004):app@shop:[1004]:ERROR:  invalid input syntax for type integer: "abc"
+2026-11-10 10:03:07 UTC:10.0.0.5(40004):app@shop:[1004]:CONTEXT:  SQL statement "select 'abc'::int"
+	PL/pgSQL function f() line 3 at PERFORM
+2026-11-10 10:03:08 UTC:10.0.0.5(40005):app@shop:[1005]:LOG:  connection received: host=10.0.0.5 port=40005
+2026-11-10 10:03:09 UTC::@:[900]:LOG:  checkpoints are occurring too frequently (24 seconds apart)
+2026-11-10 10:04:00 UTC::@:[900]:LOG:  checkpoint starting: wal
+2026-11-10 10:04:40 UTC::@:[900]:LOG:  checkpoint complete: wrote 9000 buffers (55.0%); 0 WAL file(s) added, 0 removed, 33 recycled; write=39.100 s, sync=0.200 s, total=40.000 s; sync files=10, longest=0.010 s, average=0.001 s; distance=540221 kB, estimate=540221 kB
+2026-11-10 10:04:40 UTC::@:[900]:LOG:  checkpoint starting: wal
+2026-11-10 10:05:20 UTC::@:[900]:LOG:  checkpoint complete: wrote 8000 buffers (49.0%); 0 WAL file(s) added, 0 removed, 32 recycled; write=39.000 s, sync=0.300 s, total=40.000 s; sync files=10, longest=0.010 s, average=0.001 s; distance=530000 kB, estimate=540221 kB

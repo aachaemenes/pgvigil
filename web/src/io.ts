@@ -1,11 +1,12 @@
 // The IO views (task 43): an instance's IO tab - the platform's storage metrics (CloudWatch, RDS and Aurora),
 // pg_stat_io, pg_stat_database's IO time, the checkpointer, the top statements by IO and the IO findings - and
 // the DMS page's IO panel for the replication instances. Each reads the API itself; the window comes from the
-// shell (pages.ts hands it over), like the borrowed views.
+// shell (pages.ts hands it over), like the borrowed views. Parity3 task 126: the checkpoint section adds the counters'
+// totals and write / sync time, and the log's checkpoint lines (causes, one row per checkpoint).
 import { get, Row, rowsOf, Table } from './api';
 import { stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';
 import { whatIsThis } from './sqlview';
 
 export interface Window { from: string; to: string }
@@ -88,7 +89,73 @@ const findingCols: Col[] = [
   { key: 'at', label: 'when', fmt: fmtTime },
 ];
 
-type IOReply = Record<'state' | 'platform_latest' | 'platform' | 'pgio' | 'pgio_by' | 'dbtime' | 'checkpoints' | 'statements' | 'findings', Table | null>;
+type IOReply = Record<'state' | 'platform_latest' | 'platform' | 'pgio' | 'pgio_by' | 'dbtime' | 'checkpoints' | 'checkpoint_totals'
+  | 'checkpoint_causes' | 'checkpoint_log' | 'statements' | 'findings', Table | null>;
+
+// ---- checkpoints from the server log (parity3 task 126; pgBadger's Checkpoints tab, PMM 13) -------------------------
+
+const secsTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' s';
+const causeBadge = (v: unknown) => badge(String(v ?? ''), v === 'wal' ? 'warn' : v === 'requested' ? 'warn' : v === 'start not read' ? '' : 'ok');
+
+const checkpointLogCols: Col[] = [
+  { key: 'completed_at', label: 'completed', fmt: fmtTime },
+  { key: 'started_at', label: 'started', fmt: fmtTime },
+  { key: 'what', label: 'kind' },
+  { key: 'cause', fmt: causeBadge },
+  { key: 'flags' },
+  { key: 'buffers', label: 'buffers written', num: true },
+  { key: 'buffers_pct', label: 'of shared_buffers', num: true, fmt: v => v == null ? '' : fmtNum(v) + ' %' },
+  { key: 'write_secs', label: 'write', num: true, fmt: secsTxt },
+  { key: 'sync_secs', label: 'sync', num: true, fmt: secsTxt },
+  { key: 'total_secs', label: 'total', num: true, fmt: secsTxt },
+  { key: 'wal_added', label: 'WAL added', num: true }, { key: 'wal_removed', label: 'removed', num: true }, { key: 'wal_recycled', label: 'recycled', num: true },
+  { key: 'distance_kb', label: 'distance', num: true, fmt: v => v == null ? '' : fmtBytes(Number(v) * 1024) },
+  { key: 'estimate_kb', label: 'estimate', num: true, fmt: v => v == null ? '' : fmtBytes(Number(v) * 1024) },
+];
+
+// logCheckpointsOn: log_checkpoints from the non-default settings, else the version's default (on from 15).
+function logCheckpointsOn(st: Row, ver: number): boolean | null {
+  const set = st.log_checkpoints_set;
+  if (set != null) return set === 'on' || set === 'true' || set === '1';
+  if (!ver) return null;
+  return ver >= 150000;
+}
+
+// checkpointSection: the checkpointer's counters over the window (pg_stat_bgwriter before 17, pg_stat_checkpointer
+// from 17), their charts, and from the log the causes and one row per checkpoint.
+function checkpointSection(d: IOReply, st: Row, ver: number): HTMLElement[] {
+  const ck = rowsOf(d.checkpoints), tot = rowsOf(d.checkpoint_totals)[0] ?? {};
+  const causes = rowsOf(d.checkpoint_causes), log = rowsOf(d.checkpoint_log);
+  const view = ver >= 170000 ? 'pg_stat_checkpointer' : 'pg_stat_bgwriter';
+  const on = logCheckpointsOn(st, ver);
+  const out: HTMLElement[] = [];
+  out.push(el('h3', {}, 'Checkpoints ', whatIsThis(`The counters are ${view}'s (pg_stat_bgwriter before PostgreSQL 17, pg_stat_checkpointer from 17), summed over `
+    + 'the window: a checkpoint WAL volume forced counts as requested there. The log\'s start line names the cause (time, wal, requested: a CHECKPOINT command, '
+    + 'a base backup, CREATE DATABASE; shutdown, end of recovery) and its complete line the buffers written and the write, sync and total time '
+    + '(log_checkpoints; on by default from PostgreSQL 15). Many wal checkpoints: max_wal_size is small for the write rate.', 'Checkpoints')));
+  out.push(el('div', { class: 'tiles' },
+    tile('timed', fmtNum(tot.timed ?? 0)),
+    tile('requested', fmtNum(tot.requested ?? 0), Number(tot.requested) > Number(tot.timed ?? 0) ? 'warn' : ''),
+    tile('write time', secsTxt(tot.write_secs ?? 0)),
+    tile('sync time', secsTxt(tot.sync_secs ?? 0)),
+    tile('buffers written', fmtNum(tot.buffers ?? 0))));
+  out.push(el('div', { class: 'charts' },
+    lineChart('Checkpoints per interval', ck, [{ key: 'checkpoints_timed', label: 'timed' }, { key: 'checkpoints_req', label: 'requested' }]),
+    lineChart('Checkpoint write and sync time per interval', ck, [{ key: 'write_secs', label: 'write' }, { key: 'sync_secs', label: 'sync' }], v => fmtNum(v) + ' s'),
+    lineChart('Checkpoint buffers / s', ck, [{ key: 'buffers_checkpoint_s', label: 'written' }])));
+  out.push(el('h4', {}, 'From the server log'));
+  if (!log.length && !causes.length) {
+    out.push(el('p', { class: 'empty' }, on === false
+      ? 'log_checkpoints is off on this server: the log has no checkpoint lines (the counters above still count them).'
+      : 'No checkpoint line read in this window: the log readers need the server log (an aws: block on RDS and Aurora, the serverlog door on-prem), and log_checkpoints on.'));
+    return out;
+  }
+  out.push(el('div', { class: 'two' },
+    el('div', {}, el('h4', {}, 'Causes (start lines)'), grid(causes, [{ key: 'what', label: 'kind' }, { key: 'cause', fmt: causeBadge }, { key: 'checkpoints', num: true }], 'No start line in this window.')),
+    el('div', {}, el('h4', {}, 'Checkpoints read'), el('p', { class: 'meta' }, `${fmtNum(log.length)} completed in this window${log.length >= 200 ? ' (the newest 200)' : ''}.`))));
+  out.push(grid(log, checkpointLogCols, 'No completed checkpoint in this window.'));
+  return out;
+}
 
 // ioView is one instance's IO tab over the window; label names the window in the heading.
 export async function ioView(instance: number, win: Window, label = ''): Promise<HTMLElement> {
@@ -140,11 +207,7 @@ export async function ioView(instance: number, win: Window, label = ''): Promise
     lineChart('IO time per second', dbt, [{ key: 'read_ms_s', label: 'read' }, { key: 'write_ms_s', label: 'write' }], ms),
     lineChart('Time per block read', dbt, [{ key: 'ms_per_blk_read', label: 'read' }], ms)));
 
-  sec.append(el('h3', {}, 'Checkpoints'));
-  const ck = rowsOf(d.checkpoints);
-  sec.append(el('div', { class: 'charts' },
-    lineChart('Checkpoints per interval', ck, [{ key: 'checkpoints_timed', label: 'timed' }, { key: 'checkpoints_req', label: 'requested' }]),
-    lineChart('Checkpoint buffers / s', ck, [{ key: 'buffers_checkpoint_s', label: 'written' }])));
+  sec.append(...checkpointSection(d, st, ver));
 
   sec.append(el('h3', {}, 'Top statements by IO'),
     el('p', { class: 'meta' }, 'Shared blocks read plus temp blocks read and written, over the window.'),
