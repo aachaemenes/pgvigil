@@ -86,6 +86,48 @@ One collector sends alerts: name the `alerts:` list in one configuration. A coll
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
 column; renamed, it is a new channel and sends the standing findings again.
 
+## Alert rules on a charted metric
+
+A finding is a rule pgvigil ships. An **alert rule** is one you make: any metric of an instance's
+[Metrics](metrics.md) page, above or below a value, for a number of minutes.
+
+- **The rule.** One metric (for example *Sessions: idle in transaction* or, on SQL Server, *Requests: processes
+  blocked*), `above` or `below`, a **warning** value, a **critical** value or both (critical at or beyond warning),
+  and **for n minutes** (0 to 1440; the default is 5). The values are in the metric's own unit, which the form names
+  (a count, percent, seconds, bytes per second).
+- **What it covers.** Every instance, the instances of one tag, or one instance. Where two rules on one metric cover
+  an instance, the narrower one is in force: an instance's own rule wins over a tag's, a tag's over the fleet's (two
+  tags of one instance: the newer rule). A tag or an instance rule is therefore that scope's **threshold override**,
+  in either direction: stricter or looser than the wider rule.
+- **One database.** A metric of the *Database* family (commits, cache hit ratio, temp bytes ...) can name a
+  database: the rule then watches that database's own series, and overrides nothing for the instance's summed
+  series.
+- **When it fires.** The alert sender judges every rule in force once a pass, on the samples the collector already
+  stores. A level is reached when the newest sample is beyond its value **and** the unbroken run of samples beyond
+  it spans the rule's minutes, measured from the run's first sample to its newest: a single late sample never fires
+  a rule by the clock alone. Until then the rule is *pending*. With 0 minutes the first sample beyond the value fires.
+- **No data is not a recovery.** A metric with no sample newer than its limit (10 minutes; 30 for the IO counters,
+  15 for the host) reads *no data*. A firing rule whose series stops is **held** open, and its alert says since when
+  no fresh sample came: the collector may be down, or the instance. It recovers when a sample inside the value
+  arrives.
+- **How it is sent.** A firing rule is a finding of source `alert rule`, so everything above applies unchanged: the
+  channels and their severity floors and scopes, the repeat interval, the recovery message after `clear_after`, quiet
+  hours, and acknowledge, mute, silence and blackout ([acknowledge.md](acknowledge.md)). A rise from warning to
+  critical is sent at once as *escalated*; a change of the rule's value keeps one alert open.
+- **Who judges.** The sender's pass. **With no channel configured no pass runs, and the rules are not judged**: the
+  Alert rules page says so, and the Metrics grid still colours its figures by the thresholds.
+
+Rules are made on the **Alert rules** page (a root tab: *New rule*) and from any row of an instance's Metrics grid
+(*New threshold*, *Edit*, *Override here*). Edits need the UI login and the actions door's audit login, as
+acknowledgements do; without them the pages are read only and say why. Nothing is updated in place except a rule's
+on / off switch: an edit ends the rule and writes its successor, an *End* keeps the row, and every attempt, refused
+ones included, is in the rule log with who and from where.
+
+Limits to know: a rule compares one sample series with a fixed value (no rate of change, no comparison with last
+week, no rule on a count of log events); the sender's cadence is one minute, so "for 0 minutes" still waits for the
+next pass; a counter's sample is its rate over the collection interval, and a counter reset gives no sample for that
+interval.
+
 ## Destinations and the rules they keep
 
 - **Only the configured destination.** A webhook's redirect is never followed: the send is refused, and the log says
@@ -108,6 +150,11 @@ column; renamed, it is a new channel and sends the standing findings again.
   repeat, recovery, the last send, the last attempt with its outcome and error, and whether the configuration still
   names the channel. Below them are the alerts open now and the send log of the time range.
 - **Findings** gains a column, *alerted*: when the finding was last sent and to which channels.
+- **Alert rules** (a root tab) lists the rules with their on / off switch, what each covers, where it is in force
+  and where it fires, when it last fired; under them the state of every rule per instance as the sender last judged
+  it, and the rule log. A firing rule is an open alert on the Alerts tab; it is not listed on the Findings tab.
+- **Metrics** (an instance tab) shows each counter's thresholds and colours its figures by them
+  ([metrics.md](metrics.md)).
 
 ## In the repository (migration 0059)
 
@@ -136,7 +183,32 @@ install), and fails with "permission denied" when it is the collector's login. O
 channels needs `alerts_dsn`: without an `alerts:` list, `pgvigil run` logs "alerts off" and never touches the alert
 tables, and `pgvigil alerts` prints "no channel configured: nothing sent" and exits 0 whatever the login.
 
+## In the repository (migration 0085)
+
+| Object | What it holds |
+|---|---|
+| `pgvigil.metric_catalog` | Every metric a rule may name (`family.metric`): engine, label, unit, whether it has a per-database series, how old its newest sample may be. |
+| `pgvigil.alert_rules` | The rules; an edit ends a row and writes its successor (`replaces`), so the table is its own history. |
+| `pgvigil.alert_rule_log` | Every attempt from the UI, done or refused: who, from where, what. Not purged, like the acknowledge log. |
+| `pgvigil.alert_rule_state` | The sender's last evaluation per rule in force, instance and series: `ok`, `pending`, `warning`, `critical` or `nodata`, held or not, the newest sample, since when. |
+| `pgvigil.alert_rule_fired` | Per rule: when it last began to fire, on which instance, how often. |
+| `pgvigil.alert_rule_scope`, `pgvigil.alert_rules_effective` | Every live rule on every instance it covers; the one in force per instance, metric and series. |
+| `pgvigil.alert_rule_findings` | The firing rows as findings; `pgvigil.alert_findings` (0059) lists them beside `pgvigil.findings`. |
+
+`pgvigil.alert_rules_run(at)` is the sender's call (its login needs nothing new: migration 0085 grants
+`pgvigil_alerter` the state tables). `pgvigil.alert_rule_eval(at)` is the same judgement read only, for a look by
+hand. `pgvigil.import_alert_rule(at, payload)` is the only way a rule is written: it runs as the owner for the
+collector role, which is the actions door's audit login, and checks what a rule may hold (a known metric, an instance
+of the metric's engine, one live rule per metric, scope and database).
+
 ## Proof
+
+`scripts/proof-alert-rules.sh` covers the rules on a sandbox PostgreSQL: the role contract (the collector writes
+rules only through the function, the sender stores the state and writes no rule, a reader reads); the write door
+(no session, no header, malformed and refused requests, a server without the login); a rule on real held sessions
+that stays pending under its minute, fires once, is not sent again, and clears once after the sessions end and the
+instance is read; a tag's rule winning over the fleet's in both directions; a rule on one database's series; edit,
+switch and end; the audit; and the migration and its functions on PostgreSQL 13.
 
 `scripts/proof-alerts.sh` runs on a sandbox PostgreSQL with the demo fleet, as a `pgvigil_alerter` login. It starts
 its own loopback SMTP sink and HTTP listener and covers these cases:
