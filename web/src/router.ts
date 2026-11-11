@@ -10,7 +10,7 @@ export interface Ctx {
   instance?: number;
   tag?: string;
   range: Range;
-  kind: string;          // counters kind
+  kind: string;          // the Metrics page's counter family (the old Counters kinds db, server, io, sessions still open theirs)
   logKind?: string;      // logs kind filter
   at?: string;           // activity snapshot
   task?: string;         // DMS task ARN
@@ -45,9 +45,9 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases' };
 export const instanceTabs: Record<string, string> = {
-  summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Counters', tables: 'Tables', vacuum: 'Vacuum',
+  summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
 };
@@ -58,7 +58,7 @@ const legacy: Record<string, string> = { overview: 'checks' };
 // rootTabs and instanceTabs still name every page; a group only says which pages share a strip.
 export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'alerts', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
+  { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
   { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
@@ -81,12 +81,12 @@ export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_deadlocks: 'Deadlocks',
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
-  mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB',
+  mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', counters: 'Metrics',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
-  { key: 'perf', name: 'Performance', tabs: ['mssqlcpu', 'mssqlmemory', 'mssqlfileio'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio'] },
   { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlactions'] },
@@ -121,7 +121,7 @@ export function parse(): Ctx {
     instance,
     tag: q.get('tag') ?? undefined,
     range: custom ? { from, to } : { preset: presets[w] || periods[w] ? w : '1h' },
-    kind: q.get('kind') ?? 'db',
+    kind: q.get('kind') ?? 'all',
     logKind: q.get('lk') ?? undefined,
     at: q.get('at') ?? undefined,
     task: q.get('task') ?? undefined,
@@ -151,6 +151,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     if (v !== undefined && v !== '') q.set(name, String(v));
   };
   if (c.tab === 'counters') page('kind', 'kind');
+  // the Metrics page's database cut stays on its own links: a range change keeps the database in view
+  if (keep && c.tab === 'counters') {
+    const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('mdb');
+    if (v) q.set('mdb', v);
+  }
   if (c.tab === 'logs') page('logKind', 'lk');
   if (c.tab === 'activity') { page('at', 'at'); page('minSecs', 'min'); page('st', 'st'); page('user', 'user'); page('db', 'db'); page('app', 'app'); }
   if (c.tab === 'dms') { page('task', 'task'); page('taskInstance', 'ti'); }

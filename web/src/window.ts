@@ -24,7 +24,7 @@ export async function longRunsSection(ctx: Ctx): Promise<HTMLElement> {
   else {
     const all = rowsOf(samples as Table).reverse();
     const shown = all.slice(0, 500);
-    if (all.length > shown.length) box.append(el('p', { class: 'meta' }, `The newest ${fmtNum(shown.length)} of ${fmtNum(all.length)} samples; the Counters tab charts them all.`));
+    if (all.length > shown.length) box.append(el('p', { class: 'meta' }, `The newest ${fmtNum(shown.length)} of ${fmtNum(all.length)} samples; the Metrics tab charts them all.`));
     box.append(grid(shown, sampleCols(ctx), 'No activity sample in this window.'));
   }
   return box;

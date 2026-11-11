@@ -121,8 +121,8 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     box.append(titled(lineChart('Temp', align(g, rowsOf(d.db), ['temp_bytes_s']), [{ key: 'temp_bytes_s', label: 'temp bytes/s' }], v => fmtBytes(v) + '/s'), 'Temp usage', to('counters', { kind: 'db' })));
   }
   sec.append(box);
-  const more = ms ? [['CPU', mssqlCpuTab], ['Memory', mssqlMemoryTab], ['File IO', mssqlFileIOTab], ['TempDB', mssqlTempdbTab], ['Waits', 'mssql_waits'], ['Running queries', 'mssql_running']]
-    : [['Load', 'load'], ['Counters', 'counters'], ['IO', 'io'], ['Host', 'host'], ['Waits', 'waits'], ['Memory', 'memory'], ['Pooler', 'pooler']];
+  const more = ms ? [['CPU', mssqlCpuTab], ['Memory', mssqlMemoryTab], ['File IO', mssqlFileIOTab], ['TempDB', mssqlTempdbTab], ['Metrics', 'counters'], ['Waits', 'mssql_waits'], ['Running queries', 'mssql_running']]
+    : [['Load', 'load'], ['Metrics', 'counters'], ['IO', 'io'], ['Host', 'host'], ['Waits', 'waits'], ['Memory', 'memory'], ['Pooler', 'pooler']];
   const nav = el('p', { class: 'meta' }, 'detail: ');
   more.forEach(([t, tab], i) => { nav.append(el('a', { href: to(tab) }, t)); if (i < more.length - 1) nav.append(' | '); });
   sec.append(nav);

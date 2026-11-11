@@ -4,7 +4,7 @@
 import { get, LoginRequired, post, Row, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget, tagsOf } from './fleet';
-import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, counters, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
+import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
 import { tablesView } from './borrowed';
 import { hostView } from './host';
 import { capacitySection, loadView } from './pi';
@@ -13,6 +13,8 @@ import { backupsView } from './backups';
 import { corruptionView } from './corruption';
 import { dbadashView } from './dbadash';
 import { alertsView } from './alerts';
+import { alertRulesView } from './alert_rules';
+import { metricsView } from './metrics';
 import { vacuumView } from './vacuum';
 import { extensionsView } from './extensions';
 import { versionsView } from './versions';
@@ -69,6 +71,7 @@ const mssqlPages: Record<string, Render> = {
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
   mssqlcpu: mssqlCpuView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+  counters: metricsView,
 };
 // a fleet page under a tag folder keeps that folder's instances (as the fleet Slow queries page does): the Jobs timeline, TempDB
 const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
@@ -79,9 +82,9 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)) };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)) };
 const instancePages: Record<string, Render> = {
-  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters, replication, jobs: jobsPgView, logs, dms, config,
+  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, logs, dms, config,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
   host: async c => { const s = await hostView(c); s.append(await capacitySection(c)); return s; },   // the Capacity section (Serverless v2) under the host's own
   storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),
