@@ -439,7 +439,7 @@ func (a Alert) line() string {
 type sender interface {
 	send(ctx context.Context, m Message) error
 	destination() string
-	perAlert() bool // true: one message per alert (the file drop)
+	perAlert() bool // true: one message per alert (the file drop, PagerDuty's events)
 }
 
 // refusedError marks a send refused for its destination (a redirect, a plain connection off loopback).
@@ -623,7 +623,10 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		c := byName[name]
 		var send, cleared []Alert
 		for _, a := range owed[name] {
-			if a.Event == "cleared" {
+			// a cleared finding (its instance retired, or the channel no longer covers it) is recorded without a
+			// message - nothing was fixed - except on PagerDuty, where the open incident must be resolved or it stays
+			// open for good (review 20261111-092424 B1)
+			if a.Event == "cleared" && c.Kind != "pagerduty" {
 				cleared = append(cleared, a)
 			} else {
 				send = append(send, a)

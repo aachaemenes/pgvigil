@@ -51,7 +51,7 @@ func TestPagerDutyEvents(t *testing.T) {
 		t.Error("pagerduty must send one event per alert")
 	}
 	at := time.Date(2026, 11, 11, 17, 0, 0, 0, time.UTC)
-	fire := Alert{Event: "firing", FindingKey: "autovacuum is off", Instance: "erp01", Severity: "critical", Source: "settings",
+	fire := Alert{Event: "firing", FindingKey: "5f0c2a9d8e7b6a5f4e3d2c1b0a9f8e7d", Instance: "erp01", Severity: "critical", Source: "settings",
 		Setting: "autovacuum", Value: "off", Suggested: "on", FindingAt: &at}
 	ctx := context.Background()
 	if err := c.sender.send(ctx, Message{Channel: "pd", SentAt: at, Alerts: []Alert{fire}}); err != nil {
@@ -68,7 +68,7 @@ func TestPagerDutyEvents(t *testing.T) {
 	if got[0]["event_action"] != "trigger" || got[1]["event_action"] != "resolve" {
 		t.Errorf("actions %v, %v", got[0]["event_action"], got[1]["event_action"])
 	}
-	if got[0]["dedup_key"] != "pgvigil:erp01:autovacuum is off" || got[1]["dedup_key"] != got[0]["dedup_key"] {
+	if got[0]["dedup_key"] != "pgvigil:erp01:5f0c2a9d8e7b6a5f4e3d2c1b0a9f8e7d" || got[1]["dedup_key"] != got[0]["dedup_key"] {
 		t.Errorf("dedup keys %v, %v", got[0]["dedup_key"], got[1]["dedup_key"])
 	}
 	if got[0]["routing_key"] != testPDKey {
@@ -80,6 +80,15 @@ func TestPagerDutyEvents(t *testing.T) {
 	}
 	if _, ok := got[1]["payload"]; ok {
 		t.Error("a resolve carries no payload")
+	}
+	// a cleared finding (its instance retired) resolves too: the pass sends it to this kind alone
+	clr := fire
+	clr.Event = "cleared"
+	if err := c.sender.send(ctx, Message{Channel: "pd", SentAt: at, Alerts: []Alert{clr}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[2]["event_action"] != "resolve" || got[2]["dedup_key"] != got[0]["dedup_key"] {
+		t.Errorf("cleared event %v", got[len(got)-1])
 	}
 	// a refused event: the error names the fault, never the key (even when the answer echoes it)
 	mu.Lock()
@@ -102,8 +111,11 @@ func TestPagerDutyEvents(t *testing.T) {
 func TestPagerDutyRefuses(t *testing.T) {
 	t.Setenv("PGV_TEST_PD", testPDKey)
 	t.Setenv("PGV_TEST_PD_SHORT", "abc")
+	t.Setenv("PGV_TEST_PD_RULESET", "R0123456789abcdef0123456789abcde")
+	t.Setenv("PGV_TEST_PD_ODD", "0123456789abcdef0123456789abcd-f")
 	for name, c := range map[string]string{
 		"inline key":  `{name: a, kind: pagerduty, pagerduty: {routing_key: ` + testPDKey + `}}`,
+		"odd key":     `{name: a, kind: pagerduty, pagerduty: {routing_key: env:PGV_TEST_PD_ODD}}`,
 		"short key":   `{name: a, kind: pagerduty, pagerduty: {routing_key: env:PGV_TEST_PD_SHORT}}`,
 		"other host":  `{name: a, kind: pagerduty, pagerduty: {routing_key: env:PGV_TEST_PD, url: "https://events.example.org/v2/enqueue"}}`,
 		"plain http":  `{name: a, kind: pagerduty, pagerduty: {routing_key: env:PGV_TEST_PD, url: "http://events.pagerduty.com/v2/enqueue"}}`,
@@ -117,6 +129,9 @@ func TestPagerDutyRefuses(t *testing.T) {
 			t.Errorf("%s: the error shows the key", name)
 		}
 	}
+	if _, err := Parse([]byte(`alerts: [{name: r, kind: pagerduty, pagerduty: {routing_key: env:PGV_TEST_PD_RULESET}}]`)); err != nil {
+		t.Errorf("a global ruleset key (R...) refused: %v", err)
+	}
 	st, err := Parse([]byte(`alerts: [{name: a, kind: pagerduty, pagerduty: {routing_key: env:PGV_TEST_PD}}, {name: b, kind: pagerduty, pagerduty: {routing_key: env:PGV_TEST_PD, url: "https://events.eu.pagerduty.com/v2/enqueue"}}]`))
 	if err != nil {
 		t.Fatal(err)
@@ -129,9 +144,10 @@ func TestPagerDutyRefuses(t *testing.T) {
 	}
 }
 
-// TestDedupKeyLong: a key past the API's 255 bytes becomes a stable hash.
+// TestDedupKeyLong: a key past the API's 255 bytes (an instance name over 214 bytes: a finding key is 32 hex) becomes
+// a stable hash.
 func TestDedupKeyLong(t *testing.T) {
-	a := Alert{Instance: "erp01", FindingKey: strings.Repeat("x", 300)}
+	a := Alert{Instance: strings.Repeat("x", 230), FindingKey: "5f0c2a9d8e7b6a5f4e3d2c1b0a9f8e7d"}
 	k := dedupKey(a)
 	if len(k) > maxDedupKey || k != dedupKey(a) || !strings.HasPrefix(k, "pgvigil:") {
 		t.Errorf("dedup key %q (%d bytes)", k, len(k))

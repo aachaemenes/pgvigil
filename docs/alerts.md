@@ -1,7 +1,8 @@
 # Alerts out
 
 pgvigil sends its findings to the channels your configuration names: an SMTP relay, a webhook (Microsoft Teams, Slack or
-a generic JSON body) and a file drop (one JSON file per alert, for a site with no way out). **Nothing is sent unless a
+a generic JSON body), PagerDuty (its Events API v2) and a file drop (one JSON file per alert, for a site with no way
+out). **Nothing is sent unless a
 channel is configured.** With no `alerts:` list pgvigil sends nothing, and the Alerts tab and the send log say so.
 
 The collector sends. It runs a pass every minute inside `pgvigil run`, and `pgvigil alerts -config pgvigil.yaml` runs
@@ -16,7 +17,7 @@ The `alerts:` list sits in `pgvigil.yaml` beside the rest:
 alerts_dsn: env:PGVIGIL_ALERTS_DSN   # the sender's login (IN ROLE pgvigil_alerter); default the repository's dsn
 alerts:
   - name: dba-mail                # lower-case letters, digits, '_', '.', '-'; unique
-    kind: smtp                    # smtp | webhook | file
+    kind: smtp                    # smtp | webhook | file | pagerduty
     min_severity: warning         # info | warning (the default) | critical
     instances: [erp01, crm01]     # optional
     tags: [env:prod]              # optional; an instance matches when it is listed or holds a listed tag
@@ -154,9 +155,11 @@ database that is later dropped stays held until someone ends the rule.
 - **PagerDuty** (`kind: pagerduty`, `pagerduty: {routing_key: env:PD_KEY}`, migration 0089) sends each alert as its own
   Events API v2 event: firing, escalated and repeat trigger, a recovery resolves, all under one dedup key per instance
   and finding (`pgvigil:<instance>:<finding>`, hashed past 255 bytes), so PagerDuty keeps one incident per finding and
-  closes it when the finding clears; `recovery: false` is refused for this kind. The routing key (the service's
+  closes it when the finding clears - also when the finding is cleared without a fix (the instance deactivated or
+  removed, the channel no longer covering it), which on the other kinds sends nothing; `recovery: false` is refused
+  for this kind. The routing key (the service's
   integration key) comes through `env:` or `file:` and is never shown or logged; the URL may name
-  events.pagerduty.com (the default) or events.eu.pagerduty.com only. A 429 is a failed send the next pass repeats.
+  events.pagerduty.com (the default) or events.eu.pagerduty.com only. A 429 or a 5xx is a failed send: the channel waits 1, 2, 4 ... 30 minutes and the next pass sends again.
 - **The air-gapped site** uses the file drop. pgvigil writes into a directory and the site's own tooling picks the
   files up.
 

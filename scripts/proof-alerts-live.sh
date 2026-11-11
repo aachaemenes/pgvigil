@@ -24,6 +24,9 @@
 #  R. the instance read again (the sandbox's real autovacuum is on: the finding leaves the view), a second pass: exit 0;
 #     one 'sent' row per channel with n_resolved >= 1 and the finding's key; alert_state's four rows of the finding
 #     cleared with recovery_sent_at set.
+#  C. [review 20261111-092424 B1] the finding staged again and a pass (four 'sent' rows firing it), then the instance
+#     deactivated and a pass: pd's row 'sent' with n_resolved >= 1 and the key (PagerDuty's incident resolved); mail,
+#     teams and slack one 'cleared' row each with the key (recorded, nothing sent: nothing was fixed).
 #  On the far side (Allen looks): one mail 'pgvigil: 1 new (1 critical)' and one '... resolved'; a Teams card and a Slack
 #  line for each; one PagerDuty incident opened then resolved, both events under the dedup key
 #  pgvigil:<instance>:<finding key>.
@@ -113,4 +116,17 @@ echo "R rows:"; rows "$TR" | sed 's/^/  /'
 [[ $(q "select count(*) from pgvigil.alert_state where setting = 'autovacuum' and instance_id = $PID and cleared_at is not null and recovery_sent_at is not null") == 4 ]] \
   || fail "R: alert_state: $(q "select string_agg(channel || ':' || (cleared_at is not null) || ':' || (recovery_sent_at is not null), ' ' order by channel) from pgvigil.alert_state where setting = 'autovacuum' and instance_id = $PID")"
 ok "R: the recovery sent to mail, teams, slack and pd; the four rows cleared"
+# ---- C: cleared without a fix - PagerDuty resolves, the others record it silently -----------------------------------
+q "update pgvigil.instance_state set non_default_settings = coalesce(non_default_settings, '[]'::jsonb) || '[{\"name\": \"autovacuum\", \"value\": \"off\"}]' where instance_id = $PID" >/dev/null
+TC1=$(q "select now()")
+pass C1
+[[ $(keyed "$TC1" "n_firing >= 1") == 4 ]] || fail "C1: not four 'sent' rows firing the finding again: $(rows "$TC1" | tr '\n' ' ')"
+q "update pgvigil.instances set is_active = false where instance_id = $PID" >/dev/null
+TC2=$(q "select now()")
+pass C2
+echo "C2 rows:"; rows "$TC2" | sed 's/^/  /'
+[[ $(keyed "$TC2" "n_resolved >= 1 and l.channel = 'pd'") == 1 ]] || fail "C2: pd did not send the resolve"
+[[ $(q "select string_agg(l.channel, ',' order by l.channel) from pgvigil.alert_log l where l.snapshot_at >= '$TC2' and l.outcome = 'cleared' and exists (select 1 from pgvigil.alert_state s where s.instance_id = $PID and s.setting = 'autovacuum' and s.finding_key = any (l.keys))") == "mail,slack,teams" ]] \
+  || fail "C2: the other channels' cleared rows: $(rows "$TC2" | tr '\n' ' ')"
+ok "C: cleared without a fix - pd resolved its incident, mail / teams / slack recorded it without a message"
 echo "PASS proof-alerts-live ($INST): look for 'pgvigil: 1 new (1 critical)' then '1 resolved' on each channel"

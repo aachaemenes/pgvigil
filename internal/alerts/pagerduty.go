@@ -19,7 +19,8 @@ import (
 
 // PagerDuty is a channel's pagerduty: block: the PagerDuty Events API v2. Each alert is its own event - firing,
 // escalated and repeat trigger, resolved resolves - under one dedup key per instance and finding, so PagerDuty opens
-// one incident per finding, folds the repeats into it and closes it when the finding clears. The routing key (the
+// one incident per finding, folds the repeats into it and closes it when the finding clears - also when it is cleared
+// without a fix (its instance retired, the channel narrowed), which on the other kinds sends nothing. The routing key (the
 // service's integration key) comes through env: or file: only and is never logged or shown; the UI shows the host.
 //
 //	pagerduty: {routing_key: env:PGVIGIL_PD_KEY}                  # url defaults to https://events.pagerduty.com/v2/enqueue
@@ -51,7 +52,8 @@ func (p *PagerDuty) build() (sender, error) {
 		return nil, err
 	}
 	key = strings.TrimSpace(key)
-	if len(key) != 32 || strings.Trim(key, "0123456789abcdefABCDEF") != "" {
+	// 32 characters: a service integration key (hex) or a global ruleset's (it starts with R); letters and digits only
+	if len(key) != 32 || strings.Trim(key, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
 		return nil, errors.New("pagerduty.routing_key is not a 32-character integration key (Events API v2)")
 	}
 	raw := strings.TrimSpace(p.URL)
