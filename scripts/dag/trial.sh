@@ -206,9 +206,11 @@ for _ in $(seq 1 72); do
 done
 echo "  dagdb on d2a: $a; on d2b: $b"
 if [[ $ok == 1 ]]; then
-  ids="$(Q d1a "SELECT CAST(DB_ID('dagdb') AS varchar(10))")|$(Q d2a "SELECT CAST(DB_ID('dagdb') AS varchar(10))")|$(Q d2b "SELECT CAST(DB_ID('dagdb') AS varchar(10))")"
-  echo "  dagdb's database id on d1a | d2a | d2b: $ids"
-  [[ "${ids%%|*}" != "$(cut -d'|' -f2 <<<"$ids")" ]] || { echo "FAIL: dagdb has the same database id on d1a and on d2a (the filler database did not take it)"; exit 1; }
+  # one read per assignment: a failed read ends the trial (an assignment of several reads takes only the last one's status)
+  id1=$(Q d1a "SELECT CAST(DB_ID('dagdb') AS varchar(10))"); id2=$(Q d2a "SELECT CAST(DB_ID('dagdb') AS varchar(10))"); id3=$(Q d2b "SELECT CAST(DB_ID('dagdb') AS varchar(10))")
+  echo "  dagdb's database id on d1a | d2a | d2b: $id1|$id2|$id3"
+  [[ "$id1" =~ ^[0-9]+$ && "$id2" =~ ^[0-9]+$ && "$id3" =~ ^[0-9]+$ && "$id1" != "$id2" && "$id1" != "$id3" ]] \
+    || { echo "FAIL: dagdb's database id on d2a or d2b is d1a's, or was not read (the filler database did not take it)"; exit 1; }
 fi
 if [[ $ok != 1 ]]; then
   Q d2a "SELECT TOP 5 'seeding d2a: ' + ISNULL(current_state, '-') + ' ' + ISNULL(failure_state_desc, '-') FROM sys.dm_hadr_automatic_seeding ORDER BY start_time DESC" || true
