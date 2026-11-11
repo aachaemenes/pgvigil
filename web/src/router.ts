@@ -82,12 +82,12 @@ export const mssqlInstanceTabs: Record<string, string> = {
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
-  mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit',
+  mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlprocs', 'mssqlindexlocks'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
   { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },

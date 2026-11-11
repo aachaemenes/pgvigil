@@ -5,7 +5,10 @@
 --   parents pgaudit_events and pgaudit_counts, the per-second counts, the health rows and the pgaudit: log cursors.
 --   task 158 (SQL Server Audit, 0101): the mssql_audit_findings arm; mssql_audit_counts and mssql_audit_events among
 --   purge()'s monthly partition parents (the two small tables are trimmed inside the import).
--- The view is 0099's with the new arms; purge() is 0088's with the new lines.
+--   task 150 (plan cache, indexes, statistics, 0092): three arms (mssql_plancache_findings, mssql_indexes_findings,
+--   mssql_stats_findings); purge() with mssql_pc_read / mssql_pc_sample and pgvigil.mssql_plancache_purge(); apply_roles()
+--   with mssql_plancache_purge on the owner-only list (it deletes).
+-- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new name.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
@@ -100,6 +103,12 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pgaudit_findings
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_audit', at FROM pgvigil.mssql_audit_findings
+    UNION ALL
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_plancache', at FROM pgvigil.mssql_plancache_findings
+    UNION ALL
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_indexes', at FROM pgvigil.mssql_indexes_findings
+    UNION ALL
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_stats', at FROM pgvigil.mssql_stats_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
@@ -125,7 +134,8 @@ BEGIN
                          'table_activity', 'conn_sources', 'pooler_conn_sample',
                          'mssql_indexlock_read', 'mssql_indexlock_sample', 'mssql_proc_read', 'mssql_proc_sample',
                          'mssql_qs_interval', 'mssql_qs_runtime',
-                         'pgaudit_events', 'pgaudit_counts', 'mssql_audit_counts', 'mssql_audit_events')
+                         'pgaudit_events', 'pgaudit_counts', 'mssql_audit_counts', 'mssql_audit_events',
+                         'mssql_pc_read', 'mssql_pc_sample')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
@@ -268,6 +278,7 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   n := n + pgvigil.mssql_running_purge(p_days);
   n := n + pgvigil.mssql_reads_purge(p_days);
+  n := n + pgvigil.mssql_plancache_purge(p_days);
   DELETE FROM pgvigil.mssql_xe_state WHERE snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- a cursor goes only with an instance no collection has reached for the whole window: a quiet source (no deadlock
@@ -315,4 +326,53 @@ BEGIN
   DELETE FROM pgvigil.log_cursor WHERE source LIKE 'pgaudit:%' AND updated_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION pgvigil.apply_roles()
+ RETURNS void
+ LANGUAGE plpgsql
+AS $$
+DECLARE
+  f record;
+  t record;
+BEGIN
+  REVOKE ALL ON SCHEMA pgvigil FROM PUBLIC;
+  GRANT USAGE ON SCHEMA pgvigil TO pgvigil_collector, pgvigil_reader, pgvigil_auth;
+
+  FOR f IN
+    SELECT p.oid::regprocedure AS sig, p.proname
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'pgvigil'
+  LOOP
+    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', f.sig);
+    IF f.proname LIKE 'import\_%' OR f.proname IN ('ensure_instance', 'log_collection', 'schema_latest', 'log_cursor', 'mssql_hadr_cursor') THEN
+      -- the collector's door: runs as the owner, sees only its arguments
+      EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp', f.sig);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_collector', f.sig);
+    ELSIF f.proname LIKE 'ui\_%' THEN
+      -- the UI login's door: one named user's hash and the user count, never the table
+      EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp', f.sig);
+      EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_auth', f.sig);
+    ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
+                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge') THEN
+      -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
+      EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
+    ELSE
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_reader', f.sig);
+    END IF;
+  END LOOP;
+
+  FOR t IN
+    SELECT c.oid::regclass AS rel, c.relname
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p', 'v')
+  LOOP
+    EXECUTE format('REVOKE ALL ON %s FROM PUBLIC, pgvigil_collector, pgvigil_auth', t.rel);
+    IF t.relname LIKE 'ui\_%' THEN
+      EXECUTE format('REVOKE ALL ON %s FROM pgvigil_reader', t.rel);
+    ELSE
+      EXECUTE format('GRANT SELECT ON %s TO pgvigil_reader', t.rel);
+    END IF;
+  END LOOP;
 END $$;

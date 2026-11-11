@@ -13,7 +13,7 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 
 ## Collections
 
-Twenty-three collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Twenty-seven collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -40,6 +40,10 @@ Twenty-three collections. `every` is the default; an instance's `schedules:` cha
 | `mssql_indexlocks` | 5 min | row and page lock waits and lock escalations per index, as the difference between two reads | as `mssql_procstats` | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 | `mssql_querystore` | 1 hour | each database's Query Store: state, top queries per interval, forced plans, tuning recommendations | VIEW SERVER STATE, CONNECT ANY DATABASE (VIEW ANY DEFINITION for object names) | not run | [Query Store](sqlserver-querystore.md) |
 | `mssql_audit` | 5 min | the server audits, their server and database specifications and their state; the events of a file audit read forward from a cursor (role, permission, DDL and audit changes and failed sign-ins as rows, the rest counted) | VIEW ANY DEFINITION and VIEW SERVER STATE; VIEW SERVER SECURITY AUDIT for the events (2022) | skipped (its blob target is not built) | [SQL Server Audit](sqlserver-audit.md) |
+| `mssql_plancache` | 5 min | `sys.dm_exec_query_stats`: per cached statement, what changed between two reads (the place of Query Store where it is off) | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE) | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 

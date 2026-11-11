@@ -249,6 +249,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/waitinfo", s.MSSQLWaitInfo)
 	api.HandleFunc("GET /api/mssql/procs", s.MSSQLProcs)
 	api.HandleFunc("GET /api/mssql/indexlocks", s.MSSQLIndexLocks)
+	api.HandleFunc("GET /api/mssql/plancache", s.MSSQLPlanCache)
+	api.HandleFunc("GET /api/mssql/indexes", s.MSSQLIndexes)
 	api.HandleFunc("GET /api/mssql/actions/state", s.MSSQLActionState)
 	api.HandleFunc("POST /api/mssql/actions/preview", s.MSSQLActionPreview)
 	api.HandleFunc("POST /api/mssql/actions/run", s.MSSQLActionRun)

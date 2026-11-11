@@ -59,6 +59,8 @@ import { mssqlConfigView } from './mssql_config';
 import { mssqlPropertiesView } from './mssql_properties';
 import { mssqlAuditView } from './mssql_audit';
 import { mssqlProcsView } from './mssql_procs';
+import { mssqlPlanCacheView } from './mssql_plancache';
+import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
@@ -82,7 +84,7 @@ const mssqlPages: Record<string, Render> = {
   mssqlcpu: mssqlCpuView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
-  mssqlprocs: mssqlProcsView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView,
+  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView,
 };
 // a fleet page under a tag folder keeps that folder's instances (as the fleet Slow queries page does): the Jobs timeline, TempDB
 const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
