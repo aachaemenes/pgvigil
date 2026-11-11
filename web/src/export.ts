@@ -166,10 +166,11 @@ export function sections(root: ParentNode, fallback: string): Section[] {
 
 // ---- the workbook -----------------------------------------------------------------------------------------
 
-// the light theme's status colours (app.css :root): the cell's background and its text
-const fillOf: Record<Status, string> = { ok: 'FFE3F4E6', warn: 'FFFFF1D6', crit: 'FFFDE2E2', none: 'FFEEF1F5' };
-const fontOf: Record<Status, string> = { ok: 'FF237A35', warn: 'FF9A5A00', crit: 'FFC42626', none: 'FF5D6676' };
-const headFill = 'FFDDE1E8';
+// the status colours of an exported sheet are DBA Dash's (its light theme: solid fills with white text, N/A grey with dark
+// blue text) under its blue header with white bold text, whatever the theme or status style on screen
+const fillOf: Record<Status, string> = { ok: 'FF006638', warn: 'FFE49325', crit: 'FFAB1F26', none: 'FFE0E1E9' };
+const fontOf: Record<Status, string> = { ok: 'FFFFFFFF', warn: 'FFFFFFFF', crit: 'FFFFFFFF', none: 'FF004F83' };
+const headFill = 'FF0063A3';
 // numFmt ids: 3 is Excel's built-in '#,##0'; 164 on are this file's own
 const fmtId: Record<Kind, number> = { text: 0, int: 3, dec: 164, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
 const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '#,##0.00" %"'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
@@ -203,7 +204,7 @@ class Styles {
   }
   id(kind: Kind, status?: Status, head = false): number {
     const fill = head ? this.fill(headFill) : status ? this.fill(fillOf[status]) : 0;
-    const font = head ? this.font('FF1D2330', true) : status ? this.font(fontOf[status], status !== 'none') : 0;
+    const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], status !== 'none') : 0;
     const k = `${fmtId[kind]}|${fill}|${font}`;
     let i = this.xfs.get(k);
     if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }

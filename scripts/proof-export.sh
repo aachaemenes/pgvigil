@@ -13,7 +13,7 @@
 #   summary    sheets: Summary first, then one per grid named by the heading above it ('Summary' repeated is
 #              'Summary (2)'); every data sheet: a frozen pane (ySplit 1, state frozen) and an autoFilter over its
 #              rows; styles.xml carries a solid fill in each status colour the Summary grid shows on screen
-#              (ok FFE3F4E6, warn FFFFF1D6, crit FFFDE2E2, 'no sample' FFEEF1F5) and a cell of that sheet is
+#              (DBA Dash's: ok FF006638, warn FFE49325, crit FFAB1F26, 'no sample' FFE0E1E9) and a cell of that sheet is
 #              styled with it; each sheet's data rows = the grid's rows on screen
 #   tables     sheets: Summary, Tables, Biggest tables (the screen's headings); Biggest tables sorted by 'total'
 #              on screen first (the click changes the order), its sheet's 'table' column in the screen's order and
@@ -146,7 +146,7 @@ def check(cond, msg):
     global bad
     print(('ok   ' if cond else 'FAIL ') + msg)
     if not cond: bad += 1
-fill = {'ok': 'FFE3F4E6', 'warn': 'FFFFF1D6', 'crit': 'FFFDE2E2', 'none': 'FFEEF1F5'}
+fill = {'ok': 'FF006638', 'warn': 'FFE49325', 'crit': 'FFAB1F26', 'none': 'FFE0E1E9'}
 def sheets_of(z):
     wb = z.read('xl/workbook.xml').decode()
     return [n.replace('&amp;', '&') for n in re.findall(r'<sheet name="([^"]*)"', wb)]

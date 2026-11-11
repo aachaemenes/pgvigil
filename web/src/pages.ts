@@ -404,7 +404,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   clear.addEventListener('click', () => { setPick(null); drawLower(); });
   const countCol = (b: Bucket, label: string): Col => ({
     key: b, label, num: true,
-    cls: v => 'status ' + (b === 'na' || b === 'ack' || Number(v) === 0 ? 'none' : b),
+    cls: v => 'status ' + (b === 'ok' || Number(v) === 0 ? 'ok' : b === 'na' ? 'none' : b === 'ack' ? 'none ack' : b),
     fmt: (v, r) => {
       const bt = el('button', { type: 'button', class: 'cell-link link', 'aria-pressed': 'false', 'aria-label': `${String(r.test)}: ${String(v)} instance(s) ${words[b]}; show them below` }, String(v));
       countBtns.set(String(r.key) + '|' + b, bt);

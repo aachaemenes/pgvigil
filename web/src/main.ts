@@ -132,6 +132,24 @@ function refreshSelect(live: boolean): HTMLElement {
   sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
   return sel;
 }
+// ---- status colours: 'solid' (DBA Dash's grids: every status cell a fill, a blue header) or 'quiet' (a tint on what is
+// outside the normal range only); remembered per browser, solid unless chosen otherwise
+const statusStyles = ['solid', 'quiet'];
+function applyStatusStyle(s: string) {
+  if (s === 'quiet') document.documentElement.setAttribute('data-status', 'quiet');
+  else document.documentElement.removeAttribute('data-status');
+}
+applyStatusStyle(lsGet('pgvigil.status') ?? 'solid');
+function statusStyleButton(): HTMLElement {
+  const cur = lsGet('pgvigil.status') ?? 'solid';
+  const b = el('button', { type: 'button', title: 'Status colours: solid fills every status cell; quiet tints only warning and critical' }, 'Colours: ' + cur);
+  b.addEventListener('click', () => {
+    const next = statusStyles[(statusStyles.indexOf(lsGet('pgvigil.status') ?? 'solid') + 1) % statusStyles.length];
+    lsSet('pgvigil.status', next); applyStatusStyle(next);
+    b.textContent = 'Colours: ' + next;
+  });
+  return b;
+}
 function themeButton(): HTMLElement {
   const cur = lsGet('pgvigil.theme') ?? 'auto';
   const b = el('button', { type: 'button', title: 'Theme: auto follows the system' }, 'Theme: ' + cur);
@@ -238,7 +256,7 @@ async function render(force = false) {
   const livePage = (ctx.instance ? liveInstance : liveRoot).has(ctx.tab) && isLive(ctx) && !ctx.at;
   bar.replaceChildren(rangePicker(ctx), refresh, refreshSelect(livePage), exportButtons(ctx),
     el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })),
-    themeButton());
+    statusStyleButton(), themeButton());
   if (session.login && session.user) {
     const out = el('button', { type: 'button', class: 'link' }, 'Sign out');
     out.addEventListener('click', () => { void signOut(); });

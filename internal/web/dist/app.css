@@ -222,3 +222,30 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 .u-tip-time { color: var(--muted); margin-bottom: .15rem; }
 .u-tip-key { display: inline-block; width: .6rem; height: .6rem; margin-right: .35rem; border-radius: 2px; vertical-align: 0; }
 .u-legend .u-series { cursor: pointer; }
+
+/* The status colours (2026-11-11, Allen: 'bright green and red and yellow tables in white background or dark
+   background' = DBA Dash's status grids). By default a status cell is a solid fill as DBA Dash draws it (its light
+   theme's green, orange and red; N/A grey; acknowledged blue) under a blue header row, on the light page and the dark
+   one; 'Colours: quiet' in the header brings the calm pass back (a tint on warning and critical only). The orange
+   carries dark text, not DBA Dash's white (2.5:1): every pair here clears WCAG AA 4.5:1 (white on the green 7.1, on
+   the red 7.1, on the acknowledged blue 5.2, on the header blue 6.4; the dark text on the orange 7.6). */
+:root:not([data-status="quiet"]) { --st-ok: #006638; --st-warn: #e49325; --st-crit: #ab1f26; --st-none: #e0e1e9; --st-none-fg: #004f83;
+                                   --st-ack: #1b6aa3; --st-head: #0063a3; --st-on: #fff; --st-on-warn: #1d1300; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]):not([data-status="quiet"]) { --st-none: #2c323d; --st-none-fg: #c3cad6; } }
+:root[data-theme="dark"]:not([data-status="quiet"]) { --st-none: #2c323d; --st-none-fg: #c3cad6; }
+:root:not([data-status="quiet"]) .grid td.status { border: 1px solid var(--bg); }
+:root:not([data-status="quiet"]) .grid td.status.ok { background: var(--st-ok); }
+:root:not([data-status="quiet"]) .grid td.status.warn { background: var(--st-warn); }
+:root:not([data-status="quiet"]) .grid td.status.crit { background: var(--st-crit); }
+:root:not([data-status="quiet"]) .grid td.status.none { background: var(--st-none); }
+:root:not([data-status="quiet"]) .grid td.status.none.ack { background: var(--st-ack); }
+:root:not([data-status="quiet"]) .grid td.status.ok, :root:not([data-status="quiet"]) .grid td.status.ok .cell-link, :root:not([data-status="quiet"]) .grid td.status.ok a,
+:root:not([data-status="quiet"]) .grid td.status.crit, :root:not([data-status="quiet"]) .grid td.status.crit .cell-link, :root:not([data-status="quiet"]) .grid td.status.crit a,
+:root:not([data-status="quiet"]) .grid td.status.none.ack, :root:not([data-status="quiet"]) .grid td.status.none.ack .cell-link, :root:not([data-status="quiet"]) .grid td.status.none.ack a { color: var(--st-on); }
+:root:not([data-status="quiet"]) .grid td.status.warn, :root:not([data-status="quiet"]) .grid td.status.warn .cell-link, :root:not([data-status="quiet"]) .grid td.status.warn a { color: var(--st-on-warn); }
+:root:not([data-status="quiet"]) .grid td.status.none:not(.ack), :root:not([data-status="quiet"]) .grid td.status.none:not(.ack) .cell-link, :root:not([data-status="quiet"]) .grid td.status.none:not(.ack) a { color: var(--st-none-fg); }
+:root:not([data-status="quiet"]) .grid td.status .cell-link { font-weight: 600; }
+:root:not([data-status="quiet"]) .grid > thead th { background: var(--st-head); color: var(--st-on); }
+:root:not([data-status="quiet"]) .grid > thead th button, :root:not([data-status="quiet"]) .grid > thead th a { color: var(--st-on); }
+:root:not([data-status="quiet"]) .grid > thead th .filter-btn, :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { color: var(--st-on); }
+:root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { text-decoration: underline; }
