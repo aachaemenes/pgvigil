@@ -78,6 +78,8 @@ const all = []; let failed = 0; const perRule = new Map();
 // the status style is remembered per origin too: every page in the solid style (the default), and the pages that carry
 // status cells again in the quiet one
 pages.push('#/summary|range');   // the Summary once more with the range panel open, so axe scans the panel too
+// a Diff with both sides picked (the walk above opens only its empty form): two instances, then one instance at two times
+pages.push(`#/diff?m=i&a=${onprem.instance_id}&b=${cloud.instance_id}`);
 const statusPages = pages.filter(h => /^#\/(summary|perfsummary|dbadash|alerts)\b/.test(h));
 for (const [style, list] of [['solid', pages], ['quiet', statusPages]])
 for (const theme of ['light', 'dark']) {
