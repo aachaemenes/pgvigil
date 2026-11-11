@@ -77,6 +77,7 @@ pages.push(`#/pooler?i=${hr.instance_id}`, `#/activity?i=${hr.instance_id}`);
 const all = []; let failed = 0; const perRule = new Map();
 // the status style is remembered per origin too: every page in the solid style (the default), and the pages that carry
 // status cells again in the quiet one
+pages.push('#/summary|range');   // the Summary once more with the range panel open, so axe scans the panel too
 const statusPages = pages.filter(h => /^#\/(summary|perfsummary|dbadash|alerts)\b/.test(h));
 for (const [style, list] of [['solid', pages], ['quiet', statusPages]])
 for (const theme of ['light', 'dark']) {
@@ -84,19 +85,24 @@ for (const theme of ['light', 'dark']) {
   await cmd('Page.navigate', { url: U + '#/summary' }); await sleep(300); await settled();
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); localStorage.setItem('pgvigil.status', ${JSON.stringify(style)}); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
-  for (const hash of list) {
+  for (const entry of list) {
+    const [hash, open] = entry.split('|');   // '<page>|range' = that page with the range panel open
     await cmd('Page.navigate', { url: U + hash }); await sleep(250);
     const ok = await settled();
-    if (!ok) { failed++; console.log(`FAIL render ${style} ${theme} ${hash}`); continue; }
+    if (!ok) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}`); continue; }
+    if (open === 'range') {
+      const shown = await ev(`(async () => { document.querySelector('#bar [aria-haspopup="dialog"]')?.click(); await new Promise(r => setTimeout(r, 300)); return !!document.querySelector('#bar [role="dialog"]'); })()`, true);
+      if (!shown) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}: the range panel did not open`); continue; }
+    }
     await cmd('Runtime.evaluate', { expression: axeSrc });
     const res = await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => JSON.stringify({ v: r.violations.map(v => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.map(n => ({ target: n.target, html: n.html.slice(0, 160), summary: n.failureSummary?.slice(0, 200) })) })), passes: r.passes.length }))`, true);
     const r = JSON.parse(res);
     const n = r.v.reduce((a, v) => a + v.nodes.length, 0);
-    console.log(`${n ? 'viol ' : 'ok   '}${style} ${theme} ${hash}: ${r.v.length} rule(s), ${n} node(s), ${r.passes} rules passed`);
+    console.log(`${n ? 'viol ' : 'ok   '}${style} ${theme} ${entry}: ${r.v.length} rule(s), ${n} node(s), ${r.passes} rules passed`);
     for (const v of r.v) {
-      all.push({ theme, style, page: hash, ...v });
+      all.push({ theme, style, page: entry, ...v });
       const k = perRule.get(v.id) ?? { impact: v.impact, help: v.help, nodes: 0, pages: new Set() };
-      k.nodes += v.nodes.length; k.pages.add(style + ' ' + theme + ' ' + hash); perRule.set(v.id, k);
+      k.nodes += v.nodes.length; k.pages.add(style + ' ' + theme + ' ' + entry); perRule.set(v.id, k);
     }
   }
 }

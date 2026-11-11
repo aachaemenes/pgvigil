@@ -237,59 +237,93 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
   && quiet2.attr === 'quiet' && transparent(quiet2.ok) && solid2.attr === null && solid2.ok === 'rgb(0, 102, 56)' && solid2.stored === 'solid',
   `solid: OK cell ${solid1.ok}, header ${solid1.th}, '${solid1.btn}'; quiet: attr ${quiet1.attr}, OK cell ${quiet1.ok}, header ${quiet1.th}, '${quiet1.btn}', stored ${quiet1.stored}; after another page: attr ${quiet2.attr}; back: OK cell ${solid2.ok}, stored ${solid2.stored}`);
 
-// N. the range control: its panel (the quick ranges, the calendar periods, a start and an end, the zone chooser). In the
-// zone Asia/Tokyo (no daylight saving) a fixed range of 12:00 to 13:00 UTC shows as 21:00 to 22:00 in the two inputs and
-// in the button's window text, and an end typed as 23:00 is applied as 14:00 UTC; 'Yesterday' is one whole day that ends at
-// the zone's midnight; 'Today' is a period that follows now (w=today, the page still live); the zone survives a reload;
-// Escape closes the panel with the focus back on its button; 'Browser time' puts the browser's own offset back
+// N. the range control: its panel (the quick ranges, the calendar periods, a start and an end, the zone chooser). The
+// browser's own zone is pinned to America/Los_Angeles for the case, so it does not lean on the machine's. A fixed range
+// of 12:00 to 13:00 UTC shows as 04:00 to 05:00 under the browser's zone; in the zone Asia/Tokyo (chosen without the
+// chooser losing its place) as 21:00 to 22:00 in the two inputs and in the button's window text, and an end typed as
+// 23:00 is applied as 14:00 UTC; 'Yesterday' is one whole day that ends at the zone's midnight; 'Today' is a period that
+// follows now (w=today, the page still live); a chart's legend (uPlot's clock) and its readout (tz.ts) name the same
+// minute, 17 hours later than under the browser's zone; a Log events row reads as the zone writes its instant; the zone
+// survives a reload; Escape closes the panel with the focus back on its button; 'Browser time' puts the browser's own
+// offset back; a click outside closes the panel
 {   // its own scope: the names below are the case's alone
-const rangeBtn = `document.querySelector('#bar [aria-haspopup="dialog"]')`;
-const rangePanel = `document.querySelector('#bar [role="dialog"][aria-label="Time range"]')`;
-const openRange = async () => { if (!(await ev(`!!${rangePanel}`))) await ev(`${rangeBtn}.click(); 'ok'`); await sleep(150); };
-const pickRange = async text => { await openRange(); const r = await ev(`(() => { const b = [...${rangePanel}.querySelectorAll('button')].find(x => x.firstChild?.textContent === ${JSON.stringify(text)}); if (!b) return 'no item ' + ${JSON.stringify(text)}; b.click(); return 'ok'; })()`); await sleep(700); return r; };
-const setZone = async z => { await openRange(); const r = await ev(`(() => { const s = ${rangePanel}.querySelector('select[aria-label="display time zone"]'); if (![...s.options].some(o => o.value === ${JSON.stringify(z)})) return 'no zone ' + ${JSON.stringify(z)}; s.value = ${JSON.stringify(z)}; s.dispatchEvent(new Event('change')); return 'ok'; })()`); await sleep(700); return r; };
-const hashOf = async () => new URLSearchParams((await ev(`location.hash`)).split('?')[1] ?? '');
-const zoneTag = () => ev(`document.querySelector('#bar .range-zone-tag')?.textContent ?? 'no tag'`);
-await go('#/summary?from=2026-01-15T12:00:00.000Z&to=2026-01-15T13:00:00.000Z');
-await openRange();
-const shape = await ev(`(() => { const p = ${rangePanel}; if (!p) return null;
-  return { groups: [...p.querySelectorAll('legend')].map(l => l.textContent).join('|'), items: p.querySelectorAll('button[aria-pressed]').length, zones: p.querySelector('select[aria-label="display time zone"]').options.length,
-           expanded: ${rangeBtn}.getAttribute('aria-expanded'), inside: p.getBoundingClientRect().left >= 0 && p.getBoundingClientRect().right <= innerWidth }; })()`);
-const zoneSet = await setZone('Asia/Tokyo');
-const tokyo = await ev(`(() => { const p = ${rangePanel}; const f = d => new Date(d).toLocaleString(undefined, { hour12: false, timeZone: 'Asia/Tokyo' });
-  return { tag: document.querySelector('#bar .range-zone-tag').textContent, from: p.querySelector('input[aria-label="from"]').value, to: p.querySelector('input[aria-label="to"]').value,
-           title: ${rangeBtn}.title, want: f('2026-01-15T12:00:00.000Z') + ' to ' + f('2026-01-15T13:00:00.000Z'), stored: localStorage.getItem('pgvigil.tz'), focus: document.activeElement?.getAttribute('aria-label') }; })()`);
-// a typed end of 23:00 on the zone's clock is 14:00 UTC: Apply writes that instant, the start stays 12:00 UTC
-await ev(`(() => { const p = ${rangePanel}; p.querySelector('input[aria-label="to"]').value = '2026-01-15T23:00'; [...p.querySelectorAll('button')].find(b => b.textContent === 'Apply').click(); return 'ok'; })()`); await sleep(700);
-const applied = await hashOf();
-// a run in the minute before Tokyo's midnight or the two after it waits them out: the day must not turn between this
-// script's midnight and the page's, and a period seconds old reads a minute (router.ts)
-{ const t = (Date.now() + 9 * 3600e3) % 86400e3; if (t < 120e3 || t > 86400e3 - 60e3) await sleep(185e3); }
-const picked = await pickRange('Yesterday'); const yest = await hashOf();
-const yFrom = Date.parse(yest.get('from') ?? ''), yTo = Date.parse(yest.get('to') ?? '');
-const midnight = Math.floor((Date.now() + 9 * 3600e3) / 86400e3) * 86400e3 - 9 * 3600e3;   // Tokyo's midnight today, as an instant
-const yText = await ev(`${rangeBtn}.textContent`);
-await pickRange('Today'); const today = await hashOf();
-const live = await ev(`(() => { const f = d => new Date(d).toLocaleString(undefined, { hour12: false, timeZone: 'Asia/Tokyo' });
-  return { text: ${rangeBtn}.textContent, title: ${rangeBtn}.title, want: f(${midnight}) + ' to ', refresh: !!document.querySelector('#bar select[aria-label="Auto refresh of a live page"]') }; })()`);
-await send('Page.reload'); await sleep(1500); await go('#/summary?w=today');
-const kept = { tag: await zoneTag(), stored: await ev(`localStorage.getItem('pgvigil.tz')`) };
-await openRange();
-const esc = await ev(`(async () => { document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 150));
-  return { gone: !${rangePanel}, focus: document.activeElement === ${rangeBtn}, expanded: ${rangeBtn}.getAttribute('aria-expanded') }; })()`);
-await setZone('local');
-const back = await ev(`(() => { const m = -new Date().getTimezoneOffset(), a = Math.abs(m), two = n => String(n).padStart(2, '0');
-  return { tag: document.querySelector('#bar .range-zone-tag').textContent, want: 'UTC' + (m < 0 ? '-' : '+') + two(Math.floor(a / 60)) + ':' + two(a % 60), stored: localStorage.getItem('pgvigil.tz') }; })()`);
-await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); 'ok'`); await sleep(150);
-const shut = await ev(`!${rangePanel}`);
-check('N range', !!shape && shape.groups === 'Quick ranges|Calendar periods|A start and an end' && shape.items === 12 && shape.zones > 2 && shape.expanded === 'true' && shape.inside
-  && zoneSet === 'ok' && tokyo.tag === 'UTC+09:00' && tokyo.from === '2026-01-15T21:00' && tokyo.to === '2026-01-15T22:00' && tokyo.title === tokyo.want && tokyo.stored === 'Asia/Tokyo' && tokyo.focus === 'display time zone'
-  && applied.get('from') === '2026-01-15T12:00:00.000Z' && applied.get('to') === '2026-01-15T14:00:00.000Z'
-  && picked === 'ok' && yTo === midnight && yTo - yFrom === 86400e3 && !yest.get('w') && /^Range: .+ - .+$/.test(yText)
-  && today.get('w') === 'today' && !today.get('from') && live.text === 'Range: Today' && live.title.startsWith(live.want) && live.title.endsWith('(follows now)') && live.refresh
-  && kept.tag === 'UTC+09:00' && kept.stored === 'Asia/Tokyo' && esc.gone && esc.focus && esc.expanded === 'false'
-  && back.tag === back.want && back.stored === 'local' && shut,
-  `panel ${shape?.groups} with ${shape?.items} ranges and ${shape?.zones} zones, inside the window ${shape?.inside}; Asia/Tokyo (${zoneSet}): tag ${tokyo.tag}, inputs ${tokyo.from} to ${tokyo.to}, the window text as the zone writes it ${tokyo.title === tokyo.want}, focus on '${tokyo.focus}'; Apply wrote ${applied.get('from')} to ${applied.get('to')}; Yesterday (${picked}): ${(yTo - yFrom) / 3600e3} h ending at the zone's midnight ${yTo === midnight}, '${yText}'; Today: w=${today.get('w')}, '${live.text}', from the zone's midnight ${live.title.startsWith(live.want)}, live ${live.refresh}; after a reload: tag ${kept.tag}, stored ${kept.stored}; Escape: closed ${esc.gone}, focus on the button ${esc.focus}; browser time: tag ${back.tag} (wanted ${back.want}), stored ${back.stored}; a click outside closed it ${shut}`);
+  await send('Emulation.setTimezoneOverride', { timezoneId: 'America/Los_Angeles' });
+  await send('Page.reload'); await sleep(1500);   // the page starts over on the pinned zone
+  const rangeBtn = `document.querySelector('#bar [aria-haspopup="dialog"]')`;
+  const rangePanel = `document.querySelector('#bar [role="dialog"][aria-label="Time range"]')`;
+  const zoneSel = `${rangePanel}.querySelector('select[aria-label="display time zone"]')`;
+  const openRange = async () => { if (!(await ev(`!!${rangePanel}`))) await ev(`${rangeBtn}.click(); 'ok'`); await sleep(150); };
+  const pickRange = async text => { await openRange(); const r = await ev(`(() => { const b = [...${rangePanel}.querySelectorAll('button')].find(x => x.firstChild?.textContent === ${JSON.stringify(text)}); if (!b) return 'no item ' + ${JSON.stringify(text)}; b.click(); return 'ok'; })()`); await sleep(700); return r; };
+  // the choice rests 400 ms before it is taken (a closed list fires a change per key): wait it out and the redraw after it
+  const setZone = async z => { await openRange(); const r = await ev(`(() => { const s = ${zoneSel}; if (![...s.options].some(o => o.value === ${JSON.stringify(z)})) return 'no zone ' + ${JSON.stringify(z)}; window.__zsel = s; s.value = ${JSON.stringify(z)}; s.dispatchEvent(new Event('change')); return 'ok'; })()`); await sleep(1500); return r; };
+  const hashOf = async () => new URLSearchParams((await ev(`location.hash`)).split('?')[1] ?? '');
+  const zoneTag = () => ev(`document.querySelector('#bar .range-zone-tag')?.textContent ?? 'no tag'`);
+  const inputs = () => ev(`(() => { const p = ${rangePanel}; return { from: p.querySelector('input[aria-label="from"]').value, to: p.querySelector('input[aria-label="to"]').value, tag: document.querySelector('#bar .range-zone-tag').textContent }; })()`);
+  // the middle point of the page's first chart: the readout's time (tz.ts) and the legend's (uPlot through tzDate), as minutes of the day
+  const chartClock = () => ev(`(async () => { const o = document.querySelector('main .u-over'); if (!o) return null; o.scrollIntoView({ block: 'center' }); await new Promise(r => setTimeout(r, 200)); const r = o.getBoundingClientRect();
+    o.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: r.left + r.width * 0.5, clientY: r.top + r.height / 2 })); await new Promise(r => setTimeout(r, 300));
+    const tip = o.querySelector('.u-tip-time')?.textContent ?? '', leg = o.closest('.uplot').querySelector('.u-legend .u-series .u-value')?.textContent ?? '';
+    const a = /(\\d{1,2}):(\\d{2}):\\d{2}/.exec(tip), b = /(\\d{1,2}):(\\d{2})\\s*(am|pm)/i.exec(leg);
+    return { tip, leg, tipMin: a ? (Number(a[1]) % 24) * 60 + Number(a[2]) : -1, legMin: b ? (Number(b[1]) % 12 + (b[3].toLowerCase() === 'pm' ? 12 : 0)) * 60 + Number(b[2]) : -2 }; })()`);
+  const erp = idOf('demo-onprem-erp01');
+  const dayTo = new Date(Math.floor(Date.now() / 60000) * 60000), dayFrom = new Date(dayTo.getTime() - 86400e3), day = `from=${dayFrom.toISOString()}&to=${dayTo.toISOString()}`;
+
+  await go('#/summary?from=2026-01-15T12:00:00.000Z&to=2026-01-15T13:00:00.000Z');
+  await openRange();
+  const shape = await ev(`(() => { const p = ${rangePanel}; if (!p) return null;
+    return { groups: [...p.querySelectorAll('legend')].map(l => l.textContent).join('|'), items: p.querySelectorAll('button[aria-pressed]').length, zones: ${zoneSel}.options.length,
+             expanded: ${rangeBtn}.getAttribute('aria-expanded'), inside: p.getBoundingClientRect().left >= 0 && p.getBoundingClientRect().right <= innerWidth }; })()`);
+  const local = await inputs();
+  const zoneSet = await setZone('Asia/Tokyo');
+  const tokyo = await ev(`(() => { const p = ${rangePanel}; const f = d => new Date(d).toLocaleString(undefined, { hour12: false, timeZone: 'Asia/Tokyo' });
+    return { tag: document.querySelector('#bar .range-zone-tag').textContent, from: p.querySelector('input[aria-label="from"]').value, to: p.querySelector('input[aria-label="to"]').value,
+             title: ${rangeBtn}.title, want: f('2026-01-15T12:00:00.000Z') + ' to ' + f('2026-01-15T13:00:00.000Z'), stored: localStorage.getItem('pgvigil.tz'), same: ${zoneSel} === window.__zsel }; })()`);
+  // a typed end of 23:00 on the zone's clock is 14:00 UTC: Apply writes that instant, the start stays 12:00 UTC
+  await ev(`(() => { const p = ${rangePanel}; p.querySelector('input[aria-label="to"]').value = '2026-01-15T23:00'; [...p.querySelectorAll('button')].find(b => b.textContent === 'Apply').click(); return 'ok'; })()`); await sleep(700);
+  const applied = await hashOf();
+  // a run in the minute before Tokyo's midnight or the two after it waits them out: the day must not turn between this
+  // script's midnight and the page's, and a period seconds old reads a minute (router.ts)
+  { const t = (Date.now() + 9 * 3600e3) % 86400e3; if (t < 120e3 || t > 86400e3 - 60e3) await sleep(185e3); }
+  const picked = await pickRange('Yesterday'); const yest = await hashOf();
+  const yFrom = Date.parse(yest.get('from') ?? ''), yTo = Date.parse(yest.get('to') ?? '');
+  const midnight = Math.floor((Date.now() + 9 * 3600e3) / 86400e3) * 86400e3 - 9 * 3600e3;   // Tokyo's midnight today, as an instant
+  const yText = await ev(`${rangeBtn}.textContent`);
+  await pickRange('Today'); const today = await hashOf();
+  const live = await ev(`(() => { const f = d => new Date(d).toLocaleString(undefined, { hour12: false, timeZone: 'Asia/Tokyo' });
+    return { text: ${rangeBtn}.textContent, title: ${rangeBtn}.title, want: f(${midnight}) + ' to ', refresh: !!document.querySelector('#bar select[aria-label="Auto refresh of a live page"]') }; })()`);
+  // a chart and a grid under the zone, on a fixed day so both zones read the same points
+  await go(`#/counters?i=${erp}&${day}`);
+  const chartTokyo = await chartClock();
+  const logsApi = await (await fetch(`${base}api/logs?instance=${erp}&${day}`)).json();
+  const firstAt = logsApi.events.rows[0]?.[logsApi.events.columns.indexOf('at')];
+  await go(`#/logs?i=${erp}&${day}`);
+  const gridTokyo = firstAt ? await ev(`(() => { const want = new Date(${JSON.stringify(firstAt)}).toLocaleString(undefined, { hour12: false, timeZone: 'Asia/Tokyo' });
+    return { want, found: [...document.querySelectorAll('main table.grid > tbody > tr > td:first-child')].some(td => td.textContent === want) }; })()`) : null;
+  await send('Page.reload'); await sleep(1500); await go('#/summary?w=today');
+  const kept = { tag: await zoneTag(), stored: await ev(`localStorage.getItem('pgvigil.tz')`) };
+  await openRange();
+  const esc = await ev(`(async () => { document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 150));
+    return { gone: !${rangePanel}, focus: document.activeElement === ${rangeBtn}, expanded: ${rangeBtn}.getAttribute('aria-expanded') }; })()`);
+  await setZone('local');
+  const back = await ev(`(() => { const m = -new Date().getTimezoneOffset(), a = Math.abs(m), two = n => String(n).padStart(2, '0');
+    return { tag: document.querySelector('#bar .range-zone-tag').textContent, want: 'UTC' + (m < 0 ? '-' : '+') + two(Math.floor(a / 60)) + ':' + two(a % 60), stored: localStorage.getItem('pgvigil.tz') }; })()`);
+  await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); 'ok'`); await sleep(150);
+  const shut = await ev(`!${rangePanel}`);
+  await go(`#/counters?i=${erp}&${day}`);
+  const chartLocal = await chartClock();
+  await send('Emulation.setTimezoneOverride', { timezoneId: '' });
+  const ahead = chartTokyo && chartLocal ? (chartTokyo.tipMin - chartLocal.tipMin + 1440) % 1440 : -1;   // Tokyo is 17 h ahead of Los Angeles in November and 16 h in its summer
+  check('N range', !!shape && shape.groups === 'Quick ranges|Calendar periods|A start and an end' && shape.items === 12 && shape.zones > 2 && shape.expanded === 'true' && shape.inside
+    && local.from === '2026-01-15T04:00' && local.to === '2026-01-15T05:00' && local.tag === 'UTC-08:00'
+    && zoneSet === 'ok' && tokyo.tag === 'UTC+09:00' && tokyo.from === '2026-01-15T21:00' && tokyo.to === '2026-01-15T22:00' && tokyo.title === tokyo.want && tokyo.stored === 'Asia/Tokyo' && tokyo.same
+    && applied.get('from') === '2026-01-15T12:00:00.000Z' && applied.get('to') === '2026-01-15T14:00:00.000Z'
+    && picked === 'ok' && yTo === midnight && yTo - yFrom === 86400e3 && !yest.get('w') && /^Range: .+ - .+$/.test(yText)
+    && today.get('w') === 'today' && !today.get('from') && live.text === 'Range: Today' && live.title.startsWith(live.want) && live.title.endsWith('(follows now)') && live.refresh
+    && !!chartTokyo && chartTokyo.tipMin >= 0 && chartTokyo.tipMin === chartTokyo.legMin && !!chartLocal && chartLocal.tipMin === chartLocal.legMin && (ahead === 17 * 60 || ahead === 16 * 60)
+    && !!gridTokyo && gridTokyo.found
+    && kept.tag === 'UTC+09:00' && kept.stored === 'Asia/Tokyo' && esc.gone && esc.focus && esc.expanded === 'false'
+    && back.tag === back.want && back.stored === 'local' && shut,
+    `panel ${shape?.groups} with ${shape?.items} ranges and ${shape?.zones} zones, inside the window ${shape?.inside}; browser zone: inputs ${local.from} to ${local.to}, tag ${local.tag}; Asia/Tokyo (${zoneSet}): tag ${tokyo.tag}, inputs ${tokyo.from} to ${tokyo.to}, the window text as the zone writes it ${tokyo.title === tokyo.want}, the chooser kept its place ${tokyo.same}; Apply wrote ${applied.get('from')} to ${applied.get('to')}; Yesterday (${picked}): ${(yTo - yFrom) / 3600e3} h ending at the zone's midnight ${yTo === midnight}, '${yText}'; Today: w=${today.get('w')}, '${live.text}', from the zone's midnight ${live.title.startsWith(live.want)}, live ${live.refresh}; chart under Tokyo: readout '${chartTokyo?.tip}' and legend '${chartTokyo?.leg}', under the browser's zone '${chartLocal?.tip}' and '${chartLocal?.leg}', ${ahead / 60} h apart; a log row as the zone writes it ${gridTokyo?.found} ('${gridTokyo?.want}'); after a reload: tag ${kept.tag}, stored ${kept.stored}; Escape: closed ${esc.gone}, focus on the button ${esc.focus}; browser time: tag ${back.tag} (wanted ${back.want}), stored ${back.stored}; a click outside closed it ${shut}`);
 }
 
 // O. the time strip above an event grid: the Log events of demo-onprem-erp01 over a fixed day. A drag over the strip's

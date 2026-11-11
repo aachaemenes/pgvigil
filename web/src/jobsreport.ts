@@ -121,7 +121,7 @@ export async function jobsReportView(ctx: Ctx): Promise<HTMLElement> {
     `Jobs read ${fmtTime(jobs[0].snapshot_at)}. Failing: the last 3 or more finished runs failed. Over 2x average: the latest run (a running one by its age) `
     + 'took over twice the average of the other successful runs of 30 days (3 or more) and 10 s more. Missed: pg_cron, no run since the scheduled '
     + 'time before the latest one (two scheduled runs without one; schedules rarer than about every 12 days are not judged, the history is 30 days); '
-    + "pgAgent, its own next run over 5 minutes past. The schedule is read in pg_cron's cron.timezone; the times shown are this browser's local time; the next run is as of the read."));
+    + "pgAgent, its own next run over 5 minutes past. The schedule is read in pg_cron's cron.timezone; the times shown are in the display time zone (the range panel's, this browser's unless another was chosen); the next run is as of the read."));
   if (checks.length) {
     sec.append(el('h3', {}, 'Checks'), grid(checks, [
       { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'check' }, { key: 'object', label: 'job' },

@@ -257,7 +257,7 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 /* the range control (rangepicker.ts): a button that names the range, the display zone's offset beside it, and a panel
    under the button: quick ranges and calendar periods side by side, then a start and an end, then the zone chooser */
 .range { position: relative; }
-.range-btn::after { content: ' \25BE'; color: var(--muted); }
+.range-btn::after { content: ' \25BE' / ''; color: var(--muted); }
 .range-zone-tag { white-space: nowrap; }
 .range-panel { position: absolute; top: calc(100% + .35rem); left: 0; z-index: 40; width: min(36rem, calc(100vw - 1rem)); display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1.2rem;
                padding: .7rem .9rem; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }

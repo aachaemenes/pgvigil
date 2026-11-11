@@ -32,7 +32,7 @@ import { indexesView } from './indexes';
 import { schemaView } from './schema';
 import { dbinfoView } from './dbinfo';
 import { dbPage, indexPage, jobPage, tablePage } from './drill';
-import { rangePicker } from './rangepicker';
+import { closeRange, rangePicker } from './rangepicker';
 import { fmtClock } from './tz';
 import { groupOf, groupsFor, href, isLive, isMssql, parse, rangeLabel, rememberInstance, rootGroups, rootTabs, tabsFor, window_, drillHome } from './router';
 import { mssqlRunningView } from './mssql_running';
@@ -169,6 +169,7 @@ function showLogin(message = '') {
   ++generation;
   loginShown = true;
   document.body.classList.add('signin');
+  closeRange();   // the bar is emptied: an open range panel must not come back open after the sign-in
   $('tabs').replaceChildren();
   $('bar').replaceChildren();
   $('crumb').replaceChildren();

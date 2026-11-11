@@ -68,7 +68,7 @@ API: `GET /api/logs/groups?instance=<id>&from=&to=&[level=]` (groups, totals, le
 
 The Slow queries tab of an instance carries **Latency of the logged statements**, at the page's threshold:
 
-- per hour (in the browser's time zone): the statements, min, max and mean, and **p90 / p95 / p99**, as a chart and
+- per hour (in the display time zone: the browser's unless another is chosen in the range panel): the statements, min, max and mean, and **p90 / p95 / p99**, as a chart and
   a table. The percentiles are nearest-rank: the smallest logged duration with at least that share of the hour's
   statements at or under it.
 - a **duration histogram** in pgBadger's buckets (0-1 ms, 1-5 ms, 5-10 ms, 10-25 ms, 25-50 ms, 50-100 ms,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof of the shared frame (the click-through's H): a demo fleet is seeded into a throwaway database and served on
 # loopback, and a headless Chromium runs scripts/frame-check.mjs over it. Needs go, psql, chromium and node, the web
-# bundle built (internal/web/dist/app.js), and a PostgreSQL for the throwaway database:
+# bundle built (internal/web/dist/app.js) with web/node_modules in place, and a PostgreSQL for the throwaway database:
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database
 # Expected (written before the first run):
 #   A filter      '>20' on Instances' sessions: n of 15 rows shown (filtered), 0 < n < 15, every shown value > 20
@@ -21,12 +21,18 @@
 #   K pies        every pie on Storage: k slice(s) for k row(s), none stroked, 1.0000 turn(s)
 #   L colours     solid by default: an OK cell rgb(0, 102, 56), a grid header rgb(0, 99, 163), 'Colours: solid'; one click:
 #                 data-status quiet, the OK cell unfilled, stored 'quiet', kept on another page; a second click: solid again
-#   N range       the panel: 'Quick ranges|Calendar periods|A start and an end', 12 ranges, the zone chooser, inside the
-#                 window; zone Asia/Tokyo: the tag UTC+09:00, a range of 12:00-13:00 UTC in the inputs as 2026-01-15T21:00
-#                 and T22:00, the button's window text as the zone writes it, an end typed as 23:00 applied as 14:00Z;
-#                 Yesterday: 24 h ending at the zone's midnight, no w=; Today: w=today, 'Range: Today', from the zone's
-#                 midnight, the page live; after a reload the tag and the stored zone stand; Escape closes the panel with
-#                 the focus on its button; Browser time: the browser's own offset, stored 'local'; a click outside closes it
+#   tz            (offline, before the browser) 25 zone checks: New York, Sydney, Lord Howe, Santiago and Cairo at their
+#                 daylight-saving edges, Kathmandu and Kolkata offsets, the calendar periods at a month and a year
+#                 rollover, the 31-day cap: 'tz: 25 checks as expected'
+#   N range       (the browser's own zone pinned to America/Los_Angeles) the panel: 'Quick ranges|Calendar periods|A start
+#                 and an end', 12 ranges, the zone chooser, inside the window; a range of 12:00-13:00 UTC in the inputs as
+#                 2026-01-15T04:00 and T05:00, the tag UTC-08:00; zone Asia/Tokyo: the tag UTC+09:00, the inputs T21:00 and
+#                 T22:00, the button's window text as the zone writes it, the chooser the same node; an end typed as 23:00
+#                 applied as 14:00Z; Yesterday: 24 h ending at the zone's midnight, no w=; Today: w=today, 'Range: Today',
+#                 from the zone's midnight, the page live; a chart's legend and readout name the same minute, 17 h (16 in
+#                 summer) ahead of the browser zone's; a Log events row as the zone writes its instant; after a reload the
+#                 tag and the stored zone stand; Escape closes the panel with the focus on its button; Browser time: the
+#                 browser's own offset, stored 'local'; a click outside closes it
 #   O time strip  erp01's Log events over a fixed day: 60 steps, 'Whole range. Drag ...', every row drawn (200 at most); a
 #                 drag over steps 30-59: '<from> to <to>: k of n rows.' with k the API's count for that half, k drawn, 30
 #                 steps dimmed, 'Whole range' offered; its click: all rows, none dimmed; Home, three right, two with Shift,
@@ -45,6 +51,12 @@ cleanup() {
 trap cleanup EXIT
 for t in chromium node psql; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p is in use: run again"; done
+
+echo "== the zone arithmetic, offline (web/src/tz.ts and router.ts's periods at daylight-saving edges)"
+[[ -x web/node_modules/.bin/esbuild ]] || fail "web/node_modules is missing (cd web && npm ci)"
+printf "export * from './web/src/tz'; export { periodStart, capRange, MAX_RANGE_MS } from './web/src/router';" \
+  | web/node_modules/.bin/esbuild --bundle --format=esm --loader=ts --log-level=warning --outfile="$WORK/tz.mjs"
+node scripts/tz-check.mjs "$WORK/tz.mjs" || fail "the zone arithmetic did not hold"
 
 echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil

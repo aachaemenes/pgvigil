@@ -15,7 +15,7 @@ import { suggestBox } from './plan';
 import { lineChart } from './chart';
 import { Ctx, window_ } from './router';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
-import { fmt as fmtZone } from './tz';
+import { fmt as fmtZone, fromInput, toInput } from './tz';
 
 export interface TrendKey {
   instance: number;
@@ -104,15 +104,16 @@ async function lagBox(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
     dayLag.set(key, choice);
     const w = window_(ctx);
     const p: Record<string, string | number | undefined> = { instance: k.instance, ...w, queryid: String(k.queryid), db: k.db ? String(k.db) : undefined };
-    if (choice.startsWith('at:')) p.at = new Date(choice.slice(3)).toISOString(); else p.lag = Number(choice);
+    if (choice.startsWith('at:')) p.at = choice.slice(3); else p.lag = Number(choice);   // 'at:' holds the instant, never the typed text
     const bar = el('div', { class: 'subtabs', role: 'group', 'aria-label': 'Compare with' }, el('span', { class: 'meta', style: 'align-self:center' }, 'Compare with'),
       ...lagChoices.map(([l, secs]) => {
         const a = el('a', { href: '#', class: choice === String(secs) ? 'on' : '', ...(choice === String(secs) ? { 'aria-current': 'true' } : {}) }, l + ' earlier');
         a.addEventListener('click', ev => { ev.preventDefault(); void draw(String(secs)); });
         return a;
       }));
-    const dateIn = el('input', { type: 'datetime-local', 'aria-label': 'Compare with the window starting at', value: choice.startsWith('at:') ? choice.slice(3) : '' }) as HTMLInputElement;
-    dateIn.addEventListener('change', () => { if (dateIn.value) void draw('at:' + dateIn.value); });
+    const dateIn = el('input', { type: 'datetime-local', 'aria-label': 'Compare with the window starting at', value: choice.startsWith('at:') ? toInput(new Date(choice.slice(3))) : '' }) as HTMLInputElement;
+    // the typed time is the display zone's clock (tz.ts); what is kept is its instant, so a change of zone shows the same moment
+    dateIn.addEventListener('change', () => { const t = fromInput(dateIn.value); if (!isNaN(t.getTime())) void draw('at:' + t.toISOString()); });
     bar.append(el('label', { class: 'meta', style: 'align-self:center' }, 'or from ', dateIn));
     let body: HTMLElement;
     try {

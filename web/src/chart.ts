@@ -59,6 +59,7 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   const fg = css.getPropertyValue('--muted').trim() || '#5d6676', grid = css.getPropertyValue('--line').trim() || '#dde1e8';
   const axis = { stroke: fg, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 } };
   const palette = seriesColors();
+  const zone = zoneChoice();
   const opts: uPlot.Options = {
     width: 560, height: 220,
     series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: o.stacked ? 1 : 2,
@@ -67,8 +68,9 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     bands: o.stacked ? series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : undefined,
     axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis }],
     plugins: [tooltipPlugin(fmt, !!o.stacked)],
-    // the time axis and the legend's time on the display zone's clock (the browser's own needs nothing)
-    ...(zoneChoice() === 'local' ? {} : { tzDate: (ts: number) => uPlot.tzDate(new Date(ts * 1000), zoneChoice()) }),
+    // the time axis and the legend's time on the display zone's clock (the browser's own needs nothing); the zone is the
+    // one the chart was built in: a chart still on the page after a change of zone keeps reading its own
+    ...(zone === 'local' ? {} : { tzDate: (ts: number) => uPlot.tzDate(new Date(ts * 1000), zone) }),
     scales: { x: { time: true }, ...(o.stacked ? { y: { range: (_u: uPlot, _min: number, max: number): uPlot.Range.MinMax => [0, max > 0 ? max * 1.05 : 1] } } : {}) },
   };
   // size to the container once it is in the page

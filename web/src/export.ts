@@ -332,7 +332,7 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
 
 
 // csv: RFC 4180 with a UTF-8 byte-order mark (Excel reads the encoding from it); a number as its plain value (a
-// duration in seconds, a size in bytes, a share in percent), a time as the local time the screen shows; a text cell
+// duration in seconds, a size in bytes, a share in percent), a time as the screen shows it (the display time zone's clock); a text cell
 // that a spreadsheet would read as a formula (= + - @ tab CR first) gets a leading apostrophe (OWASP CSV injection).
 export function csv(s: Section): string {
   const val = (c: Cell): string => {

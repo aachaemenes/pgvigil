@@ -198,7 +198,9 @@ for (const line of list.trim().split('\n')) {
   console.log(`${okH && okNav ? 'ok  ' : 'FAIL'} ${hash}: ${r ? r.h2 : 'no h2'} | ${r ? r.text : 'no breadcrumb'}`);
   if (want === 'Table' && !rangeDone) {
     rangeDone = true;
-    await ev(`(() => { const s = document.querySelector('#bar select'); s.value = '24h'; s.dispatchEvent(new Event('change')); return 1; })()`);
+    // the range control: its button opens the panel, 'Last 24 hours' is one of its quick ranges
+    await ev(`(async () => { document.querySelector('#bar [aria-haspopup=dialog]').click(); await new Promise(r => setTimeout(r, 200));
+      const b = [...document.querySelectorAll('#bar [role=dialog] button')].find(x => x.firstChild && x.firstChild.textContent === 'Last 24 hours'); if (!b) return 0; b.click(); return 1; })()`);
     let after = null;
     for (let t = 0; t < 80; t++) {
       await sleep(150);

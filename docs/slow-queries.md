@@ -19,7 +19,7 @@ counts every event of the filter.
 
 - **Group By**: Instance, Database Name, App, Username, Client (without the port PostgreSQL logs), Event Type
   (`server log` or `CloudWatch` for PostgreSQL; the event name for SQL Server), Object Name, Result, Session ID,
-  Text (the statement's shape: its text without literals), Time - Hour, Time - Day (in the browser's time zone; an
+  Text (the statement's shape: its text without literals), Time - Hour, Time - Day (in the display time zone, the browser's unless another is chosen in the range panel; an
   hour carries its UTC offset, so the hour a clock goes back is two rows) and Engine. A value that is an empty
   string (a SQL Server client that sends no application name) is its own row, `(empty)`, apart from `(none)`. DBA Dash's Time - Custom is the page's own range.
 - **Database**: the databases with slow events in the range, each with its count; one picked cuts the grid to it.
