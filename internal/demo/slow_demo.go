@@ -13,7 +13,10 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/aachaemenes/pgvigil/internal/logparse"
 )
 
 // serverlogSkipNote is the collection log's note without the read grant, in the collector's words (serverlogSettings.check).
@@ -67,5 +70,79 @@ func (g *Gen) serverlogRows(t, prev time.Time) []Row {
 			}
 		}
 	}
+	out = append(out, g.serverlogErrors(t, prev)...)
 	return append(out, Row{"kind": "cursor", "source": "serverlog:log", "read_to": t})
+}
+
+// demoError is one error a server log carries, as the server writes it: its level, its message, the DETAIL line and
+// the statement; kind is the kind logparse gives that line (a cancel by user request is 'canceled', not 'error').
+type demoError struct {
+	kind, level, msg, detail, stmt string
+	weight                         float64
+}
+
+// demoErrors: the errors an application's server log carries, weighted so a few groups dominate as they do in a real
+// log (pgBadger's Events tab). TestDemoErrorsParse holds each to what logparse makes of the same line.
+var demoErrors = []demoError{
+	{"error", "ERROR", `duplicate key value violates unique constraint "order_lines_pkey"`, `Key (order_id, line_no)=(%d, 1) already exists.`, `INSERT INTO order_lines (order_id, line_no, sku, qty) VALUES ($1, 1, $2, $3)`, 0.38},
+	{"canceled", "ERROR", `canceling statement due to user request`, ``, `SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC`, 0.18},
+	{"error", "ERROR", `relation "staging_import_%d" does not exist`, ``, `INSERT INTO staging_import_%d SELECT * FROM orders WHERE created_at > $1`, 0.14},
+	{"error", "WARNING", `there is no transaction in progress`, ``, `COMMIT`, 0.12},
+	{"error", "ERROR", `null value in column "sku" of relation "order_lines" violates not-null constraint`, `Failing row contains (%d, 2, null, 1).`, `INSERT INTO order_lines (order_id, line_no, sku, qty) VALUES ($1, 2, $2, $3)`, 0.1},
+	{"error", "ERROR", `permission denied for table payroll`, ``, `SELECT * FROM payroll`, 0.05},
+	{"error", "ERROR", `invalid input syntax for type integer: "%d-A"`, ``, `SELECT * FROM orders WHERE id = $1`, 0.03},
+}
+
+// render: the message line, the DETAIL line ("" when none) and the statement for the number n.
+func (e demoError) render(n int) (raw, detailLine, stmt string) {
+	raw, stmt = e.msg, e.stmt
+	if strings.Contains(raw, "%d") {
+		raw = fmt.Sprintf(raw, n%40)
+	}
+	if strings.Contains(stmt, "%d") {
+		stmt = fmt.Sprintf(stmt, n%40)
+	}
+	if e.detail != "" {
+		detailLine = fmt.Sprintf(e.detail, n)
+	}
+	return raw, detailLine, stmt
+}
+
+// serverlogErrors: one chance of an error event in each 5-minute slot, more under load, chosen by noise (not the
+// generator's random stream, so the rest of the demo's rows stay as they were), stored as the serverlog collector
+// stores an event of its kind: its level and its message shape (logparse.MessageShape), the DETAIL line in detail
+// (a 'canceled' event keeps the message alone, as ClassifyMore does). An event's time stays inside the slot and never
+// passes the reading's own cursor t: a collector stores nothing beyond read_to.
+func (g *Gen) serverlogErrors(t, prev time.Time) []Row {
+	s := g.Spec
+	var out []Row
+	for at := prev.Truncate(5 * time.Minute).Add(5 * time.Minute); !at.After(t); at = at.Add(5 * time.Minute) {
+		if noise(s.Name+"err", at) > 0.15+0.35*curve(at) {
+			continue
+		}
+		r, pick := noise(s.Name+"errkind", at), 0
+		for acc := 0.0; pick < len(demoErrors)-1; pick++ {
+			if acc += demoErrors[pick].weight; r < acc {
+				break
+			}
+		}
+		e := demoErrors[pick]
+		pid := 2000 + int(noise(s.Name+"errpid", at)*60000)
+		n := 100000 + int(noise(s.Name+"errn", at)*900000)
+		raw, detailLine, stmt := e.render(n)
+		var detail any = raw
+		if detailLine != "" && e.kind == "error" {
+			detail = raw + "\nDETAIL: " + detailLine
+		}
+		ts := at.Add(time.Duration(noise(s.Name+"errs", at)*290) * time.Second)
+		if ts.After(t) {
+			ts = t
+		}
+		file := "postgresql-" + at.UTC().Format("2006-01-02") + "_000000.log"
+		out = append(out, Row{"kind": "event", "kind_of": e.kind, "at": ts, "pid": pid,
+			"client": fmt.Sprintf("10.20.%d.%d(%d)", pid%5, 40+pid%150, 40000+pid%20000), "usename": "app_" + s.App, "datname": s.DBs[0],
+			"statement": stmt, "detail": detail, "level": e.level, "message": logparse.MessageShape(raw),
+			"source": "serverlog:log:" + file, "event_key": fmt.Sprintf("%016x", hash64(fmt.Sprintf("%s|serverlog|err|%d|%d", s.Name, at.UnixNano(), pid)))})
+	}
+	return out
 }

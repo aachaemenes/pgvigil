@@ -99,6 +99,7 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .group-l { font-size: 12px; color: var(--muted); } .group-v { font-weight: 700; }
 .group.ok { background: var(--ok-bg); color: var(--ok); } .group.warn { background: var(--warn-bg); color: var(--warn); } .group.crit { background: var(--crit-bg); color: var(--crit); }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 1rem; align-items: start; }
+.checks-box .grid td.wide { min-width: 24rem; }
 table.props { border-collapse: collapse; width: 100%; }
 .props th, .props td { padding: .3rem .6rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 .props th { color: var(--muted); font-weight: 600; width: 40%; white-space: nowrap; }

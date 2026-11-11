@@ -529,7 +529,7 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
     { key: 'at', label: 'when', fmt: fmtTime },
     { key: 'detail', wide: true },
   ];
-  two.append(el('div', {}, el('h3', {}, 'Failing checks'), grid(mine, checkCols, 'All checks pass on this instance.')));
+  two.append(el('div', { class: 'checks-box' }, el('h3', {}, 'Failing checks'), grid(mine, checkCols, 'All checks pass on this instance.')));
   sec.append(two);
   sec.append(el('h3', {}, `Activity (${rangeLabel(ctx)})`), el('div', { class: 'charts' },
     lineChart('Sessions', rowsOf(sess), [{ key: 'total', label: 'total' }, { key: 'active', label: 'active' }, { key: 'idle_in_txn', label: 'idle in txn' }, { key: 'waiting_lock', label: 'lock waits' }]),
