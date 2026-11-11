@@ -122,8 +122,9 @@ function readGrid(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   const ths = [...table.querySelectorAll('thead th')];
   const cols = ths.map(headingText);   // a header's words without its filter button (ui.ts grid)
   const numCol = ths.map(h => h.classList.contains('num'));
-  const trs = [...table.querySelectorAll('tbody tr')];
   const m = gridModel(table);
+  // every row of the grid as filtered and sorted, also the ones past its page that are not drawn (ui.ts GRID_PAGE)
+  const trs = m?.allRows ? m.allRows() : [...table.querySelectorAll('tbody tr')];
   const data = m?.rows();
   const keys: (Col | undefined)[] = m && m.cols.length === cols.length ? m.cols : cols.map(() => undefined);
   const rows = trs.map((tr, i) => [...tr.children].map((td, j) => {

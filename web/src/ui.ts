@@ -60,7 +60,9 @@ export interface Col {
 
 // The page model of a rendered grid, kept beside its table for the export (export.ts): the columns and the
 // rows in the order the screen shows them now, their raw values unformatted, so a number exports as a number.
-export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[] }
+// rows: the grid's rows as filtered and sorted; allRows: each of them as a table row, the ones not drawn yet (past the
+// grid's page) built off the screen, so the export and Copy all take every row without drawing them
+export interface GridModel { cols: Col[]; rows(): Record<string, unknown>[]; allRows?(): HTMLTableRowElement[] }
 const models = new WeakMap<HTMLTableElement, GridModel>();
 export function gridModel(t: HTMLTableElement): GridModel | undefined { return models.get(t); }
 
@@ -179,13 +181,15 @@ function showMenu(x: number, y: number, items: [string, () => void][], back: HTM
 // as in passes(): a number as the cell shows it),
 // and a copy menu (right-click, or the menu key / Shift+F10 on the grid): the cell, its row, or every row shown, as
 // tab-separated text with the headers. The export and the copy take the rows the filter leaves.
+// GRID_PAGE: the rows a grid draws before its 'show more' line (a 1,000-run job history drew a 32,000 px page)
+export const GRID_PAGE = 200;
+
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
   if (rows.length === 0) return el('p', { class: 'empty' }, empty);
   let sortKey = '', asc = true;
   let shown = rows;
   const filters = new Map<string, string>();
   const table = el('table', { class: 'grid' });
-  models.set(table, { cols, rows: () => shown });
   const thead = el('thead'), tbody = el('tbody');
   const head = el('tr'), filterRow = el('tr', { class: 'filters', hidden: '' });
   const inputs = new Map<string, HTMLInputElement>();
@@ -226,6 +230,10 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   const fmtCell = (c: Col, r: Record<string, unknown>) => { const v = r[c.key]; return c.fmt ? c.fmt(v, r) : (c.num ? fmtNum(v) : fmtAny(v)); };
   const words = (out: string | Node) => typeof out === 'string' ? out : cellText(el('span', {}, out instanceof Node ? out.cloneNode(true) : String(out)));
   const count = el('p', { class: 'meta filter-count', role: 'status' });
+  // a long grid draws its first GRID_PAGE rows and a 'show more' line under them; filters, sorting, Copy all and the
+  // export (models: shown) still see every row
+  let limit = GRID_PAGE;
+  const more = el('p', { class: 'meta grid-more', hidden: '' });
   function draw() {
     let data = [...rows];
     if (filters.size) {
@@ -242,23 +250,40 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       });
     }
     shown = data;
+    table.dataset.rows = String(data.length);
+    const drawn = data.length > limit ? data.slice(0, limit) : data;
     count.textContent = filters.size ? `${data.length} of ${rows.length} rows shown (filtered)` : '';
-    tbody.replaceChildren(...data.map(r => {
-      const tr = el('tr');
-      for (const c of cols) {
-        const v = r[c.key];
-        const out = fmtCell(c, r);
-        const base = c.num ? 'num' : c.wide ? 'wide' : '';
-        const extra = c.cls ? c.cls(v, r) : '';
-        const cl = [base, extra].filter(Boolean).join(' ');
-        const td = el('td', cl ? { class: cl } : {});
-        if (c.wide && typeof out === 'string') td.title = out;
-        td.append(out);
-        tr.append(td);
-      }
-      return tr;
-    }));
+    more.replaceChildren();
+    more.toggleAttribute('hidden', drawn.length === data.length);
+    if (drawn.length < data.length) {
+      const next = Math.min(GRID_PAGE, data.length - drawn.length);
+      const step = el('button', { type: 'button', class: 'link' }, `Show ${next} more`);
+      // the clicked button is replaced: the focus goes to the next 'Show more', else to the grid (WCAG 2.4.3)
+      const refocus = () => { ((more.querySelector('button') ?? table.parentElement) as HTMLElement | null)?.focus(); };
+      step.addEventListener('click', () => { limit += GRID_PAGE; draw(); refocus(); });
+      const all = el('button', { type: 'button', class: 'link' }, `Show all ${data.length}`);
+      all.addEventListener('click', () => { limit = Infinity; draw(); refocus(); });
+      more.append(`The first ${drawn.length} of ${data.length} rows. `, step, ' · ', all);
+    }
+    tbody.replaceChildren(...drawn.map(rowEl));
   }
+  function rowEl(r: Record<string, unknown>): HTMLTableRowElement {
+    const tr = el('tr') as HTMLTableRowElement;
+    for (const c of cols) {
+      const v = r[c.key];
+      const out = fmtCell(c, r);
+      const base = c.num ? 'num' : c.wide ? 'wide' : '';
+      const extra = c.cls ? c.cls(v, r) : '';
+      const cl = [base, extra].filter(Boolean).join(' ');
+      const td = el('td', cl ? { class: cl } : {});
+      if (c.wide && typeof out === 'string') td.title = out;
+      td.append(out);
+      tr.append(td);
+    }
+    return tr;
+  }
+  models.set(table, { cols, rows: () => shown,
+    allRows: () => shown.length > limit ? shown.map(rowEl) : [...tbody.children] as HTMLTableRowElement[] });
   draw();
   const wrap = el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
   const tsv = (trs: Element[]) => trs.filter(tr => !tr.classList.contains('trend-row')).map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
@@ -282,13 +307,16 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       items.push(['Copy cell', () => { void copyText(cellText(td)).then(done('the cell')); }]);
       items.push(['Copy row', () => { void copyText(header() + '\n' + tsv([td.parentElement!])).then(done('the row')); }]);
     }
-    items.push([filters.size ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => { void copyText(header() + '\n' + tsv([...tbody.children])).then(done(shown.length + ' rows')); }]);
+    items.push([filters.size ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => {
+      // every row, the ones past the grid's page built off the screen (the grid itself stays as drawn)
+      void copyText(header() + '\n' + tsv(models.get(table)!.allRows!())).then(done(shown.length + ' rows'));
+    }]);
     e.preventDefault();
     const r = (e.target as Element).getBoundingClientRect();
     const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;
     showMenu(x, y, items, (td as HTMLElement | null) ?? wrap);
   });
-  return el('div', { class: 'grid-box' }, count, wrap);
+  return el('div', { class: 'grid-box' }, count, wrap, more);
 }
 
 export function badge(text: string, kind: string): HTMLElement {

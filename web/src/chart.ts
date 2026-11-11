@@ -152,21 +152,27 @@ export function donutChart(title: string, slices: Slice[], fmt: (v: number) => s
     parts = [...parts.slice(0, max - 1), { label: `other (${rest.length})`, value: rest.reduce((a, s) => a + s.value, 0) }];
   }
   const share = (v: number) => (100 * v / total).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' %';
-  const r = 27, c = 2 * Math.PI * r;   // a stroke of 2r on a circle of radius r fills the disc: a pie, not a ring
+  // each slice a wedge path from the centre (a dashed stroke of width 2r left a notch where two dashes met at the centre)
+  const r = 54;
+  const at = (f: number) => { const a = 2 * Math.PI * f - Math.PI / 2; return `${(60 + r * Math.cos(a)).toFixed(3)} ${(60 + r * Math.sin(a)).toFixed(3)}`; };
   const ring = svg('svg', { viewBox: '0 0 120 120', role: 'img',
     'aria-label': `${title}: ` + parts.map(s => `${s.label} ${fmt(s.value)} (${share(s.value)})`).join(', ') });
   const body = el('tbody');
   let off = 0;
   const palette = seriesColors();
   parts.forEach((s, i) => {
-    const color = colorAt(palette, i), len = c * s.value / total;
-    const arc = svg('circle', { cx: '60', cy: '60', r: String(r), fill: 'none', stroke: color, 'stroke-width': String(2 * r),
-      'stroke-dasharray': `${len} ${c - len}`, 'stroke-dashoffset': String(-off), transform: 'rotate(-90 60 60)' },
-      svg('title', {}, `${s.label}: ${fmt(s.value)} (${share(s.value)})`));
-    off += len;
+    const color = colorAt(palette, i), f = s.value / total;
+    const tip = svg('title', {}, `${s.label}: ${fmt(s.value)} (${share(s.value)})`);
+    // a slice of (nearly) the whole: its arc's two ends round to one point and SVG drops it, so it is the disc itself,
+    // drawn under the others
+    const whole = f > 0.9999;
+    const arc = whole
+      ? svg('circle', { cx: '60', cy: '60', r: String(r), fill: color }, tip)
+      : svg('path', { d: `M60 60 L${at(off)} A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${at(off + f)} Z`, fill: color }, tip);
+    off += f;
     // the ring is one image (no control inside an image: WCAG's nested-interactive); a slice's page opens from its
     // name in the table
-    ring.append(arc);
+    if (whole) ring.prepend(arc); else ring.append(arc);
     const sw = el('span', { class: 'swatch', 'aria-hidden': 'true' });
     sw.style.background = color;
     body.append(el('tr', {},

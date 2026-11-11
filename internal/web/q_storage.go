@@ -29,14 +29,21 @@ SELECT kind, name, location, size_bytes, files, allocated_bytes, max_allocated_b
  WHERE instance_id = $1 AND is_present
  ORDER BY CASE kind WHEN 'rds' THEN 1 WHEN 'aurora_volume' THEN 2 WHEN 'wal' THEN 3 ELSE 4 END, size_bytes DESC NULLS LAST, name`
 
-// sqlStorageSeries is the WAL directory and each tablespace over the window, the largest per $4-second bucket.
+// sqlStorageSeries is the WAL directory and the tablespaces over the window: per $4-second bucket each object's largest
+// read, then the tablespaces summed (a sum over every read of a bucket counted a tablespace once per read: a bucket
+// holding two reads drew it twice its size).
 const sqlStorageSeries = `
-SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS snapshot_at,
-       max(s.size_bytes) FILTER (WHERE s.kind = 'wal') AS wal_bytes,
-       sum(s.size_bytes) FILTER (WHERE s.kind = 'tablespace') AS tablespace_bytes,
-       max(s.size_bytes) FILTER (WHERE s.kind = 'aurora_volume') AS aurora_volume_bytes
-  FROM pgvigil.storage_sample s
- WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+WITH b AS (
+  SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $4) * $4) AS at, s.kind, s.name, max(s.size_bytes) AS size_bytes
+    FROM pgvigil.storage_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+   GROUP BY 1, 2, 3
+)
+SELECT at AS snapshot_at,
+       max(size_bytes) FILTER (WHERE kind = 'wal') AS wal_bytes,
+       sum(size_bytes) FILTER (WHERE kind = 'tablespace') AS tablespace_bytes,
+       max(size_bytes) FILTER (WHERE kind = 'aurora_volume') AS aurora_volume_bytes
+  FROM b
  GROUP BY 1 ORDER BY 1`
 
 // sqlStorageTemp is the temporary file volume of the last 24 hours and 7 days (dbstats, summed over databases).

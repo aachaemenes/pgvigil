@@ -1,6 +1,6 @@
 // The shared frame's browser checks (proof-frame.sh): a grid's column filter, its copy menu and the clipboard, a grid
 // inside a grid's row, the Summary's Tests pane header, a chart legend's isolation, the crosshair readout, the auto
-// refresh select and the filtered CSV export.
+// refresh select, the filtered CSV export, a grid past its page and a pie's wedges.
 //   node scripts/frame-check.mjs <cdp port> <base url/> <download folder>
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base, dl] = process.argv.slice(2);
@@ -157,6 +157,45 @@ const iso = await ev(`(async () => {
   return { one, all: shown(), n: rows.length, tip: t && !t.hidden ? t.children.length : 0 };
 })()`);
 check('I chart', iso.one === 1 && iso.all === iso.n && iso.tip >= 2, `isolate ${iso.one} of ${iso.n}, restore ${iso.all}; readout ${iso.tip} line(s)`);
+
+// J. a grid past its page (a job's All runs): 200 rows drawn and the 'show more' line; Copy all takes every row and
+// leaves the grid as drawn; 'Show 200 more' draws 200 more and keeps the focus on the line; 'Show all' draws the rest
+await go(`#/jobs?i=${idOf('demo-aurora-crm01')}&w=7d`);
+const pg = await ev(`(async () => {
+  const t = [...document.querySelectorAll('main table.grid')].find(x => Number(x.dataset.rows) > 200); if (!t) return null;
+  const box = t.closest('.grid-box'), more = box.querySelector('.grid-more'), n = Number(t.dataset.rows);
+  const drawn = () => t.querySelectorAll('tbody tr').length;
+  const first = drawn(), line = more.hidden ? '' : more.textContent;
+  const td = t.querySelector('tbody td'); const r = td.getBoundingClientRect();
+  td.tabIndex = -1; td.focus();
+  td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 4, clientY: r.top + 4 }));
+  const copyAll = [...document.querySelectorAll('.menu button')].find(b => b.textContent.startsWith('Copy all'));
+  if (!copyAll) return { why: 'no Copy all in the menu: ' + [...document.querySelectorAll('.menu button')].map(b => b.textContent).join('|') };
+  copyAll.click();
+  await new Promise(r => setTimeout(r, 400));
+  const lines = (await navigator.clipboard.readText()).split('\\n').length, afterCopy = drawn();
+  more.querySelector('button').click(); await new Promise(r => setTimeout(r, 200));
+  const second = drawn(), focusOnLine = more.contains(document.activeElement) && document.activeElement.tagName === 'BUTTON';
+  const rest = more.hidden ? [] : [...more.querySelectorAll('button')];
+  if (rest.length) { rest.pop().click(); await new Promise(r => setTimeout(r, 300)); }
+  return { n, first, line, lines, afterCopy, second, focusOnLine, all: drawn(), hidden: more.hidden, focusGrid: document.activeElement === t.parentElement };
+})()`);
+check('J paging', !!pg && !pg.why && pg.first === 200 && pg.line.startsWith(`The first 200 of ${pg.n} rows`) && pg.lines === pg.n + 1 && pg.afterCopy === 200
+  && pg.second === Math.min(400, pg.n) && (pg.n <= 400 || pg.focusOnLine) && pg.all === pg.n && pg.hidden && pg.focusGrid,
+  pg?.why ?? (pg ? `${pg.n} rows: ${pg.first} drawn, '${pg.line.slice(0, 40)}...'; Copy all ${pg.lines - 1} rows, still ${pg.afterCopy} drawn; more ${pg.second} (focus on the line ${pg.focusOnLine}); all ${pg.all}, line hidden ${pg.hidden}, focus on the grid ${pg.focusGrid}` : 'no grid over 200 rows on the Jobs page'));
+
+// K. a pie's slices are filled wedges (a dashed stroke of width 2r left a notch at the centre): one wedge or disc per
+// legend row, none stroked, the wedges' angles summing to the whole circle
+await go(`#/storage?i=${idOf('demo-onprem-erp01')}&w=7d`);
+const pies = await ev(`[...document.querySelectorAll('main .donut')].map(d => {
+  const sl = [...d.querySelectorAll('svg path, svg circle')];
+  const ang = p => { const m = p.getAttribute('d').match(/L([-0-9.]+) ([-0-9.]+) A[^ ]+ [^ ]+ 0 ([01]) 1 ([-0-9.]+) ([-0-9.]+)/);
+    const a = (x, y) => Math.atan2(y - 60, x - 60); let v = a(+m[4], +m[5]) - a(+m[1], +m[2]); if (v < 0) v += 2 * Math.PI; if (m[3] === '1' && v < Math.PI) v += 2 * Math.PI; return v; };
+  const total = sl.reduce((s, e) => s + (e.tagName === 'circle' ? 2 * Math.PI : ang(e)), 0);
+  return { n: sl.length, rows: d.querySelectorAll('tbody tr').length, stroked: sl.filter(e => e.getAttribute('stroke-dasharray')).length, turns: total / (2 * Math.PI) };
+})`);
+check('K pies', pies.length >= 2 && pies.every(p => p.n === p.rows && p.stroked === 0 && Math.abs(p.turns - 1) < 0.001),
+  pies.map(p => `${p.n} slice(s) for ${p.rows} row(s), ${p.turns.toFixed(4)} turn(s)`).join('; ') || 'no pie on the Storage page');
 
 ws.close();
 if (failed) { console.log(`FAIL ${failed} case(s)`); process.exit(1); }
