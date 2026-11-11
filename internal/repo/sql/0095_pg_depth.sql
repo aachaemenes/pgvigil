@@ -274,7 +274,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.wal_state_sample (
   snapshot_at           timestamptz NOT NULL,
   in_recovery           boolean,
   checkpoint_time       timestamptz,            -- pg_control_checkpoint(): the last checkpoint (a restartpoint on a standby)
-  timeline_id           int,
+  timeline_id           int,                    -- the server's timeline now (a primary's WAL insert, a standby's receiver)
+  checkpoint_timeline_id int,                   -- the last checkpoint's
   redo_lsn              text,
   wal_since_redo        bigint,                 -- bytes from the redo point to the insert (on a standby: replay) position
   system_identifier     text,
@@ -289,7 +290,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.wal_state_sample (
   archive_oldest_ready  timestamptz,
   wal_files             int,
   wal_dir_bytes         bigint,
-  wal_note              text
+  wal_note              text,
+  checkpoint_age_s      bigint,                 -- the server's now() less checkpoint_time (no collector clock in it)
+  archive_oldest_age_s  bigint                  -- the server's now() less the oldest .ready file's time
 ) PARTITION BY RANGE (snapshot_at);
 
 -- 0011's import with the 'wal' row stored (the rest unchanged)
@@ -374,14 +377,16 @@ BEGIN
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'wal') THEN
     PERFORM pgvigil.ensure_month_partition('wal_state_sample', p_snapshot_at);
     INSERT INTO pgvigil.wal_state_sample (
-      instance_id, snapshot_at, in_recovery, checkpoint_time, timeline_id, redo_lsn, wal_since_redo, system_identifier,
+      instance_id, snapshot_at, in_recovery, checkpoint_time, timeline_id, checkpoint_timeline_id, redo_lsn, wal_since_redo, system_identifier,
       checkpoint_timeout_s, max_connections, superuser_reserved, reserved_connections, client_backends, standbys, archive_mode,
-      archive_ready, archive_oldest_ready, wal_files, wal_dir_bytes, wal_note)
+      archive_ready, archive_oldest_ready, wal_files, wal_dir_bytes, wal_note, checkpoint_age_s, archive_oldest_age_s)
     SELECT p_instance_id, p_snapshot_at, (r->>'in_recovery')::boolean, (r->>'checkpoint_time')::timestamptz, (r->>'timeline_id')::int,
+           (r->>'checkpoint_timeline_id')::int,
            r->>'redo_lsn', (r->>'wal_since_redo')::bigint, r->>'system_identifier', (r->>'checkpoint_timeout_s')::int,
            (r->>'max_connections')::int, (r->>'superuser_reserved')::int, (r->>'reserved_connections')::int,
            (r->>'client_backends')::int, (r->>'standbys')::int, r->>'archive_mode', (r->>'archive_ready')::int,
-           (r->>'archive_oldest_ready')::timestamptz, (r->>'wal_files')::int, (r->>'wal_dir_bytes')::bigint, r->>'wal_note'
+           (r->>'archive_oldest_ready')::timestamptz, (r->>'wal_files')::int, (r->>'wal_dir_bytes')::bigint, r->>'wal_note',
+           (r->>'checkpoint_age_s')::bigint, (r->>'archive_oldest_age_s')::bigint
       FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'wal'
      LIMIT 1;
   END IF;
@@ -392,11 +397,15 @@ END $$;
 -- last timeline or system identifier change seen in the 24 hours before the read (prev_* is the value before it, changed_at
 -- the first read that saw the new value).
 CREATE OR REPLACE VIEW pgvigil.wal_state_latest AS
-SELECT n.*,
-       extract(epoch FROM n.snapshot_at - n.checkpoint_time)::bigint AS checkpoint_age_s,
+SELECT n.instance_id, n.snapshot_at, n.in_recovery, n.checkpoint_time, n.timeline_id, n.checkpoint_timeline_id, n.redo_lsn,
+       n.wal_since_redo, n.system_identifier, n.checkpoint_timeout_s, n.max_connections, n.superuser_reserved,
+       n.reserved_connections, n.client_backends, n.standbys, n.archive_mode, n.archive_ready, n.archive_oldest_ready,
+       n.wal_files, n.wal_dir_bytes, n.wal_note,
+       -- the server's own age where the collector sent it (0095's collector does), else the read time's
+       coalesce(n.checkpoint_age_s, extract(epoch FROM n.snapshot_at - n.checkpoint_time)::bigint) AS checkpoint_age_s,
        n.max_connections - coalesce(n.superuser_reserved, 0) - coalesce(n.reserved_connections, 0) AS client_limit,
        round(100.0 * n.client_backends / nullif(n.max_connections - coalesce(n.superuser_reserved, 0) - coalesce(n.reserved_connections, 0), 0), 1) AS connections_pct,
-       extract(epoch FROM n.snapshot_at - n.archive_oldest_ready)::bigint AS archive_oldest_age_s,
+       coalesce(n.archive_oldest_age_s, extract(epoch FROM n.snapshot_at - n.archive_oldest_ready)::bigint) AS archive_oldest_age_s,
        tl.timeline_id AS prev_timeline_id, tl_at.changed_at AS timeline_changed_at,
        si.system_identifier AS prev_system_identifier, si_at.changed_at AS system_identifier_changed_at
   FROM pgvigil.instances i
@@ -745,8 +754,10 @@ BEGIN
   SELECT DISTINCT ON ((r->>'dbid')::bigint, (r->>'indexrelid')::bigint)
          p_instance_id, (r->>'dbid')::bigint, (r->>'indexrelid')::bigint, r->>'datname', r->>'schema_name', r->>'table_name',
          r->>'index_name', (r->>'index_bytes')::bigint, (r->>'est_bytes')::bigint,
-         greatest((r->>'index_bytes')::bigint - (r->>'est_bytes')::bigint, 0),
-         round(100.0 * greatest((r->>'index_bytes')::bigint - (r->>'est_bytes')::bigint, 0) / nullif((r->>'index_bytes')::bigint, 0), 1),
+         -- not estimated (est_bytes NULL): no bloat figure, never 0
+         CASE WHEN r->>'est_bytes' IS NOT NULL THEN greatest((r->>'index_bytes')::bigint - (r->>'est_bytes')::bigint, 0) END,
+         CASE WHEN r->>'est_bytes' IS NOT NULL THEN
+           round(100.0 * greatest((r->>'index_bytes')::bigint - (r->>'est_bytes')::bigint, 0) / nullif((r->>'index_bytes')::bigint, 0), 1) END,
          (r->>'fillfactor')::int, (r->>'tuples')::bigint, (r->>'partial')::boolean, r->>'est_note', r->>'reindex_sql',
          p_snapshot_at, p_snapshot_at, true
     FROM jsonb_array_elements(p_payload) r
@@ -780,7 +791,8 @@ END $$;
 --   system identifier changed  (critical) the instance's name now reaches another cluster (a rebuild or restore)
 --   no standby                 (info) a self-managed primary with no physical standby streaming from it
 --   connections near the limit (warning at 90 %, critical at 100 % of the slots a client may use)
---   subtransaction SLRU reads, multixact SLRU reads (warning) pages read from disk between the two newest SLRU reads
+--   subtransaction SLRU reads, multixact SLRU reads (warning) 50 or more pages read from disk between the two newest SLRU
+--                              reads (a few reads at a start or a multixact truncation are not the overflow)
 --   sequence near its maximum  (warning at 90 %, critical at 98 %)
 --   SECURITY DEFINER without search_path (warning), NOT VALID constraint (info), rows in a DEFAULT partition (info),
 --   CREATE on schema public    (warning), MD5 password (warning)
@@ -840,7 +852,7 @@ SELECT l.instance_id, 'warning', CASE WHEN l.family = 'subtransaction' THEN 'sub
                  ELSE 'many sessions locking the same rows (FOR SHARE / FOR KEY SHARE, foreign keys) make multixacts the cache no longer holds' END,
        'pg-depth', l.snapshot_at
   FROM pgvigil.slru_latest l
- WHERE l.family IN ('subtransaction', 'multixact_member', 'multixact_offset') AND l.read_delta > 0
+ WHERE l.family IN ('subtransaction', 'multixact_member', 'multixact_offset') AND l.read_delta >= 50
 UNION ALL
 SELECT q.instance_id, CASE WHEN q.pct_used >= 98 THEN 'critical' ELSE 'warning' END, 'sequence near its maximum',
        q.datname || ': ' || q.schema_name || '.' || q.seq_name || ' ' || q.pct_used || ' %', true, 'under 90 %', 'all',

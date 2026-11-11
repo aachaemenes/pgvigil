@@ -125,6 +125,8 @@ WITH s AS (
   SELECT s.*, c1.col_schema, c1.col_table, c1.col_name, c1.col_type,
          CASE c1.col_type WHEN 'smallint' THEN 32767::numeric WHEN 'integer' THEN 2147483647::numeric
                           WHEN 'bigint' THEN 9223372036854775807::numeric END AS col_max,
+         CASE c1.col_type WHEN 'smallint' THEN -32768::numeric WHEN 'integer' THEN -2147483648::numeric
+                          WHEN 'bigint' THEN -9223372036854775808::numeric END AS col_min,
          -- an unlogged sequence cannot be read on a standby
          CASE WHEN s.readable AND NOT (s.relpersistence = 'u' AND pg_is_in_recovery()) THEN pg_sequence_last_value(s.oid::regclass) END AS last_value
     FROM s LEFT JOIN c1 ON c1.oid = s.oid
@@ -132,9 +134,11 @@ WITH s AS (
 SELECT 'seq' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
        current_database()::text AS datname, v.oid::bigint AS seqrelid, v.schema_name, v.seq_name, v.data_type, v.increment_by,
        v.min_value, v.max_value, v.cycles, v.readable, v.last_value, v.col_schema, v.col_table, v.col_name, v.col_type, v.col_max,
+       -- an ascending sequence against the smaller maximum, a descending one against the larger minimum; a limit of 0 (a
+       -- countdown to 0) has no share
        CASE WHEN v.last_value IS NULL THEN NULL
-            WHEN v.increment_by > 0 THEN round(100 * v.last_value::numeric / least(v.max_value::numeric, coalesce(v.col_max, v.max_value::numeric)), 2)
-            ELSE round(100 * v.last_value::numeric / v.min_value::numeric, 2) END AS pct_used,
+            WHEN v.increment_by > 0 THEN round(100 * v.last_value::numeric / nullif(least(v.max_value::numeric, coalesce(v.col_max, v.max_value::numeric)), 0), 2)
+            ELSE round(100 * v.last_value::numeric / nullif(greatest(v.min_value::numeric, coalesce(v.col_min, v.min_value::numeric)), 0), 2) END AS pct_used,
        io.blks_read, io.blks_hit
   FROM v
   LEFT JOIN pg_statio_user_sequences io ON io.relid = v.oid
@@ -151,16 +155,20 @@ SELECT 'check' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = cur
     -- the ones it names
     SELECT 'secdef' AS check_kind, p.oid::regprocedure::text AS object, NULL::numeric AS figure,
            'owner ' || pg_get_userbyid(p.proowner) AS detail,
-           format('ALTER FUNCTION %s SET search_path = pg_catalog, pg_temp;', p.oid::regprocedure::text) AS fix_sql
+           format('ALTER ROUTINE %s SET search_path = pg_catalog, pg_temp;', p.oid::regprocedure::text) AS fix_sql
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE p.prosecdef AND n.nspname NOT IN ('pg_catalog', 'information_schema')
        AND NOT EXISTS (SELECT 1 FROM unnest(coalesce(p.proconfig, '{}'::text[])) c WHERE c LIKE 'search_path=%')
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
     UNION ALL
-    -- a check or foreign key added NOT VALID and never validated: the planner cannot rely on it, old rows may break it
-    SELECT 'notvalid', format('%s.%s', k.conrelid::regclass::text, quote_ident(k.conname)), NULL::numeric,
+    -- a check or foreign key added NOT VALID and never validated: the planner cannot rely on it, old rows may break it (a
+    -- domain's check: ALTER DOMAIN)
+    SELECT 'notvalid',
+           CASE WHEN k.contypid <> 0 THEN format('domain %s.%s', k.contypid::regtype::text, quote_ident(k.conname))
+                ELSE format('%s.%s', k.conrelid::regclass::text, quote_ident(k.conname)) END, NULL::numeric,
            CASE k.contype WHEN 'f' THEN 'foreign key' WHEN 'c' THEN 'check' ELSE k.contype::text END || ': ' || pg_get_constraintdef(k.oid),
-           format('ALTER TABLE %s VALIDATE CONSTRAINT %I;', k.conrelid::regclass::text, k.conname)
+           CASE WHEN k.contypid <> 0 THEN format('ALTER DOMAIN %s VALIDATE CONSTRAINT %I;', k.contypid::regtype::text, k.conname)
+                ELSE format('ALTER TABLE %s VALIDATE CONSTRAINT %I;', k.conrelid::regclass::text, k.conname) END
       FROM pg_constraint k JOIN pg_namespace n ON n.oid = k.connamespace
      WHERE NOT k.convalidated AND k.contype IN ('c', 'f') AND n.nspname NOT IN ('pg_catalog', 'information_schema')
     UNION ALL

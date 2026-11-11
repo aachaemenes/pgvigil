@@ -132,7 +132,10 @@ SELECT 'server' AS kind, b.stats_reset AS bgwriter_stats_reset, %s AS checkpoint
 // cluster's system identifier, the checkpoint_timeout in force, the client sessions against the connections a client may
 // use, and the physical standbys streaming from this server (a walsender of a logical slot is not a standby). On a standby
 // the WAL since the redo point is the replay position's. Aurora keeps no local WAL or control file: dbstatsWal leaves the
-// checkpoint and WAL columns out there.
+// checkpoint and WAL columns out there. The timeline is the server's own now (a primary's current WAL file, a standby's
+// WAL receiver; NULL on a standby with no receiver running, never the restartpoint's, which can lag a promotion upstream),
+// not the last checkpoint's (checkpoint_timeline_id): a promotion shows at once, before its first checkpoint. The ages
+// (checkpoint, oldest .ready file) are the server's own now() less the time, so the collector's clock never enters them.
 const dbstatsWalSQL = `
 SELECT 'wal' AS kind, pg_is_in_recovery() AS in_recovery,
        %[1]s,
@@ -148,14 +151,18 @@ SELECT 'wal' AS kind, pg_is_in_recovery() AS in_recovery,
 
 // dbstatsWalControl is the checkpoint and WAL part of dbstatsWalSQL where the platform keeps them.
 const dbstatsWalControl = `(SELECT c.checkpoint_time FROM pg_control_checkpoint() c) AS checkpoint_time,
-       (SELECT c.timeline_id FROM pg_control_checkpoint() c) AS timeline_id,
+       (SELECT c.timeline_id FROM pg_control_checkpoint() c) AS checkpoint_timeline_id,
+       CASE WHEN pg_is_in_recovery()
+            THEN (SELECT r.received_tli FROM pg_stat_wal_receiver r)
+            ELSE ('x' || substr(pg_walfile_name(pg_current_wal_lsn()), 1, 8))::bit(32)::int END AS timeline_id,
        (SELECT c.redo_lsn::text FROM pg_control_checkpoint() c) AS redo_lsn,
        (SELECT pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() ELSE pg_current_wal_lsn() END, c.redo_lsn)::bigint
           FROM pg_control_checkpoint() c) AS wal_since_redo,
-       (SELECT s.system_identifier::text FROM pg_control_system() s) AS system_identifier`
+       (SELECT s.system_identifier::text FROM pg_control_system() s) AS system_identifier,
+       (SELECT extract(epoch FROM now() - c.checkpoint_time)::bigint FROM pg_control_checkpoint() c) AS checkpoint_age_s`
 
-const dbstatsWalNoControl = `NULL::timestamptz AS checkpoint_time, NULL::int AS timeline_id, NULL::text AS redo_lsn,
-       NULL::bigint AS wal_since_redo, NULL::text AS system_identifier`
+const dbstatsWalNoControl = `NULL::timestamptz AS checkpoint_time, NULL::int AS checkpoint_timeline_id, NULL::int AS timeline_id, NULL::text AS redo_lsn,
+       NULL::bigint AS wal_since_redo, NULL::text AS system_identifier, NULL::bigint AS checkpoint_age_s`
 
 // dbstatsWalFilesSQL: the archiver's backlog (the .ready files in pg_wal/archive_status, the oldest by its file time) and
 // pg_wal's segment count and size. Both functions need pg_monitor (or a superuser); a refusal leaves the four NULL and
@@ -163,6 +170,7 @@ const dbstatsWalNoControl = `NULL::timestamptz AS checkpoint_time, NULL::int AS 
 const dbstatsWalFilesSQL = `
 SELECT (SELECT count(*) FROM pg_ls_archive_statusdir() a WHERE a.name LIKE '%.ready')::int AS archive_ready,
        (SELECT min(a.modification) FROM pg_ls_archive_statusdir() a WHERE a.name LIKE '%.ready') AS archive_oldest_ready,
+       (SELECT extract(epoch FROM now() - min(a.modification))::bigint FROM pg_ls_archive_statusdir() a WHERE a.name LIKE '%.ready') AS archive_oldest_age_s,
        (SELECT count(*) FROM pg_ls_waldir() w WHERE w.name ~ '^[0-9A-F]{24}$')::int AS wal_files,
        (SELECT coalesce(sum(w.size), 0) FROM pg_ls_waldir() w)::bigint AS wal_dir_bytes`
 
