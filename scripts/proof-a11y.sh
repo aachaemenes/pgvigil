@@ -5,6 +5,7 @@
 # instance in both themes (and the pages with status cells again in the quiet status style), and axe-core runs on each page. Needs go, psql, chromium, node and npm, and a
 # PostgreSQL to hold the throwaway database:
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database
+#   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 240; a loaded machine seeds slower)
 #   PGVIGIL_A11Y_MAX   the most violation nodes allowed (default 0)
 # Expected: every page renders and axe runs on it (the check's exit 0); 0 violation nodes under the
 # WCAG 2.1 A / AA rules in both themes (the rules axe can judge; keyboard order, focus visibility and
@@ -31,8 +32,8 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/n
 DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
 "$WORK/pgvigil" demo -dsn "$DSN" -serve -listen "127.0.0.1:$PORT" -days 2 > "$WORK/demo.log" 2>&1 &
 SRV=$!
-for _ in $(seq 1 240); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { cat "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
-grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up in 240 s"; }
+for _ in $(seq 1 "${PGVIGIL_DEMO_WAIT_S:-240}"); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { cat "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
+grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up in ${PGVIGIL_DEMO_WAIT_S:-240} s (PGVIGIL_DEMO_WAIT_S raises the wait on a loaded machine)"; }
 
 echo "== axe-core 4.14.0 and a headless Chromium on CDP $CDP"
 (cd "$WORK" && npm install --silent --no-audit --no-fund --no-package-lock axe-core@4.14.0 >/dev/null 2>&1) || fail "npm install axe-core failed"

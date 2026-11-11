@@ -6,6 +6,7 @@
 # python3, the web bundle built with the export wired into the bar (internal/web/dist/app.js carries 'Export .xlsx':
 # `cd web && npm run build` after the wiring in main.ts), and a PostgreSQL for the throwaway database:
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database
+#   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 240; a loaded machine seeds slower)
 #   PGVIGIL_EXPORT_OUT a folder to keep the downloads in (default: removed with the proof's temporary folder)
 # Expected:
 #   names      fleet_Summary_<yyyymmdd-hhmm>_<yyyymmdd-hhmm>.xlsx and .csv; <instance>_Tables_<from>_<to>.xlsx and
@@ -55,8 +56,8 @@ CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null
 "$WORK/pgvigil" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -serve -listen "127.0.0.1:$PORT" -days 2 > "$WORK/demo.log" 2>&1 &
 SRV=$!
-for _ in $(seq 1 240); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { cat "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
-grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up in 240 s"; }
+for _ in $(seq 1 "${PGVIGIL_DEMO_WAIT_S:-240}"); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { cat "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
+grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up in ${PGVIGIL_DEMO_WAIT_S:-240} s (PGVIGIL_DEMO_WAIT_S raises the wait on a loaded machine)"; }
 
 # the driver: open a page, count each grid's rows and read the headings, press a button, wait for the download
 cat > "$WORK/drive.mjs" <<'JS'
