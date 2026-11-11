@@ -8,6 +8,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { stripGrid } from './timestrip';
 
 type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
 type XE = Record<XEParts, Table | null>;
@@ -152,7 +153,7 @@ export async function mssqlDeadlocks(ctx: Ctx): Promise<HTMLElement> {
       { key: 'source', label: 'read from', fmt: v => v === 'system_health' ? 'system_health' : 'pgvigil\'s session' },
     ];
     sec.append(el('div', { class: 'tiles' }, tile('deadlocks', fmtNum(rows.length) + (rows.length >= 500 ? '+' : ''))));
-    sec.append(grid(rows, cols, 'No deadlock in this window.'), panel.box);
+    sec.append(stripGrid('Deadlocks', window_(ctx), rows, 'event_at', cols, 'No deadlock in this window.'), panel.box);
   } catch (e) {
     sec.append(errorBox(e));
   }
@@ -324,7 +325,7 @@ export async function mssqlAgEvents(ctx: Ctx): Promise<HTMLElement> {
     }
     const f = findingsOf(d, ['an availability replica changed role or state']);
     if (f) sec.append(f);
-    sec.append(grid(rowsOf(d.ag_events), agCols, 'No availability event in this window.'));
+    sec.append(stripGrid('Availability events', window_(ctx), rowsOf(d.ag_events), 'event_at', agCols, 'No availability event in this window.'));
   } catch (e) {
     sec.append(errorBox(e));
   }

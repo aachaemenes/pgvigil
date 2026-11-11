@@ -27,6 +27,10 @@
 #                 Yesterday: 24 h ending at the zone's midnight, no w=; Today: w=today, 'Range: Today', from the zone's
 #                 midnight, the page live; after a reload the tag and the stored zone stand; Escape closes the panel with
 #                 the focus on its button; Browser time: the browser's own offset, stored 'local'; a click outside closes it
+#   O time strip  erp01's Log events over a fixed day: 60 steps, 'Whole range. Drag ...', every row drawn (200 at most); a
+#                 drag over steps 30-59: '<from> to <to>: k of n rows.' with k the API's count for that half, k drawn, 30
+#                 steps dimmed, 'Whole range' offered; its click: all rows, none dimmed; Home, three right, two with Shift,
+#                 Enter: the rows of steps 3-5, 57 dimmed; Escape: all rows again
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -59,4 +63,4 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 
 echo "== the checks"
 node scripts/frame-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$WORK/dl" || fail "a case did not hold"
-echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, chart menu, paging, pies, colours, range and zone"
+echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, chart menu, paging, pies, colours, range and zone, time strip"

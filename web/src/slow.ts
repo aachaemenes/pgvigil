@@ -22,6 +22,7 @@ import { sqlCell, whatIsThis } from './sqlview';
 import { trendCol } from './stmt_trend';
 import { lineChart } from './chart';
 import { zoneName } from './tz';
+import { stripGrid } from './timestrip';
 
 type Parts = 'meta' | 'sources' | 'totals' | 'histogram' | 'top' | 'recent' | 'sampled' | 'instances';
 
@@ -152,7 +153,7 @@ export async function slowView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(slowLatencyPanel(ctx));
   sec.append(el('h3', {}, 'Top by count'), grid(byCount, topCols(ctx, 'count', false), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Top by total time'), grid(byTotal, topCols(ctx, 'total', false), 'No slow statement in this window.'));
-  sec.append(el('h3', {}, 'Newest slow statements'), grid(recent, recentCols, 'No slow statement in this window.'));
+  sec.append(el('h3', {}, 'Newest slow statements'), stripGrid('Newest slow statements', window_(ctx), recent, 'at', recentCols, 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Long runs seen by the activity sampler ', whatIsThis('From the activity samples, not the log: an execution seen running at least the threshold (whole seconds, at least 1 s); '
       + 'sampled, so the duration is a floor. It also catches a statement the log missed (still running, or under log_min_duration_statement).', 'Long runs seen by the activity sampler')),
     grid(sampled, slowCols, 'No execution seen running that long in this window.'));

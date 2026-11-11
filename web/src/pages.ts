@@ -5,6 +5,7 @@ import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from 
 import { lineChart } from './chart';
 import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
 import { Ctx, href, rangeLabel, window_ } from './router';
+import { stripGrid } from './timestrip';
 import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
@@ -641,7 +642,7 @@ export async function logs(ctx: Ctx): Promise<HTMLElement> {
     { key: 'statement', wide: true }, { key: 'detail', wide: true },
   ];
   return el('section', {}, el('h2', {}, `Log events (${rangeLabel(ctx)})`), tabs,
-    grid(rowsOf(d.events), cols, 'No log events in this range (the logs collection reads the server log where it is configured).'));
+    stripGrid('Log events', range(ctx), rowsOf(d.events), 'at', cols, 'No log events in this range (the logs collection reads the server log where it is configured).'));
 }
 
 // ---- Configuration: instance_state with the change history

@@ -1,7 +1,7 @@
 // The shared frame's browser checks (proof-frame.sh): a grid's column filter, its copy menu and the clipboard, a grid
 // inside a grid's row, the Summary's Tests pane header, a chart legend's isolation, the crosshair readout, the auto
-// refresh select, the filtered CSV export, a grid past its page, a pie's wedges, the status colours and the range
-// control with its calendar periods and display time zone.
+// refresh select, the filtered CSV export, a grid past its page, a pie's wedges, the status colours, the range
+// control with its calendar periods and display time zone, and the time strip above an event grid.
 //   node scripts/frame-check.mjs <cdp port> <base url/> <download folder>
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base, dl] = process.argv.slice(2);
@@ -290,6 +290,47 @@ check('N range', !!shape && shape.groups === 'Quick ranges|Calendar periods|A st
   && kept.tag === 'UTC+09:00' && kept.stored === 'Asia/Tokyo' && esc.gone && esc.focus && esc.expanded === 'false'
   && back.tag === back.want && back.stored === 'local' && shut,
   `panel ${shape?.groups} with ${shape?.items} ranges and ${shape?.zones} zones, inside the window ${shape?.inside}; Asia/Tokyo (${zoneSet}): tag ${tokyo.tag}, inputs ${tokyo.from} to ${tokyo.to}, the window text as the zone writes it ${tokyo.title === tokyo.want}, focus on '${tokyo.focus}'; Apply wrote ${applied.get('from')} to ${applied.get('to')}; Yesterday (${picked}): ${(yTo - yFrom) / 3600e3} h ending at the zone's midnight ${yTo === midnight}, '${yText}'; Today: w=${today.get('w')}, '${live.text}', from the zone's midnight ${live.title.startsWith(live.want)}, live ${live.refresh}; after a reload: tag ${kept.tag}, stored ${kept.stored}; Escape: closed ${esc.gone}, focus on the button ${esc.focus}; browser time: tag ${back.tag} (wanted ${back.want}), stored ${back.stored}; a click outside closed it ${shut}`);
+}
+
+// O. the time strip above an event grid: the Log events of demo-onprem-erp01 over a fixed day. A drag over the strip's
+// right half narrows the grid to the rows of that half (counted here from the same API read); 'Whole range' puts every
+// row back; on the keyboard Home, three steps right, two more with Shift and Enter narrow to steps 3 to 5; Escape shows
+// the whole range again
+{   // its own scope
+  const to = new Date(Math.floor(Date.now() / 60000) * 60000), from = new Date(to.getTime() - 86400e3);
+  const q = `from=${from.toISOString()}&to=${to.toISOString()}`, erp = idOf('demo-onprem-erp01');
+  const api = await (await fetch(`${base}api/logs?instance=${erp}&${q}`)).json();
+  const at = api.events.rows.map(r => Date.parse(r[api.events.columns.indexOf('at')]));
+  const step = 86400e3 / 60, inSteps = (a, b) => at.filter(t => t >= from.getTime() + a * step && (b === 59 ? t <= to.getTime() : t < from.getTime() + (b + 1) * step)).length;
+  await go(`#/logs?i=${erp}&${q}`);
+  const band = `document.querySelector('main [aria-roledescription="time strip"]')`;
+  const state = () => ev(`(() => { const b = ${band}; if (!b) return null; const box = b.closest('.strip-box');
+    return { said: box.querySelector('[role="status"]').textContent, drawn: box.querySelectorAll('table.grid > tbody > tr').length, steps: b.children.length, dim: b.querySelectorAll('.out').length,
+             whole: !box.querySelector('.strip-head button').hidden, label: b.getAttribute('aria-label'), rect: JSON.parse(JSON.stringify(b.getBoundingClientRect())) }; })()`);
+  const s0 = await state();
+  const drawn = n => Math.min(n, 200);
+  let dragged = null, back = null, keyed = null, esc = null;
+  if (s0) {
+    await ev(`${band}.scrollIntoView({ block: 'center' }); 'ok'`); await sleep(200);
+    const r = (await state()).rect, y = r.top + r.height / 2, x = i => r.left + (i + 0.5) * r.width / 60;
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x(30), y, button: 'left', buttons: 1, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x(45), y, button: 'left', buttons: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x(59), y, button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(300); dragged = await state();
+    await ev(`${band}.closest('.strip-box').querySelector('.strip-head button').click(); 'ok'`); await sleep(300); back = await state();
+    await ev(`(() => { const b = ${band}; b.focus(); const k = (key, shiftKey = false) => b.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true }));
+      k('Home'); k('ArrowRight'); k('ArrowRight'); k('ArrowRight'); k('ArrowRight', true); k('ArrowRight', true); k('Enter'); return 'ok'; })()`);
+    await sleep(300); keyed = await state();
+    await ev(`${band}.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'`); await sleep(300); esc = await state();
+  }
+  const n = at.length, right = inSteps(30, 59), mid = inSteps(3, 5), whole = 'Whole range. Drag across the strip to narrow the grid.';
+  check('O time strip', !!s0 && n >= 2 && s0.steps === 60 && s0.said === whole && s0.drawn === drawn(n) && !s0.whole && s0.label.startsWith(`Log events: ${n} rows`)
+    && !!dragged && dragged.said.endsWith(`: ${right} of ${n} rows.`) && dragged.drawn === drawn(right) && dragged.dim === 30 && dragged.whole && right < n
+    && !!back && back.said === whole && back.drawn === drawn(n) && back.dim === 0 && !back.whole
+    && !!keyed && keyed.said.endsWith(`: ${mid} of ${n} rows.`) && keyed.drawn === drawn(mid) && keyed.dim === 57
+    && !!esc && esc.said === whole && esc.drawn === drawn(n) && esc.dim === 0,
+    s0 ? `${n} log events, ${s0.steps} steps, ${s0.drawn} drawn; a drag over steps 30-59: '${dragged?.said}' (wanted ${right}), ${dragged?.drawn} drawn, ${dragged?.dim} steps dimmed; Whole range: ${back?.drawn} drawn, ${back?.dim} dimmed; keys to steps 3-5: '${keyed?.said}' (wanted ${mid}), ${keyed?.drawn} drawn, ${keyed?.dim} dimmed; Escape: ${esc?.drawn} drawn`
+       : `no strip on the Log events page (${n} events from the API)`);
 }
 
 ws.close();

@@ -269,3 +269,13 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 .range-item:hover, .range-item:focus-visible { background: var(--side); }
 .range-item[aria-pressed="true"] { border-color: var(--accent); }
 @media (max-width: 34rem) { .range-panel { grid-template-columns: 1fr; } }
+/* the time strip above an event grid (timestrip.ts): sixty steps over the window, each filled from the bottom by its
+   share of the busiest step; a drag, a click or the keyboard narrows the grid to a stretch and dims the steps outside it */
+.strip { margin: .4rem 0 .5rem; }
+.strip-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .7rem; margin-bottom: .2rem; }
+.strip-band { display: flex; height: 2.6rem; background: var(--side); border: 1px solid var(--line); cursor: ew-resize; touch-action: none; user-select: none; }
+.strip-band:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.strip-step { flex: 1 1 0; min-width: 0; background: linear-gradient(to top, var(--accent) var(--h, 0%), transparent var(--h, 0%)); }
+.strip-step.out { opacity: .25; }
+.strip-step.cur { box-shadow: inset 0 0 0 2px var(--fg); }
+.strip-ends { display: flex; justify-content: space-between; font-size: .8rem; }
