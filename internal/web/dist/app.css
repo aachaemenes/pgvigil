@@ -253,6 +253,8 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 .grid td.status:not(:has(.cell-link)) { padding: .35rem .6rem; }
 /* a badge inside a filled status cell takes the cell's own text colour (its own would be the status colour on its own fill) */
 :root:not([data-status="quiet"]) .grid td.status .badge { color: inherit; }
+/* a link-styled button in a filled status cell (the Jobs grid's Thresholds door) takes the cell's text colour: the accent blue on a green or red fill is under 4.5:1 */
+:root:not([data-status="quiet"]) .grid td.status button.link { color: inherit; }
 /* a wrapping cell keeps a width of its own: beside columns that do not wrap it was squeezed to one character a line (a backup's device path made its row hundreds of pixels tall) */
 .grid td.wide:not(:empty) { min-width: 14rem; }
 /* the row's hover overlay would take the quiet style's tinted warn / crit cells under 4.5:1 (light theme): those keep their tint */

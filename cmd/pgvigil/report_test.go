@@ -279,7 +279,7 @@ func readZip(t *testing.T, path string) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	out := map[string]string{}
 	for _, f := range zr.File {
 		rc, err := f.Open()
@@ -287,7 +287,7 @@ func readZip(t *testing.T, path string) map[string]string {
 			t.Fatal(err)
 		}
 		b, err := io.ReadAll(rc)
-		rc.Close()
+		_ = rc.Close()
 		if err != nil {
 			t.Fatal(err)
 		}

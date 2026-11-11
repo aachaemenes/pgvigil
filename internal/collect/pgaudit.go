@@ -514,10 +514,10 @@ func auditIsRow(class, setting, role string) bool {
 	case logparse.AuditRole, logparse.AuditDDL:
 		return true
 	case logparse.AuditMiscSet:
-		switch {
-		case setting == "session_authorization":
+		switch setting {
+		case "session_authorization":
 			return role != ""
-		case setting == "row_security", setting == "session_replication_role", setting == "allow_system_table_mods":
+		case "row_security", "session_replication_role", "allow_system_table_mods":
 			return true
 		}
 		return strings.HasPrefix(setting, "pgaudit.") || strings.HasPrefix(setting, "log_")
