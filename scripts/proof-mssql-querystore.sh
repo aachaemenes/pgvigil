@@ -78,7 +78,8 @@
 #     where there is none the proof starts a postgres:13 container of its own and removes it): a fresh database
 #     migrates without error, X's first payload imported twice leaves 1|1|2|2|5 and the plan cursor 11, and Y's
 #     payload gives the same judgements as on the repository's own PostgreSQL. PGVIGIL_SKIP_PG13=1 leaves it out.
-#  P. the API: every part of /api/mssql/querystore answers; view=state answers state and checks only; an unknown
+#  P. the API: every part of /api/mssql/querystore answers; the series is in whole hours on a window over two
+#     hours and in minutes on an hour's window; view=state answers state and checks only; an unknown
 #     order, an over-long db, a query route without db, one with a malformed hash, one without a hash, an unknown
 #     view and an unknown part answer 400; a plan that does not exist answers 404.
 #  DEMO. a two-day demo: DEMO-SQL01's top list has at least 8 queries; its regressed part for the two hours from
@@ -628,7 +629,11 @@ curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: t
 [ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
 [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
-[ "$(objs "$WORK/all.json" series | jq 'length >= 2')" = true ] && [ "$(objs "$WORK/all.json" state | jq 'length >= 3')" = true ] || fail "P: series or state is short"
+[ "$(objs "$WORK/all.json" state | jq 'length >= 3')" = true ] || fail "P: state is short"
+# the series: whole hours on this window of over two hours (a step that is no multiple of the interval's length draws a zigzag), a minute on an hour's window
+[ "$(objs "$WORK/all.json" series | jq 'length >= 1 and all(.[]; .snapshot_at | test("T[0-9]{2}:00:00"))')" = true ] || fail "P: the series of the long window is not in whole hours: $(objs "$WORK/all.json" series | jq -c '[.[].snapshot_at]')"
+W1="from=$(date -u -d '-55 minutes' +%FT%TZ)&to=$(date -u -d '+5 minutes' +%FT%TZ)"
+[ "$(curl -fs "$U/mssql/querystore?instance=$iid&$W1&part=series" | jq '.series.rows | length >= 2')" = true ] || fail "P: the series of an hour's window has fewer than two one-minute points"
 [ "$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=state" | jq -r 'keys | join(",")')|$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=tuning" | jq -r 'keys | join(",")')" = "checks,state|checks,state,tuning,tuning_options" ] \
   || fail "P: a view's parts: $(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=state" | jq -r 'keys | join(",")')|$(curl -fs "$U/mssql/querystore?instance=$iid&$W&view=tuning" | jq -r 'keys | join(",")')"
 LONG=$(printf 'x%.0s' $(seq 1 129))

@@ -370,14 +370,14 @@ function stateView(d: QS): HTMLElement[] {
     { key: 'policy_stale_hours', label: 'policy stale threshold (hrs)', num: true },
     { key: 'policy_compile_cpu_ms', label: 'policy total compile time (ms)', num: true },
     { key: 'policy_exec_cpu_ms', label: 'policy total execution CPU time (ms)', num: true },
-    { key: 'verdict', label: 'what it means', wide: true, fmt: (v, r) => text(v) || text(r.note) },
+    { key: 'note', label: 'not read because', wide: true },   // a judgement's sentence is in the Checks grid above: here it made the row 280 px tall
     { key: 'newest_interval', label: 'newest interval stored', fmt: fmtTime },
     { key: 'snapshot_at', label: 'read', fmt: fmtTime },
   ];
   return [
     el('p', { class: 'meta' }, 'One row per database (master and tempdb have no Query Store). Critical: the store is in the ERROR state. Warning: it is read-only '
       + '(unless the database itself is read-only or a secondary replica), or off though a state was asked for. Note: a store at 90 % of its max size with size-based cleanup off. '
-      + 'A store that is off because nobody asked for it is a choice, not a fault.'),
+      + 'A store that is off because nobody asked for it is a choice, not a fault. The Checks above say what each warning means.'),
     grid(rows, cols, 'No database read.'),
   ];
 }
