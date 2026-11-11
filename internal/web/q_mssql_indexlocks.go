@@ -17,7 +17,7 @@ import "net/http"
 //	              escalations over all indexes (database= keeps one database's)
 //
 // The counters are waits that ENDED on the index: where sessions collided. They name no holder; the head of a
-// chain and its statement are on the Running queries and Blocking pages.
+// chain and its statement are on the Running queries and Blocked reports pages.
 
 const sqlMSSQLIndexLockReads = `
 SELECT count(*) AS reads, coalesce(sum(r.interval_secs), 0)::float8 AS covered_secs, min(r.snapshot_at) AS first_read, max(r.snapshot_at) AS last_read

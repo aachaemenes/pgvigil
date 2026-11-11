@@ -2,12 +2,16 @@
 // sys.dm_os_wait_stats between two reads a minute apart: the top waits as a stacked chart with its numbers in a
 // table behind it, and every wait type in a grid. The waits of idle background work are stored and listed last,
 // outside the shares and the chart. Data from /api/mssql/waits; the route and the tab's entry are the shell's.
+// The grid's rate columns and its descriptions (DBA Dash's Waits: Wait Time ms/sec, ms/sec/core, Description) come
+// from /api/mssql/waitinfo: each wait type's time per second of the reads' covered seconds, that per scheduler, what
+// a wait type means and, for a type without its own text, what its family (the start of its name) means.
 import { neutralColor, seriesColors } from './chart';
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
 interface WaitsData { state: Table | null; reads: Table | null; events: Table | null; series: Table | null }
+interface WaitInfo { cores: Table | null; rates: Table | null; types: Table | null; families: Table | null }
 
 const paletteNow = () => [...seriesColors(), neutralColor()];
 const msSecs = (v: unknown) => v == null ? '' : fmtSecs(Math.round(Number(v) / 1000));
@@ -23,6 +27,27 @@ const eventCols: Col[] = [
   { key: 'signal_pct', label: 'signal share', num: true, fmt: pct },
   { key: 'max_wait_ms', label: 'longest since the server started (ms)', num: true },
 ];
+// the columns /api/mssql/waitinfo adds: the rates after the wait time, the description last
+const rateCols: Col[] = [
+  { key: 'ms_per_sec', label: 'wait time (ms/sec)', num: true },
+  { key: 'ms_per_sec_core', label: 'wait time (ms/sec/core)', num: true },
+];
+const descCol: Col = { key: 'description', wide: true };
+const idleText = 'Idle background work: a system task waiting for something to do. Kept, and never ranked.';
+
+// describe gives each wait row its rates and its description: the type's own text, else its family's (the longest
+// matching start of the name), else the idle note of a benign wait, else nothing.
+function describe(events: Row[], info: WaitInfo): void {
+  const rates = new Map(rowsOf(info.rates).map(r => [String(r.wait_type), r] as [string, Row]));
+  const types = new Map(rowsOf(info.types).map(r => [String(r.wait_type), String(r.description)] as [string, string]));
+  const families = rowsOf(info.families).map(r => [String(r.prefix), String(r.description)] as [string, string]).sort((a, b) => b[0].length - a[0].length);
+  for (const e of events) {
+    const w = String(e.wait_type), r = rates.get(w);
+    e.ms_per_sec = r?.ms_per_sec ?? null;
+    e.ms_per_sec_core = r?.ms_per_sec_core ?? null;
+    e.description = types.get(w) ?? families.find(f => w.startsWith(f[0]))?.[1] ?? (e.is_benign ? idleText : '');
+  }
+}
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 function svg(tag: string, attrs: Record<string, string>, ...kids: (Node | string)[]): SVGElement {
@@ -89,8 +114,16 @@ function stackedChart(title: string, p: { rows: Row[]; types: string[] }): HTMLE
 }
 
 export async function mssqlWaitsView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<WaitsData>('mssql/waits', { instance: ctx.instance, ...window_(ctx) });
+  // one window for both reads, so the rates are over the same reads as the grid
+  const win = window_(ctx);
+  let infoErr = '';
+  const [d, info] = await Promise.all([
+    get<WaitsData>('mssql/waits', { instance: ctx.instance, ...win }),
+    get<WaitInfo>('mssql/waitinfo', { instance: ctx.instance, ...win }).catch((e: unknown) => { infoErr = e instanceof Error ? e.message : String(e); return null; }),
+  ]);
   const events = rowsOf(d.events), st = rowsOf(d.state)[0], reads = rowsOf(d.reads)[0];
+  if (info) describe(events, info);
+  const cores = info ? rowsOf(info.cores)[0] : undefined;
   const sec = el('section', {}, el('h2', {}, `Waits (${rangeLabel(ctx)})`));
   sec.append(el('p', { class: 'meta' }, 'Source: sys.dm_os_wait_stats, read every minute; the numbers are what was waited between two reads. '
     + 'A wait is counted when it ends: a session still waiting shows on the Running queries tab now and here once its wait is over. '
@@ -118,6 +151,12 @@ export async function mssqlWaitsView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('h3', {}, 'Wait types'), el('p', { class: 'meta' },
     'Share is of the wait time of the real waits. Signal share is the part of a wait spent runnable, waiting for a CPU: a high one over all '
     + 'waits points at CPU pressure. The rows marked "Idle background work" are queue readers and timers waiting for work; they are kept and never ranked.'),
-    grid(events, eventCols));
+    el('p', { class: 'meta' }, !info
+      ? `The rates per second and the descriptions were not read (${infoErr}).`
+      : 'Wait time (ms/sec) is a wait type\'s time over the seconds the range\'s reads cover: 1,000 means one task waiting the whole time. '
+        + (cores ? `Per core divides it by the ${fmtNum(cores.schedulers)} schedulers that ran user work at ${fmtTime(cores.snapshot_at)} (VISIBLE ONLINE, from the CPU collection).`
+          : 'Per core is empty: no scheduler count was read (the mssql_cpu collection has not run on this instance).')),
+    // the rates stand after the wait time, the description at the end
+    grid(events, info ? [...eventCols.slice(0, 3), ...rateCols, ...eventCols.slice(3), descCol] : eventCols));
   return sec;
 }

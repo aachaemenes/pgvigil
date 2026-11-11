@@ -24,8 +24,10 @@ import (
 //
 // The names come from OBJECT_NAME and OBJECT_SCHEMA_NAME, which wait behind a schema change on the object; the
 // session gives up on a lock after two seconds, and the read then runs again without the names (stored with the
-// ids; the page shows 'object <id>'). Without VIEW ANY DEFINITION the procedures of other databases have no names.
-// The list is cut at the 5,000 plans with the most CPU; the run is partial when it is.
+// ids; the page shows 'object <id>'). The server names a procedure of another database only for a login that can
+// enter that database (CONNECT ANY DATABASE, or a user there) and see its definition (VIEW ANY DEFINITION): the
+// run is partial and counts the plans left without a name. The list is cut at the 5,000 plans with the most CPU;
+// the run is partial when it is.
 //
 // Rights as mssql_cpu (perfApplies). Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed
 // Instance; not on Azure SQL Database.
@@ -68,6 +70,17 @@ FROM sys.dm_exec_procedure_stats ps
 GROUP BY ps.database_id, ps.object_id, ps.cached_time
 ORDER BY SUM(CAST(ps.total_worker_time AS bigint)) DESC, ps.database_id, ps.object_id, ps.cached_time`
 
+// unnamed counts the rows the server gave no object name for.
+func unnamed(procs []collect.Row) int {
+	n := 0
+	for _, p := range procs {
+		if p["object_name"] == nil {
+			n++
+		}
+	}
+	return n
+}
+
 // procStatsQuery fills procStatsSQL: with the names, or without them.
 func procStatsQuery(names bool) string {
 	schema, object := "NULL", "NULL"
@@ -104,9 +117,9 @@ func (procStatsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		notes = append(notes, collect.Row{"kind": "collector_error", "source": "sys.dm_exec_procedure_stats",
 			"message": fmt.Sprintf("the plan cache holds more than %d procedure plans: the %d with the most CPU are stored", procStatsCap, procStatsCap)})
 	}
-	if !info.ViewAnyDefinition {
+	if n := unnamed(procs); n > 0 && len(notes) == 0 {
 		notes = append(notes, collect.Row{"kind": "collector_error", "source": "OBJECT_NAME",
-			"message": "the login lacks VIEW ANY DEFINITION: the procedures of databases it cannot enter are stored without their names"})
+			"message": fmt.Sprintf("%d of %d procedure plans are stored without a name: the login cannot enter their database (CONNECT ANY DATABASE, or a user there), lacks VIEW ANY DEFINITION, or the procedure is gone", n, len(procs))})
 	}
 	out = append(out, procs...)
 	return append(out, notes...), nil

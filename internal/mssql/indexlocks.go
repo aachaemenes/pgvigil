@@ -20,7 +20,7 @@ import (
 // went down, gives its whole count; nothing is ever negative).
 //
 // These are counters of waits that ENDED on the index: they say where sessions collided, not who held the lock. The
-// holder of a chain is on the Running queries and Blocking pages.
+// holder of a chain is on the Running queries and Blocked reports pages.
 //
 // The function knows ids only. The schema, table and index names are read from each database's own catalog
 // (sys.indexes and sys.objects through that database's sys.sp_executesql, one SELECT, nothing written), for the

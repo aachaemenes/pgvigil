@@ -21,7 +21,7 @@ export async function mssqlIndexLocksView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(el('p', { class: 'meta' }, 'Source: sys.dm_db_index_operational_stats, read every five minutes; a figure is what was waited between two reads. '
     + 'A lock wait is counted on the index when it ends. This is where sessions collided, not why: the session that held the lock, '
     + 'its transaction and its last statement are on ',
-    el('a', { href: href(ctx, { tab: 'mssql_running' }) }, 'Running queries'), ' and ', el('a', { href: href(ctx, { tab: 'mssql_blocked' }) }, 'Blocking'),
+    el('a', { href: href(ctx, { tab: 'mssql_running' }) }, 'Running queries'), ' and ', el('a', { href: href(ctx, { tab: 'mssql_blocked' }) }, 'Blocked reports'),
     '. An escalation is the server trading an index\'s row and page locks for one lock on the whole table.'));
   let database = (() => { try { return sessionStorage.getItem(STORE) ?? ''; } catch { return ''; } })();
   const sel = el('select', { 'aria-label': 'Database' }, el('option', { value: '' }, 'every database'));

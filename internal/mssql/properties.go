@@ -423,7 +423,9 @@ func joinNonEmpty(vals ...any) any {
 	return strings.Join(parts, " ")
 }
 
-// pctText is part / whole as a per cent with one decimal ("36.5").
+// pctText is part / whole as a per cent with one decimal ("36.5"), a half rounded up, in whole numbers (a float
+// rounds 6.25 to 6.2).
 func pctText(part, whole int64) string {
-	return strconv.FormatFloat(float64(part)*100/float64(whole), 'f', 1, 64)
+	tenths := (part*1000 + whole/2) / whole
+	return strconv.FormatInt(tenths/10, 10) + "." + strconv.FormatInt(tenths%10, 10)
 }

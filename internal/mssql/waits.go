@@ -132,7 +132,7 @@ type WaitFamily struct {
 // waitDescriptions are this project's own wording of what each wait means for a DBA; none is copied from a tool's
 // table or from the product documentation.
 var waitFamilies = []WaitFamily{
-	{"LCK_M_", "A session waited for a lock another session held. The rest of the name is the lock mode it asked for (S shared, U update, X exclusive, IS / IU / IX intent, SCH_S / SCH_M schema, RS / RI / RX key range). The cause is the holder's transaction, never the object waited on: the Running queries and Blocking pages name the head of the chain."},
+	{"LCK_M_", "A session waited for a lock another session held. The rest of the name is the lock mode it asked for (S shared, U update, X exclusive, IS / IU / IX intent, SCH_S / SCH_M schema, RS / RI / RX key range). The cause is the holder's transaction, never the object waited on: the Running queries and Blocked reports pages name the head of the chain."},
 	{"PAGEIOLATCH_", "A session waited for a data page to come from disk into memory (SH to read it, EX or UP to change it). A large share means slow data file storage, or too little memory for the pages the workload reads."},
 	{"PAGELATCH_", "A session waited for a page that is already in memory, because other sessions were changing it. On tempdb's allocation pages this is the contention more tempdb data files relieve; on a user table it is many inserts at the end of one index."},
 	{"LATCH_", "A wait for an internal structure that is not a data page: a parallel scan's shared state, a file that grows, an allocation cache. Some of it is normal with parallel queries; sys.dm_os_latch_stats names the latch class."},
