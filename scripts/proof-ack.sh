@@ -253,8 +253,10 @@ ok "C: $P's $PBAD warning / critical cells shown as acknowledged, counted ($((PB
 ok "U: $UN's until-change acknowledgements for another reading leave its $UBAD cells coloured"
 
 # ---- X: expiry --------------------------------------------------------------------------------------------------------
+# the proof's own rows only (kind 'ack'): the demo seeds a permanent alert_ack and note on the instances holding its two
+# oldest alerts (internal/demo/ack_demo.go), and which instances those are moves with the build's findings
 sleep $(( $(date -d "$QEXP" +%s) - $(date +%s) + 2 ))
-[[ $(curl -s -b "$JAR" "$U/api/ack?part=acks" | python3 -c "import json,sys; d=json.load(sys.stdin)['acks']; c=d['columns']; print(sum(1 for r in d['rows'] if r[c.index('instance')]=='$Q' and r[c.index('live')]))") == 0 ]] || fail "X: $Q's acks still live"
+[[ $(curl -s -b "$JAR" "$U/api/ack?part=acks" | python3 -c "import json,sys; d=json.load(sys.stdin)['acks']; c=d['columns']; print(sum(1 for r in d['rows'] if r[c.index('instance')]=='$Q' and r[c.index('kind')]=='ack' and r[c.index('live')]))") == 0 ]] || fail "X: $Q's acks still live"
 summary
 [[ $(get "d['rows']['$Q']['ack']") == 0 && $(get "d['rows']['$Q']['warn'] + d['rows']['$Q']['crit']") -ge "$QACK" ]] || fail "X: $Q after expiry: $(cat "$WORK/sum.json")"
 ok "X: $Q's acknowledgements expired: live false, its cells coloured again"
