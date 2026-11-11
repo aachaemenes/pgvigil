@@ -21,6 +21,9 @@
 #     alert_rules_run (an integer back), may INSERT into alert_rule_state, may not INSERT into alert_rules and is
 #     refused import_alert_rule (permission denied for function). A login IN ROLE pgvigil_reader reads
 #     metric_catalog (62 rows) and is refused by alert_rules_run (permission denied for table alert_rule_state).
+#     [Run 1 graded: the reader was refused, on the table alert_rule_fired: the statement that stores the state ends
+#     in the insert into alert_rule_fired, and that is the table the refusal names. Expected from run 2: permission
+#     denied for one of the sender's two tables, alert_rule_state or alert_rule_fired.]
 #  B. the write door. POST /api/alertrules without a session 401; with a session and no X-Pgvigil header 403; with
 #     both, a malformed request 400 for each of: scope 'all', a warning that is a string, critical inside warning,
 #     for_minutes 5000, op 'end' on the add route. None of the seven leaves a row in alert_rules or alert_rule_log.
@@ -77,12 +80,19 @@ COL=pgvigil_s3rules_col_$SUF; ALR=pgvigil_s3rules_alr_$SUF; RDR=pgvigil_s3rules_
 PW=p$RANDOM$RANDOM$RANDOM; UIUSER=proofuser; UIPW=ui$RANDOM$RANDOM$RANDOM
 INSTA=proof-rules-a-$SUF; INSTB=proof-rules-b-$SUF; INSTMS=proof-rules-ms-$SUF
 HOLDAPP=pv_s3rules_hold_$SUF
-WORK=$(mktemp -d); SRV=""; SRV2=""; HOLD=""; PG13=""
+WORK=$(mktemp -d); SRV=""; SRV2=""; HOLD=""; HOLDFDS=(); PG13=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
-cleanup() {
+release() {   # ends the held sessions: their input closes (psql leaves, the open transaction rolls back), then the pids
+  local fd
+  for fd in "${HOLDFDS[@]}"; do exec {fd}>&- || true; done
+  HOLDFDS=()
   # shellcheck disable=SC2086
   [[ -n "$HOLD" ]] && kill $HOLD 2>/dev/null || true
+  HOLD=""
+}
+cleanup() {
+  release
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$SRV2" ]] && kill "$SRV2" 2>/dev/null || true
   wait 2>/dev/null || true
@@ -93,6 +103,7 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+trap '' PIPE   # a held session that died is a failed write the script reports, not a silent end of the script
 for t in psql curl python3 ss; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 freeport() {   # free on 127.0.0.1 and [::1] both
   local p
@@ -165,7 +176,7 @@ out=$(as "$ALR" -c "select pgvigil.import_alert_rule(now(), '{\"op\":\"end\",\"u
 [[ $out == *"permission denied for function"* ]] || fail "R: the alerter called import_alert_rule: $out"
 [[ $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog") == 62 ]] || fail "R: the reader's metric_catalog: $(as "$RDR" -c "select count(*) from pgvigil.metric_catalog")"
 out=$(as "$RDR" -c "select pgvigil.alert_rules_run(now())")
-[[ $out == *"permission denied for table alert_rule_state"* ]] || fail "R: the reader ran alert_rules_run: $out"
+[[ $out == *"permission denied for table alert_rule_state"* || $out == *"permission denied for table alert_rule_fired"* ]] || fail "R: the reader ran alert_rules_run: $out"
 ok "R: the collector writes rules only through import_alert_rule; the alerter judges and stores the state, writes no rule; the reader reads"
 
 # ---- the first reads: the instances exist, the series have points ------------------------------------------------------
@@ -337,7 +348,15 @@ collect activity
 N0=$(q "select idle_in_txn from pgvigil.activity_summary where instance_id = $AID order by snapshot_at desc limit 1")
 api alertrules "{\"name\":\"proof idle\",\"metric\":\"sessions.idle_in_txn\",\"op_dir\":\"above\",\"warning\":$((N0 + 1)),\"for_minutes\":1,\"scope\":\"instance\",\"instance_id\":$AID}" 200
 FRULE=$(last_id)
-for _ in 1 2 3; do (echo "begin; select 1;"; sleep 900) | PGAPPNAME=$HOLDAPP psql "$TGT_DSN" -XAtq >/dev/null 2>&1 & HOLD="$HOLD $!"; done
+# each held session is a psql reading a named pipe this script keeps open: nothing else is left running to wait for
+# [run 2: the sessions were fed by '(echo ...; sleep 900) | psql'; the sleeps outlived their psql and the exit trap's
+#  wait sat on them for up to 15 minutes after the last line, holding whatever lock the caller ran the proof under]
+for i in 1 2 3; do
+  mkfifo "$WORK/hold$i"
+  PGAPPNAME=$HOLDAPP psql "$TGT_DSN" -XAtq < "$WORK/hold$i" >/dev/null 2>&1 & HOLD="$HOLD $!"
+  exec {fd}> "$WORK/hold$i"; HOLDFDS+=("$fd")
+  echo "begin; select 1;" >&"$fd"
+done
 held() { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAt -c "select count(*) from pg_stat_activity where application_name = '$HOLDAPP' and state = 'idle in transaction'"; }
 for n in $(seq 1 100); do [[ $(held) == 3 ]] && break; [[ $n == 100 ]] && fail "F: the three sessions are not idle in transaction ($(held))"; sleep 0.1; done
 : > "$WORK/f.log"; FIRED=""
@@ -358,8 +377,7 @@ done
 (( SPAN >= 60 && NF == 1 )) || fail "F: at the firing pass: span $SPAN s, $NF firing file(s)"
 for i in 1 2; do sleep 2; collect activity; pass "fa$i"; done
 [[ $(files firing "$IDLE") == 1 && $(files repeat "$IDLE") == 0 ]] || fail "F: after two more passes: $(files firing "$IDLE") firing, $(files repeat "$IDLE") repeat file(s)"
-# shellcheck disable=SC2086
-kill $HOLD 2>/dev/null || true; HOLD=""
+release
 for n in $(seq 1 100); do [[ $(held) == 0 ]] && break; [[ $n == 100 ]] && fail "F: the held sessions did not end"; sleep 0.1; done
 collect activity; pass fr1
 read -r STATE _ <<<"$(state_of "$AID" sessions.idle_in_txn)"

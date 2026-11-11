@@ -96,7 +96,7 @@ export async function ruleDialog(o: RuleDialog) {
   const p = o.rule ?? o.prefill;    // where the condition's fields start
   const fixedMetric = o.metric ?? undefined;
   const startMetric = String(r?.metric ?? fixedMetric ?? '');
-  const metricSel = el('select', { 'aria-label': 'metric', required: '' });
+  const metricSel = el('select', { required: '' });
   const engines: [string, string][] = [['postgres', 'PostgreSQL'], ['sqlserver', 'SQL Server'], ['any', 'Host (both engines)']];
   for (const [eng, engName] of engines) {
     const fams = [...new Set(cat.filter(c => c.engine === eng).map(c => String(c.family_label)))];
@@ -106,26 +106,28 @@ export async function ruleDialog(o: RuleDialog) {
       metricSel.append(g);
     }
   }
+  // a rule on a metric the catalogue no longer has: the form says so, and the server refuses it until another is picked
+  if (startMetric && !cat.some(c => c.key === startMetric)) metricSel.prepend(el('option', { value: startMetric }, `${startMetric} (no longer a metric)`));
   if (startMetric) metricSel.value = startMetric;
   if (fixedMetric) metricSel.disabled = true;
   const meta = () => cat.find(c => c.key === metricSel.value);
-  const name = el('input', { type: 'text', maxlength: '100', 'aria-label': 'name', value: String(r?.name ?? '') });
-  const dir = el('select', { 'aria-label': 'above or below' }, el('option', { value: 'above' }, 'above'), el('option', { value: 'below' }, 'below'));
+  const name = el('input', { type: 'text', maxlength: '100', value: String(r?.name ?? '') });
+  const dir = el('select', {}, el('option', { value: 'above' }, 'above'), el('option', { value: 'below' }, 'below'));
   dir.value = String(p?.op ?? 'above');
-  const num = (label: string, v: unknown) => el('input', { type: 'number', step: 'any', 'aria-label': label, style: 'width:9em', value: v == null ? '' : String(v) });
-  const warn = num('warning value', p?.warning), crit = num('critical value', p?.critical);
-  const mins = el('input', { type: 'number', min: '0', max: '1440', step: '1', 'aria-label': 'for minutes', style: 'width:5em', value: String(p?.for_minutes ?? 5) });
-  const scope = el('select', { 'aria-label': 'scope' }, el('option', { value: 'fleet' }, 'every instance'), el('option', { value: 'tag' }, 'one tag'), el('option', { value: 'instance' }, 'one instance'));
+  const num = (v: unknown) => el('input', { type: 'number', step: 'any', style: 'width:9em', value: v == null ? '' : String(v) });
+  const warn = num(p?.warning), crit = num(p?.critical);
+  const mins = el('input', { type: 'number', min: '0', max: '1440', step: '1', style: 'width:5em', value: String(p?.for_minutes ?? 5) });
+  const scope = el('select', {}, el('option', { value: 'fleet' }, 'every instance'), el('option', { value: 'tag' }, 'one tag'), el('option', { value: 'instance' }, 'one instance'));
   scope.value = String(r?.scope ?? (o.instanceId ? 'instance' : 'fleet'));
   const tags = [...new Set(insts.flatMap(tagsOf))].sort();
-  const tagSel = el('select', { 'aria-label': 'tag' }, ...tags.map(t => el('option', { value: t }, t)));
+  const tagSel = el('select', {}, ...tags.map(t => el('option', { value: t }, t)));
   if (r?.tag != null) { if (!tags.includes(String(r.tag))) tagSel.append(el('option', { value: String(r.tag) }, String(r.tag))); tagSel.value = String(r.tag); }
-  const instSel = el('select', { 'aria-label': 'instance' });
-  const db = el('input', { type: 'text', maxlength: '200', 'aria-label': 'database', value: String(r?.database ?? o.database ?? '') });
-  const note = el('textarea', { rows: '2', maxlength: '500', 'aria-label': 'note', style: 'width:100%' });
+  const instSel = el('select', {});
+  const db = el('input', { type: 'text', maxlength: '200', value: String(r?.database ?? o.database ?? '') });
+  const note = el('textarea', { rows: '2', maxlength: '500', style: 'width:100%' });
   note.value = String(r?.note ?? '');
   const unitLine = el('p', { class: 'meta' });
-  const tagBox = el('label', {}, 'Tag ', tagSel), instBox = el('label', {}, 'Instance ', instSel), dbBox = el('label', {}, 'Database (empty = the whole instance) ', db);
+  const tagBox = el('label', {}, 'Tag ', tagSel, tags.length || r?.tag != null ? '' : ' (no instance carries a tag)'), instBox = el('label', {}, 'Instance ', instSel), dbBox = el('label', {}, 'Database (empty = the whole instance) ', db);
   const wantInst = Number(r?.instance_id ?? o.instanceId ?? 0);
   const sync = () => {
     const m = meta();
@@ -135,12 +137,18 @@ export async function ruleDialog(o: RuleDialog) {
     const fit = insts.filter(i => !m || m.engine === 'any' || String(i.engine ?? 'postgres') === m.engine);
     instSel.replaceChildren(...fit.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
     if (fit.some(i => String(i.instance_id) === keep)) instSel.value = keep;
+    else if (r?.scope === 'instance' && !instSel.dataset.picked) {
+      // the rule's own instance is gone, or not of this metric's engine: never retarget it silently, ask
+      instSel.prepend(el('option', { value: '' }, `${String(r.instance_name ?? 'its instance')} (not an active instance of this engine: pick one)`));
+      instSel.value = '';
+    }
     tagBox.hidden = scope.value !== 'tag';
     instBox.hidden = scope.value !== 'instance';
     dbBox.hidden = !m?.per_database;
   };
   metricSel.addEventListener('change', sync);
   scope.addEventListener('change', sync);
+  instSel.addEventListener('change', () => { instSel.dataset.picked = '1'; });
   sync();
   const fields: HTMLElement[] = [
     el('label', {}, 'Metric ', metricSel), unitLine,
@@ -151,7 +159,9 @@ export async function ruleDialog(o: RuleDialog) {
     el('label', {}, 'Name (optional) ', name),
     el('label', {}, 'Note (optional)', el('br'), note),
   ];
+  // a number field holding something that is not a number reads empty: it must not pass as 'no value'
   const valid = () => metricSel.value !== '' && (warn.value.trim() !== '' || crit.value.trim() !== '')
+    && !warn.validity.badInput && !crit.validity.badInput && mins.validity.valid
     && (scope.value !== 'tag' || tagSel.value !== '') && (scope.value !== 'instance' || instSel.value !== '');
   const body = () => {
     const m = meta();
@@ -169,7 +179,7 @@ export async function ruleDialog(o: RuleDialog) {
   formDialog(r ? `Edit alert rule ${String(r.rule_id)}` : 'New alert rule',
     r ? 'Saving ends this rule and writes its successor (the old row stays with who ended it and when). The alert sender judges the new rule from its next pass.'
       : 'The alert sender judges the rule from its next pass; a firing rule is sent through the alert channels like any finding. A tag or an instance rule overrides a wider rule on the same metric.',
-    'Save', () => post<RuleResult>('alertrules', body()), o.after, fields, valid, [metricSel, warn, crit, scope, tagSel, instSel]);
+    'Save', () => post<RuleResult>('alertrules', body()), o.after, fields, valid, [metricSel, warn, crit, mins, scope, tagSel, instSel]);
 }
 
 // formDialog: a modal with what the write does, its fields, Save / Back, and the server's answer in place
@@ -224,7 +234,7 @@ export async function alertRulesView(ctx: Ctx): Promise<HTMLElement> {
   const all = rowsOf(d.rules), state = rowsOf(d.state), log = rowsOf(d.log), sender = rowsOf(d.sender)[0] ?? {};
   const live = all.filter(r => r.live), off = live.filter(r => !r.enabled).length;
   const firing = state.filter(r => r.state === 'warning' || r.state === 'critical').length;
-  const newRule = () => ruleButton(d, 'New rule', 'New alert rule', () => { void ruleDialog({ door: d, after: redraw }); });
+  const newRule = () => ruleButton(d, 'New rule', 'New rule', () => { void ruleDialog({ door: d, after: redraw }); });
   // who judges the rules: the alert sender, with at least one channel
   const judged = sender.evaluated_at != null
     ? `The alert sender last judged the rules ${fmtTime(sender.evaluated_at)}.`

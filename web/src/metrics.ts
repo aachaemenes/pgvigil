@@ -118,7 +118,7 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
       } },
     ];
     // every row's chart at once (the Counters page drew a family's charts together)
-    const allBtn = el('button', { type: 'button', class: 'link', 'aria-label': `Chart every ${famLabel} counter` }, 'Chart every row');
+    const allBtn = el('button', { type: 'button', class: 'link', 'aria-label': `Chart every row of ${famLabel}` }, 'Chart every row');
     allBtn.addEventListener('click', async () => {
       const todo = famRows.filter(r => !open.has(String(r.key)) && Number(r.samples) > 0);
       said.textContent = todo.length ? `Drawing ${todo.length} chart(s)...` : 'Every row with samples is charted already.';
@@ -151,7 +151,7 @@ function thresholdCell(d: RulesDoor, instance: number, r: Row, db: string | unde
   span.append(ruleButton(d, 'Edit', `Edit the threshold of ${name} (rule ${String(r.rule_id)}, ${scopeWords(r.rule_scope, r.rule_target)})`, () => { void editRule(d, Number(r.rule_id)); }));
   const own = r.rule_scope === 'instance' && (db == null || r.rule_database === db);
   if (!own) {
-    span.append(' · ', ruleButton(d, 'Override here', `Override the threshold of ${name} for this instance${db ? `, database ${db}` : ''}`, () => {
+    span.append(' · ', ruleButton(d, 'Override here', `Override here: the threshold of ${name} for this instance${db ? `, database ${db}` : ''}`, () => {
       void ruleDialog({ door: d, metric: String(r.key), instanceId: instance, database: db, prefill: { op: r.op, warning: r.warning, critical: r.critical, for_minutes: r.for_minutes }, after: redraw });
     }));
   }
