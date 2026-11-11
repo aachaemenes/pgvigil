@@ -66,6 +66,12 @@ const (
 	// qsPlanXMLPerRun bounds the plan XML one run of one database carries; qsPlanXMLMaxBytes one plan's XML.
 	qsPlanXMLPerRun   = 100
 	qsPlanXMLMaxBytes = 4 << 20
+	// qsPlanXMLRunBytes bounds the plan XML one run carries over every database, as the server sizes it (two bytes
+	// a character); qsMaxRows the rows of one run. A run that reaches either leaves the rest to the next run, which
+	// reads on from the repository's cursors: a first read of a busy server arrives over a few runs, not as one
+	// payload the repository's write would time out on.
+	qsPlanXMLRunBytes = 64 << 20
+	qsMaxRows         = 60000
 	// qsSinceSource and qsPlanSource name the repository's cursors (pgvigil.mssql_hadr_cursor, 0083): the newest
 	// interval stored for a database as epoch seconds, and the plan hash of a plan whose XML needs no read.
 	qsSinceSource = "qs_since:"
@@ -266,7 +272,8 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 	now := time.Now().UTC()
 	out := make([]collect.Row, 0, 4*len(dbs)+1)
 	var failed []string
-	cut := 0
+	cut, stopWhy := 0, ""
+	xmlBudget := int64(qsPlanXMLRunBytes)
 	stop, hasStop := ctx.Deadline()
 	for _, d := range dbs {
 		name, _ := d["database_name"].(string)
@@ -278,16 +285,25 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 			state["note"] = "not read: the database is not online, or the login has no access to it"
 			continue
 		}
-		if cut > 0 || ctx.Err() != nil || (hasStop && time.Until(stop) < 15*time.Second) {
-			state["note"] = "not read: the run's deadline came before this database's turn"
+		if stopWhy == "" {
+			switch {
+			case ctx.Err() != nil || (hasStop && time.Until(stop) < 15*time.Second):
+				stopWhy = "the run's deadline came"
+			case len(out) >= qsMaxRows:
+				stopWhy = fmt.Sprintf("the run already carried %d rows", len(out))
+			}
+		}
+		if stopWhy != "" {
+			state["note"] = "not read: " + stopWhy + " before this database's turn; the next run reads on"
 			cut++
 			continue
 		}
-		rows, err := qsDatabase(ctx, conn, info, cursor, name, quoted, state, now)
+		rows, err := qsDatabase(ctx, conn, info, cursor, name, quoted, state, now, &xmlBudget)
 		out = append(out, rows...)
 		if err != nil {
 			if ctx.Err() != nil {
 				state["note"] = "not read whole: the run's deadline came during this database's read"
+				stopWhy = "the run's deadline came"
 				cut++
 				continue
 			}
@@ -297,7 +313,7 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 	}
 	if cut > 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.query_store_runtime_stats",
-			"message": fmt.Sprintf("the run's deadline came before the Query Store of %d database(s) was read", cut)})
+			"message": fmt.Sprintf("%s before the Query Store of %d database(s) was read; the next run reads on", stopWhy, cut)})
 	}
 	if len(failed) > 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.database_query_store_options",
@@ -309,7 +325,7 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 // qsDatabase reads one database: the options into state, then the intervals, the candidate plans, their
 // properties and XML, the automatic tuning options and recommendations. Rows read before an error are returned
 // with it.
-func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursorFunc, name, quoted string, state collect.Row, now time.Time) ([]collect.Row, error) {
+func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursorFunc, name, quoted string, state collect.Row, now time.Time, xmlBudget *int64) ([]collect.Row, error) {
 	opt, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsOptionsSQL, qsOptionCols(info)), "")
 	if err != nil {
 		return nil, err
@@ -385,6 +401,7 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 		return out, err
 	}
 	var want []int64
+	sizes := map[int64]int64{}
 	for _, p := range plans {
 		p["kind"], p["database_name"] = "plan", name
 		id, _ := p["plan_id"].(int64)
@@ -395,19 +412,24 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 			p["xml_note"] = fmt.Sprintf("the plan XML is %d bytes: over the %d MB a plan may take, not stored", size, qsPlanXMLMaxBytes>>20)
 		case !qsPlanStored(ctx, cursor, name, id, p["plan_hash_n"]):
 			want = append(want, id)
+			sizes[id] = size
 		}
 	}
 	// a marker: the plan read succeeded, so a plan the repository holds as forced and this read does not list is no longer forced
 	out = append(append(out, plans...), collect.Row{"kind": "forced_read", "database_name": name})
 	sort.Slice(want, func(i, j int) bool { return want[i] > want[j] }) // the newest plans first when the run's share is cut
-	if len(want) > qsPlanXMLPerRun {
-		want = want[:qsPlanXMLPerRun]
-	}
-	if len(want) > 0 {
-		ids := map[int64]bool{}
-		for _, id := range want {
-			ids[id] = true
+	ids := map[int64]bool{}
+	for _, id := range want {
+		if len(ids) >= qsPlanXMLPerRun {
+			break
 		}
+		if sizes[id] > *xmlBudget {
+			continue // a later run reads it: the repository does not hold it yet
+		}
+		*xmlBudget -= sizes[id]
+		ids[id] = true
+	}
+	if len(ids) > 0 {
 		xml, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsPlanXMLSQL, qsIDList(ids)), "@maxbytes bigint", sql.Named("maxbytes", int64(qsPlanXMLMaxBytes)))
 		if err != nil {
 			return out, err
@@ -489,29 +511,4 @@ func qsIDList(ids map[int64]bool) string {
 	}
 	sort.Strings(s)
 	return strings.Join(s, ",")
-}
-
-// QSReadOnlyReasons spells out sys.database_query_store_options.readonly_reason, a bit map (Microsoft's list).
-func QSReadOnlyReasons(reason int64) []string {
-	names := []struct {
-		bit  int64
-		text string
-	}{
-		{1, "the database is read-only"}, {2, "the database is in single-user mode"}, {4, "the database is in emergency mode"},
-		{8, "the database is a secondary replica"}, {65536, "the store reached its max size (MAX_STORAGE_SIZE_MB)"},
-		{131072, "the number of different statements reached the internal memory limit"},
-		{262144, "the in-memory items waiting to be written reached the internal memory limit"},
-		{524288, "the database reached its disk size limit"},
-	}
-	var out []string
-	for _, n := range names {
-		if reason&n.bit != 0 {
-			out = append(out, n.text)
-			reason &^= n.bit
-		}
-	}
-	if reason != 0 {
-		out = append(out, fmt.Sprintf("reason %d", reason))
-	}
-	return out
 }
