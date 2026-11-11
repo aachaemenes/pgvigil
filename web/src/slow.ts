@@ -11,6 +11,8 @@
 // /api/slow/events): a free Group By, a database filter, ten duration buckets, Failed and the totals, every count a
 // button that lists its events (time, client, application, user, database, duration, result) below. Both pages here
 // carry it; the SQL Server Slow queries tab (mssql_xe.ts) gets it through the lead's wiring.
+// Parity3 task 126 (pgBadger General Activity, Histogram of query times): slowLatencyPanel on the instance tab, the
+// hourly p90 / p95 / p99 and the duration histogram of the logged statements (/api/slow/percentiles).
 import { planLink } from './plan';
 import { slowCols } from './borrowed';
 import { get, Row, rowsOf, Table } from './api';
@@ -18,6 +20,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
 import { sqlCell, whatIsThis } from './sqlview';
 import { trendCol } from './stmt_trend';
+import { lineChart } from './chart';
 
 type Parts = 'meta' | 'sources' | 'totals' | 'histogram' | 'top' | 'recent' | 'sampled' | 'instances';
 
@@ -145,6 +148,7 @@ export async function slowView(ctx: Ctx): Promise<HTMLElement> {
     : el('p', { class: 'empty' }, 'No log reader has run on this instance: RDS and Aurora need an aws: block (the logs collection); '
       + 'on-prem the serverlog collection needs logging_collector on and a read door (its last run names what is missing).'));
   sec.append(el('h3', {}, `Per day since ${fmtTime(meta.histogram_from)}`), histogram(hist, String(meta.tz ?? tz)));
+  sec.append(slowLatencyPanel(ctx));
   sec.append(el('h3', {}, 'Top by count'), grid(byCount, topCols(ctx, 'count', false), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Top by total time'), grid(byTotal, topCols(ctx, 'total', false), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Newest slow statements'), grid(recent, recentCols, 'No slow statement in this window.'));
@@ -339,5 +343,61 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
     + 'the longest first. Failed: a SQL Server result other than OK (Error, Abort). Events: SQL Server stores a slow procedure call and, '
     + 'with the statement events on, its slow statements too; calls (the default) counts each call once, as DBA Dash does.', 'Slow queries by group')), body, drill);
   void draw();
+  return box;
+}
+
+// ---- pgBadger's latency view (parity3 task 126): hourly p90 / p95 / p99 and the duration histogram ---------------
+
+const pctCols: Col[] = [
+  { key: 'hour' },
+  { key: 'statements', label: 'count', num: true },
+  { key: 'min_ms', label: 'min', num: true, fmt: msTxt }, { key: 'max_ms', label: 'max', num: true, fmt: msTxt },
+  { key: 'avg_ms', label: 'mean', num: true, fmt: msTxt },
+  { key: 'p90_ms', label: 'p90', num: true, fmt: msTxt }, { key: 'p95_ms', label: 'p95', num: true, fmt: msTxt },
+  { key: 'p99_ms', label: 'p99', num: true, fmt: msTxt },
+];
+
+// durationHistogram: pgBadger's ten buckets as rows, a bar per bucket scaled to the largest share.
+function durationHistogram(rows: Row[]): HTMLElement {
+  const peak = Math.max(...rows.map(r => Number(r.pct ?? 0)), 1);
+  const t = el('table', { class: 'grid' }, el('thead', {}, el('tr', {},
+    el('th', {}, 'duration'), el('th', { class: 'num' }, 'statements'), el('th', { class: 'num' }, 'share'), el('th', {}, ''), el('th', { class: 'num' }, 'total time'))));
+  const body = el('tbody');
+  for (const r of rows) {
+    const bar = el('div', { style: `height:12px;min-width:2px;width:${(100 * Number(r.pct ?? 0) / peak).toFixed(2)}%;background:var(--accent, #4dabf7)` });
+    body.append(el('tr', {}, el('td', {}, String(r.label ?? '')), el('td', { class: 'num' }, fmtNum(r.statements)),
+      el('td', { class: 'num' }, r.pct == null ? '' : fmtNum(r.pct) + ' %'), el('td', { style: 'min-width:240px' }, Number(r.statements) ? bar : ''),
+      el('td', { class: 'num' }, msTxt(r.total_ms))));
+  }
+  t.append(body);
+  return el('div', { class: 'grid-wrap', tabindex: '0' }, t);
+}
+
+// slowLatencyPanel: the logged statements' hourly percentiles and their duration histogram over the window, at the
+// page's threshold. Every figure is of the statements the server logged, so the floor is said beside the heading.
+export function slowLatencyPanel(ctx: Ctx): HTMLElement {
+  const ms = thresholdOf(ctx), tz = tzOf();
+  const box = el('div', { class: 'slow-latency' });
+  const body = el('div', {}, el('p', { class: 'meta' }, 'Reading...'));
+  box.append(el('h3', {}, 'Latency of the logged statements ', whatIsThis('Of the statements the server logged (log_min_duration_statement), at or over the '
+    + 'threshold picked above: a statement under the server\'s floor is never in the log, so these are the percentiles of the logged statements, '
+    + 'not of every statement the server ran. p90 / p95 / p99 are nearest-rank: the smallest logged duration with at least that share of the hour\'s '
+    + 'statements at or under it (pgBadger\'s General Activity). The histogram uses pgBadger\'s buckets.', 'Latency of the logged statements')), body);
+  void (async () => {
+    try {
+      const d = await get<Record<'hours' | 'histogram' | 'meta', Table | null>>('slow/percentiles', { instance: ctx.instance, ...window_(ctx), min: ms, tz });
+      const hours = rowsOf(d.hours), m = rowsOf(d.meta)[0] ?? {};
+      const floor = m.log_min_duration_statement == null ? 'unknown' : String(m.log_min_duration_statement);
+      body.replaceChildren(
+        el('p', { class: 'meta' }, `${fmtNum(m.statements ?? 0)} logged statement(s) at or over ${msTxt(ms) || '0 ms'}; the server's log_min_duration_statement `
+          + `${floor} (as last read; a database or role setting can differ), hours in ${String(m.tz ?? tz)}.`),
+        el('div', { class: 'charts' }, lineChart('Logged statement latency per hour', hours.map(r => ({ ...r, snapshot_at: r.hour_start })),
+          [{ key: 'p90_ms', label: 'p90' }, { key: 'p95_ms', label: 'p95' }, { key: 'p99_ms', label: 'p99' }], v => msTxt(v))),
+        grid(hours, pctCols, 'No logged statement in this window.'),
+        el('h4', {}, 'Duration histogram'), durationHistogram(rowsOf(d.histogram)));
+    } catch (e) {
+      body.replaceChildren(errorBox(e));
+    }
+  })();
   return box;
 }

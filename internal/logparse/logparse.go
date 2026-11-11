@@ -30,6 +30,14 @@ const (
 	// Corruption is a message that only a damaged page, file, TOAST value or transaction status raises:
 	// Detail is the message with its DETAIL / CONTEXT lines, Statement the statement that met it.
 	Corruption Kind = "corruption"
+	// Error is a WARNING, ERROR, FATAL or PANIC entry no other rule took (a syntax error, a constraint violation, a
+	// permission denied): Detail is the message with its DETAIL / HINT / CONTEXT lines, which can quote row values, so
+	// the query-text policy governs it like a statement; Statement is the STATEMENT line.
+	Error Kind = "error"
+	// Checkpoint is a checkpoint's or a restartpoint's 'starting' or 'complete' line (log_checkpoints): Detail is the
+	// server's own line (the cause flags, or the buffers written and the write, sync and total times); a complete
+	// line's DurationMS is its total time.
+	Checkpoint Kind = "checkpoint"
 )
 
 // Event is one parsed log entry of interest.
@@ -43,6 +51,11 @@ type Event struct {
 	DurationMS float64 // slow: the statement's duration; lock_wait: the wait so far
 	Statement  string  // slow / deadlock / lock_wait: the statement text where the log has it
 	Detail     string  // deadlock: the DETAIL lines; lock_wait: the holders; auth_fail: the message
+	// Level is the entry's level as logged (LOG, WARNING, ERROR, FATAL, PANIC).
+	Level string
+	// Message is the shape of the entry's first message line (MessageShape: quoted names, literals and numbers as
+	// ...), the key the Logs page groups by; empty for a slow statement and a plan, whose text is a statement.
+	Message string
 	// Key identifies the entry from its first line alone (time text, level, pid, message), so an entry
 	// read once without its DETAIL / STATEMENT lines and again with them keeps one key.
 	Key string
@@ -58,6 +71,9 @@ var (
 	durationRE = regexp.MustCompile(`^duration: ([0-9.]+) ms\s+(?:statement|execute [^:]*|parse [^:]*|bind [^:]*):\s?(.*)$`)
 	lockWaitRE = regexp.MustCompile(`^process \d+ still waiting for .* after ([0-9.]+) ms`)
 	planRE     = regexp.MustCompile(`^duration: ([0-9.]+) ms\s+plan:\s?(.*)$`)
+	// checkpointRE: log_checkpoints' two lines, on a primary (checkpoint) and on a standby (restartpoint)
+	checkpointRE = regexp.MustCompile(`^(checkpoint|restartpoint) (starting|complete):`)
+	cpTotalRE    = regexp.MustCompile(`total=([0-9.]+) s`)
 )
 
 // copyContextRE: COPY's error context names the table and the line (and column) and then quotes the row's data;
@@ -216,7 +232,15 @@ func zoneOf(abbr string, loc *time.Location) *time.Location {
 }
 
 func classify(e *entry) (Event, bool) {
-	ev := Event{At: e.at, Client: e.client, User: e.user, Database: e.dbname, PID: e.pid, Key: e.key}
+	ev := Event{At: e.at, Client: e.client, User: e.user, Database: e.dbname, PID: e.pid, Key: e.key, Level: e.level}
+	ok := classifyInto(e, &ev)
+	if ok && ev.Kind != Slow && ev.Kind != Plan {
+		ev.Message = MessageShape(e.msg)
+	}
+	return ev, ok
+}
+
+func classifyInto(e *entry, ev *Event) bool {
 	switch {
 	case e.level == "LOG" && planRE.MatchString(e.msg):
 		m := planRE.FindStringSubmatch(e.msg)
@@ -250,10 +274,15 @@ func classify(e *entry) (Event, bool) {
 	case e.level == "LOG" && strings.HasPrefix(e.msg, "duration: "):
 		m := durationRE.FindStringSubmatch(e.msg)
 		if m == nil {
-			return ev, false // a bare duration line (log_duration) has no statement
+			return false // a bare duration line (log_duration) has no statement
 		}
 		ev.Kind, ev.DurationMS = Slow, atof(m[1])
 		ev.Statement = strings.TrimSpace(strings.Join(append([]string{m[2]}, plain(e.more)...), "\n"))
+	case e.level == "LOG" && checkpointRE.MatchString(e.msg):
+		ev.Kind, ev.Detail = Checkpoint, e.msg
+		if m := cpTotalRE.FindStringSubmatch(e.msg); m != nil {
+			ev.DurationMS = atof(m[1]) * 1000
+		}
 	case e.level == "LOG" && lockWaitRE.MatchString(e.msg):
 		ev.Kind, ev.DurationMS = LockWait, atof(lockWaitRE.FindStringSubmatch(e.msg)[1])
 		ev.Detail, ev.Statement = tagged(e.more, "DETAIL"), tagged(e.more, "STATEMENT")
@@ -270,7 +299,7 @@ func classify(e *entry) (Event, bool) {
 		// so the query-text policy governs it; an autovacuum cancel's CONTEXT names the table.
 		k, _, ok := ClassifyMore(e.level, e.msg)
 		if !ok {
-			return ev, false
+			return classifyError(e, ev)
 		}
 		ev.Kind = k
 		d := []string{e.msg}
@@ -292,7 +321,39 @@ func classify(e *entry) (Event, bool) {
 		}
 		ev.Detail, ev.Statement = strings.Join(d, "\n"), stmt
 	}
-	return ev, true
+	return true
+}
+
+// classifyError takes a WARNING / ERROR / FATAL / PANIC entry no rule classified as an Error event: the message with
+// its DETAIL and HINT, the CONTEXT lines that do not quote statement text (splitContext), and the statement text
+// (the quoted CONTEXT lines, QUERY, STATEMENT) apart. A LOG entry no rule took is not stored.
+func classifyError(e *entry, ev *Event) bool {
+	switch e.level {
+	case "WARNING", "ERROR", "FATAL", "PANIC":
+	default:
+		return false
+	}
+	ev.Kind = Error
+	d := []string{e.msg}
+	for _, t := range []string{"DETAIL", "HINT"} {
+		if v := tagged(e.more, t); v != "" {
+			d = append(d, t+": "+v)
+		}
+	}
+	var ctx, stmt []string
+	if v := tagged(e.more, "CONTEXT"); v != "" {
+		ctx, stmt = splitContext(v)
+	}
+	if len(ctx) > 0 {
+		d = append(d, "CONTEXT: "+strings.Join(ctx, "\n"))
+	}
+	for _, t := range []string{"QUERY", "STATEMENT"} {
+		if v := tagged(e.more, t); v != "" {
+			stmt = append(stmt, v)
+		}
+	}
+	ev.Detail, ev.Statement = strings.Join(d, "\n"), strings.Join(stmt, "\n")
+	return true
 }
 
 func atof(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f }

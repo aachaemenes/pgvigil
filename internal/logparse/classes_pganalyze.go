@@ -59,7 +59,7 @@ const (
 // messageDetail: the kinds whose detail is the server's own message, never statement text (the corruption
 // reader's and these classes'); the collector's text policy keeps such a detail whole and governs the statement.
 var messageDetail = func() map[Kind]bool {
-	m := map[Kind]bool{Corruption: true}
+	m := map[Kind]bool{Corruption: true, Checkpoint: true}
 	for _, k := range Kinds {
 		m[k] = true
 	}
@@ -69,10 +69,11 @@ var messageDetail = func() map[Kind]bool {
 // DetailIsMessage reports whether an event of this kind carries the server's own message as its detail.
 func DetailIsMessage(k Kind) bool { return messageDetail[k] }
 
-// AllKinds lists every kind the two readers emit, the base kinds first, then the pganalyze classes' (the Logs API
-// accepts exactly these as a filter).
+// AllKinds lists every kind the two readers emit, the base kinds first, then the pganalyze classes', then the two of
+// 0079 (the Logs API accepts exactly these as a filter).
 func AllKinds() []Kind {
-	return append([]Kind{Slow, LockWait, Deadlock, AuthFail, Plan, Corruption}, Kinds...)
+	k := append([]Kind{Slow, LockWait, Deadlock, AuthFail, Plan, Corruption}, Kinds...)
+	return append(k, Error, Checkpoint)
 }
 
 // KnownKind reports whether s names a kind the readers emit.

@@ -288,3 +288,76 @@ func (s *Server) SlowEvents(w http.ResponseWriter, r *http.Request) {
 		{"meta", fmt.Sprintf(sqlSlowCellCount, expr), args},
 	})
 }
+
+// ---- pgBadger's latency view of the logged statements (parity3 task 126; pgBadger General Activity and Histogram of
+// query times) --------------------------------------------------------------------------------------------------
+//
+// GET /api/slow/percentiles?instance=<id>&[from=&to=]&[min=<ms>]&[tz=<IANA>] (Server.SlowPercentiles): over the
+// PostgreSQL statements the server logged (pgvigil.slow_events, both log readers) at or over min:
+//
+//	hours      one row per hour (in tz, its label with the UTC offset as the Group By's, and the hour's start as a
+//	           time): statements, min, max and
+//	           mean ms, and p90 / p95 / p99 ms as nearest-rank percentiles (percentile_disc: the smallest logged
+//	           duration with at least that share of the hour's statements at or under it), in time order
+//	histogram  pgBadger's ten duration buckets (0-1 ms .. over 10 s), every bucket even when empty: statements, the
+//	           share of the window's statements, total ms
+//	meta       statements, the instance's log_min_duration_statement as last read (instance_state) and the tz used
+//
+// Every figure is of the statements the server logged: a statement under log_min_duration_statement is never in the
+// log, so a percentile here is the percentile of the logged ones, not of every statement the server ran.
+
+// sqlSlowPctBase: $1 instance, $2 from, $3 to, $4 min ms, $5 the time zone name
+const sqlSlowPctBase = `
+WITH z AS (SELECT coalesce((SELECT name FROM pg_timezone_names WHERE name = $5::text), 'UTC') AS tz),
+e AS (
+  SELECT e.at, e.duration_ms
+    FROM pgvigil.slow_events e
+   WHERE e.instance_id = $1 AND e.at > $2 AND e.at <= $3 AND e.duration_ms IS NOT NULL AND e.duration_ms >= $4
+)`
+
+var sqlSlowPctHours = sqlSlowPctBase + `
+SELECT ` + slowGroupExpr["hour"] + ` AS hour, min(date_trunc('hour', e.at AT TIME ZONE z.tz) AT TIME ZONE z.tz) AS hour_start, count(*) AS statements,
+       round(min(e.duration_ms)::numeric, 3) AS min_ms, round(max(e.duration_ms)::numeric, 3) AS max_ms,
+       round(avg(e.duration_ms)::numeric, 3) AS avg_ms,
+       round((percentile_disc(0.90) WITHIN GROUP (ORDER BY e.duration_ms))::numeric, 3) AS p90_ms,
+       round((percentile_disc(0.95) WITHIN GROUP (ORDER BY e.duration_ms))::numeric, 3) AS p95_ms,
+       round((percentile_disc(0.99) WITHIN GROUP (ORDER BY e.duration_ms))::numeric, 3) AS p99_ms
+  FROM e CROSS JOIN z
+ GROUP BY 1
+ ORDER BY min(e.at)
+ LIMIT 2000`
+
+const sqlSlowPctHistogram = sqlSlowPctBase + `,
+b (bucket, lo, hi, label) AS (VALUES
+  (0, 0, 1, '0-1 ms'), (1, 1, 5, '1-5 ms'), (2, 5, 10, '5-10 ms'), (3, 10, 25, '10-25 ms'), (4, 25, 50, '25-50 ms'),
+  (5, 50, 100, '50-100 ms'), (6, 100, 500, '100-500 ms'), (7, 500, 1000, '500 ms-1 s'), (8, 1000, 10000, '1-10 s'),
+  (9, 10000, NULL, 'over 10 s'))
+SELECT b.bucket, b.label, count(e.duration_ms) AS statements,
+       round(100.0 * count(e.duration_ms) / nullif((SELECT count(*) FROM e), 0), 2) AS pct,
+       round(coalesce(sum(e.duration_ms), 0)::numeric, 3) AS total_ms
+  FROM b LEFT JOIN e ON e.duration_ms >= b.lo AND (b.hi IS NULL OR e.duration_ms < b.hi)
+ GROUP BY b.bucket, b.label
+ ORDER BY b.bucket`
+
+const sqlSlowPctMeta = sqlSlowPctBase + `
+SELECT (SELECT count(*) FROM e) AS statements, (SELECT tz FROM z) AS tz,
+       (SELECT st.log_min_duration_statement FROM pgvigil.instance_state st WHERE st.instance_id = $1) AS log_min_duration_statement`
+
+// SlowPercentiles serves the latency percentiles and the duration histogram of one instance's logged statements.
+func (s *Server) SlowPercentiles(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("instance") == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("instance is required"))
+		return
+	}
+	f, err := slowFilterOf(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	args := []any{f.inst, f.from, f.to, f.minMS, f.tz}
+	s.multi(w, r, []part{
+		{"hours", sqlSlowPctHours, args},
+		{"histogram", sqlSlowPctHistogram, args},
+		{"meta", sqlSlowPctMeta, args},
+	})
+}

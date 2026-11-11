@@ -17,6 +17,11 @@ func TestParseAuroraFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the fixture's first line is a checkpoint start: a Checkpoint event since 0079, checked here and set aside
+	if len(evs) == 0 || evs[0].Kind != Checkpoint || evs[0].Message != "checkpoint starting: time" {
+		t.Fatalf("the checkpoint line: %+v", evs)
+	}
+	evs = evs[1:]
 	want := []struct {
 		kind Kind
 		pid  int
@@ -137,7 +142,9 @@ func TestCorruptionRecorded(t *testing.T) {
 		if !strings.HasPrefix(p[1].Statement, "{\n  \"Query Text\": ") || !strings.HasSuffix(p[1].Statement, "\n}") || p[1].DurationMS <= 0 {
 			t.Errorf("%s: the JSON plan: %v ms %q", name, p[1].DurationMS, p[1].Statement)
 		}
-		if n := len(evs) - len(c) - len(p); n != 0 {
+		// the recording has log_checkpoints on (PostgreSQL 18's default): its checkpoint lines are events since 0079
+		ck := byKind(evs, Checkpoint)
+		if n := len(evs) - len(c) - len(p) - len(ck); n != 0 {
 			t.Errorf("%s: %d other events, want 0", name, n)
 		}
 	}
@@ -145,15 +152,19 @@ func TestCorruptionRecorded(t *testing.T) {
 
 // corruption-constructed.log is written by hand (the messages PostgreSQL's source raises that the recording could
 // not produce: the freeze checks, a missing chunk, the pre-18 WARNING and short read, the commit log, a PANIC) with
-// three lines that must not count: a missing COPY input file, a missing pg_hba.conf at LOG, an unknown relation; then
+// three lines that must not count as corruption: a missing COPY input file and an unknown relation (each an Error event
+// since 0079), a missing pg_hba.conf at LOG (no event); then
 // the B-tree page check, the multixact wraparound and two of PostgreSQL 18's combined-read messages (read from its
 // message catalogue, not produced).
 func TestCorruptionConstructed(t *testing.T) {
 	evs := parseFile(t, "corruption-constructed.log")
 	c := byKind(evs, Corruption)
 	want := []int{5101, 5102, 5103, 5104, 5104, 5105, 5106, 5107, 5111, 5112, 5113, 5114, 5115, 5116, 5117}
-	if len(c) != len(want) || len(evs) != len(want) {
-		t.Fatalf("got %d corruption of %d events, want %d: %+v", len(c), len(evs), len(want), evs)
+	if len(c) != len(want) || len(evs) != len(want)+2 {
+		t.Fatalf("got %d corruption of %d events, want %d of %d: %+v", len(c), len(evs), len(want), len(want)+2, evs)
+	}
+	if e := byKind(evs, Error); len(e) != 2 || e[0].PID != 5108 || e[1].PID != 5110 || e[1].Message != `relation "..." does not exist` {
+		t.Errorf("the two errors that are not corruption: %+v", e)
 	}
 	for i, pid := range want {
 		if c[i].PID != pid {
