@@ -41,7 +41,8 @@ SELECT c.name, c.kind, c.destination, c.min_severity, c.instances, c.tags, c.qui
        (SELECT count(*) FROM pgvigil.alert_log h WHERE h.channel = c.name AND h.outcome = 'capped'
            AND h.snapshot_at > now() - interval '1 hour') AS capped_passes_last_hour,
        t.test_id AS last_test_id, t.requested_by AS last_test_by, t.requested_at AS last_test_at, t.done_at AS last_test_done,
-       coalesce(t.outcome, CASE WHEN t.requested_at <= now() - pgvigil.alert_test_window() THEN 'no answer' ELSE 'waiting' END) AS last_test_outcome,
+       CASE WHEN t.test_id IS NULL THEN NULL
+            ELSE coalesce(t.outcome, CASE WHEN t.requested_at <= now() - pgvigil.alert_test_window() THEN 'no answer' ELSE 'waiting' END) END AS last_test_outcome,
        t.error AS last_test_error
   FROM pgvigil.alert_channels c
   LEFT JOIN LATERAL (SELECT a.snapshot_at, a.outcome, a.error FROM pgvigil.alert_log a

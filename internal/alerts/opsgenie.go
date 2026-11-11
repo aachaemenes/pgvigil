@@ -105,7 +105,13 @@ func (s *opsgenieSender) send(ctx context.Context, m Message) error {
 			err = s.post(ctx, http.MethodPost, "/v2/alerts/"+url.PathEscape(ogAlias(a))+"/close", url.Values{"identifierType": {"alias"}},
 				map[string]any{"source": "pgvigil", "user": "pgvigil", "note": ogNote(a)})
 		default:
-			err = s.post(ctx, http.MethodPost, "/v2/alerts", nil, opsgenieAlert(a, m.Subject))
+			var id string
+			id, err = s.postID(ctx, http.MethodPost, "/v2/alerts", nil, opsgenieAlert(a, m.Subject))
+			if err == nil && a.Event == "test" {
+				// the API works a request after its 202: a close sent before the create is done finds no alert, and
+				// the test alert would stay open; the request's status is read first (at most about 10 s)
+				s.waitRequest(ctx, id)
+			}
 			if err == nil && a.Event == "escalated" {
 				// a create with an open alias only counts again: the priority is raised by its own request
 				err = s.post(ctx, http.MethodPut, "/v2/alerts/"+url.PathEscape(ogAlias(a))+"/priority", url.Values{"identifierType": {"alias"}},
@@ -120,9 +126,50 @@ func (s *opsgenieSender) send(ctx context.Context, m Message) error {
 }
 
 func (s *opsgenieSender) post(ctx context.Context, method, path string, q url.Values, body any) error {
+	_, err := s.postID(ctx, method, path, q, body)
+	return err
+}
+
+// waitRequest reads a request's status until Opsgenie has worked it (or about 10 s pass); "" = no id to read.
+func (s *opsgenieSender) waitRequest(ctx context.Context, id string) {
+	if id == "" {
+		return
+	}
+	for i := 0; i < 10; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(s.base.String(), "/")+"/v2/alerts/requests/"+url.PathEscape(id), nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "GenieKey "+s.key)
+		req.Header.Set("User-Agent", "pgvigil-alerts")
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return
+		}
+		var st struct {
+			Data struct {
+				IsSuccess bool   `json:"isSuccess"`
+				Status    string `json:"status"`
+			} `json:"data"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&st)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK && (st.Data.IsSuccess || st.Data.Status != "") {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// postID sends one request and returns the requestId of a 202 answer ("" when the answer carries none).
+func (s *opsgenieSender) postID(ctx context.Context, method, path string, q url.Values, body any) (string, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// path is already escaped (the alias through url.PathEscape); the base carries no query (build refuses one)
 	target := strings.TrimRight(s.base.String(), "/") + path
@@ -131,7 +178,7 @@ func (s *opsgenieSender) post(ctx context.Context, method, path string, q url.Va
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(b))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "GenieKey "+s.key)
@@ -140,25 +187,29 @@ func (s *opsgenieSender) post(ctx context.Context, method, path string, q url.Va
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
-			return fmt.Errorf("post %s: %w", hostOf(s.base), ue.Err)
+			return "", fmt.Errorf("post %s: %w", hostOf(s.base), ue.Err)
 		}
-		return err
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	switch {
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
-		return refused("%s answered %d with a redirect: not followed (the send goes to the configured URL only)", hostOf(s.base), resp.StatusCode)
+		return "", refused("%s answered %d with a redirect: not followed (the send goes to the configured URL only)", hostOf(s.base), resp.StatusCode)
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return fmt.Errorf("%s answered 429: rate limited, the next pass sends again", hostOf(s.base))
+		return "", fmt.Errorf("%s answered 429: rate limited, the next pass sends again", hostOf(s.base))
 	case resp.StatusCode >= 400:
 		msg := strings.ReplaceAll(strings.TrimSpace(string(rb)), s.key, "<api key>")
 		if len(msg) > 300 {
 			msg = msg[:300] + " ..."
 		}
-		return fmt.Errorf("%s answered %s: %s", hostOf(s.base), resp.Status, msg)
+		return "", fmt.Errorf("%s answered %s: %s", hostOf(s.base), resp.Status, msg)
 	}
-	return nil
+	var ok struct {
+		RequestID string `json:"requestId"`
+	}
+	_ = json.Unmarshal(rb, &ok)
+	return ok.RequestID, nil
 }
 
 // opsgenieAlert is the create request of one alert; subject is the channel's subject template filled ("" = the line).

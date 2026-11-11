@@ -358,6 +358,7 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
          AND p_setting ~ '^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$'
          AND p_suggested ~ '^[A-Za-z0-9_.+-]{1,40}$'
       THEN format('ALTER SYSTEM SET %s = %L; SELECT pg_reload_conf();', p_setting, p_suggested)
-    ELSE substring(p_detail FROM '((?:REINDEX|CREATE (?:UNIQUE )?INDEX|DROP INDEX|ALTER (?:TABLE|INDEX)|VACUUM|ANALYZE)\M[^;]{1,400};)')
+    -- (no bound over 255 in a PostgreSQL regular expression: the length is cut after the match)
+    ELSE left(substring(p_detail FROM '((?:REINDEX|CREATE (?:UNIQUE )?INDEX|DROP INDEX|ALTER (?:TABLE|INDEX)|VACUUM|ANALYZE)\M[^;]+;)'), 1000)
   END
 $$;

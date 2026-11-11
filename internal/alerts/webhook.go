@@ -160,13 +160,14 @@ func (s *webhookSender) payload(m Message) ([]byte, error) {
 		return json.Marshal(map[string]any{"content": b.String(), "username": "pgvigil",
 			"allowed_mentions": map[string]any{"parse": []string{}}})
 	case "googlechat":
-		// a space's incoming webhook takes a text message (*bold* is Chat's own markup)
+		// a space's incoming webhook takes a text message (*bold* is Chat's own markup); a mention written as
+		// <users/...> in a finding's text is broken, so it never notifies the space
 		var b strings.Builder
 		b.WriteString("*" + m.Summary() + "*")
 		for _, a := range m.Alerts {
 			b.WriteString("\n" + a.Line())
 		}
-		return json.Marshal(map[string]any{"text": b.String()})
+		return json.Marshal(map[string]any{"text": strings.ReplaceAll(b.String(), "<users/", "< users/")})
 	case "teams":
 		// a Workflows (Power Automate) webhook takes an Adaptive Card in a message's attachments
 		body := []map[string]any{{"type": "TextBlock", "text": m.Summary(), "weight": "Bolder", "size": "Medium", "wrap": true}}

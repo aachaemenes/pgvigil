@@ -98,8 +98,6 @@ SELECT (SELECT max(s.evaluated_at) FROM pgvigil.alert_rule_state s) AS evaluated
        (SELECT max(l.snapshot_at) FROM pgvigil.alert_log l WHERE l.snapshot_at > now() - interval '1 day') AS last_pass_at,
        (SELECT count(*) FROM pgvigil.alert_rules_effective) AS in_force`
 
-// AlertRules is GET /api/alertrules: the rules, their state, the window's attempts, the metric catalogue and the
-// sender's line; whether writes are on, and why not.
 // sqlThresholdsInForce (task 151, K07.07): every threshold in force per active instance - the alert rule the sender
 // judges each metric's series by (alert_rules_effective: an instance's rule over a tag's over the fleet's), with the
 // rules it overrides on that instance - and, on a SQL Server instance, the HA/DR, jobs and backups thresholds of
@@ -132,6 +130,8 @@ SELECT i.instance_id, i.name, i.engine, CASE WHEN f.value IS NOT NULL THEN 'file
  ORDER BY 2, 4 DESC, 5, 9 NULLS FIRST
  LIMIT 5000`
 
+// AlertRules is GET /api/alertrules: the rules, their state, the window's attempts, the metric catalogue and the
+// sender's line; whether writes are on, and why not.
 func (s *Server) AlertRules(w http.ResponseWriter, r *http.Request) {
 	_, from, to, err := params(r, false)
 	if err != nil {

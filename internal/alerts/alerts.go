@@ -182,8 +182,15 @@ func parseBaseURL(raw string) (string, error) {
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("alerts_base_url %q must not carry a user, a query or a fragment", raw)
 	}
-	return strings.TrimRight(u.Scheme+"://"+u.Host+u.EscapedPath(), "/"), nil
+	base := strings.TrimRight(u.Scheme+"://"+u.Host+u.EscapedPath(), "/")
+	if len(base) > maxBaseURL {
+		return "", fmt.Errorf("alerts_base_url is over %d bytes (every alert line carries it)", maxBaseURL)
+	}
+	return base, nil
 }
+
+// maxBaseURL bounds alerts_base_url: the address rides after every line, inside the chat formats' text budgets.
+const maxBaseURL = 200
 
 // DSN resolves alerts_dsn; "" = not set (the caller uses the repository's dsn).
 func (s *Settings) DSN() string {
@@ -293,6 +300,12 @@ func (c *Channel) validate() error {
 	tpl, err := c.Templates.compile()
 	if err != nil {
 		return err
+	}
+	if tpl != nil && c.Kind == "file" {
+		return errors.New("templates: a file drop writes the alert's fields, never a subject or a line: leave them out")
+	}
+	if tpl != nil && len(tpl.line) > 0 && c.Kind == "webhook" && c.Webhook != nil && (c.Webhook.Format == "" || c.Webhook.Format == "json") {
+		return errors.New("templates.line: a json webhook carries the alert's fields, not its line (its subject is the body's summary)")
 	}
 	c.tpl = tpl
 	blocks := 0
@@ -507,15 +520,22 @@ const maxLine = 600
 // Line is one alert as a line of text: the channel's line template, or the built-in line, cut at maxLine bytes, then
 // the address of the alert's page (never cut: a reader must be able to open it) unless the template placed it.
 func (a Alert) Line() string {
-	s, placed := a.text, a.text != "" && a.URL != "" && strings.Contains(a.text, a.URL)
+	s := a.text
 	if s == "" {
 		s = a.line()
 	}
-	s = capLine(s)
-	if a.URL != "" && !placed {
-		s += " " + a.URL
+	if a.URL == "" {
+		return capLine(s)
 	}
-	return s
+	// a template that placed {url} keeps it where it stands while the line fits; a line over maxLine loses the
+	// placed copy and is cut, then the whole address follows (a cut never breaks the address)
+	if strings.Contains(s, a.URL) {
+		if len(s) <= maxLine+1+len(a.URL) {
+			return s
+		}
+		s = strings.TrimSpace(strings.Replace(s, a.URL, "", 1))
+	}
+	return capLine(s) + " " + a.URL
 }
 
 // capLine cuts a line at maxLine bytes on a rune boundary.
@@ -764,7 +784,7 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		for _, a := range owed[name] {
 			// a cleared finding (its instance retired, or the channel no longer covers it) is recorded without a
 			// message - nothing was fixed - except on PagerDuty and Opsgenie, where the open incident must be resolved
-			// or it stays open for good (review 20261111-092424 B1)
+			// or it stays open for good
 			if a.Event == "cleared" && !incidentKind(c.Kind) {
 				cleared = append(cleared, a)
 			} else {
@@ -862,7 +882,7 @@ func batchesWithin(a []Alert, perAlert bool, budget int) [][]Alert {
 func (c *Channel) capHold(ctx context.Context, q rowQuerier, now time.Time, send *[]Alert) ([]Alert, error) {
 	var used int
 	if err := q.QueryRow(ctx, `SELECT coalesce(sum(n_firing + n_repeat + n_resolved), 0)::int FROM pgvigil.alert_log
-	   WHERE channel = $1 AND outcome = 'sent' AND snapshot_at > $2::timestamptz - interval '1 hour' AND snapshot_at <= $2`,
+	   WHERE channel = $1 AND outcome = 'sent' AND snapshot_at > $2::timestamptz - interval '1 hour'`,
 		c.Name, now).Scan(&used); err != nil {
 		return nil, fmt.Errorf("max_per_hour: %w", err)
 	}
@@ -1009,11 +1029,14 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 		switch {
 		case err != nil:
 			log.Warn("alerts pass failed", "err", err)
-		case res.Sent+res.Failed+res.Cleared > 0:
+		case res.Sent+res.Failed+res.Cleared+res.Capped+res.Tests > 0:
 			log.Info("alerts pass", "result", res.String())
 		}
 		if res.RulesErr != nil {
 			log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
+		}
+		if res.TestsErr != nil {
+			log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
 		}
 		for n, e := range outcome {
 			if e == nil {

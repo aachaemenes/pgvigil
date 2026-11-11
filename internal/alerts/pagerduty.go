@@ -146,7 +146,7 @@ func pagerDutyEvent(key string, a Alert) map[string]any {
 		return ev
 	}
 	ev["event_action"] = "trigger"
-	summary := a.Line() // at most maxLine bytes, under the API's maxSummary
+	summary := a.Line() // at most maxLine bytes and the page address (maxBaseURL + the key), under the API's 1024
 	source := a.Instance
 	if source == "" {
 		source = "pgvigil"
