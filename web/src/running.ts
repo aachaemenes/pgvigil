@@ -7,6 +7,11 @@
 // denominator, and who pinned the xmin horizon). Data: /api/activity (the snapshot), /api/running/snapshots (the
 // steps) and /api/blocking/history.
 //
+// Behind a PgBouncer (task 128; an instance with a pooler read, /api/pooler/conns): the pooler read paired with the
+// snapshot marks each session that is a pooler server ('pooler' column: which client it serves), and the status line
+// counts the clients that wait INSIDE the pooler for a server, which pg_stat_activity cannot list, with the heads their
+// pools' servers wait behind. The full trace is on the Pooler tab.
+//
 // The chain rules (the same as pgvigil.blocking_chains and the fleet page):
 //   blocked     a session whose wait_event_type is Lock and that names a blocker; no other wait is blocking
 //   head        a session a blocked one names that is not blocked itself: it holds and does not wait. The cause of
@@ -20,6 +25,7 @@ import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { longRunsSection } from './window';
 import { pgBlockingHistory } from './blocking_history';
 import { sqlCell, whatIsThis } from './sqlview';
+import { poolerConns, poolerKnown, STALE_MS } from './pooler';
 
 const TAB = 'activity';
 const idleNote = 'This session is idle in a transaction: the text is the LAST statement it ran, not one running now.';
@@ -215,6 +221,14 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
     ? await get<{ steps: Table | null }>('running/snapshots', { instance: ctx.instance, at: a.snapshot_at }).catch(() => ({ steps: null }))
     : { steps: null };
   const steps: Steps = rowsOf(stepsT.steps)[0] ?? { shown: a.snapshot_at };
+  // the pooler read of the same minute, where the instance has a pooler (task 128); a failed read leaves the page as it was
+  // only a read within two minutes of the snapshot: an older one says nothing of these sessions (pids are reused)
+  const pcAny = a.snapshot_at && await poolerKnown(ctx.instance).catch(() => false)
+    ? await poolerConns(ctx.instance, String(a.snapshot_at)).catch(() => null) : null;
+  const readAt = rowsOf(pcAny?.read ?? null)[0]?.read_at;
+  const pc = readAt != null && Math.abs(new Date(String(readAt)).getTime() - new Date(String(a.snapshot_at)).getTime()) <= STALE_MS ? pcAny : null;
+  const viaPooler = new Map<number, Row>();
+  for (const r of rowsOf(pc?.servers ?? null)) if (r.backend_pid != null && r.backend_match === 'matched') viaPooler.set(Number(r.backend_pid), r);
   const sec = el('section', {}, el('h2', {}, 'Running queries'), snapshotBar(ctx, at, steps));
   if (!a.snapshot_at) { sec.append(el('p', { class: 'empty' }, 'No activity snapshot for this instance yet.')); return sec; }
   const sum = rowsOf(a.summary)[0] ?? {};
@@ -229,6 +243,25 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
     el('span', { class: ch.blocked ? 'crit' : '' }, `Blocked sessions: ${fmtNum(ch.blocked)}` + (ch.blocked ? ` behind ${ch.heads.length} head(s), longest blocked ${fmtSecs(longestWait) || '0s'}` : '')),
     `; sessions ${fmtNum(sum.total)}, active ${fmtNum(sum.active)}, idle in transaction ${fmtNum(sum.idle_in_txn)}`,
     `; longest statement ${longestStmt == null ? '-' : fmtSecs(longestStmt)}, oldest transaction ${oldestTxn == null ? '-' : fmtSecs(oldestTxn)}`));
+  if (pc && rowsOf(pc.read).length) {
+    const trace = rowsOf(pc.trace);
+    const waiting = trace.reduce((n, t) => n + Number(t.clients_waiting ?? 0), 0);
+    const longest = trace.reduce((m, t) => Math.max(m, Number(t.longest_wait_us ?? 0)), 0);
+    const heads = [...new Set(rowsOf(pc.heads).map(h => String(h.head_pid)))];
+    sec.append(el('p', { class: 'meta pooler-status' },
+      el('span', { class: waiting ? 'warn' : '' }, `Pooler: ${fmtNum(waiting)} client(s) waiting in PgBouncer for a server`),
+      waiting ? ` (longest ${fmtSecs(longest / 1e6)}; not in pg_stat_activity)` : '',
+      heads.length ? `; its servers wait behind head pid ${heads.join(', ')}` : '',
+      `; ${fmtNum(viaPooler.size)} session(s) below are pooler servers (read ${fmtTime(rowsOf(pc.read)[0].read_at)}). `,
+      el('a', { href: href(ctx, { tab: 'pooler', at: undefined }) }, 'The trace on the Pooler tab')));
+  }
+  const poolerCell = (_v: unknown, r: Row) => {
+    const s = viaPooler.get(Number(r.pid));
+    if (!s) return '';
+    const who = s.paired_application ?? s.paired_addr;
+    return el('span', { title: `PgBouncer server connection (remote_pid ${String(r.pid)}) of pool ${String(s.database)}/${String(s.user)}` },
+      who == null ? 'pooler server (no client paired)' : `pooler: ${String(who)}`);
+  };
 
   const after = () => { location.hash = href(ctx, { tab: TAB, at: undefined }); };
   const actions = actionsCol(ctx, act, after);
@@ -247,6 +280,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'query_secs', label: 'query age', num: true, fmt: fmtSecs },
       { key: 'xact_secs', label: 'transaction age', num: true, fmt: fmtSecs },
       { key: 'datname', label: 'database' }, { key: 'usename', label: 'user' }, { key: 'application_name', label: 'application' },
+      ...(viaPooler.size ? [{ key: '_pooler', label: 'pooler', fmt: poolerCell }] : []),
       // the head's statement is its LAST statement when it is idle in transaction: the cell's title says so
       { key: 'query', label: 'statement', fmt: stmtCell },
       { key: 'plan_link', label: 'plan', fmt: planCell },
@@ -277,6 +311,7 @@ export async function runningView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'usename', label: 'user' },
     { key: 'application_name', label: 'application' },
     { key: 'client' },
+    ...(viaPooler.size ? [{ key: '_pooler', label: 'pooler', fmt: poolerCell }] : []),
     { key: 'query', label: 'statement', fmt: stmtCell },
     { key: 'plan_link', label: 'plan', fmt: planCell },
     actions,

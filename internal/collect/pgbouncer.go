@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,8 +37,20 @@ import (
 //	database  name, host, port, database, pool_size, min_pool_size, reserve_pool, pool_mode, max_connections,
 //	          current_connections, paused, disabled
 //	config    key, value, changeable
+//	client    database, user, state, application_name, addr, port, connect_time, request_time, wait_us, ptr, link
+//	          (SHOW CLIENTS, task 128: who waits in the pooler, how long, from which application; link is the ptr of
+//	          the server it is paired with)
+//	server    the same columns from SHOW SERVERS, and remote_pid: the backend's pid in PostgreSQL, the bridge from a
+//	          pooled client to pg_stat_activity, Running queries and the blocking chain
+//	conns     clients_read, clients_kept, servers_read (once, where SHOW CLIENTS was read)
 //
-// The console's own database 'pgbouncer' is left out of the pool, stats and database rows (it has no server pool).
+// The console's own database 'pgbouncer' is left out of the pool, stats, database, client and server rows (it has no
+// server pool, and its clients are the console's own logins, this collector's among them).
+//
+// SHOW CLIENTS can list thousands of idle clients on a busy pooler: the clients kept are those not idle (active,
+// waiting, a cancel request), the longest waits first, at most pgBouncerClientCap; the conns row says how many were
+// read and kept. SHOW SERVERS is bounded by the pool sizes and kept whole up to the same cap. A console that refuses
+// SHOW CLIENTS or SHOW SERVERS (an older PgBouncer, a narrowed login) leaves the pool rows as before and no conns row.
 // A pooler that cannot be reached stores the state 'error' with the reason and a collector_error row (the collection
 // log says partial), so the tab shows why it is stale.
 type pgBouncerCollector struct{}
@@ -63,11 +76,15 @@ func (pgBouncerCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row,
 }
 
 // pgBouncerCommands is every command the collector sends to the console: SHOW only.
-var pgBouncerCommands = struct{ Version, Pools, Stats, Databases, Users, Config string }{
+var pgBouncerCommands = struct{ Version, Pools, Stats, Databases, Users, Config, Clients, Servers string }{
 	Version: "SHOW VERSION", Pools: "SHOW POOLS", Stats: "SHOW STATS", Databases: "SHOW DATABASES", Users: "SHOW USERS", Config: "SHOW CONFIG",
+	Clients: "SHOW CLIENTS", Servers: "SHOW SERVERS",
 }
 
-// pgBouncerTimeout bounds one read (connect and the six SHOWs).
+// pgBouncerClientCap bounds the client (and server) rows of one read.
+const pgBouncerClientCap = 1000
+
+// pgBouncerTimeout bounds one read (connect and the eight SHOWs).
 const pgBouncerTimeout = 15 * time.Second
 
 func (pgBouncerCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
@@ -152,7 +169,137 @@ func (pgBouncerCollector) RunInstance(ctx context.Context, _ *pgx.Conn, _ platfo
 	if err != nil {
 		return fail(err)
 	}
-	return pgBouncerRows(version, pools, stats, dbs, users, conf), nil
+	out := pgBouncerRows(version, pools, stats, dbs, users, conf)
+	clients, cerr := show(pgBouncerCommands.Clients)
+	servers, serr := show(pgBouncerCommands.Servers)
+	if cerr == nil && serr == nil {
+		out = append(out, pgBouncerConnRows(clients, servers, time.Now())...)
+	}
+	return out, nil
+}
+
+// pgBouncerConnRows shapes SHOW CLIENTS and SHOW SERVERS (task 128). The columns by version: wait and wait_us (the
+// seconds and the microsecond part of the current wait) since 1.8, application_name since 1.12, remote_pid on a
+// server row the backend's pid. A client's state on 1.21+ is active, waiting, idle, active_cancel_req or
+// waiting_cancel_req; older ones say active for an idle client, so on those every client is kept up to the cap.
+//
+// The cap keeps first the clients paired with a server (link set: at most as many as the servers; they name the
+// application each server serves), then the longest waits, then the oldest requests.
+//
+// connect_time and request_time are text in the POOLER HOST's local time with its zone abbreviation
+// ('2026-11-10 15:12:40 PST'; PgBouncer's admin.c formats them through localtime, and writes now for a time never
+// set), which time.Parse cannot place (an abbreviation it does not know reads as offset zero). The offset comes from
+// the pooler's own clock instead: the console's newest request is this collector's own SHOW CLIENTS, made at now, so
+// now minus its wall-clock time, rounded to 15 minutes, is the pooler's offset from UTC. Without that row (or a
+// reading more than 5 minutes off a 15-minute step) the times are stored only where the zone says UTC or GMT, else nil.
+func pgBouncerConnRows(clients, servers []map[string]any, now time.Time) []Row {
+	offset, known := time.Duration(0), false
+	var newest time.Time
+	for _, c := range clients {
+		if bText(c["database"]) != "pgbouncer" {
+			continue
+		}
+		if w, _, ok := bWall(c["request_time"]); ok && w.After(newest) {
+			newest = w
+		}
+	}
+	if !newest.IsZero() {
+		d := now.UTC().Sub(newest)
+		r := d.Round(15 * time.Minute)
+		if diff := d - r; diff < 5*time.Minute && diff > -5*time.Minute {
+			offset, known = r, true
+		}
+	}
+	at := func(v any) any {
+		w, zone, ok := bWall(v)
+		if !ok {
+			return nil
+		}
+		switch {
+		case known:
+			return w.Add(offset).Format(time.RFC3339)
+		case zone == "UTC" || zone == "GMT" || zone == "Z":
+			return w.Format(time.RFC3339)
+		}
+		return nil
+	}
+	conn := func(kind string, c map[string]any) Row {
+		var wait any
+		if s, ok := bNum(c["wait"]); ok {
+			us, _ := bNum(c["wait_us"])
+			wait = int64(s*1e6 + us)
+		}
+		r := Row{"kind": kind, "database": bText(c["database"]), "user": bText(c["user"]), "state": bText(c["state"]),
+			"application_name": bText(c["application_name"]), "addr": bText(c["addr"]), "port": bInt(c["port"]),
+			"connect_time": at(c["connect_time"]), "request_time": at(c["request_time"]), "wait_us": wait,
+			"ptr": bText(c["ptr"]), "link": bText(c["link"])}
+		if kind == "server" {
+			r["remote_pid"] = bInt(c["remote_pid"])
+		}
+		return r
+	}
+	var kept []Row
+	read := 0
+	for _, c := range clients {
+		if bText(c["database"]) == "pgbouncer" {
+			continue
+		}
+		read++
+		if bText(c["state"]) == "idle" {
+			continue
+		}
+		kept = append(kept, conn("client", c))
+	}
+	linked := func(r Row) bool { l, _ := r["link"].(string); return strings.TrimSpace(l) != "" }
+	wt := func(r Row) int64 { v, _ := r["wait_us"].(int64); return v }
+	req := func(r Row) string { v, _ := r["request_time"].(string); return v }
+	sort.SliceStable(kept, func(i, j int) bool {
+		if a, b := linked(kept[i]), linked(kept[j]); a != b {
+			return a
+		}
+		if a, b := wt(kept[i]), wt(kept[j]); a != b {
+			return a > b
+		}
+		return req(kept[i]) < req(kept[j])
+	})
+	if len(kept) > pgBouncerClientCap {
+		kept = kept[:pgBouncerClientCap]
+	}
+	var srv []Row
+	sread := 0
+	for _, c := range servers {
+		if bText(c["database"]) == "pgbouncer" {
+			continue
+		}
+		sread++
+		if len(srv) < pgBouncerClientCap {
+			srv = append(srv, conn("server", c))
+		}
+	}
+	out := []Row{{"kind": "conns", "clients_read": read, "clients_kept": len(kept), "servers_read": sread}}
+	out = append(out, kept...)
+	return append(out, srv...)
+}
+
+// bWall reads a console timestamp's wall clock (as if UTC) and its zone text: '2026-11-10 15:12:40 PST' gives
+// 15:12:40 and 'PST'. A time.Time (a console that sends a typed value) is taken as it is, its zone 'Z'.
+func bWall(v any) (time.Time, string, bool) {
+	if t, ok := v.(time.Time); ok {
+		if t.IsZero() {
+			return time.Time{}, "", false
+		}
+		return t.UTC(), "Z", true
+	}
+	s, _ := bText(v).(string)
+	s = strings.TrimSpace(s)
+	if len(s) < 19 {
+		return time.Time{}, "", false
+	}
+	t, err := time.Parse("2006-01-02 15:04:05", s[:19])
+	if err != nil {
+		return time.Time{}, "", false
+	}
+	return t, strings.TrimSpace(s[19:]), true
 }
 
 // pgBouncerRows shapes the SHOW results into the collection's rows (a pure function: the test feeds it the columns
