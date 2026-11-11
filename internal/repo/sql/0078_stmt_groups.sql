@@ -5,7 +5,8 @@
 --      window (as top_statements_by does, so the totals agree). pg_stat_statements keeps no client: a statement's
 --      time is split over the client hosts the running-queries samples saw it from (activity_sample.query_id, PG 14+
 --      with compute_query_id), in proportion to the samples; a statement never sampled keeps client NULL ("not
---      sampled"). A split is an estimate, and the page says so.
+--      sampled"), a socket session's samples count as '[local]'. A split is an estimate, and the page says so.
+--      A NULL database or user (a dropped role) is '' in the facets and in the filters alike.
 --   2. pgvigil.stmt_groups(instance, from, to, group, dbs, users, clients, limit): those rows filtered by the ticked
 --      databases / users / client hosts (NULL = all; '(not sampled)' ticks the NULL client) and grouped by statement,
 --      database, user or client, with each group's share of the filtered total and of the instance's whole total.
@@ -43,10 +44,11 @@ LANGUAGE sql STABLE AS $$
       FROM d WHERE d.share > 0
      GROUP BY d.queryid, d.datname, d.usename
   ), c AS (
-    SELECT s.query_id, s.datname, s.usename, nullif(s.client, '') AS client, count(*)::float8 AS n
+    SELECT s.query_id, s.datname, s.usename, coalesce(nullif(s.client, ''), '[local]') AS client, count(*)::float8 AS n   -- a socket session has no address: '[local]', as psql's prompt says
       FROM pgvigil.activity_sample s
      WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from AND s.snapshot_at <= p_to
        AND s.query_id IS NOT NULL AND s.state = 'active'
+       AND coalesce(s.backend_type, 'client backend') = 'client backend'   -- a parallel worker carries its leader's query_id and no client
      GROUP BY 1, 2, 3, 4
   ), cw AS (
     SELECT c.*, c.n / sum(c.n) OVER (PARTITION BY c.query_id, c.datname, c.usename) AS w FROM c
@@ -78,8 +80,8 @@ LANGUAGE sql STABLE AS $$
                   WHEN 'client' THEN pgvigil.stmt_client_label(r.client)
                   ELSE r.queryid::text END AS g
       FROM r
-     WHERE (p_dbs IS NULL OR r.datname = ANY (p_dbs))
-       AND (p_users IS NULL OR r.usename = ANY (p_users))
+     WHERE (p_dbs IS NULL OR coalesce(r.datname, '') = ANY (p_dbs))
+       AND (p_users IS NULL OR coalesce(r.usename, '') = ANY (p_users))
        AND (p_clients IS NULL OR pgvigil.stmt_client_label(r.client) = ANY (p_clients))
   ),
   ft AS (SELECT sum(f.total_ms) AS t FROM f),
@@ -110,13 +112,13 @@ LANGUAGE sql STABLE AS $$
   WITH r AS (SELECT r.*, pgvigil.stmt_client_label(r.client) AS cl FROM pgvigil.stmt_window_rows(p_instance_id, p_from, p_to) r),
   x AS (
     SELECT 'db'::text AS dim, coalesce(r.datname, '') AS value, r.queryid, r.calls, r.total_ms FROM r
-     WHERE (p_users IS NULL OR r.usename = ANY (p_users)) AND (p_clients IS NULL OR r.cl = ANY (p_clients))
+     WHERE (p_users IS NULL OR coalesce(r.usename, '') = ANY (p_users)) AND (p_clients IS NULL OR r.cl = ANY (p_clients))
     UNION ALL
     SELECT 'user', coalesce(r.usename, ''), r.queryid, r.calls, r.total_ms FROM r
-     WHERE (p_dbs IS NULL OR r.datname = ANY (p_dbs)) AND (p_clients IS NULL OR r.cl = ANY (p_clients))
+     WHERE (p_dbs IS NULL OR coalesce(r.datname, '') = ANY (p_dbs)) AND (p_clients IS NULL OR r.cl = ANY (p_clients))
     UNION ALL
     SELECT 'client', r.cl, r.queryid, r.calls, r.total_ms FROM r
-     WHERE (p_dbs IS NULL OR r.datname = ANY (p_dbs)) AND (p_users IS NULL OR r.usename = ANY (p_users))
+     WHERE (p_dbs IS NULL OR coalesce(r.datname, '') = ANY (p_dbs)) AND (p_users IS NULL OR coalesce(r.usename, '') = ANY (p_users))
   ), g AS (
     SELECT x.dim, x.value, count(DISTINCT x.queryid) AS statements, sum(x.calls) AS calls, sum(x.total_ms) AS total_ms
       FROM x GROUP BY x.dim, x.value
@@ -165,8 +167,9 @@ LANGUAGE sql STABLE AS $$
    ORDER BY 1
 $$;
 
--- stmt_lag: the window and the window moved back by each lag, with top_statements_by's edge shares; snapshots = the
--- deltas read in that window (0 = nothing collected then: the compare says "no data", never zero calls).
+-- stmt_lag: the window and the window moved back by each lag, with top_statements_by's edge shares; snapshots = this
+-- statement's deltas in that window, instance_snapshots = the instance's statements reads that left any delta there
+-- (0 = nothing collected then: the compare says "no data", never zero calls).
 CREATE OR REPLACE FUNCTION pgvigil.stmt_lag(p_instance_id int, p_queryid bigint, p_datname text,
                                             p_from timestamptz, p_to timestamptz, p_lags float8[])
 RETURNS TABLE (lag_secs float8, from_at timestamptz, to_at timestamptz, snapshots bigint, instance_snapshots bigint,
@@ -177,22 +180,23 @@ LANGUAGE sql STABLE AS $$
     SELECT l.lag, p_from - make_interval(secs => l.lag) AS f, p_to - make_interval(secs => l.lag) AS t, l.o
       FROM unnest(p_lags) WITH ORDINALITY AS l(lag, o)
   ), d AS (
-    SELECT w.lag, d.*,
+    SELECT w.o, d.*,
            greatest(0, extract(epoch FROM least(d.snapshot_at, w.t) - greatest(d.snapshot_at - make_interval(secs => d.interval_secs), w.f)))
              / d.interval_secs AS share
       FROM w JOIN pgvigil.statements_delta d
         ON d.instance_id = p_instance_id AND d.queryid = p_queryid AND (p_datname IS NULL OR d.datname = p_datname)
        AND d.snapshot_at > w.f AND d.snapshot_at - make_interval(secs => d.interval_secs) < w.t
   ), a AS (
-    SELECT d.lag, count(DISTINCT d.snapshot_at) AS snapshots, sum(d.calls * d.share) AS calls, sum(d.total_exec_ms * d.share) AS total_ms,
+    SELECT d.o, count(DISTINCT d.snapshot_at) AS snapshots, sum(d.calls * d.share) AS calls, sum(d.total_exec_ms * d.share) AS total_ms,
            sum(d.rows * d.share) AS rows, sum(d.shared_blks_hit * d.share) AS hit, sum(d.shared_blks_read * d.share) AS rd,
            sum(d.temp_blks_written * d.share) AS tw
-      FROM d WHERE d.share > 0 GROUP BY d.lag
+      FROM d WHERE d.share > 0 GROUP BY d.o   -- by the ordinal: the same lag twice (1 d chosen beside day over day) is two windows, not one summed twice
   )
   SELECT w.lag, w.f, w.t, coalesce(a.snapshots, 0),
-         (SELECT count(*) FROM pgvigil.statements_info i WHERE i.instance_id = p_instance_id AND i.snapshot_at > w.f AND i.snapshot_at <= w.t),
+         -- the reads of the instance in that window: any statement's delta (statements_info has rows on 14+ only)
+         (SELECT count(DISTINCT x.snapshot_at) FROM pgvigil.statements_delta x WHERE x.instance_id = p_instance_id AND x.snapshot_at > w.f AND x.snapshot_at <= w.t),
          a.calls, a.total_ms, a.total_ms / nullif(a.calls, 0), a.rows, a.hit, a.rd, a.tw
-    FROM w LEFT JOIN a ON a.lag = w.lag
+    FROM w LEFT JOIN a ON a.o = w.o
    ORDER BY w.o
 $$;
 

@@ -136,7 +136,7 @@ func (s *Server) StmtLag(w http.ResponseWriter, r *http.Request) {
 		return
 	case l != "":
 		secs, err := strconv.ParseInt(l, 10, 64)
-		if err != nil || secs < 60 || time.Duration(secs)*time.Second > maxLag {
+		if err != nil || secs < 60 || secs > int64(maxLag/time.Second) { // compared in seconds: a huge value would overflow a Duration
 			writeErr(w, http.StatusBadRequest, errors.New("lag must be whole seconds, 60 up to 400 days"))
 			return
 		}

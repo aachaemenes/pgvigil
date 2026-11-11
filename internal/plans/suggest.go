@@ -2,8 +2,9 @@ package plans
 
 // A suggested index under a statement and under an EXPLAIN (parity3 task 125; pghero's suggested index with its
 // reasoning). Suggest reads a plan's JSON form: a sequential scan whose filter compares plain columns of its table
-// with a constant or a parameter (=, <, <=, >, >=, IS NULL) is a candidate for a btree index on those columns, the
-// equalities first and one range column last. The reasoning names the scan, its estimated (and, after ANALYZE, its
+// with a constant or a parameter (=, = ANY of a constant array, <, <=, >, >=, IS NULL) is a candidate for a btree index
+// on those columns, the equalities first and one range column last. A cast column is not one (the index would not
+// serve it). Each scan of a partitioned table is a partition: the suggestion names the partition. The reasoning names the scan, its estimated (and, after ANALYZE, its
 // actual and removed) rows and the conditions used. A LIKE, an OR or an expression is not suggested; the reason says
 // which.
 //
@@ -48,12 +49,22 @@ type Skipped struct {
 	Reason string `json:"reason"`
 }
 
+const (
+	identPat = `(?:[a-z_][a-z0-9_$]*|"(?:[^"]|"")+")`
+	// a cast as EXPLAIN prints it: a type name, quoted or schema-qualified, maybe an array, maybe more than one
+	castPat = `(?:::` + identPat + `(?:\.` + identPat + `)?(?: [a-z]+)*(?:\[\])?(?:\([0-9, ]+\))?)`
+)
+
 var (
-	// a column as EXPLAIN prints it: plain, alias-qualified, or double-quoted, maybe in parentheses and cast
-	colRE = regexp.MustCompile(`^\(*((?:[a-z_][a-z0-9_$]*|"(?:[^"]|"")+")\.)?([a-z_][a-z0-9_$]*|"(?:[^"]|"")+")\)*(?:::[a-z][a-z0-9_ ]*(?:\[\])?)?\)*$`)
+	// a plain column as EXPLAIN prints it: bare, alias-qualified, or double-quoted, maybe in parentheses; no cast
+	colRE = regexp.MustCompile(`^\(*(` + identPat + `\.)?(` + identPat + `)\)*$`)
+	// a column under a cast: a btree on the column does not serve the cast's result
+	castColRE = regexp.MustCompile(`^\(*(?:` + identPat + `\.)?` + identPat + `\)*` + castPat + `+\)*$`)
 	// the right-hand side: a constant (a quoted literal, a number, NULL, true / false) or a parameter, maybe cast
-	constRE = regexp.MustCompile(`^\(*(?:'(?:[^']|'')*'|-?[0-9]+(?:\.[0-9]+)?|\$[0-9]+|NULL|true|false)\)*(?:::[a-z][a-z0-9_ ]*(?:\[\])?)?\)*$`)
-	opRE    = regexp.MustCompile(`^(.+?)\s+(=|<>|<=|>=|<|>|~~\*?|!~~\*?|IS NULL|IS NOT NULL)(?:\s+(.+))?$`)
+	constRE = regexp.MustCompile(`^\(*(?:'(?:[^']|'')*'|-?[0-9]+(?:\.[0-9]+)?|\$[0-9]+|NULL|true|false)\)*` + castPat + `*\)*$`)
+	// = ANY of a constant array (IN (...) as EXPLAIN prints it)
+	anyRE = regexp.MustCompile(`^ANY \((.+)\)$`)
+	opRE  = regexp.MustCompile(`^(.+?)\s+(=|<>|<=|>=|<|>|~~\*?|!~~\*?|IS NULL|IS NOT NULL)(?:\s+(.+))?$`)
 )
 
 // Suggest reads a plan's JSON form (NormalizeJSON's object) and returns its suggestions and the scans it skipped.
@@ -92,6 +103,21 @@ func Suggest(plan map[string]any) ([]Suggestion, []Skipped) {
 	return out, skipped
 }
 
+// unquote returns an identifier as the catalog stores it: a text plan prints "Orders", a JSON plan Orders.
+func unquote(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return strings.ReplaceAll(s[1:len(s)-1], `""`, `"`)
+	}
+	return s
+}
+
+// relOf: the scan's table and schema as the catalog stores them ("" = the plan names no schema: no VERBOSE).
+func relOf(n map[string]any) (rel, sch string) {
+	r, _ := n["Relation Name"].(string)
+	sc, _ := n["Schema"].(string)
+	return unquote(r), unquote(sc)
+}
+
 func scanName(n map[string]any) string {
 	rel, _ := n["Relation Name"].(string)
 	alias, _ := n["Alias"].(string)
@@ -109,15 +135,19 @@ func num64(v any) (float64, bool) {
 
 // fromScan: the suggestion of one sequential scan, or why there is none ("" = nothing to say: no filter).
 func fromScan(n map[string]any) (*Suggestion, string) {
-	rel, _ := n["Relation Name"].(string)
+	rel, sch := relOf(n)
 	filter, _ := n["Filter"].(string)
 	if rel == "" || filter == "" {
 		return nil, ""
 	}
-	if sch, _ := n["Schema"].(string); sch == "pg_catalog" || sch == "information_schema" || strings.HasPrefix(sch, "pg_temp") {
+	switch {
+	case sch == "pg_catalog" || sch == "information_schema" || strings.HasPrefix(sch, "pg_temp") || strings.HasPrefix(sch, "pg_toast"):
 		return nil, "a system catalog or temporary table"
+	case sch == "" && strings.HasPrefix(rel, "pg_"):
+		return nil, "a pg_ name without a schema in the plan: taken as a system catalog"
 	}
 	alias, _ := n["Alias"].(string)
+	alias = unquote(alias)
 	conj, ok := splitAnd(filter)
 	if !ok {
 		return nil, "the filter has an OR: one btree index does not serve it; consider an index per branch"
@@ -133,18 +163,25 @@ func fromScan(n map[string]any) (*Suggestion, string) {
 		lhs, op, rhs := strings.TrimSpace(m[1]), m[2], strings.TrimSpace(m[3])
 		cm := colRE.FindStringSubmatch(lhs)
 		if cm == nil {
-			why = append(why, fmt.Sprintf("%s: an expression, not a plain column (an expression index is the DBA's call)", c))
+			if castColRE.MatchString(lhs) {
+				why = append(why, fmt.Sprintf("%s: the column is cast, so a btree on the column does not serve it (an expression index is the DBA's call)", c))
+			} else {
+				why = append(why, fmt.Sprintf("%s: an expression, not a plain column (an expression index is the DBA's call)", c))
+			}
 			continue
 		}
-		if q := strings.Trim(cm[1], "."); q != "" && q != alias && q != quoteIdent(alias) && q != rel && q != quoteIdent(rel) {
+		if q := unquote(strings.TrimSuffix(cm[1], ".")); q != "" && q != alias && q != rel {
 			why = append(why, fmt.Sprintf("%s: a column of another relation", c))
 			continue
 		}
-		col := cm[2]
+		col := quoteIdent(unquote(cm[2]))
 		switch op {
 		case "IS NULL":
 			eq = appendOnce(eq, col)
 		case "=":
+			if m := anyRE.FindStringSubmatch(rhs); m != nil {
+				rhs = m[1] // = ANY of a constant array: an equality for the index
+			}
 			if !constRE.MatchString(rhs) {
 				why = append(why, fmt.Sprintf("%s: compared with another column (a join condition)", c))
 				continue
@@ -201,7 +238,7 @@ func fromScan(n map[string]any) (*Suggestion, string) {
 		s.Removed = &r
 	}
 	tbl := quoteIdent(rel)
-	if sch, _ := n["Schema"].(string); sch != "" {
+	if sch != "" {
 		tbl = quoteIdent(sch) + "." + tbl
 	}
 	s.DDL = fmt.Sprintf("CREATE INDEX CONCURRENTLY ON %s (%s)", tbl, strings.Join(cols, ", "))
@@ -213,6 +250,9 @@ func fromScan(n map[string]any) (*Suggestion, string) {
 			line += fmt.Sprintf(", removed by the filter: %.0f", *s.Removed)
 		}
 		s.Why = append(s.Why, line)
+	}
+	if sch == "" {
+		s.Why = append(s.Why, "the plan names no schema (EXPLAIN without VERBOSE): the text names the table the statement's search_path finds; qualify it before you run it")
 	}
 	if len(eq) > 0 && len(rng) > 0 {
 		s.Why = append(s.Why, "the equality columns lead, the range column follows: the index finds one range per equality")
@@ -239,8 +279,25 @@ func contains(xs []string, x string) bool {
 
 var simpleIdent = regexp.MustCompile(`^[a-z_][a-z0-9_$]*$`)
 
+// reserved are PostgreSQL's reserved key words (and those that may be a function or type name only): as an
+// identifier each must be quoted, as quote_ident does.
+var reserved = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`all analyse analyze and any array as asc asymmetric authorization binary both case cast check collate
+		collation column concurrently constraint create cross current_catalog current_date current_role current_schema current_time
+		current_timestamp current_user default deferrable desc distinct do else end except false fetch for foreign freeze from full
+		grant group having ilike in initially inner intersect into is isnull join lateral leading left like limit localtime
+		localtimestamp natural not notnull null offset on only or order outer overlaps placing primary references returning right
+		select session_user similar some symmetric system_user table tablesample then to trailing true union unique user using
+		variadic verbose when where window with`) {
+		reserved[w] = true
+	}
+}
+
+// quoteIdent quotes an identifier as quote_ident does: a lower-case plain name that is not a reserved word stays bare.
 func quoteIdent(s string) string {
-	if simpleIdent.MatchString(s) {
+	if simpleIdent.MatchString(s) && !reserved[s] {
 		return s
 	}
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
@@ -271,13 +328,15 @@ func splitAnd(f string) ([]string, bool) {
 // stripOuter removes parentheses that enclose the whole expression.
 func stripOuter(s string) string {
 	for len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
-		depth, q := 0, false
+		depth, q, dq := 0, false, false
 		whole := true
 		for i := 0; i < len(s); i++ {
 			switch c := s[i]; {
-			case c == '\'':
+			case c == '\'' && !dq:
 				q = !q
-			case q:
+			case c == '"' && !q:
+				dq = !dq
+			case q || dq:
 			case c == '(':
 				depth++
 			case c == ')':
@@ -301,12 +360,14 @@ func stripOuter(s string) string {
 // splitTop splits s at sep where it is outside parentheses and quotes.
 func splitTop(s, sep string) []string {
 	var out []string
-	depth, q, last := 0, false, 0
+	depth, q, dq, last := 0, false, false, 0
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; {
-		case c == '\'':
+		case c == '\'' && !dq:
 			q = !q
-		case q:
+		case c == '"' && !q:
+			dq = !dq
+		case q || dq:
 		case c == '(':
 			depth++
 		case c == ')':
@@ -365,7 +426,8 @@ func Hypo(ctx context.Context, dsn, datname, query, ddl string) (HypoResult, err
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	mode := pgx.QueryExecModeExec
 	var res HypoResult
-	err = tx.QueryRow(ctx, `SELECT extversion FROM pg_extension WHERE extname = 'hypopg'`, mode).Scan(&res.Hypopg)
+	var hsch string
+	err = tx.QueryRow(ctx, `SELECT e.extversion, n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'hypopg'`, mode).Scan(&res.Hypopg, &hsch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		res.Note = fmt.Sprintf("%s: hypopg is not installed in %s", NotChecked, orDefault(datname))
 		return res, nil
@@ -382,7 +444,9 @@ func Hypo(ctx context.Context, dsn, datname, query, ddl string) (HypoResult, err
 	cost := func(name string) (float64, string, error) {
 		var plan string
 		if sc.MaxParam > 0 {
-			if _, err := tx.Exec(ctx, `PREPARE `+name+` AS `+query, mode); err != nil {
+			// the extended protocol takes ONE statement: tx.Exec without arguments would use the simple protocol, which
+			// runs every statement of the text (a stored text that fools ScanSQL could COMMIT the read-only transaction)
+			if _, err := tx.Conn().PgConn().ExecParams(ctx, `PREPARE `+name+` AS `+query, nil, nil, nil, nil).Close(); err != nil {
 				return 0, "", explainErr(err, datname, sc.Keyword)
 			}
 			args := strings.TrimSuffix(strings.Repeat("NULL, ", sc.MaxParam), ", ")
@@ -406,12 +470,13 @@ func Hypo(ctx context.Context, dsn, datname, query, ddl string) (HypoResult, err
 	}
 	// hypopg takes the statement without CONCURRENTLY
 	hypoDDL := strings.Replace(ddl, "CREATE INDEX CONCURRENTLY ON ", "CREATE INDEX ON ", 1)
-	if err := tx.QueryRow(ctx, `SELECT indexname FROM hypopg_create_index($1)`, mode, hypoDDL).Scan(&res.IndexName); err != nil {
+	// the extension's own schema: it need not be on the login's search_path
+	if err := tx.QueryRow(ctx, `SELECT indexname FROM `+quoteIdent(hsch)+`.hypopg_create_index($1)`, mode, hypoDDL).Scan(&res.IndexName); err != nil {
 		return HypoResult{}, fmt.Errorf("hypopg_create_index: %w", err)
 	}
 	var after string
 	res.CostAfter, after, err = cost("pgvigil_hypo_after")
-	_, rerr := tx.Exec(context.WithoutCancel(ctx), `SELECT hypopg_reset()`, mode)
+	_, rerr := tx.Exec(context.WithoutCancel(ctx), `SELECT `+quoteIdent(hsch)+`.hypopg_reset()`, mode)
 	if err != nil {
 		return HypoResult{}, err
 	}

@@ -207,7 +207,7 @@ interface HypoDone { outcome: string; detail: string; checked: boolean; cost_bef
 // suggestBox: the suggested indexes of a plan (plan=<id>) or of a statement's newest plan (queryid, db), each with its
 // reasoning, its planner check and the button that runs the check.
 export async function suggestBox(o: { instance: number; plan?: number; queryid?: unknown; db?: unknown }): Promise<HTMLElement> {
-  const box = el('div', { class: 'suggest' }, el('h4', {}, 'Suggested index'));
+  const box = el('div', { class: 'suggest', style: 'white-space:normal' }, el('h4', {}, 'Suggested index'));
   let d: Suggested;
   try {
     d = await get<Suggested>('plans/suggest', o.plan ? { id: o.plan } : { instance: o.instance, queryid: String(o.queryid), db: o.db ? String(o.db) : undefined });
@@ -226,12 +226,19 @@ export async function suggestBox(o: { instance: number; plan?: number; queryid?:
     btn.disabled = !d.hypo;
     btn.title = d.hypo ? 'Plans the statement before and with a hypothetical index (hypopg on the monitored server); nothing is created or run; audited' : d.hypo_reason ?? '';
     btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;   // one check per click: each is a planner call on the server and an audit row
       state.replaceChildren('Checking...');
       try {
-        const r = await post<HypoDone>('plans/hypo', { plan_id: d.plan_id, n, reason: reason.value });
-        state.replaceChildren(r.checked ? badge(r.used && (r.cost_after ?? 0) < (r.cost_before ?? 0) ? 'planner-checked: lower cost' : 'planner-checked: not used', r.used ? 'ok' : 'crit') : badge('not planner-checked', 'warn'),
-          ' ', el('span', { class: 'meta' }, r.detail));
+        const r = await post<HypoDone>('plans/hypo', { plan_id: d.plan_id, n, ddl: sg.ddl, reason: reason.value });
+        const lower = (r.cost_after ?? 0) < (r.cost_before ?? 0);
+        const verdict = !r.checked ? badge('not planner-checked', 'warn')
+          : r.used && lower ? badge('planner-checked: lower cost', 'ok')
+          : r.used ? badge('planner-checked: used, cost not lower', 'warn')
+          : badge('planner-checked: not used', 'crit');
+        state.replaceChildren(verdict, ' ', el('span', { class: 'meta' }, r.detail));
       } catch (e) { state.replaceChildren(badge('not planner-checked', 'warn'), ' ', errorBox(e)); }
+      finally { btn.disabled = false; }
     });
     box.append(el('div', { class: 'card', style: 'margin:.5rem 0' },
       el('pre', { style: 'margin:0;padding:.5rem .7rem;background:#2f3136;color:#f1f1f1;border-radius:4px;white-space:pre-wrap' }, sg.ddl),

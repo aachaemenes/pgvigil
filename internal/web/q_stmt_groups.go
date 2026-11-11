@@ -19,7 +19,8 @@ import (
 //           (pgvigil.stmt_groups)
 //   totals  the instance's whole total in the window, the filtered total, and the sampled share of the client split
 // A repeated db / user / client parameter ticks several values; client=(not sampled) ticks the statements no running-
-// queries sample saw. The route is the lead's line in web.go.
+// queries sample saw, client=[local] the socket sessions'; db= or user= (empty) ticks a NULL database or user (a
+// dropped role). The route is the lead's line in web.go.
 
 var stmtGroupKinds = map[string]bool{"query": true, "db": true, "user": true, "client": true}
 
@@ -94,8 +95,8 @@ func (s *Server) StmtGroups(w http.ResponseWriter, r *http.Request) {
 		{"facets", `SELECT * FROM pgvigil.stmt_facets($1, $2, $3, $4, $5, $6)`, []any{id, from, to, dbs, users, clients}},
 		{"groups", `SELECT * FROM pgvigil.stmt_groups($1, $2, $3, $4, $5, $6, $7, $8)`, []any{id, from, to, group, dbs, users, clients, limit}},
 		{"totals", `SELECT sum(r.total_ms) AS total_ms,
-		                   sum(r.total_ms) FILTER (WHERE ($4::text[] IS NULL OR r.datname = ANY ($4))
-		                                             AND ($5::text[] IS NULL OR r.usename = ANY ($5))
+		                   sum(r.total_ms) FILTER (WHERE ($4::text[] IS NULL OR coalesce(r.datname, '') = ANY ($4))
+		                                             AND ($5::text[] IS NULL OR coalesce(r.usename, '') = ANY ($5))
 		                                             AND ($6::text[] IS NULL OR pgvigil.stmt_client_label(r.client) = ANY ($6))) AS filtered_ms,
 		                   round((100 * sum(r.total_ms) FILTER (WHERE r.client IS NOT NULL) / nullif(sum(r.total_ms), 0))::numeric, 1) AS sampled_pct,
 		                   count(DISTINCT r.queryid) AS statements

@@ -4,17 +4,27 @@
 // instance's whole total (/api/stmtgroups).
 //
 // The ticks and the grouping ride the page's hash (sg=<group>, sdb / suser / scl repeated), so a link keeps them;
-// the router keeps them on the Statements tab's own links through the lead's wiring.
+// the router keeps them on the Statements tab's own links (a sort, a range change) through the lead's wiring in router.ts.
 import { Row, rowsOf, Table } from './api';
 import { LoginRequired } from './api';
 import { Ctx, window_ } from './router';
 import { Col, el, errorBox, fmtNum, grid } from './ui';
+import { sqlCell } from './sqlview';
 
 export const groupKinds: [string, string][] = [['query', 'statement'], ['db', 'database'], ['user', 'user'], ['client', 'client host']];
 const dims: [string, string, string][] = [['db', 'sdb', 'Database'], ['user', 'suser', 'User'], ['client', 'scl', 'Client host']];
 export const notSampled = '(not sampled)';
 
 export interface StmtGroups { facets: Table | null; groups: Table | null; totals: Table | null }
+
+// a tick or a grouping redraws the page: the focus goes back to the control that was used (keyboard users)
+let refocus = '';
+function keepFocus(e: HTMLElement): void {
+  refocus = '';
+  let tries = 0;
+  const go = () => { if (e.isConnected) e.focus(); else if (++tries < 60) requestAnimationFrame(go); };
+  requestAnimationFrame(go);
+}
 
 function hashQS(): URLSearchParams { return new URLSearchParams(location.hash.split('?')[1] ?? ''); }
 
@@ -23,7 +33,7 @@ export function stmtTicks(): { group: string; ticks: Record<string, string[]> } 
   const q = hashQS();
   const g = q.get('sg') ?? 'query';
   const ticks: Record<string, string[]> = {};
-  for (const [dim, param] of dims) { const v = q.getAll(param).filter(x => x !== ''); if (v.length) ticks[dim] = v.slice(0, 100); }
+  for (const [dim, param] of dims) { const v = q.getAll(param); if (v.length) ticks[dim] = v.slice(0, 100); }
   return { group: groupKinds.some(k => k[0] === g) ? g : 'query', ticks };
 }
 
@@ -86,22 +96,38 @@ function facetPanel(facets: Row[]): HTMLElement {
     const fs = el('fieldset', { style: 'border:0;padding:0;margin:.6rem 0 0' },
       el('legend', { style: 'display:flex;justify-content:space-between;width:100%;font-weight:600;border-bottom:1px solid var(--line)' }, label, el('span', { class: 'meta' }, String(vals.length))));
     if (vals.length === 0) fs.append(el('p', { class: 'meta' }, 'none in this window'));
-    for (const f of vals.slice(0, 50)) {
+    const shown = 8;
+    const more: HTMLElement[] = [];
+    vals.forEach((f, i) => {
       const v = String(f.value ?? '');
-      const id = `sf-${dim}-${encodeURIComponent(v)}`;
+      const id = `sf-${dim}-${i}`;
       const cb = el('input', { type: 'checkbox', id }) as HTMLInputElement;
       cb.checked = (ticks[dim] ?? []).includes(v);
-      cb.addEventListener('change', () => setHash(q => {
-        const cur = q.getAll(param).filter(x => x !== v);
-        q.delete(param);
-        for (const x of cb.checked ? [...cur, v] : cur) q.append(param, x);
-      }));
-      const shown = v === '' ? '(none)' : v;
-      fs.append(el('div', { style: 'display:flex;align-items:center;gap:.35rem;margin:.15rem 0' }, cb,
-        el('label', { for: id, title: `${shown}: ${fmtNum(f.statements)} statements, ${ms(f.total_ms)}`, style: 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, shown),
-        el('span', { class: 'meta', style: 'font-variant-numeric:tabular-nums' }, pctTxt(f.share_pct))));
+      if (refocus === id) keepFocus(cb);
+      cb.addEventListener('change', () => {
+        refocus = id;
+        setHash(q => {
+          const cur = q.getAll(param).filter(x => x !== v);
+          q.delete(param);
+          for (const x of cb.checked ? [...cur, v] : cur) q.append(param, x);
+        });
+      });
+      const name = v === '' ? '(none)' : v;
+      const line = el('div', { style: 'display:flex;align-items:center;gap:.35rem;margin:.15rem 0' }, cb,
+        el('label', { for: id, title: `${name}: ${fmtNum(f.statements)} statements, ${ms(f.total_ms)}`, style: 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name),
+        el('span', { class: 'meta', style: 'font-variant-numeric:tabular-nums' }, pctTxt(f.share_pct)));
+      // a ticked value stays in sight even when it is not among the first
+      if (i < shown || cb.checked) fs.append(line); else { line.hidden = true; more.push(line); fs.append(line); }
+    });
+    if (more.length) {
+      const b = el('button', { type: 'button', class: 'link', 'aria-expanded': 'false' }, `Show all ${vals.length}`);
+      b.addEventListener('click', () => {
+        const open = b.getAttribute('aria-expanded') === 'true';
+        for (const m of more) m.hidden = open;
+        b.setAttribute('aria-expanded', String(!open)); b.textContent = open ? `Show all ${vals.length}` : 'Show fewer';
+      });
+      fs.append(b);
     }
-    if (vals.length > 50) fs.append(el('p', { class: 'meta' }, `and ${vals.length - 50} more (the 50 with the most time are listed)`));
     box.append(fs);
   }
   return box;
@@ -115,20 +141,22 @@ export function stmtGroupsSection(d: StmtGroups | Error, extra: Col[] = [], titl
   const whole = Number(tot.total_ms ?? 0), filtered = Number(tot.filtered_ms ?? 0);
   const switcher = el('div', { class: 'subtabs', role: 'group', 'aria-label': 'Group by' }, el('span', { class: 'meta', style: 'align-self:center' }, 'Group by'),
     ...groupKinds.map(([k, l]) => {
-      const a = el('a', { href: '#', class: k === group ? 'on' : '', 'aria-pressed': String(k === group) }, l);
-      a.addEventListener('click', ev => { ev.preventDefault(); setHash(q => { if (k === 'query') q.delete('sg'); else q.set('sg', k); }); });
+      const a = el('a', { href: '#', id: `sg-${k}`, class: k === group ? 'on' : '', ...(k === group ? { 'aria-current': 'true' } : {}) }, l);
+      if (refocus === a.id) keepFocus(a);
+      a.addEventListener('click', ev => { ev.preventDefault(); refocus = a.id; setHash(q => { if (k === 'query') q.delete('sg'); else q.set('sg', k); }); });
       return a;
     }));
-  const first: Col = group === 'query'
-    ? { key: 'query', label: 'statement', wide: true, fmt: v => { const s = String(v ?? '').replace(/\s+/g, ' '); return s.length > 160 ? s.slice(0, 160) + '...' : s; } }
-    : { key: 'grp', label: groupKinds.find(k => k[0] === group)![1], fmt: v => String(v ?? '') === '' ? '(none)' : String(v) };
-  const cols: Col[] = [first,
+  const intNum = (v: unknown) => v == null || v === '' ? '' : fmtNum(Math.round(Number(v)));   // a window's edge share makes fractions
+  const cols: Col[] = [
+    ...(group === 'query' ? [] : [{ key: 'grp', label: groupKinds.find(k => k[0] === group)![1], fmt: (v: unknown) => String(v ?? '') === '' ? '(none)' : String(v) }] as Col[]),
     { key: 'total_ms', label: 'total time', num: true, fmt: ms },
     { key: 'share_pct', label: 'share', num: true, fmt: v => shareCell(v, 'share of the ticked statements\' total time') },
     { key: 'share_all_pct', label: 'of all', num: true, fmt: pctTxt },
-    { key: 'calls', num: true }, { key: 'mean_ms', label: 'mean', num: true, fmt: ms },
-    { key: 'rows', num: true }, { key: 'io_blks', label: 'IO blocks', num: true }, { key: 'hit_pct', label: 'hit', num: true, fmt: pctTxt },
-    ...(group === 'query' ? [{ key: 'datname', label: 'db' }, { key: 'usename', label: 'user' }, { key: 'queryid' }, ...extra] as Col[] : [{ key: 'statements', num: true }] as Col[])];
+    { key: 'calls', num: true, fmt: intNum }, { key: 'mean_ms', label: 'mean', num: true, fmt: ms },
+    { key: 'rows', num: true, fmt: intNum }, { key: 'io_blks', label: 'IO blocks', num: true, fmt: intNum }, { key: 'hit_pct', label: 'hit', num: true, fmt: pctTxt },
+    ...(group === 'query'
+      ? [{ key: 'datname', label: 'db' }, { key: 'usename', label: 'user' }, { key: 'queryid' }, ...extra, { key: 'query', label: 'statement', fmt: (v: unknown) => sqlCell(v) }] as Col[]
+      : [{ key: 'statements', num: true }] as Col[])];
   const ticked = Object.entries(ticks).map(([k, vs]) => `${dims.find(x => x[0] === k)![2].toLowerCase()} ${vs.join(', ')}`).join('; ');
   const head = el('p', { class: 'meta' }, ticked
     ? `Ticked: ${ticked}. ${ms(filtered)} of ${ms(whole)} (${whole > 0 ? fmtNum(Math.round(1000 * filtered / whole) / 10) : 0} %) of all statements' time in the window.`

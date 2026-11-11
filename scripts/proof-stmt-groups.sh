@@ -26,14 +26,15 @@
 #     each; logins ua and ub. Each workload statement runs once before the first statements read, then: Q1 (ua, appa,
 #     n = 7) 20 times, Q3 (ua, appb, id < 100) 10 times, Q2 (ub, appb, n between 1 and 3) 15 times, and S (ua, appa,
 #     pg_sleep(2)) twice at once, from inside the container over 127.0.0.1 and over the container's own address, with
-#     one activity read while both sleep. Hand reads H1 / H2 of pg_stat_statements right after the two statements reads
+#     one activity read while both sleep. [review fold, before the rerun: S runs three times at once, twice over
+#     127.0.0.1 and once over the container's address, so the split is 2/3 and 1/3, not an even one; S 3 calls] Hand reads H1 / H2 of pg_stat_statements right after the two statements reads
 #     give the differences per statement of appa and appb.
 #     B1 /api/stmtgroups?db=appa&db=appb&group=db: two rows; each total_ms equals H2 - H1 of its database (within
 #        0.05 ms) and each share_pct equals 100 x that / (appa + appb), rounded to 2 places (within 0.01).
 #     B2 the same ticks, group=user: ua and ub, totals and shares equal the hand sums per user the same way.
 #     B3 db=appa alone: the user facet lists ua only, share 100; the db facet still lists appa (ticked) and appb (not).
 #     B4 group=query with the two ticks: Q1 20 calls, Q2 15, Q3 10, S 2 (each equal to the hand calls).
-#     B5 db=appa, group=client: 127.0.0.1 and the container's address each hold S's total / 2 (within 0.05 ms); the
+#     B5 db=appa, group=client: [fold: 127.0.0.1 holds S's total x 2/3, the container's address x 1/3] (within 0.05 ms); the
 #        group '(not sampled)' holds appa's total - S's total; totals.sampled_pct is present and above 0.
 #     B6 totals: total_ms equals the sum of the db facet's totals with no tick (within 0.05 ms).
 #  C. The trend and the lag compare.
@@ -44,10 +45,29 @@
 #        calls mean 10 ms, one hour earlier 5 calls mean 20 ms; each equal to a hand sum of statements_delta over that
 #        window. at=T-3 d-30 min: the third row 3 calls mean 30 ms (a hand sum). lag=604800: the third row calls NULL,
 #        snapshots 0, instance_snapshots 0 (the page's "no data").
+#  F. [review fold, written before the rerun] F1 lag=86400 (the preset beside day over day): the third row equals the
+#     second, 7 calls mean 10 ms, not twice that. F2 imported for a made-up queryid 4343 in the window: a delta of
+#     user NULL (a dropped role) in database lagdb, 40 calls 800 ms, and two activity samples of it with client NULL (a
+#     socket session): group=client on db=lagdb and user= (empty) gives '[local]' 800 ms and no '(not sampled)'; user= (empty) ticked
+#     gives the groups 4343 alone. F3 lag=18446744073 is a 400 (no Duration overflow).
+#  G. [review fold, written before the rerun] G1 a stored plan (PA's plan) whose text is
+#     "SELECT $1::int, name'\'; COMMIT; BEGIN READ WRITE; CREATE TABLE pwn(); COMMIT; --'" (one statement to ScanSQL
+#     when the e of name is read as an E'' escape, several to the server): the check answers 502, outcome failed, its
+#     detail naming "cannot insert multiple commands into a prepared statement"; no table pwn in appa. G2 a check of PA
+#     sent with a ddl other than suggestion 0's: 409 "changed since the page read it". actions_log hypo_index rows then:
+#     done 1, failed 1, refused 4.
+#     F4 a delta of queryid 4444 at T-29 min covering 120 s (half inside [T-30 min, T]): 10 calls 100 ms -> the window
+#     row 5 calls 50 ms (the edge share).
+#  H. [review fold] Suggest on fixed plans (a Go test the proof writes into its scratch copy): a text plan's "Orders" /
+#     "Status" -> ON "Orders" ("Status"); a table named user -> ON "user" (id); casts on columns -> no suggestion,
+#     skipped naming the cast; no schema -> ON orders (status) with the no-schema line; pg_class without a schema ->
+#     skipped; = ANY of an array and a "char" constant -> (status), (flag); a quoted column "it's" with b -> ("it's", b);
+#     an OR -> skipped naming the OR; n = 1 and id > 5 -> (n, id).
 #  D. The suggested index (a UI login; instance P with hypo_index: true, P2 the same server without it).
 #     D1 POST /api/plans/explain on P, appa, "select count(*) from big where n = 42": a plan PA. GET plans/suggest?id=PA:
 #        one suggestion, ddl "CREATE INDEX CONCURRENTLY ON big (n)", label 'not planner-checked', hypo true. The same
 #        plan found under the statement: plans/suggest?instance=P&queryid=<Q1>&db=appa answers plan_id PA (by shape).
+#        [fold] S's queryid in appa and Q1's in appb answer plan_id null (no plan of theirs).
 #     D2 POST /api/plans/hypo {PA, 0, reason}: 200, checked true, used true, cost_after < cost_before; actions_log:
 #        one 'hypo_index' row, outcome done, pid NULL, datname appa, statement beginning with the ddl.
 #     D3 the same in appb (no hypopg): plan PB, the same ddl; hypo 200, checked false, detail "not planner-checked:
@@ -58,7 +78,7 @@
 #     D6 the suggestions' shapes: "n = 1 and id > 5" -> (n, id); "n = 1 or id = 2" -> no suggestion, skipped naming
 #        the OR; "payload like 'x%'" -> no suggestion, skipped naming the LIKE. [the OR leg grades no suggestion only, as
 #        written in the check before the first run: the planner may answer an OR with a BitmapOr and no seq scan]
-#     D7 big in appa has no index after all of it (pg_indexes 0): pgvigil ran no CREATE.
+#     D7 big has no index but big_pkey in appa and in appb after all of it: pgvigil ran no CREATE.
 #  E. 400s: stmtgroups group=bogus, limit=0, db 256 characters; stmtlag lag=10, lag and at both, at after from, no
 #     queryid; plans/suggest with neither id nor instance; plans/hypo n=-1.
 #
@@ -73,7 +93,7 @@ SUF=$RANDOM; C=pgvsg$SUF
 REPO_DB=pgvigil_sg_$SUF; PW=p$RANDOM$RANDOM$RANDOM
 WORK=$(mktemp -d); SCRATCH=$WORK/scratch; JAR=$WORK/jar
 UIUSER=proofuser; UIPW=ui$RANDOM$RANDOM$RANDOM
-MADE_DB=; SRVPID=; BG1=; BG2=
+MADE_DB=; MADE_C=; SRVPID=; BG1=; BG2=; BG3=
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
 cleanup() {
@@ -81,8 +101,9 @@ cleanup() {
   set +e
   [ -n "$BG1" ] && kill "$BG1" 2>/dev/null
   [ -n "$BG2" ] && kill "$BG2" 2>/dev/null
+  [ -n "$BG3" ] && kill "$BG3" 2>/dev/null
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
-  docker rm -f "$C" >/dev/null 2>&1
+  [ -n "$MADE_C" ] && docker rm -f "$C" >/dev/null 2>&1   # only the container this run made
   [ -n "$MADE_DB" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: $REPO_DB not dropped" >&2; }
   rm -rf "$WORK"
   exit $rc
@@ -125,6 +146,7 @@ echo "binary: $WIRED"
 # ---- the monitored server: a throwaway postgres:18 container with hypopg
 docker run -d --name "$C" -e POSTGRES_PASSWORD="$PW" -p "127.0.0.1:$PORT:5432" postgres:18 \
   -c shared_preload_libraries=pg_stat_statements -c compute_query_id=on >/dev/null || fail "docker run"
+MADE_C=1
 docker exec "$C" bash -c 'apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq postgresql-18-hypopg >/dev/null 2>&1' || fail "the hypopg package"
 for _ in $(seq 1 60); do docker exec "$C" pg_isready -q -h 127.0.0.1 -U postgres 2>/dev/null && break; sleep 1; done
 SU="host=127.0.0.1 port=$PORT user=postgres password=$PW sslmode=disable"
@@ -204,16 +226,17 @@ for _ in $(seq 1 10); do U ua appb "$Q3"; done
 for _ in $(seq 1 15); do U ub appb "$Q2"; done
 docker exec -e PGPASSWORD="$PW" "$C" psql -h 127.0.0.1 -U ua -d appa -XAtqc "select pg_sleep(2)" >/dev/null & BG1=$!
 docker exec -e PGPASSWORD="$PW" "$C" psql -h "$CIP" -U ua -d appa -XAtqc "select pg_sleep(2)" >/dev/null & BG2=$!
+docker exec -e PGPASSWORD="$PW" "$C" psql -h 127.0.0.1 -U ua -d appa -XAtqc "select pg_sleep(2)" >/dev/null & BG3=$!
 sleep 1
 collect activity
-wait "$BG1"; BG1=; wait "$BG2"; BG2=
+wait "$BG1"; BG1=; wait "$BG2"; BG2=; wait "$BG3"; BG3=
 collect statements
 hand "$WORK/h2"
 QID1=$(su "select queryid from pg_stat_statements where query = 'select count(*) from big where n = \$1'")
 QIDS=$(su "select queryid from pg_stat_statements s join pg_database d on d.oid = s.dbid where query = 'select pg_sleep(\$1)' and d.datname = 'appa'")
 [ -n "$QID1" ] && [ -n "$QIDS" ] || fail "B: the queryids of Q1 and S"
-[ "$(q "select count(*) from pgvigil.activity_sample where instance_id=$P and query_id='$QIDS'")" = 2 ] \
-  || fail "B: S ($QIDS) was not sampled twice: $(q "select string_agg(coalesce(query_id::text, 'NULL') || ' ' || coalesce(client, '') || ' ' || state, '; ') from pgvigil.activity_sample where instance_id=$P")"
+[ "$(q "select count(*) from pgvigil.activity_sample where instance_id=$P and query_id='$QIDS'")" = 3 ] \
+  || fail "B: S ($QIDS) was not sampled three times: $(q "select string_agg(coalesce(query_id::text, 'NULL') || ' ' || coalesce(client, '') || ' ' || state, '; ') from pgvigil.activity_sample where instance_id=$P")"
 ok "B. workload run; container address $CIP; Q1 $QID1, S $QIDS"
 
 # ---- serve with the login
@@ -271,12 +294,12 @@ calls = {}
 for k, v in diff.items(): calls[k[2]] = calls.get(k[2], 0) + v[0]
 got = {str(r['queryid']): round(float(r['calls'])) for r in rows('b4', 'groups')}
 if got != calls: sys.exit('B4 calls %s, expected %s' % (got, calls))
-if sorted(calls.values()) != [2, 10, 15, 20]: sys.exit('B4 hand calls %s' % sorted(calls.values()))
+if sorted(calls.values()) != [3, 10, 15, 20]: sys.exit('B4 hand calls %s' % sorted(calls.values()))
 s_total = sum(v[1] for k, v in diff.items() if k[2] == qids)
 appa_total = sum(v[1] for k, v in diff.items() if k[0] == 'appa')
 got = {r['grp']: float(r['total_ms']) for r in rows('b5', 'groups')}
 if set(got) != {'127.0.0.1', cip, '(not sampled)'}: sys.exit('B5 clients %s' % sorted(got))
-near(got['127.0.0.1'], s_total / 2, 0.05, 'B5 127.0.0.1'); near(got[cip], s_total / 2, 0.05, 'B5 ' + cip)
+near(got['127.0.0.1'], s_total * 2 / 3, 0.05, 'B5 127.0.0.1'); near(got[cip], s_total / 3, 0.05, 'B5 ' + cip)
 near(got['(not sampled)'], appa_total - s_total, 0.05, 'B5 not sampled')
 tot = rows('b5', 'totals')[0]
 if tot['sampled_pct'] is None or float(tot['sampled_pct']) <= 0: sys.exit('B5 sampled_pct %s' % tot['sampled_pct'])
@@ -323,6 +346,25 @@ got=$(get "stmtlag?$LW&at=$(iso $((T - 3 * 86400 - 1800)))" | lagrows)
 [ "${got##*;}" = "3|30.000|1|1" ] || fail "C2 at: $got"
 got=$(get "stmtlag?$LW&lag=604800" | lagrows)
 [ "${got##*;}" = "None|||0|0" ] || [ "${got##*;}" = "None||0|0" ] || fail "C2 lag=604800: $got"
+got=$(get "stmtlag?$LW&lag=86400" | lagrows)
+[ "${got#*;}" = "7|10.000|1|1;7|10.000|1|1" ] || fail "F1 lag=86400: $got"
+AT=$(iso $((T - 900)))
+q "insert into pgvigil.statements_delta (instance_id, snapshot_at, interval_secs, dbid, datname, userid, usename, queryid, toplevel, calls, total_exec_ms, rows)
+   values ($P, '$AT', 60, 2, 'lagdb', 2, NULL, 4343, true, 40, 800, 40);
+   select pgvigil.ensure_month_partition('activity_sample', '$AT');
+   insert into pgvigil.activity_sample (instance_id, snapshot_at, pid, datname, usename, client, state, query_id)
+   values ($P, '$AT', 901, 'lagdb', NULL, NULL, 'active', 4343), ($P, '$(iso $((T - 890)))', 901, 'lagdb', NULL, NULL, 'active', 4343)" >/dev/null
+FW="instance=$P&from=$(iso $((T - 1800)))&to=$(iso $T)"
+got=$(get "stmtgroups?$FW&db=lagdb&user=&group=client" | python3 -I -c 'import json,sys; t=json.load(sys.stdin)["groups"]; c=t["columns"]; print(";".join("%s=%.0f" % (r[c.index("grp")], r[c.index("total_ms")]) for r in t["rows"]))')
+[ "$got" = "[local]=800" ] || fail "F2 socket client: $got"
+got=$(get "stmtgroups?$FW&user=" | python3 -I -c 'import json,sys; t=json.load(sys.stdin)["groups"]; c=t["columns"]; print(";".join(str(r[c.index("queryid")]) for r in t["rows"]))')
+[ "$got" = "4343" ] || fail "F2 NULL user ticked: $got"
+c=$(code "$API/api/stmtlag?$LW&lag=18446744073"); [ "$c" = 400 ] || fail "F3 huge lag: $c"
+q "insert into pgvigil.statements_delta (instance_id, snapshot_at, interval_secs, dbid, datname, userid, usename, queryid, toplevel, calls, total_exec_ms, rows)
+   values ($P, '$(iso $((T - 1740)))', 120, 1, 'lagdb', 1, 'lagu', 4444, true, 10, 100, 10)" >/dev/null
+got=$(get "stmtlag?instance=$P&from=$(iso $((T - 1800)))&to=$(iso $T)&queryid=4444&lag=3600" | python3 -I -c 'import json,sys; t=json.load(sys.stdin)["lag"]; c=t["columns"]; r=t["rows"][0]; print("%.0f|%.0f" % (r[c.index("calls")], r[c.index("total_ms")]))')
+[ "$got" = "5|50" ] || fail "F4 edge share: $got"
+ok "F. lag=86400 not doubled; a socket sample is [local]; a NULL user can be ticked; a huge lag is a 400"
 ok "C. the trend's calls and buffers equal the hand reads; the lag compare equals the hand sums (window, 1 d, 1 h, a date, no data)"
 
 echo "--- D. the suggested index"
@@ -338,6 +380,10 @@ got=$(jq_ '"%d|%s|%s|%s" % (len(d["suggestions"]), d["suggestions"][0]["ddl"], d
 [ "$got" = "1|CREATE INDEX CONCURRENTLY ON big (n)|not planner-checked|True" ] || fail "D1: $got"
 code "$API/api/plans/suggest?instance=$P&queryid=$QID1&db=appa" >/dev/null
 [ "$(jq_ 'd["plan_id"]')" = "$PA" ] || fail "D1 under the statement: $(cat "$WORK/body")"
+code "$API/api/plans/suggest?instance=$P&queryid=$QIDS&db=appa" >/dev/null   # [review fold] another statement: no plan
+[ "$(jq_ 'd["plan_id"]')" = None ] || fail "D1 S has no plan: $(cat "$WORK/body")"
+code "$API/api/plans/suggest?instance=$P&queryid=$QID1&db=appb" >/dev/null   # [review fold] Q1 in another database: no plan
+[ "$(jq_ 'd["plan_id"]')" = None ] || fail "D1 Q1 in appb has no plan: $(cat "$WORK/body")"
 ok "D1 the suggestion of plan $PA, found under the statement too"
 c=$(post plans/hypo "{\"plan_id\":$PA,\"n\":0,\"reason\":\"proof check of the index\"}")
 got=$(jq_ '"%s|%s|%s" % (d["checked"], d["used"], d["cost_after"] < d["cost_before"])')
@@ -348,8 +394,8 @@ got=$(q "select outcome || '|' || coalesce(pid::text, 'NULL') || '|' || datname 
 ok "D2 planner-checked: $(jq_ 'd["detail"]')"
 PB=$(explain $P appb "select count(*) from big where n = 42")
 c=$(post plans/hypo "{\"plan_id\":$PB,\"n\":0,\"reason\":\"proof check of the index\"}")
-got=$(jq_ '"%s|%s" % (d["checked"], d["detail"])')
-[ "$c|$got" = "200|False|not planner-checked: hypopg is not installed in database appb" ] || fail "D3: $c $got"
+got=$(jq_ '"%s|%s|%s" % (d["checked"], d["ddl"], d["detail"])')
+[ "$c|$got" = "200|False|CREATE INDEX CONCURRENTLY ON big (n)|not planner-checked: hypopg is not installed in database appb" ] || fail "D3: $c $got"
 ok "D3 $got"
 PC=$(explain $P2 appa "select count(*) from big where n = 42")
 code "$API/api/plans/suggest?id=$PC" >/dev/null
@@ -370,15 +416,95 @@ code "$API/api/plans/suggest?id=$PM" >/dev/null
 PO=$(explain $P appa "select * from big where n = 1 or id = 2")
 code "$API/api/plans/suggest?id=$PO" >/dev/null
 got=$(jq_ '"%d|%s" % (len(d["suggestions"]), any("OR" in s["reason"] for s in d["skipped"]))')
-# the planner may answer the OR with a BitmapOr over the primary key and a seq scan elsewhere: what counts is no suggestion
-[ "${got%%|*}" = 0 ] || fail "D6 OR: $(cat "$WORK/body")"
+[ "$got" = "0|True" ] || fail "D6 OR: $got $(cat "$WORK/body")"   # [review fold: graded whole; big.n has no index, so no BitmapOr]
 PL=$(explain $P appa "select count(*) from big where payload like 'x%'")
 code "$API/api/plans/suggest?id=$PL" >/dev/null
 got=$(jq_ '"%d|%s" % (len(d["suggestions"]), any("LIKE" in s["reason"] for s in d["skipped"]))')
 [ "$got" = "0|True" ] || fail "D6 LIKE: $got $(cat "$WORK/body")"
 ok "D6 two columns (n, id); the OR and the LIKE suggest nothing"
-[ "$(su "select count(*) from pg_indexes where tablename = 'big' and indexdef like '%(n%'" appa)" = 0 ] || fail "D7: an index on big (n) exists"
+for d in appa appb; do
+  [ "$(su "select count(*) from pg_indexes where tablename = 'big' and indexname <> 'big_pkey'" $d)" = 0 ] || fail "D7: an index other than big_pkey exists on big in $d"
+done
 ok "D7 no index was created"
+
+echo "--- G. the check runs one statement only; a changed plan is refused"
+INJ="SELECT \$1::int, name'\\'; COMMIT; BEGIN READ WRITE; CREATE TABLE pwn(); COMMIT; --'"
+PI=$(psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -v inj="$INJ" <<SQL
+insert into pgvigil.plans (instance_id, plan_key, source, first_seen, captured_at, datname, query, analyzed, format, plan_text, plan)
+select instance_id, 'proof:inj', source, first_seen, captured_at, datname, :'inj', analyzed, format, plan_text, plan
+  from pgvigil.plans where plan_id = $PA returning plan_id;
+SQL
+)
+PI=$(head -n 1 <<< "$PI")
+[ "$(q "select query from pgvigil.plans where plan_id = $PI")" = "$INJ" ] || fail "G1: the stored text is not the crafted one"
+c=$(post plans/hypo "{\"plan_id\":$PI,\"n\":0,\"reason\":\"proof check of the index\"}")
+[ "$c" = 502 ] && grep -q "cannot insert multiple commands into a prepared statement" "$WORK/body" || fail "G1: $c $(cat "$WORK/body")"
+[ "$(su "select count(*) from pg_class where relname = 'pwn'" appa)" = 0 ] || fail "G1: the table pwn was created"
+c=$(post plans/hypo "{\"plan_id\":$PA,\"n\":0,\"ddl\":\"CREATE INDEX CONCURRENTLY ON big (id)\",\"reason\":\"proof check of the index\"}")
+[ "$c" = 409 ] && grep -q "changed since the page read it" "$WORK/body" || fail "G2: $c $(cat "$WORK/body")"
+got=$(q "select string_agg(outcome || '=' || n, ' ' order by outcome) from (select outcome, count(*) n from pgvigil.actions_log where action = 'hypo_index' group by 1) x")
+[ "$got" = "done=1 failed=1 refused=4" ] || fail "G audit: $got"
+ok "G. a stored text of several statements fails and runs nothing; a changed plan is refused; audited: $got"
+
+echo "--- H. Suggest on fixed plans"
+cat > "$SCRATCH/internal/plans/zz_proof_suggest_test.go" <<'GO'
+package plans
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestProofSuggest(t *testing.T) {
+	scan := func(rel, schema, filter string) map[string]any {
+		n := map[string]any{"Node Type": "Seq Scan", "Relation Name": rel, "Alias": rel, "Filter": filter, "Plan Rows": 1.0, "Total Cost": 10.0}
+		if schema != "" {
+			n["Schema"] = schema
+		}
+		return map[string]any{"Plan": n}
+	}
+	one := func(name string, plan map[string]any, ddl, why string) {
+		sug, skipped := Suggest(plan)
+		switch {
+		case ddl != "":
+			if len(sug) != 1 || sug[0].DDL != ddl {
+				t.Errorf("%s: %+v, want %s", name, sug, ddl)
+			} else if why != "" && !strings.Contains(strings.Join(sug[0].Why, " | "), why) {
+				t.Errorf("%s: why %v lacks %q", name, sug[0].Why, why)
+			}
+		default:
+			if len(sug) != 0 || len(skipped) != 1 || !strings.Contains(skipped[0].Reason, why) {
+				t.Errorf("%s: %+v %+v, want no suggestion and a skip naming %q", name, sug, skipped, why)
+			}
+		}
+	}
+	text, err := ParseText("Seq Scan on \"Orders\"  (cost=0.00..10.00 rows=1 width=4)\n  Filter: (\"Status\" = 'a'::text)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	one("text plan", text, `CREATE INDEX CONCURRENTLY ON "Orders" ("Status")`, "")
+	one("reserved", scan("user", "", "(id = 5)"), `CREATE INDEX CONCURRENTLY ON "user" (id)`, "")
+	one("casts", scan("rv_t", "", "(((created_at)::date = '2026-01-01'::date) AND ((id)::text = '42'::text))"), "", "cast")
+	one("no schema", scan("orders", "", "(status = 'a'::text)"), `CREATE INDEX CONCURRENTLY ON orders (status)`, "no schema")
+	one("schema", scan("orders", "tenant_b", "(status = 'a'::text)"), `CREATE INDEX CONCURRENTLY ON tenant_b.orders (status)`, "")
+	one("catalog", scan("pg_class", "", "(relname = 'foo'::name)"), "", "system catalog")
+	one("any", scan("t", "", "(status = ANY ('{a,b}'::text[]))"), `CREATE INDEX CONCURRENTLY ON t (status)`, "")
+	one("char", scan("t", "", "(flag = 'r'::\"char\")"), `CREATE INDEX CONCURRENTLY ON t (flag)`, "")
+	one("quoted column", scan("t", "", "((\"it's\" = 1) AND (b = 2))"), `CREATE INDEX CONCURRENTLY ON t ("it's", b)`, "")
+	one("or", scan("big", "", "((n = 1) OR (id = 2))"), "", "OR")
+	one("two columns", scan("big", "", "((id > 5) AND (n = 1))"), `CREATE INDEX CONCURRENTLY ON big (n, id)`, "")
+	for _, d := range []string{`CREATE INDEX CONCURRENTLY ON "user" (id)`, `CREATE INDEX CONCURRENTLY ON t ("it's", b)`, `CREATE INDEX CONCURRENTLY ON tenant_b.orders (status)`} {
+		if !ddlRE.MatchString(d) {
+			t.Errorf("ddlRE refuses %s", d)
+		}
+	}
+	if ddlRE.MatchString(`CREATE INDEX CONCURRENTLY ON t (a); DROP TABLE t`) {
+		t.Error("ddlRE takes a second statement")
+	}
+}
+GO
+(cd "$SCRATCH" && go test -count=1 -run TestProofSuggest ./internal/plans/ > "$WORK/h.txt" 2>&1) || fail "H: $(cat "$WORK/h.txt")"
+ok "H. Suggest on the fixed plans: text quoting, reserved names, casts, schema, catalogs, = ANY, quoted types and columns, OR, two columns"
 
 echo "--- E. refusals"
 for u in "stmtgroups?$W&group=bogus" "stmtgroups?$W&limit=0" "stmtgroups?$W&db=$(python3 -I -c 'print("x"*256)')" \

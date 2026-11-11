@@ -31,7 +31,7 @@ const open = new WeakMap<HTMLTableRowElement, HTMLTableRowElement>();
 
 // trendPanel: the charts and their numbers for one statement (also usable on its own).
 export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
-  const box = el('div', { class: 'trend' });
+  const box = el('div', { class: 'trend', style: 'white-space:normal' });
   try {
     const w = window_(ctx);
     const p: Record<string, string | number | undefined> = { instance: k.instance, ...w };
@@ -65,7 +65,11 @@ export async function trendPanel(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
         lineChart('Rows', rows, [{ key: 'rows', label: 'rows' }])));
       box.append(el('p', { class: 'meta' }, 'The longest run comes from the server log (statements over log_min_duration_statement of the same shape): '
         + 'pg_stat_statements keeps no maximum per interval, so an interval with nothing logged has none. A buffer is 8 kB.'));
-      box.append(await lagBox(ctx, k), await suggestBox({ instance: k.instance, queryid: k.queryid, db: k.db }));
+      // the compare and the suggestion read on their own: the panel (and its charts) goes on screen without waiting for them
+      const lag = el('div', {}, el('p', { class: 'meta' }, 'Reading the compare...')), sug = el('div', {});
+      box.append(lag, sug);
+      void lagBox(ctx, k).then(b => lag.replaceChildren(b));
+      void suggestBox({ instance: k.instance, queryid: k.queryid, db: k.db }).then(b => sug.replaceChildren(b));
     } else {
       box.append(el('div', { class: 'charts' },
         lineChart('Mean and longest', rows, [{ key: 'mean_ms', label: 'mean' }, { key: 'max_ms', label: 'longest' }], ms),
@@ -93,7 +97,7 @@ const dayLag = new Map<string, string>(); // the chosen lag per statement, kept 
 // lagBox: the window against one day earlier (day over day) and against a chosen lag or date (pgwatch's Time Lag
 // Comparison); a compared window with no snapshot says "no data", never zero.
 async function lagBox(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
-  const box = el('div', { class: 'lag' });
+  const box = el('div', { class: 'lag', style: 'white-space:normal' });
   const key = `${k.instance}:${String(k.queryid)}:${String(k.db ?? '')}`;
   const draw = async (choice: string) => {
     dayLag.set(key, choice);
@@ -102,7 +106,7 @@ async function lagBox(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
     if (choice.startsWith('at:')) p.at = new Date(choice.slice(3)).toISOString(); else p.lag = Number(choice);
     const bar = el('div', { class: 'subtabs', role: 'group', 'aria-label': 'Compare with' }, el('span', { class: 'meta', style: 'align-self:center' }, 'Compare with'),
       ...lagChoices.map(([l, secs]) => {
-        const a = el('a', { href: '#', class: choice === String(secs) ? 'on' : '', 'aria-pressed': String(choice === String(secs)) }, l + ' earlier');
+        const a = el('a', { href: '#', class: choice === String(secs) ? 'on' : '', ...(choice === String(secs) ? { 'aria-current': 'true' } : {}) }, l + ' earlier');
         a.addEventListener('click', ev => { ev.preventDefault(); void draw(String(secs)); });
         return a;
       }));
@@ -124,12 +128,13 @@ async function lagBox(ctx: Ctx, k: TrendKey): Promise<HTMLElement> {
       body = grid(table, [
         { key: 'label', label: 'window' },
         { key: 'from_at', label: 'from', fmt: v => new Date(String(v)).toLocaleString() },
-        { key: 'calls', num: true, fmt: (v, r) => Number(r.instance_snapshots ?? 0) === 0 ? 'no data' : fmtNum(v ?? 0) },
+        { key: 'calls', num: true, fmt: (v, r) => Number(r.instance_snapshots ?? 0) === 0 ? 'no data' : fmtNum(Math.round(Number(v ?? 0))) },
         { key: 'calls_change', label: 'now vs then', num: true },
         { key: 'mean_ms', label: 'time per call', num: true, fmt: msCell },
         { key: 'change', label: 'now vs then', num: true },
         { key: 'total_ms', label: 'total', num: true, fmt: msCell },
-        { key: 'shared_blks_read', label: 'read', num: true }, { key: 'shared_blks_hit', label: 'hit', num: true },
+        { key: 'shared_blks_read', label: 'read', num: true, fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))) },
+        { key: 'shared_blks_hit', label: 'hit', num: true, fmt: v => v == null ? '' : fmtNum(Math.round(Number(v))) },
         { key: 'snapshots', label: 'its snapshots', num: true },
       ]);
     } catch (e) { body = errorBox(e); }

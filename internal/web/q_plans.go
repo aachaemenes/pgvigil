@@ -467,6 +467,7 @@ type hypoBody struct {
 	PlanID int64  `json:"plan_id"`
 	N      int    `json:"n"`
 	Reason string `json:"reason"`
+	DDL    string `json:"ddl"` // the suggestion the page shows: a plan re-captured since (its scans reordered) is refused
 }
 
 // HypoIndex is POST /api/plans/hypo: one suggestion checked by the planner through hypopg, every attempt audited.
@@ -523,6 +524,8 @@ func (a *Actions) HypoIndex(w http.ResponseWriter, r *http.Request) {
 		res = actions.Result{Outcome: actions.Refused, Detail: fmt.Sprintf("a reason of at least %d characters is required", actions.MinReason)}
 	case in.N >= len(sug):
 		res = actions.Result{Outcome: actions.Refused, Detail: fmt.Sprintf("plan %d has %d suggestions: no suggestion %d", in.PlanID, len(sug), in.N)}
+	case in.DDL != "" && in.DDL != sug[in.N].DDL:
+		res = actions.Result{Outcome: actions.Refused, Detail: fmt.Sprintf("plan %d changed since the page read it (suggestion %d is now %s): reload the page", in.PlanID, in.N, sug[in.N].DDL)}
 	case deref0(p.Query) == "":
 		res = actions.Result{Outcome: actions.Refused, Detail: "the plan has no statement text (the query-text policy keeps none): nothing to plan"}
 	default:
