@@ -15,7 +15,7 @@
 #   PGVIGIL_SHOTS            a folder: part S runs (it needs chromium and node) and saves the five pages' screenshots
 #                            there in both themes, 1600 wide, taken from the proof's own data. Not set: S is not run.
 #                            PGVIGIL_CHROMIUM_FLAGS: more flags for Chromium (--no-sandbox where it runs as root).
-#   PGVIGIL_NO_MSSQL=1       the parts that need no SQL Server only (the migration, D on stored rows, G, X): no
+#   PGVIGIL_NO_MSSQL=1       the parts that need no SQL Server only (the migration, D on stored rows, G, X, Y): no
 #                            container, no login; the last line says so and is NOT the proof's PASS.
 # The binary must carry the routes /api/mssql/properties, /waitinfo, /procs and /indexlocks (the lead's wiring in
 # web.go): the proof stops at its first API read when it does not.
@@ -98,6 +98,19 @@
 #     NULL resource and a lock wait.
 #     mssql_reads_purge(30): a change 40 days old and the counters of an instance last read 40 days ago go, today's
 #     stay; it returns the rows it removed (3).
+#  Y. the API on X's imported rows (no server needed, so every statement of the four handlers runs in the short
+#     mode too): /api/mssql/procs gives p100 26 executions and 2.6 ms of CPU, p103 10, p101 6, p102 2, the most
+#     duration first; p100 at 0.65 executions a minute over the 2,400 s its eight reads cover, 3.00 a minute in its
+#     busiest read, 0.100 ms of CPU a run, 5 reads; one database with 4 procedures and 44 executions; a series of 8
+#     steps whose executions per second add up to 44 / 300; database= keeps 4 rows, an unknown database none and a
+#     series of zeros; db_id= and object= give p100's reads newest first (2, 4, 1, 4, 15); a db_id that is no number
+#     and an unknown part are refused with 400. /api/mssql/indexlocks gives t200.ix1 5 waits and 320 ms, t201.ix2 7
+#     waits, 70 ms, 5 attempts and 3 escalations (10.0 ms a wait), t202.ix1 2 and 20, t203.ix1 3 and 11, the most
+#     lock wait first; 5 reads over 1,500 s; a series of 5 steps adding up to 421 ms and 3 escalations.
+#     /api/mssql/properties gives the four properties and the one change. /api/mssql/waitinfo for an instance
+#     without waits gives no cores, no rates, at least 40 described types and 7 families with LCK_M_ first; after a
+#     wait sample of 6,000 ms (LCK_M_U) and 300 ms (WRITELOG) over one 60 s read and a schedulers row of 4 are put
+#     in by hand: 100 and 25 ms/sec for the first, 5 and 1.25 for the second.
 #  P. the API: /api/mssql/properties holds the 35 properties and the changes; /api/mssql/procs lists the proof's
 #     procedure with executions 11 (7 + 4) and executions per minute = 11 x 60 / the covered seconds; database= keeps
 #     only that database's rows and an unknown database none; db_id= and object= give the procedure's two reads; a
@@ -578,9 +591,54 @@ AFTER=$(q "select (select count(*) from pgvigil.mssql_property_change where inst
 [ "$PURGED|$AFTER" = "3|1|0|0|$KEPT|true" ] || fail "X: the purge removed $PURGED rows and left $AFTER (want 3 and 1|0|0|$KEPT|true)"
 echo "X: OK"
 
+echo "--- Y. the API on the imported rows"
+W=$(win)
+curl -fs "$U/mssql/procs?instance=$xp&$W" > "$WORK/yprocs.json" || fail "Y: /api/mssql/procs"
+# a figure with decimals is compared as a whole number of its last digit (jq versions print 1.0 as 1.0 or as 1)
+GOT=$(objs "$WORK/yprocs.json" procs | jq -r '[.[] | "\(.object_name):\(.executions):\(.cpu_ms * 10 | round)"] | join(",")')
+[ "$GOT" = "p100:26:26,p103:10:10,p101:6:1,p102:2:0" ] || fail "Y: the procedures (name:executions:CPU in tenths of a ms): $GOT"
+YP=$(objs "$WORK/yprocs.json" procs | jq -r '.[] | select(.object_name == "p100") | "\(.executions_min * 100 | round)|\(.max_executions_min * 100 | round)|\(.avg_cpu_ms * 1000 | round)|\(.intervals)|\(.database)|\(.schema_name)"')
+[ "$YP" = "65|300|100|5|appdb|dbo" ] || fail "Y: p100's rates: $YP (want 0.65 a minute over 2,400 s, 3.00 in its busiest read, 0.100 ms a run, 5 reads)"
+[ "$(objs "$WORK/yprocs.json" reads | jq -r '.[0] | "\(.reads)|\(.covered_secs | round)"')" = "8|2400" ] || fail "Y: the procedures' reads: $(objs "$WORK/yprocs.json" reads)"
+[ "$(objs "$WORK/yprocs.json" databases | jq -r '[.[] | "\(.database):\(.procs):\(.executions)"] | join(",")')" = "appdb:4:44" ] || fail "Y: the procedures' databases: $(objs "$WORK/yprocs.json" databases)"
+YS=$(objs "$WORK/yprocs.json" series | jq -r '(length | tostring) + "|" + ([.[] | .executions_s] | add | tostring)')
+[ "${YS%%|*}" = 8 ] && near "${YS#*|}" "$(awk 'BEGIN { printf "%.5f", 44 / 300 }')" 0.005 || fail "Y: the procedures' series: $YS (want 8 steps whose executions per second add up to 44 / 300)"
+[ "$(curl -fs "$U/mssql/procs?instance=$xp&$W&database=appdb" | jq '.procs.rows | length')" = 4 ] || fail "Y: database=appdb"
+[ "$(curl -fs "$U/mssql/procs?instance=$xp&$W&database=no_such_db" | jq '(.procs.rows | length) + ([.series.rows[] | .[1]] | add // 0 | . * 1000 | round)')" = 0 ] || fail "Y: an unknown database keeps rows or a series above zero"
+[ "$(curl -fs "$U/mssql/procs?instance=$xp&$W&db_id=5&object=100&part=intervals" | jq -r '.intervals as $t | ($t.columns | index("executions")) as $i | [$t.rows[] | .[$i]] | map(tostring) | join(",")')" = "2,4,1,4,15" ] || fail "Y: p100 read by read (newest first)"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/procs?instance=$xp&$W&db_id=x&object=1")" = 400 ] || fail "Y: a db_id that is no number was not refused"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$U/mssql/procs?instance=$xp&$W&part=nope")" = 400 ] || fail "Y: an unknown part was not refused"
+curl -fs "$U/mssql/indexlocks?instance=$xi&$W" > "$WORK/yixl.json" || fail "Y: /api/mssql/indexlocks"
+GOT=$(objs "$WORK/yixl.json" indexes | jq -r '[.[] | "\(.table_name).\(.index_name):\(.row_lock_waits):\(.row_lock_wait_ms):\(.escalation_attempts):\(.escalations)"] | join(",")')
+[ "$GOT" = "t200.ix1:5:320:0:0,t201.ix2:7:70:5:3,t202.ix1:2:20:0:0,t203.ix1:3:11:0:0" ] || fail "Y: the indexes: $GOT"
+[ "$(objs "$WORK/yixl.json" reads | jq -r '.[0] | "\(.reads)|\(.covered_secs | round)"')" = "5|1500" ] || fail "Y: the indexes' reads: $(objs "$WORK/yixl.json" reads)"
+YT=$(objs "$WORK/yixl.json" indexes | jq -r '.[] | select(.table_name == "t201") | "\(.avg_row_lock_wait_ms * 10 | round)|\(.lock_wait_ms)|\(.named)|\(.index_type)"')
+[ "$YT" = "100|70|true|CLUSTERED" ] || fail "Y: t201's row: $YT (want 10.0 ms a wait, 70 ms, named, CLUSTERED)"
+YI=$(objs "$WORK/yixl.json" series | jq -r '(length | tostring) + "|" + ([.[] | .row_lock_ms_s] | add | tostring) + "|" + ([.[] | .escalations] | add | tostring)')
+IFS='|' read -r YI_N YI_MS YI_ESC <<<"$YI"
+[ "$YI_N" = 5 ] && near "$YI_MS" "$(awk 'BEGIN { printf "%.5f", 421 / 300 }')" 0.005 && [ "$YI_ESC" = 3 ] || fail "Y: the indexes' series: $YI (want 5 steps, 421 ms over steps of 300 s, 3 escalations)"
+[ "$(curl -fs "$U/mssql/indexlocks?instance=$xi&$W&database=no_such_db" | jq '.indexes.rows | length')" = 0 ] || fail "Y: an unknown database keeps index rows"
+curl -fs "$U/mssql/properties?instance=$xr" > "$WORK/yprops.json" || fail "Y: /api/mssql/properties"
+[ "$(objs "$WORK/yprops.json" properties | jq -r '[.[] | "\(.name)=\(.value)"] | sort | join(",")')" = "cpu_count=8,maxdop=0,power_plan=null,tempdb_data_mb=200" ] || fail "Y: the properties: $(objs "$WORK/yprops.json" properties | jq -c '[.[] | [.name, .value]]')"
+[ "$(objs "$WORK/yprops.json" changes | jq -r '[.[] | "\(.name):\(.old_value)>\(.new_value)"] | join(",")')" = "cpu_count:4>8" ] || fail "Y: the changes: $(objs "$WORK/yprops.json" changes)"
+curl -fs "$U/mssql/waitinfo?instance=$xp&$W" > "$WORK/ywi.json" || fail "Y: /api/mssql/waitinfo"
+YW=$(jq -r '"\(.cores.rows | length)|\(.rates.rows | length)|\(.types.rows | length >= 40)|\(.families.rows | length)"' "$WORK/ywi.json")
+[ "$YW" = "0|0|true|7" ] || fail "Y: waitinfo for an instance without waits or schedulers: $YW (want 0|0|true|7)"
+[ "$(objs "$WORK/ywi.json" families | jq -r '.[0].prefix')" = LCK_M_ ] || fail "Y: the families' order"
+# a wait sample and a schedulers row by hand: 6,000 ms over a 60 s read on 4 schedulers = 100 ms/sec, 25 per core
+q "select pgvigil.ensure_month_partition('mssql_wait_sample', now()), pgvigil.ensure_month_partition('mssql_sched_sample', now())" >/dev/null
+q "insert into pgvigil.mssql_wait_sample (instance_id, snapshot_at, wait_type, is_benign, waiting_tasks, wait_ms, signal_ms, interval_secs) values
+     ($xp, now() - interval '5 minutes', 'LCK_M_U', false, 2, 6000, 10, 60), ($xp, now() - interval '5 minutes', 'WRITELOG', false, 9, 300, 3, 60);
+   insert into pgvigil.mssql_sched_sample (instance_id, snapshot_at, schedulers, cpu_count) values ($xp, now() - interval '6 minutes', 4, 4)" >/dev/null
+curl -fs "$U/mssql/waitinfo?instance=$xp&$(win)" > "$WORK/ywi2.json" || fail "Y: /api/mssql/waitinfo with a wait sample"
+YR=$(objs "$WORK/ywi2.json" rates | jq -r '[.[] | "\(.wait_type):\(.ms_per_sec * 1000 | round):\(.ms_per_sec_core * 1000 | round):\(.covered_secs | round):\(.schedulers)"] | join(",")')
+[ "$YR" = "LCK_M_U:100000:25000:60:4,WRITELOG:5000:1250:60:4" ] || fail "Y: the rates in thousandths: $YR (want LCK_M_U 100 and 25 ms/sec, WRITELOG 5 and 1.25, over 60 s on 4 schedulers)"
+[ "$(objs "$WORK/ywi2.json" cores | jq -r '.[0].schedulers')" = 4 ] || fail "Y: the cores"
+echo "Y: OK"
+
 if [ -n "$NOMS" ]; then
   echo "NOT RUN (PGVIGIL_NO_MSSQL=1): A, B, C, E, F, P and D's real grant, every one of which needs a SQL Server"
-  echo "proof-mssql-reads: the parts without a SQL Server passed ($M_NOTE, D on stored rows, G, X); this is NOT the proof's PASS"
+  echo "proof-mssql-reads: the parts without a SQL Server passed ($M_NOTE, D on stored rows, G, X, Y); this is NOT the proof's PASS"
   exit 0
 fi
 echo "--- P. the API"
@@ -704,4 +762,4 @@ else
 fi
 
 echo "NOT PROVEN HERE: a real power plan (Windows), a real tempdb page latch wait, SQL Server 2016-2019, RDS, Managed Instance, a daylight-saving change, a list cut on a real server, the pages' accessibility (proof-a11y)"
-echo "proof-mssql-reads: PASS ($M_NOTE, $A_NOTE, B, C, $D_NOTE, E, F, G, X, P$S_NOTE; SQL Server $([ -n "$OWN" ] && echo "in its own container" || echo "sandbox $CT"))"
+echo "proof-mssql-reads: PASS ($M_NOTE, $A_NOTE, B, C, $D_NOTE, E, F, G, X, Y, P$S_NOTE; SQL Server $([ -n "$OWN" ] && echo "in its own container" || echo "sandbox $CT"))"

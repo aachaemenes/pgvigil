@@ -14,9 +14,10 @@ import (
 //	  state       the mssql_procstats collection's last run
 //	  reads       the reads of the window that took differences: how many, the seconds they cover
 //	  databases   the databases with a procedure that ran in the window (the page's filter)
-//	  procs       one row per procedure (database= keeps one database's): executions and per minute, CPU, duration,
-//	              logical and physical reads and writes, each as a total and per execution; the CPU and the duration
-//	              also as ms per second of the covered time. The most duration first; 2,000 at most.
+//	  procs       one row per procedure (database= keeps one database's): executions, per minute over the covered
+//	              time and per minute in its busiest read, CPU, duration, logical and physical reads and writes, each
+//	              as a total and per execution; the CPU and the duration also as ms per second of the covered time.
+//	              The most duration first; 2,000 at most.
 //	  series      the window in about 120 steps (five minutes at least): executions per second, CPU ms per second
 //	              and duration ms per second over all procedures (database= keeps one database's)
 //	  intervals   with db_id= and object=: that procedure's own reads, newest first (1,000 at most)
@@ -47,7 +48,8 @@ WITH cover AS (
          max(s.schema_name) AS schema_name, max(s.object_name) AS object_name, max(s.type_desc) AS type_desc,
          sum(s.executions)::bigint AS executions, sum(s.cpu_us)::bigint AS cpu_us, sum(s.duration_us)::bigint AS duration_us,
          sum(s.logical_reads)::bigint AS logical_reads, sum(s.physical_reads)::bigint AS physical_reads,
-         sum(s.logical_writes)::bigint AS logical_writes, count(*) AS intervals, max(s.snapshot_at) AS last_seen
+         sum(s.logical_writes)::bigint AS logical_writes, count(*) AS intervals, max(s.snapshot_at) AS last_seen,
+         max(s.executions * 60.0 / nullif(s.interval_secs, 0)) AS max_executions_min   -- the busiest single read
     FROM pgvigil.mssql_proc_sample s
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
    GROUP BY s.database_id, s.object_id
@@ -55,6 +57,7 @@ WITH cover AS (
 SELECT p.database_id, p.object_id, p.database, p.schema_name, coalesce(p.object_name, 'object ' || p.object_id) AS object_name,
        p.object_name IS NOT NULL AS named, p.type_desc, p.executions,
        round((p.executions * 60 / nullif(cover.secs, 0))::numeric, 2) AS executions_min,
+       round(p.max_executions_min::numeric, 2) AS max_executions_min,
        round(p.duration_us / 1000.0, 1) AS duration_ms,
        round((p.duration_us / 1000.0 / nullif(cover.secs, 0))::numeric, 3) AS duration_ms_sec,
        round(p.duration_us / 1000.0 / nullif(p.executions, 0), 3) AS avg_duration_ms,

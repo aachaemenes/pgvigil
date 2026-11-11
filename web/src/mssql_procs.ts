@@ -100,6 +100,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'avg_duration_ms', label: 'avg duration (ms)', num: true, fmt: ms },
       { key: 'executions', num: true },
       { key: 'executions_min', label: 'executions /min', num: true },
+      { key: 'max_executions_min', label: 'max executions /min', num: true },
       { key: 'cpu_ms', label: 'total CPU (sec)', num: true, fmt: secs },
       { key: 'cpu_ms_sec', label: 'CPU (ms/sec)', num: true, fmt: ms },
       { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: ms },
@@ -114,6 +115,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
     out.push(el('h3', {}, `Procedures (${procs.length}${procs.length >= 2000 ? ', the 2,000 with the most duration' : ''}, the most duration first)`),
       el('p', { class: 'meta' }, 'Per second and per minute are over the seconds the range\'s reads cover '
         + `(${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))}). A name opens that procedure read by read. `
+        + 'Max executions /min is the procedure\'s busiest single read. '
         + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it).'),
       grid(procs, cols));
     body.replaceChildren(...out);
