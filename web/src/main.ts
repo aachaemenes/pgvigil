@@ -41,7 +41,8 @@ import { perfSummaryView } from './perfsummary';
 import { performanceView } from './performance';
 import { mssqlSummary } from './mssql_summary';
 import { mssqlWaitsView } from './mssql_waits';
-import { mssqlBlocked, mssqlDeadlocks, mssqlSlow, mssqlAgEvents } from './mssql_xe';
+import { mssqlBlocked, mssqlSlow, mssqlAgEvents } from './mssql_xe';
+import { mssqlDeadlocksView } from './mssql_deadlocks';
 import { hasAvailability, mssqlAvailability } from './mssql_hadr';
 import { mssqlBackups } from './mssql_backups';
 import { mssqlJobs } from './mssql_jobs';
@@ -59,7 +60,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
-  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocks, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
   jobstimeline: jobsTimelineView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
@@ -169,12 +170,20 @@ async function signOut() {
   showLogin('Signed out.');
 }
 
+let shownPage = '';   // the page main shows or is loading: tab | instance | tag
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
   const gen = ++generation;
   const ctx = parse();
   rememberInstance(ctx.instance);
+  // another page (tab, instance or tag folder): say so at once instead of leaving the old page on screen while the
+  // new one reads; the same page's refresh keeps its content (no flicker every 30 s)
+  const pageKey = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
+  if (pageKey !== shownPage) {
+    $('main').replaceChildren(el('p', { class: 'empty', role: 'status' }, 'Loading...'));
+    shownPage = pageKey;
+  }
   // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
   const engine = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance)?.engine : undefined;
   let tabs = ctx.instance ? tabsFor(engine) : rootTabs;

@@ -8,6 +8,7 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { jsonRows, mssqlFindingCols } from './mssql_hadr';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+import { jobAckCell, jobAcks, loadAckSafe } from './ack';
 
 const CUT = 200;
 
@@ -109,6 +110,9 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const box = el('div');
   const d = await get<Record<'jobs', Table | null>>('jobs/history', { engine, instance: ctx.instance, ...w });
   const jobs = rowsOf(d.jobs);
+  const ad = await loadAckSafe(['acks']);
+  const ackRedraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
+  const jobAcked = (r: Row) => { const a = jobAcks(ad).get(`${String(ctx.instance)}|${String(r.name)}`); return !!a && String(a.seen_state) === String(r.last_failed_at); };
   const detail = el('div', { class: 'jobdetail' });
   // a picked job's history and changes reach back a week at least: a daily job has no run in the default hour, and
   // DBA Dash's history lists a job's newest runs, not the last hour's; the jobs grid above keeps the page's range
@@ -149,9 +153,10 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'last_duration_s', label: 'took', num: true, fmt: dur },
     { key: 'last_outcome', label: 'outcome', fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
+    { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), r.last_failed_at, ackRedraw) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
-    { key: 'failures', num: true, fmt: v => Number(v) > 0 ? badge(fmtNum(v), 'crit') : '0' },
+    { key: 'failures', num: true, fmt: (v, r) => Number(v) > 0 ? (jobAcked(r) ? `${fmtNum(v)} (acknowledged)` : badge(fmtNum(v), 'crit')) : '0' },
     { key: 'avg_s', label: 'average (good runs)', num: true, fmt: dur },
     { key: 'max_s', label: 'longest', num: true, fmt: dur },
     { key: 'changes', label: 'changed', num: true, fmt: (v, r) => Number(v) > 0 ? `${fmtNum(v)} (${fmtTime(r.last_change_at)})` : '' },

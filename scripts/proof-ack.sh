@@ -121,6 +121,8 @@ start_serve() {
 start_serve
 JAR=$WORK/jar
 code() { curl -s -o "$WORK/body" -w '%{http_code}' "$@"; }
+# the demo seeds its own acks (SeedAcks, as the UI would): B counts the log rows its refused requests add, not the total
+LOG0=$(q "select count(*) from pgvigil.ack_log")
 [[ $(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{"kind":"silence","instance_id":1}' "$U/api/ack") == 401 ]] || fail "B: no session: $(cat "$WORK/body")"
 login() {
   curl -s -c "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"username\":\"$UIUSER\",\"password\":\"$UIPW\"}" "$U/api/login" >/dev/null
@@ -129,7 +131,7 @@ login() {
 login
 [[ $(code -b "$JAR" -H 'Content-Type: application/json' -d '{"kind":"silence","instance_id":1}' "$U/api/ack") == 403 ]] || fail "B: no header: $(cat "$WORK/body")"
 [[ $(code -b "$JAR" -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d '{"kind":"nonsense"}' "$U/api/ack") == 400 ]] || fail "B: unknown kind: $(cat "$WORK/body")"
-[[ $(q "select count(*) from pgvigil.ack_log") == 0 ]] || fail "B: a refused request left an ack_log row"
+[[ $(q "select count(*) from pgvigil.ack_log") == "$LOG0" ]] || fail "B: a refused request left an ack_log row"
 [[ $(curl -s -b "$JAR" "$U/api/ack?part=acks" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["writable"], d["user"])') == "True $UIUSER" ]] || fail "B: GET /api/ack does not say writable and the user"
 ok "B: 403 without the header, 401 without a session, 400 for an unknown kind, none logged; writable for $UIUSER"
 
@@ -413,7 +415,8 @@ ADDS=$(q "select count(*) from pgvigil.acks")
 (( ADDS >= $(wc -l < "$WORK/adds") )) || fail "A: fewer acks rows ($ADDS) than adds made"
 GOT=$(q "select string_agg(op || ':' || outcome || '=' || c, ' ' order by op, outcome) from (select op, outcome, count(*) c from pgvigil.ack_log group by 1, 2) x")
 [[ $GOT == "add:done=$ADDS add:refused=1 end:done=1" ]] || fail "A: ack_log holds '$GOT', expected 'add:done=$ADDS add:refused=1 end:done=1'"
-[[ $(q "select count(*) from pgvigil.ack_log where ui_user <> '$UIUSER' or client <> '127.0.0.1'") == 0 ]] || fail "A: an ack_log row without the user or the client"
-[[ $(q "select count(*) from pgvigil.acks where created_by <> '$UIUSER'") == 0 ]] || fail "A: an acks row without its maker"
+# every row names who and from where: the proof's own requests (its user, 127.0.0.1) and the demo seed's (demo, 'demo seed')
+[[ $(q "select count(*) from pgvigil.ack_log where not ((ui_user = '$UIUSER' and client = '127.0.0.1') or (ui_user = 'demo' and client = 'demo seed'))") == 0 ]] || fail "A: an ack_log row without the user or the client"
+[[ $(q "select count(*) from pgvigil.acks where created_by not in ('$UIUSER', 'demo')") == 0 ]] || fail "A: an acks row without its maker"
 ok "A: ack_log $GOT, every row $UIUSER from 127.0.0.1"
 echo "PASS: proof-ack"

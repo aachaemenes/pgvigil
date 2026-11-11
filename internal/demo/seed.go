@@ -180,6 +180,12 @@ func Seed(ctx context.Context, pool *pgxpool.Pool, o Options) (*Fleet, Stats, er
 		}
 	}
 	if err == nil {
+		// acknowledgements, a mute, a known-noise label and a silence (0073), over the alerts just seeded
+		if e := SeedAcks(ctx, pool); e != nil {
+			err = fmt.Errorf("acks demo: %w", e)
+		}
+	}
+	if err == nil {
 		err = f.catchUp(ctx, &st)
 	}
 	st.Elapsed = time.Since(began)
