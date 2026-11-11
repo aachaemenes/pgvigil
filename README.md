@@ -178,6 +178,7 @@ SQL Server is an engine of its own: an instance says `engine: sqlserver`, a leas
 | Collection | Cadence | Source | Page |
 |---|---|---|---|
 | mssql_instance | hourly | SERVERPROPERTY, sys.configurations with the previous value, sys.dm_os_sys_info | [sqlserver](docs/sqlserver.md) |
+| mssql_traceflags | hourly | DBCC TRACESTATUS(-1), with the history of each flag | [jobs](docs/jobs.md) |
 | mssql_services | 5 min | sys.dm_server_services, Agent's sessions, Database Mail's queue, sys.dm_server_memory_dumps | [sqlserver](docs/sqlserver.md) |
 | mssql_requests | 1 min | sessions, requests and blocking chains from the DMVs, or sp_WhoIsActive where a DBA installed it | [running](docs/sqlserver-running.md) |
 | mssql_waits | 1 min | sys.dm_os_wait_stats (Azure SQL Database: sys.dm_db_wait_stats) as the difference between two reads | [running](docs/sqlserver-running.md) |
@@ -187,6 +188,7 @@ SQL Server is an engine of its own: an instance says `engine: sqlserver`, a leas
 | mssql_backups | hourly | msdb.dbo.backupset, judged across an availability group's replicas | [hadr](docs/sqlserver-hadr.md) |
 | mssql_storage | hourly | sys.master_files and the volumes | [storage](docs/sqlserver-storage.md) |
 | mssql_versionstore | 1 min | tempdb's version store and its holder | [storage](docs/sqlserver-storage.md) |
+| mssql_audit | 5 min | server audits, their specifications and state; a file audit's events from a cursor | [audit](docs/sqlserver-audit.md) |
 
 Ending a session and starting or stopping an Agent job are an opt-in door with a login of its own: [docs/sqlserver-actions.md](docs/sqlserver-actions.md).
 
