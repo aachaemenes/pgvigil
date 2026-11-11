@@ -34,7 +34,7 @@ export async function connectionsView(ctx: Ctx): Promise<HTMLElement> {
         try { localStorage.setItem(keyOf, by.join(',')); } catch { /* private window */ }
         void draw();
       });
-      return el('label', { for: 'conn-by-' + k }, cb, ' ' + label);
+      return el('label', { for: 'conn-by-' + k, style: 'margin-right: 1.2rem; white-space: nowrap' }, cb, ' ' + label);
     }));
   async function draw() {
     const d = await get<{ sources: Table | null; meta: Table | null }>('connections', { instance: ctx.instance, ...window_(ctx), by: by.join(',') });
