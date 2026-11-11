@@ -17,7 +17,8 @@
 #
 # What it makes, as the server's DBA would, and removes on every exit path the shell can catch: a repository
 # database pgvigil_rdsproof_<n> on the PostgreSQL; on the instance a database pgvproof_<n> (AUTO_CLOSE off, Query Store on, one
-# table, one procedure called five times just before the procedure read, one row lock wait between two sessions of the master user, a user there
+# table, one procedure run in a loop by a session of the master user through the procedure reads (it ends by itself after
+# 600 s), one row lock wait between two sessions of the master user just before the index lock reads, a user there
 # for the collector's login) and the four
 # Extended Events sessions of `pgvigil mssql-xe -print -form server -install-id p<n>` (dropped by the -drop script);
 # one session of the master user that waits two minutes (part B's requests read).
@@ -77,15 +78,32 @@
 #       mssql_tempdb       tempdb's files and sizes of tempdb.sys.database_files
 #       mssql_properties   edition, version, collation, CPU count, max server memory, tempdb data files
 #       mssql_procstats    per cached procedure, executions bracketed by sys.dm_exec_procedure_stats; the proof's
-#                          procedure is stored with 5 executions or more
+#                          procedure is stored (from run 14: as a plan a read lists, see below)
 #                          [Run 10: this db.t3.micro Express instance keeps no procedure in sys.dm_exec_procedure_stats,
 #                           even inside the batch that ran it (one cached plan in all, read by the master user). From
 #                           run 11 the per-procedure part holds where the master user's read shows the procedure, and
 #                           is said NOT PROVEN where it shows none; the bracket over every stored row stays.]
+#                          [Run 13: 0 stored, 0 before, 0 after, a FAIL ('nothing stored'). A probe the same hour: SQL
+#                           Server's memory target on this db.t3.micro is 115 MB of 995 MB (70 MB free), the whole plan
+#                           cache one plan; the proof's procedure is listed inside the batch that runs it and gone in the
+#                           next session, and every read here is a session of its own. From run 14 a session runs the
+#                           procedure in a loop through both reads and the collector's run; a plan is its handle and
+#                           cached time (a recompile is a new plan, as mssql_proc_last keys it); the procedure's stored
+#                           plan must be one a read lists, its count compared with each read that lists it; the other
+#                           stored rows compare where a read lists them (a plan the cache dropped between the reads is
+#                           not required, and their count is said); a stored set no read lists fails.]
 #       mssql_indexlocks   per index with lock waits, the row lock waits bracketed by
 #                          sys.dm_db_index_operational_stats; the proof's table's index is stored with one wait or more
 #                          [Run 10: no wait was made - the locker's container connected after the proof's update ran;
 #                           from run 11 the update starts once the master user reads the locker's granted X key lock.]
+#                          [Run 13: two differences. (1) The hand read counted master's catalog tables (1:21, 1:28),
+#                           which the collector never reads (indexlocks.go: object ids 1 to 100), and databases the
+#                           collector's login cannot enter: from run 14 it mirrors both (the database list read as the
+#                           collector's login). (2) The locker never held its row in 30 tries on a loaded box; the
+#                           probe the same hour saw it hold its X key lock within a second. From run 14 it holds 45
+#                           seconds, not 15, a locker that never holds is reported with its state and output, and the
+#                           wait is made right before the index lock reads (an idle index's counters can leave the
+#                           cache on this instance, and they then start again from 0).]
 #       mssql_querystore   the proof's database stored with Query Store READ_WRITE, as its options read
 #     except mssql_ag: skipped, the note "Always On is not enabled on this server" (RDS Express has no availability
 #     group; a rule of the server, said as skipped, never counted as collected or failed). A collection skipped for
@@ -117,7 +135,7 @@ REPO_DB=pgvigil_rdsproof_$SUF; XEID=p$SUF; N=proof-rds-$SUF; HOSTTAG=pgvproof-$S
 WORK=$(mktemp -d); CFG=$WORK/pgvigil.yaml
 export SQLCMDPASSWORD="$ADMIN_PW"
 export RDS_MON_DSN="sqlserver://$MON_USER:$MON_PW@$RDS_HOST:$PORT_?database=master&encrypt=true&TrustServerCertificate=true"
-MADE_DB=; MADE_XE=; MADE_FDB=; WAITER=; SRV=; LOCKER=
+MADE_DB=; MADE_XE=; MADE_FDB=; WAITER=; SRV=; LOCKER=; LOOPER=
 FAILS=()
 bad() { FAILS+=("$*"); echo "  FAIL: $*"; }
 die() { echo "FAIL: $*" >&2; exit 1; }
@@ -130,11 +148,17 @@ sq() { local out rc=0
   # a failed read stops the proof with sqlcmd's own message, never a silent empty value
   [ $rc -eq 0 ] || { echo "$1" >> "$WORK/sq-failed"; echo "FAIL: a read of the setup login failed ($rc): $(tr '\n' ' ' <<<"$out" | cut -c1-600) -- the statement: $(tr '\n' ' ' <<<"$1" | cut -c1-300)" >&2; return $rc; }
   sed -E 's/ +\|/|/g; s/\| +/|/g; s/^ +//; s/ +$//' <<<"$out"; }
+# sqmon "<sql>": a read as the collector's login (the databases it can enter), in the form of sq
+sqmon() { local out rc=0
+  out=$(SQLCMDPASSWORD="$MON_PW" docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$MON_USER" \
+  -d master -C -b -I -l 60 -h -1 -s '|' -y 8000 -i /dev/stdin <<<"SET NOCOUNT ON; $1" 2>&1) || rc=$?
+  [ $rc -eq 0 ] || { echo "$1" >> "$WORK/sq-failed"; echo "FAIL: a read of the collector's login failed ($rc): $(tr '\n' ' ' <<<"$out" | cut -c1-600) -- the statement: $(tr '\n' ' ' <<<"$1" | cut -c1-300)" >&2; return $rc; }
+  sed -E 's/ +\|/|/g; s/\| +/|/g; s/^ +//; s/ +$//' <<<"$out"; }
 sqfile() { docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d master -C -b -l 60 -i /dev/stdin; }
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
-  for c in $WAITER $LOCKER; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  for c in $WAITER $LOCKER $LOOPER; do docker rm -f "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form server -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
   if [ -n "$MADE_FDB" ]; then
@@ -193,17 +217,6 @@ sq "ALTER DATABASE [$FDB] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE);" >
 sq "CREATE USER [$MON_USER] FOR LOGIN [$MON_USER];" "$FDB" >/dev/null
 sq "CREATE TABLE dbo.t (id int NOT NULL CONSTRAINT pk_t PRIMARY KEY, v int NOT NULL); INSERT dbo.t VALUES (1, 0), (2, 0);" "$FDB" >/dev/null
 sq "EXEC('CREATE PROCEDURE dbo.pgvproof_p AS SELECT COUNT(*) FROM dbo.t;');" "$FDB" >/dev/null
-# one row lock wait on pk_t: a session holds the row for 8 seconds, the proof's update waits for it
-LOCKER=pgvproof-lock-$SUF
-docker run -d --name "$LOCKER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
-  -H "$LOCKER" -Q "BEGIN TRAN; UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:15'; COMMIT;" >/dev/null
-# the proof's update starts only once the locker holds its row (run 10: the container connected after it, no wait)
-HELD=0
-for _ in $(seq 1 30); do HELD=$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks l JOIN sys.dm_exec_sessions s ON s.session_id = l.request_session_id
-  WHERE s.host_name = N'$LOCKER' AND l.resource_type = 'KEY' AND l.request_mode = 'X' AND l.request_status = 'GRANT'"); [ "$HELD" -ge 1 ] && break; sleep 1; done
-[ "$HELD" -ge 1 ] || bad "B: the proof's lock wait was not set up: the locker session never held its row"
-sq "UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1;" "$FDB" >/dev/null
-docker wait "$LOCKER" >/dev/null 2>&1 || true; docker rm -f "$LOCKER" >/dev/null 2>&1 || true; LOCKER=
 "$BIN" mssql-xe -print -form server -install-id "$XEID" > "$WORK/xe.sql"
 MADE_XE=1
 XE_REFUSED=
@@ -251,11 +264,13 @@ run_ok() { # run_ok <collection>: runs it, and says whether it stored a read wit
 eq() { # eq <collection> <stored> <hand>: the verdict of an exact comparison; an empty side is a failed read
   if [ -z "$2" ] || [ -z "$3" ]; then VERDICT[$1]="FAIL"; bad "B: $1: an empty side (stored '$2', the master user reads '$3')"; return; fi
   if [ "$2" = "$3" ]; then VERDICT[$1]="PASS"; if [ -n "${4:-}" ] && { [ "$2" = 0 ] || [ "$2" = "(none)" ]; }; then VERDICT[$1]="PASS (${4})"; fi; else VERDICT[$1]="FAIL"; bad "B: $1 stored '$(cut -c1-300 <<<"$2")', the master user reads '$(cut -c1-300 <<<"$3")'"; fi; }
-# bracket <collection> <before> <after> <stored> [<key that must be stored>]: every stored key lies between the
-# reads before and after (each number), every key counted before is stored
+# bracket <collection> <before> <after> <stored> [<key that must be stored>] [evict]: every stored key lies between the
+# reads before and after (each number), every key counted before is stored. evict, for a cache that drops entries
+# between the reads: a stored key compares with each read that lists it, a key both reads list (not reset between
+# them) must be stored, and the keys the cache dropped are counted, not required
 bracket() {
   local out
-  if out=$(python3 - "$2" "$3" "$4" "${5:-}" <<'PY'
+  if out=$(python3 - "$2" "$3" "$4" "${5:-}" "${6:-}" <<'PY'
 import sys
 def rd(p):
     d = {}
@@ -265,12 +280,22 @@ def rd(p):
     return d
 b, a, s = (rd(p) for p in sys.argv[1:4])
 must = sys.argv[4].lower()
-errs = [f"{k} stored {v}, before {b.get(k)}, after {a.get(k)}" for k, v in s.items()
-        if k not in a or any(x < y for x, y in zip(v, b.get(k, [0] * len(v)))) or any(x > y for x, y in zip(v, a[k]))]
-errs += [f"{k} counted before the run and not stored" for k in b if k not in s]
+note = ""
+if sys.argv[5] == "evict":
+    errs = [f"{k} stored {v}, before {b.get(k)}, after {a.get(k)}" for k, v in s.items()
+            if (k in b and any(x < y for x, y in zip(v, b[k]))) or (k in a and any(x > y for x, y in zip(v, a[k])))]
+    kept = [k for k in b if k in a and all(x <= y for x, y in zip(b[k], a[k]))]
+    errs += [f"{k} listed before and after the run and not stored" for k in kept if k not in s]
+    if s and not any(k in b or k in a for k in s): errs.append("no stored key is listed by either read")
+    gone = sum(1 for k in b if k not in a); unread = sum(1 for k in s if k not in b and k not in a)
+    note = f"; {len(kept)} listed by both reads, {gone} dropped by the cache between them, {unread} stored and listed by neither"
+else:
+    errs = [f"{k} stored {v}, before {b.get(k)}, after {a.get(k)}" for k, v in s.items()
+            if k not in a or any(x < y for x, y in zip(v, b.get(k, [0] * len(v)))) or any(x > y for x, y in zip(v, a[k]))]
+    errs += [f"{k} counted before the run and not stored" for k in b if k not in s]
 if must and must not in s: errs.append(f"{must} not stored")
 if not s: errs.append("nothing stored")
-print(f"{len(s)} stored, {len(b)} before, {len(a)} after")
+print(f"{len(s)} stored, {len(b)} before, {len(a)} after{note}")
 if errs: print("; ".join(errs[:8])); sys.exit(1)
 PY
   ); then VERDICT[$1]="PASS ($out)"; else VERDICT[$1]="FAIL"; bad "B: $1: $out"; fi
@@ -306,24 +331,47 @@ sq "$FSQL" > "$WORK/f-b.txt"
 if run_ok mssql_fileio; then sq "$FSQL" > "$WORK/f-a.txt"
   q "select database_id || ':' || file_id || '|' || reads || '|' || writes from pgvigil.mssql_fileio_last where instance_id=$iid" > "$WORK/f-s.txt"
   bracket mssql_fileio "$WORK/f-b.txt" "$WORK/f-a.txt" "$WORK/f-s.txt"; fi
-PSQL_="SELECT CONVERT(varchar(130), plan_handle, 1) + '|' + CAST(execution_count AS varchar(20)) FROM sys.dm_exec_procedure_stats WHERE database_id <> 32767"
+PSQL_="SELECT CONVERT(varchar(130), plan_handle, 1) + '@' + CONVERT(varchar(23), cached_time, 121) + '|' + CAST(execution_count AS varchar(20)) FROM sys.dm_exec_procedure_stats WHERE database_id <> 32767"
 FDBID=$(sq "SELECT DB_ID(N'$FDB')"); POBJ=$(sq "SELECT OBJECT_ID(N'dbo.pgvproof_p')" "$FDB")
-# the procedure runs right before the read: a db.t3.micro's small plan cache let it go between the setup and here (run 9)
-sq "EXEC dbo.pgvproof_p; EXEC dbo.pgvproof_p; EXEC dbo.pgvproof_p; EXEC dbo.pgvproof_p; EXEC dbo.pgvproof_p;" "$FDB" >/dev/null
+# this instance keeps a procedure in sys.dm_exec_procedure_stats only while a batch runs it (run 13 and its probe: a
+# 115 MB memory target, one cached plan): a session runs the proof's procedure in a loop through both reads and the
+# collector's run, and is removed after the second read
+LOOPER=pgvproof-loop-$SUF
+docker run -d --name "$LOOPER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
+  -H "$LOOPER" -Q "SET NOCOUNT ON; DECLARE @end datetime2 = DATEADD(second, 600, SYSUTCDATETIME()); WHILE SYSUTCDATETIME() < @end BEGIN EXEC dbo.pgvproof_p; WAITFOR DELAY '00:00:00.050'; END" >/dev/null
+HSQL="SELECT ISNULL(MAX(execution_count), 0) FROM sys.dm_exec_procedure_stats WHERE database_id = $FDBID AND object_id = $POBJ"
+HB=0
+for _ in $(seq 1 30); do HB=$(sq "$HSQL"); [ "$HB" -ge 1 ] && break; sleep 1; done
 sq "$PSQL_" > "$WORK/p-b.txt"
-if run_ok mssql_procstats; then sq "$PSQL_" > "$WORK/p-a.txt"
-  q "select plan_handle || '|' || execution_count from pgvigil.mssql_proc_last where instance_id=$iid" > "$WORK/p-s.txt"
-  bracket mssql_procstats "$WORK/p-b.txt" "$WORK/p-a.txt" "$WORK/p-s.txt"
+if run_ok mssql_procstats; then sq "$PSQL_" > "$WORK/p-a.txt"; HA=$(sq "$HSQL")
+  q "select plan_handle || '@' || to_char(cached_time, 'YYYY-MM-DD HH24:MI:SS.MS') || '|' || execution_count from pgvigil.mssql_proc_last where instance_id=$iid" > "$WORK/p-s.txt"
+  bracket mssql_procstats "$WORK/p-b.txt" "$WORK/p-a.txt" "$WORK/p-s.txt" "" evict
   PX=$(q "select coalesce(max(execution_count), 0) from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID and object_id=$POBJ")
-  HX=$(sq "SELECT ISNULL(MAX(execution_count), 0) FROM sys.dm_exec_procedure_stats WHERE database_id = $FDBID AND object_id = $POBJ")
-  if [ "$HX" = 0 ] && [ "$PX" = 0 ]; then
-    if [[ ${VERDICT[mssql_procstats]} == PASS* ]]; then VERDICT[mssql_procstats]="${VERDICT[mssql_procstats]}; the proof's procedure NOT PROVEN: the server kept no plan for it (the master user's own read shows none either)"; fi
-  elif [ "$PX" -ge 5 ]; then :
-  else VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: the proof's procedure (database $FDBID, object $POBJ) stored with $PX execution(s), want 5 or more; stored for that database: '$(q "select string_agg(object_id || ':' || execution_count, ',') from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID")'; the DMV: '$(sq "SELECT CAST(object_id AS varchar(12)) + ':' + CAST(execution_count AS varchar(20)) + ':' + CONVERT(varchar(130), plan_handle, 1) FROM sys.dm_exec_procedure_stats WHERE database_id = $FDBID" | tr '\n' ',')'"
+  PK=$(q "select plan_handle || '@' || to_char(cached_time, 'YYYY-MM-DD HH24:MI:SS.MS') from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID and object_id=$POBJ order by execution_count desc limit 1")
+  if [ "$HB" -lt 1 ]; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: the proof's procedure was never listed by the master user's read while a session ran it in a loop; the looper: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$LOOPER" 2>&1 | tr '\n' ' ') output '$(docker logs "$LOOPER" 2>&1 | tail -5 | tr -s ' \n' ' ' | cut -c1-300)'"
+  elif [ -z "$PK" ] || ! grep -qiF -- "$PK|" "$WORK/p-b.txt" "$WORK/p-a.txt"; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: the proof's procedure (database $FDBID, object $POBJ) stored as '$PK' with $PX execution(s), a plan neither read lists (the master user read $HB executions before the run, $HA after it); stored for that database: '$(q "select string_agg(object_id || ':' || plan_handle || '@' || to_char(cached_time, 'YYYY-MM-DD HH24:MI:SS.MS') || ':' || execution_count, ',') from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID")'"
+  elif [[ ${VERDICT[mssql_procstats]} == PASS* ]]; then VERDICT[mssql_procstats]="${VERDICT[mssql_procstats]}; the proof's procedure stored with $PX executions (read $HB before, $HA after$(if [ "$HB" = "$HA" ]; then echo '; the counter did not move between the reads'; fi))"
   fi
 fi
+docker rm -f "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
+# one row lock wait on pk_t: a session holds the row for 45 seconds, the proof's update waits for it
+LOCKER=pgvproof-lock-$SUF
+docker run -d --name "$LOCKER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
+  -H "$LOCKER" -Q "BEGIN TRAN; UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:45'; COMMIT;" >/dev/null
+# the proof's update starts only once the locker holds its row (run 10: the container connected after it, no wait)
+HELD=0
+for _ in $(seq 1 30); do HELD=$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks l JOIN sys.dm_exec_sessions s ON s.session_id = l.request_session_id
+  WHERE s.host_name = N'$LOCKER' AND l.resource_type = 'KEY' AND l.request_mode = 'X' AND l.request_status = 'GRANT'"); [ "$HELD" -ge 1 ] && break; sleep 1; done
+[ "$HELD" -ge 1 ] || bad "B: the proof's lock wait was not set up: the locker session never held its row; the locker: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$LOCKER" 2>&1 | tr '\n' ' ') output '$(docker logs "$LOCKER" 2>&1 | tr -s ' \n' ' ' | cut -c1-300)'; its session as the master user reads it: $(sq "SELECT ISNULL(STRING_AGG(CAST(s.session_id AS varchar(5)) + ':' + s.status + ':' + ISNULL(r.wait_type, '-') + ':' + CAST(ISNULL(r.blocking_session_id, 0) AS varchar(5)), ','), 'none') FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id WHERE s.host_name = N'$LOCKER'" 2>&1 | tr '\n' ' ' || true)"
+sq "UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1;" "$FDB" >/dev/null
+docker wait "$LOCKER" >/dev/null 2>&1 || true; docker rm -f "$LOCKER" >/dev/null 2>&1 || true; LOCKER=
+# the collector reads only the online databases its login can enter, never the engine's catalog tables (object ids 1 to
+# 100: indexlocks.go); the hand read mirrors both, the database list read as the collector's login
+IDBS=$(sqmon "SELECT STRING_AGG(CAST(database_id AS varchar(9)), ',') FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1") || IDBS=
+case $IDBS in ''|NULL) IDBS=0; bad "B: mssql_indexlocks: the collector's login read no database it can enter";; esac
 ISQL="SELECT CAST(database_id AS varchar(9)) + ':' + CAST(object_id AS varchar(12)) + ':' + CAST(index_id AS varchar(9)) + ':' + CAST(partition_number AS varchar(9)) + '|' + CAST(row_lock_wait_count AS varchar(20)) + '|' + CAST(page_lock_wait_count AS varchar(20))
-  FROM sys.dm_db_index_operational_stats(NULL, NULL, NULL, NULL) WHERE row_lock_wait_count > 0 OR page_lock_wait_count > 0 OR index_lock_promotion_attempt_count > 0"
+  FROM sys.dm_db_index_operational_stats(NULL, NULL, NULL, NULL) WHERE (row_lock_wait_count > 0 OR page_lock_wait_count > 0 OR index_lock_promotion_attempt_count > 0)
+  AND object_id NOT BETWEEN 1 AND 100 AND database_id IN ($IDBS)"
 sq "$ISQL" > "$WORK/i-b.txt"
 TOBJ=$(sq "SELECT OBJECT_ID(N'dbo.t')" "$FDB")
 if run_ok mssql_indexlocks; then sq "$ISQL" > "$WORK/i-a.txt"
