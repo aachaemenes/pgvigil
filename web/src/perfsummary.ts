@@ -49,7 +49,9 @@ function histogram(h: unknown): Node {
 
 const ms = (v: unknown) => v == null ? '' : fmtNum(v);
 // a value the repository does not hold: SQL Server 'not read' (no collector yet), PostgreSQL the reason it is missing
-const absent = (r: Row, why: string) => isMs(r) ? muted('not read', 'not collected on SQL Server yet') : muted('not read', why);
+const absent = (r: Row, why: string, msWhy = 'no mssql_cpu / mssql_fileio read in the range') => isMs(r) ? muted('not read', msWhy) : muted('not read', why);
+// a column one engine has no figure for
+const na = (what: string) => muted('n/a', what);
 // a wait class with no figure: the activity estimate gives Lock alone; no wait read at all = not read
 const waitCell = (v: unknown, r: Row) => v != null ? ms(v)
   : r.wait_source === 'activity' ? muted('n/a', 'pg_wait_sampling is not installed: the activity samples give the Lock estimate only')
@@ -75,14 +77,15 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     el('li', {}, `Lock wait: warning over ${thresholds.lock_ms_s[0]} ms/sec, critical over ${thresholds.lock_ms_s[1]} ms/sec`),
     el('li', {}, 'every other cell is plain; a value not held is a muted word, never 0'),
     el('li', {}, 'waits: PostgreSQL wait_sample (pg_wait_sampling) by event type; without it Lock alone, from the sessions seen waiting each minute; SQL Server by wait category'),
-    el('li', {}, 'SQL Server CPU, transactions and IO latency: not collected yet')));
+    el('li', {}, 'SQL Server: CPU from the scheduler monitor (the machine; the SQL Server share in the cell\'s title), transactions/s from Transactions/sec, IO from sys.dm_io_virtual_file_stats; memory columns are SQL Server only')));
   sec.append(th);
   const link = (r: Row, tab: string) => el('a', { href: href(ctx, { tab, instance: Number(r.instance_id), tag: undefined }) }, String(r.instance));
-  const notRead = (_r: Row) => muted('not read', 'not collected on SQL Server yet');
+  const notRead = (_r: Row) => muted('not read', 'no mssql_cpu read in the range (VIEW SERVER STATE)');
   const cols: Col[] = [
     { key: 'instance', fmt: (_v, r) => link(r, 'performance') },
     { key: 'engine', fmt: v => v === 'sqlserver' ? 'SQL Server' : 'PostgreSQL' },
-    { key: 'cpu_avg', label: 'CPU avg', num: true, fmt: (v, r) => v == null ? (isMs(r) ? notRead(r) : muted('no host read', 'no host sample in the range')) : dataBar(v, '') },
+    { key: 'cpu_avg', label: 'CPU avg', num: true, fmt: (v, r) => v == null ? (isMs(r) ? notRead(r) : muted('no host read', 'no host sample in the range'))
+      : isMs(r) && r.cpu_sql_avg != null ? el('span', { title: `SQL Server ${fmtNum(r.cpu_sql_avg)} %` }, dataBar(v, '')) : dataBar(v, '') },
     { key: 'cpu_max', label: 'CPU max', num: true, cls: v => lvl(v, thresholds.cpu_max) ? 'status ' + lvl(v, thresholds.cpu_max) : '',
       fmt: (v, r) => v == null ? (isMs(r) ? notRead(r) : muted('no host read', 'no host sample in the range')) : dataBar(v, lvl(v, thresholds.cpu_max)) },
     // sorted by the share of samples at 70 % and over; drawn as the ten buckets
@@ -99,15 +102,21 @@ export async function perfSummaryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'total_ms_s', label: 'total wait (ms/s)', num: true, fmt: waitCell },
     { key: 'signal_pct', label: 'signal wait %', num: true, fmt: (v, r) => isMs(r) ? ms(v) : muted('n/a', 'a SQL Server measure') },
     { key: 'tps', label: 'transactions/s', num: true, fmt: (v, r) => v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
-    { key: 'commits_s', label: 'commits/s', num: true, fmt: (v, r) => v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
-    { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+    { key: 'commits_s', label: 'commits/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+    { key: 'rollbacks_s', label: 'rollbacks/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtNum(v) },
+    { key: 'batch_s', label: 'batch requests/s', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server counter') : v == null ? absent(r, '') : fmtNum(v) },
     { key: 'read_ms', label: 'read latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
     { key: 'write_ms', label: 'write latency (ms)', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io with track_io_timing nor CloudWatch latency in the range')
       : el('span', { title: String(r.latency_source ?? '') }, ms(v)) },
     { key: 'mb_s', label: 'MB/s', num: true, fmt: (v, r) => v == null ? absent(r, 'neither pg_stat_io (PostgreSQL 16+) nor CloudWatch throughput in the range')
       : el('span', { title: String(r.io_source ?? '') }, ms(v)) },
-    { key: 'temp_bytes_s', label: 'temp/s', num: true, fmt: (v, r) => v == null ? absent(r, 'no database counters in the range') : fmtBytes(v) },
+    { key: 'temp_bytes_s', label: 'temp/s', num: true, fmt: (v, r) => isMs(r) ? na('a PostgreSQL counter') : v == null ? absent(r, 'no database counters in the range') : fmtBytes(v) },
+    { key: 'mem_total_pct', label: 'memory: total of target', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) + ' %' },
+    { key: 'mem_available_pct', label: 'OS memory available', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) + ' %' },
+    { key: 'ple_min', label: 'PLE lowest (s)', num: true, fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) },
+    { key: 'grants_waiting_max', label: 'memory grants waiting', num: true, cls: v => Number(v) > 0 ? 'status warn' : '',
+      fmt: (v, r) => !isMs(r) ? na('a SQL Server measure') : v == null ? absent(r, '', 'no mssql_memory read in the range') : fmtNum(v) },
     { key: 'now_longest_stmt_secs', label: 'longest statement now', num: true, fmt: (v, r) => nowCell(v, r, fmtSecs) },
     { key: 'now_oldest_xact_secs', label: 'oldest transaction now', num: true, fmt: (v, r) => nowCell(v, r, fmtSecs) },
     { key: 'now_blocked', label: 'blocked now', num: true, fmt: (v, r) => nowCell(v, r, fmtNum) },
