@@ -251,6 +251,12 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { text-decoration: underline; }
 /* a status cell that holds plain text (no link filling it) keeps the grid's own padding, in the solid and the quiet style */
 .grid td.status:not(:has(.cell-link)) { padding: .35rem .6rem; }
+/* a badge inside a filled status cell takes the cell's own text colour (its own would be the status colour on its own fill) */
+:root:not([data-status="quiet"]) .grid td.status .badge { color: inherit; }
+/* a wrapping cell keeps a width of its own: beside columns that do not wrap it was squeezed to one character a line (a backup's device path made its row hundreds of pixels tall) */
+.grid td.wide:not(:empty) { min-width: 14rem; }
+/* the row's hover overlay would take the quiet style's tinted warn / crit cells under 4.5:1 (light theme): those keep their tint */
+:root[data-status="quiet"] .grid tbody tr:hover td.status:is(.warn, .crit) { box-shadow: none; }
 /* a chart's menu button in its heading, and the line that says what the menu did */
 .chart-menu { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 .35rem; font: inherit; line-height: 1; }
 .chart-menu:hover, .chart-menu:focus-visible { color: var(--fg); }

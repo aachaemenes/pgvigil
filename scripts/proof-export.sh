@@ -31,17 +31,19 @@
 #              without rows (the Tables tab's second grid, filtered to nothing) keeps the plain sheet filter and no table
 #   colours    every cell of every row the page draws (a grid draws its first 200 rows; the read must return exactly
 #              those), against the page: a cell the screen colours (a status cell, a badge, a dot, a
-#              cell class of the page's own rule: two cells of the Tables tab are given one by the driver, as ui.ts
-#              gives a Col's cls) carries that status's fill and text colour; a cell with a status fill
+#              bare class set on the cell: no page draws one since ui.ts turns a Col's bare cls into a status cell,
+#              so the driver gives two cells of the Tables tab one to keep export.ts's branch tested) carries that status's fill and text colour; a cell with a status fill
 #              the screen does not give it is a value its row's judging cell coloured: only in a value column of the
 #              pairs the doc lists (last archived / archiver, last start / last run, free size / free, a finding's
 #              value / severity ...), the judging cell of that row shows that colour, the cell is not empty; a cell
 #              the screen draws as a link is filled FFF1F1F6 with text
 #              FF004F83 (DBA Dash's link column); every other cell has NO fill and no text colour (no banded rows:
 #              DBA Dash bands none). Counted per sheet (the lines 'cells:'), to set beside DBA Dash's own export
-#   carry      Backups: every 'last archived' cell of a row whose 'archiver' cell is coloured carries that colour (the
+#   carry      Backups: every 'last archived' cell of a row whose 'archiver' cell is coloured is in that colour (the
 #              demo's failing archiver red, the archiving ones green: at least one each); Jobs: every 'last start' of
-#              a row with a coloured 'last run' carries its colour (at least one)
+#              a row with a coloured 'last run' is in its colour (at least one). Since the join the page's own rule
+#              colours those value cells on the screen (the file follows the screen); a value cell the screen leaves
+#              plain is carried in the file by export.ts. Either way the value's colour = the judging cell's
 #   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0#%') whose value is the screen's percent / 100;
 #              its CSV keeps the percent figure itself (12.5, not 0.125)
 #   library    when python3 has openpyxl, each workbook loads with it without an error, its tables counted; none = said
@@ -384,11 +386,16 @@ def carried(key, name, g, cells, cx, judge, value, least):
     a, b = g['head'].index(judge), g['head'].index(value); got = {}; miss = []
     for i, row in enumerate(g['cells']):
         s = row[a]['s']
-        if not s or row[b]['t'] == '' or row[b]['s']: continue
+        if not s or row[b]['t'] == '': continue
+        if row[b]['s']:
+            # coloured on the screen by the page's own rule (the file's fill against the screen is checked per cell above)
+            if row[b]['s'] == s: got[s] = got.get(s, 0) + 1
+            else: miss.append(f"{colname(b)}{i + 2} on screen {row[b]['s']} for {s}")
+            continue
         f = cx[cells.get((i + 2, b), (0, None, None))[0]]['fill']
         if f == fill[s]: got[s] = got.get(s, 0) + 1
         else: miss.append(f"{colname(b)}{i + 2} {f} for {s}")
-    check(not miss and sum(got.values()) >= 1 and all(got.get(k, 0) >= 1 for k in least), f"{key}: '{value}' carries the colour of '{judge}' in its row ({got}; at least one of {least or 'any'}; {len(miss)} wrong {miss[:3]})")
+    check(not miss and sum(got.values()) >= 1 and all(got.get(k, 0) >= 1 for k in least), f"{key}: '{value}' is in the colour of '{judge}' in its row ({got}; at least one of {least or 'any'}; {len(miss)} wrong {miss[:3]})")
 def number(t):
     t = re.sub(r'[\s\u202f\u00a0%+]', '', t)
     if ',' in t and '.' not in t: t = t.replace(',', '.')

@@ -13,18 +13,22 @@ import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const freeTxt = (v: unknown) => v == null ? '' : Number(v) < 10 ? badge(pctTxt(v), Number(v) < 5 ? 'crit' : 'warn') : pctTxt(v);
+// the free cells in the colour of the volume's own rule (under 5 % critical, under 10 % a warning, else OK), as the export writes them
+const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : Number(r.free_pct) < 5 ? 'crit' : Number(r.free_pct) < 10 ? 'warn' : 'ok';
 const perDay = (v: unknown) => v == null ? 'too little history' : (Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : fmtBytes(v)) + ' / day';
 // a forecast past ten years is not a date anyone plans to
 const dayTxt = (v: unknown) => Number(v) > 3650 ? 'over 10 years' : fmtNum(v) + ' days';
 const days = (v: unknown) => v == null ? '' : Number(v) > 3650 ? dayTxt(v) : Number(v) < 7 ? badge(fmtNum(v) + ' days', 'crit') : Number(v) < 30 ? badge(fmtNum(v) + ' days', 'warn') : fmtNum(v) + ' days';
+// 'full in' in its own rule's colour (under 7 days critical, under 30 a warning, else OK); a forecast past ten years is not judged (grey)
+const daysCls = (v: unknown) => v == null ? '' : Number(v) > 3650 ? 'status none' : Number(v) < 7 ? 'crit' : Number(v) < 30 ? 'warn' : 'ok';
 const volName = (v: unknown, r: Row) => String(v ?? '') + (r.holds_data ? ' (data)' : '')
   + (r.kind === 'rds' && r.autoscaling ? (r.at_maximum ? ' (autoscaling at its maximum)' : ' (autoscaling)') : '');
 
 const volCols: Col[] = [
   { key: 'volume', fmt: volName },
-  { key: 'days_until_full', label: 'full in', num: true, fmt: days },
-  { key: 'free_pct', label: 'free', num: true, fmt: freeTxt },
-  { key: 'free_bytes', label: 'free size', num: true, fmt: fmtBytes },
+  { key: 'days_until_full', label: 'full in', num: true, fmt: days, cls: daysCls },
+  { key: 'free_pct', label: 'free', num: true, fmt: freeTxt, cls: freeCls },
+  { key: 'free_bytes', label: 'free size', num: true, fmt: fmtBytes, cls: freeCls },
   { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
   { key: 'total_bytes', label: 'size', num: true, fmt: fmtBytes },
   { key: 'capacity_bytes', label: 'grows to', num: true, fmt: (v, r) => v != null && v !== r.total_bytes ? fmtBytes(v) : '' },
