@@ -6,6 +6,10 @@
 //   qid=<queryid>    the plans of a pg_stat_statements statement (Statements)
 //   shape=<key>      the plans of a statement shape (Slow queries: shape_key)
 //   stmt=<text>      the statement to EXPLAIN (prefilled; Running queries and Slow queries pass it), db=<datname>
+// Under a plan and under a statement (stmt_trend.ts): the suggested index (parity3 task 125; pghero), read from the
+// plan's JSON (/api/plans/suggest), labelled 'not planner-checked' until the planner checks it through hypopg on the
+// monitored server (POST /api/plans/hypo, the actions door: off by default, a reason, audited). pgvigil never creates
+// the index: the text is the DBA's to run.
 // pev2 (PostgreSQL licence, Dalibo) and Vue are a separate bundle under dist/pev2/, loaded only when a plan is
 // drawn; it renders inside a shadow root with bootstrap's and pev2's styles, so neither reaches the rest of the UI.
 import { get, post, Row, rowsOf, Table } from './api';
@@ -142,6 +146,7 @@ async function planView(ctx: Ctx, id: number): Promise<HTMLElement> {
   ]));
   out.append(el('h3', {}, 'Rule hits'), grid(hits, hitCols, p.plan_note && String(p.plan_note).startsWith('the plan could not')
     ? 'The plan could not be read, so no rule ran.' : 'No rule hit: nothing in this plan matches the ten rules.'));
+  out.append(await suggestBox({ instance: ctx.instance!, plan: id }));
   const viewer = el('div', { class: 'pev2-host', style: 'height:70vh;min-height:420px;border:1px solid var(--line);background:#fff' });
   const raw = el('details', {}, el('summary', {}, 'The plan as captured'), el('pre', { style: 'white-space:pre;overflow:auto;max-height:50vh' }, String(p.plan_text ?? '')));
   out.append(el('h3', {}, 'Plan'), viewer, raw, el('p', { class: 'meta' }, 'Plan viewer: pev2 (Dalibo, PostgreSQL licence).'));
@@ -190,4 +195,58 @@ async function mountPev2(host: HTMLElement, planText: string, query: string): Pr
   mount.style.height = '100%';
   root.replaceChildren(mount);
   vue.createApp({ render: () => vue.h(pev2.Plan, { planSource: planText, planQuery: query }) }).mount(mount);
+}
+
+interface Suggestion { table: string; columns: string[]; ddl: string; node: string; plan_rows: number; actual_rows?: number; rows_removed?: number; why: string[]; condition: string }
+interface Suggested {
+  plan_id: number | null; datname?: string | null; analyzed?: boolean; source?: string; captured_at?: string; note?: string;
+  suggestions: Suggestion[]; skipped: { node: string; reason: string }[]; label?: string; hypo?: boolean; hypo_reason?: string;
+}
+interface HypoDone { outcome: string; detail: string; checked: boolean; cost_before?: number; cost_after?: number; used?: boolean }
+
+// suggestBox: the suggested indexes of a plan (plan=<id>) or of a statement's newest plan (queryid, db), each with its
+// reasoning, its planner check and the button that runs the check.
+export async function suggestBox(o: { instance: number; plan?: number; queryid?: unknown; db?: unknown }): Promise<HTMLElement> {
+  const box = el('div', { class: 'suggest', style: 'white-space:normal' }, el('h4', {}, 'Suggested index'));
+  let d: Suggested;
+  try {
+    d = await get<Suggested>('plans/suggest', o.plan ? { id: o.plan } : { instance: o.instance, queryid: String(o.queryid), db: o.db ? String(o.db) : undefined });
+  } catch (e) { box.append(errorBox(e)); return box; }
+  if (d.plan_id == null) {
+    box.append(el('p', { class: 'meta' }, d.note ?? 'No plan.', ' ', el('a', { href: planHref(o.instance, { queryid: o.queryid, db: o.db }) }, 'Plans and EXPLAIN')));
+    return box;
+  }
+  const from = o.plan ? 'this plan' : el('a', { href: planHref(o.instance, { plan: d.plan_id }) }, `plan ${d.plan_id}`);
+  box.append(el('p', { class: 'meta' }, 'Read from ', from, ` (${sources[String(d.source)] ?? String(d.source ?? '')}, ${fmtTime(d.captured_at)}${d.analyzed ? ', actual rows' : ', estimates only'}).`));
+  if (d.suggestions.length === 0) box.append(el('p', { class: 'empty' }, 'No index to suggest: no sequential scan in this plan filters on a plain column.'));
+  d.suggestions.forEach((sg, n) => {
+    const state = el('span', { role: 'status' }, badge(d.label ?? 'not planner-checked', 'warn'));
+    const reason = el('input', { type: 'text', placeholder: 'reason (for the actions log)', 'aria-label': `Reason for checking ${sg.ddl}`, style: 'width:20em' }) as HTMLInputElement;
+    const btn = el('button', { type: 'button' }, 'Check with the planner (hypopg)') as HTMLButtonElement;
+    btn.disabled = !d.hypo;
+    btn.title = d.hypo ? 'Plans the statement before and with a hypothetical index (hypopg on the monitored server); nothing is created or run; audited' : d.hypo_reason ?? '';
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;   // one check per click: each is a planner call on the server and an audit row
+      state.replaceChildren('Checking...');
+      try {
+        const r = await post<HypoDone>('plans/hypo', { plan_id: d.plan_id, n, ddl: sg.ddl, reason: reason.value });
+        const lower = (r.cost_after ?? 0) < (r.cost_before ?? 0);
+        const verdict = !r.checked ? badge('not planner-checked', 'warn')
+          : r.used && lower ? badge('planner-checked: lower cost', 'ok')
+          : r.used ? badge('planner-checked: used, cost not lower', 'warn')
+          : badge('planner-checked: not used', 'crit');
+        state.replaceChildren(verdict, ' ', el('span', { class: 'meta' }, r.detail));
+      } catch (e) { state.replaceChildren(badge('not planner-checked', 'warn'), ' ', errorBox(e)); }
+      finally { btn.disabled = false; }
+    });
+    box.append(el('div', { class: 'card', style: 'margin:.5rem 0' },
+      el('pre', { style: 'margin:0;padding:.5rem .7rem;background:#2f3136;color:#f1f1f1;border-radius:4px;white-space:pre-wrap' }, sg.ddl),
+      el('div', { style: 'margin:.4rem 0;display:flex;flex-wrap:wrap;gap:.5rem;align-items:center' }, state, reason, btn),
+      el('details', {}, el('summary', {}, 'Details'), el('ul', {}, ...sg.why.map(w => el('li', {}, w))))));
+  });
+  if (!d.hypo && d.suggestions.length) box.append(el('p', { class: 'meta' }, 'The planner check is off: ' + (d.hypo_reason ?? '') + '.'));
+  for (const sk of d.skipped) box.append(el('p', { class: 'meta' }, `${sk.node}: no index suggested (${sk.reason}).`));
+  box.append(el('p', { class: 'meta' }, 'pgvigil never creates an index: run the text yourself after the check (CONCURRENTLY does not block writes but waits for every older transaction).'));
+  return box;
 }

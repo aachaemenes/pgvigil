@@ -20,6 +20,7 @@ import { rolesFleetView } from './roles';
 import { indexesFleetView } from './indexes';
 import { slowFleetView } from './slow';
 import { trendCol } from './stmt_trend';
+import { readStmtGroups, stmtGroupsSection, totalWithShare } from './stmt_filter';
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
@@ -96,8 +97,9 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
   const order = statementOrders.some(o => o[0] === ctx.order) ? ctx.order! : 'time';
   const minSecs = ctx.minSecs ?? 5;
   const w = { instance: ctx.instance, ...range(ctx) };
-  // the slow read is separate: its failure shows under its own heading, the top statements stay
-  const [st, slow] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs }).catch((e: unknown) => e)]);
+  // the slow read and the filter panel's read are separate: a failure of either shows under its own heading, the top statements stay
+  const [st, slow, groups] = await Promise.all([get('statements', { ...w, order, limit: 100 }), get('slow', { ...w, min: minSecs }).catch((e: unknown) => e),
+    readStmtGroups(ctx).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)))]);
   const sortBar = el('div', { class: 'subtabs' }, ...statementOrders.map(([k, l]) =>
     el('a', { href: href(ctx, { tab: 'statements', order: k }), class: k === order ? 'on' : '' }, 'by ' + l)),
     el('a', { href: href(ctx, { tab: 'compare' }) }, 'compare with 1 and 7 days earlier'));
@@ -106,9 +108,14 @@ export async function statements(ctx: Ctx): Promise<HTMLElement> {
     const v = Number(minIn.value);
     if (Number.isFinite(v)) location.hash = href(ctx, { tab: 'statements', minSecs: Math.min(86400, Math.max(0, Math.trunc(v))) });
   });
-  return el('section', {}, el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
-    grid(rowsOf(st), [...stmtCols(order), { key: 'plan_link', label: 'plan', fmt: (_, r) => planLink(ctx.instance!, { queryid: r.queryid, db: r.datname, stmt: r.query }) },
-      trendCol(ctx, r => r.queryid == null ? null : { instance: ctx.instance!, queryid: r.queryid, db: r.datname, label: String(r.query ?? '').slice(0, 60) })], 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
+  // the share of all statements' time beside a statement's total (pghero): the whole is every statement of the window, not the top 100
+  const whole = groups instanceof Error ? 0 : Number(rowsOf(groups.totals)[0]?.total_ms ?? 0);
+  const cols = stmtCols(order).map(c => c.key === 'total_exec_ms' ? { ...c, label: 'total time', fmt: (v: unknown) => totalWithShare(v, whole) } : c);
+  const stmtRowCols = [{ key: 'plan_link', label: 'plan', fmt: (_: unknown, r: Row) => planLink(ctx.instance!, { queryid: r.queryid, db: r.datname, stmt: r.query }) },
+    trendCol(ctx, r => r.queryid == null ? null : { instance: ctx.instance!, queryid: r.queryid, db: r.datname, label: String(r.query ?? '').slice(0, 60) })];
+  return el('section', {}, stmtGroupsSection(groups, stmtRowCols, `Statements by database, user and client host (${rangeLabel(ctx)})`),
+    el('h2', {}, `Top statements by ${statementOrders.find(o => o[0] === order)?.[1]} (${rangeLabel(ctx)})`), sortBar,
+    grid(rowsOf(st), [...cols, ...stmtRowCols], 'No statement deltas in this window (pg_stat_statements missing, or fewer than two snapshots).'),
     el('h3', {}, 'Ran at least ', minIn, ' s in this window'),
     el('p', { class: 'meta' }, 'From the running-queries samples: a duration is a floor (the statement ended between its last sample and the next); an idle-in-transaction session is timed from when it went idle (the Running queries tab filters these by state, user, database and application).'),
     slow instanceof Error ? errorBox(slow) : grid(rowsOf(slow as Table), slowCols, 'Nothing seen running that long in this window.'));
