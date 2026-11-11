@@ -11,7 +11,8 @@
 --                         interval (the *_rate functions of 0004: a reset gives no point, never a dip).
 --   metric_grid(i, from, to, lookback, database)
 --                         one row per metric of the instance's engine: max, min, avg and the newest value of the
---                         window, the sample count, and the thresholds in force for it (the most specific live rule).
+--                         window, the sample count, and the thresholds in force for it (metric_rule: the most
+--                         specific live rule); metric_status colours a figure against them.
 --   alert_rules           a rule: a metric above or below a warning and / or a critical value for n minutes, on the
 --                         fleet, a tag or one instance, optionally for one database's series. Never updated in place
 --                         by the UI but for its on / off switch: an edit ends the row and writes its successor
@@ -294,7 +295,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.alert_rules (
     coalesce(warning, 0) NOT IN ('NaN', 'Infinity', '-Infinity') AND coalesce(critical, 0) NOT IN ('NaN', 'Infinity', '-Infinity')),
   CONSTRAINT "critical is at or beyond warning" CHECK (
     warning IS NULL OR critical IS NULL OR (op = 'above' AND critical >= warning) OR (op = 'below' AND critical <= warning)),
-  CONSTRAINT "a tag rule names its tag, an instance rule its instance, a fleet rule neither" CHECK (
+  CONSTRAINT "a tag rule names its tag, an instance rule its instance" CHECK (       -- and a fleet rule neither
     (scope = 'fleet' AND tag IS NULL AND instance_name IS NULL) OR (scope = 'tag' AND tag IS NOT NULL AND instance_name IS NULL)
     OR (scope = 'instance' AND tag IS NULL AND instance_name IS NOT NULL))
 );
@@ -361,8 +362,32 @@ SELECT DISTINCT ON (s.instance_id, s.metric, coalesce(s.database, '')) s.*
   FROM pgvigil.alert_rule_scope s
  ORDER BY s.instance_id, s.metric, coalesce(s.database, ''), s.level DESC, s.rule_id DESC;
 
--- metric_grid: the Metrics page's rows. The thresholds of a row are the most specific rule covering the instance: for
--- one database's series a rule naming that database first, then the instance's, a tag's, the fleet's.
+-- metric_rule: the thresholds in force for one metric of one instance as the Metrics grid and a row's chart show
+-- them: the most specific rule covering the instance; for one database's series (p_database) a rule naming that
+-- database first, then the instance's, a tag's, the fleet's. No row = no threshold.
+CREATE OR REPLACE FUNCTION pgvigil.metric_rule(p_instance_id int, p_key text, p_database text DEFAULT NULL)
+RETURNS TABLE (rule_id bigint, rule_name text, op text, warning double precision, critical double precision, for_minutes int,
+               rule_scope text, rule_target text, rule_database text)
+LANGUAGE sql STABLE AS $$
+  SELECT s.rule_id, s.name, s.op, s.warning, s.critical, s.for_minutes, s.scope, coalesce(s.tag, s.instance_name), s.database
+    FROM pgvigil.alert_rule_scope s
+   WHERE s.instance_id = p_instance_id AND s.metric = p_key AND (s.database IS NULL OR s.database = p_database)
+   ORDER BY (s.database IS NOT NULL) DESC, s.level DESC, s.rule_id DESC
+   LIMIT 1
+$$;
+
+-- metric_status: one figure against a row's thresholds: critical, warning or ok; NULL without a figure or a threshold
+CREATE OR REPLACE FUNCTION pgvigil.metric_status(p_op text, p_value double precision, p_warning double precision, p_critical double precision)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN p_value IS NULL OR p_op IS NULL OR (p_warning IS NULL AND p_critical IS NULL) THEN NULL
+              WHEN p_op = 'above' AND p_value > p_critical THEN 'critical'
+              WHEN p_op = 'below' AND p_value < p_critical THEN 'critical'
+              WHEN p_op = 'above' AND p_value > p_warning THEN 'warning'
+              WHEN p_op = 'below' AND p_value < p_warning THEN 'warning'
+              ELSE 'ok' END
+$$;
+
+-- metric_grid: the Metrics page's rows, each with the thresholds metric_rule gives it.
 CREATE OR REPLACE FUNCTION pgvigil.metric_grid(p_instance_id int, p_from timestamptz, p_to timestamptz,
                                                p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
 RETURNS TABLE (key text, family text, family_label text, metric text, label text, unit text, per_database boolean,
@@ -396,17 +421,11 @@ BEGIN
     SELECT c.key, c.family, c.family_label, c.metric, c.label, c.unit, c.per_database,
            CASE WHEN c.per_database THEN p_database END,
            a.mx, a.mn, a.av, a.cur, a.cur_at, coalesce(a.n, 0),
-           t.rule_id, t.name, t.op, t.warning, t.critical, t.for_minutes, t.scope, coalesce(t.tag, t.instance_name), t.database,
+           t.rule_id, t.rule_name, t.op, t.warning, t.critical, t.for_minutes, t.rule_scope, t.rule_target, t.rule_database,
            c.family_sort, c.sort
       FROM pgvigil.metric_catalog c
       LEFT JOIN a ON a.metric = c.metric
-      LEFT JOIN LATERAL (
-        SELECT s.rule_id, s.name, s.op, s.warning, s.critical, s.for_minutes, s.scope, s.tag, s.instance_name, s.database
-          FROM pgvigil.alert_rule_scope s
-         WHERE s.instance_id = p_instance_id AND s.metric = c.key
-           AND (s.database IS NULL OR (c.per_database AND s.database = p_database))
-         ORDER BY (s.database IS NOT NULL) DESC, s.level DESC, s.rule_id DESC
-         LIMIT 1) t ON true
+      LEFT JOIN LATERAL pgvigil.metric_rule(p_instance_id, c.key, p_database) t ON true
      WHERE c.family = f.family AND c.engine IN (v_engine, 'any');
   END LOOP;
 END $$;
@@ -510,7 +529,11 @@ BEGIN
                         AND (s.state = EXCLUDED.state OR (EXCLUDED.state = 'nodata' AND s.state IN ('warning', 'critical')))
                    THEN s.since ELSE EXCLUDED.since END,
       value = coalesce(EXCLUDED.value, s.value), threshold = coalesce(EXCLUDED.threshold, s.threshold),
-      sample_at = coalesce(EXCLUDED.sample_at, s.sample_at), beyond_since = coalesce(EXCLUDED.beyond_since, s.beyond_since),
+      sample_at = coalesce(EXCLUDED.sample_at, s.sample_at),
+      -- a run longer than the evaluation window keeps its first start (the window slides past it), and so does a held row
+      beyond_since = CASE WHEN s.rule_id = EXCLUDED.rule_id AND s.state IN ('warning', 'critical')
+                               AND EXCLUDED.state IN (s.state, 'nodata')
+                          THEN least(s.beyond_since, EXCLUDED.beyond_since) ELSE EXCLUDED.beyond_since END,
       rule_id = EXCLUDED.rule_id, evaluated_at = EXCLUDED.evaluated_at
     RETURNING s.instance_id, s.metric, s.database, s.rule_id, s.state
   ), began AS (         -- the rows that began to fire in this run
@@ -641,10 +664,23 @@ BEGIN
     ELSIF v_db IS NOT NULL AND NOT v_cat.per_database THEN
       v_why := format('%s has no per-database series: leave the database empty', v_metric);
     ELSE
-      v_warn := (p_payload->>'warning')::double precision;
-      v_crit := (p_payload->>'critical')::double precision;
+      BEGIN
+        v_warn := (p_payload->>'warning')::double precision;
+        v_crit := (p_payload->>'critical')::double precision;
+      EXCEPTION WHEN numeric_value_out_of_range OR invalid_text_representation THEN
+        v_why := 'warning and critical must be finite numbers';
+      END;
       v_for := coalesce(p_payload->>'for_minutes', '5')::int;
-      IF v_scope = 'instance' THEN
+      IF v_why IS NOT NULL THEN
+        NULL;
+      ELSIF v_for > 1440 THEN
+        v_why := 'for_minutes is a whole number of minutes, 0 to 1440';
+      ELSIF v_warn IS NULL AND v_crit IS NULL THEN
+        v_why := 'a rule needs a warning or a critical value';
+      ELSIF (v_dir = 'above' AND v_crit < v_warn) OR (v_dir = 'below' AND v_crit > v_warn) THEN
+        v_why := format('critical must be at or beyond warning (%s: critical %s warning)', v_dir,
+                        CASE v_dir WHEN 'above' THEN '>=' ELSE '<=' END);
+      ELSIF v_scope = 'instance' THEN
         SELECT i.instance_id, i.engine INTO v_iid, v_engine FROM pgvigil.instances i WHERE i.name = v_inst AND i.is_active;
         IF v_iid IS NULL THEN
           v_why := format('no active instance %L', v_inst);
