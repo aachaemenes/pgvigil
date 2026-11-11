@@ -36,7 +36,8 @@ const verdict = (r: Row): string => {
   }
 };
 
-// bestPractice: the grid of rule-covered settings, worst first; nothing when the store predates the rules read.
+// bestPractice: the grid of rule-covered settings, worst first; nothing when the server or its store predates the
+// rules read (the reply then has no 'rules' table).
 function bestPractice(rules: Row[]): HTMLElement[] {
   if (!rules.length) return [];
   const sorted = [...rules].sort((a, b) => (rank[statusOfRule(a)] ?? 9) - (rank[statusOfRule(b)] ?? 9) || String(a.setting).localeCompare(String(b.setting)));
@@ -45,7 +46,8 @@ function bestPractice(rules: Row[]): HTMLElement[] {
     { key: 'setting' },
     { key: 'value', label: 'value in use', cls: (_v, r) => { const s = statusOfRule(r); return s ? 'status ' + s : ''; },
       fmt: (v, r) => { const c = valueCell(v); return r.is_set === true ? c : el('span', { title: 'the built-in default: nothing sets it' }, c, ' (default)'); } },
-    { key: 'suggested', label: 'best practice', fmt: valueCell },
+    // the value a broken rule asks for; a met rule asks for nothing, so its cell stays empty
+    { key: 'suggested', label: 'suggested', fmt: (v, r) => { const s = statusOfRule(r); return s === 'crit' || s === 'warn' ? valueCell(v) : ''; } },
     { key: 'status', label: 'verdict', fmt: (_v, r) => verdict(r) },
     { key: 'detail', label: 'what the rule guards against', wide: true },
     { key: 'platforms', label: 'rule applies to' },
@@ -72,6 +74,10 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
   const ruleOf = new Map(rules.map(r => [String(r.setting), r]));
   // a setting a rule covers carries the rule's colour on its value here too (grey 'not for this platform' stays plain)
   const valueCls = (_v: unknown, r: Row) => { const s = statusOfRule(ruleOf.get(String(r.name))); return s && s !== 'none' ? 'status ' + s : ''; };
+  // the colour never stands alone: the verdict is the value's title and a column of its own (the export carries it)
+  const ruleVerdict = (r: Row): string => { const x = ruleOf.get(String(r.name)); return x && statusOfRule(x) !== 'none' ? verdict(x) : ''; };
+  const valueFmt = (v: unknown, r: Row): string | Node => { const t = ruleVerdict(r); return t ? el('span', { title: 'best practice: ' + t }, valueCell(v)) : valueCell(v); };
+  const bp: Col[] = rules.length ? [{ key: 'best_practice', label: 'best practice', fmt: (_v, r) => ruleVerdict(r) }] : [];
   if (!rows.length) { box.append(el('p', { class: 'empty' }, 'No non-default settings recorded.')); return box; }
   const detail = rows.some(r => r.detail_read === true);
   const pending = rows.filter(r => r.pending_restart === true).length;
@@ -79,7 +85,8 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
   const name = (v: unknown) => changed.has(String(v)) ? el('b', { title: 'changed in this range' }, String(v) + ' *') : String(v ?? '');
   const cols: Col[] = detail ? [
     { key: 'name', label: 'setting', fmt: name },
-    { key: 'value', fmt: valueCell, cls: valueCls },
+    { key: 'value', fmt: valueFmt, cls: valueCls },
+    ...bp,
     { key: 'unit' },
     { key: 'default_value', label: 'default', fmt: valueCell },
     { key: 'source' },
@@ -88,7 +95,8 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
     { key: 'category' },
   ] : [
     { key: 'name', label: 'setting', fmt: name },
-    { key: 'value', fmt: valueCell, cls: valueCls },
+    { key: 'value', fmt: valueFmt, cls: valueCls },
+    ...bp,
   ];
   box.append(
     el('p', { class: 'meta' }, `${fmtNum(nonDefault)} non-default setting(s) at the server level`

@@ -17,9 +17,12 @@
 #             every status one of crit / warn / ok / none; the settings with status crit or warn
 #             are exactly the settings of the instance's setting findings (sources pg_gather, pg-collector)
 #   fleet     over the demo fleet at least one setting is ok and at least one is warn or crit (both colours are drawn)
-#   flip      an instance whose autovacuum row is ok: with autovacuum off written into its instance read the row
-#             turns crit with severity critical and pgvigil.findings gains its row; with the read put back the row is
-#             ok again and the finding is gone
+#   flip      an instance whose autovacuum row is ok, inside one transaction that is rolled back (the demo's own tick
+#             cannot interleave and nothing is left behind): with autovacuum off written into its instance read the row
+#             turns crit with severity critical and pgvigil.findings gains its row; after the rollback the row is ok
+#             again and the finding is gone
+#   pg13      the same transaction with the instance read as PostgreSQL 13: default_toast_compression and
+#             idle_session_timeout (both arrived in 14) are 'none', never green; the grid still has 41 rows
 #   api       GET /api/pgconfig?instance=<id> answers 200 with a 'rules' table whose columns hold setting, value,
 #             suggested, status, severity, detail, platforms and whose row count equals the grid's
 #   bundle    internal/web/dist/app.js carries the grid's heading 'Best practice' and its verdict words
@@ -31,7 +34,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
-  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
+  psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>"$WORK/drop.err" || echo "cleanup: the database $DB was NOT dropped: $(tr '\n' ' ' < "$WORK/drop.err")" >&2
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -80,7 +83,7 @@ G=$(q "WITH i AS (SELECT DISTINCT instance_id FROM pgvigil.setting_rules),
             g AS (SELECT i.instance_id, r.* FROM i, pgvigil.pg_setting_rules(i.instance_id) r),
             want AS (SELECT instance_id, count(DISTINCT setting) n FROM pgvigil.setting_rules GROUP BY 1),
             got AS (SELECT instance_id, count(*) n, count(DISTINCT setting) d FROM g GROUP BY 1)
-       SELECT (SELECT count(*) FROM want w JOIN got o USING (instance_id) WHERE w.n <> o.n OR o.n <> o.d OR o.n <> 41) || ' ' ||
+       SELECT (SELECT count(*) FROM want w LEFT JOIN got o USING (instance_id) WHERE o.n IS NULL OR w.n <> o.n OR o.n <> o.d OR o.n <> 41) || ' ' ||
               (SELECT count(*) FROM g WHERE status NOT IN ('crit', 'warn', 'ok', 'none')) || ' ' ||
               (SELECT count(*) FROM (
                  (SELECT instance_id, setting FROM g WHERE status IN ('crit', 'warn')
@@ -98,18 +101,27 @@ ok "grid: one row per rule-covered setting on every instance ($GALL rows), every
 [[ "$GOK" -gt 0 && "$GDEV" -gt 0 ]] || fail "fleet: $GOK ok and $GDEV deviating settings: both colours must be drawn"
 ok "fleet: $GOK settings meet their rule, $GDEV deviate"
 
-echo "== flip"
+echo "== flip and pg13 (one transaction, rolled back)"
 ID=$(q "SELECT i.instance_id FROM (SELECT DISTINCT instance_id FROM pgvigil.setting_rules) i, pgvigil.pg_setting_rules(i.instance_id) r WHERE r.setting = 'autovacuum' AND r.status = 'ok' ORDER BY 1 LIMIT 1")
 [[ -n "$ID" ]] || fail "no instance with autovacuum ok in the demo"
-q "CREATE TABLE public.bestp_keep AS SELECT instance_id, non_default_settings FROM pgvigil.instance_state WHERE instance_id = $ID" >/dev/null
-q "UPDATE pgvigil.instance_state SET non_default_settings = (SELECT coalesce(jsonb_agg(e), '[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(non_default_settings) = 'array' THEN non_default_settings ELSE '[]'::jsonb END) e WHERE e->>'name' <> 'autovacuum') || '[{\"name\": \"autovacuum\", \"value\": \"off\"}]'::jsonb WHERE instance_id = $ID" >/dev/null
-F=$(q "SELECT status || ' ' || coalesce(severity, '-') || ' ' || (SELECT count(*) FROM pgvigil.findings WHERE instance_id = $ID AND setting = 'autovacuum') FROM pgvigil.pg_setting_rules($ID) WHERE setting = 'autovacuum'")
-[[ "$F" == "crit critical 1" ]] || fail "flip: autovacuum off on instance $ID gives '$F', expected 'crit critical 1'"
-q "UPDATE pgvigil.instance_state s SET non_default_settings = k.non_default_settings FROM public.bestp_keep k WHERE s.instance_id = k.instance_id" >/dev/null
-F=$(q "SELECT status || ' ' || coalesce(severity, '-') || ' ' || (SELECT count(*) FROM pgvigil.findings WHERE instance_id = $ID AND setting = 'autovacuum') FROM pgvigil.pg_setting_rules($ID) WHERE setting = 'autovacuum'")
-[[ "$F" == "ok - 0" ]] || fail "flip: autovacuum put back on instance $ID gives '$F', expected 'ok - 0'"
-q "DROP TABLE public.bestp_keep" >/dev/null
-ok "flip: instance $ID autovacuum off -> crit critical with its finding; put back -> ok, the finding gone"
+AV="SELECT status || ' ' || coalesce(severity, '-') || ' ' || (SELECT count(*) FROM pgvigil.findings WHERE instance_id = $ID AND setting = 'autovacuum') FROM pgvigil.pg_setting_rules($ID) WHERE setting = 'autovacuum'"
+cat > "$WORK/flip.sql" <<SQL
+BEGIN;
+UPDATE pgvigil.instance_state SET non_default_settings = (SELECT coalesce(jsonb_agg(e), '[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(non_default_settings) = 'array' THEN non_default_settings ELSE '[]'::jsonb END) e WHERE e->>'name' <> 'autovacuum') || '[{"name": "autovacuum", "value": "off"}]'::jsonb WHERE instance_id = $ID;
+SELECT 'flip ' || x FROM ($AV) t(x);
+UPDATE pgvigil.instance_state SET server_version_num = 130012 WHERE instance_id = $ID;
+SELECT 'pg13 ' || string_agg(setting || '=' || status, ' ' ORDER BY setting) FROM pgvigil.pg_setting_rules($ID) WHERE setting IN ('default_toast_compression', 'idle_session_timeout');
+SELECT 'pg13n ' || count(*) FROM pgvigil.pg_setting_rules($ID);
+ROLLBACK;
+SELECT 'after ' || x FROM ($AV) t(x);
+SQL
+OUT=$(psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -v ON_ERROR_STOP=1 -f "$WORK/flip.sql")
+grep -qx 'flip crit critical 1' <<< "$OUT" || fail "flip: autovacuum off on instance $ID gives '$(grep '^flip ' <<< "$OUT")', expected 'flip crit critical 1'"
+grep -qx 'after ok - 0' <<< "$OUT" || fail "flip: after the rollback instance $ID gives '$(grep '^after ' <<< "$OUT")', expected 'after ok - 0'"
+ok "flip: instance $ID autovacuum off -> crit critical with its finding; rolled back -> ok, the finding gone"
+grep -qx 'pg13 default_toast_compression=none idle_session_timeout=none' <<< "$OUT" || fail "pg13: '$(grep '^pg13 ' <<< "$OUT")', expected both settings none"
+grep -qx 'pg13n 41' <<< "$OUT" || fail "pg13: '$(grep '^pg13n ' <<< "$OUT")', expected 41 grid rows"
+ok "pg13: read as PostgreSQL 13 the two settings that arrived in 14 are 'none'; the grid keeps 41 rows"
 
 echo "== api"
 N=$(q "SELECT count(*) FROM pgvigil.pg_setting_rules($ID)")

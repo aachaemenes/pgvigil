@@ -6,7 +6,9 @@
 
 -- setting_rules: one row per rule and instance. hit: the value in use breaks the rule (a value the rule cannot
 -- read is not a hit). applies: the rule is meant for this instance's platform (the 'platforms' label: all,
--- self-managed = on-premises, managed = any cloud platform, not aurora, replica).
+-- self-managed = on-premises, managed = any cloud platform, not aurora, replica) and for its version: instance_settings
+-- lists every setting for every instance, so the two settings PostgreSQL 13 does not have (default_toast_compression,
+-- idle_session_timeout: both arrived in 14) do not apply there.
 CREATE OR REPLACE VIEW pgvigil.setting_rules AS
 WITH v AS (
   SELECT instance_id, snapshot_at, platform, server_version_num, is_replica, name, value, is_set,
@@ -90,16 +92,16 @@ WITH v AS (
 )
 SELECT v.instance_id, r.severity, r.name AS setting, v.value, v.is_set, r.suggested, r.platforms, r.detail,
        'pg_gather'::text AS source, v.snapshot_at AS at, coalesce(r.hit, false) AS hit,
-       CASE r.platforms WHEN 'self-managed' THEN v.platform = 'onprem' WHEN 'managed' THEN v.platform <> 'onprem'
+       (CASE r.platforms WHEN 'self-managed' THEN v.platform = 'onprem' WHEN 'managed' THEN v.platform <> 'onprem'
                         WHEN 'not aurora' THEN v.platform <> 'aurora' WHEN 'replica' THEN coalesce(v.is_replica, false)
-                        ELSE true END AS applies
+                        ELSE true END) AND NOT (v.server_version_num < 140000 AND r.name IN ('default_toast_compression', 'idle_session_timeout')) AS applies
   FROM r JOIN v ON v.instance_id = r.instance_id AND v.name = r.name
 UNION ALL
 SELECT v.instance_id, c.severity, c.name, v.value, v.is_set, c.suggested, c.platforms, c.detail,
        'pg-collector', v.snapshot_at, coalesce(c.hit, false),
-       CASE c.platforms WHEN 'self-managed' THEN v.platform = 'onprem' WHEN 'managed' THEN v.platform <> 'onprem'
+       (CASE c.platforms WHEN 'self-managed' THEN v.platform = 'onprem' WHEN 'managed' THEN v.platform <> 'onprem'
                         WHEN 'not aurora' THEN v.platform <> 'aurora' WHEN 'replica' THEN coalesce(v.is_replica, false)
-                        ELSE true END
+                        ELSE true END) AND NOT (v.server_version_num < 140000 AND c.name IN ('default_toast_compression', 'idle_session_timeout'))
   FROM c JOIN v ON v.instance_id = c.instance_id AND v.name = c.name;
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -197,7 +199,8 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
 -- pg_setting_rules: the best-practice grid of one instance, one row per setting a rule covers. status: 'crit' a
 -- critical rule is broken, 'warn' a warning or an advice (info) rule is broken, 'ok' every rule of the setting that
 -- applies to this platform is met, 'none' no rule of the setting applies here. severity and detail are the worst
--- broken rule's (critical before warning before info); for a met setting detail is what its first rule guards against.
+-- broken rule's (critical before warning before info); for a met setting they are those of a rule that applies here
+-- (a rule that applies always sorts before one that does not), and suggested is then the value that rule would ask for.
 CREATE OR REPLACE FUNCTION pgvigil.pg_setting_rules(p_instance_id int)
 RETURNS TABLE (setting text, value text, is_set boolean, suggested text, status text, severity text, platforms text,
                detail text, rules int, snapshot_at timestamptz)
@@ -211,5 +214,5 @@ LANGUAGE sql STABLE AS $$
     FROM pgvigil.setting_rules s
    WHERE s.instance_id = p_instance_id
   WINDOW w AS (PARTITION BY s.setting)
-   ORDER BY s.setting, (s.hit AND s.applies) DESC, CASE s.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, s.applies DESC, s.detail
+   ORDER BY s.setting, (s.hit AND s.applies) DESC, s.applies DESC, CASE s.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, s.detail
 $$;

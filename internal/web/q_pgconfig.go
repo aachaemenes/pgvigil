@@ -1,6 +1,12 @@
 package web
 
-import "net/http"
+import (
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/jackc/pgx/v5/pgconn"
+)
 
 // The PostgreSQL Configuration grid (task 132; Darling's Configuration tab: setting, value, unit, default, source,
 // what a change needs, pending restart). Route, wired in Handler:
@@ -21,8 +27,24 @@ func (s *Server) PGConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	s.multi(w, r, []part{
-		{"settings", `SELECT * FROM pgvigil.pg_config_settings($1)`, []any{id}},
-		{"rules", `SELECT * FROM pgvigil.pg_setting_rules($1)`, []any{id}},
-	})
+	out := map[string]*table{}
+	settings, err := s.query(r.Context(), `SELECT * FROM pgvigil.pg_config_settings($1)`, id)
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("settings: %w", err))
+		return
+	}
+	out["settings"] = settings
+	// The rules read arrived with migration 0099. A store this binary has not migrated yet answers 'function does
+	// not exist' (42883): the reply then carries the settings alone and the page draws its Settings grid as before.
+	rules, err := s.query(r.Context(), `SELECT * FROM pgvigil.pg_setting_rules($1)`, id)
+	var pg *pgconn.PgError
+	switch {
+	case err == nil:
+		out["rules"] = rules
+	case errors.As(err, &pg) && pg.Code == "42883":
+	default:
+		s.reply(w, r, nil, fmt.Errorf("rules: %w", err))
+		return
+	}
+	s.reply(w, r, out, nil)
 }
