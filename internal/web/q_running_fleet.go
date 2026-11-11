@@ -10,9 +10,10 @@ import (
 //
 // GET /api/running/fleet (Server.RunningFleet): one row per active instance, both engines, from its NEWEST
 // snapshot: how old it is by the repository's clock, the sessions, the blocked ones and the heads of their chains,
-// the longest blocked wait, the longest running statement and the oldest open transaction. An instance without a
-// snapshot keeps its row with the snapshot empty. Reads activity_summary, activity_sample and query_text
-// (PostgreSQL) and mssql_requests_summary and mssql_requests_v (SQL Server).
+// the longest blocked wait, the longest running statement and the oldest open transaction; on SQL Server also the
+// memory grants and the tempdb page latch waits of the snapshot. An instance without a snapshot keeps its row with
+// the snapshot empty. Reads activity_summary, activity_sample and query_text (PostgreSQL) and mssql_requests_summary
+// and mssql_requests_v (SQL Server).
 // GET /api/running/snapshots?instance=<id>[&at=] (Server.RunningSnapshots): the PostgreSQL snapshot shown (the
 // newest at or before at), the one before it, the one after it and the newest of all: the Earlier, Later and Latest
 // buttons of the instance's page.
@@ -27,6 +28,19 @@ import (
 // A SQL Server row takes blocked, heads and the longest wait from the snapshot's own summary (the server measures
 // the wait), counts as idle in transaction a session without a request that holds an open transaction, and leaves a
 // request whose wait is idle background work (wait_is_benign) out of the longest statement.
+//
+// A SQL Server row also carries, from the same snapshot's rows (DBA Dash's Running Queries at the root; NULL on a
+// PostgreSQL row, which has neither):
+//   max_grant_kb, sum_grant_kb        the largest and the summed memory grant of the requests that hold one
+//   tempdb_waits, tempdb_wait_ms      the requests waiting for a page LATCH on a tempdb page (PAGELATCH_* on
+//                                     2:<file>:<page>; never PAGEIOLATCH_*, which is the disk) and their summed wait
+//   tempdb_alloc_waits, _wait_ms      those of them on an allocation page (PFS, GAM, SGAM): the contention more tempdb
+//                                     data files relieve. pgvigil.mssql_tempdb_page_kind (0084) names the page.
+// These are the waits in progress at the snapshot, not a total: the Waits page has what ended. A request's row
+// carries its coordinator's wait: a parallel request whose workers wait for a tempdb page shows CXPACKET or
+// CXCONSUMER and is not counted here. DBA Dash's third
+// pair, the waits on tempdb's system tables' pages (metadata contention), is not here: the snapshot does not store
+// which object a page belongs to.
 
 // sqlRunningFleet: both engines in one read, the instances with the most blocked sessions first.
 const sqlRunningFleet = `
@@ -35,7 +49,9 @@ SELECT i.instance_id, i.name AS instance, i.engine, a.snapshot_at,
        a.total::bigint AS sessions, a.active::bigint AS active, a.idle_in_txn::bigint AS idle_in_txn,
        x.blocked::bigint AS blocked, h.heads::bigint AS heads, x.longest_wait_secs::bigint AS longest_wait_secs,
        l.secs::bigint AS longest_stmt_secs, l.session AS longest_stmt_session, l.statement AS longest_stmt,
-       x.oldest_txn_secs::bigint AS oldest_txn_secs
+       x.oldest_txn_secs::bigint AS oldest_txn_secs,
+       NULL::bigint AS max_grant_kb, NULL::bigint AS sum_grant_kb, NULL::bigint AS tempdb_waits, NULL::bigint AS tempdb_wait_ms,
+       NULL::bigint AS tempdb_alloc_waits, NULL::bigint AS tempdb_alloc_wait_ms
   FROM pgvigil.instances i
   LEFT JOIN LATERAL (SELECT s.snapshot_at, s.total, s.active, s.idle_in_txn
                        FROM pgvigil.activity_summary s
@@ -70,15 +86,26 @@ SELECT i.instance_id, i.name, i.engine, m.snapshot_at,
        m.sessions::bigint, m.requests::bigint, r.idle_in_txn::bigint,
        m.blocked::bigint, m.heads::bigint, floor(m.longest_wait_ms / 1000.0)::bigint,
        floor(l.elapsed_ms / 1000.0)::bigint, l.session_id, l.statement,
-       floor(r.oldest_tran_ms / 1000.0)::bigint
+       floor(r.oldest_tran_ms / 1000.0)::bigint,
+       r.max_grant_kb::bigint, r.sum_grant_kb::bigint, r.tempdb_waits::bigint, r.tempdb_wait_ms::bigint,
+       r.tempdb_alloc_waits::bigint, r.tempdb_alloc_wait_ms::bigint
   FROM pgvigil.instances i
   LEFT JOIN LATERAL (SELECT s.snapshot_at, s.sessions, s.requests, s.blocked, s.heads, s.longest_wait_ms
                        FROM pgvigil.mssql_requests_summary s
                       WHERE s.instance_id = i.instance_id
                       ORDER BY s.snapshot_at DESC LIMIT 1) m ON true
   LEFT JOIN LATERAL (SELECT count(DISTINCT q.session_id) FILTER (WHERE q.request_id IS NULL AND q.open_tran > 0) AS idle_in_txn,
-                            max(q.tran_age_ms) AS oldest_tran_ms
+                            max(q.tran_age_ms) AS oldest_tran_ms,
+                            -- a snapshot without a grant reads 0, as one without a tempdb latch wait does
+                            coalesce(max(q.granted_memory_kb) FILTER (WHERE q.granted_memory_kb > 0), 0) AS max_grant_kb,
+                            coalesce(sum(q.granted_memory_kb) FILTER (WHERE q.granted_memory_kb > 0), 0) AS sum_grant_kb,
+                            count(*) FILTER (WHERE k.kind IS NOT NULL) AS tempdb_waits,
+                            coalesce(sum(q.wait_ms) FILTER (WHERE k.kind IS NOT NULL), 0) AS tempdb_wait_ms,
+                            count(*) FILTER (WHERE k.kind IN ('pfs', 'gam', 'sgam')) AS tempdb_alloc_waits,
+                            coalesce(sum(q.wait_ms) FILTER (WHERE k.kind IN ('pfs', 'gam', 'sgam')), 0) AS tempdb_alloc_wait_ms
                        FROM pgvigil.mssql_requests_v q
+                      -- the function is called for a page latch wait only: it is not inlined, and a fleet's snapshots hold many rows
+                      CROSS JOIN LATERAL (SELECT CASE WHEN q.wait_type LIKE 'PAGELATCH%' THEN pgvigil.mssql_tempdb_page_kind(q.wait_type, q.wait_resource) END AS kind) k
                       WHERE q.instance_id = i.instance_id AND q.snapshot_at = m.snapshot_at) r ON m.snapshot_at IS NOT NULL
   LEFT JOIN LATERAL (SELECT q.elapsed_ms, q.session_id, left(q.statement, 4000) AS statement
                        FROM pgvigil.mssql_requests_v q
