@@ -296,14 +296,14 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       const ak = (r._acked as Acked)[g.key];
       if (ak) {
         // acknowledged: no colour, the reading kept with 'ack:' before it, who and when in its title
-        const l = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}, ${ackWords(ak)}`, 'data-text': 'ack: ' + cellText(c) }, 'ack: ' + cellText(c));
+        const l = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(r.engine !== 'sqlserver' && g.kind ? { kind: g.kind } : {}) }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}, ${ackWords(ak)}`, 'data-text': 'ack: ' + cellText(c) }, 'ack: ' + cellText(c));
         l.title = ackWords(ak) + (c.detail.length ? '\n' + c.detail.slice(0, 12).join('\n') : '');
         return l;
       }
       // a green cell says nothing: the colour is the status, and text is kept for a count, a value or 'no sample'
       // (the link keeps its name for a screen reader and the export)
       const quiet = !c.none && c.level === 0 && !c.text;
-      const a = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u2713' : cellText(c));
+      const a = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(r.engine !== 'sqlserver' && g.kind ? { kind: g.kind } : {}) }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u2713' : cellText(c));
       if (c.detail.length) a.title = c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
       return a;
     },
@@ -628,7 +628,8 @@ export async function logs(ctx: Ctx): Promise<HTMLElement> {
     return v;
   }
   const kind = ctx.logKind && logKinds[ctx.logKind] ? ctx.logKind : undefined;
-  const d = await get<Record<'counts' | 'events', Table>>('logs', { instance: ctx.instance, kind, ...range(ctx) });
+  const win = range(ctx);   // one window for the read and its strip (a preset's 'now' is the read's)
+  const d = await get<Record<'counts' | 'events', Table>>('logs', { instance: ctx.instance, kind, ...win });
   const counts = new Map(rowsOf(d.counts).map(r => [String(r.kind), Number(r.events)]));
   const total = [...counts.values()].reduce((a, b) => a + b, 0);
   const tabs = el('div', { class: 'subtabs' },
@@ -643,7 +644,7 @@ export async function logs(ctx: Ctx): Promise<HTMLElement> {
     { key: 'statement', wide: true }, { key: 'detail', wide: true },
   ];
   return el('section', {}, el('h2', {}, `Log events (${rangeLabel(ctx)})`), tabs,
-    stripGrid('Log events', range(ctx), rowsOf(d.events), 'at', cols, 'No log events in this range (the logs collection reads the server log where it is configured).'));
+    stripGrid('Log events', win, rowsOf(d.events), 'at', cols, 'No log events in this range (the logs collection reads the server log where it is configured).', 1000));
 }
 
 // ---- Configuration: instance_state with the change history

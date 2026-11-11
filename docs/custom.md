@@ -399,7 +399,7 @@ replication slots are the read there.
 | --- | --- |
 | connection | every collection connects; a failing one is the daily check "collection failing" |
 | database_size, relation_size, table_size, index_size, indexes_size, total_relation_size | the databases and tables collections (Growth, Tables, Database info) |
-| dbstats | the dbstats collection (Counters) |
+| dbstats | the dbstats collection (Metrics) |
 | disk_space | the host collection (Host, Disk report) |
 | hot_standby_delay | the replication collection (Replication) |
 | last_vacuum, last_autovacuum, last_analyze, last_autoanalyze | the vacuum collection (Vacuum) |

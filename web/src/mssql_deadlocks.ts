@@ -10,6 +10,7 @@ import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
 import { DlGraph, deadlockSvg, graphFromRows, graphFromXml, resourceKind, sessionName } from './deadlock_graph';
 import { sqlCell } from './sqlview';
+import { stripGrid } from './timestrip';
 
 const text = (v: unknown) => v == null ? '' : String(v);
 const ms = (v: unknown) => v == null ? '' : fmtNum(v) + ' ms';
@@ -157,7 +158,7 @@ export async function mssqlDeadlocksView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'victim_statement', label: 'the victim\'s statement', fmt: (v, r) => sqlCell(v, { heading: `the victim of ${fmtTime(r.event_at)}: statement` }) },
       { key: 'source', label: 'read from', fmt: v => v === 'system_health' ? 'system_health' : 'pgvigil\'s session' },
     ];
-    sec.append(grid(rows, cols, 'No deadlock in this window.'), panel);
+    sec.append(stripGrid('Deadlocks', win, rows, 'event_at', cols, 'No deadlock in this window.', 500), panel);
     // the newest opens by itself, so the page shows a drawn graph without a click
     if (rows.length) void openDeadlock(ctx, rows[0], panel, false);
   } catch (e) {

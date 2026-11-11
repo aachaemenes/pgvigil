@@ -28,7 +28,7 @@ export function forget() { cache = null; }
 // check_group names; activity is read from the instance row's latest session summary.
 // mssql: the group's key in the SQL Server read (/api/mssql/summary) and the SQL Server tab its cell opens; a group
 // without it is a PostgreSQL check.
-export interface Group { key: string; label: string; checks: string[]; tab: string; mssql?: [string, string, string?]; mssqlOnly?: boolean }   // the third: the group's name on a SQL Server page
+export interface Group { key: string; label: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?]; mssqlOnly?: boolean }   // kind: the Metrics family a PostgreSQL cell opens   // the third: the group's name on a SQL Server page
 export const groups: Group[] = [
   { key: 'collect', label: 'Collection', checks: ['collection failing', 'collection stale'], tab: 'summary' },
   { key: 'activity', label: 'Activity', checks: [], tab: 'activity', mssql: ['blocking', 'mssql_running', 'Blocking'] },
@@ -38,7 +38,7 @@ export const groups: Group[] = [
   { key: 'dms', label: 'DMS', checks: ['dms'], tab: 'dms' },
   { key: 'tables', label: 'Tables', checks: ['tables'], tab: 'tables' },
   { key: 'vacuum', label: 'Vacuum', checks: ['vacuum'], tab: 'vacuum' },
-  { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters', mssql: ['events', 'mssql_deadlocks', 'Deadlocks and blocked reports'] },
+  { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters', kind: 'database', mssql: ['events', 'mssql_deadlocks', 'Deadlocks and blocked reports'] },
   { key: 'host', label: 'Host', checks: ['host', 'pi'], tab: 'host' },   // 'pi': cache starved by the ACU floor (the Capacity section sits on the Host tab)
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
   { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage', mssql: ['storage', 'mssqlstorage'] },

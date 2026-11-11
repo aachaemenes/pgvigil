@@ -33,13 +33,16 @@
 #                 from the zone's midnight, the page live; a chart's legend and readout name the same minute, 17 h (16 in
 #                 summer) ahead of the browser zone's; a Log events row as the zone writes its instant; after a reload the
 #                 tag and the stored zone stand; Escape closes the panel with the focus on its button; Browser time: the
-#                 browser's own offset, stored 'local'; a click outside closes it
-#   O time strip  erp01's Log events over a fixed day: 60 steps, 'Whole range. Drag ...', every row drawn (200 at most); a
-#                 drag over steps 30-59: '<from> to <to>: k of n rows.' with k the API's count for that half, k drawn, 30
-#                 steps dimmed, 'Whole range' offered; its click: all rows, none dimmed; Home, three right, two with Shift,
-#                 Enter: the rows of steps 3-5, 57 dimmed; Escape: all rows again
-#   P new page at its top  the fleet Summary (taller than the window) scrolled to its end; the lowest link in it to
-#                 another page clicked: that page opens at scrollY 0
+#                 browser's own offset, stored 'local'; a click outside closes it; another address with the focus in the
+#                 open panel closes it and puts the focus on the range button
+#   O time strip  erp01's Log events over a fixed day ending 3 min back: 60 steps, 'Whole range. Drag ...', every row in
+#                 the grid; sorted by ms, a drag over steps 30-59: '<from> to <to>: k of n rows.' with k (> 0) the API's count
+#                 for that half, k in the grid, still sorted, its count line 'k of n rows shown (the stretch ...)', 30 steps
+#                 dimmed, 'Whole range' offered; its click: all rows, none dimmed, still sorted; Home, three right, two with
+#                 Shift, Enter: the rows of steps 3-5 (> 0), 57 dimmed, and the same after the page is drawn again (visibilitychange); Shift+click on step 10: steps 3-10, 52 dimmed; Escape:
+#                 all rows, 'Whole range' hidden; sql01's Deadlocks page has a strip exactly when its read holds 2 or more
+#   P new page at its top  the fleet Summary (taller than the window) scrolled to its end; the lowest link in it to an
+#                 instance's Summary clicked: that page seen rendered, taller than the window, at scrollY 0
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"

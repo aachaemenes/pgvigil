@@ -24,8 +24,8 @@ const findingCols: Col[] = [
   { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
 ];
 
-async function load(ctx: Ctx, part?: XEParts): Promise<XE> {
-  return get<XE>('mssql/xe', { instance: ctx.instance, ...window_(ctx), part });
+async function load(ctx: Ctx, part?: XEParts, win = window_(ctx)): Promise<XE> {
+  return get<XE>('mssql/xe', { instance: ctx.instance, ...win, part });
 }
 
 // The findings of the tab's own checks (the instance's other findings are on the Findings page).
@@ -316,7 +316,8 @@ const agCols: Col[] = [
 export async function mssqlAgEvents(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h3', {}, `Availability events (AlwaysOn_health, ${rangeLabel(ctx)})`));
   try {
-    const d = await load(ctx);
+    const win = window_(ctx);   // one window for the read and its strip
+    const d = await load(ctx, undefined, win);
     const st = rowsOf(d.state).find(r => r.capture === 'ag');
     if (!st) sec.append(el('p', { class: 'meta' }, 'Always On is not enabled on this instance, or the reader has not read it yet.'));
     else if (st.state !== 'running') {
@@ -325,7 +326,7 @@ export async function mssqlAgEvents(ctx: Ctx): Promise<HTMLElement> {
     }
     const f = findingsOf(d, ['an availability replica changed role or state']);
     if (f) sec.append(f);
-    sec.append(stripGrid('Availability events', window_(ctx), rowsOf(d.ag_events), 'event_at', agCols, 'No availability event in this window.'));
+    sec.append(stripGrid('Availability events', win, rowsOf(d.ag_events), 'event_at', agCols, 'No availability event in this window.', 500));
   } catch (e) {
     sec.append(errorBox(e));
   }

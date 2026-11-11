@@ -43,8 +43,8 @@ Measured 2026-11-10 on the local PostgreSQL 18 with a one-minute demo history (t
 `#/performance?i=<id>` - small charts over the range on one time axis (about 120 steps, a minute at least; the steps
 with a sample in any chart). Each title opens the detailed page.
 
-- PostgreSQL: CPU (Host), sessions by state (Counters: sessions), waits by class stacked (Waits), transactions per
-  second (Counters: db), IO latency (IO), IO throughput (Counters: io), temp usage (Counters: db); links to Load,
+- PostgreSQL: CPU (Host), sessions by state (Metrics: Sessions), waits by class stacked (Waits), transactions per
+  second (Metrics: Database), IO latency (IO), IO throughput (Metrics: IO), temp usage (Metrics: Database); links to Load,
   Memory and Pooler under the charts.
 - SQL Server: requests and blocked sessions (Running queries), waits by category stacked (Waits); CPU, transactions
   and IO say "not read".

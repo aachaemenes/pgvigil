@@ -129,8 +129,8 @@ function floorNote(src: Row[], ms: number): string {
 }
 
 export async function slowView(ctx: Ctx): Promise<HTMLElement> {
-  const ms = thresholdOf(ctx), tz = tzOf();
-  const d = await get<Record<Parts, Table | null>>('slowqueries', { instance: ctx.instance, ...window_(ctx), min: ms, tz });
+  const ms = thresholdOf(ctx), tz = tzOf(), win = window_(ctx);   // one window for the read and its strip
+  const d = await get<Record<Parts, Table | null>>('slowqueries', { instance: ctx.instance, ...win, min: ms, tz });
   const src = rowsOf(d.sources), hist = rowsOf(d.histogram), top = rowsOf(d.top);
   const byCount = byRank(top, 'rank_count'), byTotal = byRank(top, 'rank_total');
   const recent = rowsOf(d.recent), sampled = rowsOf(d.sampled);
@@ -153,7 +153,7 @@ export async function slowView(ctx: Ctx): Promise<HTMLElement> {
   sec.append(slowLatencyPanel(ctx));
   sec.append(el('h3', {}, 'Top by count'), grid(byCount, topCols(ctx, 'count', false), 'No slow statement in this window.'));
   sec.append(el('h3', {}, 'Top by total time'), grid(byTotal, topCols(ctx, 'total', false), 'No slow statement in this window.'));
-  sec.append(el('h3', {}, 'Newest slow statements'), stripGrid('Newest slow statements', window_(ctx), recent, 'at', recentCols, 'No slow statement in this window.'));
+  sec.append(el('h3', {}, 'Newest slow statements'), stripGrid('Newest slow statements', win, recent, 'at', recentCols, 'No slow statement in this window.', 500));
   sec.append(el('h3', {}, 'Long runs seen by the activity sampler ', whatIsThis('From the activity samples, not the log: an execution seen running at least the threshold (whole seconds, at least 1 s); '
       + 'sampled, so the duration is a floor. It also catches a statement the log missed (still running, or under log_min_duration_statement).', 'Long runs seen by the activity sampler')),
     grid(sampled, slowCols, 'No execution seen running that long in this window.'));

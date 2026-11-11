@@ -45,7 +45,7 @@ export function rangePicker(ctx: Ctx, onZone: () => void): HTMLElement {
     r.addEventListener('focusout', e => { const to = e.relatedTarget as Node | null; if (panel && to && !r.contains(to)) close(false); });
     document.addEventListener('mousedown', e => { if (panel && !r.contains(e.target as Node)) close(false); });
     window.addEventListener('resize', () => close(false));
-    window.addEventListener('hashchange', () => close(false));
+    window.addEventListener('hashchange', () => close(!!panel && panel.contains(document.activeElement)));   // a focus inside the panel goes back to the button, never to the page's body
   }
   sync();
   return root;

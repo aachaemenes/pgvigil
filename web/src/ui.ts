@@ -196,10 +196,21 @@ export function showMenu(x: number, y: number, items: [string, () => void][], ba
 // GRID_PAGE: the rows a grid draws before its 'show more' line (a 1,000-run job history drew a 32,000 px page)
 export const GRID_PAGE = 200;
 
+// narrowGrid scopes a grid built by grid() to the rows a predicate keeps (the time strip's stretch), without building it
+// again: its sort, filters, open filter row and 'show more' place stay; note names the scope in the grid's count line,
+// which the export and Copy all carry. No predicate = every row again. false = el is not a grid of grid().
+const scopes = new WeakMap<Element, (keep?: (r: Record<string, unknown>) => boolean, note?: string) => void>();
+export function narrowGrid(box: Element, keep?: (r: Record<string, unknown>) => boolean, note = ''): boolean {
+  const set = scopes.get(box);
+  if (set) set(keep, note);
+  return !!set;
+}
+
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
   if (rows.length === 0) return el('p', { class: 'empty' }, empty);
   let sortKey = '', asc = true;
   let shown = rows;
+  let scope: ((r: Record<string, unknown>) => boolean) | undefined, scopeNote = '';   // narrowGrid's predicate and its words
   const filters = new Map<string, string>();
   const table = el('table', { class: 'grid' });
   const thead = el('thead'), tbody = el('tbody');
@@ -247,7 +258,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   let limit = GRID_PAGE;
   const more = el('p', { class: 'meta grid-more', hidden: '' });
   function draw() {
-    let data = [...rows];
+    let data = scope ? rows.filter(scope) : [...rows];
     if (filters.size) {
       const active = cols.filter(c => filters.has(c.key));
       data = data.filter(r => active.every(c => passes(filters.get(c.key)!, words(fmtCell(c, r)), !!c.num)));
@@ -264,7 +275,8 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     shown = data;
     table.dataset.rows = String(data.length);
     const drawn = data.length > limit ? data.slice(0, limit) : data;
-    count.textContent = filters.size ? `${data.length} of ${rows.length} rows shown (filtered)` : '';
+    const why = [scope ? 'the stretch ' + scopeNote : '', filters.size ? 'filtered' : ''].filter(Boolean).join('; ');
+    count.textContent = why ? `${data.length} of ${rows.length} rows shown (${why})` : '';
     more.replaceChildren();
     more.toggleAttribute('hidden', drawn.length === data.length);
     if (drawn.length < data.length) {
@@ -319,7 +331,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       items.push(['Copy cell', () => { void copyText(cellText(td)).then(done('the cell')); }]);
       items.push(['Copy row', () => { void copyText(header() + '\n' + tsv([td.parentElement!])).then(done('the row')); }]);
     }
-    items.push([filters.size ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => {
+    items.push([filters.size || scope ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => {
       // every row, the ones past the grid's page built off the screen (the grid itself stays as drawn)
       void copyText(header() + '\n' + tsv(models.get(table)!.allRows!())).then(done(shown.length + ' rows'));
     }]);
@@ -328,7 +340,9 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;
     showMenu(x, y, items, (td as HTMLElement | null) ?? wrap);
   });
-  return el('div', { class: 'grid-box' }, count, wrap, more);
+  const box = el('div', { class: 'grid-box' }, count, wrap, more);
+  scopes.set(box, (keep, note = '') => { scope = keep; scopeNote = note; draw(); });
+  return box;
 }
 
 export function badge(text: string, kind: string): HTMLElement {

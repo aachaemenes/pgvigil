@@ -158,7 +158,7 @@ export function sections(root: ParentNode, fallback: string): Section[] {
     const box = wrap.parentElement?.classList.contains('grid-box') ? wrap.parentElement : wrap;
     const prev = box.previousElementSibling;
     const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
-    const notes = [prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered/.test(filtered) ? filtered : ''].filter(Boolean);
+    const notes = [prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;
     out.push({ name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note });
   }

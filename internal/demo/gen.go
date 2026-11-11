@@ -402,6 +402,7 @@ func (g *Gen) settings(t time.Time) []Row {
 var settingMeta = map[string][4]string{
 	"checkpoint_timeout":         {"s", "300", "sighup", "Write-Ahead Log / Checkpoints"},
 	"effective_cache_size":       {"8kB", "524288", "user", "Query Tuning / Planner Cost Constants"},
+	"ignore_checksum_failure":    {"", "off", "superuser", "Developer Options"},
 	"log_min_duration_statement": {"ms", "-1", "superuser", "Reporting and Logging / When to Log"},
 	"maintenance_work_mem":       {"kB", "65536", "user", "Resource Usage / Memory"},
 	"max_connections":            {"", "100", "postmaster", "Connections and Authentication / Connection Settings"},

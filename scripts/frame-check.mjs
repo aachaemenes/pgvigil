@@ -310,6 +310,12 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
     return { tag: document.querySelector('#bar .range-zone-tag').textContent, want: 'UTC' + (m < 0 ? '-' : '+') + two(Math.floor(a / 60)) + ':' + two(a % 60), stored: localStorage.getItem('pgvigil.tz') }; })()`);
   await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); 'ok'`); await sleep(150);
   const shut = await ev(`!${rangePanel}`);
+  // another address while the panel is open (the browser's Back, a link followed by the keyboard): the panel closes and
+  // the focus that was in it goes back to the range button, never to the page's body
+  await openRange();
+  const moved = await ev(`(async () => { const inPanel = ${rangePanel}?.contains(document.activeElement) ?? false;
+    location.hash = location.hash.startsWith('#/instances') ? '#/summary' : '#/instances'; await new Promise(r => setTimeout(r, 400));
+    return { inPanel, gone: !${rangePanel}, onBtn: document.activeElement === ${rangeBtn}, body: document.activeElement === document.body }; })()`);
   await go(`#/performance?i=${erp}&${day}`);
   const chartLocal = await chartClock();
   await send('Emulation.setTimezoneOverride', { timezoneId: '' });
@@ -323,29 +329,35 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
     && !!chartTokyo && chartTokyo.tipMin >= 0 && chartTokyo.tipMin === chartTokyo.legMin && !!chartLocal && chartLocal.tipMin === chartLocal.legMin && (ahead === 17 * 60 || ahead === 16 * 60)
     && !!gridTokyo && gridTokyo.found
     && kept.tag === 'UTC+09:00' && kept.stored === 'Asia/Tokyo' && esc.gone && esc.focus && esc.expanded === 'false'
-    && back.tag === back.want && back.stored === 'local' && shut,
-    `panel ${shape?.groups} with ${shape?.items} ranges and ${shape?.zones} zones, inside the window ${shape?.inside}; browser zone: inputs ${local.from} to ${local.to}, tag ${local.tag}; Asia/Tokyo (${zoneSet}): tag ${tokyo.tag}, inputs ${tokyo.from} to ${tokyo.to}, the window text as the zone writes it ${tokyo.title === tokyo.want}, the chooser kept its place ${tokyo.same}; Apply wrote ${applied.get('from')} to ${applied.get('to')}; Yesterday (${picked}): ${(yTo - yFrom) / 3600e3} h ending at the zone's midnight ${yTo === midnight}, '${yText}'; Today: w=${today.get('w')}, '${live.text}', from the zone's midnight ${live.title.startsWith(live.want)}, live ${live.refresh}; chart under Tokyo: readout '${chartTokyo?.tip}' and legend '${chartTokyo?.leg}', under the browser's zone '${chartLocal?.tip}' and '${chartLocal?.leg}', ${ahead / 60} h apart; a log row as the zone writes it ${gridTokyo?.found} ('${gridTokyo?.want}'); after a reload: tag ${kept.tag}, stored ${kept.stored}; Escape: closed ${esc.gone}, focus on the button ${esc.focus}; browser time: tag ${back.tag} (wanted ${back.want}), stored ${back.stored}; a click outside closed it ${shut}`);
+    && back.tag === back.want && back.stored === 'local' && shut && moved.inPanel && moved.gone && moved.onBtn && !moved.body,
+    `panel ${shape?.groups} with ${shape?.items} ranges and ${shape?.zones} zones, inside the window ${shape?.inside}; browser zone: inputs ${local.from} to ${local.to}, tag ${local.tag}; Asia/Tokyo (${zoneSet}): tag ${tokyo.tag}, inputs ${tokyo.from} to ${tokyo.to}, the window text as the zone writes it ${tokyo.title === tokyo.want}, the chooser kept its place ${tokyo.same}; Apply wrote ${applied.get('from')} to ${applied.get('to')}; Yesterday (${picked}): ${(yTo - yFrom) / 3600e3} h ending at the zone's midnight ${yTo === midnight}, '${yText}'; Today: w=${today.get('w')}, '${live.text}', from the zone's midnight ${live.title.startsWith(live.want)}, live ${live.refresh}; chart under Tokyo: readout '${chartTokyo?.tip}' and legend '${chartTokyo?.leg}', under the browser's zone '${chartLocal?.tip}' and '${chartLocal?.leg}', ${ahead / 60} h apart; a log row as the zone writes it ${gridTokyo?.found} ('${gridTokyo?.want}'); after a reload: tag ${kept.tag}, stored ${kept.stored}; Escape: closed ${esc.gone}, focus on the button ${esc.focus}; browser time: tag ${back.tag} (wanted ${back.want}), stored ${back.stored}; a click outside closed it ${shut}; another address with the focus in it: closed ${moved.gone}, the focus on the button ${moved.onBtn}`);
 }
 
-// O. the time strip above an event grid: the Log events of demo-onprem-erp01 over a fixed day. A drag over the strip's
-// right half narrows the grid to the rows of that half (counted here from the same API read); 'Whole range' puts every
-// row back; on the keyboard Home, three steps right, two more with Shift and Enter narrow to steps 3 to 5; Escape shows
-// the whole range again
+// O. the time strip above an event grid: the Log events of demo-onprem-erp01 over a fixed day ending three minutes back
+// (a demo tick then adds no row the API read did not count). The grid is sorted by 'ms' first. A drag over the strip's
+// right half narrows the grid to the rows of that half (counted here from the same API read), keeps the sort, and its
+// count line names the stretch (the export carries that line); 'Whole range' puts every row back; on the keyboard Home,
+// three steps right, two more with Shift and Enter narrow to steps 3 to 5; a Shift+click on step 10 stretches that to
+// steps 3-10; Escape shows the whole range again and hides 'Whole range'. Then demo-onprem-sql01's Deadlocks page carries
+// a strip when its read holds two deadlocks or more
 {   // its own scope
-  const to = new Date(Math.floor(Date.now() / 60000) * 60000), from = new Date(to.getTime() - 86400e3);
+  const to = new Date(Math.floor(Date.now() / 60000) * 60000 - 3 * 60000), from = new Date(to.getTime() - 86400e3);
   const q = `from=${from.toISOString()}&to=${to.toISOString()}`, erp = idOf('demo-onprem-erp01');
   const api = await (await fetch(`${base}api/logs?instance=${erp}&${q}`)).json();
   const at = api.events.rows.map(r => Date.parse(r[api.events.columns.indexOf('at')]));
   const step = 86400e3 / 60, inSteps = (a, b) => at.filter(t => t >= from.getTime() + a * step && (b === 59 ? t <= to.getTime() : t < from.getTime() + (b + 1) * step)).length;
   await go(`#/logs?i=${erp}&${q}`);
   const band = `document.querySelector('main [aria-roledescription="time strip"]')`;
-  const state = () => ev(`(() => { const b = ${band}; if (!b) return null; const box = b.closest('.strip-box');
-    return { said: box.querySelector('[role="status"]').textContent, drawn: box.querySelectorAll('table.grid > tbody > tr').length, steps: b.children.length, dim: b.querySelectorAll('.out').length,
+  const state = () => ev(`(() => { const b = ${band}; if (!b) return null; const box = b.closest('.strip-box'), t = box.querySelector('table.grid');
+    const j = [...t.querySelectorAll('thead tr:first-child th')].findIndex(h => h.textContent === 'ms');
+    const ms = [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j]?.textContent.replace(/,/g, '').trim()).filter(v => v).map(Number);
+    return { said: box.querySelector('[role="status"]').textContent, total: Number(t.dataset.rows), steps: b.children.length, dim: b.querySelectorAll('.out').length,
+             count: box.querySelector('.filter-count').textContent, sorted: ms.every((v, i) => i === 0 || ms[i - 1] <= v),
              whole: !box.querySelector('.strip-head button').hidden, label: b.getAttribute('aria-label'), rect: JSON.parse(JSON.stringify(b.getBoundingClientRect())) }; })()`);
   const s0 = await state();
-  const drawn = n => Math.min(n, 200);
-  let dragged = null, back = null, keyed = null, esc = null;
+  let dragged = null, redrawn = null, back = null, keyed = null, shifted = null, esc = null;
   if (s0) {
+    await ev(`[...${band}.closest('.strip-box').querySelectorAll('table.grid thead tr:first-child th')].find(h => h.textContent === 'ms').click(); 'ok'`); await sleep(200);
     await ev(`${band}.scrollIntoView({ block: 'center' }); 'ok'`); await sleep(200);
     const r = (await state()).rect, y = r.top + r.height / 2, x = i => r.left + (i + 0.5) * r.width / 60;
     await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x(30), y, button: 'left', buttons: 1, clickCount: 1 });
@@ -356,37 +368,56 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
     await ev(`(() => { const b = ${band}; b.focus(); const k = (key, shiftKey = false) => b.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true }));
       k('Home'); k('ArrowRight'); k('ArrowRight'); k('ArrowRight'); k('ArrowRight', true); k('ArrowRight', true); k('Enter'); return 'ok'; })()`);
     await sleep(300); keyed = await state();
-    await ev(`${band}.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'`); await sleep(300); esc = await state();
+    // the page drawn again as a return to the browser tab draws it (main.ts): a fresh grid, the narrow put back on it
+    await ev(`document.dispatchEvent(new Event('visibilitychange')); 'ok'`); await sleep(2500); redrawn = await state();
+    const r2 = (await state()).rect, y2 = r2.top + r2.height / 2, x2 = i => r2.left + (i + 0.5) * r2.width / 60;
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x2(10), y: y2, button: 'left', buttons: 1, clickCount: 1, modifiers: 8 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2(10), y: y2, button: 'left', buttons: 0, clickCount: 1, modifiers: 8 });
+    await sleep(300); shifted = await state();
+    await ev(`${band}.focus(); ${band}.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'`); await sleep(300); esc = await state();
   }
-  const n = at.length, right = inSteps(30, 59), mid = inSteps(3, 5), whole = 'Whole range. Drag across the strip to narrow the grid.';
-  check('O time strip', !!s0 && n >= 2 && s0.steps === 60 && s0.said === whole && s0.drawn === drawn(n) && !s0.whole && s0.label.startsWith(`Log events: ${n} rows`)
-    && !!dragged && dragged.said.endsWith(`: ${right} of ${n} rows.`) && dragged.drawn === drawn(right) && dragged.dim === 30 && dragged.whole && right < n
-    && !!back && back.said === whole && back.drawn === drawn(n) && back.dim === 0 && !back.whole
-    && !!keyed && keyed.said.endsWith(`: ${mid} of ${n} rows.`) && keyed.drawn === drawn(mid) && keyed.dim === 57
-    && !!esc && esc.said === whole && esc.drawn === drawn(n) && esc.dim === 0,
-    s0 ? `${n} log events, ${s0.steps} steps, ${s0.drawn} drawn; a drag over steps 30-59: '${dragged?.said}' (wanted ${right}), ${dragged?.drawn} drawn, ${dragged?.dim} steps dimmed; Whole range: ${back?.drawn} drawn, ${back?.dim} dimmed; keys to steps 3-5: '${keyed?.said}' (wanted ${mid}), ${keyed?.drawn} drawn, ${keyed?.dim} dimmed; Escape: ${esc?.drawn} drawn`
+  const n = at.length, right = inSteps(30, 59), mid = inSteps(3, 5), wide = inSteps(3, 10), whole = 'Whole range. Drag across the strip to narrow the grid.';
+  // the Deadlocks page of a SQL Server instance: a strip when its read holds two deadlocks or more
+  const sql = idOf('demo-onprem-sql01');
+  const dl = await (await fetch(`${base}api/mssql/xe?instance=${sql}&part=deadlocks&${q}`)).json();
+  const nDl = dl.deadlocks?.rows?.length ?? 0;
+  await go(`#/mssql_deadlocks?i=${sql}&${q}`);
+  const dlStrip = await ev(`!!document.querySelector('main [aria-roledescription="time strip"]')`);
+  check('O time strip', !!s0 && n >= 2 && right > 0 && mid > 0 && s0.steps === 60 && s0.said === whole && s0.total === n && !s0.whole && s0.label.startsWith(`Log events: ${n} rows`)
+    && !!dragged && dragged.said.endsWith(`: ${right} of ${n} rows.`) && dragged.total === right && dragged.dim === 30 && dragged.whole && right < n && dragged.sorted
+    && dragged.count.startsWith(`${right} of ${n} rows shown (the stretch `)
+    && !!back && back.said === whole && back.total === n && back.dim === 0 && !back.whole && back.sorted && back.count === ''
+    && !!keyed && keyed.said.endsWith(`: ${mid} of ${n} rows.`) && keyed.total === mid && keyed.dim === 57
+    && !!redrawn && redrawn.total === mid && redrawn.whole && redrawn.said === keyed.said && redrawn.dim === 57
+    && !!shifted && shifted.said.endsWith(`: ${wide} of ${n} rows.`) && shifted.total === wide && shifted.dim === 52
+    && !!esc && esc.said === whole && esc.total === n && esc.dim === 0 && !esc.whole
+    && dlStrip === (nDl >= 2),
+    s0 ? `${n} log events, ${s0.steps} steps, ${s0.total} in the grid; sorted by ms, a drag over steps 30-59: '${dragged?.said}' (wanted ${right}), ${dragged?.total} in the grid, '${dragged?.count}', still sorted ${dragged?.sorted}, ${dragged?.dim} steps dimmed; Whole range: ${back?.total} in the grid, ${back?.dim} dimmed, still sorted ${back?.sorted}; keys to steps 3-5: '${keyed?.said}' (wanted ${mid}), ${keyed?.dim} dimmed; drawn again: ${redrawn?.total} in the grid, '${redrawn?.said}', ${redrawn?.dim} dimmed; Shift+click on step 10: '${shifted?.said}' (wanted ${wide}), ${shifted?.dim} dimmed; Escape: ${esc?.total} in the grid, Whole range hidden ${!esc?.whole}; Deadlocks of sql01: ${nDl} in the read, a strip ${dlStrip}`
        : `no strip on the Log events page (${n} events from the API)`);
 }
 
 // P. a link to another page opens that page at its top, wherever the reader stood on the page before (Allen
 // 2026-11-11: 'when I click on something it takes me down to the page and I have to scroll all the way up'): the
-// fleet Summary scrolled to its end, the lowest link in it to another page clicked like a reader would
+// fleet Summary scrolled to its end, the lowest link in it to an instance's Summary (a page taller than the window)
+// clicked like a reader would; the new page must be seen rendered and be taller than the window, so a page that never
+// rendered or one too short to scroll cannot pass by itself
 {   // its own scope
   await go('#/summary');
   const low = await ev(`(() => { const path = h => h.split('?')[0] + '|' + (new URLSearchParams(h.split('?')[1] ?? '').get('i') ?? '');
-    const here = path(location.hash), ls = [...document.querySelectorAll('main a[href^="#/"]')].filter(a => path(a.getAttribute('href')) !== here);
+    const here = path(location.hash), ls = [...document.querySelectorAll('main a[href^="#/summary?"]')].filter(a => /[?&]i=\\d/.test(a.getAttribute('href')) && path(a.getAttribute('href')) !== here);
     const a = ls[ls.length - 1]; if (!a) return null; a.scrollIntoView({ block: 'end' });
     return { href: a.getAttribute('href'), y: Math.round(window.scrollY), tall: document.documentElement.scrollHeight > innerHeight + 200 }; })()`);
   let after = null;
   if (low) {
     await ev(`(() => { const a = [...document.querySelectorAll('main a[href^="#/"]')].filter(x => x.getAttribute('href') === ${JSON.stringify(low.href)}).pop();
       a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); return 'ok'; })()`);
-    for (let i = 0; i < 40; i++) { await sleep(250); if (await ev(`location.hash === ${JSON.stringify(low.href)} && !!document.querySelector('main section, main .grid-box, main .chart') && !document.querySelector('main > p.empty[role=status]')`)) break; }
+    let seen = false;
+    for (let i = 0; i < 40 && !seen; i++) { await sleep(250); seen = await ev(`location.hash === ${JSON.stringify(low.href)} && !!document.querySelector('main section, main .grid-box, main .chart') && !document.querySelector('main > p.empty[role=status]')`); }
     await sleep(600);
-    after = await ev(`({ hash: location.hash, y: Math.round(window.scrollY) })`);
+    after = { ...(await ev(`({ hash: location.hash, y: Math.round(window.scrollY), tall: document.documentElement.scrollHeight > innerHeight + 200 })`)), seen };
   }
-  check('P new page at its top', !!low && low.tall && low.y > 0 && !!after && after.hash === low.href && after.y === 0,
-    low ? `the Summary ${low.tall ? 'taller' : 'NOT taller'} than the window, scrolled to ${low.y} px; '${low.href}' clicked: ${after?.hash === low.href ? 'opened' : 'NOT opened'}, the new page at ${after?.y} px` : 'no link to another page on the Summary');
+  check('P new page at its top', !!low && low.tall && low.y > 0 && !!after && after.hash === low.href && after.seen && after.tall && after.y === 0,
+    low ? `the Summary ${low.tall ? 'taller' : 'NOT taller'} than the window, scrolled to ${low.y} px; '${low.href}' clicked: ${after?.hash === low.href ? 'opened' : 'NOT opened'}, rendered ${after?.seen}, ${after?.tall ? 'taller' : 'NOT taller'} than the window, at ${after?.y} px` : 'no link to an instance Summary on the fleet Summary');
 }
 
 ws.close();
