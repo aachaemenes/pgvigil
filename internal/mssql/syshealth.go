@@ -50,6 +50,9 @@ func init() {
 func (sysHealthCollector) Name() string                   { return Prefix + "syshealth" }
 func (sysHealthCollector) DefaultInterval() time.Duration { return 5 * time.Minute }
 
+// Timeout: the first read goes through every file of the session (weeks of it on a quiet server).
+func (sysHealthCollector) Timeout() time.Duration { return 2 * time.Minute }
+
 func (sysHealthCollector) Applies(info Info) (bool, string) {
 	if info.Kind == KindAzureDB {
 		return false, "not on Azure SQL Database (it has no server-scoped system_health session)"
