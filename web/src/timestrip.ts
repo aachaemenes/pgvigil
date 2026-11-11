@@ -6,6 +6,7 @@
 // (ui.ts narrowGrid). The times it names are on the display zone's clock (tz.ts).
 import { Row } from './api';
 import { Col, el, grid, narrowGrid } from './ui';
+import { href, parse } from './router';
 import { fmt, offsetLabel, offsetMin } from './tz';
 
 const STEPS = 60;
@@ -62,6 +63,15 @@ export function timeStrip(title: string, t0: number, t1: number, times: number[]
   const said = el('span', { class: 'meta', role: 'status' }, WHOLE);
   const whole = el('button', { type: 'button', class: 'link' }, 'Whole range');
   whole.hidden = true;
+  // the stretch as the page's range (task 152): every chart and grid of the page reads it, and the address keeps it
+  const asRange = el('button', { type: 'button', class: 'link strip-as-range', title: "Read the whole page over this stretch: it becomes the page's range" }, 'Use as the range');
+  asRange.hidden = true;
+  asRange.addEventListener('click', () => {
+    if (lo < 0) return;
+    const minute = 60000, from = Math.floor(edge(lo) / minute) * minute, to = Math.max(from + minute, Math.ceil((hi === STEPS - 1 ? t1 : edge(hi + 1)) / minute) * minute);
+    const ctx = parse();
+    location.hash = href(ctx, { tab: ctx.tab, range: { from: new Date(from).toISOString(), to: new Date(to).toISOString() }, at: undefined });
+  });
 
   let lo = -1, hi = -1;   // the stretch the grid is narrowed to (steps, both ends in it); -1 = the whole range
   let cur = 0;            // the keyboard's step
@@ -77,7 +87,7 @@ export function timeStrip(title: string, t0: number, t1: number, times: number[]
   const apply = (a: number, b: number) => {
     lo = Math.min(a, b); hi = Math.max(a, b);
     paint(lo, hi);
-    whole.hidden = false;
+    whole.hidden = false; asRange.hidden = false;
     said.textContent = `${words(lo, hi)}: ${rowsIn(lo, hi)} of ${inWindow} rows.`;
     // the last step takes a row stamped at the window's very end
     const from = edge(lo), to = hi === STEPS - 1 ? t1 + 1 : edge(hi + 1);
@@ -88,7 +98,7 @@ export function timeStrip(title: string, t0: number, t1: number, times: number[]
     const was = lo >= 0;
     lo = hi = -1; stretch = -1;
     paint(-1, -1);
-    whole.hidden = true;
+    whole.hidden = true; asRange.hidden = true;
     said.textContent = WHOLE;
     kept.delete(keyOf(title));
     if (was) onNarrow();   // Escape on a pending Shift-stretch with nothing narrowed leaves the grid as it is
@@ -151,7 +161,7 @@ export function timeStrip(title: string, t0: number, t1: number, times: number[]
   } else kept.delete(keyOf(title));
 
   return el('div', { class: 'strip' },
-    el('div', { class: 'strip-head' }, el('b', {}, title), said, whole),
+    el('div', { class: 'strip-head' }, el('b', {}, title), said, whole, asRange),
     ...(note ? [el('p', { class: 'meta strip-note' }, note)] : []),
     band,
     el('div', { class: 'strip-ends meta', 'aria-hidden': 'true' }, el('span', {}, at(t0, t1)), el('span', {}, at(t1, t0))));
