@@ -5,7 +5,8 @@
 -- check_name and object to setting and value, no suggested value and no platform list.
 -- purge() re-created with 0083's two monthly partition parents (mssql_qs_interval, mssql_qs_runtime) and three
 -- retention steps: mssql_qs_plan and mssql_qs_query rows no read has listed within the window, once no kept runtime
--- row (and, for a query, no kept plan) names them; mssql_qs_tuning rows not listed within the window.
+-- row (and, for a query, no kept plan or present recommendation) names them; mssql_qs_tuning rows not listed within
+-- the window. A forced plan and a recommendation marked present stay while their database's store row does.
 -- apply_roles() is unchanged: 0083 adds two collector doors (import_mssql_querystore by its prefix, mssql_hadr_cursor
 -- already on the list) and one function a reader may call (mssql_qs_readonly_reasons).
 
@@ -361,20 +362,31 @@ BEGIN
   -- Query Store (0083): a query or a plan no read has listed within the window goes once no kept runtime row names it
   -- (the runtime partitions go by whole months, so a query's text stays as long as a runtime row of it does); a
   -- tuning recommendation no read has listed within the window goes; mssql_qs_store (each database's read cursor)
-  -- and mssql_qs_tuning_option (current state) go with their instance only
+  -- and mssql_qs_tuning_option (current state) go with their instance only. A forced plan and a recommendation still
+  -- marked present stay while their database's store row does: a store the collector no longer reads (OFF, ERROR, a
+  -- database the login cannot enter) keeps listing them on its pages, and the ERROR state is when they matter most;
+  -- a query named by such a plan or recommendation keeps its text
   DELETE FROM pgvigil.mssql_qs_plan p
    WHERE p.snapshot_at < now() - make_interval(days => p_days)
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_qs_runtime r
-                      WHERE r.instance_id = p.instance_id AND r.database_name = p.database_name AND r.query_id = p.query_id AND r.plan_id = p.plan_id);
+                      WHERE r.instance_id = p.instance_id AND r.database_name = p.database_name AND r.query_id = p.query_id AND r.plan_id = p.plan_id)
+     AND NOT (p.is_forced AND EXISTS (SELECT 1 FROM pgvigil.mssql_qs_store s
+                                       WHERE s.instance_id = p.instance_id AND s.database_name = p.database_name));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_qs_query q
    WHERE q.snapshot_at < now() - make_interval(days => p_days)
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_qs_runtime r
                       WHERE r.instance_id = q.instance_id AND r.database_name = q.database_name AND r.query_id = q.query_id)
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_qs_plan p
-                      WHERE p.instance_id = q.instance_id AND p.database_name = q.database_name AND p.query_id = q.query_id);
+                      WHERE p.instance_id = q.instance_id AND p.database_name = q.database_name AND p.query_id = q.query_id)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_qs_tuning t
+                      WHERE t.instance_id = q.instance_id AND t.database_name = q.database_name AND t.query_id = q.query_id AND t.is_present
+                        AND EXISTS (SELECT 1 FROM pgvigil.mssql_qs_store s WHERE s.instance_id = t.instance_id AND s.database_name = t.database_name));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
-  DELETE FROM pgvigil.mssql_qs_tuning WHERE snapshot_at < now() - make_interval(days => p_days);
+  DELETE FROM pgvigil.mssql_qs_tuning t
+   WHERE t.snapshot_at < now() - make_interval(days => p_days)
+     AND NOT (t.is_present AND EXISTS (SELECT 1 FROM pgvigil.mssql_qs_store s
+                                        WHERE s.instance_id = t.instance_id AND s.database_name = t.database_name));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   RETURN n;
 END $$;

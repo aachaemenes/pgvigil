@@ -10,7 +10,8 @@
 # names exactly the three old partitions (dbstats_, iostats_, serverstats_ of the month 100 days back)
 # and leaves 6; `purge -days 30` prints "3 partitions and rows removed" (no row-level series holds a row
 # older than 30 days here) and leaves the three current-month partitions; a second run removes 0.
-# Then the whole list: no partitioned parent of the schema unnamed by purge() (or mssql_running_purge(), the day
+# Then Query Store's retention (0088): 'ok   Query Store retention: plans 1,3 | queries 1,3,4 | recommendation T1 kept,
+# the rest gone' (the cases in the script). Then the whole list: no partitioned parent of the schema unnamed by purge() (or mssql_running_purge(), the day
 # partitions of mssql_requests); an old-month partition made for every other parent, all dropped by purge -days 30; the
 # reader holds EXECUTE on none of the eight owner-only functions: 'ok   every partitioned parent named by purge(); ...'.
 set -euo pipefail
@@ -52,6 +53,28 @@ after=$(parts)
 [ "$after" = "dbstats_$cur,iostats_$cur,serverstats_$cur" ] || fail "partitions after the purge: $after"
 out2=$("$BIN" purge -config "$CFG" -days 30)
 case "$out2" in "purge -days 30: 0 partitions and rows removed in "*) ;; *) fail "second purge output: $out2" ;; esac
+# Query Store retention (0088): database qsdb has a store row (in ERROR: the collector no longer reads it), database gone
+# has none; every row below is 100 days old except the one runtime row (this month). Kept: plan 1 (its runtime row),
+# plan 3 (forced, its store listed), query 1 (runtime), 3 (its plan), 4 (a present recommendation of a listed store),
+# recommendation T1 (present, its store listed). Gone: plan 2, the forced plan 4 of gone, queries 2, 5, 6, T2 (not
+# present), T3 (gone has no store row)
+o="now() - interval '100 days'"
+q "insert into pgvigil.mssql_qs_store (instance_id, database_name, snapshot_at, actual_state) values ($iid, 'qsdb', now(), 'ERROR')" >/dev/null
+q "select pgvigil.ensure_month_partition('mssql_qs_runtime', now())" >/dev/null
+q "insert into pgvigil.mssql_qs_plan (instance_id, database_name, plan_id, query_id, is_forced, first_seen, snapshot_at) values
+  ($iid, 'qsdb', 1, 1, false, $o, $o), ($iid, 'qsdb', 2, 2, false, $o, $o), ($iid, 'qsdb', 3, 3, true, $o, $o), ($iid, 'gone', 4, 6, true, $o, $o)" >/dev/null
+q "insert into pgvigil.mssql_qs_query (instance_id, database_name, query_id, first_seen, snapshot_at) values
+  ($iid, 'qsdb', 1, $o, $o), ($iid, 'qsdb', 2, $o, $o), ($iid, 'qsdb', 3, $o, $o), ($iid, 'qsdb', 4, $o, $o), ($iid, 'qsdb', 5, $o, $o), ($iid, 'gone', 6, $o, $o)" >/dev/null
+q "insert into pgvigil.mssql_qs_runtime (instance_id, snapshot_at, interval_end, database_name, plan_id, query_id, executions) values ($iid, now(), now(), 'qsdb', 1, 1, 1)" >/dev/null
+q "insert into pgvigil.mssql_qs_tuning (instance_id, database_name, rec_name, query_id, is_present, first_seen, snapshot_at) values
+  ($iid, 'qsdb', 'T1', 4, true, $o, $o), ($iid, 'qsdb', 'T2', 5, false, $o, $o), ($iid, 'gone', 'T3', 6, true, $o, $o)" >/dev/null
+"$BIN" purge -config "$CFG" -days 30 >/dev/null
+qsleft=$(q "select coalesce((select string_agg(plan_id::text, ',' order by plan_id) from pgvigil.mssql_qs_plan where instance_id = $iid), '') || '|'
+  || coalesce((select string_agg(query_id::text, ',' order by query_id) from pgvigil.mssql_qs_query where instance_id = $iid), '') || '|'
+  || coalesce((select string_agg(rec_name, ',' order by rec_name) from pgvigil.mssql_qs_tuning where instance_id = $iid), '')")
+[ "$qsleft" = "1,3|1,3,4|T1" ] || fail "Query Store retention: plans|queries|recommendations left '$qsleft', want '1,3|1,3,4|T1'"
+echo "ok   Query Store retention: plans 1,3 | queries 1,3,4 | recommendation T1 kept, the rest gone"
+
 # the whole list: every partitioned parent of the schema is named by purge() or mssql_running_purge() (the day
 # partitions of mssql_requests); an old-month partition of every other parent is dropped by purge -days 30; the
 # reader may execute none of the owner-only functions

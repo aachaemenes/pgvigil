@@ -101,3 +101,5 @@ Findings, each for three hours after the read that raised it:
 ## What is kept
 
 The current state per database; one row per interval and one per kept plan and interval, in monthly partitions; the queries, plans and recommendations as last read.
+
+How long (`pgvigil purge`, 30 days by default): the interval and runtime partitions go by whole months once the month is past the window. A query or a plan that no read has listed within the window goes once no kept runtime row names it, so a runtime row never loses its text. A forced plan, and a recommendation still marked present, stay while their database's store is listed: a store pgvigil no longer reads (OFF, ERROR, a database the login cannot enter) keeps showing them. Any other recommendation goes when no read has listed it within the window. The store's state and its tuning options go with their instance.
