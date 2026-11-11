@@ -14,7 +14,7 @@
 # What it makes, and removes on every exit path the shell can catch: its own SQL Server container (SQL Server Agent
 # on, the zone America/Los_Angeles so a server-local time differs from UTC, a throwaway sa password made here, never
 # printed), its own repository database pgvigil_p148_<n>. Inside the
-# container (gone with it): two logins, three databases, one operator, ten alerts, one trace flag, one server
+# container (gone with it): three logins, three databases, one operator, ten alerts, one trace flag, one server
 # option, one row in msdb.dbo.suspect_pages. A proof killed with kill -9 leaves them: the container is
 # pgv-p148-mssql-<n> and the database pgvigil_p148_<n>, both named in the first lines of the output.
 #
@@ -58,8 +58,8 @@
 #     (an instance of its own): the fail-safe operator is readable, 'no fail-safe operator' is raised (info) on the new
 #     server. Whether the monitoring login may read it is printed, not asserted. [Changed after the fold's first run,
 #     which also set the operator with master.dbo.sp_MSsetalertinfo and expected it stored: on the Linux image the
-#     procedure returns 0 and writes nothing (xp_instance_regread of AlertFailSafeOperator is NULL right after it,
-#     AlertNotificationMethod stays 0), so the set is not proven here.]
+#     procedure returns 0 while its registry write under the Agent's key stores nothing (xp_instance_regread of
+#     AlertFailSafeOperator is NULL right after it, AlertNotificationMethod stays 0), so the set is not proven here.]
 #  J. a table with a tinyint identity at 200 (78 % of 255) in the proof's database: `collect -once mssql_identity`
 #     lists it 'warn' with a finding; at 240 (94 %): 'crit'; the table dropped: the column and the finding gone,
 #     the scan row says scanned.
@@ -317,8 +317,8 @@ agent3() { echo "$(finding 'no operator' 'SQL Server Agent')/$(finding 'no alert
 echo "  the monitoring login reads the fail-safe operator: $(q "select failsafe_read from pgvigil.mssql_agent_alerting where instance_id = $I")"
 chk "$NS"
 IS=$(q "select instance_id from pgvigil.instances where name = '$NS'")
-fsafe() { q "select a.failsafe_read || '|' || coalesce(a.failsafe_operator, '') || '|' || (select count(*) from pgvigil.mssql_check_finding f where f.instance_id = $IS and f.check_name = 'no fail-safe operator') from pgvigil.mssql_agent_alerting a where a.instance_id = $IS"; }
-[ "$(fsafe)" = "true||1" ] || fail "I: as sa on a new server: $(fsafe) (read|operator|finding)"
+fsafe() { q "select a.failsafe_read || '|' || coalesce(a.failsafe_operator, '') || '|' || (select count(*) || coalesce(max(':' || f.severity), '') from pgvigil.mssql_check_finding f where f.instance_id = $IS and f.check_name = 'no fail-safe operator') from pgvigil.mssql_agent_alerting a where a.instance_id = $IS"; }
+[ "$(fsafe)" = "true||1:info" ] || fail "I: as sa on a new server: $(fsafe) (read|operator|finding:severity)"
 {
   echo "EXEC msdb.dbo.sp_add_operator @name = N'pgvp_dba', @enabled = 1, @email_address = N'dba@example.invalid';"
   for s in 19 20 21 22 23 24 25; do echo "EXEC msdb.dbo.sp_add_alert @name = N'pgvp sev $s', @severity = $s, @include_event_description_in = 1; EXEC msdb.dbo.sp_add_notification @alert_name = N'pgvp sev $s', @operator_name = N'pgvp_dba', @notification_method = 1;"; done

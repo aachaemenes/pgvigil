@@ -77,24 +77,29 @@ func runAgentAlerts(ctx context.Context, conn *sql.Conn, info Info, c *checksRun
 	failSafe, fsRead, note := "", false, ""
 	if fs, ferr := QueryRows(ctx, conn, failSafeSQL); ferr != nil {
 		note = "the fail-safe operator was not read (sp_MSgetalertinfo: " + ferr.Error() + ")"
-	} else if len(fs) == 1 {
-		// the procedure names the column AlertFailSafeOperator; a row without it is not read, never 'none set'
-		v, has := fs[0]["AlertFailSafeOperator"]
-		if !has {
-			v, has = fs[0]["FailSafeOperator"]
-		}
-		if has {
-			fsRead = true
-			failSafe, _ = v.(string)
-		} else {
-			note = "the fail-safe operator was not read: sp_MSgetalertinfo returned no AlertFailSafeOperator column"
-		}
+	} else {
+		failSafe, fsRead, note = failSafeFromRows(fs)
 	}
 	c.add(alerts...)
 	c.add(ops...)
 	c.add(collect.Row{"kind": "agent_alerting", "failsafe_read": b2i(fsRead), "failsafe_operator": nilIfEmpty(strings.TrimSpace(failSafe))})
 	c.find(agentAlertFindings(alerts, ops, fsRead, strings.TrimSpace(failSafe))...)
 	c.add(areaRow(AreaAlerts, true, note))
+}
+
+// failSafeFromRows takes the fail-safe operator out of sp_MSgetalertinfo's result: one row whose column
+// AlertFailSafeOperator holds the name, NULL when none is set. A result without that row or column is not read,
+// never 'none set'.
+func failSafeFromRows(fs []collect.Row) (operator string, read bool, note string) {
+	if len(fs) != 1 {
+		return "", false, fmt.Sprintf("the fail-safe operator was not read: sp_MSgetalertinfo returned %d rows", len(fs))
+	}
+	v, has := fs[0]["AlertFailSafeOperator"]
+	if !has {
+		return "", false, "the fail-safe operator was not read: sp_MSgetalertinfo returned no AlertFailSafeOperator column"
+	}
+	operator, _ = v.(string)
+	return strings.TrimSpace(operator), true, ""
 }
 
 func nilIfEmpty(s string) any {

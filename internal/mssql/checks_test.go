@@ -454,6 +454,19 @@ func TestAgentAlertFindings(t *testing.T) {
 	if fs := agentAlertFindings(all, ops, true, "dba"); len(fs) != 0 {
 		t.Errorf("a server set up in full: %s", names(fs))
 	}
+	// the fail-safe operator out of sp_MSgetalertinfo's row: a name, NULL, no such column, no row
+	if op, read, note := failSafeFromRows([]collect.Row{{"AlertFailSafeOperator": " dba ", "AlertNotificationMethod": int64(1)}}); op != "dba" || !read || note != "" {
+		t.Errorf("fail-safe set: %q %v %q", op, read, note)
+	}
+	if op, read, note := failSafeFromRows([]collect.Row{{"AlertFailSafeOperator": nil, "AlertNotificationMethod": int64(0)}}); op != "" || !read || note != "" {
+		t.Errorf("fail-safe NULL: %q %v %q", op, read, note)
+	}
+	if op, read, note := failSafeFromRows([]collect.Row{{"FailSafeOperator": "dba"}}); op != "" || read || !strings.Contains(note, "no AlertFailSafeOperator column") {
+		t.Errorf("fail-safe column missing: %q %v %q", op, read, note)
+	}
+	if _, read, note := failSafeFromRows(nil); read || !strings.Contains(note, "0 rows") {
+		t.Errorf("fail-safe no row: %v %q", read, note)
+	}
 	// the fail-safe operator not readable: its rule is left out, never raised
 	if fs := agentAlertFindings(all, ops, false, ""); len(fs) != 0 {
 		t.Errorf("fail-safe not read: %s", names(fs))
