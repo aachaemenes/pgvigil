@@ -81,6 +81,26 @@ func (statementsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.I
 	walBytes := pick("wal_bytes", "0::numeric")
 	tempReadTime := pick("temp_blk_read_time", "0::float8")
 	tempWriteTime := pick("temp_blk_write_time", "0::float8")
+	// task 155 (K11.01): planning, JIT, WAL records and full-page images, workers, local blocks and generic / custom
+	// plan counts, each NULL where the installed view lacks it (plans and wal_* from 1.8 / PG13, jit_* from 1.10 /
+	// PG15, jit_deform_* from 1.11 / PG17, wal_buffers_full and parallel_workers_* from 1.12 / PG18; generic_plan_calls
+	// and custom_plan_calls are not in 1.12 and are read where a later version has them)
+	depth := []string{}
+	for _, c := range []struct{ col, as, typ string }{
+		{"plans", "plans", "bigint"}, {"total_plan_time", "total_plan_ms", "float8"},
+		{"local_blks_hit", "local_blks_hit", "bigint"}, {"local_blks_read", "local_blks_read", "bigint"},
+		{"local_blks_dirtied", "local_blks_dirtied", "bigint"}, {"local_blks_written", "local_blks_written", "bigint"},
+		{"wal_records", "wal_records", "bigint"}, {"wal_fpi", "wal_fpi", "bigint"}, {"wal_buffers_full", "wal_buffers_full", "bigint"},
+		{"jit_functions", "jit_functions", "bigint"}, {"jit_generation_time", "jit_generation_ms", "float8"},
+		{"jit_inlining_count", "jit_inlining_count", "bigint"}, {"jit_inlining_time", "jit_inlining_ms", "float8"},
+		{"jit_optimization_count", "jit_optimization_count", "bigint"}, {"jit_optimization_time", "jit_optimization_ms", "float8"},
+		{"jit_emission_count", "jit_emission_count", "bigint"}, {"jit_emission_time", "jit_emission_ms", "float8"},
+		{"jit_deform_count", "jit_deform_count", "bigint"}, {"jit_deform_time", "jit_deform_ms", "float8"},
+		{"parallel_workers_to_launch", "parallel_workers_to_launch", "bigint"}, {"parallel_workers_launched", "parallel_workers_launched", "bigint"},
+		{"generic_plan_calls", "generic_plan_calls", "bigint"}, {"custom_plan_calls", "custom_plan_calls", "bigint"},
+	} {
+		depth = append(depth, pick(c.col, "NULL::"+c.typ)+" AS "+c.as)
+	}
 
 	// The view is read ONCE (a materialized CTE) and both top sets are picked from that read. Two
 	// scans of pg_stat_statements see different counters for a statement that ran in between, UNION
@@ -111,10 +131,12 @@ SELECT 'stmt'                         AS kind,
        %[4]s                          AS temp_read_ms,
        %[5]s                          AS temp_write_ms,
        %[6]s                          AS wal_bytes,
+       %[11]s,
        %[10]s                         AS query
   FROM picked s
   LEFT JOIN pg_database d ON d.oid = s.dbid
-  LEFT JOIN pg_roles r    ON r.oid = s.userid`, toplevel, readTime, writeTime, tempReadTime, tempWriteTime, walBytes, quoteIdent(schema), statementsTopN, statementsTopCalls, maskSQL(fmt.Sprintf("left(s.query, %d)", statementsTextMax)))
+  LEFT JOIN pg_roles r    ON r.oid = s.userid`, toplevel, readTime, writeTime, tempReadTime, tempWriteTime, walBytes, quoteIdent(schema), statementsTopN, statementsTopCalls, maskSQL(fmt.Sprintf("left(s.query, %d)", statementsTextMax)),
+		strings.Join(depth, ",\n       "))
 
 	srows, err := conn.Query(ctx, sql)
 	if err != nil {

@@ -117,5 +117,91 @@ SELECT 'server' AS kind, b.stats_reset AS bgwriter_stats_reset, %s AS checkpoint
 	}
 	out = append(out, server...)
 
+	wal, err := dbstatsWal(ctx, conn, info)
+	if err != nil {
+		// the server state is a part of its own: the counters above are stored, the run reads partial
+		out = append(out, Row{"kind": "collector_error", "source": "dbstats:wal", "message": err.Error()})
+	} else {
+		out = append(out, wal)
+	}
 	return out, nil
+}
+
+// dbstatsWalSQL (task 155, K11.10 and K11.14): the server's state at the read, one row - the last checkpoint (its time,
+// timeline and redo point from pg_control_checkpoint, open to every login) and the WAL written since its redo point, the
+// cluster's system identifier, the checkpoint_timeout in force, the client sessions against the connections a client may
+// use, and the physical standbys streaming from this server (a walsender of a logical slot is not a standby). On a standby
+// the WAL since the redo point is the replay position's. Aurora keeps no local WAL or control file: dbstatsWal leaves the
+// checkpoint and WAL columns out there.
+const dbstatsWalSQL = `
+SELECT 'wal' AS kind, pg_is_in_recovery() AS in_recovery,
+       %[1]s,
+       (SELECT setting::int FROM pg_settings WHERE name = 'checkpoint_timeout') AS checkpoint_timeout_s,
+       (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') AS max_connections,
+       (SELECT setting::int FROM pg_settings WHERE name = 'superuser_reserved_connections') AS superuser_reserved,
+       coalesce((SELECT setting::int FROM pg_settings WHERE name = 'reserved_connections'), 0) AS reserved_connections,
+       (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend')::int AS client_backends,
+       (SELECT count(*) FROM pg_stat_replication r
+         WHERE r.state = 'streaming'
+           AND NOT EXISTS (SELECT 1 FROM pg_replication_slots l WHERE l.active_pid = r.pid AND l.slot_type = 'logical'))::int AS standbys,
+       (SELECT setting FROM pg_settings WHERE name = 'archive_mode') AS archive_mode`
+
+// dbstatsWalControl is the checkpoint and WAL part of dbstatsWalSQL where the platform keeps them.
+const dbstatsWalControl = `(SELECT c.checkpoint_time FROM pg_control_checkpoint() c) AS checkpoint_time,
+       (SELECT c.timeline_id FROM pg_control_checkpoint() c) AS timeline_id,
+       (SELECT c.redo_lsn::text FROM pg_control_checkpoint() c) AS redo_lsn,
+       (SELECT pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() ELSE pg_current_wal_lsn() END, c.redo_lsn)::bigint
+          FROM pg_control_checkpoint() c) AS wal_since_redo,
+       (SELECT s.system_identifier::text FROM pg_control_system() s) AS system_identifier`
+
+const dbstatsWalNoControl = `NULL::timestamptz AS checkpoint_time, NULL::int AS timeline_id, NULL::text AS redo_lsn,
+       NULL::bigint AS wal_since_redo, NULL::text AS system_identifier`
+
+// dbstatsWalFilesSQL: the archiver's backlog (the .ready files in pg_wal/archive_status, the oldest by its file time) and
+// pg_wal's segment count and size. Both functions need pg_monitor (or a superuser); a refusal leaves the four NULL and
+// says why in wal_note, the rest of the row stands.
+const dbstatsWalFilesSQL = `
+SELECT (SELECT count(*) FROM pg_ls_archive_statusdir() a WHERE a.name LIKE '%.ready')::int AS archive_ready,
+       (SELECT min(a.modification) FROM pg_ls_archive_statusdir() a WHERE a.name LIKE '%.ready') AS archive_oldest_ready,
+       (SELECT count(*) FROM pg_ls_waldir() w WHERE w.name ~ '^[0-9A-F]{24}$')::int AS wal_files,
+       (SELECT coalesce(sum(w.size), 0) FROM pg_ls_waldir() w)::bigint AS wal_dir_bytes`
+
+// dbstatsWal reads the server state row.
+func dbstatsWal(ctx context.Context, conn *pgx.Conn, info platform.Info) (Row, error) {
+	control := dbstatsWalControl
+	if info.Kind == platform.Aurora {
+		control = dbstatsWalNoControl
+	}
+	rows, err := conn.Query(ctx, fmt.Sprintf(dbstatsWalSQL, control))
+	if err != nil {
+		return nil, fmt.Errorf("server state: %w", err)
+	}
+	got, err := rowsToMaps(rows)
+	if err != nil {
+		return nil, fmt.Errorf("server state: %w", err)
+	}
+	if len(got) != 1 {
+		return nil, fmt.Errorf("server state: %d rows", len(got))
+	}
+	row := got[0]
+	if info.Kind == platform.Aurora {
+		row["wal_note"] = "Aurora keeps no local WAL: no checkpoint, archive or pg_wal figures"
+		return row, nil
+	}
+	frows, err := conn.Query(ctx, dbstatsWalFilesSQL)
+	var files []Row
+	if err == nil {
+		files, err = rowsToMaps(frows)
+	}
+	if err != nil || len(files) != 1 {
+		if err == nil {
+			err = fmt.Errorf("%d rows", len(files))
+		}
+		row["wal_note"] = "archive and pg_wal not read: " + err.Error()
+		return row, nil
+	}
+	for k, v := range files[0] {
+		row[k] = v
+	}
+	return row, nil
 }

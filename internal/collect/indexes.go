@@ -396,3 +396,94 @@ func indexesReadOther(ctx context.Context, in config.Instance, db string) ([]Row
 	}
 	return indexesRead(ctx, conn)
 }
+
+// indexBloatCollector (task 155, K11.11) estimates, every hour and per connectable database, the leaf bloat of every
+// valid btree index of indexBloatFloor bytes or more: the pages its rows would need at its fillfactor against the pages
+// it has, with the REINDEX INDEX CONCURRENTLY line that rebuilds it (text only: pgvigil never runs it). It is its own
+// collection (not a sixth read of indexes) so 0056's import stays as it is.
+//
+// The estimate is pgvigil's own, from the catalog: a leaf tuple is the 8-byte index tuple header plus its columns'
+// widths (a fixed-width type's length; a variable one's pg_stats avg_width, so a varlena column needs the table's
+// statistics and the login's SELECT on it - pg_read_all_data, 14+ - or the estimate is left NULL with the reason),
+// rounded up to 8 bytes, plus its 4-byte line pointer; a page holds (block size - 24 - 16) x fillfactor of them; the rows
+// are the table's reltuples (the index's own for a partial index); one metapage and one level of inner pages are added.
+// It ignores deduplication (13+): an index of many equal keys is smaller than the estimate says, so it reads as no bloat
+// rather than as false bloat. An expression column is not estimated.
+type indexBloatCollector struct{}
+
+func init() { Register(indexBloatCollector{}) }
+
+// indexBloatFloor: an index under this size is not read (its bloat costs little); indexBloatMax bounds one database's rows.
+const (
+	indexBloatFloor = 10 << 20
+	indexBloatMax   = 2000
+)
+
+func (indexBloatCollector) Name() string                   { return "index_bloat" }
+func (indexBloatCollector) DefaultInterval() time.Duration { return time.Hour }
+func (indexBloatCollector) Applies(platform.Info) (bool, string) {
+	return true, ""
+}
+func (indexBloatCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row, error) {
+	return nil, fmt.Errorf("index_bloat runs per instance (RunInstance)")
+}
+
+// indexBloatSQL: $1 the size floor in bytes, $2 the row bound.
+const indexBloatSQL = `
+WITH ix AS (
+  SELECT i.indexrelid, i.indrelid, n.nspname::text AS schema_name, t.relname::text AS table_name, c.relname::text AS index_name,
+         i.indnatts, i.indkey::int2[] AS keys, i.indpred IS NOT NULL AS partial,
+         CASE WHEN i.indpred IS NULL THEN t.reltuples ELSE c.reltuples END AS tuples,
+         coalesce((SELECT substring(o FROM '^fillfactor=([0-9]+)$')::int FROM unnest(c.reloptions) o WHERE o LIKE 'fillfactor=%'), 90) AS fillfactor,
+         current_setting('block_size')::int AS bs, pg_relation_size(i.indexrelid) AS index_bytes
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_class t ON t.oid = i.indrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_am am ON am.oid = c.relam
+   WHERE am.amname = 'btree' AND c.relkind = 'i' AND i.indisvalid AND i.indisready
+     AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname !~ '^pg_toast'
+     AND c.relpersistence <> 't'
+     AND pg_relation_size(i.indexrelid) >= $1
+   ORDER BY pg_relation_size(i.indexrelid) DESC
+   LIMIT $2
+), cols AS (
+  SELECT ix.indexrelid, k.ord, k.attnum, a.attname::text AS attname, ty.typlen,
+         CASE WHEN k.attnum = 0 THEN NULL WHEN ty.typlen > 0 THEN ty.typlen::numeric ELSE s.avg_width::numeric END AS width,
+         coalesce(s.null_frac, 0)::numeric AS null_frac
+    FROM ix
+    CROSS JOIN LATERAL unnest(ix.keys) WITH ORDINALITY AS k(attnum, ord)
+    LEFT JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum
+    LEFT JOIN pg_type ty ON ty.oid = a.atttypid
+    LEFT JOIN pg_stats s ON s.schemaname = ix.schema_name AND s.tablename = ix.table_name AND s.attname = a.attname AND NOT s.inherited
+   WHERE k.ord <= ix.indnatts
+), w AS (
+  SELECT indexrelid, sum(width * (1 - null_frac)) AS data_width, bool_and(width IS NOT NULL) AS known,
+         string_agg(CASE WHEN attnum = 0 THEN 'an expression column' WHEN width IS NULL THEN 'no pg_stats width for ' || attname END, ', ')
+           FILTER (WHERE width IS NULL) AS why
+    FROM cols GROUP BY indexrelid
+), e AS (
+  SELECT ix.*, w.known, w.why,
+         -- the leaf tuple: header 8 + data, rounded up to 8, + the 4-byte line pointer
+         (ceil((8 + w.data_width) / 8) * 8 + 4) AS tuple_bytes,
+         floor((ix.bs - 24 - 16) * ix.fillfactor / 100.0) AS leaf_space
+    FROM ix JOIN w ON w.indexrelid = ix.indexrelid
+), p AS (
+  SELECT e.*,
+         CASE WHEN e.known AND e.tuples >= 0 THEN
+           ceil(e.tuples / greatest(floor(e.leaf_space / e.tuple_bytes), 1)) END AS leaf_pages
+    FROM e
+)
+SELECT 'bloat' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
+       current_database()::text AS datname, p.indexrelid::bigint AS indexrelid, p.schema_name, p.table_name, p.index_name,
+       p.index_bytes, p.fillfactor, p.tuples::bigint AS tuples, p.partial,
+       ((1 + p.leaf_pages + ceil(p.leaf_pages / greatest(floor((p.bs - 24 - 16) / p.tuple_bytes), 1))) * p.bs)::bigint AS est_bytes,
+       CASE WHEN NOT p.known THEN p.why WHEN p.tuples < 0 THEN 'no row estimate: the table was never vacuumed or analyzed' END AS est_note,
+       format('REINDEX INDEX CONCURRENTLY %s;', p.indexrelid::regclass::text) AS reindex_sql
+  FROM p`
+
+func (indexBloatCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
+	return eachDatabase(ctx, conn, in, "index_bloat", func(ctx context.Context, c *pgx.Conn, _ bool) ([]Row, error) {
+		return readAll(ctx, c, []namedRead{{"database", dbchecksDBSQL, nil}, {"bloat", indexBloatSQL, []any{indexBloatFloor, indexBloatMax}}})
+	})
+}
