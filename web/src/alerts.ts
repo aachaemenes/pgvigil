@@ -3,9 +3,10 @@
 // send attempt of the time range with its outcome and error text. Nothing is sent unless a channel is configured: with
 // none the page says so. alertCol is the Findings tab's sent / when / where column (it reads the alert_* columns
 // pgvigil.findings_alerts adds to each finding). Data from /api/alerts and /api/ack (ack.ts); the route, the root tab
-// and the Findings column's place are the shell's.
+// and the Findings column's place are the shell's. The rules on charted metrics (task 131) have their own page
+// (alert_rules.ts); a firing rule is an open alert here like any finding.
 import { get, Row, rowsOf, Table } from './api';
-import { Ctx, rangeLabel, window_ } from './router';
+import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
 import { AckData, ackDialog, endAck, endButton, liveRows, loadAckSafe, writeButton } from './ack';
 import { fleet } from './fleet';
@@ -96,6 +97,9 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
     : `${configured.length} channel(s) configured, ${open.length} alert(s) open (${nAcked} acknowledged, ${nHeld} held), ${log.length} send attempt(s) ${rangeLabel(ctx)}, ${failed} failed or refused.`,
     ' ', whatLink()));
   if (!ad.writable) sec.append(el('p', { class: 'meta' }, `Acknowledge, notes and mute are read only here: ${ad.reason ?? ''}`));
+  // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
+  sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
+    el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
   sec.append(el('h3', {}, 'Channels'),
     grid(chans, channelCols, 'No channel recorded: the alert sender has not run with a channel configured.'));
   sec.append(el('h3', {}, 'Open alerts'));
