@@ -267,6 +267,7 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
   function sync(refill = true) {
     selA.fill(); selB.fill();
     (fA.firstChild as HTMLElement).textContent = p.m === 'i' ? 'A ' : 'Instance ';
+    (fDbA.firstChild as HTMLElement).textContent = p.m === 't' ? 'Database ' : 'Database of A ';
     fB.hidden = p.m !== 'i';
     fDbB.hidden = p.m === 't';
     fTA.hidden = fTB.hidden = p.m !== 't';
