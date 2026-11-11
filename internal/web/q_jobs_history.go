@@ -3,7 +3,9 @@ package web
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 )
 
 // The Jobs pages of both engines in DBA Dash's shape (task 110; DBA Dash 4.24.1's Agent Jobs grid, Job History and
@@ -20,6 +22,14 @@ import (
 //            job's successful runs in the range), and that median
 //   changes  every version kept of the job's definition, newest first: when, the version, dropped, the fields that
 //            changed (old against new) and the whole definition
+//   stats    (task 132; DBA Dash's Job Stats grid) one row per step of the job with a run in the range, the job's own
+//            outcome row first: failed, succeeded, retry and cancelled runs, the average, longest, shortest and total
+//            seconds. SQL Server stores msdb's step rows; pg_cron has no steps and pgAgent's step log rides on the
+//            run, so a PostgreSQL job has the outcome row alone
+//   series   the range in buckets (series_meta: their width), every bucket a row, an empty one with zero counts:
+//            runs, succeeded, failed, other, and the average and longest seconds (NULL without a run), so the chart
+//            has a point where every run took 0 s
+//   &step=<n> (SQL Server; n > 0) cuts runs, counts and series to that step's own rows; engine=pg with step is 400
 
 // pgOutcome is a pg_cron or pgAgent run's status as one of succeeded, failed, cancelled, running.
 const pgOutcome = `CASE WHEN r.status = 'succeeded' THEN 'succeeded'
@@ -115,14 +125,16 @@ SELECT 'sqlagent' AS scheduler, j.job_id, j.name, j.enabled, j.schedule,
                         AND r.snapshot_at > $2 AND r.snapshot_at <= $3) c ON true
  ORDER BY (j.dropped_at IS NULL) DESC, (j.last_outcome = 'failed') DESC NULLS LAST, j.name`
 
-// the picked job's runs in the range, one shape for both engines ($4 scheduler, $5 job id as text), no limit: the
-// runs part takes the newest 1,000 of them (jobRunsLimit), the counts part all of them
+// the picked job's runs in the range, one shape for both engines ($4 scheduler, $5 job id as text, $6 the step or
+// NULL), no limit: the runs part takes the newest 1,000 of them (jobRunsLimit), the counts part all of them. The
+// PostgreSQL text names $6 too (always NULL there: the handler refuses a step), or the server could not type it.
 const sqlJobRunsPG = `
 SELECT r.start_time, r.duration_secs AS duration_s, ` + pgOutcome + ` AS outcome, r.failed_step,
        left(r.return_message, 4000) AS message, NULL::int AS sql_message_id, NULL::int AS sql_severity, NULL::int AS retries,
        r.run_id::text AS run_id
   FROM pgvigil.job_runs r
- WHERE r.instance_id = $1 AND r.scheduler = $4 AND r.job_id::text = $5 AND r.start_time > $2 AND r.start_time <= $3`
+ WHERE r.instance_id = $1 AND r.scheduler = $4 AND r.job_id::text = $5 AND r.start_time > $2 AND r.start_time <= $3
+   AND $6::int IS NULL`
 
 const sqlJobRunsMS = `
 SELECT j.running_since AS start_time, extract(epoch FROM j.snapshot_at - j.running_since)::bigint AS duration_s, 'running' AS outcome,
@@ -130,12 +142,19 @@ SELECT j.running_since AS start_time, extract(epoch FROM j.snapshot_at - j.runni
        NULL::text AS message, NULL::int AS sql_message_id, NULL::int AS sql_severity, NULL::int AS retries, NULL::text AS run_id
   FROM pgvigil.mssql_jobs j
  WHERE j.instance_id = $1 AND $4 = 'sqlagent' AND j.job_id = $5 AND j.running_since > $2 AND j.running_since <= $3
+   AND $6::int IS NULL
 UNION ALL
+-- the job's outcome rows (step 0) with the step that failed, or with a step picked that step's own rows
 SELECT r.snapshot_at, r.duration_s, ` + msOutcome + `,
-       CASE WHEN r.failed_step_id IS NOT NULL THEN r.failed_step_id || ' ' || coalesce(r.failed_step_name, '') END,
-       coalesce(r.failed_message, r.message), r.failed_sql_message_id, r.failed_sql_severity, r.step_retries, r.history_id::text
+       CASE WHEN r.step_id > 0 THEN r.step_id || ' ' || coalesce(r.step_name, '')
+            WHEN r.failed_step_id IS NOT NULL THEN r.failed_step_id || ' ' || coalesce(r.failed_step_name, '') END,
+       CASE WHEN r.step_id > 0 THEN r.message ELSE coalesce(r.failed_message, r.message) END,
+       CASE WHEN r.step_id > 0 THEN r.sql_message_id ELSE r.failed_sql_message_id END,
+       CASE WHEN r.step_id > 0 THEN r.sql_severity ELSE r.failed_sql_severity END,
+       CASE WHEN r.step_id > 0 THEN r.retries ELSE r.step_retries END, r.history_id::text
   FROM pgvigil.mssql_job_runs r
- WHERE r.instance_id = $1 AND $4 = 'sqlagent' AND r.job_id = $5 AND r.step_id = 0 AND r.snapshot_at > $2 AND r.snapshot_at <= $3`
+ WHERE r.instance_id = $1 AND $4 = 'sqlagent' AND r.job_id = $5 AND r.step_id = coalesce($6::int, 0)
+   AND r.snapshot_at > $2 AND r.snapshot_at <= $3`
 
 // jobRunsLimit is the most runs the history grid lists (the newest); the counts cover every run of the range
 const jobRunsLimit = `
@@ -150,6 +169,58 @@ SELECT count(*) AS runs, count(*) FILTER (WHERE outcome = 'succeeded') AS succee
        count(*) FILTER (WHERE outcome <> 'running' AND duration_s > 2 * m.median) AS running_long,
        round(m.median::numeric, 1) AS median_s
   FROM x, m GROUP BY m.median`
+
+// the job's runs per step over the range (DBA Dash's Job Stats grid): SQL Server from msdb's rows, step 0 being the
+// job's own outcome; PostgreSQL the outcome row alone
+const sqlJobStatsMS = `
+SELECT r.step_id, CASE WHEN r.step_id = 0 THEN '(job outcome)' ELSE max(r.step_name) END AS step_name,
+       count(*) FILTER (WHERE r.run_status = 0) AS failed, count(*) FILTER (WHERE r.run_status = 1) AS succeeded,
+       count(*) FILTER (WHERE r.run_status = 2) AS retry, count(*) FILTER (WHERE r.run_status = 3) AS cancelled,
+       round(avg(r.duration_s)::numeric, 1) AS avg_s, max(r.duration_s) AS max_s, min(r.duration_s) AS min_s,
+       sum(r.duration_s) AS total_s, max(r.snapshot_at) AS last_run_at
+  FROM pgvigil.mssql_job_runs r
+ WHERE r.instance_id = $1 AND $4 = 'sqlagent' AND r.job_id = $5 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+ GROUP BY r.step_id
+ ORDER BY r.step_id`
+
+const sqlJobStatsPG = `
+SELECT 0 AS step_id, '(job outcome)' AS step_name,
+       count(*) FILTER (WHERE x.outcome = 'failed') AS failed, count(*) FILTER (WHERE x.outcome = 'succeeded') AS succeeded,
+       0::bigint AS retry, count(*) FILTER (WHERE x.outcome = 'cancelled') AS cancelled,
+       round(avg(x.duration_s)::numeric, 1) AS avg_s, round(max(x.duration_s)::numeric, 1) AS max_s,
+       round(min(x.duration_s)::numeric, 1) AS min_s, round(sum(x.duration_s)::numeric, 1) AS total_s,
+       max(x.start_time) AS last_run_at
+  FROM (SELECT r.start_time, r.duration_secs AS duration_s, ` + pgOutcome + ` AS outcome
+          FROM pgvigil.job_runs r
+         WHERE r.instance_id = $1 AND r.scheduler = $4 AND r.job_id::text = $5 AND r.start_time > $2 AND r.start_time <= $3) x
+HAVING count(*) > 0`
+
+// the runs of the range in buckets of $7 seconds (the runs query is wrapped around it), every bucket of the range a
+// row: a bucket without a run counts 0 and has no duration. snapshot_at is the bucket's start (the chart's x).
+const sqlJobSeries = `
+WITH x AS (%s), b AS (
+  SELECT g AS snapshot_at
+    FROM generate_series(to_timestamp(floor(extract(epoch FROM $2::timestamptz) / $7::int) * $7::int), $3::timestamptz,
+                         make_interval(secs => $7::int)) g
+)
+SELECT b.snapshot_at, count(x.start_time) AS runs,
+       count(x.start_time) FILTER (WHERE x.outcome = 'succeeded') AS succeeded,
+       count(x.start_time) FILTER (WHERE x.outcome = 'failed') AS failed,
+       count(x.start_time) FILTER (WHERE x.outcome NOT IN ('succeeded', 'failed')) AS other,
+       round(avg(x.duration_s)::numeric, 1) AS avg_s, round(max(x.duration_s)::numeric, 1) AS max_s
+  FROM b
+  LEFT JOIN x ON x.start_time >= b.snapshot_at AND x.start_time < b.snapshot_at + make_interval(secs => $7::int)
+ GROUP BY b.snapshot_at
+ ORDER BY b.snapshot_at`
+
+// jobSeriesStep is the series' bucket width in seconds: about 120 buckets over the range, a whole number of minutes.
+func jobSeriesStep(rangeSecs float64) int {
+	step := int(math.Ceil(rangeSecs/120/60)) * 60
+	if step < 60 {
+		step = 60
+	}
+	return step
+}
 
 const sqlJobChanges = `
 SELECT v.valid_from, v.version_no, v.dropped, v.job_name, v.changes, v.definition
@@ -167,11 +238,12 @@ func (s *Server) JobsHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	grid, runs := sqlJobsGridPG, sqlJobRunsPG
+	grid, runs, stats := sqlJobsGridPG, sqlJobRunsPG, sqlJobStatsPG
+	mssql := false
 	switch q.Get("engine") {
 	case "pg", "":
 	case "mssql":
-		grid, runs = sqlJobsGridMS, sqlJobRunsMS
+		grid, runs, stats, mssql = sqlJobsGridMS, sqlJobRunsMS, sqlJobStatsMS, true
 	default:
 		writeErr(w, http.StatusBadRequest, errors.New("engine must be pg or mssql"))
 		return
@@ -182,10 +254,31 @@ func (s *Server) JobsHistory(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("scheduler and job go together"))
 			return
 		}
+		// the step cut: SQL Server only (msdb's step rows are stored; a PostgreSQL scheduler's are not)
+		var step *int
+		if v := q.Get("step"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > 100000 {
+				writeErr(w, http.StatusBadRequest, errors.New("step must be a step id (1 or more)"))
+				return
+			}
+			if !mssql {
+				writeErr(w, http.StatusBadRequest, errors.New("step needs engine=mssql: the repository holds no step rows of a PostgreSQL scheduler"))
+				return
+			}
+			step = &n
+		}
+		bucket := jobSeriesStep(to.Sub(from).Seconds())
 		parts = append(parts,
-			part{"runs", fmt.Sprintf(jobRunsLimit, runs), []any{id, from, to, sch, job}},
-			part{"counts", fmt.Sprintf(sqlJobCounts, runs), []any{id, from, to, sch, job}},
-			part{"changes", sqlJobChanges, []any{id, sch, job}})
+			part{"runs", fmt.Sprintf(jobRunsLimit, runs), []any{id, from, to, sch, job, step}},
+			part{"counts", fmt.Sprintf(sqlJobCounts, runs), []any{id, from, to, sch, job, step}},
+			part{"changes", sqlJobChanges, []any{id, sch, job}},
+			part{"stats", stats, []any{id, from, to, sch, job}},
+			part{"series", fmt.Sprintf(sqlJobSeries, runs), []any{id, from, to, sch, job, step, bucket}},
+			part{"series_meta", `SELECT $1::int AS step_secs, $2::int AS step`, []any{bucket, step}})
+	} else if q.Get("step") != "" {
+		writeErr(w, http.StatusBadRequest, errors.New("step needs scheduler and job"))
+		return
 	}
 	s.multiPart(w, r, parts)
 }
