@@ -248,3 +248,9 @@ its own loopback SMTP sink and HTTP listener and covers these cases:
 - A deactivated instance's alerts close without a recovery message.
 - The loop inside `pgvigil run` keeps running past a failing channel.
 - The Alerts API and the Findings column.
+
+`scripts/proof-alerts-live.sh` sends to REAL destinations (run it only against test ones): a finding of its own fires
+to an SMTP server, a Teams Workflows webhook, a Slack webhook and PagerDuty, its recovery follows on all four, and a
+finding cleared without a fix (the instance deactivated) resolves the PagerDuty incident while the other three record
+it silently. Proven 2026-11-11 against Amazon SES (STARTTLS on 587), a Teams Workflows webhook, a Slack incoming
+webhook and a PagerDuty Events API v2 service: every pass exit 0, each provider accepted every send.
