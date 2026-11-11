@@ -13,7 +13,7 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 
 ## Collections
 
-Seventeen collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Twenty collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -34,6 +34,9 @@ Seventeen collections. `every` is the default; an instance's `schedules:` change
 | `mssql_memory` | 1 min | the machine's and the server's memory, the memory clerks, memory grants, Page life expectancy | as `mssql_cpu` | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
 | `mssql_fileio` | 1 min | read and write latency and bytes per database file, as the difference between two reads | as `mssql_cpu`; VIEW ANY DEFINITION for the files' names and types (partial without it) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
 | `mssql_tempdb` | 1 hour | tempdb's layout: files, sizes, growth, the CPU count, trace flags 1117 / 1118, memory-optimized metadata | public; VIEW SERVER STATE for the CPU count and volumes (partial without it) | not run | [CPU, memory, file IO, tempdb](#cpu-memory-file-io-and-tempdb) |
+| `mssql_properties` | 1 hour | what the instance is (server, processors, memory, tempdb's layout, host) and every change of a value | public; VIEW SERVER STATE for the processor, memory and host rows (partial without it) | not run | [properties, procedures, index locks](sqlserver-reads.md) |
+| `mssql_procstats` | 5 min | what each stored procedure did between two reads: calls, CPU, duration, reads | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE); CONNECT ANY DATABASE and VIEW ANY DEFINITION for the names in other databases | not run | [properties, procedures, index locks](sqlserver-reads.md) |
+| `mssql_indexlocks` | 5 min | row and page lock waits and lock escalations per index, as the difference between two reads | as `mssql_procstats` | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 
@@ -56,12 +59,13 @@ The connection string is the driver's own form, `sqlserver://login:password@host
 
 ## The login
 
-A SQL login or a Windows login with three things and no more; never sysadmin.
+A SQL login or a Windows login with four things and no more; never sysadmin.
 
 ```sql
 CREATE LOGIN [pgvigil_monitor] WITH PASSWORD = '<a long random password>';
 GRANT VIEW SERVER STATE TO [pgvigil_monitor];
 GRANT VIEW ANY DEFINITION TO [pgvigil_monitor];
+GRANT CONNECT ANY DATABASE TO [pgvigil_monitor];   -- SQL Server 2014 and later: the names of procedures and indexes in every database; it enters a database and reads no table
 -- a server, Amazon RDS and Azure SQL Managed Instance only (Azure SQL Database has no msdb):
 USE msdb;
 CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
