@@ -5,6 +5,7 @@
 #   PGVIGIL_ADMIN_DSN  a superuser connection without dbname (creates and drops a scratch database)
 #   PGVIGIL_PGBIN      a PostgreSQL bin folder with initdb and pg_ctl for the -pgbin part (default: the
 #                      folder of the initdb on the PATH; none = that part is skipped and says so)
+#   PGVIGIL_DEMO_WAIT_S the seconds the -pgbin part waits for its seeded demo to serve (default 150; a loaded machine seeds slower)
 # N = the seed's grid: 7 days at 5 minutes up to the last hour, then every minute (2,065 points when
 # the anchor is on a 5-minute mark, 2,066 when it is not), plus the seed's catch-up ticks (one a minute from the
 # anchor, which the seed prints, to the minute the seed returns).
@@ -316,8 +317,10 @@ else
   # port 0: the server picks one; the logged URL must answer (the Host check follows the bound port)
   "$BIN" demo -serve -pgbin "$PGBIN" -pgdata "$WORK/data" -listen "127.0.0.1:0" >"$WORK/pgbin.out" 2>"$WORK/pgbin.log" & GPID=$!
   PORT=""
-  for _ in $(seq 300); do PORT=$(grep -o 'url=http://127.0.0.1:[0-9]*' "$WORK/pgbin.log" | grep -o '[0-9]*$' || true); [[ -n "$PORT" ]] && break; sleep 0.5; done
-  [[ -n "$PORT" ]] || { cat "$WORK/pgbin.log" >&2; fail "pgbin: no serving URL logged"; }
+  # the seven-day seed takes minutes on a loaded machine: PGVIGIL_DEMO_WAIT_S raises the wait (default 150 s, as before)
+  for _ in $(seq $(( ${PGVIGIL_DEMO_WAIT_S:-150} * 2 ))); do PORT=$(grep -o 'url=http://127.0.0.1:[0-9]*' "$WORK/pgbin.log" | grep -o '[0-9]*$' || true); [[ -n "$PORT" ]] && break
+    kill -0 $GPID 2>/dev/null || { cat "$WORK/pgbin.log" >&2; fail "pgbin: the demo ended before it served"; }; sleep 0.5; done
+  [[ -n "$PORT" ]] || { cat "$WORK/pgbin.log" >&2; fail "pgbin: no serving URL logged in ${PGVIGIL_DEMO_WAIT_S:-150} s (PGVIGIL_DEMO_WAIT_S raises the wait on a loaded machine)"; }
   curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null || fail "pgbin: the logged URL $PORT does not answer"; ok "pgbin: -listen 127.0.0.1:0 serves on the logged port $PORT"
   got=$(api instances | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["rows"]))') || { cat "$WORK/pgbin.log" >&2; fail "pgbin serve"; }
   [[ "$got" == 15 ]] || fail "pgbin instances: $got"; ok "pgbin: 15 instances served"
