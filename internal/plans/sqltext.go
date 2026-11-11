@@ -69,7 +69,8 @@ func ScanSQL(s string) Scan {
 					}
 					break
 				}
-				if c == '\'' && rs[j] == '\\' && i > 0 && (rs[i-1] == 'E' || rs[i-1] == 'e') && j+1 < n {
+				// an escape string is E'...' with the E standing alone: name'\' is an identifier, then a plain string
+				if c == '\'' && rs[j] == '\\' && i > 0 && (rs[i-1] == 'E' || rs[i-1] == 'e') && (i < 2 || !isIdent(rs[i-2])) && j+1 < n {
 					j++
 				}
 			}

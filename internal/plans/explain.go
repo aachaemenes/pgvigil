@@ -79,7 +79,9 @@ func Explain(ctx context.Context, dsn, datname, query string) (Row, error) {
 		if _, err := tx.Exec(ctx, `SET LOCAL plan_cache_mode = force_generic_plan`, mode); err != nil {
 			return Row{}, fmt.Errorf("plan_cache_mode: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `PREPARE pgvigil_explain AS `+query, mode); err != nil {
+		// the extended protocol, so the server takes one statement only: pgx sends an Exec without arguments over the
+		// simple protocol (it runs every statement of the text), whatever the mode option says
+		if _, err := tx.Conn().PgConn().ExecParams(ctx, `PREPARE pgvigil_explain AS `+query, nil, nil, nil, nil).Close(); err != nil {
 			return Row{}, explainErr(err, datname, sc.Keyword)
 		}
 		args := strings.TrimSuffix(strings.Repeat("NULL, ", sc.MaxParam), ", ")
