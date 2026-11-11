@@ -16,8 +16,8 @@ import (
 )
 
 // sqlMetricGrid: $1 instance, $2 from, $3 to, $4 the rate lookback in seconds, $5 one database's series (NULL = the
-// instance's). The state columns are the alert sender's last evaluation of the row's rule (NULL: not judged yet, or
-// no sender runs).
+// instance's), $6 one family (NULL = every family of the engine). The state columns are the alert sender's last
+// evaluation of the row's rule (NULL: not judged yet, or no sender runs).
 const sqlMetricGrid = `
 SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_database, g.database,
        g.max_value, g.min_value, g.avg_value, g.current_value, g.current_at, g.samples,
@@ -27,10 +27,18 @@ SELECT g.key, g.family, g.family_label, g.metric, g.label, g.unit, g.per_databas
        pgvigil.metric_status(g.op, g.current_value, g.warning, g.critical) AS current_status,
        g.rule_id, g.rule_name, g.op, g.warning, g.critical, g.for_minutes, g.rule_scope, g.rule_target, g.rule_database,
        s.state AS rule_state, s.held AS rule_held, s.since AS rule_since, s.evaluated_at AS rule_evaluated_at
-  FROM pgvigil.metric_grid($1, $2, $3, make_interval(secs => $4), $5) g
+  FROM pgvigil.metric_grid($1, $2, $3, make_interval(secs => $4), $5, $6) g
   LEFT JOIN pgvigil.alert_rule_state s
     ON s.instance_id = $1 AND s.metric = g.key AND s.database = coalesce(g.rule_database, '') AND s.rule_id = g.rule_id
  ORDER BY g.family_sort, g.sort`
+
+// sqlMetricFamilies: the counter families of an engine, in the grid's order
+const sqlMetricFamilies = `
+SELECT c.family, max(c.family_label) AS family_label, bool_or(c.per_database) AS per_database, count(*) AS metrics
+  FROM pgvigil.metric_catalog c
+ WHERE c.engine IN ($1, 'any')
+ GROUP BY c.family
+ ORDER BY max(c.family_sort)`
 
 // sqlMetricDatabases: the databases of the newest database-counter read at or before the window's end (the cut the
 // Database family's grid offers)
@@ -70,8 +78,11 @@ func (s *Server) metricLookback(r *http.Request, id int) int {
 	return max(s.rateLookback(r.Context(), id, "dbstats"), s.rateLookback(r.Context(), id, "iostats"))
 }
 
-// Metrics is GET /api/metrics?instance=&from=&to=[&db=]: the grid, the databases its Database family can be cut by,
-// the instance's engine, and whether alert rules can be written here (and why not).
+// Metrics is GET /api/metrics?instance=&from=&to=[&db=][&family=][&part=families]: the grid (every family of the
+// engine, or the one named: the page reads a family per request, so a long window costs one family's read per
+// statement and a failing family only its own section), the engine's families, the databases its Database family can
+// be cut by, the instance's engine, and whether alert rules can be written here (and why not). part=families leaves
+// the grid out.
 func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {
@@ -90,12 +101,40 @@ func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"engine": engine}
 	s.alertRulesDoor(r, out)
-	grid, err := s.query(r.Context(), sqlMetricGrid, id, from, to, s.metricLookback(r, id), db)
+	fams, err := s.query(r.Context(), sqlMetricFamilies, engine)
 	if err != nil {
-		s.reply(w, r, nil, fmt.Errorf("grid: %w", err))
+		s.reply(w, r, nil, fmt.Errorf("families: %w", err))
 		return
 	}
-	out["grid"] = grid
+	out["families"] = fams
+	var family *string
+	if v := r.URL.Query().Get("family"); v != "" {
+		names := make([]string, 0, len(fams.Rows))
+		known := false
+		for _, row := range fams.Rows {
+			n, _ := row[0].(string)
+			names = append(names, n)
+			known = known || n == v
+		}
+		if !known {
+			writeErr(w, http.StatusBadRequest, errors.New("family must be one of "+strings.Join(names, ", ")))
+			return
+		}
+		family = &v
+	}
+	switch r.URL.Query().Get("part") {
+	case "":
+		grid, gerr := s.query(r.Context(), sqlMetricGrid, id, from, to, s.metricLookback(r, id), db, family)
+		if gerr != nil {
+			s.reply(w, r, nil, fmt.Errorf("grid: %w", gerr))
+			return
+		}
+		out["grid"] = grid
+	case "families":
+	default:
+		writeErr(w, http.StatusBadRequest, errors.New("part must be families (or absent: the grid too)"))
+		return
+	}
 	dbs, err := s.query(r.Context(), sqlMetricDatabases, id, to)
 	if err != nil {
 		s.reply(w, r, nil, fmt.Errorf("databases: %w", err))

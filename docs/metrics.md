@@ -70,11 +70,12 @@ sample, and says the bucket's length in the legend. The warning and critical val
 
 | Endpoint | Answer |
 |---|---|
-| `GET /api/metrics?instance=&from=&to=[&db=]` | `grid` (the rows above, with `max_status` ... `current_status` and the rule's columns), `databases`, `engine`, and `writable` with its `reason`. |
+| `GET /api/metrics?instance=&from=&to=[&db=][&family=]` | `grid` (the rows above, with `max_status` ... `current_status` and the rule's columns; one family's rows with `family=`), `families`, `databases`, `engine`, and `writable` with its `reason`. `part=families` leaves the grid out. |
 | `GET /api/metrics/series?instance=&metric=<family.metric>&from=&to=[&db=]` | `series` (`snapshot_at`, `value`, `max_value`, `min_value`, `samples`), `step_secs` (1 = every sample as stored) and `metric` (label, unit, the thresholds in force). |
 
 The grid, a row's chart and the rule's evaluation read the same function (`pgvigil.metric_points`, migration 0085),
-so the three agree.
+so the three agree. The page reads each family with its own request: over a long range one family that is slow or
+fails shows its error under its own heading, and the others still draw.
 
 ## Proof
 

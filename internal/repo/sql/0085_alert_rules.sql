@@ -9,8 +9,8 @@
 --                         the family's samples in (from, to] as (at, metric, value): the one read behind the grid, a
 --                         row's chart and a rule's evaluation, so the three agree. A counter is a rate over its own
 --                         interval (the *_rate functions of 0004: a reset gives no point, never a dip).
---   metric_grid(i, from, to, lookback, database)
---                         one row per metric of the instance's engine: max, min, avg and the newest value of the
+--   metric_grid(i, from, to, lookback, database, family)
+--                         one row per metric of the instance's engine (of one family when named): max, min, avg and the newest value of the
 --                         window, the sample count, and the thresholds in force for it (metric_rule: the most
 --                         specific live rule); metric_status colours a figure against them.
 --   alert_rules           a rule: a metric above or below a warning and / or a critical value for n minutes, on the
@@ -387,9 +387,11 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
               ELSE 'ok' END
 $$;
 
--- metric_grid: the Metrics page's rows, each with the thresholds metric_rule gives it.
+-- metric_grid: the Metrics page's rows, each with the thresholds metric_rule gives it. p_family: that family's rows
+-- alone (the page reads a family per request, so a long window costs one family's read per statement).
 CREATE OR REPLACE FUNCTION pgvigil.metric_grid(p_instance_id int, p_from timestamptz, p_to timestamptz,
-                                               p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL)
+                                               p_lookback interval DEFAULT interval '15 minutes', p_database text DEFAULT NULL,
+                                               p_family text DEFAULT NULL)
 RETURNS TABLE (key text, family text, family_label text, metric text, label text, unit text, per_database boolean,
                database text, max_value double precision, min_value double precision, avg_value double precision,
                current_value double precision, current_at timestamptz, samples bigint,
@@ -406,7 +408,8 @@ BEGIN
     RETURN;
   END IF;
   FOR f IN SELECT c.family, bool_or(c.per_database) AS per_database
-             FROM pgvigil.metric_catalog c WHERE c.engine IN (v_engine, 'any') GROUP BY c.family
+             FROM pgvigil.metric_catalog c
+            WHERE c.engine IN (v_engine, 'any') AND (p_family IS NULL OR c.family = p_family) GROUP BY c.family
   LOOP
     RETURN QUERY
     WITH p AS MATERIALIZED (

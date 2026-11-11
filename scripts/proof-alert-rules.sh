@@ -37,6 +37,9 @@
 #     that database alone. GET /api/metrics/series for sessions.active: step_secs 1, as many points as samples, the
 #     last point = current. 400 for metric sessions.nope, for a SQL Server metric on this instance, and for db= on a
 #     metric without a per-database series.
+#     [Added before run 4, with the family read: GET /api/metrics with family=sessions answers the sessions rows alone
+#     and sessions.active's five figures again equal the hand query; part=families answers the five PostgreSQL
+#     families and no grid; family=nope 400.]
 #  S. a SQL Server instance's grid (seeded, not collected: the grid is a repository read; the collectors that fill
 #     these tables have their own proofs). mssql_requests_summary seeded with blocked = 3, 1, 7, 2, 0 (oldest to
 #     newest): requests.blocked reads max 7, min 0, avg 2.6, current 0, 5 samples. With an instance rule 'above 5
@@ -276,6 +279,7 @@ HAND=$(q "select max(active), min(active), avg(active), (array_agg(active order 
             from pgvigil.activity_summary where instance_id = $AID and snapshot_at > '$FROM' and snapshot_at <= '$TO'")
 [[ $(cut -d'|' -f5 <<<"$HAND") == 3 ]] || fail "G: the hand query sees $(cut -d'|' -f5 <<<"$HAND") activity samples, expected 3"
 five "$WORK/ga.json" sessions.active "$HAND" "the instance"
+HANDS=$HAND
 hand_commits() {   # the rate per read from the raw rows: $1 = an extra filter on dbstats
   q "with w as (
        select d.snapshot_at, d.xact_commit - lag(d.xact_commit) over k as dx,
@@ -302,10 +306,16 @@ read -r STEP NPTS LASTV < <(python3 -c 'import json,sys
 d=json.load(open(sys.argv[1])); s=d["series"]; c=s["columns"]
 print(d["step_secs"], len(s["rows"]), s["rows"][-1][c.index("value")] if s["rows"] else "none")' "$WORK/s.json")
 [[ $STEP == 1 && $NPTS == 3 ]] && same "$LASTV" "$(cell "$WORK/ga.json" sessions.active current_value)" || fail "G: the series: step $STEP, $NPTS points, last $LASTV"
+[[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO&family=sessions" "$WORK/gs.json") == 200 ]] || fail "G: GET /api/metrics family=sessions: $(cat "$WORK/gs.json")"
+[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["grid"]; c=d["columns"]; print(" ".join(sorted({r[c.index("family")] for r in d["rows"]})), len(d["rows"]))' "$WORK/gs.json") == "sessions 8" ]] || fail "G: family=sessions answered other rows"
+five "$WORK/gs.json" sessions.active "$HANDS" "the sessions family alone"
+[[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO&part=families" "$WORK/gf.json") == 200 ]] || fail "G: GET /api/metrics part=families: $(cat "$WORK/gf.json")"
+[[ $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f=d["families"]; print(" ".join(r[f["columns"].index("family")] for r in f["rows"]), "grid" in d)' "$WORK/gf.json") == "sessions database server io host False" ]] || fail "G: part=families: $(cat "$WORK/gf.json")"
+[[ $(getj "metrics?instance=$AID&from=$FROM&to=$TO&family=nope" "$WORK/bad.json") == 400 ]] || fail "G: family=nope did not answer 400: $(cat "$WORK/bad.json")"
 for bad in "metric=sessions.nope" "metric=requests.blocked" "metric=sessions.active&db=$TGT"; do
   [[ $(getj "metrics/series?instance=$AID&$bad&from=$FROM&to=$TO" "$WORK/bad.json") == 400 ]] || fail "G: series $bad did not answer 400: $(cat "$WORK/bad.json")"
 done
-ok "G: sessions.active and database.commits_s (summed: $HAND; $TGT alone) equal the hand queries; the series has the grid's points; three bad series requests 400"
+ok "G: sessions.active and database.commits_s (summed: $HAND; $TGT alone) equal the hand queries, by the whole grid and by one family; the series has the grid's points; four bad requests 400"
 
 # ---- S: a SQL Server instance's grid, seeded --------------------------------------------------------------------------
 MSID=$(q "insert into pgvigil.instances (name, platform, tags, first_seen, last_seen, is_active, engine)

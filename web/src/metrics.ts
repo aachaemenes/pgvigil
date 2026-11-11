@@ -14,7 +14,7 @@ import { Ctx, href, rangeLabel, window_ } from './router';
 import { whatIsThis } from './sqlview';
 import { Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 
-interface MetricsData extends RulesDoor { engine: string; grid: Table | null; databases: Table | null }
+interface MetricsData extends RulesDoor { engine: string; grid?: Table | null; databases: Table | null; families: Table | null }
 interface SeriesData { step_secs: number; series: Table | null; metric: Table | null }
 
 // the Counters page's kinds, kept as addresses of their families
@@ -32,25 +32,38 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, `Metrics (${rangeLabel(ctx)})`));
   const w = window_(ctx);
   let d: MetricsData;
-  try { d = await get<MetricsData>('metrics', { instance: ctx.instance, ...w, db: mdb }); } catch (e) { sec.append(errorBox(e)); return sec; }
-  const rows = rowsOf(d.grid), dbs = rowsOf(d.databases).map(r => String(r.datname));
-  const families = [...new Map(rows.map(r => [String(r.family), String(r.family_label)])).entries()];
+  try { d = await get<MetricsData>('metrics', { instance: ctx.instance, ...w, part: 'families' }); } catch (e) { sec.append(errorBox(e)); return sec; }
+  const dbs = rowsOf(d.databases).map(r => String(r.datname));
+  const families: [string, string][] = rowsOf(d.families).map(f => [String(f.family), String(f.family_label)]);
   const kind = families.some(([k]) => k === (legacyKind[asked] ?? asked)) ? legacyKind[asked] ?? asked : 'all';
+  // each family in view is its own read: a long range costs one family's read per request, and a family that fails
+  // or times out shows its error under its own heading while the others draw
+  const shown = families.filter(([k]) => kind === 'all' || kind === k);
+  const reads = await Promise.all(shown.map(([k]) => get<MetricsData>('metrics', { instance: ctx.instance, ...w, db: mdb, family: k })
+    .then(x => rowsOf(x.grid)).catch((e: unknown) => e instanceof Error ? e : new Error(String(e)))));
+  const rows = reads.flatMap(x => x instanceof Error ? [] : x);
   // a link to this page: the family, and the database cut while the Database family is in view
-  const link = (k: string, db?: string) => href(ctx, { tab: ctx.tab, kind: k }) + (db && (k === 'all' || k === 'database') ? `&mdb=${encodeURIComponent(db)}` : '');
+  // (set or taken out here whatever the shell's own links keep, so 'all databases' always clears it)
+  const link = (k: string, db?: string) => {
+    const [path, qs] = href(ctx, { tab: ctx.tab, kind: k }).split('?');
+    const p = new URLSearchParams(qs ?? '');
+    if (db && (k === 'all' || k === 'database')) p.set('mdb', db); else p.delete('mdb');
+    return `${path}?${p}`;
+  };
 
   const withRule = rows.filter(r => r.rule_id != null).length, sampled = rows.filter(r => Number(r.samples) > 0).length;
   sec.append(el('p', { class: 'meta' },
-    `${rows.length} counter(s), ${sampled} with samples in the range, ${withRule} with a threshold. `,
+    `${rows.length} counter(s)${kind === 'all' ? '' : ' in this family'}, ${sampled} with samples in the range, ${withRule} with a threshold. `,
     whatIsThis('Max, min, average and the newest value of every counter over the time range, from the samples the collector already stores (a cumulative counter is shown as its rate per interval; a counter reset gives no point). A row with a threshold shows its warning and critical values and colours each of the four figures by them; the threshold is an alert rule (the Alert rules page), judged by the alert sender on the same samples: the rule column says what it last made of it. The narrowest rule covering the instance is the one in force: this instance\'s own over a tag\'s over the fleet\'s. Chart draws a row over the range with its thresholds as flat lines.', 'Metrics')));
   if (!d.writable) sec.append(el('p', { class: 'meta' }, `Thresholds are read only here: ${d.reason ?? ''}`));
   sec.append(el('div', { class: 'subtabs' }, ...[['all', 'all'], ...families].map(([k, label]) =>
     el('a', { href: link(k, mdb), class: k === kind ? 'on' : '', ...(k === kind ? { 'aria-current': 'true' } : {}) }, label))));
-  if (!rows.length) { sec.append(el('p', { class: 'empty' }, 'No counter is known for this instance.')); return sec; }
+  if (!families.length) { sec.append(el('p', { class: 'empty' }, 'No counter is known for this instance.')); return sec; }
 
-  for (const [fam, famLabel] of families) {
-    if (kind !== 'all' && kind !== fam) continue;
-    const famRows = rows.filter(r => r.family === fam);
+  for (const [i, [, famLabel]] of shown.entries()) {
+    const read = reads[i];
+    if (read instanceof Error) { sec.append(el('h3', {}, famLabel), errorBox(read)); continue; }
+    const famRows = read;
     const perDb = famRows.some(r => r.per_database);
     const head = el('h3', {}, famLabel);
     const box = el('div', {});
