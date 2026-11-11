@@ -120,7 +120,8 @@ upgrade over stored history.
 
 `scripts/proof-upgrade.sh` starts from the released v0.3.0 itself and ends on the build of this tree, on throwaway
 containers: a Debian 12 host under systemd for pgvigil, on a network with no route out, a mirror folder there, and
-PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 (PostgreSQL 16):
+PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 against PostgreSQL 13, 16 and 18, green
+on each (the numbers are PostgreSQL 16's):
 
 - **The release.** v0.3.0's binary and SBOM match `SHA256SUMS`. The SBOM names exactly the 35 modules the binary
   itself reports (`go version -m`: name, version and hash of each) and the same build settings. The signature of
@@ -139,7 +140,7 @@ PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 (Pos
   `installed and running`, the config and the env file byte for byte as before, the unit running as `pgvigil` and
   still without a restart minutes later.
 - **The collector.** Under the collector's login, all 20 collections that ended ok under v0.3.0 ended ok under this
-  build; none ended in an error.
+  build (18 of 18 on PostgreSQL 13), and none ended in an error.
 - **The pages.** This build's `serve`, under the UI's login, rendered 488 pages over the upgraded store with no error
   box, no API answer of 400 or over, no failed request and no script exception: the 27 root pages, every tab of all
   13 instances (35 each, 36 where a pooler is read) and the drill pages they link to (a database, a table, an index,
