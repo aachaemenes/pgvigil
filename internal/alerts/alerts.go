@@ -30,6 +30,13 @@
 // repeat, resolved, cleared), sends it per channel and records every attempt (pgvigil.alert_record). A failed send
 // moves nothing: the next pass owes the same alerts, and the loop waits longer before trying a failing channel again
 // (1, 2, 4 ... 30 minutes). Delivery is at least once: a send whose record then fails is sent again.
+//
+// The alert rules (migration 0085: a charted metric above or below a value for n minutes, per instance, tag or the
+// fleet) ride the same pass: before it asks what is owed, the pass has the repository judge every rule in force
+// (pgvigil.alert_rules_run) and a firing rule is then a finding of source 'alert rule' like any other, so the channels,
+// repeats, recoveries, quiet hours, mutes and acknowledgements above apply to it unchanged. With no channel the pass
+// judges nothing (nothing would be sent); a rule evaluation that fails, or runs past rulesTimeout on the server, is
+// reported in the pass's summary line and the findings still go out.
 package alerts
 
 import (
@@ -47,6 +54,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/yaml.v3"
@@ -450,6 +458,11 @@ type Result struct {
 	Held     []string // channels in their quiet hours
 	Skipped  bool     // another sender held the lock
 	Errors   []string // channel: error
+	// RulesFiring is how many alert rule rows (a rule on one instance and series) fire after this pass's evaluation.
+	RulesFiring int
+	// RulesErr is why the alert rules were not judged in this pass (the summary line says it; Errors stays the
+	// channels'); nil = judged, or a repository before 0085.
+	RulesErr error
 }
 
 func (r Result) String() string {
@@ -460,7 +473,54 @@ func (r Result) String() string {
 	if len(r.Held) > 0 {
 		s += "; quiet hours: " + strings.Join(r.Held, ", ")
 	}
+	if r.RulesFiring > 0 {
+		s += fmt.Sprintf("; %d alert rule row(s) firing", r.RulesFiring)
+	}
+	if r.RulesErr != nil {
+		s += "; alert rules not judged: " + strings.Join(strings.Fields(r.RulesErr.Error()), " ")
+	}
 	return s
+}
+
+// rowQuerier is the one call evalRules makes: a pool connection in a pass, a fake in the tests.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// rulesTimeout bounds the rule evaluation on the server: a slow one must not hold the pass, and the lock it runs
+// under, from the channels. The server ends the statement; the connection and the pass go on.
+const rulesTimeout = 30 * time.Second
+
+// evalRules has the repository judge every alert rule in force at now and store the result
+// (pgvigil.alert_rules_run, 0085); it returns how many rows fire. The firing rows are findings of source
+// 'alert rule' in pgvigil.alert_findings, so alert_due owes them like any other finding. A repository before 0085
+// has no such function: that is asked first (no rules there, no error here, and no error in the server's log for a
+// function it lacks). The call runs under the session's statement_timeout set to rulesTimeout and put back after.
+func evalRules(ctx context.Context, q rowQuerier, now time.Time) (n int, err error) {
+	var have bool
+	if err := q.QueryRow(ctx, `SELECT to_regprocedure('pgvigil.alert_rules_run(timestamp with time zone)') IS NOT NULL`).Scan(&have); err != nil {
+		return 0, err
+	}
+	if !have {
+		return 0, nil
+	}
+	var before, set string
+	if err := q.QueryRow(ctx, `SELECT current_setting('statement_timeout')`).Scan(&before); err != nil {
+		return 0, err
+	}
+	if err := q.QueryRow(ctx, `SELECT set_config('statement_timeout', $1, false)`, strconv.FormatInt(rulesTimeout.Milliseconds(), 10)).Scan(&set); err != nil {
+		return 0, err
+	}
+	defer func() {
+		// the session's own limit comes back whatever the evaluation did; a failure to put it back is the pass's to know
+		if rerr := q.QueryRow(context.WithoutCancel(ctx), `SELECT set_config('statement_timeout', $1, false)`, before).Scan(&set); rerr != nil && err == nil {
+			n, err = 0, fmt.Errorf("statement_timeout not put back: %w", rerr)
+		}
+	}()
+	if err := q.QueryRow(ctx, `SELECT pgvigil.alert_rules_run($1)`, now).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // Pass runs one round over the channels; skip names the channels the loop is backing off (nil = none). The map it
@@ -490,6 +550,14 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	}
 	if err := syncChannels(ctx, conn.Exec, chs, now); err != nil {
 		return res, nil, err
+	}
+	// the rules are judged before the quiet-hours cut: a channel in its quiet hours is owed what fired meanwhile when
+	// they end. A failure here (or the server's cut at rulesTimeout) costs this pass's fresh rule states only: the
+	// findings, and the rule alerts as last judged, still go out.
+	if n, err := evalRules(ctx, conn, now); err != nil {
+		res.RulesErr = err
+	} else {
+		res.RulesFiring = n
 	}
 	var due []map[string]any
 	byName := map[string]*Channel{}
@@ -732,6 +800,9 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 			log.Warn("alerts pass failed", "err", err)
 		case res.Sent+res.Failed+res.Cleared > 0:
 			log.Info("alerts pass", "result", res.String())
+		}
+		if res.RulesErr != nil {
+			log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
 		}
 		for n, e := range outcome {
 			if e == nil {
