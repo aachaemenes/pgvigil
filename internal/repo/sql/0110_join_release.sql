@@ -9,6 +9,8 @@
 --   mssql_stats_findings); purge() with mssql_pc_read / mssql_pc_sample and pgvigil.mssql_plancache_purge(); apply_roles()
 --   with mssql_plancache_purge on the owner-only list (it deletes).
 --   task 148 (day-one checks, 0090): the mssql_checks_findings arm; nothing for purge() (no table grows by the month).
+--   task 149 (readers, 0091): the mssql_readers_findings arm; mssql_errorlog, mssql_health_components and mssql_trace_events
+--   among purge()'s parents; the stale-cursor DELETE keeps 'errorlog:search'; mssql_errorlog_search_set owner-only.
 -- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new name.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -112,6 +114,8 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_stats', at FROM pgvigil.mssql_stats_findings
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_checks', at FROM pgvigil.mssql_checks_findings
+    UNION ALL
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_readers', at FROM pgvigil.mssql_readers_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
@@ -138,7 +142,7 @@ BEGIN
                          'mssql_indexlock_read', 'mssql_indexlock_sample', 'mssql_proc_read', 'mssql_proc_sample',
                          'mssql_qs_interval', 'mssql_qs_runtime',
                          'pgaudit_events', 'pgaudit_counts', 'mssql_audit_counts', 'mssql_audit_events',
-                         'mssql_pc_read', 'mssql_pc_sample')
+                         'mssql_pc_read', 'mssql_pc_sample', 'mssql_errorlog', 'mssql_health_components', 'mssql_trace_events')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
@@ -286,7 +290,9 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- a cursor goes only with an instance no collection has reached for the whole window: a quiet source (no deadlock
   -- in a month) of a server still read keeps its place, or its file would be read again from the start
-  DELETE FROM pgvigil.mssql_cursor c WHERE c.updated_at < now() - make_interval(days => p_days)
+  -- the instance's own error-log search strings ('errorlog:search', 0091) are a setting, not a place in a file: they
+  -- go with their instance by the foreign key, never with the window
+  DELETE FROM pgvigil.mssql_cursor c WHERE c.updated_at < now() - make_interval(days => p_days) AND c.source <> 'errorlog:search'
      AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_log l WHERE l.instance_id = c.instance_id AND l.snapshot_at >= now() - make_interval(days => p_days));
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_ag_failovers WHERE at < now() - make_interval(days => p_days);
@@ -358,7 +364,7 @@ BEGIN
       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_auth', f.sig);
     ELSIF f.proname IN ('apply_roles', 'purge', 'ensure_month_partition', 'mssql_running_purge', 'mssql_ensure_day_partition',
-                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge') THEN
+                        'mssql_event_partition', 'mssql_hadr_read', 'mssql_reads_purge', 'mssql_plancache_purge', 'mssql_errorlog_search_set') THEN
       -- owner only; a grant an earlier run of this function gave the reader (the name was not on the list then) is taken back
       EXECUTE format('REVOKE ALL ON FUNCTION %s FROM pgvigil_reader', f.sig);
     ELSE

@@ -54,7 +54,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
 
 ## Collections
 
-Twenty-seven collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Thirty collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -85,6 +85,9 @@ Twenty-seven collections. `every` is the default; an instance's `schedules:` cha
 | `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 | `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
 | `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
+| `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
+| `mssql_syshealth` | 5 min | system_health's sp_server_diagnostics results (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM) | VIEW SERVER STATE | not run | [readers](sqlserver-readers.md) |
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 
@@ -107,7 +110,7 @@ The connection string is the driver's own form, `sqlserver://login:password@host
 
 ## The login
 
-A SQL login or a Windows login with four things and no more; never sysadmin.
+A SQL login or a Windows login with these rights and no more; never sysadmin.
 
 ```sql
 CREATE LOGIN [pgvigil_monitor] WITH PASSWORD = '<a long random password>';
@@ -118,6 +121,11 @@ GRANT CONNECT ANY DATABASE TO [pgvigil_monitor];   -- SQL Server 2014 and later:
 USE msdb;
 CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
 ALTER ROLE db_datareader ADD MEMBER [pgvigil_monitor];
+-- the error log and default trace readers ([readers](sqlserver-readers.md)):
+GRANT ALTER TRACE TO [pgvigil_monitor];
+USE master;
+CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
+GRANT EXECUTE ON master.sys.xp_readerrorlog TO [pgvigil_monitor];
 ```
 
 On Azure SQL Database the login block is the first three lines only, run in `master` (or a contained user in the database, with `VIEW DATABASE STATE`); not proven here.

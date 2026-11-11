@@ -361,13 +361,13 @@ var databaseRules = []dbRule{
 			}
 			return sevCritical, "sp_Blitz 68", "DBCC CHECKDB has never completed without error on this database"
 		}
-		min, _ := d.num("checkdb_age_min")
-		days := min / 1440
+		ageMin, _ := d.num("checkdb_age_min")
+		days := ageMin / 1440
 		// a grace of half a day past each threshold: a weekly CHECKDB is 7 days old when the next one starts
 		switch {
-		case min >= checkdbCritDays*1440+checkdbGraceMin:
+		case ageMin >= checkdbCritDays*1440+checkdbGraceMin:
 			return sevCritical, "sp_Blitz 68", fmt.Sprintf("the last good DBCC CHECKDB is %d days old (critical past %d)", days, checkdbCritDays)
-		case min >= checkdbWarnDays*1440+checkdbGraceMin:
+		case ageMin >= checkdbWarnDays*1440+checkdbGraceMin:
 			return sevWarning, "dbachecks LastGoodCheckDb", fmt.Sprintf("the last good DBCC CHECKDB is %d days old (warning past %d)", days, checkdbWarnDays)
 		}
 		return "", "", ""
@@ -681,7 +681,7 @@ FROM sys.databases d
 WHERE d.database_id > 4 AND d.source_database_id IS NULL
 ORDER BY d.name`
 
-// IdentityFloorPct: a column under this share of its type's range is not stored.
+// IdentityFloorPct is the share of its type's range under which a column is not stored.
 const IdentityFloorPct = 10
 
 // identitySQL runs inside one database: the count of identity columns of its user tables and the fullest of them.
@@ -717,7 +717,7 @@ const (
 	identityCritPct = 90
 )
 
-func (identityCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
+func (identityCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
 	dbs, err := QueryRows(ctx, conn, identityDatabasesSQL)
 	if err != nil {
 		return nil, err
@@ -819,10 +819,10 @@ func identityRows(database string, raw []collect.Row) (rows []collect.Row, findi
 			table, _ := r["table_name"].(string)
 			typ, _ := r["type_name"].(string)
 			last, _ := r["last_value"].(string)
-			max, _ := r["max_value"].(string)
+			maxValue, _ := r["max_value"].(string)
 			findings = append(findings, checkFinding{Area: AreaIdentity, Check: "identity column near its limit", Object: database + "." + schema + "." + table + "." + col,
 				Severity: sev, Rule: "pgvigil identity", Value: pctText,
-				Explain: fmt.Sprintf("%s.%s.%s.%s (%s) is at %s of %s: %s %% of the type's range used (warning at %d, critical at %d); at the limit every insert fails", database, schema, table, col, typ, last, max, pctText, identityWarnPct, identityCritPct)})
+				Explain: fmt.Sprintf("%s.%s.%s.%s (%s) is at %s of %s: %s %% of the type's range used (warning at %d, critical at %d); at the limit every insert fails", database, schema, table, col, typ, last, maxValue, pctText, identityWarnPct, identityCritPct)})
 		}
 		rows = append(rows, row)
 	}

@@ -240,7 +240,7 @@ func stripSQLState(msg string) string {
 	digit := false
 	for i := 0; i < 5; i++ {
 		c := msg[i]
-		if !(c >= '0' && c <= '9' || c >= 'A' && c <= 'Z') {
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
 			return msg
 		}
 		digit = digit || c >= '0' && c <= '9'
@@ -495,7 +495,7 @@ func statementIs(t []sqlToken, class, command string) bool {
 	}
 	roleDDL := func(verb string) bool {
 		return len(t) > 2 && t[0].is(verb) && (t[1].is("ROLE") || t[1].is("USER") || t[1].is("GROUP")) &&
-			!(t[1].is("USER") && t[2].is("MAPPING"))
+			(!t[1].is("USER") || !t[2].is("MAPPING"))
 	}
 	grant := func(verb string, membership bool) bool {
 		if !t[0].is(verb) {
@@ -554,7 +554,7 @@ func (t sqlToken) ident() string {
 	}
 	plain := t.text != ""
 	for i, c := range t.text {
-		if !(c >= 'a' && c <= 'z' || c == '_' || i > 0 && c >= '0' && c <= '9') {
+		if (c < 'a' || c > 'z') && c != '_' && (i == 0 || c < '0' || c > '9') {
 			plain = false
 			break
 		}
@@ -686,7 +686,7 @@ func skipSQLString(s string, i int, escapes bool) int {
 // when s[i] does not start one (a $1 parameter).
 func dollarQuoteEnd(s string, i int) int {
 	j := i + 1
-	for j < len(s) && (isWordByte(s[j]) && !(j == i+1 && s[j] >= '0' && s[j] <= '9')) {
+	for j < len(s) && isWordByte(s[j]) && (j != i+1 || s[j] < '0' || s[j] > '9') {
 		j++
 	}
 	if j >= len(s) || s[j] != '$' {
