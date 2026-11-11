@@ -1,36 +1,33 @@
 -- 0079_log_groups: the server log's events grouped by message, and the log's checkpoint lines (parity3 task 126;
 -- pgBadger's Events, Checkpoints and Temp Files tabs).
 --
---   1. log_events gains level (the entry's level as logged: LOG, WARNING, ERROR, FATAL, PANIC) and message (the shape
---      of its first message line, internal/logparse MessageShape: quoted names, literals, tuple ids, LSNs and numbers
---      as ..., so it carries no value of the message and is stored under every query-text policy). Both are NULL on
---      the rows read before 0079; the Logs page then takes the shape of the detail's first line where the detail is
---      the server's own message (log_message_shape below), the kind's own wording where it has one, and says so
---      otherwise. No backfill: an UPDATE of every stored event would rewrite every partition.
---   2. two new kinds: 'error' (a WARNING, ERROR, FATAL or PANIC entry no other rule takes; its detail can quote row
+--   1. log_events_at (instance_id, snapshot_at): the Logs pages, the groups and the import's duplicate check read an
+--      instance's window; until now only the slow and corruption kinds had an index of their own. Built first and
+--      not CONCURRENTLY (the migration runs in one transaction): it holds a SHARE lock on log_events and each
+--      partition while it builds, so the collectors' imports wait and the pages read on; on a repository with a
+--      large log_events it takes the time of one index build over the table.
+--   2. pgvigil.log_message_shape(text): internal/logparse MessageShape in SQL (the same ASCII-only rules: the cursor
+--      position dropped, a double- and a single-quoted run from the first quote to the last, tuple ids, every token
+--      with a digit or an @, white space folded, 300 characters), for the rows read before 0079 stored a shape
+--      (proof-log-groups.sh checks the two agree on every stored message).
+--   3. import_logs (0013's) stores level and message, and fills them in on a re-read like the statement and detail.
+--   4. log_events gains level (the entry's level as logged: LOG, WARNING, ERROR, FATAL, PANIC) and message (the
+--      shape of its first message line; NULL under the query-text policy 'none'). Both are NULL on the rows read
+--      before 0079; the Logs page then takes the shape of the detail's first line where the detail is the server's
+--      own message, the kind's own wording where it has one, and says so otherwise. No backfill.
+--   5. two new kinds: 'error' (a WARNING, ERROR, FATAL or PANIC entry no other rule takes; its detail can quote row
 --      values, so the query-text policy governs it) and 'checkpoint' (log_checkpoints' 'checkpoint|restartpoint
---      starting|complete' lines; the IO page pairs a complete line with its start for the cause).
---   3. pgvigil.log_message_shape(text): MessageShape in SQL, for the rows read before 0079 (proof-log-groups.sh
---      checks the two agree on every message of its sandbox log).
---   4. import_logs (0013's) stores level and message, and fills them in on a re-read like the statement and detail.
---   5. log_events_at (instance_id, snapshot_at): the Logs pages, the groups and the import's duplicate check read an
---      instance's window; until now only the slow and corruption kinds had an index of their own.
+--      starting|complete' lines; a complete line carries its start as a 'STARTED:' line when the parser read both).
+--      The CHECK is re-added NOT VALID and left so: every stored kind is in the new list (the old list is a subset),
+--      and VALIDATE would scan every partition inside this transaction.
+--   4 and 5 take ACCESS EXCLUSIVE on log_events (catalog changes only, no rewrite); they come last, so the lock is
+--   held from there to the commit only.
 
 -- 1.
-ALTER TABLE pgvigil.log_events ADD COLUMN IF NOT EXISTS level text;
-ALTER TABLE pgvigil.log_events ADD COLUMN IF NOT EXISTS message text;
+CREATE INDEX IF NOT EXISTS log_events_at ON pgvigil.log_events (instance_id, snapshot_at);
 
--- 2. every kind of 0045's list plus the two of this file; NOT VALID then VALIDATE as 0045 does (the old list is a
--- subset, so the scan proves nothing new and runs under SHARE UPDATE EXCLUSIVE only)
-ALTER TABLE pgvigil.log_events DROP CONSTRAINT IF EXISTS log_events_kind_check;
-ALTER TABLE pgvigil.log_events ADD CONSTRAINT log_events_kind_check CHECK (kind IN ('slow', 'lock_wait', 'deadlock', 'auth_fail', 'autovacuum', 'plan', 'corruption',
-  'connection_limit', 'connection_lost', 'timeout', 'canceled', 'autovacuum_cancel', 'vacuum_skipped', 'wraparound', 'checkpoint_frequent', 'crash', 'out_of_memory',
-  'archive_failed', 'standby_conflict', 'serialization_failure', 'temp_file', 'error', 'checkpoint')) NOT VALID;
-ALTER TABLE pgvigil.log_events VALIDATE CONSTRAINT log_events_kind_check;
-
--- 3. the same rules in the same order as logparse.MessageShape: the cursor position the server appends (at character
--- N) dropped; "..." names, '...' literals, LSNs, tuple ids, block ranges, numbers not inside a name; white space
--- folded; cut at 300 characters
+-- 2. the same rules in the same order as logparse.MessageShape (ASCII classes: a PostgreSQL class would follow the
+-- locale); the greedy runs are the whole RE's greediness (its first quantifier), as in Go
 CREATE OR REPLACE FUNCTION pgvigil.log_message_shape(p_msg text)
 RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT left(btrim(regexp_replace(
@@ -38,17 +35,15 @@ RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
              regexp_replace(
                regexp_replace(
                  regexp_replace(
-                   regexp_replace(
-                     regexp_replace(regexp_replace(p_msg, ' at character \d+$', ''), '"(?:[^"]|"")*"', '"..."', 'g'),
-                   $re$'(?:[^']|'')*'$re$, $re$'...'$re$, 'g'),
-                 '\m[0-9A-F]+/[0-9A-F]+\M', '.../...', 'g'),
-               '\(\d+(?:,\d+)*\)', '(...)', 'g'),
-             '(^|[^[:alnum:]_.$])\d+\.\.\d+(?![[:alnum:]_])', '\1...', 'g'),
-           '(^|[^[:alnum:]_.$])\d+(?:\.\d+)?(?![[:alnum:]_])', '\1...', 'g'),
-         '\s+', ' ', 'g')), 300)
+                   regexp_replace(p_msg, ' at character [0-9]+$', ''),
+                 '"[^\n]*"', '"..."', 'g'),
+               $re$'[^\n]*'$re$, $re$'...'$re$, 'g'),
+             '\([0-9]+(,[0-9]+)*\)', '(...)', 'g'),
+           '[A-Za-z0-9_.@$:/+-]*[0-9@][A-Za-z0-9_.@$:/+-]*', '...', 'g'),
+         '[ \t\n\r\f\v]+', ' ', 'g'), ' '), 300)
 $$;
 
--- 4. 0013's import with the two new columns
+-- 3. 0013's import with the two new columns
 CREATE OR REPLACE FUNCTION pgvigil.import_logs(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -95,7 +90,14 @@ BEGIN
   ON CONFLICT (instance_id, source) DO UPDATE SET read_to = greatest(c.read_to, EXCLUDED.read_to), updated_at = now();
 END $$;
 
--- 5.
-CREATE INDEX IF NOT EXISTS log_events_at ON pgvigil.log_events (instance_id, snapshot_at);
+-- 4.
+ALTER TABLE pgvigil.log_events ADD COLUMN IF NOT EXISTS level text;
+ALTER TABLE pgvigil.log_events ADD COLUMN IF NOT EXISTS message text;
+
+-- 5. every kind of 0045's list plus the two of this file, NOT VALID (see the header)
+ALTER TABLE pgvigil.log_events DROP CONSTRAINT IF EXISTS log_events_kind_check;
+ALTER TABLE pgvigil.log_events ADD CONSTRAINT log_events_kind_check CHECK (kind IN ('slow', 'lock_wait', 'deadlock', 'auth_fail', 'autovacuum', 'plan', 'corruption',
+  'connection_limit', 'connection_lost', 'timeout', 'canceled', 'autovacuum_cancel', 'vacuum_skipped', 'wraparound', 'checkpoint_frequent', 'crash', 'out_of_memory',
+  'archive_failed', 'standby_conflict', 'serialization_failure', 'temp_file', 'error', 'checkpoint')) NOT VALID;
 
 SELECT pgvigil.apply_roles();

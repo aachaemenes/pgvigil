@@ -72,13 +72,21 @@ export async function logsGroupedView(ctx: Ctx): Promise<HTMLElement> {
   }
 
   const countBtn = (v: unknown, r: Row) => {
-    const b = el('button', { type: 'button', class: 'link', 'aria-label': `${fmtNum(v)} events: list them` }, fmtNum(v));
+    const what = String(r.message ?? kindLabel[String(r.kind)] ?? r.kind);
+    const b = el('button', { type: 'button', class: 'link', 'aria-label': `${fmtNum(v)} ${String(r.level ?? '')} events, ${what}: list them` }, fmtNum(v));
     b.addEventListener('click', () => { void rows(r); });
     return b;
   };
 
+  // the level filter stays in place across redraws (a replaced select would drop the keyboard focus)
+  const sel = el('select', { 'aria-label': 'Level' });
+  for (const l of levels) sel.append(el('option', { value: l }, l || 'every level'));
+  sel.addEventListener('change', () => { level = sel.value; void draw(); });
+  const toolbar = el('div', { class: 'toolbar' }, el('label', {}, 'Level ', sel));
+
   async function draw() {
     const seq = ++drawSeq;
+    drillSeq++;   // a group's rows still on the way belong to the list being replaced
     body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
     drill.replaceChildren();
     try {
@@ -86,9 +94,6 @@ export async function logsGroupedView(ctx: Ctx): Promise<HTMLElement> {
       if (seq !== drawSeq) return;
       const tot = rowsOf(d.totals)[0] ?? {}, tt = rowsOf(d.temp_total)[0] ?? {};
       const lv = rowsOf(d.levels);
-      const sel = el('select', { 'aria-label': 'Level' });
-      for (const l of levels) { const o = el('option', { value: l }, l || 'every level'); if (l === level) o.selected = true; sel.append(o); }
-      sel.addEventListener('change', () => { level = sel.value; void draw(); });
       const cols: Col[] = [
         { key: 'events', label: 'times', num: true, fmt: countBtn },
         { key: 'level', fmt: levelBadge },
@@ -104,7 +109,6 @@ export async function logsGroupedView(ctx: Ctx): Promise<HTMLElement> {
           tile('groups', fmtNum(tot.groups ?? 0)),
           tile('most in one group', fmtNum(tot.max_per_group ?? 0)),
           ...lv.map(r => tile(String(r.level), fmtNum(r.events), levelKind(r.level)))),
-        el('div', { class: 'toolbar' }, el('label', {}, 'Level ', sel)),
         grid(rowsOf(d.groups), cols, 'No log event in this window (the logs collection reads the server log where it is configured).'),
         drill,
         el('h3', {}, 'Largest temporary files ', whatIsThis('One row per temporary file the log recorded (log_temp_files: a file at or over it is logged when it is '
@@ -116,7 +120,7 @@ export async function logsGroupedView(ctx: Ctx): Promise<HTMLElement> {
       if (seq === drawSeq) body.replaceChildren(errorBox(e));
     }
   }
-  sec.append(body);
+  sec.append(toolbar, body);
   void draw();
   return sec;
 }

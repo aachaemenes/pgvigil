@@ -60,6 +60,10 @@
 #  G. 0079 on PostgreSQL 13 (pgv-pg13-proof): a fresh database migrated without error; import_logs of a payload with
 #     level and message stores both; a second import of the same event with a longer detail keeps one row; the
 #     kind check accepts 'error' and 'checkpoint'.
+#  [review 1 fold, expected before the rerun] E and F also: the stored complete line carries 'STARTED: <time> <flags>'
+#   (paired by the parser) and the row's flags are those. G also: on PostgreSQL 13 log_message_shape gives Go's shape
+#   for the review's value cases (an e-mail, a $ amount, a name with digits, a UUID, an array literal with inner quotes,
+#   an IP address) - every value masked. A to D unchanged (the shapes of the workload's messages do not change).
 set -euo pipefail
 BIN=${PGVIGIL_BIN:-bin/pgvigil}
 : "${PGVIGIL_REPO_DSN:?}"
@@ -283,6 +287,8 @@ checkpoint_case() { # label instance su-function window-from: two dbstats reads 
   collect serverlog
   [[ $(q "select status from pgvigil.collection_dates where instance_id=$inst and collection='serverlog'") == ok ]] \
     || fail "$label serverlog: $(q "select status || ' ' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$inst and collection='serverlog'")"
+  [[ $(q "select count(*) from pgvigil.log_events where instance_id=$inst and kind='checkpoint' and detail ~ '^checkpoint complete:' and detail ~ '\nSTARTED: \S+ immediate force wait'") == 1 ]] \
+    || fail "$label: the complete line carries no STARTED line: $(q "select string_agg(detail, ' | ') from pgvigil.log_events where instance_id=$inst and kind='checkpoint'")"
   local to; to=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
   python3 -I - "$(api "io?instance=$inst&from=$from&to=$to")" "$label" <<'EOF' || fail "$label checkpoints"
 import json, sys
@@ -295,6 +301,7 @@ if c != [("checkpoint", "requested", 1)]: print("causes:", c); sys.exit(1)
 l = rows(d["checkpoint_log"])
 if len(l) != 1: print("log:", l); sys.exit(1)
 r = l[0]
+if r["flags"] != "immediate force wait": print("flags (want the parser's STARTED pairing):", r); sys.exit(1)
 if r["cause"] != "requested" or "force" not in (r["flags"] or "") or r["started_at"] is None or r["started_at"] > r["completed_at"] \
    or r["buffers"] is None or r["total_secs"] is None:
     print("row:", r); sys.exit(1)
@@ -344,6 +351,17 @@ R=$(g13 "select string_agg(kind || '/' || level || '/' || message || '/' || deta
   || fail "G rows: $R"
 [[ $(g13 "select pgvigil.log_message_shape('process 12 still waiting for ShareLock on tuple (0,5) after 1000.5 ms')") == 'process ... still waiting for ShareLock on tuple (...) after ... ms' ]] \
   || fail "G shape on 13: $(g13 "select pgvigil.log_message_shape('process 12 still waiting for ShareLock on tuple (0,5) after 1000.5 ms')")"
+while IFS='|' read -r in want; do
+  got=$(g13 "select pgvigil.log_message_shape(\$m\$$in\$m\$)")
+  [[ "$got" == "$want" ]] || fail "G shape on 13: '$in' gave '$got', want '$want'"
+done <<'SHAPES'
+Customer alice@example.com has insufficient balance|Customer ... has insufficient balance
+balance $5000 too low for acct_7781|balance ... too low for ...
+card 550e8400-e29b-41d4-a716-446655440000 declined|card ... declined
+malformed array literal: "{"secret1","secret2"}"|malformed array literal: "..."
+host 10.0.0.5 refused|host ... refused
+relation "nosuch_a" does not exist at character 15|relation "..." does not exist
+SHAPES
 echo "G ok: 0079 migrated on PostgreSQL 13; level and message stored, a longer re-read kept one row; the shape rule runs"
 
 if [[ -n "${LG_HOLD:-}" ]]; then   # a look at the pages: the server and the repository stay up this many seconds

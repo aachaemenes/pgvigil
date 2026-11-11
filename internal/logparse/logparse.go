@@ -172,9 +172,14 @@ func ParseIn(r io.Reader, loc *time.Location) ([]Event, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	var out []Event
 	var cur *entry
+	// a checkpoint's start line, per process, until its complete line pairs with it (pairStart)
+	starts := map[int]Event{}
 	flush := func() {
 		if cur != nil {
 			if ev, ok := classify(cur); ok {
+				if ev.Kind == Checkpoint {
+					pairStart(starts, &ev)
+				}
 				out = append(out, ev)
 			}
 			cur = nil
@@ -213,6 +218,32 @@ func ParseIn(r io.Reader, loc *time.Location) ([]Event, error) {
 	}
 	flush()
 	return out, sc.Err()
+}
+
+// pairStart pairs a checkpoint's (or restartpoint's) complete line with the start line of the same process read
+// before it, in log order, which a log prefix of whole seconds (%t) cannot do by time: two back-to-back checkpoints
+// log the first's complete and the second's start in one second. The complete event's detail gains a line
+// "STARTED: <start time, RFC 3339> <flags>"; the IO page reads it and pairs by time only a complete line whose start
+// was in another read (pgvigil.log_events, q_io.go). A start no complete follows stays pending.
+func pairStart(starts map[int]Event, ev *Event) {
+	m := checkpointRE.FindStringSubmatch(ev.Detail)
+	if m == nil {
+		return
+	}
+	if m[2] == "starting" {
+		starts[ev.PID] = *ev
+		return
+	}
+	st, ok := starts[ev.PID]
+	if !ok {
+		return
+	}
+	delete(starts, ev.PID)
+	if sm := checkpointRE.FindStringSubmatch(st.Detail); sm == nil || sm[1] != m[1] {
+		return // a restartpoint's start does not pair with a checkpoint's completion
+	}
+	flags := strings.TrimSpace(st.Detail[strings.Index(st.Detail, ":")+1:])
+	ev.Detail += "\nSTARTED: " + st.At.UTC().Format(time.RFC3339Nano) + " " + flags
 }
 
 func zoneOf(abbr string, loc *time.Location) *time.Location {

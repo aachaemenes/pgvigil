@@ -275,7 +275,7 @@ func serverlogRows(ctx context.Context, dir logDir, lp *linePrefix, z *logZone, 
 				"usename": p.User, "datname": p.Database, "duration_ms": nilIfZero(p.DurationMS),
 				"statement": nilIfEmpty(maskText(p.Statement)), "detail": nilIfEmpty(maskText(p.Detail)),
 				"source": source + ":" + f.Name, "event_key": hex.EncodeToString(sum[:]),
-				"level": nilIfEmpty(p.Level), "message": nilIfEmpty(p.Message),
+				"level": nilIfEmpty(p.Level), "message": nilIfEmpty(maskText(p.Message)),
 			})
 		}
 		if full {

@@ -5,41 +5,43 @@ import (
 	"strings"
 )
 
-// MessageShape is the key the Logs page groups a message by, pgBadger's normalized event: a double-quoted name, a
-// single-quoted literal, a tuple id, an LSN and every number become ..., and white space folds, so 'relation "a"
-// does not exist' and 'relation "b" does not exist' are one group. The shape carries no literal and no number of
-// the message, so it is stored whatever the query-text policy (a message such as 'invalid input syntax for type
-// integer: "abc"' keeps its words, never the value). An unquoted name (permission denied for function f) stays:
-// the message alone cannot tell it from a word. The cursor position the server appends (at character N) is dropped. pgvigil.log_message_shape (0079) is the same rule in SQL, for the
-// rows read before 0079 stored a shape; the proof checks the two agree.
+// MessageShape is the key the Logs page groups a message by, pgBadger's normalized event. In order:
+//   - the cursor position the server appends (" at character 15") is dropped;
+//   - a double-quoted run, from the first double quote of the line to the last, becomes "..." (greedy, so a quote
+//     inside a quoted value, such as an array literal's, cannot leave part of the value outside), and so does a
+//     single-quoted run;
+//   - a tuple id such as (0,5) becomes (...);
+//   - every token that holds a digit or an @ becomes ...: a number, a decimal, a range (8..15), an LSN, a path of
+//     OIDs, an IP address, a UUID, a hex token, an e-mail address, a $ amount, a name with a number in it
+//     (acct_7781); a token is a run of letters, digits and _ . @ $ : / + -;
+//   - white space (ASCII) folds to one space; the shape is cut at 300 characters.
+//
+// The rules are ASCII-only on purpose: pgvigil.log_message_shape (0079) is the same rule in SQL, and a PostgreSQL
+// character class follows the server's locale where Go's does not. What a shape can still carry: the words of a
+// free-text message (a RAISE EXCEPTION 'customer % ...' with the value written without digits or quotes, an
+// unquoted name such as "permission denied for function f"). The collectors mask passwords in it (maskText), and the
+// query-text policy 'none' stores no message at all.
 func MessageShape(msg string) string {
 	s := shapeAtChar.ReplaceAllString(msg, "")
 	s = shapeDQ.ReplaceAllString(s, `"..."`)
 	s = shapeSQ.ReplaceAllString(s, `'...'`)
-	s = shapeLSN.ReplaceAllString(s, `.../...`)
 	s = shapeTuple.ReplaceAllString(s, `(...)`)
-	s = shapeRange.ReplaceAllString(s, `${1}...`)
-	s = shapeNum.ReplaceAllString(s, `${1}...`)
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > messageShapeMax {
-		s = strings.ToValidUTF8(s[:messageShapeMax], "")
+	s = shapeToken.ReplaceAllString(s, `...`)
+	s = strings.Trim(shapeSpace.ReplaceAllString(s, " "), " ")
+	if r := []rune(s); len(r) > messageShapeMax {
+		s = string(r[:messageShapeMax])
 	}
 	return s
 }
 
-// messageShapeMax caps a shape (bytes); the SQL twin cuts at the same length in characters, equal for ASCII.
+// messageShapeMax caps a shape, in characters (the SQL twin's left(..., 300)).
 const messageShapeMax = 300
 
 var (
-	// the server appends the error's cursor position to the message line ("... does not exist at character 15"): not
-	// part of the message
-	shapeAtChar = regexp.MustCompile(` at character \d+$`)
-	shapeDQ     = regexp.MustCompile(`"(?:[^"]|"")*"`)
-	shapeSQ     = regexp.MustCompile(`'(?:[^']|'')*'`)
-	shapeLSN    = regexp.MustCompile(`\b[0-9A-F]+/[0-9A-F]+\b`)
-	shapeTuple  = regexp.MustCompile(`\(\d+(?:,\d+)*\)`)
-	shapeRange  = regexp.MustCompile(`(^|[^\w.$])\d+\.\.\d+\b`) // a block range: blocks 8..15
-	// a number not inside a name: preceded by the start or a character that is not a letter, digit, _, . or $, and
-	// followed by a word boundary (Go's regexp has no look-around; \b after a digit means a non-word character next)
-	shapeNum = regexp.MustCompile(`(^|[^\w.$])\d+(?:\.\d+)?\b`)
+	shapeAtChar = regexp.MustCompile(` at character [0-9]+$`)
+	shapeDQ     = regexp.MustCompile(`"[^\n]*"`)
+	shapeSQ     = regexp.MustCompile(`'[^\n]*'`)
+	shapeTuple  = regexp.MustCompile(`\([0-9]+(?:,[0-9]+)*\)`)
+	shapeToken  = regexp.MustCompile(`[A-Za-z0-9_.@$:/+-]*[0-9@][A-Za-z0-9_.@$:/+-]*`)
+	shapeSpace  = regexp.MustCompile(`[ \t\n\r\f\v]+`)
 )

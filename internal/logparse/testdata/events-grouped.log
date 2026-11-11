@@ -14,3 +14,7 @@
 	PL/pgSQL function f() line 3 at PERFORM
 2026-11-10 10:03:08 UTC:10.0.0.5(40005):app@shop:[1005]:LOG:  connection received: host=10.0.0.5 port=40005
 2026-11-10 10:03:09 UTC::@:[900]:LOG:  checkpoints are occurring too frequently (24 seconds apart)
+2026-11-10 10:04:00 UTC::@:[900]:LOG:  checkpoint starting: wal
+2026-11-10 10:04:40 UTC::@:[900]:LOG:  checkpoint complete: wrote 9000 buffers (55.0%); 0 WAL file(s) added, 0 removed, 33 recycled; write=39.100 s, sync=0.200 s, total=40.000 s; sync files=10, longest=0.010 s, average=0.001 s; distance=540221 kB, estimate=540221 kB
+2026-11-10 10:04:40 UTC::@:[900]:LOG:  checkpoint starting: wal
+2026-11-10 10:05:20 UTC::@:[900]:LOG:  checkpoint complete: wrote 8000 buffers (49.0%); 0 WAL file(s) added, 0 removed, 32 recycled; write=39.000 s, sync=0.300 s, total=40.000 s; sync files=10, longest=0.010 s, average=0.001 s; distance=530000 kB, estimate=540221 kB

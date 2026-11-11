@@ -19,12 +19,21 @@ Every entry of the log is classified; an entry no rule takes is not stored. The 
 | `checkpoint` | log_checkpoints' `checkpoint starting:` and `checkpoint complete:` lines (`restartpoint` on a standby) |
 
 Each event since migration 0079 carries its **level** (LOG, WARNING, ERROR, FATAL, PANIC) and its **message
-shape**: the first line of the message with every double-quoted name, single-quoted literal, tuple id, LSN and
-number turned into `...`, so `relation "a" does not exist` and `relation "b" does not exist` are one message. The
-shape carries no value from the message, so it is stored whatever the instance's `query_text` policy; an `error`
-event's detail (its DETAIL, HINT and CONTEXT lines, which can quote a row's values, such as `Key (id)=(42) already
-exists`) and its statement follow the policy like any statement text. An unquoted name stays in the shape
-(`permission denied for function f`): the message alone cannot tell it from a word.
+shape**: the first line of the message with the cursor position the server appends (`at character 15`) dropped, a
+double- or single-quoted run (from the first quote of the line to the last) turned into `"..."` / `'...'`, a tuple id
+into `(...)`, and every token that holds a digit or an `@` (a number, an LSN, a path of OIDs, an IP address, a UUID,
+an e-mail address, a `$` amount, a name such as `acct_7781`) into `...`. So `relation "a" does not exist` and
+`relation "b" does not exist` are one message. Two quoted names on one line become one run (`column "x" of relation
+"y" does not exist` reads `column "..." does not exist`).
+
+What the shape can still carry: the words of a free-text message (a `RAISE EXCEPTION` whose value has no digit and
+no quote) and an unquoted name (`permission denied for function f`). With the instance's `query_text` policy:
+
+| Policy | message shape | an `error` event's detail (its DETAIL, HINT, CONTEXT lines: `Key (email)=(...) already exists`) | statement |
+|---|---|---|---|
+| full | stored (passwords masked) | stored as the server wrote it | stored |
+| normalized | stored | not stored: the SQL normalizer cannot mask a row value written outside a literal | normalized |
+| none | not stored (the event groups by its kind) | not stored | not stored |
 
 An event is keyed by its first line's time text, level, pid and message, so a re-read drops it; two identical
 lines of one process in the same time text (one millisecond with `%m`, one second with `%t`) are stored as one
@@ -85,9 +94,11 @@ The Checkpoints section of an instance's IO tab:
   immediate or fast, force: a base backup, CREATE DATABASE), `shutdown`, `end of recovery`; and **one row per
   completed checkpoint** (the newest 200): when it started and completed, its flags and cause, the buffers written
   and their share of shared_buffers, the WAL files added, removed and recycled, the write, sync and total seconds,
-  and the distance and estimate. A complete line is paired with the latest start line of the same process after
-  that process's previous completion; a start line the readers did not read (before the window's hour of
-  lookback, or lost) shows as `start not read`.
+  and the distance and estimate. A start line the readers did not read shows as `start not read`.
+  The parser pairs a complete line with its start in log order when it reads both in one pass (it stores the start
+  as a `STARTED:` line under the complete line), which is exact even with a whole-seconds prefix (`%t`, the RDS
+  default) where one checkpoint's completion and the next one's start share a second. Only a pair split across two
+  reads is paired by time, and with a whole-seconds prefix two back-to-back checkpoints split that way can pair wrong.
 
 Many `wal` checkpoints mean max_wal_size is small for the write rate; a long sync time points at the storage.
 With `log_checkpoints` off the section says so and the counters still count.

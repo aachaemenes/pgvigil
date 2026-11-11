@@ -146,23 +146,43 @@ SELECT s.what, ` + checkpointCause + ` AS cause, count(*) AS checkpoints
  GROUP BY 1, 2
  ORDER BY 3 DESC, 1, 2`
 
-// sqlIOCheckpointLog is one row per completed checkpoint of the window, newest first (at most 200): its start (the
-// latest start line of the same process after that process's previous completion; none read = 'start not read'), the
+// sqlIOCheckpointLog is one row per completed checkpoint of the window, newest first (at most 200): its start, the
 // flags and cause, and the figures of the complete line (buffers and their share of shared_buffers, WAL files added /
-// removed / recycled, write, sync and total seconds, distance and estimate). PostgreSQL 13 to 18 write the same
-// fields (18 adds the SLRU buffers and the LSNs, not read here).
-const sqlIOCheckpointLog = sqlIOCheckpointLines + `,
-d AS (
-  SELECT d.snapshot_at, d.pid, d.what, d.detail, st.snapshot_at AS started_at,
-         btrim(substring(st.detail FROM 'starting:(.*)$')) AS flags
-    FROM c d
+// removed / recycled, write, sync and total seconds, distance and estimate; PostgreSQL 13 to 18 write the same fields,
+// 18 adds the SLRU buffers and the LSNs, not read here). The start is the complete line's own 'STARTED:' line where
+// the parser read both lines in one pass (paired in log order, exact with a whole-seconds prefix too); otherwise the
+// latest start line of the same process within a day before it and after that process's previous completion, looked
+// up through log_events_at for these 200 rows only (two back-to-back checkpoints read in different passes, with a
+// whole-seconds prefix, can pair wrong here: a stated limit); none = 'start not read'.
+const sqlIOCheckpointLog = `
+WITH d AS (
+  SELECT e.snapshot_at, e.pid, e.detail,
+         substring(e.detail FROM '^(checkpoint|restartpoint) ') AS what,
+         (substring(e.detail FROM '\nSTARTED: (\S+)'))::timestamptz AS st_at,
+         substring(e.detail FROM '\nSTARTED: \S+ ?([^\n]*)') AS st_flags
+    FROM pgvigil.log_events e
+   WHERE e.instance_id = $1 AND e.kind = 'checkpoint' AND e.snapshot_at > $2::timestamptz AND e.snapshot_at <= $3::timestamptz
+     AND e.detail ~ '^(checkpoint|restartpoint) complete:'
+   ORDER BY e.snapshot_at DESC
+   LIMIT 200
+),
+p AS (
+  SELECT d.*, coalesce(d.st_at, fb.snapshot_at) AS started_at,
+         coalesce(d.st_flags, btrim(substring(fb.detail FROM 'starting:(.*)$'))) AS flags
+    FROM d
     LEFT JOIN LATERAL (
-      SELECT x.snapshot_at, x.detail FROM c x
-       WHERE x.phase = 'starting' AND x.what = d.what AND x.pid = d.pid AND x.snapshot_at <= d.snapshot_at
-         AND x.snapshot_at > coalesce((SELECT max(y.snapshot_at) FROM c y
-                                        WHERE y.phase = 'complete' AND y.what = d.what AND y.pid = d.pid AND y.snapshot_at < d.snapshot_at), '-infinity')
-       ORDER BY x.snapshot_at DESC LIMIT 1) st ON true
-   WHERE d.phase = 'complete' AND d.snapshot_at > $2::timestamptz
+      SELECT x.snapshot_at, x.detail
+        FROM pgvigil.log_events x
+       WHERE d.st_at IS NULL AND x.instance_id = $1 AND x.kind = 'checkpoint' AND x.pid = d.pid
+         AND x.snapshot_at <= d.snapshot_at AND x.snapshot_at > d.snapshot_at - interval '1 day'
+         AND x.detail LIKE d.what || ' starting:%'
+         AND x.snapshot_at > coalesce((
+               SELECT max(y.snapshot_at) FROM pgvigil.log_events y
+                WHERE y.instance_id = $1 AND y.kind = 'checkpoint' AND y.pid = d.pid
+                  AND y.snapshot_at < d.snapshot_at AND y.snapshot_at > d.snapshot_at - interval '1 day'
+                  AND y.detail LIKE d.what || ' complete:%'), '-infinity')
+       ORDER BY x.snapshot_at DESC
+       LIMIT 1) fb ON true
 )
 SELECT d.snapshot_at AS completed_at, d.started_at, d.what, d.flags, ` + checkpointCause + ` AS cause,
        (substring(d.detail FROM 'wrote (\d+) buffers'))::bigint AS buffers,
@@ -175,9 +195,8 @@ SELECT d.snapshot_at AS completed_at, d.started_at, d.what, d.flags, ` + checkpo
        (substring(d.detail FROM 'total=([0-9.]+) s'))::numeric AS total_secs,
        (substring(d.detail FROM 'distance=(\d+) kB'))::bigint AS distance_kb,
        (substring(d.detail FROM 'estimate=(\d+) kB'))::bigint AS estimate_kb
-  FROM d
- ORDER BY d.snapshot_at DESC
- LIMIT 200`
+  FROM p d
+ ORDER BY d.snapshot_at DESC`
 
 // sqlIOState is what the page needs to say why a panel is empty: the platform, the version (pg_stat_io from 16),
 // track_io_timing, and log_checkpoints where it is not the default (on from PostgreSQL 15, off before).

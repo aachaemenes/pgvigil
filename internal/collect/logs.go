@@ -214,7 +214,7 @@ func logRows(evs []cwEvent, source string, from time.Time, loc *time.Location, f
 				"usename": p.User, "datname": p.Database, "duration_ms": nilIfZero(p.DurationMS),
 				"statement": nilIfEmpty(maskText(p.Statement)), "detail": nilIfEmpty(maskText(p.Detail)),
 				"source": source + ":" + s, "event_key": hex.EncodeToString(sum[:]),
-				"level": nilIfEmpty(p.Level), "message": nilIfEmpty(p.Message),
+				"level": nilIfEmpty(p.Level), "message": nilIfEmpty(maskText(p.Message)),
 			})
 		}
 	}
