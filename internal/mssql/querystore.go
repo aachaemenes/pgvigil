@@ -27,6 +27,9 @@ import (
 // The text, the plan's properties and the plan XML are then read for the candidate plans by their ids. A plan's XML
 // is read once: the repository says which plans it already holds.
 //
+// The login needs VIEW SERVER STATE (which is VIEW DATABASE STATE in every database) and a way into each database:
+// CONNECT ANY DATABASE, or a user in it. A database it cannot enter is listed with that note and not read.
+//
 // Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; the wait statistics, the
 // forcing type and automatic tuning from 2017 (14), the capture policy from 2019 (15). Not on Azure SQL Database
 // yet (one database is the instance there; the per-database pass is a later wave). Nothing is written on the
@@ -50,7 +53,7 @@ func (queryStoreCollector) Applies(info Info) (bool, string) {
 	case info.Kind == KindServer && info.Major > 0 && info.Major < 13:
 		return false, "Query Store arrived in SQL Server 2016"
 	case !info.ViewServerState:
-		return false, "the login lacks VIEW SERVER STATE: the Query Store views of a database need VIEW DATABASE STATE, which it gives in every database"
+		return false, "the login lacks VIEW SERVER STATE: the Query Store views of a database need VIEW DATABASE STATE, which it gives in every database the login can enter"
 	}
 	return true, ""
 }
@@ -273,6 +276,7 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 	out := make([]collect.Row, 0, 4*len(dbs)+1)
 	var failed []string
 	cut, stopWhy := 0, ""
+	noAccess, entered := 0, 0
 	xmlBudget := int64(qsPlanXMLRunBytes)
 	stop, hasStop := ctx.Deadline()
 	for _, d := range dbs {
@@ -282,9 +286,15 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 			"database_read_only": d["is_read_only"]}
 		out = append(out, state)
 		if n, _ := d["can_enter"].(int64); n != 1 {
-			state["note"] = "not read: the database is not online, or the login has no access to it"
+			if ds, _ := d["database_state"].(string); ds != "ONLINE" {
+				state["note"] = "not read: the database is " + strings.ToLower(ds)
+			} else {
+				state["note"] = "not read: the login cannot enter the database (CONNECT ANY DATABASE, or a user in the database, is the missing right)"
+				noAccess++
+			}
 			continue
 		}
+		entered++
 		if stopWhy == "" {
 			switch {
 			case ctx.Err() != nil || (hasStop && time.Until(stop) < 15*time.Second):
@@ -314,6 +324,12 @@ func (queryStoreCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Inf
 	if cut > 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.query_store_runtime_stats",
 			"message": fmt.Sprintf("%s before the Query Store of %d database(s) was read; the next run reads on", stopWhy, cut)})
+	}
+	// a login that can enter no database at all reads no store: say which right is missing (one database kept
+	// closed to the login is a choice, and only its row says so)
+	if noAccess > 0 && entered == 0 {
+		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.databases",
+			"message": fmt.Sprintf("the login cannot enter any of the %d database(s) a Query Store can be in: GRANT CONNECT ANY DATABASE (with VIEW SERVER STATE) lets it read each store", noAccess)})
 	}
 	if len(failed) > 0 {
 		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.database_query_store_options",

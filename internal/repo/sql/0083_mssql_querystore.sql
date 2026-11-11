@@ -533,13 +533,13 @@ SELECT s.instance_id, 'qs'::text AS key, bool_or(s.options_read) AS sampled,
        count(*) FILTER (WHERE s.severity = 'critical')::int AS critical,
        count(*) FILTER (WHERE s.severity = 'warning')::int AS warning,
        CASE WHEN NOT bool_or(s.options_read) THEN NULL
-            ELSE count(*) FILTER (WHERE s.actual_state IN ('READ_WRITE', 'READ_ONLY')) || ' of ' || count(*) FILTER (WHERE s.options_read) || ' on' END AS value,
+            ELSE count(*) FILTER (WHERE s.options_read AND s.actual_state IN ('READ_WRITE', 'READ_ONLY')) || ' of ' || count(*) FILTER (WHERE s.options_read) || ' on' END AS value,
        CASE WHEN count(*) FILTER (WHERE s.severity IN ('critical', 'warning')) > 0
             THEN (array_agg(s.database_name || ': ' || s.verdict ORDER BY s.severity, s.database_name)
                     FILTER (WHERE s.severity IN ('critical', 'warning')))[1:12]
             WHEN NOT bool_or(s.options_read) THEN '{}'::text[]
             ELSE ARRAY[format('Query Store is on in %s of the %s databases read, each in the state asked for%s (read %s UTC)',
-                              count(*) FILTER (WHERE s.actual_state IN ('READ_WRITE', 'READ_ONLY')), count(*) FILTER (WHERE s.options_read),
+                              count(*) FILTER (WHERE s.options_read AND s.actual_state IN ('READ_WRITE', 'READ_ONLY')), count(*) FILTER (WHERE s.options_read),
                               CASE WHEN count(*) FILTER (WHERE NOT s.options_read) > 0
                                    THEN '; ' || count(*) FILTER (WHERE NOT s.options_read) || ' database(s) not read' ELSE '' END,
                               to_char(max(s.snapshot_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'))] END AS detail
