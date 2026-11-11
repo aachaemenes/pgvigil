@@ -225,7 +225,9 @@ run says so in no error.
 
 The proof `scripts/proof-pg-depth.sh` raises each finding with a state seeded on PostgreSQL 13, 16 and 18 and clears it
 by its undo there. The 24-hour expiry of the timeline and system-identifier findings is proven with a stored read 25
-hours later. The new columns are checked against a hand read of the server.
+hours later. The new columns are checked against a hand read of the server. Not proven: the subtransaction SLRU
+finding's live seed on PostgreSQL 16 (it passed there once and then not in three runs: its session's scan did not take the
+pg_subtrans path, cause unknown); the finding is proven live on 13 and 18.
 
 ## API
 

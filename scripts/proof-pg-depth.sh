@@ -62,6 +62,11 @@
 #     size within 25 % of the estimate made before, the row no longer present (under the 10 MB floor), finding gone.
 #  X  dead rows: dr with autovacuum off, 300,000 rows, 150,000 deleted, collect tables -> 'dead rows|warning'; VACUUM -> gone.
 #  every collect's collection_dates status is 'ok'.
+#  NOT PROVEN on PostgreSQL 16 (the lead's ruling, 2026-11-11 15:47 PST): L, the subtransaction SLRU seed - three runs on 16 failed: about 12,000 of 200,000 subtransactions made (the lock table full, swallowed by the seed's handler),
+#   then a precheck that cannot see the open transaction's pending counters, then 300,000 made but the scan touched the cache
+#   8 times (cause unknown); it passed on 16 once (run 4).
+#  PGVIGIL_DEPTH_SKIP=L leaves L out on every version run and says so: the version's log prints 'NOT PROVEN [pg<v>] L
+#  (skipped)' and the last line reads 'PASS: proof-pg-depth on <versions>; L: NOT PROVEN (skipped)', never a bare PASS.
 #  [review s155-1 fold, expected before its run: D also seeds a SECURITY DEFINER procedure p_sd and a NOT VALID domain check
 #   posint_chk (so 8 tgt findings: NOT VALID x2, SECURITY DEFINER x2), their undo is each row's own fix_sql run as written
 #   (ALTER ROUTINE, ALTER DOMAIN); a sequence counting down to 0 reads pct_used NULL and the read still succeeds; a
@@ -71,6 +76,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSIONS=${PGVIGIL_DEPTH_VERSIONS:-"13 16 18"}
+# PGVIGIL_DEPTH_SKIP: parts left out, said in the last line; only L is accepted (the ruling of 2026-11-11)
+SKIP=${PGVIGIL_DEPTH_SKIP:-}
+[[ -z "$SKIP" || "$SKIP" == L ]] || { echo "FAIL: PGVIGIL_DEPTH_SKIP='$SKIP': only L can be left out"; exit 2; }
 SUF=$RANDOM$RANDOM
 WORK=$(mktemp -d)
 LABEL="pgvigil-proof=depth-$SUF"
@@ -345,37 +353,42 @@ EOF
   [[ -z $(fnd 'MD5 password' "value = 'md5user'" su) ]] || fail "MD5 still raised for md5user after SCRAM"
   ok "D: MD5 raised on the superuser instance and cleared"
 
-  echo "--- [pg$VER] L. slru"
-  t "create table slru_t (a int) with (autovacuum_enabled = false)" >/dev/null
-  sub="select coalesce(sum(blks_read), 0) from pg_stat_slru where lower(name) in ('subtrans', 'subtransaction')"
-  col slru
-  b0=$(sql postgres "$sub")
-  psql "$ADMIN dbname=tgt" -XAtq -c "begin" -c "do \$\$ begin for i in 1..300000 loop begin insert into slru_t values (i); exception when division_by_zero then null; end; end loop; end \$\$" -c "select pg_sleep(120)" -c "commit" >/dev/null 2>&1 &
-  holder=$!
-  # the open transaction reached its sleep: its 300,000 subtransactions all exist (the handler catches division_by_zero
-  # only, so any other error - 'out of shared memory' when the lock table cannot hold every subtransaction's xid lock,
-  # s155-proof5 - aborts the block and the sleep never runs). Its own SLRU counters stay pending in its backend until
-  # its transaction ends, so they cannot be read here (s155-final1).
-  waitfor postgres "select count(*) from pg_stat_activity where query = 'select pg_sleep(120)' and state = 'active'" 1 60
-  slru_all="select string_agg(name || ' read ' || blks_read || ' hit ' || blks_hit || ' zeroed ' || blks_zeroed || ' written ' || blks_written, '; ') from pg_stat_slru where lower(name) in ('subtrans', 'subtransaction')"
-  for scan in 1 2; do
-    [[ $(t "select count(*) from slru_t") == 0 ]] || fail "scan $scan saw the open transaction's rows"
-    for _ in $(seq 20); do [[ $(sql postgres "$sub") -ge $((b0 + 50)) ]] && break; sleep 0.5; done
-    [[ $(sql postgres "$sub") -ge $((b0 + 50)) ]] && break
-  done
-  b1=$(sql postgres "$sub")
-  [[ $b1 -ge $((b0 + 50)) ]] || fail "under 50 subtransaction pages read from disk ($b0 -> $b1; $(sql postgres "$slru_all"); subtransaction_buffers $(sql postgres "select coalesce((select setting from pg_settings where name = 'subtransaction_buffers'), 'n/a')")): the seed did not produce the state"
-  col slru
-  [[ $(q "select sum(blks_read) from pgvigil.slru_sample where instance_id = $IID and lower(name) in ('subtrans', 'subtransaction') and snapshot_at = (select max(snapshot_at) from pgvigil.slru_sample where instance_id = $IID)") == "$(sql postgres "$sub")" ]] || fail "slru_sample's blks_read is not the hand read"
-  [[ $(fnd 'subtransaction SLRU reads' | cut -d'|' -f1,2) == 'subtransaction SLRU reads|warning' ]] || fail "subtransaction finding: '$(fnd 'subtransaction SLRU reads')'"
-  sql postgres "select pg_terminate_backend(pid) from pg_stat_activity where query = 'select pg_sleep(120)'" >/dev/null
-  wait "$holder" 2>/dev/null || true
-  waitfor postgres "select count(*) from pg_stat_activity where query = 'select pg_sleep(120)'" 0 30
-  sleep 1
-  col slru
-  [[ -z $(fnd 'subtransaction SLRU reads') ]] || fail "subtransaction finding after the transaction ended: '$(fnd 'subtransaction SLRU reads')'"
-  t "vacuum slru_t" >/dev/null
-  ok "L: $((b1 - b0)) subtransaction pages read raised the finding; cleared after the transaction ended"
+  if [[ $SKIP == L ]]; then
+    echo "NOT PROVEN [pg$VER] L (skipped by PGVIGIL_DEPTH_SKIP)"
+  else
+    echo "--- [pg$VER] L. slru"
+    t "create table slru_t (a int) with (autovacuum_enabled = false)" >/dev/null
+    sub="select coalesce(sum(blks_read), 0) from pg_stat_slru where lower(name) in ('subtrans', 'subtransaction')"
+    col slru
+    b0=$(sql postgres "$sub")
+    psql "$ADMIN dbname=tgt" -XAtq -c "begin" -c "do \$\$ begin for i in 1..300000 loop begin insert into slru_t values (i); exception when division_by_zero then null; end; end loop; end \$\$" -c "select pg_sleep(120)" -c "commit" >/dev/null 2>&1 &
+    holder=$!
+    # the open transaction reached its sleep: its 300,000 subtransactions all exist (the handler catches division_by_zero
+    # only, so any other error - 'out of shared memory' when the lock table cannot hold every subtransaction's xid lock,
+    # s155-proof5 - aborts the block and the sleep never runs). Its own SLRU counters stay pending in its backend until
+    # its transaction ends, so they cannot be read here (s155-final1).
+    waitfor postgres "select count(*) from pg_stat_activity where query = 'select pg_sleep(120)' and state = 'active'" 1 60
+    slru_all="select string_agg(name || ' read ' || blks_read || ' hit ' || blks_hit || ' zeroed ' || blks_zeroed || ' written ' || blks_written, '; ') from pg_stat_slru where lower(name) in ('subtrans', 'subtransaction')"
+    for scan in 1 2; do
+      [[ $(t "select count(*) from slru_t") == 0 ]] || fail "scan $scan saw the open transaction's rows"
+      for _ in $(seq 20); do [[ $(sql postgres "$sub") -ge $((b0 + 50)) ]] && break; sleep 0.5; done
+      [[ $(sql postgres "$sub") -ge $((b0 + 50)) ]] && break
+    done
+    b1=$(sql postgres "$sub")
+    [[ $b1 -ge $((b0 + 50)) ]] || fail "under 50 subtransaction pages read from disk ($b0 -> $b1; $(sql postgres "$slru_all"); subtransaction_buffers $(sql postgres "select coalesce((select setting from pg_settings where name = 'subtransaction_buffers'), 'n/a')")): the seed did not produce the state"
+    col slru
+    [[ $(q "select sum(blks_read) from pgvigil.slru_sample where instance_id = $IID and lower(name) in ('subtrans', 'subtransaction') and snapshot_at = (select max(snapshot_at) from pgvigil.slru_sample where instance_id = $IID)") == "$(sql postgres "$sub")" ]] || fail "slru_sample's blks_read is not the hand read"
+    [[ $(fnd 'subtransaction SLRU reads' | cut -d'|' -f1,2) == 'subtransaction SLRU reads|warning' ]] || fail "subtransaction finding: '$(fnd 'subtransaction SLRU reads')'"
+    sql postgres "select pg_terminate_backend(pid) from pg_stat_activity where query = 'select pg_sleep(120)'" >/dev/null
+    wait "$holder" 2>/dev/null || true
+    waitfor postgres "select count(*) from pg_stat_activity where query = 'select pg_sleep(120)'" 0 30
+    sleep 1
+    col slru
+    [[ -z $(fnd 'subtransaction SLRU reads') ]] || fail "subtransaction finding after the transaction ended: '$(fnd 'subtransaction SLRU reads')'"
+    t "vacuum slru_t" >/dev/null
+    ok "L: $((b1 - b0)) subtransaction pages read raised the finding; cleared after the transaction ended"
+
+  fi
 
   echo "--- [pg$VER] B. index_bloat"
   t "create table bt (id int primary key, v int); insert into bt select g, g from generate_series(1, 1000000) g" >/dev/null
@@ -434,4 +447,5 @@ else
   for v in $VERSIONS; do echo "===== PostgreSQL $v"; run_version "$v" & wait $! || rc=1; done
 fi
 echo "load after the run: $(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo '?')"
-[[ $rc == 0 ]] && echo "PASS: proof-pg-depth on $VERSIONS" || { echo "FAIL: proof-pg-depth (see the version logs above)"; exit 1; }
+note=""; [[ $SKIP == L ]] && note="; L: NOT PROVEN (skipped)"
+[[ $rc == 0 ]] && echo "PASS: proof-pg-depth on $VERSIONS$note" || { echo "FAIL: proof-pg-depth (see the version logs above)$note"; exit 1; }
