@@ -15,6 +15,9 @@ import (
 // duration; and the job history (msdb.dbo.sysjobhistory) read forward from a cursor on its instance_id, so a row
 // is read once. msdb's integer dates and times are turned into datetimes on the server and then into UTC.
 //
+// Each job row also carries the job as one T-SQL script (agentScript, task 154): what DBA Dash keeps as a job's DDL.
+// The repository stores it with every version of the job's definition, so two versions compare as text.
+//
 // The running-jobs filter (the newest row of msdb.dbo.syssessions) and the history read's shape (past a cursor on
 // instance_id, run_status 4 "in progress" left out) are ported from DBA Dash 4.24.1, DBADash/SQL/SQLRunningJobs.sql
 // and SQLJobHistory.sql (MIT, Copyright 2022 Trimble, Inc.).
@@ -124,7 +127,7 @@ ORDER BY j.name`
 // jobStepsSQL: one row per step. The command is read for the job's definition (its versions, task 110) and masked
 // before it leaves the collector (collect.MaskJobText): a step's command can hold a password.
 var jobStepsSQL = `SELECT 'step' AS kind, st.job_id, st.step_id, CAST(st.step_name AS nvarchar(128)) AS step_name,
-  CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
+  CAST(LEFT(st.command, 8000) AS nvarchar(max)) AS command, CAST(LEN(st.command) AS int) AS command_chars, st.on_success_action, st.on_success_step_id, st.on_fail_action, st.on_fail_step_id,
   st.retry_attempts, st.retry_interval, CAST(st.output_file_name AS nvarchar(260)) AS output_file, CAST(px.name AS nvarchar(128)) AS proxy,
   CAST(st.subsystem AS nvarchar(40)) AS subsystem, CAST(st.database_name AS nvarchar(128)) AS database_name,
   st.last_run_outcome AS last_outcome,
@@ -197,13 +200,7 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor
 		if c, ok := st["command"].(string); ok {
 			st["command"] = collect.MaskJobText(c)
 		}
-		st["on_success"] = stepAction(st["on_success_action"], st["on_success_step_id"])
-		st["on_fail"] = stepAction(st["on_fail_action"], st["on_fail_step_id"])
-		for _, k := range []string{"on_success_action", "on_success_step_id", "on_fail_action", "on_fail_step_id"} {
-			delete(st, k)
-		}
 	}
-	rows = append(rows, steps...)
 	schedules, err := QueryRows(ctx, conn, jobSchedulesSQL)
 	if err != nil {
 		return nil, err
@@ -211,6 +208,19 @@ func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor
 	for _, sc := range schedules {
 		sc["runs"] = scheduleWords(sc)
 	}
+	// the script of each job, from the masked steps and the schedules' own terms
+	for _, j := range rows {
+		id, _ := j["job_id"].(string)
+		j["script"] = agentScript(j, rowsOfJob(steps, id), rowsOfJob(schedules, id))
+	}
+	for _, st := range steps {
+		st["on_success"] = stepAction(st["on_success_action"], st["on_success_step_id"])
+		st["on_fail"] = stepAction(st["on_fail_action"], st["on_fail_step_id"])
+		for _, k := range []string{"on_success_action", "on_success_step_id", "on_fail_action", "on_fail_step_id", "command_chars"} {
+			delete(st, k)
+		}
+	}
+	rows = append(rows, steps...)
 	rows = append(rows, schedules...)
 	if cursor == nil {
 		runs, err := QueryRows(ctx, conn, jobHistorySQL(false), int64(0))
@@ -284,6 +294,122 @@ func jobsAdvance(from, next, nextMark int64, runs []collect.Row) (int64, int64, 
 		}
 	}
 	return from, next, nextMark
+}
+
+// rowsOfJob is the rows of one job, in the order they were read (steps by step_id, schedules by name).
+func rowsOfJob(rows []collect.Row, jobID string) []collect.Row {
+	var out []collect.Row
+	for _, r := range rows {
+		if id, _ := r["job_id"].(string); id == jobID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// tsqlN is a text as a T-SQL Unicode literal.
+func tsqlN(v any) string {
+	s, _ := v.(string)
+	return "N'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// oneLine is a name on one line (a comment line of the script must not break).
+var oneLine = strings.NewReplacer("\r", " ", "\n", " ")
+
+// agentScript is one job as the T-SQL that makes it again: sp_add_job, a sp_add_jobstep per step, a
+// sp_add_jobschedule per schedule and sp_add_jobserver, one parameter per line so that two versions compare line by
+// line. It is built from what the collector read and nothing else: a step's command is the masked one (a password
+// stays <masked> in the script), a command longer than the 8,000 characters read says so, and nothing that moves
+// without a change to the job (ids, dates of creation and change, the last run) is in it. A schedule is written as
+// the job's own (sp_add_jobschedule), also when msdb shares it between jobs.
+func agentScript(job collect.Row, steps, schedules []collect.Row) string {
+	var b strings.Builder
+	name := tsqlN(job["name"])
+	n := func(v any) int64 { x, _ := num(v); return x }
+	text := func(v any) (string, bool) { s, ok := v.(string); return s, ok && s != "" }
+	// call writes one procedure call: its parameters one per line, the last one closed by the semicolon
+	call := func(proc string, params []string) {
+		b.WriteString("EXEC msdb.dbo." + proc + "\n")
+		for i, p := range params {
+			end := ","
+			if i == len(params)-1 {
+				end = ";"
+			}
+			b.WriteString("    " + p + end + "\n")
+		}
+	}
+	jobName, _ := job["name"].(string)
+	b.WriteString("-- SQL Server Agent job: " + oneLine.Replace(jobName) + "\n")
+	if c, ok := text(job["category"]); ok && c != "[Uncategorized (Local)]" {
+		b.WriteString("IF NOT EXISTS (SELECT 1 FROM msdb.dbo.syscategories WHERE name = " + tsqlN(c) + " AND category_class = 1)\n")
+		b.WriteString("    EXEC msdb.dbo.sp_add_category @class = N'JOB', @type = N'LOCAL', @name = " + tsqlN(c) + ";\n")
+	}
+	p := []string{"@job_name = " + name, fmt.Sprintf("@enabled = %d", n(job["enabled"]))}
+	if d, ok := text(job["description"]); ok {
+		p = append(p, "@description = "+tsqlN(d))
+	}
+	if c, ok := text(job["category"]); ok {
+		p = append(p, "@category_name = "+tsqlN(c))
+	}
+	if o, ok := text(job["owner"]); ok {
+		p = append(p, "@owner_login_name = "+tsqlN(o))
+	}
+	p = append(p, fmt.Sprintf("@notify_level_eventlog = %d", n(job["notify_level_eventlog"])),
+		fmt.Sprintf("@notify_level_email = %d", n(job["notify_level_email"])),
+		fmt.Sprintf("@notify_level_page = %d", n(job["notify_level_page"])),
+		fmt.Sprintf("@delete_level = %d", n(job["delete_level"])))
+	if o, ok := text(job["notify_email_operator"]); ok {
+		p = append(p, "@notify_email_operator_name = "+tsqlN(o))
+	}
+	if o, ok := text(job["notify_page_operator"]); ok {
+		p = append(p, "@notify_page_operator_name = "+tsqlN(o))
+	}
+	call("sp_add_job", p)
+	for _, st := range steps {
+		stepName, _ := st["step_name"].(string)
+		fmt.Fprintf(&b, "\n-- step %d: %s\n", n(st["step_id"]), oneLine.Replace(stepName))
+		if c, _ := st["command"].(string); n(st["command_chars"]) > 8000 && n(st["command_chars"]) > int64(len([]rune(c))) {
+			fmt.Fprintf(&b, "-- the command is %d characters long: the first 8,000 are below\n", n(st["command_chars"]))
+		}
+		p := []string{"@job_name = " + name, fmt.Sprintf("@step_id = %d", n(st["step_id"])), "@step_name = " + tsqlN(st["step_name"]),
+			"@subsystem = " + tsqlN(st["subsystem"])}
+		if d, ok := text(st["database_name"]); ok {
+			p = append(p, "@database_name = "+tsqlN(d))
+		}
+		p = append(p, "@command = "+tsqlN(st["command"]),
+			fmt.Sprintf("@on_success_action = %d", n(st["on_success_action"])), fmt.Sprintf("@on_success_step_id = %d", n(st["on_success_step_id"])),
+			fmt.Sprintf("@on_fail_action = %d", n(st["on_fail_action"])), fmt.Sprintf("@on_fail_step_id = %d", n(st["on_fail_step_id"])),
+			fmt.Sprintf("@retry_attempts = %d", n(st["retry_attempts"])), fmt.Sprintf("@retry_interval = %d", n(st["retry_interval"])))
+		if o, ok := text(st["output_file"]); ok {
+			p = append(p, "@output_file_name = "+tsqlN(o))
+		}
+		if x, ok := text(st["proxy"]); ok {
+			p = append(p, "@proxy_name = "+tsqlN(x))
+		}
+		call("sp_add_jobstep", p)
+	}
+	if s := n(job["start_step_id"]); s > 1 {
+		b.WriteString("\n")
+		call("sp_update_job", []string{"@job_name = " + name, fmt.Sprintf("@start_step_id = %d", s)})
+	}
+	for _, sc := range schedules {
+		words, _ := sc["runs"].(string)
+		b.WriteString("\n-- schedule: " + words + "\n")
+		call("sp_add_jobschedule", []string{"@job_name = " + name, "@name = " + tsqlN(sc["schedule_name"]),
+			fmt.Sprintf("@enabled = %d", n(sc["enabled"])),
+			fmt.Sprintf("@freq_type = %d", n(sc["freq_type"])), fmt.Sprintf("@freq_interval = %d", n(sc["freq_interval"])),
+			fmt.Sprintf("@freq_subday_type = %d", n(sc["freq_subday_type"])), fmt.Sprintf("@freq_subday_interval = %d", n(sc["freq_subday_interval"])),
+			fmt.Sprintf("@freq_relative_interval = %d", n(sc["freq_relative_interval"])),
+			fmt.Sprintf("@freq_recurrence_factor = %d", n(sc["freq_recurrence_factor"])),
+			fmt.Sprintf("@active_start_date = %d", n(sc["active_start_date"])), fmt.Sprintf("@active_end_date = %d", n(sc["active_end_date"])),
+			fmt.Sprintf("@active_start_time = %d", n(sc["active_start_time"])), fmt.Sprintf("@active_end_time = %d", n(sc["active_end_time"]))})
+	}
+	// the job's own server as its target: msdb lists it (sysjobservers) for every job the Agent runs
+	if job["last_outcome"] != nil {
+		b.WriteString("\n")
+		call("sp_add_jobserver", []string{"@job_name = " + name, "@server_name = N'(local)'"})
+	}
+	return b.String()
 }
 
 // num is a whole number QueryRows returned (msdb's tinyint, smallint and int columns), false for NULL.
@@ -387,4 +513,39 @@ func scheduleWords(r map[string]any) string {
 		return day + " at " + agentClock(from)
 	}
 	return day + " " + every(si, unit, unit+"s") + " between " + agentClock(from) + " and " + agentClock(to)
+}
+
+// traceFlagsCollector is mssql_traceflags: the trace flags switched on (DBCC TRACESTATUS(-1): any login may run
+// it), every hour. The repository keeps the flags as last read and each flag's added / removed history (migration
+// 0094, import_mssql_traceflags). The 'read' row says the command ran: a server with no flag on returns no row, and
+// that is a read too.
+type traceFlagsCollector struct{}
+
+func init() { Register(traceFlagsCollector{}) }
+
+func (traceFlagsCollector) Name() string                   { return Prefix + "traceflags" }
+func (traceFlagsCollector) DefaultInterval() time.Duration { return time.Hour }
+func (traceFlagsCollector) Applies(info Info) (bool, string) {
+	if info.Kind == KindAzureDB {
+		return false, "Azure SQL Database has no server-wide trace flags to read"
+	}
+	return true, ""
+}
+
+const traceFlagsSQL = `DBCC TRACESTATUS(-1) WITH NO_INFOMSGS`
+
+func (traceFlagsCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
+	flags, err := QueryRows(ctx, conn, traceFlagsSQL)
+	if err != nil {
+		return nil, err
+	}
+	out := []collect.Row{{"kind": "read"}}
+	for _, f := range flags {
+		// the command's columns: TraceFlag, Status, Global, Session; a flag listed with Status 0 is off
+		if st, ok := num(f["Status"]); ok && st == 0 {
+			continue
+		}
+		out = append(out, collect.Row{"kind": "flag", "trace_flag": f["TraceFlag"], "global": f["Global"], "session": f["Session"]})
+	}
+	return out, nil
 }

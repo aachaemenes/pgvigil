@@ -25,6 +25,7 @@ One line per job:
 | next run | pg_cron: pgvigil's own reading of the schedule; pgAgent: its own `jobnextrun`; SQL Server: the Agent's |
 | runs, failures | the runs that started in the page's range, and how many failed |
 | changed | the number of changes to the definition in the range, and when the last one was seen |
+| status | the job against its thresholds, and the door to them (see Status and thresholds) |
 | dropped | a job no longer on the server is kept, marked with the time the read first missed it |
 
 The PostgreSQL page adds the scheduler, database, user and command, a link to the job's own page, and every run of
@@ -60,11 +61,60 @@ the fields that changed, old against new. The definition is:
   month days, months) and each step (enabled, kind, database, connection string, on error, code).
 
 A job the read no longer lists gets a version marked dropped, with the time of that read; a job that comes back gets
-another. The first version of a job is "first seen", not a change. A version in the page's range opens by itself.
+another. The first version of a job is "first seen", not a change.
 
-DBA Dash keeps the SMO script of a job and diffs it as text (Job DDL History); pgvigil keeps the definition as
-fields, so a change reads as "steps / step 02 / command: old -> new". Like DBA Dash, it cannot say who made a
-change, and a change undone between two reads is not seen.
+### Versions and the job's script
+
+Like DBA Dash's Job DDL History, every version also keeps the whole job as one script, written by the collector:
+
+- **SQL Server:** `sp_add_job`, one `sp_add_jobstep` per step, one `sp_add_jobschedule` per schedule,
+  `sp_add_jobserver`; one parameter per line. A command over the 8,000 characters read says so in the script.
+- **pg_cron:** `cron.schedule_in_database` with a named argument per line (a job without a name: `cron.schedule`).
+- **pgAgent:** the `DO` block pgAdmin writes: the job, an `INSERT` per step and per schedule.
+
+A version is stored when the definition's fields change, and also when only the script does. A version kept before
+migration 0094 has no script: the first read after it fills the newest version's script in place; older ones show
+their definition as text instead, and the page says so.
+
+Under the job's history the versions are listed with valid from / to; for the one picked:
+
+| View | What it shows |
+|---|---|
+| Script | the script alone (code view), against the version before side by side, or inline (`-` / `+` lines, the words that changed boxed); Copy left / Copy right |
+| Info | that version as the job's page: its fields, its steps and schedules as tables |
+| Compare info | that version beside the one before, the same tables, each changed cell marked (tinted and `*`) |
+| Fields | the changed fields, old against new |
+
+### Status and thresholds
+
+The SQL Server and PostgreSQL grids carry a status per job, judged against thresholds at three levels, as DBA Dash's
+Agent Job Thresholds: the job's own, else the instance's, else the root's (every instance); a level without its own
+row inherits the one above. Without any row the built-in rule holds: the last run failed = critical. The thresholds:
+failed runs in 24 hours and in 7 days, failed steps (SQL Server) in 24 hours and 7 days, minutes since the last
+failure, minutes since the last success, each with a warning and a critical value, and whether a failed last run is
+a warning or critical. **Thresholds** in the status cell opens the three levels; Save writes the level (the old row is
+ended and kept), Inherit ends it. Writing needs the UI login and the actions door's audit login, as acknowledgements do.
+
+The value cells take the outcome's colour: last run and outcome red when failed, amber when cancelled or retried, green
+when succeeded; failures red above 0 (not acknowledged) and green at 0; a step's last outcome and run likewise.
+
+### Start and Stop
+
+On SQL Server the grid's last column has Start and Stop (`sp_start_job`, `sp_stop_job`) through the actions door
+([sqlserver-actions](sqlserver-actions.md)): disabled, with the reason, where the instance has no actions login.
+
+## Configuration history
+
+- **Change log, both engines:** every value that was replaced, with valid from / to. SQL Server keeps every value of
+  `sys.configurations` a read saw (`pgvigil.mssql_config_history`, migration 0094; the values kept before it are carried
+  over: the value before the last change has no start). PostgreSQL's comes from its setting history; on the
+  Configuration page it sits beside the Best practice grid.
+- **The fleet (SQL Server):** `sys.configurations` of every instance side by side, an option a column; a value that is
+  not the one most instances run is amber with a `*` (in a tie every value is marked). Only the options that differ are
+  shown unless every option is asked for.
+- **Trace flags (SQL Server):** `mssql_traceflags` reads `DBCC TRACESTATUS(-1)` hourly: the flags on now, and each
+  flag added or removed with the read that saw it. The first read is the baseline. A flag on for the collector's own
+  session only is listed as such.
 
 ### Passwords
 
@@ -95,15 +145,20 @@ other form is stored as read: keep secrets out of job steps (a credential, a pro
 ## Storage and retention
 
 Runs stay in the existing run tables (`pgvigil.job_runs`, `pgvigil.mssql_job_runs`) and are purged with them.
-`pgvigil.job_versions` (migration 0072) keeps a row per change, not per read, and goes with its instance.
+`pgvigil.job_versions` (migration 0072, the script since 0094), `mssql_config_history`, `mssql_trace_flag_history` and
+`job_thresholds` keep a row per change, not per read, and go with their instance.
 
 ## API
 
 `GET /api/jobs/history?engine=pg|mssql&instance=<id>&from=&to=` is the grid; with `&scheduler=<pg_cron|pgagent|sqlagent>&job=<id>`
-also the job's `runs`, `counts` and `changes`.
+also the job's `runs`, `counts` and `changes` (each version with its `script`).
+`GET /api/jobs/thresholds?instance=` the levels and each job's status; `POST /api/jobs/thresholds` sets a level or
+makes it inherit. `GET /api/config/changes[?instance=]`, `GET /api/mssql/config/fleet`, `GET /api/mssql/traceflags[?instance=]`.
 
 ## Not proven
 
 pg_cron and pgAgent are not installed on the proof's PostgreSQL sandbox: `scripts/proof-jobs-history.sh` proves the
 pg_cron side over imported rows and pgAgent's SQL over a stand-in schema of the columns it reads. The SQL Server side
-runs against a real Agent job the proof makes, fails, changes and deletes.
+runs against a real Agent job the proof makes, fails, changes and deletes. `scripts/proof-job-ddl.sh` proves the
+scripts, their diffs, the change log, the pivot and the trace flag history against a SQL Server container of its own.
+Not proven: the page in a browser; a real pg_cron (its script is built by the collector, the proof imports one).
