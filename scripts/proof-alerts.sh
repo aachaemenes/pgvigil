@@ -59,7 +59,8 @@
 #     drop and drop2 with the same open count, grace at least as many [first fold run: grace 5, the others 4: a demo
 #     finding left the view within grace's 10-minute clear delay; the four at clear_after 0 resolved it, grace holds it], a log of the last hour with the 'none', 'sent', 'refused',
 #     'failed' and 'cleared' outcomes; /api/findings: the rows carrying alert_last_sent with mail in alert_channels are
-#     mail's open rows whose finding is in the view.
+#     mail's open rows whose finding is in the view, the alert rules' own findings left out (the Alert rules page shows
+#     them; the demo's rules raise some since task 131).
 #  E. the loop inside `pgvigil run` (an instance: a sandbox database of the proof's own) with the channels dead and
 #     drop3 (a file drop scoped to the proof's instance) only, for about 70 s: dead logs at least one more 'failed' row
 #     with its error, the process still runs at the end, its log says "alerts: channel failed".
@@ -353,7 +354,9 @@ UI_PORT=$(freeport)
 for _ in $(seq 1 100); do curl -fs "http://127.0.0.1:$UI_PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
 curl -fs "http://127.0.0.1:$UI_PORT/api/alerts" > "$WORK/alerts.json" || fail "F: /api/alerts"
 curl -fs "http://127.0.0.1:$UI_PORT/api/findings" > "$WORK/findings.json" || fail "F: /api/findings"
-N3=$(q "select count(*) from pgvigil.alert_state s where s.channel = 'mail' and s.cleared_at is null and exists (select 1 from pgvigil.alert_findings f where f.finding_key = s.finding_key)")
+# /api/findings lists pgvigil.findings; alert_findings also holds the alert rules' own findings (0085: source 'alert rule',
+# shown on the Alert rules page, not in the Findings grid), which the demo's rules raise: they are not counted here
+N3=$(q "select count(*) from pgvigil.alert_state s where s.channel = 'mail' and s.cleared_at is null and exists (select 1 from pgvigil.alert_findings f where f.finding_key = s.finding_key and f.source <> 'alert rule')")
 python3 - "$WORK/alerts.json" "$WORK/findings.json" "$N3" <<'PY' || fail "F: the API's rows"
 import json, sys
 a = json.load(open(sys.argv[1])); f = json.load(open(sys.argv[2])); N3 = int(sys.argv[3])

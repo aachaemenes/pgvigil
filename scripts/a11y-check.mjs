@@ -79,7 +79,7 @@ const all = []; let failed = 0; const perRule = new Map();
 // status cells again in the quiet one
 pages.push('#/summary|range');   // the Summary once more with the range panel open, so axe scans the panel too
 // a Diff with both sides picked (the walk above opens only its empty form): two instances, then one instance at two times
-pages.push(`#/diff?m=i&a=${onprem.instance_id}&b=${cloud.instance_id}`);
+pages.push(`#/diff?m=i&a=${onprem.instance_id}&b=${cloud.instance_id}`, `#/diff?m=t&a=${onprem.instance_id}&ta=${encodeURIComponent(new Date(Date.now() - 86400e3).toISOString())}`);
 const statusPages = pages.filter(h => /^#\/(summary|perfsummary|dbadash|alerts)\b/.test(h));
 for (const [style, list] of [['solid', pages], ['quiet', statusPages]])
 for (const theme of ['light', 'dark']) {
@@ -92,6 +92,12 @@ for (const theme of ['light', 'dark']) {
     await cmd('Page.navigate', { url: U + hash }); await sleep(250);
     const ok = await settled();
     if (!ok) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}`); continue; }
+    // a Diff address with its picks renders its result, not an error box: the 'The two sides' heading appears within 8 s
+    // (the walk's bare Diff page is the empty form, with no result by design)
+    if (/^#\/diff\?(.*&)?a=/.test(hash)) {
+      const drawn = await ev(`(async () => { for (let i = 0; i < 32; i++) { if ([...document.querySelectorAll('[aria-label="Diff result"] h3')].some(h => h.textContent === 'The two sides')) return true; await new Promise(r => setTimeout(r, 250)); } return false; })()`, true);
+      if (!drawn) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}: no Diff result ('The two sides')`); continue; }
+    }
     if (open === 'range') {
       // opened only when it is closed (a second click would close it)
       const shown = await ev(`(async () => { if (!document.querySelector('#bar [role="dialog"]')) document.querySelector('#bar [aria-haspopup="dialog"]')?.click(); await new Promise(r => setTimeout(r, 300)); return !!document.querySelector('#bar [role="dialog"]'); })()`, true);
