@@ -54,7 +54,7 @@ export const ackHolds = (a: Row | undefined, now: string): boolean =>
 // ackWords: who and when, and how long it stands
 export function ackWords(a: Row): string {
   const until = a.until ? `until ${fmtTime(a.until)}` : '';
-  const change = a.until_change ? `until it changes from '${String(a.seen_state ?? '')}'` : '';
+  const change = a.until_change ? `until it changes from '${String(a.seen_state ?? '').replace(/ #[0-9a-z]+$/, '')}'` : '';
   return `acknowledged by ${String(a.created_by)} ${fmtTime(a.created_at)}${[until, change].filter(Boolean).map(x => ', ' + x).join('')}`;
 }
 
@@ -157,10 +157,17 @@ export function ackDialog(o: AckDialog) {
   });
   const valid = () => (o.noteField !== 'required' && o.noteField !== 'label') || note.value.trim().length > 0;
   confirmDialog(o.title, o.what, 'Save', async () => {
-    let last: AckResult = { outcome: 'done', detail: '' };
-    const said: string[] = [];
-    for (const b of build()) { last = await addAck(b); said.push(last.detail); }
-    return { ...last, detail: said.length > 1 ? `${said.length} rows: ${said[0]}` : last.detail };
+    const rows = build();
+    if (!rows.length) return { outcome: 'nothing to do', detail: 'every row picked already holds this' };
+    // one post per row: a refusal part way leaves the rows before it written, and the answer says which
+    let done = 0;
+    const refused: string[] = [];
+    for (const b of rows) {
+      try { await addAck(b); done++; } catch (e) { refused.push(e instanceof Error ? e.message : String(e)); }
+    }
+    if (done === 0) throw new Error(refused[0] ?? 'refused');
+    return { outcome: refused.length ? 'partly done' : 'done',
+      detail: `${done} of ${rows.length} saved` + (refused.length ? `; refused: ${refused.join('; ')}` : '') };
   }, o.after, fields, valid, [note]);
 }
 

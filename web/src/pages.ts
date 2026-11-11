@@ -225,6 +225,14 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
 
 export { errorBox };
 
+// cellState: what 'until the check changes' compares - the cell's reading and a fingerprint of the checks behind it
+// (two different checks failing read the same '1 warning'; their details differ)
+function cellState(c: { detail: string[] }): string {
+  let h = 5381;
+  for (const ch of c.detail.join('\n')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  return `${cellText(c as Parameters<typeof cellText>[0])} #${h.toString(36)}`;
+}
+
 // ---- fleet Summary: one row per instance, one coloured cell per check group (DBADash's Summary tab)
 
 export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
@@ -243,7 +251,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const acked: Acked = {};
     for (const g of groups) {
       const a = acks.get(`${String(r.instance_id)}|${g.key}`);
-      if (a && !c[g.key].none && c[g.key].level > 0 && ackHolds(a, cellText(c[g.key]))) acked[g.key] = a;
+      if (a && !c[g.key].none && c[g.key].level > 0 && ackHolds(a, cellState(c[g.key]))) acked[g.key] = a;
     }
     const row: Row = { ...r, _cells: c, _acked: acked,
       _worst: Math.max(0, ...groups.filter(g => !acked[g.key]).map(g => c[g.key].level)) };
@@ -424,7 +432,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
         return v > 0 ? `${label} ${v} (${(v * 60 / mins).toFixed(1)}/hr)` : '';
       };
       const shown = [per('blocking', 'Blocking'), per('deadlocks', 'Deadlocks'), ...reasons].filter(Boolean);
-      const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellText(c[g.key]) }));
+      const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellState(c[g.key]) }));
       const lvl = Number(r._worst);
       return el('div', { class: 'attention-row', style: `display:flex;gap:.8rem;align-items:baseline;padding:.25rem .5rem;border-left:3px solid var(${lvl === 2 ? '--crit' : '--warn'});margin:.2rem 0` },
         dot(lvl), el('strong', {}, instLink(ctx, String(r.name), r.instance_id)),

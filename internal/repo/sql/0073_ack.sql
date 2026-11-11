@@ -121,11 +121,12 @@ RETURNS bigint LANGUAGE sql STABLE AS $$
    ORDER BY a.ack_id LIMIT 1
 $$;
 
--- ack_alert_acked: an alert acknowledged at p_at (its repeats are not sent)
-CREATE OR REPLACE FUNCTION pgvigil.ack_alert_acked(p_at timestamptz, p_finding_key text)
+-- ack_alert_acked: this occurrence of an alert (open since p_first_sent) acknowledged at p_at: its repeats are not
+-- sent. An acknowledgement made before the occurrence opened is an earlier occurrence's and does not count.
+CREATE OR REPLACE FUNCTION pgvigil.ack_alert_acked(p_at timestamptz, p_finding_key text, p_first_sent timestamptz)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT EXISTS (SELECT 1 FROM pgvigil.acks a WHERE a.kind = 'alert_ack' AND a.finding_key = p_finding_key
-                    AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, p_at))
+                    AND a.created_at >= p_first_sent AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, p_at))
 $$;
 
 -- Both functions below run with jit off: the findings view under them crosses jit_above_cost, and LLVM spends 17 s
@@ -162,7 +163,7 @@ END $$;
 
 -- alert_due: 0059's, with the holds: a finding a mute, silence or blackout holds is owed nothing new (no firing, no
 -- escalation, no repeat) while it stands, and its open row stays open (no recovery for a held alert that is still
--- there); an acknowledged alert is owed no repeat, an escalation still sends. Resolution is unchanged.
+-- there); this occurrence acknowledged is owed no repeat, an escalation still sends. Resolution is unchanged.
 CREATE OR REPLACE FUNCTION pgvigil.alert_due(p_at timestamptz, p_channels jsonb)
 RETURNS TABLE (channel text, event text, finding_key text, instance_id int, instance text, severity text, source text,
                setting text, value text, detail text, suggested text, finding_at timestamptz, first_sent_at timestamptz,
@@ -199,7 +200,7 @@ LANGUAGE sql STABLE SET jit = off AS $$
    WHERE s.channel IS NULL
       OR pgvigil.severity_rank(m.severity) > pgvigil.severity_rank(s.severity)
       OR (s.repeat_secs > 0 AND p_at - s.last_sent_at >= make_interval(secs => s.repeat_secs)
-          AND NOT pgvigil.ack_alert_acked(p_at, m.finding_key))
+          AND NOT pgvigil.ack_alert_acked(p_at, m.finding_key, s.first_sent_at))
   UNION ALL
   SELECT s.channel,
          CASE WHEN NOT s.instance_active OR s.present THEN 'cleared'          -- the instance left, or out of scope now
@@ -214,6 +215,15 @@ LANGUAGE sql STABLE SET jit = off AS $$
                            WHERE d.instance_id = s.instance_id AND d.status = 'ok' AND d.snapshot_at > s.missing_since)))
   ORDER BY 1, 2, 6, 5
 $$;
+
+-- ack_lock: a transaction lock on one kind and instance (two silences of one server made at once: the second waits,
+-- then sees the first); always true
+CREATE OR REPLACE FUNCTION pgvigil.ack_lock(p_kind text, p_instance text)
+RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('pgvigil.acks:' || p_kind || ':' || coalesce(p_instance, ''), 0));
+  RETURN true;
+END $$;
 
 -- ack_time_ok: NULL or a text that reads as a timestamptz
 CREATE OR REPLACE FUNCTION pgvigil.ack_time_ok(p text)
@@ -246,9 +256,13 @@ BEGIN
     RAISE EXCEPTION 'import_ack: no ui_user' USING ERRCODE = '22023';
   END IF;
   IF v_op = 'end' THEN
-    v_id := (p_payload->>'ack_id')::bigint;
-    SELECT * INTO v_row FROM pgvigil.acks WHERE ack_id = v_id FOR UPDATE;
-    IF NOT FOUND THEN
+    IF coalesce(p_payload->>'ack_id', '') ~ '^[0-9]{1,18}$' THEN
+      v_id := (p_payload->>'ack_id')::bigint;
+      SELECT * INTO v_row FROM pgvigil.acks WHERE ack_id = v_id FOR UPDATE;
+    END IF;
+    IF v_id IS NULL THEN
+      v_why := format('ack_id %L is not an acknowledgement id', p_payload->>'ack_id');
+    ELSIF v_row.ack_id IS NULL THEN
       v_why := format('no acknowledgement %s', v_id);
     ELSIF v_row.ended_at IS NOT NULL THEN
       v_why := format('acknowledgement %s was already ended by %s at %s', v_id, v_row.ended_by, v_row.ended_at);
@@ -270,7 +284,7 @@ BEGIN
     v_why := 'until is not in the future';
   ELSIF v_kind IN ('ack', 'job', 'silence', 'blackout') AND v_inst IS NULL THEN
     v_why := format('a %s names one instance', v_kind);
-  ELSIF v_kind = 'silence' AND EXISTS (SELECT 1 FROM pgvigil.acks a WHERE a.kind = 'silence' AND a.instance_name = v_inst
+  ELSIF v_kind = 'silence' AND pgvigil.ack_lock('silence', v_inst) AND EXISTS (SELECT 1 FROM pgvigil.acks a WHERE a.kind = 'silence' AND a.instance_name = v_inst
                                           AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, p_at)) THEN
     v_why := format('%s is already silenced', v_inst);
   END IF;
@@ -286,7 +300,7 @@ BEGIN
                                              until timestamptz, until_change boolean)
       RETURNING ack_id INTO v_id;
     EXCEPTION WHEN check_violation OR foreign_key_violation OR invalid_text_representation OR invalid_datetime_format
-                   OR datetime_field_overflow THEN
+                   OR datetime_field_overflow OR numeric_value_out_of_range OR string_data_right_truncation THEN
       v_why := 'refused by the store: ' || SQLERRM;
     END;
   END IF;

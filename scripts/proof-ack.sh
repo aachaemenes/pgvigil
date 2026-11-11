@@ -35,9 +35,28 @@
 #  L. a silence covers one server: L (the demo instance with the most critical findings, not M) silenced; a pass to a
 #     fresh channel drop2: no file of L, at least one file of another instance; every ack_suppressed row of the
 #     silence is L's and there is at least one; a second silence of L refused 409 ('already silenced').
-#  A. the audit: ack_log's rows of the proof user read add:done=<the acks made> [run 6: 71 against a count of 69: the
-#     counter was a variable that MUTE=$(add ...) incremented in a subshell; now a file], add:refused=1, end:done=1, every row
-#     with ui_user the proof user and client 127.0.0.1; every acks row has created_by the proof user.
+#  [Added at the review fold, before their first run:]
+#  H. holds and acknowledgements on OPEN alerts: a channel rep (file, critical, repeat 5m) opens its alerts in a pass;
+#     A1 muted by 'Mute this alert' (its finding key), A2 acknowledged, A3's setting labelled by a known pattern, K
+#     (an instance with open rep alerts) in a blackout from a minute ago to an hour on, K2 in a blackout that starts
+#     in an hour. GET /api/ack part alerts: A2 acked (its ack id), A3's known_noise the label and held by nothing, K's
+#     rows is_blackout true, K2's false. rep's rows moved 6 minutes back, a pass: no repeat file of A1, A2 or K, a
+#     repeat file of A3 and of K2; A1's rep row still open; ack_suppressed holds A1's mute on rep and the blackout's
+#     rows, all K's; the future blackout none.
+#  O. an acknowledgement is this occurrence's: A2's open rows cleared by hand (the alert gone and back; run 8 cleared
+#     only rep's row, and drop's still-open row of the old occurrence kept the grid's acknowledgement: right), a pass: a new
+#     firing file of A2; GET: A2 not acknowledged; rep's rows moved back, a pass: a repeat file of A2.
+#  Z. close: A4's open rows marked resolved (missing_since), POST close: GET shows A4 closed; missing_since back to
+#     NULL (the finding back): GET shows A4 not closed.
+#  P. the count click: in the test grid a critical count clicked: the instance grid's column after 'instance' is that
+#     test's; clicked again to clear it [run 9: the pick, kept in sessionStorage, filtered D's page].
+#  D. until the check changes, through the page: Needs attention's first line V, its Acknowledge dialog saved with its
+#     defaults (1 day, or until the check changes): V's row then holds as many td.status.ack cells as it had warning
+#     and critical cells, and none coloured.
+#  A. the audit: ack_log's rows read add:done=<the rows of acks> add:refused=1 end:done=1, at least as many done adds
+#     as the proof made through the API [run 6: 71 against a count of 69: the counter was a variable that
+#     MUTE=$(add ...) incremented in a subshell; then a file; at the fold the acks rows, which the page's adds join],
+#     every row with ui_user the proof user and client 127.0.0.1; every acks row has created_by the proof user.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -134,7 +153,7 @@ for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$CDP/json/list" >/dev/null &
 cat > "$WORK/summary.mjs" <<'JS'
 // prints one JSON line: per instance row of the Summary, its warning / critical / ack cell counts; the test grid's
 // acknowledged sum; the header counts line; the Needs-attention instance names
-const [cdp, base, cookieLine] = process.argv.slice(2);
+const [cdp, base, cookieLine, mode = ''] = process.argv.slice(2);
 const list = await (await fetch(`http://127.0.0.1:${cdp}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r));
@@ -170,10 +189,40 @@ const out = await ev(`(() => {
   const attention = [...document.querySelectorAll('.attention-row strong')].map(s => s.textContent);
   return { rows, ackSum, ackCol: ai >= 0, counts: document.querySelector('.counts')?.textContent ?? '', attention };
 })()`);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+if (mode === 'pick') {
+  // click the first non-zero 'instances critical' count; read the instance grid's column after 'instance'
+  Object.assign(out, await ev(`(async () => {
+    const tests = document.querySelectorAll('main table')[0];
+    const hdr = [...tests.querySelectorAll('thead th')].map(t => t.textContent);
+    const ci = hdr.findIndex(h => h === 'instances critical');
+    const tr = [...tests.querySelectorAll('tbody tr')].find(r => Number(r.children[ci].textContent) > 0);
+    const test = tr.children[0].textContent.trim();
+    tr.children[ci].querySelector('button').click();
+    await new Promise(r => setTimeout(r, 400));
+    const tables = [...document.querySelectorAll('main table')];
+    const h2 = [...tables[tables.length - 1].querySelectorAll('thead th')].map(t => t.textContent);
+    const after = h2[h2.indexOf('instance') + 1];
+    tr.children[ci].querySelector('button').click();   // the same count again clears the pick (it is kept per tab)
+    await new Promise(r => setTimeout(r, 300));
+    return { pickTest: test, afterInstance: after };
+  })()`));
+} else if (mode === 'dialog') {
+  // Needs attention's first line: Acknowledge, Save with the defaults, read the dialog's answer
+  out.dlgName = await ev(`(() => { const r = document.querySelector('.attention-row'); r.querySelector('button').click(); return r.querySelector('strong').textContent; })()`);
+  await sleep(300);
+  await ev(`document.querySelector('dialog.act-dialog button[type=submit]').click()`);
+  const t1 = Date.now();
+  while (Date.now() - t1 < 10000) {
+    out.dlgSaid = await ev(`document.querySelector('dialog.act-dialog [role=status]')?.textContent ?? ''`);
+    if (out.dlgSaid && !/^Saving/.test(out.dlgSaid)) break;
+    await sleep(200);
+  }
+}
 console.log(JSON.stringify(out));
 ws.close();
 JS
-summary() { node "$WORK/summary.mjs" "$CDP" "$U/" "$COOKIE" > "$WORK/sum.json" || fail "the Summary read"; }
+summary() { node "$WORK/summary.mjs" "$CDP" "$U/" "$COOKIE" "${1:-}" > "$WORK/sum.json" || fail "the Summary read"; }
 get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$WORK/sum.json" "$1"; }
 summary
 [[ $(get 'd["ackCol"]') == True ]] || fail "C: the test grid has no acknowledged column"
@@ -272,8 +321,96 @@ OTHER=$(python3 -c "import json,os,sys; print(sum(1 for f in os.listdir(sys.argv
 [[ $(q "select count(*) || ':' || count(*) filter (where instance_name <> '$L') from pgvigil.ack_suppressed where ack_id = $SIL") =~ ^[1-9][0-9]*:0$ ]] || fail "L: the silence's held rows: $(q "select count(*), count(*) filter (where instance_name <> '$L') from pgvigil.ack_suppressed where ack_id = $SIL")"
 ok "L: the silence held $L's alerts only ($(q "select count(*) from pgvigil.ack_suppressed where ack_id = $SIL") logged), $OTHER other alert(s) sent"
 
+# ---- H, O, Z: open alerts -------------------------------------------------------------------------------------------
+mkdir -p "$WORK/rep"
+cat > "$WORK/rep.yaml" <<EOF
+repository:
+  dsn: env:PGVIGIL_REPO_DSN
+alerts_dsn: env:PGV_PROOF_ALERTS_DSN
+alerts:
+  - {name: rep, kind: file, min_severity: critical, repeat: 5m, clear_after: 0, file: {dir: $WORK/rep}}
+EOF
+pass "$WORK/rep.yaml"
+fk_files() { python3 - "$WORK/rep" "$1" "$2" <<'PY'
+import json, os, sys
+d, key, ev = sys.argv[1:4]
+print(sum(1 for f in os.listdir(d) if f.endswith('.json') and (lambda a: a['finding_key'] == key and a['event'] == ev)(json.load(open(os.path.join(d, f))))))
+PY
+}
+inst_files() { python3 - "$WORK/rep" "$1" "$2" <<'PY'
+import json, os, sys
+d, inst, ev = sys.argv[1:4]
+print(sum(1 for f in os.listdir(d) if f.endswith('.json') and (lambda a: a['instance'] == inst and a['event'] == ev)(json.load(open(os.path.join(d, f))))))
+PY
+}
+back6() { q "update pgvigil.alert_state set last_sent_at = last_sent_at - interval '6 minutes' where channel = 'rep' and cleared_at is null" >/dev/null; }
+mapfile -t INSTS < <(q "select instance_name from pgvigil.alert_state where channel = 'rep' and cleared_at is null group by 1 order by count(*) desc, 1")
+(( ${#INSTS[@]} >= 3 )) || fail "H: rep opened alerts on ${#INSTS[@]} instance(s)"
+K=${INSTS[0]}; K2=${INSTS[1]}
+mapfile -t KEYS4 < <(q "select finding_key from pgvigil.alert_state where channel = 'rep' and cleared_at is null and instance_name not in ('$K', '$K2') order by finding_key")
+(( ${#KEYS4[@]} >= 4 )) || fail "H: ${#KEYS4[@]} open rep alert(s) outside K and K2"
+A1=${KEYS4[0]}; A2=${KEYS4[1]}; A3=${KEYS4[2]}; A4=${KEYS4[3]}
+iid_of_key() { q "select instance_id from pgvigil.alert_state where channel = 'rep' and finding_key = '$1' and cleared_at is null"; }
+A3SET=$(q "select setting from pgvigil.alert_state where channel = 'rep' and finding_key = '$A3' and cleared_at is null")
+MUTE1=$(add "{\"kind\":\"mute\",\"instance_id\":$(iid_of_key "$A1"),\"finding_key\":\"$A1\"}")
+ACK2=$(add "{\"kind\":\"alert_ack\",\"instance_id\":$(iid_of_key "$A2"),\"finding_key\":\"$A2\"}")
+add "{\"kind\":\"noise\",\"instance_id\":$(iid_of_key "$A3"),\"check_key\":\"$A3SET\",\"note\":\"proof label\"}" >/dev/null
+BK=$(add "{\"kind\":\"blackout\",\"instance_id\":$(id_of "$K"),\"starts_at\":\"$(date -u -d '-1 minute' +%FT%TZ)\",\"until\":\"$(date -u -d '+1 hour' +%FT%TZ)\"}")
+BK2=$(add "{\"kind\":\"blackout\",\"instance_id\":$(id_of "$K2"),\"starts_at\":\"$(date -u -d '+1 hour' +%FT%TZ)\",\"until\":\"$(date -u -d '+2 hours' +%FT%TZ)\"}")
+alerts_get() { curl -s -b "$JAR" "$U/api/ack?part=alerts" > "$WORK/alerts.json"; }
+col() {   # col <finding_key | instance=NAME> <column>: the values, space-joined
+  python3 - "$WORK/alerts.json" "$1" "$2" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))['alerts']; c = d['columns']; who, k = sys.argv[2], sys.argv[3]
+rows = [dict(zip(c, r)) for r in d['rows']]
+rows = [r for r in rows if (r['instance'] == who[9:] if who.startswith('instance=') else r['finding_key'] == who)]
+print(' '.join(sorted(set(str(r[k]) for r in rows))))
+PY
+}
+alerts_get
+[[ $(col "$A2" ack_id) == "$ACK2" ]] || fail "H: A2's ack_id: $(col "$A2" ack_id)"
+[[ $(col "$A3" known_noise) == "proof label" && $(col "$A3" held_by) == None ]] || fail "H: A3: noise '$(col "$A3" known_noise)', held '$(col "$A3" held_by)'"
+[[ $(col "instance=$K" is_blackout) == True && $(col "instance=$K2" is_blackout) == False ]] || fail "H: blackout flags: K $(col "instance=$K" is_blackout), K2 $(col "instance=$K2" is_blackout)"
+back6; pass "$WORK/rep.yaml"
+[[ $(fk_files "$A1" repeat) == 0 && $(fk_files "$A2" repeat) == 0 && $(inst_files "$K" repeat) == 0 ]] || fail "H: a held or acknowledged alert repeated: A1 $(fk_files "$A1" repeat), A2 $(fk_files "$A2" repeat), K $(inst_files "$K" repeat)"
+(( $(fk_files "$A3" repeat) >= 1 && $(inst_files "$K2" repeat) >= 1 )) || fail "H: no repeat of A3 ($(fk_files "$A3" repeat)) or K2 ($(inst_files "$K2" repeat))"
+[[ $(q "select count(*) from pgvigil.alert_state where channel = 'rep' and finding_key = '$A1' and cleared_at is null") == 1 ]] || fail "H: A1's held row was closed"
+[[ $(q "select count(*) from pgvigil.ack_suppressed where ack_id = $MUTE1 and channel = 'rep' and finding_key = '$A1'") == 1 ]] || fail "H: no held row of A1's mute"
+[[ $(q "select count(*) || ':' || count(*) filter (where instance_name <> '$K') from pgvigil.ack_suppressed where ack_id = $BK") =~ ^[1-9][0-9]*:0$ ]] || fail "H: the blackout's held rows"
+[[ $(q "select count(*) from pgvigil.ack_suppressed where ack_id = $BK2") == 0 ]] || fail "H: the future blackout held a send"
+ok "H: on open alerts the mute and the blackout held their repeats (logged, the rows open), the acknowledgement stopped A2's, the known pattern labelled A3 and held nothing, the future blackout nothing"
+# the alert gone and back: its open rows on every channel cleared (the grid's occurrence starts at the earliest open send)
+q "update pgvigil.alert_state set cleared_at = now() where finding_key = '$A2' and cleared_at is null" >/dev/null
+pass "$WORK/rep.yaml"
+[[ $(fk_files "$A2" firing) == 2 ]] || fail "O: A2 did not fire again ($(fk_files "$A2" firing) firing files)"
+alerts_get
+[[ $(col "$A2" ack_id) == None ]] || fail "O: the new occurrence of A2 reads acknowledged ($(col "$A2" ack_id))"
+back6; pass "$WORK/rep.yaml"
+(( $(fk_files "$A2" repeat) >= 1 )) || fail "O: the new occurrence of A2 did not repeat"
+ok "O: the acknowledgement stayed with A2's earlier occurrence: the new one fired, read unacknowledged, repeated"
+q "update pgvigil.alert_state set missing_since = now() where finding_key = '$A4' and cleared_at is null" >/dev/null
+add "{\"kind\":\"close\",\"instance_id\":$(iid_of_key "$A4"),\"finding_key\":\"$A4\"}" >/dev/null
+alerts_get
+[[ $(col "$A4" close_id) =~ ^[0-9]+$ ]] || fail "Z: A4 not closed: $(col "$A4" close_id)"
+q "update pgvigil.alert_state set missing_since = null where finding_key = '$A4' and cleared_at is null" >/dev/null
+alerts_get
+[[ $(col "$A4" close_id) == None ]] || fail "Z: A4 back still reads closed"
+ok "Z: a close shows while the alert is resolved, not once its finding is back"
+
+# ---- P, D: the page ----------------------------------------------------------------------------------------------------
+summary pick
+[[ -n $(get 'd["pickTest"]') && $(get 'd["pickTest"]') == $(get 'd["afterInstance"]') ]] || fail "P: picked '$(get 'd["pickTest"]')', the column after instance '$(get 'd["afterInstance"]')'"
+ok "P: a critical count of $(get 'd["pickTest"]') clicked: its column first"
+summary dialog
+V=$(get 'd["dlgName"]'); VB=$(get "d['rows']['$V']['warn'] + d['rows']['$V']['crit']")
+[[ $(get 'd["dlgSaid"]') == *"saved"* ]] || fail "D: the dialog said '$(get 'd["dlgSaid"]')'"
+summary
+[[ $(get "d['rows']['$V']['ack']") == "$VB" && $(get "d['rows']['$V']['warn'] + d['rows']['$V']['crit']") == 0 ]] || fail "D: $V after the dialog: $(get "d['rows']['$V']") (had $VB)"
+ok "D: the dialog's until-change acknowledgement of $V holds its $VB cells"
+
 # ---- A: the audit -------------------------------------------------------------------------------------------------------
-ADDS=$(wc -l < "$WORK/adds")
+ADDS=$(q "select count(*) from pgvigil.acks")
+(( ADDS >= $(wc -l < "$WORK/adds") )) || fail "A: fewer acks rows ($ADDS) than adds made"
 GOT=$(q "select string_agg(op || ':' || outcome || '=' || c, ' ' order by op, outcome) from (select op, outcome, count(*) c from pgvigil.ack_log group by 1, 2) x")
 [[ $GOT == "add:done=$ADDS add:refused=1 end:done=1" ]] || fail "A: ack_log holds '$GOT', expected 'add:done=$ADDS add:refused=1 end:done=1'"
 [[ $(q "select count(*) from pgvigil.ack_log where ui_user <> '$UIUSER' or client <> '127.0.0.1'") == 0 ]] || fail "A: an ack_log row without the user or the client"

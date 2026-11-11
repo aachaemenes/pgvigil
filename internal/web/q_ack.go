@@ -50,10 +50,13 @@ SELECT x.last_at, x.first_at, x.passes, x.channel, x.instance_name AS instance, 
  ORDER BY x.last_at DESC
  LIMIT 1000`
 
-// sqlAckAlerts: one row per open alert (its finding key over every channel) with what the store says of it now
+// sqlAckAlerts: one row per open alert (its finding key over every channel) with what the store says of it now; an
+// acknowledgement or a close counts for this occurrence only (made since its first send), and a close only while the
+// alert is still resolved (a finding back hides nothing)
 const sqlAckAlerts = `
 WITH o AS (
-  SELECT s.finding_key, max(s.instance_id) AS instance_id, max(s.instance_name) AS instance, max(s.severity) AS severity,
+  SELECT s.finding_key, max(s.instance_id) AS instance_id, max(s.instance_name) AS instance,
+         (array_agg(s.severity ORDER BY pgvigil.severity_rank(s.severity) DESC))[1] AS severity,
          max(s.source) AS source, max(s.setting) AS setting, max(s.value) AS value, min(s.first_sent_at) AS first_sent_at,
          max(s.last_sent_at) AS last_sent_at, sum(s.send_count)::int AS sends,
          array_agg(DISTINCT s.channel ORDER BY s.channel) AS channels, bool_and(s.missing_since IS NOT NULL) AS resolved,
@@ -77,10 +80,12 @@ SELECT o.*, coalesce(t.tags, '{}'::text[]) AS tags,
   FROM o
   LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
   LEFT JOIN LATERAL (SELECT a.ack_id, a.created_by, a.created_at FROM pgvigil.acks a WHERE a.kind = 'alert_ack'
-                        AND a.finding_key = o.finding_key AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, $1)
+                        AND a.finding_key = o.finding_key AND a.created_at >= o.first_sent_at
+                        AND pgvigil.ack_live(a.ended_at, a.starts_at, a.until, $1)
                       ORDER BY a.created_at DESC LIMIT 1) ak ON true
   LEFT JOIN LATERAL (SELECT a.ack_id, a.created_by, a.created_at FROM pgvigil.acks a WHERE a.kind = 'close'
-                        AND a.finding_key = o.finding_key AND a.ended_at IS NULL
+                        AND a.finding_key = o.finding_key AND a.ended_at IS NULL AND a.created_at >= o.first_sent_at
+                        AND o.resolved
                       ORDER BY a.created_at DESC LIMIT 1) cl ON true
   LEFT JOIN LATERAL (SELECT a.kind, a.ack_id FROM pgvigil.acks a
                       WHERE a.ack_id = pgvigil.ack_hold($1, o.instance, coalesce(t.tags, '{}'), o.finding_key, o.source, o.setting, o.value)) h ON true
@@ -268,7 +273,10 @@ func (s *Server) ackWrite(w http.ResponseWriter, r *http.Request, op string) {
 		AckID   *int64 `json:"ack_id"`
 	}
 	var out []byte
-	if err := s.actions.audit.QueryRow(context.WithoutCancel(ctx), `SELECT pgvigil.import_ack($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	// the write outlives a client that hangs up (its audit row is kept), never the 15 s
+	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+	defer wcancel()
+	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_ack($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("ack: not written", "op", op, "kind", in.Kind, "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return
