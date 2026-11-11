@@ -1,21 +1,60 @@
 #!/usr/bin/env bash
-# Proof of the tab export (task 54): a demo fleet is seeded into a throwaway database and served on loopback, a
-# headless Chromium opens the fleet Summary and one instance's Tables tab, presses the bar's 'Export .xlsx' and
-# 'Export CSV' on each and saves what downloads; each file is read back with unzip and python3's zipfile and csv
-# (no spreadsheet library) and graded against the page it came from. Needs go, psql, chromium, node, unzip and
-# python3, the web bundle built with the export wired into the bar (internal/web/dist/app.js carries 'Export .xlsx':
-# `cd web && npm run build` after the wiring in main.ts), and a PostgreSQL for the throwaway database:
+# Proof of the tab export (task 54; the workbook as DBA Dash writes its own and the grid tools, task 153): a demo
+# fleet is seeded into a throwaway database and served on loopback, a headless Chromium opens the fleet Summary,
+# Backups, Jobs and Storage and one instance's tabs, presses the bar's 'Export .xlsx' and 'Export CSV' on each and
+# saves what downloads; each file is read back with python3's zipfile and csv and graded against the page it came
+# from, cell by cell for the colours. Needs go, psql, chromium, node, unzip and python3, the web bundle built with the
+# export wired into the bar (internal/web/dist/app.js carries 'Export .xlsx': `cd web && npm run build` after the
+# wiring in main.ts), and a PostgreSQL for the throwaway database:
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database
 #   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 240; a loaded machine seeds slower)
 #   PGVIGIL_EXPORT_OUT a folder to keep the downloads in (default: removed with the proof's temporary folder)
+#   PGVIGIL_PYLIB      a folder that holds the openpyxl package, when python3 has none of its own
+#   PGVIGIL_EXPORT_NEED the parts that must be graded: 'tools' (the default: the grid tools through the grid's menu,
+#                      which needs ui.ts to send 'pgvigil:gridmenu'), 'lib' (openpyxl opens every workbook), both as
+#                      'lib,tools', or 'none'. A part not named is 'not checked', said so, when its tool is missing
 # Expected:
 #   names      fleet_Summary_<yyyymmdd-hhmm>_<yyyymmdd-hhmm>.xlsx and .csv; <instance>_Tables_<from>_<to>.xlsx and
 #              .csv.zip (the Tables tab has two grids), the instance named as in the tree
 #   summary    sheets: Summary first, then one per grid named by the heading above it ('Summary' repeated is
-#              'Summary (2)'); every data sheet: a frozen pane (ySplit 1, state frozen) and an autoFilter over its
-#              rows; styles.xml carries a solid fill in each status colour the Summary grid shows on screen
+#              'Summary (2)', 'Summary (3)': the heading inside the Needs attention strip names no grid outside
+#              the strip); every data sheet: a frozen pane (ySplit 1, state frozen); styles.xml carries a solid
+#              fill in each status colour the Summary grid shows on screen
 #              (DBA Dash's: ok FF006638 white, warn FFE49325 dark FF1D1300, crit FFAB1F26 white, 'no sample' FFE0E1E9 FF004F83) and a cell of
-#              that sheet is styled with it; the header row of every data sheet filled FF0063A3 with white bold text; each sheet's data rows = the grid's rows on screen
+#              that sheet is styled with it; the header row of every data sheet filled FF0063A3 with white bold text; each sheet's data rows = the grid's rows on screen;
+#              the Summary sheet's own header row (Item, Value, Note) and its 'Sheet | Rows | Note' line in the same blue, white bold (6 cells), no pane and no table on it
+#   table      every data sheet with rows is an Excel table: the sheet names one table part (no sheet autoFilter beside
+#              it), the part's ref and its autoFilter's cover the sheet (A1 to the last column and row, = the sheet's
+#              dimension), its column names are unique whatever the case, none empty, and equal to the header cells in
+#              order, which are shared strings (xl/sharedStrings.xml, as Excel stores a table's header);
+#              ids and names unique in the workbook; the part in [Content_Types].xml. A grid a filter leaves
+#              without rows (the Tables tab's second grid, filtered to nothing) keeps the plain sheet filter and no table
+#   colours    every cell of every row the page draws (a grid draws its first 200 rows; the read must return exactly
+#              those), against the page: a cell the screen colours (a status cell, a badge, a dot, a
+#              cell class of the page's own rule: two cells of the Tables tab are given one by the driver, as ui.ts
+#              gives a Col's cls) carries that status's fill and text colour; a cell with a status fill
+#              the screen does not give it is a value its row's judging cell coloured: only in a value column of the
+#              pairs the doc lists (last archived / archiver, last start / last run, free size / free, a finding's
+#              value / severity ...), the judging cell of that row shows that colour, the cell is not empty; a cell
+#              the screen draws as a link is filled FFF1F1F6 with text
+#              FF004F83 (DBA Dash's link column); every other cell has NO fill and no text colour (no banded rows:
+#              DBA Dash bands none). Counted per sheet (the lines 'cells:'), to set beside DBA Dash's own export
+#   carry      Backups: every 'last archived' cell of a row whose 'archiver' cell is coloured carries that colour (the
+#              demo's failing archiver red, the archiving ones green: at least one each); Jobs: every 'last start' of
+#              a row with a coloured 'last run' carries its colour (at least one)
+#   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0#%') whose value is the screen's percent / 100;
+#              its CSV keeps the percent figure itself (12.5, not 0.125)
+#   library    when python3 has openpyxl, each workbook loads with it without an error, its tables counted; none = said
+#   tools      when the grid's menu carries the grid tools (ui.ts sends 'pgvigil:gridmenu'; not wired = said), on
+#              the fleet Backups grid: 'Copy the rows as HTML with the colours' puts a table on the clipboard whose
+#              header is #0063a3 and whose cells carry each status the screen shows as background and text colour, a
+#              row per grid row; 'Copy the rows as Markdown' a pipe table of rows + 2 lines; Ctrl+click on two numbers
+#              says '2 cells selected' with their sum, a plain click clears it; 'Group by platform' lists one group
+#              per platform, their rows adding up to the grid's; 'Data bars on failed' draws a bar on each failed
+#              count above zero, the largest at 100 %; 'Freeze the columns up to platform' makes the first two sticky;
+#              'Hide column platform' hides it, keeps the choice in localStorage and after a reload it is still
+#              hidden, frozen and barred; the workbook exported then has no platform column (one column fewer, the
+#              table too); 'Columns...' lists every column and 'Reset this grid' brings all back and forgets the choice
 #   tables     sheets: Summary, Tables, Biggest tables (the screen's headings); Biggest tables sorted by 'total'
 #              on screen first (the click changes the order), its sheet's 'table' column in the screen's order and
 #              every 'total' and 'live rows' still a number
@@ -31,7 +70,7 @@
 #   db         a database's drill page: its statements grid's millisecond column holds a value under 1 ms and one
 #              at 1,000 ms or more, both numbers with numFmt 170
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
-#              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first
+#              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so)
 #   libre      when soffice is on the machine, each .xlsx converts to CSV headless (the file opens); none = said
 #   languages  all of the above twice: Chromium in en-US and in fr-FR (navigator.language says so; 1234567 shows
 #              without a comma: the locale's grouping space), the numbers numeric in both
@@ -50,6 +89,7 @@ cleanup() {
 trap cleanup EXIT
 for t in go chromium node psql unzip python3 curl; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 grep -q 'Export .xlsx' internal/web/dist/app.js || fail "the web bundle has no export button: wire exportButtons into the bar (main.ts) and run 'npm run build' in web/"
+grep -q 'tableParts' internal/web/dist/app.js || fail "the web bundle is older than the export's source (no Excel table writer in it): run 'npm run build' in web/"
 
 echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
@@ -89,21 +129,66 @@ const settled = async () => {
   }
   return false;
 };
-const fresh = (before, exts) => fs.readdirSync(dl).filter(f => exts.some(e => f.endsWith(e)) && !before.includes(f));
+// the downloads folder as name -> time written: a new name is the download; a known name written again is two pages
+// of one name inside one minute (Chromium replaces the file), which the checker could not tell apart
+// (a name listed and gone before its stat is Chromium renaming its .crdownload: left out, the next look has the file)
+const folder = () => Object.fromEntries(fs.readdirSync(dl).flatMap(f => { try { return [[f, fs.statSync(dl + '/' + f).mtimeMs]]; } catch { return []; } }));
 const press = async (label, exts) => {
-  const before = fs.readdirSync(dl);
+  const before = folder();
   const hit = await ev(`(() => { const b = [...document.querySelectorAll('#bar .export button')].find(x => x.textContent === ${JSON.stringify(label)}); if (!b) return false; b.click(); return true; })()`);
   if (!hit) throw new Error('no button ' + label);
   for (const t = Date.now(); Date.now() - t < 15000; await sleep(200)) {
-    const f = fresh(before, exts);
-    if (f.length && !fs.readdirSync(dl).some(x => x.endsWith('.crdownload'))) return f[0];
+    const now = folder();
+    if (Object.keys(now).some(x => x.endsWith('.crdownload'))) continue;
+    const mine = Object.keys(now).filter(f => exts.some(e => f.endsWith(e)));
+    const f = mine.filter(n => !(n in before));
+    if (f.length) return f[0];
+    const again = mine.filter(n => before[n] !== now[n]);
+    if (again.length) throw new Error(`the download after ${label} replaced ${again[0]}: a page exported twice under one name (give the later visit another window, ?w=)`);
   }
   throw new Error(`no ${exts.join(' or ')} downloaded after ${label}: ` + await ev(`document.querySelector('#bar .export [role=status]').textContent`));
 };
-const page = async (hash, sortBy) => {
+// what the screen shows of each grid, read as the export reads it: the header's words, and of every row drawn each
+// cell's words, the colour the screen gives it (a status cell, a badge or a dot in it, the page's own cell class) and
+// whether it is drawn as a link
+const SCREEN = `(() => {
+  const words = e => { const f = e.querySelector('[data-full]'); if (f) return f.getAttribute('data-full'); const t = (e.textContent || '').replace(/\\s+/g, ' ').trim(); return t || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''); };
+  const pick = x => ['crit', 'warn', 'ok', 'none'].find(k => x.classList.contains(k)) ?? null;
+  const st = td => { if (td.classList.contains('status')) return td.classList.contains('ack') ? 'ack' : pick(td); const b = td.querySelector('.badge, .dot'); if (b) return pick(b); return ['crit', 'warn', 'ok'].find(k => td.classList.contains(k)) ?? null; };
+  const head = c => { const x = c.cloneNode(true); x.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove()); return words(x); };
+  // b: the colour is the page's own class on the cell itself (a Col's cls without 'status'), no status cell, badge or dot
+  const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'),
+    b: !td.classList.contains('status') && !td.querySelector('.badge, .dot') && ['crit', 'warn', 'ok'].some(k => td.classList.contains(k)) });
+  // a heading inside a region of its own (the Summary's Needs attention strip) names only the grids of that region
+  let outer = '', inner = null;
+  return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props')].map(e => {
+    if (e.tagName !== 'TABLE') {
+      const within = e.closest('[role=region]');
+      if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; }
+      return { h: head(e) };
+    }
+    const named = inner && inner.within.contains(e) ? inner.text : outer;
+    const grid = e.classList.contains('grid');
+    const cells = grid ? [...e.querySelectorAll(':scope > tbody > tr')].map(tr => [...tr.children].map(cell))
+      : [...e.querySelectorAll('tr')].map(tr => { const th = tr.querySelector('th'), td = tr.querySelector('td'); return [{ t: th ? words(th) : '', s: null, l: false }, { t: td ? words(td) : '', s: td ? st(td) : null, l: false }]; });
+    return { named, rows: e.dataset.rows ? Number(e.dataset.rows) : cells.length, head: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(head) : ['item', 'value'], cells,
+      status: [...new Set(cells.flat().map(c => c.s).filter(k => k && k !== 'ack'))] };
+  });
+})()`;
+const page = async (hash, sortBy, filterNone) => {
   await cmd('Page.navigate', { url: U + hash }); await sleep(300);
   if (!await settled()) throw new Error('page did not render: ' + hash);
   let order = null, before = null;
+  if (filterNone) {
+    // the page's last grid filtered to nothing: a grid without rows keeps the plain sheet filter, no Excel table
+    await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].pop(); t.querySelector('thead .filter-btn').click(); const i = t.querySelector('thead tr.filters input'); i.value = 'zzzz-no-such-row'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await sleep(600);
+    // and two cells of the page's first grid given a class as a page's own rule gives one (ui.ts adds a Col's cls to the
+    // cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
+    const drawn = await ev(`(() => { const t = document.querySelector('main table.grid'); if (Number(t.dataset.rows ?? 0) > 200) return false;   // past its page the export builds the rows off the screen
+      const tr = t.querySelector(':scope > tbody > tr'); tr.children[1].classList.add('crit'); tr.children[2].classList.add('warn'); return true; })()`);
+    if (!drawn) throw new Error('the first grid of the Tables tab has over 200 rows: the class check needs a grid drawn whole');
+  }
   if (sortBy) {
     // sort the page's last grid by a column (one click: ascending), so the export must follow the screen's order; the
     // order before the click is kept too: the check needs the click to have changed it
@@ -115,13 +200,86 @@ const page = async (hash, sortBy) => {
     await sleep(200);
     order = await ev(col);
   }
-  const grids = await ev(`[...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props')].map(e => e.tagName === 'TABLE' ? { rows: e.dataset.rows ? Number(e.dataset.rows) : e.querySelectorAll(e.classList.contains('grid') ? 'tbody tr' : 'tr').length, status: [...new Set([...e.querySelectorAll('td.status, td .badge, td .dot')].map(x => ['crit','warn','ok','none'].find(k => x.classList.contains(k))).filter(Boolean))] } : { h: (c => (c.querySelectorAll('.whatis').forEach(b => b.remove()), c.textContent.trim()))(e.cloneNode(true)) })`);   // a heading without its 'what is this' button, as the export names a sheet
+  const grids = await ev(SCREEN);
   return { hash, grids, order, before, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
+};
+// the grid tools on the fleet Backups grid, through the grid's own menu (ui.ts adds the tools' lines when it sends
+// 'pgvigil:gridmenu'); what each does is read back from the page for the checker
+const tools = async () => {
+  // another window than the Backups export above: the workbook exported here has another name
+  const open = async () => { await cmd('Page.navigate', { url: U + '#/backups?w=24h' }); await sleep(300); if (!await settled()) throw new Error('the Backups page did not render (tools)'); };
+  await cmd('Page.navigate', { url: U + '#/summary' }); await sleep(300); await settled();
+  await open();
+  const T = `document.querySelector('main table.grid')`;
+  const HS = `[...${T}.querySelectorAll(':scope > thead > tr:first-child > th')].map(h => { const c = h.cloneNode(true); c.querySelectorAll('.filter-btn').forEach(b => b.remove()); return c.textContent.trim(); })`;
+  // the menu on the first row's cell of a column (a contextmenu event, as a right-click or the menu key sends)
+  const menu = col => ev(`(() => { const j = ${HS}.indexOf(${JSON.stringify(col)}); const td = ${T}.querySelector(':scope > tbody > tr').children[j];
+    td.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 320, clientY: 320 })); return [...document.querySelectorAll('.menu button')].map(b => b.textContent); })()`);
+  const choose = async (col, text) => {
+    const items = await menu(col);
+    const hit = await ev(`(() => { const b = [...document.querySelectorAll('.menu button')].find(x => x.textContent === ${JSON.stringify(text)}); if (!b) return false; b.click(); return true; })()`);
+    if (!hit) throw new Error(`the menu on '${col}' has no '${text}': ${JSON.stringify(items)}`);
+    await sleep(250);
+  };
+  const first = await menu('platform');
+  const out = { wired: first.some(x => x.startsWith('Copy the rows as HTML')), menu: first };
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  if (!out.wired) return out;
+  out.head = await ev(HS); out.rows = await ev(`Number(${T}.dataset.rows)`);
+  out.screen = (await ev(SCREEN)).find(g => g.cells);
+  // the clipboard is kept on the page: what a copy writes is what the checker reads
+  await ev(`(() => { window.__gt = {}; const c = navigator.clipboard;
+    c.write = async items => { for (const it of items) for (const ty of it.types) window.__gt[ty] = await (await it.getType(ty)).text(); };
+    c.writeText = async t => { window.__gt.text = t; }; })()`);
+  await choose('platform', 'Copy the rows as HTML with the colours'); await sleep(300);
+  out.html = await ev(`window.__gt['text/html'] ?? null`); out.plain = await ev(`window.__gt['text/plain'] ?? null`);
+  await choose('platform', 'Copy the rows as Markdown'); await sleep(300);
+  out.markdown = await ev(`window.__gt.text ?? null`);
+  // Ctrl+click on the first two 'failed' counts, then a plain click
+  out.sel = await ev(`(() => { const j = ${HS}.indexOf('failed'); const tds = [...${T}.querySelectorAll(':scope > tbody > tr')].slice(0, 2).map(tr => tr.children[j]);
+    for (const td of tds) td.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+    return { cells: tds.map(td => td.textContent.trim()), picked: ${T}.querySelectorAll('td.gt-sel').length, line: document.querySelector('main .gt-stats')?.textContent ?? '' }; })()`);
+  out.selCleared = await ev(`(() => { const j = ${HS}.indexOf('platform'); ${T}.querySelector(':scope > tbody > tr').children[j].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    return { picked: ${T}.querySelectorAll('td.gt-sel').length, line: document.querySelector('main .gt-stats')?.textContent ?? '' }; })()`);
+  await choose('platform', 'Group by platform');
+  out.group = await ev(`(() => { const g = document.querySelector('main .gt-groups'); if (!g) return null;
+    return { label: g.getAttribute('aria-label'), head: [...g.querySelectorAll('thead th')].map(h => h.textContent), rows: [...g.querySelectorAll('tbody tr')].map(tr => [...tr.children].map(c => c.textContent)),
+      platforms: [...new Set([...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => tr.children[${HS}.indexOf('platform')].textContent.trim()))].length }; })()`);
+  await choose('platform', 'Ungroup');
+  out.ungrouped = await ev(`!document.querySelector('main .gt-groups')`);
+  await choose('failed', 'Data bars on failed');
+  const BARS = `(() => { const j = ${HS}.indexOf('failed'); return [...${T}.querySelectorAll(':scope > tbody > tr')].map(tr => { const td = tr.children[j]; return { t: td.textContent.trim(), bar: td.classList.contains('gt-bar'), share: td.style.getPropertyValue('--gt-share'), badge: !!td.querySelector('.badge') }; }); })()`;
+  out.bars = await ev(BARS);
+  await choose('platform', 'Freeze the columns up to platform');
+  const FROZEN = `(() => { const t = ${T}; const tr = t.querySelector(':scope > tbody > tr'); return { on: t.hasAttribute('data-gt-frozen'), classes: [...t.classList].filter(c => /^gt-f/.test(c)).sort(), sticky: [0, 1, 2].map(j => getComputedStyle(tr.children[j]).position) }; })()`;
+  out.frozen = await ev(FROZEN);
+  await choose('platform', 'Hide column platform');
+  const HIDDEN = `(() => { const t = ${T}; const hs = [...t.querySelectorAll(':scope > thead > tr:first-child > th')]; const j = ${HS}.indexOf('platform');
+    return { marked: hs.filter(h => h.hasAttribute('data-gt-hidden')).length, th: getComputedStyle(hs[j]).display, td: getComputedStyle(t.querySelector(':scope > tbody > tr').children[j]).display,
+      keys: Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.')) }; })()`;
+  out.hidden = await ev(HIDDEN);
+  // a reload: the choice comes back from localStorage on the freshly drawn grid
+  await cmd('Page.reload'); await sleep(500); if (!await settled()) throw new Error('the Backups page did not render after the reload'); await sleep(400);
+  out.after = { hidden: await ev(HIDDEN), frozen: await ev(FROZEN), bars: await ev(BARS) };
+  out.xlsx = await press('Export .xlsx', ['.xlsx']);
+  // the chooser: every column listed; 'Reset this grid' brings all back and forgets the choice
+  await choose('archiver', 'Columns...');
+  out.chooser = await ev(`(() => { const p = document.querySelector('main .gt-panel'); if (!p) return null; return { cols: p.querySelectorAll('.gt-col').length, unticked: [...p.querySelectorAll('.gt-col > label:first-child input')].filter(i => !i.checked).length, label: p.getAttribute('aria-label') }; })()`);
+  await ev(`[...document.querySelectorAll('main .gt-panel button')].find(b => b.textContent === 'Reset this grid').click()`); await sleep(300);
+  out.reset = { hidden: await ev(HIDDEN), frozen: await ev(FROZEN), bars: (await ev(BARS)).filter(b => b.bar).length };
+  await ev(`[...document.querySelectorAll('main .gt-panel button')].find(b => b.textContent === 'Close').click()`);
+  out.closed = await ev(`!document.querySelector('main .gt-panel')`);
+  await ev(`Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.')).forEach(k => localStorage.removeItem(k))`);
+  return out;
 };
 await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
 const out = { instance: one.name, lang: await ev('navigator.language'), sample: await ev('(1234567).toLocaleString()') };
 out.summary = await page('#/summary');
+// the fleet's Backups, Jobs and Storage: the pages DBA Dash's own exports were taken from, and the carried colours
+out.backups = await page('#/backups');
+out.jobs = await page('#/jobs');
+out.storage = await page('#/storage');
 out.tables = await page(`#/tables?i=${one.instance_id}`, ['total', 'table']);
 // the Roles tab: grids under h4 headings (the privilege grids)
 out.roles = await page(`#/roles?i=${one.instance_id}`);
@@ -136,19 +294,106 @@ if (!await settled()) throw new Error('the Database info tab did not render');
 const dbHref = await ev(`(document.querySelector('main a[href*="#/db?"]') || {}).getAttribute?.('href') ?? null`);
 if (!dbHref) throw new Error('no database link on the Database info tab');
 out.db = await page(dbHref);
+// the Tables tab again (another window: another file name), its second grid filtered to nothing: a sheet without rows
+out.empty = await page(`#/tables?i=${one.instance_id}&w=24h`, null, true);
+out.tools = await tools();
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
 cat > "$WORK/check.py" <<'PY'
-import csv, io, json, re, sys, zipfile
+import csv, io, json, os, re, sys, zipfile
 d = json.load(open(sys.argv[1])); dl = sys.argv[2]; want = sys.argv[3]
+need = {x.strip() for x in os.environ.get('PGVIGIL_EXPORT_NEED', 'tools').split(',') if x.strip()} - {'none'}
+if os.environ.get('PGVIGIL_PYLIB'): sys.path.append(os.environ['PGVIGIL_PYLIB'])
+try:
+    import openpyxl
+except Exception:
+    openpyxl = None
 bad = 0
 def check(cond, msg):
     global bad
     print(('ok   ' if cond else 'FAIL ') + msg)
     if not cond: bad += 1
-fill = {'ok': 'FF006638', 'warn': 'FFE49325', 'crit': 'FFAB1F26', 'none': 'FFE0E1E9'}
-font = {'ok': 'FFFFFFFF', 'warn': 'FF1D1300', 'crit': 'FFFFFFFF', 'none': 'FF004F83'}
+def skipped(part, msg):
+    # a part whose tool is missing: said, and a failure only when PGVIGIL_EXPORT_NEED names it
+    if part in need: check(False, f"{msg} (PGVIGIL_EXPORT_NEED asks for '{part}')")
+    else: print('not checked: ' + msg)
+fill = {'ok': 'FF006638', 'warn': 'FFE49325', 'crit': 'FFAB1F26', 'none': 'FFE0E1E9', 'ack': 'FF1B6AA3'}
+font = {'ok': 'FFFFFFFF', 'warn': 'FF1D1300', 'crit': 'FFFFFFFF', 'none': 'FF004F83', 'ack': 'FFFFFFFF'}
+LINKFILL, LINK = 'FFF1F1F6', 'FF004F83'
+def unesc(t): return t.replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&amp;', '&')
+def colname(i):
+    n = ''
+    i += 1
+    while i > 0: n = chr(65 + (i - 1) % 26) + n; i = (i - 1) // 26
+    return n
+def colidx(c):
+    n = 0
+    for ch in c: n = n * 26 + ord(ch) - 64
+    return n - 1
+def shared(z):
+    # the workbook's shared strings, in order (a table's header cells point into them)
+    if 'xl/sharedStrings.xml' not in z.namelist(): return []
+    return [unesc(t) for t in re.findall(r'<si><t[^>]*>([^<]*)</t></si>', z.read('xl/sharedStrings.xml').decode())]
+def cells_of(x, sst=()):
+    # every cell the sheet writes: (row, column) -> (style id, its number or None, its text or None)
+    out = {}
+    for m in re.finditer(r'<c r="([A-Z]+)(\d+)" s="(\d+)"(?: t="(\w+)")?(?:/>|>(.*?)</c>)', x, re.S):
+        body = m.group(5) or ''
+        v = re.search(r'<v>([^<]*)</v>', body); t = re.search(r'<t[^>]*>([^<]*)</t>', body)
+        if m.group(4) == 's': val, text = None, (sst[int(v.group(1))] if v and int(v.group(1)) < len(sst) else None)
+        else: val, text = (float(v.group(1)) if v else None), (unesc(t.group(1)) if t else None)
+        out[(int(m.group(2)), colidx(m.group(1)))] = (int(m.group(3)), val, text)
+    return out
+# a value column and the columns that may judge it, by the screen's headings (docs/export.md's table; a finding's
+# value is headed by what it names)
+PAIRS = {'last archived': ('archiver',), 'last start': ('last run',), 'free size': ('free',), 'last full': ('full',), 'full age': ('full',),
+         'last differential': ('differential',), 'last log': ('log',), 'log age': ('log',), 'last run': ('outcome', 'last outcome'),
+         'value': ('severity', 'check'), 'role': ('severity',), 'index': ('severity',), 'database': ('severity',), 'object': ('severity',)}
+def audit(key, name, x, cx, g, sst):
+    # every drawn cell against the screen: its own colour, a colour carried from its row, a link's fill and text, else no fill
+    cells = cells_of(x, sst); n = dict.fromkeys(['ok', 'warn', 'crit', 'none', 'ack', 'carried', 'link', 'plain', 'class'], 0); wrong = []
+    for i, row in enumerate(g['cells']):
+        for j, c in enumerate(row):
+            sid = cells.get((i + 2, j), (0, None, None))[0]
+            f, fo = (cx[sid]['fill'], cx[sid]['font']) if sid < len(cx) else ('?', '?')
+            at = f"{colname(j)}{i + 2}"
+            if c['s']:
+                if f == fill[c['s']] and fo == font[c['s']]: n[c['s']] += 1; n['class'] += 1 if c.get('b') else 0
+                else: wrong.append(f"{at} {c['s']} on screen, fill {f} text {fo}")
+            elif f in fill.values():
+                head = g['head'][j] if j < len(g['head']) else ''
+                judges = [row[g['head'].index(h)] for h in PAIRS.get(head, ()) if h in g['head'] and g['head'].index(h) < len(row)]
+                if c['t'] != '' and any(q['s'] and fill[q['s']] == f for q in judges): n['carried'] += 1
+                else: wrong.append(f"{at} ('{head}') fill {f}: no judging cell of its row shows that colour")
+            elif c['l']:
+                if f == LINKFILL and fo == LINK: n['link'] += 1
+                else: wrong.append(f"{at} a link on screen, fill {f} text {fo}")
+            elif f is None and fo is None: n['plain'] += 1
+            else: wrong.append(f"{at} plain on screen, fill {f} text {fo}")
+    total = sum(len(r) for r in g['cells'])
+    # the read returned the rows the page draws: all of them, or a long grid's first 200
+    check(len(g['cells']) == min(g['rows'], 200), f"{key}: sheet '{name}' the screen read returned {len(g['cells'])} rows of the grid's {g['rows']} (the page draws at most 200)")
+    filled = n['ok'] + n['warn'] + n['crit'] + n['none'] + n['ack'] + n['carried']
+    check(not wrong, f"{key}: sheet '{name}' every drawn cell in the screen's colour ({total} cells of {len(g['cells'])} rows; {len(wrong)} wrong {wrong[:3]})")
+    print(f"     cells: {key} '{name}': {total} body cells, {filled} with a status fill (ok {n['ok']}, warn {n['warn']}, crit {n['crit']}, none {n['none']}, ack {n['ack']}, carried from the row {n['carried']}), {n['link']} link cells, {n['plain']} plain with no fill")
+    return n, cells
+def carried(key, name, g, cells, cx, judge, value, least):
+    # a value cell in the colour of its row's judging cell: every row where the judge is coloured and the value not empty
+    if judge not in g['head'] or value not in g['head']: return check(False, f"{key}: sheet '{name}' has the columns '{judge}' and '{value}'")
+    a, b = g['head'].index(judge), g['head'].index(value); got = {}; miss = []
+    for i, row in enumerate(g['cells']):
+        s = row[a]['s']
+        if not s or row[b]['t'] == '' or row[b]['s']: continue
+        f = cx[cells.get((i + 2, b), (0, None, None))[0]]['fill']
+        if f == fill[s]: got[s] = got.get(s, 0) + 1
+        else: miss.append(f"{colname(b)}{i + 2} {f} for {s}")
+    check(not miss and sum(got.values()) >= 1 and all(got.get(k, 0) >= 1 for k in least), f"{key}: '{value}' carries the colour of '{judge}' in its row ({got}; at least one of {least or 'any'}; {len(miss)} wrong {miss[:3]})")
+def number(t):
+    t = re.sub(r'[\s\u202f\u00a0%+]', '', t)
+    if ',' in t and '.' not in t: t = t.replace(',', '.')
+    try: return float(t.replace(',', ''))
+    except ValueError: return None
 def sheets_of(z):
     wb = z.read('xl/workbook.xml').decode()
     return [n.replace('&amp;', '&') for n in re.findall(r'<sheet name="([^"]*)"', wb)]
@@ -168,7 +413,7 @@ def grids(page):
     head, out = '', []
     for g in page['grids']:
         if 'h' in g: head = g['h']
-        else: out.append(dict(g, name=head))
+        else: out.append(dict(g, name=g.get('named', head)))
     return out
 def sheet_rows(z, i):
     x = z.read(f'xl/worksheets/sheet{i}.xml').decode()
@@ -181,17 +426,71 @@ check(d['lang'].lower().startswith(want[:2].lower()), f"the browser runs in {wan
 if want.startswith('fr'):
     check(',' not in d['sample'], "the fr-FR grouping is not a comma (the locale took)")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
-for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname), ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('db', 'Database', iname)):
+if openpyxl is None:
+    skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
+for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname),
+                       ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('db', 'Database', iname), ('empty', 'Tables', iname)):
     p = d[key]; gs = grids(p)
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
     names = sheets_of(z)
     check(names[0] == 'Summary' and len(names) == len(gs) + 1, f"{key}: sheets {names} = Summary + {len(gs)} grid(s)")
     st, cx = xfs(z)
+    ct = z.read('[Content_Types].xml').decode(); wbx = z.read('xl/workbook.xml').decode(); tabs = []; linked = False; classed = 0; sst = shared(z)
     for i, g in enumerate(gs):
         x, n = sheet_rows(z, i + 2)
-        check('state="frozen"' in x and 'ySplit="1"' in x and '<autoFilter ref="A1:' in x, f"{key}: sheet '{names[i + 1]}' frozen header and filter")
+        check('state="frozen"' in x and 'ySplit="1"' in x, f"{key}: sheet '{names[i + 1]}' frozen header")
         check(n == g['rows'], f"{key}: sheet '{names[i + 1]}' {n} data rows = {g['rows']} on screen")
+        counts, cells = audit(key, names[i + 1], x, cx, g, sst)
+        classed += counts['class']
+        rels = f'xl/worksheets/_rels/sheet{i + 2}.xml.rels'
+        if g['rows'] == 0:
+            check('<autoFilter ref="A1:' in x and '<tableParts' not in x and rels not in z.namelist() and '_xlnm._FilterDatabase' in wbx, f"{key}: sheet '{names[i + 1]}' has no rows: the plain filter, no Excel table")
+        else:
+            rel = z.read(rels).decode() if rels in z.namelist() else ''
+            m = re.search(r'Target="\.\./tables/(table\d+\.xml)"', rel)
+            tx = z.read('xl/tables/' + m.group(1)).decode() if m and 'xl/tables/' + m.group(1) in z.namelist() else ''
+            check('<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' in x and '<autoFilter' not in x and bool(tx), f"{key}: sheet '{names[i + 1]}' names one table part, no sheet filter beside it")
+            ncol = max([len(g['head'])] + [len(r) for r in g['cells']])
+            ref = f"A1:{colname(ncol - 1)}{g['rows'] + 1}"
+            got = [(re.search(a, b) or [None, None])[1] for a, b in ((r'<table [^>]*\bref="([^"]+)"', tx), (r'<autoFilter ref="([^"]+)"', tx), (r'<dimension ref="([^"]+)"', x))]
+            check(got == [ref, ref, ref], f"{key}: sheet '{names[i + 1]}' the table's ref, its filter's and the sheet's dimension are {ref} ({got})")
+            cols = [unesc(c) for c in re.findall(r'<tableColumn id="\d+" name="([^"]*)"', tx)]
+            hdr = [cells.get((1, j), (0, None, None))[2] for j in range(ncol)]
+            check(len(cols) == ncol and all(cols) and len({c.lower() for c in cols}) == ncol and cols == hdr and f'<tableColumns count="{ncol}">' in tx,
+                  f"{key}: sheet '{names[i + 1]}' {len(cols)} table columns, each named once, = the header cells")
+            row1x = (re.search(r'<row r="1"[^>]*>(.*?)</row>', x, re.S) or [None, ''])[1]
+            check(row1x.count(' t="s"><v>') == ncol and 'inlineStr' not in row1x and 'sharedStrings+xml' in ct, f"{key}: sheet '{names[i + 1]}' its {ncol} header cells are shared strings")
+            check(all(c == h for c, h in zip(cols, g['head']) if h and g['head'].count(h) == 1), f"{key}: sheet '{names[i + 1]}' the header cells are the screen's headings")
+            tabs.append((re.search(r'<table [^>]*\bid="(\d+)"', tx) or [0, ''])[1] + '|' + (re.search(r'displayName="([^"]+)"', tx) or [0, ''])[1])
+            check(bool(m) and f'PartName="/xl/tables/{m.group(1)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"' in ct, f"{key}: sheet '{names[i + 1]}' its table part is in [Content_Types].xml")
+        if key == 'summary' and g['rows'] > 1 and any(c['l'] and not c['s'] for r in g['cells'] for c in r):
+            check(counts['link'] >= 1 and counts['plain'] >= 1, f"summary: sheet '{names[i + 1]}' a link cell is filled {LINKFILL} with text {LINK} and a plain cell has no fill ({counts['link']} link cells, {counts['plain']} plain)")
+            linked = True
+        if key == 'backups' and 'archiver' in g['head']: carried(key, names[i + 1], g, cells, cx, 'archiver', 'last archived', ['crit', 'ok'])
+        if key == 'jobs' and 'last run' in g['head']: carried(key, names[i + 1], g, cells, cx, 'last run', 'last start', [])
+        if key == 'storage' and 'free' in g['head']:
+            j = g['head'].index('free'); seen = [(number(r[j]['t']), cells.get((k + 2, j), (0, None, None))) for k, r in enumerate(g['cells']) if r[j]['t'] != '']
+            off = [(a, b) for a, b in seen if a is None or b[1] is None or cx[b[0]]['fmt'] != 167 or abs(b[1] * 100 - a) > 0.006]
+            check(len(seen) >= 1 and not off and 'numFmtId="167" formatCode="0.0#%"' in st, f"storage: sheet '{names[i + 1]}' {len(seen)} 'free' cells, each the screen's percent / 100 under numFmt 167 '0.0#%' ({off[:2]})")
+    check(len(set(tabs)) == len(tabs) and all(re.fullmatch(r'\d+\|Table\d+', t) for t in tabs), f"{key}: {len(tabs)} table(s), ids and names unique in the workbook")
+    if key == 'summary':
+        check(linked, "summary: a grid with link cells (the instance names) was graded for the link's fill and text and for the plain cells' no fill")
+        check(names == ['Summary', 'Summary (2)', 'Summary (3)'], f"summary: the two grids are named by the page's own heading, not by the Needs attention strip's ({names})")
+    if key == 'backups': check(any('archiver' in g['head'] for g in gs), "backups: the fleet grid with the 'archiver' column is on the page")
+    if key == 'jobs': check(any('last run' in g['head'] for g in gs), "jobs: the fleet grid with the 'last run' column is on the page")
+    if key == 'storage': check(any('free' in g['head'] for g in gs), "storage: the fleet grid with the 'free' column is on the page")
+    if key == 'empty':
+        check(gs[-1]['rows'] == 0 and len(gs) > 1 and gs[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
+        check(classed == 2, f"empty: the two cells that carry only a class of the page's own rule (crit, warn) are filled in their colours ({classed} cells)")
+    if openpyxl is not None:
+        try:
+            wb = openpyxl.load_workbook(f"{dl}/{p['xlsx']}")
+            check(wb.sheetnames == names and sum(len(ws.tables) for ws in wb.worksheets) == len(tabs), f"{key}: openpyxl {openpyxl.__version__} opens the workbook: {len(wb.sheetnames)} sheets, {len(tabs)} table(s)")
+        except Exception as e:
+            check(False, f"{key}: openpyxl could not open {p['xlsx']}: {type(e).__name__}: {e}")
+    for i, g in enumerate(gs):
+        x, n = sheet_rows(z, i + 2)
         for s in g.get('status', []):
             used = {int(v) for v in re.findall(r' s="(\d+)"', x)}
             check(any(cx[u]['fill'] == fill[s] and cx[u]['font'] == font[s] for u in used if u < len(cx)), f"{key}: '{s}' cells filled {fill[s]} with text {font[s]} in '{names[i + 1]}'")
@@ -226,6 +525,10 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', ina
     if key == 'summary':
         check(any(cx[s]['fill'] in fill.values() for s in range(len(cx))), "summary: a status fill in styles.xml")
     first = z.read('xl/worksheets/sheet1.xml').decode()
+    # the Summary sheet is formatted too: its header row and the heading of its list of sheets in the header's blue
+    f1 = cells_of(first); heads1 = [k for k, v in f1.items() if v[2] in ('Item', 'Value', 'Note', 'Sheet', 'Rows')]
+    check(len(heads1) == 6 and all(cx[f1[k][0]]['fill'] == 'FF0063A3' and cx[f1[k][0]]['font'] == 'FFFFFFFF' and cx[f1[k][0]]['bold'] for k in heads1)
+          and '<pane' not in first and '<tableParts' not in first, f"{key}: the Summary sheet's header row and its 'Sheet | Rows | Note' line are filled FF0063A3 with white bold text ({len(heads1)} cells)")
     check('>Time zone<' in first and re.search(r'\(UTC[-+]\d\d:\d\d at export\)', first) is not None, f"{key}: the Summary sheet has a Time zone row with the offset at export")
     if key == 'activity':
         i = next((i for i, g in enumerate(gs) if g['name'] == 'Per sample'), None)
@@ -266,6 +569,71 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', ina
         check(b.startswith(b'\xef\xbb\xbf'), f"{key}: CSV '{g['name']}' starts with a UTF-8 BOM")
         n = len(list(csv.reader(io.StringIO(b.decode('utf-8-sig'))))) - 1
         check(n == g['rows'], f"{key}: CSV '{g['name']}' {n} data rows = {g['rows']} on screen")
+        if key == 'storage' and 'free' in g['head']:
+            # the CSV keeps the percent figure the screen shows (12.5), not the share the workbook's percent format holds (0.125)
+            recs = list(csv.reader(io.StringIO(b.decode('utf-8-sig')))); j = recs[0].index('free')
+            pairs = [(number(r[g['head'].index('free')]['t']), recs[k + 1][j]) for k, r in enumerate(g['cells']) if r[g['head'].index('free')]['t'] != '']
+            check(len(pairs) >= 1 and all(a is not None and abs(float(v) - a) < 1e-6 for a, v in pairs), f"storage: CSV '{g['name']}' {len(pairs)} 'free' values are the screen's percent figures ({pairs[:2]})")
+
+# the grid tools, when the grid's menu carries them
+t = d.get('tools') or {}
+digits = lambda v: re.sub(r'\D', '', v or '')
+if not t.get('wired'):
+    skipped('tools', f"the grid's menu carries no grid tools (ui.ts does not send 'pgvigil:gridmenu'): its lines are {t.get('menu')}")
+else:
+    g, rows, head = t['screen'], t['rows'], t['head']
+    h = t.get('html') or ''
+    trs = re.findall(r'<tr>(.*?)</tr>', h, re.S)
+    ths = re.findall(r'<th style="([^"]*)">([^<]*)</th>', h)
+    check(len(trs) == rows + 1 and [unesc(x[1]) for x in ths] == head and all('background:#0063a3;color:#ffffff;font-weight:bold' in x[0] for x in ths),
+          f"tools: the HTML copy is a table of {len(trs) - 1} rows (the grid: {rows}) under the {len(ths)} headings, the header #0063a3 with white bold text")
+    tds = [re.findall(r'<td style="([^"]*)"(?: data-status="(\w+)")?>([^<]*)</td>', r) for r in trs[1:]]
+    wrong = []; seen = {}
+    for i, row in enumerate(g['cells']):
+        for j, c in enumerate(row):
+            style, st_, text = tds[i][j] if i < len(tds) and j < len(tds[i]) else ('', '', '')
+            pair = lambda k: f"background:#{fill[k][2:].lower()};color:#{font[k][2:].lower()}"
+            judges = [row[head.index(h)] for h in PAIRS.get(head[j], ()) if h in head]
+            if c['s']: good = st_ == c['s'] and pair(c['s']) in style
+            elif st_: good = any(q['s'] == st_ for q in judges) and c['t'] != '' and pair(st_) in style
+            else: good = ('background:#f1f1f6;color:#004f83' in style) == c['l'] and ('background:' in style) == c['l']
+            if st_: seen[st_] = seen.get(st_, 0) + 1
+            if not good or unesc(text) != c['t']: wrong.append(f"row {i + 1} column {j + 1}: {c} as {style[-60:]!r} {st_!r} {text!r}")
+    check(not wrong and all(k in seen for k in g['status']), f"tools: every cell of the HTML copy carries the screen's colour as its own style ({seen}; the screen shows {g['status']}; {len(wrong)} wrong {wrong[:2]})")
+    check((t.get('plain') or '').split('\n')[0] == '\t'.join(head), "tools: the HTML copy has the tab-separated words beside it for a plain paste")
+    md = (t.get('markdown') or '').rstrip('\n').split('\n')
+    marks = md[1].replace(' ', '').strip('|').split('|') if len(md) > 1 else []
+    check(len(md) == rows + 2 and md[0] == '| ' + ' | '.join(head) + ' |' and len(marks) == len(head) and set(marks) <= {'---', '---:'} and '---:' in marks
+          and md[2] == '| ' + ' | '.join(re.sub(r'([\\|*_`<\[\]])', r'\\\1', c['t']) for c in g['cells'][0]) + ' |',
+          f"tools: the Markdown copy is a pipe table of {len(md)} lines (the grid's {rows} rows + 2), number columns right-aligned, its first row the screen's")
+    sel = t['sel']; sm = re.search(r'sum ([^\u00b7]+)\u00b7', sel['line'])
+    check(sel['picked'] == 2 and sel['line'].startswith('2 cells selected: sum ') and sm is not None and digits(sm.group(1)) == str(sum(int(digits(x) or 0) for x in sel['cells'])),
+          f"tools: Ctrl+click on two 'failed' counts {sel['cells']}: {sel['line']!r}")
+    check(t['selCleared'] == {'picked': 0, 'line': ''}, f"tools: a plain click clears the selection and its line ({t['selCleared']})")
+    gp = t.get('group') or {}
+    check(gp.get('label') == 'Grouped by platform' and gp.get('head', [None])[:2] == ['platform', 'rows'] and any(x.endswith('(sum)') for x in gp.get('head', []))
+          and len(gp.get('rows', [])) == gp.get('platforms') and sum(int(digits(r[1]) or 0) for r in gp.get('rows', [])) == rows and t.get('ungrouped') is True,
+          f"tools: 'Group by platform' lists {len(gp.get('rows', []))} groups for {gp.get('platforms')} platforms, their rows adding up to {rows}, each number column summed; 'Ungroup' removes it")
+    def bars_ok(bs): return len(bs) == len(g['cells']) and all(b['bar'] == (int(digits(b['t']) or 0) > 0) for b in bs) and any(b['share'] == '100%' for b in bs) and any(b['bar'] for b in bs)
+    check(bars_ok(t['bars']), f"tools: 'Data bars on failed' draws a bar on each failed count above zero, the largest at 100 % ({[(b['t'], b['share']) for b in t['bars'] if b['bar']][:4]})")
+    fz = t['frozen']
+    check(fz['on'] and fz['classes'] == ['gt-f1', 'gt-f2'] and fz['sticky'][:2] == ['sticky', 'sticky'] and fz['sticky'][2] != 'sticky', f"tools: 'Freeze the columns up to platform' makes the first two columns sticky ({fz})")
+    hd = t['hidden']
+    check(hd['marked'] == 1 and hd['th'] == 'none' and hd['td'] == 'none' and len(hd['keys']) == 1 and hd['keys'][0].startswith('pgvigil.grid.backups.'),
+          f"tools: 'Hide column platform' hides the header and the cells and keeps the choice in localStorage ({hd})")
+    af = t['after']
+    check(af['hidden'] == hd and af['frozen']['on'] and af['frozen']['classes'] == ['gt-f1', 'gt-f3'] and bars_ok(af['bars']),
+          f"tools: after a reload the column is still hidden, the first two shown columns frozen ({af['frozen']['classes']}) and the bars drawn")
+    z2 = zipfile.ZipFile(f"{dl}/{t['xlsx']}"); x2 = z2.read('xl/worksheets/sheet2.xml').decode(); c2 = cells_of(x2, shared(z2))
+    hdr2 = [c2.get((1, j), (0, None, None))[2] for j in range(len(head))]
+    tx2 = z2.read('xl/tables/table1.xml').decode()
+    check('platform' in head and hdr2 == [x for x in head if x != 'platform'] + [None] and f'<tableColumns count="{len(head) - 1}">' in tx2 and 'name="platform"' not in tx2,
+          f"tools: the workbook exported with the column hidden has no platform column ({len([x for x in hdr2 if x])} of the grid's {len(head)} columns, the table too)")
+    ch = t.get('chooser') or {}
+    check(ch.get('cols') == len(head) and ch.get('unticked') == 1 and ch.get('label') == 'Columns of this grid', f"tools: 'Columns...' lists the {len(head)} columns, the hidden one unticked ({ch})")
+    rs = t['reset']
+    check(rs['hidden']['marked'] == 0 and rs['hidden']['keys'] == [] and rs['hidden']['td'] != 'none' and not rs['frozen']['on'] and rs['bars'] == 0 and t.get('closed') is True,
+          f"tools: 'Reset this grid' brings every column back, unfreezes, drops the bars and forgets the choice; 'Close' closes the panel ({rs['hidden']}, frozen {rs['frozen']['on']}, bars {rs['bars']})")
 sys.exit(1 if bad else 0)
 PY
 
@@ -294,4 +662,4 @@ for L in en-US fr-FR; do
   fi
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; echo "kept in $PGVIGIL_EXPORT_OUT/$L"; }
 done
-echo "OK: the Summary and the Tables tab exported to .xlsx and CSV, each file matching its page"
+echo "OK: ten pages exported to .xlsx and CSV in two languages, each file matching its page cell by cell (every grid with rows an Excel table)"
