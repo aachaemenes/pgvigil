@@ -7,6 +7,8 @@ import { indexLink } from './drill';
 import type { Ctx } from './router';
 import { get, post, Row, rowsOf, Table } from './api';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, props, tile } from './ui';
+import { whatIsThis } from './sqlview';
+import { depthError } from './statements';
 
 interface IndexesData { state: Table | null; databases: Table | null; indexes: Table | null; findings: Table | null }
 interface InventoryData { inventory: Table | null; inventory_total: Table | null }
@@ -154,8 +156,77 @@ export function adviceView(rep: AdvReport): HTMLElement {
   return box;
 }
 
+// ---- btree bloat, sequences and the catalog checks (task 155, GET /api/pgdepth) --------------------------------
+
+const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
+
+const bloatCols: Col[] = [
+  { key: 'datname', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'table_name', label: 'table' },
+  { key: 'index_name', label: 'index' },
+  { key: 'index_bytes', label: 'size', num: true, fmt: fmtBytes },
+  { key: 'est_bytes', label: 'its rows need', num: true, fmt: fmtBytes },
+  { key: 'bloat_bytes', label: 'bloat', num: true, fmt: fmtBytes },
+  { key: 'bloat_pct', label: 'bloat share', num: true, fmt: pctTxt, cls: v => Number(v) >= 50 ? 'warn' : '' },
+  { key: 'fillfactor', num: true }, { key: 'tuples', label: 'rows', num: true, fmt: fmtNum },
+  { key: 'est_note', label: 'not estimated', wide: true },
+  { key: 'reindex_sql', label: 'rebuild (run it yourself)', wide: true },
+];
+
+const seqCols: Col[] = [
+  { key: 'datname', label: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'seq_name', label: 'sequence' },
+  { key: 'data_type', label: 'type' },
+  { key: 'last_value', label: 'last value', num: true, fmt: fmtNum },
+  { key: 'max_value', label: 'its maximum', num: true, fmt: fmtNum },
+  { key: 'col_table', label: 'feeds', fmt: (v, r) => v == null ? '' : `${String(v)}.${String(r.col_name ?? '')} (${String(r.col_type ?? '')})` },
+  { key: 'pct_used', label: 'used', num: true, fmt: pctTxt, cls: v => Number(v) >= 98 ? 'crit' : Number(v) >= 90 ? 'warn' : '' },
+  { key: 'readable', label: 'readable', fmt: v => v === false ? badge('no: the login may not read it', 'warn') : '' },
+  { key: 'blks_read', label: 'blocks read', num: true, fmt: fmtNum }, { key: 'blks_hit', label: 'blocks hit', num: true, fmt: fmtNum },
+];
+
+const checkKind: Record<string, string> = {
+  secdef: 'SECURITY DEFINER without search_path', notvalid: 'NOT VALID constraint', defpart: 'rows in a DEFAULT partition',
+  public_create: 'CREATE on schema public', md5: 'MD5 password',
+};
+
+const checkCols: Col[] = [
+  { key: 'check_kind', label: 'check', fmt: v => checkKind[String(v)] ?? String(v ?? '') },
+  { key: 'datname', label: 'database' }, { key: 'object' }, { key: 'detail', wide: true },
+  { key: 'fix_sql', label: 'the fix (run it yourself)', wide: true },
+];
+
+// depthSections: the btree bloat estimates, every sequence's headroom and the catalog checks of the dbchecks collection,
+// with the PostgreSQL depth findings of the instance on top. Each part reads on its own; a failure shows in its place.
+async function depthSections(instance: number): Promise<HTMLElement[]> {
+  const read = (part: string) => get<Record<string, Table>>('pgdepth', { instance, part, limit: 500 });
+  const [f, b, q, k] = await Promise.allSettled([read('findings'), read('bloat'), read('sequences'), read('checks')]);
+  const rows = (r: PromiseSettledResult<Record<string, Table>>, what: string, show: (t: Row[]) => HTMLElement): HTMLElement =>
+    r.status === 'fulfilled' ? show(rowsOf(r.value.rows)) : depthError(what, r.reason);
+  return [
+    el('h3', {}, 'PostgreSQL depth findings ', whatIsThis('The findings of the PostgreSQL depth reads (migration 0095): checkpoints, '
+      + 'the archive backlog, the timeline, connections, standbys, the SLRU caches, sequences, the catalog checks, dead rows and '
+      + 'btree bloat. Each names the line that fixes it; pgvigil runs none of them.', 'PostgreSQL depth findings')),
+    rows(f, 'The depth findings', t => grid(t, [
+      { key: 'severity', fmt: sevBadge }, { key: 'setting', label: 'finding' }, { key: 'value', label: 'object' },
+      { key: 'suggested', wide: true }, { key: 'detail', wide: true },
+    ], 'No PostgreSQL depth finding.')),
+    el('h3', {}, 'Btree bloat ', whatIsThis('An estimate from the catalog, every hour, for each valid btree index of 10 MB or more: '
+      + 'the pages its rows would fill at its fillfactor against the pages it has. A variable-width column needs the table\'s '
+      + 'statistics and the login\'s right to read them (pg_read_all_data from 14), else the row says why it is not estimated. '
+      + 'Deduplication (13+) is not modelled: an index of many equal keys reads as less bloated than it is, never as more. '
+      + 'REINDEX INDEX CONCURRENTLY (12+) rebuilds it without blocking writes; run it alone, outside a transaction.', 'Btree bloat')),
+    rows(b, 'The bloat estimates', t => grid(t, bloatCols, 'No btree index of 10 MB or more read yet (the index_bloat collection runs hourly).')),
+    el('h3', {}, 'Sequences ', whatIsThis('Every sequence the dbchecks collection read (hourly), the fullest first: its last value against the '
+      + 'smaller of its own maximum and the maximum of the column it feeds - a bigint sequence behind an integer column runs out '
+      + 'at 2,147,483,647. Reading a sequence\'s value needs SELECT or USAGE on it (pg_read_all_data from 14).', 'Sequences')),
+    rows(q, 'The sequences', t => grid(t, seqCols, 'No sequence read yet (the dbchecks collection runs hourly).')),
+    el('h3', {}, 'Catalog checks'),
+    rows(k, 'The catalog checks', t => grid(t, checkCols, 'No SECURITY DEFINER function without search_path, NOT VALID constraint, filled DEFAULT partition, CREATE on public or MD5 password.')),
+  ];
+}
+
 // indexesView: one instance's Indexes tab.
 export async function indexesView(instance: number, ctx?: Ctx): Promise<HTMLElement> {
+  const depth = depthSections(instance);
   const d = await get<IndexesData>('indexes', { instance });
   const dbs = rowsOf(d.databases), idx = rowsOf(d.indexes), st = rowsOf(d.state)[0];
   const sec = el('section', {}, el('h2', {}, 'Indexes'));
@@ -197,6 +268,7 @@ export async function indexesView(instance: number, ctx?: Ctx): Promise<HTMLElem
         `No ${p} index.`));
   }
   sec.append(inventorySection(instance, dbs, ctx));
+  sec.append(...await depth);
   sec.append(el('p', { class: 'meta' }, 'The redundant and invalid reads are postgres_dba\'s (BSD-3, Nikolay Samokhvalov); the DO / UNDO lines are '
     + 'its i5 pattern. Run a DO line alone, outside a transaction, in a session where lock_timeout and statement_timeout are 0 '
     + '(DROP INDEX CONCURRENTLY waits for every older transaction). An unused index that covers a redundant or duplicate one is '

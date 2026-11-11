@@ -10,6 +10,11 @@ linters:
     - misspell
     - gocritic
     - revive
+  settings:
+    misspell:
+      # 'signins' (sign-ins) names the failed sign-ins part of /api/pgaudit and a SQL column alias: a word, not a typo
+      ignore-rules:
+        - signins
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

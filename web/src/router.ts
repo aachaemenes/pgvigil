@@ -45,10 +45,10 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
-  io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
+  io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
@@ -60,7 +60,7 @@ export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
-  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks'] },
+  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'tablesize', 'dbchanges', 'indexes', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
@@ -69,7 +69,7 @@ export const rootGroups: TabGroup[] = [
 export const instanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'memory', 'findings', 'logs'] },
   { key: 'checks', name: 'Checks', tabs: ['corruption', 'vacuum', 'indexes', 'custom'] },
-  { key: 'conf', name: 'Configuration', tabs: ['config', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
+  { key: 'conf', name: 'Configuration', tabs: ['config', 'pgdboptions', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
   { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['storage', 'dbinfo', 'dbchanges', 'tables'] },
@@ -83,9 +83,11 @@ export const mssqlInstanceTabs: Record<string, string> = {
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+  mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
+  { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
   { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
   { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions', 'mssqltempdb'] },
@@ -179,6 +181,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the Checks page's view and risk filter (mssql_checks.ts) stay on its own links
+  if (keep && c.tab === 'pgdboptions') { const cur = new URLSearchParams(location.hash.split('?')[1] ?? ''); const v = cur.get('risk'); if (v) q.set('risk', v); }
   if (keep && c.tab === 'mssqlchecks') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['cv', 'risk']) { const v = cur.get(k); if (v) q.set(k, v); }

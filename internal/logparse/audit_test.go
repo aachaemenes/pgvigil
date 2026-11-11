@@ -259,8 +259,8 @@ func TestAuditTarget(t *testing.T) {
 		// with the tag pgaudit writes for the statement the result is the same
 		if c.class == "ROLE" && c.stmt != "" {
 			f := strings.Fields(strings.ToUpper(c.stmt))
-			switch {
-			case f[0] == "GRANT" || f[0] == "REVOKE":
+			switch f[0] {
+			case "GRANT", "REVOKE":
 				e.Command = f[0]
 				if !strings.Contains(" "+strings.ToUpper(c.stmt)+" ", " ON ") {
 					e.Command += " ROLE"
@@ -339,7 +339,7 @@ func TestAuditTargetKeepsNoLiteral(t *testing.T) {
 		"ALTER ROLE app VALID UNTIL 'LEAK'",
 		"CREATE ROLE app PASSWORD 'LEAK'",
 	} {
-		_, obj, role := AuditTarget(AuditEntry{Class: "ROLE", Command: strings.ToUpper(stmt[:strings.Index(stmt, " ")]) + " ROLE", Statement: stmt})
+		_, obj, role := AuditTarget(AuditEntry{Class: "ROLE", Command: strings.ToUpper(strings.Fields(stmt)[0]) + " ROLE", Statement: stmt})
 		if obj != "app" || strings.Contains(obj+role, "LEAK") || strings.Contains(obj+role, "AK") {
 			t.Errorf("%q: object %q role %q", stmt, obj, role)
 		}

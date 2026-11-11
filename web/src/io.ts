@@ -2,12 +2,15 @@
 // pg_stat_io, pg_stat_database's IO time, the checkpointer, the top statements by IO and the IO findings - and
 // the DMS page's IO panel for the replication instances. Each reads the API itself; the window comes from the
 // shell (pages.ts hands it over), like the borrowed views. Parity3 task 126: the checkpoint section adds the counters'
-// totals and write / sync time, and the log's checkpoint lines (causes, one row per checkpoint).
+// totals and write / sync time, and the log's checkpoint lines (causes, one row per checkpoint). Task 155: the server's
+// state now (checkpoint age, WAL since the redo point, timeline, connections, standbys, archive backlog, pg_wal) and the
+// SLRU caches, from GET /api/pgdepth.
 import { get, Row, rowsOf, Table } from './api';
 import { stmtCols } from './borrowed';
 import { lineChart } from './chart';
 import { badge, Col, el, fmtBytes, fmtNum, fmtTime, grid, tile } from './ui';
 import { whatIsThis } from './sqlview';
+import { depthError } from './statements';
 
 export interface Window { from: string; to: string }
 
@@ -157,8 +160,91 @@ function checkpointSection(d: IOReply, st: Row, ver: number): HTMLElement[] {
   return out;
 }
 
+// ---- the server's state and the SLRU caches (task 155, GET /api/pgdepth) ---------------------------------------
+
+const secs = (v: unknown) => {
+  if (v == null) return '';
+  const n = Number(v);
+  return n >= 7200 ? fmtNum(Math.round(n / 360) / 10) + ' h' : n >= 120 ? fmtNum(Math.round(n / 6) / 10) + ' min' : fmtNum(n) + ' s';
+};
+
+// walStateSection: the newest server state - the last checkpoint and the WAL waiting since its redo point, the timeline and
+// the system identifier (with the change of the last 24 hours), the client sessions against the client slots, the
+// standbys, the archiver's backlog and pg_wal - and the state over the window.
+async function walStateSection(instance: number, win: Window): Promise<HTMLElement[]> {
+  const head = el('h3', {}, 'WAL, checkpoints and connections now ', whatIsThis('Read every minute by the dbstats collection: the last '
+    + 'checkpoint from the control file (a restartpoint on a standby) and the WAL written since its redo point (what crash recovery '
+    + 'would replay), the timeline (a promotion or a restore moves it), the client sessions against the slots a client may use '
+    + '(max_connections less superuser_reserved_connections and, from 16, reserved_connections), the physical standbys streaming, '
+    + 'the .ready files the archiver has not sent and pg_wal\'s size (both need pg_monitor). Aurora keeps no local WAL.', 'WAL and checkpoints'));
+  let d: Record<string, Table>;
+  try { d = await get<Record<string, Table>>('pgdepth', { instance, part: 'wal', ...win }); } catch (e) { return [head, depthError('The server state', e)]; }
+  const w = rowsOf(d.latest)[0];
+  if (!w) return [head, el('p', { class: 'empty' }, 'No server state read yet (the dbstats collection of this release reads it every minute).')];
+  // the finding's own rules: a standby's restartpoints follow the primary's checkpoints, so its age is never 'late'; a
+  // missing standby is information (and only visible on a self-managed server), so its tile is not coloured
+  const late = !w.in_recovery && Number(w.checkpoint_age_s) > 2 * Number(w.checkpoint_timeout_s ?? 300) + 60 && Number(w.wal_since_redo) >= 16777216;
+  const connPct = Number(w.connections_pct);
+  const ready = w.archive_ready == null ? null : Number(w.archive_ready);
+  const out: HTMLElement[] = [head, el('div', { class: 'tiles' },
+    tile('last checkpoint', w.checkpoint_age_s == null ? 'not read' : secs(w.checkpoint_age_s) + ' ago', late ? 'warn' : ''),
+    tile('WAL since its redo point', fmtBytes(w.wal_since_redo) || 'not read'),
+    tile('timeline', String(w.timeline_id ?? '?') + (w.prev_timeline_id != null ? ` (was ${String(w.prev_timeline_id)})` : ''), w.prev_timeline_id != null ? 'warn' : ''),
+    tile('client sessions', `${fmtNum(w.client_backends)} of ${fmtNum(w.client_limit)}`, connPct >= 100 ? 'crit' : connPct >= 90 ? 'warn' : 'ok'),
+    tile('standbys streaming', fmtNum(w.standbys ?? 0)),
+    tile('archive backlog', ready == null ? 'not read' : `${fmtNum(ready)} .ready`, ready != null && (ready >= 10 || Number(w.archive_oldest_age_s) > 1800) ? 'warn' : ''),
+    tile('pg_wal', w.wal_dir_bytes == null ? 'not read' : `${fmtBytes(w.wal_dir_bytes)} in ${fmtNum(w.wal_files)} segments`))];
+  out.push(el('p', { class: 'meta' }, `Read ${fmtTime(w.snapshot_at)}${w.in_recovery ? ' on a standby' : ''}; checkpoint_timeout ${secs(w.checkpoint_timeout_s)}, `
+    + `archive_mode ${String(w.archive_mode ?? '?')}, system identifier ${String(w.system_identifier ?? '?')}`
+    + (w.prev_system_identifier != null ? ` (was ${String(w.prev_system_identifier)} until ${fmtTime(w.system_identifier_changed_at)})` : '')
+    + (w.timeline_changed_at != null ? `; on this timeline since ${fmtTime(w.timeline_changed_at)}` : '')
+    + (w.wal_note ? `; ${String(w.wal_note)}` : '') + '.'));
+  const series = rowsOf(d.series);
+  out.push(el('div', { class: 'charts' },
+    lineChart('Checkpoint age', series, [{ key: 'checkpoint_age_s', label: 'age' }], v => secs(v)),
+    lineChart('WAL since the redo point', series, [{ key: 'wal_since_redo', label: 'WAL' }], fmtBytes),
+    lineChart('Client sessions', series, [{ key: 'client_backends', label: 'sessions' }, { key: 'client_limit', label: 'limit' }]),
+    lineChart('Archive backlog and pg_wal', series, [{ key: 'archive_ready', label: '.ready files' }])));
+  return out;
+}
+
+const slruCols: Col[] = [
+  { key: 'family', label: 'cache' }, { key: 'name', label: 'as the server names it' },
+  { key: 'blks_hit', label: 'hits', num: true, fmt: fmtNum },
+  { key: 'blks_read', label: 'read from disk', num: true, fmt: fmtNum,
+    cls: (v, r) => Number(v) > 0 && ['subtransaction', 'multixact_member', 'multixact_offset'].includes(String(r.family)) ? 'warn' : '' },
+  { key: 'hit_pct', label: 'hit', num: true, fmt: v => v == null ? '' : pctFmt(Number(v)) },
+  { key: 'blks_written', label: 'written', num: true, fmt: fmtNum }, { key: 'blks_zeroed', label: 'zeroed', num: true, fmt: fmtNum },
+  { key: 'flushes', num: true, fmt: fmtNum }, { key: 'truncates', num: true, fmt: fmtNum },
+  { key: 'reads_with_disk', label: 'reads with disk pages', num: true, fmt: fmtNum },
+];
+
+// slruSection: pg_stat_slru over the window (13+): per cache the pages hit and read from disk, and the subtransaction and
+// multixact reads per collection read as a chart.
+async function slruSection(instance: number, win: Window): Promise<HTMLElement[]> {
+  const head = el('h3', {}, 'SLRU caches ', whatIsThis('pg_stat_slru (13+), read every 5 minutes by the slru collection. Pages read from '
+    + 'disk in the subtransaction cache come from a transaction with more than 64 subtransactions (SAVEPOINT, a PL/pgSQL EXCEPTION '
+    + 'block per row) while other sessions take snapshots; in the multixact caches from many sessions locking the same rows. Either '
+    + 'slows every reader: the finding names it. The names are CamelCase to 16 and lower case from 17; cache groups them.', 'SLRU caches'));
+  let d: Record<string, Table>;
+  try { d = await get<Record<string, Table>>('pgdepth', { instance, part: 'slru', ...win }); } catch (e) { return [head, depthError('The SLRU caches', e)]; }
+  const totals = rowsOf(d.totals);
+  if (!totals.length) return [head, el('p', { class: 'empty' }, 'No two SLRU reads in this window (the slru collection runs every 5 minutes, from PostgreSQL 13).')];
+  const series = rowsOf(d.series);
+  const by = new Map<string, Row>();
+  for (const r of series) {
+    const k = String(r.snapshot_at);
+    if (!by.has(k)) by.set(k, { snapshot_at: k });
+    if (['subtransaction', 'multixact_member', 'multixact_offset'].includes(String(r.family))) by.get(k)![String(r.family)] = Number(r.blks_read ?? 0);
+  }
+  return [head, grid(totals, slruCols, 'No SLRU activity.'), el('div', { class: 'charts' },
+    lineChart('Pages read from disk per read', [...by.values()], [{ key: 'subtransaction', label: 'subtransaction' },
+      { key: 'multixact_member', label: 'multixact member' }, { key: 'multixact_offset', label: 'multixact offset' }]))];
+}
+
 // ioView is one instance's IO tab over the window; label names the window in the heading.
 export async function ioView(instance: number, win: Window, label = ''): Promise<HTMLElement> {
+  const depth = Promise.all([walStateSection(instance, win), slruSection(instance, win)]);
   const d = await get<IOReply>('io', { instance, ...win });
   const st = rowsOf(d.state)[0] ?? {};
   const managed = st.platform === 'rds' || st.platform === 'aurora';
@@ -208,6 +294,8 @@ export async function ioView(instance: number, win: Window, label = ''): Promise
     lineChart('Time per block read', dbt, [{ key: 'ms_per_blk_read', label: 'read' }], ms)));
 
   sec.append(...checkpointSection(d, st, ver));
+  const [walSec, slruSec] = await depth;
+  sec.append(...walSec, ...slruSec);
 
   sec.append(el('h3', {}, 'Top statements by IO'),
     el('p', { class: 'meta' }, 'Shared blocks read plus temp blocks read and written, over the window.'),
