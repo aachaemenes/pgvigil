@@ -44,9 +44,12 @@
 #     The first read logs no change; a second read of the unchanged server logs none, keeps every 'since' (the three
 #     values that are shown and never logged, tempdb's two sizes and the per cent, left aside: tempdb may grow) and
 #     moves every value's read time past the first read's.
-#     On the proof's own container: after sa sets max server memory to 1536 MB, the next read logs exactly ONE
-#     change (max_memory_mb 2147483647 > 1536: the per cent is derived and not logged), shows the per cent sa
-#     computes, and moves 'since' on max_memory_mb alone among the logged values. On an existing sandbox this step is
+#     On the proof's own container: after sa sets max server memory to three quarters of the machine's memory, the
+#     next read logs exactly ONE change (max_memory_mb 2147483647 > that figure: the per cent is derived and not
+#     logged), shows the per cent sa computes, and moves 'since' on max_memory_mb alone among the logged values.
+#     (Corrected after the fourth run: the figure was 1,536 MB, which starved the server; in that run the plan of
+#     part B's new procedure was in sa's read and not in the collector's a second later. Inferred, not measured:
+#     the plan left the cache under that pressure. Part B now prints what each read returned.) On an existing sandbox this step is
 #     NOT RUN (no server setting is changed there).
 #     A login without VIEW SERVER STATE: the run is partial naming sys.dm_os_sys_info; edition and the five tempdb
 #     rows have their values; cpu_count has none and its note says the right is missing.
@@ -403,10 +406,13 @@ collect mssql_properties "$N" >/dev/null
 [ "$(q "select (count(*) filter (where value is not null) > 30) || '|' || count(*) filter (where value is not null and snapshot_at <= '$SNAP1') from pgvigil.mssql_property where instance_id=$iid")" = "true|0" ] \
   || fail "A: the second read was not stored on every value"
 if [ -n "$OWN" ] && [ "$MAXMB" = 2147483647 ]; then
-  sq "EXEC sys.sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure 'max server memory (MB)', 1536; RECONFIGURE;" >/dev/null
+  # three quarters of the machine: a real change that leaves the server its memory (a cap of 1,536 MB starved it,
+  # and a plan evicted between sa's read and the collector's failed part B once)
+  PHYS=$(hand "SELECT physical_memory_kb / 1024 $SI"); NEWMAX=$((PHYS * 3 / 4))
+  sq "EXEC sys.sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure 'max server memory (MB)', $NEWMAX; RECONFIGURE;" >/dev/null
   sleep 1
   collect mssql_properties "$N" >/dev/null
-  WANTCH="max_memory_mb:2147483647>1536"
+  WANTCH="max_memory_mb:2147483647>$NEWMAX"
   GOTCH=$(q "select string_agg(name || ':' || old_value || '>' || new_value, ',' order by name) from pgvigil.mssql_property_change where instance_id=$iid")
   [ "$GOTCH" = "$WANTCH" ] || fail "A: the changes after max server memory was set: '$GOTCH', want '$WANTCH'"
   NEWPCT=$(hand "$PCTSQL")
@@ -451,16 +457,17 @@ mkproc "CREATE PROCEDURE dbo.pv_new AS BEGIN SET NOCOUNT ON; DECLARE @c int; SEL
 run_proc pv_new 5 ""
 SN=$(PS pv_new)
 sleep 1
-collect mssql_procstats "$N" >/dev/null
+collect mssql_procstats "$N"
 GOT=$(psample pv_new)
 echo "  pv_new, cached since the read before (whole count): stored $GOT, sa reads $SN"
-[ "$GOT" = "$SN" ] && [ "${SN%%|*}" = 5 ] || fail "B: the new procedure: stored $GOT, sa reads $SN"
+# a plan in sa's read and in no sample: what the cache holds now and what the read stored say which side lost it
+[ "$GOT" = "$SN" ] && [ "${SN%%|*}" = 5 ] || fail "B: the new procedure: stored $GOT, sa read $SN before the collector's read and reads $(PS pv_new) now; the read's samples (database|object|name|executions): $(q "select string_agg(coalesce(database_name, '?') || '|' || object_id || '|' || coalesce(object_name, '(no name)') || '|' || executions, '; ') from pgvigil.mssql_proc_sample where instance_id=$iid and snapshot_at = (select max(snapshot_at) from pgvigil.mssql_proc_state where instance_id=$iid)"); plans in the state: $(q "select count(*) from pgvigil.mssql_proc_last where instance_id=$iid")"
 [ "$(psample pv_work)" = none ] || fail "B: pv_work did not run and has a sample: $(psample pv_work)"
 sq "EXEC sp_recompile N'dbo.pv_work';" "$DB" >/dev/null
 run_proc pv_work 4 "@n = 500"
 SR=$(PS pv_work)
 sleep 1
-collect mssql_procstats "$N" >/dev/null
+collect mssql_procstats "$N"
 GOT=$(psample pv_work)
 echo "  pv_work after sp_recompile and 4 runs: stored $GOT, sa reads $SR"
 [ "$GOT" = "$SR" ] && [ "${SR%%|*}" = 4 ] || fail "B: after the recompile: stored $GOT, sa reads $SR"
