@@ -144,12 +144,21 @@ repo_files() { q "select file_id || '|' || size_bytes || '|' || coalesce(used_by
       from pgvigil.mssql_files where instance_id = $iid and database_name = '$1' and is_present order by file_id"; }
 
 echo "--- A. mssql_storage as the least-privilege login"
+# sa reads the files before AND after the collector does: a database's used pages move by themselves (a new
+# database's most of all), so the used bytes the collector stored are held between the two reads, each file's own;
+# every other column is compared exactly with the read taken after it
+SA0=$(sa_files "$DB")
 collect mssql_storage
 iid=$(q "select instance_id from pgvigil.instances where name='$N1'")
 SA=$(sa_files "$DB"); GOT=$(repo_files "$DB")
-echo "  sa reads (file|size|used|max|growth|growth %|filegroup):"; echo "$SA" | sed 's/^/    /'
+echo "  sa reads (file|size|used|max|growth|growth %|filegroup), after the collector's read:"; echo "$SA" | sed 's/^/    /'
 [ "$(echo "$SA" | wc -l)" = 3 ] || fail "A: sa lists $(echo "$SA" | wc -l) files, not 3"
-[ "$GOT" = "$SA" ] || { echo "  stored:"; echo "$GOT" | sed 's/^/    /'; fail "A: the stored files differ from sa's read"; }
+but_used() { awk -F'|' -v OFS='|' '{ $3 = "-"; print }'; }
+[ "$(echo "$GOT" | but_used)" = "$(echo "$SA" | but_used)" ] || { echo "  stored:"; echo "$GOT" | sed 's/^/    /'; fail "A: the stored files differ from sa's read"; }
+USED_OFF=$(paste -d'|' <(echo "$SA0" | cut -d'|' -f1,3) <(echo "$SA" | cut -d'|' -f1,3) <(echo "$GOT" | cut -d'|' -f1,3) \
+  | awk -F'|' '{ lo = ($2 + 0 < $4 + 0) ? $2 + 0 : $4 + 0; hi = ($2 + 0 < $4 + 0) ? $4 + 0 : $2 + 0
+                 if ($1 != $3 || $1 != $5 || $2 == "" || $4 == "" || $6 == "" || $6 + 0 < lo || $6 + 0 > hi) printf " %s (stored %s, sa %s before and %s after)", $1, $6, $2, $4 }')
+[ -z "$USED_OFF" ] || { echo "  stored:"; echo "$GOT" | sed 's/^/    /'; fail "A: the stored used bytes are not between sa's two reads: file$USED_OFF"; }
 # the maximum, the growth and the filegroup against what the proof itself asked for in CREATE DATABASE (sa's read
 # above shares the product's arithmetic; these constants do not): file 1 the data file (64 MB max, 8 MB steps), file
 # 2 the log (1 GB max, 4 MB steps, no filegroup), file 3 the second data file (no maximum, 10 per cent, FG2)
