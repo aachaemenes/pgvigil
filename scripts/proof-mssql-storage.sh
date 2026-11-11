@@ -102,7 +102,10 @@ sq "ALTER DATABASE [$DB] SET RECOVERY SIMPLE; ALTER DATABASE [$DB] SET ALLOW_SNA
 # accelerated database recovery on the closed database only: with it on, a database's row versions go to its own
 # persistent version store and not to tempdb, and part V measures tempdb's
 sq "CREATE DATABASE [$DBC];"; MADE_DBC=1
-sq "ALTER DATABASE [$DBC] SET ACCELERATED_DATABASE_RECOVERY = ON;"
+# (accelerated database recovery arrived in SQL Server 2019: before it the closed database stays a plain one and
+# part V expects no persistent version store row at all)
+MAJ=$(sq "SELECT CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)), 4) AS int)")
+if [ "$MAJ" -ge 15 ]; then sq "ALTER DATABASE [$DBC] SET ACCELERATED_DATABASE_RECOVERY = ON;"; fi
 sq "CREATE LOGIN [$L1] WITH PASSWORD = '$P1', CHECK_POLICY = OFF;"; MADE_L1=1
 sq "GRANT VIEW SERVER STATE TO [$L1]; GRANT VIEW ANY DEFINITION TO [$L1];"
 sq "CREATE LOGIN [$L2] WITH PASSWORD = '$P2', CHECK_POLICY = OFF;"; MADE_L2=1
@@ -281,7 +284,12 @@ HSTART=$(sq "SELECT CONVERT(varchar(19), started, 126) FROM dbo.pv_holder" "$DB"
 [ "$(q "select bool_and(abs(extract(epoch from holder_started_at - '${HSTART}Z'::timestamptz)) < 90 and holder_elapsed_s between 1 and 60) from pgvigil.mssql_versionstore_sample where instance_id=$iid and holder_session_id = $HSPID")" = t ] \
   || fail "V: the holder's start or elapsed time: $(q "select holder_started_at, holder_elapsed_s from pgvigil.mssql_versionstore_sample where instance_id=$iid and holder_session_id = $HSPID") against $HSTART"
 [ "$(q "select (reserved_bytes > 0) from pgvigil.mssql_versionstore_db where instance_id=$iid and database_name='$DB'")" = t ] || fail "V: mssql_versionstore_db does not list the proof's database"
-[ "$(q "select adr_on || '|' || (pvs_bytes >= 0) from pgvigil.mssql_pvs where instance_id=$iid and database_name='$DBC'")" = "true|true" ] || fail "V: mssql_pvs: $(q "select * from pgvigil.mssql_pvs where instance_id=$iid")"
+if [ "$MAJ" -ge 15 ]; then
+  [ "$(q "select adr_on || '|' || (pvs_bytes >= 0) from pgvigil.mssql_pvs where instance_id=$iid and database_name='$DBC'")" = "true|true" ] || fail "V: mssql_pvs: $(q "select * from pgvigil.mssql_pvs where instance_id=$iid")"
+else
+  [ "$(q "select count(*) from pgvigil.mssql_pvs where instance_id=$iid")" = 0 ] || fail "V: mssql_pvs holds a row on a server before SQL Server 2019: $(q "select * from pgvigil.mssql_pvs where instance_id=$iid")"
+  echo "  SQL Server $MAJ.x: no accelerated database recovery before 2019, mssql_pvs is empty as it must be"
+fi
 echo "  the holder commits (50 s after it started); cleanup runs once a minute"
 wait "${BG[0]}" || fail "V: the holder's batch failed"
 wait "${BG[1]}" || fail "V: the writer's batch failed"
