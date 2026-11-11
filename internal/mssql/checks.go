@@ -34,7 +34,8 @@ import (
 // Rights: config, traceflags, build, dboptions, dbstate and checkdb need only the public role. logspace needs
 // VIEW SERVER STATE (on SQL Server 2022 VIEW SERVER PERFORMANCE STATE is enough); the rules that weigh a value
 // against the machine (max server memory against physical memory, MAXDOP against the CPU count) need it too and
-// say 'not weighed' without it. corruption and alerts need SELECT in msdb (db_datareader there).
+// say 'not weighed' without it. alerts needs SELECT on msdb's Agent tables (db_datareader there); msdb.dbo.suspect_pages
+// is readable through msdb's guest user by the public role (read so on SQL Server 2022).
 // Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; not on Azure SQL Database.
 type checksCollector struct{}
 
