@@ -129,3 +129,21 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestImportFlags(t *testing.T) {
+	opt, err := importFlags("3, 7", "2026-11-01T00:00:00Z", "2026-11-02T00:00:00Z", "3=sql-a, 7 = sql-b", true)
+	if err != nil || len(opt.Instances) != 2 || opt.Instances[1] != 7 || opt.Names[7] != "sql-b" || !opt.DryRun || opt.From.Day() != 1 {
+		t.Fatalf("importFlags: %+v %v", opt, err)
+	}
+	for _, bad := range [][4]string{{"x", "", "", ""}, {"0", "", "", ""}, {"", "yesterday", "", ""}, {"", "2026-11-02T00:00:00Z", "2026-11-01T00:00:00Z", ""}, {"", "", "", "3"}, {"", "", "", "x=a"}, {"", "", "", "3="}} {
+		if _, err := importFlags(bad[0], bad[1], bad[2], bad[3], false); err == nil {
+			t.Errorf("importFlags(%q) passed", bad)
+		}
+	}
+	if err := ImportCommand(context.Background(), nil, nil, []string{"other"}); err == nil {
+		t.Error("import without 'dbadash' passed")
+	}
+	if err := ImportCommand(context.Background(), nil, nil, []string{"dbadash", "-config", "/nonexistent.yaml"}); err == nil {
+		t.Error("import without -repo passed")
+	}
+}

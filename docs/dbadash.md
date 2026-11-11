@@ -1,6 +1,6 @@
 # The DBADash door
 
-pgvigil monitors PostgreSQL. A site that also runs [DBA Dash](https://github.com/trimble-oss/dba-dash) for its SQL Server estate can show DBA Dash's instances beside its PostgreSQL fleet: pgvigil reads the DBA Dash repository (a SQL Server database) with a read-only login and shows the statuses of DBA Dash's own Summary screen, in DBA Dash's words. pgvigil collects nothing from SQL Server itself. Every status on these pages was computed by DBA Dash, and DBA Dash's thresholds and acknowledgements apply.
+A site that runs [DBA Dash](https://github.com/trimble-oss/dba-dash) for its SQL Server estate can show DBA Dash's instances beside its PostgreSQL fleet: pgvigil reads the DBA Dash repository (a SQL Server database) with a read-only login and shows the statuses of DBA Dash's own Summary screen, in DBA Dash's words, and DBA Dash's own screens for one instance (Performance Summary, Running Queries, Backups, Agent Jobs, Drives, DB Space, Configuration, SQL Agent Alerts) drawn from DBA Dash's own stored procedures. Every status and figure on these pages was computed by DBA Dash, and DBA Dash's thresholds and acknowledgements apply. Kill a session and start or stop an Agent job are offered through pgvigil's own SQL Server actions door, and a DBA Dash repository's history can be imported into pgvigil's store (the way off DBA Dash, below).
 
 The door is off until the configuration names a repository.
 
@@ -23,19 +23,28 @@ Several repositories are allowed; each one is read on its own, so one that does 
 
 ## The login: read-only
 
-On the DBA Dash repository database, a login with SELECT on four tables and nothing else:
+On the DBA Dash repository database, a login that may read and run DBA Dash's read procedures, and nothing else:
 
 ```sql
 CREATE LOGIN pgvigil_dbadash WITH PASSWORD = '<a strong password>';
 USE DBADashDB;
 CREATE USER pgvigil_dbadash FOR LOGIN pgvigil_dbadash;
-GRANT SELECT ON dbo.Instances        TO pgvigil_dbadash;
-GRANT SELECT ON dbo.Summary          TO pgvigil_dbadash;
-GRANT SELECT ON dbo.CollectionDates  TO pgvigil_dbadash;
-GRANT SELECT ON dbo.DBVersionHistory TO pgvigil_dbadash;
+GRANT SELECT ON SCHEMA::dbo TO pgvigil_dbadash;          -- the Summary read, the import, and the procedures' dynamic SQL
+GRANT EXECUTE ON TYPE::dbo.IDs TO pgvigil_dbadash;       -- the instance list the report procedures take
+GRANT EXECUTE ON dbo.PerformanceSummary_Get   TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.RunningQueriesSummary_Get TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.RunningQueries_Get        TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.BackupReport_Get          TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.AgentJobsReport_Get       TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.DrivesReport_Get          TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.DBFilesReport_Get         TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.Configuration_Get         TO pgvigil_dbadash;
+GRANT EXECUTE ON dbo.Alerts_Get                TO pgvigil_dbadash;
 ```
 
-These four grants are the whole right: SELECT on `dbo.Instances`, `dbo.Summary`, `dbo.CollectionDates` and `dbo.DBVersionHistory`, no EXECUTE on any procedure (proven against DBA Dash 4.24.1 by `scripts/proof-dbadash.sh`). `db_datareader` works too, and grants more than pgvigil reads. The login needs no EXECUTE: pgvigil runs no DBA Dash procedure (see below), and it writes nothing on the DBA Dash side. `scripts/proof-dbadash.sh` checks that this login is refused an INSERT and the procedure that refreshes the Summary.
+SELECT on the dbo schema is needed beside EXECUTE: four of these procedures (AgentJobsReport_Get, DrivesReport_Get, DBFilesReport_Get, RunningQueries_Get) build their statement as dynamic SQL, which SQL Server runs with the caller's own rights. SELECT writes nothing. The login needs no other EXECUTE and must not have DBA Dash's `AppReadOnly` role or `db_owner`: `AppReadOnly` may run every `*_Get` procedure, and `dbo.Summary_Get` rewrites the Summary cache (below). `scripts/proof-dbadash-door.sh` checks that this login is refused an INSERT, `dbo.Summary_Upd` and `dbo.Summary_Get`.
+
+A door that only shows the Summary (no screens, no import) works with less: SELECT on `dbo.Instances`, `dbo.Summary`, `dbo.CollectionDates` and `dbo.DBVersionHistory` alone (proven by `scripts/proof-dbadash.sh`); the screens then answer with SQL Server's own permission error.
 
 ## What pgvigil reads
 
@@ -64,6 +73,69 @@ DBA Dash's Summary screen calls `dbo.Summary_Get`. When its cache is older than 
 
 DBA Dash's GUI is a desktop application with no URL, so these pages name the instance and the repository and offer no link into DBA Dash.
 
+## DBA Dash's own screens
+
+An instance's page carries a row of DBA Dash's screens. Each is ONE call of the DBA Dash procedure that DBA Dash's GUI calls for that screen, made when the page is opened, through the repository's read login, with the parameters the GUI passes for one instance and every status of its status filter ticked; every result set the procedure returns is drawn as a grid, its columns and rows as the procedure returned them, DBA Dash's status columns in its words and colours. pgvigil stores nothing of a screen: the repository is the store, as it is for DBA Dash's GUI.
+
+| Screen | DBA Dash procedure | Takes |
+|---|---|---|
+| Summary | (the `dbo.Summary` table, above) | |
+| Performance Summary | `dbo.PerformanceSummary_Get` | the time range |
+| Running Queries | `dbo.RunningQueriesSummary_Get` | the time range; a snapshot opens its sessions |
+| Running Queries (snapshot) | `dbo.RunningQueries_Get` | one snapshot time (none = the latest) |
+| Backups | `dbo.BackupReport_Get` | |
+| Agent Jobs | `dbo.AgentJobsReport_Get` | |
+| Drives | `dbo.DrivesReport_Get` | |
+| DB Space | `dbo.DBFilesReport_Get` | |
+| Configuration | `dbo.Configuration_Get` | |
+| SQL Agent Alerts | `dbo.Alerts_Get` | |
+
+Every one is a `dbo.*_Get` procedure that writes nothing (each was read in DBA Dash 4.24.1's source: no write to a permanent table, no `_Upd` procedure called). The procedures are the contract, and they change between DBA Dash releases: the screens are proven on DBA Dash 4.24.1 (`scripts/proof-dbadash-door.sh`: each screen's grids equal the same procedure's output read by a second, independent SQL Server client). A repository of another version is still read and every screen says "not proven on DBADash <version>"; a procedure whose parameters changed answers with SQL Server's own message on the page.
+
+The API: `GET /api/dbadash?repo=<name>&id=<InstanceID>&page=<key>[&from=..&to=..][&snapshot=..]`, the keys `performance`, `running`, `sessions`, `backups`, `jobs`, `drives`, `dbfiles`, `configuration`, `alerts` (`page=list` names them). A repository that does not answer is a 502 with the reason.
+
+## Actions: kill a session, start or stop a job
+
+The Running Queries snapshot carries Kill on each session and Agent Jobs carries Start and Stop on each job. They go through pgvigil's own SQL Server actions door ([sqlserver-actions.md](sqlserver-actions.md)): the preview read through the instance's read login, the typed confirmation, the statement through a separate actions login (ALTER ANY CONNECTION for a kill, SQLAgentOperatorRole in msdb for the jobs; never sysadmin), and every attempt in `pgvigil.actions_log`. DBA Dash's repository login never acts, and pgvigil sends nothing to the DBA Dash repository.
+
+So an instance's buttons are on only when pgvigil itself monitors that SQL Server: an `instances:` entry with `engine: sqlserver`, its `actions_dsn` and its `actions:` allow list. pgvigil matches the DBA Dash instance to it by the server's own name (DBA Dash's `Instance` equal to the `@@SERVERNAME` pgvigil collected, ignoring case). Without such an instance, or without its `actions_dsn` or the action on its list, the button is off and says why; the actions are off by default.
+
+```yaml
+instances:
+  - name: sql-prod-1
+    engine: sqlserver
+    dsn: env:SQLPROD1_DSN               # the read login (VIEW SERVER STATE; db_datareader in msdb)
+    actions_dsn: env:SQLPROD1_ACTIONS   # the actions login
+    actions: [kill, job_start, job_stop]
+```
+
+## The way off DBA Dash: importing its history
+
+`pgvigil import dbadash` loads what a DBA Dash repository collected into pgvigil's own SQL Server tables, so a site moving to pgvigil keeps its history; the door stays, and both run side by side until the DBA switches the DBA Dash service off.
+
+```
+pgvigil import dbadash -config /etc/pgvigil/pgvigil.yaml -repo corp -dry-run
+pgvigil import dbadash -config /etc/pgvigil/pgvigil.yaml -repo corp [-instance 3,7] [-from 2026-01-01T00:00:00Z] [-to ...] [-name 3=sql-prod-1]
+```
+
+- It reads the repository named by `-repo` in the `dbadash:` list, through its dsn (the read login above).
+- It writes the configuration's pgvigil repository, whose dsn must be the repository owner's (the one `pgvigil migrate` uses): the rows go straight into the history tables, so the collector's and the reader's logins are refused ("may not write what the import writes").
+- Each active SQL Server instance (or the `-instance` ids) becomes a pgvigil SQL Server instance under DBA Dash's display name, or the name `-name` gives (the name `instances:` will monitor it under, so pgvigil's own collection continues the same history). An instance pgvigil already stores under that name keeps its own description and tags; one stored as PostgreSQL is skipped and the reason printed. DBA Dash's own tags come along as `name:value` tags; its system tags (`{Edition}`, `{Version}` ...) do not: pgvigil reads those from the server itself.
+- Idempotent and resumable: a row pgvigil already holds is skipped, and every batch of 2,000 rows commits on its own, so a run cut short is run again and goes on. `-dry-run` prints the counts and writes nothing.
+- It prints, per instance and table, the DBA Dash rows of the window, the rows inserted now and the rows pgvigil holds for the window after.
+
+| DBA Dash 4.24.1 | pgvigil | How |
+|---|---|---|
+| `dbo.Instances`, `dbo.Tags`, `dbo.InstanceIDsTags` | `instances` (engine sqlserver) | the display name (`ISNULL(Alias, ConnectionID)`), the product version, the tags |
+| `dbo.CPU` | `mssql_cpu_sample` | a row per DBA Dash minute: SQL Server's share, other processes', idle; on Linux other and idle are left empty as the collector leaves them (the server writes no idle figure there) |
+| `dbo.DriveSnapshot` + `dbo.Drives` | `mssql_volume_sample` | a row per drive and snapshot: capacity and free bytes |
+| `dbo.DBFileSnapshot` + `dbo.DBFiles` + `dbo.Databases` | `mssql_database_size` | a row per database and snapshot: data (ROWS files) and log size and used space, pages × 8 KB, the file count |
+| `dbo.JobHistory` + `dbo.Jobs` | `mssql_job_runs` | a row per job outcome and step: msdb's own history id, the job and step, status, duration, message; DBA Dash keeps the start in UTC and msdb's local run_date / run_time are rebuilt with the instance's current UTC offset |
+
+Not imported (no home in pgvigil's store, or nothing a later pgvigil read would not rebuild): wait statistics (`dbo.Waits`; pgvigil classifies waits as it collects them), running-query and slow-query captures, performance counters, IO statistics, backup history (pgvigil keeps each database's current backup state, which its first read fills), the configuration and patch history, DBA Dash's alerts, thresholds and acknowledgements, and Azure SQL Database rows.
+
+The import is proven on a DBA Dash 4.24.1 repository built by DBA Dash's own service (`scripts/proof-dbadash-door.sh`: the dry run's counts equal the source tables', the run inserts and then holds exactly those, a second run inserts nothing). That repository was collected on Linux, where DBA Dash reads no drives: the drive mapping is proven with 0 rows there.
+
 ## Storage and retention
 
 Migration 0052: `dbadash_repositories` (one row per configured repository: the last read, ok or `not read` with the reason), `dbadash_instances` and `dbadash_summary` (one current row per instance), and `dbadash_summary_history` (the change points: an instance's first read and every read whose statuses changed). The retention: from the wave's join migration on, `pgvigil purge` deletes history older than the retention while keeping each instance's newest row (its current baseline), and deletes an instance DBA Dash no longer lists once it is older than the retention. A read that fails keeps the last rows as they were. A repository removed from the configuration leaves the tree at the next start of `pgvigil run`, the last one too.
@@ -72,9 +144,9 @@ The API: `GET /api/dbadash` (every repository and instance), `?repo=<name>` (one
 
 ## What it does not do
 
-- No SQL Server collection: an instance DBA Dash does not monitor is not shown.
+- No SQL Server collection by the door: an instance DBA Dash does not monitor is not shown here (pgvigil's own SQL Server engine, [sqlserver.md](sqlserver.md), monitors an instance directly).
 - No Azure SQL Database rows (DBA Dash groups those per Azure server in its Summary; pgvigil leaves them out).
-- No write on the DBA Dash side, no DBA Dash procedure executed, no acknowledgement set from pgvigil.
+- No write on the DBA Dash side, no DBA Dash procedure executed but the nine read procedures above, no acknowledgement set from pgvigil.
 - Nothing outbound beyond the repositories the configuration names.
 
-The driver is [microsoft/go-mssqldb](https://github.com/microsoft/go-mssqldb) (BSD-3-Clause). DBA Dash is MIT-licensed; pgvigil copies none of its code: the table and column names above are read from its published schema.
+The driver is [microsoft/go-mssqldb](https://github.com/microsoft/go-mssqldb) (BSD-3-Clause). DBA Dash is MIT-licensed; pgvigil copies none of its code: the table, column, procedure and parameter names above are read from its published schema, and its procedures are called, never copied.

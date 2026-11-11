@@ -71,8 +71,10 @@ func allStatuses() []any {
 	return []any{sql.Named("IncludeCritical", true), sql.Named("IncludeWarning", true), sql.Named("IncludeNA", true), sql.Named("IncludeOK", true)}
 }
 
-// utc2 sends a time as DBADash keeps its dates: UTC, no offset (a datetime2 parameter)
-func utc2(t time.Time) mssql.DateTime1 { return mssql.DateTime1(t.UTC()) }
+// utc2 sends a time as DBADash keeps its dates: UTC, no offset, to the 100 ns of a datetime2(7). It goes as ISO 8601
+// text, which SQL Server converts to the procedure's datetime2 parameter exactly (a time.Time would go as a
+// datetimeoffset, mssql.DateTime1 as a datetime rounded to 3.33 ms, which would miss a running-queries snapshot)
+func utc2(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.9999999") }
 
 // Pages are the pages in the order of task 75 (the Summary first: the task-55 read of dbo.Summary, not a procedure).
 var Pages = []PageDef{
@@ -86,7 +88,7 @@ var Pages = []PageDef{
 	{Key: "sessions", Title: "Running Queries (snapshot)", Procedure: "dbo.RunningQueries_Get", Snapshot: true, args: func(a PageArgs) []any {
 		out := []any{sql.Named("InstanceID", a.InstanceID)}
 		if !a.Snapshot.IsZero() {
-			s := mssql.DateTime1(a.Snapshot.UTC())
+			s := utc2(a.Snapshot)
 			out = append(out, sql.Named("SnapshotDateFrom", s), sql.Named("SnapshotDateTo", s))
 		}
 		return out
