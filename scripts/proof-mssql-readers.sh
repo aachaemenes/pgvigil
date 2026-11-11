@@ -250,7 +250,7 @@ HB=$(hand 1 "$MB")
 collect mssql_errorlog "$NF"
 SB=$(stored "$IF" "$MB")
 eq "L4: marker B (local|utc|severity|error|rows|archive)" "$(echo "$SB" | cut -d'|' -f1-6)" "$(echo "$HB" | cut -d'|' -f1-2)|17|50000|1|1"
-eq "L4: the own line (rows|custom)" "$(stored "$IF" "$OWN line" | cut -d'|' -f5,7)" "1|t"
+eq "L4: the own line (rows|custom)" "$(stored "$IF" "$OWN line" | cut -d'|' -f5,7)" "1|true"
 eq "L4: marker A after the archives were read" "$(stored "$IF" "$MA" | cut -d'|' -f5)" 1
 echo "L4: OK (marker B once from archive 1, the own line marked, marker A still one row)"
 raise 17 "$MC"; sleep 1
