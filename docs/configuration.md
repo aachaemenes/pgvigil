@@ -43,12 +43,12 @@ column of words in the same row says it too; the Excel export carries both.
 
 | cell | green | yellow | red | grey |
 |---|---|---|---|---|
-| connection limit | no limit, or under 80 % in use | 80 % or more of `CONNECTION LIMIT` in use | reached: a new session of a login that is not a superuser is refused | connections not allowed; sessions not read in the last 10 minutes |
+| connection limit | no limit, or under 80 % in use | 80 % or more of `CONNECTION LIMIT` in use; a limit of 0 (only a superuser gets in) | reached: a new session of a login that is not a superuser is refused; an invalid database (an interrupted `DROP DATABASE`, `datconnlimit` -2) | connections not allowed; sessions not read in the last 10 minutes; under the limit on a read that folded its smallest sources (the count is then a floor) |
 | allow connections | allowed | not allowed on a database that is not a template | | a template |
-| encoding | UTF8 | another encoding (advice) | | |
+| encoding | UTF8 | another encoding (advice) | | template0 (`CREATE DATABASE ... TEMPLATE template0` takes any encoding) |
 | collation version | the version recorded = the library's now | they differ: text indexes may be out of order (REINDEX, then `ALTER DATABASE ... REFRESH COLLATION VERSION`) | | before PostgreSQL 15; a locale without a version (C, POSIX, builtin); not read |
 | data checksums (the cluster's) | on | off (a warning self-managed, advice on a managed platform) | | Aurora (its storage checks its pages) |
-| xid age | `age(datfrozenxid)` under `autovacuum_freeze_max_age` | at or past it: the anti-wraparound vacuum is due | past 1 billion | |
+| xid age | `age(datfrozenxid)` under `autovacuum_freeze_max_age` | at or past it: the anti-wraparound vacuum is due | 1 billion or more | |
 
 The sessions are the newest read of the `connections` collection (every minute; the collector's own session left out;
 a server with more than 500 connection sources folds the smallest into `(other sources)`, so a database's count there
@@ -62,15 +62,20 @@ held to the same rule as the server's own value (the Best practice grid above): 
 yellow or red even where the server's value is green, and the server's value stands beside it in its own colour.
 
 - PostgreSQL keeps an override's text as it was typed (`256MB`, `ALL`, `true`). The collector reads it into the
-  setting's base unit as `pg_settings.setting` shows it (262144 kB, `all`, `on`), the unit the rules compare in; the
-  grid shows both. A value it cannot read (masked, a placeholder of an extension not loaded) is grey.
+  setting's base unit as `pg_settings.setting` shows it (262144 kB, `all`, `on`; `1.3GB` is 1362944 kB, rounded to
+  whole MB first as PostgreSQL rounds it), the unit the rules compare in; the grid shows both. A value it cannot read
+  (masked, a placeholder of an extension not loaded, a string: PostgreSQL rewrites some, such as `TimeZone`) is grey.
+  A setting keeps PostgreSQL's own spelling (`TimeZone`, `DateStyle`).
 - A setting a session cannot set cannot be overridden: `ALTER DATABASE ... SET autovacuum = off` is refused by the
   server ('cannot be changed now'). The overrides that can break a critical rule are `track_counts = off` and
   `zero_damaged_pages = on`; most others are warnings or advice (`synchronous_commit = off`, a `work_mem` over 96 MB,
   `log_statement = all`, `jit = on`, ...).
+- A setting the Best practice grid has no rule for is grey 'no rule' as an override too: a role's
+  `statement_timeout = 0` is grey, since no rule covers `statement_timeout` (a global timeout is set from
+  measurement, never by a default rule).
 - `ALTER ROLE ALL SET` and an override of the database the collector connects to are also seen by the `instance`
   collection as server-level values (`pg_settings` sources `global` and `database`), so the Best practice grid can
-  show the same value.
+  show the same value. On such a row the server's value is shown uncoloured, marked as read under the override.
 - Values that can carry a credential are masked as the server's are.
 
 **Findings.** Every override that breaks a rule is a finding with the rule's severity. The database cells raise
@@ -79,7 +84,7 @@ not allowed (warning), an encoding other than UTF8 (info). The collation, checks
 already (`collation version`, `data_checksums`, `database xid age`).
 
 **The fleet.** The root page **PostgreSQL options** (under Configuration) counts per instance the databases at their
-connection limit and near it, not allowing connections, not UTF8, with a collation mismatch, without checksums, past
+connection limit (or invalid) and near it (or closed by a limit of 0), not allowing connections, not UTF8, with a collation mismatch, without checksums, past
 the freeze age, and the overrides that break a rule; each count opens the instance's page filtered to them (the twin
 of the SQL Server options page).
 

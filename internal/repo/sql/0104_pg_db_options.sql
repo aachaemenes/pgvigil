@@ -6,8 +6,9 @@
 --                             stored by PostgreSQL as ALTER DATABASE's is and reads as scope database. raw_value as
 --                             written (masked as the server's values are), value as pg_settings.setting would show it
 --                             (base unit, on / off, an enum's name; the collector's dbSettingBase), value_read false
---                             where the text is no such value. Replaced by each read; first_seen kept while the text
---                             stays the same.
+--                             where the text is no such value or a string. known false: pg_settings does not list the
+--                             name to the collector (a placeholder, or a setting hidden from it). Replaced by each read;
+--                             first_seen kept while the text stays the same.
 --   pg_db_role_settings_read  the last read of each instance (an instance without any override has a read and no row).
 --   setting_values            the values the rules judge: the server's (instance_settings, scope server) and every
 --                             override whose value was read, with the instance's platform, version and replica flag.
@@ -25,15 +26,18 @@
 --   pg_override_findings      a finding per override that breaks a rule, in pgvigil.findings' columns.
 --   pg_db_options             one row per database, each cell with its status (ok / warn / crit / none = grey: not
 --                             judged, or the version lacks it), severity and words: the connection limit against the
---                             sessions of the newest connections read (reached red, near - 80 % - yellow), allow
+--                             sessions of the newest connections read (reached red, near - 80 % - yellow; an invalid
+--                             database, datconnlimit -2, red; a limit of 0 yellow; below the limit on a read that folded
+--                             its smallest sources grey: the count is a floor), allow
 --                             connections off on a database that is not a template, an encoding other than UTF8
 --                             (advice), the collation version recorded against the library's now (PostgreSQL 15+,
 --                             the versions collection), data checksums (the cluster's, on each row: corruption
 --                             findings' severity by platform), age(datfrozenxid) against autovacuum_freeze_max_age
 --                             (at or past it yellow, past 1 billion red).
 --   pg_dboption_findings      a finding for the cells no other finding covers (the connection limit, allow connections,
---                             the encoding); the collation, checksums and xid age cells have theirs already
---                             (version_findings, corruption_findings, 'database xid age').
+--                             the encoding). The collation and checksums cells have theirs (version_findings,
+--                             corruption_findings); the xid age cell's is 'database xid age', which starts at 300
+--                             million and leaves the templates out, so a yellow xid cell under it has no finding.
 --   pg_dboption_risks         the fleet's risk counts per active PostgreSQL instance (the twin of 0090's
 --                             mssql_option_risks): databases at their connection limit and near it, connections not
 --                             allowed, not UTF8, collation mismatch, checksums off, xid age past the freeze age, and
@@ -55,7 +59,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.pg_db_role_settings (
   unit         text,
   context      text,
   boot_val     text,
-  known        boolean,                         -- the server knows the setting (false: a placeholder)
+  known        boolean,                         -- pg_settings lists it to the collector (false: a placeholder or hidden)
   first_seen   timestamptz NOT NULL,            -- the first read that found this text
   snapshot_at  timestamptz NOT NULL,
   PRIMARY KEY (instance_id, scope, dbid, roleid, name)
@@ -249,17 +253,24 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- one instance's overrides, the worst first, each with the server's value (the value pg_setting_rules judges; for a
--- setting without a rule the instance read's server-level value, else the compiled-in default) and the server's status
+-- setting without a rule the instance read's server-level value, else the compiled-in default; none for a setting the
+-- collector does not see) and the server's status and severity
 CREATE OR REPLACE FUNCTION pgvigil.pg_override_rules(p_instance_id int)
 RETURNS TABLE (scope text, dbid bigint, datname text, roleid bigint, rolname text, setting text, statement text, raw_value text,
                value text, value_read boolean, vartype text, unit text, context text, known boolean, status text, severity text,
                suggested text, platforms text, detail text, rules int, server_value text, server_is_set boolean,
-               server_status text, server_rules int, first_seen timestamptz, snapshot_at timestamptz)
+               server_status text, server_severity text, server_rules int, server_from_override boolean,
+               first_seen timestamptz, snapshot_at timestamptz)
 LANGUAGE sql STABLE AS $$
   SELECT o.scope, o.dbid, o.datname, o.roleid, o.rolname, o.setting, pgvigil.override_statement(o.scope, o.datname, o.rolname),
          o.raw_value, o.value, o.value_read, o.vartype, o.unit, o.context, o.known, o.status, o.severity, o.suggested,
-         o.platforms, o.detail, o.rules, coalesce(g.value, nd.value, o.boot_val), coalesce(g.is_set, nd.value IS NOT NULL),
-         g.status, g.rules, o.first_seen, o.snapshot_at
+         o.platforms, o.detail, o.rules,
+         CASE WHEN coalesce(o.known, false) OR g.setting IS NOT NULL THEN coalesce(g.value, nd.value, o.boot_val) END,
+         coalesce(g.is_set, nd.value IS NOT NULL), g.status, g.severity, g.rules,
+         -- the instance read takes ALTER ROLE ALL SET (source global) and an override of the database the collector
+         -- connects to (source database) as server-level values: there the server's value may be this override's own
+         o.scope = 'all roles' OR (o.scope = 'database' AND o.datname = st.connected_database),
+         o.first_seen, o.snapshot_at
     FROM pgvigil.override_rules o
     LEFT JOIN pgvigil.pg_setting_rules(p_instance_id) g ON g.setting = o.setting
     LEFT JOIN pgvigil.instance_state st ON st.instance_id = o.instance_id
@@ -273,8 +284,7 @@ CREATE OR REPLACE VIEW pgvigil.pg_override_findings AS
 SELECT o.instance_id, o.severity, o.setting,
        substr(pgvigil.override_statement(o.scope, o.datname, o.rolname), 7) || ' ' || o.setting || ' = ' || coalesce(o.raw_value, '') AS value,
        true AS is_set, o.suggested, o.platforms,
-       'an override breaks the rule the server''s own value is held to (' || pgvigil.override_statement(o.scope, o.datname, o.rolname)
-       || '; the sessions it covers run with it): ' || o.detail AS detail,
+       'override of the server''s value: ' || o.detail AS detail,
        'pgvigil'::text AS source, o.snapshot_at AS at
   FROM pgvigil.override_rules o
  WHERE o.status IN ('crit', 'warn');
@@ -282,18 +292,23 @@ SELECT o.instance_id, o.severity, o.setting,
 -- one row per database; per cell <cell>_status (ok / warn / crit / none), <cell>_severity (of a deviation) and
 -- <cell>_note (the cell's words)
 CREATE OR REPLACE VIEW pgvigil.pg_db_options AS
-WITH n AS (     -- the newest connections read of each instance in the last 10 minutes (the collection runs every minute)
+WITH n0 AS (    -- the newest connections read of each instance in the last 10 minutes (the collection runs every minute)
   SELECT c.instance_id, max(c.snapshot_at) AS at
     FROM pgvigil.conn_sources c
    WHERE c.snapshot_at > now() - interval '10 minutes'
    GROUP BY 1
+), n AS (       -- folded: the read put its smallest sources under '(other sources)', so a database's count is a floor
+  SELECT n0.instance_id, n0.at,
+         EXISTS (SELECT 1 FROM pgvigil.conn_sources c WHERE c.instance_id = n0.instance_id AND c.snapshot_at = n0.at
+                    AND c.datname = '(other sources)') AS folded
+    FROM n0
 ), cs AS (
   SELECT c.instance_id, c.datname, sum(c.total)::int AS sessions
     FROM pgvigil.conn_sources c JOIN n ON n.instance_id = c.instance_id AND n.at = c.snapshot_at
    GROUP BY 1, 2
 ), b AS (
   SELECT d.instance_id, d.dbid, d.datname, d.is_template, d.allow_conn, d.conn_limit, d.encoding, d.xid_age, d.snapshot_at,
-         st.platform, st.server_version_num, st.data_checksums, n.at AS sessions_at,
+         st.platform, st.server_version_num, st.data_checksums, n.at AS sessions_at, coalesce(n.folded, false) AS folded,
          CASE WHEN n.at IS NOT NULL THEN coalesce(cs.sessions, 0) END AS sessions,
          fm.v AS freeze_max_age,
          co.dbid IS NOT NULL AS collation_read, co.provider, co.locale, co.recorded_version, co.actual_version
@@ -311,21 +326,29 @@ WITH n AS (     -- the newest connections read of each instance in the last 10 m
   SELECT b.*,
     -- the connection limit against the sessions now (a superuser is not held to it; the count is every client session
     -- of the newest read but the collector's own)
-    CASE WHEN NOT coalesce(b.allow_conn, true) OR b.conn_limit IS NULL THEN 'none' WHEN b.conn_limit < 0 THEN 'ok'
+    -- datconnlimit -2 (PostgreSQL 13.12, 14.9, 15.4, 16 and later): an interrupted DROP DATABASE left it invalid
+    CASE WHEN b.conn_limit = -2 THEN 'crit' WHEN NOT coalesce(b.allow_conn, true) OR b.conn_limit IS NULL THEN 'none'
+         WHEN b.conn_limit < 0 THEN 'ok' WHEN b.conn_limit = 0 THEN 'warn'
          WHEN b.sessions IS NULL THEN 'none' WHEN b.sessions >= b.conn_limit THEN 'crit'
-         WHEN b.sessions >= 0.8 * b.conn_limit THEN 'warn' ELSE 'ok' END AS conn_status,
-    CASE WHEN NOT coalesce(b.allow_conn, true) THEN 'not judged: connections are not allowed'
+         WHEN b.folded THEN 'none' WHEN b.sessions >= 0.8 * b.conn_limit THEN 'warn' ELSE 'ok' END AS conn_status,
+    CASE WHEN b.conn_limit = -2 THEN 'invalid: an interrupted DROP DATABASE left it; no session can connect and only DROP DATABASE removes it'
+         WHEN NOT coalesce(b.allow_conn, true) THEN 'not judged: connections are not allowed'
          WHEN b.conn_limit IS NULL THEN 'not read' WHEN b.conn_limit < 0 THEN 'no limit'
+         WHEN b.conn_limit = 0 THEN 'closed: CONNECTION LIMIT 0 lets only a superuser in'
          WHEN b.sessions IS NULL THEN 'sessions not read in the last 10 minutes (the connections collection)'
          WHEN b.sessions >= b.conn_limit THEN 'reached: a new session of a login that is not a superuser is refused'
+         WHEN b.folded THEN 'not judged: the read folded its smallest connection sources into (other sources), so the count is a floor'
          WHEN b.sessions >= 0.8 * b.conn_limit THEN 'near: 80 % or more of the limit in use' ELSE 'room' END AS conn_note,
     -- allow connections
-    CASE WHEN b.allow_conn IS NULL THEN 'none' WHEN coalesce(b.is_template, false) THEN 'none' WHEN b.allow_conn THEN 'ok' ELSE 'warn' END AS allow_status,
-    CASE WHEN b.allow_conn IS NULL THEN 'not read' WHEN coalesce(b.is_template, false) THEN 'a template: not judged'
+    CASE WHEN b.allow_conn IS NULL OR b.conn_limit = -2 THEN 'none' WHEN coalesce(b.is_template, false) THEN 'none' WHEN b.allow_conn THEN 'ok' ELSE 'warn' END AS allow_status,
+    CASE WHEN b.allow_conn IS NULL THEN 'not read' WHEN b.conn_limit = -2 THEN 'an invalid database: not judged'
+         WHEN coalesce(b.is_template, false) THEN 'a template: not judged'
          WHEN b.allow_conn THEN 'allowed' ELSE 'not allowed: no session can use the database (ALTER DATABASE ... ALLOW_CONNECTIONS true opens it)' END AS allow_note,
     -- encoding
-    CASE WHEN b.encoding IS NULL THEN 'none' WHEN b.encoding = 'UTF8' THEN 'ok' ELSE 'warn' END AS encoding_status,
-    CASE WHEN b.encoding IS NULL THEN 'not read' WHEN b.encoding = 'UTF8' THEN 'UTF8'
+    -- template0's encoding binds nothing: CREATE DATABASE ... TEMPLATE template0 takes any encoding
+    CASE WHEN b.encoding IS NULL OR b.datname = 'template0' THEN 'none' WHEN b.encoding = 'UTF8' THEN 'ok' ELSE 'warn' END AS encoding_status,
+    CASE WHEN b.encoding IS NULL THEN 'not read' WHEN b.datname = 'template0' THEN b.encoding || ' (template0: CREATE DATABASE ... TEMPLATE template0 takes any encoding)'
+         WHEN b.encoding = 'UTF8' THEN 'UTF8'
          WHEN b.encoding = 'SQL_ASCII' THEN 'SQL_ASCII stores bytes unchecked: no character is validated or converted'
          ELSE 'not UTF8: characters outside ' || b.encoding || ' cannot be stored' END AS encoding_note,
     -- the collation version (PostgreSQL 15+)
@@ -371,8 +394,10 @@ SELECT j.instance_id, j.dbid, j.datname, j.is_template, j.snapshot_at, j.platfor
 CREATE OR REPLACE VIEW pgvigil.pg_dboption_findings AS
 SELECT o.instance_id, o.conn_severity AS severity, 'database connection limit' AS setting,
        o.datname || ': limit ' || o.conn_limit::text AS value, true AS is_set,
-       'raise it (ALTER DATABASE ... CONNECTION LIMIT n) or find what holds the sessions' AS suggested, 'all' AS platforms,
-       CASE o.conn_status WHEN 'crit' THEN 'the database''s CONNECTION LIMIT is reached: a new session of a login that is not a superuser is refused (too many connections for database)'
+       CASE WHEN o.conn_limit = -2 THEN 'DROP DATABASE' ELSE 'a higher CONNECTION LIMIT, or fewer sessions' END AS suggested, 'all' AS platforms,
+       CASE WHEN o.conn_limit = -2 THEN 'the database is invalid (datconnlimit -2): an interrupted DROP DATABASE left it; no session can connect and only DROP DATABASE removes it'
+            WHEN o.conn_limit = 0 THEN 'the database''s CONNECTION LIMIT is 0: only a superuser can connect'
+            WHEN o.conn_status = 'crit' THEN 'the database''s CONNECTION LIMIT is reached: a new session of a login that is not a superuser is refused (too many connections for database)'
             ELSE 'the database''s sessions are at 80 % or more of its CONNECTION LIMIT: past it a new session is refused' END AS detail,
        'pgvigil'::text AS source, coalesce(o.sessions_at, o.snapshot_at) AS at
   FROM pgvigil.pg_db_options o
@@ -397,6 +422,7 @@ SELECT i.instance_id, i.name AS instance_name,
        coalesce(x.at_limit, 0) AS at_limit, coalesce(x.near_limit, 0) AS near_limit, coalesce(x.no_connections, 0) AS no_connections,
        coalesce(x.not_utf8, 0) AS not_utf8, coalesce(x.collation_mismatch, 0) AS collation_mismatch,
        coalesce(x.checksums_off, 0) AS checksums_off, coalesce(x.xid_past_freeze, 0) AS xid_past_freeze,
+       coalesce(x.xid_critical, 0) AS xid_critical,
        r.snapshot_at AS overrides_read_at, coalesce(r.overrides, 0) AS overrides,
        coalesce(v.broken, 0) AS overrides_broken, coalesce(v.critical, 0) AS overrides_critical
   FROM pgvigil.instances i
@@ -409,7 +435,8 @@ SELECT i.instance_id, i.name AS instance_name,
            count(*) FILTER (WHERE o.encoding_status = 'warn')::int AS not_utf8,
            count(*) FILTER (WHERE o.collation_status = 'warn')::int AS collation_mismatch,
            count(*) FILTER (WHERE o.checksums_status = 'warn')::int AS checksums_off,
-           count(*) FILTER (WHERE o.xid_status IN ('warn', 'crit'))::int AS xid_past_freeze
+           count(*) FILTER (WHERE o.xid_status IN ('warn', 'crit'))::int AS xid_past_freeze,
+           count(*) FILTER (WHERE o.xid_status = 'crit')::int AS xid_critical
       FROM pgvigil.pg_db_options o
      WHERE o.instance_id = i.instance_id) x ON true
   LEFT JOIN pgvigil.pg_db_role_settings_read r ON r.instance_id = i.instance_id

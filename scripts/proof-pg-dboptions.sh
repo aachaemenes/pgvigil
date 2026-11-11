@@ -22,57 +22,70 @@
 #     connection limit ok ('no limit'), allow connections ok, encoding ok (UTF8).
 #  C. the server refuses ALTER DATABASE ... SET autovacuum = off ('cannot be changed now': autovacuum is a reload
 #     setting), so the critical override of a database is track_counts = off and of a role zero_damaged_pages = on.
-#     Seeded: ALTER DATABASE dbo_t SET track_counts = off; ALTER ROLE dbo_app SET zero_damaged_pages = on; ALTER ROLE
-#     dbo_app IN DATABASE dbo_t SET synchronous_commit = off; ALTER ROLE ALL SET work_mem = '256MB'; ALTER DATABASE
-#     dbo_t SET jit = 'true'; ALTER ROLE dbo_app SET log_statement = 'ALL'; ALTER ROLE dbo_app SET
-#     idle_in_transaction_session_timeout = '2.5s'; ALTER ROLE dbo_app SET statement_timeout = '2.5ms' (if the server
-#     takes it); ALTER ROLE dbo_app SET app.tenant = 'x' (a placeholder). After dbsettings:
-#     - the rows equal a hand read of pg_db_role_setting (one per name=value), each scope as set;
-#     - every value the collector read equals pg_settings.setting after a set_config of the raw text on the server
-#       itself (the base unit: work_mem 262144, 2.5s 2500, ALL all, true on);
+#     Seeded (16 overrides; the review's spellings among them): ALTER DATABASE dbo_t SET track_counts = off, jit =
+#     'true', random_page_cost = '1.1e0', timezone = 'UTC'; ALTER ROLE dbo_app SET zero_damaged_pages = on,
+#     log_statement = 'ALL', idle_in_transaction_session_timeout = '2.5s', statement_timeout = '2.5ms' (if the server
+#     takes it), app.tenant = 'x' (a placeholder), enable_indexscan = 'of', work_mem = '1.3GB', log_min_messages =
+#     'debug'; ALTER ROLE dbo_app IN DATABASE dbo_t SET synchronous_commit = off, idle_in_transaction_session_timeout =
+#     '5min', statement_timeout = '0.1d'; ALTER ROLE ALL SET work_mem = '256MB'. After dbsettings:
+#     - the rows equal a hand read of pg_db_role_setting (one per name=value), each scope as set; timezone is stored
+#       and kept as TimeZone, known (a string: not read);
+#     - no override the server knows is left unread but the string; every value read equals pg_settings.setting after a
+#       set_config of the raw text on the server itself, and pinned: work_mem 262144 (all roles) and 1362944 (1.3GB,
+#       rounded to whole MB first), 2.5s 2500, 5min 300000, 0.1d 7200000, ALL all, true on, of off, 1.1e0 1.1, debug
+#       debug2;
 #     - every override's status equals what 0099's rule view, run from its own file over the override's value, says
-#       (crit / warn / ok / none), with more than 0 overrides judged; the placeholder is none, known false;
+#       (crit / warn / ok / none); the placeholder is none, known false;
 #     - track_counts at scope database and zero_damaged_pages at scope role are crit with severity critical while the
-#       server's own track_counts and zero_damaged_pages are ok (green); synchronous_commit and work_mem are warn;
+#       server's own are ok (green); 9 overrides break a rule (the two critical; synchronous_commit, both work_mem, jit,
+#       log_statement, enable_indexscan, log_min_messages), a number from the seeds;
 #     - pg_override_findings holds one row per override whose status is crit or warn, exactly those;
-#     - pgvigil.setting_rules holds exactly the rows 0099's view yields on the same store (0 only in either), so no
-#       override reaches the server's grid or its findings.
+#     - pgvigil.setting_rules holds exactly the rows 0099's view yields on the same store (0 only in either), and its
+#       rule lines are 0099's word for word once the scope key is taken out (a text comparison);
+#     - an instance read now takes ALTER ROLE ALL SET work_mem as the server's value (pg_settings source global): the
+#       server's work_mem reads 262144, and that override's row says its server value is read under it.
 #  D. connection limit: CREATE DATABASE dbo_c CONNECTION LIMIT 1 and one session of dbo_hold in it: a second session of
 #     dbo_hold is refused by the server ('too many connections'); after connections and databases dbo_c's cell is crit
+#     ('reached') with a critical finding 'database connection limit'. CONNECTION LIMIT 5 and four sessions: warn
+#     ('near'), a warning finding. The sessions ended: ok, the finding gone. CONNECTION LIMIT 0: warn 'closed'.
 #     [Run 1, box job s163-proof1, 2026-11-11 15:17 PST: A to C green on PostgreSQL 13; D let the second session in.
 #     Cause: the sessions logged in as dbo_app, whose statement_timeout C had set to 2.5 ms, so the held session ended
 #     at once. Fixed: the held sessions log in as dbo_hold, a role without overrides, and a hold is read again a second
 #     later; the expectation unchanged.]
-#     ('reached') with a critical finding 'database connection limit'. CONNECTION LIMIT 5 and four sessions: warn
-#     ('near'), a warning finding. The sessions ended: ok, the finding gone.
 #     ALLOW_CONNECTIONS false on dbo_x: allow warn with its finding; true again: ok, gone. dbo_l (LATIN1, C): encoding
-#     warn (advice, an info finding); its collation cell grey (C has no version on 15+, 'PostgreSQL 15+' on 13).
-#     The collation cell (15+): datcollversion of dbo_t written to '0.0' by hand: after versions warn, recorded 0.0;
-#     ALTER DATABASE dbo_t REFRESH COLLATION VERSION: ok again. On 13 every collation cell is grey.
-#     Data checksums: each row's cell is ok where the server's data_checksums (a hand read) is on, warn where it is off
-#     (the images: off before 18, on from 18). xid age: each row's age equals the server's age(datfrozenxid) at the
-#     read within the xids used since; ok on a fresh server; in a transaction rolled back, with the stored freeze age
-#     set to the smallest stored age every database at or past it is warn (at least one), every younger one ok, and an
-#     age written as 1.2 billion is crit.
-#     [Run 2, box job s163-proof2, 15:18 PST: A to D green on PostgreSQL 13 up to here; the freeze age of 100 found no
-#     database at or past it ('warn 0 0': a fresh cluster's ages are under 100). The expectation above replaces the
-#     guessed 100 with the smallest stored age.]
+#     warn (advice, an info finding); its collation cell grey (C has no version on 15+, 'PostgreSQL 15+' on 13);
+#     template0's encoding cell grey. The collation cell (15+): datcollversion of dbo_t written to '0.0' by hand: after
+#     versions warn, recorded 0.0; ALTER DATABASE dbo_t REFRESH COLLATION VERSION: ok again. On 13 every collation cell
+#     is grey. Data checksums: each row's cell is ok where the server's data_checksums (a hand read) is on, warn where it
+#     is off (the images: off before 18, on from 18). xid age: each row's age equals the server's age(datfrozenxid) at
+#     the read within the xids used since; ok on a fresh server; dbo_x frozen (VACUUM FREEZE) and a few xids used after:
+#     in a transaction rolled back, with the stored freeze age set just above dbo_x's age, dbo_x is ok and every older
+#     database warn (at least one each), and an age written as 1.2 billion is crit.
+#     [Run 4, box job s163-proof4, 15:39 PST: C's hand read differed only in 'timezone' against the stored 'TimeZone':
+#     the comparison is case-blind on the name since, the spelling checked on its own.]
+#     [Run 2, box job s163-proof2, 15:18 PST: the freeze age of 100 found no database at or past it ('warn 0 0': a
+#     fresh cluster's ages are under 100). Run 3 set it to the smallest age, which the review showed cannot fail its
+#     'younger stays ok' half; the frozen dbo_x makes both halves able to fail.]
 #  E. the fleet's risk counts (pg_dboption_risks) while dbo_c is at its limit and the overrides are set: at_limit 1,
-#     not_utf8 1, overrides_broken = the number of crit / warn overrides, overrides_critical 2, checksums_off = the
-#     databases when data_checksums is off, else 0; each count equals a count of pg_db_options / override_rules.
-#  F. undo: every override RESET: after dbsettings 0 rows, the findings gone, the server's rows unchanged.
-#  G. the API (on PGDBO_PAGE_PG, while C to E are seeded): /api/pg/dboptions?instance=<id> answers 200 with the parts
-#     state, databases, overrides, overrides_read, findings, their row counts the views'; ?part=overrides alone;
-#     /api/pg/dboptions/fleet one risks row per active PostgreSQL instance.
+#     not_utf8 1 (template0 not judged), overrides_broken 9, overrides_critical 2, checksums_off = the databases when
+#     data_checksums is off, else 0; each count equals a count of pg_db_options / override_rules.
+#  F. undo: every override RESET: after dbsettings 0 rows, the findings gone; an instance read: the server's work_mem
+#     4096 and green again, track_counts and zero_damaged_pages green.
+#  G. the API (on PGDBO_PAGE_PG, which must be one of the versions; while C to E are seeded): /api/pg/dboptions?instance=
+#     <id> answers 200 with the parts state, databases, overrides, overrides_read, findings, their row counts the
+#     views'; ?part=overrides alone; /api/pg/dboptions/fleet one risks row per active PostgreSQL instance.
 #  H. the page in a headless Chromium, light and dark theme, solid and quiet status style (four pictures): the
 #     Databases grid and the Setting overrides grid drawn; dbo_c's connection cell red with a title 'deviates:
 #     critical: reached ...'; the database override of track_counts red beside the server's value green; a grey cell;
 #     every coloured cell carries a title; no exception. The fleet page: the instance's 'At connection limit' count is a
-#     red link to risk=at_limit, which opens a grid of exactly dbo_c.
+#     red link to risk=at_limit, which opens a grid of exactly dbo_c. PASS is printed only when G and H ran.
+#  The collection versions may end 'partial' (a part it reads elsewhere); the run says so in a line.
 #  Z. every container and its volumes gone: 0 left.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSIONS=${PGDBO_VERSIONS:-13 16 18}; RPG=${PGDBO_REPO_PG:-13}; PAGE_PG=${PGDBO_PAGE_PG:-${VERSIONS##* }}
+VERSIONS=$(echo ${PGDBO_VERSIONS:-13 16 18}); RPG=${PGDBO_REPO_PG:-13}; PAGE_PG=${PGDBO_PAGE_PG:-${VERSIONS##* }}
+[[ " $VERSIONS " == *" $PAGE_PG "* ]] || { echo "FAIL: PGDBO_PAGE_PG $PAGE_PG is not one of the versions ($VERSIONS)" >&2; exit 1; }
+PAGE_RAN=""
 SUF=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
 SUPW=s$RANDOM$RANDOM$RANDOM; MONPW=m$RANDOM$RANDOM$RANDOM; APPPW=a$RANDOM$RANDOM$RANDOM
 MON=dbo_mon_$SUF; REPO_DB=pgvigil_dbo_$SUF
@@ -82,9 +95,12 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
 cleanup() {
   local rc=$? left vols=""
-  for p in "${HOLD[@]}" $SRVPID $CHRPID; do kill "$p" 2>/dev/null || true; done
+  set +e   # every step of the cleanup runs, whatever one of them returns
+  [[ -n "$CHRPID" ]] && kill -- -"$CHRPID" 2>/dev/null
+  for p in "${HOLD[@]}" $SRVPID $CHRPID; do kill "$p" 2>/dev/null; done
   for c in "${CIDS[@]}"; do vols+=" $(docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$c" 2>/dev/null)"; done
   [[ ${#CIDS[@]} -gt 0 ]] && docker rm -f -v "${CIDS[@]}" >/dev/null 2>&1
+  wait 2>/dev/null
   left=0
   for c in "${CIDS[@]}"; do docker inspect "$c" >/dev/null 2>&1 && left=$((left + 1)); done
   for v in $vols; do docker volume inspect "$v" >/dev/null 2>&1 && left=$((left + 1)); done
@@ -149,9 +165,9 @@ declare -A PORT SU MONDSN APPDSN INST
 start_pg() {   # start_pg <key> <major>
   local k=$1 v=$2 p
   p=$(freeport); PORT[$k]=$p
+  CIDS+=("pgdbo$SUF-$k")   # by name, before the run: a container created and not started is removed too
   docker run -d --name "pgdbo$SUF-$k" -e POSTGRES_PASSWORD="$SUPW" -p "127.0.0.1:$p:5432" "postgres:$v" > "$WORK/$k.id" \
     || fail "the PostgreSQL $v container did not start"
-  CIDS+=("$(cat "$WORK/$k.id")")
   SU[$k]="host=127.0.0.1 port=$p user=postgres password=$SUPW dbname=postgres sslmode=disable"
 }
 echo "--- A. the servers: PostgreSQL $VERSIONS monitored, $RPG the repository"
@@ -201,6 +217,32 @@ R99=internal/repo/sql/0099_pg_setting_rules.sql
 [[ "$(sed -n 105p $R99)" == "  FROM c JOIN v ON v.instance_id = c.instance_id AND v.name = c.name;" ]] || fail "0099's setting_rules view does not end at line 105"
 rules99() { echo "CREATE TEMP VIEW $1 AS"; sed -n 13,105p $R99 | sed "s/FROM pgvigil.instance_settings\$/FROM $2/"; }
 
+# rules_text: 0104's rule lines with the scope key taken out = 0099's lines 13-105 with its source renamed
+R104=internal/repo/sql/0104_pg_db_options.sql
+rules_text() {
+  python3 -I - "$R99" "$R104" <<'PY' || fail "C: 0104's rule lines are not 0099's"
+import sys
+r99 = open(sys.argv[1]).read().split('\n')[12:105]
+t = open(sys.argv[2]).read()
+a = t.index('CREATE OR REPLACE VIEW pgvigil.setting_rules_scoped AS\n') + len('CREATE OR REPLACE VIEW pgvigil.setting_rules_scoped AS\n')
+b = t.index('\n\n', a)
+body = t[a:b]
+for old, new in [
+    ('instance_id, k, scope, dbid, datname, roleid, rolname, snapshot_at', 'instance_id, snapshot_at'),
+    ('FROM pgvigil.setting_values', 'FROM pgvigil.instance_settings'),
+    ('instance_id, k, name, ', 'instance_id, name, '), ('v.instance_id, v.k, v.name, ', 'v.instance_id, v.name, '),
+    (' AND c.k = v.k', ''), (' AND v.k = r.k', ''), (' AND v.k = c.k', ''),
+    ('v.instance_id, v.scope, v.dbid, v.datname, v.roleid, v.rolname, ', 'v.instance_id, ')]:
+    body = body.replace(old, new)
+mine = body.split('\n')
+if mine != r99:
+    import difflib
+    print('\n'.join(list(difflib.unified_diff(r99, mine, lineterm=''))[:20]))
+    sys.exit(1)
+print('ok: C: 0104\'s %d rule lines = 0099\'s once the scope key is taken out' % len(mine))
+PY
+}
+
 # same: pgvigil.setting_rules against 0099's view over the same store
 same() {
   { rules99 old_rules pgvigil.instance_settings
@@ -238,7 +280,8 @@ hand_overrides() {
        from pg_db_role_setting s cross join lateral unnest(s.setconfig) c left join pg_database d on d.oid = s.setdatabase left join pg_roles r on r.oid = s.setrole order by 1"
 }
 stored_overrides() {
-  q "select scope || '|' || datname || '|' || rolname || '|' || name || '|' || raw_value from pgvigil.pg_db_role_settings where instance_id = $(iid "$1") order by 1"
+  # the name case-blind: the store keeps PostgreSQL's own spelling (TimeZone), checked on its own in C
+  q "select scope || '|' || datname || '|' || rolname || '|' || lower(name) || '|' || raw_value from pgvigil.pg_db_role_settings where instance_id = $(iid "$1") order by 1"
 }
 ostatus() { q "select coalesce(string_agg(status || ' ' || coalesce(severity, '-'), ','), 'absent') from pgvigil.override_rules where instance_id = $(iid "$1") and scope = '$2' and setting = '$3'"; }
 srvstatus() { q "select status from pgvigil.pg_setting_rules($(iid "$1")) where setting = '$2'"; }
@@ -259,7 +302,15 @@ hold() {   # hold <v> <db> <n>: n sessions of dbo_hold in the database, each asl
   done
   fail "D: $3 sessions of dbo_hold did not start in $2 on PostgreSQL $1"
 }
-unhold() { s "$1" "select count(pg_terminate_backend(pid)) from pg_stat_activity where datname = '$2' and usename = 'dbo_hold'" >/dev/null; for p in "${HOLD[@]}"; do wait "$p" 2>/dev/null || true; done; HOLD=(); }
+unhold() {
+  s "$1" "select count(pg_terminate_backend(pid)) from pg_stat_activity where datname = '$2' and usename = 'dbo_hold'" >/dev/null
+  for p in "${HOLD[@]}"; do wait "$p" 2>/dev/null || true; done; HOLD=()
+  for _ in $(seq 1 50); do
+    [[ $(s "$1" "select count(*) from pg_stat_activity where datname = '$2' and usename = 'dbo_hold'") == 0 ]] && return 0
+    sleep 0.2
+  done
+  fail "D: the sessions of dbo_hold in $2 did not end on PostgreSQL $1"
+}
 
 for V in $VERSIONS; do
   echo "=== PostgreSQL $V ($(s "$V" "show server_version"))"
@@ -286,6 +337,13 @@ for V in $VERSIONS; do
   s "$V" "alter role dbo_app set idle_in_transaction_session_timeout = '2.5s'" >/dev/null
   if s "$V" "alter role dbo_app set statement_timeout = '2.5ms'" >/dev/null 2>"$WORK/st.err"; then echo "statement_timeout '2.5ms' taken"; else echo "statement_timeout '2.5ms' refused: $(head -1 "$WORK/st.err")"; fi
   s "$V" "alter role dbo_app set app.tenant = 'x'" >/dev/null
+  s "$V" "alter role dbo_app set enable_indexscan = 'of'" >/dev/null
+  s "$V" "alter role dbo_app set work_mem = '1.3GB'" >/dev/null
+  s "$V" "alter role dbo_app set log_min_messages = 'debug'" >/dev/null
+  s "$V" "alter database dbo_t set random_page_cost = '1.1e0'" >/dev/null
+  s "$V" "alter database dbo_t set timezone = 'UTC'" >/dev/null
+  s "$V" "alter role dbo_app in database dbo_t set idle_in_transaction_session_timeout = '5min'" >/dev/null
+  s "$V" "alter role dbo_app in database dbo_t set statement_timeout = '0.1d'" >/dev/null
   collect "$V" dbsettings
   hand_overrides "$V" | LC_ALL=C sort > "$WORK/hand.txt"; stored_overrides "$V" | LC_ALL=C sort > "$WORK/stored.txt"
   cmp -s "$WORK/hand.txt" "$WORK/stored.txt" || { diff "$WORK/hand.txt" "$WORK/stored.txt" || true; fail "C: the stored overrides differ from the server's pg_db_role_setting"; }
@@ -296,11 +354,21 @@ for V in $VERSIONS; do
   while IFS='|' read -r name raw val; do
     printf 'begin;\nselect set_config(%s, %s, true) is null;\nselect setting from pg_settings where name = %s;\nrollback;\n' \
       "'$name'" "'$raw'" "'$name'" > "$WORK/hand.sql"
-    got=$(psql "${SU[$V]}" -XAtq -v ON_ERROR_STOP=1 -f "$WORK/hand.sql" < /dev/null | tail -1)
+    got=$(psql "${SU[$V]}" -XAtq -v ON_ERROR_STOP=1 -f "$WORK/hand.sql" < /dev/null | tail -1) || fail "C: the server did not read $name = '$raw'"
     NH=$((NH + 1))
     [[ "$got" == "$val" ]] || { echo "  $name '$raw': the collector read '$val', the server '$got'"; BAD=$((BAD + 1)); }
   done < <(q "select name || '|' || raw_value || '|' || value from pgvigil.pg_db_role_settings where instance_id = $ID and known and value_read order by 1")
-  [[ $NH -ge 6 && $BAD == 0 ]] || fail "C: $BAD of $NH values differ from the server's own reading"
+  [[ $BAD == 0 ]] || fail "C: $BAD of $NH values differ from the server's own reading"
+  UNREAD=$(q "select coalesce(string_agg(name || ' (' || scope || ')', ', '), '') from pgvigil.pg_db_role_settings where instance_id = $ID and known and not value_read and vartype <> 'string'")
+  [[ -z "$UNREAD" ]] || fail "C: overrides the server knows left unread: $UNREAD"
+  PIN=$(q "select string_agg(scope || ':' || name || '=' || value, ' ' order by scope, name) from pgvigil.pg_db_role_settings where instance_id = $ID
+           and (name in ('work_mem', 'idle_in_transaction_session_timeout', 'log_statement', 'jit', 'enable_indexscan', 'random_page_cost', 'log_min_messages')
+                or (scope = 'role in database' and name = 'statement_timeout'))")
+  WANT_PIN="all roles:work_mem=262144 database:jit=on database:random_page_cost=1.1 role:enable_indexscan=off role:idle_in_transaction_session_timeout=2500 role:log_min_messages=debug2 role:log_statement=all role:work_mem=1362944 role in database:idle_in_transaction_session_timeout=300000 role in database:statement_timeout=7200000"
+  [[ "$PIN" == "$WANT_PIN" ]] || fail "C: the pinned values read '$PIN', expected '$WANT_PIN'"
+  TZ_ROW=$(q "select name || ' ' || known || ' ' || value_read from pgvigil.pg_db_role_settings where instance_id = $ID and lower(name) = 'timezone'")
+  [[ "$TZ_ROW" == "TimeZone true false" ]] || fail "C: timezone reads '$TZ_ROW', expected 'TimeZone true false'"
+  ok "C: no known override left unread but the string; pinned: $PIN; TimeZone known, a string not read"
   ok "C: $NH values in the base unit = pg_settings.setting after set_config of the raw text ($(q "select string_agg(name || ' ' || raw_value || '=' || value, ', ' order by name) from pgvigil.pg_db_role_settings where instance_id = $ID and name in ('work_mem', 'idle_in_transaction_session_timeout', 'log_statement', 'jit')"))"
   read -r JUDGED DIFFER <<< "$(oracle "$V")"
   [[ "$JUDGED" -gt 0 && "$DIFFER" == 0 ]] || fail "C: $DIFFER overrides whose status differs from 0099's rules over their value ($JUDGED judged)"
@@ -315,10 +383,17 @@ for V in $VERSIONS; do
   ok "C: track_counts (database) and zero_damaged_pages (role) red with the server's own green; synchronous_commit (role in database) and work_mem (all roles) yellow"
   F1=$(q "select count(*) from pgvigil.pg_override_findings where instance_id = $ID")
   F2=$(q "select count(*) from pgvigil.override_rules where instance_id = $ID and status in ('crit', 'warn')")
+  [[ "$F2" == 9 ]] || fail "C: $F2 overrides break a rule, the seeds make 9: $(q "select string_agg(setting || ' ' || scope || ' ' || status, ', ') from pgvigil.override_rules where instance_id = $ID")"
   F3=$(q "select count(*) from pgvigil.pg_override_findings f where instance_id = $ID and severity = 'critical' and (value like 'DATABASE dbo_t SET track_counts = off' or value like 'ROLE dbo_app SET zero_damaged_pages = on')")
   [[ "$F1" == "$F2" && "$F1" -gt 0 && "$F3" == 2 ]] || fail "C: $F1 override findings, $F2 broken overrides, $F3 of the two critical ones"
-  ok "C: $F1 override findings = the broken overrides, the two critical ones among them"
+  ok "C: $F1 override findings = the broken overrides (9 from the seeds), the two critical ones among them"
   same "C"
+  rules_text
+  collect "$V" instance
+  WM=$(q "select value || ' ' || status from pgvigil.pg_setting_rules($ID) where setting = 'work_mem'")
+  WF=$(q "select server_from_override from pgvigil.pg_override_rules($ID) where scope = 'all roles' and setting = 'work_mem'")
+  [[ "$WM $WF" == "262144 warn true" ]] || fail "C: after an instance read the server's work_mem and the override's flag read '$WM $WF', expected '262144 warn true'"
+  ok "C: an instance read takes ALTER ROLE ALL SET work_mem as the server's (262144, yellow); the override says its server value is read under it"
 
   echo "--- D. database options"
   s "$V" "create database dbo_c connection limit 1" >/dev/null
@@ -336,7 +411,7 @@ for V in $VERSIONS; do
       from pgvigil.pg_dboption_risks r where instance_id = $ID" | tr '|' ' ')
   CKS=$(s "$V" "show data_checksums")
   WANT_CK=$([[ $CKS == off ]] && echo "$DBN" || echo 0)
-  [[ "$AL" == 1 && "$NU" == 1 && "$OB" == "$F2" && "$OC" == 2 && "$CO" == "$WANT_CK" && "$DCK" == "$CO" ]] \
+  [[ "$AL" == 1 && "$NU" == 1 && "$OB" == "$F2" && "$OB" == 9 && "$OC" == 2 && "$CO" == "$WANT_CK" && "$DCK" == "$CO" ]] \
     || fail "E: at_limit $AL, not_utf8 $NU, overrides_broken $OB (want $F2), overrides_critical $OC, checksums_off $CO (data_checksums $CKS, $DBN databases)"
   ok "E: the fleet's counts: at_limit 1, not_utf8 1, overrides_broken $OB, overrides_critical 2, checksums_off $CO (data_checksums $CKS)"
   if [[ "$V" == "$PAGE_PG" ]]; then
@@ -460,7 +535,8 @@ process.exit(failed ? 1 : 0);
 JS
     node "$WORK/page.mjs" "$CDP" "$U" "$ID" "$SHOTS" || fail "H: a check of the page failed"
     ok "H: the page in light and dark, solid and quiet (pictures in $SHOTS); the fleet's count opens dbo_c"
-    kill "$CHRPID" 2>/dev/null || true; CHRPID=""
+    PAGE_RAN=yes
+    kill -- -"$CHRPID" 2>/dev/null || kill "$CHRPID" 2>/dev/null || true; CHRPID=""
   fi
   unhold "$V" dbo_c
   s "$V" "alter database dbo_c connection limit 5" >/dev/null
@@ -471,7 +547,11 @@ JS
   unhold "$V" dbo_c
   collect "$V" connections
   [[ "$(dbcell "$V" dbo_c conn)" == "ok -" && "$(dbfind "$V" 'database connection limit' dbo_c)" == "0 -" ]] || fail "D: no session left reads '$(dbcell "$V" dbo_c conn)'"
-  ok "D: limit 5 with 4 sessions yellow 'near' with a warning finding; the sessions ended: green, the finding gone"
+  s "$V" "alter database dbo_c connection limit 0" >/dev/null; collect "$V" databases
+  CZ=$(dbcell "$V" dbo_c conn); CN=$(q "select conn_note from pgvigil.pg_db_options where instance_id = $ID and datname = 'dbo_c'")
+  [[ "$CZ" == "warn warning" && "$CN" == closed* ]] || fail "D: CONNECTION LIMIT 0 reads '$CZ' '$CN'"
+  s "$V" "alter database dbo_c connection limit -1" >/dev/null; collect "$V" databases
+  ok "D: limit 5 with 4 sessions yellow 'near' with a warning finding; the sessions ended: green, the finding gone; limit 0 yellow 'closed'"
   s "$V" "alter database dbo_x allow_connections false" >/dev/null; collect "$V" databases
   [[ "$(dbcell "$V" dbo_x allow) $(dbfind "$V" 'database allow connections' dbo_x)" == "warn warning 1 warning" ]] || fail "D: dbo_x closed reads '$(dbcell "$V" dbo_x allow)'"
   s "$V" "alter database dbo_x allow_connections true" >/dev/null; collect "$V" databases
@@ -479,7 +559,8 @@ JS
   ok "D: dbo_x ALLOW_CONNECTIONS false yellow with its finding; true: green, gone"
   [[ "$(dbcell "$V" dbo_l encoding) $(dbfind "$V" 'database encoding' dbo_l)" == "warn info 1 info" ]] || fail "D: dbo_l LATIN1 reads '$(dbcell "$V" dbo_l encoding)'"
   [[ "$(dbcell "$V" dbo_l collation)" == "none -" ]] || fail "D: dbo_l's collation (C) reads '$(dbcell "$V" dbo_l collation)'"
-  ok "D: dbo_l LATIN1 yellow advice with an info finding; its collation cell grey"
+  [[ "$(dbcell "$V" template0 encoding)" == "none -" ]] || fail "D: template0's encoding reads '$(dbcell "$V" template0 encoding)'"
+  ok "D: dbo_l LATIN1 yellow advice with an info finding; its collation cell grey; template0's encoding grey"
   if [[ $(s "$V" "show server_version_num") -ge 150000 ]]; then
     REC=$(s "$V" "select datcollversion from pg_database where datname = 'dbo_t'")
     [[ "$(dbcell "$V" dbo_t collation)" == "ok -" ]] || fail "D: dbo_t's collation ($REC) reads '$(dbcell "$V" dbo_t collation)'"
@@ -506,7 +587,13 @@ for k in srv:
     assert 0 <= int(srv[k]) - int(st[k]) <= 200, (k, srv[k], st[k])
 PY
   [[ $(q "select count(*) from pgvigil.pg_db_options where instance_id = $ID and xid_status <> 'ok'") == 0 ]] || fail "D: an xid cell not green on a fresh server"
-  FMA=$(q "select greatest(min(xid_age), 1) from pgvigil.databases where instance_id = $ID and is_present")
+  psql "${SU[$V]} dbname=dbo_x" -XAtq -v ON_ERROR_STOP=1 -c "vacuum freeze" >/dev/null || fail "D: vacuum freeze in dbo_x"
+  for _ in 1 2 3; do s "$V" "select txid_current()" >/dev/null; done
+  collect "$V" databases
+  XX=$(q "select xid_age from pgvigil.databases where instance_id = $ID and datname = 'dbo_x'")
+  FMA=$((XX + 1))
+  OLDER=$(q "select count(*) from pgvigil.databases where instance_id = $ID and is_present and xid_age >= $FMA")
+  [[ "$OLDER" -ge 1 ]] || fail "D: no database older than the frozen dbo_x ($XX): $(q "select string_agg(datname || '=' || xid_age, ' ') from pgvigil.databases where instance_id = $ID and is_present")"
   cat > "$WORK/xid.sql" <<SQL
 BEGIN;
 UPDATE pgvigil.instance_state SET non_default_settings = coalesce(non_default_settings, '[]'::jsonb) || '[{"name": "autovacuum_freeze_max_age", "value": "$FMA"}]'::jsonb WHERE instance_id = $ID;
@@ -516,10 +603,12 @@ UPDATE pgvigil.databases SET xid_age = 1200000000 WHERE instance_id = $ID AND da
 SELECT 'crit ' || xid_status || ' ' || xid_severity FROM pgvigil.pg_db_options WHERE instance_id = $ID AND datname = 'dbo_t';
 ROLLBACK;
 SQL
-  XO=$(qf "$WORK/xid.sql")
+  XO=$(qf "$WORK/xid.sql") || fail "D: the rolled-back xid transaction failed"
   grep -qE '^warn 0 [1-9][0-9]* 0$' <<< "$XO" || fail "D: freeze age $FMA: '$(grep '^warn' <<< "$XO")'"
+  YOUNGER=$(q "select count(*) from pgvigil.databases where instance_id = $ID and is_present and xid_age < $FMA")
+  [[ "$YOUNGER" -ge 1 ]] || fail "D: no database younger than $FMA"
   grep -qx 'crit crit critical' <<< "$XO" || fail "D: age 1.2 billion: '$(grep '^crit' <<< "$XO")'"
-  ok "D: xid ages = the server's; green; freeze age $FMA (the smallest age): $(grep '^warn' <<< "$XO" | cut -d' ' -f3) databases yellow, the younger green; 1.2 billion red (rolled back)"
+  ok "D: xid ages = the server's; green; dbo_x frozen to $XX, freeze age $FMA: $YOUNGER younger green, $(grep '^warn' <<< "$XO" | cut -d' ' -f3) older yellow; 1.2 billion red (rolled back)"
 
   echo "--- F. undo"
   s "$V" "alter database dbo_t reset all" >/dev/null; s "$V" "alter role dbo_app reset all" >/dev/null
@@ -527,8 +616,11 @@ SQL
   collect "$V" dbsettings
   [[ $(q "select count(*) from pgvigil.pg_db_role_settings where instance_id = $ID") == 0 && $(q "select count(*) from pgvigil.pg_override_findings where instance_id = $ID") == 0 ]] \
     || fail "F: rows or findings left after RESET"
-  [[ "$(srvstatus "$V" track_counts) $(srvstatus "$V" zero_damaged_pages)" == "ok ok" ]] || fail "F: the server's rows changed"
+  collect "$V" instance
+  SV="$(srvstatus "$V" track_counts) $(srvstatus "$V" zero_damaged_pages) $(q "select value || ' ' || status from pgvigil.pg_setting_rules($ID) where setting = 'work_mem'")"
+  [[ "$SV" == "ok ok 4096 ok" ]] || fail "F: after RESET and an instance read the server reads '$SV', expected 'ok ok 4096 ok'"
   same "F"
-  ok "F: every override RESET: 0 rows, 0 findings; the server's rows as before"
+  ok "F: every override RESET: 0 rows, 0 findings; an instance read: work_mem 4096 green, track_counts and zero_damaged_pages green"
 done
+[[ -n "$PAGE_RAN" ]] || fail "G and H did not run (PGDBO_PAGE_PG $PAGE_PG)"
 echo "proof-pg-dboptions: PASS on PostgreSQL $VERSIONS (repository $RPG)"
