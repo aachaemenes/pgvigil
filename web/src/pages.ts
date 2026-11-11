@@ -383,7 +383,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) + Number(x.ack) > 0);
     countBtns.clear();
     const g = grid(t, testCols, focus ? 'No test has a warning or a critical instance.' : 'No test has a sampled instance.');
-    g.removeAttribute('tabindex');   // the pane around it is the scroll region the keyboard reaches
+    g.querySelector('.grid-wrap')?.removeAttribute('tabindex');   // the pane around it is the scroll region the keyboard reaches
     upper.replaceChildren(g);
   };
   focusBtn.addEventListener('click', () => {

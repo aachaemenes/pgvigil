@@ -71,21 +71,47 @@ export function cellText(e: Element): string {
     ?? ((e.textContent ?? '').replace(/\s+/g, ' ').trim() || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''));
 }
 
-// copyText puts text on the clipboard (the async API on a secure origin, a hidden textarea elsewhere)
-export async function copyText(t: string): Promise<void> {
-  try { await navigator.clipboard.writeText(t); return; } catch { /* not a secure origin, or refused: the fallback */ }
+// copyText puts text on the clipboard (the async API on a secure origin, a hidden textarea elsewhere); true = copied
+export async function copyText(t: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(t); return true; } catch { /* not a secure origin, or refused: the fallback */ }
   const ta = el('textarea', { 'aria-hidden': 'true', style: 'position:fixed;left:-9999px' }) as HTMLTextAreaElement;
   ta.value = t; document.body.append(ta); ta.select();
-  try { document.execCommand('copy'); } finally { ta.remove(); }
+  try { return document.execCommand('copy'); } catch { return false; } finally { ta.remove(); }
 }
 
-// a filter's test on one cell's words: '>5', '<10', '>=', '<=', '=3' compare a number column numerically; anything
-// else is a case-insensitive part of the words ('!x' = does not contain x)
-function passes(f: string, words: string, raw: unknown, num: boolean): boolean {
-  const m = num ? /^(>=|<=|>|<|=)\s*(-?[\d.]+)$/.exec(f) : null;
-  if (m && raw != null && raw !== '') {
-    const v = Number(raw), x = Number(m[2]);
-    return m[1] === '>' ? v > x : m[1] === '<' ? v < x : m[1] === '>=' ? v >= x : m[1] === '<=' ? v <= x : v === x;
+// A number as the cell SHOWS it, never its raw value (a size shown as '1.5 GB' is bytes underneath, a duration shown as
+// '18m 0s' milliseconds or seconds): a filter compares what the reader sees. A size or a duration is read into one
+// scale (bytes; seconds), so '>500 MB' or '>10m' compares across the cell's own units; a bare number compares with the
+// number shown ('>5' on '1.5 GB' is false). Commas are thousands separators. null = not a number.
+const sizeUnits: Record<string, number> = { b: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 };
+const timeUnits: Record<string, number> = { ms: 0.001, s: 1, m: 60, min: 60, h: 3600, d: 86400 };
+interface Reading { n: number; scale: 'size' | 'time' | 'plain' }
+function reading(text: string): Reading | null {
+  const t = text.replace(/,/g, '').trim().toLowerCase();
+  const parts = [...t.matchAll(/(-?\d+(?:\.\d+)?)\s*(tb|gb|mb|kb|b|ms|min|s|m|h|d)?\b/g)];
+  if (!parts.length) return null;
+  const u = parts[0][2];
+  if (u && u in sizeUnits) return { n: Number(parts[0][1]) * sizeUnits[u], scale: 'size' };
+  if (u && u in timeUnits) {   // '18m 0s', '1h 2m': every part summed
+    let sec = 0;
+    for (const p of parts) { if (!p[2] || !(p[2] in timeUnits)) break; sec += Number(p[1]) * timeUnits[p[2]]; }
+    return { n: sec, scale: 'time' };
+  }
+  return { n: Number(parts[0][1]), scale: 'plain' };
+}
+// a filter's test on one cell's words: '>5', '<10', '>=', '<=', '=3', '>500 MB', '<10m' compare a number column as
+// shown (reading()); anything else is a case-insensitive part of the words ('!x' = does not contain x)
+export function passes(f: string, words: string, num: boolean): boolean {
+  const m = num ? /^(>=|<=|>|<|=)\s*(.+)$/.exec(f) : null;
+  const want = m ? reading(m[2]) : null;
+  if (m && want) {
+    const got = reading(words);
+    if (!got) return false;                                    // an empty or 'n/a' cell is not a number
+    const lead = /-?\d+(?:\.\d+)?/.exec(words.replace(/,/g, ''));   // a bare number: the first number the cell shows
+    const v = want.scale === 'plain' ? (lead ? Number(lead[0]) : NaN) : got.scale === want.scale ? got.n : NaN;
+    if (Number.isNaN(v)) return false;
+    const x = want.n, eq = Math.abs(v - x) <= 1e-9 * Math.max(1, Math.abs(x));
+    return m[1] === '>' ? v > x && !eq : m[1] === '<' ? v < x && !eq : m[1] === '>=' ? v > x || eq : m[1] === '<=' ? v < x || eq : eq;
   }
   const w = words.toLowerCase();
   return f.startsWith('!') ? !w.includes(f.slice(1).toLowerCase()) : w.includes(f.toLowerCase());
@@ -93,10 +119,13 @@ function passes(f: string, words: string, raw: unknown, num: boolean): boolean {
 
 // one small menu at a time (the grids' copy menu): Escape, a click elsewhere or a choice closes it and gives the focus back
 let openMenu: { box: HTMLElement; back: HTMLElement | null } | null = null;
-function closeMenu() { if (!openMenu) return; const m = openMenu; openMenu = null; m.box.remove(); m.back?.focus(); }
+function closeMenu() { if (!openMenu) return; const m = openMenu; openMenu = null; m.box.remove(); if (m.back?.isConnected) m.back.focus(); }
 document.addEventListener('mousedown', e => { if (openMenu && !openMenu.box.contains(e.target as Node)) closeMenu(); });
-// a page change or a scroll leaves no menu behind (the page under it is gone or has moved)
-const dropMenu = () => { if (openMenu) { openMenu.box.remove(); openMenu = null; } };
+// Escape closes it wherever the focus went; Tab out of it closes it too
+document.addEventListener('keydown', e => { if (openMenu && e.key === 'Escape') { e.preventDefault(); closeMenu(); } });
+document.addEventListener('focusin', e => { if (openMenu && !openMenu.box.contains(e.target as Node)) dropMenu(); });
+// a page change, a re-render (main.ts render calls it) or a scroll leaves no menu behind: the page under it is gone or moved
+export const dropMenu = () => { if (openMenu) { openMenu.box.remove(); openMenu = null; } };
 window.addEventListener('hashchange', dropMenu);
 window.addEventListener('scroll', dropMenu, true);
 function showMenu(x: number, y: number, items: [string, () => void][], back: HTMLElement | null) {
@@ -114,12 +143,17 @@ function showMenu(x: number, y: number, items: [string, () => void][], back: HTM
     else if (e.key === 'ArrowUp') { e.preventDefault(); bs[(i - 1 + bs.length) % bs.length].focus(); }
   });
   document.body.append(box);
+  // kept inside the window: a right-click near the right or bottom edge opens it leftward or upward
+  const r = box.getBoundingClientRect();
+  if (r.right > innerWidth - 4) box.style.left = `${Math.max(4, x - r.width)}px`;
+  if (r.bottom > innerHeight - 4) box.style.top = `${Math.max(4, y - r.height)}px`;
   openMenu = { box, back };
   (box.querySelector('button') as HTMLButtonElement).focus();
 }
 
 // grid renders rows as a sortable table; clicking a header sorts by it. Every grid also has (Darling's grids):
-// a filter per column (the funnel button in its header opens the filter row; '>5', '<10', '!text' as in passes()),
+// a filter per column (the funnel button in its header opens and closes the filter row; '>5', '>500 MB', '<10m', '!text'
+// as in passes(): a number as the cell shows it),
 // and a copy menu (right-click, or the menu key / Shift+F10 on the grid): the cell, its row, or every row shown, as
 // tab-separated text with the headers. The export and the copy take the rows the filter leaves.
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
@@ -140,9 +174,9 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     fb.addEventListener('click', e => {
       e.stopPropagation();
       const open = filterRow.hasAttribute('hidden');
-      if (open) filterRow.removeAttribute('hidden');
-      for (const b of filterBtns) b.setAttribute('aria-expanded', String(open || !filterRow.hasAttribute('hidden')));
-      inputs.get(c.key)!.focus();
+      filterRow.toggleAttribute('hidden', !open);   // a closed row keeps its filters (the buttons stay marked)
+      for (const b of filterBtns) b.setAttribute('aria-expanded', String(open));
+      if (open) inputs.get(c.key)!.focus();
     });
     const th = el('th', c.num ? { class: 'num' } : {}, name, fb);
     th.addEventListener('click', () => {
@@ -150,12 +184,16 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       draw();
     });
     head.append(th);
-    const inp = el('input', { type: 'search', class: 'filter', 'aria-label': 'Filter ' + name, placeholder: c.num ? '>, <, =' : 'contains' }) as HTMLInputElement;
+    const inp = el('input', { type: 'search', class: 'filter', 'aria-label': 'Filter ' + name + (c.num ? ' (>, <, = a number as shown, or with a unit: >500 MB, <10m)' : ''), placeholder: c.num ? '>5, <10m, >1 GB' : 'contains' }) as HTMLInputElement;
+    let wait: number | undefined;   // a redraw a beat after the last key, not on every key
     inp.addEventListener('input', () => {
-      const v = inp.value.trim();
-      if (v) filters.set(c.key, v); else filters.delete(c.key);
-      fb.classList.toggle('on', !!v);
-      draw();
+      window.clearTimeout(wait);
+      wait = window.setTimeout(() => {
+        const v = inp.value.trim();
+        if (v) filters.set(c.key, v); else filters.delete(c.key);
+        fb.classList.toggle('on', !!v);
+        draw();
+      }, 150);
     });
     inputs.set(c.key, inp);
     filterRow.append(el('td', c.num ? { class: 'num' } : {}, inp));
@@ -169,7 +207,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
     let data = [...rows];
     if (filters.size) {
       const active = cols.filter(c => filters.has(c.key));
-      data = data.filter(r => active.every(c => passes(filters.get(c.key)!, words(fmtCell(c, r)), r[c.key], !!c.num)));
+      data = data.filter(r => active.every(c => passes(filters.get(c.key)!, words(fmtCell(c, r)), !!c.num)));
     }
     if (sortKey) {
       const col = cols.find(c => c.key === sortKey)!;
@@ -200,16 +238,27 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   }
   draw();
   const wrap = el('div', { class: 'grid-wrap', tabindex: '0' }, table);   // a scrollable region the keyboard can reach (WCAG 2.1.1)
-  const tsv = (trs: Element[]) => trs.map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
+  const tsv = (trs: Element[]) => trs.filter(tr => !tr.classList.contains('trend-row')).map(tr => [...tr.children].map(td => cellText(td).replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
   const header = () => cols.map(c => c.label ?? c.key).join('\t');
+  // a copy that says what it did, in the grid's own status line, for a moment
+  const done = (what: string) => (ok: boolean) => {
+    const before = count.textContent;
+    count.textContent = ok ? 'Copied ' + what : 'Not copied: the browser refused the clipboard';
+    window.setTimeout(() => { if (count.textContent?.startsWith('Copied') || count.textContent?.startsWith('Not copied')) count.textContent = before; }, 2500);
+  };
   wrap.addEventListener('contextmenu', e => {
+    // the browser's own menu stays on a field (paste), a link (open in a new tab), a button, and over selected text
+    if ((e.target as Element).closest('input, textarea, select, button, a[href]') || String(window.getSelection() ?? '').trim()) return;
+    // a grid inside a grid's row (a statement's History) answers for itself; the outer grid does not replace its menu
+    if ((e.target as Element).closest('.grid-wrap') !== wrap) return;
+    e.stopPropagation();
     const td = (e.target as Element).closest('tbody td');
     const items: [string, () => void][] = [];
     if (td) {
-      items.push(['Copy cell', () => { void copyText(cellText(td)); }]);
-      items.push(['Copy row', () => { void copyText(header() + '\n' + tsv([td.parentElement!])); }]);
+      items.push(['Copy cell', () => { void copyText(cellText(td)).then(done('the cell')); }]);
+      items.push(['Copy row', () => { void copyText(header() + '\n' + tsv([td.parentElement!])).then(done('the row')); }]);
     }
-    items.push([filters.size ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => { void copyText(header() + '\n' + tsv([...tbody.children])); }]);
+    items.push([filters.size ? `Copy all ${shown.length} rows shown` : 'Copy all rows', () => { void copyText(header() + '\n' + tsv([...tbody.children])).then(done(shown.length + ' rows')); }]);
     e.preventDefault();
     const r = (e.target as Element).getBoundingClientRect();
     const x = e.clientX || r.left + 8, y = e.clientY || r.top + 8;

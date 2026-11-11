@@ -53,7 +53,7 @@ import { mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from 
 import { mssqlConfigView } from './mssql_config';
 import { mssqlActionsLogView } from './mssql_actions';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
-import { el } from './ui';
+import { dropMenu, el } from './ui';
 import { exportButtons } from './export';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
@@ -121,8 +121,10 @@ window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',
 // ---- auto refresh: how often a live page reads again (Darling's interval select; Off pauses it), remembered per browser
 const refreshChoices: [string, string][] = [['30', '30 s'], ['60', '1 min'], ['300', '5 min'], ['900', '15 min'], ['0', 'Off (paused)']];
 function refreshSecs(): number { const v = Number(lsGet('pgvigil.refresh') ?? '30'); return refreshChoices.some(([k]) => Number(k) === v) ? v : 30; }
-function refreshSelect(): HTMLElement {
-  const sel = el('select', { 'aria-label': 'Auto refresh of a live page', title: 'Auto refresh of a live page' }) as HTMLSelectElement;
+function refreshSelect(live: boolean): HTMLElement {
+  // a page that never reads again by itself (history, a snapshot, a page without live state) shows the choice disabled
+  const why = live ? 'Auto refresh of a live page' : 'This page does not refresh by itself (a past range, a snapshot, or not a live page)';
+  const sel = el('select', { 'aria-label': why, title: why, ...(live ? {} : { disabled: '' }) }) as HTMLSelectElement;
   for (const [k, label] of refreshChoices) sel.append(el('option', { value: k, ...(Number(k) === refreshSecs() ? { selected: '' } : {}) }, 'Auto refresh: ' + label));
   sel.addEventListener('change', () => { lsSet('pgvigil.refresh', sel.value); void render(true); });
   return sel;
@@ -186,6 +188,7 @@ async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
   const gen = ++generation;
+  dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
   const ctx = parse();
   rememberInstance(ctx.instance);
   // another page or another range / filter of it: say so at once instead of leaving the old grids on screen while the
@@ -229,7 +232,8 @@ async function render(force = false) {
   const bar = $('bar');
   const refresh = el('button', { type: 'button', title: 'Read everything again' }, 'Refresh');
   refresh.addEventListener('click', () => { void render(true); });
-  bar.replaceChildren(rangePicker(ctx), refresh, refreshSelect(), exportButtons(ctx),
+  const livePage = (ctx.instance ? liveInstance : liveRoot).has(ctx.tab) && isLive(ctx) && !ctx.at;
+  bar.replaceChildren(rangePicker(ctx), refresh, refreshSelect(livePage), exportButtons(ctx),
     el('span', { class: 'meta', id: 'stamp' }, 'loaded ' + new Date().toLocaleTimeString(undefined, { hour12: false })),
     themeButton());
   if (session.login && session.user) {

@@ -65,7 +65,7 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
                                             value: (_u: uPlot, v: number | null) => v == null ? '' : fmt(v) }))],
     bands: o.stacked ? series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : undefined,
     axes: [{ ...axis }, { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis }],
-    plugins: [tooltipPlugin(fmt)],
+    plugins: [tooltipPlugin(fmt, !!o.stacked)],
     scales: { x: { time: true }, ...(o.stacked ? { y: { range: (_u: uPlot, _min: number, max: number): uPlot.Range.MinMax => [0, max > 0 ? max * 1.05 : 1] } } : {}) },
   };
   // size to the container once it is in the page
@@ -96,7 +96,9 @@ function isolateOnDoubleClick(u: uPlot) {
 
 // the crosshair's readout: the time and each shown series' value beside the cursor (the legend above carries the
 // same values for a screen reader; this box is for the eye and is hidden from assistive technology)
-function tooltipPlugin(fmt: (v: number) => string): uPlot.Plugin {
+// stacked: the series are running totals (lineChart's bands), so the readout gives each band's own value (its total less
+// the one below it), as the reader means 'IO: 42 ms/s'
+function tooltipPlugin(fmt: (v: number) => string, stacked = false): uPlot.Plugin {
   let tip: HTMLElement;
   return {
     hooks: {
@@ -106,7 +108,8 @@ function tooltipPlugin(fmt: (v: number) => string): uPlot.Plugin {
         if (idx == null || left == null || left < 0 || top == null) { tip.hidden = true; return; }
         const t = new Date((u.data[0][idx] as number) * 1000).toLocaleString(undefined, { hour12: false });
         const lines = u.series.slice(1).map((s, j) => {
-          const v = u.data[j + 1][idx];
+          const tot = u.data[j + 1][idx], below = stacked && j > 0 ? u.data[j][idx] : 0;
+          const v = tot == null ? null : (tot as number) - ((below as number | null) ?? 0);
           const c = typeof s.stroke === 'function' ? (s.stroke as unknown as (u: uPlot, i: number) => string)(u, j + 1) : String(s.stroke ?? '');
           return s.show && v != null ? el('div', {}, el('span', { class: 'u-tip-key', style: `background:${c}` }), `${s.label}: ${fmt(v as number)}`) : null;
         }).filter((x): x is HTMLDivElement => x !== null);
