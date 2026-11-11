@@ -14,6 +14,8 @@
 #   G tests pane  the Summary's Tests pane scrolled: its header within 2 px of the pane's top; one tab stop
 #   H refresh     five choices on the Summary, Off stored as 0; the select disabled on Counters (not a live page)
 #   I chart       a legend's double-click shows one series, a second shows all; the readout has a time and values
+#   M chart menu  'Copy image|Save image|Copy data|Export data (CSV)'; Copy data: a header of time and the series' names,
+#                 a row per point, the time as YYYY-MM-DD HH:MM:SS; the chart says 'Copied <n> points'
 #   J paging      a job's All runs over three days: n rows over 400, 200 drawn; Copy all n rows, still 200 drawn; 'Show 200
 #                 more' draws 400 with the focus on the line; 'Show all' draws n, the line hidden, the focus on the grid
 #   K pies        every pie on Storage: k slice(s) for k row(s), none stroked, 1.0000 turn(s)
@@ -51,4 +53,4 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 
 echo "== the checks"
 node scripts/frame-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$WORK/dl" || fail "a case did not hold"
-echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, paging, pies, colours"
+echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, chart menu, paging, pies, colours"

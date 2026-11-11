@@ -158,6 +158,24 @@ const iso = await ev(`(async () => {
 })()`);
 check('I chart', iso.one === 1 && iso.all === iso.n && iso.tip >= 2, `isolate ${iso.one} of ${iso.n}, restore ${iso.all}; readout ${iso.tip} line(s)`);
 
+// M. a chart's menu (still on the Counters page of case I): the button in the chart's heading opens four choices; 'Copy
+// data' puts the shown series on the clipboard, a row per point under a header of 'time' and the series' names, the
+// time in local 'YYYY-MM-DD HH:MM:SS', and the chart says how many points it copied
+const cm = await ev(`(async () => {
+  const b = document.querySelector('main .chart button.chart-menu'); if (!b) return { why: 'no chart menu button on the Counters page' };
+  b.click(); await new Promise(r => setTimeout(r, 150));
+  const items = [...document.querySelectorAll('.menu button')].map(x => x.textContent);
+  const copy = [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Copy data');
+  if (!copy) return { why: 'no Copy data in the chart menu: ' + items.join('|') };
+  copy.click(); await new Promise(r => setTimeout(r, 400));
+  const lines = (await navigator.clipboard.readText()).split('\\n'), box = b.closest('.chart');
+  return { items, lines: lines.length, head: lines[0].split('\\t'), series: box.querySelectorAll('.u-legend .u-series').length - 1,
+    note: box.querySelector('.chart-note')?.textContent ?? '', firstTime: (lines[1] ?? '').split('\\t')[0], name: b.getAttribute('aria-label') };
+})()`);
+check('M chart menu', !!cm && !cm.why && cm.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)' && cm.head[0] === 'time' && cm.head.length === cm.series + 1
+  && cm.lines > 2 && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(cm.firstTime) && cm.note === `Copied ${cm.lines - 1} points` && String(cm.name).startsWith('Chart menu: '),
+  cm?.why ?? `${cm.items.join('|')}; header ${cm.head.join(',')} for ${cm.series} series; ${cm.lines - 1} points from ${cm.firstTime}; note '${cm.note}'; named '${cm.name}'`);
+
 // J. a grid past its page (a job's All runs; the proof seeds three days so the grid holds more than two pages): 200
 // rows drawn and the 'show more' line; Copy all takes every row and leaves the grid as drawn; 'Show 200 more' draws 200
 // more and keeps the focus on the line; 'Show all' draws the rest, hides the line and puts the focus on the grid. The

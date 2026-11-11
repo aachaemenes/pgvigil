@@ -1,6 +1,6 @@
 import uPlot from 'uplot';
 import { Row } from './api';
-import { el } from './ui';
+import { copyText, el, saveBlob, showMenu } from './ui';
 
 // live charts, destroyed before the next page is drawn (each holds window listeners)
 const live: uPlot[] = [];
@@ -77,8 +77,78 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     const u = new uPlot(opts, data, holder);
     live.push(u);
     isolateOnDoubleClick(u);
+    chartMenu(box, title, u, !!o.stacked);
   });
   return box;
+}
+
+// chartMenu: a chart's own menu (DBA Dash's chart menu, Darling's): the picture, or the numbers under it, copied or saved.
+// The button in the chart's heading opens it (the keyboard's way) and so does a right-click on the plot. The numbers are
+// the series shown, a row per point, the time in local 'YYYY-MM-DD HH:MM:SS'; a stacked chart gives each band's own value.
+function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) {
+  const head = box.querySelector('h3');
+  if (!head) return;
+  const note = el('span', { class: 'meta chart-note', role: 'status' });
+  const btn = el('button', { type: 'button', class: 'chart-menu', 'aria-haspopup': 'menu', 'aria-label': `Chart menu: ${title}`, title: 'Copy or save this chart' }, '\u22EF') as HTMLButtonElement;
+  const say = (t: string) => { note.textContent = t; };
+  const two = (n: number) => String(n).padStart(2, '0');
+  const stamp = (d: Date) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+  const fileName = (ext: string) => {
+    const d = new Date(), slug = title.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'chart';
+    return `${slug}_${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}.${ext}`;
+  };
+  const shown = () => u.series.map((s, j) => ({ s, j })).filter(x => x.j > 0 && x.s.show);
+  const table = (sep: string): { text: string; rows: number } => {
+    const q = (v: string) => sep === ',' && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    const cols = shown(), xs = u.data[0] as number[];
+    const lines = [['time', ...cols.map(c => q(String(c.s.label ?? '')))].join(sep)];
+    for (let i = 0; i < xs.length; i++) {
+      lines.push([stamp(new Date(xs[i] * 1000)), ...cols.map(c => {
+        const tot = u.data[c.j][i], below = stacked && c.j > 1 ? u.data[c.j - 1][i] : 0;
+        return tot == null ? '' : String(Number(((tot as number) - ((below as number | null) ?? 0)).toPrecision(12)));
+      })].join(sep));
+    }
+    return { text: lines.join('\n'), rows: xs.length };
+  };
+  // the picture: the plot as drawn, on the page's own background, under its title and over a legend of the series shown
+  const image = (): Promise<Blob | null> => {
+    const src = u.ctx.canvas, k = devicePixelRatio || 1, pad = 12 * k, th = 26 * k, lh = 24 * k;
+    const css = getComputedStyle(document.documentElement);
+    const bg = css.getPropertyValue('--card').trim() || '#fff', fg = css.getPropertyValue('--fg').trim() || '#1d2330';
+    const c = document.createElement('canvas');
+    c.width = src.width + 2 * pad; c.height = src.height + th + lh + 2 * pad;
+    const g = c.getContext('2d');
+    if (!g) return Promise.resolve(null);
+    g.fillStyle = bg; g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = fg; g.textBaseline = 'middle'; g.font = `${14 * k}px system-ui, sans-serif`;
+    g.fillText(title, pad, pad + th / 2);
+    g.drawImage(src, pad, pad + th);
+    g.font = `${12 * k}px system-ui, sans-serif`;
+    let x = pad; const y = pad + th + src.height + lh / 2;
+    for (const { s, j } of shown()) {
+      const col = typeof s.stroke === 'function' ? (s.stroke as unknown as (u: uPlot, i: number) => string)(u, j) : String(s.stroke ?? fg);
+      g.fillStyle = col; g.fillRect(x, y - 5 * k, 10 * k, 10 * k);
+      g.fillStyle = fg; const label = String(s.label ?? ''); g.fillText(label, x + 14 * k, y);
+      x += 14 * k + g.measureText(label).width + 18 * k;
+    }
+    return new Promise(res => c.toBlob(res, 'image/png'));
+  };
+  const items: [string, () => void][] = [
+    ['Copy image', () => { void (async () => {
+      try {
+        const b = await image();
+        if (!b) throw new Error('no image');
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]);
+        say('Copied the image');
+      } catch { say('Not copied: the browser refused the clipboard'); }
+    })(); }],
+    ['Save image', () => { void image().then(b => { if (b) { saveBlob(b, fileName('png')); say('Saved the image'); } else say('No image could be made'); }); }],
+    ['Copy data', () => { const t = table('\t'); void copyText(t.text).then(ok => say(ok ? `Copied ${t.rows} points` : 'Not copied: the browser refused the clipboard')); }],
+    ['Export data (CSV)', () => { const t = table(','); saveBlob(new Blob([t.text + '\n'], { type: 'text/csv;charset=utf-8' }), fileName('csv')); say(`Saved ${t.rows} points`); }],
+  ];
+  btn.addEventListener('click', () => { const r = btn.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items, btn); });
+  u.over.addEventListener('contextmenu', e => { e.preventDefault(); showMenu(e.clientX, e.clientY, items, btn); });
+  head.append(' ', btn, note);
 }
 
 // a legend entry: a click shows or hides its series (uPlot's own); a double-click shows that series alone, and a

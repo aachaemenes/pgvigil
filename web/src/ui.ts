@@ -81,6 +81,16 @@ export async function copyText(t: string): Promise<boolean> {
   try { return document.execCommand('copy'); } catch { return false; } finally { ta.remove(); }
 }
 
+// saveBlob hands the browser a file to save under a name
+export function saveBlob(blob: Blob, name: string) {
+  const a = el('a', { href: URL.createObjectURL(blob), download: name });
+  a.hidden = true;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
 // A number as the cell SHOWS it, never its raw value (a size shown as '1.5 GB' is bytes underneath, a duration shown as
 // '18m 0s' milliseconds or seconds): a filter compares what the reader sees. A size or a duration is read into one
 // scale (bytes; seconds), so '>500 MB' or '>10m' compares across the cell's own units; a bare number compares with the
@@ -153,7 +163,7 @@ document.addEventListener('focusin', e => { if (openMenu && !openMenu.box.contai
 export const dropMenu = () => { if (openMenu) { openMenu.box.remove(); openMenu = null; } };
 window.addEventListener('hashchange', dropMenu);
 window.addEventListener('scroll', dropMenu, true);
-function showMenu(x: number, y: number, items: [string, () => void][], back: HTMLElement | null) {
+export function showMenu(x: number, y: number, items: [string, () => void][], back: HTMLElement | null) {
   closeMenu();
   const box = el('div', { class: 'menu', role: 'menu', style: `left:${x}px;top:${y}px` });
   for (const [label, act] of items) {
