@@ -12,6 +12,7 @@
 //	pgvigil roles                                                                            the CREATE ROLE script
 //	pgvigil purge    -config pgvigil.yaml [-days 30] [-dry-run]                            the repository's retention, as its owner
 //	pgvigil tag      -config pgvigil.yaml [-reset] <instance> [key=value[,value...]] [-key] [key]   fix an instance's tags in the repository
+//	pgvigil report   [-config pgvigil.yaml] [-out file.zip] [-dsn env:NAME] [-names] [-errors N]   a local zip of masked diagnostics for a problem report (nothing is sent)
 //	pgvigil install   [-bin p] [-config p] [-user a] [-no-start]                             the collector as a service (systemd / Windows)
 //	pgvigil uninstall [-bin p] [-config p] [-user a] [-purge]
 //	pgvigil mcp       [-dsn env:PGVIGIL_MCP_DSN] [-config pgvigil.yaml]                   read-only MCP tools on stdio (reader login)
@@ -84,6 +85,8 @@ func run(args []string) int {
 		err = runPurge(ctx, log, args[1:])
 	case "tag":
 		err = runTag(ctx, args[1:])
+	case "report":
+		err = runReport(ctx, args[1:])
 	case "install":
 		err = runInstall(log, args[1:])
 	case "uninstall":
@@ -140,7 +143,7 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|install|uninstall|mcp|mssql-xe|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|version> [-config file] [-once collection] [-instance name]")
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector

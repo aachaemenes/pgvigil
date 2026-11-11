@@ -18,6 +18,8 @@ type Parts = Record<'volumes' | 'databases' | 'files' | 'series' | 'checks', Tab
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const freeTxt = (v: unknown) => v == null ? '' : Number(v) < 10 ? badge(pctTxt(v), Number(v) < 5 ? 'crit' : 'warn') : pctTxt(v);
+// the free cells in the colour of the volume's own rule (under 5 % critical, under 10 % a warning, else OK), as the export writes them
+const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : Number(r.free_pct) < 5 ? 'crit' : Number(r.free_pct) < 10 ? 'warn' : 'ok';
 const signed = (v: unknown) => v == null ? 'too little history' : Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : '+' + fmtBytes(v);
 const perDay = (v: unknown) => v == null ? 'too little history' : (Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : fmtBytes(v)) + ' / day';
 // a file's growth step: a size, a per cent of the file, or none
@@ -33,8 +35,8 @@ const checkCols: Col[] = [
 const volCols: Col[] = [
   { key: 'volume' },
   { key: 'logical_name', label: 'label' },
-  { key: 'free_pct', label: 'free', num: true, fmt: freeTxt },
-  { key: 'free_bytes', label: 'free size', num: true, fmt: fmtBytes },
+  { key: 'free_pct', label: 'free', num: true, fmt: freeTxt, cls: freeCls },
+  { key: 'free_bytes', label: 'free size', num: true, fmt: fmtBytes, cls: freeCls },
   { key: 'used_bytes', label: 'used', num: true, fmt: fmtBytes },
   { key: 'total_bytes', label: 'size', num: true, fmt: fmtBytes },
   { key: 'files', label: 'database files', num: true },

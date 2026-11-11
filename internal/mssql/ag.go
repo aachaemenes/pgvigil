@@ -160,7 +160,13 @@ func StoreHADRThresholds(ctx context.Context, r *repo.Repo, instanceID int, coll
 
 // agCollector is mssql_ag: Always On availability groups as the instance sees them. A primary sees every replica
 // and every database replica of its groups; a secondary sees its own rows and the group's primary by name. A
-// clusterless group is read like any other; a distributed group's "replicas" are its two member groups, by name.
+// clusterless group is read like any other.
+//
+// A distributed group's "replicas" are its two member groups, by name, and only the primary of each member group
+// lists them (a secondary's catalog names the distributed group and none of its replicas, so nothing of it is read
+// there). Its database rows exist on the global primary alone: one per database, for the other member group, with
+// the queues and the lag of the link. The forwarder has no such row; what it received is on its own group's row.
+// Read on SQL Server 2022 (scripts/proof-mssql-dag.sh).
 type agCollector struct{}
 
 func init() { Register(agCollector{}) }
@@ -220,7 +226,10 @@ ORDER BY ag.name, ar.replica_server_name`
 // agDatabaseSQL: one row per database replica the instance sees. The estimates are the two the documentation of
 // sys.dm_hadr_database_replica_states gives ("Monitor performance for Always On availability groups"): the
 // recovery time is the redo queue over the redo rate; the data loss is the primary's last commit time less the
-// secondary's, which only the primary can compute (it alone sees both rows). SQL Server 2016 SP1 and later.
+// secondary's, which only the primary can compute (it alone sees both rows). A distributed group has no row for its
+// primary side (the global primary sees the other member group's row only), so there the primary's last commit is
+// taken from the database's own row in the local member group (own): without it the link's data loss was never
+// estimated. SQL Server 2016 SP1 and later.
 var agDatabaseSQL = `SELECT 'database' AS kind,
   drs.group_id, CAST(ag.name AS nvarchar(128)) AS group_name,
   CAST(ar.replica_server_name AS nvarchar(256)) AS replica_server,
@@ -234,10 +243,10 @@ var agDatabaseSQL = `SELECT 'database' AS kind,
   drs.log_send_queue_size AS log_send_queue_kb, drs.log_send_rate AS log_send_rate_kb_s,
   drs.redo_queue_size AS redo_queue_kb, drs.redo_rate AS redo_rate_kb_s,
   CASE WHEN drs.redo_rate > 0 THEN CAST(drs.redo_queue_size AS float) / drs.redo_rate END AS est_recovery_s,
-  CASE WHEN drs.is_primary_replica = 1 OR p.last_commit_time IS NULL OR drs.last_commit_time IS NULL THEN NULL
-       WHEN drs.last_commit_time >= p.last_commit_time THEN 0
-       WHEN DATEDIFF(day, drs.last_commit_time, p.last_commit_time) > 20000 THEN NULL
-       ELSE DATEDIFF(second, drs.last_commit_time, p.last_commit_time) END AS est_data_loss_s,
+  CASE WHEN drs.is_primary_replica = 1 OR COALESCE(p.last_commit_time, own.last_commit_time) IS NULL OR drs.last_commit_time IS NULL THEN NULL
+       WHEN drs.last_commit_time >= COALESCE(p.last_commit_time, own.last_commit_time) THEN 0
+       WHEN DATEDIFF(day, drs.last_commit_time, COALESCE(p.last_commit_time, own.last_commit_time)) > 20000 THEN NULL
+       ELSE DATEDIFF(second, drs.last_commit_time, COALESCE(p.last_commit_time, own.last_commit_time)) END AS est_data_loss_s,
   drs.secondary_lag_seconds AS secondary_lag_s,
   ` + utcText("drs.last_sent_time") + ` AS last_sent_utc,
   ` + utcText("drs.last_received_time") + ` AS last_received_utc,
@@ -250,6 +259,9 @@ JOIN sys.availability_replicas ar ON ar.replica_id = drs.replica_id
 LEFT JOIN sys.availability_databases_cluster adc ON adc.group_id = drs.group_id AND adc.group_database_id = drs.group_database_id
 LEFT JOIN sys.dm_hadr_database_replica_states p
        ON p.group_id = drs.group_id AND p.group_database_id = drs.group_database_id AND p.is_primary_replica = 1
+LEFT JOIN sys.dm_hadr_database_replica_states own
+       ON ag.is_distributed = 1 AND drs.is_local = 0 AND own.database_id = drs.database_id
+      AND own.group_id <> drs.group_id AND own.is_local = 1 AND own.is_primary_replica = 1
 ORDER BY ag.name, ar.replica_server_name, 5`
 
 const agListenerSQL = `SELECT 'listener' AS kind, l.group_id, CAST(l.dns_name AS nvarchar(63)) AS dns_name, l.port,
@@ -257,8 +269,8 @@ const agListenerSQL = `SELECT 'listener' AS kind, l.group_id, CAST(l.dns_name AS
 FROM sys.availability_group_listeners l
 ORDER BY l.dns_name`
 
-// the Windows cluster under the groups, where there is one and the login may read it (a clusterless group and a
-// Linux server return no row)
+// the Windows cluster under the groups, where there is one and the login may read it (a Linux server without a
+// cluster answers with one row: itself, under an empty cluster name)
 const agClusterSQL = `SELECT 'cluster_member' AS kind, CAST(c.cluster_name AS nvarchar(128)) AS cluster_name,
   CAST(c.quorum_type_desc AS nvarchar(60)) AS quorum_type, CAST(c.quorum_state_desc AS nvarchar(60)) AS quorum_state,
   CAST(m.member_name AS nvarchar(128)) AS member_name, CAST(m.member_type_desc AS nvarchar(60)) AS member_type,

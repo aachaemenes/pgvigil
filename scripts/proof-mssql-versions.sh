@@ -78,8 +78,8 @@
 #     Mail XPs' is 1 in use.
 #  G. the group, per version: created on node a with CLUSTER_TYPE = NONE, node b joined; node a reads the seed
 #     database on node b as SYNCHRONIZED and HEALTHY within 100 tries three seconds apart; AlwaysOn_health runs on
-#     both nodes. After one committed row in the seed database node a reads a commit time for it on both replicas
-#     within two minutes. [Added after a run in which the availability proof's part A failed on SQL Server 2022:
+#     both nodes. After one committed row in the seed database node a reads a commit time for it on both replicas,
+#     and the secondary's hardened time, within 120 s (each read ten seconds at most). [Added after a run in which the availability proof's part A failed on SQL Server 2022:
 #     nothing had been committed in the seed database since it joined, the secondary's row had no commit time, the
 #     collector stored no estimated data loss, and the proof expects one, 0 or more.]
 #  R. every proof of the list exits 0 on every version: the matrix says PASS in every cell. A cell that FAILS is
@@ -180,9 +180,17 @@ for ver in "${VERSIONS[@]}"; do
 done
 
 # two ports per version, chosen here, one after the other (the versions start in parallel); freeport runs in a
-# command substitution, so the caller adds what it took to TAKEN
+# command substitution, so the caller adds what it took to TAKEN. A port any container is configured to publish is
+# taken too, running or not: after the machine stopped under a run, that run's exited containers still held their
+# ports in docker (docker ps -a listed them with their ports, ss showed none, and docker run refused the port: "port
+# is already allocated"). The configured bindings are read, not the live ones, so a container stopped cleanly counts
+# as well; a range a-b counts whole; no container, or none that publishes anything, is an empty list.
+published_ports() {
+  docker ps -aq | xargs -r docker inspect --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}} {{end}}{{end}}' 2>/dev/null \
+    | tr ' ' '\n' | while read -r hp; do case $hp in *-*) seq "${hp%-*}" "${hp#*-}" ;; [0-9]*) echo "$hp" ;; esac; done | tr '\n' ' ' || true
+}
 declare -A PORT_A PORT_B
-TAKEN=" "
+TAKEN=" $(published_ports) "
 freeport() {
   local port
   for port in $(seq 21500 21599); do
@@ -380,12 +388,15 @@ EOF
   # committed in since it joined the group has none on the secondary, and the collector then stores no estimate)
   sqa "$a" "CREATE TABLE [$SEED].dbo.pgvv_tick (at datetime2 NOT NULL); INSERT [$SEED].dbo.pgvv_tick (at) VALUES (SYSDATETIME());" \
     || { WHY="G: the first commit in the seed database"; return 1; }
-  state=
-  for _ in $(seq 1 60); do
-    state=$(sqa "$a" "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states s JOIN sys.dm_hadr_database_replica_states p ON p.group_database_id = s.group_database_id AND p.is_primary_replica = 1 WHERE s.database_id = DB_ID(N'$SEED') AND s.is_primary_replica = 0 AND s.last_commit_time > '20000101' AND p.last_commit_time > '20000101' AND s.last_hardened_time > '20000101') THEN 'both' ELSE 'none' END" 2>/dev/null || true)
+  state=; local until=$((SECONDS + 120))
+  while [ "$SECONDS" -lt "$until" ]; do
+    state=$(timeout 10 docker exec -e SQLCMDPASSWORD "$a" "$SQLCMD" -S localhost -U sa -C -b -I -W -h -1 -d master -Q "SET NOCOUNT ON; SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states s JOIN sys.dm_hadr_database_replica_states p ON p.group_database_id = s.group_database_id AND p.is_primary_replica = 1 WHERE s.database_id = DB_ID(N'$SEED') AND s.is_primary_replica = 0 AND s.last_commit_time > '20000101' AND p.last_commit_time > '20000101' AND s.last_hardened_time > '20000101') THEN 'both' ELSE 'none' END" 2>/dev/null || true)
     [ "$state" = both ] && break; sleep 2
   done
-  [ "$state" = both ] || { WHY="G: after the seed database's first commit the primary reads no commit time for it on both replicas (120 s)"; return 1; }
+  if [ "$state" != both ]; then
+    sqa "$a" "SELECT is_primary_replica, synchronization_state_desc, last_hardened_time, last_commit_time FROM sys.dm_hadr_database_replica_states WHERE database_id = DB_ID(N'$SEED')" || true
+    WHY="G: after the seed database's first commit the primary reads no commit time and hardened time for it on both replicas within 120 s"; return 1
+  fi
   return 0
 }
 

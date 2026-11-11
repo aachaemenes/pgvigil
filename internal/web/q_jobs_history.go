@@ -235,7 +235,7 @@ func jobSeriesStep(rangeSecs float64) int {
 }
 
 const sqlJobChanges = `
-SELECT v.valid_from, v.version_no, v.dropped, v.job_name, v.changes, v.definition
+SELECT v.valid_from, v.version_no, v.dropped, v.job_name, v.changes, v.definition, v.script
   FROM pgvigil.job_versions v
  WHERE v.instance_id = $1 AND v.scheduler = $2 AND v.job_id = $3
  ORDER BY v.valid_from DESC

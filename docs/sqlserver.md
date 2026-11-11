@@ -11,13 +11,55 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 - The collector asks the server what it is (a server someone runs, Amazon RDS, Azure SQL Managed Instance, Azure SQL Database) and what the login may read (VIEW SERVER STATE, VIEW ANY DEFINITION, msdb) before each collection. A collection that does not apply there is skipped with the reason, never failed.
 - Nothing is installed on the monitored server and nothing is written there. The collector's session gives up on a lock after two seconds, loses any deadlock it is part of and reads without shared locks, so it cannot join a blocking chain. The one door that changes anything is the [actions door](sqlserver-actions.md), off until an instance opens it with a login of its own.
 
+## Versions
+
+SQL Server 2017, 2019, 2022 and 2025 are proven; the table says on what. `scripts/proof-mssql-versions.sh` starts a pair of Linux containers of Microsoft's image per version (Developer edition, SQL Server Agent and Always On switched on), joins the pair in a clusterless availability group and runs every SQL Server proof of this repository against the pair. The runs of 2026-11-11 (SQL Server 2017, 2022 and 2025 in one run of the tree; SQL Server 2019 in a second run, after a fix to the proof's own choice of ports that had kept its pair from starting in the first):
+
+| | build the run read | the image's host | result |
+| --- | --- | --- | --- |
+| SQL Server 2025 | 17.0.5045.3 (RTM, CU10), Enterprise Developer Edition | Ubuntu 24.04 | setup and all ten proofs passed |
+| SQL Server 2022 | 16.0.4315.2 (RTM, CU27), Developer Edition | Ubuntu 22.04 | setup and all ten proofs passed |
+| SQL Server 2019 | 15.0.4510.2 (RTM, CU32), Developer Edition | Ubuntu 20.04 | setup and all ten proofs passed |
+| SQL Server 2017 | 14.0.3570.2 (RTM, CU31), Developer Edition | Ubuntu 18.04 | setup and all ten proofs passed |
+| SQL Server 2016 (SP1 and later) | not proven yet | | Microsoft publishes no Linux image of it: the proof needs a Windows host |
+| Azure SQL Database | not proven yet | | |
+| Azure SQL Managed Instance | not proven yet | | |
+| Amazon RDS for SQL Server | not proven yet | | |
+
+Each proof on each version, as the runs printed it (`setup` is the pair itself: both servers answer, the collector connects to both and stores the version it read, the group is synchronized; the other rows are `scripts/proof-mssql-<name>.sh`, and each proof's page says what it checks):
+
+| | SQL Server 2025 | SQL Server 2022 | SQL Server 2019 | SQL Server 2017 |
+| --- | --- | --- | --- | --- |
+| setup (the pair, the connect check, the group) | PASS | PASS | PASS | PASS |
+| `base` | PASS | PASS | PASS | PASS |
+| `services` | PASS | PASS | PASS | PASS |
+| `running` | PASS | PASS | PASS | PASS |
+| `xe` | PASS | PASS | PASS | PASS |
+| `hadr` | PASS | PASS | PASS | PASS |
+| `storage` | PASS | PASS | PASS | PASS |
+| `perf` | PASS | PASS | PASS | PASS |
+| `reads` | PASS | PASS | PASS | PASS |
+| `querystore` | PASS | PASS | PASS | PASS |
+| `actions` | PASS | PASS | PASS | PASS |
+| certificate with a negative serial (node a, node b) | no, no | no, no | no, no | yes, yes |
+
+What a version changes. The collector reads the server's version at every connection and names a column only where that version has it:
+
+- **SQL Server 2017** can generate a certificate with a negative serial number for itself where none is installed. Go refuses to parse such a certificate, and the parse comes before any decision about trust, so `TrustServerCertificate=true` does not help: without the setting below every connection to such a server fails with `x509: negative serial number`. pgvigil is built with `godebug x509negativeserial=1` (go.mod), which lets the certificate be parsed and changes nothing else: a certificate is verified exactly as before. The proof reads both servers of each pair with the setting and once more with it switched off: in the run above both SQL Server 2017 servers had such a certificate, in an earlier run of the same day one of two did, and no SQL Server 2019, 2022 or 2025 server read that day had one.
+- **Before SQL Server 2019** there is no accelerated database recovery: the persistent version store is not read and the Row versions page lists no database for it. tempdb's memory-optimized metadata says n/a, and Query Store has no custom capture policy.
+- **Before SQL Server 2022** an availability group's `is_contained` is not read.
+- **SQL Server 2025**: no change of the collector or of a proof was specific to it.
+
+Not proven by these runs: a Windows host on any version, an edition other than Developer, a Windows cluster's availability group. What each proof leaves out on any server (mirroring, log shipping and replication without a real partner; a browser render) is on that proof's own page; the availability proof's job history check ran against sixty seeded history rows, and a server with fewer than fifty rows of job history is not proven there.
+
 ## Collections
 
-Twenty-one collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Thirty collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
 | `mssql_instance` | 1 hour | the server's description (version, edition, update level, collation, clustered, Always On enabled), every row of `sys.configurations` with the previous value and the time a value in use changed, the CPU count, memory and start time | nothing for the first two; VIEW SERVER STATE for the third (partial without it) | runs | this page |
+| `mssql_traceflags` | 1 hour | the trace flags on globally (`DBCC TRACESTATUS(-1)`) and their history | any login | not run | [jobs and configuration history](jobs.md) |
 | `mssql_services` | 5 min | is SQL Server Agent running, is Database Mail started, the memory dump files | VIEW SERVER STATE | not run | this page |
 | `mssql_requests` | 1 min | what runs now and who blocks whom | VIEW SERVER STATE | runs | [running queries](sqlserver-running.md) |
 | `mssql_waits` | 1 min | the wait counters, as the difference between two reads | VIEW SERVER STATE | runs (the database's own waits) | [running queries](sqlserver-running.md) |
@@ -38,6 +80,14 @@ Twenty-one collections. `every` is the default; an instance's `schedules:` chang
 | `mssql_procstats` | 5 min | what each stored procedure did between two reads: calls, CPU, duration, reads | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE); CONNECT ANY DATABASE and VIEW ANY DEFINITION for the names in other databases | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 | `mssql_indexlocks` | 5 min | row and page lock waits and lock escalations per index, as the difference between two reads | as `mssql_procstats` | not run | [properties, procedures, index locks](sqlserver-reads.md) |
 | `mssql_querystore` | 1 hour | each database's Query Store: state, top queries per interval, forced plans, tuning recommendations | VIEW SERVER STATE, CONNECT ANY DATABASE (VIEW ANY DEFINITION for object names) | not run | [Query Store](sqlserver-querystore.md) |
+| `mssql_audit` | 5 min | the server audits, their server and database specifications and their state; the events of a file audit read forward from a cursor (role, permission, DDL and audit changes and failed sign-ins as rows, the rest counted) | VIEW ANY DEFINITION and VIEW SERVER STATE; VIEW SERVER SECURITY AUDIT for the events (2022) | skipped (its blob target is not built) | [SQL Server Audit](sqlserver-audit.md) |
+| `mssql_plancache` | 5 min | `sys.dm_exec_query_stats`: per cached statement, what changed between two reads (the place of Query Store where it is off) | VIEW SERVER STATE (2022: VIEW SERVER PERFORMANCE STATE) | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_plancache_health` | 1 hour | what the plan cache holds per database: single-use and duplicate plans | as `mssql_plancache` | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_indexes` | 6 hours | each user database's indexes with their usage and size, the missing-index DMVs | VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE; SELECT on msdb.dbo.restorehistory | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_stats` | 6 hours | each user database's statistics with their age, modifications and sample | as `mssql_indexes`; db_datareader for the sample rates | not run | [plan cache, indexes, statistics](sqlserver-indexes.md) |
+| `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
+| `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
+| `mssql_syshealth` | 5 min | system_health's sp_server_diagnostics results (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM) | VIEW SERVER STATE | not run | [readers](sqlserver-readers.md) |
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 
@@ -56,11 +106,11 @@ instances:
 
 The connection string is the driver's own form, `sqlserver://login:password@host:1433?database=master&encrypt=true`, or the ADO form `server=host;user id=login;password=...;database=master`. One that carries a password must come through `env:` or `file:`; an inline password is refused. Windows authentication from a Windows collector host is the driver's (a connection string without a login); it is not proven here.
 
-`explain_dsn`, `explain_analyze`, `pgbouncer` and `backups:` are PostgreSQL's and refused on a SQL Server instance; the `aws:` block is refused there for now. `actions_dsn` and `actions:` open the [actions door](sqlserver-actions.md); `mssql_thresholds:` sets the availability, jobs and backups thresholds ([the page](sqlserver-hadr.md)).
+`explain_dsn`, `explain_analyze`, `pgbouncer` and `backups:` are PostgreSQL's and refused on a SQL Server instance; the `aws:` block is refused there for now. `actions_dsn` and `actions:` open the [actions door](sqlserver-actions.md); `mssql_thresholds:` sets the availability, jobs and backups thresholds ([the page](sqlserver-hadr.md)); `audit_text: true` keeps the statement text of the audit events stored as rows (off by default: it can carry data; [SQL Server Audit](sqlserver-audit.md)).
 
 ## The login
 
-A SQL login or a Windows login with four things and no more; never sysadmin.
+A SQL login or a Windows login with these rights and no more; never sysadmin.
 
 ```sql
 CREATE LOGIN [pgvigil_monitor] WITH PASSWORD = '<a long random password>';
@@ -71,6 +121,11 @@ GRANT CONNECT ANY DATABASE TO [pgvigil_monitor];   -- SQL Server 2014 and later:
 USE msdb;
 CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
 ALTER ROLE db_datareader ADD MEMBER [pgvigil_monitor];
+-- the error log and default trace readers ([readers](sqlserver-readers.md)):
+GRANT ALTER TRACE TO [pgvigil_monitor];
+USE master;
+CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
+GRANT EXECUTE ON master.sys.xp_readerrorlog TO [pgvigil_monitor];
 ```
 
 On Azure SQL Database the login block is the first three lines only, run in `master` (or a contained user in the database, with `VIEW DATABASE STATE`); not proven here.
@@ -85,7 +140,7 @@ Three columns of the Summary, read with the same login:
 - **DB Mail**: started or stopped, where Database Mail is switched on. `msdb.dbo.sysmail_help_status_sp` asks for CONTROL SERVER or `db_owner` in msdb, so pgvigil makes that procedure's one catalog read itself (does the queue `ExternalMailQueue` receive), which VIEW ANY DEFINITION covers. Stopped is a warning; switched off is shown as `off` and never flagged. A login that cannot see the queue gets `not readable` and a partial run that says why.
 - **Memory dumps**: the dump files the server lists (`sys.dm_server_memory_dumps`). The newest under 48 hours old is critical, under 7 days a warning. A file whose creation time the server cannot tell (SQL Server on Linux lists one dated 1601) is counted and never dated.
 
-Not on Azure SQL Database. Needs VIEW SERVER STATE. The services the server lists are kept in `pgvigil.mssql_service`, the three states in `pgvigil.mssql_health`, the cells' rules in the view `pgvigil.mssql_health_status`. Proof: `scripts/proof-mssql-services.sh` (a stopped Agent is proven on imported rows only; Windows, Express, RDS and Managed Instance are not proven).
+Not on Azure SQL Database. Needs VIEW SERVER STATE. The services the server lists are kept in `pgvigil.mssql_service`, the three states in `pgvigil.mssql_health`, the cells' rules in the view `pgvigil.mssql_health_status`. Proof: `scripts/proof-mssql-services.sh`, on SQL Server 2017, 2019, 2022 and 2025 ([Versions](#versions)); a stopped Agent is proven on imported rows only; Windows, Express, RDS and Managed Instance are not proven.
 
 ## CPU, memory, file IO and tempdb
 
@@ -114,7 +169,7 @@ The checks (in Findings and on each page): tempdb with fewer data files than rec
 
 SQL Server on Linux writes the scheduler monitor's idle figure as 0 in every record: on a Linux host the other processes' share and the machine's total are not read, the pages draw the SQL Server process's CPU alone and say so, and the CPU check weighs that.
 
-Proof: `scripts/proof-mssql-perf.sh`, against the SQL Server sandbox pair (SQL Server 2022 on Linux, both servers) as a login with VIEW SERVER STATE and VIEW ANY DEFINITION, a login with VIEW SERVER STATE alone and a login with neither, compared with what `sa` reads; the checks' thresholds, retries, late reads and a restart on imported rows; the API; and a two-day demo. Not proven: SQL Server 2016-2019, Windows, Managed Instance, RDS, a login holding only VIEW SERVER PERFORMANCE STATE, a real memory grant wait, a ring buffer after a real restart.
+Proof: `scripts/proof-mssql-perf.sh`, against the SQL Server sandbox pair (SQL Server 2022 on Linux, both servers) as a login with VIEW SERVER STATE and VIEW ANY DEFINITION, a login with VIEW SERVER STATE alone and a login with neither, compared with what `sa` reads; the checks' thresholds, retries, late reads and a restart on imported rows; the API; and a two-day demo. The same proof against a pair of SQL Server 2017, 2019 and 2025 servers: [Versions](#versions). Not proven: SQL Server 2016, Windows, Managed Instance, RDS, a login holding only VIEW SERVER PERFORMANCE STATE, a real memory grant wait, a ring buffer after a real restart.
 
 ## One run by hand
 
@@ -124,4 +179,4 @@ pgvigil collect -config pgvigil.yaml -once mssql_instance -instance sales-sql01
 
 ## Proof
 
-`scripts/proof-mssql-base.sh` runs against a SQL Server container and a PostgreSQL sandbox: the collection as the least-privilege login compared with what `sa` reads, the other engine's collections refused both ways, a login without VIEW SERVER STATE stored as partial, a name refused under a second engine, a configuration change kept with its previous value, a value the server no longer lists marked as gone, and the collector's row contract (handles and GUIDs as text that survives, times without a false time zone) read back from the server. Proven on SQL Server 2022 in a Linux container. Not proven: Azure SQL Database, Managed Instance, RDS, SQL Server 2016-2019, Windows authentication, and that a collector session never waits behind a writer (no collection of the base reads a user table). The server's start time is moved to UTC by the offset the server has at the read: a server started before a daylight-saving change shows it one hour off until its next restart.
+`scripts/proof-mssql-base.sh` runs against a SQL Server container and a PostgreSQL sandbox: the collection as the least-privilege login compared with what `sa` reads, the other engine's collections refused both ways, a login without VIEW SERVER STATE stored as partial, a name refused under a second engine, a configuration change kept with its previous value, a value the server no longer lists marked as gone, and the collector's row contract (handles and GUIDs as text that survives, times without a false time zone) read back from the server. Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([Versions](#versions)). Not proven: Azure SQL Database, Managed Instance, RDS, SQL Server 2016, Windows authentication, and that a collector session never waits behind a writer (no collection of the base reads a user table). The server's start time is moved to UTC by the offset the server has at the read: a server started before a daylight-saving change shows it one hour off until its next restart.

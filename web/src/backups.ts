@@ -116,12 +116,12 @@ export async function backupsFleetView(keep?: (r: Row) => boolean, instLink?: (n
       { key: 'platform' },
       { key: 'worst', label: 'findings', fmt: (v, r) => v == null ? '' : badge(`${fmtNum(r.findings)} ${String(v)}`, v === 'critical' ? 'crit' : 'warn') },
       { key: 'archiver_failing', label: 'archiver', fmt: (_v, r) => { const [t, k] = archiverState(r); return k ? badge(t, k) : t; } },
-      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt },
+      { key: 'archive_age_s', label: 'last archived', num: true, fmt: ageTxt, cls: (v, r) => v == null ? '' : archiverState(r)[1] },
       { key: 'archive_lag_bytes', label: 'archive lag', num: true, fmt: fmtBytes },
       { key: 'failed_count', label: 'failed', num: true },
-      { key: 'retention_days', label: 'retention', num: true, fmt: retTxt },
+      { key: 'retention_days', label: 'retention', num: true, fmt: retTxt, cls: v => v == null ? '' : Number(v) === 0 ? 'crit' : Number(v) < 7 ? 'warn' : 'ok' },
       { key: 'restorable_age_s', label: 'restorable', num: true, fmt: ageTxt },
-      { key: 'newest_snapshot_age_s', label: 'newest snapshot', num: true, fmt: snapAge },
+      { key: 'newest_snapshot_age_s', label: 'newest snapshot', num: true, fmt: snapAge, cls: v => v == null ? '' : Number(v) > 86400 ? 'warn' : 'ok' },
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ], 'No backups read yet.'));
 }

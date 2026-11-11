@@ -89,6 +89,11 @@ type Instance struct {
 	ExplainAnalyze bool `yaml:"explain_analyze"`
 	// HypoIndex turns on the suggested index's planner check (hypopg) for this instance; false (the default) = off.
 	HypoIndex bool `yaml:"hypo_index"`
+	// AuditText keeps the statement text and the parameters of the audit entries stored as rows for this instance
+	// (PostgreSQL: pgaudit, docs/audit.md; SQL Server: SQL Server Audit, docs/sqlserver-audit.md). They can carry
+	// data, so false (the default) keeps the class, the command and the object only; what is kept still passes the
+	// instance's query_text policy.
+	AuditText bool `yaml:"audit_text"`
 	// ExplainDSNRaw is the login EXPLAIN ANALYZE runs as: SELECT grants only, never the actions login (a SELECT can
 	// call pg_terminate_backend through pg_signal_backend); env:NAME or file:/path only, as actions_dsn.
 	ExplainDSNRaw string `yaml:"explain_dsn"`

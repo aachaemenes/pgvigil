@@ -162,7 +162,7 @@ collect
 echo "D ok"
 
 echo "--- D2. the narrow door"
-DOOR=$(awk '/^const serverlogDoorSQL = `/{f=1; sub(/^const serverlogDoorSQL = `/, "")} f{ if (/`$/) { sub(/`$/, ""); print; exit } print }' internal/collect/serverlog.go)
+DOOR=$(awk '/^const ServerlogDoorSQL = `/{f=1; sub(/^const ServerlogDoorSQL = `/, "")} f{ if (/`$/) { sub(/`$/, ""); print; exit } print }' internal/collect/serverlog.go)
 [[ "$DOOR" == *"pgvigil_read_log"* ]] || fail "D2: the door's text was not found in serverlog.go"
 printf '%s\n' "${DOOR//<login>/$MON}" | psql "$SU" -XAtq -v ON_ERROR_STOP=1 >/dev/null
 psql "$SU" -XAtq -v ON_ERROR_STOP=1 >/dev/null -c "set log_min_duration_statement = 100" -c "select pg_sleep(0.25) /* $TAG-d */"

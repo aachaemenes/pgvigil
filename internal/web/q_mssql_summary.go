@@ -20,7 +20,7 @@ WITH inst AS (
          ('backups', ARRAY['mssql_backups']), ('jobs', ARRAY['mssql_jobs']), ('storage', ARRAY['mssql_storage', 'mssql_versionstore']),
          ('uptime', ARRAY['mssql_instance']), ('dbstate', ARRAY['mssql_storage']),
          ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services']),
-         ('qs', ARRAY['mssql_querystore'])
+         ('qs', ARRAY['mssql_querystore']), ('audit', ARRAY['mssql_audit'])
 ), runs AS (
   -- the last run of each of the group's collections (collection_dates keeps one row per collection): old = older
   -- than three of its intervals, the rule of the daily check 'collection stale' ($1 the intervals, $2 the age for
@@ -111,6 +111,11 @@ WITH inst AS (
   -- (warning); the rules live in the view (migration 0083)
   SELECT i.instance_id, 'qs', coalesce(c.sampled, false), coalesce(c.critical, 0), coalesce(c.warning, 0), c.value, coalesce(c.detail, '{}')
     FROM inst i LEFT JOIN pgvigil.mssql_querystore_status c ON c.instance_id = i.instance_id
+  UNION ALL
+  -- SQL Server Audit: an audit that failed (critical) or is stopped though defined (warning); the rules live in the
+  -- view (migration 0101)
+  SELECT i.instance_id, 'audit', coalesce(c.sampled, false), coalesce(c.critical, 0), coalesce(c.warning, 0), c.value, coalesce(c.detail, '{}')
+    FROM inst i LEFT JOIN pgvigil.mssql_audit_status c ON c.instance_id = i.instance_id
 )
 SELECT c.instance_id, c.key, st.state, c.sampled, coalesce(c.critical, 0) AS critical, coalesce(c.warning, 0) AS warning,
        c.value, c.detail, st.read_at, st.err

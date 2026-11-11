@@ -51,6 +51,7 @@ export const groups: Group[] = [
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true },
   { key: 'dumps', label: 'Memory dumps', checks: [], tab: 'summary', mssql: ['dumps', 'summary'], mssqlOnly: true },
   { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true },
+  { key: 'audit', label: 'Audit', checks: [], tab: 'summary', mssql: ['audit', 'mssqlaudit', 'SQL Server Audit'], mssqlOnly: true },
   { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption' },
   { key: 'io', label: 'IO', checks: ['io'], tab: 'io' },
   { key: 'roles', label: 'Roles', checks: ['roles'], tab: 'roles' },
