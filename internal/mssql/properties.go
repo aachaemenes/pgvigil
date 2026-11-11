@@ -3,6 +3,7 @@ package mssql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -19,25 +20,29 @@ import (
 //   - Processor: logical CPUs, sockets, cores per socket, the hyperthread ratio, NUMA nodes, soft NUMA, the affinity
 //     type, the schedulers online and offline, max worker threads, the hypervisor (sys.dm_os_sys_info and
 //     sys.dm_os_schedulers) and the Windows power plan.
-//   - Memory: the machine's memory, max and min server memory, max server memory as a per cent of the machine, the
-//     memory model.
+//   - Memory: the machine's memory, max and min server memory, max server memory as a per cent of the machine (a
+//     figure derived from two others: shown, never logged as a change of its own), the memory model.
 //   - TempDB: the data and log files, their sizes, whether the data files are one size (tempdb.sys.database_files:
 //     any login). The sizes move by themselves, so they are shown and never logged as a change.
 //   - Host: the platform, the distribution and the release (sys.dm_os_host_info, SQL Server 2017 and later;
 //     sys.dm_os_windows_info before).
 //
 // sys.dm_os_sys_info gained socket_count, cores_per_socket and numa_node_count with SQL Server 2016 SP2 and 2017,
-// and softnuma_configuration_desc and sql_memory_model_desc with 2016: the collector asks sys.all_columns which the
-// server has and reads those.
+// softnuma_configuration_desc with 2016 and sql_memory_model_desc with 2016 SP1: the collector asks sys.all_columns
+// which the server has and reads those.
 //
 // The power plan is the one value SQL Server does not hold: on a Windows server someone runs it is read from the
-// registry with xp_regread (HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes, ActivePowerScheme), a
-// read. On Linux, Amazon RDS and Azure SQL Managed Instance the row says 'not read' and why. The server's start
-// time is not a property: the DMV writes it in the local clock and a daylight-saving shift would log a change.
+// registry with xp_regread, a read: first the plan a Group Policy enforces (HKLM\SOFTWARE\Policies\Microsoft\Power\
+// PowerSettings, ActivePowerScheme), which the local key does not follow, then the machine's own
+// (HKLM\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes, ActivePowerScheme). On Linux, Amazon RDS and Azure
+// SQL Managed Instance the row says 'not read' and why. The server's start time is not a property: the DMV writes
+// it in the local clock and a daylight-saving shift would log a change.
 //
-// Rights: the Server and TempDB groups need only the public role; the rest needs VIEW SERVER STATE (on SQL Server
-// 2022 VIEW SERVER PERFORMANCE STATE is enough): without it those rows say so and the run is partial. Runs on SQL
-// Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; not on Azure SQL Database.
+// Rights: the Server and TempDB groups and max and min server memory need only the public role. The processor
+// rows, the machine's memory and the memory model need VIEW SERVER STATE (on SQL Server 2022 VIEW SERVER PERFORMANCE
+// STATE is enough). The host rows are public's before SQL Server 2022 and need VIEW SERVER PERFORMANCE STATE from
+// it. A row the login may not read says so and the run is partial. Runs on SQL Server 2016 SP1 and later, Amazon
+// RDS and Azure SQL Managed Instance; not on Azure SQL Database.
 type propertiesCollector struct{}
 
 func init() { Register(propertiesCollector{}) }
@@ -96,18 +101,23 @@ const (
   CAST(windows_release AS nvarchar(256)) AS host_release FROM sys.dm_os_windows_info`
 )
 
-// propsPowerSQL reads the active power scheme's GUID from the registry. An extended procedure reports a failure
-// as a message and a return code, never as an error a TRY / CATCH sees: the code comes back with the value.
-const propsPowerSQL = `DECLARE @scheme nvarchar(128), @rc int;
-EXEC @rc = master.dbo.xp_regread @rootkey = N'HKEY_LOCAL_MACHINE',
+// propsPowerSQL reads the active power scheme's GUID from the registry: the one a Group Policy enforces, then the
+// machine's own. A key or a value that is not there comes back as no value (xp_regread answers with a message and
+// return code 0, read on SQL Server 2022); a login that may not execute the procedure gets an error, which the
+// driver returns.
+const propsPowerSQL = `DECLARE @policy nvarchar(128), @scheme nvarchar(128);
+EXEC master.dbo.xp_regread @rootkey = N'HKEY_LOCAL_MACHINE',
+  @key = N'SOFTWARE\Policies\Microsoft\Power\PowerSettings', @value_name = N'ActivePowerScheme', @value = @policy OUTPUT;
+EXEC master.dbo.xp_regread @rootkey = N'HKEY_LOCAL_MACHINE',
   @key = N'SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes', @value_name = N'ActivePowerScheme', @value = @scheme OUTPUT;
-SELECT @rc AS rc, @scheme AS scheme;`
+SELECT @policy AS policy_scheme, @scheme AS scheme;`
 
-// powerPlans names the three power schemes every Windows ships, by their GUID.
+// powerPlans names the power schemes Windows ships, by their GUID (Ultimate Performance ships hidden).
 var powerPlans = map[string]string{
 	"381b4222-f694-41f0-9685-ff5bb260df2e": "Balanced",
 	"8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c": "High performance",
 	"a1841308-3541-4fab-bc81-f71556f20b4a": "Power saver",
+	"e9a42b02-d5df-448d-aa00-03f14749eb61": "Ultimate Performance",
 }
 
 // unlimitedMemoryMB is max server memory's default: no limit.
@@ -138,15 +148,19 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 	perfErr := perfState(ctx, conn, info, "sys.dm_os_sys_info")
 	var si collect.Row
 	why := "not read: the login lacks VIEW SERVER STATE"
-	if perfErr == nil {
+	switch {
+	case perfErr == nil:
 		si, err = readSysInfo(ctx, conn)
 		if err != nil {
 			why = "not read: " + err.Error()
 			partial = append(partial, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info", "message": err.Error()})
 		}
-	} else {
+	case errors.Is(perfErr, collect.ErrSkip):
 		partial = append(partial, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info",
-			"message": "the login lacks VIEW SERVER STATE: the processor, memory and host rows were not read"})
+			"message": "the login lacks VIEW SERVER STATE: the processor rows, the machine's memory and the memory model were not read"})
+	default: // the question itself failed (the run's deadline, a lost connection): not a missing right
+		why = "not read: " + perfErr.Error()
+		partial = append(partial, collect.Row{"kind": "collector_error", "source": "sys.dm_os_sys_info", "message": perfErr.Error()})
 	}
 	val := func(k string) any {
 		if si == nil {
@@ -186,14 +200,11 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 	p.add("max_workers", "Processor", "Max worker threads", 290, val("max_workers"), note())
 	p.add("virtual_machine", "Processor", "Virtual machine", 300, val("virtual_machine"), note())
 
-	// the host, then the power plan (the registry of a Windows server someone runs)
-	var host collect.Row
-	hostWhy := why
-	if si != nil {
-		host, hostWhy = readHost(ctx, conn)
-		if host == nil {
-			partial = append(partial, collect.Row{"kind": "collector_error", "source": "sys.dm_os_host_info", "message": strings.TrimPrefix(hostWhy, "not read: ")})
-		}
+	// the host (its views have their own rights: asked whatever sys.dm_os_sys_info answered), then the power plan
+	// (the registry of a Windows server someone runs)
+	host, hostWhy := readHost(ctx, conn, info)
+	if host == nil {
+		partial = append(partial, collect.Row{"kind": "collector_error", "source": "the host views", "message": strings.TrimPrefix(hostWhy, "not read: ")})
 	}
 	hval := func(k string) any {
 		if host == nil {
@@ -219,15 +230,19 @@ func (propertiesCollector) Run(ctx context.Context, conn *sql.Conn, info Info) (
 		maxNote = "the default: no limit is set"
 	}
 	p.add("max_memory_mb", "Memory", "Max server memory (MB)", 410, s["max_memory_mb"], maxNote)
+	// derived from the two rows above: shown, and a change of either is logged once, on its own row
+	const pctLabel = "Max server memory, % of the machine"
 	switch {
 	case si == nil:
-		p.add("max_memory_pct", "Memory", "Max server memory, % of the machine", 420, nil, why)
+		p.addUntracked("max_memory_pct", "Memory", pctLabel, 420, nil, why)
 	case maxMB == unlimitedMemoryMB || maxMB <= 0:
-		p.add("max_memory_pct", "Memory", "Max server memory, % of the machine", 420, "no limit", "max server memory is at its default: SQL Server may take all of the machine's memory")
+		p.addUntracked("max_memory_pct", "Memory", pctLabel, 420, "no limit", "max server memory is at its default: SQL Server sets itself no limit (on Linux the memory.memorylimitmb setting still caps it)")
+	case physMB > 0 && maxMB > physMB:
+		p.addUntracked("max_memory_pct", "Memory", pctLabel, 420, pctText(maxMB, physMB), "more than the machine has: the setting does not limit SQL Server")
 	case physMB > 0:
-		p.add("max_memory_pct", "Memory", "Max server memory, % of the machine", 420, pctText(maxMB, physMB), "")
+		p.addUntracked("max_memory_pct", "Memory", pctLabel, 420, pctText(maxMB, physMB), "")
 	default:
-		p.add("max_memory_pct", "Memory", "Max server memory, % of the machine", 420, nil, "not read: the machine's memory read as 0")
+		p.addUntracked("max_memory_pct", "Memory", pctLabel, 420, nil, "not read: the machine's memory read as 0")
 	}
 	p.add("min_memory_mb", "Memory", "Min server memory (MB)", 430, s["min_memory_mb"], "")
 	p.add("memory_model", "Memory", "Memory model", 440, val("memory_model"), older("memory_model", "SQL Server 2016 SP1"))
@@ -301,12 +316,15 @@ func sysInfoSQL(have map[string]bool) string {
 }
 
 // readHost reads the host's platform and release: sys.dm_os_host_info, or before SQL Server 2017 (which has no such
-// view) sys.dm_os_windows_info. nil and the reason when neither answers.
-func readHost(ctx context.Context, conn *sql.Conn) (collect.Row, string) {
-	rows, err := QueryRows(ctx, conn, propsHostSQL)
-	if err != nil {
-		rows, err = QueryRows(ctx, conn, propsWindowsSQL)
+// view and runs on Windows only) sys.dm_os_windows_info. The view is chosen by the version, never by an error: on a
+// Linux server sys.dm_os_windows_info answers too, with an empty release. nil and the reason when the view does
+// not answer.
+func readHost(ctx context.Context, conn *sql.Conn, info Info) (collect.Row, string) {
+	q := propsHostSQL
+	if info.Major > 0 && info.Major < 14 && info.Kind != KindAzureMI { // Managed Instance answers 12.0 and runs the current engine
+		q = propsWindowsSQL
 	}
+	rows, err := QueryRows(ctx, conn, q)
 	if err != nil {
 		return nil, "not read: " + err.Error()
 	}
@@ -336,24 +354,31 @@ func powerPlan(ctx context.Context, conn *sql.Conn, info Info, platform string, 
 	return powerPlanOf(rows)
 }
 
-// powerPlanOf turns xp_regread's answer (its return code and the scheme's GUID) into the plan's name and note.
+// powerPlanOf turns xp_regread's answer (the scheme a Group Policy enforces, and the machine's own) into the plan's
+// name and note. The policy's scheme wins: it is the one in force.
 func powerPlanOf(rows []collect.Row) (any, string) {
 	if len(rows) != 1 {
 		return nil, "not read: xp_regread returned no row"
 	}
-	guid, _ := rows[0]["scheme"].(string)
-	guid = strings.ToLower(strings.Trim(strings.TrimSpace(guid), "{}"))
-	if rc, ok := rows[0]["rc"].(int64); !ok || rc != 0 || guid == "" {
-		return nil, "not read: xp_regread gave no active power scheme (the login may not execute it, or the key is not there)"
+	clean := func(v any) string {
+		g, _ := v.(string)
+		return strings.ToLower(strings.Trim(strings.TrimSpace(g), "{}"))
+	}
+	guid, by := clean(rows[0]["policy_scheme"]), " (enforced by Group Policy)"
+	if guid == "" {
+		guid, by = clean(rows[0]["scheme"]), ""
+	}
+	if guid == "" {
+		return nil, "not read: the registry holds no active power scheme where xp_regread looked"
 	}
 	name, known := powerPlans[guid]
 	switch {
 	case !known:
-		return guid, "a power scheme of the machine's own (not one of the three Windows ships)"
-	case name != "High performance":
-		return name, "Windows may slow or park cores under this plan; a database server is normally set to High performance"
+		return guid, "a power scheme of the machine's own, not one Windows ships" + by
+	case name != "High performance" && name != "Ultimate Performance":
+		return name, "Windows may slow or park cores under this plan; a database server is normally set to High performance" + by
 	}
-	return name, ""
+	return name, strings.TrimSpace(strings.Trim(by, " ()"))
 }
 
 // propList gathers the payload's property rows.

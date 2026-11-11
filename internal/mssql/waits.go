@@ -110,7 +110,7 @@ var waitCategories = map[string]string{
 	"PWAIT_QRY_BPMEMORY": "Batch mode", "BPSORT": "Batch mode",
 	"BTREE_INSERT_FLOW_CONTROL": "Sequential key",
 	"HADR_SYNC_COMMIT":          "Availability group", "HADR_GROUP_COMMIT": "Availability group",
-	"WAIT_ON_SYNC_STATISTICS_REFRESH": "Statistics",
+	"WAIT_ON_SYNC_STATISTICS_REFRESH": "A query could not compile until out-of-date statistics it depends on had been rebuilt in its own session (the database updates statistics synchronously).",
 	"IO_QUEUE_LIMIT":                  "Throttling", "IO_RETRY": "Throttling", "RESMGR_THROTTLED": "Throttling",
 }
 
@@ -132,7 +132,7 @@ type WaitFamily struct {
 // waitDescriptions are this project's own wording of what each wait means for a DBA; none is copied from a tool's
 // table or from the product documentation.
 var waitFamilies = []WaitFamily{
-	{"LCK_M_", "A session waited for a lock another session held. The rest of the name is the lock mode it asked for (S shared, U update, X exclusive, IS / IU / IX intent, SCH_S / SCH_M schema, RS / RI / RX key range). The cause is the holder's transaction, never the object waited on: the Running queries and Blocked reports pages name the head of the chain."},
+	{"LCK_M_", "A session waited for a lock another session held. The rest of the name is the lock mode it asked for: S shared, U update, X exclusive; IS, IU, IX intent; SIU, SIX, UIX a mode with an intent; SCH_S, SCH_M schema; BU bulk update; RS_, RIn_, RX_ key range. An ending of LOW_PRIORITY or ABORT_BLOCKERS is an online index operation or a partition switch waiting at low priority. The cause is the holder's transaction, never the object waited on: the Running queries and Blocked reports pages name the head of the chain."},
 	{"PAGEIOLATCH_", "A session waited for a data page to come from disk into memory (SH to read it, EX or UP to change it). A large share means slow data file storage, or too little memory for the pages the workload reads."},
 	{"PAGELATCH_", "A session waited for a page that is already in memory, because other sessions were changing it. On tempdb's allocation pages this is the contention more tempdb data files relieve; on a user table it is many inserts at the end of one index."},
 	{"LATCH_", "A wait for an internal structure that is not a data page: a parallel scan's shared state, a file that grows, an allocation cache. Some of it is normal with parallel queries; sys.dm_os_latch_stats names the latch class."},
@@ -141,8 +141,9 @@ var waitFamilies = []WaitFamily{
 	{"CX", "A parallel query's threads waited for each other."},
 }
 
-// waitDescriptions says what a wait type means, for the types a DBA meets most. A type without an entry takes its
-// family's text; a wait of idle background work (benignWaits) says so on the page.
+// waitDescriptions says what a wait type means, for the types a DBA meets most. On the page a type without an entry
+// that is idle background work (benignWaits) says so, whatever its name starts with; any other takes its family's
+// text.
 var waitDescriptions = map[string]string{
 	"LCK_M_SCH_M":                      "A schema change (an index rebuild, ALTER TABLE, a partition switch) waited for every user of the object to finish. Every session that arrives after it queues behind it, so a short DDL statement can stall a busy table.",
 	"LCK_M_SCH_S":                      "A session waited for a schema stability lock: a schema change holds the object, or is queued for it.",
@@ -151,7 +152,7 @@ var waitDescriptions = map[string]string{
 	"CXCONSUMER":                       "The reading side of a parallel exchange waited for rows from the threads that produce them. The query waits on its own work: mostly harmless.",
 	"CXSYNC_PORT":                      "A parallel query's threads waited to open or line up an exchange. Newer versions count this apart from CXPACKET; read it the same way.",
 	"CXSYNC_CONSUMER":                  "A parallel query's threads waited to line up at an exchange. Newer versions count this apart from CXPACKET; read it the same way.",
-	"EXECSYNC":                         "A parallel query's threads waited for a shared area that is not an exchange: a bitmap, a spool, a large object.",
+	"EXECSYNC":                         "Threads of one parallel query queued for something they share outside the exchanges between them, built once per query and used by all of its threads.",
 	"SOS_SCHEDULER_YIELD":              "A thread used its whole time slice and stepped aside for the next one. Nothing was missing: it marks queries that burn CPU. Read it with the signal share here and the runnable tasks on the CPU page.",
 	"THREADPOOL":                       "A task waited for a worker thread because every one was in use. Serious: new logins and queries stall. The usual causes are a long blocking chain that holds workers, or many parallel queries at once.",
 	"RESOURCE_SEMAPHORE":               "A query waited for its memory grant, the workspace its sorts and hashes asked for, before it could start. The Memory page shows the grants and the largest one.",
@@ -159,16 +160,16 @@ var waitDescriptions = map[string]string{
 	"CMEMTHREAD":                       "Threads waited for a shared memory allocator. It grows with very many small allocations on a machine with many cores.",
 	"MEMORY_ALLOCATION_EXT":            "A thread took memory from the operating system or from SQL Server's own memory manager; it is counted as time outside the scheduler. Large totals come with very many small allocations.",
 	"WRITELOG":                         "A session waited at commit for its log records to reach the disk. Slow log storage, or very many small transactions that each commit on their own.",
-	"LOGBUFFER":                        "A session waited for room in the log buffer because the log writer was behind: the log's storage cannot keep up.",
-	"LOGMGR_RESERVE_APPEND":            "A task waited to see whether truncating the log makes room for its record: the log file is full and can neither grow nor be truncated.",
+	"LOGBUFFER":                        "A session had a log record to write and found no free log buffer: the log writer is behind because the log's storage is slow.",
+	"LOGMGR_RESERVE_APPEND":            "The log file is full and cannot grow: the task waited for the log to be truncated (a checkpoint under simple recovery, a log backup otherwise) so that its record fits.",
 	"ASYNC_NETWORK_IO":                 "SQL Server had rows ready and waited for the client to take them. The application reads slowly (row by row work, a very large result) or the network is slow; the server is not what holds the query back.",
 	"IO_COMPLETION":                    "A wait for an I/O that is not a data page read: a sort or a hash spilling to tempdb, a backup or a restore, a file header.",
 	"ASYNC_IO_COMPLETION":              "A wait for a long asynchronous I/O to finish: a backup, or a file created or grown without instant file initialization.",
 	"WRITE_COMPLETION":                 "A task waited for a write outside the normal checkpoint path to finish: a file growing, a sort run, a bulk load.",
-	"SLEEP_BPOOL_FLUSH":                "A checkpoint slowed itself down so that its writes do not flood the disks: the storage is the limit while a checkpoint runs.",
+	"SLEEP_BPOOL_FLUSH":                "A checkpoint held its own writes back because the disks were already busy with them: while a checkpoint runs, the storage sets the pace.",
 	"BACKUPIO":                         "A backup or a restore waited for its data: the backup's target (or source) is slower than the database's files.",
 	"BACKUPBUFFER":                     "A backup or a restore waited for a free buffer: the backup's target (or source) is slower than the database's files.",
-	"BACKUPTHREAD":                     "A task waited for a backup thread: another backup or restore of the same database was running.",
+	"BACKUPTHREAD":                     "A backup or restore thread waited for the other threads of the same backup to finish their part. It grows with the backup's own duration; on its own it points at nothing.",
 	"HADR_SYNC_COMMIT":                 "A commit on the primary waited for a synchronous secondary to write the log. The time is the network round trip and the secondary's log write: the price of synchronous commit.",
 	"OLEDB":                            "SQL Server waited inside an OLE DB provider: a linked server query, or one of the DMVs and DBCC commands that go through the provider (a monitoring tool's own reads are counted here).",
 	"MSQL_XP":                          "A session waited for an extended stored procedure (an xp_ call) to return.",
@@ -189,7 +190,7 @@ var waitDescriptions = map[string]string{
 	"IO_QUEUE_LIMIT":                   "The service throttled the database's I/O: more was queued than its tier allows.",
 	"RESMGR_THROTTLED":                 "Resource Governor held a request back because its pool or group was at a limit.",
 	"RESOURCE_GOVERNOR_IDLE":           "Resource Governor kept a CPU idle to hold a pool under its CPU cap.",
-	"PREEMPTIVE_OS_WRITEFILEGATHER":    "SQL Server waited for the operating system to grow and zero a file: a data file growing without instant file initialization, or any growth of a log file (a log is always zeroed).",
+	"PREEMPTIVE_OS_WRITEFILEGATHER":    "SQL Server waited for the operating system to grow and zero a file: a data file growing without instant file initialization, or a log file growing (a log's growth is zeroed; from SQL Server 2022 a growth of up to 64 MB is not).",
 	"PREEMPTIVE_OS_AUTHENTICATIONOPS":  "SQL Server waited for the operating system to check an account: a slow or unreachable domain controller shows here.",
 	"PREEMPTIVE_OS_LOOKUPACCOUNTSID":   "SQL Server waited for the operating system to resolve an account's identifier: a slow or unreachable domain controller shows here.",
 	"PREEMPTIVE_OS_GETPROCADDRESS":     "SQL Server loaded and ran an extended stored procedure (an xp_ call); the time includes the procedure's own run.",

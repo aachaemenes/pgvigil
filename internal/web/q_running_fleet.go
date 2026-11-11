@@ -36,7 +36,9 @@ import (
 //                                     2:<file>:<page>; never PAGEIOLATCH_*, which is the disk) and their summed wait
 //   tempdb_alloc_waits, _wait_ms      those of them on an allocation page (PFS, GAM, SGAM): the contention more tempdb
 //                                     data files relieve. pgvigil.mssql_tempdb_page_kind (0084) names the page.
-// These are the waits in progress at the snapshot, not a total: the Waits page has what ended. DBA Dash's third
+// These are the waits in progress at the snapshot, not a total: the Waits page has what ended. A request's row
+// carries its coordinator's wait: a parallel request whose workers wait for a tempdb page shows CXPACKET or
+// CXCONSUMER and is not counted here. DBA Dash's third
 // pair, the waits on tempdb's system tables' pages (metadata contention), is not here: the snapshot does not store
 // which object a page belongs to.
 
@@ -102,7 +104,8 @@ SELECT i.instance_id, i.name, i.engine, m.snapshot_at,
                             count(*) FILTER (WHERE k.kind IN ('pfs', 'gam', 'sgam')) AS tempdb_alloc_waits,
                             coalesce(sum(q.wait_ms) FILTER (WHERE k.kind IN ('pfs', 'gam', 'sgam')), 0) AS tempdb_alloc_wait_ms
                        FROM pgvigil.mssql_requests_v q
-                      CROSS JOIN LATERAL (SELECT pgvigil.mssql_tempdb_page_kind(q.wait_type, q.wait_resource) AS kind) k
+                      -- the function is called for a page latch wait only: it is not inlined, and a fleet's snapshots hold many rows
+                      CROSS JOIN LATERAL (SELECT CASE WHEN q.wait_type LIKE 'PAGELATCH%' THEN pgvigil.mssql_tempdb_page_kind(q.wait_type, q.wait_resource) END AS kind) k
                       WHERE q.instance_id = i.instance_id AND q.snapshot_at = m.snapshot_at) r ON m.snapshot_at IS NOT NULL
   LEFT JOIN LATERAL (SELECT q.elapsed_ms, q.session_id, left(q.statement, 4000) AS statement
                        FROM pgvigil.mssql_requests_v q

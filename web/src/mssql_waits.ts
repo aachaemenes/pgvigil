@@ -28,15 +28,18 @@ const eventCols: Col[] = [
   { key: 'max_wait_ms', label: 'longest since the server started (ms)', num: true },
 ];
 // the columns /api/mssql/waitinfo adds: the rates after the wait time, the description last
+// three decimals, as the API rounds them: a rate under 0.005 would read 0 with the grid's two
+const rate = (v: unknown) => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 3 });
 const rateCols: Col[] = [
-  { key: 'ms_per_sec', label: 'wait time (ms/sec)', num: true },
-  { key: 'ms_per_sec_core', label: 'wait time (ms/sec/core)', num: true },
+  { key: 'ms_per_sec', label: 'wait time (ms/sec)', num: true, fmt: rate },
+  { key: 'ms_per_sec_core', label: 'wait time (ms/sec/core)', num: true, fmt: rate },
 ];
 const descCol: Col = { key: 'description', wide: true };
 const idleText = 'Idle background work: a system task waiting for something to do. Kept, and never ranked.';
 
-// describe gives each wait row its rates and its description: the type's own text, else its family's (the longest
-// matching start of the name), else the idle note of a benign wait, else nothing.
+// describe gives each wait row its rates and its description: the type's own text; else, for a wait of idle
+// background work, the idle note (PREEMPTIVE_XE_DISPATCHER is idle, whatever its family says); else its family's
+// text (the longest matching start of the name); else nothing.
 function describe(events: Row[], info: WaitInfo): void {
   const rates = new Map(rowsOf(info.rates).map(r => [String(r.wait_type), r] as [string, Row]));
   const types = new Map(rowsOf(info.types).map(r => [String(r.wait_type), String(r.description)] as [string, string]));
@@ -45,7 +48,7 @@ function describe(events: Row[], info: WaitInfo): void {
     const w = String(e.wait_type), r = rates.get(w);
     e.ms_per_sec = r?.ms_per_sec ?? null;
     e.ms_per_sec_core = r?.ms_per_sec_core ?? null;
-    e.description = types.get(w) ?? families.find(f => w.startsWith(f[0]))?.[1] ?? (e.is_benign ? idleText : '');
+    e.description = types.get(w) ?? (e.is_benign ? idleText : families.find(f => w.startsWith(f[0]))?.[1] ?? '');
   }
 }
 

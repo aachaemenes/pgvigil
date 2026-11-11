@@ -28,17 +28,20 @@ export async function mssqlPropertiesView(ctx: Ctx): Promise<HTMLElement> {
   const lastRead = props.map(r => String(r.snapshot_at ?? '')).reduce((a, b) => b > a ? b : a, '');
   const unread = props.filter(r => r.value == null).length;
   sec.append(el('p', { class: 'meta counts' }, `${props.length} properties, read ${fmtTime(lastRead)}; `,
-    unread ? el('span', { class: 'warn' }, `${unread} not read (each row says why)`) : 'every one read', `; ${changes.length} change(s) logged.` + stateNote));
+    unread ? el('span', { class: 'warn' }, `${unread} not read (each row says why)`) : 'every one read',
+    changes.length >= 500 ? '; the newest 500 changes are listed.' : `; ${changes.length} change(s) logged.`, stateNote));
   const maxPct = by.get('max_memory_pct')?.value;
   const plan = String(by.get('power_plan')?.value ?? '');
+  const fastPlan = plan === 'High performance' || plan === 'Ultimate Performance';
+  const uneven = by.get('tempdb_even_size')?.value === 'no';
   sec.append(el('div', { class: 'tiles' },
     tile('logical CPUs', val('cpu_count')),
     tile('sockets x cores per socket', by.get('socket_count')?.value != null ? `${val('socket_count')} x ${val('cores_per_socket')}` : 'not read'),
     tile('physical memory (MB)', val('physical_memory_mb')),
-    // no limit on max server memory is a setting to look at, not a fault
+    // a tile that marks something to look at says it in words too, never by its colour alone
     tile('max server memory, % of the machine', maxPct == null ? 'not read' : /^[\d.]+$/.test(String(maxPct)) ? `${String(maxPct)} %` : String(maxPct), maxPct === 'no limit' ? 'warn' : ''),
-    tile('tempdb data files', val('tempdb_data_files'), by.get('tempdb_even_size')?.value === 'no' ? 'warn' : ''),
-    tile('power plan', plan || 'not read', plan && plan !== 'High performance' ? 'warn' : '')));
+    tile('tempdb data files', val('tempdb_data_files') + (uneven ? ', not one size' : ''), uneven ? 'warn' : ''),
+    tile('power plan', !plan ? 'not read' : fastPlan ? plan : `${plan} (not High performance)`, plan && !fastPlan ? 'warn' : '')));
 
   const cols: Col[] = [
     { key: 'grp', label: 'group' },

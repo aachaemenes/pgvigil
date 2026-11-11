@@ -10,16 +10,17 @@ import (
 // did over the window, from the differences of sys.dm_exec_procedure_stats between two reads (mssql_procstats,
 // every five minutes; 0084).
 //
-//	GET /api/mssql/procs?instance=N[&from=&to=][&database=<name>][&db_id=&object=][&part=...]
+//	GET /api/mssql/procs?instance=N[&from=&to=][&db=<database id>][&db_id=&object=][&part=...]
 //	  state       the mssql_procstats collection's last run
 //	  reads       the reads of the window that took differences: how many, the seconds they cover
-//	  databases   the databases with a procedure that ran in the window (the page's filter)
-//	  procs       one row per procedure (database= keeps one database's): executions, per minute over the covered
+//	  databases   the databases with a procedure that ran in the window (the page's filter), each under one name
+//	  totals      the window's sums over every procedure (db= one database's), whatever the grid's limit
+//	  procs       one row per procedure (db= keeps one database's): executions, per minute over the covered
 //	              time and per minute in its busiest read, CPU, duration, logical and physical reads and writes, each
 //	              as a total and per execution; the CPU and the duration also as ms per second of the covered time.
 //	              The most duration first; 2,000 at most.
 //	  series      the window in about 120 steps (five minutes at least): executions per second, CPU ms per second
-//	              and duration ms per second over all procedures (database= keeps one database's)
+//	              and duration ms per second over all procedures (db= keeps one database's)
 //	  intervals   with db_id= and object=: that procedure's own reads, newest first (1,000 at most)
 //
 // A figure is what ran between two reads. A procedure compiled, run and dropped from the plan cache between two
@@ -30,31 +31,41 @@ SELECT count(*) AS reads, coalesce(sum(r.interval_secs), 0)::float8 AS covered_s
   FROM pgvigil.mssql_proc_read r
  WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3`
 
-const sqlMSSQLProcDatabases = `
-SELECT coalesce(s.database_name, 'database ' || s.database_id) AS database, count(DISTINCT s.object_id) AS procs, sum(s.executions)::bigint AS executions
-  FROM pgvigil.mssql_proc_sample s
- WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
- GROUP BY 1
- ORDER BY 1`
+// procDBNames: one name per database of the window, for the filter list, the grid and the chart alike: the newest
+// name read (a read that gave up on a lock stores none), else 'database <id>'. $1 instance, $2 and $3 the window.
+const procDBNames = `
+  SELECT DISTINCT ON (s.database_id) s.database_id, coalesce(s.database_name, 'database ' || s.database_id) AS database
+    FROM pgvigil.mssql_proc_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+   ORDER BY s.database_id, (s.database_name IS NULL), s.snapshot_at DESC`
 
-// sqlMSSQLProcs: $4 the database's name as the page shows it, NULL = every database. A name read in one interval
-// and not in another (the read gave up on a lock) keeps the name: max() skips the NULL.
+const sqlMSSQLProcDatabases = `
+WITH dbn AS (` + procDBNames + `)
+SELECT n.database_id, n.database, count(DISTINCT s.object_id) AS procs, sum(s.executions)::bigint AS executions
+  FROM pgvigil.mssql_proc_sample s
+  JOIN dbn n ON n.database_id = s.database_id
+ WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+ GROUP BY n.database_id, n.database
+ ORDER BY n.database, n.database_id`
+
+// sqlMSSQLProcs: $4 the database's id, NULL = every database. A name read in one interval and not in another (the
+// read gave up on a lock) keeps the name: max() skips the NULL.
 const sqlMSSQLProcs = `
-WITH cover AS (
+WITH dbn AS (` + procDBNames + `), cover AS (
   SELECT coalesce(sum(r.interval_secs), 0)::float8 AS secs FROM pgvigil.mssql_proc_read r
    WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
 ), p AS (
-  SELECT s.database_id, s.object_id, coalesce(max(s.database_name), 'database ' || s.database_id) AS database,
+  SELECT s.database_id, s.object_id,
          max(s.schema_name) AS schema_name, max(s.object_name) AS object_name, max(s.type_desc) AS type_desc,
          sum(s.executions)::bigint AS executions, sum(s.cpu_us)::bigint AS cpu_us, sum(s.duration_us)::bigint AS duration_us,
          sum(s.logical_reads)::bigint AS logical_reads, sum(s.physical_reads)::bigint AS physical_reads,
          sum(s.logical_writes)::bigint AS logical_writes, count(*) AS intervals, max(s.snapshot_at) AS last_seen,
          max(s.executions * 60.0 / nullif(s.interval_secs, 0)) AS max_executions_min   -- the busiest single read
     FROM pgvigil.mssql_proc_sample s
-   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
    GROUP BY s.database_id, s.object_id
 )
-SELECT p.database_id, p.object_id, p.database, p.schema_name, coalesce(p.object_name, 'object ' || p.object_id) AS object_name,
+SELECT p.database_id, p.object_id, n.database, p.schema_name, coalesce(p.object_name, 'object ' || p.object_id) AS object_name,
        p.object_name IS NOT NULL AS named, p.type_desc, p.executions,
        round((p.executions * 60 / nullif(cover.secs, 0))::numeric, 2) AS executions_min,
        round(p.max_executions_min::numeric, 2) AS max_executions_min,
@@ -68,10 +79,17 @@ SELECT p.database_id, p.object_id, p.database, p.schema_name, coalesce(p.object_
        p.physical_reads, round(p.physical_reads::numeric / nullif(p.executions, 0), 1) AS avg_physical_reads,
        p.logical_writes, round(p.logical_writes::numeric / nullif(p.executions, 0), 1) AS avg_logical_writes,
        p.intervals, p.last_seen
-  FROM p CROSS JOIN cover
- WHERE $4::text IS NULL OR p.database = $4
- ORDER BY p.duration_us DESC, p.database, p.object_name NULLS LAST, p.object_id
+  FROM p JOIN dbn n ON n.database_id = p.database_id CROSS JOIN cover
+ ORDER BY p.duration_us DESC, n.database, p.object_name NULLS LAST, p.object_id
  LIMIT 2000`
+
+// sqlMSSQLProcTotals: the window's sums over EVERY procedure ($4 one database's), whatever the grid's limit.
+const sqlMSSQLProcTotals = `
+SELECT count(DISTINCT (s.database_id, s.object_id)) AS procs, coalesce(sum(s.executions), 0)::bigint AS executions,
+       round(coalesce(sum(s.cpu_us), 0) / 1000.0, 1) AS cpu_ms, round(coalesce(sum(s.duration_us), 0) / 1000.0, 1) AS duration_ms,
+       coalesce(sum(s.logical_reads), 0)::bigint AS logical_reads
+  FROM pgvigil.mssql_proc_sample s
+ WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)`
 
 // sqlMSSQLProcSeries: every procedure's work per step ($5 seconds) over the seconds the step's reads cover (each
 // read once, an idle one too).
@@ -85,8 +103,7 @@ WITH secs AS (
   SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $5) * $5) AS step, sum(s.executions) AS executions,
          sum(s.cpu_us) AS cpu_us, sum(s.duration_us) AS duration_us
     FROM pgvigil.mssql_proc_sample s
-   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
-     AND ($4::text IS NULL OR coalesce(s.database_name, 'database ' || s.database_id) = $4)
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
    GROUP BY 1
 )
 SELECT c.step AS snapshot_at, round((coalesce(w.executions, 0) / c.secs)::numeric, 3) AS executions_s,
@@ -116,7 +133,20 @@ func procStep(secs float64) int {
 	return step
 }
 
-// MSSQLProcs is GET /api/mssql/procs?instance=N[&from=&to=][&database=][&db_id=&object=][&part=...].
+// dbFilter reads db=<database id>: nil = every database.
+func dbFilter(r *http.Request) (any, error) {
+	v := r.URL.Query().Get("db")
+	if v == "" {
+		return nil, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return nil, errors.New("db must be a database id")
+	}
+	return n, nil
+}
+
+// MSSQLProcs is GET /api/mssql/procs?instance=N[&from=&to=][&db=][&db_id=&object=][&part=...].
 func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
 	if err != nil {
@@ -124,14 +154,16 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	var database any
-	if v := q.Get("database"); v != "" {
-		database = v
+	database, err := dbFilter(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	parts := []part{
 		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_procstats"}}},
 		{"reads", sqlMSSQLProcReads, []any{id, from, to}},
 		{"databases", sqlMSSQLProcDatabases, []any{id, from, to}},
+		{"totals", sqlMSSQLProcTotals, []any{id, from, to, database}},
 		{"procs", sqlMSSQLProcs, []any{id, from, to, database}},
 		{"series", sqlMSSQLProcSeries, []any{id, from, to, database, procStep(to.Sub(from).Seconds())}},
 	}
