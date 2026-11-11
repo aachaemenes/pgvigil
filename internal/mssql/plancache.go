@@ -188,7 +188,7 @@ var planCacheSent = &planCacheTexts{sent: map[string]time.Time{}}
 // pick returns the statements whose text this run reads: per query key the first row in the rows' order (the most
 // CPU first), max keys at most, none whose text was sent less than planCacheTextEvery ago. It marks what it
 // picked; unpick takes the marks back when the read failed.
-func (t *planCacheTexts) pick(server string, rows []collect.Row, now time.Time, max int) []collect.Row {
+func (t *planCacheTexts) pick(server string, rows []collect.Row, now time.Time, limit int) []collect.Row {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for k, at := range t.sent {
@@ -198,7 +198,7 @@ func (t *planCacheTexts) pick(server string, rows []collect.Row, now time.Time, 
 	}
 	var out []collect.Row
 	for _, r := range rows {
-		if len(out) >= max {
+		if len(out) >= limit {
 			break
 		}
 		key, _ := r["query_key"].(string)

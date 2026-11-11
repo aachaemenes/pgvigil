@@ -374,9 +374,9 @@ func TestPgauditServerlogCursorMovesOn(t *testing.T) {
 			return fmt.Sprintf("%s [30] app@shop LOG:  AUDIT: %s\n", stamp(at, c.layout), rest)
 		})
 		dir := &memDir{files: map[string]string{"pg.log": text}, mod: map[string]time.Time{"pg.log": t0.Add(time.Minute)}}
-		cursor, found, lastFrom, sawAfter := time.Time{}, false, time.Time{}, false
 		now := t0.Add(9*time.Second + logsOverlap + pgauditGuard) // the first read starts at t0+9s, as after an earlier read
-		cursor, found = now.Add(-pgauditGuard), true
+		cursor, found := now.Add(-pgauditGuard), true
+		lastFrom, sawAfter := time.Time{}, false
 		for run := 0; run < 40 && !sawAfter; run++ {
 			from := pgauditFrom(cursor, found, now)
 			if run > 0 && !from.After(lastFrom) {
