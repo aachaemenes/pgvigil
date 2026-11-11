@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -120,5 +121,50 @@ func TestBNum(t *testing.T) {
 		if ok != c.ok || got != c.want {
 			t.Errorf("bNum(%#v) = %v, %v; want %v, %v", c.in, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// SHOW CLIENTS and SHOW SERVERS (task 128): the console's own clients are left out, idle clients are counted and not
+// kept, the longest wait comes first and is wait + wait_us, a server keeps its remote_pid, the timestamps come out as
+// RFC 3339 whether the console sent text or a time, and the conns row counts what was read and kept.
+func TestPgBouncerConnRows(t *testing.T) {
+	clients := []map[string]any{
+		{"database": "pgbouncer", "user": "mon", "state": "active"},
+		{"database": "app", "user": "web", "state": "active", "application_name": "api", "addr": "10.0.0.5", "port": int64(53410),
+			"connect_time": "2026-11-10 23:12:40 UTC", "request_time": "2026-11-10 23:12:40 UTC", "wait": int64(0), "wait_us": int64(0),
+			"ptr": "0x1", "link": "0xs1"},
+		{"database": "app", "user": "web", "state": "waiting", "application_name": "batch", "wait": "1", "wait_us": "250000", "ptr": "0x2", "link": ""},
+		{"database": "app", "user": "web", "state": "waiting", "application_name": "api", "wait": int64(0), "wait_us": int64(15991), "ptr": "0x3"},
+		{"database": "app", "user": "web", "state": "idle", "ptr": "0x4"},
+	}
+	servers := []map[string]any{
+		{"database": "pgbouncer", "user": "pgbouncer", "state": "active", "remote_pid": int64(0)},
+		{"database": "app", "user": "web", "state": "active", "application_name": "api", "remote_pid": int64(2017329), "ptr": "0xs1", "link": "0x1",
+			"connect_time": time.Date(2026, 11, 10, 23, 12, 40, 0, time.UTC)},
+	}
+	rows := pgBouncerConnRows(clients, servers)
+	if len(rows) != 5 {
+		t.Fatalf("rows: %d, want 5 (conns, 3 clients, 1 server): %v", len(rows), rows)
+	}
+	if c := rows[0]; c["kind"] != "conns" || c["clients_read"] != 4 || c["clients_kept"] != 3 || c["servers_read"] != 1 {
+		t.Errorf("conns row: %v", c)
+	}
+	if r := rows[1]; r["application_name"] != "batch" || r["wait_us"] != int64(1250000) || r["state"] != "waiting" {
+		t.Errorf("first client (the longest wait): %v", r)
+	}
+	if r := rows[2]; r["wait_us"] != int64(15991) {
+		t.Errorf("second client: %v", r)
+	}
+	if r := rows[3]; r["link"] != "0xs1" || r["connect_time"] != "2026-11-10T23:12:40Z" || r["port"] != int64(53410) {
+		t.Errorf("the active client: %v", r)
+	}
+	if r := rows[4]; r["kind"] != "server" || r["remote_pid"] != int64(2017329) || r["connect_time"] != "2026-11-10T23:12:40Z" || r["link"] != "0x1" {
+		t.Errorf("the server: %v", r)
+	}
+	if _, ok := rows[1]["remote_pid"]; ok {
+		t.Error("a client row carries remote_pid (only a server's is the backend pid)")
+	}
+	if bTime("") != nil || bTime(nil) != nil {
+		t.Error("a blank timestamp is not nil")
 	}
 }
