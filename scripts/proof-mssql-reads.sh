@@ -12,6 +12,9 @@
 #                            own SQL Server container (MSSQL_IMAGE, default mcr.microsoft.com/mssql/server:2022-latest)
 #                            with a throwaway sa password made here, and removes it at the end.
 #   PGVIGIL_SKIP_PG13=1      leaves part M out (it starts and removes a postgres:13 container of its own).
+#   PGVIGIL_SHOTS            a folder: part S runs (it needs chromium and node) and saves the five pages' screenshots
+#                            there in both themes, 1600 wide, taken from the proof's own data. Not set: S is not run.
+#                            PGVIGIL_CHROMIUM_FLAGS: more flags for Chromium (--no-sandbox where it runs as root).
 #   PGVIGIL_NO_MSSQL=1       the parts that need no SQL Server only (the migration, D on stored rows, G, X): no
 #                            container, no login; the last line says so and is NOT the proof's PASS.
 # The binary must carry the routes /api/mssql/properties, /waitinfo, /procs and /indexlocks (the lead's wiring in
@@ -100,10 +103,17 @@
 #     only that database's rows and an unknown database none; db_id= and object= give the procedure's two reads; a
 #     db_id that is no number is refused with 400. /api/mssql/indexlocks lists the clustered index with the stored
 #     sums; database= keeps that database's rows.
+#  S. (only with PGVIGIL_SHOTS) in a headless Chromium at 1600 wide, in the light and the dark theme, each page is
+#     found by its grid's column names, never by position: Properties shows 35 rows with the logical CPUs a number
+#     and the power plan's cell not empty; Procedures shows the proof's procedure with 11 executions under dbo, and
+#     its name opens it read by read (2 reads); Index locks shows PK_pv_lock on pv_lock with at least 1 row lock
+#     wait and 1 escalation; Waits shows the forced lock wait's type with both rates and a description; the fleet
+#     Running queries row of the stored snapshot reads 4.0 MB, 5.0 MB, 2, 800, 1, 500 and a PostgreSQL row's cells
+#     are empty. Ten screenshots are saved (reads-<page>-<theme>.png) for the look against the tools' shots.
 #  NOT PROVEN HERE: a real power plan (a Windows SQL Server), a real tempdb page latch wait, SQL Server 2016-2019
 #  (the older sys.dm_os_sys_info), Amazon RDS, Azure SQL Managed Instance, a daylight-saving change on a server
 #  (the reason the cached time is kept in the server's own clock), a list long enough to be cut on a real server,
-#  the pages in a browser (proof-a11y and the lead's look).
+#  the pages' accessibility (proof-a11y) and, without PGVIGIL_SHOTS, the pages in a browser.
 set -euo pipefail
 : "${PGVIGIL_ADMIN_DSN:?a superuser connection in keyword form, no dbname}"
 for t in psql curl jq docker; do command -v $t >/dev/null || { echo "FAIL: $t is not on this machine" >&2; exit 1; }; done
@@ -118,7 +128,7 @@ pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; 
 P1=$(pw); P2=$(pw); P3=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
-MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; MADE_PG13=; SRV_PID=; GRANT_PID=; HOLD_PID=
+MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; MADE_PG13=; SRV_PID=; GRANT_PID=; HOLD_PID=; CHR_PID=
 CT=${PGVIGIL_MSSQL_CONTAINER:-}; OWN=; NOMS=${PGVIGIL_NO_MSSQL:-}
 PG13=pgv-p4s2-pg13-$SUF
 # sq <sql> [database]: as sa, the password through the environment by name
@@ -127,7 +137,7 @@ sq() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S loca
 sqs() { docker exec -i -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -U sa -i /dev/stdin; }
 cleanup() {
   rc=$?
-  for p in "$SRV_PID" "$GRANT_PID" "$HOLD_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
+  for p in "$SRV_PID" "$GRANT_PID" "$HOLD_PID" "$CHR_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   if [ -n "$MADE_CT" ]; then
     docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2   # only the container this run made
   else
@@ -597,5 +607,101 @@ SUMS=$(q "select 'pv_lock|' || sum(row_lock_waits) || '|' || sum(row_lock_wait_m
 [ "$(curl -fs "$U/mssql/indexlocks?instance=$iid&$W&database=$DB" | jq -r --arg d "$DB" '.indexes as $t | ($t.columns | index("database")) as $i | [$t.rows[] | .[$i] == $d] | (length > 0) and all')" = true ] || fail "P: database=$DB on the index locks"
 echo "P: OK"
 
-echo "NOT PROVEN HERE: a real power plan (Windows), a real tempdb page latch wait, SQL Server 2016-2019, RDS, Managed Instance, a daylight-saving change, a list cut on a real server, the pages in a browser"
-echo "proof-mssql-reads: PASS ($M_NOTE, $A_NOTE, B, C, $D_NOTE, E, F, G, X, P; SQL Server $([ -n "$OWN" ] && echo "in its own container" || echo "sandbox $CT"))"
+if [ -n "${PGVIGIL_SHOTS:-}" ]; then
+  echo "--- S. the pages in a headless Chromium, both themes, 1600 wide"
+  for t in chromium node; do command -v $t >/dev/null || fail "S: $t is not on this machine (PGVIGIL_SHOTS asks for the pages)"; done
+  mkdir -p "$PGVIGIL_SHOTS"
+  CDP=$(freeport 19222 19260) || fail "S: no free port for Chromium"
+  # shellcheck disable=SC2086  # PGVIGIL_CHROMIUM_FLAGS is a list of flags (--no-sandbox where Chromium runs as root)
+  chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu ${PGVIGIL_CHROMIUM_FLAGS:-} about:blank > "$WORK/chrome.log" 2>&1 & CHR_PID=$!
+  for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+  curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || { tail -5 "$WORK/chrome.log" >&2; fail "S: Chromium's CDP port never answered"; }
+  cat > "$WORK/ui.mjs" <<'JS'
+const a = JSON.parse(process.argv[2]);
+const fs = await import('node:fs');
+const list = await (await fetch(`http://127.0.0.1:${a.cdp}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
+  return d.result?.result?.value;
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const until = async (expr, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await ev(expr)) return true; await sleep(150); } return false; };
+let fails = 0;
+const check = (cond, what) => { console.log((cond ? '  ok   ' : '  FAIL ') + what); if (!cond) fails++; };
+// a grid is found by the name of one of its columns and a cell by its column's name and its row's key: never by position
+const fns = `
+  const gridOf = name => [...document.querySelectorAll('main table')].find(t => [...t.querySelectorAll('thead th')].some(h => h.textContent.trim() === name));
+  const heads = t => [...t.querySelectorAll('thead th')].map(h => h.textContent.trim());
+  const rowsOf = t => t ? [...t.querySelectorAll('tbody tr')] : [];
+  const cell = (t, tr, col) => tr ? tr.cells[heads(t).indexOf(col)] : undefined;
+  const rowWith = (t, col, text) => rowsOf(t).find(tr => cell(t, tr, col)?.textContent.trim() === text);
+  const text = (t, tr, col) => cell(t, tr, col)?.textContent.trim() ?? null;
+`;
+const pv = body => ev(`(() => { ${fns} ${body} })()`);
+const go = async (hash, col) => {
+  await ev(`document.querySelector('main')?.replaceChildren(); 'ok'`);
+  await cmd('Page.navigate', { url: a.u + '/' + hash }); await sleep(400);
+  return until(`(() => { ${fns} return !!gridOf(${JSON.stringify(col)}); })()`);
+};
+const shot = async (name, theme) => {
+  const d = await cmd('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(`${a.shots}/reads-${name}-${theme}.png`, Buffer.from(d.result.data, 'base64'));
+};
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1200, deviceScaleFactor: 1, mobile: false });
+for (const theme of ['light', 'dark']) {
+  await cmd('Page.navigate', { url: a.u + '/#/summary' }); await until(`!!document.querySelector('main table')`);
+  await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); sessionStorage.clear(); 'ok'`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+  const T = `[${theme}] `;
+
+  check(await go(`#/mssqlproperties?i=${a.iid}`, 'property'), T + 'Properties rendered');
+  const p = await pv(`const t = gridOf('property'); return { n: rowsOf(t).length, cpu: text(t, rowWith(t, 'property', 'Logical CPUs'), 'value'), plan: text(t, rowWith(t, 'property', 'Power plan'), 'value') };`);
+  check(p.n === 35 && /^[\d,.\s]+$/.test(p.cpu ?? '') && (p.plan ?? '') !== '', T + `Properties: ${p.n} rows, logical CPUs '${p.cpu}', power plan '${p.plan}'`);
+  await shot('properties', theme);
+
+  check(await go(`#/mssqlprocs?i=${a.iid}`, 'total duration (sec)'), T + 'Procedures rendered');
+  const pr = await pv(`const t = gridOf('total duration (sec)'); const tr = rowsOf(t).find(r => text(t, r, 'name') === 'pv_work' && text(t, r, 'database') === ${JSON.stringify(a.db)}); return tr ? { ex: text(t, tr, 'executions'), sch: text(t, tr, 'schema') } : null;`);
+  check(pr && pr.ex === '11' && pr.sch === 'dbo', T + `Procedures: pv_work's row ${JSON.stringify(pr)} (want 11 executions under dbo)`);
+  await pv(`const t = gridOf('total duration (sec)'); const tr = rowsOf(t).find(r => text(t, r, 'name') === 'pv_work' && text(t, r, 'database') === ${JSON.stringify(a.db)}); cell(t, tr, 'name').querySelector('button').click(); return 'ok';`);
+  const drilled = await until(`(() => { ${fns} return rowsOf(gridOf('interval')).length === 2 && [...document.querySelectorAll('main h3')].some(h => h.textContent.includes('pv_work, read by read')); })()`);
+  check(drilled, T + 'Procedures: the name opens the procedure read by read (2 reads)');
+  await shot('procedures', theme);
+
+  check(await go(`#/mssqlindexlocks?i=${a.iid}`, 'row lock waits'), T + 'Index locks rendered');
+  const ix = await pv(`const t = gridOf('row lock waits'); const tr = rowWith(t, 'index', 'PK_pv_lock'); return tr ? { table: text(t, tr, 'table'), waits: text(t, tr, 'row lock waits'), esc: text(t, tr, 'escalations') } : null;`);
+  check(ix && ix.table === 'pv_lock' && Number(ix.waits) >= 1 && Number(ix.esc) >= 1, T + `Index locks: PK_pv_lock's row ${JSON.stringify(ix)}`);
+  await shot('indexlocks', theme);
+
+  check(await go(`#/mssql_waits?i=${a.iid}`, 'wait time (ms/sec/core)'), T + 'Waits rendered with the rate columns');
+  const w = await pv(`const t = gridOf('wait time (ms/sec/core)'); const tr = rowWith(t, 'wait type', ${JSON.stringify(a.lck)}); return tr ? { rate: text(t, tr, 'wait time (ms/sec)'), core: text(t, tr, 'wait time (ms/sec/core)'), desc: text(t, tr, 'description') } : null;`);
+  check(w && w.rate !== '' && w.core !== '' && (w.desc ?? '').length > 40, T + `Waits: ${a.lck} ${JSON.stringify(w)?.slice(0, 160)}`);
+  await shot('waits', theme);
+
+  check(await go('#/running', 'max memory grant'), T + 'the fleet Running queries page rendered with the grant columns');
+  const f = await pv(`const t = gridOf('max memory grant'); const tr = rowWith(t, 'instance', ${JSON.stringify(a.fleet)}); const pg = rowWith(t, 'instance', ${JSON.stringify(a.pg)});
+    return { ms: tr ? ['max memory grant', 'sum of memory grants', 'tempdb latch waits', 'tempdb latch wait (ms)', 'tempdb allocation waits', 'tempdb allocation wait (ms)'].map(c => text(t, tr, c)).join('|') : null,
+             pg: pg ? ['max memory grant', 'tempdb latch waits'].map(c => text(t, pg, c)).join('|') : null };`);
+  check(f.ms === '4.0 MB|5.0 MB|2|800|1|500' && f.pg === '|', T + `the fleet row of the stored snapshot '${f.ms}' (want 4.0 MB|5.0 MB|2|800|1|500), a PostgreSQL row '${f.pg}' (want empty cells)`);
+  await shot('fleet', theme);
+}
+ws.close();
+process.exit(fails ? 1 : 0);
+JS
+  ARGS=$(jq -nc --arg cdp "$CDP" --arg u "http://127.0.0.1:$PORT" --arg shots "$PGVIGIL_SHOTS" --arg db "$DB" --argjson iid "$iid" --arg fleet "proof-reads-fleet-$SUF" --arg pg "proof-reads-pg-$SUF" --arg lck "$LT" \
+    '{cdp: $cdp, u: $u, shots: $shots, db: $db, iid: $iid, fleet: $fleet, pg: $pg, lck: $lck}')
+  node "$WORK/ui.mjs" "$ARGS" || fail "S: the pages"
+  kill "$CHR_PID" 2>/dev/null || true; CHR_PID=
+  echo "S: OK (ten screenshots in $PGVIGIL_SHOTS: reads-<page>-<theme>.png)"; S_NOTE=", S"
+else
+  echo "--- S. the pages in a browser: NOT RUN (PGVIGIL_SHOTS names no folder)"; S_NOTE=""
+fi
+
+echo "NOT PROVEN HERE: a real power plan (Windows), a real tempdb page latch wait, SQL Server 2016-2019, RDS, Managed Instance, a daylight-saving change, a list cut on a real server, the pages' accessibility (proof-a11y)"
+echo "proof-mssql-reads: PASS ($M_NOTE, $A_NOTE, B, C, $D_NOTE, E, F, G, X, P$S_NOTE; SQL Server $([ -n "$OWN" ] && echo "in its own container" || echo "sandbox $CT"))"
