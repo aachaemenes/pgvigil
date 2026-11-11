@@ -41,9 +41,9 @@
 # environment by name and a statement that carries a password goes in on stdin. On each node, as a server in use
 # has them and a new container does not: Database Mail switched on and started, and the Agent job 'pgvv seed' with
 # sixty history rows dated yesterday. On each pair: certificate endpoints on 5022, the group pgvv_ag over the seed
-# database pgvv_seed with automatic seeding, the AlwaysOn_health session started. On the 2017 image, which ships
-# sqlcmd under /opt/mssql-tools only, a link /opt/mssql-tools18/bin/sqlcmd inside the container (the proofs call
-# that path). Where sp_WhoIsActive.sql was named: that procedure in master on node a.
+# database pgvv_seed with automatic seeding and one committed row, the AlwaysOn_health session started. On the
+# 2017 image, which ships sqlcmd under /opt/mssql-tools only, a link /opt/mssql-tools18/bin/sqlcmd inside the
+# container (the proofs call that path). Where sp_WhoIsActive.sql was named: that procedure in master on node a.
 # What the proofs it runs make is theirs to remove, and each says what in its own header: their repository
 # databases on the same PostgreSQL, logins and databases inside this run's containers, and (reads, querystore) a
 # postgres:13 container of their own.
@@ -78,7 +78,10 @@
 #     Mail XPs' is 1 in use.
 #  G. the group, per version: created on node a with CLUSTER_TYPE = NONE, node b joined; node a reads the seed
 #     database on node b as SYNCHRONIZED and HEALTHY within 100 tries three seconds apart; AlwaysOn_health runs on
-#     both nodes.
+#     both nodes. After one committed row in the seed database node a reads a commit time for it on both replicas
+#     within two minutes. [Added after a run in which the availability proof's part A failed on SQL Server 2022:
+#     nothing had been committed in the seed database since it joined, the secondary's row had no commit time, the
+#     collector stored no estimated data loss, and the proof expects one, 0 or more.]
 #  R. every proof of the list exits 0 on every version: the matrix says PASS in every cell. A cell that FAILS is
 #     the finding (the proof's log names the statement and the column); it is never rerun into green here.
 #  S. proof-mssql-summary.sh (no SQL Server) exits 0, once.
@@ -372,6 +375,17 @@ EOF
     sqa "$a" "SELECT start_time, current_state, failure_state_desc, error_code FROM sys.dm_hadr_automatic_seeding" || true
     WHY="G: the seed database on $b reads '$state' after 5 minutes (want SYNCHRONIZED:HEALTHY)"; return 1
   fi
+  # a database in use has commits: one committed row in the seed database, then the wait until the primary reads a
+  # commit time for it on both replicas (the availability proof compares the two times; a database nothing was
+  # committed in since it joined the group has none on the secondary, and the collector then stores no estimate)
+  sqa "$a" "CREATE TABLE [$SEED].dbo.pgvv_tick (at datetime2 NOT NULL); INSERT [$SEED].dbo.pgvv_tick (at) VALUES (SYSDATETIME());" \
+    || { WHY="G: the first commit in the seed database"; return 1; }
+  state=
+  for _ in $(seq 1 60); do
+    state=$(sqa "$a" "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states s JOIN sys.dm_hadr_database_replica_states p ON p.group_database_id = s.group_database_id AND p.is_primary_replica = 1 WHERE s.database_id = DB_ID(N'$SEED') AND s.is_primary_replica = 0 AND s.last_commit_time > '20000101' AND p.last_commit_time > '20000101' AND s.last_hardened_time > '20000101') THEN 'both' ELSE 'none' END" 2>/dev/null || true)
+    [ "$state" = both ] && break; sleep 2
+  done
+  [ "$state" = both ] || { WHY="G: after the seed database's first commit the primary reads no commit time for it on both replicas (120 s)"; return 1; }
   return 0
 }
 
