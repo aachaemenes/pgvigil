@@ -46,15 +46,18 @@
 #     'default trace: a DBCC SHRINK command ran' for FULL (info).
 #  H. system_health. 1. FULL's read: state 'read', scope event_file; the stored results equal, per component, sa's
 #     count of sp_server_diagnostics_component_result events up to the newest stored one; all four components there.
-#     CURRENT and BARE: 'no right' naming VIEW SERVER STATE. 2. the warning. The container runs with max worker threads 128 (set and restarted before L). sa
-#     waits for a QUERY_PROCESSING result, then one session holds a lock and 400 sessions wait on it (the workers run
-#     out) for the whole of the next five-minute interval and 30 s more; the sessions are ended. (Measured on the box
+#     CURRENT and BARE: 'no right' naming VIEW SERVER STATE. 2. the warning. The container runs with max worker threads 128 (set and restarted before L). one
+#     session holds a lock and 400 sessions wait on it (the workers run out) from now until the first result due at
+#     least 300 s later (results come every 300 s; their times are read from a result in the file) and 30 s more,
+#     then the sessions are ended and sa waits, 150 s at most, for that result to reach the file (system_health writes
+#     up to 120 s late). (Measured on the box
 #     in two experiments before this was written: such a starved interval gave a QUERY_PROCESSING result in WARNING,
 #     35 pending tasks, the oldest waiting 289 s; a memory eater in the container never gave a RESOURCE warning.)
-#     sa reads at least one QUERY_PROCESSING result not CLEAN. FULL's next read stores it exactly once, its event_at
+#     sa reads at least one QUERY_PROCESSING result not CLEAN dated after the sessions began. (Restated with the
+#     review fold, before any run that reached H2: the waits for the file's late writes.) FULL's next read stores it exactly once, its event_at
 #     equal to sa's timestamp_utc to the millisecond, its state and pending tasks equal; the findings hold
 #     'system_health: a component is not clean' for QUERY_PROCESSING (warning for WARNING, critical for ERROR).
-#     3. A second read stores no more of them.
+#     3. A second read stores no more of them: H2's result is still one row, and the results equal sa's count again.
 #  A. the API on FULL's rows: /api/mssql/errorlog with q=marker A gives one line of severity 17; with sev=17 it is
 #     there and with class=corruption it is not; the search part holds the own string; class=nope, sev=99 and a q of
 #     201 characters are refused with 400. /api/mssql/defaulttrace: dbcc_summary has DBCC SHRINKFILE with 1 run by sa;
@@ -112,7 +115,8 @@ pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; 
 PF=$(pw); PC=$(pw); PB=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 eq() { [ "$2" = "$3" ] || fail "$1: got '$2', want '$3'"; }
-freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
+# the listening sockets read once (a grep -q on a pipe from ss can end ss with SIGPIPE, which pipefail reads as 'free')
+freeport() { local used; used=$(ss -Hltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$used" || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_CT=; MADE_PG13=; SRV_PID=
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
 # sq <sql> [database]: one batch as sa (the password through the environment by name); sqs: a batch on stdin
@@ -161,7 +165,7 @@ else
   docker restart "$CT" >/dev/null || fail "the restart of $CT"
   for _ in $(seq 1 90); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
   eq "the most workers after the restart" "$(sq "SELECT max_workers_count FROM sys.dm_os_sys_info")" 128
-  OFF=$(sq "SELECT DATEDIFF(minute, GETUTCDATE(), GETDATE())")
+  OFF=$(sq "SELECT DATEPART(TZOFFSET, SYSDATETIMEOFFSET())")
   case $OFF in -480|-420) echo "  the server's clock is $OFF minutes from UTC" ;; *) fail "L1: the server's offset is $OFF, want -480 or -420 (TZ=America/Los_Angeles)" ;; esac
 fi
 
@@ -230,7 +234,7 @@ raise 17 "$MA"; sleep 1
 collect mssql_errorlog "$NF"
 IF=$(iid "$NF")
 # sa's own read of a marker's line: its local time and that time moved to UTC by the server's offset
-hand() { printf "SET NOCOUNT ON; CREATE TABLE #l (d datetime, p nvarchar(100), t nvarchar(max));\nINSERT #l EXEC master.dbo.xp_readerrorlog %s, 1, N'%s';\nSELECT CONVERT(varchar(23), d, 121) + '|' + CONVERT(varchar(23), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), d), 121) + '|' + CAST(COUNT(*) OVER () AS varchar(5)) FROM #l WHERE t LIKE N'%%%s%%';\n" "$1" "$2" "$2" | sqs; }
+hand() { printf "SET NOCOUNT ON; CREATE TABLE #l (d datetime, p nvarchar(100), t nvarchar(max));\nINSERT #l EXEC master.dbo.xp_readerrorlog %s, 1, N'%s';\nSELECT CONVERT(varchar(23), d, 121) + '|' + CONVERT(varchar(23), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), d), 121) + '|' + CAST(COUNT(*) OVER () AS varchar(5)) FROM #l WHERE t LIKE N'%%%s%%';\n" "$1" "$2" "$2" | sqs; }
 stored() { q "select to_char(logged_local, 'YYYY-MM-DD HH24:MI:SS.MS') || '|' || to_char(log_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS') || '|' || coalesce(severity::text, '') || '|' || coalesce(error_number::text, '') || '|' || count(*) over () || '|' || coalesce(archive::text, '') || '|' || custom from pgvigil.mssql_errorlog where instance_id = $1 and message like '%$2%'"; }
 HA=$(hand 0 "$MA")
 SA=$(stored "$IF" "$MA")
@@ -281,12 +285,12 @@ sleep 1
 TB="DECLARE @p nvarchar(260) = (SELECT path FROM sys.traces WHERE is_default = 1); DECLARE @b nvarchar(260) = LEFT(@p, LEN(@p) - CHARINDEX(N'/', REVERSE(@p))) + N'/log.trc';"
 # the trace is written to its file in buffers: sa's read waits for the shrink, the last event seeded (once it is in
 # the file, everything before it is)
-HSQ="$TB SELECT CONVERT(varchar(23), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), StartTime), 121) + '|' + CAST(COUNT(*) OVER () AS varchar(5)) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass = 116 AND CAST(TextData AS nvarchar(4000)) LIKE N'%SHRINKFILE%'"
+HSQ="$TB SELECT CONVERT(varchar(23), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), StartTime), 121) + '|' + CAST(COUNT(*) OVER () AS varchar(5)) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass = 116 AND CAST(TextData AS nvarchar(4000)) LIKE N'%SHRINKFILE%'"
 HS=; for w in $(seq 1 60); do HS=$(sq "$HSQ"); [ -n "$HS" ] && break; sleep 1; done
 [ "$(echo "$HS" | cut -d'|' -f2)" = 1 ] || fail "T2: sa does not find one DBCC SHRINKFILE in the trace within 60 s: '$HS'"
 echo "  T2: the shrink was in the trace file after ${w} s"
 HG=$(sq "$TB SELECT CAST(SUM(CASE WHEN EventClass = 92 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN EventClass = 93 THEN 1 ELSE 0 END) AS varchar(10)) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass IN (92, 93)")
-HGT=$(sq "$TB SELECT TOP (1) CONVERT(varchar(23), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), StartTime), 121) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass = 92 ORDER BY StartTime DESC, EventSequence DESC")
+HGT=$(sq "$TB SELECT TOP (1) CONVERT(varchar(23), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), StartTime), 121) FROM sys.fn_trace_gettable(@b, DEFAULT) WHERE DatabaseName = N'$DB' AND EventClass = 92 ORDER BY StartTime DESC, EventSequence DESC")
 [ "$(echo "$HG" | cut -d'|' -f1)" -ge 1 ] 2>/dev/null || fail "T2: sa counts no data growth of $DB in the trace: $HG"
 collect mssql_defaulttrace "$NF"
 tq() { q "select $1 from pgvigil.mssql_trace_events where instance_id = $IF and $2"; }
@@ -308,40 +312,50 @@ for n in "$NC" "$NB"; do
   eq "H1: $n's state" "$(st "$n" syshealth state)" "no right"
   st "$n" syshealth note | grep -q "VIEW SERVER STATE" || fail "H1: $n's note does not name VIEW SERVER STATE"
 done
-# sa's count per component up to the newest stored result
+# sa's count per component up to the newest stored result (a filter on timestamp_utc itself goes into the function
+# and picks whole files on SQL Server 2022; on an expression of it, rows)
 hcount() {
   local upto; upto=$(q "select to_char(max(event_at) at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS') from pgvigil.mssql_health_components where instance_id = $IF")
-  sq "SELECT x.c + ':' + CAST(COUNT(*) AS varchar(10)) FROM (SELECT CAST(event_data AS xml) AS e, timestamp_utc FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result') f CROSS APPLY (SELECT f.e.value('(/event/data[@name=\"component\"]/text)[1]', 'varchar(30)') AS c) x WHERE f.timestamp_utc <= CONVERT(datetime2, '$upto', 121) GROUP BY x.c ORDER BY x.c" | paste -sd, -
+  sq "SELECT x.c + ':' + CAST(COUNT(*) AS varchar(10)) FROM (SELECT CAST(event_data AS xml) AS e, timestamp_utc FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result') f CROSS APPLY (SELECT f.e.value('(/event/data[@name=\"component\"]/text)[1]', 'varchar(30)') AS c) x WHERE DATEADD(millisecond, 0, f.timestamp_utc) <= CONVERT(datetime2, '$upto', 121) GROUP BY x.c ORDER BY x.c" | paste -sd, -
 }
 mine() { q "select string_agg(component || ':' || n, ',' order by component) from (select component, count(*) n from pgvigil.mssql_health_components where instance_id = $IF group by component) x"; }
 H1=$(hcount)
 eq "H1: the results per component" "$(mine)" "$H1"
 [ "$(echo "$H1" | tr ',' '\n' | wc -l)" = 4 ] || fail "H1: not four components: $H1"
 echo "H1: OK ($H1)"
-# H2: a starved interval of the workers
+# H2: a starved interval of the workers. system_health writes to its file up to 120 s late (its dispatch latency), so
+# the time of a result comes from any result in the file (they come every 300 s from the server's start) and the
+# starved interval's own result is waited for after the sessions end.
 QPNEWEST="SELECT CONVERT(varchar(23), MAX(timestamp_utc), 121) FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result' AND CAST(event_data AS nvarchar(max)) LIKE N'%QUERY_PROCESSING%'"
-T0=$(sq "$QPNEWEST")
-for _ in $(seq 1 40); do T1=$(sq "$QPNEWEST"); [ "$T1" != "$T0" ] && break; sleep 10; done
-[ "$T1" != "$T0" ] || fail "H2: no new QUERY_PROCESSING result within 400 s (the newest $T0)"
-NEXT=$(( $(date -u -d "$T1" +%s) + 300 ))
+T0=; for _ in $(seq 1 30); do T0=$(sq "$QPNEWEST"); [ -n "$T0" ] && [ "$T0" != NULL ] && break; T0=; sleep 5; done
+[ -n "$T0" ] || fail "H2: no QUERY_PROCESSING result in system_health's file within 150 s"
 sq "CREATE TABLE dbo.pv_hold (id int PRIMARY KEY, v int NOT NULL); INSERT dbo.pv_hold VALUES (1, 0);" "$DB" >/dev/null
-docker exec -d -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -C -U sa -d "$DB" -Q "BEGIN TRAN; UPDATE dbo.pv_hold SET v = 1 WHERE id = 1; WAITFOR DELAY '00:09:00'; ROLLBACK;"
+docker exec -d -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -C -U sa -d "$DB" -Q "BEGIN TRAN; UPDATE dbo.pv_hold SET v = 1 WHERE id = 1; WAITFOR DELAY '00:15:00'; ROLLBACK;"
 sleep 2
-docker exec -d -e SQLCMDPASSWORD "$CT" bash -c "for i in \$(seq 1 400); do $SQLCMD -S localhost -C -U sa -d $DB -l 600 -t 700 -Q 'SELECT v FROM dbo.pv_hold WHERE id = 1' >/dev/null 2>&1 & done; wait"
-echo "  H2: 400 sessions wait on one lock from $(date -u +%T) UTC to the result due at $(date -u -d "@$NEXT" +%T) and 30 s more"
+STARVE=$(date -u +%s)
+docker exec -d -e SQLCMDPASSWORD "$CT" bash -c "for i in \$(seq 1 400); do $SQLCMD -S localhost -C -U sa -d $DB -l 900 -t 1000 -Q 'SELECT v FROM dbo.pv_hold WHERE id = 1' >/dev/null 2>&1 & done; wait"
+# the first result due at least 300 s after the start: the sessions wait through one whole interval
+T0S=$(date -u -d "$T0" +%s); NEXT=$(( T0S + 300 * ( (STARVE + 300 - T0S + 299) / 300 ) ))
+echo "  H2: 400 sessions wait on one lock from $(date -u -d "@$STARVE" +%T) UTC to the result due at $(date -u -d "@$NEXT" +%T) and 30 s more (the load $(cut -d' ' -f1 /proc/loadavg))"
 while [ "$(date -u +%s)" -lt $((NEXT + 30)) ]; do sleep 10; done
 docker exec "$CT" bash -c 'for p in /proc/[0-9]*; do tr "\0" " " < $p/cmdline 2>/dev/null | grep -q "^/opt/mssql-tools18/bin/sqlcmd" && kill ${p#/proc/}; done' >/dev/null 2>&1 || true
 for _ in $(seq 1 36); do sq "SELECT 1" >/dev/null 2>&1 && break; sleep 5; done
 sq "SELECT 1" >/dev/null 2>&1 || fail "H2: the SQL Server does not answer 3 minutes after the sessions were ended"
-HQ=$(sq "SELECT TOP (1) CONVERT(varchar(23), timestamp_utc, 121) + '|' + x.s + '|' + ISNULL(x.p, '') FROM (SELECT timestamp_utc, CAST(event_data AS xml) AS e FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result') f CROSS APPLY (SELECT f.e.value('(/event/data[@name=\"component\"]/text)[1]', 'varchar(30)') AS c, f.e.value('(/event/data[@name=\"state\"]/text)[1]', 'varchar(20)') AS s, f.e.value('(/event/data[@name=\"data\"]/value/queryProcessing/@pendingTasks)[1]', 'varchar(20)') AS p) x WHERE x.c = 'QUERY_PROCESSING' AND x.s <> 'CLEAN' ORDER BY f.timestamp_utc DESC")
+NEXTT=$(date -u -d "@$((NEXT - 10))" '+%F %T')
+QPAT="SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result' AND CAST(event_data AS nvarchar(max)) LIKE N'%QUERY_PROCESSING%' AND DATEADD(millisecond, 0, timestamp_utc) >= CONVERT(datetime2, '$NEXTT', 120)"
+for w in $(seq 1 30); do [ "$(sq "$QPAT")" -ge 1 ] 2>/dev/null && break; sleep 5; done
+[ "$(sq "$QPAT")" -ge 1 ] 2>/dev/null || fail "H2: the result due at $(date -u -d "@$NEXT" +%T) UTC is not in system_health's file 150 s after the sessions ended"
+echo "  H2: the starved interval's result was in the file $((w * 5)) s after the sessions ended (at most)"
+STARVET=$(date -u -d "@$STARVE" '+%F %T')
+HQ=$(sq "SELECT TOP (1) CONVERT(varchar(23), timestamp_utc, 121) + '|' + x.s + '|' + ISNULL(x.p, '') FROM (SELECT timestamp_utc, CAST(event_data AS xml) AS e FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result') f CROSS APPLY (SELECT f.e.value('(/event/data[@name=\"component\"]/text)[1]', 'varchar(30)') AS c, f.e.value('(/event/data[@name=\"state\"]/text)[1]', 'varchar(20)') AS s, f.e.value('(/event/data[@name=\"data\"]/value/queryProcessing/@pendingTasks)[1]', 'varchar(20)') AS p) x WHERE x.c = 'QUERY_PROCESSING' AND x.s <> 'CLEAN' AND DATEADD(millisecond, 0, f.timestamp_utc) >= CONVERT(datetime2, '$STARVET', 120) ORDER BY f.timestamp_utc DESC")
 [ -n "$HQ" ] || fail "H2: sa reads no QUERY_PROCESSING result that is not CLEAN after the starved interval"
 collect mssql_syshealth "$NF"
 eq "H2: the result (time|state|pending|rows)" "$(q "select to_char(event_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS') || '|' || state || '|' || coalesce(detail->>'pendingTasks', '') || '|' || count(*) over () from pgvigil.mssql_health_components where instance_id = $IF and component = 'QUERY_PROCESSING' and event_at = '$(echo "$HQ" | cut -d'|' -f1)+00'")" "$HQ|1"
 WANTSEV=warning; [ "$(echo "$HQ" | cut -d'|' -f2)" = ERROR ] && WANTSEV=critical
 eq "H2: the finding" "$(q "select severity from pgvigil.mssql_readers_findings where instance_id = $IF and check_name = 'system_health: a component is not clean' and object = 'QUERY_PROCESSING'")" "$WANTSEV"
 echo "H2: OK (QUERY_PROCESSING $(echo "$HQ" | cut -d'|' -f2) at $(echo "$HQ" | cut -d'|' -f1) UTC, $(echo "$HQ" | cut -d'|' -f3) pending tasks; findings: $(q "select string_agg(check_name, '; ') from pgvigil.mssql_readers_findings where instance_id = $IF and check_name like 'system_health%'"))"
-N2=$(mine); collect mssql_syshealth "$NF"
-eq "H3: the results after another read" "$(mine | sed 's/:[0-9]*//g')" "$(echo "$N2" | sed 's/:[0-9]*//g')"
+collect mssql_syshealth "$NF"
+eq "H3: H2's result after another read" "$(q "select count(*) from pgvigil.mssql_health_components where instance_id = $IF and component = 'QUERY_PROCESSING' and event_at = '$(echo "$HQ" | cut -d'|' -f1)+00'")" 1
 eq "H3: the results equal sa's count again" "$(mine)" "$(hcount)"
 echo "H3: OK"
 
