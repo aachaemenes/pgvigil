@@ -88,3 +88,63 @@ func (s *Server) DBInfoFleet(w http.ResponseWriter, r *http.Request) {
 		{"tables", `SELECT * FROM pgvigil.fleet_table_growers(50)`, nil},
 	})
 }
+
+// The busiest tables and the database changes (task 127; pgwatch's Tables Overview, DBA Dash's New Databases and
+// Deleted Databases). Routes, wired in Handler:
+//   GET /api/tables/top?instance=<id>[&from=..&to=..][&n=5..50] -> s.TablesTop: the top n tables by sequential scans,
+//       inserts, updates and deletes over the window (pgvigil.table_activity_top; each row carries its four ranks).
+//   GET /api/dbchanges[?instance=<id>][&days=1..366] -> s.DBChanges: the databases created and dropped in the last
+//       days (default 30), both engines, newest first (pgvigil.database_changes); no instance = the fleet.
+
+// TablesTop is one instance's busiest tables over the window.
+func (s *Server) TablesTop(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	n := 10
+	if v := r.URL.Query().Get("n"); v != "" {
+		if n, err = strconv.Atoi(v); err != nil || n < 1 || n > 50 {
+			writeErr(w, http.StatusBadRequest, errors.New("n must be 1 to 50"))
+			return
+		}
+	}
+	s.multi(w, r, []part{
+		{"tables", `SELECT * FROM pgvigil.table_activity_top($1, $2, $3, $4)`, []any{id, from, to, n}},
+		{"meta", `
+SELECT $4::int AS n,
+       (SELECT count(DISTINCT a.snapshot_at) FROM pgvigil.table_activity a
+         WHERE a.instance_id = $1 AND a.snapshot_at > $2 AND a.snapshot_at <= $3) AS reads,
+       (SELECT max(a.snapshot_at) FROM pgvigil.table_activity a
+         WHERE a.instance_id = $1 AND a.snapshot_at <= $3 AND a.snapshot_at > $3 - interval '1 day') AS last_read`,
+			[]any{id, from, to, n}},
+	})
+}
+
+// DBChanges is the databases created and dropped in the last days, one instance's or the fleet's.
+func (s *Server) DBChanges(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var inst *int
+	if v := q.Get("instance"); v != "" {
+		id, err := strconv.Atoi(v)
+		if err != nil || id <= 0 {
+			writeErr(w, http.StatusBadRequest, errors.New("instance must be a positive instance_id"))
+			return
+		}
+		inst = &id
+	}
+	days := 30
+	if v := q.Get("days"); v != "" {
+		d, err := strconv.Atoi(v)
+		if err != nil || d < 1 || d > 366 {
+			writeErr(w, http.StatusBadRequest, errors.New("days must be 1 to 366"))
+			return
+		}
+		days = d
+	}
+	s.multi(w, r, []part{
+		{"changes", `SELECT * FROM pgvigil.database_changes($1, $2)`, []any{days, inst}},
+		{"meta", `SELECT $1::int AS days`, []any{days}},
+	})
+}

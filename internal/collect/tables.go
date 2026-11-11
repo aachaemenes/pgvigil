@@ -267,6 +267,100 @@ func tablesRead(ctx context.Context, conn *pgx.Conn, q, qs string) ([]Row, error
 // tablesReadOther connects to another database with the instance's DSN and the collector's session
 // settings, reads it, and closes the connection.
 func tablesReadOther(ctx context.Context, in config.Instance, db, q, qs string) ([]Row, error) {
+	return onDatabase(ctx, in, db, func(ctx context.Context, c *pgx.Conn) ([]Row, error) { return tablesRead(ctx, c, q, qs) })
+}
+
+// tableActivityCollector is the five-minute read of the scan and row-change counters of the busiest tables of each
+// database (pgwatch's Tables Overview: the most sequential scans, inserts, updates and deletes over a window). The
+// counters are cumulative since the statistics reset; the repository's table_activity_top takes the read-to-read
+// rises. Only pg_stat_user_tables is read: no size function, no lock taken, so a table under an ACCESS EXCLUSIVE
+// lock is still read. Per database the read keeps the tables that lead any one counter (tableActivityPerDB by
+// each, cumulatively): a table that turned busy late among more than that many busier ones is missed until it
+// climbs into the set, and the window then counts it from its first read.
+type tableActivityCollector struct{}
+
+func init() { Register(tableActivityCollector{}) }
+
+// tableActivityPerDB is how many tables per counter and database are read (a var: tests lower it).
+var tableActivityPerDB = 100
+
+func (tableActivityCollector) Name() string                   { return "table_activity" }
+func (tableActivityCollector) DefaultInterval() time.Duration { return 5 * time.Minute }
+func (tableActivityCollector) Applies(platform.Info) (bool, string) {
+	return true, ""
+}
+
+func (tableActivityCollector) Run(context.Context, *pgx.Conn, platform.Info) ([]Row, error) {
+	return nil, fmt.Errorf("table_activity needs the instance config: %w", ErrSkip)
+}
+
+// tableActivitySQL: %[1]d = the tables per counter. A partitioned table's partitions are read one by one (that is
+// where pg_stat_user_tables counts). A table whose counters are all 0 is read too (while the database has fewer
+// tables than the cap): it is the base its first rise is measured from.
+const tableActivitySQL = `
+WITH s AS (
+  SELECT s.relid, s.schemaname, s.relname, s.seq_scan, s.seq_tup_read, s.idx_scan, s.n_tup_ins, s.n_tup_upd,
+         s.n_tup_del, s.n_tup_hot_upd
+    FROM pg_stat_user_tables s
+), pick AS (
+  (SELECT relid FROM s ORDER BY seq_scan DESC NULLS LAST LIMIT %[1]d)
+  UNION (SELECT relid FROM s ORDER BY n_tup_ins DESC NULLS LAST LIMIT %[1]d)
+  UNION (SELECT relid FROM s ORDER BY n_tup_upd DESC NULLS LAST LIMIT %[1]d)
+  UNION (SELECT relid FROM s ORDER BY n_tup_del DESC NULLS LAST LIMIT %[1]d)
+)
+SELECT 'table' AS kind, (SELECT oid::bigint FROM pg_database WHERE datname = current_database()) AS dbid,
+       current_database()::text AS datname, s.relid::bigint AS relid, s.schemaname::text AS schema_name,
+       s.relname::text AS table_name, s.seq_scan, s.seq_tup_read, s.idx_scan, s.n_tup_ins, s.n_tup_upd, s.n_tup_del,
+       s.n_tup_hot_upd
+  FROM s JOIN pick USING (relid)`
+
+// RunInstance reads every database the tables collection reads, the same way (the connected one on conn, each other
+// on its own short connection), up to tablesMaxDatabases.
+func (tableActivityCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ platform.Info, in config.Instance, _ CursorFunc) ([]Row, error) {
+	dbs, err := tablesDatabases(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	var cur string
+	if err := conn.QueryRow(ctx, `SELECT current_database()::text`).Scan(&cur); err != nil {
+		return nil, err
+	}
+	q := fmt.Sprintf(tableActivitySQL, tableActivityPerDB)
+	read := func(ctx context.Context, c *pgx.Conn) ([]Row, error) {
+		r, err := c.Query(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		return rowsToMaps(r)
+	}
+	out := []Row{}
+	if len(dbs) > tablesMaxDatabases {
+		out = append(out, Row{"kind": "collector_error", "source": "table_activity",
+			"message": fmt.Sprintf("%d databases: the first %d by name are read (tablesMaxDatabases)", len(dbs), tablesMaxDatabases)})
+		dbs = dbs[:tablesMaxDatabases]
+	}
+	for _, db := range dbs {
+		var rows []Row
+		if db == cur {
+			rows, err = read(ctx, conn)
+		} else {
+			rows, err = onDatabase(ctx, in, db, read)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			out = append(out, Row{"kind": "collector_error", "source": "table_activity:" + db, "message": err.Error()})
+			continue
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
+}
+
+// onDatabase connects to another database with the instance's DSN and the collector's session settings, runs fn on
+// that connection, and closes it.
+func onDatabase(ctx context.Context, in config.Instance, db string, fn func(context.Context, *pgx.Conn) ([]Row, error)) ([]Row, error) {
 	dsn := in.DSN()
 	if dsn == "" {
 		return nil, fmt.Errorf("dsn %q resolved to an empty string", in.DSNRaw)
@@ -284,5 +378,5 @@ func tablesReadOther(ctx context.Context, in config.Instance, db, q, qs string) 
 	if _, err := conn.Exec(ctx, sessionSetup); err != nil {
 		return nil, fmt.Errorf("session setup: %w", err)
 	}
-	return tablesRead(ctx, conn, q, qs)
+	return fn(ctx, conn)
 }

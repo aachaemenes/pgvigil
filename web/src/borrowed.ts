@@ -4,6 +4,7 @@
 // the shell (pages.ts hands it over); Tables also takes the shell's ctx, so a table name links to its page (task 65).
 import { tableLink } from './dbinfo';
 import type { Ctx } from './router';
+import { window_ } from './router';
 import { get, Row, rowsOf, Table } from './api';
 import { alertCol } from './alerts';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
@@ -12,6 +13,16 @@ import { sqlCell, whatIsThis } from './sqlview';
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 const never = (v: unknown) => v == null ? 'never' : fmtTime(v);
+
+// unused: no sequential and no index scan of the table since the statistics reset (pghero's UNUSED mark, here on a
+// table: it is written or kept, never read). A table without indexes has idx_scan NULL.
+export const isUnused = (r: Row) => r.seq_scan != null && Number(r.seq_scan) === 0 && (r.idx_scan == null || Number(r.idx_scan) === 0);
+const sizeWithTag = (v: unknown, r: Row) => {
+  if (!isUnused(r)) return fmtBytes(v);
+  const b = badge('UNUSED', 'warn');
+  b.title = 'No sequential or index scan since the statistics reset';
+  return el('span', {}, fmtBytes(v), ' ', b);
+};
 
 // ---- Tables ---------------------------------------------------------------------------------------------
 
@@ -35,7 +46,7 @@ export async function tablesView(instance: number, ctx?: Ctx): Promise<HTMLEleme
     { key: 'datname', label: 'db' },
     { key: 'schema_name', label: 'schema' },
     { key: 'table_name', label: 'table', fmt: (v, r) => ctx ? tableLink(ctx, String(v ?? ''), r.dbid, r.relid) : String(v ?? '') },
-    { key: 'total_bytes', label: 'total', num: true, fmt: fmtBytes },
+    { key: 'total_bytes', label: 'total', num: true, fmt: sizeWithTag },
     { key: 'heap_bytes', label: 'heap', num: true, fmt: fmtBytes },
     { key: 'toast_bytes', label: 'TOAST', num: true, fmt: fmtBytes },
     { key: 'index_bytes', label: 'indexes', num: true, fmt: fmtBytes },
@@ -53,11 +64,60 @@ export async function tablesView(instance: number, ctx?: Ctx): Promise<HTMLEleme
     { key: 'idx_scan', label: 'index scans', num: true },
     { key: 'autovacuum_off', label: 'autovacuum', fmt: v => v ? badge('off', 'warn') : 'on' },
   ];
+  const unused = tabs.filter(isUnused).length;
   return el('section', {}, el('h2', {}, 'Tables'),
-    el('p', { class: 'meta' }, 'The biggest tables of each database, read hourly. "Never" means no vacuum or analyze recorded since the statistics reset.'),
+    el('p', { class: 'meta' }, 'The biggest tables of each database, read hourly. "Never" means no vacuum or analyze recorded since the statistics reset.'
+      + (unused ? ` ${unused} of them UNUSED: no sequential or index scan since the statistics reset.` : '')),
     grid(dbs, dbCols, 'No table read yet: the tables collection runs hourly.'),
+    ctx ? await busiestView(instance, ctx) : '',
     el('h3', {}, 'Biggest tables'),
     grid(tabs, tCols, 'No tables yet.'));
+}
+
+// ---- The busiest tables over the window (pgwatch's Tables Overview) -------------------------------------
+
+const topChoices = [5, 10, 25];
+
+// busiestView: the top N tables by sequential scans, inserts, updates and deletes over the shell's window, from the
+// table_activity collection (the read-to-read rises of pg_stat_user_tables, every 5 minutes).
+export async function busiestView(instance: number, ctx: Ctx): Promise<HTMLElement> {
+  let n = 5;
+  try { const v = Number(localStorage.getItem('pgvigil.tablesTopN')); if (topChoices.includes(v)) n = v; } catch { /* private window */ }
+  const sel = el('select', { 'aria-label': 'Top N' }, ...topChoices.map(x => el('option', { value: String(x) }, `top ${x}`)));
+  sel.value = String(n);
+  const body = el('div');
+  const name = (v: unknown, r: Row) => {
+    const t = `${String(r.schema_name ?? '')}.${String(v ?? '')}`;
+    return tableLink(ctx, t, r.dbid, r.relid);
+  };
+  async function draw() {
+    const d = await get<{ tables: Table | null; meta: Table | null }>('tables/top', { instance, ...window_(ctx), n });
+    const rows = rowsOf(d.tables), meta = rowsOf(d.meta)[0] ?? {};
+    const part = (title: string, rank: string, lead: Col, extra: Col[]) => {
+      const rs = rows.filter(r => r[rank] != null && Number(r[rank]) <= n).sort((a, b) => Number(a[rank]) - Number(b[rank]));
+      return el('div', {}, el('h4', {}, title), grid(rs, [{ key: 'datname', label: 'db' }, { key: 'table_name', label: 'table', fmt: name }, lead, ...extra,
+        { key: 'first_at', label: 'counted from', fmt: fmtTime }], 'No table moved by this measure in the window.'));
+    };
+    const pctHot = (v: unknown, r: Row) => Number(r.n_tup_upd) > 0 ? fmtNum(Math.round(1000 * Number(v ?? 0) / Number(r.n_tup_upd)) / 10) + ' %' : '';
+    body.replaceChildren(
+      el('p', { class: 'meta' }, `Over the window: the sum of the rises between the table activity reads (every 5 minutes; ${fmtNum(meta.reads)} in the window, the newest `
+        + `${fmtTime(meta.last_read) || 'none'}), the read before the window as the base. A table read first inside the window counts from that read (counted from). `
+        + 'A statistics reset counts what the counter rose by since it.'),
+      el('div', { class: 'top-n' },
+        part('Most sequential scans', 'rank_seq', { key: 'seq_scan', label: 'seq scans', num: true },
+          [{ key: 'seq_tup_read', label: 'rows read by them', num: true }, { key: 'idx_scan', label: 'index scans', num: true }]),
+        part('Most inserts', 'rank_ins', { key: 'n_tup_ins', label: 'rows inserted', num: true }, []),
+        part('Most updates', 'rank_upd', { key: 'n_tup_upd', label: 'rows updated', num: true },
+          [{ key: 'n_tup_hot_upd', label: 'HOT', num: true, fmt: pctHot }]),
+        part('Most deletes', 'rank_del', { key: 'n_tup_del', label: 'rows deleted', num: true }, [])));
+  }
+  sel.addEventListener('change', () => {
+    n = Number(sel.value);
+    try { localStorage.setItem('pgvigil.tablesTopN', String(n)); } catch { /* private window */ }
+    void draw();
+  });
+  await draw();
+  return el('div', {}, el('h3', {}, 'Busiest tables in the window ', sel), body);
 }
 
 // ---- Findings -------------------------------------------------------------------------------------------
