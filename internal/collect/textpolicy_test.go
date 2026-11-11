@@ -183,3 +183,31 @@ func TestTextPolicyKindRules(t *testing.T) {
 		t.Errorf("none kept statement text: %v %v", rows[1]["statement"], rows[2]["statement"])
 	}
 }
+
+// review 1 of parity3 s2: an 'error' event's detail carries row values the normalizer cannot mask, and a message shape
+// is not stored under none
+func TestTextPolicyErrorAndMessage(t *testing.T) {
+	mk := func() []Row {
+		return []Row{{"kind": "event", "kind_of": "error", "statement": "insert into users values (17, 'alice@example.com')",
+			"detail":  "duplicate key value violates unique constraint \"users_email_key\"\nDETAIL: Key (email)=(alice@example.com) already exists.",
+			"message": `duplicate key value violates unique constraint "..."`}}
+	}
+	rows := mk()
+	applyTextPolicy(rows, "full")
+	if rows[0]["detail"] == nil || rows[0]["message"] == nil {
+		t.Fatalf("full must change nothing: %v", rows[0])
+	}
+	rows = mk()
+	applyTextPolicy(rows, "normalized")
+	if rows[0]["detail"] != nil || rows[0]["message"] != `duplicate key value violates unique constraint "..."` {
+		t.Errorf("normalized: detail %v, message %v", rows[0]["detail"], rows[0]["message"])
+	}
+	if s, _ := rows[0]["statement"].(string); strings.Contains(s, "alice") {
+		t.Errorf("normalized kept a literal in an error's statement: %q", s)
+	}
+	rows = mk()
+	applyTextPolicy(rows, "none")
+	if rows[0]["detail"] != nil || rows[0]["message"] != nil || rows[0]["statement"] != nil {
+		t.Errorf("none kept text: %v", rows[0])
+	}
+}

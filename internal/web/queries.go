@@ -246,12 +246,14 @@ SELECT kind, count(*) AS events, max(snapshot_at) AS last_at
  GROUP BY kind
  ORDER BY kind`
 
-// sqlLogEvents are the window's log events ($4 = one kind or NULL), newest first.
+// sqlLogEvents are the window's log events ($4 = one kind or NULL), newest first; the checkpoint lines (two per
+// checkpoint, 0079) only on their own sub-tab, so 'all' keeps its 1000 rows for the events.
 const sqlLogEvents = `
 SELECT snapshot_at AS at, kind, pid, datname, usename, client, duration_ms,
        left(statement, 2000) AS statement, left(detail, 1000) AS detail, source
   FROM pgvigil.log_events
- WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3 AND ($4::text IS NULL OR kind = $4)
+ WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+   AND (kind = $4 OR ($4::text IS NULL AND kind <> 'checkpoint'))
  ORDER BY snapshot_at DESC
  LIMIT 1000`
 

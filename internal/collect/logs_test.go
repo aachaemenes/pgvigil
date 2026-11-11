@@ -44,8 +44,8 @@ func TestLogRowsStreamsAndRereads(t *testing.T) {
 	from := a[0].Time.Add(-time.Minute)
 	rows := logRows(evs, "cloudwatch:/g", from, time.UTC, false)
 	got, cur := events(rows)
-	if len(got) != 12 {
-		t.Errorf("distinct events %d, want 12 (6 per stream)", len(got))
+	if len(got) != 14 { // the fixture's checkpoint line is an event since 0079
+		t.Errorf("distinct events %d, want 14 (7 per stream)", len(got))
 	}
 	// the cursor waits for the stream that is behind: b's latest event
 	if want := a[len(a)-1].Time.Add(-30 * time.Second); !cur["read_to"].(time.Time).Equal(want) {

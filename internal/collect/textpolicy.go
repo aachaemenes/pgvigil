@@ -41,6 +41,16 @@ func applyTextPolicy(rows []Row, mode string) {
 		if kind == "plan" {
 			r["statement"] = nil
 		}
+		// a log event's message shape (logparse.MessageShape, 0079) masks quoted text, numbers and any token with a
+		// digit or an @, but a free-text message can still carry words: none stores no message. An 'error' event's
+		// detail quotes the server's DETAIL / CONTEXT lines (Key (email)=(...), Failing row contains (...)), which the
+		// SQL normalizer cannot mask: normalized stores none of it (the message shape groups the event).
+		if _, has := r["message"]; has && mode == "none" {
+			r["message"] = nil
+		}
+		if kind == "error" && mode == "normalized" {
+			r["detail"] = nil
+		}
 		for _, k := range textPolicyKeys {
 			if k == "detail" && logparse.DetailIsMessage(logparse.Kind(kind)) {
 				continue

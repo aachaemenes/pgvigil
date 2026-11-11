@@ -22,6 +22,7 @@ import { slowFleetView } from './slow';
 import { trendCol } from './stmt_trend';
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
+import { logsGroupedView } from './logs_grouped';
 import { AckBody, ackDialog, ackHolds, ackWords, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 
 export type { Ctx };
@@ -602,17 +603,25 @@ const logKinds: Record<string, string> = {
   connection_limit: 'connection limits', connection_lost: 'connections lost', timeout: 'timeouts', canceled: 'cancellations', autovacuum_cancel: 'autovacuum cancelled',
   vacuum_skipped: 'vacuum skipped', wraparound: 'wraparound', checkpoint_frequent: 'frequent checkpoints', crash: 'crashes', out_of_memory: 'out of memory',
   archive_failed: 'archiving failed', standby_conflict: 'standby conflicts', serialization_failure: 'serialization failures', temp_file: 'temporary files',
+  error: 'errors', checkpoint: 'checkpoints',
 };
 const logKindsAlways = new Set(['slow', 'lock_wait', 'deadlock', 'auth_fail']);
 const critKinds = new Set(['deadlock', 'crash', 'out_of_memory', 'wraparound', 'corruption']);
 
 export async function logs(ctx: Ctx): Promise<HTMLElement> {
   const need = needInstance(ctx); if (need) return need;
+  const groupedTab = el('a', { href: href(ctx, { tab: 'logs', logKind: 'grouped' }), class: ctx.logKind === 'grouped' ? 'on' : '' }, 'grouped by message');
+  if (ctx.logKind === 'grouped') {
+    const v = await logsGroupedView(ctx);
+    v.insertBefore(el('div', { class: 'subtabs' }, el('a', { href: href(ctx, { tab: 'logs', logKind: '' }) }, 'all events'), groupedTab), v.children[1] ?? null);
+    return v;
+  }
   const kind = ctx.logKind && logKinds[ctx.logKind] ? ctx.logKind : undefined;
   const d = await get<Record<'counts' | 'events', Table>>('logs', { instance: ctx.instance, kind, ...range(ctx) });
   const counts = new Map(rowsOf(d.counts).map(r => [String(r.kind), Number(r.events)]));
   const total = [...counts.values()].reduce((a, b) => a + b, 0);
   const tabs = el('div', { class: 'subtabs' },
+    groupedTab,
     el('a', { href: href(ctx, { tab: 'logs', logKind: '' }), class: kind ? '' : 'on' }, `all (${total})`),
     ...Object.entries(logKinds).filter(([k]) => logKindsAlways.has(k) || (counts.get(k) ?? 0) > 0 || k === kind).map(([k, l]) => el('a', { href: href(ctx, { tab: 'logs', logKind: k }), class: k === kind ? 'on' : '' }, `${l} (${counts.get(k) ?? 0})`)));
   const cols: Col[] = [

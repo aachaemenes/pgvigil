@@ -76,7 +76,8 @@ func TestServerlogRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{"slow": 2, "lock_wait": 1, "deadlock": 1, "auth_fail": 1}
+	// since 0079 the two ERROR lines no rule takes (permission denied, absolute path not allowed) are error events
+	want := map[string]int{"slow": 2, "lock_wait": 1, "deadlock": 1, "auth_fail": 1, "error": 2}
 	if got := kinds(rows); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("kinds %v, want %v", got, want)
 	}
@@ -274,8 +275,8 @@ func TestServerlogZones(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs, cur := events(rows)
-	if len(evs) != 5 || !cur["read_to"].(time.Time).Equal(end.UTC()) {
-		t.Errorf("localtime: %d events, cursor %v (want 5, %v)", len(evs), cur["read_to"], end.UTC())
+	if len(evs) != 7 || !cur["read_to"].(time.Time).Equal(end.UTC()) { // 5, and the two error events since 0079
+		t.Errorf("localtime: %d events, cursor %v (want 7, %v)", len(evs), cur["read_to"], end.UTC())
 	}
 	for _, r := range evs {
 		if at := r["at"].(time.Time); at.Before(time.Date(2026, 11, 9, 22, 0, 0, 0, time.UTC)) {

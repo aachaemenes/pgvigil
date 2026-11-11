@@ -101,7 +101,7 @@ func TestCorruptionBothReaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	want := map[string]int{"corruption": 9, "plan": 2}
+	want := map[string]int{"checkpoint": 6, "corruption": 9, "plan": 2} // the recording's log_checkpoints lines are events since 0079
 
 	base := time.Date(2026, 11, 9, 23, 52, 0, 0, time.UTC)
 	var evs []cwEvent
