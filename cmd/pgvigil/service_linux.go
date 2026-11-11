@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -212,22 +213,61 @@ func installService(log *slog.Logger, o installOptions) error {
 		fmt.Printf("pgvigil is installed and enabled. Next:\n  1. %s: the repository login in PGVIGIL_REPO_DSN and one line per monitored instance\n  2. %s: list the instances\n  3. systemctl start pgvigil && systemctl status pgvigil\n", envFile, o.Config)
 		return nil
 	}
+	restarted := time.Now()
 	if out, err := systemctl("restart", "pgvigil.service"); err != nil {
 		return fmt.Errorf("systemctl restart: %v: %s", err, out)
 	}
-	for i := 0; i < 10; i++ {
-		time.Sleep(500 * time.Millisecond)
-		state, _ := systemctl("is-active", "pgvigil.service")
-		if state == "active" {
-			fmt.Printf("pgvigil is installed and running (systemctl status pgvigil; journalctl -u pgvigil -f).\n")
-			return nil
-		}
-		if state == "failed" {
+	// Type=simple reads 'active' from the exec on, so a start that fails in its first seconds (the repository's
+	// schema behind this binary, a refused repository login) still looks up at a first glance: the unit counts as
+	// running only after it stayed active for upSettle; a start that failed is named with its reason
+	up := true
+	for waited := time.Duration(0); waited < upSettle; waited += upStep {
+		time.Sleep(upStep)
+		if state, _ := systemctl("is-active", "pgvigil.service"); state != "active" {
+			up = false
 			break
 		}
 	}
-	out, _ := systemctl("status", "--no-pager", "-n", "10", "pgvigil.service")
-	return fmt.Errorf("the service did not come up:\n%s", out)
+	if up {
+		fmt.Printf("pgvigil is installed and running (systemctl status pgvigil; journalctl -u pgvigil -f).\n")
+		return nil
+	}
+	journal := func() string {
+		out, _ := exec.Command("journalctl", "-u", "pgvigil.service", "--no-pager", "-o", "cat", "-n", "20",
+			"--since", restarted.Add(-time.Second).Format("2006-01-02 15:04:05")).CombinedOutput()
+		return string(out)
+	}
+	msg, known := startFailure(journal())
+	if !known {
+		// journald takes the process's last line in on its own clock: the unit's state can be seen before that line
+		time.Sleep(time.Second)
+		msg, known = startFailure(journal())
+	}
+	if !known {
+		// an unknown reason: the unit's own last lines, readable, above the one-line error
+		out, _ := systemctl("status", "--no-pager", "-n", "10", "pgvigil.service")
+		fmt.Fprintf(os.Stderr, "%s\n", out)
+	}
+	return errors.New(msg)
+}
+
+const (
+	upSettle = 4 * time.Second // how long the unit must stay active before the installer calls it running
+	upStep   = 500 * time.Millisecond
+)
+
+// schemaBehind is the line 'pgvigil run' ends with when the repository's schema is older than the binary (main.go).
+var schemaBehind = regexp.MustCompile(`repository schema is behind this binary \(needs ([^)\s]+)\)`)
+
+// startFailure turns the unit's last journal lines into the installer's one-line error. The one start failure an
+// upgrade meets by design is the schema behind the new binary (the installer ran before 'pgvigil migrate'): that
+// one is said in full, with what is already done and the one command left; any other is pointed at the journal.
+func startFailure(journal string) (msg string, known bool) {
+	if m := schemaBehind.FindStringSubmatch(journal); m != nil {
+		return "the service did not come up: the repository schema is behind this binary (needs " + m[1] +
+			"). The binary and the service are installed; run 'pgvigil migrate' as the repository owner and the service starts by itself (systemd retries it every 10 s)", true
+	}
+	return "the service did not come up (its status is above; the reason is in: journalctl -u pgvigil -n 50)", false
 }
 
 func uninstallService(log *slog.Logger, o installOptions) error {

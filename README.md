@@ -251,7 +251,7 @@ cosign verify-blob --bundle SHA256SUMS.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
 
-The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag. On a machine without Internet access the bundle form also needs Sigstore's trust root as three key files carried with the release (cosign refreshes its trust root over the network otherwise, `--offline` or not): [docs/airgap.md](docs/airgap.md) step 2 has the commands, and `scripts/proof-upgrade.sh` runs them on a network with no route out.
+The first line proves the binary is the one the checksums name; the second proves the checksums file came out of this repository's release workflow for that tag. On a machine without Internet access the bundle form also needs Sigstore's trust root as three key files carried with the release (in this project's runs cosign v2.6.1 tried to refresh its trust root over the network otherwise, `--offline` or not): [docs/airgap.md](docs/airgap.md) step 2 has the commands, and `scripts/proof-upgrade.sh` runs them on a network with no route out.
 
 ### PostgreSQL release table
 

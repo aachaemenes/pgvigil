@@ -38,13 +38,19 @@ Before the copy, on the connected machine, write Sigstore's trust root out as th
 
 ```sh
 cosign initialize
-python3 - ~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json <<'PY'
+TROOT=$(find ~/.sigstore -name trusted_root.json | head -n 1)
+python3 - "$TROOT" <<'PY'
 import json, sys, textwrap
 d = json.load(open(sys.argv[1]))
 pem = lambda raw, kind: "-----BEGIN %s-----\n%s\n-----END %s-----\n" % (kind, "\n".join(textwrap.wrap(raw, 64)), kind)
-open("fulcio.pem", "w").write("".join(pem(c["rawBytes"], "CERTIFICATE") for ca in d["certificateAuthorities"] for c in ca["certChain"]["certificates"]))
-open("rekor.pub", "w").write(pem([t for t in d["tlogs"] if t.get("baseUrl") == "https://rekor.sigstore.dev"][0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
-open("ctfe.pub", "w").write(pem([t for t in d["ctlogs"] if "end" not in t["publicKey"].get("validFor", {})][0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
+certs = [c["rawBytes"] for ca in d["certificateAuthorities"] for c in ca["certChain"]["certificates"]]
+rekor = [t for t in d["tlogs"] if t.get("baseUrl") == "https://rekor.sigstore.dev"]   # the log the release's bundle names
+ct = [t for t in d["ctlogs"] if "end" not in t["publicKey"].get("validFor", {})]      # the certificate log in use
+if not certs or len(rekor) != 1 or len(ct) != 1:
+    sys.exit("trusted_root.json: %d certificates, %d rekor.sigstore.dev logs, %d open certificate logs (wanted 1+, 1, 1)" % (len(certs), len(rekor), len(ct)))
+open("fulcio.pem", "w").write("".join(pem(c, "CERTIFICATE") for c in certs))
+open("rekor.pub", "w").write(pem(rekor[0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
+open("ctfe.pub", "w").write(pem(ct[0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
 PY
 ```
 
@@ -58,7 +64,7 @@ SIGSTORE_ROOT_FILE=fulcio.pem SIGSTORE_REKOR_PUBLIC_KEY=rekor.pub SIGSTORE_CT_LO
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 ```
 
-The bundle carries the signature, the certificate and the transparency-log entry, so no connection to the log is needed. cosign (v2.6.1, the version the release workflow pins) still wants Sigstore's trust root and, even with `--offline`, tries to refresh it from the TUF mirror when it has only its cache (`~/.sigstore`): on a host with no route out that fails ("error updating to TUF remote mirror"), and `--trusted-root` is refused for this bundle format. The three files are that trust root's own keys (Fulcio's certificates, Rekor's key, the certificate log's key, one key per file), which cosign reads through these variables instead. `scripts/proof-upgrade.sh` runs this check on a network with no route out and an empty home folder: the release verifies, another tag's identity is refused, and the same command without the three files is refused. A new Sigstore trust root layout would change the python lines above, not the check.
+The bundle carries the signature, the certificate and the transparency-log entry, so no connection to the log is needed. cosign still wants Sigstore's trust root: in this project's runs, cosign v2.6.1 (the version the release workflow pins) given only its cache (`~/.sigstore`, carried across) tried to refresh it from the TUF mirror even with `--offline`, and on a host with no route out that failed ("error updating to TUF remote mirror"). The three files are that trust root's own keys (Fulcio's certificates, Rekor's key, the certificate log's key, one key per file), which cosign reads through these variables instead; the python lines stop with a message when the trust root holds more than one Rekor log or more than one open certificate log, rather than pick one. `scripts/proof-upgrade.sh` part C runs this check on a network with no route out and an empty home folder: the release verifies with the three files and another tag's identity is refused; it also prints, without judging it, what the same command does without them.
 
 ## 3. Install from the copy
 

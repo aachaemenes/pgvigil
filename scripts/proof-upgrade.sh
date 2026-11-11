@@ -62,10 +62,11 @@
 #   I way back    the owner's dump restores, as the owner, into a second database with every table's row count and row
 #                 md5 as before the upgrade; the old tag reinstalled from the mirror runs on it ('installed and running',
 #                 a new activity sample): the way back is the dump and the previous binary. Then the installer first, as
-#                 're-run it to upgrade' reads: install.sh for this build replaces the binary and ends either with exit
-#                 1 and 'the service did not come up' (the first start had failed when it looked; the expected case) or
-#                 with exit 0 and 'installed and running' (it had not yet): the proof tells which; either way the journal
-#                 names the newest migration file and 'pgvigil migrate' and the unit is restarted (1 restart or more in
+#                 're-run it to upgrade' reads: install.sh for this build replaces the binary and ends with exit 1
+#                 and ONE line that says 'the service did not come up', names the newest migration file and says
+#                 "run 'pgvigil migrate' as the repository owner" ('pgvigil install' calls the unit running only after
+#                 it stayed active for four seconds, and the first start on the old schema ends at the schema check
+#                 well inside that: exit 0 here is a failure); the journal names the same file and the unit is restarted (1 restart or more in
 #                 12 s); once the owner has migrated, the unit comes up by itself (a new activity sample) and the rows
 #                 outside the live instance are the count from before
 set -euo pipefail
@@ -354,14 +355,19 @@ hashes "$WORK/after.hash" "$WORK/before.cols" || fail "the row hashes after the 
 # schema_version alone may differ (it holds the files applied more); every other table: the same rows in the columns it had
 diff <(grep -v '^schema_version|' "$WORK/before.hash") <(grep -v '^schema_version|' "$WORK/after.hash") >"$WORK/hash.diff" || fail "stored rows changed over the migrate, in the columns $OLD had: $(sed -n 's/^[<>] \([a-z0-9_]*\)|.*/\1/p' "$WORK/hash.diff" | sort -u | tr '\n' ' ')"
 NHASH=$(grep -vc '|empty$' "$WORK/before.hash" || true); NEMPTY=$(grep -c '|empty$' "$WORK/before.hash" || true)
-# compare <before> <after> <mode> <applied>: strict = every old table the same count, new tables empty; rest = tables
+# compare <before> <after> <mode> <applied> [<seed>]: strict = every old table the same count, a new table exactly what
+# this build's migrations leave in an EMPTY repository (<seed>: reference rows a migration writes, 0100's pgaudit_rules;
+# 0 without it); rest = tables
 # with an instance column the same, one without may only have grown; schema_version holds the files applied more in both
 compare() {
   python3 -I - "$@" <<'PY'
 import sys
 before, after, mode = sys.argv[1:4]; applied = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+seedf = sys.argv[5] if len(sys.argv) > 5 else ""
 load = lambda p: {l.split("|")[0]: (l.split("|")[1], int(l.split("|")[2])) for l in open(p).read().split("\n") if l}
 b, a = load(before), load(after); bad, grew = [], []
+seed = load(seedf) if seedf else {}
+seeded = lambda t: seed.get(t, ("", 0))[1]
 if not b or not a: sys.exit("an empty count file (%d and %d tables)" % (len(b), len(a)))
 for t, (kind, n) in sorted(b.items()):
     if t not in a: bad.append("%s: gone (held %d)" % (t, n)); continue
@@ -370,13 +376,19 @@ for t, (kind, n) in sorted(b.items()):
     if mode == "rest" and kind == "g" and m > n: grew.append("%s %d -> %d" % (t, n, m)); continue
     bad.append("%s: %d before, %d after" % (t, n, m))
 new = sorted(t for t in a if t not in b)
-if mode == "strict": bad += ["%s: a table this build adds holds %d row(s)" % (t, a[t][1]) for t in new if a[t][1]]
+if mode == "strict": bad += ["%s: a table this build adds holds %d row(s), %d after a migrate of an empty repository" % (t, a[t][1], seeded(t)) for t in new if a[t][1] != seeded(t)]
 if bad: sys.exit("; ".join(bad))
 rows = sum(n for _, n in b.values())
-print("%d tables, %d rows%s%s" % (len(b), rows, "; %d new tables, all empty" % len(new) if mode == "strict" else "", "; grew without an instance column: " + ", ".join(grew) if grew else ""))
+nseed = [t for t in new if seeded(t)]
+print("%d tables, %d rows%s%s" % (len(b), rows, ("; %d new tables, each as a migrate of an empty repository leaves it (%s)" % (len(new), "empty" if not nseed else "%d seeded: %s" % (len(nseed), ", ".join("%s %d" % (t, seeded(t)) for t in nseed)))) if mode == "strict" else "", "; grew without an instance column: " + ", ".join(grew) if grew else ""))
 PY
 }
-got=$(compare "$WORK/before.all" "$WORK/after.all" strict "$APPLIED" 2>&1) || fail "row counts changed over the migrate: $got"
+# what this build's migrations leave in an EMPTY repository: the count a new table must have after the upgrade
+docker exec "$REPO" psql -U postgres -XAtq -v ON_ERROR_STOP=1 -c "create database pgvigil_seedcount owner pgvigil_owner" >/dev/null || fail "the empty repository for the seeded counts"
+insys sh -c "PGVIGIL_REPO_DSN='postgres://pgvigil_owner:$OPW@$REPO:5432/pgvigil_seedcount?sslmode=disable' /root/pgvigil migrate -config /etc/pgvigil/pgvigil.yaml" >"$WORK/m0.out" 2>&1 || fail "this build's migrate of an empty repository: $(tail -n 3 "$WORK/m0.out")"
+RDB=pgvigil_seedcount counts "$WORK/seed.all" 0 || fail "the row counts of the empty repository after its migrate"
+docker exec "$REPO" psql -U postgres -XAtq -c "drop database pgvigil_seedcount with (force)" >/dev/null || fail "dropping the empty repository of the seeded counts"
+got=$(compare "$WORK/before.all" "$WORK/after.all" strict "$APPLIED" "$WORK/seed.all" 2>&1) || fail "row counts changed over the migrate: $got"
 ok "migrate applied $APPLIED files in $MIGMS ms (the store's $OLDFILES to this tree's $NFILES), a second one 0; this build refused to run before it (exit 1); row counts kept: $got; the rows themselves, in the columns $OLD had: the same md5 per table in all $NHASH tables that hold rows ($NEMPTY hold none)"
 # the stamp BEFORE the install restarts the unit (stopped since the start of E, so nothing else writes in between): each
 # collection first runs up to 10 s after the start, and 'install' returns half a second or more after it, so a stamp read
@@ -545,18 +557,15 @@ n=0; for _ in $(seq 1 90); do n=$(rq "select count(*) from pgvigil.activity_summ
 [[ "$n" -ge 1 ]] || fail "no activity sample of proof-target under $OLD on the restored store within 90 s"
 ok "the way back: the owner's dump restores, as the owner, with every row count and every row's md5 from before the upgrade ($(wc -l < "$WORK/back.all") tables, schema at $OLDLATEST) and $OLD, reinstalled from the mirror, collects on it"
 rc=0; inst "$NEW" >"$WORK/i6.out" 2>&1 || rc=$?
-# 'pgvigil install' looks at the unit from 0.5 s after its restart, for 5 s: a start that has already failed reads as not
-# running (exit 1, 'the service did not come up'), one that has not failed yet reads as running (exit 0)
-if [[ "$rc" != 0 ]]; then
-  grep -q 'the service did not come up' "$WORK/i6.out" || fail "the installer-first upgrade ended with exit $rc without 'the service did not come up': $(tail -n 5 "$WORK/i6.out")"
-  SAID="exit $rc with 'the service did not come up'"
-else
-  grep -q 'installed and running' "$WORK/i6.out" || fail "the installer-first upgrade ended with exit 0 without 'installed and running': $(tail -n 5 "$WORK/i6.out")"
-  SAID="exit 0 with 'installed and running' (it looked before the first start had failed)"
-fi
+# 'pgvigil install' calls the unit running only after it stayed active for four seconds: the first start on the old
+# schema ends at the schema check well inside that, so the installer ends with exit 1 and says why in its own line
+[[ "$rc" == 1 ]] || fail "the installer-first upgrade ended with exit $rc (want 1) on a schema that is behind: $(tail -n 5 "$WORK/i6.out")"
+grep -q 'the service did not come up' "$WORK/i6.out" || fail "the installer-first upgrade ended with exit $rc without 'the service did not come up': $(tail -n 5 "$WORK/i6.out")"
+grep "the service did not come up" "$WORK/i6.out" | grep "needs $LATEST" | grep -q "run 'pgvigil migrate' as the repository owner" \
+  || fail "the installer's own line does not name $LATEST and 'pgvigil migrate': $(tail -n 5 "$WORK/i6.out")"
+SAID="exit $rc with 'the service did not come up', naming $LATEST and 'pgvigil migrate' in the same line"
 echo "     the installer's last lines, as the operator sees them:"; tail -n 8 "$WORK/i6.out" | cut -c1-220 | sed 's/^/     | /'
 [[ "$(insys /usr/local/bin/pgvigil version)" == "pgvigil $NEW ("* ]] || fail "the installer-first upgrade left the binary at $(insys /usr/local/bin/pgvigil version)"
-NAMED=no; grep -q "pgvigil migrate" "$WORK/i6.out" && NAMED=yes
 sleep 12
 insys journalctl -u pgvigil --no-pager --since "-60s" | grep -q "repository schema is behind this binary (needs $LATEST): run 'pgvigil migrate'" || fail "the journal does not name the migration to run"
 RST=$(insys systemctl show -p NRestarts --value pgvigil); [[ "$RST" -ge 1 ]] || fail "the unit was not restarted while the schema was behind (NRestarts $RST)"
@@ -567,5 +576,5 @@ n=0; for _ in $(seq 1 90); do n=$(rq "select count(*) from pgvigil.activity_summ
 [[ "$n" -ge 1 && "$(insys systemctl is-active pgvigil)" == active ]] || fail "the unit did not come up by itself after the migrate (state $(insys systemctl is-active pgvigil || true), $n new sample(s))"
 counts "$WORK/back.rest" "$TID" || fail "the row counts of the restored store after its upgrade"
 got=$(compare "$WORK/before.rest" "$WORK/back.rest" rest "$APPLIED" 2>&1) || fail "rows outside the live instance changed on the installer-first upgrade: $got"
-ok "the installer first: install.sh ended $SAID (its own text names 'pgvigil migrate': $NAMED), the binary replaced, the journal names $LATEST and 'pgvigil migrate', $RST restart(s) in 12 s; after the owner's migrate the unit came up by itself; outside the live instance: $got"
+ok "the installer first: install.sh ended $SAID, the binary replaced, the journal names $LATEST and 'pgvigil migrate', $RST restart(s) in 12 s; after the owner's migrate the unit came up by itself; outside the live instance: $got"
 echo "proof-upgrade: OK ($OLD -> this build: the release verified against SHA256SUMS and its SBOM against the binary; $SIGNED; installed from a mirror on a network with no route out; $APPLIED migration files applied with every row count kept; the service restarted on this build under the collector login; $WALK; the way back from the dump and the installer-first order proven)"
