@@ -48,7 +48,9 @@
 # databases on the same PostgreSQL, logins and databases inside this run's containers, and (reads, querystore) a
 # postgres:13 container of their own.
 # Every exit path the shell can catch removes all of it (the end, a failed check, INT, TERM: a running proof is
-# ended through its own cleanup first). A kill -9 of this script cannot: the versions' own shells then run on to
+# ended through its own cleanup first, and a proof that has not ended 120 s after its TERM is killed: what that
+# proof made on the PostgreSQL side, its repository databases and a postgres:13 container of its own, then stays,
+# under the names its log holds). A kill -9 of this script cannot: the versions' own shells then run on to
 # their last proof and nothing is removed. The first line of the output names the label; after a kill -9 end the
 # shells (pkill -f 'proof-mssql-version[s].sh') and remove what the label finds:
 #   docker rm -f -v $(docker ps -aq --filter label=<label>); docker volume rm $(docker volume ls -q --filter
@@ -402,7 +404,8 @@ run_proof() {
     note=$(grep -m1 -E '^FAIL' "$log" || true)
     [ -n "$note" ] || note=$(grep -m1 -E 'level=ERROR|^Msg [0-9]+, Level 1[1-9]' -A1 "$log" | tr '\n' ' ' || true)
     [ -n "$note" ] || note=$(grep -v '^[[:space:]]*$' "$log" | tail -1 || true)
-    if [ $rc = 124 ] || [ $rc = 137 ]; then note="over $PTIMEOUT s, ended; $note"; fi
+    if [ -e "$OUT/stop" ]; then note="ended with the run; $note"
+    elif [ $rc = 124 ] || [ $rc = 137 ]; then note="over $PTIMEOUT s, ended; $note"; fi
     result "$ver" "$name" FAIL $((SECONDS - t0)) "exit $rc: $note"
   fi
 }
