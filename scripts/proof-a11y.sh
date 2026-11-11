@@ -2,7 +2,7 @@
 # Proof of the web UI's accessibility (government readiness, task 50; Section 508 points at WCAG 2.0 AA,
 # checked here as WCAG 2.1 A + AA with axe-core): a demo fleet is seeded into a throwaway database and
 # served on loopback, a headless Chromium walks every root tab and every tab of an on-prem and a cloud
-# instance in both themes, and axe-core runs on each page. Needs go, psql, chromium, node and npm, and a
+# instance in both themes (and the pages with status cells again in the quiet status style), and axe-core runs on each page. Needs go, psql, chromium, node and npm, and a
 # PostgreSQL to hold the throwaway database:
 #   PGVIGIL_ADMIN_DSN  keyword-form connection to a cluster as a login that may create a database
 #   PGVIGIL_A11Y_MAX   the most violation nodes allowed (default 0)

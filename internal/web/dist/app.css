@@ -223,12 +223,12 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 .u-tip-key { display: inline-block; width: .6rem; height: .6rem; margin-right: .35rem; border-radius: 2px; vertical-align: 0; }
 .u-legend .u-series { cursor: pointer; }
 
-/* The status colours (2026-11-11, Allen: 'bright green and red and yellow tables in white background or dark
-   background' = DBA Dash's status grids). By default a status cell is a solid fill as DBA Dash draws it (its light
+/* The status colours. By default a status cell is a solid fill as DBA Dash draws its status grids (its light
    theme's green, orange and red; N/A grey; acknowledged blue) under a blue header row, on the light page and the dark
    one; 'Colours: quiet' in the header brings the calm pass back (a tint on warning and critical only). The orange
-   carries dark text, not DBA Dash's white (2.5:1): every pair here clears WCAG AA 4.5:1 (white on the green 7.1, on
-   the red 7.1, on the acknowledged blue 5.2, on the header blue 6.4; the dark text on the orange 7.6). */
+   carries dark text, not DBA Dash's white (2.5:1): every pair here clears WCAG AA 4.5:1 (white on the green 7.10, on
+   the red 7.11, on the acknowledged blue 5.77, on the header blue 6.34; the dark text on the orange 7.42; the N/A
+   text 6.59 light and 7.81 dark). A status cell that holds plain text (no cell link) keeps the grid's padding. */
 :root:not([data-status="quiet"]) { --st-ok: #006638; --st-warn: #e49325; --st-crit: #ab1f26; --st-none: #e0e1e9; --st-none-fg: #004f83;
                                    --st-ack: #1b6aa3; --st-head: #0063a3; --st-on: #fff; --st-on-warn: #1d1300; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]):not([data-status="quiet"]) { --st-none: #2c323d; --st-none-fg: #c3cad6; } }
@@ -249,3 +249,4 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 :root:not([data-status="quiet"]) .grid > thead th button, :root:not([data-status="quiet"]) .grid > thead th a { color: var(--st-on); }
 :root:not([data-status="quiet"]) .grid > thead th .filter-btn, :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { color: var(--st-on); }
 :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { text-decoration: underline; }
+:root:not([data-status="quiet"]) .grid td.status:not(:has(.cell-link)) { padding: .35rem .6rem; }

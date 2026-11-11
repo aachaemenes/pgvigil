@@ -20,15 +20,16 @@ same way as any browser.
   Property cards (two-column label / value panels) export too, as `item` / `value` sheets.
 - **The header row is frozen** and the **filter is on** over every data sheet; the column widths follow the
   content (8 to 60 characters).
-- **Status colours** are solid cell fills with white text, as DBA Dash exports them, under a blue header row
-  (`#0063A3`, white bold), whatever the theme on screen:
+- **Status colours** are the screen's solid fills (DBA Dash's colours; the orange carries dark text, white on
+  it is 2.5:1) under a blue header row (`#0063A3`, white bold), whatever the theme or status style on screen:
 
   | Screen            | Fill      | Text      |
   |-------------------|-----------|-----------|
   | ok                | `#006638` | `#FFFFFF` |
-  | warning           | `#E49325` | `#FFFFFF` |
+  | warning           | `#E49325` | `#1D1300` |
   | critical          | `#AB1F26` | `#FFFFFF` |
   | no sample (muted) | `#E0E1E9` | `#004F83` |
+  | acknowledged      | `#1B6AA3` | `#FFFFFF` |
 
   A cell is coloured when the screen colours it: a status cell (the Summary grid), or a cell that holds a
   coloured badge or dot (a severity, a check, a run status).

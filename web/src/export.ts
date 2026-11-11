@@ -9,7 +9,7 @@ import { fleet } from './fleet';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, rangeLabel, rootTabs, window_ } from './router';
 import { Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel } from './ui';
 
-type Status = 'ok' | 'warn' | 'crit' | 'none';
+type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
 interface Cell { v: string | number; kind: Kind; status?: Status; text: string; stamp?: string }   // stamp: a time's local text for the CSV
 export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string }   // note: the page's 'the newest N of M' line above the grid
@@ -101,7 +101,7 @@ const statuses: Status[] = ['crit', 'warn', 'ok', 'none'];
 // statusOf: the colour the screen gives a cell: a status cell (the Summary grid's), else a badge or a dot in it.
 function statusOf(td: Element): Status | undefined {
   const pick = (e: Element) => statuses.find(k => e.classList.contains(k));
-  if (td.classList.contains('status')) return pick(td);
+  if (td.classList.contains('status')) return td.classList.contains('ack') ? 'ack' : pick(td);
   const b = td.querySelector('.badge, .dot');
   return b ? pick(b) : undefined;
 }
@@ -166,10 +166,11 @@ export function sections(root: ParentNode, fallback: string): Section[] {
 
 // ---- the workbook -----------------------------------------------------------------------------------------
 
-// the status colours of an exported sheet are DBA Dash's (its light theme: solid fills with white text, N/A grey with dark
-// blue text) under its blue header with white bold text, whatever the theme or status style on screen
-const fillOf: Record<Status, string> = { ok: 'FF006638', warn: 'FFE49325', crit: 'FFAB1F26', none: 'FFE0E1E9' };
-const fontOf: Record<Status, string> = { ok: 'FFFFFFFF', warn: 'FFFFFFFF', crit: 'FFFFFFFF', none: 'FF004F83' };
+// the status colours of an exported sheet are the screen's solid ones (DBA Dash's light theme: solid fills with white text,
+// N/A grey with dark blue text, acknowledged blue; the orange carries dark text, white on it is 2.5:1) under a blue header
+// with white bold text, whatever the theme or status style on screen
+const fillOf: Record<Status, string> = { ok: 'FF006638', warn: 'FFE49325', crit: 'FFAB1F26', none: 'FFE0E1E9', ack: 'FF1B6AA3' };
+const fontOf: Record<Status, string> = { ok: 'FFFFFFFF', warn: 'FF1D1300', crit: 'FFFFFFFF', none: 'FF004F83', ack: 'FFFFFFFF' };
 const headFill = 'FF0063A3';
 // numFmt ids: 3 is Excel's built-in '#,##0'; 164 on are this file's own
 const fmtId: Record<Kind, number> = { text: 0, int: 3, dec: 164, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };

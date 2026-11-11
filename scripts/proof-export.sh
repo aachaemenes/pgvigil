@@ -13,8 +13,8 @@
 #   summary    sheets: Summary first, then one per grid named by the heading above it ('Summary' repeated is
 #              'Summary (2)'); every data sheet: a frozen pane (ySplit 1, state frozen) and an autoFilter over its
 #              rows; styles.xml carries a solid fill in each status colour the Summary grid shows on screen
-#              (DBA Dash's: ok FF006638, warn FFE49325, crit FFAB1F26, 'no sample' FFE0E1E9) and a cell of that sheet is
-#              styled with it; each sheet's data rows = the grid's rows on screen
+#              (DBA Dash's: ok FF006638 white, warn FFE49325 dark FF1D1300, crit FFAB1F26 white, 'no sample' FFE0E1E9 FF004F83) and a cell of
+#              that sheet is styled with it; the header row of every data sheet filled FF0063A3 with white bold text; each sheet's data rows = the grid's rows on screen
 #   tables     sheets: Summary, Tables, Biggest tables (the screen's headings); Biggest tables sorted by 'total'
 #              on screen first (the click changes the order), its sheet's 'table' column in the screen's order and
 #              every 'total' and 'live rows' still a number
@@ -147,6 +147,7 @@ def check(cond, msg):
     print(('ok   ' if cond else 'FAIL ') + msg)
     if not cond: bad += 1
 fill = {'ok': 'FF006638', 'warn': 'FFE49325', 'crit': 'FFAB1F26', 'none': 'FFE0E1E9'}
+font = {'ok': 'FFFFFFFF', 'warn': 'FF1D1300', 'crit': 'FFFFFFFF', 'none': 'FF004F83'}
 def sheets_of(z):
     wb = z.read('xl/workbook.xml').decode()
     return [n.replace('&amp;', '&') for n in re.findall(r'<sheet name="([^"]*)"', wb)]
@@ -154,11 +155,13 @@ def xfs(z):
     st = z.read('xl/styles.xml').decode()
     fills = re.findall(r'<fill>(.*?)</fill>', re.search(r'<fills[^>]*>(.*?)</fills>', st).group(1))
     cx = re.findall(r'<xf ([^>]*)/>', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st).group(1))
+    fonts = re.findall(r'<font>(.*?)</font>', re.search(r'<fonts[^>]*>(.*?)</fonts>', st).group(1))
     out = []
     for a in cx:
         g = lambda k: int(re.search(k + r'="(\d+)"', a).group(1))
         f = re.search(r'rgb="(\w+)"', fills[g('fillId')])
-        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None})
+        fo = fonts[g('fontId')]; c = re.search(r'rgb="(\w+)"', fo)
+        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo})
     return st, out
 def grids(page):
     head, out = '', []
@@ -190,7 +193,10 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('tables', 'Tables', ina
         check(n == g['rows'], f"{key}: sheet '{names[i + 1]}' {n} data rows = {g['rows']} on screen")
         for s in g.get('status', []):
             used = {int(v) for v in re.findall(r' s="(\d+)"', x)}
-            check(any(cx[u]['fill'] == fill[s] for u in used if u < len(cx)), f"{key}: '{s}' cells filled {fill[s]} in '{names[i + 1]}'")
+            check(any(cx[u]['fill'] == fill[s] and cx[u]['font'] == font[s] for u in used if u < len(cx)), f"{key}: '{s}' cells filled {fill[s]} with text {font[s]} in '{names[i + 1]}'")
+        row1 = re.search(r'<row r="1"[^>]*>(.*?)</row>', x, re.S)
+        hs1 = {int(v) for v in re.findall(r' s="(\d+)"', row1.group(1))} if row1 else set()
+        check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF0063A3' and cx[u]['font'] == 'FFFFFFFF' and cx[u]['bold'] for u in hs1), f"{key}: sheet '{names[i + 1]}' header row filled FF0063A3, white bold")
     # each sheet named by the heading above its grid (h2, h3 or h4): the name starts with the heading's first words
     # (cut at 31 characters, a repeat numbered; the Summary grid's heading meets the export's own Summary sheet)
     hs = [re.sub(r'[\\/?*\[\]:]', ' ', g['name']).strip()[:24].rstrip() for g in gs]

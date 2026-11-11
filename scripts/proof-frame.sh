@@ -14,6 +14,11 @@
 #   G tests pane  the Summary's Tests pane scrolled: its header within 2 px of the pane's top; one tab stop
 #   H refresh     five choices on the Summary, Off stored as 0; the select disabled on Counters (not a live page)
 #   I chart       a legend's double-click shows one series, a second shows all; the readout has a time and values
+#   J paging      a job's All runs over three days: n rows over 400, 200 drawn; Copy all n rows, still 200 drawn; 'Show 200
+#                 more' draws 400 with the focus on the line; 'Show all' draws n, the line hidden, the focus on the grid
+#   K pies        every pie on Storage: k slice(s) for k row(s), none stroked, 1.0000 turn(s)
+#   L colours     solid by default: an OK cell rgb(0, 102, 56), a grid header rgb(0, 99, 163), 'Colours: solid'; one click:
+#                 data-status quiet, the OK cell unfilled, stored 'quiet', kept on another page; a second click: solid again
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -32,7 +37,7 @@ for p in $PORT $CDP; do ss -ltnH "( sport = :$p )" | grep -q . && fail "port $p 
 echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null
-"$WORK/pgvigil" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -serve -listen "127.0.0.1:$PORT" -days 2 > "$WORK/demo.log" 2>&1 &
+"$WORK/pgvigil" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -serve -listen "127.0.0.1:$PORT" -days 3 > "$WORK/demo.log" 2>&1 &
 SRV=$!
 for _ in $(seq 1 240); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { cat "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
 grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; fail "the demo did not come up in 240 s"; }
@@ -46,4 +51,4 @@ curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP po
 
 echo "== the checks"
 node scripts/frame-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$WORK/dl" || fail "a case did not hold"
-echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart"
+echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, paging, pies, colours"

@@ -18,9 +18,10 @@ interface DBADashData { repositories: Table | null; fleet: Table | null; checks:
 interface DBADashInstance { instance: Table | null; statuses: Table | null; changes: Table | null }
 
 // DBADash's codes (DBADashStatusEnum) and pgvigil's colour for each: 1 Critical, 2 Warning, 6 Warning (low) are the
-// two alarm levels; N/A, Acknowledged, Information and Disabled are shown muted; OK green.
+// two alarm levels; N/A, Information and Disabled are shown muted; Acknowledged muted and marked (blue in the solid
+// status style); OK green.
 export const words: Record<number, string> = { 1: 'Critical', 2: 'Warning', 3: 'N/A', 4: 'OK', 5: 'Acknowledged', 6: 'Warning (low)', 7: 'Information', 8: 'Disabled' };
-export const codeClass = (c: unknown) => c === 1 ? 'crit' : c === 2 || c === 6 ? 'warn' : c === 4 ? 'ok' : 'none';
+export const codeClass = (c: unknown) => c === 1 ? 'crit' : c === 2 || c === 6 ? 'warn' : c === 4 ? 'ok' : c === 5 ? 'none ack' : 'none';
 export const levelWords = ['OK', 'Warning', 'Critical'];
 // ldot: the status dot with its word for a screen reader as well as the eye (the level is never colour alone)
 function ldot(level: number, word: string): HTMLElement {

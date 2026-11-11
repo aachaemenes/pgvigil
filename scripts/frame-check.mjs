@@ -158,13 +158,16 @@ const iso = await ev(`(async () => {
 })()`);
 check('I chart', iso.one === 1 && iso.all === iso.n && iso.tip >= 2, `isolate ${iso.one} of ${iso.n}, restore ${iso.all}; readout ${iso.tip} line(s)`);
 
-// J. a grid past its page (a job's All runs): 200 rows drawn and the 'show more' line; Copy all takes every row and
-// leaves the grid as drawn; 'Show 200 more' draws 200 more and keeps the focus on the line; 'Show all' draws the rest
+// J. a grid past its page (a job's All runs; the proof seeds three days so the grid holds more than two pages): 200
+// rows drawn and the 'show more' line; Copy all takes every row and leaves the grid as drawn; 'Show 200 more' draws 200
+// more and keeps the focus on the line; 'Show all' draws the rest, hides the line and puts the focus on the grid. The
+// buttons are found by their words, and a grid of 400 rows or fewer fails the case (the last two claims need a third page).
 await go(`#/jobs?i=${idOf('demo-aurora-crm01')}&w=7d`);
 const pg = await ev(`(async () => {
   const t = [...document.querySelectorAll('main table.grid')].find(x => Number(x.dataset.rows) > 200); if (!t) return null;
   const box = t.closest('.grid-box'), more = box.querySelector('.grid-more'), n = Number(t.dataset.rows);
   const drawn = () => t.querySelectorAll('tbody tr').length;
+  const btn = w => more.hidden ? undefined : [...more.querySelectorAll('button')].find(b => b.textContent.trim().startsWith(w));
   const first = drawn(), line = more.hidden ? '' : more.textContent;
   const td = t.querySelector('tbody td'); const r = td.getBoundingClientRect();
   td.tabIndex = -1; td.focus();
@@ -174,15 +177,16 @@ const pg = await ev(`(async () => {
   copyAll.click();
   await new Promise(r => setTimeout(r, 400));
   const lines = (await navigator.clipboard.readText()).split('\\n').length, afterCopy = drawn();
-  more.querySelector('button').click(); await new Promise(r => setTimeout(r, 200));
+  const moreBtn = btn('Show 200 more'); if (!moreBtn) return { why: "no 'Show 200 more' button on a grid of " + n + ' rows: ' + line };
+  moreBtn.click(); await new Promise(r => setTimeout(r, 200));
   const second = drawn(), focusOnLine = more.contains(document.activeElement) && document.activeElement.tagName === 'BUTTON';
-  const rest = more.hidden ? [] : [...more.querySelectorAll('button')];
-  if (rest.length) { rest.pop().click(); await new Promise(r => setTimeout(r, 300)); }
+  const allBtn = btn('Show all'); if (!allBtn) return { why: "no 'Show all' button after the second page of " + n + ' rows' };
+  allBtn.click(); await new Promise(r => setTimeout(r, 300));
   return { n, first, line, lines, afterCopy, second, focusOnLine, all: drawn(), hidden: more.hidden, focusGrid: document.activeElement === t.parentElement };
 })()`);
-check('J paging', !!pg && !pg.why && pg.first === 200 && pg.line.startsWith(`The first 200 of ${pg.n} rows`) && pg.lines === pg.n + 1 && pg.afterCopy === 200
-  && pg.second === Math.min(400, pg.n) && (pg.n <= 400 || pg.focusOnLine) && pg.all === pg.n && pg.hidden && pg.focusGrid,
-  pg?.why ?? (pg ? `${pg.n} rows: ${pg.first} drawn, '${pg.line.slice(0, 40)}...'; Copy all ${pg.lines - 1} rows, still ${pg.afterCopy} drawn; more ${pg.second} (focus on the line ${pg.focusOnLine}); all ${pg.all}, line hidden ${pg.hidden}, focus on the grid ${pg.focusGrid}` : 'no grid over 200 rows on the Jobs page'));
+check('J paging', !!pg && !pg.why && pg.n > 400 && pg.first === 200 && pg.line.startsWith(`The first 200 of ${pg.n} rows`) && pg.lines === pg.n + 1 && pg.afterCopy === 200
+  && pg.second === 400 && pg.focusOnLine && pg.all === pg.n && pg.hidden && pg.focusGrid,
+  pg?.why ?? (pg ? `${pg.n} rows (over 400: ${pg.n > 400}): ${pg.first} drawn, '${pg.line.slice(0, 40)}...'; Copy all ${pg.lines - 1} rows, still ${pg.afterCopy} drawn; more ${pg.second}, focus on the line ${pg.focusOnLine}; all ${pg.all}, line hidden ${pg.hidden}, focus on the grid ${pg.focusGrid}` : 'no grid over 200 rows on the Jobs page'));
 
 // K. a pie's slices are filled wedges (a dashed stroke of width 2r left a notch at the centre): one wedge or disc per
 // legend row, none stroked, the wedges' angles summing to the whole circle
@@ -196,6 +200,23 @@ const pies = await ev(`[...document.querySelectorAll('main .donut')].map(d => {
 })`);
 check('K pies', pies.length >= 2 && pies.every(p => p.n === p.rows && p.stroked === 0 && Math.abs(p.turns - 1) < 0.001),
   pies.map(p => `${p.n} slice(s) for ${p.rows} row(s), ${p.turns.toFixed(4)} turn(s)`).join('; ') || 'no pie on the Storage page');
+
+// L. the status colours: solid by default (an OK cell filled DBA Dash's green, a grid's header its blue), 'Colours'
+// switches to quiet (the OK cell unfilled, the header the page's), the choice survives a reload, a second click is solid
+await go('#/summary');
+const colours = async () => JSON.parse(await ev(`(() => { const ok = document.querySelector('main td.status.ok'), th = document.querySelector('main table.grid > thead th');
+  const b = [...document.querySelectorAll('header button, #bar button')].find(x => x.textContent.startsWith('Colours:'));
+  return JSON.stringify({ attr: document.documentElement.getAttribute('data-status'), ok: ok ? getComputedStyle(ok).backgroundColor : 'no ok cell', th: th ? getComputedStyle(th).backgroundColor : 'no header', btn: b ? b.textContent : 'no button', stored: localStorage.getItem('pgvigil.status') }); })()`));
+const clickColours = () => ev(`[...document.querySelectorAll('header button, #bar button')].find(x => x.textContent.startsWith('Colours:'))?.click(); 'ok'`);
+const transparent = c => c === 'rgba(0, 0, 0, 0)' || c === 'transparent';
+const solid1 = await colours();
+await clickColours(); await sleep(200); const quiet1 = await colours();
+await go('#/alerts'); await go('#/summary'); const quiet2 = await colours();
+await clickColours(); await sleep(200); const solid2 = await colours();
+check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && solid1.th === 'rgb(0, 99, 163)' && solid1.btn === 'Colours: solid'
+  && quiet1.attr === 'quiet' && transparent(quiet1.ok) && quiet1.th !== 'rgb(0, 99, 163)' && quiet1.btn === 'Colours: quiet' && quiet1.stored === 'quiet'
+  && quiet2.attr === 'quiet' && transparent(quiet2.ok) && solid2.attr === null && solid2.ok === 'rgb(0, 102, 56)' && solid2.stored === 'solid',
+  `solid: OK cell ${solid1.ok}, header ${solid1.th}, '${solid1.btn}'; quiet: attr ${quiet1.attr}, OK cell ${quiet1.ok}, header ${quiet1.th}, '${quiet1.btn}', stored ${quiet1.stored}; after another page: attr ${quiet2.attr}; back: OK cell ${solid2.ok}, stored ${solid2.stored}`);
 
 ws.close();
 if (failed) { console.log(`FAIL ${failed} case(s)`); process.exit(1); }
