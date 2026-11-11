@@ -111,6 +111,7 @@ DB=pgv149db_$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 PF=$(pw); PC=$(pw); PB=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
+eq() { [ "$2" = "$3" ] || fail "$1: got '$2', want '$3'"; }
 freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_CT=; MADE_PG13=; SRV_PID=
 SQLCMD=/opt/mssql-tools18/bin/sqlcmd
@@ -190,7 +191,6 @@ collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "$2" > "$OUT" 2>&
 iid() { q "select instance_id from pgvigil.instances where name = '$1'"; }
 status() { q "select status from pgvigil.collection_dates where instance_id = $(iid "$1") and collection = '$2'"; }
 st() { q "select $3 from pgvigil.mssql_reader_state where instance_id = $(iid "$1") and reader = '$2'"; }
-eq() { [ "$2" = "$3" ] || fail "$1: got '$2', want '$3'"; }
 
 if [ "${PGVIGIL_SKIP_PG13:-}" = 1 ]; then
   echo "--- M. PostgreSQL 13: NOT RUN (PGVIGIL_SKIP_PG13=1)"; M_NOTE="M NOT RUN"
