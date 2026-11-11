@@ -151,6 +151,12 @@ database that is later dropped stays held until someone ends the rule.
 - **Secrets stay out of the file and out of the screen.** A webhook URL and an SMTP password come through `env:` or
   `file:`. The UI and the log show a webhook's scheme and host only, never its path or token, and an error text never
   carries the URL.
+- **PagerDuty** (`kind: pagerduty`, `pagerduty: {routing_key: env:PD_KEY}`, migration 0089) sends each alert as its own
+  Events API v2 event: firing, escalated and repeat trigger, a recovery resolves, all under one dedup key per instance
+  and finding (`pgvigil:<instance>:<finding>`, hashed past 255 bytes), so PagerDuty keeps one incident per finding and
+  closes it when the finding clears; `recovery: false` is refused for this kind. The routing key (the service's
+  integration key) comes through `env:` or `file:` and is never shown or logged; the URL may name
+  events.pagerduty.com (the default) or events.eu.pagerduty.com only. A 429 is a failed send the next pass repeats.
 - **The air-gapped site** uses the file drop. pgvigil writes into a directory and the site's own tooling picks the
   files up.
 

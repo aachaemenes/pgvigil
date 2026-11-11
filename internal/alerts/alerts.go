@@ -12,7 +12,7 @@
 //	alerts_dsn: env:PGVIGIL_ALERTS_DSN
 //	alerts:
 //	  - name: dba-mail               # [a-z0-9][a-z0-9_.-]*, unique
-//	    kind: smtp                   # smtp | webhook | file
+//	    kind: smtp                   # smtp | webhook | file | pagerduty
 //	    min_severity: warning        # info | warning (default) | critical
 //	    instances: [erp01]           # optional; instances: and tags: empty = every instance
 //	    tags: [env:prod]             # optional; a tag in its written form (prod, env:prod)
@@ -24,6 +24,7 @@
 //	    smtp: {host: relay.example.org, port: 587, tls: starttls, username: env:U, password: file:/p, from: a@b, to: [c@d]}
 //	    webhook: {url: env:TEAMS_URL, format: teams}   # teams | slack | json; the URL through env: or file: only
 //	    file: {dir: /var/spool/pgvigil/alerts}
+//	    pagerduty: {routing_key: env:PD_KEY}            # Events API v2; one incident per finding, resolved when it clears
 //
 // Each pass (every minute inside `pgvigil run`, once for `pgvigil alerts`) records the channels, stamps the open alerts
 // whose finding is gone (pgvigil.alert_mark), asks the repository what is owed (pgvigil.alert_due: firing, escalated,
@@ -77,6 +78,7 @@ type Channel struct {
 	SMTP        *SMTP            `yaml:"smtp"`
 	Webhook     *Webhook         `yaml:"webhook"`
 	File        *FileDrop        `yaml:"file"`
+	PagerDuty   *PagerDuty       `yaml:"pagerduty"`
 
 	quiet  *quiet
 	loc    *time.Location
@@ -219,13 +221,13 @@ func (c *Channel) validate() error {
 		return fmt.Errorf("repeat must be at least 5m, or disabled (got %s)", c.Repeat.Duration)
 	}
 	blocks := 0
-	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil} {
+	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil} {
 		if set {
 			blocks++
 		}
 	}
 	if blocks != 1 {
-		return errors.New("exactly one of smtp:, webhook: or file: is required")
+		return errors.New("exactly one of smtp:, webhook:, file: or pagerduty: is required")
 	}
 	var err error
 	switch c.Kind {
@@ -244,8 +246,16 @@ func (c *Channel) validate() error {
 			return errors.New("kind file needs a file: block")
 		}
 		c.sender, err = c.File.build()
+	case "pagerduty":
+		if c.PagerDuty == nil {
+			return errors.New("kind pagerduty needs a pagerduty: block")
+		}
+		if !c.SendsRecovery() {
+			return errors.New("kind pagerduty sends every recovery (recovery: false would leave its incidents open)")
+		}
+		c.sender, err = c.PagerDuty.build()
 	default:
-		return fmt.Errorf("kind must be smtp, webhook or file (got %q)", c.Kind)
+		return fmt.Errorf("kind must be smtp, webhook, file or pagerduty (got %q)", c.Kind)
 	}
 	return err
 }
