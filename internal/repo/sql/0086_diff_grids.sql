@@ -439,12 +439,13 @@ $$;
 --   added first                           'only b' (its definition as last stored inside the window)
 --   dropped last                          'only a' (its definition at the start: the first change's 'before')
 --   otherwise, per attribute (definition, owner, acl): the first change's 'before' against the last change's
---   'after'; equal on all three = no row (changed and changed back), unless a definition changed past the stored
---   20,000 characters (its texts read the same: it still counts as 'different').
+--   'after'; equal on all three = no row (changed and changed back, or dropped and re-created the same: 'same' when
+--   identical rows are asked for), unless a definition changed past the stored 20,000 characters (its texts read the
+--   same: it still counts as 'different').
 --   A column, index, constraint, trigger or owned sequence netted to the same side as its table is folded into the
 --   table's row (children).
--- p_all adds, as 'same', every object first seen at or before p_at_a with no change in the window that is still
--- present or was dropped after p_at_b. p_db narrows to one database by name.
+-- p_all adds, as 'same', those netted-out objects and every object first seen at or before p_at_a with no change in
+-- the window that is still present or was dropped after p_at_b. p_db narrows to one database by name.
 -- The history starts at each database's first read (schema_databases.first_read) and ends at the repository's
 -- retention: a p_at_a before either compares from there, and diff_sides says where that is.
 CREATE OR REPLACE FUNCTION pgvigil.diff_schema_snapshots(p_instance_id int, p_at_a timestamptz, p_at_b timestamptz,
@@ -493,15 +494,19 @@ LANGUAGE sql STABLE AS $$
              CASE WHEN n.acl_rows > 0 AND n.a_acl IS DISTINCT FROM n.b_acl THEN 'acl' END), '') AS differs
       FROM n
   ), k AS (
-    SELECT s.*, s.parent IS NOT NULL AND s.status IN ('only a', 'only b')
-                AND EXISTS (SELECT 1 FROM s t WHERE t.dbid = s.dbid AND t.kind IN ('table', 'view', 'materialized view')
-                               AND t.identity = s.parent AND t.status = s.status) AS is_folded
+    -- an object at both ends whose changes net to nothing is 'same': a row only when identical rows are asked for
+    SELECT s.dbid, s.datname, s.kind, s.identity, s.schema_name, s.object_name, s.parent, s.differs, s.a_def, s.b_def,
+           s.a_owner, s.b_owner, s.a_acl, s.b_acl,
+           CASE WHEN s.status = 'different' AND s.differs IS NULL THEN 'same' ELSE s.status END AS status,
+           s.parent IS NOT NULL AND s.status IN ('only a', 'only b')
+             AND EXISTS (SELECT 1 FROM s t WHERE t.dbid = s.dbid AND t.kind IN ('table', 'view', 'materialized view')
+                            AND t.identity = s.parent AND t.status = s.status) AS is_folded
       FROM s
-     WHERE s.status IS NOT NULL AND (s.status <> 'different' OR s.differs IS NOT NULL)
+     WHERE s.status IS NOT NULL AND (s.status <> 'different' OR s.differs IS NOT NULL OR p_all)
   )
   SELECT k.datname, k.datname, k.kind, k.identity, k.schema_name, k.object_name, k.parent, k.status,
          CASE WHEN k.status = 'different' THEN k.differs END,
-         CASE WHEN k.status <> 'only b' THEN k.a_def END, CASE WHEN k.status <> 'only a' THEN k.b_def END,
+         CASE WHEN k.status IN ('only a', 'different') THEN k.a_def END, CASE WHEN k.status IN ('only b', 'different') THEN k.b_def END,
          CASE WHEN k.status = 'different' THEN k.a_owner END, CASE WHEN k.status = 'different' THEN k.b_owner END,
          CASE WHEN k.status = 'different' THEN k.a_acl END, CASE WHEN k.status = 'different' THEN k.b_acl END,
          CASE WHEN k.kind IN ('table', 'view', 'materialized view') AND k.status IN ('only a', 'only b')

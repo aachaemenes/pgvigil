@@ -245,9 +245,9 @@ export async function diffView(ctx: Ctx): Promise<HTMLElement> {
       try { rows = rowsOf((await get<{ databases: Table | null }>('diff', { a, b, part: 'databases' })).databases); } catch { rows = []; }
     }
     if (mine !== dbSeq) return;
-    const of = (id?: number) => rows.filter(r => Number(r.instance_id) === id).map(r => String(r.datname));
+    const namesOf = (id?: number) => rows.filter(r => Number(r.instance_id) === id).map(r => String(r.datname));
     const none = p.m === 'i' ? '(all, paired by name)' : p.m === 't' ? '(all databases)' : '(pick a database)';
-    set(dbA, of(a), p.dba, none); set(dbB, of(b), p.dbb, none);
+    set(dbA, namesOf(a), p.dba, none); set(dbB, namesOf(b), p.dbb, none);
     if (dbA.value === '') p.dba = undefined;
     if (dbB.value === '') p.dbb = undefined;
     hint.textContent = incomplete(p);

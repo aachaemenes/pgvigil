@@ -41,8 +41,9 @@ export async function pgConfigSection(ctx: Ctx, changed: Set<string> = new Set()
       + (detail ? `, ${fmtNum(pending)} waiting for a restart (listed first)` : '') + `; read ${fmtTime(rows[0].snapshot_at)}. `
       + (detail
         ? 'Value and default are in the setting\'s own unit. Source: where the value in use comes from. Pending restart: '
-          + 'the configuration file holds another value than the running server, which takes it at the next restart '
-          + '(such a setting can still read source "default"). A setting marked * changed in this range.'
+          + 'at the last reload the configuration file held another value than the running server, which takes it at '
+          + 'the next restart (such a setting can still read source "default"; PostgreSQL keeps the mark until a restart '
+          + 'or until the file names the running value again). A setting marked * changed in this range.'
         : 'The unit, default, source, restart and category columns arrive with the next hourly instance read: this read '
           + 'came from a collector older than them.')),
     grid(rows, cols, 'No non-default settings recorded.'));
