@@ -137,6 +137,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (c.tab === 'activity') { page('at', 'at'); page('minSecs', 'min'); page('st', 'st'); page('user', 'user'); page('db', 'db'); page('app', 'app'); }
   if (c.tab === 'dms') { page('task', 'task'); page('taskInstance', 'ti'); }
   if (c.tab === 'statements') { page('order', 'order'); page('minSecs', 'min'); }
+  // the Statements page's ticks and grouping (stmt_filter.ts) stay on its own links: a sort or a range change keeps them
+  if (keep && c.tab === 'statements') {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['sg', 'sdb', 'suser', 'scl']) for (const v of cur.getAll(k)) q.append(k, v);
+  }
   if (c.tab === 'slowqueries') page('ms', 'ms');
   // the Database info and drill-down pages keep their own parameters (db, rel, scheduler, job, idx) on a link to the
   // same page, so a range change stays on the same database, table, job or index

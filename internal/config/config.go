@@ -87,6 +87,8 @@ type Instance struct {
 	// ExplainAnalyze turns on the Plan page's EXPLAIN ANALYZE for this instance (it executes the statement: a
 	// SELECT only, through explain_dsn, in a read-only transaction rolled back); false (the default) = off.
 	ExplainAnalyze bool `yaml:"explain_analyze"`
+	// HypoIndex turns on the suggested index's planner check (hypopg) for this instance; false (the default) = off.
+	HypoIndex bool `yaml:"hypo_index"`
 	// ExplainDSNRaw is the login EXPLAIN ANALYZE runs as: SELECT grants only, never the actions login (a SELECT can
 	// call pg_terminate_backend through pg_signal_backend); env:NAME or file:/path only, as actions_dsn.
 	ExplainDSNRaw string `yaml:"explain_dsn"`
@@ -508,8 +510,8 @@ func (c *Config) Validate() error {
 			}
 			// the doors below are PostgreSQL's
 			switch {
-			case strings.TrimSpace(in.ExplainDSNRaw) != "" || in.ExplainAnalyze:
-				return fmt.Errorf("instance %q: explain_dsn and explain_analyze are PostgreSQL's", in.Name)
+			case strings.TrimSpace(in.ExplainDSNRaw) != "" || in.ExplainAnalyze || in.HypoIndex:
+				return fmt.Errorf("instance %q: explain_dsn, explain_analyze and hypo_index are PostgreSQL's", in.Name)
 			case strings.TrimSpace(in.PgBouncerDSNRaw) != "":
 				return fmt.Errorf("instance %q: pgbouncer is PostgreSQL's", in.Name)
 			case in.AWS != nil:
