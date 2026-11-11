@@ -28,8 +28,9 @@ ALTER TABLE pgvigil.log_events ADD CONSTRAINT log_events_kind_check CHECK (kind 
   'archive_failed', 'standby_conflict', 'serialization_failure', 'temp_file', 'error', 'checkpoint')) NOT VALID;
 ALTER TABLE pgvigil.log_events VALIDATE CONSTRAINT log_events_kind_check;
 
--- 3. the same rules in the same order as logparse.MessageShape: "..." names, '...' literals, LSNs, tuple ids, block
--- ranges, numbers not inside a name; white space folded; cut at 300 characters
+-- 3. the same rules in the same order as logparse.MessageShape: the cursor position the server appends (at character
+-- N) dropped; "..." names, '...' literals, LSNs, tuple ids, block ranges, numbers not inside a name; white space
+-- folded; cut at 300 characters
 CREATE OR REPLACE FUNCTION pgvigil.log_message_shape(p_msg text)
 RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT left(btrim(regexp_replace(
@@ -38,7 +39,7 @@ RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
                regexp_replace(
                  regexp_replace(
                    regexp_replace(
-                     regexp_replace(p_msg, '"(?:[^"]|"")*"', '"..."', 'g'),
+                     regexp_replace(regexp_replace(p_msg, ' at character \d+$', ''), '"(?:[^"]|"")*"', '"..."', 'g'),
                    $re$'(?:[^']|'')*'$re$, $re$'...'$re$, 'g'),
                  '\m[0-9A-F]+/[0-9A-F]+\M', '.../...', 'g'),
                '\(\d+(?:,\d+)*\)', '(...)', 'g'),

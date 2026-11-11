@@ -117,14 +117,15 @@ SELECT sum(checkpoints_timed) AS timed, sum(checkpoints_req) AS requested,
  WHERE interval_secs > 0 AND NOT reset`
 
 // sqlIOCheckpointLines: the log's checkpoint lines (log_checkpoints; kind 'checkpoint' since 0079) of the window and
-// the hour before it (a start before the window pairs with its completion inside it); $1 instance, $2 from, $3 to.
+// the hour before it (a start before the window pairs with its completion inside it); $1 instance, $2 from, $3 to
+// (typed: '$2 - interval' alone resolves $2 as an interval).
 const sqlIOCheckpointLines = `
 WITH c AS (
   SELECT e.snapshot_at, e.pid, e.detail,
          substring(e.detail FROM '^(checkpoint|restartpoint) ') AS what,
          substring(e.detail FROM '^(?:checkpoint|restartpoint) (starting|complete):') AS phase
     FROM pgvigil.log_events e
-   WHERE e.instance_id = $1 AND e.kind = 'checkpoint' AND e.snapshot_at > $2 - interval '1 hour' AND e.snapshot_at <= $3
+   WHERE e.instance_id = $1 AND e.kind = 'checkpoint' AND e.snapshot_at > $2::timestamptz - interval '1 hour' AND e.snapshot_at <= $3::timestamptz
 )`
 
 // checkpointCause names a start line's flags (in a column called flags) by the cause pgBadger charts: shutdown, end of
@@ -139,7 +140,7 @@ const checkpointCause = `CASE WHEN flags IS NULL THEN 'start not read'
 
 // sqlIOCheckpointCauses counts the start lines of the window by cause.
 const sqlIOCheckpointCauses = sqlIOCheckpointLines + `,
-s AS (SELECT c.what, btrim(substring(c.detail FROM 'starting:(.*)$')) AS flags FROM c WHERE c.phase = 'starting' AND c.snapshot_at > $2)
+s AS (SELECT c.what, btrim(substring(c.detail FROM 'starting:(.*)$')) AS flags FROM c WHERE c.phase = 'starting' AND c.snapshot_at > $2::timestamptz)
 SELECT s.what, ` + checkpointCause + ` AS cause, count(*) AS checkpoints
   FROM s
  GROUP BY 1, 2
@@ -161,7 +162,7 @@ d AS (
          AND x.snapshot_at > coalesce((SELECT max(y.snapshot_at) FROM c y
                                         WHERE y.phase = 'complete' AND y.what = d.what AND y.pid = d.pid AND y.snapshot_at < d.snapshot_at), '-infinity')
        ORDER BY x.snapshot_at DESC LIMIT 1) st ON true
-   WHERE d.phase = 'complete' AND d.snapshot_at > $2
+   WHERE d.phase = 'complete' AND d.snapshot_at > $2::timestamptz
 )
 SELECT d.snapshot_at AS completed_at, d.started_at, d.what, d.flags, ` + checkpointCause + ` AS cause,
        (substring(d.detail FROM 'wrote (\d+) buffers'))::bigint AS buffers,

@@ -8,6 +8,7 @@ import (
 func TestMessageShape(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{`relation "orders_typo" does not exist`, `relation "..." does not exist`},
+		{`relation "nosuch_a" does not exist at character 15`, `relation "..." does not exist`},
 		{`duplicate key value violates unique constraint "a""b"`, `duplicate key value violates unique constraint "..."`},
 		{`invalid input syntax for type integer: 'x''y'`, `invalid input syntax for type integer: '...'`},
 		{`process 2001 still waiting for ExclusiveLock on tuple (0,5) of relation 16384 of database 5 after 1000.071 ms`,
