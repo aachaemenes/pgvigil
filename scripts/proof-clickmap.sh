@@ -63,6 +63,37 @@
 #     over the Summary (the address unchanged, the dialog names the instance and 'In force: warning under .. hours,
 #     critical under .. hours'), on both engines; no named difference is left for those four; each drive's Files link
 #     under erp01 and sql01 opens 'Files on <drive>' listing only that drive's files; the PostgreSQL strip holds Temp.
+# Expected, task P08 (written before its first run):
+#  T10 DBA Dash's Summary columns, read by the SQL Server summary (GET /api/mssql/summary): with sql01's day-one checks
+#     areas read now (checkdb, logspace, corruption, alerts, identity) and its rows - a database never CHECKDB'd and
+#     one 9 days since, an agent alert 5 hours ago, a suspect page 3 days ago, an identity column 42.50 % used with
+#     120 days left - and a second SQL Server instance (ms2) with only a database checked 9 days ago and the alerts area
+#     read without an alert: sql01 checkdb critical 1, value Never, since 9 days back; ms2 checkdb value none, since
+#     9 days back; sql01 alerts since 5 h back, ms2 alerts sampled with no since; sql01 corruption since 3 days back;
+#     sql01 identity value '42.5% / 120 days'; logspace sampled on sql01. The demo's instance with three memory dumps
+#     (the newest 72 h old): dumps warning at the default (48 / 168 h); a root crash threshold of 100 / 200 h
+#     (import_pg_threshold, the Memory Dump Thresholds dialog's write) makes it critical. sql01's uptime set to warn
+#     under 87600 h at the instance and acknowledged until it changes (import_ack, seen_state 'since <start in ms>',
+#     what the Summary's Clear Alert / Acknowledge Uptime write).
+#     [review fold 20261111-205600, before the rerun: mssql_checks and mssql_identity logged as run now (else every
+#     area reads 'never'); the state checked; whole-hour seeds, the CHECKDB day at 9 UTC midnights; CLICK_EXPECT merged per
+#     instance and every (instance, column) pair of it required in the click map; identity '42.5|120', shown '42.5% / 3 months']
+#  C adds (click-check.mjs, CLICK_EXPECT): the instance grid's columns are DBA Dash's in its order, then pgvigil's;
+#     every cell of a DBA Dash column lands where DBA Dash's Summary.cs tabMapping sends it (Last Good Check DB:
+#     corruption / the Checks page's Database options; SQL Agent Alerts: the Checks page's Agent alerts; Backup FULL /
+#     DIFF / LOG: backups / mssqlbackups; Log Shipping, Mirroring, Availability Groups: replication or pgbackups /
+#     availability; Log Space and File Space: dbfiles; Identity Columns: the Identity columns view; Snapshot Age:
+#     Collection dates; Collection Errors (24hrs): Collection dates, a difference argued: DBA Dash's ErrorLog page is
+#     P13's); Memory Dump, Is Agent Running and DB Mail are text, no link; the cell texts T10 seeded read 'Never',
+#     '9 days', '5hrs', 'Never', '3 days', '42.5% / 3 months', 'View', the dump instance's Memory Dump '3 days', sql01's
+#     Instance Uptime 'ack: ...'; the test grid's headers are 'Test', 'Instance Count OK', 'Instance Count Warning',
+#     'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged', its tests sorted by name, each
+#     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, View,
+#     Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
+#     Summary Max Height % (10% ... 90%, 70% ticked; 40% sets the test pane to 40vh); Memory Dumps > Configure
+#     Thresholds opens 'Memory Dump Thresholds' with Critical 100 and Warning 200 (the root row T10 set); Instance
+#     Uptime > Configure Thresholds 'Uptime Threshold Config (root)'; an Uptime cell 'Uptime Threshold Config <instance>'
+#     with Inherit, Enabled, Warning / Critical in mins, Uptime:, Start Time:, Clear Alert and Update.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -177,6 +208,66 @@ C9=$(upc); [[ "$C9" == 1\|*"set on the instance"* ]] || fail "T9: the SQL Server
 C9B=$(upc); [[ "$C9B" == *"the default"* ]] || fail "T9: after inherit: $C9B"
 ok "T9: sql01's uptime at 87600 / 87599 h (another key refused there), /api/uptime [$UP], the summary cell [${C9%%|*} critical, set on the instance]; inherit: the default again"
 
+# T10 (task P08): DBA Dash's Summary columns of the SQL Server summary, seeded on sql01 and a second SQL Server instance
+MS2=$(q "select instance_id from pgvigil.instances where engine = 'sqlserver' and is_active and instance_id <> $SQL1 order by name limit 1")
+DUMPI=$(q "select instance_id from pgvigil.mssql_health where dump_count > 0 order by instance_id limit 1")
+[[ -n "$MS2" && -n "$DUMPI" ]] || fail "T10: the demo has no second SQL Server instance ($MS2) or none with a memory dump ($DUMPI)"
+UTC="'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'"
+q "insert into pgvigil.mssql_check_area (instance_id, area, is_read, snapshot_at, read_at)
+   select i, a, true, now(), now() from unnest(array[$SQL1, $MS2]) i cross join unnest(array['checkdb','logspace','corruption','alerts','identity']) a
+   on conflict (instance_id, area) do update set is_read = true, note = null, snapshot_at = now(), read_at = now()" >/dev/null
+q "insert into pgvigil.mssql_database_option (instance_id, database_name, database_id, state, options, snapshot_at) values
+   ($SQL1, 'p08_never', 901, 'ONLINE', '{\"last_good_checkdb\": \"never\"}', now()),
+   ($SQL1, 'p08_old', 902, 'ONLINE', jsonb_build_object('last_good_checkdb', to_char((date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' - interval '9 days' + interval '1 hour') at time zone 'UTC', $UTC)), now()),
+   ($MS2, 'p08_old', 902, 'ONLINE', jsonb_build_object('last_good_checkdb', to_char((date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' - interval '9 days' + interval '1 hour') at time zone 'UTC', $UTC)), now())
+   on conflict (instance_id, database_name) do update set options = excluded.options, is_present = true, snapshot_at = now()" >/dev/null
+q "insert into pgvigil.mssql_check_finding (instance_id, area, check_name, object, rule, severity, value, detail, first_seen, snapshot_at)
+   values ($SQL1, 'checkdb', 'last good CHECKDB', 'p08_never', 'sp_Blitz 68', 'critical', 'never', 'DBCC CHECKDB has never completed without error on this database', now(), now())
+   on conflict do nothing" >/dev/null
+q "insert into pgvigil.mssql_agent_alert (instance_id, name, message_id, severity, enabled, occurrence_count, last_occurrence_at, snapshot_at)
+   values ($SQL1, 'p08 severity 19', 0, 19, true, 1, now() - interval '5 hours 10 minutes', now()) on conflict (instance_id, name) do update set last_occurrence_at = excluded.last_occurrence_at" >/dev/null
+q "insert into pgvigil.mssql_suspect_page (instance_id, database_id, file_id, page_id, event_type, database_name, event, error_count, last_update_at, snapshot_at)
+   values ($SQL1, 902, 1, 4711, 1, 'p08_old', '823 error', 1, now() - interval '73 hours', now()) on conflict do nothing" >/dev/null
+q "insert into pgvigil.mssql_identity_column (instance_id, database_name, schema_name, table_name, column_name, type_name, last_value, max_value, pct_used, status, days_left, snapshot_at)
+   values ($SQL1, 'p08_old', 'dbo', 'orders', 'id', 'int', 912680550, 2147483647, 42.50, 'ok', 120, now()) on conflict do nothing" >/dev/null
+for i in $SQL1 $MS2; do for c in mssql_checks mssql_identity; do q "select pgvigil.log_collection($i, '$c', now(), 10, 'ok', null)" >/dev/null; done; done
+# cell <instance id> <key>: state|critical|warning|value|since hours|since UTC midnights|sampled ('-' for no since)
+cellP() { curl -fs "$U/api/mssql/summary" | python3 -c "
+import json, sys, datetime
+d = json.load(sys.stdin)['cells']; r = [dict(zip(d['columns'], x)) for x in d['rows']]
+c = [x for x in r if str(x['instance_id']) == sys.argv[1] and x['key'] == sys.argv[2]]
+if len(c) != 1: print('ROWS=%d' % len(c)); sys.exit()
+c = c[0]; s = c['since']; now = datetime.datetime.now(datetime.timezone.utc)
+t = None if s is None else datetime.datetime.fromisoformat(s.replace('Z', '+00:00')).astimezone(datetime.timezone.utc)
+h = '-' if t is None else str(int((now - t).total_seconds() // 3600)); dd = '-' if t is None else str((now.date() - t.date()).days)
+print('%s|%s|%s|%s|%s|%s|%s' % (c['state'], c['critical'], c['warning'], c['value'] if c['value'] is not None else '-', h, dd, str(c['sampled']).lower()))" "$1" "$2"; }
+want10() { local got; got=$(cellP "$1" "$2"); [[ "$got" == $3 ]] || fail "T10: $4: the $2 cell is '$got', want '$3'"; echo "     $4: $2 = $got"; }
+want10 "$SQL1" checkdb "ok|1|0|Never|*|9|true" "sql01 a database never checked, the oldest 9 UTC midnights back"
+want10 "$MS2" checkdb "ok|0|0|-|*|9|true" "ms2 checked 9 UTC midnights back"
+want10 "$SQL1" alerts "ok|*|*|*|5|*|true" "sql01 an alert 5 h 10 min ago"
+want10 "$MS2" alerts "ok|*|*|*|-|-|true" "ms2 no alert"
+want10 "$SQL1" corruption "ok|*|*|*|73|*|true" "sql01 a suspect page 73 h ago"
+want10 "$SQL1" identity "ok|*|*|42.5|120|-|-|true" "sql01 identity (per cent|days left)"
+want10 "$SQL1" logspace "ok|*|*|*|-|-|true" "sql01 log space read"
+want10 "$DUMPI" dumps "*|0|1|3 files|*|*|true" "the dump instance at the default 48 / 168 h"
+[[ $(pt "{\"op\":\"set\",\"key\":\"crash\",\"level\":\"root\",\"warn\":\"200\",\"crit\":\"100\",\"ui_user\":\"proof\"}") == done ]] || fail "T10: the root crash threshold refused"
+want10 "$DUMPI" dumps "*|1|0|3 files|*|*|true" "the dump instance under a root 100 / 200 h"
+[[ $(pt "{\"op\":\"set\",\"key\":\"uptime\",\"level\":\"instance\",\"instance_id\":\"$SQL1\",\"warn\":\"87600\",\"ui_user\":\"proof\"}") == done ]] || fail "T10: sql01's uptime warning refused"
+want10 "$SQL1" uptime "*|0|1|*|*|*|true" "sql01 uptime under its own warning of 87600 h"
+SINCE=$(q "select 'since ' || floor(extract(epoch from started_at) * 1000)::bigint from pgvigil.mssql_instance where instance_id = $SQL1")
+[[ $(q "select pgvigil.import_ack(now(), '{\"op\":\"add\",\"kind\":\"ack\",\"instance_id\":$SQL1,\"instance_name\":\"demo-onprem-sql01\",\"check_key\":\"uptime\",\"seen_state\":\"$SINCE\",\"until_change\":true,\"ui_user\":\"proof\"}'::jsonb)->>'outcome'") == done ]] || fail "T10: the uptime acknowledgement refused"
+ok "T10: sql01 / ms2 / the dump instance's DBA Dash cells as seeded; the root crash threshold moves the dump cell; sql01's uptime warning acknowledged ($SINCE)"
+DUMPN=$(q "select name from pgvigil.instances where instance_id = $DUMPI"); MS2N=$(q "select name from pgvigil.instances where instance_id = $MS2")
+# one entry per instance, merged (the dump instance may be sql01: two keys of one name would leave only the last)
+export CLICK_EXPECT=$(python3 -c 'import json, sys
+e = {}
+def add(inst, col, text): e.setdefault(inst, {})[col] = text
+s1, ms2, dmp = sys.argv[1:4]
+for col, text in (("Last Good Check DB", "Never"), ("SQL Agent Alerts", "5hrs"), ("Corruption", "3 days"), ("Identity Columns", "42.5% / 3 months"), ("Log Space", "View"), ("Instance Uptime", "ack: *")): add(s1, col, text)
+add(ms2, "Last Good Check DB", "9 days"); add(ms2, "SQL Agent Alerts", "Never"); add(dmp, "Memory Dump", "3 days")
+print(json.dumps(e))' demo-onprem-sql01 "$MS2N" "$DUMPN")
+export CLICK_DUMP_ROOT="100|200"
+
 echo "== R the reads"
 js() { curl -fs "$U/api/$1" | python3 -c "import json,sys,os; d=json.load(sys.stdin); rows=lambda p: [dict(zip(d[p]['columns'], r)) for r in (d.get(p) or {'columns':[],'rows':[]})['rows']]; $2"; }
 # counted again here: T's count held the edge fixture, removed at T8
@@ -222,14 +313,24 @@ node scripts/click-check.mjs "$CDP" "$U/" "${PGVIGIL_CLICK_OUT:-$WORK/click.json
 grep -q '^links: .*; 0 FAIL$' "$WORK/click.txt" || fail "click-check.mjs did not end with 0 FAIL"
 # the check found what it was to check (a check that collected nothing passes nothing)
 python3 - "${PGVIGIL_CLICK_OUT:-$WORK/click.json}" <<'PY' || fail "the click map checked too little (above)"
-import json, sys
+import json, os, sys
 d = json.load(open(sys.argv[1])); r = d['results']; bad = []
 has = lambda **k: [x for x in r if all(x.get(a) == b for a, b in k.items())]
-for e in ('postgres', 'sqlserver'):
-    for c in ('Disk', 'Storage'):
+# task P08: DBA Dash's columns: each with a link on the engines that read it, at the root
+for c, engines in (('Drive Space', ('postgres', 'sqlserver')), ('Backup FULL', ('postgres', 'sqlserver')), ('Agent Jobs', ('postgres', 'sqlserver')),
+                   ('Last Good Check DB', ('postgres', 'sqlserver')), ('SQL Agent Alerts', ('sqlserver',)), ('Corruption', ('sqlserver',)),
+                   ('Identity Columns', ('sqlserver',)), ('Log Space', ('sqlserver',)), ('Availability Groups', ('postgres', 'sqlserver')),
+                   ('Snapshot Age', ('postgres', 'sqlserver')), ('Collection Errors (24hrs)', ('postgres', 'sqlserver'))):
+    for e in engines:
         if not has(scope='root', kind='cell', column=c, engine=e): bad.append('no %s cell of %s at the root' % (c, e))
-for c in ('Disk', 'Storage'):
+for c in ('Drive Space', 'Backup FULL', 'Snapshot Age'):
     if not has(scope='root', kind='test', column=c): bad.append('no %s test link at the root' % c)
+shape = has(scope='root', kind='shape')
+if len(shape) < 13: bad.append('%d Summary shape checks (13 or more besides the texts: headers, order, fill, listing, columns, plain cells, toolbar, Refresh Time, height, Options, its height menu, both dialogs, View)' % len(shape))
+pairs = [(i, c) for i, w in json.loads(os.environ.get('CLICK_EXPECT', '{}')).items() for c in w]
+seen = {x['column'][:-5] + '|' + x['landed'].split(':')[0] for x in shape if x['column'].endswith(' text')}
+missing = ['%s %s' % p for p in pairs if '%s|%s' % (p[1], p[0]) not in seen]
+if not pairs or missing: bad.append('the T10 texts not checked: ' + (', '.join(missing) or 'CLICK_EXPECT is empty'))
 for s in ('root', 'tag ' + d['tag']):
     if not [x for x in has(scope=s, kind='tree') if x['verdict'].startswith('ok')]: bad.append('no tree Storage node at ' + s)
 for s in ('root', 'tag ' + d['tag'], 'PostgreSQL ' + d['pg'], 'SQL Server ' + d['ms']):
@@ -237,11 +338,11 @@ for s in ('root', 'tag ' + d['tag'], 'PostgreSQL ' + d['pg'], 'SQL Server ' + d[
     if len(t) < 6: bad.append('%d Storage tabs at %s' % (len(t), s))
 # task 176b: the four landings DBA Dash's map now holds, the Uptime dialog, a drive's Files, the PostgreSQL Temp tab
 for e in ('postgres', 'sqlserver'):
-    for c in ('Collection', 'Database state', 'QS', 'Uptime'):
+    for c in ('Snapshot Age', 'Database State', 'QS', 'Instance Uptime'):
         got = has(scope='root', kind='cell', column=c, engine=e)
         if not got: bad.append('no %s cell of %s at the root' % (c, e))
         elif any('named difference' in x['verdict'] for x in got): bad.append('%s of %s still a named difference' % (c, e))
-    if not [x for x in r if x['kind'] == 'cell' and x['column'] == 'Uptime' and x['engine'] == e and 'dialog over the Summary' in x['landed']]: bad.append('no Uptime dialog clicked on ' + e)
+    if not [x for x in r if x['kind'] == 'cell' and x['column'] == 'Instance Uptime' and x['engine'] == e and 'dialog over the Summary' in x['landed']]: bad.append('no Instance Uptime dialog clicked on ' + e)
 for s in ('PostgreSQL ' + d['pg'], 'SQL Server ' + d['ms']):
     if not [x for x in has(scope=s, kind='drive-files') if x['verdict'].startswith('ok')]: bad.append('no drive Files link checked at ' + s)
 if not has(scope='PostgreSQL ' + d['pg'], kind='storage-tab', column='Temp'): bad.append('no Temp tab under ' + d['pg'])

@@ -11,21 +11,22 @@
 #     SUSPECT, EMERGENCY, OFFLINE and ONLINE, then its next run logged as an error: dbstate = failed|true|2|0| with
 #     the two names in the detail and the run's note in err; filespace (DBA Dash's File Space, the same collection) = failed.
 #     With only the OFFLINE and ONLINE databases on another instance, read now: dbstate = ok|true|0|1|.
-#  D. never: an instance nothing ran on: every one of the twenty-three keys is never, none critical or warning.
+#  D. never: an instance nothing ran on: every one of the twenty-four keys is never, none critical or warning.
 #  E. skipped: mssql_jobs logged as skipped and nothing else: jobs = n/a; blocking = never.
 #  F. clock skew: the server's start time ten minutes AHEAD of the repository: uptime = ok|true|1|0|0 h.
 #  G. one collection of a group fresh and another failed (mssql_ag ok now, mssql_replication error now):
 #     availability = ok.
-#  H. the response carries exactly twenty-three keys per SQL Server instance (qs: Query Store, task 129; audit: SQL Server Audit, task 158; disk: a volume's free space, task 176; task P08, DBA Dash's Summary columns: full / diff / log for backups, filespace for storage, logship and mirroring out of availability, checkdb, logspace, corruption, alerts, identity) and no row for a PostgreSQL instance.
+#  H. the response carries exactly twenty-four keys per SQL Server instance (qs: Query Store, task 129; audit: SQL Server Audit, task 158; disk: a volume's free space, task 176; task P08, DBA Dash's Summary columns: full / diff / log for backups, filespace and pctmax (% Max Size) for storage, logship and mirroring out of availability, checkdb, logspace, corruption, alerts, identity) and no row for a PostgreSQL instance.
 #  I. Memory Dump on the crash threshold (task P08, 0117): instance i with one memory dump written 30 hours ago: with
 #     the default (critical under 48 h, warning under 168) dumps = ok|true|1|0|1 file and its since is that dump; after
 #     a root 'crash' row of critical 24 / warning 168 (import_pg_threshold, what the Summary's Memory Dump Thresholds
 #     dialog's POST /api/pg/thresholds calls) dumps = ok|true|0|1|1 file; the roots part names the root row (crash 24 / 168, its threshold_id) and
 #     the key's defaults (crash 48 / 168, uptime 12 / 48).
+#     [review fold 20261111-205600, before the rerun: 24 keys with pctmax; the serve under TZ=UTC]
 #  J. the collect part (Snapshot Age, Collection Errors (24hrs)), one row per active instance of either engine: a (only
 #     mssql_instance, logged now): age_min = age_max under 60 s, stale 0, failing 0, errors_24h 0; b (logged 20 days
-#     ago): stale 1; c (mssql_storage's last run an error, now): failing 1, errors_24h 1; the PostgreSQL instance
-#     has a row with no age (nothing ran).
+#     ago): stale 1; c (mssql_storage's last run an error, now): failing 1, errors_24h 1 and no age (the ages count
+#     runs that ended well only: review fold); the PostgreSQL instance has a row with no age (nothing ran).
 #  NOT PROVEN HERE: the page's own wording of these states (web/src/fleet.ts: 'stale', 'read failed', 'n/a', 'not
 #  yet', a flag with ', stale' beside it) and the failed-fetch text - a browser render; a configured interval other
 #  than the collector's default; the PostgreSQL database-state part (pgdb); the FULL / DIFF / LOG split of backup
@@ -70,7 +71,8 @@ i=$(inst i); q "select pgvigil.import_mssql_services($i, now(), jsonb_build_arra
 logc "$i" mssql_services "now()" ok null
 
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-"$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" 2>"$WORK/serve.log" & SPID=$!
+# TZ=UTC: the JSON carries times in the server's zone, and I compares one with a UTC to_char (as proof-mssql-querystore)
+TZ=UTC "$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" 2>"$WORK/serve.log" & SPID=$!
 for _ in $(seq 50); do curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
 curl -fsS "http://127.0.0.1:$PORT/api/mssql/summary" > "$WORK/sum.json" || { cat "$WORK/serve.log" >&2; fail "GET /api/mssql/summary"; }
 # cell <instance id> <key> [field]: state|sampled|critical|warning|value, or one field of the row
@@ -94,16 +96,16 @@ want "$c" dbstate "failed|true|2|0|" "C a failed run"
 [[ "$(cell "$c" dbstate err)" == *"mssql_storage: the proof's failed run"* ]] || fail "C: err: $(cell "$c" dbstate err)"
 [[ "$(cell "$c" filespace state)" == failed ]] || fail "C: filespace state: $(cell "$c" filespace state)"
 want "$c2" dbstate "ok|true|0|1|" "C offline only"
-for k in blocking events availability logship mirroring full diff log jobs filespace disk uptime dbstate agent dbmail dumps qs audit checkdb logspace corruption alerts identity; do
+for k in blocking events availability logship mirroring full diff log jobs filespace pctmax disk uptime dbstate agent dbmail dumps qs audit checkdb logspace corruption alerts identity; do
   got=$(cell "$d" $k); [[ "$got" == never\|*\|0\|0\| ]] || fail "D: $k on an instance nothing ran on: '$got'"
-done; echo "ok   D never: twenty-three keys, none flagged"
+done; echo "ok   D never: twenty-four keys, none flagged"
 want "$e" jobs "n/a|true|0|0|" "E skipped"; [[ "$(cell "$e" blocking state)" == never ]] || fail "E: blocking"
 want "$f" uptime "ok|true|1|0|0 h" "F clock skew"
 [[ "$(cell "$g" availability state)" == ok ]] || fail "G: availability state: $(cell "$g" availability state)"; echo "ok   G one fresh, one failed: availability = ok"
 got=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["cells"]; c=d["columns"]; i=c.index("instance_id"); n={}
 for r in d["rows"]: n[r[i]]=n.get(r[i],0)+1
 print(len(n), sorted(set(n.values())), int(sys.argv[2]) in n)' "$WORK/sum.json" "$pg")
-[[ "$got" == "9 [23] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 9 instances x 23 keys (task P08's DBA Dash columns), no PostgreSQL row"
+[[ "$got" == "9 [24] False" ]] || fail "H: instances, keys per instance, a PostgreSQL row: $got"; echo "ok   H: 9 instances x 24 keys (task P08's DBA Dash columns), no PostgreSQL row"
 want "$i" dumps "ok|true|1|0|1 file" "I the default 48 h"
 [[ "$(cell "$i" dumps since)" == "$(q "select to_char(last_dump_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI') from pgvigil.mssql_health where instance_id = $i")"* ]] || fail "I: since is '$(cell "$i" dumps since)'"
 # the dialog's write is POST /api/pg/thresholds, a signed-in user's: here its function, as proof-clickmap T9 sets uptime
@@ -121,6 +123,6 @@ print("ROWS=%d" % len(R) if r is None else "|".join("-" if r[k] is None else str
 ca=$(collect "$a"); IFS='|' read -r amin amax ast afl aer <<< "$ca"
 [[ "$amin" =~ ^[0-9]+$ && "$amin" -lt 60 && "$amin" == "$amax" && "$ast|$afl|$aer" == "0|0|0" ]] || fail "J a: $ca"; echo "ok   J a fresh: $ca"
 [[ "$(collect "$b" | cut -d'|' -f3)" == 1 ]] || fail "J b: $(collect "$b")"; echo "ok   J b stale: $(collect "$b")"
-[[ "$(collect "$c" | cut -d'|' -f4-5)" == "1|1" ]] || fail "J c: $(collect "$c")"; echo "ok   J c failing: $(collect "$c")"
+[[ "$(collect "$c")" == "-|-|0|1|1" ]] || fail "J c: $(collect "$c")"; echo "ok   J c failing, no age: $(collect "$c")"
 [[ "$(collect "$pg")" == "-|-|0|0|0" ]] || fail "J pg: $(collect "$pg")"; echo "ok   J PostgreSQL instance, nothing ran: $(collect "$pg")"
 echo "proof-mssql-summary: PASS (A-J)"

@@ -25,26 +25,50 @@ const tag = [...tagCount.entries()].filter(([, e]) => e.n < insts.length && e.en
 if (!tag) { console.log('FAIL the demo has no tag that holds both engines and not every instance'); process.exit(1); }
 const engineOf = new Map(insts.map(r => [Number(r.instance_id), r.engine === 'sqlserver' ? 'sqlserver' : 'postgres']));
 
-// DBA Dash's map, as pgvigil's columns and tests name it: column (or test) -> the tab it lands on per engine, and DBA
-// Dash's own target. A column DBA Dash does not have is checked against the never-Daily-checks rule alone.
+// DBA Dash's map (task P08: the Summary's columns under DBA Dash's names, Checks/Summary.cs tabMapping): column (or
+// test) -> the tab it lands on per engine, the view (cv) a SQL Server tab must open on, and DBA Dash's own target. A
+// column DBA Dash does not have is checked against the never-Daily-checks rule alone.
 const dbadash = {
-  Disk:        { postgres: ['drives'], sqlserver: ['drives'], dd: 'Drive Space -> Storage > Drives' },
-  Storage:     { postgres: ['drives'], sqlserver: ['dbfiles'], dd: 'Drive Space -> Storage > Drives (PostgreSQL: volume checks); Log Space -> Storage > Files (SQL Server: file and log checks)' },
-  Backups:     { postgres: ['backups'], sqlserver: ['mssqlbackups'], dd: 'Backup FULL / LOG -> HA/DR > Backups' },
-  Jobs:        { postgres: ['jobsreport', 'jobs'], sqlserver: ['mssqljobs'], dd: 'Agent Jobs -> Jobs > Job Status' },
-  Agent:       { sqlserver: ['mssqljobs'], dd: 'Is Agent Running -> Jobs' },
-  Corruption:  { postgres: ['corruption'], dd: 'Last Good Check DB -> Checks > Last Good CheckDB' },
-  // task 176b: the four the 176 map named as differences, now where DBA Dash's Summary opens them
-  Collection:  { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'Snapshot Age -> Checks > Collection Dates' },
-  'Database state': { postgres: ['pgdboptions'], sqlserver: ['mssqlchecks'], dd: 'Database State -> Configuration > DB Options (SQL Server: the Checks page\'s Database options view)' },
-  QS:          { postgres: ['pgstate'], sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS (PostgreSQL: the statement store on Server state)' },
+  'Corruption':          { postgres: ['corruption'], sqlserver: ['mssqlchecks'], cv: { sqlserver: 'build' }, dd: 'Corruption -> the instance\'s corruption viewer (pgvigil: the Corruption page; SQL Server: the Checks page\'s suspect pages)' },
+  'Last Good Check DB':  { postgres: ['corruption'], sqlserver: ['mssqlchecks'], cv: { sqlserver: 'databases' }, dd: 'Last Good Check DB -> Checks > Last Good CheckDB' },
+  'SQL Agent Alerts':    { sqlserver: ['mssqlchecks'], cv: { sqlserver: 'alerts' }, dd: 'SQL Agent Alerts -> Configuration > SQL Agent Alerts' },
+  'Backup FULL':         { postgres: ['backups'], sqlserver: ['mssqlbackups'], dd: 'Backup FULL -> HA/DR > Backups' },
+  'Backup DIFF':         { sqlserver: ['mssqlbackups'], dd: 'Backup DIFF -> HA/DR > Backups' },
+  'Backup LOG':          { postgres: ['backups'], sqlserver: ['mssqlbackups'], dd: 'Backup LOG -> HA/DR > Backups' },
+  'Drive Space':         { postgres: ['drives'], sqlserver: ['drives'], dd: 'Drive Space -> Storage > Drives' },
+  'Agent Jobs':          { postgres: ['jobsreport', 'jobs'], sqlserver: ['mssqljobs'], dd: 'Agent Jobs -> Jobs > Job Status' },
+  'Log Shipping':        { postgres: ['pgbackups'], sqlserver: ['availability'], dd: 'Log Shipping -> HA/DR > Log Shipping' },
+  'Mirroring':           { sqlserver: ['availability'], dd: 'Mirroring -> HA/DR > Mirroring' },
+  'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
+  'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
+  'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
+  'QS':                  { postgres: ['pgstate'], sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS (PostgreSQL: the statement store on Server state)' },
+  'Custom Checks':       { postgres: ['custom'], dd: 'Custom Checks -> Checks > Custom Checks' },
+  'Snapshot Age':        { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'Snapshot Age -> Checks > Collection Dates' },
+  'Identity Columns':    { sqlserver: ['mssqlchecks'], cv: { sqlserver: 'identity' }, dd: 'Identity Columns -> Checks > Identity Columns' },
+  'Database State':      { postgres: ['pgdboptions'], sqlserver: ['mssqlchecks'], cv: { sqlserver: 'databases' }, dd: 'Database State -> Configuration > DB Options' },
+  '% Max Size':          { sqlserver: ['dbfiles'], dd: '% Max Size -> Storage > Files' },
+  // the landing checked, the difference from DBA Dash's page named in the verdict (argued in the report)
+  'Collection Errors (24hrs)': { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'DBA Dash Errors (24hrs) -> Checks > DBA Dash ErrorLog',
+    diff: 'pgvigil has no error-log page yet (E205, parity task P13): Collection dates, whose rows carry each collection\'s last error' },
 };
-// the differences named (pgvigil lands elsewhere; the lead's call): column -> words
+// the differences named (pgvigil lands elsewhere, argued in the report): column -> words
 const named = {};
-// Uptime: DBA Dash's Summary opens the Instance Uptime threshold dialog over the grid; the click must too
-const dialogColumns = new Set(['Uptime']);
+// DBA Dash's cells that are text, not links (Checks/Summary.cs: no tab, no dialog)
+const plainColumns = ['Memory Dump', 'Is Agent Running', 'DB Mail'];
+// Instance Uptime: DBA Dash's Summary opens the Instance Uptime threshold dialog over the grid; the click must too
+const dialogColumns = new Set(['Instance Uptime']);
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
-const testWant = { Disk: 'drives', Storage: 'drives', Backups: 'backups', Jobs: 'jobs' };
+const testWant = { 'Drive Space': 'drives', 'Backup FULL': 'backups', 'Backup LOG': 'backups', 'Agent Jobs': 'jobs', 'Snapshot Age': 'collectiondates',
+  'Collection Errors (24hrs)': 'collectiondates', 'Last Good Check DB': 'corruption', 'Corruption': 'corruption', 'Log Space': 'dbfiles', 'File Space': 'dbfiles',
+  'Availability Groups': 'pgreplication', 'Database State': 'mssqlrisks', 'Custom Checks': 'custom' };
+// DBA Dash's column order (Checks/Summary.Designer.cs Columns.AddRange, under pgvigil's word for DBA Dash Errors)
+const ddOrder = ['Instance', 'Memory Dump', 'Corruption', 'Last Good Check DB', 'SQL Agent Alerts', 'Backup FULL', 'Backup DIFF', 'Backup LOG', 'Drive Space',
+  'Agent Jobs', 'Is Agent Running', 'Log Shipping', 'Mirroring', 'Availability Groups', 'Log Space', 'File Space', '% Max Size', 'Elastic Pool Storage', 'QS',
+  'Custom Checks', 'Collection Errors (24hrs)', 'Snapshot Age', 'DB Mail', 'Identity Columns', 'Database State', 'Service Broker', 'Instance Uptime'];
+// the cell texts proof-clickmap's T10 seeded: instance -> column -> text ('x*' = starts with x)
+const expectText = JSON.parse(process.env.CLICK_EXPECT || '{}');
+const dumpRoot = (process.env.CLICK_DUMP_ROOT || '').split('|');
 
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
@@ -83,7 +107,8 @@ const record = (r) => { results.push(r); if (r.verdict.startsWith('FAIL')) fails
 const verdictFor = (column, engine, tab) => {
   if (tab === 'checks') return 'FAIL lands on Daily checks';
   const m = dbadash[column];
-  if (m && m[engine]) return m[engine].includes(tab) ? 'ok (DBA Dash: ' + m.dd + ')' : `FAIL want ${m[engine].join(' or ')} (DBA Dash: ${m.dd})`;
+  if (m && m[engine]) return !m[engine].includes(tab) ? `FAIL want ${m[engine].join(' or ')} (DBA Dash: ${m.dd})` : m.diff ? `named difference, argued: ${m.diff} (DBA Dash: ${m.dd})` : 'ok (DBA Dash: ' + m.dd + ')';
+  if (m && !m[engine]) return `FAIL a ${column} link on ${engine}: the column has no read there`;
   if (named[column]) return 'named difference: ' + named[column];
   return 'ok (not in DBA Dash\'s map; not Daily checks)';
 };
@@ -133,10 +158,12 @@ const clickDialog = async (scopeHash, href, column, inst) => {
   }
   await ev(`(() => { const x = document.querySelector('dialog[open]'); if (x) { x.close(); x.remove(); } })()`);
   if (!d) return { ok: false, why: 'no dialog opened' };
-  const want = inst ? d.label.includes(inst) && d.text.includes(inst) : true;
-  const thr = /In force: warning under (?:[0-9.,\u202f\u00a0]+ hours|not judged), critical under (?:[0-9.,\u202f\u00a0]+ hours|not judged)/.test(d.text);
+  const want = inst ? d.label === 'Uptime Threshold Config ' + inst : true;
+  const thr = /In force: (?:warning under [0-9.,\u202f\u00a0]+ mins|no warning), (?:critical under [0-9.,\u202f\u00a0]+ mins|no critical)/.test(d.text);
+  const parts = ['Inherit', 'Enabled', 'Warning: ', 'Critical: ', ' mins', 'Uptime: ', 'Start Time: ', 'Clear Alert', 'Update'].filter(p => !d.text.includes(p));
+  if (parts.length) return { ok: false, why: `DBA Dash's dialog lacks ${parts.join(', ')}: ${d.text.slice(0, 200)}` };
   if (d.hash !== before) return { ok: false, why: `the address changed to ${d.hash}` };
-  if (!want) return { ok: false, why: `the dialog does not name ${inst}: ${d.label}` };
+  if (!want) return { ok: false, why: `the dialog is not 'Uptime Threshold Config ${inst}': ${d.label}` };
   if (!thr) return { ok: false, why: `no thresholds in the dialog: ${d.text.slice(0, 160)}` };
   return { ok: true, why: d.label, text: d.text };
 };
@@ -157,7 +184,8 @@ for (const sc of scopes) {
     let verdict;
     if (l.kind === 'cell') {
       verdict = verdictFor(l.column, engine, tab);
-      if (l.column === 'Database state' && engine === 'sqlserver' && paramsOf(l.href).get('cv') !== 'databases') verdict = 'FAIL the SQL Server Database state cell does not open the Database options view (cv=databases)';
+      const cv = dbadash[l.column]?.cv?.[engine];
+      if (cv && paramsOf(l.href).get('cv') !== cv) verdict = `FAIL the ${engine} ${l.column} cell does not open its view (cv=${cv}; its href: ${l.href})`;
     } else if (l.kind === 'test') verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : testWant[l.column] ? (testWant[l.column] === tab ? 'ok (DBA Dash: the test\'s own page)' : `FAIL want ${testWant[l.column]}`) : 'ok (the test\'s own page; not Daily checks)';
     else verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : 'ok';
     const key = `${l.kind}|${l.column}|${engine}`;
@@ -216,6 +244,103 @@ for (const sc of scopes) {
 }
 
 // every tab of the Storage folder at each scope: drawn, no error box
+// S: the Summary's shape (task P08), at the root: DBA Dash's two grids (headers, the test names' fill and order, the
+// instance grid's column order, the cells that are text, the texts T10 seeded), its toolbar and Refresh Time, the
+// Options menu (Memory Dumps, Instance Uptime, Test Summary Max Height %) and the two threshold dialogs
+const shape = (column, landed, good, why) => record({ scope: 'root', kind: 'shape', column, engine: '', link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
+const clickTb = label => ev(`(() => { const b = [...document.querySelectorAll('.summary-toolbar button')].find(x => x.textContent.trim() === ${JSON.stringify(label)}); if (!b) return false; b.click(); return true; })()`);
+const menuItems = () => ev(`[...document.querySelectorAll('div.menu button[role="menuitem"]')].map(b => b.textContent)`);
+const clickItem = label => ev(`(() => { const b = [...document.querySelectorAll('div.menu button[role="menuitem"]')].find(x => x.textContent.startsWith(${JSON.stringify(label)}) || x.textContent.endsWith(' ' + ${JSON.stringify(label)})); if (!b) return false; b.click(); return true; })()`);
+const openDialog = async () => {
+  for (let i = 0; i < 50; i++) {
+    const d = await ev(`(() => { const x = document.querySelector('dialog[open]'); if (!x || !/In force|Set on the root|The default|could not be read/.test(x.textContent)) return null;
+      const v = s => x.querySelector('input[aria-label="' + s + '"]');
+      return { label: x.getAttribute('aria-label'), text: x.textContent.replace(/ +/g, ' ').slice(0, 600), crit: v('Critical Threshold (Hrs)')?.value ?? null, warn: v('Warning Threshold (Hrs)')?.value ?? null,
+        inheritDisabled: x.querySelector('input[type=checkbox]')?.disabled ?? null }; })()`);
+    if (d) return d;
+    await sleep(100);
+  }
+  return null;
+};
+const closeDialog = () => ev(`(() => { const x = document.querySelector('dialog[open]'); if (x) { x.close(); x.remove(); } })()`);
+await ev(`(() => { try { localStorage.removeItem('pgvigil.summaryTestsMaxPct'); localStorage.removeItem('pgvigil.summaryShowTests'); localStorage.removeItem('pgvigil.summaryFocus'); sessionStorage.removeItem('pgvigil.summaryPick'); } catch (e) {} })()`);
+if (!(await go('#/summary'))) shape('the Summary', 'not drawn', false, 'the Summary did not render');
+else {
+  const sh = await ev(`(() => {
+    const m = document.querySelector('main');
+    const head = t => t ? [...t.querySelectorAll('thead tr:first-child th')].map(th => (th.firstChild && th.firstChild.nodeType === 3 ? th.firstChild.nodeValue : th.textContent).trim()) : [];
+    const tests = m.querySelector('.tests table.grid'), inst = m.querySelector('.summary-instances table.grid');
+    const testRows = tests ? [...tests.querySelectorAll('tbody tr')].map(tr => { const td = [...tr.children]; return { name: td[0].textContent.trim(), cls: td[0].className, n: td.slice(1, 6).map(x => Number(x.textContent.trim())) }; }) : [];
+    const ih = head(inst), cells = {};
+    if (inst) for (const tr of inst.querySelectorAll('tbody tr')) {
+      const tds = [...tr.children], o = {};
+      ih.forEach((h, i) => { if (tds[i]) o[h] = { text: tds[i].textContent.trim(), link: !!tds[i].querySelector('a'), cls: tds[i].className }; });
+      cells[o.Instance ? o.Instance.text : ''] = o;
+    }
+    const plain = ${JSON.stringify(plainColumns)};
+    const plainLinks = [...m.querySelectorAll('a.cell-link')].map(a => (a.getAttribute('aria-label') ?? '').split(':')[0]).filter(c => plain.includes(c));
+    const tb = m.querySelector('.summary-toolbar'), rt = tb && tb.querySelector('.refresh-time'), icon = rt && rt.querySelector('[role="img"]'), upper = m.querySelector('.tests');
+    return { th: head(tests), ih, testRows, cells, plainLinks, buttons: tb ? [...tb.querySelectorAll('button')].map(b => b.textContent.trim()) : [],
+      rt: rt ? rt.textContent : '', icon: icon ? icon.getAttribute('aria-label') : '', maxH: upper ? upper.style.maxHeight : '', upperHidden: upper ? upper.hidden : null };
+  })()`);
+  const wantTh = ['Test', 'Instance Count OK', 'Instance Count Warning', 'Instance Count Critical', 'Instance Count N/A', 'Instance Count Acknowledged'];
+  shape('test grid headers', sh.th.join(' | '), sh.th.join('|') === wantTh.join('|'), sh.th.join('|') === wantTh.join('|') ? 'DBA Dash\'s six' : `want ${wantTh.join(' | ')}`);
+  const names = sh.testRows.map(t => t.name), sorted = [...names].sort((x, y) => x.localeCompare(y));
+  shape('test order', `${names.length} tests`, names.length > 0 && names.join('|') === sorted.join('|'), names.length ? 'by the test\'s name, as DBA Dash sorts them' : 'no test listed');
+  const fillOf = n => n[2] ? 'crit' : n[1] ? 'warn' : n[0] ? 'ok' : n[4] ? 'none ack' : 'none';
+  const badFill = sh.testRows.filter(t => !t.cls.split(' ').includes('status') || !(' ' + t.cls + ' ').includes(' ' + fillOf(t.n) + ' '));
+  shape('test name fill', `${sh.testRows.length - badFill.length} of ${sh.testRows.length} filled with the worst count`, !badFill.length && sh.testRows.length > 0,
+    badFill.length ? 'not filled with the worst count: ' + badFill.map(t => `${t.name} (${t.cls}; ${t.n.join('/')})`).slice(0, 4).join(', ') : 'DBA Dash\'s DgvTests_RowsAdded');
+  const hidden = sh.testRows.filter(t => t.n[0] + t.n[1] + t.n[2] === 0);
+  shape('tests listed', `${sh.testRows.length} tests`, !hidden.length, hidden.length ? 'listed with no OK, warning or critical instance: ' + hidden.map(t => t.name).join(', ') : 'each with an OK, warning or critical instance (DBA Dash\'s TestRowFilter)');
+  const pos = sh.ih.map(h => ddOrder.indexOf(h)), dd = pos.filter(x => x >= 0), firstOwn = pos.findIndex(x => x < 0);
+  const inOrder = sh.ih[0] === 'Instance' && dd.every((x, i) => i === 0 || x > dd[i - 1]) && (firstOwn < 0 || pos.slice(firstOwn).every(x => x < 0));
+  shape('instance grid columns', sh.ih.slice(0, 26).join(' | '), inOrder, inOrder ? `Instance, ${dd.length - 1} of DBA Dash's columns in its order, then pgvigil's` : 'not in DBA Dash\'s order');
+  shape('plain cells', sh.plainLinks.length ? sh.plainLinks.join(', ') : 'no link', !sh.plainLinks.length, sh.plainLinks.length ? 'a link where DBA Dash\'s cell is text' : 'Memory Dump, Is Agent Running and DB Mail are text, as DBA Dash\'s');
+  for (const [inst, want] of Object.entries(expectText)) for (const [col, text] of Object.entries(want)) {
+    const got = sh.cells[inst] && sh.cells[inst][col];
+    const good = !!got && (text.endsWith('*') ? got.text.startsWith(text.slice(0, -1)) : got.text === text);
+    shape(`${col} text`, `${inst}: ${got ? got.text : 'no cell'}`, good, good ? `DBA Dash's text '${text}'` : `want '${text}'`);
+  }
+  if (expectText['demo-onprem-sql01']?.['Instance Uptime']) {
+    const t = sh.testRows.find(x => x.name === 'Instance Uptime');
+    shape('Instance Uptime acknowledged', t ? t.n.join('/') : 'no row', !!t && t.n[4] >= 1, t && t.n[4] >= 1 ? 'counted under Instance Count Acknowledged' : 'the acknowledged cell is not counted');
+  }
+  const tbWant = ['Refresh', 'View', 'Options', 'Clear Filter'].filter(b => !sh.buttons.includes(b));
+  shape('toolbar', sh.buttons.join(', '), !tbWant.length, tbWant.length ? 'lacks ' + tbWant.join(', ') : 'Refresh, View, Options, Clear Filter');
+  shape('Refresh Time', `${sh.rt.trim()} [${sh.icon}]`, sh.rt.startsWith('Refresh Time: ') && sh.icon === 'current', 'DBA Dash\'s Refresh Time with its OK tick');
+  shape('Test Summary Max Height %', sh.maxH, sh.maxH === '70vh' && sh.upperHidden === false, 'the test pane at 70 % by default');
+  // Options and its three sub-menus
+  await clickTb('Options'); await sleep(200);
+  const opt = await menuItems();
+  const optWant = ['Memory Dumps', 'Instance Uptime', 'Test Summary Max Height %'];
+  shape('Options menu', opt.join(' | '), optWant.every((w, i) => (opt[i] ?? '').startsWith(w)) && opt.length === 3, 'DBA Dash\'s three');
+  await clickItem('Test Summary Max Height %'); await sleep(200);
+  const pcts = await menuItems();
+  const pctOk = pcts.length === 9 && pcts.some(x => x.includes('70%') && x !== '70%') && ['10%', '50%', '90%'].every(x => pcts.some(y => y.endsWith(x)));
+  await clickItem('40%'); await sleep(200);
+  const h40 = await ev(`document.querySelector('main .tests').style.maxHeight`);
+  shape('Test Summary Max Height % menu', `${pcts.join(' ')}; 40% -> ${h40}`, pctOk && h40 === '40vh', '10% ... 90%, 70% ticked; 40% sizes the pane');
+  await ev(`(() => { try { localStorage.removeItem('pgvigil.summaryTestsMaxPct'); } catch (e) {} })()`);
+  await clickTb('Options'); await sleep(200); await clickItem('Memory Dumps'); await sleep(200);
+  const dm = await menuItems();
+  await clickItem('Configure Thresholds');
+  const dd1 = await openDialog(); await closeDialog();
+  const dumpOk = !!dd1 && dd1.label === 'Memory Dump Thresholds' && (dumpRoot.length < 2 || (Number(dd1.crit) === Number(dumpRoot[0]) && Number(dd1.warn) === Number(dumpRoot[1])))
+    && ['Acknowledge', 'Clear', 'Update', 'Cancel'].every(w => dd1.text.includes(w));
+  shape('Memory Dump Thresholds', dd1 ? `${dm.join(' | ')}; ${dd1.label}: critical ${dd1.crit}, warning ${dd1.warn}` : 'no dialog', dumpOk && dm.join('|') === 'Acknowledge Dumps|Configure Thresholds',
+    dumpOk ? 'Memory Dumps > Acknowledge Dumps / Configure Thresholds; the root threshold shown' : `want the root ${dumpRoot.join(' / ')}: ${dd1 ? dd1.text.slice(0, 160) : ''}`);
+  await clickTb('Options'); await sleep(200); await clickItem('Instance Uptime'); await sleep(200);
+  const um = await menuItems();
+  await clickItem('Configure Thresholds');
+  const ud = await openDialog(); await closeDialog();
+  shape('Uptime Threshold Config (root)', ud ? `${um.join(' | ')}; ${ud.label}` : 'no dialog', !!ud && ud.label === 'Uptime Threshold Config (root)' && ud.inheritDisabled === true && um.join('|') === 'Acknowledge Uptime|Configure Thresholds' && ud.text.includes('Clear ALL Alerts'),
+    'Instance Uptime > Acknowledge Uptime / Configure Thresholds; the root\'s dialog, Inherit off, Clear ALL Alerts');
+  await clickTb('View'); await sleep(200);
+  const vm = await menuItems(); await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+  shape('View menu', vm.join(' | '), vm.length === 2 && vm[0].endsWith('Focused View') && vm[1].endsWith('Show Test Summary') && vm[1] !== 'Show Test Summary', 'Focused View, Show Test Summary (ticked)');
+}
+
 const storageScopes = [
   { name: 'root', q: '' }, { name: `tag ${tag}`, q: `?tag=${encodeURIComponent(tag)}` },
   { name: `PostgreSQL ${pg.name}`, q: `?i=${pg.instance_id}` }, { name: `SQL Server ${ms.name}`, q: `?i=${ms.instance_id}` },
@@ -266,6 +391,6 @@ for (const r of results) {
 for (const r of seen.values()) console.log(`${r.verdict.startsWith('FAIL') ? 'FAIL' : 'ok  '} | ${r.scope} | ${r.kind} | ${r.column || '-'} | ${r.engine || '-'} | ${r.n} link(s) | ${r.landed} | ${r.verdict}`);
 if (outPath) fs.writeFileSync(outPath, JSON.stringify({ tag, pg: pg.name, ms: ms.name, results }, null, 1));
 const byKind = k => results.filter(r => r.kind === k).length;
-console.log(`links: ${results.length} (${byKind('cell')} instance-grid cells, ${byKind('test')} test names, ${byKind('test-filter')} test filters, ${byKind('strip')} Needs attention, ${byKind('name')} instance names, ${byKind('check')} failing checks, ${byKind('other')} other, ${byKind('tree')} tree nodes, ${byKind('storage-tab')} Storage tabs, ${byKind('drive-files')} drive Files links); ${fails} FAIL`);
+console.log(`links: ${results.length} (${byKind('cell')} instance-grid cells, ${byKind('shape')} Summary shape checks, ${byKind('test')} test names, ${byKind('test-filter')} test filters, ${byKind('strip')} Needs attention, ${byKind('name')} instance names, ${byKind('check')} failing checks, ${byKind('other')} other, ${byKind('tree')} tree nodes, ${byKind('storage-tab')} Storage tabs, ${byKind('drive-files')} drive Files links); ${fails} FAIL`);
 ws.close();
 process.exit(fails ? 1 : 0);

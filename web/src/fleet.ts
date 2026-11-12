@@ -51,18 +51,19 @@ export function forget() { cache = null; }
 // pgvigil's own, after them. plain: DBA Dash's cell is text, not a link (Memory Dump, Is Agent Running, DB Mail).
 // both: read for either engine from the collect part (Snapshot Age, Collection Errors (24hrs)).
 export interface Group { key: string; label: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?, string?]; mssqlOnly?: boolean; names?: (checkName: string, checkGroup: string) => boolean; dd?: boolean; plain?: boolean; both?: boolean; cv?: string }   // kind: the Metrics family a PostgreSQL cell opens; cv: the view of a PostgreSQL tab
-// PostgreSQL's Backup FULL takes the base backups and the managed service's snapshots and retention; Backup LOG the
+// PostgreSQL's Backup FULL takes the base backups and the managed service's snapshots and retention (0103 names the
+// retention row by its threshold: 'retention under <n> days', 'retention at or under <n> days'); Backup LOG the
 // archiver (WAL)
-const fullBackupChecks = new Set(['retention under 7 days', 'no snapshot in 24 h']);
+const fullBackupCheck = (n: string) => n.startsWith('retention ') || n === 'no snapshot in 24 h';
 export const groups: Group[] = [
   // DBA Dash's Summary tests in its column order (Instance, then MemoryDumpStatus ... UptimeStatus)
   { key: 'dumps', label: 'Memory Dump', checks: ['crashes'], tab: 'pgstate', mssql: ['dumps', 'summary', 'Memory dumps'], dd: true, plain: true },
   { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption', mssql: ['corruption', 'mssqlchecks', 'Suspect pages', 'build'], dd: true },
   { key: 'checkdb', label: 'Last Good Check DB', checks: ['amcheck age'], tab: 'corruption', mssql: ['checkdb', 'mssqlchecks', 'Last good CHECKDB', 'databases'], dd: true },
   { key: 'alerts', label: 'SQL Agent Alerts', checks: [], tab: 'summary', mssql: ['alerts', 'mssqlchecks', 'Agent alerts', 'alerts'], mssqlOnly: true, dd: true },
-  { key: 'full', label: 'Backup FULL', checks: ['base backups', 'backups'], names: (n, grp) => grp === 'base backups' || fullBackupChecks.has(n), tab: 'backups', mssql: ['full', 'mssqlbackups', 'Full backups'], dd: true },
+  { key: 'full', label: 'Backup FULL', checks: ['base backups', 'backups'], names: (n, grp) => grp === 'base backups' || fullBackupCheck(n), tab: 'backups', mssql: ['full', 'mssqlbackups', 'Full backups'], dd: true },
   { key: 'diff', label: 'Backup DIFF', checks: [], tab: 'summary', mssql: ['diff', 'mssqlbackups', 'Differential backups'], mssqlOnly: true, dd: true },
-  { key: 'log', label: 'Backup LOG', checks: ['backups'], names: n => !fullBackupChecks.has(n), tab: 'backups', mssql: ['log', 'mssqlbackups', 'Log backups'], dd: true },
+  { key: 'log', label: 'Backup LOG', checks: ['backups'], names: n => !fullBackupCheck(n), tab: 'backups', mssql: ['log', 'mssqlbackups', 'Log backups'], dd: true },
   { key: 'disk', label: 'Drive Space', checks: ['disk', 'storage'], tab: 'drives', mssql: ['disk', 'drives', 'Drive space'], dd: true },
   { key: 'jobs', label: 'Agent Jobs', checks: ['jobs', 'jobs report'], tab: 'jobsreport', mssql: ['jobs', 'mssqljobs'], dd: true },
   { key: 'agent', label: 'Is Agent Running', checks: [], tab: 'summary', mssql: ['agent', 'mssqljobs', 'SQL Server Agent'], mssqlOnly: true, dd: true, plain: true },
@@ -71,6 +72,9 @@ export const groups: Group[] = [
   { key: 'replication', label: 'Availability Groups', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'], dd: true },
   { key: 'logspace', label: 'Log Space', checks: [], tab: 'summary', mssql: ['logspace', 'dbfiles', 'Log space'], mssqlOnly: true, dd: true },
   { key: 'filespace', label: 'File Space', checks: [], tab: 'summary', mssql: ['filespace', 'dbfiles', 'File space'], mssqlOnly: true, dd: true },
+  { key: 'pctmax', label: '% Max Size', checks: [], tab: 'summary', mssql: ['pctmax', 'dbfiles', 'Files at their max size'], mssqlOnly: true, dd: true },
+  // Azure SQL Database's elastic pools and Service Broker: pgvigil reads neither yet, so both stay N/A and hidden
+  { key: 'elasticpool', label: 'Elastic Pool Storage', checks: [], tab: 'summary', mssqlOnly: true, dd: true },
   { key: 'qs', label: 'QS', checks: ['statement store'], tab: 'pgstate', mssql: ['qs', 'mssqlqs', 'Query Store'], dd: true },
   { key: 'custom', label: 'Custom Checks', checks: ['custom'], tab: 'custom', dd: true },
   { key: 'errors', label: 'Collection Errors (24hrs)', checks: ['collection failing'], tab: 'collectiondates', mssql: ['errors', 'collectiondates', 'Collection errors'], dd: true, both: true },
@@ -78,6 +82,7 @@ export const groups: Group[] = [
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true, dd: true, plain: true },
   { key: 'identity', label: 'Identity Columns', checks: [], tab: 'summary', mssql: ['identity', 'mssqlchecks', 'Identity columns', 'identity'], mssqlOnly: true, dd: true },
   { key: 'dbstate', label: 'Database State', checks: [], tab: 'pgdboptions', mssql: ['dbstate', 'mssqlchecks', 'Database state', 'databases'], dd: true },
+  { key: 'servicebroker', label: 'Service Broker', checks: [], tab: 'summary', mssqlOnly: true, dd: true },
   { key: 'uptime', label: 'Instance Uptime', checks: ['uptime'], tab: 'pgstate', mssql: ['uptime', 'summary'], dd: true },
   // pgvigil's own, after DBA Dash's (PostgreSQL's checks DBA Dash has no column for, and the two both engines share)
   { key: 'activity', label: 'Activity', checks: [], tab: 'activity', mssql: ['blocking', 'mssql_running', 'Blocking'] },
@@ -141,19 +146,20 @@ function collectCell(f: Fleet, id: number, key: string): Cell {
   }
   if (x.age_min_secs == null) return { level: 0, n: 0, detail: ['no collection has run for this instance yet'], none: true, text: 'not yet' };
   const stale = Number(x.stale ?? 0);
-  const lo = humanize(Number(x.age_min_secs), 1, 'minute'), hi = humanize(Number(x.age_max_secs), 1, 'minute');
+  const lo = humanize(Number(x.age_min_secs), 1, 'minute', 'year'), hi = humanize(Number(x.age_max_secs), 1, 'minute', 'year');
   return { level: stale ? 1 : 0, n: stale, value: lo === hi ? hi : `${lo} to ${hi}`,
     detail: stale ? lines.filter(l => !l.endsWith('the last run failed')) : [`the youngest collection ran ${lo} ago, the oldest ${hi} ago`] };
 }
 
-// humanize: a time span in DBA Dash's words (Humanizer's TimeSpan.Humanize: the largest units first, weeks at most,
-// 'precision' units that are not zero, '1 day, 14 hours'); zero reads '0 <the smallest unit>s'
-const units: [string, number][] = [['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]];
-export function humanize(secs: number, precision = 1, minUnit: 'second' | 'minute' | 'day' = 'second'): string {
+// humanize: a time span in DBA Dash's words (Humanizer's TimeSpan.Humanize: the largest units first, weeks at most unless
+// maxUnit says year, 'precision' units that are not zero, '1 day, 14 hours'); zero reads '0 <the smallest unit>s'.
+// Humanizer's year is 365 days and its month 365.2425 / 12.
+const units: [string, number][] = [['year', 31536000], ['month', 2629746], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]];
+export function humanize(secs: number, precision = 1, minUnit: 'second' | 'minute' | 'day' = 'second', maxUnit: 'week' | 'year' = 'week'): string {
   if (!isFinite(secs)) return '';
   let left = Math.max(0, Math.floor(secs));
   const out: string[] = [];
-  for (const [name, size] of units) {
+  for (const [name, size] of units.slice(maxUnit === 'year' ? 0 : 2)) {
     const n = Math.floor(left / size);
     left -= n * size;
     if (n > 0 && out.length < precision) out.push(`${n} ${name}${n === 1 ? '' : 's'}`);
@@ -165,6 +171,8 @@ export function humanize(secs: number, precision = 1, minUnit: 'second' | 'minut
 // the newest dump as a time, whatever the JSON spelling of it
 export const sinceState = (v: unknown): string => `since ${Date.parse(String(v))}`;
 const since = (v: unknown): number => v == null ? NaN : (Date.now() - Date.parse(String(v))) / 1000;
+// midnights: the days between a time and now as DATEDIFF(d) counts them (date boundaries, here in UTC)
+const midnights = (v: unknown): number => { const d = new Date(String(v)), n = new Date(); return Math.round((Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()) - Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())) / 86400000); };
 
 // summaryText: the text DBA Dash's Summary cell shows (Checks/Summary.cs DgvSummary_RowAdded) and whether it is a link:
 // 'View' on the columns that open a page, the age it counts (the uptime '1 day, 14 hours', the time since the newest
@@ -177,11 +185,11 @@ export function summaryText(g: Group, c: Cell, r: Row, all: Record<string, Cell>
   if (c.none) return out(c.text === 'n/a' ? '' : c.text ?? 'no sample');
   const ms = r.engine === 'sqlserver';
   switch (g.key) {
-    case 'dumps': return out(ms ? (c.since == null ? '' : humanize(since(c.since))) : c.level ? cellText(c) : '');
+    case 'dumps': return out(c.since == null ? '' : humanize(since(c.since)));
     case 'corruption': return out(ms ? (c.since == null ? '' : humanize(since(c.since))) : c.level ? cellText(c) : '');
     case 'checkdb':
       if (!ms) return out(c.level ? cellText(c) : 'View');
-      return out(c.value === 'Never' ? 'Never' : c.since == null ? '' : `${Math.floor(since(c.since) / 86400)} days`);
+      return out(c.value === 'Never' ? 'Never' : c.since == null ? '' : `${midnights(c.since)} days`);
     case 'alerts': {
       if (c.since == null) return out('Never');
       const s = since(c.since);
@@ -189,7 +197,11 @@ export function summaryText(g: Group, c: Cell, r: Row, all: Record<string, Cell>
     }
     case 'jobs': return out(ms && all.agent && !all.agent.none && all.agent.level > 0 ? 'Not Running' : 'View');
     case 'agent': case 'dbmail': return out(c.level ? c.value ?? cellText(c) : '');
-    case 'identity': return out(c.value ?? '');
+    case 'identity': {
+      // '<per cent>|<days left>': DBA Dash's 'P1 / the days humanized from a day to a year' ('42.5% / 3 months')
+      const [pct, days] = (c.value ?? '').split('|');
+      return out(c.value == null ? '' : [pct ? `${pct}%` : '', days ? humanize(Number(days) * 86400, 1, 'day', 'year') : ''].filter(Boolean).join(' / '));
+    }
     case 'errors': case 'snapshot': return out(c.value ?? cellText(c));
     case 'uptime': { const s = since(c.since); return out(isNaN(s) ? cellText(c) : humanize(s, 2)); }
     default: return out(g.dd ? 'View' : cellText(c));
@@ -269,6 +281,9 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
     out[g.key] = {
       level: hit.reduce<Level>((a, c) => Math.max(a, sevLevel(c.severity)) as Level, 0),
       n: hit.length,
+      // Memory Dump on PostgreSQL: the newest crash restart's time (the 'crashes' rows' at), what its text counts from
+      // and what its acknowledgement holds for
+      ...(g.key === 'dumps' && hit.length ? { since: hit.map(c => String(c.at ?? '')).filter(Boolean).sort().pop() } : {}),
       detail: hit.map(c => `${checkLabel(c.check_name)}: ${c.object ?? ''} ${c.detail ?? ''}`.trim()),
     };
   }

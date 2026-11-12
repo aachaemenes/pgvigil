@@ -22,7 +22,7 @@ WITH inst AS (
   VALUES ('blocking', ARRAY['mssql_requests']), ('events', ARRAY['mssql_xe']),
          ('availability', ARRAY['mssql_ag', 'mssql_replication']), ('logship', ARRAY['mssql_logshipping']), ('mirroring', ARRAY['mssql_mirroring']),
          ('full', ARRAY['mssql_backups']), ('diff', ARRAY['mssql_backups']), ('log', ARRAY['mssql_backups']), ('jobs', ARRAY['mssql_jobs']),
-         ('filespace', ARRAY['mssql_storage', 'mssql_versionstore']), ('disk', ARRAY['mssql_storage']),
+         ('filespace', ARRAY['mssql_storage', 'mssql_versionstore']), ('pctmax', ARRAY['mssql_storage']), ('disk', ARRAY['mssql_storage']),
          ('uptime', ARRAY['mssql_instance']), ('dbstate', ARRAY['mssql_storage']),
          ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services']),
          ('qs', ARRAY['mssql_querystore']), ('audit', ARRAY['mssql_audit']),
@@ -59,12 +59,15 @@ WITH inst AS (
                      -- DBA Dash's Log Shipping and Mirroring columns apart from Availability Groups (task P08)
                      WHEN 'mssql_hadr' THEN CASE WHEN setting LIKE 'log shipping%' THEN 'logship' WHEN setting LIKE 'mirroring%' THEN 'mirroring' ELSE 'availability' END
                      -- a volume's free space is DBA Dash's Drive Space (task 176); the files and the version store its File Space
-                     WHEN 'mssql_storage' THEN CASE WHEN setting = 'a volume under 10 % free' THEN 'disk' ELSE 'filespace' END
+                     -- DBA Dash's % Max Size apart (a file at or within one growth of its max size, task P08)
+                     WHEN 'mssql_storage' THEN CASE WHEN setting = 'a volume under 10 % free' THEN 'disk' WHEN setting LIKE '%max size%' THEN 'pctmax' ELSE 'filespace' END
                      -- DBA Dash's Backup FULL, DIFF and LOG columns apart (task P08): a log or a differential finding by its
                      -- name ('backups not judged' by its detail), any other backup finding is FULL's
                      WHEN 'mssql_jobs' THEN CASE WHEN NOT (setting ILIKE '%backup%' OR value = 'mssql_backups') THEN 'jobs'
-                                                 WHEN setting ILIKE '%log backup%' OR (setting LIKE 'backups not judged%' AND detail ILIKE '%log backup%') THEN 'log'
-                                                 WHEN setting ILIKE '%differential%' THEN 'diff' ELSE 'full' END END AS key
+                                                 WHEN setting ILIKE '%log backup%' OR (setting LIKE 'backups not judged%' AND detail ILIKE '%log backup%')
+                                                      OR (setting = 'a backup went to NUL' AND detail LIKE '%: a log backup %') THEN 'log'
+                                                 WHEN setting ILIKE '%differential%' OR (setting = 'a backup went to NUL' AND detail LIKE '%: a differential backup %') THEN 'diff'
+                                                 ELSE 'full' END END AS key
     -- the five SQL Server findings views themselves, as pgvigil.findings maps them (check_name = setting, object =
     -- value): a filter on the big view's source still scans every PostgreSQL arm of it
     FROM (SELECT instance_id, severity, check_name AS setting, object AS value, detail, 'mssql_running' AS source FROM pgvigil.mssql_running_findings
@@ -94,7 +97,7 @@ WITH inst AS (
                              ORDER BY f.severity, f.setting) FILTER (WHERE f.instance_id IS NOT NULL))[1:12], '{}') AS detail,
          NULL::timestamptz AS since
     FROM st LEFT JOIN f ON f.instance_id = st.instance_id AND f.key = st.key
-   WHERE st.key IN ('blocking', 'events', 'availability', 'logship', 'mirroring', 'full', 'diff', 'log', 'jobs', 'filespace', 'disk')
+   WHERE st.key IN ('blocking', 'events', 'availability', 'logship', 'mirroring', 'full', 'diff', 'log', 'jobs', 'filespace', 'pctmax', 'disk')
    GROUP BY st.instance_id, st.key
   UNION ALL
   -- uptime: the threshold in force for the instance (pg_threshold(instance, 'uptime'): DBA Dash's defaults, critical
@@ -109,7 +112,7 @@ WITH inst AS (
               ELSE floor(extract(epoch FROM now() - s.started_at) / 86400)::int || ' d' END,
          CASE WHEN s.started_at IS NULL THEN '{}'::text[]
               ELSE ARRAY['SQL Server started ' || to_char(s.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC ('
-                         || concat_ws(', ', 'critical under ' || trim_scale(th.crit) || ' hours', 'warning under ' || trim_scale(th.warn) || ' hours')
+                         || coalesce(nullif(concat_ws(', ', 'critical under ' || trim_scale(th.crit) || ' hours', 'warning under ' || trim_scale(th.warn) || ' hours'), ''), 'not judged')
                          || CASE th.level WHEN 'default' THEN ', the default' WHEN 'tag' THEN ', set on the tag ' || th.tag ELSE ', set on the ' || th.level END || ')'] END,
          s.started_at
     FROM inst i LEFT JOIN started s USING (instance_id) CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'uptime') th
@@ -138,7 +141,7 @@ WITH inst AS (
               WHEN coalesce(h.dump_count, 0) = 0 THEN ARRAY['the server lists no memory dump file']
               ELSE ARRAY[h.dump_count || ' memory dump file(s) on the server; the newest '
                          || coalesce('written ' || to_char(h.last_dump_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC', 'has no creation time the server can tell')
-                         || ' (' || coalesce(concat_ws(', ', 'critical under ' || trim_scale(th.crit) || ' hours', 'warning under ' || trim_scale(th.warn) || ' hours'), 'not judged')
+                         || ' (' || coalesce(nullif(concat_ws(', ', 'critical under ' || trim_scale(th.crit) || ' hours', 'warning under ' || trim_scale(th.warn) || ' hours'), ''), 'not judged')
                          || CASE th.level WHEN 'default' THEN ', the default' WHEN 'tag' THEN ', set on the tag ' || th.tag ELSE ', set on the ' || th.level END || ')'] END,
          h.last_dump_at
     FROM inst i LEFT JOIN pgvigil.mssql_health h USING (instance_id) CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'crash') th
@@ -156,11 +159,13 @@ WITH inst AS (
   -- DBA Dash's Last Good Check DB, Log Space, Corruption, SQL Agent Alerts and Identity Columns: the day-one checks'
   -- areas (mssql_checks_status, 0090; task P08); since = what DBA Dash's cell counts from: the oldest last good
   -- CHECKDB, the newest corruption detection (suspect pages 1-3), the newest alert; value = DBA Dash's 'Never' (a
-  -- database never checked) or the identity cell's 'max % used / fewest days left'
+  -- database never checked) or the identity cell's 'max % used|fewest days left'
   SELECT i.instance_id, k.key, coalesce(c.sampled, false), coalesce(c.critical, 0), coalesce(c.warning, 0),
          CASE WHEN NOT coalesce(c.sampled, false) THEN NULL
               WHEN k.key = 'checkdb' THEN CASE WHEN cd.never THEN 'Never' END
-              WHEN k.key = 'identity' THEN (SELECT trim_scale(max(ic.pct_used)) || '%' || coalesce(' / ' || floor(min(ic.days_left))::bigint || ' days', '')
+              -- identity: '<the most used column's per cent, one decimal>|<the fewest days left>' (the page words it as
+              -- DBA Dash does: '42.5% / 3 months')
+              WHEN k.key = 'identity' THEN (SELECT to_char(max(ic.pct_used), 'FM9999990.0') || '|' || coalesce(floor(min(ic.days_left))::bigint::text, '')
                                               FROM pgvigil.mssql_identity_column ic WHERE ic.instance_id = i.instance_id)
               ELSE c.value END,
          coalesce(c.detail, '{}'),
@@ -206,7 +211,7 @@ SELECT d.instance_id, count(*)::int AS n,
 
 // The Summary's Snapshot Age and Collection Errors (24hrs) columns for every instance of either engine (DBA Dash's
 // SnapshotAgeStatus and CollectionErrorStatus, task P08): the youngest and the oldest last run of the instance's
-// collections that run there (not disabled, not skipped on that kind of server) in seconds, how many of them are
+// collections that run there and last ended well (not disabled, not skipped, not failed) in seconds, how many of them are
 // stale (older than three intervals, at least 300 s; $2 when no interval is known: the daily check 'collection
 // stale') and how many failed at their last run, and the errors collection_log holds for the last 24 hours. $1 the
 // intervals as the daily checks read them.
@@ -218,8 +223,11 @@ WITH c AS (
     JOIN pgvigil.instances i ON i.instance_id = c.instance_id AND i.is_active
 )
 SELECT i.instance_id,
-       (min(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status <> 'skipped' AND c.iv IS DISTINCT FROM 0))::bigint AS age_min_secs,
-       (max(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status <> 'skipped' AND c.iv IS DISTINCT FROM 0))::bigint AS age_max_secs,
+       -- the ages count from runs that ended well only: log_collection moves snapshot_at on a failed run too, and a
+       -- collection failing for days is not a young one (DBA Dash's collection dates move on success); Collection
+       -- Errors shows the failing ones
+       (min(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_min_secs,
+       (max(greatest(0, extract(epoch FROM now() - c.snapshot_at))) FILTER (WHERE c.status = 'ok' AND c.iv IS DISTINCT FROM 0))::bigint AS age_max_secs,
        count(*) FILTER (WHERE c.status NOT IN ('skipped', 'error') AND c.iv IS DISTINCT FROM 0
                           AND now() - c.snapshot_at > make_interval(secs => CASE WHEN c.iv IS NULL THEN $2::int ELSE greatest(300, 3 * c.iv) END))::int AS stale,
        count(*) FILTER (WHERE c.status = 'error' AND c.iv IS DISTINCT FROM 0)::int AS failing,

@@ -35,7 +35,11 @@ async function rootOf(key: 'uptime' | 'crash'): Promise<Row | undefined> {
 }
 
 const num = (v: unknown): number | null => v == null || v === '' ? null : Number(v);
-const minsOf = (hours: unknown): string => { const h = num(hours); return h == null ? '' : String(Math.round(h * 60 * 100) / 100); };
+// whole minutes, as DBA Dash's boxes take them: the store keeps hours to two decimals (q_pg_backups.go sends '%.2f'), so
+// 10 minutes is kept as 0.17 h; rounding to the minute gives back what was typed
+const minsOf = (hours: unknown): string => { const h = num(hours); return h == null ? '' : String(Math.round(h * 60)); };
+// what the Summary's Acknowledge Uptime / Dumps did (the dialog shows it)
+type Acked = () => Promise<{ done: number; text: string }>;
 
 // the dialog's frame: a modal with DBA Dash's title, a close button, and a status line for the outcome; done() marks
 // a change, and the Summary redraws when the dialog closes
@@ -56,7 +60,7 @@ const number = (label: string, v: string, max: unknown) => el('input', { type: '
 
 // openUptimeDialog: DBA Dash's 'Uptime Threshold Config <instance>' for an instance, or the root's (instanceId -1);
 // clearAll is the Summary's Acknowledge Uptime (the root's Clear ALL Alerts)
-export async function openUptimeDialog(instanceId: number, clearAll?: () => Promise<void>): Promise<void> {
+export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Promise<void> {
   const root = instanceId < 0;
   let r: Row | undefined;
   if (root) r = await rootOf('uptime');
@@ -72,7 +76,7 @@ export async function openUptimeDialog(instanceId: number, clearAll?: () => Prom
   const enabled = check('Enabled', warnNow != null && critNow != null);
   const warn = number('Warning (mins)', minsOf(warnNow ?? r?.warn_default), r?.max_value == null ? null : Number(r.max_value) * 60);
   const crit = number('Critical (mins)', minsOf(critNow ?? r?.crit_default), r?.max_value == null ? null : Number(r.max_value) * 60);
-  const rootLink = el('a', { href: '#', role: 'button' }, 'Root Threshold Config');
+  const rootLink = el('button', { type: 'button', class: 'link' }, 'Root Threshold Config');
   const panel = el('fieldset', { style: 'border:none;padding:0;margin:0' },
     row(enabled.label, el('label', {}, 'Warning: ', warn, ' mins'), el('label', {}, 'Critical: ', crit, ' mins')));
   const sync = () => { panel.disabled = inherit.box.checked; warn.disabled = crit.disabled = !enabled.box.checked; };
@@ -99,16 +103,19 @@ export async function openUptimeDialog(instanceId: number, clearAll?: () => Prom
       ? `In force: ${warnNow == null ? 'no warning' : `warning under ${minsOf(warnNow)} mins`}, ${critNow == null ? 'no critical' : `critical under ${minsOf(critNow)} mins`}${root ? (r.threshold_id != null ? ' (set on the root)' : ' (the default)') : r.level === 'default' ? ' (the default)' : r.level === 'tag' ? ` (set on the tag ${String(r.tag)})` : ` (set on the ${String(r.level)})`}; the default: warning under ${minsOf(r.warn_default)} mins, critical under ${minsOf(r.crit_default)} mins.`
       : 'The instance or its threshold could not be read.'),
     row(clear, el('span', { style: 'flex:1' }), update));
-  rootLink.addEventListener('click', e => { e.preventDefault(); f.dlg.close(); void openUptimeDialog(-1, clearAll); });
+  rootLink.addEventListener('click', () => { f.dlg.close(); void openUptimeDialog(-1, clearAll); });
   clear.addEventListener('click', async () => {
     clear.disabled = true;
     try {
-      if (root) { await clearAll?.(); f.said(true, 'Every Instance Uptime alert in the Summary is acknowledged until its next restart.'); }
-      else {
+      if (root) {
+        const res = clearAll ? await clearAll() : { done: 0, text: 'nothing to acknowledge from here' };
+        f.said(res.done > 0, res.text);
+        if (res.done) f.done(); else clear.disabled = false;
+      } else {
         const res = await addAck({ kind: 'ack', instance_id: instanceId, check_key: 'uptime', seen_state: sinceState(started), until_change: true });
         f.said(true, `Alert cleared until the next restart (${res.outcome}).`);
+        f.done();
       }
-      f.done();
     } catch (e) { f.said(false, e instanceof Error ? e.message : String(e)); clear.disabled = false; }
   });
   f.form.addEventListener('submit', async ev => {
@@ -131,7 +138,7 @@ export async function openUptimeDialog(instanceId: number, clearAll?: () => Prom
 }
 
 // openDumpDialog: DBA Dash's 'Memory Dump Thresholds' (the root's); acknowledge is the Summary's Acknowledge Dumps
-export async function openDumpDialog(acknowledge?: () => Promise<void>): Promise<void> {
+export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
   const r = await rootOf('crash');
   const f = frame('Memory Dump Thresholds', -1);
   const set = r?.threshold_id != null;
@@ -162,7 +169,11 @@ export async function openDumpDialog(acknowledge?: () => Promise<void>): Promise
   cancel.addEventListener('click', () => f.dlg.close());
   ackLink.addEventListener('click', async () => {
     ackLink.disabled = true;
-    try { await acknowledge?.(); f.said(true, 'Memory dumps acknowledged until a newer dump.'); f.done(); } catch (e) { f.said(false, e instanceof Error ? e.message : String(e)); }
+    try {
+      const res = acknowledge ? await acknowledge() : { done: 0, text: 'nothing to acknowledge from here' };
+      f.said(res.done > 0, res.text);
+      if (res.done) f.done(); else ackLink.disabled = false;
+    } catch (e) { f.said(false, e instanceof Error ? e.message : String(e)); ackLink.disabled = false; }
   });
   clearLink.addEventListener('click', async () => {
     clearLink.disabled = true;

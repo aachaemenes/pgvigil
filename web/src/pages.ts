@@ -400,7 +400,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     let shown = base();
     const inFocus = shown.length;
     if (pick && !live.some(g => g.key === pick!.key) && pick.b !== 'na') setPick(null);   // its test is not on the page (the focused view, a new scope)
-    if (pick) shown = shown.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
+    if (pick) shown = rows.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
     for (const [k, b] of countBtns) b.setAttribute('aria-pressed', String(!!pick && k === pick.key + '|' + pick.b));
     clear.disabled = !pick;
     said.replaceChildren(pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}.` : focus ? `${inFocus} of ${rows.length} instance(s) need a look.` : `${rows.length} instance(s).`);
@@ -410,14 +410,14 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     lower.replaceChildren(grid(shown, shownCols,
       rows.length === 0 ? 'No instances yet: run the collector.' : pick ? 'No instance matches.' : focus ? 'Nothing needs a look: every sampled check is OK.' : 'No instance matches.'));
   };
-  // The test grid counts the same instances the grid below lists (in the focused view: those that need a look), so a
-  // count and the rows its click leaves always agree. It is rebuilt only when that set changes (the view), never on a
-  // count click: the clicked button keeps the keyboard focus.
+  // The test grid counts every instance in scope, in the focused view too (DBA Dash counts the whole table; the view
+  // only chooses which tests are listed), so a count and the rows its click leaves agree: a picked count shows its
+  // instances whatever the view (DBA Dash's FilterByStatus replaces the focused filter). It is rebuilt only when the
+  // view changes, never on a count click: the clicked button keeps the keyboard focus.
   const drawUpper = () => {
-    const set = base();
     const tests = groups.map(g => {
       const c: Record<Exclude<Bucket, 'bad'>, number> = { ok: 0, warn: 0, crit: 0, na: 0, ack: 0 };
-      for (const r of set) c[bucketOf(r, g.key)]++;
+      for (const r of rows) c[bucketOf(r, g.key)]++;   // every instance in scope, the focused view too (DBA Dash's GroupSummaryByTest)
       // the test name's fill: its worst count (DBA Dash's DgvTests_RowsAdded: critical, then warning, then OK, then
       // acknowledged; N/A only when nothing else)
       return { key: g.key, test: g.label, ...c, _worst: c.crit ? 'crit' : c.warn ? 'warn' : c.ok ? 'ok' : c.ack ? 'none ack' : 'none' } as Row;
@@ -526,10 +526,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // ---- DBA Dash's toolbar: Refresh, View, Options, Clear Filter, and the Refresh Time
   // Acknowledge Dumps / Acknowledge Uptime (DBA Dash's Options menu): every Memory Dump or Instance Uptime cell in
   // scope with a warning or a critical is acknowledged until its newest dump or its start changes
-  const ackAll = async (key: 'dumps' | 'uptime', what: string) => {
-    if (!ad.writable) { note.textContent = `Acknowledge is off: ${ad.reason ?? ''}`; return; }
+  // it answers what it did (the dialogs show it: the page's note sits behind their modal)
+  const ackAll = async (key: 'dumps' | 'uptime', what: string): Promise<{ done: number; text: string }> => {
+    const said = (done: number, text: string) => { note.textContent = text; return { done, text }; };
+    if (!ad.writable) return said(0, `Acknowledge is off: ${ad.reason ?? ''}`);
     const todo = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
-    if (!todo.length) { note.textContent = `No ${what} cell with a warning or a critical to acknowledge.`; return; }
+    if (!todo.length) return said(0, `No ${what} cell with a warning or a critical to acknowledge.`);
     let done = 0;
     const failed: string[] = [];
     for (const r of todo) {
@@ -538,8 +540,8 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
         done++;
       } catch (e) { failed.push(`${String(r.name)}: ${e instanceof Error ? e.message : String(e)}`); }
     }
-    note.textContent = `${what} acknowledged on ${done} instance(s) until ${key === 'dumps' ? 'a newer dump' : 'the next restart'}${failed.length ? `; not saved: ${failed.join('; ')}` : ''}.`;
     if (done) setTimeout(redraw, 1200);
+    return said(done, `${what} acknowledged on ${done} instance(s) until ${key === 'dumps' ? 'a newer dump' : 'the next restart'}${failed.length ? `; not saved: ${failed.join('; ')}` : ''}.`);
   };
   const tbButton = (label: string, menu?: boolean) => el('button', { type: 'button', class: 'tb-btn', ...(menu ? { 'aria-haspopup': 'menu' } : {}) }, label);
   const refresh = tbButton('Refresh');
