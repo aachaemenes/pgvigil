@@ -105,7 +105,7 @@ cleanup() {
   [ -n "$BG2" ] && kill "$BG2" 2>/dev/null
   [ -n "$BG3" ] && kill "$BG3" 2>/dev/null
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null
-  [ -n "$MADE_C" ] && docker rm -f "$C" >/dev/null 2>&1   # only the container this run made
+  [ -n "$MADE_C" ] && docker rm -f -v "$C" >/dev/null 2>&1   # only the container this run made
   [ -n "$MADE_DB" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: $REPO_DB not dropped" >&2; }
   rm -rf "$WORK"
   exit $rc

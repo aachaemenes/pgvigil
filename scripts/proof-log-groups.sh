@@ -78,7 +78,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   pg_ctl -D "$DIR/data" stop -m fast -s >/dev/null 2>&1 || true
-  docker rm -f "$C13" >/dev/null 2>&1 || true
+  docker rm -f -v "$C13" >/dev/null 2>&1 || true
   psql "host=127.0.0.1 port=5413 user=postgres dbname=postgres" -XAtq -c "drop database if exists $G13DB with (force)" >/dev/null 2>&1 || true
   [[ "$PG13_WAS_RUNNING" == false ]] && docker stop "$PG13_PROOF" >/dev/null 2>&1 || true
   rm -rf "$DIR" "$CFG"

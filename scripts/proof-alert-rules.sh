@@ -130,7 +130,7 @@ cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$SRV2" ]] && kill "$SRV2" 2>/dev/null || true
   wait 2>/dev/null || true
-  [[ -n "$PG13" ]] && docker rm -f "$PG13" >/dev/null 2>&1 || true
+  [[ -n "$PG13" ]] && docker rm -f -v "$PG13" >/dev/null 2>&1 || true
   psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO with (force)" \
     -c "drop database if exists $TGT with (force)" -c "drop role if exists $COL" -c "drop role if exists $ALR" \
     -c "drop role if exists $RDR" >/dev/null 2>&1 || true
@@ -590,6 +590,6 @@ got=$(v "select pgvigil.import_alert_rule(now(), '{\"op\":\"add\",\"ui_user\":\"
 [[ $(v "select pgvigil.alert_rules_run(now())") == 1 ]] || fail "V: alert_rules_run on PostgreSQL 13"
 [[ $(v "select state, value, threshold from pgvigil.alert_rule_state") == "critical|5|4" ]] || fail "V: the state on PostgreSQL 13: $(v "select state, value, threshold from pgvigil.alert_rule_state")"
 [[ $(v "select severity, setting from pgvigil.alert_findings where source = 'alert rule'") == "critical|Sessions: idle in transaction" ]] || fail "V: the finding on PostgreSQL 13"
-docker rm -f "$PG13" >/dev/null 2>&1 || true; PG13=""
+docker rm -f -v "$PG13" >/dev/null 2>&1 || true; PG13=""
 ok "V: PostgreSQL 13: every migration applies; the grid 5 / 2 / 3 / 5 over 30 samples, the nine families read, a rule added, judged critical and listed as a finding"
 echo "proof-alert-rules: R B G S F T D E H A V green"

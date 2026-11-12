@@ -49,7 +49,7 @@ IMAGE=${SYSSTATS_IMAGE:-pgvigil-sysstats:18}; CTR=pgvigil-storproof-$SUF
 CFG=$(mktemp)
 cleanup() {
   rm -f "$CFG"
-  docker rm -f "$CTR" >/dev/null 2>&1 || true
+  docker rm -f -v "$CTR" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -XAtq -c "drop role if exists $MON" >/dev/null 2>&1 || true
 }

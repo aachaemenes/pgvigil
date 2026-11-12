@@ -119,7 +119,7 @@ cleanup() {
   rc=$?
   for p in "$SRV_PID" "$DEMO_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   if [ -n "$MADE_CT" ]; then
-    docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
+    docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
   else
     for d in "${MADE_DBS[@]:-}"; do
       [ -n "$d" ] || continue
@@ -135,7 +135,7 @@ cleanup() {
   if [ -n "$PG13_STOP" ] && [ "$(psql "$V13" -XAtqc "select count(*) from pg_database where datname not in ('postgres', 'template0', 'template1')" 2>/dev/null)" = 0 ]; then
     docker stop "$PG13_STOP" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_STOP not stopped" >&2
   fi
-  [ -n "$PG13_RM" ] && { docker rm -f "$PG13_RM" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_RM not removed" >&2; }
+  [ -n "$PG13_RM" ] && { docker rm -f -v "$PG13_RM" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_RM not removed" >&2; }
   for d in "$REPO_DB:$MADE_REPO" "$DEMO_DB:$MADE_DEMO"; do
     [ -n "${d#*:}" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists ${d%%:*} with (force)" >/dev/null 2>&1 || echo "CLEANUP: database ${d%%:*} not dropped" >&2; }
   done
