@@ -20,11 +20,11 @@ Every SQL Server collection runs on 2016 without a statement the server does not
 (`mssql_ag`, `audit`, `backups`, `checks`, `cpu`, `defaulttrace`, `errorlog`, `fileio`, `identity`, `indexes`,
 `indexlocks`, `instance`, `jobs`, `logshipping`, `memory`, `mirroring`, `plancache`, `plancache_health`,
 `procstats`, `properties`, `querystore`, `replication`, `requests`, `services`, `stats`, `storage`, `syshealth`,
-`tempdb`, `traceflags`, `versionstore`, `waits`, `xe`): 30 stored `ok`; `mssql_ag` stored `skipped: Always On is not
-enabled on this server` (the server is not in a Windows cluster); `mssql_defaulttrace` stored `partial` with no row,
-because one older file of the default trace's rollover set on this server was unreadable (`Msg 567 ... is not a
-recognizable trace file`; the files after it read) and the collection reads the set as a whole. The collector connects over TLS and stores the server as version
-130000.
+`tempdb`, `traceflags`, `versionstore`, `waits`, `xe`): 31 stored `ok`; `mssql_ag` stored `skipped: Always On is not
+enabled on this server` (the server is not in a Windows cluster). `mssql_defaulttrace` stored `ok` although one older
+file of the default trace's rollover set on this server is unreadable (`Msg 567 ... is not a recognizable trace file`,
+`log_7.trc` of `log_7` to `log_11`): the reader skips such a file, reads the set from the file after it and names the
+skipped file in its state note. The collector connects over TLS and stores the server as version 130000.
 
 What the proofs compared on this server against `sa`'s own reads, and found equal or within each proof's stated
 bound (a rate against the counter's rise, the plan cache within 5 %, file IO counters at or below a later read, a
@@ -40,8 +40,8 @@ volume's free bytes within 2 %, a slow batch's duration within 250 ms):
 - the server's properties (33 values against `sa`'s reads; on 2016 the host's platform is Windows by rule on both
   sides and its release is read from `sys.dm_os_windows_info` on both);
 - Query Store: the stores' options and the top list per statement (executions, duration, CPU, reads, the largest
-  memory grant). On 2016 the server keeps no wait statistics: the collector stores a wait time of 0 and there is
-  nothing on the server to compare it with (see below);
+  memory grant). On 2016 the server keeps no wait statistics: the collector stores the wait time as not read (NULL),
+  never 0, and `sa`'s side says the same (see below);
 - the actions through the separate actions login: a session's preview and kill, an Agent job started and stopped,
   the refusals and the audit rows.
 
@@ -51,7 +51,7 @@ the server's column list, or drops what an older version cannot give; it never f
 | What | On 2016 | Why |
 | --- | --- | --- |
 | The host (`mssql_properties`: platform, distribution, release) | platform Windows and the release from `sys.dm_os_windows_info`; no distribution | `sys.dm_os_host_info` arrived in SQL Server 2017; before it the engine runs on Windows only |
-| Query Store wait statistics (`mssql_querystore`) | the wait mode is not stored; every plan's wait time is stored as 0 | `sys.query_store_wait_stats` and `wait_stats_capture_mode_desc` arrived in 2017 |
+| Query Store wait statistics (`mssql_querystore`) | the wait mode is not stored; every plan's wait time is stored as not read (NULL) | `sys.query_store_wait_stats` and `wait_stats_capture_mode_desc` arrived in 2017 |
 | Query Store plan forcing type and automatic tuning | not read | `plan_forcing_type` and `sys.dm_db_tuning_recommendations` arrived in 2017 |
 | An availability group's `cluster_type` and `required_synchronized_secondaries_to_commit` | NULL by the version guard (the statement compiles on this server; without a group it is not run) | the columns arrived in 2017 |
 | tempdb's memory-optimized metadata | no value (n/a) | `SERVERPROPERTY('IsTempDBMetadataMemoryOptimized')` answers from 2019; the collector reads it and stores no value before 2019 |
@@ -68,10 +68,12 @@ the server's column list, or drops what an older version cannot give; it never f
 - **The Windows power plan, as a least-privilege login**: not read on this server (`xp_regread() returned error 5,
   'Access is denied.'`); the property says so in its note. Seen on 2016; not checked on a Windows host of another
   version.
-- **The default trace, while an older file of its set is unreadable**: `mssql_defaulttrace` reads the set as a
-  whole and stores nothing until that file leaves the set (seen on this server; not 2016-specific as far as known).
-- **Query Store's wait time** reads 0 on 2016, where the server keeps no wait statistics at all: a 0 there means
-  "not measured", not "no waits".
+- **The default trace, with an unreadable older file in its set** (a file the engine was writing when it was stopped
+  by force or crashed): `mssql_defaulttrace` skips that file, reads the set from the file after it and names the
+  skipped file in its state note; when files before the skipped one were readable, the note says they were not read
+  (the reader goes on from the file after the unreadable one). An unreadable current file is a failed read.
+- **Query Store's wait time** is stored as not read (NULL) on 2016, where the server keeps no wait statistics at
+  all; the Query Store page's per-plan rows show it empty.
 
 ## Not proven
 
@@ -107,9 +109,12 @@ toolchain and a PostgreSQL superuser connection) against one SQL Server 2016 ser
   `GODEBUG=x509negativeserial=0` records whether the server's certificate has a negative serial number (go.mod's
   `godebug x509negativeserial=1` lets the collector connect to such a server; this one's was not negative).
 - **H**: the server is made to look like one in use: Database Mail on and started, sixty rows of Agent job history
-  (both put back at the end).
-- **K**: every SQL Server collection of the collector (21) runs once as `sa`; none may fail on a column, a view or a
+  (both put back at the end), and a database with Query Store on and a few statements in it (dropped at the end).
+- **K**: every SQL Server collection of the collector (32) runs once as `sa`; none may fail on a column, a view or a
   function the server does not have, or on any other server error.
+- **Q**: of the Query Store database, the stored runtime rows and intervals carry no wait time (NULL, not read).
+- **D**: `sa` reads the default trace's current file and each older one alone; every older file that is not a
+  readable trace file is named as skipped in the reader's note, and the reader's state is `read`.
 - **T**: the live tests of `internal/mssql` run against the server (`TestHADRStatementsLive` compiles every
   availability group, mirroring, log shipping and replication statement under `SET NOEXEC ON`).
 - **R**: the SQL Server proofs of `proof-mssql-versions.sh` run against the server. They reach their server's `sa`
