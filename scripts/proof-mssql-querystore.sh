@@ -375,7 +375,7 @@ GO
 SQL
 collect "$N" >/dev/null
 RW="from=$T&to=$(date -u -d "$T + 5 minutes" +%FT%TZ)"
-curl -fs "$U/mssql/querystore?instance=$iid&$RW&db=$DB1&part=regressed" > "$WORK/reg.json" || fail "D: the API's regressed part"
+curl -fs "$U/mssql/querystore?instance=$iid&$RW&db=$DB1&base=prev&part=regressed" > "$WORK/reg.json" || fail "D: the API's regressed part"
 REG=$(objs "$WORK/reg.json" regressed | jq -c '[.[] | select(.object_name == "dbo.pv_reg")]')
 echo "  regressed: $(echo "$REG" | jq -c '.[] | {query_id, plan_id, new_plan, executions, before_executions, duration_ratio, avg_duration_ms, before_avg_duration_ms}')"
 [ "$(echo "$REG" | jq '[.[] | select(.new_plan == true and .executions == 50 and .before_executions == 50 and .duration_ratio >= 1.5)] | length')" = 1 ] \
@@ -640,7 +640,7 @@ fi
 
 echo "--- P. the API"
 curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: the page's read"
-[ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
+[ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,regressed_skipped,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
 [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
 # the wait time: NULL (the page says n/a) where the server keeps no wait statistics (before SQL Server 2017), a number from
@@ -690,7 +690,7 @@ RH0=$(dq "select to_char(min(snapshot_at) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH
 [ -n "$RH0" ] || fail "DEMO: no stored row of Sales' plan 12"
 D1="from=$RH0&to=$(date -u -d "$RH0 + 2 hours" +%FT%TZ)"
 curl -fs "$D/mssql/querystore?instance=$s1&$DW" > "$WORK/d.json" || fail "DEMO: the page's read"
-curl -fs "$D/mssql/querystore?instance=$s1&$D1&part=regressed" > "$WORK/dr.json" || fail "DEMO: the regressed part"
+curl -fs "$D/mssql/querystore?instance=$s1&$D1&base=prev&part=regressed" > "$WORK/dr.json" || fail "DEMO: the regressed part"
 echo "  sql01: top $(objs "$WORK/d.json" top | jq length), forced $(objs "$WORK/d.json" forced | jq length), tuning $(objs "$WORK/d.json" tuning | jq length), regressed (1 h) $(objs "$WORK/dr.json" regressed | jq length)"
 [ "$(objs "$WORK/d.json" top | jq 'length >= 8')" = true ] || fail "DEMO: the top list has $(objs "$WORK/d.json" top | jq length) queries"
 [ "$(objs "$WORK/dr.json" regressed | jq '[.[] | select(.database_name == "Sales" and .query_id == 1 and .plan_id == 12 and .new_plan == true and .duration_ratio >= 1.5)] | length')" = 1 ] \

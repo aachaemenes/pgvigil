@@ -5,6 +5,7 @@
 // /api/mssql/procs; the route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { compareSection } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
 import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
@@ -48,6 +49,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'logical_reads', label: 'logical reads', num: true },
         { key: 'physical_reads', label: 'physical reads', num: true },
         { key: 'logical_writes', label: 'writes', num: true },
+        { key: 'spills', label: 'spilled pages', num: true, fmt: v => v == null ? 'not read' : fmtNum(v) },
       ], 'No read of this procedure in the range.'));
       (drill.querySelector('h3') as HTMLElement).focus();   // the new block is announced and scrolled to
     } catch (e) {
@@ -124,6 +126,9 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'avg_physical_reads', label: 'avg physical reads', num: true },
       { key: 'logical_writes', label: 'writes', num: true },
       { key: 'avg_logical_writes', label: 'avg writes', num: true },
+      // PerformanceMonitor's 'I/O and spills' (D10, 0126): total_spills, SQL Server 2016 SP2 / 2017 CU3 on
+      { key: 'spills', label: 'Total spilled pages', num: true, fmt: (v, r) => v == null ? 'not read' : Number(r.spill_reads) < Number(r.intervals) ? `${fmtNum(v)} (${fmtNum(r.spill_reads)} of ${fmtNum(r.intervals)} reads)` : fmtNum(v) },
+      { key: 'avg_spills', label: 'Avg spilled pages', num: true, fmt: v => v == null ? '' : fmtNum(v) },
       { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
     ];
     const cut = procs.length >= LIMIT;
@@ -131,8 +136,10 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, 'Per second and per minute are over the seconds the range\'s reads cover '
         + `(${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))}). A name opens that procedure read by read. `
         + 'Max executions /min is the procedure\'s busiest single read. '
-        + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it).'),
-      grid(procs, cols));
+        + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it). '
+        + 'Spilled pages: "not read" where the server has no total_spills (before SQL Server 2016 SP2 and 2017 CU3) or the reads came before pgvigil stored it.'),
+      grid(procs, cols),
+      compareSection(ctx, 'procs', { db: database || undefined }));
     body.replaceChildren(...out);
   }
 

@@ -186,7 +186,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   // the Query Store page's view, sort and database (mssql_querystore.ts) stay on its own links
   if (keep && c.tab === 'mssqlqs') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
-    for (const k of ['qs', 'qo', 'qdb']) { const v = cur.get(k); if (v) q.set(k, v); }
+    for (const k of ['qs', 'qo', 'qdb', 'qb']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the Database info and drill-down pages keep their own parameters (db, rel, scheduler, job, idx) on a link to the
   // same page, so a range change stays on the same database, table, job or index
