@@ -33,6 +33,8 @@ instances:
     # explain_analyze: true            # the Plan page's EXPLAIN ANALYZE on this instance (it executes the SELECT, read-only, rolled back)
     # explain_dsn: env:PROD_EXPLAIN_DSN # the login it runs as: SELECT grants only, never pgvigil_actions (pgvigil roles prints it)
     # explain_timeout: 30s              # one EXPLAIN ANALYZE at most (5m is the ceiling)
+    # audit_text: true                 # keep the statement text and parameters of the audit rows (pgaudit, SQL Server
+    #                                  # Audit); they can carry data: absent = the class, command and object only
     # backups:
     #   archive_warn_minutes: 60         # the last archived WAL older than this while WAL waits is a finding
     schedules:

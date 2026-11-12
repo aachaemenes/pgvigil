@@ -1,11 +1,13 @@
 // The fleet's instances and daily-check rows, shared by the tree, the Summary grid and the checks page,
 // fetched at most once per 25 s unless a refresh forces it.
 import { get, Row, rowsOf, Table } from './api';
+import { auditFleetCell, readAuditFleet } from './pgaudit';
 import { versionCell } from './versions';
 
 // mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
 // mssqlFailed: the SQL Server read itself failed (its cells then say so, never 'not yet')
-export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; mssqlFailed: boolean; at: number }
+// pgaudit: the PostgreSQL instances' pgaudit cells (readAuditFleet); pgauditFailed: that read failed
+export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 
@@ -15,9 +17,11 @@ export async function fleet(force = false): Promise<Fleet> {
   // the versions read is optional: a repository not yet migrated to 0035 (or any failure there) costs the Version
   // column only, never the tree and the Summary
   // the SQL Server read is optional the same way (a repository before 0064, a failure): its rows then say 'not yet'
+  // the pgaudit read too (a repository before 0100, a failure): the PostgreSQL Audit cells then say 'read failed'
   pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
-    get<{ cells: Table | null; servers: Table | null; pgdb: Table | null; failed?: boolean }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null, pgdb: null, failed: true }))])
-    .then(([i, c, v, m]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), mssqlFailed: m.failed === true, at: Date.now() }))
+    get<{ cells: Table | null; servers: Table | null; pgdb: Table | null; failed?: boolean }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null, pgdb: null, failed: true })),
+    readAuditFleet().then(rows => ({ rows, failed: false }), () => ({ rows: [] as Row[], failed: true }))])
+    .then(([i, c, v, m, a]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed, at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
 }
@@ -51,7 +55,8 @@ export const groups: Group[] = [
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true },
   { key: 'dumps', label: 'Memory dumps', checks: [], tab: 'summary', mssql: ['dumps', 'summary'], mssqlOnly: true },
   { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true },
-  { key: 'audit', label: 'Audit', checks: [], tab: 'summary', mssql: ['audit', 'mssqlaudit', 'SQL Server Audit'], mssqlOnly: true },
+  // both engines: SQL Server Audit from the SQL Server read, pgaudit from the pgaudit fleet read (the instance's Audit tab)
+  { key: 'audit', label: 'Audit', checks: [], tab: 'audit', mssql: ['audit', 'mssqlaudit', 'SQL Server Audit'] },
   { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption' },
   { key: 'io', label: 'IO', checks: ['io'], tab: 'io' },
   { key: 'roles', label: 'Roles', checks: ['roles'], tab: 'roles' },
@@ -114,6 +119,11 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
         else if (!m.sampled) out[g.key] = none('not read', detail[0] ?? 'this part was not readable with the login\'s rights');
         else out[g.key] = { level: 0, n: 0, detail, ...(m.value != null ? { text: String(m.value) } : {}) };
       }
+      continue;
+    }
+    if (g.key === 'audit') {
+      const a = auditFleetCell(f.pgaudit.find(x => Number(x.instance_id) === id), f.pgauditFailed);
+      out[g.key] = { level: a.level, n: a.level ? 1 : 0, detail: a.detail, none: a.none, text: a.text };
       continue;
     }
     if (g.mssqlOnly) { out[g.key] = { level: 0, n: 0, detail: ['a SQL Server check: nothing is read for it on PostgreSQL'], none: true, text: 'n/a' }; continue; }
