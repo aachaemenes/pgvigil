@@ -87,6 +87,7 @@ import { aboutLink, aboutView } from './about';
 import { reportPages } from './reports';
 import { customReportsView } from './customreports';
 import { communityView } from './community';
+import { instanceFrame } from './instheader';
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
@@ -313,6 +314,7 @@ async function render(force = false) {
   // new ones read (an export in that gap took the old page); the same hash's refresh keeps its content (no flicker every
   // 30 s). The status node goes in empty and gets its text a frame later, so a screen reader announces it.
   const pageKey = location.hash;
+  const same = pageKey === shownPage;   // a refresh of the page on screen: its header and dot stay until the new read
   if (pageKey !== shownPage) {
     const note = el('p', { class: 'empty', role: 'status' });
     $('main').replaceChildren(note);
@@ -367,6 +369,8 @@ async function render(force = false) {
     bar.append(el('span', { class: 'meta' }, session.user), out);
   }
 
+  // the instance's header and its band's dot (task 177 D29), read beside the page; a failure there leaves them out
+  const frame = ctx.instance ? instanceFrame(ctx).catch(() => null) : Promise.resolve(null);
   // the tree and the breadcrumb come from the fleet read; a failure there still shows the page
   const crumb = $('crumb');
   try {
@@ -374,10 +378,20 @@ async function render(force = false) {
     if (gen !== generation) return;
     updateTree(f, ctx);
     const inst = ctx.instance ? f.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
+    const oldDot = same ? crumb.querySelector('.band-dot') : null;
     crumb.replaceChildren(
       el('a', { href: href(ctx, { tab: ctx.instance ? 'summary' : ctx.tab, instance: undefined, tag: undefined }) }, 'All instances'),
       ...(ctx.tag && !ctx.instance ? [' / ', el('span', {}, 'tag ' + ctx.tag)] : []),
-      ...(ctx.instance ? [' / ', el('b', {}, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []));
+      ...(ctx.instance ? [' / ', el('b', { id: 'crumb-inst' }, inst ? String(inst.name) : 'instance ' + ctx.instance)] : []));
+    if (oldDot) $('crumb-inst')?.before(oldDot, ' ');
+    // the band's dot as soon as its read ends (it does not wait for the page); a failed read takes the old one away
+    void frame.then(fr => {
+      if (gen !== generation) return;
+      const d = $('crumb').querySelector('.band-dot');
+      if (fr && d) d.replaceWith(fr.dot);
+      else if (fr) $('crumb-inst')?.before(fr.dot, ' ');
+      else if (d) { const sp = d.nextSibling; if (sp && sp.nodeType === Node.TEXT_NODE) sp.remove(); d.remove(); }
+    });
   } catch (e) {
     if (e instanceof LoginRequired) { showLogin(); return; }
     crumb.replaceChildren(errorBox(e));
@@ -392,7 +406,18 @@ async function render(force = false) {
   }
   if (gen !== generation) return;
   destroyCharts();
-  $('main').replaceChildren(view);
+  // the page is placed the moment it is built and the header follows when its read ends (before the first paint when
+  // it ended first; a refresh of the same page keeps the old header until then), never on a page the reader has left;
+  // a header read that hangs holds nothing up
+  const oldHeader = same ? $('main').querySelector(':scope > .inst-header') : null;
+  $('main').replaceChildren(...(oldHeader ? [oldHeader] : []), view);
+  void frame.then(fr => {
+    if (gen !== generation) return;
+    const cur = $('main').querySelector(':scope > .inst-header');
+    if (fr && cur) cur.replaceWith(fr.header);
+    else if (fr) $('main').prepend(fr.header);
+    else cur?.remove();
+  });
   // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (Allen
   // 2026-11-11: 'when I click on something it takes me down to the page'); a range, a filter or a refresh of the same
   // page keeps the place

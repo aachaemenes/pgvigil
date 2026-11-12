@@ -3,7 +3,7 @@
 Four reads that answer "which tables are busy now", "who holds the connections", "is this instance healthy at a
 glance" and "which databases came and went". Each says where its numbers come from and what it cannot see.
 
-## The busiest tables (Tables tab, "Busiest tables in the window")
+## The busiest tables (Table Size tab, "Busiest tables in the window")
 
 The top 5, 10 or 25 tables of the instance by **sequential scans**, **rows inserted**, **rows updated** (with the HOT
 share) and **rows deleted** over the page's time range (pgwatch's Tables Overview).
@@ -22,7 +22,7 @@ share) and **rows deleted** over the page's time range (pgwatch's Tables Overvie
   the "counted from" column says so.
 - The ranks are instance-wide: every database's tables compete.
 
-## UNUSED (Tables tab, beside a table's total size)
+## UNUSED (Table Size tab, beside a table's total size)
 
 A table with no sequential and no index scan since the statistics reset (pghero marks unused indexes the same way):
 it is written or kept, never read. The biggest tables of each database carry the mark; the counts reset with the

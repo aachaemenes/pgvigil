@@ -567,19 +567,27 @@ ws.close();
 process.exit(0);
 JS
 gwalk() { G_USR="$USR" G_UPW="$UPW" node "$TMPD/g-check.mjs" "$CDP" "$U/" "$1"; }
-# the SQL Server tab set the walk must find: the keys of mssqlInstanceTabs in the tree the run built
-GWANT=$(python3 - "$GSRC/web/src/router.ts" <<'PY'
+# the SQL Server tab set the walk must find: the keys of mssqlInstanceTabs in the tree the run built (names, not only a
+# count: the walk lists the same object, so a renamed or dropped tab must fail by name), and task 168's 33 among them
+GKEYS=$(python3 - "$GSRC/web/src/router.ts" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()
 b = re.search(r"export const mssqlInstanceTabs: Record<string, string> = \{(.*?)\n\};", t, re.S)
-print(len(re.findall(r"(?m)(?:^|,|\{)\s*([a-z_0-9]+):\s*'", re.sub(r"//[^\n]*", "", b.group(1)))) if b else 0)
+body = re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", b.group(1), flags=re.S)) if b else ""
+print(" ".join(sorted(re.findall(r"(?m)(?:^|,|\{)\s*([A-Za-z_0-9]+)\s*:\s*['\"`]", body))))
 PY
 )
+read -ra GK <<<"$GKEYS"; GWANT=${#GK[@]}
 [[ "$GWANT" =~ ^[0-9]+$ && "$GWANT" -gt 0 ]] || fail "G: no mssqlInstanceTabs in $GSRC/web/src/router.ts"
+G168="availability counters findings jobstimeline mssql_blocked mssql_deadlocks mssql_running mssql_slow mssql_waits mssqlactions mssqlaudit mssqlbackups mssqlchecks mssqlconfig mssqlcpu mssqlerrorlog mssqlfileio mssqlfiles mssqlhealth mssqlindexes mssqlindexlocks mssqljobs mssqlmemory mssqlplancache mssqlprocs mssqlproperties mssqlqs mssqlstorage mssqltempdb mssqltrace performance rowversions summary"
+for k in $G168; do [[ " $GKEYS " == *" $k "* ]] || fail "G: task 168's SQL Server tab $k is no longer in router.ts mssqlInstanceTabs"; done
 # gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
 gtabs() {
   local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage " n line k
   n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == "$GWANT" ]] || fail "$4: $n tabs walked (want $GWANT, router.ts mssqlInstanceTabs): $out"
+  local walked; walked=$(echo "$out" | awk '/^tab /{print $2}' | LC_ALL=C sort | tr '\n' ' ')
+  [[ "$walked" == "$(printf '%s\n' "${GK[@]}" | LC_ALL=C sort | tr '\n' ' ')" ]] || fail "$4: the walked tabs ($walked) are not router.ts mssqlInstanceTabs ($GKEYS)"
+  for k in $2 $3; do [[ " $GKEYS " == *" $k "* ]] || fail "$4: $k is no longer a SQL Server tab in router.ts"; done
   echo "$out" | grep -q '^tree folder clean$' || fail "$4: the tree: $(echo "$out" | grep '^tree')"
   echo "$out" | grep -q '^root clean source-lines=1$' || fail "$4: the Imported servers page: $(echo "$out" | grep '^root')"
   while read -r line; do

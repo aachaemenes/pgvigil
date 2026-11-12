@@ -444,28 +444,52 @@ type dlRef struct {
 }
 
 type dlFrame struct {
-	ProcName string `xml:"procname,attr"`
-	Text     string `xml:",chardata"`
+	ProcName  string `xml:"procname,attr"`
+	SQLHandle string `xml:"sqlhandle,attr"`
+	StmtStart string `xml:"stmtstart,attr"`
+	StmtEnd   string `xml:"stmtend,attr"`
+	Text      string `xml:",chardata"`
+}
+
+// handleFrame is the first frame of a stack with a statement handle that is not all zeros (sp_HumanEventsBlockViewer's
+// lead-blocker identity: the handle with the statement's offsets); nil when no frame has one.
+func (p dlProcess) handleFrame() *dlFrame {
+	for i, f := range p.Frames {
+		if h := strings.TrimLeft(strings.TrimPrefix(strings.ToLower(f.SQLHandle), "0x"), "0"); h != "" {
+			return &p.Frames[i]
+		}
+	}
+	return nil
 }
 
 type dlProcess struct {
-	ID          string    `xml:"id,attr"`
-	Spid        string    `xml:"spid,attr"`
-	Login       string    `xml:"loginname,attr"`
-	Host        string    `xml:"hostname,attr"`
-	Program     string    `xml:"clientapp,attr"`
-	Database    string    `xml:"currentdbname,attr"`
-	Isolation   string    `xml:"isolationlevel,attr"`
-	Status      string    `xml:"status,attr"`
-	TranCount   string    `xml:"trancount,attr"`
-	WaitRes     string    `xml:"waitresource,attr"`
-	WaitTime    string    `xml:"waittime,attr"`
-	LockMode    string    `xml:"lockMode,attr"`
-	Transaction string    `xml:"transactionname,attr"`
-	LogUsed     string    `xml:"logused,attr"`
-	LastBatch   string    `xml:"lastbatchstarted,attr"`
-	Frames      []dlFrame `xml:"executionStack>frame"`
-	InputBuf    string    `xml:"inputbuf"`
+	ID          string `xml:"id,attr"`
+	Spid        string `xml:"spid,attr"`
+	Login       string `xml:"loginname,attr"`
+	Host        string `xml:"hostname,attr"`
+	Program     string `xml:"clientapp,attr"`
+	Database    string `xml:"currentdbname,attr"`
+	Isolation   string `xml:"isolationlevel,attr"`
+	Status      string `xml:"status,attr"`
+	TranCount   string `xml:"trancount,attr"`
+	WaitRes     string `xml:"waitresource,attr"`
+	WaitTime    string `xml:"waittime,attr"`
+	LockMode    string `xml:"lockMode,attr"`
+	Transaction string `xml:"transactionname,attr"`
+	LogUsed     string `xml:"logused,attr"`
+	LastBatch   string `xml:"lastbatchstarted,attr"`
+	// read by the blocked-process reports only (sp_HumanEventsBlockViewer's columns): a deadlock graph carries most
+	// of them too and leaves them unread
+	Ecid       string    `xml:"ecid,attr"`
+	LastDone   string    `xml:"lastbatchcompleted,attr"`
+	LastTran   string    `xml:"lasttranstarted,attr"`
+	Priority   string    `xml:"priority,attr"`
+	ClientOpt1 string    `xml:"clientoption1,attr"`
+	ClientOpt2 string    `xml:"clientoption2,attr"`
+	XactID     string    `xml:"xactid,attr"`
+	CurrentDB  string    `xml:"currentdb,attr"`
+	Frames     []dlFrame `xml:"executionStack>frame"`
+	InputBuf   string    `xml:"inputbuf"`
 }
 
 type dlResource struct {
@@ -624,10 +648,37 @@ func parseDeadlock(e *xeEvent, c xeContext) collect.Row {
 }
 
 // --- blocked-process reports
+//
+// The columns follow sp_HumanEventsBlockViewer 5.11 (Erik Darling, Darling Data, LLC, MIT License,
+// https://github.com/erikdarlingdata/DarlingData): each side's process attributes as its #blocking / #blocked tables
+// read them (status, isolation level, lock mode, transaction count and name, last batch started and completed, last
+// transaction started, log used, priority, client options), and the event's own transaction id, object id, resource
+// owner type and the report's monitor loop, which its findings count and its lead-blocker walk keys on.
+//
+// MIT License, Copyright 2026 Darling Data, LLC: Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files (the "Software"), to deal in the Software without
+// restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
+// following conditions: The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+// SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 type bpReport struct {
-	Blocked  dlProcess `xml:"blocked-process>process"`
-	Blocking dlProcess `xml:"blocking-process>process"`
+	MonitorLoop string      `xml:"monitorLoop,attr"`
+	Blocked     dlProcess   `xml:"blocked-process>process"`
+	Blockings   []dlProcess `xml:"blocking-process>process"`
+	Blocking    dlProcess   `xml:"-"`
+}
+
+// head picks the report's blocking process: the first one when a victim waits behind several holders at once (the
+// procedure fans such a report out one row per blocker; pgvigil keeps the first, never a mix of their attributes).
+func (r *bpReport) head() {
+	if len(r.Blockings) > 0 {
+		r.Blocking = r.Blockings[0]
+	}
 }
 
 func parseBlocked(e *xeEvent, c xeContext) collect.Row {
@@ -648,6 +699,18 @@ func parseBlocked(e *xeEvent, c xeContext) collect.Row {
 	} else {
 		row["wait_ms"] = atoiOrNil(r.Blocked.WaitTime)
 	}
+	// the event's own fields, as sp_HumanEventsBlockViewer reads them from the event (not from the report)
+	row["transaction_id"], row["object_id"], row["database_id"] = e.num("transaction_id"), e.num("object_id"), e.num("database_id")
+	row["resource_owner_type"] = e.mapped("resource_owner_type")
+	blockedSides(row, r, report, c)
+	return row
+}
+
+// blockedSides fills a blocked row from its report: both sides' processes, the head's statement and key, the report.
+func blockedSides(row collect.Row, r bpReport, report string, c xeContext) {
+	r.head()
+	row["source"] = c.source
+	row["monitor_loop"] = atoiOrNil(r.MonitorLoop)
 	row["wait_resource"] = strOrNil(r.Blocked.WaitRes)
 	row["blocked_spid"], row["blocked_login"], row["blocked_host"] = atoiOrNil(r.Blocked.Spid), strOrNil(r.Blocked.Login), strOrNil(r.Blocked.Host)
 	row["blocked_program"] = strOrNil(r.Blocked.Program)
@@ -655,9 +718,37 @@ func parseBlocked(e *xeEvent, c xeContext) collect.Row {
 	row["blocking_spid"], row["blocking_status"] = atoiOrNil(r.Blocking.Spid), strOrNil(r.Blocking.Status)
 	row["blocking_trancount"], row["blocking_last_batch"] = atoiOrNil(r.Blocking.TranCount), strOrNil(r.Blocking.LastBatch)
 	row["blocking_login"], row["blocking_host"], row["blocking_program"] = strOrNil(r.Blocking.Login), strOrNil(r.Blocking.Host), strOrNil(r.Blocking.Program)
+	// each side's attributes under one name pattern: blocked_<attr> and blocking_<attr>
+	for _, side := range []struct {
+		name string
+		p    dlProcess
+	}{{"blocked", r.Blocked}, {"blocking", r.Blocking}} {
+		p := side.p
+		row[side.name+"_ecid"] = atoiOrNil(p.Ecid)
+		row[side.name+"_isolation"] = strOrNil(p.Isolation)
+		row[side.name+"_lock_mode"] = strOrNil(p.LockMode)
+		row[side.name+"_transaction_name"] = strOrNil(p.Transaction)
+		row[side.name+"_last_batch_completed"] = strOrNil(p.LastDone)
+		row[side.name+"_last_tran_started"] = strOrNil(p.LastTran)
+		row[side.name+"_log_used"] = atoiOrNil(p.LogUsed)
+		row[side.name+"_priority"] = atoiOrNil(p.Priority)
+		row[side.name+"_clientoption1"], row[side.name+"_clientoption2"] = atoiOrNil(p.ClientOpt1), atoiOrNil(p.ClientOpt2)
+		row[side.name+"_xactid"] = atoiOrNil(p.XactID)
+		row[side.name+"_currentdb"] = strOrNil(p.Database)
+	}
+	row["blocked_status"], row["blocked_trancount"] = strOrNil(r.Blocked.Status), atoiOrNil(r.Blocked.TranCount)
+	row["blocked_wait_ms"] = atoiOrNil(r.Blocked.WaitTime)
+	row["blocked_last_batch"] = strOrNil(r.Blocked.LastBatch)
+	row["blocking_wait_resource"], row["blocking_wait_ms"] = strOrNil(r.Blocking.WaitRes), atoiOrNil(r.Blocking.WaitTime)
+	if f := r.Blocking.handleFrame(); f != nil {
+		row["blocking_sql_handle"] = strings.ToLower(f.SQLHandle)
+		row["blocking_stmtstart"], row["blocking_stmtend"] = atoiOrNil(f.StmtStart), atoiOrNil(f.StmtEnd)
+	}
 	// the head's side: the blocking process's input buffer is its last statement
 	head := r.Blocking.statement()
-	row["statement"] = strOrNil(head)
+	// under the instance's text policy here too: a system_health row travels inside a component's detail, where the
+	// batch's own policy pass does not look
+	row["statement"] = policyText(head, c.queryText)
 	if c.textKept() {
 		if head == "" {
 			row["head_key"] = hash16(fmt.Sprintf("(no input buffer) %v %v", row["blocking_login"], row["blocking_program"]))
@@ -666,7 +757,65 @@ func parseBlocked(e *xeEvent, c xeContext) collect.Row {
 		}
 	}
 	row["report"] = fullText(report, c.queryText)
-	return row
+}
+
+// bpRaw is one blocked-process report inside system_health's QUERY_PROCESSING result, its XML kept whole.
+type bpRaw struct {
+	bpReport
+	Inner string `xml:",innerxml"`
+}
+
+// blockingTasks turns system_health's QUERY_PROCESSING component result (sp_server_diagnostics, every five minutes)
+// into blocked rows, one per report under queryProcessing/blockingTasks: the fallback where no blocked-process
+// capture of pgvigil runs (sp_HealthParser 3.11 reads the same path, Erik Darling, Darling Data, LLC, MIT License, the
+// notice above). Such a report has no event of its own: its time is the component result's, its transaction id the
+// blocked process's xactid, its database the blocked process's current database, its lock mode the blocked process's,
+// its key a hash of the report itself (the result repeats a long block every five minutes with a longer wait).
+func blockingTasks(at time.Time, doc string, c xeContext) []map[string]any {
+	if strings.TrimSpace(doc) == "" || !strings.Contains(doc, "blocked-process-report") {
+		return nil
+	}
+	c.source = "system_health"
+	d := xml.NewDecoder(strings.NewReader(doc))
+	var out []map[string]any
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			break
+		}
+		el, ok := tok.(xml.StartElement)
+		if !ok || el.Name.Local != "blocked-process-report" {
+			continue
+		}
+		var r bpRaw
+		if err := d.DecodeElement(&r, &el); err != nil {
+			continue
+		}
+		var attrs strings.Builder
+		for _, a := range el.Attr {
+			fmt.Fprintf(&attrs, " %s=\"%s\"", a.Name.Local, xmlAttrEscape(a.Value))
+		}
+		report := "<blocked-process-report" + attrs.String() + ">" + r.Inner + "</blocked-process-report>"
+		row := collect.Row{"kind": "blocked", "event_at": at.Format(time.RFC3339Nano), "event_name": "blockingTasks",
+			"session_name": "system_health", "event_key": hash16("blockingTasks " + report)}
+		row["database_name"], row["lock_mode"] = strOrNil(r.Blocked.Database), strOrNil(r.Blocked.LockMode)
+		row["wait_ms"], row["transaction_id"] = atoiOrNil(r.Blocked.WaitTime), atoiOrNil(r.Blocked.XactID)
+		row["database_id"] = atoiOrNil(r.Blocked.CurrentDB)
+		blockedSides(row, r.bpReport, report, c)
+		out = append(out, row)
+	}
+	return out
+}
+
+// BlockingTasksKey is the detail key a QUERY_PROCESSING component row carries its blocked reports under (blockingTasks);
+// the repository moves them into mssql_blocked_reports when the row is stored (migration 0116) and keeps the detail
+// without them.
+const BlockingTasksKey = "pgvigil_blocked_reports"
+
+func xmlAttrEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return strings.ReplaceAll(b.String(), `"`, "&#34;")
 }
 
 // --- slow completions

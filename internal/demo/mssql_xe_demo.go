@@ -73,7 +73,11 @@ func mssqlXERows(name string, end time.Time, rng *rand.Rand) []Row {
 			"blocked_program": "orders-api", "blocked_statement": "UPDATE dbo.Customer SET last_order = SYSDATETIME() WHERE customer_id = 5521",
 			"blocking_spid": 72, "blocking_status": "sleeping", "blocking_trancount": 1, "blocking_login": "credit_svc", "blocking_host": "batch-1",
 			"blocking_program": "credit-review", "statement": head, "blocking_last_batch": at.Add(-3 * time.Minute).UTC().Format("2006-01-02T15:04:05.000"),
-			"head_key": "de30bead00000001"})
+			"head_key": "de30bead00000001",
+			// both sides' columns of 0116 (task 177 D04), so the demo's Blocked reports findings read in full
+			"transaction_id": 4100 + i, "blocked_wait_ms": 15000 * (i + 1), "resource_owner_type": "LOCK",
+			"blocked_status": "suspended", "blocked_isolation": "read committed (2)", "blocking_isolation": "read committed (2)",
+			"blocked_transaction_name": "UPDATE", "blocking_transaction_name": "user_transaction"})
 	}
 
 	// a day of slow completions: four shapes

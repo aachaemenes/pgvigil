@@ -18,7 +18,9 @@
 # What it makes, and removes on every exit path the shell can catch: a repository database pgvigil_azproof_<n> on
 # the PostgreSQL; in the monitored database, as its DBA would (pgvigil prints the script, the DBA runs it), the four
 # Extended Events sessions of `pgvigil mssql-xe -print -form azuresqldb -install-id p<n>` (dropped by the -drop
-# script at the end); one session of the setup login that waits two minutes (part B's requests read).
+# script at the end); one session of the setup login that waits two minutes (part B's requests read); a global
+# temporary table ##pgvproof_wt_<n> (tempdb, per database on Azure SQL Database) held 90 s by a holder session of the
+# setup login, with a waiter session blocked on its row (part B's waiting tasks; both sessions removed after the read).
 #
 # Expected (written before the first run):
 #  R. the rights: the collector's user is a contained database user (authentication DATABASE) holding CONNECT and
@@ -41,7 +43,10 @@
 #                       running for each of the four once the -form azuresqldb script ran
 #       mssql_waiting_tasks  [added at the release join, written before its first run here] status ok, never partial,
 #                       its read stored (one mssql_waiting_summary row) with as many task rows as the row says it kept;
-#                       its tasks are NOT compared with a live waiter here (the verdict says so)
+#                       [165b, written before its first run:] a blocked pair the setup login makes on a global temp
+#                       table (a holder's open UPDATE, a waiter's UPDATE of the same row waiting LCK_M_X): the waiter's
+#                       task stored (session, wait type, blocker = the holder, database) equals the setup login's read of
+#                       the collector's query (darling_waiting.go, PerformanceMonitor's WHERE clause) before and after
 #     SKIP - status skipped, the note names Azure SQL Database, the run prints "skipped:", and the collection's own
 #       tables hold no row for the instance: mssql_services, mssql_ag, mssql_mirroring, mssql_logshipping,
 #       mssql_replication, mssql_jobs, mssql_backups, mssql_storage, mssql_versionstore, mssql_cpu, mssql_memory,
@@ -56,14 +61,17 @@
 #        Added at the release join: mssql_reports, skipped by its own rule (no server roles, SQL logins or service
 #        list of its own to read), its seven tables empty for the instance.]
 #     A skip is never counted as collected or as failed; a RUN collection skipped for a missing right is a FAIL.
-#  C. the pages: GET /api/mssql/summary gives the instance the cells availability, backups, jobs, storage, dbstate,
-#     agent, dbmail, dumps and qs as n/a (every collection of the group skipped) and blocking, events and uptime as
-#     ok [after the join: audit n/a too; the collections that feed an ok cell run again right before C, so no cell
-#     reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
+#  C. the pages: GET /api/mssql/summary gives the instance blocking, events and uptime as ok and every other cell
+#     the tree's Summary has as n/a (every collection of the group skipped; the keys are read from the API, not
+#     listed here: task P08 made them DBA Dash's, e.g. full/diff/log for backups) [the collections that feed an ok
+#     cell run again right before C, so no cell reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
 #     yet"; each SQL Server tab of the instance renders without an error line, and each tab whose collections are
 #     all skipped here says so (the skip's own text, or "not on this platform") [at the release join: the Storage
-#     folder's Drives, DB Space, Files and Drive Performance too, and Waiting tasks renders; the Reports tabs are not
-#     checked here yet].
+#     folder's Drives, DB Space, Files and Drive Performance too, and Waiting tasks renders] [165b: the Reports folder's
+#     fourteen tabs render; the six of mssql_reports (Database Extended Properties, Failed Logins, Server Role Members,
+#     Server Services, SQL Login Password Age, Table Size) each say mssql_reports is skipped here (web/src/main.ts's
+#     mssqlTabRuns holds the six since 43c3fbb, F14; reports.ts has no text naming Azure SQL Database, so the check
+#     catches a lost mssqlTabRuns entry)].
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
 #     permissions, role members and event sessions read by the setup login after the proof's own setup equal the
 #     same read after every collector run.
@@ -103,6 +111,7 @@ cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
   [ -n "$WAITER" ] && { docker rm -f "$WAITER" >/dev/null 2>&1 || true; }
+  for c in ${HOLDER:-} ${WTR:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form azuresqldb -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null \
     && docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$AZ_HOST,${AZ_PORT:-1433}" -U "$ADMIN_USER" -d "$AZ_DB" -C -b -l 60 -i /dev/stdin < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
@@ -248,13 +257,44 @@ PY
     [[ $SRC == *sys.dm_db_wait_stats* ]] && VERDICT[mssql_waits]="PASS ($OUT)" || { VERDICT[mssql_waits]="FAIL"; bad "B: mssql_waits source '$SRC' (want sys.dm_db_wait_stats)"; }
   else VERDICT[mssql_waits]="FAIL"; bad "B: mssql_waits: $OUT"; fi
 fi
-# mssql_waiting_tasks: its read stored, self-consistent; not compared with a live waiter here
-if run_ok mssql_waiting_tasks; then
-  GOT=$(q "select s.stored || '|' || s.tasks || '|' || (select count(*) from pgvigil.mssql_waiting_tasks t where t.instance_id=s.instance_id and t.snapshot_at=s.snapshot_at) from pgvigil.mssql_waiting_summary s where s.instance_id=$iid order by s.snapshot_at desc limit 1")
-  IFS='|' read -r KEPT SEEN NT <<<"$GOT"
-  if [ -n "$GOT" ] && [ "$KEPT" = "$NT" ] && [ "$KEPT" -le "$SEEN" ]; then VERDICT[mssql_waiting_tasks]="OK ($SEEN task(s) seen, $NT stored; not compared with a live waiter)"
-  else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: the newest read '$GOT' (want stored = the task rows of the read, at most the tasks seen)"; fi
+# mssql_waiting_tasks (165b): a blocked pair the setup login makes on a global temp table (in tempdb, so nothing joins
+# the database's own objects that part D compares): the holder updates its row in an open transaction, the waiter updates
+# the same row and waits LCK_M_X; the waiter's task stored (session, wait type, blocker, database) equals the setup
+# login's read of the collector's query (darling_waiting.go: PerformanceMonitor's read and WHERE clause, the blocker
+# that is the reader itself dropped) before and after the run; the newest read's own counts agree (stored = its task rows)
+GT="##pgvproof_wt_$SUF"; HOLDER=pgvproof-hold-$SUF; WTR=pgvproof-wtr-$SUF
+docker run -d --name "$HOLDER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$AZ_HOST,${AZ_PORT:-1433}" -U "$ADMIN_USER" -d "$AZ_DB" -C -l 60 \
+  -H "$HOLDER" -Q "SET NOCOUNT ON; CREATE TABLE $GT (id int PRIMARY KEY, v int); INSERT $GT VALUES (1, 0); BEGIN TRAN; UPDATE $GT SET v = 1 WHERE id = 1; WAITFOR DELAY '00:01:30'; COMMIT;" >/dev/null
+HSID=
+for _ in $(seq 1 45); do HSID=$(sq "SELECT r.session_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.host_name = N'$HOLDER' AND r.wait_type = N'WAITFOR'"); [ -n "$HSID" ] && break; sleep 2; done
+WSID2=
+if [ -n "$HSID" ]; then
+  docker run -d --name "$WTR" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$AZ_HOST,${AZ_PORT:-1433}" -U "$ADMIN_USER" -d "$AZ_DB" -C -l 60 \
+    -H "$WTR" -Q "UPDATE $GT SET v = 2 WHERE id = 1;" >/dev/null
+  for _ in $(seq 1 30); do WSID2=$(sq "SELECT r.session_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.host_name = N'$WTR' AND r.wait_type = N'LCK_M_X'"); [ -n "$WSID2" ] && break; sleep 2; done
 fi
+WTSQL="SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT CAST(wt.session_id AS varchar(9)) + '|' + CAST(wt.wait_type AS nvarchar(60)) COLLATE DATABASE_DEFAULT + '|'
+  + ISNULL(CAST(NULLIF(wt.blocking_session_id, @@SPID) AS varchar(9)), '') + '|' + ISNULL(CAST(d.name AS nvarchar(256)) COLLATE DATABASE_DEFAULT, '')
+FROM sys.dm_os_waiting_tasks AS wt LEFT JOIN sys.dm_exec_requests AS er ON er.session_id = wt.session_id LEFT JOIN sys.databases AS d ON d.database_id = er.database_id
+WHERE wt.session_id >= 50 AND wt.session_id <> @@SPID AND wt.wait_type IS NOT NULL AND er.database_id <> ISNULL(DB_ID(N'PerformanceMonitor'), 0) AND wt.session_id = ${WSID2:-0}"
+if [ -z "$HSID" ] || [ -z "$WSID2" ]; then
+  VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: the blocked pair was not made (holder '$HSID' waiting WAITFOR, waiter '$WSID2' waiting LCK_M_X); the holder said '$(docker logs "$HOLDER" 2>&1 | tr -s ' \n' ' ' | cut -c1-300)', the waiter '$(docker logs "$WTR" 2>&1 | tr -s ' \n' ' ' | cut -c1-300)'"
+else
+  sq "$WTSQL" > "$WORK/wt-b.txt"
+  if run_ok mssql_waiting_tasks; then sq "$WTSQL" > "$WORK/wt-a.txt"
+    sed -i '/^[[:space:]]*$/d' "$WORK/wt-b.txt" "$WORK/wt-a.txt"
+    q "select session_id || '|' || wait_type || '|' || coalesce(blocking_session_id::text, '') || '|' || coalesce(database_name, '') from pgvigil.mssql_waiting_tasks
+       where instance_id=$iid and session_id=$WSID2 and snapshot_at = (select max(snapshot_at) from pgvigil.mssql_waiting_summary where instance_id=$iid)" > "$WORK/wt-s.txt"
+    GOT=$(q "select s.stored || '|' || s.tasks || '|' || (select count(*) from pgvigil.mssql_waiting_tasks t where t.instance_id=s.instance_id and t.snapshot_at=s.snapshot_at) from pgvigil.mssql_waiting_summary s where s.instance_id=$iid order by s.snapshot_at desc limit 1")
+    IFS='|' read -r KEPT SEEN NT <<<"$GOT"
+    if [ -s "$WORK/wt-s.txt" ] && cmp -s <(LC_ALL=C sort "$WORK/wt-s.txt") <(LC_ALL=C sort "$WORK/wt-b.txt") && cmp -s <(LC_ALL=C sort "$WORK/wt-s.txt") <(LC_ALL=C sort "$WORK/wt-a.txt") \
+       && grep -q "^$WSID2|LCK_M_X|$HSID|$AZ_DB\$" "$WORK/wt-s.txt" && [ "$KEPT" = "$NT" ] && [ "$KEPT" -le "$SEEN" ]; then
+      VERDICT[mssql_waiting_tasks]="PASS (the waiter, session $WSID2: $(head -1 "$WORK/wt-s.txt") stored, equal to the setup login's read of the collector's query before and after the run, the blocker the holder $HSID; the read $SEEN task(s) seen, $NT stored)"
+    else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: stored [$(tr '\n' ' ' < "$WORK/wt-s.txt")], the setup login read [$(tr '\n' ' ' < "$WORK/wt-b.txt")] before and [$(tr '\n' ' ' < "$WORK/wt-a.txt")] after (want '$WSID2|LCK_M_X|$HSID|$AZ_DB' on all three); the newest read '$GOT'"; fi
+  fi
+fi
+docker rm -f "$WTR" "$HOLDER" >/dev/null 2>&1 || true; WTR=; HOLDER=
 # mssql_xe: one state per capture, as the setup login reads the sessions
 if run_ok mssql_xe; then
   HAND=$(sq "SELECT c.capture + '|' + CASE WHEN x.name IS NOT NULL THEN 'running' WHEN d.name IS NOT NULL THEN 'stopped' ELSE 'not installed' END
@@ -285,27 +325,37 @@ else
   # cells is a table: {columns: [...], rows: [[...], ...]}
   GOT=$(jq -r --argjson i "$iid" '.cells as $t | ($t.columns | index("instance_id")) as $ci | ($t.columns | index("key")) as $ck | ($t.columns | index("state")) as $cs
     | [$t.rows[] | select(.[$ci] == $i) | "\(.[$ck])=\(.[$cs])"] | sort | join(" ")' "$WORK/sum.json")
-  WANT="agent=n/a audit=n/a availability=n/a backups=n/a blocking=ok dbmail=n/a dbstate=n/a disk=n/a dumps=n/a events=ok jobs=n/a qs=n/a storage=n/a uptime=ok"
-  [ "$GOT" = "$WANT" ] && echo "  summary cells: OK" || bad "C: the summary cells '$GOT', want '$WANT'"
+  # the cell keys come from the tree's own Summary (task P08 set them one for one under DBA Dash's): the three cells
+  # whose collections run here (blocking: mssql_requests, events: mssql_xe, uptime: mssql_instance) must say ok, every
+  # other cell n/a (its collection skipped by the platform rule); a key with any other state fails by its name
+  OKCELLS="blocking events uptime"; CBAD=""
+  for kv in $GOT; do k=${kv%%=*}; s=${kv#*=}
+    if [[ " $OKCELLS " == *" $k "* ]]; then [ "$s" = ok ] || CBAD+=" $k=$s (want ok)"; else [ "$s" = n/a ] || CBAD+=" $k=$s (want n/a)"; fi
+  done
+  for k in $OKCELLS; do [[ " $GOT " == *" $k="* ]] || CBAD+=" $k missing"; done
+  [ -z "$CBAD" ] && echo "  summary cells: OK ($(wc -w <<<"$GOT") cells: $OKCELLS ok, the rest n/a)" || bad "C: the summary cells:$CBAD (all: '$GOT')"
   if command -v chromium >/dev/null; then
     page() { timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/$1?i=$iid&w=1h" 2>/dev/null; }
     text() { python3 -c 'import sys,re,html; t=re.sub(r"<(script|style)[^>]*>.*?</\1>","",sys.stdin.read(),flags=re.S); print(html.unescape(re.sub(r"<[^>]+>"," ",t)))'; }
     page summary > "$WORK/p-summary.html" || true
     T=$(text < "$WORK/p-summary.html")
     grep -q 'azuresqldb' <<<"$T" || bad "C: the Summary page does not show the platform badge azuresqldb"
-    if grep -qE 'not read yet:[^.]*(Availability|Backups|Jobs|Storage|Drive space|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store|SQL Server Audit)' <<<"$T"; then
+    # the n/a groups by the page's own labels (web/src/fleet.ts: g.mssql[2] ?? g.label, task P08's set)
+    if grep -qE 'not read yet:[^.]*(Availability|Log shipping|Mirroring|Full backups|Differential backups|Log backups|Agent Jobs|Drive space|File space|Files at their max size|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store|SQL Server Audit|Last good CHECKDB|Log space|Suspect pages|Agent alerts|Identity columns)' <<<"$T"; then
       bad "C: the Summary page lists groups that do not run on Azure SQL Database as 'not read yet': $(grep -oE 'not read yet:[^.]*' <<<"$T" | head -1)"; fi
     declare -A SKIPTABS=([availability]="mssql_ag" [mssqlbackups]="mssql_backups" [mssqljobs]="mssql_jobs" [jobstimeline]="mssql_jobs" [mssqlstorage]="mssql_storage"
       [mssqlfiles]="mssql_storage" [rowversions]="mssql_versionstore" [mssqltempdb]="mssql_tempdb" [mssqlcpu]="mssql_cpu" [mssqlmemory]="mssql_memory"
       [mssqlfileio]="mssql_fileio" [mssqlqs]="mssql_querystore" [mssqlprocs]="mssql_procstats" [mssqlindexlocks]="mssql_indexlocks" [mssqlproperties]="mssql_properties"
       [mssqlplancache]="mssql_plancache" [mssqlindexes]="mssql_indexes" [mssqlaudit]="mssql_audit" [mssqlchecks]="mssql_checks" [mssqlerrorlog]="mssql_errorlog"
       [mssqltrace]="mssql_defaulttrace" [mssqlhealth]="mssql_syshealth"
-      [drives]="mssql_storage" [dbspace]="mssql_storage" [dbfiles]="mssql_storage" [driveperf]="mssql_fileio")
+      [drives]="mssql_storage" [dbspace]="mssql_storage" [dbfiles]="mssql_storage" [driveperf]="mssql_fileio"
+      [rp_props]="mssql_reports" [rp_failed]="mssql_reports" [rp_roles]="mssql_reports" [rp_services]="mssql_reports" [rp_pwage]="mssql_reports" [rp_tables]="mssql_reports")
     NTABS=0
     for tab in summary performance mssql_running mssql_slow mssql_waits mssql_deadlocks mssql_blocked findings availability mssqlbackups mssqljobs mssqlstorage mssqlfiles \
                rowversions mssqlconfig mssqlactions jobstimeline mssqlcpu mssqlmemory mssqlfileio mssqltempdb mssqlqs counters mssqlprocs mssqlindexlocks mssqlproperties \
                mssqlplancache mssqlindexes mssqlaudit mssqlchecks mssqlerrorlog mssqltrace mssqlhealth \
-               drives dbspace dbfiles driveperf mssql_waiting; do
+               drives dbspace dbfiles driveperf mssql_waiting \
+               rp_props rp_finder rp_dbdeleted rp_failed rp_flushed rp_killed rp_dbnew rp_actions rp_roles rp_services rp_pwage rp_tables customreports community; do
       NTABS=$((NTABS + 1))
       page "$tab" > "$WORK/p-$tab.html" || true
       T=$(text < "$WORK/p-$tab.html")
@@ -322,7 +372,7 @@ fi
 [ ! -s "$WORK/sq-failed" ] || bad "a read of the setup login failed during the run (its message is above): $(head -c 300 "$WORK/sq-failed" | tr '\n' ' ')"
 echo
 if [ ${#FAILS[@]} -eq 0 ]; then
-  echo "proof-mssql-azuresqldb: PASS (R, A, B: $(( ${#RUNS[@]} - 1 )) collected and equal, mssql_waiting_tasks collected, its tasks not compared with a live waiter, ${#SKIPS[@]} skipped by the platform rule; C; D)"
+  echo "proof-mssql-azuresqldb: PASS (R, A, B: ${#RUNS[@]} collected and equal (mssql_waiting_tasks against a blocked pair), ${#SKIPS[@]} skipped by the platform rule; C; D)"
 else
   echo "the failed items:"; printf '  - %s\n' "${FAILS[@]}"
   echo "proof-mssql-azuresqldb: FAIL (${#FAILS[@]} item(s))"; exit 1

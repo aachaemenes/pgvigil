@@ -21,9 +21,12 @@ import (
 // transaction's age, its last statement), trend (per step), xmin_summary, xmin_pins (which session held the oldest
 // xmin of its capture, and how often) and xmin_now (what holds the horizon now: vacuum_xmin_holders).
 //
-// SQL Server (migration 0064's snapshots and 0065's deadlocks): meta, trend (per step: snapshots, snapshots with a
-// blocked session, the most blocked, the longest wait, the most heads) and deadlock_trend (per step: deadlocks and
-// their processes); every step of the window is a row, an empty one with zeros, so a quiet stretch draws as zero.
+// SQL Server (migration 0064's snapshots, 0065's deadlocks and blocked-process reports, 0116): meta, trend (per step:
+// snapshots, snapshots with a blocked session, the most blocked, the longest wait, the most heads, the summed blocked
+// wait of the snapshot that had the most, the blocked-process reports and the blocked transactions they name),
+// deadlock_trend (per step: deadlocks and their processes) and pairs (the blocked / blocking pairs of the minute
+// snapshots over the window, pgvigil.mssql_block_pairs); every step of the window is a row, an empty one with zeros, so
+// a quiet stretch draws as zero.
 
 // historyMaxWindow is the longest window the history reads (one pass over the samples per part).
 const historyMaxWindow = 7 * 24 * time.Hour
@@ -56,21 +59,43 @@ SELECT h.snapshot_at, h.holder, h.name, h.datname, h.xmin_age, h.catalog_xmin_ag
  ORDER BY greatest(coalesce(h.xmin_age, 0), coalesce(h.catalog_xmin_age, 0)) DESC
  LIMIT 20`
 
-// sqlMssqlBlockingTrend: every step of the window; a step's numbers from the snapshots inside it.
+// sqlMssqlBlockingTrend: every step of the window; a step's numbers from the snapshots inside it (the summed wait:
+// the blocked requests' waits of one snapshot added up, the step's largest such sum) and from the blocked-process
+// reports raised inside it (pgvigil's own capture, else system_health's: migration 0116).
 const sqlMssqlBlockingTrend = `
 WITH b AS (
   SELECT g AS bucket FROM generate_series(to_timestamp(floor(extract(epoch FROM $2::timestamptz) / $4) * $4), $3::timestamptz, make_interval(secs => $4)) g
+), w AS (
+  SELECT q.snapshot_at, sum(q.wait_ms) AS summed_wait_ms
+    FROM pgvigil.mssql_requests q
+   WHERE q.instance_id = $1 AND q.snapshot_at > $2 AND q.snapshot_at <= $3
+     AND q.blocking_session_id > 0 AND q.blocking_session_id <> q.session_id
+   GROUP BY q.snapshot_at
 ), s AS (
-  SELECT to_timestamp(floor(extract(epoch FROM x.snapshot_at) / $4) * $4) AS bucket, x.blocked, x.heads, x.longest_wait_ms
-    FROM pgvigil.mssql_requests_summary x
+  SELECT to_timestamp(floor(extract(epoch FROM x.snapshot_at) / $4) * $4) AS bucket, x.blocked, x.heads, x.longest_wait_ms,
+         w.summed_wait_ms
+    FROM pgvigil.mssql_requests_summary x LEFT JOIN w ON w.snapshot_at = x.snapshot_at
    WHERE x.instance_id = $1 AND x.snapshot_at > $2 AND x.snapshot_at <= $3
+), r AS (
+  SELECT to_timestamp(floor(extract(epoch FROM x.event_at) / $4) * $4) AS bucket, count(*) AS reports,
+         count(DISTINCT coalesce(x.transaction_id, -x.blocked_spid)) AS blocked_transactions
+    FROM pgvigil.mssql_blocked_reports x
+   WHERE x.instance_id = $1 AND x.event_at > $2 AND x.event_at <= $3
+     AND (x.source = 'product' OR NOT EXISTS (SELECT 1 FROM pgvigil.mssql_blocked_reports p
+            WHERE p.instance_id = $1 AND p.event_at > $2 AND p.event_at <= $3 AND p.source = 'product'))
+   GROUP BY 1
 )
 SELECT b.bucket AS snapshot_at, count(s.bucket)::int AS snapshots, count(*) FILTER (WHERE s.blocked > 0)::int AS with_blocking,
        coalesce(max(s.blocked), 0) AS blocked_max, coalesce(max(s.heads), 0) AS heads_max,
-       CASE WHEN count(s.bucket) > 0 THEN coalesce(max(s.longest_wait_ms) FILTER (WHERE s.blocked > 0), 0) END AS longest_wait_ms
-  FROM b LEFT JOIN s ON s.bucket = b.bucket
+       CASE WHEN count(s.bucket) > 0 THEN coalesce(max(s.longest_wait_ms) FILTER (WHERE s.blocked > 0), 0) END AS longest_wait_ms,
+       CASE WHEN count(s.bucket) > 0 THEN coalesce(max(s.summed_wait_ms), 0) END AS summed_wait_ms,
+       coalesce(max(r.reports), 0)::int AS reports, coalesce(max(r.blocked_transactions), 0)::int AS blocked_transactions
+  FROM b LEFT JOIN s ON s.bucket = b.bucket LEFT JOIN r ON r.bucket = b.bucket
  GROUP BY b.bucket
  ORDER BY b.bucket`
+
+// sqlMssqlBlockPairs: the blocked / blocking pairs of the minute snapshots over the window (migration 0116)
+const sqlMssqlBlockPairs = `SELECT * FROM pgvigil.mssql_block_pairs($1, $2, $3) LIMIT 500`
 
 const sqlMssqlDeadlockTrend = `
 WITH b AS (
@@ -115,6 +140,7 @@ func (s *Server) BlockingHistory(w http.ResponseWriter, r *http.Request) {
 			meta,
 			{"trend", sqlMssqlBlockingTrend, []any{id, from, to, step}},
 			{"deadlock_trend", sqlMssqlDeadlockTrend, []any{id, from, to, step}},
+			{"pairs", sqlMssqlBlockPairs, []any{id, from, to}},
 		})
 		return
 	}

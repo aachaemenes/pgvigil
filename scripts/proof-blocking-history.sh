@@ -45,7 +45,8 @@
 #     an open transaction, a second waits on it), then a deadlock between two of the proof's own sessions, read by
 #     `collect -once mssql_xe` (retried for up to 60 s while the event reaches the file): one row in mssql_deadlocks
 #     for the proof's database, 2 processes, 1 victim, the graph XML whole. The API (/api/blocking/history, pgvigil
-#     serve -no-login): for the SQL Server instance the parts meta, trend, deadlock_trend; the trend's steps sum to 2
+#     serve -no-login): for the SQL Server instance the parts meta, trend, deadlock_trend, pairs (since task 177 D04: at least one
+#     blocked / blocking pair, the chain both snapshots saw); the trend's steps sum to 2
 #     snapshots, 2 with a blocked session, the most blocked at least 1, a longest wait above 0; deadlock_trend's steps
 #     sum to the repository's count of the instance's deadlocks in the window (at least 1); every step of the window
 #     is a row (both parts hold floor((to - floor(from / step) * step) / step) + 1 rows). For the PostgreSQL instance the parts meta, summary, episodes, trend, xmin_summary, xmin_pins,
@@ -114,6 +115,9 @@ sq "CREATE TABLE dbo.dl_a (id int NOT NULL PRIMARY KEY, v int NOT NULL); CREATE 
 # the login's password reaches the server in a file, never on a command line (ps lists docker exec's arguments)
 umask 077; printf "CREATE LOGIN [%s] WITH PASSWORD = N'%s', CHECK_POLICY = OFF;\n" "$L1" "$P1" > "$TMPD/login.sql"
 docker cp -q "$TMPD/login.sql" "$CT:/tmp/pgvbh_login_$SUF.sql"; rm -f "$TMPD/login.sql"; MADE_L1=1
+# docker cp keeps the host owner and mode 0600; sqlcmd runs as the image's mssql user (a fresh 2022 container): the file
+# is handed to that user, still 0600 (on a sandbox that runs sqlcmd as root this changes nothing)
+docker exec -u 0 "$CT" sh -c "chown mssql /tmp/pgvbh_login_$SUF.sql 2>/dev/null || true"
 rc=0; docker exec -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -U sa -C -b -i "/tmp/pgvbh_login_$SUF.sql" >/dev/null || rc=$?
 docker exec -u 0 "$CT" rm -f "/tmp/pgvbh_login_$SUF.sql"
 [ $rc = 0 ] || fail "the login was not created"
@@ -255,7 +259,10 @@ python3 - "$TMPD/ms.json" "$NDL" <<'PY' || fail "C: the SQL Server parts"
 import json, sys
 d = json.load(open(sys.argv[1])); ndl = int(sys.argv[2])
 rows = lambda p: [dict(zip(d[p]["columns"], r)) for r in d[p]["rows"]]
-assert sorted(d) == ["deadlock_trend", "meta", "trend"], sorted(d)
+assert sorted(d) == ["deadlock_trend", "meta", "pairs", "trend"], sorted(d)
+# pairs since task 177 D04 (the blocked / blocking pairs of the minute snapshots, pgvigil.mssql_block_pairs): a grid
+assert isinstance(d["pairs"].get("columns"), list) and isinstance(d["pairs"].get("rows"), list), sorted(d["pairs"])
+assert len(d["pairs"]["rows"]) >= 1, d["pairs"]  # the chain both snapshots saw is one pair at least
 t = rows("trend"); dt = rows("deadlock_trend"); m = rows("meta")[0]
 assert m["engine"] == "sqlserver" and m["cut"] is False, m
 assert sum(r["snapshots"] for r in t) == 2 and sum(r["with_blocking"] for r in t) == 2, t

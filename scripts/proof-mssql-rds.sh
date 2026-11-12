@@ -18,10 +18,13 @@
 # What it makes, as the server's DBA would, and removes on every exit path the shell can catch: a repository
 # database pgvigil_rdsproof_<n> on the PostgreSQL; on the instance a database pgvproof_<n> (AUTO_CLOSE off, Query Store on, one
 # table, one procedure run in a loop by a session of the master user through the procedure reads (it ends by itself after
-# 600 s), one row lock wait between two sessions of the master user just before the index lock reads, a user there
+# 600 s), one row lock wait between two sessions of the master user just before the index lock reads (the locker holds
+# 90 s; the waiting session is part B's mssql_waiting_tasks fixture), a user there
 # for the collector's login) and the four
 # Extended Events sessions of `pgvigil mssql-xe -print -form server -install-id p<n>` (dropped by the -drop script);
-# one session of the master user that waits two minutes (part B's requests read).
+# one session of the master user that waits two minutes (part B's requests read); one 'Login failed for user
+# 'pgvproof_nl_<n>'' line in the instance's error log (a login attempt under a name no login has: nothing to lock, and
+# the line cannot be removed).
 #
 # Expected (written before the first run):
 #  R. the rights: the collector's login holds exactly VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE
@@ -37,7 +40,7 @@
 #  A. detection: `collect -once mssql_instance` stores the instance as engine sqlserver, platform rdssqlserver,
 #     server_version_num = major * 10000 + minor of the master user's ProductVersion; mssql_instance holds that
 #     ProductVersion, Edition (Express Edition (64-bit)), EngineEdition 4 and server name.
-#  B. each of the 32 SQL Server collections (21 before the join of wave 1) (the list is checked against internal/mssql's Name() functions), status
+#  B. each of the 34 SQL Server collections (21 before the join of wave 1, 32 before the release join) (the list is checked against internal/mssql's Name() functions), status
 #     ok and never partial, with rows equal to the master user's read of the same view:
 #       mssql_instance     sys.configurations' row count and 'max server memory (MB)'; sysinfo_read, cpu_count
 #       mssql_services     the services' names and states of sys.dm_server_services; Agent not expected (Express)
@@ -141,6 +144,24 @@
 #      read's instance; up to five read-collect-read cycles, a cycle where the cache dropped it compares nothing.
 #      plancache_health: a cycle passes when both reads agree for the proof's database and the stored counts equal them,
 #      up to five cycles (the counts move within seconds here).]
+#     [Task 165b, on the release join (written before its first run; s165-onjoin found the proof's list at 32 of 34 and
+#      procstats and plancache failing on a cache that recompiled between the reads):
+#       mssql_waiting_tasks the proof's own update, waiting LCK_M_X behind the locker in a session of its own: its task
+#                          stored (session, wait type, blocker, database) equals the master user's read of the collector's
+#                          query (darling_waiting.go: PerformanceMonitor's read and WHERE clause) before and after the run,
+#                          the blocker being the locker's session
+#       mssql_reports      each part the collector read equal to the master user's read of its query (reports.go): the
+#                          server role members (role, login, type, disabled), the SQL logins (name, disabled, policy,
+#                          expiration), the services (name, file), the proof's database's tables (rows); the failed logins
+#                          of a login the proof attempts under a name no login has, as many stored as the error log
+#                          holds within the collector's 3 hours; a part the login cannot read makes the collection
+#                          partial: a FAIL with the collector's note (reports.go reads the error log through
+#                          xp_readerrorlog / sp_readerrorlog only, not rds_read_error_log as errorlog.go does); the
+#                          extended properties part is not compared (the proof's database has none)
+#       F13: a procstats or plancache cycle in which the cache churned (nothing stored while it dropped plans between the
+#            reads; the proof's procedure stored as a plan neither read lists while the reads list different plans of
+#            it) is a dropped cycle and is run again, ten cycles at most for each; at the limit, FAIL with every cycle
+#            named. A stored plan neither read lists while both reads list the same plan fails at once.]
 #     except mssql_ag: skipped, the note "Always On is not enabled on this server" (RDS Express has no availability
 #     group; a rule of the server, said as skipped, never counted as collected or failed). A collection skipped for
 #     a missing right, partial, or failed is a FAIL with its note (the statement and the file are named in the report).
@@ -194,7 +215,7 @@ sqfile() { docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/
 cleanup() {
   rc=$?; set +e; trap '' INT TERM
   [ -n "$SRV" ] && { kill "$SRV" 2>/dev/null || true; }
-  for c in $WAITER $LOCKER $LOOPER; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  for c in $WAITER $LOCKER $LOOPER ${UPD:-}; do docker rm -f "$c" >/dev/null 2>&1 || true; done
   if [ -n "$MADE_XE" ]; then "$BIN" mssql-xe -print -drop -form server -install-id "$XEID" > "$WORK/xe-drop.sql" 2>/dev/null && sqfile < "$WORK/xe-drop.sql" >/dev/null 2>&1 \
     || echo "CLEANUP: the event sessions pgvigil_${XEID}_* were NOT dropped" >&2; fi
   if [ -n "$MADE_FDB" ]; then
@@ -296,7 +317,8 @@ echo "--- B. every collection"
 mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls internal/mssql/*.go | grep -v _test.go) | sed 's/.*Prefix + "\([a-z_]*\)"/mssql_\1/' | sort)
 ALL=(mssql_instance mssql_services mssql_requests mssql_waits mssql_xe mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups
   mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
-  mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags)
+  mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags
+  mssql_waiting_tasks mssql_reports)
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${ALL[@]}" | sort | tr '\n' ' ')" ] || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
@@ -336,6 +358,9 @@ if sys.argv[5] == "evict":
         print(f"{len(s)} stored, {len(b)} before, {len(a)} after{note}"); print("no stored key is listed by either read"); sys.exit(2)
     gone = sum(1 for k in b if k not in a); unread = sum(1 for k in s if k not in b and k not in a)
     note = f"; {len(kept)} listed by both reads, {gone} dropped by the cache between them, {unread} stored and listed by neither"
+    if not s and gone and not errs and not must:
+        # the cache dropped what the collector could have stored between the reads: a dropped cycle (F13), not a verdict
+        print(f"0 stored, {len(b)} before, {len(a)} after{note}"); print("nothing stored: the cache churned between the reads"); sys.exit(2)
 else:
     errs = [f"{k} stored {v}, before {b.get(k)}, after {a.get(k)}" for k, v in s.items()
             if k not in a or any(x < y for x, y in zip(v, b.get(k, [0] * len(v)))) or any(x > y for x, y in zip(v, a[k]))]
@@ -389,30 +414,77 @@ LOOPER=pgvproof-loop-$SUF
 docker run -d --name "$LOOPER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
   -H "$LOOPER" -Q "SET NOCOUNT ON; DECLARE @end datetime2 = DATEADD(second, 600, SYSUTCDATETIME()); WHILE SYSUTCDATETIME() < @end BEGIN EXEC dbo.pgvproof_p; WAITFOR DELAY '00:00:00.050'; END" >/dev/null
 HSQL="SELECT ISNULL(MAX(execution_count), 0) FROM sys.dm_exec_procedure_stats WHERE database_id = $FDBID AND object_id = $POBJ"
+KSQL="SELECT ISNULL(MAX(CONVERT(varchar(130), plan_handle, 1) + '@' + CONVERT(varchar(23), cached_time, 121)), '') FROM sys.dm_exec_procedure_stats WHERE database_id = $FDBID AND object_id = $POBJ"
 HB=0
 for _ in $(seq 1 30); do HB=$(sq "$HSQL"); [ "$HB" -ge 1 ] && break; sleep 1; done
-sq "$PSQL_" > "$WORK/p-b.txt"
-if run_ok mssql_procstats; then sq "$PSQL_" > "$WORK/p-a.txt"; HA=$(sq "$HSQL")
+# a cycle (read, the collector's run, read) whose stored plan of the proof's procedure neither read lists while the two
+# reads list different plans of it (the cache recompiled it between them) is a dropped cycle and is run again, ten
+# cycles at most (F13; s165-onjoin: the plan stored at 03:52:38.483, compiled after the first read and gone before
+# the second); a stored plan neither read lists while both reads list the same plan fails at once
+PSDONE=; PSWHY=
+if [ "$HB" -lt 1 ]; then VERDICT[mssql_procstats]="FAIL"; PSDONE=1; bad "B: mssql_procstats: the proof's procedure was never listed by the master user's read while a session ran it in a loop; the looper: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$LOOPER" 2>&1 | tr '\n' ' ') output '$(docker logs "$LOOPER" 2>&1 | tail -5 | tr -s ' \n' ' ' | cut -c1-300)'"; fi
+for pcyc in $(seq 1 10); do
+  [ -n "$PSDONE" ] && break
+  HB=$(sq "$HSQL"); KB=$(sq "$KSQL"); sq "$PSQL_" > "$WORK/p-b.txt"   # the plan list last, right before the run
+  run_ok mssql_procstats || { PSDONE=1; break; }
+  sq "$PSQL_" > "$WORK/p-a.txt"; HA=$(sq "$HSQL"); KA=$(sq "$KSQL")
   q "select plan_handle || '@' || to_char(cached_time, 'YYYY-MM-DD HH24:MI:SS.MS') || '|' || execution_count from pgvigil.mssql_proc_last where instance_id=$iid" > "$WORK/p-s.txt"
-  bracket mssql_procstats "$WORK/p-b.txt" "$WORK/p-a.txt" "$WORK/p-s.txt" "" evict
+  rc=0; bracket mssql_procstats "$WORK/p-b.txt" "$WORK/p-a.txt" "$WORK/p-s.txt" "" evict quiet || rc=$?
   PX=$(q "select coalesce(max(execution_count), 0) from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID and object_id=$POBJ")
   PK=$(q "select plan_handle || '@' || to_char(cached_time, 'YYYY-MM-DD HH24:MI:SS.MS') from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID and object_id=$POBJ order by execution_count desc limit 1")
-  if [ "$HB" -lt 1 ]; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: the proof's procedure was never listed by the master user's read while a session ran it in a loop; the looper: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$LOOPER" 2>&1 | tr '\n' ' ') output '$(docker logs "$LOOPER" 2>&1 | tail -5 | tr -s ' \n' ' ' | cut -c1-300)'"
-  elif [ -z "$PK" ] || ! grep -qiF -- "$PK|" "$WORK/p-b.txt" "$WORK/p-a.txt"; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: the proof's procedure (database $FDBID, object $POBJ) stored as '$PK' with $PX execution(s), a plan neither read lists (the master user read $HB executions before the run, $HA after it); stored for that database: '$(q "select string_agg(object_id || ':' || plan_handle || '@' || to_char(cached_time, 'YYYY-MM-DD HH24:MI:SS.MS') || ':' || execution_count, ',') from pgvigil.mssql_proc_last where instance_id=$iid and database_id=$FDBID")'"
-  elif [[ ${VERDICT[mssql_procstats]} == PASS* ]]; then VERDICT[mssql_procstats]="${VERDICT[mssql_procstats]}; the proof's procedure stored with $PX executions (read $HB before, $HA after$(if [ "$HB" = "$HA" ]; then echo '; the counter did not move between the reads'; fi))"
+  if [ $rc -eq 1 ]; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats (cycle $pcyc): $BR_OUT"; PSDONE=1; break; fi
+  if [ -n "$PK" ] && grep -qiF -- "$PK|" "$WORK/p-b.txt" "$WORK/p-a.txt"; then
+    if [ $rc -eq 0 ]; then
+      VERDICT[mssql_procstats]="PASS ($(tr '\n' ' ' <<<"$BR_OUT" | cut -c1-200); cycle $pcyc of 10${PSWHY:+; dropped:$PSWHY}); the proof's procedure stored with $PX executions (read $HB before, $HA after$(if [ "$HB" = "$HA" ]; then echo '; the counter did not move between the reads'; fi))"
+      PSDONE=1; break
+    fi
   fi
-fi
+  if [ "${KB,,}" != "${KA,,}" ] || [ -z "$KB" ] || [ -z "$KA" ]; then
+    PSWHY="$PSWHY cycle $pcyc: stored '$PK' ($PX), read before '$KB', after '$KA': the cache recompiled it between the reads;"
+    continue
+  fi
+  VERDICT[mssql_procstats]="FAIL"; PSDONE=1
+  bad "B: mssql_procstats (cycle $pcyc): the proof's procedure (database $FDBID, object $POBJ) stored as '$PK' with $PX execution(s), a plan neither read lists while both list '$KB' (the master user read $HB executions before the run, $HA after it); $(tr '\n' ' ' <<<"$BR_OUT")"
+done
+if [ -z "$PSDONE" ]; then VERDICT[mssql_procstats]="FAIL"; bad "B: mssql_procstats: no cycle of ten met a stored plan of the proof's procedure in a read:$(cut -c1-900 <<<"$PSWHY")"; fi
 docker rm -f "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
 # one row lock wait on pk_t: a session holds the row for 45 seconds, the proof's update waits for it
 LOCKER=pgvproof-lock-$SUF
 docker run -d --name "$LOCKER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
-  -H "$LOCKER" -Q "BEGIN TRAN; UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:45'; COMMIT;" >/dev/null
+  -H "$LOCKER" -Q "BEGIN TRAN; UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:01:30'; COMMIT;" >/dev/null
 # the proof's update starts only once the locker holds its row (run 10: the container connected after it, no wait)
 HELD=0
 for _ in $(seq 1 30); do HELD=$(sq "SELECT COUNT(*) FROM sys.dm_tran_locks l JOIN sys.dm_exec_sessions s ON s.session_id = l.request_session_id
   WHERE s.host_name = N'$LOCKER' AND l.resource_type = 'KEY' AND l.request_mode = 'X' AND l.request_status = 'GRANT'"); [ "$HELD" -ge 1 ] && break; sleep 1; done
 [ "$HELD" -ge 1 ] || bad "B: the proof's lock wait was not set up: the locker session never held its row; the locker: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$LOCKER" 2>&1 | tr '\n' ' ') output '$(docker logs "$LOCKER" 2>&1 | tr -s ' \n' ' ' | cut -c1-300)'; its session as the master user reads it: $(sq "SELECT ISNULL(STRING_AGG(CAST(s.session_id AS varchar(5)) + ':' + s.status + ':' + ISNULL(r.wait_type, '-') + ':' + CAST(ISNULL(r.blocking_session_id, 0) AS varchar(5)), ','), 'none') FROM sys.dm_exec_sessions s LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id WHERE s.host_name = N'$LOCKER'" 2>&1 | tr '\n' ' ' || true)"
-sq "UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1;" "$FDB" >/dev/null
+# mssql_waiting_tasks (F12): the proof's update waits for the locker in a session of its own; the waiting task the
+# collector stores for it equals the master user's read of the collector's own query (PerformanceMonitor's read,
+# darling_waiting.go waitingSQL: its WHERE clause, the blocker that is the reader itself dropped) before and after the run
+UPD=pgvproof-upd-$SUF
+docker run -d --name "$UPD" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
+  -H "$UPD" -Q "UPDATE dbo.t WITH (ROWLOCK) SET v = v + 1 WHERE id = 1;" >/dev/null
+US=
+for _ in $(seq 1 30); do US=$(sq "SELECT r.session_id FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id WHERE s.host_name = N'$UPD' AND r.wait_type = N'LCK_M_X'"); [ -n "$US" ] && break; sleep 1; done
+LBS=$(sq "SELECT MIN(session_id) FROM sys.dm_exec_sessions WHERE host_name = N'$LOCKER'")   # read while the locker surely holds
+WTSQL="SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+SELECT CAST(wt.session_id AS varchar(9)) + '|' + CAST(wt.wait_type AS nvarchar(60)) COLLATE DATABASE_DEFAULT + '|'
+  + ISNULL(CAST(NULLIF(wt.blocking_session_id, @@SPID) AS varchar(9)), '') + '|' + ISNULL(CAST(d.name AS nvarchar(256)) COLLATE DATABASE_DEFAULT, '')
+FROM sys.dm_os_waiting_tasks AS wt LEFT JOIN sys.dm_exec_requests AS er ON er.session_id = wt.session_id LEFT JOIN sys.databases AS d ON d.database_id = er.database_id
+WHERE wt.session_id >= 50 AND wt.session_id <> @@SPID AND wt.wait_type IS NOT NULL AND er.database_id <> ISNULL(DB_ID(N'PerformanceMonitor'), 0) AND wt.session_id = ${US:-0}"
+if [ -z "$US" ]; then VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: the proof's update never waited LCK_M_X behind the locker (the locker held: $HELD)"
+else
+  sq "$WTSQL" > "$WORK/wt-b.txt"
+  if run_ok mssql_waiting_tasks; then sq "$WTSQL" > "$WORK/wt-a.txt"
+    q "select session_id || '|' || wait_type || '|' || coalesce(blocking_session_id::text, '') || '|' || coalesce(database_name, '') from pgvigil.mssql_waiting_tasks
+       where instance_id=$iid and session_id=$US and snapshot_at = (select max(snapshot_at) from pgvigil.mssql_waiting_summary where instance_id=$iid)" > "$WORK/wt-s.txt"
+    sed -i '/^[[:space:]]*$/d' "$WORK/wt-b.txt" "$WORK/wt-a.txt"
+    if [ -s "$WORK/wt-s.txt" ] && cmp -s <(LC_ALL=C sort "$WORK/wt-s.txt") <(LC_ALL=C sort "$WORK/wt-b.txt") && cmp -s <(LC_ALL=C sort "$WORK/wt-s.txt") <(LC_ALL=C sort "$WORK/wt-a.txt") \
+       && grep -q "^$US|LCK_M_X|$LBS|$FDB\$" "$WORK/wt-s.txt"; then
+      VERDICT[mssql_waiting_tasks]="PASS (the proof's update, session $US: $(head -1 "$WORK/wt-s.txt") stored, equal to the master user's read of the collector's query before and after the run; the blocker is the locker's session $LBS)"
+    else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: stored [$(tr '\n' ' ' < "$WORK/wt-s.txt")], the master user read [$(tr '\n' ' ' < "$WORK/wt-b.txt")] before and [$(tr '\n' ' ' < "$WORK/wt-a.txt")] after (want '$US|LCK_M_X|$LBS|$FDB' on all three)"; fi
+  fi
+fi
+docker wait "$UPD" >/dev/null 2>&1 || true; docker rm -f "$UPD" >/dev/null 2>&1 || true; UPD=
 docker wait "$LOCKER" >/dev/null 2>&1 || true; docker rm -f "$LOCKER" >/dev/null 2>&1 || true; LOCKER=
 # the collector reads only the online databases its login can enter, never the engine's catalog tables (object ids 1 to
 # 100: indexlocks.go); the hand read mirrors both, the database list read as the collector's login
@@ -747,6 +819,39 @@ if run_ok mssql_defaulttrace; then sq "$DTSQL" > "$WORK/dt-h.txt"
   [[ $RS == read\|* ]] || RS="$RS (the collector's login: ALTER TRACE $(sqmon "SELECT CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER TRACE'), 0) AS varchar(1))" || echo '?'); the master user's own: $(sq "SELECT ISNULL(STRING_AGG(state_desc, ','), 'none') FROM sys.server_permissions WHERE grantee_principal_id = SUSER_ID() AND permission_name = N'ALTER TRACE'" || echo '?'))"
   [[ ${VERDICT[mssql_defaulttrace]} == PASS* ]] || echo "  mssql_defaulttrace: the reader's state '$RS'"
   also mssql_defaulttrace "$([[ $RS == read\|* ]] && echo 1 || echo 0)" "the reader's state '$RS'"
+fi
+# mssql_reports (F12): each part the collector read equals the master user's read of the collector's own query
+# (reports.go): the server role members, the SQL logins, the services, the proof's database's tables (rows), and the
+# failed logins of a login the proof attempts with a name no login has, as many stored as the error log holds; the
+# extended properties part is not compared (the proof's database has none). A part the login cannot read makes the
+# collection partial (run_ok's FAIL with the collector's note).
+NL=pgvproof_nl_$SUF
+SQLCMDPASSWORD=Nx9$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')a! docker run --rm -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$NL" -C -l 30 -Q "SELECT 1" >/dev/null 2>&1 || true
+if run_ok mssql_reports; then
+  PARTS=$(q "select string_agg(part || '=' || status, ' ' order by part) from pgvigil.report_read_state where instance_id=$iid")
+  FLST=$(q "select status || '|' || coalesce(note, '') from pgvigil.report_read_state where instance_id=$iid and part='failed_logins'")
+  { q "select 'role|' || role_name || '|' || login_name || '|' || coalesce(login_type, '') || '|' || coalesce(is_disabled::int::text, '') from pgvigil.mssql_server_role_members where instance_id=$iid and is_present"
+    q "select 'login|' || login_name || '|' || coalesce(is_disabled::int::text, '') || '|' || coalesce(is_policy_checked::int::text, '') || '|' || coalesce(is_expiration_checked::int::text, '') from pgvigil.mssql_sql_logins where instance_id=$iid and is_present"
+    q "select 'service|' || service_name || '|' || coalesce(filename, '') from pgvigil.mssql_service_ext where instance_id=$iid"
+    q "select 'table|' || schema_name || '.' || table_name || '|' || coalesce(row_count::text, '') from pgvigil.mssql_table_size where instance_id=$iid and database_name='$FDB' and snapshot_at = (select max(snapshot_at) from pgvigil.mssql_table_size where instance_id=$iid and database_name='$FDB')"
+    if [[ $FLST == read\|* ]]; then q "select 'failed|$NL|' || count(*) from pgvigil.mssql_failed_logins where instance_id=$iid and login_name='$NL'"; fi
+  } > "$WORK/rp-s.txt"
+  { sq "SELECT 'role|' + CAST(r.name AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '|' + CAST(m.name AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '|' + CAST(m.type AS nvarchar(2)) COLLATE DATABASE_DEFAULT + '|' + CAST(CAST(m.is_disabled AS int) AS varchar(1))
+      FROM sys.server_role_members rm JOIN sys.server_principals r ON r.principal_id = rm.role_principal_id JOIN sys.server_principals m ON m.principal_id = rm.member_principal_id"
+    sq "SELECT 'login|' + CAST(l.name AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '|' + CAST(CAST(l.is_disabled AS int) AS varchar(1)) + '|' + CAST(CAST(l.is_policy_checked AS int) AS varchar(1)) + '|' + CAST(CAST(l.is_expiration_checked AS int) AS varchar(1))
+      FROM sys.sql_logins l WHERE l.name NOT LIKE '##%##'"
+    sq "SELECT 'service|' + CAST(servicename AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '|' + ISNULL(CAST(filename AS nvarchar(512)) COLLATE DATABASE_DEFAULT, '') FROM sys.dm_server_services"
+    sq "SELECT 'table|' + CAST(s.name AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '.' + CAST(o.name AS nvarchar(256)) COLLATE DATABASE_DEFAULT + '|' + CAST(SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.row_count ELSE 0 END) AS varchar(20))
+      FROM sys.dm_db_partition_stats ps JOIN sys.objects o ON o.object_id = ps.object_id JOIN sys.schemas s ON s.schema_id = o.schema_id
+      WHERE o.type = 'U' AND o.is_ms_shipped = 0 GROUP BY s.name, o.name" "$FDB"
+    if [[ $FLST == read\|* ]]; then sq "CREATE TABLE #pgvfl (d datetime, p nvarchar(64), t nvarchar(max)); INSERT #pgvfl EXEC sys.sp_readerrorlog 0, 1, N'Login failed', N'$NL';
+      SELECT 'failed|$NL|' + CAST(COUNT(*) AS varchar(9)) FROM #pgvfl WHERE d >= DATEADD(hour, -3, GETDATE());"; fi
+  } > "$WORK/rp-h.txt"
+  setcmp mssql_reports "$WORK/rp-s.txt" "$WORK/rp-h.txt"
+  also mssql_reports "$(grep -q '^table|dbo\.' "$WORK/rp-s.txt" && echo 1 || echo 0)" "the proof's database's tables stored"
+  if [[ $FLST == read\|* ]]; then also mssql_reports "$(grep -q "^failed|$NL|[1-9]" "$WORK/rp-s.txt" && echo 1 || echo 0)" "the proof's failed login ($NL) stored"
+  else also mssql_reports 0 "the failed_logins part not stored as read: '$FLST'"; fi
+  also mssql_reports 1 "parts: $PARTS"
 fi
 echo "  the collections:"
 for c in "${ALL[@]}"; do printf '    %-20s %s\n' "$c" "${VERDICT[$c]:-FAIL (no verdict)}"; done
