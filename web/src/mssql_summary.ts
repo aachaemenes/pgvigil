@@ -1,18 +1,26 @@
 // The Summary of one SQL Server instance: what the server is (the base collection's description), which status
 // groups are not OK (each a link to its page), and the findings the wave's collections raise for it.
-import { get, Row, rowsOf } from './api';
+import { get, Row, rowsOf, Table } from './api';
+import { AckData, loadAckSafe } from './ack';
 import { cellClass, cells, cellText, fleet, groups } from './fleet';
 import { Ctx, href } from './router';
 import { badge, el, fmtTime, grid, props, Col } from './ui';
+import { healthCalendar } from './healthcal';
 
 const sev = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const findingCols: Col[] = [
   { key: 'severity', fmt: sev }, { key: 'setting', label: 'check' }, { key: 'value', label: 'object' },
   { key: 'detail' }, { key: 'at', label: 'seen', fmt: fmtTime },
+  // PerformanceMonitor's Occurrences and First seen (task 177 D29): from the alert history (GET /api/ack part=seen):
+  // how many times the finding was raised anew and when first; '-' for a finding never sent
+  { key: '_occ', label: 'occurrences', num: true, fmt: v => v == null ? '-' : String(v) },
+  { key: '_first', label: 'first seen', fmt: v => v == null ? '-' : fmtTime(v) },
 ];
 
 export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
-  const [f, fi] = await Promise.all([fleet(), get('findings', { instance: ctx.instance })]);
+  const [f, fi, sn] = await Promise.all([fleet(), get('findings', { instance: ctx.instance }),
+    loadAckSafe(['seen'], { instance: ctx.instance }) as Promise<AckData & { seen?: Table | null }>]);
+  const seen = new Map(rowsOf(sn.seen ?? null).map(x => [`${String(x.setting ?? '')}\x1f${String(x.value ?? '')}`, x]));
   const r = f.instances.find(x => Number(x.instance_id) === ctx.instance);
   if (!r) return el('p', { class: 'empty' }, 'This instance is not in the repository (or no longer active).');
   const c = cells(f, r);
@@ -49,7 +57,12 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
     ['tags', Array.isArray(r.tags) ? r.tags.map(String).join(', ') : ''],
     ['description read', s.snapshot_at ? fmtTime(s.snapshot_at) : 'not yet'],
   ]));
-  const rows = rowsOf(fi).filter(x => Number(x.instance_id) === ctx.instance && x.severity !== 'info');
+  const rows = rowsOf(fi).filter(x => Number(x.instance_id) === ctx.instance && x.severity !== 'info').map(x => {
+    const k = seen.get(`${String(x.setting ?? '')}\x1f${String(x.value ?? '')}`);
+    return { ...x, _occ: k?.occurrences ?? null, _first: k?.first_seen ?? null };
+  });
   sec.append(el('h3', {}, `Findings (${rows.length})`), grid(rows, findingCols, 'No warning or critical finding on this instance.'));
+  // PerformanceMonitor's Daily Health Calendar (task 177 D29, healthcal.ts): read after the page is drawn
+  sec.append(healthCalendar(ctx, 'sqlserver'));
   return sec;
 }
