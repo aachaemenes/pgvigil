@@ -20,7 +20,7 @@ One line per job:
 | job | the job's name; a click opens its History and Changes under the grid |
 | enabled | `no` when the job (pg_cron: `active`) is off |
 | schedule | pg_cron's cron text; pgAgent's schedule is in the job's definition (Changes); SQL Server's schedules in words ("every day every 15 minutes between 00:00 and 23:59:59"), on the server's clock |
-| last run, outcome | when the newest run started and how it ended; a fill only when it failed (red) or was cancelled (amber) |
+| last run, outcome | when the newest run started and how it ended; coloured by the outcome (see Status and thresholds) |
 | last failure | when the newest failed run started, the step that failed and its message: the first 200 characters on one line, the whole text on a click |
 | next run | pg_cron: pgvigil's own reading of the schedule; pgAgent: its own `jobnextrun`; SQL Server: the Agent's |
 | runs, failures | the runs that started in the page's range, and how many failed |
@@ -167,4 +167,4 @@ pg_cron and pgAgent are not installed on the proof's PostgreSQL sandbox: `script
 pg_cron side over imported rows and pgAgent's SQL over a stand-in schema of the columns it reads. The SQL Server side
 runs against a real Agent job the proof makes, fails, changes and deletes. `scripts/proof-job-ddl.sh` proves the
 scripts, their diffs, the change log, the pivot and the trace flag history against a SQL Server container of its own.
-Not proven: the page in a browser; a real pg_cron (its script is built by the collector, the proof imports one).
+Not proven: the page in a browser (`scripts/proof-a11y.sh` renders the tab for accessibility only); a real pg_cron (its script is built by the collector, the proof imports one); a SQL Server job with an operator notification (the proof makes no operator).

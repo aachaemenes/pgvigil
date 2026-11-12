@@ -112,7 +112,7 @@ Neither session is ever started, stopped or altered. An `AlwaysOn_health` sessio
 
 - **Deadlocks**: the deadlocks of the range; one opened as its processes and resources with the victim marked; the graph as an `.xdl` download that SSMS opens.
 - **Blocked reports**: one row per blocking statement, the blocking side first; the reports of one statement.
-- **Slow queries**: by statement shape (a procedure call by its procedure; a statement sent through a driver's wrapper such as `sp_executesql` or `sp_prepexec` by the statement inside it; anything else by its text without literals; a call by handle, `sp_execute`, has no text and is named by its query hash): count, total and worst duration; the events of one shape; a chart of completions over time with its table. The **Attentions** section is below it.
+- **Slow queries**: by statement shape (a procedure call by its procedure; a statement sent through a driver's wrapper such as `sp_executesql` or `sp_prepexec` by the statement inside it; anything else by its text without literals; a call by handle, `sp_execute`, has no text and is named by its query hash): count, total and worst duration; the events of one shape; a chart of completions over time with its table. The **Attentions** section is below it. Not proven: these pages in a browser (the proof's part P grades their API; `scripts/proof-a11y.sh` renders them for accessibility only).
 
 ## Findings
 

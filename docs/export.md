@@ -3,14 +3,14 @@
 Every tab of the web UI can be saved as an Excel workbook (.xlsx) or as CSV, from the two buttons in the bar
 beside Refresh: **Export .xlsx** and **Export CSV**. The export is built in the browser from the page on the
 screen, so the file holds what the screen shows: the same rows in the same sort order, the same columns, the
-same colours. The pgvigil server is not involved, nothing is written on any server, and nothing leaves the
-browser but the file you save. The browser window opened by `pgvigil -open` and the Windows app download the
+same colours. The pgvigil server is read only for an instance's name (on an instance's tab), nothing is written on any server, and nothing leaves the
+browser but the file you save. Not proven (no proof saves a file from either): that the browser window opened by `pgvigil -open` and the Windows app download the
 same way as any browser.
 
 ## The workbook
 
 - **Summary** is the first sheet: the instance (or `fleet`, or the tag), the tab, the time window (its label,
-  its start and its end), the export time, the time zone the times in the file are written in (the browser's, as
+  its start and its end), the export time, the time zone the times in the file are written in (the display time zone: the browser's unless the range panel names another, as
   `America/Los_Angeles (UTC-08:00 at export)`; each time carries its own date's offset, so a window across a
   daylight-saving change holds two), and one line per data sheet with its row count and, when the page said
   it shows only the newest N of M rows (the Running queries samples), that note. Its header row and the
@@ -29,8 +29,8 @@ same way as any browser.
 - **A link cell is drawn as DBA Dash's link column**: a cell the screen draws as a link (an instance name that
   opens its page) has a light fill (`#F1F1F6`) and the link blue as its text colour (`#004F83`). No other cell
   is filled: a cell has the colour the screen gives it, and the rows are not banded.
-- **Status colours** are the screen's solid fills (DBA Dash's colours; the orange carries dark text, white on
-  it is 2.5:1) under a blue header row (`#0063A3`, white bold), whatever the theme or status style on screen:
+- **Status colours** are the screen's solid fills (DBA Dash's colours; the orange carries dark text)
+  under a blue header row (`#0063A3`, white bold), whatever the theme or status style on screen:
 
   | Screen            | Fill      | Text      |
   |-------------------|-----------|-----------|
@@ -75,8 +75,8 @@ same way as any browser.
   keeps the words; an integer past 2^53 (Excel's exact range) stays text so no digit is lost; a value that only
   looks like a number (a role named `0042`) stays the text it is. A grid built without the raw values (the Slow
   queries tab's Per day table) is read from its text: its numeric columns still export as numbers.
-- **Long text is the screen's text.** A statement or query is exported as the page shows it: cut at 400 or 600
-  characters with `...` and on one line, not the whole statement (the Statements tab's own page holds that). A
+- **Long text.** A statement the page cuts is exported as the page shows it: cut at 400 or 600
+  characters with `...` and on one line; a statement cell that opens the whole statement on a click exports the whole statement (`web/src/sqlview.ts`). Not proven: no proof part grades a long statement. A
   cell past Excel's 32,767-character limit is cut and says so.
 
 ## Beside DBA Dash's own export
@@ -138,8 +138,8 @@ selection does not (the cells are drawn again).
 `web/src/export.ts` writes the SpreadsheetML parts (the sheets, the styles, a table part per grid, the shared
 strings of the tables' header cells) and the zip
 container itself (deflate through the browser's `CompressionStream` when it has one, stored entries when not);
-no spreadsheet library is in the bundle, so no third-party code or licence is added. The export is about 13 KB
-of the bundle, the Excel tables and the grid tools (`web/src/gridtools.ts`) about 22 KB more. The grid helper in
+no spreadsheet library is in the bundle, so no third-party code or licence is added. The export, the Excel tables and the grid tools (`web/src/gridtools.ts`) are part
+of the bundle. The grid helper in
 `web/src/ui.ts` keeps each rendered grid's columns and its rows in the shown order beside the table, so the
 export writes raw values, not the formatted text, and knows each column by its key (the carried colours go by
 it). The grid tools read the page as the export does and change only how a grid is drawn; their lines come
