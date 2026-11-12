@@ -90,8 +90,9 @@
 #              a size on the screen) and of its texts computed in the critical or warning colour, else a bare class
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so)
-#   gridmenu   (P03) the fleet Backups grid's menu has one Export Excel line (no other line starting so), right after its
-#              copies (DBA Dash's grid menu: Copy, then Export Excel); clicked, it downloads fleet_Backups_<sheet>_<from>_<to>.xlsx: Summary + that grid's
+#   gridmenu   (P03) the fleet Backups grid's menu has one Export Excel line (no other line starting so: task 172's
+#              'Export Excel (this grid)' out of treemenu.ts, P03's WIRING BLOCK), right after its copies (DBA Dash's grid
+#              menu: Copy, then Export Excel); clicked, it downloads fleet_Backups_<sheet>_<from>_<to>.xlsx: Summary + that grid's
 #              sheet, its rows, every cell in the screen's colour, the widths by the rule; the grid's line says 'Exported <file>'
 #   summary drop-down (P03) the fleet Summary's bar has Export to Excel (aria-haspopup menu) with Export Summary and
 #              Export Test Summary; each downloads one grid's workbook (sheets Summary + 'Instance Summary' / 'Test
@@ -348,6 +349,10 @@ out.slow = await page('#/slowqueries?w=24h');
 // the fleet's Performance summary: a data bar's fill colours its cell, a CPU histogram (a picture whose top bucket is
 // painted critical even when empty) colours none
 out.perf = await page('#/perfsummary');
+// the rows whose CPU histogram cell holds the picture (a row with no CPU sample shows '-'): the no-fill check needs one
+out.perf.pictures = await ev(`(() => { const t = [...document.querySelectorAll('main table.grid')].find(x => [...x.querySelectorAll(':scope > thead > tr:first-child > th')].some(h => h.textContent.trim().startsWith('CPU histogram')));
+  if (!t) return 0; const j = [...t.querySelectorAll(':scope > thead > tr:first-child > th')].findIndex(h => h.textContent.trim().startsWith('CPU histogram'));
+  return [...t.querySelectorAll(':scope > tbody > tr')].filter(tr => tr.children[j]?.querySelector('[role=img]')).length; })()`);
 // a database's drill page (the Database info tab's first database link): its statements grid rounds to 0.1 ms, with
 // sub-millisecond, fractional and 1,000+ ms values in one column
 await cmd('Page.navigate', { url: U + `#/dbinfo?i=${one.instance_id}` }); await sleep(300);
@@ -732,7 +737,7 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         if hg:
             i, g0 = hg[0]; j = g0['head'].index('CPU histogram'); px_ = sheet_rows(z, i + 2)[0]; cc = cells_of(px_, sst)
             filled = [k for k in range(len(g0['cells'])) if cx[cc.get((k + 2, j), (0, None, None))[0]]['fill'] is not None]
-        check(bool(hg) and not filled, f"perf: the CPU histogram column has no fill in any of its rows (a picture, no status; {len(filled) if hg else 'no grid'} filled)")
+        check(bool(hg) and p.get('pictures', 0) >= 1 and not filled, f"perf: the CPU histogram column has no fill in any of its rows, {p.get('pictures')} of them holding the picture (a picture, no status; {len(filled) if hg else 'no grid'} filled)")
     if key == 'empty':
         tg = [g for g in gs if not g.get('empty')]   # the Tables tab's grids with a table: the filtered one is the last
         check(tg[-1]['rows'] == 0 and len(tg) > 1 and tg[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
@@ -851,7 +856,7 @@ def one_book(key, fname, inst, tab, sheet, g):
 gm = d.get('gridmenu') or {}
 its = gm.get('items') or []
 lastcopy = max([i for i, x in enumerate(its) if x.startswith('Copy')] or [-1])
-check('Export Excel' in its and its.index('Export Excel') == lastcopy + 1 and sum(1 for x in its if x.startswith('Export Excel')) == 1, f"gridmenu: the grid's menu has one Export Excel, right after its copies, as DBA Dash's grid menu ({its})")
+check('Export Excel' in its and its.index('Export Excel') == lastcopy + 1 and sum(1 for x in its if x.startswith('Export Excel')) == 1, f"gridmenu: the grid's menu has one Export Excel, right after its copies, as DBA Dash's grid menu (red with task 172's 'Export Excel (this grid)' still in web/src/treemenu.ts: P03's WIRING BLOCK takes it out) ({its})")
 if gm.get('xlsx'):
     g = gm['screen']
     # export.ts sheetNames for one name: Excel's refused characters a space, the quotes at either end off, runs of spaces
