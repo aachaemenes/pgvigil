@@ -26,6 +26,8 @@
 #   H. the collector's process is the one started in B (no restart) and logged each list it applied
 #   I. a second collector on the repository: it logs once that another collector holds the page's instances and
 #      collects the file's only (filepg), never a page instance
+#   J. the fenced lease: a take-over (the lease made 60 s old) bumps the generation; the first collector, superseded,
+#      drops the page's instances at its next tick; released, it takes the lease back with the next generation
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -402,4 +404,22 @@ PAGE2=$(grep 'scheduler: instances applied' "$TMPD/run2.log" | grep -oE ' instan
 kill "$RUN2PID" 2>/dev/null; wait "$RUN2PID" 2>/dev/null || true; RUN2PID=
 kill -0 "$RUNPID" 2>/dev/null || fail "I: the first collector stopped"
 echo "ok   I: a second collector said once that another holds the page's instances and applied the file's one instance only"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; the NOT PROVEN lines above stand)"
+
+echo "== J. a fenced lease: a take-over bumps the generation; the superseded holder stops at its next tick, then takes it back =="
+last_applied() { grep 'scheduler: instances applied' "$TMPD/run.log" | tail -1 | grep -oE ' instances=[0-9]+' | tr -d ' '; }
+BEFORE=$(last_applied); G1=$(pq "SELECT generation FROM pgvigil.admin_page_holder")
+[[ "$(pq "SELECT holder LIKE '%:$RUNPID:%' FROM pgvigil.admin_page_holder")" == t && "$G1" -ge 1 ]] || fail "J: the first collector (pid $RUNPID) does not hold the lease: $(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")"
+# a lease 60 s old and a take-over in one transaction (the holder's renewal waits on the row, then finds itself superseded)
+TG=$(pq "UPDATE pgvigil.admin_page_holder SET beat = now() - interval '60 seconds'; SELECT pgvigil.import_admin_page_lease('proof-taker', 0, 45)")
+[[ "$TG" == $((G1 + 1)) ]] || fail "J: the take-over got generation $TG (want $((G1 + 1)))"
+for _ in $(seq 1 45); do grep -q "another collector holds the page's instances" "$TMPD/run.log" && break; sleep 1; done
+grep -q "another collector holds the page's instances" "$TMPD/run.log" || fail "J: the superseded holder did not say so within 45 s"
+for _ in $(seq 1 20); do [[ "$(last_applied)" == "instances=1" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "instances=1" ]] || fail "J: the superseded holder still runs [$(last_applied)] (want the file's one instance)"
+[[ "$(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")" == "proof-taker $TG" ]] || fail "J: the superseded holder took the lease back while the taker's was alive"
+pq "SELECT pgvigil.import_admin_page_release('proof-taker', $TG)" >/dev/null
+for _ in $(seq 1 45); do grep -q "this collector holds the page's instances now" "$TMPD/run.log" && [[ "$(last_applied)" == "$BEFORE" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "$BEFORE" ]] || fail "J: after the release the first collector runs [$(last_applied)] (want [$BEFORE] again)"
+[[ "$(pq "SELECT generation FROM pgvigil.admin_page_holder")" == $((TG + 1)) ]] || fail "J: the take-back's generation is $(pq "SELECT generation FROM pgvigil.admin_page_holder") (want $((TG + 1)))"
+echo "ok   J: generation $G1 -> $TG (a take-over: the first collector superseded, the file's instance only) -> $((TG + 1)) (taken back: [$BEFORE] again)"
+echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; the NOT PROVEN lines above stand)"

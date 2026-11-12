@@ -107,11 +107,14 @@ page.
 Who may change them: every UI login can add, change, disable and remove instances and sources, and these writes need
 the actions door's audit login, as acknowledgements do. Give UI logins to the people who may change what is monitored.
 
-One collector per repository collects the page's instances: the holder of the repository's page lease (a row it renews
-every 15 seconds, which works through a transaction-mode pooler). A second `pgvigil run` on the same repository
-(another host with its own file's instances) collects its file's instances only, logs once that another collector
-holds the page's, and takes them over within 15 seconds of a clean stop of the first one, or within 90 seconds when
-the first one's host is lost.
+One collector per repository collects the page's instances: the holder of the repository's page lease, a row it
+renews every 15 seconds (it works through a transaction-mode pooler; every time in it is the repository's clock,
+never a host's). The lease expires 45 seconds (three renewals) after its last renewal. A second `pgvigil run` on the
+same repository (another host with its own file's instances) collects its file's instances only, logs once that
+another collector holds the page's, and takes them over within 15 seconds of a clean stop of the first one, or
+within about a minute when the first one's host is lost. The lease is fenced: each take-over bumps its generation,
+so a holder that comes back after a network partition finds itself superseded at its next renewal and stops
+collecting the page's instances within 15 seconds.
 
 A `custom:` check may name an instance or a tag only the page holds: the file's instances no longer decide, so a name
 or tag that matches nothing in the file is a warning at start, and the collector warns again when a check matches no

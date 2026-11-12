@@ -38,6 +38,7 @@ const oldLoopsWait = 35 * time.Second
 func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config) error {
 	lock := newPageLease(cfg.Repository.DSN())
 	defer lock.release()
+	go lock.keep(ctx)
 	s := newScheduler(log, oldLoopsWait, func(ictx context.Context, in config.Instance, wg *sync.WaitGroup) int {
 		return startInstance(ictx, log, r, cfg, in, wg)
 	})
@@ -144,21 +145,28 @@ func (s *scheduler) warnUnmatched(all []config.Instance) {
 	}
 }
 
-// pageLeaseTTL: a holder that has not renewed the lease for this long (stopped, its host lost, its watcher held by a
-// slow apply) gives the page's instances to the next collector that asks. Above the longest gap between renewals:
-// the 15 s tick plus apply's wait for old loops (35 s).
-const pageLeaseTTL = 90
+// The page lease: renewed every pageLeaseEvery on a goroutine of its own (never behind apply's wait for old loops),
+// taken by another collector once pageLeaseTTL passed without a renewal (three missed) - on the repository's clock.
+const (
+	pageLeaseEvery = 15 * time.Second
+	pageLeaseTTL   = 45
+)
 
 // pageLease: the page's instances belong to one collector of a repository, the holder of the page lease (0122's
-// admin_page_holder row, taken and renewed through import_admin_page_lease each tick on a connection of its own). A
-// second collector (another host with its own file's instances) collects its file's only: nothing is collected
-// twice and no host tries another's credential files. A row, not a session lock, so it holds through a
-// transaction-mode pooler and frees itself after pageLeaseTTL when the holder's host is lost; a clean stop frees it
-// at once.
+// admin_page_holder row, taken and renewed through import_admin_page_lease on a connection of its own). A second
+// collector (another host with its own file's instances) collects its file's only: nothing is collected twice and
+// no host tries another's credential files. A row, not a session lock, so it holds through a transaction-mode pooler
+// and frees itself pageLeaseTTL after the holder's host is lost; a clean stop frees it at once. Fenced: a take-over
+// bumps the generation and a renewal names the one it holds, so a holder superseded while away (a partition) is
+// refused at its next renewal and drops the page's instances at the watcher's next tick.
 type pageLease struct {
 	dsn    string
 	holder string
+	mu     sync.Mutex
 	conn   *pgx.Conn
+	gen    int64 // the generation held, 0 = none
+	err    error // the last renewal's error
+	asked  bool  // a renewal has run
 }
 
 func newPageLease(dsn string) *pageLease {
@@ -168,46 +176,79 @@ func newPageLease(dsn string) *pageLease {
 	return &pageLease{dsn: dsn, holder: fmt.Sprintf("%s:%d:%s", host, os.Getpid(), hex.EncodeToString(b))}
 }
 
-func (l *pageLease) connect(ctx context.Context) error {
-	// parsed as the repository's pool parses it: a DSN's pool_* keys never reach the server as startup parameters
-	pc, err := pgxpool.ParseConfig(l.dsn)
-	if err != nil {
-		return err
-	}
-	cc := pc.ConnConfig
-	cc.RuntimeParams["application_name"] = "pgvigil-page-lease"
-	c, err := pgx.ConnectConfig(ctx, cc)
-	if err != nil {
-		return err
-	}
-	l.conn = c
-	return nil
-}
-
-func (l *pageLease) hold(ctx context.Context) (bool, error) {
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+// renew takes or renews the lease once: the lease goroutine every pageLeaseEvery, and hold's first call.
+func (l *pageLease) renew(ctx context.Context) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.asked = true
+	// not cut by Run's end: a renewal in flight finishes, so release still holds the connection and frees the lease
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if l.conn == nil {
-		if err := l.connect(cctx); err != nil {
-			return false, err
+		// parsed as the repository's pool parses it: a DSN's pool_* keys never reach the server as startup parameters
+		pc, err := pgxpool.ParseConfig(l.dsn)
+		if err != nil {
+			l.err = err
+			return
 		}
+		cc := pc.ConnConfig
+		cc.RuntimeParams["application_name"] = "pgvigil-page-lease"
+		c, err := pgx.ConnectConfig(cctx, cc)
+		if err != nil {
+			l.err = err
+			return
+		}
+		l.conn = c
 	}
-	var ok bool
-	if err := l.conn.QueryRow(cctx, `SELECT pgvigil.import_admin_page_lease($1, $2)`, l.holder, pageLeaseTTL).Scan(&ok); err != nil {
+	var g int64
+	if err := l.conn.QueryRow(cctx, `SELECT pgvigil.import_admin_page_lease($1, $2, $3)`, l.holder, l.gen, pageLeaseTTL).Scan(&g); err != nil {
 		_ = l.conn.Close(context.Background())
 		l.conn = nil
-		return false, err
+		l.err = err
+		return
 	}
-	return ok, nil
+	l.gen, l.err = g, nil
+}
+
+// keep renews the lease until ctx ends.
+func (l *pageLease) keep(ctx context.Context) {
+	t := time.NewTicker(pageLeaseEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			l.renew(ctx)
+		}
+	}
+}
+
+// hold is WatchInventory's question: whether this collector holds the page's instances now (an error = the
+// repository did not answer the last renewal: the watcher keeps its last list).
+func (l *pageLease) hold(ctx context.Context) (bool, error) {
+	l.mu.Lock()
+	asked := l.asked
+	l.mu.Unlock()
+	if !asked {
+		l.renew(ctx)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.gen > 0, l.err
 }
 
 func (l *pageLease) release() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.conn == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = l.conn.Exec(ctx, `SELECT pgvigil.import_admin_page_release($1)`, l.holder)
+	if l.gen > 0 {
+		_, _ = l.conn.Exec(ctx, `SELECT pgvigil.import_admin_page_release($1, $2)`, l.holder, l.gen)
+	}
 	_ = l.conn.Close(ctx)
 	l.conn = nil
 }
