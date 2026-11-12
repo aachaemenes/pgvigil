@@ -71,7 +71,11 @@
 #  F. `pgvigil serve`: GET /api/mssql/memory over the window: every D13 part answers, its row counts = the functions'.
 #  G. #/mssqlmemory over the window in headless Chromium, light and dark: every D13 section present with its rows (the
 #     pool and semaphore grids, the pressure events, the grants now, the workload groups, the caches, the plan cache by
-#     type), no error box; shots of both themes (the full page); every link and every control (check box, button) of the
+#     type), no error box; under three hours the pressure events per hour written out, each hour's start and counts in
+#     order those of mssql_memory_rmon_hourly over the window, nothing in the card calling an hour a read, at least one
+#     hour counting D's record; from 2 h before read #0 (three hours or more) the per-hour chart drawn instead; the page
+#     again over reads #0-#1 (the grants still held at #1): 'Queries with memory grants' lists the grants stored at #1;
+#     shots of both themes (the full page, both windows: memory-d13-* and memory-d13-grants-*); every link and every control (check box, button) of the
 #     page clicked once, each in a click table with its landing (a link: the page it opens and no error box; a control:
 #     the page still there, no error box).
 # NOT PROVEN HERE (when B prints DIFFERENT): a live grant timeout (the rule then checked on stored rows in E);
@@ -530,7 +534,7 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "G: chromium's CDP port never answered"
 cat > "$TMPD/g.mjs" <<'JS'
 // prints one line per check; the shell grades them
-const [port, U, sb, from, to, shots] = process.argv.slice(2);
+const [port, U, sb, from, to, shots, to1, from3] = process.argv.slice(2);
 const fs = await import('node:fs');
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
@@ -550,6 +554,10 @@ const state = () => ev(`(() => { const m = document.querySelector('main');
   const after = (title) => { const h = [...m.querySelectorAll('h3')].find(x => x.textContent === title); if (!h) return -1; let g = h.nextElementSibling; while (g && !g.querySelector('table') && g.tagName !== 'TABLE' && g.tagName !== 'H3') g = g.nextElementSibling; return g && g.tagName !== 'H3' ? [...g.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty')).length : 0; };
   return JSON.stringify({ hash: location.hash, title: m.querySelector('h2')?.textContent ?? '', sections: Object.fromEntries(${JSON.stringify(SECTIONS)}.map(s => [s, after(s)])),
     tiles: [...m.querySelectorAll('.tile')].length, errors: m.querySelectorAll('.error:not([role=status])').length,
+    hours: (() => { const h = [...m.querySelectorAll('h3')].find(x => x.textContent.startsWith('Memory pressure events per hour')); const card = h ? h.parentElement : null;
+      const p = card ? card.querySelector('p[data-hours]') : null;
+      return { card: card ? card.textContent : null, chart: !!(card && card.querySelector('.uplot')), n: p ? Number(p.dataset.hours) : null,
+               items: p ? [...p.querySelectorAll('span[data-at]')].map(s => [s.dataset.at, s.textContent]) : [] }; })(),
     links: [...m.querySelectorAll('a[href]')].map(a => ({ t: a.textContent.trim(), h: a.getAttribute('href') })),
     controls: [...m.querySelectorAll('input, button, select')].length }); })()`).then(JSON.parse);
 await cmd('Page.enable'); await cmd('Runtime.enable');
@@ -557,14 +565,23 @@ await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
 console.log(`login ${st}`);
 const page = `#/mssqlmemory?i=${sb}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+const page01 = `#/mssqlmemory?i=${sb}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to1)}`;
+const page3h = `#/mssqlmemory?i=${sb}&from=${encodeURIComponent(from3)}&to=${encodeURIComponent(to)}`;
 for (const theme of ['light', 'dark']) {
   await go('#/about');
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
   await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
   if (!await go(page)) { console.log(`FAIL render ${theme}`); continue; }
-  const s = await state(); console.log(`page ${theme} ${JSON.stringify({ title: s.title, sections: s.sections, tiles: s.tiles, errors: s.errors, controls: s.controls })}`);
+  const s = await state(); console.log(`page ${theme} ${JSON.stringify({ title: s.title, sections: s.sections, tiles: s.tiles, errors: s.errors, controls: s.controls, hours: s.hours })}`);
   await shot(`memory-d13-${theme}`);
+  // reads #0-#1 (the grants still held at #1): the grid of queries with grants has rows, shot as it shows them
+  if (!await go(page01)) { console.log(`FAIL render01 ${theme}`); continue; }
+  const s1 = await state(); console.log(`page01 ${theme} ${JSON.stringify({ title: s1.title, sections: s1.sections, errors: s1.errors, hours: s1.hours })}`);
+  await shot(`memory-d13-grants-${theme}`);
+  // a window of three hours or more: the per-hour chart drawn, no hour line
+  if (!await go(page3h)) { console.log(`FAIL render3h ${theme}`); continue; }
+  const s3 = await state(); console.log(`page3h ${theme} ${JSON.stringify({ title: s3.title, errors: s3.errors, hours: s3.hours })}`);
 }
 // every link, each distinct target once: where it lands
 await go(page);
@@ -597,20 +614,52 @@ ws.close(); process.exit(0);
 JS
 FISO=$(pq "SELECT to_char(('$R0'::timestamptz - interval '1 second') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 TISO=$(pq "SELECT to_char(('$R2'::timestamptz + interval '1 second') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
-out=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/g.mjs" "$CDP" "$U/" "$SB" "$FISO" "$TISO" "$SHOTS") || fail "G: the Chromium walk stopped: $out"
+T1ISO=$(pq "SELECT to_char(('$R1'::timestamptz + interval '1 second') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+F3ISO=$(pq "SELECT to_char(('$R0'::timestamptz - interval '2 hours 1 second') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+# the expected hours of each window, (start as epoch seconds, the four counts) in order: the page writes them out under
+# three hours and draws the chart from three (from 2 h before read #0 the window falls in three hours or more); the
+# grants listed at read #1
+hrs() { pq "SELECT coalesce(json_agg(json_build_array(extract(epoch FROM at)::bigint, sql_medium, sql_severe, os_medium, os_severe) ORDER BY at), '[]') FROM pgvigil.mssql_memory_rmon_hourly($SB, '$1', '$2')"; }
+HRS=$(hrs "$FISO" "$TISO"); HRS1=$(hrs "$FISO" "$T1ISO"); HRS3=$(hrs "$F3ISO" "$TISO")
+NG1=$(pq "SELECT least(count(*), 50) FROM pgvigil.mssql_memory_grant_query WHERE instance_id = $SB AND snapshot_at = '$R1'")
+echo "G: per hour over #0-#2 $HRS, over #0-#1 $HRS1, from 2 h before #0 to #2 $HRS3; $NG1 grant(s) listed at read #1"
+(( NG1 > 0 )) || fail "G: no grant stored at read #1 (C4 saw them)"
+out=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/g.mjs" "$CDP" "$U/" "$SB" "$FISO" "$TISO" "$SHOTS" "$T1ISO" "$F3ISO") || fail "G: the Chromium walk stopped: $out"
 echo "$out"
 echo "$out" | grep -q '^login 200$' || fail "G: the UI login in Chromium"
 ! echo "$out" | grep -q '^FAIL' || fail "G: a page did not render"
 for theme in light dark; do
   line=$(echo "$out" | grep "^page $theme ") || fail "G: no page line ($theme)"
-  python3 - "$line" <<'PYEND' || fail "G: the page ($theme): $line"
+  line01=$(echo "$out" | grep "^page01 $theme ") || fail "G: no page line over reads #0-#1 ($theme)"
+  line3h=$(echo "$out" | grep "^page3h $theme ") || fail "G: no page line from 2 h before read #0 ($theme)"
+  python3 - "$line" "$HRS" "$line01" "$HRS1" "$NG1" "$line3h" "$HRS3" <<'PYEND' || fail "G: the page ($theme): $line / $line01 / $line3h"
 import json, sys
+from datetime import datetime
 d = json.loads(sys.argv[1].split(' ', 2)[2]); s = d['sections']
+d1 = json.loads(sys.argv[3].split(' ', 2)[2]); s1 = d1['sections']
+d3 = json.loads(sys.argv[6].split(' ', 2)[2])
+epoch = lambda v: int(datetime.fromisoformat(v.replace('Z', '+00:00')).timestamp())
 need = ['Memory grant pressure (every read of the range, per pool)', 'Memory grants (the newest read of the range, per pool: a moment, not the range)',
         'Resource semaphore pressure (every read of the range, per semaphore)', 'Resource semaphores (the newest read of the range)',
         'Workload groups and resource pools (the newest read)', 'Caches (the newest read, the 20 largest)', 'Plan cache by type']
 ok = all(s.get(k, -1) > 0 for k in need) and s.get('Memory pressure events', -1) >= 0 and s.get('Queries with memory grants (the newest read)', -1) >= 0 \
      and s.get('Plan cache (the newest read)', -1) >= 0 and d['errors'] == 0
+# the per-hour card: nothing in it calls an hour a read; under three hours no chart, each hour written out in order with
+# its start and the function's counts; from three the chart drawn and no hour line
+def hours_ok(h, hrs):
+    if not h or h.get('card') is None or 'read' in h['card']: return False
+    if len(hrs) >= 3: return h['chart'] and h['n'] is None
+    return not h['chart'] and h['n'] == len(hrs) and len(h['items']) == len(hrs) and all(
+        epoch(at) == t0 and f"SQL Server {a} medium, {b} severe; operating system {c} medium, {e} severe" in txt
+        for (at, txt), (t0, a, b, c, e) in zip(h['items'], hrs))
+hrs, hrs1, hrs3 = json.loads(sys.argv[2]), json.loads(sys.argv[4]), json.loads(sys.argv[7])
+# the low-memory record D provoked is in the window: at least one hour counts one
+ok = ok and hours_ok(d.get('hours'), hrs) and sum(sum(x[1:]) for x in hrs) > 0
+# over reads #0-#1 the newest read is #1: the grants grid lists the grants stored at #1
+ok = ok and d1['errors'] == 0 and s1.get('Queries with memory grants (the newest read)', -1) == int(sys.argv[5]) and hours_ok(d1.get('hours'), hrs1)
+# from 2 h before read #0: three hours or more, the chart drawn
+ok = ok and d3['errors'] == 0 and len(hrs3) >= 3 and hours_ok(d3.get('hours'), hrs3)
+print(f"G: per hour {d['hours']['items']}; over #0-#1 {s1.get('Queries with memory grants (the newest read)')} grant row(s) of {sys.argv[5]}; from 2 h before #0 {len(hrs3)} hours, chart {d3['hours']['chart']}")
 sys.exit(0 if ok else 1)
 PYEND
 done
@@ -618,5 +667,5 @@ CL=$(echo "$out" | grep -c '^click ' || true)
 (( CL > 0 )) || fail "G: nothing clicked"
 ! echo "$out" | grep '^click link' | grep -v 'external' | grep -q 'errors=[1-9]\|rendered=false\|same=false' || fail "G: a link landed wrong: $(echo "$out" | grep '^click link' | grep 'errors=[1-9]\|rendered=false\|same=false' | head -3)"
 ! echo "$out" | grep '^click control' | grep -q 'errors=[1-9]' || fail "G: a control left an error box: $(echo "$out" | grep '^click control' | grep 'errors=[1-9]' | head -3)"
-echo "ok   G: the page in light and dark, every D13 section with its rows, no error box; $CL click(s) (links and controls) in the click table above, none landing on an error; shots in $SHOTS"
+echo "ok   G: the page in light and dark, every D13 section with its rows, the per-hour counts written out in order (the function's, each hour's start and counts), from 2 h before read #0 the per-hour chart drawn, over reads #0-#1 the $NG1 grant(s) of read #1 listed, no error box; $CL click(s) (links and controls) in the click table above, none landing on an error; shots in $SHOTS"
 echo "proof-darling-memory: OK (sp_PressureDetector's semaphores, grant cap, reduced grants, top five clerks, stolen memory, grants, caches and low-memory list equal; PerformanceMonitor's semaphores and plan cache by type equal; the timeouts, forced grants and pressure notifications provoked and read back; the findings; the API and the page; the NOT PROVEN lines above stand)"

@@ -320,9 +320,21 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
   const hourly = rowsOf(d.rmon_hourly).map(r => ({ ...r, snapshot_at: r.at }));
   const rmon = rowsOf(d.rmon);
   const pBox = el('div', { class: 'charts' });
-  pBox.append(lineChart('Memory pressure events per hour', hourly, [{ key: 'sql_medium', label: 'SQL Server (medium)' },
-    { key: 'sql_severe', label: 'SQL Server (severe)' }, { key: 'os_medium', label: 'operating system (medium)' },
-    { key: 'os_severe', label: 'operating system (severe)' }], v => fmtNum(v)));
+  // a point is an hour, not a read: under three hours (a 1 h window gives two: the function, as PerformanceMonitor's
+  // pressureEventBuckets, takes every hour from the one holding the window's start to the one holding its end) the
+  // chart's own note would count the hours as reads, so the hours are written out, each counted within the window only
+  const hourWords = (h: Row) => el('span', { 'data-at': String(h.at) }, `the hour from ${fmtTime(h.at)}: SQL Server `
+    + `${fmtNum(h.sql_medium)} medium, ${fmtNum(h.sql_severe)} severe; operating system ${fmtNum(h.os_medium)} medium, ${fmtNum(h.os_severe)} severe`);
+  const hourLine = el('p', { class: 'meta', 'data-hours': String(hourly.length) }, hourly.length
+    ? `The window falls in ${hourly.length === 1 ? 'one hour' : 'two hours'}, each counted within the window only (the chart is drawn from three): `
+    : 'No hour in this window.');
+  hourly.forEach((h, i) => hourLine.append(...(i ? ['. ', hourWords(h)] : [hourWords(h)])));
+  if (hourly.length) hourLine.append('.');
+  pBox.append(hourly.length >= 3
+    ? lineChart('Memory pressure events per hour', hourly, [{ key: 'sql_medium', label: 'SQL Server (medium)' },
+      { key: 'sql_severe', label: 'SQL Server (severe)' }, { key: 'os_medium', label: 'operating system (medium)' },
+      { key: 'os_severe', label: 'operating system (severe)' }], v => fmtNum(v))
+    : el('div', { class: 'chart' }, el('h3', {}, 'Memory pressure events per hour'), hourLine));
   sec.append(el('h3', {}, 'Memory pressure events'), el('p', { class: 'meta' },
     'The resource monitor ring buffer (RING_BUFFER_RESOURCE_MONITOR), every record of the range: an hour counts a record when the process '
     + '(SQL Server) or the system (operating system) indicator reads 2 or more, 2 medium, 3 or more severe; an hour without one counts 0. '
