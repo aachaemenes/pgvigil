@@ -12,15 +12,16 @@ button). `scripts/proof-a11y.sh` checks every page in both themes against WCAG 2
 |---|---|---|
 | `--font-sans` | system-ui and its fallbacks | everything but code |
 | `--font-mono` | ui-monospace and its fallbacks | statements, plans, code (`pre.sql`, `code`, `.mono`, a grid's wide cell) |
-| `--fs-xs` | 11 px | the smallest words: the range panel's legends, a chart's axis values, a ring's total |
+| `--fs-xs` | 11 px | the smallest words: a pill, the range panel's legends, a chart's axis values, a ring's total |
 | `--fs-sm` | 12 px | the second line: meta, a chart legend, a chip, code, a tooltip, a grid's header in the quiet style (small and strong, in its own case: a unit keeps it) |
 | `--fs-md` | 13 px | the body, a grid's cells, a chart's title |
 | `--fs-lg` | 15 px | a section's title (h3), the brand |
 | `--fs-xl` | 20 px | a page's title (h2), a tile's figure |
 | `--fw-normal` / `--fw-strong` | 400 / 600 | two weights only: a title, a figure, the open tab and a picked item are strong |
 | `--lh` / `--lh-tight` | 1.45 / 1.2 | body text / a title or a figure |
-| `--caps-tracking` | .05em | the letter spacing of an uppercase legend (the range panel) |
-| `--ul-offset` | .2em | a link's underline below its letters |
+| `--caps-tracking` | .05em | the letter spacing of uppercase words: the range panel's legends, a pill |
+| `--ul-offset` / `--ul-mix` | .2em / 40 % | a link's underline below its letters / how much of the link's colour it takes at rest |
+| `--stale-gray` | .9 | how far a stale part is greyed |
 | `--num` | tabular-nums | every figure that lines up with another: grids, tiles, the tooltip, the bars |
 
 ## Space, radii, borders
@@ -39,12 +40,12 @@ button). `scripts/proof-a11y.sh` checks every page in both themes against WCAG 2
 |---|---|---|---|
 | `--surface-page` | #f3f4f7 | #111317 | the page behind the panels |
 | `--surface-panel` | #ffffff | #181b21 | the header, the tree, the tab row, a grid's box, a chart, a tile on the page |
-| `--surface-card` | #f6f7f9 | #1f232a | a card inside a panel, a statement's box, the time strip |
+| `--surface-card` | #f6f7f9 | #1f232a | a tile inside a panel, a statement's box, the time strip, an empty or loading box |
 | `--surface-raised` | #ffffff | #252a32 | a menu, the range panel, the chart tooltip (with `--shadow-raised` / `--shadow-tip`) |
 | `--surface-hover` | #eceef2 | #2c313a | a control, a tree row or a menu item under the pointer (dark: lighter than a menu, so it shows there) |
 | `--hover-overlay` | 9 % grey | the same | laid over a grid's row under the pointer |
 | `--select-fill` | the accent at 14 % | the accent at 20 % | a drag's brush across a chart |
-| `--line` / `--line-strong` | #e0e3e9 / #c8cdd6 | #2a2f38 / #3a404b | a rule between rows / a control's border |
+| `--line` / `--line-strong` | #e0e3e9 / #c8cdd6 | #2a2f38 / #3a404b | a rule between rows, a toolbar control's border / a lone control's border, a tile's stripe when it has no state |
 | `--text` | #1b2230 | #e3e6eb | body text, a figure |
 | `--text-muted` | #545d6d | #a3abb8 | a label, a header, the second line (5.6:1 or more on every surface) |
 | `--text-faint` | #606979 | #969fad | the least text (4.7:1 or more on every surface); no rule reads it yet |
@@ -104,20 +105,25 @@ ui.ts and tiles.ts hold the parts every page builds from; a page calls them and 
 - `tile(label, value, kind, { unit, sub, pill })`: a card with a left stripe (`--stripe`) in its state colour (`kind`
   'ok', 'warn', 'crit', or none), a small muted label over a large figure (`--fs-xl`, the text colour: the colour is on
   the stripe, not the figure), the unit beside it, a sub line, and on a warning or a critical tile a WARN or CRIT pill
-  (the state in words). `tileRow(label, ...tiles)` (tiles.ts): tiles side by side as one named group. Inside a panel a
-  tile sits on `--surface-card`.
+  (the state in words; none when the label is itself a state's word, 'Critical' or 'Warnings'). `tileRow(label,
+  ...tiles)` (tiles.ts): tiles side by side as one named group. Inside a panel a tile sits on `--surface-card`, its
+  stripe kept.
 - `badge(text, kind)` and `pill(text, kind)`: the state's word on its own tint (`--ok-bg` ... `--na-bg`, `--r-pill`);
   inside a solid status cell a badge takes the fill's text colour and no tint.
 - `panel(title, note, ...content)`: a section as a card, its title with the window or the moment beside it ('last 1h',
   'latest snapshot').
-- `toolbar(...groups)`: one quiet bar - no border on a control, a soft fill, the pressed one in the accent's tint,
-  groups apart by a hairline. The header's bar and the Summary's toolbar take the same look from app.css.
-- Links: a link in running text keeps a faint underline (WCAG 1.4.1: told from its text by more than colour), the full
-  line when pointed at; a link standing alone (the tree, a tab, a tile, a panel's title) has none; a grid's links keep
-  DBA Dash's full underline.
+- `toolbar(...groups)`: one quiet bar - each control a hairline border (`--line`) on the panel colour, the pressed one
+  in the accent's tint with an accent border, groups apart by a hairline; a toggle (`.seg`) keeps its own mark and a
+  link-styled button stays a link. The header's bar and every page's `.toolbar` take the same look from app.css.
+- Links: a link at rest keeps a faint underline (`--ul-mix` of its colour; WCAG 1.4.1: a link in running text is told
+  from its text by more than colour), the full line when pointed at - the task asked for 'underlined on hover only', and
+  the faint line is the nearest that keeps 1.4.1; a link that stands alone has none (the tree, a tab's word, a tile's
+  figure or label, a panel's title); the open sub-tab and the back tab keep their full underline as the mark of where the
+  page is; a grid's links and the crumb keep DBA Dash's full underline.
 - States, one shape: `stateNote('empty' | 'loading' | 'stale', words)` - empty and loading a soft box in the muted text
-  (the page's own 'Loading...' line too), stale a warning-tinted line 'Last collected <time>'; `markStale(box, at)`
-  greys a part whose newest read is old and puts that line at its top. An empty grid stays DBA Dash's header row alone.
+  (the page's own 'Loading...' line too; both carry `.empty`, which the proofs' settle checks wait on), stale a
+  warning-tinted line 'Last collected <time>'; `markStale(box, at)` greys every child of a part whose newest read is old
+  but that line, which goes under the part's heading. An empty grid stays DBA Dash's header row alone.
 
 ## The rule for a new page
 

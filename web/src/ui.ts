@@ -381,9 +381,11 @@ export function dot(level: number, title = ''): HTMLElement {
 // or WARN pill (the state in words, not the colour alone; o.pill false leaves it out, a string names it). The figure
 // (.tile-v) is the first child and the label (.tile-l) holds only its words: the proofs read both; app.css draws the
 // label above the figure.
+// A label that is itself a state's word ('Critical', 'Warnings') takes no pill: it would say the state twice.
 export interface TileOpts { unit?: string; sub?: string | Node; pill?: string | false }
 export function tile(label: string, value: string, kind = '', o: TileOpts = {}): HTMLElement {
-  const word = o.pill === false ? '' : o.pill ?? (kind === 'crit' ? 'CRIT' : kind === 'warn' ? 'WARN' : '');
+  const said = /^(critical|warnings?|ok|healthy)$/i.test(label.trim());
+  const word = o.pill === false || said ? '' : o.pill ?? (kind === 'crit' ? 'CRIT' : kind === 'warn' ? 'WARN' : '');
   return el('div', { class: 'tile ' + kind },
     el('div', { class: 'tile-v' }, value, o.unit ? el('span', { class: 'tile-unit' }, ' ' + o.unit) : null),
     el('div', { class: 'tile-l' }, label),
@@ -405,12 +407,19 @@ export function toolbar(...groups: (Node | Node[])[]): HTMLElement {
 // The states a part of a page is in besides showing its data, one shape everywhere: empty (the words say what was
 // looked for and the window), loading (a status a screen reader announces), stale (the newest read is old: the part is
 // greyed and says when it was collected).
+// Empty and loading carry the class 'empty' too: the proofs' settle checks wait while a p.empty says 'Loading'. A loading
+// note goes in empty and gets its words a frame later, so a screen reader announces it (main.ts does the same).
 export function stateNote(kind: 'empty' | 'loading' | 'stale', words: string): HTMLElement {
-  return el('p', { class: `state ${kind}${kind === 'empty' ? ' empty' : ''}`, ...(kind === 'loading' ? { role: 'status' } : {}) }, words);
+  const p = el('p', { class: kind === 'stale' ? 'state stale' : kind === 'empty' ? 'state empty' : 'state loading empty', ...(kind === 'loading' ? { role: 'status' } : {}) },
+    kind === 'loading' ? '' : words);
+  if (kind === 'loading') requestAnimationFrame(() => { p.textContent = words; });
+  return p;
 }
+// markStale: the part is greyed (every child but the note) and says when it was collected, under its heading if it has one
 export function markStale(box: HTMLElement, at: unknown): HTMLElement {
   box.classList.add('is-stale');
-  box.prepend(stateNote('stale', `Last collected ${fmtTime(at)}`));
+  const note = stateNote('stale', `Last collected ${fmtTime(at)}`), head = box.querySelector(':scope > h3, :scope > h2');
+  if (head) head.after(note); else box.prepend(note);
   return box;
 }
 
