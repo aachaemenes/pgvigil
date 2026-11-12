@@ -42,6 +42,7 @@
 # PROOF_ONLY=E,D1,... runs the rig, A and the named cases only (A E H D1 D1b D2 D3 D4 D5 DQ F B G); unset = all.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+mkdir -p .vis/spool-evidence .vis/collector-shots   # fetched back by the box job even when no case wrote to them
 WORK=$(mktemp -d); FAILS=0
 fail() { echo "FAIL $*"; FAILS=$((FAILS + 1)); }
 ok() { echo "ok   $*"; }
@@ -94,7 +95,7 @@ fi
 mkdir -p "$WORK/spool" "$WORK/spool2" "$WORK/spool3" "$WORK/spool4"; chmod 0711 "$WORK"; chmod 0777 "$WORK"/spool*   # the service's user walks through the folder (not reads it)
 instances() { # $1 host, $2 port
   for n in 1 2 3 4; do printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n' "$n" "$1" "$2" "$n" "$n" "$n"
-    (( n < 4 )) && printf '    schedules: {activity: 10s}\n'; done
+    if (( n < 4 )); then printf '    schedules: {activity: 10s}\n'; fi; done
 }
 # the service sees this folder as /work (systemd mounts a tmpfs over /tmp in the container)
 alerts_of() { printf 'alerts:\n  - {name: spool, kind: file, min_severity: critical, repeat: disabled, clear_after: 0, file: {dir: %s/spool}}\n  - {name: scoped, kind: file, min_severity: critical, repeat: disabled, clear_after: 0, instances: [t1], file: {dir: %s/spool2}}\n  - {name: rep, kind: file, min_severity: critical, repeat: 5m, clear_after: 0, file: {dir: %s/spool3}}\n' "$1" "$1" "$1"
