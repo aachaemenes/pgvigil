@@ -45,7 +45,8 @@
 #                 before (schema_version alone grows, by the files applied) and the same md5 over its rows in the
 #                 columns the old version had; each table this build adds holds exactly the rows this build's migrate
 #                 leaves in an EMPTY repository (a second database, migrated and counted, then dropped): 0, or the
-#                 reference rows a migration writes (0100's pgaudit_rules seed), the run naming each seeded table;
+#                 reference rows a migration writes (0100's pgaudit_rules, 0103's pg_threshold_keys), the run naming
+#                 each seeded table;
 #                 './pgvigil install' ends 'installed and running': the installed binary
 #                 prints this build's version, the config and the env file are byte for byte the old ones, the unit is
 #                 active with 0 restarts and runs as pgvigil
