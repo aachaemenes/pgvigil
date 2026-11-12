@@ -208,7 +208,7 @@ func attachConsole() {
 	}
 }
 
-// makeIcon draws the app's icon (a teal disc with a white eye) at n x n pixels: no resource file,
+// makeIcon draws the app's icon (mark E, iconPixel) at n x n pixels for the tray and the window: no resource file,
 // no image decoder.
 func makeIcon(n int) uintptr {
 	if n < 16 {

@@ -219,7 +219,8 @@ type app struct {
 	setErr   error
 	logw     io.Writer
 	tray     uintptr // the hidden window that owns the tray icon
-	icon     uintptr
+	icon     uintptr // mark E at SM_CXSMICON: the tray and the title bar
+	iconBig  uintptr // mark E at SM_CXICON: Alt+Tab and the taskbar button
 	wv       webview2.WebView
 	hwnd     uintptr // the WebView2 window (0 until first opened)
 	oldProc  uintptr
@@ -449,7 +450,7 @@ func (a *app) show() {
 		}
 		a.hwnd = uintptr(a.wv.Window())
 		_, _, _ = pSendMessageW.Call(a.hwnd, wmSetIcon, 0, a.icon)
-		_, _, _ = pSendMessageW.Call(a.hwnd, wmSetIcon, 1, a.icon)
+		_, _, _ = pSendMessageW.Call(a.hwnd, wmSetIcon, 1, a.iconBig)
 		a.oldProc, _, _ = pSetWindowLongPtrW.Call(a.hwnd, gwlpWndProc, windows.NewCallback(windowProc))
 		if set.Maximized {
 			_, _, _ = pShowWindow.Call(a.hwnd, swMaximize)
@@ -570,8 +571,12 @@ func (a *app) makeTray() error {
 	a.tray = h
 	tc, _, _ := pRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(u16("TaskbarCreated"))))
 	a.taskbar = uint32(tc)
-	sm, _, _ := pGetSystemMetrics.Call(49) // SM_CXSMICON
-	a.icon = makeIcon(int(sm) * 2)
+	// each icon drawn at the size Windows shows it (iconPixel takes the mark's own 16 px drawing up to 24 px); the exe's
+	// own icon (Explorer, a pinned button, Programs and Features) is the resource in rsrc_windows_amd64.syso
+	small, _, _ := pGetSystemMetrics.Call(49) // SM_CXSMICON
+	big, _, _ := pGetSystemMetrics.Call(11)   // SM_CXICON
+	a.icon = makeIcon(int(small))
+	a.iconBig = makeIcon(int(big))
 	return a.addIcon()
 }
 

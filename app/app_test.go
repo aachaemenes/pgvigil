@@ -220,9 +220,18 @@ func TestIcon(t *testing.T) {
 			t.Errorf("%s: %08x, want %08x", c.what, p, c.want)
 		}
 	}
-	// the 16 px drawing: the pupil still dark at the centre
+	// the 16 px drawing up to 24 px: its square fills to the edge (the 32 px drawing is inset by 1 unit), its pupil dark
 	if p := iconPixel(8, 8, 16); p != 0xFF0B1F2A {
 		t.Errorf("the 16 px pupil is dark: %08x", p)
+	}
+	for _, c := range []struct {
+		n     int
+		full  bool
+		where string
+	}{{16, true, "16 px: the 16 px drawing"}, {24, true, "24 px: the 16 px drawing"}, {25, false, "25 px: the 32 px drawing"}, {32, false, "32 px: the 32 px drawing"}} {
+		if a := iconPixel(0, c.n/2, c.n) >> 24; (a == 0xFF) != c.full {
+			t.Errorf("%s: the left edge's alpha %d", c.where, a)
+		}
 	}
 }
 
