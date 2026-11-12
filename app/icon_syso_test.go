@@ -4,7 +4,8 @@ package main
 // by iconPixel, so Explorer, a pinned taskbar button and Programs and Features show the mark. The Go linker takes a
 // .syso in the package directory when it builds for windows/amd64; the file is committed, so the build needs no tool.
 // After a change to icon.go: `go generate` here (this test with -syso writes the file); without -syso the test fails
-// when the committed file is not what iconPixel draws now.
+// when the committed file is not what iconPixel draws now. The images are PNG-encoded by image/png, so a Go release
+// that changes that encoder's output also fails it: `go generate` again (the drawing is the same).
 
 //go:generate go test -run TestIconSyso -count=1 . -args -syso
 

@@ -45,6 +45,9 @@ var (
 	pSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	pCreateIconIndirect            = user32.NewProc("CreateIconIndirect")
 	pGetSystemMetrics              = user32.NewProc("GetSystemMetrics")
+	pGetSystemMetricsForDpi        = user32.NewProc("GetSystemMetricsForDpi") // Windows 10 1607 and later
+	pGetDpiForWindow               = user32.NewProc("GetDpiForWindow")        // Windows 10 1607 and later
+	pDestroyIcon                   = user32.NewProc("DestroyIcon")
 	pShellNotifyIconW              = shell32.NewProc("Shell_NotifyIconW")
 	pShellExecuteW                 = shell32.NewProc("ShellExecuteW")
 	pCreateDIBSection              = gdi32.NewProc("CreateDIBSection")
@@ -57,6 +60,7 @@ const (
 	wmDestroy       = 0x0002
 	wmEndSession    = 0x0016
 	wmExitSizeMove  = 0x0232
+	wmDpiChanged    = 0x02E0
 	wmClose         = 0x0010
 	wmSetIcon       = 0x0080
 	wmContextMenu   = 0x007B

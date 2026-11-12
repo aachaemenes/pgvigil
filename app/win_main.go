@@ -221,6 +221,8 @@ type app struct {
 	tray     uintptr // the hidden window that owns the tray icon
 	icon     uintptr // mark E at SM_CXSMICON: the tray and the title bar
 	iconBig  uintptr // mark E at SM_CXICON: Alt+Tab and the taskbar button
+	winSmall uintptr // the window's own icons drawn for its monitor's DPI (0: a.icon / a.iconBig)
+	winBig   uintptr
 	wv       webview2.WebView
 	hwnd     uintptr // the WebView2 window (0 until first opened)
 	oldProc  uintptr
@@ -449,8 +451,7 @@ func (a *app) show() {
 			return
 		}
 		a.hwnd = uintptr(a.wv.Window())
-		_, _, _ = pSendMessageW.Call(a.hwnd, wmSetIcon, 0, a.icon)
-		_, _, _ = pSendMessageW.Call(a.hwnd, wmSetIcon, 1, a.iconBig)
+		a.windowIcons(dpiOf(a.hwnd))
 		a.oldProc, _, _ = pSetWindowLongPtrW.Call(a.hwnd, gwlpWndProc, windows.NewCallback(windowProc))
 		if set.Maximized {
 			_, _, _ = pShowWindow.Call(a.hwnd, swMaximize)
@@ -505,6 +506,9 @@ func windowProc(hwnd, m, wp, lp uintptr) uintptr {
 	}
 	if m == wmExitSizeMove {
 		a.saveWindow()
+	}
+	if m == wmDpiChanged { // moved to a monitor of another scale: the window's icons drawn for it (LOWORD = the new DPI)
+		a.windowIcons(uint32(wp & 0xffff))
 	}
 	r, _, _ := pCallWindowProcW.Call(a.oldProc, hwnd, m, wp, lp)
 	return r
@@ -727,4 +731,41 @@ func trayProc(hwnd, m, wp, lp uintptr) uintptr {
 	}
 	r, _, _ := pDefWindowProcW.Call(hwnd, m, wp, lp)
 	return r
+}
+
+// dpiOf is the DPI of the monitor hwnd is on; 0 before Windows 10 1607 (no GetDpiForWindow).
+func dpiOf(hwnd uintptr) uint32 {
+	if pGetDpiForWindow.Find() != nil {
+		return 0
+	}
+	d, _, _ := pGetDpiForWindow.Call(hwnd)
+	return uint32(d)
+}
+
+// windowIcons sets the window's small (title bar) and big (Alt+Tab, the taskbar button) icons, drawn at the sizes the
+// system uses at dpi, so a window on a monitor of another scale than the primary is not stretched; dpi 0 or no
+// GetSystemMetricsForDpi = the icons drawn at sign-in. The tray keeps a.icon (the notification area is on the primary
+// monitor). The window's previous DPI-drawn icons are destroyed once replaced.
+func (a *app) windowIcons(dpi uint32) {
+	oldSmall, oldBig := a.winSmall, a.winBig
+	a.winSmall, a.winBig = 0, 0
+	small, big := a.icon, a.iconBig
+	if dpi != 0 && pGetSystemMetricsForDpi.Find() == nil {
+		sm, _, _ := pGetSystemMetricsForDpi.Call(49, uintptr(dpi)) // SM_CXSMICON
+		bg, _, _ := pGetSystemMetricsForDpi.Call(11, uintptr(dpi)) // SM_CXICON
+		a.winSmall, a.winBig = makeIcon(int(sm)), makeIcon(int(bg))
+		if a.winSmall != 0 {
+			small = a.winSmall
+		}
+		if a.winBig != 0 {
+			big = a.winBig
+		}
+	}
+	_, _, _ = pSendMessageW.Call(a.hwnd, wmSetIcon, 0, small)
+	_, _, _ = pSendMessageW.Call(a.hwnd, wmSetIcon, 1, big)
+	for _, h := range []uintptr{oldSmall, oldBig} {
+		if h != 0 {
+			_, _, _ = pDestroyIcon.Call(h)
+		}
+	}
 }
