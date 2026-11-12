@@ -164,13 +164,34 @@ func schemaState(names, missing []string) (bool, string) {
 	return true, names[len(names)-1]
 }
 
+// LatestMigration is the newest migration this binary carries (the last embedded file in name order).
+func LatestMigration() (string, error) {
+	names, err := migrationNames()
+	if err != nil || len(names) == 0 {
+		return "", err
+	}
+	return names[len(names)-1], nil
+}
+
+// schemaMissingFile is the embedded migration that creates pgvigil.schema_missing ("" when none does).
+func schemaMissingFile(names []string) string {
+	for _, n := range names {
+		if b, err := migrations.ReadFile("sql/" + n); err == nil && strings.Contains(string(b), "FUNCTION pgvigil.schema_missing(") {
+			return n
+		}
+	}
+	return ""
+}
+
 // SchemaCurrent reports whether every embedded migration is applied, through SECURITY DEFINER functions the
 // collector role may call; `pgvigil run` checks this instead of migrating, so the daemon runs with the collector
 // login. It asks the store which embedded names schema_version lacks, so a lower-numbered file that arrives after a
-// higher one was applied reads behind (Migrate applies every missing file, not only the ones above the newest).
-// The name is the first missing migration when the store is behind, else the newest embedded one. A store from
-// before the file that adds schema_missing() is behind by that alone: the name is then the first embedded
-// migration above its newest (the collector cannot read schema_version itself).
+// higher one was applied reads behind (Migrate applies every missing file, not only the ones above the newest); the
+// name is then the first missing migration, and the newest embedded one when the store is current.
+// A store from before the file that creates schema_missing() cannot say which files it lacks (the collector cannot
+// read schema_version): it is behind by that file alone, and the name is the newest embedded migration, as it always
+// was. A store that records that file but has no such function (one migrated by an earlier build of it) is an error
+// that names the repair.
 func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 	names, err := migrationNames()
 	if err != nil {
@@ -194,12 +215,12 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.schema_latest()`).Scan(&have); err != nil {
 		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
 	}
-	for _, n := range names {
-		if have == nil || n > *have {
-			return false, n, nil
-		}
+	defines := schemaMissingFile(names)
+	if have == nil || defines == "" || *have < defines {
+		return false, latest, nil
 	}
-	return false, latest, fmt.Errorf("schema check: pgvigil.schema_missing() does not exist although %s is applied", *have)
+	return false, latest, fmt.Errorf("schema check: pgvigil.schema_missing() does not exist although %s is applied (a store migrated by an earlier build of that file): "+
+		"as the repository owner run DELETE FROM pgvigil.schema_version WHERE version = '%s' and then 'pgvigil migrate' to run it again", defines, defines)
 }
 
 // EnsureInstance upserts the instance row and returns its id.

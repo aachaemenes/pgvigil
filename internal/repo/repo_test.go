@@ -126,3 +126,72 @@ func TestSchemaCurrentReadsALowerMissingFile(t *testing.T) {
 		t.Fatalf("without %s: SchemaCurrent = %v, %q, %v; want false, %s", lower, ok, name, err, lower)
 	}
 }
+
+// TestSchemaCurrentBeforeSchemaMissing: a store from before the file that creates schema_missing() (the function and
+// that file's row taken out) reads behind and names the newest embedded migration, the old contract (docs/upgrade.md,
+// scripts/proof-upgrade.sh); Migrate runs that file again and the store reads current. A store that records the file
+// without the function is an error naming the repair, and the repair (delete the row, migrate) works. Needs an owner's
+// DSN of a scratch repository: PGVIGIL_REPO_TEST_DSN (skipped without it); the store is left migrated.
+func TestSchemaCurrentBeforeSchemaMissing(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	r, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Close)
+	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, defines := names[len(names)-1], schemaMissingFile(names)
+	if defines == "" {
+		t.Fatal("no embedded migration creates pgvigil.schema_missing")
+	}
+	t.Cleanup(func() { // whatever failed above, the store ends with the function and the file's row
+		c := context.Background()
+		var gone bool
+		if err := r.pool.QueryRow(c, `SELECT to_regprocedure('pgvigil.schema_missing(text[])') IS NULL`).Scan(&gone); err == nil && gone {
+			_, _ = r.pool.Exec(c, `DELETE FROM pgvigil.schema_version WHERE version = $1`, defines)
+			_, _ = r.Migrate(c)
+		}
+	})
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := r.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	// a store from before the file
+	exec(`DROP FUNCTION pgvigil.schema_missing(text[])`)
+	exec(`DELETE FROM pgvigil.schema_version WHERE version = $1`, defines)
+	if ok, name, err := r.SchemaCurrent(ctx); err != nil || ok || name != latest {
+		t.Fatalf("before %s: SchemaCurrent = %v, %q, %v; want false, %s (the newest)", defines, ok, name, err, latest)
+	}
+	if n, err := r.Migrate(ctx); err != nil || n < 1 {
+		t.Fatalf("migrate after taking %s out: %d applied, %v", defines, n, err)
+	}
+	if ok, name, err := r.SchemaCurrent(ctx); err != nil || !ok || name != latest {
+		t.Fatalf("migrated again: SchemaCurrent = %v, %q, %v; want true, %s", ok, name, err, latest)
+	}
+	// the file recorded, the function gone: the error names the repair, and the repair works
+	exec(`DROP FUNCTION pgvigil.schema_missing(text[])`)
+	repair := "DELETE FROM pgvigil.schema_version WHERE version = '" + defines + "'"
+	if ok, _, err := r.SchemaCurrent(ctx); err == nil || ok || !strings.Contains(err.Error(), repair) {
+		t.Fatalf("recorded without the function: SchemaCurrent = %v, %v; want an error naming %q", ok, err, repair)
+	}
+	exec(repair)
+	if _, err := r.Migrate(ctx); err != nil {
+		t.Fatalf("migrate after the repair: %v", err)
+	}
+	if ok, name, err := r.SchemaCurrent(ctx); err != nil || !ok || name != latest {
+		t.Fatalf("after the repair: SchemaCurrent = %v, %q, %v; want true, %s", ok, name, err, latest)
+	}
+}
