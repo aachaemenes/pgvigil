@@ -459,6 +459,8 @@ PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
 export PGV_Q_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
 for _ in $(seq 1 120); do sq "SELECT 1" master 10 >/dev/null 2>&1 && break; sleep 1; done
 sqok "E: SQL Server back after the restart" "SELECT 1" master
+# master answers before pgvq has run its recovery: wait for pgvq itself to take a login
+for _ in $(seq 1 120); do sq "SELECT 1" pgvq 10 >/dev/null 2>&1 && break; sleep 1; done
 sqok "E: q_cost after the restart" "$Q_COST 1;" pgvq
 col mssql_plancache
 read -r NL NH NORPH NOLD NMATCH <<<"$(pq "SELECT (SELECT count(*) FROM pgvigil.mssql_pc_last WHERE instance_id = $SB),
