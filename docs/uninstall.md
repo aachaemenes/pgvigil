@@ -10,10 +10,14 @@ Linux, as root:
 
 ```sh
 pgvigil uninstall -all -dry-run                       # every item: remove, absent, or kept and why; nothing changes
-pgvigil uninstall -all                                # this host; the repository database is kept and named
+pgvigil uninstall -all                                # this host only; the repository database is kept and named
+# or this host and the repository in one run: type its name when asked
 pgvigil uninstall -all -drop-repository -owner-dsn-file /root/pgvigil-owner.dsn
-                                                      # also the repository: type its name when asked
 ```
+
+The repository goes in the same run as the host, never in a later one: the configuration is how the uninstall knows the
+owner's database is this host's, and a plain `-all` removes it, so `-drop-repository` after it is refused. A repository
+kept by a plain `-all` is dropped by hand (below).
 
 Windows, from an elevated PowerShell:
 
@@ -28,15 +32,22 @@ A run without a terminal (a script, a configuration tool) names the database ins
 ### The order
 
 1. Every refusal before any change: not root (not elevated); a `-bin`, `-config` or `-user` that disagrees with the
-   installed service; another process running the installed binary or its `.previous` (a `pgvigil serve` started by
-   hand or by a unit of the house, the app's): it would outlive the uninstall and keep writing, so stop it first (the
-   dry run lists it as `running`); with `-drop-repository`, the owner's connection string missing (or both
+   installed service; another pgvigil process on this host, on the installed binary, its `.previous` or any other
+   pgvigil binary under any name (told by the build information Go embeds in it: a bundle's
+   `pgvigil_<version>_linux_amd64`, a renamed copy, a `go run`; when that cannot be read, by the name `pgvigil` or
+   `pgvigil_*`): a `pgvigil serve` started by hand or by a unit of the house, or another user's app's serve on Windows,
+   would outlive the uninstall and keep writing (an instance added in its page writes `instances/` again), so stop it
+   first (the dry run lists it as `running`); this user's own app and its serve are not refused: step 7 ends them; with `-drop-repository`, the owner's connection string missing (or both
    `-owner-dsn-file` and `-owner-dsn-env` given), naming a database without the pgvigil schema, or naming another
    database than the one this host's configuration names (the same name, and the same database on the same server, read
-   through both logins); this host's configuration naming no repository connection string the uninstall can read
-   (read as the service reads it: an `env:` name from `/etc/pgvigil/pgvigil.env`, on Windows from the service's own
-   environment and then the machine's, never the shell's; a `file:` from its file), since then it cannot tell the
-   owner's database is this host's; a login that may not drop the database or the roles (from
+   through both logins); this host's configuration gone (a plain `-all` ran before) or naming no repository connection
+   string the uninstall can read (read as the service reads it: an `env:` name from `/etc/pgvigil/pgvigil.env`, on
+   Windows from the service's own environment and then the machine's, never the shell's; a `file:` from its file), and
+   on Linux a service that may use another repository than the check reads: an env file other than that one (a
+   drop-in's or an edit's `EnvironmentFile=`), an `Environment=` setting the `env:` name or one `systemctl show` cannot
+   print (systemd 239 prints a value holding a space as `[unprintable]`), or a drop-in setting `ExecStart=` (another
+   `-config`), `User=`, `Environment=` or `EnvironmentFile=` (put the repository the service uses in `pgvigil.env` and
+   take that line out, or drop the repository by hand); in each case it cannot tell the owner's database is this host's; a login that may not drop the database or the roles (from
    PostgreSQL 16, `DROP ROLE` needs ADMIN OPTION on each role as well as CREATEROLE: a role a superuser made gives the
    owner none, and the refusal prints the `GRANT ... WITH ADMIN OPTION` that fixes it); pg_dump older than the server;
    no room for the dump.
@@ -44,12 +55,13 @@ A run without a terminal (a script, a configuration tool) names the database ins
 3. The service is stopped.
 4. With `-drop-repository`: the repository is watched for 75 seconds (`collection_dates`' newest snapshot read at the
    stop and again after): a collector on another host writes within a minute, and its write refuses the drop. Any other
-   session on the database (a `pgvigil serve`, Grafana, a psql; every backend but an autovacuum worker, which
+   session on the database (a `pgvigil serve`, which keeps one session open even when nobody browses it, Grafana, a
+   psql; every backend but an autovacuum worker, which
    `DROP DATABASE` ends by itself) refuses it too; the drop never forces a session off. A refusal here, or Ctrl-C during the watch, starts the service again: the host is as it was.
    A scheduled `pgvigil purge` or `pgvigil alerts` on another host holds no session between its runs and writes no
    `collection_dates`, so it is not seen: stop it there first, or its next run fails.
 5. The dump (`pg_dump --format=custom`, 0600, to `/var/backups/pgvigil` or `%ProgramData%\pgvigil-backups` by default;
-   `-dump <file>` names it, `-no-dump` takes none). A failed dump starts the service again.
+   `-dump <file>` names it, `-no-dump` takes none). A failed dump starts the service again if this run stopped it.
 6. `DROP DATABASE`, run from the server's maintenance database (`postgres`, else `template1`), then the roles, one
    `DROP ROLE` each (below).
 7. Windows: the app machine-wide (`pgvigil-app.exe` and its old copies in `%ProgramFiles%\pgvigil`,
@@ -88,10 +100,27 @@ Roles belong to the server (the cluster), not to the database, so a role goes on
   database records it and it has no session there. Every other member of the groups (the UI's login, a Grafana login,
   another host's collector) is listed with its `DROP ROLE` line for its owner to run.
 
+### A repository kept by a plain `-all`, dropped by hand
+
+As the repository owner (or a superuser), from the server's `postgres` database, after a dump:
+
+```sh
+pg_dump --format=custom --file pgvigil-before-drop.dump "<the owner's connection string>"
+psql "<the owner's connection string, dbname=postgres>" -c 'DROP DATABASE "<the repository database the plan named>"'
+```
+
+then the roles as "The roles" above says (the login this host's collector used, and each pgvigil group nothing else
+uses). Check first
+that no collector, serve or Grafana of another host still uses that database: the uninstall's own checks do not run.
+
 ### What stays
 
 Named on every run, never removed:
 
+- Without `-drop-repository`: the repository, its roles and its scheduled work. The instances added in the page
+  (Admin > Instances) stay in it, active, while their passwords go with this host's credential folders: another
+  collector of the same repository then reports each of them unreachable. Remove them in the page first when the
+  repository lives on.
 - The dumps (`/var/backups/pgvigil`, `%ProgramData%\pgvigil-backups`): yours to keep or delete.
 - Linux: a service account the install did not create. `pgvigil install` marks the account it creates (its comment is
   `created by pgvigil install`); an account that was there before, or one made by an earlier release, is kept with its

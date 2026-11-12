@@ -46,3 +46,46 @@ func TestPurgeEnvFiles(t *testing.T) {
 		t.Errorf("the unit's file and README's place: %v", got)
 	}
 }
+
+// TestUnitEnvExtra (the join review w9e, finding 9, and its fold's review): the unit's other environment sources and
+// the drop-ins that change what the service runs, as systemctl show prints them, are refused by name; the installer's
+// own env file alone, unrelated variables and an unrelated drop-in pass.
+func TestUnitEnvExtra(t *testing.T) {
+	env := "/etc/pgvigil/pgvigil.env"
+	files := map[string]string{
+		"/etc/systemd/system/pgvigil.service.d/ip.conf":   "[Service]\nIPAddressAllow=10.0.0.0/8\n# ExecStart= in a comment\n",
+		"/etc/systemd/system/pgvigil.service.d/exec.conf": "[Service]\nExecStart=\nExecStart=/usr/local/bin/pgvigil run -config /etc/pgvigil/prod.yaml\n",
+		"/etc/systemd/system/pgvigil.service.d/user.conf": "[Service]\n  User = pgvprod\n",
+	}
+	read := func(f string) ([]byte, error) {
+		if b, ok := files[f]; ok {
+			return []byte(b), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	base := "EnvironmentFiles=/etc/pgvigil/pgvigil.env (ignore_errors=no)\n"
+	for _, c := range []struct {
+		show, name, bad string
+	}{
+		{base + "Environment=\nDropInPaths=", "PGVIGIL_REPO_DSN", ""},
+		{base + "Environment=GOMAXPROCS=2 TZ=UTC\nDropInPaths=/etc/systemd/system/pgvigil.service.d/ip.conf", "PGVIGIL_REPO_DSN", ""},
+		{"Environment=\nDropInPaths=", "PGVIGIL_REPO_DSN", ""},
+		{base + "EnvironmentFiles=/etc/pgvigil/prod.env (ignore_errors=yes)\nEnvironment=", "PGVIGIL_REPO_DSN", "EnvironmentFile=/etc/pgvigil/prod.env"},
+		{base + "Environment=TZ=UTC PGVIGIL_REPO_DSN=host=x", "PGVIGIL_REPO_DSN", "Environment=PGVIGIL_REPO_DSN=..."},
+		{base + "Environment=\"PGVIGIL_REPO_DSN=host=x user=y\"", "PGVIGIL_REPO_DSN", "Environment=PGVIGIL_REPO_DSN=..."},
+		{base + "Environment=[unprintable]", "PGVIGIL_REPO_DSN", "an Environment= systemctl cannot print"},
+		{base + "Environment=MY_PGVIGIL_REPO_DSN=x", "PGVIGIL_REPO_DSN", ""},
+		{"EnvironmentFiles=/etc/pgvigil/prod.env (ignore_errors=yes)\nEnvironment=[unprintable]", "", ""}, // a file: dsn: no env source matters
+		{base + "DropInPaths=/etc/systemd/system/pgvigil.service.d/exec.conf", "", "the drop-in /etc/systemd/system/pgvigil.service.d/exec.conf (ExecStart=)"},
+		{base + "DropInPaths=/etc/systemd/system/pgvigil.service.d/ip.conf /etc/systemd/system/pgvigil.service.d/user.conf", "PGVIGIL_REPO_DSN", "the drop-in /etc/systemd/system/pgvigil.service.d/user.conf (User=)"},
+		{base + "DropInPaths=/run/systemd/system/pgvigil.service.d/gone.conf", "", "(unreadable:"},
+	} {
+		err := unitEnvExtra(c.show, env, c.name, read)
+		switch {
+		case c.bad == "" && err != nil:
+			t.Errorf("%q: %v", c.show, err)
+		case c.bad != "" && (err == nil || !strings.Contains(err.Error(), c.bad)):
+			t.Errorf("%q: want an error naming %q, got %v", c.show, c.bad, err)
+		}
+	}
+}
