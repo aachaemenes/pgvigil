@@ -206,7 +206,7 @@ const rollupWords: Record<string, [string, string]> = {
   lead: ['Blocked wait by lead blocker', 'lead blocker (its last statement)'],
   object: ['Blocked wait by object', 'object'],
   database: ['Blocked wait by database', 'database'],
-  login: ['Blocked wait by login, application and host', 'login / application / host'],
+  login: ['Blocked wait by the blocking login, application and host', 'blocking login / application / host'],
 };
 
 async function openHead(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {

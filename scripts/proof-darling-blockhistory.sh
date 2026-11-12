@@ -33,7 +33,9 @@
 #     the findings hold Database Locks, Object Locks naming dbo.pgvb_t, Blocking Involving Selects, Serializable
 #     Blocking, Top Lead Blocker and the totals (1000, 1001).
 #  C. GET /api/blocking/history part=pairs: the pairs (blocked, blocking, snapshots, longest wait) equal a direct read of
-#     pgvigil.mssql_requests for the window; the trend part has reports in some step and a summed wait.
+#     pgvigil.mssql_requests for the window; the trend part has reports in some step and a summed wait; the lead rollup
+#     has one lead, the head's statement, with all the blocked wait (the database's total; the writer in the middle
+#     of the chain is no lead).
 #  D. pgvigil's blocked session dropped (the chain still held, the threshold 5 again): within about 6.5 minutes a read
 #     of mssql_syshealth stores system_health's QUERY_PROCESSING blockingTasks as reports of source system_health
 #     (the syshealth wiring, scripts/proof-darling-blockhistory-join.patch, applied to the run's copy while the join
@@ -43,7 +45,10 @@
 #  F. `pgvigil serve` from the run's copy (web bundle rebuilt): #/mssql_blocked and #/mssql_running of the instance in
 #     the light and the dark theme: the Blocked reports grid has as many rows as the store's head statements, the
 #     findings grid as many as B's findings, the pairs grid as many as C's pairs; every link of both pages clicked, its
-#     landing named (one 'click' line each) and rendered without an error box; shots of each page in both themes.
+#     landing named (one 'click' line each) and rendered without an error box; each head's Open button clicked on a
+#     fresh render: its panel (in place) lists as many reports as the head's row counts, each blocked by that head's
+#     session, the object dbo.pgvb_t, the panels together as many reports as the store; shots of each page and of the
+#     first head's opened panel in both themes.
 # NOT PROVEN HERE: the checks this chain does not raise, whose rules are read and not run: a stored-procedure lead
 # resolved to schema.procedure (check 9 is raised for this ad hoc head, run 8), repeatable read (4), the sleeping, background, done, compile-lock
 # and application-lock groups of 6 (the head waits in a WAITFOR: suspended), the implicit-transaction and auto-stats groups of 7, non-lock reports (10); a page or
@@ -235,6 +240,13 @@ read -r TREP TSUM <<<"$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1
 NHEADS=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["blocked"]["rows"]))' "$TMPD/xe.json")
 NAPIF=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["block_findings"]["rows"]))' "$TMPD/xe.json")
 [[ "$NAPIF" == "$(wc -l < "$TMPD/pgv.txt")" ]] || fail "C: the API's findings $NAPIF, the function's $(wc -l < "$TMPD/pgv.txt")"
+# the lead rollup: the victims' wait belongs to the chain's head (the writer in the middle is not a lead), all of it
+read -r NLEAD LEADOK LEADW DBW <<<"$(python3 -c '
+import json, sys
+t = json.load(open(sys.argv[1]))["block_rollup"]; rs = [dict(zip(t["columns"], r)) for r in t["rows"]]
+lead = [r for r in rs if r["dimension"] == "lead"]; db = [r for r in rs if r["dimension"] == "database"]
+print(len(lead), str(bool(lead) and str(lead[0]["name"]).startswith("BEGIN TRAN")).lower(), lead[0]["total_wait_ms"] if lead else -1, db[0]["total_wait_ms"] if db else -2)' "$TMPD/xe.json")"
+[[ "$NLEAD" == 1 && "$LEADOK" == true && "$LEADW" == "$DBW" ]] || fail "C: the lead rollup: $NLEAD lead(s), the head's statement $LEADOK, its wait $LEADW ms against the database's $DBW ms (want 1, true, equal)"
 echo "ok   C: $NP pairs equal to the store's rows; the trend: $TREP reports, the largest summed wait ${TSUM} ms; $NHEADS head statement(s), $NAPIF findings"
 
 echo "== D. system_health's blockingTasks where no capture of pgvigil runs =="
@@ -305,10 +317,19 @@ for (const theme of ['light', 'dark']) {
   const s = await state();
   console.log(`page blocked ${theme} errors=${s.errors} heads=${await gridRows('Blocked reports')} findings=${await gridRows('Findings over the range')} lead=${await gridRows('Blocked wait by lead blocker')} object=${await gridRows('Blocked wait by object')}`);
   await shot(`blocked-${theme}`);
+  // the first head opened: the panel (in place, below the grid) shot alone, clipped to its box
+  await ev(`[...document.querySelectorAll('main button.link')].find(b => b.textContent.trim() === 'Open')?.click(); 'ok'`);
+  for (let k = 0; k < 50 && !(await ev(`!!document.querySelector('main section.detail tbody tr:not(:has(.empty))')`)); k++) await sleep(200);
+  await sleep(400);
+  const box = JSON.parse(await ev(`(() => { const b = document.querySelector('main section.detail')?.getBoundingClientRect(); return JSON.stringify(b ? { x: b.left + scrollX, y: b.top + scrollY, w: b.width, h: b.height } : null); })()`));
+  if (box && box.h > 0) {
+    const pd = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: box.x, y: box.y, width: box.w, height: box.h, scale: 1 } });
+    fs.writeFileSync(`${shots}/blocked-open-${theme}.png`, Buffer.from(pd.result.data, 'base64'));
+  }
+  console.log(`shot blocked-open ${theme} panel=${box ? `${Math.round(box.w)}x${Math.round(box.h)}` : 'none'}`);
   if (!await go(pages.running)) { console.log(`FAIL render running ${theme}`); continue; }
   const r = await state();
   console.log(`page running ${theme} errors=${r.errors} pairs=${await gridRows('Who blocked whom')}`);
-  await ev(`document.querySelector('main .blocking-history')?.scrollIntoView(); 'ok'`); await sleep(300);
   await shot(`running-blocking-${theme}`);
 }
 // every link of both pages: its landing and whether the page it lands on renders without an error box
@@ -323,6 +344,29 @@ for (const [name, hash] of Object.entries(pages)) {
     await go(hash);
   }
 }
+// the Blocked reports grid's Open buttons (a head's reports into the panel below the grid, in place): each one clicked on
+// a fresh render of the page (a navigation to the same address keeps the page, and the panel the last click filled: run 12)
+const openBtns = `[...document.querySelectorAll('main button.link')].filter(b => b.textContent.trim() === 'Open')`;
+await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200); await go(pages.blocked);
+const nOpen = await ev(`${openBtns}.length`);
+for (let i = 0; i < nOpen; i++) {
+  await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
+  await go(pages.blocked);
+  // the head's own row, read before the click: its blocking session and its report count
+  const head = JSON.parse(await ev(`(() => { const b = ${openBtns}[${i}]; const tr = b.closest('tr');
+    const hs = [...tr.closest('table').querySelectorAll('thead th')].map(th => th.textContent.replace(/[\u25be\u25b4\u25bc\u25b2]/g, '').trim());
+    const c = k => tr.children[hs.indexOf(k)]?.textContent.trim() ?? ''; b.click(); return JSON.stringify({ spid: c('blocking session'), reports: c('reports') }); })()`));
+  let r = null;
+  for (let k = 0; k < 50; k++) {
+    r = JSON.parse(await ev(`(() => { const p = document.querySelector('main section.detail'); const trs = p ? [...p.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty')) : [];
+      const hs = p ? [...p.querySelectorAll('thead th')].map(th => th.textContent.replace(/[\u25be\u25b4\u25bc\u25b2]/g, '').trim()) : [];
+      const col = k => { const j = hs.indexOf(k); return j < 0 ? [] : [...new Set(trs.map(tr => tr.children[j].textContent.trim()))]; };
+      return JSON.stringify({ rows: trs.length, object: col('object').join(',') || '-', spids: col('blocking session').join(',') || '-', errors: p ? p.querySelectorAll('.error').length : -1, hash: location.hash }); })()`));
+    if (r.rows > 0 || r.errors > 0) break; await sleep(200);
+  }
+  console.log(`click blocked Open#${i + 1} -> panel in place (${r.hash.split('?')[0]}) rows=${r.rows} of=${head.reports || '-'} session=${r.spids} head=${head.spid || '-'} object=${r.object} errors=${r.errors}`);
+}
+if (nOpen === 0) console.log('click blocked Open none');
 ws.close(); process.exit(0);
 JS
 out=$(F_USR="$USR" F_UPW="$UPW" node "$TMPD/f.mjs" "$CDP" "$U/" "$SB" "$SHOTS" "$START" "$DEND") || fail "F: the Chromium walk stopped: $out"
@@ -336,7 +380,22 @@ for theme in light dark; do
   echo "$out" | grep -q "^page blocked $theme errors=0 heads=$NHALL findings=$NFALL " || fail "F: the Blocked reports page ($theme): $(echo "$out" | grep "^page blocked $theme") (want heads $NHALL, findings $NFALL)"
   echo "$out" | grep -q "^page running $theme errors=0 pairs=$NPALL$" || fail "F: the Running page's pairs ($theme): $(echo "$out" | grep "^page running $theme") (want $NPALL)"
 done
-! echo "$out" | grep '^click ' | grep -v 'not followed' | grep -qv 'rendered=true errors=0' || fail "F: a link landed on a page with an error: $(echo "$out" | grep '^click ' | grep -v 'rendered=true errors=0' | head -3)"
+! echo "$out" | grep '^click ' | grep -v 'not followed' | grep -v '^click blocked Open#' | grep -qv 'rendered=true errors=0' || fail "F: a link landed on a page with an error: $(echo "$out" | grep '^click ' | grep -v '^click blocked Open#' | grep -v 'rendered=true errors=0' | head -3)"
 echo "$out" | grep '^click running ' | grep -q -- '-> #/mssql_running (.*) rendered=true errors=0 at=20' || fail "F: a pair's 'last seen' does not land on a Running snapshot with at="
+NOPEN=$(echo "$out" | grep -c '^click blocked Open#' || true)
+[[ "$NOPEN" == "$NHALL" ]] || fail "F: $NOPEN Open button(s) clicked, the grid has $NHALL head(s)"
+# each panel is its own head's reports: as many rows as the head's row counts, every row blocked by that head's session
+OPENRE='rows=([0-9]+) of=([0-9]+) session=([^ ]+) head=([^ ]+) object=([^ ]+) errors=(-?[0-9]+)$'
+while IFS= read -r line; do
+  [[ "$line" =~ $OPENRE ]] || fail "F: an Open line out of shape: $line"
+  [[ "${BASH_REMATCH[1]}" != 0 && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" && "${BASH_REMATCH[3]}" == "${BASH_REMATCH[4]}" && "${BASH_REMATCH[5]}" == dbo.pgvb_t && "${BASH_REMATCH[6]}" == 0 ]] \
+    || fail "F: an Open panel is not its head's reports: $line (want rows = of > 0, session = head, object dbo.pgvb_t, errors 0)"
+done < <(echo "$out" | grep '^click blocked Open#')
+for theme in light dark; do
+  echo "$out" | grep -q "^shot blocked-open $theme panel=[0-9]" && [[ -s "$SHOTS/blocked-open-$theme.png" ]] || fail "F: no shot of an opened head's panel ($theme): $(echo "$out" | grep "^shot blocked-open $theme")"
+done
+SUMOPEN=$(echo "$out" | sed -n 's/^click blocked Open#.* rows=\([0-9]*\) .*/\1/p' | awk '{ n += $1 } END { print n + 0 }')
+NRALL=$(pq "SELECT count(*) FROM pgvigil.mssql_blocked_reports WHERE instance_id = $SB AND event_at > '$START' AND event_at <= '$DEND' AND source = 'product'")
+[[ "$SUMOPEN" == "$NRALL" ]] || fail "F: the Open panels hold $SUMOPEN report(s), the store $NRALL"
 echo "ok   F: both pages in light and dark (heads $NHALL, findings $NFALL, pairs $NPALL as the store), $(echo "$out" | grep -c '^click ') link(s) clicked, each landing named; shots in $SHOTS"
 echo "proof-darling-blockhistory: OK (the reports with sp_HumanEventsBlockViewer's columns; its findings equal over the same capture; the pairs equal to the store; system_health's blockingTasks stored without a capture; the pages and their links in Chromium)"
