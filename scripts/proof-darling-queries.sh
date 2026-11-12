@@ -192,10 +192,12 @@ now_utc() { sq "SELECT CONVERT(varchar(19), SYSUTCDATETIME(), 126) + 'Z'"; }
 # to_bound: sleep until the server's clock is $1 seconds past the next whole minute; prints that minute (UTC)
 to_bound() { local s m; s=$(sq "SELECT 60 - DATEPART(second, SYSUTCDATETIME())"); sleep $((s + $1)); m=$(sq "SELECT CONVERT(varchar(16), SYSUTCDATETIME(), 126) + ':00Z'"); printf '%s' "$m"; }
 Q_COST="EXEC sp_executesql N'SELECT /*q_cost*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v + b.v = -1', N'@n int', @n ="
-Q_TO="EXEC sp_executesql N'SELECT /*q_to*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v * 2 + b.v = -1', N'@n int', @n ="
+# q_to and q_tonew under LOOP JOIN: compiled at 20,000 rows a hash join answers in milliseconds (s177j-8: q_tonew's four
+# runs ended Regular); a loop over 400 M pairs outlasts the client's 1 s
+Q_TO="EXEC sp_executesql N'SELECT /*q_to*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v * 2 + b.v = -1 OPTION (LOOP JOIN)', N'@n int', @n ="
 # each scenario statement has a shape of its own: a query hash leaves literals out, so two statements that differ in
 # a literal only would be one key
-Q_TONEW="EXEC sp_executesql N'SELECT /*q_tonew*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.id * 2 + b.v = -1', N'@n int', @n ="
+Q_TONEW="EXEC sp_executesql N'SELECT /*q_tonew*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.id * 2 + b.v = -1 OPTION (LOOP JOIN)', N'@n int', @n ="
 Q_ERR="EXEC sp_executesql N'SELECT /*q_err*/ COUNT_BIG(*) / @d FROM dbo.t WHERE v >= 0', N'@d int', @d ="
 Q_CHEAP="EXEC sp_executesql N'SELECT /*q_cheap*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v - b.v = -1', N'@n int', @n ="
 Q_GONE="EXEC sp_executesql N'SELECT /*q_gone*/ COUNT_BIG(*) FROM dbo.t WHERE v = @v', N'@v int', @v = 5;"
@@ -319,11 +321,12 @@ for h in hand:
 nofail = q(f"SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = {sb} AND coalesce(failed, 0) = 0 AND (aborted_executions IS NOT NULL OR exception_executions IS NOT NULL)")[0][0]
 fails = sorted(f"{tag(h, h['text'])}:a{h['an']}/x{h['xn']}" for h in hand if h['an'] + h['xn'] > 0)
 print(f"D failures in the hand read: {fails}")
-w2 = {}
-for h in hand:
-    k = tag(h, h['text'])
-    if k and E2 <= h['at'] < E4: w2[k] = w2.get(k, 0) + h['e']
-print(f"D executions in W2 by statement (hand read): {dict(sorted(w2.items()))}")
+for lo, hi, nm in [(E1, E2, 'W1'), (E2, E4, 'W2')]:
+    w = {}
+    for h in hand:
+        k = tag(h, h['text'])
+        if k and lo <= h['at'] < hi: w[k] = w.get(k, 0) + h['e']
+    print(f"D executions in {nm} by statement (hand read): {dict(sorted(w.items()))}")
 if nsplit < 3: bad.append(f"D only {nsplit} stored (plan, interval) rows with failures")
 if nofail != '0': bad.append(f"D {nofail} rows without failures carry split values (want NULL)")
 # 2. Regressed
