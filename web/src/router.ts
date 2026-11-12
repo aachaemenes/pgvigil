@@ -27,7 +27,7 @@ export interface Ctx {
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
 export function rememberInstance(id?: number) { if (id) try { localStorage.setItem('pgvigil.instance', String(id)); } catch { /* private window */ } }
 
-export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
+export const presets: Record<string, number> = { '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '6h': 21600, '24h': 86400, '2d': 172800, '7d': 604800, '30d': 2592000 };
 // Calendar periods that end now: they follow now like a preset, from the start of the day, the week (Monday) or the
 // month on the display zone's clock (tz.ts). A period that has ended (yesterday, the week or month before) is a fixed
 // from / to the range panel writes.

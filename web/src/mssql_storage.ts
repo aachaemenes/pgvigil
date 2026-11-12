@@ -129,7 +129,7 @@ function growthPanel(ctx: Ctx, first: Parts): HTMLElement {
       el('p', { class: 'meta' }, `${fmtNum(span)} days of history` + (span < n - 1 ? ` (the ${n}-day window holds no more yet)` : '')
         + '. Grown: the size now minus the oldest size of the window; the lines are the eight largest databases.'),
       el('div', { class: 'charts' },
-        lineChart(`Database sizes, ${n} days`, ds.rows, ds.series, v => fmtBytes(v)),
+        lineChart(`Database sizes, ${n} days`, ds.rows, ds.series, v => fmtBytes(v), { ownSpan: true }),
         donutChart(`Growth by database, ${n} days`, dbs.map(r => ({ label: String(r.database_name), value: Number(r.grown_bytes ?? 0) })), fmtBytes,
           8, false, 'No database grew in this window.')),
       el('details', {}, el('summary', {}, `Database sizes, ${n} days: the numbers`),

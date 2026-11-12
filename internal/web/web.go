@@ -156,6 +156,8 @@ func (s *Server) Close() { s.actions.Close(); s.pool.Close() }
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/health", s.health)
+	api.HandleFunc("GET /api/frame/status", s.FrameStatus)
+	api.HandleFunc("GET /api/frame/events", s.FrameEvents)
 	api.HandleFunc("GET /api/instances", s.instances)
 	api.HandleFunc("GET /api/overview", s.overview)
 	api.HandleFunc("GET /api/activity", s.activity)
