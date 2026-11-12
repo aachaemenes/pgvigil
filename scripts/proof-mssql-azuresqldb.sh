@@ -42,10 +42,18 @@
 #       tables hold no row for the instance: mssql_services, mssql_ag, mssql_mirroring, mssql_logshipping,
 #       mssql_replication, mssql_jobs, mssql_backups, mssql_storage, mssql_versionstore, mssql_cpu, mssql_memory,
 #       mssql_fileio, mssql_tempdb, mssql_properties, mssql_procstats, mssql_indexlocks, mssql_querystore.
+#       [Added after the join of wave 1 (rel-join-w1, 11 collections more; written before their first run here): mssql_audit,
+#        mssql_checks, mssql_defaulttrace, mssql_errorlog, mssql_identity, mssql_indexes, mssql_plancache,
+#        mssql_plancache_health, mssql_stats, mssql_syshealth, mssql_traceflags - each skipped by its Azure SQL Database
+#        rule, its own tables empty for the instance. Microsoft's pages for the five the platform has no object for:
+#        audit (auditing writes to a storage account, Log Analytics or Event Hubs), default trace ('SQL Server trace' is
+#        not supported), error log (sp_readerrorlog applies to SQL Server only), system_health (no built-in session),
+#        trace flags (instance configuration not supported); docs/sqlserver-cloud.md cites each page.]
 #     A skip is never counted as collected or as failed; a RUN collection skipped for a missing right is a FAIL.
 #  C. the pages: GET /api/mssql/summary gives the instance the cells availability, backups, jobs, storage, dbstate,
 #     agent, dbmail, dumps and qs as n/a (every collection of the group skipped) and blocking, events and uptime as
-#     ok; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
+#     ok [after the join: audit n/a too; the collections that feed an ok cell run again right before C, so no cell
+#     reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
 #     yet"; each SQL Server tab of the instance renders without an error line, and each tab whose collections are
 #     all skipped here says so (the skip's own text, or "not on this platform").
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
@@ -151,14 +159,19 @@ WANT="sqlserver|azuresqldb|$((maj * 10000 + 10#$min))|$PV|$ED|$EE|$SN"
 echo "--- B. every collection"
 mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls internal/mssql/*.go | grep -v _test.go) | sed 's/.*Prefix + "\([a-z_]*\)"/mssql_\1/' | sort)
 RUNS=(mssql_instance mssql_requests mssql_waits mssql_xe)
-SKIPS=(mssql_services mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore)
+SKIPS=(mssql_services mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
+  mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags)
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${RUNS[@]}" "${SKIPS[@]}" | sort | tr '\n' ' ')" ] \
   || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
 declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mssql_ag_state mssql_ag_database_state" [mssql_mirroring]="mssql_mirroring_state"
   [mssql_logshipping]="mssql_logshipping_state" [mssql_replication]="mssql_replication_state" [mssql_jobs]="mssql_jobs mssql_job_runs" [mssql_backups]="mssql_backup_state"
   [mssql_storage]="mssql_files mssql_volumes" [mssql_versionstore]="mssql_versionstore_db mssql_versionstore_sample" [mssql_cpu]="mssql_cpu_sample mssql_sched_sample"
   [mssql_memory]="mssql_memory_sample mssql_memory_clerk" [mssql_fileio]="mssql_fileio_last" [mssql_tempdb]="mssql_tempdb mssql_tempdb_files"
-  [mssql_properties]="mssql_property" [mssql_procstats]="mssql_proc_last" [mssql_indexlocks]="mssql_indexlock_last" [mssql_querystore]="mssql_qs_store")
+  [mssql_properties]="mssql_property" [mssql_procstats]="mssql_proc_last" [mssql_indexlocks]="mssql_indexlock_last" [mssql_querystore]="mssql_qs_store"
+  [mssql_audit]="mssql_audit mssql_audit_spec mssql_audit_events" [mssql_checks]="mssql_check_finding mssql_server_option mssql_database_option mssql_build mssql_trace_flag"
+  [mssql_defaulttrace]="mssql_trace_events" [mssql_errorlog]="mssql_errorlog" [mssql_identity]="mssql_identity_column mssql_identity_scan"
+  [mssql_indexes]="mssql_index mssql_index_db mssql_missing_index" [mssql_plancache]="mssql_pc_last mssql_pc_sample" [mssql_plancache_health]="mssql_pc_health"
+  [mssql_stats]="mssql_stat mssql_stats_db" [mssql_syshealth]="mssql_health_components" [mssql_traceflags]="mssql_trace_flags")
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
 for c in "${SKIPS[@]}"; do
@@ -241,6 +254,8 @@ else bad "D: the monitored database changed under the collector: $(tr '\n' ' ' <
 echo "--- C. the pages"
 if [ -n "${PGVIGIL_SKIP_PAGES:-}" ]; then echo "C: NOT RUN (PGVIGIL_SKIP_PAGES)"; FAILS+=("C: not run")
 else
+  # the collections behind an ok cell run again now: the Summary calls a read older than its window stale
+  for c in mssql_instance mssql_requests mssql_xe; do "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c-c.out" 2>&1 || true; done
   PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   "$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 & SRV=$!
   for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
@@ -248,7 +263,7 @@ else
   # cells is a table: {columns: [...], rows: [[...], ...]}
   GOT=$(jq -r --argjson i "$iid" '.cells as $t | ($t.columns | index("instance_id")) as $ci | ($t.columns | index("key")) as $ck | ($t.columns | index("state")) as $cs
     | [$t.rows[] | select(.[$ci] == $i) | "\(.[$ck])=\(.[$cs])"] | sort | join(" ")' "$WORK/sum.json")
-  WANT="agent=n/a availability=n/a backups=n/a blocking=ok dbmail=n/a dbstate=n/a dumps=n/a events=ok jobs=n/a qs=n/a storage=n/a uptime=ok"
+  WANT="agent=n/a audit=n/a availability=n/a backups=n/a blocking=ok dbmail=n/a dbstate=n/a dumps=n/a events=ok jobs=n/a qs=n/a storage=n/a uptime=ok"
   [ "$GOT" = "$WANT" ] && echo "  summary cells: OK" || bad "C: the summary cells '$GOT', want '$WANT'"
   if command -v chromium >/dev/null; then
     page() { timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/$1?i=$iid&w=1h" 2>/dev/null; }
@@ -260,16 +275,23 @@ else
       bad "C: the Summary page lists groups that do not run on Azure SQL Database as 'not read yet': $(grep -oE 'not read yet:[^.]*' <<<"$T" | head -1)"; fi
     declare -A SKIPTABS=([availability]="mssql_ag" [mssqlbackups]="mssql_backups" [mssqljobs]="mssql_jobs" [jobstimeline]="mssql_jobs" [mssqlstorage]="mssql_storage"
       [mssqlfiles]="mssql_storage" [rowversions]="mssql_versionstore" [mssqltempdb]="mssql_tempdb" [mssqlcpu]="mssql_cpu" [mssqlmemory]="mssql_memory"
-      [mssqlfileio]="mssql_fileio" [mssqlqs]="mssql_querystore" [mssqlprocs]="mssql_procstats" [mssqlindexlocks]="mssql_indexlocks" [mssqlproperties]="mssql_properties")
+      [mssqlfileio]="mssql_fileio" [mssqlqs]="mssql_querystore" [mssqlprocs]="mssql_procstats" [mssqlindexlocks]="mssql_indexlocks" [mssqlproperties]="mssql_properties"
+      [mssqlplancache]="mssql_plancache" [mssqlindexes]="mssql_indexes" [mssqlaudit]="mssql_audit" [mssqlchecks]="mssql_checks" [mssqlerrorlog]="mssql_errorlog"
+      [mssqltrace]="mssql_defaulttrace" [mssqlhealth]="mssql_syshealth")
+    NTABS=0
     for tab in summary performance mssql_running mssql_slow mssql_waits mssql_deadlocks mssql_blocked findings availability mssqlbackups mssqljobs mssqlstorage mssqlfiles \
-               rowversions mssqlconfig mssqlactions jobstimeline mssqlcpu mssqlmemory mssqlfileio mssqltempdb mssqlqs counters mssqlprocs mssqlindexlocks mssqlproperties; do
+               rowversions mssqlconfig mssqlactions jobstimeline mssqlcpu mssqlmemory mssqlfileio mssqltempdb mssqlqs counters mssqlprocs mssqlindexlocks mssqlproperties \
+               mssqlplancache mssqlindexes mssqlaudit mssqlchecks mssqlerrorlog mssqltrace mssqlhealth; do
+      NTABS=$((NTABS + 1))
       page "$tab" > "$WORK/p-$tab.html" || true
       T=$(text < "$WORK/p-$tab.html")
       if [ ! -s "$WORK/p-$tab.html" ] || grep -q 'class="error"' "$WORK/p-$tab.html"; then bad "C: tab $tab did not render: $(grep -o 'class="error"[^<]*<' "$WORK/p-$tab.html" | head -1)"; continue; fi
+      # an unknown tab falls back to the Summary page: a tab of its own must not be that page
+      if [ "$tab" != summary ] && grep -qF 'aria-current="page">Summary</a>' "$WORK/p-$tab.html"; then bad "C: tab $tab opened the Summary page (no route for it in the embedded app)"; fi
       if [ -n "${SKIPTABS[$tab]:-}" ] && ! grep -qiE 'not on this platform|Azure SQL Database' <<<"$T"; then
         bad "C: tab $tab (${SKIPTABS[$tab]}, skipped here) renders without a line saying it does not run on this platform"; fi
     done
-    echo "  pages rendered: 26 tabs"
+    echo "  pages rendered: $NTABS tabs"
   else bad "C: chromium is not on this machine: the pages were not rendered"; fi
 fi
 

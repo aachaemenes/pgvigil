@@ -105,6 +105,42 @@
 #                           wait is made right before the index lock reads (an idle index's counters can leave the
 #                           cache on this instance, and they then start again from 0).]
 #       mssql_querystore   the proof's database stored with Query Store READ_WRITE, as its options read
+#     [Added after the join of wave 1 (rel-join-w1, 11 collections more), written before their first run here; each
+#      status ok and compared with the master user's read of the same view, the collector's filter mirrored:
+#       mssql_traceflags   the global flags stored equal DBCC TRACESTATUS(-1)
+#       mssql_audit        the server audits (name, type, switched on) and server specifications stored equal
+#                          sys.server_audits and sys.server_audit_specifications (RDS's own; none made here)
+#       mssql_checks       the server options stored (name, value in use, value set) equal sys.configurations
+#       mssql_identity     the identity columns at 10 % of their range or more, per user database the login can enter,
+#                          equal sys.identity_columns by the collector's formula; the proof's tinyint column (30) stored
+#       mssql_indexes      dbo.big's indexes stored equal sys.indexes; ix_b's user_seeks between the reads before and
+#                          after two hinted seeks (2 or more)
+#       mssql_stats        st_bb's modifications (5,000 rows changed) and NORECOMPUTE equal sys.dm_db_stats_properties
+#                          (the collector's user holds db_datareader in the proof's database: the RDS form gives it)
+#       mssql_plancache    mssql_pc_last by the evict bracket against sys.dm_exec_query_stats while a session runs a
+#                          parameterized statement in a loop; that statement stored
+#       mssql_plancache_health  the plans per database stored between the smaller and the larger read before and after
+#       mssql_syshealth    the reader's state 'read'; the component results per component and state between the counts
+#                          of sp_server_diagnostics_component_result in the session's event files before and after
+#       mssql_errorlog     the reader's state 'read'; every stored line of the current log a line of the master user's
+#                          read of it; the proof's marker (logged WITH LOG, the instance's own search string) stored
+#       mssql_defaulttrace the reader's state 'read'; the DDL events of the proof's database stored equal the default
+#                          trace read with the collector's filter
+#      Part C: the collections behind each Summary cell run again right before it; no cell reads never, stale or
+#      failed; the join's seven tabs render too.]
+#     [Runs 16-18, every difference recorded: run 16 Msg 451 on the audit read (catalog collations; COLLATE DATABASE_DEFAULT on
+#      every new hand read). Run 17: identity differed by sq's empty line for an empty result (dropped on both sides);
+#      stats partial on rdsadmin (finding F8 in the slice report: the collector leaves rdsadmin out on RDS); defaulttrace
+#      stored nothing - the RDS form had no ALTER TRACE (now granted: the master user holds it WITH GRANT OPTION; R wants
+#      it); syshealth: this instance writes no sp_server_diagnostics_component_result (probe 3), so 0 stored = 0 read
+#      with the reader's state 'read' is what is compared, a component row's content NOT PROVEN. Run 18: storage's hand
+#      read took tempdb's start size from sys.master_files where the collector takes the database's own
+#      sys.database_files (the fixture grew tempdb): mirrored. plancache: the proof's statement keeps its plan handle and
+#      gets a new creation time every 2 or 3 seconds, so it is compared by identity (handle, offsets): the collector's
+#      newest stored instance was created between the reads' instances, its count bounded by a read's where it is that
+#      read's instance; up to five read-collect-read cycles, a cycle where the cache dropped it compares nothing.
+#      plancache_health: a cycle passes when both reads agree for the proof's database and the stored counts equal them,
+#      up to five cycles (the counts move within seconds here).]
 #     except mssql_ag: skipped, the note "Always On is not enabled on this server" (RDS Express has no availability
 #     group; a rule of the server, said as skipped, never counted as collected or failed). A collection skipped for
 #     a missing right, partial, or failed is a FAIL with its note (the statement and the file are named in the report).
@@ -190,8 +226,8 @@ R=$(sq "SELECT ISNULL((SELECT STRING_AGG(permission_name, ',') WITHIN GROUP (ORD
   + '|' + ISNULL((SELECT STRING_AGG(r.name, ',') FROM msdb.sys.database_role_members m JOIN msdb.sys.database_principals r ON r.principal_id = m.role_principal_id JOIN msdb.sys.database_principals u ON u.principal_id = m.member_principal_id WHERE u.name = N'$MON_USER'), '') COLLATE DATABASE_DEFAULT
   + '|' + ISNULL((SELECT STRING_AGG(o.name, ',') WITHIN GROUP (ORDER BY o.name) FROM msdb.sys.database_permissions p JOIN msdb.sys.objects o ON o.object_id = p.major_id JOIN msdb.sys.database_principals u ON u.principal_id = p.grantee_principal_id WHERE u.name = N'$MON_USER' AND p.permission_name = 'SELECT' AND p.state = 'G'), '') COLLATE DATABASE_DEFAULT")
 echo "  $MON_USER: $R"
-[ "$R" = "CONNECT SQL,VIEW ANY DEFINITION,VIEW SERVER STATE|0||sysjobactivity,sysjobhistory,sysjobs" ] && echo "R: OK (the RDS form: no CONNECT ANY DATABASE and no msdb db_datareader, which the master user cannot grant)" \
-  || bad "R: the collector's login holds '$R' (want CONNECT SQL,VIEW ANY DEFINITION,VIEW SERVER STATE|0||sysjobactivity,sysjobhistory,sysjobs)"
+[ "$R" = "ALTER TRACE,CONNECT SQL,VIEW ANY DEFINITION,VIEW SERVER STATE|0||sysjobactivity,sysjobhistory,sysjobs" ] && echo "R: OK (the RDS form: no CONNECT ANY DATABASE and no msdb db_datareader, which the master user cannot grant)" \
+  || bad "R: the collector's login holds '$R' (want ALTER TRACE,CONNECT SQL,VIEW ANY DEFINITION,VIEW SERVER STATE|0||sysjobactivity,sysjobhistory,sysjobs)"
 
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 -c "create database $REPO_DB"; MADE_DB=1
 export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO_DB"
@@ -217,6 +253,14 @@ sq "ALTER DATABASE [$FDB] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE);" >
 sq "CREATE USER [$MON_USER] FOR LOGIN [$MON_USER];" "$FDB" >/dev/null
 sq "CREATE TABLE dbo.t (id int NOT NULL CONSTRAINT pk_t PRIMARY KEY, v int NOT NULL); INSERT dbo.t VALUES (1, 0), (2, 0);" "$FDB" >/dev/null
 sq "EXEC('CREATE PROCEDURE dbo.pgvproof_p AS SELECT COUNT(*) FROM dbo.t;');" "$FDB" >/dev/null
+# for the join's collections: an identity column past the collector's floor (30 of tinyint's 255 = 11.76 %), a table with a
+# nonclustered index and a NORECOMPUTE statistic, and db_datareader for the collector's user (sys.dm_db_stats_properties
+# asks SELECT on the table: the stats collection reads partial without it)
+sq "CREATE TABLE dbo.idt (id tinyint IDENTITY(1,1) NOT NULL CONSTRAINT pk_idt PRIMARY KEY, x int NOT NULL); INSERT dbo.idt (x) SELECT TOP (30) 0 FROM sys.all_objects;" "$FDB" >/dev/null
+sq "CREATE TABLE dbo.big (id int NOT NULL CONSTRAINT pk_big PRIMARY KEY, b int NOT NULL);
+  INSERT dbo.big (id, b) SELECT TOP (20000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)), 0 FROM sys.all_columns a CROSS JOIN sys.all_columns c;
+  CREATE INDEX ix_b ON dbo.big (b) WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSION = NONE); CREATE STATISTICS st_bb ON dbo.big (b) WITH NORECOMPUTE;" "$FDB" >/dev/null
+sq "ALTER ROLE db_datareader ADD MEMBER [$MON_USER];" "$FDB" >/dev/null
 "$BIN" mssql-xe -print -form server -install-id "$XEID" > "$WORK/xe.sql"
 MADE_XE=1
 XE_REFUSED=
@@ -251,7 +295,8 @@ WANT="sqlserver|rdssqlserver|$((maj * 10000 + 10#$min))|$PV|$ED|$EE|$SN"
 echo "--- B. every collection"
 mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls internal/mssql/*.go | grep -v _test.go) | sed 's/.*Prefix + "\([a-z_]*\)"/mssql_\1/' | sort)
 ALL=(mssql_instance mssql_services mssql_requests mssql_waits mssql_xe mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups
-  mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore)
+  mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
+  mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags)
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${ALL[@]}" | sort | tr '\n' ' ')" ] || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
@@ -264,13 +309,14 @@ run_ok() { # run_ok <collection>: runs it, and says whether it stored a read wit
 eq() { # eq <collection> <stored> <hand>: the verdict of an exact comparison; an empty side is a failed read
   if [ -z "$2" ] || [ -z "$3" ]; then VERDICT[$1]="FAIL"; bad "B: $1: an empty side (stored '$2', the master user reads '$3')"; return; fi
   if [ "$2" = "$3" ]; then VERDICT[$1]="PASS"; if [ -n "${4:-}" ] && { [ "$2" = 0 ] || [ "$2" = "(none)" ]; }; then VERDICT[$1]="PASS (${4})"; fi; else VERDICT[$1]="FAIL"; bad "B: $1 stored '$(cut -c1-300 <<<"$2")', the master user reads '$(cut -c1-300 <<<"$3")'"; fi; }
-# bracket <collection> <before> <after> <stored> [<key that must be stored>] [evict]: every stored key lies between the
+# bracket <collection> <before> <after> <stored> [<key that must be stored>] [evict] [quiet]: every stored key lies between the
 # reads before and after (each number), every key counted before is stored. evict, for a cache that drops entries
 # between the reads: a stored key compares with each read that lists it, a key both reads list (not reset between
 # them) must be stored, and the keys the cache dropped are counted, not required
 bracket() {
   local out
-  if out=$(python3 - "$2" "$3" "$4" "${5:-}" "${6:-}" <<'PY'
+  local rc=0
+  out=$(python3 - "$2" "$3" "$4" "${5:-}" "${6:-}" <<'PY'
 import sys
 def rd(p):
     d = {}
@@ -286,7 +332,8 @@ if sys.argv[5] == "evict":
             if (k in b and any(x < y for x, y in zip(v, b[k]))) or (k in a and any(x > y for x, y in zip(v, a[k])))]
     kept = [k for k in b if k in a and all(x <= y for x, y in zip(b[k], a[k]))]
     errs += [f"{k} listed before and after the run and not stored" for k in kept if k not in s]
-    if s and not any(k in b or k in a for k in s): errs.append("no stored key is listed by either read")
+    if s and not any(k in b or k in a for k in s) and not errs and not (must and must not in s):
+        print(f"{len(s)} stored, {len(b)} before, {len(a)} after{note}"); print("no stored key is listed by either read"); sys.exit(2)
     gone = sum(1 for k in b if k not in a); unread = sum(1 for k in s if k not in b and k not in a)
     note = f"; {len(kept)} listed by both reads, {gone} dropped by the cache between them, {unread} stored and listed by neither"
 else:
@@ -298,7 +345,9 @@ if not s: errs.append("nothing stored")
 print(f"{len(s)} stored, {len(b)} before, {len(a)} after{note}")
 if errs: print("; ".join(errs[:8])); sys.exit(1)
 PY
-  ); then VERDICT[$1]="PASS ($out)"; else VERDICT[$1]="FAIL"; bad "B: $1: $out"; fi
+  ) || rc=$?
+  if [ "${7:-}" = quiet ]; then BR_OUT=$out; return $rc; fi
+  if [ $rc -eq 0 ]; then VERDICT[$1]="PASS ($out)"; else VERDICT[$1]="FAIL"; bad "B: $1: $out"; fi
 }
 # mssql_instance (run in A)
 st=$(status_of mssql_instance)
@@ -413,9 +462,16 @@ run_ok mssql_backups && eq mssql_backups \
        AND UPPER(ISNULL(mf.physical_device_name, N'')) NOT IN (N'NUL', N'NUL:')
        AND NOT (bs.is_copy_only = 1 AND bs.is_snapshot = 0 AND ISNULL(mf.device_type, 0) IN (7, 107) AND bs.name IS NULL AND ISNULL(mf.physical_device_name, N'') LIKE N'{________-____-____-____-____________}')
        AND bs.backup_finish_date >= DATEADD(hour, -1, d.create_date)) x), '(none)')")"
-run_ok mssql_storage && eq mssql_storage \
-  "$(q "select string_agg(database_id || ':' || file_id || '=' || size_bytes, ',' order by database_id, file_id) from pgvigil.mssql_files where instance_id=$iid and is_present")" \
-  "$(sq "SELECT STRING_AGG(CAST(mf.database_id AS varchar(9)) + ':' + CAST(mf.file_id AS varchar(9)) + '=' + CAST(CAST(mf.size AS bigint) * 8192 AS varchar(20)), ',') WITHIN GROUP (ORDER BY mf.database_id, mf.file_id) FROM sys.master_files mf JOIN sys.databases d ON d.database_id = mf.database_id WHERE d.source_database_id IS NULL")"
+# a file's size: sys.master_files, replaced by the database's own sys.database_files where the collector's login can enter it
+# (storage.go; tempdb's master_files row keeps its start size) - mirrored from run 18, whose fixture grew tempdb
+if run_ok mssql_storage; then
+  sq "SELECT CAST(mf.database_id AS varchar(9)) + ':' + CAST(mf.file_id AS varchar(9)) + '=' + CAST(CAST(mf.size AS bigint) * 8192 AS varchar(20)) FROM sys.master_files mf JOIN sys.databases d ON d.database_id = mf.database_id WHERE d.source_database_id IS NULL" > "$WORK/st-mf.txt"
+  : > "$WORK/st-df.txt"
+  for d in $(sqmon "SELECT name FROM sys.databases WHERE state = 0 AND source_database_id IS NULL AND HAS_DBACCESS(name) = 1") ; do
+    sq "SELECT CAST(DB_ID() AS varchar(9)) + ':' + CAST(file_id AS varchar(9)) + '=' + CAST(CAST(size AS bigint) * 8192 AS varchar(20)) FROM sys.database_files" "$d" >> "$WORK/st-df.txt"; done
+  HAND=$(awk -F'=' 'NF == 2 { if (FILENAME ~ /st-df/) df[$1] = $2; else mf[$1] = $2 } END { for (k in mf) print k "=" ((k in df) ? df[k] : mf[k]) }' "$WORK/st-mf.txt" "$WORK/st-df.txt" | sort -t: -k1,1n -k2,2n | paste -sd, -)
+  eq mssql_storage "$(q "select string_agg(database_id || ':' || file_id || '=' || size_bytes, ',' order by database_id, file_id) from pgvigil.mssql_files where instance_id=$iid and is_present")" "$HAND"
+fi
 run_ok mssql_versionstore && eq mssql_versionstore "$(q "select coalesce(string_agg(database_name, ',' order by database_name), '(none)') from pgvigil.mssql_versionstore_db where instance_id=$iid")" \
   "$(sq "SELECT ISNULL(STRING_AGG(DB_NAME(database_id), ',') WITHIN GROUP (ORDER BY DB_NAME(database_id)), '(none)') FROM sys.dm_tran_version_store_space_usage WHERE reserved_page_count > 0 AND DB_NAME(database_id) IS NOT NULL")"
 run_ok mssql_tempdb && eq mssql_tempdb "$(q "select string_agg(file_id || '=' || size_bytes, ',' order by file_id) from pgvigil.mssql_tempdb_files where instance_id=$iid")" \
@@ -442,6 +498,241 @@ fi
 st=$(status_of mssql_ag)
 if [[ $st == "skipped|Always On is not enabled on this server"* ]] && grep -q "skipped: " "$WORK/mssql_ag.out" && [ "$(sq "SELECT CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int)")" = 0 ]; then VERDICT[mssql_ag]="SKIP (${st#skipped|})"
 else VERDICT[mssql_ag]="FAIL"; bad "B: mssql_ag status '$st' (want skipped: Always On is not enabled on this server)"; fi
+# --- the eleven collections of the join of wave 1 (rel-join-w1), written before their first run here: each run as the
+# collector's login and compared with the master user's read of the same view, filtered as the collector filters
+setcmp() { # setcmp <collection> <stored> <read>: the two lists are equal (sorted in byte order); an empty pair fails
+  sed -i '/^[[:space:]]*$/d' "$2" "$3"   # sq prints an empty line for an empty result
+  LC_ALL=C sort -o "$2" "$2"; LC_ALL=C sort -o "$3" "$3"
+  if [ ! -s "$2" ] && [ ! -s "$3" ]; then VERDICT[$1]="FAIL"; bad "B: $1: nothing stored and nothing read"; return; fi
+  if cmp -s "$2" "$3"; then VERDICT[$1]="PASS ($(wc -l < "$2") rows equal)"
+  else VERDICT[$1]="FAIL"; bad "B: $1: stored (<) and read (>) differ: $(diff "$2" "$3" | grep '^[<>]' | head -6 | tr '\n' ' ' | cut -c1-700)"; fi; }
+also() { # also <collection> <ok?> <text>: a second check of a collection that passed its first
+  if [[ ${VERDICT[$1]:-} == PASS* ]]; then if [ "$2" = 1 ]; then VERDICT[$1]="${VERDICT[$1]}; $3"; else VERDICT[$1]="FAIL"; bad "B: $1: $3"; fi; fi; }
+reader_of() { q "select state || '|' || coalesce(scanned::text, '-') || '|' || coalesce(stored::text, '-') || '|' || coalesce(note, '') from pgvigil.mssql_reader_state where instance_id=$iid and reader='$1'"; }
+# the user databases the collector's login can enter (identity reads database_id > 4)
+UDBS=$(sqmon "SELECT name FROM sys.databases WHERE database_id > 4 AND state = 0 AND source_database_id IS NULL AND HAS_DBACCESS(name) = 1 ORDER BY name") || UDBS=
+
+# mssql_traceflags: the global flags stored equal the master user's DBCC TRACESTATUS(-1)
+TFSQL="CREATE TABLE #pgvtf (f int, s int, g int, se int); INSERT #pgvtf EXEC ('DBCC TRACESTATUS(-1) WITH NO_INFOMSGS'); SELECT ISNULL(STRING_AGG(CAST(f AS varchar(6)), ',') WITHIN GROUP (ORDER BY f), '(none)') FROM #pgvtf WHERE g = 1;"
+run_ok mssql_traceflags && eq mssql_traceflags "$(q "select coalesce(string_agg(trace_flag::text, ',' order by trace_flag), '(none)') from pgvigil.mssql_trace_flags where instance_id=$iid and is_global")" "$(sq "$TFSQL")"
+
+# mssql_audit: the server audits (name, type, switched on) and server audit specifications (name, switched on) stored
+# equal sys.server_audits and sys.server_audit_specifications
+if run_ok mssql_audit; then
+  { q "select 'audit|' || name || '|' || coalesce(type, '') || '|' || is_enabled::int from pgvigil.mssql_audit where instance_id=$iid and is_present"
+    q "select distinct 'spec|' || name || '|' || is_enabled::int from pgvigil.mssql_audit_spec where instance_id=$iid and scope='server' and is_present"; } > "$WORK/au-s.txt"
+  { sq "SELECT 'audit|' + name COLLATE DATABASE_DEFAULT + '|' + type COLLATE DATABASE_DEFAULT + '|' + CAST(is_state_enabled AS varchar(1)) FROM sys.server_audits"
+    sq "SELECT 'spec|' + name COLLATE DATABASE_DEFAULT + '|' + CAST(is_state_enabled AS varchar(1)) FROM sys.server_audit_specifications"; } > "$WORK/au-h.txt"
+  setcmp mssql_audit "$WORK/au-s.txt" "$WORK/au-h.txt"
+fi
+
+# mssql_checks: the server options stored (name, value in use, value set) equal sys.configurations
+if run_ok mssql_checks; then
+  q "select name || '=' || coalesce(value_in_use::text, 'NULL') || '/' || coalesce(value_set::text, 'NULL') from pgvigil.mssql_server_option where instance_id=$iid and is_present" > "$WORK/ck-s.txt"
+  sq "SELECT CAST(name AS varchar(128)) COLLATE DATABASE_DEFAULT + '=' + CAST(CAST(value_in_use AS bigint) AS varchar(20)) + '/' + CAST(CAST(value AS bigint) AS varchar(20)) FROM sys.configurations" > "$WORK/ck-h.txt"
+  setcmp mssql_checks "$WORK/ck-s.txt" "$WORK/ck-h.txt"
+fi
+
+# mssql_identity: the identity columns at 10 % of their type's range or more (dboptions.go's floor) in each user database the
+# collector's login can enter equal the master user's read of sys.identity_columns there (the collector's own formula);
+# the proof's tinyint column (30 of 255) is among them
+if run_ok mssql_identity; then
+  q "select database_name || '|' || schema_name || '.' || table_name || '.' || column_name || '|' || type_name || '|' || last_value || '|' || max_value || '|' || pct_used from pgvigil.mssql_identity_column where instance_id=$iid" > "$WORK/id-s.txt"
+  : > "$WORK/id-h.txt"
+  for d in $UDBS; do sq "SELECT DB_NAME() COLLATE DATABASE_DEFAULT + '|' + s.name COLLATE DATABASE_DEFAULT + '.' + o.name COLLATE DATABASE_DEFAULT + '.' + c.name COLLATE DATABASE_DEFAULT + '|' + ty.name COLLATE DATABASE_DEFAULT + '|' + CAST(CAST(c.last_value AS decimal(38, 0)) AS varchar(40)) + '|' + m.max_text COLLATE DATABASE_DEFAULT + '|'
+      + CAST(CAST((CAST(CAST(c.last_value AS decimal(38, 0)) AS float) - b.base) * 100 / (m.max_value - b.base) AS decimal(9, 2)) AS varchar(12))
+    FROM sys.identity_columns c JOIN sys.objects o ON o.object_id = c.object_id AND o.type = 'U' JOIN sys.schemas s ON s.schema_id = o.schema_id
+    JOIN sys.types ty ON ty.user_type_id = c.system_type_id
+    CROSS APPLY (SELECT CASE ty.name WHEN 'tinyint' THEN CAST(255 AS float) WHEN 'smallint' THEN CAST(32767 AS float) WHEN 'int' THEN CAST(2147483647 AS float)
+        WHEN 'bigint' THEN CAST(9223372036854775807 AS float) ELSE POWER(CAST(10 AS float), c.precision) - 1 END AS max_value,
+      CAST(CASE ty.name WHEN 'tinyint' THEN '255' WHEN 'smallint' THEN '32767' WHEN 'int' THEN '2147483647' WHEN 'bigint' THEN '9223372036854775807'
+        ELSE REPLICATE('9', c.precision) END AS varchar(40)) AS max_text) m
+    CROSS APPLY (SELECT CASE WHEN CAST(c.seed_value AS decimal(38, 0)) < 0 THEN CAST(CAST(c.seed_value AS decimal(38, 0)) AS float) ELSE CAST(0 AS float) END AS base) b
+    WHERE c.last_value IS NOT NULL AND CAST(c.increment_value AS decimal(38, 0)) > 0
+      AND (CAST(CAST(c.last_value AS decimal(38, 0)) AS float) - b.base) * 100 / (m.max_value - b.base) >= 10" "$d" >> "$WORK/id-h.txt"; done
+  setcmp mssql_identity "$WORK/id-s.txt" "$WORK/id-h.txt"
+  also mssql_identity "$(grep -c "^$FDB|dbo.idt.id|tinyint|30|255|11.76$" "$WORK/id-s.txt")" "the proof's column stored (30 of 255, 11.76 %)"
+fi
+
+# mssql_indexes: two hinted seeks on dbo.big's ix_b; its stored user_seeks lie between the master user's reads of
+# sys.dm_db_index_usage_stats before and after the run (2 or more); the indexes stored for dbo.big equal sys.indexes
+sq "SELECT COUNT(*) FROM dbo.big WITH (INDEX(ix_b)) WHERE b = 1; SELECT COUNT(*) FROM dbo.big WITH (INDEX(ix_b)) WHERE b = 2;" "$FDB" >/dev/null
+USQL="SELECT CAST(ISNULL(SUM(u.user_seeks), 0) AS varchar(20)) FROM sys.dm_db_index_usage_stats u JOIN sys.indexes i ON i.object_id = u.object_id AND i.index_id = u.index_id
+  WHERE u.database_id = DB_ID() AND u.object_id = OBJECT_ID(N'dbo.big') AND i.name = N'ix_b'"
+UB=$(sq "$USQL" "$FDB")
+if run_ok mssql_indexes; then UA=$(sq "$USQL" "$FDB")
+  US=$(q "select coalesce(max(user_seeks), -1) from pgvigil.mssql_index where instance_id=$iid and database_name='$FDB' and table_name='big' and index_name='ix_b'")
+  q "select coalesce(index_name, '(heap)') || '|' || index_type from pgvigil.mssql_index where instance_id=$iid and database_name='$FDB' and table_name='big'" > "$WORK/ix-s.txt"
+  sq "SELECT ISNULL(name, '(heap)') COLLATE DATABASE_DEFAULT + '|' + type_desc COLLATE DATABASE_DEFAULT FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.big') AND index_id > 0" "$FDB" > "$WORK/ix-h.txt"
+  setcmp mssql_indexes "$WORK/ix-s.txt" "$WORK/ix-h.txt"
+  also mssql_indexes "$([ "$US" -ge "$UB" ] && [ "$US" -le "$UA" ] && [ "$UA" -ge 2 ] && echo 1 || echo 0)" "ix_b's user_seeks stored $US, the master user read $UB before the run and $UA after it"
+fi
+
+# mssql_stats: 5,000 of dbo.big's rows changed; the stored modifications of st_bb (NORECOMPUTE, on b) equal the master
+# user's sys.dm_db_stats_properties, read before and after the run (equal both times)
+sq "UPDATE dbo.big SET b = b + 1 WHERE id <= 5000;" "$FDB" >/dev/null
+SSQL="SELECT CAST(p.modification_counter AS varchar(20)) + '|' + CAST(s.no_recompute AS varchar(1)) FROM sys.stats s CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) p WHERE s.object_id = OBJECT_ID(N'dbo.big') AND s.name = N'st_bb'"
+SB=$(sq "$SSQL" "$FDB")
+if run_ok mssql_stats; then SA=$(sq "$SSQL" "$FDB")
+  eq mssql_stats "$(q "select modifications || '|' || no_recompute::int from pgvigil.mssql_stat where instance_id=$iid and database_name='$FDB' and stats_name='st_bb'")" "$SA"
+  also mssql_stats "$([ "$SB" = "$SA" ] && echo 1 || echo 0)" "the counter read the same before and after the run ($SB)"
+fi
+[[ ${VERDICT[mssql_stats]:-} == PASS* ]] || echo "  the statistics' databases: $(q "select string_agg(database_name || ' ' || database_state || ' read=' || coalesce(read_at::text, '-') || ' ' || coalesce(note, ''), '; ') from pgvigil.mssql_stats_db where instance_id=$iid" | cut -c1-600)"
+
+# mssql_plancache: a session runs a parameterized statement in a loop through both reads and the collector's run (this
+# instance's cache keeps a plan only while it is used); mssql_pc_last (each statement's counters as read; a plan is its
+# handle, the statement's offsets and its creation time) compares with sys.dm_exec_query_stats by the evict bracket, the
+# collector's filter mirrored (the resource database's statements left out); the proof's statement stored
+LOOPER=pgvproof-pc-$SUF
+docker run -d --name "$LOOPER" -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$IMG" -S "tcp:$RDS_HOST,$PORT_" -U "$ADMIN_USER" -d "$FDB" -C -l 60 \
+  -H "$LOOPER" -Q "SET NOCOUNT ON; DECLARE @end datetime2 = DATEADD(second, 600, SYSUTCDATETIME()); WHILE SYSUTCDATETIME() < @end BEGIN EXEC sys.sp_executesql N'SELECT COUNT(*) FROM dbo.big WHERE b = @b /* pgvproof_pc */', N'@b int', @b = 1; WAITFOR DELAY '00:00:00.050'; END" >/dev/null
+QKEY="CONVERT(varchar(130), qs.plan_handle, 1) + '@' + CAST(qs.statement_start_offset AS varchar(12)) + '@' + CAST(qs.statement_end_offset AS varchar(12)) + '@' + CONVERT(varchar(23), qs.creation_time, 121)"
+QSQL="SELECT $QKEY + '|' + CAST(qs.execution_count AS varchar(20)) FROM sys.dm_exec_query_stats qs
+  OUTER APPLY (SELECT TOP (1) CAST(a.value AS int) AS dbid FROM sys.dm_exec_plan_attributes(qs.plan_handle) a WHERE a.attribute = N'dbid') pa WHERE ISNULL(pa.dbid, 0) <> 32767"
+PKSQL="SELECT TOP (1) $QKEY FROM sys.dm_exec_query_stats qs CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t WHERE t.text LIKE N'(@b int)%pgvproof[_]pc%' ORDER BY qs.execution_count DESC"
+for _ in $(seq 1 30); do [ -n "$(sq "$PKSQL")" ] && break; sleep 1; done
+# a cycle (read, the collector's run, read) is compared when the cache kept a stored plan across a read: any stored
+# plan a read lists must lie between the reads (else FAIL at once); a cycle in which the cache dropped every stored
+# plan between the reads compares nothing and is run again, five cycles at most
+PCDONE=; PCWHY=
+for cyc in 1 2 3 4 5; do
+  sq "$QSQL" > "$WORK/pc-b.txt"; PKB=$(sq "$PKSQL")
+  run_ok mssql_plancache || { PCDONE=1; break; }
+  sq "$QSQL" > "$WORK/pc-a.txt"; PKA=$(sq "$PKSQL")
+  q "select plan_handle || '@' || stmt_start || '@' || stmt_end || '@' || to_char(creation_time, 'YYYY-MM-DD HH24:MI:SS.MS') || '|' || execution_count from pgvigil.mssql_pc_last where instance_id=$iid" > "$WORK/pc-s.txt"
+  rc=0; bracket mssql_plancache "$WORK/pc-b.txt" "$WORK/pc-a.txt" "$WORK/pc-s.txt" "" evict quiet || rc=$?
+  if [ $rc -eq 1 ]; then VERDICT[mssql_plancache]="FAIL"; bad "B: mssql_plancache (cycle $cyc): $BR_OUT"; PCDONE=1; break; fi
+  # the proof's statement by its plan's identity (handle and statement offsets; run 18: the same handle in every read, a new
+  # creation time every 2 or 3 seconds): the collector's newest stored instance was created between the instances the
+  # reads list (instances only get newer), and where it is a read's own instance its count respects that read's
+  PRE=${PKB%@*}; [ -n "$PRE" ] || PRE=${PKA%@*}
+  ST=$(python3 - "$WORK/pc-b.txt" "$WORK/pc-a.txt" "$WORK/pc-s.txt" "$PRE" <<'PY'
+import sys
+pre = sys.argv[4].lower()
+def rows(p):
+    out = []
+    for line in open(p):
+        k, _, v = line.strip().partition("|")
+        if pre and k.lower().startswith(pre + "@"): out.append((k.lower()[len(pre) + 1:], int(v)))
+    return out
+b, a, s = (rows(p) for p in sys.argv[1:4])
+if not pre or not b or not a: print("NC a read did not list the proof's statement"); sys.exit()
+if not s: print("NC the proof's statement not stored in this cycle"); sys.exit()
+(cs, v), (cb, nb), (ca, na) = max(s), max(b), max(a)
+bad = cs < cb or cs > ca or v < 1 or (cs == cb and v < nb) or (cs == ca and v > na)
+print(("FAIL " if bad else "PASS ") + f"stored created {cs} with {v} execution(s); the reads: created {cb} with {nb}, created {ca} with {na}")
+PY
+)
+  case $ST in
+    FAIL*) VERDICT[mssql_plancache]="FAIL"; bad "B: mssql_plancache (cycle $cyc): the proof's statement ${ST#FAIL }"; PCDONE=1; break;;
+    PASS*) VERDICT[mssql_plancache]="PASS ($(tr '\n' ' ' <<<"$BR_OUT" | cut -c1-200); cycle $cyc of 5: the proof's statement ${ST#PASS })"; PCDONE=1; break;;
+  esac
+  PCWHY="$PCWHY cycle $cyc: ${ST#NC };"
+done
+[ -n "$PCDONE" ] || { VERDICT[mssql_plancache]="FAIL"; bad "B: mssql_plancache: no cycle of five compared a stored plan with the proof's statement:$(cut -c1-900 <<<"$PCWHY")"; }
+
+# mssql_plancache_health (the looper still running): the compiled plans per database (plans, single-use, ad hoc, prepared,
+# procedure plans; planCachePlansSQL mirrored). The proof's database: stored equal to both reads when they agree (else
+# between them); every other database both reads list is stored (this cache's counts move up and down between reads)
+HPSQL="SELECT DB_NAME(pa.dbid) + '|' + CAST(COUNT_BIG(*) AS varchar(20)) + '|' + CAST(SUM(CASE WHEN cp.usecounts = 1 AND cp.objtype IN (N'Adhoc', N'Prepared') THEN 1 ELSE 0 END) AS varchar(20))
+  + '|' + CAST(SUM(CASE WHEN cp.objtype = N'Adhoc' THEN 1 ELSE 0 END) AS varchar(20)) + '|' + CAST(SUM(CASE WHEN cp.objtype = N'Prepared' THEN 1 ELSE 0 END) AS varchar(20))
+  + '|' + CAST(SUM(CASE WHEN cp.objtype = N'Proc' THEN 1 ELSE 0 END) AS varchar(20))
+  FROM sys.dm_exec_cached_plans cp CROSS APPLY (SELECT TOP (1) CAST(a.value AS int) AS dbid FROM sys.dm_exec_plan_attributes(cp.plan_handle) a WHERE a.attribute = N'dbid') pa
+  WHERE cp.cacheobjtype = N'Compiled Plan' AND pa.dbid <> 32767 GROUP BY pa.dbid"
+# a cycle passes when both reads agree for the proof's database and the stored counts equal them; this cache's counts
+# move within seconds (run 18: the looper's prepared plan absent at the collector's read), so up to five cycles
+PHDONE=; PHWHY=
+for cyc in 1 2 3 4 5; do
+  sq "$HPSQL" > "$WORK/ph-b.txt"
+  run_ok mssql_plancache_health || { PHDONE=1; break; }
+  sq "$HPSQL" > "$WORK/ph-a.txt"
+  q "select database_name || '|' || plans || '|' || single_use || '|' || adhoc_plans || '|' || prepared_plans || '|' || proc_plans from pgvigil.mssql_pc_health where instance_id=$iid" > "$WORK/ph-s.txt"
+  prc=0
+  out=$(python3 - "$WORK/ph-b.txt" "$WORK/ph-a.txt" "$WORK/ph-s.txt" "$FDB" <<'PY'
+import sys
+def rd(p):
+    d = {}
+    for line in open(p):
+        k, *v = line.rstrip("\n").split("|")
+        if k and v: d[k.lower()] = [int(x) for x in v]
+    return d
+b, a, s = (rd(p) for p in sys.argv[1:4])
+fdb = sys.argv[4].lower()
+missing = [k for k in b if k in a and k not in s]
+head = f"{len(s)} database(s) stored, {len(b)} read before, {len(a)} after; the proof's database stored {s.get(fdb)}, read {b.get(fdb)} and {a.get(fdb)}"
+if missing: print(head + "; read before and after the run and not stored: " + ", ".join(missing)); sys.exit(1)
+if b.get(fdb) is None or b.get(fdb) != a.get(fdb): print(head + " (the reads disagree)"); sys.exit(2)
+if s.get(fdb) != b[fdb]: print(head); sys.exit(1)
+print(head)
+PY
+  ) || prc=$?
+  if [ $prc -eq 0 ]; then VERDICT[mssql_plancache_health]="PASS ($out; cycle $cyc of 5)"; PHDONE=1; break; fi
+  PHWHY="$PHWHY cycle $cyc: $out;"
+done
+[ -n "$PHDONE" ] || { VERDICT[mssql_plancache_health]="FAIL"; bad "B: mssql_plancache_health: no cycle of five held:$(cut -c1-900 <<<"$PHWHY")"; }
+docker rm -f "$LOOPER" >/dev/null 2>&1 || true; LOOPER=
+
+# the three readers keep their own state (read, no right, off, failed): each must say read
+# mssql_syshealth: the component results stored per component and state lie between the master user's counts of
+# sp_server_diagnostics_component_result in the system_health session's event files before and after the run
+XEPAT=$(sq "SELECT LEFT(f, LEN(f) - CHARINDEX('\\', REVERSE(f)) + 1) + 'system_health*.xel' FROM (SELECT CAST(t.target_data AS xml).value('(EventFileTarget/File/@name)[1]', 'nvarchar(260)') AS f
+  FROM sys.dm_xe_session_targets t JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address WHERE s.name = N'system_health' AND t.target_name = N'event_file') x") || XEPAT=
+SHSQL="SELECT UPPER(x.c) + ':' + UPPER(x.s) + '|' + CAST(COUNT(*) AS varchar(9)) FROM (SELECT e.x.value('(event/data[@name=\"component\"]/text)[1]', 'nvarchar(60)') AS c,
+  e.x.value('(event/data[@name=\"state\"]/text)[1]', 'nvarchar(60)') AS s FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL) f
+  CROSS APPLY (SELECT CAST(f.event_data AS xml) AS x) e WHERE f.object_name = N'sp_server_diagnostics_component_result' AND f.timestamp_utc >= DATEADD(day, -45, SYSUTCDATETIME())) x GROUP BY x.c, x.s"
+SHN="SELECT CAST(COUNT(*) AS varchar(12)) FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL)"
+sq "$SHSQL" > "$WORK/sh-b.txt" || : > "$WORK/sh-b.txt"; NB=$(sq "$SHN") || NB=0
+if run_ok mssql_syshealth; then sq "$SHSQL" > "$WORK/sh-a.txt" || : > "$WORK/sh-a.txt"; NA=$(sq "$SHN") || NA=0
+  q "select component || ':' || state || '|' || count(*) from pgvigil.mssql_health_components where instance_id=$iid group by component, state" > "$WORK/sh-s.txt"
+  sed -i '/^[[:space:]]*$/d' "$WORK/sh-b.txt" "$WORK/sh-a.txt"
+  RS=$(reader_of syshealth); SCN=$(cut -d'|' -f2 <<<"$RS")
+  if [ ! -s "$WORK/sh-b.txt" ] && [ ! -s "$WORK/sh-a.txt" ] && [ ! -s "$WORK/sh-s.txt" ]; then
+    # this instance writes no sp_server_diagnostics_component_result (probe 3: the session defines it, its files and its
+    # ring buffer hold none): what is compared is the reader's own pass over the files
+    # the reader's scanned and stored are the component events it kept (syshealth.go: new_events): 0 here, as the files hold
+    if [[ $RS == read\|0\|0\|* ]] && [[ $NB =~ ^[0-9]+$ ]] && [ "$NB" -gt 0 ]; then
+      VERDICT[mssql_syshealth]="PASS (0 component results stored, 0 in the session's files, which hold $NB to $NA events of other kinds; the reader's state 'read', 0 kept; a component row's content NOT PROVEN: this instance writes none)"
+    else VERDICT[mssql_syshealth]="FAIL"; bad "B: mssql_syshealth: the reader's state '$RS', the session's files held $NB events before the run and $NA after ($XEPAT)"; fi
+  else
+    bracket mssql_syshealth "$WORK/sh-b.txt" "$WORK/sh-a.txt" "$WORK/sh-s.txt"
+    [[ ${VERDICT[mssql_syshealth]} == PASS* ]] || echo "  mssql_syshealth: the reader's state '$RS' (the event files $XEPAT)"
+    also mssql_syshealth "$([[ $RS == read\|* ]] && echo 1 || echo 0)" "the reader's state '$RS' (the event files $XEPAT)"
+  fi
+fi
+
+# mssql_errorlog: the proof's marker is the instance's own search string (in the repository); the master user logs it
+# (severity 10, WITH LOG); every stored line of the current log is a line of the master user's read of it (time to the
+# second and the message's first 60 characters), the marker among them
+MARK=pgvproof-marker-$SUF
+q "select pgvigil.mssql_errorlog_search_set('$N', array['$MARK'], false)" >/dev/null
+sq "RAISERROR(N'$MARK', 10, 1) WITH LOG;" >/dev/null
+ELSQL="CREATE TABLE #pgvel (d datetime, p nvarchar(64), t nvarchar(max)); INSERT #pgvel EXEC sys.sp_readerrorlog 0, 1;
+  SELECT CONVERT(varchar(19), d, 126) + '|' + LEFT(LTRIM(REPLACE(REPLACE(t, CHAR(13), ' '), CHAR(10), ' ')), 60) FROM #pgvel;"
+if run_ok mssql_errorlog; then sq "$ELSQL" > "$WORK/el-h.txt"
+  q "select to_char(logged_local, 'YYYY-MM-DD\"T\"HH24:MI:SS') || '|' || left(ltrim(replace(replace(message, chr(13), ' '), chr(10), ' ')), 60) from pgvigil.mssql_errorlog where instance_id=$iid and coalesce(archive, 0) = 0" > "$WORK/el-s.txt"
+  sed -i -E 's/ +\|/|/g; s/\| +/|/g; s/^ +//; s/ +$//' "$WORK/el-s.txt"   # sq's own clean-up of the read side
+  MISS=$(LC_ALL=C grep -vxFf "$WORK/el-h.txt" "$WORK/el-s.txt" | head -4 | tr '\n' ' ' || true)
+  if [ ! -s "$WORK/el-s.txt" ]; then VERDICT[mssql_errorlog]="FAIL"; bad "B: mssql_errorlog: nothing stored of the current log"
+  elif [ -n "$MISS" ]; then VERDICT[mssql_errorlog]="FAIL"; bad "B: mssql_errorlog: stored lines the master user's read of the current log does not hold: $(cut -c1-500 <<<"$MISS")"
+  else VERDICT[mssql_errorlog]="PASS ($(wc -l < "$WORK/el-s.txt") stored lines, each a line of the master user's read of $(wc -l < "$WORK/el-h.txt"))"; fi
+  also mssql_errorlog "$(grep -c -- "$MARK" "$WORK/el-s.txt" | grep -qx '[1-9][0-9]*' && echo 1 || echo 0)" "the marker stored"
+  RS=$(reader_of errorlog); also mssql_errorlog "$([[ $RS == read\|* ]] && echo 1 || echo 0)" "the reader's state '$RS'"
+fi
+
+# mssql_defaulttrace: the DDL events of the proof's database stored (class, object, start to the second) equal the master
+# user's read of the default trace with the collector's filter (defaulttrace.go: classes 46, 47, 164, subclass 1, not
+# statistics or a temporary object)
+DTP=$(sq "SELECT ISNULL((SELECT TOP (1) CAST(path AS nvarchar(260)) FROM sys.traces WHERE is_default = 1 AND path IS NOT NULL), '')")
+DTSQL="SELECT CAST(t.EventClass AS varchar(4)) + '|' + ISNULL(CAST(t.ObjectName AS nvarchar(256)), '') + '|' + CONVERT(varchar(19), t.StartTime, 126) FROM sys.fn_trace_gettable(N'$DTP', DEFAULT) t
+  WHERE t.DatabaseName = N'$FDB' AND t.EventClass IN (46, 47, 164) AND t.EventSubClass = 1 AND ISNULL(t.ObjectType, 0) NOT IN (21587, 17747)"
+if run_ok mssql_defaulttrace; then sq "$DTSQL" > "$WORK/dt-h.txt"
+  q "select event_class || '|' || coalesce(object_name, '') || '|' || to_char(logged_local, 'YYYY-MM-DD\"T\"HH24:MI:SS') from pgvigil.mssql_trace_events where instance_id=$iid and database_name='$FDB'" > "$WORK/dt-s.txt"
+  RS=$(reader_of defaulttrace)
+  setcmp mssql_defaulttrace "$WORK/dt-s.txt" "$WORK/dt-h.txt"
+  [[ $RS == read\|* ]] || RS="$RS (the collector's login: ALTER TRACE $(sqmon "SELECT CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'ALTER TRACE'), 0) AS varchar(1))" || echo '?'); the master user's own: $(sq "SELECT ISNULL(STRING_AGG(state_desc, ','), 'none') FROM sys.server_permissions WHERE grantee_principal_id = SUSER_ID() AND permission_name = N'ALTER TRACE'" || echo '?'))"
+  [[ ${VERDICT[mssql_defaulttrace]} == PASS* ]] || echo "  mssql_defaulttrace: the reader's state '$RS'"
+  also mssql_defaulttrace "$([[ $RS == read\|* ]] && echo 1 || echo 0)" "the reader's state '$RS'"
+fi
 echo "  the collections:"
 for c in "${ALL[@]}"; do printf '    %-20s %s\n' "$c" "${VERDICT[$c]:-FAIL (no verdict)}"; done
 
@@ -453,6 +744,10 @@ else bad "D: the server changed under the collector: $(tr '\n' ' ' < "$WORK/d.di
 echo "--- C. the pages"
 if [ -n "${PGVIGIL_SKIP_PAGES:-}" ]; then echo "C: NOT RUN (PGVIGIL_SKIP_PAGES)"; FAILS+=("C: not run")
 else
+  # the collections behind each Summary cell run again now (q_mssql_summary.go's groups): the Summary calls a read older
+  # than its window stale, and the proof's own order put minutes between B's first collections and this page
+  for c in mssql_requests mssql_xe mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_backups mssql_jobs mssql_storage mssql_versionstore \
+           mssql_instance mssql_services mssql_querystore mssql_audit; do "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c-c.out" 2>&1 || true; done
   PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   "$BIN" serve -config "$CFG" -no-login -listen "127.0.0.1:$PORT" > "$WORK/serve.log" 2>&1 & SRV=$!
   for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 0.2; done
@@ -460,24 +755,30 @@ else
   # cells is a table: {columns: [...], rows: [[...], ...]}
   GOT=$(jq -r --argjson i "$iid" '.cells as $t | ($t.columns | index("instance_id")) as $ci | ($t.columns | index("key")) as $ck | ($t.columns | index("state")) as $cs
     | [$t.rows[] | select(.[$ci] == $i) | "\(.[$ck])=\(.[$cs])"] | sort | join(" ")' "$WORK/sum.json")
-  if grep -q '=never' <<<"$GOT" || ! grep -qE 'availability=(ok|n/a)' <<<"$GOT"; then bad "C: the summary cells '$GOT' (want availability ok or n/a and no 'never')"; else echo "  summary cells: OK ($GOT)"; fi
+  if grep -qE '=(never|stale|failed)' <<<"$GOT" || ! grep -qE 'availability=(ok|n/a)' <<<"$GOT"; then bad "C: the summary cells '$GOT' (want availability ok or n/a and no 'never', 'stale' or 'failed')"; else echo "  summary cells: OK ($GOT)"; fi
   if command -v chromium >/dev/null; then
     page() { timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/$1?i=$iid&w=1h" 2>/dev/null; }
     page summary > "$WORK/p-summary.html" || true
     grep -q 'rdssqlserver' "$WORK/p-summary.html" || bad "C: the Summary page does not show the platform badge rdssqlserver"
+    NTABS=0
     for tab in summary performance mssql_running mssql_slow mssql_waits mssql_deadlocks mssql_blocked findings availability mssqlbackups mssqljobs mssqlstorage mssqlfiles \
-               rowversions mssqlconfig mssqlactions jobstimeline mssqlcpu mssqlmemory mssqlfileio mssqltempdb mssqlqs counters mssqlprocs mssqlindexlocks mssqlproperties; do
+               rowversions mssqlconfig mssqlactions jobstimeline mssqlcpu mssqlmemory mssqlfileio mssqltempdb mssqlqs counters mssqlprocs mssqlindexlocks mssqlproperties \
+               mssqlplancache mssqlindexes mssqlaudit mssqlchecks mssqlerrorlog mssqltrace mssqlhealth; do
+      NTABS=$((NTABS + 1))
       page "$tab" > "$WORK/p-$tab.html" || true
       if [ ! -s "$WORK/p-$tab.html" ] || grep -q 'class="error"' "$WORK/p-$tab.html"; then bad "C: tab $tab did not render: $(grep -o 'class="error"[^<]*<' "$WORK/p-$tab.html" | head -1)"; fi
+      # an unknown tab falls back to the Summary page: a tab of its own must not be that page
+      if [ "$tab" != summary ] && grep -qF 'aria-current="page">Summary</a>' "$WORK/p-$tab.html"; then bad "C: tab $tab opened the Summary page (no route for it in the embedded app)"; fi
     done
-    echo "  pages rendered: 26 tabs"
+    echo "  pages rendered: $NTABS tabs"
   else bad "C: chromium is not on this machine: the pages were not rendered"; fi
 fi
 
 [ ! -s "$WORK/sq-failed" ] || bad "a read of the setup login failed during the run (its message is above): $(head -c 300 "$WORK/sq-failed" | tr '\n' ' ')"
 echo
 if [ ${#FAILS[@]} -eq 0 ]; then
-  echo "proof-mssql-rds: PASS (R, A, B: 18 collected and equal, mssql_ag skipped (no Always On), mssql_logshipping skipped (no log shipping on RDS), mssql_jobs skipped (the msdb tables the master user cannot grant); C; D)"
+  NP=0; NS=0; for c in "${ALL[@]}"; do case ${VERDICT[$c]:-} in PASS*) NP=$((NP + 1));; SKIP*) NS=$((NS + 1));; esac; done
+  echo "proof-mssql-rds: PASS (R, A, B: $NP collected and equal, $NS skipped by an RDS rule (mssql_ag: no Always On, mssql_logshipping: no log shipping on RDS, mssql_jobs: the msdb tables the master user cannot grant); C; D)"
 else
   echo "the failed items:"; printf '  - %s\n' "${FAILS[@]}"
   echo "proof-mssql-rds: FAIL (${#FAILS[@]} item(s))"; exit 1

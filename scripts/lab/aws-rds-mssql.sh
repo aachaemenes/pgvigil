@@ -136,6 +136,8 @@ SET NOCOUNT ON;
 IF SUSER_ID(N'$MON_USER') IS NULL CREATE LOGIN [$MON_USER] WITH PASSWORD = N'$MON_PW', CHECK_POLICY = OFF;
 GRANT VIEW SERVER STATE TO [$MON_USER];
 GRANT VIEW ANY DEFINITION TO [$MON_USER];
+-- the default trace reader (mssql_defaulttrace) needs ALTER TRACE, which the master user holds WITH GRANT OPTION
+GRANT ALTER TRACE TO [$MON_USER];
 GO
 -- no CONNECT ANY DATABASE: the RDS master user does not hold it and cannot grant it (Msg 4613, Grantor does not
 -- have GRANT permission); the login gets a user in msdb here and in each database it is to read (the proof makes one)
