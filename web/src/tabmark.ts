@@ -46,9 +46,10 @@ export function tabMark(f: Fleet | null) {
 // watchHiddenTab: the page's own refresh stops while its tab is hidden, yet a background tab is where the coloured mark is
 // read. While hidden, every 60 s, the fleet's status read alone - fleet(true): the instances, the overview checks, the
 // versions, the SQL Server summary (the audit read on its own cache) - sets the mark; no page is drawn. It stops when the
-// tab shows again (the page's refresh takes over) and on a sign-in (a 401 leaves the plain mark); paused() says when the
-// page is in a state where no read may run (main.ts: the sign-in form). A page opened hidden (a background tab, a
-// session restore) starts the watch at once: no visibilitychange comes for it.
+// tab shows again (the page's refresh takes over) and on a sign-in (a 401 leaves the plain mark); paused() says when no
+// read may run (main.ts: the sign-in form, and auto refresh Off - the user turned reading off; the mark then keeps the
+// last read). A page opened hidden (a background tab, a session restore) starts the watch at once: no visibilitychange
+// comes for it.
 let hiddenTimer: number | undefined;
 export function watchHiddenTab(paused: () => boolean, everyMs = 60000) {
   const stop = () => { window.clearInterval(hiddenTimer); hiddenTimer = undefined; };
