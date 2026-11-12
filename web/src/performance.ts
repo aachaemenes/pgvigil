@@ -102,6 +102,8 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
   const meta = rowsOf(d.meta)[0] ?? {};
   const g = sharedSteps(rowsOf(d.grid), (['cpu', 'sessions', 'waits', 'db', 'io'] as Parts[]).flatMap(k => rowsOf(d[k])), Number(meta.step_secs ?? 60));
   const ms = meta.engine === 'sqlserver';
+  // the buffer pool read comes before any chart is made: the page is placed as soon as its last read ends
+  const mem = ms ? await get<{ series: Table | null }>('mssql/memory', { instance: ctx.instance, ...window_(ctx), part: 'series' }).catch(() => null) : null;
   const to = (tab: string, extra: Record<string, string> = {}) => href(ctx, { tab, ...extra });
   const sec = el('section', {}, el('h2', {}, `Performance (${rangeLabel(ctx)})`));
   sec.append(el('p', { class: 'meta' }, `one step = ${fmtNum(Number(meta.step_secs ?? 60) / 60)} min; every chart shares the time axis; a drag on a chart zooms them all`));
@@ -122,8 +124,8 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
       [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions', to('mssql_running')));
     const w = pivotWaits(g, rowsOf(d.waits));
     box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), 'Waits by category (ms of wait per second, stacked)', to('mssql_waits')));
-    // the buffer pool (PerformanceMonitor's 'Buffer pool (MB)' strip: Database Cache Memory) with Total Server Memory
-    const mem = await get<{ series: Table | null }>('mssql/memory', { instance: ctx.instance, ...window_(ctx), part: 'series' }).catch(() => null);
+    // the buffer pool (PerformanceMonitor's 'Buffer pool (MB)' strip: Database Cache Memory) with Total Server Memory,
+    // read above
     const memRaw = rowsOf(mem?.series ?? null);
     // on the page's shared steps (the same window and step as /api/performance); the memory read's own points only
     // where its steps meet none of the page's

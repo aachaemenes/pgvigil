@@ -37,6 +37,10 @@
 #      collected 2h ago'. #/summary?i=<the serverless instance>: the CPU chip's detail 'ACU <A2's figure>% of 8
 #      configured', its band from ACU (80 / 95), its value the CPU figure of the same read; fx-acu0's 'ACU 0% of 4
 #      configured' ok; fx-acu-old's 'no ACU read in the last 20 minutes' unknown (the chip's grey edge). #/performance?i=<the demo's sql01>: a 'Buffer pool (MB)' chart.
+#      With the page's own reads held in the browser (CDP Fetch): sql01's buffer pool read (/api/mssql/memory) 1.5 s, and
+#      on sql01 and erp01 the header's live read (/api/ack ... part=live) until the check releases it - every chart of
+#      the Performance page drawn and the header absent while it is held, the header present after (a chart made
+#      before a page is placed draws once it is; a slow header read holds no page up).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -202,7 +206,7 @@ chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chro
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 cat > "$WORK/u.mjs" <<'JS'
-const [port, U, ms, off, sql1, offN, d1, d2, d3, d4, sls, acu0, acuOld] = process.argv.slice(2);
+const [port, U, ms, off, sql1, offN, d1, d2, d3, d4, sls, acu0, acuOld, erp] = process.argv.slice(2);
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
 await new Promise(r => ws.addEventListener('open', r));
@@ -300,9 +304,39 @@ if (await go(`#/performance?i=${sql1}`, `[...document.querySelectorAll('main .ch
   // a chart's heading also holds its menu buttons' glyphs: the title starts it
   check('Performance: Buffer pool (MB)', t.some(x => x.trim().startsWith('Buffer pool (MB)')), t.join(' | '));
 }
+// every chart drawn while the page's own reads are slow (CDP Fetch holds them): on sql01 the buffer pool read held
+// 1.5 s, then released; on both the header's live read held until every chart is drawn - the header absent meanwhile -,
+// then released and the header lands
+const paused = [];
+ws.addEventListener('message', m => { const d = JSON.parse(m.data);
+  if (d.method === 'Fetch.requestPaused') paused.push({ id: d.params.requestId, url: d.params.request.url }); });
+const release = async (re) => { for (const p of paused.filter(x => re.test(x.url) && !x.done)) { p.done = true; await cmd('Fetch.continueRequest', { requestId: p.id }); } };
+const isMem = /\/api\/mssql\/memory/, isLive = /\/api\/ack\?.*part=live/;
+await cmd('Fetch.enable', { patterns: [{ urlPattern: '*/api/mssql/memory*' }, { urlPattern: '*/api/ack*part=live*' }] });
+const drawn = `(() => { const c = [...document.querySelectorAll('main .charts > .chart')]; return c.length > 3 && c.every(x => x.querySelector('.uplot, p.empty')); })()`;
+const each = `[...document.querySelectorAll('main .charts > .chart')].map(x => (x.querySelector('h3')?.textContent ?? '').replace(/[⋯⤢]/g, '').trim().slice(0, 24) + (x.querySelector('.uplot') ? ' drawn' : x.querySelector('p.empty') ? ' empty' : ' BLANK'))`;
+for (const [i, name, mem] of [[sql1, 'sql01', true], [erp, 'erp01', false]]) {
+  paused.length = 0;
+  await cmd('Page.navigate', { url: 'about:blank' }); await cmd('Page.navigate', { url: `${U}/#/performance?i=${i}` });
+  for (let k = 0; k < 100 && !(paused.some(p => isLive.test(p.url)) && (!mem || paused.some(p => isMem.test(p.url)))); k++) await sleep(100);
+  const held = `live ${paused.filter(p => isLive.test(p.url)).length}, memory ${paused.filter(p => isMem.test(p.url)).length}`;
+  if (mem) { await sleep(1500); await release(isMem); }
+  let ok0 = false;
+  for (let k = 0; k < 60 && !(ok0 = await ev(drawn)); k++) await sleep(250);
+  const noHeader = await ev(`!document.querySelector('main .inst-header')`);
+  const charts = await ev(each);
+  await release(isLive);
+  let header = false;
+  for (let k = 0; k < 50 && !(header = await ev(`!!document.querySelector('main .inst-header')`)); k++) await sleep(100);
+  const heldOk = paused.some(p => isLive.test(p.url)) && (!mem || paused.some(p => isMem.test(p.url)));
+  check(`${name} Performance: every chart drawn with its reads held`, heldOk && ok0 && noHeader && header,
+    `held ${held}; while the header's read was held: header absent ${noHeader}, ${charts.join(' | ')}; after its release: header ${header}`);
+}
+await release(/./);
+await cmd('Fetch.disable');
 console.log(bad.length ? bad.map(b => 'FAIL ' + b).join('\n') : 'U: every page as expected');
 ws.close();
 process.exit(bad.length ? 1 : 0);
 JS
-node "$WORK/u.mjs" "$CDP" "$U" "$MS" "$OFF" "$SQL1" "$OFFN" "$D1" "$D2" "$D3" "$D4" "$SLS" "$ACU0" "$ACUOLD" || fail "U (above)"
+node "$WORK/u.mjs" "$CDP" "$U" "$MS" "$OFF" "$SQL1" "$OFFN" "$D1" "$D2" "$D3" "$D4" "$SLS" "$ACU0" "$ACUOLD" "$ERP" || fail "U (above)"
 echo "PROOF OK"

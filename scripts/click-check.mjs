@@ -76,7 +76,7 @@ await new Promise(r => ws.addEventListener('open', r));
 let id = 0; const wait = new Map();
 ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
-// an async expression needs awaitPromise: without it CDP hands back the pending Promise, serialised as {} (d29-c3)
+// an async expression needs awaitPromise: without it CDP hands back the pending Promise, serialised as {}
 const ev = async (expr, awaitPromise = false) => {
   const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise });
   if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
@@ -412,7 +412,9 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const home = `#/summary?i=${inst.instance_id}`;
     if (!(await go(home))) { pm(`${eng} ${inst.name}`, 'header', eng, 'not drawn', false, 'the instance Summary did not draw'); continue; }
     for (let i = 0; i < 40 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(250);
-    // the header's name: the instance's Summary
+    // the header's name: the instance's Summary (the header and the breadcrumb's dot follow the page when their read
+    // ends: waited for)
+    for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('#crumb .band-dot')`)); i++) await sleep(100);
     const nh = await ev(`document.querySelector('main .inst-header .inst-name')?.getAttribute('href') ?? ''`);
     pm(`${eng} ${inst.name}`, 'header name', eng, nh, tabOf(nh) === 'summary' && paramsOf(nh).get('i') === String(inst.instance_id), "the header's name: the instance's Summary");
     const dot = await ev(`(() => { const d = document.querySelector('#crumb .band-dot'); return d ? d.getAttribute('aria-label') : null; })()`);
@@ -455,6 +457,8 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     // the Performance page's zoom: a real drag across the first chart (CDP mouse events: uPlot's own drag, chart.ts
     // sets the page's range), then the chip and its x
     if (await go(`#/performance?i=${inst.instance_id}`)) {
+      // the header lands above the charts when its read ends: waited for before the chart is measured for the drag
+      for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header')`)); i++) await sleep(100);
       const before = await ev('location.hash');
       const r0 = await ev(`(() => { const o = document.querySelector('main .charts .u-over'); if (!o) return null; o.scrollIntoView({ block: 'center' }); const b = o.getBoundingClientRect(); return { x: b.left, y: b.top + b.height / 2, w: b.width }; })()`);
       if (r0) {
