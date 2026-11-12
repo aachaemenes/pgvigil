@@ -1,4 +1,4 @@
--- 0112: waiting tasks now (task 177, darling-open D01; the collection mssql_waiting_tasks, internal/mssql/darling_waiting.go,
+-- 0108: waiting tasks now (task 177, darling-open D01; the collection mssql_waiting_tasks, internal/mssql/darling_waiting.go,
 -- and the PostgreSQL twin over the running-queries samples of 0002). What every waiting task of a SQL Server is waiting
 -- on, every minute: one row per task of sys.dm_os_waiting_tasks (a parallel request has one per exec context), the
 -- session that blocks it, the resource it waits for decoded to database, object and index where the server can say,
@@ -32,12 +32,9 @@
 -- The PostgreSQL twin reads what pgvigil already samples (0002's activity_sample: wait event, blockers, the leader of
 -- a parallel worker); the lock's target relation is not sampled, and the page says so.
 --
--- For the join: the arm in pgvigil.findings
---     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_waiting', at
---       FROM pgvigil.mssql_waiting_findings
---   and 'mssql_waiting_summary', 'mssql_waiting_tasks' on purge()'s month-partition parents. This file sorts after
---   0110 (the number the task gave it), so the two lines cannot go into 0110 (it runs first on a new repository): they
---   go into a join file after 0112, or this file takes a number in the 0105-0109 gap (the lead's choice).
+-- The join's lines are in 0110 (this file was 0112 on its branch and took 0108 so that 0110 runs after it): the arm
+--   'mssql_waiting' in pgvigil.findings over mssql_waiting_findings, and 'mssql_waiting_summary', 'mssql_waiting_tasks'
+--   on purge()'s month-partition parents.
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_waiting_summary (
   instance_id   int NOT NULL,

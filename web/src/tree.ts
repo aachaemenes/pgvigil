@@ -272,9 +272,11 @@ function state(l: Load, depth: number, empty: string): HTMLElement | null {
 function instanceFolders(ctx: Ctx, id: number, depth: number, engine?: unknown): HTMLElement[] {
   const here = ctx.instance === id;
   const tabLink = (tab: string) => href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined });
+  // a folder's name opens its first tab, as DBA Dash's tree does (Storage -> Drives)
   const tabFolder = (k: string, name: string, tabs: [string, string][]) =>
     folder(`i${id}/${k}`, name, depth, () => [...tabs.map(([tab, label]) => el('div', { style: nodeStyle(depth + 1) }, leaf(label, tabLink(tab), here && ctx.tab === tab))),
-      ...(k === 'storage' ? driveNodes(ctx, id, engine, depth + 1, draw) : [])]);
+      ...(k === 'storage' ? driveNodes(ctx, id, engine, depth + 1, draw) : [])],
+      tabs.length ? tabLink(tabs[0][0]) : undefined, here && tabs.length > 0 && ctx.tab === tabs[0][0]);
   const instanceTabs = tabsFor(engine), instanceGroups = groupsFor(engine);
   // a SQL Server instance: its tab groups only (its databases and jobs are pages, not tree nodes yet)
   if (isMssql(engine)) return instanceGroups.filter(g => g.key !== 'main').map(g => tabFolder(g.key, g.name, g.tabs.map(t => [t, instanceTabs[t]] as [string, string])));
@@ -339,7 +341,8 @@ function scopeFolders(ctx: Ctx): HTMLElement[] {
   const scope = ctx.instance ? undefined : ctx.tag;
   return rootGroups.filter(g => g.key !== 'main').map(g =>
     folder(`r/${g.key}`, g.name, 0, () => g.tabs.map(t => el('div', { style: nodeStyle(1) },
-      leaf(rootTabs[t], href(ctx, { tab: t, instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined }), !ctx.instance && ctx.tab === t)))));
+      leaf(rootTabs[t], href(ctx, { tab: t, instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined }), !ctx.instance && ctx.tab === t))),
+      href(ctx, { tab: g.tabs[0], instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined }), !ctx.instance && ctx.tab === g.tabs[0]));
 }
 
 const rollup = (f: Fleet, rows: Row[]) => rows.reduce<Level>((a, r) => Math.max(a, worst(f, r)) as Level, 0);

@@ -67,6 +67,9 @@ const defaultTracePathSQL = `SELECT TOP (1) CAST(path AS nvarchar(260)) FROM sys
 // defaultTraceOldestSQL: the first event of the file set, which is its oldest (the function reads the files in order).
 const defaultTraceOldestSQL = `SELECT TOP (1) CONVERT(varchar(23), StartTime, 126) FROM sys.fn_trace_gettable(@p1, DEFAULT) WHERE StartTime IS NOT NULL`
 
+// defaultTraceOldestOneSQL reads the oldest file of the set alone: an answer means it is readable.
+const defaultTraceOldestOneSQL = `SELECT COUNT_BIG(*) FROM sys.fn_trace_gettable(@p1, 1)`
+
 // defaultTraceReadSQL reads at most @p4 events past the cursor: @p1 the file to start at, @p2 the cursor's time as
 // the server's local time (ISO 8601), @p3 its sequence number. The order and the cursor are the time an event was
 // WRITTEN: a growth or a shrink is written when it ends and stamped with the time it began (StartTime; EndTime is
@@ -135,6 +138,49 @@ func traceBasePath(current string) string {
 		return ""
 	}
 	return current[:i+1] + "log.trc"
+}
+
+// traceFileNum splits a default trace file's path (C:\...\Log\log_12.trc, /var/opt/mssql/log/log_12.trc) into its
+// folder and stem (...\log) and its number; traceFileInMsg finds the file a server message names.
+var (
+	traceFileNum   = regexp.MustCompile(`(?i)^(.*[\\/][^\\/]*?)_(\d+)\.trc$`)
+	traceFileInMsg = regexp.MustCompile(`'([^']+\.trc)'`)
+)
+
+// traceUnreadable is the error a file of the set raises when it is not a readable trace file (Msg 567: a file the
+// engine was writing when it was stopped by force or crashed is left so).
+const traceUnreadable = 567
+
+// traceRestartFile chooses where a read of the set goes on after Msg 567 (msg: the server's message) named one of
+// its files: when the named file is an older one of the set than current (the file written now, sys.traces' path),
+// the file after it, in current's folder; skipped is the named file. ok is false for the current file itself (that
+// read stays failed), a file of another set or folder, a name not of the set's form, or a message naming no file.
+func traceRestartFile(msg, current string) (restart, skipped string, ok bool) {
+	m := traceFileInMsg.FindStringSubmatch(msg)
+	if m == nil {
+		return "", "", false
+	}
+	skipped = m[1]
+	sk, cu := traceFileNum.FindStringSubmatch(skipped), traceFileNum.FindStringSubmatch(current)
+	if sk == nil || cu == nil || !strings.EqualFold(sk[1], cu[1]) {
+		return "", skipped, false
+	}
+	sn, err1 := strconv.Atoi(sk[2])
+	cn, err2 := strconv.Atoi(cu[2])
+	if err1 != nil || err2 != nil || sn >= cn {
+		return "", skipped, false
+	}
+	return fmt.Sprintf("%s_%d.trc", cu[1], sn+1), skipped, true
+}
+
+// traceFileNumber is the number of a trace file of the set (log_12.trc: 12), -1 for another name.
+func traceFileNumber(p string) int {
+	if m := traceFileNum.FindStringSubmatch(p); m != nil {
+		if n, err := strconv.Atoi(m[2]); err == nil {
+			return n
+		}
+	}
+	return -1
 }
 
 // traceRow turns one row of the read into the payload's row. offset is the server's local time less UTC. It returns
@@ -234,10 +280,37 @@ func (defaultTraceCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ I
 	var notes []string
 	var scanned int64
 	newest := cur.LastEventAt
+	setStart := base // the set's first readable file: base, or the file after one Msg 567 named
+	restarted := false
 	for {
 		rows, err := QueryRows(ctx, conn, defaultTraceReadSQL, file, localText(startAt), startSeq, defaultTraceBatch)
-		if err != nil && file != base && ctx.Err() == nil {
-			// the file the cursor names was rolled away: the whole set, by the same time
+		if err != nil && mssqlErrNumber(err) == traceUnreadable && ctx.Err() == nil {
+			// a file of the set is not a readable trace file. Older than the file written now, and not the cursor's own
+			// file (that one goes to the set below, as a file rolled away does): the read goes on from the file after
+			// it; each restart is a later file, so the loop ends at the current file, whose own 567 stays a failed read
+			next, skipped, ok := traceRestartFile(err.Error(), path.String)
+			cursorsOwn := file != base && !restarted && strings.EqualFold(skipped, file)
+			if ok && !cursorsOwn && traceFileNumber(next) > traceFileNumber(file) {
+				note := fmt.Sprintf("the trace file %s is not a readable trace file (Msg 567; an engine stopped by force or a crash leaves one): it was skipped and the set read from %s", skipped, next)
+				switch {
+				case file != base && !strings.EqualFold(skipped, file):
+					// the read began in an earlier, readable file (the cursor's): what it held past the cursor and the
+					// files between were not read
+					note += fmt.Sprintf("; the events of %s past the cursor and of any file between were not read", file)
+				case file == base:
+					// a readable oldest file means files before the skipped one were left out
+					var n sql.NullInt64
+					if conn.QueryRowContext(ctx, defaultTraceOldestOneSQL, base).Scan(&n) == nil {
+						note += "; the older readable file(s) before it were not read"
+					}
+				}
+				notes = append(notes, note)
+				file, setStart, restarted = next, next, true
+				continue
+			}
+		}
+		if err != nil && file != base && !restarted && ctx.Err() == nil {
+			// the file the cursor names was rolled away or cannot be read: the whole set, by the same time
 			notes = append(notes, fmt.Sprintf("the cursor's file %s could not be read (%v): the trace was read again from its oldest file, by event time", file, err))
 			file = base
 			continue
@@ -300,12 +373,23 @@ func (defaultTraceCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ I
 		}
 	}
 	var oldest sql.NullString
-	if err := conn.QueryRowContext(ctx, defaultTraceOldestSQL, base).Scan(&oldest); err == nil && oldest.Valid {
-		if t, perr := time.Parse("2006-01-02T15:04:05.999", oldest.String); perr == nil {
-			state["oldest_at"] = instantText(t.Add(-offset))
+	from := setStart
+	for range 5 { // the set holds five files: an unreadable oldest one is passed over as the main read passes it
+		err := conn.QueryRowContext(ctx, defaultTraceOldestSQL, from).Scan(&oldest)
+		if err != nil && mssqlErrNumber(err) == traceUnreadable {
+			if next, _, ok := traceRestartFile(err.Error(), path.String); ok && traceFileNumber(next) > traceFileNumber(from) {
+				from = next
+				continue
+			}
 		}
-	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		notes = append(notes, fmt.Sprintf("the trace's oldest event was not read (%v)", err))
+		if err == nil && oldest.Valid {
+			if t, perr := time.Parse("2006-01-02T15:04:05.999", oldest.String); perr == nil {
+				state["oldest_at"] = instantText(t.Add(-offset))
+			}
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			notes = append(notes, fmt.Sprintf("the trace's oldest event was not read (%v)", err))
+		}
+		break
 	}
 	state["scanned"], state["stored"], state["newest_at"] = scanned, scanned, instantText(newest)
 	state["note"] = strOrNil(strings.Join(notes, "; "))

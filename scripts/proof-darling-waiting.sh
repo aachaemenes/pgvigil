@@ -39,7 +39,8 @@
 #     just before the sample say.
 #  D. `pgvigil serve` built from a copy of this tree with the join's wiring (scripts/proof-darling-waiting-join.patch)
 #     and, while the join does not hold it, rel-join-w1 962c116's pages.ts fix (scripts/proof-darling-waiting-base.patch)
-#     applied and the web bundle rebuilt: GET /api/waiting returns 2 reads, the newest read's tasks equal to the
+#     applied (on the release join neither patch file is in the tree: its wiring is checked and the tree used as it is)
+#     and the web bundle rebuilt: GET /api/waiting returns 2 reads, the newest read's tasks equal to the
 #     store's rows, and the PostgreSQL waiter.
 #  E. the pages in a headless Chromium signed in as a UI user: #/mssql_waiting?i=<id> shows the tiles of the newest read
 #     as the store holds them (tasks, sessions, blocked by another session, THREADPOOL 0) and as many grid rows as the
@@ -243,7 +244,10 @@ echo "== D. the API under pgvigil serve (the join's wiring applied to a copy) ==
 GSRC=$TMPD/src; mkdir -p "$GSRC"
 tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
 for p in scripts/proof-darling-waiting-base.patch scripts/proof-darling-waiting-join.patch; do
-  if (cd "$GSRC" && git apply --check -R "$p" 2>/dev/null); then echo "D: $p is already in this tree"
+  if [ ! -f "$GSRC/$p" ]; then
+    grep -q mssqlWaitingView "$GSRC/web/src/main.ts" || fail "D: no $p and the tree lacks the join's wiring (web/src/main.ts has no mssqlWaitingView)"
+    echo "D: no $p in the tree: the release join carries it (the tree is used as it is)"
+  elif (cd "$GSRC" && git apply --check -R "$p" 2>/dev/null); then echo "D: $p is already in this tree"
   elif (cd "$GSRC" && git apply "$p" 2>"$TMPD/apply.err"); then echo "D: $p applied to the run's copy"
   else fail "D: $p neither applies nor is applied: $(cat "$TMPD/apply.err")"; fi
 done

@@ -145,7 +145,9 @@ ORDER BY i.end_time, i.runtime_stats_interval_id`
 // duration, CPU, logical reads, the largest memory grant and total wait time; a plan in the first @top of any list
 // is kept. tot_* are the interval's totals over every plan, so the page can say what share the kept plans are.
 // Durations and CPU are microseconds, memory is 8 KB pages. %s: the wait statistics' CTE (qsWaitsCTE or
-// qsNoWaitsCTE).
+// qsNoWaitsCTE, the first argument); %[2]s: a plan's wait time over it - qsWaitMS, 0 where no wait was recorded,
+// or qsNoWaitMS, the empty relation's column: NULL where the server keeps no wait statistics (SQL Server 2016),
+// so wait_ms and tot_wait_ms read as not measured (a column, never a constant: a window's ORDER BY refuses one).
 const qsCandidatesSQL = `WITH rs AS (
   SELECT r.plan_id, r.runtime_stats_interval_id AS interval_id,
          SUM(r.count_executions) AS executions,
@@ -165,18 +167,18 @@ const qsCandidatesSQL = `WITH rs AS (
    WHERE r.runtime_stats_interval_id BETWEEN @first AND @last
    GROUP BY r.plan_id, r.runtime_stats_interval_id
 ), %s, ranked AS (
-  SELECT rs.*, ISNULL(ws.wait_ms, 0) AS wait_ms, ws.top_wait,
+  SELECT rs.*, %[2]s AS wait_ms, ws.top_wait,
          ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY rs.duration_us DESC, rs.plan_id) AS rn_duration,
          ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY rs.cpu_us DESC, rs.plan_id) AS rn_cpu,
          ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY rs.logical_reads DESC, rs.plan_id) AS rn_reads,
          ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY rs.max_memory_pages DESC, rs.plan_id) AS rn_memory,
-         ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY ISNULL(ws.wait_ms, 0) DESC, rs.plan_id) AS rn_wait,
+         ROW_NUMBER() OVER (PARTITION BY rs.interval_id ORDER BY %[2]s DESC, rs.plan_id) AS rn_wait,
          COUNT(*) OVER (PARTITION BY rs.interval_id) AS tot_plans,
          SUM(rs.executions) OVER (PARTITION BY rs.interval_id) AS tot_executions,
          SUM(rs.duration_us) OVER (PARTITION BY rs.interval_id) AS tot_duration_us,
          SUM(rs.cpu_us) OVER (PARTITION BY rs.interval_id) AS tot_cpu_us,
          SUM(rs.logical_reads) OVER (PARTITION BY rs.interval_id) AS tot_logical_reads,
-         SUM(ISNULL(ws.wait_ms, 0)) OVER (PARTITION BY rs.interval_id) AS tot_wait_ms
+         SUM(%[2]s) OVER (PARTITION BY rs.interval_id) AS tot_wait_ms
     FROM rs LEFT JOIN ws ON ws.plan_id = rs.plan_id AND ws.interval_id = rs.interval_id
 )
 SELECT k.plan_id, k.interval_id, CAST(k.executions AS bigint) AS executions, CAST(k.failed AS bigint) AS failed,
@@ -207,6 +209,8 @@ const (
 	qsNoWaitsCTE = `ws AS (
   SELECT CAST(NULL AS bigint) AS plan_id, CAST(NULL AS bigint) AS interval_id, CAST(NULL AS bigint) AS wait_ms, CAST(NULL AS nvarchar(60)) AS top_wait WHERE 1 = 0
 )`
+	qsWaitMS   = `ISNULL(ws.wait_ms, 0)`
+	qsNoWaitMS = `ws.wait_ms`
 )
 
 // qsPlansSQL reads the candidate plans by id, and every forced plan: the plan's properties, its query, the query's
@@ -454,11 +458,11 @@ func qsDatabase(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursor
 			iv["kind"], iv["database_name"] = "interval", name
 			byID[id] = iv
 		}
-		waits := qsNoWaitsCTE
+		waits, waitMS := qsNoWaitsCTE, qsNoWaitMS
 		if qsHasWaits(info) {
-			waits = qsWaitsCTE
+			waits, waitMS = qsWaitsCTE, qsWaitMS
 		}
-		cands, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsCandidatesSQL, waits), "@first bigint, @last bigint, @top int",
+		cands, err := qsRead(ctx, conn, quoted, fmt.Sprintf(qsCandidatesSQL, waits, waitMS), "@first bigint, @last bigint, @top int",
 			sql.Named("first", first), sql.Named("last", last), sql.Named("top", qsTopN))
 		if err != nil {
 			return pre, err
