@@ -304,9 +304,13 @@ func (s *Server) DBSpace(w http.ResponseWriter, r *http.Request) {
 
 // sqlDBFiles: the files of the scope. SQL Server: every data and log file with its size, the space used inside it
 // where read, its maximum and growth, and the status 0067's rule gives (critical at its max, warning within one growth
-// of it); PostgreSQL: the WAL directory and each tablespace the storage collection read (no maximum: status ok).
-// $1 the instance (0 = any), $2 the folder's instances, $3 the statuses.
-const sqlDBFiles = `
+// of it); PostgreSQL: the WAL directory and each tablespace the storage collection read (no maximum: status ok). A
+// PostgreSQL row's drive (task 176b: a drive's Files link lists the files on that drive, as DBA Dash's does): a
+// tablespace with a location, the host volume one of whose mount points is the longest prefix of it; a row without a
+// location (pg_wal, pg_default, pg_global: inside the data directory) the volume that holds the data directory
+// (host_disks.holds_data; a pg_wal symlinked elsewhere is not read). $1 the instance (0 = any), $2 the folder's instances, $3 the statuses,
+// $4 the drive (empty = every drive).
+const sqlDBFilesFrom = `
 WITH f AS (
   SELECT f.instance_id, f.database_name AS database, coalesce(f.file_name, f.file_id::text) AS file, f.type_desc AS type, f.filegroup,
          f.physical_name AS location, f.size_bytes, CASE WHEN f.used_read THEN f.used_bytes END AS used_bytes,
@@ -321,24 +325,34 @@ WITH f AS (
     FROM pgvigil.mssql_files f
    WHERE f.is_present
   UNION ALL
-  SELECT s.instance_id, NULL, s.name, upper(s.kind), NULL, s.location, s.size_bytes, NULL, NULL, NULL, NULL, NULL, NULL, s.snapshot_at, 'ok'
+  SELECT s.instance_id, NULL, s.name, upper(s.kind), NULL, s.location, s.size_bytes, NULL, NULL, NULL, NULL, NULL,
+         CASE WHEN s.location IS NULL
+              THEN (SELECT h.mount_point FROM pgvigil.host_disks h WHERE h.instance_id = s.instance_id AND h.is_present AND h.holds_data
+                     ORDER BY h.mount_point LIMIT 1)
+              ELSE (SELECT h.mount_point FROM pgvigil.host_disks h CROSS JOIN LATERAL unnest(coalesce(h.mounts, '{}'::text[]) || h.mount_point) m
+                     WHERE h.instance_id = s.instance_id AND h.is_present
+                       AND (s.location = m OR left(s.location, length(rtrim(m, '/')) + 1) = rtrim(m, '/') || '/')
+                     ORDER BY length(m) DESC LIMIT 1) END,
+         s.snapshot_at, 'ok'
     FROM pgvigil.storage_state s
    WHERE s.is_present AND s.kind IN ('wal', 'tablespace')
-)
+)`
+
+const sqlDBFiles = sqlDBFilesFrom + `
 SELECT f.instance_id, i.name AS instance, i.engine, f.database, f.file, f.type, f.filegroup, f.location, f.size_bytes, f.used_bytes, f.free_bytes,
        f.free_pct, f.max_size_bytes, f.growth, f.drive, f.snapshot_at, f.status
   FROM f JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
  WHERE ($1::int = 0 OR f.instance_id = $1) AND ($2::int[] IS NULL OR f.instance_id = ANY ($2)) AND ($3::text[] IS NULL OR f.status = ANY ($3))
+   AND ($4::text = '' OR f.drive = $4)
  ORDER BY CASE f.status WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, i.name, f.database NULLS FIRST, f.size_bytes DESC NULLS LAST`
 
-const sqlDBFileCounts = `
-SELECT count(*) AS files, coalesce(sum(f.size_bytes), 0) AS size_bytes FROM (
-  SELECT m.instance_id, m.size_bytes FROM pgvigil.mssql_files m WHERE m.is_present
-  UNION ALL SELECT s.instance_id, s.size_bytes FROM pgvigil.storage_state s WHERE s.is_present AND s.kind IN ('wal', 'tablespace')) f
-  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
- WHERE ($1::int = 0 OR f.instance_id = $1) AND ($2::int[] IS NULL OR f.instance_id = ANY ($2))`
+// sqlDBFileCounts: the files of the scope and drive whatever the status filter.
+const sqlDBFileCounts = sqlDBFilesFrom + `
+SELECT count(*) AS files, coalesce(sum(f.size_bytes), 0) AS size_bytes
+  FROM f JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
+ WHERE ($1::int = 0 OR f.instance_id = $1) AND ($2::int[] IS NULL OR f.instance_id = ANY ($2)) AND ($3::text = '' OR f.drive = $3)`
 
-// DBFiles is GET /api/dbfiles[?instance=N|?instances=..][&status=..]: DBA Dash's Files.
+// DBFiles is GET /api/dbfiles[?instance=N|?instances=..][&status=..][&drive=..]: DBA Dash's Files.
 func (s *Server) DBFiles(w http.ResponseWriter, r *http.Request) {
 	id, ids, err := storageScope(r)
 	if err != nil {
@@ -350,9 +364,14 @@ func (s *Server) DBFiles(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	drive := r.URL.Query().Get("drive")
+	if len(drive) > 400 {
+		writeErr(w, http.StatusBadRequest, errors.New("drive is 400 characters at most"))
+		return
+	}
 	s.multiPart(w, r, []part{
-		{"files", sqlDBFiles, []any{id, ids, st}},
-		{"counts", sqlDBFileCounts, []any{id, ids}},
+		{"files", sqlDBFiles, []any{id, ids, st, drive}},
+		{"counts", sqlDBFileCounts, []any{id, ids, drive}},
 	})
 }
 

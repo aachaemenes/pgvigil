@@ -44,6 +44,25 @@
 #     [after s176-c4, before the rerun: a SQL Server instance's Disk cell (the SQL Server summary's own 'disk' key: the
 #     volume finding, DBA Dash's Drive Space) lands on Drives too; under an instance the tree's Storage node is checked
 #     once the instance's node is opened (not shown, not a FAIL, when the node sits in a closed folder)]
+# Expected, task 176b (written before its first run):
+#  T1 at the default, now DBA Dash's 20 / 10 (0113): drives_now judges every drive by it (warning under 20 % free,
+#     critical under 10 %); host_checks' disk rows and mssql_storage_findings' volume rows are exactly the drives that
+#     rule raises; each detail names 'warning under 20 %, critical under 10 % (the default)'; the edge fixture at 19.96 %
+#     and 9.96 % free: PostgreSQL /fx1996 ok and /fx996 warning (20.0 and 10.0 rounded), SQL Server X: warning and Y:
+#     critical (the exact ratio). T2-T7 as before; T8 back at 20 / 10.
+#  T9 the uptime threshold (one dialog, both engines): import_pg_threshold sets 'uptime' at a SQL Server instance
+#     (sql01, warning 87600 h, critical 87599 h) and still refuses another key there ('crash'); GET /api/uptime names
+#     sql01, its start time, the level 'instance' and those two values; the SQL Server summary's uptime cell is then
+#     critical with a detail naming 'set on the instance'; inherit ends it and the detail says 'the default' again.
+#  R adds: /api/dbfiles?drive=<sql01's E:\> gives only E:\ files, as many as mssql_files has there; ?drive=<erp01's
+#     data volume> holds erp01's pg_wal (a row without a location lives in the data directory) [review fold, before
+#     the run: the separate data-directory row is gone, it counted pg_default's bytes twice]; /api/collectiondates: one row per active instance and collection, each status critical, warning,
+#     ok or disabled, critical exactly where the last run failed; ?instance=<sql01> its own rows only.
+#  C adds: Collection opens Collection dates on both engines; Database state opens Database options (PostgreSQL
+#     pgdboptions; SQL Server the Checks page with cv=databases); QS opens pgstate / mssqlqs; Uptime opens the dialog
+#     over the Summary (the address unchanged, the dialog names the instance and 'In force: warning under .. hours,
+#     critical under .. hours'), on both engines; no named difference is left for those four; each drive's Files link
+#     under erp01 and sql01 opens 'Files on <drive>' listing only that drive's files; the PostgreSQL strip holds Temp.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -90,27 +109,27 @@ off() { q "select count(*) from (select d.*, $1 as want, case when d.engine = 's
                                  when x.p < split_part(x.want, '|', 2)::numeric then 'warning' else 'ok' end)"; }
 
 echo "== T the drive thresholds"
-# the edges: a scratch instance of each engine with a drive at 9.96 % and one at 4.96 % free, read now
+# the edges of the default (20 / 10, 0113): a scratch instance of each engine with a drive at 19.96 % and one at 9.96 % free, read now
 q "insert into pgvigil.instances (name, platform, engine) values ('fx-drive-pg', 'onprem', 'postgres'), ('fx-drive-ms', 'onprem', 'sqlserver')" >/dev/null
 FXP=$(q "select instance_id from pgvigil.instances where name = 'fx-drive-pg'"); FXM=$(q "select instance_id from pgvigil.instances where name = 'fx-drive-ms'")
 q "insert into pgvigil.host_disks (instance_id, mount_point, snapshot_at, source, total_bytes, used_bytes, free_bytes, first_seen)
-   values ($FXP, '/fx996', now(), 'system_stats', 100000, 90040, 9960, now()), ($FXP, '/fx496', now(), 'system_stats', 100000, 95040, 4960, now());
+   values ($FXP, '/fx1996', now(), 'system_stats', 100000, 80040, 19960, now()), ($FXP, '/fx996', now(), 'system_stats', 100000, 90040, 9960, now());
    insert into pgvigil.mssql_volumes (instance_id, volume, total_bytes, free_bytes, files, snapshot_at)
-   values ($FXM, 'X:', 100000, 9960, 1, now()), ($FXM, 'Y:', 100000, 4960, 1, now())" >/dev/null
+   values ($FXM, 'X:', 100000, 19960, 1, now()), ($FXM, 'Y:', 100000, 9960, 1, now())" >/dev/null
 FX=$(q "select string_agg(engine || ' ' || drive || ' ' || status, ', ' order by engine, drive) from pgvigil.drives_now where instance_id in ($FXP, $FXM)")
-[[ "$FX" == 'postgres /fx496 warning, postgres /fx996 ok, sqlserver X: warning, sqlserver Y: critical' ]] || fail "T1: the edge fixture: $FX"
+[[ "$FX" == 'postgres /fx1996 ok, postgres /fx996 warning, sqlserver X: warning, sqlserver Y: critical' ]] || fail "T1: the edge fixture: $FX"
 N=$(q "select count(*) from pgvigil.drives_now"); NPG=$(q "select count(*) from pgvigil.drives_now where engine = 'postgres'"); NMS=$(q "select count(*) from pgvigil.drives_now where engine = 'sqlserver'")
 (( NPG > 0 && NMS > 0 )) || fail "T: the demo's drives: $NPG PostgreSQL, $NMS SQL Server"
-[[ $(off "'default|10|5'") == 0 ]] || fail "T1: drives off the old rule at the default: $(off "'default|10|5'")"
-OLDPG=$(q "select coalesce(string_agg(instance_id || ':' || mount_point || ':' || case when free_pct < 5 then 'critical' else 'warning' end, ',' order by instance_id, mount_point), '') from pgvigil.disk_report where free_pct < 10 and snapshot_at > now() - interval '1 hour'")
+[[ $(off "'default|20|10'") == 0 ]] || fail "T1: drives off DBA Dash's rule at the default: $(off "'default|20|10'")"
+OLDPG=$(q "select coalesce(string_agg(instance_id || ':' || mount_point || ':' || case when free_pct < 10 then 'critical' else 'warning' end, ',' order by instance_id, mount_point), '') from pgvigil.disk_report where free_pct < 20 and snapshot_at > now() - interval '1 hour'")
 NEWPG=$(q "select coalesce(string_agg(instance_id || ':' || object || ':' || severity, ',' order by instance_id, object), '') from pgvigil.host_checks where check_group = 'disk'")
 [[ "$OLDPG" == "$NEWPG" ]] || fail "T1: host_checks' disk rows [$NEWPG], the old rule [$OLDPG]"
-OLDMS=$(q "select coalesce(string_agg(instance_id || ':' || volume || ':' || case when 100.0 * free_bytes / total_bytes < 5 then 'critical' else 'warning' end, ',' order by instance_id, volume), '') from pgvigil.mssql_volumes where is_present and total_bytes > 0 and free_bytes is not null and 100.0 * free_bytes / total_bytes < 10 and snapshot_at > now() - interval '3 hours'")
+OLDMS=$(q "select coalesce(string_agg(instance_id || ':' || volume || ':' || case when 100.0 * free_bytes / total_bytes < 10 then 'critical' else 'warning' end, ',' order by instance_id, volume), '') from pgvigil.mssql_volumes where is_present and total_bytes > 0 and free_bytes is not null and 100.0 * free_bytes / total_bytes < 20 and snapshot_at > now() - interval '3 hours'")
 NEWMS=$(q "select coalesce(string_agg(instance_id || ':' || object || ':' || severity, ',' order by instance_id, object), '') from pgvigil.mssql_storage_findings where check_name = 'a volume under 10 % free'")
 [[ "$OLDMS" == "$NEWMS" ]] || fail "T1: mssql_storage_findings' volume rows [$NEWMS], the old rule [$OLDMS]"
 [[ -n "$NEWPG$NEWMS" ]] || fail "T1: the demo raises no drive row on either engine (nothing compared)"
-[[ $(q "select count(*) from (select detail from pgvigil.host_checks where check_group = 'disk' union all select detail from pgvigil.mssql_storage_findings where check_name = 'a volume under 10 % free') x where detail not like '%warning under 10 %, critical under 5 % (the default)%'") == 0 ]] || fail "T1: a detail without the threshold in force"
-ok "T1: $N drives ($NPG PostgreSQL, $NMS SQL Server, the edge fixture's 4 among them: $FX) at the default judge as before 0111; host_checks [$NEWPG], mssql_storage_findings [$NEWMS]"
+[[ $(q "select count(*) from (select detail from pgvigil.host_checks where check_group = 'disk' union all select detail from pgvigil.mssql_storage_findings where check_name = 'a volume under 10 % free') x where detail not like '%warning under 20 %, critical under 10 % (the default)%'") == 0 ]] || fail "T1: a detail without the threshold in force"
+ok "T1: $N drives ($NPG PostgreSQL, $NMS SQL Server, the edge fixture's 4 among them: $FX) at the default judge by DBA Dash's 20 / 10; host_checks [$NEWPG], mssql_storage_findings [$NEWMS]"
 [[ $(put '{"op":"set","level":"root","warn":"50","crit":"40","ui_user":"proof"}') == done ]] || fail "T2: root"
 [[ $(off "'root|50|40'") == 0 ]] || fail "T2: drives off the root threshold: $(off "'root|50|40'")"
 ok "T2: a root 50 / 40 judges every drive"
@@ -143,9 +162,20 @@ ok "T7: six refusals, nothing written"
 for p in "{\"op\":\"inherit\",\"level\":\"instance\",\"instance_id\":\"$ERP\",\"ui_user\":\"proof\"}" "{\"op\":\"inherit\",\"level\":\"tag\",\"tag\":\"$TAG\",\"ui_user\":\"proof\"}" '{"op":"inherit","level":"root","ui_user":"proof"}'; do
   [[ $(put "$p") == done ]] || fail "T8: $p"
 done
-[[ $(off "'default|10|5'") == 0 && $(q "select count(*) from pgvigil.drive_thresholds where ended_at is null") == 0 ]] || fail "T8: not back at the default"
+[[ $(off "'default|20|10'") == 0 && $(q "select count(*) from pgvigil.drive_thresholds where ended_at is null") == 0 ]] || fail "T8: not back at the default"
 q "delete from pgvigil.instances where instance_id in ($FXP, $FXM)" >/dev/null
 ok "T8: every level inherited: the default again"
+# T9: the uptime threshold of a SQL Server instance (0113), read back by /api/uptime and the SQL Server summary
+pt() { q "select pgvigil.import_pg_threshold(now(), '$1'::jsonb)->>'outcome'"; }
+upc() { curl -fs "$U/api/mssql/summary" | python3 -c "import json,sys; d=json.load(sys.stdin)['cells']; r=[dict(zip(d['columns'], x)) for x in d['rows']]; c=[x for x in r if str(x['instance_id']) == sys.argv[1] and x['key'] == 'uptime'][0]; print(str(c['critical']) + '|' + ' '.join(map(str, c['detail'] or [])))" "$SQL1"; }
+[[ $(pt "{\"op\":\"set\",\"key\":\"uptime\",\"level\":\"instance\",\"instance_id\":\"$SQL1\",\"warn\":\"87600\",\"crit\":\"87599\",\"ui_user\":\"proof\"}") == done ]] || fail "T9: sql01's uptime threshold refused"
+[[ $(pt "{\"op\":\"set\",\"key\":\"crash\",\"level\":\"instance\",\"instance_id\":\"$SQL1\",\"warn\":\"1\",\"crit\":\"1\",\"ui_user\":\"proof\"}") == refused ]] || fail "T9: another key at a SQL Server instance not refused"
+UP=$(curl -fs "$U/api/uptime?instance=$SQL1" | python3 -c "import json,sys; d=json.load(sys.stdin)['uptime']; r=dict(zip(d['columns'], d['rows'][0])); print(r['instance'], r['level'], int(float(r['warn'])), int(float(r['crit'])), r['own_id'] is not None, r['started_at'] is not None)")
+[[ "$UP" == "demo-onprem-sql01 instance 87600 87599 True True" ]] || fail "T9: /api/uptime: $UP"
+C9=$(upc); [[ "$C9" == 1\|*"set on the instance"* ]] || fail "T9: the SQL Server summary's uptime cell with the threshold: $C9"
+[[ $(pt "{\"op\":\"inherit\",\"key\":\"uptime\",\"level\":\"instance\",\"instance_id\":\"$SQL1\",\"ui_user\":\"proof\"}") == done ]] || fail "T9: inherit"
+C9B=$(upc); [[ "$C9B" == *"the default"* ]] || fail "T9: after inherit: $C9B"
+ok "T9: sql01's uptime at 87600 / 87599 h (another key refused there), /api/uptime [$UP], the summary cell [${C9%%|*} critical, set on the instance]; inherit: the default again"
 
 echo "== R the reads"
 js() { curl -fs "$U/api/$1" | python3 -c "import json,sys,os; d=json.load(sys.stdin); rows=lambda p: [dict(zip(d[p]['columns'], r)) for r in (d.get(p) or {'columns':[],'rows':[]})['rows']]; $2"; }
@@ -166,12 +196,22 @@ USED=$(q "select coalesce(string_agg(i.name || ':' || coalesce(x.u::text, 'none'
 [[ $(js "dbspace?instance=$SQL1" "print(int(len(rows('databases')) >= 1 and len(rows('history')) >= 2))") == 1 ]] || fail "R: dbspace of sql01"
 [[ $(js "dbfiles?instance=$SQL1" "print(int(len(rows('files')) >= 1 and all(r['status'] in ('ok','warning','critical') for r in rows('files'))))") == 1 ]] || fail "R: dbfiles of sql01"
 [[ $(js dbfiles "print(rows('counts')[0]['files'])") == $(q "select (select count(*) from pgvigil.mssql_files f join pgvigil.instances i using (instance_id) where f.is_present and i.is_active) + (select count(*) from pgvigil.storage_state s join pgvigil.instances i using (instance_id) where s.is_present and s.kind in ('wal','tablespace') and i.is_active)") ]] || fail "R: dbfiles counts"
+# a drive's files (task 176b): sql01's E:\ only, as many as mssql_files puts there; erp01's data volume holds its pg_wal (no location: the data directory's)
+EVOL=$(q "select volume from pgvigil.mssql_files where instance_id = $SQL1 and is_present and volume is not null group by volume order by count(*) desc, volume limit 1")
+EQ=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$EVOL")
+[[ $(VOL="$EVOL" js "dbfiles?instance=$SQL1&drive=$EQ" "r=rows('files'); print(int(len(r) >= 1 and all(x['drive'] == os.environ['VOL'] for x in r)), len(r))") == "1 $(q "select count(*) from pgvigil.mssql_files where instance_id = $SQL1 and is_present and volume = '$EVOL'")" ]] || fail "R: dbfiles of sql01 on $EVOL"
+DQ=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$DATA")
+[[ $(js "dbfiles?instance=$ERP&drive=$DQ" "print(int(any(x['file'] == 'pg_wal' for x in rows('files'))))") == 1 ]] || fail "R: erp01's pg_wal not on $DATA"
+# the collection dates: one row per active instance and collection; critical exactly where the last run failed
+[[ $(js collectiondates "print(len(rows('collections')))") == $(q "select count(*) from pgvigil.collection_dates c join pgvigil.instances i using (instance_id) where i.is_active") ]] || fail "R: collectiondates rows"
+[[ $(js collectiondates "r=rows('collections'); print(int(all(x['status'] in ('critical','warning','ok','disabled') for x in r) and all((x['status'] == 'critical') == (x['last_status'] == 'error') for x in r if x['status'] != 'disabled')))") == 1 ]] || fail "R: collectiondates statuses"
+[[ $(js "collectiondates?instance=$SQL1" "r=rows('collections'); print(int(len(r) >= 1 and all(str(x['instance_id']) == '$SQL1' for x in r)))") == 1 ]] || fail "R: collectiondates of sql01"
 VOLS=$(q "select string_agg(volume, '|') from pgvigil.mssql_volumes where instance_id = $SQL1")
 # the volume names travel through the environment: a Windows name ends in a backslash, which a quoted literal would eat
 [[ $(VOLS="$VOLS" js "driveperf?instance=$SQL1" "v=set(os.environ['VOLS'].split('|'))|{'drive not read'}; r=rows('series'); print(int(len(r) >= 1 and all(x['drive'] in v for x in r)))") == 1 ]] || fail "R: driveperf of sql01"
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' "$U/api/drives/thresholds") == 403 ]] || fail "R: a write without the header"
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/drives/thresholds") == 403 ]] || fail "R: a write without the login"
-ok "R: drives, history ($H points), dbspace ($NI instances), dbfiles, driveperf answer as the repository says; the write door refuses without the header and the login"
+ok "R: drives, history ($H points), dbspace ($NI instances), dbfiles (sql01 on $EVOL, erp01's pg_wal on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
 
 echo "== C the click map (headless Chromium on CDP $CDP)"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
@@ -195,6 +235,16 @@ for s in ('root', 'tag ' + d['tag']):
 for s in ('root', 'tag ' + d['tag'], 'PostgreSQL ' + d['pg'], 'SQL Server ' + d['ms']):
     t = has(scope=s, kind='storage-tab')
     if len(t) < 6: bad.append('%d Storage tabs at %s' % (len(t), s))
+# task 176b: the four landings DBA Dash's map now holds, the Uptime dialog, a drive's Files, the PostgreSQL Temp tab
+for e in ('postgres', 'sqlserver'):
+    for c in ('Collection', 'Database state', 'QS', 'Uptime'):
+        got = has(scope='root', kind='cell', column=c, engine=e)
+        if not got: bad.append('no %s cell of %s at the root' % (c, e))
+        elif any('named difference' in x['verdict'] for x in got): bad.append('%s of %s still a named difference' % (c, e))
+    if not [x for x in r if x['kind'] == 'cell' and x['column'] == 'Uptime' and x['engine'] == e and 'dialog over the Summary' in x['landed']]: bad.append('no Uptime dialog clicked on ' + e)
+for s in ('PostgreSQL ' + d['pg'], 'SQL Server ' + d['ms']):
+    if not [x for x in has(scope=s, kind='drive-files') if x['verdict'].startswith('ok')]: bad.append('no drive Files link checked at ' + s)
+if not has(scope='PostgreSQL ' + d['pg'], kind='storage-tab', column='Temp'): bad.append('no Temp tab under ' + d['pg'])
 print('the click map covered: ' + ('every kind asked' if not bad else '; '.join(bad)))
 sys.exit(1 if bad else 0)
 PY

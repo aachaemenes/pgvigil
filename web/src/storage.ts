@@ -15,7 +15,7 @@ const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 // a volume's free per cent judged as the Drives page judges it (drives_now's status: the threshold in force, task 176)
 const lvlOf = (r: Row) => r.status === 'critical' ? 'crit' : r.status === 'warning' ? 'warn' : r.status === 'ok' ? 'ok' : '';
 const freeTxt = (v: unknown, r: Row) => v == null ? '' : lvlOf(r) === 'crit' || lvlOf(r) === 'warn' ? badge(pctTxt(v), lvlOf(r)) : pctTxt(v);
-// the free cells in the colour of the volume's threshold (the root's, a tag's, the instance's or its own; 10 / 5 by default), as the export writes them
+// the free cells in the colour of the volume's threshold (the root's, a tag's, the instance's or its own; DBA Dash's 20 / 10 by default), as the export writes them
 const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : lvlOf(r);
 const perDay = (v: unknown) => v == null ? 'too little history' : (Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : fmtBytes(v)) + ' / day';
 // a forecast past ten years is not a date anyone plans to
@@ -58,7 +58,7 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
   // the growth of a chosen number of days
   const pies = el('div', { class: 'charts' });
   const bars = volumeBars('Volumes', vols.filter(v => v.used_bytes != null && v.free_bytes != null)
-    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes), note: v.holds_data ? '(data)' : undefined })), fmtBytes);
+    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes), note: v.holds_data ? '(data)' : undefined, status: v.status == null ? undefined : String(v.status) })), fmtBytes);
   pies.append(donutChart('Databases by size',
     rowsOf(d.databases).map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0) })), fmtBytes));
   sec.append(el('h3', {}, 'Space at a glance'), bars, pies, growthPanel(ctx));
@@ -66,7 +66,9 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
   const checks = rowsOf(d.checks);
   if (checks.length) {
     sec.append(el('h3', {}, 'Checks'), grid(checks, [
-      { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'check' }, { key: 'object' }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
+      // 0033's 'volume under 10 % free' is the headroom against the volume's capacity (RDS autoscaling), not the drive
+      // threshold: shown as such (the check's key stays for alert rules and acknowledgements)
+      { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'check', fmt: v => v === 'volume under 10 % free' ? 'capacity headroom under 10 %' : String(v ?? '') }, { key: 'object' }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
     ]));
   }
   sec.append(el('h3', {}, 'Volumes'),
@@ -186,7 +188,7 @@ export async function storageFleetView(keep?: (r: Row) => boolean, instLink?: (n
     el('div', { class: 'tiles' },
       tile('volumes', String(rows.length)),
       tile('full within 30 days', String(soon), soon ? 'warn' : 'ok'),
-      tile('under 10 % free', String(low), low ? 'warn' : 'ok'),
+      tile('capacity headroom under 10 %', String(low), low ? 'warn' : 'ok'),
       tile('repository', fmtBytes(repo.database_bytes) || '-')),
     el('p', { class: 'meta' }, 'Every volume of the fleet, the soonest full first. '
       + `The repository (this database) holds ${fmtBytes(repo.schema_bytes) || '-'} of pgvigil tables, ${fmtBytes(repo.history_bytes) || '-'} of it monthly history partitions.`),

@@ -670,9 +670,11 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
 }
 
 // volumeBars draws each volume as one horizontal bar, used against its size (DBA Dash's drive bars): the filled part
-// is the used share, coloured by the free share left (under 10 % warning, under 5 % critical; the status is also a
-// word in the row, never the colour alone). The numbers stand beside the bar; the list is a table for a screen reader.
-export interface Volume { name: string; used: number; free: number; note?: string }
+// is the used share, coloured by the volume's status: the Drives page's judgement (drives_now: the threshold in force
+// for that drive, task 176b: one rule), given by the caller; a volume without one is judged by the drive default,
+// DBA Dash's (under 20 % free a warning, under 10 % critical). The status is also a word in the row, never the colour
+// alone. The numbers stand beside the bar; the list is a table for a screen reader.
+export interface Volume { name: string; used: number; free: number; note?: string; status?: string }
 export function volumeBars(title: string, vols: Volume[], fmt: (v: number) => string, empty = 'No volume read yet.'): HTMLElement {
   const box = el('div', { class: 'chart bars' }, el('h3', {}, title));
   const rows = vols.filter(v => isFinite(v.used) && isFinite(v.free) && v.used + v.free > 0);
@@ -680,7 +682,7 @@ export function volumeBars(title: string, vols: Volume[], fmt: (v: number) => st
   const body = el('tbody');
   for (const v of rows) {
     const total = v.used + v.free, usedPct = 100 * v.used / total, freePct = 100 - usedPct;
-    const level = freePct < 5 ? 'crit' : freePct < 10 ? 'warn' : 'ok';
+    const level = v.status === 'critical' ? 'crit' : v.status === 'warning' ? 'warn' : v.status === 'ok' ? 'ok' : freePct < 10 ? 'crit' : freePct < 20 ? 'warn' : 'ok';
     const word = level === 'crit' ? 'critical' : level === 'warn' ? 'warning' : 'OK';
     const pct = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' %';
     const fill = el('span', { class: 'bar-fill ' + level });
