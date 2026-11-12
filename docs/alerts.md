@@ -289,7 +289,7 @@ database that is later dropped stays held until someone ends the rule.
 | `pgvigil.alert_findings`, `pgvigil.findings_alerts`, `pgvigil.alert_sent` | Findings with their key, and with their alert columns. |
 
 The sender connects as `alerts_dsn`, a login in the role `pgvigil_alerter` that migration 0059 creates. The role is a
-member of `pgvigil_reader`, so it reads the findings. It also holds INSERT and UPDATE on the alert tables:
+member of `pgvigil_reader`, so it reads the findings. It also holds INSERT on the alert tables and UPDATE on `alert_channels` and `alert_state`:
 
 ```sql
 CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;
