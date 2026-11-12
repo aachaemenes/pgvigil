@@ -18,6 +18,7 @@ import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { poolerCached } from './pooler';
 import { Ctx, href, drillHome, groupsFor, isMssql, rootGroups, rootTabs, tabsFor } from './router';
 import { Fleet, forget, Level, tagsOf, worst } from './fleet';
+import { refreshSilenced, silencedSet, treeBell } from './instheader';
 import { hashParam, hrefWith } from './dbinfo';
 import { dot, el, fmtBytes } from './ui';
 import { dbadashFolders } from './dbadash';
@@ -163,6 +164,8 @@ export function treeHiddenSaved(): boolean { return lsGet('pgvigil.treeHidden') 
 export function updateTree(f: Fleet, ctx: Ctx) {
   last = { f, ctx };
   draw();
+  // the silenced instances' mark (task 177 D29): the tree draws again when the set changed
+  void refreshSilenced().then(changed => { if (changed && last) draw(); });
   // the ui: block arrives once; the tree redraws with it (the first paint never waits on it)
   if (!uiAt) void tagUI().then(() => { if (last) draw(); });
 }
@@ -458,7 +461,7 @@ function draw() {
           const key = `i${id}`;
           ul.append(el('div', { class: 'tree-inst', style: rowStyle }, caretFor(key, String(r.name)),
             nameOpens(el('a', { class: 'inst' + (id === ctx.instance ? ' on' : ''), style: 'flex:1;min-width:0', href: href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined }), title: `${r.platform ?? ''} ${r.server_version ?? ''}` },
-              dot(worst(f, r)), String(r.name)), key, opened.has(key), id === ctx.instance && ctx.tab === tab && ctx.at == null && ctx.task == null, () => flip(key))));
+              dot(worst(f, r)), String(r.name), ...(silencedSet().has(id) ? [' ', treeBell()] : [])), key, opened.has(key), id === ctx.instance && ctx.tab === tab && ctx.at == null && ctx.task == null, () => flip(key))));
           if (opened.has(key)) ul.append(...instanceFolders(ctx, id, 1, r.engine));
         }
       }

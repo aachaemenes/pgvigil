@@ -35,7 +35,11 @@ const settled = async (ms = 12000) => {
   while (Date.now() - t < ms) {
     // rendered = the shell replaced its "Loading..." paragraph; an honest empty state ("No rows yet") is a rendered page too
     const ok = await ev(`(() => { const m = document.querySelector('main'); if (!m) return false; const e = m.querySelector('p.empty'); return !(e && /^Loading/.test(e.textContent)) && m.children.length > 0; })()`);
-    if (ok) { await sleep(300); return true; }
+    if (ok) {
+      // an instance page's header (task 177 D29) follows the page when its read ends: waited for, up to 5 s
+      for (let i = 0; i < 50 && await ev(`/[?&]i=/.test(location.hash) && !document.querySelector('main .inst-header')`); i++) await sleep(100);
+      await sleep(300); return true;
+    }
     await sleep(150);
   }
   return false;

@@ -208,10 +208,13 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   };
   let markState: { marks: FrameMark[] } = { marks: [] };
   const hiddenKey = pageScope() + '|' + title;
-  // size to the container once it is in the page
-  requestAnimationFrame(() => {
+  // size to the container once it is in the page: a page placed after a read of its own (a section read after its
+  // charts were made, the instance header) is waited for frame by frame, up to 20 s (past the server's 15 s statement
+  // timeout); a chart whose page was replaced never joins the page and stops there
+  const until = Date.now() + 20000;
+  const draw = () => {
+    if (!holder.isConnected) { if (Date.now() < until) requestAnimationFrame(draw); return; }
     opts.width = Math.max(300, holder.clientWidth || 560);
-    if (!holder.isConnected) return;     // the page was replaced before this frame
     // a panel that redraws itself (the Storage tab's days selector) leaves its old charts off the page: free them
     for (let i = live.length - 1; i >= 0; i--) if (!live[i].root.isConnected) live.splice(i, 1)[0].destroy();
     // the series hidden here before (a refresh, a range change): hidden from the start
@@ -270,7 +273,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
       }
       if (added.length) u.setData(u.data); else u.redraw(false, false);
     });
-  });
+  };
+  requestAnimationFrame(draw);
   return box;
 }
 

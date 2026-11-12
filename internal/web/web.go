@@ -200,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/metrics", s.Metrics)
 	api.HandleFunc("GET /api/metrics/series", s.MetricSeries)
 	api.HandleFunc("GET /api/ack", s.Ack)
+	api.HandleFunc("GET /api/healthcal", s.HealthCal)
 	api.HandleFunc("POST /api/ack", s.AckAdd)
 	api.HandleFunc("POST /api/ack/end", s.AckEnd)
 	api.HandleFunc("GET /api/slow", s.slow)
