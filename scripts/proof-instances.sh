@@ -34,6 +34,9 @@
 #      still down -> the same; pg-never, added while its server is down and never collected -> its instances row at
 #      the add (active) and the same finding; sql-down (a SQL Server page instance on A's container, the last row: the
 #      container stopped) enabled while down -> the same through the SQL Server collector
+#   L. the page on a serve with no UI login (-no-login, the join's w9c): the list renders read only, a plain note in the
+#      page's own words ('adding and changing instances needs the UI login: ...'), no error box, every control disabled
+#      saying why on hover; an add through the API refused with the same words
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -58,7 +61,7 @@ PGDB=pgv_in_$SUF; COL=pgv_incol_$SUF; USR=proofdba$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
-TMPD=$(mktemp -d); SRVPID=; RUNPID=; RUN2PID=; CHRPID=
+TMPD=$(mktemp -d); SRVPID=; RUNPID=; RUN2PID=; CHRPID=; SRVLPID=
 SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
 SA_PW=$(pw); MON_PW=$(pw); CMS_PW=$(pw); PG_PW=$(pw); BAD_PW=$(pw); UPW=$(pw); COL_PW=$(pw); PGPASS_PW=$(pw)
 export MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW
@@ -66,6 +69,7 @@ printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\n' "$SA_PW" "$SA_PW" > "$T
 printf 'POSTGRES_PASSWORD=%s\n' "$PG_PW" > "$TMPD/pg.env"
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
+  [[ -n "$SRVLPID" ]] && kill "$SRVLPID" 2>/dev/null || true
   [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
   [[ -n "$RUN2PID" ]] && kill "$RUN2PID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
@@ -473,4 +477,45 @@ code=$(api POST admin/instances "$(js op=enable name=sql-down)"); [[ "$code" == 
 unreachable sql-down "$T3" "a SQL Server enabled while its server is down"
 code=$(api POST admin/instances "$(js op=remove name=sql-down)"); [[ "$code" == 200 ]] || fail "K: remove sql-down: $code"
 echo "ok   K: enabled while down, added again after a remove while down, added never collected (PostgreSQL), and a SQL Server enabled while down: each active at once and 'server unreachable' (critical) with a new connect error within one interval"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; the NOT PROVEN lines above stand)"
+echo "== L. the page on a serve with no UI login (-no-login): read only, a note, no error box; a write refused in the page's words =="
+PORTL=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); UL="http://127.0.0.1:$PORTL"
+(umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORTL" -no-login) >"$TMPD/serve-nl.log" 2>&1 & SRVLPID=$!
+for _ in $(seq 1 100); do curl -s -o /dev/null "$UL/api/session" 2>/dev/null && break; sleep 0.1; done
+kill -0 "$SRVLPID" 2>/dev/null || { cat "$TMPD/serve-nl.log" >&2; fail "L: the -no-login serve exited"; }
+NL='adding and changing instances needs the UI login: this server runs with -no-login'
+code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -H 'X-Pgvigil: 1' "$UL/api/admin/instances"); [[ "$code" == 200 && "$(ans writable)" == False && "$(ans why_not)" == "$NL" ]] || fail "L: the list on -no-login: $code $(head -c 300 "$TMPD/ans.json")"
+printf '%s' "$(js op=add name=pg-nl engine=postgres host=127.0.0.1 port="$PA" dbname=postgres auth=password login=postgres password=@PG_PW)" > "$TMPD/body.json"
+code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/body.json" "$UL/api/admin/instances")
+[[ "$code" == 403 && "$(cat "$TMPD/ans.json")" == *"$NL"* && "$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-nl'")" == 0 ]] || fail "L: an add on -no-login: $code $(head -c 300 "$TMPD/ans.json")"
+cat > "$TMPD/l.mjs" <<'JS'
+const [port, U] = process.argv.slice(2);
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true }); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
+await cmd('Page.navigate', { url: U + '#/admin_instances?w=1h' });
+let ok = false;
+for (let i = 0; i < 150 && !ok; i++) { ok = await ev(`!!document.querySelector('main .admin-instances h2')`); if (!ok) await sleep(200); }
+await sleep(500);
+console.log(`ready ${ok}`);
+console.log(`errors ${await ev(`document.querySelectorAll('main .error:not([role=status])').length`)}`);
+console.log(`note ${JSON.stringify(await ev(`document.querySelector('main [role=note]')?.textContent ?? ''`))}`);
+console.log(`enabled ${await ev(`[...document.querySelectorAll('main button, main input, main select, main textarea')].filter(c => !c.disabled).length`)}`);
+console.log(`titles ${await ev(`[...new Set([...document.querySelectorAll('main button:disabled')].map(b => b.title))].join(' | ')`)}`);
+console.log(`rows ${await ev(`document.querySelectorAll('main table tbody tr').length`)}`);
+ws.close(); process.exit(0);
+JS
+lout=$(node "$TMPD/l.mjs" "$CDP" "$UL/") || fail "L: the Chromium walk stopped: $lout"
+echo "$lout"
+echo "$lout" | grep -q '^ready true$' && echo "$lout" | grep -q '^errors 0$' && echo "$lout" | grep -q '^enabled 0$' || fail "L: the page on -no-login (an error box, or a control left enabled)"
+echo "$lout" | grep -qF "note \"Read only: $NL.\"" && echo "$lout" | grep -qxF "titles $NL" || fail "L: the note or the hover words"
+[[ "$(echo "$lout" | sed -n 's/^rows //p')" -gt 0 ]] || fail "L: the list did not render"
+kill "$SRVLPID" 2>/dev/null; SRVLPID=
+echo "ok   L: on -no-login the page lists the instances read only: the note 'Read only: $NL.', no error box, every control disabled with those words on hover; an add refused 403 with them, nothing written"
+echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login, no error box; the NOT PROVEN lines above stand)"

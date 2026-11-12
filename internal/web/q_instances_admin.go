@@ -221,7 +221,7 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 		}
 		file.Rows = append(file.Rows, []any{in.Name, in.Engine, plat, strings.Join(in.Tags, " "), "from the file"})
 	}
-	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.ackOff() == "", "why_not": s.ackOff()}
+	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.instancesOff() == "", "why_not": s.instancesOff()}
 	parts := []struct{ k, q string }{
 		{"page", `SELECT a.name, a.engine, a.platform, a.auth, a.host, a.port, a.dbname, a.login, a.options, array_to_string(a.tags, ' ') AS tags,
 		        a.disabled, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
@@ -260,14 +260,32 @@ func keys(m map[string]string) []string {
 	return out
 }
 
+// instancesOff says why the page cannot add or change instances (or read its sources) on this server, "" when it
+// can, in the page's own words: its writes ride the actions door's audit login and the UI login, as acknowledgements
+// do (ackOff), but an acknowledgement's wording would be wrong here (the join's w9c: proof-upgrade, proof-darling-alerts C).
+func (s *Server) instancesOff() string {
+	switch {
+	case s.auth == nil:
+		return "adding and changing instances needs the UI login: this server runs with -no-login"
+	case s.actions == nil:
+		return "adding and changing instances is off on this server: it has no actions door (every change is written through its audit login)"
+	case s.actions.audit == nil:
+		if s.actions.off != "" {
+			return "adding and changing instances goes through the actions door's audit login, and it is off: " + s.actions.off
+		}
+		return "adding and changing instances goes through the actions door's audit login, and it is not connected"
+	}
+	return ""
+}
+
 // adminBody is the writes' common door: the header, the actions door, the login, a body of 16 KB at most.
 func (s *Server) adminBody(w http.ResponseWriter, r *http.Request) (string, map[string]any, bool) {
 	if r.Header.Get(loginHeader) == "" {
 		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
 		return "", nil, false
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(strings.Replace(why, "acknowledgements", "instance changes", 1)))
+	if why := s.instancesOff(); why != "" {
+		writeErr(w, http.StatusForbidden, errors.New(why))
 		return "", nil, false
 	}
 	user := s.sessionUser(r)
@@ -816,8 +834,8 @@ func (s *Server) readSource(ctx context.Context, src *sourceRow) ([]config.Propo
 // syncSource reads one source and hands the list to import_admin_proposals (a failed read is recorded, nothing
 // marked gone).
 func (s *Server) syncSource(ctx context.Context, name string) (map[string]any, error) {
-	if s.ackOff() != "" {
-		return nil, errors.New(s.ackOff())
+	if why := s.instancesOff(); why != "" {
+		return nil, errors.New(why)
 	}
 	src, err := s.sourceByName(ctx, name)
 	if err != nil {
@@ -863,7 +881,7 @@ func (s *Server) RunInstanceSync(ctx context.Context) {
 		if !swept {
 			swept = s.sweepSecrets(ctx)
 		}
-		if s.ackOff() != "" {
+		if s.instancesOff() != "" {
 			continue
 		}
 		rows, err := s.pool.Query(ctx, `SELECT name FROM pgvigil.admin_sources WHERE enabled AND (last_run IS NULL OR last_run + every_s * interval '1 second' <= now()) ORDER BY name`)

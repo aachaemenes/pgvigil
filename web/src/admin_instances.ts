@@ -59,7 +59,8 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
         'A change reaches the collector within 15 seconds, without a restart (inventory generation ', String(d.generation), '). ',
         d.secret_dir ? `Credentials are written to their own files in ${d.secret_dir}; the repository keeps only each file's name.` : ''),
-      d.writable ? '' : el('p', { class: 'meta error' }, `Changes are off on this server: ${d.why_not}`),
+      // read only on this server: a note, not an error (the page works; the join's w9c)
+      d.writable ? '' : el('p', { class: 'meta', role: 'note' }, `Read only: ${d.why_not}.`),
       status,
       instanceForm(d),
       el('h3', {}, 'Instances added here'),
@@ -77,6 +78,16 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       grid(audit, [{ key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'client' }, { key: 'op' }, { key: 'target' },
         { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? '' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
     );
+    readOnly(d);
+  }
+
+  // read only: every control that would write is disabled and says why on hover
+  function readOnly(d: AdminData): void {
+    if (d.writable) return;
+    for (const c of root.querySelectorAll('button, input, select, textarea')) {
+      (c as HTMLButtonElement).disabled = true;
+      (c as HTMLElement).title = d.why_not;
+    }
   }
 
   async function act(path: string, data: Record<string, unknown>, done: string): Promise<boolean> {
