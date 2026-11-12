@@ -1,19 +1,19 @@
 # Acknowledge, mute and notes
 
 pgvigil keeps every acknowledgement and every mute in one store in the repository. A row is never deleted from the UI.
-Ending a row records who ended it and when. Every attempt to make or end a row is audited, refused attempts included.
+Ending a row records who ended it and when. Every attempt to make or end a row that passes the write door (the UI login, the `X-Pgvigil` header, a known kind) is audited, refused attempts included.
 
 | What | Where | What it does |
 |---|---|---|
-| Acknowledge a check | Summary: Needs attention, **Acknowledge** | The instance's warning and critical cells lose their colour. They count under *instances acknowledged* in the test grid and the header line. The acknowledgement lasts until a time, until the cell's reading changes, or both. |
-| Acknowledge an alert | Alerts: tick the alerts, **Acknowledge alerts** | The alert is not sent again on its channel's repeat interval. A rise in its severity is still sent. **Clear acknowledgement** ends it. |
-| Note | Alerts: **Add notes to selected alerts** | Keeps a note on the alert, with who wrote it and when. The *notes* column shows the newest note and the count. |
-| Close resolved | Alerts: **Close resolved alerts** | Takes an alert whose finding is gone off the open list. **Show closed** lists it again. The channels still send the recovery. |
+| Acknowledge a check | Summary: Needs attention, **Acknowledge** | The instance's warning and critical cells lose their colour. They count under *acknowledged* in the test grid and as *check(s) acknowledged* in the header line. The acknowledgement lasts until a time, until the cell's reading changes, or both. |
+| Acknowledge an alert | Alerts: tick the alerts, **Acknowledge alerts** | The alert is not sent again on its channel's repeat interval. A rise in its severity is still sent (not proven: the proof covers the repeat only). **Clear acknowledgement** ends it. |
+| Note | Alerts: **Add notes to selected alerts** | Keeps a note on the alert, with who wrote it and when. The *notes* column shows the newest note and the count. Not proven: the proof writes no note. |
+| Close resolved | Alerts: **Close resolved alerts** | Takes an alert whose finding is gone off the open list. **Show closed** lists it again. The channels still send the recovery (not proven: the proof reads the close, not a send). |
 | Silence a server | Alerts: Silenced servers, **Silence** | Holds every alert of the instance until it is unsilenced or the time chosen passes. Held alerts are still logged. |
 | Blackout | Alerts: Silenced servers, **Blackout** | Holds an instance's alerts from a start to an end and flags them *blackout*. |
 | Mute rule | Alerts: **Mute this alert**, **Mute similar**, **New mute rule** | Holds every alert matching the rule until the rule ends or expires. Held alerts are logged under *Held sends*. |
 | Known pattern | Alerts: **New known pattern** | Shows a label beside each matching alert. It holds nothing. |
-| Acknowledge a job | The Jobs grids: **Acknowledge** | The job's failure cell loses its colour until the job fails again. |
+| Acknowledge a job | The Jobs grids: **Acknowledge** | The job's failure cell loses its colour until the job fails again (not proven: the proof makes no job acknowledgement). |
 
 A rule matches an alert when every field filled in matches:
 

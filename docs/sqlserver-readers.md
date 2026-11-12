@@ -31,7 +31,7 @@ The server does not run one search per string. The first read goes seven days ba
   `rdsadmin.dbo.rds_read_error_log @index, @type` (the arguments its documentation names) the same way and reads the
   current log only.
 - **Where a read starts.** Half an hour before the cursor. The log is not always in time order: a server under memory
-  pressure wrote lines dated up to five minutes before the line above them. `xp_readerrorlog` with a start time hands
+  pressure wrote lines dated before the line above them. `xp_readerrorlog` with a start time hands
   over only the lines after the last line dated before the start, so a read that started at the cursor would lose
   them. What is read again is stored once. The cursor keeps the server's offset of the read that wrote it, and the
   start uses the earlier of that offset and today's. A clock set forward (spring) and a clock set back (autumn) both
@@ -190,6 +190,6 @@ the repository on PostgreSQL 18, the migration chain also on PostgreSQL 13): PAS
 - system_health: 400 sessions behind one lock, with max worker threads at 128, gave a QUERY_PROCESSING result in
   WARNING with 43 pending tasks. It was stored once with its finding.
 
-Not proven here: a Windows SQL Server (its backslash paths are unit-tested), SQL Server 2017 and 2019, Amazon RDS,
+Not proven here: a Windows SQL Server (its backslash paths are unit-tested), SQL Server 2016, 2017, 2019 and 2025, Amazon RDS,
 Azure SQL Managed Instance, a growth slower than 1 s, and the corruption, IO and scheduler figures of a real server in
 trouble.
