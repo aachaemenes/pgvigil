@@ -423,7 +423,8 @@ if want DQ; then
   left=$(( C * 60 + 20 - $(date -u +%s) )); if (( left > 0 )); then sleep "$left"; fi
   logins nologin t1 t2 t3; sleep 300
   dq1=$(cnt "$WORK/spool4" firing "$PAR" ""); dqo=$(per "$WORK/spool4" firing "t1|t2|t3")
-  dqt=$( (cd "$WORK/spool4" && ls | grep -- "-firing-" | sort | head -1 | cut -c1-15) || true)
+  # the parent's own first file (a new channel also sends the standing findings of the plain target)
+  dqt=$(python3 -c "import glob, json, os, sys; print(min((os.path.basename(f)[:15] for f in glob.glob(sys.argv[1] + '/*-firing-*.json') if json.load(open(f)).get('setting') == 'collector or network'), default=''))" "$WORK/spool4" 2>/dev/null || true)
   logins login t1 t2 t3; waitfor 480 "$NOPARENT" || true
   unset QUIET
   { printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\ninstances:\n' "$PW"; instances target 5432; alerts_of /work; } > "$WORK/svc.yaml"
