@@ -31,9 +31,9 @@ export async function readAuditFleet(): Promise<Row[]> {
 }
 
 // auditFleetCell: the fleet Summary's Audit cell of a PostgreSQL instance from its readAuditFleet row: the colour from
-// the health's status (warning: set but not loaded, or loaded and logging nothing; off: not loaded and nothing set, no
-// colour, as no audit asked for is not a fault), the text the Audit tab's status cell shows; failed = the fleet read
-// itself failed (never 'not yet' then)
+// the health's status (warning: set but not loaded, or loaded and logging nothing; off: not loaded and nothing set, read
+// and OK as the SQL Server cell's 'none' is - no audit asked for is not a fault), the text the Audit tab's status cell
+// shows; no row = no read to judge; failed = the fleet read itself failed (never 'not yet' then)
 export interface AuditFleetCell { level: 0 | 1; text: string; detail: string[]; none: boolean }
 export function auditFleetCell(h: Row | undefined, failed: boolean): AuditFleetCell {
   if (failed) return { level: 0, text: 'read failed', detail: ['the read of the pgaudit cells failed (GET /api/pgaudit): this is not the instance\'s state'], none: true };
@@ -43,7 +43,6 @@ export function auditFleetCell(h: Row | undefined, failed: boolean): AuditFleetC
   const nf = Number(h.findings ?? 0);
   if (nf > 0) detail.push(`${nf} finding${nf === 1 ? '' : 's'} on the Audit tab`);
   if (h.snapshot_at != null) detail.push(`read ${fmtTime(h.snapshot_at)}`);
-  if (h.status === 'off') return { level: 0, text: String(h.cell ?? 'not loaded'), detail, none: true };
   return { level: h.status === 'warning' ? 1 : 0, text: String(h.cell ?? ''), detail, none: false };
 }
 
