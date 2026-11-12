@@ -82,6 +82,12 @@ func (a *InstancesAdmin) listPathOK(p string) error {
 	if strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, "//") {
 		return errors.New("the list file is a network path (UNC): give a path on this server's own disk")
 	}
+	// Windows reads any two leading separators (/\, \/) and \??\ as a network or device path: only a drive letter
+	if runtime.GOOS == "windows" {
+		if v := filepath.VolumeName(filepath.Clean(p)); len(v) != 2 || v[1] != ':' {
+			return errors.New(`the list file is not on a drive of this server (a network or device path): give a path like C:\lists\servers.txt`)
+		}
+	}
 	clean := filepath.Clean(p)
 	for _, d := range []string{a.secretDir(), a.sourceDir()} {
 		if d == "" {
@@ -126,6 +132,49 @@ func (s *Server) removeSecretLater(dir, ref, name string) {
 			s.log.Warn("admin instance: the previous credential file stays", "name", name, "err", err)
 		}
 	})
+}
+
+// sweepSecrets removes the instance credential files no instance names (those a serve stopped within the grace of an
+// edit or a remove left behind), once, at the sync loop's first tick: past the grace, so a collector still holding
+// an old ref has moved on. A file younger than twice the grace stays (an add may be writing it). true = done.
+func (s *Server) sweepSecrets(ctx context.Context) bool {
+	dir := s.instAdmin().secretDir()
+	if dir == "" {
+		return true
+	}
+	rows, err := s.pool.Query(ctx, `SELECT dsn_ref FROM pgvigil.admin_instances`)
+	if err != nil {
+		return false
+	}
+	refs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return false
+	}
+	named := map[string]bool{}
+	for _, r := range refs {
+		if _, p, ok := strings.Cut(r, ":"); ok {
+			named[filepath.Clean(p)] = true
+		}
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	for _, e := range ents {
+		p := filepath.Join(dir, e.Name())
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() || named[p] || time.Since(fi.ModTime()) < 2*credentialGrace {
+			continue
+		}
+		ref := "file:" + p
+		if strings.HasSuffix(e.Name(), ".dpapi") {
+			ref = "dpapi:" + p
+		}
+		if err := config.RemoveSecret(dir, ref); err == nil {
+			s.log.Info("admin instance: a credential file no instance names was removed", "file", e.Name())
+		}
+	}
+	return true
 }
 
 func (a *InstancesAdmin) fileNames() []string {
@@ -804,11 +853,15 @@ func (s *Server) syncSource(ctx context.Context, name string) (map[string]any, e
 func (s *Server) RunInstanceSync(ctx context.Context) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
+	swept := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if !swept {
+			swept = s.sweepSecrets(ctx)
 		}
 		if s.ackOff() != "" {
 			continue

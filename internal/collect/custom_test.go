@@ -108,7 +108,7 @@ custom:
 		t.Errorf("one matching tag: %v", err)
 	}
 	// <> and == are read as != and =
-	cs, _, err := ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, compare: '<>', warning: 1}]"), ins)
+	cs, _, err = ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, compare: '<>', warning: 1}]"), ins)
 	if err != nil || cs[0].Compare != "!=" {
 		t.Fatalf("<>: %v %+v", err, cs)
 	}

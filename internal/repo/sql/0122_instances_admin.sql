@@ -64,8 +64,9 @@ CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE
 BEGIN
   IF NEW.is_active AND NOT OLD.is_active
      AND (EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes')
-          -- a disabled page instance stays inactive against a run in flight (enable: the next run sets it active)
-          OR EXISTS (SELECT 1 FROM pgvigil.admin_instances a WHERE a.name = NEW.name AND a.disabled)) THEN
+          -- a page instance disabled in the last 5 minutes stays inactive against a run in flight (enable: the next run
+          -- sets it active); past that only a file instance of the name runs (the page's holder skips disabled rows)
+          OR EXISTS (SELECT 1 FROM pgvigil.admin_instances a WHERE a.name = NEW.name AND a.disabled AND a.updated_at > now() - interval '5 minutes')) THEN
     NEW.is_active := false;
   END IF;
   RETURN NEW;
@@ -73,6 +74,34 @@ END $$;
 DROP TRIGGER IF EXISTS admin_keep_removed ON pgvigil.instances;
 CREATE TRIGGER admin_keep_removed BEFORE UPDATE OF is_active ON pgvigil.instances
   FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
+
+-- The page's instances belong to one collector of a repository: the holder of this lease (one row), renewed by its
+-- holder every 15 s and taken by another collector once it is older than p_ttl_s (a holder stopped or its host lost).
+-- A row, not a session advisory lock: it holds through a transaction-mode pooler (PgBouncer) and needs no TCP
+-- keepalive to free it.
+CREATE TABLE IF NOT EXISTS pgvigil.admin_page_holder (
+  id      int PRIMARY KEY CHECK (id = 1),
+  holder  text NOT NULL,
+  beat    timestamptz NOT NULL
+);
+
+-- import_admin_page_lease: true = p_holder holds the page's instances (taken or renewed now)
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_lease(p_holder text, p_ttl_s int)
+RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE v text;
+BEGIN
+  INSERT INTO pgvigil.admin_page_holder AS h (id, holder, beat) VALUES (1, p_holder, now())
+  ON CONFLICT (id) DO UPDATE SET holder = EXCLUDED.holder, beat = now()
+   WHERE h.holder = EXCLUDED.holder OR h.beat < now() - make_interval(secs => greatest(p_ttl_s, 30))
+  RETURNING holder INTO v;
+  RETURN v IS NOT NULL;
+END $$;
+
+-- import_admin_page_release: a holder stopping cleanly frees the lease at once
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_release(p_holder text)
+RETURNS void LANGUAGE sql AS $$
+  DELETE FROM pgvigil.admin_page_holder WHERE holder = p_holder
+$$;
 
 CREATE TABLE IF NOT EXISTS pgvigil.admin_audit (
   audit_id  bigserial PRIMARY KEY,

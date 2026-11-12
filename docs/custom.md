@@ -65,8 +65,10 @@ custom:
   most 100 rows (each cell masked for passwords and cut at 1000 characters) under `query_text: full`; under
   `normalized` or `none` the rows are not kept (the value and the count are). The runs are kept as long as the other
   samples (`pgvigil purge`).
-- **Where it must match.** A check whose `instances:` and `tags:` together match no instance in `instances:` (a typo
-  such as `env:prd` for `env:prod`) refuses the configuration, as an unknown instance name does.
+- **Where it must match.** A check may name an instance or a tag that only Admin > Instances holds, so a name not in
+  `instances:`, or `instances:` and `tags:` that together match no instance of the file (a typo such as `env:prd`
+  for `env:prod`), is a warning at start, not a refusal; the collector warns again when a check matches none of
+  its instances (the file's, and the page's when it holds them).
 - **Off and gone.** Without a `custom:` key the collection is off. A check taken off the list, or off an instance, is
   marked gone at that instance's next run (the tab lists it under "Taken off this instance"); to retire every check,
   leave `custom: []` in the file, so the runs go on long enough to mark them gone. While a `custom:` key is present the

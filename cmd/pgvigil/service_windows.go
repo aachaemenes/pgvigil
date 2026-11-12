@@ -168,6 +168,12 @@ func installService(log *slog.Logger, o installOptions) error {
 	}, 86400); err != nil {
 		log.Warn("recovery actions not set", "err", err)
 	}
+	// the service reports SERVICE_STOPPED with an exit code on a runtime failure (Execute returns (true, 1)); without
+	// this flag Windows runs the recovery actions only for a crash, so a repository down at boot would stay stopped.
+	// A configuration error returns (false, 0): no exit code, no retry.
+	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+		log.Warn("recovery on a non-crash failure not set", "err", err)
+	}
 	// the data folder (config, repo.dsn, log) for SYSTEM, Administrators and the service account only;
 	// the binary folder readable by the service account (SIDs, not names: Administrators is localised)
 	icacls := func(args ...string) {

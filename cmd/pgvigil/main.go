@@ -151,8 +151,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 
-// loadConfig reads the config for the repository commands; needInstance is the collector
-// commands' rule (collect, run), not migrate's: a host that only serves the UI lists no instance
+// loadConfig reads the config for the repository commands; needInstance is collect -once's rule: run takes
+// a file with no instance (Admin > Instances may hold them all), and a host that only serves the UI lists none
 // and still migrates its repository.
 func loadConfig(args []string, needInstance bool) (*config.Config, *flag.FlagSet, error) {
 	fs := flag.NewFlagSet("pgvigil", flag.ContinueOnError)

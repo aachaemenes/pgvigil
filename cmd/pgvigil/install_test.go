@@ -53,6 +53,15 @@ func TestConfigTemplate(t *testing.T) {
 	if ok, why := configReady(p, env); !ok {
 		t.Fatalf("the env file filled in, no instance in the config: %q (want ready)", why)
 	}
+	// the env file decides, not the installer's own environment; its last assignment wins
+	t.Setenv("PGVIGIL_REPO_DSN", "host=from-the-shell")
+	if err := os.WriteFile(env, []byte("PGVIGIL_REPO_DSN=y\nPGVIGIL_REPO_DSN=\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := configReady(p, env); ok {
+		t.Fatal("an emptied PGVIGIL_REPO_DSN in the env file counted as ready (the shell's value or an earlier line won)")
+	}
+	t.Setenv("PGVIGIL_REPO_DSN", "")
 	// a file: DSN (the Windows install's repo.dsn beside the config)
 	dsnFile := filepath.Join(dir, "repo.dsn")
 	if err := os.WriteFile(dsnFile, nil, 0o600); err != nil {

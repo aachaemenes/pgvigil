@@ -7,13 +7,18 @@ package sched
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	mrand "math/rand/v2"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
@@ -28,10 +33,10 @@ const oldLoopsWait = 35 * time.Second
 // Run blocks until ctx is cancelled. The instance list is the file's and the page's (task 204): config.WatchInventory
 // reads the page's list at start and whenever its generation moves (every 15 s) and hands the merged list to apply,
 // which stops the loops of a removed, disabled or changed instance and starts those of a new or changed one; each
-// instance's loops run under its own context. The page's instances belong to one collector of a repository: the one
-// holding the page_inventory lock (pageLock); another collects its file's instances only.
+// instance's loops run under its own context. The page's instances belong to one collector of a repository: the
+// holder of the page lease (pageLease); another collects its file's instances only.
 func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config) error {
-	lock := &pageLock{dsn: cfg.Repository.DSN()}
+	lock := newPageLease(cfg.Repository.DSN())
 	defer lock.release()
 	s := newScheduler(log, oldLoopsWait, func(ictx context.Context, in config.Instance, wg *sync.WaitGroup) int {
 		return startInstance(ictx, log, r, cfg, in, wg)
@@ -48,6 +53,7 @@ type scheduler struct {
 	start     func(context.Context, config.Instance, *sync.WaitGroup) int
 	oldWait   time.Duration
 	running   map[string]instLoops
+	stopping  map[string]chan struct{} // a stopped instance's "loops ended", kept across applies until they end
 	cur       []config.Instance
 	all       sync.WaitGroup // every instance's loops, for the end of Run
 	unmatched string         // the custom checks last warned as matching no instance
@@ -55,23 +61,30 @@ type scheduler struct {
 
 type instLoops struct {
 	cancel context.CancelFunc
-	wg     *sync.WaitGroup
+	ended  chan struct{} // closed when every loop of the instance returned
 }
 
 func newScheduler(log *slog.Logger, oldWait time.Duration, start func(context.Context, config.Instance, *sync.WaitGroup) int) *scheduler {
-	return &scheduler{log: log, start: start, oldWait: oldWait, running: map[string]instLoops{}}
+	return &scheduler{log: log, start: start, oldWait: oldWait, running: map[string]instLoops{}, stopping: map[string]chan struct{}{}}
 }
 
-// apply stops the loops of every instance gone or changed, then starts the new and changed ones; a changed
-// instance's new loops start only once its old ones ended (oldWait at most), so a cancelled run still writing never
-// overlaps the new loop's first read of the same cursor.
+// apply stops the loops of every instance gone or changed, then starts the new and changed ones; an instance's new
+// loops start only once its old ones ended (oldWait at most) - in this apply (a change) or an earlier one (a disable
+// then an enable, the page lost then held again) - so a cancelled run still writing never overlaps the new loop's
+// first read of the same cursor.
 func (s *scheduler) apply(ctx context.Context, all []config.Instance) {
+	for n, ended := range s.stopping {
+		select {
+		case <-ended:
+			delete(s.stopping, n)
+		default:
+		}
+	}
 	stop, start := config.Diff(s.cur, all)
-	stopped := map[string]*sync.WaitGroup{}
 	for _, n := range stop {
 		if l, ok := s.running[n]; ok {
 			l.cancel()
-			stopped[n] = l.wg
+			s.stopping[n] = l.ended
 			delete(s.running, n)
 		}
 	}
@@ -81,15 +94,21 @@ func (s *scheduler) apply(ctx context.Context, all []config.Instance) {
 	}
 	schedules := 0
 	for _, n := range start {
-		if wg, ok := stopped[n]; ok && !waitFor(wg, s.oldWait) {
-			s.log.Warn("scheduler: a changed instance's old loops did not end in time; its new ones start anyway", "instance", n, "waited", s.oldWait)
+		if ended, ok := s.stopping[n]; ok {
+			select {
+			case <-ended:
+			case <-time.After(s.oldWait):
+				s.log.Warn("scheduler: an instance's old loops did not end in time; its new ones start anyway", "instance", n, "waited", s.oldWait)
+			}
+			delete(s.stopping, n)
 		}
 		ictx, cancel := context.WithCancel(ctx)
 		wg := &sync.WaitGroup{}
-		s.running[n] = instLoops{cancel: cancel, wg: wg}
+		ended := make(chan struct{})
+		s.running[n] = instLoops{cancel: cancel, ended: ended}
 		schedules += s.start(ictx, by[n], wg)
 		s.all.Add(1)
-		go func() { wg.Wait(); s.all.Done() }()
+		go func() { wg.Wait(); close(ended); s.all.Done() }()
 	}
 	s.cur = all
 	s.warnUnmatched(all)
@@ -99,8 +118,9 @@ func (s *scheduler) apply(ctx context.Context, all []config.Instance) {
 // wait blocks until every instance's loops ended (ctx is done).
 func (s *scheduler) wait() { s.all.Wait() }
 
-// warnUnmatched logs each custom check that matches no instance of the merged list (the file's and the page's), once
-// per change of that set: a typo like env:prd still shows now that the file alone no longer decides.
+// warnUnmatched logs each custom check that matches none of this collector's instances (the file's, and the page's
+// when it holds them), once per change of that set: a typo like env:prd still shows now that the file alone no
+// longer decides.
 func (s *scheduler) warnUnmatched(all []config.Instance) {
 	checks, _ := collect.CustomChecks()
 	var none []string
@@ -118,65 +138,78 @@ func (s *scheduler) warnUnmatched(all []config.Instance) {
 	}
 	if key := strings.Join(none, "\x1f"); key != s.unmatched {
 		for _, n := range none {
-			s.log.Warn("custom: a check matches no instance of the file or the page", "check", n)
+			s.log.Warn("custom: a check matches none of this collector's instances (the file's, and the page's when it holds them)", "check", n)
 		}
 		s.unmatched = key
 	}
 }
 
-// waitFor waits for wg up to d; false = it did not end in time.
-func waitFor(wg *sync.WaitGroup, d time.Duration) bool {
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-		return true
-	case <-time.After(d):
-		return false
-	}
+// pageLeaseTTL: a holder that has not renewed the lease for this long (stopped, its host lost, its watcher held by a
+// slow apply) gives the page's instances to the next collector that asks. Above the longest gap between renewals:
+// the 15 s tick plus apply's wait for old loops (35 s).
+const pageLeaseTTL = 90
+
+// pageLease: the page's instances belong to one collector of a repository, the holder of the page lease (0122's
+// admin_page_holder row, taken and renewed through import_admin_page_lease each tick on a connection of its own). A
+// second collector (another host with its own file's instances) collects its file's only: nothing is collected
+// twice and no host tries another's credential files. A row, not a session lock, so it holds through a
+// transaction-mode pooler and frees itself after pageLeaseTTL when the holder's host is lost; a clean stop frees it
+// at once.
+type pageLease struct {
+	dsn    string
+	holder string
+	conn   *pgx.Conn
 }
 
-// pageLock: the page's instances belong to one collector of a repository, the one holding the session advisory lock
-// hashtext('pgvigil.page_inventory') on a connection of its own. A second collector (another host with its own
-// file's instances) then collects its file's only: nothing is collected twice and no host tries another's credential
-// files. Each tick pings the held connection (a repository restart drops the lock) and tries again when it is gone,
-// so another collector takes over within a tick of the holder's end.
-type pageLock struct {
-	dsn  string
-	conn *pgx.Conn
+func newPageLease(dsn string) *pageLease {
+	host, _ := os.Hostname()
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return &pageLease{dsn: dsn, holder: fmt.Sprintf("%s:%d:%s", host, os.Getpid(), hex.EncodeToString(b))}
 }
 
-func (l *pageLock) hold(ctx context.Context) (bool, error) {
-	if l.conn != nil {
-		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := l.conn.Ping(pctx)
-		cancel()
-		if err == nil {
-			return true, nil
-		}
-		_ = l.conn.Close(context.Background())
-		l.conn = nil
-	}
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	c, err := pgx.Connect(cctx, l.dsn)
+func (l *pageLease) connect(ctx context.Context) error {
+	// parsed as the repository's pool parses it: a DSN's pool_* keys never reach the server as startup parameters
+	pc, err := pgxpool.ParseConfig(l.dsn)
 	if err != nil {
-		return false, err
+		return err
 	}
-	var ok bool
-	if err := c.QueryRow(cctx, `SELECT pg_try_advisory_lock(hashtext('pgvigil.page_inventory'))`).Scan(&ok); err != nil || !ok {
-		_ = c.Close(context.Background())
-		return false, err
+	cc := pc.ConnConfig
+	cc.RuntimeParams["application_name"] = "pgvigil-page-lease"
+	c, err := pgx.ConnectConfig(ctx, cc)
+	if err != nil {
+		return err
 	}
 	l.conn = c
-	return true, nil
+	return nil
 }
 
-func (l *pageLock) release() {
-	if l.conn != nil {
+func (l *pageLease) hold(ctx context.Context) (bool, error) {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if l.conn == nil {
+		if err := l.connect(cctx); err != nil {
+			return false, err
+		}
+	}
+	var ok bool
+	if err := l.conn.QueryRow(cctx, `SELECT pgvigil.import_admin_page_lease($1, $2)`, l.holder, pageLeaseTTL).Scan(&ok); err != nil {
 		_ = l.conn.Close(context.Background())
 		l.conn = nil
+		return false, err
 	}
+	return ok, nil
+}
+
+func (l *pageLease) release() {
+	if l.conn == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = l.conn.Exec(ctx, `SELECT pgvigil.import_admin_page_release($1)`, l.holder)
+	_ = l.conn.Close(ctx)
+	l.conn = nil
 }
 
 // startInstance starts one goroutine per applicable collection of the instance's engine; it answers how many.
@@ -203,7 +236,7 @@ func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *con
 
 func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, iv time.Duration) {
 	// a small random offset so every instance's minute collections do not fire together
-	jitter := time.Duration(rand.Int64N(int64(min(iv, 10*time.Second))))
+	jitter := time.Duration(mrand.Int64N(int64(min(iv, 10*time.Second))))
 	select {
 	case <-ctx.Done():
 		return

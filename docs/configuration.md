@@ -100,16 +100,18 @@ approves or ignores: a SQL Server Central Management Server (its login needs msd
 repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
 marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
 15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
-checks until it is enabled. A server list or CSV must be readable by more than its owner (0644): a file only its owner
-may read, a network (UNC) path and a `.pgpass`-shaped line are refused, so no credential file is read into the page.
+checks until it is enabled. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
+Linux and macOS so is a file only its owner may read (a server list is 0644), so no credential file is read into the
+page.
 
 Who may change them: every UI login can add, change, disable and remove instances and sources, and these writes need
 the actions door's audit login, as acknowledgements do. Give UI logins to the people who may change what is monitored.
 
-One collector per repository collects the page's instances: the one holding the repository's `page_inventory` lock. A
-second `pgvigil run` on the same repository (another host with its own file's instances) collects its file's
-instances only, logs once that another collector holds the page's, and takes them over within 15 seconds when the
-first one stops.
+One collector per repository collects the page's instances: the holder of the repository's page lease (a row it renews
+every 15 seconds, which works through a transaction-mode pooler). A second `pgvigil run` on the same repository
+(another host with its own file's instances) collects its file's instances only, logs once that another collector
+holds the page's, and takes them over within 15 seconds of a clean stop of the first one, or within 90 seconds when
+the first one's host is lost.
 
 A `custom:` check may name an instance or a tag only the page holds: the file's instances no longer decide, so a name
 or tag that matches nothing in the file is a warning at start, and the collector warns again when a check matches no

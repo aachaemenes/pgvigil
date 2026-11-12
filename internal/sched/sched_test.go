@@ -71,12 +71,13 @@ func (s *syncBuf) String() string {
 }
 
 type rig struct {
-	t      *testing.T
-	mu     sync.Mutex
-	events []event
-	live   map[string]string // name -> the dsn its running loop has
-	logs   *syncBuf
-	held   bool
+	t       *testing.T
+	mu      sync.Mutex
+	events  []event
+	live    map[string]string // name -> the dsn its running loop has
+	logs    *syncBuf
+	held    bool
+	holdErr error
 }
 
 // start is the scheduler's start func: one loop per instance that records its start, waits for its stop, takes a
@@ -104,6 +105,9 @@ func (r *rig) start(ctx context.Context, in config.Instance, wg *sync.WaitGroup)
 func (r *rig) hold(context.Context) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.holdErr != nil {
+		return false, r.holdErr
+	}
 	return r.held, nil
 }
 
@@ -206,6 +210,22 @@ func TestApplyFollowsThePageList(t *testing.T) {
 	inv.set(func() { inv.fail = false })
 	r.until("the read back", func(l map[string]string) bool { return names(l) == "f1 p3" })
 
+	// the lease's own read failing (the repository blinks) keeps the page's instances: never "not held"
+	r.mu.Lock()
+	r.holdErr = errors.New("the repository is down")
+	r.mu.Unlock()
+	time.Sleep(150 * time.Millisecond)
+	r.mu.Lock()
+	got = names(r.live)
+	r.holdErr = nil
+	r.mu.Unlock()
+	if got != "f1 p3" {
+		t.Fatalf("a failed lease read dropped the page's instances: %s", got)
+	}
+	if n := strings.Count(r.logs.String(), "could not be read"); n != 2 {
+		t.Fatalf("the failed lease read was logged %d times in all (want the second streak once: 2)", n)
+	}
+
 	// another collector holds the page's instances: the file's only, said once; back when the lock is free again
 	r.setHeld(false)
 	r.until("the lock lost", func(l map[string]string) bool { return names(l) == "f1" })
@@ -245,5 +265,12 @@ func TestApplyWaitIsBounded(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "did not end in time") {
 		t.Fatalf("no warning: %s", logs.String())
+	}
+	// stopped in one apply, started in a later one (a disable then an enable): the old loops are waited for too
+	s.apply(ctx, nil)
+	t0 = time.Now()
+	s.apply(ctx, []config.Instance{{Name: "a", DSNRaw: "y"}})
+	if d := time.Since(t0); starts != 3 || d < 50*time.Millisecond {
+		t.Fatalf("a start after an earlier stop: starts %d after %v (want 3 after about 50 ms)", starts, d)
 	}
 }

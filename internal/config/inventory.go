@@ -475,11 +475,37 @@ func secretShaped(l string) bool {
 	return strings.ContainsAny(l, "=@") || strings.Contains(l, "://") || pgpassShaped(l)
 }
 
+// pgpassFields splits a line on ':' the way libpq reads .pgpass: a backslash makes the next character literal
+// (\: is a colon inside a field, as in an IPv6 host).
+func pgpassFields(l string) []string {
+	var f []string
+	var b strings.Builder
+	esc := false
+	for _, r := range l {
+		switch {
+		case esc:
+			b.WriteRune(r)
+			esc = false
+		case r == '\\':
+			esc = true
+		case r == ':':
+			f = append(f, b.String())
+			b.Reset()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return append(f, b.String())
+}
+
 // pgpassShaped: host:port:database:user:password, the port a number or '*' (a .pgpass line holds no '=' or '@');
 // an IPv6 address is not one.
 func pgpassShaped(l string) bool {
-	f := strings.Split(l, ":")
-	if len(f) < 5 || f[0] == "" || f[2] == "" || f[3] == "" || net.ParseIP(l) != nil {
+	if strings.HasPrefix(l, "[") || net.ParseIP(l) != nil { // a bracketed IPv6 host (with or without a port), a bare IPv6
+		return false
+	}
+	f := pgpassFields(l)
+	if len(f) < 5 || f[0] == "" || f[2] == "" || f[3] == "" {
 		return false
 	}
 	if f[1] == "*" {

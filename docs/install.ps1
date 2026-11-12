@@ -1,6 +1,6 @@
 # pgvigil installer for Windows (Windows PowerShell 5.1 or PowerShell 7, elevated): finds the release for
 # this CPU, downloads pgvigil.exe and SHA256SUMS, verifies the checksum, then runs `pgvigil install` (the
-# service pgvigil under its virtual account, automatic start; started once the config names an instance)
+# service pgvigil under its virtual account, automatic start; started once repo.dsn holds the repository DSN)
 # and puts the install folder on the machine PATH. Re-run it to upgrade: the binary and the service are
 # replaced, the config is kept.
 #

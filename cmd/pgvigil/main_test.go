@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 )
@@ -45,6 +46,14 @@ func TestExpectedIntervalsGated(t *testing.T) {
 	}
 	if e.Instances["plain"]["activity"] != 60 {
 		t.Errorf("activity %d, want 60", e.Instances["plain"]["activity"])
+	}
+	// the file's global schedules: reach Defaults (the stale check of an instance the page holds) and never Builtin
+	// (the dialogs' default_s): statements at 30m, activity off
+	g := &config.Config{Schedules: map[string]config.Duration{"statements": {Duration: 30 * time.Minute}, "activity": {}}}
+	e = expectedIntervals(g)
+	if e.Defaults["statements"] != 1800 || e.Defaults["activity"] != 0 || e.Builtin["activity"] != 60 || e.Builtin["statements"] == 1800 {
+		t.Errorf("global schedules: defaults statements %d activity %d, builtin statements %d activity %d",
+			e.Defaults["statements"], e.Defaults["activity"], e.Builtin["statements"], e.Builtin["activity"])
 	}
 }
 
