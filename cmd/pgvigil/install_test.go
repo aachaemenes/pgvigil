@@ -30,27 +30,51 @@ func TestParseInstallArgs(t *testing.T) {
 	}
 }
 
-// The template the installer writes is a valid config with no instance, so the installer keeps the
-// service down until one is added; a second install never overwrites an edited file.
+// The template the installer writes is a valid config with no instance and an env: repository DSN: the installer
+// keeps the service down until that DSN is filled in (the instances may all be in the page, task 204), and a second
+// install never overwrites an edited file.
 func TestConfigTemplate(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "pgvigil.yaml")
+	dir := t.TempDir()
+	p, env := filepath.Join(dir, "pgvigil.yaml"), filepath.Join(dir, "pgvigil.env")
 	wrote, err := writeIfAbsent(p, configTemplate("env:PGVIGIL_REPO_DSN"), 0o640)
 	if err != nil || !wrote {
 		t.Fatalf("first write: %v %v", wrote, err)
 	}
-	if ok, why := configNamesAnInstance(p); ok || !strings.Contains(why, "no instance") {
-		t.Fatalf("template: ok=%v why=%q, want a valid config with no instance", ok, why)
-	}
-	if err := os.WriteFile(p, []byte("repository:\n  dsn: x\ninstances:\n  - name: a\n    dsn: y\n"), 0o640); err != nil {
+	t.Setenv("PGVIGIL_REPO_DSN", "")
+	if err := os.WriteFile(env, []byte("PGVIGIL_REPO_DSN=\n"), 0o640); err != nil {
 		t.Fatal(err)
+	}
+	if ok, why := configReady(p, env); ok || !strings.Contains(why, "is empty yet") {
+		t.Fatalf("template: ok=%v why=%q, want not ready (the DSN is empty)", ok, why)
+	}
+	if err := os.WriteFile(env, []byte("# the repository\nPGVIGIL_REPO_DSN=\"host=r dbname=pgvigil\"\nOTHER=x\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if ok, why := configReady(p, env); !ok {
+		t.Fatalf("the env file filled in, no instance in the config: %q (want ready)", why)
+	}
+	// a file: DSN (the Windows install's repo.dsn beside the config)
+	dsnFile := filepath.Join(dir, "repo.dsn")
+	if err := os.WriteFile(dsnFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	q := filepath.Join(dir, "win.yaml")
+	if err := os.WriteFile(q, []byte("repository:\n  dsn: file:"+dsnFile+"\ninstances: []\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := configReady(q, ""); ok {
+		t.Fatal("an empty repo.dsn counted as ready")
+	}
+	if err := os.WriteFile(dsnFile, []byte("host=r dbname=pgvigil\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, why := configReady(q, ""); !ok {
+		t.Fatalf("repo.dsn filled in: %q", why)
 	}
 	if wrote, err := writeIfAbsent(p, "overwritten", 0o640); err != nil || wrote {
 		t.Fatalf("second write replaced the file: %v %v", wrote, err)
 	}
-	if ok, why := configNamesAnInstance(p); !ok {
-		t.Fatalf("an edited config with one instance: %q", why)
-	}
-	if ok, why := configNamesAnInstance(filepath.Join(t.TempDir(), "missing.yaml")); ok || why == "" {
+	if ok, why := configReady(filepath.Join(t.TempDir(), "missing.yaml"), ""); ok || why == "" {
 		t.Fatal("a missing config counted as ready")
 	}
 }

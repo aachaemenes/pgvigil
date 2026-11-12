@@ -99,7 +99,25 @@ Admin > Instances adds, tests, edits, disables and removes an instance, and sync
 approves or ignores: a SQL Server Central Management Server (its login needs msdb's `ServerGroupReaderRole`), a DBA Dash
 repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
 marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
-15 seconds, without a restart.
+15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
+checks until it is enabled. A server list or CSV must be readable by more than its owner (0644): a file only its owner
+may read, a network (UNC) path and a `.pgpass`-shaped line are refused, so no credential file is read into the page.
+
+Who may change them: every UI login can add, change, disable and remove instances and sources, and these writes need
+the actions door's audit login, as acknowledgements do. Give UI logins to the people who may change what is monitored.
+
+One collector per repository collects the page's instances: the one holding the repository's `page_inventory` lock. A
+second `pgvigil run` on the same repository (another host with its own file's instances) collects its file's
+instances only, logs once that another collector holds the page's, and takes them over within 15 seconds when the
+first one stops.
+
+A `custom:` check may name an instance or a tag only the page holds: the file's instances no longer decide, so a name
+or tag that matches nothing in the file is a warning at start, and the collector warns again when a check matches no
+instance of the file or the page.
+
+`pgvigil run` starts with no instance in the file (the page may hold them all); `pgvigil collect -once` reads the
+file's instances only. A repository `dsn` that resolves to nothing (the installer's env file not filled in yet) stops
+`run` and `serve` with exit 3, which the service leaves stopped.
 
 Credentials go to files beside the configuration file (`instances/` and `sources/`): on Linux 0600 files in 0700
 folders; on Windows a DPAPI machine-scope blob in a folder whose access list is SYSTEM, Administrators and the service

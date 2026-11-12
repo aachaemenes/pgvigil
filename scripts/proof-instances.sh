@@ -12,15 +12,20 @@
 #      approved; each collected; one deleted from the CMS: marked gone, its instance kept
 #   D. a pg_service.conf of the two PostgreSQL servers as a source: two proposed, approved, collected
 #   E. the API: test (a wrong and a right password), add, the refusals (a name twice, a file name, a connection
-#      change without the password), a tags edit, disable (its collections stop), enable (they start again), remove
-#      (its credential file removed, its history kept); every change and refusal in the audit
+#      change without the password), a tags edit, disable (its collections stop; is_active false, so the fleet's stale
+#      check passes it by), enable (they start again; is_active true after a run), remove (its credential file removed
+#      after the 30 s grace, its history kept); every change and refusal in the audit
 #   F. the page in headless Chromium, light and dark: every control clicked (the add form's test and add, a row's
 #      Test, Edit + Save, Disable, Enable, Remove + Keep, Remove + confirm, Cancel the edit, a source's Read now,
 #      Turn off, Turn on, Add the source, Remove + confirm, a proposal's Ignore, Propose again, Approve), each with
 #      what it answered: the click table
-#   G. no credential anywhere in the repository (every row of every table of the pgvigil schema, read as text), in
-#      the API's answer or in the two logs; the credential files 0600 in a 0700 folder
+#   G. a list source pointed at a .pgpass (0600) is refused with 400 and leaves no row; one at a readable file of
+#      .pgpass lines adds the source but its read is refused by line number; no credential anywhere in the
+#      repository (every row of every table of the pgvigil schema, read as text), in the API's answer or in the logs;
+#      the credential files 0600 in a 0700 folder
 #   H. the collector's process is the one started in B (no restart) and logged each list it applied
+#   I. a second collector on the repository: it logs once that another collector holds the page's instances and
+#      collects the file's only (filepg), never a page instance
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -45,15 +50,16 @@ PGDB=pgv_in_$SUF; COL=pgv_incol_$SUF; USR=proofdba$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
-TMPD=$(mktemp -d); SRVPID=; RUNPID=; CHRPID=
+TMPD=$(mktemp -d); SRVPID=; RUNPID=; RUN2PID=; CHRPID=
 SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
-SA_PW=$(pw); MON_PW=$(pw); CMS_PW=$(pw); PG_PW=$(pw); BAD_PW=$(pw); UPW=$(pw); COL_PW=$(pw)
-export MON_PW CMS_PW PG_PW BAD_PW
+SA_PW=$(pw); MON_PW=$(pw); CMS_PW=$(pw); PG_PW=$(pw); BAD_PW=$(pw); UPW=$(pw); COL_PW=$(pw); PGPASS_PW=$(pw)
+export MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 printf 'POSTGRES_PASSWORD=%s\n' "$PG_PW" > "$TMPD/pg.env"
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
+  [[ -n "$RUN2PID" ]] && kill "$RUN2PID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
   for c in "$SQL" "$PGA" "$PGB"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
@@ -225,17 +231,20 @@ code=$(api POST admin/instances "$(js op=test name=pg-manual)"); [[ "$code" == 2
 code=$(api POST admin/instances "$(js op=disable name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: disable: $code"
 sleep 30; D0=$(newest pg-manual); sleep 75; D1=$(newest pg-manual)
 [[ "$D0" == "$D1" ]] || fail "E: pg-manual was collected after the disable ($D0 -> $D1)"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: pg-manual is still active after the disable (the fleet's stale check would flag it)"
 code=$(api POST admin/instances "$(js op=enable name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: enable: $code"
 for _ in $(seq 1 120); do [[ "$(newest pg-manual)" > "$D1" ]] && break; sleep 1; done
 [[ "$(newest pg-manual)" > "$D1" ]] || fail "E: pg-manual was not collected again after the enable"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == t ]] || fail "E: pg-manual is not active after the enable and a run"
 REF=$(pq "SELECT dsn_ref FROM pgvigil.admin_instances WHERE name = 'pg-manual'"); RF=${REF#file:}
 [[ -f "$RF" ]] || fail "E: the credential file $RF is missing"
 code=$(api POST admin/instances "$(js op=remove name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: remove: $code"
-[[ ! -e "$RF" ]] || fail "E: the credential file stayed after the remove"
+[[ -e "$RF" ]] || fail "E: the credential file went at once (the collector may still read it for 15 s: 30 s grace)"
 RM="$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-manual'")|$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")"
 [[ "$RM" == "0|f" ]] || fail "E: the remove: admin rows|is_active = $RM (want 0|f)"
 [[ "$(collected pg-manual)" -gt 0 ]] || fail "E: the remove dropped the history"
 sleep 30; R0=$(newest pg-manual); sleep 75; [[ "$(newest pg-manual)" == "$R0" ]] || fail "E: pg-manual was collected after the remove"
+[[ ! -e "$RF" ]] || fail "E: the credential file stayed 105 s after the remove (the grace is 30 s)"
 [[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: pg-manual is active again after the remove (a run in flight)"
 AUD=$(pq "SELECT string_agg(op || ':' || outcome, ' ' ORDER BY audit_id) FROM pgvigil.admin_audit WHERE target = 'pg-manual'")
 for w in "instance add:done" "instance add:refused" "instance edit:done" "instance tested:done" "instance disable:done" "instance enable:done" "instance remove:done"; do
@@ -346,13 +355,24 @@ waitcol "$NCSV" 120 "F"
 echo "ok   F: the page in light and dark (every field labelled, no error); $(echo "$out" | grep -c '^click ') clicks, each answered as above; the CSV source's server $NCSV collected after its source was removed"
 
 echo "== G. no credential in the repository, the API or the logs =="
+PGPASS_FILE=$TMPD/pgpass; printf '127.0.0.1:%s:*:postgres:%s\n' "$PA" "$PGPASS_PW" > "$PGPASS_FILE"; chmod 600 "$PGPASS_FILE"
+code=$(api POST admin/sources "$(js op=add kind=sqlserver_list name=pgpass1 ref="$PGPASS_FILE" every_s=3600)")
+[[ "$code" == 400 && "$(pq "SELECT count(*) FROM pgvigil.admin_sources WHERE name = 'pgpass1'")" == 0 ]] || fail "G: a 0600 .pgpass as a list source: $code $(head -c 300 "$TMPD/ans.json") (want 400, no row)"
+grep -q 'owner only' "$TMPD/ans.json" || fail "G: the refusal does not say why: $(head -c 300 "$TMPD/ans.json")"
+chmod 644 "$PGPASS_FILE"
+code=$(api POST admin/sources "$(js op=add kind=pg_csv name=pgpass2 ref="$PGPASS_FILE" every_s=3600)")
+[[ "$code" == 200 && "$(ans sync_error)" == *".pgpass line"* && "$(ans sync_error)" == *"line 1"* ]] || fail "G: a readable file of .pgpass lines: $code $(head -c 300 "$TMPD/ans.json") (want its read refused by line number)"
+[[ "$(pq "SELECT count(*) FROM pgvigil.admin_proposals WHERE source = 'pgpass2'")" == 0 ]] || fail "G: the .pgpass file was read into proposals"
+code=$(api POST admin/sources "$(js op=remove name=pgpass2)"); [[ "$code" == 200 ]] || fail "G: remove pgpass2: $code"
+echo "G: a 0600 .pgpass refused (400, no row); a readable one's read refused by line number, no proposal"
+for _ in $(seq 1 40); do (( $(find "$CFGD/instances" -type f | wc -l) == $(pq "SELECT count(*) FROM pgvigil.admin_instances") )) && break; sleep 1; done  # the 30 s grace of the files F replaced
 TABLES=$(pq "SELECT c.oid::regclass FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1")
 NT=0; HITS=""
 for t in $TABLES; do NT=$((NT + 1))
-  for v in MON_PW CMS_PW PG_PW BAD_PW; do n=$(pq "SELECT count(*) FROM $t x WHERE strpos(x::text, '${!v}') > 0"); [[ "$n" == 0 ]] || HITS+=" $t:$v=$n"; done; done
+  for v in MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW; do n=$(pq "SELECT count(*) FROM $t x WHERE strpos(x::text, '${!v}') > 0"); [[ "$n" == 0 ]] || HITS+=" $t:$v=$n"; done; done
 [[ -z "$HITS" ]] || fail "G: a password is in the repository:$HITS"
 api GET admin/instances >/dev/null
-for v in MON_PW CMS_PW PG_PW BAD_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/run.log"; do ! grep -qF -- "${!v}" "$f" || fail "G: $v is in $(basename "$f")"; done; done
+for v in MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/run.log"; do ! grep -qF -- "${!v}" "$f" || fail "G: $v is in $(basename "$f")"; done; done
 NF=0; for d in instances sources; do [[ "$(stat -c %a "$CFGD/$d")" == 700 ]] || fail "G: the credential folder $d is $(stat -c %a "$CFGD/$d")"
   for f in "$CFGD/$d"/*; do NF=$((NF + 1)); [[ "$(stat -c %a "$f")" == 600 ]] || fail "G: $d/$(basename "$f") is $(stat -c %a "$f")"; done; done
 NREF=$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE dsn_ref LIKE 'file:$CFGD/instances/%'")
@@ -365,4 +385,18 @@ kill -0 "$RUNPID" 2>/dev/null || fail "H: the collector stopped"
 NA=$(grep -c 'scheduler: instances applied' "$TMPD/run.log" || true)
 (( NA >= 8 )) || fail "H: the collector applied $NA lists (want one per change: 8 or more)"
 echo "ok   H: pid $RUNPID ran from B to the end and applied $NA lists (generation $G0 -> $(gen))"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository; no restart; the NOT PROVEN lines above stand)"
+
+echo "== I. a second collector on the repository =="
+"$TMPD/pgvigil" run -config "$CFGD/collector.yaml" >"$TMPD/run2.log" 2>&1 & RUN2PID=$!
+for _ in $(seq 1 40); do grep -q "another collector holds the page's instances" "$TMPD/run2.log" && break; sleep 1; done
+kill -0 "$RUN2PID" 2>/dev/null || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector exited"; }
+[[ "$(grep -c "another collector holds the page's instances" "$TMPD/run2.log")" == 1 ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector did not say once that another holds the page's instances"; }
+sleep 20
+[[ "$(grep -c "another collector holds the page's instances" "$TMPD/run2.log")" == 1 ]] || fail "I: the second collector said it more than once"
+PAGE2=$(grep 'scheduler: instances applied' "$TMPD/run2.log" | grep -oE ' instances=[0-9]+' | tr -d ' ' | sort -u | tr '\n' ' ')
+[[ "$PAGE2" == "instances=1 " ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector applied [$PAGE2] (want only the file's one instance)"; }
+! grep -q 'instances: list read' "$TMPD/run2.log" || { grep -m3 'instances: list read' "$TMPD/run2.log" >&2; fail "I: the second collector read the page's list"; }
+kill "$RUN2PID" 2>/dev/null; wait "$RUN2PID" 2>/dev/null || true; RUN2PID=
+kill -0 "$RUNPID" 2>/dev/null || fail "I: the first collector stopped"
+echo "ok   I: a second collector said once that another holds the page's instances and applied the file's one instance only"
+echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; the NOT PROVEN lines above stand)"

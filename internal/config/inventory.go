@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -148,14 +149,43 @@ func Diff(old, cur []Instance) (stop, start []string) {
 // WatchInventory reads the page's list at once and hands the merged list to apply, then polls the generation every
 // `every` and hands a new merged list whenever it moved. A failed read keeps the last list (logged once per
 // failure streak); apply is called from this goroutine only. It returns when ctx ends.
-func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
+//
+// hold (nil = always) says whether this collector holds the page's instances (one collector of a repository does:
+// sched's page_inventory lock). One that does not collects the file's instances only, says so once, and asks again
+// each tick: when the holder ends, the next to take the lock reads the page's list at once.
+func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, hold func(context.Context) (bool, error), file []Instance, queryText string, every time.Duration, apply func([]Instance)) {
 	if every <= 0 {
 		every = 15 * time.Second
 	}
 	var have int64 = -1
 	failing := false
+	held, toldOther := true, false
 	read := func() {
-		gen, err := src.InventoryGeneration(ctx)
+		var err error
+		if hold != nil {
+			var ok bool
+			ok, err = hold(ctx)
+			if err == nil && !ok {
+				if !toldOther && ctx.Err() == nil {
+					log.Warn("instances: another collector holds the page's instances; this one collects the file's only (asked again every tick)")
+					toldOther = true
+				}
+				if held || have == -1 { // lost the lock, or never had it: the file's list alone
+					all, _ := Merge(file, nil, queryText)
+					apply(all)
+				}
+				held, have, failing = false, -3, false
+				return
+			}
+			if err == nil && !held {
+				log.Info("instances: this collector holds the page's instances now")
+				held, toldOther, have = true, false, -3
+			}
+		}
+		var gen int64
+		if err == nil {
+			gen, err = src.InventoryGeneration(ctx)
+		}
 		if err == nil && gen == have {
 			return
 		}
@@ -168,8 +198,8 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 				log.Warn("instances: the page's list could not be read; the last list stays", "err", err)
 			}
 			failing = true
-			if have < 0 {
-				have = -2 // run the file's instances meanwhile
+			if have == -1 { // the first read failed: run the file's instances meanwhile (once, not each tick)
+				have = -2
 				all, _ := Merge(file, nil, queryText)
 				apply(all)
 			}
@@ -442,7 +472,21 @@ func NotTCP(s string) bool {
 // secretShaped says whether a line looks like a connection string or a credential rather than a server: an error
 // about it names its line number only, and nothing of it reaches a proposal.
 func secretShaped(l string) bool {
-	return strings.ContainsAny(l, "=@") || strings.Contains(l, "://")
+	return strings.ContainsAny(l, "=@") || strings.Contains(l, "://") || pgpassShaped(l)
+}
+
+// pgpassShaped: host:port:database:user:password, the port a number or '*' (a .pgpass line holds no '=' or '@');
+// an IPv6 address is not one.
+func pgpassShaped(l string) bool {
+	f := strings.Split(l, ":")
+	if len(f) < 5 || f[0] == "" || f[2] == "" || f[3] == "" || net.ParseIP(l) != nil {
+		return false
+	}
+	if f[1] == "*" {
+		return true
+	}
+	_, err := strconv.Atoi(f[1])
+	return err == nil
 }
 
 // ParseServerList reads a server list for engine: a CSV whose first line names its columns (host is required;
@@ -490,7 +534,7 @@ func ParseServerList(r io.Reader, engine string) ([]Proposal, error) {
 		for n, rec := range recs[1:] {
 			for _, f := range rec {
 				if secretShaped(f) {
-					return nil, fmt.Errorf("the CSV line %d holds a connection string or a credential ('=', '@' or '://'): not a server list", lineNo[n+1])
+					return nil, fmt.Errorf("the CSV line %d holds a connection string or a credential ('=', '@', '://' or a .pgpass line): not a server list", lineNo[n+1])
 				}
 			}
 			h, p := SplitHostPort(get(rec, "host"))
@@ -518,7 +562,7 @@ func ParseServerList(r io.Reader, engine string) ([]Proposal, error) {
 	}
 	for n, l := range lines {
 		if secretShaped(l) {
-			return nil, fmt.Errorf("line %d holds a connection string or a credential ('=', '@' or '://'): not a server list", lineNo[n])
+			return nil, fmt.Errorf("line %d holds a connection string or a credential ('=', '@', '://' or a .pgpass line host:port:database:user:password): not a server list", lineNo[n])
 		}
 		if NotTCP(l) {
 			return nil, fmt.Errorf("line %d names a named pipe or shared memory: TCP only", lineNo[n])

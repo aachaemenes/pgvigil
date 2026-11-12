@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
@@ -291,6 +292,15 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	cfg, fs, err := loadConfig(args, false)
 	if err != nil {
 		return err
+	}
+	for _, w := range collect.CustomWarnings() {
+		log.Warn(w)
+	}
+	// an empty repository dsn (a fresh install's env file not filled yet) is a config error: exit 3, which the unit's
+	// RestartPreventExitStatus=3 and the Windows service's recovery leave stopped - never a restart loop
+	if strings.TrimSpace(cfg.Repository.DSN()) == "" {
+		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing: fill in the env file or the file it names",
+			fs.Lookup("config").Value.String(), cfg.Repository.DSNRaw)}
 	}
 	// the alerts: list (task 60): the sender runs beside the scheduler as alerts_dsn (a login IN ROLE pgvigil_alerter), else the repository's dsn
 	ast, err := alerts.LoadFile(fs.Lookup("config").Value.String())

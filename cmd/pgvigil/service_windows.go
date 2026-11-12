@@ -182,12 +182,12 @@ func installService(log *slog.Logger, o installOptions) error {
 	// config and repo.dsn stay out of its reach)
 	icacls(logDir, "/grant", o.User+":(OI)(CI)M")
 	log.Info("permissions set", "data", dataDir, "readers", "SYSTEM, Administrators, "+o.User, "writable by the service", logDir)
-	ready, why := configNamesAnInstance(o.Config)
+	ready, why := configReady(o.Config, "")
 	if o.NoStart || !ready {
 		if !ready {
 			log.Info("service installed, not started", "why", why)
 		}
-		fmt.Printf("pgvigil is installed as the service %s (automatic start). Next:\n  1. %s: the collector's repository connection string, one line (the owner ran migrate and roles)\n  2. %s: list the instances (each dsn as file:<path> beside it, or env:NAME set for the service)\n  3. Start-Service %s; Get-Content %s -Wait\n", serviceName, dsnFile, o.Config, serviceName, filepath.Join(logDir, logFileName))
+		fmt.Printf("pgvigil is installed as the service %s (automatic start). Next:\n  1. %s: the collector's repository connection string, one line (the owner ran migrate and roles)\n  2. %s: list the instances (each dsn as file:<path> beside it, or env:NAME set for the service), or add them later in the page (Admin > Instances)\n  3. Start-Service %s; Get-Content %s -Wait\n", serviceName, dsnFile, o.Config, serviceName, filepath.Join(logDir, logFileName))
 		return nil
 	}
 	if err := s.Start(); err != nil {

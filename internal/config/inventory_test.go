@@ -93,7 +93,7 @@ func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
 			var n []string
 			for _, in := range all {
 				n = append(n, in.Name)
@@ -309,6 +309,18 @@ func TestListsRefuseCredentialsWithoutEchoingThem(t *testing.T) {
 	}
 	if _, err := ParseServerList(strings.NewReader("host,port\npg1,x=y\n"), EnginePostgres); err == nil || strings.Contains(err.Error(), "x=y") {
 		t.Fatalf("a CSV field with '=': %v", err)
+	}
+	// a .pgpass line (the collector account's own, the pgpass login mode's file) is no server list: refused by its
+	// line number, the password never echoed (the join review of 204, finding 4)
+	for _, in := range []string{"pg1\ndb1:5432:*:pgvigil:S3cret\n", "pg1\n*:*:*:pgvigil:S3cret\n", "host,port\npg1,1\ndb1:5432:app:u:S3cret,2\n"} {
+		_, err := ParseServerList(strings.NewReader(in), EnginePostgres)
+		if err == nil || strings.Contains(err.Error(), "S3cret") || !strings.Contains(err.Error(), "line 2") && !strings.Contains(err.Error(), "line 3") {
+			t.Fatalf("a .pgpass line %q: %v", in, err)
+		}
+	}
+	// an IPv6 address and host:port stay servers
+	if got, err := ParseServerList(strings.NewReader("2001:db8:0:0:1:0:0:1\npg2:5433\n"), EnginePostgres); err != nil || len(got) != 2 {
+		t.Fatalf("IPv6 / host:port: %v %v", got, err)
 	}
 	if _, err := ParseServerList(strings.NewReader("np:sql01\n"), EngineSQLServer); err == nil {
 		t.Fatal("a named pipe was taken")

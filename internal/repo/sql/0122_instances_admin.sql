@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.admin_removed (
 CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.is_active AND NOT OLD.is_active
-     AND EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes') THEN
+     AND (EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes')
+          -- a disabled page instance stays inactive against a run in flight (enable: the next run sets it active)
+          OR EXISTS (SELECT 1 FROM pgvigil.admin_instances a WHERE a.name = NEW.name AND a.disabled)) THEN
     NEW.is_active := false;
   END IF;
   RETURN NEW;
@@ -242,6 +244,11 @@ BEGIN
      WHERE name = v_name;
   ELSIF v_op IN ('disable', 'enable') THEN
     UPDATE pgvigil.admin_instances SET disabled = (v_op = 'disable'), updated_at = p_at, updated_by = v_user WHERE name = v_name;
+    -- a disabled instance leaves the fleet pages' stale and failing checks (they read is_active); enable needs
+    -- nothing: the next run's ensure_instance sets it active again
+    IF v_op = 'disable' THEN
+      UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
+    END IF;
   ELSIF v_op = 'remove' THEN
     DELETE FROM pgvigil.admin_instances WHERE name = v_name;
     -- its history stays; the fleet pages read is_active (kept false against a run in flight: admin_keep_removed)

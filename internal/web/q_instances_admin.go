@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,9 +76,12 @@ func (a *InstancesAdmin) sourceDir() string {
 	return config.SourceSecretDir(a.ConfigPath)
 }
 
-// listPathOK refuses a list source's path inside a credential folder or the config file itself: a list is read
-// into proposals, which the page shows.
+// listPathOK refuses a list source's path inside a credential folder, the config file itself, or a network path (a
+// UNC path would be opened over SMB as serve's machine account): a list is read into proposals, which the page shows.
 func (a *InstancesAdmin) listPathOK(p string) error {
+	if strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, "//") {
+		return errors.New("the list file is a network path (UNC): give a path on this server's own disk")
+	}
 	clean := filepath.Clean(p)
 	for _, d := range []string{a.secretDir(), a.sourceDir()} {
 		if d == "" {
@@ -93,6 +97,35 @@ func (a *InstancesAdmin) listPathOK(p string) error {
 		}
 	}
 	return nil
+}
+
+// listFileOK checks a list source's file before it is added and before each read: a regular file and, off Windows,
+// readable by more than its owner unless it is a pg_service.conf (whose parser keeps no password) - a file only
+// its owner may read is a credential by convention (.pgpass), and a list is shown on the page.
+func listFileOK(kind, p string) error {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return fmt.Errorf("the list file: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return errors.New("the list file is not a regular file")
+	}
+	if runtime.GOOS != "windows" && kind != "pg_service" && fi.Mode().Perm()&0o044 == 0 {
+		return fmt.Errorf("the list file can be read by its owner only (mode %04o): a file kept that private is a credential by convention (.pgpass); a server list is readable (0644)", fi.Mode().Perm())
+	}
+	return nil
+}
+
+// credentialGrace: an instance's previous credential file stays this long after an edit or a remove, so the
+// collector, which reads the page's list every 15 s, never opens a ref already gone.
+const credentialGrace = 30 * time.Second
+
+func (s *Server) removeSecretLater(dir, ref, name string) {
+	time.AfterFunc(credentialGrace, func() {
+		if err := config.RemoveSecret(dir, ref); err != nil {
+			s.log.Warn("admin instance: the previous credential file stays", "name", name, "err", err)
+		}
+	})
 }
 
 func (a *InstancesAdmin) fileNames() []string {
@@ -400,10 +433,8 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case previous != "" && (op == "remove" || written != ""):
-		// the row names the new file now (or no file: a remove)
-		if err := config.RemoveSecret(a.secretDir(), previous); err != nil {
-			s.log.Warn("admin instance: the previous credential file stays", "name", name, "err", err)
-		}
+		// the row names the new file now (or no file: a remove); the old one goes after the collector's next read
+		s.removeSecretLater(a.secretDir(), previous, name)
 	}
 	s.log.Info("admin instance", "op", op, "name", name, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
 	s.answer(w, ans, raw, nil)
@@ -572,8 +603,8 @@ func (s *Server) SourcesAdminWrite(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, err)
 				return
 			}
-			if _, err := os.Stat(p); err != nil {
-				writeErr(w, http.StatusBadRequest, fmt.Errorf("the list file: %w", err))
+			if err := listFileOK(kind, p); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
 				return
 			}
 			pay["ref"] = p
@@ -710,6 +741,12 @@ func (s *Server) readSource(ctx context.Context, src *sourceRow) ([]config.Propo
 		}
 		return out, rows.Err()
 	case "sqlserver_list", "pg_csv", "pg_service":
+		if err := s.instAdmin().listPathOK(src.Ref); err != nil {
+			return nil, err
+		}
+		if err := listFileOK(src.Kind, src.Ref); err != nil {
+			return nil, err
+		}
 		f, err := os.Open(src.Ref)
 		if err != nil {
 			return nil, err
