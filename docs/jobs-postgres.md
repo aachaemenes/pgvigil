@@ -49,10 +49,14 @@ GRANT SELECT (jobid, jobenabled, jobagentid), UPDATE (jobnextrun) ON pgagent.pga
   take it is connected (`pga_jobagent`, and its host where the job names one).
 - Both logins reach the same server (`pg_postmaster_start_time()`), the actions login is no superuser.
 
-**The dialog** shows the run or the job, asks for a reason (5 to 500 characters) and the job's name typed to confirm. Every
-attempt past the UI login and the `X-Pgvigil` header writes one row in `pgvigil.actions_log` (done, refused or failed),
-with the UI user, the client address, the reason, the job (`target`, and `target_id` = `<scheduler>:<job id> run <run id>`),
-the pid and the statement; the instance's Jobs page lists the newest 200 under "Job actions".
+**The dialog** shows the run or the job, asks for a reason (5 to 500 characters) and the job's name typed to confirm. An
+attempt that reaches the instance's checks - past the UI login, the `X-Pgvigil` header, a well-formed body without a NUL
+character, a PostgreSQL instance and a reachable audit login that may write it - writes one row in `pgvigil.actions_log`
+(done, refused or failed), with the UI user, the client address, the reason, the job (`target`, and `target_id` =
+`<scheduler>:<job id>`, with ` run <run id>` for a stop), the pid and the statement sent or that would have been; the
+others are answered with their reason and write nothing. The instance's Jobs page lists the newest 200 under "Job
+actions". Run now also refuses a standby (its job tables are the primary's copy) and an `actions_dsn` that connects to
+another database than the instance's (Run now writes in that database).
 
 ## Running now
 
@@ -81,12 +85,13 @@ run, its outcome (`succeeded`, `failed`, `ignored` = a failure the step's "on er
 `pgvigil.job_step_runs`. On the Jobs page, "pgAgent steps" opens each pgAgent job's steps over the page's range: runs,
 succeeded, failed, ignored, aborted, the average and longest duration, the last outcome; and the step runs themselves.
 A pgAgent job's failed steps now count in its status: the step thresholds of [jobs](jobs.md) (failed steps in 24 hours and
-in 7 days) apply to pgAgent as they do to SQL Server Agent.
+in 7 days) apply to pgAgent as they do to SQL Server Agent. pgAgent runs a job's steps in the order of their names.
 
 ## Leaving jobs out of the checks
 
-DBA Dash's job exclusions: a pattern on a job's name or its command, `*` for any text and `?` for one character, any case
-(`tmp_*`, `*VACUUM*`), for every instance or for this one. A job it takes is left out of:
+DBA Dash's job exclusions: a pattern on a job's name (a pg_cron job without a name: its id) or its command, `*` for any
+text and `?` for one character, any case (`tmp_*`, `*VACUUM*`), for every instance or for this one. A command pattern takes
+pg_cron jobs only: a pgAgent job has no command of its own (its steps' code is not matched). A job it takes is left out of:
 
 - its status against the thresholds (`job_status`: status `excluded`, the reason names the pattern);
 - the job report's checks (`job_report_checks`: the Summary's Jobs column and the job findings);
@@ -106,11 +111,11 @@ PostgreSQL writes, for each process of the cycle, `Process P waits for <mode> on
 
 | Part | What it shows |
 | --- | --- |
-| tiles | the deadlocks in the log in the range, pg_stat_database's deadlock counter over the same range (more there than in the log: the reader is not reading this server's log, or entries were cut), the groups, the last |
-| chart | deadlocks per 5 minutes (per hour over a day or more) |
+| tiles | the deadlocks in the log in the range, pg_stat_database's deadlock counter over the same range (its rise between the range's own samples; more there than in the log: the reader is not reading this server's log, or entries were cut), the groups, the last |
+| chart | every deadlock of the range per 5 minutes (per hour over a day or more) |
 | by database, user, application, relation | a ring and a grid each; a deadlock counts once in each value its processes had |
 | groups | one row per set of statement shapes (literals and numbers as `?`), relations and lock modes: its count, first, last, the latest's graph |
-| deadlocks | the newest 500: the victim's pid, user, application and statement, the relations, the locks |
+| deadlocks | the newest 500: the victim's pid, user, application and statement, the relations, the locks (with more than 500 in the range, the groups and the breakdowns read these 500, and the page says so) |
 | the graph | the SQL Server page's drawing: each process a box with its statement's first line, the victim boxed VICTIM, each lock between them with who holds it and who waits for it; then the participants and the locks as grids |
 
 What the log does not carry, and what pgvigil does instead:
@@ -124,9 +129,12 @@ What the log does not carry, and what pgvigil does instead:
   activity samples: the pid seen within 90 seconds before the deadlock; "not sampled" otherwise (a deadlock between short
   transactions is often not sampled: the activity collection reads once a minute). The victim's user and database are
   the log line's own.
-- **The query-text policy.** Under `normalized` every number of the DETAIL lines is `?`: the processes are named by
-  their place in the cycle (`process #1`), the victim is the first. Under `none` no detail is stored: a deadlock is its
-  time and the victim's pid, and it is not drawn.
+- **The query-text policy.** Under `normalized` every number of the DETAIL lines is `?` and the lines are joined into one:
+  pgvigil splits them again, names the processes by their place in the cycle (`process #1`, the victim the first) and
+  keeps one lock per holder. Under `none` no detail is stored: a deadlock is its time, the victim's pid, user, database
+  and sampled application, and it is not drawn.
+- **A function's inner statement.** A deadlock inside a PL/pgSQL function shows the function call in DETAIL; the inner
+  statement that took the lock is in the event's statement (the CONTEXT line's `SQL statement "..."`).
 
 ## Storage and retention
 
@@ -136,8 +144,8 @@ What the log does not carry, and what pgvigil does instead:
 | `pgvigil.job_exclusions` | one per exclusion, ended rows kept | with its instance |
 | `pgvigil.actions_log` | one per job action attempt | as the actions door's audit |
 
-Migration `0102_pg_jobs_deadlocks.sql`. It replaces `job_status` (0094's, the same signature), `job_report_checks` and
-`job_failures` with the exclusions and pgAgent's step failures in them.
+Migration `0102_pg_jobs_deadlocks.sql`. It replaces `job_status` (0094's, the same signature: the exclusions, and
+pgAgent's step failures in its step counts), and `job_report_checks` and `job_failures` (the exclusions).
 
 ## API
 
@@ -150,7 +158,8 @@ Migration `0102_pg_jobs_deadlocks.sql`. It replaces `job_status` (0094's, the sa
 | `GET /api/jobs/exclusions?instance=N`, `POST` | the live exclusions; `{op: add, level, instance_id, match_on, pattern, note}` or `{op: end, exclusion_id}` |
 | `GET /api/pg/deadlocks?instance=N` | the deadlocks, groups, breakdowns, trend and counter of the range |
 
-The POST routes need the UI login and the `X-Pgvigil` header; a refused attempt is 409 with its reason, a failed one 502.
+The POST routes need the UI login and the `X-Pgvigil` header; a refused attempt is 409 with its reason, a failed one 502,
+a body with a NUL or a SQL Server instance 400, an audit login that cannot write 503.
 
 ## Proof
 
@@ -164,6 +173,8 @@ relation, and drawn; a job changed twice and its script diff; both pages in a he
 
 - `cron.use_background_workers = on` (the action refuses it), pg_cron on a node other than the monitored one
   (`cron.job.nodename`), RDS and Aurora (pg_cron there; pgAgent is not offered).
-- A pgAgent step whose code is longer than `track_activity_query_size`: the session is matched by the text's start.
+- A pgAgent step's session is found by its code (proven with a code longer than `track_activity_query_size`, matched by the
+  text's start, beside another active session); a step whose code another session of its database runs at that moment
+  too is refused, never guessed.
 - The CloudWatch reader's deadlock events on the page (the same events as the `serverlog` reader's; read through the
   same parser).

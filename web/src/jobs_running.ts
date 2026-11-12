@@ -22,7 +22,9 @@ const text = (v: unknown) => v == null ? '' : String(v);
 const outcomeBadge = (v: unknown) => badge(text(v), v === 'done' ? 'ok' : v === 'refused' ? 'warn' : 'crit');
 
 // cronInWords: a pg_cron schedule in words beside its expression (minute hour day-of-month month day-of-week, the
-// @ names, pg_cron's 'N seconds'); an expression it does not know is given back as it is.
+// @ names, pg_cron's 'N seconds', '$' = the last day of the month); an expression it does not know is given back as it
+// is, never guessed. A step reads 'every N' only when it divides its field (*/45 runs at :00 and :45: not every 45
+// minutes); a day of the month and a day of the week both set read as either (cron runs the job on both).
 export function cronInWords(expr: unknown): string {
   const e = text(expr).trim();
   const named: Record<string, string> = {
@@ -46,19 +48,30 @@ export function cronInWords(expr: unknown): string {
     return names && num(p) ? (names[+p] ?? p) : p;
   }).join(', ');
   let when: string;
-  const step = /^\*\/(\d+)$/.exec(mi);
+  const even = (s: string, range: number) => { const m = /^\*\/(\d+)$/.exec(s); return m && +m[1] > 0 && range % +m[1] === 0 ? m[1] : null; };
+  const listed = /^[\d,-]+$/;
+  const mstep = even(mi, 60), hstep = even(ho, 24);
+  if (/^\*\/\d+$/.test(mi) && !mstep) return e;
+  if (/^\*\/\d+$/.test(ho) && !hstep) return e;
   if (mi === '*' && ho === '*') when = 'every minute';
-  else if (step && ho === '*') when = `every ${step[1]} minutes`;
+  else if (mstep && ho === '*') when = `every ${mstep} minutes`;
   else if (num(mi) && num(ho)) when = `at ${pad(ho)}:${pad(mi)}`;
   else if (num(mi) && ho === '*') when = `at minute ${mi} of every hour`;
-  else if (num(mi) && /^\*\/\d+$/.test(ho)) when = `at minute ${mi} of every ${ho.slice(2)} hours`;
-  else if (num(mi) && /^[\d,-]+$/.test(ho)) when = `at minute ${mi} of hours ${list(ho)}`;
-  else if (step && /^[\d,-]+$/.test(ho)) when = `every ${step[1]} minutes during hours ${list(ho)}`;
+  else if (num(mi) && hstep) when = `at minute ${mi} of every ${hstep} hours`;
+  else if (num(mi) && listed.test(ho)) when = `at minute ${mi} of hours ${list(ho)}`;
+  else if (mstep && listed.test(ho)) when = `every ${mstep} minutes during hours ${list(ho)}`;
   else return e;
+  if (![dom, mon, dow].every(f => f === '*' || f === '$' || listed.test(f) || /^\*\/\d+$/.test(f))) return e;
+  const domWords = dom === '$' ? 'on the last day of the month' : /^\*\/\d+$/.test(dom) ? `every ${dom.slice(2)} days of the month` : `on day ${list(dom)} of the month`;
+  const dowWords = /^\*\/\d+$/.test(dow) ? null : `on ${list(dow, days)}`;
+  if (dow !== '*' && !dowWords) return e;
   const parts = [when];
-  if (dom !== '*') parts.push(/^\*\/\d+$/.test(dom) ? `every ${dom.slice(2)} days of the month` : `on day ${list(dom)} of the month`);
-  if (mon !== '*') parts.push(`in ${list(mon, months)}`);
-  if (dow !== '*') parts.push(`on ${list(dow, days)}`);
+  if (dom !== '*' && dow !== '*' && !dom.startsWith('*') && !dow.startsWith('*')) parts.push(`${domWords}, or ${dowWords}`);   // cron's OR
+  else {
+    if (dom !== '*') parts.push(domWords);
+    if (dow !== '*') parts.push(dowWords!);
+  }
+  if (mon !== '*') parts.splice(1, 0, `in ${list(mon, months)}`);
   if (dom === '*' && mon === '*' && dow === '*' && !when.startsWith('every')) parts.push('every day');
   return parts.join(' ');
 }
@@ -104,14 +117,15 @@ export async function pgJobActionCol(ctx: Ctx, after: () => void): Promise<Col> 
 // confirmJobAction: the row as shown, the typed reason and the job's name typed to confirm; the server checks the
 // target again before it sends anything.
 async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
-  const job = text(r.job_name ?? r.name);
+  const job = text(r.job_name ?? r.name).trim();
   const what = kind === 'job_stop' ? `Stop the running job ${job}` : `Run the pgAgent job ${job} now`;
   const no = el('button', { type: 'button' }, 'Back');
   const msg = el('p', { class: 'meta', role: 'status' });
   const reason = el('textarea', { rows: '3', maxlength: '500', 'aria-label': 'reason', placeholder: 'Why (kept in the actions log)', style: 'width:100%' });
   const typed = el('input', { type: 'text', 'aria-label': "type the job's name to confirm", placeholder: job, autocomplete: 'off' });
   const go = el('button', { type: 'submit', disabled: '' }, `${labels[kind]} ${job}`);
-  const check = () => { go.disabled = typed.value.trim() !== job || reason.value.trim().length < 5; };
+  let busy = false;   // one action per dialog: a keystroke after the send never arms the button again
+  const check = () => { go.disabled = busy || typed.value.trim() !== job || reason.value.trim().length < 5; };
   reason.addEventListener('input', check);
   typed.addEventListener('input', check);
   const shown = kind === 'job_stop'
@@ -138,21 +152,22 @@ async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () => void)
   reason.focus();
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
-    go.disabled = true;
+    if (busy) return;
+    busy = true; sent = true;          // sent from here: a dialog closed while the request runs still redraws the grid
+    go.disabled = true; reason.readOnly = true; typed.readOnly = true;
     msg.textContent = 'Sending...';
     try {
       const out = await post<{ outcome: string; detail: string; statement?: string }>(kind === 'job_stop' ? 'jobs/actions/stop' : 'jobs/actions/start', {
-        instance_id: ctx.instance, scheduler: r.scheduler, job_id: Number(r.job_id), job_name: job, run_id: Number(r.run_id ?? 0),
+        instance_id: ctx.instance, scheduler: r.scheduler, job_id: Number(r.job_id), job_name: text(r.job_name ?? r.name), run_id: Number(r.run_id ?? 0),
         job_pid: Number(r.job_pid ?? 0), reason: reason.value, confirm: typed.value.trim(),
       });
-      sent = true;
       msg.replaceChildren(badge(out.outcome, 'ok'), ' ', out.detail, out.statement ? el('span', {}, ' (', el('code', {}, out.statement), ')') : '');
-      no.textContent = 'Close';
     } catch (e) {
-      sent = true;
-      msg.replaceChildren(badge('not done', 'crit'), ' ', e instanceof Error ? e.message : String(e));
-      no.textContent = 'Close';
+      const m = e instanceof Error ? e.message : String(e);
+      // a 500 that starts 'done:' was sent and only its audit row failed
+      msg.replaceChildren(m.startsWith('done:') ? badge('done, not audited', 'warn') : badge('not done', 'crit'), ' ', m);
     }
+    no.textContent = 'Close';
   });
 }
 
@@ -178,6 +193,7 @@ async function stepLog(ctx: Ctx, jobId: string, box: HTMLElement) {
   box.replaceChildren(el('p', { class: 'meta' }, 'Reading the step log...'));
   try {
     const d = await get<Record<'steps' | 'step_runs', Table | null>>('jobs/steps', { instance: ctx.instance, ...window_(ctx), job: jobId });
+    box.dataset.read = 'ok';
     box.replaceChildren(
       el('h4', {}, `Steps (${rangeLabel(ctx)})`), grid(rowsOf(d.steps), stepCols, 'No step ran in this range (the step log is read by the collection job_steps).'),
       el('h4', {}, 'Step runs (the newest 1,000)'), grid(rowsOf(d.step_runs), stepRunCols, 'No step run in this range.'));
@@ -239,10 +255,11 @@ export async function jobsRunningPanel(ctx: Ctx): Promise<HTMLElement> {
   const box = el('div', { class: 'jobs-running' });
   const redraw = () => { void jobsRunningPanel(ctx).then(n => box.replaceWith(n)); };
   try {
-    const [st, ex, jobs] = await Promise.all([
+    // each part on its own: a failed exclusions or jobs read never hides Running now and its Stop buttons
+    const [st, exR, jobsR] = await Promise.all([
       runningState(ctx.instance),
-      get<{ writable: boolean; reason?: string; exclusions: Table | null }>('jobs/exclusions', { instance: ctx.instance }),
-      get<Record<'jobs', Table | null>>('jobs/history', { instance: ctx.instance, ...window_(ctx), engine: 'pg', part: 'jobs' }),
+      get<{ writable: boolean; reason?: string; exclusions: Table | null }>('jobs/exclusions', { instance: ctx.instance }).then(v => ({ v }), (e: unknown) => ({ e })),
+      get<Record<'jobs', Table | null>>('jobs/history', { instance: ctx.instance, ...window_(ctx), engine: 'pg', part: 'jobs' }).then(v => ({ v }), (e: unknown) => ({ e })),
     ]);
     const running = rowsOf(st.running);
     const cols: Col[] = [
@@ -250,7 +267,13 @@ export async function jobsRunningPanel(ctx: Ctx): Promise<HTMLElement> {
       { key: 'start_time', label: 'started', fmt: fmtTime },
       { key: 'running_secs', label: 'running for', num: true, fmt: (v, r) => r.over_average === true ? badge(fmtSecs(v), 'warn') : fmtSecs(v) },
       { key: 'avg_secs', label: 'average', num: true, fmt: (v, r) => v == null ? 'no successful run in 30 days' : `${fmtSecs(v)} (${fmtNum(r.ok_runs)} runs)` },
-      { key: 'estimated_end', label: 'estimated end', fmt: (v, r) => v == null ? '-' : r.over_average === true ? badge(`${fmtTime(v)} (passed)`, 'warn') : fmtTime(v) },
+      {
+        key: 'estimated_end', label: 'estimated end', fmt: (v, r) => {
+          if (v == null) return '-';
+          const shown = Date.parse(String(v)) < Date.now() ? `${fmtTime(v)} (passed)` : fmtTime(v);
+          return r.over_average === true ? badge(shown, 'warn') : shown;
+        },
+      },
       { key: 'current_step', label: 'current step', fmt: (v, r) => v == null ? (r.scheduler === 'pgagent' ? '-' : 'no steps') : `${text(v)} (since ${fmtTime(r.current_step_start)})` },
       { key: 'job_pid', label: 'pid', num: true }, { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
       { key: 'excluded_by', label: 'checks', fmt: v => v == null ? '' : badge('left out', '') },
@@ -267,22 +290,29 @@ export async function jobsRunningPanel(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, 'Estimated end = the start plus the job\'s average over its successful runs of 30 days; amber = running over twice that average (and 10 s more) with 3 runs or more behind it. ',
         st.actions?.job_stop?.on ? 'Stop is on for this instance.' : `Stop is off: ${st.actions?.job_stop?.reason ?? ''}`));
     // the pgAgent step log, one disclosure per pgAgent job
-    const agentJobs = rowsOf(jobs.jobs).filter(j => j.scheduler === 'pgagent');
+    if ('e' in jobsR) box.append(el('h3', {}, 'pgAgent steps'), errorBox(jobsR.e));
+    const agentJobs = 'v' in jobsR ? rowsOf(jobsR.v.jobs).filter(j => j.scheduler === 'pgagent') : [];
     if (agentJobs.length) {
       box.append(el('h3', {}, `pgAgent steps (${rangeLabel(ctx)})`));
       for (const j of agentJobs) {
         const inner = el('div', {});
         const d = el('details', {}, el('summary', {}, `${text(j.name)} (job ${text(j.job_id)})`), inner);
-        d.addEventListener('toggle', () => { if (d.open && !inner.childElementCount) void stepLog(ctx, text(j.job_id), inner); });
+        d.addEventListener('toggle', () => { if (d.open && inner.dataset.read !== 'ok') void stepLog(ctx, text(j.job_id), inner); });
         box.append(d);
       }
     }
     // the exclusions
+    box.append(el('h3', {}, 'Left out of the job checks'));
+    if ('e' in exR) {
+      box.append(errorBox(exR.e));
+    } else {
+    const ex = exR.v;
     const ex_ = rowsOf(ex.exclusions);
-    box.append(el('h3', {}, 'Left out of the job checks'),
+    box.append(
       el('p', { class: 'meta' }, 'A job whose name or command is like a pattern (* any text, ? one character, any case) is left out of the job checks: its status, the Summary\'s Jobs cell, the overview\'s failed-job check and the job findings. The grids still list it and its runs.'),
       grid(ex_, exclCols(ex.writable, redraw), 'No exclusion: every pg_cron and pgAgent job is checked.'),
       ex.writable ? exclusionForm(ctx, redraw) : el('p', { class: 'meta' }, `Exclusions cannot be written here: ${ex.reason ?? ''}`));
+    }
     const log = rowsOf(st.log);
     if (log.length) box.append(el('h3', {}, 'Job actions (the audit, newest 200)'), grid(log, logCols));
   } catch (e) {

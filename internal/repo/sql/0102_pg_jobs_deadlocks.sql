@@ -4,11 +4,13 @@
 --   1. The actions door gains two PostgreSQL job actions in pgvigil.actions_log: job_stop (pg_cron or pgAgent: the
 --      run's backend is cancelled, pid = that backend) and job_start (pgAgent's Run now: jobnextrun = now(), no pid).
 --      import_pg_job_actions_log is their audit door (the SQL Server door's shape, 0067: target = the job's name,
---      target_id = '<scheduler>:<job_id>', statement = the statement sent or that would have been sent).
+--      target_id = '<scheduler>:<job_id>' and ' run <run_id>' for a stop, statement = the statement sent or that would have
+--      been sent).
 --   2. pgvigil.job_step_runs: pgAgent's step log per run (pga_jobsteplog), one row per step run, written by the
 --      collection job_steps through import_job_steps; a running step's row is updated when it ends.
---   3. pgvigil.job_exclusions: pg_cron / pgAgent jobs left out of the job checks by a pattern on the job's name or its
---      command (* any text, ? one character, any case), fleet-wide (level root) or per instance, written through
+--   3. pgvigil.job_exclusions: pg_cron / pgAgent jobs left out of the job checks by a pattern on the job's name (a job
+--      without a name: its id) or its command (pg_cron's: a pgAgent job has no command of its own, its steps' code is not
+--      matched) (* any text, ? one character, any case), fleet-wide (level root) or per instance, written through
 --      import_job_exclusion; never updated in place but ended, so the table is its own history.
 --      pgvigil.job_exclusion(instance, name, command) is the exclusion that takes a job (instance level first), or NULL.
 --      The checks that read it: job_status (status 'excluded', reason the pattern), job_report_checks (the Summary's
@@ -19,24 +21,26 @@
 --   5. pgvigil.pg_jobs_running(instance): the runs the newest read still saw running, with how long they have run,
 --      the job's average over its successful runs of 30 days and the estimated end from it, and pgAgent's current step.
 --
--- Retention: job_step_runs is kept as job_runs is (purge() deletes it by start_time: the join's line in 0110);
+-- Retention: job_step_runs is kept as job_runs is: purge() deletes it by start_time through the line the join adds to
+-- 0110's purge() (the lead's file; until then the table is not purged);
 -- job_exclusions holds a row per change and goes with its instance.
--- Lock footprint: actions_log's action CHECK dropped and added again (ACCESS EXCLUSIVE for the validation scan of a
--- small table); the views job_report_checks and job_failures and the function job_status replaced; new tables.
+-- Lock footprint: the views job_report_checks and job_failures and the function job_status replaced; new tables;
+-- actions_log's action CHECK dropped and added again (ACCESS EXCLUSIVE for the validation scan of a small table), last,
+-- so the lock is held only to the commit.
 
 -- ---------------------------------------------------------------------------------------------------------
 -- 1. the actions door: job_stop and job_start on PostgreSQL
 -- ---------------------------------------------------------------------------------------------------------
-ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_action_check;
-ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_action_check CHECK (
-     (engine = 'postgres' AND action IN ('cancel', 'terminate', 'explain_analyze', 'hypo_index', 'job_stop', 'job_start'))
-  OR (engine = 'sqlserver' AND action IN ('kill', 'job_start', 'job_stop')));
-
 CREATE OR REPLACE FUNCTION pgvigil.import_pg_job_actions_log(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'postgres' THEN
     RAISE EXCEPTION 'import_pg_job_actions_log: instance % is not a PostgreSQL instance', p_instance_id;
+  END IF;
+  -- a row of another action is an error, never dropped: the action it records has been sent already
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(p_payload, '[]'::jsonb)) e
+              WHERE coalesce(e->>'action', '') NOT IN ('job_stop', 'job_start')) THEN
+    RAISE EXCEPTION 'import_pg_job_actions_log: an action other than job_stop and job_start';
   END IF;
   INSERT INTO pgvigil.actions_log (instance_id, instance_name, at, ui_user, client, engine, action, pid, backend_start,
                                    target_user, target_app, target, target_id, reason, outcome, detail, datname, statement, server_message)
@@ -47,8 +51,7 @@ BEGIN
     FROM jsonb_to_recordset(p_payload) AS x(instance_name text, at timestamptz, ui_user text, client text, action text,
                                             pid int, backend_start timestamptz, target_user text, target_app text, target text,
                                             target_id text, reason text, outcome text, detail text, datname text, statement text,
-                                            server_message text)
-   WHERE x.action IN ('job_stop', 'job_start');
+                                            server_message text);
 END $$;
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -192,12 +195,16 @@ BEGIN
   END IF;
   IF v_op = 'end' THEN
     UPDATE pgvigil.job_exclusions SET ended_by = v_user, ended_at = p_at WHERE exclusion_id = v_id AND ended_at IS NULL;
+    IF NOT FOUND THEN   -- ended by another user between the check and the update
+      RETURN jsonb_build_object('outcome', 'refused', 'detail', format('no live exclusion %s', v_id));
+    END IF;
     RETURN jsonb_build_object('outcome', 'done', 'detail', 'ended: the job checks take these jobs again', 'exclusion_id', v_id);
   END IF;
   INSERT INTO pgvigil.job_exclusions (level, instance_id, match_on, pattern, note, created_by, created_at, client)
   VALUES (v_level, v_inst, v_match, v_pat, v_note, v_user, p_at, nullif(p_payload->>'client', ''))
   RETURNING exclusion_id INTO v_new;
-  RETURN jsonb_build_object('outcome', 'done', 'detail', 'added', 'exclusion_id', v_new);
+  RETURN jsonb_build_object('outcome', 'done', 'exclusion_id', v_new,
+    'detail', CASE WHEN v_match = 'command' THEN 'added (a command pattern takes pg_cron jobs: a pgAgent job has no command of its own)' ELSE 'added' END);
 END $$;
 
 -- job_exclusion_rows: the live exclusions an instance's jobs can take, and the jobs each one takes now
@@ -209,7 +216,7 @@ LANGUAGE sql STABLE AS $$
          count(j.job_id), string_agg(coalesce(j.job_name, j.job_id::text), ', ' ORDER BY j.job_name) FILTER (WHERE j.job_id IS NOT NULL)
     FROM pgvigil.job_exclusions x
     LEFT JOIN pgvigil.jobs j ON j.instance_id = p_instance_id AND j.is_present
-         AND CASE x.match_on WHEN 'name' THEN coalesce(j.job_name, '') ELSE coalesce(j.command, '') END ILIKE pgvigil.job_pattern_like(x.pattern)
+         AND CASE x.match_on WHEN 'name' THEN coalesce(j.job_name, j.job_id::text) ELSE coalesce(j.command, '') END ILIKE pgvigil.job_pattern_like(x.pattern)
    WHERE x.ended_at IS NULL AND (x.level = 'root' OR x.instance_id = p_instance_id)
    GROUP BY x.exclusion_id
    ORDER BY CASE x.level WHEN 'instance' THEN 1 ELSE 2 END, x.exclusion_id
@@ -222,14 +229,14 @@ CREATE OR REPLACE VIEW pgvigil.job_failures AS
     LEFT JOIN pgvigil.jobs j ON j.instance_id = r.instance_id AND j.scheduler = r.scheduler AND j.job_id = r.job_id
    WHERE r.start_time > now() - interval '1 day'
      AND r.status IN ('failed', 'internal error', 'aborted')
-     AND pgvigil.job_exclusion(r.instance_id, j.job_name, coalesce(j.command, r.command)) IS NULL;
+     AND pgvigil.job_exclusion(r.instance_id, coalesce(j.job_name, r.job_id::text), coalesce(j.command, r.command)) IS NULL;
 
 CREATE OR REPLACE VIEW pgvigil.job_report_checks AS
 WITH r AS (
   SELECT *, scheduler || ' ' || coalesce(job_name, job_id::text) AS object
     FROM pgvigil.job_report
    WHERE is_present AND coalesce(active, true)
-     AND pgvigil.job_exclusion(instance_id, job_name, command) IS NULL
+     AND pgvigil.job_exclusion(instance_id, coalesce(job_name, job_id::text), command) IS NULL
 )
 SELECT instance_id, 'critical' AS severity, 'job failing repeatedly' AS check_name, object, last_start AS at,
        'failed ' || fail_streak::text || ' times in a row; '
@@ -286,7 +293,7 @@ LANGUAGE sql STABLE AS $$
     UNION ALL
     SELECT g.scheduler, g.job_id::text, coalesce(g.job_name, g.job_id::text),
            lr.outcome, c.fail_24h, c.fail_7d, coalesce(sf.step_fail_24h, 0), coalesce(sf.step_fail_7d, 0), lf.at, ls.at, fr.at,
-           pgvigil.job_exclusion(g.instance_id, g.job_name, g.command)
+           pgvigil.job_exclusion(g.instance_id, coalesce(g.job_name, g.job_id::text), g.command)
       FROM pgvigil.jobs g
       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE r.start_time > now() - interval '24 hours') AS fail_24h, count(*) AS fail_7d
                            FROM pgvigil.job_runs r
@@ -378,7 +385,7 @@ LANGUAGE sql STABLE AS $$
          CASE WHEN a.n > 0 THEN r.start_time + make_interval(secs => a.avg_secs) END,
          coalesce(a.n >= 3 AND extract(epoch FROM now() - r.start_time) > greatest(2 * a.avg_secs, a.avg_secs + 10), false),
          st.step_name, st.start_time, r.snapshot_at, j.active,
-         pgvigil.job_exclusion(r.instance_id, j.job_name, coalesce(j.command, r.command))
+         pgvigil.job_exclusion(r.instance_id, coalesce(j.job_name, r.job_id::text), coalesce(j.command, r.command))
     FROM pgvigil.job_runs r
     JOIN pgvigil.jobs j ON j.instance_id = r.instance_id AND j.scheduler = r.scheduler AND j.job_id = r.job_id
     LEFT JOIN LATERAL (SELECT avg(x.duration_secs) AS avg_secs, count(*) AS n, max(x.duration_secs) AS max_secs
@@ -387,12 +394,19 @@ LANGUAGE sql STABLE AS $$
                           AND x.status = 'succeeded' AND x.duration_secs IS NOT NULL
                           AND x.start_time > now() - interval '30 days' AND x.run_id <> r.run_id) a ON true
     LEFT JOIN LATERAL (SELECT s.step_name, s.start_time FROM pgvigil.job_step_runs s
-                        WHERE r.scheduler = 'pgagent' AND s.instance_id = r.instance_id AND s.run_id = r.run_id AND s.end_time IS NULL
+                        WHERE r.scheduler = 'pgagent' AND s.instance_id = r.instance_id AND s.job_id = r.job_id AND s.run_id = r.run_id
+                          AND s.end_time IS NULL
                         ORDER BY s.start_time DESC LIMIT 1) st ON true
    WHERE r.instance_id = p_instance_id AND r.end_time IS NULL
      AND r.status NOT IN ('succeeded', 'failed', 'internal error', 'aborted')
      AND j.is_present AND r.snapshot_at >= j.snapshot_at - interval '1 second'
    ORDER BY r.start_time
 $$;
+
+-- the actions door's CHECK last (see the lock footprint above)
+ALTER TABLE pgvigil.actions_log DROP CONSTRAINT IF EXISTS actions_log_action_check;
+ALTER TABLE pgvigil.actions_log ADD CONSTRAINT actions_log_action_check CHECK (
+     (engine = 'postgres' AND action IN ('cancel', 'terminate', 'explain_analyze', 'hypo_index', 'job_stop', 'job_start'))
+  OR (engine = 'sqlserver' AND action IN ('kill', 'job_start', 'job_stop')));
 
 SELECT pgvigil.apply_roles();

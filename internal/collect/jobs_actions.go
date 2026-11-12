@@ -14,6 +14,8 @@ package collect
 // application_name 'pg_cron', the job's user and database). pgAgent records no pid: a step runs on a connection of the
 // pgAgent daemon with no application_name, so the backend is the one active session of the step's database whose
 // statement is the step's code and started no earlier than the step; none or several = refused, nothing is sent.
+// pgAgent hands a connection to the next step when one ends, so the actions login is connected and checked BEFORE the
+// target is read: one round trip separates the last check from the signal.
 
 import (
 	"context"
@@ -41,7 +43,8 @@ func (jobStepsCollector) Applies(info platform.Info) (bool, string) {
 	return true, ""
 }
 
-// pgAgent's step runs of the last day and the ones still running; a step's output masked as a run's message is.
+// pgAgent's step runs of the runs of the last day and of the runs still going (read from pga_joblog, which is smaller
+// than the step log and never purged by pgAgent either); a step's output masked as a run's message is, then cut.
 // jslstatus: r running, s succeeded, f failed, i a failure the step's 'on error = ignore' passed over, d aborted.
 const jobStepsSQL = `
 SELECT l.jlgjobid::bigint AS job_id, sl.jsljlgid::bigint AS run_id, sl.jslid::bigint AS step_log_id, sl.jsljstid::bigint AS step_id,
@@ -50,11 +53,11 @@ SELECT l.jlgjobid::bigint AS job_id, sl.jsljlgid::bigint AS run_id, sl.jslid::bi
                          WHEN 'r' THEN 'running' ELSE sl.jslstatus::text END AS status,
        sl.jslresult AS result, sl.jslstart AS start_time,
        CASE WHEN sl.jslstatus = 'r' THEN NULL ELSE sl.jslstart + sl.jslduration END AS end_time,
-       extract(epoch FROM sl.jslduration) AS duration_secs, left(%s, 4000) AS output
-  FROM pgagent.pga_jobsteplog sl
-  JOIN pgagent.pga_joblog l ON l.jlgid = sl.jsljlgid
+       extract(epoch FROM sl.jslduration) AS duration_secs, left(%s, 8000) AS output
+  FROM pgagent.pga_joblog l
+  JOIN pgagent.pga_jobsteplog sl ON sl.jsljlgid = l.jlgid
   LEFT JOIN pgagent.pga_jobstep st ON st.jstid = sl.jsljstid
- WHERE sl.jslstart > now() - interval '1 day' OR sl.jslstatus = 'r'`
+ WHERE l.jlgstart > now() - interval '1 day' OR l.jlgstatus = 'r'`
 
 func (jobStepsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Info) ([]Row, error) {
 	rows, err := conn.Query(ctx, fmt.Sprintf(jobStepsSQL, maskSQL("sl.jsloutput")))
@@ -66,8 +69,12 @@ func (jobStepsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Inf
 		return nil, fmt.Errorf("pgagent.pga_jobsteplog: %w", err)
 	}
 	for _, r := range out {
+		// masked first, cut after: a cut through a password would leave its start unmasked
 		if t, ok := r["output"].(string); ok {
-			r["output"] = MaskJobText(t)
+			if t = MaskJobText(t); len([]rune(t)) > 4000 {
+				t = string([]rune(t)[:4000])
+			}
+			r["output"] = t
 		}
 	}
 	return out, nil
@@ -118,7 +125,7 @@ func ValidateJobAction(r JobActionRequest) error {
 		return errors.New("pg_cron has no run-now call: a pg_cron job runs at its schedule only")
 	case r.JobID <= 0:
 		return errors.New("job_id must be a positive job id")
-	case strings.TrimSpace(r.JobName) == "" || len(r.JobName) > 300:
+	case strings.TrimSpace(r.JobName) == "" || len([]rune(r.JobName)) > 300:
 		return errors.New("the job's name as shown is required (300 characters at most)")
 	case r.Kind == JobStop && r.RunID <= 0:
 		return errors.New("a stop names the run (run_id)")
@@ -140,8 +147,8 @@ func jobRefused(format string, a ...any) JobActionResult {
 	return JobActionResult{Outcome: actions.Refused, Detail: fmt.Sprintf(format, a...)}
 }
 
-// jobConn opens a short-lived connection that cannot hang on a busy server; readOnly for every connection but the
-// one that writes pgAgent's jobnextrun.
+// jobConn opens a short-lived connection that cannot hang on a busy server; read-only for every connection but the one
+// that writes pgAgent's jobnextrun, which sets it off explicitly (a role or database default of on would win otherwise).
 func jobConn(ctx context.Context, dsn, app string, readOnly bool) (*pgx.Conn, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -157,7 +164,7 @@ func jobConn(ctx context.Context, dsn, app string, readOnly bool) (*pgx.Conn, er
 	if readOnly {
 		rp["default_transaction_read_only"] = "on"
 	} else {
-		delete(rp, "default_transaction_read_only")
+		rp["default_transaction_read_only"] = "off"
 	}
 	return pgx.ConnectConfig(ctx, cfg)
 }
@@ -179,15 +186,29 @@ func ExecuteJobAction(ctx context.Context, d actions.Door, r JobActionRequest) J
 		return jobRefused("the monitoring login could not connect to check the target: %v", err)
 	}
 	defer func() { _ = mon.Close(context.WithoutCancel(ctx)) }()
+	// a standby holds a copy of the primary's job tables: its sessions are not the jobs' (pg_is_in_recovery: any login)
+	var standby bool
+	if err := mon.QueryRow(ctx, `SELECT pg_is_in_recovery()`).Scan(&standby); err != nil {
+		return jobRefused("the server check failed: %v", err)
+	}
+	if standby {
+		return jobRefused("this server is a standby: its job tables are the primary's copy and the jobs run on the primary; act from the primary's page")
+	}
+	// the actions login first (connected and checked), so the target read below is the last step before the signal
+	act, fail := actionsLogin(ctx, mon, d, r.Kind == JobStart)
+	if fail != nil {
+		return *fail
+	}
+	defer func() { _ = act.Close(context.WithoutCancel(ctx)) }()
+	if r.Kind == JobStart {
+		return runNow(ctx, mon, act, r)
+	}
 	var canWatch bool
 	if err := mon.QueryRow(ctx, `SELECT pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')`).Scan(&canWatch); err != nil {
 		return jobRefused("the target check failed: %v", err)
 	}
 	if !canWatch {
 		return jobRefused("the monitoring login cannot read every session (it needs pg_monitor or pg_read_all_stats): the target cannot be checked")
-	}
-	if r.Kind == JobStart {
-		return runNow(ctx, mon, d, r)
 	}
 	var res JobActionResult
 	if r.Scheduler == "pg_cron" {
@@ -198,14 +219,6 @@ func ExecuteJobAction(ctx context.Context, d actions.Door, r JobActionRequest) J
 	if res.Outcome != "" {
 		return res
 	}
-	// the signal, through the actions login
-	act, fail := actionsLogin(ctx, mon, d, false)
-	if fail != nil {
-		fail.PID, fail.BackendStart, fail.TargetUser, fail.TargetApp, fail.Datname = res.PID, res.BackendStart, res.TargetUser, res.TargetApp, res.Datname
-		fail.Statement = res.Statement
-		return *fail
-	}
-	defer func() { _ = act.Close(context.WithoutCancel(ctx)) }()
 	var ok bool
 	if err := act.QueryRow(ctx, `SELECT pg_cancel_backend($1)`, res.PID).Scan(&ok); err != nil {
 		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("pg_cancel_backend(%d) failed: %v", res.PID, err)
@@ -225,13 +238,12 @@ func ExecuteJobAction(ctx context.Context, d actions.Door, r JobActionRequest) J
 
 // backendSQL is a session as the monitoring login reads it.
 const backendSQL = `
-SELECT a.backend_start, a.usename, a.application_name, a.backend_type, a.datname, coalesce(r.rolsuper, false), a.query_start, a.state,
-       left(a.query, 200)
+SELECT a.backend_start, a.usename, a.application_name, a.backend_type, a.datname, coalesce(r.rolsuper, false), a.state
   FROM pg_stat_activity a LEFT JOIN pg_roles r ON r.oid = a.usesysid
  WHERE a.pid = $1`
 
 // cronTarget checks a pg_cron run: still running, the job_pid shown, and that pid's backend the one the run started
-// (no later backend that reused the pid, the run's user and database, application_name pg_cron, no superuser).
+// (no later backend that reused the pid, the run's user and database, application_name pg_cron, active, no superuser).
 func cronTarget(ctx context.Context, mon *pgx.Conn, r JobActionRequest) JobActionResult {
 	var (
 		status, user, db, name *string
@@ -253,16 +265,17 @@ SELECT d.status, d.job_pid, d.start_time, d.end_time, d.username::text, d.databa
 		return jobRefused("pg_cron job %d is now named %q, not %q as shown: nothing was sent", r.JobID, deref(name), r.JobName)
 	case end != nil || (deref(status) != "running" && deref(status) != "starting" && deref(status) != "sending" && deref(status) != "connecting"):
 		return jobRefused("run %d has ended (%s): nothing to stop", r.RunID, orDash(status))
+	case start == nil:
+		return jobRefused("run %d has no start time yet (pg_cron is still connecting it): try again in a moment", r.RunID)
 	case pid == nil || *pid != r.PID:
 		return jobRefused("run %d's job_pid is %s, not %d as shown: nothing was sent", r.RunID, intOrNone(pid), r.PID)
 	}
 	var (
-		bs                    *time.Time
-		bu, ba, bt, bd, st, q *string
-		super                 bool
-		qs                    *time.Time
+		bs                 *time.Time
+		bu, ba, bt, bd, st *string
+		super              bool
 	)
-	err = mon.QueryRow(ctx, backendSQL, r.PID).Scan(&bs, &bu, &ba, &bt, &bd, &super, &qs, &st, &q)
+	err = mon.QueryRow(ctx, backendSQL, r.PID).Scan(&bs, &bu, &ba, &bt, &bd, &super, &st)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return jobRefused("pid %d is not running any more: nothing to stop", r.PID)
 	}
@@ -273,7 +286,7 @@ SELECT d.status, d.job_pid, d.start_time, d.end_time, d.username::text, d.databa
 		Statement: fmt.Sprintf("SELECT pg_cancel_backend(%d)", r.PID)}
 	slack := 2 * time.Second
 	switch {
-	case bs == nil || start == nil || bs.After(start.Add(slack)):
+	case bs == nil || bs.After(start.Add(slack)):
 		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf("pid %d belongs to a backend that started %s, after the run (%s): the run's backend has ended and the pid was reused",
 			r.PID, fmtTime(bs), fmtTime(start))
 	case deref(bt) != "client backend":
@@ -284,6 +297,8 @@ SELECT d.status, d.job_pid, d.start_time, d.end_time, d.username::text, d.databa
 		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf("pid %d is %s on %s, the run is %s on %s: it is not the run's session", r.PID, orDash(bu), orDash(bd), orDash(user), orDash(db))
 	case super:
 		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf("the run's backend %d belongs to the superuser %s: the actions login holds pg_signal_backend only and a superuser's backend stays out of its reach", r.PID, deref(bu))
+	case deref(st) != "active":
+		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf("the run's backend %d is %s, not running a statement: its command has finished and pg_cron has not recorded the end yet", r.PID, orDash(st))
 	}
 	return res
 }
@@ -291,9 +306,7 @@ SELECT d.status, d.job_pid, d.start_time, d.end_time, d.username::text, d.databa
 // agentTarget checks a pgAgent run: still running, its running step a SQL step on the monitored server, and exactly
 // one active backend whose statement is the step's code.
 func agentTarget(ctx context.Context, mon *pgx.Conn, r JobActionRequest) JobActionResult {
-	var (
-		status, name *string
-	)
+	var status, name *string
 	err := mon.QueryRow(ctx, `SELECT l.jlgstatus::text, j.jobname FROM pgagent.pga_joblog l JOIN pgagent.pga_job j ON j.jobid = l.jlgjobid
  WHERE l.jlgid = $1 AND l.jlgjobid = $2`, r.RunID, r.JobID).Scan(&status, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -380,9 +393,38 @@ SELECT a.pid, a.backend_start, a.usename, a.application_name, coalesce(r.rolsupe
 	return res
 }
 
-// runNow is pgAgent's Run now: the job exists under the name shown, is enabled, is not running, and a pgAgent that may
-// take it is connected; then jobnextrun = now() through the actions login.
-func runNow(ctx context.Context, mon *pgx.Conn, d actions.Door, r JobActionRequest) JobActionResult {
+// runNow is pgAgent's Run now: both logins in the same database (the one pgAgent's tables were read in), the actions
+// login allowed to set jobnextrun, the job under the name shown, enabled, not running, and a pgAgent that may take it
+// connected; then jobnextrun = now() through the actions login.
+func runNow(ctx context.Context, mon, act *pgx.Conn, r JobActionRequest) JobActionResult {
+	stmt := fmt.Sprintf("UPDATE pgagent.pga_job SET jobnextrun = now() WHERE jobid = %d", r.JobID)
+	res := JobActionResult{Statement: stmt}
+	var monDB, actDB string
+	if err := mon.QueryRow(ctx, `SELECT current_database()`).Scan(&monDB); err != nil {
+		return JobActionResult{Outcome: actions.Refused, Detail: fmt.Sprintf("the database check failed: %v", err), Statement: stmt}
+	}
+	if err := act.QueryRow(ctx, `SELECT current_database()`).Scan(&actDB); err != nil {
+		return JobActionResult{Outcome: actions.Failed, Detail: fmt.Sprintf("the actions login's database check failed: %v", err), Statement: stmt}
+	}
+	if monDB != actDB {
+		return JobActionResult{Outcome: actions.Refused, Statement: stmt,
+			Detail: fmt.Sprintf("actions_dsn connects to database %q, the instance's dsn to %q, where pgAgent's tables are: Run now writes there, so actions_dsn must name %q", actDB, monDB, monDB)}
+	}
+	var may bool
+	// in this order (a CASE): the schema, its USAGE (naming pga_job without it is an error), then the four columns
+	if err := act.QueryRow(ctx, `
+SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'pgagent') THEN false
+            WHEN NOT has_schema_privilege('pgagent', 'USAGE') THEN false
+            WHEN to_regclass('pgagent.pga_job') IS NULL THEN false
+            ELSE has_column_privilege('pgagent.pga_job', 'jobnextrun', 'UPDATE') AND has_column_privilege('pgagent.pga_job', 'jobid', 'SELECT')
+                 AND has_column_privilege('pgagent.pga_job', 'jobenabled', 'SELECT') AND has_column_privilege('pgagent.pga_job', 'jobagentid', 'SELECT') END`).Scan(&may); err != nil {
+		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("the actions login's grant check failed: %v", err)
+		return res
+	}
+	if !may {
+		res.Outcome, res.Detail = actions.Refused, "the actions login may not set jobnextrun (GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions; GRANT SELECT (jobid, jobenabled, jobagentid), UPDATE (jobnextrun) ON pgagent.pga_job TO pgvigil_actions)"
+		return res
+	}
 	var (
 		name, host *string
 		enabled    bool
@@ -395,14 +437,12 @@ SELECT j.jobname, j.jobenabled, j.jobagentid, j.jobhostagent,
        (SELECT count(*) FROM pgagent.pga_jobagent)::int,
        (j.jobhostagent = '' OR EXISTS (SELECT 1 FROM pgagent.pga_jobagent a WHERE a.jagstation = j.jobhostagent))
   FROM pgagent.pga_job j WHERE j.jobid = $1`, r.JobID).Scan(&name, &enabled, &agent, &host, &agents, &hostOK)
-	stmt := fmt.Sprintf("UPDATE pgagent.pga_job SET jobnextrun = now() WHERE jobid = %d", r.JobID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return jobRefused("pgAgent job %d is not in pgagent.pga_job", r.JobID)
+		return JobActionResult{Outcome: actions.Refused, Detail: fmt.Sprintf("pgAgent job %d is not in pgagent.pga_job", r.JobID), Statement: stmt}
 	}
 	if err != nil {
-		return jobRefused("the job check failed: %v", err)
+		return JobActionResult{Outcome: actions.Refused, Detail: fmt.Sprintf("the job check failed: %v", err), Statement: stmt}
 	}
-	res := JobActionResult{Statement: stmt}
 	switch {
 	case deref(name) != r.JobName:
 		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf("pgAgent job %d is now named %q, not %q as shown: nothing was sent", r.JobID, deref(name), r.JobName)
@@ -416,22 +456,6 @@ SELECT j.jobname, j.jobenabled, j.jobagentid, j.jobhostagent,
 		res.Outcome, res.Detail = actions.Refused, fmt.Sprintf("the job runs on host agent %q only, and no pgAgent of that host is connected", deref(host))
 	}
 	if res.Outcome != "" {
-		return res
-	}
-	act, fail := actionsLogin(ctx, mon, d, true)
-	if fail != nil {
-		fail.Statement = stmt
-		return *fail
-	}
-	defer func() { _ = act.Close(context.WithoutCancel(ctx)) }()
-	var may bool
-	if err := act.QueryRow(ctx, `SELECT coalesce(has_column_privilege(to_regclass('pgagent.pga_job'), 'jobnextrun', 'UPDATE'), false)
-	   AND coalesce(has_column_privilege(to_regclass('pgagent.pga_job'), 'jobid', 'SELECT'), false)`).Scan(&may); err != nil {
-		res.Outcome, res.Detail = actions.Failed, fmt.Sprintf("the actions login's grant check failed: %v", err)
-		return res
-	}
-	if !may {
-		res.Outcome, res.Detail = actions.Refused, "the actions login may not set jobnextrun (GRANT USAGE ON SCHEMA pgagent TO pgvigil_actions; GRANT SELECT (jobid, jobenabled, jobagentid), UPDATE (jobnextrun) ON pgagent.pga_job TO pgvigil_actions)"
 		return res
 	}
 	tag, err := act.Exec(ctx, `UPDATE pgagent.pga_job SET jobnextrun = now() WHERE jobid = $1 AND jobenabled AND jobagentid IS NULL`, r.JobID)

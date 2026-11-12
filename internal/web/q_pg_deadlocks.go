@@ -81,15 +81,45 @@ type pgDeadlock struct {
 var (
 	// "Process 123 waits for ShareLock on transaction 456; blocked by process 789." (numbers '?' under 'normalized')
 	dlWaitRE = regexp.MustCompile(`^Process (\d+|\?) waits for (\w+) on (.+?); blocked by process (\d+|\?)\.?$`)
-	dlStmtRE = regexp.MustCompile(`^Process (\d+|\?): (.*)$`)
+	dlStmtRE = regexp.MustCompile(`^Process (\d+|\?):(?: (.*))?$`)
+	// the 'normalized' policy folds every newline into a space: the lines are split again at their starts
+	dlSplitRE = regexp.MustCompile(`\s+(Process (?:\d+|\?)(?: waits for |:)|CONTEXT: |HINT: )`)
 	// the lock tags of DescribeLockTag that carry a relation
-	dlRelRE    = regexp.MustCompile(`^(?:extension of |page \S+ of |tuple \(\S+\) of )?relation (\d+|\?) of database (\d+|\?)$`)
-	dlCtxRE    = regexp.MustCompile(`(?m)while (?:updating|locking|deleting|inserting index|checking uniqueness of|rechecking updated|inserting) tuple \([^)]*\) in relation "([^"]+)"`)
-	dlTargetRE = regexp.MustCompile(`(?is)^\s*(?:with\b.*?\)\s*)?(?:update\s+(?:only\s+)?|delete\s+from\s+(?:only\s+)?|insert\s+into\s+|lock\s+(?:table\s+)?(?:only\s+)?|select\b.*?\bfrom\s+(?:only\s+)?)((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)`)
+	dlRelRE = regexp.MustCompile(`^(?:extension of |page \S+ of |tuple \(\S+\) of )?relation (\d+|\?) of database (\d+|\?)$`)
+	// the lock-wait contexts of lmgr.c (XactLockTableWaitErrorCb's texts)
+	dlCtxRE = regexp.MustCompile(`(?m)while (?:(?:updating|locking|deleting|inserting index|checking uniqueness of|rechecking updated|inserting) tuple \([^)]*\)|locking updated version \([^)]*\) of tuple|checking exclusion constraint on tuple \([^)]*\)) in relation "([^"]+)"`)
+	// a statement's target: UPDATE / DELETE FROM / INSERT INTO / LOCK [TABLE] name, or the first FROM name of a SELECT
+	// that is not a function call (from now()); leading comments and a BEGIN; are skipped
+	dlTargetRE = regexp.MustCompile(`(?is)^(?:update\s+(?:only\s+)?|delete\s+from\s+(?:only\s+)?|insert\s+into\s+|lock\s+(?:table\s+)?(?:only\s+)?)((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)`)
+	dlFromRE   = regexp.MustCompile(`(?is)\bfrom\s+(?:only\s+)?((?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?)\s*(\(?)`)
+	dlLeadRE   = regexp.MustCompile(`(?is)^(?:\s+|/\*.*?\*/|--[^\n]*\n?|begin\s*;|start\s+transaction\s*;)+`)
 	dlNumRE    = regexp.MustCompile(`\b\d+(?:\.\d+)?\b`)
 	dlStrRE    = regexp.MustCompile(`'(?:[^']|'')*'`)
 	dlSpaceRE  = regexp.MustCompile(`\s+`)
 )
+
+// stmtTarget is the relation a statement works on, "" when it names none this reading can tell
+func stmtTarget(st string) string {
+	st = dlLeadRE.ReplaceAllString(st, "")
+	if m := dlTargetRE.FindStringSubmatch(st); m != nil {
+		return strings.ReplaceAll(m[1], `"`, "")
+	}
+	if len(st) >= 6 && strings.EqualFold(st[:6], "select") {
+		for _, m := range dlFromRE.FindAllStringSubmatch(st, -1) {
+			if m[2] == "" { // not a function call
+				return strings.ReplaceAll(m[1], `"`, "")
+			}
+		}
+	}
+	return ""
+}
+
+func deref0i(p *int) int {
+	if p == nil {
+		return -1
+	}
+	return *p
+}
 
 func strp(s string) *string {
 	if strings.TrimSpace(s) == "" {
@@ -98,15 +128,16 @@ func strp(s string) *string {
 	return &s
 }
 
-// lockKindOf is the lock tag's kind: transaction, relation, tuple, page, advisory lock, ...
+// lockKindOf is the lock tag's kind: transaction, relation, tuple, page, advisory, ... (no word 'lock' in it: the graph
+// adds its own)
 func lockKindOf(tag string) string {
 	for _, k := range []string{"virtual transaction", "speculative token", "extension of relation", "advisory lock", "user lock",
 		"remote transaction", "applying transaction", "tuple", "page", "relation", "transaction", "object", "pg_database.datfrozenxid"} {
 		if strings.HasPrefix(tag, k) {
-			return k
+			return strings.TrimSuffix(k, " lock")
 		}
 	}
-	return "lock"
+	return "other"
 }
 
 // parsePgDeadlock takes a deadlock's DETAIL lines (and a CONTEXT line where the event keeps one) apart. victimPID is the
@@ -116,10 +147,12 @@ func parsePgDeadlock(detail, statement string, victimPID int) pgDeadlock {
 	var stmts []*pgDlProc
 	var cur *pgDlProc
 	ctxRel := ""
+	detail = dlSplitRE.ReplaceAllString(strings.ReplaceAll(detail, "\r", ""), "\n$1")
 	if m := dlCtxRE.FindStringSubmatch(detail); m != nil {
 		ctxRel = m[1]
 	}
-	for _, raw := range strings.Split(strings.ReplaceAll(detail, "\r", ""), "\n") {
+	stmtByPid := map[int]int{} // pid -> its index in stmts (a continuation line replaces the statement's pointer)
+	for _, raw := range strings.Split(detail, "\n") {
 		l := strings.TrimSpace(raw)
 		if strings.HasPrefix(l, "CONTEXT: ") || strings.HasPrefix(l, "HINT: ") {
 			cur = nil
@@ -146,6 +179,9 @@ func parsePgDeadlock(detail, statement string, victimPID int) pgDeadlock {
 			st := m[2]
 			p := &pgDlProc{Statement: &st}
 			stmts = append(stmts, p)
+			if n, err := strconv.Atoi(m[1]); err == nil {
+				stmtByPid[n] = len(stmts) - 1
+			}
 			cur = p
 			continue
 		}
@@ -158,10 +194,15 @@ func parsePgDeadlock(detail, statement string, victimPID int) pgDeadlock {
 		return d
 	}
 	d.Parsed = true
-	// the statements follow the wait lines in the same order; their pids name them where the log has numbers
+	// a statement by its pid where the log has numbers, else by its place (the statements follow the waits in order)
 	for i, p := range d.Processes {
-		if i < len(stmts) {
+		if k, ok := stmtByPid[deref0i(p.Spid)]; ok && p.Spid != nil {
+			p.Statement = stmts[k].Statement
+		} else if p.Spid == nil && i < len(stmts) {
 			p.Statement = stmts[i].Statement
+		}
+		if p.Statement != nil && strings.TrimSpace(*p.Statement) == "" {
+			p.Statement = nil
 		}
 		if p.Spid != nil {
 			p.Process = "process " + strconv.Itoa(*p.Spid)
@@ -201,8 +242,8 @@ func parsePgDeadlock(detail, statement string, victimPID int) pgDeadlock {
 			r, from := ctxRel, "context"
 			p.Relation, p.RelationFrom = &r, &from
 		case p.Statement != nil:
-			if m := dlTargetRE.FindStringSubmatch(*p.Statement); m != nil {
-				r, from := strings.ReplaceAll(m[1], `"`, ""), "statement"
+			if t := stmtTarget(*p.Statement); t != "" {
+				r, from := t, "statement"
 				p.Relation, p.RelationFrom = &r, &from
 			}
 		}
@@ -211,6 +252,10 @@ func parsePgDeadlock(detail, statement string, victimPID int) pgDeadlock {
 	byTag := map[string]*pgDlRes{}
 	for _, p := range d.Processes {
 		tag := deref(p.WaitResource)
+		// under the 'normalized' policy every tag reads 'transaction ?': one lock per holder, or the cycle merges into one
+		if strings.Contains(tag, "?") {
+			tag += " | " + p.BlockedBy
+		}
 		res, ok := byTag[tag]
 		if !ok {
 			res = &pgDlRes{Type: p.lockKind, Object: p.WaitResource, Owners: []pgDlRef{}, Waiters: []pgDlRef{}}
@@ -273,6 +318,14 @@ SELECT t.dbid, t.relid, t.schema_name || '.' || t.table_name
   FROM pgvigil.tables t
   JOIN unnest($2::bigint[], $3::bigint[]) AS x(db, rel) ON t.dbid = x.db AND t.relid = x.rel
  WHERE t.instance_id = $1`
+
+// every deadlock of the range, by step: the total and the trend (the list, the groups and the breakdowns read the
+// newest 500)
+const sqlPgDeadlockTrend = `
+SELECT floor(extract(epoch FROM e.snapshot_at) / $4)::bigint * $4 AS bucket, count(*) AS n
+  FROM pgvigil.log_events e
+ WHERE e.instance_id = $1 AND e.kind = 'deadlock' AND e.snapshot_at >= $2 AND e.snapshot_at < $3
+ GROUP BY 1`
 
 // the deadlock counter of pg_stat_database (dbstats: the rise per database, in the window) beside the log's count
 const sqlPgDeadlockCounter = `
@@ -385,6 +438,9 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 	var ats []time.Time
 	var dbs, rels []int64
 	for _, e := range evs {
+		if !e.Parsed && e.PID != nil {
+			ks, ps, ats = append(ks, e.Key), append(ps, *e.PID), append(ats, e.At)
+		}
 		for _, p := range e.Procs {
 			if p.Spid != nil {
 				ks, ps, ats = append(ks, e.Key), append(ps, *p.Spid), append(ats, e.At)
@@ -462,6 +518,21 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 				}
 				p.Relation = &n
 			}
+		}
+		// a bare name (from CONTEXT or a statement) takes the schema of the same table named by a lock of this deadlock
+		for _, p := range e.Procs {
+			if p.Relation == nil || strings.Contains(*p.Relation, ".") {
+				continue
+			}
+			for _, q := range e.Procs {
+				if q.lockRel != nil && q.Relation != nil && strings.HasSuffix(*q.Relation, "."+*p.Relation) {
+					v := *q.Relation
+					p.Relation = &v
+					break
+				}
+			}
+		}
+		for _, p := range e.Procs {
 			if p.Victim {
 				p.Login, p.Database = e.User, e.Database
 			}
@@ -501,9 +572,25 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 			shapes = append(shapes, dlShape(deref(p.Statement)))
 		}
 		if !e.Parsed {
-			// no cycle in the detail: the entry's own statement is the victim's
+			// no cycle in the detail: the entry's own statement is the victim's, its database and user the log line's, its
+			// application the victim pid's sample
 			e.VStmt = strp(e.stmt)
 			shapes = append(shapes, "(no DETAIL lines: the query_text policy none, or an entry cut short)")
+			if e.Database != nil {
+				dbSet[*e.Database] = true
+			}
+			if e.User != nil {
+				userSet[*e.User] = true
+			} else {
+				userSet["not sampled"] = true
+			}
+			e.Program = &notSampled
+			if e.PID != nil {
+				if sm, ok := samples[e.Key+"|"+strconv.Itoa(*e.PID)]; ok && sm.app != nil {
+					e.Program = sm.app
+				}
+			}
+			appSet[*e.Program] = true
 		}
 		sort.Strings(shapes)
 		e.Rels, e.Modes = joinSet(relSet), joinSet(modeSet)
@@ -555,17 +642,33 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 	if to.Sub(from) >= 24*time.Hour {
 		step = time.Hour
 	}
-	trend := map[time.Time]int{}
-	for _, e := range evs {
-		trend[e.At.Truncate(step)]++
+	// keyed by Unix seconds: a time read from the repository and one parsed from the URL differ in their Location
+	trend := map[int64]int64{}
+	var total int64
+	trows, err := s.pool.Query(ctx, sqlPgDeadlockTrend, id, from, to, int64(step.Seconds()))
+	if err != nil {
+		s.reply(w, r, nil, fmt.Errorf("trend: %w", err))
+		return
 	}
+	for trows.Next() {
+		var b, n int64
+		if err := trows.Scan(&b, &n); err != nil {
+			trows.Close()
+			s.reply(w, r, nil, fmt.Errorf("trend: %w", err))
+			return
+		}
+		trend[b] = n
+		total += n
+	}
+	trows.Close()
 	type tp struct {
 		At    time.Time `json:"snapshot_at"`
-		Count int       `json:"deadlocks"`
+		Count int64     `json:"deadlocks"`
 	}
 	var tl []tp
-	for t := from.Truncate(step); !t.After(to); t = t.Add(step) {
-		tl = append(tl, tp{t, trend[t]})
+	st := int64(step.Seconds())
+	for b := from.Unix() / st * st; b <= to.Unix(); b += st {
+		tl = append(tl, tp{time.Unix(b, 0).UTC(), trend[b]})
 		if len(tl) > 2000 {
 			break
 		}
@@ -582,7 +685,7 @@ func (s *Server) PgDeadlocks(w http.ResponseWriter, r *http.Request) {
 		gl = []*dlGroup{}
 	}
 	s.reply(w, r, map[string]any{
-		"deadlocks": evs, "more": more, "groups": gl, "trend": tl, "step_secs": int(step.Seconds()),
+		"deadlocks": evs, "more": more, "total": total, "groups": gl, "trend": tl, "step_secs": int(step.Seconds()),
 		"by_database": sortedCounts(byDB), "by_user": sortedCounts(byUser), "by_application": sortedCounts(byApp), "by_relation": sortedCounts(byRel),
 		"counter": map[string]any{"deadlocks": counted, "databases": dbn},
 	}, nil)

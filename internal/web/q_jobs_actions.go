@@ -63,8 +63,20 @@ func (s *Server) pgJobAllowed(instance, kind string) bool {
 	return v.(map[string]map[string]bool)[instance][kind]
 }
 
-// pgJobOff is why a job action is off on an instance, or "" when it is on.
-func (s *Server) pgJobOff(ctx context.Context, instance, kind string) string {
+// pgJobAuditOff is why the audit cannot take a job action's row, or "" when it can.
+func (s *Server) pgJobAuditOff(ctx context.Context) string {
+	var may bool
+	if err := s.actions.audit.QueryRow(ctx, `SELECT coalesce(has_function_privilege(to_regprocedure('pgvigil.import_pg_job_actions_log(int, timestamptz, jsonb)'), 'EXECUTE'), false)`).Scan(&may); err != nil {
+		return "the actions log could not be checked: " + err.Error()
+	} else if !may {
+		return "the actions log cannot take a job action: the repository has no pgvigil.import_pg_job_actions_log the audit login may call (run 'pgvigil migrate': 0102)"
+	}
+	return ""
+}
+
+// pgJobOff is why a job action is off on an instance, or "" when it is on; auditOff is pgJobAuditOff's answer, read once
+// per request.
+func (s *Server) pgJobOff(instance, kind, auditOff string) string {
 	a := s.actions
 	switch {
 	case a == nil:
@@ -78,11 +90,7 @@ func (s *Server) pgJobOff(ctx context.Context, instance, kind string) string {
 	if !s.pgJobAllowed(instance, kind) {
 		return fmt.Sprintf("instance %s's actions: list does not name %s: the job actions are off by default (add it to the instance's actions: in the config)", instance, kind)
 	}
-	var may bool
-	if err := a.audit.QueryRow(ctx, `SELECT coalesce(has_function_privilege(to_regprocedure('pgvigil.import_pg_job_actions_log(int, timestamptz, jsonb)'), 'EXECUTE'), false)`).Scan(&may); err != nil || !may {
-		return "the actions log cannot take a job action: the repository has no pgvigil.import_pg_job_actions_log the audit login may call (run 'pgvigil migrate': 0102)"
-	}
-	return ""
+	return auditOff
 }
 
 const sqlJobsRunning = `SELECT * FROM pgvigil.pg_jobs_running($1)`
@@ -117,8 +125,12 @@ func (s *Server) JobsRunning(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{}
 	acts := map[string]state{}
+	auditOff := ""
+	if s.actions != nil && s.actions.off == "" {
+		auditOff = s.pgJobAuditOff(ctx)
+	}
 	for _, k := range []string{collect.JobStop, collect.JobStart} {
-		why := s.pgJobOff(ctx, name, k)
+		why := s.pgJobOff(name, k, auditOff)
 		acts[k] = state{On: why == "", Reason: why}
 	}
 	out["actions"] = acts
@@ -202,25 +214,35 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, kind string) 
 		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("the actions log cannot be written (%v): nothing was sent", err))
 		return
 	}
-	var may bool
-	if err := a.audit.QueryRow(ctx, `SELECT coalesce(has_function_privilege(to_regprocedure('pgvigil.import_pg_job_actions_log(int, timestamptz, jsonb)'), 'EXECUTE'), false)`).Scan(&may); err != nil || !may {
-		writeErr(w, http.StatusServiceUnavailable, errors.New("the actions log cannot be written: the repository has no pgvigil.import_pg_job_actions_log the audit login may call (run 'pgvigil migrate': 0102); nothing was sent"))
+	if off := s.pgJobAuditOff(ctx); off != "" {
+		writeErr(w, http.StatusServiceUnavailable, errors.New(off+"; nothing was sent"))
 		return
 	}
 	req := collect.JobActionRequest{InstanceID: in.InstanceID, Instance: name, Kind: kind, Scheduler: in.Scheduler, JobID: in.JobID,
 		JobName: in.JobName, RunID: in.RunID, PID: in.PID, Reason: in.Reason, User: user, Client: clientIP(r)}
 	var res collect.JobActionResult
+	// the statement a refusal here would have sent (a pgAgent stop's pid is not known before its checks)
+	would := ""
+	switch {
+	case kind == collect.JobStart:
+		would = fmt.Sprintf("UPDATE pgagent.pga_job SET jobnextrun = now() WHERE jobid = %d", in.JobID)
+	case in.Scheduler == "pg_cron" && in.PID > 0:
+		would = fmt.Sprintf("SELECT pg_cancel_backend(%d)", in.PID)
+	}
 	switch {
 	case !s.pgJobAllowed(name, kind):
-		res = collect.JobActionResult{Outcome: actions.Refused,
+		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would,
 			Detail: fmt.Sprintf("instance %s's actions: list does not name %s: the job actions are off by default", name, kind)}
-	case strings.TrimSpace(in.Confirm) != in.JobName || in.JobName == "":
-		res = collect.JobActionResult{Outcome: actions.Refused, Detail: "the typed confirmation is not the job's name"}
+	case strings.TrimSpace(in.Confirm) != strings.TrimSpace(in.JobName) || strings.TrimSpace(in.JobName) == "":
+		res = collect.JobActionResult{Outcome: actions.Refused, Statement: would, Detail: "the typed confirmation is not the job's name"}
 	default:
 		res = pgJobRun(ctx, a.doors[name], req)
 	}
 	at := time.Now()
-	if err := s.writeJobAudit(context.WithoutCancel(ctx), at, req, res); err != nil {
+	// the audit row outlives a client that hangs up, never 15 s
+	actx, acancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer acancel()
+	if err := s.writeJobAudit(actx, at, req, res); err != nil {
 		s.log.Error("job actions: the audit row was not written", "instance", name, "action", kind, "job", in.JobID, "user", user,
 			"outcome", res.Outcome, "detail", res.Detail, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("%s: %s; the audit row could not be written: %v", res.Outcome, res.Detail, err))

@@ -14,7 +14,7 @@ import { sqlCell } from './sqlview';
 
 interface DlCount { name: string; deadlocks: number; processes: number; last: string }
 interface PgDeadlocks {
-  deadlocks: Row[]; more: boolean; groups: Row[]; trend: Row[]; step_secs: number;
+  deadlocks: Row[]; more: boolean; total: number; groups: Row[]; trend: Row[]; step_secs: number;
   by_database: DlCount[]; by_user: DlCount[]; by_application: DlCount[]; by_relation: DlCount[];
   counter: { deadlocks: number; databases: number };
 }
@@ -38,15 +38,18 @@ const resCols: Col[] = [
   { key: 'waiters', label: 'wanted by', fmt: v => Array.isArray(v) ? v.map(o => `${text((o as Row).process)} (${text((o as Row).mode)})`).join(', ') : '' },
 ];
 
-// openDeadlock draws one deadlock with its participants and locks
-function openDeadlock(d: Row, panel: HTMLElement) {
+// openDeadlock draws one deadlock with its participants and locks; focus moves to its heading when a click opened it
+function openDeadlock(d: Row, panel: HTMLElement, focus = false) {
   const g = graphFromRows(d.processes, d.resources);
+  const who = [d.victim_user == null ? null : text(d.victim_user), d.database == null ? null : `on ${text(d.database)}`].filter(Boolean).join(' ');
   const head = props([
-    ['when', fmtTime(d.event_at)], ['victim', `pid ${text(d.victim_pid)} (${text(d.victim_user)} on ${text(d.database)})`],
+    ['when', fmtTime(d.event_at)], ['victim', `pid ${text(d.victim_pid)}${who ? ` (${who})` : ''}`],
     ['processes', fmtNum(d.process_count)], ['relations', text(d.relations) || 'not named'], ['locks wanted', text(d.lock_modes)],
     ['group', `#${text(d.group)}`],
   ]);
-  panel.replaceChildren(el('h3', {}, `The deadlock of ${fmtTime(d.event_at)}`), head);
+  const h = el('h3', { tabindex: '-1' }, `The deadlock of ${fmtTime(d.event_at)}`);
+  panel.replaceChildren(h, head);
+  if (focus) h.focus();
   if (d.parsed !== true || !g) {
     panel.append(el('p', { class: 'empty' }, 'This deadlock has no DETAIL lines to draw: the instance\'s query_text policy is none (no detail is stored), or the log entry was cut short.'));
     return;
@@ -70,13 +73,15 @@ export async function pgDeadlocksView(ctx: Ctx): Promise<HTMLElement> {
   try {
     const d = await get<PgDeadlocks>('pg/deadlocks', { instance: ctx.instance, ...window_(ctx) });
     const rows = d.deadlocks ?? [];
-    const n = rows.length;
+    const n = rows.length, total = Number(d.total ?? n);
+    const counted = Number(d.counter?.deadlocks ?? 0);
     sec.append(el('div', { class: 'tiles' },
-      tile('in the log', fmtNum(n) + (d.more ? '+' : ''), n ? 'warn' : ''),
-      tile('pg_stat_database counted', fmtNum(d.counter?.deadlocks ?? 0), (d.counter?.deadlocks ?? 0) > n ? 'warn' : ''),
-      tile('groups', fmtNum((d.groups ?? []).length)),
+      tile('in the log', fmtNum(total), total ? 'warn' : ''),
+      tile('pg_stat_database counted', fmtNum(counted), counted > total ? 'warn' : ''),
+      tile('groups', fmtNum((d.groups ?? []).length) + (d.more ? ' (newest 500)' : '')),
       tile('last', n ? fmtTime(rows[0].event_at) : '-')));
-    if ((d.counter?.deadlocks ?? 0) > n) {
+    if (d.more) sec.append(el('p', { class: 'meta' }, `The chart counts all ${fmtNum(total)} deadlocks of the range; the groups, the breakdowns and the list read the newest 500.`));
+    if (counted > total) {
       sec.append(el('p', { class: 'meta' }, 'pg_stat_database counted more deadlocks than the log holds: the log reader may not read this server\'s log (the Logs tab says why), or its entries were cut.'));
     }
     if (n) {
@@ -88,11 +93,12 @@ export async function pgDeadlocksView(ctx: Ctx): Promise<HTMLElement> {
         donutChart('By application', slices(d.by_application)), donutChart('By relation', slices(d.by_relation))));
       sec.append(el('p', { class: 'meta' }, 'A deadlock counts once in each database, user, application and relation its processes had. The application comes from the activity samples (the pid seen within 90 seconds before), "not sampled" otherwise; a relation named "(from the statement)" is the statement\'s target, the log naming only a transaction.'));
     }
-    const panel = el('section', { class: 'detail', 'aria-live': 'polite' });
+    const panel = el('section', { class: 'detail' });
     const byKey = new Map(rows.map(r => [text(r.event_key), r]));
     const openBtn = (r: Row, label: string) => {
-      const b = el('button', { type: 'button', class: 'link', 'aria-label': `Graph: the deadlock of ${fmtTime(r.event_at)}` }, label);
-      b.addEventListener('click', () => openDeadlock(r, panel));
+      // the name starts with the visible words (a voice command says what it sees)
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `${label}: the deadlock of ${fmtTime(r.event_at)}` }, label);
+      b.addEventListener('click', () => openDeadlock(r, panel, true));
       return b;
     };
     const groupCols: Col[] = [
