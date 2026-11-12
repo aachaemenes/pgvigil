@@ -172,9 +172,9 @@ function versions(rows: Row[], jobName: string): HTMLElement {
 }
 
 // ---- thresholds at three levels (DBA Dash's Agent Job Thresholds: Job Level, Instance Level, Root Level, Inherit)
-interface Thresholds { writable: boolean; reason?: string; levels?: Table | null; status?: Table | null }
+export interface Thresholds { writable: boolean; reason?: string; levels?: Table | null; status?: Table | null }
 // a server without the route (an older one, or the demo) has no thresholds: the grid then has no status column
-async function loadThresholds(instance: number): Promise<Thresholds | null> {
+export async function loadThresholds(instance: number): Promise<Thresholds | null> {
   if (!instance) return null;
   try { return await get<Thresholds>('jobs/thresholds', { instance }); } catch { return null; }
 }
@@ -194,7 +194,7 @@ const thresholdRows: [string, string, string][] = [
 // thresholdsDialog: one job's thresholds at its three levels. A level with a row of its own applies whole; a level
 // without one inherits the level above (the root inherits the built-in rule: the last run failed = critical).
 // Save writes the level's row (the old one is ended and kept), Inherit ends it. Nothing is written on a bare click.
-function thresholdsDialog(instance: number, jobName: string, th: Thresholds, after: () => void) {
+export function thresholdsDialog(instance: number, jobName: string, th: Thresholds, after: () => void) {
   const levels = rowsOf(th.levels);
   const rowAt = (lv: Level) => levels.find(r => r.level === lv && (lv !== 'job' || r.job_name === jobName));
   let level: Level = 'job';

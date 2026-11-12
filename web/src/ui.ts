@@ -179,7 +179,9 @@ export function showMenu(x: number, y: number, items: [string, () => void][], ba
     else if (e.key === 'ArrowDown') { e.preventDefault(); bs[(i + 1) % bs.length].focus(); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); bs[(i - 1 + bs.length) % bs.length].focus(); }
   });
-  document.body.append(box);
+  // a grid inside a modal dialog (the file viewers, task 172): the menu goes into that dialog, the top layer, or it would
+  // sit under it, inert
+  (back?.closest('dialog[open]') ?? document.body).append(box);
   // kept inside the window: a right-click near the right or bottom edge opens it leftward or upward
   const r = box.getBoundingClientRect();
   if (r.right > innerWidth - 4) box.style.left = `${Math.max(4, x - r.width)}px`;

@@ -330,7 +330,7 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
           select('Group By', slowGroupBy, group, v => { group = v; void draw(); }),
           select('Database', [['', 'all databases'], ...dbs], db, v => { db = v; void draw(); }),
           select('Top', topChoices.map(n => [String(n), String(n)] as [string, string]), String(top), v => { top = Number(v); void draw(); }),
-          select('Events', [['calls', 'calls (DBA Dash)'], ['all', 'calls and their statements']], events_, v => { events_ = v; void draw(); })),
+          select('Events', [['calls', 'calls'], ['all', 'calls and their statements']], events_, v => { events_ = v; void draw(); })),
         o.keep ? el('p', { class: 'meta' }, group === 'instance' ? 'Under a tag folder the grid keeps the folder\'s instances; the All row counts the whole fleet.'
           : 'Under a tag folder only Group By Instance keeps the folder\'s instances: this grouping and the All row count the whole fleet.') : '',
         grid(rows, cols, 'No slow event in this window.'),
@@ -343,7 +343,7 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
     + 'so a drilled event shows the application the activity sampler saw for its pid during the run, marked sampled) and the SQL Server slow '
     + 'capture (rpc, batch and statement completions with CPU, reads, writes, rows and the result). Every count opens its events below, '
     + 'the longest first. Failed: a SQL Server result other than OK (Error, Abort). Events: SQL Server stores a slow procedure call and, '
-    + 'with the statement events on, its slow statements too; calls (the default) counts each call once, as DBA Dash does.', 'Slow queries by group')), body, drill);
+    + 'with the statement events on, its slow statements too; calls (the default) counts each call once.', 'Slow queries by group')), body, drill);
   void draw();
   return box;
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/repo"
+	"github.com/aachaemenes/pgvigil/internal/reportmail"
 	"github.com/aachaemenes/pgvigil/internal/sched"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -95,6 +96,8 @@ func run(args []string) int {
 		err = runMCP(ctx, log, args[1:])
 	case "mssql-xe":
 		err = runMSSQLXE(args[1:])
+	case "import":
+		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
 	default:
 		usage()
 		return 2
@@ -143,7 +146,8 @@ func runMSSQLXE(args []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|import|version> [-config file] [-once collection] [-instance name]")
+	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
 }
 
 // loadConfig reads the config for the repository commands; needInstance is the collector
@@ -316,6 +320,12 @@ func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
 	go func() {
 		if err := alerts.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
 			log.Warn("alert loop stopped", "err", err)
+		}
+	}()
+	// task 171: the report mails queued by serve, mailed through the smtp channels on the sender's login
+	go func() {
+		if err := reportmail.Run(ctx, log, alertsDSN, ast.Channels); err != nil {
+			log.Warn("report mail loop stopped", "err", err)
 		}
 	}()
 	return sched.Run(ctx, log, r, cfg)
