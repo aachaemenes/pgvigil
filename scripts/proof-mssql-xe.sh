@@ -55,7 +55,7 @@
 #  J. AlwaysOn_health, where Always On is enabled (SKIPPED with its reason where it is not): the 'ag' state row says
 #     running, mssql_ag_events holds as many availability_replica_state_change rows as sa counts in the session's
 #     files for the last 45 days.
-#  P. the pages' API (pgvigil serve on the proof's repository, curl): /api/mssql/xe returns its eight parts, the
+#  P. the pages' API (pgvigil serve on the proof's repository, curl): /api/mssql/xe returns its ten parts (block_findings and block_rollup since task 177 D04, each a grid), the
 #     captures' states (attention stopped by then), the proof's deadlock, the head statement's group, the bulk
 #     batches as ONE shape of at least 2,000 events, the attention and the two findings; ?part=state returns that
 #     part alone and an unknown part is a 400; the deadlock's detail holds two processes (one victim, both

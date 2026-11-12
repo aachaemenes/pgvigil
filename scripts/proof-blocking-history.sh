@@ -45,7 +45,8 @@
 #     an open transaction, a second waits on it), then a deadlock between two of the proof's own sessions, read by
 #     `collect -once mssql_xe` (retried for up to 60 s while the event reaches the file): one row in mssql_deadlocks
 #     for the proof's database, 2 processes, 1 victim, the graph XML whole. The API (/api/blocking/history, pgvigil
-#     serve -no-login): for the SQL Server instance the parts meta, trend, deadlock_trend; the trend's steps sum to 2
+#     serve -no-login): for the SQL Server instance the parts meta, trend, deadlock_trend, pairs (since task 177 D04: at least one
+#     blocked / blocking pair, the chain both snapshots saw); the trend's steps sum to 2
 #     snapshots, 2 with a blocked session, the most blocked at least 1, a longest wait above 0; deadlock_trend's steps
 #     sum to the repository's count of the instance's deadlocks in the window (at least 1); every step of the window
 #     is a row (both parts hold floor((to - floor(from / step) * step) / step) + 1 rows). For the PostgreSQL instance the parts meta, summary, episodes, trend, xmin_summary, xmin_pins,
@@ -258,6 +259,7 @@ rows = lambda p: [dict(zip(d[p]["columns"], r)) for r in d[p]["rows"]]
 assert sorted(d) == ["deadlock_trend", "meta", "pairs", "trend"], sorted(d)
 # pairs since task 177 D04 (the blocked / blocking pairs of the minute snapshots, pgvigil.mssql_block_pairs): a grid
 assert isinstance(d["pairs"].get("columns"), list) and isinstance(d["pairs"].get("rows"), list), sorted(d["pairs"])
+assert len(d["pairs"]["rows"]) >= 1, d["pairs"]  # the chain both snapshots saw is one pair at least
 t = rows("trend"); dt = rows("deadlock_trend"); m = rows("meta")[0]
 assert m["engine"] == "sqlserver" and m["cut"] is False, m
 assert sum(r["snapshots"] for r in t) == 2 and sum(r["with_blocking"] for r in t) == 2, t
