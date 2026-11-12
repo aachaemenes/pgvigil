@@ -109,7 +109,7 @@ func XEScript(installID, form string) (string, error) {
 	case XEFormAzureDB:
 		w("  Azure SQL Database: run it IN THE DATABASE pgvigil connects to. The sessions are database-scoped and every\n" +
 			"  target is a ring buffer (an event file there needs a storage container and a credential).\n" +
-			"  NOT PROVEN: this form was written from the documentation and has not been run against Azure SQL Database.\n")
+			"  Proven against Azure SQL Database (General Purpose serverless) by scripts/proof-mssql-azuresqldb.sh.\n")
 	case XEFormAzureMI:
 		w("  Azure SQL Managed Instance: run it in master. Every target is a ring buffer (an event file there must be a\n" +
 			"  blob URL with a credential).\n" +
@@ -166,7 +166,11 @@ func XEScript(installID, form string) (string, error) {
 	session(xeBlocked, "ADD EVENT sqlserver.blocked_process_report(ACTION(package0.event_sequence))\n"+ring("@blocked_kb")+"\n"+opts)
 
 	// the slow session: the completions with who ran them; pgvigil's own sessions are left out by their program name
-	const who = "sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.database_name,sqlserver.server_principal_name,sqlserver.session_id"
+	who := "sqlserver.client_app_name,sqlserver.client_hostname,sqlserver.database_name,sqlserver.server_principal_name,sqlserver.session_id"
+	if form == XEFormAzureDB {
+		// Azure SQL Database has no server_principal_name action (Msg 25744); username is the login there, and xe_shred.go reads it
+		who = strings.Replace(who, "sqlserver.server_principal_name", "sqlserver.username", 1)
+	}
 	const pred = "WHERE ([duration]>=(' + @us + N') AND [sqlserver].[client_app_name]<>N''pgvigil'')"
 	slow := "ADD EVENT sqlserver.rpc_completed(ACTION(package0.event_sequence," + who + ") " + pred + "),\n" +
 		"ADD EVENT sqlserver.sql_batch_completed(ACTION(package0.event_sequence," + who + ") " + pred + ")' + CASE WHEN @slow_statements = 1 THEN N',\n" +

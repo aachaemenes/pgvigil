@@ -278,6 +278,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/mssql/rowversions", s.MSSQLRowVersions)
 	api.HandleFunc("GET /api/mssql/config", s.MSSQLConfig)
 	api.HandleFunc("GET /api/mssql/properties", s.MSSQLProperties)
+	api.HandleFunc("GET /api/mssql/state", s.MSSQLState)
 	api.HandleFunc("GET /api/mssql/checks", s.MSSQLChecks)
 	api.HandleFunc("GET /api/mssql/checks/fleet", s.MSSQLChecksFleet)
 	api.HandleFunc("GET /api/mssql/waitinfo", s.MSSQLWaitInfo)

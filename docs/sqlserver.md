@@ -22,9 +22,9 @@ SQL Server 2017, 2019, 2022 and 2025 are proven; the table says on what. `script
 | SQL Server 2019 | 15.0.4510.2 (RTM, CU32), Developer Edition | Ubuntu 20.04 | setup and all ten proofs passed |
 | SQL Server 2017 | 14.0.3570.2 (RTM, CU31), Developer Edition | Ubuntu 18.04 | setup and all ten proofs passed |
 | SQL Server 2016 (SP1 and later) | 13.0.7050.2 (SP3 CU1 GDR), Developer Edition | Windows Server 2019 Datacenter (an Azure VM) | proven on one Windows server by `scripts/proof-mssql-2016.sh`: [SQL Server 2016](sqlserver-2016.md) (Always On not proven: one server; `mssql_defaulttrace` partial there) |
-| Azure SQL Database | not proven yet | | |
+| Azure SQL Database | 12.0.2000.8, General Purpose serverless Gen5, 1 vCore | Azure (the service) | proven by `scripts/proof-mssql-azuresqldb.sh`: 4 collections stored equal to the setup login's read, 28 skipped by an Azure SQL Database rule, each with its reason ([SQL Server in the cloud](sqlserver-cloud.md)) |
 | Azure SQL Managed Instance | not proven yet | | |
-| Amazon RDS for SQL Server | not proven yet | | |
+| Amazon RDS for SQL Server | 15.0.4500.2 (SQL Server 2019), Express Edition, db.t3.micro | AWS (the service) | proven by `scripts/proof-mssql-rds.sh`: 29 collections stored equal to the master user's read, 3 skipped by an RDS rule; the login is the RDS form ([SQL Server in the cloud](sqlserver-cloud.md)) |
 
 Each proof on each version, as the runs printed it (`setup` is the pair itself: both servers answer, the collector connects to both and stores the version it read, the group is synchronized; the other rows are `scripts/proof-mssql-<name>.sh`, and each proof's page says what it checks):
 
@@ -92,7 +92,7 @@ Thirty-two collections; `mssql_checks` and `mssql_identity` are on [day-one chec
 | `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
 | `mssql_syshealth` | 5 min | system_health's sp_server_diagnostics results (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM) | VIEW SERVER STATE | not run | [readers](sqlserver-readers.md) |
 
-Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
+Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right; not proven here. Azure SQL Database and Amazon RDS for SQL Server have their own rules, logins and proofs: [SQL Server in the cloud](sqlserver-cloud.md) (on RDS the login below cannot be made: the master user holds no CONNECT ANY DATABASE and cannot add a member to msdb's db_datareader, so the page gives the RDS form).
 
 Not yet: the performance counters beyond the ones named below, logins and permissions, Azure SQL Database's storage and version store, a proof of Windows authentication, and the `aws:` block (CloudWatch and RDS metrics) on a SQL Server instance. Azure SQL Database's backups are the service's own and are not read. On the Summary a SQL Server instance's cell in a PostgreSQL-only column says `n/a`, and a column with a SQL Server read says `not yet` until a read of its group is stored; the fleet pages of PostgreSQL checks (Versions, Corruption, Slow queries' sources) do not list it, and no PostgreSQL finding is raised on it. Azure Synapse Analytics answers on the same protocol and is refused with a clear error: it is not a SQL Server.
 
