@@ -71,15 +71,22 @@ type Heartbeat struct {
 
 var current atomic.Pointer[Heartbeat]
 
-// RecordRun counts one run of a collection on an instance (sched's loop calls it after each run); nothing when no
-// heartbeat runs (`pgvigil collect`, a test).
+// RecordRun counts one run of a collection on an instance (sched's loop calls it after each run, never for a run its
+// stop cut short); nothing when no heartbeat runs (`pgvigil collect`, a test).
 func RecordRun(instance, engine, collection string, res Result) {
 	if h := current.Load(); h != nil {
 		h.record(instance, engine, collection, res, time.Now())
 	}
 }
 
-func skipped(res Result) bool { return res.Err == nil && strings.Contains(res.Note, "skipped") }
+// skipped: a run that did not try (a skip note), or one a stop cut short (context.Canceled: the process or the
+// instance's loop ending), which is no failure of the instance.
+func skipped(res Result) bool {
+	if res.Err != nil {
+		return errors.Is(res.Err, context.Canceled)
+	}
+	return strings.Contains(res.Note, "skipped")
+}
 
 // CountConnect counts one connection attempt to an instance: opened when err is nil, a login refused when the server
 // said so (AuthFailure). Every collection's connect calls it (connectCounted; the SQL Server connector directly).
@@ -269,7 +276,8 @@ func runsAs() string {
 
 // StartHeartbeat writes this collector's row (its start in the repository's clock) and beats every minute until ctx ends,
 // then writes the last minute and marks a clean stop. dsn is the collector's repository DSN (the import_ door). The
-// returned wait blocks until that is written (at most 15 s): the caller defers it, or the process ends first.
+// returned wait blocks until that is done (at most 15 s: the final beat 8 s, the stop mark 5 s, the pool's close): the
+// caller defers it, or the process ends first.
 func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info HeartbeatInfo) (wait func(), err error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -297,7 +305,7 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 		select {
 		case <-done:
 		case <-time.After(15 * time.Second):
-			log.Warn("heartbeat: the stop mark was not written in 15 s")
+			log.Warn("heartbeat: the heartbeat's stop did not finish in 15 s")
 		}
 	}, nil
 }
@@ -342,13 +350,16 @@ func (h *Heartbeat) loop(ctx context.Context) {
 		next := time.Now().Truncate(time.Minute).Add(time.Minute + 2*time.Second)
 		select {
 		case <-ctx.Done():
-			// the last partial minute's counts and streaks, then the stop mark
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			h.beat(sctx, time.Now().Truncate(time.Minute))
+			// the last partial minute's counts and streaks, then the stop mark, each with its own time (a slow final
+			// beat leaves the stop mark its 5 s, so a clean stop never reads as a collector not seen)
+			bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+			h.beat(bctx, time.Now().Truncate(time.Minute))
+			bcancel()
+			sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			if _, err := h.pool.Exec(sctx, `SELECT pgvigil.import_collector_stop($1)`, h.id); err != nil {
 				h.log.Warn("heartbeat: the stop mark was not written", "err", err)
 			}
-			cancel()
+			scancel()
 			return
 		case <-time.After(time.Until(next)):
 		}

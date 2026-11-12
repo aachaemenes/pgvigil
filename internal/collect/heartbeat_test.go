@@ -1,6 +1,7 @@
 package collect
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -141,5 +142,19 @@ func TestEmptyBeatJSON(t *testing.T) {
 		if !strings.Contains(string(body), k) {
 			t.Errorf("%s not in %s", k, body)
 		}
+	}
+}
+
+// TestStopCutRun: a run the stop cut short (context.Canceled, wrapped) is no failure: not counted, no streak.
+func TestStopCutRun(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	now := time.Now()
+	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.Canceled)}, now)
+	if b := h.take(); len(b.Runs) != 0 || len(b.Load) != 0 || len(b.Streaks) != 0 {
+		t.Fatalf("a cut run was counted: runs %d, load %d, streaks %d", len(b.Runs), len(b.Load), len(b.Streaks))
+	}
+	h.record("t1", "postgres", "activity", Result{Err: fmt.Errorf("activity t1: %w", context.DeadlineExceeded)}, now)
+	if b := h.take(); len(b.Runs) != 1 || b.Runs[0].Failures != 1 {
+		t.Errorf("a timeout is a failure: %+v", b.Runs)
 	}
 }

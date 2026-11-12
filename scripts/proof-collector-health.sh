@@ -13,7 +13,8 @@
 #   E  a login refused: t2's password changed at the source - t2's 'logins refused' counted, 'authentication failing'
 #      and 'collection failing' on t2, both alerted (one instance: nothing held), no 'collector or network'; the service
 #      restarted while t2 is still refused: its streak counts on from the stored one (no new alert, no recovery); the
-#      password back and the service restarted again: t2's findings gone, its streaks reset
+#      password back and the service restarted again: t2's 'authentication failing' gone, its 'collection failing'
+#      within t1's (the plain target's own: some collections fail on every plain target)
 #   H  the page: #/collector in both themes (shots), every link on it clicked with its landing (an instance link opens
 #      its Collection dates with the collector's line, the line's link comes back), the tree's Collector node, the
 #      chart's menu
@@ -77,7 +78,7 @@ CMD ["/lib/systemd/systemd"]
 EOF
   docker build -q -t "$IMG" "$WORK/img" >/dev/null || { echo "FAIL the systemd image did not build"; exit 1; }
 fi
-mkdir -p "$WORK/spool" "$WORK/spool2"; chmod 0755 "$WORK"; chmod 0777 "$WORK/spool" "$WORK/spool2"   # the service's user walks into the folder
+mkdir -p "$WORK/spool" "$WORK/spool2"; chmod 0711 "$WORK"; chmod 0777 "$WORK/spool" "$WORK/spool2"   # the service's user walks through the folder (not reads it)
 instances() { # $1 host, $2 port
   for n in 1 2 3 4; do printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n' "$n" "$1" "$2" "$n" "$n" "$n"; done
 }
@@ -100,26 +101,36 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$SP/api/collector" >/dev/nul
 api() { curl -fs "http://127.0.0.1:$SP/api/collector$1"; }
 jget() { python3 -c "import json,sys; d=json.load(sys.stdin); t=d[sys.argv[1]]; c=t['columns']; print(json.dumps([dict(zip(c,r)) for r in t['rows']]))" "$1"; }
 # spool_n EVENT SETTING [INSTANCE]: the alert files (one JSON per alert: <time>-<event>-<channel>-<key>.json) of an event
-# whose setting is SETTING (and instance INSTANCE)
+# whose setting is SETTING (and instance INSTANCE). The service writes them 0640 as its own user: made readable first;
+# a file still unreadable after 5 tries (one renamed in between) prints -1 and leaves $WORK/unreadable, which fails the
+# proof at its end (a sum of counts could hide a -1), so 'nothing sent' is never read off files that could not be read.
 spool_n() {
-  # the service writes its alert files 0640 as its own user: made readable here first
-  docker exec "$SVC" chmod -R a+rX /work/spool /work/spool2 2>/dev/null || true
-  python3 - "${SPOOL:-$WORK/spool}" "$@" <<'PY'
+  local n=-1 try
+  for try in 1 2 3 4 5; do
+    docker exec "$SVC" chmod -R a+rX /work/spool /work/spool2 >/dev/null 2>&1
+    n=$(python3 - "${SPOOL:-$WORK/spool}" "$@" <<'PY'
 import glob, json, os, sys
 d, ev, setting = sys.argv[1:4]; inst = sys.argv[4] if len(sys.argv) > 4 else None
-n = 0
+n = bad = 0
 for f in glob.glob(os.path.join(d, '*.json')):
     if f'-{ev}-' not in os.path.basename(f):
         continue
     try:
         a = json.load(open(f))
     except Exception:
+        bad += 1
         continue
     flat = json.dumps(a)
     if f'"{setting}"' in flat and (inst is None or f'"{inst}"' in flat):
         n += 1
-print(n)
+print(-1 if bad else n)
 PY
+)
+    [[ "$n" != -1 ]] && break
+    sleep 1
+  done
+  [[ "$n" == -1 ]] && echo "${SPOOL:-$WORK/spool} $*" >> "$WORK/unreadable"
+  echo "$n"
 }
 waitfor() { # $1 seconds, $2 SQL that returns t when done
   local end=$((SECONDS + $1)); while (( SECONDS < end )); do [[ "$(q "$2")" == t ]] && return 0; sleep 5; done; return 1
@@ -232,7 +243,7 @@ docker exec "$SVC" systemctl restart pgvigil.service   # a changed password is f
 # every plain target: host without system_stats, jobs without pg_cron, ...)
 CF="SELECT f.value FROM pgvigil.collector_findings f JOIN pgvigil.instances i USING (instance_id) WHERE f.setting = 'collection failing' AND i.name ="
 if waitfor 300 "SELECT NOT EXISTS (SELECT 1 $T2 AND f.setting = 'authentication failing') AND NOT EXISTS ($CF 't2' EXCEPT $CF 't1')"; then
-  ok "E restart: the password back and the service restarted - t2's 'authentication failing' gone, its collections failing as t1's ($(q "SELECT count(*) FROM ($CF 't1') x") on every plain target: $(q "SELECT string_agg(value, ' ') FROM ($CF 't1') x"))"
+  ok "E restart: the password back and the service restarted - t2's 'authentication failing' gone, its 'collection failing' within t1's ($(q "SELECT count(*) FROM ($CF 't1') x") on t1: $(q "SELECT string_agg(value, ' ') FROM ($CF 't1') x"))"
 else fail "E restart: t2 still $(q "SELECT string_agg(f.setting || ' ' || f.value, ', ') $T2") 300 s after the restart"; fi
 sleep 90   # the passes that send t2's recoveries, before D counts
 
@@ -306,5 +317,6 @@ page=$(api '' | jget repository | python3 -c "import json,sys; r=json.load(sys.s
   || fail "G purge: finding before '$before', run '$row', after $after, page '$page': $(tail -2 "$WORK/purge.out" | tr '\n' ' ')"
 
 echo "the service's journal (last lines): $(docker exec "$SVC" journalctl -u pgvigil -n 4 --no-pager 2>&1 | tr '\n' ' ' | cut -c1-600)"
+[[ -s "$WORK/unreadable" ]] && fail "alert files unreadable after 5 tries (a count read as -1): $(tr '\n' ';' < "$WORK/unreadable")"
 if (( FAILS )); then echo "FAIL: $FAILS case(s)"; exit 1; fi
 echo "proof-collector-health: OK (the heartbeat of a systemd unit, its load and a refused login, the page, failing together and a stopped collector each one alert with only their unread instances held, many collectors on one repository, the purge recorded)"
