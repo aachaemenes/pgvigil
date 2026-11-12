@@ -245,7 +245,9 @@ for (const s of storageScopes.slice(2)) {
     const cells = await ev(`(() => { const t = document.querySelector('main table.grid'); if (!t) return null; const hs = [...t.querySelectorAll('thead tr:first-child th')].map(x => x.textContent.trim());
       const j = hs.findIndex(x => x.startsWith('drive')); if (j < 0) return { j }; return { j, drives: [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j]?.textContent.trim() ?? '') }; })()`);
     const all = cells && cells.drives ? cells.drives : [];
-    const okL = tabOf(got.hash) === 'dbfiles' && drive && got.h2 === `Files on ${drive}` && !got.err.length && cells != null && cells.j >= 0 && all.every(d => d === drive);
+    // a drive that holds no file draws the empty line, no grid (each instance must still list a file on some drive, below)
+    const empty = cells == null && await ev(`!!document.querySelector('main p.empty')`);
+    const okL = tabOf(got.hash) === 'dbfiles' && drive && got.h2 === `Files on ${drive}` && !got.err.length && (empty || (cells != null && cells.j >= 0 && all.every(d => d === drive)));
     filesSeen.set(s.name, (filesSeen.get(s.name) ?? 0) + all.length);
     record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: lab, landed: `${tabOf(got.hash)} (${got.h2.slice(0, 40)}; ${all.length} file(s))`,
       href: h, verdict: okL ? `ok (DBA Dash: a drive's Files: ${all.length} file(s), each on ${drive})` : `FAIL ${got.err[0] ?? ''} want Files on ${drive}, got ${tabOf(got.hash)} '${got.h2}' with drives [${[...new Set(all)].join(', ')}]` });
