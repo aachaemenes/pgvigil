@@ -59,7 +59,7 @@
 --   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 --   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 --
--- For the join (this file sorts after 0110): the arm in pgvigil.findings
+-- The release join's lines (0190_join_release2.sql holds them, this file sorting after 0110): the arm in pgvigil.findings
 --     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_waits', at
 --       FROM pgvigil.mssql_waits_findings
 --   and 'mssql_memory_pool' on purge()'s month-partition parents.

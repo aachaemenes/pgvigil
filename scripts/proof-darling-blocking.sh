@@ -27,7 +27,8 @@
 #        V1's and V2's wait after the second read is at least the stored one and less than 10 s more;
 #     B3 mssql_blocking_findings: 'an implicit transaction blocking' on session H1 and none on H2; 'sessions in
 #        implicit transactions' naming session I1; 'a lead blocker' on H1's statement (the hour's blocked wait over a
-#        minute) and none on H2's.
+#        minute) and none on H2's; pgvigil.findings holds as many source 'mssql_blocking' rows as mssql_blocking_findings,
+#        more than 0 (the release join's arm, 0190).
 #  C. the PostgreSQL twin: in a scratch database a non-superuser role's session updates a row in an open transaction
 #     and goes idle (the head), a second session's update of that row waits on it; `collect -once activity`; the hand
 #     read: the head 'idle in transaction', the waiter's pg_blocking_pids = the head.

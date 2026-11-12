@@ -55,7 +55,7 @@
 #  J. AlwaysOn_health, where Always On is enabled (SKIPPED with its reason where it is not): the 'ag' state row says
 #     running, mssql_ag_events holds as many availability_replica_state_change rows as sa counts in the session's
 #     files for the last 45 days.
-#  P. the pages' API (pgvigil serve on the proof's repository, curl): /api/mssql/xe returns its eight parts, the
+#  P. the pages' API (pgvigil serve on the proof's repository, curl): /api/mssql/xe returns its ten parts (block_findings and block_rollup since task 177 D04, each a grid), the
 #     captures' states (attention stopped by then), the proof's deadlock, the head statement's group, the bulk
 #     batches as ONE shape of at least 2,000 events, the attention and the two findings; ?part=state returns that
 #     part alone and an unknown part is a 400; the deadlock's detail holds two processes (one victim, both
@@ -400,7 +400,9 @@ curl -fs "$U?$W" > "$OUT" || fail "P: /api/mssql/xe"
 py 'import json, sys
 d = json.load(open(sys.argv[1])); db, hb, mark = sys.argv[2], sys.argv[3], sys.argv[4]
 rows = lambda k: [dict(zip(d[k]["columns"], r)) for r in d[k]["rows"]]
-assert sorted(d) == ["ag_events", "attentions", "blocked", "deadlocks", "findings", "slow_series", "slow_shapes", "state"], sorted(d)
+assert sorted(d) == ["ag_events", "attentions", "block_findings", "block_rollup", "blocked", "deadlocks", "findings", "slow_series", "slow_shapes", "state"], sorted(d)
+# block_findings and block_rollup since task 177 D04: the findings of sp_HumanEventsBlockViewer and the blocked wait by lead over the range
+assert all(isinstance(d[k].get("columns"), list) and isinstance(d[k].get("rows"), list) for k in ("block_findings", "block_rollup")), {k: sorted(d[k]) for k in ("block_findings", "block_rollup")}
 st = {r["capture"]: r for r in rows("state")}
 assert all(st[c]["state"] == "running" for c in ("deadlocks", "blocked", "slow")) and st["attention"]["state"] == "stopped", st
 dl = [r for r in rows("deadlocks") if r["database_names"] == db]

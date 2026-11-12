@@ -420,3 +420,36 @@ func TestTraceRowWriteTime(t *testing.T) {
 		t.Errorf("wrote %v, want 17:10:01.697", wrote)
 	}
 }
+
+// A QUERY_PROCESSING result whose blockingTasks hold reports hands them to the repository under BlockingTasksKey
+// (0116's trigger moves them into mssql_blocked_reports, source system_health); an empty blockingTasks and the other
+// components carry no such key.
+func TestComponentBlockingTasks(t *testing.T) {
+	ev := `<event name="sp_server_diagnostics_component_result" package="sqlserver" timestamp="2026-11-10T17:05:00.000Z">` +
+		`<data name="component"><value>2</value><text><![CDATA[QUERY_PROCESSING]]></text></data>` +
+		`<data name="state"><value>2</value><text><![CDATA[WARNING]]></text></data>` +
+		`<data name="data"><value>` + fixQueryProcessing + `</value></data></event>`
+	e, err := parseEvent(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := parseComponentResult(&e, fullCtx)
+	if row == nil || row["component"] != "QUERY_PROCESSING" {
+		t.Fatalf("row %v", row)
+	}
+	b, ok := row["detail"].(map[string]any)[BlockingTasksKey].([]map[string]any)
+	if !ok || len(b) != 2 {
+		t.Fatalf("detail[%s] = %v, want the fixture's 2 reports", BlockingTasksKey, row["detail"].(map[string]any)[BlockingTasksKey])
+	}
+	for i, r := range b {
+		if r["source"] != "system_health" || r["blocked_spid"] == nil {
+			t.Errorf("report %d: source %v, blocked spid %v", i, r["source"], r["blocked_spid"])
+		}
+	}
+	for name, doc := range map[string]string{"QUERY_PROCESSING, empty blockingTasks": fixtureQPWarning, "RESOURCE": fixtureResourceWarning,
+		"SYSTEM": fixtureSystemClean, "IO_SUBSYSTEM": fixtureIOClean} {
+		if _, has := component(t, doc)["detail"].(map[string]any)[BlockingTasksKey]; has {
+			t.Errorf("%s carries %s", name, BlockingTasksKey)
+		}
+	}
+}

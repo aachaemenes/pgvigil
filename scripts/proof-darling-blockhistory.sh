@@ -39,8 +39,9 @@
 #     middle leads only a loop that lacks its own report), checked only when the chain has its middle (2 head statements).
 #  D. pgvigil's blocked session dropped (the chain still held, the threshold 5 again): within about 6.5 minutes a read
 #     of mssql_syshealth stores system_health's QUERY_PROCESSING blockingTasks as reports of source system_health
-#     (the syshealth wiring, scripts/proof-darling-blockhistory-join.patch, applied to the run's copy while the join
-#     does not hold it) and the component row's detail no longer carries them.
+#     (the syshealth wiring is the release join's, internal/mssql/syshealth.go; a tree that still carries
+#     scripts/proof-darling-blockhistory-join.patch gets it applied to the run's copy) and the component row's detail
+#     no longer carries them.
 #  E. go test ./internal/mssql ./internal/web ./internal/repo and golangci-lint (0 issues) at the root and in app/, on
 #     the run's copy.
 #  F. `pgvigil serve` from the run's copy (web bundle rebuilt): #/mssql_blocked and #/mssql_running of the instance in
