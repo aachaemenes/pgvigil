@@ -88,7 +88,10 @@ psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/n
 export D30_DEMO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
 printf 'repository:\n  dsn: env:D30_DEMO_DSN\n' > "$WORK/demo-cfg.yaml"
 "$WORK/pgvigil" migrate -config "$WORK/demo-cfg.yaml" > "$WORK/demo-migrate.log" 2>&1 || { tail -5 "$WORK/demo-migrate.log"; fail "the demo database's migrate"; }
-psql "$D30_DEMO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "the findings arm (scripts/proof-darling-alerts-findings.sql) on the demo"
+if [[ $(psql "$D30_DEMO_DSN" -XAt -c "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'") == f ]]; then
+  psql "$D30_DEMO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "the findings arm (scripts/proof-darling-alerts-findings.sql) on the demo"
+  echo "SPLICED (demo): darling arm absent from the applied migrations (the lead's 0190 line)"
+fi
 "$WORK/pgvigil" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -serve -listen "127.0.0.1:$PORT" -days 2 > "$WORK/demo.log" 2>&1 &
 SRV=$!
 for _ in $(seq 1 "${PGVIGIL_DEMO_WAIT_S:-240}"); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { tail -5 "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
@@ -355,6 +358,7 @@ tq() { psql "$D30_TGT_DSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 JOINED=$(rq "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'")
 if [[ $JOINED == f ]]; then
   psql "$D30_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "F: the findings arm (scripts/proof-darling-alerts-findings.sql)"
+  echo "SPLICED: darling arm absent from the applied migrations (the lead's 0190 line)"
 fi
 [[ $(rq "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'") == t ]] || fail "F: pgvigil.findings does not read darling_alert_findings after the splice"
 psql "$D30_REPO_DSN" -XAtq -c "create role $ALR login password '$PW' in role pgvigil_alerter" >/dev/null
