@@ -7,7 +7,8 @@
 # Expected (written before the first run):
 #   A filter      '>20' on Instances' sessions: n of 15 rows shown (filtered), 0 < n < 15, every shown value > 20
 #   B export      the CSV export of the filtered grid: n data lines and the header
-#   C menu        'Copy cell|Copy row|Copy all n rows shown'; Escape with the focus outside the menu closes it
+#   C menu        the grid's own three items first: 'Copy cell|Copy row|Copy all n rows shown|' (the grid tools' lines
+#                 follow them); Escape with the focus outside the menu closes it
 #   C clipboard   the cell's own words (1 line); the header and the row (2 lines); the header and n rows; 'Copied ...'
 #   D own menu    a link and a filter field keep the browser's menu; at the window's corner the menu ends inside it
 #   E unit filter '>500 MB' on Memory's 'size in cache' keeps exactly the cells shown over 500 MB, some rows dropped
@@ -15,8 +16,9 @@
 #   G tests pane  the Summary's Tests pane scrolled: its header within 2 px of the pane's top; one tab stop
 #   H refresh     five choices on the Summary, Off stored as 0; the select disabled on Performance (not a live page)
 #   I chart       a legend's double-click shows one series, a second shows all; the readout has a time and values
-#   M chart menu  'Copy image|Save image|Copy data|Export data (CSV)'; Copy data: a header of time and the series' names,
-#                 a row per point, the time as YYYY-MM-DD HH:MM:SS; the chart says 'Copied <n> points'
+#   M chart menu  'Copy image|Save image|Copy data|Export data (CSV)', and '|Pick series' on a chart of two series or more;
+#                 Copy data: a header of time and the series' names, a row per point, the time as YYYY-MM-DD HH:MM:SS;
+#                 the chart says 'Copied <n> points'
 #   J paging      a job's All runs over three days: n rows over 400, 200 drawn; Copy all n rows, still 200 drawn; 'Show 200
 #                 more' draws 400 with the focus on the line; 'Show all' draws n, the line hidden, the focus on the grid
 #   K pies        every pie on Storage: k slice(s) for k row(s), none stroked, 1.0000 turn(s)
@@ -26,8 +28,8 @@
 #                 daylight-saving edges, Kathmandu and Kolkata offsets, the calendar periods at a month and a year
 #                 rollover, the 31-day cap: 'tz: 25 checks as expected'
 #   N range       (the browser's own zone pinned to America/Los_Angeles) the panel: 'Quick ranges|Calendar periods|A start
-#                 and an end', 12 ranges, the zone chooser, inside the window; a range of 12:00-13:00 UTC in the inputs as
-#                 2026-01-15T04:00 and T05:00, the tag UTC-08:00; zone Asia/Tokyo: the tag UTC+09:00, the inputs T21:00 and
+#                 and an end|Type a range', 16 ranges, the zone chooser, inside the window; a range of 12:00-13:00 UTC in
+#                 the inputs as 2026-01-15T04:00 and T05:00, the tag UTC-08:00; zone Asia/Tokyo: the tag UTC+09:00, the inputs T21:00 and
 #                 T22:00, the button's window text as the zone writes it, the chooser the same node; an end typed as 23:00
 #                 applied as 14:00Z; Yesterday: 24 h ending at the zone's midnight, no w=; Today: w=today, 'Range: Today',
 #                 from the zone's midnight, the page live; a chart's legend and readout name the same minute, 17 h (16 in
@@ -43,6 +45,36 @@
 #                 all rows, 'Whole range' hidden; sql01's Deadlocks page has a strip exactly when its read holds 2 or more
 #   P new page at its top  the fleet Summary (taller than the window) scrolled to its end; the lowest link in it to an
 #                 instance's Summary clicked: that page seen rendered, taller than the window, at scrollY 0
+#   task 152's cases (each one's comment in frame-check.mjs):
+#   Q chart drag  erp01's Performance page over a fixed day, a drag from 40 % to 60 % of the first chart's plot: from / to
+#                 in the address (whole minutes, within two minutes and a pixel of the dragged times), no w=, every chart
+#                 drawn again inside that range
+#   R one cursor  the pointer over the first chart's middle: a readout on every chart whose span holds that moment, each
+#                 naming the same time
+#   S setting     the first PostgreSQL instance with a 'setting' event in its frame read over three days: on its Performance
+#                 page over two hours either side every chart holding the moment has a mark at that instant (within 2 % of
+#                 the span), named with the event's words; another instance's page draws exactly its own events; the mark
+#                 opens the Configuration page over ten minutes around it
+#   T slices      erp01's Database info: a 'Databases by size' wedge opens its database's page; a pie of over five slices:
+#                 Top 5 draws five wedges (four and 'other') and five legend rows, All every slice, the choice kept; the pie
+#                 menu's four items, Copy data copies every slice under a header
+#   U pick series a tick per series; the first unticked hides it on the legend and stays so after a redraw; All shows every
+#                 series again; Done puts the focus back on the menu button
+#   V steps       on 12:00-13:00 UTC: Earlier 11:00-12:00, Later 12:00-13:00, Zoom out 11:30-13:30, the key [ is Earlier; on
+#                 the preset 1h Later disabled and Zoom out the preset 4h; the key ] on a range ending now changes nothing
+#   W typed range 'now-6h' previews 'follows now' and Enter makes w=6h; 'now-1d/d to now/d' is yesterday (24 h from the
+#                 zone's midnight before) as a fixed range; 'soon' refused in the preview, the address unchanged
+#   X footer      on the Summary the instances as /api/instances counts them, the collections, the repository's size, the
+#                 seat, the newest read and 'auto refresh every 30 s'; on a fixed Performance window 'auto refresh not on
+#                 this page'
+#   Y axes, limit erp01's Transactions chart has three axes, the right one 'rollbacks/s'; its Connections chart names
+#                 max_connections at the frame read's value, a line within four times the chart's peak, else 'above the chart'
+#   Z full window the button draws the chart over the window (fixed, the plot at least the window's width less 100 px),
+#                 aria-pressed true; Escape puts it back at its width with the focus on the button
+#   AA partial    erp01's Performance page over a day that starts a day before the demo's first read says where its data
+#                 starts; over a day inside the seeded days no note
+#   AB deadlocks  sql01's frame read over the fixed day holds as many deadlock marks as its deadlock read (api/mssql/xe
+#                 part=deadlocks), drawn on a chart of its Performance page and in the chart's list
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
