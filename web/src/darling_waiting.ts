@@ -5,7 +5,7 @@
 //               resource decoded to database, object and index, the request's statement; the range's wait types,
 //               each a link to the tasks waiting on it. The Waits tab links here with wt= (the lead's line).
 //   PostgreSQL  #/waiting?i=<id>[&at=..][&wt=<type:event>]  the waiting backends of the running-queries samples
-//               (0002): the backend, its parallel leader, the wait event, how long, the blocking pids, the query.
+//               (0002): the backend, its parallel leader (a worker is sampled only when it blocks a lock waiter), the wait event, how long, the blocking pids, the query.
 // One read at a time: the newest of the range unless at= names one, with Earlier / Later / Latest.
 import { get, Row, rowsOf, Table } from './api';
 import { Ctx, href, window_ } from './router';
@@ -106,7 +106,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   ];
   sec.append(el('h3', {}, 'The tasks of this read'), grid(tasks, cols, wt ? `No task waited on ${wt} in this read.` : 'No task waited in this read (beyond the benign waits).'));
   sec.append(el('h3', {}, 'Wait types over the range'),
-    el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, in how many reads, and the longest wait seen. A wait type opens the read where it was last seen, filtered to it.'),
+    el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, counted read by read (a session waiting in two reads counts twice; a session id can go to a later session once its session ends), in how many reads, the longest wait seen and when it was last seen. A wait type opens the read where it was last seen, filtered to it.'),
     grid(types, [
       { key: 'wait_type', label: 'wait', fmt: (v, r) => el('a', { href: waitingHref(ctx, 'mssql_waiting', iso(r.last_seen), String(v)), title: `the read where ${String(v)} was last seen` }, String(v)) },
       { key: 'tasks', num: true }, { key: 'sessions', num: true }, { key: 'reads', num: true },
@@ -123,12 +123,11 @@ export async function pgWaitingView(ctx: Ctx): Promise<HTMLElement> {
   const rows = rowsOf(d.pg), types = rowsOf(d.pgbytype);
   const cur = rows.length ? iso(rows[0].snapshot_at) : at;
   const sec = el('section', {}, el('h2', {}, 'Waiting backends'),
-    el('p', { class: 'meta' }, 'The backends that wait in a running-queries sample: active with a wait event (not the client\'s, an idle loop\'s or a timer\'s), and every lock waiter, with its parallel leader and the pids that block it. The lock\'s target relation is not sampled: Running queries shows the chain. One sample at a time: the newest of the range.'));
-  const locks = rows.filter(r => r.wait_event_type === 'Lock').length, workers = rows.filter(r => r.leader_pid != null && r.leader_pid !== r.pid).length;
+    el('p', { class: 'meta' }, 'The backends that wait in a running-queries sample: active with a wait event (not the client\'s, an idle loop\'s or a timer\'s), and every lock waiter, with the pids that block it. A sample keeps client backends and the processes that block a lock waiter, so a parallel worker shows (with its leader) only when it blocks one. The lock\'s target relation is not sampled: Running queries shows the chain. One sample at a time: the newest of the range.'));
+  const locks = rows.filter(r => r.wait_event_type === 'Lock').length;
   sec.append(el('div', { class: 'tiles' },
     tile(wt ? `Backends waiting on ${wt}` : 'Backends waiting', fmtNum(rows.length)),
-    tile('Lock waits', fmtNum(locks), locks ? 'warn' : 'ok'),
-    tile('Parallel workers waiting', fmtNum(workers))),
+    tile('Lock waits', fmtNum(locks), locks ? 'warn' : 'ok')),
     el('p', { class: 'meta' }, `Sample ${cur ? fmtTime(cur) : '(the newest)'}: `, el('a', { href: waitingHref(ctx, 'waiting', undefined, wt) }, 'Latest')),
     filterLine(ctx, 'waiting', cur, wt, 'backends'));
   const key = (r: Row) => `${String(r.wait_event_type)}:${String(r.wait_event)}`;
@@ -142,9 +141,11 @@ export async function pgWaitingView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'state' }, { key: 'backend_type', label: 'backend' },
     { key: 'query', fmt: v => oneLine(v) },
   ], wt ? `No backend waited on ${wt} in this sample.` : 'No backend waited in the newest sample of this range (or no sample was taken in it).'));
-  sec.append(el('h3', {}, 'Wait events over the range'), grid(types, [
-    { key: 'wait_event', label: 'wait', fmt: (_v, r) => el('a', { href: waitingHref(ctx, 'waiting', iso(r.last_seen), key(r)), title: `the sample where ${key(r)} was last seen` }, key(r)) },
-    { key: 'backends', num: true }, { key: 'samples', num: true }, { key: 'last_seen', label: 'last seen', fmt: v => fmtTime(v) },
-  ], 'No backend waited in any sample of this range.'));
+  sec.append(el('h3', {}, 'Wait events over the range'),
+    el('p', { class: 'meta' }, 'From the stored samples: how many sampled backends (client backends, and the processes that block a lock waiter) waited on each, counted sample by sample (a backend waiting in two samples counts twice; a pid can come back for a later backend), in how many samples, and when it was last seen. A wait event opens the sample where it was last seen, filtered to it.'),
+    grid(types, [
+      { key: 'wait_event', label: 'wait', fmt: (_v, r) => el('a', { href: waitingHref(ctx, 'waiting', iso(r.last_seen), key(r)), title: `the sample where ${key(r)} was last seen` }, key(r)) },
+      { key: 'backends', num: true }, { key: 'samples', num: true }, { key: 'last_seen', label: 'last seen', fmt: v => fmtTime(v) },
+    ], 'No backend waited in any sample of this range.'));
   return sec;
 }

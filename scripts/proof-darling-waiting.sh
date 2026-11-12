@@ -29,6 +29,10 @@
 #     B5 the WHERE clause: a session blocked inside a database named PerformanceMonitor (host pgvw_pm) waits in
 #        sys.dm_os_waiting_tasks and is in neither PerformanceMonitor's read nor pgvigil's rows (the comparison uses
 #        PerformanceMonitor's own ignore list, IgnoredWaitDefaults.All, on both sides). [added after review s177-4]
+#     B6 the ignore list: the head (host pgvw_h) waits WAITFOR, one of IgnoredWaitDefaults.All, in a hand read of
+#        sys.dm_os_waiting_tasks, and is in neither PerformanceMonitor's read nor pgvigil's rows (B1 compares only the
+#        blocked sessions, so without B6 a collector that kept the benign waits would pass); PerformanceMonitor's read
+#        before its ignore list does hold the head's WAITFOR row (its WHERE keeps the head). [added after s177-final1]
 #  C. the PostgreSQL twin: in a scratch database a row is updated in an open transaction, the same row updated by a
 #     second session; after `pgvigil collect -once activity`, pg_waiting_at holds the second session with
 #     Lock:transactionid and blocking_pids = {the first session's pid}, as pg_stat_activity and pg_blocking_pids read
@@ -209,6 +213,13 @@ echo "ok   B4: no THREADPOOL finding (threadpool $(pq "SELECT threadpool FROM pg
 [[ "$(sq "SELECT COUNT(*) FROM sys.dm_os_waiting_tasks WHERE session_id = $B3")" -ge 1 ]] || fail "B5: session $B3 no longer waits"
 ! grep -q "^$B3|" "$TMPD/pm_before.txt" "$TMPD/pm_after.txt" "$TMPD/pgv.txt" || fail "B5: session $B3 (inside PerformanceMonitor) is in a read: $(grep -h "^$B3|" "$TMPD/pm_before.txt" "$TMPD/pm_after.txt" "$TMPD/pgv.txt" | head -3)"
 echo "ok   B5: session $B3 waits inside PerformanceMonitor and is in neither PerformanceMonitor's read nor pgvigil's rows"
+[[ "$(sq "SELECT COUNT(*) FROM sys.dm_os_waiting_tasks WHERE session_id = $H AND wait_type = 'WAITFOR'")" -ge 1 ]] || fail "B6: the head $H does not wait WAITFOR"
+grep -qx 'WAITFOR' "$TMPD/benign.txt" || fail "B6: WAITFOR is not in pgvigil's copy of PerformanceMonitor's ignore list"
+sqmon "$(cat "$TMPD/pm.sql")" > "$TMPD/pm_raw.txt" || fail "B6: PerformanceMonitor's read (unfiltered)"
+[[ "$(awk -F'|' 'NF>=5 {gsub(/ /,"",$1); gsub(/ /,"",$2); print $1"|"$2}' "$TMPD/pm_raw.txt" | grep -cx "$H|WAITFOR" || true)" -ge 1 ]] \
+  || fail "B6: PerformanceMonitor's read before its ignore list has no WAITFOR row for the head $H (its WHERE drops the head, so B6 would test nothing)"
+! grep -q "^$H|" "$TMPD/pm_before.txt" "$TMPD/pm_after.txt" "$TMPD/pgv.txt" || fail "B6: the head $H (WAITFOR) is in a read: $(grep -h "^$H|" "$TMPD/pm_before.txt" "$TMPD/pm_after.txt" "$TMPD/pgv.txt" | head -3 | tr '\n' ' ')"
+echo "ok   B6: the head $H waits WAITFOR in sys.dm_os_waiting_tasks and is in neither read (PerformanceMonitor's ignore list applied by the collector)"
 "$TMPD/pgvigil" collect -config "$TMPD/w.yaml" -instance sqlbox -once mssql_waits >/dev/null 2>&1 || true
 sleep 3
 "$TMPD/pgvigil" collect -config "$TMPD/w.yaml" -instance sqlbox -once mssql_waits >/dev/null 2>&1 || true

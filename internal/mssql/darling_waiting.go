@@ -123,10 +123,9 @@ OPTION(RECOMPILE);`
 
 // waitResource is what a resource description names.
 type waitResource struct {
-	kind              string // key, page, rid, object, page latch, exchange, other
-	dbid, file, page  int64
-	hobt, object      int64
-	objectName, index string
+	kind             string // key, page, rid, object, hobt, allocation unit, extent, metadata, application, page latch, exchange, other
+	dbid, file, page int64
+	hobt, object     int64
 }
 
 var (
