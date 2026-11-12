@@ -276,6 +276,15 @@ BEGIN
     VALUES (v_name, v_eng, coalesce(nullif(p_payload->>'platform', ''), 'auto'), v_ref, p_payload->>'auth', btrim(p_payload->>'host'),
             nullif(p_payload->>'port', '')::int, nullif(p_payload->>'dbname', ''), nullif(p_payload->>'login', ''), nullif(p_payload->>'options', ''), coalesce(v_tags, '{}'),
             coalesce(nullif(p_payload->>'source', ''), 'page'), p_at, v_user, p_at, v_user);
+    -- active from the add (the join's review, finding 1): a failed connect is recorded for an active row only
+    -- (0118's import_connect_failure), and ensure_instance runs only after a connect that succeeded, so a name added
+    -- again after a remove, or added while its server is down, would be silent until its server answers. A name
+    -- never collected gets its row here (the page's platform, 'auto' until the first read that connects writes the
+    -- detected one, its version and tags through ensure_instance), so its first failed connect is recorded too.
+    -- admin_keep_removed holds nothing here: the admin_removed row is gone and the page row is not disabled.
+    INSERT INTO pgvigil.instances AS i (name, platform, engine, tags)
+    VALUES (v_name, coalesce(nullif(p_payload->>'platform', ''), 'auto'), v_eng, coalesce(v_tags, '{}'))
+    ON CONFLICT (name) DO UPDATE SET is_active = true WHERE i.engine = EXCLUDED.engine;
   ELSIF v_op = 'edit' THEN
     UPDATE pgvigil.admin_instances SET platform = coalesce(nullif(p_payload->>'platform', ''), platform), dsn_ref = v_ref, auth = p_payload->>'auth',
            host = btrim(p_payload->>'host'), port = nullif(p_payload->>'port', '')::int, dbname = nullif(p_payload->>'dbname', ''),
@@ -283,10 +292,16 @@ BEGIN
      WHERE name = v_name;
   ELSIF v_op IN ('disable', 'enable') THEN
     UPDATE pgvigil.admin_instances SET disabled = (v_op = 'disable'), updated_at = p_at, updated_by = v_user WHERE name = v_name;
-    -- a disabled instance leaves the fleet pages' stale and failing checks (they read is_active); enable needs
-    -- nothing: the next run's ensure_instance sets it active again
+    -- a disabled instance leaves the fleet pages' stale and failing checks (they read is_active); enable makes it
+    -- active again at once (the join's review, finding 1: waiting for the next run's ensure_instance left an
+    -- instance enabled while its server is down silent - no failed connect recorded, no 'server unreachable'); a
+    -- row that is missing is made as the add makes it. admin_keep_removed holds nothing: the page row is not disabled.
     IF v_op = 'disable' THEN
       UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
+    ELSE
+      INSERT INTO pgvigil.instances AS i (name, platform, engine, tags)
+      VALUES (v_name, coalesce(v_have.platform, 'auto'), v_have.engine, coalesce(v_have.tags, '{}'))
+      ON CONFLICT (name) DO UPDATE SET is_active = true WHERE i.engine = EXCLUDED.engine;
     END IF;
   ELSIF v_op = 'remove' THEN
     DELETE FROM pgvigil.admin_instances WHERE name = v_name;

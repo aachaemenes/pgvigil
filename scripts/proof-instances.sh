@@ -28,6 +28,11 @@
 #      collects the file's only (filepg), never a page instance
 #   J. the fenced lease: a take-over (the lease made 60 s old) bumps the generation; the first collector, superseded,
 #      drops the page's instances at its next tick; released, it takes the lease back with the next generation
+#   K. a page instance whose server is down is seen failing (the join's review, finding 1): pg-down (its own
+#      PostgreSQL container) collected, disabled, its server stopped, enabled -> is_active true at once and, within one
+#      interval, a new 'connect:' error and a 'server unreachable' finding; removed and added again while its server is
+#      still down -> the same; pg-never, added while its server is down and never collected -> its instances row at
+#      the add (active) and the same finding
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -47,7 +52,7 @@ ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
 IMG_SQL=mcr.microsoft.com/mssql/server:2022-latest
 IMG_PG=postgres:16
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-SQL=pgvin-sql-$SUF; PGA=pgvin-pga-$SUF; PGB=pgvin-pgb-$SUF; LBL=pgvigil-proof=s204
+SQL=pgvin-sql-$SUF; PGA=pgvin-pga-$SUF; PGB=pgvin-pgb-$SUF; PGK=pgvin-pgk-$SUF; LBL=pgvigil-proof=s204
 PGDB=pgv_in_$SUF; COL=pgv_incol_$SUF; USR=proofdba$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
@@ -63,7 +68,7 @@ cleanup() {
   [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
   [[ -n "$RUN2PID" ]] && kill "$RUN2PID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
-  for c in "$SQL" "$PGA" "$PGB"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
+  for c in "$SQL" "$PGA" "$PGB" "$PGK"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   psql "$ADMIN_DSN" -Xqc "DROP ROLE IF EXISTS $COL" >/dev/null 2>&1 || echo "CLEANUP: role $COL not dropped" >&2
   rm -rf "$TMPD"
@@ -424,4 +429,37 @@ for _ in $(seq 1 35); do [[ "$(last_applied)" == "$BEFORE" ]] && break; sleep 1;
 [[ "$(grep -c "holds the page's instances now" "$TMPD/run.log")" == $((HOLD0 + 1)) ]] || fail "J: the take-back was not logged once"
 [[ "$(pq "SELECT generation FROM pgvigil.admin_page_holder")" == $((TG + 1)) ]] || fail "J: the take-back's generation is $(pq "SELECT generation FROM pgvigil.admin_page_holder") (want $((TG + 1)))"
 echo "ok   J: generation $G1 -> $TG (a take-over: the first collector superseded, the file's instance only) -> $((TG + 1)) (taken back: [$BEFORE] again)"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; the NOT PROVEN lines above stand)"
+echo "== K. a page instance whose server is down: enabled, added again, added never collected - each active and unreachable =="
+docker run -d --name "$PGK" --label "$LBL" --env-file "$TMPD/pg.env" -p 127.0.0.1::5432 "$IMG_PG" >/dev/null
+PK=$(docker port "$PGK" 5432/tcp | head -1 | sed 's/.*://')
+for _ in $(seq 1 60); do PGPASSWORD=$PG_PW psql "host=127.0.0.1 port=$PK user=postgres dbname=postgres connect_timeout=2" -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
+KA="engine=postgres host=127.0.0.1 port=$PK dbname=postgres auth=password login=postgres"
+active() { pq "SELECT coalesce((SELECT is_active::text FROM pgvigil.instances WHERE name = '$1'), 'no row')"; }
+# unreachable NAME SINCE: a 'connect:' error recorded after SINCE (the repository's clock) and the finding, within 120 s
+unreachable() { local e f; for _ in $(seq 1 120); do
+    e=$(pq "SELECT count(*) FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.status = 'error' AND d.note LIKE 'connect: %' AND d.snapshot_at > '$2'")
+    f=$(pq "SELECT count(*) FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND f.setting = 'server unreachable' AND f.severity = 'critical'")
+    [[ "$e" -gt 0 && "$f" -gt 0 ]] && return 0; sleep 1; done
+  tail -5 "$TMPD/run.log" >&2; fail "K: $3: within 120 s: connect errors after $2 = $e, 'server unreachable' findings = $f (want both > 0)"; }
+code=$(api POST admin/instances "$(js op=add name=pg-down $KA password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-down: $code $(cat "$TMPD/ans.json")"
+waitcol pg-down 120 "K"
+code=$(api POST admin/instances "$(js op=disable name=pg-down)"); [[ "$code" == 200 && "$(active pg-down)" == false ]] || fail "K: disable: $code, is_active $(active pg-down)"
+docker stop -t 5 "$PGK" >/dev/null || fail "K: docker stop"
+T0=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=enable name=pg-down)"); [[ "$code" == 200 ]] || fail "K: enable: $code"
+[[ "$(active pg-down)" == true ]] || fail "K: pg-down is $(active pg-down) right after the enable (want true: its failed connects are recorded only for an active row)"
+unreachable pg-down "$T0" "enabled while its server is down"
+echo "K: enabled while down: is_active true at the enable; $(pq "SELECT left(detail, 160) FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'pg-down' AND f.setting = 'server unreachable'")"
+code=$(api POST admin/instances "$(js op=remove name=pg-down)"); [[ "$code" == 200 && "$(active pg-down)" == false ]] || fail "K: remove: $code, is_active $(active pg-down)"
+[[ "$(pq "SELECT count(*) FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'pg-down' AND f.setting = 'server unreachable'")" == 0 ]] || fail "K: a removed instance is still said unreachable"
+T1=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=add name=pg-down $KA password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add again: $code $(cat "$TMPD/ans.json")"
+[[ "$(active pg-down)" == true ]] || fail "K: pg-down is $(active pg-down) right after the add again (want true)"
+unreachable pg-down "$T1" "added again after a remove while its server is down"
+T2=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=add name=pg-never $KA password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-never: $code $(cat "$TMPD/ans.json")"
+[[ "$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'pg-never'")" == "true postgres auto" ]] || fail "K: pg-never's row at the add: [$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'pg-never'")] (want 'true postgres auto')"
+unreachable pg-never "$T2" "added while its server is down, never collected"
+for n in pg-down pg-never; do code=$(api POST admin/instances "$(js op=remove name=$n)"); [[ "$code" == 200 ]] || fail "K: remove $n: $code"; done
+echo "ok   K: enabled while down, added again after a remove while down, and added never collected: each active at once and 'server unreachable' (critical) with a new connect error within one interval"
+echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; the NOT PROVEN lines above stand)"
