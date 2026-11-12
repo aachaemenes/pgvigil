@@ -99,7 +99,32 @@ Admin > Instances adds, tests, edits, disables and removes an instance, and sync
 approves or ignores: a SQL Server Central Management Server (its login needs msdb's `ServerGroupReaderRole`), a DBA Dash
 repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
 marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
-15 seconds, without a restart.
+15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
+checks until it is enabled. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
+Linux and macOS so is a file only its owner may read (a server list is 0644), so no credential file is read into the
+page.
+
+Who may change them: every UI login can add, change, disable and remove instances and sources, and these writes need
+the actions door's audit login, as acknowledgements do. Give UI logins to the people who may change what is monitored.
+
+One collector per repository collects the page's instances: the holder of the repository's page lease, a row it
+renews every 15 seconds (it works through a transaction-mode pooler; every time in it is the repository's clock,
+never a host's). The lease expires 45 seconds (three renewals) after its last renewal. A second `pgvigil run` on the
+same repository (another host with its own file's instances) collects its file's instances only, logs once that
+the page's instances are not its own, and takes them over within 30 seconds of a clean stop of the first one, or
+within about 75 seconds of the first one's last renewal when its host is lost. The lease is fenced: each take-over
+bumps its generation and names the new holder, so a holder that comes back after a network partition finds itself
+superseded at its next renewal and stops starting collections of the page's instances within 30 seconds; a holder
+that cannot reach the repository lets go of them itself after two failed renewals (30 seconds), before another can
+take the lease.
+
+A `custom:` check may name an instance or a tag only the page holds: the file's instances no longer decide, so a name
+or tag that matches nothing in the file is a warning at start, and the collector warns again when a check matches no
+instance of the file or the page.
+
+`pgvigil run` starts with no instance in the file (the page may hold them all); `pgvigil collect -once` reads the
+file's instances only. A repository `dsn` that resolves to nothing (the installer's env file not filled in yet) stops
+`run` and `serve` with exit 3, which the service leaves stopped.
 
 Credentials go to files beside the configuration file (`instances/` and `sources/`): on Linux 0600 files in 0700
 folders; on Windows a DPAPI machine-scope blob in a folder whose access list is SYSTEM, Administrators and the service

@@ -76,6 +76,9 @@ type Options struct {
 type Expected struct {
 	Defaults  map[string]int            `json:"defaults"`
 	Instances map[string]map[string]int `json:"instances"`
+	// Builtin is each collection's own interval (0 = opt-in), before the file's global schedules: (Defaults holds
+	// those, for an instance the page holds): the Collections dialogs' default_s
+	Builtin map[string]int `json:"builtin"`
 }
 
 // DefaultStaleSecs is the age after which a collection with no known interval is stale.

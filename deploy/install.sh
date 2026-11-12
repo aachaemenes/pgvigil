@@ -1,7 +1,7 @@
 #!/bin/sh
 # pgvigil installer for Linux and macOS: finds the release for this OS and CPU, downloads the binary and
 # SHA256SUMS, verifies the checksum, then runs `pgvigil install` (Linux: a system account, a systemd unit,
-# enabled; started once the config names an instance). Re-run it to upgrade: the binary and the unit are
+# enabled; started once PGVIGIL_REPO_DSN is filled in). Re-run it to upgrade: the binary and the unit are
 # replaced, the config is kept.
 #
 #   curl -fsSL https://pgvigil.com/install.sh | sh
