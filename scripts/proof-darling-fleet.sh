@@ -26,7 +26,8 @@
 #      true (their CPU reads); the fourth day back has_data false; a hand count equals each.
 #   C  GET /api/ack?part=seen&instance=fx-pm-ms: the seeded finding with occurrences 2, first_seen the first episode.
 #   U  (headless Chromium) the Summary at the root: the counts line names the offline instances (a hand count of active
-#      instances with no healthy collection for 30 minutes) and 'N blocking (recent)' (a hand count of the hour);
+#      instances with no healthy collection for 30 minutes) and 'N blocking (recent)' (the live part's blocking summed
+#      over every instance - each a hand count in A -, read just before or after the page);
 #      fx-pm-ms's row: Total CPU '96%' critical, Threads '2 starved' critical, Memory '3 waiters' critical, Blocking '6'
 #      critical (its title 'max wait 1.3 min'), Collectors '1 failing' warning (1 of 5 is not over 20 %), Measured '6 of
 #      6', Alerts the bell ('Alerts silenced') and 'Unsilence', its tree node the bell too; fx-pm-off's row: Collection 'Offline · last collected
@@ -222,10 +223,16 @@ const go = async (hash, ready) => {
   bad.push(`${hash}: not drawn (${ready})`); return false;
 };
 const check = (what, good, got) => { if (!good) bad.push(`${what}: ${got}`); else console.log(`ok   U ${what}: ${got}`); };
-// the Summary at the root
+// the Summary at the root; 'N blocking (recent)' = the live part's blocking summed over every instance, read just
+// before or just after the page (the demo keeps collecting)
+const blockSum = async () => { const t = (await (await fetch(`${U}/api/ack?part=live`)).json()).live; const k = t.columns.indexOf('blocking');
+  return t.rows.reduce((a, r) => a + Number(r[k] ?? 0), 0); };
+const b1 = await blockSum();
 if (await go('#/summary', `!!document.querySelector('main .summary-instances table.grid')`)) {
   const counts = await ev(`document.querySelector('main .counts')?.textContent ?? ''`);
-  check('the counts line', new RegExp(`(^|\\D)${offN} offline`).test(counts) && /\d+ blocking \(recent\)/.test(counts), counts);
+  const b2 = await blockSum();
+  const shown = Number((counts.match(/(\d+) blocking \(recent\)/) ?? [])[1]);
+  check('the counts line', new RegExp(`(^|\\D)${offN} offline`).test(counts) && (shown === b1 || shown === b2), `${counts} (blocking summed over the live part: ${b1} before, ${b2} after)`);
   const row = name => ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => t.querySelector('td')?.textContent.trim() === ${JSON.stringify(name)});
     if (!tr) return null; const ths = [...tr.closest('table').querySelectorAll('thead th')].map(t => t.textContent.replace(/[▾▴]/g, '').trim());
     return Object.fromEntries([...tr.children].map((td, i) => [ths[i], { text: td.querySelector('[data-text]')?.getAttribute('data-text') ?? td.textContent.trim(), cls: td.className, title: td.querySelector('[title]')?.getAttribute('title') ?? '', html: td.innerHTML.slice(0, 300), all: td.textContent.trim() }])); })()`);
