@@ -2,14 +2,16 @@
 // axis (every part is cut into the same steps; the lines break where the samples stop for a while), each chart's title
 // a link to the detailed page. Built with chart.ts's lineChart as it is. Data from /api/performance.
 // Task 177 D29 (Darling's PerformanceMonitor's Overview timeline): a SQL Server instance's buffer pool chart (MB, the
-// Memory page's series, /api/mssql/memory part=series), and the zoom's chip: a drag on any chart sets the page's range
-// (chart.ts: every chart reads it), and this page then says 'Zoomed: <from> → <to>' with a '×' (Reset zoom) back to
-// the range before the drag (PerformanceMonitor 3.12.0's overview-strips.js chip, MIT License, Copyright (c) 2026 Erik
-// Darling, Darling Data LLC; the full notice: instheader.ts).
+// Memory page's series, /api/mssql/memory part=series), and the zoom's chip: while the page stands on a range a drag set
+// (chartkit.ts's zoom chain), it says 'Zoomed: <from> → <to>' in the display zone with a '×' (Reset zoom) to the same
+// place as every chart's Reset zoom, the range before the first drag (PerformanceMonitor 3.12.0's overview-strips.js
+// chip, MIT License, Copyright (c) 2026 Erik Darling, Darling Data LLC; the full notice: instheader.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { chartPlaceholder, zoomBack, zoomReset } from './chartkit';
 import { mssqlCpuTab, mssqlFileIOTab, mssqlMemoryTab, mssqlTempdbTab } from './mssql_perf';
 import { Ctx, href, rangeLabel, window_ } from './router';
+import { fmt } from './tz';
 import { el, fmtBytes, fmtNum } from './ui';
 
 type Parts = 'meta' | 'grid' | 'cpu' | 'sessions' | 'waits' | 'db' | 'io';
@@ -68,27 +70,22 @@ function sharedSteps(grid: Row[], parts: Row[], stepSecs: number): Row[] {
   return out;
 }
 
-// the zoom: the address at a pointer press on the charts, then the address the drag made (sessionStorage: it survives
-// the page's own redraw); a range change more than 5 seconds after the press is not a drag's
-const ZOOM = 'pgvigil.perfZoom';
-const ss = {
-  get: (k: string): string | null => { try { return sessionStorage.getItem(k); } catch { return null; } },
-  set: (k: string, v: string) => { try { sessionStorage.setItem(k, v); } catch { /* private window */ } },
-  del: (k: string) => { try { sessionStorage.removeItem(k); } catch { /* private window */ } },
-};
+// the zoom's chip: shown only while chartkit's zoom chain holds this address (a drag led here), its × the chain's way
+// back - one target with every chart's 'Reset zoom'
 function zoomChip(ctx: Ctx): HTMLElement | null {
-  const pressed = ss.get(ZOOM + '.before');
-  ss.del(ZOOM + '.before');
-  if (pressed) {
-    const p = JSON.parse(pressed) as { hash: string; at: number };
-    if (p.hash !== location.hash && Date.now() - p.at < 5000 && ctx.range.from && ctx.range.to) ss.set(ZOOM, JSON.stringify({ hash: location.hash, back: p.hash }));
-  }
-  const z = (() => { try { return JSON.parse(ss.get(ZOOM) ?? 'null') as { hash: string; back: string } | null; } catch { return null; } })();
-  if (!z || z.hash !== location.hash || !ctx.range.from || !ctx.range.to) return null;
-  const reset = el('button', { type: 'button', class: 'link drill-clear', title: 'Reset zoom', 'aria-label': 'Reset zoom' }, '×');
-  reset.addEventListener('click', () => { ss.del(ZOOM); location.hash = z.back; });
+  const back = zoomBack();
+  if (!back || !ctx.range.from || !ctx.range.to) return null;
   return el('p', { class: 'zoom-chip', role: 'status' },
-    `Zoomed: ${new Date(ctx.range.from).toLocaleString()} → ${new Date(ctx.range.to).toLocaleString()} `, reset);
+    `Zoomed: ${fmt(new Date(ctx.range.from))} → ${fmt(new Date(ctx.range.to))} `,
+    el('a', { class: 'drill-clear', href: back, title: 'Reset zoom', 'aria-label': 'Reset zoom' }, '×'));
+}
+
+// a chart with nothing to draw: the kit's one empty shape, its title the link, the way back from a zoom beside it
+function emptyChart(title: string, link: string, words: string): HTMLElement {
+  const c = titled(chartPlaceholder(title, 'empty', words), title, link);
+  const r = zoomReset();
+  if (r) c.querySelector('h3')?.append(' ', r);
+  return c;
 }
 
 function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
@@ -110,7 +107,6 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
   const chip = zoomChip(ctx);
   if (chip) sec.append(chip);
   const box = el('div', { class: 'charts' });
-  box.addEventListener('pointerdown', () => ss.set(ZOOM + '.before', JSON.stringify({ hash: location.hash, at: Date.now() })));
   const ms_s = (v: number) => fmtNum(v) + ' ms/s';
   if (ms) {
     const cpu = rowsOf(d.cpu);
@@ -118,8 +114,7 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
       ? titled(lineChart('CPU', align(g, cpu, ['sql_avg', 'cpu_avg', 'cpu_max']),
           [{ key: 'sql_avg', label: 'SQL Server %' }, { key: 'cpu_avg', label: 'total %' }, { key: 'cpu_max', label: 'total max %' }], v => fmtNum(v) + ' %'),
           cpu.some(r => r.machine_read) ? 'CPU (scheduler monitor: SQL Server and the machine)' : 'CPU (scheduler monitor: SQL Server only, a Linux host)', to(mssqlCpuTab))
-      : el('div', { class: 'chart' }, el('h3', {}, el('a', { href: to(mssqlCpuTab) }, 'CPU')),
-          el('p', { class: 'empty' }, 'no CPU read in this range: the mssql_cpu collection runs every minute and needs VIEW SERVER STATE')));
+      : emptyChart('CPU', to(mssqlCpuTab), 'No CPU read in this window: the mssql_cpu collection runs every minute and needs VIEW SERVER STATE.'));
     box.append(titled(lineChart('Requests', align(g, rowsOf(d.sessions), ['requests', 'blocked', 'sessions']),
       [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions', to('mssql_running')));
     const w = pivotWaits(g, rowsOf(d.waits));
@@ -134,8 +129,7 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     box.append(memRaw.length
       ? titled(lineChart('Buffer pool', memRows, [{ key: 'buffer_pool_mb', label: 'buffer pool' }, { key: 'total_mb', label: 'total server' }], v => fmtNum(v) + ' MB'),
           'Buffer pool (MB)', to(mssqlMemoryTab))
-      : el('div', { class: 'chart' }, el('h3', {}, el('a', { href: to(mssqlMemoryTab) }, 'Buffer pool (MB)')),
-          el('p', { class: 'empty' }, 'no memory read in this range: the mssql_memory collection runs every minute')));
+      : emptyChart('Buffer pool (MB)', to(mssqlMemoryTab), 'No memory read in this window: the mssql_memory collection runs every minute.'));
     box.append(titled(lineChart('Transactions', align(g, rowsOf(d.db), ['batch_s', 'transactions_s', 'compiles_s']),
       [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }]),
       'Batch requests and transactions per second', to(mssqlCpuTab)));
@@ -151,7 +145,7 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
           [{ key: 'cpu_avg', label: 'CPU avg %' }, { key: 'cpu_max', label: 'CPU max %' }, { key: 'iowait_avg', label: 'IO wait %' }], v => fmtNum(v) + ' %',
           // the host check's own lines (0021: 'CPU over 90 % for 10 minutes', critical from 98 %)
           { lines: [{ value: 90, label: 'warning 90 %', kind: 'threshold', level: 'warning' }, { value: 98, label: 'critical 98 %', kind: 'threshold', level: 'critical' }] }), `CPU (${String(meta.host_source ?? 'host')})`, to('host'))
-      : el('div', { class: 'chart' }, el('h3', {}, el('a', { href: to('host') }, 'CPU')), el('p', { class: 'empty' }, 'no host read for this instance')));
+      : emptyChart('CPU', to('host'), 'No host read for this instance.'));
     box.append(titled(lineChart('Sessions', align(g, rowsOf(d.sessions), ['active', 'idle_in_txn', 'waiting_lock']),
       [{ key: 'active', label: 'active' }, { key: 'idle_in_txn', label: 'idle in transaction' }, { key: 'waiting_lock', label: 'waiting on a lock' }]), 'Sessions by state', to('counters', { kind: 'sessions' })));
     const wr = rowsOf(d.waits), w = pivotWaits(g, wr);

@@ -358,7 +358,7 @@ if not has(scope='PostgreSQL ' + d['pg'], kind='storage-tab', column='Temp'): ba
 # task 177 D29: PerformanceMonitor's links and buttons, on an instance of each engine
 if not has(scope='root', kind='pm', column='Silence (Summary row)'): bad.append("no Summary row's Silence button checked")
 for e, n in (('sqlserver', d['ms']), ('postgres', d['pg'])):
-    for c in ('header name', 'breadcrumb dot', 'calendar months', 'calendar table', 'calendar day', 'calendar View Top Queries', 'Performance zoom'):
+    for c in ('header name', 'breadcrumb dot', 'calendar months', 'calendar table', 'calendar day', 'calendar View Top Queries', 'Performance zoom', 'zoom: two drags', 'zoom: Reset zoom from a custom range'):
         if not has(scope='%s %s' % (e, n), kind='pm', column=c): bad.append('no %s checked on %s' % (c, n))
 print('the click map covered: ' + ('every kind asked' if not bad else '; '.join(bad)))
 sys.exit(1 if bad else 0)
