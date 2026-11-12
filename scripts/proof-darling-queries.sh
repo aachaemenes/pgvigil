@@ -454,6 +454,9 @@ echo "ok   E: mssql_pc_handles = the DMV's sql_handle and query_plan_hash for ev
 OLDMAX=$(pq "SELECT max(creation_time) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
 RB=$(pq "SELECT count(*) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
 docker restart "$SQL" >/dev/null || fail "E: docker restart of the SQL Server container"
+# a restarted container publishes 1433 on a new host port (-p 127.0.0.1::1433): the monitor DSN follows it
+PORT_SQL=$(docker port "$SQL" 1433/tcp | head -1 | sed 's/.*://')
+export PGV_Q_MON="sqlserver://$MON:$(urlq "$MON_PW")@127.0.0.1:$PORT_SQL?database=master&encrypt=true&TrustServerCertificate=true&connection+timeout=20"
 for _ in $(seq 1 120); do sq "SELECT 1" master 10 >/dev/null 2>&1 && break; sleep 1; done
 sqok "E: SQL Server back after the restart" "SELECT 1" master
 sqok "E: q_cost after the restart" "$Q_COST 1;" pgvq
