@@ -61,9 +61,14 @@ CREATE TABLE IF NOT EXISTS pgvigil.admin_removed (
   removed_by  text NOT NULL
 );
 -- It holds an insert too (the join's w9e, finding 1): a row never read is deleted at its remove, and a first read
--- already in flight would insert it again, active.
+-- already in flight would insert it again, active. An insert takes the name's lock first, the lock the remove holds
+-- to its commit: a remove still open is waited for, so its admin_removed row is seen (its review: without it an
+-- insert that waited on the deleted row went in active).
 CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    PERFORM pg_advisory_xact_lock(hashtext('pgvigil.instance:' || NEW.name));
+  END IF;
   IF NEW.is_active AND (TG_OP = 'INSERT' OR NOT OLD.is_active)
      AND (EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes')
           -- a page instance disabled in the last 5 minutes stays inactive against a run in flight (enable sets it
@@ -81,13 +86,24 @@ DROP TRIGGER IF EXISTS admin_keep_removed_insert ON pgvigil.instances;
 CREATE TRIGGER admin_keep_removed_insert BEFORE INSERT ON pgvigil.instances
   FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
 
+-- admin_imported: the instance holds history pgvigil import dbadash wrote, which leaves no collection_dates or
+-- mssql_instance row and no version when DBA Dash's ProductVersion is empty (the fold's review, finding 3): the three
+-- tables it writes whose index leads with instance_id (mssql_cpu_sample has none; DBA Dash's file sizes come with
+-- every instance it monitors)
+CREATE OR REPLACE FUNCTION pgvigil.admin_imported(p_id int) RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM pgvigil.mssql_database_size WHERE instance_id = p_id)
+      OR EXISTS (SELECT 1 FROM pgvigil.mssql_volume_sample WHERE instance_id = p_id)
+      OR EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs WHERE instance_id = p_id)
+$$;
+
 -- a page instance's row made at its add (no version: import_admin_instance) has its history from the first read that
 -- connects: ensure_instance writes the version then, and first_seen moves to that read (the Diff page's 'history
 -- from' reads it) - the join's review of fold 1, finding 3. Never read = no version, whatever the platform: the
 -- page's form sends one (onprem, rds, ...) - the join's w9e, finding 4
 CREATE OR REPLACE FUNCTION pgvigil.admin_first_read() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF OLD.server_version IS NULL AND NEW.server_version IS NOT NULL THEN
+  -- a row DBA Dash's import filled keeps its first_seen: its history is older than pgvigil's first read
+  IF OLD.server_version IS NULL AND NEW.server_version IS NOT NULL AND NOT pgvigil.admin_imported(NEW.instance_id) THEN
     NEW.first_seen := now();
   END IF;
   RETURN NEW;
@@ -325,6 +341,8 @@ BEGIN
       ON CONFLICT (name) DO UPDATE SET is_active = true WHERE i.engine = EXCLUDED.engine;
     END IF;
   ELSIF v_op = 'remove' THEN
+    -- the name's lock to the commit: an insert of the name (a read in flight) waits and then sees admin_removed
+    PERFORM pg_advisory_xact_lock(hashtext('pgvigil.instance:' || v_name));
     DELETE FROM pgvigil.admin_instances WHERE name = v_name;
     -- its history stays; the fleet pages read is_active (kept false against a run in flight: admin_keep_removed)
     INSERT INTO pgvigil.admin_removed (name, removed_at, removed_by) VALUES (v_name, p_at, v_user)
@@ -338,7 +356,8 @@ BEGIN
      WHERE i.name = v_name AND i.server_version IS NULL
        AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)
        AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d WHERE d.instance_id = i.instance_id
-                        AND NOT (d.status = 'error' AND d.note LIKE 'connect: %'));
+                        AND NOT (d.status = 'error' AND d.note LIKE 'connect: %'))
+       AND NOT pgvigil.admin_imported(i.instance_id);
     UPDATE pgvigil.admin_proposals SET state = 'proposed', instance_name = NULL, decided_at = p_at, decided_by = v_user WHERE instance_name = v_name;
   ELSIF v_op = 'tested' THEN
     UPDATE pgvigil.admin_instances SET tested_at = p_at, tested_ok = (p_payload->>'ok')::boolean, tested_detail = left(p_payload->>'detail', 1000) WHERE name = v_name;
