@@ -18,7 +18,8 @@ import (
 //                                                'imported': each instance's pgvigil instance (sqlDBADashImported).
 //   GET /api/dbadash?repo=<name>              -> the same, narrowed to one repository.
 //   GET /api/dbadash?repo=<name>&id=<n>[&from=..&to=..] -> one DBADash instance: its facts, its Summary statuses with
-//                                                DBADash's words, and the status changes of the window.
+//                                                DBADash's words, the status changes of the window, and the imported
+//                                                server's newest database sizes (part 'sizes', task 168).
 //   GET /api/dbadash?repo=<name>&id=<n>&page=<key>[&from=..&to=..][&snapshot=..] -> one DBADash page (task 75): ONE
 //                                                call of the page's DBADash procedure for the instance, made now through
 //                                                the repository's read login (internal/dbadash pages.go); the reply is
@@ -83,6 +84,7 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 		{"statuses", `SELECT * FROM pgvigil.dbadash_statuses($1, $2)`, []any{*repo, id}},
 		{"changes", `SELECT * FROM pgvigil.dbadash_changes($1, $2, $3, $4)`, []any{*repo, id, from, to}},
 		{"pgvigil", sqlDBADashPgvigil, []any{*repo, id}},
+		{"sizes", sqlDBADashSizes, []any{*repo, id}},
 	})
 }
 
@@ -99,6 +101,22 @@ SELECT d.repository, d.instance_id AS source_id, i.instance_id, i.name, (m.insta
  WHERE ($1::text IS NULL OR d.repository = $1)
    AND (upper(m.server_name) = upper(d.instance) OR (m.instance_id IS NULL AND upper(i.name) = upper(d.display_name)))
  ORDER BY d.repository, d.instance_id, (m.instance_id IS NULL), i.instance_id`
+
+// sqlDBADashSizes is the newest database size per database that pgvigil import dbadash stored for the imported server of
+// one repository instance (sqlDBADashImported's imported match: the display name, not collected by pgvigil), largest
+// first: the Storage tab of an imported server (pgvigil's own Storage page lists the databases of its own file read,
+// which an imported server has not). No imported server = no row.
+const sqlDBADashSizes = `
+SELECT * FROM (
+  SELECT DISTINCT ON (s.database_name) s.database_name, s.snapshot_at, s.data_bytes, s.log_bytes, s.data_bytes + s.log_bytes AS size_bytes,
+         s.data_used_bytes, s.files
+    FROM pgvigil.dbadash_instances d
+    JOIN pgvigil.instances i ON i.engine = 'sqlserver' AND i.is_active AND upper(i.name) = upper(d.display_name)
+    JOIN pgvigil.mssql_database_size s ON s.instance_id = i.instance_id
+   WHERE d.repository = $1 AND d.instance_id = $2
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)
+   ORDER BY s.database_name, s.snapshot_at DESC) x
+ ORDER BY x.size_bytes DESC, x.database_name`
 
 // sqlDBADashPgvigil is the active SQL Server instance pgvigil monitors itself under the DBADash instance's server name
 // (the actions buttons' door); more than one = the lowest instance_id, said by the count. Its machine name goes to the

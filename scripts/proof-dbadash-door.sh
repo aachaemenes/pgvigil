@@ -83,8 +83,10 @@
 #     G2 `pgvigil import dbadash -config <it> -repo lab` (the join's subcommand) exits 0 and makes the imported server
 #        under DBA Dash's display name;
 #     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same 33 tabs (Availability
-#        kept); mssqlcpu, mssqlstorage and jobstimeline render pgvigil's own pages over the imported rows (a grid row or
-#        a chart), the eight other screen tabs as in G1, every other tab its one line; the tree as in G1.
+#        kept); mssqlcpu and jobstimeline render pgvigil's own pages over the imported rows (a grid row or a chart),
+#        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the eight
+#        other screen tabs as in G1, every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
+#        Storage page there; it lists the databases of pgvigil's own file read, which an imported server has not.]
 # NOT PROVEN HERE: the page's machine-name and latest-snapshot guards on the buttons in a browser; the 'volumes' mapping with rows
 # when DBA Dash collects none (Linux: run with PGVIGIL_DBADASH_BAK of a Windows-side repository); pgvigil's own
 # collector run after an import (the duplicates the docs' -to rule is about); a DBA Dash version other than 4.24.1;

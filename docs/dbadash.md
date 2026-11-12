@@ -98,11 +98,11 @@ Each tab is served from pgvigil's store where the import fills the tables its pa
 | Configuration | screen `dbo.Configuration_Get` | the same |
 | Properties | the instance's facts as the repository records them (the stored read) | the same |
 | CPU | pgvigil's CPU page over the CPU minutes the import copied (`mssql_cpu_sample`) | not read: the import copies them |
-| Storage | pgvigil's Storage page over the volume samples and database sizes the import copied (`mssql_volume_sample`, `mssql_database_size`) | screen `dbo.DrivesReport_Get` |
+| Storage | the newest size of each database the import copied (pgvigil's store, `mssql_database_size`), then screen `dbo.DrivesReport_Get` (pgvigil's own Storage page lists the databases of its own file read, which an imported server has not; the import's volume samples wait for the server to be collected) | screen `dbo.DrivesReport_Get` |
 | Jobs timeline | pgvigil's Jobs timeline over the job outcomes the import copied (`mssql_job_runs`) | not read: the import copies them |
 | Slow queries, Waits, Deadlocks, Blocked reports, Findings, Availability, Row versions, Actions log, Memory, File IO, TempDB, Query Store, Metrics, Procedures, Index locks, Audit, Plan cache, Indexes, Checks, Error log, Default trace, System health | not read: the line names pgvigil's own read of the server that fills it | the same |
 
-On a store tab, the parts of pgvigil's page that its own collection fills (the file list, the current volumes, schedulers) stay empty for an imported server, and the page says so in its first line. To get every tab, add the server to `instances:` with `engine: sqlserver`: it becomes a collected instance, and the import's history stays under it when the names match (the import's `-to` rule below).
+On the CPU and Jobs timeline tabs, the parts of pgvigil's page that its own collection fills (schedulers, running jobs) stay empty for an imported server, and the page says so in its first line. To get every tab, add the server to `instances:` with `engine: sqlserver`: it becomes a collected instance, and the import's history stays under it when the names match (the import's `-to` rule below).
 
 ## DBA Dash's own screens
 

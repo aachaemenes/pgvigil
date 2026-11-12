@@ -20,10 +20,10 @@ import { get, LoginRequired, Row, rowsOf, Table } from './api';
 import { mssqlJobCol, mssqlKillCol } from './mssql_actions';
 import { Ctx, href, mssqlInstanceGroups, mssqlInstanceTabs, window_ } from './router';
 import { hashParam } from './dbinfo';
-import { badge, Col, dot, el, errorBox, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, dot, el, errorBox, fmtBytes, fmtTime, grid, props, tile } from './ui';
 
 interface DBADashData { repositories: Table | null; fleet: Table | null; checks: Table | null; imported?: Table | null }
-interface DBADashInstance { instance: Table | null; statuses: Table | null; changes: Table | null; pgvigil?: Table | null }
+interface DBADashInstance { instance: Table | null; statuses: Table | null; changes: Table | null; pgvigil?: Table | null; sizes?: Table | null }
 interface PageSet { columns: { name: string; type: string }[]; rows: unknown[][]; truncated?: boolean }
 interface PageReply { page: string; title: string; procedure: string; version: string; proven: boolean; note?: string; results: PageSet[]; ms: number; instance?: string; machine?: string }
 type Render = (c: Ctx) => Promise<HTMLElement>;
@@ -87,9 +87,11 @@ export async function isImported(instance: number | undefined): Promise<boolean>
 // ---- what each SQL Server tab shows for an imported server (docs/dbadash.md has this table)
 
 // store: what pgvigil import dbadash copies into the tables the native page reads (an imported server: the native page);
+// sizes: the database sizes the import copied, drawn here from pgvigil's store (the native Storage page lists the
+// databases of pgvigil's own file read, which an imported server has not), before the screen;
 // screen: the repository's live screen (a procedure of pages.go, or 'summary' / 'properties': the stored read of task 55);
 // read: what reads the tab for a server pgvigil collects itself (the 'not read' line's words).
-interface Source { store?: string; screen?: string; extra?: string; read?: string }
+interface Source { store?: string; sizes?: boolean; screen?: string; extra?: string; read?: string }
 const own = 'pgvigil\'s own collection of the server (an instances: entry with engine: sqlserver)';
 export const tabSources: Record<string, Source> = {
   summary: { screen: 'summary' },
@@ -103,7 +105,7 @@ export const tabSources: Record<string, Source> = {
   availability: { read: `${own}: its Always On and log shipping reads` },
   mssqlbackups: { screen: 'backups' },
   mssqljobs: { screen: 'jobs', extra: 'alerts' },
-  mssqlstorage: { store: 'the volume samples and database sizes', screen: 'drives' },
+  mssqlstorage: { sizes: true, screen: 'drives' },
   mssqlfiles: { screen: 'dbfiles' },
   rowversions: { read: `${own}: its version store read` },
   mssqlconfig: { screen: 'configuration' },
@@ -296,6 +298,7 @@ async function tabView(ctx: Ctx, m: Mode, tab: string): Promise<HTMLElement> {
     v.prepend(el('p', { class: 'meta' }, `An imported server: ${src.store} here are the ones pgvigil import dbadash copied from ${m.repo}; what pgvigil's own collection fills stays empty.`));
     return v;
   }
+  if (src.sizes && m.instance) return sizesTab(ctx, m, tab, src, h2);
   if (src.screen) return screenTab(ctx, m, tab, src, h2);
   return notRead(tab, src.store ? `pgvigil import dbadash -repo ${m.repo} -instance ${m.id} copies ${src.store}` : src.read ?? own, h2);
 }
@@ -311,6 +314,30 @@ async function screenTab(ctx: Ctx, m: Mode, tab: string, src: Source, h2: boolea
     if (src.extra) rows += await screenInto(sec, ctx, m, src.extra);
   }
   sec.dataset.rows = String(rows);
+  return sec;
+}
+
+// sizesTab: an imported server's Storage tab: the newest database sizes the import copied (pgvigil's store), then the
+// repository's Drives screen
+async function sizesTab(ctx: Ctx, m: Mode, tab: string, src: Source, h2: boolean): Promise<HTMLElement> {
+  const sec = el('section', { 'data-source': 'store' }, ...(h2 ? [el('h2', {}, mssqlInstanceTabs[tab] ?? tab, ' ', el('span', { class: 'meta' }, `(imported: ${m.repo})`))] : []));
+  const w = window_(ctx);
+  const d = await get<DBADashInstance>('dbadash', { repo: m.repo, id: m.id, from: w.from, to: w.to });
+  const rows = rowsOf(d.sizes);
+  const b = (v: unknown) => v == null ? '' : fmtBytes(v);
+  sec.append(el('h3', {}, 'Database sizes'),
+    el('p', { class: 'meta' }, `An imported server: the newest size of each database that pgvigil import dbadash copied from ${m.repo}. pgvigil's own Storage page lists the databases of its own file read, which an imported server has not.`),
+    grid(rows, [
+      { key: 'database_name', label: 'database' },
+      { key: 'size_bytes', label: 'size', num: true, fmt: b },
+      { key: 'data_bytes', label: 'data', num: true, fmt: b },
+      { key: 'log_bytes', label: 'log', num: true, fmt: b },
+      { key: 'data_used_bytes', label: 'data used', num: true, fmt: b },
+      { key: 'files', num: true },
+      { key: 'snapshot_at', label: 'as of', fmt: v => fmtTime(v) },
+    ], 'The import copied no database size for this server.'));
+  const n = rows.length + await screenInto(sec, ctx, m, src.screen!);
+  sec.dataset.rows = String(n);
   return sec;
 }
 
