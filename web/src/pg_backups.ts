@@ -353,7 +353,7 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
     const keys = rowsOf(d.keys), rows = rowsOf(d.rows), tags = rowsOf(d.tags).map(r => String(r.tag)), insts = rowsOf(d.instances);
     keysCache = keys;
     const out: HTMLElement[] = [el('h2', {}, 'Thresholds'),
-      el('p', { class: 'meta' }, 'PostgreSQL state thresholds: the root applies to every instance, a tag to its instances (the first of an instance\'s tags in sort order that has a row), an instance to itself, a database to one database (amcheck). The nearest level wins; with none, the built-in default.')];
+      el('p', { class: 'meta' }, 'State thresholds: the root applies to every instance, a tag to its instances (the first of an instance\'s tags in sort order that has a row), an instance to itself, a database to one database (amcheck). The nearest level wins; with none, the built-in default. Two keys judge SQL Server instances too: uptime (the Summary\'s Instance Uptime: a root or tag row set here colours every SQL Server Uptime cell under it as well) and crash (the Summary\'s Memory Dump: SQL Server\'s memory dumps, PostgreSQL\'s crash restarts).')];
     const keyCols: Col[] = [
       { key: 'label', label: 'threshold' }, { key: 'unit' },
       { key: 'warn_default', label: 'built in', fmt: (_v, r) => thresholdLine({ ...r, warn: r.warn_default, crit: r.crit_default, level: 'default' }) },

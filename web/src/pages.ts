@@ -3,11 +3,11 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { cellClass, cells, cellText, Fleet, fleet, groups, tagsOf } from './fleet';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, sinceState, summaryText, tagsOf } from './fleet';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
-import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile } from './ui';
+import { badge, Col, dot, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, showMenu, tile } from './ui';
 import { diskReportView } from './host';
 import { storageFleetView } from './storage';
 import { dbinfoFleetView } from './dbinfo';
@@ -28,8 +28,8 @@ import { readStmtGroups, stmtGroupsSection, totalWithShare } from './stmt_filter
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
-import { summaryCellAction } from './uptimedialog';
-import { AckBody, ackDialog, ackHolds, ackWords, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
+import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
+import { AckBody, ackDialog, ackHolds, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 
 export type { Ctx };
 const range = window_;
@@ -63,7 +63,7 @@ export async function checks(ctx: Ctx): Promise<HTMLElement> {
   const cols: Col[] = [
     { key: 'severity', fmt: v => badge(String(v), v === 'critical' ? 'crit' : 'warn') },
     { key: 'instance', fmt: (v, r) => r.instance_id == null ? String(v ?? '') : instLink(ctx, String(v), r.instance_id, groupTab(r.check_group)) },
-    { key: 'check_name', label: 'check' },
+    { key: 'check_name', label: 'check', fmt: v => checkLabel(v) },
     { key: 'object' },
     { key: 'at', label: 'when', fmt: fmtTime },
     { key: 'detail', wide: true },
@@ -246,14 +246,26 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
 export { errorBox };
 
 // cellState: what 'until the check changes' compares - the cell's reading and a fingerprint of the checks behind it
-// (two different checks failing read the same '1 warning'; their details differ)
-function cellState(c: { detail: string[] }): string {
+// (two different checks failing read the same '1 warning'; their details differ). Instance Uptime and Memory Dump
+// change with the start or the newest dump only, never with the hours their text counts (DBA Dash: an
+// acknowledgement holds until a restart or a dump after it).
+function cellState(c: Cell, key = ''): string {
+  if ((key === 'uptime' || key === 'dumps') && c.since != null) return sinceState(c.since);
   let h = 5381;
   for (const ch of c.detail.join('\n')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
-  return `${cellText(c as Parameters<typeof cellText>[0])} #${h.toString(36)}`;
+  return `${cellText(c)} #${h.toString(36)}`;
 }
 
-// ---- fleet Summary: one row per instance, one coloured cell per check group (DBADash's Summary tab)
+// the Summary's own settings, kept per browser: Test Summary Max Height % (DBA Dash's 10 % ... 90 %, 70 % by default)
+// and Show Test Summary
+const maxHeights = [10, 20, 30, 40, 50, 60, 70, 80, 90];
+const readSetting = (k: string): string | null => { try { return localStorage.getItem(k); } catch { return null; } };
+const writeSetting = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private window */ } };
+
+// ---- fleet Summary: DBA Dash's Summary (Checks/Summary.cs, task P08): its test grid over its instance grid, one
+// coloured cell per test and instance under DBA Dash's names and in its column order (pgvigil's own tests after them),
+// each cell's text as DBA Dash writes it and a link where DBA Dash's is one, the toolbar's Refresh, View, Options and
+// Clear Filter and the Refresh Time with its tick; pgvigil's tag filter, Sort and Needs attention strip stay beside it
 
 export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // the acknowledgements in force and the Needs-attention rates (task 118); a server without them: no ack, no rate
@@ -264,14 +276,15 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const filterBar = tagFilterBar(scope);   // built first: it drops a remembered filter this scope no longer carries
   const insts = applyTagFilter(scope);
   type Acked = Record<string, Row>;
+  const cellsOf = (r: Row) => r._cells as Record<string, Cell>;
   const rows = insts.map(r => {
     const c = cells(f, r);
-    // an acknowledged cell (in force, and for until-change the same text it was given for) loses its colour and its
+    // an acknowledged cell (in force, and for until-change the same state it was given for) loses its colour and its
     // weight: it is counted as acknowledged, never as warning or critical
     const acked: Acked = {};
     for (const g of groups) {
       const a = acks.get(`${String(r.instance_id)}|${g.key}`);
-      if (a && !c[g.key].none && c[g.key].level > 0 && ackHolds(a, cellState(c[g.key]))) acked[g.key] = a;
+      if (a && !c[g.key].none && c[g.key].level > 0 && ackHolds(a, cellState(c[g.key], g.key))) acked[g.key] = a;
     }
     const row: Row = { ...r, _cells: c, _acked: acked,
       _worst: Math.max(0, ...groups.filter(g => !acked[g.key]).map(g => c[g.key].level)) };
@@ -280,7 +293,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   });
   // Sort (Darling's): severity (then name), name, or CPU (the newest host sample, highest first; none last)
   type SortBy = 'severity' | 'name' | 'cpu';
-  let sortBy: SortBy = (() => { try { const v = localStorage.getItem('pgvigil.summarySort'); return v === 'name' || v === 'cpu' ? v : 'severity'; } catch { return 'severity'; } })();
+  let sortBy: SortBy = (() => { const v = readSetting('pgvigil.summarySort'); return v === 'name' || v === 'cpu' ? v : 'severity'; })();
   const cpuOf = (r: Row) => { const v = rates.get(Number(r.instance_id))?.cpu_pct; return v == null ? -1 : Number(v); };
   const sortRows = () => rows.sort((a, b) => sortBy === 'name' ? String(a.name).localeCompare(String(b.name))
     : sortBy === 'cpu' ? cpuOf(b) - cpuOf(a) || String(a.name).localeCompare(String(b.name))
@@ -295,50 +308,56 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances: `,
     el('span', { class: n[2] ? 'crit' : '' }, `${n[2]} critical`), ', ', el('span', { class: n[1] ? 'warn' : '' }, `${n[1]} warning`), `, ${n[0]} OK, ${nAck} check(s) acknowledged`,
     waiters ? `; ${waiters} lock waiters now` : '');
-  const statusCol = (g: typeof groups[number]): Col => ({
+  // a cell's page: the column's tab for the instance (DBA Dash's tabMapping), with the view a SQL Server tab opens on
+  const cellHref = (g: Group, r: Row): string => {
+    const ms = r.engine === 'sqlserver';
+    const base = href(ctx, { tab: ms ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(!ms && g.kind ? { kind: g.kind } : {}) });
+    const cv = ms ? g.mssql?.[3] : g.cv;
+    return cv ? `${base}${base.includes('?') ? '&' : '?'}cv=${cv}` : base;
+  };
+  const statusCol = (g: Group): Col => ({
     key: 'g_' + g.key, label: g.label,
-    cls: (_v, r) => (r._acked as Acked)[g.key] ? 'status none ack' : 'status ' + cellClass((r._cells as ReturnType<typeof cells>)[g.key]),
+    cls: (_v, r) => (r._acked as Acked)[g.key] ? 'status none ack' : 'status ' + cellClass(cellsOf(r)[g.key]),
     fmt: (_v, r) => {
-      const c = (r._cells as ReturnType<typeof cells>)[g.key];
+      const all = cellsOf(r), c = all[g.key];
       const ak = (r._acked as Acked)[g.key];
-      if (ak) {
-        // acknowledged: no colour, the reading kept with 'ack:' before it, who and when in its title
-        const l = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(r.engine !== 'sqlserver' && g.kind ? { kind: g.kind } : {}) }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}, ${ackWords(ak)}`, 'data-text': 'ack: ' + cellText(c) }, 'ack: ' + cellText(c));
-        l.title = ackWords(ak) + (c.detail.length ? '\n' + c.detail.slice(0, 12).join('\n') : '');
-        summaryCellAction(l, g.key, r);
-        return l;
+      const t = summaryText(g, c, r, all);
+      // the cell's text is DBA Dash's ('View', '1 day, 14 hours', 'Never' ...); the reading behind it ('2 warning')
+      // is its name for a screen reader and the export, and the checks behind it its title
+      const text = ak ? `ack: ${t.text || cellText(c)}` : t.text;
+      const reading = cellText(c);
+      const tip = (ak ? ackWords(ak) + (c.detail.length ? '\n' : '') : '') + c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
+      if (!t.link) {
+        const s = el('span', { 'data-text': reading }, text);
+        if (tip) s.title = tip;
+        return s;
       }
-      // a green cell says nothing: the colour is the status, and text is kept for a count, a value or 'no sample'
-      // (the link keeps its name for a screen reader and the export)
-      const quiet = !c.none && c.level === 0 && !c.text;
-      const a = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(r.engine !== 'sqlserver' && g.kind ? { kind: g.kind } : {}) }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u2713' : cellText(c));
-      if (c.detail.length) a.title = c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
+      const a = el('a', { href: cellHref(g, r), class: 'cell-link', 'aria-label': `${g.label}: ${text}${text === reading ? '' : ` (${reading})`}${ak ? ', ' + ackWords(ak) : ''}`, 'data-text': reading }, text);
+      if (tip) a.title = tip;
       summaryCellAction(a, g.key, r);
       return a;
     },
   });
+  // DBA Dash's columns in its order, then pgvigil's own tests, then pgvigil's other columns
   const cols: Col[] = [
-    { key: '_worst', label: '', fmt: v => dot(Number(v)) },
-    { key: 'name', label: 'instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
-    { key: 'platform' },
-    { key: 'is_replica', label: 'role', fmt: v => v ? 'replica' : 'primary' },
-    // no tag columns: tags group the tree at the left and filter this grid (the bar above), as in DBA Dash; a column
-    // per tag key made the grid wide and said what the tree already says
-    ...groups.map(statusCol),
-    { key: 'total', label: 'sessions', num: true },
+    { key: 'name', label: 'Instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
+    ...groups.filter(g => g.dd).map(statusCol),
+    ...groups.filter(g => !g.dd).map(statusCol),
+    { key: 'platform', label: 'Platform' },
+    { key: 'is_replica', label: 'Role', fmt: v => v ? 'replica' : 'primary' },
+    { key: 'total', label: 'Sessions', num: true },
     // no colour here: the Activity cell judges lock waits, and acknowledging it takes the line out of the colour
-    { key: 'waiting_lock', label: 'lock waits', num: true },
-    { key: 'activity_at', label: 'last sample', fmt: fmtTime },
+    { key: 'waiting_lock', label: 'Lock Waits', num: true },
+    { key: 'activity_at', label: 'Last Sample', fmt: fmtTime },
   ];
   const broken = f.checks.filter(r => r.instance_id == null);
-  // The test grid (DBA Dash's Summary, its upper grid): one row per check group over the scope the tree gives (the
-  // fleet, a tag folder, the tag filter), with how many instances are OK, warning, critical and not sampled. A
-  // count is a button: it narrows the instance grid below to those instances; the same button again, or 'Clear
-  // filter' shows them all; the column of that test moves to the front of the grid (DBA Dash 01a). An acknowledged
-  // cell counts under 'acknowledged', not under its warning or critical (DBA Dash's Acknowledged column).
+  // The test grid (DBA Dash's upper grid): one row per test over the scope the tree gives (the fleet, a tag folder, the
+  // tag filter), with how many instances are OK, warning, critical, N/A and acknowledged. A count is a button: it
+  // narrows the instance grid below to those instances and shows that test's column only (DBA Dash's FilterByStatus);
+  // the same button again, or Clear Filter, shows them all. An acknowledged cell counts under Acknowledged only.
   type Bucket = 'ok' | 'warn' | 'crit' | 'na' | 'ack' | 'bad';   // 'bad': warning or critical (a test name without a page of its own)
   const bucketOf = (r: Row, key: string): Exclude<Bucket, 'bad'> => {
-    const c = (r._cells as ReturnType<typeof cells>)[key];
+    const c = cellsOf(r)[key];
     if ((r._acked as Acked)[key]) return 'ack';
     return c.none ? 'na' : c.level === 2 ? 'crit' : c.level === 1 ? 'warn' : 'ok';
   };
@@ -354,18 +373,24 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     pick = p;
     try { if (p) sessionStorage.setItem('pgvigil.summaryPick', JSON.stringify({ key: p.key, b: p.b })); else sessionStorage.removeItem('pgvigil.summaryPick'); } catch { /* private window */ }
   };
-  const lower = el('div', {});
-  const clear = el('button', { type: 'button', class: 'link' }, 'Clear filter');
+  const lower = el('div', { class: 'summary-instances' });
+  // DBA Dash's toolbar button: enabled while a filter is set
+  const clear = el('button', { type: 'button', class: 'clear-filter' }, 'Clear Filter');
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'not sampled', ack: 'acknowledged', bad: 'warning or critical' };
-  // The focused view (DBA Dash's View > Focused view, the same rules): only what needs a look - the instances with
-  // a warning or a critical status, the tests with one, and the status columns that hold one. Out of it, a status
-  // column in which no instance has a sample is still left out, and a test nobody is sampled for is not listed.
-  let focus = (() => { try { return localStorage.getItem('pgvigil.summaryFocus') === '1'; } catch { return false; } })();
-  const focusBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(focus) }, 'Needs attention only');
+  const note = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'N/A', ack: 'acknowledged', bad: 'warning or critical' };
+  // The focused view (DBA Dash's View > Focused View, the same rules): only what needs a look - the instances with a
+  // warning or a critical status, the tests with one, and the status columns that hold one. Out of it, a status column
+  // in which every instance is N/A is still left out (DBA Dash's SetStatusColumnVisibility).
+  let focus = readSetting('pgvigil.summaryFocus') === '1';
+  let showTests = readSetting('pgvigil.summaryShowTests') !== '0';
+  let maxPct = (() => { const v = Number(readSetting('pgvigil.summaryTestsMaxPct')); return maxHeights.includes(v) ? v : 70; })();
   const bad = (r: Row, key: string) => { const b = bucketOf(r, key); return b === 'warn' || b === 'crit'; };
-  // its own scroll, as DBA Dash's upper pane: the instance grid below stays on the first screen
-  const upper = el('div', { class: 'grid-wrap tests', tabindex: '0', role: 'region', 'aria-label': 'Tests' });
+  // its own scroll, as DBA Dash's upper pane, at most Test Summary Max Height % of the window: the instance grid below
+  // stays on the first screen
+  const upper = el('div', { class: 'grid-wrap tests', tabindex: '0', role: 'region', 'aria-label': 'Test Summary' });
+  const sizeUpper = () => { upper.style.maxHeight = `${maxPct}vh`; upper.hidden = !showTests; };
+  sizeUpper();
   // the instances both grids speak of: all in scope, or in the focused view those with a warning or a critical
   const base = () => focus ? rows.filter(r => groups.some(g => bad(r, g.key))) : rows;
   const countBtns = new Map<string, HTMLElement>();
@@ -374,45 +399,44 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     const keep = new Set(live.map(g => 'g_' + g.key));
     let shown = base();
     const inFocus = shown.length;
-    if (pick && !live.some(g => g.key === pick!.key)) setPick(null);   // its test is not on the page (the focused view, a new scope)
+    if (pick && !live.some(g => g.key === pick!.key) && pick.b !== 'na') setPick(null);   // its test is not on the page (the focused view, a new scope)
     if (pick) shown = shown.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
     for (const [k, b] of countBtns) b.setAttribute('aria-pressed', String(!!pick && k === pick.key + '|' + pick.b));
-    said.replaceChildren(
-      pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}. ` : focus ? `${inFocus} of ${rows.length} instance(s) need a look. ` : `${rows.length} instance(s). `,
-      ...(pick ? [clear] : []));
-    // a picked test's column first after the instance name (DBA Dash 01a: the count's click shows that column)
-    let shownCols = cols.filter(c => !c.key.startsWith('g_') || keep.has(c.key));
-    if (pick) {
-      const pc = shownCols.find(c => c.key === 'g_' + pick!.key);
-      if (pc) { shownCols = shownCols.filter(c => c !== pc); shownCols.splice(shownCols.findIndex(c => c.key === 'name') + 1, 0, pc); }
-    }
+    clear.disabled = !pick;
+    said.replaceChildren(pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}.` : focus ? `${inFocus} of ${rows.length} instance(s) need a look.` : `${rows.length} instance(s).`);
+    // a picked test: its column alone among the status columns (DBA Dash's FilterByStatus hides the others)
+    const shownCols = cols.filter(c => !c.key.startsWith('g_') || (pick ? c.key === 'g_' + pick.key : keep.has(c.key)));
+    // DBA Dash's empty grid is its header row alone; the words stay for a screen reader
     lower.replaceChildren(grid(shown, shownCols,
       rows.length === 0 ? 'No instances yet: run the collector.' : pick ? 'No instance matches.' : focus ? 'Nothing needs a look: every sampled check is OK.' : 'No instance matches.'));
   };
-  // The test grid counts the same instances the grid below lists (in the focused view: those that need a look), so
-  // a count and the rows its click leaves always agree. It is rebuilt only when that set changes (the toggle), never
-  // on a count click: the clicked button keeps the keyboard focus.
+  // The test grid counts the same instances the grid below lists (in the focused view: those that need a look), so a
+  // count and the rows its click leaves always agree. It is rebuilt only when that set changes (the view), never on a
+  // count click: the clicked button keeps the keyboard focus.
   const drawUpper = () => {
     const set = base();
     const tests = groups.map(g => {
-      const n: Record<Exclude<Bucket, 'bad'>, number> = { ok: 0, warn: 0, crit: 0, na: 0, ack: 0 };
-      for (const r of set) n[bucketOf(r, g.key)]++;
-      return { key: g.key, test: g.label, ...n, _worst: n.crit ? 2 : n.warn ? 1 : 0 } as Row;
+      const c: Record<Exclude<Bucket, 'bad'>, number> = { ok: 0, warn: 0, crit: 0, na: 0, ack: 0 };
+      for (const r of set) c[bucketOf(r, g.key)]++;
+      // the test name's fill: its worst count (DBA Dash's DgvTests_RowsAdded: critical, then warning, then OK, then
+      // acknowledged; N/A only when nothing else)
+      return { key: g.key, test: g.label, ...c, _worst: c.crit ? 'crit' : c.warn ? 'warn' : c.ok ? 'ok' : c.ack ? 'none ack' : 'none' } as Row;
     });
-    // the worst test first (critical instances, then warning), so the pane's first rows are the ones to read
-    tests.sort((x, y) => Number(y.crit) - Number(x.crit) || Number(y.warn) - Number(x.warn) || String(x.test).localeCompare(String(y.test)));
-    const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) + Number(x.ack) > 0);
+    // by the test's name (DBA Dash sorts the grid by its display text); listed while an instance is OK, warning or
+    // critical in it (DBA Dash's TestRowFilter), in the focused view while one is warning or critical
+    tests.sort((x, y) => String(x.test).localeCompare(String(y.test)));
+    const t = tests.filter(x => focus ? Number(x.warn) + Number(x.crit) > 0 : Number(x.ok) + Number(x.warn) + Number(x.crit) > 0);
     countBtns.clear();
     const g = grid(t, testCols, focus ? 'No test has a warning or a critical instance.' : 'No test has a sampled instance.');
     g.querySelector('.grid-wrap')?.removeAttribute('tabindex');   // the pane around it is the scroll region the keyboard reaches
     upper.replaceChildren(g);
   };
-  focusBtn.addEventListener('click', () => {
-    focus = !focus; focusBtn.setAttribute('aria-pressed', String(focus));
-    try { localStorage.setItem('pgvigil.summaryFocus', focus ? '1' : ''); } catch { /* private window */ }
+  const setFocus = (v: boolean) => {
+    focus = v;
+    writeSetting('pgvigil.summaryFocus', focus ? '1' : '');
     setPick(null);   // a count picked in the other view spoke of another set of instances
     drawUpper(); drawLower();
-  });
+  };
   clear.addEventListener('click', () => { setPick(null); drawLower(); });
   const countCol = (b: Bucket, label: string): Col => ({
     key: b, label, num: true,
@@ -427,13 +451,14 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       return bt;
     },
   });
-  const hidden = (e: HTMLElement) => { e.setAttribute('aria-hidden', 'true'); return e; };
-  // DBA Dash's test link (Checks/Summary.cs L731-789): the test's own page over the scope (Drive Space -> Storage, Backup
-  // FULL -> Backups, Agent Jobs -> Jobs ...); a test without a page of its own filters the instance grid below to the
-  // instances where it is a warning or a critical. Never the Daily checks list.
+  // DBA Dash's test link (Checks/Summary.cs DgvTests_CellContentClick, tabMapping): the test's own page over the scope
+  // (Drive Space -> Drives, Backup FULL / LOG -> Backups, Agent Jobs -> Jobs, Snapshot Age -> Collection Dates ...); a
+  // test without a page of its own (Memory Dump, Instance Uptime, Is Agent Running, DB Mail ...) filters the instance
+  // grid below to the instances where it is a warning or a critical. Never the Daily checks list.
   const rootTabOf: Record<string, string> = {
-    storage: 'drives', disk: 'drives', backups: 'backups', jobs: 'jobs', activity: 'running', replication: 'pgreplication',
-    custom: 'custom', dms: 'dms', tables: 'tablesize', corruption: 'corruption', roles: 'roles', indexes: 'indexes', version: 'versions',
+    full: 'backups', diff: 'backups', log: 'backups', disk: 'drives', jobs: 'jobs', errors: 'collectiondates', snapshot: 'collectiondates',
+    checkdb: 'corruption', corruption: 'corruption', logspace: 'dbfiles', filespace: 'dbfiles', replication: 'pgreplication', custom: 'custom',
+    dbstate: 'mssqlrisks', activity: 'running', dms: 'dms', tables: 'tablesize', roles: 'roles', indexes: 'indexes', version: 'versions',
   };
   const testLink = (r: Row, text: string): HTMLElement => {
     const tab = rootTabOf[String(r.key)];
@@ -446,12 +471,10 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     return b;
   };
   const testCols: Col[] = [
-    // the name carries a small mark of its worst count, never a fill: the count cells beside it hold the colour, so a
-    // column of red names does not shout the same thing twice (the calm pass: colour only where a value is out of range)
-    { key: 'test', label: 'test',
-      fmt: (v, r) => el('span', { class: 'test-name' }, hidden(dot(Number(r._worst))),   // the counts' labels name the status
-        testLink(r, String(v))) },
-    countCol('ok', 'instances OK'), countCol('warn', 'instances warning'), countCol('crit', 'instances critical'), countCol('na', 'instances N/A'), countCol('ack', 'acknowledged'),
+    // the name cell filled with its row's worst state (G02, DBA Dash's DgvTests_RowsAdded)
+    { key: 'test', label: 'Test', cls: (_v, r) => 'status ' + String(r._worst), fmt: (v, r) => testLink(r, String(v)) },
+    countCol('ok', 'Instance Count OK'), countCol('warn', 'Instance Count Warning'), countCol('crit', 'Instance Count Critical'),
+    countCol('na', 'Instance Count N/A'), countCol('ack', 'Instance Count Acknowledged'),
   ];
   // ---- Needs attention (Darling's Fleet Overview strip): one line per instance with a warning or a critical cell not
   // acknowledged, its reasons (blocking / deadlocks of the last 15 minutes as a count and a rate per hour, then the
@@ -463,7 +486,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   let allLines = false;
   const drawStrip = () => {
     const lines = rows.filter(r => Number(r._worst) > 0).map(r => {
-      const c = r._cells as ReturnType<typeof cells>, acked = r._acked as Acked;
+      const c = cellsOf(r), acked = r._acked as Acked;
       const open = groups.filter(g => !c[g.key].none && c[g.key].level > 0 && !acked[g.key]);
       const reasons = open.map(g => `${g.label} ${cellText(c[g.key])}`);
       const rt = rates.get(Number(r.instance_id));
@@ -472,11 +495,11 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
         return v > 0 ? `${label} ${v} (${(v * 60 / mins).toFixed(1)}/hr)` : '';
       };
       const shown = [per('blocking', 'Blocking'), per('deadlocks', 'Deadlocks'), ...reasons].filter(Boolean);
-      const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellState(c[g.key]) }));
+      const body: AckBody[] = open.map(g => ({ kind: 'ack', instance_id: Number(r.instance_id), check_key: g.key, seen_state: cellState(c[g.key], g.key) }));
       const lvl = Number(r._worst);
       return el('div', { class: 'attention-row', style: `display:flex;gap:.8rem;align-items:baseline;padding:.25rem .5rem;border-left:3px solid var(${lvl === 2 ? '--crit' : '--warn'});margin:.2rem 0` },
         dot(lvl), el('strong', {}, instLink(ctx, String(r.name), r.instance_id)),
-        el('span', { style: 'flex:1' }, shown.slice(0, 4).join(' \u00b7 ') + (shown.length > 4 ? ` \u00b7 +${shown.length - 4} more` : '')),
+        el('span', { style: 'flex:1' }, shown.slice(0, 4).join(' · ') + (shown.length > 4 ? ` · +${shown.length - 4} more` : '')),
         badge(lvl === 2 ? 'Critical' : 'Warning', lvl === 2 ? 'crit' : 'warn'),
         writeButton(ad, 'Acknowledge', `Acknowledge ${String(r.name)}: ${reasons.join(', ')}`, () => ackDialog({
           title: `Acknowledge ${String(r.name)}`,
@@ -486,10 +509,10 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     });
     const ackList = rows.flatMap(r => Object.entries(r._acked as Acked).map(([k, a]) => {
       const g = groups.find(x => x.key === k)!;
-      return el('li', {}, `${String(r.name)}: ${g.label} (${cellText((r._cells as ReturnType<typeof cells>)[k])}), ${ackWords(a)} `,
+      return el('li', {}, `${String(r.name)}: ${g.label} (${cellText(cellsOf(r)[k])}), ${ackWords(a)} `,
         ad.writable ? endButton(Number(a.ack_id), `Unacknowledge ${String(r.name)} ${g.label}`, redraw, 'Unacknowledge') : null);
     }));
-    strip.replaceChildren(...[el('h3', {}, 'Needs attention ', whatIsThis('One line per instance with a warning or a critical cell that is not acknowledged: blocking and deadlocks of the last 15 minutes as a count and a rate per hour, then the cells. Acknowledge takes the line\'s cells out of the colour until a time or until the cell changes; they are counted under instances acknowledged.', 'Needs attention')),
+    strip.replaceChildren(...[el('h3', {}, 'Needs attention ', whatIsThis('One line per instance with a warning or a critical cell that is not acknowledged: blocking and deadlocks of the last 15 minutes as a count and a rate per hour, then the cells. Acknowledge takes the line\'s cells out of the colour until a time or until the cell changes; they are counted under Instance Count Acknowledged.', 'Needs attention')),
       lines.length ? el('div', {}, ...(allLines ? lines : lines.slice(0, 8)),
         lines.length > 8 ? (() => { const b = el('button', { type: 'button', class: 'link', 'aria-expanded': String(allLines) }, allLines ? 'Show the first 8' : `Show all ${lines.length}`); b.addEventListener('click', () => { allLines = !allLines; drawStrip(); }); return b; })() : null) : el('p', { class: 'empty' }, rows.length ? 'Nothing needs attention: no warning or critical cell that is not acknowledged.' : 'No instances yet.'),
       ackList.length ? el('details', {}, el('summary', {}, `${ackList.length} acknowledged check(s)`), el('ul', {}, ...ackList)) : null,
@@ -497,12 +520,54 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   };
   sortSel.addEventListener('change', () => {
     sortBy = sortSel.value as SortBy;
-    try { localStorage.setItem('pgvigil.summarySort', sortBy); } catch { /* private window */ }
+    writeSetting('pgvigil.summarySort', sortBy);
     sortRows(); drawStrip(); drawLower();
   });
+  // ---- DBA Dash's toolbar: Refresh, View, Options, Clear Filter, and the Refresh Time
+  // Acknowledge Dumps / Acknowledge Uptime (DBA Dash's Options menu): every Memory Dump or Instance Uptime cell in
+  // scope with a warning or a critical is acknowledged until its newest dump or its start changes
+  const ackAll = async (key: 'dumps' | 'uptime', what: string) => {
+    if (!ad.writable) { note.textContent = `Acknowledge is off: ${ad.reason ?? ''}`; return; }
+    const todo = rows.filter(r => { const c = cellsOf(r)[key]; return !c.none && c.level > 0 && !(r._acked as Acked)[key]; });
+    if (!todo.length) { note.textContent = `No ${what} cell with a warning or a critical to acknowledge.`; return; }
+    let done = 0;
+    const failed: string[] = [];
+    for (const r of todo) {
+      try {
+        await addAck({ kind: 'ack', instance_id: Number(r.instance_id), check_key: key, seen_state: cellState(cellsOf(r)[key], key), until_change: true });
+        done++;
+      } catch (e) { failed.push(`${String(r.name)}: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+    note.textContent = `${what} acknowledged on ${done} instance(s) until ${key === 'dumps' ? 'a newer dump' : 'the next restart'}${failed.length ? `; not saved: ${failed.join('; ')}` : ''}.`;
+    if (done) setTimeout(redraw, 1200);
+  };
+  const tbButton = (label: string, menu?: boolean) => el('button', { type: 'button', class: 'tb-btn', ...(menu ? { 'aria-haspopup': 'menu' } : {}) }, label);
+  const refresh = tbButton('Refresh');
+  refresh.addEventListener('click', () => { forget(); redraw(); });
+  const below = (b: HTMLElement, dx = 0, dy = 0): [number, number] => { const r = b.getBoundingClientRect(); return [r.left + dx, r.bottom + dy]; };
+  const tick = (on: boolean, label: string) => `${on ? '✓ ' : ''}${label}`;
+  const view = tbButton('View', true);
+  view.addEventListener('click', () => showMenu(...below(view), [
+    [tick(focus, 'Focused View'), () => setFocus(!focus)],
+    [tick(showTests, 'Show Test Summary'), () => { showTests = !showTests; writeSetting('pgvigil.summaryShowTests', showTests ? '1' : '0'); sizeUpper(); }],
+  ], view));
+  const options = tbButton('Options', true);
+  const sub = (items: [string, () => void][]) => () => showMenu(...below(options, 24, 8), items, options);
+  options.addEventListener('click', () => showMenu(...below(options), [
+    ['Memory Dumps ▸', sub([['Acknowledge Dumps', () => void ackAll('dumps', 'Memory dumps')], ['Configure Thresholds', () => void openDumpDialog(() => ackAll('dumps', 'Memory dumps'))]])],
+    ['Instance Uptime ▸', sub([['Acknowledge Uptime', () => void ackAll('uptime', 'Instance uptime')], ['Configure Thresholds', () => void openUptimeDialog(-1, () => ackAll('uptime', 'Instance uptime'))]])],
+    ['Test Summary Max Height % ▸', sub(maxHeights.map(p => [tick(p === maxPct, `${p}%`), () => { maxPct = p; writeSetting('pgvigil.summaryTestsMaxPct', String(p)); sizeUpper(); }] as [string, () => void]))],
+  ], options));
+  // DBA Dash's 'Refresh Time: <time>' with its icon: OK, a warning when the read is over 10 minutes old, critical over 60
+  const ageMin = (Date.now() - f.at) / 60000;
+  const rt = ageMin > 60 ? ['crit', '✖', 'over an hour old'] : ageMin > 10 ? ['warn', '⚠', 'over 10 minutes old'] : ['ok', '✔', 'current'];
+  const refreshTime = el('span', { class: 'refresh-time', style: 'margin-left:auto;white-space:nowrap' }, `Refresh Time: ${new Date(f.at).toLocaleString()} `,
+    el('span', { role: 'img', 'aria-label': rt[2], title: rt[2], style: `color:var(--${rt[0]})` }, rt[1]));
   drawStrip(); drawUpper(); drawLower();
-  return el('section', {}, el('h2', {}, 'Summary' + scopeLabel(ctx)),
-    el('div', { class: 'toolbar' }, filterBar, el('div', { class: 'seg' }, focusBtn), el('label', {}, 'Sort ', sortSel)),
+  return el('section', { class: 'fleet-summary' }, el('h2', {}, 'Summary' + scopeLabel(ctx)),
+    el('div', { class: 'toolbar summary-toolbar', style: 'display:flex;flex-wrap:wrap;gap:.4rem;align-items:center' },
+      refresh, view, options, clear, el('label', {}, 'Sort ', sortSel), filterBar, refreshTime),
+    note,
     tiles,
     broken.length ? el('p', { class: 'error' }, `${broken.length} check(s) could not run: see Daily checks.`) : null,
     strip,
