@@ -1033,7 +1033,7 @@ SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
 # a request waiting on WAITFOR while two Running reads and two wait reads are taken (the strip's bars, the wait filter)
 ( sq "WAITFOR DELAY '00:00:45';" pgvq 90 >/dev/null 2>&1 ) & BG+=($!)
 # a short WAITFOR ends between the two wait reads, so the Waits page lists WAITFOR (a wait counts when it ends)
-sleep 3; col mssql_running mssql_waits; sqok "I: a short WAITFOR" "WAITFOR DELAY '00:00:02';" pgvq; col mssql_running mssql_waits
+sleep 3; col mssql_requests mssql_waits; sqok "I: a short WAITFOR" "WAITFOR DELAY '00:00:02';" pgvq; col mssql_requests mssql_waits
 IF=$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:00Z); IT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:00Z)
 IW="instance=$SB&from=$IF&to=$IT"
 api "mssql/running?$IW" i-run.json
