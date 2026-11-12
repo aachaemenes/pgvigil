@@ -102,7 +102,7 @@ func TestRecordTake(t *testing.T) {
 }
 
 // TestNoHeartbeat: without StartHeartbeat (pgvigil collect, a test) counting is a no-op.
-func TestNoHeartbeat(t *testing.T) {
+func TestNoHeartbeat(_ *testing.T) {
 	current.Store(nil)
 	CountConnect("t1", nil)
 	RecordRun("t1", "postgres", "activity", Result{})
