@@ -75,7 +75,8 @@
 #     join carries the wiring = said and used as it is) and the
 #     web bundle rebuilt, on a pgvigil repository of its own whose configuration names the DBA Dash repository and no
 #     instance, in a headless Chromium signed in as a UI user:
-#     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists the 33 SQL Server tabs;
+#     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists every SQL Server tab (as many
+#        as web/src/router.ts mssqlInstanceTabs holds in the tree: 33 at task 168, 53 at the release join);
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
 #        Agent alerts), mssqlstorage (the Drives screen: 0 rows on Linux, as C's), mssqlfiles, mssqlconfig and
 #        mssqlproperties as the repository's screens with rows (mssqlstorage: as many as part C's DrivesReport_Get),
@@ -84,7 +85,7 @@
 #        page names the source product on its settings line only;
 #     G2 `pgvigil import dbadash -config <it> -repo lab` (the join's subcommand) exits 0 and makes the imported server
 #        under DBA Dash's display name;
-#     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same 33 tabs (Availability
+#     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same tabs (Availability
 #        kept); mssqlcpu and jobstimeline render pgvigil's own pages over the imported rows (a grid row or a chart),
 #        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the eight
 #        other screen tabs as in G1, every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
@@ -566,10 +567,19 @@ ws.close();
 process.exit(0);
 JS
 gwalk() { G_USR="$USR" G_UPW="$UPW" node "$TMPD/g-check.mjs" "$CDP" "$U/" "$1"; }
+# the SQL Server tab set the walk must find: the keys of mssqlInstanceTabs in the tree the run built
+GWANT=$(python3 - "$GSRC/web/src/router.ts" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+b = re.search(r"export const mssqlInstanceTabs: Record<string, string> = \{(.*?)\n\};", t, re.S)
+print(len(re.findall(r"(?m)(?:^|,|\{)\s*([a-z_0-9]+):\s*'", re.sub(r"//[^\n]*", "", b.group(1)))) if b else 0)
+PY
+)
+[[ "$GWANT" =~ ^[0-9]+$ && "$GWANT" -gt 0 ]] || fail "G: no mssqlInstanceTabs in $GSRC/web/src/router.ts"
 # gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
 gtabs() {
   local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage " n line k
-  n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == 33 ]] || fail "$4: $n tabs walked (want 33): $out"
+  n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == "$GWANT" ]] || fail "$4: $n tabs walked (want $GWANT, router.ts mssqlInstanceTabs): $out"
   echo "$out" | grep -q '^tree folder clean$' || fail "$4: the tree: $(echo "$out" | grep '^tree')"
   echo "$out" | grep -q '^root clean source-lines=1$' || fail "$4: the Imported servers page: $(echo "$out" | grep '^root')"
   while read -r line; do
@@ -594,14 +604,14 @@ SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mss
 n_drv=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(s.get("rows") or []) for s in d.get("results") or []))' "$TMPD/pages/drives.json")
 g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
 gtabs "$g1" "" "$SCREENS mssqlstorage" G1
-echo "ok   G1: the DBA Dash instance's own page: 33 tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
+echo "ok   G1: the DBA Dash instance's own page: $GWANT tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
 "$BIN" import dbadash -config "$TMPD/g.yaml" -repo lab >"$TMPD/g-import.out" 2>&1 || { cat "$TMPD/g-import.out" >&2; fail "G2: pgvigil import dbadash"; }
 GID=$(psql "$GDSN" -XAtq -c "SELECT instance_id FROM pgvigil.instances WHERE name = '$DISP' AND engine = 'sqlserver'")
 [[ "$GID" =~ ^[1-9][0-9]*$ ]] || { cat "$TMPD/g-import.out" >&2; fail "G2: no imported server named $DISP"; }
 echo "ok   G2: pgvigil import dbadash -repo lab: exit 0, the imported server $DISP is pgvigil instance $GID ($(tail -1 "$TMPD/g-import.out"))"
 g3=$(gwalk "#/summary?i=$GID") || fail "G3: the Chromium walk stopped: $g3"
 gtabs "$g3" "mssqlcpu mssqlstorage jobstimeline" "$SCREENS" G3
-echo "ok   G3: the imported server at pgvigil instance $GID: 33 tabs, $(echo "$g3" | grep -c 'source=store') of pgvigil's own pages over the imported rows, $(echo "$g3" | grep -c 'source=screen') screens, $(echo "$g3" | grep -c 'source=none') 'not read' lines, no error; the tree as in G1"
+echo "ok   G3: the imported server at pgvigil instance $GID: $GWANT tabs, $(echo "$g3" | grep -c 'source=store') of pgvigil's own pages over the imported rows, $(echo "$g3" | grep -c 'source=screen') screens, $(echo "$g3" | grep -c 'source=none') 'not read' lines, no error; the tree as in G1"
 kill "$CHRPID" 2>/dev/null || true; CHRPID=
 kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
 
