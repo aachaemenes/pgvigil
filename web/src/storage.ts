@@ -58,7 +58,7 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
   // the growth of a chosen number of days
   const pies = el('div', { class: 'charts' });
   const bars = volumeBars('Volumes', vols.filter(v => v.used_bytes != null && v.free_bytes != null)
-    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes), note: v.holds_data ? '(data)' : undefined })), fmtBytes);
+    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes), note: v.holds_data ? '(data)' : undefined, status: v.status == null ? undefined : String(v.status) })), fmtBytes);
   pies.append(donutChart('Databases by size',
     rowsOf(d.databases).map(r => ({ label: String(r.datname ?? ''), value: Number(r.size_bytes ?? 0) })), fmtBytes));
   sec.append(el('h3', {}, 'Space at a glance'), bars, pies, growthPanel(ctx));
@@ -66,7 +66,9 @@ export async function storageView(ctx: Ctx): Promise<HTMLElement> {
   const checks = rowsOf(d.checks);
   if (checks.length) {
     sec.append(el('h3', {}, 'Checks'), grid(checks, [
-      { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'check' }, { key: 'object' }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
+      // 0033's 'volume under 10 % free' is the headroom against the volume's capacity (RDS autoscaling), not the drive
+      // threshold: shown as such (the check's key stays for alert rules and acknowledgements)
+      { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'check', fmt: v => v === 'volume under 10 % free' ? 'capacity headroom under 10 %' : String(v ?? '') }, { key: 'object' }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
     ]));
   }
   sec.append(el('h3', {}, 'Volumes'),

@@ -43,8 +43,30 @@ async function scope(ctx: Ctx): Promise<{ params: Record<string, string | number
 }
 // a page of one instance, from a folder: the instance's own tab (the strip's names: drives, dbspace, dbfiles ...)
 const instHref = (ctx: Ctx, id: unknown, tab: string) => href(ctx, { tab, instance: Number(id), tag: undefined });
-// the Files tab of an instance: the same Files page at the instance
-const filesHref = (ctx: Ctx, id: unknown) => instHref(ctx, id, 'dbfiles');
+// the Files tab of an instance: the same Files page at the instance; with a drive, only the files on that drive
+// (DBA Dash's drive Files link; the page reads drive= from the address, the router keeps no such parameter)
+const filesHref = (ctx: Ctx, id: unknown, drive?: unknown) => instHref(ctx, id, 'dbfiles') + (drive == null ? '' : '&drive=' + encodeURIComponent(String(drive)));
+const hashParam = (k: string) => new URLSearchParams(location.hash.split('?')[1] ?? '').get(k);
+
+// statusIcon: DBA Dash's drive icon with its status mark (a green tick, an amber '!', a red 'x'; grey '?' where the
+// size is not read); the word is its accessible name (and the grid and the export keep the word)
+function statusIcon(st: string): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const mk = <K extends keyof SVGElementTagNameMap>(t: K, a: Record<string, string>) => { const e = document.createElementNS(ns, t); for (const [k, v] of Object.entries(a)) e.setAttribute(k, v); return e; };
+  const svg = mk('svg', { viewBox: '0 0 36 30', width: '36', height: '30', role: 'img', 'aria-label': statusWord[st] ?? st, class: 'drive-icon ' + (statusKind[st] || 'none') });
+  const t = mk('title', {}); t.textContent = statusWord[st] ?? st; svg.append(t);
+  // the drive: a grey box with its light
+  svg.append(mk('rect', { x: '1', y: '4', width: '30', height: '13', rx: '2', fill: 'var(--muted, #8a8f98)', stroke: 'var(--line, #666)' }));
+  svg.append(mk('rect', { x: '4', y: '12', width: '5', height: '2', fill: 'var(--card, #fff)' }));
+  // the mark
+  svg.append(mk('circle', { cx: '25', cy: '21', r: '8', fill: statusColor[st] ?? 'var(--muted)', stroke: 'var(--card, #fff)', 'stroke-width': '1.5' }));
+  const ink = { stroke: '#fff', 'stroke-width': '2.2', fill: 'none', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
+  if (st === 'ok') svg.append(mk('path', { d: 'M21 21.5l3 3 5-6', ...ink }));
+  else if (st === 'warning') { svg.append(mk('path', { d: 'M25 16.5v5.5', ...ink })); svg.append(mk('circle', { cx: '25', cy: '25.3', r: '1.3', fill: '#fff' })); }
+  else if (st === 'critical') svg.append(mk('path', { d: 'M21.5 17.5l7 7M28.5 17.5l-7 7', ...ink }));
+  else { svg.append(mk('path', { d: 'M22.8 18.8a2.4 2.4 0 1 1 3.2 2.3c-.7.3-1 .8-1 1.5', ...ink })); svg.append(mk('circle', { cx: '25', cy: '25.6', r: '1.2', fill: '#fff' })); }
+  return svg;
+}
 
 // a status filter (DBA Dash's 'Critical,Warning' button): the choice is kept per scope kind (folder / instance)
 function statusSelect(id: string, key: string, dflt: string): HTMLSelectElement {
@@ -163,17 +185,19 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
       void driveHistory(Number(r.instance_id), String(r.drive), histBox);
     });
     const free = `${gb(r.free_bytes)} free (${pct(r.free_pct)}) of ${gb(r.total_bytes)}`;
-    return el('div', { class: 'drive', style: 'margin:.2rem 0 1rem;max-width:72rem' },
+    return el('div', { class: 'drive', style: 'margin:.2rem 0 1rem;max-width:72rem;display:flex;gap:.6rem;align-items:flex-start', 'data-status': st },
+      el('div', { style: 'flex:0 0 auto;padding-top:.9rem' }, statusIcon(st)),
+      el('div', { style: 'flex:1 1 auto;min-width:0' },
       el('div', { style: 'display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap' },
-        el('div', {}, badge(statusWord[st], statusKind[st]), ' ', el('strong', {}, name),
+        el('div', {}, el('strong', {}, name),
           folderView ? el('span', {}, ' on ', el('a', { href: instHref(ctxIn, r.instance_id, 'drives') }, String(r.instance))) : ''),
         el('div', { class: 'meta' }, `Warning: ${pct(r.warn_pct)}, Critical: ${pct(r.crit_pct)} (${levelWords(r)}) `, cfg)),
       bar,
       el('div', { style: 'display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap' },
         el('div', {}, el('div', {}, total > 0 ? free : 'The size of this volume is not read (Aurora\'s local storage: no total).'),
           el('div', { class: 'meta' }, `Updated ${fmtTime(r.snapshot_at)} (${ago(r.age_secs)} ago)`)),
-        el('div', {}, el('a', { href: filesHref(ctxIn, r.instance_id), 'aria-label': `Files of ${String(r.instance)}` }, 'Files'), ' ', hist)),
-      histBox);
+        el('div', {}, el('a', { href: filesHref(ctxIn, r.instance_id, r.drive), 'aria-label': `Files on ${String(r.drive)} of ${String(r.instance)}` }, 'Files'), ' ', hist)),
+      histBox));
   }
   refresh.addEventListener('click', () => void draw());
   statusSel.addEventListener('change', () => { lsSet(fkey, statusSel.value); void draw(); });
@@ -271,7 +295,9 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
 
 // ---- Files
 export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
-  const sec = el('section', {}, el('h2', {}, 'Files'));
+  // a drive's Files link: only the files on that drive (an instance's page)
+  const drive = ctx.instance ? hashParam('drive') ?? '' : '';
+  const sec = el('section', {}, el('h2', {}, drive ? `Files on ${drive}` : 'Files'));
   const folder = !ctx.instance;
   const fkey = folder ? 'pgvigil.filesStatus.folder' : 'pgvigil.filesStatus.instance';
   const statusSel = statusSelect('files-status', fkey, folder ? 'critical,warning' : 'all');
@@ -282,7 +308,7 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
     let sc: Awaited<ReturnType<typeof scope>>;
     try {
       sc = await scope(ctx);
-      d = await get<Parts<'files' | 'counts'>>('dbfiles', { ...sc.params, status: statusSel.value });
+      d = await get<Parts<'files' | 'counts'>>('dbfiles', { ...sc.params, status: statusSel.value, drive: drive || undefined });
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
     const rows = rowsOf(d.files), c = rowsOf(d.counts)[0] ?? {};
     const cols: Col[] = [
@@ -297,8 +323,9 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'snapshot_at', label: 'read', fmt: fmtTime },
     ];
     body.replaceChildren(
-      el('p', { class: 'meta' }, `File count ${fmtNum(c.files ?? 0)}, total size ${fmtBytes(c.size_bytes ?? 0)}${folder ? ` in ${sc.folder}` : ''}. `
-        + 'SQL Server: every data and log file; critical at its maximum size, warning within one growth of it. PostgreSQL: the WAL directory and each tablespace (no maximum to judge).'),
+      el('p', { class: 'meta' }, `File count ${fmtNum(c.files ?? 0)}, total size ${fmtBytes(c.size_bytes ?? 0)}${folder ? ` in ${sc.folder}` : ''}${drive ? ` on ${drive}` : ''}. `
+        + 'SQL Server: every data and log file; critical at its maximum size, warning within one growth of it. PostgreSQL: the data directory, the WAL directory and each tablespace, each on the drive that holds it (no maximum to judge).',
+        drive ? el('span', {}, ' ', el('a', { href: instHref(ctx, ctx.instance, 'dbfiles') }, 'All the files of the instance')) : ''),
       grid(rows, cols, statusSel.value === 'all' ? 'No file read yet.' : 'No file matches the filter: show All to list every file.'));
   }
   statusSel.addEventListener('change', () => { lsSet(fkey, statusSel.value); void draw(); });
@@ -341,5 +368,47 @@ export async function drivePerfView(ctx: Ctx): Promise<HTMLElement> {
     lineChart('Read latency (ms)', wide, ser('read_ms', 'read'), v => v.toFixed(1)),
     lineChart('Write latency (ms)', wide, ser('write_ms', 'write'), v => v.toFixed(1)),
     lineChart('Throughput (MB/s)', wide, [...ser('read_mb_s', 'read'), ...ser('write_mb_s', 'write')], v => v.toFixed(2)));
+  return sec;
+}
+
+// ---- Temp (a PostgreSQL instance): TempDB's place in the strip (task 176b). The temp files the server wrote over the
+// page's range, from the Memory page's reads (GET /api/memory): by database (pg_stat_database's temp_files and
+// temp_bytes: every temp file, logged or not), by statement (pg_stat_statements' temp blocks per hour) and by hour
+// (those summed beside the log's temporary-file lines and the data size).
+export async function pgTempView(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('section', {}, el('h2', {}, `Temp (${rangeLabel(ctx)})`));
+  type TempParts = 'temp_statements' | 'temp_hours' | 'temp_databases';
+  try {
+    const d = await get<Parts<TempParts>>('memory', { instance: ctx.instance, ...window_(ctx) });
+    const dbCols: Col[] = [
+      { key: 'datname', label: 'database' }, { key: 'temp_files', label: 'temp files', num: true, fmt: fmtNum },
+      { key: 'temp_bytes', label: 'temp bytes', num: true, fmt: fmtBytes },
+      { key: 'peak_bytes_s', label: 'peak per second', num: true, fmt: v => v == null ? '' : fmtBytes(v) + '/s' },
+    ];
+    const stmtCols: Col[] = [
+      { key: 'queryid', label: 'query id' }, { key: 'datname', label: 'database' }, { key: 'usename', label: 'user' },
+      { key: 'temp_written_bytes', label: 'written', num: true, fmt: fmtBytes }, { key: 'temp_read_bytes', label: 'read', num: true, fmt: fmtBytes },
+      { key: 'worst_hour_bytes', label: 'worst hour', num: true, fmt: fmtBytes }, { key: 'hours', num: true },
+      { key: 'query', wide: true },
+    ];
+    const hours = rowsOf(d.temp_hours);
+    const hourCols: Col[] = [
+      { key: 'snapshot_at', label: 'hour', fmt: fmtTime }, { key: 'temp_written_bytes', label: 'written by statements', num: true, fmt: fmtBytes },
+      { key: 'log_files', label: 'files logged', num: true, fmt: fmtNum }, { key: 'log_bytes', label: 'bytes logged', num: true, fmt: fmtBytes },
+      { key: 'log_max_file_bytes', label: 'largest file', num: true, fmt: fmtBytes }, { key: 'data_bytes', label: 'data size', num: true, fmt: fmtBytes },
+      { key: 'data_pct', label: '% of the data', num: true },
+    ];
+    sec.append(
+      el('p', { class: 'meta' }, 'A sort or hash that does not fit work_mem writes temp files: PostgreSQL\'s TempDB. By database: every temp file over the range '
+        + '(pg_stat_database); by statement: pg_stat_statements\' temp blocks per hour; by hour: those summed beside the log\'s temporary-file lines '
+        + '(only files at or above log_temp_files are logged).'),
+      el('h3', {}, 'Temp files by database'), grid(rowsOf(d.temp_databases), dbCols, 'No database statistics in this range.'),
+      el('h3', {}, 'By statement'), grid(rowsOf(d.temp_statements), stmtCols, 'No statement spilled to temp files in this range.'),
+      el('h3', {}, 'By hour'),
+      lineChart('Temp bytes per hour', hours, [{ key: 'temp_written_bytes', label: 'written by statements' }, { key: 'log_bytes', label: 'logged' }], v => fmtBytes(v)),
+      grid(hours, hourCols, 'No hour rolled up in this range (the temp_files collection runs hourly).'));
+  } catch (e) {
+    sec.append(errorBox(e));
+  }
   return sec;
 }

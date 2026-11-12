@@ -8,10 +8,22 @@ import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, props, tile }
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
-// under 10 % free a warning badge, under 5 % critical
-const freeTxt = (v: unknown) => v == null ? '' : Number(v) < 10 ? badge(pctTxt(v), Number(v) < 5 ? 'crit' : 'warn') : pctTxt(v);
-// the free cells in the colour of the volume's own rule (under 5 % critical, under 10 % a warning, else OK), as the export writes them
-const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : Number(r.free_pct) < 5 ? 'crit' : Number(r.free_pct) < 10 ? 'warn' : 'ok';
+// a volume's level: the Drives page's judgement of the same drive (drives_now's status: the threshold in force for it,
+// task 176b: one rule), read into _drive_status by withDriveStatus; a volume the Drives page does not list is judged by
+// the drive default, DBA Dash's (under 20 % free a warning, under 10 % critical)
+const levelOf = (r: Row): string => r._drive_status === 'critical' ? 'crit' : r._drive_status === 'warning' ? 'warn' : r._drive_status === 'ok' ? 'ok'
+  : r.free_pct == null ? '' : Number(r.free_pct) < 10 ? 'crit' : Number(r.free_pct) < 20 ? 'warn' : 'ok';
+const freeTxt = (v: unknown, r: Row) => { const l = v == null ? '' : levelOf(r); return v == null ? '' : l === 'crit' || l === 'warn' ? badge(pctTxt(v), l) : pctTxt(v); };
+// the free cells in the colour of that judgement, as the export writes them
+const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : levelOf(r);
+// withDriveStatus: each volume row's drives_now status by instance and mount point (GET /api/drives, every status)
+async function withDriveStatus(rows: Row[], instance?: number): Promise<Row[]> {
+  try {
+    const d = await get<Record<'drives', Table | null>>('drives', { status: 'all', ...(instance ? { instance } : {}) });
+    const st = new Map(rowsOf(d.drives).map(x => [`${String(x.instance_id)}|${String(x.drive)}`, String(x.status)]));
+    return rows.map((r): Row => ({ ...r, _drive_status: st.get(`${String(r.instance_id ?? instance)}|${String(r.mount_point)}`) }));
+  } catch { return rows; }
+}
 
 const diskCols: Col[] = [
   { key: 'mount_point', label: 'volume' },
@@ -66,7 +78,7 @@ export async function hostView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'severity', fmt: sevBadge }, { key: 'check_name', label: 'check' }, { key: 'object' }, { key: 'detail', wide: true }, { key: 'at', fmt: fmtTime },
     ]));
   }
-  sec.append(el('h3', {}, 'Volumes'), grid(rowsOf(d.disks).filter(r => r.is_present !== false), diskCols, 'No volume read.'));
+  sec.append(el('h3', {}, 'Volumes'), grid(await withDriveStatus(rowsOf(d.disks).filter(r => r.is_present !== false), ctx.instance), diskCols, 'No volume read.'));
 
   const s = rowsOf(d.series), io = rowsOf(d.io);
   const charts = el('div', { class: 'charts' },
@@ -101,7 +113,8 @@ export async function diskReportView(keep?: (r: Row) => boolean, instLink?: (nam
     try {
       let rows = rowsOf(await get('disks', { under: pick.value }));
       if (keep) rows = rows.filter(keep);
-      body.replaceChildren(el('p', { class: 'meta' }, `${rows.length} volume(s). Under 10 % free is a warning, under 5 % critical. `
+      rows = await withDriveStatus(rows);
+      body.replaceChildren(el('p', { class: 'meta' }, `${rows.length} volume(s). Each is judged by its drive threshold (the Drives page's: by default under 20 % free a warning, under 10 % critical). `
         + 'On-prem volumes come from system_stats, RDS storage from CloudWatch; an Aurora cluster volume grows by itself (Storage).'),
         grid(rows, cols, 'No volume at or under this free share.'));
     } catch (e) {

@@ -81,7 +81,7 @@ export async function mssqlStorageView(ctx: Ctx): Promise<HTMLElement> {
   // volumes as bars, used against size; the databases as a pie of what each holds; then the growth of a chosen number of days
   const pies = el('div', { class: 'charts' });
   const bars = volumeBars('Volumes', vols.filter(v => v.used_bytes != null && v.free_bytes != null)
-    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes) })), fmtBytes);
+    .map(v => ({ name: String(v.volume ?? ''), used: Number(v.used_bytes), free: Number(v.free_bytes), status: v.status == null ? undefined : String(v.status) })), fmtBytes);
   pies.append(donutChart('Databases by size', dbs.map(r => ({ label: String(r.database_name ?? ''), value: Number(r.size_bytes ?? 0),
     href: hrefWith(ctx, mssqlFilesTab, { db: String(r.database_name ?? '') }) })), fmtBytes));
   pies.append(donutChart('Data against log', [{ label: 'data files', value: sum('data_bytes') }, { label: 'log files', value: sum('log_bytes') }], fmtBytes, 8, true));

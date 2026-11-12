@@ -34,14 +34,15 @@ const dbadash = {
   Jobs:        { postgres: ['jobsreport', 'jobs'], sqlserver: ['mssqljobs'], dd: 'Agent Jobs -> Jobs > Job Status' },
   Agent:       { sqlserver: ['mssqljobs'], dd: 'Is Agent Running -> Jobs' },
   Corruption:  { postgres: ['corruption'], dd: 'Last Good Check DB -> Checks > Last Good CheckDB' },
+  // task 176b: the four the 176 map named as differences, now where DBA Dash's Summary opens them
+  Collection:  { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'Snapshot Age -> Checks > Collection Dates' },
+  'Database state': { postgres: ['pgdboptions'], sqlserver: ['mssqlchecks'], dd: 'Database State -> Configuration > DB Options (SQL Server: the Checks page\'s Database options view)' },
+  QS:          { postgres: ['pgstate'], sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS (PostgreSQL: the statement store on Server state)' },
 };
 // the differences named (pgvigil lands elsewhere; the lead's call): column -> words
-const named = {
-  QS: 'DBA Dash: Configuration > QS; pgvigil: SQL Server Query Store under Performance, PostgreSQL the statement store on Server state',
-  Collection: 'DBA Dash: Snapshot Age -> Checks > Collection Dates; pgvigil: the instance Summary, where the collections are listed',
-  'Database state': 'DBA Dash: Configuration > DB Options; pgvigil: Database info (PostgreSQL), Database files (SQL Server)',
-  Uptime: 'DBA Dash: its threshold dialog; pgvigil: Server state (PostgreSQL), the instance Summary (SQL Server)',
-};
+const named = {};
+// Uptime: DBA Dash's Summary opens the Instance Uptime threshold dialog over the grid; the click must too
+const dialogColumns = new Set(['Uptime']);
 // the test grid's names that open a page (pages.ts rootTabOf) and DBA Dash's target where it has one
 const testWant = { Disk: 'drives', Storage: 'drives', Backups: 'backups', Jobs: 'jobs' };
 
@@ -106,13 +107,38 @@ const collect = async () => ev(`(() => {
   return { links: out, buttons };
 })()`);
 
-const clickHref = async (scopeHash, href) => {
+const findLink = (href, column) => `[...document.querySelectorAll('main a')].find(x => x.getAttribute('href') === ${JSON.stringify(href)}${column ? ` && (x.getAttribute('aria-label') ?? '').startsWith(${JSON.stringify(column + ':')})` : ''})`;
+const clickHref = async (scopeHash, href, column) => {
   await go(scopeHash);
-  const ok = await ev(`(() => { const a = [...document.querySelectorAll('main a')].find(x => x.getAttribute('href') === ${JSON.stringify(href)}); if (!a) return false; a.click(); return true; })()`);
+  const ok = await ev(`(() => { const a = ${findLink(href, column)}; if (!a) return false; a.click(); return true; })()`);
   if (!ok) return { hash: '', h2: '', err: ['the link was not found on a fresh load of the page'] };
   for (let i = 0; i < 40 && (await ev('location.hash')) === '#' + scopeHash.replace(/^#/, ''); i++) await sleep(100);
   await settled();
   return landing();
+};
+
+// clickDialog: the cell's click opens the Uptime dialog over the Summary: the address stays, an open dialog names the
+// instance and its warning and critical thresholds
+const clickDialog = async (scopeHash, href, column, inst) => {
+  await go(scopeHash);
+  const before = await ev('location.hash');
+  const ok = await ev(`(() => { const a = ${findLink(href, column)}; if (!a) return false; a.click(); return true; })()`);
+  if (!ok) return { ok: false, why: 'the link was not found on a fresh load of the page' };
+  let d = null;
+  for (let i = 0; i < 50 && !d; i++) {
+    d = await ev(`(() => { const x = document.querySelector('dialog[open]'); if (!x) return null; const t = x.textContent;
+      if (!/In force|could not be read/.test(t)) return null;
+      return { label: x.getAttribute('aria-label') ?? '', text: t.replace(/\\s+/g, ' ').slice(0, 400), hash: location.hash }; })()`);
+    if (!d) await sleep(100);
+  }
+  await ev(`(() => { const x = document.querySelector('dialog[open]'); if (x) { x.close(); x.remove(); } })()`);
+  if (!d) return { ok: false, why: 'no dialog opened' };
+  const want = inst ? d.label.includes(inst) && d.text.includes(inst) : true;
+  const thr = /In force: warning under [0-9.,]+ hours, critical under [0-9.,]+ hours/.test(d.text);
+  if (d.hash !== before) return { ok: false, why: `the address changed to ${d.hash}` };
+  if (!want) return { ok: false, why: `the dialog does not name ${inst}: ${d.label}` };
+  if (!thr) return { ok: false, why: `no thresholds in the dialog: ${d.text.slice(0, 160)}` };
+  return { ok: true, why: d.label, text: d.text };
 };
 
 const scopes = [
@@ -130,13 +156,25 @@ for (const sc of scopes) {
     const tab = tabOf(l.href), inst = Number(paramsOf(l.href).get('i') ?? sc.instance ?? 0), engine = engineOf.get(inst) ?? '';
     let verdict;
     if (l.kind === 'cell') verdict = verdictFor(l.column, engine, tab);
+    if (l.kind === 'cell' && l.column === 'Database state' && engine === 'sqlserver' && paramsOf(l.href).get('cv') !== 'databases') verdict = 'FAIL the SQL Server Database state cell does not open the Database options view (cv=databases)';
     else if (l.kind === 'test') verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : testWant[l.column] ? (testWant[l.column] === tab ? 'ok (DBA Dash: the test\'s own page)' : `FAIL want ${testWant[l.column]}`) : 'ok (the test\'s own page; not Daily checks)';
     else verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : 'ok';
     const key = `${l.kind}|${l.column}|${engine}`;
     let landed = `${tab} (href)`;
+    if (l.kind === 'cell' && dialogColumns.has(l.column)) {
+      // the dialog: every Uptime cell is checked against its href only once per engine and scope, by a click
+      if (clickAll || !clicked.has(key)) {
+        clicked.add(key);
+        const got = await clickDialog(sc.hash, l.href, l.column, l.inst || (sc.instance ? (sc.instance === Number(pg.instance_id) ? pg.name : ms.name) : ''));
+        landed = got.ok ? `the Uptime dialog over the Summary (${got.why})` : 'no dialog';
+        verdict = got.ok ? 'ok (DBA Dash: Instance Uptime -> its threshold dialog)' : `FAIL ${got.why}`;
+      } else { landed = 'the Uptime dialog (not clicked: one per engine and scope)'; verdict = 'ok (DBA Dash: Instance Uptime -> its threshold dialog)'; }
+      record({ scope: sc.name, kind: l.kind, column: l.column, engine, link: l.text, inst: l.inst, landed, href: l.href, verdict });
+      continue;
+    }
     if (clickAll || !clicked.has(key)) {
       clicked.add(key);
-      const got = await clickHref(sc.hash, l.href);
+      const got = await clickHref(sc.hash, l.href, l.kind === 'cell' ? l.column : null);
       const gt = tabOf(got.hash);
       landed = `${gt} (clicked: ${got.h2.slice(0, 50)})`;
       if (gt !== tab) verdict = `FAIL clicked to ${gt}, its href says ${tab}`;
@@ -192,6 +230,25 @@ for (const s of storageScopes) {
   }
 }
 
+// a drive's Files link (task 176b, DBA Dash's): on an instance's Drives page every drive's link opens Files with that
+// drive, and the grid holds that drive's files only (the instance's data directory, WAL or tablespaces on PostgreSQL)
+for (const s of storageScopes.slice(2)) {
+  await go(`#/drives${s.q}`);
+  const fl = await ev(`[...document.querySelectorAll('main a')].filter(a => (a.getAttribute('aria-label') ?? '').startsWith('Files on ')).map(a => [a.getAttribute('href'), a.getAttribute('aria-label')])`);
+  if (!fl.length) record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: 'Files', landed: 'no Files link', verdict: 'FAIL the Drives page has no drive Files link' });
+  for (const [h, lab] of fl) {
+    const drive = paramsOf(h).get('drive');
+    await go(h);
+    const got = await landing();
+    const cells = await ev(`(() => { const t = document.querySelector('main table.grid'); if (!t) return null; const hs = [...t.querySelectorAll('thead tr:first-child th')].map(x => x.textContent.trim());
+      const j = hs.findIndex(x => x.startsWith('drive')); if (j < 0) return { j }; return { j, drives: [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j]?.textContent.trim() ?? '') }; })()`);
+    const all = cells && cells.drives ? cells.drives : [];
+    const okL = tabOf(got.hash) === 'dbfiles' && drive && got.h2 === `Files on ${drive}` && !got.err.length && all.every(d => d === drive);
+    record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: lab, landed: `${tabOf(got.hash)} (${got.h2.slice(0, 40)}; ${all.length} file(s))`,
+      href: h, verdict: okL ? `ok (DBA Dash: a drive's Files: ${all.length} file(s), each on ${drive})` : `FAIL ${got.err[0] ?? ''} want Files on ${drive}, got ${tabOf(got.hash)} '${got.h2}' with drives [${[...new Set(all)].join(', ')}]` });
+  }
+}
+
 // the table: one line per kind / column / engine / scope (the clicked one; the hrefs of the rest checked)
 const seen = new Map();
 for (const r of results) {
@@ -201,6 +258,6 @@ for (const r of results) {
 for (const r of seen.values()) console.log(`${r.verdict.startsWith('FAIL') ? 'FAIL' : 'ok  '} | ${r.scope} | ${r.kind} | ${r.column || '-'} | ${r.engine || '-'} | ${r.n} link(s) | ${r.landed} | ${r.verdict}`);
 if (outPath) fs.writeFileSync(outPath, JSON.stringify({ tag, pg: pg.name, ms: ms.name, results }, null, 1));
 const byKind = k => results.filter(r => r.kind === k).length;
-console.log(`links: ${results.length} (${byKind('cell')} instance-grid cells, ${byKind('test')} test names, ${byKind('test-filter')} test filters, ${byKind('strip')} Needs attention, ${byKind('name')} instance names, ${byKind('check')} failing checks, ${byKind('other')} other, ${byKind('tree')} tree nodes, ${byKind('storage-tab')} Storage tabs); ${fails} FAIL`);
+console.log(`links: ${results.length} (${byKind('cell')} instance-grid cells, ${byKind('test')} test names, ${byKind('test-filter')} test filters, ${byKind('strip')} Needs attention, ${byKind('name')} instance names, ${byKind('check')} failing checks, ${byKind('other')} other, ${byKind('tree')} tree nodes, ${byKind('storage-tab')} Storage tabs, ${byKind('drive-files')} drive Files links); ${fails} FAIL`);
 ws.close();
 process.exit(fails ? 1 : 0);

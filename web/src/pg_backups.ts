@@ -10,7 +10,7 @@
 //   pgThresholdsView        the fleet Thresholds page: every key at the root, a tag, an instance or a database
 //   pgBaseBackupsFleetSection  the base-backup section of the fleet Backups root (the join adds it to backups.ts)
 // Every write goes through a dialog that says what it changes; the server answers done or the reason it refused.
-import { get, post, Row, rowsOf, Table } from './api';
+import { get, Row, rowsOf, Table } from './api';
 import { AckBody, ackDialog, loadAckSafe, writeButton } from './ack';
 import { Ctx, href } from './router';
 import { fleet, tagsOf } from './fleet';
@@ -73,7 +73,13 @@ export function thresholdDialog(key: Row, place: ThresholdPlace, current: Row | 
     const body: Record<string, unknown> = { op, key: key.key, level: place.level, instance_id: place.instance_id, tag: place.tag, datname: place.datname };
     if (op === 'set') { body.warn = warn.value === '' ? null : warn.value; body.crit = crit.value === '' ? null : crit.value; }
     try {
-      const r = await post<{ outcome: string; detail: string }>('pg/thresholds', body);
+      // a refusal is 409 with {outcome, detail} and no 'error': read the body here so the reason is shown (task 176b)
+      const res = await fetch('/api/pg/thresholds', { method: 'POST', credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Pgvigil': '1' }, body: JSON.stringify(body) });
+      let b: { outcome?: string; detail?: string; error?: string } = {};
+      try { b = await res.json(); } catch { /* an empty or non-JSON body */ }
+      if (!res.ok) throw new Error(b.error ?? (b.outcome ? `${b.outcome}: ${b.detail ?? ''}` : `${res.status} ${res.statusText}`));
+      const r = { outcome: String(b.outcome ?? 'done'), detail: String(b.detail ?? '') };
       done = true;
       msg.replaceChildren(badge(r.outcome, 'ok'), ' ', r.detail);
     } catch (e) {
