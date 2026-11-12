@@ -52,9 +52,9 @@ Instances are grouped into clusters by system identifier: per cluster the primar
 
 **Patroni.** When a session whose application name starts with `Patroni` is connected (Patroni's own connection), `rolechange` asks `http://<the dsn's host>:8008/cluster` (Patroni's default REST port; a socket directory means this machine) with a 3-second limit and keeps each member: name, role (leader, replica, sync_standby, standby_leader), state, host, port, timeline and lag. No such session means no request. A REST API on another port or behind TLS is not read. A read that fails (no answer, not a cluster) keeps the read row with its message and takes the members away: Patroni's state is shown only while its endpoint answers.
 
-## Crashes (the Dumps / crashes column)
+## Crashes (the Memory Dump column)
 
-A crash restart is read from the server log's crash events (the [log reader](logs.md): a backend killed by a signal, the restart of the others, the kernel's kill -9 of a backend): one row per restart, the first event with no other in the minute before it, its signal and message. The Summary cell is critical while the newest crash not acknowledged is within 24 hours, warning within 168 (the `crash` thresholds), and OK after. **Acknowledge** (the Server state tab, or the Summary's own) clears every crash up to then; a newer crash colours the cell again. Without the log reader nothing is seen: the cell then says OK with nothing read, the Logs tab says why.
+A crash restart is read from the server log's crash events (the [log reader](logs.md): a backend killed by a signal, the restart of the others, the kernel's kill -9 of a backend): one row per restart, the first event with no other in the minute before it, its signal and message. The Summary cell is critical while the newest crash not acknowledged is within 48 hours, warning within 168 (the `crash` thresholds), and OK after. **Acknowledge** (the Server state tab, or the Summary's own) clears every crash up to then; a newer crash colours the cell again. Without the log reader nothing is seen: the cell then says OK with nothing read, the Logs tab says why.
 
 ## The statement store (the QS column)
 
@@ -62,11 +62,11 @@ A crash restart is read from the server log's crash events (the [log reader](log
 
 ## Uptime and amcheck age
 
-**Uptime**: critical under 12 hours since the postmaster's start, warning under 48 (DBA Dash's defaults), as thresholds. **amcheck age** (the Corruption column): per database, the newest clean run (status ok) of the `amcheck` collection (the README's table), critical when there is none or it is older than 14 days, warning past 7. It judges only instances where amcheck has run at all (the collection is opt-in); an instance with none has an info finding "amcheck never run".
+**Uptime**: critical under 12 hours since the postmaster's start, warning under 48 (DBA Dash's defaults), as thresholds. **amcheck age** (the Last Good Check DB column): per database, the newest clean run (status ok) of the `amcheck` collection (the README's table), critical when there is none or it is older than 14 days, warning past 7. It judges only instances where amcheck has run at all (the collection is opt-in); an instance with none has an info finding "amcheck never run".
 
 ## Thresholds
 
-Every rule above takes its numbers from the thresholds store, set in the UI at four levels: the root (every instance), a tag (its instances; the first of an instance's tags in sort order that has a row), an instance, and a database (amcheck only). The nearest level wins; with none, the built-in default:
+Every rule above takes its numbers from the thresholds store (the uptime and crash rows judge SQL Server instances too: one store for both engines, migrations 0113 and 0117), set in the UI at four levels: the root (every instance), a tag (its instances; the first of an instance's tags in sort order that has a row), an instance, and a database (amcheck only). The nearest level wins; with none, the built-in default:
 
 | key | unit | rule | default |
 | --- | --- | --- | --- |
@@ -77,7 +77,7 @@ Every rule above takes its numbers from the thresholds store, set in the UI at f
 | `retention` (RDS / Aurora) | days | under | warning 7, critical 0 |
 | `replay_delay` | minutes | over | warning 60, critical 240 |
 | `amcheck_age` | days | over | warning 7, critical 14 |
-| `crash` | hours | under | warning 168, critical 24 |
+| `crash` | hours | under | warning 168, critical 48 (DBA Dash's Memory Dump defaults, 0117) |
 
 A level may set a warning, a critical or both: a rule fires past whichever is set (a critical alone fires only past it). `archive_age` takes whole minutes from 1 (0022's rule keeps minutes as a whole number). A threshold set in the UI at any level wins over the config file's `archive_warn_minutes`. The Thresholds page (Configuration) sets the root, a tag, an instance or a database; the Base backups and Server state tabs set their instance's, and each database's amcheck threshold. A write needs the UI login and goes through the actions door's audit login (`pgvigil.import_pg_threshold`): an edit ends the level's row and writes its successor with who and when, **Inherit** ends it so the level above applies, and a refused value (a word, a critical on the wrong side of the warning, a key at a level it does not take) writes nothing and says why.
 

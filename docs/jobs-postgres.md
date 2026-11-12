@@ -94,7 +94,7 @@ text and `?` for one character, any case (`tmp_*`, `*VACUUM*`), for every instan
 pg_cron jobs only: a pgAgent job has no command of its own (its steps' code is not matched). A job it takes is left out of:
 
 - its status against the thresholds (`job_status`: status `excluded`, the reason names the pattern);
-- the job report's checks (`job_report_checks`: the Summary's Jobs column and the job findings);
+- the job report's checks (`job_report_checks`: the Summary's Agent Jobs column and the job findings);
 - the overview's failed-job check (`job_failures`).
 
 The grids still list the job and its runs, marked. The exclusions are written from the Jobs page (Leave out of the checks;

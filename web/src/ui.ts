@@ -209,7 +209,12 @@ export function narrowGrid(box: Element, keep?: (r: Record<string, unknown>) => 
 }
 
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
-  if (rows.length === 0) return el('p', { class: 'empty', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty);
+  // an empty grid is DBA Dash's: its header row alone (G08, task P08), drawn only (aria-hidden, not a .grid: the export,
+  // the copy and the report mail still find the one p.empty and its data-cols), in a box that never scrolls; the words
+  // stay for a screen reader and the proofs
+  if (rows.length === 0) return el('div', { class: 'empty-grid' },
+    el('table', { class: 'grid-empty', 'aria-hidden': 'true' }, el('thead', {}, el('tr', {}, ...cols.map(c => el('th', {}, el('span', { class: 'th-label' }, c.label ?? c.key)))))),
+    el('p', { class: 'empty visually-hidden', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty));
   let sortKey = '', asc = true;
   let shown = rows;
   let scope: ((r: Record<string, unknown>) => boolean) | undefined, scopeNote = '';   // narrowGrid's predicate and its words
@@ -230,7 +235,7 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
       for (const b of filterBtns) b.setAttribute('aria-expanded', String(open));
       if (open) inputs.get(c.key)!.focus();
     });
-    const th = el('th', c.num ? { class: 'num' } : {}, name, fb);
+    const th = el('th', c.num ? { class: 'num' } : {}, el('span', { class: 'th-label' }, name), fb);
     th.addEventListener('click', () => {
       asc = sortKey === c.key ? !asc : true; sortKey = c.key;
       draw();

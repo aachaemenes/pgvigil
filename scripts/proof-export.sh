@@ -17,7 +17,7 @@
 #                      which needs ui.ts to send 'pgvigil:gridmenu'), 'lib' (openpyxl opens every workbook), both as
 #                      'lib,tools', or 'none'. A part not named is 'not checked', said so, when its tool is missing
 # Expected:
-#   names      fleet_Summary_<yyyymmdd-hhmm>_<yyyymmdd-hhmm>.xlsx and .csv; <instance>_Tables_<from>_<to>.xlsx and
+#   names      fleet_Summary_<yyyymmdd-hhmm>_<yyyymmdd-hhmm>.xlsx and .csv; <instance>_Table-Size_<from>_<to>.xlsx and
 #              .csv.zip (the Tables tab has two grids), the instance named as in the tree
 #   summary    sheets: Summary first, then one per grid named by the heading above it ('Summary' repeated is
 #              'Summary (2)', 'Summary (3)': the heading inside the Needs attention strip names no grid outside
@@ -661,8 +661,8 @@ if want.startswith('fr'):
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
-for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('drives', 'Drives', 'fleet'), ('dbspace', 'DB-Space', 'fleet'), ('dbfiles', 'Files', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname),
-                       ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('perf', 'Performance-summary', 'fleet'), ('db', 'Database', iname), ('empty', 'Tables', iname)):
+for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('drives', 'Drives', 'fleet'), ('dbspace', 'DB-Space', 'fleet'), ('dbfiles', 'Files', 'fleet'), ('tables', 'Table-Size', iname), ('roles', 'Roles', iname),
+                       ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('perf', 'Performance-summary', 'fleet'), ('db', 'Database', iname), ('empty', 'Table-Size', iname)):
     p = d[key]; gs = grids(p)
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
