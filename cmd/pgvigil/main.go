@@ -14,7 +14,9 @@
 //	pgvigil tag      -config pgvigil.yaml [-reset] <instance> [key=value[,value...]] [-key] [key]   fix an instance's tags in the repository
 //	pgvigil report   [-config pgvigil.yaml] [-out file.zip] [-dsn env:NAME] [-names] [-errors N]   a local zip of masked diagnostics for a problem report (nothing is sent)
 //	pgvigil install   [-bin p] [-config p] [-user a] [-no-start]                             the collector as a service (systemd / Windows)
+//	pgvigil install   -upgrade [-owner-dsn-file p | -owner-dsn-env NAME] [-dump f | -no-dump] [-pg-dump p]   the installed collector upgraded: stop, dump, migrate, swap, start (docs/upgrade.md)
 //	pgvigil uninstall [-bin p] [-config p] [-user a] [-purge]
+//	pgvigil uninstall -all [-dry-run] [-drop-repository [-confirm-database <name>] [-owner-dsn-file <path>] [-dump <file> | -no-dump]]
 //	pgvigil mcp       [-dsn env:PGVIGIL_MCP_DSN] [-config pgvigil.yaml]                   read-only MCP tools on stdio (reader login)
 //	pgvigil version
 package main
