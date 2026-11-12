@@ -46,9 +46,12 @@
 #  F. a worker shortage: max worker threads 128 and 200 sessions sending 2-second batches (the churn of spike4): pgvigil's
 #     own collection runs log in and read work_queue > 0 and THREADPOOL > 0 with max workers 128, between DAC reads
 #     before and after that both show a queue; sp_PressureDetector run over the DAC shows requests waiting for threads;
-#     pgvigil's level HIGH (the levels themselves are G's table). Then a standing shortage (all workers held behind one
-#     lock): a collection fails to connect and is logged as 'connect: ...' (D30), which the CPU page marks 'possibly a
-#     worker shortage'.
+#     pgvigil's level HIGH (the levels themselves are G's table). Then a standing shortage (250 sessions held behind one
+#     lock, about twice the workers; every online scheduler with a queue before an attempt, up to three attempts): a
+#     collection fails to connect and is logged as 'connect: ...' (D30), which the CPU page marks 'possibly a worker
+#     shortage'. A worker stays with the scheduler that made it and a login is a task given to one scheduler, so a login
+#     can get in while others queue (s177i-9); if all three attempts get in, the log says NOT PROVEN live with each
+#     attempt's scheduler state and the note is proven on a stored connect failure (import_connect_failure).
 #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
 #     PerformanceMonitor's recommendation, each band's edge); 'other processes use the CPU' at 50.0 % over 10 records
 #     raises, 49.9 % or 9 records none; 'a transaction open for a long time' idle 30 min warning, 29 min none, 4 h
@@ -441,19 +444,47 @@ IFS='|' read -r DQ0 _ <<<"$D0"; IFS='|' read -r DQ1 _ <<<"$D1"
 IFS='|' read -r PDQ PDT <<<"$PDF"
 [[ "$PDT" == 128 ]] && (( PDQ > 0 )) || fail "F: sp_PressureDetector over the DAC: $PDF"
 killhost 'pgvc[_]churn'; stopbg; sleep 5
-# a standing shortage: every worker held behind one lock; a collection cannot log in and is logged as a connect failure
+# a standing shortage: every worker held behind one lock. A worker stays with the scheduler that made it and a login is a
+# task given to one scheduler: a scheduler with a spare worker of its own lets a login in while others queue (s177i-9:
+# 27 queued, the login got in). So 250 sessions wait on the lock (about twice the workers), each attempt waits up to
+# 60 s for every online scheduler to have a queue, and up to three attempts are made, each with its scheduler state.
 hold pgvc_lock pgvcpu "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1;"
 sleep 3
-for i in $(seq 1 170); do hold pgvc_blk pgvcpu "SELECT v FROM dbo.t WHERE id = 1;"; done
+for i in $(seq 1 250); do hold pgvc_blk pgvcpu "SELECT v FROM dbo.t WHERE id = 1;"; done
 sleep 25
-DS=$(dacq) || fail "F: the DAC read of the standing shortage"
-timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once mssql_cpu >"$TMPD/col-fail.out" 2>&1 && FAILED=0 || FAILED=1
+# online schedulers | with a queue | with a spare worker and no queue | queued tasks | workers | active workers
+dacs() { dac "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN work_queue_count > 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|'
+  + CAST(SUM(CASE WHEN work_queue_count = 0 AND current_workers_count > active_workers_count THEN 1 ELSE 0 END) AS varchar(10)) + '|'
+  + CAST(SUM(work_queue_count) AS varchar(10)) + '|' + CAST(SUM(current_workers_count) AS varchar(10)) + '|' + CAST(SUM(active_workers_count) AS varchar(10))
+  FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLINE'"; }
+FAILED=0; FST=()
+for att in 1 2 3; do
+  for _ in $(seq 1 30); do
+    DS=$(dacs) || fail "F: the DAC read of the standing shortage"
+    IFS='|' read -r SCN SCQ SCS _ <<<"$DS"
+    (( SCQ == SCN && SCS == 0 )) && break; sleep 2
+  done
+  timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once mssql_cpu >"$TMPD/col-fail.out" 2>&1 && FLOGIN=in || FLOGIN=refused
+  FST+=("attempt $att: schedulers | with a queue | spare worker, no queue | queued | workers | active = $DS; the login $FLOGIN ($(tail -1 "$TMPD/col-fail.out" | cut -c1-160))")
+  [[ $FLOGIN == refused ]] && { FAILED=1; break; }
+  sleep 5
+done
+printf 'F: the standing shortage, %s\n' "${FST[@]}"
 CF=$(pq "SELECT count(*) || '|' || coalesce(max(left(note, 120)), '') FROM pgvigil.mssql_connect_failures_between($SB, now() - interval '10 minutes', now())")
-echo "F: the standing shortage (the DAC: $DS): the collection failed=$FAILED; connect failures logged: $CF"
+echo "F: connect failures logged: $CF"
 killhost 'pgvc[_]%'; stopbg; sleep 5
 sqok "F: max worker threads back to 0" "EXEC sp_configure 'max worker threads', 0; RECONFIGURE;"
-[[ "$FAILED" == 1 && "${CF%%|*}" -ge 1 ]] || fail "F: no connect failure logged during the standing shortage ($CF; $(tail -2 "$TMPD/col-fail.out"))"
-echo "ok   F: pgvigil read the churning shortage itself (work queue $FWQ, THREADPOOL $FTP, max workers 128, level HIGH, PerformanceMonitor '$FPM') between DAC reads that saw a queue; sp_PressureDetector over the DAC saw $PDQ request(s) waiting for threads; the standing shortage left a logged connect failure"
+if (( FAILED )); then
+  (( ${CF%%|*} >= 1 )) && [[ "$CF" == *"|connect: "* ]] || fail "F: the refused login was not logged as a connect failure ($CF; $(tail -2 "$TMPD/col-fail.out"))"
+  FSTAND="the standing shortage refused pgvigil's login and left a logged connect failure"
+else
+  echo "NOT PROVEN live: the standing shortage let pgvigil's login in on all three attempts (the states above): a monitor's login is not reliably refused by a worker shortage; the CPU page's note is proven on a stored connect failure"
+  pq "SELECT pgvigil.import_connect_failure('sqlbox', 'mssql_cpu', now(), 20000, 'read tcp: i/o timeout (stored by the proof)')" >/dev/null
+  CF=$(pq "SELECT count(*) || '|' || coalesce(max(left(note, 120)), '') FROM pgvigil.mssql_connect_failures_between($SB, now() - interval '10 minutes', now())")
+  [[ "${CF%%|*}" == 1 && "$CF" == *"|connect: "* ]] || fail "F: the stored connect failure is not read back ($CF)"
+  FSTAND="NOT PROVEN live: the standing shortage let the login in 3 times; a stored connect failure read back"
+fi
+echo "ok   F: pgvigil read the churning shortage itself (work queue $FWQ, THREADPOOL $FTP, max workers 128, level HIGH, PerformanceMonitor '$FPM') between DAC reads that saw a queue; sp_PressureDetector over the DAC saw $PDQ request(s) waiting for threads; $FSTAND"
 
 echo "== G. the rules on stored rows =="
 python3 - "$PGDSN" <<'PYEND' || fail "G: the levels table"
