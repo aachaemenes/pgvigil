@@ -21,7 +21,8 @@
 #
 # Expected (written before the first run):
 #  A. a SQL Server 2022 container with sp_PressureDetector installed, remote admin connections 1 (the DAC), three
-#     user databases, a monitor login (VIEW SERVER STATE, VIEW ANY DEFINITION).
+#     user databases, a monitor login (VIEW SERVER STATE, VIEW ANY DEFINITION; an msdb user with db_datareader for
+#     mssql_jobs).
 #  B. two mssql_cpu and two mssql_activity reads at rest (a write load between the activity reads): the 'perfmon' rows
 #     stored as mssql_counter_sample per series; the four throughput rates of mssql_sched_sample as before (0074's
 #     import, unchanged) and offline CPUs 0 with the nodes online = all; mssql_cpu_info holds sp_PressureDetector's
@@ -66,7 +67,12 @@
 #     three grids with the stored rows), Metrics (the counter grid's rows = the API's, the five default series charted,
 #     a box checked and cleared), TempDB (the holders), File IO (KB per read / write, the log flushes), Jobs (p95, % of
 #     average); no error box; every link and control of the CPU and Connections pages clicked with its landing in the
-#     click table; shots of each page and theme.
+#     click table; shots of each page and theme. Before mssql_tempdb and mssql_fileio ever read (an early walk, light,
+#     after a fresh temp-table session and an mssql_activity read, over its own window end): TempDB shows the holders
+#     (at least 1, the count of mssql_session_tempdb_newest taken right after the walk), File IO no file grid and the
+#     log flush rows of mssql_log_flush_between over that window. Then mssql_jobs, mssql_tempdb and two mssql_fileio
+#     reads around a write, the stored running job and its runs, a window end taken again, and the main walk; its
+#     holders at least 1.
 # NOT PROVEN HERE: 'other processes' on a live server (a Linux host writes no idle figure; the rule on stored rows);
 #   a live transaction open 30 minutes (stored rows); offline CPUs and an offline NUMA node (the container has none);
 #   a job running live (SQL Agent is off in the container: stored rows); SQL Server 2016-2019, Managed Instance, RDS.
@@ -719,8 +725,16 @@ for (const name of ['cpu', 'connections']) {
 ws.close(); process.exit(0);
 JS
 # the early path: TempDB and File IO before mssql_tempdb (hourly) and mssql_fileio (every minute) read: D14's sections
-# (the tempdb holders, the log flushes) are mssql_activity's and still show
-early=$(I_USR="$USR" I_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$FISO" "$TISO" "$SHOTS" early) || fail "I: the early walk stopped: $early"
+# (the tempdb holders, the log flushes) are mssql_activity's and still show. A fresh session holding tempdb and a fresh
+# mssql_activity read first (D's holder was killed in F), the early walk over its own window end, the holders counted
+# right after it
+hold pgvc_tmpi pgvcpu "CREATE TABLE #held (id int, pad char(2000)); INSERT #held SELECT TOP (600) object_id, 'x' FROM sys.all_objects;"
+seen 'pgvc[_]tmpi' 1 "I: the session holding tempdb"
+sleep 3
+col mssql_activity
+TISO_E=$(pq "SELECT to_char((now() + interval '1 minute') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+early=$(I_USR="$USR" I_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$FISO" "$TISO_E" "$SHOTS" early) || fail "I: the early walk stopped: $early"
+EH=$(pq "SELECT count(*) FROM pgvigil.mssql_session_tempdb_newest($SB, now() - interval '15 minutes', now())")
 # then the reads a running pgvigil has made by now: mssql_jobs (msdb), mssql_tempdb, two mssql_fileio reads around a
 # write (the first sets the baseline)
 col mssql_jobs mssql_tempdb mssql_fileio
@@ -738,9 +752,9 @@ out="$early"$'\n'"$out"
 echo "$out" | grep -v '^click control'
 echo "$out" | grep -q '^login 200$' || fail "I: the UI login in Chromium"
 ! echo "$out" | grep -q '^FAIL' || fail "I: a page did not render: $(echo "$out" | grep '^FAIL' | head -3)"
-python3 - "$PGDSN" "$SB" "$FISO" "$TISO" "$JP" "$out" <<'PYEND' || fail "I: see above"
+python3 - "$PGDSN" "$SB" "$FISO" "$TISO" "$JP" "$out" "$TISO_E" "$EH" <<'PYEND' || fail "I: see above"
 import sys, json, subprocess
-dsn, sb, f, t, jp, out = sys.argv[1:]
+dsn, sb, f, t, jp, out, te_end, eh = sys.argv[1:]
 def q(s): return subprocess.run(['psql', dsn, '-XAtq', '-c', s], check=True, capture_output=True, text=True).stdout.strip()
 w = f"{sb}, '{f}', '{t}'"
 lv, pm = q(f"SELECT level || '|' || pm_level FROM pgvigil.mssql_cpu_newest({w})").split('|')
@@ -748,6 +762,7 @@ want_now = int(q(f"SELECT count(*) FROM pgvigil.mssql_counter_newest({w})"))
 grp = {g: int(q(f"SELECT count(*) FROM pgvigil.mssql_session_groups_newest({w}, '{g}')")) for g in ('program', 'host', 'database')}
 holders = int(q(f"SELECT count(*) FROM pgvigil.mssql_session_tempdb_newest({sb}, now() - interval '15 minutes', now())"))
 flushes = int(q(f"SELECT count(*) FROM pgvigil.mssql_log_flush_between({w})"))
+flushes_e = int(q(f"SELECT count(*) FROM pgvigil.mssql_log_flush_between({sb}, '{f}', '{te_end}')"))
 pages = {}
 for l in out.splitlines():
     if l.startswith('page '):
@@ -764,14 +779,14 @@ for theme in ('light', 'dark'):
     m = g('metrics')
     if m.get('counters') != want_now or m.get('checked', 0) < 4 or not m.get('counterChart') or m.get('errors') != 0: bad.append(f"I metrics {theme}: {m} (want {want_now} counter rows, the default series checked and charted)")
     td = g('tempdb')
-    if td.get('holders') != holders or td.get('errors') != 0: bad.append(f"I tempdb {theme}: {td} (want {holders} holders)")
+    if td.get('holders') != holders or holders < 1 or td.get('errors') != 0: bad.append(f"I tempdb {theme}: {td} (want {holders} holders, at least 1)")
     fi = g('fileio')
     if fi.get('kb') != 2 or fi.get('logflush') != flushes or flushes < 1 or fi.get('errors') != 0: bad.append(f"I fileio {theme}: {fi} (want the KB per read and per write columns, {flushes} log flush rows)")
     jb = g('jobs')
     if jp != '|' and (not jb.get('p95') or 'pgvproof job' not in jb.get('jobRow', '')): bad.append(f"I jobs {theme}: {jb}")
 te, fe = pages.get(('tempdb-early', 'light'), {}), pages.get(('fileio-early', 'light'), {})
-if te.get('holders') != holders or te.get('errors') != 0: bad.append(f"I tempdb before its own read: {te} (want {holders} holders)")
-if fe.get('kb') != 0 or fe.get('logflush') != flushes or fe.get('errors') != 0: bad.append(f"I fileio before its own read: {fe} (want no file grid, {flushes} log flush rows)")
+if te.get('holders') != int(eh) or int(eh) < 1 or te.get('errors') != 0: bad.append(f"I tempdb before its own read: {te} (want {eh} holders, at least 1)")
+if fe.get('kb') != 0 or fe.get('logflush') != flushes_e or flushes_e < 1 or fe.get('errors') != 0: bad.append(f"I fileio before its own read: {fe} (want no file grid, {flushes_e} log flush rows)")
 pk = [l for l in out.splitlines() if l.startswith('metrics pick ')]
 if not pk or pk[0].split(' ', 2)[2].split('|')[2] != 'true': bad.append(f"I metrics pick: {pk}")
 cl = [l for l in out.splitlines() if l.startswith('click ')]

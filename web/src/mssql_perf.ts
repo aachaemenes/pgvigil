@@ -324,7 +324,7 @@ export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
       + 'then more by fours only while allocation contention stays; every data file the same size and growth. Trace flags 1117 and 1118 are no longer '
       + 'required from SQL Server 2016 (their behaviour is tempdb\'s default).'));
   if (!layout.length) {
-    sec.append(el('p', { class: 'empty' }, 'No tempdb read yet: the mssql_tempdb collection runs hourly (the CPU count needs VIEW SERVER STATE).'));
+    sec.append(el('p', { class: 'empty' }, 'No tempdb layout read yet: the mssql_tempdb collection runs hourly (the CPU count needs VIEW SERVER STATE).'));
     // the holders are mssql_activity's (task 177 D14): they show without a layout read too
     if (!fleet) sec.append(tempdbHolders(rowsOf(d.holders), rowsOf(d.holders_read)[0]));
     return sec;
@@ -354,7 +354,7 @@ function tempdbHolders(rows: Row[], read?: Row): HTMLElement {
   const box = el('div', {}, el('h3', {}, 'Sessions holding tempdb'));
   const refused = ((read?.skipped ?? []) as { read?: string; error?: string }[]).find(s => s.read === 'sys.dm_db_session_space_usage');
   box.append(el('p', { class: 'meta', 'data-holders': read == null ? 'not read' : refused ? 'refused' : String(rows.length) }, rows.length
-    ? `The newest read, ${fmtTime(rows[0].snapshot_at)}: the 20 sessions with the most tempdb allocated (sp_PressureDetector's figures: allocated, and current = allocated less deallocated; a running request's tasks and the session's finished ones summed, the running part also apart).`
+    ? `The newest mssql_activity read (every 5 minutes), ${fmtTime(rows[0].snapshot_at)}: the 20 sessions with the most tempdb allocated (sp_PressureDetector's figures: allocated, and current = allocated less deallocated; a running request's tasks and the session's finished ones summed, the running part also apart).`
     : read == null ? 'Not read in the last 15 minutes: mssql_activity reads the sessions holding tempdb every 5 minutes (it needs VIEW SERVER STATE).'
     : refused ? `The server refused the read at ${fmtTime(read.snapshot_at)}: ${String(refused.error ?? '').slice(0, 300)}`
     : `No session held tempdb at the read of ${fmtTime(read.snapshot_at)}.`));
@@ -372,9 +372,10 @@ function tempdbHolders(rows: Row[], read?: Row): HTMLElement {
 // logFlushBlock (task 177 D14): log bytes flushed per second per database (the Databases object's Log Bytes
 // Flushed/sec, read every 5 minutes): the five busiest databases charted, every database in a grid
 async function logFlushBlock(ctx: Ctx, rows: Row[]): Promise<HTMLElement> {
-  const box = el('div', {}, el('h3', {}, 'Log bytes flushed per database'));
+  const box = el('div', {}, el('h3', {}, 'Log bytes flushed per database'),
+    el('p', { class: 'meta' }, 'From mssql_activity\'s per-database counters (the Databases object\'s Log Bytes Flushed/sec), read every 5 minutes.'));
   if (!rows.length) {
-    box.append(el('p', { class: 'meta' }, 'No per-database log counters in this window (mssql_activity reads the Databases object every 5 minutes).'));
+    box.append(el('p', { class: 'meta' }, 'No per-database log counters in this window.'));
     return box;
   }
   const top = rows.slice(0, 5);
