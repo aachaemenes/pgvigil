@@ -100,6 +100,8 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_xe', at FROM pgvigil.mssql_xe_findings
     UNION ALL
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_waiting', at FROM pgvigil.mssql_waiting_findings
+    UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_hadr', at FROM pgvigil.mssql_hadr_findings
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_jobs', at FROM pgvigil.mssql_jobs_findings
@@ -159,7 +161,8 @@ BEGIN
                          'mssql_qs_interval', 'mssql_qs_runtime',
                          'pgaudit_events', 'pgaudit_counts', 'mssql_audit_counts', 'mssql_audit_events',
                          'mssql_pc_read', 'mssql_pc_sample', 'mssql_errorlog', 'mssql_health_components', 'mssql_trace_events',
-                         'wal_state_sample', 'function_stats', 'slru_sample')
+                         'wal_state_sample', 'function_stats', 'slru_sample',
+                         'mssql_waiting_summary', 'mssql_waiting_tasks')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then

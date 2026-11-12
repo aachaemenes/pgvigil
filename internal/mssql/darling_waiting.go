@@ -16,10 +16,10 @@ import (
 // waitingCollector is mssql_waiting_tasks (task 177, darling-open D01): what every waiting task of the server waits on
 // now, every minute. One row per task of sys.dm_os_waiting_tasks (a parallel request has one per exec context), its
 // blocker, the resource decoded to database, object and index where the server can say, and the statement of its
-// request; migration 0112 keeps them.
+// request; migration 0108 keeps them.
 //
 // The read is PerformanceMonitor's waiting-tasks collector (PerformanceMonitor.Collectors/WaitingTasksCollector.cs,
-// Darling Data, MIT; the notice is in 0112 and THIRD-PARTY-NOTICES.md): its FROM and WHERE kept as they are, and its
+// Darling Data, MIT; the notice is in 0108 and THIRD-PARTY-NOTICES.md): its FROM and WHERE kept as they are, and its
 // ignore list (IgnoredWaitDefaults.All, 126 wait types, as data below) applied after the read as it applies it, so
 // the rows are the rows PerformanceMonitor would store from the same server at the same moment, widened by the exec
 // context, the resource and the request's statement (the columns Get-DbaWaitingTask reads). Like PerformanceMonitor's,

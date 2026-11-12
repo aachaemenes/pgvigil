@@ -13,6 +13,7 @@ import { backupsView } from './backups';
 import { corruptionView } from './corruption';
 import { pgBackupsView, pgBaseBackupsFleetSection, pgReplicationFleetView, pgStateView, pgThresholdsView } from './pg_backups';
 import { dbadashView, importedPage, isImported } from './dbadash';
+import { mssqlWaitingView, pgWaitingView } from './darling_waiting';
 import { alertsView } from './alerts';
 import { alertRulesView } from './alert_rules';
 import { alertPageView } from './alert_page';
@@ -90,7 +91,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
 // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
 const mssqlPages: Record<string, Render> = {
   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
-  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
   jobstimeline: jobsTimelineView,
   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
@@ -126,6 +127,7 @@ const instancePages: Record<string, Render> = {
   roles: c => rolesView(c.instance!),
   slowqueries: slowView,
   waits: waitsView,
+  waiting: pgWaitingView,
   indexes: c => indexesView(c.instance!, c),
   schema: c => schemaView(c.instance!, c),
   plans: plansView,

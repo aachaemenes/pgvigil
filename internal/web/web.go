@@ -298,6 +298,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/running/fleet", s.RunningFleet)
 	api.HandleFunc("GET /api/running/snapshots", s.RunningSnapshots)
 	api.HandleFunc("GET /api/mssql/waits", s.MssqlWaits)
+	api.HandleFunc("GET /api/waiting", s.Waiting) // the Waiting tasks tab of either engine (task 177)
 	api.HandleFunc("GET /api/mssql/availability", s.MSSQLAvailability)
 	api.HandleFunc("GET /api/mssql/jobs", s.MSSQLJobs)
 	api.HandleFunc("GET /api/jobs/history", s.JobsHistory)

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// The waiting-tasks API (task 177, darling-open D01; migration 0112). The join wires the route in Handler:
+// The waiting-tasks API (task 177, darling-open D01; migration 0108). The join wires the route in Handler:
 //   GET /api/waiting?instance=N[&from=..&to=..][&at=<RFC 3339>][&wait=<wait type>][&part=...] -> s.Waiting
 // A SQL Server instance's parts: snapshots (each read of the range: tasks, sessions, THREADPOOL, the longest wait),
 // tasks (one read's waiting tasks: the newest read at or before at, else at or before the range's end; wait narrows
