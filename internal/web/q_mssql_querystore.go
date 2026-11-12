@@ -52,6 +52,8 @@ SELECT s.database_name, s.desired_state, s.actual_state, s.readonly_reason, s.re
  WHERE s.instance_id = $1
  ORDER BY s.database_name`
 
+// sqlMSSQLQSTotals: wait_ms is NULL (not measured) where the server keeps no wait statistics (SQL Server 2016: the
+// collector stores NULL, querystore.go qsNoWaitMS) and 0 over an empty window; the series' wait_ms likewise.
 var sqlMSSQLQSTotals = `
 WITH iv AS (
   SELECT i.* FROM pgvigil.mssql_qs_interval i WHERE ` + fmt.Sprintf(qsWindow, "i") + `
@@ -65,7 +67,7 @@ SELECT count(*) AS intervals, count(DISTINCT iv.database_name) AS databases, min
        max(iv.interval_end) AS last_end, max(iv.read_at) AS read_at,
        coalesce(sum(iv.plans), 0) AS plan_runs, coalesce(sum(iv.executions), 0) AS executions,
        round(coalesce(sum(iv.duration_us), 0) / 1000.0, 1) AS duration_ms, round(coalesce(sum(iv.cpu_us), 0) / 1000.0, 1) AS cpu_ms,
-       coalesce(sum(iv.logical_reads), 0) AS logical_reads, coalesce(sum(iv.wait_ms), 0) AS wait_ms,
+       coalesce(sum(iv.logical_reads), 0) AS logical_reads, CASE WHEN count(*) = 0 THEN 0 ELSE sum(iv.wait_ms) END AS wait_ms,
        (SELECT rt.queries FROM rt) AS kept_queries, coalesce((SELECT rt.executions FROM rt), 0) AS kept_executions,
        round(coalesce((SELECT rt.duration_us FROM rt), 0) / 1000.0, 1) AS kept_duration_ms,
        round(coalesce((SELECT rt.cpu_us FROM rt), 0) / 1000.0, 1) AS kept_cpu_ms,
@@ -79,7 +81,7 @@ var sqlMSSQLQSSeries = `
 SELECT to_timestamp(floor(extract(epoch FROM i.snapshot_at) / $5) * $5) AS snapshot_at,
        coalesce(sum(i.executions), 0) AS executions, round(coalesce(sum(i.duration_us), 0) / 1000.0, 1) AS duration_ms,
        round(coalesce(sum(i.cpu_us), 0) / 1000.0, 1) AS cpu_ms, coalesce(sum(i.logical_reads), 0) AS logical_reads,
-       coalesce(sum(i.wait_ms), 0) AS wait_ms
+       sum(i.wait_ms) AS wait_ms
   FROM pgvigil.mssql_qs_interval i
  WHERE ` + fmt.Sprintf(qsWindow, "i") + `
  GROUP BY 1 ORDER BY 1`

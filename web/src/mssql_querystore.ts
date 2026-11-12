@@ -192,7 +192,7 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
   const share = (kept: unknown, all: unknown) => Number(all) > 0 ? fmtNum(Math.round(1000 * Number(kept) / Number(all)) / 10) + ' %' : '-';
   out.push(el('div', { class: 'tiles' },
     tile('executions', fmtNum(t.executions)), tile('duration', dur(t.duration_ms)), tile('CPU', dur(t.cpu_ms)),
-    tile('logical reads', fmtNum(t.logical_reads)), tile('wait time', dur(t.wait_ms)),
+    tile('logical reads', fmtNum(t.logical_reads)), tile('wait time', t.wait_ms == null ? 'n/a' : dur(t.wait_ms)),
     tile('intervals', fmtNum(t.intervals)), tile('databases', fmtNum(t.databases))));
   out.push(el('p', { class: 'meta' }, `The tiles are the store's totals over every plan, ${fmtTime(t.first_start)} to ${fmtTime(t.last_end)} (every interval that overlaps the range; read ${fmtTime(t.read_at)}). `
     + `The list holds the plans in each interval's first 50 by duration, CPU, logical reads, memory grant or waits: ${share(t.kept_duration_ms, t.duration_ms)} of that duration, `

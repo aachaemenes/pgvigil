@@ -24,7 +24,7 @@
 #     give each procedure's statement exactly those executions; its duration, CPU and logical reads equal sa's
 #     read of the store summed the same way (a total per plan and interval cut to whole microseconds; 50 either
 #     way allowed for the float sums) and its largest memory grant and wait time equal sa's (the wait time from SQL
-#     Server 2017; before it the server keeps no wait statistics, the collector stores 0 and sa's side says 0). Through the API, for
+#     Server 2017; before it the server keeps no wait statistics, the collector stores NULL, not read, and both sides say n/a). Through the API, for
 #     each of order = duration, cpu, reads, memory, executions the four statements come in sa's order by that
 #     figure (ties by query id).
 #  C. a forced plan that fails. A plan forced for a fifth procedure whose index is then dropped: the stored plan is
@@ -166,14 +166,14 @@ export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 echo "SQL Server: $CT on $ADDR, $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40))")"
 # the store's wait statistics (sys.query_store_wait_stats, WAIT_STATS_CAPTURE_MODE, wait_stats_capture_mode_desc)
 # arrived in SQL Server 2017 (14): before it the collector stores no wait mode (both sides below say n/a) and a
-# wait time of 0 (querystore.go qsHasWaits, and its candidates read ISNULL(wait_ms, 0) over no wait rows: sa's side
-# says 0 too); from 2017 the comparisons are as strict as before
+# wait time of NULL, not read (querystore.go qsHasWaits: its candidates read the empty wait relation's own column,
+# qsNoWaitMS; rep()'s coalesce says n/a, and sa's side says n/a too); from 2017 the comparisons are as strict as before
 QSMAJOR=$(sq "SELECT CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)), 4) AS int)")
 if [ "$QSMAJOR" -ge 14 ]; then
   WSC=", WAIT_STATS_CAPTURE_MODE = ON"; WSMODE="wait_stats_capture_mode_desc"
   SAWAIT="CAST(ISNULL((SELECT SUM(w.total_query_wait_time_ms) FROM sys.query_store_wait_stats w JOIN sys.query_store_plan wp ON wp.plan_id = w.plan_id WHERE wp.query_id = q.query_id), 0) AS varchar(30))"
 else
-  WSC=; WSMODE="'n/a'"; SAWAIT="'0'"
+  WSC=; WSMODE="'n/a'"; SAWAIT="'n/a'"
 fi
 
 adm() { psql "$ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
