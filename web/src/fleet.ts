@@ -11,9 +11,9 @@ export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
 // the pgaudit cells are read at most every 5 minutes, a forced refresh included (the Summary's auto refresh forces one
-// every 30 s): GET /api/pgaudit counts every instance's findings, whose rule arm reads pgaudit_events - about 18 ms
-// over 12,000 events, 1.5 s over 600,000 on 12 instances (task 167's measurement); the pgaudit collection itself
-// reads health once a minute
+// every 30 s): GET /api/pgaudit counts every instance's findings, a plan the server can estimate past jit_above_cost -
+// on a store of 12 instances, about 18 ms over 12,000 pgaudit_events and 1.5 s over 600,000, all but 40 ms of it the
+// JIT compile (40 ms with jit off; task 167's measurement); the pgaudit collection itself reads health once a minute
 const auditTTL = 300000;
 let audit: { rows: Row[]; failed: boolean; at: number } | null = null;
 function auditRead(): Promise<{ rows: Row[]; failed: boolean }> {
