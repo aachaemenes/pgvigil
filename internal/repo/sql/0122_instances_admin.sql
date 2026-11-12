@@ -64,8 +64,9 @@ CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE
 BEGIN
   IF NEW.is_active AND NOT OLD.is_active
      AND (EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes')
-          -- a page instance disabled in the last 5 minutes stays inactive against a run in flight (enable: the next run
-          -- sets it active); past that only a file instance of the name runs (the page's holder skips disabled rows)
+          -- a page instance disabled in the last 5 minutes stays inactive against a run in flight (enable sets it
+          -- active itself, in import_admin_instance); past that only a file instance of the name runs (the page's
+          -- holder skips disabled rows)
           OR EXISTS (SELECT 1 FROM pgvigil.admin_instances a WHERE a.name = NEW.name AND a.disabled AND a.updated_at > now() - interval '5 minutes')) THEN
     NEW.is_active := false;
   END IF;
@@ -74,6 +75,20 @@ END $$;
 DROP TRIGGER IF EXISTS admin_keep_removed ON pgvigil.instances;
 CREATE TRIGGER admin_keep_removed BEFORE UPDATE OF is_active ON pgvigil.instances
   FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
+
+-- a page instance's row made at its add (platform 'auto', no version: import_admin_instance) has its history from the
+-- first read that connects: ensure_instance writes the version then, and first_seen moves to that read (the Diff
+-- page's 'history from' reads it) - the join's review of fold 1, finding 3
+CREATE OR REPLACE FUNCTION pgvigil.admin_first_read() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.platform = 'auto' AND OLD.server_version IS NULL AND NEW.server_version IS NOT NULL THEN
+    NEW.first_seen := now();
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS admin_first_read ON pgvigil.instances;
+CREATE TRIGGER admin_first_read BEFORE UPDATE OF server_version ON pgvigil.instances
+  FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_first_read();
 
 -- The page's instances belong to one collector of a repository: the holder of this lease (one row), renewed by its
 -- holder every 15 s and taken by another collector once it is older than p_ttl_s (45 s: three renewals missed - a

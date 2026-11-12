@@ -103,7 +103,10 @@ SELECT d.repository, d.instance_id AS source_id, i.instance_id, i.name, (m.insta
   JOIN pgvigil.dbadash_repositories r ON r.repository = d.repository AND r.is_configured
   JOIN pgvigil.instances i ON i.engine = 'sqlserver' AND i.is_active
   LEFT JOIN pgvigil.mssql_instance m ON m.instance_id = i.instance_id
-  CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM pgvigil.collection_dates cd WHERE cd.instance_id = i.instance_id) AS attempted) c
+  -- an attempt that got past the connect (a page instance has its row from its add, and 0118 records its failed
+  -- connects: those do not make it pgvigil's own until pgvigil reaches it - the join's review of fold 1, finding 1)
+  CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM pgvigil.collection_dates cd WHERE cd.instance_id = i.instance_id
+                                       AND NOT (cd.status = 'error' AND cd.note LIKE 'connect: %')) AS attempted) c
  WHERE ($1::text IS NULL OR d.repository = $1)
    AND (upper(m.server_name) = upper(d.instance)
         OR (m.instance_id IS NULL AND upper(i.name) = upper(d.display_name)))
@@ -123,7 +126,8 @@ SELECT * FROM (
     JOIN pgvigil.mssql_database_size s ON s.instance_id = i.instance_id
    WHERE d.repository = $1 AND d.instance_id = $2
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)
-     AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates cd WHERE cd.instance_id = i.instance_id)
+     AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates cd WHERE cd.instance_id = i.instance_id
+                       AND NOT (cd.status = 'error' AND cd.note LIKE 'connect: %'))
    ORDER BY s.database_name, s.snapshot_at DESC) x
  ORDER BY x.size_bytes DESC, x.database_name`
 

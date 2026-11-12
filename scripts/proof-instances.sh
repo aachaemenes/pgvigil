@@ -13,7 +13,7 @@
 #   D. a pg_service.conf of the two PostgreSQL servers as a source: two proposed, approved, collected
 #   E. the API: test (a wrong and a right password), add, the refusals (a name twice, a file name, a connection
 #      change without the password), a tags edit, disable (its collections stop; is_active false, so the fleet's stale
-#      check passes it by), enable (they start again; is_active true after a run), remove (its credential file removed
+#      check passes it by), enable (they start again; is_active true at the enable), remove (its credential file removed
 #      after the 30 s grace, its history kept); every change and refusal in the audit
 #   F. the page in headless Chromium, light and dark: every control clicked (the add form's test and add, a row's
 #      Test, Edit + Save, Disable, Enable, Remove + Keep, Remove + confirm, Cancel the edit, a source's Read now,
@@ -32,7 +32,8 @@
 #      PostgreSQL container) collected, disabled, its server stopped, enabled -> is_active true at once and, within one
 #      interval, a new 'connect:' error and a 'server unreachable' finding; removed and added again while its server is
 #      still down -> the same; pg-never, added while its server is down and never collected -> its instances row at
-#      the add (active) and the same finding
+#      the add (active) and the same finding; sql-down (a SQL Server page instance on A's container, the last row: the
+#      container stopped) enabled while down -> the same through the SQL Server collector
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -461,5 +462,15 @@ code=$(api POST admin/instances "$(js op=add name=pg-never $KA password=@PG_PW)"
 [[ "$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'pg-never'")" == "true postgres auto" ]] || fail "K: pg-never's row at the add: [$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'pg-never'")] (want 'true postgres auto')"
 unreachable pg-never "$T2" "added while its server is down, never collected"
 for n in pg-down pg-never; do code=$(api POST admin/instances "$(js op=remove name=$n)"); [[ "$code" == 200 ]] || fail "K: remove $n: $code"; done
-echo "ok   K: enabled while down, added again after a remove while down, and added never collected: each active at once and 'server unreachable' (critical) with a new connect error within one interval"
+# the SQL Server collector's path (internal/mssql records its failed connects the same way): A's container, stopped last
+SA_="engine=sqlserver host=127.0.0.1 port=$PORT_SQL auth=sql login=$MONL options=TrustServerCertificate=true"
+code=$(api POST admin/instances "$(js op=add name=sql-down $SA_ password=@MON_PW)"); [[ "$code" == 200 ]] || fail "K: add sql-down: $code $(cat "$TMPD/ans.json")"
+waitcol sql-down 120 "K"
+code=$(api POST admin/instances "$(js op=disable name=sql-down)"); [[ "$code" == 200 && "$(active sql-down)" == false ]] || fail "K: disable sql-down: $code, is_active $(active sql-down)"
+docker stop -t 5 "$SQL" >/dev/null || fail "K: docker stop the SQL Server"
+T3=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=enable name=sql-down)"); [[ "$code" == 200 && "$(active sql-down)" == true ]] || fail "K: enable sql-down: $code, is_active $(active sql-down)"
+unreachable sql-down "$T3" "a SQL Server enabled while its server is down"
+code=$(api POST admin/instances "$(js op=remove name=sql-down)"); [[ "$code" == 200 ]] || fail "K: remove sql-down: $code"
+echo "ok   K: enabled while down, added again after a remove while down, added never collected (PostgreSQL), and a SQL Server enabled while down: each active at once and 'server unreachable' (critical) with a new connect error within one interval"
 echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; the NOT PROVEN lines above stand)"
