@@ -29,31 +29,39 @@
 #              install.sh itself'; the bundle itself: 'signature not verified here', '(plain build) checksum verified',
 #              'installed and enabled', /usr/local/bin/pgvigil prints <v> and fips140 off, the unit written; then
 #              uninstall -purge and userdel leave neither
-#  O old store v0.3.0's FIPS build installed with -bin /opt/pgv/bin/pgvigil -config /srv/pgvigil/pgvigil.yaml -user pgvsvc;
+#  O old store v0.3.0's FIPS build installed with -bin /opt/pgv/bin/pgvigil -config /srv/pgvconf/pgvigil.yaml -user pgvsvc
+#              (a config folder NOT named pgvigil: the installer's folder check applies to it in full);
 #              its migrate as the owner, the logins 'pgvigil roles' prints, its demo over the days asked (12 instances),
-#              the live server as an instance; the unit running; an activity sample of the live instance arrives
+#              the live server as an instance; the unit running; an activity sample of the live instance arrives; the
+#              page's credential folders instances/ and sources/ beside the config, a 0600 file in each (task 204)
 #  C refusals  each ends non-zero with its own line and changes nothing (the unit's main PID, the installed binary's
 #              sha256, schema_version's count, the backup folder's mode and file count, and no .previous, as before):
 #              not root ('the upgrade needs root', run as nobody); no owner DSN ('the
 #              repository owner's connection string is not given'); a -bin that disagrees ('disagrees with the installed
 #              service's /opt/pgv/bin/pgvigil'); a pg_dump 12 against PostgreSQL 15 ('is pg_dump 12 and the repository's
-#              server is PostgreSQL 15'); a dump on a 64 KiB tmpfs ('free and the repository is'); a second process on the
-#              installed binary ('other processes run the installed binary', its pid named)
+#              server is PostgreSQL 15'); a dump on a 64 KiB tmpfs ('free and the repository is'); a file the installer does not
+#              own in the config folder ('holds other files (notes.txt)'); a second process on the installed binary
+#              ('other processes run the installed binary', its pid named)
 #  M migrate   with the database read only by default the upgrade keeps the previous binary (before the stop), stops,
 #    fails     dumps, and its migrate fails: 'the migrate failed: the binary was not swapped and the service stays
 #              stopped' and the way back; the unit inactive, the binary unchanged, .previous = the old binary, schema_version
 #              as before, the dump file there (0600); after the reset the old collector starts again
+#  F dump      a pg_dump that fails: with the service running, 'the dump failed, the service runs again on the previous
+#    fails     binary' and the unit active after the settle; with the service stopped beforehand, 'the service was not
+#              running before the upgrade and is left stopped' and the unit inactive; the binary and schema as before
 #  U upgrade   install.sh --from with --owner-dsn-file: steps 1 (previous kept) to 5 (swapped, started) printed, 'installed and running', the way back; the
 #              dump in /var/backups/pgvigil (0700 root) as a 0600 file pg_restore lists; /opt/pgv/bin/pgvigil.previous is
 #              the v0.3.0 FIPS binary byte for byte; the installed binary prints <v> and fips140 on (the flavour kept,
-#              no switch given); the unit keeps ExecStart=/opt/pgv/bin/pgvigil run -config /srv/pgvigil/pgvigil.yaml and
+#              no switch given); the unit keeps ExecStart=/opt/pgv/bin/pgvigil run -config /srv/pgvconf/pgvigil.yaml and
 #              User=pgvsvc; the config and env file byte for byte as before; schema_version = this tree's files; every
 #              table with an instance column holds, outside the live instance, its row count and its rows' md5 over the
 #              columns v0.3.0 had; a table without one has not shrunk; the collector writes an activity sample after
-#              the restart
-#  R re-run    install.sh --from again (the installed binary is already this one) with --dump into an existing folder
-#              of another owner (0755, 65534): 'migrated ... 0 file(s)', 'already this one', .previous still v0.3.0's, the
-#              folder's mode and owner as before, the dump file 0600 root's
+#              the restart; instances/ and sources/ and their files as before
+#  R re-run    the config's instances emptied first (a filled repository DSN, no instance in the file: the one case where
+#              the DSN gate and the old instance gate differ); install.sh --from again (the installed binary is already
+#              this one) with --dump into an existing folder of another owner (0755, 65534): 'migrated ... 0 file(s)',
+#              'already this one', '5. swapped the binary and started the service' and the unit active, .previous still
+#              v0.3.0's, the folder's mode and owner as before, the dump file 0600 root's
 #  D downgrade the repository naming a migration newer than this build's: 'newer than this build's newest migration',
 #              nothing changed
 #  W way back  the dump restored by the owner into a new database holds every instance table's rows as before the
@@ -203,7 +211,7 @@ insys userdel pgvigil || fail "userdel pgvigil"
 ok "a changed binary and a changed install.sh refused, nothing installed; the bundle installed fresh ($vv), then removed"
 
 echo "== O the old store: $OLD's FIPS build at non-default paths, its schema, logins, demo and service =="
-OB=/opt/pgv/bin/pgvigil; OC=/srv/pgvigil/pgvigil.yaml; OE=/srv/pgvigil/pgvigil.env; OU=pgvsvc
+OB=/opt/pgv/bin/pgvigil; OC=/srv/pgvconf/pgvigil.yaml; OE=/srv/pgvconf/pgvigil.env; OU=pgvsvc
 insys chmod 0755 "/root/$OLDF"
 insys "/root/$OLDF" install -bin "$OB" -config "$OC" -user "$OU" >"$WORK/o1.out" 2>&1 || fail "$OLD install: $(cat "$WORK/o1.out")"
 [[ "$(insys "$OB" version)" == *"fips140 on"* ]] || fail "the old build is not FIPS: $(insys "$OB" version)"
@@ -226,7 +234,9 @@ insys sh -c "sed -i 's/^instances: \[\]/instances:\n  - name: proof-target\n    
 insys systemctl restart pgvigil
 TID=""; for _ in $(seq 1 90); do TID=$(pq "select i.instance_id from pgvigil.instances i where i.name = 'proof-target' and exists (select 1 from pgvigil.activity_summary s where s.instance_id = i.instance_id)"); [[ -n "$TID" ]] && break; sleep 1; done
 [[ -n "$TID" ]] || fail "no activity sample of proof-target under $OLD within 90 s"
-ok "$OLD FIPS at $OB (config $OC, account $OU): $OLDFILES migration files, the logins, 12 demo instances over $DAYS day(s), running; the live instance sampled"
+insys sh -c "umask 077; mkdir -p /srv/pgvconf/instances /srv/pgvconf/sources && echo 'host=x password=secret-i' > /srv/pgvconf/instances/page-a.dsn && echo 'host=y password=secret-s' > /srv/pgvconf/sources/src-b.dsn && chown -R $OU /srv/pgvconf/instances /srv/pgvconf/sources"
+CREDS=$(insys sh -c 'cd /srv/pgvconf && find instances sources -type f -printf "%p %m %u " && cat instances/* sources/* | sha256sum | cut -c1-16')
+ok "$OLD FIPS at $OB (config $OC, account $OU): $OLDFILES migration files, the logins, 12 demo instances over $DAYS day(s), running; the live instance sampled; instances/ and sources/ beside the config"
 
 echo "== C refusals before any change =="
 insys sh -c "umask 077; printf '%s\n' '$OWNER_DSN' > /root/owner.dsn"
@@ -246,6 +256,9 @@ insys sh -c "printf '#!/bin/sh\necho \"pg_dump (PostgreSQL) 12.22\"\n' > /root/p
 refused "pg_dump 12" "is pg_dump 12 and the repository's server is PostgreSQL $PGMAJ" sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn --pg-dump /root/pg_dump12
 insys sh -c "mkdir -p /mnt/tiny && mount -t tmpfs -o size=64k tmpfs /mnt/tiny"
 refused "room" "free and the repository is" sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn --dump /mnt/tiny/x.dump
+insys sh -c 'echo "the operator" > /srv/pgvconf/notes.txt'
+refused "folder" "holds other files (notes.txt)" sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn
+insys rm -f /srv/pgvconf/notes.txt
 # the env file is systemd's, not a shell's (a value holds spaces): each variable taken out whole
 docker exec -d "$SYS" sh -c "export PGVIGIL_REPO_DSN=\"\$(sed -n 's/^PGVIGIL_REPO_DSN=//p' $OE)\" PROOF_TARGET_DSN=\"\$(sed -n 's/^PROOF_TARGET_DSN=//p' $OE)\"; exec $OB run -config $OC >/root/second.log 2>&1"
 sp=""; for _ in $(seq 1 20); do sp=$(insys pgrep -f "^$OB run -config $OC" | grep -v "^$(insys systemctl show -p MainPID --value pgvigil)\$" | head -n 1 || true); [[ -n "$sp" ]] && break; sleep 0.5; done
@@ -254,7 +267,7 @@ refused "second process" "pid $sp:" sh "$B/install.sh" --from "$B" --owner-dsn-f
 insys kill "$sp"
 for _ in $(seq 1 40); do insys kill -0 "$sp" 2>/dev/null || break; sleep 0.25; done
 if insys kill -0 "$sp" 2>/dev/null; then fail "C: the second process $sp is still there 10 s after its kill"; fi
-ok "refused with nothing changed: not root, no owner DSN, a -bin that disagrees, pg_dump 12 against PostgreSQL $PGMAJ, a dump on a 64 KiB tmpfs, a second process (pid $sp) on $OB"
+ok "refused with nothing changed: not root, no owner DSN, a -bin that disagrees, pg_dump 12 against PostgreSQL $PGMAJ, a dump on a 64 KiB tmpfs, a file the installer does not own in the config folder, a second process (pid $sp) on $OB"
 
 echo "== M a failed migrate =="
 PQDB=postgres pq "ALTER DATABASE pgvigil SET default_transaction_read_only = on" >/dev/null
@@ -269,6 +282,20 @@ MD=$(insys sh -c 'ls /var/backups/pgvigil/*.dump' | head -n 1); [[ -n "$MD" && "
 insys rm -f "$MD"; insys systemctl start pgvigil; sleep 3
 [[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "M: the old collector did not start again"
 ok "the failed migrate: the previous binary kept first, stopped, dumped (0600), no swap, schema as before, the service left stopped and the way back printed; the old collector started again after the reset"
+
+echo "== F a failed dump =="
+insys sh -c "printf '#!/bin/sh\nif [ \"\$1\" = --version ]; then echo \"pg_dump (PostgreSQL) $PGMAJ.0\"; exit 0; fi\necho \"pg_dump: error: the proof fails this dump\" >&2; exit 1\n' > /root/pg_dumpfail && chmod 0755 /root/pg_dumpfail"
+if insys sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn --pg-dump /root/pg_dumpfail >"$WORK/f1.out" 2>&1; then fail "F: the upgrade passed with a failing pg_dump"; fi
+grep -qF 'the dump failed, the service runs again on the previous binary' "$WORK/f1.out" || fail "F: running: $(cat "$WORK/f1.out")"
+[[ "$(insys systemctl is-active pgvigil || true)" == active ]] || fail "F: the service is $(insys systemctl is-active pgvigil || true) after a failed dump with the service running before"
+insys systemctl stop pgvigil
+if insys sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn --pg-dump /root/pg_dumpfail >"$WORK/f2.out" 2>&1; then fail "F: the upgrade passed with a failing pg_dump"; fi
+grep -qF 'the service was not running before the upgrade and is left stopped' "$WORK/f2.out" || fail "F: stopped: $(cat "$WORK/f2.out")"
+[[ "$(insys systemctl is-active pgvigil || true)" == inactive ]] || fail "F: the service is $(insys systemctl is-active pgvigil || true) after a failed dump with the service stopped before"
+[[ "$(insys sha256sum "$OB" | cut -c1-64)" == "$OLDSHA" && "$(pq "select count(*) from pgvigil.schema_version")" == "$OLDFILES" ]] || fail "F: the binary or the schema changed"
+insys systemctl start pgvigil; sleep 3
+[[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "F: the old collector did not start again"
+ok "a failed dump: with the service running it runs again (active after the settle); with the service stopped before, 'was not running before the upgrade and is left stopped' (inactive); the binary and the schema as before"
 
 echo "== U the upgrade from the bundle =="
 counts() { # counts <file>: 'table|i or g|rows' for every table, the live instance's rows left out
@@ -334,14 +361,18 @@ PY
 diff "$WORK/before.hash" "$WORK/after.hash" >"$WORK/hash.diff" || fail "U: the rows' md5 changed: $(head -5 "$WORK/hash.diff")"
 ok "upgraded $OLD FIPS to $V FIPS in place ($OB, $OC, $OU): $APPLIED files applied; the dump 0600 in a 0700 folder, pg_restore lists it; .previous = $OLD byte for byte; config and env unchanged; $cmpres, each table's md5 the same ($(wc -l < "$WORK/after.hash") tables); a sample after the restart"
 
+[[ "$(insys sh -c 'cd /srv/pgvconf && find instances sources -type f -printf "%p %m %u " && cat instances/* sources/* | sha256sum | cut -c1-16')" == "$CREDS" ]] || fail "U: instances/ or sources/ changed"
 echo "== R the re-run, its dump in a folder of another owner =="
+insys sed -i '/^instances:/,$c instances: []' "$OC"
 insys sh -c "mkdir -p /srv/opdir && chown 65534:65534 /srv/opdir && chmod 0755 /srv/opdir"
 insys sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn --dump /srv/opdir/r.dump >"$WORK/r.out" 2>&1 || fail "R: $(cat "$WORK/r.out")"
 grep -qF '4. migrated the repository: 0 file(s) applied' "$WORK/r.out" && grep -qF 'the installed binary is already this one' "$WORK/r.out" || fail "R: $(cat "$WORK/r.out")"
+grep -qF '5. swapped the binary and started the service' "$WORK/r.out" || fail "R: no instance in the file and a filled DSN, but not started: $(cat "$WORK/r.out")"
+[[ "$(insys systemctl is-active pgvigil || true)" == active ]] || fail "R: the service is $(insys systemctl is-active pgvigil || true) after the re-run"
 [[ "$(insys sha256sum "$OB.previous" | cut -c1-64)" == "$OLDSHA" ]] || fail "R: $OB.previous was overwritten"
 [[ "$(insys stat -c '%a %u %g' /srv/opdir)" == "755 65534 65534" ]] || fail "R: the operator's folder changed: $(insys stat -c '%a %u %g' /srv/opdir)"
 [[ "$(insys stat -c '%a %U' /srv/opdir/r.dump)" == "600 root" ]] || fail "R: the dump file: $(insys stat -c '%a %U' /srv/opdir/r.dump)"
-ok "re-run: 0 files, the binary already this one, .previous still $OLD's; the dump in the operator's folder 0600 root's, the folder as it was (755, 65534)"
+ok "re-run with no instance in the file: 0 files, the binary already this one, step 5 started and the unit active (the DSN gate), .previous still $OLD's; the dump in the operator's folder 0600 root's, the folder as it was (755, 65534)"
 
 echo "== D a downgrade =="
 pq "INSERT INTO pgvigil.schema_version (version) VALUES ('9999_from_a_newer_build.sql')" >/dev/null
@@ -363,4 +394,4 @@ if bad: sys.exit(", ".join(bad))
 PY
 pv=$(insys "$OB.previous" version); [[ "$pv" == "pgvigil $OLD ("* && "$pv" == *"fips140 on"* ]] || fail "W: .previous says $pv"
 ok "the dump restored into pgvigil_back holds every instance table's rows as before; .previous runs ($pv)"
-echo "proof-offline: OK (the bundles laid out and checked; a fresh install and an upgrade of $OLD FIPS with its history from the bundle with no network; six refusals, a downgrade and a failed migrate change nothing they should not; the re-run keeps the way back; the way back restores)"
+echo "proof-offline: OK (the bundles laid out and checked; a fresh install and an upgrade of $OLD FIPS with its history from the bundle with no network; seven refusals, a downgrade, a failed migrate and a failed dump change nothing they should not; the re-run keeps the way back; the way back restores)"

@@ -49,7 +49,9 @@ changes, it refuses when: it does not run as root (elevated); the repository alr
 build (a downgrade: the way back below, not this command); the owner's connection string is missing or does not own the repository; `pg_dump` is older
 (major version) than the repository's server, or missing (`--pg-dump <path>` names one, `--no-dump` takes none); the
 dump's folder has less room than the repository's size; another process runs the installed binary (a `pgvigil serve`,
-the Windows app: the swap would leave it on the old binary over the new schema). Then:
+the Windows app: the swap would leave it on the old binary over the new schema); the config's folder, when it is not
+named `pgvigil`, holds files the installer does not own (its own are the config, the env file or `repo.dsn`, the logs
+and the page's `instances/` and `sources/`). Then:
 
 1. keeps the binary it replaces as `pgvigil.previous` (`pgvigil.previous.exe`) beside it, while the service still runs (a
    copy that cannot be made ends the run before anything else changes); a run after a half-finished upgrade, where the
