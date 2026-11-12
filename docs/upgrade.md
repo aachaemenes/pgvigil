@@ -28,6 +28,44 @@ Two rules follow from how the binary checks the schema:
 
 There is no downgrade migration. The way back is the dump taken before the upgrade and the previous binary (below).
 
+## The upgrade from the offline bundle (no network needed)
+
+On a host without Internet access, or wherever the release came as a bundle ([airgap.md](airgap.md), "The offline
+bundle"), the installer does steps 2 to 5 below in one run, with every refusal before any change:
+
+```sh
+# the owner's connection string in a file of root's alone (a variable does not survive sudo's env_reset)
+sudo install -m 0600 /dev/null /root/pgvigil-owner.dsn && sudo sh -c 'cat > /root/pgvigil-owner.dsn'   # paste, then Ctrl-D
+sudo sh <bundle>/install.sh --from <bundle> --owner-dsn-file /root/pgvigil-owner.dsn
+```
+
+```powershell
+& <bundle>\install.ps1 -From <bundle> -OwnerDsnFile C:\secure\pgvigil-owner.dsn
+```
+
+It finds the installed collector (the unit's `ExecStart=` and `User=`, the service's command line) and keeps its
+binary path, config and account; a `-bin`, `-config` or `-user` that names another is refused. Then, before anything
+changes, it refuses when: the owner's connection string is missing or does not own the repository; `pg_dump` is older
+(major version) than the repository's server, or missing (`--pg-dump <path>` names one, `--no-dump` takes none); the
+dump's folder has less room than the repository's size; another process runs the installed binary (a `pgvigil serve`,
+the Windows app: the swap would leave it on the old binary over the new schema). Then:
+
+1. stops the service;
+2. dumps the repository as its owner (`pg_dump --format=custom`), by default to
+   `/var/backups/pgvigil/pgvigil-before-<version>-<UTC time>.dump` (Windows: `%ProgramData%\pgvigil-backups\`), a
+   folder of root's (SYSTEM's and Administrators') alone and a file of mode 0600 (the dump holds the UI users'
+   password hashes and statement text); `--dump <file>` names another; the password reaches `pg_dump` through a
+   temporary password file, never a command line. A failed dump starts the old service again and changes nothing else;
+3. migrates the repository as its owner;
+4. keeps the binary it replaces as `pgvigil.previous` (`pgvigil.previous.exe`) beside it; a run after a half-finished
+   upgrade, where the installed binary is already this one, leaves `pgvigil.previous` as it is;
+5. swaps the binary, writes the unit or the service again with the same paths and account, starts it;
+6. prints the way back: the previous binary, the dump and the restore line below.
+
+A failed migrate swaps nothing and starts nothing: the service stays stopped on the previous binary, the way back is
+printed (a migration file is its own transaction, so the files before the failed one are applied: the dump is the way
+back to before them).
+
 ## Before
 
 1. Read the release notes of every version between yours and the new one.
@@ -68,7 +106,7 @@ Then start `pgvigil serve` again with the new binary (it is not part of the unit
 `repository schema is current applied=<n>`: the number of files it ran. Step 5 ends with
 `pgvigil is installed and running`.
 
-On a network without Internet access step 1 reads a mirror folder instead
+On a network without Internet access the offline bundle above does steps 2 to 5; by hand, step 1 reads a mirror folder instead
 (`PGVIGIL_BASE_URL=https://mirror.example.internal/pgvigil`, [docs/airgap.md](airgap.md)), or the verified binary is
 carried across by hand and renamed `pgvigil`; the other steps are the same.
 

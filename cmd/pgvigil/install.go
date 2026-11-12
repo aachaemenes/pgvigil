@@ -93,15 +93,16 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	}
 	o.set = map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { o.set[f.Name] = true })
-	if !o.Upgrade {
+	switch {
+	case !o.Upgrade:
 		for _, n := range []string{"owner-dsn-env", "owner-dsn-file", "dump", "no-dump", "pg-dump"} {
 			if o.set[n] {
 				return o, fmt.Errorf("-%s goes with -upgrade only", n)
 			}
 		}
-	} else if o.NoStart {
+	case o.NoStart:
 		return o, errors.New("-upgrade starts the service it stopped: -no-start does not go with it")
-	} else if o.NoDump && (o.set["dump"] || o.set["pg-dump"]) {
+	case o.NoDump && (o.set["dump"] || o.set["pg-dump"]):
 		return o, errors.New("-no-dump does not go with -dump or -pg-dump")
 	}
 	if o.User == "" {
@@ -466,10 +467,9 @@ func upgradePreflight(log *slog.Logger, h *upgradeHooks, o installOptions) (*upg
 	if _, err := os.Stat(p.dumpFile); err == nil {
 		return nil, fmt.Errorf("the dump file %s is already there: name another with -dump", p.dumpFile)
 	}
-	dir := filepath.Dir(p.dumpFile)
-	if err := h.secureDumpDir(dir); err != nil {
-		return nil, fmt.Errorf("the dump folder %s: %w", dir, err)
-	}
+	// the room is read on the folder or, while it does not exist yet, on its nearest existing parent: the preflight
+	// makes nothing (the folder is made in the dump step, after the stop)
+	dir := existingParent(filepath.Dir(p.dumpFile))
 	free, err := h.freeBytes(dir)
 	if err != nil {
 		return nil, fmt.Errorf("free space in %s: %w", dir, err)
@@ -537,6 +537,11 @@ func upgradeDump(h *upgradeHooks, p *upgradePlan) error {
 	if err != nil {
 		return err
 	}
+	if dir := filepath.Dir(p.dumpFile); dir != "" {
+		if err := h.secureDumpDir(dir); err != nil {
+			return fmt.Errorf("the dump folder %s: %w", dir, err)
+		}
+	}
 	f, err := os.OpenFile(p.dumpFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
@@ -585,12 +590,12 @@ func wayBack(p *upgradePlan, swapped bool) string {
 	var b strings.Builder
 	b.WriteString("The way back:\n")
 	if swapped {
-		b.WriteString(fmt.Sprintf("  stop the service; put the previous binary back: %s over %s\n", p.previous, p.inst.Bin))
+		fmt.Fprintf(&b, "  stop the service; put the previous binary back: %s over %s\n", p.previous, p.inst.Bin)
 	} else {
-		b.WriteString(fmt.Sprintf("  the binary %s is still the previous one\n", p.inst.Bin))
+		fmt.Fprintf(&b, "  the binary %s is still the previous one\n", p.inst.Bin)
 	}
 	if p.dumpFile != "" {
-		b.WriteString(fmt.Sprintf("  restore the dump as the owner into a new, empty database and make it the repository (docs/upgrade.md, 'The way back'):\n    pg_restore --exit-on-error -d <the owner's connection to the new database> %s\n", p.dumpFile))
+		fmt.Fprintf(&b, "  restore the dump as the owner into a new, empty database and make it the repository (docs/upgrade.md, 'The way back'):\n    pg_restore --exit-on-error -d <the owner's connection to the new database> %s\n", p.dumpFile)
 	} else {
 		b.WriteString("  no dump was taken (-no-dump): the repository cannot be put back to before the migrate\n")
 	}
@@ -790,6 +795,18 @@ func copyFileMode(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return nil
+}
+
+// existingParent is dir itself when it exists, else its nearest existing parent.
+func existingParent(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if st, err := os.Stat(d); err == nil && st.IsDir() {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return d
+		}
+	}
 }
 
 func samePath(a, b string) bool {

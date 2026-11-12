@@ -17,8 +17,15 @@ func u32(v uint32) *uint32 { return &v }
 
 func TestMerge(t *testing.T) {
 	s := Merge(Choices{})
-	if !s.UpdateCheck || s.UpdateFeed != DefaultFeed || s.AttachURL != DefaultAttachURL || s.Width != 1280 || s.Height != 800 || s.NoLogin {
-		t.Errorf("defaults: %+v", s)
+	if s.UpdateCheck || s.UpdateFeed != DefaultFeed || s.AttachURL != DefaultAttachURL || s.Width != 1280 || s.Height != 800 || s.NoLogin {
+		t.Errorf("defaults (the update check off by default, F02): %+v", s)
+	}
+	// on by the administrator's policy, or by the user when no policy says otherwise
+	if s := Merge(Choices{PolicyUpdateCheck: u32(1)}); !s.UpdateCheck {
+		t.Errorf("policy on: %+v", s)
+	}
+	if s := Merge(Choices{UserUpdateCheck: u32(1)}); !s.UpdateCheck {
+		t.Errorf("user on: %+v", s)
 	}
 	// the policy turns the check off whatever the user says; the user can turn it off alone
 	if s := Merge(Choices{PolicyUpdateCheck: u32(0), UserUpdateCheck: u32(1)}); s.UpdateCheck || !strings.Contains(s.UpdateWhy, "administrator") {

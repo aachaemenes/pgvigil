@@ -8,11 +8,73 @@ pgvigil runs where nothing may reach out. This page is the procedure for a site 
 - The repository database (one PostgreSQL database that pgvigil owns).
 - On RDS and Aurora instances whose configuration has an `aws:` block: the AWS APIs for that region only (CloudWatch Logs, CloudWatch metrics, Performance Insights, RDS Describe calls, DMS Describe calls), through the AWS SDK's endpoint for the region, so `us-gov-west-1` and `us-gov-east-1` resolve to the GovCloud (US) endpoints with nothing to configure beyond the region; FIPS endpoints follow the SDK's `AWS_USE_FIPS_ENDPOINT=true` (the SDK's setting; not proven here). No `aws:` block, no AWS call.
 - The browser that opens the web UI, on loopback by default (an HTTPS listen elsewhere needs a certificate and the login).
-- The Windows app (`pgvigil-app.exe`), where it is installed: its own `pgvigil serve` on loopback, and once a day the release feed (`https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, one GET with `User-Agent: pgvigil-app/<version>`, nothing else sent; it notifies, never downloads). Off for every user with `HKLM\Software\Policies\pgvigil\App` `UpdateCheck` = 0 (the machine install's `-no-update-check` writes it), or pointed at an internal mirror with `UpdateFeed`; [docs/app.md](app.md). The WebView2 runtime the window runs in is Microsoft's, with its own policies for its own traffic.
+- The Windows app (`pgvigil-app.exe`), where it is installed: its own `pgvigil serve` on loopback, and, only where it is turned on, once a day the release feed (`https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, one GET with `User-Agent: pgvigil-app/<version>`, nothing else sent; it notifies, never downloads). The check is off by default: `HKLM\Software\Policies\pgvigil\App` `UpdateCheck` = 1 turns it on for every user (the machine install's `-update-check`, `install.ps1 -UpdateCheck`, writes it), a user may turn it on for themselves where no policy says 0, and `UpdateCheck` = 0 keeps it off for every user (`-no-update-check`); `UpdateFeed` points it at an internal mirror; [docs/app.md](app.md). The WebView2 runtime the window runs in is Microsoft's, with its own policies for its own traffic.
 - The alert channels the configuration names, when alerts are on ([alerts.md](alerts.md): a webhook, SMTP, PagerDuty, Opsgenie).
 - The DBA Dash repositories under `dbadash:` (SQL Server databases), through their read-only login ([dbadash.md](dbadash.md)).
 
-Nothing else: no telemetry, no update check in the collector or the UI server, no download at run time, no DNS name of the project's. The installers (`install.sh`, `install.ps1`) download a release when they run; on an air-gapped network they read a mirror folder instead (below) or are not used at all.
+Nothing else: no telemetry, no update check in the collector or the UI server, no download at run time, no DNS name of the project's. The installers (`install.sh`, `install.ps1`) download a release when they run online; on an air-gapped network they install from the offline bundle (below), which needs no network at all.
+
+## The offline bundle: install and upgrade without a network
+
+Every release carries one archive per platform with everything an install or an upgrade needs:
+`pgvigil-offline-<tag>-linux-amd64.tar.gz` and `pgvigil-offline-<tag>-windows-amd64.zip`. Each extracts to one folder
+of the same name holding the plain and the FIPS 140-3 binaries (Windows: and the app's zip), their SBOMs, the installer
+(`install.sh`, `install.ps1`), this page, [upgrade.md](upgrade.md) and [uninstall.md](uninstall.md), `SHA256SUMS` with
+its signature, certificate and Sigstore bundle, and three trust-root files written at the release. Every file in the
+folder but `SHA256SUMS` and its three signature files has its line in that one signed `SHA256SUMS`. The two archives
+are listed in `SHA256SUMS.offline`, which carries a keyless signature of its own (`.sig`, `.pem`, `.bundle`).
+
+On the connected machine, verify the archive, then what is inside:
+
+```sh
+TAG=v0.4.0; OS=linux   # or windows (the .zip)
+BASE=https://github.com/aachaemenes/pgvigil/releases/download/$TAG
+ID="https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/$TAG"
+for f in pgvigil-offline-$TAG-$OS-amd64.tar.gz SHA256SUMS.offline SHA256SUMS.offline.sig SHA256SUMS.offline.pem SHA256SUMS.offline.bundle; do curl -fsSLO "$BASE/$f"; done
+sha256sum -c SHA256SUMS.offline --ignore-missing
+cosign verify-blob --bundle SHA256SUMS.offline.bundle --certificate-identity "$ID" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS.offline
+tar -xzf pgvigil-offline-$TAG-$OS-amd64.tar.gz && cd pgvigil-offline-$TAG-$OS-amd64
+sha256sum -c SHA256SUMS --ignore-missing
+cosign verify-blob --bundle SHA256SUMS.bundle --certificate-identity "$ID" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+```
+
+The three trust-root files inside the folder (`fulcio.pem`, `rekor.pub`, `ctfe.pub`) are a convenience, never a proof:
+whoever could swap the archive could swap them too. Write the site's own trust root with `cosign initialize` and the
+lines of section 2 below, and compare: `sha256sum fulcio.pem rekor.pub ctfe.pub` in both folders must agree, or use the
+site's own files from then on. Carry the folder across as the site's transfer procedure requires.
+
+Inside the network, as root (Linux) or from an elevated PowerShell (Windows), with the folder on local disk, a mounted
+USB drive or a share:
+
+```sh
+sudo sh /mnt/usb/pgvigil-offline-v0.4.0-linux-amd64/install.sh --from /mnt/usb/pgvigil-offline-v0.4.0-linux-amd64
+```
+
+```powershell
+& E:\pgvigil-offline-v0.4.0-windows-amd64\install.ps1 -From E:\pgvigil-offline-v0.4.0-windows-amd64 -App
+```
+
+The installer copies the binary and `SHA256SUMS` into a new folder of root's (Administrators') alone, checks its own
+bytes and the binary's against `SHA256SUMS`, and runs only the copy: a share or a drive can change between a check and
+a use. That checksum proves the files are the ones `SHA256SUMS` names (integrity), not where they came from (origin):
+the signature does that. Where cosign is on the host, `--trust-root <dir>` (`-TrustRoot`) names a folder with the
+site's OWN three trust-root files and the installer verifies the signature of `SHA256SUMS` offline with them; the
+files inside the bundle are never used for it. Without it the installer says that the signature was not verified there.
+
+- **A fresh install** runs `pgvigil install` (Linux: the account, the hardened unit, enabled; Windows: the service under
+  `NT SERVICE\pgvigil`, the folder on the machine PATH). The plain build unless `--fips` (`-Fips`).
+- **An upgrade** is what the installer does on a host where the collector is installed (the unit
+  `/etc/systemd/system/pgvigil.service`, the service `pgvigil`): `pgvigil install -upgrade`, in the order of
+  [upgrade.md](upgrade.md), with the repository owner's connection string from `--owner-dsn-file <path>` (`sudo` drops
+  environment variables). The installed build is kept, FIPS or plain, as its `pgvigil version` says; `--fips` or
+  `--plain` changes it, and the installer says so.
+- **The Windows app** (`-App`) is placed machine-wide beside the collector just installed, by `pgvigil-app install
+  -app-only`: the app zip's own `pgvigil.exe`, the plain build, is never put over a FIPS collector. Its update check
+  stays off unless `-UpdateCheck`. The app's window needs Microsoft's WebView2 runtime: on a host without Internet
+  access install the WebView2 Runtime's offline (standalone) installer first, fetched on the connected side from
+  Microsoft's WebView2 download page ("Evergreen Standalone Installer").
 
 ## 1. On a connected machine: fetch the release and verify it
 
@@ -70,7 +132,7 @@ The bundle carries the signature, the certificate and the transparency-log entry
 
 ## 3. Install from the copy
 
-Either by hand: put the binary where the service account can run it, create the repository database and the roles (`pgvigil migrate`, `pgvigil roles`, the README's quick start), write the configuration, and install the service with `pgvigil install` (Linux: a hardened systemd unit, `deploy/pgvigil.service`, is written; Windows: a service under the virtual account `NT SERVICE\pgvigil`). Or through the installers from a mirror folder: `PGVIGIL_BASE_URL` points `install.sh` and `install.ps1` at any HTTP folder that holds the release's files, and `PGVIGIL_VERSION` pins the tag; the installers verify the checksum from that folder before they run anything. The installers fetch the plain build only; a site that wants the FIPS build (`*_fips`, the same folder, its own line in `SHA256SUMS`) installs it by hand as above.
+The offline bundle above is the way. Otherwise, either by hand: put the binary where the service account can run it, create the repository database and the roles (`pgvigil migrate`, `pgvigil roles`, the README's quick start), write the configuration, and install the service with `pgvigil install` (Linux: a hardened systemd unit, `deploy/pgvigil.service`, is written; Windows: a service under the virtual account `NT SERVICE\pgvigil`). Or through the installers from an HTTP mirror folder: `PGVIGIL_BASE_URL` points `install.sh` and `install.ps1` at any HTTP folder that holds the release's files, and `PGVIGIL_VERSION` pins the tag; the installers verify the checksum from that folder before they run anything. That checksum comes from the same folder as the binary, so it shows the copy is intact (integrity), not where it came from (origin): verify the signature when the folder is filled. The mirror path fetches the plain build only; the offline bundle carries both.
 
 ```sh
 # an HTTP mirror inside the network: the release folder served as it was downloaded

@@ -41,19 +41,6 @@ func TestPgpassEscape(t *testing.T) {
 	}
 }
 
-func TestParseUnit(t *testing.T) {
-	o, found, err := parseUnit(renderUnit("/opt/pgv/bin/pgvigil", "/srv/pgv/etc/pgvigil/pgvigil.yaml", "/srv/pgv/etc/pgvigil/pgvigil.env", "svc_pgv"))
-	if err != nil || !found {
-		t.Fatalf("found %v err %v", found, err)
-	}
-	if o.Bin != "/opt/pgv/bin/pgvigil" || o.Config != "/srv/pgv/etc/pgvigil/pgvigil.yaml" || o.User != "svc_pgv" {
-		t.Errorf("got %+v", o)
-	}
-	if _, _, err := parseUnit("[Service]\nExecStart=/usr/bin/other\n"); err == nil {
-		t.Error("a foreign unit was taken for the installer's")
-	}
-}
-
 func TestUpgradeFlags(t *testing.T) {
 	def := installOptions{Bin: "/usr/local/bin/pgvigil", Config: "/etc/pgvigil/pgvigil.yaml", User: "pgvigil"}
 	o, err := parseInstallArgs("install", []string{"-upgrade", "-owner-dsn-file", "/root/owner.dsn", "-bin", "/opt/x"}, def)

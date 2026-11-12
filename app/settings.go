@@ -61,12 +61,18 @@ type Choices struct {
 
 // Merge applies the precedence: the policy (the administrator's) over the user's over the defaults.
 func Merge(c Choices) Settings {
-	s := Settings{AttachURL: DefaultAttachURL, UpdateCheck: true, UpdateFeed: DefaultFeed, Width: 1280, Height: 800}
+	// the release-feed check is off unless asked for (nothing outbound by default: decisions review F02): the
+	// administrator's policy UpdateCheck = 1 or the user's own choice turns it on; the policy's 0 turns it off for every
+	// user, and a user may still turn it off for themselves under a policy of 1
+	s := Settings{AttachURL: DefaultAttachURL, UpdateFeed: DefaultFeed, Width: 1280, Height: 800,
+		UpdateWhy: "off by default (nothing outbound): the administrator's policy UpdateCheck = 1 or the user's own choice turns it on"}
 	switch {
 	case c.PolicyUpdateCheck != nil && *c.PolicyUpdateCheck == 0:
 		s.UpdateCheck, s.UpdateWhy = false, "turned off by the administrator (policy UpdateCheck = 0)"
 	case c.UserUpdateCheck != nil && *c.UserUpdateCheck == 0:
 		s.UpdateCheck, s.UpdateWhy = false, "turned off by the user"
+	case c.PolicyUpdateCheck != nil && *c.PolicyUpdateCheck != 0, c.UserUpdateCheck != nil && *c.UserUpdateCheck != 0:
+		s.UpdateCheck, s.UpdateWhy = true, ""
 	}
 	if f := strings.TrimSpace(c.PolicyUpdateFeed); f != "" {
 		s.UpdateFeed = f

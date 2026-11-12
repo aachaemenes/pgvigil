@@ -21,16 +21,19 @@ import (
 
 // The two tiers of the install:
 //
-//	pgvigil-app install [-no-autostart] [-no-update-check]      as an administrator: machine-wide
-//	pgvigil-app install -user [-no-autostart] [-no-update-check] as the user: %LOCALAPPDATA%\pgvigil
+//	pgvigil-app install [-no-autostart] [-update-check | -no-update-check] [-app-only]  as an administrator: machine-wide
+//	pgvigil-app install -user [-no-autostart] [-no-update-check]                        as the user: %LOCALAPPDATA%\pgvigil
 //	pgvigil-app uninstall [-user] [-purge]
 //
 // Machine-wide: `pgvigil install` (beside the app) puts pgvigil.exe in %ProgramFiles%\pgvigil and the
 // collector in the service pgvigil under its virtual account NT SERVICE\pgvigil; the app goes beside
 // it; %ProgramData%\pgvigil\app\pgvigil.yaml (the UI login, readable by the machine's users) is
 // written when absent; the Run entry under HKLM starts the app at every user's login; the policy key
-// HKLM\Software\Policies\pgvigil\App holds UpdateCheck (1, or 0 with -no-update-check); the
-// Programs and Features entry is under HKLM. Nothing else is written.
+// HKLM\Software\Policies\pgvigil\App holds UpdateCheck only when a switch names it (1 with -update-check, 0 with
+// -no-update-check; neither: no policy, and the check stays off by default, settings.go); the Programs and Features
+// entry is under HKLM. -app-only places the app beside a collector already installed (install.ps1 -From, which
+// installs the collector of the build the site chose, FIPS or plain) and never runs the zip's own pgvigil.exe (the
+// plain build) over it. Nothing else is written.
 // Per user (no administrator): the app and pgvigil.exe in %LOCALAPPDATA%\pgvigil with a template
 // pgvigil.yaml beside them, the Run entry and the Programs and Features entry under HKCU, no
 // service. It needs the WebView2 Evergreen runtime on the machine already; without it the app has no
@@ -46,17 +49,33 @@ func (e *exitErr) ExitCode() int { return e.code }
 
 func elevated() bool { return windows.GetCurrentProcessToken().IsElevated() }
 
-func installFlags(name string, args []string) (user, noAuto, noUpdate, purge bool, err error) {
+// installChoice is what install's flags ask for beyond the tier.
+type installChoice struct {
+	noAuto   bool // no start-at-login entry
+	noUpdate bool // the update check off (machine: the policy 0 for every user)
+	update   bool // machine: the policy 1, the update check on for every user
+	appOnly  bool // machine: the app only, beside the collector already installed
+}
+
+func installFlags(name string, args []string) (user bool, ch installChoice, purge bool, err error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.BoolVar(&user, "user", false, "the per-user tier: %LOCALAPPDATA%\\pgvigil and HKCU only, no service")
 	if name == "install" {
-		fs.BoolVar(&noAuto, "no-autostart", false, "no start-at-login entry")
-		fs.BoolVar(&noUpdate, "no-update-check", false, "turn the release-feed check off (machine: the policy for every user)")
+		fs.BoolVar(&ch.noAuto, "no-autostart", false, "no start-at-login entry")
+		fs.BoolVar(&ch.noUpdate, "no-update-check", false, "turn the release-feed check off (machine: the policy for every user)")
+		fs.BoolVar(&ch.update, "update-check", false, "machine: turn the release-feed check on for every user (the policy UpdateCheck = 1); off by default")
+		fs.BoolVar(&ch.appOnly, "app-only", false, "machine: place the app beside the collector already installed; never run the zip's pgvigil.exe")
 	} else {
 		fs.BoolVar(&purge, "purge", false, "also remove the UI configuration, the app's settings and its data")
 	}
 	if err = fs.Parse(args); err == nil && fs.NArg() > 0 {
 		err = fmt.Errorf("%s takes flags only, got %q", name, fs.Arg(0))
+	}
+	if err == nil && ch.update && ch.noUpdate {
+		err = errors.New("-update-check and -no-update-check name opposite policies")
+	}
+	if err == nil && user && (ch.update || ch.appOnly) {
+		err = errors.New("-update-check and -app-only are machine-wide switches: the per-user tier writes no policy and has no collector")
 	}
 	if err != nil {
 		err = &exitErr{err, 2}
@@ -65,7 +84,7 @@ func installFlags(name string, args []string) (user, noAuto, noUpdate, purge boo
 }
 
 func runInstall(args []string) error {
-	user, noAuto, noUpdate, _, err := installFlags("install", args)
+	user, ch, _, err := installFlags("install", args)
 	if err != nil {
 		return err
 	}
@@ -74,26 +93,35 @@ func runInstall(args []string) error {
 		return err
 	}
 	srcServe := filepath.Join(filepath.Dir(self), "pgvigil.exe")
-	if !exists(srcServe) {
+	if !exists(srcServe) && !ch.appOnly {
 		return fmt.Errorf("pgvigil.exe must sit beside %s (the release zip holds both)", self)
 	}
 	if user {
-		return installUser(self, srcServe, noAuto, noUpdate)
+		return installUser(self, srcServe, ch.noAuto, ch.noUpdate)
 	}
 	if !elevated() {
 		return &exitErr{errors.New("the machine-wide install needs an elevated prompt (Run as administrator); a standard user installs for themselves with: pgvigil-app install -user"), 3}
 	}
-	return installMachine(self, srcServe, noAuto, noUpdate)
+	return installMachine(self, srcServe, ch)
 }
 
-func installMachine(self, srcServe string, noAuto, noUpdate bool) error {
+func installMachine(self, srcServe string, ch installChoice) error {
 	dst := filepath.Join(os.Getenv("ProgramFiles"), "pgvigil")
-	// the collector: pgvigil.exe to Program Files, the service under its virtual account
-	cmd := exec.Command(srcServe, "install")
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pgvigil install (the collector service): %w", err)
+	if ch.appOnly {
+		// the collector is the one already installed (its build, FIPS or plain, is the site's choice): the app only
+		if !exists(filepath.Join(dst, "pgvigil.exe")) {
+			return fmt.Errorf("-app-only: no collector in %s: install it first (install.ps1 -From <bundle>, or pgvigil.exe install)", dst)
+		}
+		fmt.Println("collector kept as installed:", filepath.Join(dst, "pgvigil.exe"))
+	} else {
+		// the collector: pgvigil.exe to Program Files, the service under its virtual account
+		cmd := exec.Command(srcServe, "install")
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("pgvigil install (the collector service): %w", err)
+		}
 	}
+	noAuto := ch.noAuto
 	app := filepath.Join(dst, "pgvigil-app.exe")
 	if err := placeFile(self, app); err != nil {
 		return err
@@ -118,20 +146,24 @@ func installMachine(self, srcServe string, noAuto, noUpdate bool) error {
 		return fmt.Errorf("start at login: %w", err)
 	}
 	fmt.Println("start at login for every user:", !noAuto)
-	pk, _, err := registry.CreateKey(registry.LOCAL_MACHINE, policyKey, registry.SET_VALUE)
-	if err != nil {
-		return fmt.Errorf("policy key: %w", err)
+	if ch.update || ch.noUpdate {
+		pk, _, err := registry.CreateKey(registry.LOCAL_MACHINE, policyKey, registry.SET_VALUE)
+		if err != nil {
+			return fmt.Errorf("policy key: %w", err)
+		}
+		on := uint32(0)
+		if ch.update {
+			on = 1
+		}
+		err = pk.SetDWordValue("UpdateCheck", on)
+		_ = pk.Close()
+		if err != nil {
+			return fmt.Errorf("policy UpdateCheck: %w", err)
+		}
+		fmt.Printf("update check (HKLM\\%s UpdateCheck): %d\n", policyKey, on)
+	} else {
+		fmt.Println("update check: off by default, no policy written (-update-check turns it on for every user)")
 	}
-	on := uint32(1)
-	if noUpdate {
-		on = 0
-	}
-	err = pk.SetDWordValue("UpdateCheck", on)
-	_ = pk.Close()
-	if err != nil {
-		return fmt.Errorf("policy UpdateCheck: %w", err)
-	}
-	fmt.Printf("update check (HKLM\\%s UpdateCheck): %d\n", policyKey, on)
 	if err := writeARP(registry.LOCAL_MACHINE, dst, app, `"`+app+`" uninstall`); err != nil {
 		return err
 	}
@@ -181,7 +213,7 @@ func installUser(self, srcServe string, noAuto, noUpdate bool) error {
 }
 
 func runUninstall(args []string) error {
-	user, _, _, purge, err := installFlags("uninstall", args)
+	user, _, purge, err := installFlags("uninstall", args)
 	if err != nil {
 		return err
 	}
