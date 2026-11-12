@@ -110,6 +110,16 @@ The reader takes the results from the session's event file, past a cursor of its
 (top waits, CPU-intensive requests) are not stored. A session without an event file target (a DBA changed it, or the platform writes it to a ring
 buffer only) is not read: the state is off and says so.
 
+The same read of `system_health`'s file also takes the four events sp_HealthParser reads beside the component results
+(task 177 D15): the memory broker's notifications, the memory node out-of-memory records, the scheduler monitor's
+samples and the significant waits (`wait_info` of 500 ms or more, sp_HealthParser's filter). The System health tab draws
+PerformanceMonitor's Corruption and Contention Events charts (bad pages, dump requests, access violations, write access
+violations, non-yielding tasks, latch warnings, a line per sick spinlock type; each the largest value per bucket), shows
+those four events as grids, and RESOURCE gains process memory and pressure-flag column groups. Its findings: other
+processes used 50 % of the CPU or more, memory utilization 50 or less, and the ring buffer output cut at the last read.
+On SQL Server on Linux the scheduler monitor writes the idle CPU as 0 in every sample, so pgvigil stores the idle and
+other processes' shares as not read there (as the CPU reader does) and raises no 'other processes' finding on Linux.
+
 ## Findings
 
 | Finding | Severity | When |

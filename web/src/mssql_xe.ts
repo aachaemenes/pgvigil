@@ -65,6 +65,7 @@ function captureNote(d: XE, capture: string, what: string): HTMLElement {
   if (Number(st.unknown_events ?? 0) > 0) bits.push(`${fmtNum(st.unknown_events)} event(s) of a kind the reader does not store`);
   const p = el('p', { class: 'meta' }, badge('running', 'ok'), ` ${bits.join(', ')} (${read}).`);
   if (st.lost_at != null) p.append(` Events were lost: ${fmtNum(st.lost_events)} at the read of ${fmtTime(st.lost_at)}.`);
+  if (st.truncated === true) p.append(' Its ring buffer output came back cut at the last read: the newest events are the ones missing; an event_file target keeps the whole history.');
   if (st.note) p.append(` ${text(st.note)}`);
   return p;
 }

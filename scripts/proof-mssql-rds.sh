@@ -767,7 +767,7 @@ SHSQL="SELECT UPPER(x.c) + ':' + UPPER(x.s) + '|' + CAST(COUNT(*) AS varchar(9))
 SHN="SELECT CAST(COUNT(*) AS varchar(12)) FROM sys.fn_xe_file_target_read_file(N'$XEPAT', NULL, NULL, NULL)"
 sq "$SHSQL" > "$WORK/sh-b.txt" || : > "$WORK/sh-b.txt"; NB=$(sq "$SHN") || NB=0
 if run_ok mssql_syshealth; then sq "$SHSQL" > "$WORK/sh-a.txt" || : > "$WORK/sh-a.txt"; NA=$(sq "$SHN") || NA=0
-  q "select component || ':' || state || '|' || count(*) from pgvigil.mssql_health_components where instance_id=$iid group by component, state" > "$WORK/sh-s.txt"
+  q "select component || ':' || state || '|' || count(*) from pgvigil.mssql_health_components where instance_id=$iid and state <> 'EVENT' group by component, state" > "$WORK/sh-s.txt"
   sed -i '/^[[:space:]]*$/d' "$WORK/sh-b.txt" "$WORK/sh-a.txt"
   RS=$(reader_of syshealth); SCN=$(cut -d'|' -f2 <<<"$RS")
   if [ ! -s "$WORK/sh-b.txt" ] && [ ! -s "$WORK/sh-a.txt" ] && [ ! -s "$WORK/sh-s.txt" ]; then

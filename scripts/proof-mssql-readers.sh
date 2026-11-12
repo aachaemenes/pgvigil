@@ -315,10 +315,10 @@ done
 # sa's count per component up to the newest stored result (a filter on timestamp_utc itself goes into the function
 # and picks whole files on SQL Server 2022; on an expression of it, rows)
 hcount() {
-  local upto; upto=$(q "select to_char(max(event_at) at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS') from pgvigil.mssql_health_components where instance_id = $IF")
+  local upto; upto=$(q "select to_char(max(event_at) at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.MS') from pgvigil.mssql_health_components where instance_id = $IF and state <> 'EVENT'")
   sq "SELECT x.c + ':' + CAST(COUNT(*) AS varchar(10)) FROM (SELECT CAST(event_data AS xml) AS e, timestamp_utc FROM sys.fn_xe_file_target_read_file(N'system_health*.xel', NULL, NULL, NULL) WHERE object_name = N'sp_server_diagnostics_component_result') f CROSS APPLY (SELECT f.e.value('(/event/data[@name=\"component\"]/text)[1]', 'varchar(30)') AS c) x WHERE DATEADD(millisecond, 0, f.timestamp_utc) <= CONVERT(datetime2, '$upto', 121) GROUP BY x.c ORDER BY x.c" | paste -sd, -
 }
-mine() { q "select string_agg(component || ':' || n, ',' order by component) from (select component, count(*) n from pgvigil.mssql_health_components where instance_id = $IF group by component) x"; }
+mine() { q "select string_agg(component || ':' || n, ',' order by component) from (select component, count(*) n from pgvigil.mssql_health_components where instance_id = $IF and state <> 'EVENT' group by component) x"; }
 H1=$(hcount)
 eq "H1: the results per component" "$(mine)" "$H1"
 [ "$(echo "$H1" | tr ',' '\n' | wc -l)" = 4 ] || fail "H1: not four components: $H1"
