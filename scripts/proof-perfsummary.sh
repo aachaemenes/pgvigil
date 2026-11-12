@@ -16,7 +16,8 @@
 #     the demo gives pg_wait_sampling) and 'activity' on the other 10. Every row: total_ms_s >= lock_ms_s where both
 #     are set; cpu_avg <= cpu_max; now_at set. tag=staging: 4 rows (aurora-reporting01, azure-portal02,
 #     cloudsql-analytics02, azure-sql03); tag=untagged: 0 rows; part=nope: HTTP 400.
-#  B. the thresholds: demo-onprem-erp01's cpu_max is over 90 (the demo's saturated host) and no other row's is over 75.
+#  B. the thresholds: demo-onprem-erp01's cpu_max is over 90 (the demo's saturated host) and no other row's, PostgreSQL
+#     or SQL Server (task 119 gave SQL Server its cpu_max), is over 75.
 #  C. /api/performance over 6 hours (step 180 s) ending 15 minutes back (A3's reason): demo-onprem-erp01 and
 #     demo-onprem-sql01 both have the parts meta grid cpu sessions waits db io (task 119 gave SQL Server its cpu, db
 #     and io); the grid has 121 steps, every snapshot_at of every part is a
@@ -30,7 +31,9 @@
 #     mssql_cpu_sample; cpu_avg and cpu_sql_avg equal to that mean and sql_pct's mean rounded half up to 0.1; tps
 #     within 0.01 (or 0.1 %) of mssql_sched_sample's transactions/s weighted by interval_secs (interval_secs > 0);
 #     read_ms and write_ms within the same of mssql_fileio_sample's stall over its operations, mb_s of its read and
-#     write bytes over mssql_fileio_read's seconds in MB.
+#     write bytes over mssql_fileio_read's seconds in MB. The demo exercises the 100 - idle_pct branch only (every
+#     demo record carries an idle figure) and has no NULL transactions_s in the window (its counters run from two days
+#     back): the sql_pct fallback and the NULL-rate filter are copied into the hand read, not run by this proof.
 #  C3. demo-onprem-sql01's cpu part from C: one row per 180 s step that mssql_cpu_sample has records in, the same
 #     steps as a hand read of the table, cpu_max equal, cpu_avg, sql_avg and other_avg equal rounded half up to 0.1.
 #  D. EXPLAIN (ANALYZE) of each fleet statement (1 h and 24 h): the execution time printed; every history table is
@@ -105,7 +108,7 @@ for r in pg + ms:
     if r['now_at'] is None: bad.append(('now_at', r['instance']))
     if r['total_ms_s'] is not None and r['lock_ms_s'] is not None and float(r['total_ms_s']) < float(r['lock_ms_s']): bad.append(('total<lock', r['instance']))
 # B
-over = {r['instance'] for r in pg if r['cpu_max'] is not None and float(r['cpu_max']) > 75}
+over = {r['instance'] for r in pg + ms if r['cpu_max'] is not None and float(r['cpu_max']) > 75}
 if over != {'demo-onprem-erp01'} or float(next(r for r in pg if r['instance'] == 'demo-onprem-erp01')['cpu_max']) <= 90: bad.append(('thresholds', over))
 print('A/B bad:', bad) if bad else print('A/B: 15 rows as expected; erp01 cpu_max over 90, no other over 75')
 sys.exit(1 if bad else 0)
@@ -216,7 +219,8 @@ echo "F: fx-reset commits_s 1.50, tps 1.50, read_ms 0.50, mb_s 1.67, no wait sou
 
 # ---- C
 id() { psql "$REPO" -XAtq -c "select instance_id from pgvigil.instances where name = '$1'"; }
-TO=$(date -u -d '-15 minutes' +%Y-%m-%dT%H:%M:%SZ); FROM=$(date -u -d '-375 minutes' +%Y-%m-%dT%H:%M:%SZ)
+NOW=$(date -u +%s)   # one clock read: two date calls a second apart make a window of 21,599 s (step 179)
+TO=$(date -u -d "@$((NOW - 900))" +%Y-%m-%dT%H:%M:%SZ); FROM=$(date -u -d "@$((NOW - 22500))" +%Y-%m-%dT%H:%M:%SZ)
 for pair in "demo-onprem-erp01:cpu,db,grid,io,meta,sessions,waits" "demo-onprem-sql01:cpu,db,grid,io,meta,sessions,waits"; do
   n=${pair%%:*}; want=${pair#*:}
   curl -fs "$U/performance?instance=$(id $n)&from=$FROM&to=$TO" > "$WORK/p.json" || fail "performance $n"
