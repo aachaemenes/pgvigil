@@ -103,7 +103,7 @@ MADE_REPO=; MADE_CT=; SRV_PID=
 cleanup() {
   rc=$?
   [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null || true
-  [ -n "$MADE_CT" ] && { docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2; }
+  [ -n "$MADE_CT" ] && { docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2; }
   [ -n "$MADE_REPO" ] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
   rm -rf "$WORK" || true
   exit $rc

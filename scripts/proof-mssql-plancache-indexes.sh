@@ -92,7 +92,7 @@ cleanup() {
   rc=$?
   [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null || true
   if [ -n "$MADE_CT" ]; then
-    docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
+    docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
   elif [ -n "$CT" ]; then
     if [ -n "$MADE_DB" ]; then
       for d in "$DPC" "$DQS"; do sq "IF DB_ID('$d') IS NOT NULL BEGIN ALTER DATABASE [$d] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$d]; END" >/dev/null 2>&1 || echo "CLEANUP: database $d not dropped" >&2; done

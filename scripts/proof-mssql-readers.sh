@@ -127,8 +127,8 @@ raise() { timeout 60 docker exec -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -C
 cleanup() {
   rc=$?
   [ -n "$SRV_PID" ] && { kill "$SRV_PID" 2>/dev/null || true; }
-  [ -n "$MADE_CT" ] && { docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2; }
-  [ -n "$MADE_PG13" ] && { docker rm -f "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
+  [ -n "$MADE_CT" ] && { docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2; }
+  [ -n "$MADE_PG13" ] && { docker rm -f -v "$PG13" >/dev/null 2>&1 || echo "CLEANUP: container $PG13 not removed" >&2; }
   [ -n "$MADE_REPO" ] && { psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; }
   rm -rf "$WORK" || true
   echo "cleanup: container $CT $( [ -n "$MADE_CT" ] && (docker ps -aq --filter "name=^$CT\$" | grep -q . && echo LEFT || echo removed) || echo 'not made'), repository $REPO_DB $( [ -n "$MADE_REPO" ] && echo dropped || echo 'not made')"
@@ -215,7 +215,7 @@ else
   eq "M: PostgreSQL major|schema version" "$V13" "13|$(q "select max(version) from pgvigil.schema_version")"
   F13=$(p13 "select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'pgvigil' and p.proname in ('import_mssql_readers', 'import_mssql_errorlog', 'import_mssql_defaulttrace', 'import_mssql_syshealth', 'mssql_errorlog_search_set', 'mssql_health_num', 'mssql_event_partition')" pgvigil_s149_pg13)
   eq "M: 0091's functions on PostgreSQL 13" "$F13" 7
-  docker rm -f "$PG13" >/dev/null 2>&1 && MADE_PG13=
+  docker rm -f -v "$PG13" >/dev/null 2>&1 && MADE_PG13=
   echo "M: OK"; M_NOTE="M"
 fi
 

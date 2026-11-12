@@ -48,7 +48,7 @@ DB="pgvigil_it_grafana_$SUF"; LOGIN="pgvigil_gf_$SUF"; CT="pgvigil-grafana-proof
 PASS=$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9'); GFPASS=$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
 WORK=$(mktemp -d); CREATED=""; ROLE=""; CTUP=""
 cleanup() {
-  [[ -n "$CTUP" ]] && docker rm -f "$CT" >/dev/null 2>&1 || true
+  [[ -n "$CTUP" ]] && docker rm -f -v "$CT" >/dev/null 2>&1 || true
   [[ -n "$CREATED" ]] && psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $DB with (force)" >/dev/null 2>&1 || true
   [[ -n "$ROLE" ]] && psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop role if exists $LOGIN" >/dev/null 2>&1 || true
   rm -rf "$WORK"

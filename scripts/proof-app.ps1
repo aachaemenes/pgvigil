@@ -444,7 +444,7 @@ Remove-Item 'C:\__TAG__' -Recurse -Force -ErrorAction SilentlyContinue
         Set-Content -LiteralPath (Join-Path $shareDir 'cleanup.ps1') -Value $cleanup -Encoding utf8 -ErrorAction Stop
         $null = & ssh -o ConnectTimeout=15 -o LogLevel=ERROR winsandbox "powershell -NoProfile -ExecutionPolicy Bypass -File \\host.lan\Data\$tag\cleanup.ps1" 2>&1
     } catch { Write-Host "cleanup in the guest: $_" }
-    & docker rm -f $repoName 2>&1 | Out-Null
+    & docker rm -f -v $repoName 2>&1 | Out-Null
     Remove-Item -LiteralPath $shareDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $work 'stdpw'), $script:askpass -Force -ErrorAction SilentlyContinue
     # the build (about 40 MB): gone; the transcripts stay in PROOF_OUT, or in the temp folder when it is not set

@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 NET="${PGVIGIL_WIN_NET:-mssqlsandbox_default}"; SHARE="${PGVIGIL_WIN_SHARE:-$HOME/winsandbox/shared}"
 TAG="pgvwin$RANDOM"; REPO="$TAG-repo"; ASSETS="$TAG-assets"; V="v0.0.0-proof"; PW="pw$RANDOM$RANDOM"
 WORK=$(mktemp -d)
-cleanup() { docker rm -f "$REPO" "$ASSETS" >/dev/null 2>&1 || true; rm -rf "$WORK" "$SHARE/proof-install.ps1"; }
+cleanup() { docker rm -f -v "$REPO" "$ASSETS" >/dev/null 2>&1 || true; rm -rf "$WORK" "$SHARE/proof-install.ps1"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 rq() { docker exec "$REPO" psql -U postgres -XAt -c "$1"; }
