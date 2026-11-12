@@ -255,7 +255,9 @@ python3 - "$TMPD/ms.json" "$NDL" <<'PY' || fail "C: the SQL Server parts"
 import json, sys
 d = json.load(open(sys.argv[1])); ndl = int(sys.argv[2])
 rows = lambda p: [dict(zip(d[p]["columns"], r)) for r in d[p]["rows"]]
-assert sorted(d) == ["deadlock_trend", "meta", "trend"], sorted(d)
+assert sorted(d) == ["deadlock_trend", "meta", "pairs", "trend"], sorted(d)
+# pairs since task 177 D04 (the blocked / blocking pairs of the minute snapshots, pgvigil.mssql_block_pairs): a grid
+assert isinstance(d["pairs"].get("columns"), list) and isinstance(d["pairs"].get("rows"), list), sorted(d["pairs"])
 t = rows("trend"); dt = rows("deadlock_trend"); m = rows("meta")[0]
 assert m["engine"] == "sqlserver" and m["cut"] is False, m
 assert sum(r["snapshots"] for r in t) == 2 and sum(r["with_blocking"] for r in t) == 2, t
