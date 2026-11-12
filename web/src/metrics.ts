@@ -153,7 +153,78 @@ export async function metricsView(ctx: Ctx): Promise<HTMLElement> {
     box.append(grid(famRows, cols, 'No counter in this family.'));
     sec.append(head, tools, said, box, chartsBox);
   }
+  if (d.engine === 'sqlserver') sec.append(await mssqlCounters(ctx));
   return sec;
+}
+
+// PerformanceMonitor's perfmon panel's default counters (server-tabs.js PERFMON_DEFAULT_COUNTERS) and its chart cap
+// (MAX_COUNTERS_CHARTED)
+const pmDefaultCounters = ['Batch Requests/sec', 'SQL Compilations/sec', 'SQL Re-Compilations/sec', 'Query optimizations/sec', 'Network IO waits'];
+const maxCharted = 10;
+
+// mssqlCounters (task 177 D14): a SQL Server instance's performance counters in PerformanceMonitor's perfmon panel's
+// shape: the newest read as a grid (sp_PressureDetector's and PerformanceMonitor's counter list; instance counters
+// every minute, per-database ones every 5 minutes) and a chart of up to ten series picked in it, one series per
+// counter and instance (PerformanceMonitor picks by counter name). A cumulative counter is its rate per second over the
+// interval and its total since the counter started; a gauge is its value. Data from /api/mssql/counters.
+async function mssqlCounters(ctx: Ctx): Promise<HTMLElement> {
+  const box = el('div', { class: 'mssql-counters' }, el('h3', {}, 'Performance counters (sys.dm_os_performance_counters)'));
+  const w = window_(ctx);
+  let rows: Row[];
+  try { rows = rowsOf((await get<Record<'now', Table | null>>('mssql/counters', { instance: ctx.instance, ...w, part: 'now' })).now); } catch (e) { box.append(errorBox(e)); return box; }
+  if (!rows.length) {
+    box.append(el('p', { class: 'empty' }, 'No performance counter read in this range: mssql_cpu reads the instance counters every minute, mssql_activity the per-database ones every 5 minutes.'));
+    return box;
+  }
+  const key = (r: Row) => String(r.series_id);
+  const name = (r: Row) => `${String(r.counter)}${r.inst && r.inst !== '_Total' ? ` [${String(r.inst)}]` : ''}`;
+  const picked = new Set<string>();
+  for (const c of pmDefaultCounters) {
+    const hit = rows.find(r => r.scope === 'instance' && r.counter === c && (r.inst === '_Total' || !rows.some(x => x.counter === c && x.inst === '_Total')));
+    if (hit && picked.size < maxCharted) picked.add(key(hit));
+  }
+  const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  const chartBox = el('div', { class: 'charts' });
+  const draw = async () => {
+    const ids = [...picked];
+    said.textContent = `${ids.length} of at most ${maxCharted} series charted.`;
+    if (!ids.length) { chartBox.replaceChildren(el('p', { class: 'meta' }, 'Check at least one counter to chart it.')); return; }
+    try {
+      const s = rowsOf((await get<Record<'series', Table | null>>('mssql/counters', { instance: ctx.instance, ...w, part: 'series', series: ids.join(',') })).series);
+      const at = new Map<string, Row>();
+      for (const p of s) {
+        const k = String(p.snapshot_at);
+        const row = at.get(k) ?? { snapshot_at: p.snapshot_at };
+        row['s' + String(p.series_id)] = p.value;
+        at.set(k, row);
+      }
+      const byId = new Map(rows.map(r => [key(r), r]));
+      chartBox.replaceChildren(lineChart('Performance counters (per second for a cumulative counter, the value for a gauge)', [...at.values()],
+        ids.map(id => ({ key: 's' + id, label: byId.has(id) ? name(byId.get(id)!) : id })), v => fmtNum(v)));
+    } catch (e) { chartBox.replaceChildren(errorBox(e)); }
+  };
+  const boxes: HTMLInputElement[] = [];
+  const cap = () => { for (const b of boxes) b.disabled = !b.checked && picked.size >= maxCharted; };
+  const cols: Col[] = [
+    { key: '_pick', label: 'chart', fmt: (_v, r) => {
+      const b = el('input', { type: 'checkbox', 'aria-label': `Chart ${name(r)} (${String(r.object)})` }) as HTMLInputElement;
+      b.checked = picked.has(key(r));
+      b.addEventListener('change', () => { if (b.checked) picked.add(key(r)); else picked.delete(key(r)); cap(); void draw(); });
+      boxes.push(b);
+      return b;
+    } },
+    { key: 'object' }, { key: 'counter' }, { key: 'inst', label: 'instance' },
+    { key: 'rate', label: 'per second', num: true, fmt: (v, r) => r.cumulative ? (v == null ? 'no rate yet' : fmtNum(v)) : '' },
+    { key: 'value', label: 'total since the counter started', num: true, fmt: (v, r) => r.cumulative ? fmtNum(v) : '' },
+    { key: '_level', label: 'value', num: true, fmt: (_v, r) => r.cumulative ? '' : fmtNum(r.value) },
+    { key: 'scope', label: 'read', fmt: v => v === 'database' ? 'every 5 minutes' : 'every minute' },
+    { key: 'snapshot_at', label: 'newest read', fmt: fmtTime },
+  ];
+  box.append(el('p', { class: 'meta' }, `${rows.length} counter row(s) at the newest read (sp_PressureDetector's and PerformanceMonitor's list). A cumulative counter that never counted since the server started has no row; a gauge has its row at every read, 0 included.`),
+    grid(rows, cols), said, chartBox);
+  cap();
+  await draw();
+  return box;
 }
 
 // thresholdCell: the row's write links - a new threshold where none is in force; Edit for the rule in force, and

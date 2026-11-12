@@ -278,7 +278,7 @@ var serverOptionRules = map[string]func(v int64, m machineFacts) optionVerdict{
 	},
 	"remote admin connections": func(v int64, _ machineFacts) optionVerdict {
 		if v == 0 {
-			return broken(sevInfo, "1", "sp_Blitz 100", "remote admin connections is 0: the dedicated admin connection answers only on the server itself, so a server that no longer takes logins cannot be reached from another machine")
+			return broken(sevInfo, "1", "sp_Blitz 100, sp_PressureDetector", "remote admin connections is 0: the dedicated admin connection answers only on the server itself, so a server that no longer takes logins cannot be reached from another machine (sp_PressureDetector's line: EXECUTE sp_configure 'remote admin connections', 1; RECONFIGURE;)")
 		}
 		return met("")
 	},

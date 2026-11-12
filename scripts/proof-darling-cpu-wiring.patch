@@ -1,0 +1,66 @@
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 0068374..f57c44e 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -277,6 +277,8 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
+ 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
+ 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
++	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
++	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
+ 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
+ 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
+ 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)
+diff --git i/web/src/main.ts w/web/src/main.ts
+index 2d2de5e..71513f7 100644
+--- i/web/src/main.ts
++++ w/web/src/main.ts
+@@ -57,7 +57,7 @@ import { jobsPgView } from './jobs_pg';
+ import { pgDeadlocksView } from './pg_deadlocks';
+ import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
+ import { mssqlRowVersionsView } from './mssql_rowversions';
+-import { mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
++import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
+ import { mssqlQueryStoreView } from './mssql_querystore';
+ import { mssqlConfigView } from './mssql_config';
+ import { mssqlPropertiesView } from './mssql_properties';
+@@ -101,7 +101,7 @@ const mssqlPages: Record<string, Render> = {
+   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
+   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
+-  mssqlcpu: mssqlCpuView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
++  mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+   mssqlqs: mssqlQueryStoreView,
+   counters: metricsView,
+   mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
+@@ -113,7 +113,7 @@ const mssqlPages: Record<string, Render> = {
+ // such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
+ const mssqlTabRuns: Record<string, string[]> = {
+   mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
+-  mssqlcpu: ['mssql_cpu'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
++  mssqlcpu: ['mssql_cpu'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
+   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
+   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
+ };
+diff --git i/web/src/router.ts w/web/src/router.ts
+index 9e6bd4d..87340b5 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -89,7 +89,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
+   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+-  mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
++  mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
+   // the instance's Reports folder (reports.ts)
+@@ -102,7 +102,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
+   { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
+   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
+   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
+-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
++  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
+   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
