@@ -430,5 +430,6 @@ func (s *Server) MSSQLTempdb(w http.ResponseWriter, r *http.Request) {
 		{"checks", sqlMSSQLTempdbChecks, []any{id}},
 		// task 177 D14: the sessions holding tempdb at the newest activity read of the last 15 minutes (one instance)
 		{"holders", `SELECT * FROM pgvigil.mssql_session_tempdb_newest($1, now() - interval '15 minutes', now())`, []any{id}},
+		{"holders_read", `SELECT * FROM pgvigil.mssql_activity_read_newest($1, now() - interval '15 minutes', now())`, []any{id}},
 	})
 }

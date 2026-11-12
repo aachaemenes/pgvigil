@@ -13,7 +13,7 @@ import (
 // read about the server's sessions, every 5 minutes (PerformanceMonitor's session_stats cadence):
 //
 //   - Sessions: one read of sys.dm_exec_sessions grouped by GROUPING SETS: the totals of PerformanceMonitor's
-//     SessionSummaryStatsCollector over every session (running, sleeping, background = not a user process, dormant,
+//     SessionSummaryStatsCollector over the sessions over 50, as its read has them (running, sleeping, background = not a user process, dormant,
 //     idle over 30 minutes = sleeping user sessions whose last request ended 30 or more minutes ago, the databases
 //     with a connection), and per application, per host and per database PerformanceMonitor's SessionStatsCollector
 //     figures over the user sessions over 50 with a program name (connections, running, sleeping, dormant, CPU,
@@ -21,11 +21,10 @@ import (
 //     reading connection's own (PROGRAM_NAME(), whatever the connection string set) and any 'pgvigil%', as
 //     PerformanceMonitor leaves out 'PerformanceMonitor%'. sys.dm_exec_requests is not joined: the requests a page
 //     needs (waiting for memory) come from mssql_requests, read each minute (requests.go).
-//   - Sessions holding tempdb: sys.dm_db_session_space_usage, sessions over 50 whose user and internal allocations
-//     are over 0 (sp_PressureDetector's tempdb read, L2700-2745), the 20 largest by allocations, with the session's
-//     login, program, host, status, open transactions and last request's end. A running request's own tasks are
-//     sys.dm_db_task_space_usage, which requests.go reads each minute: the page adds them per session, as
-//     sp_PressureDetector does, from mssql_requests.
+//   - Sessions holding tempdb: sp_PressureDetector's tempdb read (L2700-2745): sys.dm_db_task_space_usage (running
+//     tasks) and sys.dm_db_session_space_usage (the session's finished tasks) summed per session over 50, kept when
+//     the allocations are over 0, the 20 largest by allocations, with the running tasks' part apart and the session's
+//     login, program, host, status, open transactions and last request's end.
 //   - The per-database performance counters (the Databases and Database Replica objects of perfmonCounters, every
 //     database but the system ones) as 'perfmon' rows: per-database counters every 5 minutes, the instance's every
 //     minute (cpu.go).
@@ -52,7 +51,7 @@ func (activityCollector) Applies(in Info) (bool, string) {
 	return true, ""
 }
 
-// activitySessionsSQL: the totals (grp 'total', every session) and the user sessions per program, host and database.
+// activitySessionsSQL: the totals (grp 'total', the sessions over 50) and the user sessions per program, host and database.
 // A session that is not a user session over 50 with a program name has no group key and falls in the NULL group of
 // each set, which activityRows drops.
 const activitySessionsSQL = `SELECT 'sessions' AS kind,
@@ -74,27 +73,37 @@ FROM (SELECT s.status, CAST(s.is_user_process AS int) AS is_user_process, s.last
              CASE WHEN u.mine = 1 THEN s.host_name END AS gh,
              CASE WHEN u.mine = 1 THEN DB_NAME(s.database_id) END AS gd
         FROM sys.dm_exec_sessions s
-       CROSS APPLY (SELECT CASE WHEN s.session_id > 50 AND s.is_user_process = 1 AND ISNULL(s.program_name, N'') <> N''
+       CROSS APPLY (SELECT CASE WHEN s.is_user_process = 1 AND ISNULL(s.program_name, N'') <> N''
                                  AND s.program_name <> ISNULL(PROGRAM_NAME(), N'') AND s.program_name NOT LIKE N'pgvigil%'
-                                THEN 1 ELSE 0 END AS mine) u) x
+                                THEN 1 ELSE 0 END AS mine) u
+       WHERE s.session_id > 50) x
 GROUP BY GROUPING SETS ((x.gp), (x.gh), (x.gd), ())`
 
 // activityTempdbSQL: the sessions holding tempdb (sp_PressureDetector's allocations and current pages, in KB), the 20
 // largest by allocations; the last request's end in UTC.
 const activityTempdbSQL = `SELECT TOP (20) 'tempdb' AS kind, u.session_id,
-  CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count) * 8 AS bigint) AS alloc_kb,
-  CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count
-        - u.user_objects_dealloc_page_count - u.internal_objects_dealloc_page_count) * 8 AS bigint) AS current_kb,
-  CAST((u.user_objects_alloc_page_count - u.user_objects_dealloc_page_count) * 8 AS bigint) AS user_kb,
-  CAST((u.internal_objects_alloc_page_count - u.internal_objects_dealloc_page_count) * 8 AS bigint) AS internal_kb,
-  CAST(s.login_name AS nvarchar(128)) AS login_name, CAST(s.program_name AS nvarchar(128)) AS program_name,
-  CAST(s.host_name AS nvarchar(128)) AS host_name, CAST(s.status AS nvarchar(30)) AS status,
-  s.open_transaction_count AS open_tran,
-  CONVERT(varchar(33), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), s.last_request_end_time), 126) + 'Z' AS last_request_end
-FROM sys.dm_db_session_space_usage u
-JOIN sys.dm_exec_sessions s ON s.session_id = u.session_id
-WHERE u.session_id > 50 AND u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count > 0
-ORDER BY u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count DESC`
+  CAST(SUM(u.ua + u.ia) * 8 AS bigint) AS alloc_kb,
+  CAST(SUM(u.ua + u.ia - u.ud - u.id) * 8 AS bigint) AS current_kb,
+  CAST(SUM(u.ua - u.ud) * 8 AS bigint) AS user_kb,
+  CAST(SUM(u.ia - u.id) * 8 AS bigint) AS internal_kb,
+  CAST(SUM(CASE WHEN u.task = 1 THEN u.ua + u.ia ELSE 0 END) * 8 AS bigint) AS task_alloc_kb,
+  CAST(SUM(CASE WHEN u.task = 1 THEN u.ua + u.ia - u.ud - u.id ELSE 0 END) * 8 AS bigint) AS task_current_kb,
+  CAST(MAX(s.login_name) AS nvarchar(128)) AS login_name, CAST(MAX(s.program_name) AS nvarchar(128)) AS program_name,
+  CAST(MAX(s.host_name) AS nvarchar(128)) AS host_name, CAST(MAX(s.status) AS nvarchar(30)) AS status,
+  MAX(s.open_transaction_count) AS open_tran,
+  CONVERT(varchar(33), DATEADD(minute, -DATEPART(TZOFFSET, SYSDATETIMEOFFSET()), MAX(s.last_request_end_time)), 126) + 'Z' AS last_request_end
+FROM (SELECT t.session_id, 1 AS task, CAST(t.user_objects_alloc_page_count AS bigint) AS ua, CAST(t.internal_objects_alloc_page_count AS bigint) AS ia,
+             CAST(t.user_objects_dealloc_page_count AS bigint) AS ud, CAST(t.internal_objects_dealloc_page_count AS bigint) AS id
+        FROM sys.dm_db_task_space_usage t
+      UNION ALL
+      SELECT s2.session_id, 0, s2.user_objects_alloc_page_count, s2.internal_objects_alloc_page_count,
+             s2.user_objects_dealloc_page_count, s2.internal_objects_dealloc_page_count
+        FROM sys.dm_db_session_space_usage s2) u
+LEFT JOIN sys.dm_exec_sessions s ON s.session_id = u.session_id
+WHERE u.session_id > 50
+GROUP BY u.session_id
+HAVING SUM(u.ua + u.ia) > 0
+ORDER BY SUM(u.ua + u.ia) DESC`
 
 // activityDBCounterSQL: the per-database objects of perfmonCounters (cpuCounterRows keeps them with perDB).
 var activityDBCounterSQL = `SELECT CAST(RTRIM(object_name) AS nvarchar(128)) AS object, CAST(RTRIM(counter_name) AS nvarchar(128)) AS counter,

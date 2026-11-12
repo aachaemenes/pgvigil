@@ -314,7 +314,7 @@ const tempdbCols = (fleet: boolean, ctx: Ctx): Col[] => [
 // mssqlTempdbView: one instance's tempdb layout, its files and its checks; at the root (no instance) every SQL
 // Server instance's row (keep: a tag folder's instances only).
 export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Promise<HTMLElement> {
-  const d = await get<Record<'layout' | 'files' | 'checks' | 'holders', Table | null>>('mssql/tempdb', ctx.instance ? { instance: ctx.instance } : {});
+  const d = await get<Record<'layout' | 'files' | 'checks' | 'holders' | 'holders_read', Table | null>>('mssql/tempdb', ctx.instance ? { instance: ctx.instance } : {});
   const k = keep ?? (() => true);
   const layout = rowsOf(d.layout).filter(k), files = rowsOf(d.files).filter(k), checks = rowsOf(d.checks).filter(k);
   const fleet = !ctx.instance;
@@ -339,26 +339,28 @@ export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
   sec.append(el('h3', {}, 'Checks'), checks.length
     ? grid(checks, [...(fleet ? [{ key: 'instance' }] : []), ...checkCols])
     : el('p', { class: 'meta' }, 'No tempdb check raised: the data files match the recommended minimum, one size and one growth.'));
-  if (!fleet) sec.append(tempdbHolders(rowsOf(d.holders)));
+  if (!fleet) sec.append(tempdbHolders(rowsOf(d.holders), rowsOf(d.holders_read)[0]));
   return sec;
 }
 
 // tempdbHolders (task 177 D14): the sessions holding tempdb at the newest mssql_activity read of the last 15 minutes,
-// sp_PressureDetector's allocations and current pages per session: sys.dm_db_session_space_usage (what the session's
-// finished tasks hold, so an idle session keeping temp tables shows) plus a running request's own tasks
-// (sys.dm_db_task_space_usage, from the requests read nearest within 30 s)
-function tempdbHolders(rows: Row[]): HTMLElement {
+// sp_PressureDetector's allocations and current pages per session: sys.dm_db_task_space_usage (running tasks) and
+// sys.dm_db_session_space_usage (what the session's finished tasks hold, so an idle session keeping temp tables shows)
+// summed; 'none' only when that read ran and was not refused
+function tempdbHolders(rows: Row[], read?: Row): HTMLElement {
   const box = el('div', {}, el('h3', {}, 'Sessions holding tempdb'));
-  box.append(el('p', { class: 'meta' }, rows.length
-    ? `The newest read, ${fmtTime(rows[0].snapshot_at)}: the 20 sessions with the most tempdb allocated (sp_PressureDetector's figures: allocated, and current = allocated less deallocated)`
-      + `${rows[0].requests_at != null ? `; a running request's own tasks from the requests read of ${fmtTime(rows[0].requests_at)}` : '; no requests read within 30 s'}.`
-    : 'No session holds tempdb at the newest read of the last 15 minutes (mssql_activity reads it every 5 minutes).'));
+  const refused = ((read?.skipped ?? []) as { read?: string; error?: string }[]).find(s => s.read === 'sys.dm_db_session_space_usage');
+  box.append(el('p', { class: 'meta', 'data-holders': read == null ? 'not read' : refused ? 'refused' : String(rows.length) }, rows.length
+    ? `The newest read, ${fmtTime(rows[0].snapshot_at)}: the 20 sessions with the most tempdb allocated (sp_PressureDetector's figures: allocated, and current = allocated less deallocated; a running request's tasks and the session's finished ones summed, the running part also apart).`
+    : read == null ? 'Not read in the last 15 minutes: mssql_activity reads the sessions holding tempdb every 5 minutes (it needs VIEW SERVER STATE).'
+    : refused ? `The server refused the read at ${fmtTime(read.snapshot_at)}: ${String(refused.error ?? '').slice(0, 300)}`
+    : `No session held tempdb at the read of ${fmtTime(read.snapshot_at)}.`));
   if (rows.length) box.append(grid(rows, [
     { key: 'session_id', label: 'session', num: true }, { key: 'login_name', label: 'login' }, { key: 'program_name', label: 'program' },
     { key: 'host_name', label: 'host' }, { key: 'status' }, { key: 'open_tran', label: 'open transactions', num: true },
-    { key: 'alloc_kb', label: 'allocated (session)', num: true, fmt: kb }, { key: 'current_kb', label: 'current (session)', num: true, fmt: kb },
+    { key: 'alloc_kb', label: 'allocated', num: true, fmt: kb }, { key: 'current_kb', label: 'current', num: true, fmt: kb },
     { key: 'user_kb', label: 'user objects', num: true, fmt: kb }, { key: 'internal_kb', label: 'internal objects', num: true, fmt: kb },
-    { key: 'task_alloc_kb', label: 'allocated (running request)', num: true, fmt: kb }, { key: 'task_current_kb', label: 'current (running request)', num: true, fmt: kb },
+    { key: 'task_alloc_kb', label: 'allocated (running tasks)', num: true, fmt: kb }, { key: 'task_current_kb', label: 'current (running tasks)', num: true, fmt: kb },
     { key: 'last_request_end', label: 'last request ended', fmt: fmtTime },
   ]));
   return box;
@@ -596,7 +598,7 @@ export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
   const s = rowsOf(d.summary)[0], series = rowsOf(d.series);
   const sec = el('section', {}, el('h2', {}, `Connections (${rangeLabel(ctx)})`));
   if (!s) { sec.append(empty('sessions', 'mssql_activity', 'every 5 minutes')); return sec; }
-  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count every session; the groups count the user sessions over 50 '
+  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count the sessions over 50; the groups count the user sessions over 50 '
     + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions and Sessions by Application). Waiting for memory: the requests '
     + 'whose wait type names memory at the requests read nearest the sessions read.'));
   sec.append(el('h3', {}, `Sessions (${fmtTime(s.snapshot_at)})`), el('div', { class: 'tiles' },

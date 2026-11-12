@@ -33,17 +33,20 @@
 #  D. sessions: 5 sessions as host pgvc_h1 in pgvcpu, 3 as host pgvc_h2 in pgvcpu2, an idle one holding a temp table:
 #     the activity read's groups (application, host, database) equal a hand read of the same filter and
 #     PerformanceMonitor's own SessionStatsCollector read per application (its exclusion aside); the totals equal a
-#     hand read of PerformanceMonitor's summary definitions; the idle session's tempdb (allocated, current, user,
-#     internal) equals sys.dm_db_session_space_usage read by hand.
+#     hand read of PerformanceMonitor's summary definitions (the sessions over 50: sessions, sleeping, background, the
+#     databases); the idle session's tempdb (allocated, current, user,
+#     internal; the running tasks' part 0) equals sys.dm_db_session_space_usage read by hand.
 #  E. CPU pressure: 3 CPU-bound sessions per scheduler for 100 s: pgvigil's reads during it show runnable tasks > 0
 #     and, at the requests read within 30 s, runnable requests over 10 % of 4 or more; sp_PressureDetector's logged
 #     thread row at the same moment has threads waiting for CPU > 0 and its high_runnable_percent line; after it, the
 #     scheduler monitor's record of 50 % or more SQL Server CPU is stored and is among sp_PressureDetector's logged CPU
-#     events (time within 1 s, the same percentage).
+#     events (the same percentage, the time within 1.5 s: sp_PressureDetector adds whole seconds, (timestamp - ms_ticks)
+#     / 1000 in integer arithmetic, L3933, where pgvigil adds milliseconds, so the two times differ by up to 1 s and the
+#     reads' own moments).
 #  F. a worker shortage: max worker threads 128 and 200 sessions sending 2-second batches (the churn of spike4): pgvigil's
 #     own collection runs log in and read work_queue > 0 and THREADPOOL > 0 with max workers 128, between DAC reads
 #     before and after that both show a queue; sp_PressureDetector run over the DAC shows requests waiting for threads;
-#     the newest read's levels are the function's (pgvigil HIGH). Then a standing shortage (all workers held behind one
+#     pgvigil's level HIGH (the levels themselves are G's table). Then a standing shortage (all workers held behind one
 #     lock): a collection fails to connect and is logged as 'connect: ...' (D30), which the CPU page marks 'possibly a
 #     worker shortage'.
 #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
@@ -148,7 +151,7 @@ instances:
 EOF
 "$TMPD/pgvigil" migrate -config "$TMPD/m.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "B: migrate"; }
 col() { for c in "$@"; do timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once "$c" >"$TMPD/col-$c.out" 2>&1 || { cat "$TMPD/col-$c.out" >&2; fail "collect $c"; }; done; }
-col mssql_instance mssql_cpu mssql_activity mssql_requests mssql_waiting
+col mssql_instance mssql_cpu mssql_activity mssql_requests mssql_waiting_tasks
 SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlbox'")
 sleep 8
 sqok "B: a write load" "UPDATE dbo.t SET v = v + 1; UPDATE dbo.t SET v = v + 1; CHECKPOINT;" pgvcpu
@@ -179,13 +182,18 @@ if int(g0[0][0]) == 0: bad.append("B no gauge stored at 0 (Processes blocked, Me
 cz = q(f"SELECT count(*) FROM pgvigil.mssql_counter_sample s JOIN pgvigil.mssql_counter_series k USING (series_id) WHERE s.instance_id = {sb} AND k.cntr_type IN (272696576, 272696320) AND s.value = 0")
 if int(cz[0][0]) != 0: bad.append(f"B {cz[0][0]} cumulative row(s) stored at a raw 0")
 sch = q(f"SELECT count(*), count(batch_s), min(offline_cpus), bool_and(nodes_online = nodes_total AND nodes_total > 0) FROM pgvigil.mssql_sched_sample WHERE instance_id = {sb}")[0]
-if sch[0] != '3' or sch[1] != '2' or sch[2] != '0' or sch[3] != 't': bad.append(f"B scheduler rows {sch} (want 3 reads, 2 with rates, offline 0, nodes online = all)")
+if sch[0] != '2' or sch[1] != '1' or sch[2] != '0' or sch[3] != 't': bad.append(f"B scheduler rows {sch} (want 2 reads, the second with rates, offline 0, nodes online = all)")
 lf = q(f"SELECT count(*) FROM pgvigil.mssql_log_flush_between({sb}, now() - interval '1 hour', now()) WHERE database_name = 'pgvcpu' AND avg_bytes_s > 0")
 if lf[0][0] != '1': bad.append("B no log flush rate for pgvcpu after the write load")
 info = q(f"SELECT info->>'cpu_count', info->>'scheduler_count' FROM pgvigil.mssql_cpu_info WHERE instance_id = {sb}")
 if not info or not info[0][0]: bad.append(f"B CPU details {info}")
+size = q(f"""SELECT c.scope, round(avg(n.rows)), (SELECT round(avg(pg_column_size(s.*))) FROM pgvigil.mssql_counter_sample s WHERE s.instance_id = {sb})
+  FROM pgvigil.mssql_counter_read c CROSS JOIN LATERAL (SELECT count(*) AS rows FROM pgvigil.mssql_counter_sample s WHERE s.instance_id = {sb} AND s.snapshot_at = c.snapshot_at
+   AND EXISTS (SELECT 1 FROM pgvigil.mssql_counter_series k WHERE k.series_id = s.series_id AND (k.object IN ('Databases', 'Database Replica')) = (c.scope = 'database'))) n
+ WHERE c.instance_id = {sb} GROUP BY c.scope ORDER BY c.scope""")
 for b in bad: print('DIFF', b)
 print(f"B: {n} cumulative series' rates = the raw difference over the interval; gauges at 0 stored {g0[0][0]}; reads {reads}; scheduler {sch}; CPU details {info}")
+print(f"B sizing (stored rows per read by scope, the average row's bytes): {size}")
 sys.exit(1 if bad else 0)
 PYEND
 echo "ok   B: the counters stored per series with their rates, gauges at 0 kept, the four throughput rates and the scheduler pieces, the log flush per database, the CPU details"
@@ -201,6 +209,8 @@ PYEND
 sq "SELECT RTRIM(object_name) + '|' + RTRIM(counter_name) + '|' + CASE WHEN LEN(RTRIM(instance_name)) > 0 THEN RTRIM(instance_name) ELSE N'_Total' END + '|' + CAST(cntr_value AS varchar(30))
   FROM sys.dm_os_performance_counters WHERE cntr_type IN (272696576, 272696320) AND cntr_value > 0" >"$TMPD/hand-before.out" || fail "C: the hand read before"
 col mssql_cpu mssql_activity
+sq "SELECT RTRIM(object_name) + '|' + RTRIM(counter_name) + '|' + CASE WHEN LEN(RTRIM(instance_name)) > 0 THEN RTRIM(instance_name) ELSE N'_Total' END + '|' + CAST(cntr_value AS varchar(30))
+  FROM sys.dm_os_performance_counters WHERE cntr_type IN (272696576, 272696320) AND cntr_value > 0" >"$TMPD/hand-after.out" || fail "C: the hand read after"
 sqok "C: sp_PressureDetector logged" "EXEC dbo.sp_PressureDetector @log_to_table = 1, @log_database_name = N'pgvc_out', @log_schema_name = N'dbo', @log_table_name_prefix = N'pdc';"
 sq "SELECT object_name + '|' + counter_name + '|' + instance_name + '|' + CAST(cntr_value AS varchar(30)) + '|' + CAST(cntr_type AS varchar(20)) FROM dbo.pdc_Perfmon" pgvc_out >"$TMPD/pd-perfmon.out" || fail "C: the logged perfmon"
 sq "SELECT ISNULL(CAST(socket_count AS varchar(10)), '') + '|' + CAST(cpu_count AS varchar(10)) + '|' + CAST(scheduler_count AS varchar(10)) FROM sys.dm_os_sys_info" >"$TMPD/hand-info.out" || fail "C: the CPU details by hand"
@@ -209,10 +219,13 @@ import sys, subprocess
 dsn, sb, d = sys.argv[1:]
 def q(s): return [l.split('|') for l in subprocess.run(['psql', dsn, '-XAtq', '-c', s], check=True, capture_output=True, text=True).stdout.splitlines() if l]
 strip = lambda o: o.split(':', 1)[1] if ':' in o else o
-before = {}
-for l in open(f"{d}/hand-before.out"):
-    p = l.strip().split('|')
-    if len(p) == 4: before[(strip(p[0]), p[1], p[2])] = int(p[3])
+def hand(f):
+    out = {}
+    for l in open(f):
+        p = l.strip().split('|')
+        if len(p) == 4: out[(strip(p[0]), p[1], p[2])] = int(p[3])
+    return out
+before, after = hand(f"{d}/hand-before.out"), hand(f"{d}/hand-after.out")
 pd = {}
 for l in open(f"{d}/pd-perfmon.out"):
     p = l.strip().split('|')
@@ -225,8 +238,13 @@ for o, c, i, v, t in q(f"""SELECT k.object, k.counter, k.inst, s.value, k.cntr_t
 bad = []
 if len(pd) < 30: bad.append(f"C sp_PressureDetector logged only {len(pd)} perfmon rows")
 cum = 0
+late = []
 for k, (v, t) in pd.items():
-    if k not in ours: bad.append(f"C {k} logged by sp_PressureDetector ({v}) is no series pgvigil stored at its read before"); continue
+    if k not in ours:
+        # a cumulative counter at a raw 0 is not stored; one still at 0 in the hand read right after pgvigil's read
+        # (which keeps only values over 0; counters only go up) started counting after it: that, not a miss
+        if t in (272696576, 272696320) and k not in after: late.append(k); continue
+        bad.append(f"C {k} logged by sp_PressureDetector ({v}, type {t}) is no series pgvigil stored at its read before"); continue
     ov, ot = ours[k]
     if ot != t: bad.append(f"C {k}: type {ot} against sp_PressureDetector's {t}")
     if t in (272696576, 272696320):
@@ -235,9 +253,9 @@ for k, (v, t) in pd.items():
         if k in before and ov < before[k]: bad.append(f"C {k}: pgvigil {ov} below the hand read before it {before[k]}")
 info = q(f"SELECT coalesce(info->>'socket_count', '') || '|' || (info->>'cpu_count') || '|' || (info->>'scheduler_count') FROM pgvigil.mssql_cpu_info WHERE instance_id = {sb}")
 hand = open(f"{d}/hand-info.out").read().strip()
-if not info or info[0][0] != hand: bad.append(f"C CPU details {info} against the hand read {hand}")
+if not info or '|'.join(info[0]) != hand: bad.append(f"C CPU details {info} against the hand read {hand}")
 for b in bad: print('DIFF', b)
-print(f"C: sp_PressureDetector logged {len(pd)} perfmon rows, every one a series pgvigil stored ({cum} cumulative between the hand read before and its own); CPU details {hand}")
+print(f"C: sp_PressureDetector logged {len(pd)} perfmon rows, every one a series pgvigil stored ({cum} cumulative between the hand read before and its own) but {len(late)} cumulative that started counting after pgvigil's read {late}; CPU details {hand}")
 sys.exit(1 if bad else 0)
 PYEND
 echo "ok   C: every counter sp_PressureDetector logs is stored by pgvigil, the cumulative ones between a hand read before and sp_PressureDetector's after; the CPU details equal"
@@ -310,7 +328,7 @@ GROUP BY
 ORDER BY
     COUNT_BIG(*) DESC
 OPTION(RECOMPILE);" >"$TMPD/pm-sessions.out" || fail "D: PerformanceMonitor's session read"
-sq "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN status = N'sleeping' THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN is_user_process = 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(COUNT(DISTINCT database_id) AS varchar(10)) FROM sys.dm_exec_sessions WHERE session_id <> @@SPID" >"$TMPD/hand-total.out" || fail "D: the totals by hand"
+sq "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN status = N'sleeping' THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN is_user_process = 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + (SELECT STRING_AGG(x.d, ',') FROM (SELECT DISTINCT DB_NAME(database_id) AS d FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID) x) FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID" >"$TMPD/hand-total.out" || fail "D: the totals by hand"
 sq "SELECT CAST(u.session_id AS varchar(10)) + '|' + CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count) * 8 AS varchar(20)) + '|' + CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count - u.user_objects_dealloc_page_count - u.internal_objects_dealloc_page_count) * 8 AS varchar(20)) + '|' + CAST((u.user_objects_alloc_page_count - u.user_objects_dealloc_page_count) * 8 AS varchar(20))
   FROM sys.dm_db_session_space_usage u JOIN sys.dm_exec_sessions s ON s.session_id = u.session_id WHERE s.host_name = N'pgvc_tmp'" >"$TMPD/hand-tmp.out" || fail "D: the temp table by hand"
 python3 - "$PGDSN" "$SB" "$TMPD" <<'PYEND' || fail "D: see above"
@@ -342,11 +360,14 @@ for n, (c, sl) in pm.items():
 if not pm: bad.append("D PerformanceMonitor's read returned nothing")
 tot = q(f"SELECT sessions, sleeping, background, databases FROM pgvigil.mssql_session_summary WHERE instance_id = {sb} AND snapshot_at = {at}")[0]
 h = open(f"{d}/hand-total.out").read().strip().split('|')
-# the hand read ran after pgvigil's: pgvigil's own session is gone and the hand reader's is left out
-if abs(int(tot[0]) - 1 - int(h[0])) > 0 or int(tot[2]) != int(h[2]): bad.append(f"D totals: pgvigil {tot} (its own session one of them) against the hand read {h}")
+# PerformanceMonitor's totals are over the sessions over 50. The hand read ran after pgvigil's and leaves its own
+# session out; pgvigil's own session (running, in master) was one of pgvigil's
+hdb = set(h[3].split(',')) if len(h) > 3 and h[3] else set()
+if (int(tot[0]), int(tot[1]), int(tot[2]), int(tot[3])) != (int(h[0]) + 1, int(h[1]), int(h[2]), len(hdb | {'master'})):
+    bad.append(f"D totals (sessions, sleeping, background, databases): pgvigil {tot} against the hand read {h[:3]} + pgvigil's own session and databases {sorted(hdb | {'master'})}")
 tmp = q(f"SELECT t.session_id || '|' || t.alloc_kb || '|' || t.current_kb || '|' || t.user_kb FROM pgvigil.mssql_session_tempdb t WHERE t.instance_id = {sb} AND t.snapshot_at = {at} AND t.host_name = 'pgvc_tmp'")
 ht = open(f"{d}/hand-tmp.out").read().strip()
-if not tmp or tmp[0][0] != ht: bad.append(f"D the idle temp table session: pgvigil {tmp} against the hand read {ht}")
+if not tmp or '|'.join(tmp[0]) != ht: bad.append(f"D the idle temp table session: pgvigil {tmp} against the hand read {ht}")
 for b in bad: print('DIFF', b)
 print(f"D: hosts {sorted((n, v) for (g, n), v in ours.items() if g == 'host')}; applications {po}; PerformanceMonitor's {pm}; totals {tot} / hand {h}; tempdb {ht}")
 sys.exit(1 if bad else 0)
@@ -359,7 +380,7 @@ NS=$(sq "SELECT COUNT(*) FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLI
 for i in $(seq 1 $(( NS * 3 ))); do hold pgvc_cpu pgvcpu "DECLARE @i bigint = 0, @t datetime2 = SYSDATETIME(); WHILE DATEDIFF(second, @t, SYSDATETIME()) < 100 SET @i += 1;"; done
 seen 'pgvc[_]cpu' $(( NS * 3 )) "E: the CPU-bound sessions"
 sleep 10
-col mssql_requests mssql_cpu mssql_waiting
+col mssql_requests mssql_cpu mssql_waiting_tasks
 sqok "E: sp_PressureDetector logged under the burn" "EXEC dbo.sp_PressureDetector @log_to_table = 1, @log_database_name = N'pgvc_out', @log_schema_name = N'dbo', @log_table_name_prefix = N'pde';"
 sq "SELECT TOP (1) CAST(threads_waiting_for_cpu AS varchar(10)) + '|' + ISNULL(high_runnable_percent, '') FROM dbo.pde_CPU ORDER BY collection_time DESC" pgvc_out >"$TMPD/pd-cpu.out" || fail "E: the logged thread row"
 E1=$(pq "SELECT runnable_tasks || '|' || coalesce(runnable_pct::text, '') || '|' || coalesce(requests::text, '') || '|' || level FROM pgvigil.mssql_cpu_newest($SB, now() - interval '1 hour', now())")
@@ -406,7 +427,7 @@ for i in $(seq 1 200); do churn pgvc_churn "$B"; done
 sleep 25
 dacq() { dac "SELECT CAST(SUM(work_queue_count) AS varchar(10)) + '|' + (SELECT CAST(COUNT(*) AS varchar(10)) FROM sys.dm_os_waiting_tasks WHERE wait_type = N'THREADPOOL') FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLINE'"; }
 D0=$(dacq) || fail "F: the DAC read before"
-t0=$(date +%s); col mssql_cpu mssql_waiting mssql_requests; t1=$(date +%s)
+t0=$(date +%s); col mssql_cpu mssql_waiting_tasks mssql_requests; t1=$(date +%s)
 D1=$(dacq) || fail "F: the DAC read after"
 dac "EXEC dbo.sp_PressureDetector @what_to_check = 'cpu', @skip_queries = 1, @log_to_table = 1, @log_database_name = N'pgvc_out', @log_schema_name = N'dbo', @log_table_name_prefix = N'pdf';" >"$TMPD/pdf.out" 2>&1 || true
 PDF=$(dac "SELECT TOP (1) CAST(requests_waiting_for_threads AS varchar(10)) + '|' + CAST(total_threads AS varchar(10)) FROM pgvc_out.dbo.pdf_CPU ORDER BY collection_time DESC" 2>&1 || true)
@@ -418,9 +439,6 @@ IFS='|' read -r DQ0 _ <<<"$D0"; IFS='|' read -r DQ1 _ <<<"$D1"
 (( FWQ > 0 )) && [[ "$FMAX" == 128 && "$FTP" != NULL ]] && (( FTP > 0 )) && [[ "$FLVL" == HIGH ]] || fail "F: pgvigil's read of the shortage: $F1"
 IFS='|' read -r PDQ PDT <<<"$PDF"
 [[ "$PDT" == 128 ]] && (( PDQ > 0 )) || fail "F: sp_PressureDetector over the DAC: $PDF"
-CHK=$(pq "SELECT l.level = n.level AND l.pm_level = n.pm_level FROM pgvigil.mssql_cpu_newest($SB, now() - interval '1 hour', now()) n,
-  LATERAL pgvigil.mssql_sched_levels(n.runnable_tasks, n.schedulers, n.work_queue, n.current_workers, n.max_workers, n.cpu_count, n.rg_queued_requests::int) l")
-[[ "$CHK" == t ]] || fail "F: the newest read's levels are not the function's on its own inputs"
 killhost 'pgvc[_]churn'; stopbg; sleep 5
 # a standing shortage: every worker held behind one lock; a collection cannot log in and is logged as a connect failure
 hold pgvc_lock pgvcpu "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1;"
@@ -448,8 +466,11 @@ cases = [
   ((4, 4, 0, 10, 512, 4, 0), 'HIGH', 'HIGH - Runnable tasks warning', 'No CPU scheduler pressure detected'),
   ((10, 64, 0, 10, 2000, 64, 0), 'NORMAL', 'NORMAL', 'No CPU scheduler pressure detected'),
   ((11, 64, 0, 10, 2000, 64, 0), 'NORMAL', 'MEDIUM - Some runnable tasks queued', 'No CPU scheduler pressure detected'),
-  ((21, 64, 0, 10, 2000, 64, 0), 'NORMAL', 'HIGH - Moderate runnable task queue', 'CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores'),
-  ((51, 64, 0, 10, 2000, 64, 0), 'NORMAL', 'CRITICAL - High runnable task queue', 'CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores'),
+  ((21, 64, 0, 10, 2000, 64, 0), 'ELEVATED', 'HIGH - Moderate runnable task queue', 'CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores'),
+  ((51, 64, 0, 10, 2000, 64, 0), 'ELEVATED', 'CRITICAL - High runnable task queue', 'CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores'),
+  ((15, 64, 0, 10, 2000, 64, 0), 'NORMAL', 'MEDIUM - Some runnable tasks queued', 'No CPU scheduler pressure detected'),
+  ((16, 64, 0, 10, 2000, 64, 0), 'ELEVATED', 'MEDIUM - Some runnable tasks queued', 'No CPU scheduler pressure detected'),
+  ((64, 64, 0, 10, 2000, 64, 0), 'HIGH', 'CRITICAL - High runnable task queue', 'CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores'),
   ((0, 4, 1, 10, 512, 4, 0), 'HIGH', 'NORMAL', 'No CPU scheduler pressure detected'),
   ((0, 4, 0, 410, 512, 4, 0), 'ELEVATED', 'NORMAL', 'No CPU scheduler pressure detected'),
   ((0, 4, 0, 461, 512, 4, 0), 'ELEVATED', 'HIGH - Worker thread exhaustion', 'Worker thread exhaustion - check max worker threads setting'),
@@ -458,6 +479,9 @@ cases = [
   ((0, 4, 0, 10, 512, 4, 4), 'NORMAL', 'MEDIUM - Queued requests warning', 'Requests queued for execution - CPU or worker thread pressure'),
   ((0, 4, 0, 10, 512, 4, 3), 'NORMAL', 'NORMAL', 'Requests queued for execution - CPU or worker thread pressure'),
 ]
+# pgvigil's level on the page's rounded figures (worker use to 1 place, runnable per scheduler to 2) [review s177i-review11]
+cases.append(((0, 4, 0, 563, 704, 4, 0), 'ELEVATED', 'NORMAL', 'No CPU scheduler pressure detected'))
+cases.append(((199, 200, 0, 10, 5000, 200, 0), 'HIGH', 'CRITICAL - High runnable task queue', 'CPU pressure detected - check for CPU-intensive queries, consider adding CPU cores'))
 # exactly 90 % of max: PerformanceMonitor's flag (>= 90 %) without its > 90 % band
 cases.append(((0, 4, 0, 900, 1000, 4, 0), 'ELEVATED', 'CRITICAL - Worker thread exhaustion warning', 'Worker thread exhaustion - check max worker threads setting'))
 bad = []
@@ -469,7 +493,7 @@ print(f"G: {len(cases)} cases of mssql_sched_levels")
 sys.exit(1 if bad else 0)
 PYEND
 fnd() { pq "SELECT count(*) FROM pgvigil.mssql_cpu_findings WHERE instance_id = $SB AND check_name = '$1'"; }
-for tb in mssql_cpu_sample mssql_requests mssql_fileio_sample mssql_job_runs; do pq "SELECT pgvigil.ensure_month_partition('$tb', now())" >/dev/null; done
+for tb in mssql_cpu_sample mssql_fileio_sample mssql_job_runs; do pq "SELECT pgvigil.ensure_month_partition('$tb', now())" >/dev/null; done
 pq "SELECT pgvigil.ensure_month_partition('mssql_job_runs', now() - interval '21 days')" >/dev/null
 oth() { pq "DELETE FROM pgvigil.mssql_cpu_sample WHERE instance_id = $SB AND record_id >= 900000" >/dev/null
   pq "INSERT INTO pgvigil.mssql_cpu_sample (instance_id, snapshot_at, record_id, sql_pct, other_pct, idle_pct) SELECT $SB, now() - make_interval(secs => g * 60), 900000 + g, 10, $1, 90 - $1 FROM generate_series(1, $2) g" >/dev/null; }
@@ -477,6 +501,7 @@ oth 50 10; O1=$(fnd 'other processes use the CPU'); oth 49 10; O2=$(fnd 'other p
 pq "DELETE FROM pgvigil.mssql_cpu_sample WHERE instance_id = $SB AND record_id >= 900000" >/dev/null
 [[ "$O1" == 1 && "$O2" == 0 && "$O3" == 0 ]] || fail "G: other processes: 50 % x10 $O1 (want 1), 49 % x10 $O2 (want 0), 60 % x9 $O3 (want 0)"
 TS=$(pq "SELECT now() + interval '1 minute'")
+pq "SELECT pgvigil.mssql_ensure_day_partition('mssql_requests', '$TS')" >/dev/null   # mssql_requests is partitioned by day
 pq "INSERT INTO pgvigil.mssql_requests_summary (instance_id, snapshot_at, source) VALUES ($SB, '$TS', 'dmv')" >/dev/null
 trq() { pq "DELETE FROM pgvigil.mssql_requests WHERE instance_id = $SB AND snapshot_at = '$TS'" >/dev/null
   pq "INSERT INTO pgvigil.mssql_requests (instance_id, snapshot_at, session_id, status, tran_start, login_name, program_name) VALUES ($SB, '$TS', 4242, '$1', '$TS'::timestamptz - interval '$2', 'proof', 'proof')" >/dev/null

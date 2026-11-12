@@ -102,7 +102,8 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_session_tempdb (
   instance_id       int NOT NULL,
   snapshot_at       timestamptz NOT NULL,
   session_id        int NOT NULL,
-  alloc_kb          bigint, current_kb bigint, user_kb bigint, internal_kb bigint,
+  alloc_kb          bigint, current_kb bigint, user_kb bigint, internal_kb bigint,   -- sessions' and running tasks' together
+  task_alloc_kb     bigint, task_current_kb bigint,                                 -- the running tasks' part
   login_name        text, program_name text, host_name text, status text, open_tran int,
   last_request_end  timestamptz
 ) PARTITION BY RANGE (snapshot_at);
@@ -137,7 +138,8 @@ BEGIN
   SELECT count(*) INTO v_n FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'perfmon';
   IF v_n = 0 THEN RETURN; END IF;
   -- an older read arriving late: its scope's newest read is already stored
-  SELECT max(c.server_utc) INTO v_prev FROM pgvigil.mssql_counter_read c WHERE c.instance_id = p_instance_id AND c.scope = p_scope;
+  SELECT c.server_utc INTO v_prev FROM pgvigil.mssql_counter_read c WHERE c.instance_id = p_instance_id AND c.scope = p_scope
+   ORDER BY c.snapshot_at DESC LIMIT 1;
   IF v_prev IS NOT NULL AND v_prev >= p_now THEN RETURN; END IF;
 
   INSERT INTO pgvigil.mssql_counter_series AS k (instance_id, object, counter, inst, cntr_type)
@@ -195,6 +197,9 @@ BEGIN
   -- mssql_cpu_sample and mssql_sched_sample, which its import makes next
   PERFORM pgvigil.ensure_month_partition('mssql_counter_read', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_counter_sample', p_snapshot_at);
+  -- the counter parents locked before 0074's import locks mssql_cpu_sample and mssql_sched_sample: the name order
+  -- purge() and every import take (0067's note), so a month's first reads and a purge never wait on each other in a ring
+  LOCK TABLE ONLY pgvigil.mssql_counter_read, ONLY pgvigil.mssql_counter_sample IN ROW EXCLUSIVE MODE;
   PERFORM pgvigil.import_mssql_cpu_0074(p_instance_id, p_snapshot_at, p_payload);
   SELECT r INTO v_sched FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'sched' LIMIT 1;
   UPDATE pgvigil.mssql_sched_sample SET offline_cpus = (v_sched->>'offline_cpus')::int, nodes_total = (v_sched->>'nodes_total')::int,
@@ -219,6 +224,8 @@ BEGIN
   PERFORM pgvigil.ensure_month_partition('mssql_session_group', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_session_summary', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_session_tempdb', p_snapshot_at);
+  LOCK TABLE ONLY pgvigil.mssql_activity_read, ONLY pgvigil.mssql_counter_read, ONLY pgvigil.mssql_counter_sample,
+       ONLY pgvigil.mssql_session_group, ONLY pgvigil.mssql_session_summary, ONLY pgvigil.mssql_session_tempdb IN ROW EXCLUSIVE MODE;
 
   -- a payload imported twice at one snapshot time leaves one set of rows
   DELETE FROM pgvigil.mssql_activity_read WHERE instance_id = p_instance_id AND snapshot_at = p_snapshot_at;
@@ -244,9 +251,10 @@ BEGIN
    WHERE r->>'kind' = 'sessions' AND r->>'grp' IN ('program', 'host', 'database') AND r->>'name' IS NOT NULL;
 
   INSERT INTO pgvigil.mssql_session_tempdb (instance_id, snapshot_at, session_id, alloc_kb, current_kb, user_kb, internal_kb,
-                                            login_name, program_name, host_name, status, open_tran, last_request_end)
+                                            task_alloc_kb, task_current_kb, login_name, program_name, host_name, status, open_tran, last_request_end)
   SELECT p_instance_id, p_snapshot_at, (r->>'session_id')::int, (r->>'alloc_kb')::bigint, (r->>'current_kb')::bigint,
-         (r->>'user_kb')::bigint, (r->>'internal_kb')::bigint, r->>'login_name', r->>'program_name', r->>'host_name',
+         (r->>'user_kb')::bigint, (r->>'internal_kb')::bigint, (r->>'task_alloc_kb')::bigint, (r->>'task_current_kb')::bigint,
+         r->>'login_name', r->>'program_name', r->>'host_name',
          r->>'status', (r->>'open_tran')::int, (r->>'last_request_end')::timestamptz
     FROM jsonb_array_elements(p_payload) r WHERE r->>'kind' = 'tempdb' AND r->>'session_id' IS NOT NULL;
 
@@ -261,9 +269,10 @@ BEGIN
 END $$;
 
 -- mssql_sched_levels: the scheduler pressure verdict of one read, two ways.
---   level / verdict: pgvigil's (the CPU page before D14, kept as the verdict): HIGH at a runnable task per scheduler
---     on average or any task in the work queue; ELEVATED at a quarter of a runnable task per scheduler or 80 % of the
---     workers in use; else NORMAL.
+--   level / verdict: pgvigil's (the CPU page before D14, kept as the verdict, on the figures it rounded: runnable tasks
+--     per scheduler to 2 places, worker use to 1): HIGH at a runnable task per scheduler on average or any task in the
+--     work queue; ELEVATED at a quarter of a runnable task per scheduler or 80 % of the workers in use; else NORMAL.
+--     PerformanceMonitor's levels take the figures unrounded, as its C# does.
 --   pm_level / pm_recommendation: PerformanceMonitor's ClassifyCpuSchedulerPressure (DarlingPlanCacheSchedulerReader,
 --     3.12.0) word for word: the runnable bands over 50 / 20 / 10, workers over 90 %, then its collector's flags
 --     (current workers >= 90 % of max; runnable tasks >= CPUs; Resource Governor's queued requests >= CPUs).
@@ -271,15 +280,16 @@ CREATE OR REPLACE FUNCTION pgvigil.mssql_sched_levels(p_runnable int, p_schedule
                                                      p_cpus int, p_queued int,
                                                      OUT level text, OUT verdict text, OUT pm_level text, OUT pm_recommendation text)
 LANGUAGE sql IMMUTABLE AS $$
-  WITH x AS (SELECT coalesce(p_runnable, 0) AS rt, coalesce(p_runnable, 0)::numeric / nullif(p_schedulers, 0) AS per,
+  WITH x AS (SELECT coalesce(p_runnable, 0) AS rt, round(coalesce(p_runnable, 0)::numeric / nullif(p_schedulers, 0), 2) AS per,
                     coalesce(p_work_queue, 0) AS wq, coalesce(p_current, 0) AS cur, coalesce(p_max, 0) AS mx,
+                    CASE WHEN coalesce(p_max, 0) > 0 THEN round(100.0 * coalesce(p_current, 0) / p_max, 1) ELSE 0 END AS wpct_r,
                     CASE WHEN coalesce(p_max, 0) > 0 THEN 100.0 * coalesce(p_current, 0) / p_max ELSE 0 END AS wpct,
                     coalesce(p_cpus, 0) AS cpus, coalesce(p_queued, 0) AS q)
-  SELECT CASE WHEN coalesce(x.per, 0) >= 1 OR x.wq > 0 THEN 'HIGH' WHEN coalesce(x.per, 0) >= 0.25 OR x.wpct >= 80 THEN 'ELEVATED' ELSE 'NORMAL' END,
+  SELECT CASE WHEN coalesce(x.per, 0) >= 1 OR x.wq > 0 THEN 'HIGH' WHEN coalesce(x.per, 0) >= 0.25 OR x.wpct_r >= 80 THEN 'ELEVATED' ELSE 'NORMAL' END,
          CASE WHEN x.wq > 0 THEN x.wq || ' task(s) wait for a worker thread: THREADPOOL waits follow; find what holds the workers (blocking, parallel queries) before raising max worker threads.'
               WHEN coalesce(x.per, 0) >= 1 THEN 'Work is ready and waits for a CPU on every scheduler: SOS_SCHEDULER_YIELD and signal waits follow; the queries using the most CPU are the lever.'
               WHEN coalesce(x.per, 0) >= 0.25 THEN 'Some tasks wait for a CPU: worth a look if it lasts.'
-              WHEN x.wpct >= 80 THEN 'Most worker threads are in use: blocking or many parallel queries hold them.'
+              WHEN x.wpct_r >= 80 THEN 'Most worker threads are in use: blocking or many parallel queries hold them.'
               ELSE 'No CPU scheduler pressure at the newest read.' END,
          CASE WHEN x.rt > 50 THEN 'CRITICAL - High runnable task queue'
               WHEN x.rt > 20 THEN 'HIGH - Moderate runnable task queue'
@@ -336,16 +346,19 @@ LANGUAGE sql STABLE AS $$
                                                   s.cpu_count, wg.q::int) l
 $$;
 
--- the THREADPOOL tasks with a session at the waiting-tasks read nearest the newest scheduler read (D01's rows; a task
--- queued for a worker before its login has no session and is only in the count)
+-- the THREADPOOL tasks with a session at the waiting-tasks read nearest the newest scheduler read within 30 s, the
+-- read mssql_cpu_newest takes its count from (D01's rows; a task queued for a worker before its login has no session
+-- and is only in the count)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_threadpool_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (snapshot_at timestamptz, session_id int, wait_ms bigint)
 LANGUAGE sql STABLE AS $$
+  WITH s AS (SELECT x.snapshot_at FROM pgvigil.mssql_sched_sample x WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
+              ORDER BY x.snapshot_at DESC LIMIT 1),
+  w AS (SELECT w.snapshot_at FROM s, pgvigil.mssql_waiting_summary w
+         WHERE w.instance_id = p_instance_id AND w.snapshot_at BETWEEN s.snapshot_at - interval '30 seconds' AND s.snapshot_at + interval '30 seconds'
+         ORDER BY abs(extract(epoch FROM w.snapshot_at - s.snapshot_at)) LIMIT 1)
   SELECT t.snapshot_at, t.session_id, t.wait_ms
-    FROM pgvigil.mssql_waiting_tasks t
-   WHERE t.instance_id = p_instance_id AND t.wait_type = 'THREADPOOL'
-     AND t.snapshot_at = (SELECT max(w.snapshot_at) FROM pgvigil.mssql_waiting_summary w
-                           WHERE w.instance_id = p_instance_id AND w.snapshot_at > p_from AND w.snapshot_at <= p_to)
+    FROM w JOIN pgvigil.mssql_waiting_tasks t ON t.instance_id = p_instance_id AND t.snapshot_at = w.snapshot_at AND t.wait_type = 'THREADPOOL'
    ORDER BY t.wait_ms DESC NULLS LAST
 $$;
 
@@ -439,26 +452,29 @@ LANGUAGE sql STABLE AS $$
    ORDER BY g.sessions DESC, g.name
 $$;
 
--- the TempDB page: the sessions holding tempdb at the newest activity read, a running request's own tasks
--- (mssql_requests' tempdb figures from sys.dm_db_task_space_usage, the requests read nearest within 30 s) added per
--- session as sp_PressureDetector adds them
+-- the TempDB page: the sessions holding tempdb at the newest activity read (sp_PressureDetector's per-session sum of
+-- sys.dm_db_task_space_usage and sys.dm_db_session_space_usage, the 20 with the most allocated), and that read itself
+-- (its time and the reads it could not take), so 'none' and 'not read' are told apart
 CREATE OR REPLACE FUNCTION pgvigil.mssql_session_tempdb_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (snapshot_at timestamptz, session_id int, alloc_kb bigint, current_kb bigint, user_kb bigint, internal_kb bigint,
                task_alloc_kb bigint, task_current_kb bigint, login_name text, program_name text, host_name text, status text,
-               open_tran int, last_request_end timestamptz, requests_at timestamptz)
+               open_tran int, last_request_end timestamptz)
 LANGUAGE sql STABLE AS $$
-  WITH a AS (SELECT max(x.snapshot_at) AS at FROM pgvigil.mssql_activity_read x
-              WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to),
-  rq AS (SELECT q.snapshot_at FROM a, pgvigil.mssql_requests_summary q
-          WHERE q.instance_id = p_instance_id AND q.snapshot_at BETWEEN a.at - interval '30 seconds' AND a.at + interval '30 seconds'
-          ORDER BY abs(extract(epoch FROM q.snapshot_at - a.at)) LIMIT 1)
-  SELECT t.snapshot_at, t.session_id, t.alloc_kb, t.current_kb, t.user_kb, t.internal_kb, r.alloc, r.cur,
-         t.login_name, t.program_name, t.host_name, t.status, t.open_tran, t.last_request_end, rq.snapshot_at
-    FROM a JOIN pgvigil.mssql_session_tempdb t ON t.instance_id = p_instance_id AND t.snapshot_at = a.at
-    LEFT JOIN rq ON true
-    LEFT JOIN LATERAL (SELECT sum(x.tempdb_alloc_kb)::bigint AS alloc, sum(x.tempdb_current_kb)::bigint AS cur FROM pgvigil.mssql_requests x
-                        WHERE x.instance_id = p_instance_id AND x.snapshot_at = rq.snapshot_at AND x.session_id = t.session_id) r ON true
-   ORDER BY t.alloc_kb + coalesce(r.alloc, 0) DESC, t.session_id
+  SELECT t.snapshot_at, t.session_id, t.alloc_kb, t.current_kb, t.user_kb, t.internal_kb, t.task_alloc_kb, t.task_current_kb,
+         t.login_name, t.program_name, t.host_name, t.status, t.open_tran, t.last_request_end
+    FROM pgvigil.mssql_session_tempdb t
+   WHERE t.instance_id = p_instance_id
+     AND t.snapshot_at = (SELECT max(x.snapshot_at) FROM pgvigil.mssql_activity_read x
+                           WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to)
+   ORDER BY t.alloc_kb DESC, t.session_id
+$$;
+
+CREATE OR REPLACE FUNCTION pgvigil.mssql_activity_read_newest(p_instance_id int, p_from timestamptz, p_to timestamptz)
+RETURNS TABLE (snapshot_at timestamptz, skipped jsonb)
+LANGUAGE sql STABLE AS $$
+  SELECT x.snapshot_at, x.skipped FROM pgvigil.mssql_activity_read x
+   WHERE x.instance_id = p_instance_id AND x.snapshot_at > p_from AND x.snapshot_at <= p_to
+   ORDER BY x.snapshot_at DESC LIMIT 1
 $$;
 
 -- log bytes flushed per second per database over a window (the Databases object's Log Bytes Flushed/sec, read every 5
