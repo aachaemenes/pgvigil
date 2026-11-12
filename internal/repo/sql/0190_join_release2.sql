@@ -6,6 +6,7 @@
 --   task 177 D04 (0116): nothing here (its findings are the Blocked reports tab's own; mssql_blocked_reports is purged).
 --   task 177 D13 (0119): the mssql_memory_findings arm; mssql_memory_rmon, mssql_memory_cache, mssql_plancache_type and
 --     mssql_memory_grant_query among purge()'s monthly partition parents.
+--   task 177 D30 (0118): the darling_alert_findings arm; nothing for purge().
 --   task 177 D15 (0120): the mssql_sysevents_findings arm; nothing for purge() (the events live in mssql_health_components, already a monthly parent).
 -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
 
@@ -135,6 +136,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- task 177 D13 (0119): grant timeouts, sp_Blitz 145 / 146, sp_BlitzFirst 45 / 46, the plan cache's bloat
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_memory', at FROM pgvigil.mssql_memory_findings
+    UNION ALL
+    -- task 177 D30 (0118): Darling's alert thresholds (PerformanceMonitor's alert set) over the stored reads
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.darling_alert_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 

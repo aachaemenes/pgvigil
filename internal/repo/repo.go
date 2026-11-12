@@ -369,6 +369,14 @@ func (r *Repo) LogCollection(ctx context.Context, instanceID int, collection str
 	return err
 }
 
+// LogConnectFailure records a collection that could not connect to its instance (task 177 D30, the 'server unreachable'
+// finding of 0118): the instance found by its name, the collection's row an error noted 'connect: <err>'; an instance
+// never collected is left alone (pgvigil.import_connect_failure).
+func (r *Repo) LogConnectFailure(ctx context.Context, name, collection string, at time.Time, d time.Duration, cause error) error {
+	_, err := r.pool.Exec(ctx, `SELECT pgvigil.import_connect_failure($1, $2, $3, $4, $5)`, name, collection, at, int(d.Milliseconds()), cause.Error())
+	return err
+}
+
 func nullIfEmpty(s string) any {
 	if s == "" {
 		return nil
