@@ -328,7 +328,7 @@ GROUP BY
 ORDER BY
     COUNT_BIG(*) DESC
 OPTION(RECOMPILE);" >"$TMPD/pm-sessions.out" || fail "D: PerformanceMonitor's session read"
-sq "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN status = N'sleeping' THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN is_user_process = 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + (SELECT STRING_AGG(x.d, ',') FROM (SELECT DISTINCT DB_NAME(database_id) AS d FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID) x) FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID" >"$TMPD/hand-total.out" || fail "D: the totals by hand"
+sq "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN status = N'sleeping' THEN 1 ELSE 0 END) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN is_user_process = 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|' + (SELECT STRING_AGG(CAST(x.d AS varchar(10)), ',') FROM (SELECT DISTINCT database_id AS d FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID) x) FROM sys.dm_exec_sessions WHERE session_id > 50 AND session_id <> @@SPID" >"$TMPD/hand-total.out" || fail "D: the totals by hand"
 sq "SELECT CAST(u.session_id AS varchar(10)) + '|' + CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count) * 8 AS varchar(20)) + '|' + CAST((u.user_objects_alloc_page_count + u.internal_objects_alloc_page_count - u.user_objects_dealloc_page_count - u.internal_objects_dealloc_page_count) * 8 AS varchar(20)) + '|' + CAST((u.user_objects_alloc_page_count - u.user_objects_dealloc_page_count) * 8 AS varchar(20))
   FROM sys.dm_db_session_space_usage u JOIN sys.dm_exec_sessions s ON s.session_id = u.session_id WHERE s.host_name = N'pgvc_tmp'" >"$TMPD/hand-tmp.out" || fail "D: the temp table by hand"
 python3 - "$PGDSN" "$SB" "$TMPD" <<'PYEND' || fail "D: see above"
@@ -363,8 +363,9 @@ h = open(f"{d}/hand-total.out").read().strip().split('|')
 # PerformanceMonitor's totals are over the sessions over 50. The hand read ran after pgvigil's and leaves its own
 # session out; pgvigil's own session (running, in master) was one of pgvigil's
 hdb = set(h[3].split(',')) if len(h) > 3 and h[3] else set()
-if (int(tot[0]), int(tot[1]), int(tot[2]), int(tot[3])) != (int(h[0]) + 1, int(h[1]), int(h[2]), len(hdb | {'master'})):
-    bad.append(f"D totals (sessions, sleeping, background, databases): pgvigil {tot} against the hand read {h[:3]} + pgvigil's own session and databases {sorted(hdb | {'master'})}")
+# databases by id (a background session's database can have no name, which STRING_AGG would drop); pgvigil's own is master (1)
+if (int(tot[0]), int(tot[1]), int(tot[2]), int(tot[3])) != (int(h[0]) + 1, int(h[1]), int(h[2]), len(hdb | {'1'})):
+    bad.append(f"D totals (sessions, sleeping, background, databases): pgvigil {tot} against the hand read {h[:3]} + pgvigil's own session and database ids {sorted(hdb | {'1'})}")
 tmp = q(f"SELECT t.session_id || '|' || t.alloc_kb || '|' || t.current_kb || '|' || t.user_kb FROM pgvigil.mssql_session_tempdb t WHERE t.instance_id = {sb} AND t.snapshot_at = {at} AND t.host_name = 'pgvc_tmp'")
 ht = open(f"{d}/hand-tmp.out").read().strip()
 if not tmp or '|'.join(tmp[0]) != ht: bad.append(f"D the idle temp table session: pgvigil {tmp} against the hand read {ht}")
