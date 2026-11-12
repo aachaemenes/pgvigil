@@ -19,7 +19,7 @@
 #   dbstats      N rows per database (onprem-erp01/02: 3 databases, the others 2) = 26 N
 #   statements   statements_info at every 5-minute snapshot on 11 instances (none on
 #                cloudsql-analytics02); reset rows on rds-orders01 only
-#   overview     exactly the 60 demo rows of EXPECTED_OVERVIEW_FIXED below (check@instance), one per finding the
+#   overview     exactly the 62 demo rows of EXPECTED_OVERVIEW_FIXED below (check@instance), one per finding the
 #                demo's scenarios raise across every overview check the waves added (io, pi, host, disk, storage,
 #                backups, corruption, custom, roles, indexes, jobs report, vacuum, beside the first ones); 'job
 #                failed'@aurora-crm01 once per failed run: refresh-sales-mv twice and sync-contacts four times at the
@@ -67,6 +67,9 @@ export PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
 printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\n' > "$CFG"
 P() { psql "$PGVIGIL_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 "$@"; }
 "$BIN" migrate -config "$CFG" >/dev/null 2>&1 || fail "migrate"
+# the drive thresholds this proof's fixtures were written for: 10 / 5 at the root (task 176b: the default is DBA Dash's
+# 20 / 10, its edges proven in proof-clickmap.sh T1)
+[[ $(psql "$PGVIGIL_REPO_DSN" -XAtq -c "select pgvigil.import_drive_threshold(now(), '{\"op\":\"set\",\"level\":\"root\",\"warn\":\"10\",\"crit\":\"5\",\"ui_user\":\"proof\"}'::jsonb)->>'outcome'") == done ]] || fail "the root drive threshold 10 / 5"
 KEEP=$(P -c "select pgvigil.ensure_instance('keep-$RANDOM', 'onprem', '16.1', 160001, false, '{prod}')")
 P -c "select pgvigil.log_collection($KEEP, 'instance', now(), 10, 'ok', null)" >/dev/null
 
@@ -148,6 +151,8 @@ DMS validation failures@demo-aurora-dms01
 DMS validation suspended@demo-aurora-dms01
 DiskQueueDepth@demo-rds-orders01
 ReadLatency@demo-rds-orders01
+amcheck never clean@demo-onprem-erp01
+amcheck never clean@demo-onprem-hr01
 archiver failing@demo-onprem-hr01
 cache starved by the ACU floor@demo-aurora-reporting01
 collection failing@demo-cloudsql-analytics02

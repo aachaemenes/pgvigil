@@ -41,7 +41,7 @@ One database at a time, chosen from a list (the largest first): a ring of each f
 
 | Finding | Severity | Rule |
 | --- | --- | --- |
-| a volume under 10 % free | warning; critical under 5 % | free space over total, per volume |
+| a volume under 10 % free (the name kept for alert rules and acknowledgements) | warning under 20 % free; critical under 10 % (DBA Dash's defaults; Storage > Drives > Configure sets a drive, an instance, a tag or the root) | free space over total, per volume; the detail names the threshold in force |
 | a file at its max size | critical | the file has a maximum, grows, and has reached it |
 | a file within one growth of its max size | warning | at most one growth step is left |
 | a percentage growth on a file over 10 GB | info | any per cent growth on a file over 10 GiB: the step grows with the file |

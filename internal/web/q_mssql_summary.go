@@ -84,17 +84,21 @@ WITH inst AS (
    WHERE st.key IN ('blocking', 'events', 'availability', 'backups', 'jobs', 'storage', 'disk')
    GROUP BY st.instance_id, st.key
   UNION ALL
-  -- uptime, DBA Dash's defaults: critical under 12 hours since the start, warning under 48; a start time ahead of
-  -- the repository's clock (skew) counts as just started, never as a negative age
+  -- uptime: the threshold in force for the instance (pg_threshold(instance, 'uptime'): DBA Dash's defaults, critical
+  -- under 12 hours since the start, warning under 48; set in the Summary's Uptime dialog, task 176b); a start time
+  -- ahead of the repository's clock (skew) counts as just started, never as a negative age
   SELECT i.instance_id, 'uptime', s.started_at IS NOT NULL,
-         (s.started_at > now() - interval '12 hours')::int,
-         (s.started_at <= now() - interval '12 hours' AND s.started_at > now() - interval '48 hours')::int,
+         coalesce(th.crit IS NOT NULL AND s.started_at > now() - th.crit * interval '1 hour', false)::int,
+         coalesce(th.warn IS NOT NULL AND s.started_at > now() - th.warn * interval '1 hour'
+                  AND NOT (th.crit IS NOT NULL AND s.started_at > now() - th.crit * interval '1 hour'), false)::int,
          CASE WHEN s.started_at IS NULL THEN NULL
               WHEN now() - s.started_at < interval '2 days' THEN greatest(0, floor(extract(epoch FROM now() - s.started_at) / 3600))::int || ' h'
               ELSE floor(extract(epoch FROM now() - s.started_at) / 86400)::int || ' d' END,
          CASE WHEN s.started_at IS NULL THEN '{}'::text[]
-              ELSE ARRAY['SQL Server started ' || to_char(s.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC (critical under 12 hours, warning under 48)'] END
-    FROM inst i LEFT JOIN started s USING (instance_id)
+              ELSE ARRAY['SQL Server started ' || to_char(s.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC ('
+                         || concat_ws(', ', 'critical under ' || trim_scale(th.crit) || ' hours', 'warning under ' || trim_scale(th.warn) || ' hours')
+                         || CASE th.level WHEN 'default' THEN ', the default' WHEN 'tag' THEN ', set on the tag ' || th.tag ELSE ', set on the ' || th.level END || ')'] END
+    FROM inst i LEFT JOIN started s USING (instance_id) CROSS JOIN LATERAL pgvigil.pg_threshold(i.instance_id, 'uptime') th
   UNION ALL
   -- database state: the count of databases in a state other than ONLINE / RESTORING / OFFLINE is critical, else
   -- the count of OFFLINE ones a warning

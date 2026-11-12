@@ -132,6 +132,9 @@ instances:
     dsn: env:PG_MON_DSN
 EOF
 "$BIN" migrate -config "$CFG" >/dev/null
+# the drive thresholds this proof's fixtures were written for: 10 / 5 at the root (task 176b: the default is DBA Dash's
+# 20 / 10, its edges proven in proof-clickmap.sh T1)
+[[ $(psql "$PGVIGIL_REPO_DSN" -XAtq -c "select pgvigil.import_drive_threshold(now(), '{\"op\":\"set\",\"level\":\"root\",\"warn\":\"10\",\"crit\":\"5\",\"ui_user\":\"proof\"}'::jsonb)->>'outcome'") == done ]] || fail "the root drive threshold 10 / 5"
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "${2:-$N1}" | tee "$OUT"; }
 
 # what sa reads of one database's files, in that database: file_id|size|used|max|growth_bytes|growth_pct|filegroup

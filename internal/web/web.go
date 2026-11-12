@@ -182,6 +182,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/dbspace", s.DBSpace)
 	api.HandleFunc("GET /api/dbfiles", s.DBFiles)
 	api.HandleFunc("GET /api/driveperf", s.DrivePerf)
+	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
+	api.HandleFunc("GET /api/uptime", s.Uptime)
 	api.HandleFunc("GET /api/pgconfig", s.PGConfig)
 	api.HandleFunc("GET /api/pg/dboptions", s.PGDBOptions)
 	api.HandleFunc("GET /api/pg/dboptions/fleet", s.PGDBOptionsFleet)

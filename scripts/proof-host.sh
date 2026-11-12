@@ -67,6 +67,9 @@ instances:
     dsn: env:SANDBOX_DSN
 EOF
 "$BIN" migrate -config "$CFG" >/dev/null
+# the drive thresholds this proof's fixtures were written for: 10 / 5 at the root (task 176b: the default is DBA Dash's
+# 20 / 10, its edges proven in proof-clickmap.sh T1)
+[[ $(psql "$PGVIGIL_REPO_DSN" -XAtq -c "select pgvigil.import_drive_threshold(now(), '{\"op\":\"set\",\"level\":\"root\",\"warn\":\"10\",\"crit\":\"5\",\"ui_user\":\"proof\"}'::jsonb)->>'outcome'") == done ]] || fail "the root drive threshold 10 / 5"
 
 echo "--- B. no door: the sandbox"
 "$BIN" collect -config "$CFG" -once host

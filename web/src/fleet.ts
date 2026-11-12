@@ -45,7 +45,7 @@ export function forget() { cache = null; }
 // without it is a PostgreSQL check.
 export interface Group { key: string; label: string; checks: string[]; tab: string; kind?: string; mssql?: [string, string, string?]; mssqlOnly?: boolean }   // kind: the Metrics family a PostgreSQL cell opens   // the third: the group's name on a SQL Server page
 export const groups: Group[] = [
-  { key: 'collect', label: 'Collection', checks: ['collection failing', 'collection stale'], tab: 'summary' },
+  { key: 'collect', label: 'Collection', checks: ['collection failing', 'collection stale'], tab: 'collectiondates', mssql: ['collect', 'collectiondates', 'Collection'] },
   { key: 'activity', label: 'Activity', checks: [], tab: 'activity', mssql: ['blocking', 'mssql_running', 'Blocking'] },
   { key: 'replication', label: 'Replication', checks: ['replication'], tab: 'replication', mssql: ['availability', 'availability', 'Availability'] },
   { key: 'jobs', label: 'Jobs', checks: ['jobs', 'jobs report'], tab: 'jobsreport', mssql: ['jobs', 'mssqljobs'] },
@@ -60,7 +60,7 @@ export const groups: Group[] = [
   { key: 'backups', label: 'Backups', checks: ['backups', 'base backups', 'log shipping'], tab: 'backups', mssql: ['backups', 'mssqlbackups'] },
   // DBA Dash's Summary columns (plan task 106), both engines
   { key: 'uptime', label: 'Uptime', checks: ['uptime'], tab: 'pgstate', mssql: ['uptime', 'summary'] },
-  { key: 'dbstate', label: 'Database state', checks: [], tab: 'dbinfo', mssql: ['dbstate', 'mssqlfiles'] },
+  { key: 'dbstate', label: 'Database state', checks: [], tab: 'pgdboptions', mssql: ['dbstate', 'mssqlchecks'] },
   // SQL Server only until the PostgreSQL equivalents are built (the scheduler alive); Memory dumps' PostgreSQL twin is the log's
   // crash restarts, QS's is pg_stat_statements' state (task 162: the Server state tab)
   { key: 'agent', label: 'Agent', checks: [], tab: 'summary', mssql: ['agent', 'mssqljobs', 'SQL Server Agent'], mssqlOnly: true },

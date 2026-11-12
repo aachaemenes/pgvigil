@@ -28,6 +28,7 @@ import { readStmtGroups, stmtGroupsSection, totalWithShare } from './stmt_filter
 import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
+import { summaryCellAction } from './uptimedialog';
 import { AckBody, ackDialog, ackHolds, ackWords, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 
 export type { Ctx };
@@ -304,6 +305,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
         // acknowledged: no colour, the reading kept with 'ack:' before it, who and when in its title
         const l = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(r.engine !== 'sqlserver' && g.kind ? { kind: g.kind } : {}) }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}, ${ackWords(ak)}`, 'data-text': 'ack: ' + cellText(c) }, 'ack: ' + cellText(c));
         l.title = ackWords(ak) + (c.detail.length ? '\n' + c.detail.slice(0, 12).join('\n') : '');
+        summaryCellAction(l, g.key, r);
         return l;
       }
       // a green cell says nothing: the colour is the status, and text is kept for a count, a value or 'no sample'
@@ -311,6 +313,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       const quiet = !c.none && c.level === 0 && !c.text;
       const a = el('a', { href: href(ctx, { tab: r.engine === 'sqlserver' ? g.mssql?.[1] ?? 'summary' : g.tab, instance: Number(r.instance_id), tag: undefined, ...(r.engine !== 'sqlserver' && g.kind ? { kind: g.kind } : {}) }), class: 'cell-link', 'aria-label': `${g.label}: ${cellText(c)}`, 'data-text': cellText(c) }, quiet ? '\u2713' : cellText(c));
       if (c.detail.length) a.title = c.detail.slice(0, 12).join('\n') + (c.detail.length > 12 ? `\n... ${c.detail.length - 12} more` : '');
+      summaryCellAction(a, g.key, r);
       return a;
     },
   });
