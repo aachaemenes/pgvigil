@@ -126,3 +126,42 @@ func (s *Server) Waits(w http.ResponseWriter, r *http.Request) {
 		{"locktree", sqlWaitsLockTree, []any{id, to}},
 	})
 }
+
+// GET /api/mssql/waitfindings?instance=<id>&[from=&to=][&part=...] (Server.MSSQLWaitFindings, task 177 D03): the SQL
+// Server Waits tab's findings over its range, in sp_PerfCheck's, sp_BlitzFirst's and sp_Blitz's thresholds and wording
+// (0115, pgvigil.mssql_wait_findings_between): the findings, the shares the checks read (the signal ratio with its
+// server-information label, SOS_SCHEDULER_YIELD and page latch time as shares of the range, the range's forced grants
+// and grant timeouts), the real waits by category, and the grant semaphores of the range's newest memory read with
+// each one's forced grants and timeouts over the range.
+
+const sqlMssqlWaitFindings = `
+SELECT f.severity, f.check_name, f.object, f.at, f.detail, f.source, f.source_check, f.source_priority, f.value
+  FROM pgvigil.mssql_wait_findings_between($1, $2, $3) f
+ ORDER BY f.source_priority, f.value DESC NULLS LAST, f.check_name`
+
+const sqlMssqlWaitShares = `SELECT * FROM pgvigil.mssql_wait_shares_between($1, $2, $3)`
+
+const sqlMssqlWaitRollup = `SELECT * FROM pgvigil.mssql_wait_rollup_between($1, $2, $3)`
+
+const sqlMssqlGrantPools = `
+SELECT p.snapshot_at, p.pool_id, p.pool_name, p.semaphore_id, p.target_kb, p.max_target_kb, p.total_kb, p.available_kb, p.granted_kb,
+       p.used_kb, p.grantees, p.waiters, d.forced_grants, d.timeout_errors
+  FROM pgvigil.mssql_memory_pools_at($1, $3) p
+  LEFT JOIN pgvigil.mssql_grant_deltas($1, $2, $3) d ON d.pool_id = p.pool_id AND d.semaphore_id = p.semaphore_id
+ WHERE p.snapshot_at > $2
+ ORDER BY p.pool_id, p.semaphore_id`
+
+// MSSQLWaitFindings serves /api/mssql/waitfindings.
+func (s *Server) MSSQLWaitFindings(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.multiPart(w, r, []part{
+		{"findings", sqlMssqlWaitFindings, []any{id, from, to}},
+		{"shares", sqlMssqlWaitShares, []any{id, from, to}},
+		{"rollup", sqlMssqlWaitRollup, []any{id, from, to}},
+		{"pools", sqlMssqlGrantPools, []any{id, from, to}},
+	})
+}
