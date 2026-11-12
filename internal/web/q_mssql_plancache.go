@@ -161,7 +161,7 @@ const pcEdge = `(SELECT max(x.snapshot_at) FROM pgvigil.mssql_pc_read x WHERE x.
 // (edge_cut_reads: the read just before either window, which decides how the window's first read counts),
 // whether the windows overlap, and the coverage word ('ok': the earlier window's reads cover at least 90 % of what
 // the window's cover; 'partial': less; 'no baseline': no read; q_compare.go's words).
-const sqlMSSQLPCCompareWindows = `
+var sqlMSSQLPCCompareWindows = `
 WITH w AS (
   SELECT $2::timestamptz AS now_from, $3::timestamptz AS now_to,
          $2::timestamptz - make_interval(secs => $4) AS before_from, $3::timestamptz - make_interval(secs => $4) AS before_to
