@@ -3,6 +3,7 @@ package mssql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -181,10 +182,17 @@ func (c jobsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]co
 	return c.RunFrom(ctx, conn, info, nil)
 }
 
+// jobTables are the msdb tables the read touches: a login without SELECT on any one of them is skipped with that table
+// named, never failed on a permission error halfway (Amazon RDS's master user can grant three of them).
+var jobTables = []string{"sysjobs", "sysjobhistory", "sysjobsteps", "sysjobschedules", "sysschedules", "syscategories", "sysjobactivity", "sysjobservers", "sysoperators", "sysproxies", "syssessions"}
+
 // RunFrom reads the jobs, their steps and the history past the cursor.
-func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, _ Info, cursor SeqCursorFunc) ([]collect.Row, error) {
-	for _, t := range []string{"sysjobs", "sysjobhistory"} {
+func (jobsCollector) RunFrom(ctx context.Context, conn *sql.Conn, info Info, cursor SeqCursorFunc) ([]collect.Row, error) {
+	for _, t := range jobTables {
 		if err := msdbReadable(ctx, conn, t); err != nil {
+			if info.Kind == KindRDS && errors.Is(err, collect.ErrSkip) {
+				return nil, fmt.Errorf("the login has no access to msdb.dbo.%s, which the Amazon RDS master user cannot grant (it may grant sysjobs, sysjobhistory and sysjobactivity only): %w", t, collect.ErrSkip)
+			}
 			return nil, err
 		}
 	}

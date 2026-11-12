@@ -158,6 +158,11 @@ func userDatabases(ctx context.Context, conn *sql.Conn, info Info) (dbs []userDB
 			continue
 		}
 		name, _ := r["database_name"].(string)
+		if info.Kind == KindRDS && strings.EqualFold(name, "rdsadmin") {
+			// the service's own database (as dboptions.go's user() judges it): its tables are not the DBA's, and the
+			// master user cannot give a login SELECT there, so its statistics would leave every RDS read partial
+			continue
+		}
 		quoted, _ := r["quoted_name"].(string)
 		state, _ := r["database_state"].(string)
 		enter, _ := r["can_enter"].(int64)

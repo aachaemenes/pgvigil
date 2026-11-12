@@ -1,7 +1,7 @@
 // The shell: a header (brand, where you are, the time range, refresh, theme, the user), the instance
 // tree on the left, a tab strip (root tabs for the fleet or a tag, instance tabs for one instance)
 // and the page under it.
-import { get, LoginRequired, post, Row, rowsOf, Session } from './api';
+import { get, LoginRequired, post, Row, rowsOf, Session, Table } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget, tagsOf } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
@@ -105,6 +105,25 @@ const mssqlPages: Record<string, Render> = {
   customreports: customReportsView, community: communityView,
   ...reportPages,
 };
+// the SQL Server tabs whose own read says nothing when their collection was skipped on the instance (a platform rule
+// such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
+const mssqlTabRuns: Record<string, string[]> = {
+  mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
+  mssqlcpu: ['mssql_cpu'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
+};
+for (const [tab, cols] of Object.entries(mssqlTabRuns)) {
+  const page = mssqlPages[tab];
+  mssqlPages[tab] = async c => {
+    const [s, st] = await Promise.all([page(c), get<{ state: Table | null }>('mssql/state', { instance: c.instance, collections: cols.join(',') }).catch(() => null)]);
+    const runs = rowsOf(st?.state);
+    if (runs.length === cols.length && runs.every(r => r.status === 'skipped')) {
+      const p = el('p', { class: 'meta' }, runs.map(r => `Not read on this instance: ${String(r.collection)} is skipped (${String(r.note ?? '')}).`).join(' '));
+      const h = s.querySelector('h2');
+      if (h) h.after(p); else s.prepend(p);
+    }
+    return s;
+  };
+}
 // a fleet page under a tag folder keeps that folder's instances (as the fleet Slow queries page does): the Jobs timeline, TempDB
 const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
   if (!c.tag) return undefined;
