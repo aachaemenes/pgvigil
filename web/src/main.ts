@@ -52,6 +52,7 @@ import { hasAvailability, mssqlAvailability } from './mssql_hadr';
 import { mssqlBackups } from './mssql_backups';
 import { mssqlJobs } from './mssql_jobs';
 import { jobsPgView } from './jobs_pg';
+import { pgDeadlocksView } from './pg_deadlocks';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
 import { mssqlRowVersionsView } from './mssql_rowversions';
 import { mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
@@ -102,7 +103,7 @@ const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
 const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, about: aboutView };
 const instancePages: Record<string, Render> = {
-  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, logs, dms, config, pgdboptions: pgDbOptionsView,
+  summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
   host: async c => { const s = await hostView(c); s.append(await capacitySection(c)); return s; },   // the Capacity section (Serverless v2) under the host's own
   storage: storageView, backups: backupsView, corruption: c => corruptionView(c.instance!),

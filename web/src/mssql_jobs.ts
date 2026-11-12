@@ -178,15 +178,15 @@ async function loadThresholds(instance: number): Promise<Thresholds | null> {
   if (!instance) return null;
   try { return await get<Thresholds>('jobs/thresholds', { instance }); } catch { return null; }
 }
-const statusWords: Record<string, string> = { crit: 'critical', warn: 'warning', ok: 'OK', none: 'not judged' };
+const statusWords: Record<string, string> = { crit: 'critical', warn: 'warning', ok: 'OK', none: 'not judged', excluded: 'not checked' };
 const statusWord = (x: Row): string => statusWords[String(x.status)] ?? '';
 type Level = 'job' | 'instance' | 'root';
 // label, the warning's key, the critical's key
 const thresholdRows: [string, string, string][] = [
   ['Failed runs in the last 24 hours (this many or more)', 'fail_24h_warn', 'fail_24h_crit'],
   ['Failed runs in the last 7 days (this many or more)', 'fail_7d_warn', 'fail_7d_crit'],
-  ['Failed steps in the last 24 hours (SQL Server; this many or more)', 'step_fail_24h_warn', 'step_fail_24h_crit'],
-  ['Failed steps in the last 7 days (SQL Server; this many or more)', 'step_fail_7d_warn', 'step_fail_7d_crit'],
+  ['Failed steps in the last 24 hours (SQL Server Agent, pgAgent; this many or more)', 'step_fail_24h_warn', 'step_fail_24h_crit'],
+  ['Failed steps in the last 7 days (SQL Server Agent, pgAgent; this many or more)', 'step_fail_7d_warn', 'step_fail_7d_crit'],
   ['Minutes since the last failure (this few or fewer)', 'since_fail_warn_min', 'since_fail_crit_min'],
   ['Minutes since the last success (more than this)', 'since_ok_warn_min', 'since_ok_crit_min'],
 ];
