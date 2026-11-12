@@ -55,8 +55,8 @@ export const groups: Group[] = [
   { key: 'vacuum', label: 'Vacuum', checks: ['vacuum'], tab: 'vacuum' },
   { key: 'dbhealth', label: 'Deadlocks / checksums', checks: ['deadlocks and checksums'], tab: 'counters', kind: 'database', mssql: ['events', 'mssql_deadlocks', 'Deadlocks and blocked reports'] },
   { key: 'host', label: 'Host', checks: ['host', 'pi'], tab: 'host' },   // 'pi': cache starved by the ACU floor (the Capacity section sits on the Host tab)
-  { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
-  { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage', mssql: ['storage', 'mssqlstorage'] },
+  { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'drives', mssql: ['disk', 'drives', 'Drive space'] },
+  { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'drives', mssql: ['storage', 'dbfiles'] },
   { key: 'backups', label: 'Backups', checks: ['backups', 'base backups', 'log shipping'], tab: 'backups', mssql: ['backups', 'mssqlbackups'] },
   // DBA Dash's Summary columns (plan task 106), both engines
   { key: 'uptime', label: 'Uptime', checks: ['uptime'], tab: 'pgstate', mssql: ['uptime', 'summary'] },
