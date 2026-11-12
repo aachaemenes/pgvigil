@@ -33,7 +33,7 @@
 <main id="main">
 <div class="wrap page-head">
   <h1>Features</h1>
-  <p>Every page works the same way on both engines: a short row of tabs, a grid you can sort, filter and export, and colour only where something needs you.</p>
+  <p>Every page works the same way on both engines, PostgreSQL and SQL Server: a short row of tabs, a grid you can sort, filter and export, and status colours (in the quiet colour style, only where something needs you).</p>
 </div>
 
 <section class="plain"><div class="wrap"><div class="grid2">
@@ -43,7 +43,7 @@
   </div>
   <div>
     <h2 class="h3">Running queries and blocking</h2>
-    <p>Every session each minute, the blocking chain to its head, the head's last statement, and the waits of each victim. Earlier minutes stay one click away. Cancel or end a session from the page when you turn that on.</p>
+    <p>The sessions at work (running, in a transaction or blocking another) each minute, the blocking chain to its head, the head's last statement, and the waits of each victim. Earlier minutes stay one click away. Cancel or end a session from the page when you turn that on.</p>
   </div>
   <div>
     <h2 class="h3">Statements and slow queries</h2>
@@ -63,7 +63,7 @@
   </div>
   <div>
     <h2 class="h3">Replication and availability</h2>
-    <p>Streaming and logical replication, slots and the WAL they hold, Aurora replicas; on SQL Server Always On, mirroring, log shipping and replication.</p>
+    <p>Streaming and logical replication, slots and the WAL they hold, Aurora replicas (not tested yet); on SQL Server Always On, and mirroring, log shipping and replication (tested on stand-in rows only, not on a real pair).</p>
   </div>
   <div>
     <h2 class="h3">Configuration and changes</h2>
@@ -79,7 +79,7 @@
   </div>
   <div>
     <h2 class="h3">Cloud</h2>
-    <p>On RDS and Aurora the server log from CloudWatch, storage IO, Performance Insights kept past its seven days, and AWS DMS tasks with their lag and how long they need to catch up.</p>
+    <p>On RDS and Aurora the server log from CloudWatch, storage IO, Performance Insights kept past its seven days (not yet tested on a live cluster), and AWS DMS tasks with their lag and how long they need to catch up.</p>
   </div>
   <div>
     <h2 class="h3">If you already run other tools</h2>

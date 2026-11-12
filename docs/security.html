@@ -33,7 +33,7 @@
 <main id="main">
 <div class="wrap page-head">
   <h1>Security</h1>
-  <p>pgvigil reads, it does not change. What it touches, what it keeps and what it sends are listed here.</p>
+  <p>pgvigil reads the PostgreSQL and SQL Server servers it watches and changes nothing there unless you turn on an action. What it touches, what it keeps and what it sends are listed here.</p>
 </div>
 
 <section class="plain"><div class="wrap text">
@@ -48,7 +48,7 @@
 <section class="plain"><div class="wrap text">
   <h2>The data it keeps</h2>
   <ul class="list">
-    <li>Passwords never sit in the config file and are masked out of every statement text it stores. You choose whether statement text is kept as is, with every literal replaced, or not at all.</li>
+    <li>Passwords can stay out of the config file (an inline one is refused for SQL Server, not for PostgreSQL) and are masked out of every statement text it stores. You choose whether statement text is kept as is, with every literal replaced, or not at all.</li>
     <li>Its own database gives each part its own role: the collector adds data only through its import functions, the web page reads (and records each action it runs), the alert sender holds a login of its own, and the sign-in check runs through one function nobody else can call.</li>
     <li>The web page has its own sign-in (argon2id password hashes, strict cookies, rate limits) and refuses to listen beyond the local machine without HTTPS.</li>
   </ul>

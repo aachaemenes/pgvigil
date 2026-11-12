@@ -59,7 +59,7 @@
   </div>
   <div class="row flip">
     <div class="row-text"><h2>What is running, and who is blocking whom</h2>
-      <p>Every session sampled each minute, the blocking chain walked to its head, and the statement the head ran last. Step back through earlier minutes to see what held the locks an hour ago.</p></div>
+      <p>The sessions at work (running, in a transaction or blocking another) sampled each minute, the blocking chain walked to its head, and the statement the head ran last. Step back through earlier minutes to see what held the locks an hour ago.</p></div>
     <figure class="shot"><a href="img/running-queries.png"><img src="img/running-queries.png" width="1600" height="900" loading="lazy" alt="Running queries: a blocking chain to its head and every session on one line"></a></figure>
   </div>
   <div class="row">
@@ -83,15 +83,15 @@
   <div class="grid2">
     <div>
       <h2>Where it runs</h2>
-      <p><strong>PostgreSQL 13 to 18</strong>, tested on your own servers and on Amazon Aurora. Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB are recognised and read; not all of them are tested yet.</p>
-      <p><strong>SQL Server</strong> tested on SQL Server 2022 on Linux. Windows hosts, Windows sign-in, earlier versions, Amazon RDS and Azure SQL are not tested yet.</p>
+      <p><strong>PostgreSQL 13 to 18</strong>, tested on 13, 16 and 18 on your own servers and on Amazon Aurora PostgreSQL 17. Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB are recognised; they are not tested yet.</p>
+      <p><strong>SQL Server</strong> tested on SQL Server 2017, 2019, 2022 and 2025 on Linux. SQL Server 2016, Windows hosts, Windows sign-in, Amazon RDS and Azure SQL are not tested yet.</p>
       <p>The program is one file for Linux, Windows or macOS. The history lives in a PostgreSQL database you choose.</p>
     </div>
     <div>
       <h2>What it does not do</h2>
       <ul class="list">
         <li>Its collector never writes to a server it watches. Ending a session or starting a job is off until you turn it on, through a login kept for that alone, and every use is logged.</li>
-        <li>No agent runs on your database servers, and there is no telemetry: it talks to your servers, its own database, the cloud APIs you configure and your alert channels, nothing else.</li>
+        <li>No agent runs on your database servers, and there is no telemetry: it talks to your servers, its own database, the cloud APIs you configure and your alert channels, nothing else (the Windows app also checks GitHub for a new release once a day, unless an administrator turns that off).</li>
         <li>It is not a hosted service: you run it, and the data stays in your own database.</li>
         <li>It watches databases, not Kubernetes or your applications.</li>
       </ul>
