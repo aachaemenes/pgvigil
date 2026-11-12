@@ -6,7 +6,7 @@
 // (internal/web/q_reports.go); New / Deleted Databases read /api/dbchanges, the PostgreSQL deadlocks /api/pg/deadlocks
 // and the PostgreSQL table sizes /api/tablesize, as their own pages do.
 import { get, Row, rowsOf, Table } from './api';
-import { donutChart, lineChart, Slice } from './chart';
+import { lineChart, ringChart, Slice } from './chart';
 import { deadlockSvg, DlGraph, graphFromRows, graphFromXml } from './deadlock_graph';
 import { hrefWith } from './dbinfo';
 import { fleet, tagsOf } from './fleet';
@@ -369,12 +369,12 @@ const deadlockChartsView: Render = ctx => {
       notes.length ? el('p', { class: 'meta' }, badge('Not all read', 'warn'), ' ' + notes.join('; ')) : '',
       el('div', { class: 'charts' }, lineChart('Over Time', series, both ? [{ key: 'sqlserver', label: 'SQL Server' }, { key: 'postgres', label: 'PostgreSQL' }] : [{ key: 'deadlocks', label: 'Deadlocks' }], v2 => fmtNum(v2), { unit: 'count', marks: false })),
       el('div', { class: 'charts donuts' },
-        donutChart('Signature', by((_p, d) => d.signature, true), undefined, slices),
-        donutChart('Application', by(p => text(p.program)), undefined, slices),
-        donutChart('Database', by(p => text(p.database)), undefined, slices),
-        donutChart('Login', by(p => text(p.login)), undefined, slices),
-        donutChart('Host', by(p => text(p.host)), undefined, slices),
-        donutChart('Procedure', by(p => text(p.proc)), undefined, slices)));
+        ringChart('Signature', by((_p, d) => d.signature, true), undefined, slices),
+        ringChart('Application', by(p => text(p.program)), undefined, slices),
+        ringChart('Database', by(p => text(p.database)), undefined, slices),
+        ringChart('Login', by(p => text(p.login)), undefined, slices),
+        ringChart('Host', by(p => text(p.host)), undefined, slices),
+        ringChart('Procedure', by(p => text(p.proc)), undefined, slices)));
   });
 };
 
@@ -677,7 +677,7 @@ const qsChartsView: Render = ctx => page(ctx, 'rp_qscharts', [], async (_v, s, o
       s.engines.has('sqlserver') ? lineChart('CPU (ms)', series, [{ key: 'ms_cpu_ms', label: 'SQL Server' }], x => fmtNum(x), { marks: false }) : '',
       lineChart('Duration (ms)', series, sr('duration_ms'), x => fmtNum(x), { marks: false }),
       lineChart('Logical Reads', series, sr('logical_reads'), x => fmtNum(x), { marks: false })),
-    el('div', { class: 'charts donuts' }, donutChart('Top queries by CPU', slice('cpu_ms'), x => fmtNum(x) + ' ms', 10), donutChart('Top queries by duration', slice('duration_ms'), x => fmtNum(x) + ' ms', 10)),
+    el('div', { class: 'charts donuts' }, ringChart('Top queries by CPU', slice('cpu_ms'), x => fmtNum(x) + ' ms', 10), ringChart('Top queries by duration', slice('duration_ms'), x => fmtNum(x) + ' ms', 10)),
     ...section('Top queries', grid(top, qsCols(ctx, 'query'), 'No statement ran in this range.')));
 });
 

@@ -530,6 +530,19 @@ function topSet(title: string, n: number) { try { localStorage.setItem(topKey(ti
 // or the picture.
 export function donutChart(title: string, slices: Slice[], fmt: (v: number) => string = v => v.toLocaleString(),
                            max = 8, keepOrder = false, empty = 'Nothing to show yet.'): HTMLElement {
+  return pieOrRing(title, slices, fmt, max, keepOrder, empty, 0);
+}
+
+// ringChart: the same chart drawn as a ring, its hole half the radius - DBA Dash's Deadlock Charts and Query Stats
+// Charts rings (DeadlockChartsReport.cs, QueryStatsChartsReport.cs: InnerRadius = 0.5); every other pie stays a pie
+export function ringChart(title: string, slices: Slice[], fmt: (v: number) => string = v => v.toLocaleString(),
+                          max = 8, keepOrder = false, empty = 'Nothing to show yet.'): HTMLElement {
+  return pieOrRing(title, slices, fmt, max, keepOrder, empty, 0.5);
+}
+
+// hole: the inner radius as a share of the outer one (0: a pie, each slice a wedge from the centre)
+function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, max: number, keepOrder: boolean, empty: string,
+                   hole: number): HTMLElement {
   const box = el('div', { class: 'chart donut' }, el('h3', {}, title));
   let all = slices.filter(s => isFinite(s.value) && s.value > 0);
   if (!keepOrder) all = [...all].sort((a, b) => b.value - a.value);
@@ -551,8 +564,12 @@ export function donutChart(title: string, slices: Slice[], fmt: (v: number) => s
   const draw = () => {
     fold();
     // each slice a wedge path from the centre (a dashed stroke of width 2r left a notch where two dashes met at the centre)
-    const r = 54;
-    const at = (f: number) => { const a = 2 * Math.PI * f - Math.PI / 2; return `${(60 + r * Math.cos(a)).toFixed(3)} ${(60 + r * Math.sin(a)).toFixed(3)}`; };
+    const r = 54, r0 = r * hole;
+    const at = (f: number, rad = r) => { const a = 2 * Math.PI * f - Math.PI / 2; return `${(60 + rad * Math.cos(a)).toFixed(3)} ${(60 + rad * Math.sin(a)).toFixed(3)}`; };
+    // a ring's slice: the outer arc, in to the inner circle, the inner arc back; a ring's whole slice: a circle stroked
+    // as wide as the ring
+    const ringSlice = (from: number, f: number) => { const big = f > 0.5 ? 1 : 0;
+      return `M${at(from)} A${r} ${r} 0 ${big} 1 ${at(from + f)} L${at(from + f, r0)} A${r0} ${r0} 0 ${big} 0 ${at(from, r0)} Z`; };
     ring = svg('svg', { viewBox: '0 0 120 120', role: 'img',
       'aria-label': `${title}: ` + parts.map(s => `${s.label} ${fmt(s.value)} (${share(s.value)})`).join(', ') });
     const tbody = el('tbody');
@@ -565,8 +582,9 @@ export function donutChart(title: string, slices: Slice[], fmt: (v: number) => s
       // drawn under the others
       const whole = f > 0.9999;
       const arc = whole
-        ? svg('circle', { cx: '60', cy: '60', r: String(r), fill: color }, tip)
-        : svg('path', { d: `M60 60 L${at(off)} A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${at(off + f)} Z`, fill: color }, tip);
+        ? (hole > 0 ? svg('circle', { cx: '60', cy: '60', r: String((r + r0) / 2), fill: 'none', stroke: color, 'stroke-width': String(r - r0) }, tip)
+                    : svg('circle', { cx: '60', cy: '60', r: String(r), fill: color }, tip))
+        : svg('path', { d: hole > 0 ? ringSlice(off, f) : `M60 60 L${at(off)} A${r} ${r} 0 ${f > 0.5 ? 1 : 0} 1 ${at(off + f)} Z`, fill: color }, tip);
       off += f;
       // the ring is one image (no control inside an image: WCAG's nested-interactive): a wedge answers a pointer's click
       // only, and its page opens from its name in the table for the keyboard
