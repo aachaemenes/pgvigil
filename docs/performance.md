@@ -54,6 +54,6 @@ API: `GET /api/performance?instance=N&from=&to=[&part=]` - parts `meta`, `grid` 
 
 ## Not proven
 
-The SQL Server columns and charts on Windows, Azure SQL Managed Instance and Amazon RDS for SQL Server: `scripts/proof-mssql-perf.sh` runs on SQL Server 2017 to 2025 in Linux containers (through `scripts/proof-mssql-versions.sh`).
+The SQL Server columns and charts on SQL Server 2016 (task 164), on Windows (task 144), on Amazon RDS for SQL Server (task 165) and on Azure SQL Managed Instance: `scripts/proof-mssql-perf.sh` runs on SQL Server 2017 to 2025 in Linux containers (through `scripts/proof-mssql-versions.sh`).
 
 

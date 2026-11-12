@@ -38,7 +38,7 @@
 
 <section class="plain"><div class="wrap text">
   <h2>Try the demo</h2>
-  <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and point it at the bin folder of any PostgreSQL install . One command builds a throwaway demo fleet of PostgreSQL and SQL Server servers with a week of history and opens it in its own window. No Docker. Tested on Linux; on Windows (a portable PostgreSQL, no admin rights) not tested yet.</p>
+  <p>Download pgvigil from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and point it at the bin folder of any PostgreSQL install. One command builds a throwaway demo fleet of PostgreSQL and SQL Server servers with a week of history and opens it in its own window. No Docker. Tested on Linux; on Windows (a portable PostgreSQL, no admin rights) not tested yet.</p>
 <pre tabindex="0"><code>pgvigil demo -pgbin &lt;a PostgreSQL bin folder&gt; -serve -open</code></pre>
 </div></section>
 
@@ -56,7 +56,7 @@ irm https://pgvigil.com/install.ps1 | iex</code></pre>
   <h2>Set it up by hand</h2>
   <ol class="steps">
     <li>Download the file for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and check it against <code>SHA256SUMS</code>; the <a href="https://github.com/aachaemenes/pgvigil#releases-and-how-to-verify-one">README</a> shows the two commands.</li>
-    <li>Create an empty database on a PostgreSQL 13 or later server for pgvigil's history (tested on 13, 16 and 18), and copy <code>pgvigil.example.yaml</code>. Keep passwords in the environment or a file, not in the config: pgvigil refuses an inline one for SQL Server, not for PostgreSQL.</li>
+    <li>Create an empty database on a PostgreSQL 13 or later server for pgvigil's history (tested on 13, 16 and 18), and copy <code>pgvigil.example.yaml</code>. Keep passwords in the environment or a file, not in the config: pgvigil refuses an inline one for SQL Server and for the actions and EXPLAIN logins, not for a PostgreSQL server's own login or the repository.</li>
     <li>Create the tables, the logins and the first web user. The login that owns pgvigil's database needs CREATEROLE: <code>migrate</code> creates pgvigil's own roles.</li>
     <li>Start the collector and the web page, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
   </ol>

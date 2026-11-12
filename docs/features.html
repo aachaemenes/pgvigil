@@ -39,7 +39,7 @@
 <section class="plain"><div class="wrap"><div class="grid2">
   <div>
     <h2 class="h3">The fleet at a glance</h2>
-    <p>The Summary counts every check across the fleet and lists one row per server. The Performance summary puts CPU, waits and IO of every server side by side. Tags such as prod or team:billing group the tree and filter every fleet page.</p>
+    <p>The Summary counts every check across the fleet and lists one row per server. The Performance summary puts CPU, waits and IO of every server side by side. Tags such as prod or team:billing group the tree and filter the Performance summary.</p>
   </div>
   <div>
     <h2 class="h3">Running queries and blocking</h2>
@@ -55,7 +55,7 @@
   </div>
   <div>
     <h2 class="h3">Jobs and backups</h2>
-    <p>SQL Server Agent, pg_cron and pgAgent jobs: every run, the failed step's error message, a timeline, and the definition's changes. Backups and WAL archiving with their age, and RDS and Aurora snapshots.</p>
+    <p>SQL Server Agent, pg_cron and pgAgent jobs: every run, the failed step's error message, a timeline, and the definition's changes. Backups and WAL archiving with their age, and Aurora snapshots (RDS from recorded answers only).</p>
   </div>
   <div>
     <h2 class="h3">Storage and growth</h2>
@@ -63,7 +63,7 @@
   </div>
   <div>
     <h2 class="h3">Replication and availability</h2>
-    <p>Streaming and logical replication, slots and the WAL they hold, Aurora replicas (not tested yet); on SQL Server Always On, and mirroring, log shipping and replication (tested on stand-in rows only, not on a real pair).</p>
+    <p>Streaming and logical replication, slots and the WAL they hold, Aurora replicas (not tested yet); on SQL Server, Always On; mirroring, log shipping and replication are tested on stand-in rows only, not on a real mirror, log shipping pair or distributor.</p>
   </div>
   <div>
     <h2 class="h3">Configuration and changes</h2>
@@ -79,7 +79,7 @@
   </div>
   <div>
     <h2 class="h3">Cloud</h2>
-    <p>On RDS and Aurora the server log from CloudWatch, storage IO, Performance Insights kept past its seven days (not yet tested on a live cluster), and AWS DMS tasks with their lag and how long they need to catch up.</p>
+    <p>On Aurora (RDS through the same AWS calls, not tested live) the server log from CloudWatch, storage IO, Performance Insights kept past its seven days (not yet tested on a live cluster), and AWS DMS tasks with their lag and how long they need to catch up.</p>
   </div>
   <div>
     <h2 class="h3">If you already run other tools</h2>

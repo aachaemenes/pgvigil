@@ -101,7 +101,7 @@ column; renamed, it is a new channel and sends the standing findings again.
 
 - **Every alert carries the address of its page.** With `alerts_base_url` set (the UI's address as a reader opens it:
   `https://host[:port][/path]`, no query; `env:` and `file:` work), every alert line ends with
-  `<base>/#/alert?k=<finding key>&t=<first send, Unix seconds>` (the address at most 200 bytes). The address is added
+  `<base>/#/alert?k=<finding key>&t=<first send, Unix seconds>` (`alerts_base_url` at most 200 bytes; the key and the time follow it). The address is added
   after the line is cut at 600 bytes, so it is never cut. A template that places `{url}` itself keeps it where it
   stands while the line fits; a longer line is cut and the whole address follows it, once. The JSON body, the file drop, PagerDuty
   (`links` and `custom_details.url`) and Opsgenie (`details.url`) carry it as a field too. Without the setting no link is
@@ -289,7 +289,7 @@ database that is later dropped stays held until someone ends the rule.
 | `pgvigil.alert_findings`, `pgvigil.findings_alerts`, `pgvigil.alert_sent` | Findings with their key, and with their alert columns. |
 
 The sender connects as `alerts_dsn`, a login in the role `pgvigil_alerter` that migration 0059 creates. The role is a
-member of `pgvigil_reader`, so it reads the findings. It also holds INSERT on the alert tables and UPDATE on `alert_channels` and `alert_state`:
+member of `pgvigil_reader`, so it reads the findings. It also holds INSERT and UPDATE on `alert_channels`, `alert_state`, `alert_rule_fired` and `ack_suppressed`, UPDATE and DELETE on `alert_rule_state`, and UPDATE of `alert_tests`' outcome columns (migrations 0059, 0073, 0085, 0093):
 
 ```sql
 CREATE ROLE pgvigil_alerts LOGIN PASSWORD '<set-me>' IN ROLE pgvigil_alerter;

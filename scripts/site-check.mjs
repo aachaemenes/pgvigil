@@ -77,6 +77,8 @@ ws.close();
 
 for (const [h, page] of links) {
   if (h.startsWith('#')) { say(h === '#main', `link ${h} on ${page}: only the skip link may jump inside a page`); continue; }
+  // a mail link is not fetched: its address is checked for its shape
+  if (h.startsWith('mailto:')) { say(/^mailto:[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(h), `link ${h} on ${page}: a mail address`); continue; }
   const abs = /^https?:/.test(h) ? h : new URL(h, base).href;
   if (/^https?:/.test(h) && noNet) { console.log(`n/a  link ${h} (--no-net)`); continue; }
   let st = 0, body = '';

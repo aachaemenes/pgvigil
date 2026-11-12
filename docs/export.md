@@ -3,7 +3,7 @@
 Every tab of the web UI can be saved as an Excel workbook (.xlsx) or as CSV, from the two buttons in the bar
 beside Refresh: **Export .xlsx** and **Export CSV**. The export is built in the browser from the page on the
 screen, so the file holds what the screen shows: the same rows in the same sort order, the same columns, the
-same colours. The pgvigil server is read only for an instance's name (on an instance's tab), nothing is written on any server, and nothing leaves the
+same colours. The pgvigil server is asked only for an instance's name (on an instance's tab), nothing is written on any server, and nothing leaves the
 browser but the file you save. Not proven (no proof saves a file from either): that the browser window opened by `pgvigil -open` and the Windows app download the
 same way as any browser.
 
@@ -81,12 +81,10 @@ same way as any browser.
 
 ## Beside DBA Dash's own export
 
-DBA Dash writes one sheet per grid as an Excel table without a style, a blue header row in white bold, every
-cell in the colour its grid gives it, dates as dates, percents as percents and fitted widths. This workbook
-does the same, with the same colours, and adds what a browser page needs: the Summary sheet (what was
-exported, from when, in which time zone), the frozen header row, and times to the second
-(DBA Dash writes `yyyy-MM-dd HH:mm`). Where pgvigil's screen colours fewer cells than DBA Dash's grid (an OK
-value carries no colour on most tabs), the workbook follows the page: a colour in the file is always one the
+The workbook writes one sheet per grid as an Excel table without a style, a blue header row in white bold, every
+cell in the colour its grid gives it, dates as dates and percents as percents, plus the Summary sheet (what was
+exported, from when, in which time zone), the frozen header row, and times to the second. Where the screen leaves a
+cell uncoloured, the workbook does too: a colour in the file is always one the
 page's own rule gave that cell, or the cell that judges it in the same row.
 
 ## CSV

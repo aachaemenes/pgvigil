@@ -121,8 +121,8 @@ For each database the read stores:
 
 It does not show:
 
-- SQL Server 2016 to 2019, and 2025.
-- RDS or Managed Instance.
+- SQL Server 2016 (task 164) to 2019, and 2025.
+- RDS (task 165) or Managed Instance.
 - A list cut on a real server, or a server with more databases than one run reaches.
 - An availability group, or a memory-optimized table.
 - The per-day missing-index finding (it needs days of uptime).

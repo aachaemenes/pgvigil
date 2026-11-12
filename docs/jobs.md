@@ -38,8 +38,8 @@ step that failed, the message, and on SQL Server msdb's error number, severity a
 A SQL Server job running now is the first row.
 
 - **SQL Server:** the outcome row of a run (msdb's step 0) carries the step that failed in that run: the last step
-  row of the run with the run's own status, its name, its message, `sql_message_id` and `sql_severity`. DBA Dash keeps
-  the step's message behind "View Steps"; pgvigil puts it on the run.
+  row of the run with the run's own status, its name, its message, `sql_message_id` and `sql_severity`. pgvigil puts the
+  step's message on the run.
 - **pg_cron:** `job_run_details.status` and `return_message`.
 - **pgAgent:** the run's status from `pga_joblog`; for a failed run the step that ended it (`pga_jobsteplog`: the
   first failed step) with its result and output.

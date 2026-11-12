@@ -4,10 +4,10 @@ Two collections run every minute on a [SQL Server instance](sqlserver.md): `mssq
 
 ## Running queries (`mssql_requests`)
 
-One row per session that
+One row per session (pgvigil's own left out) that
 
-- runs a request, or
-- holds an open transaction (a sleeping session too), or
+- is a user session running a request, or
+- is a user session holding an open transaction (a sleeping one too), or
 - blocks another session, whatever it is (a sleeping session without a transaction still holds its database lock; a system session can head a chain).
 
 A row carries the session and request, the status and command, the wait type, wait time and wait resource, the blocking session, the open transaction count, the transaction id, the transaction's start and the log bytes it wrote, the isolation level, CPU, physical reads, writes, logical reads, the granted memory, the tempdb pages of the request (allocated, and still held), the degree of parallelism, the login, host, program and database names, the `sql_handle`, `plan_handle`, `query_hash` and `query_plan_hash`, the percent complete (a backup or a restore shows its progress), and the session's own three largest waits since it logged in (`sys.dm_exec_session_wait_stats`).

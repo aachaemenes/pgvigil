@@ -1,7 +1,7 @@
 # Acknowledge, mute and notes
 
 pgvigil keeps every acknowledgement and every mute in one store in the repository. A row is never deleted from the UI.
-Ending a row records who ended it and when. Every attempt to make or end a row that passes the write door (the UI login, the `X-Pgvigil` header, a known kind) is audited, refused attempts included.
+Ending a row records who ended it and when. Every attempt to make or end a row that passes the write door (the UI login, the `X-Pgvigil` header, a readable body of a known kind for a known instance) is audited, refused attempts included.
 
 | What | Where | What it does |
 |---|---|---|

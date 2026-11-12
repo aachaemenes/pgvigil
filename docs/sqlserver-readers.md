@@ -190,6 +190,6 @@ the repository on PostgreSQL 18, the migration chain also on PostgreSQL 13): PAS
 - system_health: 400 sessions behind one lock, with max worker threads at 128, gave a QUERY_PROCESSING result in
   WARNING with 43 pending tasks. It was stored once with its finding.
 
-Not proven here: a Windows SQL Server (its backslash paths are unit-tested), SQL Server 2016, 2017, 2019 and 2025, Amazon RDS,
+Not proven here: a Windows SQL Server (task 144; its backslash paths are unit-tested), SQL Server 2016 (task 164), 2017, 2019 and 2025, Amazon RDS (task 165),
 Azure SQL Managed Instance, a growth slower than 1 s, and the corruption, IO and scheduler figures of a real server in
 trouble.
