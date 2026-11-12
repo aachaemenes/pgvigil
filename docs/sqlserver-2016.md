@@ -16,11 +16,14 @@ changed proofs pass on SQL Server 2017 containers too.
 
 ## What collects on 2016
 
-Every SQL Server collection runs on 2016 without a statement the server does not have: all 21 (`mssql_ag`,
-`backups`, `cpu`, `fileio`, `indexlocks`, `instance`, `jobs`, `logshipping`, `memory`, `mirroring`, `procstats`,
-`properties`, `querystore`, `replication`, `requests`, `services`, `storage`, `tempdb`, `versionstore`, `waits`,
-`xe`) ran once as `sa` and stored `ok`, except `mssql_ag`, which stored `skipped: Always On is not enabled on this
-server` (the server is not in a Windows cluster). The collector connects over TLS and stores the server as version
+Every SQL Server collection runs on 2016 without a statement the server does not have. All 32 ran once as `sa`
+(`mssql_ag`, `audit`, `backups`, `checks`, `cpu`, `defaulttrace`, `errorlog`, `fileio`, `identity`, `indexes`,
+`indexlocks`, `instance`, `jobs`, `logshipping`, `memory`, `mirroring`, `plancache`, `plancache_health`,
+`procstats`, `properties`, `querystore`, `replication`, `requests`, `services`, `stats`, `storage`, `syshealth`,
+`tempdb`, `traceflags`, `versionstore`, `waits`, `xe`): 30 stored `ok`; `mssql_ag` stored `skipped: Always On is not
+enabled on this server` (the server is not in a Windows cluster); `mssql_defaulttrace` stored `partial` with no row,
+because one older file of the default trace's rollover set on this server was unreadable (`Msg 567 ... is not a
+recognizable trace file`; the files after it read) and the collection reads the set as a whole. The collector connects over TLS and stores the server as version
 130000.
 
 What the proofs compared on this server against `sa`'s own reads, and found equal or within each proof's stated
@@ -65,6 +68,8 @@ the server's column list, or drops what an older version cannot give; it never f
 - **The Windows power plan, as a least-privilege login**: not read on this server (`xp_regread() returned error 5,
   'Access is denied.'`); the property says so in its note. Seen on 2016; not checked on a Windows host of another
   version.
+- **The default trace, while an older file of its set is unreadable**: `mssql_defaulttrace` reads the set as a
+  whole and stores nothing until that file leaves the set (seen on this server; not 2016-specific as far as known).
 - **Query Store's wait time** reads 0 on 2016, where the server keeps no wait statistics at all: a 0 there means
   "not measured", not "no waits".
 
@@ -82,6 +87,8 @@ the server's column list, or drops what an older version cannot give; it never f
 - A login holding only VIEW SERVER PERFORMANCE STATE; a real memory grant wait; a ring buffer after a real restart.
 - A Query Store in the ERROR state or really cleared, the bounds of one run, the access path of the interval floor.
 - Thousands of databases, a FILESTREAM container, a live ring buffer overrun of an Extended Events capture.
+- The proofs of the newer collections (`proof-mssql-audit.sh`, `-checks`, `-dag`, `-plancache-indexes`,
+  `-readers`) against 2016: those collections ran once as `sa` (above) and nothing compared their rows here.
 - That a collector session never waits behind a writer (no collection of the base reads a user table); the many
   sessions load test (`TestRequestsManySessionsLive`, skipped); the pages in a browser and their accessibility.
 
