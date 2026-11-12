@@ -68,7 +68,7 @@
 #     reports and Community tools; Custom reports holds the three seeded reports as DBA Dash's Reports folder holds
 #     its own (sub folders first by name, then the reports by name: Ops > Daily > rp169 tree pg, Ops > rp169 tree
 #     store, rp169 tree ms); under an instance its engine's and the repository's (PostgreSQL: Ops > Daily > rp169 tree
-#     pg, Ops > rp169 tree store; SQL Server: Ops > rp169 tree store, rp169 tree ms); each report node clicked opens #/customreports?report=N (&i=<id> under an
+#     pg, Ops > rp169 tree store; SQL Server: Ops > rp169 tree store alone, rp169 tree ms); each report node clicked opens #/customreports?report=N (&i=<id> under an
 #     instance) and the page's h2 is the report's name; Community tools opens #/community (?i= under an instance).
 #     The Deadlock Charts and Query Stats Charts rings are rings with a hole half their radius (each slice an outer arc
 #     and an inner one of radius 27, a whole slice a circle of radius 40.5 stroked 27 wide: DBA Dash's InnerRadius 0.5); the PostgreSQL instance's Databases by size stays a pie (each wedge from the centre).
@@ -683,6 +683,9 @@ for (const [inst, eng, path, rep, id, wantSeen] of [[ipg, 'PostgreSQL', ['Ops', 
   to = (await clickIn(`i${inst}/reports`, 'Community tools')) ? await landed(h => h.startsWith('#/community') && q(h).get('i') === inst, 'Community tools') : { at: 'no node' };
   check(`tree: the ${eng} instance's Community tools node opens its page there`, to.at?.startsWith('#/community') && q(to.at).get('i') === inst && to.h === 'Community tools', JSON.stringify(to));
 }
+// the SQL Server instance's Ops folder: the repository's report alone (a PostgreSQL report there would be a leak)
+const msOps = await openKey(`i${ims}/reports/cr/Ops`);
+check("tree: the SQL Server instance's Custom reports > Ops - the repository's report alone", JSON.stringify(msOps) === JSON.stringify(['rp169 tree store']), JSON.stringify(msOps));
 // every other pie stays a pie: the PostgreSQL instance's Databases by size
 await open(`#/dbinfo?i=${ipg}&w=4h`); await cmd('Page.navigate', { url: `${base}/#/dbinfo?i=${ipg}&w=4h` });
 let pies = null; for (let i = 0; i < 80 && !(pies && pies.length); i++) { await sleep(250); pies = await shapes('main .chart.donut'); }
