@@ -26,7 +26,8 @@
 #  A. detection: `collect -once mssql_instance` as the collector stores the instance as engine sqlserver, platform
 #     azuresqldb, server_version_num 120000 (Azure SQL Database answers 12.0 whatever engine it runs); mssql_instance
 #     holds the setup login's ProductVersion, Edition ('SQL Azure'), EngineEdition 5 and server name.
-#  B. each of the 32 SQL Server collections (21 before the join of wave 1) (the list is checked against internal/mssql's Name() functions):
+#  B. each of the 34 SQL Server collections (21 before the join of wave 1, 32 before mssql_waiting_tasks and mssql_reports
+#     joined) (the list is checked against internal/mssql's Name() functions):
 #     RUN - status ok, never partial, and rows equal to the setup login's read of the same view:
 #       mssql_instance  sys.configurations' row count and 'max server memory (MB)' value_in_use; sysinfo_read true
 #                       and cpu_count = sys.dm_os_sys_info's
@@ -38,6 +39,9 @@
 #       mssql_xe        one state per capture (deadlocks, blocked, slow, attention) equal to the setup login's read of
 #                       sys.database_event_sessions / sys.dm_xe_database_sessions for pgvigil_p<n>_<capture>:
 #                       running for each of the four once the -form azuresqldb script ran
+#       mssql_waiting_tasks  [added at the release join, written before its first run here] status ok, never partial,
+#                       its read stored (one mssql_waiting_summary row) with as many task rows as the row says it kept;
+#                       its tasks are NOT compared with a live waiter here (the verdict says so)
 #     SKIP - status skipped, the note names Azure SQL Database, the run prints "skipped:", and the collection's own
 #       tables hold no row for the instance: mssql_services, mssql_ag, mssql_mirroring, mssql_logshipping,
 #       mssql_replication, mssql_jobs, mssql_backups, mssql_storage, mssql_versionstore, mssql_cpu, mssql_memory,
@@ -48,14 +52,18 @@
 #        rule, its own tables empty for the instance. Microsoft's pages for the five the platform has no object for:
 #        audit (auditing writes to a storage account, Log Analytics or Event Hubs), default trace ('SQL Server trace' is
 #        not supported), error log (sp_readerrorlog applies to SQL Server only), system_health (no built-in session),
-#        trace flags (instance configuration not supported); docs/sqlserver-cloud.md cites each page.]
+#        trace flags (instance configuration not supported); docs/sqlserver-cloud.md cites each page.
+#        Added at the release join: mssql_reports, skipped by its own rule (no server roles, SQL logins or service
+#        list of its own to read), its five tables empty for the instance.]
 #     A skip is never counted as collected or as failed; a RUN collection skipped for a missing right is a FAIL.
 #  C. the pages: GET /api/mssql/summary gives the instance the cells availability, backups, jobs, storage, dbstate,
 #     agent, dbmail, dumps and qs as n/a (every collection of the group skipped) and blocking, events and uptime as
 #     ok [after the join: audit n/a too; the collections that feed an ok cell run again right before C, so no cell
 #     reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
 #     yet"; each SQL Server tab of the instance renders without an error line, and each tab whose collections are
-#     all skipped here says so (the skip's own text, or "not on this platform").
+#     all skipped here says so (the skip's own text, or "not on this platform") [at the release join: the Storage
+#     folder's Drives, DB Space, Files and Drive Performance too, and Waiting tasks renders; the Reports tabs are not
+#     checked here yet].
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
 #     permissions, role members and event sessions read by the setup login after the proof's own setup equal the
 #     same read after every collector run.
@@ -158,9 +166,10 @@ WANT="sqlserver|azuresqldb|$((maj * 10000 + 10#$min))|$PV|$ED|$EE|$SN"
 
 echo "--- B. every collection"
 mapfile -t KNOWN < <(grep -ho 'Name() string *{ return Prefix + "[a-z_]*"' $(ls internal/mssql/*.go | grep -v _test.go) | sed 's/.*Prefix + "\([a-z_]*\)"/mssql_\1/' | sort)
-RUNS=(mssql_instance mssql_requests mssql_waits mssql_xe)
+RUNS=(mssql_instance mssql_requests mssql_waits mssql_xe mssql_waiting_tasks)
 SKIPS=(mssql_services mssql_ag mssql_mirroring mssql_logshipping mssql_replication mssql_jobs mssql_backups mssql_storage mssql_versionstore mssql_cpu mssql_memory mssql_fileio mssql_tempdb mssql_properties mssql_procstats mssql_indexlocks mssql_querystore
-  mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags)
+  mssql_audit mssql_checks mssql_defaulttrace mssql_errorlog mssql_identity mssql_indexes mssql_plancache mssql_plancache_health mssql_stats mssql_syshealth mssql_traceflags
+  mssql_reports)
 [ "$(printf '%s\n' "${KNOWN[@]}" | tr '\n' ' ')" = "$(printf '%s\n' "${RUNS[@]}" "${SKIPS[@]}" | sort | tr '\n' ' ')" ] \
   || bad "B: the collections of internal/mssql (${KNOWN[*]}) are not the proof's list"
 declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mssql_ag_state mssql_ag_database_state" [mssql_mirroring]="mssql_mirroring_state"
@@ -168,16 +177,21 @@ declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mss
   [mssql_storage]="mssql_files mssql_volumes" [mssql_versionstore]="mssql_versionstore_db mssql_versionstore_sample" [mssql_cpu]="mssql_cpu_sample mssql_sched_sample"
   [mssql_memory]="mssql_memory_sample mssql_memory_clerk" [mssql_fileio]="mssql_fileio_last" [mssql_tempdb]="mssql_tempdb mssql_tempdb_files"
   [mssql_properties]="mssql_property" [mssql_procstats]="mssql_proc_last" [mssql_indexlocks]="mssql_indexlock_last" [mssql_querystore]="mssql_qs_store"
-  [mssql_audit]="mssql_audit mssql_audit_spec mssql_audit_events" [mssql_checks]="mssql_check_finding mssql_server_option mssql_database_option mssql_build mssql_trace_flag"
+  [mssql_audit]="mssql_audit mssql_audit_spec mssql_audit_events" [mssql_checks]="mssql_check_finding mssql_server_option mssql_database_option mssql_build"
   [mssql_defaulttrace]="mssql_trace_events" [mssql_errorlog]="mssql_errorlog" [mssql_identity]="mssql_identity_column mssql_identity_scan"
   [mssql_indexes]="mssql_index mssql_index_db mssql_missing_index" [mssql_plancache]="mssql_pc_last mssql_pc_sample" [mssql_plancache_health]="mssql_pc_health"
-  [mssql_stats]="mssql_stat mssql_stats_db" [mssql_syshealth]="mssql_health_components" [mssql_traceflags]="mssql_trace_flags")
+  [mssql_stats]="mssql_stat mssql_stats_db" [mssql_syshealth]="mssql_health_components" [mssql_traceflags]="mssql_trace_flags"
+  [mssql_reports]="mssql_server_role_members mssql_sql_logins mssql_failed_logins mssql_service_ext mssql_table_size")
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
 for c in "${SKIPS[@]}"; do
   "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c.out" 2>&1 || true
   st=$(status_of "$c"); rows=0
-  for t in ${TABLES[$c]}; do rows=$((rows + $(q "select count(*) from pgvigil.$t where instance_id=$iid"))); done
+  for t in ${TABLES[$c]}; do
+    n=$(q "select count(*) from pgvigil.$t where instance_id=$iid") || n=x
+    [[ $n =~ ^[0-9]+$ ]] || { bad "B: $c: no count of pgvigil.$t"; n=0; }
+    rows=$((rows + n))
+  done
   if [[ $st == skipped\|*"Azure SQL Database"* ]] && grep -q "skipped: " "$WORK/$c.out" && [ "$rows" = 0 ]; then VERDICT[$c]="SKIP (${st#skipped|})"
   else VERDICT[$c]="FAIL"; bad "B: $c should be skipped by the Azure SQL Database rule: status '$st', $rows stored row(s), the run said '$(tr '\n' ' ' < "$WORK/$c.out" | cut -c1-300)'"; fi
 done
@@ -233,6 +247,13 @@ PY
     [[ $SRC == *sys.dm_db_wait_stats* ]] && VERDICT[mssql_waits]="PASS ($OUT)" || { VERDICT[mssql_waits]="FAIL"; bad "B: mssql_waits source '$SRC' (want sys.dm_db_wait_stats)"; }
   else VERDICT[mssql_waits]="FAIL"; bad "B: mssql_waits: $OUT"; fi
 fi
+# mssql_waiting_tasks: its read stored, self-consistent; not compared with a live waiter here
+if run_ok mssql_waiting_tasks; then
+  GOT=$(q "select s.stored || '|' || s.tasks || '|' || (select count(*) from pgvigil.mssql_waiting_tasks t where t.instance_id=s.instance_id and t.snapshot_at=s.snapshot_at) from pgvigil.mssql_waiting_summary s where s.instance_id=$iid order by s.snapshot_at desc limit 1")
+  IFS='|' read -r KEPT SEEN NT <<<"$GOT"
+  if [ -n "$GOT" ] && [ "$KEPT" = "$NT" ] && [ "$KEPT" -le "$SEEN" ]; then VERDICT[mssql_waiting_tasks]="OK ($SEEN task(s) seen, $NT stored; not compared with a live waiter)"
+  else VERDICT[mssql_waiting_tasks]="FAIL"; bad "B: mssql_waiting_tasks: the newest read '$GOT' (want stored = the task rows of the read, at most the tasks seen)"; fi
+fi
 # mssql_xe: one state per capture, as the setup login reads the sessions
 if run_ok mssql_xe; then
   HAND=$(sq "SELECT c.capture + '|' + CASE WHEN x.name IS NOT NULL THEN 'running' WHEN d.name IS NOT NULL THEN 'stopped' ELSE 'not installed' END
@@ -263,7 +284,7 @@ else
   # cells is a table: {columns: [...], rows: [[...], ...]}
   GOT=$(jq -r --argjson i "$iid" '.cells as $t | ($t.columns | index("instance_id")) as $ci | ($t.columns | index("key")) as $ck | ($t.columns | index("state")) as $cs
     | [$t.rows[] | select(.[$ci] == $i) | "\(.[$ck])=\(.[$cs])"] | sort | join(" ")' "$WORK/sum.json")
-  WANT="agent=n/a audit=n/a availability=n/a backups=n/a blocking=ok dbmail=n/a dbstate=n/a dumps=n/a events=ok jobs=n/a qs=n/a storage=n/a uptime=ok"
+  WANT="agent=n/a audit=n/a availability=n/a backups=n/a blocking=ok dbmail=n/a dbstate=n/a disk=n/a dumps=n/a events=ok jobs=n/a qs=n/a storage=n/a uptime=ok"
   [ "$GOT" = "$WANT" ] && echo "  summary cells: OK" || bad "C: the summary cells '$GOT', want '$WANT'"
   if command -v chromium >/dev/null; then
     page() { timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/$1?i=$iid&w=1h" 2>/dev/null; }
@@ -277,11 +298,13 @@ else
       [mssqlfiles]="mssql_storage" [rowversions]="mssql_versionstore" [mssqltempdb]="mssql_tempdb" [mssqlcpu]="mssql_cpu" [mssqlmemory]="mssql_memory"
       [mssqlfileio]="mssql_fileio" [mssqlqs]="mssql_querystore" [mssqlprocs]="mssql_procstats" [mssqlindexlocks]="mssql_indexlocks" [mssqlproperties]="mssql_properties"
       [mssqlplancache]="mssql_plancache" [mssqlindexes]="mssql_indexes" [mssqlaudit]="mssql_audit" [mssqlchecks]="mssql_checks" [mssqlerrorlog]="mssql_errorlog"
-      [mssqltrace]="mssql_defaulttrace" [mssqlhealth]="mssql_syshealth")
+      [mssqltrace]="mssql_defaulttrace" [mssqlhealth]="mssql_syshealth"
+      [drives]="mssql_storage" [dbspace]="mssql_storage" [dbfiles]="mssql_storage" [driveperf]="mssql_fileio")
     NTABS=0
     for tab in summary performance mssql_running mssql_slow mssql_waits mssql_deadlocks mssql_blocked findings availability mssqlbackups mssqljobs mssqlstorage mssqlfiles \
                rowversions mssqlconfig mssqlactions jobstimeline mssqlcpu mssqlmemory mssqlfileio mssqltempdb mssqlqs counters mssqlprocs mssqlindexlocks mssqlproperties \
-               mssqlplancache mssqlindexes mssqlaudit mssqlchecks mssqlerrorlog mssqltrace mssqlhealth; do
+               mssqlplancache mssqlindexes mssqlaudit mssqlchecks mssqlerrorlog mssqltrace mssqlhealth \
+               drives dbspace dbfiles driveperf mssql_waiting; do
       NTABS=$((NTABS + 1))
       page "$tab" > "$WORK/p-$tab.html" || true
       T=$(text < "$WORK/p-$tab.html")
@@ -298,7 +321,7 @@ fi
 [ ! -s "$WORK/sq-failed" ] || bad "a read of the setup login failed during the run (its message is above): $(head -c 300 "$WORK/sq-failed" | tr '\n' ' ')"
 echo
 if [ ${#FAILS[@]} -eq 0 ]; then
-  echo "proof-mssql-azuresqldb: PASS (R, A, B: ${#RUNS[@]} collected and equal, ${#SKIPS[@]} skipped by the platform rule; C; D)"
+  echo "proof-mssql-azuresqldb: PASS (R, A, B: $(( ${#RUNS[@]} - 1 )) collected and equal, mssql_waiting_tasks collected and not compared, ${#SKIPS[@]} skipped by the platform rule; C; D)"
 else
   echo "the failed items:"; printf '  - %s\n' "${FAILS[@]}"
   echo "proof-mssql-azuresqldb: FAIL (${#FAILS[@]} item(s))"; exit 1
