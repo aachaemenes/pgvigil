@@ -1,7 +1,7 @@
 // The shell: a header (brand, where you are, the time range, refresh, theme, the user), the instance
 // tree on the left, a tab strip (root tabs for the fleet or a tag, instance tabs for one instance)
 // and the page under it.
-import { get, LoginRequired, post, Row, Session } from './api';
+import { get, LoginRequired, post, Row, rowsOf, Session } from './api';
 import { destroyCharts } from './chart';
 import { fleet, forget, tagsOf } from './fleet';
 import { checks, config, Ctx, disks, dms, errorBox, extensions, findings, fleetSummary, instances, instanceSummary, jobsRoot, logs, replication, roles, slows, statements, storage, backups, corruption, versions, indexes, growth, customRoot } from './pages';
@@ -69,7 +69,7 @@ import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
-import { dropMenu, el } from './ui';
+import { dropMenu, el, fmtBytes } from './ui';
 import { exportButtons } from './export';
 import { connectionsView } from './connections';
 import { dbChangesView } from './dbchanges';
@@ -184,6 +184,38 @@ function themeButton(): HTMLElement {
   return b;
 }
 
+// ---- the footer's status line on every page (task 152, K09.01; Darling's status bar): the instances by engine, the
+// collections' last runs (healthy, failing, stale, not collected, and those without a permission counted apart), the
+// repository's size, whether this server may write (the repository login) and its actions door, the newest healthy
+// read, and the auto refresh as this page has it. Read at most every 15 s (internal/web/q_frame.go); a failed read says so.
+let statusAt = 0, statusRow: Row | null = null, statusErr = '';
+async function statusLine(ctx: Ctx, live: boolean) {
+  let foot = document.getElementById('status-line');
+  if (!foot) {
+    foot = el('footer', { id: 'status-line', class: 'meta status-line', style: 'margin:1.5rem 0 .5rem;padding-top:.4rem;border-top:1px solid var(--line)' });
+    $('content').append(foot);
+  }
+  if (Date.now() - statusAt > 15000) {
+    try { statusRow = rowsOf(await get('frame/status'))[0] ?? null; statusErr = ''; }
+    catch (e) { if (e instanceof LoginRequired) return; statusRow = null; statusErr = e instanceof Error ? e.message : String(e); }
+    statusAt = Date.now();
+  }
+  if (loginShown) return;
+  const n = (k: string) => Number(statusRow?.[k] ?? 0);
+  const refresh = live ? (refreshSecs() > 0 ? 'every ' + (refreshChoices.find(([k]) => Number(k) === refreshSecs())?.[1] ?? refreshSecs() + ' s') : 'paused') : 'not on this page';
+  const items: (Node | string)[] = statusRow ? [
+    el('span', { 'data-part': 'instances' }, `${n('instances')} instances (${n('postgres')} PostgreSQL, ${n('sqlserver')} SQL Server)`),
+    el('span', { 'data-part': 'collections' }, 'collections: ', `${n('healthy')} healthy, `,
+      n('failing') ? el('a', { href: href(ctx, { tab: 'checks', instance: undefined, tag: undefined }) }, `${n('failing')} failing`) : '0 failing',
+      `, ${n('stale')} stale, ${n('not_collected')} not collected`, n('no_permission') ? `; ${n('no_permission')} without a permission` : ''),
+    el('span', { 'data-part': 'repository' }, `repository ${fmtBytes(statusRow.repository_bytes)}`),
+    el('span', { 'data-part': 'seat' }, `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
+    el('span', { 'data-part': 'newest' }, statusRow.newest_read ? `newest read ${fmtClock(new Date(String(statusRow.newest_read)))}` : 'no read yet'),
+    el('span', { 'data-part': 'refresh' }, `auto refresh ${refresh}`),
+  ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr)];
+  foot.replaceChildren(...items.flatMap((x, i) => i ? [' \u00b7 ', x] : [x]));
+}
+
 // showLogin replaces the page with the sign-in form; a successful sign-in renders the page asked for.
 function showLogin(message = '') {
   window.clearTimeout(timer);
@@ -195,6 +227,7 @@ function showLogin(message = '') {
   $('tabs').replaceChildren();
   $('bar').replaceChildren();
   $('crumb').replaceChildren();
+  document.getElementById('status-line')?.replaceChildren();
   const user = el('input', { name: 'username', autocomplete: 'username', required: '', autofocus: '', maxlength: '64' });
   const pass = el('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: '' });
   const err = el('p', { class: 'error' }, message);
@@ -229,6 +262,7 @@ async function signOut() {
 }
 
 let shownPage = '';   // the page main shows or is loading: the whole hash (tab, instance, tag, range, filters)
+let shownPath = '';   // its tab, instance and tag alone: another of them opens at the page's top (a range or a filter keeps the place)
 async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
@@ -318,6 +352,12 @@ async function render(force = false) {
   if (gen !== generation) return;
   destroyCharts();
   $('main').replaceChildren(view);
+  // another page (a link, the tree, a tab) opens at its top, wherever the reader stood on the page before (Allen
+  // 2026-11-11: 'when I click on something it takes me down to the page'); a range, a filter or a refresh of the same
+  // page keeps the place
+  const path = `${ctx.tab}|${ctx.instance ?? ''}|${ctx.tag ?? ''}`;
+  if (path !== shownPath) { shownPath = path; window.scrollTo(0, 0); }
+  void statusLine(ctx, livePage);
   const live = ctx.instance ? liveInstance : liveRoot;
   if (live.has(ctx.tab) && isLive(ctx) && !ctx.at && refreshSecs() > 0) {
     timer = window.setTimeout(() => { if (!document.hidden) void render(true); else timer = undefined; }, refreshSecs() * 1000);

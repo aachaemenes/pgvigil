@@ -2,7 +2,9 @@
 // inside a grid's row, the Summary's Tests pane header, a chart legend's isolation, the crosshair readout, the auto
 // refresh select, the filtered CSV export, a grid past its page, a pie's wedges, the status colours, the range
 // control with its calendar periods and display time zone, the time strip above an event grid, and a new page opened at
-// its top.
+// its top; and (task 152) a drag on a chart setting the page's range, one cursor across a page's charts, a setting change
+// marked on its instance's charts, clickable slices with a Top N and a pie menu, Pick series, the range's steps and its
+// typed form, the footer's status line, a second y axis and a server limit, the full-window view, the partial-window note.
 //   node scripts/frame-check.mjs <cdp port> <base url/> <download folder>
 // Prints one 'ok <case>: ...' line per case, or 'FAIL <case>: ...' and exits 1.
 const [port, base, dl] = process.argv.slice(2);
@@ -62,7 +64,8 @@ const menu = await ev(`(async () => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   return { items, openAfter: !!document.querySelector('.menu') };
 })()`);
-check('C menu', menu.items === `Copy cell|Copy row|Copy all ${a.n} rows shown` && !menu.openAfter, `${menu.items}; open after Escape elsewhere: ${menu.openAfter}`);
+// the grid's own three items first; the grid tools (gridtools.ts, task 153) add their lines after them
+check('C menu', menu.items.startsWith(`Copy cell|Copy row|Copy all ${a.n} rows shown|`) && !menu.openAfter, `${menu.items}; open after Escape elsewhere: ${menu.openAfter}`);
 const clip = [];
 for (const k of [0, 1, 2]) clip.push(await ev(`(async () => {
   const td = document.querySelector('main table.grid tbody td:nth-child(2)');
@@ -174,7 +177,8 @@ const cm = await ev(`(async () => {
   return { items, lines: lines.length, head: lines[0].split('\\t'), series: box.querySelectorAll('.u-legend .u-series').length - 1,
     note: box.querySelector('.chart-note')?.textContent ?? '', firstTime: (lines[1] ?? '').split('\\t')[0], name: b.getAttribute('aria-label') };
 })()`);
-check('M chart menu', !!cm && !cm.why && cm.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)' && cm.head[0] === 'time' && cm.head.length === cm.series + 1
+// a chart of two series or more adds Pick series (task 152)
+check('M chart menu', !!cm && !cm.why && cm.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)' + (cm.series >= 2 ? '|Pick series' : '') && cm.head[0] === 'time' && cm.head.length === cm.series + 1
   && cm.lines > 2 && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(cm.firstTime) && cm.note === `Copied ${cm.lines - 1} points` && String(cm.name).startsWith('Chart menu: '),
   cm?.why ?? `${cm.items.join('|')}; header ${cm.head.join(',')} for ${cm.series} series; ${cm.lines - 1} points from ${cm.firstTime}; note '${cm.note}'; named '${cm.name}'`);
 
@@ -320,7 +324,7 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
   const chartLocal = await chartClock();
   await send('Emulation.setTimezoneOverride', { timezoneId: '' });
   const ahead = chartTokyo && chartLocal ? (chartTokyo.tipMin - chartLocal.tipMin + 1440) % 1440 : -1;   // Tokyo is 17 h ahead of Los Angeles in November and 16 h in its summer
-  check('N range', !!shape && shape.groups === 'Quick ranges|Calendar periods|A start and an end' && shape.items === 12 && shape.zones > 2 && shape.expanded === 'true' && shape.inside
+  check('N range', !!shape && shape.groups === 'Quick ranges|Calendar periods|A start and an end|Type a range' && shape.items === 16 && shape.zones > 2 && shape.expanded === 'true' && shape.inside
     && local.from === '2026-01-15T04:00' && local.to === '2026-01-15T05:00' && local.tag === 'UTC-08:00'
     && zoneSet === 'ok' && tokyo.tag === 'UTC+09:00' && tokyo.from === '2026-01-15T21:00' && tokyo.to === '2026-01-15T22:00' && tokyo.title === tokyo.want && tokyo.stored === 'Asia/Tokyo' && tokyo.same
     && applied.get('from') === '2026-01-15T12:00:00.000Z' && applied.get('to') === '2026-01-15T14:00:00.000Z'
@@ -418,6 +422,328 @@ check('L colours', solid1.attr === null && solid1.ok === 'rgb(0, 102, 56)' && so
   }
   check('P new page at its top', !!low && low.tall && low.y > 0 && !!after && after.hash === low.href && after.seen && after.tall && after.y === 0,
     low ? `the Summary ${low.tall ? 'taller' : 'NOT taller'} than the window, scrolled to ${low.y} px; '${low.href}' clicked: ${after?.hash === low.href ? 'opened' : 'NOT opened'}, rendered ${after?.seen}, ${after?.tall ? 'taller' : 'NOT taller'} than the window, at ${after?.y} px` : 'no link to an instance Summary on the fleet Summary');
+}
+
+// ---- task 152 (K09.01-K09.03, part 1 J8): the footer, the range's steps and typed form, and the charts' frame
+const charts = () => ev(`[...document.querySelectorAll('main .chart')].filter(c => c.querySelector('.u-over')).map(c => ({ title: c.querySelector('h3')?.firstChild?.textContent ?? '', first: c.dataset.first, last: c.dataset.last }))`);
+const params = async () => new URLSearchParams((await ev(`location.hash`)).split('?')[1] ?? '');
+const waitCharts = async () => { for (let i = 0; i < 40; i++) { if (await ev(`document.querySelectorAll('main .u-over').length > 0 && !document.querySelector('main > p.empty[role=status]')`)) break; await sleep(250); } await sleep(600); };
+const fixedDay = (() => { const to = new Date(Math.floor(Date.now() / 60000) * 60000 - 3 * 60000); return { from: new Date(to.getTime() - 86400e3), to }; })();
+const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()}`;
+
+// Q. a drag across a chart sets the page's range: on erp01's Performance page over a fixed day, a drag from 40 % to 60 %
+// of the first chart's plot writes from / to into the address (whole minutes, within two minutes and a pixel's worth of
+// the dragged times read off the chart's own span), drops w=, and every chart of the page drawn again inside that range
+{
+  const erp = idOf('demo-onprem-erp01');
+  await go(`#/performance?i=${erp}&${dayQ}`); await waitCharts();
+  const before = await charts();
+  await ev(`document.querySelector('main .u-over').scrollIntoView({ block: 'center' }); 'ok'`); await sleep(200);
+  const r = await ev(`JSON.parse(JSON.stringify(document.querySelector('main .u-over').getBoundingClientRect()))`);
+  const y = r.top + r.height / 2, xa = r.left + 0.4 * r.width, xb = r.left + 0.6 * r.width;
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: xa, y });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: xa, y, button: 'left', buttons: 1, clickCount: 1 });
+  for (let k = 1; k <= 5; k++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: xa + k * (xb - xa) / 5, y, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: xb, y, button: 'left', buttons: 0, clickCount: 1 });
+  await sleep(500); await waitCharts();
+  const q = await params(), f = Date.parse(q.get('from') ?? ''), t = Date.parse(q.get('to') ?? '');
+  const c0 = before[0] ?? {}, s0 = Date.parse(c0.first), s1 = Date.parse(c0.last), px = (s1 - s0) / r.width;
+  const wantF = s0 + 0.4 * (s1 - s0), wantT = s0 + 0.6 * (s1 - s0), tol = 120e3 + 2 * px;
+  const after = await charts();
+  const inside = after.filter(c => Date.parse(c.first) >= f - (t - f) / 10 && Date.parse(c.last) <= t + (t - f) / 10).length;
+  check('Q drag sets the range', before.length >= 2 && !q.get('w') && Math.abs(f - wantF) <= tol && Math.abs(t - wantT) <= tol && f % 60000 === 0 && t % 60000 === 0
+    && (await ev(`location.hash.startsWith('#/performance?')`)) && after.length === before.length && inside === after.length,
+    `${before.length} charts; a drag over 40-60 % of '${c0.title}' wrote ${q.get('from')} to ${q.get('to')} (wanted about ${new Date(wantF).toISOString()} to ${new Date(wantT).toISOString()}, within ${Math.round(tol / 1000)} s), w=${q.get('w')}; after it ${inside} of ${after.length} charts drawn inside the range`);
+}
+
+// R. one cursor across the page: the pointer over the first chart's middle shows the readout on every chart of the page
+// whose span holds that moment, each naming the same time
+{
+  const erp = idOf('demo-onprem-erp01');
+  await go(`#/performance?i=${erp}&${dayQ}`); await waitCharts();
+  await ev(`document.querySelector('main .u-over').scrollIntoView({ block: 'center' }); 'ok'`); await sleep(200);
+  const r = await ev(`JSON.parse(JSON.stringify(document.querySelector('main .u-over').getBoundingClientRect()))`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: r.left + r.width * 0.5, y: r.top + r.height / 2 }); await sleep(400);
+  const tips = await ev(`[...document.querySelectorAll('main .u-over')].map(o => { const t = o.querySelector('.u-tip'); return t && !t.hidden ? (t.querySelector('.u-tip-time')?.textContent ?? '') : null; })`);
+  const shown = tips.filter(x => x !== null);
+  check('R one cursor', tips.length >= 2 && shown.length === tips.length && shown.every(x => x === shown[0]) && !!shown[0],
+    `${shown.length} of ${tips.length} charts show the readout, times ${[...new Set(shown)].join(' | ')}`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
+}
+
+// S. a setting change is drawn on its instance's charts: the first PostgreSQL instance whose frame read over the last
+// three days holds a 'setting' event; its Performance page over two hours either side: every chart whose span holds the
+// moment has a setting mark at that instant, named with the event's words, placed at the moment's share of the chart's
+// span (within 2 %); another instance's page over the same window draws exactly its own events; the mark opens its rows
+// (the Configuration page over ten minutes around it)
+{
+  const ids = inst.rows.filter(r => String(r[c.indexOf('engine')] ?? 'postgres') !== 'sqlserver').map(r => r[c.indexOf('instance_id')]);
+  const now = Date.now(), win = `from=${new Date(now - 3 * 86400e3 + 60e3).toISOString()}&to=${new Date(now).toISOString()}`;
+  let hit = null, other = null;
+  for (const id of ids) {
+    const d = await (await fetch(`${base}api/frame/events?instance=${id}&${win}`)).json();
+    const ev0 = (d.events?.rows ?? []).map(r => Object.fromEntries(d.events.columns.map((k, i) => [k, r[i]]))).find(e => e.kind === 'setting');
+    if (ev0 && !hit) hit = { id, ev: ev0 }; else if (!ev0 && !other) other = id;
+    if (hit && other) break;
+  }
+  let res = null, otherRes = null, opened = null;
+  if (hit) {
+    const at = Date.parse(hit.ev.at), w = `from=${new Date(at - 2 * 3600e3).toISOString()}&to=${new Date(at + 2 * 3600e3).toISOString()}`;
+    await go(`#/performance?i=${hit.id}&${w}`); await waitCharts(); await sleep(800);
+    res = await ev(`[...document.querySelectorAll('main .chart')].filter(c => c.querySelector('.u-over')).map(c => {
+      const s0 = Date.parse(c.dataset.first), s1 = Date.parse(c.dataset.last), o = c.querySelector('.u-over').getBoundingClientRect();
+      const m = [...c.querySelectorAll('a.chart-mark[data-kind="setting"]')].find(a => a.dataset.at === ${JSON.stringify(new Date(at).toISOString())});
+      const r = m ? m.getBoundingClientRect() : null, list = c.querySelector('details.chart-marks');
+      return { holds: s0 <= ${at} && ${at} <= s1, mark: !!m, label: m?.getAttribute('aria-label') ?? '', share: r ? ((r.left + r.width / 2) - o.left) / o.width : -1, want: (${at} - s0) / (s1 - s0),
+               untabbed: !!m && m.getAttribute('tabindex') === '-1', listed: !!list && [...list.querySelectorAll('a')].some(a => a.textContent.includes(${JSON.stringify(hit.ev.label)})) };
+    })`);
+    // another instance's page over the same window: its marks are its own events, every one of them in each chart's span
+    if (other) {
+      const d = await (await fetch(`${base}api/frame/events?instance=${other}&${w}`)).json();
+      const own = (d.events?.rows ?? []).map(r => new Date(r[d.events.columns.indexOf('at')]).toISOString());
+      await go(`#/performance?i=${other}&${w}`); await waitCharts(); await sleep(800);
+      const drawn = await ev(`[...document.querySelectorAll('main a.chart-mark')].map(a => a.dataset.at)`);
+      otherRes = { own: own.length, drawn: drawn.length, foreign: drawn.filter(x => !own.includes(x)).length };
+      await go(`#/performance?i=${hit.id}&${w}`); await waitCharts(); await sleep(800);
+    }
+    await ev(`(() => { const a = document.querySelector('main a.chart-mark[data-kind="setting"]'); if (a) a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); return 'ok'; })()`);
+    await sleep(600);
+    const q = await params();
+    opened = { hash: await ev(`location.hash.split('?')[0]`), from: q.get('from'), i: q.get('i') };
+  }
+  const holding = (res ?? []).filter(x => x.holds);
+  check('S setting mark', !!hit && holding.length >= 2 && holding.every(x => x.mark && x.untabbed && x.listed && x.label.includes(hit.ev.label) && x.label.startsWith('Setting change at ') && Math.abs(x.share - x.want) <= 0.02)
+    && (!other || (otherRes && otherRes.foreign === 0)) && !!opened && opened.hash === '#/config' && opened.i === String(hit.id) && Date.parse(opened.from) === Date.parse(hit.ev.at) - 5 * 60e3,
+    hit ? `instance ${hit.id}: '${hit.ev.label}' at ${hit.ev.at}; ${holding.filter(x => x.mark).length} of ${holding.length} charts holding it carry the mark, shares ${holding.map(x => `${x.share.toFixed(3)}/${x.want.toFixed(3)}`).join(' ')}; another instance (${other}): ${otherRes ? `${otherRes.drawn} marks drawn, ${otherRes.own} own events, ${otherRes.foreign} foreign` : 'none without a setting change'}; the mark opened ${opened?.hash} i=${opened?.i} from ${opened?.from}`
+        : 'no PostgreSQL instance with a setting change in the last three days');
+}
+
+// T. clickable slices, Top N and the pie's menu: on erp01's Database info page the 'Databases by size' wedge of a
+// database opens that database's page (the address the slice names); a pie of over five slices offers its Top N: Top 5
+// draws five wedges (four and 'other') and five legend rows, All draws every slice, the choice kept per browser; the pie
+// menu offers the four items and Copy data copies every slice under a header
+{
+  const erp = idOf('demo-onprem-erp01');
+  await go(`#/dbinfo?i=${erp}&w=24h`);
+  const slice = await ev(`(() => { const d = [...document.querySelectorAll('main .donut')].find(x => x.querySelector('h3')?.firstChild?.textContent === 'Databases by size'); if (!d) return null;
+    const w = d.querySelector('svg [data-href]'); if (!w) return { none: true }; const to = w.getAttribute('data-href');
+    w.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); return { to }; })()`);
+  await sleep(1500);
+  const landed = await ev(`({ hash: location.hash, page: !!document.querySelector('main section, main .grid-box') })`);
+  let top = null, menu = null;
+  for (const h of [`#/dbinfo?i=${erp}&w=24h`, `#/connections?i=${erp}&w=24h`, `#/storage?i=${erp}&w=7d`, `#/dbinfo?i=${idOf('demo-rds-orders01')}&w=24h`]) {
+    await go(h);
+    top = await ev(`(async () => { const d = [...document.querySelectorAll('main .donut')].find(x => x.querySelector('select.donut-top')); if (!d) return null;
+      const s = d.querySelector('select.donut-top'), title = d.querySelector('h3').firstChild.textContent, n = () => ({ wedges: d.querySelectorAll('svg path, svg circle').length, rows: d.querySelectorAll('tbody tr').length });
+      s.value = '5'; s.dispatchEvent(new Event('change')); await new Promise(r => setTimeout(r, 150)); const five = n();
+      const allOpt = [...s.options].find(o => o.value === '0'); s.value = '0'; s.dispatchEvent(new Event('change')); await new Promise(r => setTimeout(r, 150)); const every = n();
+      const stored = Object.keys(localStorage).filter(k => k.startsWith('pgvigil.topn.')).map(k => localStorage.getItem(k));
+      const b = d.querySelector('button.chart-menu'); b.click(); await new Promise(r => setTimeout(r, 150));
+      const items = [...document.querySelectorAll('.menu button')].map(x => x.textContent);
+      [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Copy data')?.click(); await new Promise(r => setTimeout(r, 400));
+      const lines = (await navigator.clipboard.readText()).split('\\n');
+      return { page: location.hash.split('?')[0], title, five, every, all: Number(allOpt.textContent.replace(/\\D/g, '')), stored, items, lines: lines.length, head: lines[0] }; })()`);
+    if (top) break;
+  }
+  check('T slices, Top N, pie menu', !!slice && !slice.none && landed.hash === slice.to && landed.page && !!top && top.five.wedges === 5 && top.five.rows === 5 && top.every.rows === top.all && top.every.wedges === top.all
+    && top.stored.includes('0') && top.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)' && top.lines === top.all + 1 && top.head === 'name\tsize\tshare_pct',
+    `${slice ? (slice.none ? 'no wedge with a page' : `the wedge opened ${landed.hash} (wanted ${slice.to}), rendered ${landed.page}`) : "no 'Databases by size' pie"}; ${top ? `${top.page} '${top.title}': Top 5 ${top.five.wedges} wedges / ${top.five.rows} rows, All ${top.every.wedges} / ${top.every.rows} of ${top.all}, stored ${top.stored.join(',')}; menu ${top.items.join('|')}; Copy data ${top.lines} lines '${top.head}'` : 'no pie over five slices on the pages tried'}`);
+}
+
+// U. Pick series: the chart menu's item opens a tick per series; unticking the first hides it on the legend, the choice
+// stays after the page is drawn again, All shows every series again, Done gives the focus back to the menu button
+{
+  const erp = idOf('demo-onprem-erp01');
+  await go(`#/performance?i=${erp}&${dayQ}`); await waitCharts();
+  const title = await ev(`[...document.querySelectorAll('main .chart')].find(c => c.querySelectorAll('.u-legend .u-series').length > 2)?.querySelector('h3').firstChild.textContent ?? null`);
+  const box = `[...document.querySelectorAll('main .chart')].find(c => c.querySelector('h3')?.firstChild?.textContent === ${JSON.stringify(title)})`;
+  const off = () => ev(`(() => { const c = ${box}; return c ? [...c.querySelectorAll('.u-legend .u-series')].slice(1).map(r => r.classList.contains('u-off')) : null; })()`);
+  let p1 = null, kept = null, back = null;
+  if (title) {
+    p1 = await ev(`(async () => { const c = ${box}; c.querySelector('button.chart-menu').click(); await new Promise(r => setTimeout(r, 150));
+      const it = [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Pick series'); if (!it) return { why: 'no Pick series' }; it.click(); await new Promise(r => setTimeout(r, 150));
+      const p = c.querySelector('fieldset.chart-pick'); const ticks = [...p.querySelectorAll('input[type=checkbox]')];
+      ticks[0].click(); await new Promise(r => setTimeout(r, 150));
+      return { ticks: ticks.length, focusIn: p.contains(document.activeElement) }; })()`);
+    const offNow = await off();
+    await ev(`document.dispatchEvent(new Event('visibilitychange')); 'ok'`); await sleep(2500); await waitCharts();
+    kept = await off();
+    back = await ev(`(async () => { const c = ${box}; c.querySelector('button.chart-menu').click(); await new Promise(r => setTimeout(r, 150));
+      [...document.querySelectorAll('.menu button')].find(x => x.textContent === 'Pick series').click(); await new Promise(r => setTimeout(r, 150));
+      const p = c.querySelector('fieldset.chart-pick'); [...p.querySelectorAll('button')].find(b => b.textContent === 'All').click(); await new Promise(r => setTimeout(r, 150));
+      [...p.querySelectorAll('button')].find(b => b.textContent === 'Done').click(); await new Promise(r => setTimeout(r, 150));
+      return { open: !!c.querySelector('fieldset.chart-pick'), focus: document.activeElement === c.querySelector('button.chart-menu') }; })()`);
+    p1 = { ...p1, offNow };
+  }
+  const all = await off();
+  check('U pick series', !!title && !!p1 && !p1.why && p1.ticks >= 2 && p1.offNow[0] === true && p1.offNow.slice(1).every(x => !x) && kept?.[0] === true && !!back && !back.open && back.focus && all.every(x => !x),
+    title ? (p1?.why ?? `'${title}': ${p1.ticks} ticks; the first unticked: legend off ${JSON.stringify(p1.offNow)}; drawn again ${JSON.stringify(kept)}; All then Done: closed ${!back?.open}, focus on the menu button ${back?.focus}, legend ${JSON.stringify(all)}`) : 'no chart of three series or more on Performance');
+}
+
+// V. the range's steps: on a fixed hour 12:00-13:00 UTC, Earlier is 11:00-12:00, Later back to 12:00-13:00, Zoom out
+// 11:30-13:30, the key [ is Earlier; on the preset 1h Later is disabled and Zoom out is the preset 4h (the next at least
+// twice as long); the key ] on a page whose range ends now leaves it as it is
+{
+  const at = s => Date.parse(`2026-01-15T${s}:00.000Z`);
+  const press = async name => { await ev(`document.querySelector('#bar .range button[aria-label^=${JSON.stringify(name)}]').click(); 'ok'`); await sleep(700); const q = await params(); return [Date.parse(q.get('from') ?? ''), Date.parse(q.get('to') ?? ''), q.get('w')]; };
+  await go('#/summary?from=2026-01-15T12:00:00.000Z&to=2026-01-15T13:00:00.000Z');
+  const e1 = await press('Earlier'), l1 = await press('Later'), z1 = await press('Zoom out');
+  await go('#/summary?from=2026-01-15T12:00:00.000Z&to=2026-01-15T13:00:00.000Z');
+  await ev(`document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'`); await sleep(700);
+  const k1 = await params();
+  await go('#/summary?w=1h');
+  const dis = await ev(`document.querySelector('#bar .range button[aria-label^="Later"]').disabled`);
+  const zp = await press('Zoom out');
+  await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true, cancelable: true })); 'ok'`); await sleep(500);
+  const kp = await params();
+  check('V range steps', e1[0] === at('11:00') && e1[1] === at('12:00') && l1[0] === at('12:00') && l1[1] === at('13:00') && z1[0] === at('11:30') && z1[1] === at('13:30')
+    && Date.parse(k1.get('from')) === at('11:00') && dis === true && zp[2] === '4h' && kp.get('w') === '4h',
+    `Earlier ${new Date(e1[0]).toISOString()}-${new Date(e1[1]).toISOString()}; Later ${new Date(l1[0]).toISOString()}-${new Date(l1[1]).toISOString()}; Zoom out ${new Date(z1[0]).toISOString()}-${new Date(z1[1]).toISOString()}; key [ from ${k1.get('from')}; on 1h: Later disabled ${dis}, Zoom out w=${zp[2]}, key ] w=${kp.get('w')}`);
+}
+
+// W. the typed range: 'now-6h' previews 'follows now' and Enter makes w=6h; 'now-1d/d to now/d' is yesterday (24 h, from
+// the zone's midnight before) as a fixed range; 'soon' is refused in the preview and the address stays as it was
+{
+  await go('#/summary?w=1h');
+  const panel = `document.querySelector('#bar [role="dialog"][aria-label="Time range"]')`;
+  const open = async () => { if (!(await ev(`!!${panel}`))) await ev(`document.querySelector('#bar [aria-haspopup="dialog"]').click(); 'ok'`); await sleep(150); };
+  const type = async (t, enter) => { await open(); return ev(`(async () => { const i = ${panel}.querySelector('input.range-typed'); i.value = ${JSON.stringify(t)}; i.dispatchEvent(new Event('input'));
+    const pv = ${panel}.querySelector('#range-typed-preview').textContent; if (${!!enter}) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 700)); return pv; })()`); };
+  const pv6 = await type('now-6h', true); const q6 = await params();
+  const pvy = await type('now-1d/d to now/d', true); const qy = await params();
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const before = await ev(`location.hash`);
+  const pvb = await type('soon', true); const after = await ev(`location.hash`);
+  await ev(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'`);
+  check('W typed range', pv6.endsWith(', follows now') && q6.get('w') === '6h' && /\(1d\)$/.test(pvy) && !qy.get('w') && Date.parse(qy.get('to')) === midnight.getTime() && Date.parse(qy.get('to')) - Date.parse(qy.get('from')) === 86400e3
+    && pvb.startsWith('not a time') && before === after,
+    `'now-6h': '${pv6}', w=${q6.get('w')}; 'now-1d/d to now/d': '${pvy}', ${qy.get('from')} to ${qy.get('to')}; 'soon': '${pvb}', address kept ${before === after}`);
+}
+
+// X. the footer's status line: on the Summary the instances as /api/instances counts them, the collections, the
+// repository's size, the seat, the newest read and 'auto refresh every 30 s'; on a fixed window of Performance 'auto
+// refresh not on this page'
+{
+  await go('#/summary?w=1h'); await sleep(500);
+  const part = k => `document.querySelector('#status-line [data-part="${k}"]')?.textContent ?? ''`;
+  const sum = await ev(`({ landmark: document.querySelector('#status-line')?.tagName, inst: ${part('instances')}, col: ${part('collections')}, repo: ${part('repository')}, seat: ${part('seat')}, newest: ${part('newest')}, refresh: ${part('refresh')} })`);
+  await go(`#/performance?i=${idOf('demo-onprem-erp01')}&${dayQ}`); await sleep(500);
+  const perf = await ev(part('refresh'));
+  // the seat as the server's acknowledgement route says it (writable), the door's word as the actions log route
+  // refuses or not; the frame routes refuse a missing instance and a window over 31 days (400)
+  const ack = await (await fetch(`${base}api/ack?part=acks`)).json();
+  const seatWant = `${ack.writable ? 'read-write' : 'read only'}, actions `;
+  const noInst = (await fetch(`${base}api/frame/events`)).status;
+  const tooLong = (await fetch(`${base}api/frame/events?instance=1&from=2026-01-01T00:00:00Z&to=2026-02-02T00:00:00Z`)).status;
+  check('X footer', sum.landmark === 'FOOTER' && sum.inst.startsWith(`${inst.rows.length} instances (`) && /^collections: \d+ healthy, /.test(sum.col) && /^repository \d/.test(sum.repo)
+    && sum.seat.startsWith(seatWant) && /actions (on|off)$/.test(sum.seat) && sum.newest.startsWith('newest read ') && sum.refresh === 'auto refresh every 30 s' && perf === 'auto refresh not on this page'
+    && noInst === 400 && tooLong === 400,
+    `${sum.inst} · ${sum.col} · ${sum.repo} · ${sum.seat} (the ack route: writable ${ack.writable}) · ${sum.newest} · ${sum.refresh}; Performance: '${perf}'; /api/frame/events without an instance ${noInst}, over 32 days ${tooLong}`);
+}
+
+// Y. a second y axis and a server limit: erp01's Transactions chart draws three axes, the right one written
+// 'rollbacks/s'; its Connections page's chart names the limit max_connections at the frame read's value, drawn as a line
+// when it lies within four times the chart's peak and named 'above the chart' otherwise
+{
+  const erp = idOf('demo-onprem-erp01');
+  await go(`#/performance?i=${erp}&${dayQ}`); await waitCharts();
+  const tx = await ev(`(() => { const c = [...document.querySelectorAll('main .chart')].find(x => (x.querySelector('h3')?.textContent ?? '').startsWith('Transactions per second')); if (!c) return null;
+    return { axes: c.querySelectorAll('.u-axis').length, note: c.querySelector('.chart-notes')?.textContent ?? '' }; })()`);
+  // the CPU chart's two thresholds (the host check's 90 % and 98 %): drawn as lines inside the plot, at their values'
+  // heights in order (98 above 90), and named under the chart
+  const th = await ev(`(() => { const c = [...document.querySelectorAll('main .chart')].find(x => (x.querySelector('h3')?.textContent ?? '').startsWith('CPU (')); if (!c) return null;
+    const o = c.querySelector('.u-over').getBoundingClientRect(), ls = [...c.querySelectorAll('.chart-line[data-kind="threshold"]')];
+    return { n: ls.length, values: ls.map(l => l.dataset.value), tops: ls.map(l => l.getBoundingClientRect().top - o.top), h: o.height, note: c.querySelector('.chart-notes')?.textContent ?? '' }; })()`);
+  // every PostgreSQL instance's Connections page in turn, until one draws its limit as a line: each must name its
+  // max_connections at the frame read's value, drawn as a line at that value or said to be above the chart
+  const pgIds = inst.rows.filter(r => String(r[c.indexOf('engine')] ?? 'postgres') !== 'sqlserver').map(r => r[c.indexOf('instance_id')]);
+  const seen = [];
+  for (const id of pgIds) {
+    const fr = await (await fetch(`${base}api/frame/events?instance=${id}&${dayQ}`)).json();
+    const mc = (fr.limits?.rows ?? []).find(r => r[0] === 'max_connections')?.[1];
+    await go(`#/connections?i=${id}&${dayQ}`); await waitCharts(); await sleep(800);
+    const lim = await ev(`(() => { const c = [...document.querySelectorAll('main .chart')].find(x => x.querySelector('.u-over')); if (!c) return null;
+      const l = c.querySelector('.chart-line[data-kind="limit"]'), o = c.querySelector('.u-over').getBoundingClientRect();
+      return { note: c.querySelector('.chart-notes')?.textContent ?? '', line: l?.dataset.value ?? null, inside: l ? l.getBoundingClientRect().top >= o.top - 1 && l.getBoundingClientRect().top <= o.bottom + 1 : null }; })()`);
+    if (!lim) continue;
+    const named = mc != null && lim.note.includes(`limit max_connections ${Number(mc).toLocaleString()}`);
+    seen.push({ id, mc, named, drawn: lim.line === String(Number(mc)) && lim.inside === true, above: lim.line === null && lim.note.includes('above the chart') });
+    if (seen[seen.length - 1].drawn) break;
+  }
+  const drawnOne = seen.find(x => x.drawn);
+  const t90 = th ? th.tops[th.values.indexOf('90')] : NaN, t98 = th ? th.tops[th.values.indexOf('98')] : NaN;
+  check('Y second axis, threshold, limit', !!tx && tx.axes === 3 && tx.note.includes('Left axis: commits/s (commits/s); right axis: rollbacks/s (rollbacks/s).')
+    && !!th && th.n === 2 && t98 >= 0 && t98 < t90 && t90 <= th.h && th.note.includes('threshold warning 90 %, threshold critical 98 %')
+    && seen.length > 0 && seen.every(x => x.named && (x.drawn || x.above)),
+    `Transactions: ${tx?.axes} axes, '${tx?.note}'; CPU: ${th?.n} threshold lines ${th?.values?.join(',')} at ${th?.tops?.map(Math.round).join(',')} px of ${Math.round(th?.h)}, note '${th?.note}'; Connections: ${seen.map(x => `i=${x.id} max_connections ${x.mc} ${x.drawn ? 'drawn' : x.above ? 'above the chart' : 'NEITHER'}${x.named ? '' : ' (not named)'}`).join('; ')}${drawnOne ? '' : '; no instance drew its limit as a line'}`);
+}
+
+// Z. the full-window view: the button draws the chart over the window (fixed, the plot at least the window's width less
+// 100 px), aria-pressed true; Escape puts it back at its width with the focus on the button
+{
+  await go(`#/performance?i=${idOf('demo-onprem-erp01')}&${dayQ}`); await waitCharts();
+  const fw = await ev(`(async () => { const c = document.querySelector('main .chart'); const b = c.querySelector('button.chart-full'); if (!b) return null; const w0 = c.querySelector('canvas').getBoundingClientRect().width;
+    b.click(); await new Promise(r => setTimeout(r, 300)); const on = { pos: getComputedStyle(c).position, w: c.querySelector('canvas').getBoundingClientRect().width, pressed: b.getAttribute('aria-pressed') };
+    document.dispatchEvent(new Event('visibilitychange')); await new Promise(r => setTimeout(r, 3000));   // the page drawn again: the chart opens full again
+    const c2 = document.querySelector('main .chart'), b2 = c2.querySelector('button.chart-full');
+    const again = { fresh: c2 !== c, pos: getComputedStyle(c2).position, pressed: b2.getAttribute('aria-pressed') };
+    b2.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 300));
+    return { w0, on, again, pos: getComputedStyle(c2).position, w1: c2.querySelector('canvas').getBoundingClientRect().width, pressed: b2.getAttribute('aria-pressed'), focus: document.activeElement === b2, inner: innerWidth }; })()`);
+  check('Z full window', !!fw && fw.on.pos === 'fixed' && fw.on.w >= fw.inner - 100 && fw.on.pressed === 'true' && fw.again.fresh && fw.again.pos === 'fixed' && fw.again.pressed === 'true'
+    && fw.pos !== 'fixed' && Math.abs(fw.w1 - fw.w0) <= 1 && fw.pressed === 'false' && fw.focus,
+    fw ? `full: ${fw.on.pos}, ${Math.round(fw.on.w)} of ${fw.inner} px, pressed ${fw.on.pressed}; drawn again: a new chart ${fw.again.fresh}, ${fw.again.pos}, pressed ${fw.again.pressed}; Escape: ${fw.pos}, ${Math.round(fw.w1)} px (was ${Math.round(fw.w0)}), pressed ${fw.pressed}, focus on the button ${fw.focus}` : 'no full-window button');
+}
+
+// AA. the partial-window note: erp01's Performance page over a day that starts a day before the demo's first read says
+// where its data starts; over a day inside the seeded days the note is absent
+{
+  const erp = idOf('demo-onprem-erp01');
+  const t = Date.now() - 2 * 86400e3, early = `from=${new Date(t - 2 * 86400e3).toISOString()}&to=${new Date(t).toISOString()}`;
+  await go(`#/performance?i=${erp}&${early}`); await waitCharts();
+  const late = await ev(`[...document.querySelectorAll('main .chart .chart-notes')].map(n => n.textContent).filter(t => t.includes('The data starts at')).length`);
+  await go(`#/performance?i=${erp}&${dayQ}`); await waitCharts();
+  const inside = await ev(`[...document.querySelectorAll('main .chart .chart-notes')].map(n => n.textContent).filter(t => t.includes('The data starts at')).length`);
+  const n = (await charts()).length;
+  // a window of the half hour before the first read and 90 s after it: under three reads, said under the charts
+  await go(`#/performance?i=${erp}&${early}`); await waitCharts();
+  // the two-day page's first point is the start of a coarse step: twelve minutes from it, read by the minute, name the
+  // first read itself
+  // the API's own rows over the half hour after that point name the first read itself
+  const coarse = Date.parse((await charts())[0]?.first ?? '');
+  let first = NaN, few = -1;
+  if (!Number.isNaN(coarse)) {
+    const pr = await (await fetch(`${base}api/performance?instance=${erp}&from=${new Date(coarse - 60e3).toISOString()}&to=${new Date(coarse + 30 * 60e3).toISOString()}`)).json();
+    // the reads' parts only: the grid part is every step of the window, read or not
+    const ts = ['cpu', 'sessions', 'db'].map(k => pr[k]).filter(t => t && Array.isArray(t.columns) && t.columns.includes('snapshot_at') && t.rows.length)
+      .flatMap(t => t.rows.map(r => Date.parse(r[t.columns.indexOf('snapshot_at')])));
+    first = ts.length ? Math.min(...ts) : NaN;
+  }
+  if (!Number.isNaN(first)) {
+  await go(`#/performance?i=${erp}&from=${new Date(first - 1800e3).toISOString()}&to=${new Date(first + 90e3).toISOString()}`); await sleep(1500);
+  few = await ev(`[...document.querySelectorAll('main .chart')].map(c => c.querySelector('.chart-notes')?.textContent || c.querySelector('p.empty')?.textContent || '').filter(t => /Only (one|1|2) read|needs two/.test(t)).length`);
+  }
+  // the Storage page on 30 days: a chart of the page's window starts late (the demo holds three days), the chart of
+  // its own days does not say so
+  await go(`#/storage?i=${erp}&w=30d`); await waitCharts();
+  const st = await ev(`[...document.querySelectorAll('main .chart')].filter(c => c.querySelector('.u-over')).map(c => ({ t: c.querySelector('h3')?.firstChild?.textContent ?? '', late: (c.querySelector('.chart-notes')?.textContent ?? '').includes('The data starts at') }))`);
+  const own = st.filter(x => x.t.startsWith('Database sizes')), wal = st.find(x => x.t === 'WAL directory');
+  check('AA partial window', late >= 1 && inside === 0 && few >= 1 && own.length >= 1 && own.every(x => !x.late) && !!wal && wal.late,
+    `a window starting a day before the first read: ${late} chart(s) note where the data starts; a seeded day: ${inside} of ${n} charts; the half hour before the first read (${Number.isNaN(first) ? 'NOT FOUND' : new Date(first).toISOString()}) and 90 s after it: ${few} chart(s) say under three reads; Storage on 30 days: ${own.map(x => `'${x.t}' ${x.late ? 'NOTED' : 'no note'}`).join(', ') || 'no own-span chart'}, 'WAL directory' ${wal ? (wal.late ? 'noted late' : 'NOT noted') : 'absent'}`);
+}
+
+// AB. a SQL Server instance's deadlocks marked: sql01's frame read over the fixed day holds as many deadlock marks as its
+// deadlock read (api/mssql/xe part=deadlocks) and its Performance page draws them on a chart, in the chart's list too
+{
+  const sql = idOf('demo-onprem-sql01');
+  const fr = await (await fetch(`${base}api/frame/events?instance=${sql}&${dayQ}`)).json();
+  const marks = (fr.events?.rows ?? []).filter(r => r[fr.events.columns.indexOf('kind')] === 'deadlock').length;
+  const dl = await (await fetch(`${base}api/mssql/xe?instance=${sql}&part=deadlocks&${dayQ}`)).json();
+  const nDl = dl.deadlocks?.rows?.length ?? 0;
+  await go(`#/performance?i=${sql}&${dayQ}`); await waitCharts(); await sleep(800);
+  const drawn = await ev(`Math.max(0, ...[...document.querySelectorAll('main .chart')].map(c => c.querySelectorAll('a.chart-mark[data-kind="deadlock"]').length))`);
+  const href0 = await ev(`document.querySelector('main a.chart-mark[data-kind="deadlock"]')?.getAttribute('href') ?? ''`);
+  check('AB SQL Server deadlock marks', nDl >= 1 && marks === nDl && drawn >= 1 && drawn <= marks && href0.startsWith('#/mssql_deadlocks?'),
+    `sql01: ${nDl} deadlocks in the read, ${marks} deadlock marks in the frame read, ${drawn} drawn on the busiest chart, the first opens ${href0.split('&')[0]}`);
 }
 
 ws.close();
