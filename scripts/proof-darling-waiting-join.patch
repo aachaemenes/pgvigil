@@ -1,0 +1,114 @@
+diff --git i/internal/web/web.go w/internal/web/web.go
+index d52ae05..1d4197c 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -281,6 +281,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/running/fleet", s.RunningFleet)
+ 	api.HandleFunc("GET /api/running/snapshots", s.RunningSnapshots)
+ 	api.HandleFunc("GET /api/mssql/waits", s.MssqlWaits)
++	api.HandleFunc("GET /api/waiting", s.Waiting) // the Waiting tasks tab of either engine (task 177)
+ 	api.HandleFunc("GET /api/mssql/availability", s.MSSQLAvailability)
+ 	api.HandleFunc("GET /api/mssql/jobs", s.MSSQLJobs)
+ 	api.HandleFunc("GET /api/jobs/history", s.JobsHistory)
+diff --git i/web/src/main.ts w/web/src/main.ts
+index 5352f50..5d62eed 100644
+--- i/web/src/main.ts
++++ w/web/src/main.ts
+@@ -13,6 +13,7 @@ import { backupsView } from './backups';
+ import { corruptionView } from './corruption';
+ import { pgBackupsView, pgBaseBackupsFleetSection, pgReplicationFleetView, pgStateView, pgThresholdsView } from './pg_backups';
+ import { dbadashView } from './dbadash';
++import { mssqlWaitingView, pgWaitingView } from './darling_waiting';
+ import { alertsView } from './alerts';
+ import { alertRulesView } from './alert_rules';
+ import { alertPageView } from './alert_page';
+@@ -82,7 +83,7 @@ type Render = (c: Ctx) => Promise<HTMLElement>;
+ // a SQL Server instance's pages (router.ts mssqlInstanceTabs); the Availability page ends with AlwaysOn_health's events
+ const mssqlPages: Record<string, Render> = {
+   summary: mssqlSummary, findings: c => findings(c), performance: performanceView,
+-  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
++  mssql_running: mssqlRunningView, mssql_waits: mssqlWaitsView, mssql_waiting: mssqlWaitingView, mssql_deadlocks: mssqlDeadlocksView, mssql_blocked: mssqlBlocked, mssql_slow: async c => { const s = await mssqlSlow(c); s.append(slowGroupsPanel(c)); return s; },
+   jobstimeline: jobsTimelineView,
+   availability: async c => { const s = await mssqlAvailability(c); s.append(await mssqlAgEvents(c)); return s; },
+   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
+@@ -115,6 +116,7 @@ const instancePages: Record<string, Render> = {
+   roles: c => rolesView(c.instance!),
+   slowqueries: slowView,
+   waits: waitsView,
++  waiting: pgWaitingView,
+   indexes: c => indexesView(c.instance!, c),
+   schema: c => schemaView(c.instance!, c),
+   plans: plansView,
+diff --git i/web/src/mssql_waits.ts w/web/src/mssql_waits.ts
+index 9912274..a981054 100644
+--- i/web/src/mssql_waits.ts
++++ w/web/src/mssql_waits.ts
+@@ -9,6 +9,7 @@ import { neutralColor, seriesColors } from './chart';
+ import { get, Row, rowsOf, Table } from './api';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
++import { waitingLink } from './darling_waiting';
+ 
+ interface WaitsData { state: Table | null; reads: Table | null; events: Table | null; series: Table | null }
+ interface WaitInfo { cores: Table | null; rates: Table | null; types: Table | null; families: Table | null }
+@@ -18,7 +19,7 @@ const msSecs = (v: unknown) => v == null ? '' : fmtSecs(Math.round(Number(v) / 1
+ const pct = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
+ 
+ const eventCols: Col[] = [
+-  { key: 'wait_type', label: 'wait type', fmt: v => String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v) },
++  { key: 'wait_type', label: 'wait type', fmt: v => waitingLink(String(v), String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v)) },
+   { key: 'category', fmt: (v, r) => r.is_benign ? badge(String(v), '') : String(v ?? '') },
+   { key: 'wait_ms', label: 'wait time', num: true, fmt: msSecs },
+   { key: 'pct', label: 'share', num: true, fmt: pct },
+diff --git i/web/src/router.ts w/web/src/router.ts
+index 2e96cb4..f139bf1 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -49,7 +49,7 @@ export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks
+ export const instanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
+   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+-  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', pgbackups: 'Base backups', pgstate: 'Server state', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', pg_deadlocks: 'Deadlocks', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
++  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', pgbackups: 'Base backups', pgstate: 'Server state', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', waiting: 'Waiting backends', pg_deadlocks: 'Deadlocks', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
+ };
+ const legacy: Record<string, string> = { overview: 'checks' };
+ 
+@@ -67,7 +67,7 @@ export const rootGroups: TabGroup[] = [
+   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+ ];
+ export const instanceGroups: TabGroup[] = [
+-  { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
++  { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'waiting', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
+   { key: 'checks', name: 'Checks', tabs: ['corruption', 'vacuum', 'indexes', 'custom', 'pgstate'] },
+   { key: 'conf', name: 'Configuration', tabs: ['config', 'pgdboptions', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
+   { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
+@@ -78,7 +78,7 @@ export const instanceGroups: TabGroup[] = [
+ // A SQL Server instance has its own pages (the engine of the instance chooses the tab set; a PostgreSQL page is
+ // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
+ export const mssqlInstanceTabs: Record<string, string> = {
+-  summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_deadlocks: 'Deadlocks',
++  summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
+   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+   mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+@@ -86,7 +86,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
+ };
+ export const mssqlInstanceGroups: TabGroup[] = [
+-  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
++  { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_waiting', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
+   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
+   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
+   { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
+@@ -190,6 +190,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
+     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+     for (const k of ['dr', 'di']) { const v = cur.get(k); if (v) q.set(k, v); }
+   }
++  // the Waiting tasks tab's read and wait type (darling_waiting.ts) stay on its own links
++  if (keep && (c.tab === 'mssql_waiting' || c.tab === 'waiting')) {
++    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
++    for (const k of ['at', 'wt']) { const v = cur.get(k); if (v) q.set(k, v); }
++  }
+   // the alert page's key, firing time and view (alert_page.ts) stay on its own links: a range change keeps the alert
+   if (keep && c.tab === 'alert') {
+     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
