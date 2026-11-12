@@ -158,3 +158,27 @@ func TestStopCutRun(t *testing.T) {
 		t.Errorf("a timeout is a failure: %+v", b.Runs)
 	}
 }
+
+// TestSkipEndsStreak: a skipped run after failures (the login refused, then a collection that skips on this target)
+// ends the streak, a stored one too, and is not counted as a run; a skip with no failing streak writes nothing.
+func TestSkipEndsStreak(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{
+		{"t2", "host"}: {fails: 7, lastErr: "refused", fresh: true}}}
+	now := time.Now()
+	skip := Result{Note: " (skipped: no system_stats)"}
+	h.record("t2", "postgres", "host", skip, now)
+	h.record("t2", "postgres", "jobs", Result{Err: errors.New("connect t2: refused")}, now)
+	h.record("t2", "postgres", "jobs", skip, now)
+	h.record("t1", "postgres", "host", skip, now)
+	b := h.take()
+	got := map[string]int{}
+	for _, s := range b.Streaks {
+		got[s.Instance+"/"+s.Collection] = s.Fails
+	}
+	if len(got) != 2 || got["t2/host"] != 0 || got["t2/jobs"] != 0 {
+		t.Errorf("streaks after the skips: %v", got)
+	}
+	if len(b.Runs) != 1 || b.Runs[0].Runs != 1 || b.Runs[0].Failures != 1 {
+		t.Errorf("a skip was counted as a run: %+v", b.Runs)
+	}
+}

@@ -365,8 +365,10 @@ SELECT l.instance_id, 'critical', 'authentication failing', 'login refused', tru
 HAVING sum(l.auth_failures) > 0
    AND max(l.minute) FILTER (WHERE l.auth_failures > 0) >= coalesce(max(l.minute) FILTER (WHERE l.opened > 0 AND l.auth_failures = 0), '-infinity')
 UNION ALL
--- two runs of `pgvigil run` collecting one instance in the same minute, in at least 2 of the last 10 complete minutes
--- (a restart overlaps one minute at most): both write every collection, cursor imports twice
+-- two runs of `pgvigil run` live at once collecting one instance in the same minute, in at least 2 of the last 10
+-- complete minutes: both write every collection, cursor imports twice. A run whose stop mark is at or before the
+-- other's start is a restart, not a second collector (two clean restarts in 10 minutes raise nothing); a crash
+-- (no stop mark) overlaps its replacement for one minute at most
 SELECT d.instance_id, 'critical', 'collected by more than one collector', d.collectors::text || ' collectors', true,
        'one collector per instance', 'all',
        'the same minutes from ' || hh.hosts || ': each collection is written twice (logs, job history and every cursor import twice)',
@@ -374,7 +376,13 @@ SELECT d.instance_id, 'critical', 'collected by more than one collector', d.coll
   FROM (SELECT x.instance_id, max(x.n) AS collectors, max(x.minute) AS last_minute
           FROM (SELECT l.instance_id, l.minute, count(DISTINCT l.collector_id) AS n
                   FROM pgvigil.collector_load l
+                  JOIN pgvigil.collector_heartbeat ha ON ha.collector_id = l.collector_id
                  WHERE l.minute >= now() - interval '10 minutes' AND l.minute < date_trunc('minute', now())
+                   AND EXISTS (SELECT 1 FROM pgvigil.collector_load o
+                                 JOIN pgvigil.collector_heartbeat hb ON hb.collector_id = o.collector_id
+                                WHERE o.instance_id = l.instance_id AND o.minute = l.minute AND o.collector_id <> l.collector_id
+                                  AND NOT coalesce(ha.stopped_at <= hb.started_at, false)
+                                  AND NOT coalesce(hb.stopped_at <= ha.started_at, false))
                  GROUP BY l.instance_id, l.minute
                 HAVING count(DISTINCT l.collector_id) > 1) x
          GROUP BY x.instance_id

@@ -79,14 +79,12 @@ func RecordRun(instance, engine, collection string, res Result) {
 	}
 }
 
-// skipped: a run that did not try (a skip note), or one a stop cut short (context.Canceled: the process or the
-// instance's loop ending), which is no failure of the instance.
-func skipped(res Result) bool {
-	if res.Err != nil {
-		return errors.Is(res.Err, context.Canceled)
-	}
-	return strings.Contains(res.Note, "skipped")
-}
+// cutShort: a run a stop cut short (context.Canceled: the process or the instance's loop ending) - no failure of the
+// instance, and nothing is counted for it.
+func cutShort(res Result) bool { return res.Err != nil && errors.Is(res.Err, context.Canceled) }
+
+// skipped: a run that did not try (a skip note) - no run and no failure; it ends a failing streak it finds.
+func skipped(res Result) bool { return res.Err == nil && strings.Contains(res.Note, "skipped") }
 
 // CountConnect counts one connection attempt to an instance: opened when err is nil, a login refused when the server
 // said so (AuthFailure). Every collection's connect calls it (connectCounted; the SQL Server connector directly).
@@ -143,11 +141,19 @@ func bucket(d time.Duration) int {
 }
 
 func (h *Heartbeat) record(instance, engine, collection string, res Result, now time.Time) {
-	if skipped(res) {
+	if cutShort(res) {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if skipped(res) {
+		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
+		// a setting changed - is failing no more: its streak (a stored one too) ends at 0 and is written
+		if s := h.streaks[[2]string{instance, collection}]; s != nil && s.fails > 0 {
+			s.fails, s.lastErr, s.at, s.dirty, s.fresh = 0, "", now, true, false
+		}
+		return
+	}
 	l := h.loadOf(instance)
 	failed := res.Err != nil
 	l.runs++
