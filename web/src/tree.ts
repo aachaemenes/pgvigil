@@ -268,12 +268,45 @@ function state(l: Load, depth: number, empty: string): HTMLElement | null {
   return null;
 }
 
+// customReports: the Custom reports node of a Reports folder (task 170's saved reports, /api/customreports, read once for
+// the whole tree), laid out as DBA Dash lays out its Reports folder (SQLTreeItem.PopulateReportsFolder): the sub folders
+// first by name, then the reports by name; a report's folder path ('Ops/Daily') makes its folders. Under an instance
+// only the reports of its engine; at the root every report. The node's name opens the Custom reports page, a report
+// #/customreports?report=N (&i= under an instance).
+function customReports(ctx: Ctx, key: string, label: string, depth: number, base: string, on: boolean, id?: number, engine?: unknown): HTMLElement {
+  const withReport = (n: unknown) => { const [p, q] = base.split('?'); const u = new URLSearchParams(q ?? ''); u.set('report', String(n)); return `${p}?${u}`; };
+  const scoped = id === undefined ? !ctx.instance : ctx.instance === id;
+  const cur = ctx.tab === 'customreports' && scoped ? hashParam('report') : undefined;
+  const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+  const level = (rows: Row[], path: string, d: number): HTMLElement[] => {
+    const sub = new Set<string>();
+    for (const r of rows) {
+      const f = String(r.folder ?? '');
+      if (path ? f.startsWith(path + '/') : f !== '') sub.add(f.slice(path ? path.length + 1 : 0).split('/')[0]);
+    }
+    return [
+      ...[...sub].sort(byName).map(n => { const p = path ? `${path}/${n}` : n; return folder(`${key}/${p}`, n, d, () => level(rows, p, d + 1)); }),
+      ...rows.filter(r => String(r.folder ?? '') === path).sort((a, b) => byName(String(a.name), String(b.name))).map(r =>
+        el('div', { style: nodeStyle(d) }, leaf(String(r.name), withReport(r.report_id), cur === String(r.report_id), String(r.description || r.name)))),
+    ];
+  };
+  return folder(key, label, depth, () => {
+    const l = loaded('customreports', async () => rowsOf((await get<{ reports: Table | null }>('customreports')).reports));
+    const want = id === undefined ? undefined : isMssql(engine) ? 'sqlserver' : 'postgres';
+    const rows = l.rows?.filter(r => want === undefined || r.engine === want);
+    const s = state({ ...l, rows }, depth + 1, 'No saved report.');
+    return s ? [s] : level(rows!, '', depth + 1);
+  }, base, on && cur === undefined, on);
+}
+
 // instanceFolders: what opens under an instance node
 function instanceFolders(ctx: Ctx, id: number, depth: number, engine?: unknown): HTMLElement[] {
   const here = ctx.instance === id;
   const tabLink = (tab: string) => href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined });
   const tabFolder = (k: string, name: string, tabs: [string, string][]) =>
-    folder(`i${id}/${k}`, name, depth, () => [...tabs.map(([tab, label]) => el('div', { style: nodeStyle(depth + 1) }, leaf(label, tabLink(tab), here && ctx.tab === tab))),
+    folder(`i${id}/${k}`, name, depth, () => [...tabs.map(([tab, label]) => tab === 'customreports'
+      ? customReports(ctx, `i${id}/${k}/cr`, label, depth + 1, tabLink(tab), here && ctx.tab === tab, id, engine)
+      : el('div', { style: nodeStyle(depth + 1) }, leaf(label, tabLink(tab), here && ctx.tab === tab))),
       ...(k === 'storage' ? driveNodes(ctx, id, engine, depth + 1, draw) : [])]);
   const instanceTabs = tabsFor(engine), instanceGroups = groupsFor(engine);
   // a SQL Server instance: its tab groups only (its databases and jobs are pages, not tree nodes yet)
@@ -337,9 +370,11 @@ function instanceFolders(ctx: Ctx, id: number, depth: number, engine?: unknown):
 // scopeFolders: the folders of the fleet or of a tag folder (the scope the page is in), each a short list of pages
 function scopeFolders(ctx: Ctx): HTMLElement[] {
   const scope = ctx.instance ? undefined : ctx.tag;
+  const link = (t: string) => href(ctx, { tab: t, instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined });
   return rootGroups.filter(g => g.key !== 'main').map(g =>
-    folder(`r/${g.key}`, g.name, 0, () => g.tabs.map(t => el('div', { style: nodeStyle(1) },
-      leaf(rootTabs[t], href(ctx, { tab: t, instance: undefined, tag: scope, at: undefined, task: undefined, taskInstance: undefined }), !ctx.instance && ctx.tab === t)))));
+    folder(`r/${g.key}`, g.name, 0, () => g.tabs.map(t => t === 'customreports'
+      ? customReports(ctx, `r/${g.key}/cr`, rootTabs[t], 1, link(t), !ctx.instance && ctx.tab === t)
+      : el('div', { style: nodeStyle(1) }, leaf(rootTabs[t], link(t), !ctx.instance && ctx.tab === t)))));
 }
 
 const rollup = (f: Fleet, rows: Row[]) => rows.reduce<Level>((a, r) => Math.max(a, worst(f, r)) as Level, 0);

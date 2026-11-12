@@ -64,10 +64,20 @@
 #     Charts page draws 6 rings, the five with data (all but Procedure) not empty [fold] (Procedure draws one slice,
 #     '(none)': the deadlocks run no procedure); the Reports strip lists 17
 #     pages at the root, 12 on a SQL Server instance and 10 on a PostgreSQL one [fold: the group's own strip].
+#     [169b] The tree (tree.ts): the root's Reports folder lists the 17 stock pages in DBA Dash's order, then Custom
+#     reports and Community tools; Custom reports holds the three seeded reports as DBA Dash's Reports folder holds
+#     its own (sub folders first by name, then the reports by name: Ops > Daily > rp169 tree pg, Ops > rp169 tree
+#     store, rp169 tree ms); under the PostgreSQL instance only its engine's (Ops > Daily > rp169 tree pg), under the
+#     SQL Server one only rp169 tree ms; each report node clicked opens #/customreports?report=N (&i=<id> under an
+#     instance) and the page's h2 is the report's name; Community tools opens #/community (?i= under an instance).
+#     The Deadlock Charts and Query Stats Charts rings are rings (each slice two arcs, a whole slice a stroked circle:
+#     DBA Dash's InnerRadius 0.5); the PostgreSQL instance's Databases by size stays a pie (each wedge from the centre).
 #  G. each page's Export .xlsx (16: every page with a grid) gives a workbook that opens (openpyxl where the box has
 #     it, else the zip's workbook.xml) with a sheet, after its own Summary sheet, for every grid heading of its page that
 #     holds rows [fold: all 16; run 8: an empty grid (pgaudit's, not in the image) shows a note, not a table, and the
-#     shell's export takes tables]; every grid F wants holds rows on this seed [fold].
+#     shell's export takes tables]; every grid F wants holds rows on this seed [fold]. [169b] An empty grid is a sheet
+#     too, its header row alone with as many cells as the grid's columns, as DBA Dash exports one (CommonShared.cs
+#     SaveDataGridViewsToXLSX); at least one such sheet (pgaudit's grid on User Actions).
 #  H. NOT PROVEN HERE: SQL Server 2016-2019 and 2025 (the reads use no column newer than 2012 but LOGINPROPERTY's
 #     values were read on 2022 only), Azure SQL Managed Instance and Amazon RDS (where sys.dm_server_services lists
 #     little), PostgreSQL 13 / 18, a fleet over 25 PostgreSQL instances with deadlocks (the page reads 25), a pass
@@ -334,6 +344,13 @@ q "insert into pgvigil.actions_log (instance_id, instance_name, at, ui_user, cli
    values ($IMS, 'rp-ms', now() - interval '1 hour', 'proof169', '127.0.0.1', 'sqlserver', 'kill', 61, 'app_login', 'box-a', 'SQLCMD', 'the proof''s kill', 'done', NULL),
           ($IPG, 'rp-pg', now() - interval '2 hours', 'proof169', '127.0.0.1', 'postgres', 'terminate', 4242, 'rp_app', NULL, 'psql', 'the proof''s terminate', 'refused', 'not allowed'),
           ($IPG, 'rp-pg', now() - interval '3 hours', 'proof169', '127.0.0.1', 'postgres', 'job_start', NULL, NULL, NULL, NULL, 'the proof''s job start', 'done', NULL)" >/dev/null
+# three saved custom reports (task 170's table, written as its door writes them), for the tree's Custom reports nodes
+q "insert into pgvigil.custom_reports (name, description, folder, engine, kind, body, created_by, created_at, updated_by, updated_at)
+   values ('rp169 tree pg', 'the proof''s PostgreSQL report', 'Ops/Daily', 'postgres', 'sql', 'select 1', 'proof169', now(), 'proof169', now()),
+          ('rp169 tree store', 'the proof''s repository report', 'Ops', 'store', 'sql', 'select 1', 'proof169', now(), 'proof169', now()),
+          ('rp169 tree ms', 'the proof''s SQL Server report', '', 'sqlserver', 'sql', 'select 1', 'proof169', now(), 'proof169', now())" >/dev/null
+CRPG=$(q "select report_id from pgvigil.custom_reports where name = 'rp169 tree pg'"); CRMS=$(q "select report_id from pgvigil.custom_reports where name = 'rp169 tree ms'")
+[ -n "$CRPG" ] && [ -n "$CRMS" ] || fail "seed: the custom reports"
 q "update pgvigil.instances set is_active = false where instance_id = $IGONE" >/dev/null
 echo "collections: done"
 
@@ -464,7 +481,7 @@ W="from=$FROM&to=$TO"
 api "r=deadlocks&$W"; cp "$WORK/b" "$WORK/api-deadlocks.json"
 cat > "$WORK/page.mjs" <<'PAGE'
 import { writeFileSync } from 'node:fs';
-const [port, base, ims, ipg, xdir, shots] = process.argv.slice(2);
+const [port, base, ims, ipg, xdir, shots, crpg, crms] = process.argv.slice(2);
 setTimeout(() => { console.log('FAIL the page check did not end in 600 s'); process.exit(2); }, 600000).unref();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -488,7 +505,8 @@ await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, dev
 // (a heading's own text: a chart's heading also holds its menu button and its Top select; a chart's heading names no grid)
 const gridsOf = `[...document.querySelectorAll('main section.report h3')].filter(h => !h.closest('.chart')).map(h => { let t = h.nextElementSibling;
   while (t && !t.querySelector?.('table.grid') && !t.matches?.('p.empty') && t.tagName !== 'H3') t = t.nextElementSibling;
-  const tb = t?.querySelector?.('table.grid'); return [[...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(), tb ? Number(tb.dataset.rows) : t?.matches?.('p.empty') ? 0 : -1]; })`;
+  const tb = t?.querySelector?.('table.grid'); return [[...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(), tb ? Number(tb.dataset.rows) : t?.matches?.('p.empty') ? 0 : -1,
+    !tb && t?.matches?.('p.empty') ? JSON.parse(t.dataset.cols || '[]').length : null]; })`;
 const want = {
   rp_props: ['Database Extended Properties'], rp_finder: ['Database Finder'], rp_dlcharts: [], rp_deadlocks: ['Signatures', 'Grouped', 'Deadlocks', 'Participants'],
   rp_dbdeleted: ['Deleted Databases'], rp_failed: ['Server Summary', 'Login Summary', 'Client Summary', 'Message Summary', 'Detail'], rp_flushed: ['Flushed Plans'], rp_killed: ['Killed Sessions'], rp_dbnew: ['New Databases'],
@@ -533,7 +551,13 @@ const expect = {
   rp_roles: async () => { const d = await (await fetch(`${base}/api/reports?r=roles`)).json(); const e = d.members.columns.indexOf('engine'), r = d.members.columns.indexOf('role_name');
     return { Normal: d.members.rows.filter(x => admin.has(`${x[e]}:${x[r]}`)).length }; },
 };
-const allGrids = {};
+const allGrids = {}, emptyGrids = {};
+// a ring: each slice two arcs (outer and inner), a whole slice a circle stroked as wide as the ring; a pie: each wedge
+// from the centre, a whole slice a filled disc
+const shapes = sel => ev(`[...document.querySelectorAll('${sel}')].filter(r => r.querySelector('svg')).map(r => {
+  const ps = [...r.querySelectorAll('svg path')], cs = [...r.querySelectorAll('svg circle')];
+  return { ring: ps.every(x => (x.getAttribute('d').match(/A/g) || []).length === 2) && cs.every(x => x.getAttribute('fill') === 'none'),
+           pie: ps.every(x => x.getAttribute('d').startsWith('M60 60 ')) && cs.every(x => x.getAttribute('fill') !== 'none'), n: ps.length + cs.length }; })`);
 // the root's Reports folder: every page
 for (const [tab, name] of Object.entries(names)) {
   thrown = [];
@@ -548,8 +572,9 @@ for (const [tab, name] of Object.entries(names)) {
   const bare = want[tab].filter(h => grids.some(g => g[0] === h && g[1] <= 0));   // every wanted grid holds rows on this seed
   check(`${tab} renders`, ok && h2.startsWith(name) && missing.length === 0 && bare.length === 0 && errs.length === 0 && thrown.length === 0 && grids.every(g => g[1] >= 0),
     `h2 '${h2}', grids ${JSON.stringify(grids)}${missing.length ? ', missing ' + missing : ''}${bare.length ? ', empty ' + bare : ''}${errs.length ? ', errors ' + errs.join(' | ') : ''}${thrown.length ? ', thrown ' + thrown.join(' | ') : ''}`);
-  // the export makes a sheet of a grid's table; an empty grid shows a note, no table: only one outside the want list may be empty
-  allGrids[tab] = grids.filter(g => g[1] > 0 || want[tab].includes(g[0])).map(g => g[0]);
+  // every grid is a sheet, an empty one its header row alone (G reads it: the grid's column count from its note)
+  allGrids[tab] = grids.map(g => g[0]);
+  emptyGrids[tab] = grids.filter(g => g[1] === 0).map(g => [g[0], g[2] ?? 0]);
   if (expect[tab]) {
     const want = await expect[tab](), got = Object.fromEntries(grids);
     const bad = Object.entries(want).filter(([g, n]) => got[g] !== n);
@@ -574,6 +599,12 @@ for (const [tab, name] of Object.entries(names)) {
                line: document.querySelectorAll('main .chart:not(.donut) canvas, main .chart:not(.donut) .uplot').length }; })()`);
     const five = ['Signature', 'Application', 'Database', 'Login', 'Host'];
     check('rp_dlcharts: six rings, the five with data drawn, and the line', c && c.rings === 6 && five.every(x => c.drawn.includes(x)) && !c.empty.some(x => five.includes(x)) && c.line >= 1, JSON.stringify(c));
+    const sh = await shapes('main .chart.donut') ?? [];
+    check('rp_dlcharts: every drawn ring has its hole (DBA Dash: InnerRadius 0.5)', sh.length >= 5 && sh.every(x => x.ring && x.n > 0), JSON.stringify(sh));
+  }
+  if (tab === 'rp_qscharts') {
+    const sh = await shapes('main .chart.donut') ?? [];
+    check('rp_qscharts: the two rings have their hole', sh.length === 2 && sh.every(x => x.ring && x.n > 0), JSON.stringify(sh));
   }
   if (want[tab].length) { const x = await exportOf(tab); check(`${tab} export`, x === 'ok', x); }
   if (shots) for (const theme of ['light', 'dark']) {
@@ -590,7 +621,7 @@ const counts = async hash => { await open(hash); await cmd('Page.navigate', { ur
 const nRoot = await counts('#/rp_props?w=4h'), nMs = await counts(`#/rp_props?i=${ims}&w=4h`), nPg = await counts(`#/rp_props?i=${ipg}&w=4h`);
 check('the Reports folders (the strip of the Reports group)', [nRoot, nMs, nPg].every(x => x?.label === 'Reports pages') && nRoot.n === 17 && nMs.n === 12 && nPg.n === 10,
   `root ${JSON.stringify(nRoot)}, SQL Server instance ${JSON.stringify(nMs)}, PostgreSQL instance ${JSON.stringify(nPg)}`);
-writeFileSync(`${xdir}/grids.json`, JSON.stringify(allGrids));
+writeFileSync(`${xdir}/grids.json`, JSON.stringify({ grids: allGrids, empty: emptyGrids }));
 // the instance folders' pages render too
 for (const [inst, list] of [[ims, ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables']],
                             [ipg, ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_pwage', 'rp_tables']]]) {
@@ -603,15 +634,65 @@ for (const [inst, list] of [[ims, ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_
     check(`${tab} on instance ${inst}`, ok && h2.startsWith(names[tab]) && errs.length === 0 && thrown.length === 0, `h2 '${h2}'${errs.length ? ', errors ' + errs.join(' | ') : ''}${thrown.length ? ', thrown ' + thrown.join(' | ') : ''}`);
   }
 }
+// the tree's Reports folders (tree.ts): the stock pages in DBA Dash's order, then Custom reports (its sub folders first,
+// then its reports, by name; under an instance its engine's only) and Community tools; a node clicked lands on its page
+const kidsOf = key => ev(`(() => { const b = document.querySelector('#tree button.caret[data-key="${key}"]'); if (!b) return null;
+  return [...b.closest('.tree-node, .tree-inst').parentElement.children].slice(1).map(c => (c.querySelector('a.inst, .folder-name, p') ?? c).textContent.trim()); })()`);
+const openKey = async key => {
+  for (let i = 0; i < 60; i++) {
+    const st = await ev(`(() => { const b = document.querySelector('#tree button.caret[data-key="${key}"]'); if (!b) return 'none';
+      if (b.getAttribute('aria-expanded') !== 'true') { b.click(); return 'clicked'; } return 'open'; })()`);
+    if (st === 'open') { const k = await kidsOf(key); if (k && !k.includes('Loading...')) return k; }
+    if (st === 'none') await ev(`[...document.querySelectorAll('#tree button.caret[data-key^="f:"][aria-expanded="false"]')].forEach(b => b.click())`);
+    await sleep(250);
+  }
+  return null;
+};
+const clickIn = async (key, name) => ev(`(() => { const b = document.querySelector('#tree button.caret[data-key="${key}"]');
+  const a = b && [...b.closest('.tree-node').parentElement.querySelectorAll(':scope > div a.inst')].find(x => x.textContent.trim() === '${name}');
+  if (!a) return false; a.click(); return true; })()`);
+const landed = async (want, h2) => { for (let i = 0; i < 80; i++) {
+  const at = await ev(`location.hash`), h = await ev(`document.querySelector('main section h2')?.textContent.trim() ?? ''`);
+  if (want(at) && h === h2) return { at, h }; await sleep(250); }
+  return { at: await ev(`location.hash`), h: await ev(`document.querySelector('main section h2')?.textContent.trim() ?? ''`) }; };
+const q = h => new URLSearchParams(h.split('?')[1] ?? '');
+await open('#/rp_props?w=4h'); await cmd('Page.navigate', { url: `${base}/#/rp_props?w=4h` }); await settled();
+const rootKids = await openKey('r/reports') ?? [];
+check('tree: the root Reports folder - the 17 stock pages, then Custom reports and Community tools',
+  JSON.stringify(rootKids.slice(0, 19)) === JSON.stringify([...Object.values(names), 'Custom reports', 'Community tools']), JSON.stringify(rootKids));
+const crKids = await openKey('r/reports/cr'), opsKids = await openKey('r/reports/cr/Ops'), dayKids = await openKey('r/reports/cr/Ops/Daily');
+check('tree: the root Custom reports - folders first, then reports, by name', JSON.stringify([crKids, opsKids, dayKids]) === JSON.stringify([['Ops', 'rp169 tree ms'], ['Daily', 'rp169 tree store'], ['rp169 tree pg']]),
+  JSON.stringify([crKids, opsKids, dayKids]));
+let to = (await clickIn('r/reports/cr/Ops/Daily', 'rp169 tree pg')) ? await landed(h => q(h).get('report') === crpg, 'rp169 tree pg') : { at: 'no node' };
+check('tree: a root report node opens its report', to.at?.startsWith('#/customreports?') && q(to.at).get('report') === crpg && !q(to.at).get('i') && to.h === 'rp169 tree pg', JSON.stringify(to));
+to = (await clickIn('r/reports', 'Community tools')) ? await landed(h => h.startsWith('#/community'), 'Community tools') : { at: 'no node' };
+check('tree: the root Community tools node opens its page', to.at?.startsWith('#/community') && !q(to.at).get('i') && to.h === 'Community tools', JSON.stringify(to));
+for (const [inst, eng, path, rep, id] of [[ipg, 'PostgreSQL', ['Ops', 'Daily'], 'rp169 tree pg', crpg], [ims, 'SQL Server', [], 'rp169 tree ms', crms]]) {
+  await openKey(`i${inst}`);
+  const rk = await openKey(`i${inst}/reports`) ?? [];
+  check(`tree: the ${eng} instance's Reports folder ends with Custom reports and Community tools`, JSON.stringify(rk.slice(-2)) === JSON.stringify(['Custom reports', 'Community tools']), JSON.stringify(rk));
+  let key = `i${inst}/reports/cr`; const seen = [await openKey(key)];
+  for (const part of path) { key += '/' + part; seen.push(await openKey(key)); }
+  const wantSeen = path.length ? [['Ops'], ['Daily'], [rep]] : [[rep]];
+  check(`tree: the ${eng} instance's Custom reports - its engine's report only`, JSON.stringify(seen) === JSON.stringify(wantSeen), JSON.stringify(seen));
+  to = (await clickIn(key, rep)) ? await landed(h => q(h).get('report') === id && q(h).get('i') === inst, rep) : { at: 'no node' };
+  check(`tree: the ${eng} instance's report node opens its report there`, q(to.at ?? '').get('report') === id && q(to.at ?? '').get('i') === inst && to.h === rep, JSON.stringify(to));
+  to = (await clickIn(`i${inst}/reports`, 'Community tools')) ? await landed(h => h.startsWith('#/community') && q(h).get('i') === inst, 'Community tools') : { at: 'no node' };
+  check(`tree: the ${eng} instance's Community tools node opens its page there`, to.at?.startsWith('#/community') && q(to.at).get('i') === inst && to.h === 'Community tools', JSON.stringify(to));
+}
+// every other pie stays a pie: the PostgreSQL instance's Databases by size
+await open(`#/dbinfo?i=${ipg}&w=4h`); await cmd('Page.navigate', { url: `${base}/#/dbinfo?i=${ipg}&w=4h` });
+let pies = null; for (let i = 0; i < 80 && !(pies && pies.length); i++) { await sleep(250); pies = await shapes('main .chart.donut'); }
+check('a database pie stays a pie (Databases by size)', !!pies && pies.length >= 1 && pies.every(x => x.pie && x.n > 0), JSON.stringify(pies));
 ws.close();
 process.exit(failed ? 1 : 0);
 PAGE
-timeout 700 node "$WORK/page.mjs" "$CDP" "http://127.0.0.1:$SPORT" "$IMS" "$IPG" "$WORK/xlsx" "$SHOTS" || fail "F: a check of the pages failed"
+timeout 700 node "$WORK/page.mjs" "$CDP" "http://127.0.0.1:$SPORT" "$IMS" "$IPG" "$WORK/xlsx" "$SHOTS" "$CRPG" "$CRMS" || fail "F: a check of the pages failed"
 echo "F: OK"
 python3 - "$WORK/xlsx" <<'PY' || fail "G: a workbook did not open or lacks a sheet"
 import sys, os, zipfile, re, json
 d = sys.argv[1]
-grids = json.load(open(os.path.join(d, 'grids.json')))
+gj = json.load(open(os.path.join(d, 'grids.json'))); grids, empties = gj['grids'], gj['empty']; checked = 0
 try:
     import openpyxl
 except ImportError:
@@ -628,7 +709,16 @@ for f in files:
     clean = lambda x: re.sub(r'[\\/?*\[\]:]', '', x)[:25].lower()
     for w in grids.get(tab, []):
         assert any(clean(s).startswith(clean(w)) or clean(w) in clean(s) for s in sheets[1:]), f'{f}: no sheet for the grid {w!r} in {sheets}'   # sheet 1 is the export's own Summary
+    for w, ncols in empties.get(tab, []):
+        k = next((i for i, s in enumerate(sheets) if i > 0 and (clean(s).startswith(clean(w)) or clean(w) in clean(s))), None)
+        assert k is not None, f'{f}: no sheet for the empty grid {w!r} in {sheets}'
+        xml = zipfile.ZipFile(p).read(f'xl/worksheets/sheet{k + 1}.xml').decode()
+        rows = re.findall(r'<row [^>]*>(.*?)</row>', xml, re.S)
+        assert ncols > 0 and len(rows) == 1 and len(re.findall(r'<c ', rows[0])) == ncols, f'{f}: the empty grid {w!r}: {len(rows)} row(s), {len(re.findall(chr(60) + "c ", rows[0])) if rows else 0} header cell(s), want its header row alone with {ncols}'
+        checked += 1
+        print(f'ok   {f}: the empty grid {w!r} is the sheet {sheets[k]!r}, its header row alone ({ncols} columns)')
     print(f'ok   {f}: {len(sheets)} sheet(s) {sheets}' + ('' if openpyxl else ' (read as a zip: openpyxl is not on this machine)'))
+assert checked >= 1, 'no empty grid was exported (the seed leaves pgaudit\'s grid on User Actions empty)'
 PY
 [ -n "$SHOTS" ] && mkdir -p "$SHOTS/xlsx" && cp "$WORK"/xlsx/*.xlsx "$SHOTS/xlsx/"
 echo "G: OK"

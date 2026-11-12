@@ -199,13 +199,21 @@ function readProps(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
 export function sections(root: ParentNode, fallback: string): Section[] {
   let outer = fallback, inner: { text: string; within: Element } | undefined;
   const out: Section[] = [];
-  for (const e of root.querySelectorAll('h2, h3, h4, table.grid, table.props')) {
-    if (e.tagName !== 'TABLE') {
+  for (const e of root.querySelectorAll('h2, h3, h4, table.grid, table.props, p.empty[data-cols]')) {
+    if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
       const within = e.closest('[role=region]');
       if (within) inner = { text: headingText(e) || fallback, within }; else { outer = headingText(e) || fallback; inner = undefined; }
       continue;
     }
     const heading = inner && inner.within.contains(e) ? inner.text : outer;
+    // a grid with no row (ui.ts grid: its note carries its columns' names): a sheet of its header row alone, as DBA Dash
+    // exports an empty grid (CommonShared.cs SaveDataGridViewsToXLSX: a sheet per grid, the header row, then the rows)
+    if (e.tagName === 'P') {
+      let cols: unknown = [];
+      try { cols = JSON.parse((e as HTMLElement).dataset.cols ?? '[]'); } catch { cols = []; }
+      if (Array.isArray(cols) && cols.length) out.push({ name: heading, cols: cols.map(String), rows: [], note: text(e) || undefined });
+      continue;
+    }
     const t = e as HTMLTableElement;
     // a 'the newest 500 of 1,234 samples' line right above the grid rides into the Summary sheet: the rows taken are not all
     // ui.ts grid: table in .grid-wrap in .grid-box, whose first child is the 'n of m rows shown (filtered)' line
