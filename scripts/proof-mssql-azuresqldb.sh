@@ -69,8 +69,9 @@
 #     all skipped here says so (the skip's own text, or "not on this platform") [at the release join: the Storage
 #     folder's Drives, DB Space, Files and Drive Performance too, and Waiting tasks renders] [165b: the Reports folder's
 #     fourteen tabs render; the six of mssql_reports (Database Extended Properties, Failed Logins, Server Role Members,
-#     Server Services, SQL Login Password Age, Table Size) say mssql_reports is skipped here - with web/src/main.ts's
-#     mssqlTabRuns given those six tabs (F14, scripts/proof-165b-wiring.patch until the join holds it)].
+#     Server Services, SQL Login Password Age, Table Size) each say mssql_reports is skipped here (web/src/main.ts's
+#     mssqlTabRuns holds the six since 43c3fbb, F14; reports.ts has no text naming Azure SQL Database, so the check
+#     catches a lost mssqlTabRuns entry)].
 #  D. nothing of pgvigil is created in the monitored database: its objects (not shipped by Microsoft), principals,
 #     permissions, role members and event sessions read by the setup login after the proof's own setup equal the
 #     same read after every collector run.
