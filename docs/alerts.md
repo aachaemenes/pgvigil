@@ -77,7 +77,7 @@ while the digits inside a name (`orders_idx1`, `orders_idx2`) keep two indexes a
 | new (escalated) | The finding's severity rose above the one sent. It goes out at once. |
 | still open (repeat) | The repeat interval has passed since the last send. |
 | resolved | The finding has been gone from the findings for `clear_after` (default 10 minutes, so a finding at a time window's edge does not send a recovery and a new alert a minute later), **and** the collector has read the instance successfully since the finding went missing. An instance left unread (unreachable, the collector stopped, a gap of any length) holds its alerts open: its time-windowed findings leave the view, but nothing was fixed. Sent when `recovery` is on; otherwise the alert is closed without a message (the log's outcome `cleared`). |
-| closed without a message | The instance was deactivated or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. PagerDuty and Opsgenie are the exception: they close their incident, or it would stay open for good. |
+| closed without a message | The instance was deactivated, disabled on Admin > Instances, or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. PagerDuty and Opsgenie are the exception: they close their incident, or it would stay open for good. |
 
 A finding that falls below the channel's severity floor but stays (critical to warning on a critical channel) keeps its
 alert open and quiet: no repeat, no recovery. If it rises again it is not sent again until the repeat interval.
