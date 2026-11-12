@@ -90,8 +90,8 @@
 #              a size on the screen) and of its texts computed in the critical or warning colour, else a bare class
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so)
-#   gridmenu   (P03) the fleet Backups grid's menu has Export Excel right after its copies (DBA Dash's grid menu: Copy,
-#              then Export Excel); clicked, it downloads fleet_Backups_<sheet>_<from>_<to>.xlsx: Summary + that grid's
+#   gridmenu   (P03) the fleet Backups grid's menu has one Export Excel line (no other line starting so), right after its
+#              copies (DBA Dash's grid menu: Copy, then Export Excel); clicked, it downloads fleet_Backups_<sheet>_<from>_<to>.xlsx: Summary + that grid's
 #              sheet, its rows, every cell in the screen's colour, the widths by the rule; the grid's line says 'Exported <file>'
 #   summary drop-down (P03) the fleet Summary's bar has Export to Excel (aria-haspopup menu) with Export Summary and
 #              Export Test Summary; each downloads one grid's workbook (sheets Summary + 'Instance Summary' / 'Test
@@ -851,7 +851,7 @@ def one_book(key, fname, inst, tab, sheet, g):
 gm = d.get('gridmenu') or {}
 its = gm.get('items') or []
 lastcopy = max([i for i, x in enumerate(its) if x.startswith('Copy')] or [-1])
-check('Export Excel' in its and its.index('Export Excel') == lastcopy + 1 and its.count('Export Excel') == 1, f"gridmenu: the grid's menu has Export Excel right after its copies, as DBA Dash's grid menu ({its})")
+check('Export Excel' in its and its.index('Export Excel') == lastcopy + 1 and sum(1 for x in its if x.startswith('Export Excel')) == 1, f"gridmenu: the grid's menu has one Export Excel, right after its copies, as DBA Dash's grid menu ({its})")
 if gm.get('xlsx'):
     g = gm['screen']
     # export.ts sheetNames for one name: Excel's refused characters a space, the quotes at either end off, runs of spaces
