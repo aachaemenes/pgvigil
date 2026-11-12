@@ -27,7 +27,7 @@ export interface Ctx {
 function lsGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
 export function rememberInstance(id?: number) { if (id) try { localStorage.setItem('pgvigil.instance', String(id)); } catch { /* private window */ } }
 
-export const presets: Record<string, number> = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400, '7d': 604800, '30d': 2592000 };
+export const presets: Record<string, number> = { '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '6h': 21600, '24h': 86400, '2d': 172800, '7d': 604800, '30d': 2592000 };
 // Calendar periods that end now: they follow now like a preset, from the start of the day, the week (Monday) or the
 // month on the display zone's clock (tz.ts). A period that has ended (yesterday, the week or month before) is a fixed
 // from / to the range panel writes.
@@ -45,11 +45,11 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
-  io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', findings: 'Findings',
-  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
+  io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+  host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', pg_deadlocks: 'Deadlocks', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
@@ -60,16 +60,16 @@ export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
-  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks'] },
+  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'tablesize', 'dbchanges', 'indexes', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
 ];
 export const instanceGroups: TabGroup[] = [
-  { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'memory', 'findings', 'logs'] },
+  { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
   { key: 'checks', name: 'Checks', tabs: ['corruption', 'vacuum', 'indexes', 'custom'] },
-  { key: 'conf', name: 'Configuration', tabs: ['config', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
+  { key: 'conf', name: 'Configuration', tabs: ['config', 'pgdboptions', 'extensions', 'versions', 'roles', 'audit', 'schema', 'actions'] },
   { key: 'perf', name: 'Performance', tabs: ['counters', 'host', 'io', 'load', 'connections', 'pooler'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['storage', 'dbinfo', 'dbchanges', 'tables'] },
@@ -181,6 +181,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     for (const k of ['db', 'rel', 'scheduler', 'job', 'idx']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the Checks page's view and risk filter (mssql_checks.ts) stay on its own links
+  if (keep && c.tab === 'pgdboptions') { const cur = new URLSearchParams(location.hash.split('?')[1] ?? ''); const v = cur.get('risk'); if (v) q.set('risk', v); }
   if (keep && c.tab === 'mssqlchecks') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['cv', 'risk']) { const v = cur.get(k); if (v) q.set(k, v); }
@@ -188,6 +189,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (keep && c.tab === 'dbadash') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['dr', 'di']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
+  // the alert page's key, firing time and view (alert_page.ts) stay on its own links: a range change keeps the alert
+  if (keep && c.tab === 'alert') {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['k', 't', 'v']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the Diff page's picks (diff.ts: mode, the two sides, their databases and times, identical rows) stay on a range change
   if (keep && c.tab === 'diff') {

@@ -103,7 +103,9 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     const cpu = rowsOf(d.cpu);
     box.append(cpu.length
       ? titled(lineChart('CPU', align(g, cpu, ['cpu_avg', 'cpu_max', 'iowait_avg']),
-          [{ key: 'cpu_avg', label: 'CPU avg %' }, { key: 'cpu_max', label: 'CPU max %' }, { key: 'iowait_avg', label: 'IO wait %' }], v => fmtNum(v) + ' %'), `CPU (${String(meta.host_source ?? 'host')})`, to('host'))
+          [{ key: 'cpu_avg', label: 'CPU avg %' }, { key: 'cpu_max', label: 'CPU max %' }, { key: 'iowait_avg', label: 'IO wait %' }], v => fmtNum(v) + ' %',
+          // the host check's own lines (0021: 'CPU over 90 % for 10 minutes', critical from 98 %)
+          { lines: [{ value: 90, label: 'warning 90 %', kind: 'threshold', level: 'warning' }, { value: 98, label: 'critical 98 %', kind: 'threshold', level: 'critical' }] }), `CPU (${String(meta.host_source ?? 'host')})`, to('host'))
       : el('div', { class: 'chart' }, el('h3', {}, el('a', { href: to('host') }, 'CPU')), el('p', { class: 'empty' }, 'no host read for this instance')));
     box.append(titled(lineChart('Sessions', align(g, rowsOf(d.sessions), ['active', 'idle_in_txn', 'waiting_lock']),
       [{ key: 'active', label: 'active' }, { key: 'idle_in_txn', label: 'idle in transaction' }, { key: 'waiting_lock', label: 'waiting on a lock' }]), 'Sessions by state', to('counters', { kind: 'sessions' })));
@@ -111,7 +113,7 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
     const src = wr.length && wr[0].source === 'activity' ? ' - from the activity samples' : '';
     box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), `Waits by class (ms of wait per second, stacked${src})`, to('waits')));
     box.append(titled(lineChart('Transactions', align(g, rowsOf(d.db), ['commits_s', 'rollbacks_s']),
-      [{ key: 'commits_s', label: 'commits/s' }, { key: 'rollbacks_s', label: 'rollbacks/s' }]), 'Transactions per second', to('counters', { kind: 'db' })));
+      [{ key: 'commits_s', label: 'commits/s' }, { key: 'rollbacks_s', label: 'rollbacks/s' }], undefined, { unit: 'commits/s', y2: { keys: ['rollbacks_s'], unit: 'rollbacks/s' } }), 'Transactions per second', to('counters', { kind: 'db' })));
     const io = align(g, rowsOf(d.io), ['read_ms', 'write_ms', 'read_mb_s', 'write_mb_s', 'cw_read_ms', 'cw_write_ms', 'cw_read_mb_s', 'cw_write_mb_s']);
     const cw = io.some(r => r.cw_read_ms != null);
     box.append(titled(lineChart('IO latency', io, [{ key: 'read_ms', label: 'read ms (pg_stat_io)' }, { key: 'write_ms', label: 'write ms (pg_stat_io)' },

@@ -119,6 +119,14 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 	}
 	srv.SetMSSQLActions(doors)
+	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
+	pgJobs := map[string][]string{}
+	for _, in := range cfg.Instances {
+		if in.Engine != config.EngineSQLServer && len(in.Actions) > 0 {
+			pgJobs[in.Name] = in.Actions
+		}
+	}
+	srv.SetPgJobActions(pgJobs)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}

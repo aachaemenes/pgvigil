@@ -320,6 +320,18 @@ func classifyInto(e *entry, ev *Event) bool {
 	case e.level == "ERROR" && strings.HasPrefix(e.msg, "deadlock detected"):
 		ev.Kind = Deadlock
 		ev.Detail, ev.Statement = tagged(e.more, "DETAIL"), tagged(e.more, "STATEMENT")
+		// the CONTEXT line names the relation of a tuple deadlock ('while updating tuple (0,2) in relation "t"'): kept
+		// in the detail; its lines that quote statement text (a function's inner statement) go to the statement, where
+		// the query-text policy governs them (task 161's Deadlocks page reads both)
+		if v := tagged(e.more, "CONTEXT"); v != "" {
+			ctx, stmt := splitContext(v)
+			if len(ctx) > 0 {
+				ev.Detail += "\nCONTEXT: " + strings.Join(ctx, "\n")
+			}
+			if len(stmt) > 0 {
+				ev.Statement = strings.TrimLeft(ev.Statement+"\n"+strings.Join(stmt, "\n"), "\n")
+			}
+		}
 	case e.level == "FATAL" && (strings.Contains(e.msg, "authentication failed") || strings.HasPrefix(e.msg, "no pg_hba.conf entry") ||
 		strings.Contains(e.msg, "does not exist") && strings.HasPrefix(e.msg, "role ")):
 		ev.Kind, ev.Detail = AuthFail, e.msg

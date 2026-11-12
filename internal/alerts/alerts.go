@@ -12,7 +12,7 @@
 //	alerts_dsn: env:PGVIGIL_ALERTS_DSN
 //	alerts:
 //	  - name: dba-mail               # [a-z0-9][a-z0-9_.-]*, unique
-//	    kind: smtp                   # smtp | webhook | file | pagerduty
+//	    kind: smtp                   # smtp | webhook | file | pagerduty | opsgenie
 //	    min_severity: warning        # info | warning (default) | critical
 //	    instances: [erp01]           # optional; instances: and tags: empty = every instance
 //	    tags: [env:prod]             # optional; a tag in its written form (prod, env:prod)
@@ -22,7 +22,7 @@
 //	    recovery: true               # a message when the finding clears (default true)
 //	    clear_after: 10m             # a finding gone this long is resolved (default 10m; 0 = at the first pass)
 //	    smtp: {host: relay.example.org, port: 587, tls: starttls, username: env:U, password: file:/p, from: a@b, to: [c@d]}
-//	    webhook: {url: env:TEAMS_URL, format: teams}   # teams | slack | json; the URL through env: or file: only
+//	    webhook: {url: env:TEAMS_URL, format: teams}   # teams | slack | discord | googlechat | json; the URL through env: or file: only
 //	    file: {dir: /var/spool/pgvigil/alerts}
 //	    pagerduty: {routing_key: env:PD_KEY}            # Events API v2; one incident per finding, resolved when it clears
 //
@@ -38,6 +38,21 @@
 // repeats, recoveries, quiet hours, mutes and acknowledgements above apply to it unchanged. With no channel the pass
 // judges nothing (nothing would be sent); a rule evaluation that fails, or runs past rulesTimeout on the server, is
 // reported in the pass's summary line and the findings still go out.
+//
+// Task 151 (K07): the Opsgenie kind (opsgenie.go: one alert per finding under its alias, closed when it clears, also
+// when it is cleared without a fix, as PagerDuty's); the webhook formats discord and googlechat (a message cut to the
+// destination's text limit by packing fewer alerts in it, never by cutting one); per-channel templates (templates.go:
+// a subject and a line for firing, escalated, repeat and resolved, with {placeholders} checked at load); max_per_hour
+// (a send cap: what is over it is held, logged as outcome 'capped', and owed again by the next pass); a Send test asked
+// from the Alerts page (tests.go: the request is a row through an import_* door, the next pass sends it); and
+// alerts_base_url, the UI's address, so every alert line carries the address of its own page (#/alert?k=<finding key>).
+//
+//	alerts_base_url: https://pgvigil.example.org     # optional; no address = no link in the messages
+//	  - name: ops
+//	    kind: opsgenie
+//	    opsgenie: {api_key: env:PGVIGIL_OG_KEY}         # url defaults to https://api.opsgenie.com (EU: https://api.eu.opsgenie.com)
+//	    max_per_hour: 30                                # optional; 0 = no cap
+//	    templates: {subject: {firing: "{severity}: {setting} on {instance}"}, line: {resolved: "OK again: {instance} {setting}"}}
 package alerts
 
 import (
@@ -50,6 +65,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -79,11 +95,25 @@ type Channel struct {
 	Webhook     *Webhook         `yaml:"webhook"`
 	File        *FileDrop        `yaml:"file"`
 	PagerDuty   *PagerDuty       `yaml:"pagerduty"`
+	Opsgenie    *Opsgenie        `yaml:"opsgenie"`
+	// MaxPerHour caps the alerts the channel sends in any hour (0 = no cap): what is over it is held, logged as
+	// outcome 'capped', and sent by a later pass once the hour allows.
+	MaxPerHour int        `yaml:"max_per_hour"`
+	Templates  *Templates `yaml:"templates"`
 
 	quiet  *quiet
 	loc    *time.Location
 	sender sender
+	tpl    *compiled // Templates, checked
+	base   string    // alerts_base_url, "" = no link
 }
+
+// maxPerHourLimit bounds max_per_hour (a typing slip of 300000 is refused, not taken as no cap).
+const maxPerHourLimit = 100000
+
+// incidentKind says whether a channel keeps an incident per finding at the destination (PagerDuty, Opsgenie): such a
+// channel is sent a finding cleared without a fix, or its incident would stay open for good.
+func incidentKind(kind string) bool { return kind == "pagerduty" || kind == "opsgenie" }
 
 // DefaultRepeat is how long a standing finding waits before it is sent again.
 const DefaultRepeat = 24 * time.Hour
@@ -120,11 +150,47 @@ func (c *Channel) Destination() string {
 	return c.sender.destination()
 }
 
-// Settings is what the configuration file says about alerts: the channels and the sender's login.
+// Settings is what the configuration file says about alerts: the channels, the sender's login and the UI's address.
 type Settings struct {
-	DSNRaw   string    `yaml:"alerts_dsn"`
-	Channels []Channel `yaml:"alerts"`
+	DSNRaw     string    `yaml:"alerts_dsn"`
+	Channels   []Channel `yaml:"alerts"`
+	BaseURLRaw string    `yaml:"alerts_base_url"`
+	baseURL    string
 }
+
+// BaseURL is alerts_base_url as checked ("" = not set: the messages carry no link).
+func (s *Settings) BaseURL() string { return s.baseURL }
+
+// parseBaseURL checks alerts_base_url: an absolute http or https address with a host, no user, query or fragment (the
+// UI's root, a sub-path allowed); it may come through env: or file:. The trailing slash is dropped.
+func parseBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(raw, "env:") || strings.HasPrefix(raw, "file:") {
+		v := strings.TrimSpace(config.Resolve(raw))
+		if v == "" {
+			return "", fmt.Errorf("alerts_base_url %s is empty or unreadable", raw)
+		}
+		raw = v
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", fmt.Errorf("alerts_base_url %q must be an absolute http or https address (the UI's, as a reader opens it)", raw)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("alerts_base_url %q must not carry a user, a query or a fragment", raw)
+	}
+	base := strings.TrimRight(u.Scheme+"://"+u.Host+u.EscapedPath(), "/")
+	if len(base) > maxBaseURL {
+		return "", fmt.Errorf("alerts_base_url is over %d bytes (every alert line carries it)", maxBaseURL)
+	}
+	return base, nil
+}
+
+// maxBaseURL bounds alerts_base_url: the address rides after every line, inside the chat formats' text budgets.
+const maxBaseURL = 200
 
 // DSN resolves alerts_dsn; "" = not set (the caller uses the repository's dsn).
 func (s *Settings) DSN() string {
@@ -155,6 +221,14 @@ func Parse(b []byte) (*Settings, error) {
 	}
 	if v := strings.TrimSpace(s.DSNRaw); v != "" && (strings.HasPrefix(v, "env:") || strings.HasPrefix(v, "file:")) && s.DSN() == "" {
 		return nil, fmt.Errorf("alerts_dsn %s is empty or unreadable", v)
+	}
+	base, err := parseBaseURL(s.BaseURLRaw)
+	if err != nil {
+		return nil, err
+	}
+	s.baseURL = base
+	for i := range s.Channels {
+		s.Channels[i].base = base
 	}
 	return &s, nil
 }
@@ -220,16 +294,29 @@ func (c *Channel) validate() error {
 	if c.Repeat != nil && c.Repeat.Duration != 0 && c.Repeat.Duration < 5*time.Minute {
 		return fmt.Errorf("repeat must be at least 5m, or disabled (got %s)", c.Repeat.Duration)
 	}
+	if c.MaxPerHour < 0 || c.MaxPerHour > maxPerHourLimit {
+		return fmt.Errorf("max_per_hour must be 0 (no cap) to %d (got %d)", maxPerHourLimit, c.MaxPerHour)
+	}
+	tpl, err := c.Templates.compile()
+	if err != nil {
+		return err
+	}
+	if tpl != nil && c.Kind == "file" {
+		return errors.New("templates: a file drop writes the alert's fields, never a subject or a line: leave them out")
+	}
+	if tpl != nil && len(tpl.line) > 0 && c.Kind == "webhook" && c.Webhook != nil && (c.Webhook.Format == "" || c.Webhook.Format == "json") {
+		return errors.New("templates.line: a json webhook carries the alert's fields, not its line (its subject is the body's summary)")
+	}
+	c.tpl = tpl
 	blocks := 0
-	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil} {
+	for _, set := range []bool{c.SMTP != nil, c.Webhook != nil, c.File != nil, c.PagerDuty != nil, c.Opsgenie != nil} {
 		if set {
 			blocks++
 		}
 	}
 	if blocks != 1 {
-		return errors.New("exactly one of smtp:, webhook:, file: or pagerduty: is required")
+		return errors.New("exactly one of smtp:, webhook:, file:, pagerduty: or opsgenie: is required")
 	}
-	var err error
 	switch c.Kind {
 	case "smtp":
 		if c.SMTP == nil {
@@ -254,8 +341,16 @@ func (c *Channel) validate() error {
 			return errors.New("kind pagerduty sends every recovery (recovery: false would leave its incidents open)")
 		}
 		c.sender, err = c.PagerDuty.build()
+	case "opsgenie":
+		if c.Opsgenie == nil {
+			return errors.New("kind opsgenie needs an opsgenie: block")
+		}
+		if !c.SendsRecovery() {
+			return errors.New("kind opsgenie sends every recovery (recovery: false would leave its alerts open)")
+		}
+		c.sender, err = c.Opsgenie.build()
 	default:
-		return fmt.Errorf("kind must be smtp, webhook, file or pagerduty (got %q)", c.Kind)
+		return fmt.Errorf("kind must be smtp, webhook, file, pagerduty or opsgenie (got %q)", c.Kind)
 	}
 	return err
 }
@@ -361,6 +456,11 @@ type Alert struct {
 	FindingAt   *time.Time `json:"finding_at,omitempty"`
 	FirstSentAt *time.Time `json:"first_sent_at,omitempty"`
 	SentBefore  int        `json:"sent_before"` // this channel's earlier sends of the finding
+	// URL is the address of the alert's own page (alerts_base_url + #/alert?k=<finding key>&t=<unix time>); "" when
+	// no base address is configured.
+	URL string `json:"url,omitempty"`
+
+	text string // the line as the channel's template made it ("" = the built-in line)
 }
 
 // Message is what one send carries.
@@ -368,17 +468,24 @@ type Message struct {
 	Channel string    `json:"channel"`
 	SentAt  time.Time `json:"sent_at"`
 	Alerts  []Alert   `json:"alerts"`
+	// Subject is the channel's subject template filled for this message ("" = the built-in summary).
+	Subject string `json:"subject,omitempty"`
 }
 
-// Summary is the one-line headline of a message.
+// Summary is the one-line headline of a message: the channel's subject template when it has one.
 func (m Message) Summary() string {
-	var firing, repeat, resolved, crit int
+	if m.Subject != "" {
+		return m.Subject
+	}
+	var firing, repeat, resolved, crit, tests int
 	for _, a := range m.Alerts {
 		switch a.Event {
 		case "firing", "escalated":
 			firing++
 		case "repeat":
 			repeat++
+		case "test":
+			tests++
 		default:
 			resolved++
 		}
@@ -387,6 +494,9 @@ func (m Message) Summary() string {
 		}
 	}
 	parts := []string{}
+	if tests > 0 && firing+repeat == 0 {
+		return "pgvigil: test message"
+	}
 	if firing > 0 {
 		parts = append(parts, fmt.Sprintf("%d new", firing))
 	}
@@ -407,9 +517,29 @@ func (m Message) Summary() string {
 // octets and a message of maxPerMessage alerts stays well under a Teams or Slack webhook's payload limit.
 const maxLine = 600
 
-// Line is one alert as a line of text, at most maxLine bytes.
+// Line is one alert as a line of text: the channel's line template, or the built-in line, cut at maxLine bytes, then
+// the address of the alert's page (never cut: a reader must be able to open it) unless the template placed it.
 func (a Alert) Line() string {
-	s := a.line()
+	s := a.text
+	if s == "" {
+		s = a.line()
+	}
+	if a.URL == "" {
+		return capLine(s)
+	}
+	// a template that placed {url} keeps it where it stands while the line fits; a line over maxLine loses the
+	// placed copy and is cut, then the whole address follows (a cut never breaks the address)
+	if strings.Contains(s, a.URL) {
+		if len(s) <= maxLine+1+len(a.URL) {
+			return s
+		}
+		s = strings.TrimSpace(strings.Replace(s, a.URL, "", 1))
+	}
+	return capLine(s) + " " + a.URL
+}
+
+// capLine cuts a line at maxLine bytes on a rune boundary.
+func capLine(s string) string {
 	if len(s) <= maxLine {
 		return s
 	}
@@ -421,6 +551,9 @@ func (a Alert) Line() string {
 }
 
 func (a Alert) line() string {
+	if a.Event == "test" {
+		return fmt.Sprintf("[TEST] %s: %s", a.Instance, a.Value)
+	}
 	ev := strings.ToUpper(a.Event)
 	if a.Event == "resolved" {
 		return fmt.Sprintf("[RESOLVED] %s: %s %s (%s) %s", a.Instance, a.Source, a.Setting, a.Severity, a.Value)
@@ -439,7 +572,13 @@ func (a Alert) line() string {
 type sender interface {
 	send(ctx context.Context, m Message) error
 	destination() string
-	perAlert() bool // true: one message per alert (the file drop, PagerDuty's events)
+	perAlert() bool // true: one message per alert (the file drop, PagerDuty's and Opsgenie's events)
+}
+
+// budgeted is a sender whose destination limits a message's text (Discord 2000 characters, Google Chat 4096): a
+// message carries only as many alerts as their lines fit, the rest go in the next message of the pass.
+type budgeted interface {
+	budget() int // bytes of alert lines one message may carry; 0 = no limit beyond maxPerMessage
 }
 
 // refusedError marks a send refused for its destination (a redirect, a plain connection off loopback).
@@ -473,6 +612,12 @@ type Result struct {
 	// RulesErr is why the alert rules were not judged in this pass (the summary line says it; Errors stays the
 	// channels'); nil = judged, or a repository before 0085.
 	RulesErr error
+	// Capped is how many alerts the channels' max_per_hour held in this pass (owed again by a later pass).
+	Capped int
+	// Tests is how many Send test requests the pass answered; TestsFailed of them did not reach the destination.
+	Tests, TestsFailed int
+	// TestsErr is why the Send test requests were not read (a repository before 0093 has none: nil).
+	TestsErr error
 }
 
 func (r Result) String() string {
@@ -488,6 +633,15 @@ func (r Result) String() string {
 	}
 	if r.RulesErr != nil {
 		s += "; alert rules not judged: " + strings.Join(strings.Fields(r.RulesErr.Error()), " ")
+	}
+	if r.Capped > 0 {
+		s += fmt.Sprintf("; %d held by max_per_hour", r.Capped)
+	}
+	if r.Tests > 0 {
+		s += fmt.Sprintf("; %d test message(s), %d failed", r.Tests, r.TestsFailed)
+	}
+	if r.TestsErr != nil {
+		s += "; test requests not read: " + strings.Join(strings.Fields(r.TestsErr.Error()), " ")
 	}
 	return s
 }
@@ -569,6 +723,11 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	} else {
 		res.RulesFiring = n
 	}
+	// a Send test asked on the Alerts page goes out whatever the channel's quiet hours, back-off or cap: a person is
+	// waiting for its answer (tests.go)
+	if err := runTests(ctx, conn, chs, now, &res); err != nil {
+		res.TestsErr = err
+	}
 	var due []map[string]any
 	byName := map[string]*Channel{}
 	for i := range chs {
@@ -624,12 +783,12 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 		var send, cleared []Alert
 		for _, a := range owed[name] {
 			// a cleared finding (its instance retired, or the channel no longer covers it) is recorded without a
-			// message - nothing was fixed - except on PagerDuty, where the open incident must be resolved or it stays
-			// open for good (review 20261111-092424 B1)
-			if a.Event == "cleared" && c.Kind != "pagerduty" {
+			// message - nothing was fixed - except on PagerDuty and Opsgenie, where the open incident must be resolved
+			// or it stays open for good
+			if a.Event == "cleared" && !incidentKind(c.Kind) {
 				cleared = append(cleared, a)
 			} else {
-				send = append(send, a)
+				send = append(send, c.decorate(a, now))
 			}
 		}
 		if len(cleared) > 0 {
@@ -639,10 +798,27 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 			}
 			res.Cleared += len(cleared)
 		}
+		if c.MaxPerHour > 0 && len(send) > 0 {
+			held, err := c.capHold(ctx, conn, now, &send)
+			if err != nil {
+				return res, outcome, err
+			}
+			if len(held) > 0 {
+				if err := record(ctx, conn.Exec, now, attempt{Channel: c.Name, Kind: c.Kind, Destination: c.Destination(),
+					Outcome: "capped", Items: held, Error: fmt.Sprintf("%d alert(s) held: max_per_hour %d reached; a later pass sends them", len(held), c.MaxPerHour)}); err != nil {
+					return res, outcome, err
+				}
+				res.Capped += len(held)
+			}
+		}
+		budget := 0
+		if b, ok := c.sender.(budgeted); ok {
+			budget = b.budget()
+		}
 		var chErr error
-		for _, batch := range batches(send, c.sender.perAlert()) {
+		for _, batch := range batchesWithin(send, c.sender.perAlert(), budget) {
 			sctx, cancel := context.WithTimeout(ctx, sendTimeout)
-			err := c.sender.send(sctx, Message{Channel: c.Name, SentAt: now.UTC(), Alerts: batch})
+			err := c.sender.send(sctx, Message{Channel: c.Name, SentAt: now.UTC(), Alerts: batch, Subject: c.subject(batch)})
 			cancel()
 			at := attempt{Channel: c.Name, Kind: c.Kind, Destination: c.Destination(), Outcome: "sent", Items: batch}
 			if err != nil {
@@ -674,18 +850,59 @@ func Pass(ctx context.Context, pool *pgxpool.Pool, chs []Channel, now time.Time,
 	return res, outcome, nil
 }
 
-func batches(a []Alert, perAlert bool) [][]Alert {
+func batches(a []Alert, perAlert bool) [][]Alert { return batchesWithin(a, perAlert, 0) }
+
+// batchesWithin cuts the alerts into messages of at most maxPerMessage (1 for a per-alert sender) whose lines, one
+// newline each, stay within budget bytes (0 = no budget); a message always carries at least one alert.
+func batchesWithin(a []Alert, perAlert bool, budget int) [][]Alert {
 	n := maxPerMessage
 	if perAlert {
 		n = 1
 	}
 	var out [][]Alert
 	for len(a) > 0 {
-		k := min(n, len(a))
+		k, used := 0, 0
+		for k < len(a) && k < n {
+			l := len(a[k].Line()) + 1
+			if budget > 0 && k > 0 && used+l > budget {
+				break
+			}
+			used += l
+			k++
+		}
 		out = append(out, a[:k])
 		a = a[k:]
 	}
 	return out
+}
+
+// capHold keeps in *send what the channel's max_per_hour still allows in the hour before now (its sent alerts as the
+// log records them) and returns the rest, held: firing and escalated first, the critical ones first among them, then
+// the recoveries, then the repeats.
+func (c *Channel) capHold(ctx context.Context, q rowQuerier, now time.Time, send *[]Alert) ([]Alert, error) {
+	var used int
+	if err := q.QueryRow(ctx, `SELECT coalesce(sum(n_firing + n_repeat + n_resolved), 0)::int FROM pgvigil.alert_log
+	   WHERE channel = $1 AND outcome = 'sent' AND snapshot_at > $2::timestamptz - interval '1 hour'`,
+		c.Name, now).Scan(&used); err != nil {
+		return nil, fmt.Errorf("max_per_hour: %w", err)
+	}
+	left := max(c.MaxPerHour-used, 0)
+	if len(*send) <= left {
+		return nil, nil
+	}
+	s := append([]Alert(nil), *send...)
+	order := func(a Alert) int {
+		switch a.Event {
+		case "firing", "escalated":
+			return 3 - rank(a.Severity) // 0 critical, 1 warning, 2 info
+		case "resolved", "cleared":
+			return 3
+		}
+		return 4
+	}
+	sort.SliceStable(s, func(i, j int) bool { return order(s[i]) < order(s[j]) })
+	*send = s[:left]
+	return s[left:], nil
 }
 
 func utc(t *time.Time) *time.Time {
@@ -717,7 +934,8 @@ func syncChannels[T any](ctx context.Context, exec func(context.Context, string,
 		rows = append(rows, map[string]any{"name": c.Name, "kind": c.Kind, "destination": c.Destination(),
 			"min_severity": c.MinSeverity, "instances": nonNil(c.Instances), "tags": nonNil(c.Tags),
 			"quiet_hours": c.QuietHours, "timezone": c.Timezone, "repeat_secs": int(c.RepeatEvery().Seconds()),
-			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery()})
+			"clear_after_secs": int(c.ClearAfterEvery().Seconds()), "recovery": c.SendsRecovery(),
+			"max_per_hour": c.MaxPerHour, "templates": c.tpl.words(), "link_base": c.base})
 	}
 	pay, _ := json.Marshal(rows)
 	_, err := exec(ctx, `SELECT pgvigil.alert_channels_sync($1, $2::jsonb)`, now, string(pay))
@@ -811,11 +1029,14 @@ func Run(ctx context.Context, log *slog.Logger, dsn string, chs []Channel) error
 		switch {
 		case err != nil:
 			log.Warn("alerts pass failed", "err", err)
-		case res.Sent+res.Failed+res.Cleared > 0:
+		case res.Sent+res.Failed+res.Cleared+res.Capped+res.Tests > 0:
 			log.Info("alerts pass", "result", res.String())
 		}
 		if res.RulesErr != nil {
 			log.Warn("alerts: the alert rules were not judged in this pass", "err", res.RulesErr)
+		}
+		if res.TestsErr != nil {
+			log.Warn("alerts: the Send test requests were not read in this pass", "err", res.TestsErr)
 		}
 		for n, e := range outcome {
 			if e == nil {

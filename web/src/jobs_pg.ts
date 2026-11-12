@@ -3,10 +3,12 @@
 // history and changes, and every run of the range as the old page had it (pages.ts jobs(): nothing it showed is
 // lost). Data from /api/jobs/history?engine=pg and /api/jobs. The lead points the 'jobs' tab here.
 // Task 154: the shared panel carries the versions (pg_cron's and pgAgent's scripts with their diffs) and the status
-// against the job thresholds; Start / Stop is SQL Server's alone (pg_cron and pgAgent have no such call).
+// against the job thresholds. Task 161 (jobs_running.ts): the pg_cron schedule in words, Run now on a pgAgent job, and
+// under the grid Running now with Stop, the pgAgent step log, the exclusions and the job actions' audit.
 import { get, Row, rowsOf, Table } from './api';
 import { jobLink } from './drill';
 import { jobsPanel, oneLine } from './mssql_jobs';
+import { cronInWords, jobsRunningPanel, pgJobActionCol } from './jobs_running';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtSecs, fmtTime, grid } from './ui';
 
@@ -24,8 +26,12 @@ export async function jobsPgView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'datname', label: 'db' }, { key: 'run_as', label: 'run as' },
       { key: 'command', fmt: oneLine },
       { key: 'job_id', label: 'page', fmt: (v, r: Row) => jobLink(ctx, `#${String(v)}`, r.scheduler, Number(v)) },
+      // task 161: the pg_cron schedule in words, Run now on a pgAgent job
+      { key: '_schedule_words', label: 'schedule in words (cron.timezone)', fmt: (_v, r: Row) => r.scheduler === 'pg_cron' ? cronInWords(r.schedule) : '' },
+      await pgJobActionCol(ctx, () => window.dispatchEvent(new HashChangeEvent('hashchange'))),
     ];
     sec.append(await jobsPanel(ctx, 'pg', extra));
+    sec.append(await jobsRunningPanel(ctx));
     const d = await get<Record<'runs', Table | null>>('jobs', { instance: ctx.instance, ...window_(ctx), part: 'runs' });
     const runCols: Col[] = [
       { key: 'start_time', label: 'start', fmt: fmtTime },

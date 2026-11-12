@@ -52,7 +52,7 @@ function seriesChart(series: Row[], meta: Row, dimLabel: string): HTMLElement {
     for (const k of ranks) { sum += Number(row['v' + k] ?? 0); row['s' + k] = sum; }
   }
   const title = `Connections over time by ${dimLabel} (average per read, buckets of ${bucketLabel(Number(meta.step_secs ?? 60))})`;
-  return lineChart(title, rows, ranks.map(k => ({ key: 's' + k, label: names.get(k)! })), v => fmtNum(v), { stacked: true });
+  return lineChart(title, rows, ranks.map(k => ({ key: 's' + k, label: names.get(k)! })), v => fmtNum(v), { stacked: true, limits: ['max_connections'] });
 }
 
 export async function connectionsView(ctx: Ctx): Promise<HTMLElement> {

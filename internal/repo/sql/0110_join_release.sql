@@ -11,6 +11,11 @@
 --   task 148 (day-one checks, 0090): the mssql_checks_findings arm; nothing for purge() (no table grows by the month).
 --   task 149 (readers, 0091): the mssql_readers_findings arm; mssql_errorlog, mssql_health_components and mssql_trace_events
 --   among purge()'s parents; the stale-cursor DELETE keeps 'errorlog:search'; mssql_errorlog_search_set owner-only.
+--   task 155 (PostgreSQL depth, 0095): the pg_depth_findings arm; wal_state_sample, function_stats, slru_sample among purge()'s
+--   parents; sequence_state, db_checks, index_bloat and depth_databases lose their absent rows past the retention.
+--   task 161 (PostgreSQL jobs and deadlocks, 0102): purge() deletes job_step_runs past the retention.
+--   task 151 (alerting): purge() deletes the alert test sends past the retention.
+--   task 163 (PostgreSQL database options, 0104): the pg_override_findings and pg_dboption_findings arms; nothing for purge().
 -- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new name.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -105,6 +110,12 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pgaudit_findings
     UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_override_findings
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_dboption_findings
+    UNION ALL
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.pg_depth_findings
+    UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_audit', at FROM pgvigil.mssql_audit_findings
     UNION ALL
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_plancache', at FROM pgvigil.mssql_plancache_findings
@@ -142,7 +153,8 @@ BEGIN
                          'mssql_indexlock_read', 'mssql_indexlock_sample', 'mssql_proc_read', 'mssql_proc_sample',
                          'mssql_qs_interval', 'mssql_qs_runtime',
                          'pgaudit_events', 'pgaudit_counts', 'mssql_audit_counts', 'mssql_audit_events',
-                         'mssql_pc_read', 'mssql_pc_sample', 'mssql_errorlog', 'mssql_health_components', 'mssql_trace_events')
+                         'mssql_pc_read', 'mssql_pc_sample', 'mssql_errorlog', 'mssql_health_components', 'mssql_trace_events',
+                         'wal_state_sample', 'function_stats', 'slru_sample')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
@@ -286,6 +298,21 @@ BEGIN
   n := n + pgvigil.mssql_running_purge(p_days);
   n := n + pgvigil.mssql_reads_purge(p_days);
   n := n + pgvigil.mssql_plancache_purge(p_days);
+  -- the PostgreSQL job step runs (161, 0102) past the retention, as job_runs
+  DELETE FROM pgvigil.job_step_runs WHERE start_time < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- alert test sends (151) past the retention (alert_dismissals and the acks columns are an audit: kept)
+  DELETE FROM pgvigil.alert_tests WHERE requested_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- PostgreSQL depth (0095): rows no longer present past the retention
+  DELETE FROM pgvigil.sequence_state WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.db_checks WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.index_bloat WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  DELETE FROM pgvigil.depth_databases WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_xe_state WHERE snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- a cursor goes only with an instance no collection has reached for the whole window: a quiet source (no deadlock

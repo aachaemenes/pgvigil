@@ -77,8 +77,8 @@ export async function dbPage(ctx: Ctx): Promise<HTMLElement> {
   ]));
   const meta = rowsOf(d.series_meta)[0] ?? {};
   sec.append(el('div', { class: 'charts' },
-    lineChart(`Size (${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)})`, rowsOf(d.series), [{ key: 'size_bytes', label: String(f.datname) }], v => fmtBytes(v)),
-    lineChart('Transaction-id age', rowsOf(d.series), [{ key: 'xid_age', label: 'age(datfrozenxid)' }], v => fmtNum(v))));
+    lineChart(`Size (${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)})`, rowsOf(d.series), [{ key: 'size_bytes', label: String(f.datname) }], v => fmtBytes(v), { ownSpan: true }),
+    lineChart('Transaction-id age', rowsOf(d.series), [{ key: 'xid_age', label: 'age(datfrozenxid)' }], v => fmtNum(v), { ownSpan: true })));
 
   sec.append(el('h3', {}, 'Tables'), grid(rowsOf(d.tables), [
     { key: 'table_name', label: 'table', fmt: (v, r) => tableLink(ctx, `${String(r.schema_name)}.${String(v)}`, db, r.relid) },
@@ -153,8 +153,8 @@ export async function tablePage(ctx: Ctx): Promise<HTMLElement> {
   ]));
   const s = rowsOf(d.series), meta = rowsOf(d.series_meta)[0] ?? {};
   sec.append(el('div', { class: 'charts' },
-    lineChart(`Size (${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)})`, s, [{ key: 'total_bytes', label: 'total' }, { key: 'bloat_bytes', label: 'bloat' }], v => fmtBytes(v)),
-    lineChart('Live and dead rows', s, [{ key: 'n_live_tup', label: 'live' }, { key: 'n_dead_tup', label: 'dead' }], v => fmtNum(v))));
+    lineChart(`Size (${fmtTime(meta.from_at)} to ${fmtTime(meta.to_at)})`, s, [{ key: 'total_bytes', label: 'total' }, { key: 'bloat_bytes', label: 'bloat' }], v => fmtBytes(v), { ownSpan: true }),
+    lineChart('Live and dead rows', s, [{ key: 'n_live_tup', label: 'live' }, { key: 'n_dead_tup', label: 'dead' }], v => fmtNum(v), { ownSpan: true })));
 
   sec.append(el('h3', {}, `Vacuum and analyze runs (${rangeLabel(ctx)})`), grid(rowsOf(d.vacuum), [
     { key: 'started_at', label: 'started', fmt: fmtTime }, { key: 'kind' }, { key: 'is_auto', label: 'auto', fmt: yesNo },
