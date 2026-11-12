@@ -21,7 +21,7 @@ function ageText(from: unknown): string {
 }
 const whereText = (r: Row) => r.level === 'default' ? 'the default' : r.level === 'tag' ? `set on the tag ${String(r.tag)}` : r.level === 'instance' ? 'set on this instance' : `set on the ${String(r.level)}`;
 
-// a POST that keeps a refusal's reason: the thresholds write answers 409 with {outcome, detail}
+// a POST that shows a refusal as '<outcome>: <detail>' (the thresholds write answers 409 with {outcome, detail, error})
 async function send(body: Record<string, unknown>): Promise<{ outcome: string; detail: string }> {
   const res = await fetch('/api/pg/thresholds', {
     method: 'POST', credentials: 'same-origin',
@@ -30,7 +30,7 @@ async function send(body: Record<string, unknown>): Promise<{ outcome: string; d
   });
   let b: { outcome?: string; detail?: string; error?: string } = {};
   try { b = await res.json(); } catch { /* an empty or non-JSON body */ }
-  if (!res.ok) throw new Error(b.error ?? (b.outcome ? `${b.outcome}: ${b.detail ?? ''}` : `${res.status} ${res.statusText}`));
+  if (!res.ok) throw new Error(b.outcome ? `${b.outcome}: ${b.detail ?? ''}` : b.error ?? `${res.status} ${res.statusText}`);
   return { outcome: String(b.outcome ?? 'done'), detail: String(b.detail ?? '') };
 }
 
@@ -57,9 +57,10 @@ export async function openUptimeDialog(instanceId: number): Promise<void> {
     msg, el('div', { style: 'margin-top:.6rem' }, save, ' ', inherit, ' ', close));
   const dlg = el('dialog', { class: 'act-dialog', style: 'max-width:36rem', 'aria-label': `Instance Uptime: ${name}`, 'data-instance': String(instanceId) }, form);
   let done = false;
-  const finish = () => { dlg.close(); dlg.remove(); if (done) window.dispatchEvent(new HashChangeEvent('hashchange')); };
-  close.addEventListener('click', finish);
-  dlg.addEventListener('cancel', () => { dlg.remove(); if (done) window.dispatchEvent(new HashChangeEvent('hashchange')); });
+  let ownNow = r != null && r.own_id != null;
+  // closed by Close or Esc: the dialog's own close returns the focus to the cell, then it goes
+  dlg.addEventListener('close', () => { dlg.remove(); if (done) window.dispatchEvent(new HashChangeEvent('hashchange')); });
+  close.addEventListener('click', () => dlg.close());
   const go = async (op: 'set' | 'inherit') => {
     save.disabled = inherit.disabled = true;
     msg.textContent = 'Saving...';
@@ -69,10 +70,11 @@ export async function openUptimeDialog(instanceId: number): Promise<void> {
       const a = await send(body);
       done = true;
       msg.replaceChildren(badge(a.outcome, 'ok'), ' ', a.detail);
-      inherit.disabled = op === 'inherit';
+      ownNow = op === 'set';
+      inherit.disabled = !ownNow;
     } catch (e) {
       msg.replaceChildren(badge('not saved', 'crit'), ' ', e instanceof Error ? e.message : String(e));
-      inherit.disabled = !r || r.own_id == null;
+      inherit.disabled = !ownNow;
     }
     save.disabled = !r;
   };

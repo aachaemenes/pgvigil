@@ -15,7 +15,7 @@ const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
 // a volume's free per cent judged as the Drives page judges it (drives_now's status: the threshold in force, task 176)
 const lvlOf = (r: Row) => r.status === 'critical' ? 'crit' : r.status === 'warning' ? 'warn' : r.status === 'ok' ? 'ok' : '';
 const freeTxt = (v: unknown, r: Row) => v == null ? '' : lvlOf(r) === 'crit' || lvlOf(r) === 'warn' ? badge(pctTxt(v), lvlOf(r)) : pctTxt(v);
-// the free cells in the colour of the volume's threshold (the root's, a tag's, the instance's or its own; 10 / 5 by default), as the export writes them
+// the free cells in the colour of the volume's threshold (the root's, a tag's, the instance's or its own; DBA Dash's 20 / 10 by default), as the export writes them
 const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : lvlOf(r);
 const perDay = (v: unknown) => v == null ? 'too little history' : (Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : fmtBytes(v)) + ' / day';
 // a forecast past ten years is not a date anyone plans to
@@ -188,7 +188,7 @@ export async function storageFleetView(keep?: (r: Row) => boolean, instLink?: (n
     el('div', { class: 'tiles' },
       tile('volumes', String(rows.length)),
       tile('full within 30 days', String(soon), soon ? 'warn' : 'ok'),
-      tile('under 10 % free', String(low), low ? 'warn' : 'ok'),
+      tile('capacity headroom under 10 %', String(low), low ? 'warn' : 'ok'),
       tile('repository', fmtBytes(repo.database_bytes) || '-')),
     el('p', { class: 'meta' }, 'Every volume of the fleet, the soonest full first. '
       + `The repository (this database) holds ${fmtBytes(repo.schema_bytes) || '-'} of pgvigil tables, ${fmtBytes(repo.history_bytes) || '-'} of it monthly history partitions.`),

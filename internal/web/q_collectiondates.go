@@ -33,10 +33,12 @@ SELECT c.instance_id, c.instance, c.engine, c.collection,
        c.interval_secs, CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END AS stale_secs,
        CASE WHEN c.interval_secs > 0 THEN c.snapshot_at + make_interval(secs => c.interval_secs) END AS next_run,
        CASE WHEN c.last_status = 'ok' THEN c.snapshot_at END AS last_success,
-       (SELECT max(l.snapshot_at) FROM pgvigil.collection_log l
-         WHERE l.instance_id = c.instance_id AND l.collection = c.collection AND l.status = 'error') AS last_error_at,
-       c.duration_ms, c.note
+       e.last_error_at, c.duration_ms, c.note
   FROM c
+  LEFT JOIN (SELECT l.instance_id, l.collection, max(l.snapshot_at) AS last_error_at
+               FROM pgvigil.collection_log l
+              WHERE l.status = 'error' AND ($3::int = 0 OR l.instance_id = $3) AND ($4::int[] IS NULL OR l.instance_id = ANY ($4))
+              GROUP BY l.instance_id, l.collection) e ON e.instance_id = c.instance_id AND e.collection = c.collection
  ORDER BY CASE WHEN c.interval_secs = 0 THEN 4 WHEN c.last_status = 'error' THEN 1
                WHEN now() - c.snapshot_at > make_interval(secs => CASE WHEN c.interval_secs IS NULL THEN $2::int ELSE greatest(300, 3 * c.interval_secs) END) THEN 2
                ELSE 3 END, c.instance, c.collection`

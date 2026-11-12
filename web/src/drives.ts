@@ -91,7 +91,7 @@ function configureDialog(p: Place, inForce: string, own: Row | undefined, after:
   if (!own) inherit.disabled = true;
   const form = el('form', { method: 'dialog' }, el('h3', {}, `Drive space thresholds: ${p.where}`),
     el('p', {}, 'A drive with less free space than the warning per cent is a warning, less than the critical per cent a critical. '
-      + 'The drive\'s own threshold wins, then its instance\'s, a tag\'s (when two of the instance\'s tags carry one, the tag first by name), the root\'s; the default is warning under 10 %, critical under 5 %. '
+      + 'The drive\'s own threshold wins, then its instance\'s, a tag\'s (when two of the instance\'s tags carry one, the tag first by name), the root\'s; the default is warning under 20 %, critical under 10 %. '
       + 'Inherit ends this level\'s own threshold, so the level above applies. Who set it and when is kept.'),
     el('p', { class: 'meta' }, `In force now: ${inForce}.`),
     el('div', { style: 'margin:.3rem 0' }, el('label', {}, 'Warning under (% free) ', warn)),
@@ -207,7 +207,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
       : ctx.tag && ctx.tag !== 'untagged' ? { level: 'tag', tag: ctx.tag, where: `the tag ${ctx.tag} (every instance carrying it)` }
         : { level: 'root', where: 'the root (every drive of the fleet)' };
     const own = ownRow(thresholds, p);
-    configureDialog(p, own ? `warning under ${pct(own.warn_pct)}, critical under ${pct(own.crit_pct)} (set at this level)` : 'the level above (or the default: warning under 10 %, critical under 5 %)', own, () => void draw());
+    configureDialog(p, own ? `warning under ${pct(own.warn_pct)}, critical under ${pct(own.crit_pct)} (set at this level)` : 'the level above (or the default: warning under 20 %, critical under 10 %)', own, () => void draw());
   });
   sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'drv-status' }, 'Status ', statusSel), ' ', configure, ' ', toggle), body);
   await draw();
@@ -324,7 +324,7 @@ export async function dbFilesView(ctx: Ctx): Promise<HTMLElement> {
     ];
     body.replaceChildren(
       el('p', { class: 'meta' }, `File count ${fmtNum(c.files ?? 0)}, total size ${fmtBytes(c.size_bytes ?? 0)}${folder ? ` in ${sc.folder}` : ''}${drive ? ` on ${drive}` : ''}. `
-        + 'SQL Server: every data and log file; critical at its maximum size, warning within one growth of it. PostgreSQL: the data directory, the WAL directory and each tablespace, each on the drive that holds it (no maximum to judge).',
+        + 'SQL Server: every data and log file; critical at its maximum size, warning within one growth of it. PostgreSQL: the WAL directory and each tablespace, each on the drive that holds it (pg_wal, pg_default and pg_global on the data directory\'s drive; no maximum to judge).',
         drive ? el('span', {}, ' ', el('a', { href: instHref(ctx, ctx.instance, 'dbfiles') }, 'All the files of the instance')) : ''),
       grid(rows, cols, statusSel.value === 'all' ? 'No file read yet.' : 'No file matches the filter: show All to list every file.'));
   }

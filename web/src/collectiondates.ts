@@ -52,7 +52,7 @@ export async function collectionDatesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'last_status', label: 'critical threshold', fmt: (_v, r) => r.status === 'disabled' ? '' : 'the last run failed' },
       { key: 'interval_secs', label: 'schedule', num: true, fmt: v => v == null ? 'not known' : Number(v) === 0 ? 'disabled' : `every ${fmtSecs(v)}` },
       { key: 'next_run', label: 'next run', fmt: fmtTime },
-      { key: 'last_success', label: 'last success', fmt: (v, r) => v == null ? (r.last_status === 'ok' ? '' : 'not kept (the last run failed)') : fmtTime(v) },
+      { key: 'last_success', label: 'last success', fmt: (v, r) => v == null ? (r.last_status === 'error' ? 'not kept (the last run failed)' : r.last_status === 'skipped' ? 'not kept (the last run was skipped)' : '') : fmtTime(v) },
       { key: 'last_error_at', label: 'last error', fmt: fmtTime },
       { key: 'duration_ms', label: 'duration (ms)', num: true, fmt: fmtNum },
       { key: 'note', wide: true },

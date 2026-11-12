@@ -304,10 +304,11 @@ func (s *Server) DBSpace(w http.ResponseWriter, r *http.Request) {
 
 // sqlDBFiles: the files of the scope. SQL Server: every data and log file with its size, the space used inside it
 // where read, its maximum and growth, and the status 0067's rule gives (critical at its max, warning within one growth
-// of it); PostgreSQL: the WAL directory and each tablespace the storage collection read, and the data directory (the
-// databases' size, on the drive host_disks says holds it); no maximum: status ok. A PostgreSQL row's drive is the
-// host volume one of whose mount points is the longest prefix of its location (task 176b: a drive's Files link lists
-// the files on that drive, as DBA Dash's does). $1 the instance (0 = any), $2 the folder's instances, $3 the statuses,
+// of it); PostgreSQL: the WAL directory and each tablespace the storage collection read (no maximum: status ok). A
+// PostgreSQL row's drive (task 176b: a drive's Files link lists the files on that drive, as DBA Dash's does): a
+// tablespace with a location, the host volume one of whose mount points is the longest prefix of it; a row without a
+// location (pg_wal, pg_default, pg_global: inside the data directory) the volume that holds the data directory
+// (host_disks.holds_data; a pg_wal symlinked elsewhere is not read). $1 the instance (0 = any), $2 the folder's instances, $3 the statuses,
 // $4 the drive (empty = every drive).
 const sqlDBFilesFrom = `
 WITH f AS (
@@ -325,22 +326,16 @@ WITH f AS (
    WHERE f.is_present
   UNION ALL
   SELECT s.instance_id, NULL, s.name, upper(s.kind), NULL, s.location, s.size_bytes, NULL, NULL, NULL, NULL, NULL,
-         (SELECT h.mount_point FROM pgvigil.host_disks h CROSS JOIN LATERAL unnest(coalesce(h.mounts, '{}'::text[]) || h.mount_point) m
-           WHERE h.instance_id = s.instance_id AND h.is_present AND s.location IS NOT NULL
-             AND (s.location = m OR left(s.location, length(rtrim(m, '/')) + 1) = rtrim(m, '/') || '/')
-           ORDER BY length(m) DESC LIMIT 1),
+         CASE WHEN s.location IS NULL
+              THEN (SELECT h.mount_point FROM pgvigil.host_disks h WHERE h.instance_id = s.instance_id AND h.is_present AND h.holds_data
+                     ORDER BY h.mount_point LIMIT 1)
+              ELSE (SELECT h.mount_point FROM pgvigil.host_disks h CROSS JOIN LATERAL unnest(coalesce(h.mounts, '{}'::text[]) || h.mount_point) m
+                     WHERE h.instance_id = s.instance_id AND h.is_present
+                       AND (s.location = m OR left(s.location, length(rtrim(m, '/')) + 1) = rtrim(m, '/') || '/')
+                     ORDER BY length(m) DESC LIMIT 1) END,
          s.snapshot_at, 'ok'
     FROM pgvigil.storage_state s
    WHERE s.is_present AND s.kind IN ('wal', 'tablespace')
-  UNION ALL
-  SELECT d.instance_id, NULL, 'data directory', 'DATA', NULL, NULL, sum(d.size_bytes)::bigint, NULL, NULL, NULL, NULL, NULL,
-         (SELECT h.mount_point FROM pgvigil.host_disks h WHERE h.instance_id = d.instance_id AND h.is_present AND h.holds_data
-           ORDER BY h.mount_point LIMIT 1),
-         max(d.snapshot_at), 'ok'
-    FROM pgvigil.databases d
-    JOIN pgvigil.instances di ON di.instance_id = d.instance_id AND di.engine = 'postgres'
-   WHERE d.is_present
-   GROUP BY d.instance_id
 )`
 
 const sqlDBFiles = sqlDBFilesFrom + `

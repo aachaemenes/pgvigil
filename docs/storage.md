@@ -6,7 +6,7 @@ The Storage folder's first tabs are DBA Dash's, in its order. At the root and in
 | --- | --- | --- |
 | Drives | one bar per drive with its free space and the threshold it is judged by | PostgreSQL: the host collection's volumes (`system_stats`, or CloudWatch on RDS and Aurora); SQL Server: `mssql_storage`'s volumes (`sys.dm_os_volume_stats`) |
 | DB Space | the space the databases hold: per instance in a folder, per database under an instance, with its history | PostgreSQL: `pg_database_size` per database (`databases`); SQL Server: the data and log files (`mssql_storage`) |
-| Files | SQL Server's data and log files; PostgreSQL's data directory, WAL directory and tablespaces, each on the drive that holds it | `mssql_storage`; the `storage` collection, the host's volumes and the databases' sizes |
+| Files | SQL Server's data and log files; PostgreSQL's WAL directory and tablespaces, each on the drive that holds it (pg_wal, pg_default and pg_global, which have no location of their own, on the drive of the data directory) | `mssql_storage`; the `storage` collection and the host's volumes |
 | TempDB | SQL Server's tempdb files per instance | `mssql_tempdb` ([SQL Server storage](sqlserver-storage.md)) |
 | Temp | a PostgreSQL instance's temporary files over the page's range: by database, by statement, by hour | `pg_stat_database`'s temp_files and temp_bytes, `pg_stat_statements`' temp blocks, the log's temporary-file lines (the Memory page's reads) |
 | Table Size | the largest tables with their growth (under a PostgreSQL instance: its Tables page) | the `tables` collection (PostgreSQL only: the repository holds no table sizes of a SQL Server instance) |

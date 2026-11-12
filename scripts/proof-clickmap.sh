@@ -54,9 +54,9 @@
 #     (sql01, warning 87600 h, critical 87599 h) and still refuses another key there ('crash'); GET /api/uptime names
 #     sql01, its start time, the level 'instance' and those two values; the SQL Server summary's uptime cell is then
 #     critical with a detail naming 'set on the instance'; inherit ends it and the detail says 'the default' again.
-#  R adds: /api/dbfiles counts the data directory of each PostgreSQL instance with databases; ?drive=<sql01's E:\>
-#     gives only E:\ files, as many as mssql_files has there; ?drive=<erp01's data volume> holds erp01's 'data
-#     directory' row; /api/collectiondates: one row per active instance and collection, each status critical, warning,
+#  R adds: /api/dbfiles?drive=<sql01's E:\> gives only E:\ files, as many as mssql_files has there; ?drive=<erp01's
+#     data volume> holds erp01's pg_wal (a row without a location lives in the data directory) [review fold, before
+#     the run: the separate data-directory row is gone, it counted pg_default's bytes twice]; /api/collectiondates: one row per active instance and collection, each status critical, warning,
 #     ok or disabled, critical exactly where the last run failed; ?instance=<sql01> its own rows only.
 #  C adds: Collection opens Collection dates on both engines; Database state opens Database options (PostgreSQL
 #     pgdboptions; SQL Server the Checks page with cv=databases); QS opens pgstate / mssqlqs; Uptime opens the dialog
@@ -195,13 +195,13 @@ USED=$(q "select coalesce(string_agg(i.name || ':' || coalesce(x.u::text, 'none'
 [[ "$USED" == *none* && "$USED" == *[0-9]* ]] || fail "R: the demo's SQL Server rows hold no unread or no read used ($USED): the case is not exercised"
 [[ $(js "dbspace?instance=$SQL1" "print(int(len(rows('databases')) >= 1 and len(rows('history')) >= 2))") == 1 ]] || fail "R: dbspace of sql01"
 [[ $(js "dbfiles?instance=$SQL1" "print(int(len(rows('files')) >= 1 and all(r['status'] in ('ok','warning','critical') for r in rows('files'))))") == 1 ]] || fail "R: dbfiles of sql01"
-[[ $(js dbfiles "print(rows('counts')[0]['files'])") == $(q "select (select count(*) from pgvigil.mssql_files f join pgvigil.instances i using (instance_id) where f.is_present and i.is_active) + (select count(*) from pgvigil.storage_state s join pgvigil.instances i using (instance_id) where s.is_present and s.kind in ('wal','tablespace') and i.is_active) + (select count(distinct d.instance_id) from pgvigil.databases d join pgvigil.instances i using (instance_id) where d.is_present and i.engine = 'postgres' and i.is_active)") ]] || fail "R: dbfiles counts"
-# a drive's files (task 176b): sql01's E:\ only, as many as mssql_files puts there; erp01's data volume holds its data directory
+[[ $(js dbfiles "print(rows('counts')[0]['files'])") == $(q "select (select count(*) from pgvigil.mssql_files f join pgvigil.instances i using (instance_id) where f.is_present and i.is_active) + (select count(*) from pgvigil.storage_state s join pgvigil.instances i using (instance_id) where s.is_present and s.kind in ('wal','tablespace') and i.is_active)") ]] || fail "R: dbfiles counts"
+# a drive's files (task 176b): sql01's E:\ only, as many as mssql_files puts there; erp01's data volume holds its pg_wal (no location: the data directory's)
 EVOL=$(q "select volume from pgvigil.mssql_files where instance_id = $SQL1 and is_present and volume is not null group by volume order by count(*) desc, volume limit 1")
 EQ=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$EVOL")
 [[ $(VOL="$EVOL" js "dbfiles?instance=$SQL1&drive=$EQ" "r=rows('files'); print(int(len(r) >= 1 and all(x['drive'] == os.environ['VOL'] for x in r)), len(r))") == "1 $(q "select count(*) from pgvigil.mssql_files where instance_id = $SQL1 and is_present and volume = '$EVOL'")" ]] || fail "R: dbfiles of sql01 on $EVOL"
 DQ=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$DATA")
-[[ $(js "dbfiles?instance=$ERP&drive=$DQ" "print(int(any(x['file'] == 'data directory' for x in rows('files'))))") == 1 ]] || fail "R: erp01's data directory not on $DATA"
+[[ $(js "dbfiles?instance=$ERP&drive=$DQ" "print(int(any(x['file'] == 'pg_wal' for x in rows('files'))))") == 1 ]] || fail "R: erp01's pg_wal not on $DATA"
 # the collection dates: one row per active instance and collection; critical exactly where the last run failed
 [[ $(js collectiondates "print(len(rows('collections')))") == $(q "select count(*) from pgvigil.collection_dates c join pgvigil.instances i using (instance_id) where i.is_active") ]] || fail "R: collectiondates rows"
 [[ $(js collectiondates "r=rows('collections'); print(int(all(x['status'] in ('critical','warning','ok','disabled') for x in r) and all((x['status'] == 'critical') == (x['last_status'] == 'error') for x in r if x['status'] != 'disabled')))") == 1 ]] || fail "R: collectiondates statuses"
@@ -211,7 +211,7 @@ VOLS=$(q "select string_agg(volume, '|') from pgvigil.mssql_volumes where instan
 [[ $(VOLS="$VOLS" js "driveperf?instance=$SQL1" "v=set(os.environ['VOLS'].split('|'))|{'drive not read'}; r=rows('series'); print(int(len(r) >= 1 and all(x['drive'] in v for x in r)))") == 1 ]] || fail "R: driveperf of sql01"
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' "$U/api/drives/thresholds") == 403 ]] || fail "R: a write without the header"
 [[ $(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'X-Pgvigil: 1' -d '{}' "$U/api/drives/thresholds") == 403 ]] || fail "R: a write without the login"
-ok "R: drives, history ($H points), dbspace ($NI instances), dbfiles (the data directory rows; sql01 on $EVOL, erp01 on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
+ok "R: drives, history ($H points), dbspace ($NI instances), dbfiles (sql01 on $EVOL, erp01's pg_wal on $DATA), driveperf, collectiondates answer as the repository says; the write door refuses without the header and the login"
 
 echo "== C the click map (headless Chromium on CDP $CDP)"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &

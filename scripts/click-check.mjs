@@ -134,7 +134,7 @@ const clickDialog = async (scopeHash, href, column, inst) => {
   await ev(`(() => { const x = document.querySelector('dialog[open]'); if (x) { x.close(); x.remove(); } })()`);
   if (!d) return { ok: false, why: 'no dialog opened' };
   const want = inst ? d.label.includes(inst) && d.text.includes(inst) : true;
-  const thr = /In force: warning under [0-9.,]+ hours, critical under [0-9.,]+ hours/.test(d.text);
+  const thr = /In force: warning under (?:[0-9.,\u202f\u00a0]+ hours|not judged), critical under (?:[0-9.,\u202f\u00a0]+ hours|not judged)/.test(d.text);
   if (d.hash !== before) return { ok: false, why: `the address changed to ${d.hash}` };
   if (!want) return { ok: false, why: `the dialog does not name ${inst}: ${d.label}` };
   if (!thr) return { ok: false, why: `no thresholds in the dialog: ${d.text.slice(0, 160)}` };
@@ -155,9 +155,10 @@ for (const sc of scopes) {
   for (const l of links) {
     const tab = tabOf(l.href), inst = Number(paramsOf(l.href).get('i') ?? sc.instance ?? 0), engine = engineOf.get(inst) ?? '';
     let verdict;
-    if (l.kind === 'cell') verdict = verdictFor(l.column, engine, tab);
-    if (l.kind === 'cell' && l.column === 'Database state' && engine === 'sqlserver' && paramsOf(l.href).get('cv') !== 'databases') verdict = 'FAIL the SQL Server Database state cell does not open the Database options view (cv=databases)';
-    else if (l.kind === 'test') verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : testWant[l.column] ? (testWant[l.column] === tab ? 'ok (DBA Dash: the test\'s own page)' : `FAIL want ${testWant[l.column]}`) : 'ok (the test\'s own page; not Daily checks)';
+    if (l.kind === 'cell') {
+      verdict = verdictFor(l.column, engine, tab);
+      if (l.column === 'Database state' && engine === 'sqlserver' && paramsOf(l.href).get('cv') !== 'databases') verdict = 'FAIL the SQL Server Database state cell does not open the Database options view (cv=databases)';
+    } else if (l.kind === 'test') verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : testWant[l.column] ? (testWant[l.column] === tab ? 'ok (DBA Dash: the test\'s own page)' : `FAIL want ${testWant[l.column]}`) : 'ok (the test\'s own page; not Daily checks)';
     else verdict = tab === 'checks' ? 'FAIL lands on Daily checks' : 'ok';
     const key = `${l.kind}|${l.column}|${engine}`;
     let landed = `${tab} (href)`;
@@ -232,6 +233,7 @@ for (const s of storageScopes) {
 
 // a drive's Files link (task 176b, DBA Dash's): on an instance's Drives page every drive's link opens Files with that
 // drive, and the grid holds that drive's files only (the instance's data directory, WAL or tablespaces on PostgreSQL)
+const filesSeen = new Map();
 for (const s of storageScopes.slice(2)) {
   await go(`#/drives${s.q}`);
   const fl = await ev(`[...document.querySelectorAll('main a')].filter(a => (a.getAttribute('aria-label') ?? '').startsWith('Files on ')).map(a => [a.getAttribute('href'), a.getAttribute('aria-label')])`);
@@ -243,11 +245,15 @@ for (const s of storageScopes.slice(2)) {
     const cells = await ev(`(() => { const t = document.querySelector('main table.grid'); if (!t) return null; const hs = [...t.querySelectorAll('thead tr:first-child th')].map(x => x.textContent.trim());
       const j = hs.findIndex(x => x.startsWith('drive')); if (j < 0) return { j }; return { j, drives: [...t.querySelectorAll('tbody tr')].map(tr => tr.children[j]?.textContent.trim() ?? '') }; })()`);
     const all = cells && cells.drives ? cells.drives : [];
-    const okL = tabOf(got.hash) === 'dbfiles' && drive && got.h2 === `Files on ${drive}` && !got.err.length && all.every(d => d === drive);
+    const okL = tabOf(got.hash) === 'dbfiles' && drive && got.h2 === `Files on ${drive}` && !got.err.length && cells != null && cells.j >= 0 && all.every(d => d === drive);
+    filesSeen.set(s.name, (filesSeen.get(s.name) ?? 0) + all.length);
     record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: lab, landed: `${tabOf(got.hash)} (${got.h2.slice(0, 40)}; ${all.length} file(s))`,
       href: h, verdict: okL ? `ok (DBA Dash: a drive's Files: ${all.length} file(s), each on ${drive})` : `FAIL ${got.err[0] ?? ''} want Files on ${drive}, got ${tabOf(got.hash)} '${got.h2}' with drives [${[...new Set(all)].join(', ')}]` });
   }
 }
+
+// an instance whose drives' Files pages listed no file at all has proven nothing
+for (const s of storageScopes.slice(2)) if (!filesSeen.get(s.name)) record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: 'every drive', landed: 'no file listed on any drive', verdict: 'FAIL no drive of the instance lists a file' });
 
 // the table: one line per kind / column / engine / scope (the clicked one; the hrefs of the rest checked)
 const seen = new Map();
