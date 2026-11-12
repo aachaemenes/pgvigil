@@ -93,19 +93,22 @@ export function routeOf(hash = location.hash): string {
 }
 
 // buildMail: the page under root as a mail: the HTML body and the workbook, its name, the window's words
+// The workbook is the one Export .xlsx writes of the same page (sections with the empty grids: a sheet of the header
+// row each); the body shows the grids with rows, as numbers() pairs them. A page whose grids are all empty is mailed too.
 export async function buildMail(ctx: Ctx, root: HTMLElement | null): Promise<MailBody> {
   const m = await metaOf(ctx);
-  const secs = root ? sections(root, m.tab) : [];
-  if (!secs.length) throw new Error('nothing to mail: no grid on this page');
+  const book = root ? sections(root, m.tab, true) : [];
+  if (!book.length) throw new Error('nothing to mail: no grid on this page');
+  const secs = sections(root!, m.tab);
   const nums = numbers(root!);
   const win = `${m.window} (${stamp(m.from)} to ${stamp(m.to)}, ${zoneName()})`;
   const title = `${m.tab} - ${m.instance}`;
-  const z = await zip(workbook(m, secs), m.at);
+  const z = await zip(workbook(m, book), m.at);
   const xlsx = b64(new Uint8Array(await z.arrayBuffer()));
   return {
     name: title, route: routeOf(), subject: `pgvigil: ${title} - ${win}`, window: win,
     html: mailHtml(m, secs, nums, title), xlsx, xlsx_name: exportName(m, 'xlsx'),
-    grids: secs.length, rows: secs.reduce((n, s) => n + s.rows.length, 0),
+    grids: book.length, rows: book.reduce((n, s) => n + s.rows.length, 0),
   };
 }
 

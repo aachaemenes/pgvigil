@@ -2,6 +2,7 @@ import uPlot from 'uplot';
 import { get, Row, rowsOf, Table } from './api';
 import { href, MAX_RANGE_MS, parse, window_ } from './router';
 import { copyText, el, saveBlob, showMenu } from './ui';
+import { exportChart } from './export';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
 
 // live charts, destroyed before the next page is drawn (each holds window listeners)
@@ -425,6 +426,16 @@ function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) 
     ['Save image', () => { void image().then(b => { if (b) { saveBlob(b, fileName('png')); say('Saved the image'); } else say('No image could be made'); }); }],
     ['Copy data', () => { const t = table('\t'); void copyText(t.text).then(ok => say(ok ? `Copied ${t.rows} points` : 'Not copied: the browser refused the clipboard')); }],
     ['Export data (CSV)', () => { const t = table(','); saveBlob(new Blob([t.text + '\n'], { type: 'text/csv;charset=utf-8' }), fileName('csv')); say(`Saved ${t.rows} points`); }],
+    // Export Excel (DBA Dash's chart menu): the same numbers as a workbook, a time as a time, each value a number
+    ['Export Excel', () => {
+      const cols = shown(), xs = u.data[0] as number[];
+      const rows = xs.map((x, i) => [new Date(x * 1000), ...cols.map(c => {
+        const tot = u.data[c.j][i], below = stacked && c.j > 1 ? u.data[c.j - 1][i] : 0;
+        return tot == null ? null : Number(((tot as number) - ((below as number | null) ?? 0)).toPrecision(12));
+      })]);
+      void exportChart(title, ['time', ...cols.map(c => String(c.s.label ?? ''))], rows)
+        .then(() => say(`Saved ${xs.length} points as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
+    }],
     ...(u.series.length > 2 ? [['Pick series', () => pickSeries(box, u, btn)] as [string, () => void]] : []),
   ];
   btn.addEventListener('click', () => { const r = btn.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items, btn); });
@@ -650,6 +661,11 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     ['Save image', () => { void image().then(b => { if (b) { saveBlob(b, fileName('png')); say('Saved the image'); } else say('No image could be made'); }); }],
     ['Copy data', () => { void copyText(table('\t')).then(ok => say(ok ? `Copied ${all.length} slices` : 'Not copied: the browser refused the clipboard')); }],
     ['Export data (CSV)', () => { saveBlob(new Blob([table(',') + '\n'], { type: 'text/csv;charset=utf-8' }), fileName('csv')); say(`Saved ${all.length} slices`); }],
+    // Export Excel: every slice as a row, its size a number and its share under '0.0%'
+    ['Export Excel', () => {
+      void exportChart(title, ['name', 'size', 'share'], all.map(s => [s.label, s.value, total ? s.value / total : null]), [undefined, undefined, 'pct'])
+        .then(() => say(`Saved ${all.length} slices as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
+    }],
   ];
   const menuBtn = el('button', { type: 'button', class: 'chart-menu', 'aria-haspopup': 'menu', 'aria-label': `Chart menu: ${title}`, title: 'Copy or save this chart' }, '⋯') as HTMLButtonElement;
   menuBtn.addEventListener('click', () => { const r = menuBtn.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items, menuBtn); });
