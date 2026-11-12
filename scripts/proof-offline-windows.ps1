@@ -10,7 +10,7 @@
 # Expected (written before its first run; NOT run by this project yet: the sandbox was another lane's):
 #  N   no network adapter is up (Get-NetAdapter shows none Up)
 #  A   install.ps1 -From the bundle: 'signature not verified here', '(plain build) checksum verified'; the service
-#      pgvigil exists (Stopped: no instance yet) under NT SERVICE\pgvigil; %ProgramFiles%\pgvigil\pgvigil.exe prints
+#      pgvigil exists (Stopped: repo.dsn empty yet) under NT SERVICE\pgvigil; %ProgramFiles%\pgvigil\pgvigil.exe prints
 #      the bundle's version and fips140 off; the machine PATH holds the folder; then 'pgvigil.exe uninstall -purge'
 #      leaves no service
 #  O   v0.3.0's FIPS exe installs the service; its migrate as the owner, the logins of 'pgvigil roles', a day of its
@@ -102,7 +102,7 @@ try {
     & icacls.exe $odir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
     $ofile = Join-Path $odir 'owner.dsn'; Set-Content -LiteralPath $ofile -Value $owner -NoNewline
     $u = & (Join-Path $Bundle 'install.ps1') -From $Bundle -OwnerDsnFile $ofile -PgDump (Join-Path $PgBin 'pg_dump.exe') *>&1 | Out-String
-    foreach ($l in '1. stopped the service', '2. dumped the repository to', '3. migrated the repository:', 'pgvigil.previous.exe', '5. swapped the binary and started the service', 'The way back:') { if ($u -notmatch [regex]::Escape($l)) { Fail "U: no '$l' in: $u" } }
+    foreach ($l in '1. kept the previous binary as', '2. stopped the service', '3. dumped the repository to', '4. migrated the repository:', '5. swapped the binary and started the service', 'The way back:') { if ($u -notmatch [regex]::Escape($l)) { Fail "U: no '$l' in: $u" } }
     $nv = & $exe version
     if ($nv -notmatch "^pgvigil $([regex]::Escape($v)) " -or $nv -notmatch 'fips140 on') { Fail "U: the installed exe: $nv (want $v, FIPS)" }
     if ((Hash (Join-Path $pf 'pgvigil.previous.exe')) -ne $oldHash) { Fail 'U: pgvigil.previous.exe is not the old exe' }

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -81,5 +83,33 @@ func TestPreviousNameLinux(t *testing.T) {
 	}
 	if got := upgradeHooksOf.previous("/usr/local/bin/pgvigil"); got != "/usr/local/bin/pgvigil.previous" && !strings.HasSuffix(got, ".previous.exe") {
 		t.Errorf("got %q", got)
+	}
+}
+
+// The page's credential folders (task 204) beside a config in a folder not named pgvigil are the installer's own: an
+// upgrade's folder check passes them and refuses anything else (the join review of 202, finding 2).
+func TestDedicatedFolderCredentials(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pgvconf")
+	for _, d := range []string{"instances", "sources"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, d, "x.dsn"), []byte("host=x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"pgvigil.yaml", "pgvigil.env"} {
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dedicatedFolder(dir, "pgvigil.yaml"); err != nil {
+		t.Fatalf("the credential folders were refused: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := dedicatedFolder(dir, "pgvigil.yaml"); err == nil || !strings.Contains(err.Error(), "holds other files (notes.txt)") {
+		t.Fatalf("a foreign file: %v", err)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -93,10 +94,15 @@ func stopIfRunning(log *slog.Logger, s *mgr.Service) error {
 	return nil
 }
 
-func installService(log *slog.Logger, o installOptions) error {
+func installService(log *slog.Logger, o installOptions) (started bool, why string, err error) {
+	dataDir := filepath.Dir(o.Config)
+	// the folder's refusal before anything changes: a refused folder leaves the service running and the binary as it was
+	if err := dedicatedFolder(dataDir, filepath.Base(o.Config)); err != nil {
+		return false, "", err
+	}
 	m, err := connectSCM()
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	defer func() { _ = m.Disconnect() }()
 	existing, err := m.OpenService(serviceName)
@@ -104,28 +110,24 @@ func installService(log *slog.Logger, o installOptions) error {
 		// an upgrade: the running binary cannot be replaced while the service holds it
 		if err := stopIfRunning(log, existing); err != nil {
 			_ = existing.Close()
-			return err
+			return false, "", err
 		}
 	}
 	if err := installBinary(log, o.Bin); err != nil {
 		if existing != nil {
 			_ = existing.Close()
 		}
-		return err
+		return false, "", err
 	}
-	dataDir := filepath.Dir(o.Config)
 	dsnFile := filepath.Join(dataDir, dsnFileName)
 	logDir := filepath.Join(dataDir, "logs")
-	if err := dedicatedFolder(dataDir, filepath.Base(o.Config)); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return err
+		return false, "", err
 	}
 	for _, f := range []struct{ path, content string }{{o.Config, configTemplate("file:" + dsnFile)}, {dsnFile, ""}} {
 		wrote, err := writeIfAbsent(f.path, f.content, 0o600)
 		if err != nil {
-			return err
+			return false, "", err
 		}
 		if wrote {
 			log.Info("written", "path", f.path)
@@ -145,19 +147,19 @@ func installService(log *slog.Logger, o installOptions) error {
 		c, err := s.Config()
 		if err != nil {
 			_ = s.Close()
-			return err
+			return false, "", err
 		}
 		c.BinaryPathName = windows.EscapeArg(o.Bin) + " run -config " + windows.EscapeArg(o.Config)
 		c.DisplayName, c.Description, c.StartType, c.ServiceStartName = cfg.DisplayName, cfg.Description, cfg.StartType, cfg.ServiceStartName
 		if err := s.UpdateConfig(c); err != nil {
 			_ = s.Close()
-			return fmt.Errorf("update service: %w", err)
+			return false, "", fmt.Errorf("update service: %w", err)
 		}
 		log.Info("service updated", "account", o.User)
 	} else {
 		s, err = m.CreateService(serviceName, o.Bin, cfg, "run", "-config", o.Config)
 		if err != nil {
-			return fmt.Errorf("create service: %w", err)
+			return false, "", fmt.Errorf("create service: %w", err)
 		}
 		log.Info("service created", "account", o.User)
 	}
@@ -190,21 +192,27 @@ func installService(log *slog.Logger, o installOptions) error {
 	icacls(logDir, "/grant", o.User+":(OI)(CI)M")
 	log.Info("permissions set", "data", dataDir, "readers", "SYSTEM, Administrators, "+o.User, "writable by the service", logDir)
 	ready, why := configReady(o.Config, "")
+	if o.NoStart && ready {
+		why = "-no-start"
+	}
 	if o.NoStart || !ready {
 		if !ready {
 			log.Info("service installed, not started", "why", why)
 		}
 		fmt.Printf("pgvigil is installed as the service %s (automatic start). Next:\n  1. %s: the collector's repository connection string, one line (the owner ran migrate and roles)\n  2. %s: list the instances (each dsn as file:<path> beside it, or env:NAME set for the service), or add them later in the page (Admin > Instances)\n  3. Start-Service %s; Get-Content %s -Wait\n", serviceName, dsnFile, o.Config, serviceName, filepath.Join(logDir, logFileName))
-		return nil
+		return false, why, nil
 	}
 	if err := s.Start(); err != nil {
-		return fmt.Errorf("start: %w", err)
+		return false, "", fmt.Errorf("start: %w", err)
 	}
 	if _, err := waitState(s, svc.Running, 15*time.Second); err != nil {
-		return fmt.Errorf("the service did not come up (%v); see %s", err, filepath.Join(logDir, logFileName))
+		return false, "", fmt.Errorf("the service did not come up (%v); see %s", err, filepath.Join(logDir, logFileName))
+	}
+	if !settledRunning(s) {
+		return false, "", fmt.Errorf("the service started and stopped again within %s; see %s", upSettleWindows, filepath.Join(logDir, logFileName))
 	}
 	fmt.Printf("pgvigil is installed and running (Get-Service %s; the log is %s).\n", serviceName, filepath.Join(logDir, logFileName))
-	return nil
+	return true, "", nil
 }
 
 func uninstallService(log *slog.Logger, o installOptions) error {
@@ -241,6 +249,40 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 		fmt.Printf("the service is gone; %s and %s are kept (pgvigil uninstall -purge removes them).\n", dataDir, filepath.Dir(o.Bin))
 	}
 	return nil
+}
+
+// upSettleWindows: a service that reports Running and stops in its first seconds (an empty repository DSN ends 'run'
+// with a configuration error) counts as started only after it stayed Running this long.
+const upSettleWindows = 4 * time.Second
+
+func settledRunning(s *mgr.Service) bool {
+	for waited := time.Duration(0); waited < upSettleWindows; waited += 500 * time.Millisecond {
+		time.Sleep(500 * time.Millisecond)
+		if st, err := s.Query(); err != nil || st.State != svc.Running {
+			return false
+		}
+	}
+	return true
+}
+
+// serviceEnvironment reads name from the service's own registry Environment (REG_MULTI_SZ NAME=value lines), where an
+// env:NAME repository DSN set for the service lives.
+func serviceEnvironment(name string) (string, bool) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+serviceName, registry.QUERY_VALUE)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = k.Close() }()
+	lines, _, err := k.GetStringsValue("Environment")
+	if err != nil {
+		return "", false
+	}
+	for _, l := range lines {
+		if k, v, ok := strings.Cut(l, "="); ok && strings.EqualFold(k, name) {
+			return v, true
+		}
+	}
+	return "", false
 }
 
 // pgvigilService runs the scheduler under the service control manager.
@@ -337,6 +379,7 @@ func replaceFile(tmp, dst string) error { return os.Rename(tmp, dst) }
 // --- install -upgrade on Windows (install.go's runUpgrade); not seen on Windows yet: unit tests and vet only
 
 func init() {
+	serviceEnv = serviceEnvironment
 	upgradeHooksOf = &upgradeHooks{
 		installed:     installedServiceConfig,
 		stop:          stopInstalled,
@@ -362,7 +405,20 @@ func init() {
 		previous: func(bin string) string {
 			return strings.TrimSuffix(bin, filepath.Ext(bin)) + ".previous" + filepath.Ext(bin)
 		},
-		ready: func(o installOptions) (bool, string) { return configReady(o.Config, "") },
+		active: func() bool {
+			m, err := connectSCM()
+			if err != nil {
+				return false
+			}
+			defer func() { _ = m.Disconnect() }()
+			sv, err := m.OpenService(serviceName)
+			if err != nil {
+				return false
+			}
+			defer func() { _ = sv.Close() }()
+			st, err := sv.Query()
+			return err == nil && st.State == svc.Running
+		},
 	}
 }
 
@@ -425,8 +481,13 @@ func startInstalled(_ *slog.Logger) error {
 	if err := s.Start(); err != nil {
 		return err
 	}
-	_, err = waitState(s, svc.Running, 15*time.Second)
-	return err
+	if _, err = waitState(s, svc.Running, 15*time.Second); err != nil {
+		return err
+	}
+	if !settledRunning(s) {
+		return fmt.Errorf("it started and stopped again within %s: see its log", upSettleWindows)
+	}
+	return nil
 }
 
 // otherProcessesWindows lists the processes whose image is bin, but the service's own and this one.
