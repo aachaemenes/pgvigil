@@ -1,6 +1,6 @@
 # pgvigil
 
-PostgreSQL monitoring for DBAs: daily checks, running queries with blocking chains, the statements that cost the most, counters and rates, replication and slots, database inventory, and alerting, across on-prem PostgreSQL, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.
+Free, open-source monitoring for PostgreSQL and SQL Server, built for DBAs ([pgvigil.com](https://pgvigil.com/)). On PostgreSQL: daily checks, running queries with blocking chains, the statements that cost the most, counters and rates, replication and slots, database inventory, and alerting, across on-prem PostgreSQL, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB. On SQL Server: running queries and blocking, waits, deadlocks and slow statements from Extended Events, Agent jobs, backups, Always On and the rest listed in [docs/sqlserver.md](docs/sqlserver.md).
 
 One collector binary (Go, static, no runtime on the target) polls each instance on a schedule and writes into a PostgreSQL repository. A web UI served by the same binary, a Windows app around it, and an MCP door for an AI client read the repository; Grafana can read it too.
 
