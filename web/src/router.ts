@@ -45,11 +45,12 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', pgreplication: 'Replication', pgthresholds: 'Thresholds', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', customreports: 'Custom reports', community: 'Community tools', reportmail: 'Report mail', retention: 'Data retention', about: 'About' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
   host: 'Host', storage: 'Storage', dbinfo: 'Database info', backups: 'Backups', pgbackups: 'Base backups', pgstate: 'Server state', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', audit: 'Audit', waits: 'Waits', pg_deadlocks: 'Deadlocks', memory: 'Memory', pooler: 'Pooler', indexes: 'Indexes', schema: 'Schema', plans: 'Plans', actions: 'Actions log', custom: 'Custom', jobstimeline: 'Jobs timeline', connections: 'Connections', dbchanges: 'New and dropped databases',
+  customreports: 'Custom reports', community: 'Community tools',
 };
 const legacy: Record<string, string> = { overview: 'checks' };
 
@@ -60,11 +61,12 @@ export interface TabGroup { key: string; name: string; tabs: string[] }
 export const rootGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'alerts', 'alertrules', 'perfsummary', 'slowqueries', 'running', 'findings', 'instances'] },
   { key: 'checks', name: 'Checks', tabs: ['checks', 'corruption', 'custom'] },
-  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks', 'pgthresholds'] },
+  { key: 'conf', name: 'Configuration', tabs: ['versions', 'extensions', 'roles', 'diff', 'mssqlrisks', 'pgrisks', 'pgthresholds', 'retention'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['backups', 'pgreplication', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['disks', 'storage', 'growth', 'tablesize', 'dbchanges', 'indexes', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobstimeline'] },
   { key: 'doors', name: 'Doors', tabs: ['dbadash'] },
+  { key: 'reports', name: 'Reports', tabs: ['customreports', 'community', 'reportmail'] },
 ];
 export const instanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'activity', 'slowqueries', 'statements', 'plans', 'waits', 'pg_deadlocks', 'memory', 'findings', 'logs'] },
@@ -74,6 +76,7 @@ export const instanceGroups: TabGroup[] = [
   { key: 'hadr', name: 'HA/DR', tabs: ['replication', 'backups', 'pgbackups', 'dms'] },
   { key: 'storage', name: 'Storage', tabs: ['storage', 'dbinfo', 'dbchanges', 'tables'] },
   { key: 'jobs', name: 'Jobs', tabs: ['jobs', 'jobsreport', 'jobstimeline'] },
+  { key: 'reports', name: 'Reports', tabs: ['customreports', 'community'] },
 ];
 // A SQL Server instance has its own pages (the engine of the instance chooses the tab set; a PostgreSQL page is
 // never offered for it, and the other way round). Summary and Findings are shared: both read by instance.
@@ -84,6 +87,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
   mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
+  customreports: 'Custom reports', community: 'Community tools',
 };
 export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'main', name: '', tabs: ['summary', 'performance', 'mssql_running', 'mssql_slow', 'mssql_waits', 'mssql_deadlocks', 'mssql_blocked', 'findings'] },
@@ -93,6 +97,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'storage', name: 'Storage', tabs: ['mssqlstorage', 'mssqlfiles', 'rowversions', 'mssqltempdb'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
+  { key: 'reports', name: 'Reports', tabs: ['customreports', 'community'] },
 ];
 export const isMssql = (engine: unknown) => engine === 'sqlserver';
 export const tabsFor = (engine: unknown) => isMssql(engine) ? mssqlInstanceTabs : instanceTabs;
@@ -188,7 +193,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   }
   if (keep && c.tab === 'dbadash') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
-    for (const k of ['dr', 'di']) { const v = cur.get(k); if (v) q.set(k, v); }
+    for (const k of ['dr', 'di', 'dp', 'ds']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the alert page's key, firing time and view (alert_page.ts) stay on its own links: a range change keeps the alert
   if (keep && c.tab === 'alert') {
