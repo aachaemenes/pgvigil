@@ -26,7 +26,7 @@
 #  A. detection: `collect -once mssql_instance` as the collector stores the instance as engine sqlserver, platform
 #     azuresqldb, server_version_num 120000 (Azure SQL Database answers 12.0 whatever engine it runs); mssql_instance
 #     holds the setup login's ProductVersion, Edition ('SQL Azure'), EngineEdition 5 and server name.
-#  B. each of the 21 SQL Server collections (the list is checked against internal/mssql's Name() functions):
+#  B. each of the 32 SQL Server collections (21 before the join of wave 1) (the list is checked against internal/mssql's Name() functions):
 #     RUN - status ok, never partial, and rows equal to the setup login's read of the same view:
 #       mssql_instance  sys.configurations' row count and 'max server memory (MB)' value_in_use; sysinfo_read true
 #                       and cpu_count = sys.dm_os_sys_info's

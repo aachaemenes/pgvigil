@@ -37,7 +37,7 @@
 #  A. detection: `collect -once mssql_instance` stores the instance as engine sqlserver, platform rdssqlserver,
 #     server_version_num = major * 10000 + minor of the master user's ProductVersion; mssql_instance holds that
 #     ProductVersion, Edition (Express Edition (64-bit)), EngineEdition 4 and server name.
-#  B. each of the 21 SQL Server collections (the list is checked against internal/mssql's Name() functions), status
+#  B. each of the 32 SQL Server collections (21 before the join of wave 1) (the list is checked against internal/mssql's Name() functions), status
 #     ok and never partial, with rows equal to the master user's read of the same view:
 #       mssql_instance     sys.configurations' row count and 'max server memory (MB)'; sysinfo_read, cpu_count
 #       mssql_services     the services' names and states of sys.dm_server_services; Agent not expected (Express)
@@ -119,7 +119,7 @@
 #                          (the collector's user holds db_datareader in the proof's database: the RDS form gives it)
 #       mssql_plancache    mssql_pc_last by the evict bracket against sys.dm_exec_query_stats while a session runs a
 #                          parameterized statement in a loop; that statement stored
-#       mssql_plancache_health  the plans per database stored between the smaller and the larger read before and after
+#       mssql_plancache_health  the proof's database's plans stored equal to both reads when they agree (cycles)
 #       mssql_syshealth    the reader's state 'read'; the component results per component and state between the counts
 #                          of sp_server_diagnostics_component_result in the session's event files before and after
 #       mssql_errorlog     the reader's state 'read'; every stored line of the current log a line of the master user's
@@ -501,7 +501,8 @@ else VERDICT[mssql_ag]="FAIL"; bad "B: mssql_ag status '$st' (want skipped: Alwa
 # --- the eleven collections of the join of wave 1 (rel-join-w1), written before their first run here: each run as the
 # collector's login and compared with the master user's read of the same view, filtered as the collector filters
 setcmp() { # setcmp <collection> <stored> <read>: the two lists are equal (sorted in byte order); an empty pair fails
-  sed -i '/^[[:space:]]*$/d' "$2" "$3"   # sq prints an empty line for an empty result
+  sed -i '/^[[:space:]]*$/d' "$3"   # sq prints an empty line for an empty result (the read side only)
+  if grep -q '^[[:space:]]*$' "$2"; then VERDICT[$1]="FAIL"; bad "B: $1: a stored row has a NULL column (an empty line)"; return; fi
   LC_ALL=C sort -o "$2" "$2"; LC_ALL=C sort -o "$3" "$3"
   if [ ! -s "$2" ] && [ ! -s "$3" ]; then VERDICT[$1]="FAIL"; bad "B: $1: nothing stored and nothing read"; return; fi
   if cmp -s "$2" "$3"; then VERDICT[$1]="PASS ($(wc -l < "$2") rows equal)"
@@ -594,8 +595,8 @@ for _ in $(seq 1 30); do [ -n "$(sq "$PKSQL")" ] && break; sleep 1; done
 # a cycle (read, the collector's run, read) is compared when the cache kept a stored plan across a read: any stored
 # plan a read lists must lie between the reads (else FAIL at once); a cycle in which the cache dropped every stored
 # plan between the reads compares nothing and is run again, five cycles at most
-PCDONE=; PCWHY=
-for cyc in 1 2 3 4 5; do
+PCDONE=; PCWHY=; PCBETWEEN=
+for cyc in $(seq 1 10); do
   sq "$QSQL" > "$WORK/pc-b.txt"; PKB=$(sq "$PKSQL")
   run_ok mssql_plancache || { PCDONE=1; break; }
   sq "$QSQL" > "$WORK/pc-a.txt"; PKA=$(sq "$PKSQL")
@@ -619,21 +620,32 @@ b, a, s = (rows(p) for p in sys.argv[1:4])
 if not pre or not b or not a: print("NC a read did not list the proof's statement"); sys.exit()
 if not s: print("NC the proof's statement not stored in this cycle"); sys.exit()
 (cs, v), (cb, nb), (ca, na) = max(s), max(b), max(a)
-bad = cs < cb or cs > ca or v < 1 or (cs == cb and v < nb) or (cs == ca and v > na)
-print(("FAIL " if bad else "PASS ") + f"stored created {cs} with {v} execution(s); the reads: created {cb} with {nb}, created {ca} with {na}")
+if cs < cb or cs > ca or v < 1:
+    print(f"FAIL stored created {cs} with {v} execution(s), outside the reads' instances (created {cb} with {nb}, created {ca} with {na})"); sys.exit()
+if cb < cs < ca:
+    # an instance neither read lists: no count bound to compare; the cycle is run again (the pace bound is the fallback)
+    from datetime import datetime
+    f = lambda t: datetime.strptime(t, "%Y-%m-%d %H:%M:%S.%f")
+    pace = int((f(ca) - f(cs)).total_seconds() / 0.04) + 1
+    print(("BETWEEN " if v <= pace else "FAIL ") + f"stored created {cs} with {v} execution(s), an instance neither read lists (created {cb} with {nb}, created {ca} with {na}); the looper's pace allows at most {pace}"); sys.exit()
+bad = (cs == cb and v < nb) or (cs == ca and v > na)
+print(("FAIL " if bad else "PASS ") + f"stored created {cs} with {v} execution(s), the instance a read lists (created {cb} with {nb}, created {ca} with {na})")
 PY
-)
+) || ST="FAIL the identity check did not run"
   case $ST in
     FAIL*) VERDICT[mssql_plancache]="FAIL"; bad "B: mssql_plancache (cycle $cyc): the proof's statement ${ST#FAIL }"; PCDONE=1; break;;
-    PASS*) VERDICT[mssql_plancache]="PASS ($(tr '\n' ' ' <<<"$BR_OUT" | cut -c1-200); cycle $cyc of 5: the proof's statement ${ST#PASS })"; PCDONE=1; break;;
+    PASS*) VERDICT[mssql_plancache]="PASS ($(tr '\n' ' ' <<<"$BR_OUT" | cut -c1-200); cycle $cyc of 10: the proof's statement ${ST#PASS })"; PCDONE=1; break;;
+    BETWEEN*) PCBETWEEN="${ST#BETWEEN }";;
   esac
   PCWHY="$PCWHY cycle $cyc: ${ST#NC };"
 done
-[ -n "$PCDONE" ] || { VERDICT[mssql_plancache]="FAIL"; bad "B: mssql_plancache: no cycle of five compared a stored plan with the proof's statement:$(cut -c1-900 <<<"$PCWHY")"; }
+if [ -z "$PCDONE" ] && [ -n "$PCBETWEEN" ]; then
+  VERDICT[mssql_plancache]="PASS, counts NOT PROVEN (no cycle of ten met the collector's instance in a read; identity, creation-time order and the looper's pace checked: $PCBETWEEN)"
+elif [ -z "$PCDONE" ]; then VERDICT[mssql_plancache]="FAIL"; bad "B: mssql_plancache: no cycle of ten compared a stored plan with the proof's statement:$(cut -c1-900 <<<"$PCWHY")"; fi
 
 # mssql_plancache_health (the looper still running): the compiled plans per database (plans, single-use, ad hoc, prepared,
-# procedure plans; planCachePlansSQL mirrored). The proof's database: stored equal to both reads when they agree (else
-# between them); every other database both reads list is stored (this cache's counts move up and down between reads)
+# procedure plans; planCachePlansSQL mirrored). The proof's database: stored equal to both reads when they agree; every
+# other database both reads list is stored (this cache's counts move up and down between reads)
 HPSQL="SELECT DB_NAME(pa.dbid) + '|' + CAST(COUNT_BIG(*) AS varchar(20)) + '|' + CAST(SUM(CASE WHEN cp.usecounts = 1 AND cp.objtype IN (N'Adhoc', N'Prepared') THEN 1 ELSE 0 END) AS varchar(20))
   + '|' + CAST(SUM(CASE WHEN cp.objtype = N'Adhoc' THEN 1 ELSE 0 END) AS varchar(20)) + '|' + CAST(SUM(CASE WHEN cp.objtype = N'Prepared' THEN 1 ELSE 0 END) AS varchar(20))
   + '|' + CAST(SUM(CASE WHEN cp.objtype = N'Proc' THEN 1 ELSE 0 END) AS varchar(20))
@@ -666,7 +678,7 @@ if s.get(fdb) != b[fdb]: print(head); sys.exit(1)
 print(head)
 PY
   ) || prc=$?
-  if [ $prc -eq 0 ]; then VERDICT[mssql_plancache_health]="PASS ($out; cycle $cyc of 5)"; PHDONE=1; break; fi
+  if [ $prc -eq 0 ]; then VERDICT[mssql_plancache_health]="PASS ($out; cycle $cyc of 5${PHWHY:+; earlier:$PHWHY})"; PHDONE=1; break; fi
   PHWHY="$PHWHY cycle $cyc: $out;"
 done
 [ -n "$PHDONE" ] || { VERDICT[mssql_plancache_health]="FAIL"; bad "B: mssql_plancache_health: no cycle of five held:$(cut -c1-900 <<<"$PHWHY")"; }
@@ -690,9 +702,12 @@ if run_ok mssql_syshealth; then sq "$SHSQL" > "$WORK/sh-a.txt" || : > "$WORK/sh-
     # this instance writes no sp_server_diagnostics_component_result (probe 3: the session defines it, its files and its
     # ring buffer hold none): what is compared is the reader's own pass over the files
     # the reader's scanned and stored are the component events it kept (syshealth.go: new_events): 0 here, as the files hold
-    if [[ $RS == read\|0\|0\|* ]] && [[ $NB =~ ^[0-9]+$ ]] && [ "$NB" -gt 0 ]; then
-      VERDICT[mssql_syshealth]="PASS (0 component results stored, 0 in the session's files, which hold $NB to $NA events of other kinds; the reader's state 'read', 0 kept; a component row's content NOT PROVEN: this instance writes none)"
-    else VERDICT[mssql_syshealth]="FAIL"; bad "B: mssql_syshealth: the reader's state '$RS', the session's files held $NB events before the run and $NA after ($XEPAT)"; fi
+    # the reader went through the files: its cursor names a file of the session (it moves on every event, kept or not)
+    CUR=$(q "select coalesce(file_name, '') || '|' || coalesce(file_offset::text, '') from pgvigil.mssql_cursor where instance_id=$iid and source='syshealth'")
+    XEDIR=${XEPAT%system_health\*.xel}
+    if [ "$RS" = 'read|0|0|' ] && [[ ${CUR,,} == "${XEDIR,,}system_health"*.xel\|[0-9]* ]] && [[ $NB =~ ^[0-9]+$ ]] && [ "$NB" -gt 0 ]; then
+      VERDICT[mssql_syshealth]="PASS (0 component results stored, 0 in the session's files, which hold $NB to $NA events of other kinds; the reader's state 'read', 0 kept, its cursor at $CUR; a component row's content NOT PROVEN: this instance writes none)"
+    else VERDICT[mssql_syshealth]="FAIL"; bad "B: mssql_syshealth: the reader's state '$RS', its cursor '$CUR', the session's files held $NB events before the run and $NA after ($XEPAT)"; fi
   else
     bracket mssql_syshealth "$WORK/sh-b.txt" "$WORK/sh-a.txt" "$WORK/sh-s.txt"
     [[ ${VERDICT[mssql_syshealth]} == PASS* ]] || echo "  mssql_syshealth: the reader's state '$RS' (the event files $XEPAT)"
