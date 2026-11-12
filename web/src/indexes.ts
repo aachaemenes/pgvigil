@@ -203,7 +203,7 @@ async function depthSections(instance: number): Promise<HTMLElement[]> {
     r.status === 'fulfilled' ? show(rowsOf(r.value.rows)) : depthError(what, r.reason);
   return [
     el('h3', {}, 'PostgreSQL depth findings ', whatIsThis('The findings of the PostgreSQL depth reads (migration 0095): checkpoints, '
-      + 'the archive backlog, the timeline, connections, standbys, the SLRU caches, sequences, the catalog checks, dead rows and '
+      + 'the archive backlog, the timeline, connections, standbys, the SLRU caches, sequences, the catalog checks and '
       + 'btree bloat. Each names the line that fixes it; pgvigil runs none of them.', 'PostgreSQL depth findings')),
     rows(f, 'The depth findings', t => grid(t, [
       { key: 'severity', fmt: sevBadge }, { key: 'setting', label: 'finding' }, { key: 'value', label: 'object' },

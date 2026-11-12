@@ -220,7 +220,6 @@ run says so in no error.
 | rows in a DEFAULT partition | info | live rows in a DEFAULT partition |
 | CREATE on schema public | warning | the fix: `REVOKE CREATE ON SCHEMA public FROM PUBLIC` |
 | MD5 password | warning | a login role with an MD5 password hash |
-| dead rows | warning | 100,000 dead rows or more and 20 % or more of the table's rows (the tables collection) |
 | index bloat | info, warning at 1 GB of bloat | 50 % or more of an index of 10 MB or more |
 
 The proof `scripts/proof-pg-depth.sh` raises each finding but the multixact SLRU one (no seed: not proven) with a state seeded on PostgreSQL 13, 16 and 18 and clears it
