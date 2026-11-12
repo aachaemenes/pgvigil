@@ -88,6 +88,20 @@
 #   reader     the screen's colour of a cell is read on its own terms, not by export.ts's rule: a status cell, else the
 #              worst of the marks drawn in it (a badge, a dot, a data bar's fill, a span marked warn / crit, each with
 #              a size on the screen) and of its texts computed in the critical or warning colour, else a bare class
+#   colours    (E2-4's reader) web/src/export_colours.ts: its unit tests (web/src/export_colours.test.mjs, Node, stand-in
+#              elements) all pass; in the browser on the fleet Summary, the reader gives the stylesheet's own colours
+#              (app.css): a header cell 004F83 / FFFFFF, status cells ok 006638 / FFFFFF, crit AB1F26 / FFFFFF, 'no sample'
+#              E0E1E9 / 004F83, a plain cell no fill of its own and 1B2230, a link 2259C8 with no fill; a planted
+#              rgba(34, 89, 200, .14) cell on a panel E0E8F7 and a planted color-mix(in srgb, #1b2230 50%, transparent)
+#              text 8D9097 (each within 1 a channel: rounding); under data-theme dark the same plain cell E3E6EB with no fill
+#              and the header 004F83; the theme put back
+#   sections   (E2-1's reader) every page the proof opens is read as its visible sections in page order (heading, grid,
+#              property card, chart, tiles, chips, disclosure, attention strip, calendar, table, list, note, and 'other'
+#              for any text outside those; controls are not sections), printed per page; self-test on an instance's
+#              Summary: sections planted at the end of the page are read in their place (a heading and a tile row, a closed
+#              disclosure's summary line, an open disclosure's summary and its grid, an unknown element's text as
+#              'other'), and none of the planted hidden ones (a closed disclosure's grid, display none, a visually-hidden
+#              note, visibility hidden) is read; the planted sections removed after
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
 #              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so)
 #   gridmenu   (P03) the fleet Backups grid's menu has one Export Excel line (no other line starting so: task 172's
@@ -128,6 +142,14 @@ grep -q 'Export .xlsx' internal/web/dist/app.js || fail "the web bundle has no e
 grep -q 'tableParts' internal/web/dist/app.js || fail "the web bundle is older than the export's source (no Excel table writer in it): run 'npm run build' in web/"
 grep -q 'pgvigil.drivesMetrics' internal/web/dist/app.js || fail "the web bundle has no Storage folder pages (drives.ts not wired in main.ts): run 'npm run build' in web/"
 
+echo "== the colour reader's unit tests (web/src/export_colours.ts)"
+[[ -x web/node_modules/.bin/esbuild ]] || fail "web/node_modules has no esbuild: run 'npm ci' in web/"
+web/node_modules/.bin/esbuild web/src/export_colours.ts --format=esm --log-level=warning --outfile="$WORK/export_colours.mjs" || fail "esbuild could not compile web/src/export_colours.ts"
+node web/src/export_colours.test.mjs "$WORK/export_colours.mjs" > "$WORK/colours-unit.out" 2>&1 || { cat "$WORK/colours-unit.out"; fail "the colour reader's unit tests"; }
+ok "colour reader: $(tail -1 "$WORK/colours-unit.out")"
+# the same module as a script for the page (the driver runs it there: window.__pgvColours)
+web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
+
 echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null
@@ -138,7 +160,7 @@ grep -q 'pgvigil demo serving' "$WORK/demo.log" || { tail -5 "$WORK/demo.log"; f
 
 # the driver: open a page, count each grid's rows and read the headings, press a button, wait for the download
 cat > "$WORK/drive.mjs" <<'JS'
-const [port, U, dl] = process.argv.slice(2);
+const [port, U, dl, colourFile] = process.argv.slice(2);
 const fs = await import('node:fs');
 const inst = await (await fetch(U + 'api/instances')).json();
 const rows = inst.rows.map(r => Object.fromEntries(inst.columns.map((c, i) => [c, r[i]])));
@@ -226,6 +248,57 @@ const SCREEN = `(() => {
       status: [...new Set(cells.flat().map(c => c.s).filter(k => k && k !== 'ack'))], tests: !!e.closest('.tests'), att: !!e.closest('.attention') };
   });
 })()`;
+// SECTIONS (E2-1): the page's visible sections in page order, read on the page's own terms (not by export.ts's walk):
+// every block of #main the eye sees - a heading, a grid (an empty grid's header-only table too), a property card, a
+// chart (a chart box, a canvas, an SVG), tiles, chips, a disclosure's summary line, the attention strip, the health
+// calendar, any other table, a list, a note - and, so that no content goes unread, any other element with text of its
+// own outside those ('other'); controls (buttons, inputs, the window's choice, the tabs) are not sections. A block the
+// eye does not see is left out: display none, visibility hidden, opacity 0, a closed disclosure's content (no box), a
+// visually-hidden note (a clipped pixel). The export's own walk (export.ts) is graded against this list in E3.
+const SECTIONS = `(() => {
+  const main = document.getElementById('main');
+  const KINDS = [['heading', 'h1, h2, h3, h4, h5, h6'], ['grid', 'table.grid, table.grid-empty'], ['props', 'table.props'],
+    ['chart', '.chart, .u-wrap, canvas, svg, figure, img'], ['tiles', '.tiles, .tile-wall, .tile'], ['chips', '.chips, .chip, .badge, .pill, .dot'],
+    ['attention', '.attention'], ['calendar', '.healthcal'], ['disclosure', 'summary'], ['table', 'table'], ['list', 'ul, ol, dl'],
+    ['note', 'p, .meta, .note, .empty, .error']];
+  const CONTROL = 'button, input, select, textarea, label, nav, form, [role=tablist], [role=toolbar], .seg, .subtabs, .filter-btn, .whatis, .chart-menu';
+  const ANY = KINDS.map(k => k[1]).join(', ');
+  const flat = t => (t || '').split(/\\s+/).filter(Boolean).join(' ');
+  const out = []; let hidden = 0;
+  const push = (kind, e, text) => {
+    const r = e.getBoundingClientRect();
+    const s = { kind, tag: e.tagName.toLowerCase(), cls: (e.getAttribute('class') || '').trim(), text: flat(text ?? e.textContent).slice(0, 160),
+      x: Math.round(r.x), y: Math.round(r.y + scrollY), w: Math.round(r.width), h: Math.round(r.height) };
+    if (kind === 'grid') {
+      s.cols = [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(h => flat(h.textContent));
+      s.rows = [...e.querySelectorAll(':scope > tbody > tr')].filter(tr => tr.getBoundingClientRect().height > 1).length;
+    }
+    out.push(s);
+  };
+  // seen: the browser's own answer (checkVisibility: false under display none, visibility hidden, opacity 0 and a
+  // content-visibility that skips the content - a closed disclosure's, which keeps display 'table' and a box from a forced
+  // layout), a closed disclosure's content but its summary, and a box over a pixel (a visually-hidden note is one)
+  const visit = e => {
+    const cs = getComputedStyle(e), r = e.getBoundingClientRect();
+    if (cs.display === 'none') { hidden++; return; }
+    if (cs.display !== 'contents') {
+      const shut = e.closest('details:not([open])');
+      if (shut && shut !== e && !shut.querySelector(':scope > summary')?.contains(e)) { hidden++; return; }
+      if (e.checkVisibility && !e.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) { hidden++; return; }
+      if (cs.visibility !== 'visible' || Number(cs.opacity) === 0) { hidden++; return; }
+      if ((r.width <= 1 && r.height <= 1) || (r.width === 0 && r.height === 0)) { hidden++; return; }
+    }
+    const k = KINDS.find(([, sel]) => e.matches(sel));
+    if (k) { push(k[0], e); return; }
+    if (e.matches(CONTROL)) return;
+    const own = flat([...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' '));
+    if (own && !e.querySelector(ANY)) { push('other', e); return; }
+    if (own) push('other', e, own);
+    for (const c of e.children) visit(c);
+  };
+  for (const c of main.children) visit(c);
+  return { sections: out, hidden };
+})()`;
 const page = async (hash, sortBy, filterNone) => {
   await cmd('Page.navigate', { url: U + hash }); await sleep(300);
   if (!await settled()) throw new Error('page did not render: ' + hash);
@@ -252,7 +325,8 @@ const page = async (hash, sortBy, filterNone) => {
     order = await ev(col);
   }
   const grids = await ev(SCREEN);
-  return { hash, grids, order, before, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
+  const sections = await ev(SECTIONS);
+  return { hash, grids, order, before, sections, xlsx: await press('Export .xlsx', ['.xlsx']), csv: await press('Export CSV', ['.csv', '.csv.zip']) };
 };
 // the grid tools on the fleet Backups grid, through the grid's own menu (ui.ts adds the tools' lines when it sends
 // 'pgvigil:gridmenu'); what each does is read back from the page for the checker
@@ -468,6 +542,48 @@ eh.note = (await ev(GRIDS)).find(x => x.t === 'P' && x.h === eh.heading) ?? null
 eh.xlsx = await press('Export .xlsx', ['.xlsx']);
 await ev(`Object.keys(localStorage).filter(k => k.startsWith('pgvigil.grid.')).forEach(k => localStorage.removeItem(k))`);
 out.emptyHidden = eh;
+// the colour reader (web/src/export_colours.ts as a script: window.__pgvColours) on the fleet Summary's own elements,
+// then on two planted cells (an rgba fill, a color-mix text), then the same plain cell and header under the dark theme
+await go('#/summary?w=2h');
+await ev(fs.readFileSync(colourFile, 'utf8') + '; true');
+out.colourReader = await ev(`(() => {
+  const P = window.__pgvColours.paintOf, main = document.getElementById('main'), root = document.documentElement;
+  const g = [...main.querySelectorAll('table.grid')];
+  const th = g[0]?.querySelector(':scope > thead > tr > th');
+  const st = k => main.querySelector('table.grid td.status.' + k + (k === 'none' ? ':not(.ack)' : ''));
+  const plain = [...main.querySelectorAll('table.grid td')].find(td => !td.classList.contains('status') && !td.querySelector('a, .badge, .dot, .bar-fill') && (td.textContent || '').trim());
+  const link = main.querySelector('table.grid td:not(.status) a[href]');
+  const r = {};
+  const put = (k, e, base) => { r[k] = e ? P(e, base) : null; };
+  put('th', th); put('ok', st('ok')); put('crit', st('crit')); put('none', st('none')); put('plain', plain); put('link', link, link?.closest('table'));
+  const box = document.createElement('div'); box.className = 'panel';
+  box.innerHTML = '<table class="grid"><tbody><tr><td style="background: rgba(34, 89, 200, .14)">x</td><td style="color: color-mix(in srgb, #1b2230 50%, transparent)">y</td></tr></tbody></table>';
+  main.append(box);
+  const tds = box.querySelectorAll('td'); put('tint', tds[0]); put('mix', tds[1]); r.mixRaw = getComputedStyle(tds[1]).color;
+  box.remove();
+  const was = root.getAttribute('data-theme');
+  root.setAttribute('data-theme', 'dark'); put('darkPlain', plain); put('darkTh', th);
+  if (was === null) root.removeAttribute('data-theme'); else root.setAttribute('data-theme', was);
+  r.themeBack = root.getAttribute('data-theme') === was;
+  return r;
+})()`);
+// SECTIONS' self-test on an instance's Summary: sections planted at the end of the page, read, then removed, in one
+// evaluation (the live page redraws every 30 s)
+await go(`#/summary?i=${one.instance_id}&w=2h`);
+out.sectionsSelfTest = await ev(`(() => {
+  const main = document.getElementById('main');
+  const plant = html => { const d = document.createElement('div'); d.innerHTML = html; const e = d.firstElementChild; e.dataset.plant = '1'; main.append(e); };
+  plant('<section><h3>Planted heading</h3><div class="tiles"><div class="tile ok"><div class="tile-v">7</div> <div class="tile-l">planted tile</div></div></div></section>');
+  plant('<details><summary>planted closed disclosure</summary><table class="grid"><tbody><tr><td>planted hidden cell</td></tr></tbody></table></details>');
+  plant('<div class="tiles" style="display: none"><div class="tile">planted display none</div></div>');
+  plant('<p class="visually-hidden">planted visually hidden</p>');
+  plant('<details open><summary>planted open disclosure</summary><table class="grid"><thead><tr><th>c</th></tr></thead><tbody><tr><td>planted open cell</td></tr></tbody></table></details>');
+  plant('<div style="visibility: hidden"><p class="meta">planted invisible note</p></div>');
+  plant('<div><span class="no-such-kind">planted unknown content</span></div>');
+  const r = ${SECTIONS};
+  main.querySelectorAll('[data-plant]').forEach(e => e.remove());
+  return { ...r, removed: main.querySelectorAll('[data-plant]').length === 0 };
+})()`);
 console.log(JSON.stringify(out));
 process.exit(0);
 JS
@@ -983,6 +1099,39 @@ else:
     rs = t['reset']
     check(rs['hidden']['marked'] == 0 and rs['hidden']['keys'] == [] and rs['hidden']['td'] != 'none' and not rs['frozen']['on'] and rs['bars'] == 0 and t.get('closed') is True,
           f"tools: 'Reset this grid' brings every column back, unfreezes, drops the bars and forgets the choice; 'Close' closes the panel ({rs['hidden']}, frozen {rs['frozen']['on']}, bars {rs['bars']})")
+
+# the colour reader (web/src/export_colours.ts) on the page's own elements: the stylesheet's colours (app.css)
+cr = d.get('colourReader') or {}
+def pc(k): return cr.get(k) or {}
+def near(a, b): return bool(a) and bool(b) and all(abs(int(a[i:i + 2], 16) - int(b[i:i + 2], 16)) <= 1 for i in (0, 2, 4))
+check(pc('th').get('fill') == '004F83' and pc('th').get('text') == 'FFFFFF', f"colour reader: a grid's header cell 004F83 / FFFFFF (app.css --st-head / --st-on) ({pc('th')})")
+for k, f_, t_ in (('ok', '006638', 'FFFFFF'), ('crit', 'AB1F26', 'FFFFFF'), ('none', 'E0E1E9', '004F83')):
+    check(pc(k).get('fill') == f_ and pc(k).get('text') == t_, f"colour reader: a status cell '{k}' {f_} / {t_} ({pc(k)})")
+check(bool(pc('plain')) and 'fill' not in pc('plain') and pc('plain').get('text') == '1B2230', f"colour reader: a plain cell paints no fill of its own, its text 1B2230 (--text) ({pc('plain')})")
+check(bool(pc('link')) and 'fill' not in pc('link') and pc('link').get('text') == '2259C8', f"colour reader: a link in a cell: no fill, 2259C8 (--accent) ({pc('link')})")
+check(near(pc('tint').get('fill'), 'E0E8F7') and pc('tint').get('under') == 'FFFFFF', f"colour reader: a planted rgba(34, 89, 200, .14) cell on a panel blends to E0E8F7 within 1 a channel ({pc('tint')})")
+check(near(pc('mix').get('text'), '8D9097'), f"colour reader: a planted color-mix(in srgb, #1b2230 50%, transparent) text blends to 8D9097 within 1 a channel (computed {cr.get('mixRaw')!r}; {pc('mix')})")
+check(bool(pc('darkPlain')) and 'fill' not in pc('darkPlain') and pc('darkPlain').get('text') == 'E3E6EB' and pc('darkTh').get('fill') == '004F83' and cr.get('themeBack') is True,
+      f"colour reader: under data-theme dark the same plain cell E3E6EB with no fill, the header 004F83; the theme put back ({pc('darkPlain')}, {pc('darkTh')}, back {cr.get('themeBack')})")
+
+# SECTIONS (E2-1): its self-test, then each page's visible sections
+st = d.get('sectionsSelfTest') or {}
+secs = st.get('sections') or []
+tail = secs[-6:]
+kinds = [x['kind'] for x in tail]
+want = ['heading', 'tiles', 'disclosure', 'disclosure', 'grid', 'other']
+texts = ['Planted heading', 'planted tile', 'planted closed disclosure', 'planted open disclosure', 'planted open cell', 'planted unknown content']
+check(kinds == want and all(t in x['text'] for t, x in zip(texts, tail)) and (tail[4].get('rows') == 1 if len(tail) == 6 else False),
+      f"sections: the planted visible sections read last, in their place: {[(x['kind'], x['text'][:30]) for x in tail]}")
+leak = [t for t in ('planted hidden cell', 'planted display none', 'planted visually hidden', 'planted invisible note') if any(t in x['text'] for x in secs)]
+check(not leak, f"sections: none of the planted hidden sections is read (read: {leak or 'none'}; {st.get('hidden')} hidden elements met)")
+check(st.get('removed') is True, "sections: the planted sections removed after")
+for key, pg in d.items():
+    if isinstance(pg, dict) and isinstance(pg.get('sections'), dict):
+        ss = pg['sections']['sections']
+        n_ = {}
+        for x in ss: n_[x['kind']] = n_.get(x['kind'], 0) + 1
+        print(f"sections {pg.get('hash')}: {len(ss)} - " + ', '.join(f'{k} {v}' for k, v in sorted(n_.items())))
 sys.exit(1 if bad else 0)
 PY
 
@@ -996,7 +1145,7 @@ for L in en-US fr-FR; do
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
   echo "== the downloads ($L)"
-  node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$DL" > "$WORK/drive-$L.json" || fail "the driver failed ($L)"
+  node "$WORK/drive.mjs" "$CDP" "http://127.0.0.1:$PORT/" "$DL" "$WORK/export_colours.js" > "$WORK/drive-$L.json" || fail "the driver failed ($L)"
   ok "downloaded ($L): $(cd "$DL" && ls | tr '\n' ' ')"
   echo "== the files read back ($L)"
   python3 -I "$WORK/check.py" "$WORK/drive-$L.json" "$DL" "$L" || fail "a file did not match its page ($L)"
