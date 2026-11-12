@@ -429,7 +429,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // FULL -> Backups, Agent Jobs -> Jobs ...); a test without a page of its own filters the instance grid below to the
   // instances where it is a warning or a critical. Never the Daily checks list.
   const rootTabOf: Record<string, string> = {
-    storage: 'storage', disk: 'disks', backups: 'backups', jobs: 'jobs', activity: 'running', replication: 'pgreplication',
+    storage: 'drives', disk: 'drives', backups: 'backups', jobs: 'jobs', activity: 'running', replication: 'pgreplication',
     custom: 'custom', dms: 'dms', tables: 'tablesize', corruption: 'corruption', roles: 'roles', indexes: 'indexes', version: 'versions',
   };
   const testLink = (r: Row, text: string): HTMLElement => {

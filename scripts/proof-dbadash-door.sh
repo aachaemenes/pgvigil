@@ -71,7 +71,8 @@
 #  F. the version pin: with a newer version row '9.9.9' in the repository, every page answers ok with proven=false and
 #     the note 'not proven on source version 9.9.9'; the row is removed again.
 #  G. the imported server's tabs (task 168), under `pgvigil serve` built from a copy of this tree with the join's wiring
-#     (internal/dbadash/testdata/join-168.patch applied to the copy; already applied = said and used as it is) and the
+#     (internal/dbadash/testdata/join-168.patch applied to the copy; already applied, or no patch file once the release
+#     join carries the wiring = said and used as it is) and the
 #     web bundle rebuilt, on a pgvigil repository of its own whose configuration names the DBA Dash repository and no
 #     instance, in a headless Chromium signed in as a UI user:
 #     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists the 33 SQL Server tabs;
@@ -486,7 +487,8 @@ echo "== G. the imported server's tabs under pgvigil serve, in headless Chromium
 GSRC=$TMPD/gsrc; mkdir -p "$GSRC"
 tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
 JP=internal/dbadash/testdata/join-168.patch
-if (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: the join's wiring is already in this tree"
+if [ ! -f "$GSRC/$JP" ]; then grep -q importedPage "$GSRC/web/src/main.ts" || fail "G: no $JP and the tree lacks the join's wiring (web/src/main.ts has no importedPage)"; echo "G: no wiring patch in the tree: the release join carries the wiring (the tree is used as it is)"
+elif (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: the join's wiring is already in this tree"
 elif (cd "$GSRC" && git apply "$JP" 2>"$TMPD/g-apply.err"); then echo "G: the join's wiring applied to the run's copy"
 else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; fi
 (cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/g-web.log" 2>&1 && npm run build >>"$TMPD/g-web.log" 2>&1) || { tail -20 "$TMPD/g-web.log" >&2; fail "G: the web build"; }

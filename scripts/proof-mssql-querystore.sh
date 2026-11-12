@@ -24,7 +24,7 @@
 #     give each procedure's statement exactly those executions; its duration, CPU and logical reads equal sa's
 #     read of the store summed the same way (a total per plan and interval cut to whole microseconds; 50 either
 #     way allowed for the float sums) and its largest memory grant and wait time equal sa's (the wait time from SQL
-#     Server 2017; before it the server keeps no wait statistics, the collector stores 0 and sa's side says 0). Through the API, for
+#     Server 2017; before it the server keeps no wait statistics, the collector stores NULL, not read, and both sides say n/a). Through the API, for
 #     each of order = duration, cpu, reads, memory, executions the four statements come in sa's order by that
 #     figure (ties by query id).
 #  C. a forced plan that fails. A plan forced for a fifth procedure whose index is then dropped: the stored plan is
@@ -166,14 +166,14 @@ export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 echo "SQL Server: $CT on $ADDR, $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40))")"
 # the store's wait statistics (sys.query_store_wait_stats, WAIT_STATS_CAPTURE_MODE, wait_stats_capture_mode_desc)
 # arrived in SQL Server 2017 (14): before it the collector stores no wait mode (both sides below say n/a) and a
-# wait time of 0 (querystore.go qsHasWaits, and its candidates read ISNULL(wait_ms, 0) over no wait rows: sa's side
-# says 0 too); from 2017 the comparisons are as strict as before
+# wait time of NULL, not read (querystore.go qsHasWaits: its candidates read the empty wait relation's own column,
+# qsNoWaitMS; rep()'s coalesce says n/a, and sa's side says n/a too); from 2017 the comparisons are as strict as before
 QSMAJOR=$(sq "SELECT CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)), 4) AS int)")
 if [ "$QSMAJOR" -ge 14 ]; then
   WSC=", WAIT_STATS_CAPTURE_MODE = ON"; WSMODE="wait_stats_capture_mode_desc"
   SAWAIT="CAST(ISNULL((SELECT SUM(w.total_query_wait_time_ms) FROM sys.query_store_wait_stats w JOIN sys.query_store_plan wp ON wp.plan_id = w.plan_id WHERE wp.query_id = q.query_id), 0) AS varchar(30))"
 else
-  WSC=; WSMODE="'n/a'"; SAWAIT="'0'"
+  WSC=; WSMODE="'n/a'"; SAWAIT="'n/a'"
 fi
 
 adm() { psql "$ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
@@ -643,6 +643,12 @@ curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: t
 [ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
 [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
+# the wait time: NULL (the page says n/a) where the server keeps no wait statistics (before SQL Server 2017), a number from
+# 2017, in the totals and in every series point in which a plan ran
+[ "$(objs "$WORK/all.json" totals | jq --argjson m "$QSMAJOR" '.[0] | (.wait_ms == null) == ($m < 14)')" = true ] \
+  || fail "P: the totals' wait_ms on major $QSMAJOR: $(objs "$WORK/all.json" totals | jq -c '.[0].wait_ms')"
+[ "$(objs "$WORK/all.json" series | jq --argjson m "$QSMAJOR" '[.[] | select((.executions | tonumber) > 0)] | length >= 1 and all(.[]; (.wait_ms == null) == ($m < 14))')" = true ] \
+  || fail "P: the series' wait_ms on major $QSMAJOR: $(objs "$WORK/all.json" series | jq -c '[.[] | [.executions, .wait_ms]]')"
 [ "$(objs "$WORK/all.json" state | jq 'length >= 3')" = true ] || fail "P: state is short"
 # the series: whole hours on this window of over two hours (a step that is no multiple of the interval's length draws a zigzag)
 [ "$(objs "$WORK/all.json" series | jq 'length >= 1 and all(.[]; .snapshot_at | test("T[0-9]{2}:00:00"))')" = true ] || fail "P: the series of the long window is not in whole hours: $(objs "$WORK/all.json" series | jq -c '[.[].snapshot_at]')"

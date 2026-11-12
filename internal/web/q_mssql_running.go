@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -146,4 +147,27 @@ func (s *Server) MssqlWaits(w http.ResponseWriter, r *http.Request) {
 		{"events", sqlMssqlWaitEvents, []any{id, from, to}},
 		{"series", sqlMssqlWaitSeries, []any{id, from, to}},
 	})
+}
+
+// MSSQLState serves GET /api/mssql/state?instance=<id>&collections=<name>[,<name>...]: the last run of each named SQL
+// Server collection (collection_dates), for a page whose own read says nothing when its collection was skipped (a
+// platform rule, a missing right). At most 21 names, each mssql_<what>.
+func (s *Server) MSSQLState(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	names := strings.Split(r.URL.Query().Get("collections"), ",")
+	if len(names) == 0 || len(names) > 21 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("collections: 1 to 21 names"))
+		return
+	}
+	for _, n := range names {
+		if !strings.HasPrefix(n, "mssql_") {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("collections: %q is not a SQL Server collection", n))
+			return
+		}
+	}
+	s.multiPart(w, r, []part{{"state", sqlMssqlRunningState, []any{id, names}}})
 }

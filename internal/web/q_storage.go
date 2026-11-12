@@ -15,10 +15,12 @@ SELECT c.instance_id, c.severity, c.check_name, c.object, c.at, c.detail
 
 // sqlStorageVolumes is one instance's volumes with growth and days until full, the soonest first.
 const sqlStorageVolumes = `
-SELECT volume, kind, total_bytes, used_bytes, free_bytes, free_pct, capacity_bytes, headroom_bytes, headroom_pct, autoscaling, at_maximum, holds_data,
-       growth_7d_per_day, growth_30d_per_day, days_until_full_7, days_until_full_30, days_until_full, snapshot_at
-  FROM pgvigil.volume_forecast($1)
- ORDER BY days_until_full NULLS LAST, free_pct NULLS LAST, volume`
+SELECT f.volume, f.kind, f.total_bytes, f.used_bytes, f.free_bytes, f.free_pct, f.capacity_bytes, f.headroom_bytes, f.headroom_pct, f.autoscaling, f.at_maximum, f.holds_data,
+       f.growth_7d_per_day, f.growth_30d_per_day, f.days_until_full_7, f.days_until_full_30, f.days_until_full, f.snapshot_at,
+       d.warn_pct, d.crit_pct, d.status          -- the Drives page's threshold and judgement of the volume (0111)
+  FROM pgvigil.volume_forecast($1) f
+  LEFT JOIN pgvigil.drives_now d ON d.instance_id = $1 AND d.drive = f.volume
+ ORDER BY f.days_until_full NULLS LAST, f.free_pct NULLS LAST, f.volume`
 
 // sqlStorageObjects is what the storage collection read: the WAL directory, the tablespaces, the RDS and
 // Aurora volumes.
