@@ -49,7 +49,7 @@ index b64e6e2..dab75da 100644
  		b, err := os.ReadFile(strings.TrimPrefix(v, "file:"))
  		if err != nil {
 diff --git i/internal/repo/repo.go w/internal/repo/repo.go
-index 2003503..2fb0bc0 100644
+index 2003503..9d9143e 100644
 --- i/internal/repo/repo.go
 +++ w/internal/repo/repo.go
 @@ -20,6 +20,8 @@ import (
@@ -61,7 +61,7 @@ index 2003503..2fb0bc0 100644
  )
  
  //go:embed sql/*.sql
-@@ -223,6 +225,38 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
+@@ -223,6 +225,51 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
  		"as the repository owner run DELETE FROM pgvigil.schema_version WHERE version = '%s' and then 'pgvigil migrate' to run it again", defines, defines)
  }
  
@@ -72,7 +72,8 @@ index 2003503..2fb0bc0 100644
 +	return g, err
 +}
 +
-+// Inventory is the page's instance list (0122's admin_inventory(), SECURITY DEFINER: the collector holds no SELECT).
++// Inventory is the page's instance list and its generation, read in one statement (0122's admin_inventory(),
++// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
 +func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
 +	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, generation FROM pgvigil.admin_inventory()`)
 +	if err != nil {
@@ -82,19 +83,31 @@ index 2003503..2fb0bc0 100644
 +	var out []config.PageInstance
 +	var gen int64
 +	for rows.Next() {
-+		var p config.PageInstance
-+		if err := rows.Scan(&p.Name, &p.Engine, &p.Platform, &p.DSNRef, &p.Tags, &p.Disabled, &gen); err != nil {
++		var name, engine, platform, ref *string
++		var tags []string
++		var disabled *bool
++		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &gen); err != nil {
 +			return nil, 0, err
++		}
++		if name == nil {
++			continue
++		}
++		p := config.PageInstance{Name: *name, Tags: tags}
++		if engine != nil {
++			p.Engine = *engine
++		}
++		if platform != nil {
++			p.Platform = *platform
++		}
++		if ref != nil {
++			p.DSNRef = *ref
++		}
++		if disabled != nil {
++			p.Disabled = *disabled
 +		}
 +		out = append(out, p)
 +	}
-+	if err := rows.Err(); err != nil {
-+		return nil, 0, err
-+	}
-+	if len(out) == 0 {
-+		gen, err = r.InventoryGeneration(ctx)
-+	}
-+	return out, gen, err
++	return out, gen, rows.Err()
 +}
 +
  // EnsureInstance upserts the instance row and returns its id.

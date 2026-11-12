@@ -10,12 +10,15 @@
 //
 // The list sources of a sync (a server list, a pg_service.conf, a CSV) are parsed here into proposals; the
 // SQL Server sources (a CMS, a DBA Dash repository) are read by serve.
+
 package config
 
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -194,17 +197,25 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 	}
 }
 
-// SecretDir is the folder the page's credential files live in: instances/ beside the config file.
-func SecretDir(configPath string) string {
+// SecretDir is the folder the page's instance credential files live in: instances/ beside the config file.
+func SecretDir(configPath string) string { return besideConfig(configPath, "instances") }
+
+// SourceSecretDir is the folder of the sync sources' credential files: sources/ beside the config file (apart
+// from the instances', so no source's file and no instance's file can share a name).
+func SourceSecretDir(configPath string) string { return besideConfig(configPath, "sources") }
+
+func besideConfig(configPath, sub string) string {
 	abs, err := filepath.Abs(configPath)
 	if err != nil {
 		abs = configPath
 	}
-	return filepath.Join(filepath.Dir(abs), "instances")
+	return filepath.Join(filepath.Dir(abs), sub)
 }
 
-// WriteSecret stores value for the named instance (or source) in dir and returns its reference. The file is
-// written beside its final name and renamed over it, so a reader never sees half of it.
+// WriteSecret stores value for the named instance (or source) in dir and returns its reference. Each write is a
+// file of its own (<name>-<random>.dsn): a refused attempt removes its own file only, never one a concurrent write
+// of the same name owns; the caller removes the previous file once the row names the new one. The file is written
+// beside its final name and renamed over it, so a reader never sees half of it.
 func WriteSecret(dir, name, value string) (string, error) {
 	if !pageName.MatchString(name) {
 		return "", fmt.Errorf("not a valid name for a credential file: %q", name)
@@ -215,7 +226,14 @@ func WriteSecret(dir, name, value string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return writeSecret(dir, name, value)
+	if err := prepareDir(dir); err != nil {
+		return "", fmt.Errorf("the credential folder's access: %w", err)
+	}
+	var rnd [6]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", err
+	}
+	return writeSecret(dir, name+"-"+hex.EncodeToString(rnd[:]), value)
 }
 
 // RemoveSecret deletes the file a reference names when it lies in dir; a reference elsewhere is left alone.
@@ -253,6 +271,9 @@ type Conn struct {
 // Extra (a sqlserver query string or postgres keywords, from a source's credential file) is appended; it may set
 // TrustServerCertificate or sslmode, never the host.
 func BuildDSN(c Conn) (string, error) {
+	if optionHoldsPassword(c.Extra) {
+		return "", errors.New("the driver options hold no password: it goes in the password field, to its own file")
+	}
 	host := strings.TrimSpace(c.Host)
 	if host == "" || strings.ContainsAny(host, " /?#@'\"") {
 		return "", fmt.Errorf("not a host: %q", c.Host)
@@ -353,6 +374,15 @@ func BuildDSN(c Conn) (string, error) {
 	return "", fmt.Errorf("unknown engine %q", c.Engine)
 }
 
+// optionHoldsPassword says whether driver options name a password (they are stored in the repository as written).
+func optionHoldsPassword(x string) bool {
+	l := strings.ToLower(x)
+	return strings.Contains(l, "password") || strings.Contains(l, "pwd")
+}
+
+// QuoteValue quotes a libpq keyword value (a path or a login with a space, a quote or a backslash).
+func QuoteValue(v string) string { return pq(v) }
+
 // pq quotes a libpq keyword value.
 func pq(v string) string {
 	if v != "" && !strings.ContainsAny(v, " '\\") {
@@ -377,6 +407,10 @@ type Proposal struct {
 // (host\name) is kept whole.
 func SplitHostPort(s string) (string, int) {
 	s = strings.TrimSpace(s)
+	// SQL Server's protocol prefix: tcp: is the default anyway (np: and lpc: are refused by NotTCP)
+	if len(s) > 4 && strings.EqualFold(s[:4], "tcp:") {
+		s = s[4:]
+	}
 	if h, p, ok := strings.Cut(s, ","); ok {
 		if n, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
 			return strings.TrimSpace(h), n
@@ -399,6 +433,18 @@ func SplitHostPort(s string) (string, int) {
 	return s, 0
 }
 
+// NotTCP says whether a server name asks for a named pipe or shared memory (np:, lpc:), which the collector does not open.
+func NotTCP(s string) bool {
+	l := strings.ToLower(strings.TrimSpace(s))
+	return strings.HasPrefix(l, "np:") || strings.HasPrefix(l, "lpc:")
+}
+
+// secretShaped says whether a line looks like a connection string or a credential rather than a server: an error
+// about it names its line number only, and nothing of it reaches a proposal.
+func secretShaped(l string) bool {
+	return strings.ContainsAny(l, "=@") || strings.Contains(l, "://")
+}
+
 // ParseServerList reads a server list for engine: a CSV whose first line names its columns (host is required;
 // port, name, dbname, login, tags (space-separated) are read when present) or one server per line ("host",
 // "host,port", "host:port"); '#' starts a comment. The server key is the line's host and port as written.
@@ -411,9 +457,11 @@ func ParseServerList(r io.Reader, engine string) ([]Proposal, error) {
 		return nil, err
 	}
 	var lines []string
-	for _, l := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
+	var lineNo []int // each kept line's number in the file
+	for i, l := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
 		if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "#") {
 			lines = append(lines, t)
+			lineNo = append(lineNo, i+1)
 		}
 	}
 	if len(lines) == 0 {
@@ -426,7 +474,8 @@ func ParseServerList(r io.Reader, engine string) ([]Proposal, error) {
 		cr.FieldsPerRecord = -1
 		recs, err := cr.ReadAll()
 		if err != nil {
-			return nil, fmt.Errorf("the CSV: %w", err)
+			// csv's error quotes no field text, its line numbers count the kept lines
+			return nil, errors.New("the CSV could not be read (a quote not closed?)")
 		}
 		col := map[string]int{}
 		for i, h := range recs[0] {
@@ -439,14 +488,22 @@ func ParseServerList(r io.Reader, engine string) ([]Proposal, error) {
 			return ""
 		}
 		for n, rec := range recs[1:] {
+			for _, f := range rec {
+				if secretShaped(f) {
+					return nil, fmt.Errorf("the CSV line %d holds a connection string or a credential ('=', '@' or '://'): not a server list", lineNo[n+1])
+				}
+			}
 			h, p := SplitHostPort(get(rec, "host"))
 			if h == "" {
-				return nil, fmt.Errorf("the CSV line %d has no host", n+2)
+				return nil, fmt.Errorf("the CSV line %d has no host", lineNo[n+1])
+			}
+			if NotTCP(get(rec, "host")) {
+				return nil, fmt.Errorf("the CSV line %d names a named pipe or shared memory: TCP only", lineNo[n+1])
 			}
 			if ps := get(rec, "port"); ps != "" {
 				v, err := strconv.Atoi(ps)
 				if err != nil || v < 1 || v > 65535 {
-					return nil, fmt.Errorf("the CSV line %d: port %q", n+2, ps)
+					return nil, fmt.Errorf("the CSV line %d: the port is not a number from 1 to 65535", lineNo[n+1])
 				}
 				p = v
 			}
@@ -459,10 +516,16 @@ func ParseServerList(r io.Reader, engine string) ([]Proposal, error) {
 		}
 		return dedupe(out), nil
 	}
-	for _, l := range lines {
+	for n, l := range lines {
+		if secretShaped(l) {
+			return nil, fmt.Errorf("line %d holds a connection string or a credential ('=', '@' or '://'): not a server list", lineNo[n])
+		}
+		if NotTCP(l) {
+			return nil, fmt.Errorf("line %d names a named pipe or shared memory: TCP only", lineNo[n])
+		}
 		h, p := SplitHostPort(l)
 		if h == "" || strings.ContainsAny(h, " \t") {
-			return nil, fmt.Errorf("not a server: %q", l)
+			return nil, fmt.Errorf("line %d is not a server (one host, host,port or host:port)", lineNo[n])
 		}
 		out = append(out, Proposal{Server: l, Engine: engine, Host: h, Port: p, Tags: []string{}})
 	}

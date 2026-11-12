@@ -16,6 +16,7 @@
 // RunInstanceSync (serve, every 30 s) reads each enabled source whose interval is up: a CMS
 // (msdb.dbo.sysmanagement_shared_registered_servers and _groups, the groups as tags group:<name>), a DBA Dash
 // repository's dbo.Instances, a server list, a pg_service.conf or a CSV, into the proposals (import_admin_proposals).
+
 package web
 
 import (
@@ -67,6 +68,33 @@ func (a *InstancesAdmin) secretDir() string {
 	return config.SecretDir(a.ConfigPath)
 }
 
+func (a *InstancesAdmin) sourceDir() string {
+	if a.ConfigPath == "" {
+		return ""
+	}
+	return config.SourceSecretDir(a.ConfigPath)
+}
+
+// listPathOK refuses a list source's path inside a credential folder or the config file itself: a list is read
+// into proposals, which the page shows.
+func (a *InstancesAdmin) listPathOK(p string) error {
+	clean := filepath.Clean(p)
+	for _, d := range []string{a.secretDir(), a.sourceDir()} {
+		if d == "" {
+			continue
+		}
+		if rel, err := filepath.Rel(d, clean); err == nil && !strings.HasPrefix(rel, "..") {
+			return errors.New("the list file lies in a credential folder: not a server list")
+		}
+	}
+	if a.ConfigPath != "" {
+		if abs, err := filepath.Abs(a.ConfigPath); err == nil && abs == clean {
+			return errors.New("the list file is pgvigil.yaml itself: not a server list")
+		}
+	}
+	return nil
+}
+
 func (a *InstancesAdmin) fileNames() []string {
 	out := []string{}
 	for _, in := range a.File {
@@ -113,7 +141,7 @@ func (s *Server) InstancesAdminView(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"file": file, "secret_dir": a.secretDir(), "dbadash": keys(a.DBADash), "writable": s.ackOff() == "", "why_not": s.ackOff()}
 	parts := []struct{ k, q string }{
-		{"page", `SELECT a.name, a.engine, a.platform, a.auth, a.host, a.port, a.dbname, a.login, array_to_string(a.tags, ' ') AS tags,
+		{"page", `SELECT a.name, a.engine, a.platform, a.auth, a.host, a.port, a.dbname, a.login, a.options, array_to_string(a.tags, ' ') AS tags,
 		        a.disabled, a.source, a.dsn_ref IS NOT NULL AS has_credential, a.created_at, a.created_by, a.updated_at, a.updated_by,
 		        a.tested_at, a.tested_ok, a.tested_detail, i.instance_id, i.last_seen,
 		        (SELECT max(c.snapshot_at) FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id AND c.status = 'ok') AS last_collected
@@ -258,14 +286,14 @@ func (s *Server) answer(w http.ResponseWriter, a importAnswer, raw json.RawMessa
 type pageRow struct {
 	Engine, Platform, Ref, Auth, Host string
 	Port                              *int
-	DBName, Login                     *string
+	DBName, Login, Options            *string
 	Tags                              []string
 }
 
 func (s *Server) pageInstance(ctx context.Context, name string) (*pageRow, error) {
 	var p pageRow
-	err := s.pool.QueryRow(ctx, `SELECT engine, platform, dsn_ref, auth, host, port, dbname, login, tags FROM pgvigil.admin_instances WHERE name = $1`, name).
-		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Tags)
+	err := s.pool.QueryRow(ctx, `SELECT engine, platform, dsn_ref, auth, host, port, dbname, login, options, tags FROM pgvigil.admin_instances WHERE name = $1`, name).
+		Scan(&p.Engine, &p.Platform, &p.Ref, &p.Auth, &p.Host, &p.Port, &p.DBName, &p.Login, &p.Options, &p.Tags)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -303,7 +331,7 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 		s.reply(w, r, nil, err)
 		return
 	}
-	var restore func() // puts the credential file back as it was when the row is refused
+	var written, previous string // this attempt's credential file; the one the row named before (removed once replaced)
 	switch op {
 	case "add", "edit":
 		port := 0
@@ -318,24 +346,23 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 		if op == "edit" && have != nil {
 			c.Engine = have.Engine
 		}
-		pay["engine"], pay["platform"], pay["auth"], pay["host"], pay["port"], pay["dbname"], pay["login"], pay["tags"] =
-			c.Engine, str(in, "platform"), c.Auth, c.Host, str(in, "port"), c.DBName, c.Login, tagsOf(in)
-		needsPw := c.Auth == "sql" || c.Auth == "entra" || c.Auth == "password"
-		if op == "edit" && have != nil && c.Password == "" && needsPw {
-			// a tags or platform edit keeps the credential file; a change of the connection asks for the password again
-			if c.Host != have.Host || port != orZero(have.Port) || c.DBName != orZero(have.DBName) || c.Login != orZero(have.Login) || c.Auth != have.Auth || c.Extra != "" {
+		pay["engine"], pay["platform"], pay["auth"], pay["host"], pay["port"], pay["dbname"], pay["login"], pay["options"], pay["tags"] =
+			c.Engine, str(in, "platform"), c.Auth, c.Host, str(in, "port"), c.DBName, c.Login, c.Extra, tagsOf(in)
+		if op == "edit" && have != nil && c.Password == "" {
+			changed := c.Host != have.Host || port != orZero(have.Port) || c.DBName != orZero(have.DBName) || c.Login != orZero(have.Login) ||
+				c.Auth != have.Auth || c.Extra != orZero(have.Options)
+			if !changed {
+				// a tags or platform edit keeps the credential file as it is
+				pay["dsn_ref"] = have.Ref
+				break
+			}
+			if c.Auth == "sql" || c.Auth == "entra" || c.Auth == "password" {
 				writeErr(w, http.StatusConflict, errors.New("the connection changed: give the password again (it is never read back from its file)"))
 				return
 			}
-			pay["dsn_ref"] = have.Ref
-			break
 		}
-		if op == "add" && have != nil {
+		if (op == "add" && have != nil) || (op == "edit" && have == nil) || slicesContains(a.fileNames(), name) {
 			pay["dsn_ref"] = "file:/refused" // the function refuses the name; nothing is written
-			break
-		}
-		if op == "add" && slicesContains(a.fileNames(), name) {
-			pay["dsn_ref"] = "file:/refused"
 			break
 		}
 		dsn, err := config.BuildDSN(c)
@@ -343,50 +370,39 @@ func (s *Server) InstancesAdminWrite(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		var old []byte
-		var oldRef string
-		if have != nil {
-			oldRef = have.Ref
-			if p, ok := strings.CutPrefix(have.Ref, "file:"); ok {
-				old, _ = os.ReadFile(p)
-			} else if p, ok := strings.CutPrefix(have.Ref, "dpapi:"); ok {
-				old, _ = os.ReadFile(p)
-			}
-		}
 		ref, err := config.WriteSecret(dir, name, dsn)
 		if err != nil {
 			writeErr(w, http.StatusConflict, fmt.Errorf("the credential file: %w", err))
 			return
 		}
-		pay["dsn_ref"] = ref
-		restore = func() {
-			if old != nil && oldRef == ref {
-				_, p, _ := strings.Cut(ref, ":")
-				_ = os.WriteFile(p, old, 0o600)
-				return
-			}
-			_ = config.RemoveSecret(dir, ref)
+		pay["dsn_ref"], written = ref, ref
+		if have != nil {
+			previous = have.Ref
 		}
 	case "disable", "enable", "remove":
+		if op == "remove" && have != nil {
+			previous = have.Ref
+		}
 	default:
 		writeErr(w, http.StatusBadRequest, errors.New("op is add, edit, disable, enable, remove or test"))
 		return
 	}
 	ans, raw, err := s.callImport(ctx, "import_admin_instance", pay)
-	if err != nil {
-		if restore != nil {
-			restore()
+	switch {
+	case err != nil || ans.Outcome != "done":
+		// this attempt's own file only: a concurrent write of the same name owns another
+		if written != "" {
+			_ = config.RemoveSecret(a.secretDir(), written)
 		}
-		s.log.Error("admin instance: not written", "user", user, "op", op, "name", name, "err", err)
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
-		return
-	}
-	if ans.Outcome != "done" && restore != nil {
-		restore()
-	}
-	if ans.Outcome == "done" && op == "remove" && have != nil {
-		if err := config.RemoveSecret(a.secretDir(), have.Ref); err != nil {
-			s.log.Warn("admin instance: the credential file stays", "name", name, "err", err)
+		if err != nil {
+			s.log.Error("admin instance: not written", "user", user, "op", op, "name", name, "err", err)
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
+			return
+		}
+	case previous != "" && (op == "remove" || written != ""):
+		// the row names the new file now (or no file: a remove)
+		if err := config.RemoveSecret(a.secretDir(), previous); err != nil {
+			s.log.Warn("admin instance: the previous credential file stays", "name", name, "err", err)
 		}
 	}
 	s.log.Info("admin instance", "op", op, "name", name, "user", user, "outcome", ans.Outcome, "detail", ans.Detail)
@@ -451,7 +467,7 @@ func testConnection(ctx context.Context, engine, dsn string) (bool, string) {
 		if err != nil {
 			return false, "the connection string: " + err.Error()
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		var srv, ver, login string
 		if err := db.QueryRowContext(cctx, `SELECT CAST(@@SERVERNAME AS nvarchar(256)), CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), SUSER_SNAME()`).Scan(&srv, &ver, &login); err != nil {
 			return false, err.Error()
@@ -462,7 +478,7 @@ func testConnection(ctx context.Context, engine, dsn string) (bool, string) {
 		if err != nil {
 			return false, err.Error()
 		}
-		defer conn.Close(context.Background())
+		defer func() { _ = conn.Close(context.Background()) }()
 		var ver, login string
 		if err := conn.QueryRow(cctx, `SELECT current_setting('server_version'), current_user`).Scan(&ver, &login); err != nil {
 			return false, err.Error()
@@ -503,7 +519,7 @@ func (s *Server) SourcesAdminWrite(w http.ResponseWriter, r *http.Request) {
 	var written []string
 	undo := func() {
 		for _, ref := range written {
-			_ = config.RemoveSecret(a.secretDir(), ref)
+			_ = config.RemoveSecret(a.sourceDir(), ref)
 		}
 	}
 	if op == "add" {
@@ -511,7 +527,7 @@ func (s *Server) SourcesAdminWrite(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("a source name is 1 to 51 letters, digits, _ . or -"))
 			return
 		}
-		dir := a.secretDir()
+		dir := a.sourceDir()
 		if dir == "" {
 			writeErr(w, http.StatusConflict, errors.New("this server was started without a config file path: credentials cannot be written"))
 			return
@@ -552,6 +568,10 @@ func (s *Server) SourcesAdminWrite(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusBadRequest, errors.New("the list file's path is absolute (a path on this server)"))
 				return
 			}
+			if err := a.listPathOK(p); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
 			if _, err := os.Stat(p); err != nil {
 				writeErr(w, http.StatusBadRequest, fmt.Errorf("the list file: %w", err))
 				return
@@ -585,7 +605,7 @@ func (s *Server) SourcesAdminWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	if ans.Outcome == "done" && op == "remove" {
 		for _, ref := range refs {
-			_ = config.RemoveSecret(a.secretDir(), ref)
+			_ = config.RemoveSecret(a.sourceDir(), ref)
 		}
 	}
 	extra := map[string]any{}
@@ -656,7 +676,7 @@ func (s *Server) readSource(ctx context.Context, src *sourceRow) ([]config.Propo
 		if err != nil {
 			return nil, fmt.Errorf("the connection string: %w", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		q := cmsQuery
@@ -667,15 +687,15 @@ func (s *Server) readSource(ctx context.Context, src *sourceRow) ([]config.Propo
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		var out []config.Proposal
 		for rows.Next() {
 			var server, disp, path sql.NullString
 			if err := rows.Scan(&server, &disp, &path); err != nil {
 				return nil, err
 			}
-			if !server.Valid || strings.TrimSpace(server.String) == "" {
-				continue
+			if !server.Valid || strings.TrimSpace(server.String) == "" || config.NotTCP(server.String) {
+				continue // a named pipe or shared memory registration: the collector opens TCP only
 			}
 			h, p := config.SplitHostPort(server.String)
 			tags := []string{}
@@ -694,7 +714,7 @@ func (s *Server) readSource(ctx context.Context, src *sourceRow) ([]config.Propo
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		switch src.Kind {
 		case "pg_service":
 			return config.ParsePgService(f)
@@ -832,12 +852,12 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 		var dsn string
 		if sr.Kind == "pg_service" {
 			// the service file itself: its password (or the service account's .pgpass) stays where it is
-			dsn = "service=" + strings.ReplaceAll(server, " ", "") + " servicefile=" + sr.Ref
+			dsn = "service=" + config.QuoteValue(server) + " servicefile=" + config.QuoteValue(sr.Ref)
 			if cred.Login != "" {
-				dsn += " user=" + cred.Login
+				dsn += " user=" + config.QuoteValue(cred.Login)
 			}
 			if cred.Password != "" {
-				dsn += " password='" + strings.ReplaceAll(strings.ReplaceAll(cred.Password, `\`, `\\`), `'`, `\'`) + "'"
+				dsn += " password=" + config.QuoteValue(cred.Password)
 			}
 		} else {
 			l := cred.Login
@@ -863,7 +883,7 @@ func (s *Server) ProposalsAdminWrite(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			pay["dsn_ref"] = ref
-			restore = func() { _ = config.RemoveSecret(a.secretDir(), ref) }
+			restore = func() { _ = config.RemoveSecret(a.secretDir(), ref) } // this attempt's own file only
 		}
 	}
 	ans, raw, err := s.callImport(ctx, "import_admin_decision", pay)

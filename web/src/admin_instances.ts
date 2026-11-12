@@ -51,6 +51,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
   const say = (text: string, bad = false) => { status.textContent = text; status.className = bad ? 'meta error' : 'meta'; status.setAttribute('role', 'status'); };
 
   async function draw(): Promise<void> {
+    editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
     const d = await get<AdminData>('admin/instances');
     const page = rowsOf(d.page), file = rowsOf(d.file), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
     root.replaceChildren(
@@ -80,13 +81,15 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
 
   async function act(path: string, data: Record<string, unknown>, done: string): Promise<boolean> {
     say('Working…');
+    // one request at a time: a second click (a double Approve) waits for the redraw
+    for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = true;
     try {
       const r = await send(path, data);
-      if (!r.ok) { say(`Not done: ${why(r.body)}`, true); return false; }
+      if (!r.ok) { for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = false; say(`Not done: ${why(r.body)}`, true); return false; }
       await draw();
       say(done + (r.body.sync_error ? ` The first read failed: ${String(r.body.sync_error)}` : ''));
       return true;
-    } catch (e) { say(`Not done: ${(e as Error).message}`, true); return false; }
+    } catch (e) { for (const b of root.querySelectorAll('button')) (b as HTMLButtonElement).disabled = false; say(`Not done: ${(e as Error).message}`, true); return false; }
   }
 
   // the add / edit form; edit fills it from a row (the password is asked again when the connection changes)
@@ -123,7 +126,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       engine.value = String(r.engine); engine.dispatchEvent(new Event('change')); engine.disabled = true;
       name.value = editing; name.disabled = true; host.value = String(r.host ?? ''); port.value = r.port == null ? '' : String(r.port);
       dbname.value = String(r.dbname ?? ''); auth.value = String(r.auth); platform.value = String(r.platform ?? 'auto'); login.value = String(r.login ?? '');
-      password.value = ''; tags.value = String(r.tags ?? ''); name.focus();
+      password.value = ''; options.value = String(r.options ?? ''); tags.value = String(r.tags ?? ''); name.focus();
       say(`Editing ${editing}: a change of the host, port, database, login or authentication asks for the password again.`);
     };
     formRef = f as HTMLFormElement & { fill?: (r: Row) => void };

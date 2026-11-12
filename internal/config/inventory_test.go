@@ -271,3 +271,67 @@ func TestRefOK(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteSecretGivesEachWriteItsOwnFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("DPAPI on Windows")
+	}
+	dir := t.TempDir()
+	a, err := WriteSecret(dir, "sql01", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := WriteSecret(dir, "sql01", "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b || Resolve(a) != "one" || Resolve(b) != "two" {
+		t.Fatalf("two writes of one name: %s (%q) and %s (%q)", a, Resolve(a), b, Resolve(b))
+	}
+	if err := RemoveSecret(dir, b); err != nil || Resolve(a) != "one" {
+		t.Fatalf("removing the second removed the first: %v", err)
+	}
+}
+
+func TestListsRefuseCredentialsWithoutEchoingThem(t *testing.T) {
+	for _, in := range []string{"host=pg1 password=S3cret\n", "sqlserver://u:S3cret@h:1433?x=1\n", "# x\n\npg1\nuser@S3cret\n"} {
+		_, err := ParseServerList(strings.NewReader(in), EnginePostgres)
+		if err == nil {
+			t.Fatalf("%q was taken as a server list", in)
+		}
+		if strings.Contains(err.Error(), "S3cret") {
+			t.Fatalf("the error echoes the line: %v", err)
+		}
+	}
+	_, err := ParseServerList(strings.NewReader("# x\n\npg1\nuser@S3cret\n"), EnginePostgres)
+	if err == nil || !strings.Contains(err.Error(), "line 4") {
+		t.Fatalf("the error does not name the file's line 4: %v", err)
+	}
+	if _, err := ParseServerList(strings.NewReader("host,port\npg1,x=y\n"), EnginePostgres); err == nil || strings.Contains(err.Error(), "x=y") {
+		t.Fatalf("a CSV field with '=': %v", err)
+	}
+	if _, err := ParseServerList(strings.NewReader("np:sql01\n"), EngineSQLServer); err == nil {
+		t.Fatal("a named pipe was taken")
+	}
+}
+
+func TestSplitHostPortProtocolPrefix(t *testing.T) {
+	if h, p := SplitHostPort("tcp:sql01,1433"); h != "sql01" || p != 1433 {
+		t.Fatalf("tcp:sql01,1433 -> %s %d", h, p)
+	}
+	if !NotTCP("np:\\\\sql01\\pipe\\sql\\query") || !NotTCP("lpc:sql01") || NotTCP("tcp:sql01") {
+		t.Fatal("NotTCP")
+	}
+}
+
+func TestBuildDSNRefusesAPasswordInTheOptions(t *testing.T) {
+	if _, err := BuildDSN(Conn{Engine: EngineSQLServer, Auth: "windows", Host: "sql01", Extra: "password=x"}); err == nil {
+		t.Fatal("a password in the options was taken")
+	}
+	if _, err := BuildDSN(Conn{Engine: EnginePostgres, Auth: "pgpass", Host: "pg1", Extra: "PWD=x"}); err == nil {
+		t.Fatal("PWD in the options was taken")
+	}
+	if got := QuoteValue(`C:\Program Files\pg_service.conf`); got != `'C:\\Program Files\\pg_service.conf'` {
+		t.Fatalf("QuoteValue %s", got)
+	}
+}

@@ -11,6 +11,26 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// prepareDir (Windows): the folder's access list is protected (nothing inherited from ProgramData, where the local
+// Users may read) and grants full control to SYSTEM, the Administrators and the account serve runs as only; the
+// files in it inherit that list. DPAPI at machine scope lets any process of the machine unseal a blob it can read,
+// so the access list is what keeps the other local accounts out.
+func prepareDir(dir string) error {
+	tu, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;" + tu.User.Sid.String() + ")")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+
 // writeSecret (Windows): the value sealed with DPAPI at machine scope (any process of this machine can open it,
 // none elsewhere: the lead's decision), written beside its final name and renamed over it.
 func writeSecret(dir, name, value string) (string, error) {

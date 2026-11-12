@@ -99,12 +99,9 @@ PA=$(docker port "$PGA" 5432/tcp | head -1 | sed 's/.*://'); PB=$(docker port "$
 for p in "$PA" "$PB"; do for _ in $(seq 1 60); do PGPASSWORD="$PG_PW" psql "host=127.0.0.1 port=$p user=postgres dbname=postgres" -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
   PGPASSWORD="$PG_PW" psql "host=127.0.0.1 port=$p user=postgres dbname=postgres" -XAtqc 'select 1' >/dev/null || fail "A: PostgreSQL on port $p did not come up"; done
 CMSL=pgv_cms_$SUF; MONL=pgv_mon_$SUF
-printf 'CMS_PW=%s\nMON_PW=%s\n' "$CMS_PW" "$MON_PW" > "$TMPD/logins.env"
-docker cp "$TMPD/logins.env" "$SQL:/tmp/logins.env" >/dev/null
 sqok "A: the logins" "CREATE LOGIN [$CMSL] WITH PASSWORD = '$CMS_PW', CHECK_POLICY = OFF; CREATE LOGIN [$MONL] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF;
   GRANT VIEW SERVER STATE TO [$MONL]; GRANT VIEW ANY DEFINITION TO [$MONL];
   USE msdb; CREATE USER [$CMSL] FOR LOGIN [$CMSL]; ALTER ROLE ServerGroupReaderRole ADD MEMBER [$CMSL];"
-docker exec "$SQL" rm -f /tmp/logins.env
 S1="127.0.0.1,$PORT_SQL"; S2="localhost,$PORT_SQL"; S3="$SQLIP,1433"
 sqok "A: the CMS groups and servers" "DECLARE @prod int, @test int, @id int;
   EXEC msdb.dbo.sp_sysmanagement_add_shared_server_group @parent_id = 1, @name = N'Prod', @description = N'', @server_type = 0, @server_group_id = @prod OUTPUT;
@@ -138,12 +135,13 @@ instances:
 EOF
 sed "s|dsn: \"$PGDSN\"|dsn: env:PGV_COL_DSN|" "$CFGD/pgvigil.yaml" > "$CFGD/collector.yaml"
 "$TMPD/pgvigil" migrate -config "$CFGD/pgvigil.yaml" >"$TMPD/migrate.out" 2>&1 || { cat "$TMPD/migrate.out" >&2; fail "B: migrate"; }
-psql "$ADMIN_DSN" -Xqc "CREATE ROLE $COL LOGIN PASSWORD '$COL_PW' IN ROLE pgvigil_collector" >/dev/null
+printf "CREATE ROLE %s LOGIN PASSWORD '%s' IN ROLE pgvigil_collector;\n" "$COL" "$COL_PW" | psql "$ADMIN_DSN" -Xq -v ON_ERROR_STOP=1 >/dev/null
 [[ "$(pq "SELECT has_table_privilege('$COL', 'pgvigil.admin_instances', 'SELECT')")" == f ]] || fail "B: the collector's login can read admin_instances (want only the functions)"
 PGVIGIL_PASSWORD="$UPW" "$TMPD/pgvigil" user add -config "$CFGD/pgvigil.yaml" "$USR" >/dev/null 2>&1 || fail "B: user add"
 "$TMPD/pgvigil" run -config "$CFGD/collector.yaml" >"$TMPD/run.log" 2>&1 & RUNPID=$!
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); U="http://127.0.0.1:$PORT"
-"$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORT" >"$TMPD/serve.log" 2>&1 & SRVPID=$!
+# serve under umask 022 (a service's usual): G's 0600 / 0700 are then the code's own modes, not the proof's umask
+(umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORT") >"$TMPD/serve.log" 2>&1 & SRVPID=$!
 for _ in $(seq 1 100); do curl -s -o /dev/null "$U/api/session" 2>/dev/null && break; sleep 0.1; done
 kill -0 "$SRVPID" 2>/dev/null || { cat "$TMPD/serve.log" >&2; fail "B: serve exited"; }
 kill -0 "$RUNPID" 2>/dev/null || { cat "$TMPD/run.log" >&2; fail "B: run exited"; }
@@ -175,8 +173,8 @@ for s in "$S1" "$S2" "$S3"; do
 done
 N1=$(pq "SELECT instance_name FROM pgvigil.admin_proposals WHERE server = '$S1'"); N3=$(pq "SELECT instance_name FROM pgvigil.admin_proposals WHERE server = '$S3'")
 for s in "$S1" "$S2" "$S3"; do n=$(pq "SELECT instance_name FROM pgvigil.admin_proposals WHERE server = '$s'"); waitcol "$n" 120 "C"; done
-[[ "$(pq "SELECT string_agg(name || ':' || array_to_string(tags, ' '), ', ' ORDER BY name) FROM pgvigil.admin_instances WHERE source = 'cms:cms1'")" == *"group:Prod"*"group:Test"* ]] \
-  || [[ "$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE source = 'cms:cms1' AND tags && ARRAY['group:Prod', 'group:Test']")" == 3 ]] || fail "C: the approved instances do not carry the groups as tags"
+GT=$(pq "SELECT string_agg(host || ':' || array_to_string(tags, ' '), ', ' ORDER BY host) FROM pgvigil.admin_instances WHERE source = 'cms:cms1'")
+[[ "$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE source = 'cms:cms1' AND tags && ARRAY['group:Prod', 'group:Test']")" == 3 && "$GT" == *"group:Prod"*"group:Test"* ]] || fail "C: the approved instances' tags: $GT (want all three, Prod and Test)"
 sqok "C: delete $S3 from the CMS" "DECLARE @id int = (SELECT server_id FROM msdb.dbo.sysmanagement_shared_registered_servers WHERE server_name = N'$S3');
   EXEC msdb.dbo.sp_sysmanagement_delete_shared_registered_server @server_id = @id;" msdb
 code=$(api POST admin/sources "$(js op=sync name=cms1)"); [[ "$code" == 200 && "$(ans gone)" == 1 ]] || fail "C: the read after the delete: $code $(cat "$TMPD/ans.json")"
@@ -208,8 +206,9 @@ echo "ok   D: svc_a and svc_b proposed from the pg_service.conf, approved, colle
 echo "== E. the API: test, add, the refusals, edit, disable, enable, remove =="
 T="op=test engine=postgres host=127.0.0.1 port=$PB dbname=postgres auth=password login=postgres"
 code=$(api POST admin/instances "$(js $T password=@BAD_PW)"); [[ "$code" == 200 && "$(ans ok)" == False ]] || fail "E: a test with a wrong password: $code $(cat "$TMPD/ans.json")"
+WRONG=$(ans detail | head -c 120)
 code=$(api POST admin/instances "$(js $T password=@PG_PW)"); [[ "$code" == 200 && "$(ans ok)" == True ]] || fail "E: a test with the right password: $code $(cat "$TMPD/ans.json")"
-echo "E: test: wrong password -> '$(ans detail | head -c 80)'; right -> '$(ans detail)'"
+echo "E: test: wrong password -> '$WRONG'; right -> '$(ans detail)'"
 A="engine=postgres host=127.0.0.1 port=$PB dbname=postgres auth=password login=postgres tags=env:proof"
 G1=$(gen)
 code=$(api POST admin/instances "$(js op=add name=pg-manual $A password=@PG_PW)"); [[ "$code" == 200 ]] || fail "E: add: $code $(cat "$TMPD/ans.json")"
@@ -219,7 +218,7 @@ code=$(api POST admin/instances "$(js op=add name=pg-manual $A password=@PG_PW)"
 code=$(api POST admin/instances "$(js op=add name=filepg $A password=@PG_PW)"); [[ "$code" == 409 && "$(ans detail)" == *"pgvigil.yaml"* ]] || fail "E: the file's name: $code $(cat "$TMPD/ans.json")"
 code=$(api POST admin/instances "$(js op=edit name=pg-manual engine=postgres host=localhost port=$PB dbname=postgres auth=password login=postgres tags=env:proof)")
 [[ "$code" == 409 ]] || fail "E: a host change without the password was taken: $code $(cat "$TMPD/ans.json")"
-code=$(api POST admin/instances "$(js op=edit name=pg-manual $A tags=env:proof team:dba)"); [[ "$code" == 200 ]] || fail "E: a tags edit: $code $(cat "$TMPD/ans.json")"
+code=$(api POST admin/instances "$(js op=edit name=pg-manual $A "tags=env:proof team:dba")"); [[ "$code" == 200 ]] || fail "E: a tags edit: $code $(cat "$TMPD/ans.json")"
 [[ "$(pq "SELECT array_to_string(tags, ' ') FROM pgvigil.admin_instances WHERE name = 'pg-manual'")" == "env:proof team:dba" ]] || fail "E: the tags edit was not stored"
 code=$(api POST admin/instances "$(js op=test name=pg-manual)"); [[ "$code" == 200 && "$(ans ok)" == True ]] || fail "E: the stored instance's test: $code $(cat "$TMPD/ans.json")"
 [[ "$(pq "SELECT tested_ok FROM pgvigil.admin_instances WHERE name = 'pg-manual'")" == t ]] || fail "E: the test result was not kept"
@@ -233,9 +232,11 @@ REF=$(pq "SELECT dsn_ref FROM pgvigil.admin_instances WHERE name = 'pg-manual'")
 [[ -f "$RF" ]] || fail "E: the credential file $RF is missing"
 code=$(api POST admin/instances "$(js op=remove name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: remove: $code"
 [[ ! -e "$RF" ]] || fail "E: the credential file stayed after the remove"
-[[ "$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-manual'")|$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == "0|f" ]] || fail "E: the remove: the row or is_active"
+RM="$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-manual'")|$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")"
+[[ "$RM" == "0|f" ]] || fail "E: the remove: admin rows|is_active = $RM (want 0|f)"
 [[ "$(collected pg-manual)" -gt 0 ]] || fail "E: the remove dropped the history"
 sleep 30; R0=$(newest pg-manual); sleep 75; [[ "$(newest pg-manual)" == "$R0" ]] || fail "E: pg-manual was collected after the remove"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: pg-manual is active again after the remove (a run in flight)"
 AUD=$(pq "SELECT string_agg(op || ':' || outcome, ' ' ORDER BY audit_id) FROM pgvigil.admin_audit WHERE target = 'pg-manual'")
 for w in "instance add:done" "instance add:refused" "instance edit:done" "instance tested:done" "instance disable:done" "instance enable:done" "instance remove:done"; do
   [[ "$AUD" == *"$w"* ]] || fail "E: the audit lacks '$w': $AUD"; done
@@ -307,6 +308,7 @@ await submit('Add or edit an instance', 'Save');
 await click('Disable pg-click');
 await click('Enable pg-click');
 await click('Remove pg-click', false); await click('Keep pg-click');
+console.log(`kept ${await ev(`[...document.querySelectorAll('main button')].some(b => b.getAttribute('aria-label') === 'Remove pg-click') && ![...document.querySelectorAll('main button')].some(b => b.getAttribute('aria-label') === 'Confirm: remove pg-click')`)}`);
 await click('Remove pg-click', false); await click('Confirm: remove pg-click');
 // a source: read now (the fourth CMS server comes in), its proposal ignored, proposed again, approved
 await click('Read cms1 now');
@@ -332,7 +334,8 @@ for theme in light dark; do echo "$out" | grep "^page $theme " | grep -q '"label
 grade() { echo "$out" | grep -F "click \"$1\" -> " | head -1 | grep -qE -- "$2" || fail "F: '$1' answered $(echo "$out" | grep -F "click \"$1\" -> " | head -1) (want /$2/)"; }
 grade 'Test the connection' 'connected: PostgreSQL'; grade 'Add' 'Added pg-click'; grade 'Test pg-click' 'pg-click: connected'
 echo "$out" | grep -q '^edit-legend "Edit pg-click"' && echo "$out" | grep -q '^cancel-legend "Add an instance"' || fail "F: Edit / Cancel the edit"
-grade 'Save' 'Saved pg-click'; grade 'Disable pg-click' 'disabled'; grade 'Enable pg-click' 'enabled'; grade 'Keep pg-click' '.'
+grade 'Save' 'Saved pg-click'; grade 'Disable pg-click' 'disabled'; grade 'Enable pg-click' 'enabled'
+echo "$out" | grep -q '^kept true$' || fail "F: Keep did not put the row's Remove back (or left the confirm)"
 grade 'Confirm: remove pg-click' 'pg-click removed'; grade 'Read cms1 now' 'cms1 read'; grade 'Ignore ignoreme.invalid' 'ignored'
 grade 'Propose ignoreme.invalid again' 'proposed again'; grade 'Turn off cms1' 'turned off'; grade 'Turn on cms1' 'turned on'
 grade 'Add the source' 'Source csv1 added and read'; grade "Approve 127.0.0.1,$PA" 'approved'; grade 'Confirm: remove source csv1' 'Source csv1 removed'
@@ -350,15 +353,16 @@ for t in $TABLES; do NT=$((NT + 1))
 [[ -z "$HITS" ]] || fail "G: a password is in the repository:$HITS"
 api GET admin/instances >/dev/null
 for v in MON_PW CMS_PW PG_PW BAD_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/run.log"; do ! grep -qF -- "${!v}" "$f" || fail "G: $v is in $(basename "$f")"; done; done
-[[ "$(stat -c %a "$CFGD/instances")" == 700 ]] || fail "G: the credential folder is $(stat -c %a "$CFGD/instances")"
-NF=0; for f in "$CFGD"/instances/*; do NF=$((NF + 1)); [[ "$(stat -c %a "$f")" == 600 ]] || fail "G: $(basename "$f") is $(stat -c %a "$f")"; done
+NF=0; for d in instances sources; do [[ "$(stat -c %a "$CFGD/$d")" == 700 ]] || fail "G: the credential folder $d is $(stat -c %a "$CFGD/$d")"
+  for f in "$CFGD/$d"/*; do NF=$((NF + 1)); [[ "$(stat -c %a "$f")" == 600 ]] || fail "G: $d/$(basename "$f") is $(stat -c %a "$f")"; done; done
 NREF=$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE dsn_ref LIKE 'file:$CFGD/instances/%'")
-echo "ok   G: no password in any row of $NT tables, the API's answer or the two logs; $NF credential file(s) 0600 in a 0700 folder; $NREF instance rows name theirs"
+NLIVE=$(pq "SELECT count(*) FROM pgvigil.admin_instances"); NINST=$(find "$CFGD/instances" -type f | wc -l)
+[[ "$NREF" == "$NLIVE" && "$NINST" == "$NLIVE" ]] || fail "G: $NLIVE page instances, $NREF name a file in the folder, $NINST files there (want all equal: no file left behind, none missing)"
+echo "ok   G: no password in any row of $NT tables, the API's answer or the two logs; $NF credential file(s) 0600 in 0700 folders (serve under umask 022); $NINST instance files = $NLIVE page instances"
 
 echo "== H. the collector was never restarted =="
 kill -0 "$RUNPID" 2>/dev/null || fail "H: the collector stopped"
 NA=$(grep -c 'scheduler: instances applied' "$TMPD/run.log" || true)
 (( NA >= 8 )) || fail "H: the collector applied $NA lists (want one per change: 8 or more)"
-! grep -q 'scheduler started' "$TMPD/run.log" || true
 echo "ok   H: pid $RUNPID ran from B to the end and applied $NA lists (generation $G0 -> $(gen))"
 echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository; no restart; the NOT PROVEN lines above stand)"

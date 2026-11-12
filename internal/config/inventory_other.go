@@ -8,20 +8,24 @@ import (
 	"path/filepath"
 )
 
-// writeSecret (Linux and the rest): a file of mode 0600 in a folder of mode 0700, owned by the account serve runs as.
+// prepareDir (Linux and the rest): the folder is 0700 even when it existed before with another mode.
+func prepareDir(dir string) error { return os.Chmod(dir, 0o700) }
+
+// writeSecret (Linux and the rest): a file of mode 0600 (from its creation) in a folder of mode 0700, owned by the
+// account serve runs as.
 func writeSecret(dir, name, value string) (string, error) {
 	p := filepath.Join(dir, name+".dsn")
 	tmp, err := os.CreateTemp(dir, "."+name+".*")
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }() // gone after the rename; this removes it on a failure
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return "", err
 	}
 	if _, err := tmp.WriteString(value); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return "", err
 	}
 	if err := tmp.Close(); err != nil {
