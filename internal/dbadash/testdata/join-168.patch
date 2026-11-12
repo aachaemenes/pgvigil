@@ -1,0 +1,149 @@
+diff --git i/cmd/pgvigil/main.go w/cmd/pgvigil/main.go
+index 996edd5..a36da96 100644
+--- i/cmd/pgvigil/main.go
++++ w/cmd/pgvigil/main.go
+@@ -95,6 +95,8 @@ func run(args []string) int {
+ 		err = runMCP(ctx, log, args[1:])
+ 	case "mssql-xe":
+ 		err = runMSSQLXE(args[1:])
++	case "import":
++		err = dbadash.ImportCommand(ctx, log, os.Stdout, args[1:])
+ 	default:
+ 		usage()
+ 		return 2
+@@ -143,7 +145,8 @@ func runMSSQLXE(args []string) error {
+ }
+ 
+ func usage() {
+-	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|version> [-config file] [-once collection] [-instance name]")
++	fmt.Fprintln(os.Stderr, "usage: pgvigil <run|collect|alerts|migrate|roles|serve|user|cert|demo|purge|tag|report|install|uninstall|mcp|mssql-xe|import|version> [-config file] [-once collection] [-instance name]")
++	fmt.Fprintln(os.Stderr, "       "+dbadash.ImportUsage)
+ }
+ 
+ // loadConfig reads the config for the repository commands; needInstance is the collector
+diff --git i/cmd/pgvigil/serve.go w/cmd/pgvigil/serve.go
+index 66f91e4..277264d 100644
+--- i/cmd/pgvigil/serve.go
++++ w/cmd/pgvigil/serve.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/aachaemenes/pgvigil/internal/actions"
+ 	"github.com/aachaemenes/pgvigil/internal/collect"
+ 	"github.com/aachaemenes/pgvigil/internal/config"
++	"github.com/aachaemenes/pgvigil/internal/dbadash"
+ 	"github.com/aachaemenes/pgvigil/internal/engines"
+ 	"github.com/aachaemenes/pgvigil/internal/mssql"
+ 	"github.com/aachaemenes/pgvigil/internal/web"
+@@ -119,6 +120,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
+ 		}
+ 	}
+ 	srv.SetMSSQLActions(doors)
++	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
+ 	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
+ 	pgJobs := map[string][]string{}
+ 	for _, in := range cfg.Instances {
+diff --git i/web/src/about.ts w/web/src/about.ts
+index 2c878ec..6446f6d 100644
+--- i/web/src/about.ts
++++ w/web/src/about.ts
+@@ -133,6 +133,8 @@ export async function aboutView(_ctx: Ctx): Promise<HTMLElement> {
+     el('p', {}, 'On the host that runs pgvigil, ', el('code', {}, 'pgvigil report -config pgvigil.yaml'),
+       ' writes a zip into the folder it is run in: the configuration with every secret and name masked, the versions, the repository\'s ',
+       'migration level and the last collection errors. It sends nothing either: read it, then attach it to your mail.'),
++    el('h2', {}, 'Thanks'),
++    el('p', {}, 'The imported SQL Server servers are read from DBA Dash repositories; pgvigil\'s collection catalog and several of its SQL Server reads were shaped by DBA Dash (https://github.com/trimble-oss/dba-dash, MIT, Copyright 2022 Trimble, Inc.). Thank you to its author and contributors; THIRD-PARTY-NOTICES has the notice.'),
+     el('h2', {}, 'Security'),
+     el('p', {}, 'A vulnerability is reported privately, not by mail: ',
+       el('a', { href: securityUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Report a vulnerability on GitHub (opens in a new tab)'),
+diff --git i/web/src/main.ts w/web/src/main.ts
+index 2cbe28f..96a36a7 100644
+--- i/web/src/main.ts
++++ w/web/src/main.ts
+@@ -11,7 +11,7 @@ import { capacitySection, loadView } from './pi';
+ import { storageView } from './storage';
+ import { backupsView } from './backups';
+ import { corruptionView } from './corruption';
+-import { dbadashView } from './dbadash';
++import { dbadashView, importedPage, isImported } from './dbadash';
+ import { alertsView } from './alerts';
+ import { alertRulesView } from './alert_rules';
+ import { alertPageView } from './alert_page';
+@@ -283,9 +283,11 @@ async function render(force = false) {
+   // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
+   const engine = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance)?.engine : undefined;
+   let tabs = ctx.instance ? tabsFor(engine) : rootTabs;
++  // an imported server (pgvigil import dbadash, not collected by pgvigil): every SQL Server tab, each from dbadash.ts
++  const imported = ctx.instance !== undefined && isMssql(engine) && await isImported(ctx.instance);
+   if (ctx.instance && isMssql(engine)) {
+-    // the Availability tab only where one of its collections has stored a read
+-    if (!(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
++    // the Availability tab only where one of its collections has stored a read (an imported server keeps it: its line says why it is not read)
++    if (!imported && !(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
+   } else if (ctx.instance) {
+     // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
+     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));
+@@ -344,7 +346,7 @@ async function render(force = false) {
+ 
+   let view: HTMLElement;
+   try {
+-    view = await pages[ctx.tab](ctx);
++    view = (imported ? await importedPage(ctx, mssqlPages) : null) ?? await pages[ctx.tab](ctx);
+   } catch (e) {
+     if (e instanceof LoginRequired) { showLogin(); return; }
+     view = errorBox(e);
+diff --git i/web/src/pg_dboptions.ts w/web/src/pg_dboptions.ts
+index 0bac7ae..6b2d776 100644
+--- i/web/src/pg_dboptions.ts
++++ w/web/src/pg_dboptions.ts
+@@ -77,7 +77,7 @@ export async function pgDbOptionsView(ctx: Ctx): Promise<HTMLElement> {
+   const state = rowsOf(d.state);
+   const failing = state.filter(s => s.status !== 'ok');
+   sec.append(el('p', { class: 'meta' },
+-    'Each database\'s options and every ALTER DATABASE / ALTER ROLE ... SET override, coloured as DBA Dash colours its database options: green '
++    'Each database\'s options and every ALTER DATABASE / ALTER ROLE ... SET override, coloured by risk: green '
+     + 'where the value meets its rule, yellow where a warning or an advice rule is broken, red where a critical one is, grey where it is not '
+     + 'judged here or the version lacks it. An override is held to the same rule as the server\'s own value (the Configuration page\'s Best '
+     + 'practice grid); every broken rule is also a finding.'
+diff --git i/web/src/router.ts w/web/src/router.ts
+index fedd0e5..a5ccca0 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -45,7 +45,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
+   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
+ }
+ 
+-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
++export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'Imported servers', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
+ export const instanceTabs: Record<string, string> = {
+   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
+   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
+@@ -188,7 +188,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
+   }
+   if (keep && c.tab === 'dbadash') {
+     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+-    for (const k of ['dr', 'di']) { const v = cur.get(k); if (v) q.set(k, v); }
++    for (const k of ['dr', 'di', 'dp', 'ds']) { const v = cur.get(k); if (v) q.set(k, v); }
+   }
+   // the alert page's key, firing time and view (alert_page.ts) stay on its own links: a range change keeps the alert
+   if (keep && c.tab === 'alert') {
+diff --git i/web/src/slow.ts w/web/src/slow.ts
+index ef310bc..460a642 100644
+--- i/web/src/slow.ts
++++ w/web/src/slow.ts
+@@ -330,7 +330,7 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
+           select('Group By', slowGroupBy, group, v => { group = v; void draw(); }),
+           select('Database', [['', 'all databases'], ...dbs], db, v => { db = v; void draw(); }),
+           select('Top', topChoices.map(n => [String(n), String(n)] as [string, string]), String(top), v => { top = Number(v); void draw(); }),
+-          select('Events', [['calls', 'calls (DBA Dash)'], ['all', 'calls and their statements']], events_, v => { events_ = v; void draw(); })),
++          select('Events', [['calls', 'calls'], ['all', 'calls and their statements']], events_, v => { events_ = v; void draw(); })),
+         o.keep ? el('p', { class: 'meta' }, group === 'instance' ? 'Under a tag folder the grid keeps the folder\'s instances; the All row counts the whole fleet.'
+           : 'Under a tag folder only Group By Instance keeps the folder\'s instances: this grouping and the All row count the whole fleet.') : '',
+         grid(rows, cols, 'No slow event in this window.'),
+@@ -343,7 +343,7 @@ export function slowGroupsPanel(ctx: Ctx, o: SlowGroupsOpts = {}): HTMLElement {
+     + 'so a drilled event shows the application the activity sampler saw for its pid during the run, marked sampled) and the SQL Server slow '
+     + 'capture (rpc, batch and statement completions with CPU, reads, writes, rows and the result). Every count opens its events below, '
+     + 'the longest first. Failed: a SQL Server result other than OK (Error, Abort). Events: SQL Server stores a slow procedure call and, '
+-    + 'with the statement events on, its slow statements too; calls (the default) counts each call once, as DBA Dash does.', 'Slow queries by group')), body, drill);
++    + 'with the statement events on, its slow statements too; calls (the default) counts each call once.', 'Slow queries by group')), body, drill);
+   void draw();
+   return box;
+ }
