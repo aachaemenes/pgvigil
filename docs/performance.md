@@ -10,11 +10,11 @@ every column sortable by a header click. API: `GET /api/perfsummary?from=&to=[&t
 | column | PostgreSQL | SQL Server |
 |---|---|---|
 | CPU avg / max (data bars) | the host collection's `cpu_pct` (system_stats or CloudWatch); none = "no host read" | the scheduler monitor's CPU (`mssql_cpu_sample`; on a Linux host the SQL Server process's share); none = "not read" |
-| CPU histogram | the share of the range's samples in ten 10 % buckets; only 70-90 % (warning) and 90-100 % (critical) are coloured | the same buckets over `mssql_cpu_sample` (not proven: no proof reads a SQL Server row's histogram) |
+| CPU histogram | the share of the range's samples in ten 10 % buckets; only 70-90 % (warning) and 90-100 % (critical) are coloured | the same buckets over `mssql_cpu_sample` (scripts/proof-perfsummary.sh A3 holds each row against a hand read of the table) |
 | active avg / max | `activity_summary.active` | `mssql_requests_summary.requests` |
 | Lock (the critical wait), IO, LWLock / latch, IPC / parallelism, Client, total (ms of wait per second) | `wait_sample` (pg_wait_sampling) by event type; the idling Activity type, an idle connection's ClientRead and CPU left out. Without pg_wait_sampling, Lock alone is estimated from the sessions seen waiting on a lock at each minute's sample, marked `*` | `mssql_wait_sample` by category: Locking; Disk + Transaction log; the latch categories; Parallelism; Query (client, spills, spools); idle background waits left out |
 | signal wait % | n/a | the part of the wait time spent runnable |
-| transactions/s, commits/s, rollbacks/s | `dbstats`, the counters' rise per restart epoch | transactions/s from `Transactions/sec` (`mssql_sched_sample`; not proven in this column: the proof checks the stored rate); commits/s and rollbacks/s n/a |
+| transactions/s, commits/s, rollbacks/s | `dbstats`, the counters' rise per restart epoch | transactions/s from `Transactions/sec` (`mssql_sched_sample`; scripts/proof-perfsummary.sh A3 holds it against a hand read); commits/s and rollbacks/s n/a |
 | read / write latency (ms), MB/s | `pg_stat_io` (PostgreSQL 16+, `track_io_timing` on for the latency), else CloudWatch `ReadLatency`, `WriteLatency`, `*Throughput` | `sys.dm_io_virtual_file_stats` over every database file (`mssql_fileio_sample`) |
 | temp/s | `dbstats.temp_bytes` | n/a |
 | longest statement, oldest transaction, blocked - now | the newest activity snapshot in the range | the newest requests snapshot in the range |

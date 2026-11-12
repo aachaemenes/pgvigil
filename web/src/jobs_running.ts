@@ -76,7 +76,7 @@ export function cronInWords(expr: unknown): string {
   return parts.join(' ');
 }
 
-async function runningState(instance: number | undefined): Promise<RunningState> {
+export async function runningState(instance: number | undefined): Promise<RunningState> {
   return get<RunningState>('jobs/running', { instance });
 }
 
@@ -116,7 +116,7 @@ export async function pgJobActionCol(ctx: Ctx, after: () => void): Promise<Col> 
 
 // confirmJobAction: the row as shown, the typed reason and the job's name typed to confirm; the server checks the
 // target again before it sends anything.
-async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
+export async function confirmJobAction(ctx: Ctx, kind: Kind, r: Row, after: () => void) {
   const job = text(r.job_name ?? r.name).trim();
   const what = kind === 'job_stop' ? `Stop the running job ${job}` : `Run the pgAgent job ${job} now`;
   const no = el('button', { type: 'button' }, 'Back');

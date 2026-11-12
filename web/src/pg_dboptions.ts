@@ -77,7 +77,7 @@ export async function pgDbOptionsView(ctx: Ctx): Promise<HTMLElement> {
   const state = rowsOf(d.state);
   const failing = state.filter(s => s.status !== 'ok');
   sec.append(el('p', { class: 'meta' },
-    'Each database\'s options and every ALTER DATABASE / ALTER ROLE ... SET override, coloured as DBA Dash colours its database options: green '
+    'Each database\'s options and every ALTER DATABASE / ALTER ROLE ... SET override, coloured by risk: green '
     + 'where the value meets its rule, yellow where a warning or an advice rule is broken, red where a critical one is, grey where it is not '
     + 'judged here or the version lacks it. An override is held to the same rule as the server\'s own value (the Configuration page\'s Best '
     + 'practice grid); every broken rule is also a finding.'

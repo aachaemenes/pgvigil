@@ -16,6 +16,7 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/actions"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/web"
@@ -119,6 +120,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 	}
 	srv.SetMSSQLActions(doors)
+	dbadash.SetRepositories(cfg.DBADash) // the imported servers' live screens (task 168) read the repositories through serve
 	// task 161: a PostgreSQL instance's job actions (job_stop, job_start) are on only where its actions: list names them
 	pgJobs := map[string][]string{}
 	for _, in := range cfg.Instances {
@@ -127,6 +129,8 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 	}
 	srv.SetPgJobActions(pgJobs)
+	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
+	go srv.RunReportMail(ctx)
 
 	// activity runs up to four 15 s statements in a row: the write deadline covers all of them
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 75 * time.Second, TLSConfig: tlsCfg}
