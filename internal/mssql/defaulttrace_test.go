@@ -39,7 +39,7 @@ func TestTraceRestartFile(t *testing.T) {
 		}
 	}
 	// the restarts move forward by number, not by text (log_10 sorts before log_8 as text)
-	if a, b := traceFileNumber(win+"log_10.trc"), traceFileNumber(win+"log_8.trc"); a != 10 || b != 8 || !(a > b) {
+	if a, b := traceFileNumber(win+"log_10.trc"), traceFileNumber(win+"log_8.trc"); a != 10 || b != 8 || a <= b {
 		t.Errorf("traceFileNumber: log_10 = %d, log_8 = %d", a, b)
 	}
 	if n := traceFileNumber(win + "log.trc"); n != -1 {
