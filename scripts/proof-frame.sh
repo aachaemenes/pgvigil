@@ -16,7 +16,7 @@
 #   G tests pane  the Summary's Tests pane scrolled: its header within 2 px of the pane's top; one tab stop
 #   H refresh     five choices on the Summary, Off stored as 0; the select disabled on Performance (not a live page)
 #   I chart       a legend's double-click shows one series, a second shows all; the readout has a time and values
-#   M chart menu  'Copy image|Save image|Copy data|Export data (CSV)', and '|Pick series' on a chart of two series or more;
+#   M chart menu  'Copy image|Save image|Copy data|Export data (CSV)|Export Excel' (Export Excel since task P03), and '|Pick series' on a chart of two series or more;
 #                 Copy data: a header of time and the series' names, a row per point, the time as YYYY-MM-DD HH:MM:SS;
 #                 the chart says 'Copied <n> points'
 #   J paging      a job's All runs over three days: n rows over 400, 200 drawn; Copy all n rows, still 200 drawn; 'Show 200
@@ -57,7 +57,7 @@
 #                 instance's page draws none of its marks; the mark opens #/config for the instance from the event less 5 min
 #   T slices      erp01's Database info: a 'Databases by size' wedge opens the page its slice names; a pie of over five
 #                 slices: Top 5 = 5 wedges and 5 legend rows, All = every slice, the choice stored; the pie menu
-#                 'Copy image|Save image|Copy data|Export data (CSV)'; Copy data = a header name, size, share_pct and a row per slice
+#                 'Copy image|Save image|Copy data|Export data (CSV)|Export Excel'; Copy data = a header name, size, share_pct and a row per slice
 #   U pick series 2 or more ticks; the first unticked turns only its legend entry off, kept after a redraw; All then Done:
 #                 the panel closed, the focus on the menu button, every series on
 #   V steps       on 12:00-13:00 UTC: Earlier 11:00-12:00, Later 12:00-13:00, Zoom out 11:30-13:30, the key [ from 11:00; on
