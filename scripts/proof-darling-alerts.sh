@@ -40,7 +40,8 @@
 #  P. shots of #/alerts, an alert page, #/alertrules and #/admin in the light and the dark theme.
 #  F. migration 0118 (PerformanceMonitor's defaults as findings) on a fresh repository leaves pgvigil.findings alone;
 #     scripts/proof-darling-alerts-findings.sql (proof only: the arm the release's join writes in its view) splices
-#     darling_alert_findings in, on that repository and on the demo of A-P; F1 live on this cluster: a table of 1,200,000 deleted rows (autovacuum off for it) read by
+#     darling_alert_findings in, on that repository and on the demo's database before the demo seeds (A-P); on a tree
+#     with the release's join applied (0190_*) the arm is already there and no splice runs; F1 live on this cluster: a table of 1,200,000 deleted rows (autovacuum off for it) read by
 #     `pgvigil collect -once tables` raises 'dead tuples piling up' (warning) on <db>.public.d30_dead, the alert sender's
 #     pass sends it to a file drop; after VACUUM and a read the finding is gone, and a pass that misses it, a read and a
 #     pass clear the alert (the sender's clear rule: a read newer than the pass that first missed it);
@@ -80,12 +81,17 @@ PORT=$(freeport); CDP=$(freeport)
 echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
 psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "create database $DB" >/dev/null
+# the demo seeds its alert history from pgvigil.alert_findings before it serves (demo.go: Migrate, Seed, SeedAlerts):
+# its database is migrated and given the findings arm of 0118's view first (a proof-only splice, as the release's join
+# writes it), so the seeded history holds the darling alerts; the demo's own Migrate then finds nothing to apply
+export D30_DEMO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB"
+printf 'repository:\n  dsn: env:D30_DEMO_DSN\n' > "$WORK/demo-cfg.yaml"
+"$WORK/pgvigil" migrate -config "$WORK/demo-cfg.yaml" > "$WORK/demo-migrate.log" 2>&1 || { tail -5 "$WORK/demo-migrate.log"; fail "the demo database's migrate"; }
+psql "$D30_DEMO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "the findings arm (scripts/proof-darling-alerts-findings.sql) on the demo"
 "$WORK/pgvigil" demo -dsn "$PGVIGIL_ADMIN_DSN dbname=$DB" -serve -listen "127.0.0.1:$PORT" -days 2 > "$WORK/demo.log" 2>&1 &
 SRV=$!
 for _ in $(seq 1 "${PGVIGIL_DEMO_WAIT_S:-240}"); do grep -q 'pgvigil demo serving' "$WORK/demo.log" 2>/dev/null && break; kill -0 $SRV 2>/dev/null || { tail -5 "$WORK/demo.log"; fail "the demo serve died"; }; sleep 1; done
 grep -q 'pgvigil demo serving' "$WORK/demo.log" || fail "the demo did not come up"
-# the findings arm of 0118's view, as the release's join writes it (a proof-only splice: 0118 leaves pgvigil.findings alone)
-psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "the findings arm (scripts/proof-darling-alerts-findings.sql) on the demo"
 U="http://127.0.0.1:$PORT/"
 chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu about:blank > "$WORK/chrome.log" 2>&1 &
 CHR=$!
@@ -342,12 +348,15 @@ EOF
 rq() { psql "$D30_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 tq() { psql "$D30_TGT_DSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 [[ $(rq "select count(*) from pgvigil.schema_version where version = '0118_darling_alerts.sql'") == 1 ]] || fail "F: 0118 not applied"
-[[ $(rq "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'") == f ]] || fail "F: 0118 itself changed pgvigil.findings (its arm is the release join's)"
-psql "$D30_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "F: the findings arm (scripts/proof-darling-alerts-findings.sql)"
+JOINED=$(rq "select count(*) from pgvigil.schema_version where version like '0190%'")
+if [[ $JOINED == 0 ]]; then
+  [[ $(rq "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'") == f ]] || fail "F: 0118 itself changed pgvigil.findings (its arm is the release join's)"
+  psql "$D30_REPO_DSN" -XAtq -v ON_ERROR_STOP=1 -f scripts/proof-darling-alerts-findings.sql >/dev/null || fail "F: the findings arm (scripts/proof-darling-alerts-findings.sql)"
+fi
 [[ $(rq "select pg_get_viewdef('pgvigil.findings'::regclass) like '%darling_alert_findings%'") == t ]] || fail "F: pgvigil.findings does not read darling_alert_findings after the splice"
 psql "$D30_REPO_DSN" -XAtq -c "create role $ALR login password '$PW' in role pgvigil_alerter" >/dev/null
 export D30_ALERTS_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO2 user=$ALR password=$PW"
-ok "F: 0118 applied and pgvigil.findings left alone; the proof-only splice gives it the darling_alert_findings arm (the join's line)"
+ok "F: 0118 applied; $([[ $JOINED == 0 ]] && echo "pgvigil.findings left alone, the proof-only splice gives it the darling_alert_findings arm (the join's line)" || echo "the release's join (0190) holds the darling_alert_findings arm in pgvigil.findings")"
 collect() { "$WORK/pgvigil" collect -config "$WORK/cfg.yaml" -once "$1" > "$WORK/collect.$1.log" 2>&1 || { tail -5 "$WORK/collect.$1.log"; fail "F: collect -once $1"; }; }
 pass() { "$WORK/pgvigil" alerts -config "$WORK/cfg.yaml" > "$WORK/pass.$1.out" 2> "$WORK/pass.$1.err" || true; }
 # the sender clears a gone finding only on a pass after a read newer than the pass that first missed it (alert_pick,

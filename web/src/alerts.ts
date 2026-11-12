@@ -608,7 +608,7 @@ const builtIn: Row[] = [
   { finding: 'dead tuples piling up', engine: 'PostgreSQL', warning: '1,000,000 dead tuples in a table', critical: '10,000,000', from: 'template pg-autovacuum-dead-tuples' },
   { finding: 'replay lag', engine: 'PostgreSQL', warning: '30 s', critical: '5 min', from: 'template pg-replication-lag' },
   { finding: 'replication slot retaining WAL', engine: 'PostgreSQL', warning: '10 GB', critical: '50 GB', from: 'template pg-replication-slot-wal' },
-  { finding: 'a volume under 5 GB free', engine: 'SQL Server', warning: 'under 5 GB free, on a volume over 10 GB whose percent threshold (Drives) raises nothing', critical: '2 GB or less (the same volumes)', from: 'LowDiskThresholdGb, DiskCriticalFreeGb' },
+  { finding: 'a volume under 5 GB free', engine: 'SQL Server', warning: 'under 5 GB free, on a volume over 10 GB whose percent threshold (Drives) raises nothing', critical: '2 GB or less (the same volumes: needs a percent threshold under 20 %)', from: 'LowDiskThresholdGb, DiskCriticalFreeGb' },
   { finding: 'AG secondary behind', engine: 'SQL Server', warning: '300 s behind the primary', critical: '', from: 'agLagAlertSeconds' },
   { finding: 'runnable queue per scheduler', engine: 'SQL Server', warning: '8 per scheduler (5 min)', critical: '16', from: 'RunnableQueueWarning / CriticalPerScheduler' },
   { finding: 'long-running requests', engine: 'SQL Server', warning: '30 min (BACKUP, RESTORE, WAITFOR, Service Broker waits and system sessions left out)', critical: '', from: 'LongRunningQueryThresholdMinutes, LongRunningQueryExcludeBackups' },
@@ -656,10 +656,14 @@ export async function adminView(ctx: Ctx): Promise<HTMLElement> {
     ['overrides', 'Threshold overrides', async () => {
       const d = await get<{ rules?: Table | null }>('alertrules', window_(ctx));
       const live = rowsOf(d.rules).filter(r => r.live);
+      const insts = (await fleet()).instances;
+      // a wider rule on the same metric and database; a tag rule only where the instance carries that tag
+      const same = (w: Row, r: Row) => w.metric === r.metric && String(w.database ?? '') === String(r.database ?? '');
       const over = (r: Row): string => {
-        const fleet = live.find(w => w.metric === r.metric && w.scope === 'fleet');
-        const tag = r.scope === 'instance' ? live.find(w => w.metric === r.metric && w.scope === 'tag') : undefined;
-        return tag ? `tag rule ${String(tag.rule_id)}${fleet ? ` and fleet rule ${String(fleet.rule_id)}` : ''}` : fleet ? `fleet rule ${String(fleet.rule_id)}` : 'none (no wider rule on this metric: a rule of its own scope)';
+        const wide = live.find(w => w.scope === 'fleet' && same(w, r));
+        const tags = r.scope === 'instance' ? tagsOf(insts.find(i => Number(i.instance_id) === Number(r.instance_id)) ?? {}) : [];
+        const tag = r.scope === 'instance' ? live.find(w => w.scope === 'tag' && same(w, r) && tags.includes(String(w.tag))) : undefined;
+        return tag ? `tag rule ${String(tag.rule_id)}${wide ? ` and fleet rule ${String(wide.rule_id)}` : ''}` : wide ? `fleet rule ${String(wide.rule_id)}` : 'none (no wider rule on this metric: a rule of its own scope)';
       };
       const rows = live.filter(r => r.scope !== 'fleet');
       return el('div', {}, el('p', { class: 'meta' }, 'A tag or an instance rule overrides a fleet rule on the same metric (an instance rule over a tag rule): made and edited on ',

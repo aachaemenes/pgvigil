@@ -42,8 +42,10 @@
 --                                   alert's resolution is the 'connection restored' message. A failed connect is
 --                                   recorded through import_connect_failure (the collectors call it, not when pgvigil's
 --                                   own shutdown cut the connect: a WIRING BLOCK of internal/collect, internal/mssql and
---                                   internal/repo), its note marked 'connect: '; an error after the connect (a lock or
---                                   statement timeout, a per-database connect of one collection) is not read as unreachable
+--                                   internal/repo), its note marked 'connect: '. PostgreSQL's Connect includes the
+--                                   session's setup after the server accepted it, so a failure there is raised too; an
+--                                   error of a collection's statements (a lock or statement timeout, a per-database
+--                                   connect of one collection) is not read as unreachable
 -- A read older than its collection's freshness raises nothing (the Collections page says the collection is stale).
 
 CREATE OR REPLACE VIEW pgvigil.darling_alert_findings AS
