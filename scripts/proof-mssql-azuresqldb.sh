@@ -54,7 +54,7 @@
 #        not supported), error log (sp_readerrorlog applies to SQL Server only), system_health (no built-in session),
 #        trace flags (instance configuration not supported); docs/sqlserver-cloud.md cites each page.
 #        Added at the release join: mssql_reports, skipped by its own rule (no server roles, SQL logins or service
-#        list of its own to read), its five tables empty for the instance.]
+#        list of its own to read), its seven tables empty for the instance.]
 #     A skip is never counted as collected or as failed; a RUN collection skipped for a missing right is a FAIL.
 #  C. the pages: GET /api/mssql/summary gives the instance the cells availability, backups, jobs, storage, dbstate,
 #     agent, dbmail, dumps and qs as n/a (every collection of the group skipped) and blocking, events and uptime as
@@ -181,19 +181,20 @@ declare -A TABLES=([mssql_services]="mssql_service mssql_health" [mssql_ag]="mss
   [mssql_defaulttrace]="mssql_trace_events" [mssql_errorlog]="mssql_errorlog" [mssql_identity]="mssql_identity_column mssql_identity_scan"
   [mssql_indexes]="mssql_index mssql_index_db mssql_missing_index" [mssql_plancache]="mssql_pc_last mssql_pc_sample" [mssql_plancache_health]="mssql_pc_health"
   [mssql_stats]="mssql_stat mssql_stats_db" [mssql_syshealth]="mssql_health_components" [mssql_traceflags]="mssql_trace_flags"
-  [mssql_reports]="mssql_server_role_members mssql_sql_logins mssql_failed_logins mssql_service_ext mssql_table_size")
+  [mssql_reports]="mssql_server_role_members mssql_sql_logins mssql_failed_logins mssql_service_ext mssql_table_size report_db_properties report_read_state")
 declare -A VERDICT
 status_of() { q "select coalesce(status, '') || '|' || coalesce(note, '') from pgvigil.collection_dates where instance_id=$iid and collection='$1'"; }
 for c in "${SKIPS[@]}"; do
   "$BIN" collect -config "$CFG" -once "$c" -instance "$N" > "$WORK/$c.out" 2>&1 || true
-  st=$(status_of "$c"); rows=0
+  st=$(status_of "$c"); rows=0; cnt=ok
   for t in ${TABLES[$c]}; do
     n=$(q "select count(*) from pgvigil.$t where instance_id=$iid") || n=x
-    [[ $n =~ ^[0-9]+$ ]] || { bad "B: $c: no count of pgvigil.$t"; n=0; }
+    [[ $n =~ ^[0-9]+$ ]] || { bad "B: $c: no count of pgvigil.$t"; n=0; cnt=no; }
     rows=$((rows + n))
   done
   if [[ $st == skipped\|*"Azure SQL Database"* ]] && grep -q "skipped: " "$WORK/$c.out" && [ "$rows" = 0 ]; then VERDICT[$c]="SKIP (${st#skipped|})"
   else VERDICT[$c]="FAIL"; bad "B: $c should be skipped by the Azure SQL Database rule: status '$st', $rows stored row(s), the run said '$(tr '\n' ' ' < "$WORK/$c.out" | cut -c1-300)'"; fi
+  [ "$cnt" = ok ] || VERDICT[$c]="FAIL (no count of a table)"
 done
 run_ok() { # run_ok <collection>: runs it, and says whether it stored a read with status ok
   "$BIN" collect -config "$CFG" -once "$1" -instance "$N" > "$WORK/$1.out" 2>&1 || true
@@ -292,7 +293,7 @@ else
     page summary > "$WORK/p-summary.html" || true
     T=$(text < "$WORK/p-summary.html")
     grep -q 'azuresqldb' <<<"$T" || bad "C: the Summary page does not show the platform badge azuresqldb"
-    if grep -qE 'not read yet:[^.]*(Availability|Backups|Jobs|Storage|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store)' <<<"$T"; then
+    if grep -qE 'not read yet:[^.]*(Availability|Backups|Jobs|Storage|Drive space|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store|SQL Server Audit)' <<<"$T"; then
       bad "C: the Summary page lists groups that do not run on Azure SQL Database as 'not read yet': $(grep -oE 'not read yet:[^.]*' <<<"$T" | head -1)"; fi
     declare -A SKIPTABS=([availability]="mssql_ag" [mssqlbackups]="mssql_backups" [mssqljobs]="mssql_jobs" [jobstimeline]="mssql_jobs" [mssqlstorage]="mssql_storage"
       [mssqlfiles]="mssql_storage" [rowversions]="mssql_versionstore" [mssqltempdb]="mssql_tempdb" [mssqlcpu]="mssql_cpu" [mssqlmemory]="mssql_memory"
@@ -321,7 +322,7 @@ fi
 [ ! -s "$WORK/sq-failed" ] || bad "a read of the setup login failed during the run (its message is above): $(head -c 300 "$WORK/sq-failed" | tr '\n' ' ')"
 echo
 if [ ${#FAILS[@]} -eq 0 ]; then
-  echo "proof-mssql-azuresqldb: PASS (R, A, B: $(( ${#RUNS[@]} - 1 )) collected and equal, mssql_waiting_tasks collected and not compared, ${#SKIPS[@]} skipped by the platform rule; C; D)"
+  echo "proof-mssql-azuresqldb: PASS (R, A, B: $(( ${#RUNS[@]} - 1 )) collected and equal, mssql_waiting_tasks collected, its tasks not compared with a live waiter, ${#SKIPS[@]} skipped by the platform rule; C; D)"
 else
   echo "the failed items:"; printf '  - %s\n' "${FAILS[@]}"
   echo "proof-mssql-azuresqldb: FAIL (${#FAILS[@]} item(s))"; exit 1
