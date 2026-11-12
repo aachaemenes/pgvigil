@@ -68,8 +68,8 @@
 #   login time against the row's; an id is not reused on demand); Kill's absence on a head that is not the holder or
 #   whose row is not in the read (read in the code, killable()); B2's 'longest wait' against the newest (the waits only
 #   grow between the two reads); a kill on Azure SQL or a Managed Instance; a MARS session's implicit flag over several requests;
-#   'a lead blocker' over a full hour of real traffic (the proof's hour holds two snapshots); the findings on the
-#   Findings tab (their arm is the lead's join line, written in 0114's header).
+#   'a lead blocker' over a full hour of real traffic (the proof's hour holds two snapshots); the Findings tab's page
+#   itself (B3 reads the release join's arm in pgvigil.findings, 0190, not the rendered tab).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -239,7 +239,10 @@ grep -qx "a lead blocker|statement $TX1" <<<"$F" || fail "B3: no lead-blocker fi
 ! grep -qx "a lead blocker|statement $TX3" <<<"$F" || fail "B3: a lead-blocker finding on H2's statement: $F"
 pq "SELECT detail FROM pgvigil.mssql_blocking_findings WHERE instance_id = $SB AND check_name = 'sessions in implicit transactions'" | grep -q "session $I1 " \
   || fail "B3: the implicit-transactions finding does not name I1: $(pq "SELECT detail FROM pgvigil.mssql_blocking_findings WHERE instance_id = $SB AND check_name = 'sessions in implicit transactions'")"
-echo "ok   B3: findings: implicit transaction blocking on $H1, sessions in implicit transactions naming $I1, a lead blocker on statement $TX1; none on H2"
+NV=$(pq "SELECT count(*) FROM pgvigil.findings WHERE instance_id = $SB AND source = 'mssql_blocking'")
+NV2=$(pq "SELECT count(*) FROM pgvigil.mssql_blocking_findings WHERE instance_id = $SB")
+[[ "$NV" == "$NV2" && "$NV" -gt 0 ]] || fail "B3: pgvigil.findings holds $NV mssql_blocking rows, the view $NV2 (want equal, more than 0)"
+echo "ok   B3: findings: implicit transaction blocking on $H1, sessions in implicit transactions naming $I1, a lead blocker on statement $TX1; none on H2; pgvigil.findings holds the view's $NV rows"
 
 echo "== C. the PostgreSQL twin =="
 psql "$SCRDSN" -Xq -v ON_ERROR_STOP=1 -c "CREATE TABLE pgvb_t (id int PRIMARY KEY, v int); INSERT INTO pgvb_t SELECT g, 0 FROM generate_series(1, 5) g; GRANT SELECT, UPDATE ON pgvb_t TO $PGAPP;" >/dev/null

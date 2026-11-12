@@ -419,7 +419,17 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		found := map[string]bool{}
-		rows, err := conn.QueryContext(ctx, `SELECT name FROM `+msQuote(db)+`.sys.procedures WHERE name IN (`+strings.Join(names, ", ")+`)`)
+		// Azure SQL Database refuses a three-part name (Msg 40515): there the tools are looked for in the database the
+		// connection opens, whatever database the page asked for
+		q := `SELECT name FROM ` + msQuote(db) + `.sys.procedures WHERE name IN (` + strings.Join(names, ", ") + `)`
+		var edition int
+		var current string
+		if conn.QueryRowContext(ctx, `SELECT CAST(SERVERPROPERTY('EngineEdition') AS int), DB_NAME()`).Scan(&edition, &current) == nil && edition == 5 {
+			db = current
+			out.Database = db
+			q = `SELECT name FROM sys.procedures WHERE name IN (` + strings.Join(names, ", ") + `)`
+		}
+		rows, err := conn.QueryContext(ctx, q)
 		if err == nil {
 			for rows.Next() {
 				var n string

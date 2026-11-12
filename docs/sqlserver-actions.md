@@ -59,7 +59,7 @@ instances:
 
 ## How an action runs
 
-1. **The button.** Kill is on a row of Running queries; Start and Stop are on a row of Jobs. A button is disabled, with the reason as its title, when the action is off for the instance.
+1. **The button.** Kill is on every session row of the newest Running queries snapshot while that snapshot is at most 5 minutes old (DBA Dash's kill window), and as `kill this head` on each holder head of the blocking chain tree; an older snapshot offers no Kill and the page says why. Before the dialog opens, the button reads the live session and refuses when its login or login time is not the row's (the id went to a new session); Start and Stop are on a row of Jobs. A button is disabled, with the reason as its title, when the action is off for the instance.
 2. **The preview.** The server reads the target through the read login and shows it: for a session its login, host, program, database, open transaction count and last statement; for a job its name, owner and current state. The statement that would be sent is shown too.
 3. **The confirm step.** You type a reason (kept in the log) and the session id, or the job's name. The request carries the values you were shown.
 4. **The check.** The server reads the target again. A session id whose login or login time differs now belongs to another session: the one you saw has ended and its id was reused. It is refused. A job whose name differs is refused.

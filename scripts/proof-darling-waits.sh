@@ -48,8 +48,8 @@
 #  C. window 2: the counters cleared, read #2, 32 busy sessions for 30 s on 16 schedulers, read #3, sp_PerfCheck: its
 #     signal wait ratio and label equal pgvigil's over (read #2, read #3] within 1 point, its 6101 row and priority on
 #     both sides; its 6102 share x U2/W2 = pgvigil's within 2 % with the band's priority. [6102 added after review d03]
-#  D. `pgvigil serve` built from a copy with scripts/proof-darling-waits-wiring.patch (the route; the findings arm as a
-#     proof-only migration): GET /api/mssql/waitfindings over window 1 returns the function's findings (each row's check,
+#  D. `pgvigil serve` built from a copy of the tree (the route and the findings arm are the release join's: web.go and
+#     0190; a tree that still carries scripts/proof-darling-waits-wiring.patch gets it applied to the copy): GET /api/mssql/waitfindings over window 1 returns the function's findings (each row's check,
 #     finding, wait and priority), roll-up and shares row counts, and its semaphores' forced grants and timeouts equal
 #     mssql_grant_deltas over the window [content compared after review d03]; pgvigil.findings holds the view's rows.
 #  E. #/mssql_waits over window 1 in a headless Chromium, light and dark: the tiles (signal wait ratio with its label,
@@ -425,7 +425,10 @@ echo "== D. the API under pgvigil serve (the wiring applied to a copy) =="
 GSRC=$TMPD/src; mkdir -p "$GSRC"
 tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
 P=scripts/proof-darling-waits-wiring.patch
-if (cd "$GSRC" && git apply --check -R "$P" 2>/dev/null); then echo "D: $P is already in this tree"
+if [ ! -f "$GSRC/$P" ]; then
+  grep -q 'MSSQLWaitFindings' "$GSRC/internal/web/web.go" || fail "D: no $P and web.go has no /api/mssql/waitfindings route"
+  echo "D: no $P in the tree: the release join carries the route and the arm (the tree is used as it is)"
+elif (cd "$GSRC" && git apply --check -R "$P" 2>/dev/null); then echo "D: $P is already in this tree"
 elif (cd "$GSRC" && git apply "$P" 2>"$TMPD/apply.err"); then echo "D: $P applied to the run's copy"
 else fail "D: $P neither applies nor is applied: $(cat "$TMPD/apply.err")"; fi
 (cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "D: the web build"; }
