@@ -4,7 +4,7 @@
 # pg_ctl, psql, pg_dump of one major version) for a throwaway cluster on 127.0.0.1 as the repository and the monitored
 # server.
 #   -Bundle  <folder>   the extracted pgvigil-offline-<v>-windows-amd64
-#   -PgBin   <folder>   PostgreSQL's bin folder
+#   -PgBin   <folder>   PostgreSQL's bin folder, 16 or newer (the role rules uninstall -drop-repository checks)
 #   -Work    <folder>   a scratch folder on local disk (default C:\pgvigil-uninstall-proof; removed at the end)
 # Expected (written before its first run; NOT run by this project yet: the sandbox was another lane's):
 #  N   no network adapter is up
@@ -15,8 +15,9 @@
 #  P   the dry run names every item 'remove' (the app, this user's app, Run HKLM and HKCU, Programs and Features, the
 #      policy keys, the PATH entry, the service, the binary, the configuration folder, the database, the agent and the
 #      groups) and 'dry run: nothing was changed'; the service still runs
-#  U   uninstall -all -drop-repository -confirm-database pgvigil (run from a copy of pgvigil.exe in -Work, so the
-#      installed one is not in use): read back: no service, no %ProgramFiles%\pgvigil, no %ProgramData%\pgvigil, no
+#  U   with this user's app running (started from %LOCALAPPDATA%\pgvigil), uninstall -all -drop-repository
+#      -confirm-database pgvigil (run from a copy of pgvigil.exe in -Work, so the installed one is not in use): 'ended
+#      this user's running app'; read back: no service, no %ProgramFiles%\pgvigil, no %ProgramData%\pgvigil, no
 #      %LOCALAPPDATA%\pgvigil, no Run value, Programs and Features entry, policy key or HKCU settings, the PATH without
 #      the folder, no role pgvigil_% but the monitor and the owner, no database pgvigil, the dump in
 #      %ProgramData%\pgvigil-backups
@@ -60,7 +61,8 @@ try {
     & (Join-Path $PgBin 'pg_ctl.exe') -D (Join-Path $Work 'pgdata') -l (Join-Path $Work 'pg.log') -o "-p $port -c listen_addresses=127.0.0.1" -w start | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail 'pg_ctl start' }
     $env:PGPASSWORD = $pw
-    function Q([string]$sql, [string]$db = 'pgvigil') { $o = & (Join-Path $PgBin 'psql.exe') -h 127.0.0.1 -p $port -U postgres -d $db -XAtq -v ON_ERROR_STOP=1 -c $sql; if ($LASTEXITCODE -ne 0) { Fail "psql: $sql" }; return $o }
+    function Q([string]$sql, [string]$db = 'pgvigil', [string]$as = 'postgres') { $o = & (Join-Path $PgBin 'psql.exe') -h 127.0.0.1 -p $port -U $as -d $db -XAtq -v ON_ERROR_STOP=1 -c $sql; if ($LASTEXITCODE -ne 0) { Fail "psql: $sql" }; return $o }
+    if ([int](Q "select current_setting('server_version_num')::int / 10000" 'postgres') -lt 16) { Fail '-PgBin is older than PostgreSQL 16' }
 
     # S the install: the collector, the app machine-wide and this user's, the repository, the service collecting
     $s = & (Join-Path $Bundle 'install.ps1') -From $Bundle -App -UpdateCheck *>&1 | Out-String
@@ -78,10 +80,10 @@ try {
     $roles = & $exe roles
     foreach ($r in @(@('agent', $apw), @('monitor', $mpw))) {
         $line = ($roles | Where-Object { $_ -match "^CREATE ROLE pgvigil_$($r[0]) LOGIN PASSWORD '<set-me>'" } | Select-Object -First 1) -replace '<set-me>', $r[1]
-        Q $line | Out-Null
+        if ($r[0] -eq 'monitor') { Q $line 'postgres' | Out-Null } else { Q $line 'pgvigil' 'pgvigil_owner' | Out-Null }   # the agent made by the owner (a CREATEROLE login), as the Linux proof
     }
     Set-Content -LiteralPath (Join-Path $pd 'repo.dsn') -Value "host=127.0.0.1 port=$port user=pgvigil_agent password=$apw dbname=pgvigil sslmode=disable" -NoNewline
-    $tdsn = Join-Path $pd 'target.dsn'
+    $tdsn = Join-Path $Work 'target.dsn'   # outside the configuration folder: a file there that is not the installer's keeps the folder
     Set-Content -LiteralPath $tdsn -Value "host=127.0.0.1 port=$port user=pgvigil_monitor password=$mpw dbname=postgres sslmode=disable" -NoNewline
     (Get-Content $cfg -Raw) -replace 'instances: \[\]', "instances:`n  - name: win-target`n    dsn: file:$($tdsn -replace '\\','/')`n    tags: [proof]" | Set-Content $cfg
     Start-Service pgvigil
@@ -110,9 +112,12 @@ try {
     if ((State) -ne $before) { Fail "P: the dry run changed the host:`n$before`n---`n$(State)" }
     Ok 'P the dry run names every item and changes nothing'
 
-    # U the run
+    # U the run, with this user's app running (start at login is the default; its WebView2 data locks the folder)
+    Start-Process -FilePath (Join-Path $mine 'pgvigil-app.exe')
+    Start-Sleep 5
     $u = & $copy uninstall -all -drop-repository -confirm-database pgvigil -owner-dsn-file $ofile -pg-dump (Join-Path $PgBin 'pg_dump.exe') 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { Fail "U: $u" }
+    if ($u -notmatch "ended this user's running app") { Fail "U: this user's running app was not ended: $u" }
     $after = State
     if (Get-Service pgvigil -ErrorAction SilentlyContinue) { Fail "U: the service pgvigil is still there:`n$u" }
     foreach ($l in "$exe False", "$pd False", "$mine False", 'run-hklm False', 'run-hkcu False', 'Uninstall\pgvigil False', 'Policies\pgvigil False', 'HKCU:\Software\pgvigil False', 'path False', 'roles pgvigil_monitor,pgvigil_owner') {

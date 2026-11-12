@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -986,6 +987,39 @@ type removal struct {
 	remove  func() error // removes it (nil when absent or kept)
 }
 
+// keptErr is a removal that found its item must stay (a folder still holding other files, a group with members, a
+// service marked for deletion): the item is named as kept and the run goes on.
+type keptErr struct{ why string }
+
+func (e *keptErr) Error() string { return e.why }
+
+// foreignFiles are the names in dir that are not the installer's own (own); nil when dir is absent.
+func foreignFiles(dir string, own ...string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var other []string
+	for _, e := range entries {
+		if !slices.Contains(own, e.Name()) {
+			other = append(other, e.Name())
+		}
+	}
+	return other
+}
+
+// removeFolder removes the installer's own files from dir, then dir; a folder that still holds anything is kept and
+// named (never 'removed' while it is there).
+func removeFolder(dir string, own ...string) error {
+	if err := purgeFolder(slog.New(slog.DiscardHandler), dir, own...); err != nil {
+		return err
+	}
+	if left := foreignFiles(dir); len(left) > 0 {
+		return &keptErr{"it still holds " + strings.Join(left, ", ")}
+	}
+	return nil
+}
+
 // uninstallHooks are the platform's side of uninstall -all (Linux and Windows set them beside upgradeHooksOf).
 type uninstallHooks struct {
 	privileged func() error
@@ -1072,12 +1106,12 @@ func decideLogin(f roleFacts, hostLogin string, dropped map[string]bool) roleSte
 		}
 	}
 	switch {
-	case f.name != hostLogin:
-		s.why = "not the login this host's configuration names"
-	case f.super:
-		s.why = "a superuser"
 	case f.isConnected:
 		s.why = "the role this uninstall connects as"
+	case f.super:
+		s.why = "a superuser"
+	case f.name != hostLogin:
+		s.why = "not the login this host's configuration names"
 	case len(notDropped) > 0:
 		s.why = "a member of " + strings.Join(notDropped, ", ") + ", which stay"
 	case f.usedIn != "":
@@ -1135,7 +1169,44 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 			return fmt.Errorf("uninstall refused, nothing was changed: %w", err)
 		}
 	}
+	// an install at other paths than the defaults: once the service definition is gone, a re-run needs them named
+	again := ""
+	if def := defaultInstallOptions(); found && (!samePath(inst.Bin, def.Bin) || !samePath(inst.Config, def.Config) || inst.User != def.User) {
+		again = fmt.Sprintf(" with -bin %s -config %s -user %s", inst.Bin, inst.Config, inst.User)
+	}
 	stopped := false
+	var changing atomic.Bool // the drop or a removal has begun: an interrupt no longer starts the service again
+	dumping := ""            // the dump file while pg_dump writes it
+	var dumpMu sync.Mutex
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-sig:
+			if f := passFile.Load(); f != nil {
+				_ = os.Remove(*f)
+			}
+			dumpMu.Lock()
+			if dumping != "" {
+				_ = os.Remove(dumping)
+			}
+			dumpMu.Unlock()
+			if changing.Load() {
+				fmt.Fprintf(os.Stderr, "\ninterrupted while removing: what is left is listed by 'pgvigil uninstall -all -dry-run%s'; run the same command again\n", again)
+			} else if stopped {
+				if err := h.start(log); err != nil {
+					fmt.Fprintf(os.Stderr, "\ninterrupted before any change but the stop, and the service did not start again (%v): start it by hand\n", err)
+				} else {
+					fmt.Fprintln(os.Stderr, "\ninterrupted before any change but the stop: the service runs again")
+				}
+			}
+			os.Exit(130)
+		case <-done:
+		}
+	}()
 	if uh.running() {
 		if err := h.stop(log); err != nil {
 			return fmt.Errorf("stopping the service: %w (nothing else was changed)", err)
@@ -1143,15 +1214,20 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 		stopped = true
 		fmt.Println("stopped the service")
 	}
-	// a refusal after the stop starts the collector again: the host is as it was
+	// a refusal after the stop starts the collector again: the host is as it was (but a dump already written)
+	dumped := ""
 	refuse := func(err error) error {
+		kept := "nothing else was changed"
+		if dumped != "" {
+			kept = "nothing else was changed but the dump " + dumped + " (kept; a re-run takes a new one: leave -dump out or name another file)"
+		}
 		if stopped {
 			if serr := h.start(log); serr != nil {
-				return fmt.Errorf("uninstall refused (%w), and the service did not start again (%v): start it by hand; nothing else was changed", err, serr)
+				return fmt.Errorf("uninstall refused (%w), and the service did not start again (%v): start it by hand; %s", err, serr, kept)
 			}
-			return fmt.Errorf("uninstall refused, the service runs again, nothing else was changed: %w", err)
+			return fmt.Errorf("uninstall refused, the service runs again, %s: %w", kept, err)
 		}
-		return fmt.Errorf("uninstall refused, nothing was changed: %w", err)
+		return fmt.Errorf("uninstall refused, %s: %w", strings.Replace(kept, "nothing else was", "nothing was", 1), err)
 	}
 	if p != nil {
 		if p.present {
@@ -1162,28 +1238,44 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 				return refuse(err)
 			}
 			if p.dump.dumpFile != "" {
-				if err := upgradeDump(h, p.dump); err != nil {
+				dumpMu.Lock()
+				dumping = p.dump.dumpFile
+				dumpMu.Unlock()
+				err := upgradeDump(h, p.dump)
+				dumpMu.Lock()
+				dumping = ""
+				dumpMu.Unlock()
+				if err != nil {
 					return refuse(fmt.Errorf("the dump: %w", err))
 				}
+				dumped = p.dump.dumpFile
 				fmt.Printf("dumped the repository to %s\n", p.dump.dumpFile)
 			}
 		}
+		changing.Store(true)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		err := dropRepository(ctx, p)
 		cancel()
 		if err != nil {
 			if p.present && errors.Is(err, errDropNotDone) {
+				changing.Store(false)
 				return refuse(err)
 			}
-			return fmt.Errorf("%w (run the same command again once it is fixed)", err)
+			return fmt.Errorf("%w (run the same command again%s once it is fixed)", err, again)
 		}
 	}
+	changing.Store(true)
 	for _, it := range items {
 		if !it.present || it.kept != "" || it.remove == nil {
 			continue
 		}
 		if err := it.remove(); err != nil {
-			return fmt.Errorf("removing %s: %w (what is left is above; run the same command again once it is fixed)", it.what, err)
+			var k *keptErr
+			if errors.As(err, &k) {
+				fmt.Printf("kept: %s: %s\n", it.what, k.why)
+				continue
+			}
+			return fmt.Errorf("removing %s: %w (what is left is above; run the same command again%s once it is fixed)", it.what, err, again)
 		}
 		fmt.Println("removed:", it.what)
 	}
@@ -1344,17 +1436,32 @@ func dropPreflight(ctx context.Context, h *upgradeHooks, uh *uninstallHooks, o i
 	if !p.loginSup && !createRole {
 		return nil, fmt.Errorf("the owner's login %s may not drop roles (neither CREATEROLE nor a superuser): name a login that may", p.login)
 	}
-	if hc := uh.repoDSN(inst); hc != "" {
-		if c, err := pgx.ParseConfig(hc); err == nil {
-			p.hostLogin = c.User
-		}
+	if err := sameRepository(ctx, uh.repoDSN(inst), p); err != nil {
+		return nil, err
 	}
 	if p.roles, err = planRoles(ctx, mc, p); err != nil {
 		return nil, fmt.Errorf("reading the roles: %w", err)
 	}
+	if !p.loginSup && d.serverMajor >= 16 {
+		// from PostgreSQL 16 DROP ROLE needs ADMIN OPTION on the role as well as CREATEROLE (a role a superuser made
+		// gives the owner none): refused now, never after the database is gone
+		for _, r := range p.roles {
+			if !r.drop {
+				continue
+			}
+			var admin bool
+			if err := mc.QueryRow(ctx, `SELECT pg_has_role(current_user, $1, 'MEMBER WITH ADMIN OPTION')`, r.name).Scan(&admin); err != nil {
+				return nil, err
+			}
+			if !admin {
+				return nil, fmt.Errorf("on PostgreSQL %d DROP ROLE needs ADMIN OPTION on the role, and the owner's login %s holds none on %s: as a superuser, GRANT %s TO %s WITH ADMIN OPTION, INHERIT FALSE, SET FALSE; or name a superuser's login",
+					d.serverMajor, p.login, r.name, pgx.Identifier{r.name}.Sanitize(), pgx.Identifier{p.login}.Sanitize())
+			}
+		}
+	}
 	if p.present {
 		rows, err := mc.Query(ctx, `SELECT format('pid %s: %s from %s as %s', pid, coalesce(nullif(application_name, ''), '(no application name)'),
-		  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = $1 ORDER BY pid`, d.database)
+		  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = $1 AND backend_type = 'client backend' ORDER BY pid`, d.database)
 		if err != nil {
 			return nil, err
 		}
@@ -1368,6 +1475,52 @@ func dropPreflight(ctx context.Context, h *upgradeHooks, uh *uninstallHooks, o i
 		}
 	}
 	return p, nil
+}
+
+// sameRepository holds the owner's connection to the repository this host's configuration names (hostDSN, "" when the
+// configuration names none): the same database name, and, while it exists, the same database on the same server (its
+// oid and the server's start time, read through both connections). It sets p.hostLogin.
+func sameRepository(ctx context.Context, hostDSN string, p *dropPlan) error {
+	if hostDSN == "" {
+		return nil
+	}
+	hc, err := pgx.ParseConfig(hostDSN)
+	if err != nil {
+		return fmt.Errorf("this host's repository connection string: %w", err)
+	}
+	p.hostLogin = hc.User
+	if hc.Database != p.dump.database {
+		return fmt.Errorf("the owner's connection string names the database %s and this host's configuration %s: name the owner's login to this host's repository", p.dump.database, hc.Database)
+	}
+	if !p.present {
+		return nil
+	}
+	ident := func(cfg *pgx.ConnConfig) (string, error) {
+		c, err := pgx.ConnectConfig(ctx, cfg)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
+		var id string
+		err = c.QueryRow(ctx, `SELECT (SELECT oid FROM pg_database WHERE datname = current_database())::text || '@' || pg_postmaster_start_time()::text`).Scan(&id)
+		return id, err
+	}
+	oc, err := pgx.ParseConfig(p.dump.ownerDSN)
+	if err != nil {
+		return err
+	}
+	ownerID, err := ident(oc)
+	if err != nil {
+		return err
+	}
+	hostID, err := ident(hc)
+	if err != nil {
+		return fmt.Errorf("this host's repository login cannot connect (%v): the drop cannot tell it is the same database; fix the configuration, or uninstall without -drop-repository and drop the repository by hand", err)
+	}
+	if ownerID != hostID {
+		return fmt.Errorf("the owner's connection reaches another database %s than this host's configuration (%s on %s:%d): name the owner's login to this host's repository", p.dump.database, hc.Database, hc.Host, hc.Port)
+	}
+	return nil
 }
 
 // connectMaint connects as the owner to the server's maintenance database (postgres, else template1): DROP DATABASE
@@ -1394,6 +1547,12 @@ func sqlState(err error, code string) bool {
 
 // planRoles reads the pgvigil groups and their members and decides each one's step: logins first, then the groups.
 func planRoles(ctx context.Context, c *pgx.Conn, p *dropPlan) ([]roleStep, error) {
+	// from PostgreSQL 16 a CREATEROLE login that creates a role is given an ADMIN-only membership of it (no inherit, no
+	// SET ROLE): it uses nothing of the role, so it is no member here
+	inUse := ""
+	if p.dump.serverMajor >= 16 {
+		inUse = " AND (m.inherit_option OR m.set_option)"
+	}
 	facts := func(name string) (roleFacts, bool, error) {
 		f := roleFacts{name: name, isConnected: name == p.login}
 		var oid int64
@@ -1404,7 +1563,7 @@ func planRoles(ctx context.Context, c *pgx.Conn, p *dropPlan) ([]roleStep, error
 		if err != nil {
 			return f, false, err
 		}
-		rows, err := c.Query(ctx, `SELECT b.rolname::text FROM pg_auth_members m JOIN pg_roles b ON b.oid = m.roleid WHERE m.member = $1::oid ORDER BY 1`, oid)
+		rows, err := c.Query(ctx, `SELECT b.rolname::text FROM pg_auth_members m JOIN pg_roles b ON b.oid = m.roleid WHERE m.member = $1::oid`+inUse+` ORDER BY 1`, oid)
 		if err != nil {
 			return f, false, err
 		}
@@ -1441,7 +1600,7 @@ func planRoles(ctx context.Context, c *pgx.Conn, p *dropPlan) ([]roleStep, error
 		groups = append(groups, s)
 	}
 	rows, err := c.Query(ctx, `SELECT DISTINCT r.rolname::text FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member
-	  JOIN pg_roles g ON g.oid = m.roleid WHERE g.rolname = ANY($1) AND NOT r.rolname = ANY($1) ORDER BY 1`, pgvigilGroups)
+	  JOIN pg_roles g ON g.oid = m.roleid WHERE g.rolname = ANY($1) AND NOT r.rolname = ANY($1)`+inUse+` ORDER BY 1`, pgvigilGroups)
 	if err != nil {
 		return nil, err
 	}
@@ -1493,7 +1652,8 @@ func repositoryInUse(ctx context.Context, p *dropPlan) error {
 		return fmt.Errorf("another collector writes into %s (collection_dates' newest snapshot moved from %s to %s while this host's service was stopped): stop it, or point it at another repository, first", p.dump.database, before, after)
 	}
 	rows, err := c.Query(ctx, `SELECT format('pid %s: %s from %s as %s', pid, coalesce(nullif(application_name, ''), '(no application name)'),
-	  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() ORDER BY pid`)
+	  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()
+	  AND backend_type = 'client backend' ORDER BY pid`)
 	if err != nil {
 		return err
 	}

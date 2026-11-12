@@ -12,7 +12,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -543,19 +542,13 @@ func linuxItems(inst installOptions, _ bool) []removal {
 		removal{what: "the configuration " + inst.Config, present: present(inst.Config), remove: removeFile(inst.Config)},
 		removal{what: "the environment file " + envFile, present: present(envFile), remove: removeFile(envFile)},
 	)
+	// on Linux the installer writes the configuration and the environment file only (the logs go to the journal)
+	own := []string{filepath.Base(inst.Config), envName}
 	folder := removal{what: "the configuration folder " + cfgDir, present: present(cfgDir)}
-	if entries, err := os.ReadDir(cfgDir); err == nil {
-		var other []string
-		for _, e := range entries {
-			if n := e.Name(); n != filepath.Base(inst.Config) && !slices.Contains(ownFiles, n) {
-				other = append(other, n)
-			}
-		}
-		if len(other) > 0 {
-			folder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
-		}
+	if other := foreignFiles(cfgDir, own...); len(other) > 0 {
+		folder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
 	}
-	folder.remove = func() error { return purgeFolder(slog.New(slog.DiscardHandler), cfgDir, ownFiles...) }
+	folder.remove = func() error { return removeFolder(cfgDir, own...) }
 	items = append(items, folder)
 	if d := "/var/backups/pgvigil"; present(d) {
 		items = append(items, removal{what: "the dump folder " + d, present: true, kept: "the repository's dumps: yours to keep or delete"})
@@ -594,8 +587,13 @@ func accountItem(name string) removal {
 			return fmt.Errorf("userdel %s: %v: %s", name, err, strings.TrimSpace(string(out)))
 		}
 		// useradd --user-group made a group of the same name; userdel takes it with the account where USERGROUPS_ENAB is
-		// on, else it goes here when nothing else is in it
+		// on, else it goes here when nothing else is in it (a supplementary member keeps it, named)
 		if g, err := user.LookupGroup(name); err == nil && g.Gid == u.Gid {
+			if ent, _ := exec.Command("getent", "group", name).Output(); len(strings.Split(strings.TrimSpace(string(ent)), ":")) == 4 {
+				if members := strings.Split(strings.TrimSpace(string(ent)), ":")[3]; members != "" {
+					return &keptErr{fmt.Sprintf("the account is gone; its group %s stays: it has members (%s): groupdel %s when they no longer need it", name, members, name)}
+				}
+			}
 			if _, lookErr := exec.LookPath("groupdel"); lookErr == nil {
 				out, err = exec.Command("groupdel", name).CombinedOutput()
 			} else {

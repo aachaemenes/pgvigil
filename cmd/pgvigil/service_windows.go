@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unsafe"
@@ -560,6 +562,67 @@ func removeNowOrAtRestart(p string) error {
 	return nil
 }
 
+// stopProcessesUnder ends the processes whose image lies in dir (this user's app and the serve it started hold their
+// files while they run) and names them.
+func stopProcessesUnder(dir string) []string {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = windows.CloseHandle(snap) }()
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	prefix := strings.ToLower(filepath.Clean(dir)) + `\`
+	var ended []string
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		pid := e.ProcessID
+		if pid == 0 || pid == uint32(os.Getpid()) {
+			continue
+		}
+		h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
+		if err != nil {
+			continue
+		}
+		buf := make([]uint16, windows.MAX_LONG_PATH)
+		n := uint32(len(buf))
+		if windows.QueryFullProcessImageName(h, 0, &buf[0], &n) == nil && strings.HasPrefix(strings.ToLower(windows.UTF16ToString(buf[:n])), prefix) {
+			if windows.TerminateProcess(h, 1) == nil {
+				_, _ = windows.WaitForSingleObject(h, 5000)
+				ended = append(ended, fmt.Sprintf("pid %d %s", pid, windows.UTF16ToString(e.ExeFile[:])))
+			}
+		}
+		_ = windows.CloseHandle(h)
+	}
+	return ended
+}
+
+// removeTreeNowOrAtRestart removes dir; what is still locked (the WebView2 data of an app another process holds) goes
+// at the next restart through MoveFileEx, deepest first, and is named.
+func removeTreeNowOrAtRestart(dir string) error {
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	var paths []string
+	_ = filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
+		if err == nil {
+			paths = append(paths, p)
+		}
+		return nil
+	})
+	slices.Reverse(paths) // WalkDir lists a folder before its contents
+	for _, p := range paths {
+		name, err := windows.UTF16PtrFromString(p)
+		if err != nil {
+			return err
+		}
+		if err := windows.MoveFileEx(name, nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT); err != nil {
+			return fmt.Errorf("%s is in use and cannot go at the next restart either: %v", p, err)
+		}
+	}
+	fmt.Printf("  %s is in use: what is left of it goes at the next restart\n", dir)
+	return nil
+}
+
 func regValue(root registry.Key, key, name string) bool {
 	k, err := registry.OpenKey(root, key, registry.QUERY_VALUE)
 	if err != nil {
@@ -611,10 +674,12 @@ func windowsItems(inst installOptions, found bool) []removal {
 	binDir := filepath.Dir(inst.Bin)
 	cfgDir := filepath.Dir(inst.Config)
 	var items []removal
-	apps, _ := filepath.Glob(filepath.Join(binDir, "pgvigil-app.exe*"))
-	olds, _ := filepath.Glob(filepath.Join(binDir, "*.old-*"))
+	// the app always installs to %ProgramFiles%\pgvigil (app/win_install.go), whatever -bin the collector took
+	appHome := filepath.Join(programFiles(), "pgvigil")
+	apps, _ := filepath.Glob(filepath.Join(appHome, "pgvigil-app.exe*"))
+	olds, _ := filepath.Glob(filepath.Join(appHome, "*.old-*"))
 	appFiles := append(apps, olds...)
-	items = append(items, removal{what: "the app, machine-wide (" + filepath.Join(binDir, "pgvigil-app.exe") + " and its old copies)", present: len(appFiles) > 0, remove: func() error {
+	items = append(items, removal{what: "the app, machine-wide (" + filepath.Join(appHome, "pgvigil-app.exe") + " and its old copies)", present: len(appFiles) > 0, remove: func() error {
 		for _, f := range appFiles {
 			if err := removeNowOrAtRestart(f); err != nil {
 				return err
@@ -627,7 +692,13 @@ func windowsItems(inst installOptions, found bool) []removal {
 	mine := ""
 	if d := os.Getenv("LOCALAPPDATA"); d != "" {
 		mine = filepath.Join(d, "pgvigil")
-		items = append(items, removal{what: "this user's app " + mine, present: exists(mine), remove: func() error { return os.RemoveAll(mine) }})
+		items = append(items, removal{what: "this user's app " + mine, present: exists(mine), remove: func() error {
+			// the running app (start at login is the default) and the serve it started hold the folder's files
+			if ended := stopProcessesUnder(mine); len(ended) > 0 {
+				fmt.Printf("  ended this user's running app: %s\n", strings.Join(ended, ", "))
+			}
+			return removeTreeNowOrAtRestart(mine)
+		}})
 	}
 	if profiles, err := filepath.Glob(filepath.Join(os.Getenv("SystemDrive")+`\`, "Users", "*", "AppData", "Local", "pgvigil")); err == nil {
 		for _, p := range profiles {
@@ -683,7 +754,20 @@ func windowsItems(inst installOptions, found bool) []removal {
 		}
 		return k.SetStringValue("Path", nv)
 	}})
-	items = append(items, removal{what: "the service " + serviceName + " (its virtual account " + serviceAccount + " ends with it)", present: found, remove: func() error {
+	// a service deleted earlier that a handle still holds (services.msc) is marked for deletion: pending, not to remove
+	pending := ""
+	if found {
+		if m, err := connectSCM(); err == nil {
+			if s, err := m.OpenService(serviceName); err == nil {
+				if err := windows.ChangeServiceConfig(s.Handle, windows.SERVICE_NO_CHANGE, windows.SERVICE_NO_CHANGE, windows.SERVICE_NO_CHANGE, nil, nil, nil, nil, nil, nil, nil); errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+					pending = "pending: marked for deletion, it goes when the last handle to it closes (services.msc, or a restart)"
+				}
+				_ = s.Close()
+			}
+			_ = m.Disconnect()
+		}
+	}
+	items = append(items, removal{what: "the service " + serviceName + " (its virtual account " + serviceAccount + " ends with it)", present: found, kept: pending, remove: func() error {
 		m, err := connectSCM()
 		if err != nil {
 			return err
@@ -699,22 +783,35 @@ func windowsItems(inst installOptions, found bool) []removal {
 		}
 		if err := s.Delete(); err != nil {
 			if errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
-				fmt.Println("  the service is marked for deletion: it goes when the last handle to it closes (services.msc, or a restart)")
-				return nil
+				return &keptErr{"pending: marked for deletion, it goes when the last handle to it closes (services.msc, or a restart)"}
 			}
 			return fmt.Errorf("delete service: %w", err)
 		}
 		return nil
 	}})
 	prev := upgradeHooksOf.previous(inst.Bin)
+	binFolder := removal{what: "the binary folder " + binDir, present: exists(binDir), remove: func() error { return removeNowOrAtRestart(binDir) }}
+	binOwn := []string{filepath.Base(inst.Bin), filepath.Base(prev)}
+	for _, f := range appFiles {
+		binOwn = append(binOwn, filepath.Base(f))
+	}
+	if other := foreignFiles(binDir, binOwn...); len(other) > 0 {
+		binFolder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
+	}
+	// the installer writes the configuration, repo.dsn and the logs folder; the app's own subfolder goes above
+	cfgOwn := []string{filepath.Base(inst.Config), dsnFileName, "logs", "app"}
+	cfgFolder := removal{what: "the configuration folder " + cfgDir + " (the configuration, " + dsnFileName + ", the logs)", present: exists(cfgDir), remove: func() error {
+		_ = os.RemoveAll(filepath.Join(cfgDir, "logs"))
+		return removeFolder(cfgDir, cfgOwn...)
+	}}
+	if other := foreignFiles(cfgDir, cfgOwn...); len(other) > 0 {
+		cfgFolder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
+	}
 	items = append(items,
 		removal{what: "the binary " + inst.Bin, present: exists(inst.Bin), remove: func() error { return removeNowOrAtRestart(inst.Bin) }},
 		removal{what: "the previous binary " + prev, present: exists(prev), remove: func() error { return removeNowOrAtRestart(prev) }},
-		removal{what: "the binary folder " + binDir, present: exists(binDir), remove: func() error { return removeNowOrAtRestart(binDir) }},
-		removal{what: "the configuration folder " + cfgDir + " (the configuration, " + dsnFileName + ", the logs)", present: exists(cfgDir), remove: func() error {
-			_ = os.RemoveAll(filepath.Join(cfgDir, "logs"))
-			return purgeFolder(slog.New(slog.DiscardHandler), cfgDir, append([]string{filepath.Base(inst.Config)}, ownFiles...)...)
-		}},
+		binFolder,
+		cfgFolder,
 		removal{what: "the bundled Windows store (not in this release: nothing to look for)"},
 	)
 	if d := filepath.Join(programData(), "pgvigil-backups"); exists(d) {

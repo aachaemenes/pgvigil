@@ -3,11 +3,13 @@
 # docs/uninstall.md). Each section prints one 'ok' line or stops at the first FAIL.
 #
 # T  go test cmd/pgvigil (the uninstall's own tests among them), GOOS=windows vet, golangci-lint
-# S  this build installed fresh (its account marked 'created by pgvigil install'), the repository migrated by its
-#    owner, the agent and UI logins, the service collecting a live instance
-# C  refusals: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, a -bin that
-#    disagrees, a session held on the repository, a second collector writing; each leaves the host as it was (files,
-#    unit, account, roles, databases, the service running), the last two after the stop and the 75 s watch
+# S  this build installed fresh (its account marked 'created by pgvigil install') on PostgreSQL 17 (PGDG: the 16+ role
+#    rules), the repository migrated by its owner (a CREATEROLE login), the agent and UI logins, the service collecting
+# C  refusals: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN
+#    naming another database than this host's configuration, a -bin that disagrees, a role the owner holds no ADMIN
+#    OPTION on (16+), a session held on the repository, a second collector writing; each leaves the host as it was
+#    (files, unit, account, roles, databases, the service running); the first seven before the stop (no stop said),
+#    the last two after the stop and the 75 s watch
 # P  the dry run: every item and what would be done, a group another database uses kept, another login listed with its
 #    DROP ROLE line, nothing changed
 # U  uninstall -all -drop-repository: the order of its steps; nothing of pgvigil left, read back item by item; the dump
@@ -21,7 +23,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
 V=v0.0.0-uninstall
-TAG="pgvun$RANDOM"; SYS="$TAG-sys"; IMG="pgvigil-proof-offline:bookworm"
+TAG="pgvun$RANDOM"; SYS="$TAG-sys"; IMG="pgvigil-proof-uninstall:bookworm-pg17"
 OPW="ow$RANDOM$RANDOM"; APW="ag$RANDOM$RANDOM"; UPW="ui$RANDOM$RANDOM"; MPW="mo$RANDOM$RANDOM"
 WORK=$(mktemp -d)
 cleanup() {
@@ -59,7 +61,11 @@ mkdir -p "$WORK/img"
 cat > "$WORK/img/Dockerfile" <<'EOF'
 FROM debian:bookworm-slim
 ENV container=docker
-RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv postgresql procps ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv procps ca-certificates curl \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update && apt-get install -y --no-install-recommends postgresql-17 \
  && rm -rf /var/lib/apt/lists/* \
  && systemctl mask systemd-logind.service getty.target console-getty.service systemd-udevd.service systemd-udev-trigger.service systemd-networkd-wait-online.service
 STOPSIGNAL SIGRTMIN+3
@@ -72,6 +78,8 @@ st=""; for _ in $(seq 1 60); do st=$(insys systemctl is-system-running 2>/dev/nu
 pgok=""; for _ in $(seq 1 60); do pgok=$(insys sh -c "su postgres -c 'psql -XAtqc \"select 1\"'" 2>/dev/null || true); [[ "$pgok" == 1 ]] && break; sleep 1; done
 [[ "$pgok" == 1 ]] || fail "PostgreSQL did not answer inside the container"
 [[ "$(insys ls /sys/class/net)" == lo ]] || fail "the container has interfaces: $(insys ls /sys/class/net | tr '\n' ' ')"
+PGMAJ=$(PQDB=postgres pq "select current_setting('server_version_num')::int / 10000")
+[[ "$PGMAJ" -ge 16 ]] || fail "PostgreSQL $PGMAJ in the container: the proof needs 16+ (the role rules)"
 docker cp "$WORK/pgvigil" "$SYS:/root/pgvigil" >/dev/null && insys chmod 0755 /root/pgvigil
 insys /root/pgvigil install >"$WORK/s1.out" 2>&1 || fail "the install: $(cat "$WORK/s1.out")"
 mark=$(insys getent passwd pgvigil | cut -d: -f5)
@@ -94,7 +102,7 @@ n=0; for _ in $(seq 1 90); do n=$(pq "select count(*) from pgvigil.collection_da
 [[ "$n" -gt 0 ]] || fail "no collection_dates row for proof-target within 90 s"
 insys cp "$B" "$B.previous"   # an upgrade's copy of the binary it replaced (task 202)
 insys sh -c "umask 077; printf '%s\n' '$OWNER_DSN' > /root/owner.dsn"
-ok "$V installed fresh at $B (account pgvigil marked '$mark'), the repository migrated by its owner ($FILES files), the agent, UI and monitor logins, the service collecting proof-target ($n collection_dates rows); $B.previous beside it"
+ok "$V installed fresh at $B on PostgreSQL $PGMAJ (account pgvigil marked '$mark'), the repository migrated by its owner ($FILES files), the agent, UI and monitor logins, the service collecting proof-target ($n collection_dates rows); $B.previous beside it"
 
 # the host's state: the files, the unit, the account and group, the service, the roles and the databases
 fp() {
@@ -110,21 +118,34 @@ refused() { # name, text the refusal says, the command (run inside the container
   grep -qF -- "$want" "$WORK/c.out" || fail "$name: the refusal did not say '$want': $(cat "$WORK/c.out")"
   cp "$WORK/c.out" "$WORK/c-${name// /-}.out"
 }
+before_stop() { # the refusal came before any change: it says so and never stopped the service
+  grep -qF "uninstall refused, nothing was changed" "$WORK/c.out" || fail "$1: no 'nothing was changed': $(cat "$WORK/c.out")"
+  if grep -q '^stopped the service' "$WORK/c.out"; then fail "$1: refused only after the stop: $(cat "$WORK/c.out")"; fi
+}
 ALLDROP=("$B" uninstall -all -drop-repository -confirm-database pgvigil -owner-dsn-file /root/owner.dsn)
 
 echo "== C refusals: each leaves the host as it was =="
 F0=$(fp)
 [[ "$F0" == *"active"* ]] || fail "the service is not active before the refusals: $F0"
 refused "not root" "uninstall -all needs root" su -s /bin/sh nobody -c "$B uninstall -all"
-same "not root"
+before_stop "not root"; same "not root"
 refused "no terminal" "type its name at a terminal, or pass -confirm-database pgvigil" "$B" uninstall -all -drop-repository -owner-dsn-file /root/owner.dsn
-same "no terminal and no -confirm-database"
+before_stop "no terminal"; same "no terminal and no -confirm-database"
 refused "wrong name" "-confirm-database pgvigil_x is not the repository database's name pgvigil" "$B" uninstall -all -drop-repository -confirm-database pgvigil_x -owner-dsn-file /root/owner.dsn
-same "a wrong -confirm-database"
+before_stop "wrong name"; same "a wrong -confirm-database"
 refused "no owner" "the repository owner's connection string is not given" "$B" uninstall -all -drop-repository -confirm-database pgvigil
-same "no owner DSN"
+before_stop "no owner"; same "no owner DSN"
+insys sh -c "umask 077; printf '%s\n' '${OWNER_DSN/dbname=pgvigil/dbname=pgvigl}' > /root/owner-typo.dsn"
+refused "other database" "the owner's connection string names the database pgvigl and this host's configuration pgvigil" "$B" uninstall -all -drop-repository -confirm-database pgvigl -owner-dsn-file /root/owner-typo.dsn
+before_stop "other database"; same "an owner DSN naming another database"
 refused "bin" "-bin /opt/elsewhere/pgvigil disagrees with the installed service's $B" "$B" uninstall -all -bin /opt/elsewhere/pgvigil
-same "a -bin that disagrees"
+before_stop "bin"; same "a -bin that disagrees"
+# PostgreSQL 16+: a CREATEROLE login needs ADMIN OPTION on a role to drop it; without it the drop is refused up front
+PQDB=postgres pq "REVOKE ADMIN OPTION FOR pgvigil_alerter FROM pgvigil_owner" >/dev/null
+refused "no admin option" "DROP ROLE needs ADMIN OPTION on the role, and the owner's login pgvigil_owner holds none on pgvigil_alerter" "${ALLDROP[@]}"
+before_stop "no admin option"
+PQDB=postgres pq "GRANT pgvigil_alerter TO pgvigil_owner WITH ADMIN OPTION, INHERIT FALSE, SET FALSE" >/dev/null
+same "a role without ADMIN OPTION"
 # a session held on the repository: refused after the stop and the watch; the service runs again
 docker exec -d -u postgres "$SYS" psql -d pgvigil -XAtqc "select pg_sleep(900) /* proof-held */"
 h=0; for _ in $(seq 1 20); do h=$(PQDB=postgres pq "select count(*) from pg_stat_activity where datname = 'pgvigil' and query like '%proof-held%' and pid <> pg_backend_pid()"); [[ "$h" == 1 ]] && break; sleep 1; done
@@ -143,7 +164,7 @@ refused "second collector" "another collector writes into pgvigil" "${ALLDROP[@]
 grep -q 'the service runs again, nothing else was changed' "$WORK/c.out" || fail "the second collector's refusal did not start the service again: $(cat "$WORK/c.out")"
 insys kill "$P2"; for _ in $(seq 1 20); do insys kill -0 "$P2" 2>/dev/null || break; sleep 1; done
 same "a second collector"
-ok "refused with nothing changed: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, a -bin that disagrees; after the stop and the 75 s watch, the service started again: a held psql session (named), a second collector writing"
+ok "refused with nothing changed, before the stop: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN naming another database, a -bin that disagrees, a role without ADMIN OPTION (PostgreSQL $PGMAJ); after the stop and the 75 s watch, the service started again: a held psql session (named), a second collector writing"
 
 echo "== P the dry run =="
 PQDB=postgres pq "CREATE DATABASE pgvigil_other" >/dev/null
@@ -216,4 +237,4 @@ insys test -f /etc/pgvigil/operator-notes.txt || fail "the operator's file was r
 [[ -z "$(insys sh -c "for f in $B $C $E $U; do [ -e \"\$f\" ] && echo \"\$f\"; done; true")" ]] || fail "K left the installer's files"
 ok "an account that was there before (no mark) and an operator's file kept and named with their lines; the rest removed"
 
-echo "proof-uninstall: OK (uninstall -all removes this host's pgvigil in order, -drop-repository the database and the roles nothing else holds; seven refusals change nothing; the dry run changes nothing; a second run finds nothing to remove; what the install did not make stays, named)"
+echo "proof-uninstall: OK (uninstall -all removes this host's pgvigil in order, -drop-repository the database and the roles nothing else holds; nine refusals change nothing; the dry run changes nothing; a second run finds nothing to remove; what the install did not make stays, named)"

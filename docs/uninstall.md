@@ -28,20 +28,25 @@ A run without a terminal (a script, a configuration tool) names the database ins
 ### The order
 
 1. Every refusal before any change: not root (not elevated); a `-bin`, `-config` or `-user` that disagrees with the
-   installed service; with `-drop-repository`, the owner's connection string missing or naming a database without the
-   pgvigil schema, a login that may not drop the database or roles, pg_dump older than the server, no room for the dump.
+   installed service; with `-drop-repository`, the owner's connection string missing, naming a database without the
+   pgvigil schema, or naming another database than the one this host's configuration names (the same name, and the same
+   database on the same server, read through both logins); a login that may not drop the database or the roles (from
+   PostgreSQL 16, `DROP ROLE` needs ADMIN OPTION on each role as well as CREATEROLE: a role a superuser made gives the
+   owner none, and the refusal prints the `GRANT ... WITH ADMIN OPTION` that fixes it); pg_dump older than the server;
+   no room for the dump.
 2. The database's name, typed (or `-confirm-database`).
 3. The service is stopped.
 4. With `-drop-repository`: the repository is watched for 75 seconds (`collection_dates`' newest snapshot read at the
    stop and again after): a collector on another host writes within a minute, and its write refuses the drop. Any other
-   session on the database (a `pgvigil serve`, Grafana, a psql) refuses it too; the drop never forces a session off.
-   A refusal here starts the service again: the host is as it was.
+   client session on the database (a `pgvigil serve`, Grafana, a psql) refuses it too; the drop never forces a session
+   off. A refusal here, or Ctrl-C during the watch, starts the service again: the host is as it was.
 5. The dump (`pg_dump --format=custom`, 0600, to `/var/backups/pgvigil` or `%ProgramData%\pgvigil-backups` by default;
    `-dump <file>` names it, `-no-dump` takes none). A failed dump starts the service again.
 6. `DROP DATABASE`, run from the server's maintenance database (`postgres`, else `template1`), then the roles, one
    `DROP ROLE` each (below).
 7. Windows: the app machine-wide (`pgvigil-app.exe` and its old copies in `%ProgramFiles%\pgvigil`,
-   `%ProgramData%\pgvigil\app`), then this user's (`%LOCALAPPDATA%\pgvigil`); start at login (the `Run` value
+   `%ProgramData%\pgvigil\app`), then this user's (`%LOCALAPPDATA%\pgvigil`: this user's running app and the serve it
+   started are ended first, and a file still locked goes at the next restart); start at login (the `Run` value
    `pgvigil` under HKLM and HKCU); the Programs and Features entries; the policy keys
    (`HKLM\Software\Policies\pgvigil`) and this user's settings (`HKCU\Software\pgvigil`); the machine PATH entry
    `install.ps1` added.
@@ -52,7 +57,10 @@ A run without a terminal (a script, a configuration tool) names the database ins
 10. Linux: the service account, last.
 
 A step that fails stops the run and names what is left; the same command runs again from there (the configuration
-stays until the repository is dropped, so a second run finds the same database).
+stays until the repository is dropped, so a second run finds the same database). Two exceptions, both said in the
+message: a dump named with `-dump <file>` is kept when the drop is refused after it, so a re-run names another file or
+leaves `-dump` out; and an install at other paths than the defaults, once its service definition is gone, is found
+again only with the same `-bin`, `-config` and `-user`.
 
 ### The roles
 
@@ -74,8 +82,9 @@ Named on every run, never removed:
 - Linux: a service account the install did not create. `pgvigil install` marks the account it creates (its comment is
   `created by pgvigil install`); an account that was there before, or one made by an earlier release, is kept with its
   `userdel` line. A marked account with a process still running as it is kept too.
-- Linux: an operator's drop-in folder `/etc/systemd/system/pgvigil.service.d`, and a configuration folder that holds
-  files the installer did not write.
+- Linux: an operator's drop-in folder `/etc/systemd/system/pgvigil.service.d`, a configuration folder (or, on
+  Windows, a binary folder) that holds files the installer did not write, and the account's group when another account
+  is a member of it.
 - Windows: another user's own app (`C:\Users\<name>\AppData\Local\pgvigil`): its keys live in that user's registry
   hive, so that user runs `pgvigil-app.exe uninstall -user`.
 - Windows: a file in use (the running `pgvigil.exe` itself, an app another session runs) goes at the next restart; a
