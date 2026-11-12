@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -101,8 +102,11 @@ func systemctl(args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), err
 }
 
+// accountMark is the comment (GECOS) of an account install created: uninstall -all removes only a marked account.
+const accountMark = "created by pgvigil install"
+
 // ensureAccount looks the service account up and creates it as a system user without a home or a
-// login shell when missing (useradd, else busybox adduser). It returns its uid and gid.
+// login shell when missing (useradd, else busybox adduser), marked with accountMark. It returns its uid and gid.
 func ensureAccount(log *slog.Logger, name string) (int, int, error) {
 	u, err := user.Lookup(name)
 	if err != nil {
@@ -124,9 +128,9 @@ func ensureAccount(log *slog.Logger, name string) (int, int, error) {
 		}
 		var out []byte
 		if _, lookErr := exec.LookPath("useradd"); lookErr == nil {
-			out, err = exec.Command("useradd", "--system", "--no-create-home", "--user-group", "--shell", "/usr/sbin/nologin", name).CombinedOutput()
+			out, err = exec.Command("useradd", "--system", "--no-create-home", "--user-group", "--shell", "/usr/sbin/nologin", "--comment", accountMark, name).CombinedOutput()
 		} else if _, lookErr := exec.LookPath("adduser"); lookErr == nil {
-			out, err = exec.Command("adduser", "-S", "-D", "-H", "-s", "/sbin/nologin", name).CombinedOutput()
+			out, err = exec.Command("adduser", "-S", "-D", "-H", "-s", "/sbin/nologin", "-g", accountMark, name).CombinedOutput()
 		} else {
 			return 0, 0, fmt.Errorf("no useradd or adduser on this system: create the account %q (a system user, no login) and run install again, or name an existing one with -user", name)
 		}
@@ -449,4 +453,192 @@ func secureDir(dir string) error {
 		return err
 	}
 	return os.Chmod(dir, 0o700)
+}
+
+// --- uninstall -all on Linux (install.go's runUninstallAll)
+
+func init() {
+	uninstallHooksOf = &uninstallHooks{
+		privileged: func() error {
+			if os.Geteuid() != 0 {
+				return errors.New("uninstall -all needs root: run it with sudo")
+			}
+			return nil
+		},
+		running: func() bool {
+			state, _ := systemctl("is-active", "pgvigil.service")
+			return systemdRunning() && state == "active"
+		},
+		items: linuxItems,
+		repoDSN: func(inst installOptions) string {
+			return envValue(filepath.Join(filepath.Dir(inst.Config), envName), "PGVIGIL_REPO_DSN")
+		},
+	}
+}
+
+// envValue is the value of name in a systemd EnvironmentFile (NAME=value, the value whole: it is not shell syntax and a
+// connection string holds spaces; one pair of surrounding quotes is taken off). The last assignment wins, as in systemd
+// (the template's empty PGVIGIL_REPO_DSN= line may be followed by the filled one).
+func envValue(path, name string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	val := ""
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || strings.TrimSpace(k) != name {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		}
+		val = v
+	}
+	return val
+}
+
+func present(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+func removeFile(path string) func() error {
+	return func() error {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+}
+
+// linuxItems lists everything of pgvigil on this host after the repository, in the order uninstall -all removes it:
+// the service definition, the binaries, the configuration, the account last.
+func linuxItems(inst installOptions, _ bool) []removal {
+	cfgDir := filepath.Dir(inst.Config)
+	envFile := filepath.Join(cfgDir, envName)
+	var items []removal
+	items = append(items, removal{what: "the service pgvigil (systemd unit " + unitPath + ")", present: present(unitPath), remove: func() error {
+		if systemdRunning() {
+			if out, err := systemctl("disable", "--now", "pgvigil.service"); err != nil {
+				return fmt.Errorf("systemctl disable --now: %v: %s", err, out)
+			}
+		}
+		if err := os.Remove(unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if systemdRunning() {
+			_, _ = systemctl("daemon-reload")
+			_, _ = systemctl("reset-failed", "pgvigil.service")
+		}
+		return nil
+	}})
+	if d := unitPath + ".d"; present(d) {
+		items = append(items, removal{what: "the unit's drop-in folder " + d, present: true, kept: "an operator's overrides, not the installer's: remove it by hand"})
+	}
+	items = append(items,
+		removal{what: "the binary " + inst.Bin, present: present(inst.Bin), remove: removeFile(inst.Bin)},
+		removal{what: "the previous binary " + inst.Bin + ".previous", present: present(inst.Bin + ".previous"), remove: removeFile(inst.Bin + ".previous")},
+		removal{what: "the configuration " + inst.Config, present: present(inst.Config), remove: removeFile(inst.Config)},
+		removal{what: "the environment file " + envFile, present: present(envFile), remove: removeFile(envFile)},
+	)
+	folder := removal{what: "the configuration folder " + cfgDir, present: present(cfgDir)}
+	if entries, err := os.ReadDir(cfgDir); err == nil {
+		var other []string
+		for _, e := range entries {
+			if n := e.Name(); n != filepath.Base(inst.Config) && !slices.Contains(ownFiles, n) {
+				other = append(other, n)
+			}
+		}
+		if len(other) > 0 {
+			folder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
+		}
+	}
+	folder.remove = func() error { return purgeFolder(slog.New(slog.DiscardHandler), cfgDir, ownFiles...) }
+	items = append(items, folder)
+	if d := "/var/backups/pgvigil"; present(d) {
+		items = append(items, removal{what: "the dump folder " + d, present: true, kept: "the repository's dumps: yours to keep or delete"})
+	}
+	return append(items, accountItem(inst.User))
+}
+
+// accountItem: the service account goes only when install made it (accountMark) and no process runs as it.
+func accountItem(name string) removal {
+	it := removal{what: "the service account " + name}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return it
+	}
+	it.present = true
+	if u.Name != accountMark {
+		it.kept = fmt.Sprintf("install did not make it (no %q mark): when nothing else uses it, userdel %s", accountMark, name)
+		return it
+	}
+	if procs := processesOf(u.Uid, true); len(procs) > 0 {
+		it.kept = "processes run as it: " + strings.Join(procs, "; ")
+		return it
+	}
+	it.remove = func() error {
+		if procs := processesOf(u.Uid, false); len(procs) > 0 {
+			return fmt.Errorf("processes run as %s: %s", name, strings.Join(procs, "; "))
+		}
+		var out []byte
+		var err error
+		if _, lookErr := exec.LookPath("userdel"); lookErr == nil {
+			out, err = exec.Command("userdel", name).CombinedOutput()
+		} else {
+			out, err = exec.Command("deluser", name).CombinedOutput()
+		}
+		if err != nil {
+			return fmt.Errorf("userdel %s: %v: %s", name, err, strings.TrimSpace(string(out)))
+		}
+		// useradd --user-group made a group of the same name; userdel takes it with the account where USERGROUPS_ENAB is
+		// on, else it goes here when nothing else is in it
+		if g, err := user.LookupGroup(name); err == nil && g.Gid == u.Gid {
+			if _, lookErr := exec.LookPath("groupdel"); lookErr == nil {
+				out, err = exec.Command("groupdel", name).CombinedOutput()
+			} else {
+				out, err = exec.Command("delgroup", name).CombinedOutput()
+			}
+			if err != nil {
+				return fmt.Errorf("the account is gone; its group %s stays: %v: %s", name, err, strings.TrimSpace(string(out)))
+			}
+		}
+		return nil
+	}
+	return it
+}
+
+// processesOf lists the processes running as uid; skipService leaves the pgvigil service's own main process out (it is
+// stopped before the account goes).
+func processesOf(uid string, skipService bool) []string {
+	mainPID := ""
+	if skipService {
+		if v, err := systemctl("show", "-p", "MainPID", "--value", "pgvigil.service"); err == nil {
+			mainPID = strings.TrimSpace(v)
+		}
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil || e.Name() == mainPID {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "status"))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if f := strings.Fields(line); len(f) >= 2 && f[0] == "Uid:" && f[1] == uid {
+				cmd, _ := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+				out = append(out, fmt.Sprintf("pid %s: %s", e.Name(), strings.TrimSpace(strings.ReplaceAll(string(cmd), "\x00", " "))))
+				break
+			}
+		}
+	}
+	return out
 }
