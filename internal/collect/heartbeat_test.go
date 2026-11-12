@@ -182,3 +182,66 @@ func TestSkipEndsStreak(t *testing.T) {
 		t.Errorf("a skip was counted as a run: %+v", b.Runs)
 	}
 }
+
+// TestConnectFailNoStreak: a run that failed at the instance's own connect (InstanceConnect) is counted in the load
+// and the collection's runs (the parent's test reads them) but builds no per-collection streak: one refused login is
+// one 'authentication failing', never a 'collection failing' per collection. A failure after the connect still does.
+func TestConnectFailNoStreak(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	now := time.Now()
+	refused := &pgconn.PgError{Code: "28P01", Message: "password authentication failed"}
+	for _, c := range []string{"activity", "jobs", "host", "waits"} {
+		err := h.instanceConnect("t2", refused, now)
+		h.record("t2", "postgres", c, Result{Err: fmt.Errorf("connect t2: %w", err)}, now)
+	}
+	h.record("t1", "postgres", "activity", Result{Err: errors.New("activity on t1: relation missing")}, now)
+	b := h.take()
+	got := map[string]int{}
+	for _, s := range b.Streaks {
+		got[s.Instance+"/"+s.Collection] = s.Fails
+	}
+	if len(got) != 2 || got["t2/"+connectStreak] != 0 || got["t1/activity"] != 1 {
+		t.Errorf("streaks: %v (want t2's connect streak at 0 - refused = the server answered - and t1/activity 1)", got)
+	}
+	var l2 *beatLoad
+	for i := range b.Load {
+		if b.Load[i].Instance == "t2" {
+			l2 = &b.Load[i]
+		}
+	}
+	if l2 == nil || l2.Runs != 4 || l2.Failures != 4 || l2.Auth != 4 || l2.Attempts != 4 || l2.Opened != 0 {
+		t.Errorf("t2's load: %+v (want 4 runs, 4 failures, 4 attempts, 4 refused, 0 opened)", l2)
+	}
+	if !AuthFailure(fmt.Errorf("connect t2: %w", h.instanceConnect("t2", refused, now))) {
+		t.Error("the marked error hides the PgError from errors.As")
+	}
+}
+
+// TestConnectStreak: the instance's own connect streak - a network failure adds one, an opened or a refused connect
+// ends it, a stop's cancel touches nothing; per-database connects (CountConnect) never touch it.
+func TestConnectStreak(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	now := time.Now()
+	dial := errors.New("dial tcp 10.0.0.9:5432: connect: connection timed out")
+	fails := func() int { return h.streaks[[2]string{"t3", connectStreak}].fails }
+	for range 3 {
+		_ = h.instanceConnect("t3", dial, now)
+	}
+	_ = h.instanceConnect("t3", fmt.Errorf("connect: %w", context.Canceled), now)
+	h.countConnect("t3", errors.New("per-database connect refused"))
+	if fails() != 3 {
+		t.Fatalf("after 3 timeouts, a cancel and a per-database failure: %d (want 3)", fails())
+	}
+	if InstanceConnect("t3", nil) != nil {
+		t.Error("InstanceConnect(nil) is not nil")
+	}
+	_ = h.instanceConnect("t3", nil, now)
+	if fails() != 0 {
+		t.Errorf("an opened connect left the streak at %d", fails())
+	}
+	_ = h.instanceConnect("t3", dial, now)
+	_ = h.instanceConnect("t3", &pgconn.PgError{Code: "28000"}, now)
+	if fails() != 0 {
+		t.Errorf("a refused login (the server answered) left the streak at %d", fails())
+	}
+}

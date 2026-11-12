@@ -92,14 +92,73 @@ func CountConnect(instance string, err error) {
 	if h := current.Load(); h != nil {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		l := h.loadOf(instance)
-		l.attempts++
-		if err == nil {
-			l.opened++
-		} else if AuthFailure(err) {
-			l.auth++
-		}
+		h.countConnect(instance, err)
 	}
+}
+
+func (h *Heartbeat) countConnect(instance string, err error) {
+	l := h.loadOf(instance)
+	l.attempts++
+	if err == nil {
+		l.opened++
+	} else if AuthFailure(err) {
+		l.auth++
+	}
+}
+
+// connectError marks a failure of an instance's own connect (InstanceConnect): the run that meets it builds no
+// per-collection streak - the instance's own findings ('authentication failing', 'server unreachable') speak for it.
+type connectError struct{ err error }
+
+func (e *connectError) Error() string { return e.err.Error() }
+func (e *connectError) Unwrap() error { return e.err }
+
+// connectStreak is the collection name under which an instance's own connect keeps its failed attempts in a row
+// (0121's 'server unreachable'; never a collection's name).
+const connectStreak = "(connect)"
+
+// InstanceConnect counts an instance's own connect (a collection's first: collect.Connect, the SQL Server connector)
+// as CountConnect does and keeps the instance's connect streak: a failure that is not a refused login adds one, an
+// opened or refused connect ends it (the server answered), a stop's cancel touches nothing. It returns err marked as
+// the instance's connect failure (its text unchanged; errors.Is / errors.As see through the mark).
+func InstanceConnect(instance string, err error) error {
+	if h := current.Load(); h != nil {
+		return h.instanceConnect(instance, err, time.Now())
+	}
+	if err == nil {
+		return nil
+	}
+	return &connectError{err}
+}
+
+func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.countConnect(instance, err)
+	if err != nil && errors.Is(err, context.Canceled) {
+		return &connectError{err}
+	}
+	sk := [2]string{instance, connectStreak}
+	s := h.streaks[sk]
+	if s == nil {
+		s = &streak{fresh: true}
+		h.streaks[sk] = s
+	}
+	was := s.fails
+	failed := err != nil && !AuthFailure(err)
+	if failed {
+		s.fails++
+		s.lastErr = err.Error()
+	} else {
+		s.fails, s.lastErr = 0, ""
+	}
+	s.at = now
+	s.dirty = s.dirty || failed || was > 0 || s.fresh
+	s.fresh = false
+	if err == nil {
+		return nil
+	}
+	return &connectError{err}
 }
 
 // connectCounted is pgx.ConnectConfig counted for the instance's load.
@@ -176,6 +235,9 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	a.durSum += int64(ms)
 	a.durMax = max(a.durMax, ms)
 	a.hist[bucket(res.Duration)]++
+	if ce := (*connectError)(nil); failed && errors.As(res.Err, &ce) {
+		return // the instance's own connect failed: its connect streak and 'authentication failing' speak for it
+	}
 	sk := [2]string{instance, collection}
 	s := h.streaks[sk]
 	if s == nil {
