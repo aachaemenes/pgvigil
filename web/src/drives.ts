@@ -231,13 +231,15 @@ export async function dbSpaceView(ctx: Ctx): Promise<HTMLElement> {
       d = await get<Parts<'instances' | 'databases' | 'history'>>('dbspace', { ...sc.params, days: day });
     } catch (e) { body.replaceChildren(errorBox(e)); return; }
     if (!ctx.instance) {
-      const rows = rowsOf(d.instances);
+      // the GB columns hold the GB figure itself (rounded to 0.1) and show it with fmtNum, so the export writes a number
+      const toGB = (v: unknown) => v == null ? null : Math.round(Number(v) / GB * 10) / 10;
+      const rows: Row[] = rowsOf(d.instances).map((r): Row => ({ ...r, allocated_gb: toGB(r.allocated_bytes), used_gb: toGB(r.used_bytes) }));
       const cols: Col[] = [
         { key: 'instance', label: 'name', fmt: (v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace') }, String(v ?? '')) },
-        { key: 'allocated_bytes', label: 'allocated (GB)', num: true, fmt: v => v == null ? '' : (Number(v) / GB).toFixed(1) },
-        { key: 'used_bytes', label: 'used (GB)', num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : (Number(v) / GB).toFixed(1) },
+        { key: 'allocated_gb', label: 'allocated (GB)', num: true, fmt: v => fmtNum(v) },
+        { key: 'used_gb', label: 'used (GB)', num: true, fmt: (v, r) => v == null ? (r.engine === 'postgres' ? 'not read' : '') : fmtNum(v) },
         { key: 'databases', num: true }, { key: 'engine' },
-        { key: 'history', label: 'history', fmt: (_v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace'), 'aria-label': `History of ${String(r.instance)}` }, 'View') },
+        { key: 'history', label: 'history', fmt: (_v, r) => el('a', { href: instHref(ctx, r.instance_id, 'dbspace'), 'aria-label': `View the history of ${String(r.instance)}` }, 'View') },
       ];
       body.replaceChildren(
         el('p', { class: 'meta' }, `The space the databases hold now, per instance of ${sc.folder}. Allocated: a SQL Server instance's data and log files, a PostgreSQL instance's databases (pg_database_size). `

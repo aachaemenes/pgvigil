@@ -1,6 +1,6 @@
 # Storage
 
-The Storage folder holds the same six pages on both engines, in the order the folder lists them. They appear at the root of the tree, in a tag folder and under an instance. The first five are at every scope; Drive Performance is an instance's page.
+The Storage folder's first tabs are DBA Dash's, in its order. At the root and in a tag folder: Drives, DB Space, Files, TempDB and Table Size. Under a PostgreSQL instance: Drives, DB Space, Files, Tables (its table sizes) and Drive Performance. Under a SQL Server instance: Drives, DB Space, Files, TempDB and Drive Performance (the repository holds no table sizes of a SQL Server instance). A PostgreSQL instance's temporary files are on its Memory page, not in this folder.
 
 | Tab | What it shows | Read from |
 | --- | --- | --- |
@@ -8,10 +8,10 @@ The Storage folder holds the same six pages on both engines, in the order the fo
 | DB Space | the space the databases hold: per instance in a folder, per database under an instance, with its history | PostgreSQL: `pg_database_size` per database (`databases`); SQL Server: the data and log files (`mssql_storage`) |
 | Files | SQL Server's data and log files; PostgreSQL's WAL directory and tablespaces | `mssql_storage`; the `storage` collection |
 | TempDB | SQL Server's tempdb files per instance | `mssql_tempdb` ([SQL Server storage](sqlserver-storage.md)) |
-| Table Size | the largest tables with their growth | the `tables` collection (PostgreSQL only: the repository holds no table sizes of a SQL Server instance) |
+| Table Size | the largest tables with their growth (under a PostgreSQL instance: its Tables page) | the `tables` collection (PostgreSQL only: the repository holds no table sizes of a SQL Server instance) |
 | Drive Performance | read and write latency, throughput and IOPS per drive over the page's range | SQL Server: each database file's virtual file stats, the file placed on its drive; PostgreSQL: `system_stats`' device counters (an on-prem host; RDS and Aurora have no device read) |
 
-The folder's other pages follow these six: Disk report, Growth, New and dropped databases and Indexes at the root; Tables, Storage, Database info and New and dropped databases under a PostgreSQL instance; Storage, Database files and Row versions under a SQL Server instance.
+The folder's other pages follow them: Disk report, Storage, Growth, New and dropped databases and Indexes at the root and in a tag folder; Storage, Database info and New and dropped databases under a PostgreSQL instance; Storage, Database files and Row versions under a SQL Server instance.
 
 ## Drives
 
@@ -39,4 +39,4 @@ A Summary cell opens the page DBA Dash's Summary opens for it (DBA Dash's Checks
 - R: the reads (`/api/drives`, `/api/drives/history`, `/api/dbspace`, `/api/dbfiles`, `/api/driveperf`) against the repository's own rows; the write is refused without the header or a login.
 - C: `scripts/click-check.mjs` in a headless Chromium. From the Summary at the root, a tag folder, a PostgreSQL instance and a SQL Server instance, every link's target is checked against DBA Dash's map, one link per column, engine and scope is clicked, and every tab of the Storage folder at those scopes is opened. No landing may be Daily checks.
 
-Not proven here: Drive Performance on a PostgreSQL host with real devices (the demo's device counters are synthetic); a threshold set through the UI's Configure on a server with the actions configuration (the proof sets them through the same function; the page's write is refused without a login, as proven); Windows volumes for PostgreSQL. A drive's Files link opens all of its instance's files, not that drive's alone (DBA Dash's opens the drive's).
+Not proven here: Drive Performance on a PostgreSQL host with real devices (the demo's device counters are synthetic); a threshold set through the UI's Configure on a server with the actions configuration (the proof sets them through the same function; on a server without logins the page's write is refused, 403, as proven; the signed-in path is not); Windows volumes for PostgreSQL. A drive's Files link opens all of its instance's files, not that drive's alone (DBA Dash's opens the drive's).
