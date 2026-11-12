@@ -43,7 +43,9 @@
 #        has one; H1's rows carry the 'implicit' badge, H2's do not; the status line says 'implicit transactions open
 #        2, 1 heading a chain'; 'Lead blockers over the range' has 2 rows, H1's share marked lead, H2's not; no error
 #        box; pgbox's Running queries: the head's tree row (idle in transaction) and every client session row have
-#        Cancel and Terminate on; shots of both pages in both themes;
+#        Cancel and Terminate on; shots of both pages in both themes, and on sqlbox two more per theme with the part
+#        below or right of the first view scrolled in: 'Lead blockers over the range' at the top (blocking-mssql-share-*)
+#        and the sessions grid's first Kill button in the middle (blocking-mssql-kill-*) [after s177b-proof4];
 #     E2 sqlbox-ro: every Kill button aria-disabled with a title naming actions_dsn, and a click opens no dialog;
 #        pgbox-ro: every Terminate button disabled with a title naming actions_dsn;
 #     E3 sqlbox at= the first snapshot: no Kill button anywhere and the line 'Kill acts on the newest snapshot only';
@@ -340,6 +342,12 @@ for (const theme of ['light', 'dark']) {
   console.log(`mssql ${theme} ${JSON.stringify({ tree: kills(s.tree), implicit: s.tree.filter(r => /implicit/.test(r.text)).map(r => r.id),
     sessions: kills(s.sessions), share: s.share.map(r => /lead/.test(r.text)), status: s.status, errors: s.errors })}`);
   await shot(`blocking-mssql-${theme}`);
+  const shareIn = await ev(`(() => { const h = [...document.querySelectorAll('main h3')].find(x => /^Lead blockers over the range/.test(x.textContent)); if (!h) return false; h.scrollIntoView({ block: 'start' }); return h.getBoundingClientRect().top < innerHeight; })()`);
+  await sleep(300); await shot(`blocking-mssql-share-${theme}`);
+  const killIn = await ev(`(() => { const h = [...document.querySelectorAll('main h3')].find(x => /^(Sessions and requests|Sessions)/.test(x.textContent)); let g = h?.nextElementSibling; while (g && !g.querySelector('table') && g.tagName !== 'TABLE') g = g.nextElementSibling; const b = g?.querySelector('button.act-kill'); if (!b) return false; b.scrollIntoView({ block: 'center', inline: 'center' }); const r = b.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()`);
+  await sleep(300); await shot(`blocking-mssql-kill-${theme}`);
+  console.log(`mssql-shots ${theme} share=${shareIn} kill=${killIn}`);
+  await ev(`(() => { window.scrollTo(0, 0); return 1; })()`);
   if (!await go(`#/activity?i=${pgi}`)) { console.log(`FAIL render pg ${theme}`); continue; }
   const p = await page();
   const term = rs => rs.map(r => ({ id: r.id, t: r.buttons.filter(b => b.cls === 'act-terminate').map(b => b.on), c: r.buttons.filter(b => b.cls === 'act-cancel').map(b => b.on), idle: /idle in transaction/.test(r.text) }));
@@ -423,6 +431,8 @@ status_ok = "implicit transactions open 2, 1 heading a chain" in d["status"]
 share_ok = d["share"] == [True, False]
 sys.exit(0 if heads_on and others_none and rows_ok and implicit_ok and status_ok and share_ok and d["errors"] == 0 else 1)
 EOF
+  grep -q "^mssql-shots $theme share=true kill=true$" <<<"$out" || fail "E1: the scrolled SQL Server shots ($theme): $(grep "^mssql-shots $theme" <<<"$out")"
+  for f in blocking-mssql-share-$theme blocking-mssql-kill-$theme; do [[ -s "$SHOTS/$f.png" ]] || fail "E1: no shot $f.png"; done
   line=$(grep "^pg $theme " <<<"$out" | sed "s/^pg $theme //") || fail "E1: no PostgreSQL page ($theme)"
   python3 - "$line" "$HP" "$WP" <<'EOF' || fail "E1: the PostgreSQL page ($theme): $line"
 import json, sys
@@ -434,7 +444,7 @@ rows_ok = all(i in rows and rows[i]["t"] == [True] for i in (hp, wp))
 sys.exit(0 if head_ok and rows_ok and d["errors"] == 0 else 1)
 EOF
 done
-echo "ok   E1: sqlbox: Kill on every session row (on above session 50), 'kill this head' on H1 and H2 only, H1 implicit, the status line, H1 lead in the share table; pgbox: Cancel and Terminate on the idle-in-transaction head and the rows; both themes shot"
+echo "ok   E1: sqlbox: Kill on every session row (on above session 50), 'kill this head' on H1 and H2 only, H1 implicit, the status line, H1 lead in the share table; pgbox: Cancel and Terminate on the idle-in-transaction head and the rows; both themes shot, sqlbox's share table and Kill column scrolled in"
 grep -Eq '^ro mssql buttons=[1-9][0-9]* off=true titled=true dialog=false$' <<<"$out" || fail "E2: sqlbox-ro: $(grep '^ro mssql' <<<"$out")"
 grep -Eq '^ro pg buttons=[1-9][0-9]* off=true titled=true$' <<<"$out" || fail "E2: pgbox-ro: $(grep '^ro pg' <<<"$out")"
 echo "ok   E2: without the actions login every Kill and Terminate button is off with the reason, and a click opens nothing"
