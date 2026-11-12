@@ -25,7 +25,9 @@ import (
 //     open), the oldest first, qsMaxIntervals a run, seven days back at most. A backlog is read over several runs;
 //  2. sys.query_store_runtime_stats and sys.query_store_wait_stats are read for those interval ids alone, summed
 //     per plan and interval on the server, and only the plans in an interval's top lists leave it (the candidate
-//     set).
+//     set). A kept plan's aborted runs (execution_type 3: a client abort, a timeout or a cancel) and exception runs
+//     (4: the run ended in an error) leave it apart, their executions, CPU and duration, where the interval had any
+//     (failed > 0); otherwise NULL (0126 stores them so).
 //
 // What step 2 costs the server: the wait statistics are clustered by interval, the runtime statistics by plan
 // (plan_id, runtime_stats_interval_id, execution_type; read on SQL Server 2022), so the filter on the interval
@@ -152,6 +154,12 @@ const qsCandidatesSQL = `WITH rs AS (
   SELECT r.plan_id, r.runtime_stats_interval_id AS interval_id,
          SUM(r.count_executions) AS executions,
          SUM(CASE WHEN r.execution_type <> 0 THEN r.count_executions ELSE 0 END) AS failed,
+         SUM(CASE WHEN r.execution_type = 3 THEN r.count_executions ELSE 0 END) AS aborted_executions,
+         SUM(CASE WHEN r.execution_type = 3 THEN r.avg_cpu_time * r.count_executions ELSE 0 END) AS aborted_cpu_us,
+         SUM(CASE WHEN r.execution_type = 3 THEN r.avg_duration * r.count_executions ELSE 0 END) AS aborted_duration_us,
+         SUM(CASE WHEN r.execution_type = 4 THEN r.count_executions ELSE 0 END) AS exception_executions,
+         SUM(CASE WHEN r.execution_type = 4 THEN r.avg_cpu_time * r.count_executions ELSE 0 END) AS exception_cpu_us,
+         SUM(CASE WHEN r.execution_type = 4 THEN r.avg_duration * r.count_executions ELSE 0 END) AS exception_duration_us,
          SUM(r.avg_duration * r.count_executions) AS duration_us,
          SUM(r.avg_cpu_time * r.count_executions) AS cpu_us,
          SUM(r.avg_logical_io_reads * r.count_executions) AS logical_reads,
@@ -182,6 +190,12 @@ const qsCandidatesSQL = `WITH rs AS (
     FROM rs LEFT JOIN ws ON ws.plan_id = rs.plan_id AND ws.interval_id = rs.interval_id
 )
 SELECT k.plan_id, k.interval_id, CAST(k.executions AS bigint) AS executions, CAST(k.failed AS bigint) AS failed,
+       CASE WHEN k.failed > 0 THEN CAST(k.aborted_executions AS bigint) END AS aborted_executions,
+       CASE WHEN k.failed > 0 THEN CAST(k.aborted_cpu_us AS bigint) END AS aborted_cpu_us,
+       CASE WHEN k.failed > 0 THEN CAST(k.aborted_duration_us AS bigint) END AS aborted_duration_us,
+       CASE WHEN k.failed > 0 THEN CAST(k.exception_executions AS bigint) END AS exception_executions,
+       CASE WHEN k.failed > 0 THEN CAST(k.exception_cpu_us AS bigint) END AS exception_cpu_us,
+       CASE WHEN k.failed > 0 THEN CAST(k.exception_duration_us AS bigint) END AS exception_duration_us,
        CAST(k.duration_us AS bigint) AS duration_us, CAST(k.cpu_us AS bigint) AS cpu_us,
        CAST(k.logical_reads AS bigint) AS logical_reads, CAST(k.physical_reads AS bigint) AS physical_reads,
        CAST(k.logical_writes AS bigint) AS logical_writes, CAST(k.row_count AS bigint) AS row_count,
@@ -563,6 +577,12 @@ func qsRuntimeRows(name string, ivs []collect.Row, byID map[int64]collect.Row, c
 		for _, k := range []string{"tot_plans", "tot_executions", "tot_duration_us", "tot_cpu_us", "tot_logical_reads", "tot_wait_ms"} {
 			delete(c, k)
 		}
+		// the split travels only where the interval had a failure: the import stores NULL for the rest anyway
+		if f, _ := c["failed"].(int64); f == 0 {
+			for _, k := range qsSplitKeys {
+				delete(c, k)
+			}
+		}
 		c["kind"], c["database_name"], c["interval_start"] = "runtime", name, iv["interval_start"]
 		if p, _ := c["plan_id"].(int64); p > 0 {
 			planIDs[p] = true
@@ -571,6 +591,9 @@ func qsRuntimeRows(name string, ivs []collect.Row, byID map[int64]collect.Row, c
 	}
 	return append(ivs, out...)
 }
+
+// qsSplitKeys are a runtime row's aborted and exception figures (0126).
+var qsSplitKeys = []string{"aborted_executions", "aborted_cpu_us", "aborted_duration_us", "exception_executions", "exception_cpu_us", "exception_duration_us"}
 
 // qsPlanStored asks the repository whether it holds this plan's XML already (or looked at it within a day and
 // kept none under the instance's text policy): the stored plan's hash must be this plan's, since a cleared store
