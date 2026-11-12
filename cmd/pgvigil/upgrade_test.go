@@ -109,6 +109,9 @@ func TestUninstallFlags(t *testing.T) {
 		{[]string{"-purge", "-dump", "/root/x.dump"}, "-dump goes with -drop-repository only"},
 		{[]string{"-all", "-drop-repository", "-no-dump", "-dump", "/x"}, "-no-dump does not go with"},
 		{[]string{"-all", "-upgrade"}, "flag provided but not defined"},
+		{[]string{"-all", "-drop-repository", "-owner-dsn-file", "/root/o.dsn", "-owner-dsn-env", "OWNER"}, "-owner-dsn-file and -owner-dsn-env both name"},
+		{[]string{"-all", "-drop-repository", "-owner-dsn-env", "OWNER"}, ""},
+		{[]string{"-all", "-drop-repository", "-pg-dump", "/usr/bin/pg_dump", "-no-dump"}, "-no-dump does not go with"},
 	} {
 		_, err := parseInstallArgs("uninstall", c.args, def)
 		switch {
@@ -221,16 +224,21 @@ func TestUninstallAllOrder(t *testing.T) {
 		}
 	}
 	present := true
+	var others []string
 	upgradeHooksOf = &upgradeHooks{
 		installed: func() (installOptions, bool, error) { return installOptions{}, false, nil },
 		stop:      func(*slog.Logger) error { stopped++; return nil },
 		start:     func(*slog.Logger) error { return nil },
+		others:    func(string) ([]string, error) { return others, nil },
+		previous:  func(bin string) string { return bin + ".previous" },
 	}
 	uninstallHooksOf = &uninstallHooks{
 		privileged: func() error { return privErr },
 		running:    func() bool { return present },
 		items:      func(installOptions, bool) []removal { return items(present) },
-		repoDSN:    func(installOptions) string { return "host=db port=5432 user=pgvigil_agent dbname=pgvigil" },
+		repoDSN: func(installOptions) (string, bool, error) {
+			return "host=db port=5432 user=pgvigil_agent dbname=pgvigil", true, nil
+		},
 	}
 	log := slog.New(slog.DiscardHandler)
 	o := installOptions{All: true, Bin: "/usr/local/bin/pgvigil", Config: "/etc/pgvigil/pgvigil.yaml", User: "pgvigil", set: map[string]bool{}}
@@ -251,6 +259,18 @@ func TestUninstallAllOrder(t *testing.T) {
 	if err != nil || len(removed) != 0 || stopped != 1 || !strings.Contains(out, "nothing of pgvigil is left to remove") {
 		t.Fatalf("the second run: err %v, removed %v, stopped %d:\n%s", err, removed, stopped, out)
 	}
+	// another pgvigil process on the installed binary (a serve by hand): refused before any change; the dry run lists it
+	present, removed, others = true, nil, []string{"pid 4242: /usr/local/bin/pgvigil serve -config /etc/pgvigil/pgvigil.yaml"}
+	stoppedBefore := stopped
+	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || !strings.Contains(err.Error(), "uninstall refused, nothing was changed: other processes run the installed binary") ||
+		!strings.Contains(err.Error(), "pid 4242") || len(removed) != 0 || stopped != stoppedBefore {
+		t.Fatalf("a serve on the installed binary: err %v, removed %v, stopped %d", err, removed, stopped-stoppedBefore)
+	}
+	out, err = captureStdout(t, func() error { return runUninstallAll(log, dry) })
+	if err != nil || !strings.Contains(out, "running  pid 4242: /usr/local/bin/pgvigil serve") || len(removed) != 0 {
+		t.Fatalf("the dry run with a serve running: err %v:\n%s", err, out)
+	}
+	others = nil
 	privErr = errors.New("uninstall -all needs root")
 	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || !strings.Contains(err.Error(), "uninstall refused, nothing was changed") {
 		t.Fatalf("not root: %v", err)

@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -156,14 +157,14 @@ func installService(log *slog.Logger, o installOptions) (started bool, why strin
 	if os.Geteuid() != 0 {
 		return false, "", errors.New("install needs root: run it with sudo")
 	}
-	_, gid, err := ensureAccount(log, o.User)
-	if err != nil {
-		return false, "", err
-	}
 	cfgDir := filepath.Dir(o.Config)
 	envFile := filepath.Join(cfgDir, envName)
-	// the folder's refusal before anything is written: a refused folder leaves the binary as it was
+	// the folder's refusal before anything is written: a refused folder leaves the account and the binary as they were
 	if err := dedicatedFolder(cfgDir, filepath.Base(o.Config)); err != nil {
+		return false, "", err
+	}
+	_, gid, err := ensureAccount(log, o.User)
+	if err != nil {
 		return false, "", err
 	}
 	if err := installBinary(log, o.Bin); err != nil {
@@ -308,7 +309,7 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 		}
 		log.Info("removed", "binary", o.Bin)
 	} else {
-		fmt.Printf("the service is gone; %s and %s are kept (pgvigil uninstall -purge removes them).\n", filepath.Dir(o.Config), o.Bin)
+		fmt.Printf("the service is gone; %s and %s are kept (-purge removes the installer's files; the page's instances/ and sources/ go with uninstall -all).\n", filepath.Dir(o.Config), o.Bin)
 	}
 	fmt.Printf("the account %s is kept; remove it with: userdel %s\n", o.User, o.User)
 	return nil
@@ -343,10 +344,7 @@ func init() {
 			}
 			return nil
 		},
-		active: func() bool {
-			state, _ := systemctl("is-active", "pgvigil.service")
-			return state == "active"
-		},
+		active:        unitRunning,
 		others:        otherProcesses,
 		freeBytes:     freeBytes,
 		dumpDir:       "/var/backups/pgvigil",
@@ -422,6 +420,16 @@ func systemdStart() error {
 	return nil
 }
 
+// unitRunning: the unit runs or is on its way (activating: Restart='s wait or a start; reloading): an upgrade or an
+// uninstall that stops it starts it again on a refusal.
+func unitRunning() bool {
+	if !systemdRunning() {
+		return false
+	}
+	state, _ := systemctl("is-active", "pgvigil.service")
+	return state == "active" || state == "activating" || state == "reloading"
+}
+
 // otherProcesses lists the processes whose executable is bin, but the service's own main process and this one.
 func otherProcesses(bin string) ([]string, error) {
 	want, err := filepath.EvalSymlinks(bin)
@@ -484,14 +492,10 @@ func init() {
 			}
 			return nil
 		},
-		running: func() bool {
-			state, _ := systemctl("is-active", "pgvigil.service")
-			return systemdRunning() && state == "active"
-		},
-		items: linuxItems,
-		repoDSN: func(inst installOptions) string {
-			v, _ := envFileValue(filepath.Join(filepath.Dir(inst.Config), envName), "PGVIGIL_REPO_DSN")
-			return v
+		running: unitRunning,
+		items:   linuxItems,
+		repoDSN: func(inst installOptions) (string, bool, error) {
+			return hostRepoDSN(inst, filepath.Join(filepath.Dir(inst.Config), envName))
 		},
 	}
 }
@@ -516,6 +520,37 @@ func linuxItems(inst installOptions, _ bool) []removal {
 	cfgDir := filepath.Dir(inst.Config)
 	envFile := filepath.Join(cfgDir, envName)
 	var items []removal
+	// the scheduled purge README tells operators to lay down (deploy/pgvigil-purge.service and .timer, the owner's
+	// connection string in pgvigil-purge.env): its timer would run a removed binary as a removed account every day, and
+	// its env file is the repository owner's password
+	timer, purgeSvc := "/etc/systemd/system/pgvigil-purge.timer", "/etc/systemd/system/pgvigil-purge.service"
+	items = append(items, removal{what: "the scheduled purge (systemd units " + timer + " and " + purgeSvc + ")", present: present(timer) || present(purgeSvc), remove: func() error {
+		if systemdRunning() {
+			if present(timer) {
+				if out, err := systemctl("disable", "--now", "pgvigil-purge.timer"); err != nil {
+					return fmt.Errorf("systemctl disable --now pgvigil-purge.timer: %v: %s", err, out)
+				}
+			}
+			if out, err := systemctl("stop", "pgvigil-purge.service"); err != nil && present(purgeSvc) {
+				return fmt.Errorf("systemctl stop pgvigil-purge.service: %v: %s", err, out)
+			}
+		}
+		for _, f := range []string{timer, purgeSvc} {
+			if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		if systemdRunning() {
+			_, _ = systemctl("daemon-reload")
+			_, _ = systemctl("reset-failed", "pgvigil-purge.timer", "pgvigil-purge.service")
+		}
+		return nil
+	}})
+	for _, d := range []string{timer + ".d", purgeSvc + ".d"} {
+		if present(d) {
+			items = append(items, removal{what: "the purge unit's drop-in folder " + d, present: true, kept: "an operator's overrides, not the installer's: remove it by hand"})
+		}
+	}
 	items = append(items, removal{what: "the service pgvigil (systemd unit " + unitPath + ")", present: present(unitPath), remove: func() error {
 		if systemdRunning() {
 			if out, err := systemctl("disable", "--now", "pgvigil.service"); err != nil {
@@ -540,21 +575,17 @@ func linuxItems(inst installOptions, _ bool) []removal {
 		removal{what: "the configuration " + inst.Config, present: present(inst.Config), remove: removeFile(inst.Config)},
 		removal{what: "the environment file " + envFile, present: present(envFile), remove: removeFile(envFile)},
 	)
+	// the purge's env file: the one the purge unit names (EnvironmentFile=), else README's place beside the config
+	for _, f := range purgeEnvFiles(purgeSvc, filepath.Join(cfgDir, "pgvigil-purge.env")) {
+		items = append(items, removal{what: "the purge's env file " + f + " (the repository owner's connection string)", present: present(f), remove: removeFile(f)})
+	}
 	// the page's credential folders (task 204): the passwords of the monitored servers added in the page; -all takes
 	// them with the rest (a decommissioned host keeps no monitored server's password)
-	creds := []string{filepath.Join(cfgDir, "instances"), filepath.Join(cfgDir, "sources")}
-	items = append(items, removal{what: "the page's credential folders " + creds[0] + " and " + creds[1] + " (the monitored servers' passwords)",
-		present: present(creds[0]) || present(creds[1]), remove: func() error {
-			for _, d := range creds {
-				if err := os.RemoveAll(d); err != nil {
-					return err
-				}
-			}
-			return nil
-		}})
+	creds, credOwn := credentialItems(cfgDir, os.RemoveAll)
+	items = append(items, creds...)
 	// on Linux the installer writes the configuration and the environment file (the logs go to the journal); the
-	// credential folders go just above
-	own := []string{filepath.Base(inst.Config), envName, "instances", "sources"}
+	// credential folders and the purge's env file go just above
+	own := append([]string{filepath.Base(inst.Config), envName, "pgvigil-purge.env"}, credOwn...)
 	folder := removal{what: "the configuration folder " + cfgDir, present: present(cfgDir)}
 	if other := foreignFiles(cfgDir, own...); len(other) > 0 {
 		folder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
@@ -565,6 +596,25 @@ func linuxItems(inst installOptions, _ bool) []removal {
 		items = append(items, removal{what: "the dump folder " + d, present: true, kept: "the repository's dumps: yours to keep or delete"})
 	}
 	return append(items, accountItem(inst.User))
+}
+
+// purgeEnvFiles: the EnvironmentFile= files the purge unit names (a leading '-' dropped), and def (README's place) when
+// the unit names none or def is there too; each once.
+func purgeEnvFiles(unit, def string) []string {
+	var out []string
+	if b, err := os.ReadFile(unit); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(l), "="); ok && strings.TrimSpace(k) == "EnvironmentFile" {
+				if f := strings.TrimPrefix(strings.TrimSpace(v), "-"); f != "" && !slices.Contains(out, f) {
+					out = append(out, f)
+				}
+			}
+		}
+	}
+	if !slices.Contains(out, def) && (len(out) == 0 || present(def)) {
+		out = append(out, def)
+	}
+	return out
 }
 
 // accountItem: the service account goes only when install made it (accountMark) and no process runs as it.

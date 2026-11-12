@@ -28,9 +28,15 @@ A run without a terminal (a script, a configuration tool) names the database ins
 ### The order
 
 1. Every refusal before any change: not root (not elevated); a `-bin`, `-config` or `-user` that disagrees with the
-   installed service; with `-drop-repository`, the owner's connection string missing, naming a database without the
-   pgvigil schema, or naming another database than the one this host's configuration names (the same name, and the same
-   database on the same server, read through both logins); a login that may not drop the database or the roles (from
+   installed service; another process running the installed binary or its `.previous` (a `pgvigil serve` started by
+   hand or by a unit of the house, the app's): it would outlive the uninstall and keep writing, so stop it first (the
+   dry run lists it as `running`); with `-drop-repository`, the owner's connection string missing (or both
+   `-owner-dsn-file` and `-owner-dsn-env` given), naming a database without the pgvigil schema, or naming another
+   database than the one this host's configuration names (the same name, and the same database on the same server, read
+   through both logins); this host's configuration naming no repository connection string the uninstall can read
+   (read as the service reads it: an `env:` name from `/etc/pgvigil/pgvigil.env`, on Windows from the service's own
+   environment and then the machine's, never the shell's; a `file:` from its file), since then it cannot tell the
+   owner's database is this host's; a login that may not drop the database or the roles (from
    PostgreSQL 16, `DROP ROLE` needs ADMIN OPTION on each role as well as CREATEROLE: a role a superuser made gives the
    owner none, and the refusal prints the `GRANT ... WITH ADMIN OPTION` that fixes it); pg_dump older than the server;
    no room for the dump.
@@ -40,6 +46,8 @@ A run without a terminal (a script, a configuration tool) names the database ins
    stop and again after): a collector on another host writes within a minute, and its write refuses the drop. Any other
    session on the database (a `pgvigil serve`, Grafana, a psql; every backend but an autovacuum worker, which
    `DROP DATABASE` ends by itself) refuses it too; the drop never forces a session off. A refusal here, or Ctrl-C during the watch, starts the service again: the host is as it was.
+   A scheduled `pgvigil purge` or `pgvigil alerts` on another host holds no session between its runs and writes no
+   `collection_dates`, so it is not seen: stop it there first, or its next run fails.
 5. The dump (`pg_dump --format=custom`, 0600, to `/var/backups/pgvigil` or `%ProgramData%\pgvigil-backups` by default;
    `-dump <file>` names it, `-no-dump` takes none). A failed dump starts the service again.
 6. `DROP DATABASE`, run from the server's maintenance database (`postgres`, else `template1`), then the roles, one
@@ -50,11 +58,16 @@ A run without a terminal (a script, a configuration tool) names the database ins
    `pgvigil` under HKLM and HKCU); the Programs and Features entries; the policy keys
    (`HKLM\Software\Policies\pgvigil`) and this user's settings (`HKCU\Software\pgvigil`); the machine PATH entry
    `install.ps1` added.
-8. The service definition (Linux: the unit, disabled, `daemon-reload`; Windows: the service, with its virtual account
-   `NT SERVICE\pgvigil`).
-9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` on Windows), the logs, the
-   page's credential folders `instances/` and `sources/` beside the configuration (the passwords of the monitored
-   servers added in the page: a decommissioned host keeps none of them) and the configuration folder.
+8. The scheduled purge README sets up: on Linux the timer and its service (`/etc/systemd/system/pgvigil-purge.timer`
+   and `.service`, disabled and stopped, `daemon-reload`); on Windows each scheduled task whose action runs a pgvigil
+   executable with `purge` (deleted with `schtasks /Delete`). Then the service definition (Linux: the unit, disabled,
+   `daemon-reload`; Windows: the service, with its virtual account `NT SERVICE\pgvigil`).
+9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` on Windows), the purge's env
+   file (Linux: the `EnvironmentFile=` the purge unit names, `/etc/pgvigil/pgvigil-purge.env` by README: the
+   repository owner's connection string) or its configuration copy (Windows: `pgvigil-purge.yaml` beside the
+   configuration), the logs, the page's credential folders `instances/` and `sources/` beside the configuration, each
+   listed with its file count (the passwords of the monitored servers added in the page: a decommissioned host keeps
+   none of them), and the configuration folder.
 10. Linux: the service account, last.
 
 A step that fails stops the run and names what is left; the same command runs again from there (the configuration
@@ -70,8 +83,8 @@ Roles belong to the server (the cluster), not to the database, so a role goes on
 - The groups `pgvigil_collector`, `pgvigil_reader`, `pgvigil_auth` and `pgvigil_alerter` are dropped, except one that
   another database records (`pg_shdepend`: another pgvigil repository on the same server, a grant elsewhere), one that
   is a member of a role outside pgvigil, a superuser, or the role the uninstall connects as. Each one kept is named.
-- A login is dropped only when it is the one this host's configuration names (`PGVIGIL_REPO_DSN` in
-  `/etc/pgvigil/pgvigil.env`, `repo.dsn` on Windows), every pgvigil group it is in is dropped, nothing in another
+- A login is dropped only when it is the one this host's configuration names (its repository connection string read as
+  the service reads it: `PGVIGIL_REPO_DSN` in `/etc/pgvigil/pgvigil.env` by default, `repo.dsn` on Windows), every pgvigil group it is in is dropped, nothing in another
   database records it and it has no session there. Every other member of the groups (the UI's login, a Grafana login,
   another host's collector) is listed with its `DROP ROLE` line for its owner to run.
 
@@ -83,7 +96,12 @@ Named on every run, never removed:
 - Linux: a service account the install did not create. `pgvigil install` marks the account it creates (its comment is
   `created by pgvigil install`); an account that was there before, or one made by an earlier release, is kept with its
   `userdel` line. A marked account with a process still running as it is kept too.
-- Linux: an operator's drop-in folder `/etc/systemd/system/pgvigil.service.d`, a configuration folder (or, on
+- A credential folder (`instances/`, `sources/`) that is a link or a junction to another place: removing the link
+  would leave the passwords where it points, so it is named with its target for you to clear by hand.
+- Windows: the repository owner's connection-string file that `pgvigil-purge.yaml` names (`file:<path>`, a place you
+  chose): named, for you to delete when no other task needs it.
+- Linux: an operator's drop-in folder `/etc/systemd/system/pgvigil.service.d` (or `pgvigil-purge.timer.d`,
+  `pgvigil-purge.service.d`), a configuration folder (or, on
   Windows, a binary folder) that holds files the installer did not write, and the account's group when another account
   is a member of it.
 - Windows: another user's own app (`C:\Users\<name>\AppData\Local\pgvigil`): its keys live in that user's registry

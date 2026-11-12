@@ -21,6 +21,8 @@ import (
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
 const (
@@ -248,7 +250,7 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 			log.Info("folder kept: it still holds other files", "path", filepath.Dir(o.Bin))
 		}
 	} else {
-		fmt.Printf("the service is gone; %s and %s are kept (pgvigil uninstall -purge removes them).\n", dataDir, filepath.Dir(o.Bin))
+		fmt.Printf("the service is gone; %s and %s are kept (-purge removes the installer's files; the page's instances\\ and sources\\ go with uninstall -all).\n", dataDir, filepath.Dir(o.Bin))
 	}
 	return nil
 }
@@ -285,6 +287,21 @@ func serviceEnvironment(name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// machineEnvironment reads a variable of the machine environment (HKLM ...\Session Manager\Environment) that a service
+// starts with; never this process's own (a variable set after boot is in an elevated shell, not in services.exe's).
+func machineEnvironment(name string) (string, bool) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, machineEnv, registry.QUERY_VALUE)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = k.Close() }()
+	v, _, err := k.GetStringValue(name)
+	if err != nil {
+		return "", false
+	}
+	return v, true
 }
 
 // pgvigilService runs the scheduler under the service control manager.
@@ -382,6 +399,7 @@ func replaceFile(tmp, dst string) error { return os.Rename(tmp, dst) }
 
 func init() {
 	serviceEnv = serviceEnvironment
+	machineEnvValue = machineEnvironment
 	upgradeHooksOf = &upgradeHooks{
 		installed:     installedServiceConfig,
 		stop:          stopInstalled,
@@ -419,7 +437,8 @@ func init() {
 			}
 			defer func() { _ = sv.Close() }()
 			st, err := sv.Query()
-			return err == nil && st.State == svc.Running
+			// running or on its way (a start, a continue): an upgrade that stops it starts it again on a refusal
+			return err == nil && (st.State == svc.Running || st.State == svc.StartPending || st.State == svc.ContinuePending)
 		},
 	}
 }
@@ -595,15 +614,44 @@ func init() {
 			return err == nil && st.State != svc.Stopped
 		},
 		items: windowsItems,
-		repoDSN: func(inst installOptions) string {
-			b, err := os.ReadFile(filepath.Join(filepath.Dir(inst.Config), dsnFileName))
-			if err != nil {
-				return ""
-			}
-			line, _, _ := strings.Cut(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
-			return strings.TrimSpace(line)
-		},
+		// the service's own resolution: a file: (repo.dsn) from its file, an env: from the service's registry Environment,
+		// then the machine environment
+		repoDSN: func(inst installOptions) (string, bool, error) { return hostRepoDSN(inst, "") },
 	}
+}
+
+// purgeYAML is README's configuration copy for the Windows purge task (its repository.dsn the owner's file: DSN).
+const purgeYAML = "pgvigil-purge.yaml"
+
+// purgeTasks lists the scheduled tasks whose action runs a pgvigil executable with the purge command, as \path\name
+// (README fixes no task name, so the actions are read, through PowerShell's ScheduledTasks module).
+func purgeTasks() ([]string, error) {
+	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+		`Get-ScheduledTask | Where-Object { @($_.Actions | Where-Object { $_.Execute -like '*pgvigil*' -and " $($_.Arguments) " -match '\spurge\s' }).Count -gt 0 } | ForEach-Object { $_.TaskPath + $_.TaskName }`).Output()
+	if err != nil {
+		return nil, err
+	}
+	var tasks []string
+	for _, l := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			tasks = append(tasks, l)
+		}
+	}
+	return tasks, nil
+}
+
+// purgeYAMLItems: README's purge configuration beside the config, removed; the owner's connection-string file its
+// repository.dsn names (file:<path>, a place the operator chose) is named and kept.
+func purgeYAMLItems(cfgDir string) []removal {
+	f := filepath.Join(cfgDir, purgeYAML)
+	items := []removal{{what: "the purge's configuration " + f, present: exists(f), remove: func() error { return removeNowOrAtRestart(f) }}}
+	if cfg, err := config.Load(f); err == nil {
+		if p, ok := strings.CutPrefix(cfg.Repository.DSNRaw, "file:"); ok && exists(p) {
+			p = filepath.Clean(p)
+			items = append(items, removal{what: "the repository owner's connection string " + p + " (named by " + purgeYAML + ")", present: true, kept: "a file of the operator's choosing: delete it when no other task needs it"})
+		}
+	}
+	return items
 }
 
 func exists(p string) bool {
@@ -741,6 +789,23 @@ func windowsItems(inst installOptions, found bool) []removal {
 	binDir := filepath.Dir(inst.Bin)
 	cfgDir := filepath.Dir(inst.Config)
 	var items []removal
+	// README's daily purge: a scheduled task running pgvigil.exe purge; it would run a removed binary every day
+	tasks, terr := purgeTasks()
+	switch {
+	case terr != nil:
+		items = append(items, removal{what: "a scheduled task running pgvigil.exe purge", present: true, kept: "the scheduled tasks could not be read (" + terr.Error() + "): look in Task Scheduler and delete it there"})
+	case len(tasks) == 0:
+		items = append(items, removal{what: "a scheduled task running pgvigil.exe purge"})
+	}
+	for _, t := range tasks {
+		items = append(items, removal{what: "the scheduled task " + t + " (pgvigil.exe purge)", present: true, remove: func() error {
+			out, err := exec.Command("schtasks.exe", "/Delete", "/TN", t, "/F").CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("schtasks /Delete /TN %s: %v: %s", t, err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		}})
+	}
 	// the app always installs to %ProgramFiles%\pgvigil (app/win_install.go), whatever -bin the collector took
 	appHome := filepath.Join(programFiles(), "pgvigil")
 	apps, _ := filepath.Glob(filepath.Join(appHome, "pgvigil-app.exe*"))
@@ -865,19 +930,10 @@ func windowsItems(inst installOptions, found bool) []removal {
 	if other := foreignFiles(binDir, binOwn...); len(other) > 0 {
 		binFolder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
 	}
-	// the installer writes the configuration, repo.dsn and the logs folder; the app's own subfolder and the page's
-	// credential folders go before it
-	cfgOwn := []string{filepath.Base(inst.Config), dsnFileName, "logs", "app", "instances", "sources"}
-	creds := []string{filepath.Join(cfgDir, "instances"), filepath.Join(cfgDir, "sources")}
-	credFolders := removal{what: "the page's credential folders " + creds[0] + " and " + creds[1] + " (the monitored servers' passwords)",
-		present: exists(creds[0]) || exists(creds[1]), remove: func() error {
-			for _, d := range creds {
-				if err := removeTreeNowOrAtRestart(d); err != nil {
-					return err
-				}
-			}
-			return nil
-		}}
+	// the installer writes the configuration, repo.dsn and the logs folder; the app's own subfolder, the page's
+	// credential folders and README's purge configuration go before it
+	creds, credOwn := credentialItems(cfgDir, removeTreeNowOrAtRestart)
+	cfgOwn := append([]string{filepath.Base(inst.Config), dsnFileName, "logs", "app", purgeYAML}, credOwn...)
 	cfgFolder := removal{what: "the configuration folder " + cfgDir + " (the configuration, " + dsnFileName + ", the logs)", present: exists(cfgDir), remove: func() error {
 		_ = os.RemoveAll(filepath.Join(cfgDir, "logs"))
 		return removeFolder(cfgDir, cfgOwn...)
@@ -889,7 +945,10 @@ func windowsItems(inst installOptions, found bool) []removal {
 		removal{what: "the binary " + inst.Bin, present: exists(inst.Bin), remove: func() error { return removeNowOrAtRestart(inst.Bin) }},
 		removal{what: "the previous binary " + prev, present: exists(prev), remove: func() error { return removeNowOrAtRestart(prev) }},
 		binFolder,
-		credFolders,
+	)
+	items = append(items, creds...)
+	items = append(items, purgeYAMLItems(cfgDir)...)
+	items = append(items,
 		cfgFolder,
 		removal{what: "the bundled Windows store (not in this release: nothing to look for)"},
 	)
