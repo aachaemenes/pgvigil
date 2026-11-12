@@ -22,6 +22,8 @@ import (
 //	  series      the window in about 120 steps (five minutes at least): executions per second, CPU ms per second
 //	              and duration ms per second over all procedures (db= keeps one database's)
 //	  intervals   with db_id= and object=: that procedure's own reads, newest first (1,000 at most)
+//	  history     with db_id= and object=: that procedure in about 120 steps: PerformanceMonitor's four procedure
+//	              history metrics (sqlMSSQLProcHistory)
 //	  compare, compare_windows   with compare=prev|day|week: PerformanceMonitor's compare of the window against
 //	              the same span earlier, and the two windows' reads (sqlMSSQLProcCompare)
 //
@@ -132,6 +134,32 @@ SELECT s.snapshot_at, s.interval_secs, s.executions, s.spills, round(s.cpu_us / 
  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.database_id = $4 AND s.object_id = $5
  ORDER BY s.snapshot_at DESC
  LIMIT 1000`
+
+// sqlMSSQLProcHistory: one procedure ($4 database id, $5 object id) in steps of $6 seconds, with PerformanceMonitor's
+// procedure history metrics (stats-history.js:32-37, 52; DurationTrendRouting.cs:666-667, 785; MIT, Erik Darling,
+// Darling Data LLC): Duration (ms/s) = its duration over the seconds the step's reads cover, Executions (per second)
+// likewise, Avg Duration (ms) = the first over the second (its duration per execution), Avg CPU (ms) = its CPU per
+// execution. A step whose reads hold no run of it reads 0 per second and no averages.
+const sqlMSSQLProcHistory = `
+WITH st AS (
+  SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $6) * $6) AS step, sum(r.interval_secs)::float8 AS secs, count(*) AS reads
+    FROM pgvigil.mssql_proc_read r
+   WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+   GROUP BY 1
+), p AS (
+  SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $6) * $6) AS step, sum(s.executions) AS e,
+         sum(s.cpu_us) AS c, sum(s.duration_us) AS d
+    FROM pgvigil.mssql_proc_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.database_id = $4 AND s.object_id = $5
+   GROUP BY 1
+)
+SELECT st.step AS snapshot_at, st.reads, coalesce(p.e, 0)::bigint AS executions,
+       round((coalesce(p.d, 0) / 1000.0 / nullif(st.secs, 0))::numeric, 3) AS duration_ms_s,
+       round((coalesce(p.e, 0) / nullif(st.secs, 0))::numeric, 4) AS executions_s,
+       round(p.d / 1000.0 / nullif(p.e, 0), 3) AS avg_duration_ms,
+       round(p.c / 1000.0 / nullif(p.e, 0), 3) AS avg_cpu_ms
+  FROM st LEFT JOIN p ON p.step = st.step
+ ORDER BY 1`
 
 // sqlMSSQLProcCompare: PerformanceMonitor's compare (top-compare.js, MIT, Erik Darling, Darling Data LLC) on the
 // procedures' stored reads, keyed as PerformanceMonitor keys them, by database and name ([database_name,
@@ -272,7 +300,8 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("db_id and object must both be given as the procedure's database id and object id"))
 			return
 		}
-		parts = append(parts, part{"intervals", sqlMSSQLProcIntervals, []any{id, from, to, dbID, obj}})
+		parts = append(parts, part{"intervals", sqlMSSQLProcIntervals, []any{id, from, to, dbID, obj}},
+			part{"history", sqlMSSQLProcHistory, []any{planEach, id, from, to, dbID, obj, procStep(to.Sub(from).Seconds())}})
 	}
 	s.multiPart(w, r, parts)
 }

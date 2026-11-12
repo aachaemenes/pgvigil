@@ -50,6 +50,13 @@
 #     days) over 14 days of 1-minute intervals at 250 kept plans each (the collector's ceiling: 5 lists of 50).
 #  G. the pages in headless Chromium (light): the Query Store's Top with its compare grid (= the API's rows), Regressed
 #     with q_to's and q_err's rows, Plan cache and Procedures with their compare and new columns; no error box.
+#  H. DONE-2's reads (PostgreSQL only, on F's seed and synthetic rows): the heatmap's cells (duration and executions,
+#     24 h, 10-minute bins) = a hand count of the stored samples (distinct (database, query) per cell, the most-executed
+#     by executions summed, the newest 1,000, n_cells all); the heatmap at 24 h and 7 days at 761 and 3,000 rows a read
+#     under 10 s (eight runs each); 8 days refused 400 with 'pick 7 days or less'; one query's and one procedure's history
+#     sum their executions = a hand sum, about 120 steps, under 10 s over 7 days; the Query Store overhead lists the
+#     QDS_* waits but PerformanceMonitor's sleep waits, per hour over the measured seconds; the memory clerk's captures,
+#     samples, latest and max.
 # NOT PROVEN HERE: SQL Server 2016 (no total_spills: the column check's unit test), Managed Instance, a readable
 # secondary; the pages' shots and click table (DONE-2).
 set -euo pipefail
@@ -552,6 +559,154 @@ for what in "compare:from=$F7&to=$T7&compare=week&part=compare" "regressed:from=
   done
 done
 echo "ok   F: the Query Store over $NQ stored rows (14 days, 1-minute intervals, 250 kept plans each), through the API (s, eight runs each):$TQ"
+
+echo "== H. DONE-2's reads: the heatmap, the histories, the Query Store overhead =="
+# H1. the heatmap's cells = a hand count of the stored samples (F's seed at 761 rows a read, 24 hours: 10-minute bins)
+HF=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:00Z); HT=$(date -u +%Y-%m-%dT%H:%M:00Z)
+for metric in duration executions; do
+  api "mssql/plancache?instance=$IID_761&from=$HF&to=$HT&part=heatmap&metric=$metric" "h-$metric.json"
+done
+psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "COPY (SELECT extract(epoch FROM snapshot_at)::bigint, database_id, query_key, executions, duration_us
+    FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID_761 AND snapshot_at > '$HF' AND snapshot_at <= '$HT' AND executions > 0) TO STDOUT WITH CSV" > "$TMPD/h.csv"
+python3 - "$TMPD" <<'PYEND' || fail "H: the heatmap's cells differ from the hand count (above)"
+import sys, csv, json
+from datetime import datetime
+d = sys.argv[1]
+rows = [(int(a), int(b), c, int(e), int(u)) for a, b, c, e, u in csv.reader(open(f"{d}/h.csv"))]
+def bucket(num, den):   # PerformanceMonitor's seven log10 buckets of num / den, in integers (no float edge)
+    for k, lim in enumerate((1, 10, 100, 1000, 10000, 100000)):
+        if num < lim * den: return k
+    return 6
+for metric in ('duration', 'executions'):
+    j = json.load(open(f"{d}/h-{metric}.json"))['heatmap']
+    api = [dict(zip(j['columns'], r)) for r in j['rows']]
+    if not api: print(f"DIFF {metric}: no cell"); sys.exit(1)
+    binm = api[0]['bin_minutes']
+    if binm != 10: print(f"DIFF {metric}: bin {binm} min, PerformanceMonitor's at 24 h is 10"); sys.exit(1)
+    cells = {}
+    for ts, db, key, e, dur in rows:
+        b = ts // 600 * 600
+        k = bucket(dur, 1000 * e) if metric == 'duration' else bucket(e, 1)
+        c = cells.setdefault((b, k), {})
+        c[(db, key)] = c.get((db, key), 0) + e
+    hand = {}
+    for (b, k), qs in cells.items():
+        top = sorted(qs.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[0]
+        hand[(b, k)] = (len(qs), sum(qs.values()), top[0][0], top[0][1], top[1])
+    want = sorted(hand, key=lambda x: (-x[0], x[1]))[:1000]
+    got = {(int(datetime.fromisoformat(r['time_bin'].replace('Z', '+00:00')).timestamp()), r['bucket']):
+           (r['queries'], r['executions'], r['database_id'], r['query_key'], r['top_executions']) for r in api}
+    bad = [x for x in want if got.get(x) != hand[x]] + [x for x in got if x not in hand]
+    n_cells = api[0]['n_cells']
+    if bad or len(got) != len(want) or n_cells != len(hand):
+        print(f"DIFF {metric}: {len(bad)} cells differ, the API {len(got)} of {n_cells}, the hand {len(want)} of {len(hand)}; first {bad[:3]}",
+              [(got.get(x), hand.get(x)) for x in bad[:3]]); sys.exit(1)
+    print(f"H {metric}: {len(got)} cells of {n_cells} = the hand count over {len(rows)} stored samples (distinct queries {sum(v[0] for v in hand.values())})")
+PYEND
+echo "ok   H: the heatmap's cells (duration and executions, 24 h, 10-minute bins) = a hand count of the stored samples: distinct (database, query) per cell, the most-executed by executions summed, the newest 1,000"
+# H2. the heatmap timed at 24 h and 7 days at 761 and 3,000 rows a read (eight runs each: past the fifth, where a
+# prepared statement may turn generic), the fail line 10 s
+TH=""
+for spec in 761 3000; do
+  eval "IID=\$IID_$spec"
+  for span in 24h 7d; do
+    [[ $span == 24h ]] && HF=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:%SZ) || HF=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ)
+    HT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    for run in 1 2 3 4 5 6 7 8; do
+      tt=$(curl -s -o "$TMPD/hh.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$HF&to=$HT&part=heatmap")
+      [[ "${tt%% *}" == 200 ]] || fail "H: the heatmap at $spec rows a read over $span answered ${tt%% *}: $(head -c 300 "$TMPD/hh.json")"
+      python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "H: the heatmap at $spec rows a read over $span took ${tt##* } s (the fail line is 10 s)"
+      TH+=" $spec/$span:${tt##* }"
+    done
+  done
+done
+echo "ok   H: the heatmap through the API (s, eight runs each):$TH"
+# a range past PerformanceMonitor's 168 h reach is refused with its words
+c=$(curl -s -o "$TMPD/h8.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_761&from=$(date -u -d '-8 days' +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)&part=heatmap")
+[[ "$c" == 400 ]] && grep -q 'pick 7 days or less' "$TMPD/h8.json" || fail "H: 8 days answered $c: $(head -c 200 "$TMPD/h8.json")"
+echo "ok   H: 8 days answered 400 'the heatmap reaches 7 days: pick 7 days or less'"
+# H3. one query's history (plan cache) and one procedure's history: their executions = a hand sum; 7 days timed
+F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+PRI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tpr', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+for back in 8 0; do pq "SELECT pgvigil.ensure_month_partition('mssql_proc_sample', now() - interval '$back days'), pgvigil.ensure_month_partition('mssql_proc_read', now() - interval '$back days')" >/dev/null; done
+pq "INSERT INTO pgvigil.mssql_proc_read (instance_id, snapshot_at, interval_secs, procs)
+      SELECT $PRI, t, 300, 1000 FROM generate_series(now() - interval '7 days 1 hour', now(), interval '5 minutes') t" >/dev/null
+pq "INSERT INTO pgvigil.mssql_proc_sample (instance_id, snapshot_at, database_id, object_id, database_name, schema_name, object_name, type_desc,
+      executions, cpu_us, duration_us, logical_reads, physical_reads, logical_writes, interval_secs)
+    SELECT $PRI, t, 5 + (g % 3), 1000 + g, 'db' || (g % 3), 'dbo', 'p' || g, 'SQL_STORED_PROCEDURE', e, e * 700, e * 1000, e * 10, 0, 0, 300
+      FROM (SELECT t, g, 1 + (random() * 100)::bigint AS e FROM generate_series(now() - interval '7 days 1 hour', now(), interval '5 minutes') t, generate_series(1, 1000) g) a" >/dev/null
+psql "$PGDSN" -Xqc "VACUUM (ANALYZE) pgvigil.mssql_proc_sample, pgvigil.mssql_proc_read" >/dev/null
+TY=""
+for spec in 761 3000; do
+  eval "IID=\$IID_$spec"
+  read -r KDB KEY <<<"$(pq "SELECT database_id, query_key FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID AND snapshot_at > now() - interval '1 hour' ORDER BY executions DESC, query_key LIMIT 1" | tr '|' ' ')"
+  for run in 1 2 3 4 5 6 7 8; do
+    tt=$(curl -s -o "$TMPD/y1.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$F7&to=$T7&db_id=$KDB&key=$KEY&part=history")
+    [[ "${tt%% *}" == 200 ]] || fail "H: the plan cache history at $spec answered ${tt%% *}: $(head -c 300 "$TMPD/y1.json")"
+    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "H: the plan cache history at $spec took ${tt##* } s (the fail line is 10 s)"
+    TY+=" query/$spec:${tt##* }"
+  done
+  hand=$(pq "SELECT coalesce(sum(executions), 0) FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID AND database_id = $KDB AND query_key = '$KEY' AND snapshot_at > '$F7' AND snapshot_at <= '$T7'")
+  got=$(jq '[.history.columns as $c | .history.rows[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add | .executions] | add' "$TMPD/y1.json")
+  [[ "$got" == "$hand" ]] || fail "H: the plan cache history of $KEY at $spec sums $got executions, the hand $hand"
+  steps=$(jq '.history.rows | length' "$TMPD/y1.json"); [[ $steps -ge 100 && $steps -le 130 ]] || fail "H: the history has $steps steps (about 120 wanted)"
+done
+for run in 1 2 3 4 5 6 7 8; do
+  tt=$(curl -s -o "$TMPD/y2.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/procs?instance=$PRI&from=$F7&to=$T7&db_id=6&object=1001&part=history")
+  [[ "${tt%% *}" == 200 ]] || fail "H: the procedure history answered ${tt%% *}: $(head -c 300 "$TMPD/y2.json")"
+  python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "H: the procedure history took ${tt##* } s (the fail line is 10 s)"
+  TY+=" procedure:${tt##* }"
+done
+hand=$(pq "SELECT sum(executions) FROM pgvigil.mssql_proc_sample WHERE instance_id = $PRI AND database_id = 6 AND object_id = 1001 AND snapshot_at > '$F7' AND snapshot_at <= '$T7'")
+python3 - "$TMPD/y2.json" "$hand" <<'PYEND' || fail "H: the procedure history (above)"
+import sys, json
+j = json.load(open(sys.argv[1]))['history']; rows = [dict(zip(j['columns'], r)) for r in j['rows']]
+got = sum(r['executions'] for r in rows)
+if got != int(sys.argv[2]): print(f"DIFF executions {got}, the hand {sys.argv[2]}"); sys.exit(1)
+# the seed's duration is 1 ms and its CPU 0.7 ms per execution: every step that ran says so, in each metric's terms
+for r in rows:
+    if r['executions'] and (float(r['avg_duration_ms']) != 1 or float(r['avg_cpu_ms']) != 0.7
+                            or abs(float(r['duration_ms_s']) - float(r['executions_s'])) > 0.002):
+        print('DIFF step', r); sys.exit(1)
+print(f"H procedure history: {len(rows)} steps, {got} executions = the hand sum; Avg Duration 1 ms, Avg CPU 0.7 ms, Duration (ms/s) = Executions (per second) at 1 ms each")
+PYEND
+echo "ok   H: the histories' executions = the hand sums (one query at 761 and 3,000 rows a read, one procedure of 1,000 a read), 7 days through the API (s, eight runs each):$TY"
+# H4. the Query Store overhead and memory clerk on synthetic reads: one an hour of one-minute wait reads, QDS_STMT
+# 100 ms and 2 tasks in each, QDS_DB_DISK 50 ms in 30 of them, two of PerformanceMonitor's sleep waits and a
+# PAGEIOLATCH_SH left out; three clerk reads, MEMORYCLERK_QUERYDISKSTORE 2 MB then 4 MB, then out of the top 25
+OVI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tov', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+pq "SELECT pgvigil.ensure_month_partition('mssql_wait_sample', now() - interval '2 hours'), pgvigil.ensure_month_partition('mssql_wait_sample', now()),
+           pgvigil.ensure_month_partition('mssql_memory_clerk', now() - interval '2 hours'), pgvigil.ensure_month_partition('mssql_memory_clerk', now())" >/dev/null
+pq "INSERT INTO pgvigil.mssql_wait_sample (instance_id, snapshot_at, wait_type, category, is_benign, waiting_tasks, wait_ms, signal_ms, interval_secs)
+    SELECT $OVI, t, w, 'Other', w LIKE '%SLEEP' OR w = 'QDS_ASYNC_QUEUE', CASE w WHEN 'QDS_STMT' THEN 2 ELSE 1 END,
+           CASE w WHEN 'QDS_STMT' THEN 100 WHEN 'QDS_DB_DISK' THEN 50 ELSE 60000 END, 0, 60
+      FROM generate_series(date_trunc('minute', now()) - interval '59 minutes', date_trunc('minute', now()), interval '1 minute') WITH ORDINALITY g(t, n),
+           unnest(ARRAY['QDS_STMT', 'QDS_DB_DISK', 'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP', 'QDS_ASYNC_QUEUE', 'PAGEIOLATCH_SH']) w
+     WHERE w <> 'QDS_DB_DISK' OR n % 2 = 0" >/dev/null
+pq "INSERT INTO pgvigil.mssql_memory_clerk (instance_id, snapshot_at, clerk_type, pages_kb)
+    VALUES ($OVI, date_trunc('minute', now()) - interval '50 minutes', 'MEMORYCLERK_QUERYDISKSTORE', 2048), ($OVI, date_trunc('minute', now()) - interval '50 minutes', 'MEMORYCLERK_SQLBUFFERPOOL', 900000),
+           ($OVI, date_trunc('minute', now()) - interval '30 minutes', 'MEMORYCLERK_QUERYDISKSTORE', 4096), ($OVI, date_trunc('minute', now()) - interval '30 minutes', 'MEMORYCLERK_SQLBUFFERPOOL', 900000),
+           ($OVI, date_trunc('minute', now()) - interval '10 minutes', 'MEMORYCLERK_SQLBUFFERPOOL', 900000)" >/dev/null
+OF=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); OT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)
+api "mssql/querystore?instance=$OVI&from=$OF&to=$OT&part=overhead" ov.json
+api "mssql/querystore?instance=$OVI&from=$OF&to=$OT&part=qs_memory" om.json
+python3 - "$TMPD" <<'PYEND' || fail "H: the Query Store overhead (above)"
+import sys, json
+d = sys.argv[1]
+def objs(f, p):
+    j = json.load(open(f"{d}/{f}"))[p]; return [dict(zip(j['columns'], r)) for r in j['rows']]
+ov = {r['wait_type']: r for r in objs('ov.json', 'overhead')}
+bad = []
+if set(ov) != {'QDS_STMT', 'QDS_DB_DISK'}: bad.append(f"types {sorted(ov)}")
+s = ov.get('QDS_STMT', {}); k = ov.get('QDS_DB_DISK', {})
+if (s.get('wait_ms'), s.get('waiting_tasks'), s.get('rows'), float(s.get('measured_secs') or 0), float(s.get('wait_ms_per_hour') or 0)) != (6000, 120, 60, 3600.0, 6000.0): bad.append(f"QDS_STMT {s}")
+if (k.get('wait_ms'), k.get('rows'), float(k.get('wait_ms_per_hour') or 0)) != (1500, 30, 1500.0): bad.append(f"QDS_DB_DISK {k}")
+m = objs('om.json', 'qs_memory')[0]
+if (m['captures'], m['clerk_samples'], float(m['latest_mb']), float(m['max_mb'])) != (3, 2, 4.0, 4.0) or m['latest_clerk_capture'] == m['latest_capture']: bad.append(f"clerk {m}")
+for b in bad: print('DIFF', b)
+sys.exit(1 if bad else 0)
+PYEND
+echo "ok   H: the overhead lists QDS_STMT (6,000 ms, 120 tasks, 60 rows, 3,600 measured s, 6,000 ms an hour) and QDS_DB_DISK (1,500 ms an hour over the same measured time), not the sleep waits nor PAGEIOLATCH_SH; the clerk: 3 captures, in 2, 4 MB latest and max, not in the newest capture"
 
 echo "== G. the pages in headless Chromium =="
 CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')

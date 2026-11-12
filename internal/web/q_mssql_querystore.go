@@ -500,6 +500,56 @@ SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_querystore_fi
  WHERE instance_id = $1
  ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
 
+// sqlMSSQLQSOverhead: Query Store's own waits, PerformanceMonitor's Query Store overhead (DarlingQueryStoreClutterReader.cs
+// :523-543, QueryStoreClutter.cs:304-305; MIT, Erik Darling, Darling Data LLC), from the stored one-minute wait
+// deltas (mssql_wait_sample, 0064): every QDS_* type but the four sleep waits PerformanceMonitor leaves out
+// (IgnoredWaitDefaults.cs:100-103), per type its wait ms, waiting tasks, rows and the last read that had it, and the
+// wait ms per hour over the measured seconds. The measured seconds are what every wait read of the window covers
+// (a type that did not grow in a read stores no row there, so its own rows would undercount the time). One row with
+// no wait type when the window has wait reads and no QDS_* wait grew; none when it has no wait read. Per server,
+// never per database (PerformanceMonitor's 'qs_overhead is per SERVER'). PerformanceMonitor's unrateable rows are
+// left out: pgvigil stores no delta across a restart or a reset (0064), so they would always read 0.
+const sqlMSSQLQSOverhead = `
+WITH rd AS (
+  SELECT s.snapshot_at, max(s.interval_secs) AS secs
+    FROM pgvigil.mssql_wait_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+   GROUP BY 1
+), m AS (
+  SELECT coalesce(sum(rd.secs), 0)::float8 AS measured_secs, count(*) AS wait_reads FROM rd
+), w AS (
+  SELECT s.wait_type, sum(s.wait_ms)::bigint AS wait_ms, sum(s.waiting_tasks)::bigint AS waiting_tasks, count(*) AS rows,
+         max(s.snapshot_at) AS last_seen
+    FROM pgvigil.mssql_wait_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.wait_type LIKE 'QDS\_%'
+     AND s.wait_type NOT IN ('QDS_ASYNC_QUEUE', 'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP', 'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP',
+                             'QDS_SHUTDOWN_QUEUE')
+   GROUP BY 1
+)
+SELECT w.wait_type, w.wait_ms, w.waiting_tasks, w.rows, w.last_seen, m.measured_secs, m.wait_reads,
+       round((3600.0 * w.wait_ms / nullif(m.measured_secs, 0))::numeric, 1) AS wait_ms_per_hour
+  FROM m LEFT JOIN w ON true
+ WHERE m.wait_reads > 0
+ ORDER BY w.wait_ms DESC NULLS LAST, w.wait_type`
+
+// sqlMSSQLQSMemory: the Query Store's memory clerk, MEMORYCLERK_QUERYDISKSTORE (PerformanceMonitor's
+// QueryStoreMemoryClerk, DarlingQueryStoreClutterReader.cs:89, and its line, ViewerDataService.QueryStoreClutter.cs
+// :294-301): the window's clerk reads (captures), the reads that held it, its MB at the latest of those and its
+// largest, and the newest read. pgvigil keeps the 25 largest clerks of each read (memory.go), so a read without it
+// ranked it lower: a rank, not a zero.
+const sqlMSSQLQSMemory = `
+WITH cap AS (
+  SELECT DISTINCT c.snapshot_at FROM pgvigil.mssql_memory_clerk c
+   WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3
+), k AS (
+  SELECT c.snapshot_at, c.pages_kb FROM pgvigil.mssql_memory_clerk c
+   WHERE c.instance_id = $1 AND c.snapshot_at > $2 AND c.snapshot_at <= $3 AND c.clerk_type = 'MEMORYCLERK_QUERYDISKSTORE'
+)
+SELECT (SELECT count(*) FROM cap) AS captures, (SELECT max(cap.snapshot_at) FROM cap) AS latest_capture,
+       (SELECT count(*) FROM k) AS clerk_samples, (SELECT max(k.snapshot_at) FROM k) AS latest_clerk_capture,
+       (SELECT round(k.pages_kb / 1024.0, 1) FROM k ORDER BY k.snapshot_at DESC LIMIT 1) AS latest_mb,
+       (SELECT round(max(k.pages_kb) / 1024.0, 1) FROM k) AS max_mb`
+
 // one query ($2 the database, $3 the query id, $4 its hash: a cleared store gives the id to another statement)
 const sqlMSSQLQSQueryOne = `
 SELECT q.database_name, q.query_id, q.query_hash, q.object_name, q.query_text AS query, q.parameterization, q.plan_count,
@@ -663,6 +713,13 @@ func (s *Server) MSSQLQueryStore(w http.ResponseWriter, r *http.Request) {
 		{"tuning", sqlMSSQLQSTuning, win},
 		{"tuning_options", sqlMSSQLQSTuningOptions, []any{id, db}},
 		{"checks", sqlMSSQLQSChecks, []any{id}},
+	}
+	// the overhead and the memory clerk are per server: read only when ?part= names them (the Queries page's line)
+	switch r.URL.Query().Get("part") {
+	case "overhead":
+		parts = append(parts, part{"overhead", sqlMSSQLQSOverhead, []any{planEach, id, from, to}})
+	case "qs_memory":
+		parts = append(parts, part{"qs_memory", sqlMSSQLQSMemory, []any{planEach, id, from, to}})
 	}
 	// the compare reads both windows: only when a shift is asked for (the page asks for it apart, part=compare)
 	if shift, on, err := compareShift(r.URL.Query().Get("compare"), from, to); err != nil {

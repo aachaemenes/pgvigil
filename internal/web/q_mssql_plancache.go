@@ -1,7 +1,10 @@
 package web
 
 import (
+	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +33,10 @@ const planEach = pgx.QueryExecModeDescribeExec
 //	  findings   the plan cache findings of the instance
 //	  compare, compare_windows   with compare=prev|day|week: PerformanceMonitor's compare of the window against
 //	             the same span earlier, and the two windows' reads (sqlMSSQLPCCompare)
+//	  heatmap    only when ?part=heatmap names it, [&metric=duration|cpu|writes|executions]: PerformanceMonitor's query
+//	             heatmap over the window, 7 days at most (sqlMSSQLPCHeatmap)
+//	  history    with db_id= and key=<query key>: that query's executions and its average CPU and duration per
+//	             execution in about 120 steps (sqlMSSQLPCHistory)
 //
 // top's plan_hash, sql_handle and plan_handle are the statements cached at the last read (handles_at), not the
 // window's.
@@ -232,6 +239,90 @@ SELECT f.severity, f.check_name, f.object, f.at, f.detail
  WHERE f.instance_id = $1
  ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, f.check_name, f.object`
 
+// sqlMSSQLPCHeatmap: PerformanceMonitor's query heatmap (DarlingQueryHeatmapReader.cs:186-241,
+// query-heatmap-model.js; MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC) on the plan cache's stored reads.
+// Each stored sample that ran (one (database, query key) of one read, executions > 0) gives one value: $7 'duration'
+// and 'cpu' ms per execution, 'writes' logical writes per execution, 'executions' the read's executions
+// (PerformanceMonitor's four, :124-128); the value falls in one of PerformanceMonitor's seven log10 buckets
+// (:207-215), in bins of $6 minutes cut from the UTC epoch (:190). A cell counts the distinct (database, query key)
+// with a sample in it: PerformanceMonitor's own words for the count ('Distinct queries in the cell, NOT
+// executions', DarlingMcpQueryHeatmapTools.cs:219), where its SQL counts rows, one per read. A query whose reads
+// fall in two buckets of a bin counts in both. The cell's most-executed query is the one with the most executions
+// summed over the cell. The newest 1,000 cells (PerformanceMonitor's cap, DarlingWebEndpoints.cs:8190); n_cells
+// counts them all. One read over the window's samples, no rollup, as PerformanceMonitor's (H3: 2.05 s over 7 days at
+// 761 rows a read, 7.4 s at 3,000, s177j-spike3).
+const sqlMSSQLPCHeatmap = `
+WITH r AS (
+  SELECT date_bin(make_interval(mins => $6), s.snapshot_at, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS time_bin,
+         s.database_id, s.query_key, s.executions,
+         CASE $7::text WHEN 'cpu' THEN s.cpu_us / 1000.0 / s.executions
+                       WHEN 'writes' THEN s.logical_writes::numeric / s.executions
+                       WHEN 'executions' THEN s.executions::numeric
+                       ELSE s.duration_us / 1000.0 / s.executions END AS v
+    FROM pgvigil.mssql_pc_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.executions > 0 AND ` + pcScope + `
+), q AS (
+  SELECT r.time_bin,
+         CASE WHEN r.v < 1 THEN 0 WHEN r.v < 10 THEN 1 WHEN r.v < 100 THEN 2 WHEN r.v < 1000 THEN 3
+              WHEN r.v < 10000 THEN 4 WHEN r.v < 100000 THEN 5 ELSE 6 END AS bucket,
+         r.database_id, r.query_key, sum(r.executions) AS e
+    FROM r
+   GROUP BY 1, 2, 3, 4
+), c AS (
+  SELECT q.time_bin, q.bucket, count(*) AS queries, sum(q.e) AS executions FROM q GROUP BY 1, 2
+), t AS (
+  SELECT DISTINCT ON (q.time_bin, q.bucket) q.time_bin, q.bucket, q.database_id, q.query_key, q.e
+    FROM q
+   ORDER BY q.time_bin, q.bucket, q.e DESC, q.database_id, q.query_key
+), k AS (
+  SELECT c.time_bin, c.bucket, c.queries, c.executions, t.database_id, t.query_key, t.e AS top_executions, count(*) OVER () AS n_cells
+    FROM c JOIN t ON t.time_bin = c.time_bin AND t.bucket = c.bucket
+   ORDER BY c.time_bin DESC, c.bucket
+   LIMIT 1000
+)
+SELECT k.time_bin, k.bucket, k.queries, k.executions::bigint AS executions, k.n_cells, $6::int AS bin_minutes,
+       k.database_id, coalesce(d.database_name, 'database ' || k.database_id) AS database, k.query_key,
+       k.top_executions::bigint AS top_executions, left(x.query, 80) AS top_query
+  FROM k
+  LEFT JOIN pgvigil.mssql_pc_database d ON d.instance_id = $1 AND d.database_id = k.database_id
+  LEFT JOIN pgvigil.mssql_pc_text x ON x.instance_id = $1 AND x.query_key = k.query_key
+ ORDER BY k.time_bin, k.bucket`
+
+// heatmapReachSecs: PerformanceMonitor's heatmap reaches 168 hours (DarlingMcpQueryHeatmapTools.cs:101-102).
+const heatmapReachSecs = 168 * 3600
+
+// heatmapBinMinutes is PerformanceMonitor's bin (query-heatmap-model.js:24-28): five-minute multiples aiming at 144
+// columns over the window, 5 to 1,440 minutes (5 up to 12 hours, 10 at 24 hours, 70 at 7 days).
+func heatmapBinMinutes(secs float64) int {
+	wanted := int(math.Ceil(secs/60/144/5)) * 5
+	return min(1440, max(5, wanted))
+}
+
+// sqlMSSQLPCHistory: one query's history ($4 database id, $5 query key) in steps of $6 seconds: PerformanceMonitor's
+// query trend (DarlingMcpTrendTools.cs:459-460, MIT, Erik Darling, Darling Data LLC: the average CPU and duration per
+// execution at each point) over the plan cache's stored reads, each step's averages weighted by executions. A step
+// whose reads hold no sample of the query has 0 executions and no averages (a gap); cut_reads counts the step's reads
+// that were cut (the query may have run there, past the collector's lists).
+const sqlMSSQLPCHistory = `
+WITH st AS (
+  SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $6) * $6) AS step, sum(r.interval_secs)::float8 AS secs,
+         count(*) AS reads, count(*) FILTER (WHERE r.capped) AS cut_reads
+    FROM pgvigil.mssql_pc_read r
+   WHERE r.instance_id = $1 AND r.snapshot_at > $2 AND r.snapshot_at <= $3
+   GROUP BY 1
+), q AS (
+  SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / $6) * $6) AS step, sum(s.executions) AS e,
+         sum(s.cpu_us) AS c, sum(s.duration_us) AS d
+    FROM pgvigil.mssql_pc_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.database_id = $4 AND s.query_key = $5
+   GROUP BY 1
+)
+SELECT st.step AS snapshot_at, st.reads, st.cut_reads, coalesce(q.e, 0)::bigint AS executions,
+       round((coalesce(q.e, 0) / nullif(st.secs, 0))::numeric, 4) AS executions_s,
+       round(q.c / 1000.0 / nullif(q.e, 0), 3) AS avg_cpu_ms, round(q.d / 1000.0 / nullif(q.e, 0), 3) AS avg_duration_ms
+  FROM st LEFT JOIN q ON q.step = st.step
+ ORDER BY 1`
+
 // MSSQLPlanCache is GET /api/mssql/plancache.
 func (s *Server) MSSQLPlanCache(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
@@ -266,6 +357,33 @@ func (s *Server) MSSQLPlanCache(w http.ResponseWriter, r *http.Request) {
 	if cmp {
 		parts = append(parts, part{"compare", sqlMSSQLPCCompare, []any{planEach, id, from, to, database, noQS, shift}},
 			part{"compare_windows", sqlMSSQLPCCompareWindows, []any{planEach, id, from, to, shift}})
+	}
+	q := r.URL.Query()
+	// the heatmap reads every sample of the window: only when ?part=heatmap asks for it (the page's section, alone)
+	if q.Get("part") == "heatmap" {
+		metric := q.Get("metric")
+		switch metric {
+		case "":
+			metric = "duration"
+		case "duration", "cpu", "writes", "executions":
+		default:
+			writeErr(w, http.StatusBadRequest, errors.New("metric must be one of duration, cpu, writes, executions"))
+			return
+		}
+		secs := to.Sub(from).Seconds()
+		if secs > heatmapReachSecs {
+			writeErr(w, http.StatusBadRequest, errors.New("the heatmap reaches 7 days: pick 7 days or less"))
+			return
+		}
+		parts = append(parts, part{"heatmap", sqlMSSQLPCHeatmap, []any{planEach, id, from, to, database, noQS, heatmapBinMinutes(secs), metric}})
+	}
+	if q.Get("key") != "" || q.Get("db_id") != "" {
+		dbID, err := strconv.Atoi(q.Get("db_id"))
+		if err != nil || q.Get("key") == "" || len(q.Get("key")) > 200 {
+			writeErr(w, http.StatusBadRequest, errors.New("db_id and key must both be given as the query's database id and query key"))
+			return
+		}
+		parts = append(parts, part{"history", sqlMSSQLPCHistory, []any{planEach, id, from, to, dbID, q.Get("key"), procStep(to.Sub(from).Seconds())}})
 	}
 	s.multiPart(w, r, parts)
 }
