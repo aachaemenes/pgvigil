@@ -40,3 +40,4 @@ web/node_modules/
 
 # proof output folders (scripts/proof-*.sh write their PNGs and logs here)
 /.proof-*/
+.lab/

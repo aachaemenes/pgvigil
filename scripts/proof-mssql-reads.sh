@@ -36,7 +36,8 @@
 #     affinity, max workers, virtual machine, physical MB, memory model), sys.dm_os_schedulers (VISIBLE ONLINE,
 #     VISIBLE OFFLINE), SERVERPROPERTY (edition, version, level, collation, clustered, Always On, machine, server
 #     name), sys.configurations (MAXDOP, cost threshold, max and min server memory), tempdb.sys.database_files (data
-#     files, data MB, one size, log files, log MB), sys.dm_os_host_info (platform, distribution, release); sa's value
+#     files, data MB, one size, log files, log MB), sys.dm_os_host_info (platform, distribution, release; before SQL
+#     Server 2017: Windows and sys.dm_os_windows_info's release, no distribution); sa's value
 #     is never empty (the distribution may be, off Linux). Max server memory as a per cent of the machine is 'no
 #     limit' while the setting is at its default, else sa's own arithmetic in decimal (max MB x 100 / physical MB,
 #     one decimal, a half away from zero). The power plan on a Linux host is not read and its note says 'SQL Server
@@ -331,7 +332,12 @@ echo "--- A. mssql_properties as the monitoring login"
 # hand <T-SQL scalar>: sa's own read, NULL as nothing
 hand() { sq "SELECT ISNULL(CAST(($1) AS varchar(256)), '')"; }
 SI="FROM sys.dm_os_sys_info"; TF="FROM tempdb.sys.database_files"; CF="FROM sys.configurations WHERE name ="
-HOSTP=$(hand "SELECT host_platform FROM sys.dm_os_host_info")
+# the host as sa reads it: sys.dm_os_host_info from SQL Server 2017; before it the host is Windows and
+# sys.dm_os_windows_info names the release (no distribution)
+HOSTQ="(SELECT host_platform, host_distribution, host_release FROM sys.dm_os_host_info)"
+[ "$(hand "SELECT CASE WHEN OBJECT_ID('sys.dm_os_host_info') IS NULL THEN 0 ELSE 1 END")" = 1 ] \
+  || HOSTQ="(SELECT N'Windows' AS host_platform, CAST(NULL AS nvarchar(256)) AS host_distribution, windows_release AS host_release FROM sys.dm_os_windows_info)"
+HOSTP=$(hand "SELECT host_platform FROM $HOSTQ h")
 collect mssql_properties "$N" >/dev/null
 iid=$(q "select instance_id from pgvigil.instances where name='$N'")
 pv() { q "select coalesce(value, '') from pgvigil.mssql_property where instance_id=$iid and name='$1'"; }
@@ -374,9 +380,9 @@ tempdb_data_mb~SELECT SUM(CAST(size AS bigint)) * 8 / 1024 $TF WHERE type_desc =
 tempdb_even_size~SELECT CASE WHEN MIN(size) = MAX(size) THEN 'yes' ELSE 'no' END $TF WHERE type_desc = 'ROWS'
 tempdb_log_files~SELECT COUNT(*) $TF WHERE type_desc = 'LOG'
 tempdb_log_mb~SELECT SUM(CAST(size AS bigint)) * 8 / 1024 $TF WHERE type_desc = 'LOG'
-host_platform~SELECT host_platform FROM sys.dm_os_host_info
-host_distribution~SELECT host_distribution FROM sys.dm_os_host_info
-host_release~SELECT host_release FROM sys.dm_os_host_info
+host_platform~SELECT host_platform FROM $HOSTQ h
+host_distribution~SELECT host_distribution FROM $HOSTQ h
+host_release~SELECT host_release FROM $HOSTQ h
 EOF
 # max server memory as a per cent of the machine, by sa's own arithmetic: decimal, a half away from zero (the
 # collector computes it in whole numbers)
