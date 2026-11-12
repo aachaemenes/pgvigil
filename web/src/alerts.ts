@@ -18,6 +18,8 @@ import { fleet, tagsOf } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
 import { fromInput, toInput } from './tz';
+import { conditionWords, scopeWords, willAlert } from './alert_rules';
+import { mssqlActionsState } from './mssql_actions';
 
 interface AlertsData {
   channels: Table | null; open: Table | null; log: Table | null;
@@ -198,7 +200,7 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
     { key: 'severity', fmt: sevBadge },
     { key: 'instance' },
     { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.fired_at, ctx) }, [r.source, v].filter(x => x != null && x !== '').map(String).join(': ')) },
-    { key: 'value', fmt: v => oneLine(v) },
+    { key: 'value', label: 'detail', fmt: (v, r) => detailCell(v, r) },
     { key: 'threshold', fmt: v => String(v ?? '') },
     { key: 'channels', fmt: v => list(v) },
     { key: 'sends', num: true },
@@ -207,6 +209,22 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
   ];
   return el('div', {}, el('h3', {}, `Alert history ${rangeLabel(ctx)} `, whatIsThis('Every firing of an alert that was open at some time in the range: when it was first sent, when it cleared (on every channel), how it ended (resolved: a recovery was sent; cleared without a fix: its instance retired, the channel no longer covers it, or recovery is off - PagerDuty and Opsgenie closed their incident, the other kinds sent nothing), the value last sent and the threshold (an alert rule\'s value, a finding\'s suggested value while it stands). A firing is the channels\' alerts of one finding grouped while their periods overlap. The history is as long as the purge window keeps the cleared alerts.', 'Alert history')),
     grid(rows, cols, 'No alert was open in the time range.'));
+}
+
+// detailCell: the alert's value on one line, clipped, opening in the row to its labelled detail (PerformanceMonitor's
+// Alert History Detail column: a disclosure per row); the export and the copies take the value alone (data-full)
+function detailCell(v: unknown, r: Row): HTMLElement | string {
+  const t = v == null ? '' : String(v);
+  if (!t) return '';
+  const line = (k: string, x: unknown) => x == null || x === '' ? null : el('div', {}, el('b', {}, k + ': '), String(x));
+  const chans = Array.isArray(r.channels) ? r.channels.join(', ') : r.channels;
+  return el('details', { class: 'alert-detail', 'data-full': t },
+    el('summary', { title: t, style: 'max-width:18rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, t.split('\n')[0]),
+    el('div', { style: 'white-space:normal;max-width:40rem;padding:.2rem 0' },
+      ...[line('Value', t), line('Threshold', r.threshold), line('Alert', [r.source, r.setting].filter(x => x != null && x !== '').map(String).join(': ')),
+        line('Instance', r.instance), line('First sent', (r.fired_at ?? r.first_sent_at) == null ? null : fmtTime(r.fired_at ?? r.first_sent_at)),
+        line('Cleared', r.cleared_at == null ? null : fmtTime(r.cleared_at)), line('Channels', chans),
+        line('Sends', r.sends), line('Firing', r.occurrence)].filter((x): x is HTMLDivElement => !!x)));
 }
 
 // oneLine: a cell's text on one line, clipped, the whole of it in the title
@@ -284,7 +302,7 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
       { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.first_sent_at, ctx), title: 'open the alert\'s page' },
         oneLine([r.source, v].filter(x => x != null && x !== '').map(String).join(': '))) },
       // one line per row: the value clipped, whole in its title
-      { key: 'value', fmt: v => oneLine(v) },
+      { key: 'value', label: 'detail', fmt: (v, r) => detailCell(v, r) },
       { key: 'first_sent_at', label: 'first sent', fmt: fmtTime },
       { key: 'sends', label: 'sends', num: true, fmt: (v, r) => el('span', { title: `last sent ${fmtTime(r.last_sent_at)} to ${list(r.channels)}` }, String(v ?? '')) },
       { key: '_state', label: 'state', fmt: (_v, r) => oneLine([
@@ -557,7 +575,7 @@ const heldCols: Col[] = [
   { key: 'severity', fmt: sevBadge },
   { key: 'source' },
   { key: 'setting' },
-  { key: 'value', fmt: v => oneLine(v) },
+  { key: 'value', label: 'detail', fmt: (v, r) => detailCell(v, r) },
   { key: 'held_by', label: 'held by', fmt: (v, r) => `${String(v)} ${String(r.rule ?? '')} (${String(r.created_by)})` },
 ];
 
@@ -579,3 +597,112 @@ export const alertCol: Col = {
   fmt: (v, r) => v == null ? '' :
     `sent ${fmtTime(v)} to ${list(r.alert_channels)} (first ${fmtTime(r.alert_first_sent)}, ${fmtNum(r.alert_sends)} send(s))`,
 };
+
+// ---- Admin (task 177 D30: PerformanceMonitor's Admin page - its Servers, Notification Routes, Alert Settings, Threshold
+// Overrides and Server actions tabs) -------------------------------------------------------------------------------------
+// What this pgvigil runs with, in one place and read only: the configuration file (pgvigil.yaml) is the source of the
+// instances, the channels and the action switches, and the alert rules are written on Alert rules (each tab says where a
+// change is made). The tab rides in the address (atab=). The route and the tab are the shell's (a WIRING BLOCK).
+// builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC)
+const builtIn: Row[] = [
+  { finding: 'dead tuples piling up', engine: 'PostgreSQL', warning: '1,000,000 dead tuples in a table', critical: '10,000,000', from: 'template pg-autovacuum-dead-tuples' },
+  { finding: 'replay lag', engine: 'PostgreSQL', warning: '30 s', critical: '5 min', from: 'template pg-replication-lag' },
+  { finding: 'replication slot retaining WAL', engine: 'PostgreSQL', warning: '10 GB', critical: '50 GB', from: 'template pg-replication-slot-wal' },
+  { finding: 'a volume under 5 GB free', engine: 'SQL Server', warning: 'under 5 GB free, on a volume over 10 GB whose percent threshold (Drives) raises nothing', critical: '2 GB or less (the same volumes)', from: 'LowDiskThresholdGb, DiskCriticalFreeGb' },
+  { finding: 'AG secondary behind', engine: 'SQL Server', warning: '300 s behind the primary', critical: '', from: 'agLagAlertSeconds' },
+  { finding: 'runnable queue per scheduler', engine: 'SQL Server', warning: '8 per scheduler (5 min)', critical: '16', from: 'RunnableQueueWarning / CriticalPerScheduler' },
+  { finding: 'long-running requests', engine: 'SQL Server', warning: '30 min (BACKUP, RESTORE, WAITFOR, Service Broker waits and system sessions left out)', critical: '', from: 'LongRunningQueryThresholdMinutes, LongRunningQueryExcludeBackups' },
+  { finding: 'server unreachable', engine: 'both', warning: '', critical: 'the newest read could not connect or log in', from: 'Server Unreachable (ConnectionAlertPolicy)' },
+];
+export async function adminView(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('section', { class: 'admin' }, el('h2', {}, 'Admin'),
+    el('p', { class: 'meta' }, 'What this pgvigil runs with, read only: the configuration file (pgvigil.yaml) is the source of the servers, the notification channels and the action switches (a change there takes a reload of the service); the alert rules and their overrides are written on ',
+      el('a', { href: href(ctx, { tab: 'alertrules', instance: undefined }) }, 'Alert rules'), '; acknowledgements, mutes and channel tests on ', el('a', { href: href(ctx, { tab: 'alerts', instance: undefined }) }, 'Alerts'), '.'));
+  const tabs: [string, string, () => Promise<HTMLElement>][] = [
+    ['servers', 'Servers', async () => {
+      const insts = (await fleet()).instances;
+      const want = ['name', 'engine', 'platform', 'server_version', 'is_replica', 'tags', 'last_seen', 'collections_failing'];
+      const keys = want.filter(k => insts.some(r => k in r));
+      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) in the repository: each the configuration names (instances:) and the collector has read at least once (a server never reached is listed after its first read); last seen and the collections failing now.`),
+        grid(insts, keys.map(k => ({ key: k, ...(k === 'name' ? { fmt: (v: unknown, r: Row) => el('a', { href: href(ctx, { tab: 'summary', instance: Number(r.instance_id) }) }, String(v)) } : {}),
+          ...(k === 'last_seen' ? { label: 'last seen', fmt: fmtTime } : {}), ...(k === 'collections_failing' ? { label: 'collections failing', num: true } : {}),
+          ...(k === 'is_replica' ? { label: 'replica', fmt: (v: unknown) => v ? 'yes' : '' } : {}),
+          ...(k === 'tags' ? { fmt: (v: unknown) => Array.isArray(v) ? v.join(', ') : String(v ?? '') } : {}) })), 'No server in the repository yet.'));
+    }],
+    ['routes', 'Notification routes', async () => {
+      const d = await get<AlertsData>('alerts', { ...window_(ctx), part: 'channels' });
+      const all = rowsOf(d.channels);
+      const rows = all.filter(r => r.is_configured !== false);
+      const gone = all.length - rows.length;
+      const cols = ['name', 'kind', 'destination', 'min_severity', 'instances', 'tags', 'quiet_hours', 'repeat_secs', 'recovery', 'open_alerts', 'last_outcome', 'last_error'];
+      return el('div', {}, el('p', { class: 'meta' }, `${rows.length} channel(s) (the configuration's alerts:): where each alert goes, from which severity, and for which instances.${gone ? ` ${gone} channel(s) no longer in the configuration are left out (Alerts lists them).` : ''}`),
+        grid(rows, cols.map(k => ({ key: k, ...(/destination|instances|tags|last_error/.test(k) ? { wide: true } : {}), ...(k === 'min_severity' ? { label: 'from severity' } : {}),
+          ...(k === 'repeat_secs' ? { label: 'repeat (s)', num: true } : {}), ...(k === 'open_alerts' ? { label: 'open alerts', num: true } : {}),
+          ...(k === 'recovery' ? { fmt: (v: unknown) => v ? 'on' : 'off' } : {}), ...(/instances|tags/.test(k) ? { fmt: (v: unknown) => Array.isArray(v) ? (v.length ? v.join(', ') : 'all') : String(v ?? '') } : {}) })),
+          'No channel in the configuration: the alert sender has not run with a channel configured.'));
+    }],
+    ['settings', 'Alert settings', async () => {
+      const d = await get<{ rules?: Table | null; inforce?: Table | null; sender?: Table | null }>('alertrules', window_(ctx));
+      const on = rowsOf(d.rules).filter(r => r.live && r.enabled);
+      const noChannel = Number(rowsOf(d.sender)[0]?.channels ?? 0) === 0;
+      return el('div', {},
+        on.length ? el('p', { class: 'will-alert' }, willAlert(on, r => String(r.name ?? `${String(r.family_label ?? '')}: ${String(r.label ?? r.metric)}`), noChannel)) : el('p', { class: 'meta' }, 'No alert rule is switched on.'),
+        el('h3', {}, 'Built-in thresholds (PerformanceMonitor\'s defaults)'),
+        grid(builtIn, [{ key: 'finding' }, { key: 'engine' }, { key: 'warning' }, { key: 'critical' }, { key: 'from', label: 'PerformanceMonitor\'s setting', wide: true }]),
+        el('h3', {}, 'Thresholds in force per instance'),
+        rowsOf(d.inforce).length > 500 ? el('p', { class: 'meta' }, `The first 500 of ${rowsOf(d.inforce).length} rows; Alert rules lists them all.`) : '',
+        grid(rowsOf(d.inforce).slice(0, 500), Object.keys(rowsOf(d.inforce)[0] ?? {}).filter(k => !k.startsWith('_') && k !== 'tags').slice(0, 9).map(k => ({ key: k })), 'No threshold in force.'));
+    }],
+    ['overrides', 'Threshold overrides', async () => {
+      const d = await get<{ rules?: Table | null }>('alertrules', window_(ctx));
+      const live = rowsOf(d.rules).filter(r => r.live);
+      const over = (r: Row): string => {
+        const fleet = live.find(w => w.metric === r.metric && w.scope === 'fleet');
+        const tag = r.scope === 'instance' ? live.find(w => w.metric === r.metric && w.scope === 'tag') : undefined;
+        return tag ? `tag rule ${String(tag.rule_id)}${fleet ? ` and fleet rule ${String(fleet.rule_id)}` : ''}` : fleet ? `fleet rule ${String(fleet.rule_id)}` : 'none (no wider rule on this metric: a rule of its own scope)';
+      };
+      const rows = live.filter(r => r.scope !== 'fleet');
+      return el('div', {}, el('p', { class: 'meta' }, 'A tag or an instance rule overrides a fleet rule on the same metric (an instance rule over a tag rule): made and edited on ',
+        el('a', { href: href(ctx, { tab: 'alertrules', instance: undefined }) }, 'Alert rules'), ' (its Thresholds in force line opens an override).'),
+        grid(rows, [{ key: 'rule_id', label: 'rule', num: true }, { key: 'metric', fmt: (v, r) => `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` },
+          { key: 'scope', label: 'covers', fmt: (v, r) => scopeWords(v, r.tag ?? r.instance_name) }, { key: 'op', label: 'alert when', fmt: (_v, r) => conditionWords(r) },
+          { key: 'enabled', label: 'on', fmt: v => v ? 'on' : 'off' }, { key: 'overrides', fmt: (_v, r) => over(r) }], 'No override: every live rule covers the fleet.'));
+    }],
+    ['actions', 'Server actions', async () => {
+      const ms = (await fleet()).instances.filter(r => r.engine === 'sqlserver');
+      const rows: Row[] = [];
+      for (let i = 0; i < ms.length; i += 8) {      // eight at a time: a large fleet in a few round trips, the server not flooded
+        const part = ms.slice(i, i + 8);
+        const sts = await Promise.all(part.map(r => mssqlActionsState(Number(r.instance_id))));
+        part.forEach((r, j) => { for (const k of ['kill', 'job_start', 'job_stop'] as const) rows.push({ instance: r.name, instance_id: r.instance_id, action: k, state: sts[j].actions[k]?.enabled ? 'on' : 'off', reason: sts[j].actions[k]?.reason ?? '' }); });
+      }
+      return el('div', {}, el('p', { class: 'meta' }, 'Each SQL Server instance\'s action switches (the configuration\'s actions: allow list and the login\'s rights) and why one is off; each instance\'s Actions page does them.'),
+        grid(rows, [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'mssqlactions', instance: Number(r.instance_id) }) }, String(v)) }, { key: 'action' },
+          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
+    }],
+  ];
+  let cur = new URLSearchParams(location.hash.split('?')[1] ?? '').get('atab') ?? 'servers';
+  if (!tabs.some(t => t[0] === cur)) cur = 'servers';
+  const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Admin tabs' });
+  const body = el('div', { class: 'admin-body' });
+  const btns = new Map<string, HTMLButtonElement>();
+  let seq = 0;
+  const show = async (k: string) => {
+    cur = k; const mine = ++seq;     // a slower tab's answer arriving after a later click is dropped
+    for (const [key, b] of btns) b.setAttribute('aria-pressed', String(key === k));
+    const [path, qs] = location.hash.split('?'); const q = new URLSearchParams(qs ?? ''); q.set('atab', k); history.replaceState(null, '', `${path}?${q}`);
+    body.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
+    const t = tabs.find(x => x[0] === k)!;
+    let out: HTMLElement;
+    try { out = await t[2](); } catch (e) { if (mine === seq) body.replaceChildren(el('h3', {}, t[1]), errorBox(e)); return; }
+    if (mine === seq) body.replaceChildren(el('h3', {}, t[1]), out);
+  };
+  for (const [k, label] of tabs) {
+    const b = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(k === cur) }, label) as HTMLButtonElement;
+    b.addEventListener('click', () => { void show(k); });
+    btns.set(k, b); seg.append(b);
+  }
+  sec.append(seg, body);
+  await show(cur);
+  return sec;
+}
