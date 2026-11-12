@@ -115,6 +115,9 @@ sq "CREATE TABLE dbo.dl_a (id int NOT NULL PRIMARY KEY, v int NOT NULL); CREATE 
 # the login's password reaches the server in a file, never on a command line (ps lists docker exec's arguments)
 umask 077; printf "CREATE LOGIN [%s] WITH PASSWORD = N'%s', CHECK_POLICY = OFF;\n" "$L1" "$P1" > "$TMPD/login.sql"
 docker cp -q "$TMPD/login.sql" "$CT:/tmp/pgvbh_login_$SUF.sql"; rm -f "$TMPD/login.sql"; MADE_L1=1
+# docker cp keeps the host owner and mode 0600; sqlcmd runs as the image's mssql user (a fresh 2022 container): the file
+# is handed to that user, still 0600 (on a sandbox that runs sqlcmd as root this changes nothing)
+docker exec -u 0 "$CT" sh -c "chown mssql /tmp/pgvbh_login_$SUF.sql 2>/dev/null || true"
 rc=0; docker exec -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -U sa -C -b -i "/tmp/pgvbh_login_$SUF.sql" >/dev/null || rc=$?
 docker exec -u 0 "$CT" rm -f "/tmp/pgvbh_login_$SUF.sql"
 [ $rc = 0 ] || fail "the login was not created"
