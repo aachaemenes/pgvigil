@@ -18,7 +18,16 @@ import (
 //                                                   PLE, grants per step), clerks (one row per step and clerk type,
 //                                                   the 10 largest types of the range and the rest as '(other)'),
 //                                                   clerk_stats (every type of the range: current, max, avg, min),
-//                                                   checks.
+//                                                   checks (0074's memory checks and 0119's memory findings over the
+//                                                   range); task 177 D13 (0119): pools_window, semaphores_window
+//                                                   (PerformanceMonitor's grant and semaphore pressure over the range),
+//                                                   pools_newest, semaphores_newest (the newest read), pool_series (per
+//                                                   step and pool), rmon (the resource monitor's records), rmon_hourly,
+//                                                   caches (sp_PressureDetector's 20 largest caches, the newest read),
+//                                                   plancache (the totals and the bloat level), plancache_types,
+//                                                   plancache_trend (single- and multi-use MB per step), grants_now (the
+//                                                   newest read's grants), rg (the workload groups with their pools),
+//                                                   skipped (the reads the server refused at the newest read).
 //   GET /api/mssql/fileio?instance=N[&from=&to=]   latency (read and write ms per step by database and file type,
 //                                                   the five busiest groups and the rest as '(other)'), throughput
 //                                                   (read and write MB/s per step, the five busiest files and the
@@ -76,6 +85,7 @@ SELECT s.snapshot_at, s.physical_kb, s.available_kb, round((100.0 * (s.physical_
        s.system_state, s.process_kb, s.process_low, s.committed_kb, s.committed_target_kb, s.target_kb, s.total_kb, s.stolen_kb,
        s.buffer_pool_kb, s.plan_cache_kb, s.clerks_kb, s.ple, s.grants_pending, s.grants_outstanding, s.sem_granted, s.sem_waiting,
        s.sem_granted_kb, s.sem_target_kb, s.grants, s.grants_waiting, s.max_grant_kb, s.sum_grant_kb, s.max_requested_kb, s.memory_model,
+       s.xtp_kb, s.tokenperm_kb, s.max_workspace_kb, s.granted_workspace_kb,
        (SELECT value_in_use FROM pgvigil.mssql_config c WHERE c.instance_id = $1 AND c.name = 'max server memory (MB)') AS max_server_memory_mb
   FROM pgvigil.mssql_memory_sample s
  WHERE s.instance_id = $1 AND s.snapshot_at <= $3 AND $2::timestamptz < $3
@@ -223,6 +233,60 @@ func (s *Server) MSSQLCPU(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// sqlMSSQLMemoryChecks: 0074's memory checks (as they stand) and 0119's memory findings over the range.
+const sqlMSSQLMemoryChecks = `
+SELECT severity, check_name, object, at, detail FROM (
+  SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_perf_findings WHERE instance_id = $1 AND check_name ~ 'memory'
+  UNION ALL
+  SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_memory_findings_between($1, $2, $3)) f
+ ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
+
+const (
+	sqlMSSQLPoolsWindow      = `SELECT * FROM pgvigil.mssql_grant_window_between($1, $2, $3, false)`
+	sqlMSSQLSemaphoresWindow = `SELECT * FROM pgvigil.mssql_grant_window_between($1, $2, $3, true)`
+	sqlMSSQLPoolsNewest      = `SELECT * FROM pgvigil.mssql_grant_newest_between($1, $2, $3, false)`
+	sqlMSSQLSemaphoresNewest = `SELECT * FROM pgvigil.mssql_grant_newest_between($1, $2, $3, true)`
+	sqlMSSQLPoolSeries       = `SELECT at AS snapshot_at, pool_id, coalesce(pool_name, 'pool ' || pool_id) AS pool, waiters,
+       round(granted_kb / 1024.0, 1) AS granted_mb, round(available_kb / 1024.0, 1) AS available_mb, timeouts, forced_grants
+  FROM pgvigil.mssql_grant_series_between($1, $2, $3, $4)`
+	sqlMSSQLRmon = `SELECT snapshot_at AS sample_at, notification, ind_process, ind_system, avail_phys_kb, avail_vas_kb, record_id
+  FROM pgvigil.mssql_memory_rmon WHERE instance_id = $1 AND snapshot_at > $2 AND snapshot_at <= $3
+ ORDER BY snapshot_at DESC, record_id DESC LIMIT 1000`
+	sqlMSSQLRmonHourly = `SELECT * FROM pgvigil.mssql_memory_rmon_hourly($1, $2, $3)`
+	sqlMSSQLCaches     = `SELECT c.snapshot_at, c.cache_name, c.pages_kb, c.pages_in_use_kb, c.entries, c.entries_in_use
+  FROM pgvigil.mssql_memory_cache c
+ WHERE c.instance_id = $1 AND c.snapshot_at = (SELECT max(x.snapshot_at) FROM pgvigil.mssql_memory_cache x
+                                                WHERE x.instance_id = $1 AND x.snapshot_at > $2 AND x.snapshot_at <= $3)
+ ORDER BY c.pages_kb DESC, c.cache_name`
+	sqlMSSQLPlanCache      = `SELECT * FROM pgvigil.mssql_plancache_summary_between($1, $2, $3)`
+	sqlMSSQLPlanCacheTypes = `SELECT t.snapshot_at, t.cache_type, t.object_type, t.plans, t.size_kb, t.single_use_plans, t.single_use_kb,
+       t.multi_use_plans, t.multi_use_kb, t.avg_use_count
+  FROM pgvigil.mssql_plancache_type t
+ WHERE t.instance_id = $1 AND t.snapshot_at = (SELECT max(x.snapshot_at) FROM pgvigil.mssql_plancache_type x
+                                                WHERE x.instance_id = $1 AND x.snapshot_at > $2 AND x.snapshot_at <= $3)
+ ORDER BY t.size_kb DESC, t.cache_type, t.object_type`
+	sqlMSSQLPlanCacheTrend = `SELECT to_timestamp(floor(extract(epoch FROM r.snapshot_at) / $4) * $4) AS snapshot_at,
+       round(avg(r.su) / 1024.0, 1) AS single_use_mb, round(avg(r.mu) / 1024.0, 1) AS multi_use_mb
+  FROM (SELECT t.snapshot_at, sum(t.single_use_kb) AS su, sum(t.multi_use_kb) AS mu FROM pgvigil.mssql_plancache_type t
+         WHERE t.instance_id = $1 AND t.snapshot_at > $2 AND t.snapshot_at <= $3 GROUP BY t.snapshot_at) r
+ GROUP BY 1 ORDER BY 1`
+	sqlMSSQLGrantsNow = `SELECT g.snapshot_at, g.session_id, g.request_id, g.database_name, g.request_at, g.grant_at, g.wait_time_ms,
+       g.requested_kb, g.granted_kb, g.used_kb, g.max_used_kb, g.ideal_kb, g.required_kb, g.queue_id, g.wait_order, g.is_next_candidate,
+       g.timeout_sec, g.semaphore_id, g.pool_id, g.group_id, g.is_small, g.dop, g.query_cost, g.wait_type, g.wait_ms, g.plan_handle, g.statement
+  FROM pgvigil.mssql_memory_grant_query g
+ WHERE g.instance_id = $1 AND g.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_memory_sample s
+                                                WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3)
+ ORDER BY g.requested_kb DESC NULLS LAST, g.request_at`
+	sqlMSSQLResourceGovernor = `SELECT g.snapshot_at, g.pool_id, p.pool_name, p.min_memory_pct, p.max_memory_pct, p.max_memory_kb, p.used_memory_kb,
+       p.target_memory_kb, p.used_memgrant_kb, p.memgrant_timeouts, p.memgrant_waiters, p.out_of_memory,
+       g.group_id, g.group_name, g.importance, g.max_grant_pct, g.grant_timeout_sec, g.max_cpu_sec, g.max_requests, g.max_dop,
+       g.reduced_grants, g.requests, g.active_requests, g.queued_requests, g.max_request_grant_kb
+  FROM pgvigil.mssql_rg_group g LEFT JOIN pgvigil.mssql_rg_pool p ON p.instance_id = g.instance_id AND p.pool_id = g.pool_id
+ WHERE g.instance_id = $1 ORDER BY g.pool_id, g.group_id`
+	sqlMSSQLMemorySkipped = `SELECT r.snapshot_at, x->>'read' AS read, x->>'error' AS error
+  FROM pgvigil.mssql_memory_reads r CROSS JOIN LATERAL jsonb_array_elements(r.skipped) x WHERE r.instance_id = $1`
+)
+
 // MSSQLMemory is GET /api/mssql/memory?instance=N[&from=&to=][&part=...].
 func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
@@ -236,7 +300,21 @@ func (s *Server) MSSQLMemory(w http.ResponseWriter, r *http.Request) {
 		{"series", sqlMSSQLMemorySeries, base},
 		{"clerks", sqlMSSQLClerkSeries, base},
 		{"clerk_stats", sqlMSSQLClerkStats, []any{id, from, to}},
-		{"checks", sqlMSSQLPerfChecks, []any{id, "memory"}},
+		{"checks", sqlMSSQLMemoryChecks, []any{id, from, to}},
+		{"pools_window", sqlMSSQLPoolsWindow, []any{id, from, to}},
+		{"semaphores_window", sqlMSSQLSemaphoresWindow, []any{id, from, to}},
+		{"pools_newest", sqlMSSQLPoolsNewest, []any{id, from, to}},
+		{"semaphores_newest", sqlMSSQLSemaphoresNewest, []any{id, from, to}},
+		{"pool_series", sqlMSSQLPoolSeries, base},
+		{"rmon", sqlMSSQLRmon, []any{id, from, to}},
+		{"rmon_hourly", sqlMSSQLRmonHourly, []any{id, from, to}},
+		{"caches", sqlMSSQLCaches, []any{id, from, to}},
+		{"plancache", sqlMSSQLPlanCache, []any{id, from, to}},
+		{"plancache_types", sqlMSSQLPlanCacheTypes, []any{id, from, to}},
+		{"plancache_trend", sqlMSSQLPlanCacheTrend, base},
+		{"grants_now", sqlMSSQLGrantsNow, []any{id, from, to}},
+		{"rg", sqlMSSQLResourceGovernor, []any{id}},
+		{"skipped", sqlMSSQLMemorySkipped, []any{id}},
 	})
 }
 
