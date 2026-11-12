@@ -153,6 +153,12 @@ BEGIN
      SET attempts = collector_load.attempts + EXCLUDED.attempts, opened = collector_load.opened + EXCLUDED.opened,
          runs = collector_load.runs + EXCLUDED.runs,
          failures = collector_load.failures + EXCLUDED.failures, auth_failures = collector_load.auth_failures + EXCLUDED.auth_failures;
+  -- a streak whose beat carries its first failure ('since') takes it, whatever start is stored (a streak that ended
+  -- and began again inside one beat never wrote its 0)
+  UPDATE pgvigil.collector_streaks cs SET failing_since = NULL
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'streaks') = 'array' THEN p_beat->'streaks' ELSE '[]'::jsonb END)) AS s(instance text, collection text, since timestamptz)
+    JOIN pgvigil.instances i ON i.name = s.instance
+   WHERE cs.instance_id = i.instance_id AND cs.collection = s.collection AND s.since IS NOT NULL;
   INSERT INTO pgvigil.collector_streaks (instance_id, collection, fail_streak, last_error, last_run_at, failing_since)
   SELECT i.instance_id, s.collection, s.fails, nullif(s.error, ''), s.at, CASE WHEN s.fails > 0 THEN coalesce(s.since, s.at) END
     FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'streaks') = 'array' THEN p_beat->'streaks' ELSE '[]'::jsonb END)) AS s(instance text, collection text, fails int, error text, at timestamptz, since timestamptz)
@@ -354,15 +360,18 @@ SELECT DISTINCT m.instance_id, n.host, n.minute
 -- run (the parent leaves collector_parent 5 minutes after its newest such minute). alert_due: a NEW collector kind of
 -- the instance whose newest failure (the finding's at) is inside waits - after the parent clears, an instance still
 -- failing alerts once per finding after one failure past the window, never off a streak or a refusal from inside it,
--- never after a fresh streak of 3. Anchored to the finding (the minutes after p_at - 5 min), with no look-back cap.
+-- never after a fresh streak of 3. Anchored to the finding, with no look-back cap: it reads the minutes from p_at - 5
+-- min to p_at + 5 min only (a window that holds p_at has a failing-together minute there: one in the 5 minutes before
+-- it, or, in the cut's first mixed minute, the first one within the forming cap after it).
 CREATE OR REPLACE FUNCTION pgvigil.collector_in_window(p_instance_id int, p_at timestamptz)
 RETURNS boolean LANGUAGE sql STABLE AS $$
   WITH m AS (
     SELECT h.host, l.minute, l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
       FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-     WHERE l.minute > p_at - interval '5 minutes'
+     WHERE l.minute > p_at - interval '5 minutes' AND l.minute <= p_at + interval '5 minutes'
        AND h.host IN (SELECT h1.host FROM pgvigil.collector_load l1 JOIN pgvigil.collector_heartbeat h1 USING (collector_id)
-                       WHERE l1.instance_id = p_instance_id AND l1.minute > p_at - interval '5 minutes')
+                       WHERE l1.instance_id = p_instance_id AND l1.minute > p_at - interval '5 minutes'
+                         AND l1.minute <= p_at + interval '5 minutes')
      GROUP BY h.host, l.minute, l.instance_id
   )
   SELECT EXISTS (

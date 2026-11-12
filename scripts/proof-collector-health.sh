@@ -190,6 +190,9 @@ PY
 # A recovery takes up to two alert passes after its finding left (alert_mark stamps missing_since on the first, the
 # resolve needs a pass after it and an ok read since), so a resolve is waited for, never read after a fixed sleep.
 within() { local t0=$SECONDS; while (( SECONDS - t0 < $1 )); do [[ "$(cnt "$2" "$3" "$4" "$5")" -ge "${6:-1}" ]] && { echo $((SECONDS - t0)); return 0; }; sleep 5; done; echo -1; }
+# snap CASE: the spools' file names now (the files before the lift); keep CASE: the spools copied for the evidence
+snap() { (cd "$WORK" && ls spool spool2 spool3 spool4 2>/dev/null | grep '\.json$') > "$WORK/$1.lst" || true; }
+keep() { docker exec "$SVC" chmod -R a+rX /work/spool /work/spool2 /work/spool3 /work/spool4 >/dev/null 2>&1; rm -rf ".vis/spool-evidence/$1"; mkdir -p ".vis/spool-evidence/$1"; cp -r "$WORK"/spool* ".vis/spool-evidence/$1/" 2>/dev/null || echo "keep $1: a spool file not copied" >> "$WORK/unreadable"; }
 # keymax DIR EVENT: the most files one alert key has for the EVENT in DIR (the key = the file name's last part)
 keymax() {
   docker exec "$SVC" chmod -R a+rX /work/spool /work/spool2 /work/spool3 /work/spool4 >/dev/null 2>&1
@@ -321,7 +324,7 @@ if waitfor 300 "SELECT NOT EXISTS (SELECT 1 $T2 AND f.setting = 'authentication 
   [[ "$e_res" == 1 ]] && ok "E restart: the password back and the service restarted - t2's 'authentication failing' gone and resolved once ($e_w s after it left the view), its 'collection failing' within t1's ($(q "SELECT count(*) FROM ($CF 't1') x") on t1: $(q "SELECT string_agg(value, ' ') FROM ($CF 't1') x"))" \
     || fail "E restart: t2's 'authentication failing' resolved $e_res times in 240 s (want 1)"
 else fail "E restart: t2 still $(q "SELECT string_agg(f.setting || ' ' || f.value, ', ') $T2") 300 s after the restart"; fi
-mkdir -p .vis/spool-evidence/E && cp -r "$WORK"/spool* .vis/spool-evidence/E/ 2>/dev/null || true
+keep E
 fi
 
 # ---- D failing together -------------------------------------------------------------------------------------------
@@ -329,9 +332,6 @@ fi
 logins() { local how=$1 a=() n; shift; for n in "$@"; do a+=(-c "alter role l${n#t} $how"); done; psql "$TDSN" -Xq "${a[@]}" >/dev/null; }
 # pin_at S: wait for the second S of a wall-clock minute (the cut's second)
 pin_at() { local i; for i in $(seq 1 700); do [[ "$((10#$(date -u +%S)))" == "$1" ]] && return 0; sleep 0.1; done; return 0; }
-# snap CASE: the spools' file names now (the files before the lift); keep CASE: the spools copied for the evidence
-snap() { (cd "$WORK" && ls spool spool2 spool3 spool4 2>/dev/null | grep '\.json$') > "$WORK/$1.lst" || true; }
-keep() { mkdir -p ".vis/spool-evidence/$1"; cp -r "$WORK"/spool* ".vis/spool-evidence/$1/" 2>/dev/null || true; }
 NOPARENT="SELECT NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent) AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances) AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_findings WHERE setting IN ('authentication failing', 'server unreachable'))"
 # d_clean: every login back, no parent, nothing held, no refusal standing, a pass after it; the spools emptied
 d_clean() { logins login t1 t2 t3 t4; waitfor 600 "$NOPARENT" || fail "D: not clean 600 s after the logins came back"; sleep 70; rm -f "$WORK"/spool*/*; }
@@ -340,24 +340,30 @@ per() { cnt "$1" "$2" "$PER" "$3" "$(plain)"; }
 PAR="collector or network"
 # d_cut CASE SECOND MINUTES: t1-t3 cut at the SECOND of a minute for MINUTES (D1, D1b)
 d_cut() {
-  local c=$1 t0 tp left up sp pr pr2 ur sr af ar s1 L
-  d_clean; pin_at "$2"; logins nologin t1 t2 t3; t0=$SECONDS
+  local c=$1 t0 c0 tp left up sp pr pr2 ur sr af ar s1 L k want_k want_k1
+  d_clean; pin_at "$2"; logins nologin t1 t2 t3; t0=$SECONDS; c0=$(date -u +%s)
   tp=$(within 185 "$WORK/spool" firing "$PAR" "")
   left=$(( $3 * 60 - (SECONDS - t0) )); if (( left > 0 )); then sleep "$left"; fi
   snap "$c"; L=$WORK/$c.lst
   up=$(cnt "$WORK/spool" firing "$PAR" ""); sp=$(cnt "$WORK/spool2" firing "$PAR" "")
   pr=$(per "$WORK/spool" firing "t1|t2|t3"); pr2=$(per "$WORK/spool2" firing t1)
+  # k: t1-t3 with a failed run in the cut's minute (a run starts 0-10 s off its slot: a cut at :55 may reach only some);
+  # fewer than 3 = no 'collector or network' forming, so those k alert at once (a single instance is never delayed) and
+  # resolve after the lift; 3 = nothing of t1-t3 goes out
+  k=$(q "SELECT count(DISTINCT l.instance_id) FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name IN ('t1','t2','t3') AND l.failures > 0 AND l.minute = date_trunc('minute', to_timestamp($c0))")
+  want_k=$(( k >= 3 ? 0 : k )); want_k1=$(q "SELECT count(*) FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 't1' AND l.failures > 0 AND l.minute = date_trunc('minute', to_timestamp($c0))"); if (( k >= 3 )); then want_k1=0; fi
   logins login t1 t2 t3
   waitfor 480 "$NOPARENT" || fail "$c: the parent still standing 480 s after the lift"
   SKIP=$L within 240 "$WORK/spool" resolved "$PAR" "" >/dev/null; SKIP=$L within 60 "$WORK/spool2" resolved "$PAR" "" >/dev/null
   sleep 60   # one more pass: nothing of t1-t3 may follow the parent's recovery
   ur=$(SKIP=$L cnt "$WORK/spool" resolved "$PAR" ""); sr=$(SKIP=$L cnt "$WORK/spool2" resolved "$PAR" "")
+  if (( want_k > 0 )); then within 240 "$WORK/spool" resolved "$PER" "t1|t2|t3" "$want_k" >/dev/null; fi
   af=$(SKIP=$L per "$WORK/spool" firing "t1|t2|t3"); ar=$(per "$WORK/spool" resolved "t1|t2|t3"); s1=$(per "$WORK/spool2" resolved t1)
   keep "$c"
-  if [[ "$tp" -ge 0 && "$up" == 1 && "$sp" == 1 && "$pr" == 0 && "$pr2" == 0 && "$ur" == 1 && "$sr" == 1 && "$af" == 0 && "$ar" == 0 && "$s1" == 0 ]]; then
-    ok "$c: t1-t3 cut at :$2 for $3 min - 'collector or network' sent $tp s after the cut, once on U and once on S; t1-t3's own alerts 0 (S: t1 0); after the lift the parent resolved once on each, t1-t3 sent 0 and resolved 0"
+  if [[ "$tp" -ge 0 && "$up" == 1 && "$sp" == 1 && "$pr" == "$want_k" && "$pr2" == "$want_k1" && "$ur" == 1 && "$sr" == 1 && "$af" == 0 && "$ar" == "$want_k" && "$s1" == "$want_k1" ]]; then
+    ok "$c: t1-t3 cut at :$2 for $3 min - 'collector or network' sent $tp s after the cut, once on U and once on S; $k of t1-t3 failed a run in the cut's minute: their own alerts $pr (S: t1 $pr2), want $want_k / $want_k1; after the lift the parent resolved once on each, t1-t3 sent 0, resolved $ar"
   else
-    fail "$c: parent $tp s after the cut (want 0-185), U $up / S $sp (want 1 / 1), t1-t3 before the lift $pr / S $pr2 (want 0 / 0); after it: parent resolved U $ur / S $sr (want 1 / 1), t1-t3 sent $af resolved $ar, S t1 resolved $s1 (want 0 0 0): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-700)"
+    fail "$c: parent $tp s after the cut (want 0-185), U $up / S $sp (want 1 / 1), t1-t3 before the lift $pr / S $pr2 (want $want_k / $want_k1: $k failed in the cut's minute); after it: parent resolved U $ur / S $sr (want 1 / 1), t1-t3 sent $af resolved $ar, S t1 resolved $s1 (want 0 $want_k $want_k1): $(ls "$WORK/spool" | tr '\n' ' ' | cut -c1-700)"
   fi
 }
 if want D1; then d_cut D1 20 6; fi
@@ -396,11 +402,11 @@ if want D4; then
   logins login t1 t2 t3; waitfor 480 "$NOPARENT" || fail "D4: the parent still standing 480 s after the lift"
   SKIP=$L within 240 "$WORK/spool" resolved "authentication failing" t1 >/dev/null; SKIP=$L within 60 "$WORK/spool2" resolved "authentication failing" t1 >/dev/null; sleep 60
   d4a=$(SKIP=$L cnt "$WORK/spool" resolved "authentication failing" t1)$(SKIP=$L cnt "$WORK/spool2" resolved "authentication failing" t1)
-  d4o2=$(per "$WORK/spool" firing "t2|t3"); d4rt2=$(cnt "$WORK/spool3" repeat "authentication failing" t1)
+  d4o2=$(per "$WORK/spool" firing "t2|t3"); d4rt2=$(SKIP=$L cnt "$WORK/spool3" repeat "authentication failing" t1)
   keep D4
-  [[ "$tw" -ge 0 && "$tp" -ge 0 && "$d4rp" -ge 1 && "$d4rt" == 0 && "$d4h" == 00 && "$d4o" == 0 && "$d4d" == *"t1 authentication failing"* && "$d4a" == 11 && "$d4o2" == 0 && "$d4rt2" == 0 ]] \
-    && ok "D4: t1 refused first (its alert out in $tw s on U, S and R), then t2, t3 - the parent $tp s after; during the hold R repeated the parent $d4rp time(s) and t1 0 times, t1 resolved 0, t2 t3 sent 0; the parent's text '$d4d'; after the lift t1 resolved once on U and on S" \
-    || fail "D4: t1 out after $tw s, parent after $tp s; R repeats parent $d4rp (want >= 1) / t1 $d4rt (want 0); t1 resolved during the hold U+S '$d4h' (want 00); t2 t3 sent $d4o (want 0); covers '$d4d'; after: t1 resolved U+S '$d4a' (want 11), t2 t3 $d4o2, R t1 repeats $d4rt2: $(ls "$WORK/spool" "$WORK/spool3" | tr '\n' ' ' | cut -c1-700)"
+  [[ "$tw" -ge 0 && "$tp" -ge 0 && "$d4rp" -ge 1 && "$d4rt" == 0 && "$d4h" == 00 && "$d4o" == 0 && "$d4d" == *"t1 authentication failing"* && "$d4a" == 11 && "$d4o2" == 0 && "$d4rt2" -le 1 ]] \
+    && ok "D4: t1 refused first (its alert out in $tw s on U, S and R), then t2, t3 - the parent $tp s after; during the hold R repeated the parent $d4rp time(s) and t1 0 times, t1 resolved 0, t2 t3 sent 0; the parent's text '$d4d'; after the lift t1 resolved once on U and on S (R: $d4rt2 repeat of t1 after the lift, at most 1: its finding stands until the next minute is written)" \
+    || fail "D4: t1 out after $tw s, parent after $tp s; R repeats parent $d4rp (want >= 1) / t1 $d4rt (want 0); t1 resolved during the hold U+S '$d4h' (want 00); t2 t3 sent $d4o (want 0); covers '$d4d'; after: t1 resolved U+S '$d4a' (want 11), t2 t3 $d4o2, R t1 repeats after the lift $d4rt2 (want <= 1): $(ls "$WORK/spool" "$WORK/spool3" | tr '\n' ' ' | cut -c1-700)"
 fi
 if want D5; then
   d_clean; pin_at 20; logins nologin t1 t2 t3; t0=$SECONDS
@@ -429,21 +435,21 @@ if want DQ; then
   logins nologin t1 t2 t3; sleep 300
   dq1=$(cnt "$WORK/spool4" firing "$PAR" ""); dqo=$(per "$WORK/spool4" firing "t1|t2|t3")
   # the parent's own first file (a new channel also sends the standing findings of the plain target)
-  dqt=$(python3 -c "import glob, json, os, sys; print(min((os.path.basename(f)[:15] for f in glob.glob(sys.argv[1] + '/*-firing-*.json') if json.load(open(f)).get('setting') == 'collector or network'), default=''))" "$WORK/spool4" 2>/dev/null || true)
+  firstpar() { python3 -c "import glob, json, os, sys; print(min((os.path.basename(f)[:15] for f in glob.glob(sys.argv[1] + '/*-firing-*.json') if json.load(open(f)).get('setting') == 'collector or network'), default=''))" "$1" 2>/dev/null || true; }
+  dqt=$(firstpar "$WORK/spool4"); dqu=$(firstpar "$WORK/spool")   # U sends at once: its file before the quiet end shows Q held it
   logins login t1 t2 t3; waitfor 480 "$NOPARENT" || true
   unset QUIET
   { printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\ninstances:\n' "$PW"; instances target 5432; alerts_of /work; } > "$WORK/svc.yaml"
   docker exec "$SVC" sh -c "install -m 0640 -g pgvigil /work/svc.yaml /etc/pgvigil/pgvigil.yaml && systemctl restart pgvigil.service"
   keep DQ
-  [[ "$dq1" == 1 && "$dqo" == 0 && -n "$dqt" ]] && ! [[ "$dqt" < "$QEND" ]] \
-    && ok "DQ: quiet hours $QUIET UTC over the cut - the parent once on the quiet channel, its first file at $dqt (the quiet end $QEND), t1-t3 0" \
-    || fail "DQ: quiet $QUIET: the parent $dq1 (want 1), first file '$dqt' (want at or after $QEND), t1-t3 $dqo (want 0): $(ls "$WORK/spool4" | tr '\n' ' ' | cut -c1-500)"
+  [[ "$dq1" == 1 && "$dqo" == 0 && -n "$dqt" && -n "$dqu" && "$dqu" < "$QEND" ]] && ! [[ "$dqt" < "$QEND" ]] \
+    && ok "DQ: quiet hours $QUIET UTC over the cut - the parent once on the quiet channel, its first file at $dqt (the quiet end $QEND; U's at $dqu, before it), t1-t3 0" \
+    || fail "DQ: quiet $QUIET: the parent $dq1 (want 1), first file '$dqt' (want at or after $QEND), U's '$dqu' (want before it), t1-t3 $dqo (want 0): $(ls "$WORK/spool4" | tr '\n' ' ' | cut -c1-500)"
 fi
 logins login t1 t2 t3 t4
 
-# ---- F many collectors
+# ---- F many collectors on one repository ---------------------------------------------------------------------------
 if want F; then
-on one repository ---------------------------------------------------------------------------
 timeout 240 "$BIN" run -config "$WORK/host.yaml" > "$WORK/second.log" 2>&1 &
 SECOND=$!
 if waitfor 200 "SELECT count(DISTINCT f.instance_id) = 4 FROM pgvigil.collector_findings f WHERE f.setting = 'collected by more than one collector'"; then
@@ -458,9 +464,8 @@ sleep 130   # pgvigil-svc beats past the second collector's stop: the second's i
 
 fi
 
-# ---- B the service stopped
+# ---- B the service stopped -----------------------------------------------------------------------------------------
 if want B; then
------------------------------------------------------------------------------------------
 waitfor 150 "SELECT count(*) = 1 FROM pgvigil.collector_live" || true
 rm -f "$WORK"/spool/* "$WORK"/spool2/*
 docker exec "$SVC" systemctl stop pgvigil.service
@@ -481,9 +486,8 @@ waitfor 200 "SELECT (SELECT count(*) FROM pgvigil.collector_live) = 1 AND NOT EX
 
 fi
 
-# ---- G purge
+# ---- G purge -------------------------------------------------------------------------------------------------------
 if want G; then
--------------------------------------------------------------------------------------------------------
 q "UPDATE pgvigil.instances SET first_seen = now() - interval '3 days' WHERE name = 't1'" >/dev/null
 before=$(q "SELECT value FROM pgvigil.collector_findings WHERE setting = 'purge not run in 2 days'")
 old=$(date -u -d '-4 months' +%Y%m)
