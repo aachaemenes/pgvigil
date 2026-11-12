@@ -47,11 +47,12 @@
 #     own collection runs log in and read work_queue > 0 and THREADPOOL > 0 with max workers 128, between DAC reads
 #     before and after that both show a queue; sp_PressureDetector run over the DAC shows requests waiting for threads;
 #     pgvigil's level HIGH (the levels themselves are G's table). Then a standing shortage (250 sessions held behind one
-#     lock, about twice the workers; every online scheduler with a queue before an attempt, up to three attempts): a
-#     collection fails to connect and is logged as 'connect: ...' (D30), which the CPU page marks 'possibly a worker
-#     shortage'. A worker stays with the scheduler that made it and a login is a task given to one scheduler, so a login
-#     can get in while others queue (s177i-9); if all three attempts get in, the log says NOT PROVEN live with each
-#     attempt's scheduler state and the note is proven on a stored connect failure (import_connect_failure).
+#     lock, about twice the workers; before each of up to three attempts a wait of up to 60 s for every online
+#     scheduler to have a queue): a collection fails to connect and is logged as 'connect: ...' (D30), which the CPU
+#     page marks 'possibly a worker shortage'. Why s177i-9's login got in under a standing shortage is not established
+#     (its DAC read had only the total queue, 27); each attempt prints its scheduler state and a row per scheduler. If
+#     all three attempts get in, the log says NOT PROVEN live (and whether every scheduler had queued) and the note is
+#     proven on a stored connect failure (import_connect_failure).
 #  G. the rules on stored rows: mssql_sched_levels on a table of cases (pgvigil's and PerformanceMonitor's levels and
 #     PerformanceMonitor's recommendation, each band's edge); 'other processes use the CPU' at 50.0 % over 10 records
 #     raises, 49.9 % or 9 records none; 'a transaction open for a long time' idle 30 min warning, 29 min none, 4 h
@@ -136,6 +137,7 @@ sqok "A: the databases" "CREATE DATABASE pgvcpu; CREATE DATABASE pgvcpu2; CREATE
 sqok "A: the table" "CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NOT NULL DEFAULT 0, pad char(500) NOT NULL DEFAULT 'a');
   INSERT dbo.t (id) SELECT TOP (20000) ROW_NUMBER() OVER (ORDER BY (SELECT 1)) FROM sys.all_objects a CROSS JOIN sys.all_objects b;" pgvcpu
 sqok "A: the monitor login" "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON];"
+sqok "A: the monitor's msdb user (mssql_jobs reads msdb)" "CREATE USER [$MON] FOR LOGIN [$MON]; ALTER ROLE db_datareader ADD MEMBER [$MON];" msdb
 dacok "A: the DAC" "SELECT 1"
 echo "ok   A: SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))"), sp_PressureDetector (sha256 $(sha256sum "$PROCS/sp_PressureDetector.sql" | cut -c1-12)), the DAC answers, 3 user databases"
 
@@ -444,29 +446,38 @@ IFS='|' read -r DQ0 _ <<<"$D0"; IFS='|' read -r DQ1 _ <<<"$D1"
 IFS='|' read -r PDQ PDT <<<"$PDF"
 [[ "$PDT" == 128 ]] && (( PDQ > 0 )) || fail "F: sp_PressureDetector over the DAC: $PDF"
 killhost 'pgvc[_]churn'; stopbg; sleep 5
-# a standing shortage: every worker held behind one lock. A worker stays with the scheduler that made it and a login is a
-# task given to one scheduler: a scheduler with a spare worker of its own lets a login in while others queue (s177i-9:
-# 27 queued, the login got in). So 250 sessions wait on the lock (about twice the workers), each attempt waits up to
-# 60 s for every online scheduler to have a queue, and up to three attempts are made, each with its scheduler state.
+# a standing shortage: every worker held behind one lock. s177i-9's login got in with 27 tasks queued (its DAC read had
+# only the total) and s177i-6's was refused with 10: why is not established (a hypothesis: a login put on a scheduler
+# with a worker of its own to spare). So 250 sessions wait on the lock (about twice the workers), each attempt waits up
+# to 60 s for every online scheduler to have a queue, up to three attempts are made, and each prints its scheduler
+# state and a row per scheduler (id:queued/workers/active/load factor).
 hold pgvc_lock pgvcpu "BEGIN TRAN; UPDATE dbo.t SET v = v + 1 WHERE id = 1;"
 sleep 3
 for i in $(seq 1 250); do hold pgvc_blk pgvcpu "SELECT v FROM dbo.t WHERE id = 1;"; done
 sleep 25
-# online schedulers | with a queue | with a spare worker and no queue | queued tasks | workers | active workers
+# online schedulers | with a queue | with a worker not active (idle or preemptive) and no queue | queued tasks | workers |
+# active workers
 dacs() { dac "SELECT CAST(COUNT(*) AS varchar(10)) + '|' + CAST(SUM(CASE WHEN work_queue_count > 0 THEN 1 ELSE 0 END) AS varchar(10)) + '|'
   + CAST(SUM(CASE WHEN work_queue_count = 0 AND current_workers_count > active_workers_count THEN 1 ELSE 0 END) AS varchar(10)) + '|'
   + CAST(SUM(work_queue_count) AS varchar(10)) + '|' + CAST(SUM(current_workers_count) AS varchar(10)) + '|' + CAST(SUM(active_workers_count) AS varchar(10))
   FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLINE'"; }
-FAILED=0; FST=()
+dacrows() { dac "SELECT CAST(STRING_AGG(CONCAT(scheduler_id, ':', work_queue_count, '/', current_workers_count, '/', active_workers_count, '/', load_factor), ' ')
+  WITHIN GROUP (ORDER BY scheduler_id) AS varchar(2000)) FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLINE'"; }
+FAILED=0; QALLIN=0; FST=()
 for att in 1 2 3; do
-  for _ in $(seq 1 30); do
+  QALL=0; FEND=$(( SECONDS + 60 ))
+  while :; do
     DS=$(dacs) || fail "F: the DAC read of the standing shortage"
-    IFS='|' read -r SCN SCQ SCS _ <<<"$DS"
-    (( SCQ == SCN && SCS == 0 )) && break; sleep 2
+    IFS='|' read -r SCN SCQ _ <<<"$DS"
+    (( SCQ == SCN )) && { QALL=1; break; }
+    (( SECONDS >= FEND )) && break; sleep 2
   done
-  timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once mssql_cpu >"$TMPD/col-fail.out" 2>&1 && FLOGIN=in || FLOGIN=refused
-  FST+=("attempt $att: schedulers | with a queue | spare worker, no queue | queued | workers | active = $DS; the login $FLOGIN ($(tail -1 "$TMPD/col-fail.out" | cut -c1-160))")
-  [[ $FLOGIN == refused ]] && { FAILED=1; break; }
+  DR=$(dacrows) || DR='(the per-scheduler read failed)'
+  timeout 120 "$TMPD/pgvigil" collect -config "$TMPD/m.yaml" -instance sqlbox -once mssql_cpu >"$TMPD/col-fail.out" 2>&1 && FLOGIN=in || FLOGIN=failed
+  FWHY=$(grep -m1 'collection failed' "$TMPD/col-fail.out" || tail -1 "$TMPD/col-fail.out")
+  FST+=("attempt $att: every scheduler queued=$QALL; schedulers | with a queue | a worker not active, no queue | queued | workers | active = $DS; per scheduler $DR; the collection $FLOGIN ($(cut -c1-200 <<<"$FWHY"))")
+  [[ $FLOGIN == failed ]] && { FAILED=1; break; }
+  (( QALL )) && QALLIN=1
   sleep 5
 done
 printf 'F: the standing shortage, %s\n' "${FST[@]}"
@@ -475,10 +486,14 @@ echo "F: connect failures logged: $CF"
 killhost 'pgvc[_]%'; stopbg; sleep 5
 sqok "F: max worker threads back to 0" "EXEC sp_configure 'max worker threads', 0; RECONFIGURE;"
 if (( FAILED )); then
-  (( ${CF%%|*} >= 1 )) && [[ "$CF" == *"|connect: "* ]] || fail "F: the refused login was not logged as a connect failure ($CF; $(tail -2 "$TMPD/col-fail.out"))"
-  FSTAND="the standing shortage refused pgvigil's login and left a logged connect failure"
+  (( ${CF%%|*} >= 1 )) && [[ "$CF" == *"|connect: "* ]] || fail "F: a failed collection left no connect failure ($CF; $(tail -2 "$TMPD/col-fail.out"))"
+  FSTAND="under the standing shortage pgvigil's collection could not connect and the failure was logged ($CF)"
 else
-  echo "NOT PROVEN live: the standing shortage let pgvigil's login in on all three attempts (the states above): a monitor's login is not reliably refused by a worker shortage; the CPU page's note is proven on a stored connect failure"
+  if (( QALLIN )); then
+    echo "NOT PROVEN live: the standing shortage let pgvigil's login in on all three attempts, at least one with every scheduler queued (the states above): a monitor's login is not reliably refused by a worker shortage; the CPU page's note is proven on a stored connect failure"
+  else
+    echo "NOT PROVEN live: the standing shortage never queued every scheduler and pgvigil's login got in on all three attempts (the states above: a set-up shortfall, not a finding about logins); the CPU page's note is proven on a stored connect failure"
+  fi
   pq "SELECT pgvigil.import_connect_failure('sqlbox', 'mssql_cpu', now(), 20000, 'read tcp: i/o timeout (stored by the proof)')" >/dev/null
   CF=$(pq "SELECT count(*) || '|' || coalesce(max(left(note, 120)), '') FROM pgvigil.mssql_connect_failures_between($SB, now() - interval '10 minutes', now())")
   [[ "${CF%%|*}" == 1 && "$CF" == *"|connect: "* ]] || fail "F: the stored connect failure is not read back ($CF)"
@@ -597,17 +612,13 @@ PYEND
 echo "ok   H: every D14 part answers, the counted ones equal to their functions; eleven series refused (400)"
 
 echo "== I. the pages in headless Chromium =="
-# a running job with stored runs, so Running now draws its p95 and % of average (SQL Agent is off in the container)
-pq "INSERT INTO pgvigil.mssql_jobs (instance_id, job_id, name, snapshot_at, running_since) VALUES ($SB, '00000000-0000-0000-0000-00000000d014', 'pgvproof job', now(), now() - interval '150 seconds')" >/dev/null 2>&1 || echo "I: the stored running job could not be written (the Jobs page check is skipped)"
-pq "INSERT INTO pgvigil.mssql_job_runs (instance_id, history_id, job_id, step_id, run_status, duration_s, snapshot_at) SELECT $SB, 9000000 + g, '00000000-0000-0000-0000-00000000d014', 0, 1, g * 10, now() - make_interval(days => g) FROM generate_series(1, 20) g" >/dev/null || fail "I: the stored job runs"
-JP=$(pq "SELECT round(avg(duration_s)) || '|' || round(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_s)::numeric) FROM pgvigil.mssql_job_runs WHERE instance_id = $SB AND step_id = 0 AND run_status = 1" 2>/dev/null || echo '|')
 CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 setsid chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu --window-size=1600,1100 about:blank >"$TMPD/chrome.log" 2>&1 & CHRPID=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "I: chromium's CDP port never answered"
 cat > "$TMPD/i.mjs" <<'JS'
 // prints one line per check; the shell grades them
-const [port, U, sb, from, to, shots] = process.argv.slice(2);
+const [port, U, sb, from, to, shots, mode] = process.argv.slice(2);
 const fs = await import('node:fs');
 const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
 const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
@@ -624,13 +635,15 @@ const w = `i=${sb}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}
 const pages = { cpu: `#/mssqlcpu?${w}`, connections: `#/mssqlconnections?${w}`, metrics: `#/counters?${w}`, tempdb: `#/mssqltempdb?i=${sb}`, fileio: `#/mssqlfileio?${w}`, jobs: `#/mssqljobs?${w}` };
 const state = () => ev(`(() => { const m = document.querySelector('main');
   const h3 = t => [...m.querySelectorAll('h3')].find(x => x.textContent.startsWith(t));
-  const rowsAfter = (t) => { const h = h3(t); if (!h) return -1; let g = h.nextElementSibling; while (g && !g.querySelector('table') && g.tagName !== 'TABLE' && g.tagName !== 'H3') g = g.nextElementSibling; return g && g.tagName !== 'H3' ? [...g.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty')).length : 0; };
+  // a chart's legend is a table too (uPlot's .u-legend): only a grid counts
+  const isGrid = x => x.tagName === 'TABLE' ? !x.classList.contains('u-legend') : [...x.querySelectorAll('table')].some(tb => !tb.classList.contains('u-legend'));
+  const rowsAfter = (t) => { const h = h3(t); if (!h) return -1; let g = h.nextElementSibling; while (g && !isGrid(g) && g.tagName !== 'H3') g = g.nextElementSibling; return g && g.tagName !== 'H3' ? [...g.querySelectorAll('tbody tr')].filter(tr => !tr.closest('.u-legend') && !tr.querySelector('.empty')).length : 0; };
   const attr = (a) => { const e = m.querySelector('[' + a + ']'); return e ? e.getAttribute(a) : null; };
   return JSON.stringify({ hash: location.hash, title: m.querySelector('h2')?.textContent ?? '', errors: m.querySelectorAll('.error:not([role=status])').length,
     verdict: attr('data-verdict'), pm: attr('data-pm-level'), threadpool: attr('data-threadpool'), cpuinfo: attr('data-cpuinfo'), connectfail: attr('data-connectfail'),
     runpct: attr('data-runnable-pct'), threadRows: rowsAfter('Thread usage'), tiles: m.querySelectorAll('.tile').length,
     apps: rowsAfter('Sessions by application'), hosts: rowsAfter('Sessions by host'), dbs: rowsAfter('Sessions by database'),
-    counters: m.querySelector('.mssql-counters') ? [...m.querySelectorAll('.mssql-counters tbody tr')].filter(tr => !tr.querySelector('.empty')).length : -1,
+    counters: m.querySelector('.mssql-counters') ? [...m.querySelectorAll('.mssql-counters tbody tr')].filter(tr => !tr.closest('.u-legend') && !tr.querySelector('.empty')).length : -1,
     checked: [...m.querySelectorAll('.mssql-counters input[type=checkbox]')].filter(c => c.checked).length,
     counterChart: !!m.querySelector('.mssql-counters .uplot'), holders: rowsAfter('Sessions holding tempdb'),
     kb: [...m.querySelectorAll('th')].filter(th => /KB per (read|write)/.test(th.textContent)).length, logflush: rowsAfter('Log bytes flushed per database'),
@@ -642,6 +655,19 @@ await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.I_USR)}, password: ${JSON.stringify(process.env.I_UPW)} }) }).then(r => r.status)`, true);
 console.log(`login ${st}`);
+// the early walk: TempDB and File IO before their own collections ran, in light only
+if (mode === 'early') {
+  await go('#/about');
+  await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+  for (const name of ['tempdb', 'fileio']) {
+    if (!await go(pages[name])) { console.log(`FAIL render ${name}-early light`); continue; }
+    const s = await state(); delete s.links;
+    console.log(`page ${name}-early light ${JSON.stringify(s)}`);
+    await shot(`d14-${name}-early-light`);
+  }
+  ws.close(); process.exit(0);
+}
 for (const theme of ['light', 'dark']) {
   await go('#/about');
   await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
@@ -690,7 +716,23 @@ for (const name of ['cpu', 'connections']) {
 }
 ws.close(); process.exit(0);
 JS
+# the early path: TempDB and File IO before mssql_tempdb (hourly) and mssql_fileio (every minute) read: D14's sections
+# (the tempdb holders, the log flushes) are mssql_activity's and still show
+early=$(I_USR="$USR" I_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$FISO" "$TISO" "$SHOTS" early) || fail "I: the early walk stopped: $early"
+# then the reads a running pgvigil has made by now: mssql_jobs (msdb), mssql_tempdb, two mssql_fileio reads around a
+# write (the first sets the baseline)
+col mssql_jobs mssql_tempdb mssql_fileio
+sqok "I: a write between the file reads" "UPDATE dbo.t SET v = v + 1; CHECKPOINT;" pgvcpu
+sleep 2
+col mssql_fileio
+# a running job with stored runs after mssql_jobs's own read, so Running now draws its p95 and % of average (SQL Agent
+# is off in the container)
+pq "INSERT INTO pgvigil.mssql_jobs (instance_id, job_id, name, snapshot_at, running_since) VALUES ($SB, '00000000-0000-0000-0000-00000000d014', 'pgvproof job', now(), now() - interval '150 seconds')" >/dev/null 2>&1 || echo "I: the stored running job could not be written (the Jobs page check is skipped)"
+pq "INSERT INTO pgvigil.mssql_job_runs (instance_id, history_id, job_id, step_id, run_status, duration_s, snapshot_at) SELECT $SB, 9000000 + g, '00000000-0000-0000-0000-00000000d014', 0, 1, g * 10, now() - make_interval(days => g) FROM generate_series(1, 20) g" >/dev/null || fail "I: the stored job runs"
+JP=$(pq "SELECT round(avg(duration_s)) || '|' || round(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_s)::numeric) FROM pgvigil.mssql_job_runs WHERE instance_id = $SB AND step_id = 0 AND run_status = 1" 2>/dev/null || echo '|')
+TISO=$(pq "SELECT to_char((now() + interval '1 minute') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
 out=$(I_USR="$USR" I_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$FISO" "$TISO" "$SHOTS") || fail "I: the Chromium walk stopped: $out"
+out="$early"$'\n'"$out"
 echo "$out" | grep -v '^click control'
 echo "$out" | grep -q '^login 200$' || fail "I: the UI login in Chromium"
 ! echo "$out" | grep -q '^FAIL' || fail "I: a page did not render: $(echo "$out" | grep '^FAIL' | head -3)"
@@ -703,6 +745,7 @@ lv, pm = q(f"SELECT level || '|' || pm_level FROM pgvigil.mssql_cpu_newest({w})"
 want_now = int(q(f"SELECT count(*) FROM pgvigil.mssql_counter_newest({w})"))
 grp = {g: int(q(f"SELECT count(*) FROM pgvigil.mssql_session_groups_newest({w}, '{g}')")) for g in ('program', 'host', 'database')}
 holders = int(q(f"SELECT count(*) FROM pgvigil.mssql_session_tempdb_newest({sb}, now() - interval '15 minutes', now())"))
+flushes = int(q(f"SELECT count(*) FROM pgvigil.mssql_log_flush_between({w})"))
 pages = {}
 for l in out.splitlines():
     if l.startswith('page '):
@@ -721,9 +764,12 @@ for theme in ('light', 'dark'):
     td = g('tempdb')
     if td.get('holders') != holders or td.get('errors') != 0: bad.append(f"I tempdb {theme}: {td} (want {holders} holders)")
     fi = g('fileio')
-    if fi.get('kb') != 2 or fi.get('logflush', 0) < 1 or fi.get('errors') != 0: bad.append(f"I fileio {theme}: {fi}")
+    if fi.get('kb') != 2 or fi.get('logflush') != flushes or flushes < 1 or fi.get('errors') != 0: bad.append(f"I fileio {theme}: {fi} (want the KB per read and per write columns, {flushes} log flush rows)")
     jb = g('jobs')
     if jp != '|' and (not jb.get('p95') or 'pgvproof job' not in jb.get('jobRow', '')): bad.append(f"I jobs {theme}: {jb}")
+te, fe = pages.get(('tempdb-early', 'light'), {}), pages.get(('fileio-early', 'light'), {})
+if te.get('holders') != holders or te.get('errors') != 0: bad.append(f"I tempdb before its own read: {te} (want {holders} holders)")
+if fe.get('kb') != 0 or fe.get('logflush') != flushes or fe.get('errors') != 0: bad.append(f"I fileio before its own read: {fe} (want no file grid, {flushes} log flush rows)")
 pk = [l for l in out.splitlines() if l.startswith('metrics pick ')]
 if not pk or pk[0].split(' ', 2)[2].split('|')[2] != 'true': bad.append(f"I metrics pick: {pk}")
 cl = [l for l in out.splitlines() if l.startswith('click ')]

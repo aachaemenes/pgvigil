@@ -253,7 +253,8 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
   const lat = rowsOf(d.latency), thr = rowsOf(d.throughput), files = rowsOf(d.files), checks = [...rowsOf(d.checks), ...rowsOf(d.findings)];
   const flush = rowsOf(d.logflush);
   const sec = el('section', {}, el('h2', {}, `File IO (${rangeLabel(ctx)})`));
-  if (!files.length) { sec.append(empty('file IO', 'mssql_fileio', 'every minute')); return sec; }
+  // the log flushes are mssql_activity's (task 177 D14): they show without a file IO read too
+  if (!files.length) { sec.append(empty('file IO', 'mssql_fileio', 'every minute'), await logFlushBlock(ctx, flush)); return sec; }
   sec.append(el('p', { class: 'meta' }, 'From sys.dm_io_virtual_file_stats: each minute\'s reads and writes per file and the time they stalled; the latency is the stall over the operations. '
     + 'The five busiest database and file type groups are drawn on their own, the rest as (other).'), stepNote(ctx));
   const r = pivot(lat.filter(x => x.read_ms != null), 'grp', 'read_ms'), w = pivot(lat.filter(x => x.write_ms != null), 'grp', 'write_ms');
@@ -324,6 +325,8 @@ export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
       + 'required from SQL Server 2016 (their behaviour is tempdb\'s default).'));
   if (!layout.length) {
     sec.append(el('p', { class: 'empty' }, 'No tempdb read yet: the mssql_tempdb collection runs hourly (the CPU count needs VIEW SERVER STATE).'));
+    // the holders are mssql_activity's (task 177 D14): they show without a layout read too
+    if (!fleet) sec.append(tempdbHolders(rowsOf(d.holders), rowsOf(d.holders_read)[0]));
     return sec;
   }
   sec.append(grid(layout, tempdbCols(fleet, ctx)));
