@@ -8,6 +8,11 @@
 # SHA256SUMS line covers it; not Authenticode-signed, so SmartScreen may warn on first run) and the app's SBOM.
 # Nothing is published from a laptop: a release is reproducible from this file and the tag. docs/airgap.md says how a site without Internet access verifies and installs one. The cosign installer
 # is pinned: its v4 line changes the signature assets (bundle only).
+# The offline bundles (task 202): install.sh, install.ps1, the docs a site needs offline and Sigstore's trust root as
+# three files go into dist BEFORE the checksums, so the one signed SHA256SUMS lists every file of a bundle;
+# scripts/package-offline.sh then lays out pgvigil-offline-<tag>-linux-amd64.tar.gz and -windows-amd64.zip, and
+# SHA256SUMS.offline lists the two archives under a keyless signature of its own (an archive cannot sit in the list it
+# carries). The trust-root files are a convenience: a site verifies with its own (docs/airgap.md).
 name: release
 
 on:
@@ -101,9 +106,31 @@ jobs:
           path: dist
       - name: the app's zip and its SBOM are in dist (their SHA256SUMS lines follow)
         run: ls -l dist/pgvigil-app_*_windows_amd64.zip dist/pgvigil-app_*_windows_amd64.cdx.json
+      - uses: sigstore/cosign-installer@v3.10.1   # cosign v2.6.1: --bundle beside --output-signature / --output-certificate; the installer's v4 (cosign v3) drops those two flags and writes the new bundle format only, so a bump is a deliberate change of the assets, never a floating tag
+      - name: the installers, the offline docs and Sigstore's trust root into dist (their SHA256SUMS lines follow)
+        run: |
+          set -euo pipefail
+          cp docs/install.sh docs/install.ps1 docs/airgap.md docs/upgrade.md docs/uninstall.md dist/
+          # the trust root as three key files, as docs/airgap.md writes them on a site's connected machine
+          cosign initialize
+          TROOT=$(find ~/.sigstore -name trusted_root.json | head -n 1)
+          (cd dist && python3 - "$TROOT" <<'PY'
+          import json, sys, textwrap
+          d = json.load(open(sys.argv[1]))
+          pem = lambda raw, kind: "-----BEGIN %s-----\n%s\n-----END %s-----\n" % (kind, "\n".join(textwrap.wrap(raw, 64)), kind)
+          certs = [c["rawBytes"] for ca in d["certificateAuthorities"] for c in ca["certChain"]["certificates"]]
+          rekor = [t for t in d["tlogs"] if t.get("baseUrl") == "https://rekor.sigstore.dev"]
+          ct = [t for t in d["ctlogs"] if "end" not in t["publicKey"].get("validFor", {})]
+          if not certs or len(rekor) != 1 or len(ct) != 1:
+              sys.exit("trusted_root.json: %d certificates, %d rekor.sigstore.dev logs, %d open certificate logs (wanted 1+, 1, 1)" % (len(certs), len(rekor), len(ct)))
+          open("fulcio.pem", "w").write("".join(pem(c, "CERTIFICATE") for c in certs))
+          open("rekor.pub", "w").write(pem(rekor[0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
+          open("ctfe.pub", "w").write(pem(ct[0]["publicKey"]["rawBytes"], "PUBLIC KEY"))
+          PY
+          )
+          ls -l dist/fulcio.pem dist/rekor.pub dist/ctfe.pub
       - name: checksums
         run: (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
-      - uses: sigstore/cosign-installer@v3.10.1   # cosign v2.6.1: --bundle beside --output-signature / --output-certificate; the installer's v4 (cosign v3) drops those two flags and writes the new bundle format only, so a bump is a deliberate change of the assets, never a floating tag
       - name: sign the checksums (keyless), with a bundle for an offline verification
         run: cosign sign-blob --yes --bundle dist/SHA256SUMS.bundle --output-signature dist/SHA256SUMS.sig --output-certificate dist/SHA256SUMS.pem dist/SHA256SUMS
       - name: verify what was just signed, both ways
@@ -114,6 +141,17 @@ jobs:
           cosign verify-blob --bundle dist/SHA256SUMS.bundle \
             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com dist/SHA256SUMS
+      - name: the offline bundles, listed in SHA256SUMS.offline under a keyless signature of its own
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME}"
+          bash scripts/package-offline.sh dist "$V"
+          (cd dist && sha256sum -- pgvigil-offline-* > SHA256SUMS.offline && cat SHA256SUMS.offline)
+          cosign sign-blob --yes --bundle dist/SHA256SUMS.offline.bundle --output-signature dist/SHA256SUMS.offline.sig \
+            --output-certificate dist/SHA256SUMS.offline.pem dist/SHA256SUMS.offline
+          cosign verify-blob --bundle dist/SHA256SUMS.offline.bundle \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com dist/SHA256SUMS.offline
       - name: publish the release
         uses: softprops/action-gh-release@v2
         with:
