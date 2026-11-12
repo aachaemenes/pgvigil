@@ -359,9 +359,20 @@ export D30_ALERTS_DSN="$PGVIGIL_ADMIN_DSN dbname=$REPO2 user=$ALR password=$PW"
 ok "F: 0118 applied; $([[ $JOINED == 0 ]] && echo "pgvigil.findings left alone, the proof-only splice gives it the darling_alert_findings arm (the join's line)" || echo "the release's join (0190) holds the darling_alert_findings arm in pgvigil.findings")"
 collect() { "$WORK/pgvigil" collect -config "$WORK/cfg.yaml" -once "$1" > "$WORK/collect.$1.log" 2>&1 || { tail -5 "$WORK/collect.$1.log"; fail "F: collect -once $1"; }; }
 pass() { "$WORK/pgvigil" alerts -config "$WORK/cfg.yaml" > "$WORK/pass.$1.out" 2> "$WORK/pass.$1.err" || true; }
-# the sender clears a gone finding only on a pass after a read newer than the pass that first missed it (alert_pick,
-# 0073_ack.sql: missing_since, clear_after, an ok collection_dates row with snapshot_at > missing_since): miss, read, clear
-clear_passes() { pass "$2.miss"; collect "$1"; pass "$2"; }
+# the sender clears a gone finding only on a pass after a read newer than the pass that first missed it (alert_due,
+# 0073_ack.sql: missing_since, clear_after, an OK collection_dates row with snapshot_at > missing_since): miss, read,
+# clear. The read is one that writes 'ok' on this shared cluster: 'tables' reads every database on it and is 'partial'
+# when another job's database errors, 'databases' reads its one connection. Each leg is checked, so a failure names it.
+clear_passes() {   # <collection> <tag> <finding key> <instance id>
+  pass "$2.miss"
+  local ms; ms=$(rq "select coalesce(max(missing_since)::text, '') from pgvigil.alert_state where finding_key = '$3' and cleared_at is null")
+  [[ -n $ms ]] || fail "$2: the pass that missed the finding stamped no missing_since (alert_findings holds the key: $(rq "select count(*) from pgvigil.alert_findings where finding_key = '$3'"); pass: $(tail -3 "$WORK/pass.$2.miss.err" | tr '\n' ' '))"
+  collect "$1"
+  local rd; rd=$(rq "select status || ' ' || snapshot_at || coalesce(' ' || left(note, 200), '') from pgvigil.collection_dates where instance_id = $4 and snapshot_at > '$ms' order by snapshot_at desc limit 1")
+  [[ $rd == ok\ * ]] || fail "$2: no ok read after missing_since $ms: the newest read is '$rd'"
+  pass "$2"
+  [[ $(rq "select count(*) from pgvigil.alert_state where finding_key = '$3' and cleared_at is not null") -ge 1 ]] || fail "$2: the alert did not clear (missing_since $ms, the read '$rd'): $(rq "select channel || ' ' || coalesce(missing_since::text, '-') || ' ' || coalesce(cleared_at::text, '-') from pgvigil.alert_state where finding_key = '$3'"); pass: $(tail -3 "$WORK/pass.$2.err" | tr '\n' ' ')"
+}
 fwd_up
 collect databases; collect tables
 IID=$(rq "select instance_id from pgvigil.instances where name = 'd30pg'")
@@ -381,8 +392,7 @@ ok "F1: $DEAD dead tuples in d30_dead (pg_stat_user_tables) -> 'dead tuples pili
 tq "vacuum d30_dead"; tq "select pg_stat_force_next_flush()" 2>/dev/null || true; sleep 2
 collect tables
 [[ $(rq "select count(*) from pgvigil.findings where setting = 'dead tuples piling up' and value like '%.public.d30_dead' and instance_id = $IID") == 0 ]] || fail "F1: the finding still stands after VACUUM ($(tq "select n_dead_tup from pg_stat_user_tables where relname = 'd30_dead'") dead)"
-clear_passes tables clear
-[[ $(rq "select count(*) from pgvigil.alert_state where finding_key = '$KEY' and cleared_at is not null") -ge 1 ]] || fail "F1: the alert did not clear: $(rq "select channel, cleared_at from pgvigil.alert_state where finding_key = '$KEY'")"
+clear_passes databases F1-clear "$KEY" "$IID"
 ok "F1: after VACUUM ($(tq "select n_dead_tup from pg_stat_user_tables where relname = 'd30_dead'") dead) the finding is gone and the alert cleared (a pass that missed it, a read, a pass)"
 # F2-F5 seeded at the collected rows (no standby, slot of 10 GB, 5 GB volume or AG on the box): the tiers and the clear
 seed() { rq "$1" >/dev/null; }
@@ -427,8 +437,7 @@ DKEY=$(rq "select finding_key from pgvigil.alert_findings where setting = 'serve
 fwd_up
 collect databases
 [[ $(rq "select count(*) from pgvigil.findings where setting = 'server unreachable' and instance_id = $DID") == 0 ]] || fail "F6: still unreachable after the server came back"
-clear_passes databases up
-[[ $(rq "select count(*) from pgvigil.alert_state where finding_key = '$DKEY' and cleared_at is not null") -ge 1 ]] || fail "F6: the unreachable alert did not clear"
+clear_passes databases F6-up "$DKEY" "$DID"
 ok "F6: d30down unreachable ('${F6:0:160}') -> critical, sent; reachable again -> gone, the alert cleared"
 # F7 seeded: the runnable queue per scheduler over the last 5 minutes (three reads), 4 none / 10 warning / 20 critical
 R7=""
