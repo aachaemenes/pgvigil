@@ -1,9 +1,11 @@
 // The SQL Server readers' tabs of an instance (task 149): Error log (the kept lines newest first, with a class, a text
 // and a severity filter over the page's time range; the instance's own search strings), Default trace (file growths
 // and shrinks, DBCC commands with who ran them, DDL) and System health (sp_server_diagnostics' four components as
-// system_health recorded them). Each says what its reader could read: a missing right is shown as such, never as a
-// failure. Data from /api/mssql/errorlog, /defaulttrace and /syshealth; the lead wires the tabs (router.ts, main.ts).
+// system_health recorded them, with PerformanceMonitor's System Events: the corruption and contention counter charts,
+// the memory broker, memory node OOM, scheduler monitor and significant-wait grids of the events read beside them,
+// task 177 D15). Each says what its reader could read: a missing right is shown as such, never as a failure. Data from /api/mssql/errorlog, /defaulttrace and /syshealth; the lead wires the tabs (router.ts, main.ts).
 import { get, Row, rowsOf, Table } from './api';
+import { waitingLink } from './darling_waiting';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
@@ -204,7 +206,9 @@ const systemCols: Col[] = [
   { key: 'non_yielding', label: 'non-yielding', num: true, cls: flag }, { key: 'latch_warnings', label: 'latch warnings', num: true, cls: flag },
   { key: 'spinlock_backoffs', label: 'spinlock backoffs', num: true }, { key: 'sick_spinlock', label: 'sick spinlock', cls: v => v ? 'crit' : '' },
   { key: 'bad_pages_detected', label: 'bad pages', num: true, cls: flag }, { key: 'bad_pages_fixed', label: 'fixed', num: true },
-  { key: 'access_violation', label: 'access violation', num: true, cls: flag }, { key: 'dump_requests', label: 'dump requests', num: true, cls: flag },
+  { key: 'access_violation', label: 'access violation', num: true, cls: flag },
+  { key: 'write_access_violations', label: 'write access violations', num: true, cls: flag },
+  { key: 'dump_requests', label: 'dump requests', num: true, cls: flag },
   { key: 'page_faults', label: 'page faults', num: true },
 ];
 const qpCols: Col[] = [
@@ -222,18 +226,138 @@ const ioCols: Col[] = [
   { key: 'total_long_ios', label: 'long IOs since start', num: true },
   { key: 'longest', label: 'longest pending', wide: true, fmt: v => Array.isArray(v) ? v.map(x => `${text((x as Row).filePath)} ${fmtNum((x as Row).duration)} ms`).join('; ') : '' },
 ];
-const resourceCols: Col[] = [
+// a grid whose columns come in groups, each switched on and off by a check box above it (PerformanceMonitor's column
+// groups, its defaults on): the base columns always, then each group's that is on
+type ColGroup = { name: string; cols: Col[]; on: boolean };
+function groupedGrid(title: string, rows: Row[], base: Col[], groups: ColGroup[], empty: string): HTMLElement {
+  const box = el('div', { class: 'grouped-grid' });
+  let current = grid(rows, [...base, ...groups.filter(g => g.on).flatMap(g => g.cols)], empty);
+  const boxes = groups.map(g => {
+    const cb = el('input', { type: 'checkbox' }) as HTMLInputElement;
+    cb.checked = g.on;
+    cb.addEventListener('change', () => {
+      g.on = cb.checked;
+      const next = grid(rows, [...base, ...groups.filter(x => x.on).flatMap(x => x.cols)], empty);
+      current.replaceWith(next); current = next;
+    });
+    return el('label', {}, cb, ` ${g.name}`);
+  });
+  box.append(el('fieldset', { class: 'filters' }, el('legend', {}, `${title}: column groups`), ...boxes), current);
+  return box;
+}
+
+const yes = (v: unknown) => Number(v) > 0 || v === 'true' ? 'warn' : '';
+const kb = (v: unknown) => v == null ? '' : fmtNum(v) + ' KB';
+
+const resourceBase: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'state', fmt: stateBadge },
   { key: 'last_notification', label: 'last notification', cls: v => text(v).endsWith('_LOW') ? 'warn' : '' },
   { key: 'oom_exceptions', label: 'out-of-memory exceptions', num: true, cls: flag },
   { key: 'pool_out_of_memory', label: 'pool out of memory', num: true, cls: flag },
-  { key: 'available_physical_mb', label: 'available physical', num: true, fmt: mb },
-  { key: 'working_set_mb', label: 'working set', num: true, fmt: mb },
-  { key: 'system_memory_low', label: 'system memory low', num: true, cls: flag },
-  { key: 'process_memory_low', label: 'process memory low', num: true, cls: flag },
   { key: 'target_committed_mb', label: 'target committed', num: true, fmt: mb },
   { key: 'current_committed_mb', label: 'committed', num: true, fmt: mb },
 ];
+const resourceGroups = (): ColGroup[] => [
+  { name: 'Process memory', on: true, cols: [
+    { key: 'available_physical_mb', label: 'available physical', num: true, fmt: mb },
+    { key: 'available_virtual_mb', label: 'available virtual', num: true, fmt: mb },
+    { key: 'available_paging_mb', label: 'available paging file', num: true, fmt: mb },
+    { key: 'working_set_mb', label: 'working set', num: true, fmt: mb },
+    { key: 'pct_committed_in_ws', label: '% committed in working set', num: true },
+    { key: 'page_faults', label: 'page faults', num: true },
+  ] },
+  { name: 'Pressure flags', on: false, cols: [
+    { key: 'system_memory_high', label: 'system physical memory high', num: true },
+    { key: 'system_memory_low', label: 'system physical memory low', num: true, cls: flag },
+    { key: 'process_memory_low', label: 'process physical memory low', num: true, cls: flag },
+    { key: 'process_virtual_low', label: 'process virtual memory low', num: true, cls: flag },
+  ] },
+];
+
+// the events read beside the component results (0120): sp_HealthParser's columns, PerformanceMonitor's grids
+const brokerCols: Col[] = [
+  { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'broker_id', label: 'broker id', num: true }, { key: 'broker' },
+  { key: 'notification', cls: v => text(v) === 'SHRINK' ? 'warn' : '' }, { key: 'pool_metadata_id', label: 'pool metadata id', num: true },
+  { key: 'delta_time', label: 'delta time', num: true }, { key: 'memory_ratio', label: 'memory ratio', num: true },
+  { key: 'new_target', label: 'new target', num: true }, { key: 'overall', num: true }, { key: 'rate', num: true },
+  { key: 'currently_predicated', label: 'predicated', num: true }, { key: 'currently_allocated', label: 'allocated', num: true },
+  { key: 'previously_allocated', label: 'previously allocated', num: true },
+];
+const oomBase: Col[] = [
+  { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'node_id', label: 'node id', num: true },
+  { key: 'memory_node_id', label: 'memory node id', num: true }, { key: 'memory_utilization_pct', label: 'memory utilization %', num: true },
+];
+const oomGroups = (): ColGroup[] => [
+  { name: 'Memory sizes', on: false, cols: [
+    { key: 'total_physical_memory_kb', label: 'total physical', num: true, fmt: kb },
+    { key: 'available_physical_memory_kb', label: 'available physical', num: true, fmt: kb },
+    { key: 'total_page_file_kb', label: 'total page file', num: true, fmt: kb },
+    { key: 'available_page_file_kb', label: 'available page file', num: true, fmt: kb },
+    { key: 'total_virtual_address_space_kb', label: 'total virtual address space', num: true, fmt: kb },
+    { key: 'available_virtual_address_space_kb', label: 'available virtual address space', num: true, fmt: kb },
+  ] },
+  { name: 'Pool detail', on: false, cols: [
+    { key: 'target_kb', label: 'target', num: true, fmt: kb }, { key: 'reserved_kb', label: 'reserved', num: true, fmt: kb },
+    { key: 'committed_kb', label: 'committed', num: true, fmt: kb }, { key: 'shared_committed_kb', label: 'shared committed', num: true, fmt: kb },
+    { key: 'awe_kb', label: 'AWE', num: true, fmt: kb }, { key: 'pages_kb', label: 'pages', num: true, fmt: kb },
+  ] },
+  { name: 'Failure', on: true, cols: [
+    { key: 'failure_type', label: 'failure', cls: v => v ? 'crit' : '' }, { key: 'failure_value', label: 'failure value', num: true },
+    { key: 'resources', wide: true }, { key: 'factor_text', label: 'factor' }, { key: 'factor_value', label: 'factor value', num: true },
+    { key: 'last_error', label: 'last error' },
+  ] },
+  { name: 'Flags', on: false, cols: [
+    { key: 'pool_metadata_id', label: 'pool metadata id', num: true }, { key: 'is_process_in_job', label: 'in a job' },
+    { key: 'is_system_physical_memory_high', label: 'system physical memory high' },
+    { key: 'is_system_physical_memory_low', label: 'system physical memory low', cls: yes },
+    { key: 'is_process_physical_memory_low', label: 'process physical memory low', cls: yes },
+    { key: 'is_process_virtual_memory_low', label: 'process virtual memory low', cls: yes },
+  ] },
+];
+const schedulerCols: Col[] = [
+  { key: 'event_at', label: 'when', fmt: fmtTime },
+  { key: 'sql_cpu', label: 'SQL Server CPU %', num: true, cls: v => Number(v) >= 90 ? 'warn' : '' },
+  { key: 'other_cpu', label: 'other processes CPU %', num: true, cls: v => Number(v) >= 50 ? 'warn' : '' },
+  { key: 'system_idle', label: 'idle %', num: true },
+  { key: 'memory_utilization', label: 'memory utilization %', num: true, cls: v => v != null && Number(v) <= 50 ? 'warn' : '' },
+  { key: 'page_faults', label: 'page faults', num: true }, { key: 'working_set_delta_mb', label: 'working set change', num: true, fmt: mb },
+];
+const waitCols: Col[] = [
+  { key: 'event_at', label: 'when', fmt: fmtTime },
+  { key: 'wait_type', label: 'wait type', fmt: v => v ? waitingLink(text(v), text(v)) : '' },
+  { key: 'duration_ms', label: 'duration', num: true, fmt: ms }, { key: 'signal_duration_ms', label: 'signal duration', num: true, fmt: ms },
+  { key: 'wait_resource', label: 'wait resource', wide: true }, { key: 'session_id', label: 'session', num: true },
+  { key: 'statement', wide: true },
+];
+
+// PerformanceMonitor's Corruption Events and Contention Events charts: each SYSTEM counter as the largest value in its
+// time bucket; a counter no result carried in this window says so instead of drawing a zero line
+const counterCharts = [
+  { group: 'Corruption events', title: 'Bad pages', key: 'bad_pages', empty: 'No bad pages were reported' },
+  { group: 'Corruption events', title: 'Dump requests', key: 'dump_requests', empty: 'No dump request count was reported' },
+  { group: 'Corruption events', title: 'Access violations', key: 'access_violations', empty: 'No access violation count was reported' },
+  { group: 'Corruption events', title: 'Write access violations', key: 'write_access_violations', empty: 'No write access violation count was reported' },
+  { group: 'Contention events', title: 'Non-yielding tasks', key: 'non_yielding', empty: 'No non-yielding task count was reported' },
+  { group: 'Contention events', title: 'Latch warnings', key: 'latch_warnings', empty: 'No latch warning count was reported' },
+];
+const whole = (v: number) => Math.round(v).toLocaleString();
+const hasValue = (rows: Row[], key: string) => rows.some(r => r[key] != null && !Number.isNaN(Number(r[key])));
+function emptyChart(title: string, words: string): HTMLElement {
+  return el('div', { class: 'chart' }, el('h3', {}, title), el('p', { class: 'empty' }, words));
+}
+// one line per sick spinlock type: its largest backoffs per bucket of the series, a gap where the bucket did not name it
+function spinlockChart(series: Row[], spins: Row[]): HTMLElement {
+  const title = 'Contention events: sick spinlocks (backoffs)';
+  const types = [...new Set(spins.map(r => text(r.spinlock_type)))].sort();
+  if (!types.length) return emptyChart(title, 'No sick spinlock was reported in this window.');
+  const at = (v: unknown) => new Date(text(v)).getTime();
+  const rows = series.map(b => {
+    const r: Row = { snapshot_at: b.snapshot_at };
+    types.forEach((t, i) => { r['s' + i] = spins.find(x => text(x.spinlock_type) === t && at(x.snapshot_at) === at(b.snapshot_at))?.backoffs ?? null; });
+    return r;
+  });
+  return lineChart(title, rows, types.map((t, i) => ({ key: 's' + i, label: t })), whole);
+}
 const issueCols: Col[] = [
   { key: 'event_at', label: 'when', fmt: fmtTime }, { key: 'component' }, { key: 'state', fmt: stateBadge },
   { key: 'last_notification', label: 'last notification' },
@@ -245,6 +369,8 @@ export async function mssqlSysHealthView(ctx: Ctx): Promise<HTMLElement> {
     const d = await get<Record<string, Part>>('mssql/syshealth', { instance: ctx.instance, ...window_(ctx) });
     const f = findingsOf(d.findings, ['system_health'], 'syshealth');
     if (f) sec.append(f);
+    const ef = rowsOf(d.event_findings);
+    if (ef.length) sec.append(el('section', {}, el('h3', {}, 'Findings of the system events'), grid(ef, findingCols)));
     sec.append(readerNote(d.state, 'syshealth'),
       el('p', { class: 'meta' }, 'SQL Server checks four parts of itself every five minutes (sp_server_diagnostics) and its system_health session '
         + 'keeps each result; pgvigil reads that session and never changes it.'));
@@ -257,15 +383,45 @@ export async function mssqlSysHealthView(ctx: Ctx): Promise<HTMLElement> {
     const series = rowsOf(d.series);
     sec.append(lineChart('Results not CLEAN and pending tasks', series, [{ key: 'not_clean', label: 'results not CLEAN' }, { key: 'pending_tasks', label: 'pending tasks' }]),
       lineChart('CPU from the SYSTEM component (%)', series, [{ key: 'sql_cpu', label: 'SQL Server' }, { key: 'system_cpu', label: 'the machine' }]));
+    const spins = rowsOf(d.spinlocks);
+    // PerformanceMonitor leaves the counter cards out of a window with no system_health row: no SYSTEM result, no card
+    // (an empty card would read as a clean server where nothing was read)
+    const systemRead = hasValue(series, 'sql_cpu') || rowsOf(d.system).length > 0;
+    if (!systemRead) sec.append(el('p', { class: 'meta' }, 'No SYSTEM result is stored for this window: the corruption and contention charts need one (the state above says why).'));
+    if (systemRead && (counterCharts.some(c => hasValue(series, c.key)) || spins.length)) {
+      sec.append(el('p', { class: 'meta' }, 'The corruption and contention counters are charted below (each point is the largest value in its time bucket); the raw rows follow.'));
+    }
+    if (systemRead) sec.append(el('div', { class: 'charts' },
+      ...counterCharts.map(c => hasValue(series, c.key)
+        ? lineChart(`${c.group}: ${c.title.toLowerCase()}`, series, [{ key: c.key, label: c.title }], whole)
+        : emptyChart(`${c.group}: ${c.title.toLowerCase()}`, `${c.empty} in this window.`)),
+      spinlockChart(series, spins)));
     const stored = series.reduce((n, r) => n + Number(r.results ?? 0), 0);
     sec.append(el('h3', {}, 'Results that were not CLEAN'), grid(rowsOf(d.issues), issueCols,
       stored > 0 ? 'Every result in this window was CLEAN.' : 'No system_health result is stored for this window (the state above says why).'));
     sec.append(el('h3', {}, 'SYSTEM'), el('p', { class: 'meta' }, 'Counters since the server started: a non-zero bad-page, access-violation, non-yielding or latch-warning figure stays until the server restarts.'),
       grid(rowsOf(d.system), systemCols, 'No SYSTEM result in this window.'));
-    sec.append(el('h3', {}, 'RESOURCE (memory)'), grid(rowsOf(d.resource), resourceCols, 'No RESOURCE result in this window.'));
+    sec.append(el('h3', {}, 'RESOURCE (memory)'),
+      groupedGrid('RESOURCE', rowsOf(d.resource), resourceBase, resourceGroups(), 'No RESOURCE result in this window.'));
     sec.append(el('h3', {}, 'QUERY_PROCESSING (workers and tasks)'), grid(rowsOf(d.query_processing), qpCols, 'No QUERY_PROCESSING result in this window.'));
     sec.append(el('h3', {}, 'IO_SUBSYSTEM'), el('p', { class: 'meta' }, 'Only the results that saw a long IO (over 15 s) or an IO latch timeout, or were not CLEAN.'),
       grid(rowsOf(d.io), ioCols, 'No long IO and no IO latch timeout in this window.'));
+    sec.append(el('p', { class: 'meta' }, 'The four grids below hold the events system_health keeps beside the component results; pgvigil reads them from the '
+      + 'version that added them on (a read already past older files does not go back), so an empty grid is what was stored, not proof of a quiet server.'));
+    sec.append(el('h3', {}, 'Scheduler monitor'), el('p', { class: 'meta' }, 'The samples system_health keeps of SQL Server\'s CPU, the idle CPU and '
+      + 'memory utilization (the share of SQL Server\'s committed memory in its working set), here those past one of sp_HealthParser\'s '
+      + 'warnings: SQL Server at 90 % or more, other processes at 50 % or more, memory utilization at 50 or less. SQL Server on Linux writes '
+      + 'the idle CPU as 0 in every sample, so there the idle and other processes\' shares are not read (blank).'),
+      grid(rowsOf(d.scheduler), schedulerCols, Number(rowsOf(d.scheduler_samples)[0]?.samples ?? 0) > 0
+        ? 'No stored scheduler monitor sample crossed a warning in this window.'
+        : 'No scheduler monitor sample is stored for this window.'));
+    sec.append(el('h3', {}, 'Memory broker'), el('p', { class: 'meta' }, 'The memory broker\'s notifications to its clerks (grow, shrink, stable) as system_health keeps them.'),
+      grid(rowsOf(d.broker), brokerCols, 'No memory broker event is stored for this window.'));
+    sec.append(el('h3', {}, 'Memory node OOM'),
+      groupedGrid('Memory node OOM', rowsOf(d.node_oom), oomBase, oomGroups(), 'No memory node out-of-memory event is stored for this window.'));
+    sec.append(el('h3', {}, 'Significant waits'), el('p', { class: 'meta' }, 'A real session waiting 500 ms or more on a wait type that is not idle '
+      + '(system_health keeps a wait only when it is long: 15 s on a latch, 30 s on a lock); the wait type opens the Waiting tasks tab filtered to it.'),
+      grid(rowsOf(d.waits), waitCols, 'No significant wait is stored for this window.'));
     const newest = latest.find(r => r.component === 'RESOURCE');
     if (newest) {
       const m = (newest.detail as Row | null)?.memory as Row | undefined;

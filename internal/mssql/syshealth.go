@@ -30,6 +30,10 @@ import (
 //	RESOURCE          the last memory notification, out-of-memory exceptions, a pool out of memory, and the memory
 //	                  report (process and system counts, the memory manager's figures)
 //
+// In the same read it takes the four events sp_HealthParser reads beside them (readers_sysevents.go): the memory
+// broker's notifications, a memory node's out-of-memory record, the scheduler monitor's samples and the long waits,
+// each a row of its own component (MEMORY_BROKER, MEMORY_NODE_OOM, SCHEDULER_MONITOR, WAIT_INFO; state EVENT).
+//
 // The session is the server's own: pgvigil reads it and never creates, changes, starts or stops it. Needs VIEW
 // SERVER STATE; a login without it is the state "no right", never a failure. Not on Azure SQL Database.
 //
@@ -212,9 +216,14 @@ func (sysHealthCollector) RunBatches(ctx context.Context, conn *sql.Conn, info I
 	if pattern == "" {
 		return failed(fmt.Errorf("the event file of system_health has an unexpected name: %s", ft.File.Name))
 	}
-	r := &xeRun{ctx: ctx, conn: conn, info: info, opt: opt, cursor: cursor, emit: emit, now: time.Now()}
+	batchEmit := emit
+	if linuxHost(ctx, conn) {
+		// SQL Server on Linux writes the scheduler monitor's system_idle as 0 (cpu.go's rule): not stored as read
+		batchEmit = func(rows []collect.Row) error { return emit(dropLinuxIdle(rows)) }
+	}
+	r := &xeRun{ctx: ctx, conn: conn, info: info, opt: opt, cursor: cursor, emit: batchEmit, now: time.Now()}
 	side := collect.Row{}
-	if err := r.readFile(sysHealthSource, pattern, []string{sysHealthEvent}, sysHealthBatch,
+	if err := r.readFile(sysHealthSource, pattern, sysEventList(), sysHealthBatch,
 		xeContext{source: "system_health", session: "system_health", queryText: opt.QueryText}, side); err != nil {
 		if noRightError(err) {
 			return emit([]collect.Row{readerStateRow(sysHealthSource, readerNoRight, "the login may not read the event file: "+err.Error())})
