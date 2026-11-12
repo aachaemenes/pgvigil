@@ -272,4 +272,4 @@ Questions and problems go to **support@pgvigil.com**. The UI's About page has **
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). pgvigil is an independent project, not affiliated with Trimble, Inc. or DBA Dash.
+MIT. See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). pgvigil is an independent project, not affiliated with any project it learned from. With thanks to DBA Dash (MIT), Erik Darling's DarlingData and the SQL Server First Responder Kit (MIT), and the other projects THIRD-PARTY-NOTICES.md lists.
