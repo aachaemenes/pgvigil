@@ -527,10 +527,13 @@ await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
 if (st !== 200) { console.log(`login ${st}`); process.exit(1); }
-await cmd('Page.navigate', { url: U + start }); await sleep(500);
-if (!await settled()) { console.log('FAIL render start'); process.exit(1); }
+// the app reads its session when it loads: a real load after the login (a hash change would keep the login screen)
+await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
+await cmd('Page.navigate', { url: U + start }); await sleep(800);
+const mainText = async () => (await ev(`(document.querySelector('main')?.innerText ?? '(no main)').replace(/\\s+/g, ' ').slice(0, 300)`)) ?? '';
+if (!await settled()) { console.log(`FAIL render start: ${await mainText()}`); process.exit(1); }
 const tabs = await ev(`(() => { const d = document.querySelector('main [data-all]') ?? document.querySelector('#tabs'); return d?.dataset.all ? JSON.parse(d.dataset.all) : null; })()`);
-if (!Array.isArray(tabs)) { console.log('FAIL no tab list'); process.exit(1); }
+if (!Array.isArray(tabs)) { console.log(`FAIL no tab list: ${await mainText()}`); process.exit(1); }
 // the tree: its Imported folder drawn (the read arrives after the first draw), no source-product name in it
 let tree = '';
 for (let i = 0; i < 40 && !/Imported: lab/.test(tree); i++) { await sleep(250); tree = await ev(`document.getElementById('tree')?.innerText ?? ''`); }
@@ -538,7 +541,7 @@ console.log(`tree ${/Imported: lab/.test(tree) ? 'folder' : 'nofolder'} ${/DBA ?
 for (const h of tabs) {
   const key = /[?&]dp=([^&]+)/.exec(h)?.[1] ?? /^#\/([^?]+)/.exec(h)?.[1];
   await cmd('Page.navigate', { url: U + h }); await sleep(300);
-  if (!await settled()) { console.log(`tab ${key} render=no`); continue; }
+  if (!await settled()) { console.log(`tab ${key} render=no: ${await mainText()}`); continue; }
   const r = await ev(`(() => { const m = document.querySelector('main'); const s = m.querySelector('[data-source]');
     const rows = [...m.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty') && tr.children.length > 0).length;
     return JSON.stringify({ src: s?.dataset.source ?? 'native', rows: s?.dataset.rows ?? '-', trs: rows, charts: m.querySelectorAll('canvas, svg').length,
@@ -571,15 +574,14 @@ gtabs() {
   done < <(echo "$out" | grep '^tab ')
 }
 SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlproperties"
-g1=$(gwalk "#/dbadash?dr=lab&di=$ID"); echo "$g1" > "$TMPD/g1.txt"
+g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
 gtabs "$g1" "" "$SCREENS mssqlstorage" G1
 echo "ok   G1: the DBA Dash instance's own page: 33 tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
 "$BIN" import dbadash -config "$TMPD/g.yaml" -repo lab >"$TMPD/g-import.out" 2>&1 || { cat "$TMPD/g-import.out" >&2; fail "G2: pgvigil import dbadash"; }
 GID=$(psql "$GDSN" -XAtq -c "SELECT instance_id FROM pgvigil.instances WHERE name = '$DISP' AND engine = 'sqlserver'")
 [[ "$GID" =~ ^[1-9][0-9]*$ ]] || { cat "$TMPD/g-import.out" >&2; fail "G2: no imported server named $DISP"; }
 echo "ok   G2: pgvigil import dbadash -repo lab: exit 0, the imported server $DISP is pgvigil instance $GID ($(tail -1 "$TMPD/g-import.out"))"
-sleep 26   # the UI keeps the repositories' read 25 s: the next walk sees the import
-g3=$(gwalk "#/summary?i=$GID"); echo "$g3" > "$TMPD/g3.txt"
+g3=$(gwalk "#/summary?i=$GID") || fail "G3: the Chromium walk stopped: $g3"
 gtabs "$g3" "mssqlcpu mssqlstorage jobstimeline" "$SCREENS" G3
 echo "ok   G3: the imported server at pgvigil instance $GID: 33 tabs, $(echo "$g3" | grep -c 'source=store') of pgvigil's own pages over the imported rows, $(echo "$g3" | grep -c 'source=screen') screens, $(echo "$g3" | grep -c 'source=none') 'not read' lines, no error; the tree as in G1"
 kill "$CHRPID" 2>/dev/null || true; CHRPID=
