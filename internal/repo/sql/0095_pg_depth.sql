@@ -15,7 +15,8 @@
 --      and the catalog findings (SECURITY DEFINER without search_path, NOT VALID constraints, rows in a DEFAULT partition,
 --      CREATE on public, MD5 passwords).
 --   6. index_bloat (current state) from the new index_bloat collection: the btree estimate with its REINDEX line.
---   7. pg_depth_findings: the findings of all of the above plus the dead-row share of the tables collection's rows.
+--   7. pg_depth_findings: the findings of all of the above (a table's dead rows are 0016's table_checks 'table dead rows',
+--      over 20 % of over 1,000 rows, on the Tables page: one rule, not a second one here).
 --   depth_databases records, per collection, which databases the last read covered (a database in error keeps its rows).
 -- For the lead's join (0110): pg_depth_findings is a findings arm; wal_state_sample, function_stats and slru_sample are
 -- monthly partition parents for purge(); sequence_state, db_checks, index_bloat and depth_databases keep rows no longer
@@ -796,7 +797,6 @@ END $$;
 --   sequence near its maximum  (warning at 90 %, critical at 98 %)
 --   SECURITY DEFINER without search_path (warning), NOT VALID constraint (info), rows in a DEFAULT partition (info),
 --   CREATE on schema public    (warning), MD5 password (warning)
---   dead rows                  (warning) 100,000 dead rows or more and 20 % or more of the table's rows (the tables collection)
 --   index bloat                (info at 50 % of an index of 10 MB or more; warning when 1 GB or more of it is bloat)
 CREATE OR REPLACE VIEW pgvigil.pg_depth_findings AS
 SELECT w.instance_id, 'warning'::text AS severity, 'checkpoint late'::text AS setting,
@@ -877,14 +877,6 @@ SELECT k.instance_id,
        'pg-depth', k.snapshot_at
   FROM pgvigil.db_checks k
  WHERE k.is_present
-UNION ALL
-SELECT t.instance_id, 'warning', 'dead rows',
-       t.datname || ': ' || t.schema_name || '.' || t.table_name || ' ' || t.n_dead_tup || ' dead', true, 'under 100,000 or under 20 %', 'all',
-       t.n_dead_tup || ' dead rows, ' || round(100.0 * t.n_dead_tup / nullif(t.n_live_tup + t.n_dead_tup, 0), 1)
-         || ' % of the table: vacuum is not keeping up (autovacuum off for it, a long transaction or slot holding xmin, or the cost limit)',
-       'pg-depth', t.snapshot_at
-  FROM pgvigil.tables t
- WHERE t.is_present AND t.n_dead_tup >= 100000 AND t.n_dead_tup >= 0.2 * (coalesce(t.n_live_tup, 0) + t.n_dead_tup)
 UNION ALL
 SELECT b.instance_id, CASE WHEN b.bloat_bytes >= 1073741824 THEN 'warning' ELSE 'info' END, 'index bloat',
        b.datname || ': ' || b.schema_name || '.' || b.index_name || ' ' || b.bloat_pct || ' %', true, b.reindex_sql, 'all',
