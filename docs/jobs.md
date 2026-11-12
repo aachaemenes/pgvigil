@@ -120,7 +120,9 @@ On SQL Server the grid's last column has Start and Stop (`sp_start_job`, `sp_sto
   shown unless every option is asked for.
 - **Trace flags (SQL Server):** `mssql_traceflags` reads `DBCC TRACESTATUS(-1)` hourly: the flags on now, and each
   flag added or removed with the read that saw it. The first read is the baseline. A flag on for the collector's own
-  session only is listed as such.
+  session only is listed as such. The same read carries the day-one checks' verdict of each flag (the Checks page's
+  Trace flags view and its findings, [SQL Server checks](sqlserver-checks.md)): no other collection reads
+  `DBCC TRACESTATUS(-1)` (`mssql_tempdb` asks for 1117 and 1118 alone).
 
 ### Passwords
 

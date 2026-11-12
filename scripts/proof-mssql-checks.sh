@@ -22,8 +22,8 @@
 #  A. as the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, db_datareader in msdb): `collect -once
 #     mssql_checks` exits 0 and does not say partial; mssql_server_option holds as many present rows as sa counts in
 #     sys.configurations; mssql_database_option as many as sa counts in sys.databases; every area of the nine is
-#     read; mssql_build is known (the catalogue has 2022) and, where sa's build is newer than the catalogue's newest
-#     (4255), newer; the image's untouched options: 'cost threshold for parallelism' 5 is a warning (sp_Blitz 188),
+#     read; mssql_build is known (the catalogue has 2017 to 2025) and, where sa's build is newer than the catalogue's
+#     newest build of its major (read from checks.go's catalogue: 4255 for 2022), newer; the image's untouched options: 'cost threshold for parallelism' 5 is a warning (sp_Blitz 188),
 #     'xp_cmdshell' 0 is ok. The server's clock is not UTC (GETDATE() differs from GETUTCDATE()), so F's 'within the
 #     last hour' fails if a local time is stored as UTC.
 #  B. a database with AUTO_CLOSE on: its auto_close cell deviates ('warn', sp_Blitz 12), the finding 'auto close'
@@ -37,8 +37,10 @@
 #     xp_cmdshell, and run 2 stopped at its sp_configure with the server's message hidden (sq sent it to /dev/null; sq
 #     now prints it on a failure). The option is now one that changes on any platform; xp_cmdshell's rule is the unit
 #     test's.]
-#  E. trace flag 1211 on globally (DBCC TRACEON(1211, -1)): its row is on and 'warn', the finding 'trace flag on'
-#     names 1211; TRACEOFF: the row is kept, not present, and the finding is gone.
+#  E. trace flag 1211 on globally (DBCC TRACEON(1211, -1)): its row of the checks' view mssql_trace_flag_checks (over
+#     0094's one store, read by mssql_traceflags) is on and 'warn', the finding 'trace flag on' names 1211; TRACEOFF:
+#     the row is kept, not present, and the finding is gone. Trace flag 3226 (off in the image, advised on) is listed
+#     off and 'warn' throughout, with its 'trace flag off' finding at info.
 #  F. master has never had a good DBCC CHECKDB on a new container (its create date is the image's, years old): the
 #     finding 'last good CHECKDB' names master, critical; DBCC CHECKDB(master): its cell holds a time within the last
 #     hour and the finding is gone. A database made by the proof minutes ago with no CHECKDB raises nothing (new).
@@ -63,8 +65,9 @@
 #  J. a table with a tinyint identity at 200 (78 % of 255) in the proof's database: `collect -once mssql_identity`
 #     lists it 'warn' with a finding; at 240 (94 %): 'crit'; the table dropped: the column and the finding gone,
 #     the scan row says scanned.
-#  K. a login with the public role only: mssql_checks exits 0 and says partial; the config, traceflags, build,
-#     dboptions, dbstate, checkdb and corruption areas are read; logspace and alerts are not, each with its reason.
+#  K. a login with the public role only: mssql_traceflags exits 0, mssql_checks exits 0 and says partial; the config,
+#     traceflags, build, dboptions, dbstate, checkdb and corruption areas are read; logspace and alerts are not, each
+#     with its reason.
 #     [Changed after run 5, which expected corruption not read: msdb's guest user lets the public role read
 #     msdb.dbo.suspect_pages (the read succeeded as that login), while sysnotifications refused it (Msg 229).]
 #     mssql_identity is skipped naming VIEW ANY DEFINITION. A login with VIEW ANY DEFINITION and no right to enter
@@ -93,7 +96,9 @@ N=proof-checks-$SUF; NB=proof-checksbare-$SUF; NV=proof-checksdef-$SUF; NS=proof
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw); P2=$(pw); P3=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
-freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
+# the listening sockets are read once into a variable: 'ss | grep -q' under pipefail would call a taken port free
+# whenever grep left before ss had finished writing
+freeport() { local l p; l=$(ss -ltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$l" || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_CT=; SRV_PID=
 cleanup() {
   rc=$?
@@ -122,6 +127,10 @@ ADDR=127.0.0.1:$MPORT
 MADE_CT=1
 docker run -d --name "$CT" -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD -e MSSQL_AGENT_ENABLED=true -e TZ=America/Los_Angeles -p "127.0.0.1:$MPORT:1433" \
   "${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}" >/dev/null || fail "docker run of the SQL Server container"
+# sq calls /opt/mssql-tools18/bin/sqlcmd: the 2017 image has /opt/mssql-tools only (and runs as root, so the link can
+# be made; the 2019 and later images ship mssql-tools18)
+docker exec "$CT" sh -c 'test -x /opt/mssql-tools18/bin/sqlcmd || { mkdir -p /opt/mssql-tools18/bin && ln -s /opt/mssql-tools/bin/sqlcmd /opt/mssql-tools18/bin/sqlcmd; }' \
+  || fail "the sqlcmd link in $CT"
 # sq <sql> [database]: as sa, the password through the environment by name
 # sqlcmd writes a server error to stdout: on a failure the output goes to stderr, so a caller's >/dev/null hides nothing
 sq() {
@@ -163,7 +172,9 @@ q() { psql "$PGVIGIL_REPO_DSN" -XAt -v ON_ERROR_STOP=1 -c "$1"; }
 } > "$CFG"
 "$BIN" migrate -config "$CFG" >/dev/null || fail "migrate"
 collect() { "$BIN" collect -config "$CFG" -once "$1" -instance "${2:-$N}" > "$OUT" 2>&1 || { cat "$OUT" >&2; return 1; }; cat "$OUT"; }
-chk() { collect mssql_checks "${1:-$N}" >/dev/null; }
+# the trace flags are the collection mssql_traceflags' (one read, one store: 0094); the checks' read runs last, so
+# OUT holds its output
+chk() { collect mssql_traceflags "${1:-$N}" >/dev/null && collect mssql_checks "${1:-$N}" >/dev/null; }
 
 echo "--- A. the read as the monitoring login"
 chk
@@ -173,15 +184,18 @@ NCFG=$(sq "SELECT COUNT(*) FROM sys.configurations"); NDB=$(sq "SELECT COUNT(*) 
 [ "$(q "select count(*) from pgvigil.mssql_server_option where instance_id = $I and is_present")" = "$NCFG" ] || fail "A: options, want $NCFG"
 [ "$(q "select count(*) from pgvigil.mssql_database_option where instance_id = $I and is_present")" = "$NDB" ] || fail "A: databases, want $NDB"
 [ "$(q "select count(*) from pgvigil.mssql_check_area where instance_id = $I and is_read")" = 9 ] || fail "A: areas read: $(q "select string_agg(area || '=' || is_read || coalesce(' ' || note, ''), '; ') from pgvigil.mssql_check_area where instance_id = $I")"
-BUILD=$(echo "$PV" | cut -d. -f3)
-WANT_NEWER=$([ "$BUILD" -gt 4255 ] && echo true || echo false)   # a boolean joined into text reads true / false
+BUILD=$(echo "$PV" | cut -d. -f3); MAJ=$(echo "$PV" | cut -d. -f1)
+# the catalogue's newest build of the server's own major, read from checks.go's catalogue itself (major|build|...)
+NEWEST=$(grep -E "^$MAJ\|[0-9]+\|" "$ROOT/internal/mssql/checks.go" | cut -d'|' -f2 | sort -n | tail -1 || true)
+[ -n "$NEWEST" ] || fail "A: checks.go's catalogue has no build of major $MAJ"
+WANT_NEWER=$([ "$BUILD" -gt "$NEWEST" ] && echo true || echo false)   # a boolean joined into text reads true / false
 [ "$(q "select known || '|' || newer from pgvigil.mssql_build where instance_id = $I")" = "true|$WANT_NEWER" ] || fail "A: build: $(q "select * from pgvigil.mssql_build where instance_id = $I")"
 opt() { q "select status || '|' || coalesce(rule, '') from pgvigil.mssql_server_option where instance_id = $I and name = '$1'"; }
 [ "$(opt 'cost threshold for parallelism')" = "warn|sp_Blitz 188" ] || fail "A: cost threshold: $(opt 'cost threshold for parallelism')"
 [ "$(opt xp_cmdshell)" = "ok|" ] || fail "A: xp_cmdshell: $(opt xp_cmdshell)"
 OFFS=$(sq "SELECT DATEDIFF(minute, GETUTCDATE(), GETDATE())")
 [ "$OFFS" != 0 ] || fail "A: the server's clock is UTC (TZ not taken): F could not catch a local time stored as UTC"
-echo "  $NCFG options, $NDB databases, build $BUILD (newer than the catalogue: $WANT_NEWER), server clock UTC$OFFS min"
+echo "  $NCFG options, $NDB databases, build $MAJ.$BUILD (the catalogue's newest of $MAJ: $NEWEST; newer: $WANT_NEWER), server clock UTC$OFFS min"
 echo "A: OK"
 
 # cell <database> <option key>: the deviation's status, or 'none'
@@ -249,13 +263,15 @@ sq "EXEC sp_configure 'cost threshold for parallelism', 5; RECONFIGURE; EXEC sp_
 echo "D: OK"
 
 echo "--- E. trace flag 1211"
-flag() { q "select is_on || '|' || status || '|' || is_present from pgvigil.mssql_trace_flag where instance_id = $I and flag = $1"; }
+flag() { q "select is_on || '|' || status || '|' || is_present from pgvigil.mssql_trace_flag_checks where instance_id = $I and flag = $1"; }
 sq "DBCC TRACEON(1211, -1) WITH NO_INFOMSGS;" >/dev/null; chk
 [ "$(flag 1211)" = "true|warn|true" ] || fail "E: flag 1211 on: $(flag 1211)"
 [ "$(finding 'trace flag on' 1211)" = "1|warning" ] || fail "E: the finding"
 sq "DBCC TRACEOFF(1211, -1) WITH NO_INFOMSGS;" >/dev/null; chk
 [ "$(flag 1211)" = "true|warn|false" ] || fail "E: flag 1211 after TRACEOFF: $(flag 1211)"
 [ "$(finding 'trace flag on' 1211)" = "0|" ] || fail "E: the finding after TRACEOFF"
+[ "$(flag 3226)" = "false|warn|true" ] || fail "E: the advised flag 3226 (off): $(flag 3226)"
+[ "$(finding 'trace flag off' 3226)" = "1|info" ] || fail "E: the advised flag's finding: $(finding 'trace flag off' 3226)"
 echo "E: OK"
 
 echo "--- F. last good CHECKDB"
@@ -355,6 +371,7 @@ collect mssql_identity >/dev/null
 echo "J: OK"
 
 echo "--- K. a login with the public role only"
+collect mssql_traceflags "$NB" >/dev/null || fail "K: mssql_traceflags as the public login failed"
 collect mssql_checks "$NB" >/dev/null || fail "K: the run failed"
 grep -q partial "$OUT" || fail "K: the run does not say partial: $(cat "$OUT")"
 IB=$(q "select instance_id from pgvigil.instances where name = '$NB'")

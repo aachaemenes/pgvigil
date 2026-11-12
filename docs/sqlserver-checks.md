@@ -1,6 +1,6 @@
 # SQL Server day-one checks
 
-Two collections judge a SQL Server instance the way a DBA does on the first day with it: the server's options, its trace flags, its build, every database's options and state, the logs, the last good DBCC CHECKDB, damaged pages, SQL Server Agent's alerts and the identity columns near their limit. Every value is stored **with its verdict**, so the pages show each option a rule covers, met or not, coloured as DBA Dash colours its Configuration and DB Options grids:
+Three collections judge a SQL Server instance the way a DBA does on the first day with it: the server's options, its trace flags, its build, every database's options and state, the logs, the last good DBCC CHECKDB, damaged pages, SQL Server Agent's alerts and the identity columns near their limit. Every value is stored **with its verdict**, so the pages show each option a rule covers, met or not, coloured as DBA Dash colours its Configuration and DB Options grids:
 
 - **green**: the value is at its default or meets its best practice;
 - **yellow**: a warning or an advice rule is broken (a value that is only off its default is advice);
@@ -11,10 +11,10 @@ A coloured cell is never the only signal: its title names the rule and says why,
 
 | Collection | Interval | What it reads | Rights |
 |---|---|---|---|
-| `mssql_checks` | 1 hour | `sys.configurations`, `DBCC TRACESTATUS(-1)`, the build, `sys.databases` with `DATABASEPROPERTYEX(..., 'LastGoodCheckDbTime')`, `DBCC SQLPERF(LOGSPACE)` and `sys.dm_db_log_info`, `msdb.dbo.suspect_pages`, `msdb.dbo.sysalerts`, `sysoperators`, `sysnotifications`, `sp_MSgetalertinfo` | public for the options, flags, build, databases and CHECKDB; `VIEW SERVER STATE` for the logs and for weighing max server memory and MAXDOP against the machine; `db_datareader` in msdb for the alerts (the suspect pages are readable by the public role through msdb's guest user, read so on SQL Server 2022) |
+| `mssql_checks` | 1 hour | `sys.configurations`, the build, `sys.databases` with `DATABASEPROPERTYEX(..., 'LastGoodCheckDbTime')`, `DBCC SQLPERF(LOGSPACE)` and `sys.dm_db_log_info`, `msdb.dbo.suspect_pages`, `msdb.dbo.sysalerts`, `sysoperators`, `sysnotifications`, `sp_MSgetalertinfo` | public for the options, build, databases and CHECKDB; `VIEW SERVER STATE` for the logs and for weighing max server memory and MAXDOP against the machine; `db_datareader` in msdb for the alerts (the suspect pages are readable by the public role through msdb's guest user, read so on SQL Server 2022) |
 | `mssql_identity` | 6 hours | `sys.identity_columns` in every user database the login can enter | `VIEW ANY DEFINITION` and access to the databases (`CONNECT ANY DATABASE`) |
 
-An area the last run could not read keeps its rows and findings (the last known) and its cell says **not read now**, uncoloured. Nothing is written on the server. `mssql_checks` never enters a user database; `mssql_identity` runs one SELECT per database through that database's `sys.sp_executesql`. Both run on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; not yet on Azure SQL Database. An area the login may not read is stored as **not read** with the reason and keeps what an earlier read stored; the run is then partial.
+The trace flags are judged by the same rules but read once, by `mssql_traceflags` (hourly, `DBCC TRACESTATUS(-1)`, any login; [jobs and configuration history](jobs.md)): its rows are the one store of the flags, and its read writes the checks' Trace flags cell and findings. An area the last run could not read keeps its rows and findings (the last known) and its cell says **not read now**, uncoloured. Nothing is written on the server. `mssql_checks` never enters a user database; `mssql_identity` runs one SELECT per database through that database's `sys.sp_executesql`. Both run on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; not yet on Azure SQL Database. An area the login may not read is stored as **not read** with the reason and keeps what an earlier read stored; the run is then partial.
 
 ## The areas
 

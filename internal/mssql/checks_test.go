@@ -166,6 +166,62 @@ func TestTraceFlagRows(t *testing.T) {
 	}
 }
 
+// The one read of the flags (mssql_traceflags) carries the checks' verdicts: a global flag its verdict, a flag of
+// the collector's session alone none, a flag listed with Status 0 nothing, an advised flag that is off an 'advised'
+// row, and the checks' area row and findings.
+func TestTraceFlagPayload(t *testing.T) {
+	raw := []collect.Row{
+		{"TraceFlag": int64(1211), "Status": int64(1), "Global": int64(1), "Session": int64(0)},
+		{"TraceFlag": int64(3226), "Status": int64(1), "Global": int64(1), "Session": int64(0)},
+		{"TraceFlag": int64(1222), "Status": int64(1), "Global": int64(0), "Session": int64(1)}, // this session's only
+		{"TraceFlag": int64(652), "Status": int64(0), "Global": int64(1), "Session": int64(0)},  // listed, off
+	}
+	out := traceFlagPayload(raw, Info{Kind: KindServer, Major: 16})
+	kinds := map[string]int{}
+	flags := map[int64]collect.Row{}
+	for _, r := range out {
+		k, _ := r["kind"].(string)
+		kinds[k]++
+		switch k {
+		case "flag":
+			f, _ := num(r["trace_flag"])
+			flags[f] = r
+		case "advised":
+			if r["trace_flag"] != int64(7745) || r["status"] != "warn" || r["severity"] != sevInfo || r["rule"] != "Glenn Berry Q5" {
+				t.Errorf("advised row: %v", r)
+			}
+		case "area":
+			if r["area"] != AreaTraceFlags || r["read"] != 1 {
+				t.Errorf("area row: %v", r)
+			}
+		case "finding":
+			if r["area"] != AreaTraceFlags {
+				t.Errorf("finding of another area: %v", r)
+			}
+		}
+	}
+	if kinds["read"] != 1 || kinds["flag"] != 3 || kinds["advised"] != 1 || kinds["area"] != 1 || kinds["finding"] != 2 {
+		t.Fatalf("row kinds %v, want read 1, flag 3, advised 1, area 1, finding 2 (1211 on, 7745 off)", kinds)
+	}
+	if r := flags[1211]; r["status"] != "warn" || r["severity"] != sevWarning || r["rule"] != "sp_Blitz 74" || r["explain"] == nil {
+		t.Errorf("1211: %v", r)
+	}
+	if r := flags[3226]; r["status"] != "ok" || r["severity"] != nil {
+		t.Errorf("3226: %v", r)
+	}
+	if r := flags[1222]; r["status"] != nil || r["global"] != int64(0) || r["session"] != int64(1) {
+		t.Errorf("1222 (the session's): %v", r)
+	}
+	if _, ok := flags[652]; ok {
+		t.Errorf("652 is listed off and was carried: %v", flags[652])
+	}
+	// no flag on: the read row, the area row, the advised flags
+	out = traceFlagPayload(nil, Info{Kind: KindServer, Major: 16})
+	if len(out) != 6 || out[0]["kind"] != "read" {
+		t.Errorf("no flag on: %v", out)
+	}
+}
+
 func TestBuildCatalogue(t *testing.T) {
 	for major, newest := range map[int]int{13: 7055, 14: 3530, 15: 4470, 16: 4255, 17: 4055} {
 		rows := builds[major]

@@ -8,7 +8,7 @@ import (
 )
 
 // The day-one checks of a SQL Server instance (task 148; migration 0090, collections mssql_checks and
-// mssql_identity) and their fleet view.
+// mssql_identity; the trace flags' area from mssql_traceflags, migration 0094) and their fleet view.
 //
 //	GET /api/mssql/checks?instance=N[&part=...]   state (the two collections' last runs), areas (per area: read or
 //	        not, why, the Summary cell), findings, options (every server option with its default, advised value and
@@ -45,7 +45,7 @@ SELECT o.name, o.value_in_use, o.value_set, o.default_value, o.advised, o.status
 
 const sqlMSSQLChecksFlags = `
 SELECT t.flag, t.is_on, t.status, t.severity, t.rule, t.detail, t.first_seen, t.is_present, t.snapshot_at
-  FROM pgvigil.mssql_trace_flag t
+  FROM pgvigil.mssql_trace_flag_checks t
  WHERE t.instance_id = $1
  ORDER BY t.is_present DESC, t.is_on DESC, t.flag`
 
@@ -123,7 +123,7 @@ func (s *Server) MSSQLChecks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.multiPart(w, r, []part{
-		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_checks", "mssql_identity"}}},
+		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_checks", "mssql_identity", "mssql_traceflags"}}},
 		{"areas", sqlMSSQLChecksAreas, []any{id}},
 		{"findings", sqlMSSQLChecksFindings, []any{id}},
 		{"options", sqlMSSQLChecksOptions, []any{id}},
