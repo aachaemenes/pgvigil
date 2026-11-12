@@ -101,6 +101,11 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	}
 	rp["default_transaction_read_only"] = "on"
 	rp["statement_timeout"] = "15000"
+	// every run of a statement planned with its own values (the join review d10a, verdict (a)): pgx prepares each
+	// statement once per connection, and from its sixth run the server may keep a generic plan, which for a 7-day
+	// window at 3,000 plan-cache rows a read took 18-20 s against 2.6 s (s177j-spike4), past the 15 s above; behind
+	// PgBouncer in transaction mode it needs track_extra_parameters, as statement_timeout, jit and lock_timeout do
+	rp["plan_cache_mode"] = "force_custom_plan"
 	rp["jit"] = "off" // the findings view (sixteen UNION arms of CASE-heavy rules) crosses jit_above_cost: LLVM compiled 1,289 functions per read, 147 s against 3 s without (2026-11-09)
 	rp["lock_timeout"] = "2000"
 	rp["search_path"] = "pgvigil, pg_catalog"
