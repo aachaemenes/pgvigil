@@ -221,7 +221,9 @@ SPILL1=$(sq "SELECT ISNULL(SUM(total_spills), 0) FROM sys.dm_exec_procedure_stat
 [[ $(sq "SELECT CASE WHEN SYSUTCDATETIME() < DATEADD(second, 119, CONVERT(datetime2, '${M1%Z}')) THEN 1 ELSE 0 END") == 1 ]] || fail "D: W1's runs and R1 overran W1"
 M2=$(plus "$M1" 120); until_s "$M2" 2; echo "  W2 from $M2"
 sqt "$(rep 5 "$Q_COST 1500;")$(rep 5 "$Q_NEW")$(rep 5 "$Q_NK")$(rep 10 "$Q_CHEAP 20;")$(rep 3 'EXEC dbo.p_spill;')$(rep 3 'EXEC dbo.p_new;')" pgvq
-sqt "$(rep 4 "$Q_TO 20000;")$(rep 4 "$Q_TONEW 20000;")" pgvq 1    # the client gives up after 1 s: Aborted
+# the client gives up after 1 s: Aborted. One session per run: a session that timed out once is not trusted to run
+# the next batch (s177j-7: of eight batches in one session, three ran to a timeout)
+for q in "$Q_TO" "$Q_TONEW"; do for _ in 1 2 3 4; do sqt "$q 20000;" pgvq 1; done; done
 sqt "$(rep 4 "$Q_ERR 0;")" pgvq                                         # divide by zero: Exception
 [[ $(sq "SELECT CASE WHEN SYSUTCDATETIME() < DATEADD(second, 58, CONVERT(datetime2, '${M2%Z}')) THEN 1 ELSE 0 END") == 1 ]] || fail "D: W2's first minute overran"
 M3=$(plus "$M2" 60); until_s "$M3" 2
@@ -317,6 +319,11 @@ for h in hand:
 nofail = q(f"SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = {sb} AND coalesce(failed, 0) = 0 AND (aborted_executions IS NOT NULL OR exception_executions IS NOT NULL)")[0][0]
 fails = sorted(f"{tag(h, h['text'])}:a{h['an']}/x{h['xn']}" for h in hand if h['an'] + h['xn'] > 0)
 print(f"D failures in the hand read: {fails}")
+w2 = {}
+for h in hand:
+    k = tag(h, h['text'])
+    if k and E2 <= h['at'] < E4: w2[k] = w2.get(k, 0) + h['e']
+print(f"D executions in W2 by statement (hand read): {dict(sorted(w2.items()))}")
 if nsplit < 3: bad.append(f"D only {nsplit} stored (plan, interval) rows with failures")
 if nofail != '0': bad.append(f"D {nofail} rows without failures carry split values (want NULL)")
 # 2. Regressed
