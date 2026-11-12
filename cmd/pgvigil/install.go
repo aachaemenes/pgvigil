@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -38,9 +39,10 @@ import (
 // or service definition are replaced, the config is kept, a running service is restarted).
 //
 //	pgvigil install   [-bin <path>] [-config <path>] [-user <account>] [-no-start]
-//	pgvigil install   -upgrade [-owner-dsn-file <path> | -owner-dsn-env <NAME>] [-dump <file> | -no-dump] [-pg-dump <path>]
+//	pgvigil install   -upgrade [-owner-dsn-file <path> | -owner-dsn-env <NAME>] [-dump <file> [-pg-dump <path>] | -no-dump]
 //	pgvigil uninstall [-config <path>] [-purge]
-//	pgvigil uninstall -all [-dry-run] [-drop-repository [-confirm-database <name>] [-owner-dsn-file <path>] [-dump <file> | -no-dump]]
+//	pgvigil uninstall -all [-bin <path>] [-config <path>] [-user <account>] [-dry-run] [-drop-repository [-confirm-database <name>]
+//	                  [-owner-dsn-file <path> | -owner-dsn-env <NAME>] [-dump <file> [-pg-dump <path>] | -no-dump]]
 //
 // uninstall -all (docs/uninstall.md) removes everything of pgvigil on this host in one order: every refusal first, the
 // service stopped, the repository (with -drop-repository: the database's name typed, no other collector or session on
@@ -141,6 +143,9 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	}
 	if o.NoDump && (o.set["dump"] || o.set["pg-dump"]) {
 		return o, errors.New("-no-dump does not go with -dump or -pg-dump")
+	}
+	if o.set["owner-dsn-file"] && o.set["owner-dsn-env"] {
+		return o, errors.New("-owner-dsn-file and -owner-dsn-env both name the owner's connection string: give one")
 	}
 	if o.User == "" {
 		return o, errors.New("-user must name an account")
@@ -299,7 +304,7 @@ func purgeFolder(log *slog.Logger, dir string, files ...string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		log.Info("folder kept: it still holds other files", "path", dir)
+		log.Info("folder kept: it still holds other files", "path", dir, "files", strings.Join(foreignFiles(dir), ", "))
 		return nil
 	}
 	log.Info("removed", "folder", dir)
@@ -316,33 +321,51 @@ func (e *configError) Error() string { return e.err.Error() }
 func (e *configError) Unwrap() error { return e.err }
 func (e *configError) ExitCode() int { return 3 }
 
-// configReady says whether the service may start: the config loads and its repository DSN resolves to something
-// (an env:NAME DSN read from envFile, the environment file the unit loads, when one is named; a file: DSN from its
-// file). The instances may all be in the page (Admin > Instances, task 204), so none in the file is fine; with an
-// empty DSN the collector would end with exit 3 at once.
 // serviceEnv reads a variable of the installed service's own environment where the platform keeps one outside a file
-// (Windows: the service's registry Environment); nil elsewhere.
-var serviceEnv func(name string) (string, bool)
+// (Windows: the service's registry Environment); nil elsewhere. machineEnvValue reads the machine environment a service
+// starts with (Windows: the Session Manager's Environment key), never this process's; nil elsewhere.
+var (
+	serviceEnv      func(name string) (string, bool)
+	machineEnvValue func(name string) (string, bool)
+)
 
-func configReady(path, envFile string) (bool, string) {
+// serviceRepoDSN resolves the repository connection string of the config at path the way the installed service does:
+// an env:NAME DSN from envFile, the environment file the unit loads, when one is named (a name it lacks is empty: the
+// service never sees the installer's own environment), else from the service's own environment (Windows: its registry
+// Environment, then the machine environment); a file: DSN from its file; a literal as written. raw is the config's dsn:
+// value. Only a platform with no service environment (neither) reads this process's environment, as the binary run by
+// hand would.
+func serviceRepoDSN(path, envFile string) (dsn, raw string, err error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return false, err.Error()
+		return "", "", err
 	}
-	raw := cfg.Repository.DSNRaw
-	dsn := cfg.Repository.DSN()
-	if name, ok := strings.CutPrefix(raw, "env:"); ok {
-		// the service's own environment first: systemd's EnvironmentFile on Linux, the service's registry Environment
-		// on Windows; the installer's process environment only after them
-		if envFile != "" {
-			if v, found := envFileValue(envFile, name); found {
-				dsn = v
-			}
-		} else if serviceEnv != nil {
-			if v, found := serviceEnv(name); found {
-				dsn = v
-			}
+	raw = cfg.Repository.DSNRaw
+	name, isEnv := strings.CutPrefix(raw, "env:")
+	switch {
+	case !isEnv:
+		dsn = cfg.Repository.DSN()
+	case envFile != "":
+		dsn, _ = envFileValue(envFile, name)
+	case serviceEnv != nil:
+		v, found := serviceEnv(name)
+		if !found && machineEnvValue != nil {
+			v, _ = machineEnvValue(name)
 		}
+		dsn = v
+	default:
+		dsn = cfg.Repository.DSN()
+	}
+	return dsn, raw, nil
+}
+
+// configReady says whether the service may start: the config loads and its repository DSN resolves, as the service
+// resolves it (serviceRepoDSN), to something. The instances may all be in the page (Admin > Instances, task 204), so
+// none in the file is fine; with an empty DSN the collector would end with exit 3 at once.
+func configReady(path, envFile string) (bool, string) {
+	dsn, raw, err := serviceRepoDSN(path, envFile)
+	if err != nil {
+		return false, err.Error()
 	}
 	if strings.TrimSpace(dsn) == "" {
 		return false, "the repository dsn (" + raw + ") is empty yet"
@@ -350,7 +373,8 @@ func configReady(path, envFile string) (bool, string) {
 	return true, ""
 }
 
-// envFileValue reads NAME=value from a systemd environment file: the last assignment wins, quotes are stripped.
+// envFileValue reads NAME=value from a systemd environment file: the last assignment wins; a value wholly in one pair of
+// quotes loses them, a quote inside or at one end only stays (password='a b' at the end of a DSN keeps its quotes).
 func envFileValue(path, name string) (string, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -360,7 +384,10 @@ func envFileValue(path, name string) (string, bool) {
 	for _, l := range strings.Split(string(b), "\n") {
 		k, val, ok := strings.Cut(strings.TrimSpace(l), "=")
 		if ok && strings.TrimSpace(strings.TrimPrefix(k, "export ")) == name {
-			v, found = strings.Trim(strings.TrimSpace(val), `"'`), true
+			v, found = strings.TrimSpace(val), true
+			if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] && !strings.ContainsRune(v[1:len(v)-1], rune(v[0])) {
+				v = v[1 : len(v)-1]
+			}
 		}
 	}
 	return v, found
@@ -1059,6 +1086,42 @@ func foreignFiles(dir string, own ...string) []string {
 	return other
 }
 
+// credentialItems lists the page's credential folders beside the config (task 204: instances/ and sources/, the
+// monitored servers' passwords) one by one with their file count; a folder that is a link (or a junction) is kept and
+// named with its target, since removing the link would leave the passwords where it points. own gets the names
+// removeFolder may take with the configuration folder (a kept link is not among them).
+func credentialItems(cfgDir string, removeTree func(string) error) (items []removal, own []string) {
+	for _, name := range []string{"instances", "sources"} {
+		d := filepath.Join(cfgDir, name)
+		it := removal{what: "the page's credential folder " + d}
+		fi, err := os.Lstat(d)
+		if err != nil {
+			items = append(items, it)
+			own = append(own, name)
+			continue
+		}
+		it.present = true
+		if fi.Mode().Type() != os.ModeDir {
+			target, _ := os.Readlink(d)
+			it.kept = "a link to " + target + ", not a folder of its own: remove the passwords there by hand, then the link"
+			items = append(items, it)
+			continue
+		}
+		n := 0
+		_ = filepath.WalkDir(d, func(_ string, e fs.DirEntry, err error) error {
+			if err == nil && !e.IsDir() {
+				n++
+			}
+			return nil
+		})
+		it.what += fmt.Sprintf(" (%d %s: the monitored servers' passwords)", n, map[bool]string{true: "file", false: "files"}[n == 1])
+		it.remove = func() error { return removeTree(d) }
+		items = append(items, it)
+		own = append(own, name)
+	}
+	return items, own
+}
+
 // removeFolder removes the installer's own files from dir, then dir; a folder that still holds anything is kept and
 // named (never 'removed' while it is there).
 func removeFolder(dir string, own ...string) error {
@@ -1076,7 +1139,19 @@ type uninstallHooks struct {
 	privileged func() error
 	running    func() bool                                     // the installed service runs (stopped first, started again after a refusal)
 	items      func(inst installOptions, found bool) []removal // everything after the repository, in the order removed
-	repoDSN    func(inst installOptions) string                // the repository connection string this host's config holds ("" when none)
+	// repoDSN is the repository connection string this host's installed service uses (hostRepoDSN), configured whether
+	// its configuration file is there
+	repoDSN func(inst installOptions) (dsn string, configured bool, err error)
+}
+
+// hostRepoDSN is the repository connection string the service installed at inst resolves (serviceRepoDSN), envFile the
+// unit's environment file ("" on Windows); configured says the configuration file is there.
+func hostRepoDSN(inst installOptions, envFile string) (string, bool, error) {
+	if _, ok := fileExists(inst.Config); !ok {
+		return "", false, nil
+	}
+	dsn, _, err := serviceRepoDSN(inst.Config, envFile)
+	return strings.TrimSpace(dsn), true, err
 }
 
 var uninstallHooksOf *uninstallHooks
@@ -1196,6 +1271,20 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 	} else {
 		inst = o
 	}
+	// another pgvigil process on the installed binary or its .previous (a serve started by hand or by a unit of the house,
+	// the app's) would outlive the uninstall and keep writing (an Add in the page makes instances/ again): refused, as the
+	// upgrade refuses it; the dry run lists them
+	var others []string
+	for _, b := range []string{inst.Bin, h.previous(inst.Bin)} {
+		ps, err := h.others(b)
+		if err != nil {
+			return fmt.Errorf("uninstall refused, nothing was changed: looking for other processes on %s: %w", b, err)
+		}
+		others = append(others, ps...)
+	}
+	if len(others) > 0 && !o.DryRun {
+		return fmt.Errorf("uninstall refused, nothing was changed: other processes run the installed binary (a serve, the app): stop them first:\n  %s", strings.Join(others, "\n  "))
+	}
 	var p *dropPlan
 	if o.DropRepository {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1206,7 +1295,7 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 		}
 	}
 	items := uh.items(inst, found)
-	todo := printUninstallPlan(o, inst, uh, p, items)
+	todo := printUninstallPlan(o, inst, uh, p, items, others)
 	if o.DryRun {
 		fmt.Println("dry run: nothing was changed")
 		return nil
@@ -1225,7 +1314,7 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 	if def := defaultInstallOptions(); found && (!samePath(inst.Bin, def.Bin) || !samePath(inst.Config, def.Config) || inst.User != def.User) {
 		again = fmt.Sprintf(" with -bin %s -config %s -user %s", inst.Bin, inst.Config, inst.User)
 	}
-	stopped := false
+	var stopped atomic.Bool  // the service was stopped: read by the interrupt handler too
 	var changing atomic.Bool // the drop or a removal has begun: an interrupt no longer starts the service again
 	dumping := ""            // the dump file while pg_dump writes it
 	var dumpMu sync.Mutex
@@ -1247,7 +1336,7 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 			dumpMu.Unlock()
 			if changing.Load() {
 				fmt.Fprintf(os.Stderr, "\ninterrupted while removing: what is left is listed by 'pgvigil uninstall -all -dry-run%s'; run the same command again\n", again)
-			} else if stopped {
+			} else if stopped.Load() {
 				if err := h.start(log); err != nil {
 					fmt.Fprintf(os.Stderr, "\ninterrupted before any change but the stop, and the service did not start again (%v): start it by hand\n", err)
 				} else {
@@ -1262,7 +1351,7 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 		if err := h.stop(log); err != nil {
 			return fmt.Errorf("stopping the service: %w (nothing else was changed)", err)
 		}
-		stopped = true
+		stopped.Store(true)
 		fmt.Println("stopped the service")
 	}
 	// a refusal after the stop starts the collector again: the host is as it was (but a dump already written)
@@ -1272,7 +1361,7 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 		if dumped != "" {
 			kept = "nothing else was changed but the dump " + dumped + " (kept; a re-run takes a new one: leave -dump out or name another file)"
 		}
-		if stopped {
+		if stopped.Load() {
 			if serr := h.start(log); serr != nil {
 				return fmt.Errorf("uninstall refused (%w), and the service did not start again (%v): start it by hand; %s", err, serr, kept)
 			}
@@ -1344,7 +1433,7 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 
 // printUninstallPlan prints every item, the repository's steps and the monitored servers' note; it returns how many
 // things would change.
-func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHooks, p *dropPlan, items []removal) int {
+func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHooks, p *dropPlan, items []removal, others []string) int {
 	host, _ := os.Hostname()
 	if o.DryRun {
 		fmt.Printf("uninstall -all on %s, dry run (nothing is changed):\n", host)
@@ -1353,6 +1442,9 @@ func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHook
 	}
 	todo := 0
 	line := func(state, what string) { fmt.Printf("  %-8s %s\n", state, what) }
+	for _, ps := range others {
+		line("running", ps+" (another process on the installed binary: the uninstall refuses until it is stopped)")
+	}
 	for _, it := range items {
 		switch {
 		case !it.present:
@@ -1366,8 +1458,8 @@ func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHook
 	}
 	fmt.Println("the repository:")
 	if p == nil {
-		dsn := uh.repoDSN(inst)
-		if _, cfg := fileExists(inst.Config); dsn == "" && !cfg {
+		dsn, cfg, _ := uh.repoDSN(inst)
+		if dsn == "" && !cfg {
 			line("absent", "a repository named by this host's configuration (-drop-repository with the owner's connection string drops one)")
 		} else {
 			db := "named in " + inst.Config
@@ -1487,7 +1579,16 @@ func dropPreflight(ctx context.Context, h *upgradeHooks, uh *uninstallHooks, o i
 	if !p.loginSup && !createRole {
 		return nil, fmt.Errorf("the owner's login %s may not drop roles (neither CREATEROLE nor a superuser): name a login that may", p.login)
 	}
-	if err := sameRepository(ctx, uh.repoDSN(inst), p); err != nil {
+	// this host's repository as its service resolves it (an env: name from the unit's env file or the service's
+	// environment, a file: from its file); a configuration that resolves to nothing cannot be told from another database
+	hostDSN, configured, err := uh.repoDSN(inst)
+	if err != nil {
+		return nil, fmt.Errorf("this host's configuration %s: %w: -drop-repository cannot tell the owner's database is this host's", inst.Config, err)
+	}
+	if configured && hostDSN == "" {
+		return nil, fmt.Errorf("this host's configuration %s names no repository connection string the uninstall can read: -drop-repository cannot tell it is this host's database", inst.Config)
+	}
+	if err := sameRepository(ctx, hostDSN, p); err != nil {
 		return nil, err
 	}
 	if p.roles, err = planRoles(ctx, mc, p); err != nil {

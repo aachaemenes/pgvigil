@@ -10,11 +10,14 @@
 #  N   no network adapter is up
 #  S   install.ps1 -From the bundle -App -UpdateCheck: the service pgvigil, the app machine-wide, the HKLM Run value,
 #      the Programs and Features entry, the policy key, the machine PATH entry; pgvigil-app install -user: this user's
-#      app; the repository migrated by its owner, the agent login in repo.dsn, the service collecting the local cluster
+#      app; the repository migrated by its owner, the agent login in repo.dsn, the service collecting the local cluster;
+#      a file in each of the page's credential folders instances\ and sources\; README's purge: the scheduled task
+#      \pgvigil-purge (pgvigil.exe purge -config pgvigil-purge.yaml) and pgvigil-purge.yaml beside the configuration
 #  C   refused with nothing changed: no terminal and no -confirm-database; a wrong -confirm-database
 #  P   the dry run names every item 'remove' (the app, this user's app, Run HKLM and HKCU, Programs and Features, the
-#      policy keys, the PATH entry, the service, the binary, the configuration folder, the database, the agent and the
-#      groups) and 'dry run: nothing was changed'; the service still runs
+#      policy keys, the PATH entry, the scheduled purge task, the service, the binary, each credential folder with its
+#      file count, the purge's configuration, the configuration folder, the database, the agent and the groups) and
+#      'dry run: nothing was changed'; the service still runs
 #  U   with this user's app running (started from %LOCALAPPDATA%\pgvigil), uninstall -all -drop-repository
 #      -confirm-database pgvigil (run from a copy of pgvigil.exe in -Work, so the installed one is not in use): 'ended
 #      this user's running app'; read back: no service, no %ProgramFiles%\pgvigil, no %ProgramData%\pgvigil, no
@@ -91,7 +94,13 @@ try {
     if ($n -eq 0) { Fail 'S: no collection_dates row in 90 s' }
     $ofile = Join-Path $Work 'owner.dsn'; Set-Content -LiteralPath $ofile -Value $owner -NoNewline
     $copy = Join-Path $Work 'pgvigil.exe'; Copy-Item -LiteralPath $exe -Destination $copy
-    Ok "S the collector, the app machine-wide and this user's, the repository, the service collecting ($n rows)"
+    # the page's credential folders (task 204; the page writes DPAPI blobs there: a plain file is enough for the removal)
+    foreach ($d in 'instances', 'sources') { New-Item -ItemType Directory -Force -Path (Join-Path $pd $d) | Out-Null; Set-Content -LiteralPath (Join-Path $pd "$d\proof-$d.dsn") -Value 'x' -NoNewline }
+    # README's Windows purge: a copy of the configuration naming the owner's file, and a daily task running the purge
+    $pyaml = Join-Path $pd 'pgvigil-purge.yaml'
+    (Get-Content $cfg -Raw) -replace 'dsn: file:[^\r\n]*', "dsn: file:$($ofile -replace '\\','/')" | Set-Content $pyaml
+    Register-ScheduledTask -TaskName 'pgvigil-purge' -Action (New-ScheduledTaskAction -Execute $exe -Argument "purge -config `"$pyaml`" -days 30") -Trigger (New-ScheduledTaskTrigger -Daily -At 3:15am) -User 'SYSTEM' | Out-Null
+    Ok "S the collector, the app machine-wide and this user's, the repository, the service collecting ($n rows), the credential folders, the purge task and its configuration"
 
     # C refusals
     $before = State
@@ -106,7 +115,9 @@ try {
     $p = & $copy uninstall -all -dry-run -drop-repository -owner-dsn-file $ofile -pg-dump (Join-Path $PgBin 'pg_dump.exe') 2>&1 | Out-String
     foreach ($l in 'remove   the app, machine-wide', "remove   this user's app", 'remove   start at login (HKLM', 'remove   start at login (HKCU', 'remove   the Programs and Features entry (HKLM',
         'remove   the policy keys', 'remove   the machine PATH entry', 'remove   the service pgvigil', "remove   the binary $exe", 'remove   the configuration folder', 'remove   the database pgvigil',
-        'remove   the login role pgvigil_agent', 'remove   the group role pgvigil_collector', 'dry run: nothing was changed') {
+        'remove   the login role pgvigil_agent', 'remove   the group role pgvigil_collector', 'dry run: nothing was changed',
+        "remove   the page's credential folder $pd\instances (1 file: the monitored servers' passwords)", "remove   the page's credential folder $pd\sources (1 file: the monitored servers' passwords)",
+        'remove   the scheduled task \pgvigil-purge (pgvigil.exe purge)', "remove   the purge's configuration $pyaml", "kept     the repository owner's connection string $ofile (named by pgvigil-purge.yaml)") {
         if ($p -notmatch [regex]::Escape($l)) { Fail "P: no '$l' in: $p" }
     }
     if ((State) -ne $before) { Fail "P: the dry run changed the host:`n$before`n---`n$(State)" }
@@ -125,6 +136,8 @@ try {
     }
     if ($after -match '(^|,)pgvigil(,|$)') { Fail "U: the database pgvigil is still there:`n$after" }
     if (Test-Path $pf) { Fail "U: $pf is still there: $(Get-ChildItem $pf | Out-String)" }
+    if (Get-ScheduledTask -TaskName 'pgvigil-purge' -ErrorAction SilentlyContinue) { Fail "U: the scheduled task pgvigil-purge is still there:`n$u" }
+    if (-not (Test-Path -LiteralPath $ofile)) { Fail 'U: the owner file pgvigil-purge.yaml names was removed (it is the operator''s, kept)' }
     $dump = @(Get-ChildItem (Join-Path $env:ProgramData 'pgvigil-backups') -Filter 'pgvigil-before-uninstall-*.dump')
     if ($dump.Count -ne 1) { Fail 'U: no dump in pgvigil-backups' }
     Ok "U everything removed and read back; the roles left: the monitor and the owner; the dump $($dump[0].Name)"

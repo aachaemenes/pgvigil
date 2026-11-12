@@ -62,7 +62,8 @@ and the page's `instances/` and `sources/`). Then:
    folder of root's (SYSTEM's and Administrators') alone and a file of mode 0600 (the dump holds the UI users'
    password hashes and statement text); `--dump <file>` names another, and a folder the operator names keeps its own
    permissions (only the file is made root's alone); the password reaches `pg_dump` through a temporary password file,
-   never a command line or its environment. A failed dump starts the old service again and changes nothing else;
+   never a command line or its environment. A failed dump starts the service again only if it was running before the upgrade (else it says so and
+   leaves it stopped), and changes nothing else;
 4. migrates the repository as its owner (the role that owns the `pgvigil` schema);
 5. swaps the binary, writes the unit or the service again with the same paths and account, starts it;
 6. prints the way back: the previous binary, the dump and the restore line below.
