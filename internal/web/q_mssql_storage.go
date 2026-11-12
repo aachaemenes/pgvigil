@@ -18,11 +18,12 @@ var storageDays = map[int]bool{7: true, 30: true, 90: true, 180: true, 365: true
 // sqlMSSQLVolumes: each volume now, and how much its used space grew over the window ($2 days).
 const sqlMSSQLVolumes = `
 SELECT v.volume, v.logical_name, v.file_system, v.total_bytes, v.free_bytes, v.total_bytes - v.free_bytes AS used_bytes,
-       round(100.0 * v.free_bytes / nullif(v.total_bytes, 0), 1) AS free_pct, v.files, v.snapshot_at,
+       round(100.0 * v.free_bytes / nullif(v.total_bytes, 0), 1) AS free_pct, v.files, v.snapshot_at, d.warn_pct, d.crit_pct, d.status,
        w.first_at, (v.total_bytes - v.free_bytes) - w.first_used AS grown_bytes,
        CASE WHEN v.snapshot_at > w.first_at
             THEN round(((v.total_bytes - v.free_bytes) - w.first_used) / greatest(extract(epoch FROM v.snapshot_at - w.first_at) / 86400.0, 1 / 24.0)) END AS per_day
   FROM pgvigil.mssql_volumes v
+  LEFT JOIN pgvigil.drives_now d ON d.instance_id = v.instance_id AND d.drive = v.volume   -- the Drives page's threshold (0111)
   LEFT JOIN LATERAL (SELECT s.snapshot_at AS first_at, s.total_bytes - s.free_bytes AS first_used
                        FROM pgvigil.mssql_volume_sample s
                       WHERE s.instance_id = v.instance_id AND s.volume = v.volume AND s.snapshot_at > now() - make_interval(days => $2)

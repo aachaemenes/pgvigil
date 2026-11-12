@@ -17,9 +17,11 @@ type Parts = Record<'volumes' | 'databases' | 'files' | 'series' | 'checks', Tab
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pctTxt = (v: unknown) => v == null ? '' : fmtNum(v) + ' %';
-const freeTxt = (v: unknown) => v == null ? '' : Number(v) < 10 ? badge(pctTxt(v), Number(v) < 5 ? 'crit' : 'warn') : pctTxt(v);
-// the free cells in the colour of the volume's own rule (under 5 % critical, under 10 % a warning, else OK), as the export writes them
-const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : Number(r.free_pct) < 5 ? 'crit' : Number(r.free_pct) < 10 ? 'warn' : 'ok';
+// a volume's free per cent judged as the Drives page judges it (drives_now's status: the threshold in force, task 176)
+const lvlOf = (r: Row) => r.status === 'critical' ? 'crit' : r.status === 'warning' ? 'warn' : r.status === 'ok' ? 'ok' : '';
+const freeTxt = (v: unknown, r: Row) => v == null ? '' : lvlOf(r) === 'crit' || lvlOf(r) === 'warn' ? badge(pctTxt(v), lvlOf(r)) : pctTxt(v);
+// the free cells in the colour of the volume's threshold (the root's, a tag's, the instance's or its own; 10 / 5 by default), as the export writes them
+const freeCls = (v: unknown, r: Row) => v == null || r.free_pct == null ? '' : lvlOf(r);
 const signed = (v: unknown) => v == null ? 'too little history' : Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : '+' + fmtBytes(v);
 const perDay = (v: unknown) => v == null ? 'too little history' : (Number(v) < 0 ? '-' + fmtBytes(-Number(v)) : fmtBytes(v)) + ' / day';
 // a file's growth step: a size, a per cent of the file, or none
@@ -69,7 +71,7 @@ export async function mssqlStorageView(ctx: Ctx): Promise<HTMLElement> {
     tile('data files', fmtBytes(sum('data_bytes')) || '-'),
     tile('log files', fmtBytes(sum('log_bytes')) || '-'),
     tile('least free volume', lowest ? `${pctTxt(lowest.free_pct)} on ${String(lowest.volume)}` : '-',
-      lowest ? (Number(lowest.free_pct) < 5 ? 'crit' : Number(lowest.free_pct) < 10 ? 'warn' : '') : ''),
+      lowest ? (lvlOf(lowest) === 'ok' ? '' : lvlOf(lowest)) : ''),
   ));
   if (!dbs.length) {
     sec.append(el('p', { class: 'empty' }, 'No file read yet: the mssql_storage collection runs hourly and needs VIEW ANY DEFINITION.'));
