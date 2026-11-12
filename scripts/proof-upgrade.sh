@@ -40,10 +40,13 @@
 #   E upgrade     the installer with PGVIGIL_NO_SERVICE=1 leaves ./pgvigil of this build ('checksum verified'); the
 #                 service stopped; a custom-format dump of the repository is taken as its owner; this build's 'run' on the
 #                 old schema ends within 30 s with exit 1, naming the newest migration file and 'pgvigil migrate'; migrate
-#                 as the owner prints applied = this tree's files minus the store's (26 from v0.3.0) and a second migrate
-#                 applied=0; EVERY table of the old store holds the row count it held before (schema_version alone grows,
-#                 by the files applied) and the same md5 over its rows in the columns the old version had; the tables
-#                 this build adds hold 0 rows; './pgvigil install' ends 'installed and running': the installed binary
+#                 as the owner prints applied = this tree's files minus the store's (B prints the tree's count, D the
+#                 store's) and a second migrate applied=0; EVERY table of the old store holds the row count it held
+#                 before (schema_version alone grows, by the files applied) and the same md5 over its rows in the
+#                 columns the old version had; each table this build adds holds exactly the rows this build's migrate
+#                 leaves in an EMPTY repository (a second database, migrated and counted, then dropped): 0, or the
+#                 reference rows a migration writes (0100's pgaudit_rules seed), the run naming each seeded table;
+#                 './pgvigil install' ends 'installed and running': the installed binary
 #                 prints this build's version, the config and the env file are byte for byte the old ones, the unit is
 #                 active with 0 restarts and runs as pgvigil
 #   F collector   under the collector login (no owner right) an activity sample newer than the restart arrives; every
