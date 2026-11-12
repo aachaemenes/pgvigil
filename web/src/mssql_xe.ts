@@ -1,6 +1,7 @@
 // The Extended Events tabs of a SQL Server instance (phase 3 wave G, task 97): Deadlocks (the list of the range, one
 // deadlock opened as its processes and resources with the victim marked, the graph XML as an .xdl download), Blocked
-// reports (grouped by the blocking statement, the head's side first), Slow queries (by statement shape, with the
+// reports (grouped by the blocking statement, the head's side first; sp_HumanEventsBlockViewer's report columns,
+// findings and blocked-wait rollups below: darling-open D04), Slow queries (by statement shape, with the
 // events of one shape and the Attentions section). Each says "not installed" with the script's name where the
 // server's DBA has not created the session, and "stopped" where the session is defined and not started.
 // Data from /api/mssql/xe and its detail routes; the lead wires the tabs (router.ts, main.ts, pages.ts).
@@ -10,7 +11,7 @@ import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './ui';
 import { stripGrid } from './timestrip';
 
-type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
+type XEParts = 'state' | 'findings' | 'deadlocks' | 'blocked' | 'block_findings' | 'block_rollup' | 'slow_shapes' | 'slow_series' | 'attentions' | 'ag_events';
 type XE = Record<XEParts, Table | null>;
 
 const SCRIPT = 'pgvigil mssql-xe -print';
@@ -162,19 +163,51 @@ export async function mssqlDeadlocks(ctx: Ctx): Promise<HTMLElement> {
 
 // ---- Blocked reports
 
+// one report a row: the blocking side first, then the blocked side (sp_HumanEventsBlockViewer's columns, darling-open D04)
 const reportCols: Col[] = [
   { key: 'event_at', label: 'report at', fmt: fmtTime },
+  { key: 'contentious_object', label: 'object' },
   { key: 'blocking_spid', label: 'blocking session', num: true },
-  { key: 'blocking_status', label: 'its status' },
+  { key: 'blocking_status', label: 'its status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : text(v) },
+  { key: 'blocking_isolation', label: 'its isolation level' },
   { key: 'blocking_trancount', label: 'its open transactions', num: true },
-  { key: 'blocking_login', label: 'its login' }, { key: 'blocking_host', label: 'its host' }, { key: 'blocking_program', label: 'its program' },
+  { key: 'blocking_transaction_name', label: 'its transaction name' },
   { key: 'blocking_last_batch', label: 'its last batch started (server clock)' },
+  { key: 'blocking_last_batch_completed', label: 'its last batch completed (server clock)' },
+  { key: 'blocking_last_tran_started', label: 'its transaction started (server clock)' },
+  { key: 'blocking_log_used', label: 'its log used (bytes)', num: true },
+  { key: 'blocking_priority', label: 'its priority', num: true },
+  { key: 'blocking_login', label: 'its login' }, { key: 'blocking_host', label: 'its host' }, { key: 'blocking_program', label: 'its program' },
   { key: 'blocked_spid', label: 'blocked session', num: true },
   { key: 'wait_ms', label: 'blocked for', num: true, fmt: secs },
   { key: 'lock_mode', label: 'lock wanted' }, { key: 'wait_resource', label: 'resource' }, { key: 'database_name', label: 'database' },
-  { key: 'blocked_login', label: 'blocked login' }, { key: 'blocked_program', label: 'blocked program' },
+  { key: 'resource_owner_type', label: 'resource owner' },
+  { key: 'blocked_isolation', label: 'blocked isolation level' },
+  { key: 'blocked_status', label: 'blocked status' },
+  { key: 'blocked_trancount', label: 'blocked open transactions', num: true },
+  { key: 'blocked_transaction_name', label: 'blocked transaction name' },
+  { key: 'blocked_last_tran_started', label: 'blocked transaction started (server clock)' },
+  { key: 'blocked_log_used', label: 'blocked log used (bytes)', num: true },
+  { key: 'blocked_login', label: 'blocked login' }, { key: 'blocked_host', label: 'blocked host' }, { key: 'blocked_program', label: 'blocked program' },
   { key: 'blocked_statement', label: 'blocked statement', wide: true },
+  { key: 'source', label: 'read from', fmt: v => v === 'system_health' ? 'system_health (blockingTasks)' : 'pgvigil\'s session' },
 ];
+
+// sp_HumanEventsBlockViewer's findings over the stored reports (its check ids, groups and words; migration 0116)
+const blockFindingCols: Col[] = [
+  { key: 'check_id', label: 'check', num: true, fmt: v => String(v) },
+  { key: 'finding_group', label: 'group' },
+  { key: 'database_name', label: 'database' },
+  { key: 'object_name', label: 'object' },
+  { key: 'finding', wide: true },
+];
+
+const rollupWords: Record<string, [string, string]> = {
+  lead: ['Blocked wait by lead blocker', 'lead blocker (its last statement)'],
+  object: ['Blocked wait by object', 'object'],
+  database: ['Blocked wait by database', 'database'],
+  login: ['Blocked wait by the blocking login, application and host', 'blocking login / application / host'],
+};
 
 async function openHead(ctx: Ctx, row: Row, panel: ReturnType<typeof detailPanel>) {
   try {
@@ -202,17 +235,36 @@ export async function mssqlBlocked(ctx: Ctx): Promise<HTMLElement> {
     const rows = rowsOf(d.blocked);
     const panel = detailPanel('The reports of one blocking statement');
     const cols: Col[] = [
-      { key: 'blocking_statement', label: 'blocking statement (the head\'s last batch)', wide: true, fmt: v => text(v) || '(no input buffer)' },
+      { key: 'blocking_statement', label: 'blocking statement (the blocking session\'s last batch)', wide: true, fmt: v => text(v) || '(no input buffer)' },
       { key: 'head_key', label: 'open', fmt: (_, r) => openButton('Open', `the reports blocked by ${(text(r.blocking_statement) || 'a session without an input buffer').slice(0, 80)}`, () => { void openHead(ctx, r, panel); }) },
       { key: 'blocking_spid', label: 'blocking session', num: true },
       { key: 'blocking_status', label: 'its status' },
       { key: 'blocking_login', label: 'its login' }, { key: 'blocking_program', label: 'its program' },
       { key: 'reports', num: true }, { key: 'blocked_sessions', label: 'blocked sessions', num: true },
       { key: 'worst_wait_ms', label: 'longest block', num: true, fmt: secs },
+      { key: 'total_wait_ms', label: 'blocked wait', num: true, fmt: secs },
       { key: 'database_names', label: 'databases' },
       { key: 'first_at', label: 'first report', fmt: fmtTime }, { key: 'last_at', label: 'last report', fmt: fmtTime },
     ];
     sec.append(grid(rows, cols, 'No blocked-process report in this window.'), panel.box);
+    sec.append(el('h3', {}, 'Findings over the range'),
+      el('p', { class: 'meta' }, 'sp_HumanEventsBlockViewer\'s findings (Erik Darling, MIT), made from the stored reports with its rules: '
+        + 'each report counts as its blocked side and its blocking side, and a count is of blocked transactions. '
+        + 'The object is the lock\'s resource as pgvigil\'s waiting-tasks read decoded it; a lock no read decoded keeps the procedure\'s own \'Unresolved\' label.'),
+      grid(rowsOf(d.block_findings), blockFindingCols, 'No finding: no blocked-process report in this window.'));
+    const roll = rowsOf(d.block_rollup);
+    for (const dim of ['lead', 'object', 'database', 'login']) {
+      const [title, nameLabel] = rollupWords[dim];
+      sec.append(el('h3', {}, title), grid(roll.filter(r => r.dimension === dim), [
+        { key: 'name', label: nameLabel, wide: dim === 'lead' },
+        ...(dim === 'database' ? [] : [{ key: 'database_name', label: 'database' } as Col]),
+        { key: 'total_wait_ms', label: 'blocked wait', num: true, fmt: secs },
+        { key: 'longest_wait_ms', label: 'longest', num: true, fmt: secs },
+        { key: 'blocked_sessions', label: 'blocked transactions', num: true },
+        { key: 'reports', num: true },
+        { key: 'first_at', label: 'first report', fmt: fmtTime }, { key: 'last_at', label: 'last report', fmt: fmtTime },
+      ], 'No blocked-process report in this window.'));
+    }
   } catch (e) {
     sec.append(errorBox(e));
   }

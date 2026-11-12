@@ -6,8 +6,10 @@
 // TRANSACTION (its samples as root, its states, how often idle in transaction, its transaction's age, victims, direct,
 // depth, its last statement), each opening the Running snapshot of its last capture; and which session pinned the
 // xmin horizon (Darling 14.3): what holds it now, and per session how many captures it held the oldest xmin in.
-// SQL Server (mssqlBlockingTrend, under the Running queries snapshot): the blocked sessions and the longest wait per
-// step from the minute snapshots (Darling 13.5's Blocking snapshot trend).
+// SQL Server (mssqlBlockingTrend, under the Running queries snapshot): the blocked sessions, the longest wait and the
+// summed wait per step from the minute snapshots (Darling 13.5's Blocking snapshot trend), the blocked-process reports
+// per step beside them, and the blocked / blocking pairs the snapshots saw over the range, each opening the Running
+// queries snapshot where it was last seen (PerformanceMonitor's Blocking view; darling-open D04).
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, href, rangeLabel, window_ } from './router';
@@ -15,7 +17,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from '
 import { sqlCell, whatIsThis } from './sqlview';
 
 type PgParts = 'meta' | 'summary' | 'episodes' | 'trend' | 'xmin_summary' | 'xmin_pins' | 'xmin_now';
-type MsParts = 'meta' | 'trend' | 'deadlock_trend';
+type MsParts = 'meta' | 'trend' | 'deadlock_trend' | 'pairs';
 
 const sampledNote = 'From the activity samples (pg_stat_activity once a minute: active and idle-in-transaction sessions and every blocker a Lock '
   + 'waiter names). A chain shorter than a minute can fall between two captures, so every count is a floor. A head blocks others and is not '
@@ -116,31 +118,61 @@ function xminSection(d: Record<PgParts, Table | null>): HTMLElement {
   return box;
 }
 
-// mssqlBlockingTrend: the SQL Server Running page's trend of the range (Darling 13.5's Blocking snapshot trend).
+// mssqlBlockingTrend: the SQL Server Running page's trend of the range (Darling 13.5's Blocking snapshot trend) and the
+// pairs of the range (PerformanceMonitor's Blocking view: who blocked whom, from the minute snapshots).
 export async function mssqlBlockingTrend(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { class: 'blocking-history' }, el('h3', {}, `Blocking over the range (${rangeLabel(ctx)})`));
   try {
-    const d = await get<Record<MsParts, Table | null>>('blocking/history', { instance: ctx.instance, ...window_(ctx), part: 'trend' });
-    const trend: Row[] = rowsOf(d.trend).map(r => ({ ...r, longest_wait_s: r.longest_wait_ms == null ? null : Number(r.longest_wait_ms) / 1000 }));
+    const q = { instance: ctx.instance, ...window_(ctx) };
+    const [d, p] = await Promise.all([
+      get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'trend' }),
+      get<Record<MsParts, Table | null>>('blocking/history', { ...q, part: 'pairs' }),
+    ]);
+    const trend: Row[] = rowsOf(d.trend).map(r => ({
+      ...r,
+      longest_wait_s: r.longest_wait_ms == null ? null : Number(r.longest_wait_ms) / 1000,
+      summed_wait_s: r.summed_wait_ms == null ? null : Number(r.summed_wait_ms) / 1000,
+    }));
     const snaps = trend.reduce((a, r) => a + Number(r.snapshots ?? 0), 0), withB = trend.reduce((a, r) => a + Number(r.with_blocking ?? 0), 0);
     const worst = trend.reduce((a, r) => Math.max(a, Number(r.blocked_max ?? 0)), 0);
     const longest = trend.reduce((a, r) => Math.max(a, Number(r.longest_wait_s ?? 0)), 0);
+    const reports = trend.reduce((a, r) => a + Number(r.reports ?? 0), 0);
     const step = trend.length > 1 ? (Date.parse(String(trend[1].snapshot_at)) - Date.parse(String(trend[0].snapshot_at))) / 1000 : 60;
     sec.append(el('div', { class: 'tiles' },
       tile('snapshots', fmtNum(snaps)),
       tile('with a blocked session', fmtNum(withB), withB ? 'warn' : ''),
       tile('of snapshots', snaps ? (Math.round(1000 * withB / snaps) / 10).toLocaleString() + ' %' : '-'),
       tile('most blocked at once', fmtNum(worst)),
-      tile('longest wait', longest ? fmtSecs(Math.floor(longest)) : '-')));
+      tile('longest wait', longest ? fmtSecs(Math.floor(longest)) : '-'),
+      tile('blocked-process reports', fmtNum(reports), reports ? 'warn' : '')));
     if (Date.parse(window_(ctx).to) - Date.parse(window_(ctx).from) > 7 * 86400000) sec.append(el('p', { class: 'meta' }, 'The trend reads the newest seven days of the range.'));
-    if (!snaps) { sec.append(el('p', { class: 'empty' }, 'No snapshot in this window.')); return sec; }
+    if (!snaps && !reports) { sec.append(el('p', { class: 'empty' }, 'No snapshot and no blocked-process report in this window.')); return sec; }
     const per = step % 3600 === 0 ? `${step / 3600} h` : `${Math.round(step / 60)} min`;
     sec.append(el('div', { class: 'charts' },
       lineChart(`Blocked sessions and heads (the most in one snapshot, per ${per})`, trend, [{ key: 'blocked_max', label: 'blocked' }, { key: 'heads_max', label: 'heads' }]),
-      lineChart(`Longest wait behind a blocker (per ${per})`, trend, [{ key: 'longest_wait_s', label: 'longest wait' }], v => fmtSecs(Math.floor(v)))));
+      lineChart(`Longest and summed wait behind blockers (per ${per})`, trend,
+        [{ key: 'longest_wait_s', label: 'longest wait' }, { key: 'summed_wait_s', label: 'summed wait (one snapshot)' }], v => fmtSecs(Math.floor(v))),
+      lineChart(`Blocked-process reports (per ${per})`, trend, [{ key: 'reports', label: 'reports' }, { key: 'blocked_transactions', label: 'blocked transactions' }])));
+    const pairs = rowsOf(p.pairs);
+    sec.append(el('h4', {}, 'Who blocked whom (the minute snapshots)'),
+      el('p', { class: 'meta' }, 'One row per blocked session and the session that blocked it, from the Running queries snapshots of the range: '
+        + 'how often a snapshot saw the pair, first and last, the longest wait. A block shorter than a minute can fall between two snapshots.'),
+      grid(pairs, [
+        { key: 'blocked_session_id', label: 'blocked session', num: true, fmt: v => String(v) },
+        { key: 'blocking_session_id', label: 'blocking session', num: true, fmt: v => String(v) },
+        { key: 'head_session_id', label: 'head of its chain', num: true, fmt: v => v == null ? '' : String(v) },
+        { key: 'snapshots', label: 'snapshots', num: true },
+        { key: 'longest_wait_ms', label: 'longest wait', num: true, fmt: v => v == null ? '' : fmtSecs(Math.floor(Number(v) / 1000)) },
+        { key: 'wait_types', label: 'wait types' }, { key: 'wait_resources', label: 'resources', wide: true },
+        { key: 'database_name', label: 'database' }, { key: 'blocked_login', label: 'blocked login' }, { key: 'blocked_program', label: 'blocked program' },
+        { key: 'blocking_login', label: 'blocking login' }, { key: 'blocking_program', label: 'blocking program' },
+        { key: 'blocking_status', label: 'blocking status', fmt: v => v === 'sleeping' ? badge('sleeping', 'warn') : String(v ?? '') },
+        { key: 'first_at', label: 'first seen', fmt: fmtTime },
+        // the SQL Server tab reads at= from the address itself (href writes it for the PostgreSQL tab only; running_fleet.ts)
+        { key: 'last_at', label: 'last seen', fmt: (v) => el('a', { href: `${href(ctx, { tab: 'mssql_running' })}&at=${encodeURIComponent(String(v))}`, title: 'The Running queries snapshot where this pair was last seen' }, fmtTime(v)) },
+      ], 'No snapshot of this window saw a session blocked by another.'));
   } catch (e) {
     sec.append(errorBox(e));
   }
   return sec;
 }
-

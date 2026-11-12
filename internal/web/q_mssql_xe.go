@@ -44,30 +44,57 @@ SELECT d.event_at, d.event_key, d.source, d.process_count, d.victim_count, d.vic
  ORDER BY d.event_at DESC
  LIMIT 500`
 
-// one row per head statement; the head's side (what blocked) before the blocked side (how many, how long)
+// mssqlBlockedSource: the reports of pgvigil's own capture; system_health's (migration 0116) only where the window
+// holds none of them, as pgvigil.mssql_blocks reads them
+const mssqlBlockedSource = `(b.source = 'product' OR NOT EXISTS (SELECT 1 FROM pgvigil.mssql_blocked_reports p
+       WHERE p.instance_id = $1 AND p.event_at > $2 AND p.event_at <= $3 AND p.source = 'product'))`
+
+// one row per head statement; the head's side (what blocked) before the blocked side (how many, how long); the
+// summed wait counts each blocked transaction's longest wait once (sp_HumanEventsBlockViewer's rule)
 const sqlMSSQLXEBlockedHeads = `
-SELECT b.head_key,
+WITH b AS (
+  SELECT b.* FROM pgvigil.mssql_blocked_reports b
+   WHERE b.instance_id = $1 AND b.event_at > $2 AND b.event_at <= $3 AND ` + mssqlBlockedSource + `
+), tx AS (
+  SELECT b.head_key, coalesce(b.transaction_id, -b.blocked_spid) AS t, max(b.wait_ms) AS w FROM b GROUP BY 1, 2
+), tot AS (
+  SELECT tx.head_key, sum(tx.w) AS total_wait_ms FROM tx GROUP BY 1
+)
+SELECT b.head_key, (array_agg(b.source ORDER BY b.event_at DESC))[1] AS source,
        (array_agg(b.blocking_statement ORDER BY b.event_at DESC))[1] AS blocking_statement,
        (array_agg(b.blocking_spid ORDER BY b.event_at DESC))[1] AS blocking_spid,
        (array_agg(b.blocking_status ORDER BY b.event_at DESC))[1] AS blocking_status,
        (array_agg(b.blocking_login ORDER BY b.event_at DESC))[1] AS blocking_login,
        (array_agg(b.blocking_program ORDER BY b.event_at DESC))[1] AS blocking_program,
        count(*) AS reports, count(DISTINCT b.blocked_spid) AS blocked_sessions, max(b.wait_ms) AS worst_wait_ms,
+       max(tot.total_wait_ms) AS total_wait_ms,
        string_agg(DISTINCT b.database_name, ', ') AS database_names, min(b.event_at) AS first_at, max(b.event_at) AS last_at
-  FROM pgvigil.mssql_blocked_reports b
- WHERE b.instance_id = $1 AND b.event_at > $2 AND b.event_at <= $3
+  FROM b JOIN tot ON tot.head_key IS NOT DISTINCT FROM b.head_key
  GROUP BY b.head_key
  ORDER BY max(b.wait_ms) DESC NULLS LAST, count(*) DESC
  LIMIT 200`
 
+// one report a row: sp_HumanEventsBlockViewer's columns for both sides (migration 0116) and the contended object
 const sqlMSSQLXEBlockedOne = `
-SELECT b.event_at, b.blocking_spid, b.blocking_status, b.blocking_trancount, b.blocking_login, b.blocking_host, b.blocking_program,
-       b.blocking_last_batch, b.blocking_statement, b.blocked_spid, b.blocked_login, b.blocked_host, b.blocked_program,
-       b.blocked_statement, b.wait_ms, b.wait_resource, b.lock_mode, b.database_name
+SELECT b.event_at, b.source, b.blocking_spid, b.blocking_ecid, b.blocking_status, b.blocking_isolation, b.blocking_trancount,
+       b.blocking_transaction_name, b.blocking_last_batch, b.blocking_last_batch_completed, b.blocking_last_tran_started,
+       b.blocking_log_used, b.blocking_priority, b.blocking_login, b.blocking_host, b.blocking_program, b.blocking_statement,
+       b.blocked_spid, b.blocked_ecid, b.blocked_status, b.blocked_isolation, b.blocked_trancount, b.blocked_transaction_name,
+       b.blocked_last_batch, b.blocked_last_batch_completed, b.blocked_last_tran_started, b.blocked_log_used, b.blocked_priority,
+       b.blocked_login, b.blocked_host, b.blocked_program, b.blocked_statement, b.wait_ms, b.wait_resource, b.lock_mode,
+       b.database_name, b.resource_owner_type, b.transaction_id, b.monitor_loop,
+       coalesce(pgvigil.mssql_lock_object(b.instance_id, b.wait_resource, b.event_at),
+                'Unresolved: ' || coalesce(lower(pgvigil.mssql_lock_type(b.wait_resource)) || ' lock, ', '')
+                || 'database: ' || coalesce(b.database_name, 'unknown')) AS contentious_object
   FROM pgvigil.mssql_blocked_reports b
- WHERE b.instance_id = $1 AND b.event_at > $2 AND b.event_at <= $3 AND b.head_key IS NOT DISTINCT FROM $4
+ WHERE b.instance_id = $1 AND b.event_at > $2 AND b.event_at <= $3 AND b.head_key IS NOT DISTINCT FROM $4 AND ` + mssqlBlockedSource + `
  ORDER BY b.event_at DESC
  LIMIT 500`
+
+// sp_HumanEventsBlockViewer's findings and the blocked wait per lead blocker, object, database and login (migration 0116)
+const sqlMSSQLXEBlockFindings = `SELECT * FROM pgvigil.mssql_block_findings($1, $2, $3) LIMIT 5000`
+
+const sqlMSSQLXEBlockRollup = `SELECT * FROM pgvigil.mssql_block_rollup($1, $2, $3)`
 
 const sqlMSSQLXESlowShapes = `
 SELECT e.shape_key, max(e.shape) AS shape, count(*) AS events, round(sum(e.duration_ms), 1) AS total_ms,
@@ -152,6 +179,8 @@ func (s *Server) MSSQLXE(w http.ResponseWriter, r *http.Request) {
 		{"findings", sqlMSSQLXEFindings, []any{id}},
 		{"deadlocks", sqlMSSQLXEDeadlocks, []any{id, from, to}},
 		{"blocked", sqlMSSQLXEBlockedHeads, []any{id, from, to}},
+		{"block_findings", sqlMSSQLXEBlockFindings, []any{id, from, to}},
+		{"block_rollup", sqlMSSQLXEBlockRollup, []any{id, from, to}},
 		{"slow_shapes", sqlMSSQLXESlowShapes, []any{id, from, to}},
 		{"slow_series", sqlMSSQLXESlowSeries, []any{id, from, to, step}},
 		{"attentions", sqlMSSQLXEAttentions, []any{id, from, to}},
