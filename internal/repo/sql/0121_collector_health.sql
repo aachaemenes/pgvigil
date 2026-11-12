@@ -16,10 +16,15 @@
 --
 -- 'collector or network' is one alert per collector: its host not seen for 5 minutes (stopped, crashed, or the
 -- repository out of its reach) while no other collector reads its instances, or a minute in which at least 3 of its
--- instances and over half of those it ran failed every run. While it stands, alert_due (0190) holds the alerts of that
--- collector's instances that have had no ok collection since it began - the instances still read keep alerting. The
--- repository-wide findings (source 'pgvigil repository': the parent, the purge) go to every channel that passes its
--- severity floor, scoped channels too.
+-- instances and over half of those it ran failed every run. alert_due (0190) holds only what a shared cause explains
+-- (collector_shared_cause: the collector's own kinds and the findings judged by age on data a cut stops refreshing):
+-- while the parent stands, those alerts of its instances not read since it began (the instances still read keep
+-- alerting; a data finding from the last good read is sent); while one may be forming (collector_forming: the
+-- newest minute shows 3+ instances and over half with a failed run) their NEW alerts wait for the next minute, 3
+-- minutes at most; after it (collector_windows) a collector kind needs one failure past its window. A refused login
+-- or a server not answering at the instance's own connect is the instance's one finding ('authentication failing',
+-- 'server unreachable'), never a 'collection failing' per collection. The repository-wide findings (source 'pgvigil
+-- repository': the parent, the purge) go to every channel that passes its severity floor, scoped channels too.
 
 CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat (
   collector_id  text PRIMARY KEY,                 -- host/pid/start: one row per run of `pgvigil run`
@@ -302,21 +307,66 @@ SELECT DISTINCT x.instance_id
     OR NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d
                     WHERE d.instance_id = x.instance_id AND d.status = 'ok' AND d.snapshot_at > p.since);
 
--- collector_together_at: whether the instance was in a failing-together minute of a host that ran it in p_minute (at
--- least 3 of the host's instances and over half of those it ran failed every run) - any time in the 8 days kept
-CREATE OR REPLACE FUNCTION pgvigil.collector_together_at(p_instance_id int, p_minute timestamptz)
-RETURNS boolean LANGUAGE sql STABLE AS $$
-  SELECT EXISTS (
-    SELECT 1
-      FROM pgvigil.collector_heartbeat h0
-      JOIN pgvigil.collector_load l0 ON l0.collector_id = h0.collector_id AND l0.minute = p_minute AND l0.instance_id = p_instance_id
-     WHERE (SELECT count(*) FILTER (WHERE x.failures >= x.runs AND x.runs > 0) >= 3
-                   AND count(*) FILTER (WHERE x.failures >= x.runs AND x.runs > 0) * 2 > count(*) FILTER (WHERE x.runs > 0)
-              FROM (SELECT l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
-                      FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                     WHERE l.minute = p_minute AND h.host = h0.host
-                     GROUP BY l.instance_id) x))
+-- collector_shared_cause: the findings a shared cause (the network, the collector host, a shared login) explains -
+-- the ones alert_due (0190) holds under 'collector or network' and makes wait while one forms: the collector's own
+-- kinds, and the findings judged by age against now() on data a cut stops refreshing (a job still 'running', a due
+-- time passed with no run seen, the last clean amcheck, an index's unused window). Every other finding comes from the
+-- last good read and is sent as it is (a full disk found before a cut may be the shared cause itself).
+CREATE OR REPLACE FUNCTION pgvigil.collector_shared_cause(p_source text, p_setting text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable'))
+      OR (p_source = 'pgvigil' AND p_setting IN ('job run over twice its average', 'job schedule missed'))
+      OR (p_source = 'mssql_jobs' AND p_setting = 'a job runs far longer than its average')
+      OR (p_source = 'pg-backups' AND p_setting LIKE 'amcheck older than %')
+      OR (p_source = 'pgvigil indexes' AND p_setting = 'unused index'), false)
 $$;
+
+-- collector_forming: the instances of a 'collector or network' that may be forming - in a collector's (host's) newest
+-- written minute at least 3 of its instances, and over half of those it ran, had a failed run (not every run: a cut
+-- starts partway through a minute). alert_due holds the NEW alerts of these instances (collector_shared_cause) until
+-- the next minute is written; the parent's own rule is unchanged. The cap: when the host's last 4 written minutes all
+-- form, nothing waits any more (about 3 minutes). A minute older than 2 minutes is not newest (a late collector).
+CREATE OR REPLACE VIEW pgvigil.collector_forming AS
+WITH m AS (
+  SELECT h.host, l.minute, l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
+    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute >= date_trunc('minute', now()) - interval '6 minutes' AND l.minute < date_trunc('minute', now())
+   GROUP BY h.host, l.minute, l.instance_id
+), mm AS (
+  SELECT m.host, m.minute,
+         count(*) FILTER (WHERE m.failures > 0 AND m.runs > 0) >= 3
+         AND count(*) FILTER (WHERE m.failures > 0 AND m.runs > 0) * 2 > count(*) FILTER (WHERE m.runs > 0) AS forming
+    FROM m GROUP BY m.host, m.minute
+), newest AS (
+  SELECT DISTINCT ON (mm.host) mm.host, mm.minute, mm.forming FROM mm ORDER BY mm.host, mm.minute DESC
+)
+SELECT DISTINCT m.instance_id, n.host, n.minute
+  FROM newest n
+  JOIN m ON m.host = n.host AND m.minute = n.minute AND m.failures > 0 AND m.runs > 0
+ WHERE n.forming AND n.minute >= date_trunc('minute', now()) - interval '2 minutes'
+   AND (SELECT count(*) FROM mm x WHERE x.host = n.host AND x.forming
+           AND x.minute >= n.minute - interval '3 minutes' AND x.minute <= n.minute) < 4;
+
+-- collector_windows: per instance, when the newest 'instances failing together' of a host that ran it ends - its
+-- newest failing-together minute (in the last 30 minutes) in which the instance itself failed every run, plus 5
+-- minutes (the parent leaves collector_parent when that minute leaves its 4-minute window). alert_due: a collector
+-- kind of the instance whose newest failure (the finding's at) is before this end waits - after the parent clears,
+-- an instance still failing alerts once per finding after one failure past the window, never off a streak or a
+-- refusal from inside it, never after a fresh streak of 3.
+CREATE OR REPLACE VIEW pgvigil.collector_windows AS
+WITH m AS (
+  SELECT h.host, l.minute, l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
+    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute >= date_trunc('minute', now()) - interval '30 minutes'
+   GROUP BY h.host, l.minute, l.instance_id
+), bad AS (
+  SELECT m.host, m.minute FROM m GROUP BY m.host, m.minute
+  HAVING count(*) FILTER (WHERE m.failures >= m.runs AND m.runs > 0) >= 3
+     AND count(*) FILTER (WHERE m.failures >= m.runs AND m.runs > 0) * 2 > count(*) FILTER (WHERE m.runs > 0)
+)
+SELECT m.instance_id, max(b.minute) + interval '5 minutes' AS window_end
+  FROM bad b JOIN m ON m.host = b.host AND m.minute = b.minute AND m.failures >= m.runs AND m.runs > 0
+ GROUP BY m.instance_id;
 
 -- collector_down: a collector not seen for 5 minutes (serve's watchdog runs the alert pass then: the collector that
 -- would send it is the one down)
@@ -331,7 +381,13 @@ $$;
 CREATE OR REPLACE VIEW pgvigil.collector_findings AS
 SELECT NULL::int AS instance_id, 'critical'::text AS severity, 'collector or network'::text AS setting, p.why || ': ' || p.host AS value,
        true AS is_set, 'the collector beating and its instances read'::text AS suggested, 'all'::text AS platforms,
-       p.detail || '; the alerts of its instances not read since are held until this clears' AS detail,
+       p.detail || '; the alerts of its instances not read since are held until this clears'
+       || coalesce((SELECT '; it covers ' || count(*) || ' open alert(s): ' || string_agg(o.x, ', ' ORDER BY o.x)
+                      FROM (SELECT DISTINCT a.instance_name || ' ' || a.setting AS x
+                              FROM pgvigil.alert_state a
+                             WHERE a.cleared_at IS NULL AND a.instance_id = ANY (p.instances)
+                               AND pgvigil.collector_shared_cause(a.source, a.setting)) o
+                    HAVING count(*) > 0), '') AS detail,
        'pgvigil repository'::text AS source, p.since AS at
   FROM pgvigil.collector_parent p
 UNION ALL
@@ -348,11 +404,19 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
        format('%s runs in a row failed since %s: %s', s.fail_streak, s.failing_since, coalesce(s.last_error, 'no error text')),
        'pgvigil collector', s.last_run_at
   FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
- WHERE i.is_active AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
-   -- not an outage: the streak's last failed run is not in a failing-together minute of its host - after an outage a
-   -- slower collection is judged again at its next run, not alerted the moment the hold lifts; one instance failing
-   -- alone is judged as it is
-   AND NOT pgvigil.collector_together_at(s.instance_id, date_trunc('minute', s.last_run_at - interval '2 seconds'))
+ WHERE i.is_active AND s.collection <> '(connect)' AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
+   -- it stands during an outage too (the page shows it); alert_due (0190) decides the send: held while 'collector or
+   -- network' stands, and after it one failed run past its window (collector_windows)
+UNION ALL
+-- the instance's own connect failing, the server not answering (not a refused login: that is 'authentication
+-- failing'): 3 attempts in a row over a minute or more (heartbeat.go's '(connect)' streak); a run that fails there
+-- builds no 'collection failing'
+SELECT s.instance_id, 'critical', 'server unreachable', 'no connection', true, 'the server answering the collector', 'all',
+       format('%s connection attempts in a row failed since %s: %s', s.fail_streak, s.failing_since, coalesce(s.last_error, 'no error text')),
+       'pgvigil collector', s.last_run_at
+  FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
+ WHERE i.is_active AND s.collection = '(connect)' AND s.fail_streak >= 3
+   AND s.last_run_at - s.failing_since >= interval '60 seconds' AND s.last_run_at > now() - interval '1 day'
 UNION ALL
 SELECT l.instance_id, 'critical', 'authentication failing', 'login refused', true, 'the login the collector uses works', 'all',
        format('%s login(s) refused in 15 minutes (a per-database connect included): a changed password or pg_hba? each run retries it and can lock the login out',
