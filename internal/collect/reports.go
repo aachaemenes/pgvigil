@@ -14,7 +14,7 @@ import (
 // properties) and the password method of each login role (the twin of SQL Server's password policy columns).
 //
 //	comments   pg_database with shobj_description - any login (the shared catalog)
-//	passwords  pg_authid - a superuser only (pg_authid is not readable otherwise; on Amazon RDS and Aurora, Azure and
+//	passwords  pg_authid - a superuser, or a role granted SELECT on it (on Amazon RDS and Aurora, Azure and
 //	           Cloud SQL not even by the provider's admin role). The method is worked out on the server from the
 //	           stored secret's prefix (SCRAM-SHA-256$..., md5...): only the method's name leaves it, never the hash.
 //	           PostgreSQL keeps no time a password was set, so there is no password age to read: the report shows the
@@ -38,7 +38,8 @@ SELECT d.datname::text AS database_name, shobj_description(d.oid, 'pg_database')
  WHERE NOT d.datistemplate
  ORDER BY d.datname`
 
-const reportsSuperSQL = `SELECT coalesce((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)`
+// may the login read pg_authid: a superuser, or a role granted SELECT on it
+const reportsSuperSQL = `SELECT has_table_privilege('pg_catalog.pg_authid', 'SELECT')`
 
 const reportsPasswordsSQL = `
 SELECT a.rolname::text AS role_name,
@@ -69,7 +70,9 @@ func (reportsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Info
 				rows.Close()
 				return nil, err
 			}
-			got = append(got, Row{"kind": "dbread", "database_name": db})
+			// dbread: this database's comment was read; dbname: the server lists it (a database no longer listed has
+			// its stored comment marked gone)
+			got = append(got, Row{"kind": "dbread", "database_name": db}, Row{"kind": "dbname", "database_name": db})
 			if v != nil && *v != "" {
 				got = append(got, Row{"kind": "db_property", "database_name": db, "property": "comment", "value": *v})
 			}
@@ -89,8 +92,8 @@ func (reportsCollector) Run(ctx context.Context, conn *pgx.Conn, _ platform.Info
 		return out, nil
 	}
 	if !super {
-		// not a failure: pg_authid is a superuser's alone, and a monitoring login should not be one
-		part("passwords", "no right", "pg_authid is readable by a superuser only: the password method of each role was not read")
+		// not a failure: pg_authid is a superuser's (or a role granted SELECT on it), and a monitoring login should be neither
+		part("passwords", "no right", "pg_authid is readable by a superuser (or a role granted SELECT on it) only: the password method of each role was not read")
 		return out, nil
 	}
 	rows, err := conn.Query(ctx, reportsPasswordsSQL)

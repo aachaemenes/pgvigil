@@ -22,19 +22,22 @@ import (
 //	deadlocks    deadlocks (SQL Server, the window, each with its processes and resources, 2,000 newest), pg (the
 //	             PostgreSQL instances with deadlocks in the window and how many: the page reads each one's
 //	             /api/pg/deadlocks)
-//	failed       failed (each failed login of the last &days=: SQL Server error log lines 18456 / 'Login failed',
-//	             PostgreSQL auth_fail log events; 5,000 newest), state (the error log reader's and the log reader's)
-//	flushed      flushed (the last &days=: DBCC FREEPROCCACHE / FREESYSTEMCACHE / FLUSHPROCINDB / FREESESSIONCACHE from
+//	failed       server (each instance's failed logins of the last &days= and how its reader last ended), logins,
+//	             clients, messages (the counts by login, client and reason over the scope), failed (the 5,000 newest:
+//	             SQL Server's 'Login failed' lines read by mssql_reports, PostgreSQL's auth_fail log events)
+//	flushed      flushed (the last &days=: DBCC FREEPROCCACHE / FREESYSTEMCACHE / FLUSHPROCINDB from
 //	             the default trace, and the error log's 'cachestore flush' lines)
 //	killed       killed (the actions log's kill, terminate and cancel attempts of the last &days=)
 //	actions      actions (every attempt in the actions log of the last &days=), audit (PostgreSQL pgaudit ROLE and DDL
 //	             entries of the last &days=, 2,000 newest)
-//	roles        members (SQL Server server role members; PostgreSQL superusers and the members of the pg_* roles),
+//	roles        members (SQL Server server role members; PostgreSQL superusers, the members of the pg_* roles and of
+//	             the managed services' admin roles),
 //	             roles (the role names there are, for the picker), state
 //	pwage        logins (SQL Server SQL logins with their password age; &disabled=1 keeps the disabled ones),
 //	             pg (PostgreSQL login roles: expiry and password method), state
 //	services     services (SQL Server services with the file name and cluster node)
-//	tables       tables (SQL Server table sizes at the newest read, growth per day over &days= (Growth Days); &top=),
+//	tables       tables (SQL Server table sizes at each database's newest read, growth per day over &days= (Growth
+//	             Days); &top=),
 //	             state
 //	querystats   stats (both engines over the window, grouped by &group=query|database|object|instance, ordered by
 //	             &order=cpu|duration|executions|reads|writes, &top=)
@@ -147,35 +150,50 @@ SELECT i.instance_id, i.name AS instance, count(*) AS deadlocks
  GROUP BY i.instance_id, i.name
  ORDER BY i.name`
 
-// failed logins: SQL Server's error log line 'Login failed for user 'x'. Reason: ... [CLIENT: a.b.c.d]' taken apart;
-// PostgreSQL's auth_fail log event as the log reader stored it
-const sqlRepFailed = `
-SELECT * FROM (
-  SELECT i.instance_id, i.name AS instance, 'sqlserver' AS engine, e.log_at AS at,
-         substring(e.message from 'for user ''([^'']*)''') AS login_name,
-         substring(e.message from '\[CLIENT: ([^\]]*)\]') AS client,
-         NULL::text AS database_name,
-         trim(substring(e.message from 'Reason: ([^\[]*)')) AS reason, e.error_state AS state, e.message
-    FROM pgvigil.mssql_errorlog e JOIN pgvigil.instances i ON i.instance_id = e.instance_id
-   WHERE ` + repScope + ` AND i.engine = 'sqlserver' AND e.log_at > now() - make_interval(days => $2)
-     AND (e.error_number = 18456 OR e.message ILIKE 'Login failed%')
+// failed logins of both engines in one shape: SQL Server's error log lines read by mssql_reports (the login, the
+// client and the reason taken apart on import), PostgreSQL's auth_fail log events (the message's quoted names left
+// out of its reason, so one reason groups)
+const repFailedCTE = `
+WITH f AS (
+  SELECT i.instance_id, i.name AS instance, 'sqlserver' AS engine, f.logged_at AS at, f.login_name, f.client,
+         NULL::text AS database_name, f.reason, f.message
+    FROM pgvigil.mssql_failed_logins f JOIN pgvigil.instances i ON i.instance_id = f.instance_id
+   WHERE ` + repScope + ` AND i.engine = 'sqlserver' AND f.logged_at > now() - make_interval(days => $2)
   UNION ALL
-  SELECT i.instance_id, i.name, 'postgres', l.snapshot_at, l.usename, l.client, l.datname, NULL, NULL, l.detail
+  SELECT i.instance_id, i.name, 'postgres', l.snapshot_at, l.usename, l.client, l.datname,
+         nullif(regexp_replace(coalesce(l.detail, ''), '"[^"]*"', '"..."', 'g'), ''), l.detail
     FROM pgvigil.log_events l JOIN pgvigil.instances i ON i.instance_id = l.instance_id
    WHERE ` + repScope + ` AND coalesce(i.engine, 'postgres') = 'postgres' AND l.kind = 'auth_fail'
      AND l.snapshot_at > now() - make_interval(days => $2)
-) f
- ORDER BY at DESC
- LIMIT 5000`
+)`
 
-// the two readers a failed login comes from, per instance: SQL Server's error log reader, PostgreSQL's log reader
-const sqlRepFailedState = `
-SELECT i.instance_id, i.name AS instance, coalesce(i.engine, 'postgres') AS engine,
-       CASE WHEN i.engine = 'sqlserver' THEN (SELECT r.status FROM pgvigil.mssql_reader_state r WHERE r.instance_id = i.instance_id AND r.reader = 'errorlog')
-            ELSE (SELECT c.status FROM pgvigil.collection_dates c WHERE c.instance_id = i.instance_id AND c.collection IN ('logs', 'serverlog') ORDER BY c.snapshot_at DESC LIMIT 1) END AS status
+// the Server Summary: every instance of the scope, its failed logins and how its reader last ended (SQL Server: the
+// failed_logins part of mssql_reports; PostgreSQL: the log reader's collection)
+const sqlRepFailedServer = repFailedCTE + `
+SELECT i.instance_id, i.name AS instance, coalesce(i.engine, 'postgres') AS engine, count(f.at) AS failed_logins,
+       min(f.at) AS first_failed, max(f.at) AS last_failed,
+       CASE WHEN i.engine = 'sqlserver' THEN s.snapshot_at ELSE c.snapshot_at END AS snapshot_at,
+       CASE WHEN i.engine = 'sqlserver' THEN s.status ELSE c.status END AS read_status,
+       CASE WHEN i.engine = 'sqlserver' THEN s.note ELSE c.note END AS read_note
   FROM pgvigil.instances i
+  LEFT JOIN f ON f.instance_id = i.instance_id
+  LEFT JOIN pgvigil.report_read_state s ON s.instance_id = i.instance_id AND s.part = 'failed_logins'
+  LEFT JOIN LATERAL (SELECT x.snapshot_at, x.status, x.note FROM pgvigil.collection_dates x
+                      WHERE x.instance_id = i.instance_id AND x.collection IN ('serverlog', 'logs')
+                      ORDER BY x.snapshot_at DESC LIMIT 1) c ON true
  WHERE ` + repScope + `
- ORDER BY i.name`
+ GROUP BY i.instance_id, i.name, i.engine, s.snapshot_at, s.status, s.note, c.snapshot_at, c.status, c.note
+ ORDER BY count(f.at) DESC, i.name`
+
+// the Login, Client and Message summaries (over the whole scope, as DBA Dash's) and the Detail (the newest 5,000)
+func sqlRepFailedBy(col string) string {
+	return repFailedCTE + `
+SELECT ` + col + ` AS value, count(*) AS failed_logins, count(DISTINCT instance_id) AS instances, min(at) AS first_failed, max(at) AS last_failed
+  FROM f GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 5000`
+}
+
+const sqlRepFailedDetail = repFailedCTE + `
+SELECT * FROM f ORDER BY at DESC LIMIT 5000`
 
 const sqlRepFlushed = `
 SELECT * FROM (
@@ -183,7 +201,9 @@ SELECT * FROM (
          t.database_name, coalesce(t.sub, 'DBCC') AS command, t.statement AS text, 'default trace' AS source
     FROM pgvigil.mssql_trace_events t JOIN pgvigil.instances i ON i.instance_id = t.instance_id
    WHERE ` + repScope + ` AND t.kind = 'dbcc' AND t.event_at > now() - make_interval(days => $2)
-     AND (t.sub ~* '(FREEPROCCACHE|FREESYSTEMCACHE|FLUSHPROCINDB|FREESESSIONCACHE)' OR t.statement ~* '(FREEPROCCACHE|FREESYSTEMCACHE|FLUSHPROCINDB|FREESESSIONCACHE)')
+     AND (t.sub ~* '(FREEPROCCACHE|FREESYSTEMCACHE|FLUSHPROCINDB)'
+          -- the command's own name only: the default trace reader names it in sub, 'DBCC' when it could not
+          OR (t.sub = 'DBCC' AND t.statement ~* '^\s*DBCC\s+(FREEPROCCACHE|FREESYSTEMCACHE|FLUSHPROCINDB)'))
   UNION ALL
   SELECT i.instance_id, i.name, e.log_at, NULL, NULL, NULL, NULL, NULL, 'cachestore flush', e.message, 'error log'
     FROM pgvigil.mssql_errorlog e JOIN pgvigil.instances i ON i.instance_id = e.instance_id
@@ -218,6 +238,9 @@ SELECT i.instance_id, i.name AS instance, e.snapshot_at AS at, e.usename, e.datn
  ORDER BY e.snapshot_at DESC
  LIMIT 2000`
 
+// the managed services' admin roles (no role is a superuser there): Amazon RDS / Aurora, Azure, Cloud SQL, AlloyDB
+const repAdminRoles = `'rds_superuser', 'azure_pg_admin', 'cloudsqlsuperuser', 'alloydbsuperuser'`
+
 // role members: SQL Server's server roles; PostgreSQL's superusers (the attribute, shown as the role 'superuser') and
 // the members of the predefined pg_* roles (role_members: direct grants)
 const sqlRepRoleMembers = `
@@ -236,7 +259,8 @@ SELECT * FROM (
          CASE WHEN a.canlogin THEN 'LOGIN ROLE' ELSE 'ROLE' END, NOT coalesce(a.canlogin, true), NULL::timestamptz, NULL::timestamptz, NULL::timestamptz
     FROM pgvigil.role_members m JOIN pgvigil.instances i ON i.instance_id = m.instance_id
     LEFT JOIN pgvigil.role_attributes a ON a.instance_id = m.instance_id AND a.rolname = m.member_name AND a.is_present
-   WHERE ` + repScope + ` AND coalesce(i.engine, 'postgres') = 'postgres' AND m.is_present AND m.role_name LIKE 'pg\_%'
+   WHERE ` + repScope + ` AND coalesce(i.engine, 'postgres') = 'postgres' AND m.is_present
+     AND (m.role_name LIKE 'pg\_%' OR m.role_name IN (` + repAdminRoles + `))
 ) x
  WHERE $2 = '' OR x.role_name = $2
  ORDER BY instance, role_name, login_name`
@@ -249,7 +273,7 @@ SELECT DISTINCT engine, role_name FROM (
   SELECT 'postgres', 'superuser' FROM pgvigil.instances i WHERE ` + repScope + ` AND coalesce(i.engine, 'postgres') = 'postgres'
   UNION ALL
   SELECT 'postgres', m.role_name FROM pgvigil.role_members m JOIN pgvigil.instances i ON i.instance_id = m.instance_id
-   WHERE ` + repScope + ` AND m.is_present AND m.role_name LIKE 'pg\_%'
+   WHERE ` + repScope + ` AND m.is_present AND (m.role_name LIKE 'pg\_%' OR m.role_name IN (` + repAdminRoles + `))
 ) r
  ORDER BY 1 DESC, 2`
 
@@ -290,20 +314,27 @@ SELECT i.instance_id, i.name AS instance, s.service_name,
  WHERE ` + repScope + ` AND s.is_present
  ORDER BY i.name, s.service_name`
 
-// SQL Server table sizes: each table at its instance's newest read, against the read nearest &days= before it (the
-// growth per day over the span between the two; NULL with one read only)
+// SQL Server table sizes: each database the server still lists (the backups read's list), its tables at that
+// database's newest read (a database a cut or a failed pass left out keeps its last read), against the read nearest
+// &days= before it (the growth per day over the span between the two; NULL with one read only)
 const sqlRepTables = `
-WITH last AS (
-  SELECT t.instance_id, max(t.snapshot_at) AS at FROM pgvigil.mssql_table_size t JOIN pgvigil.instances i ON i.instance_id = t.instance_id
-   WHERE ` + repScope + ` GROUP BY t.instance_id
+WITH dbs AS (
+  SELECT b.instance_id, b.database_name FROM pgvigil.mssql_backup_state b JOIN pgvigil.instances i ON i.instance_id = b.instance_id
+   WHERE ` + repScope + ` AND i.engine = 'sqlserver' AND b.is_present
+), last AS (
+  SELECT d.instance_id, d.database_name, x.at
+    FROM dbs d CROSS JOIN LATERAL (SELECT t.snapshot_at AS at FROM pgvigil.mssql_table_size t
+                                    WHERE t.instance_id = d.instance_id AND t.database_name = d.database_name
+                                    ORDER BY t.snapshot_at DESC LIMIT 1) x
 )
 SELECT i.instance_id, i.name AS instance, t.snapshot_at, t.database_name, t.schema_name, t.table_name, t.row_count,
        t.reserved_kb, t.used_kb, t.data_kb, t.index_kb, b.snapshot_at AS base_at,
+       round((extract(epoch FROM t.snapshot_at - b.snapshot_at) / 86400)::numeric, 1) AS calc_days,
        CASE WHEN b.snapshot_at IS NOT NULL AND t.snapshot_at > b.snapshot_at
             THEN round((t.row_count - b.row_count) / (extract(epoch FROM t.snapshot_at - b.snapshot_at) / 86400)::numeric, 1) END AS avg_rows_per_day,
        CASE WHEN b.snapshot_at IS NOT NULL AND t.snapshot_at > b.snapshot_at
             THEN round((t.reserved_kb - b.reserved_kb) / (extract(epoch FROM t.snapshot_at - b.snapshot_at) / 86400)::numeric, 1) END AS avg_kb_per_day
-  FROM last JOIN pgvigil.mssql_table_size t ON t.instance_id = last.instance_id AND t.snapshot_at = last.at
+  FROM last JOIN pgvigil.mssql_table_size t ON t.instance_id = last.instance_id AND t.database_name = last.database_name AND t.snapshot_at = last.at
   JOIN pgvigil.instances i ON i.instance_id = t.instance_id
   LEFT JOIN LATERAL (
     SELECT o.snapshot_at, o.row_count, o.reserved_kb FROM pgvigil.mssql_table_size o
@@ -316,25 +347,31 @@ SELECT i.instance_id, i.name AS instance, t.snapshot_at, t.database_name, t.sche
 // one row per query (or per database, object or instance: &group=) over the window, both engines. PostgreSQL has no
 // CPU time (pg_stat_statements' total_exec_time is the duration): its cpu_ms is NULL. Reads: SQL Server logical reads,
 // PostgreSQL shared blocks hit + read; physical: SQL Server physical reads, PostgreSQL shared blocks read; writes: SQL
-// Server logical writes, PostgreSQL shared blocks written.
+// Server logical writes (pages dirtied), PostgreSQL shared blocks dirtied. Each engine's samples are summed per key
+// first and the statement's text joined once per key.
 const sqlRepQueryRows = `
-WITH q AS (
-  SELECT s.instance_id, 'sqlserver' AS engine, s.database_name, t.object_name, s.query_key, t.query AS query_text,
-         sum(s.executions) AS executions, sum(s.cpu_us) / 1000.0 AS cpu_ms, sum(s.duration_us) / 1000.0 AS duration_ms,
-         sum(s.logical_reads) AS logical_reads, sum(s.physical_reads) AS physical_reads, sum(s.logical_writes) AS writes,
-         sum(s.row_count) AS row_count, max(s.plans) AS plans, max(s.max_grant_kb) AS max_grant_kb
+WITH ms AS (
+  SELECT s.instance_id, s.database_name, s.query_key, sum(s.executions) AS executions, sum(s.cpu_us) / 1000.0 AS cpu_ms,
+         sum(s.duration_us) / 1000.0 AS duration_ms, sum(s.logical_reads) AS logical_reads, sum(s.physical_reads) AS physical_reads,
+         sum(s.logical_writes) AS writes, sum(s.row_count) AS row_count, max(s.plans) AS plans, max(s.max_grant_kb) AS max_grant_kb
     FROM pgvigil.mssql_pc_sample s JOIN pgvigil.instances i ON i.instance_id = s.instance_id
-    LEFT JOIN pgvigil.mssql_pc_text t ON t.instance_id = s.instance_id AND t.query_key = s.query_key
    WHERE ` + repScope + ` AND s.snapshot_at > $2 AND s.snapshot_at <= $3
-   GROUP BY s.instance_id, s.database_name, t.object_name, s.query_key, t.query
-  UNION ALL
-  SELECT d.instance_id, 'postgres', d.datname, NULL, d.queryid::text, st.query,
-         sum(d.calls), NULL, sum(d.total_exec_ms), sum(coalesce(d.shared_blks_hit, 0) + coalesce(d.shared_blks_read, 0)),
-         sum(d.shared_blks_read), sum(d.shared_blks_written), sum(d.rows), NULL, NULL
+   GROUP BY s.instance_id, s.database_name, s.query_key
+), pg AS (
+  SELECT d.instance_id, d.datname, d.queryid, sum(d.calls) AS executions, sum(d.total_exec_ms) AS duration_ms,
+         sum(coalesce(d.shared_blks_hit, 0) + coalesce(d.shared_blks_read, 0)) AS logical_reads, sum(d.shared_blks_read) AS physical_reads,
+         sum(d.shared_blks_dirtied) AS writes, sum(d.rows) AS row_count
     FROM pgvigil.statements_delta d JOIN pgvigil.instances i ON i.instance_id = d.instance_id
-    LEFT JOIN pgvigil.statement_text st ON st.instance_id = d.instance_id AND st.queryid = d.queryid
    WHERE ` + repScope + ` AND d.snapshot_at > $2 AND d.snapshot_at <= $3
-   GROUP BY d.instance_id, d.datname, d.queryid, st.query
+   GROUP BY d.instance_id, d.datname, d.queryid
+), q AS (
+  SELECT ms.instance_id, 'sqlserver' AS engine, ms.database_name, t.object_name, ms.query_key, t.query AS query_text,
+         ms.executions, ms.cpu_ms, ms.duration_ms, ms.logical_reads, ms.physical_reads, ms.writes, ms.row_count, ms.plans, ms.max_grant_kb
+    FROM ms LEFT JOIN pgvigil.mssql_pc_text t ON t.instance_id = ms.instance_id AND t.query_key = ms.query_key
+  UNION ALL
+  SELECT pg.instance_id, 'postgres', pg.datname, NULL, pg.queryid::text, st.query,
+         pg.executions, NULL, pg.duration_ms, pg.logical_reads, pg.physical_reads, pg.writes, pg.row_count, NULL, NULL
+    FROM pg LEFT JOIN pgvigil.statement_text st ON st.instance_id = pg.instance_id AND st.queryid = pg.queryid
 )
 SELECT q.instance_id, i.name AS instance, q.engine,
        CASE WHEN $4 <> 'instance' THEN q.database_name END AS database_name,
@@ -420,7 +457,9 @@ func (s *Server) Reports(w http.ResponseWriter, r *http.Request) {
 			bad(errors.New("like must be 200 characters at most"))
 			return
 		}
-		if like != "" && !strings.ContainsAny(like, "%_") {
+		// a name part is searched anywhere in the name; a pattern with % is taken as written (an _ alone is a common
+		// separator in database names, never taken as the wildcard's sign of a pattern)
+		if like != "" && !strings.Contains(like, "%") {
 			like = "%" + like + "%"
 		}
 		s.multi(w, r, []part{{"databases", sqlRepFinder, []any{ids, like, q.Get("system") == "1", top}}})
@@ -436,8 +475,11 @@ func (s *Server) Reports(w http.ResponseWriter, r *http.Request) {
 		})
 	case "failed":
 		s.multi(w, r, []part{
-			{"failed", sqlRepFailed, []any{ids, days}},
-			{"state", sqlRepFailedState, []any{ids}},
+			{"server", sqlRepFailedServer, []any{ids, days}},
+			{"logins", sqlRepFailedBy("login_name"), []any{ids, days}},
+			{"clients", sqlRepFailedBy("client"), []any{ids, days}},
+			{"messages", sqlRepFailedBy("reason"), []any{ids, days}},
+			{"failed", sqlRepFailedDetail, []any{ids, days}},
 		})
 	case "flushed":
 		s.multi(w, r, []part{{"flushed", sqlRepFlushed, []any{ids, days}}})

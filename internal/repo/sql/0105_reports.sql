@@ -9,7 +9,11 @@
 --   mssql_service_ext          the columns of sys.dm_server_services the services read (mssql_service, 0070) does not
 --                              keep: the executable's file name and the cluster node name
 --   mssql_table_size           each read's largest tables of each database (sys.dm_db_partition_stats): rows, reserved,
---                              used, data and index KB; one row per read, so the growth per day is a difference
+--                              used, data and index KB; one row per read, so the growth per day is a difference. Kept
+--                              until purge() takes it: the line is the lead's (0110), an index on snapshot_at serves it
+--   mssql_failed_logins        the error log's 'Login failed' lines (error 18456), read by this collection itself: the
+--                              error log reader passes them over (sp_LogHunter's noise list), DBA Dash's FailedLogins
+--                              collection reads them the same way; the login, the client and the reason taken apart
 -- PostgreSQL (the collection reports, internal/collect/reports.go, hourly):
 --   pg_role_passwords          the password method of each login role (scram-sha-256, md5, none) - read on a superuser
 --                              login only, the method worked out on the server: the hash itself never leaves it
@@ -87,6 +91,22 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_table_size (
   PRIMARY KEY (instance_id, snapshot_at, database_name, schema_name, table_name)
 );
 CREATE INDEX IF NOT EXISTS mssql_table_size_name_idx ON pgvigil.mssql_table_size (instance_id, database_name, schema_name, table_name, snapshot_at);
+CREATE INDEX IF NOT EXISTS mssql_table_size_db_idx ON pgvigil.mssql_table_size (instance_id, database_name, snapshot_at DESC);
+CREATE INDEX IF NOT EXISTS mssql_table_size_at_idx ON pgvigil.mssql_table_size (snapshot_at);
+
+CREATE TABLE IF NOT EXISTS pgvigil.mssql_failed_logins (
+  instance_id   int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
+  logged_at     timestamptz NOT NULL,   -- the line's time, from the server's clock and offset
+  line_key      text NOT NULL,          -- md5 of the local time, the text and its place among identical lines of that time
+  logged_local  timestamp NOT NULL,     -- the server's own clock, as the log wrote it
+  login_name    text,
+  client        text,
+  reason        text,
+  message       text NOT NULL,
+  snapshot_at   timestamptz NOT NULL,
+  PRIMARY KEY (instance_id, logged_at, line_key)
+);
+CREATE INDEX IF NOT EXISTS mssql_failed_logins_at_idx ON pgvigil.mssql_failed_logins (logged_at);
 
 CREATE TABLE IF NOT EXISTS pgvigil.pg_role_passwords (
   instance_id  int NOT NULL REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
@@ -148,6 +168,13 @@ BEGIN
   UPDATE pgvigil.report_db_properties p SET is_present = false
    WHERE p.instance_id = p_instance_id AND p.is_present AND p.snapshot_at < p_snapshot_at
      AND p.database_name IN (SELECT x->>'database_name' FROM jsonb_array_elements(p_payload) x WHERE x->>'kind' = 'dbread');
+  -- a database the server no longer lists at all (dropped, renamed): its properties are gone too. Only a read that
+  -- sent the list (its 'dbname' rows: every database the server lists, entered or not) judges that
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) x WHERE x->>'kind' = 'dbname') THEN
+    UPDATE pgvigil.report_db_properties p SET is_present = false
+     WHERE p.instance_id = p_instance_id AND p.is_present AND p.snapshot_at < p_snapshot_at
+       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) x WHERE x->>'kind' = 'dbname' AND x->>'database_name' = p.database_name);
+  END IF;
 END $$;
 
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_reports(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
@@ -205,13 +232,24 @@ BEGIN
     PERFORM pgvigil.report_props_apply(p_instance_id, p_snapshot_at, p_payload);
   END IF;
 
-  -- the table sizes are history: every read's rows are kept (purge() takes them past the retention)
+  -- the table sizes are history: every read's rows are kept (purge() takes them past the retention once the lead's
+  -- 0110 line is in)
   INSERT INTO pgvigil.mssql_table_size (instance_id, snapshot_at, database_name, schema_name, table_name, row_count,
       reserved_kb, used_kb, data_kb, index_kb)
   SELECT p_instance_id, p_snapshot_at, r->>'database_name', r->>'schema_name', r->>'table_name', (r->>'row_count')::bigint,
          (r->>'reserved_kb')::bigint, (r->>'used_kb')::bigint, (r->>'data_kb')::bigint, (r->>'index_kb')::bigint
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'table_size' AND r->>'database_name' IS NOT NULL AND r->>'schema_name' IS NOT NULL AND r->>'table_name' IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+  -- failed logins: each line once (a later read that looks back over it again adds nothing)
+  INSERT INTO pgvigil.mssql_failed_logins (instance_id, logged_at, line_key, logged_local, login_name, client, reason, message, snapshot_at)
+  SELECT p_instance_id, (r->>'logged_utc')::timestamptz, md5(coalesce(r->>'logged_local', '') || '|' || coalesce(r->>'text', '') || '|' || coalesce(r->>'seq', '0')),
+         (r->>'logged_local')::timestamp,
+         substring(r->>'text' from 'for user ''([^'']*)'''), substring(r->>'text' from '\[CLIENT: ([^\]]*)\]'),
+         nullif(trim(substring(r->>'text' from 'Reason: ([^\[]*)')), ''), left(r->>'text', 2000), p_snapshot_at
+    FROM jsonb_array_elements(p_payload) r
+   WHERE r->>'kind' = 'failed_login' AND r->>'logged_utc' IS NOT NULL AND r->>'logged_local' IS NOT NULL AND r->>'text' IS NOT NULL
   ON CONFLICT DO NOTHING;
 
   PERFORM pgvigil.report_state_apply(p_instance_id, p_snapshot_at, p_payload);

@@ -7,7 +7,7 @@
 // and the PostgreSQL table sizes /api/tablesize, as their own pages do.
 import { get, Row, rowsOf, Table } from './api';
 import { donutChart, lineChart, Slice } from './chart';
-import { deadlockSvg, graphFromRows } from './deadlock_graph';
+import { deadlockSvg, DlGraph, graphFromRows, graphFromXml } from './deadlock_graph';
 import { hrefWith } from './dbinfo';
 import { fleet, tagsOf } from './fleet';
 import type { Ctx } from './router';
@@ -17,8 +17,10 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } fr
 
 type Render = (c: Ctx) => Promise<HTMLElement>;
 
-// the reports by route, in the order of DBA Dash's Reports folder (the root's); the instance folder lists the ones
-// an instance has (reportTabsFor)
+// the reports by route, in the order of DBA Dash's Reports folder (the root's); router.ts' Reports groups (the lead's
+// file) list the ones the root, a SQL Server instance (all but Deadlock Charts, Deadlocks, Query Stats Charts, Query
+// Stats and Recycle Bin: the instance has those as tabs of its own) and a PostgreSQL instance (those, less Flushed
+// Plans and Server Services: no twin) show
 export const reportTabs: Record<string, string> = {
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dlcharts: 'Deadlock Charts', rp_deadlocks: 'Deadlocks',
   rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions',
@@ -26,11 +28,6 @@ export const reportTabs: Record<string, string> = {
   rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
   rp_recycle: 'Recycle Bin',
 };
-// DBA Dash's instance Reports folder (the instance's own Deadlocks and the Query Stats are tabs of the instance)
-export const reportInstanceTabs = ['rp_props', 'rp_finder', 'rp_dbdeleted', 'rp_failed', 'rp_flushed', 'rp_killed', 'rp_dbnew', 'rp_actions', 'rp_roles', 'rp_services', 'rp_pwage', 'rp_tables'];
-// a PostgreSQL instance's folder: the reports with a twin (Flushed Plans and Server Services have none)
-export const reportPgInstanceTabs = reportInstanceTabs.filter(t => t !== 'rp_flushed' && t !== 'rp_services');
-
 const text = (v: unknown) => v == null ? '' : String(v);
 const lsGet = (k: string) => { try { return localStorage.getItem('pgvigil.rp.' + k); } catch { return null; } };
 const lsSet = (k: string, v: string) => { try { localStorage.setItem('pgvigil.rp.' + k, v); } catch { /* private window */ } };
@@ -154,6 +151,7 @@ const finderView: Render = ctx => {
       lk('DB Options', r => ms(r) ? at(r, 'mssqlchecks') : at(r, 'pgdboptions')),
       lk('QS', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name) }) : null),
       lk('Top Queries', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name), qs: 'top' }) : at(r, 'statements')),
+      lk('Forced Plans', r => ms(r) ? at(r, 'mssqlqs', { qdb: text(r.database_name), qs: 'forced' }) : null),
       { key: 'state', label: 'State' }, { key: 'size_bytes', label: 'Size', num: true, fmt: fmtBytes },
     ];
     out.append(el('p', { class: 'meta' }, `${fmtNum(rows.length)} database(s)${rows.length >= Number(v['finder-top']) ? ` (the first ${fmtNum(rows.length)}: raise Top for more)` : ''}. `
@@ -174,6 +172,9 @@ interface Dl {
 // the shape of a deadlock, stable over its occurrences (DBA Dash's signature: the code involved, the objects and the
 // lock modes; spids, times, hosts, logins and literal values left out), as 0x and 16 hex digits
 const normSql = (s: string) => s.replace(/'(?:[^']|'')*'/g, '?').replace(/\b\d+(\.\d+)?\b/g, '?').replace(/\s+/g, ' ').trim().toLowerCase();
+// a lock's name without what changes on every occurrence: PostgreSQL names a row lock by its transaction ('transaction
+// 745') or its tuple ('tuple (0,2) of relation 16384 of database 5'); a relation's or a database's OID stays
+const normName = (s: string) => s.replace(/\btransaction \d+/g, 'transaction ?').replace(/\btuple \(\d+,\d+\)/g, 'tuple (?)').toLowerCase();
 function fnv(s: string, seed: number): number {
   let h = seed >>> 0;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
@@ -181,12 +182,13 @@ function fnv(s: string, seed: number): number {
 }
 export function deadlockSignature(processes: Proc[], resources: Row[]): string {
   const parts: string[] = [];
-  for (const p of processes) parts.push(`process|${p.proc ? text(p.proc).toLowerCase() : normSql(text(p.statement))}|isolation=${text(p.isolation).toLowerCase()}|victim=${p.victim === true}|wants=${text(p.waits_mode)} on ${text(p.waits_on).toLowerCase()}`);
-  for (const r of resources) parts.push(`resource|${text(r.type)}|object=${text(r.object).toLowerCase()}|index=${text(r.index).toLowerCase()}|mode=${text(r.mode)}`);
+  for (const p of processes) parts.push(`process|${p.proc ? text(p.proc).toLowerCase() : normSql(text(p.statement))}|isolation=${text(p.isolation).toLowerCase()}|victim=${p.victim === true}|wants=${text(p.waits_mode)} on ${normName(text(p.waits_on))}|relation=${text(p.relation).toLowerCase()}`);
+  for (const r of resources) parts.push(`resource|${text(r.type)}|object=${normName(text(r.object))}|index=${text(r.index).toLowerCase()}|mode=${text(r.mode)}`);
   const s = parts.sort().join('\n');
   return '0x' + [fnv(s, 0x811c9dc5), fnv(s, 0x050c5d1f)].map(h => h.toString(16).toUpperCase().padStart(8, '0')).join('');
 }
 
+const PG_DEADLOCK_INSTANCES = 25;
 async function loadDeadlocks(ctx: Ctx, s: Scope): Promise<{ list: Dl[]; notes: string[] }> {
   const w = window_(ctx);
   const d = await get<{ deadlocks: Table; pg: Table }>('reports', { r: 'deadlocks', ...s.params, ...w });
@@ -195,26 +197,43 @@ async function loadDeadlocks(ctx: Ctx, s: Scope): Promise<{ list: Dl[]; notes: s
   const add = (r: Row, engine: string, procs: Proc[], res: Row[]) => {
     const victim = procs.find(p => p.victim === true);
     const spids = procs.map(p => p.spid).filter(x => x != null);
-    const objects = [...new Set(procs.map(p => text(p.waits_on)).concat(res.map(x => text(x.object))).filter(Boolean))].sort().join(', ') || text(r.object_names ?? r.relations);
+    // the objects: SQL Server's waited-on objects; PostgreSQL's relations (its lock names are transactions and tuples)
+    const objects = engine === 'postgres'
+      ? [...new Set(procs.map(p => text(p.relation)).filter(Boolean))].sort().join(', ') || text(r.relations)
+      : [...new Set(procs.map(p => text(p.waits_on)).concat(res.map(x => text(x.object))).filter(Boolean))].sort().join(', ') || text(r.object_names);
+    // a deadlock whose processes were not taken apart is its own row, never one signature for all of them
+    const signature = procs.length ? deadlockSignature(procs, res) : `not parsed (${engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} ${text(r.event_key).slice(0, 12)})`;
     list.push({ n: 0, instance_id: Number(r.instance_id), instance: text(r.instance), engine, event_at: text(r.event_at), event_key: text(r.event_key),
-      has_graph: r.has_graph === true, processes: procs, resources: res, signature: deadlockSignature(procs, res), objects,
+      has_graph: r.has_graph === true, processes: procs, resources: res, signature, objects,
       procedures: [...new Set(procs.map(p => text(p.proc)).filter(Boolean))].sort().join(', '),
       parallel: new Set(spids).size < spids.length, victim, sessions: new Set(spids).size || procs.length });
   };
-  for (const r of rowsOf(d.deadlocks)) add(r, 'sqlserver', Array.isArray(r.processes) ? r.processes as Proc[] : [], Array.isArray(r.resources) ? r.resources as Row[] : []);
-  // PostgreSQL: each instance with deadlocks in the window, from its own Deadlocks page's read (the log's DETAIL lines taken apart)
+  const ms = rowsOf(d.deadlocks);
+  for (const r of ms) add(r, 'sqlserver', Array.isArray(r.processes) ? r.processes as Proc[] : [], Array.isArray(r.resources) ? r.resources as Row[] : []);
+  if (ms.length >= 2000) notes.push('SQL Server: the newest 2,000 deadlocks of the range only (a shorter range reads them all)');
+  // PostgreSQL: each instance with deadlocks in the range, from its own Deadlocks tab's read (the log's DETAIL lines taken apart)
   const pg = rowsOf(d.pg);
-  const cap = 25;
-  for (const p of pg.slice(0, cap)) {
-    try {
-      const x = await get<{ deadlocks: Row[] }>('pg/deadlocks', { instance: Number(p.instance_id), ...w });
-      for (const r of x.deadlocks ?? []) add({ ...r, instance_id: p.instance_id, instance: p.instance }, 'postgres', Array.isArray(r.processes) ? r.processes as Proc[] : [], Array.isArray(r.resources) ? r.resources as Row[] : []);
-    } catch (e) { notes.push(`${text(p.instance)}: ${e instanceof Error ? e.message : String(e)}`); }
+  const reads = await Promise.all(pg.slice(0, PG_DEADLOCK_INSTANCES).map(p =>
+    get<{ deadlocks: Row[]; more?: boolean }>('pg/deadlocks', { instance: Number(p.instance_id), ...w }).then(x => ({ p, x }), e => ({ p, e }))));
+  for (const r of reads) {
+    if ('e' in r) { notes.push(`${text(r.p.instance)}: ${r.e instanceof Error ? r.e.message : String(r.e)}`); continue; }
+    for (const x of r.x.deadlocks ?? []) add({ ...x, instance_id: r.p.instance_id, instance: r.p.instance }, 'postgres', Array.isArray(x.processes) ? x.processes as Proc[] : [], Array.isArray(x.resources) ? x.resources as Row[] : []);
+    if (r.x.more) notes.push(`${text(r.p.instance)}: the newest ${fmtNum((r.x.deadlocks ?? []).length)} of ${fmtNum(r.p.deadlocks)} only`);
   }
-  if (pg.length > cap) notes.push(`${pg.length - cap} more PostgreSQL instance(s) with deadlocks are not read here (open their own Deadlocks tab)`);
+  if (pg.length > PG_DEADLOCK_INSTANCES) notes.push(`${pg.length - PG_DEADLOCK_INSTANCES} more PostgreSQL instance(s) with deadlocks are not read here (open their own Deadlocks tab)`);
   list.sort((a, b) => Date.parse(b.event_at) - Date.parse(a.event_at));
   list.forEach((x, i) => { x.n = i + 1; });
   return { list, notes };
+}
+
+// the deadlocks of one scope and range, kept while the page is open: a picker only regroups them
+function deadlockCache(ctx: Ctx) {
+  let key = '', got: Promise<{ list: Dl[]; notes: string[] }> | undefined;
+  return (s: Scope) => {
+    const k = JSON.stringify([s.params, ctx.range]);
+    if (k !== key || !got) { key = k; got = loadDeadlocks(ctx, s); got.catch(() => { key = ''; }); }
+    return got;
+  };
 }
 
 const groupBy: [string, string, (p: Proc) => string][] = [
@@ -224,10 +243,16 @@ const groupBy: [string, string, (p: Proc) => string][] = [
 const processesPicker: Picker = { key: 'dl-processes', label: 'Processes', def: 'all', options: [['all', 'All involved'], ['victims', 'Victims only']] };
 const procsOf = (d: Dl, mode: string) => mode === 'victims' ? d.processes.filter(p => p.victim === true) : d.processes;
 
-function graphPanel(ctx: Ctx, d: Dl, panel: HTMLElement) {
-  const g = graphFromRows(d.processes, d.resources);
+async function graphPanel(ctx: Ctx, d: Dl, panel: HTMLElement) {
   const q = new URLSearchParams({ instance: String(d.instance_id), at: d.event_at, key: d.event_key });
-  const save = d.engine === 'sqlserver' && d.has_graph ? el('a', { href: `/api/mssql/xe/deadlock.xdl?${q}`, download: '', class: 'button' }, 'Save XML (.xdl)') : '';
+  const xdl = `/api/mssql/xe/deadlock.xdl?${q}`;
+  // SQL Server: the XML the server wrote where it is kept (as the instance's Deadlocks tab draws it); else the processes
+  let g: DlGraph | null = null;
+  if (d.engine === 'sqlserver' && d.has_graph) {
+    try { const res = await fetch(xdl, { credentials: 'same-origin' }); if (res.ok) g = graphFromXml(await res.text()); } catch { /* drawn from the processes below */ }
+  }
+  g ??= graphFromRows(d.processes, d.resources);
+  const save = d.engine === 'sqlserver' && d.has_graph ? el('a', { href: xdl, download: '', class: 'button' }, 'Save XML (.xdl)') : '';
   const tab = d.engine === 'sqlserver' ? 'mssql_deadlocks' : 'pg_deadlocks';
   panel.replaceChildren(el('h4', { tabindex: '-1' }, `Deadlock #${d.n}: ${d.instance}, ${fmtTime(d.event_at)}`),
     el('p', { class: 'meta' }, `${d.processes.length} process(es), victim ${d.victim ? text(d.victim.spid ?? d.victim.process) : 'not named'}; signature ${d.signature}. `,
@@ -236,108 +261,122 @@ function graphPanel(ctx: Ctx, d: Dl, panel: HTMLElement) {
   (panel.firstElementChild as HTMLElement).focus();
 }
 
-const deadlocksView: Render = ctx => page(ctx, 'rp_deadlocks', [processesPicker,
-  { key: 'dl-group', label: 'Group By', def: 'Application', options: groupBy.map(g => [g[0], g[1]] as [string, string]) }], async (v, s, out) => {
-  const { list, notes } = await loadDeadlocks(ctx, s);
-  const mode = v['dl-processes'];
-  const by = groupBy.find(g => g[0] === v['dl-group']) ?? groupBy[0];
-  let sig = '';
-  const panel = el('div', { class: 'deadlock-panel' });
-  const graphCol: Col = { key: 'graph', label: 'Graph', fmt: (_v, r) => { const b = el('button', { type: 'button', class: 'link' }, 'Graph'); b.addEventListener('click', () => graphPanel(ctx, r.dl as Dl, panel)); return b; } };
-  const body = el('div');
-  function drawGrids() {
-    const ds = sig ? list.filter(d => d.signature === sig) : list;
-    // Signatures
-    const sigs = new Map<string, Dl[]>();
-    for (const d of list) { const a = sigs.get(d.signature) ?? []; a.push(d); sigs.set(d.signature, a); }
-    const sigRows = [...sigs.entries()].map(([k, a]) => ({ signature: k, occurrences: a.length, victims: a.reduce((n, d) => n + d.processes.filter(p => p.victim === true).length, 0),
-      instances: new Set(a.map(d => d.instance_id)).size, first_seen: a[a.length - 1].event_at, last_seen: a[0].event_at, objects: a[0].objects, procedures: a[0].procedures,
-      parallel: a.filter(d => d.parallel).length })).sort((a, b) => b.occurrences - a.occurrences);
-    const sigCols: Col[] = [{ key: 'signature', label: 'Signature', fmt: x => { const b = el('button', { type: 'button', class: 'link', title: 'Show this signature\'s deadlocks only' }, text(x)); b.addEventListener('click', () => { sig = text(x); drawGrids(); }); return b; } },
-      { key: 'occurrences', label: 'Occurrences', num: true }, { key: 'victims', label: 'Victims', num: true }, { key: 'instances', label: 'Instances', num: true },
-      { key: 'first_seen', label: 'First Seen', fmt: fmtTime }, { key: 'last_seen', label: 'Last Seen', fmt: fmtTime },
-      { key: 'objects', label: 'Objects', wide: true }, { key: 'procedures', label: 'Procedures', wide: true }, { key: 'parallel', label: 'Parallel', num: true }];
-    // Grouped: by the chosen value over the processes (all, or the victims only)
-    const groups = new Map<string, { deadlocks: Set<Dl>; victims: number; procs: number; first: string; last: string }>();
-    for (const d of ds) for (const p of procsOf(d, mode)) {
-      const k = by[2](p) || '(none)';
-      const g = groups.get(k) ?? { deadlocks: new Set<Dl>(), victims: 0, procs: 0, first: d.event_at, last: d.event_at };
-      g.deadlocks.add(d); g.procs++; if (p.victim === true) g.victims++;
-      if (Date.parse(d.event_at) < Date.parse(g.first)) g.first = d.event_at;
-      if (Date.parse(d.event_at) > Date.parse(g.last)) g.last = d.event_at;
-      groups.set(k, g);
+const deadlocksView: Render = ctx => {
+  const cache = deadlockCache(ctx);
+  // the signature and the Grouped value the grids are narrowed to: kept across a picker change, cleared by Clear Filter
+  let sig = '', val = '';
+  return page(ctx, 'rp_deadlocks', [processesPicker,
+    { key: 'dl-group', label: 'Group By', def: 'Application', options: groupBy.map(g => [g[0], g[1]] as [string, string]) }], async (v, s, out) => {
+    const { list, notes } = await cache(s);
+    const mode = v['dl-processes'];
+    const by = groupBy.find(g => g[0] === v['dl-group']) ?? groupBy[0];
+    const panel = el('div', { class: 'deadlock-panel' });
+    const graphCol: Col = { key: 'graph', label: 'Graph', fmt: (_v, r) => {
+      const d = r.dl as Dl;
+      const b = el('button', { type: 'button', class: 'link', 'aria-label': `Graph: deadlock #${d.n}, ${fmtTime(d.event_at)}` }, 'Graph');
+      b.addEventListener('click', () => { void graphPanel(ctx, d, panel); }); return b; } };
+    const body = el('div');
+    function drawGrids() {
+      const ds = list.filter(d => (!sig || d.signature === sig) && (!val || procsOf(d, mode).some(p => (by[2](p) || '(none)') === val)));
+      // Signatures (of every deadlock of the range: the filters narrow the grids below it)
+      const sigs = new Map<string, Dl[]>();
+      for (const d of list) { const a = sigs.get(d.signature) ?? []; a.push(d); sigs.set(d.signature, a); }
+      const sigRows = [...sigs.entries()].map(([k, a]) => ({ signature: k, occurrences: a.length, victims: a.reduce((n, d) => n + d.processes.filter(p => p.victim === true).length, 0),
+        instances: new Set(a.map(d => d.instance_id)).size, first_seen: a[a.length - 1].event_at, last_seen: a[0].event_at, objects: a[0].objects, procedures: a[0].procedures,
+        parallel: a.filter(d => d.parallel).length })).sort((a, b) => b.occurrences - a.occurrences);
+      const filterBtn = (x: unknown, set: (k: string) => void, what: string) => { const b = el('button', { type: 'button', class: 'link', title: `Show the deadlocks of this ${what} only` }, text(x)); b.addEventListener('click', () => { set(text(x)); drawGrids(); }); return b; };
+      const sigCols: Col[] = [{ key: 'signature', label: 'Signature', fmt: x => filterBtn(x, k => { sig = k; }, 'signature') },
+        { key: 'occurrences', label: 'Occurrences', num: true }, { key: 'victims', label: 'Victims', num: true }, { key: 'instances', label: 'Instances', num: true },
+        { key: 'first_seen', label: 'First Seen', fmt: fmtTime }, { key: 'last_seen', label: 'Last Seen', fmt: fmtTime },
+        { key: 'objects', label: 'Objects', wide: true }, { key: 'procedures', label: 'Procedures', wide: true }, { key: 'parallel', label: 'Parallel', num: true }];
+      // Grouped: by the chosen value over the processes (all, or the victims only) of the deadlocks the signature leaves
+      const groups = new Map<string, { deadlocks: Set<Dl>; victims: number; procs: number; first: string; last: string }>();
+      for (const d of list.filter(x => !sig || x.signature === sig)) for (const p of procsOf(d, mode)) {
+        const k = by[2](p) || '(none)';
+        const g = groups.get(k) ?? { deadlocks: new Set<Dl>(), victims: 0, procs: 0, first: d.event_at, last: d.event_at };
+        g.deadlocks.add(d); g.procs++; if (p.victim === true) g.victims++;
+        if (Date.parse(d.event_at) < Date.parse(g.first)) g.first = d.event_at;
+        if (Date.parse(d.event_at) > Date.parse(g.last)) g.last = d.event_at;
+        groups.set(k, g);
+      }
+      const grpRows = [...groups.entries()].map(([k, g]) => ({ value: k, deadlocks: g.deadlocks.size, victim_processes: g.victims, processes: g.procs, first_seen: g.first, last_seen: g.last }))
+        .sort((a, b) => b.deadlocks - a.deadlocks);
+      const dlRows = ds.map(d => ({ dl: d, n: d.n, instance_id: d.instance_id, instance: d.instance, engine: d.engine, event_at: d.event_at,
+        victim_procedure: d.victim?.proc ?? null, victim_statement: d.victim?.statement ?? null, victim_database: d.victim?.database ?? null,
+        victim_app: d.victim?.program ?? null, victim_login: d.victim?.login ?? null, victim_host: d.victim?.host ?? null, objects: d.objects,
+        signature: d.signature, processes: d.processes.length, victims: d.processes.filter(p => p.victim === true).length,
+        survivors: d.processes.filter(p => p.victim !== true).length, sessions: d.sessions, resources: d.resources.length, parallel: d.parallel }));
+      const partRows = ds.flatMap(d => procsOf(d, mode).map(p => ({ dl: d, n: d.n, instance_id: d.instance_id, instance: d.instance, event_at: d.event_at,
+        victim: p.victim === true, database: p.database ?? null, procedure: p.proc ?? null, statement: p.statement ?? null, application: p.program ?? null,
+        login: p.login ?? null, host: p.host ?? null, lock_mode: p.lock_mode ?? p.waits_mode ?? null, wait_resource: p.wait_resource ?? p.waits_on ?? null,
+        wait_ms: p.wait_ms ?? null, log_used: p.log_used ?? null, isolation: p.isolation ?? null, transaction: p.transaction ?? null,
+        trancount: p.trancount ?? null, status: p.status ?? null, spid: p.spid ?? null, last_batch: p.last_batch ?? null })));
+      const stmt = (h: string) => (x: unknown) => sqlCell(x, { heading: h });
+      const clear = () => { const b = el('button', { type: 'button' }, 'Clear Filter'); b.addEventListener('click', () => { sig = ''; val = ''; drawGrids(); }); return b; };
+      body.replaceChildren(
+        sig || val ? el('p', { class: 'meta' }, [sig ? `Signature ${sig}` : '', val ? `${by[1]} ${val}` : ''].filter(Boolean).join(', ') + ' only. ', clear()) : '',
+        ...section('Signatures', grid(sigRows, sigCols, 'No deadlock in this range.')),
+        ...section('Grouped', grid(grpRows, [{ key: 'value', label: 'Value', fmt: x => filterBtn(x, k => { val = k; }, by[1].toLowerCase()) },
+          { key: 'deadlocks', label: 'Deadlocks', num: true },
+          { key: 'victim_processes', label: 'Victim Processes', num: true }, { key: 'processes', label: 'Processes', num: true },
+          { key: 'first_seen', label: 'First Seen', fmt: fmtTime }, { key: 'last_seen', label: 'Last Seen', fmt: fmtTime }], 'No deadlock in this range.')),
+        ...section('Deadlocks', grid(dlRows, [{ key: 'n', label: 'Deadlock #', num: true }, instCol(ctx), engCol, { key: 'event_at', label: 'Event Time', fmt: fmtTime }, graphCol,
+          { key: 'victim_procedure', label: 'Victim Procedure' }, { key: 'victim_statement', label: 'Victim Statement', fmt: stmt('Victim statement') },
+          { key: 'victim_database', label: 'Victim Database' }, { key: 'victim_app', label: 'Victim Application' }, { key: 'victim_login', label: 'Victim Login' },
+          { key: 'victim_host', label: 'Victim Host' }, { key: 'objects', label: 'Objects', wide: true }, { key: 'signature', label: 'Signature' },
+          { key: 'processes', label: 'Processes', num: true }, { key: 'victims', label: 'Victims', num: true }, { key: 'survivors', label: 'Survivors', num: true },
+          { key: 'sessions', label: 'Sessions', num: true }, { key: 'resources', label: 'Resources', num: true }, { key: 'parallel', label: 'Parallel', fmt: yes }], 'No deadlock in this range.')),
+        ...section('Participants', grid(partRows, [{ key: 'n', label: 'Deadlock #', num: true }, instCol(ctx), { key: 'event_at', label: 'Event Time', fmt: fmtTime }, graphCol,
+          { key: 'victim', label: 'Victim', fmt: x => x === true ? badge('victim', 'crit') : '' }, { key: 'database', label: 'Database' }, { key: 'procedure', label: 'Procedure' },
+          { key: 'statement', label: 'Statement', fmt: stmt('Statement') }, { key: 'application', label: 'Application' }, { key: 'login', label: 'Login' }, { key: 'host', label: 'Host' },
+          { key: 'lock_mode', label: 'Lock Mode' }, { key: 'wait_resource', label: 'Wait Resource', wide: true }, { key: 'wait_ms', label: 'Wait Time (ms)', num: true },
+          { key: 'log_used', label: 'Log Used', num: true }, { key: 'isolation', label: 'Isolation Level' }, { key: 'transaction', label: 'Transaction' },
+          { key: 'trancount', label: 'Tran Count', num: true }, { key: 'status', label: 'Status' }, { key: 'spid', label: 'SPID', num: true },
+          { key: 'last_batch', label: 'Batch Started', fmt: fmtTime }], 'No process to list.')),
+        panel);
     }
-    const grpRows = [...groups.entries()].map(([k, g]) => ({ value: k, deadlocks: g.deadlocks.size, victim_processes: g.victims, processes: g.procs, first_seen: g.first, last_seen: g.last }))
-      .sort((a, b) => b.deadlocks - a.deadlocks);
-    const dlRows = ds.map(d => ({ dl: d, n: d.n, instance_id: d.instance_id, instance: d.instance, engine: d.engine, event_at: d.event_at,
-      victim_procedure: d.victim?.proc ?? null, victim_statement: d.victim?.statement ?? null, victim_database: d.victim?.database ?? null,
-      victim_app: d.victim?.program ?? null, victim_login: d.victim?.login ?? null, victim_host: d.victim?.host ?? null, objects: d.objects,
-      signature: d.signature, processes: d.processes.length, victims: d.processes.filter(p => p.victim === true).length,
-      survivors: d.processes.filter(p => p.victim !== true).length, sessions: d.sessions, resources: d.resources.length, parallel: d.parallel }));
-    const partRows = ds.flatMap(d => procsOf(d, mode).map(p => ({ dl: d, n: d.n, instance_id: d.instance_id, instance: d.instance, event_at: d.event_at,
-      victim: p.victim === true, database: p.database ?? null, procedure: p.proc ?? null, statement: p.statement ?? null, application: p.program ?? null,
-      login: p.login ?? null, host: p.host ?? null, lock_mode: p.lock_mode ?? p.waits_mode ?? null, wait_resource: p.wait_resource ?? p.waits_on ?? null,
-      wait_ms: p.wait_ms ?? null, log_used: p.log_used ?? null, isolation: p.isolation ?? null, transaction: p.transaction ?? null,
-      trancount: p.trancount ?? null, status: p.status ?? null, spid: p.spid ?? null })));
-    const stmt = (h: string) => (x: unknown) => sqlCell(x, { heading: h });
-    body.replaceChildren(
-      sig ? el('p', { class: 'meta' }, `Signature ${sig} only. `, (() => { const b = el('button', { type: 'button' }, 'Clear Filter'); b.addEventListener('click', () => { sig = ''; drawGrids(); }); return b; })()) : '',
-      ...section('Signatures', grid(sigRows, sigCols, 'No deadlock in this range.')),
-      ...section('Grouped', grid(grpRows, [{ key: 'value', label: 'Value' }, { key: 'deadlocks', label: 'Deadlocks', num: true },
-        { key: 'victim_processes', label: 'Victim Processes', num: true }, { key: 'processes', label: 'Processes', num: true },
-        { key: 'first_seen', label: 'First Seen', fmt: fmtTime }, { key: 'last_seen', label: 'Last Seen', fmt: fmtTime }], 'No deadlock in this range.')),
-      ...section('Deadlocks', grid(dlRows, [{ key: 'n', label: 'Deadlock #', num: true }, instCol(ctx), engCol, { key: 'event_at', label: 'Event Time', fmt: fmtTime }, graphCol,
-        { key: 'victim_procedure', label: 'Victim Procedure' }, { key: 'victim_statement', label: 'Victim Statement', fmt: stmt('Victim statement') },
-        { key: 'victim_database', label: 'Victim Database' }, { key: 'victim_app', label: 'Victim Application' }, { key: 'victim_login', label: 'Victim Login' },
-        { key: 'victim_host', label: 'Victim Host' }, { key: 'objects', label: 'Objects', wide: true }, { key: 'signature', label: 'Signature' },
-        { key: 'processes', label: 'Processes', num: true }, { key: 'victims', label: 'Victims', num: true }, { key: 'survivors', label: 'Survivors', num: true },
-        { key: 'sessions', label: 'Sessions', num: true }, { key: 'resources', label: 'Resources', num: true }, { key: 'parallel', label: 'Parallel', fmt: yes }], 'No deadlock in this range.')),
-      ...section('Participants', grid(partRows, [{ key: 'n', label: 'Deadlock #', num: true }, instCol(ctx), { key: 'event_at', label: 'Event Time', fmt: fmtTime }, graphCol,
-        { key: 'victim', label: 'Victim', fmt: x => x === true ? badge('victim', 'crit') : '' }, { key: 'database', label: 'Database' }, { key: 'procedure', label: 'Procedure' },
-        { key: 'statement', label: 'Statement', fmt: stmt('Statement') }, { key: 'application', label: 'Application' }, { key: 'login', label: 'Login' }, { key: 'host', label: 'Host' },
-        { key: 'lock_mode', label: 'Lock Mode' }, { key: 'wait_resource', label: 'Wait Resource', wide: true }, { key: 'wait_ms', label: 'Wait Time (ms)', num: true },
-        { key: 'log_used', label: 'Log Used', num: true }, { key: 'isolation', label: 'Isolation Level' }, { key: 'transaction', label: 'Transaction' },
-        { key: 'trancount', label: 'Tran Count', num: true }, { key: 'status', label: 'Status' }, { key: 'spid', label: 'SPID', num: true }], 'No process to list.')),
-      panel);
-  }
-  out.append(el('p', { class: 'meta' }, `${fmtNum(list.length)} deadlock(s) in ${rangeLabel(ctx)}. Signature: the shape of a deadlock (the code involved with its literal values taken out, the objects and the lock modes), so one problem that recurs is one row. `
-    + 'Grouped: the processes by the Group By value; Processes picks all involved or the victims only. Graph: draws the deadlock below the grids. PostgreSQL deadlocks come from the server log (each instance\'s Deadlocks tab has the detail); the log does not carry the isolation level, the transaction or the log used.'),
-  notes.length ? el('p', { class: 'meta' }, badge('Not all read', 'warn'), ' ' + notes.join('; ')) : '', body);
-  drawGrids();
-});
+    out.append(el('p', { class: 'meta' }, `${fmtNum(list.length)} deadlock(s) in ${rangeLabel(ctx)}. Signature: the shape of a deadlock (the code involved with its literal values taken out, the objects and the lock modes), so one problem that recurs is one row; a link narrows the grids under it to that signature, a Grouped value to that value. `
+      + 'Grouped: the processes by the Group By value; Processes picks all involved or the victims only. Graph: draws the deadlock below the grids. PostgreSQL deadlocks come from the server log (each instance\'s Deadlocks tab has the detail); the log does not carry the isolation level, the transaction or the log used.'),
+    notes.length ? el('p', { class: 'meta' }, badge('Not all read', 'warn'), ' ' + notes.join('; ')) : '', body);
+    drawGrids();
+  });
+};
 
-const deadlockChartsView: Render = ctx => page(ctx, 'rp_dlcharts', [
-  { key: 'dl-slices', label: 'Slices', def: '8', options: [['5', '5'], ['8', '8'], ['10', '10'], ['20', '20']] }, processesPicker], async (v, s, out) => {
-  const { list, notes } = await loadDeadlocks(ctx, s);
-  const w = window_(ctx);
-  const from = Date.parse(w.from), to = Date.parse(w.to);
-  const step = Math.max(60, Math.ceil((to - from) / 1000 / 120)) * 1000;
-  const buckets = new Map<number, { sqlserver: number; postgres: number }>();
-  for (let t = Math.floor(from / step) * step; t <= to; t += step) buckets.set(t, { sqlserver: 0, postgres: 0 });
-  for (const d of list) { const t = Math.floor(Date.parse(d.event_at) / step) * step; const b = buckets.get(t); if (b) b[d.engine as 'sqlserver' | 'postgres']++; }
-  const series = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([t, b]) => ({ snapshot_at: new Date(t).toISOString(), deadlocks: b.sqlserver + b.postgres, sqlserver: b.sqlserver, postgres: b.postgres }));
-  const both = s.engines.size > 1;
-  const slices = Number(v['dl-slices']);
-  const by = (f: (p: Proc, d: Dl) => string, perDeadlock = false): Slice[] => {
-    const m = new Map<string, number>();
-    for (const d of list) {
-      if (perDeadlock) { const k = f({}, d) || '(none)'; m.set(k, (m.get(k) ?? 0) + 1); continue; }
-      const seen = new Set<string>();
-      for (const p of procsOf(d, v['dl-processes'])) { const k = f(p, d) || '(none)'; if (!seen.has(k)) { seen.add(k); m.set(k, (m.get(k) ?? 0) + 1); } }
-    }
-    return [...m.entries()].map(([label, value]) => ({ label, value }));
-  };
-  out.append(el('p', { class: 'meta' }, `${fmtNum(list.length)} deadlock(s) in ${rangeLabel(ctx)}, a point per ${fmtSecs(step / 1000)}. Each ring counts deadlocks: one with two processes of one application counts once for it.`),
-    notes.length ? el('p', { class: 'meta' }, badge('Not all read', 'warn'), ' ' + notes.join('; ')) : '',
-    el('div', { class: 'charts' }, lineChart('Over Time', series, both ? [{ key: 'sqlserver', label: 'SQL Server' }, { key: 'postgres', label: 'PostgreSQL' }] : [{ key: 'deadlocks', label: 'Deadlocks' }], v2 => fmtNum(v2), { unit: 'count', marks: false })),
-    el('div', { class: 'charts donuts' },
-      donutChart('Signature', by((_p, d) => d.signature, true), undefined, slices),
-      donutChart('Application', by(p => text(p.program)), undefined, slices),
-      donutChart('Database', by(p => text(p.database)), undefined, slices),
-      donutChart('Login', by(p => text(p.login)), undefined, slices),
-      donutChart('Host', by(p => text(p.host)), undefined, slices),
-      donutChart('Procedure', by(p => text(p.proc)), undefined, slices)));
-});
+const deadlockChartsView: Render = ctx => {
+  const cache = deadlockCache(ctx);
+  return page(ctx, 'rp_dlcharts', [
+    { key: 'dl-slices', label: 'Slices', def: '8', options: [['5', '5'], ['8', '8'], ['10', '10'], ['20', '20']] }, processesPicker], async (v, s, out) => {
+    const { list, notes } = await cache(s);
+    const w = window_(ctx);
+    const from = Date.parse(w.from), to = Date.parse(w.to);
+    const step = Math.max(60, Math.ceil((to - from) / 1000 / 120)) * 1000;
+    const buckets = new Map<number, { sqlserver: number; postgres: number }>();
+    for (let t = Math.floor(from / step) * step; t <= to; t += step) buckets.set(t, { sqlserver: 0, postgres: 0 });
+    for (const d of list) { const t = Math.floor(Date.parse(d.event_at) / step) * step; const b = buckets.get(t); if (b) b[d.engine as 'sqlserver' | 'postgres']++; }
+    const series = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([t, b]) => ({ snapshot_at: new Date(t).toISOString(), deadlocks: b.sqlserver + b.postgres, sqlserver: b.sqlserver, postgres: b.postgres }));
+    const both = s.engines.size > 1;
+    const slices = Number(v['dl-slices']);
+    const by = (f: (p: Proc, d: Dl) => string, perDeadlock = false): Slice[] => {
+      const m = new Map<string, number>();
+      for (const d of list) {
+        if (perDeadlock) { const k = f({}, d) || '(none)'; m.set(k, (m.get(k) ?? 0) + 1); continue; }
+        const seen = new Set<string>();
+        for (const p of procsOf(d, v['dl-processes'])) { const k = f(p, d) || '(none)'; if (!seen.has(k)) { seen.add(k); m.set(k, (m.get(k) ?? 0) + 1); } }
+      }
+      return [...m.entries()].map(([label, value]) => ({ label, value }));
+    };
+    out.append(el('p', { class: 'meta' }, `${fmtNum(list.length)} deadlock(s) in ${rangeLabel(ctx)}, a point per ${fmtSecs(step / 1000)}. Each ring counts deadlocks: one with two processes of one application counts once for it.`),
+      notes.length ? el('p', { class: 'meta' }, badge('Not all read', 'warn'), ' ' + notes.join('; ')) : '',
+      el('div', { class: 'charts' }, lineChart('Over Time', series, both ? [{ key: 'sqlserver', label: 'SQL Server' }, { key: 'postgres', label: 'PostgreSQL' }] : [{ key: 'deadlocks', label: 'Deadlocks' }], v2 => fmtNum(v2), { unit: 'count', marks: false })),
+      el('div', { class: 'charts donuts' },
+        donutChart('Signature', by((_p, d) => d.signature, true), undefined, slices),
+        donutChart('Application', by(p => text(p.program)), undefined, slices),
+        donutChart('Database', by(p => text(p.database)), undefined, slices),
+        donutChart('Login', by(p => text(p.login)), undefined, slices),
+        donutChart('Host', by(p => text(p.host)), undefined, slices),
+        donutChart('Procedure', by(p => text(p.proc)), undefined, slices)));
+  });
+};
 
 // ---- New Databases, Deleted Databases (both engines: /api/dbchanges)
 
@@ -360,28 +399,31 @@ function dbChangesReport(key: 'rp_dbnew' | 'rp_dbdeleted'): Render {
   });
 }
 
-// ---- Failed Logins (SQL Server's error log, PostgreSQL's log)
+// ---- Failed Logins (SQL Server's error log, PostgreSQL's log): DBA Dash's five grids
 
 const failedView: Render = ctx => page(ctx, 'rp_failed', [daysPicker('failed-days')], async (v, s, out) => {
-  const d = await get<{ failed: Table; state: Table }>('reports', { r: 'failed', ...s.params, days: v['failed-days'] });
-  const rows = rowsOf(d.failed);
-  const sum = new Map<string, Row>();
-  for (const r of rows) {
-    const k = `${text(r.instance_id)}|${text(r.login_name)}|${text(r.client)}`;
-    const a = sum.get(k) ?? { instance_id: r.instance_id, instance: r.instance, engine: r.engine, login_name: r.login_name, client: r.client, failed: 0, first: r.at, last: r.at };
-    a.failed = Number(a.failed) + 1;
-    if (Date.parse(text(r.at)) < Date.parse(text(a.first))) a.first = r.at;
-    if (Date.parse(text(r.at)) > Date.parse(text(a.last))) a.last = r.at;
-    sum.set(k, a);
-  }
-  const off = rowsOf(d.state).filter(r => r.status !== 'read' && r.status !== 'ok');
-  out.append(el('p', { class: 'meta' }, `${fmtNum(rows.length)} failed login(s) in the last ${v['failed-days']} day(s)${rows.length >= 5000 ? ' (the newest 5,000)' : ''}. `
-    + 'SQL Server: the error log\'s "Login failed" lines (error 18456: the server logs failed logins by default); PostgreSQL: the server log\'s authentication failures (log_connections is not needed).'),
-  off.length ? el('p', { class: 'meta' }, badge(`Log not read on ${off.length} instance(s)`, 'warn'), ' ' + off.slice(0, 5).map(r => `${text(r.instance)}: ${text(r.status ?? 'not read yet')}`).join('; ')) : '',
-  ...section('Summary', grid([...sum.values()].sort((a, b) => Number(b.failed) - Number(a.failed)), [instCol(ctx), engCol, { key: 'login_name', label: 'Login' },
-    { key: 'client', label: 'Client' }, { key: 'failed', label: 'Failed Logins', num: true }, { key: 'first', label: 'First', fmt: fmtTime }, { key: 'last', label: 'Last', fmt: fmtTime }], 'No failed login in this time.')),
-  ...section('Failed Logins', grid(rows, [instCol(ctx), engCol, { key: 'at', label: 'Time', fmt: fmtTime }, { key: 'login_name', label: 'Login' }, { key: 'client', label: 'Client' },
-    { key: 'database_name', label: 'Database' }, { key: 'reason', label: 'Reason', wide: true }, { key: 'state', label: 'State', num: true }, { key: 'message', label: 'Message', wide: true }], 'No failed login in this time.')));
+  const d = await get<{ server: Table; logins: Table; clients: Table; messages: Table; failed: Table }>('reports', { r: 'failed', ...s.params, days: v['failed-days'] });
+  const server = rowsOf(d.server), rows = rowsOf(d.failed);
+  const total = server.reduce((n, r) => n + Number(r.failed_logins ?? 0), 0);
+  const fresh = (r: Row) => r.snapshot_at == null ? '' : Date.now() - Date.parse(text(r.snapshot_at)) < 3 * 3600e3 ? 'ok' : Date.now() - Date.parse(text(r.snapshot_at)) < 86400e3 ? 'warn' : 'crit';
+  const status = (r: Row) => r.read_status == null ? 'not read yet' : r.read_status === 'read' || r.read_status === 'ok' ? 'OK' : `${text(r.read_status)}${r.read_note ? ': ' + text(r.read_note) : ''}`;
+  const off = server.filter(r => !(r.read_status === 'read' || r.read_status === 'ok' || r.read_status === 'partial'));
+  const sum = (label: string): Col[] => [{ key: 'value', label }, { key: 'failed_logins', label: 'Failed Logins', num: true }, { key: 'instances', label: 'Instances', num: true },
+    { key: 'first_failed', label: 'First Failed Login', fmt: fmtTime }, { key: 'last_failed', label: 'Last Failed Login', fmt: fmtTime }];
+  out.append(el('p', { class: 'meta' }, `${fmtNum(total)} failed login(s) in the last ${v['failed-days']} day(s). `
+    + 'SQL Server: the error log\'s "Login failed" lines (error 18456; the server logs failed logins by default), read hourly by the mssql_reports collection, three hours back each time; '
+    + 'PostgreSQL: the server log\'s authentication failures. The summaries count every failure of the scope; Detail lists the newest 5,000.'),
+  off.length ? el('p', { class: 'meta' }, badge(`Failed logins not read on ${off.length} of ${server.length} instance(s)`, 'warn'), ' ' + off.slice(0, 5).map(r => `${text(r.instance)}: ${status(r)}`).join('; ')) : '',
+  ...section('Server Summary', grid(server, [instCol(ctx), engCol, { key: 'failed_logins', label: 'Failed Logins', num: true },
+    { key: 'first_failed', label: 'First Failed Login', fmt: fmtTime }, { key: 'last_failed', label: 'Last Failed Login', fmt: fmtTime },
+    { key: 'snapshot_age', label: 'Snapshot Age', num: true, fmt: (_x, r) => r.snapshot_at == null ? '' : fmtSecs((Date.now() - Date.parse(text(r.snapshot_at))) / 1000) },
+    { key: 'snapshot_at', label: 'Snapshot Date', fmt: fmtTime, cls: (_x, r) => fresh(r) },
+    { key: 'read_status', label: 'Snapshot Status', fmt: (_x, r) => status(r), cls: (_x, r) => r.read_status === 'read' || r.read_status === 'ok' ? 'ok' : r.read_status == null ? '' : 'warn' }], 'No instance in this scope.')),
+  ...section('Login Summary', grid(rowsOf(d.logins), sum('Login'), 'No failed login in this time.')),
+  ...section('Client Summary', grid(rowsOf(d.clients), sum('Client'), 'No failed login in this time.')),
+  ...section('Message Summary', grid(rowsOf(d.messages), sum('Message'), 'No failed login in this time.')),
+  ...section('Detail', grid(rows, [instCol(ctx), engCol, { key: 'at', label: 'Log Date', fmt: fmtTime }, { key: 'login_name', label: 'Login' }, { key: 'client', label: 'Client' },
+    { key: 'database_name', label: 'Database' }, { key: 'reason', label: 'Reason', wide: true }, { key: 'message', label: 'Text', wide: true }], 'No failed login in this time.')));
 });
 
 // ---- Flushed Plans (SQL Server only)
@@ -399,13 +441,13 @@ const flushedView: Render = ctx => page(ctx, 'rp_flushed', [daysPicker('flushed-
 
 const actionCols = (ctx: Ctx, killed: boolean): Col[] => killed
   ? [instCol(ctx), engCol, { key: 'at', label: 'Killed At', fmt: fmtTime }, { key: 'ui_user', label: 'Killed By' }, { key: 'session_id', label: 'Session ID', num: true },
-    { key: 'target_user', label: 'Login' }, { key: 'target_host', label: 'Host' }, { key: 'target_app', label: 'Program' }, { key: 'action', label: 'Command' },
+    { key: 'target_user', label: 'Login' }, { key: 'target_host', label: 'Host' }, { key: 'target_app', label: 'Program' }, { key: 'action', label: 'Action' },
     { key: 'outcome', label: 'Outcome', cls: x => x === 'done' ? 'ok' : x === 'failed' ? 'crit' : x === 'refused' ? 'warn' : '' },
-    { key: 'reason', label: 'Reason', wide: true }, { key: 'detail', label: 'Detail', wide: true }, { key: 'client', label: 'Client' }]
+    { key: 'reason', label: 'Reason', wide: true }, { key: 'detail', label: 'Server Message', wide: true }, { key: 'client', label: 'Client' }]
   : [{ key: 'at', label: 'Date', fmt: fmtTime }, { key: 'ui_user', label: 'User' }, { key: 'client', label: 'Client' }, { key: 'action', label: 'Action' },
     instCol(ctx), engCol, { key: 'target', label: 'Target', fmt: (x, r) => text(x ?? (r.session_id != null ? 'session ' + text(r.session_id) : '')) },
-    { key: 'reason', label: 'Details', wide: true },
-    { key: 'outcome', label: 'Outcome', cls: x => x === 'done' ? 'ok' : x === 'failed' ? 'crit' : x === 'refused' ? 'warn' : '' }, { key: 'detail', label: 'Detail', wide: true }];
+    { key: 'reason', label: 'Reason', wide: true },
+    { key: 'outcome', label: 'Outcome', cls: x => x === 'done' ? 'ok' : x === 'failed' ? 'crit' : x === 'refused' ? 'warn' : '' }, { key: 'detail', label: 'Server Message', wide: true }];
 
 const killedView: Render = ctx => page(ctx, 'rp_killed', [daysPicker('killed-days')], async (v, s, out) => {
   const d = await get<{ killed: Table }>('reports', { r: 'killed', ...s.params, days: v['killed-days'] });
@@ -429,7 +471,8 @@ const rolesView: Render = ctx => page(ctx, 'rp_roles', [], async (_v, s, out) =>
   const d = await get<{ members: Table; roles: Table; state: Table }>('reports', { r: 'roles', ...s.params });
   const all = rowsOf(d.members);
   const roleNames = rowsOf(d.roles).map(r => `${text(r.engine)}:${text(r.role_name)}`);
-  const choices: [string, string][] = [['admin', 'sysadmin / superuser'], ...roleNames.filter(k => k !== 'sqlserver:sysadmin' && k !== 'postgres:superuser')
+  const admin = new Set(['sqlserver:sysadmin', 'postgres:superuser', 'postgres:rds_superuser', 'postgres:azure_pg_admin', 'postgres:cloudsqlsuperuser', 'postgres:alloydbsuperuser']);
+  const choices: [string, string][] = [['admin', 'sysadmin / superuser'], ...roleNames.filter(k => !admin.has(k))
     .map(k => [k, `${k.split(':').slice(1).join(':')} (${engName(k.split(':')[0])})`] as [string, string])];
   const sel = el('select', { id: 'rp-role' }, ...choices.map(([k, l]) => el('option', { value: k }, l)));
   const saved = lsGet('role');
@@ -437,8 +480,7 @@ const rolesView: Render = ctx => page(ctx, 'rp_roles', [], async (_v, s, out) =>
   const grids = el('div');
   const draw = () => {
     const want = sel.value;
-    const rows = all.filter(r => want === 'admin' ? (r.engine === 'sqlserver' && r.role_name === 'sysadmin') || (r.engine === 'postgres' && r.role_name === 'superuser')
-      : `${text(r.engine)}:${text(r.role_name)}` === want);
+    const rows = all.filter(r => want === 'admin' ? admin.has(`${text(r.engine)}:${text(r.role_name)}`) : `${text(r.engine)}:${text(r.role_name)}` === want);
     const insts = [...new Set(rows.map(r => text(r.instance)))].sort();
     const logins = [...new Set(rows.map(r => text(r.login_name)))].sort();
     const has = new Set(rows.map(r => `${text(r.instance)}\u0000${text(r.login_name)}`));
@@ -457,7 +499,7 @@ const rolesView: Render = ctx => page(ctx, 'rp_roles', [], async (_v, s, out) =>
   };
   sel.addEventListener('change', () => { lsSet('role', sel.value); draw(); });
   out.append(el('div', { class: 'toolbar' }, el('label', { for: 'rp-role' }, 'Role ', sel)),
-    el('p', { class: 'meta' }, 'SQL Server: the members of each server role (sys.server_role_members). PostgreSQL: the superusers (an attribute, shown as the role "superuser") and the direct members of the predefined pg_* roles. A = a member, - = not. Type: S SQL login, U Windows login, G Windows group, R server role; PostgreSQL L a login role, R a role that cannot log in.'),
+    el('p', { class: 'meta' }, 'SQL Server: the members of each server role (sys.server_role_members). PostgreSQL: the superusers (an attribute, shown as the role "superuser"), the direct members of the predefined pg_* roles and of the managed services\' admin roles (rds_superuser, azure_pg_admin, cloudsqlsuperuser, alloydbsuperuser: sysadmin / superuser shows them too). A = a member, - = not. Type: S SQL login, U Windows login, G Windows group, R server role; PostgreSQL L a login role, R a role that cannot log in.'),
     stateNote(rowsOf(d.state), 'The server role members'), grids);
   draw();
 });
@@ -468,11 +510,13 @@ const buckets: [string, (d: number) => boolean][] = [['0-1 Days', d => d <= 1], 
   ['15-30 Days', d => d >= 15 && d <= 30], ['31-90 Days', d => d >= 31 && d <= 90], ['91-180 Days', d => d >= 91 && d <= 180], ['181-365 Days', d => d >= 181 && d <= 365], ['>1 Year', d => d > 365]];
 
 const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
-  { key: 'pw-top', label: 'Top', def: '20', options: [['10', '10'], ['20', '20'], ['50', '50'], ['100', '100'], ['0', 'All']] },
-  { key: 'pw-days', label: 'Password Age (Days)', def: '0', options: [['0', 'Any'], ['30', '>= 30'], ['90', '>= 90'], ['180', '>= 180'], ['365', '>= 365']] },
+  { key: 'pw-top', label: 'Top', def: '1000', options: [['10', '10'], ['20', '20'], ['50', '50'], ['100', '100'], ['1000', '1,000'], ['5000', '5,000']] },
+  { key: 'pw-days', label: 'Password Age (Days)', def: '0', options: [['0', 'Any'], ['30', '> 30'], ['60', '> 60'], ['90', '> 90'], ['180', '> 180'], ['365', '> 365']] },
   { key: 'pw-disabled', label: 'Disabled Logins', def: '0', options: [['0', 'Exclude'], ['1', 'Include']] }], async (v, s, out) => {
   const d = await get<{ logins: Table; pg: Table; state: Table }>('reports', { r: 'pwage', ...s.params, disabled: v['pw-disabled'] });
-  const logins = rowsOf(d.logins);
+  // Password Age (Days) narrows both grids, as DBA Dash's: older than that many days (Any keeps the unknown ages too)
+  const min = Number(v['pw-days']), top = Number(v['pw-top']);
+  const logins = rowsOf(d.logins).filter(r => min === 0 || (r.password_age_days != null && Number(r.password_age_days) > min));
   const per = new Map<string, Row>();
   for (const r of logins) {
     const k = text(r.instance_id);
@@ -486,15 +530,15 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
     }
     per.set(k, a);
   }
-  const min = Number(v['pw-days']), top = Number(v['pw-top']);
-  const oldest = logins.filter(r => r.password_age_days != null && Number(r.password_age_days) >= min);
+  // the oldest first, the unknown ages last
+  const oldest = [...logins].sort((a, b) => (b.password_age_days == null ? -1 : Number(b.password_age_days)) - (a.password_age_days == null ? -1 : Number(a.password_age_days)));
   const ageCls = (x: unknown) => x == null ? '' : Number(x) > 365 ? 'crit' : Number(x) > 90 ? 'warn' : '';
   out.append(stateNote(rowsOf(d.state), 'The SQL logins'),
     ...(s.engines.has('sqlserver') ? [
       ...section('Summary', grid([...per.values()], [instCol(ctx), { key: 'logins', label: 'SQL Logins', num: true },
         { key: 'max_age', label: 'Max Password Age (Days)', num: true, cls: ageCls }, ...buckets.map(b => ({ key: b[0], label: b[0], num: true })),
         { key: 'unknown', label: 'Unknown', num: true }], 'No SQL login is stored for this scope.')),
-      ...section('Oldest Passwords', grid(top ? oldest.slice(0, top) : oldest, [instCol(ctx), { key: 'login_name', label: 'Login' }, { key: 'is_disabled', label: 'Is Disabled', fmt: yes },
+      ...section('Oldest Passwords', grid(oldest.slice(0, top), [instCol(ctx), { key: 'login_name', label: 'Login' }, { key: 'is_disabled', label: 'Is Disabled', fmt: yes },
         { key: 'created_at', label: 'Created Date', fmt: fmtTime }, { key: 'modified_at', label: 'Modified Date', fmt: fmtTime },
         { key: 'password_set_at', label: 'Password Last Set', fmt: fmtTime }, { key: 'password_age_days', label: 'Password Age (Days)', num: true, cls: ageCls },
         { key: 'is_policy_checked', label: 'Policy Checked', fmt: yes }, { key: 'is_expiration_checked', label: 'Expiration Checked', fmt: yes },
@@ -505,13 +549,13 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
     const pgPer = new Map<string, Row>();
     for (const r of pg) {
       const k = text(r.instance_id);
-      const a = pgPer.get(k) ?? { instance_id: r.instance_id, instance: r.instance, roles: 0, superusers: 0, expired: 0, expiring: 0, no_expiry: 0, scram: 0, md5: 0, none: 0, not_read: 0 };
+      const a = pgPer.get(k) ?? { instance_id: r.instance_id, instance: r.instance, roles: 0, superusers: 0, expired: 0, expiring: 0, no_expiry: 0, scram: 0, md5: 0, none: 0, other: 0, not_read: 0 };
       a.roles = Number(a.roles) + 1;
       if (r.is_superuser === true) a.superusers = Number(a.superusers) + 1;
       const left = r.days_until_expiration == null ? null : Number(r.days_until_expiration);
       if (left == null) a.no_expiry = Number(a.no_expiry) + 1; else if (left < 0) a.expired = Number(a.expired) + 1; else if (left <= 30) a.expiring = Number(a.expiring) + 1;
-      const m = r.method === 'scram-sha-256' ? 'scram' : r.method === 'md5' ? 'md5' : r.method === 'none' ? 'none' : r.method == null ? 'not_read' : '';
-      if (m) a[m] = Number(a[m]) + 1;
+      const m = r.method === 'scram-sha-256' ? 'scram' : r.method === 'md5' ? 'md5' : r.method === 'none' ? 'none' : r.method == null ? 'not_read' : 'other';
+      a[m] = Number(a[m]) + 1;
       pgPer.set(k, a);
     }
     out.append(el('h3', {}, 'PostgreSQL login roles'),
@@ -519,7 +563,7 @@ const pwAgeView: Render = ctx => page(ctx, 'rp_pwage', [
       grid([...pgPer.values()], [instCol(ctx), { key: 'roles', label: 'Login Roles', num: true }, { key: 'superusers', label: 'Superusers', num: true },
         { key: 'expired', label: 'Expired', num: true, cls: x => Number(x) > 0 ? 'crit' : '' }, { key: 'expiring', label: 'Expiring in 30 Days', num: true, cls: x => Number(x) > 0 ? 'warn' : '' },
         { key: 'no_expiry', label: 'No Expiry', num: true }, { key: 'scram', label: 'scram-sha-256', num: true }, { key: 'md5', label: 'md5', num: true, cls: x => Number(x) > 0 ? 'warn' : '' },
-        { key: 'none', label: 'No Password', num: true }, { key: 'not_read', label: 'Method Not Read', num: true }], 'No PostgreSQL login role is stored for this scope.'),
+        { key: 'none', label: 'No Password', num: true }, { key: 'other', label: 'Other Method', num: true }, { key: 'not_read', label: 'Method Not Read', num: true }], 'No PostgreSQL login role is stored for this scope.'),
       el('h3', {}, 'PostgreSQL password expiry'),
       grid(pg, [instCol(ctx), { key: 'role_name', label: 'Role' }, { key: 'is_superuser', label: 'Superuser', fmt: yes },
         { key: 'valid_until', label: 'Valid Until', fmt: x => x == null ? 'no expiry' : fmtTime(x) },
@@ -579,7 +623,8 @@ const tablesView: Render = ctx => page(ctx, 'rp_tables', [
     { key: 'status', label: 'SnapshotStatus', cls: x => x === 'OK' ? 'ok' : x === 'Stale' ? 'warn' : '' }, { key: 'database_name', label: 'DB' }, { key: 'schema_name', label: 'Schema Name' },
     { key: 'table_name', label: 'Object Name' }, { key: 'row_count', label: 'Rows', num: true }, { key: 'reserved_kb', label: 'Reserved KB', num: true, fmt: kb },
     { key: 'used_kb', label: 'Used KB', num: true, fmt: kb }, { key: 'data_kb', label: 'Data KB', num: true, fmt: kb }, { key: 'index_kb', label: 'Index KB', num: true, fmt: kb },
-    { key: 'avg_rows_per_day', label: 'Avg Rows Per Day', num: true }, { key: 'avg_kb_per_day', label: 'Avg KB Per Day', num: true, fmt: kb }], 'No table size is stored for this scope.')));
+    { key: 'avg_rows_per_day', label: 'Avg Rows Per Day', num: true }, { key: 'avg_kb_per_day', label: 'Avg KB Per Day', num: true, fmt: kb },
+    { key: 'calc_days', label: 'Calc Days', num: true }], 'No table size is stored for this scope.')));
 });
 
 // ---- Query Stats, Query Stats Charts (SQL Server's plan cache; PostgreSQL's pg_stat_statements)
