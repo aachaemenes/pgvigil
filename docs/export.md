@@ -23,8 +23,9 @@ same way as any browser.
 - **Every grid with rows is an Excel table** (Insert > Table: sortable, filterable, a name per sheet, `Table1`
   on), with no table style, so the cells keep their own colours. Its column names are the header cells: a
   heading that repeats gets ` (2)`, an empty one is `Column n` (Excel wants each column named once). A grid
-  that a filter left without rows is a plain sheet with the filter on, and a grid with no row at all is a sheet of
-  its header row alone, as DBA Dash exports an empty grid.
+  without rows (one a filter left empty, or one with no row at all) is a plain sheet of its header row with the
+  filter on; DBA Dash also exports an empty grid as its header row. A grid with no row at all carries every column
+  of the grid there (the grid tools hide columns in a grid with rows only).
 - **The header row is frozen**; the column widths follow the content (8 to 60 characters).
 - **A column hidden on the screen is left out.** The grid tools (below) hide columns; the workbook and the CSV
   hold the columns the screen shows.
