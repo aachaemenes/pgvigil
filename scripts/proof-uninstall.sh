@@ -162,7 +162,8 @@ P2=$(insys sh -c "PGVIGIL_REPO_DSN='$DSNV' PROOF_TARGET_DSN='$TGT' setsid /root/
 sleep 5; insys kill -0 "$P2" 2>/dev/null || fail "the second collector exited: $(insys tail -n 5 /root/second.log)"
 refused "second collector" "another collector writes into pgvigil" "${ALLDROP[@]}"
 grep -q 'the service runs again, nothing else was changed' "$WORK/c.out" || fail "the second collector's refusal did not start the service again: $(cat "$WORK/c.out")"
-insys kill "$P2"; for _ in $(seq 1 20); do insys kill -0 "$P2" 2>/dev/null || break; sleep 1; done
+insys kill "$P2"; gone=""; for _ in $(seq 1 30); do insys kill -0 "$P2" 2>/dev/null || { gone=1; break; }; sleep 1; done
+[[ -n "$gone" ]] || fail "the second collector (pid $P2) did not end within 30 s of SIGTERM: $(insys tail -n 5 /root/second.log)"
 same "a second collector"
 ok "refused with nothing changed, before the stop: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN naming another database, a -bin that disagrees, a role without ADMIN OPTION (PostgreSQL $PGMAJ); after the stop and the 75 s watch, the service started again: a held psql session (named), a second collector writing"
 

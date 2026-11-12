@@ -1488,7 +1488,7 @@ func dropPreflight(ctx context.Context, h *upgradeHooks, uh *uninstallHooks, o i
 	}
 	if p.present {
 		rows, err := mc.Query(ctx, `SELECT format('pid %s: %s from %s as %s', pid, coalesce(nullif(application_name, ''), '(no application name)'),
-		  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = $1 AND backend_type = 'client backend' ORDER BY pid`, d.database)
+		  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = $1 AND backend_type IS DISTINCT FROM 'autovacuum worker' ORDER BY pid`, d.database)
 		if err != nil {
 			return nil, err
 		}
@@ -1680,7 +1680,7 @@ func repositoryInUse(ctx context.Context, p *dropPlan) error {
 	}
 	rows, err := c.Query(ctx, `SELECT format('pid %s: %s from %s as %s', pid, coalesce(nullif(application_name, ''), '(no application name)'),
 	  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()
-	  AND backend_type = 'client backend' ORDER BY pid`)
+	  AND backend_type IS DISTINCT FROM 'autovacuum worker' ORDER BY pid`)
 	if err != nil {
 		return err
 	}
@@ -1688,6 +1688,8 @@ func repositoryInUse(ctx context.Context, p *dropPlan) error {
 	if err != nil {
 		return err
 	}
+	// every backend on the database counts but an autovacuum worker (DROP DATABASE ends those by itself); a login that
+	// may not read another role's session sees its backend_type as NULL, and such a session counts too
 	if len(others) > 0 {
 		return fmt.Errorf("other sessions are connected to %s (a serve, Grafana, a psql): end them first; the drop never forces them off:\n  %s", p.dump.database, strings.Join(others, "\n  "))
 	}
@@ -1714,6 +1716,16 @@ func dropRepository(ctx context.Context, p *dropPlan) error {
 	defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
 	if p.present {
 		if _, err := c.Exec(ctx, "DROP DATABASE "+pgx.Identifier{p.dump.database}.Sanitize()); err != nil {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) && pe.Code == "55006" {
+				// someone connected after the check: name every backend on the database, whatever its kind
+				var who []string
+				if rows, qerr := c.Query(ctx, `SELECT format('pid %s: %s, %s from %s as %s, %s', pid, backend_type, coalesce(nullif(application_name, ''), '(no application name)'),
+				  coalesce(client_addr::text, 'a local socket'), coalesce(usename::text, '(no user)'), coalesce(state, '(no state)')) FROM pg_stat_activity WHERE datname = $1 ORDER BY pid`, p.dump.database); qerr == nil {
+					who, _ = pgx.CollectRows(rows, pgx.RowTo[string])
+				}
+				return fmt.Errorf("%w: %s (%s); on the database now: %s", errDropNotDone, pe.Message, pe.Detail, strings.Join(who, "; "))
+			}
 			return fmt.Errorf("%w: %v", errDropNotDone, err)
 		}
 		fmt.Printf("dropped the database %s\n", p.dump.database)

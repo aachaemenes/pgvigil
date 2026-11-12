@@ -38,8 +38,8 @@ A run without a terminal (a script, a configuration tool) names the database ins
 3. The service is stopped.
 4. With `-drop-repository`: the repository is watched for 75 seconds (`collection_dates`' newest snapshot read at the
    stop and again after): a collector on another host writes within a minute, and its write refuses the drop. Any other
-   client session on the database (a `pgvigil serve`, Grafana, a psql) refuses it too; the drop never forces a session
-   off. A refusal here, or Ctrl-C during the watch, starts the service again: the host is as it was.
+   session on the database (a `pgvigil serve`, Grafana, a psql; every backend but an autovacuum worker, which
+   `DROP DATABASE` ends by itself) refuses it too; the drop never forces a session off. A refusal here, or Ctrl-C during the watch, starts the service again: the host is as it was.
 5. The dump (`pg_dump --format=custom`, 0600, to `/var/backups/pgvigil` or `%ProgramData%\pgvigil-backups` by default;
    `-dump <file>` names it, `-no-dump` takes none). A failed dump starts the service again.
 6. `DROP DATABASE`, run from the server's maintenance database (`postgres`, else `template1`), then the roles, one
