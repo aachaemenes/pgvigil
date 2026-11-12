@@ -47,7 +47,7 @@
   </div>
   <div>
     <h2 class="h3">Statements and slow queries</h2>
-    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, with each statement's trend. Slow statements, deadlocks and failed logins from the PostgreSQL server log; on SQL Server, deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script.</p>
+    <p>The statements that cost the most over any window, as real per-interval numbers from pg_stat_statements, with each statement's trend. Slow statements, deadlocks and failed logins from the PostgreSQL server log; on SQL Server, deadlocks, blocking and slow statements from small Extended Events sessions you create from pgvigil's script, and the plan cache's statements for a database without Query Store (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">plan cache and indexes</a>).</p>
   </div>
   <div>
     <h2 class="h3">Performance and metrics</h2>
@@ -67,11 +67,11 @@
   </div>
   <div>
     <h2 class="h3">Configuration and changes</h2>
-    <p>Settings with a history of every change, server properties, roles and permissions, schema changes, and a side-by-side diff of two servers or of one server at two times.</p>
+    <p>Settings with a history of every change, server properties, roles and permissions, schema changes, and a side-by-side diff of two servers or of one server at two times. The audit trail of pgaudit on PostgreSQL and of SQL Server Audit (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/audit.md">pgaudit</a>, <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-audit.md">SQL Server Audit</a>).</p>
   </div>
   <div>
     <h2 class="h3">Health checks</h2>
-    <p>Vacuum and wraparound, unused and duplicate indexes, versions against the release calendar, extensions out of date, corruption signs, and your own SQL as a check with its own thresholds.</p>
+    <p>Vacuum and wraparound, unused and duplicate indexes, versions against the release calendar, extensions out of date, corruption signs, and your own SQL as a check with its own thresholds. On SQL Server the day-one checks of configuration, database options, CHECKDB and Agent alerts (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-checks.md">checks</a>), the error log, the default trace and system health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-readers.md">readers</a>), and unused, duplicate and missing indexes with the statistics' health (<a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/sqlserver-indexes.md">indexes</a>).</p>
   </div>
   <div>
     <h2 class="h3">Alerts and exports</h2>
@@ -96,7 +96,7 @@
 </main>
 
 <footer><div class="wrap">
-  <p><a href="https://github.com/aachaemenes/pgvigil">GitHub</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/releases">Releases</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/LICENSE">MIT licence</a></p>
+  <p><a href="https://github.com/aachaemenes/pgvigil">GitHub</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/releases">Releases</a> &middot; <a href="mailto:support@pgvigil.com">support@pgvigil.com</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/support.md">Support</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/LICENSE">MIT licence</a></p>
   <p>pgvigil is an independent open-source project by Allen Achaemenes. It is not affiliated with Trimble, Inc., DBA Dash or the PostgreSQL Global Development Group.</p>
 </div></footer>
 </body>
