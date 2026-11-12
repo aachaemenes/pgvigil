@@ -49,7 +49,8 @@ There is one renderer. The browser that shows a page is also what builds its mai
   under the heading the screen shows above it; the cells are the export's (`docs/export.md`): the same rows in the
   same sort order, a column hidden with the grid tools left out, a value cell in the colour of the cell that
   judges it;
-- the attachment is the workbook **Export .xlsx** saves from the same page.
+- the attachment is the workbook **Export .xlsx** saves from the same page, except that a grid with no row gets no
+  sheet in the mail's workbook (Export .xlsx writes it as a sheet of its header row).
 
 A scheduled page has no browser of its own, so the server opens one: at each turn the serve process starts a
 headless Chromium-family browser (`chromium`, Chrome or Edge, found on the PATH or at the usual install places;

@@ -169,13 +169,16 @@ const SCREEN = `(() => {
     b: !td.classList.contains('status') && !td.querySelector('.badge, .dot') && ['crit', 'warn', 'ok'].some(k => td.classList.contains(k)) });
   // a heading inside a region of its own (the Summary's Needs attention strip) names only the grids of that region
   let outer = '', inner = null;
-  return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props')].map(e => {
-    if (e.tagName !== 'TABLE') {
+  return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props, main p.empty[data-cols]')].map(e => {
+    if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
       const within = e.closest('[role=region]');
       if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; }
       return { h: head(e) };
     }
     const named = inner && inner.within.contains(e) ? inner.text : outer;
+    // a grid with no row (ui.ts grid: its note carries its columns' names): the export's sheet of its header row alone
+    // (a note with no column the export leaves out: null, dropped by grids())
+    if (e.tagName === 'P') { const cols = JSON.parse(e.dataset.cols || '[]'); return cols.length ? { named, rows: 0, head: cols, cells: [], status: [], empty: true } : null; }
     const grid = e.classList.contains('grid');
     const cells = grid ? [...e.querySelectorAll(':scope > tbody > tr')].map(tr => [...tr.children].map(cell))
       : [...e.querySelectorAll('tr')].map(tr => { const th = tr.querySelector('th'), td = tr.querySelector('td'); return [{ t: th ? words(th) : '', s: null, l: false }, { t: td ? words(td) : '', s: td ? st(td) : null, l: false }]; });
@@ -234,7 +237,7 @@ const tools = async () => {
   await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   if (!out.wired) return out;
   out.head = await ev(HS); out.rows = await ev(`Number(${T}.dataset.rows)`);
-  out.screen = (await ev(SCREEN)).find(g => g.cells);
+  out.screen = (await ev(SCREEN)).find(g => g && g.cells && !g.empty);   // the first grid with a table, never an empty grid's note
   // the clipboard is kept on the page: what a copy writes is what the checker reads
   await ev(`(() => { window.__gt = {}; const c = navigator.clipboard;
     c.write = async items => { for (const it of items) for (const ty of it.types) window.__gt[ty] = await (await it.getType(ty)).text(); };
@@ -433,6 +436,7 @@ def xfs(z):
 def grids(page):
     head, out = '', []
     for g in page['grids']:
+        if not g: continue   # a note the export leaves out
         if 'h' in g: head = g['h']
         else: out.append(dict(g, name=g.get('named', head)))
     return out
@@ -488,9 +492,9 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         if key == 'summary' and g['rows'] > 1 and any(c['l'] and not c['s'] for r in g['cells'] for c in r):
             check(counts['link'] >= 1 and counts['plain'] >= 1, f"summary: sheet '{names[i + 1]}' a link cell is filled {LINKFILL} with text {LINK} and a plain cell has no fill ({counts['link']} link cells, {counts['plain']} plain)")
             linked = True
-        if key == 'backups' and 'archiver' in g['head']: carried(key, names[i + 1], g, cells, cx, 'archiver', 'last archived', ['crit', 'ok'])
-        if key == 'jobs' and 'last run' in g['head']: carried(key, names[i + 1], g, cells, cx, 'last run', 'last start', [])
-        if key == 'storage' and 'free' in g['head']:
+        if key == 'backups' and 'archiver' in g['head'] and g['rows'] > 0: carried(key, names[i + 1], g, cells, cx, 'archiver', 'last archived', ['crit', 'ok'])
+        if key == 'jobs' and 'last run' in g['head'] and g['rows'] > 0: carried(key, names[i + 1], g, cells, cx, 'last run', 'last start', [])
+        if key == 'storage' and 'free' in g['head'] and g['rows'] > 0:
             j = g['head'].index('free'); seen = [(number(r[j]['t']), cells.get((k + 2, j), (0, None, None))) for k, r in enumerate(g['cells']) if r[j]['t'] != '']
             off = [(a, b) for a, b in seen if a is None or b[1] is None or cx[b[0]]['fmt'] != 167 or abs(b[1] * 100 - a) > 0.006]
             check(len(seen) >= 1 and not off and 'numFmtId="167" formatCode="0.0#%"' in st, f"storage: sheet '{names[i + 1]}' {len(seen)} 'free' cells, each the screen's percent / 100 under numFmt 167 '0.0#%' ({off[:2]})")
@@ -518,7 +522,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             used_num = [r for r, k in re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', sx) if r != '1' and k == '><v>']
             check(len(used_num) >= 1 and all(t in ('not read', '') for r, t in used_text if r != '1'), f"dbspace: used (GB) numeric in {len(used_num)} rows, its text cells only 'not read' ({sorted({t for r, t in used_text if r != '1'})[:3]})")
     if key == 'empty':
-        check(gs[-1]['rows'] == 0 and len(gs) > 1 and gs[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
+        tg = [g for g in gs if not g.get('empty')]   # the Tables tab's grids with a table: the filtered one is the last
+        check(tg[-1]['rows'] == 0 and len(tg) > 1 and tg[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
         check(classed == 2, f"empty: the two cells that carry only a class of the page's own rule (crit, warn) are filled in their colours ({classed} cells)")
     if openpyxl is not None:
         try:
@@ -536,7 +541,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         check(bool(hs1) and all(u < len(cx) and cx[u]['fill'] == 'FF0063A3' and cx[u]['font'] == 'FFFFFFFF' and cx[u]['bold'] for u in hs1), f"{key}: sheet '{names[i + 1]}' header row filled FF0063A3, white bold")
     # each sheet named by the heading above its grid (h2, h3 or h4): the name starts with the heading's first words
     # (cut at 31 characters, a repeat numbered; the Summary grid's heading meets the export's own Summary sheet)
-    hs = [re.sub(r'[\\/?*\[\]:]', ' ', g['name']).strip()[:24].rstrip() for g in gs]
+    # (the export's rule: a character Excel refuses becomes a space, then each run of spaces one space)
+    hs = [re.sub(r'\s+', ' ', re.sub(r'[\\/?*\[\]:]', ' ', g['name'])).strip()[:24].rstrip() for g in gs]
     check(all(n.startswith(h) for n, h in zip(names[1:], hs)), f"{key}: sheet names {names[1:]} follow the screen's headings {[g['name'] for g in gs]}")
     if key == 'roles':
         check(any(g['name'].endswith('privileges') or 'privileges' in g['name'] for g in gs), "roles: a grid under a privileges (h4) heading on screen")
@@ -606,7 +612,7 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         check(b.startswith(b'\xef\xbb\xbf'), f"{key}: CSV '{g['name']}' starts with a UTF-8 BOM")
         n = len(list(csv.reader(io.StringIO(b.decode('utf-8-sig'))))) - 1
         check(n == g['rows'], f"{key}: CSV '{g['name']}' {n} data rows = {g['rows']} on screen")
-        if key == 'storage' and 'free' in g['head']:
+        if key == 'storage' and 'free' in g['head'] and g['rows'] > 0:
             # the CSV keeps the percent figure the screen shows (12.5), not the share the workbook's percent format holds (0.125)
             recs = list(csv.reader(io.StringIO(b.decode('utf-8-sig')))); j = recs[0].index('free')
             pairs = [(number(r[g['head'].index('free')]['t']), recs[k + 1][j]) for k, r in enumerate(g['cells']) if r[g['head'].index('free')]['t'] != '']

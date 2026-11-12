@@ -209,7 +209,7 @@ export function narrowGrid(box: Element, keep?: (r: Record<string, unknown>) => 
 }
 
 export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No rows.'): HTMLElement {
-  if (rows.length === 0) return el('p', { class: 'empty' }, empty);
+  if (rows.length === 0) return el('p', { class: 'empty', 'data-cols': JSON.stringify(cols.map(c => c.label ?? c.key)) }, empty);
   let sortKey = '', asc = true;
   let shown = rows;
   let scope: ((r: Record<string, unknown>) => boolean) | undefined, scopeNote = '';   // narrowGrid's predicate and its words

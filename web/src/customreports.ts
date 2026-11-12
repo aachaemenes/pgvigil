@@ -8,6 +8,7 @@
 // The shell mounts customReportsView(ctx) as the root tab 'customreports' and as an instance tab (the run's target
 // defaults to that instance); the page's own address: #/customreports?report=N (&run=1 runs it on open, &p.<name>=<value>
 // fills a parameter), ?edit=N, ?new=1&folder=<path> (the lead wires the route and the tree's Custom reports folder).
+import { reloadTree } from './tree';
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
 import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
@@ -513,6 +514,7 @@ async function editorPage(_ctx: Ctx, id: number, folder = ''): Promise<HTMLEleme
     try {
       const r = await post<{ detail: string; report_id: number }>('customreports', out);
       msg.textContent = r.detail;
+      reloadTree('r/reports/cr');   // the tree's Custom reports nodes show the new or renamed report at once
       go({ report: String(r.report_id ?? id) });
     } catch (e) { msg.textContent = 'Not saved: ' + (e instanceof Error ? e.message : String(e)); }
   });

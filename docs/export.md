@@ -13,16 +13,18 @@ same way as any browser.
   its start and its end), the export time, the time zone the times in the file are written in (the display time zone: the browser's unless the range panel names another, as
   `America/Los_Angeles (UTC-08:00 at export)`; each time carries its own date's offset, so a window across a
   daylight-saving change holds two), and one line per data sheet with its row count and, when the page said
-  it shows only the newest N of M rows (the Running queries samples), that note. Its header row and the
+  it shows only the newest N of M rows (the Running queries samples), that note, or, for a grid with no row, the
+  page's own empty message. Its header row and the
   heading of its list of sheets carry the same blue as every data sheet's header.
 - **One sheet per grid** on the tab, named by the heading (h2, h3 or h4) above the grid on the screen (Excel's
   31-character limit applies, a trailing space cut; a name that repeats gets ` (2)`, and so do `Summary` and
-  Excel's reserved `History`; the characters `\ / ? * [ ] :` become spaces).
+  Excel's reserved `History`; the characters `\ / ? * [ ] :` become spaces, and a run of spaces is one space).
   Property cards (two-column label / value panels) export too, as `item` / `value` sheets.
 - **Every grid with rows is an Excel table** (Insert > Table: sortable, filterable, a name per sheet, `Table1`
   on), with no table style, so the cells keep their own colours. Its column names are the header cells: a
   heading that repeats gets ` (2)`, an empty one is `Column n` (Excel wants each column named once). A grid
-  that a filter left without rows is a plain sheet with the filter on.
+  that a filter left without rows is a plain sheet with the filter on, and a grid with no row at all is a sheet of
+  its header row alone, as DBA Dash exports an empty grid.
 - **The header row is frozen**; the column widths follow the content (8 to 60 characters).
 - **A column hidden on the screen is left out.** The grid tools (below) hide columns; the workbook and the CSV
   hold the columns the screen shows.
