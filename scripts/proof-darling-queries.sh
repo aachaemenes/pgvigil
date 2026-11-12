@@ -27,12 +27,17 @@
 #     one (spills 100) stores the interval's spills NULL and last.spills 100; the next read (130) stores 30; a plan new
 #     in it (7) stores 7. querystore - a runtime row with failed 5 and no split keys stores the six NULL; with the keys
 #     stores them; failed 0 with the keys sent stores NULL.
-#  D. live Query Store, W1 then W2 (two minutes each, on minute bounds of the server's clock): the stored split = a
-#     hand read by execution_type; Regressed (base=prev): q_cost 'cost', q_to and q_tonew (no kept baseline)
-#     'timeouts', q_err 'errors' with Aborted 0, q_cheap not 'cost'; with q_err's baseline rows in the pre-0126 shape it
-#     is no longer raised by 'errors', reads 'not read apart' and is counted by regressed_skipped; compare=prev: q_new
-#     'new' (compiled in W2), q_nk 'not kept before' (compiled in W0), q_gone 'not kept now', q_cost avg duration over
-#     +25 %, no false NEW; the scenario keys' figures = a hand read of sys.query_store_runtime_stats over the same
+#  D. live Query Store, W1 then W2 (two minutes each, on minute bounds of the server's clock), every run in its own
+#     sqlcmd session: per window and statement the runs in a hand read of sys.query_store_runtime_stats = the runs
+#     sent (0 where none was sent); the stored split = the hand read by execution_type; q_tonew (a statement no plan
+#     ends inside the client's 1 s, first sent in W2) 4 Aborted and no row before W2; Regressed (base=prev): q_cost
+#     'cost', q_to 'timeouts', q_tonew 'timeouts' with no kept baseline, q_err 'errors' with Aborted 0, q_cheap not
+#     'cost'; with q_err's baseline rows in the pre-0126 shape it is no longer raised by 'errors', reads 'not read
+#     apart' and is counted by regressed_skipped; Regressed's default (7 days before): q_cost 'cost', q_tonew
+#     'timeouts' with no kept baseline; stored rows (synthetic): a query with 4 Aborted runs in the window and none
+#     before is raised by 'timeouts' alone, no kept baseline, HIGH, one at the same rate before is not listed;
+#     compare=prev: q_new 'new' (compiled in W2), q_nk 'not kept before' (compiled in W0), q_gone 'not kept now',
+#     q_cost avg duration over +25 %, no false NEW; the scenario keys' figures = the hand read over the same
 #     intervals; the 400-query interval stores at most 250 plans while its interval row counts all.
 #  E. procedures and plan cache over reads R0, R1 (after W1), R2 (after W2): the spilling procedure's interval spills =
 #     the hand delta of total_spills (> 0); p_new 'new', p_gone 'gone'; mssql_pc_handles = sys.dm_exec_query_stats'
@@ -77,6 +82,10 @@ trap 'exit 130' INT TERM
 sq() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-120}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -b -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqt() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout 300 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -W -h -1 -l 60 -t "$1" -d "$0" -i /dev/stdin' "${2:-pgvq}" "${3:-0}" >/dev/null 2>&1 || true; }
 sqok() { local out; out=$(sq "$2" "${3:-master}" 2>&1) || fail "$1: $out"; }
+# sqtn <n> <statement> [db] [timeout s]: n runs of one statement, each in its own sqlcmd session (one docker exec);
+# the hand read counts every run sent this way (s177j-8 / -9), while a session of several batches counted fewer
+sqtn() { printf 'SET NOCOUNT ON;\n%s\n' "$2" | timeout 600 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'q=$(cat); for _ in $(seq 1 "$1"); do
+    printf "%s\n" "$q" | SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -W -h -1 -l 60 -t "$3" -d "$2" -i /dev/stdin >/dev/null 2>&1 || true; done' sqtn "$1" "${3:-pgvq}" "${4:-0}" >/dev/null 2>&1 || true; }
 pq() { psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
 # objs <file> <part>: an API part ({columns, rows}) as a JSON array of objects
 objs() { jq -c --arg p "$2" '.[$p] | .columns as $c | [(.rows // [])[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
@@ -192,18 +201,18 @@ now_utc() { sq "SELECT CONVERT(varchar(19), SYSUTCDATETIME(), 126) + 'Z'"; }
 # to_bound: sleep until the server's clock is $1 seconds past the next whole minute; prints that minute (UTC)
 to_bound() { local s m; s=$(sq "SELECT 60 - DATEPART(second, SYSUTCDATETIME())"); sleep $((s + $1)); m=$(sq "SELECT CONVERT(varchar(16), SYSUTCDATETIME(), 126) + ':00Z'"); printf '%s' "$m"; }
 Q_COST="EXEC sp_executesql N'SELECT /*q_cost*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v + b.v = -1', N'@n int', @n ="
-# q_to and q_tonew under LOOP JOIN: compiled at 20,000 rows a hash join answers in milliseconds (s177j-8: q_tonew's four
-# runs ended Regular); a loop over 400 M pairs outlasts the client's 1 s
+# q_to under LOOP JOIN: compiled at TOP 1 in W1, run at 20,000 in W2, a loop over 400 M pairs outlasts the client's 1 s
 Q_TO="EXEC sp_executesql N'SELECT /*q_to*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v * 2 + b.v = -1 OPTION (LOOP JOIN)', N'@n int', @n ="
 # each scenario statement has a shape of its own: a query hash leaves literals out, so two statements that differ in
-# a literal only would be one key
-Q_TONEW="EXEC sp_executesql N'SELECT /*q_tonew*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.id * 2 + b.v = -1 OPTION (LOOP JOIN)', N'@n int', @n ="
+# a literal only would be one key. q_tonew is new in W2 and no plan of it ends inside 1 s: the three sides join on
+# the unique key (no grouping shrinks a side; s177j-8 / -9's TOP (@n) over b.v ended Regular), so any plan forms at
+# least the 400 M pairs of two sides, on one thread
+Q_TONEW="EXEC sp_executesql N'SELECT /*q_tonew*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN dbo.t b CROSS JOIN dbo.t c WHERE a.id + b.id + c.id = -1 OPTION (MAXDOP 1)';"
 Q_ERR="EXEC sp_executesql N'SELECT /*q_err*/ COUNT_BIG(*) / @d FROM dbo.t WHERE v >= 0', N'@d int', @d ="
 Q_CHEAP="EXEC sp_executesql N'SELECT /*q_cheap*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v - b.v = -1', N'@n int', @n ="
 Q_GONE="EXEC sp_executesql N'SELECT /*q_gone*/ COUNT_BIG(*) FROM dbo.t WHERE v = @v', N'@v int', @v = 5;"
 Q_NEW="EXEC sp_executesql N'SELECT /*q_new*/ MAX(v) FROM dbo.t WHERE id > @i', N'@i int', @i = 7;"
 Q_NK="EXEC sp_executesql N'SELECT /*q_nk*/ MIN(v) FROM dbo.t WHERE id < @i', N'@i int', @i = 19000;"
-rep() { local n=$1 s=$2 out=; for _ in $(seq 1 "$n"); do out+="$s"$'\nGO\n'; done; printf '%s' "$out"; }
 # plus <minute UTC> <seconds>: that time; until_s <minute UTC> <seconds>: sleep until the server's clock is past it
 plus() { date -u -d "@$(( $(date -u -d "$1" +%s) + $2 ))" +%Y-%m-%dT%H:%M:%SZ; }
 until_s() { local ms; ms=$(sq "SELECT DATEDIFF(millisecond, SYSUTCDATETIME(), DATEADD(second, $2, CONVERT(datetime2, '${1%Z}')))"); (( ms > 0 )) && sleep "$(python3 -c "print($ms / 1000)")"; return 0; }
@@ -215,18 +224,19 @@ R0=$(pq "SELECT max(snapshot_at) FROM pgvigil.mssql_pc_state WHERE instance_id =
 sleep 25
 M0=$(to_bound 2); sqt "$Q_NK" pgvq                                     # W0: q_nk compiled, before the earlier window
 M1=$(plus "$M0" 60); until_s "$M1" 2; echo "  W1 from $M1"
-sqt "$(rep 5 "$Q_COST 1;")$(rep 5 "$Q_TO 1;")$(rep 5 "$Q_ERR 1;")$(rep 5 "$Q_GONE")$(rep 10 "$Q_CHEAP 1;")$(rep 3 'EXEC dbo.p_spill;')$(rep 3 'EXEC dbo.p_gone;')" pgvq
-until_s "$M1" 110                                                       # R1 at W1's end: R2 - R1 stays under R1 - R0
+sqtn 5 "$Q_COST 1;"; sqtn 5 "$Q_TO 1;"; sqtn 5 "$Q_ERR 1;"; sqtn 5 "$Q_GONE"; sqtn 10 "$Q_CHEAP 1;"; sqtn 3 'EXEC dbo.p_spill;'; sqtn 3 'EXEC dbo.p_gone;'
+echo "  W1's runs sent by +$(sq "SELECT DATEDIFF(millisecond, CONVERT(datetime2, '${M1%Z}'), SYSUTCDATETIME()) / 1000.0") s"
+until_s "$M1" 110                                                      # R1 at W1's end: R2 - R1 stays under R1 - R0
 col mssql_procstats mssql_plancache                                     # R1
 R1=$(pq "SELECT snapshot_at FROM pgvigil.mssql_pc_state WHERE instance_id = $SB")
 SPILL1=$(sq "SELECT ISNULL(SUM(total_spills), 0) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgvq') AND object_id = OBJECT_ID('pgvq.dbo.p_spill')")
 [[ $(sq "SELECT CASE WHEN SYSUTCDATETIME() < DATEADD(second, 119, CONVERT(datetime2, '${M1%Z}')) THEN 1 ELSE 0 END") == 1 ]] || fail "D: W1's runs and R1 overran W1"
 M2=$(plus "$M1" 120); until_s "$M2" 2; echo "  W2 from $M2"
-sqt "$(rep 5 "$Q_COST 1500;")$(rep 5 "$Q_NEW")$(rep 5 "$Q_NK")$(rep 10 "$Q_CHEAP 20;")$(rep 3 'EXEC dbo.p_spill;')$(rep 3 'EXEC dbo.p_new;')" pgvq
-# the client gives up after 1 s: Aborted. One session per run: a session that timed out once is not trusted to run
-# the next batch (s177j-7: of eight batches in one session, three ran to a timeout)
-for q in "$Q_TO" "$Q_TONEW"; do for _ in 1 2 3 4; do sqt "$q 20000;" pgvq 1; done; done
-sqt "$(rep 4 "$Q_ERR 0;")" pgvq                                         # divide by zero: Exception
+sqtn 5 "$Q_COST 1500;"; sqtn 5 "$Q_NEW"; sqtn 5 "$Q_NK"; sqtn 10 "$Q_CHEAP 20;"; sqtn 3 'EXEC dbo.p_spill;'; sqtn 3 'EXEC dbo.p_new;'
+# the client gives up after 1 s: Aborted (s177j-7: of eight timing-out batches in one session, three ran)
+sqtn 4 "$Q_TO 20000;" pgvq 1; sqtn 4 "$Q_TONEW" pgvq 1
+sqtn 4 "$Q_ERR 0;"                                                      # divide by zero: Exception
+echo "  W2's first minute sent by +$(sq "SELECT DATEDIFF(millisecond, CONVERT(datetime2, '${M2%Z}'), SYSUTCDATETIME()) / 1000.0") s"
 [[ $(sq "SELECT CASE WHEN SYSUTCDATETIME() < DATEADD(second, 58, CONVERT(datetime2, '${M2%Z}')) THEN 1 ELSE 0 END") == 1 ]] || fail "D: W2's first minute overran"
 M3=$(plus "$M2" 60); until_s "$M3" 2
 sqt "SET NOCOUNT ON; DECLARE @i int = 0, @s nvarchar(10); WHILE @i < 400 BEGIN SET @s = CAST(@i AS nvarchar(10));
@@ -280,9 +290,10 @@ api "mssql/procs?$PW&part=procs" procs.json
 api "mssql/plancache?$PW&compare=prev&part=compare" ccmp.json
 api "mssql/plancache?$PW&compare=prev&part=compare_windows" ccmpw.json
 api "mssql/plancache?$PW&part=top" ctop.json
-python3 - "$TMPD" "$PGDSN" "$SB" "$M1" "$M2" "$M4" "$SPILL1" "$SPILL2" <<'PYEND' || fail "D/E: see above"
+TNQ=$(sq "SELECT COUNT(*) FROM sys.query_store_query_text WHERE query_sql_text LIKE N'%/*q[_]tonew*/%' AND query_sql_text NOT LIKE N'%query[_]store[_]query[_]text%'" pgvq) || TNQ='?'
+python3 - "$TMPD" "$PGDSN" "$SB" "$M1" "$M2" "$M4" "$SPILL1" "$SPILL2" "$TNQ" <<'PYEND' || fail "D/E: see above"
 import sys, json, subprocess, datetime as dt
-d, dsn, sb, m1, m2, m4, s1, s2 = sys.argv[1:]
+d, dsn, sb, m1, m2, m4, s1, s2, tnq = sys.argv[1:]
 def q(s): return [l.split('|') for l in subprocess.run(['psql', dsn, '-XAtq', '-c', s], check=True, capture_output=True, text=True).stdout.splitlines() if l]
 def rows(f, part):
     # a part is {columns, rows: [[...]]}: one dict per row
@@ -305,7 +316,15 @@ for h in hand:
     k = tag(h, h['text'])
     if k: hashof[k] = h['hash']
 for k in ['q_cost', 'q_to', 'q_tonew', 'q_err', 'q_cheap', 'q_gone', 'q_new', 'q_nk']:
-    if k not in hashof: bad.append(f"D the store holds no {k}")
+    if k not in hashof: bad.append(f"D the store holds no runtime row of {k}" + (f" ({tnq} query text(s) of it kept: if 1 or more, the FINDING that Query Store keeps no runtime row of an aborted first run; the fallback is a compile in W0)" if k == 'q_tonew' else ''))
+# q_tonew: 4 Aborted in W2 and no row before it, in the hand read and in pgvigil's store
+tn = [h for h in hand if tag(h, h['text']) == 'q_tonew']
+if tn:
+    early = sorted({h['at'] for h in tn if h['at'] < E2})
+    an = sum(h['an'] for h in tn if E2 <= h['at'] < E4)
+    pre = q(f"SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = {sb} AND upper(query_hash) = upper('{hashof['q_tonew']}') AND snapshot_at < '{m2}'")[0][0]
+    if an != 4 or early or pre != '0': bad.append(f"D q_tonew: {an} Aborted in W2 (want 4); hand-read intervals before W2 {early}, stored rows before W2 {pre} (want none)")
+    else: print(f"D q_tonew: 4 Aborted in W2, no row before W2 (hand read and store)")
 # 1. the stored split = the hand read, per (plan, interval) with failures
 st = {(int(r[0]), int(r[1])): r for r in q(f"""SELECT plan_id, extract(epoch FROM snapshot_at)::bigint, failed, aborted_executions, aborted_cpu_us, aborted_duration_us,
        exception_executions, exception_cpu_us, exception_duration_us FROM pgvigil.mssql_qs_runtime WHERE instance_id = {sb} AND database_name = 'pgvq'""")}
@@ -321,12 +340,17 @@ for h in hand:
 nofail = q(f"SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = {sb} AND coalesce(failed, 0) = 0 AND (aborted_executions IS NOT NULL OR exception_executions IS NOT NULL)")[0][0]
 fails = sorted(f"{tag(h, h['text'])}:a{h['an']}/x{h['xn']}" for h in hand if h['an'] + h['xn'] > 0)
 print(f"D failures in the hand read: {fails}")
+# the runs sent, one sqlcmd session each (q_nk's W0 run is before W1)
+SENT = {'W1': {'q_cost': 5, 'q_to': 5, 'q_err': 5, 'q_gone': 5, 'q_cheap': 10},
+        'W2': {'q_cost': 5, 'q_new': 5, 'q_nk': 5, 'q_cheap': 10, 'q_to': 4, 'q_tonew': 4, 'q_err': 4}}
 for lo, hi, nm in [(E1, E2, 'W1'), (E2, E4, 'W2')]:
     w = {}
     for h in hand:
         k = tag(h, h['text'])
         if k and lo <= h['at'] < hi: w[k] = w.get(k, 0) + h['e']
     print(f"D executions in {nm} by statement (hand read): {dict(sorted(w.items()))}")
+    for k in sorted(set(SENT[nm]) | set(w)):
+        if w.get(k, 0) != SENT[nm].get(k, 0): bad.append(f"D {nm} {k}: {w.get(k, 0)} run(s) in the hand read, {SENT[nm].get(k, 0)} sent (one session each)")
 if nsplit < 3: bad.append(f"D only {nsplit} stored (plan, interval) rows with failures")
 if nofail != '0': bad.append(f"D {nofail} rows without failures carry split values (want NULL)")
 # 2. Regressed
@@ -438,7 +462,34 @@ api "mssql/querystore?$QW&part=regressed" reg7.json
 QC=$(jq -r '.q_cost' "$TMPD/hashof.json")
 R7=$(objs "$TMPD/reg7.json" regressed | jq -r --arg k "$QC" '[.[] | select((.query_hash | ascii_upcase) == ($k | ascii_upcase)) | .raised_by] | join(",")')
 [[ "$R7" == *cost* ]] || fail "D: Regressed's default baseline: q_cost raised by '$R7' (want cost)"
-echo "ok   D: Regressed's default baseline (7 days before) raises q_cost by '$R7'"
+QTN=$(jq -r '.q_tonew' "$TMPD/hashof.json")
+TN7=$(objs "$TMPD/reg7.json" regressed | jq -r --arg k "$QTN" '[.[] | select((.query_hash | ascii_upcase) == ($k | ascii_upcase)) | (.raised_by + "|" + (.has_baseline | tostring))] | join(",")')
+[[ "$TN7" == "timeouts|false" ]] || fail "D: Regressed's default baseline: q_tonew '$TN7' (want 'timeouts|false': raised by timeouts alone, no kept baseline)"
+echo "ok   D: Regressed's default baseline (7 days before) raises q_cost by '$R7' and q_tonew by timeouts with no kept baseline"
+# stored rows (the 0126 shape, synthetic): tn_new 4 Aborted runs in a 1-hour window and none before; tn_same (the
+# control) 4 in the window and 4 in the hour before, the same rate; the database's first interval at that hour's start
+TN=$(pq "SELECT pgvigil.ensure_instance('pgvq-tn', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+TW=$(( $(date +%s) / 60 * 60 - 7200 )); BW=$(( TW - 3600 ))
+iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+for at in "$BW" "$TW"; do pq "SELECT pgvigil.ensure_month_partition('mssql_qs_runtime', '$(iso "$at")'), pgvigil.ensure_month_partition('mssql_qs_interval', '$(iso "$at")')" >/dev/null; done
+pq "INSERT INTO pgvigil.mssql_qs_interval (instance_id, snapshot_at, database_name, interval_id, interval_end, plans, executions, duration_us, cpu_us, logical_reads, wait_ms, read_at)
+    VALUES ($TN, '$(iso "$BW")', 'synth', 1, '$(iso $((BW + 60)))', 1, 4, 4000000, 4000000, 40, 0, '$(iso $((BW + 120)))'),
+           ($TN, '$(iso $((TW + 600)))', 'synth', 2, '$(iso $((TW + 660)))', 2, 8, 8000000, 8000000, 80, 0, '$(iso $((TW + 720)))')" >/dev/null
+tnrow() {  # tnrow <interval start epoch> <plan = query> <hash>: 4 Aborted runs of 1 s
+  printf "(%s, '%s', '%s', 'synth', %s, %s, '%s', %s, 4, 4, 4000000, 4000000, 40, 0, 0, 0, 1000000, 0, 0, 1, '%s', '%s', 0, 4, 4000000, 4000000, 0, 0, 0)" \
+    "$TN" "$(iso "$1")" "$(iso $(($1 + 60)))" "$2" "$2" "$3" "$2" "$(iso $(($1 + 5)))" "$(iso $(($1 + 30)))"; }
+pq "INSERT INTO pgvigil.mssql_qs_runtime (instance_id, snapshot_at, interval_end, database_name, plan_id, query_id, query_hash, plan_hash_n, executions, failed,
+      duration_us, cpu_us, logical_reads, physical_reads, logical_writes, row_count, max_duration_us, memory_pages, max_memory_pages, max_dop,
+      first_execution, last_execution, wait_ms, aborted_executions, aborted_cpu_us, aborted_duration_us, exception_executions, exception_cpu_us, exception_duration_us)
+    VALUES $(tnrow "$BW" 1 0x00000000000000B1), $(tnrow $((TW + 600)) 1 0x00000000000000B1), $(tnrow $((TW + 600)) 2 0x00000000000000B2)" >/dev/null
+TNW="instance=$TN&from=$(iso "$TW")&to=$(iso $((TW + 3600)))&db=synth"
+api "mssql/querystore?$TNW&base=prev&part=regressed" tnp.json
+api "mssql/querystore?$TNW&part=regressed" tn7.json
+for f in tnp tn7; do
+  got=$(objs "$TMPD/$f.json" regressed | jq -r '[.[] | (.query_hash + "|" + .raised_by + "|" + (.has_baseline | tostring) + "|" + .severity)] | sort | join(",")')
+  [[ "$got" == "0x00000000000000B2|timeouts|false|HIGH" ]] || fail "D: stored rows, Regressed ($f): '$got' (want only tn_new 0x00000000000000B2|timeouts|false|HIGH)"
+done
+echo "ok   D: stored rows: 4 Aborted runs in the window and none before raised by timeouts alone, no kept baseline, HIGH (base=prev and the 7-day default); the same rate before not listed"
 
 echo "== F. the plan-cache compare over 7 days =="
 for spec in "761" "3000"; do
