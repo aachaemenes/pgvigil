@@ -375,6 +375,8 @@ BEGIN
   DELETE FROM pgvigil.pg_patroni_members WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.pg_wal_replay WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
+  -- task 171: the mails asked (report_mail_schedules and report_mail_log are an audit, kept whole)
+  DELETE FROM pgvigil.report_mail_sends WHERE requested_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   RETURN n;
 END $$;

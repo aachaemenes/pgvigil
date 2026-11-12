@@ -40,10 +40,14 @@
 #   E upgrade     the installer with PGVIGIL_NO_SERVICE=1 leaves ./pgvigil of this build ('checksum verified'); the
 #                 service stopped; a custom-format dump of the repository is taken as its owner; this build's 'run' on the
 #                 old schema ends within 30 s with exit 1, naming the newest migration file and 'pgvigil migrate'; migrate
-#                 as the owner prints applied = this tree's files minus the store's (26 from v0.3.0) and a second migrate
-#                 applied=0; EVERY table of the old store holds the row count it held before (schema_version alone grows,
-#                 by the files applied) and the same md5 over its rows in the columns the old version had; the tables
-#                 this build adds hold 0 rows; './pgvigil install' ends 'installed and running': the installed binary
+#                 as the owner prints applied = this tree's files minus the store's (B prints the tree's count, D the
+#                 store's) and a second migrate applied=0; EVERY table of the old store holds the row count it held
+#                 before (schema_version alone grows, by the files applied) and the same md5 over its rows in the
+#                 columns the old version had; each table this build adds holds exactly the rows this build's migrate
+#                 leaves in an EMPTY repository (a second database, migrated and counted, then dropped): 0, or the
+#                 reference rows a migration writes (0100's pgaudit_rules, 0103's pg_threshold_keys), the run naming
+#                 each seeded table;
+#                 './pgvigil install' ends 'installed and running': the installed binary
 #                 prints this build's version, the config and the env file are byte for byte the old ones, the unit is
 #                 active with 0 restarts and runs as pgvigil
 #   F collector   under the collector login (no owner right) an activity sample newer than the restart arrives; every
@@ -356,8 +360,8 @@ hashes "$WORK/after.hash" "$WORK/before.cols" || fail "the row hashes after the 
 diff <(grep -v '^schema_version|' "$WORK/before.hash") <(grep -v '^schema_version|' "$WORK/after.hash") >"$WORK/hash.diff" || fail "stored rows changed over the migrate, in the columns $OLD had: $(sed -n 's/^[<>] \([a-z0-9_]*\)|.*/\1/p' "$WORK/hash.diff" | sort -u | tr '\n' ' ')"
 NHASH=$(grep -vc '|empty$' "$WORK/before.hash" || true); NEMPTY=$(grep -c '|empty$' "$WORK/before.hash" || true)
 # compare <before> <after> <mode> <applied> [<seed>]: strict = every old table the same count, a new table exactly what
-# this build's migrations leave in an EMPTY repository (<seed>: reference rows a migration writes, 0100's pgaudit_rules;
-# 0 without it); rest = tables
+# this build's migrations leave in an EMPTY repository (<seed>: reference rows a migration writes, 0100's pgaudit_rules
+# and 0103's pg_threshold_keys; 0 without them); rest = tables
 # with an instance column the same, one without may only have grown; schema_version holds the files applied more in both
 compare() {
   python3 -I - "$@" <<'PY'

@@ -133,6 +133,8 @@ export async function aboutView(_ctx: Ctx): Promise<HTMLElement> {
     el('p', {}, 'On the host that runs pgvigil, ', el('code', {}, 'pgvigil report -config pgvigil.yaml'),
       ' writes a zip into the folder it is run in: the configuration with every secret and name masked, the versions, the repository\'s ',
       'migration level and the last collection errors. It sends nothing either: read it, then attach it to your mail.'),
+    el('h2', {}, 'Thanks'),
+    el('p', {}, 'The imported SQL Server servers are read from DBA Dash repositories; pgvigil\'s collection catalog and several of its SQL Server reads were shaped by DBA Dash (https://github.com/trimble-oss/dba-dash, MIT, Copyright 2022 Trimble, Inc.). Thank you to its author and contributors; THIRD-PARTY-NOTICES has the notice.'),
     el('h2', {}, 'Security'),
     el('p', {}, 'A vulnerability is reported privately, not by mail: ',
       el('a', { href: securityUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Report a vulnerability on GitHub (opens in a new tab)'),

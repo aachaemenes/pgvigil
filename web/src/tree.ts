@@ -21,6 +21,7 @@ import { Fleet, forget, Level, tagsOf, worst } from './fleet';
 import { hashParam, hrefWith } from './dbinfo';
 import { dot, el, fmtBytes } from './ui';
 import { dbadashFolders } from './dbadash';
+import { driveNodes } from './treemenu';
 
 const UNTAGGED = 'untagged';
 
@@ -177,6 +178,12 @@ function flip(key: string) {
   try { sessionStorage.setItem('pgvigil.treeOpen', JSON.stringify([...opened])); } catch { /* private window */ }
 }
 function toggle(key: string) { flip(key); draw(); }
+// reloadTree: the folder reads under a key (i5, i5/jobs; '' = all) dropped and the tree drawn, so each open folder reads
+// again (the tree menu's Refresh, task 172)
+export function reloadTree(prefix = '') {
+  for (const k of [...loads.keys()]) if (!prefix || k === prefix || k.startsWith(prefix + '/')) loads.delete(k);
+  draw();
+}
 
 // nameOpens: a click on a node's NAME opens the node too, as a click on its caret does (the caret stays, for
 // opening a node without leaving the page and for the keyboard). A closed node opens and its link is followed; the
@@ -266,7 +273,8 @@ function instanceFolders(ctx: Ctx, id: number, depth: number, engine?: unknown):
   const here = ctx.instance === id;
   const tabLink = (tab: string) => href(ctx, { tab, instance: id, tag: undefined, at: undefined, task: undefined, taskInstance: undefined });
   const tabFolder = (k: string, name: string, tabs: [string, string][]) =>
-    folder(`i${id}/${k}`, name, depth, () => tabs.map(([tab, label]) => el('div', { style: nodeStyle(depth + 1) }, leaf(label, tabLink(tab), here && ctx.tab === tab))));
+    folder(`i${id}/${k}`, name, depth, () => [...tabs.map(([tab, label]) => el('div', { style: nodeStyle(depth + 1) }, leaf(label, tabLink(tab), here && ctx.tab === tab))),
+      ...(k === 'storage' ? driveNodes(ctx, id, engine, depth + 1, draw) : [])]);
   const instanceTabs = tabsFor(engine), instanceGroups = groupsFor(engine);
   // a SQL Server instance: its tab groups only (its databases and jobs are pages, not tree nodes yet)
   if (isMssql(engine)) return instanceGroups.filter(g => g.key !== 'main').map(g => tabFolder(g.key, g.name, g.tabs.map(t => [t, instanceTabs[t]] as [string, string])));

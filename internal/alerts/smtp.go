@@ -128,7 +128,10 @@ func (s *smtpSender) destination() string {
 
 func (s *smtpSender) perAlert() bool { return false }
 
-func (s *smtpSender) send(ctx context.Context, m Message) error {
+func (s *smtpSender) send(ctx context.Context, m Message) error { return s.sendRaw(ctx, s.body(m)) }
+
+// sendRaw delivers one whole message (headers and body, CRLF lines) to s.to through the relay
+func (s *smtpSender) sendRaw(ctx context.Context, msg []byte) error {
 	d := net.Dialer{Timeout: 15 * time.Second}
 	var conn net.Conn
 	var err error
@@ -181,7 +184,7 @@ func (s *smtpSender) send(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
-	if _, err := w.Write(s.body(m)); err != nil {
+	if _, err := w.Write(msg); err != nil {
 		return err
 	}
 	if err := w.Close(); err != nil {
