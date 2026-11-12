@@ -64,8 +64,18 @@
 #     sum their executions = a hand sum, about 120 steps, under 10 s over 7 days; the Query Store overhead lists the
 #     QDS_* waits but PerformanceMonitor's sleep waits, per hour over the measured seconds; the memory clerk's captures,
 #     samples, latest and max.
+#  I. DONE-2's pages (headless Chromium, light and dark): the Queries page's ten sections in PerformanceMonitor's order,
+#     each head = the first rows of its tab's own API read (Running, Plan cache, Query Store, Regressed, Slow queries,
+#     Tuning), the heatmap's table = the API's cells, no error box; the Query Store strip re-reads its grid for a step and
+#     draws a query's line; the plan cache's History draws a chart; a procedure's chart in PerformanceMonitor's four
+#     metrics and its line on the procedures strip; Running's strip steps the slider; wait=WAITFOR shows 'Only requests
+#     waiting on WAITFOR.' and 'Show all active queries' clears it; the Waits page's 'requests' link lands there; a
+#     heatmap cell's 'Show Active Queries at This Time' lands on Running at its time; behind a 45 s lock on
+#     mssql_pc_sample the heatmap section says 'the heatmap's read took too long for this range: pick 24 hours or less'
+#     (no error box, no grid); every link and control of the Queries page clicked once (the click table); shots.
 # NOT PROVEN HERE: SQL Server 2016 (no total_spills: the column check's unit test), Managed Instance, a readable
-# secondary; the pages' shots and click table (DONE-2).
+# secondary; PerformanceMonitor's own pages beside these (its shots are read by hand); accessibility (proof-a11y, run
+# beside this one).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -1013,4 +1023,219 @@ for b in bad: print('DIFF', b)
 sys.exit(1 if bad else 0)
 PYEND
 echo "ok   G: Top's compare grid, Plan cache's and Procedures' compare grids = the API's rows; their new columns and Regressed's PerformanceMonitor columns drawn; no error box"
-echo "PROOF OK: D10 DONE-1"
+echo "== I. DONE-2's pages in headless Chromium: the Queries page, the strips, the histories, the wait filter; light and dark =="
+SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
+# a request waiting on WAITFOR while two Running reads and two wait reads are taken (the strip's bars, the wait filter)
+( sq "WAITFOR DELAY '00:00:45';" pgvq 90 >/dev/null 2>&1 ) & BG+=($!)
+# a short WAITFOR ends between the two wait reads, so the Waits page lists WAITFOR (a wait counts when it ends)
+sleep 3; col mssql_running mssql_waits; sqok "I: a short WAITFOR" "WAITFOR DELAY '00:00:02';" pgvq; col mssql_running mssql_waits
+IF=$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:00Z); IT=$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:00Z)
+IW="instance=$SB&from=$IF&to=$IT"
+api "mssql/running?$IW" i-run.json
+api "mssql/plancache?$IW&part=top" i-top.json
+api "mssql/querystore?$IW&view=top" i-qs.json
+api "mssql/querystore?$IW&view=regressed&base=7d" i-reg.json
+api "mssql/xe?$IW&part=slow_shapes" i-long.json
+api "mssql/querystore?$IW&view=tuning" i-tun.json
+api "mssql/plancache?$IW&part=heatmap&metric=duration" i-heat.json
+WAITED=$(jq -r '.rows.columns as $c | [(.rows.rows // [])[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add | .wait_type // empty] | map(select(. == "WAITFOR")) | length' "$TMPD/i-run.json")
+[[ "$WAITED" -ge 1 ]] || fail "I: the newest Running snapshot holds no request waiting on WAITFOR (the wait filter's case)"
+cat > "$TMPD/i.mjs" <<'JS'
+const [port, U, sb, from, to, shots, mode, hf, ht, hi] = process.argv.slice(2);
+const fs = await import('node:fs');
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const settled = async () => { for (let i = 0; i < 150; i++) { const ok = await ev(`(() => { const m = document.querySelector('main'); return !!m && !!m.querySelector('h2') && ![...m.querySelectorAll('p')].some(p => /^Reading/.test(p.textContent) && !p.closest('.queries-part')); })()`); if (ok) { await sleep(800); return true; } await sleep(200); } return false; };
+const go = async (hash) => { await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200); await cmd('Page.navigate', { url: U + hash }); await sleep(300); return settled(); };
+const shot = async (name) => { const d = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); fs.writeFileSync(`${shots}/${name}.png`, Buffer.from(d.result.data, 'base64')); };
+// every section of the Queries page scrolled into view, then read till none says 'Reading' (40 s at most)
+const allParts = async (limit = 40000) => {
+  await ev(`(async () => { for (const s of document.querySelectorAll('.queries-part')) { s.scrollIntoView(); await new Promise(r => setTimeout(r, 150)); } window.scrollTo(0, 0); return 'ok'; })()`, true);
+  for (let t = 0; t < limit; t += 500) { const busy = await ev(`[...document.querySelectorAll('.queries-part')].some(s => /^Reading|comes into view/.test(s.querySelector('.queries-body')?.textContent ?? ''))`); if (!busy) break; await sleep(500); }
+  await sleep(600);
+};
+const parts = () => ev(`JSON.stringify([...document.querySelectorAll('.queries-part')].map(s => { const t = [...s.querySelectorAll('table')].filter(x => !x.classList.contains('u-legend'));
+  return { part: s.dataset.part, errors: s.querySelectorAll('.error:not([role=status])').length, rows: t.length ? [...t[0].querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty')).length : -1,
+    charts: s.querySelectorAll('.uplot').length, strips: s.querySelectorAll('.strip-band').length, cells: s.querySelectorAll('.heatmap-cell[title]').length, text: (s.querySelector('.queries-body')?.textContent ?? '').slice(0, 160) }; }))`).then(JSON.parse);
+const state = () => ev(`(() => { const m = document.querySelector('main');
+  return JSON.stringify({ hash: location.hash, title: m.querySelector('h2')?.textContent ?? '', errors: m.querySelectorAll('.error:not([role=status])').length,
+    links: [...m.querySelectorAll('a[href]')].map(a => ({ t: a.textContent.trim().slice(0, 60), h: a.getAttribute('href') })), controls: [...m.querySelectorAll('input, button, select')].length }); })()`).then(JSON.parse);
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
+const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
+console.log(`login ${st}`);
+const w = `i=${sb}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+if (mode === 'lock') {
+  // the heatmap behind a holder of mssql_pc_sample: its read runs past the UI pool's 15 s statement timeout
+  await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
+  await go(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
+  await ev(`(() => { document.querySelector('[data-part=heatmap]').scrollIntoView(); return 'ok'; })()`);
+  let s = '';
+  for (let t = 0; t < 40000; t += 500) { s = await ev(`(() => { const h = document.querySelector('[data-part=heatmap] .queries-body'); return h ? h.textContent : ''; })()`); if (!/Reading/.test(s)) break; await sleep(500); }
+  const hs = await ev(`(() => { const h = document.querySelector('[data-part=heatmap]'); return JSON.stringify({ line: h.querySelector('.heatmap-too-long')?.textContent ?? null, errors: h.querySelectorAll('.error').length,
+    tables: h.querySelectorAll('table').length, cells: h.querySelectorAll('.heatmap-cell').length }); })()`);
+  console.log(`lock ${hs}`);
+  ws.close(); process.exit(0);
+}
+const pages = { queries: `#/mssqlqueries?${w}`, qs: `#/mssqlqs?${w}&qdb=pgvq`, plancache: `#/mssqlplancache?${w}`, procs: `#/mssqlprocs?${w}`, running: `#/mssql_running?${w}`, waits: `#/mssql_waits?${w}` };
+for (const theme of ['light', 'dark']) {
+  await go('#/about');
+  await ev(`localStorage.setItem('pgvigil.theme', ${JSON.stringify(theme)}); 'ok'`);
+  await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+  for (const [name, hash] of Object.entries(pages)) {
+    if (!await go(hash) || await ev(`!!document.querySelector('form.login')`)) { console.log(`FAIL render ${name} ${theme}`); continue; }
+    if (name === 'queries') { await allParts(); console.log(`parts ${theme} ${JSON.stringify(await parts())}`); }
+    const s = await state();
+    console.log(`page ${name} ${theme} ${JSON.stringify({ title: s.title, errors: s.errors, strips: await ev(`document.querySelectorAll('main .strip-band').length`) })}`);
+    await shot(`d10-${name}-${theme}`);
+  }
+}
+await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
+await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+const kbd = (sel, keys) => ev(`(async () => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return 'no band'; b.focus();
+  for (const k of ${JSON.stringify(keys)}) { b.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); await new Promise(r => setTimeout(r, 100)); } return 'ok'; })()`, true);
+// the Query Store strip: Home + Enter reads the grid again for the first step; Draw puts a query's line on it
+await go(pages.qs);
+const qs0 = await ev(`document.querySelector('main .strip-band') ? 'band' : 'none'`);
+const k1 = await kbd('main .strip-band', ['Home', 'Enter']); await sleep(2500);
+const qs1 = await ev(`JSON.stringify({ said: [...document.querySelectorAll('main p[role=status]')].map(p => p.textContent).find(t => t.startsWith('The grid holds')) ?? null, errors: document.querySelectorAll('main .error:not([role=status])').length })`);
+const drew = await ev(`(async () => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent === 'Draw'); if (!b) return 'no Draw'; b.click(); await new Promise(r => setTimeout(r, 2500));
+  return JSON.stringify({ line: !!document.querySelector('main svg.strip-overlay polyline'), note: document.querySelector('main .strip-overlay-note')?.textContent ?? null }); })()`, true);
+console.log(`qsstrip ${qs0} ${k1} ${qs1} ${drew}`);
+// the plan cache's History
+await go(pages.plancache);
+const ph = await ev(`(async () => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent === 'History'); if (!b) return 'no History'; b.click();
+  for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 250)); const h = document.querySelector('main .pc-history'); if (h && !/Reading/.test(h.textContent)) break; }
+  const h = document.querySelector('main .pc-history'); return JSON.stringify({ chart: !!h.querySelector('.uplot'), text: h.textContent.slice(0, 160), errors: h.querySelectorAll('.error').length }); })()`, true);
+console.log(`pchistory ${ph}`);
+// a procedure opened: its chart in PerformanceMonitor's metrics, the metric switched, its line on the strip
+await go(pages.procs);
+const pr = await ev(`(async () => { const b = [...document.querySelectorAll('main button[title="This procedure read by read"]')][0]; if (!b) return 'no procedure';
+  b.click(); for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 250)); if (document.querySelector('main .proc-history')) break; }
+  await new Promise(r => setTimeout(r, 1500));
+  const h = document.querySelector('main .proc-history'); if (!h) return 'no chart';
+  const s = h.querySelector('select'); const t1 = h.querySelector('h3, .chart-title, [class*=title]')?.textContent ?? '';
+  s.value = 'executions_s'; s.dispatchEvent(new Event('change', { bubbles: true })); await new Promise(r => setTimeout(r, 500));
+  return JSON.stringify({ metrics: [...s.options].map(o => o.textContent), before: t1.slice(0, 80), after: (h.querySelector('h3, .chart-title, [class*=title]')?.textContent ?? '').slice(0, 80),
+    line: !!document.querySelector('main svg.strip-overlay polyline'), errors: document.querySelectorAll('main .error:not([role=status])').length }); })()`, true);
+console.log(`prochistory ${pr}`);
+// Running: the strip's Home + Enter steps the slider to the first snapshot; the wait filter and its way back
+await go(pages.running);
+const r0 = await ev(`document.getElementById('mssql-snap')?.value ?? 'none'`);
+const k2 = await kbd('main .strip-band', ['Home', 'Enter']); await sleep(1500);
+const r1 = await ev(`document.getElementById('mssql-snap')?.value ?? 'none'`);
+console.log(`runstrip ${r0} ${k2} ${r1}`);
+await go(`${pages.running}&wait=WAITFOR`);
+const wf = await ev(`JSON.stringify({ line: document.querySelector('main .wait-only')?.textContent ?? null, back: document.querySelector('main .wait-only a')?.getAttribute('href') ?? null })`);
+console.log(`waitfilter ${wf}`);
+const back = JSON.parse(wf).back; if (back) { await go(back); console.log(`waitback ${await ev(`JSON.stringify({ hash: location.hash, line: !!document.querySelector('main .wait-only') })`)}`); }
+await go(pages.waits);
+const wl = await ev(`[...document.querySelectorAll('main a')].filter(a => a.textContent === 'requests').map(a => a.getAttribute('href')).find(h => h.includes('wait=WAITFOR')) ?? null`);
+if (wl) { await go(wl); console.log(`waitlink ${wl} ${await ev(`document.querySelector('main .wait-only')?.textContent ?? 'none'`)}`); } else console.log('waitlink none');
+// the heatmap: a cell picked, its 'Show Active Queries at This Time' followed
+await go(pages.queries); await allParts();
+const hc = await ev(`(async () => { const c = document.querySelector('.heatmap-cell[title]'); if (!c) return 'no cell'; c.click(); await new Promise(r => setTimeout(r, 300));
+  const a = [...document.querySelectorAll('.heatmap-detail a')].find(x => x.textContent === 'Show Active Queries at This Time'); return a ? a.getAttribute('href') : 'no link'; })()`, true);
+if (hc.startsWith('#')) { await go(hc); console.log(`heatcell ${hc} -> ${await ev(`JSON.stringify({ hash: location.hash, title: document.querySelector('main h2')?.textContent ?? '' })`)}`); } else console.log(`heatcell ${hc}`);
+// the click table: every link and every control of the Queries page, each clicked once, with its landing
+await go(pages.queries); await allParts();
+const links = (await state()).links; const seen = new Set();
+for (const l of links) {
+  if (seen.has(l.h)) continue; seen.add(l.h);
+  if (!l.h.startsWith('#')) { console.log(`click link queries ${JSON.stringify(l.t)} ${l.h} -> not a page link (not followed)`); continue; }
+  const ok = await go(l.h); const r = await state();
+  console.log(`click link queries ${JSON.stringify(l.t)} ${l.h} -> ${r.hash.split('&')[0]} title=${JSON.stringify(r.title)} errors=${r.errors} rendered=${ok}`);
+}
+await go(pages.queries); await allParts();
+const n = (await state()).controls;
+for (let i = 0; i < n; i++) {
+  const what = await ev(`(() => { const c = [...document.querySelector('main').querySelectorAll('input, button, select')][${i}]; if (!c) return null;
+    const lab = (c.closest('label')?.textContent || c.getAttribute('aria-label') || c.textContent || c.title || c.id || c.tagName).trim().slice(0, 60);
+    const t = c.tagName === 'INPUT' ? c.type : c.tagName.toLowerCase();
+    if (t === 'select') { c.selectedIndex = Math.min(c.options.length - 1, 1); c.dispatchEvent(new Event('change', { bubbles: true })); } else { c.click(); }
+    return JSON.stringify({ t, lab }); })()`);
+  if (!what) { console.log(`click control queries ${i} gone`); continue; }
+  await sleep(600);
+  const dlg = await ev(`(() => { const d = document.querySelector('dialog[open]'); if (d) { d.close(); return true; } return false; })()`);
+  const r = await state(); const wv = JSON.parse(what);
+  console.log(`click control queries ${i} ${wv.t} ${JSON.stringify(wv.lab)} -> ${r.hash.split('?')[0]} dialog=${dlg} errors=${r.errors}`);
+  if (r.hash.split('?')[0] !== pages.queries.split('?')[0]) { await go(pages.queries); await allParts(); }
+}
+ws.close(); process.exit(0);
+JS
+out=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS") || fail "I: the Chromium walk stopped: $out"
+printf '%s\n' "$out" > "$TMPD/i.out"; printf '%s\n' "$out" | grep '^click ' > "$SHOTS/d10-click-table.txt" || true
+echo "$out" | grep -v '^click ' | sed 's/^/  /'
+# the heatmap behind a lock holder (45 s, past the pool's 15 s statement timeout): the plain line, no error box, no grid
+HF=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:00Z); HT=$(date -u +%Y-%m-%dT%H:%M:00Z)
+setsid psql "$PGDSN" -XAtq -c "BEGIN; LOCK TABLE pgvigil.mssql_pc_sample IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(45); COMMIT;" >/dev/null 2>&1 & BG+=($!); sleep 1
+lk=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" lock "$HF" "$HT" "$IID_761") || fail "I: the lock walk stopped: $lk"
+echo "$lk" | sed 's/^/  /'; printf '%s\n' "$lk" >> "$TMPD/i.out"
+python3 - "$TMPD" <<'PYEND' || fail "I: see above"
+import sys, json
+d = sys.argv[1]
+out = open(f"{d}/i.out").read().splitlines()
+def n(f, p):
+    return len((json.load(open(f"{d}/{f}")).get(p) or {}).get('rows') or [])
+bad = []
+if 'login 200' not in out: bad.append('I login')
+bad += [l for l in out if l.startswith('FAIL')]
+want = {'active': min(10, n('i-run.json', 'rows')), 'top': min(10, n('i-top.json', 'top')), 'qs': min(10, n('i-qs.json', 'top')),
+        'regressed': min(10, n('i-reg.json', 'regressed')), 'long': min(10, n('i-long.json', 'slow_shapes')), 'tuning': min(10, n('i-tun.json', 'tuning'))}
+heat = n('i-heat.json', 'heatmap')
+for theme in ('light', 'dark'):
+    line = next((l for l in out if l.startswith(f'parts {theme} ')), None)
+    if not line: bad.append(f'no parts line {theme}'); continue
+    ps = {p['part']: p for p in json.loads(line.split(' ', 2)[2])}
+    order = list(ps)
+    if order != ['active', 'duration', 'execs', 'top', 'qs', 'regressed', 'heatmap', 'overhead', 'long', 'tuning']: bad.append(f'{theme} section order {order}')
+    for k, v in ps.items():
+        if v['errors']: bad.append(f'{theme} {k}: {v["errors"]} error box(es) {v["text"][:100]}')
+    for k, wv in want.items():
+        got = ps.get(k, {}).get('rows', -9)
+        if got != wv and not (wv == 0 and got in (-1, 0)): bad.append(f'{theme} {k}: {got} rows, the API head {wv}')
+    if ps.get('heatmap', {}).get('rows') != heat: bad.append(f"{theme} heatmap: {ps.get('heatmap', {}).get('rows')} table rows, the API {heat} cells")
+    if ps.get('active', {}).get('strips') != 1 or ps.get('qs', {}).get('strips') != 1: bad.append(f'{theme} strips: active {ps.get("active", {}).get("strips")}, qs {ps.get("qs", {}).get("strips")}')
+    if ps.get('duration', {}).get('charts', 0) < 1 or ps.get('execs', {}).get('charts', 0) < 1: bad.append(f'{theme} the duration / executions charts')
+    for pg in ('qs', 'plancache', 'procs', 'running', 'waits'):
+        l = next((x for x in out if x.startswith(f'page {pg} {theme} ')), None)
+        if not l or json.loads(l.split(' ', 3)[3])['errors']: bad.append(f'{theme} page {pg}: {l}')
+def one(prefix):
+    return next((l for l in out if l.startswith(prefix + ' ')), '')
+q = one('qsstrip')
+if 'band ok' not in q or '"said":"The grid holds' not in q or '"line":true' not in q: bad.append(f'qs strip: {q}')
+p = one('pchistory')
+if '"chart":true' not in p or '"errors":0' not in p: bad.append(f'plan cache history: {p}')
+r = one('prochistory')
+if '"Avg Duration (ms)","Avg CPU (ms)","Duration (ms/s)","Executions (per second)"' not in r or '"line":true' not in r or '"errors":0' not in r: bad.append(f'procedure history: {r}')
+rs = one('runstrip').split()
+if len(rs) != 4 or rs[2] != 'ok' or rs[3] != '0' or rs[1] == '0': bad.append(f'running strip: {rs}')
+wf = one('waitfilter')
+if 'Only requests waiting on WAITFOR. Show all active queries' not in wf: bad.append(f'wait filter: {wf}')
+wb = one('waitback')
+if '"line":false' not in wb or 'wait=' in wb: bad.append(f'wait filter back: {wb}')
+wl = one('waitlink')
+if 'Only requests waiting on WAITFOR' not in wl: bad.append(f'the Waits page link: {wl}')
+hc = one('heatcell')
+if '#/mssql_running' not in hc or 'at=' not in hc or '"hash":"#/mssql_running' not in hc: bad.append(f'heatmap cell: {hc}')
+lk = one('lock')
+if lk:
+    j = json.loads(lk.split(' ', 1)[1])
+    if j['line'] != "the heatmap's read took too long for this range: pick 24 hours or less" or j['errors'] or j['tables'] or j['cells']: bad.append(f'lock: {j}')
+else: bad.append('no lock line')
+clicks = [l for l in out if l.startswith('click ')]
+cbad = [l for l in clicks if ('errors=0' not in l and 'not followed' not in l and not l.endswith(' gone')) or 'rendered=false' in l]
+if not clicks: bad.append('no click table')
+bad += [f'click: {l}' for l in cbad]
+for b in bad: print('DIFF', b)
+print(f"I: {len(clicks)} clicks in the click table")
+sys.exit(1 if bad else 0)
+PYEND
+echo "ok   I: the Queries page in PerformanceMonitor's section order, each head = its tab's API head (Running, Plan cache, Query Store, Regressed, Slow queries, Tuning), the heatmap's table = the API's cells, light and dark, no error box; the Query Store strip re-reads its grid and draws a query's line; the plan cache's History and a procedure's chart in PerformanceMonitor's four metrics with its line on the strip; Running's strip steps the slider, the wait filter and its way back, the Waits page's link; a heatmap cell opens Running at its time; behind a 45 s lock the heatmap says the plain line (no error box, no grid); $(grep -c . "$SHOTS/d10-click-table.txt") clicks in the click table; shots in $SHOTS"
+echo "PROOF OK: D10 DONE-1 and DONE-2"
