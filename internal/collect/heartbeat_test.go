@@ -245,3 +245,29 @@ func TestConnectStreak(t *testing.T) {
 		t.Errorf("a refused login (the server answered) left the streak at %d", fails())
 	}
 }
+
+// TestStreakSince: a streak carries its FIRST failure's time (the beat's 'since'), kept across beats until it ends;
+// a stop-cut instance connect counts as no attempt.
+func TestStreakSince(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	t0 := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	boom := Result{Err: errors.New("waits on t1: boom")}
+	h.record("t1", "postgres", "waits", boom, t0)
+	if b := h.take(); len(b.Streaks) != 1 || b.Streaks[0].Since == nil || !b.Streaks[0].Since.Equal(t0) {
+		t.Fatalf("first beat: %+v (want since %s)", b.Streaks, t0)
+	}
+	h.record("t1", "postgres", "waits", boom, t0.Add(30*time.Second))
+	h.record("t1", "postgres", "waits", boom, t0.Add(70*time.Second))
+	b := h.take()
+	if len(b.Streaks) != 1 || b.Streaks[0].Fails != 3 || b.Streaks[0].Since == nil || !b.Streaks[0].Since.Equal(t0) {
+		t.Errorf("second beat: %+v (want 3 fails since %s)", b.Streaks, t0)
+	}
+	h.record("t1", "postgres", "waits", Result{Rows: 1}, t0.Add(90*time.Second))
+	if b := h.take(); len(b.Streaks) != 1 || b.Streaks[0].Fails != 0 || b.Streaks[0].Since != nil {
+		t.Errorf("after a success: %+v (want 0 fails, no since)", b.Streaks)
+	}
+	_ = h.instanceConnect("t9", fmt.Errorf("connect: %w", context.Canceled), t0)
+	if l := h.load["t9"]; l != nil && l.attempts != 0 {
+		t.Errorf("a stop-cut connect counted as an attempt: %+v", l)
+	}
+}

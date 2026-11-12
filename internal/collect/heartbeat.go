@@ -53,6 +53,7 @@ type streak struct {
 	fails   int
 	lastErr string
 	at      time.Time
+	since   time.Time // the first failure of the streak (zero: none, or carried from the repository at the start)
 	dirty   bool
 	fresh   bool // loaded from the repository at the start: the first result after it is sent, whatever it is
 }
@@ -87,7 +88,8 @@ func cutShort(res Result) bool { return res.Err != nil && errors.Is(res.Err, con
 func skipped(res Result) bool { return res.Err == nil && strings.Contains(res.Note, "skipped") }
 
 // CountConnect counts one connection attempt to an instance: opened when err is nil, a login refused when the server
-// said so (AuthFailure). Every collection's connect calls it (connectCounted; the SQL Server connector directly).
+// said so (AuthFailure). A collection's per-database connects call it (connectCounted); the instance's own connect
+// (collect.Connect, the SQL Server connector) goes through InstanceConnect, which counts the same way.
 func CountConnect(instance string, err error) {
 	if h := current.Load(); h != nil {
 		h.mu.Lock()
@@ -132,12 +134,12 @@ func InstanceConnect(instance string, err error) error {
 }
 
 func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) error {
+	if err != nil && errors.Is(err, context.Canceled) {
+		return &connectError{err} // a stop cut it: no attempt, no streak
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.countConnect(instance, err)
-	if err != nil && errors.Is(err, context.Canceled) {
-		return &connectError{err}
-	}
 	sk := [2]string{instance, connectStreak}
 	s := h.streaks[sk]
 	if s == nil {
@@ -147,10 +149,13 @@ func (h *Heartbeat) instanceConnect(instance string, err error, now time.Time) e
 	was := s.fails
 	failed := err != nil && !AuthFailure(err)
 	if failed {
+		if s.fails == 0 {
+			s.since = now
+		}
 		s.fails++
 		s.lastErr = err.Error()
 	} else {
-		s.fails, s.lastErr = 0, ""
+		s.fails, s.lastErr, s.since = 0, "", time.Time{}
 	}
 	s.at = now
 	s.dirty = s.dirty || failed || was > 0 || s.fresh
@@ -209,7 +214,7 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 		// a collection that skips (no system_stats, no pg_cron, no log door) after it failed - its login refused, or
 		// a setting changed - is failing no more: its streak (a stored one too) ends at 0 and is written
 		if s := h.streaks[[2]string{instance, collection}]; s != nil && s.fails > 0 {
-			s.fails, s.lastErr, s.at, s.dirty, s.fresh = 0, "", now, true, false
+			s.fails, s.lastErr, s.at, s.since, s.dirty, s.fresh = 0, "", now, time.Time{}, true, false
 		}
 		return
 	}
@@ -246,10 +251,13 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	}
 	was := s.fails
 	if failed {
+		if s.fails == 0 {
+			s.since = now
+		}
 		s.fails++
 		s.lastErr = res.Err.Error()
 	} else {
-		s.fails, s.lastErr = 0, ""
+		s.fails, s.lastErr, s.since = 0, "", time.Time{}
 	}
 	s.at = now
 	// a streak row is written when it changes (a failure, the first success after failures) and for the first result
@@ -279,11 +287,12 @@ type beatLoad struct {
 }
 
 type beatStreak struct {
-	Instance   string    `json:"instance"`
-	Collection string    `json:"collection"`
-	Fails      int       `json:"fails"`
-	Error      string    `json:"error"`
-	At         time.Time `json:"at"`
+	Instance   string     `json:"instance"`
+	Collection string     `json:"collection"`
+	Fails      int        `json:"fails"`
+	Error      string     `json:"error"`
+	At         time.Time  `json:"at"`
+	Since      *time.Time `json:"since,omitempty"` // the streak's first failure (none: the repository keeps its own)
 }
 
 type beat struct {
@@ -313,7 +322,12 @@ func (h *Heartbeat) take() beat {
 	}
 	for k, s := range h.streaks {
 		if s.dirty {
-			b.Streaks = append(b.Streaks, beatStreak{Instance: k[0], Collection: k[1], Fails: s.fails, Error: s.lastErr, At: s.at})
+			bs := beatStreak{Instance: k[0], Collection: k[1], Fails: s.fails, Error: s.lastErr, At: s.at}
+			if s.fails > 0 && !s.since.IsZero() {
+				since := s.since
+				bs.Since = &since
+			}
+			b.Streaks = append(b.Streaks, bs)
 			s.dirty = false
 		}
 	}
