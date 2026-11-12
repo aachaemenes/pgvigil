@@ -102,18 +102,22 @@ SELECT t.event_at, t.sub AS action, t.database_name, t.object_name, t.object_typ
  ORDER BY t.event_at DESC, t.event_key DESC
  LIMIT 1000`
 
+// healthComponents are the four component results; the table also holds the events read beside them (state EVENT,
+// 0120), which have grids of their own
+const healthComponents = `h.component IN ('SYSTEM', 'RESOURCE', 'QUERY_PROCESSING', 'IO_SUBSYSTEM')`
+
 // the newest result of each component at the window's end, at most a day before it (the server writes one every
 // five minutes)
 const sqlMSSQLHealthLatest = `
 SELECT DISTINCT ON (h.component) h.component, h.state, h.event_at, h.detail
   FROM pgvigil.mssql_health_components h
- WHERE h.instance_id = $1 AND h.event_at <= $2 AND h.event_at > $2::timestamptz - interval '1 day'
+ WHERE h.instance_id = $1 AND h.event_at <= $2 AND h.event_at > $2::timestamptz - interval '1 day' AND ` + healthComponents + `
  ORDER BY h.component, h.event_at DESC`
 
 const sqlMSSQLHealthIssues = `
 SELECT h.event_at, h.component, h.state, h.detail->>'lastNotification' AS last_notification, h.detail
   FROM pgvigil.mssql_health_components h
- WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.state <> 'CLEAN'
+ WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.state <> 'CLEAN' AND ` + healthComponents + `
  ORDER BY h.event_at DESC
  LIMIT 500`
 
@@ -163,7 +167,12 @@ SELECT h.event_at, h.state, h.detail->>'lastNotification' AS last_notification,
        pgvigil.mssql_health_num(h.detail, 'isAnyPoolOutOfMemory') AS pool_out_of_memory,
        pgvigil.mssql_health_num(h.detail, 'processOutOfMemoryPeriod') AS oom_period,
        round(pgvigil.mssql_health_num(h.detail->'memory', 'Available Physical Memory') / 1048576) AS available_physical_mb,
+       round(pgvigil.mssql_health_num(h.detail->'memory', 'Available Virtual Memory') / 1048576) AS available_virtual_mb,
+       round(pgvigil.mssql_health_num(h.detail->'memory', 'Available Paging File') / 1048576) AS available_paging_mb,
        round(pgvigil.mssql_health_num(h.detail->'memory', 'Working Set') / 1048576) AS working_set_mb,
+       pgvigil.mssql_health_num(h.detail->'memory', 'Percent of Committed Memory in WS') AS pct_committed_in_ws,
+       pgvigil.mssql_health_num(h.detail->'memory', 'Page Faults') AS page_faults,
+       pgvigil.mssql_health_num(h.detail->'memory', 'System physical memory high') AS system_memory_high,
        pgvigil.mssql_health_num(h.detail->'memory', 'System physical memory low') AS system_memory_low,
        pgvigil.mssql_health_num(h.detail->'memory', 'Process physical memory low') AS process_memory_low,
        pgvigil.mssql_health_num(h.detail->'memory', 'Process virtual memory low') AS process_virtual_low,
@@ -176,7 +185,8 @@ SELECT h.event_at, h.state, h.detail->>'lastNotification' AS last_notification,
 
 // per bucket of $4 seconds, every bucket of the window: the results stored, those not CLEAN (no value where the bucket
 // holds none: a read that stored nothing is not a clean one), the most pending tasks, the long IOs, SQL Server's and
-// the machine's CPU
+// the machine's CPU, and the SYSTEM component's counters as PerformanceMonitor's Corruption and Contention Events
+// charts draw them: each the largest value in its bucket, none where no SYSTEM result carried it
 const sqlMSSQLHealthSeries = `
 WITH b AS (
   SELECT to_timestamp(g * $4::bigint) AS snapshot_at
@@ -187,14 +197,114 @@ WITH b AS (
          max(pgvigil.mssql_health_num(h.detail, 'pendingTasks')) FILTER (WHERE h.component = 'QUERY_PROCESSING') AS pending_tasks,
          sum(pgvigil.mssql_health_num(h.detail, 'intervalLongIos')) FILTER (WHERE h.component = 'IO_SUBSYSTEM') AS long_ios,
          max(pgvigil.mssql_health_num(h.detail, 'sqlCpuUtilization')) FILTER (WHERE h.component = 'SYSTEM') AS sql_cpu,
-         max(pgvigil.mssql_health_num(h.detail, 'systemCpuUtilization')) FILTER (WHERE h.component = 'SYSTEM') AS system_cpu
+         max(pgvigil.mssql_health_num(h.detail, 'systemCpuUtilization')) FILTER (WHERE h.component = 'SYSTEM') AS system_cpu,
+         max(pgvigil.mssql_health_num(h.detail, 'BadPagesDetected')) FILTER (WHERE h.component = 'SYSTEM') AS bad_pages,
+         max(pgvigil.mssql_health_num(h.detail, 'intervalDumpRequests')) FILTER (WHERE h.component = 'SYSTEM') AS dump_requests,
+         max(pgvigil.mssql_health_num(h.detail, 'isAccessViolationOccurred')) FILTER (WHERE h.component = 'SYSTEM') AS access_violations,
+         max(pgvigil.mssql_health_num(h.detail, 'writeAccessViolationCount')) FILTER (WHERE h.component = 'SYSTEM') AS write_access_violations,
+         max(pgvigil.mssql_health_num(h.detail, 'nonYieldingTasksReported')) FILTER (WHERE h.component = 'SYSTEM') AS non_yielding,
+         max(pgvigil.mssql_health_num(h.detail, 'latchWarnings')) FILTER (WHERE h.component = 'SYSTEM') AS latch_warnings
     FROM pgvigil.mssql_health_components h
-   WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3
+   WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND ` + healthComponents + `
    GROUP BY 1
 )
-SELECT b.snapshot_at, coalesce(h.results, 0) AS results, h.not_clean, h.pending_tasks, h.long_ios, h.sql_cpu, h.system_cpu
+SELECT b.snapshot_at, coalesce(h.results, 0) AS results, h.not_clean, h.pending_tasks, h.long_ios, h.sql_cpu, h.system_cpu,
+       h.bad_pages, h.dump_requests, h.access_violations, h.write_access_violations, h.non_yielding, h.latch_warnings
   FROM b LEFT JOIN h USING (snapshot_at)
  ORDER BY b.snapshot_at`
+
+// a line per sick spinlock type (PerformanceMonitor's Contention Events: Sick Spinlocks): per bucket of $4 seconds,
+// the type's largest backoff count among the SYSTEM results that named it
+const sqlMSSQLHealthSpinlocks = `
+SELECT to_timestamp(floor(extract(epoch FROM h.event_at) / $4)::bigint * $4::bigint) AS snapshot_at,
+       h.detail->>'sickSpinlockType' AS spinlock_type, max(pgvigil.mssql_health_num(h.detail, 'spinlockBackoffs')) AS backoffs
+  FROM pgvigil.mssql_health_components h
+ WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.component = 'SYSTEM'
+   AND coalesce(h.detail->>'sickSpinlockType', 'none') NOT IN ('none', '')
+ GROUP BY 1, 2
+ ORDER BY 1, 2`
+
+// the memory broker's notifications (sp_HealthParser's 'memory broker notifications'), newest first
+const sqlMSSQLHealthBroker = `
+SELECT h.event_at, pgvigil.mssql_health_num(h.detail, 'broker_id') AS broker_id, h.detail->>'broker' AS broker,
+       h.detail->>'notification' AS notification, pgvigil.mssql_health_num(h.detail, 'pool_metadata_id') AS pool_metadata_id,
+       pgvigil.mssql_health_num(h.detail, 'delta_time') AS delta_time, pgvigil.mssql_health_num(h.detail, 'memory_ratio') AS memory_ratio,
+       pgvigil.mssql_health_num(h.detail, 'new_target') AS new_target, pgvigil.mssql_health_num(h.detail, 'overall') AS overall,
+       pgvigil.mssql_health_num(h.detail, 'rate') AS rate, pgvigil.mssql_health_num(h.detail, 'currently_predicated') AS currently_predicated,
+       pgvigil.mssql_health_num(h.detail, 'currently_allocated') AS currently_allocated,
+       pgvigil.mssql_health_num(h.detail, 'previously_allocated') AS previously_allocated
+  FROM pgvigil.mssql_health_components h
+ WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.component = 'MEMORY_BROKER'
+ ORDER BY h.event_at DESC, h.event_key
+ LIMIT 500`
+
+// a memory node's out-of-memory records (sp_HealthParser's 'memory node OOM events'), newest first
+const sqlMSSQLHealthNodeOOM = `
+SELECT h.event_at, pgvigil.mssql_health_num(h.detail, 'node_id') AS node_id, pgvigil.mssql_health_num(h.detail, 'memory_node_id') AS memory_node_id,
+       pgvigil.mssql_health_num(h.detail, 'memory_utilization_pct') AS memory_utilization_pct,
+       pgvigil.mssql_health_num(h.detail, 'total_physical_memory_kb') AS total_physical_memory_kb,
+       pgvigil.mssql_health_num(h.detail, 'available_physical_memory_kb') AS available_physical_memory_kb,
+       pgvigil.mssql_health_num(h.detail, 'total_page_file_kb') AS total_page_file_kb,
+       pgvigil.mssql_health_num(h.detail, 'available_page_file_kb') AS available_page_file_kb,
+       pgvigil.mssql_health_num(h.detail, 'total_virtual_address_space_kb') AS total_virtual_address_space_kb,
+       pgvigil.mssql_health_num(h.detail, 'available_virtual_address_space_kb') AS available_virtual_address_space_kb,
+       pgvigil.mssql_health_num(h.detail, 'target_kb') AS target_kb, pgvigil.mssql_health_num(h.detail, 'reserved_kb') AS reserved_kb,
+       pgvigil.mssql_health_num(h.detail, 'committed_kb') AS committed_kb, pgvigil.mssql_health_num(h.detail, 'shared_committed_kb') AS shared_committed_kb,
+       pgvigil.mssql_health_num(h.detail, 'awe_kb') AS awe_kb, pgvigil.mssql_health_num(h.detail, 'pages_kb') AS pages_kb,
+       h.detail->>'failure_type' AS failure_type, pgvigil.mssql_health_num(h.detail, 'failure_value') AS failure_value,
+       h.detail->>'resources' AS resources, h.detail->>'factor_text' AS factor_text, pgvigil.mssql_health_num(h.detail, 'factor_value') AS factor_value,
+       h.detail->>'last_error' AS last_error, pgvigil.mssql_health_num(h.detail, 'pool_metadata_id') AS pool_metadata_id,
+       h.detail->>'is_process_in_job' AS is_process_in_job, h.detail->>'is_system_physical_memory_high' AS is_system_physical_memory_high,
+       h.detail->>'is_system_physical_memory_low' AS is_system_physical_memory_low,
+       h.detail->>'is_process_physical_memory_low' AS is_process_physical_memory_low,
+       h.detail->>'is_process_virtual_memory_low' AS is_process_virtual_memory_low
+  FROM pgvigil.mssql_health_components h
+ WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.component = 'MEMORY_NODE_OOM'
+ ORDER BY h.event_at DESC, h.event_key
+ LIMIT 500`
+
+// the scheduler monitor's samples that cross one of sp_HealthParser's warnings (SQL Server's CPU 90 % or more, other
+// processes 50 % or more, memory utilization 50 or less), newest first; other = 100 - SQL Server - idle
+const sqlMSSQLHealthScheduler = `
+SELECT x.* FROM (
+  SELECT h.event_at, pgvigil.mssql_health_num(h.detail, 'process_utilization') AS sql_cpu,
+         100 - pgvigil.mssql_health_num(h.detail, 'process_utilization') - pgvigil.mssql_health_num(h.detail, 'system_idle') AS other_cpu,
+         pgvigil.mssql_health_num(h.detail, 'system_idle') AS system_idle,
+         pgvigil.mssql_health_num(h.detail, 'memory_utilization') AS memory_utilization,
+         pgvigil.mssql_health_num(h.detail, 'page_faults') AS page_faults,
+         round(pgvigil.mssql_health_num(h.detail, 'working_set_delta') / 1048576, 2) AS working_set_delta_mb
+    FROM pgvigil.mssql_health_components h
+   WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.component = 'SCHEDULER_MONITOR') x
+ WHERE x.sql_cpu >= 90 OR x.other_cpu >= 50 OR x.memory_utilization <= 50
+ ORDER BY x.event_at DESC
+ LIMIT 500`
+
+// how many scheduler monitor samples the window holds at all: the page tells 'none stored' from 'none crossed a warning'
+const sqlMSSQLHealthSchedulerSamples = `
+SELECT count(*) AS samples
+  FROM pgvigil.mssql_health_components h
+ WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.component = 'SCHEDULER_MONITOR'`
+
+// sp_HealthParser's 'queries with significant waits': a wait_info event of a real session (not 0) with a statement that
+// is not a BACKUP, waiting 500 ms or more on a wait type not on its ignorable list; newest first
+const sqlMSSQLHealthWaits = `
+SELECT h.event_at, h.detail->>'wait_type' AS wait_type, pgvigil.mssql_health_num(h.detail, 'duration_ms') AS duration_ms,
+       pgvigil.mssql_health_num(h.detail, 'signal_duration_ms') AS signal_duration_ms, h.detail->>'wait_resource' AS wait_resource,
+       pgvigil.mssql_health_num(h.detail, 'session_id') AS session_id, h.detail->>'statement' AS statement
+  FROM pgvigil.mssql_health_components h
+ WHERE h.instance_id = $1 AND h.event_at > $2 AND h.event_at <= $3 AND h.component = 'WAIT_INFO'
+   AND coalesce(pgvigil.mssql_health_num(h.detail, 'session_id'), 0) <> 0 AND (h.detail->>'has_sql_text')::boolean
+   AND NOT coalesce((h.detail->>'is_backup')::boolean, false) AND pgvigil.mssql_health_num(h.detail, 'duration_ms') >= 500
+   AND NOT pgvigil.mssql_wait_ignorable(h.detail->>'wait_type')
+ ORDER BY h.event_at DESC, h.event_key
+ LIMIT 500`
+
+// the system events' findings of the instance (0120) this tab owns: system_health's (the cut ring buffer is a capture's)
+const sqlMSSQLSysEventFindings = `
+SELECT f.severity, f.check_name, f.object, f.at, f.detail
+  FROM pgvigil.mssql_sysevents_findings f
+ WHERE f.instance_id = $1 AND f.check_name LIKE 'system_health:%'
+ ORDER BY f.at DESC`
 
 // errorLogClasses are the classes a line is filed under (errorlog.go's errorLogClassOrder).
 var errorLogClasses = map[string]bool{"corruption": true, "memory": true, "io": true, "scheduler": true, "availability": true,
@@ -284,5 +394,12 @@ func (s *Server) MSSQLSysHealth(w http.ResponseWriter, r *http.Request) {
 		{"io", sqlMSSQLHealthIO, []any{id, from, to}},
 		{"resource", sqlMSSQLHealthResource, []any{id, from, to}},
 		{"series", sqlMSSQLHealthSeries, []any{id, from, to, step}},
+		{"spinlocks", sqlMSSQLHealthSpinlocks, []any{id, from, to, step}},
+		{"broker", sqlMSSQLHealthBroker, []any{id, from, to}},
+		{"node_oom", sqlMSSQLHealthNodeOOM, []any{id, from, to}},
+		{"scheduler", sqlMSSQLHealthScheduler, []any{id, from, to}},
+		{"scheduler_samples", sqlMSSQLHealthSchedulerSamples, []any{id, from, to}},
+		{"waits", sqlMSSQLHealthWaits, []any{id, from, to}},
+		{"event_findings", sqlMSSQLSysEventFindings, []any{id}},
 	})
 }
