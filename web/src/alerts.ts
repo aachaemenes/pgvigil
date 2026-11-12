@@ -49,7 +49,7 @@ export const capText = (r: Row): string => Number(r.max_per_hour) > 0
 // testCell: a channel's Send test button and its last answer
 function testCell(ad: AckData, r: Row, redraw: () => void): HTMLElement {
   const said = el('span', { role: 'status', 'aria-live': 'polite' });
-  const b = writeButton(ad, 'Send test', `Send a test message on channel ${String(r.name)}`, async () => {
+  const b = writeButton(ad, 'Send test', `Send test message on channel ${String(r.name)}`, async () => {
     b.disabled = true; said.textContent = ' asking ...';
     try {
       const res = await post<{ detail: string }>('alerts/test', { channel: String(r.name) });
