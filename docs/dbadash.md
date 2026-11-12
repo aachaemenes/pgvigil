@@ -1,6 +1,8 @@
-# The DBADash door
+# Imported SQL Server servers (the DBA Dash door)
 
 A site that runs [DBA Dash](https://github.com/trimble-oss/dba-dash) for its SQL Server estate can show DBA Dash's instances beside its PostgreSQL fleet: pgvigil reads the DBA Dash repository (a SQL Server database) with a read-only login and shows the statuses of DBA Dash's own Summary screen, in DBA Dash's words, and DBA Dash's own screens for one instance (Performance Summary, Running Queries, Backups, Agent Jobs, Drives, DB Space, Configuration, SQL Agent Alerts) drawn from DBA Dash's own stored procedures. Every status and figure on these pages was computed by DBA Dash, and DBA Dash's thresholds and acknowledgements apply. Kill a session and start or stop an Agent job are offered through pgvigil's own SQL Server actions door, and a DBA Dash repository's history can be imported into pgvigil's store (the way off DBA Dash, below).
+
+In pgvigil's own pages these are the **imported servers**: the root tab Imported servers, a tree folder `Imported: <name>` per repository, and each instance with the same SQL Server tab set as a server pgvigil collects itself (below). DBA Dash is named once in the UI, as the source, on the Imported servers page's settings line, and credited on the About page and in THIRD-PARTY-NOTICES.md. The internal names stay: the package `internal/dbadash`, the configuration key `dbadash:`, the route `/api/dbadash`, the `pgvigil import dbadash` command.
 
 The door is off until the configuration names a repository.
 
@@ -8,7 +10,7 @@ The door is off until the configuration names a repository.
 
 ```yaml
 dbadash:
-  - name: corp                 # the tree folder is "DBADash: corp"
+  - name: corp                 # the tree folder is "Imported: corp"
     dsn: env:DBADASH_CORP_DSN  # or file:/etc/pgvigil/dbadash-corp.dsn
   - name: lab
     dsn: file:/etc/pgvigil/dbadash-lab.dsn
@@ -63,19 +65,48 @@ A column an older or newer DBA Dash does not have is simply not read (pgvigil li
 
 ### Why the table, not `dbo.Summary_Get`
 
-DBA Dash's Summary screen calls `dbo.Summary_Get`. When its cache is older than the `SummaryCacheDurationSec` setting, that procedure runs `dbo.Summary_Upd` first, which rewrites `dbo.Summary`: a write on the DBA Dash repository. pgvigil reads the same cache (`dbo.Summary`, the rows `Summary_Get` returns for SQL Server instances) and never refreshes it. The statuses are therefore as fresh as DBA Dash's last refresh; the page shows that time ("DBADash Summary refreshed"). DBA Dash refreshes the cache when someone opens its Summary screen, and on a schedule when the DBA Dash service's `SummaryRefreshCron` is set: set it (for example every 5 minutes) when pgvigil should follow DBA Dash without a GUI open.
+DBA Dash's Summary screen calls `dbo.Summary_Get`. When its cache is older than the `SummaryCacheDurationSec` setting, that procedure runs `dbo.Summary_Upd` first, which rewrites `dbo.Summary`: a write on the DBA Dash repository. pgvigil reads the same cache (`dbo.Summary`, the rows `Summary_Get` returns for SQL Server instances) and never refreshes it. The statuses are therefore as fresh as DBA Dash's last refresh; the page shows that time ("Summary refreshed"). DBA Dash refreshes the cache when someone opens its Summary screen, and on a schedule when the DBA Dash service's `SummaryRefreshCron` is set: set it (for example every 5 minutes) when pgvigil should follow DBA Dash without a GUI open.
 
 ## Where it shows
 
-- **The tree**: below the PostgreSQL folders, one folder per repository, `DBADash: <name> (n)`, a node per SQL Server instance with its worst status as the dot. A repository that did not answer, or refused the login, shows `not read` and the reason under its folder; the instances of its last good read stay listed.
-- **The DBADash page** (`#/dbadash`, the folder's link): the repositories (last read, the reason when not read, DBA Dash's version and its Summary refresh time, the critical and warning counts) and every instance as a row of Summary cells, a cell per status in DBA Dash's column order.
-- **An instance's page** (a node's link): the instance, its DBA Dash connection and the repository it came from, the SQL Server version DBA Dash recorded, the last collection by DBA Dash, when DBA Dash refreshed its Summary and when pgvigil read it, a Summary row of 26 cells (DBA Dash's header and word in each, the detail DBA Dash shows beside it as the cell's title: days since the last good CHECKDB, the error count, the snapshot age, the uptime, ...), the same as a list, and the status changes of the time range.
+- **The tree**: below the instance folders, one folder per repository, `Imported: <name> (n)`, a node per SQL Server instance with its worst Summary status as the dot. A node opens the instance's pgvigil instance when pgvigil holds one (imported, or collected by pgvigil under the same `@@SERVERNAME`), else the instance's own page. A repository that did not answer, or refused the login, shows `not read` and the reason under its folder; the instances of its last good read stay listed.
+- **The Imported servers page** (`#/dbadash`, the folder's link): the settings line (the source, its read cadence), the repositories (last read, the reason when not read, the source version and its Summary refresh time, the critical and warning counts) and every instance as a row of Summary cells, a cell per status in the source's column order, with whether pgvigil holds it (collected, imported, not imported).
+- **An instance**: the SQL Server tab set (below).
 
 DBA Dash's GUI is a desktop application with no URL, so these pages name the instance and the repository and offer no link into DBA Dash.
 
+## An imported server's tabs
+
+An instance read through a repository opens with the same tabs as a SQL Server instance pgvigil collects itself (the main tabs Summary, Performance, Running queries, Slow queries, Waits, Deadlocks, Blocked reports, Findings, and the groups Logs, HA/DR, Performance, Storage, Jobs, Configuration: 33 tabs). Which instance is which:
+
+- **Collected**: pgvigil collects a SQL Server whose `@@SERVERNAME` equals the instance's. It is pgvigil's own instance, with its own pages, and the repository adds nothing to them (the actions of the repository's screens go through it, below).
+- **Imported**: `pgvigil import dbadash` made a pgvigil SQL Server instance under the instance's display name, and pgvigil does not collect it. It opens at its pgvigil instance (`#/<tab>?i=<id>`); each tab is served as the table says.
+- **Not imported**: neither. It opens at its own page (`#/dbadash?dr=<repository>&di=<InstanceID>&dp=<tab>`) with the same tabs; a tab the import would fill says so, with the command.
+
+An instance imported under another name (`-name <id>=<name>`) is not recognised as imported: it opens as a SQL Server instance with pgvigil's own pages over what the import stored, and its other tabs are empty. Import under the display name to get the table below.
+
+Each tab is served from pgvigil's store where the import fills the tables its page reads, else from the repository's live screen, else it says in one line `not read for an imported server: <what would read it>`, never an empty grid:
+
+| Tab | Imported server | Not imported |
+|---|---|---|
+| Summary | the repository's Summary statuses, their changes in the range (the stored read above) | the same |
+| Performance | screen `dbo.PerformanceSummary_Get` | the same |
+| Running queries | screen `dbo.RunningQueriesSummary_Get`; a snapshot (and "the latest snapshot's sessions") `dbo.RunningQueries_Get`, with Kill through a collected instance (below) | the same |
+| Backups | screen `dbo.BackupReport_Get` | the same |
+| Jobs | screen `dbo.AgentJobsReport_Get` with Start / Stop through a collected instance, then the SQL Agent alerts `dbo.Alerts_Get` | the same |
+| Database files | screen `dbo.DBFilesReport_Get` | the same |
+| Configuration | screen `dbo.Configuration_Get` | the same |
+| Properties | the instance's facts as the repository records them (the stored read) | the same |
+| CPU | pgvigil's CPU page over the CPU minutes the import copied (`mssql_cpu_sample`) | not read: the import copies them |
+| Storage | pgvigil's Storage page over the volume samples and database sizes the import copied (`mssql_volume_sample`, `mssql_database_size`) | screen `dbo.DrivesReport_Get` |
+| Jobs timeline | pgvigil's Jobs timeline over the job outcomes the import copied (`mssql_job_runs`) | not read: the import copies them |
+| Slow queries, Waits, Deadlocks, Blocked reports, Findings, Availability, Row versions, Actions log, Memory, File IO, TempDB, Query Store, Metrics, Procedures, Index locks, Audit, Plan cache, Indexes, Checks, Error log, Default trace, System health | not read: the line names pgvigil's own read of the server that fills it | the same |
+
+On a store tab, the parts of pgvigil's page that its own collection fills (the file list, the current volumes, schedulers) stay empty for an imported server, and the page says so in its first line. To get every tab, add the server to `instances:` with `engine: sqlserver`: it becomes a collected instance, and the import's history stays under it when the names match (the import's `-to` rule below).
+
 ## DBA Dash's own screens
 
-An instance's page carries a row of DBA Dash's screens. Each is ONE call of the DBA Dash procedure that DBA Dash's GUI calls for that screen, made when the page is opened, through the repository's read login, with the parameters the GUI passes for one instance and every status of its status filter ticked; every result set the procedure returns is drawn as a grid, its columns and rows as the procedure returned them, DBA Dash's status columns in its words and colours. pgvigil stores nothing of a screen: the repository is the store, as it is for DBA Dash's GUI.
+The screens of the table above. Each is ONE call of the DBA Dash procedure that DBA Dash's GUI calls for that screen, made when the page is opened, through the repository's read login, with the parameters the GUI passes for one instance and every status of its status filter ticked; every result set the procedure returns is drawn as a grid, its columns and rows as the procedure returned them, DBA Dash's status columns in its words and colours. pgvigil stores nothing of a screen: the repository is the store, as it is for DBA Dash's GUI.
 
 | Screen | DBA Dash procedure | Takes |
 |---|---|---|
@@ -90,7 +121,7 @@ An instance's page carries a row of DBA Dash's screens. Each is ONE call of the 
 | Configuration | `dbo.Configuration_Get` | |
 | SQL Agent Alerts | `dbo.Alerts_Get` | |
 
-Every one is a `dbo.*_Get` procedure that writes nothing (each was read in DBA Dash 4.24.1's source: no write to a permanent table, no `_Upd` procedure called). The procedures are the contract, and they change between DBA Dash releases: the screens are proven on DBA Dash 4.24.1 (`scripts/proof-dbadash-door.sh`: each screen's grids equal the same procedure's output read by a second, independent SQL Server client). A repository of another version is still read and every screen says "not proven on DBADash <version>"; a procedure whose parameters changed answers with SQL Server's own message on the page.
+Every one is a `dbo.*_Get` procedure that writes nothing (each was read in DBA Dash 4.24.1's source: no write to a permanent table, no `_Upd` procedure called). The procedures are the contract, and they change between DBA Dash releases: the screens are proven on DBA Dash 4.24.1 (`scripts/proof-dbadash-door.sh`: each screen's grids equal the same procedure's output read by a second, independent SQL Server client). A repository of another version is still read and every screen says "not proven on source version <version>"; a procedure whose parameters changed answers with SQL Server's own message on the page.
 
 The API: `GET /api/dbadash?repo=<name>&id=<InstanceID>&page=<key>[&from=..&to=..][&snapshot=..]`, the keys `performance`, `running`, `sessions`, `backups`, `jobs`, `drives`, `dbfiles`, `configuration`, `alerts` (`page=list` names them). A repository that does not answer is a 502 with the reason.
 

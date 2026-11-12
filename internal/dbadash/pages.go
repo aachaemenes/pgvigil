@@ -172,7 +172,7 @@ const MaxPageRows = 5000
 const PageTimeout = 60 * time.Second
 
 // ErrNoRepository is a page asked of a repository the configuration does not name.
-var ErrNoRepository = errors.New("no DBADash repository of that name in the configuration")
+var ErrNoRepository = errors.New("no source repository of that name in the configuration (the dbadash: list)")
 
 var (
 	reposMu sync.RWMutex
@@ -212,10 +212,10 @@ func Page(ctx context.Context, repo, page string, a PageArgs) (PageReply, error)
 func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, error) {
 	def, ok := PageByKey(page)
 	if !ok {
-		return PageReply{}, fmt.Errorf("unknown DBADash page %q", page)
+		return PageReply{}, fmt.Errorf("unknown screen %q", page)
 	}
 	if a.InstanceID <= 0 || a.InstanceID > MaxInstanceID {
-		return PageReply{}, errors.New("a page needs a DBADash InstanceID (1 to 2147483647)")
+		return PageReply{}, errors.New("a screen needs the source repository's InstanceID (1 to 2147483647)")
 	}
 	if def.Window && (a.From.IsZero() || a.To.IsZero() || !a.From.Before(a.To)) {
 		return PageReply{}, errors.New("the page needs a time range (from before to)")
@@ -246,7 +246,7 @@ func PageDSN(ctx context.Context, dsn, page string, a PageArgs) (PageReply, erro
 	}
 	out.Proven = Proven(out.Version)
 	if !out.Proven {
-		out.Note = fmt.Sprintf("not proven on DBADash %s: the pages are proven on %s", orNone(out.Version), ProvenVersion)
+		out.Note = fmt.Sprintf("not proven on source version %s: the screens are proven on %s", orNone(out.Version), ProvenVersion)
 	}
 	if def.Key == "sessions" || def.Key == "jobs" {
 		var inst, machine sql.NullString

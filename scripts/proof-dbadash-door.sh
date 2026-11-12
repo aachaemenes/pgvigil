@@ -69,9 +69,23 @@
 #     the instance under DBA Dash's display name, engine sqlserver, with the tag 'env:proof' added on DBA Dash's side
 #     and none of DBA Dash's system tags; the run as a login in role pgvigil_reader is refused ('may not write').
 #  F. the version pin: with a newer version row '9.9.9' in the repository, every page answers ok with proven=false and
-#     the note 'not proven on DBADash 9.9.9'; the row is removed again.
-# NOT PROVEN HERE: the pages through `pgvigil serve` (the join wires dbadash.SetRepositories into serve.go) and in a
-# browser, with them the page's machine-name and latest-snapshot guards on the buttons; the 'volumes' mapping with rows
+#     the note 'not proven on source version 9.9.9'; the row is removed again.
+#  G. the imported server's tabs (task 168), under `pgvigil serve` built from a copy of this tree with the join's wiring
+#     (internal/dbadash/testdata/join-168.patch applied to the copy; already applied = said and used as it is) and the
+#     web bundle rebuilt, on a pgvigil repository of its own whose configuration names the DBA Dash repository and no
+#     instance, in a headless Chromium signed in as a UI user:
+#     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists the 33 SQL Server tabs;
+#        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
+#        Agent alerts), mssqlstorage (the Drives screen: 0 rows on Linux, as C's), mssqlfiles, mssqlconfig and
+#        mssqlproperties as the repository's screens with rows (mssqlstorage excepted), every other tab its one
+#        'not read for an imported server' line and no grid row; the tree shows 'Imported: lab' and no 'DBADash' or
+#        'DBA Dash' text;
+#     G2 `pgvigil import dbadash -config <it> -repo lab` (the join's subcommand) exits 0 and makes the imported server
+#        under DBA Dash's display name;
+#     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same 33 tabs (Availability
+#        kept); mssqlcpu, mssqlstorage and jobstimeline render pgvigil's own pages over the imported rows (a grid row or
+#        a chart), the eight other screen tabs as in G1, every other tab its one line; the tree as in G1.
+# NOT PROVEN HERE: the page's machine-name and latest-snapshot guards on the buttons in a browser; the 'volumes' mapping with rows
 # when DBA Dash collects none (Linux: run with PGVIGIL_DBADASH_BAK of a Windows-side repository); pgvigil's own
 # collector run after an import (the duplicates the docs' -to rule is about); a DBA Dash version other than 4.24.1;
 # Azure SQL Database rows of a repository.
@@ -92,17 +106,19 @@ PROCS="PerformanceSummary_Get RunningQueriesSummary_Get RunningQueries_Get Backu
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
-TMPD=$(mktemp -d); SRVPID=; APPPID=
+TMPD=$(mktemp -d); SRVPID=; APPPID=; CHRPID=; GDB=pgv_door_g_$SUF
 SA_PW=$(pw); RO_PW=$(pw); MON_PW=$(pw); ACT_PW=$(pw); APP_PW=$(pw); UPW=$(pw)
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\nMSSQL_AGENT_ENABLED=true\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 printf 'SQLCMDPASSWORD=%s\n' "$RO_PW" > "$TMPD/ro.env"; printf 'SQLCMDPASSWORD=%s\n' "$APP_PW" > "$TMPD/app.env"
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   [[ -n "$APPPID" ]] && kill "$APPPID" 2>/dev/null || true
+  [[ -n "$CHRPID" ]] && kill "$CHRPID" 2>/dev/null || true
   docker rm -f "$SVC" "$CFGC" "$PYC" "$SQL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   if compgen -G "$CACHE/ServiceConfig.json*" >/dev/null; then echo "WARN: $CACHE holds a ServiceConfig.json* (remove it by hand)" >&2; fi
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || true
+  psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $GDB WITH (FORCE)" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -Xqc "DROP ROLE IF EXISTS $PGRO" >/dev/null 2>&1 || true
   rm -rf "$TMPD"
 }
@@ -118,7 +134,7 @@ jget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]));
 for k in sys.argv[2].split("."):
     d = d[int(k)] if isinstance(d, list) else (d or {}).get(k)
 print("" if d is None else d)' "$1" "$2"; }
-for t in docker go psql curl python3 unzip; do command -v "$t" >/dev/null || fail "needs $t"; done
+for t in docker go psql curl python3 unzip chromium node npm git; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
 
 echo "== A. the DBA Dash repository =="
@@ -458,9 +474,117 @@ sqok "F: the version row" "INSERT INTO dbo.DBVersionHistory (DeployDate, Version
 res=$(pages)
 sqok "F: the version row's removal" "DELETE FROM dbo.DBVersionHistory WHERE Version = '9.9.9'" "$DDB"
 [[ "$(echo "$res" | grep -c ' ok version=9.9.9 proven=false ')" == 9 ]] || fail "F: not every page answered ok with proven=false on 9.9.9: $res"
-for pj in "$TMPD"/pages/*.json; do jget "$pj" note | grep -q 'not proven on DBADash 9.9.9' || fail "F: the note of $(basename "$pj"): $(jget "$pj" note)"; done
+for pj in "$TMPD"/pages/*.json; do jget "$pj" note | grep -q 'not proven on source version 9.9.9' || fail "F: the note of $(basename "$pj"): $(jget "$pj" note)"; done
 echo "ok   F: on a repository at 9.9.9 every page says proven=false: '$(jget "$TMPD/pages/alerts.json" note)'; the row removed"
 
-echo "Not proven here: the pages through 'pgvigil serve' (dbadash.SetRepositories is the join's line in serve.go) and in a browser;"
+echo "== G. the imported server's tabs under pgvigil serve, in headless Chromium =="
+GSRC=$TMPD/gsrc; mkdir -p "$GSRC"
+tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
+JP=internal/dbadash/testdata/join-168.patch
+if (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: the join's wiring is already in this tree"
+elif (cd "$GSRC" && git apply "$JP" 2>"$TMPD/g-apply.err"); then echo "G: the join's wiring applied to the run's copy"
+else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; fi
+(cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/g-web.log" 2>&1 && npm run build >>"$TMPD/g-web.log" 2>&1) || { tail -20 "$TMPD/g-web.log" >&2; fail "G: the web build"; }
+(cd "$GSRC" && go build -o "$TMPD/pgvigil-g" ./cmd/pgvigil) || fail "G: the build"
+BIN="$TMPD/pgvigil-g"
+psql "$ADMIN_DSN" -Xqc "CREATE DATABASE $GDB" >/dev/null
+GDSN="$ADMIN_DSN"; GDSN="${GDSN/dbname=postgres/dbname=$GDB}"; [[ "$GDSN" == *"dbname=$GDB"* ]] || GDSN="$GDSN dbname=$GDB"
+printf 'repository:\n  dsn: "%s"\ndbadash:\n  - name: lab\n    dsn: env:PGV_DD_RO\n' "$GDSN" > "$TMPD/g.yaml"
+"$BIN" migrate -config "$TMPD/g.yaml" >"$TMPD/g-migrate.out" 2>&1 || { cat "$TMPD/g-migrate.out" >&2; fail "G: migrate"; }
+glive=$(PGVIGIL_DBADASH_CONFIG="$TMPD/g.yaml" go test -count=1 -run '^TestLive$' -v ./internal/dbadash 2>&1 | grep '^dbadash ' || true)
+echo "$glive" | grep -qE '^dbadash lab ok instances=[1-9]' || fail "G: the door's read: $glive"
+PGVIGIL_PASSWORD="$UPW" "$BIN" user add -config "$TMPD/g.yaml" "$USR" >/dev/null 2>&1 || fail "G: user add"
+serve "$TMPD/g.yaml"
+CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu about:blank >"$TMPD/chrome.log" 2>&1 & CHRPID=$!
+for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
+curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "G: chromium's CDP port never answered"
+cat > "$TMPD/g-check.mjs" <<'JS'
+// walks every SQL Server tab of one scope in the UI: prints 'tree <ok|...>' and one 'tab <key> ...' line per tab
+const [port, U, start] = process.argv.slice(2);
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr, awaitPromise = false) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise });
+  if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
+  return d.result?.result?.value;
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const settled = async (ms = 30000) => {
+  const t = Date.now();
+  while (Date.now() - t < ms) {
+    const ok = await ev(`(() => { const m = document.querySelector('main'); if (!m) return false; const e = m.querySelector('p.empty'); return !(e && /^(Loading|Opening)/.test(e.textContent)) && m.children.length > 0; })()`);
+    if (ok) { await sleep(400); return true; }
+    await sleep(200);
+  }
+  return false;
+};
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
+const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
+if (st !== 200) { console.log(`login ${st}`); process.exit(1); }
+await cmd('Page.navigate', { url: U + start }); await sleep(500);
+if (!await settled()) { console.log('FAIL render start'); process.exit(1); }
+const tabs = await ev(`(() => { const d = document.querySelector('main [data-all]') ?? document.querySelector('#tabs'); return d?.dataset.all ? JSON.parse(d.dataset.all) : null; })()`);
+if (!Array.isArray(tabs)) { console.log('FAIL no tab list'); process.exit(1); }
+// the tree: its Imported folder drawn (the read arrives after the first draw), no source-product name in it
+let tree = '';
+for (let i = 0; i < 40 && !/Imported: lab/.test(tree); i++) { await sleep(250); tree = await ev(`document.getElementById('tree')?.innerText ?? ''`); }
+console.log(`tree ${/Imported: lab/.test(tree) ? 'folder' : 'nofolder'} ${/DBA ?Dash/i.test(tree) ? 'named' : 'clean'}`);
+for (const h of tabs) {
+  const key = /[?&]dp=([^&]+)/.exec(h)?.[1] ?? /^#\/([^?]+)/.exec(h)?.[1];
+  await cmd('Page.navigate', { url: U + h }); await sleep(300);
+  if (!await settled()) { console.log(`tab ${key} render=no`); continue; }
+  const r = await ev(`(() => { const m = document.querySelector('main'); const s = m.querySelector('[data-source]');
+    const rows = [...m.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty') && tr.children.length > 0).length;
+    return JSON.stringify({ src: s?.dataset.source ?? 'native', rows: s?.dataset.rows ?? '-', trs: rows, charts: m.querySelectorAll('canvas, svg').length,
+      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length }); })()`);
+  const o = JSON.parse(r);
+  console.log(`tab ${key} render=yes source=${o.src} rows=${o.rows} trs=${o.trs} charts=${o.charts} notread=${o.notread} errors=${o.errors}`);
+}
+ws.close();
+process.exit(0);
+JS
+gwalk() { G_USR="$USR" G_UPW="$UPW" node "$TMPD/g-check.mjs" "$CDP" "$U/" "$1"; }
+# gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
+gtabs() {
+  local out="$1" store=" $2 " screen=" $3 " n line k
+  n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == 33 ]] || fail "$4: $n tabs walked (want 33): $out"
+  echo "$out" | grep -q '^tree folder clean$' || fail "$4: the tree: $(echo "$out" | grep '^tree')"
+  while read -r line; do
+    k=$(echo "$line" | awk '{print $2}')
+    [[ "$line" == *" render=yes "* && "$line" == *" errors=0" ]] || fail "$4: $line"
+    if [[ "$store" == *" $k "* ]]; then
+      [[ "$line" == *" source=store "* ]] || fail "$4: $k is not pgvigil's own page over the imported rows: $line"
+      t=$(echo "$line" | sed -n 's/.* trs=\([0-9]*\) charts=\([0-9]*\) .*/\1 \2/p'); (( ${t% *} + ${t#* } > 0 )) || fail "$4: $k shows no imported row: $line"
+    elif [[ "$screen" == *" $k "* ]]; then
+      [[ "$line" == *" source=screen "* ]] || fail "$4: $k is not the repository's screen: $line"
+      r=$(echo "$line" | sed -n 's/.* rows=\([0-9]*\) .*/\1/p')
+      [[ "$k" == mssqlstorage ]] && { [[ "$r" == "$n_vol" ]] || fail "$4: the Drives screen shows $r rows (want $n_vol, as the source)"; } || (( r > 0 )) || fail "$4: $k shows no row: $line"
+    else
+      [[ "$line" == *" source=none "* && "$line" == *" notread=1 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k is not one 'not read' line: $line"
+    fi
+  done < <(echo "$out" | grep '^tab ')
+}
+SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlproperties"
+g1=$(gwalk "#/dbadash?dr=lab&di=$ID"); echo "$g1" > "$TMPD/g1.txt"
+gtabs "$g1" "" "$SCREENS mssqlstorage" G1
+echo "ok   G1: the DBA Dash instance's own page: 33 tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
+"$BIN" import dbadash -config "$TMPD/g.yaml" -repo lab >"$TMPD/g-import.out" 2>&1 || { cat "$TMPD/g-import.out" >&2; fail "G2: pgvigil import dbadash"; }
+GID=$(psql "$GDSN" -XAtq -c "SELECT instance_id FROM pgvigil.instances WHERE name = '$DISP' AND engine = 'sqlserver'")
+[[ "$GID" =~ ^[1-9][0-9]*$ ]] || { cat "$TMPD/g-import.out" >&2; fail "G2: no imported server named $DISP"; }
+echo "ok   G2: pgvigil import dbadash -repo lab: exit 0, the imported server $DISP is pgvigil instance $GID ($(tail -1 "$TMPD/g-import.out"))"
+sleep 26   # the UI keeps the repositories' read 25 s: the next walk sees the import
+g3=$(gwalk "#/summary?i=$GID"); echo "$g3" > "$TMPD/g3.txt"
+gtabs "$g3" "mssqlcpu mssqlstorage jobstimeline" "$SCREENS" G3
+echo "ok   G3: the imported server at pgvigil instance $GID: 33 tabs, $(echo "$g3" | grep -c 'source=store') of pgvigil's own pages over the imported rows, $(echo "$g3" | grep -c 'source=screen') screens, $(echo "$g3" | grep -c 'source=none') 'not read' lines, no error; the tree as in G1"
+kill "$CHRPID" 2>/dev/null || true; CHRPID=
+kill "$SRVPID" 2>/dev/null || true; wait "$SRVPID" 2>/dev/null || true; SRVPID=
+
+echo "Not proven here: the buttons' machine-name and latest-snapshot guards in a browser;"
 echo "the 'volumes' mapping with rows when DBA Dash collected none ($n_vol here); a DBA Dash version other than $VER; Azure SQL Database rows."
-echo "proof-dbadash-door: OK (DBA Dash $VER; 9 pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's)"
+echo "proof-dbadash-door: OK (DBA Dash $VER; 9 pages equal to DBA Dash's grids; an action refused without the actions login, done with it; the import's counts equal the source's; every SQL Server tab of the door instance and of the imported server rendered in Chromium)"

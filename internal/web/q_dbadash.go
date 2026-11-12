@@ -14,7 +14,8 @@ import (
 // The DBADash door's API (task 55): DBADash's own instances and Summary statuses, read from the DBADash repositories the
 // configuration names (internal/dbadash) and kept by 0052. The join wires the route in Handler:
 //   GET /api/dbadash                          -> s.DBADash: every configured repository and every present instance
-//                                                (the tree's DBADash folders and the fleet grid).
+//                                                (the tree's Imported folders and the fleet grid), and part
+//                                                'imported': each instance's pgvigil instance (sqlDBADashImported).
 //   GET /api/dbadash?repo=<name>              -> the same, narrowed to one repository.
 //   GET /api/dbadash?repo=<name>&id=<n>[&from=..&to=..] -> one DBADash instance: its facts, its Summary statuses with
 //                                                DBADash's words, and the status changes of the window.
@@ -37,7 +38,7 @@ func dbadashRepo(r *http.Request) (*string, error) {
 		return nil, nil
 	}
 	if len(v) > 100 || strings.ContainsAny(v, "/\t\r\n") {
-		return nil, errors.New("repo must be a configured DBADash repository name")
+		return nil, errors.New("repo must be a configured source repository name (the dbadash: list)")
 	}
 	return &v, nil
 }
@@ -59,6 +60,7 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 			{"repositories", `SELECT * FROM pgvigil.dbadash_repositories() WHERE $1::text IS NULL OR repository = $1`, []any{repo}},
 			{"fleet", `SELECT * FROM pgvigil.dbadash_fleet($1)`, []any{repo}},
 			{"checks", `SELECT * FROM pgvigil.dbadash_checks()`, nil},
+			{"imported", sqlDBADashImported, []any{repo}},
 		})
 		return
 	}
@@ -68,7 +70,7 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := strconv.Atoi(idv)
 	if err != nil || id <= 0 || id > dbadash.MaxInstanceID {
-		writeErr(w, http.StatusBadRequest, errors.New("id must be a DBADash InstanceID (1 to 2147483647)"))
+		writeErr(w, http.StatusBadRequest, errors.New("id must be the source repository's InstanceID (1 to 2147483647)"))
 		return
 	}
 	_, from, to, err := params(r, false)
@@ -83,6 +85,20 @@ func (s *Server) DBADash(w http.ResponseWriter, r *http.Request) {
 		{"pgvigil", sqlDBADashPgvigil, []any{*repo, id}},
 	})
 }
+
+// sqlDBADashImported is the pgvigil SQL Server instance of each instance read through a repository (task 168): the one
+// pgvigil collects itself under the same @@SERVERNAME (collected: its own pages), or the one the import made under the
+// instance's display name (pgvigil import dbadash's default name) that pgvigil does not collect (an imported server: its
+// tabs come from the import's tables and the repository's live screens, web/src/dbadash.ts). An instance imported under
+// another name (-name) is not matched: docs/dbadash.md says so. A collected match is listed before an imported one.
+const sqlDBADashImported = `
+SELECT d.repository, d.instance_id AS source_id, i.instance_id, i.name, (m.instance_id IS NOT NULL) AS collected
+  FROM pgvigil.dbadash_instances d
+  JOIN pgvigil.instances i ON i.engine = 'sqlserver' AND i.is_active
+  LEFT JOIN pgvigil.mssql_instance m ON m.instance_id = i.instance_id
+ WHERE ($1::text IS NULL OR d.repository = $1)
+   AND (upper(m.server_name) = upper(d.instance) OR (m.instance_id IS NULL AND upper(i.name) = upper(d.display_name)))
+ ORDER BY d.repository, d.instance_id, (m.instance_id IS NULL), i.instance_id`
 
 // sqlDBADashPgvigil is the active SQL Server instance pgvigil monitors itself under the DBADash instance's server name
 // (the actions buttons' door); more than one = the lowest instance_id, said by the count. Its machine name goes to the
@@ -110,7 +126,7 @@ func (s *Server) dbadashPage(w http.ResponseWriter, r *http.Request, repo *strin
 	}
 	def, ok := dbadash.PageByKey(page)
 	if !ok {
-		writeErr(w, http.StatusBadRequest, errors.New("page must be one of the DBADash pages (page=list names them)"))
+		writeErr(w, http.StatusBadRequest, errors.New("page must be one of the source repository's screens (page=list names them)"))
 		return
 	}
 	if repo == nil {
@@ -119,7 +135,7 @@ func (s *Server) dbadashPage(w http.ResponseWriter, r *http.Request, repo *strin
 	}
 	id, err := strconv.Atoi(idv)
 	if err != nil || id <= 0 || id > dbadash.MaxInstanceID {
-		writeErr(w, http.StatusBadRequest, errors.New("id must be a DBADash InstanceID (1 to 2147483647)"))
+		writeErr(w, http.StatusBadRequest, errors.New("id must be the source repository's InstanceID (1 to 2147483647)"))
 		return
 	}
 	a := dbadash.PageArgs{InstanceID: id}

@@ -124,7 +124,7 @@ func readConn(ctx context.Context, conn *sql.Conn) (Payload, error) {
 		return Payload{}, err
 	}
 	if len(cols["Instances"]) == 0 {
-		return Payload{}, errors.New("no dbo.Instances visible to this login: not a DBADash repository, or the login lacks SELECT on it")
+		return Payload{}, errors.New("no dbo.Instances visible to this login: not a source repository, or the login lacks SELECT on it")
 	}
 	p := Payload{Status: "ok", Instances: []Instance{}}
 	if cols["DBVersionHistory"]["Version"] {
