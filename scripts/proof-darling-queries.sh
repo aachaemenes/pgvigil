@@ -449,6 +449,25 @@ CUT=$(objs "$TMPD/ccmpw2.json" compare_windows | jq -r '.[0].before_cut_reads')
 [[ "$L2/$CUT" == "not kept before/1" ]] || fail "E: with R1 cut, q_new reads '$L2' with $CUT cut read(s) before (want 'not kept before' and 1)"
 pq "UPDATE pgvigil.mssql_pc_read SET capped = false WHERE instance_id = $SB AND snapshot_at = '$R1'" >/dev/null
 echo "ok   E: mssql_pc_handles = the DMV's sql_handle and query_plan_hash for every cached statement of q_cost; with R1 cut q_new reads 'not kept before' and the windows part 1 cut read"
+# E. a restart read (the join review d10a, finding 2): 0092's restart path empties mssql_pc_last and, by the cascade,
+# mssql_pc_handles; after it the handles are exactly the read's statements (each carries a handle on 2022), none older
+OLDMAX=$(pq "SELECT max(creation_time) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
+RB=$(pq "SELECT count(*) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB")
+docker restart "$SQL" >/dev/null || fail "E: docker restart of the SQL Server container"
+for _ in $(seq 1 120); do sq "SELECT 1" master 10 >/dev/null 2>&1 && break; sleep 1; done
+sqok "E: SQL Server back after the restart" "SELECT 1" master
+sqok "E: q_cost after the restart" "$Q_COST 1;" pgvq
+col mssql_plancache
+read -r NL NH NORPH NOLD NMATCH <<<"$(pq "SELECT (SELECT count(*) FROM pgvigil.mssql_pc_last WHERE instance_id = $SB),
+    (SELECT count(*) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB),
+    (SELECT count(*) FROM pgvigil.mssql_pc_handles h WHERE h.instance_id = $SB AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_pc_last l
+        WHERE l.instance_id = h.instance_id AND l.plan_handle = h.plan_handle AND l.stmt_start = h.stmt_start AND l.stmt_end = h.stmt_end AND l.creation_time = h.creation_time)),
+    (SELECT count(*) FROM pgvigil.mssql_pc_handles WHERE instance_id = $SB AND creation_time <= '$OLDMAX'),
+    (SELECT count(*) FROM pgvigil.mssql_pc_last l WHERE l.instance_id = $SB AND EXISTS (SELECT 1 FROM pgvigil.mssql_pc_handles h
+        WHERE h.instance_id = l.instance_id AND h.plan_handle = l.plan_handle AND h.stmt_start = l.stmt_start AND h.stmt_end = l.stmt_end AND h.creation_time = l.creation_time))" | tr '|' ' ')"
+[[ "$RB" -gt 0 && "$NL" -gt 0 && "$NH" == "$NL" && "$NMATCH" == "$NL" && "$NORPH" == 0 && "$NOLD" == 0 ]] \
+  || fail "E: after the restart read mssql_pc_last holds $NL statements, mssql_pc_handles $NH ($NMATCH matched, $NORPH orphaned, $NOLD from before the restart; $RB before it)"
+echo "ok   E: after a restart read mssql_pc_handles holds exactly the read's $NL statements ($RB before the restart, none of them left, none orphaned)"
 
 # D. q_err's baseline rows in the pre-0126 shape: the failure test is not applied, the cells say so
 QE=$(jq -r '.q_err' "$TMPD/hashof.json")
@@ -525,9 +544,45 @@ for spec in 761 3000; do
     python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the compare at $spec rows a read took ${tt##* } s (the fail line is 10 s)"
     TF+=" ${spec}:${tt##* }"
   done
-  n=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-3.json"); [[ "$n" -ge 100 ]] || fail "F: the compare at $spec returned $n rows"
+  n=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-3.json"); n8=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-8.json")
+  [[ "$n" -ge 100 && "$n8" == "$n" ]] || fail "F: the compare at $spec returned $n rows on run 3 and $n8 on run 8"
 done
-echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, eight runs each):$TF"
+echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, eight runs each; run 3's rows = run 8's):$TF"
+# the plan cache's other windowed parts at 3,000 rows a read over 7 days (the join review d10a, finding 1): named,
+# cached statements, so the UI pool's plan_cache_mode = force_custom_plan (web.go) alone keeps them planned with their
+# window's values; and the compare's windows part (finding 3)
+TP=""
+for what in "totals:part=totals" "top:part=top" "series:part=series" "cwin:compare=week&part=compare_windows"; do
+  for run in 1 2 3 4 5 6 7 8; do
+    tt=$(curl -s -o "$TMPD/fp.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_3000&from=$F7&to=$T7&${what#*:}")
+    [[ "${tt%% *}" == 200 ]] || fail "F: the plan cache ${what%%:*} at 3000 answered ${tt%% *}: $(head -c 300 "$TMPD/fp.json")"
+    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the plan cache ${what%%:*} at 3000 took ${tt##* } s (the fail line is 10 s)"
+    TP+=" ${what%%:*}:${tt##* }"
+  done
+done
+echo "ok   F: the plan cache's totals, top, series and compare_windows at 3,000 rows a read over 7 days (s, eight runs each):$TP"
+# the procedures at scale: 1,000 procedures a read, every five minutes, 14 days; every windowed part over 7 days
+PRI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tpr', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+for back in 15 8 0; do pq "SELECT pgvigil.ensure_month_partition('mssql_proc_sample', now() - interval '$back days'), pgvigil.ensure_month_partition('mssql_proc_read', now() - interval '$back days')" >/dev/null; done
+pq "INSERT INTO pgvigil.mssql_proc_read (instance_id, snapshot_at, interval_secs, procs)
+      SELECT $PRI, t, 300, 1000 FROM generate_series(now() - interval '14 days', now(), interval '5 minutes') t" >/dev/null
+pq "INSERT INTO pgvigil.mssql_proc_sample (instance_id, snapshot_at, database_id, object_id, database_name, schema_name, object_name, type_desc,
+      executions, cpu_us, duration_us, logical_reads, physical_reads, logical_writes, interval_secs)
+    SELECT $PRI, t, 5 + (g % 3), 1000 + g, 'db' || (g % 3), 'dbo', 'p' || g, 'SQL_STORED_PROCEDURE', e, e * 700, e * 1000, e * 10, 0, 0, 300
+      FROM (SELECT t, g, 1 + (random() * 100)::bigint AS e FROM generate_series(now() - interval '14 days', now(), interval '5 minutes') t, generate_series(1, 1000) g) a" >/dev/null
+psql "$PGDSN" -Xqc "VACUUM (ANALYZE) pgvigil.mssql_proc_sample, pgvigil.mssql_proc_read" >/dev/null
+NP=$(pq "SELECT count(*) FROM pgvigil.mssql_proc_sample WHERE instance_id = $PRI")
+TR=""
+for what in "totals:part=totals" "procs:part=procs" "series:part=series" "intervals:db_id=6&object=1001&part=intervals" "compare:compare=week&part=compare" "cwin:compare=week&part=compare_windows"; do
+  for run in 1 2 3 4 5 6 7 8; do
+    tt=$(curl -s -o "$TMPD/fr-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/procs?instance=$PRI&from=$F7&to=$T7&${what#*:}")
+    [[ "${tt%% *}" == 200 ]] || fail "F: the procedures ${what%%:*} answered ${tt%% *}: $(head -c 300 "$TMPD/fr-$run.json")"
+    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the procedures ${what%%:*} took ${tt##* } s over $NP stored rows (the fail line is 10 s)"
+    TR+=" ${what%%:*}:${tt##* }"
+  done
+  [[ "${what%%:*}" == compare ]] && { c3=$(jq '(.compare.rows // []) | length' "$TMPD/fr-3.json"); c8=$(jq '(.compare.rows // []) | length' "$TMPD/fr-8.json"); [[ "$c3" -ge 100 && "$c8" == "$c3" ]] || fail "F: the procedures compare returned $c3 rows on run 3 and $c8 on run 8"; }
+done
+echo "ok   F: the procedures over $NP stored rows (1,000 a read, 14 days), 7 days through the API (s, eight runs each):$TR"
 # the Query Store at its ceiling: 1-minute intervals, 250 kept plans each (5 lists of 50), 14 days; 1 % of the rows
 # with failures, split as 0126 stores them
 QI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tqs', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
@@ -550,7 +605,7 @@ psql "$PGDSN" -Xqc "VACUUM (ANALYZE) pgvigil.mssql_qs_runtime, pgvigil.mssql_qs_
 NQ=$(pq "SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = $QI")
 TQ=""
 F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); F1=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-for what in "compare:from=$F7&to=$T7&compare=week&part=compare" "regressed:from=$F1&to=$T7&part=regressed"; do
+for what in "compare:from=$F7&to=$T7&compare=week&part=compare" "regressed:from=$F1&to=$T7&part=regressed" "skipped:from=$F1&to=$T7&part=regressed_skipped" "cwin:from=$F7&to=$T7&compare=week&part=compare_windows"; do
   for run in 1 2 3 4 5 6 7 8; do
     tt=$(curl -s -o "$TMPD/fq-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/querystore?instance=$QI&${what#*:}")
     [[ "${tt%% *}" == 200 ]] || fail "F: the Query Store ${what%%:*} answered ${tt%% *}: $(head -c 300 "$TMPD/fq-$run.json")"
@@ -559,6 +614,47 @@ for what in "compare:from=$F7&to=$T7&compare=week&part=compare" "regressed:from=
   done
 done
 echo "ok   F: the Query Store over $NQ stored rows (14 days, 1-minute intervals, 250 kept plans each), through the API (s, eight runs each):$TQ"
+# plan_cache_mode itself (the join review d10a's proof of (a)): one psql session PREPAREs the plan-cache compare's own
+# SQL (read from the Go source), EXECUTEs it six times on a 1-hour window and once on 7 days at 3,000 rows a read, and
+# reads pg_prepared_statements (PostgreSQL 14 on): no generic plan under force_custom_plan, one or more under auto (the
+# row fails if the setting changes nothing); then the planning cost under it: EXPLAIN (SUMMARY) of the Findings page's
+# own read of the 16-arm findings view, three times
+python3 - "$TMPD" <<'PYEND' || fail "F: the SQL could not be read from the Go source"
+import re, sys
+d = sys.argv[1]
+def lit(src, name):
+    m = re.search(r'(?:const|var) ' + name + r' = ', src)
+    i, out = m.end(), []
+    while True:
+        while src[i] in ' \t\n': i += 1
+        if src[i] == '`':
+            j = src.index('`', i + 1); out.append(src[i + 1:j]); i = j + 1
+        else:
+            ident = re.match(r'[A-Za-z_]\w*', src[i:]).group(0); i += len(ident)
+            if src[i] in '.(': raise SystemExit(f'{name}: a call in the expression ({ident})')
+            out.append(lit(src, ident))
+        k = i
+        while src[k] in ' \t': k += 1
+        if src[k] == '+': i = k + 1; continue
+        return ''.join(out)
+pc = open('internal/web/q_mssql_plancache.go').read()
+open(f'{d}/pcc.sql', 'w').write(lit(pc, 'sqlMSSQLPCCompare'))
+open(f'{d}/findings.sql', 'w').write(lit(open('internal/web/queries.go').read(), 'sqlFindings'))
+PYEND
+for mode in force_custom_plan auto; do
+  { echo "PREPARE pcc (int, timestamptz, timestamptz, int, boolean, float8) AS"; cat "$TMPD/pcc.sql"; echo ";"; echo '\o /dev/null'
+    for _ in 1 2 3 4 5 6; do echo "EXECUTE pcc($IID_3000, now() - interval '1 hour', now(), NULL, false, 3600);"; done
+    echo "EXECUTE pcc($IID_3000, now() - interval '7 days', now(), NULL, false, 604800);"; echo '\o'
+    echo "SELECT generic_plans || '|' || custom_plans FROM pg_prepared_statements WHERE name = 'pcc';"; } > "$TMPD/pcm-$mode.sql"
+done
+PCM_F=$(PGOPTIONS='-c plan_cache_mode=force_custom_plan -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pcm-force_custom_plan.sql") || fail "F: the PREPARE session under force_custom_plan"
+PCM_A=$(PGOPTIONS='-c plan_cache_mode=auto -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pcm-auto.sql") || fail "F: the PREPARE session under auto"
+[[ "$PCM_F" == "0|7" ]] || fail "F: under force_custom_plan pg_prepared_statements reads generic|custom $PCM_F (want 0|7)"
+[[ "${PCM_A%%|*}" -ge 1 ]] || fail "F: under auto the compare stayed custom ($PCM_A generic|custom): the row cannot tell the setting does anything"
+{ echo "PREPARE pf (int) AS"; cat "$TMPD/findings.sql"; echo ";"; for _ in 1 2 3; do echo "EXPLAIN (SUMMARY ON) EXECUTE pf(NULL);"; done; } > "$TMPD/pf.sql"
+PT=$(PGOPTIONS='-c plan_cache_mode=force_custom_plan -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pf.sql" | grep -o 'Planning Time: [0-9.]* ms' | sed 's/Planning Time: //' | tr '\n' ' ')
+[[ -n "$PT" ]] || fail "F: no Planning Time from EXPLAIN (SUMMARY) of the findings read"
+echo "ok   F: plan_cache_mode: the plan-cache compare PREPAREd and run 6 x 1 hour + 1 x 7 days reads generic|custom $PCM_F under force_custom_plan and $PCM_A under auto; the Findings page's read plans in $PT under it (each read pays it)"
 
 echo "== H. DONE-2's reads: the heatmap, the histories, the Query Store overhead =="
 # H1. the heatmap's cells = a hand count of the stored samples (F's seed at 761 rows a read, 24 hours: 10-minute bins)
@@ -627,15 +723,7 @@ c=$(curl -s -o "$TMPD/h8.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1'
 echo "ok   H: 8 days answered 400 'the heatmap reaches 7 days: pick 7 days or less'"
 # H3. one query's history (plan cache) and one procedure's history: their executions = a hand sum; 7 days timed
 F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-PRI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tpr', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
-for back in 8 0; do pq "SELECT pgvigil.ensure_month_partition('mssql_proc_sample', now() - interval '$back days'), pgvigil.ensure_month_partition('mssql_proc_read', now() - interval '$back days')" >/dev/null; done
-pq "INSERT INTO pgvigil.mssql_proc_read (instance_id, snapshot_at, interval_secs, procs)
-      SELECT $PRI, t, 300, 1000 FROM generate_series(now() - interval '7 days 1 hour', now(), interval '5 minutes') t" >/dev/null
-pq "INSERT INTO pgvigil.mssql_proc_sample (instance_id, snapshot_at, database_id, object_id, database_name, schema_name, object_name, type_desc,
-      executions, cpu_us, duration_us, logical_reads, physical_reads, logical_writes, interval_secs)
-    SELECT $PRI, t, 5 + (g % 3), 1000 + g, 'db' || (g % 3), 'dbo', 'p' || g, 'SQL_STORED_PROCEDURE', e, e * 700, e * 1000, e * 10, 0, 0, 300
-      FROM (SELECT t, g, 1 + (random() * 100)::bigint AS e FROM generate_series(now() - interval '7 days 1 hour', now(), interval '5 minutes') t, generate_series(1, 1000) g) a" >/dev/null
-psql "$PGDSN" -Xqc "VACUUM (ANALYZE) pgvigil.mssql_proc_sample, pgvigil.mssql_proc_read" >/dev/null
+# (the procedures' seed is F's: 1,000 a read, 14 days)
 TY=""
 for spec in 761 3000; do
   eval "IID=\$IID_$spec"
