@@ -3,7 +3,7 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, sinceState, summaryText, tagsOf } from './fleet';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, summaryText, tagsOf } from './fleet';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
@@ -29,7 +29,9 @@ import { customReportView } from './custom';
 import { whatIsThis } from './sqlview';
 import { logsGroupedView } from './logs_grouped';
 import { openDumpDialog, openUptimeDialog, summaryCellAction } from './uptimedialog';
-import { AckBody, ackDialog, ackHolds, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
+import { AckBody, AckData, ackDialog, ackHolds, ackWords, addAck, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
+import { healthCalendar } from './healthcal';
+import { bandClass, cellState, Chip, clockOf, freshness, serverNow, lastCollected, liveChips, measured, silenceButton, silencedMark, statusWord } from './instheader';
 
 export type { Ctx };
 const range = window_;
@@ -245,16 +247,8 @@ export async function dms(ctx: Ctx): Promise<HTMLElement> {
 
 export { errorBox };
 
-// cellState: what 'until the check changes' compares - the cell's reading and a fingerprint of the checks behind it
-// (two different checks failing read the same '1 warning'; their details differ). Instance Uptime and Memory Dump
-// change with the start or the newest dump only, never with the hours their text counts (DBA Dash: an
-// acknowledgement holds until a restart or a dump after it).
-function cellState(c: Cell, key = ''): string {
-  if ((key === 'uptime' || key === 'dumps') && c.since != null) return sinceState(c.since);
-  let h = 5381;
-  for (const ch of c.detail.join('\n')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
-  return `${cellText(c)} #${h.toString(36)}`;
-}
+// cellState (what 'until the check changes' compares) lives in instheader.ts: the instance header judges the band
+// with it too
 
 // the Summary's own settings, kept per browser: Test Summary Max Height % (DBA Dash's 10 % ... 90 %, 70 % by default)
 // and Show Test Summary
@@ -269,9 +263,13 @@ const writeSetting = (k: string, v: string) => { try { localStorage.setItem(k, v
 
 export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // the acknowledgements in force and the Needs-attention rates (task 118); a server without them: no ack, no rate
-  const [f, , ad] = await Promise.all([fleet(), tagUI(), loadAckSafe(['acks', 'attention'])]);
+  // the live read (task 177 D29) apart: a failure there never takes the acknowledgements and the rates with it
+  const [f, , ad, lvd] = await Promise.all([fleet(), tagUI(), loadAckSafe(['acks', 'attention']), loadAckSafe(['live'])]);
   const acks = checkAcks(ad);
   const rates = new Map(rowsOf(ad.attention).map(r => [Number(r.instance_id), r]));
+  // PerformanceMonitor's live figures per instance (task 177 D29, instheader.ts): the chips as columns, the freshness
+  const lives = new Map(rowsOf((lvd as AckData & { live?: Table | null }).live ?? null).map(r => [Number(r.instance_id), r]));
+  const nowMs = serverNow(lives.values().next().value);
   const scope = inTag(ctx, f.instances);
   const filterBar = tagFilterBar(scope);   // built first: it drops a remembered filter this scope no longer carries
   const insts = applyTagFilter(scope);
@@ -286,8 +284,12 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       const a = acks.get(`${String(r.instance_id)}|${g.key}`);
       if (a && !c[g.key].none && c[g.key].level > 0 && ackHolds(a, cellState(c[g.key], g.key))) acked[g.key] = a;
     }
-    const row: Row = { ...r, _cells: c, _acked: acked,
+    const lv = lives.get(Number(r.instance_id));
+    const chips = liveChips(lv, nowMs);
+    const row: Row = { ...r, _cells: c, _acked: acked, _live: lv, _chips: chips, _fresh: freshness(lv, nowMs),
       _worst: Math.max(0, ...groups.filter(g => !acked[g.key]).map(g => c[g.key].level)) };
+    for (const ch of chips) row['m_' + ch.key] = ch.band === 'unknown' ? -1 : ch.band === 'crit' ? 2 : ch.band === 'warn' ? 1 : 0;
+    row.m_measured = measured(chips)[0];
     for (const g of groups) row['g_' + g.key] = acked[g.key] ? -1 : c[g.key].level * 1000 + c[g.key].n;   // sorts by level, then count
     return row;
   });
@@ -300,13 +302,21 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     : Number(b._worst) - Number(a._worst) || String(a.name).localeCompare(String(b.name)));
   sortRows();
   const n = [0, 0, 0];
-  for (const r of rows) n[Number(r._worst)]++;
+  let offline = 0;
+  for (const r of rows) { if (r._fresh === 'offline') offline++; else n[Number(r._worst)]++; }
+  // Blocking (recent): every instance's blocking of the last hour, coloured by the worst instance's band
+  const blockRecent = rows.reduce((a, r) => a + Number((r._live as Row | undefined)?.blocking ?? 0), 0);
+  const blockBandOf = (r: Row) => (r._chips as Chip[]).find(x => x.key === 'blocking')?.band ?? 'unknown';
+  const blockWorst = rows.some(r => blockBandOf(r) === 'crit') ? 'crit' : rows.some(r => blockBandOf(r) === 'warn') ? 'warn' : '';
   const nAck = rows.reduce((a, r) => a + Object.keys(r._acked as Acked).length, 0);
   // one line of counts where a row of tiles stood: the grid is the page (DBA Dash's Summary)
   const waiters = insts.reduce((a, r) => a + Number(r.waiting_lock ?? 0), 0);
   const tiles = el('p', { class: 'meta counts' },
     `${insts.length === scope.length ? rows.length : `${rows.length} of ${scope.length}`} instances: `,
-    el('span', { class: n[2] ? 'crit' : '' }, `${n[2]} critical`), ', ', el('span', { class: n[1] ? 'warn' : '' }, `${n[1]} warning`), `, ${n[0]} OK, ${nAck} check(s) acknowledged`,
+    el('span', { class: n[2] ? 'crit' : '' }, `${n[2]} critical`), ', ', el('span', { class: n[1] ? 'warn' : '' }, `${n[1]} warning`), `, ${n[0]} OK, `,
+    el('span', { class: offline ? 'muted offline-count' : 'offline-count' }, `${offline} offline`), `, ${nAck} check(s) acknowledged; `,
+    el('span', { class: `blocking-recent ${blockWorst}`, title: 'Blocking (recent): the blocking events of every instance in the last hour, coloured by the worst instance\'s band (PerformanceMonitor\'s: 5 / 20 an hour, 10 / 60 seconds of wait)' },
+      `${blockRecent} blocking (recent)`),
     waiters ? `; ${waiters} lock waiters now` : '');
   // a cell's page: the column's tab for the instance (DBA Dash's tabMapping), with the view a SQL Server tab opens on
   const cellHref = (g: Group, r: Row): string => {
@@ -338,11 +348,41 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
       return a;
     },
   });
+  // a PerformanceMonitor chip as a Summary column: the value in a cell filled by its band (unknown: N/A's grey), the
+  // detail its title and part of its name
+  const chipCol = (k: string): Col => {
+    const label = k === 'cpu' ? 'Total CPU' : k[0].toUpperCase() + k.slice(1);
+    return {
+      key: 'm_' + k, label, num: false,
+      cls: (_v, r) => { const c = (r._chips as Chip[]).find(x => x.key === k); return 'status ' + bandClass(c?.band ?? 'unknown'); },
+      fmt: (_v, r) => {
+        const c = (r._chips as Chip[]).find(x => x.key === k);
+        if (!c) return '';
+        const s = el('span', { 'data-text': c.value }, c.value, c.detail ? el('span', { class: 'visually-hidden' }, `, ${c.detail}`) : null);
+        if (c.detail) s.title = c.detail;
+        return s;
+      },
+    };
+  };
   // DBA Dash's columns in its order, then pgvigil's own tests, then pgvigil's other columns
   const cols: Col[] = [
     { key: 'name', label: 'Instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
     ...groups.filter(g => g.dd).map(statusCol),
     ...groups.filter(g => !g.dd).map(statusCol),
+    // PerformanceMonitor's server card as columns (task 177 D29): each chip's value, its detail in the cell's title
+    // and its name, its band the fill; then 'N of M measured', the instance's freshness and its silence
+    ...(['cpu', 'threads', 'memory', 'blocking', 'collectors'] as const).map(k => chipCol(k)),
+    { key: 'm_measured', label: 'Measured', num: true, fmt: (_v, r) => { const [a, b] = measured(r._chips as Chip[]); return el('span', { 'data-text': `${a} of ${b}` }, `${a} of ${b}`); } },
+    { key: '_fresh', label: 'Collection', fmt: (_v, r) => {
+      const lv = r._live as Row | undefined, fr = r._fresh as ReturnType<typeof freshness>;
+      const t = fr === 'awaiting' ? statusWord.awaiting : fr === 'offline' ? `${statusWord.offline} · ${lastCollected(lv, nowMs)}`
+        : `${statusWord[fr]} · last collect ${clockOf(lv?.last_collect_at)}`;
+      return el('span', { class: fr === 'offline' ? 'muted' : fr === 'online' ? '' : 'warn' }, t);
+    } },
+    { key: '_silence', label: 'Alerts', fmt: (_v, r) => {
+      const lv = r._live as Row | undefined;
+      return el('span', { class: 'silence-cell' }, silencedMark(lv) ?? '', ' ', silenceButton(ad, r, lv, () => { forget(); window.dispatchEvent(new HashChangeEvent('hashchange')); }));
+    } },
     { key: 'platform', label: 'Platform' },
     { key: 'is_replica', label: 'Role', fmt: v => v ? 'replica' : 'primary' },
     { key: 'total', label: 'Sessions', num: true },
@@ -642,6 +682,8 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
     { key: 'snapshot_at', label: 'seen', fmt: fmtTime },
   ];
   sec.append(el('h3', {}, 'Databases'), grid(rowsOf(dbs), dbCols, 'No database inventory yet (the databases collection runs hourly).'));
+  // PerformanceMonitor's Daily Health Calendar (task 177 D29, healthcal.ts): read after the page is drawn
+  sec.append(healthCalendar(ctx, 'postgres'));
   return sec;
 }
 

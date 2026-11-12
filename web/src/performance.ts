@@ -1,6 +1,11 @@
 // The instance Performance page (plan task 108, DBA Dash's Performance tab): small charts over the range on one time
 // axis (every part is cut into the same steps; the lines break where the samples stop for a while), each chart's title
 // a link to the detailed page. Built with chart.ts's lineChart as it is. Data from /api/performance.
+// Task 177 D29 (Darling's PerformanceMonitor's Overview timeline): a SQL Server instance's buffer pool chart (MB, the
+// Memory page's series, /api/mssql/memory part=series), and the zoom's chip: a drag on any chart sets the page's range
+// (chart.ts: every chart reads it), and this page then says 'Zoomed: <from> → <to>' with a '×' (Reset zoom) back to
+// the range before the drag (PerformanceMonitor 3.12.0's overview-strips.js chip, MIT License, Copyright (c) 2026 Erik
+// Darling, Darling Data LLC; the full notice: instheader.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { mssqlCpuTab, mssqlFileIOTab, mssqlMemoryTab, mssqlTempdbTab } from './mssql_perf';
@@ -63,6 +68,29 @@ function sharedSteps(grid: Row[], parts: Row[], stepSecs: number): Row[] {
   return out;
 }
 
+// the zoom: the address at a pointer press on the charts, then the address the drag made (sessionStorage: it survives
+// the page's own redraw); a range change more than 5 seconds after the press is not a drag's
+const ZOOM = 'pgvigil.perfZoom';
+const ss = {
+  get: (k: string): string | null => { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set: (k: string, v: string) => { try { sessionStorage.setItem(k, v); } catch { /* private window */ } },
+  del: (k: string) => { try { sessionStorage.removeItem(k); } catch { /* private window */ } },
+};
+function zoomChip(ctx: Ctx): HTMLElement | null {
+  const pressed = ss.get(ZOOM + '.before');
+  ss.del(ZOOM + '.before');
+  if (pressed) {
+    const p = JSON.parse(pressed) as { hash: string; at: number };
+    if (p.hash !== location.hash && Date.now() - p.at < 5000 && ctx.range.from && ctx.range.to) ss.set(ZOOM, JSON.stringify({ hash: location.hash, back: p.hash }));
+  }
+  const z = (() => { try { return JSON.parse(ss.get(ZOOM) ?? 'null') as { hash: string; back: string } | null; } catch { return null; } })();
+  if (!z || z.hash !== location.hash || !ctx.range.from || !ctx.range.to) return null;
+  const reset = el('button', { type: 'button', class: 'link drill-clear', title: 'Reset zoom', 'aria-label': 'Reset zoom' }, '×');
+  reset.addEventListener('click', () => { ss.del(ZOOM); location.hash = z.back; });
+  return el('p', { class: 'zoom-chip', role: 'status' },
+    `Zoomed: ${new Date(ctx.range.from).toLocaleString()} → ${new Date(ctx.range.to).toLocaleString()} `, reset);
+}
+
 function titled(chart: HTMLElement, text: string, link: string): HTMLElement {
   const h = chart.querySelector('h3');
   if (h) h.replaceChildren(el('a', { href: link }, text));
@@ -76,8 +104,11 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
   const ms = meta.engine === 'sqlserver';
   const to = (tab: string, extra: Record<string, string> = {}) => href(ctx, { tab, ...extra });
   const sec = el('section', {}, el('h2', {}, `Performance (${rangeLabel(ctx)})`));
-  sec.append(el('p', { class: 'meta' }, `one step = ${fmtNum(Number(meta.step_secs ?? 60) / 60)} min; every chart shares the time axis`));
+  sec.append(el('p', { class: 'meta' }, `one step = ${fmtNum(Number(meta.step_secs ?? 60) / 60)} min; every chart shares the time axis; a drag on a chart zooms them all`));
+  const chip = zoomChip(ctx);
+  if (chip) sec.append(chip);
   const box = el('div', { class: 'charts' });
+  box.addEventListener('pointerdown', () => ss.set(ZOOM + '.before', JSON.stringify({ hash: location.hash, at: Date.now() })));
   const ms_s = (v: number) => fmtNum(v) + ' ms/s';
   if (ms) {
     const cpu = rowsOf(d.cpu);
@@ -91,6 +122,18 @@ export async function performanceView(ctx: Ctx): Promise<HTMLElement> {
       [{ key: 'requests', label: 'requests' }, { key: 'blocked', label: 'blocked' }, { key: 'sessions', label: 'sessions' }]), 'Requests and blocked sessions', to('mssql_running')));
     const w = pivotWaits(g, rowsOf(d.waits));
     box.append(titled(lineChart('Waits', w.rows, w.series, ms_s, { stacked: true }), 'Waits by category (ms of wait per second, stacked)', to('mssql_waits')));
+    // the buffer pool (PerformanceMonitor's 'Buffer pool (MB)' strip: Database Cache Memory) with Total Server Memory
+    const mem = await get<{ series: Table | null }>('mssql/memory', { instance: ctx.instance, ...window_(ctx), part: 'series' }).catch(() => null);
+    const memRaw = rowsOf(mem?.series ?? null);
+    // on the page's shared steps (the same window and step as /api/performance); the memory read's own points only
+    // where its steps meet none of the page's
+    const memAligned = align(g, memRaw, ['buffer_pool_mb', 'total_mb']);
+    const memRows = memAligned.some(r => r.buffer_pool_mb != null) ? memAligned : memRaw;
+    box.append(memRaw.length
+      ? titled(lineChart('Buffer pool', memRows, [{ key: 'buffer_pool_mb', label: 'buffer pool' }, { key: 'total_mb', label: 'total server' }], v => fmtNum(v) + ' MB'),
+          'Buffer pool (MB)', to(mssqlMemoryTab))
+      : el('div', { class: 'chart' }, el('h3', {}, el('a', { href: to(mssqlMemoryTab) }, 'Buffer pool (MB)')),
+          el('p', { class: 'empty' }, 'no memory read in this range: the mssql_memory collection runs every minute')));
     box.append(titled(lineChart('Transactions', align(g, rowsOf(d.db), ['batch_s', 'transactions_s', 'compiles_s']),
       [{ key: 'batch_s', label: 'batch requests/s' }, { key: 'transactions_s', label: 'transactions/s' }, { key: 'compiles_s', label: 'compilations/s' }]),
       'Batch requests and transactions per second', to(mssqlCpuTab)));

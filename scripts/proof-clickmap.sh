@@ -97,6 +97,12 @@
 #     Warning box editable; an Uptime cell 'Uptime Threshold Config <instance>' with Inherit, Enabled, Warning / Critical
 #     in mins, Uptime:, Start Time:, Clear Alert and Update, 'Warning:' over its box and Root Threshold Config more than
 #     100 px right of Inherit (DBA Dash's layout).
+#     Task 177 D29 (PerformanceMonitor's links and buttons, kind 'pm'): the Summary row's Silence button (off with why
+#     on a server without the UI login, else its confirm 'Silence all alerts for '<name>'?'); on an instance of each
+#     engine the header's name (its Summary), the breadcrumb's band dot (named OK / Warning / Critical / Offline), the
+#     calendar's Previous / Next month (Next off on this month) and This month, Show as table and back, the newest day
+#     with data ('Why this day is <its band>:') and each of its drills landing on that page over that UTC day (View Top
+#     Queries always), and the Performance page's 'Zoomed: <from> → <to>' chip whose x goes back to the range before.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
@@ -349,6 +355,11 @@ for e in ('postgres', 'sqlserver'):
 for s in ('PostgreSQL ' + d['pg'], 'SQL Server ' + d['ms']):
     if not [x for x in has(scope=s, kind='drive-files') if x['verdict'].startswith('ok')]: bad.append('no drive Files link checked at ' + s)
 if not has(scope='PostgreSQL ' + d['pg'], kind='storage-tab', column='Temp'): bad.append('no Temp tab under ' + d['pg'])
+# task 177 D29: PerformanceMonitor's links and buttons, on an instance of each engine
+if not has(scope='root', kind='pm', column='Silence (Summary row)'): bad.append("no Summary row's Silence button checked")
+for e, n in (('sqlserver', d['ms']), ('postgres', d['pg'])):
+    for c in ('header name', 'breadcrumb dot', 'calendar months', 'calendar table', 'calendar day', 'calendar View Top Queries', 'Performance zoom'):
+        if not has(scope='%s %s' % (e, n), kind='pm', column=c): bad.append('no %s checked on %s' % (c, n))
 print('the click map covered: ' + ('every kind asked' if not bad else '; '.join(bad)))
 sys.exit(1 if bad else 0)
 PY

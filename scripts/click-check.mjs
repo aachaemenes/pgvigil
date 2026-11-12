@@ -76,8 +76,9 @@ await new Promise(r => ws.addEventListener('open', r));
 let id = 0; const wait = new Map();
 ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
-const ev = async (expr) => {
-  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true });
+// an async expression needs awaitPromise: without it CDP hands back the pending Promise, serialised as {} (d29-c3)
+const ev = async (expr, awaitPromise = false) => {
+  const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise });
   if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
   return d.result?.result?.value;
 };
@@ -391,6 +392,91 @@ for (const s of storageScopes.slice(2)) {
   }
 }
 
+// P (task 177 D29): PerformanceMonitor's links and buttons on pgvigil - the instance header's name, the Summary
+// row's Silence button (the demo serves without the UI login: it is drawn off, with why), the calendar's month
+// buttons, a day and its drills (each to its page over that UTC day), Show as table, and the Performance page's zoom
+// chip (its x back to the range before the zoom), on an instance of each engine
+const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: 'pm', column, engine, link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
+{
+  if (await go('#/summary')) {
+    const sb = await ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => t.querySelector('td')?.textContent.trim() === ${JSON.stringify(pg.name)});
+      const b = tr && [...tr.querySelectorAll('button')].find(x => /^(Silence|Unsilence)$/.test(x.textContent));
+      if (!b) return null; const was = location.hash; b.click(); const d = document.querySelector('dialog[open]');
+      const out = { text: b.textContent, aria: b.getAttribute('aria-label'), disabled: b.disabled, title: b.title, dialog: d ? (d.querySelector('h3,h2')?.textContent ?? d.textContent.slice(0, 80)) : '', moved: location.hash !== was };
+      if (d) { d.close(); d.remove(); } return out; })()`);
+    pm('root', 'Silence (Summary row)', 'postgres', sb ? `${sb.text}: ${sb.disabled ? `off - ${sb.title}` : `dialog '${sb.dialog}'`}` : 'no button',
+      !!sb && !sb.moved && sb.aria === `Silence all alerts for '${pg.name}'` && (sb.disabled ? sb.title.length > 0 : sb.dialog.startsWith(`Silence all alerts for '${pg.name}'?`)),
+      "PerformanceMonitor's Silence on the server's row: its confirm, or off with why");
+  } else pm('root', 'Silence (Summary row)', 'postgres', 'the Summary did not draw', false, 'the Summary did not draw');
+  for (const [inst, eng] of [[ms, 'sqlserver'], [pg, 'postgres']]) {
+    const home = `#/summary?i=${inst.instance_id}`;
+    if (!(await go(home))) { pm(`${eng} ${inst.name}`, 'header', eng, 'not drawn', false, 'the instance Summary did not draw'); continue; }
+    for (let i = 0; i < 40 && !(await ev(`!!document.querySelector('main .inst-header') && !!document.querySelector('main .healthcal-grid')`)); i++) await sleep(250);
+    // the header's name: the instance's Summary
+    const nh = await ev(`document.querySelector('main .inst-header .inst-name')?.getAttribute('href') ?? ''`);
+    pm(`${eng} ${inst.name}`, 'header name', eng, nh, tabOf(nh) === 'summary' && paramsOf(nh).get('i') === String(inst.instance_id), "the header's name: the instance's Summary");
+    const dot = await ev(`(() => { const d = document.querySelector('#crumb .band-dot'); return d ? d.getAttribute('aria-label') : null; })()`);
+    pm(`${eng} ${inst.name}`, 'breadcrumb dot', eng, String(dot), ['OK', 'Warning', 'Critical', 'Offline'].includes(dot), 'the band dot before the name in the breadcrumb, named by its word');
+    // the calendar's month buttons
+    const monthOf = () => ev(`document.querySelector('main .healthcal-month')?.textContent ?? ''`);
+    const clickNav = async (name) => { await ev(`[...document.querySelectorAll('main .healthcal-nav button')].find(b => (b.getAttribute('aria-label') ?? b.textContent) === ${JSON.stringify(name)})?.click()`); for (let i = 0; i < 30 && await ev(`!!document.querySelector('main .healthcal-body p.meta') && /^Loading/.test(document.querySelector('main .healthcal-body p.meta').textContent)`); i++) await sleep(100); await sleep(200); };
+    const m0 = await monthOf();
+    const nextOff = await ev(`[...document.querySelectorAll('main .healthcal-nav button')].find(b => b.getAttribute('aria-label') === 'Next month')?.disabled ?? null`);
+    await clickNav('Previous month'); const m1 = await monthOf();
+    const back = await ev(`!![...document.querySelectorAll('main .healthcal-nav button')].find(b => b.getAttribute('aria-label') === 'Back to this month')`);
+    await clickNav('Next month'); const m2 = await monthOf();
+    await clickNav('Previous month'); await clickNav('Back to this month'); const m3 = await monthOf();
+    pm(`${eng} ${inst.name}`, 'calendar months', eng, `${m0} -> ${m1} -> ${m2}; This month -> ${m3}`, nextOff === true && m1 !== m0 && back && m2 === m0 && m3 === m0,
+      'Previous / Next month (Next off on this month), This month only away from it');
+    await clickNav('Show as table');
+    const tb = await ev(`({ grid: !!document.querySelector('main .healthcal-body table.grid, main .healthcal-body p.empty'), next: [...document.querySelectorAll('main .healthcal-nav button')].find(b => /Show as/.test(b.textContent))?.textContent })`);
+    await clickNav('Show as calendar');
+    const cal = await ev(`!!document.querySelector('main .healthcal-grid')`);
+    pm(`${eng} ${inst.name}`, 'calendar table', eng, `table ${tb.grid}, then '${tb.next}', calendar again ${cal}`, tb.grid && tb.next === 'Show as calendar' && cal, 'Show as table / Show as calendar');
+    // the newest day with data: its detail and its drills
+    const day = await ev(`(async () => { const c = [...document.querySelectorAll('main .healthcal-cell')].filter(b => /^\\d+ (Healthy|Warning|Critical), /.test(b.getAttribute('aria-label'))).pop();
+      if (!c) return null; c.click(); await new Promise(r => setTimeout(r, 300)); const d = document.querySelector('main .healthcal-day');
+      return { label: c.getAttribute('aria-label'), why: d?.querySelector('p')?.textContent ?? '', drills: [...(d?.querySelectorAll('.healthcal-drills a') ?? [])].map(a => [a.textContent, a.getAttribute('href')]) }; })()`, true);
+    // a day read that failed is recorded and its drills skipped; the zoom below still runs
+    const dayOk = !!day && typeof day === 'object' && typeof day.label === 'string' && Array.isArray(day.drills);
+    if (!day) pm(`${eng} ${inst.name}`, 'calendar day', eng, 'no day with data this month', false, 'the demo collects today: a day with data');
+    else if (!dayOk) pm(`${eng} ${inst.name}`, 'calendar day', eng, `read back ${JSON.stringify(day).slice(0, 120)}`, false, "the day's click read no label");
+    if (dayOk) {
+      pm(`${eng} ${inst.name}`, 'calendar day', eng, `${day.label}; ${day.why}`, /^Why this day is (Healthy|Warning|Critical):$/.test(day.why) && day.label.split(', ')[0].replace(/^\d+ /, '') === day.why.replace(/^Why this day is (.*):$/, '$1'), "a day's click: why it has its band");
+      const want = { 'View Deadlocks': eng === 'sqlserver' ? 'mssql_deadlocks' : 'pg_deadlocks', 'View Blocking': eng === 'sqlserver' ? 'mssql_blocked' : 'activity', 'View Top Queries': eng === 'sqlserver' ? 'mssql_slow' : 'statements' };
+      const iso = (day.label.match(/\d{4}-\d{2}-\d{2}/) ?? [''])[0];
+      for (const [t, h] of day.drills) {
+        const ok0 = tabOf(h) === want[t] && paramsOf(h).get('from') === `${iso}T00:00:00Z` && (paramsOf(h).get('to') ?? '').startsWith(new Date(Date.parse(iso + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10));
+        await ev(`location.hash = ${JSON.stringify(h)}`); await settled(); const got = await landing();
+        pm(`${eng} ${inst.name}`, `calendar ${t}`, eng, `${tabOf(got.hash)} (${got.h2.slice(0, 40)})`, ok0 && tabOf(got.hash) === want[t] && !got.err.length, `the day's ${t.replace('View ', '')} page over that UTC day`);
+      }
+      if (!day.drills.some(([t]) => t === 'View Top Queries')) pm(`${eng} ${inst.name}`, 'calendar View Top Queries', eng, 'missing', false, 'a day with data links its top queries');
+    }
+    // the Performance page's zoom: a real drag across the first chart (CDP mouse events: uPlot's own drag, chart.ts
+    // sets the page's range), then the chip and its x
+    if (await go(`#/performance?i=${inst.instance_id}`)) {
+      const before = await ev('location.hash');
+      const r0 = await ev(`(() => { const o = document.querySelector('main .charts .u-over'); if (!o) return null; o.scrollIntoView({ block: 'center' }); const b = o.getBoundingClientRect(); return { x: b.left, y: b.top + b.height / 2, w: b.width }; })()`);
+      if (r0) {
+        const x1 = r0.x + r0.w * 0.45, x2 = r0.x + r0.w * 0.8;
+        await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x1, y: r0.y });
+        await cmd('Input.dispatchMouseEvent', { type: 'mousePressed', x: x1, y: r0.y, button: 'left', buttons: 1, clickCount: 1 });
+        for (let k = 1; k <= 6; k++) { await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x1 + (x2 - x1) * k / 6, y: r0.y, button: 'left', buttons: 1 }); await sleep(30); }
+        await cmd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2, y: r0.y, button: 'left', buttons: 0, clickCount: 1 });
+      }
+      for (let i = 0; i < 40 && (await ev('location.hash')) === before; i++) await sleep(100);
+      await settled(); await sleep(400);
+      const zoomedTo = await ev('location.hash');
+      const chip = await ev(`document.querySelector('main .zoom-chip')?.textContent ?? ''`);
+      await ev(`document.querySelector('main .zoom-chip button[aria-label="Reset zoom"]')?.click()`); await settled();
+      const after = await ev('location.hash');
+      pm(`${eng} ${inst.name}`, 'Performance zoom', eng, `drag -> ${paramsOf(zoomedTo).get('from') ? 'a custom range' : zoomedTo}; ${chip.slice(0, 60)}; x -> ${after === before ? 'the range before' : after}`,
+        !!r0 && zoomedTo !== before && !!paramsOf(zoomedTo).get('from') && chip.startsWith('Zoomed: ') && chip.includes('→') && after === before,
+        "a drag on a chart zooms every chart (the page's range); PerformanceMonitor's 'Zoomed: from → to' chip, its x back to the range before");
+    } else pm(`${eng} ${inst.name}`, 'Performance zoom', eng, 'not drawn', false, 'the Performance page did not draw');
+  }
+}
+
 // an instance whose drives' Files pages listed no file at all has proven nothing
 for (const s of storageScopes.slice(2)) if (!filesSeen.get(s.name)) record({ scope: s.name, kind: 'drive-files', column: 'Files', engine: '', link: 'every drive', landed: 'no file listed on any drive', verdict: 'FAIL no drive of the instance lists a file' });
 
@@ -403,6 +489,6 @@ for (const r of results) {
 for (const r of seen.values()) console.log(`${r.verdict.startsWith('FAIL') ? 'FAIL' : 'ok  '} | ${r.scope} | ${r.kind} | ${r.column || '-'} | ${r.engine || '-'} | ${r.n} link(s) | ${r.landed} | ${r.verdict}`);
 if (outPath) fs.writeFileSync(outPath, JSON.stringify({ tag, pg: pg.name, ms: ms.name, results }, null, 1));
 const byKind = k => results.filter(r => r.kind === k).length;
-console.log(`links: ${results.length} (${byKind('cell')} instance-grid cells, ${byKind('shape')} Summary shape checks, ${byKind('test')} test names, ${byKind('test-filter')} test filters, ${byKind('strip')} Needs attention, ${byKind('name')} instance names, ${byKind('check')} failing checks, ${byKind('other')} other, ${byKind('tree')} tree nodes, ${byKind('storage-tab')} Storage tabs, ${byKind('drive-files')} drive Files links); ${fails} FAIL`);
+console.log(`links: ${results.length} (${byKind('cell')} instance-grid cells, ${byKind('shape')} Summary shape checks, ${byKind('test')} test names, ${byKind('test-filter')} test filters, ${byKind('strip')} Needs attention, ${byKind('name')} instance names, ${byKind('check')} failing checks, ${byKind('other')} other, ${byKind('tree')} tree nodes, ${byKind('storage-tab')} Storage tabs, ${byKind('drive-files')} drive Files links, ${byKind('pm')} PerformanceMonitor links and buttons); ${fails} FAIL`);
 ws.close();
 process.exit(fails ? 1 : 0);
