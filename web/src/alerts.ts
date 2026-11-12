@@ -600,8 +600,8 @@ export const alertCol: Col = {
 
 // ---- Admin (task 177 D30: PerformanceMonitor's Admin page - its Servers, Notification Routes, Alert Settings, Threshold
 // Overrides and Server actions tabs) -------------------------------------------------------------------------------------
-// What this pgvigil runs with, in one place and read only: the configuration file (pgvigil.yaml) is the source of the
-// instances, the channels and the action switches, and the alert rules are written on Alert rules (each tab says where a
+// What this pgvigil runs with, in one place and read only: the configuration file (pgvigil.yaml) and Admin > Instances are
+// the sources of the instances; the file is the source of the channels and the action switches, and the alert rules are written on Alert rules (each tab says where a
 // change is made). The tab rides in the address (atab=). The route and the tab are the shell's (a WIRING BLOCK).
 // builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC)
 const builtIn: Row[] = [
@@ -616,14 +616,14 @@ const builtIn: Row[] = [
 ];
 export async function adminView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', { class: 'admin' }, el('h2', {}, 'Admin'),
-    el('p', { class: 'meta' }, 'What this pgvigil runs with, read only: the configuration file (pgvigil.yaml) is the source of the servers, the notification channels and the action switches (a change there takes a reload of the service); the alert rules and their overrides are written on ',
+    el('p', { class: 'meta' }, 'What this pgvigil runs with, read only: the configuration file (pgvigil.yaml) and ', el('a', { href: href(ctx, { tab: 'admin_instances', instance: undefined }) }, 'Admin > Instances'), ' are the sources of the servers (a page change applies within 15 seconds, a file change takes a reload of the service); the configuration file is the source of the notification channels and the action switches; the alert rules and their overrides are written on ',
       el('a', { href: href(ctx, { tab: 'alertrules', instance: undefined }) }, 'Alert rules'), '; acknowledgements, mutes and channel tests on ', el('a', { href: href(ctx, { tab: 'alerts', instance: undefined }) }, 'Alerts'), '.'));
   const tabs: [string, string, () => Promise<HTMLElement>][] = [
     ['servers', 'Servers', async () => {
       const insts = (await fleet()).instances;
       const want = ['name', 'engine', 'platform', 'server_version', 'is_replica', 'tags', 'last_seen', 'collections_failing'];
       const keys = want.filter(k => insts.some(r => k in r));
-      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) in the repository: each the configuration names (instances:) and the collector has read at least once (a server never reached is listed after its first read); last seen and the collections failing now.`),
+      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) in the repository: each named in pgvigil.yaml (instances:) or on Admin > Instances, and read by the collector at least once (a server never reached is listed after its first read); last seen and the collections failing now.`),
         grid(insts, keys.map(k => ({ key: k, ...(k === 'name' ? { fmt: (v: unknown, r: Row) => el('a', { href: href(ctx, { tab: 'summary', instance: Number(r.instance_id) }) }, String(v)) } : {}),
           ...(k === 'last_seen' ? { label: 'last seen', fmt: fmtTime } : {}), ...(k === 'collections_failing' ? { label: 'collections failing', num: true } : {}),
           ...(k === 'is_replica' ? { label: 'replica', fmt: (v: unknown) => v ? 'yes' : '' } : {}),
