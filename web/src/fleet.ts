@@ -10,6 +10,17 @@ import { versionCell } from './versions';
 export interface Fleet { instances: Row[]; checks: Row[]; versions: Row[]; mssql: Row[]; mssqlServers: Row[]; pgdb: Row[]; mssqlFailed: boolean; pgaudit: Row[]; pgauditFailed: boolean; at: number }
 let cache: Fleet | null = null;
 let pending: Promise<Fleet> | null = null;
+// the pgaudit cells are read at most every 5 minutes, a forced refresh included (the Summary's auto refresh forces one
+// every 30 s): GET /api/pgaudit counts every instance's findings, whose rule arm reads pgaudit_events - about 18 ms
+// over 12,000 events, 1.5 s over 600,000 on 12 instances (task 167's measurement); the pgaudit collection itself
+// reads health once a minute
+const auditTTL = 300000;
+let audit: { rows: Row[]; failed: boolean; at: number } | null = null;
+function auditRead(): Promise<{ rows: Row[]; failed: boolean }> {
+  if (audit && Date.now() - audit.at < auditTTL) return Promise.resolve(audit);
+  return readAuditFleet().then(rows => ({ rows, failed: false }), () => ({ rows: [] as Row[], failed: true }))
+    .then(a => (audit = a.failed ? null : { ...a, at: Date.now() }, a));   // a failed read is tried again at the next fleet read
+}
 
 export async function fleet(force = false): Promise<Fleet> {
   if (!force && cache && Date.now() - cache.at < 25000) return cache;
@@ -20,7 +31,7 @@ export async function fleet(force = false): Promise<Fleet> {
   // the pgaudit read too (a repository before 0100, a failure): the PostgreSQL Audit cells then say 'read failed'
   pending = Promise.all([get('instances'), get('overview'), get<{ fleet: Table | null }>('versions', {}).catch(() => ({ fleet: null })),
     get<{ cells: Table | null; servers: Table | null; pgdb: Table | null; failed?: boolean }>('mssql/summary', {}).catch(() => ({ cells: null, servers: null, pgdb: null, failed: true })),
-    readAuditFleet().then(rows => ({ rows, failed: false }), () => ({ rows: [] as Row[], failed: true }))])
+    auditRead()])
     .then(([i, c, v, m, a]) => (cache = { instances: rowsOf(i), checks: rowsOf(c), versions: rowsOf(v.fleet), mssql: rowsOf(m.cells), mssqlServers: rowsOf(m.servers), pgdb: rowsOf(m.pgdb), mssqlFailed: m.failed === true, pgaudit: a.rows, pgauditFailed: a.failed, at: Date.now() }))
     .finally(() => { pending = null; });
   return pending;
