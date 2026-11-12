@@ -1,0 +1,29 @@
+diff --git i/internal/repo/sql/0199_proof_d03_join.sql w/internal/repo/sql/0199_proof_d03_join.sql
+new file mode 100644
+index 0000000..2f95315
+--- /dev/null
++++ w/internal/repo/sql/0199_proof_d03_join.sql
+@@ -0,0 +1,11 @@
++-- PROOF ONLY (scripts/proof-darling-waits.sh applies it to its own copy of the tree): the join's arm of task 177 D03 in
++-- pgvigil.findings, appended to whatever pgvigil.findings the tree defines. The join itself writes the arm into its
++-- join file as text:
++--     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_waits', at
++--       FROM pgvigil.mssql_waits_findings
++DO $$
++DECLARE v text := rtrim(pg_get_viewdef('pgvigil.findings'::regclass), E' ;\n');
++BEGIN
++  EXECUTE 'CREATE OR REPLACE VIEW pgvigil.findings AS SELECT * FROM (' || v || E') f\nUNION ALL\n'
++       || 'SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, ''mssql_waits''::text, at FROM pgvigil.mssql_waits_findings';
++END $$;
+diff --git i/internal/web/web.go w/internal/web/web.go
+index 1bd4483..82ab880 100644
+--- i/internal/web/web.go
++++ w/internal/web/web.go
+@@ -298,6 +298,7 @@ func (s *Server) Handler() http.Handler {
+ 	api.HandleFunc("GET /api/running/fleet", s.RunningFleet)
+ 	api.HandleFunc("GET /api/running/snapshots", s.RunningSnapshots)
+ 	api.HandleFunc("GET /api/mssql/waits", s.MssqlWaits)
++	api.HandleFunc("GET /api/mssql/waitfindings", s.MSSQLWaitFindings) // the Waits tab's findings, shares, roll-up and grant semaphores (task 177 D03)
+ 	api.HandleFunc("GET /api/waiting", s.Waiting) // the Waiting tasks tab of either engine (task 177)
+ 	api.HandleFunc("GET /api/mssql/availability", s.MSSQLAvailability)
+ 	api.HandleFunc("GET /api/mssql/jobs", s.MSSQLJobs)

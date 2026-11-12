@@ -21,6 +21,12 @@ import (
 //   - Memory grants: sys.dm_exec_query_resource_semaphores summed (granted queries, waiters, granted and target KB)
 //     and sys.dm_exec_query_memory_grants at the read (the largest and the summed grant, the queries waiting: the
 //     Max / Sum Memory Grant KB of DBA Dash's Running Queries row), the collector's own session left out.
+//   - The grant semaphores one by one (task 177, D03): each row of sys.dm_exec_query_resource_semaphores with its
+//     resource pool's name: target and max target, total, available, granted and used memory, grantees and waiters,
+//     and the two counters since the server started, timeout_error_count and forced_grant_count (the repository
+//     stores their differences between reads: sp_PerfCheck's forced-grant check over an interval).
+//   - The NUMA nodes (sp_Blitz's CMEMTHREAD-on-NUMA check): node 0's online schedulers and how many other nodes
+//     there are that are not the dedicated admin connection's (sys.dm_os_nodes).
 //
 // Rights as mssql_cpu (perfApplies). Runs on SQL Server 2016 SP1 and later (sql_memory_model_desc), Amazon RDS and
 // Azure SQL Managed Instance; not on Azure SQL Database (no sys.dm_os_sys_memory or sys.dm_os_process_memory there).
@@ -71,12 +77,28 @@ const memoryGrantSQL = `SELECT 'grants' AS kind,
 FROM sys.dm_exec_query_memory_grants g
 WHERE g.session_id <> @@SPID`
 
+// memoryPoolSQL: one row per grant semaphore (two per resource pool: 0 the regular one, 1 the small-query one).
+const memoryPoolSQL = `SELECT 'pool' AS kind, CAST(s.pool_id AS int) AS pool_id, CAST(p.name AS nvarchar(128)) AS pool_name,
+  CAST(s.resource_semaphore_id AS int) AS semaphore_id, CAST(s.target_memory_kb AS bigint) AS target_kb,
+  CAST(s.max_target_memory_kb AS bigint) AS max_target_kb, CAST(s.total_memory_kb AS bigint) AS total_kb,
+  CAST(s.available_memory_kb AS bigint) AS available_kb, CAST(s.granted_memory_kb AS bigint) AS granted_kb,
+  CAST(s.used_memory_kb AS bigint) AS used_kb, CAST(s.grantee_count AS int) AS grantees, CAST(s.waiter_count AS int) AS waiters,
+  CAST(s.timeout_error_count AS bigint) AS timeout_errors, CAST(s.forced_grant_count AS bigint) AS forced_grants
+FROM sys.dm_exec_query_resource_semaphores s
+LEFT JOIN sys.dm_resource_governor_resource_pools p ON p.pool_id = s.pool_id`
+
+// memoryNumaSQL: sp_Blitz's NUMA test (check 162): node 0's online schedulers, and the nodes after it that are not
+// the dedicated admin connection's.
+const memoryNumaSQL = `SELECT 'numa' AS kind,
+  (SELECT CAST(online_scheduler_count AS int) FROM sys.dm_os_nodes WHERE node_id = 0) AS node0_schedulers,
+  (SELECT CAST(COUNT(*) AS int) FROM sys.dm_os_nodes WHERE node_id > 0 AND node_state_desc NOT LIKE N'%DAC') AS other_nodes`
+
 func (memoryCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	if err := perfState(ctx, conn, info, "sys.dm_os_sys_memory and sys.dm_os_memory_clerks"); err != nil {
 		return nil, err
 	}
 	var out []collect.Row
-	for _, q := range []string{memorySQL, memoryCounterSQL, memoryClerkSQL, memoryTotalsSQL, memoryGrantSQL} {
+	for _, q := range []string{memorySQL, memoryCounterSQL, memoryClerkSQL, memoryTotalsSQL, memoryGrantSQL, memoryPoolSQL, memoryNumaSQL} {
 		rows, err := QueryRows(ctx, conn, q)
 		if err != nil {
 			return nil, err
