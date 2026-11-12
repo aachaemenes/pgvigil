@@ -114,7 +114,7 @@ WITH now_b AS (SELECT pg_database_size(current_database()) AS bytes),
 past AS (SELECT repo_bytes AS bytes, at FROM pgvigil.collector_beats
           WHERE at <= now() - interval '23 hours' AND repo_bytes IS NOT NULL ORDER BY at DESC LIMIT 1),
 first AS (SELECT repo_bytes AS bytes, at FROM pgvigil.collector_beats WHERE repo_bytes IS NOT NULL ORDER BY at LIMIT 1),
-w AS (SELECT round(sum(rows_written)::numeric / greatest(count(*), 1)) AS rows_per_min, count(*) AS beats
+w AS (SELECT round(sum(rows_written)::numeric / greatest(count(DISTINCT date_trunc('minute', at)), 1)) AS rows_per_min, count(*) AS beats
         FROM pgvigil.collector_beats WHERE at > now() - interval '1 hour'),
 p AS (SELECT * FROM pgvigil.purge_runs ORDER BY finished_at DESC LIMIT 1)
 SELECT n.bytes AS size_bytes,

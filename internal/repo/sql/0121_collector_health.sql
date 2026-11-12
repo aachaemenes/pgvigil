@@ -225,38 +225,48 @@ CREATE OR REPLACE VIEW pgvigil.collector_live AS
 SELECT * FROM pgvigil.collector_status
  WHERE state NOT IN ('stopped', 'ended') AND beat_at > now() - interval '3 minutes';
 
--- collector_hosts: each collector (a host) by its newest run, and the instances it collected in the 15 minutes before
--- its last beat
+-- collector_hosts: each collector (a host): its newest beat over all its runs (a console run stopped beside the service
+-- does not make the host look down), whether any run is live, and its active instances - those it collected in the 15
+-- minutes before its newest beat - with the ones no other host has read since that beat (orphaned)
 CREATE OR REPLACE VIEW pgvigil.collector_hosts AS
-WITH cur AS (
-  SELECT DISTINCT ON (h.host) h.* FROM pgvigil.collector_heartbeat h ORDER BY h.host, h.started_at DESC
+WITH hb AS (
+  SELECT h.host, max(h.beat_at) AS beat_at, bool_and(h.stopped_at IS NOT NULL) AS all_stopped
+    FROM pgvigil.collector_heartbeat h GROUP BY h.host
+), mine AS (
+  SELECT DISTINCT hb.host, l.instance_id
+    FROM hb JOIN pgvigil.collector_heartbeat h ON h.host = hb.host
+    JOIN pgvigil.collector_load l ON l.collector_id = h.collector_id AND l.minute >= hb.beat_at - interval '15 minutes'
+    JOIN pgvigil.instances i ON i.instance_id = l.instance_id AND i.is_active
 )
-SELECT cur.host, cur.collector_id, cur.started_at, cur.beat_at, cur.stopped_at,
-       coalesce((SELECT array_agg(DISTINCT l.instance_id)
-                   FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h2 USING (collector_id)
-                  WHERE h2.host = cur.host AND l.minute >= cur.beat_at - interval '15 minutes'), '{}') AS instances
-  FROM cur;
+SELECT hb.host, hb.beat_at, hb.all_stopped,
+       coalesce((SELECT array_agg(m.instance_id) FROM mine m WHERE m.host = hb.host), '{}') AS instances,
+       coalesce((SELECT array_agg(m.instance_id) FROM mine m
+                  WHERE m.host = hb.host
+                    AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_load l2 JOIN pgvigil.collector_heartbeat h2 USING (collector_id)
+                                     WHERE h2.host <> hb.host AND l2.instance_id = m.instance_id
+                                       AND l2.minute >= date_trunc('minute', hb.beat_at))), '{}') AS orphaned
+  FROM hb;
 
 -- collector_parent: the 'collector or network' conditions now, one row per collector (host) at most:
---   'collector not seen': no beat for 5 minutes from the host while it had instances and no other collector read any
---     of them in the last 5 minutes (a host whose instances moved to another collector is retired, not down)
---   'instances failing together': a minute among the host's last 3 complete ones in which at least 3 of its instances
---     and over half of those it ran failed every run (three minutes, so a minute in which hung connects finished few
---     runs does not lift it); since = the first such minute of the three
+--   'collector not seen': no beat for 5 minutes from any run of the host while some of its active instances have not
+--     been read by another host since its newest beat (orphaned; a host whose every instance moved is retired, not
+--     down); its instances = the orphaned ones (held whatever the down host read after its last beat)
+--   'instances failing together': a minute among the host's last 4 minute stamps (the newest may not be written yet:
+--     a beat writes minute M at M+1 min+2 s) in which at least 3 of its instances and over half of those it ran failed
+--     every run (several minutes, so a minute in which hung connects finished few runs does not lift it); since = the
+--     first such minute; its instances = the host's, held while they have had no ok collection since
 -- instances: the host's instances (the hold reads them); since: when the condition began.
 CREATE OR REPLACE VIEW pgvigil.collector_parent AS
 WITH down AS (
   SELECT c.host, 'collector not seen'::text AS why,
-         format('no heartbeat from %s for %s min (the last at %s%s); its %s instance(s): %s', c.host,
+         format('no heartbeat from %s for %s min (the last at %s%s); %s of its %s instance(s) read by no other collector since: %s', c.host,
                 floor(extract(epoch FROM now() - c.beat_at) / 60), c.beat_at,
-                CASE WHEN c.stopped_at IS NOT NULL THEN ', stopped cleanly' ELSE ', no stop mark: a crash, the host or the network' END,
-                cardinality(c.instances),
-                (SELECT string_agg(i.name, ', ' ORDER BY i.name) FROM pgvigil.instances i WHERE i.instance_id = ANY (c.instances))) AS detail,
-         c.beat_at AS since, c.instances
+                CASE WHEN c.all_stopped THEN ', stopped cleanly' ELSE ', no stop mark: a crash, the host or the network' END,
+                cardinality(c.orphaned), cardinality(c.instances),
+                (SELECT string_agg(i.name, ', ' ORDER BY i.name) FROM pgvigil.instances i WHERE i.instance_id = ANY (c.orphaned))) AS detail,
+         c.beat_at AS since, c.orphaned AS instances
     FROM pgvigil.collector_hosts c
-   WHERE c.beat_at < now() - interval '5 minutes' AND cardinality(c.instances) > 0
-     AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-                      WHERE h.host <> c.host AND l.minute > now() - interval '5 minutes' AND l.instance_id = ANY (c.instances))
+   WHERE c.beat_at < now() - interval '5 minutes' AND cardinality(c.orphaned) > 0
 ), m AS (    -- the last 3 complete minutes, per host, minute and instance
   SELECT h.host, l.minute, l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
     FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
@@ -288,8 +298,25 @@ SELECT * FROM together t WHERE NOT EXISTS (SELECT 1 FROM down d WHERE d.host = t
 CREATE OR REPLACE VIEW pgvigil.collector_held_instances AS
 SELECT DISTINCT x.instance_id
   FROM pgvigil.collector_parent p CROSS JOIN LATERAL unnest(p.instances) AS x(instance_id)
- WHERE NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d
+ WHERE p.why = 'collector not seen'   -- the orphaned instances: no other host has read them since the down host's last beat
+    OR NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d
                     WHERE d.instance_id = x.instance_id AND d.status = 'ok' AND d.snapshot_at > p.since);
+
+-- collector_together_at: whether the instance was in a failing-together minute of a host that ran it in p_minute (at
+-- least 3 of the host's instances and over half of those it ran failed every run) - any time in the 8 days kept
+CREATE OR REPLACE FUNCTION pgvigil.collector_together_at(p_instance_id int, p_minute timestamptz)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM pgvigil.collector_heartbeat h0
+      JOIN pgvigil.collector_load l0 ON l0.collector_id = h0.collector_id AND l0.minute = p_minute AND l0.instance_id = p_instance_id
+     WHERE (SELECT count(*) FILTER (WHERE x.failures >= x.runs AND x.runs > 0) >= 3
+                   AND count(*) FILTER (WHERE x.failures >= x.runs AND x.runs > 0) * 2 > count(*) FILTER (WHERE x.runs > 0)
+              FROM (SELECT l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
+                      FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                     WHERE l.minute = p_minute AND h.host = h0.host
+                     GROUP BY l.instance_id) x))
+$$;
 
 -- collector_down: a collector not seen for 5 minutes (serve's watchdog runs the alert pass then: the collector that
 -- would send it is the one down)
@@ -322,20 +349,21 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
        'pgvigil collector', s.last_run_at
   FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
-   -- not an outage: the streak's last failed run is not in a minute in which the instance failed every run (at least
-   -- 2) - after an outage a slower collection is judged again at its next run, not alerted the moment the hold lifts
-   AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_load l
-                    WHERE l.instance_id = s.instance_id AND l.minute = date_trunc('minute', s.last_run_at - interval '2 seconds')
-                    GROUP BY l.instance_id HAVING sum(l.runs) >= 2 AND sum(l.failures) >= sum(l.runs))
+   -- not an outage: the streak's last failed run is not in a failing-together minute of its host - after an outage a
+   -- slower collection is judged again at its next run, not alerted the moment the hold lifts; one instance failing
+   -- alone is judged as it is
+   AND NOT pgvigil.collector_together_at(s.instance_id, date_trunc('minute', s.last_run_at - interval '2 seconds'))
 UNION ALL
 SELECT l.instance_id, 'critical', 'authentication failing', 'login refused', true, 'the login the collector uses works', 'all',
        format('%s login(s) refused in 15 minutes (a per-database connect included): a changed password or pg_hba? each run retries it and can lock the login out',
               sum(l.auth_failures)),
-       'pgvigil collector', max(l.minute)
+       'pgvigil collector', max(l.minute) FILTER (WHERE l.auth_failures > 0)
   FROM pgvigil.collector_load l JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND l.minute > now() - interval '15 minutes'
  GROUP BY l.instance_id
+-- it stands until a minute after the last refusal opened a connection (the login works again)
 HAVING sum(l.auth_failures) > 0
+   AND max(l.minute) FILTER (WHERE l.auth_failures > 0) >= coalesce(max(l.minute) FILTER (WHERE l.opened > 0 AND l.auth_failures = 0), '-infinity')
 UNION ALL
 -- two runs of `pgvigil run` collecting one instance in the same minute, in at least 2 of the last 10 complete minutes
 -- (a restart overlaps one minute at most): both write every collection, cursor imports twice

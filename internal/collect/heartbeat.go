@@ -332,7 +332,9 @@ func (h *Heartbeat) loop(ctx context.Context) {
 		next := time.Now().Truncate(time.Minute).Add(time.Minute + 2*time.Second)
 		select {
 		case <-ctx.Done():
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			// the last partial minute's counts and streaks, then the stop mark
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			h.beat(sctx, time.Now().Truncate(time.Minute))
 			if _, err := h.pool.Exec(sctx, `SELECT pgvigil.import_collector_stop($1)`, h.id); err != nil {
 				h.log.Warn("heartbeat: the stop mark was not written", "err", err)
 			}
@@ -355,9 +357,9 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 	bctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var known bool
-	if err := h.pool.QueryRow(bctx, `SELECT pgvigil.import_collector_beat($1, $2, $3::jsonb)`, h.id, minute, string(body)).Scan(&known); err != nil {
+	err = h.pool.QueryRow(bctx, `SELECT pgvigil.import_collector_beat($1, $2, $3::jsonb)`, h.id, minute, string(body)).Scan(&known)
+	if err != nil || !known {
 		// the minute's counts are lost with the beat (the page shows the gap); the streaks are sent again next minute
-		h.log.Warn("heartbeat: the beat was not written", "err", err)
 		h.mu.Lock()
 		for _, s := range b.Streaks {
 			if st := h.streaks[[2]string{s.Instance, s.Collection}]; st != nil {
@@ -365,6 +367,9 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 			}
 		}
 		h.mu.Unlock()
+	}
+	if err != nil {
+		h.log.Warn("heartbeat: the beat was not written", "err", err)
 		return
 	}
 	if !known { // the row is gone (trimmed after 8 days without a beat, or deleted): claimed again
@@ -374,12 +379,12 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 	}
 }
 
-var watchdog atomic.Value // string: "on", or "off: <why>"; empty when no watchdog was asked (not serve)
+var watchdog atomic.Value // string: "on", "on; the last alert pass failed: <err>", or "off: <why>"; empty outside serve
 
 // SetWatchdogOff records why serve runs no watchdog (logged by the caller; the Collector page shows it).
 func SetWatchdogOff(why string) { watchdog.Store("off: " + why) }
 
-// WatchdogStatus: "on", "off: <why>", or "" outside serve.
+// WatchdogStatus is "on" (with the last pass's failure when it failed), "off: <why>", or "" outside serve.
 func WatchdogStatus() string {
 	if v, ok := watchdog.Load().(string); ok {
 		return v
@@ -407,6 +412,14 @@ func Watchdog(ctx context.Context, log *slog.Logger, dsn string, pass func(conte
 		return
 	}
 	defer pool.Close()
+	pctx, pcancel := context.WithTimeout(ctx, 20*time.Second)
+	err = pool.Ping(pctx)
+	pcancel()
+	if err != nil { // a pool connects when first used: the page says on only once the repository answered
+		SetWatchdogOff("the repository did not answer: " + err.Error())
+		log.Warn("collector watchdog off", "err", err)
+		return
+	}
 	watchdog.Store("on")
 	log.Info("collector watchdog on: serve runs the alert pass while a collector is not seen for 5 minutes")
 	t := time.NewTicker(time.Minute)
@@ -432,7 +445,10 @@ func Watchdog(ctx context.Context, log *slog.Logger, dsn string, pass func(conte
 		}
 		if down {
 			if err := pass(ctx); err != nil {
+				watchdog.Store("on; the last alert pass failed: " + err.Error())
 				log.Warn("collector watchdog: the alert pass failed", "err", err)
+			} else {
+				watchdog.Store("on")
 			}
 		}
 	}

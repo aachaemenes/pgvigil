@@ -11,8 +11,9 @@
 #   A  the heartbeat: a 'systemd unit' collector on pgvigil-svc is up; each instance's runs counted (connections per
 #      minute, runs, no failure); every collection's runs, rows and durations; the repository part answers
 #   E  a login refused: t2's password changed at the source - t2's 'logins refused' counted, 'authentication failing'
-#      and 'collection failing' on t2, both alerted (one instance: nothing held), no 'collector or network'; the password
-#      back and the service restarted: t2's streak is reset (a restart carries the stored streaks on)
+#      and 'collection failing' on t2, both alerted (one instance: nothing held), no 'collector or network'; the service
+#      restarted while t2 is still refused: its streak counts on from the stored one (no new alert, no recovery); the
+#      password back and the service restarted again: t2's findings gone, its streaks reset
 #   H  the page: #/collector in both themes (shots), every link on it clicked with its landing (an instance link opens
 #      its Collection dates with the collector's line, the line's link comes back), the tree's Collector node, the
 #      chart's menu
@@ -150,6 +151,14 @@ if waitfor 300 "SELECT EXISTS (SELECT 1 $T2 AND f.setting = 'authentication fail
 else
   fail "E login refused: t2's findings did not come in 300 s: $(q "SELECT string_agg(setting || '=' || value, ', ') FROM pgvigil.collector_findings")"
 fi
+S2="SELECT coalesce(max(s.fail_streak), 0) FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 't2'"
+k0=$(q "$S2"); f0=$(spool_n firing "collection failing" t2); r0=$(spool_n resolved "collection failing" t2)
+docker exec "$SVC" systemctl restart pgvigil.service   # still refused: the restart must not reset the count
+sleep 150
+k1=$(q "$S2"); f1=$(spool_n firing "collection failing" t2); r1=$(spool_n resolved "collection failing" t2)
+[[ "$k1" -gt "$k0" && "$f1" == "$f0" && "$r1" == "$r0" ]] \
+  && ok "E restart while refused: t2's streak $k0 -> $k1 across the restart (carried on), no new 'collection failing' alert ($f1), no recovery ($r1)" \
+  || fail "E restart while refused: streak $k0 -> $k1 (want more), firing $f0 -> $f1, resolved $r0 -> $r1 (want unchanged)"
 
 # ---- H the page ----------------------------------------------------------------------------------------------------
 setsid chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chrome" --no-first-run --disable-gpu --hide-scrollbars \
@@ -237,9 +246,9 @@ fi
 psql "$TDSN" -Xq -c "alter role l1 login" -c "alter role l2 login" -c "alter role l3 login" >/dev/null
 if waitfor 300 "SELECT NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent) AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances)"; then
   sleep 200   # the passes after the hold lifts: a held 'collection failing' of a slower collection must not go out
-  after=0; for n in t1 t2 t3; do after=$((after + $(spool_n firing "collection failing" $n))); done
-  [[ "$after" == 0 ]] && ok "D lifted: the logins back - the parent cleared, nothing held, no 'collection failing' of t1-t3 sent in the 200 s after" \
-    || fail "D lifted: $after 'collection failing' alert(s) of t1-t3 sent after the hold lifted: $(ls "$WORK/spool" | grep -v 'collector' | head | tr '\n' ' ')"
+  after=0; for n in t1 t2 t3; do after=$((after + $(spool_n firing "collection failing" $n) + $(spool_n firing "authentication failing" $n))); done
+  [[ "$after" == 0 ]] && ok "D lifted: the logins back - the parent cleared, nothing held, no 'collection failing' or 'authentication failing' of t1-t3 sent in the 200 s after" \
+    || fail "D lifted: $after alert(s) of t1-t3 sent after the hold lifted: $(ls "$WORK/spool" | grep -v 'collector' | head | tr '\n' ' ')"
 else fail "D lifted: still a parent or a held instance 300 s after the logins came back"; fi
 
 # ---- F many collectors on one repository ---------------------------------------------------------------------------
@@ -253,6 +262,7 @@ if waitfor 200 "SELECT count(DISTINCT f.instance_id) = 4 FROM pgvigil.collector_
 else fail "F many: no 'collected by more than one collector' on the 4 instances in 200 s: $(tail -3 "$WORK/second.log" | tr '\n' ' ' | cut -c1-400)"; fi
 kill -TERM $SECOND 2>/dev/null || true; wait $SECOND 2>/dev/null || true; SECOND=""
 waitfor 60 "SELECT (SELECT count(*) FROM pgvigil.collector_live) = 1" || fail "F many: the second collector still live 60 s after it was stopped"
+sleep 130   # pgvigil-svc beats past the second collector's stop: the second's instances are read by another host since
 
 # ---- B the service stopped -----------------------------------------------------------------------------------------
 waitfor 150 "SELECT count(*) = 1 FROM pgvigil.collector_live" || true
@@ -264,9 +274,10 @@ st=$(api '' | jget collectors | python3 -c "import json,sys; r=[x for x in json.
 if waitfor 600 "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_parent WHERE why = 'collector not seen' AND host = 'pgvigil-svc')"; then
   sleep 130   # serve's watchdog: its next minute
   sent=$(spool_n firing "collector or network"); sent2=$(SPOOL=$WORK/spool2 spool_n firing "collector or network")
-  [[ "$sent" == 1 && "$sent2" == 1 ]] && grep -qE 'collector_down(=|":)true' "$WORK/serve.log" \
-    && ok "B not seen: 'collector or network' (collector not seen: pgvigil-svc) after $(q "SELECT floor(extract(epoch FROM now() - max(beat_at)) / 60) FROM pgvigil.collector_heartbeat WHERE host = 'pgvigil-svc'") min, sent once on each channel by serve's watchdog" \
-    || fail "B not seen: alerts $sent / scoped $sent2 (want 1 / 1); serve log: $(grep -i watchdog "$WORK/serve.log" | tail -3 | tr '\n' ' ' | cut -c1-400)"
+  heldb=$(q "SELECT string_agg(i.name, ' ' ORDER BY i.name) FROM pgvigil.collector_held_instances h JOIN pgvigil.instances i USING (instance_id)")
+  [[ "$sent" == 1 && "$sent2" == 1 && "$heldb" == "t1 t2 t3 t4" ]] && grep -qE 'collector_down(=|":)true' "$WORK/serve.log" \
+    && ok "B not seen: 'collector or network' (collector not seen: pgvigil-svc) after $(q "SELECT floor(extract(epoch FROM now() - max(beat_at)) / 60) FROM pgvigil.collector_heartbeat WHERE host = 'pgvigil-svc'") min, sent once on each channel by serve's watchdog; held: $heldb" \
+    || fail "B not seen: alerts $sent / scoped $sent2 (want 1 / 1), held '$heldb' (want t1 t2 t3 t4); serve log: $(grep -i watchdog "$WORK/serve.log" | tail -3 | tr '\n' ' ' | cut -c1-400)"
 else fail "B not seen: no 'collector not seen' 8 min after the stop"; fi
 docker exec "$SVC" systemctl start pgvigil.service
 waitfor 200 "SELECT (SELECT count(*) FROM pgvigil.collector_live) = 1 AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent)" \

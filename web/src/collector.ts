@@ -19,8 +19,11 @@ const stateKind: Record<string, string> = { up: 'ok', stopped: 'warn', ended: ''
 const sevKind: Record<string, string> = { critical: 'crit', warning: 'warn', info: '' };
 const sevWord: Record<string, string> = { critical: 'Critical', warning: 'Warning', info: 'Info' };
 
-// the service's state in words: the collectors up (one per host), or how long the newest has not been seen
-function serviceState(rows: Row[]): { word: string; kind: string; sub: string } {
+// the service's state in words: a collector down (its 'collector or network' finding) first, then the collectors up (one
+// per host), or how long the newest has not been seen
+function serviceState(rows: Row[], findings: Row[] = []): { word: string; kind: string; sub: string } {
+  const down = findings.filter(r => r.setting === 'collector or network' && String(r.value).startsWith('collector not seen'));
+  if (down.length) return { word: down.length === 1 ? 'Down' : `${down.length} down`, kind: 'crit', sub: down.map(r => String(r.value).replace(/^collector not seen: /, '')).join(', ') + ' not seen for 5 minutes' };
   const live = rows.filter(r => r.state === 'up');
   if (live.length > 1) return { word: `${live.length} up`, kind: 'ok', sub: live.map(r => String(r.host)).join(', ') };
   if (live.length === 1) return { word: 'Up', kind: 'ok', sub: `beat ${fmtSecs(live[0].beat_age_secs)} ago` };
@@ -41,9 +44,10 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
   const load = rowsOf(d.load), streaks = rowsOf(d.streaks), tables = rowsOf(d.tables);
   const repo: Row = rowsOf(d.repository)[0] ?? {};
   const conns = rowsOf(d.connections), purges = rowsOf(d.purges);
-  const st = serviceState(collectors), me = collectors.find(r => r.state === 'up') ?? collectors[0];
+  const st = serviceState(collectors, findings), me = collectors.find(r => r.state === 'up') ?? collectors[0];
   const wd = String(rowsOf(d.watchdog)[0]?.watchdog ?? '');
   const wdTile = wd === 'on' ? tile('Watchdog', 'On', '', { sub: 'serve sends the alert while a collector is down' })
+    : wd.startsWith('on;') ? tile('Watchdog', 'On', 'warn', { sub: wd.slice(4) })
     : wd ? tile('Watchdog', 'Off', 'warn', { sub: wd.replace(/^off: /, '') }) : tile('Watchdog', '-', '', { sub: 'not this process' });
 
   // the service
@@ -168,7 +172,7 @@ export async function collectorLine(ctx: Ctx): Promise<HTMLElement> {
   if (!ctx.instance) return box;
   let d: Parts;
   try { d = await get<Parts>('collector', { instance: ctx.instance }); } catch (e) { return errorBox(e); }
-  const st = serviceState(rowsOf(d.collectors)), l = rowsOf(d.load)[0], failing = rowsOf(d.streaks).filter(r => Number(r.fail_streak) >= 3);
+  const st = serviceState(rowsOf(d.collectors), rowsOf(d.findings)), l = rowsOf(d.load)[0], failing = rowsOf(d.streaks).filter(r => Number(r.fail_streak) >= 3);
   const own = rowsOf(d.findings).filter(r => r.instance_id != null);
   box.append(el('a', { href: href(ctx, { tab: 'collector', instance: undefined, tag: undefined }) }, 'Collector'), ': ',
     badge(st.word, st.kind), ` ${st.sub}. This instance: `,
