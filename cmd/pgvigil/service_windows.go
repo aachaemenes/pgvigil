@@ -865,8 +865,19 @@ func windowsItems(inst installOptions, found bool) []removal {
 	if other := foreignFiles(binDir, binOwn...); len(other) > 0 {
 		binFolder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
 	}
-	// the installer writes the configuration, repo.dsn and the logs folder; the app's own subfolder goes above
-	cfgOwn := []string{filepath.Base(inst.Config), dsnFileName, "logs", "app"}
+	// the installer writes the configuration, repo.dsn and the logs folder; the app's own subfolder and the page's
+	// credential folders go before it
+	cfgOwn := []string{filepath.Base(inst.Config), dsnFileName, "logs", "app", "instances", "sources"}
+	creds := []string{filepath.Join(cfgDir, "instances"), filepath.Join(cfgDir, "sources")}
+	credFolders := removal{what: "the page's credential folders " + creds[0] + " and " + creds[1] + " (the monitored servers' passwords)",
+		present: exists(creds[0]) || exists(creds[1]), remove: func() error {
+			for _, d := range creds {
+				if err := removeTreeNowOrAtRestart(d); err != nil {
+					return err
+				}
+			}
+			return nil
+		}}
 	cfgFolder := removal{what: "the configuration folder " + cfgDir + " (the configuration, " + dsnFileName + ", the logs)", present: exists(cfgDir), remove: func() error {
 		_ = os.RemoveAll(filepath.Join(cfgDir, "logs"))
 		return removeFolder(cfgDir, cfgOwn...)
@@ -878,6 +889,7 @@ func windowsItems(inst installOptions, found bool) []removal {
 		removal{what: "the binary " + inst.Bin, present: exists(inst.Bin), remove: func() error { return removeNowOrAtRestart(inst.Bin) }},
 		removal{what: "the previous binary " + prev, present: exists(prev), remove: func() error { return removeNowOrAtRestart(prev) }},
 		binFolder,
+		credFolders,
 		cfgFolder,
 		removal{what: "the bundled Windows store (not in this release: nothing to look for)"},
 	)

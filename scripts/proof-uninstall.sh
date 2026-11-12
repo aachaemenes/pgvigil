@@ -50,10 +50,10 @@ go test -count=1 ./cmd/pgvigil/ >"$WORK/test.out" 2>&1 || { tail -30 "$WORK/test
 GOOS=windows go vet ./cmd/pgvigil/ >"$WORK/vetw.out" 2>&1 || { cat "$WORK/vetw.out" >&2; fail "GOOS=windows go vet ./cmd/pgvigil"; }
 golangci-lint run --allow-parallel-runners ./... >"$WORK/lint.out" 2>&1 || { tail -30 "$WORK/lint.out" >&2; fail "golangci-lint at the root"; }
 # the uninstall's own tests by name, once into a file (a grep -q on go test's pipe would end it early under pipefail)
-NAMED="TestUninstallFlags TestDecideGroup TestDecideLogin TestPathWithout TestUninstallAllOrder TestEnvValue"
+NAMED="TestUninstallFlags TestDecideGroup TestDecideLogin TestPathWithout TestUninstallAllOrder TestDedicatedFolderCredentials"
 go test -count=1 -run "^(${NAMED// /|})\$" -v ./cmd/pgvigil/ >"$WORK/named.out" 2>&1 || { tail -30 "$WORK/named.out" >&2; fail "the uninstall's tests"; }
 for n in $NAMED; do grep -q -- "--- PASS: $n" "$WORK/named.out" || fail "$n did not run and pass"; done
-ok "go test cmd/pgvigil (TestUninstallFlags, TestDecideGroup, TestDecideLogin, TestPathWithout, TestUninstallAllOrder, TestEnvValue among them), GOOS=windows vet, golangci-lint clean"
+ok "go test cmd/pgvigil (TestUninstallFlags, TestDecideGroup, TestDecideLogin, TestPathWithout, TestUninstallAllOrder, TestDedicatedFolderCredentials among them), GOOS=windows vet, golangci-lint clean"
 
 echo "== S this build installed, the repository, the logins, the service collecting =="
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$V" -o "$WORK/pgvigil" ./cmd/pgvigil
@@ -101,8 +101,10 @@ insys systemctl restart pgvigil
 n=0; for _ in $(seq 1 90); do n=$(pq "select count(*) from pgvigil.collection_dates d join pgvigil.instances i using (instance_id) where i.name = 'proof-target'" 2>/dev/null || echo 0); [[ "$n" -gt 0 ]] && break; sleep 1; done
 [[ "$n" -gt 0 ]] || fail "no collection_dates row for proof-target within 90 s"
 insys cp "$B" "$B.previous"   # an upgrade's copy of the binary it replaced (task 202)
+# the page's credential folders beside the config (task 204): a monitored server's password in each
+insys sh -c "umask 077; mkdir -p /etc/pgvigil/instances /etc/pgvigil/sources && echo 'host=x password=secret-i' > /etc/pgvigil/instances/page-a.dsn && echo 'host=y password=secret-s' > /etc/pgvigil/sources/src-b.dsn && chown -R pgvigil /etc/pgvigil/instances /etc/pgvigil/sources"
 insys sh -c "umask 077; printf '%s\n' '$OWNER_DSN' > /root/owner.dsn"
-ok "$V installed fresh at $B on PostgreSQL $PGMAJ (account pgvigil marked '$mark'), the repository migrated by its owner ($FILES files), the agent, UI and monitor logins, the service collecting proof-target ($n collection_dates rows); $B.previous beside it"
+ok "$V installed fresh at $B on PostgreSQL $PGMAJ (account pgvigil marked '$mark'), the repository migrated by its owner ($FILES files), the agent, UI and monitor logins, the service collecting proof-target ($n collection_dates rows); $B.previous beside it; instances/ and sources/ with a password each"
 
 # the host's state: the files, the unit, the account and group, the service, the roles and the databases
 fp() {
@@ -173,7 +175,8 @@ PQDB=postgres pq "GRANT CONNECT ON DATABASE pgvigil_other TO pgvigil_reader" >/d
 F0=$(fp)
 insys "$B" uninstall -all -dry-run -drop-repository -owner-dsn-file /root/owner.dsn >"$WORK/p.out" 2>&1 || fail "the dry run: $(cat "$WORK/p.out")"
 for l in "remove   the service pgvigil (systemd unit $U)" "remove   the binary $B" "remove   the previous binary $B.previous" \
-  "remove   the configuration $C" "remove   the environment file $E" "remove   the configuration folder /etc/pgvigil" "remove   the service account pgvigil" \
+  "remove   the configuration $C" "remove   the environment file $E" "remove   the page's credential folders /etc/pgvigil/instances and /etc/pgvigil/sources (the monitored servers' passwords)" \
+  "remove   the configuration folder /etc/pgvigil" "remove   the service account pgvigil" \
   "remove   the database pgvigil (" "a dump first to /var/backups/pgvigil/pgvigil-before-uninstall-" "remove   the login role pgvigil_agent (the login this host's configuration names)" \
   "remove   the group role pgvigil_collector" "remove   the group role pgvigil_auth" "remove   the group role pgvigil_alerter" \
   "kept     the group role pgvigil_reader: used in pgvigil_other" \
@@ -196,7 +199,7 @@ insys "${ALLDROP[@]}" </dev/null >"$WORK/u.out" 2>&1 || fail "the uninstall: $(c
 prev=0
 for l in "stopped the service" "watching the repository for 1m15s" "dumped the repository to /var/backups/pgvigil/pgvigil-before-uninstall-" "dropped the database pgvigil" \
   "dropped the role pgvigil_agent" "dropped the role pgvigil_collector" "dropped the role pgvigil_reader" "dropped the role pgvigil_auth" "dropped the role pgvigil_alerter" \
-  "removed: the service pgvigil" "removed: the binary $B" "removed: the previous binary" "removed: the configuration $C" "removed: the environment file" \
+  "removed: the service pgvigil" "removed: the binary $B" "removed: the previous binary" "removed: the configuration $C" "removed: the environment file" "removed: the page's credential folders" \
   "removed: the configuration folder /etc/pgvigil" "removed: the service account pgvigil" "kept: the dump /var/backups/pgvigil/pgvigil-before-uninstall-" "pgvigil is uninstalled from this host"; do
   at=$(grep -nF -- "$l" "$WORK/u.out" | head -n 1 | cut -d: -f1)
   [[ -n "$at" && "$at" -gt "$prev" ]] || fail "'$l' is not in its place (after line $prev): $(cat "$WORK/u.out")"
@@ -213,7 +216,7 @@ PQDB=postgres pq "CREATE DATABASE pgvigil_back" >/dev/null
 insys sh -c "cp $DUMPF /tmp/u.dump && chown postgres /tmp/u.dump"
 insys su postgres -c "pg_restore --no-owner --no-privileges -d pgvigil_back /tmp/u.dump" >"$WORK/restore.out" 2>&1 || fail "pg_restore: $(tail -n 5 "$WORK/restore.out")"
 [[ "$(PQDB=pgvigil_back pq "select count(*) from pgvigil.schema_version")" == "$FILES" && "$(PQDB=pgvigil_back pq "select count(*) from pgvigil.collection_dates")" -ge "$ROWS" ]] || fail "the restored dump's counts"
-ok "in order: stopped, watched 75 s, dumped, the database dropped, pgvigil_agent then the four groups dropped, the service, the binaries, the configuration and the account removed; read back: no file, unit, account or group, roles left only pgvigil_monitor (the monitored server's) and pgvigil_owner (the owner's own, named), no database pgvigil; the dump 600 root in a 700 folder restores ($FILES migration rows, collection_dates complete)"
+ok "in order: stopped, watched 75 s, dumped, the database dropped, pgvigil_agent then the four groups dropped, the service, the binaries, the configuration, the page's credential folders and the account removed; read back: no file, unit, account or group, roles left only pgvigil_monitor (the monitored server's) and pgvigil_owner (the owner's own, named), no database pgvigil; the dump 600 root in a 700 folder restores ($FILES migration rows, collection_dates complete)"
 
 echo "== R the second run =="
 insys /root/pgvigil uninstall -all -drop-repository -confirm-database pgvigil -owner-dsn-file /root/owner.dsn </dev/null >"$WORK/r1.out" 2>&1 || fail "the second run with -drop-repository: $(cat "$WORK/r1.out")"

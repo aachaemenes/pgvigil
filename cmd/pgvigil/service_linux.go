@@ -490,32 +490,10 @@ func init() {
 		},
 		items: linuxItems,
 		repoDSN: func(inst installOptions) string {
-			return envValue(filepath.Join(filepath.Dir(inst.Config), envName), "PGVIGIL_REPO_DSN")
+			v, _ := envFileValue(filepath.Join(filepath.Dir(inst.Config), envName), "PGVIGIL_REPO_DSN")
+			return v
 		},
 	}
-}
-
-// envValue is the value of name in a systemd EnvironmentFile (NAME=value, the value whole: it is not shell syntax and a
-// connection string holds spaces; one pair of surrounding quotes is taken off). The last assignment wins, as in systemd
-// (the template's empty PGVIGIL_REPO_DSN= line may be followed by the filled one).
-func envValue(path, name string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	val := ""
-	for _, line := range strings.Split(string(b), "\n") {
-		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
-		if !ok || strings.TrimSpace(k) != name {
-			continue
-		}
-		v = strings.TrimSpace(v)
-		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-			v = v[1 : len(v)-1]
-		}
-		val = v
-	}
-	return val
 }
 
 func present(path string) bool {
@@ -562,8 +540,21 @@ func linuxItems(inst installOptions, _ bool) []removal {
 		removal{what: "the configuration " + inst.Config, present: present(inst.Config), remove: removeFile(inst.Config)},
 		removal{what: "the environment file " + envFile, present: present(envFile), remove: removeFile(envFile)},
 	)
-	// on Linux the installer writes the configuration and the environment file only (the logs go to the journal)
-	own := []string{filepath.Base(inst.Config), envName}
+	// the page's credential folders (task 204): the passwords of the monitored servers added in the page; -all takes
+	// them with the rest (a decommissioned host keeps no monitored server's password)
+	creds := []string{filepath.Join(cfgDir, "instances"), filepath.Join(cfgDir, "sources")}
+	items = append(items, removal{what: "the page's credential folders " + creds[0] + " and " + creds[1] + " (the monitored servers' passwords)",
+		present: present(creds[0]) || present(creds[1]), remove: func() error {
+			for _, d := range creds {
+				if err := os.RemoveAll(d); err != nil {
+					return err
+				}
+			}
+			return nil
+		}})
+	// on Linux the installer writes the configuration and the environment file (the logs go to the journal); the
+	// credential folders go just above
+	own := []string{filepath.Base(inst.Config), envName, "instances", "sources"}
 	folder := removal{what: "the configuration folder " + cfgDir, present: present(cfgDir)}
 	if other := foreignFiles(cfgDir, own...); len(other) > 0 {
 		folder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"

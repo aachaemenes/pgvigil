@@ -52,8 +52,9 @@ A run without a terminal (a script, a configuration tool) names the database ins
    `install.ps1` added.
 8. The service definition (Linux: the unit, disabled, `daemon-reload`; Windows: the service, with its virtual account
    `NT SERVICE\pgvigil`).
-9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` on Windows), the logs and the
-   configuration folder.
+9. The binary, its `.previous` copy, the configuration, the environment file (`repo.dsn` on Windows), the logs, the
+   page's credential folders `instances/` and `sources/` beside the configuration (the passwords of the monitored
+   servers added in the page: a decommissioned host keeps none of them) and the configuration folder.
 10. Linux: the service account, last.
 
 A step that fails stops the run and names what is left; the same command runs again from there (the configuration
