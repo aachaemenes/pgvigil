@@ -35,8 +35,9 @@
 #      the add (active) and the same finding; sql-down (a SQL Server page instance on A's container, the last row: the
 #      container stopped) enabled while down -> the same through the SQL Server collector
 #   L. the page on a serve with no UI login (-no-login, the join's w9c): the list renders read only, a plain note in the
-#      page's own words ('adding and changing instances needs the UI login: ...'), no error box, every control disabled
-#      saying why on hover; an add through the API refused with the same words
+#      page's own words ('adding and changing instances needs the UI login: ...'), no error box, every control that
+#      writes disabled saying why on hover, the grids' filters still usable; an add through the API refused with the
+#      same words
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -506,16 +507,18 @@ await sleep(500);
 console.log(`ready ${ok}`);
 console.log(`errors ${await ev(`document.querySelectorAll('main .error:not([role=status])').length`)}`);
 console.log(`note ${JSON.stringify(await ev(`document.querySelector('main [role=note]')?.textContent ?? ''`))}`);
-console.log(`enabled ${await ev(`[...document.querySelectorAll('main button, main input, main select, main textarea')].filter(c => !c.disabled).length`)}`);
+console.log(`enabled ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled).length`)}`);
+console.log(`filters ${await ev(`[...document.querySelectorAll('main .filter-btn')].filter(b => !b.disabled && (b.title ?? '').startsWith('Filter ')).length`)}`);
 console.log(`titles ${await ev(`[...new Set([...document.querySelectorAll('main button:disabled')].map(b => b.title))].join(' | ')`)}`);
 console.log(`rows ${await ev(`document.querySelectorAll('main table tbody tr').length`)}`);
 ws.close(); process.exit(0);
 JS
 lout=$(node "$TMPD/l.mjs" "$CDP" "$UL/") || fail "L: the Chromium walk stopped: $lout"
 echo "$lout"
-echo "$lout" | grep -q '^ready true$' && echo "$lout" | grep -q '^errors 0$' && echo "$lout" | grep -q '^enabled 0$' || fail "L: the page on -no-login (an error box, or a control left enabled)"
+echo "$lout" | grep -q '^ready true$' && echo "$lout" | grep -q '^errors 0$' && echo "$lout" | grep -q '^enabled 0$' || fail "L: the page on -no-login (an error box, or a control that writes left enabled)"
+[[ "$(echo "$lout" | sed -n 's/^filters //p')" -gt 0 ]] || fail "L: the grids' filters were disabled too (they only read)"
 echo "$lout" | grep -qF "note \"Read only: $NL.\"" && echo "$lout" | grep -qxF "titles $NL" || fail "L: the note or the hover words"
 [[ "$(echo "$lout" | sed -n 's/^rows //p')" -gt 0 ]] || fail "L: the list did not render"
-kill "$SRVLPID" 2>/dev/null; SRVLPID=
-echo "ok   L: on -no-login the page lists the instances read only: the note 'Read only: $NL.', no error box, every control disabled with those words on hover; an add refused 403 with them, nothing written"
+kill "$SRVLPID" 2>/dev/null || true; SRVLPID=
+echo "ok   L: on -no-login the page lists the instances read only: the note 'Read only: $NL.', no error box, every control that writes disabled with those words on hover, the filters usable; an add refused 403 with them, nothing written"
 echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login, no error box; the NOT PROVEN lines above stand)"

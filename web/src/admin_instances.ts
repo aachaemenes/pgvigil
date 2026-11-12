@@ -81,10 +81,11 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     readOnly(d);
   }
 
-  // read only: every control that would write is disabled and says why on hover
+  // read only: every control that would write (the forms', the rows' actions) is disabled and says why on hover; the
+  // grids' own filters and 'Show more' only read, and stay as they are (as ack.ts and alert_rules.ts do)
   function readOnly(d: AdminData): void {
     if (d.writable) return;
-    for (const c of root.querySelectorAll('button, input, select, textarea')) {
+    for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) {
       (c as HTMLButtonElement).disabled = true;
       (c as HTMLElement).title = d.why_not;
     }
