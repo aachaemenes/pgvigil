@@ -112,13 +112,15 @@ buffer only) is not read: the state is off and says so.
 
 The same read of `system_health`'s file also takes the four events sp_HealthParser reads beside the component results
 (task 177 D15): the memory broker's notifications, the memory node out-of-memory records, the scheduler monitor's
-samples and the significant waits (`wait_info` of 500 ms or more, sp_HealthParser's filter). The System health tab draws
+samples and every `wait_info`; the grids show the samples past one of sp_HealthParser's warnings (SQL Server's CPU 90 %
+or more, other processes 50 % or more, memory utilization 50 or less) and the significant waits (500 ms or more, a
+session with a statement, not a BACKUP, a wait not on the ignorable list). The System health tab draws
 PerformanceMonitor's Corruption and Contention Events charts (bad pages, dump requests, access violations, write access
 violations, non-yielding tasks, latch warnings, a line per sick spinlock type; each the largest value per bucket), shows
 those four events as grids, and RESOURCE gains process memory and pressure-flag column groups. Its findings: other
-processes used 50 % of the CPU or more, memory utilization 50 or less, and the ring buffer output cut at the last read.
-On SQL Server on Linux the scheduler monitor writes the idle CPU as 0 in every sample, so pgvigil stores the idle and
-other processes' shares as not read there (as the CPU reader does) and raises no 'other processes' finding on Linux.
+processes used 50 % of the CPU or more, and memory utilization 50 or less.
+On SQL Server on Linux the scheduler monitor writes the idle CPU as 0 in every sample, so pgvigil stores the idle share as
+not read there (as the CPU reader does): other processes' share is unknown and no 'other processes' finding is raised.
 
 ## Findings
 
@@ -140,6 +142,8 @@ other processes' shares as not read there (as the CPU reader does) and raises no
 | system_health: long IO or IO latch timeouts | warning | long IOs in the last 24 hours, or IO latch timeouts the counter gained in them (it runs from the server's start) |
 | system_health: out of memory | critical | out-of-memory exceptions the counter gained in the last 24 hours (it runs from the server's start), or a pool out of memory |
 | a SQL Server reader could not read its source | warning | the state failed, read in the last 30 minutes |
+| system_health: other processes used half the CPU | warning | a scheduler monitor sample in the last hour with other processes at 50 % or more (100 - SQL Server - idle); not on Linux |
+| system_health: the working set was trimmed | warning | a scheduler monitor sample in the last hour with memory utilization 50 or less |
 | a SQL Server reader's source is switched off | info | the state off |
 | a SQL Server reader lacks its right | info | the state no right, one row per instance naming the readers |
 
@@ -150,7 +154,7 @@ other processes' shares as not read there (as the CPU reader does) and raises no
 - `GET /api/mssql/defaulttrace?instance=<id>[&from=&to=][&part=]`: state, findings, growth_summary, growths,
   dbcc_summary, dbcc, ddl.
 - `GET /api/mssql/syshealth?instance=<id>[&from=&to=][&part=]`: state, findings, latest, issues, system,
-  query_processing, io, resource, series.
+  query_processing, io, resource, series, spinlocks, broker, node_oom, scheduler, scheduler_samples, waits, event_findings.
 
 ## Retention
 

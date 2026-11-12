@@ -72,6 +72,7 @@ WITH inst AS (
     -- value): a filter on the big view's source still scans every PostgreSQL arm of it
     FROM (SELECT instance_id, severity, check_name AS setting, object AS value, detail, 'mssql_running' AS source FROM pgvigil.mssql_running_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_xe_findings
+          UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_xe' FROM pgvigil.mssql_sysevents_findings WHERE check_name = 'the ring buffer output was cut off'
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_hadr' FROM pgvigil.mssql_hadr_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_jobs' FROM pgvigil.mssql_jobs_findings
           UNION ALL SELECT instance_id, severity, check_name, object, detail, 'mssql_storage' FROM pgvigil.mssql_storage_findings) u
