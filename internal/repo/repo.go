@@ -20,6 +20,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
 //go:embed sql/*.sql
@@ -221,6 +223,51 @@ func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
 	}
 	return false, latest, fmt.Errorf("schema check: pgvigil.schema_missing() does not exist although %s is applied (a store migrated by an earlier build of that file): "+
 		"as the repository owner run DELETE FROM pgvigil.schema_version WHERE version = '%s' and then 'pgvigil migrate' to run it again", defines, defines)
+}
+
+// InventoryGeneration is the page's instance list's generation (0122; config.WatchInventory polls it).
+func (r *Repo) InventoryGeneration(ctx context.Context) (int64, error) {
+	var g int64
+	err := r.pool.QueryRow(ctx, `SELECT pgvigil.admin_inventory_generation()`).Scan(&g)
+	return g, err
+}
+
+// Inventory is the page's instance list and its generation, read in one statement (0122's admin_inventory(),
+// SECURITY DEFINER: the collector holds no SELECT; one row of NULLs beside the generation when the list is empty).
+func (r *Repo) Inventory(ctx context.Context) ([]config.PageInstance, int64, error) {
+	rows, err := r.pool.Query(ctx, `SELECT name, engine, platform, dsn_ref, tags, disabled, generation FROM pgvigil.admin_inventory()`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []config.PageInstance
+	var gen int64
+	for rows.Next() {
+		var name, engine, platform, ref *string
+		var tags []string
+		var disabled *bool
+		if err := rows.Scan(&name, &engine, &platform, &ref, &tags, &disabled, &gen); err != nil {
+			return nil, 0, err
+		}
+		if name == nil {
+			continue
+		}
+		p := config.PageInstance{Name: *name, Tags: tags}
+		if engine != nil {
+			p.Engine = *engine
+		}
+		if platform != nil {
+			p.Platform = *platform
+		}
+		if ref != nil {
+			p.DSNRef = *ref
+		}
+		if disabled != nil {
+			p.Disabled = *disabled
+		}
+		out = append(out, p)
+	}
+	return out, gen, rows.Err()
 }
 
 // EnsureInstance upserts the instance row and returns its id.

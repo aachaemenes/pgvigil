@@ -129,6 +129,13 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		}
 	}
 	srv.SetPgJobActions(pgJobs)
+	// task 204: Admin > Instances (the credential files beside the config, the file's instances read-only) and its sync loop
+	dd := map[string]string{}
+	for _, d := range cfg.DBADash {
+		dd[d.Name] = d.DSNRaw
+	}
+	srv.SetInstancesAdmin(web.InstancesAdmin{ConfigPath: *path, File: cfg.Instances, DBADash: dd})
+	go srv.RunInstanceSync(ctx)
 	// task 171: the report mail schedules (claimed, rendered headless, queued for the alert sender)
 	go srv.RunReportMail(ctx)
 

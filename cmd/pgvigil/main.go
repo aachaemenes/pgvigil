@@ -287,7 +287,8 @@ func checkCollectionNames(cfg *config.Config) error {
 }
 
 func runScheduler(ctx context.Context, log *slog.Logger, args []string) error {
-	cfg, fs, err := loadConfig(args, true)
+	// no instance in the file is fine: Admin > Instances may hold them all (task 204)
+	cfg, fs, err := loadConfig(args, false)
 	if err != nil {
 		return err
 	}

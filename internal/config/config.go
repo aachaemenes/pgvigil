@@ -577,6 +577,13 @@ func Resolve(v string) string {
 	switch {
 	case strings.HasPrefix(v, "env:"):
 		return os.Getenv(strings.TrimPrefix(v, "env:"))
+	case strings.HasPrefix(v, "dpapi:"):
+		// a credential Admin > Instances sealed on Windows (task 204, inventory_windows.go)
+		s, err := ResolveDPAPI(strings.TrimPrefix(v, "dpapi:"))
+		if err != nil {
+			return ""
+		}
+		return s
 	case strings.HasPrefix(v, "file:"):
 		b, err := os.ReadFile(strings.TrimPrefix(v, "file:"))
 		if err != nil {

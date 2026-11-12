@@ -92,3 +92,19 @@ API: `GET /api/pg/dboptions?instance=<id>[&part=state|databases|overrides|overri
 `GET /api/pg/dboptions/fleet` (`risks`). Repository migration 0104 (`pgvigil migrate`).
 
 Proof: `scripts/proof-pg-dboptions.sh` (PostgreSQL 13, 16 and 18).
+
+## Instances added in the page
+
+Admin > Instances adds, tests, edits, disables and removes an instance, and syncs sources into proposals that a click
+approves or ignores: a SQL Server Central Management Server (its login needs msdb's `ServerGroupReaderRole`), a DBA Dash
+repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
+marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
+15 seconds, without a restart.
+
+Credentials go to files beside the configuration file (`instances/` and `sources/`): on Linux 0600 files in 0700
+folders; on Windows a DPAPI machine-scope blob in a folder whose access list is SYSTEM, Administrators and the service
+account. The repository keeps only each file's name, so `pgvigil serve` and `pgvigil run` must share the configuration
+folder (one host). Every change is audited (the page's Changes grid).
+
+Not in this release: Entra (Azure AD) sign-in for an instance added here. The page can build such a connection, but the
+collector does not sign in with it yet; its test says so.

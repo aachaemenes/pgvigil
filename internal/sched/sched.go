@@ -17,34 +17,61 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
-// Run blocks until ctx is cancelled.
+// Run blocks until ctx is cancelled. The instance list is the file's and the page's (task 204): config.WatchInventory
+// reads the page's list at start and whenever its generation moves (every 15 s) and hands the merged list to apply,
+// which stops the loops of a removed, disabled or changed instance and starts those of a new or changed one; each
+// instance's loops run under its own context.
 func Run(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config) error {
 	var wg sync.WaitGroup
-	started := 0
-	for _, in := range cfg.Instances {
-		// only the collections of the instance's own engine
-		for _, c := range engines.Specs(in.Engine) {
-			iv := cfg.Interval(in, c.Name, c.Default)
-			if iv <= 0 {
-				continue
+	running := map[string]context.CancelFunc{}
+	var cur []config.Instance
+	apply := func(all []config.Instance) {
+		stop, start := config.Diff(cur, all)
+		for _, n := range stop {
+			if c, ok := running[n]; ok {
+				c()
+				delete(running, n)
 			}
-			if skip, why := engines.Gated(in, c.Name); skip {
-				log.Debug("collection off by config", "instance", in.Name, "collection", c.Name, "why", why)
-				continue
-			}
-			started++
-			wg.Add(1)
-			go func(in config.Instance, name string, iv time.Duration) {
-				defer wg.Done()
-				loop(ctx, log, r, in, name, iv)
-			}(in, c.Name, iv)
 		}
+		by := map[string]config.Instance{}
+		for _, in := range all {
+			by[in.Name] = in
+		}
+		schedules := 0
+		for _, n := range start {
+			ictx, cancel := context.WithCancel(ctx)
+			running[n] = cancel
+			schedules += startInstance(ictx, log, r, cfg, by[n], &wg)
+		}
+		cur = all
+		log.Info("scheduler: instances applied", "instances", len(all), "stopped", len(stop), "started", len(start), "schedules", schedules)
 	}
-	log.Info("scheduler started", "instances", len(cfg.Instances), "schedules", started)
-	<-ctx.Done()
+	config.WatchInventory(ctx, log, r, cfg.Instances, cfg.QueryText, 15*time.Second, apply)
 	wg.Wait()
 	log.Info("scheduler stopped")
 	return nil
+}
+
+// startInstance starts one goroutine per applicable collection of the instance's engine; it answers how many.
+func startInstance(ctx context.Context, log *slog.Logger, r *repo.Repo, cfg *config.Config, in config.Instance, wg *sync.WaitGroup) int {
+	started := 0
+	for _, c := range engines.Specs(in.Engine) {
+		iv := cfg.Interval(in, c.Name, c.Default)
+		if iv <= 0 {
+			continue
+		}
+		if skip, why := engines.Gated(in, c.Name); skip {
+			log.Debug("collection off by config", "instance", in.Name, "collection", c.Name, "why", why)
+			continue
+		}
+		started++
+		wg.Add(1)
+		go func(in config.Instance, name string, iv time.Duration) {
+			defer wg.Done()
+			loop(ctx, log, r, in, name, iv)
+		}(in, c.Name, iv)
+	}
+	return started
 }
 
 func loop(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Instance, name string, iv time.Duration) {
