@@ -61,17 +61,21 @@
 #     services, recycle, new and deleted databases (rp169gone, a PostgreSQL database dropped between two reads [run 7:
 #     none dropped left the page with no grid to export]), the role members of sysadmin / superuser]; the Deadlocks page shows
 #     2 signatures with 2 occurrences each, 4 deadlocks and 8 participants, and a Graph draws 2 processes; the Deadlock
-#     Charts page draws 6 rings, the five with data (all but Procedure) not empty [fold]; the Reports strip lists 17
+#     Charts page draws 6 rings, the five with data (all but Procedure) not empty [fold] (Procedure draws one slice,
+#     '(none)': the deadlocks run no procedure); the Reports strip lists 17
 #     pages at the root, 12 on a SQL Server instance and 10 on a PostgreSQL one [fold: the group's own strip].
 #  G. each page's Export .xlsx (16: every page with a grid) gives a workbook that opens (openpyxl where the box has
-#     it, else the zip's workbook.xml) with a sheet for every grid heading of its page that holds rows [fold: all 16;
-#     run 8: an empty grid (pgaudit's, not in the image) shows a note, not a table, and the shell's export takes tables].
+#     it, else the zip's workbook.xml) with a sheet, after its own Summary sheet, for every grid heading of its page that
+#     holds rows [fold: all 16; run 8: an empty grid (pgaudit's, not in the image) shows a note, not a table, and the
+#     shell's export takes tables]; every grid F wants holds rows on this seed [fold].
 #  H. NOT PROVEN HERE: SQL Server 2016-2019 and 2025 (the reads use no column newer than 2012 but LOGINPROPERTY's
 #     values were read on 2022 only), Azure SQL Managed Instance and Amazon RDS (where sys.dm_server_services lists
 #     little), PostgreSQL 13 / 18, a fleet over 25 PostgreSQL instances with deadlocks (the page reads 25), a pass
 #     the deadline cuts (the rotation), an availability group secondary (not entered), a binary extended property,
 #     pgaudit's ROLE / DDL grid with rows (pgaudit is not in the image), the query stats grids' rows against the API
-#     (the page's range moves with now), PostgreSQL query stats with pg_stat_statements over the collector's 500 + 200
+#     (the page's range moves with now), the Query Stats Charts' four line charts drawn (the window holds one
+#     5-minute point when both engines' deltas fall in one step: each chart then says it needs two; a run whose deltas
+#     cross a step boundary draws them, unchecked), PostgreSQL query stats with pg_stat_statements over the collector's 500 + 200
 #     pick (the proof resets it before the marker), and a statement's calls before its first pick (never a delta).
 set -euo pipefail
 export PATH=$HOME/.local/share/mise/shims:$HOME/go/bin:/usr/local/go/bin:$PATH
@@ -541,9 +545,11 @@ for (const [tab, name] of Object.entries(names)) {
   const grids = await ev(gridsOf) ?? [];
   const errs = await ev(`[...document.querySelectorAll('main p.error')].map(p => p.textContent.trim())`) ?? [];
   const missing = want[tab].filter(h => !grids.some(g => g[0] === h));
-  check(`${tab} renders`, ok && h2.startsWith(name) && missing.length === 0 && errs.length === 0 && thrown.length === 0 && grids.every(g => g[1] >= 0),
-    `h2 '${h2}', grids ${JSON.stringify(grids)}${missing.length ? ', missing ' + missing : ''}${errs.length ? ', errors ' + errs.join(' | ') : ''}${thrown.length ? ', thrown ' + thrown.join(' | ') : ''}`);
-  allGrids[tab] = grids.filter(g => g[1] > 0).map(g => g[0]);   // the export makes a sheet of a grid's table: an empty grid shows a note, no table
+  const bare = want[tab].filter(h => grids.some(g => g[0] === h && g[1] <= 0));   // every wanted grid holds rows on this seed
+  check(`${tab} renders`, ok && h2.startsWith(name) && missing.length === 0 && bare.length === 0 && errs.length === 0 && thrown.length === 0 && grids.every(g => g[1] >= 0),
+    `h2 '${h2}', grids ${JSON.stringify(grids)}${missing.length ? ', missing ' + missing : ''}${bare.length ? ', empty ' + bare : ''}${errs.length ? ', errors ' + errs.join(' | ') : ''}${thrown.length ? ', thrown ' + thrown.join(' | ') : ''}`);
+  // the export makes a sheet of a grid's table; an empty grid shows a note, no table: only one outside the want list may be empty
+  allGrids[tab] = grids.filter(g => g[1] > 0 || want[tab].includes(g[0])).map(g => g[0]);
   if (expect[tab]) {
     const want = await expect[tab](), got = Object.fromEntries(grids);
     const bad = Object.entries(want).filter(([g, n]) => got[g] !== n);
@@ -621,7 +627,7 @@ for f in files:
     tab = f[:-5]
     clean = lambda x: re.sub(r'[\\/?*\[\]:]', '', x)[:25].lower()
     for w in grids.get(tab, []):
-        assert any(clean(s).startswith(clean(w)) or clean(w) in clean(s) for s in sheets), f'{f}: no sheet for the grid {w!r} in {sheets}'
+        assert any(clean(s).startswith(clean(w)) or clean(w) in clean(s) for s in sheets[1:]), f'{f}: no sheet for the grid {w!r} in {sheets}'   # sheet 1 is the export's own Summary
     print(f'ok   {f}: {len(sheets)} sheet(s) {sheets}' + ('' if openpyxl else ' (read as a zip: openpyxl is not on this machine)'))
 PY
 [ -n "$SHOTS" ] && mkdir -p "$SHOTS/xlsx" && cp "$WORK"/xlsx/*.xlsx "$SHOTS/xlsx/"
@@ -629,6 +635,6 @@ echo "G: OK"
 kill "$CHRPID" "$SRVPID" 2>/dev/null || true; wait "$CHRPID" "$SRVPID" 2>/dev/null || true; CHRPID=; SRVPID=
 if [ "${PGVIGIL_REPORTS_KEEP:-}" != 1 ]; then
   docker rm -f -v "$PCT" "$MCT" >/dev/null; PCT=; MCT=
-  [ "$(docker ps -a --filter "name=pgv169-" --format '{{.Names}}' | grep -c "$SUF" || true)" = 0 ] || fail "a container of this run is left"
+  ! docker container inspect "pgv169-pg-$SUF" >/dev/null 2>&1 && ! docker container inspect "pgv169-ms-$SUF" >/dev/null 2>&1 || fail "a container of this run is left"
 fi
 echo "PROOF OK: reports (A B C D E F G)"
