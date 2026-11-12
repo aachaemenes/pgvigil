@@ -204,15 +204,34 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestIcon(t *testing.T) {
+	// mark E at 32 px: the corner outside the rounded square, the dark pupil at the centre, the teal iris around it,
+	// the white almond beside the iris, the teal square above the eye
 	n := 32
 	if a := iconPixel(0, 0, n) >> 24; a != 0 {
 		t.Errorf("the corner is transparent, alpha %d", a)
 	}
-	if p := iconPixel(n/2, n/2, n); p != 0xFFFFFFFF {
-		t.Errorf("the pupil is white: %08x", p)
+	for _, c := range []struct {
+		x, y int
+		want uint32
+		what string
+	}{{n / 2, n / 2, 0xFF0B1F2A, "the pupil is dark"}, {20, n / 2, 0xFF0F766E, "the iris is teal"},
+		{8, n / 2, 0xFFFFFFFF, "the almond is white"}, {n / 2, 3, 0xFF0F766E, "the square is teal and opaque"}} {
+		if p := iconPixel(c.x, c.y, n); p != c.want {
+			t.Errorf("%s: %08x, want %08x", c.what, p, c.want)
+		}
 	}
-	if p := iconPixel(n/2, 3, n); p>>24 != 0xFF || p&0xFFFFFF == 0xFFFFFF {
-		t.Errorf("the disc is teal and opaque: %08x", p)
+	// the 16 px drawing up to 24 px: its square fills to the edge (the 32 px drawing is inset by 1 unit), its pupil dark
+	if p := iconPixel(8, 8, 16); p != 0xFF0B1F2A {
+		t.Errorf("the 16 px pupil is dark: %08x", p)
+	}
+	for _, c := range []struct {
+		n     int
+		full  bool
+		where string
+	}{{16, true, "16 px: the 16 px drawing"}, {24, true, "24 px: the 16 px drawing"}, {25, false, "25 px: the 32 px drawing"}, {32, false, "32 px: the 32 px drawing"}} {
+		if a := iconPixel(0, c.n/2, c.n) >> 24; (a == 0xFF) != c.full {
+			t.Errorf("%s: the left edge's alpha %d", c.where, a)
+		}
 	}
 }
 

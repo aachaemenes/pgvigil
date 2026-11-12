@@ -1,4 +1,4 @@
-# pgvigil
+# <img src="docs/img/mark.svg" width="32" height="32" alt=""> pgvigil
 
 Free, open-source monitoring for PostgreSQL and SQL Server, built for DBAs ([pgvigil.com](https://pgvigil.com/)). On PostgreSQL: daily checks, running queries with blocking chains, the statements that cost the most, counters and rates, replication and slots, database inventory, and alerting, across on-prem PostgreSQL and Amazon Aurora (Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB are recognised; not proven in this release). On SQL Server: running queries and blocking, waits, deadlocks and slow statements from Extended Events, Agent jobs, backups, Always On and the rest listed in [docs/sqlserver.md](docs/sqlserver.md).
 
