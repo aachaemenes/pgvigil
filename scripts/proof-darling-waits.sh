@@ -433,7 +433,7 @@ elif (cd "$GSRC" && git apply "$P" 2>"$TMPD/apply.err"); then echo "D: $P applie
 else fail "D: $P neither applies nor is applied: $(cat "$TMPD/apply.err")"; fi
 (cd "$GSRC/web" && npm ci --no-audit --no-fund >"$TMPD/web.log" 2>&1 && npm run build >>"$TMPD/web.log" 2>&1) || { tail -20 "$TMPD/web.log" >&2; fail "D: the web build"; }
 (cd "$GSRC" && go build -o "$TMPD/pgvigil-g" ./cmd/pgvigil) || fail "D: the build"
-"$TMPD/pgvigil-g" migrate -config "$TMPD/w.yaml" >"$TMPD/migrate2.out" 2>&1 || { cat "$TMPD/migrate2.out" >&2; fail "D: migrate (the proof's join file)"; }
+"$TMPD/pgvigil-g" migrate -config "$TMPD/w.yaml" >"$TMPD/migrate2.out" 2>&1 || { cat "$TMPD/migrate2.out" >&2; fail "D: migrate"; }
 PGVIGIL_PASSWORD="$UPW" "$TMPD/pgvigil-g" user add -config "$TMPD/w.yaml" "$USR" >/dev/null 2>&1 || fail "D: user add"
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); U="http://127.0.0.1:$PORT"
 "$TMPD/pgvigil-g" serve -config "$TMPD/w.yaml" -listen "127.0.0.1:$PORT" >"$TMPD/serve.log" 2>&1 & SRVPID=$!

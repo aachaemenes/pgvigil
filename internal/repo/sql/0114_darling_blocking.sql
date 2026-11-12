@@ -31,7 +31,7 @@
 -- The minute's floor under 'a lead blocker' is pgvigil's: with no floor, any single short block would make its head a
 -- lead blocker with 100 % of the hour's blocked wait.
 --
--- For the join (the lead's 0110): the arm in pgvigil.findings
+-- The release join's arm in pgvigil.findings (0190_join_release2.sql holds it):
 --     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_blocking', at
 --       FROM pgvigil.mssql_blocking_findings
 --   No table is added, so purge() needs no line.
