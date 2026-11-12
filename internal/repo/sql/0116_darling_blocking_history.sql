@@ -510,7 +510,8 @@ LANGUAGE sql STABLE AS $$
   ORDER BY f.check_id, f.finding_group, f.sort_order
 $$;
 
--- The blocked wait over the window by lead blocker, object, database and login / application / host: the victim rows,
+-- The blocked wait over the window by lead blocker (the top of each victim's chain in its monitor loop), object, database
+-- and login / application / host of the direct blocker: the victim rows,
 -- each blocked transaction's longest wait counted once (as the proc's checks 1000 and 1001), the reports and the
 -- blocked transactions behind each; each dimension's 200 largest.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_block_rollup(p_instance_id int, p_from timestamptz, p_to timestamptz)
@@ -518,10 +519,32 @@ RETURNS TABLE (dimension text, database_name text, name text, reports bigint, bl
                longest_wait_ms bigint, first_at timestamptz, last_at timestamptz)
 LANGUAGE sql STABLE AS $$
   WITH b AS (SELECT * FROM pgvigil.mssql_blocks(p_instance_id, p_from, p_to)),
+  -- each blocker's chain lead per monitor loop (the proc's #session_leads, as in mssql_block_findings): a victim's wait
+  -- belongs to the top of its chain, not to a session in the middle that is itself blocked
+  pairs AS (SELECT DISTINCT b.monitor_loop, b.blocking_desc, b.blocked_desc FROM b),
+  walk AS (
+    WITH RECURSIVE w(monitor_loop, lead_desc, session_desc, lead_path) AS (
+      SELECT p.monitor_loop, p.blocking_desc, p.blocking_desc, p.blocking_desc
+        FROM pairs p
+       WHERE NOT EXISTS (SELECT 1 FROM pairs p2 WHERE p2.monitor_loop = p.monitor_loop AND p2.blocked_desc = p.blocking_desc)
+      UNION ALL
+      SELECT w.monitor_loop, w.lead_desc, n.blocked_desc, w.lead_path || ' ' || n.blocked_desc
+        FROM w JOIN pairs n ON n.monitor_loop = w.monitor_loop AND n.blocking_desc = w.session_desc
+       WHERE strpos(w.lead_path, n.blocked_desc) = 0
+    )
+    SELECT DISTINCT monitor_loop, lead_desc, session_desc FROM w
+  ),
+  lead_text AS (
+    SELECT b.monitor_loop, b.blocking_desc AS lead_desc, max(b.query_text) AS txt FROM b WHERE b.activity = 'blocking' GROUP BY 1, 2
+  ),
   v AS (
     SELECT bd.event_at, bd.event_key, bd.database_name, bd.contentious_object, bd.transaction_id, bd.wait_time_ms,
-           bg.query_text AS lead_text, bg.login_name, bg.client_app, bg.host_name
+           coalesce(ld.txt, bg.query_text) AS lead_text, bg.login_name, bg.client_app, bg.host_name
       FROM b bd JOIN b bg ON bg.event_key = bd.event_key AND bg.event_at = bd.event_at AND bg.activity = 'blocking'
+      LEFT JOIN LATERAL (
+        SELECT lt.txt FROM walk w JOIN lead_text lt ON lt.monitor_loop = w.monitor_loop AND lt.lead_desc = w.lead_desc
+         WHERE w.monitor_loop = bg.monitor_loop AND w.session_desc = bg.blocking_desc
+         ORDER BY w.lead_desc LIMIT 1) ld ON true   -- a cycle (no lead) keeps the blocker itself, as the proc's fallback
      WHERE bd.activity = 'blocked'
   ),
   dims AS (
