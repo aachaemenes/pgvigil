@@ -18,7 +18,7 @@
 #                      'lib,tools', or 'none'. A part not named is 'not checked', said so, when its tool is missing
 # Expected:
 #   names      fleet_Summary_<yyyymmdd-hhmm>_<yyyymmdd-hhmm>.xlsx and .csv; <instance>_Table-Size_<from>_<to>.xlsx and
-#              .csv.zip (the Tables tab has two grids), the instance named as in the tree
+#              .csv.zip (the Table Size tab has two grids), the instance named as in the tree
 #   summary    sheets: Summary first, then one per grid named by the heading above it ('Summary' repeated is
 #              'Summary (2)', 'Summary (3)': the heading inside the Needs attention strip names no grid outside
 #              the strip); every data sheet: no frozen pane (DBA Dash's: P03), each column's width the rule's (export.ts
@@ -34,11 +34,11 @@
 #              order, which are shared strings (xl/sharedStrings.xml, as Excel stores a table's header); its tableStyleInfo
 #              DBA Dash's (no style name, showRowStripes 1: no stripe drawn);
 #              ids and names unique in the workbook; the part in [Content_Types].xml. A grid a filter leaves
-#              without rows (the Tables tab's second grid, filtered to nothing) keeps the plain sheet filter and no table
+#              without rows (the Table Size tab's second grid, filtered to nothing) keeps the plain sheet filter and no table
 #   colours    every cell of every row the page draws (a grid draws its first 200 rows; the read must return exactly
 #              those), against the page: a cell the screen colours (a status cell, a badge, a dot, a
 #              bare class set on the cell: no page draws one since ui.ts turns a Col's bare cls into a status cell,
-#              so the driver gives two cells of the Tables tab one to keep export.ts's branch tested) carries that status's fill and text colour; a cell with a status fill
+#              so the driver gives two cells of the Table Size tab one to keep export.ts's branch tested) carries that status's fill and text colour; a cell with a status fill
 #              the screen does not give it is a value its row's judging cell coloured: only in a value column of the
 #              pairs the doc lists (last archived / archiver, last start / last run, free size / free, a finding's
 #              value / severity ...), the judging cell of that row shows that colour, the cell is not empty; a cell
@@ -238,7 +238,7 @@ const page = async (hash, sortBy, filterNone) => {
     // cell the same way): no tab of this proof's visits has such a rule in the demo, the export must read the class
     const drawn = await ev(`(() => { const t = document.querySelector('main table.grid'); if (Number(t.dataset.rows ?? 0) > 200) return false;   // past its page the export builds the rows off the screen
       const tr = t.querySelector(':scope > tbody > tr'); tr.children[1].classList.add('crit'); tr.children[2].classList.add('warn'); return true; })()`);
-    if (!drawn) throw new Error('the first grid of the Tables tab has over 200 rows: the class check needs a grid drawn whole');
+    if (!drawn) throw new Error('the first grid of the Table Size tab has over 200 rows: the class check needs a grid drawn whole');
   }
   if (sortBy) {
     // sort the page's last grid by a column (one click: ascending), so the export must follow the screen's order; the
@@ -360,7 +360,7 @@ if (!await settled()) throw new Error('the Database info tab did not render');
 const dbHref = await ev(`(document.querySelector('main a[href*="#/db?"]') || {}).getAttribute?.('href') ?? null`);
 if (!dbHref) throw new Error('no database link on the Database info tab');
 out.db = await page(dbHref);
-// the Tables tab again (another window: another file name), its second grid filtered to nothing: a sheet without rows
+// the Table Size tab again (another window: another file name), its second grid filtered to nothing: a sheet without rows
 out.empty = await page(`#/tables?i=${one.instance_id}&w=24h`, null, true);
 out.tools = await tools();
 // ---- P03: the new menu items, each clicked and its download read ---------------------------------------------------
@@ -739,7 +739,7 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             filled = [k for k in range(len(g0['cells'])) if cx[cc.get((k + 2, j), (0, None, None))[0]]['fill'] is not None]
         check(bool(hg) and p.get('pictures', 0) >= 1 and not filled, f"perf: the CPU histogram column has no fill in any of its rows, {p.get('pictures')} of them holding the picture (a picture, no status; {len(filled) if hg else 'no grid'} filled)")
     if key == 'empty':
-        tg = [g for g in gs if not g.get('empty')]   # the Tables tab's grids with a table: the filtered one is the last
+        tg = [g for g in gs if not g.get('empty')]   # the Table Size tab's grids with a table: the filtered one is the last
         check(tg[-1]['rows'] == 0 and len(tg) > 1 and tg[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
         check(classed == 2, f"empty: the two cells that carry only a class of the page's own rule (crit, warn) are filled in their colours ({classed} cells)")
     if openpyxl is not None:

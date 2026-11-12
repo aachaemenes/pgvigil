@@ -66,7 +66,7 @@ A crash restart is read from the server log's crash events (the [log reader](log
 
 ## Thresholds
 
-Every rule above takes its numbers from the thresholds store (the uptime and crash rows judge SQL Server instances too: one store for both engines, migrations 0113 and 0117), set in the UI at four levels: the root (every instance), a tag (its instances; the first of an instance's tags in sort order that has a row), an instance, and a database (amcheck only). The nearest level wins; with none, the built-in default:
+Every rule above takes its numbers from the thresholds store (the uptime and crash rows judge SQL Server instances too: one store for both engines, migrations 0113 and 0117; a SQL Server instance takes an instance row for uptime only, its crash threshold comes from the levels above it), set in the UI at four levels: the root (every instance), a tag (its instances; the first of an instance's tags in sort order that has a row), an instance, and a database (amcheck only). The nearest level wins; with none, the built-in default:
 
 | key | unit | rule | default |
 | --- | --- | --- | --- |
@@ -79,7 +79,7 @@ Every rule above takes its numbers from the thresholds store (the uptime and cra
 | `amcheck_age` | days | over | warning 7, critical 14 |
 | `crash` | hours | under | warning 168, critical 48 (DBA Dash's Memory Dump defaults, 0117) |
 
-A level may set a warning, a critical or both: a rule fires past whichever is set (a critical alone fires only past it). `archive_age` takes whole minutes from 1 (0022's rule keeps minutes as a whole number). A threshold set in the UI at any level wins over the config file's `archive_warn_minutes`. The Thresholds page (Configuration) sets the root, a tag, an instance or a database; the Base backups and Server state tabs set their instance's, and each database's amcheck threshold. A write needs the UI login and goes through the actions door's audit login (`pgvigil.import_pg_threshold`): an edit ends the level's row and writes its successor with who and when, **Inherit** ends it so the level above applies, and a refused value (a word, a critical on the wrong side of the warning, a key at a level it does not take) writes nothing and says why.
+A level may set a warning, a critical or both: a rule fires past whichever is set (a critical alone fires only past it); since 0117 an uptime or crash level may set neither (Enabled off: that level judges nothing). `archive_age` takes whole minutes from 1 (0022's rule keeps minutes as a whole number). A threshold set in the UI at any level wins over the config file's `archive_warn_minutes`. The Thresholds page (Configuration) sets the root, a tag, an instance or a database; the Base backups and Server state tabs set their instance's, and each database's amcheck threshold. A write needs the UI login and goes through the actions door's audit login (`pgvigil.import_pg_threshold`): an edit ends the level's row and writes its successor with who and when, **Inherit** ends it so the level above applies, and a refused value (a word, a critical on the wrong side of the warning, a key at a level it does not take) writes nothing and says why.
 
 ## Retention
 

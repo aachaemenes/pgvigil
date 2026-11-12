@@ -22,7 +22,7 @@
 #   J paging      a job's All runs over three days: n rows over 400, 200 drawn; Copy all n rows, still 200 drawn; 'Show 200
 #                 more' draws 400 with the focus on the line; 'Show all' draws n, the line hidden, the focus on the grid
 #   K pies        every pie on Storage: k slice(s) for k row(s), none stroked, 1.0000 turn(s)
-#   L colours     solid by default: an OK cell rgb(0, 102, 56), a grid header rgb(0, 99, 163), 'Colours: solid'; one click:
+#   L colours     solid by default: an OK cell rgb(0, 102, 56), a grid header rgb(0, 79, 131) (DBA Dash's TrimbleBlueDark, task P08), 'Colours: solid'; one click:
 #                 data-status quiet, the OK cell unfilled, stored 'quiet', kept on another page; a second click: solid again
 #   tz            (offline, before the browser) 25 zone checks: New York, Sydney, Lord Howe, Santiago and Cairo at their
 #                 daylight-saving edges, Kathmandu and Kolkata offsets, the calendar periods at a month and a year

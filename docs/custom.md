@@ -75,7 +75,7 @@ custom:
   (`schedules: {custom: 5m}` makes a 1m check a 5m check). A check that is no longer listed anywhere (the collection
   switched off, or disabled on the instance) leaves the repository with the purge's retention; it raises no finding
   once its latest listing is more than two of its cadences old (at least 5 minutes), so a removed `custom:` key clears
-  the Findings and the Summary's Custom column within that time, and `custom: []` clears them at the next run.
+  the Findings and the Summary's Custom Checks column within that time, and `custom: []` clears them at the next run.
 - **The findings.** `custom_findings`: a check whose latest run is `warning` or `critical` (that severity), a check
   whose latest run failed (warning, with the error), and a check that has not run in two of its cadences while the
   collection still visits the instance (warning: the collection runs less often than the check, or a run of many slow

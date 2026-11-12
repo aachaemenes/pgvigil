@@ -174,7 +174,7 @@ into the grid's menu on the `pgvigil:gridmenu` event the grid sends before it sh
 ## Proof
 
 `scripts/proof-export.sh` seeds the demo, serves it, and has a headless Chromium press both buttons on the fleet
-Summary, Backups, Jobs and Storage, an instance's Tables tab (one grid sorted on screen first; once more with a
+Summary, Backups, Jobs and Storage, an instance's Table Size tab (one grid sorted on screen first; once more with a
 grid filtered to nothing), its Roles tab, its Running queries tab over seven days (the newest-500 note), the
 fleet's Slow queries tab (the hand-built Per day table) and a database's page, in en-US and in fr-FR. It reads
 each file back and grades it against the page it came from:
