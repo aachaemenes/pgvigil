@@ -286,7 +286,7 @@ func TestUninstallAllOrder(t *testing.T) {
 	}
 	out, err = captureStdout(t, func() error { return runUninstallAll(log, dry) })
 	if err != nil || !strings.Contains(out, "running  pid 5151: /root/pgvigil-bundle/pgvigil serve -no-login (another pgvigil process") ||
-		!strings.Contains(out, "kept     the instances added in the page (Admin > Instances), active in the kept repository") {
+		!strings.Contains(out, "kept     any instances added in the page (Admin > Instances): they stay active in the kept repository") {
 		t.Fatalf("the dry run with a serve from another path: err %v:\n%s", err, out)
 	}
 	named = nil

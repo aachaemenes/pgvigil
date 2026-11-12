@@ -254,3 +254,39 @@ func TestCredentialItems(t *testing.T) {
 		t.Fatalf("a linked folder: %+v own %v", items[1], own)
 	}
 }
+
+// TestPgvigilExe (the fold of the join review w9e, finding 2): a pgvigil binary is told by its build information under
+// any name; a file whose build information cannot be read falls back to the shipped names (pgvigil, pgvigil_<v>_...),
+// never the app's.
+func TestPgvigilExe(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// this test binary is a Go binary built from cmd/pgvigil's test main, not cmd/pgvigil: read, and not a pgvigil
+	if pgvigilExe(self, "/usr/local/bin/pgvigil") {
+		t.Errorf("the test binary %s was taken for a pgvigil binary although its build information says otherwise", self)
+	}
+	dir := t.TempDir()
+	notGo := filepath.Join(dir, "x")
+	if err := os.WriteFile(notGo, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		want bool
+	}{
+		{"/root/pgvigil-bundle/pgvigil", true},
+		{"/root/pgvigil-offline-v1/pgvigil_v1.2.3_linux_amd64", true},
+		{"/root/pgvigil-offline-v1/pgvigil_v1.2.3_linux_amd64_fips", true},
+		{"C:/Users/a/Downloads/pgvigil_v1.2.3_windows_amd64.exe", true}, // forward slashes: filepath.Base splits them everywhere
+		{"C:/Program Files/pgvigil/PGVIGIL.EXE", true},
+		{"C:/Program Files/pgvigil/pgvigil-app.exe", false},
+		{"/usr/bin/bash", false},
+		{"/opt/pgvigilish", false},
+	} {
+		if got := pgvigilExe(notGo, c.name); got != c.want {
+			t.Errorf("an unreadable build at %s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}

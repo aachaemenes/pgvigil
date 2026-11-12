@@ -516,10 +516,26 @@ func otherProcessesWindows(bin string) ([]string, error) {
 	return processesWhereWindows(func(image string) bool { return strings.EqualFold(filepath.Clean(image), filepath.Clean(bin)) })
 }
 
-// namedProcessesWindows lists the processes whose image is named pgvigil.exe, from any path (uninstall -all's), but the
-// service's own and this one.
+// namedProcessesWindows lists the processes running a pgvigil binary (pgvigilExe) from any path and under any name
+// (uninstall -all's), each image read once; but the service's own, this one, and the serve this user's own app started
+// from %LOCALAPPDATA%\pgvigil (step 7 of uninstall -all ends that app and its serve itself).
 func namedProcessesWindows() ([]string, error) {
-	return processesWhereWindows(func(image string) bool { return strings.EqualFold(filepath.Base(image), "pgvigil.exe") })
+	own := ""
+	if la := os.Getenv("LOCALAPPDATA"); la != "" {
+		own = strings.ToLower(filepath.Clean(filepath.Join(la, "pgvigil"))) + `\`
+	}
+	seen := map[string]bool{}
+	return processesWhereWindows(func(image string) bool {
+		if own != "" && strings.HasPrefix(strings.ToLower(filepath.Clean(image)), own) {
+			return false
+		}
+		v, ok := seen[strings.ToLower(image)]
+		if !ok {
+			v = pgvigilExe(image, image)
+			seen[strings.ToLower(image)] = v
+		}
+		return v
+	})
 }
 
 // processesWhereWindows lists the processes whose full image path matches, as 'pid N: its image name', but the

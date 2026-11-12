@@ -33,17 +33,21 @@ A run without a terminal (a script, a configuration tool) names the database ins
 
 1. Every refusal before any change: not root (not elevated); a `-bin`, `-config` or `-user` that disagrees with the
    installed service; another pgvigil process on this host, on the installed binary, its `.previous` or any other
-   executable named `pgvigil` (`pgvigil.exe`: a bundle's copy, a `go run`): a `pgvigil serve` started by hand or by a
-   unit of the house, the app's, would outlive the uninstall and keep writing (an instance added in its page writes
-   `instances/` again), so stop it first (the dry run lists it as `running`); with `-drop-repository`, the owner's connection string missing (or both
+   pgvigil binary under any name (told by the build information Go embeds in it: a bundle's
+   `pgvigil_<version>_linux_amd64`, a renamed copy, a `go run`; when that cannot be read, by the name `pgvigil` or
+   `pgvigil_*`): a `pgvigil serve` started by hand or by a unit of the house, or another user's app's serve on Windows,
+   would outlive the uninstall and keep writing (an instance added in its page writes `instances/` again), so stop it
+   first (the dry run lists it as `running`); this user's own app and its serve are not refused: step 7 ends them; with `-drop-repository`, the owner's connection string missing (or both
    `-owner-dsn-file` and `-owner-dsn-env` given), naming a database without the pgvigil schema, or naming another
    database than the one this host's configuration names (the same name, and the same database on the same server, read
    through both logins); this host's configuration gone (a plain `-all` ran before) or naming no repository connection
    string the uninstall can read (read as the service reads it: an `env:` name from `/etc/pgvigil/pgvigil.env`, on
    Windows from the service's own environment and then the machine's, never the shell's; a `file:` from its file), and
-   on Linux a service that takes its environment from more than that file (a drop-in's or an edit's
-   `EnvironmentFile=`, or an `Environment=` setting the `env:` name, as `systemctl show` reads them), since then it
-   cannot tell the owner's database is this host's; a login that may not drop the database or the roles (from
+   on Linux a service that may use another repository than the check reads: an env file other than that one (a
+   drop-in's or an edit's `EnvironmentFile=`), an `Environment=` setting the `env:` name or one `systemctl show` cannot
+   print (systemd 239 prints a value holding a space as `[unprintable]`), or a drop-in setting `ExecStart=` (another
+   `-config`), `User=`, `Environment=` or `EnvironmentFile=` (put the repository the service uses in `pgvigil.env` and
+   take that line out, or drop the repository by hand); in each case it cannot tell the owner's database is this host's; a login that may not drop the database or the roles (from
    PostgreSQL 16, `DROP ROLE` needs ADMIN OPTION on each role as well as CREATEROLE: a role a superuser made gives the
    owner none, and the refusal prints the `GRANT ... WITH ADMIN OPTION` that fixes it); pg_dump older than the server;
    no room for the dump.
@@ -102,10 +106,10 @@ As the repository owner (or a superuser), from the server's `postgres` database,
 
 ```sh
 pg_dump --format=custom --file pgvigil-before-drop.dump "<the owner's connection string>"
-psql "<the owner's connection string, dbname=postgres>" -c 'DROP DATABASE pgvigil'
+psql "<the owner's connection string, dbname=postgres>" -c 'DROP DATABASE "<the repository database the plan named>"'
 ```
 
-then the roles as "The roles" below says (the login this host's collector used, and each pgvigil group nothing else
+then the roles as "The roles" above says (the login this host's collector used, and each pgvigil group nothing else
 uses). Check first
 that no collector, serve or Grafana of another host still uses that database: the uninstall's own checks do not run.
 

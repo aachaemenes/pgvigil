@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -1142,9 +1143,9 @@ type uninstallHooks struct {
 	// repoDSN is the repository connection string this host's installed service uses (hostRepoDSN), configured whether
 	// its configuration file is there
 	repoDSN func(inst installOptions) (dsn string, configured bool, err error)
-	// named lists every other process whose executable is named pgvigil (pgvigil.exe), from any path: a serve run from a
-	// bundle's copy or by go run outlives -all as surely as one on the installed binary (the service's own main
-	// process and this one left out)
+	// named lists every other process running a pgvigil binary (pgvigilExe), from any path and under any name: a serve
+	// run from a bundle's release asset or by go run outlives -all as surely as one on the installed binary (the
+	// service's own main process and this one left out)
 	named func() ([]string, error)
 }
 
@@ -1159,6 +1160,22 @@ func hostRepoDSN(inst installOptions, envFile string) (string, bool, error) {
 }
 
 var uninstallHooksOf *uninstallHooks
+
+// pgvigilMainPath is the main package every pgvigil binary is built from, whatever its file is called (pgvigil, a
+// release asset pgvigil_<v>_linux_amd64, a renamed copy, go run's): uninstall -all's process check reads it from the
+// executable's embedded build information.
+const pgvigilMainPath = "github.com/aachaemenes/pgvigil/cmd/pgvigil"
+
+// pgvigilExe says whether the executable at file is a pgvigil binary: its build information names pgvigilMainPath;
+// when that cannot be read (not a Go binary, unreadable), its name is pgvigil or a release asset's pgvigil_*
+// (.exe trimmed), never the app (pgvigil-app*). name is the executable's path as the system reports it.
+func pgvigilExe(file, name string) bool {
+	if bi, err := buildinfo.ReadFile(file); err == nil {
+		return bi.Path == pgvigilMainPath
+	}
+	b := strings.TrimSuffix(strings.ToLower(filepath.Base(name)), ".exe")
+	return b == "pgvigil" || strings.HasPrefix(b, "pgvigil_")
+}
 
 // pgvigilGroups are the group roles the migrations create (cluster-wide: uninstall -drop-repository drops them only when
 // nothing else uses them).
@@ -1278,7 +1295,8 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 	// another pgvigil process on the installed binary or its .previous (a serve started by hand or by a unit of the house,
 	// the app's) would outlive the uninstall and keep writing (an Add in the page makes instances/ again): refused, as the
 	// upgrade refuses it; the dry run lists them
-	// and any process whose executable is named pgvigil, from any path (a bundle's copy, go run); each pid said once
+	// and any pgvigil binary from any path or under any name (a bundle's release asset, a renamed copy, go run): each
+	// pid said once
 	var others []string
 	addOthers := func(ps []string) {
 		for _, p := range ps {
@@ -1480,14 +1498,14 @@ func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHook
 	if p == nil {
 		dsn, cfg, _ := uh.repoDSN(inst)
 		if dsn == "" && !cfg {
-			line("absent", "a repository named by this host's configuration (-drop-repository with the owner's connection string drops one)")
+			line("absent", "this host's configuration naming a repository: a repository an earlier plain -all kept is dropped by hand (docs/uninstall.md)")
 		} else {
 			db := "named in " + inst.Config
 			if c, err := pgx.ParseConfig(dsn); dsn != "" && err == nil {
 				db = fmt.Sprintf("%s on %s:%d", c.Database, c.Host, c.Port)
 			}
-			line("kept", "the repository database ("+db+") and the pgvigil roles: -drop-repository drops them")
-			line("kept", "the instances added in the page (Admin > Instances), active in the kept repository: their passwords go with this host's credential folders, so another collector of the repository would report them unreachable; remove them in the page first if the repository lives on")
+			line("kept", "the repository database ("+db+") and the pgvigil roles: -drop-repository in this same run drops them; after a plain -all, by hand (docs/uninstall.md)")
+			line("kept", "any instances added in the page (Admin > Instances): they stay active in the kept repository while their passwords go with this host's credential folders, so another collector of the repository would report them unreachable; remove them in the page first if the repository lives on")
 		}
 	} else {
 		d := p.dump
