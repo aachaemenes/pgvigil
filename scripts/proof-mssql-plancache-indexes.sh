@@ -81,7 +81,9 @@ N=proof-s150-$SUF; NB=proof-s150bare-$SUF
 pw() { printf 'Pv9%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 P1=$(pw); P2=$(pw)
 fail() { echo "FAIL: $*" >&2; exit 1; }
-freeport() { for p in $(seq "$1" "$2"); do ss -ltn | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " || { echo "$p"; return; }; done; return 1; }
+# the listening sockets are read once into a variable: 'ss | grep -q' under pipefail would call a taken port free
+# whenever grep left before ss had finished writing
+freeport() { local l p; l=$(ss -ltn); for p in $(seq "$1" "$2"); do grep -qE "(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*):$p " <<<"$l" || { echo "$p"; return; }; done; return 1; }
 MADE_REPO=; MADE_DB=; MADE_L=(); MADE_CT=; SRV_PID=
 CT=${PGVIGIL_MSSQL_CONTAINER:-}
 sq() { docker exec -e SQLCMDPASSWORD "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -W -h -1 -s '|' -U sa -d "${2:-master}" -Q "SET NOCOUNT ON; $1"; }
@@ -90,7 +92,7 @@ cleanup() {
   rc=$?
   [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null || true
   if [ -n "$MADE_CT" ]; then
-    docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
+    docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
   elif [ -n "$CT" ]; then
     if [ -n "$MADE_DB" ]; then
       for d in "$DPC" "$DQS"; do sq "IF DB_ID('$d') IS NOT NULL BEGIN ALTER DATABASE [$d] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$d]; END" >/dev/null 2>&1 || echo "CLEANUP: database $d not dropped" >&2; done

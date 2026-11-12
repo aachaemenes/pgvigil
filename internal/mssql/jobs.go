@@ -522,9 +522,11 @@ func scheduleWords(r map[string]any) string {
 }
 
 // traceFlagsCollector is mssql_traceflags: the trace flags switched on (DBCC TRACESTATUS(-1): any login may run
-// it), every hour. The repository keeps the flags as last read and each flag's added / removed history (migration
-// 0094, import_mssql_traceflags). The 'read' row says the command ran: a server with no flag on returns no row, and
-// that is a read too.
+// it), every hour. It is the one read of the flags: the repository keeps them as last read and each flag's added /
+// removed history (migration 0094, import_mssql_traceflags), and the day-one checks' 'traceflags' area is judged
+// here from the same rows (checks.go's traceFlagRows: what each global flag does and whether it belongs on, the
+// advised flags that are off) and stored by the same import. The 'read' row says the command ran: a server with no
+// flag on returns no row, and that is a read too.
 type traceFlagsCollector struct{}
 
 func init() { Register(traceFlagsCollector{}) }
@@ -538,20 +540,52 @@ func (traceFlagsCollector) Applies(info Info) (bool, string) {
 	return true, ""
 }
 
-// traceFlagsSQL is checks.go's (one statement, both collections read it)
+// traceFlagsSQL is checks.go's
 
-func (traceFlagsCollector) Run(ctx context.Context, conn *sql.Conn, _ Info) ([]collect.Row, error) {
+func (traceFlagsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
 	flags, err := QueryRows(ctx, conn, traceFlagsSQL)
 	if err != nil {
 		return nil, err
 	}
-	out := []collect.Row{{"kind": "read"}}
+	return traceFlagPayload(flags, info), nil
+}
+
+// traceFlagPayload is one read's payload: the 'read' row, a 'flag' row per flag that is on ({trace_flag, global,
+// session}; a global one with its verdict: status, severity, rule, explain), an 'advised' row per advised flag that
+// is off (its verdict: status, severity, rule, explain), the checks' 'area' row and their findings.
+func traceFlagPayload(flags []collect.Row, info Info) []collect.Row {
+	on := make([]collect.Row, 0, len(flags))
 	for _, f := range flags {
 		// the command's columns: TraceFlag, Status, Global, Session; a flag listed with Status 0 is off
 		if st, ok := num(f["Status"]); ok && st == 0 {
 			continue
 		}
-		out = append(out, collect.Row{"kind": "flag", "trace_flag": f["TraceFlag"], "global": f["Global"], "session": f["Session"]})
+		on = append(on, f)
 	}
-	return out, nil
+	verdicts, findings := traceFlagRows(on, info)
+	byFlag := map[int64]collect.Row{}
+	out := []collect.Row{{"kind": "read"}}
+	for _, v := range verdicts {
+		f, _ := v["flag"].(int64)
+		if v["is_on"] == 1 {
+			byFlag[f] = v
+			continue
+		}
+		out = append(out, collect.Row{"kind": "advised", "trace_flag": f, "status": v["status"], "severity": v["severity"], "rule": v["rule"],
+			"explain": v["explain"]})
+	}
+	for _, f := range on {
+		r := collect.Row{"kind": "flag", "trace_flag": f["TraceFlag"], "global": f["Global"], "session": f["Session"]}
+		if tf, ok := num(f["TraceFlag"]); ok && f["Global"] == int64(1) {
+			if v, ok := byFlag[tf]; ok {
+				r["status"], r["severity"], r["rule"], r["explain"] = v["status"], v["severity"], v["rule"], v["explain"]
+			}
+		}
+		out = append(out, r)
+	}
+	out = append(out, areaRow(AreaTraceFlags, true, ""))
+	for _, fd := range findings {
+		out = append(out, fd.row())
+	}
+	return out
 }

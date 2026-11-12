@@ -3,7 +3,8 @@
 # memory.go, fileio.go, tempdb.go) and their pages' API (internal/web/q_mssql_perf.go, the SQL Server parts of
 # q_performance.go and q_perfsummary.go), against the SQL Server sandbox PAIR (real DMVs) and the demo.
 #
-# Needs: docker with the two SQL Server containers (PGVIGIL_MSSQL_CONTAINERS, default "mssql-sandbox mssql-sandbox2")
+# Needs: docker with the two SQL Server containers (PGVIGIL_MSSQL_CONTAINERS, default "mssql-sandbox mssql-sandbox2";
+# the parts run on every server named, one too, as scripts/proof-mssql-2016.sh names one)
 # reachable from this machine on PGVIGIL_MSSQL_ADDRS (default "localhost:1433 localhost:1434"), one sa password for
 # both in MSSQL_SA_PASSWORD, psql, curl, jq, and
 #   PGVIGIL_REPO_DSN   a superuser connection to a PostgreSQL sandbox in KEYWORD form (host=... user=... dbname=...).
@@ -57,9 +58,9 @@
 #     over its own two-read interval (1,200 over 120 s = 10/s, not 20); every fileio read that took differences keeps
 #     its seconds in mssql_fileio_read, an idle read too. (Added with the review's fold.)
 #  P. the API on the servers' repository: /api/mssql/cpu, /memory, /fileio answer for the first server with rows in
-#     cpu, latest, series, clerks, files; /api/mssql/tempdb lists both servers; /api/performance for the first
+#     cpu, latest, series, clerks, files; /api/mssql/tempdb lists both servers (every server the run names); /api/performance for the first
 #     server has the parts cpu, db and io with rows; /api/perfsummary's mssql rows carry cpu_avg and mem_total_pct
-#     for both servers, and read or write latency for the first (corrected after the third run: the second server
+#     for both servers (every server the run names), and read or write latency for the first (corrected after the third run: the second server
 #     had no file IO between the proof's two reads, and no IO gives no latency).
 #  DEMO. a two-day demo: DEMO-SQL01's Performance page has cpu, db and io rows on at least 100 steps, its CPU /
 #     Memory / File IO pages hold rows, the fleet TempDB grid has three rows; the findings name sql01's tempdb (4
@@ -151,7 +152,8 @@ for i in "${!CTS[@]}"; do
   [ "$(q "select count(*) || '|' || count(distinct record_id) from pgvigil.mssql_cpu_sample where instance_id=$iid")" = "$SAR|$SAR" ] \
     || fail "A: the stored records $(q "select count(*) || '|' || count(distinct record_id) from pgvigil.mssql_cpu_sample where instance_id=$iid") (count|distinct ids), sa reads $SAR in the ring buffer"
   NEWEST=$(sq "$ct" "SELECT TOP 1 CAST(x.r.value('(./Record/@id)[1]','bigint') AS varchar(20)) + '|' + CAST(x.r.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]','int') AS varchar(5)) + '|' + CAST(x.r.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]','int') AS varchar(5)) FROM (SELECT [timestamp] AS ts, CONVERT(xml, record) AS r FROM sys.dm_os_ring_buffers WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' AND record LIKE N'%<SystemHealth>%') x ORDER BY x.ts DESC")
-  HOSTP=$(sq "$ct" "SELECT host_platform FROM sys.dm_os_host_info")
+  # sys.dm_os_host_info arrived in SQL Server 2017; a server without it runs on Windows
+  HOSTP=$(sq "$ct" "IF OBJECT_ID('sys.dm_os_host_info') IS NULL SELECT N'Windows' ELSE EXEC (N'SELECT host_platform FROM sys.dm_os_host_info')")
   [ "$HOSTP" = Linux ] && NEWEST="${NEWEST%|*}|"
   [ "$(q "select record_id || '|' || sql_pct || '|' || coalesce(idle_pct::text, '') from pgvigil.mssql_cpu_sample where instance_id=$iid order by record_id desc limit 1")" = "$NEWEST" ] \
     || fail "A: the newest record $(q "select record_id || '|' || sql_pct || '|' || coalesce(idle_pct::text, '') from pgvigil.mssql_cpu_sample where instance_id=$iid order by record_id desc limit 1"), want $NEWEST (host $HOSTP)"
@@ -345,12 +347,13 @@ echo "  cpu: latest $(n "$WORK/cpu.json" latest) cpu $(n "$WORK/cpu.json" cpu); 
 for c in "$WORK/cpu.json:latest" "$WORK/cpu.json:cpu" "$WORK/mem.json:latest" "$WORK/mem.json:series" "$WORK/mem.json:clerks" "$WORK/io.json:files" "$WORK/perf.json:cpu" "$WORK/perf.json:db" "$WORK/perf.json:io"; do
   [ "$(n "${c%%:*}" "${c#*:}")" -ge 1 ] || fail "P: no rows in $(basename "${c%%:*}") part ${c#*:}"
 done
-# tempdb lists both monitoring logins' rows and both bare logins' rows (cpu_count null), plus the F instances
-[ "$(jq "[.layout.rows[] | select(.[1] | test(\"proof-perf-[01]-$SUF\"))] | length" "$WORK/tdb.json")" = 2 ] || fail "P: tempdb does not list both servers"
+# tempdb lists every server's monitoring login rows (both of the pair; one where the run is given one server, as the
+# SQL Server 2016 proof does) and the bare logins' rows (cpu_count null), plus the F instances
+[ "$(jq "[.layout.rows[] | select(.[1] | test(\"proof-perf-[0-9]+-$SUF\"))] | length" "$WORK/tdb.json")" = "${#CTS[@]}" ] || fail "P: tempdb does not list every server (${#CTS[@]})"
 COLS=$(jq -c '.mssql.columns' "$WORK/ps.json")
-PSOK=$(jq --argjson c "$COLS" -r "[.mssql.rows[] | select(.[\$c | index(\"instance\")] | test(\"proof-perf-[01]-$SUF\")) | (.[\$c | index(\"cpu_avg\")] != null) and (.[\$c | index(\"mem_total_pct\")] != null)] | (length|tostring) + \":\" + (all|tostring)" "$WORK/ps.json")
+PSOK=$(jq --argjson c "$COLS" -r "[.mssql.rows[] | select(.[\$c | index(\"instance\")] | test(\"proof-perf-[0-9]+-$SUF\")) | (.[\$c | index(\"cpu_avg\")] != null) and (.[\$c | index(\"mem_total_pct\")] != null)] | (length|tostring) + \":\" + (all|tostring)" "$WORK/ps.json")
 IO0=$(jq --argjson c "$COLS" -r "[.mssql.rows[] | select(.[\$c | index(\"instance\")] == \"proof-perf-0-$SUF\") | (.[\$c | index(\"read_ms\")] != null) or (.[\$c | index(\"write_ms\")] != null)] | all" "$WORK/ps.json")
-[ "$PSOK|$IO0" = "2:true|true" ] || fail "P: perfsummary's SQL Server rows ($PSOK): $(jq -c '.mssql.rows' "$WORK/ps.json" | head -c 600)"
+[ "$PSOK|$IO0" = "${#CTS[@]}:true|true" ] || fail "P: perfsummary's SQL Server rows ($PSOK): $(jq -c '.mssql.rows' "$WORK/ps.json" | head -c 600)"
 echo "P: OK"
 
 echo "--- DEMO. a two-day demo"

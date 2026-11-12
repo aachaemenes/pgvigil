@@ -442,7 +442,9 @@ for _ in $(seq 1 30); do
   [ "$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobhistory h JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id WHERE j.name = N'$J1' AND h.step_id = 0")" = 1 ] && break; sleep 1
 done
 [ "$(sq "SELECT COUNT(*) FROM msdb.dbo.sysjobhistory h JOIN msdb.dbo.sysjobs j ON j.job_id = h.job_id WHERE j.name = N'$J1'")" = 3 ] || fail "D: the job did not write its three history rows (is SQL Server Agent running?)"
-NEXT=$(sq "SELECT CONVERT(varchar(16), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), DATEADD(minute, 23 * 60 + 59, CAST(CAST(GETDATE() AS date) AS datetime))), 126)")
+# the next 23:59 server time after now (a part D that runs after 23:59 meets tomorrow's: the 2017 cell of task 166's
+# versions run failed so, its job row right), in UTC
+NEXT=$(sq "DECLARE @next datetime = DATEADD(minute, 23 * 60 + 59, CAST(CAST(GETDATE() AS date) AS datetime)); IF GETDATE() >= @next SET @next = DATEADD(day, 1, @next); SELECT CONVERT(varchar(16), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), @next), 126)")
 RSTART=
 for _ in $(seq 1 30); do
   RSTART=$(sq "SELECT ISNULL(CONVERT(varchar(19), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), MAX(a.start_execution_date)), 126), '') FROM msdb.dbo.sysjobactivity a JOIN msdb.dbo.sysjobs j ON j.job_id = a.job_id WHERE j.name = N'$J2' AND a.session_id = (SELECT MAX(session_id) FROM msdb.dbo.syssessions) AND a.stop_execution_date IS NULL")

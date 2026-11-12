@@ -18,7 +18,7 @@ Then, for those plans by their ids, and for every forced plan: the plan's proper
 
 ### What a run costs the server
 
-The store's history never leaves the server, and text, plans and plan XML are read for the candidate plans alone. Inside the store, the interval list and the wait statistics are index seeks. The runtime statistics are not: SQL Server keeps them clustered by plan, not by interval (read on SQL Server 2022: `plan_id, runtime_stats_interval_id, execution_type`), so the filter on the interval makes SQL Server read the store's runtime statistics table through once per database and run, as SSMS's own Query Store reports and `sp_QuickieStore` do. That table is bounded by the store's `MAX_STORAGE_SIZE_MB`; on a store of many gigabytes the hourly read is a real read, and the collection's interval can be raised or the collection switched off per instance.
+The store's history never leaves the server, and text, plans and plan XML are read for the candidate plans alone. Inside the store the access paths have not been looked at (not proven: no proof reads the plans of the collector's statements). SQL Server keeps the runtime statistics clustered by plan, not by interval (read on SQL Server 2022: `plan_id, runtime_stats_interval_id, execution_type`), so the filter on the interval can make SQL Server read the store's runtime statistics table through once per database and run, as SSMS's own Query Store reports and `sp_QuickieStore` do. That table is bounded by the store's `MAX_STORAGE_SIZE_MB`; on a store of many gigabytes the hourly read is a real read, and the collection's interval can be raised or the collection switched off per instance.
 
 Each read is one SELECT run through that database's `sys.sp_executesql`; it changes no session setting. The collector's own statements run inside the database and are captured by its Query Store like any other session's: two to seven short statements per database a run.
 
@@ -44,13 +44,13 @@ A window's list is exact for the plans that were stored. A query that stayed und
 
 | Server | Read |
 | --- | --- |
-| SQL Server 2016 SP1 | the store's state and contents; no wait statistics, no forcing type, no automatic tuning |
+| SQL Server 2016 SP1 | the store's state and contents; no wait statistics, no forcing type, no automatic tuning (not proven: task 164) |
 | SQL Server 2017 | the above with wait statistics, the forcing type, automatic tuning |
 | SQL Server 2019 and later | the above with the custom capture policy's four thresholds |
-| Azure SQL Managed Instance, Amazon RDS | as their engine version |
+| Azure SQL Managed Instance, Amazon RDS | as their engine version (not proven: RDS is task 165; Managed Instance not proven) |
 | Azure SQL Database | not yet: the collection is skipped |
 
-Proven on SQL Server 2017, 2019, 2022 and 2025 (`scripts/proof-mssql-querystore.sh`, [versions](sqlserver.md#versions)). The column set of 2016 follows Microsoft's documentation and has not been run; nor have Amazon RDS, a managed instance, or a secondary replica that is not readable.
+Proven on SQL Server 2017, 2019, 2022 and 2025 (`scripts/proof-mssql-querystore.sh`, [versions](sqlserver.md#versions)). The column set of 2016 follows Microsoft's documentation and has not been run (task 164); nor have Amazon RDS (task 165), a managed instance, or a secondary replica that is not readable.
 
 ## The statement text and the plan XML
 
@@ -71,7 +71,7 @@ A window takes every interval of the store that overlaps it: with 60-minute inte
 - **Top**: the window's totals over every plan (executions, duration, CPU, logical reads, wait time) and the first 100 queries by duration, CPU, logical reads, memory grant, waits or executions, each with its share of the window's total. A query's `Open` shows its text, its plans in the window's stored rows (executions, average and maximum duration, average CPU and reads, the largest memory grant, forced or not) with a `Download .sqlplan` per plan, and each plan's average duration and CPU per interval as a line, with the numbers as a table.
 - **Regressed**: a plan whose average duration or CPU in the window is 1.5 times its query's average in the window of equal length before it, or more, and at least 1 ms. The average before is over all the query's stored plans. Only stored rows are compared: "not seen before" means the plan is in no stored row of the window before (it did not run then, or ran under every cut), and a query that was in no interval's top plans before has nothing to be weighed against and is not listed.
 - **Forced plans**: every forced plan as the last read found it, with the forcing type, the failure count and the last failure's reason.
-- **Tuning**: SQL Server's own plan-regression recommendations with their state, score and script, and each database's automatic tuning options. A restart of SQL Server empties the server's list; a recommendation it stopped listing inside the window stays, marked so. The statement beside a recommendation is the store's current query of that number.
+- **Tuning** (proven on demo and written rows only: no real recommendation was read): SQL Server's own plan-regression recommendations with their state, score and script, and each database's automatic tuning options. A restart of SQL Server empties the server's list; a recommendation it stopped listing inside the window stays, marked so. The statement beside a recommendation is the store's current query of that number.
 - **Store state**: one row per database: desired and actual state, the read-only reason spelled out, capture mode, cleanup mode, sizes, intervals and the capture policy. Under the grid, what each flagged state means; the checks at the top of the page say the same while the store's read is under three hours old.
 
 A cleared store (`ALTER DATABASE ... SET QUERY_STORE CLEAR`) numbers its queries and plans again from 1. Rows read before the clear keep the hashes they were read with and never show the text of the query that took their number; they show without text. A plan number that comes back under another query loses the XML stored for it.

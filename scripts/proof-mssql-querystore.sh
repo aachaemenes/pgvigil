@@ -16,14 +16,15 @@
 # Expected (written before the first run):
 #  A. store state. As the monitoring login (VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE), after
 #     `collect -once mssql_querystore`: for the first and the third proof database (the second at E) the stored desired state, actual
-#     state, read-only reason, max size, interval length, capture mode, cleanup mode, wait statistics mode, flush
-#     interval, stale threshold and max plans per query equal sa's read of sys.database_query_store_options in
+#     state, read-only reason, max size, interval length, capture mode, cleanup mode, wait statistics mode (from
+#     SQL Server 2017; before it both sides say n/a), flush interval, stale threshold and max plans per query equal sa's read of sys.database_query_store_options in
 #     that database. The first has its store on (READ_WRITE, 1-minute intervals), the third OFF / OFF with no
 #     judgement. master and tempdb are not listed.
 #  B. the top list. In the first database four procedures ran 300, 5, 40 and 200 times. The stored runtime rows
 #     give each procedure's statement exactly those executions; its duration, CPU and logical reads equal sa's
 #     read of the store summed the same way (a total per plan and interval cut to whole microseconds; 50 either
-#     way allowed for the float sums) and its largest memory grant and wait time equal sa's. Through the API, for
+#     way allowed for the float sums) and its largest memory grant and wait time equal sa's (the wait time from SQL
+#     Server 2017; before it the server keeps no wait statistics, the collector stores 0 and sa's side says 0). Through the API, for
 #     each of order = duration, cpu, reads, memory, executions the four statements come in sa's order by that
 #     figure (ties by query id).
 #  C. a forced plan that fails. A plan forced for a fifth procedure whose index is then dropped: the stored plan is
@@ -119,7 +120,7 @@ cleanup() {
   rc=$?
   for p in "$SRV_PID" "$DEMO_PID"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done
   if [ -n "$MADE_CT" ]; then
-    docker rm -f "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
+    docker rm -f -v "$CT" >/dev/null 2>&1 || echo "CLEANUP: container $CT not removed" >&2
   else
     for d in "${MADE_DBS[@]:-}"; do
       [ -n "$d" ] || continue
@@ -135,7 +136,7 @@ cleanup() {
   if [ -n "$PG13_STOP" ] && [ "$(psql "$V13" -XAtqc "select count(*) from pg_database where datname not in ('postgres', 'template0', 'template1')" 2>/dev/null)" = 0 ]; then
     docker stop "$PG13_STOP" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_STOP not stopped" >&2
   fi
-  [ -n "$PG13_RM" ] && { docker rm -f "$PG13_RM" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_RM not removed" >&2; }
+  [ -n "$PG13_RM" ] && { docker rm -f -v "$PG13_RM" >/dev/null 2>&1 || echo "CLEANUP: container $PG13_RM not removed" >&2; }
   for d in "$REPO_DB:$MADE_REPO" "$DEMO_DB:$MADE_DEMO"; do
     [ -n "${d#*:}" ] && { psql "$ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists ${d%%:*} with (force)" >/dev/null 2>&1 || echo "CLEANUP: database ${d%%:*} not dropped" >&2; }
   done
@@ -163,6 +164,17 @@ if [ -z "${MSSQL_SA_PASSWORD:-}" ]; then
 fi
 export SQLCMDPASSWORD="$MSSQL_SA_PASSWORD"
 echo "SQL Server: $CT on $ADDR, $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(40))")"
+# the store's wait statistics (sys.query_store_wait_stats, WAIT_STATS_CAPTURE_MODE, wait_stats_capture_mode_desc)
+# arrived in SQL Server 2017 (14): before it the collector stores no wait mode (both sides below say n/a) and a
+# wait time of 0 (querystore.go qsHasWaits, and its candidates read ISNULL(wait_ms, 0) over no wait rows: sa's side
+# says 0 too); from 2017 the comparisons are as strict as before
+QSMAJOR=$(sq "SELECT CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS varchar(40)), 4) AS int)")
+if [ "$QSMAJOR" -ge 14 ]; then
+  WSC=", WAIT_STATS_CAPTURE_MODE = ON"; WSMODE="wait_stats_capture_mode_desc"
+  SAWAIT="CAST(ISNULL((SELECT SUM(w.total_query_wait_time_ms) FROM sys.query_store_wait_stats w JOIN sys.query_store_plan wp ON wp.plan_id = w.plan_id WHERE wp.query_id = q.query_id), 0) AS varchar(30))"
+else
+  WSC=; WSMODE="'n/a'"; SAWAIT="'0'"
+fi
 
 adm() { psql "$ADMIN_DSN dbname=postgres" -XAtq -v ON_ERROR_STOP=1 "$@"; }
 adm -c "create database $REPO_DB"; MADE_REPO=1
@@ -194,7 +206,7 @@ IDX="WITH (ONLINE = OFF, FILLFACTOR = 100, SORT_IN_TEMPDB = OFF, DATA_COMPRESSIO
 echo "--- the databases and the workload"
 MADE_DBS=("$DB1" "$DB2" "$DB3" "$DB4")
 for d in "${MADE_DBS[@]}"; do sq "CREATE DATABASE [$d]; ALTER DATABASE [$d] SET RECOVERY SIMPLE;" >/dev/null; done
-sq "ALTER DATABASE [$DB1] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60, MAX_STORAGE_SIZE_MB = 100, WAIT_STATS_CAPTURE_MODE = ON);" >/dev/null
+sq "ALTER DATABASE [$DB1] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60, MAX_STORAGE_SIZE_MB = 100$WSC);" >/dev/null
 sq "ALTER DATABASE [$DB2] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60, MAX_STORAGE_SIZE_MB = 1, SIZE_BASED_CLEANUP_MODE = OFF);" >/dev/null
 sq "ALTER DATABASE [$DB3] SET QUERY_STORE = OFF;" >/dev/null
 sq "ALTER DATABASE [$DB4] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL, INTERVAL_LENGTH_MINUTES = 1, DATA_FLUSH_INTERVAL_SECONDS = 60, MAX_STORAGE_SIZE_MB = 100);" >/dev/null
@@ -231,7 +243,7 @@ GO
 SQL
 PROCS="'dbo.pv_by_cust', 'dbo.pv_scan', 'dbo.pv_sort', 'dbo.pv_write'"
 # sa's read of the store per procedure statement, summed as the collection sums it: name|query id|executions|duration|cpu|reads|max memory|wait ms
-sahand() { sq "SELECT OBJECT_NAME(q.object_id) + '|' + CAST(q.query_id AS varchar(20)) + '|' + CAST(SUM(x.execs) AS varchar(20)) + '|' + CAST(SUM(x.dur) AS varchar(30)) + '|' + CAST(SUM(x.cpu) AS varchar(30)) + '|' + CAST(SUM(x.lr) AS varchar(30)) + '|' + CAST(MAX(x.mem) AS varchar(30)) + '|' + CAST(ISNULL((SELECT SUM(w.total_query_wait_time_ms) FROM sys.query_store_wait_stats w JOIN sys.query_store_plan wp ON wp.plan_id = w.plan_id WHERE wp.query_id = q.query_id), 0) AS varchar(30))
+sahand() { sq "SELECT OBJECT_NAME(q.object_id) + '|' + CAST(q.query_id AS varchar(20)) + '|' + CAST(SUM(x.execs) AS varchar(20)) + '|' + CAST(SUM(x.dur) AS varchar(30)) + '|' + CAST(SUM(x.cpu) AS varchar(30)) + '|' + CAST(SUM(x.lr) AS varchar(30)) + '|' + CAST(MAX(x.mem) AS varchar(30)) + '|' + $SAWAIT
   FROM (SELECT r.plan_id, r.runtime_stats_interval_id, SUM(r.count_executions) AS execs, CAST(SUM(r.avg_duration * r.count_executions) AS bigint) AS dur,
                CAST(SUM(r.avg_cpu_time * r.count_executions) AS bigint) AS cpu, CAST(SUM(r.avg_logical_io_reads * r.count_executions) AS bigint) AS lr,
                CAST(MAX(r.max_query_max_used_memory) AS bigint) AS mem
@@ -244,8 +256,8 @@ echo "--- A. store state"
 collect "$N" >/dev/null
 grep -q "partial\|skipped" "$OUT" && fail "A: the run is not ok: $(cat "$OUT")"
 iid=$(q "select instance_id from pgvigil.instances where name='$N'")
-saopt() { sq "SELECT desired_state_desc + '|' + actual_state_desc + '|' + CAST(readonly_reason AS varchar(10)) + '|' + CAST(max_storage_size_mb AS varchar(20)) + '|' + CAST(interval_length_minutes AS varchar(10)) + '|' + query_capture_mode_desc + '|' + size_based_cleanup_mode_desc + '|' + wait_stats_capture_mode_desc + '|' + CAST(flush_interval_seconds AS varchar(10)) + '|' + CAST(stale_query_threshold_days AS varchar(10)) + '|' + CAST(max_plans_per_query AS varchar(10)) FROM sys.database_query_store_options" "$1"; }
-stored() { q "select desired_state || '|' || actual_state || '|' || readonly_reason || '|' || max_mb || '|' || interval_minutes || '|' || capture_mode || '|' || cleanup_mode || '|' || wait_stats_mode || '|' || flush_interval_s || '|' || stale_days || '|' || max_plans_per_query from pgvigil.mssql_qs_store where instance_id=$iid and database_name='$1'"; }
+saopt() { sq "SELECT desired_state_desc + '|' + actual_state_desc + '|' + CAST(readonly_reason AS varchar(10)) + '|' + CAST(max_storage_size_mb AS varchar(20)) + '|' + CAST(interval_length_minutes AS varchar(10)) + '|' + query_capture_mode_desc + '|' + size_based_cleanup_mode_desc + '|' + $WSMODE + '|' + CAST(flush_interval_seconds AS varchar(10)) + '|' + CAST(stale_query_threshold_days AS varchar(10)) + '|' + CAST(max_plans_per_query AS varchar(10)) FROM sys.database_query_store_options" "$1"; }
+stored() { q "select desired_state || '|' || actual_state || '|' || readonly_reason || '|' || max_mb || '|' || interval_minutes || '|' || capture_mode || '|' || cleanup_mode || '|' || coalesce(wait_stats_mode, 'n/a') || '|' || flush_interval_s || '|' || stale_days || '|' || max_plans_per_query from pgvigil.mssql_qs_store where instance_id=$iid and database_name='$1'"; }
 for d in "$DB1" "$DB3"; do
   [ "$(stored "$d")" = "$(saopt "$d")" ] || fail "A: $d stored $(stored "$d"), sa reads $(saopt "$d")"
 done
@@ -259,7 +271,7 @@ echo "A: OK"
 echo "--- B. the top list against sa's read"
 HAND=$(sahand)
 echo "$HAND" | sed 's/^/  sa: /'
-rep() { q "select string_agg(x.o || '|' || x.qid || '|' || x.e || '|' || x.d || '|' || x.c || '|' || x.l || '|' || x.m || '|' || x.w, E'\n' order by x.o)
+rep() { q "select string_agg(x.o || '|' || x.qid || '|' || x.e || '|' || x.d || '|' || x.c || '|' || x.l || '|' || x.m || '|' || coalesce(x.w::text, 'n/a'), E'\n' order by x.o)
   from (select replace(qq.object_name, 'dbo.', '') as o, r.query_id as qid, sum(r.executions) as e, sum(r.duration_us) as d, sum(r.cpu_us) as c,
                sum(r.logical_reads) as l, max(r.max_memory_pages) as m, sum(r.wait_ms) as w
           from pgvigil.mssql_qs_runtime r

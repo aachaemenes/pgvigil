@@ -23,7 +23,7 @@ counted, not stored: a busy pooler can hold thousands. The admin console's own c
 collector's login among them) are left out. A console that refuses `SHOW CLIENTS` or `SHOW SERVERS` (an older
 PgBouncer, a narrowed login) keeps the pools as before and stores no clients.
 
-PgBouncer before 1.21 shows an idle client as `active`: there every client is stored up to the cap.
+PgBouncer before 1.21 shows an idle client as `active`: there every client is stored up to the cap (not proven: the proof runs PgBouncer 1.26.1).
 
 ## The trace (Pooler tab)
 

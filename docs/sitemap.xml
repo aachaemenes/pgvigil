@@ -1,2 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://pgvigil.com/</loc><lastmod>2026-11-10</lastmod></url></urlset>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://pgvigil.com/</loc><lastmod>2026-11-11</lastmod></url>
+<url><loc>https://pgvigil.com/features.html</loc><lastmod>2026-11-11</lastmod></url>
+<url><loc>https://pgvigil.com/install.html</loc><lastmod>2026-11-11</lastmod></url>
+<url><loc>https://pgvigil.com/security.html</loc><lastmod>2026-11-11</lastmod></url>
+</urlset>

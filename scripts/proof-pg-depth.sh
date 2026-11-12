@@ -60,7 +60,8 @@
 #  B  index_bloat: bt (1,000,000 rows, primary key), 90 % deleted, VACUUM + ANALYZE -> bt_pkey's estimate within 15 points
 #     of pgstatindex's (100 - avg_leaf_density x 100 / 90) and 'index bloat|info'; its own reindex_sql run -> the rebuilt
 #     size within 25 % of the estimate made before, the row no longer present (under the 10 MB floor), finding gone.
-#  X  dead rows: dr with autovacuum off, 300,000 rows, 150,000 deleted, collect tables -> 'dead rows|warning'; VACUUM -> gone.
+#  X  dead rows, one rule (task 167): dr with autovacuum off, 300,000 rows, 150,000 deleted, collect tables -> 0016's
+#     table_checks 'table dead rows|warning' for tgt.public.dr and no 'dead rows' row in pg_depth_findings; VACUUM -> gone.
 #  every collect's collection_dates status is 'ok'.
 #  NOT PROVEN on PostgreSQL 16 (the lead's ruling, 2026-11-11 15:47 PST): L, the subtransaction SLRU seed - three runs on 16 failed: about 12,000 of 200,000 subtransactions made (the lock table full, swallowed by the seed's handler),
 #   then a precheck that cannot see the open transaction's pending counters, then 300,000 made but the scan touched the cache
@@ -408,17 +409,19 @@ EOF
   [[ -z $(br index_name) && -z $(fnd 'index bloat' "value like 'tgt: public.bt_pkey %'") ]] || fail "bt_pkey still listed after its rebuild"
   ok "B: bt_pkey estimated $est % (pgstatindex $meas %), the estimate $est_bytes bytes against the rebuilt $newb; cleared by its own REINDEX line"
 
-  echo "--- [pg$VER] X. dead rows"
+  echo "--- [pg$VER] X. dead rows: one rule (0016's table_checks)"
   t "create table dr (id int, v int) with (autovacuum_enabled = false); insert into dr select g, g from generate_series(1, 300000) g" >/dev/null
   t "delete from dr where id % 2 = 0" >/dev/null
   waitfor tgt "select n_dead_tup >= 150000 from pg_stat_user_tables where relname = 'dr'" t
   col tables
-  [[ $(fnd 'dead rows' "value like 'tgt: public.dr %'" | cut -d'|' -f1,2) == 'dead rows|warning' ]] || fail "dead rows: '$(fnd 'dead rows')'"
+  tdr() { q "select coalesce(string_agg(check_name || '|' || severity, ',' order by check_name), '') from pgvigil.table_checks where instance_id = $(iid depth) and object = 'tgt.public.dr' and check_name = 'table dead rows'"; }
+  [[ $(tdr) == 'table dead rows|warning' ]] || fail "table dead rows for tgt.public.dr: '$(tdr)'"
+  [[ -z $(fnd 'dead rows') ]] || fail "pg_depth_findings still raises its own dead rows: '$(fnd 'dead rows')'"
   t "vacuum dr" >/dev/null
   waitfor tgt "select n_dead_tup from pg_stat_user_tables where relname = 'dr'" 0
   col tables
-  [[ -z $(fnd 'dead rows' "value like 'tgt: public.dr %'") ]] || fail "dead rows still raised after VACUUM"
-  ok "X: dead rows raised and cleared by VACUUM"
+  [[ -z $(tdr) ]] || fail "table dead rows still raised after VACUUM"
+  ok "X: one dead-rows rule - 0016's 'table dead rows' raised and cleared by VACUUM, none in pg_depth_findings"
 
   echo "--- [pg$VER] W5. checkpoint"
   CK=$(sql postgres "select pid from pg_stat_activity where backend_type = 'checkpointer'")

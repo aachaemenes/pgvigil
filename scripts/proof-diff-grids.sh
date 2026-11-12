@@ -179,7 +179,7 @@ cleanup() {
     psql "$ADMIN_DSN" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $d not dropped" >&2
   done
   if [ -n "$CT13" ]; then
-    docker rm -f "$CT13" >/dev/null 2>&1 || echo "CLEANUP: container $CT13 not removed" >&2
+    docker rm -f -v "$CT13" >/dev/null 2>&1 || echo "CLEANUP: container $CT13 not removed" >&2
   elif [ -n "$MADE_13" ]; then
     psql "$PGVIGIL_PG13_DSN" -XAtq -c "drop database if exists $DB13 with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $DB13 on the PostgreSQL 13 not dropped" >&2
   fi

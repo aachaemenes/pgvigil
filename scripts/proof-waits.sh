@@ -60,7 +60,7 @@ IMAGE=${GURUS_IMAGE:-pgvigil-gurus:18}; CTR=pgvigil-waitproof-$SUF
 CFG=$(mktemp); BUILD=$(mktemp -d)
 cleanup() {
   rm -rf "$CFG" "$BUILD"
-  docker rm -f "$CTR" >/dev/null 2>&1 || true
+  docker rm -f -v "$CTR" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -XAtq -c "drop table if exists public.$LK" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -XAtq -c "drop role if exists $MON" >/dev/null 2>&1 || true

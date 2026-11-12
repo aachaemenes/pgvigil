@@ -20,7 +20,7 @@ One line per job:
 | job | the job's name; a click opens its History and Changes under the grid |
 | enabled | `no` when the job (pg_cron: `active`) is off |
 | schedule | pg_cron's cron text; pgAgent's schedule is in the job's definition (Changes); SQL Server's schedules in words ("every day every 15 minutes between 00:00 and 23:59:59"), on the server's clock |
-| last run, outcome | when the newest run started and how it ended; a fill only when it failed (red) or was cancelled (amber) |
+| last run, outcome | when the newest run started and how it ended; coloured by the outcome (see Status and thresholds) |
 | last failure | when the newest failed run started, the step that failed and its message: the first 200 characters on one line, the whole text on a click |
 | next run | pg_cron: pgvigil's own reading of the schedule; pgAgent: its own `jobnextrun`; SQL Server: the Agent's |
 | runs, failures | the runs that started in the page's range, and how many failed |
@@ -38,8 +38,8 @@ step that failed, the message, and on SQL Server msdb's error number, severity a
 A SQL Server job running now is the first row.
 
 - **SQL Server:** the outcome row of a run (msdb's step 0) carries the step that failed in that run: the last step
-  row of the run with the run's own status, its name, its message, `sql_message_id` and `sql_severity`. DBA Dash keeps
-  the step's message behind "View Steps"; pgvigil puts it on the run.
+  row of the run with the run's own status, its name, its message, `sql_message_id` and `sql_severity`. pgvigil puts the
+  step's message on the run.
 - **pg_cron:** `job_run_details.status` and `return_message`.
 - **pgAgent:** the run's status from `pga_joblog`; for a failed run the step that ended it (`pga_jobsteplog`: the
   first failed step) with its result and output.
@@ -120,7 +120,9 @@ On SQL Server the grid's last column has Start and Stop (`sp_start_job`, `sp_sto
   shown unless every option is asked for.
 - **Trace flags (SQL Server):** `mssql_traceflags` reads `DBCC TRACESTATUS(-1)` hourly: the flags on now, and each
   flag added or removed with the read that saw it. The first read is the baseline. A flag on for the collector's own
-  session only is listed as such.
+  session only is listed as such. The same read carries the day-one checks' verdict of each flag (the Checks page's
+  Trace flags view and its findings, [SQL Server checks](sqlserver-checks.md)): no other collection reads
+  `DBCC TRACESTATUS(-1)` (`mssql_tempdb` asks for 1117 and 1118 alone).
 
 ### Passwords
 
@@ -167,4 +169,4 @@ pg_cron and pgAgent are not installed on the proof's PostgreSQL sandbox: `script
 pg_cron side over imported rows and pgAgent's SQL over a stand-in schema of the columns it reads. The SQL Server side
 runs against a real Agent job the proof makes, fails, changes and deletes. `scripts/proof-job-ddl.sh` proves the
 scripts, their diffs, the change log, the pivot and the trace flag history against a SQL Server container of its own.
-Not proven: the page in a browser; a real pg_cron (its script is built by the collector, the proof imports one).
+Not proven: the page in a browser (`scripts/proof-a11y.sh` renders the tab for accessibility only); a real pg_cron (its script is built by the collector, the proof imports one); a SQL Server job with an operator notification (the proof makes no operator).

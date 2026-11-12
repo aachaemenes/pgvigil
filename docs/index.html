@@ -3,171 +3,108 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pgvigil: open-source PostgreSQL monitoring for DBAs</title>
-<meta name="description" content="pgvigil is an open-source (MIT) PostgreSQL monitoring tool for DBAs: daily checks, running queries and blocking chains, top statements, counters, replication, jobs, logs, DMS tasks, host and storage with days until full, vacuum, versions against the release table, extensions, storage IO, roles and ACLs, slow queries from the server logs, a job report, tags and grouping, and cancel or terminate from the UI through an audited login, across on-prem PostgreSQL, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB.">
+<title>pgvigil: monitoring for PostgreSQL and SQL Server</title>
+<meta name="description" content="pgvigil is free, open-source monitoring for PostgreSQL and SQL Server: the whole fleet on one page, running queries and blocking chains, performance over time, jobs, backups, storage and alerts.">
 <link rel="canonical" href="https://pgvigil.com/">
-<meta property="og:title" content="pgvigil: open-source PostgreSQL monitoring for DBAs">
-<meta property="og:description" content="One collector binary, a PostgreSQL repository, a web UI with its own login. Daily checks, blocking chains, top statements, replication, jobs and a job report, logs and slow queries, DMS, host and storage, vacuum, versions, extensions, IO, roles and ACLs, tags, cancel and terminate.">
+<meta property="og:title" content="pgvigil: monitoring for PostgreSQL and SQL Server">
+<meta property="og:description" content="Free and open source. The whole fleet on one page, what is running and who is blocking whom, performance over time, jobs, backups, storage and alerts.">
 <meta property="og:url" content="https://pgvigil.com/">
 <meta property="og:type" content="website">
-<style>
-  :root { --bg: #ffffff; --fg: #1d2330; --muted: #5d6676; --line: #dde1e8; --card: #f7f8fa; --accent: #2f6fdf; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #14171d; --fg: #e4e7ec; --muted: #9aa3b2; --line: #2c323d; --card: #1b1f27; --accent: #6b9cff; } }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
-  body { font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-  a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
-  header { border-bottom: 1px solid var(--line); }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
-  nav { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem 1.6rem; padding: .9rem 0; }
-  nav .brand { font-weight: 700; font-size: 1.15rem; color: var(--fg); text-decoration: none; margin-right: auto; }
-  nav a:not(.brand) { color: var(--muted); text-decoration: none; }
-  .hero { padding: 4.5rem 0 3rem; }
-  .hero h1 { font-size: 2.3rem; line-height: 1.2; margin: 0 0 1rem; }
-  .hero p.lead { font-size: 1.2rem; color: var(--muted); max-width: 44rem; margin: 0 0 1.8rem; }
-  .btn { display: inline-block; padding: .6rem 1.1rem; border-radius: 6px; border: 1px solid var(--accent); text-decoration: none; margin: 0 .6rem .6rem 0; }
-  .btn.primary { background: var(--accent); color: #fff; }
-  section { padding: 2.4rem 0; border-top: 1px solid var(--line); }
-  h2 { font-size: 1.45rem; margin: 0 0 1.2rem; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
-  .shots { padding: 0 0 2rem; } .shots figure { margin: 0 0 1.4rem; } .shots img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; } .shots figcaption { color: var(--muted); font-size: .95rem; margin-top: .5rem; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; }
-  .card h3 { margin: 0 0 .4rem; font-size: 1.05rem; }
-  .card p { margin: 0; color: var(--muted); font-size: .97rem; }
-  table { border-collapse: collapse; width: 100%; font-size: .95rem; }
-  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; }
-  .scroll { overflow-x: auto; }
-  pre { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; font-size: .9rem; line-height: 1.5; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .93em; }
-  ol li, ul li { margin-bottom: .45rem; }
-  footer { border-top: 1px solid var(--line); padding: 2rem 0 3rem; color: var(--muted); font-size: .95rem; }
-  footer p { margin: 0 0 .5rem; }
-</style>
+<meta property="og:image" content="https://pgvigil.com/img/summary.png">
+<link rel="stylesheet" href="site.css">
+<script>/* the old one-page site's sections now have pages of their own */ (function () { var m = { '#features': 'features.html', '#collects': 'features.html', '#install': 'install.html', '#security': 'security.html' }; if (m[location.hash]) location.replace(m[location.hash]); })();</script>
 </head>
 <body>
-<header><div class="wrap"><nav>
-  <a class="brand" href="/">pgvigil</a>
-  <a href="#features">Features</a>
-  <a href="#collects">What it collects</a>
-  <a href="#install">Install</a>
-  <a href="#security">Security</a>
-  <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
-</nav></div></header>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top"><div class="bar">
+  <a class="brand" href="./">pgvigil</a>
+  <nav class="links" aria-label="Site">
+    <a href="features.html">Features</a>
+    <a href="install.html">Install</a>
+    <a href="security.html">Security</a>
+    <a href="https://github.com/aachaemenes/pgvigil#readme">Docs</a>
+    <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
+    <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
+  </nav>
+  <details class="menu"><summary>Menu</summary><nav aria-label="Site menu">
+    <a href="features.html">Features</a>
+    <a href="install.html">Install</a>
+    <a href="security.html">Security</a>
+    <a href="https://github.com/aachaemenes/pgvigil#readme">Docs</a>
+    <a href="https://github.com/aachaemenes/pgvigil">GitHub</a>
+    <a href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
+  </nav></details>
+</div></header>
 
-<main>
+<main id="main">
 <div class="wrap hero">
-  <h1>Open-source PostgreSQL monitoring, built the way a DBA works</h1>
-  <p class="lead">pgvigil watches your PostgreSQL servers: the daily checks, what is running right now and who is blocking whom, the statements that cost the most, the settings that changed, the jobs that failed, the replication that fell behind. SQL Server instances sit beside them in the same tree, with their own collector and their own pages. One collector binary, a PostgreSQL repository, a web UI with its own login.</p>
-  <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download the latest release</a>
-  <a class="btn" href="https://github.com/aachaemenes/pgvigil#quick-start">Quick start</a>
-  <a class="btn" href="https://github.com/aachaemenes/pgvigil">Source on GitHub</a>
+  <h1>Monitoring for PostgreSQL and SQL Server</h1>
+  <p>Free and open source. pgvigil reads every server on a schedule, keeps the history in a PostgreSQL database, and shows the fleet the way a DBA reads it: what is wrong, what is running, and what changed.</p>
+  <div class="actions">
+    <a class="btn primary" href="https://github.com/aachaemenes/pgvigil/releases/latest">Download</a>
+    <a class="btn" href="install.html">Try the demo</a>
+    <a class="btn" href="https://github.com/aachaemenes/pgvigil">Source on GitHub</a>
+  </div>
 </div>
 
-<section id="screens"><div class="wrap shots">
-  <figure><img src="img/summary.png" alt="The Summary: the checks counted over the fleet on top, one row per instance below" width="1600" height="900" loading="lazy"><figcaption>The Summary in DBA Dash&#39;s shape: every check counted over the fleet on top, one row per instance below, colour only where a check is not OK.</figcaption></figure>
-  <figure><img src="img/performance-summary.png" alt="Performance summary: one row per server with CPU, waits by class and IO" width="1600" height="900" loading="lazy"><figcaption>Performance summary: one sortable row per server on both engines, CPU, waits by class, IO latency and throughput; a fill only past a threshold.</figcaption></figure>
-  <figure><img src="img/performance.png" alt="An instance Performance page: CPU, sessions, stacked waits and transactions on one time axis" width="1600" height="900" loading="lazy"><figcaption>An instance&#39;s Performance page: CPU, sessions, waits by class stacked, transactions and IO on one time axis, each title opening its detail.</figcaption></figure>
-  <figure><img src="img/running-queries.png" alt="Running queries on SQL Server: a blocking chain to its head and every session, one line each" width="1600" height="900" loading="lazy"><figcaption>Running queries: the blocking chain to its head (a session left with an open transaction), the lock each waits on, every session on one line, earlier and later snapshots.</figcaption></figure>
-  <figure><img src="img/jobs.png" alt="Agent jobs: the failed step error message per run, the history and the definition change" width="1600" height="900" loading="lazy"><figcaption>Agent jobs: the failed step&#39;s own error message on every run, a week of history, and the definition&#39;s changes with the field that changed.</figcaption></figure>
-  <figure><img src="img/dms.png" alt="DMS tasks with the drain readout: speed, rows behind, spill and the replication instance IO" width="1600" height="900" loading="lazy"><figcaption>DMS tasks next to the databases they feed: latency, the drain speed and when it catches up, the spill to disk, the replication instance&#39;s IO.</figcaption></figure>
-</div></section>
+<div class="wrap lead-shot">
+  <figure class="shot"><a href="img/summary.png"><img src="img/summary.png" width="1600" height="900" alt="The Summary: the servers that need attention first, then every check counted across the fleet as OK, warning, critical and not applicable"></a></figure>
+</div>
 
-<section id="features"><div class="wrap">
-  <h2>Features</h2>
-  <div class="cards">
-    <div class="card"><h3>Daily checks</h3><p>One overview page: stale or failing collections, replication problems, failed jobs, DMS tasks failed or stopped, CDC latency, tables in error, deadlocks and checksum failures in the last 24 hours.</p></div>
-    <div class="card"><h3>SQL Server beside PostgreSQL</h3><p>An instance marked <code>engine: sqlserver</code> gets its own collections and its own tabs: running queries and blocking chains, waits, deadlocks and slow statements from small Extended Events sessions, Always On, mirroring, log shipping and replication, Agent jobs, backups, data and log files, the version store with its holder, the configuration with its changes, and whether Agent and Database Mail are running. On-prem, Amazon RDS, Azure SQL Database and Managed Instance. The read login holds three rights and never sysadmin; it never creates an event session (pgvigil writes the script for your DBA to run), and killing a session or starting a job goes through a second login that is off by default.</p></div>
-    <div class="card"><h3>Running queries and blocking chains</h3><p>Every active and idle-in-transaction session, sampled each minute, with the blocking chain walked to its head. Step back through history by snapshot time.</p></div>
-    <div class="card"><h3>Top statements</h3><p>pg_stat_statements as deltas per interval, with reset detection, so the top statements over any window are real numbers, not cumulative totals.</p></div>
-    <div class="card"><h3>Counters and rates</h3><p>pg_stat_database, the background writer, checkpointer, WAL and pg_stat_io as rates over a window, charted.</p></div>
-    <div class="card"><h3>Replication, slots, jobs</h3><p>Streaming and logical replication, slots with retained WAL, Aurora replica status, pg_cron and pgAgent job runs and failures.</p></div>
-    <div class="card"><h3>Host, disk and storage</h3><p>CPU, memory, swap and load from the server itself (system_stats on-prem, CloudWatch on RDS and Aurora), every volume with its free space, growth per day and days until full, a fleet Disk report and a Storage view sorted by the soonest full.</p></div>
-    <div class="card"><h3>Vacuum, versions, extensions, IO</h3><p>Running vacuums and the tables autovacuum is behind on, wraparound headroom, every server's version against the PostgreSQL release table with end of life and pending cloud maintenance, outdated extensions, and the storage IO of RDS, Aurora and DMS instances.</p></div>
-    <div class="card"><h3>Roles, slow queries, job report</h3><p>Every role with its attributes, memberships and ACLs per database, the hba rules where readable with a change history, and findings such as a superuser beyond the platform's own or a login no hba rule lets in; the slow statements of the server log over any threshold, on-prem through a read door the DBA grants; per job the runs, failures, durations and the next run from the schedule, with failing, missed and over-average jobs across the fleet.</p></div>
-    <div class="card"><h3>Tags, grouping, actions</h3><p>Tags as plain words or key:value pairs, the tree grouped by the keys you choose with production first, the Summary filtered and sorted by any tag, an override command so a tag changes without a config deploy; cancel or terminate a session from the UI through a separate login holding pg_signal_backend only, off by default and audited.</p></div>
-    <div class="card"><h3>Grafana, if you already run it</h3><p>13 provisioned dashboards on the repository's views and read functions, a datasource example for a reader login, built-in panels only: no plugin, no download, no outbound call. Optional; the web UI needs nothing else.</p></div>
-    <div class="card"><h3>A Windows app, an AI door</h3><p>pgvigil-app.exe shows the UI in its own window with a tray icon: installed machine-wide by an administrator with the collector as a service, or per user by a standard user with no admin right. <code>pgvigil mcp</code> serves seven read-only tools over stdio to an AI client on the same machine, as a reader login, with no port opened.</p></div>
-    <div class="card"><h3>Excel and CSV from any tab</h3><p>Two buttons on every tab write what the screen shows: an .xlsx with the status colours, the numbers as numbers with their formats, a frozen header with the filter and a sheet per grid, and a CSV beside it. Written in the page itself: no library, nothing sent anywhere.</p></div>
-    <div class="card"><h3>A door to DBA Dash, Performance Insights, compare</h3><p>A site that runs DBA Dash for SQL Server sees its instances and Summary statuses in the same tree, read from the DBA Dash repository with a read-only login. On RDS and Aurora, Performance Insights kept past its seven days with the top SQL's whole text, and the Serverless v2 cache-starvation finding. Every statement compared with the same window one and seven days earlier, a tenfold rise a finding; the sessions' own SET of a planner setting another; every index with its usage.</p></div>
-    <div class="card"><h3>Alerts, your way</h3><p>A finding reaches you by SMTP, by a webhook shaped for Teams, Slack or any JSON receiver, or as a file dropped in a folder for an air-gapped site; per channel a severity floor, quiet hours, a repeat interval and a recovery message once the finding has been gone for a set time; every send audited; the sender holds its own login. Off until you configure a channel: nothing leaves the server by default.</p></div>
-    <div class="card"><h3>Schema, custom checks, memory, poolers</h3><p>An hourly digest of every database's objects with a diff history and a finding on anything dropped or changed, the exact statement where an opt-in event trigger is allowed; your own SQL as a check with a cadence and thresholds, charted and raised as a finding, with the check_postgres catalogue to start from; shared_buffers by relation from pg_buffercache, temp-file spills per statement, and PgBouncer pools, waits and client counts from SHOW POOLS and SHOW STATS.</p></div>
-    <div class="card"><h3>Cloud doors</h3><p>On RDS and Aurora, the PostgreSQL log from CloudWatch Logs (slow statements, lock waits, deadlocks, failed logins) and AWS DMS tasks with their table statistics and CDC latency.</p></div>
-    <div class="card"><h3>Every platform, one query set</h3><p>On-prem PostgreSQL 13 to 18, Amazon RDS and Aurora, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB. Column names come from the server's own catalog, so one query set serves them all.</p></div>
-    <div class="card"><h3>Small and static</h3><p>A single static Go binary for Linux, Windows and macOS, no runtime on the target, about 30 MB of memory while polling fifty instances. The web UI is embedded in the same binary.</p></div>
-    <div class="card"><h3>Open source, MIT</h3><p>Built in the open on GitHub. Signed release binaries with checksums; dependencies pinned and scanned in CI.</p></div>
-    <div class="card"><h3>Government ready</h3><p>No telemetry and no connection beyond the servers you name and the AWS region you configure (GovCloud included). FIPS 140-3 builds, a CycloneDX SBOM and Sigstore-signed checksums with every release, an air-gapped install procedure, a hardened service unit, and the UI checked against WCAG 2.1 AA.</p></div>
+<div class="wrap">
+  <div class="row">
+    <div class="row-text"><h2>The whole fleet on one page</h2>
+      <p>One row per server with CPU, waits and IO side by side, sortable by any column, coloured only past a threshold. The Summary above counts every check across the fleet.</p></div>
+    <figure class="shot"><a href="img/performance-summary.png"><img src="img/performance-summary.png" width="1600" height="900" loading="lazy" alt="Performance summary: one sortable row per server with CPU, waits by class and IO"></a></figure>
+  </div>
+  <div class="row flip">
+    <div class="row-text"><h2>What is running, and who is blocking whom</h2>
+      <p>The sessions at work (running, in a transaction or blocking another) sampled each minute, the blocking chain walked to its head, and the statement the head ran last. Step back through earlier minutes to see what held the locks an hour ago.</p></div>
+    <figure class="shot"><a href="img/running-queries.png"><img src="img/running-queries.png" width="1600" height="900" loading="lazy" alt="Running queries: a blocking chain to its head and every session on one line"></a></figure>
+  </div>
+  <div class="row">
+    <div class="row-text"><h2>Performance over time</h2>
+      <p>CPU, sessions, waits, transactions and IO on one time axis. Choose any range or a calendar period such as yesterday or the previous week; every chart opens its detail.</p></div>
+    <figure class="shot"><a href="img/performance.png"><img src="img/performance.png" width="1600" height="900" loading="lazy" alt="An instance's Performance page: CPU, sessions, waits and transactions on one time axis"></a></figure>
+  </div>
+  <div class="row flip">
+    <div class="row-text"><h2>Jobs, backups and storage</h2>
+      <p>SQL Server Agent, pg_cron and pgAgent jobs with the failed step's own error message, backups and how old they are, and every volume with its growth and the days until it is full.</p></div>
+    <figure class="shot"><a href="img/jobs.png"><img src="img/jobs.png" width="1600" height="900" loading="lazy" alt="Agent jobs over a day: each job's last run and outcome, and the failed run with its step's error message"></a></figure>
+  </div>
+  <div class="row">
+    <div class="row-text"><h2>Alerts on what matters</h2>
+      <p>A threshold on any metric, for one server, a tag or the whole fleet, sent by email, Teams, Slack or a webhook. Nothing is sent until you set up a channel.</p></div>
+    <figure class="shot"><a href="img/alert-rules.png"><img src="img/alert-rules.png" width="1600" height="900" loading="lazy" alt="Alert rules: each rule with its metric, thresholds, scope and state"></a></figure>
+  </div>
+</div>
+
+<section class="plain"><div class="wrap">
+  <div class="grid2">
+    <div>
+      <h2>Where it runs</h2>
+      <p><strong>PostgreSQL 13 to 18</strong>, tested on self-hosted 13, 16 and 18 and on Amazon Aurora PostgreSQL 17. Amazon RDS, Azure Database for PostgreSQL, Google Cloud SQL and AlloyDB are recognised; they are not tested yet.</p>
+      <p><strong>SQL Server</strong> tested on SQL Server 2017, 2019, 2022 and 2025 on Linux. SQL Server 2016, Windows hosts and Windows sign-in, Amazon RDS, Azure SQL Database and Azure SQL Managed Instance are not tested yet.</p>
+      <p>The program is one file for Linux, Windows or macOS. The history lives in a PostgreSQL database you choose.</p>
+    </div>
+    <div>
+      <h2>What it does not do</h2>
+      <ul class="list">
+        <li>Its collector never writes to a server it watches. Ending a session or starting a job is off until you turn it on, through a login kept for that alone, and every use is logged.</li>
+        <li>No agent runs on your database servers, and there is no telemetry: it talks to your servers, its own database, the cloud APIs you configure and your alert channels, nothing else (the Windows app also checks GitHub for a new release once a day, unless an administrator turns that off).</li>
+        <li>It is not a hosted service: you run it, and the data stays in your own database.</li>
+        <li>It watches databases, not Kubernetes or your applications.</li>
+      </ul>
+    </div>
   </div>
 </div></section>
 
-<section id="collects"><div class="wrap">
-  <h2>What it collects</h2>
-  <div class="scroll"><table>
-    <tr><th>Collection</th><th>Cadence</th><th>Source</th></tr>
-    <tr><td>instance</td><td>hourly</td><td>version, recovery state, non-default settings (credentials masked) with a history of changes, extensions</td></tr>
-    <tr><td>activity</td><td>1 min</td><td>pg_stat_activity: active and idle-in-transaction sessions, blockers, pg_blocking_pids, blocking chains to the head</td></tr>
-    <tr><td>statements</td><td>5 min</td><td>pg_stat_statements, top by time and by calls, per-interval deltas with reset detection; from pg_stat_monitor where pg_stat_statements is absent</td></tr>
-    <tr><td>dbstats</td><td>1 min</td><td>pg_stat_database, bgwriter, checkpointer, WAL, as rates</td></tr>
-    <tr><td>iostats</td><td>5 min</td><td>pg_stat_io (PG16+) by backend type, object and context, as rates; every minute with <code>schedules: iostats: 1m</code></td></tr>
-    <tr><td>replication</td><td>1 min</td><td>pg_stat_replication, wal receiver, slots with retained WAL, subscriptions, conflicts, aurora_replica_status()</td></tr>
-    <tr><td>databases</td><td>hourly</td><td>inventory with sizes, transaction id and multixact age</td></tr>
-    <tr><td>jobs</td><td>1 min</td><td>pg_cron and pgAgent jobs, run history, failures; the job report: runs, failures and durations over 7 and 30 days, the next run from the schedule, failing, missed and over-average jobs</td></tr>
-    <tr><td>logs</td><td>1 min</td><td>RDS and Aurora: the PostgreSQL log from CloudWatch Logs, slow statements, lock waits, deadlocks, failed logins</td></tr>
-    <tr><td>serverlog</td><td>1 min</td><td>on-prem: the server-log files through <code>pg_ls_logdir()</code> and a read door the DBA grants (a SECURITY DEFINER function serving only the log files; the wide grant named for what it opens); the same events; the Slow queries view over any threshold</td></tr>
-    <tr><td>dms</td><td>1 min</td><td>AWS DMS tasks, table statistics, replication instances, CDC latency, host metrics and the instances' IO, read only</td></tr>
-    <tr><td>tables</td><td>hourly</td><td>the biggest tables per database with dead rows, bloat, vacuum state and the table checks</td></tr>
-    <tr><td>vacuum</td><td>1 min, tables hourly</td><td>vacuums and analyzes running now (a VACUUM waiting on its table lock included), the run history, tables over their autovacuum thresholds for hours, wraparound against the freeze max age, xmin holders</td></tr>
-    <tr><td>host</td><td>1 min</td><td>on-prem through the <code>system_stats</code> extension where installed: OS, CPU, memory, load, every mount, device IO; RDS and Aurora through CloudWatch; the fleet Disk report</td></tr>
-    <tr><td>storage</td><td>15 min</td><td>volumes with growth per day and days until full, the WAL directory, tablespaces, RDS allocated storage with its autoscaling maximum, the Aurora volume against 128 TiB, database and table growth</td></tr>
-    <tr><td>backups</td><td>5 min</td><td>the WAL archiver everywhere (counts, the last archived and failed WAL, the archive lag); on RDS and Aurora the retention, the latest restorable time and the snapshots; pgBackRest and barman are not read</td></tr>
-    <tr><td>corruption, amcheck</td><td>from the log; amcheck opt-in</td><td>the log reader's corruption classes (page verification failed, invalid page, could not read block, TOAST chunks, xmin before relfrozenxid) from both readers, data_checksums and the two developer settings as findings; amcheck's bt_index_check and verify_heapam where the DBA installed it and granted them, on a schedule the instance names, under a budget</td></tr>
-    <tr><td>plans</td><td>15 min; from the log; on demand</td><td>pg_store_plans where installed, every auto_explain line the log readers see, and EXPLAIN without execution from the Plan page; ten plan rules with their reasons (estimates off by 10x, spills, nested loops over a large outer, lossy bitmap scans, heap fetches, JIT, triggers, workers not launched, a CTE scanned twice); pev2 draws the plan; EXPLAIN ANALYZE as an opt-in through its own SELECT-only login, audited</td></tr>
-    <tr><td>extensions</td><td>hourly</td><td>installed per database against the server's available versions, the preload lists and the extension settings; which servers have which extension</td></tr>
-    <tr><td>versions</td><td>hourly</td><td>the server version against a built-in PostgreSQL release table (minors behind, end of life), the last restart and version changes, RDS and Aurora upgrade targets and pending maintenance, collation versions</td></tr>
-    <tr><td>io</td><td>5 min</td><td>RDS and Aurora storage IO from CloudWatch: IOPS, latency, throughput, queue depth, burst balance; the DMS replication instances' IO</td></tr>
-    <tr><td>roles</td><td>hourly</td><td>pg_roles (never pg_authid), memberships, database, schema and default ACLs per database, pg_hba_file_rules where readable with a checksum and a change history; findings for superusers, CREATEROLE and BYPASSRLS, the monitoring login, a role on every database, a login no rule lets in</td></tr>
-    <tr><td>waits</td><td>1 min</td><td>pg_wait_sampling's profile per event and statement where installed (Azure: pgms_wait_sampling), else the activity samples; the lock tree of the newest snapshot</td></tr>
-    <tr><td>indexes</td><td>hourly</td><td>unused, redundant, duplicate and invalid indexes per database, each with its DROP and undo line as text; an index advisor on demand where pg_qualstats and HypoPG are installed (hypothetical indexes only, nothing created)</td></tr>
-  </table></div>
-</div></section>
-
-<section id="install"><div class="wrap">
-  <h2>Install</h2>
-  <p>From v0.2.0, one line installs the collector as a service (the binary is fetched from the release and its checksum verified first; run it again to upgrade):</p>
-<pre><code>curl -fsSL https://pgvigil.com/install.sh | sh          # Linux: a system account, a systemd unit
-irm https://pgvigil.com/install.ps1 | iex               # Windows: a service under NT SERVICE\pgvigil, elevated PowerShell</code></pre>
-  <p>No server to point it at yet? <code>pgvigil demo -pgbin &lt;portable PostgreSQL bin folder&gt; -serve -open</code> runs a throwaway repository from an unzipped PostgreSQL, seeds a 12-instance fleet with 7 days of history and serves it on your own machine: no admin rights, no Docker.</p>
-  <p>By hand, on any release:</p>
-  <ol>
-    <li>Download the binary for your platform from the <a href="https://github.com/aachaemenes/pgvigil/releases/latest">latest release</a> and verify it against <code>SHA256SUMS</code> (signed with Sigstore; the README shows the two commands).</li>
-    <li>Create a repository database on any PostgreSQL 13+ server and copy <code>pgvigil.example.yaml</code>; connection strings are read from the environment or a file, never written in the config.</li>
-    <li><code>pgvigil migrate</code>, then <code>pgvigil roles</code> for the three logins, then <code>pgvigil user add admin</code> for the web UI.</li>
-    <li><code>pgvigil run</code> for the collector; <code>pgvigil serve</code> for the web UI, over HTTPS with <code>pgvigil cert</code> or your own certificate.</li>
-  </ol>
-<pre><code>pgvigil migrate -config pgvigil.yaml
-pgvigil roles                                   # CREATE ROLE statements for the collector, the UI and the monitored servers
-pgvigil user add admin -config pgvigil.yaml
-pgvigil run -config pgvigil.yaml
-pgvigil serve -config pgvigil.yaml -listen 0.0.0.0:8443 -tls-cert pgvigil.crt -tls-key pgvigil.key</code></pre>
-  <p>The full quick start, the configuration reference and the platform notes are in the <a href="https://github.com/aachaemenes/pgvigil#readme">README</a>. The installer scripts are <code>deploy/install.sh</code> and <code>deploy/install.ps1</code> in the repository, served here as the same files; <code>pgvigil install</code> and <code>uninstall</code> are described in the README. Optional doors: <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/grafana.md">Grafana dashboards</a> (docs/grafana.md), <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/app.md">the Windows app</a> (docs/app.md), <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/mcp.md">the MCP door</a> (docs/mcp.md).</p>
-</div></section>
-
-<section id="security"><div class="wrap">
-  <h2>Security</h2>
-  <ul>
-    <li>The collector connects to a monitored server as a <code>pg_monitor</code> login, opens read-only sessions with statement and lock timeouts, and never writes to it.</li>
-    <li>Credentials never sit in the config file and are masked out of every collected text. A switch stores statement text as is, with every literal replaced, or not at all.</li>
-    <li>The repository uses three roles: the collector may only call the import functions, the reader may only read, and the UI's password check runs through one SECURITY DEFINER function nobody else can call.</li>
-    <li>The web UI has its own login (argon2id hashes, HttpOnly SameSite=Strict cookies, rate limits) and refuses to listen beyond loopback without TLS.</li>
-    <li>Releases are static binaries built by GitHub Actions from a tag, with a SHA256SUMS file signed through Sigstore (a bundle for offline verification included) and a CycloneDX SBOM per target; modules are pinned and checked by govulncheck in CI.</li>
-    <li>Government and regulated fleets: FIPS 140-3 builds for Linux and Windows (the Go Cryptographic Module v1.0.0, CMVP certificate #5247), an <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/airgap.md">air-gapped install procedure</a>, a hardened systemd unit (systemd-analyze security 1.4), GovCloud (US) through the region alone, every module's licence in <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/notices.md">docs/notices.md</a>, and the web UI checked against WCAG 2.1 A/AA in both themes.</li>
-  </ul>
-</div></section>
+<div class="wrap next"><a class="btn primary" href="install.html">Install pgvigil</a> <a class="btn" href="features.html">Every feature</a></div>
 </main>
 
 <footer><div class="wrap">
-  <p><a href="https://github.com/aachaemenes/pgvigil">github.com/aachaemenes/pgvigil</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/releases">Releases</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/issues">Issues</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/LICENSE">MIT licence</a></p>
-  <p>pgvigil is an independent open-source project by Allen Achaemenes. It is not affiliated with Trimble, Inc. or DBA Dash, nor with the PostgreSQL Global Development Group.</p>
+  <p><a href="https://github.com/aachaemenes/pgvigil">GitHub</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/releases">Releases</a> &middot; <a href="mailto:support@pgvigil.com">support@pgvigil.com</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/docs/support.md">Support</a> &middot; <a href="https://github.com/aachaemenes/pgvigil/blob/main/LICENSE">MIT licence</a></p>
+  <p>pgvigil is an independent open-source project by Allen Achaemenes, not affiliated with the PostgreSQL Global Development Group or with any project it learned from. With thanks to DBA Dash (MIT), Erik Darling's DarlingData and the SQL Server First Responder Kit (MIT), and the other projects its <a href="https://github.com/aachaemenes/pgvigil/blob/main/THIRD-PARTY-NOTICES.md">notices</a> list.</p>
 </div></footer>
 </body>
 </html>

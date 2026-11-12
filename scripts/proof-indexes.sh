@@ -66,7 +66,7 @@ CFG=$(mktemp); BUILD=$(mktemp -d)
 dsn_for() { echo "$ADMIN_DSN dbname=$1"; }   # a later keyword wins, in libpq and in pgx
 cleanup() {
   rm -rf "$CFG" "$BUILD"
-  docker rm -f "$CTR" >/dev/null 2>&1 || true
+  docker rm -f -v "$CTR" >/dev/null 2>&1 || true
   for d in "$REPO_DB" "$T1" "$T2"; do psql "$ADMIN_DSN" -XAtq -c "drop database if exists $d with (force)" >/dev/null 2>&1 || true; done
   psql "$ADMIN_DSN" -XAtq -c "drop role if exists $MON" >/dev/null 2>&1 || true
 }

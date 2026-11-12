@@ -1,6 +1,6 @@
 # Grafana dashboards for pgvigil
 
-pgvigil's own web UI needs nothing else. Grafana is optional, for a site that already runs it and wants pgvigil's data beside its other dashboards. `deploy/grafana/` holds a provisioned set of 13 dashboards and the two provisioning files that load them. Nothing in pgvigil depends on Grafana, and Grafana gets nothing that the web UI does not already show.
+pgvigil's own web UI needs nothing else. Grafana is optional, for a site that already runs it and wants pgvigil's data beside its other dashboards. `deploy/grafana/` holds a provisioned set of 13 dashboards and the two provisioning files that load them. Nothing in pgvigil depends on Grafana.
 
 | Dashboard | uid | What it shows |
 |---|---|---|
@@ -48,7 +48,7 @@ GRANT CONNECT ON DATABASE pgvigil TO pgvigil_grafana;
 REVOKE TEMP ON DATABASE pgvigil FROM PUBLIC;
 ```
 
-The last line matters: PUBLIC holds TEMP on every database by default, so without it a Viewer could fill the server's temp space with temporary tables through the datasource. pgvigil's own imports keep working: they create their temporary tables inside SECURITY DEFINER functions, which run as the repository owner (a database's owner holds TEMP whatever PUBLIC holds).
+The last line matters: PUBLIC holds TEMP on every database by default, so without it a Viewer could fill the server's temp space with temporary tables through the datasource. pgvigil's own imports should keep working (not proven: no proof collects after the REVOKE): they create their temporary tables inside SECURITY DEFINER functions, which run as the repository owner (a database's owner holds TEMP whatever PUBLIC holds).
 
 On PostgreSQL 13 and 14, every role may create objects in the schema `public` unless that is revoked. Close it on such a repository (PostgreSQL 15 and later already have it closed):
 
@@ -56,13 +56,13 @@ On PostgreSQL 13 and 14, every role may create objects in the schema `public` un
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ```
 
-`pgvigil_reader` cannot call the UI's password function or read the UI users, and it cannot write: an INSERT, UPDATE or DELETE fails with permission denied, and it creates nothing, not even a temporary table once TEMP is revoked. On RDS and Aurora, IAM authentication works the same way (`GRANT rds_iam TO pgvigil_grafana` and no password), if the site's Grafana supports it. Require TLS for this login in `pg_hba.conf` (`hostssl`) when Grafana runs on another host.
+`pgvigil_reader` cannot call the UI's password function or read the UI users, and it cannot write: an INSERT, UPDATE or DELETE fails with permission denied, and it creates nothing, not even a temporary table once TEMP is revoked. On RDS and Aurora, IAM authentication should work the same way (not proven: no proof runs a Grafana login on RDS) (`GRANT rds_iam TO pgvigil_grafana` and no password), if the site's Grafana supports it. Require TLS for this login in `pg_hba.conf` (`hostssl`) when Grafana runs on another host.
 
 This login is the access boundary, not the dashboards. Any Grafana Viewer can send its own SQL through the datasource (Grafana's query API, or a crafted `var-` URL), so a Viewer reads whatever `pgvigil_reader` reads, raw tables included. "Views and read functions only" describes the panels, not a limit on the Viewers. Give Viewer rights on this datasource only to people who may see the repository.
 
 ## 2. The datasource
 
-`deploy/grafana/provisioning/datasources/pgvigil.yaml` defines a PostgreSQL datasource with the uid `pgvigil` (the type `grafana-postgresql-datasource`, Grafana 10.3 and later). It reads five variables from Grafana's environment, so no password is written into the file:
+`deploy/grafana/provisioning/datasources/pgvigil.yaml` defines a PostgreSQL datasource with the uid `pgvigil` (the type `grafana-postgresql-datasource`, proven on Grafana 12.4.3; earlier versions not proven). It reads five variables from Grafana's environment, so no password is written into the file:
 
 | Variable | Example |
 |---|---|
@@ -83,7 +83,7 @@ sudo install -m 0644 deploy/grafana/provisioning/dashboards/pgvigil.yaml /etc/gr
 sudo systemctl restart grafana-server
 ```
 
-The JSON files are written by `deploy/grafana/gen.py` (`python3 deploy/grafana/gen.py deploy/grafana/dashboards`, the standard library only): change the generator, never a JSON file by hand, and regenerate; the proof reads the JSON. Until the first collection has landed, the repository holds no instance: the `instance` variable has no value, every panel of an instance dashboard shows a query error (there is nothing to put in place of `$instance`) and the fleet dashboards show No data; it clears with the first hourly read.
+The JSON files are written by `deploy/grafana/gen.py` (`python3 deploy/grafana/gen.py deploy/grafana/dashboards`, the standard library only): change the generator, never a JSON file by hand, and regenerate; the proof reads the JSON. Until the first collection has landed, the repository holds no instance: the `instance` variable has no value, every panel of an instance dashboard shows a query error (there is nothing to put in place of `$instance`) and the fleet dashboards show No data (not proven: the proof runs on a seeded repository); it clears once the first collection has landed.
 
 The dashboards appear in a `pgvigil` folder. They are provisioned read-only (`allowUiUpdates: false`), so a new pgvigil release replaces the JSON without fighting a hand edit. To change a dashboard for the site, save a copy under another uid. With Docker, mount the same three paths, as `scripts/proof-grafana.sh` does.
 

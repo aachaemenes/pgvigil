@@ -21,7 +21,7 @@ V="v0.0.0-proof"; PW="pw$RANDOM$RANDOM"; IMG="pgvigil-proof-systemd:bookworm"
 WORK=$(mktemp -d)
 cleanup() {
   if [[ "${PGVIGIL_PROOF_KEEP:-}" = "1" && "${FAILED:-}" = "1" ]]; then echo "kept: $SYS $REPO $ASSETS on $NET"; return; fi
-  docker rm -f "$SYS" "$REPO" "$ASSETS" >/dev/null 2>&1 || true
+  docker rm -f -v "$SYS" "$REPO" "$ASSETS" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }

@@ -28,8 +28,8 @@ The server names a relation's file only within its own database: a relation of a
 database's name and its file node. The chart shows the used, dirty and largest-relation shares over the time range.
 
 Each read of the view walks every buffer header, so the collection reads it once per run: the buffers are grouped by
-relation file in that one pass, and the totals and the 50 largest relations both come from the grouped rows (a few
-thousand at most, so the grouping stays in memory). On a large shared_buffers the walk still takes a moment, which is
+relation file in that one pass, and the totals and the 50 largest relations both come from the grouped rows (one row per relation file in the cache).
+On a large shared_buffers the walk still takes a moment, which is
 why it is hourly.
 Set `schedules: {buffercache: 6h}` on an instance to read it less often, or `disabled: [buffercache]` to stop it.
 

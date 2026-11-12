@@ -1041,14 +1041,16 @@ func (m *masker) readRepository(ctx context.Context, dsn string, maxErr int) rep
 	// this binary's own level (the newest migration it carries), and which of the two is ahead
 	rctx, rcancel := context.WithTimeout(ctx, 15*time.Second)
 	if r, err := repo.Open(rctx, readOnlySession(dsn)); err == nil {
-		if _, latest, _ := r.SchemaCurrent(rctx); latest != "" {
+		// the newest file this binary carries, and the state from SchemaCurrent's own judgement (the first missing file),
+		// never from comparing the store's newest name with it: a store missing a lower file is behind, not current
+		if latest, _ := repo.LatestMigration(); latest != "" {
 			state := "the repository's level was not read"
-			switch {
-			case levelErr != nil:
-			case have != nil && *have >= latest:
-				state = "the repository is current"
-			default:
-				state = "the repository is behind this binary: run 'pgvigil migrate' as the repository owner"
+			if ok, name, cerr := r.SchemaCurrent(rctx); levelErr == nil && cerr == nil {
+				if ok {
+					state = "the repository is current"
+				} else {
+					state = fmt.Sprintf("the repository is behind this binary (needs %s): run 'pgvigil migrate' as the repository owner", name)
+				}
 			}
 			fmt.Fprintf(&b, "this binary's newest migration: %s (%s)\n", latest, state)
 		}

@@ -49,7 +49,7 @@ IMAGE=${SYSSTATS_IMAGE:-pgvigil-sysstats:18}; CTR=pgvigil-hostproof-$SUF
 CFG=$(mktemp); BUILD=$(mktemp -d)
 cleanup() {
   rm -rf "$CFG" "$BUILD"
-  docker rm -f "$CTR" >/dev/null 2>&1 || true
+  docker rm -f -v "$CTR" >/dev/null 2>&1 || true
   psql "$ADMIN_DSN" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT

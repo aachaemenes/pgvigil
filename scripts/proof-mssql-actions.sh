@@ -73,7 +73,8 @@ cat > "$TMPD/hold.sh" <<'HOLD'
 { printf '%s\nGO\n' "$3"; sleep 180; } | docker exec -i -e SQLCMDPASSWORD "$1" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -U "$2" -d master >/dev/null 2>&1
 HOLD
 hold() { SQLCMDPASSWORD="$2" setsid bash "$TMPD/hold.sh" "$CT" "$1" "$3" & BG+=($!); }
-spids() { sq "SELECT ISNULL(STRING_AGG(CAST(session_id AS varchar(10)), ','), '') FROM sys.dm_exec_sessions WHERE login_name = '$1' AND program_name LIKE 'SQLCMD%'"; }
+# (FOR XML PATH, not STRING_AGG: STRING_AGG arrived in SQL Server 2017)
+spids() { sq "SELECT ISNULL(CAST(STUFF((SELECT ',' + CAST(session_id AS varchar(10)) FROM sys.dm_exec_sessions WHERE login_name = '$1' AND program_name LIKE 'SQLCMD%' FOR XML PATH('')), 1, 1, '') AS varchar(8000)), '')"; }
 cleanup() {
   rc=$?
   [ -n "$SRVPID" ] && kill "$SRVPID" 2>/dev/null || true

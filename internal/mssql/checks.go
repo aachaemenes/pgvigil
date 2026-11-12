@@ -12,13 +12,15 @@ import (
 	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
-// checksCollector is mssql_checks: the day-one checks of a SQL Server instance, hourly. One read covers nine
-// areas, each judged here and stored with its verdict, so a page can show every value a rule covers, met or not:
+// checksCollector is mssql_checks: the day-one checks of a SQL Server instance, hourly. One read covers eight
+// areas, each judged here and stored with its verdict, so a page can show every value a rule covers, met or not
+// (the ninth, traceflags, is judged here too but read by mssql_traceflags, jobs.go: one read of the flags, one store):
 //
 //   - config: every sys.configurations option against its default (sp_Blitz's defaults table, as data) and
 //     against the best-practice rules of serverOptionRules; a value at its default or its best practice is 'ok',
 //     a deviation 'warn' (a warning or an advice rule) or 'crit' (a critical rule).
-//   - traceflags: every global trace flag (DBCC TRACESTATUS(-1)) with what it does and whether it belongs on.
+//   - traceflags: every global trace flag (DBCC TRACESTATUS(-1)) with what it does and whether it belongs on
+//     (traceFlagRows; the collection mssql_traceflags reads the flags and carries the verdicts).
 //   - build: the build against the catalogue of builds (buildCatalogue, at the end of this file): updates behind,
 //     support ended or ending.
 //   - dboptions and dbstate: every database's options (sys.databases) against databaseRules; its state and access.
@@ -29,12 +31,12 @@ import (
 //
 // An area the login may not read is stored as not read with the reason; the others are stored and the run is
 // partial. Nothing is written on the server: every statement is one SELECT from a catalog view, a DMV or an msdb
-// table, one of two DBCC status commands (TRACESTATUS, SQLPERF(LOGSPACE)) or the Agent's own read of its alert
-// settings (sp_MSgetalertinfo); none enters a user database (the identity scan, which does, is mssql_identity).
+// table, a DBCC status command (SQLPERF(LOGSPACE)) or the Agent's own read of its alert settings
+// (sp_MSgetalertinfo); none enters a user database (the identity scan, which does, is mssql_identity).
 //
-// Rights: config, traceflags, build, dboptions, dbstate and checkdb need only the public role. logspace needs
-// VIEW SERVER STATE (on SQL Server 2022 VIEW SERVER PERFORMANCE STATE is enough); the rules that weigh a value
-// against the machine (max server memory against physical memory, MAXDOP against the CPU count) need it too and
+// Rights: config, build, dboptions, dbstate and checkdb need only the public role (so does traceflags, read by
+// mssql_traceflags). logspace needs VIEW SERVER STATE (on SQL Server 2022 VIEW SERVER PERFORMANCE STATE is
+// enough); the rules that weigh a value against the machine (max server memory against physical memory, MAXDOP against the CPU count) need it too and
 // say 'not weighed' without it. alerts needs SELECT on msdb's Agent tables (db_datareader there); msdb.dbo.suspect_pages
 // is readable through msdb's guest user by the public role (read so on SQL Server 2022).
 // Runs on SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; not on Azure SQL Database.
@@ -155,15 +157,7 @@ func (checksCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]co
 	c.find(fs...)
 	c.add(areaRow(AreaConfig, true, cfgNote))
 
-	// trace flags
-	if flags, ferr := QueryRows(ctx, conn, traceFlagsSQL); ferr != nil {
-		c.unread(AreaTraceFlags, "DBCC TRACESTATUS", ferr.Error())
-	} else {
-		rows, fs := traceFlagRows(flags, info)
-		c.add(rows...)
-		c.find(fs...)
-		c.add(areaRow(AreaTraceFlags, true, ""))
-	}
+	// trace flags: judged by traceFlagRows in the collection mssql_traceflags (jobs.go), the one read of them
 
 	// the build against the catalogue
 	b := judgeBuild(info, now)
@@ -456,6 +450,7 @@ func serverOptionRows(cfg []collect.Row, m machineFacts) (rows []collect.Row, fi
 }
 
 // traceFlagsSQL lists every trace flag that is on, globally or for this session. With none on it returns no rows.
+// mssql_traceflags (jobs.go) runs it; nothing else does.
 const traceFlagsSQL = `DBCC TRACESTATUS(-1) WITH NO_INFOMSGS`
 
 // flagNote is what a global trace flag does and whether it belongs on: severity "" = in order.
@@ -498,8 +493,9 @@ var traceFlagNotes = map[int64]flagNote{
 // advisedFlags are the flags Glenn Berry's diagnostic queries ask for on a server someone runs.
 var advisedFlags = []int64{3226, 7745}
 
-// traceFlagRows turns DBCC TRACESTATUS's rows into the payload's flag rows (the global flags, and the advised
-// ones that are off) and their findings. A flag on for the collector's own session only is not the server's.
+// traceFlagRows judges DBCC TRACESTATUS's rows: a verdict row per global flag and per advised flag that is off
+// ({flag, is_on, status, severity, rule, explain}: traceFlagPayload, jobs.go, puts them on the payload of
+// mssql_traceflags), and their findings. A flag on for the collector's own session only is not the server's.
 func traceFlagRows(raw []collect.Row, info Info) (rows []collect.Row, findings []checkFinding) {
 	on := map[int64]bool{}
 	for _, r := range raw {

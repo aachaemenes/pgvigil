@@ -126,7 +126,7 @@ What the log does not carry, and what pgvigil does instead:
   else from the victim's CONTEXT line (`while updating tuple (0,2) in relation "t"`), else from the statement's target
   (`UPDATE`, `DELETE FROM`, `INSERT INTO`, `SELECT ... FROM`, `LOCK`), marked "from the statement".
 - **The application, and the other processes' user.** Not in the log prefixes the readers take. They come from the
-  activity samples: the pid seen within 90 seconds before the deadlock; "not sampled" otherwise (a deadlock between short
+  activity samples: the pid seen from 90 seconds before the deadlock to 5 seconds after; "not sampled" otherwise (a deadlock between short
   transactions is often not sampled: the activity collection reads once a minute). The victim's user and database are
   the log line's own.
 - **The query-text policy.** Under `normalized` every number of the DETAIL lines is `?` and the lines are joined into one:

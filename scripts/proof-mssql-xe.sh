@@ -323,7 +323,11 @@ echo "H: OK ($C1)"
 
 echo "--- I. 2,000 slow events, in two halves, read in batches of 500 across a rollover"
 BMARK="pgvxe-bulk-$SUF"
-files() { sq "SELECT COUNT(DISTINCT file_name) FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_${ID}_slow*.xel', NULL, NULL, NULL)"; }
+# the slow session's event files are in the server's own log folder (its target names a file without a folder):
+# /var/opt/mssql/log/ on Linux, the instance's Log folder on Windows
+XELDIR=$(sq "SELECT LEFT(p, LEN(p) - CHARINDEX(CASE WHEN p LIKE N'%\%' THEN N'\' ELSE N'/' END, REVERSE(p)) + 1) FROM (SELECT CAST(SERVERPROPERTY('ErrorLogFileName') AS nvarchar(400)) AS p) x")
+[ -n "$XELDIR" ] || fail "I: the server's log folder"
+files() { sq "SELECT COUNT(DISTINCT file_name) FROM sys.fn_xe_file_target_read_file(N'${XELDIR}pgvigil_${ID}_slow*.xel', NULL, NULL, NULL)"; }
 bulk() { docker exec -i -e SQLCMDPASSWORD "$CT" $SQLCMD -S localhost -U sa -C -I -H "$HOSTB" -d "$DB" >/dev/null <<EOF
 SET NOCOUNT ON; /* $BMARK $(printf 'x%.0s' $(seq 1 600)) */ WAITFOR DELAY '00:00:00.008';
 GO 1000
@@ -344,11 +348,11 @@ MOVES=$(( $(q "select count(*) from public.cursor_moves where source='pgvigil_${
 echo "I: OK (2,000 stored once each; $F1 then $F2 file(s); the cursor moved $MOVES times)"
 
 echo "--- K. the cursor's file gone"
-q "update pgvigil.mssql_cursor set file_name = '/var/opt/mssql/log/pgvigil_${ID}_slow_0_100000000000000000.xel', file_offset = 4096 where instance_id=$iid and source='pgvigil_${ID}_slow'" >/dev/null
+q "update pgvigil.mssql_cursor set file_name = '${XELDIR}pgvigil_${ID}_slow_0_100000000000000000.xel', file_offset = 4096 where instance_id=$iid and source='pgvigil_${ID}_slow'" >/dev/null
 xe K
 [ "$(bk "count(*)")" = 2000 ] || fail "K: $(bk "count(*)") stored after the fallback, want 2000"
 [ "$(q "select note like '%could not be read%by event time%' from pgvigil.mssql_xe_state where instance_id=$iid and capture='slow'")" = t ] || fail "K: the note: $(q "select note from pgvigil.mssql_xe_state where instance_id=$iid and capture='slow'")"
-[ "$(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'/var/opt/mssql/log/pgvigil_${ID}_slow*.xel', NULL, NULL, NULL) WHERE file_name = N'$(q "select file_name from pgvigil.mssql_cursor where instance_id=$iid and source='pgvigil_${ID}_slow'")'")" -ge 1 ] || fail "K: the cursor is not on a real file"
+[ "$(sq "SELECT COUNT(*) FROM sys.fn_xe_file_target_read_file(N'${XELDIR}pgvigil_${ID}_slow*.xel', NULL, NULL, NULL) WHERE file_name = N'$(q "select file_name from pgvigil.mssql_cursor where instance_id=$iid and source='pgvigil_${ID}_slow'")'")" -ge 1 ] || fail "K: the cursor is not on a real file"
 echo "  the note: $(q "select left(note, 200) from pgvigil.mssql_xe_state where instance_id=$iid and capture='slow'")"
 xe K
 [ "$(bk "count(*)")" = 2000 ] || fail "K: the read after the fallback stored something twice"

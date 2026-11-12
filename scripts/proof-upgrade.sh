@@ -81,7 +81,7 @@ cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true
   if [[ "${PGVIGIL_PROOF_KEEP:-}" = "1" && "${FAILED:-}" = "1" ]]; then echo "kept: $SYS $REPO $MIRROR on $NET, files in $WORK"; return; fi
-  docker rm -f "$SYS" "$REPO" "$MIRROR" >/dev/null 2>&1 || true
+  docker rm -f -v "$SYS" "$REPO" "$MIRROR" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -rf "$WORK" 2>/dev/null || true
 }

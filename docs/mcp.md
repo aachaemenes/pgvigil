@@ -9,7 +9,7 @@
 - A reader login only. Before it reads a message, `pgvigil mcp` checks its login and refuses (exit 3) a superuser, the schema's owner or any login with CREATE on it, a login that may change a repository table, the collector (`pgvigil_collector`) and the UI's password door (`pgvigil_auth`). The login is IN ROLE `pgvigil_reader` and nothing else.
 - The query_text policy holds. A tool returns the statement text the repository holds, which is what each instance's `query_text` setting (full, normalized or none) let the collector keep; the door never reads a monitored server.
 - No credential in any output. The login's password is scrubbed from every reply, and any `password=` value or URL password that would appear in an error message with it; the repository holds no other credential the reader can see.
-- Nothing outbound. No port is opened: the client starts `pgvigil mcp` as its own child process and talks over the pipe. The only connection the process makes is to the repository database. No telemetry, no update check.
+- Nothing outbound. No port is opened: the client starts `pgvigil mcp` as its own child process and talks over the pipe. The only connection the process makes is to the repository database; no telemetry, no update check (not proven: the proof looks for a listening socket, not for outbound connections).
 
 ## The tools
 
@@ -63,7 +63,7 @@ Newline-delimited JSON-RPC 2.0 on stdin and stdout; logs on stderr. Protocol rev
 
 ## What an AI client sees, and who decides
 
-The tools return what the web UI shows a reader: instance names, settings, check results, sizes, and statement text as the query_text policy keeps it. Whether that may go to a model hosted elsewhere is the site's decision, made in the client: pgvigil sends nothing anywhere itself. A site that may not send statement text to a hosted model sets `query_text: normalized` or `none` for the instances concerned, or uses a model that runs on its own machines.
+The tools return what the web UI shows a reader: instance names, settings, check results, sizes, and statement text as the query_text policy keeps it. Whether that may go to a model hosted elsewhere is the site's decision, made in the client: pgvigil sends nothing anywhere itself (not proven: see Nothing outbound above). A site that may not send statement text to a hosted model sets `query_text: normalized` or `none` for the instances concerned, or uses a model that runs on its own machines.
 
 ## The proof
 
