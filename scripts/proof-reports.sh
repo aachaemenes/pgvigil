@@ -504,9 +504,11 @@ await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, dev
 // the grids of a page: each h3's name and the rows its grid holds (all, not only the ones drawn)
 // (a heading's own text: a chart's heading also holds its menu button and its Top select; a chart's heading names no grid)
 const gridsOf = `[...document.querySelectorAll('main section.report h3')].filter(h => !h.closest('.chart')).map(h => { let t = h.nextElementSibling;
-  while (t && !t.querySelector?.('table.grid') && !t.matches?.('p.empty') && t.tagName !== 'H3') t = t.nextElementSibling;
-  const tb = t?.querySelector?.('table.grid'); return [[...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(), tb ? Number(tb.dataset.rows) : t?.matches?.('p.empty') ? 0 : -1,
-    !tb && t?.matches?.('p.empty') ? JSON.parse(t.dataset.cols || '[]').length : null]; })`;
+  // an empty grid is a p.empty, or since task P08 a div.empty-grid holding its drawn header row and the p.empty
+  while (t && !t.querySelector?.('table.grid') && !t.matches?.('p.empty') && !t.querySelector?.(':scope > p.empty') && t.tagName !== 'H3') t = t.nextElementSibling;
+  const pe = t?.matches?.('p.empty') ? t : t?.querySelector?.(':scope > p.empty');
+  const tb = t?.querySelector?.('table.grid'); return [[...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(), tb ? Number(tb.dataset.rows) : pe ? 0 : -1,
+    !tb && pe ? JSON.parse(pe.dataset.cols || '[]').length : null]; })`;
 const want = {
   rp_props: ['Database Extended Properties'], rp_finder: ['Database Finder'], rp_dlcharts: [], rp_deadlocks: ['Signatures', 'Grouped', 'Deadlocks', 'Participants'],
   rp_dbdeleted: ['Deleted Databases'], rp_failed: ['Server Summary', 'Login Summary', 'Client Summary', 'Message Summary', 'Detail'], rp_flushed: ['Flushed Plans'], rp_killed: ['Killed Sessions'], rp_dbnew: ['New Databases'],
