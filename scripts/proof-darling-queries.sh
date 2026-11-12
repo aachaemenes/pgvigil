@@ -72,9 +72,12 @@
 #     draws a query's line; the plan cache's History draws a chart; a procedure's chart in PerformanceMonitor's four
 #     metrics and its line on the procedures strip; Running's strip steps the slider; wait=WAITFOR shows 'Only requests
 #     waiting on WAITFOR.' and 'Show all active queries' clears it; the Waits page's 'requests' link lands there; a
-#     heatmap cell's 'Show Active Queries at This Time' lands on Running at its time; behind a 45 s lock on
-#     mssql_pc_sample the heatmap section says 'the heatmap's read took too long for this range: pick 24 hours or less'
-#     (no error box, no grid); every link and control of the Queries page clicked once (the click table); shots.
+#     heatmap cell's 'Show Active Queries at This Time' lands on Running at its time; with its read held past the UI
+#     pool's real 15 s statement timeout (mssql_pc_sample renamed for the walk, a view of the same name that sleeps 20 s
+#     once in its place: a lock cannot do it, the pool's lock_timeout of 2 s cancels a lock wait first) the heatmap
+#     section says 'the heatmap's read took too long for this range: pick 24 hours or less' (no error box, no grid,
+#     the serve log's cause the statement timeout), and after the table is put back the heatmap reads again; every link
+#     and control of the Queries page clicked once (the click table); shots.
 # NOT PROVEN HERE: SQL Server 2016 (no total_spills: the column check's unit test), Managed Instance, a readable
 # secondary; PerformanceMonitor's own pages beside these (its shots are read by hand); accessibility (proof-a11y, run
 # beside this one).
@@ -1073,16 +1076,20 @@ await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
 console.log(`login ${st}`);
 const w = `i=${sb}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-if (mode === 'lock') {
-  // the heatmap behind a holder of mssql_pc_sample: its read runs past the UI pool's 15 s statement timeout
+if (mode === 'slow') {
+  // the heatmap's read held past the UI pool's 15 s statement timeout (the caller's view over mssql_pc_sample sleeps
+  // 20 s): wait while the section has not started ('comes into view') or still reads, 60 s at most (the page's other
+  // sections time out too and hold the pool's 8 connections up to 15 s each before the heatmap's read starts)
   await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
   await go(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
+  const t0 = Date.now();
   await ev(`(() => { document.querySelector('[data-part=heatmap]').scrollIntoView(); return 'ok'; })()`);
   let s = '';
-  for (let t = 0; t < 40000; t += 500) { s = await ev(`(() => { const h = document.querySelector('[data-part=heatmap] .queries-body'); return h ? h.textContent : ''; })()`); if (!/Reading/.test(s)) break; await sleep(500); }
+  for (let t = 0; t < 60000; t += 500) { s = await ev(`(() => { const h = document.querySelector('[data-part=heatmap] .queries-body'); return h ? h.textContent : ''; })()`); if (!/Reading|comes into view/.test(s)) break; await sleep(500); }
+  const ms = Date.now() - t0;
   const hs = await ev(`(() => { const h = document.querySelector('[data-part=heatmap]'); return JSON.stringify({ line: h.querySelector('.heatmap-too-long')?.textContent ?? null, errors: h.querySelectorAll('.error').length,
-    tables: h.querySelectorAll('table').length, cells: h.querySelectorAll('.heatmap-cell').length }); })()`);
-  console.log(`lock ${hs}`);
+    tables: h.querySelectorAll('table').length, cells: h.querySelectorAll('.heatmap-cell').length, text: (h.querySelector('.queries-body')?.textContent ?? '').slice(0, 200) }); })()`);
+  console.log(`slow ${JSON.stringify({ ...JSON.parse(hs), ms })}`);
   ws.close(); process.exit(0);
 }
 const pages = { queries: `#/mssqlqueries?${w}`, qs: `#/mssqlqs?${w}&qdb=pgvq`, plancache: `#/mssqlplancache?${w}`, procs: `#/mssqlprocs?${w}`, running: `#/mssql_running?${w}`, waits: `#/mssql_waits?${w}` };
@@ -1174,10 +1181,24 @@ JS
 out=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS") || fail "I: the Chromium walk stopped: $out"
 printf '%s\n' "$out" > "$TMPD/i.out"; printf '%s\n' "$out" | grep '^click ' > "$SHOTS/d10-click-table.txt" || true
 echo "$out" | grep -v '^click ' | sed 's/^/  /'
-# the heatmap behind a lock holder (45 s, past the pool's 15 s statement timeout): the plain line, no error box, no grid
+# the heatmap's read past the UI pool's real 15 s statement timeout: the plain line, no error box, no grid. A lock on
+# mssql_pc_sample cannot provoke it (the pool's lock_timeout, 2 s, cancels the lock wait first and the page shows an
+# error box), so for this walk only the table is renamed and a view of its name sleeps 20 s once (an InitPlan) before
+# it returns the rows; the serve's statements resolve the name at each run (plan_cache_mode, planEach). Put back after.
 HF=$(date -u -d '-24 hours' +%Y-%m-%dT%H:%M:00Z); HT=$(date -u +%Y-%m-%dT%H:%M:00Z)
-setsid psql "$PGDSN" -XAtq -c "BEGIN; LOCK TABLE pgvigil.mssql_pc_sample IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(45); COMMIT;" >/dev/null 2>&1 & BG+=($!); sleep 1
-lk=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" lock "$HF" "$HT" "$IID_761") || fail "I: the lock walk stopped: $lk"
+api "mssql/plancache?instance=$IID_761&from=$HF&to=$HT&part=heatmap&metric=duration" i-heat-before.json
+HN0=$(jq '.heatmap.rows | length' "$TMPD/i-heat-before.json")
+pq "ALTER TABLE pgvigil.mssql_pc_sample RENAME TO mssql_pc_sample_i; CREATE VIEW pgvigil.mssql_pc_sample AS SELECT * FROM pgvigil.mssql_pc_sample_i WHERE (SELECT true FROM pg_sleep(20));" || fail "I: the slow view"
+SL0=$(grep -c . "$TMPD/serve.out" || true)
+lk=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" slow "$HF" "$HT" "$IID_761") || { pq "DROP VIEW IF EXISTS pgvigil.mssql_pc_sample; ALTER TABLE IF EXISTS pgvigil.mssql_pc_sample_i RENAME TO mssql_pc_sample;" || true; fail "I: the slow walk stopped: $lk"; }
+pq "DROP VIEW pgvigil.mssql_pc_sample; ALTER TABLE pgvigil.mssql_pc_sample_i RENAME TO mssql_pc_sample;" || fail "I: the table put back"
+# the serve's own log names the cause of the heatmap's failed read: the statement timeout, not a lock timeout
+HCAUSE=$(tail -n +"$((SL0 + 1))" "$TMPD/serve.out" | grep -E 'api query failed.*mssql/plancache' | grep -oE 'heatmap: ERROR: canceling statement due to [a-z ]+' | sed 's/ *$//' | sort -u | tr '\n' ';' || true)
+api "mssql/plancache?instance=$IID_761&from=$HF&to=$HT&part=heatmap&metric=duration" i-heat-back.json
+HN1=$(jq '.heatmap.rows | length' "$TMPD/i-heat-back.json")
+lk="$lk
+slowcause $HCAUSE
+slowback $HN0 $HN1"
 echo "$lk" | sed 's/^/  /'; printf '%s\n' "$lk" >> "$TMPD/i.out"
 python3 - "$TMPD" <<'PYEND' || fail "I: see above"
 import sys, json
@@ -1226,11 +1247,15 @@ wl = one('waitlink')
 if 'Only requests waiting on WAITFOR' not in wl: bad.append(f'the Waits page link: {wl}')
 hc = one('heatcell')
 if '#/mssql_running' not in hc or 'at=' not in hc or '"hash":"#/mssql_running' not in hc: bad.append(f'heatmap cell: {hc}')
-lk = one('lock')
+lk = one('slow')
 if lk:
     j = json.loads(lk.split(' ', 1)[1])
-    if j['line'] != "the heatmap's read took too long for this range: pick 24 hours or less" or j['errors'] or j['tables'] or j['cells']: bad.append(f'lock: {j}')
-else: bad.append('no lock line')
+    if j['line'] != "the heatmap's read took too long for this range: pick 24 hours or less" or j['errors'] or j['tables'] or j['cells'] or j['ms'] < 14000: bad.append(f'slow: {j}')
+else: bad.append('no slow line')
+sc = one('slowcause')
+if sc != 'slowcause heatmap: ERROR: canceling statement due to statement timeout;': bad.append(f'the heatmap read\'s cause in the serve log: {sc!r}')
+sb = one('slowback').split()
+if len(sb) != 3 or sb[1] != sb[2] or sb[1] in ('0', 'null'): bad.append(f'the heatmap after the table was put back (cells before, after): {sb}')
 clicks = [l for l in out if l.startswith('click ')]
 cbad = [l for l in clicks if ('errors=0' not in l and 'not followed' not in l and not l.endswith(' gone')) or 'rendered=false' in l]
 if not clicks: bad.append('no click table')
@@ -1239,5 +1264,5 @@ for b in bad: print('DIFF', b)
 print(f"I: {len(clicks)} clicks in the click table")
 sys.exit(1 if bad else 0)
 PYEND
-echo "ok   I: the Queries page in PerformanceMonitor's section order, each head = its tab's API head (Running, Plan cache, Query Store, Regressed, Slow queries, Tuning), the heatmap's table = the API's cells, light and dark, no error box; the Query Store strip re-reads its grid and draws a query's line; the plan cache's History and a procedure's chart in PerformanceMonitor's four metrics with its line on the strip; Running's strip steps the slider, the wait filter and its way back, the Waits page's link; a heatmap cell opens Running at its time; behind a 45 s lock the heatmap says the plain line (no error box, no grid); $(grep -c . "$SHOTS/d10-click-table.txt") clicks in the click table; shots in $SHOTS"
+echo "ok   I: the Queries page in PerformanceMonitor's section order, each head = its tab's API head (Running, Plan cache, Query Store, Regressed, Slow queries, Tuning), the heatmap's table = the API's cells, light and dark, no error box; the Query Store strip re-reads its grid and draws a query's line; the plan cache's History and a procedure's chart in PerformanceMonitor's four metrics with its line on the strip; Running's strip steps the slider, the wait filter and its way back, the Waits page's link; a heatmap cell opens Running at its time; a heatmap read held past the pool's 15 s statement timeout says the plain line (no error box, no grid; the serve log's cause the statement timeout) and reads again once the table is back; $(grep -c . "$SHOTS/d10-click-table.txt") clicks in the click table; shots in $SHOTS"
 echo "PROOF OK: D10 DONE-1 and DONE-2"
