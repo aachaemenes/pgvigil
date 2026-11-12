@@ -257,7 +257,17 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 	}
 	db, conn, err := Connect(sctx, in)
 	if err != nil {
-		return collect.Result{Err: timeoutNote(sctx, limit, err), Duration: time.Since(start)}
+		// the server did not answer: recorded, so the 'server unreachable' finding sees it (0118); a connect cut by
+		// pgvigil's own shutdown (the parent ctx cancelled) is not recorded - the run's own timeout (sctx) still is
+		cerr := timeoutNote(sctx, limit, err)
+		if ctx.Err() == nil {
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
+			if lerr := r.LogConnectFailure(rctx, in.Name, name, start, time.Since(start), cerr); lerr != nil {
+				log.Warn("the failed connect was not recorded", "instance", in.Name, "collection", name, "err", lerr)
+			}
+			rcancel()
+		}
+		return collect.Result{Err: cerr, Duration: time.Since(start)}
 	}
 	defer func() { _ = conn.Close(); _ = db.Close() }()
 

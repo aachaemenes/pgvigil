@@ -57,10 +57,11 @@ import (
 // Linux: the binary to -bin (default /usr/local/bin/pgvigil), the config template to -config (default
 // /etc/pgvigil/pgvigil.yaml) with /etc/pgvigil/pgvigil.env beside it for PGVIGIL_REPO_DSN, a system
 // account (default pgvigil, created when missing), a systemd unit /etc/systemd/system/pgvigil.service
-// enabled and started once the config names an instance. Windows: the binary to %ProgramFiles%\pgvigil,
-// the config and repo.dsn under %ProgramData%\pgvigil (readable by SYSTEM, Administrators and the
-// service's own virtual account NT SERVICE\pgvigil only), the service pgvigil (automatic start, restart
-// on failure) started once the config names an instance. Other systems: the binary and the config only.
+// enabled and started once the repository DSN is filled in (PGVIGIL_REPO_DSN in the env file). Windows: the
+// binary to %ProgramFiles%\pgvigil, the config and repo.dsn under %ProgramData%\pgvigil (readable by SYSTEM,
+// Administrators and the service's own virtual account NT SERVICE\pgvigil only), the service pgvigil (automatic
+// start, restart on failure) started once repo.dsn holds the DSN. The instances are listed in the config or
+// added in the page (Admin > Instances); none in the file is fine. Other systems: the binary and the config only.
 // Nothing here touches a monitored server or the repository: migrate, roles and user stay separate
 // commands run by the repository owner.
 
@@ -313,22 +314,47 @@ func (e *configError) Error() string { return e.err.Error() }
 func (e *configError) Unwrap() error { return e.err }
 func (e *configError) ExitCode() int { return 3 }
 
-// configNamesAnInstance says whether the config at path loads and lists at least one instance: the
-// service is started only then (a fresh template lists none, and the collector would refuse it).
-func configNamesAnInstance(path string) (bool, string) {
+// configReady says whether the service may start: the config loads and its repository DSN resolves to something
+// (an env:NAME DSN read from envFile, the environment file the unit loads, when one is named; a file: DSN from its
+// file). The instances may all be in the page (Admin > Instances, task 204), so none in the file is fine; with an
+// empty DSN the collector would end with exit 3 at once.
+func configReady(path, envFile string) (bool, string) {
 	cfg, err := config.Load(path)
 	if err != nil {
 		return false, err.Error()
 	}
-	if len(cfg.Instances) == 0 {
-		return false, "the config lists no instance yet"
+	raw := cfg.Repository.DSNRaw
+	dsn := cfg.Repository.DSN()
+	if name, ok := strings.CutPrefix(raw, "env:"); ok && envFile != "" {
+		if v, found := envFileValue(envFile, name); found {
+			dsn = v
+		}
+	}
+	if strings.TrimSpace(dsn) == "" {
+		return false, "the repository dsn (" + raw + ") is empty yet"
 	}
 	return true, ""
 }
 
+// envFileValue reads NAME=value from a systemd environment file: the last assignment wins, quotes are stripped.
+func envFileValue(path, name string) (string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	v, found := "", false
+	for _, l := range strings.Split(string(b), "\n") {
+		k, val, ok := strings.Cut(strings.TrimSpace(l), "=")
+		if ok && strings.TrimSpace(strings.TrimPrefix(k, "export ")) == name {
+			v, found = strings.Trim(strings.TrimSpace(val), `"'`), true
+		}
+	}
+	return v, found
+}
+
 // configTemplate is the first config of an installed collector: the repository DSN comes from the
 // environment (Linux: the env file beside it) or a file (Windows: repo.dsn beside it), the instance
-// list is empty and the service waits until one is added.
+// list is empty; the service waits until the DSN is filled in.
 func configTemplate(repositoryDSN string) string {
 	return strings.ReplaceAll(`# pgvigil configuration, written by 'pgvigil install'. Secrets stay out of this file:
 #   env:NAME     read from the environment
@@ -345,8 +371,8 @@ schedules:
 # What statement text the repository may hold: full | normalized | none (an instance can override it).
 query_text: full
 
-# The service starts collecting once this list names an instance. Each dsn is env:NAME or file:/path;
-# the login is a pg_monitor member ('pgvigil roles' prints its CREATE ROLE).
+# The instances to collect: listed here, or added in the page (Admin > Instances). Each dsn is env:NAME or
+# file:/path; the login is a pg_monitor member ('pgvigil roles' prints its CREATE ROLE).
 instances: []
 #  - name: prod-writer
 #    dsn: env:PROD_WRITER_DSN
@@ -370,6 +396,7 @@ type upgradeHooks struct {
 	secureDumpDir  func(dir string) error  // a folder for the owner of the host only (0700; SYSTEM and Administrators)
 	secureDumpFile func(file string) error // the dump file itself in a folder the operator named (Windows: its ACL)
 	previous       func(bin string) string
+	ready          func(o installOptions) (bool, string) // installService's own gate: may the service start (configReady), or why not
 }
 
 var upgradeHooksOf *upgradeHooks
@@ -464,7 +491,7 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 	fmt.Printf("4. migrated the repository: %d file(s) applied\n", n)
 	inst := p.inst
 	inst.Upgrade, inst.NoStart = false, false
-	ready, why := configNamesAnInstance(inst.Config)
+	ready, why := h.ready(inst) // the gate installService starts the service by: the repository DSN, not an instance in the file (task 204)
 	if err := installService(log, inst); err != nil {
 		fmt.Fprintf(os.Stderr, "the install of the new binary did not finish: %s\n", wayBack(p, false))
 		return err

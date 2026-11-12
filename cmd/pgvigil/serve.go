@@ -52,9 +52,19 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
 		return err
 	}
+	for _, w := range collect.CustomWarnings() {
+		log.Warn(w)
+	}
 	d := cfg.Repository.DSN()
 	if *dsn != "" {
 		d = config.Resolve(*dsn)
+	}
+	if strings.TrimSpace(d) == "" {
+		src := "repository.dsn " + cfg.Repository.DSNRaw
+		if *dsn != "" {
+			src = "-dsn " + *dsn
+		}
+		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing: fill in the env file or the file it names", *path, src)}
 	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {
@@ -105,7 +115,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
-	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}}
+	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
 	for _, in := range cfg.Instances {
 		pc.Gates[in.Name] = actions.ExplainGate{Enabled: in.ExplainAnalyze, DSN: in.ExplainDSN(),
 			Configured: strings.TrimSpace(in.ExplainDSNRaw) != "", Timeout: in.ExplainTimeout.Duration}
@@ -169,10 +179,13 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 // expectedIntervals gives the stale check every collection's default interval and each
 // configured instance's effective one (0 = disabled there), in seconds.
 func expectedIntervals(cfg *config.Config) web.Expected {
-	e := web.Expected{Defaults: map[string]int{}, Instances: map[string]map[string]int{}}
+	e := web.Expected{Defaults: map[string]int{}, Instances: map[string]map[string]int{}, Builtin: map[string]int{}}
 	all := engines.AllSpecs()
 	for _, c := range all {
-		e.Defaults[c.Name] = int(c.Default / time.Second)
+		// the file's global schedules: apply to an instance the page holds (it has no entry below); the dialogs'
+		// default_s stays the collection's own (Builtin)
+		e.Defaults[c.Name] = int(cfg.Interval(config.Instance{}, c.Name, c.Default) / time.Second)
+		e.Builtin[c.Name] = int(c.Default / time.Second)
 	}
 	for _, in := range cfg.Instances {
 		m := map[string]int{}

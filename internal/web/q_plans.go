@@ -47,6 +47,8 @@ import (
 type PlansConfig struct {
 	Gates     map[string]actions.ExplainGate
 	QueryText map[string]string
+	// DefaultQueryText is the file's query_text, for an instance the page holds (no entry above): Merge's rule
+	DefaultQueryText string
 	// Hypo turns on the suggested index's planner check (hypopg) per instance; absent = off (task 125).
 	Hypo map[string]bool
 }
@@ -315,7 +317,11 @@ func (a *Actions) ExplainAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	at := time.Now()
 	audited := req
-	audited.Statement = collect.PolicyText(req.Statement, a.s.plansConfig().QueryText[name]) // the audit follows the query-text policy
+	qt, ok := a.s.plansConfig().QueryText[name]
+	if !ok {
+		qt = a.s.plansConfig().DefaultQueryText
+	}
+	audited.Statement = collect.PolicyText(req.Statement, qt) // the audit follows the query-text policy
 	payload, err := json.Marshal([]actions.ExplainLogRow{actions.ExplainRow(at, audited, res)})
 	if err == nil {
 		_, err = a.audit.Exec(context.WithoutCancel(ctx), actions.ImportSQL, in.InstanceID, at, string(payload))

@@ -205,7 +205,7 @@ func installService(log *slog.Logger, o installOptions) error {
 	if out, err := systemctl("enable", "pgvigil.service"); err != nil {
 		return fmt.Errorf("systemctl enable: %v: %s", err, out)
 	}
-	ready, why := configNamesAnInstance(o.Config)
+	ready, why := configReady(o.Config, envFile)
 	if o.NoStart || !ready {
 		if !ready {
 			log.Info("service enabled, not started", "why", why)
@@ -214,7 +214,7 @@ func installService(log *slog.Logger, o installOptions) error {
 			fmt.Printf("pgvigil is upgraded and enabled; the running service still runs the previous binary until: systemctl restart pgvigil\n")
 			return nil
 		}
-		fmt.Printf("pgvigil is installed and enabled. Next:\n  1. %s: the repository login in PGVIGIL_REPO_DSN and one line per monitored instance\n  2. %s: list the instances\n  3. systemctl start pgvigil && systemctl status pgvigil\n", envFile, o.Config)
+		fmt.Printf("pgvigil is installed and enabled. Next:\n  1. %s: the repository login in PGVIGIL_REPO_DSN (and one line per instance the config names by env:)\n  2. %s: list the instances, or add them later in the page (Admin > Instances)\n  3. systemctl start pgvigil && systemctl status pgvigil (or run this installer again)\n", envFile, o.Config)
 		return nil
 	}
 	restarted := time.Now()
@@ -340,6 +340,9 @@ func init() {
 			return nil
 		},
 		previous: func(bin string) string { return bin + ".previous" },
+		ready: func(o installOptions) (bool, string) {
+			return configReady(o.Config, filepath.Join(filepath.Dir(o.Config), envName))
+		},
 	}
 }
 

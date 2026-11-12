@@ -12,15 +12,22 @@
 #      approved; each collected; one deleted from the CMS: marked gone, its instance kept
 #   D. a pg_service.conf of the two PostgreSQL servers as a source: two proposed, approved, collected
 #   E. the API: test (a wrong and a right password), add, the refusals (a name twice, a file name, a connection
-#      change without the password), a tags edit, disable (its collections stop), enable (they start again), remove
-#      (its credential file removed, its history kept); every change and refusal in the audit
+#      change without the password), a tags edit, disable (its collections stop; is_active false, so the fleet's stale
+#      check passes it by), enable (they start again; is_active true after a run), remove (its credential file removed
+#      after the 30 s grace, its history kept); every change and refusal in the audit
 #   F. the page in headless Chromium, light and dark: every control clicked (the add form's test and add, a row's
 #      Test, Edit + Save, Disable, Enable, Remove + Keep, Remove + confirm, Cancel the edit, a source's Read now,
 #      Turn off, Turn on, Add the source, Remove + confirm, a proposal's Ignore, Propose again, Approve), each with
 #      what it answered: the click table
-#   G. no credential anywhere in the repository (every row of every table of the pgvigil schema, read as text), in
-#      the API's answer or in the two logs; the credential files 0600 in a 0700 folder
+#   G. a list source pointed at a .pgpass (0600) is refused with 400 and leaves no row; one at a readable file of
+#      .pgpass lines adds the source but its read is refused by line number; no credential anywhere in the
+#      repository (every row of every table of the pgvigil schema, read as text), in the API's answer or in the logs;
+#      the credential files 0600 in a 0700 folder
 #   H. the collector's process is the one started in B (no restart) and logged each list it applied
+#   I. a second collector on the repository: it logs once that the page's instances are not its own and
+#      collects the file's only (filepg), never a page instance
+#   J. the fenced lease: a take-over (the lease made 60 s old) bumps the generation; the first collector, superseded,
+#      drops the page's instances at its next tick; released, it takes the lease back with the next generation
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -45,15 +52,16 @@ PGDB=pgv_in_$SUF; COL=pgv_incol_$SUF; USR=proofdba$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
-TMPD=$(mktemp -d); SRVPID=; RUNPID=; CHRPID=
+TMPD=$(mktemp -d); SRVPID=; RUNPID=; RUN2PID=; CHRPID=
 SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
-SA_PW=$(pw); MON_PW=$(pw); CMS_PW=$(pw); PG_PW=$(pw); BAD_PW=$(pw); UPW=$(pw); COL_PW=$(pw)
-export MON_PW CMS_PW PG_PW BAD_PW
+SA_PW=$(pw); MON_PW=$(pw); CMS_PW=$(pw); PG_PW=$(pw); BAD_PW=$(pw); UPW=$(pw); COL_PW=$(pw); PGPASS_PW=$(pw)
+export MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 printf 'POSTGRES_PASSWORD=%s\n' "$PG_PW" > "$TMPD/pg.env"
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
+  [[ -n "$RUN2PID" ]] && kill "$RUN2PID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
   for c in "$SQL" "$PGA" "$PGB"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
@@ -223,19 +231,25 @@ code=$(api POST admin/instances "$(js op=edit name=pg-manual $A "tags=env:proof 
 code=$(api POST admin/instances "$(js op=test name=pg-manual)"); [[ "$code" == 200 && "$(ans ok)" == True ]] || fail "E: the stored instance's test: $code $(cat "$TMPD/ans.json")"
 [[ "$(pq "SELECT tested_ok FROM pgvigil.admin_instances WHERE name = 'pg-manual'")" == t ]] || fail "E: the test result was not kept"
 code=$(api POST admin/instances "$(js op=disable name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: disable: $code"
+# a run in flight at the disable calls ensure_instance as the collector: admin_keep_removed keeps it inactive
+psql "$PGV_COL_DSN" -XAtq -v ON_ERROR_STOP=1 -c "SELECT pgvigil.ensure_instance('pg-manual', 'auto', '', 0, false, '{}')" >/dev/null || fail "E: ensure_instance as the collector"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: a run in flight set the disabled pg-manual active again (admin_keep_removed)"
 sleep 30; D0=$(newest pg-manual); sleep 75; D1=$(newest pg-manual)
 [[ "$D0" == "$D1" ]] || fail "E: pg-manual was collected after the disable ($D0 -> $D1)"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: pg-manual is still active after the disable (the fleet's stale check would flag it)"
 code=$(api POST admin/instances "$(js op=enable name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: enable: $code"
 for _ in $(seq 1 120); do [[ "$(newest pg-manual)" > "$D1" ]] && break; sleep 1; done
 [[ "$(newest pg-manual)" > "$D1" ]] || fail "E: pg-manual was not collected again after the enable"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == t ]] || fail "E: pg-manual is not active after the enable and a run"
 REF=$(pq "SELECT dsn_ref FROM pgvigil.admin_instances WHERE name = 'pg-manual'"); RF=${REF#file:}
 [[ -f "$RF" ]] || fail "E: the credential file $RF is missing"
 code=$(api POST admin/instances "$(js op=remove name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: remove: $code"
-[[ ! -e "$RF" ]] || fail "E: the credential file stayed after the remove"
+[[ -e "$RF" ]] || fail "E: the credential file went at once (the collector may still read it for 15 s: 30 s grace)"
 RM="$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-manual'")|$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")"
 [[ "$RM" == "0|f" ]] || fail "E: the remove: admin rows|is_active = $RM (want 0|f)"
 [[ "$(collected pg-manual)" -gt 0 ]] || fail "E: the remove dropped the history"
 sleep 30; R0=$(newest pg-manual); sleep 75; [[ "$(newest pg-manual)" == "$R0" ]] || fail "E: pg-manual was collected after the remove"
+[[ ! -e "$RF" ]] || fail "E: the credential file stayed 105 s after the remove (the grace is 30 s)"
 [[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: pg-manual is active again after the remove (a run in flight)"
 AUD=$(pq "SELECT string_agg(op || ':' || outcome, ' ' ORDER BY audit_id) FROM pgvigil.admin_audit WHERE target = 'pg-manual'")
 for w in "instance add:done" "instance add:refused" "instance edit:done" "instance tested:done" "instance disable:done" "instance enable:done" "instance remove:done"; do
@@ -245,7 +259,7 @@ echo "ok   E: tests (wrong: refused by the server, right: connected), add (colle
 echo "== F. the page in headless Chromium =="
 sqok "F: a fourth server in the CMS" "DECLARE @test int = (SELECT server_group_id FROM msdb.dbo.sysmanagement_shared_server_groups WHERE name = N'Test'), @id int;
   EXEC msdb.dbo.sp_sysmanagement_add_shared_registered_server @name = N'nobody', @server_group_id = @test, @server_name = N'ignoreme.invalid', @description = N'', @server_type = 0, @server_id = @id OUTPUT;" msdb
-printf 'host,port,name,tags\n127.0.0.1,%s,csv one,env:csv\n' "$PA" > "$CFGD/servers.csv"
+printf 'host,port,name,tags\n127.0.0.1,%s,csv one,env:csv\n' "$PA" > "$CFGD/servers.csv"; chmod 644 "$CFGD/servers.csv"  # a server list is readable: the page refuses one only its owner reads (the proof's umask is 077)
 CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu --window-size=1600,1200 about:blank >"$TMPD/chrome.log" 2>&1 & CHRPID=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
@@ -346,13 +360,24 @@ waitcol "$NCSV" 120 "F"
 echo "ok   F: the page in light and dark (every field labelled, no error); $(echo "$out" | grep -c '^click ') clicks, each answered as above; the CSV source's server $NCSV collected after its source was removed"
 
 echo "== G. no credential in the repository, the API or the logs =="
+PGPASS_FILE=$TMPD/pgpass; printf '127.0.0.1:%s:*:postgres:%s\n' "$PA" "$PGPASS_PW" > "$PGPASS_FILE"; chmod 600 "$PGPASS_FILE"
+code=$(api POST admin/sources "$(js op=add kind=sqlserver_list name=pgpass1 ref="$PGPASS_FILE" every_s=3600)")
+[[ "$code" == 400 && "$(pq "SELECT count(*) FROM pgvigil.admin_sources WHERE name = 'pgpass1'")" == 0 ]] || fail "G: a 0600 .pgpass as a list source: $code $(head -c 300 "$TMPD/ans.json") (want 400, no row)"
+grep -q 'owner only' "$TMPD/ans.json" || fail "G: the refusal does not say why: $(head -c 300 "$TMPD/ans.json")"
+chmod 644 "$PGPASS_FILE"
+code=$(api POST admin/sources "$(js op=add kind=pg_csv name=pgpass2 ref="$PGPASS_FILE" every_s=3600)")
+[[ "$code" == 200 && "$(ans sync_error)" == *".pgpass line"* && "$(ans sync_error)" == *"line 1"* ]] || fail "G: a readable file of .pgpass lines: $code $(head -c 300 "$TMPD/ans.json") (want its read refused by line number)"
+[[ "$(pq "SELECT count(*) FROM pgvigil.admin_proposals WHERE source = 'pgpass2'")" == 0 ]] || fail "G: the .pgpass file was read into proposals"
+code=$(api POST admin/sources "$(js op=remove name=pgpass2)"); [[ "$code" == 200 ]] || fail "G: remove pgpass2: $code"
+echo "G: a 0600 .pgpass refused (400, no row); a readable one's read refused by line number, no proposal"
+for _ in $(seq 1 40); do (( $(find "$CFGD/instances" -type f | wc -l) == $(pq "SELECT count(*) FROM pgvigil.admin_instances") )) && break; sleep 1; done  # the 30 s grace of the files F replaced
 TABLES=$(pq "SELECT c.oid::regclass FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1")
 NT=0; HITS=""
 for t in $TABLES; do NT=$((NT + 1))
-  for v in MON_PW CMS_PW PG_PW BAD_PW; do n=$(pq "SELECT count(*) FROM $t x WHERE strpos(x::text, '${!v}') > 0"); [[ "$n" == 0 ]] || HITS+=" $t:$v=$n"; done; done
+  for v in MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW; do n=$(pq "SELECT count(*) FROM $t x WHERE strpos(x::text, '${!v}') > 0"); [[ "$n" == 0 ]] || HITS+=" $t:$v=$n"; done; done
 [[ -z "$HITS" ]] || fail "G: a password is in the repository:$HITS"
 api GET admin/instances >/dev/null
-for v in MON_PW CMS_PW PG_PW BAD_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/run.log"; do ! grep -qF -- "${!v}" "$f" || fail "G: $v is in $(basename "$f")"; done; done
+for v in MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/run.log"; do ! grep -qF -- "${!v}" "$f" || fail "G: $v is in $(basename "$f")"; done; done
 NF=0; for d in instances sources; do [[ "$(stat -c %a "$CFGD/$d")" == 700 ]] || fail "G: the credential folder $d is $(stat -c %a "$CFGD/$d")"
   for f in "$CFGD/$d"/*; do NF=$((NF + 1)); [[ "$(stat -c %a "$f")" == 600 ]] || fail "G: $d/$(basename "$f") is $(stat -c %a "$f")"; done; done
 NREF=$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE dsn_ref LIKE 'file:$CFGD/instances/%'")
@@ -365,4 +390,38 @@ kill -0 "$RUNPID" 2>/dev/null || fail "H: the collector stopped"
 NA=$(grep -c 'scheduler: instances applied' "$TMPD/run.log" || true)
 (( NA >= 8 )) || fail "H: the collector applied $NA lists (want one per change: 8 or more)"
 echo "ok   H: pid $RUNPID ran from B to the end and applied $NA lists (generation $G0 -> $(gen))"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository; no restart; the NOT PROVEN lines above stand)"
+
+echo "== I. a second collector on the repository =="
+"$TMPD/pgvigil" run -config "$CFGD/collector.yaml" >"$TMPD/run2.log" 2>&1 & RUN2PID=$!
+for _ in $(seq 1 40); do grep -q "are not this collector's now" "$TMPD/run2.log" && break; sleep 1; done
+kill -0 "$RUN2PID" 2>/dev/null || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector exited"; }
+[[ "$(grep -c "are not this collector's now" "$TMPD/run2.log")" == 1 ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector did not say once that another holds the page's instances"; }
+sleep 20
+[[ "$(grep -c "are not this collector's now" "$TMPD/run2.log")" == 1 ]] || fail "I: the second collector said it more than once"
+PAGE2=$(grep 'scheduler: instances applied' "$TMPD/run2.log" | grep -oE ' instances=[0-9]+' | tr -d ' ' | sort -u | tr '\n' ' ')
+[[ "$PAGE2" == "instances=1 " ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector applied [$PAGE2] (want only the file's one instance)"; }
+! grep -q 'instances: list read' "$TMPD/run2.log" || { grep -m3 'instances: list read' "$TMPD/run2.log" >&2; fail "I: the second collector read the page's list"; }
+kill "$RUN2PID" 2>/dev/null; wait "$RUN2PID" 2>/dev/null || true; RUN2PID=
+kill -0 "$RUNPID" 2>/dev/null || fail "I: the first collector stopped"
+echo "ok   I: a second collector said once that the page's instances are not its own and applied the file's one instance only"
+
+echo "== J. a fenced lease: a take-over bumps the generation; the superseded holder stops at its next tick, then takes it back =="
+last_applied() { grep 'scheduler: instances applied' "$TMPD/run.log" | tail -1 | grep -oE ' instances=[0-9]+' | tr -d ' '; }
+BEFORE=$(last_applied); G1=$(pq "SELECT generation FROM pgvigil.admin_page_holder")
+NOT0=$(grep -c "are not this collector's now" "$TMPD/run.log" || true); HOLD0=$(grep -c "holds the page's instances now" "$TMPD/run.log" || true)
+[[ "$(pq "SELECT holder LIKE '%:$RUNPID:%' FROM pgvigil.admin_page_holder")" == t && "$G1" -ge 1 ]] || fail "J: the first collector (pid $RUNPID) does not hold the lease: $(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")"
+# a lease 60 s old and a take-over in one transaction (the holder's renewal waits on the row, then finds itself superseded)
+TG=$(pq "UPDATE pgvigil.admin_page_holder SET beat = now() - interval '60 seconds'; SELECT pgvigil.import_admin_page_lease('proof-taker', 45)")
+[[ "$TG" == $((G1 + 1)) ]] || fail "J: the take-over got generation $TG (want $((G1 + 1)))"
+# the docs' bound: its renewal (15 s) and its watcher's tick (15 s), 5 s spare
+for _ in $(seq 1 35); do [[ "$(last_applied)" == "instances=1" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "instances=1" ]] || fail "J: the superseded holder still runs [$(last_applied)] 35 s after the take-over (want the file's one instance)"
+[[ "$(grep -c "are not this collector's now" "$TMPD/run.log")" == $((NOT0 + 1)) ]] || fail "J: the superseded holder did not say once that the page's instances are not its own"
+[[ "$(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")" == "proof-taker $TG" ]] || fail "J: the superseded holder took the lease back while the taker's was alive"
+pq "SELECT pgvigil.import_admin_page_release('proof-taker', $TG)" >/dev/null
+for _ in $(seq 1 35); do [[ "$(last_applied)" == "$BEFORE" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "$BEFORE" ]] || fail "J: 35 s after the release the first collector runs [$(last_applied)] (want [$BEFORE] again)"
+[[ "$(grep -c "holds the page's instances now" "$TMPD/run.log")" == $((HOLD0 + 1)) ]] || fail "J: the take-back was not logged once"
+[[ "$(pq "SELECT generation FROM pgvigil.admin_page_holder")" == $((TG + 1)) ]] || fail "J: the take-back's generation is $(pq "SELECT generation FROM pgvigil.admin_page_holder") (want $((TG + 1)))"
+echo "ok   J: generation $G1 -> $TG (a take-over: the first collector superseded, the file's instance only) -> $((TG + 1)) (taken back: [$BEFORE] again)"
+echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; the NOT PROVEN lines above stand)"

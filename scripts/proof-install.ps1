@@ -1,6 +1,6 @@
 # Guest side of the Windows installer proof (scripts/proof-install-windows.sh drives it over SSH; Windows
 # PowerShell 5.1, elevated). Phase install: `irm | iex` from the mock release server, the service exists
-# stopped (no instance), the binary prints the version, the data folder's ACL names the service account;
+# stopped (repo.dsn still empty), the binary prints the version, the data folder's ACL names the service account;
 # then the repository DSN and one instance are written and the installer runs again (the upgrade path):
 # the service is Running and its log says the scheduler started. Phase uninstall: `pgvigil uninstall -purge`
 # removes the service and the data folder; the install folder and the PATH entry are cleaned here.
@@ -25,7 +25,7 @@ if ($Phase -eq 'install') {
     & ([scriptblock]::Create($installerText))
     $proofSvc = Get-Service -Name pgvigil -ErrorAction SilentlyContinue
     if (-not $proofSvc) { Fail 'no service pgvigil after install' }
-    if ($proofSvc.Status -ne 'Stopped') { Fail "service state after the first install: $($proofSvc.Status) (expected Stopped: no instance yet)" }
+    if ($proofSvc.Status -ne 'Stopped') { Fail "service state after the first install: $($proofSvc.Status) (expected Stopped: repo.dsn is empty yet)" }
     if ($proofSvc.StartType -ne 'Automatic') { Fail "start type $($proofSvc.StartType)" }
     $proofVersionOut = & $proofExe version
     if ("$proofVersionOut" -ne "pgvigil $Tag") { Fail "installed binary says '$proofVersionOut'" }

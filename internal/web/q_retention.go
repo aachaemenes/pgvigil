@@ -381,6 +381,9 @@ func (s *Server) InstanceCollections(w http.ResponseWriter, r *http.Request) {
 	// default_s: the collector's own interval; 0 = an opt-in collection (off until a schedule gives it one), which a
 	// disabled: line has nothing to do with
 	def := func(c string) any {
+		if v, ok := s.expected.Builtin[c]; ok {
+			return v
+		}
 		if v, ok := s.expected.Defaults[c]; ok {
 			return v
 		}

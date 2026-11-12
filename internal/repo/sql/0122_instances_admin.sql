@@ -63,7 +63,10 @@ CREATE TABLE IF NOT EXISTS pgvigil.admin_removed (
 CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.is_active AND NOT OLD.is_active
-     AND EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes') THEN
+     AND (EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes')
+          -- a page instance disabled in the last 5 minutes stays inactive against a run in flight (enable: the next run
+          -- sets it active); past that only a file instance of the name runs (the page's holder skips disabled rows)
+          OR EXISTS (SELECT 1 FROM pgvigil.admin_instances a WHERE a.name = NEW.name AND a.disabled AND a.updated_at > now() - interval '5 minutes')) THEN
     NEW.is_active := false;
   END IF;
   RETURN NEW;
@@ -71,6 +74,44 @@ END $$;
 DROP TRIGGER IF EXISTS admin_keep_removed ON pgvigil.instances;
 CREATE TRIGGER admin_keep_removed BEFORE UPDATE OF is_active ON pgvigil.instances
   FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
+
+-- The page's instances belong to one collector of a repository: the holder of this lease (one row), renewed by its
+-- holder every 15 s and taken by another collector once it is older than p_ttl_s (45 s: three renewals missed - a
+-- holder stopped or its host lost). A row, not a session advisory lock: it holds through a transaction-mode pooler
+-- (PgBouncer) and needs no TCP keepalive to free it. Every time is the repository's now(), never a host's clock.
+-- A fenced lease: each take-over bumps the generation and writes the new holder (a name unique to one process), so a
+-- holder superseded while it was away (a partition) no longer matches the row: it gets 0 at its next call and stops.
+CREATE TABLE IF NOT EXISTS pgvigil.admin_page_holder (
+  id          int PRIMARY KEY CHECK (id = 1),
+  holder      text NOT NULL,
+  generation  bigint NOT NULL,
+  beat        timestamptz NOT NULL
+);
+
+-- import_admin_page_lease: the generation p_holder holds after this call, 0 = not held (another holds it, or this
+-- holder was superseded). The holder alone decides a renewal (not the generation it last saw), so a reply lost after
+-- its commit never locks the holder out of its own lease.
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_lease(p_holder text, p_ttl_s int)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  v_gen bigint;
+  v_ttl interval := make_interval(secs => greatest(p_ttl_s, 30));
+BEGIN
+  INSERT INTO pgvigil.admin_page_holder AS h (id, holder, generation, beat) VALUES (1, p_holder, 1, now())
+  ON CONFLICT (id) DO UPDATE
+     SET holder = EXCLUDED.holder, beat = now(),
+         generation = CASE WHEN h.holder = EXCLUDED.holder AND h.beat >= now() - v_ttl THEN h.generation ELSE h.generation + 1 END
+   WHERE h.holder = EXCLUDED.holder OR h.beat < now() - v_ttl
+  RETURNING generation INTO v_gen;
+  RETURN coalesce(v_gen, 0);
+END $$;
+
+-- import_admin_page_release: a holder stopping cleanly frees the lease at once (only the generation it holds): the
+-- row is expired, not deleted, so the next take-over still bumps the generation (it only ever rises)
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_release(p_holder text, p_generation bigint)
+RETURNS void LANGUAGE sql AS $$
+  UPDATE pgvigil.admin_page_holder SET beat = '-infinity' WHERE holder = p_holder AND generation = p_generation
+$$;
 
 CREATE TABLE IF NOT EXISTS pgvigil.admin_audit (
   audit_id  bigserial PRIMARY KEY,
@@ -242,6 +283,11 @@ BEGIN
      WHERE name = v_name;
   ELSIF v_op IN ('disable', 'enable') THEN
     UPDATE pgvigil.admin_instances SET disabled = (v_op = 'disable'), updated_at = p_at, updated_by = v_user WHERE name = v_name;
+    -- a disabled instance leaves the fleet pages' stale and failing checks (they read is_active); enable needs
+    -- nothing: the next run's ensure_instance sets it active again
+    IF v_op = 'disable' THEN
+      UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
+    END IF;
   ELSIF v_op = 'remove' THEN
     DELETE FROM pgvigil.admin_instances WHERE name = v_name;
     -- its history stays; the fleet pages read is_active (kept false against a run in flight: admin_keep_removed)
