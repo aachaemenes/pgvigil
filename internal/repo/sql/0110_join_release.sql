@@ -16,7 +16,9 @@
 --   task 161 (PostgreSQL jobs and deadlocks, 0102): purge() deletes job_step_runs past the retention.
 --   task 151 (alerting): purge() deletes the alert test sends past the retention.
 --   task 163 (PostgreSQL database options, 0104): the pg_override_findings and pg_dboption_findings arms; nothing for purge().
--- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new name.
+--   task 167 (release items): pgvigil.schema_missing(), the embedded migration names schema_version lacks, on the
+--   collector's list (SchemaCurrent: a lower-numbered file applied after a higher one no longer reads current).
+-- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new names.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
 SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
@@ -364,6 +366,15 @@ BEGIN
   RETURN n;
 END $$;
 
+-- the names of p_names that schema_version lacks, in name order (SchemaCurrent passes the binary's embedded list; the
+-- collector may call it - SECURITY DEFINER through apply_roles - and cannot read schema_version itself)
+CREATE OR REPLACE FUNCTION pgvigil.schema_missing(p_names text[])
+RETURNS text[] LANGUAGE sql STABLE AS $$
+  SELECT coalesce(array_agg(u.n ORDER BY u.n), '{}'::text[])
+    FROM unnest(p_names) AS u(n)
+   WHERE NOT EXISTS (SELECT 1 FROM pgvigil.schema_version v WHERE v.version = u.n)
+$$;
+
 CREATE OR REPLACE FUNCTION pgvigil.apply_roles()
  RETURNS void
  LANGUAGE plpgsql
@@ -381,7 +392,7 @@ BEGIN
      WHERE n.nspname = 'pgvigil'
   LOOP
     EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', f.sig);
-    IF f.proname LIKE 'import\_%' OR f.proname IN ('ensure_instance', 'log_collection', 'schema_latest', 'log_cursor', 'mssql_hadr_cursor') THEN
+    IF f.proname LIKE 'import\_%' OR f.proname IN ('ensure_instance', 'log_collection', 'schema_latest', 'schema_missing', 'log_cursor', 'mssql_hadr_cursor') THEN
       -- the collector's door: runs as the owner, sees only its arguments
       EXECUTE format('ALTER FUNCTION %s SECURITY DEFINER SET search_path = pgvigil, pg_catalog, pg_temp', f.sig);
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pgvigil_collector', f.sig);

@@ -11,12 +11,14 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -77,17 +79,10 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 );`); err != nil {
 		return 0, fmt.Errorf("schema_version: %w", err)
 	}
-	entries, err := fs.ReadDir(migrations, "sql")
+	names, err := migrationNames()
 	if err != nil {
 		return 0, err
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".sql") {
-			names = append(names, e.Name())
-		}
-	}
-	sort.Strings(names)
 	applied := 0
 	for _, n := range names {
 		var exists bool
@@ -134,25 +129,77 @@ CREATE TABLE IF NOT EXISTS pgvigil.schema_version (
 	return applied, nil
 }
 
-// SchemaCurrent reports whether every embedded migration is applied, through a
-// SECURITY DEFINER function the collector role may call; `pgvigil run` checks
-// this instead of migrating, so the daemon runs with the collector login.
-func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
+// migrationNames is the embedded migration files in name order, the order Migrate applies them in.
+func migrationNames() ([]string, error) {
 	entries, err := fs.ReadDir(migrations, "sql")
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// schemaState is SchemaCurrent's answer from the embedded names (in name order) and the names the store lacks:
+// current when none of them is missing, else false and the first missing one in name order; a missing name this
+// binary does not carry is not counted. Current names the newest embedded migration.
+func schemaState(names, missing []string) (bool, string) {
+	lacks := make(map[string]bool, len(missing))
+	for _, m := range missing {
+		lacks[m] = true
+	}
+	for _, n := range names {
+		if lacks[n] {
+			return false, n
+		}
+	}
+	if len(names) == 0 {
+		return true, ""
+	}
+	return true, names[len(names)-1]
+}
+
+// SchemaCurrent reports whether every embedded migration is applied, through SECURITY DEFINER functions the
+// collector role may call; `pgvigil run` checks this instead of migrating, so the daemon runs with the collector
+// login. It asks the store which embedded names schema_version lacks, so a lower-numbered file that arrives after a
+// higher one was applied reads behind (Migrate applies every missing file, not only the ones above the newest).
+// The name is the first missing migration when the store is behind, else the newest embedded one. A store from
+// before the file that adds schema_missing() is behind by that alone: the name is then the first embedded
+// migration above its newest (the collector cannot read schema_version itself).
+func (r *Repo) SchemaCurrent(ctx context.Context) (bool, string, error) {
+	names, err := migrationNames()
 	if err != nil {
 		return false, "", err
 	}
 	latest := ""
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".sql") && e.Name() > latest {
-			latest = e.Name()
-		}
+	if len(names) > 0 {
+		latest = names[len(names)-1]
+	}
+	var missing []string
+	err = r.pool.QueryRow(ctx, `SELECT pgvigil.schema_missing($1::text[])`, names).Scan(&missing)
+	if err == nil {
+		ok, name := schemaState(names, missing)
+		return ok, name, nil
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42883" { // 42883: undefined_function
+		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
 	}
 	var have *string
 	if err := r.pool.QueryRow(ctx, `SELECT pgvigil.schema_latest()`).Scan(&have); err != nil {
 		return false, latest, fmt.Errorf("schema check (run 'pgvigil migrate' as the repository owner first): %w", err)
 	}
-	return have != nil && *have >= latest, latest, nil
+	for _, n := range names {
+		if have == nil || n > *have {
+			return false, n, nil
+		}
+	}
+	return false, latest, fmt.Errorf("schema check: pgvigil.schema_missing() does not exist although %s is applied", *have)
 }
 
 // EnsureInstance upserts the instance row and returns its id.
