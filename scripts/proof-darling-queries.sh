@@ -622,7 +622,7 @@ echo "     F: the Query Store over $NQ stored rows (14 days, 1-minute intervals,
 [[ -z "$SLOW" ]] || fail "F: past the 10 s line:$SLOW (every timing above)"
 echo "ok   F: every timed part under 10 s (above)"
 # plan_cache_mode itself (the join review d10a's proof of (a)): one psql session PREPAREs the plan-cache compare's own
-# SQL (read from the Go source), EXECUTEs it six times on a 1-hour window and once on 7 days at 3,000 rows a read, and
+# SQL (read from the Go source), EXECUTEs it six times over 7 days at 761 rows a read and once at 3,000, and
 # reads pg_prepared_statements (PostgreSQL 14 on): no generic plan under force_custom_plan, one or more under auto (the
 # row fails if the setting changes nothing); then the planning cost under it: EXPLAIN (SUMMARY) of the Findings page's
 # own read of the 16-arm findings view, three times
@@ -650,7 +650,9 @@ open(f'{d}/findings.sql', 'w').write(lit(open('internal/web/queries.go').read(),
 PYEND
 for mode in force_custom_plan auto; do
   { echo "PREPARE pcc (int, timestamptz, timestamptz, int, boolean, float8) AS"; cat "$TMPD/pcc.sql"; echo ";"; echo '\o /dev/null'
-    for _ in 1 2 3 4 5 6; do echo "EXECUTE pcc($IID_3000, now() - interval '1 hour', now(), NULL, false, 3600);"; done
+    # s177j-10's order: dear custom plans first (7 days at 761 a read), then 7 days at 3,000; six cheap 1-hour runs
+    # keep auto custom (s177j-18: 0|7), since the generic plan then looks dearer than their average
+    for _ in 1 2 3 4 5 6; do echo "EXECUTE pcc($IID_761, now() - interval '7 days', now(), NULL, false, 604800);"; done
     echo "EXECUTE pcc($IID_3000, now() - interval '7 days', now(), NULL, false, 604800);"; echo '\o'
     echo "SELECT generic_plans || '|' || custom_plans FROM pg_prepared_statements WHERE name = 'pcc';"; } > "$TMPD/pcm-$mode.sql"
 done
@@ -661,7 +663,7 @@ PCM_A=$(PGOPTIONS='-c plan_cache_mode=auto -c jit=off' psql "$PGDSN" -XAtq -v ON
 { echo "PREPARE pf (int) AS"; cat "$TMPD/findings.sql"; echo ";"; for _ in 1 2 3; do echo "EXPLAIN (SUMMARY ON) EXECUTE pf(NULL);"; done; } > "$TMPD/pf.sql"
 PT=$(PGOPTIONS='-c plan_cache_mode=force_custom_plan -c jit=off' psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -f "$TMPD/pf.sql" | grep -o 'Planning Time: [0-9.]* ms' | sed 's/Planning Time: //' | tr '\n' ' ')
 [[ -n "$PT" ]] || fail "F: no Planning Time from EXPLAIN (SUMMARY) of the findings read"
-echo "ok   F: plan_cache_mode: the plan-cache compare PREPAREd and run 6 x 1 hour + 1 x 7 days reads generic|custom $PCM_F under force_custom_plan and $PCM_A under auto; the Findings page's read plans in $PT under it (each read pays it)"
+echo "ok   F: plan_cache_mode: the plan-cache compare PREPAREd and run 6 x 7 days at 761 + 1 x 7 days at 3,000 reads generic|custom $PCM_F under force_custom_plan and $PCM_A under auto; the Findings page's read plans in $PT under it (each read pays it)"
 
 echo "== H. DONE-2's reads: the heatmap, the histories, the Query Store overhead =="
 # H1. the heatmap's cells = a hand count of the stored samples (F's seed at 761 rows a read, 24 hours: 10-minute bins)
