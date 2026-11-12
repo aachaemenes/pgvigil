@@ -487,7 +487,7 @@ echo "== G. the imported server's tabs under pgvigil serve, in headless Chromium
 GSRC=$TMPD/gsrc; mkdir -p "$GSRC"
 tar -C . --exclude=./web/node_modules --exclude=./.lab --exclude=./.git -cf - . | tar -C "$GSRC" -xf -
 JP=internal/dbadash/testdata/join-168.patch
-if [ ! -f "$GSRC/$JP" ]; then echo "G: no wiring patch in the tree: the release join carries the wiring (the tree is used as it is)"
+if [ ! -f "$GSRC/$JP" ]; then grep -q importedPage "$GSRC/web/src/main.ts" || fail "G: no $JP and the tree lacks the join's wiring (web/src/main.ts has no importedPage)"; echo "G: no wiring patch in the tree: the release join carries the wiring (the tree is used as it is)"
 elif (cd "$GSRC" && git apply --check -R "$JP" 2>/dev/null); then echo "G: the join's wiring is already in this tree"
 elif (cd "$GSRC" && git apply "$JP" 2>"$TMPD/g-apply.err"); then echo "G: the join's wiring applied to the run's copy"
 else fail "G: $JP neither applies nor is applied: $(cat "$TMPD/g-apply.err")"; fi
