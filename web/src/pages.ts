@@ -334,7 +334,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // filter' shows them all; the column of that test moves to the front of the grid (DBA Dash 01a). An acknowledged
   // cell counts under 'acknowledged', not under its warning or critical (DBA Dash's Acknowledged column).
   type Bucket = 'ok' | 'warn' | 'crit' | 'na' | 'ack' | 'bad';   // 'bad': warning or critical (a test name without a page of its own)
-  const bucketOf = (r: Row, key: string): Bucket => {
+  const bucketOf = (r: Row, key: string): Exclude<Bucket, 'bad'> => {
     const c = (r._cells as ReturnType<typeof cells>)[key];
     if ((r._acked as Acked)[key]) return 'ack';
     return c.none ? 'na' : c.level === 2 ? 'crit' : c.level === 1 ? 'warn' : 'ok';
@@ -392,7 +392,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const drawUpper = () => {
     const set = base();
     const tests = groups.map(g => {
-      const n: Record<Bucket, number> = { ok: 0, warn: 0, crit: 0, na: 0, ack: 0 };
+      const n: Record<Exclude<Bucket, 'bad'>, number> = { ok: 0, warn: 0, crit: 0, na: 0, ack: 0 };
       for (const r of set) n[bucketOf(r, g.key)]++;
       return { key: g.key, test: g.label, ...n, _worst: n.crit ? 2 : n.warn ? 1 : 0 } as Row;
     });
