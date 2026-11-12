@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -314,4 +315,138 @@ func writeFile(path, content string, mode os.FileMode) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(content), mode)
+}
+
+// --- install -upgrade on Linux (install.go's runUpgrade)
+
+func init() {
+	upgradeHooksOf = &upgradeHooks{
+		installed:     installedUnit,
+		stop:          func(_ *slog.Logger) error { return systemdStop() },
+		start:         func(_ *slog.Logger) error { return systemdStart() },
+		others:        otherProcesses,
+		freeBytes:     freeBytes,
+		dumpDir:       "/var/backups/pgvigil",
+		secureDumpDir: secureDir,
+		// a file in the operator's own folder: made 0600 by the upgrade before pg_dump writes into it, nothing more
+		secureDumpFile: func(string) error { return nil },
+		privileged: func() error {
+			if os.Geteuid() != 0 {
+				return errors.New("the upgrade needs root (it stops the service, writes beside the binary and the unit): run it with sudo")
+			}
+			return nil
+		},
+		previous: func(bin string) string { return bin + ".previous" },
+	}
+}
+
+// installedUnit reads the binary, the config and the account from the unit the installer wrote (renderUnit's
+// ExecStart=<bin> run -config <config> and User=<account>).
+func installedUnit() (installOptions, bool, error) {
+	b, err := os.ReadFile(unitPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return installOptions{}, false, nil
+	}
+	if err != nil {
+		return installOptions{}, false, err
+	}
+	return parseUnit(string(b))
+}
+
+func parseUnit(unit string) (installOptions, bool, error) {
+	var o installOptions
+	for _, line := range strings.Split(unit, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "User":
+			o.User = strings.TrimSpace(v)
+		case "ExecStart":
+			f := strings.Fields(v)
+			if len(f) >= 4 && f[1] == "run" && f[2] == "-config" {
+				o.Bin, o.Config = f[0], f[3]
+			}
+		}
+	}
+	if o.Bin == "" || o.Config == "" {
+		return o, false, fmt.Errorf("%s has no ExecStart=<binary> run -config <file> line: not the installer's unit", unitPath)
+	}
+	if o.User == "" {
+		return o, false, fmt.Errorf("%s has no User= line: not the installer's unit", unitPath)
+	}
+	return o, true, nil
+}
+
+func systemdStop() error {
+	if !systemdRunning() {
+		return errors.New("systemd is not running here: stop the collector by hand and run the upgrade's steps of docs/upgrade.md")
+	}
+	if out, err := systemctl("stop", "pgvigil.service"); err != nil {
+		return fmt.Errorf("systemctl stop: %v: %s", err, out)
+	}
+	if state, _ := systemctl("is-active", "pgvigil.service"); state == "active" || state == "deactivating" {
+		return fmt.Errorf("the service is still %s after systemctl stop", state)
+	}
+	return nil
+}
+
+func systemdStart() error {
+	if out, err := systemctl("start", "pgvigil.service"); err != nil {
+		return fmt.Errorf("systemctl start: %v: %s", err, out)
+	}
+	return nil
+}
+
+// otherProcesses lists the processes whose executable is bin, but the service's own main process and this one.
+func otherProcesses(bin string) ([]string, error) {
+	want, err := filepath.EvalSymlinks(bin)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	mainPID := 0
+	if v, err := systemctl("show", "-p", "MainPID", "--value", "pgvigil.service"); err == nil {
+		mainPID, _ = strconv.Atoi(strings.TrimSpace(v))
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == os.Getpid() || pid == mainPID {
+			continue
+		}
+		exe, err := os.Readlink(filepath.Join("/proc", e.Name(), "exe"))
+		if err != nil || strings.TrimSuffix(exe, " (deleted)") != want {
+			continue
+		}
+		cmd, _ := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		out = append(out, fmt.Sprintf("pid %d: %s", pid, strings.TrimSpace(strings.ReplaceAll(string(cmd), "\x00", " "))))
+	}
+	return out, nil
+}
+
+func freeBytes(dir string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, err
+	}
+	return st.Bavail * uint64(st.Bsize), nil
+}
+
+// secureDir makes dir (and its missing parents) and leaves dir itself to root alone: 0700, root's.
+func secureDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chown(dir, 0, 0); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
 }

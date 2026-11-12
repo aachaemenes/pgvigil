@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -326,3 +327,165 @@ func maybeRunAsService(args []string) (bool, int) {
 
 // replaceFile renames tmp over dst; the service was stopped first, so the old binary is not held.
 func replaceFile(tmp, dst string) error { return os.Rename(tmp, dst) }
+
+// --- install -upgrade on Windows (install.go's runUpgrade); not seen on Windows yet: unit tests and vet only
+
+func init() {
+	upgradeHooksOf = &upgradeHooks{
+		installed:     installedServiceConfig,
+		stop:          stopInstalled,
+		start:         startInstalled,
+		others:        otherProcessesWindows,
+		freeBytes:     freeBytesWindows,
+		dumpDir:       filepath.Join(programData(), "pgvigil-backups"),
+		secureDumpDir: secureDirWindows,
+		secureDumpFile: func(file string) error {
+			// the file alone for SYSTEM and Administrators: a folder the operator named keeps its own permissions
+			out, err := exec.Command("icacls", file, "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F").CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("icacls: %v: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
+		privileged: func() error {
+			if !windows.GetCurrentProcessToken().IsElevated() {
+				return errors.New("the upgrade needs an elevated prompt (Run as administrator)")
+			}
+			return nil
+		},
+		previous: func(bin string) string {
+			return strings.TrimSuffix(bin, filepath.Ext(bin)) + ".previous" + filepath.Ext(bin)
+		},
+	}
+}
+
+// installedServiceConfig reads the binary, the config and the account from the service's own definition
+// (BinaryPathName = "<bin>" run -config "<config>", ServiceStartName).
+func installedServiceConfig() (installOptions, bool, error) {
+	m, err := connectSCM()
+	if err != nil {
+		return installOptions{}, false, err
+	}
+	defer func() { _ = m.Disconnect() }()
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return installOptions{}, false, nil
+	}
+	defer func() { _ = s.Close() }()
+	c, err := s.Config()
+	if err != nil {
+		return installOptions{}, false, err
+	}
+	return parseBinaryPathName(c.BinaryPathName, c.ServiceStartName)
+}
+
+func parseBinaryPathName(cmdline, account string) (installOptions, bool, error) {
+	args, err := windows.DecomposeCommandLine(cmdline)
+	if err != nil {
+		return installOptions{}, false, fmt.Errorf("the service's command line %q: %w", cmdline, err)
+	}
+	if len(args) < 4 || args[1] != "run" || args[2] != "-config" {
+		return installOptions{}, false, fmt.Errorf("the service's command line %q is not <binary> run -config <file>: not the installer's service", cmdline)
+	}
+	return installOptions{Bin: args[0], Config: args[3], User: account}, true, nil
+}
+
+func stopInstalled(log *slog.Logger) error {
+	m, err := connectSCM()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = m.Disconnect() }()
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	return stopIfRunning(log, s)
+}
+
+func startInstalled(_ *slog.Logger) error {
+	m, err := connectSCM()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = m.Disconnect() }()
+	s, err := m.OpenService(serviceName)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Start(); err != nil {
+		return err
+	}
+	_, err = waitState(s, svc.Running, 15*time.Second)
+	return err
+}
+
+// otherProcessesWindows lists the processes whose image is bin, but the service's own and this one.
+func otherProcessesWindows(bin string) ([]string, error) {
+	var servicePID uint32
+	if m, err := connectSCM(); err == nil {
+		if s, err := m.OpenService(serviceName); err == nil {
+			if st, err := s.Query(); err == nil {
+				servicePID = st.ProcessId
+			}
+			_ = s.Close()
+		}
+		_ = m.Disconnect()
+	}
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = windows.CloseHandle(snap) }()
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	var out []string
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		pid := e.ProcessID
+		if pid == 0 || pid == servicePID || pid == uint32(os.Getpid()) {
+			continue
+		}
+		h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+		if err != nil {
+			continue
+		}
+		buf := make([]uint16, windows.MAX_LONG_PATH)
+		n := uint32(len(buf))
+		qerr := windows.QueryFullProcessImageName(h, 0, &buf[0], &n)
+		_ = windows.CloseHandle(h)
+		if qerr != nil {
+			continue
+		}
+		if strings.EqualFold(filepath.Clean(windows.UTF16ToString(buf[:n])), filepath.Clean(bin)) {
+			out = append(out, fmt.Sprintf("pid %d: %s", pid, windows.UTF16ToString(e.ExeFile[:])))
+		}
+	}
+	return out, nil
+}
+
+func freeBytesWindows(dir string) (uint64, error) {
+	p, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return 0, err
+	}
+	var free, total, totalFree uint64
+	if err := windows.GetDiskFreeSpaceEx(p, &free, &total, &totalFree); err != nil {
+		return 0, err
+	}
+	return free, nil
+}
+
+// secureDirWindows makes dir for SYSTEM and Administrators only (SIDs: Administrators is localised), inheritance cut, so
+// ProgramData's Users read does not reach a dump that holds password hashes and statement text.
+func secureDirWindows(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	out, err := exec.Command("icacls", dir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("icacls: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
