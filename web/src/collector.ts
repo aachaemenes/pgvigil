@@ -1,8 +1,8 @@
 // The Collector page (task 201; PerformanceMonitor's Collection Health learned from, pgvigil's own page): is `pgvigil run`
-// up, and is it collecting into the repository? The service (each collector seen in the last 8 days: up, stopped,
-// refused, not seen), the collector's own findings, each collection's runs over 24 h (failures, p50 / p95 duration,
+// up, and is it collecting into the repository? The service (each run of a collector seen in the last 8 days: up,
+// stopped, not seen; many collectors may share a repository, one per host; serve's watchdog on or off), the findings, each collection's runs over 24 h (failures, p50 / p95 duration,
 // rows written, the read-to-store lag) and a chart of the runs per minute, the collections failing now, pgvigil's own
-// load on each monitored server (connections opened per minute, authentication failures), and the repository (size,
+// load on each monitored server (connections opened and attempted per minute, logins refused), and the repository (size,
 // growth per day, rows written per minute, the largest tables, its connections, the purges). collectorLine is the
 // line an instance's Collection dates page shows. Data from GET /api/collector.
 import { get, Row, rowsOf, Table } from './api';
@@ -14,20 +14,19 @@ import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, pan
 
 type Parts = Record<string, Table | null>;
 
-const stateWord: Record<string, string> = { up: 'Up', stopped: 'Stopped', refused: 'Refused', 'not seen': 'Not seen' };
-const stateKind: Record<string, string> = { up: 'ok', stopped: 'warn', refused: 'crit', 'not seen': 'crit' };
+const stateWord: Record<string, string> = { up: 'Up', stopped: 'Stopped', ended: 'Ended', 'not seen': 'Not seen' };
+const stateKind: Record<string, string> = { up: 'ok', stopped: 'warn', ended: '', 'not seen': 'crit' };
 const sevKind: Record<string, string> = { critical: 'crit', warning: 'warn', info: '' };
 const sevWord: Record<string, string> = { critical: 'Critical', warning: 'Warning', info: 'Info' };
 
-// the service's state in words: up, or how long it has not been seen
+// the service's state in words: the collectors up (one per host), or how long the newest has not been seen
 function serviceState(rows: Row[]): { word: string; kind: string; sub: string } {
   const live = rows.filter(r => r.state === 'up');
-  if (live.length > 1) return { word: `${live.length} up`, kind: 'crit', sub: 'two collectors on one repository' };
+  if (live.length > 1) return { word: `${live.length} up`, kind: 'ok', sub: live.map(r => String(r.host)).join(', ') };
   if (live.length === 1) return { word: 'Up', kind: 'ok', sub: `beat ${fmtSecs(live[0].beat_age_secs)} ago` };
-  const last = rows[0];
+  const last = rows.reduce<Row | undefined>((a, r) => a == null || String(r.beat_at) > String(a.beat_at) ? r : a, undefined);   // the newest run
   if (!last) return { word: 'Never seen', kind: 'crit', sub: 'no collector has beaten on this repository' };
   if (last.state === 'stopped') return { word: 'Stopped', kind: 'crit', sub: `stopped ${fmtTime(last.stopped_at)}` };
-  if (last.state === 'refused') return { word: 'Refused', kind: 'crit', sub: String(last.refused_why ?? '') };
   return { word: `Not seen for ${fmtSecs(last.beat_age_secs)}`, kind: 'crit', sub: `the last beat ${fmtTime(last.beat_at)}` };
 }
 
@@ -43,6 +42,9 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
   const repo: Row = rowsOf(d.repository)[0] ?? {};
   const conns = rowsOf(d.connections), purges = rowsOf(d.purges);
   const st = serviceState(collectors), me = collectors.find(r => r.state === 'up') ?? collectors[0];
+  const wd = String(rowsOf(d.watchdog)[0]?.watchdog ?? '');
+  const wdTile = wd === 'on' ? tile('Watchdog', 'On', '', { sub: 'serve sends the alert while a collector is down' })
+    : wd ? tile('Watchdog', 'Off', 'warn', { sub: wd.replace(/^off: /, '') }) : tile('Watchdog', '-', '', { sub: 'not this process' });
 
   // the service
   const svc = panel('Service', 'pgvigil run, now',
@@ -52,7 +54,8 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       tile('Version', String(me?.version ?? '-'), '', { sub: me ? `pid ${me.pid}` : undefined }),
       tile('Started', me ? fmtTime(me.started_at) : '-', '', { sub: me?.state === 'up' ? `up ${fmtSecs((Date.now() - Date.parse(String(me.started_at))) / 1000)}` : undefined }),
       tile('Memory', me?.mem_bytes == null ? '-' : fmtBytes(me.mem_bytes), '', { sub: me?.goroutines == null ? undefined : `${fmtNum(me.goroutines)} goroutines` }),
-      tile('Instances', me?.instances == null ? '-' : fmtNum(me.instances), '', { sub: 'ran a collection in the last minute' })),
+      tile('Instances', me?.instances == null ? '-' : fmtNum(me.instances), '', { sub: 'ran a collection in the last minute' }),
+      wdTile),
     grid(collectors, [
       { key: 'state', fmt: v => badge(stateWord[String(v)] ?? String(v), stateKind[String(v)] ?? '') },
       { key: 'host' }, { key: 'runs_as', label: 'runs as' }, { key: 'os', label: 'OS' }, { key: 'version' }, { key: 'pid', num: true },
@@ -61,7 +64,6 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'stopped_at', label: 'stopped', fmt: fmtTime },
       { key: 'mem_bytes', label: 'memory', num: true, fmt: v => v == null ? '' : fmtBytes(v) },
       { key: 'goroutines', num: true, fmt: fmtNum }, { key: 'repo_conns', label: 'repository sessions', num: true, fmt: fmtNum },
-      { key: 'refused_why', label: 'refused', wide: true },
     ] as Col[], 'No collector has beaten on this repository in the last 8 days: is pgvigil run started (the service, or a console)?'));
 
   // the collector's findings
@@ -115,18 +117,20 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
   const authed = load.filter(r => Number(r.auth_failures_24h ?? 0) > 0).length;
   const loadPanel = panel('Load on the monitored servers', 'connections pgvigil opened, last hour; logins refused, last 24 h',
     tileRow('pgvigil\'s load',
-      tile('Connections per minute', fmtNum(Math.round(load.reduce((a, r) => a + Number(r.conns_per_min ?? 0), 0))), '', { sub: `over ${fmtNum(load.length)} instance(s), one per run` }),
+      tile('Connections per minute', fmtNum(Math.round(load.reduce((a, r) => a + Number(r.conns_per_min ?? 0), 0))), '',
+        { sub: `${fmtNum(Math.round(load.reduce((a, r) => a + Number(r.attempts_per_min ?? 0), 0)))} attempted, over ${fmtNum(load.length)} instance(s)` }),
       tile('Logins refused', fmtNum(load.reduce((a, r) => a + Number(r.auth_failures_24h ?? 0), 0)), authed ? 'crit' : '', { sub: `${authed} instance(s), 24 h` })),
     grid(load, [
       { key: 'instance', fmt: (_v, r) => instLink(ctx, r) }, { key: 'engine' },
       { key: 'conns_per_min', label: 'connections / min', num: true, fmt: fmtNum },
+      { key: 'attempts_per_min', label: 'attempts / min', num: true, fmt: fmtNum },
       { key: 'conns_peak_min', label: 'busiest minute', num: true, fmt: fmtNum },
       { key: 'runs_1h', label: 'runs (1 h)', num: true, fmt: fmtNum }, { key: 'failures_1h', label: 'failures (1 h)', num: true, fmt: fmtNum },
       { key: 'auth_failures_1h', label: 'logins refused (1 h)', num: true, fmt: fmtNum },
       { key: 'auth_failures_24h', label: 'logins refused (24 h)', num: true, fmt: fmtNum },
     ] as Col[], 'No run in the last 24 hours.'),
-    el('p', { class: 'meta' }, 'Each run of a collection opens one connection to its server and closes it (PostgreSQL and SQL Server alike). '
-      + 'A login refused (PostgreSQL 28P01 / 28000, SQL Server 18456) is retried at every run: a changed password can lock the login out.'));
+    el('p', { class: 'meta' }, 'Counted at every connect a collection makes, a per-database connect included (each collection connects and closes; '
+      + 'every collector of the instance summed). A login refused (PostgreSQL 28P01 / 28000, SQL Server 18456) is retried at every run: a changed password can lock the login out.'));
 
   // the repository
   const total = conns.reduce((a, r) => a + Number(r.connections ?? 0), 0);

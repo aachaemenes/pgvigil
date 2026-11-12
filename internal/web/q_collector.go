@@ -2,34 +2,39 @@ package web
 
 import (
 	"net/http"
+
+	"github.com/aachaemenes/pgvigil/internal/collect"
 )
 
 // The Collector page (task 201, migration 0121; PerformanceMonitor's Collection Health as pgvigil's own page): the
-// service (each collector seen in the last 8 days: up, stopped, refused or not seen), the findings of the collector
-// itself, each collection's runs over 24 h (failures, p50 / p95 duration from the beat's histograms, rows written,
-// the read-to-store lag), the runs per minute, pgvigil's own load on each monitored server (connections opened per
-// minute, authentication failures), and the repository (size, growth per day, rows written per minute, the largest
+// service (each run of a collector seen in the last 8 days: up, stopped or not seen; serve's watchdog on or off), the
+// findings of the collectors and the repository, each collection's runs over 24 h (failures, p50 / p95 duration from
+// the beat's histograms, rows written, the read-to-store lag), the runs per minute, pgvigil's own load on each
+// monitored server (connection attempts and connections opened per minute, logins refused), and the repository (size, growth per day, rows written per minute, the largest
 // tables, its connections, the purges). ?instance=N narrows it to what the instance's Collection dates line shows.
 
-// sqlCollectors: every collector seen in the last 8 days, the live ones first
+// sqlCollectors: every run of a collector seen in the last 8 days, the live ones first
 const sqlCollectors = `
 SELECT s.collector_id, s.host, s.os, s.runs_as, s.version, s.pid, s.started_at, s.beat_at, s.beat_age_secs, s.state,
-       s.stopped_at, s.refused_why, s.mem_bytes, s.goroutines, s.instances, s.repo_conns
+       s.stopped_at, s.mem_bytes, s.goroutines, s.instances, s.repo_conns
   FROM pgvigil.collector_status s
- ORDER BY CASE s.state WHEN 'up' THEN 1 WHEN 'not seen' THEN 2 WHEN 'refused' THEN 3 ELSE 4 END, s.beat_at DESC`
+ ORDER BY CASE s.state WHEN 'up' THEN 1 WHEN 'not seen' THEN 2 ELSE 3 END, s.beat_at DESC`
+
+// sqlWatchdog: serve's watchdog ($1: on, off: <why>; empty outside serve)
+const sqlWatchdog = `SELECT nullif($1::text, '') AS watchdog`
 
 // sqlCollectorFindings: the collector's findings ($1 the instance, 0 = all: an instance sees its own and the
 // repository-wide ones)
 const sqlCollectorFindings = `
-SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.at
+SELECT f.instance_id, coalesce(i.name, 'the repository') AS instance, f.severity, f.setting, f.value, f.detail, f.source, f.at
   FROM pgvigil.collector_findings f
   LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
  WHERE $1::int = 0 OR f.instance_id IS NULL OR f.instance_id = $1
  ORDER BY pgvigil.severity_rank(f.severity) DESC, f.instance_id NULLS FIRST, f.setting`
 
 // sqlCollectorCollections: per collection over 24 h. p50 / p95 from the summed histograms (an estimate within the
-// bucket's factor of two); lag: now against the newest stored read of the collection (any instance) and the oldest
-// instance's newest read.
+// bucket's factor of two); lag: now against the newest ok read of the collection (any instance) and the oldest
+// instance's newest ok read (a failed run updates collection_dates too: it does not count as a read).
 const sqlCollectorCollections = `
 WITH r AS (
   SELECT engine, collection, sum(runs)::bigint AS runs, sum(failures)::bigint AS failures, sum(rows_written)::bigint AS rows_written,
@@ -44,7 +49,8 @@ WITH r AS (
            GROUP BY cr.engine, cr.collection, u.b) x
    GROUP BY engine, collection
 ), lag AS (
-  SELECT i.engine, d.collection, max(d.snapshot_at) AS newest, min(d.snapshot_at) AS oldest_newest
+  SELECT i.engine, d.collection, max(d.snapshot_at) FILTER (WHERE d.status = 'ok') AS newest,
+         min(d.snapshot_at) FILTER (WHERE d.status = 'ok') AS oldest_newest
     FROM pgvigil.collection_dates d JOIN pgvigil.instances i ON i.instance_id = d.instance_id AND i.is_active
    GROUP BY i.engine, d.collection
 )
@@ -68,23 +74,30 @@ SELECT minute AS snapshot_at, sum(runs)::bigint AS runs, sum(failures)::bigint A
   FROM pgvigil.collector_runs WHERE minute > now() - interval '24 hours'
  GROUP BY minute ORDER BY minute`
 
-// sqlCollectorLoad: pgvigil's own load per instance: connections opened per minute over the last hour (the mean of the
-// minutes it ran and the busiest minute), runs and failures in the hour, authentication failures in the hour and 24 h
-// ($1 the instance, 0 = all)
+// sqlCollectorLoad: pgvigil's own load per instance: connections opened and connection attempts per minute over the
+// last hour (the mean over the minutes it ran, every collector summed, and the busiest minute), runs and failures in
+// the hour, logins refused in the hour and 24 h ($1 the instance, 0 = all)
 const sqlCollectorLoad = `
+WITH l AS (
+  SELECT l.instance_id, l.minute, sum(l.attempts) AS attempts, sum(l.opened) AS opened, sum(l.runs) AS runs,
+         sum(l.failures) AS failures, sum(l.auth_failures) AS auth_failures
+    FROM pgvigil.collector_load l
+   WHERE l.minute > now() - interval '24 hours' AND ($1::int = 0 OR l.instance_id = $1)
+   GROUP BY l.instance_id, l.minute
+)
 SELECT i.instance_id, i.name AS instance, i.engine,
-       round(avg(l.connections) FILTER (WHERE l.minute > now() - interval '1 hour'), 1) AS conns_per_min,
-       max(l.connections) FILTER (WHERE l.minute > now() - interval '1 hour') AS conns_peak_min,
+       round(avg(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour'), 1) AS conns_per_min,
+       round(avg(l.attempts) FILTER (WHERE l.minute > now() - interval '1 hour'), 1) AS attempts_per_min,
+       max(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour') AS conns_peak_min,
        sum(l.runs) FILTER (WHERE l.minute > now() - interval '1 hour') AS runs_1h,
        sum(l.failures) FILTER (WHERE l.minute > now() - interval '1 hour') AS failures_1h,
        coalesce(sum(l.auth_failures) FILTER (WHERE l.minute > now() - interval '1 hour'), 0) AS auth_failures_1h,
        sum(l.auth_failures) AS auth_failures_24h,
        max(l.minute) AS last_minute
-  FROM pgvigil.collector_load l
+  FROM l
   JOIN pgvigil.instances i ON i.instance_id = l.instance_id AND i.is_active
- WHERE l.minute > now() - interval '24 hours' AND ($1::int = 0 OR l.instance_id = $1)
  GROUP BY i.instance_id, i.name, i.engine
- ORDER BY sum(l.auth_failures) DESC, avg(l.connections) FILTER (WHERE l.minute > now() - interval '1 hour') DESC NULLS LAST, i.name`
+ ORDER BY sum(l.auth_failures) DESC, avg(l.opened) FILTER (WHERE l.minute > now() - interval '1 hour') DESC NULLS LAST, i.name`
 
 // sqlCollectorStreaks: the collections failing now ($1 the instance, 0 = all)
 const sqlCollectorStreaks = `
@@ -148,6 +161,7 @@ func (s *Server) Collector(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := []part{
 		{"collectors", sqlCollectors, nil},
+		{"watchdog", sqlWatchdog, []any{collect.WatchdogStatus()}},
 		{"findings", sqlCollectorFindings, []any{id}},
 		{"load", sqlCollectorLoad, []any{id}},
 		{"streaks", sqlCollectorStreaks, []any{id}},

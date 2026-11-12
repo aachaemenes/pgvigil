@@ -11,15 +11,17 @@
 #   A  the heartbeat: a 'systemd unit' collector on pgvigil-svc is up; each instance's runs counted (connections per
 #      minute, runs, no failure); every collection's runs, rows and durations; the repository part answers
 #   E  a login refused: t2's password changed at the source - t2's 'logins refused' counted, 'authentication failing'
-#      and 'collection failing' on t2, both alerted (one instance: nothing held), no 'collector or network'
+#      and 'collection failing' on t2, both alerted (one instance: nothing held), no 'collector or network'; the password
+#      back and the service restarted: t2's streak is reset (a restart carries the stored streaks on)
 #   H  the page: #/collector in both themes (shots), every link on it clicked with its landing (an instance link opens
 #      its Collection dates with the collector's line, the line's link comes back), the tree's Collector node, the
 #      chart's menu
-#   D  the network: the target stopped - 'collector or network' (instances failing together) alerted ONCE, no
-#      per-instance alert while it stands; the target started - it clears
-#   F  one collector per repository: a second `pgvigil run` on this host (another host than pgvigil-svc) is refused at
-#      its start (exit non-zero, the reason, the refused row shown); a second run inside pgvigil-svc (the same host) is
-#      'two collectors on one repository'
+#   D  failing together: the logins of t1-t3 refused - 'collector or network' (instances failing together:
+#      pgvigil-svc) alerted ONCE on the unscoped channel and ONCE on a channel scoped to t1; t1-t3 held (their own
+#      alerts not sent), t4 (still read) not held; the logins back - the parent clears, and no held 'collection failing'
+#      goes out after it (a streak whose last run fell in a failing-together minute waits for its next run)
+#   F  many collectors: a second `pgvigil run` on this host collecting the same instances is not refused (the page: 2
+#      up); each instance 'collected by more than one collector'
 #   B  the service stopped: the page says stopped at once; after 5 minutes 'collector or network' (collector not seen),
 #      and serve's watchdog sends it (the collector that would is the one stopped); started again: up, cleared
 #   G  purge: 'purge not run in 2 days' on an instance seen 3 days ago; `pgvigil purge` records its run (an old
@@ -74,23 +76,23 @@ CMD ["/lib/systemd/systemd"]
 EOF
   docker build -q -t "$IMG" "$WORK/img" >/dev/null || { echo "FAIL the systemd image did not build"; exit 1; }
 fi
-mkdir -p "$WORK/spool"; chmod 0777 "$WORK/spool"
+mkdir -p "$WORK/spool" "$WORK/spool2"; chmod 0777 "$WORK/spool" "$WORK/spool2"
 instances() { # $1 host, $2 port
   for n in 1 2 3 4; do printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n' "$n" "$1" "$2" "$n" "$n" "$n"; done
 }
-alerts_yaml="alerts:
-  - {name: spool, kind: file, min_severity: critical, repeat: disabled, clear_after: 0, file: {dir: $WORK/spool}}"
-{ printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\ninstances:\n' "$PW"; instances target 5432; echo "$alerts_yaml"; } > "$WORK/svc.yaml"
-{ printf 'repository:\n  dsn: "%s dbname=pgvigil"\ninstances:\n' "$RDSN"; instances 127.0.0.1 "$TP"; echo "$alerts_yaml"; } > "$WORK/host.yaml"
+# the service sees this folder as /work (systemd mounts a tmpfs over /tmp in the container)
+alerts_of() { printf 'alerts:\n  - {name: spool, kind: file, min_severity: critical, repeat: disabled, clear_after: 0, file: {dir: %s/spool}}\n  - {name: scoped, kind: file, min_severity: critical, repeat: disabled, clear_after: 0, instances: [t1], file: {dir: %s/spool2}}\n' "$1" "$1"; }
+{ printf 'repository:\n  dsn: "host=repo port=5432 user=postgres password=%s dbname=pgvigil sslmode=disable"\ninstances:\n' "$PW"; instances target 5432; alerts_of /work; } > "$WORK/svc.yaml"
+{ printf 'repository:\n  dsn: "%s dbname=pgvigil"\ninstances:\n' "$RDSN"; instances 127.0.0.1 "$TP"; alerts_of "$WORK"; } > "$WORK/host.yaml"
 "$BIN" migrate -config "$WORK/host.yaml" >"$WORK/migrate.out" 2>&1 || { cat "$WORK/migrate.out"; exit 1; }
 
 docker run -d --name "$SVC" --hostname pgvigil-svc --network "$NET" --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-  --tmpfs /run --tmpfs /run/lock -v "$WORK:$WORK" "$IMG" >/dev/null
+  --tmpfs /run --tmpfs /run/lock -v "$WORK:/work" "$IMG" >/dev/null
 for _ in $(seq 1 30); do docker exec "$SVC" systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break; sleep 1; done
-docker exec "$SVC" sh -c "install -m 0755 $WORK/pgvigil.bin /usr/local/bin/pgvigil && mkdir -p /etc/pgvigil /etc/systemd/system/pgvigil.service.d \
-  && install -m 0640 -g pgvigil $WORK/svc.yaml /etc/pgvigil/pgvigil.yaml && touch /etc/pgvigil/pgvigil.env"
+docker exec "$SVC" sh -c "install -m 0755 /work/pgvigil.bin /usr/local/bin/pgvigil && mkdir -p /etc/pgvigil /etc/systemd/system/pgvigil.service.d \
+  && install -m 0640 -g pgvigil /work/svc.yaml /etc/pgvigil/pgvigil.yaml && touch /etc/pgvigil/pgvigil.env"
 docker cp deploy/pgvigil.service "$SVC:/etc/systemd/system/pgvigil.service"
-docker exec "$SVC" sh -c "printf '[Service]\nReadWritePaths=$WORK/spool\n' > /etc/systemd/system/pgvigil.service.d/proof.conf && systemctl daemon-reload && systemctl enable --now pgvigil.service" >/dev/null 2>&1
+docker exec "$SVC" sh -c "printf '[Service]\nReadWritePaths=/work/spool /work/spool2\n' > /etc/systemd/system/pgvigil.service.d/proof.conf && systemctl daemon-reload && systemctl enable --now pgvigil.service" >/dev/null 2>&1
 "$BIN" serve -config "$WORK/host.yaml" -listen "127.0.0.1:$SP" -no-login > "$WORK/serve.log" 2>&1 &
 SRV=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$SP/api/collector" >/dev/null 2>&1 && break; sleep 1; done
@@ -99,7 +101,7 @@ jget() { python3 -c "import json,sys; d=json.load(sys.stdin); t=d[sys.argv[1]]; 
 # spool_n EVENT SETTING [INSTANCE]: the alert files (one JSON per alert: <time>-<event>-<channel>-<key>.json) of an event
 # whose setting is SETTING (and instance INSTANCE)
 spool_n() {
-  python3 - "$WORK/spool" "$@" <<'PY'
+  python3 - "${SPOOL:-$WORK/spool}" "$@" <<'PY'
 import glob, json, os, sys
 d, ev, setting = sys.argv[1:4]; inst = sys.argv[4] if len(sys.argv) > 4 else None
 n = 0
@@ -124,11 +126,11 @@ echo "rig: repository :$RP, target :$TP (t1-t4), serve :$SP, the service in $SVC
 # ---- A the heartbeat -----------------------------------------------------------------------------------------------
 if waitfor 200 "SELECT count(*) >= 2 FROM pgvigil.collector_beats b JOIN pgvigil.collector_heartbeat h USING (collector_id) WHERE h.host = 'pgvigil-svc'"; then
   read -r st ra hs <<<"$(api '' | jget collectors | python3 -c "import json,sys; r=json.load(sys.stdin)[0]; print(r['state'], r['runs_as'].replace(' ','_'), r['host'])")"
-  loads=$(api '' | jget load | python3 -c "import json,sys; r=json.load(sys.stdin); print(len(r), all((x['conns_per_min'] or 0) > 0 for x in r), sum(x['failures_1h'] or 0 for x in r))")
+  loads=$(api '' | jget load | python3 -c "import json,sys; r=json.load(sys.stdin); print(len(r), all((x['conns_per_min'] or 0) > 0 and (x['attempts_per_min'] or 0) >= (x['conns_per_min'] or 0) for x in r), sum(x['failures_1h'] or 0 for x in r))")
   colls=$(api '' | jget collections | python3 -c "import json,sys; r=json.load(sys.stdin); print(len(r), sum(x['runs'] for x in r), sum(x['rows_written'] for x in r), sum(1 for x in r if x['p95_ms'] is not None))")
   repo=$(api '' | jget repository | python3 -c "import json,sys; r=json.load(sys.stdin)[0]; print(r['size_bytes'] > 0, r['rows_per_min'])")
   [[ "$st $ra $hs" == "up systemd_unit pgvigil-svc" && "${loads% *}" == "4 True" && "${repo%% *}" == True ]] \
-    && ok "A heartbeat: $st, runs as $ra on $hs; load: $loads (instances, every one connecting, failures); collections (count, runs, rows, with p95): $colls; repository (size read, rows/min): $repo" \
+    && ok "A heartbeat: $st, runs as $ra on $hs; load: $loads (instances, every one with connections opened <= attempted, failures in the hour); collections (count, runs, rows, with p95): $colls; repository (size read, rows/min): $repo" \
     || fail "A heartbeat: state '$st $ra $hs', load '$loads', collections '$colls', repository '$repo'"
 else
   fail "A heartbeat: no two beats from pgvigil-svc in 200 s: $(docker exec "$SVC" journalctl -u pgvigil -n 15 --no-pager 2>&1 | tr '\n' ' ' | cut -c1-900)"
@@ -142,9 +144,9 @@ if waitfor 300 "SELECT EXISTS (SELECT 1 $T2 AND f.setting = 'authentication fail
   auth=$(api '' | jget load | python3 -c "import json,sys; print({x['instance']: x['auth_failures_24h'] for x in json.load(sys.stdin)})")
   sleep 70   # an alert pass after the findings
   e_auth=$(spool_n firing "authentication failing" t2); e_coll=$(spool_n firing "collection failing" t2); e_parent=$(spool_n firing "collector or network")
-  [[ "$e_auth" -ge 1 && "$e_coll" -ge 1 && "$e_parent" == 0 && "$(q "SELECT pgvigil.collector_hold()")" == f ]] \
+  [[ "$e_auth" -ge 1 && "$e_coll" -ge 1 && "$e_parent" == 0 && "$(q "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances)")" == f ]] \
     && ok "E login refused: logins refused per instance $auth; alerts: 'authentication failing' $e_auth, t2 'collection failing' lines $e_coll, 'collector or network' $e_parent (one instance: nothing held)" \
-    || fail "E login refused: refused $auth; alerts auth $e_auth, collection $e_coll, parent $e_parent, hold $(q "SELECT pgvigil.collector_hold()")"
+    || fail "E login refused: refused $auth; alerts auth $e_auth, collection $e_coll, parent $e_parent, held $(q "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances)")"
 else
   fail "E login refused: t2's findings did not come in 300 s: $(q "SELECT string_agg(setting || '=' || value, ', ') FROM pgvigil.collector_findings")"
 fi
@@ -211,55 +213,63 @@ ws.close(); process.exit(fails ? 1 : 0);
 EOF
 node "$WORK/page.mjs" "$CDP" "http://127.0.0.1:$SP/" "$PWD/.vis/collector-shots" || FAILS=$((FAILS + 1))
 psql "$TDSN" -XAtqc "alter role l2 password 'p2'" >/dev/null
-waitfor 300 "SELECT NOT EXISTS (SELECT 1 $T2 AND f.setting = 'authentication failing') AND (SELECT count(*) FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 't2' AND s.fail_streak > 0) <= $base_fail" || true
+docker exec "$SVC" systemctl restart pgvigil.service   # a changed password is fixed and the service restarted
+if waitfor 300 "SELECT NOT EXISTS (SELECT 1 $T2 AND f.setting IN ('authentication failing', 'collection failing')) AND (SELECT count(*) FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 't2' AND s.fail_streak > 0) <= $base_fail"; then
+  ok "E restart: the password back and the service restarted - t2's 'collection failing' and 'authentication failing' gone, its streaks reset"
+else fail "E restart: t2 still $(q "SELECT string_agg(f.setting || ' ' || f.value, ', ') $T2") 300 s after the restart"; fi
 sleep 90   # the passes that send t2's recoveries, before D counts
 
-# ---- D the network -------------------------------------------------------------------------------------------------
-rm -f "$WORK"/spool/*
-docker stop "$TGT" >/dev/null
-if waitfor 240 "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_parent WHERE why = 'instances failing together')"; then
-  sleep 240   # three more runs: each instance's 'collection failing' stands, held
-  held=$(q "SELECT count(*) FROM pgvigil.collector_findings WHERE instance_id IS NOT NULL AND setting = 'collection failing'")
-  parent=$(spool_n firing "collector or network"); per=$(spool_n firing "collection failing")
-  [[ "$parent" == 1 && "$per" == 0 && "$held" -ge 4 ]] \
-    && ok "D network: 'collector or network' (instances failing together) sent once; $held per-instance 'collection failing' finding(s) standing, 0 sent (held)" \
-    || fail "D network: parent alerts $parent (want 1), per-instance alerts $per (want 0), standing per-instance findings $held: $(ls "$WORK/spool" | head -20 | tr '\n' ' ')"
+# ---- D failing together -------------------------------------------------------------------------------------------
+rm -f "$WORK"/spool/* "$WORK"/spool2/*
+psql "$TDSN" -Xq -c "alter role l1 nologin" -c "alter role l2 nologin" -c "alter role l3 nologin" >/dev/null
+if waitfor 240 "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_parent WHERE why = 'instances failing together' AND host = 'pgvigil-svc')"; then
+  sleep 240   # three more runs: t1-t3's own findings stand, held
+  heldn=$(q "SELECT string_agg(i.name, ' ' ORDER BY i.name) FROM pgvigil.collector_held_instances h JOIN pgvigil.instances i USING (instance_id)")
+  standing=$(q "SELECT count(*) FROM pgvigil.collector_findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name IN ('t1','t2','t3')")
+  parent=$(spool_n firing "collector or network"); parent2=$(SPOOL=$WORK/spool2 spool_n firing "collector or network")
+  per=0; for n in t1 t2 t3; do per=$((per + $(spool_n firing "collection failing" $n) + $(spool_n firing "authentication failing" $n))); done
+  [[ "$parent" == 1 && "$parent2" == 1 && "$per" == 0 && "$heldn" == "t1 t2 t3" && "$standing" -ge 3 ]] \
+    && ok "D together: 'collector or network' (instances failing together: pgvigil-svc) sent once on the unscoped channel and once on the channel scoped to t1; held: $heldn (t4, still read, not held); $standing finding(s) of t1-t3 standing, 0 of them sent" \
+    || fail "D together: parent sent $parent / scoped $parent2 (want 1 / 1), t1-t3 sent $per (want 0), held '$heldn' (want t1 t2 t3), standing $standing: $(ls "$WORK/spool" | head -20 | tr '\n' ' ')"
 else
-  fail "D network: no 'instances failing together' in 240 s: $(q "SELECT minute || ':' || count(*) FILTER (WHERE failures >= runs AND runs > 0) || '/' || count(*) FROM pgvigil.collector_load GROUP BY minute ORDER BY minute DESC LIMIT 3")"
+  fail "D together: no 'instances failing together' in 240 s: $(q "SELECT string_agg(minute || ':' || failures || '/' || runs, ' ') FROM (SELECT minute, sum(failures) failures, sum(runs) runs FROM pgvigil.collector_load GROUP BY minute ORDER BY minute DESC LIMIT 3) x")"
 fi
-docker start "$TGT" >/dev/null
-waitfor 300 "SELECT NOT pgvigil.collector_hold()" \
-  && ok "D network: the target back - the parent cleared ($(q "SELECT count(*) FROM pgvigil.collector_streaks WHERE fail_streak >= 3") collection(s) still failing 3 in a row: a collection that fails on this target by itself)" || fail "D network: still held 300 s after the target came back"
+psql "$TDSN" -Xq -c "alter role l1 login" -c "alter role l2 login" -c "alter role l3 login" >/dev/null
+if waitfor 300 "SELECT NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent) AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances)"; then
+  sleep 200   # the passes after the hold lifts: a held 'collection failing' of a slower collection must not go out
+  after=0; for n in t1 t2 t3; do after=$((after + $(spool_n firing "collection failing" $n))); done
+  [[ "$after" == 0 ]] && ok "D lifted: the logins back - the parent cleared, nothing held, no 'collection failing' of t1-t3 sent in the 200 s after" \
+    || fail "D lifted: $after 'collection failing' alert(s) of t1-t3 sent after the hold lifted: $(ls "$WORK/spool" | grep -v 'collector' | head | tr '\n' ' ')"
+else fail "D lifted: still a parent or a held instance 300 s after the logins came back"; fi
 
-# ---- F one collector per repository --------------------------------------------------------------------------------
-set +e; timeout 60 "$BIN" run -config "$WORK/host.yaml" > "$WORK/second.log" 2>&1; rc=$?; set -e
-why=$(grep -o "another collector writes to this repository[^\"]*" "$WORK/second.log" | head -1)
-shown=$(api '' | jget collectors | python3 -c "import json,sys; print(sum(1 for r in json.load(sys.stdin) if r['state'] == 'refused'))")
-[[ $rc -ne 0 && $rc -ne 124 && -n "$why" && "$shown" -ge 1 ]] \
-  && ok "F refused: a second collector on this host ($(hostname)) exit $rc: '${why:0:160}'; the page shows $shown refused" \
-  || fail "F refused: exit $rc, reason '${why:0:200}', refused rows $shown: $(tail -3 "$WORK/second.log" | tr '\n' ' ' | cut -c1-500)"
-docker exec -d "$SVC" sh -c "timeout 90 runuser -u pgvigil -- /usr/local/bin/pgvigil run -config /etc/pgvigil/pgvigil.yaml > /tmp/second.log 2>&1"
-if waitfor 150 "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_findings WHERE setting = 'two collectors on one repository')"; then
-  ok "F same host: $(q "SELECT value || ' - ' || detail FROM pgvigil.collector_findings WHERE setting = 'two collectors on one repository'" | cut -c1-220)"
-else fail "F same host: no 'two collectors on one repository' in 150 s"; fi
-waitfor 120 "SELECT (SELECT count(*) FROM pgvigil.collector_live) = 1" || fail "F same host: the second run (timeout 90) still live"
+# ---- F many collectors on one repository ---------------------------------------------------------------------------
+timeout 240 "$BIN" run -config "$WORK/host.yaml" > "$WORK/second.log" 2>&1 &
+SECOND=$!
+if waitfor 200 "SELECT count(DISTINCT f.instance_id) = 4 FROM pgvigil.collector_findings f WHERE f.setting = 'collected by more than one collector'"; then
+  up=$(api '' | jget collectors | python3 -c "import json,sys; print(sum(1 for r in json.load(sys.stdin) if r['state'] == 'up'))")
+  [[ "$up" == 2 ]] && kill -0 $SECOND 2>/dev/null \
+    && ok "F many: a second collector on $(hostname) runs beside pgvigil-svc (not refused; the page: $up up); 'collected by more than one collector' on t1-t4: $(q "SELECT detail FROM pgvigil.collector_findings WHERE setting = 'collected by more than one collector' LIMIT 1" | cut -c1-200)" \
+    || fail "F many: up $up (want 2), the second alive $(kill -0 $SECOND 2>/dev/null && echo yes || echo no): $(tail -3 "$WORK/second.log" | tr '\n' ' ' | cut -c1-400)"
+else fail "F many: no 'collected by more than one collector' on the 4 instances in 200 s: $(tail -3 "$WORK/second.log" | tr '\n' ' ' | cut -c1-400)"; fi
+kill -TERM $SECOND 2>/dev/null || true; wait $SECOND 2>/dev/null || true; SECOND=""
+waitfor 60 "SELECT (SELECT count(*) FROM pgvigil.collector_live) = 1" || fail "F many: the second collector still live 60 s after it was stopped"
 
 # ---- B the service stopped -----------------------------------------------------------------------------------------
 waitfor 150 "SELECT count(*) = 1 FROM pgvigil.collector_live" || true
-rm -f "$WORK"/spool/*
+rm -f "$WORK"/spool/* "$WORK"/spool2/*
 docker exec "$SVC" systemctl stop pgvigil.service
 sleep 5
 st=$(api '' | jget collectors | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin) if x['host'] == 'pgvigil-svc'][0]; print(r['state'])")
 [[ "$st" == stopped ]] && ok "B stopped: the page says '$st' at once (a clean stop)" || fail "B stopped: the page says '$st'"
-if waitfor 480 "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_parent WHERE why = 'collector not seen')"; then
+if waitfor 600 "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_parent WHERE why = 'collector not seen' AND host = 'pgvigil-svc')"; then
   sleep 130   # serve's watchdog: its next minute
-  sent=$(spool_n firing "collector or network")
-  [[ "$sent" == 1 ]] && grep -q "collector_down=true" "$WORK/serve.log" \
-    && ok "B not seen: 'collector or network' (collector not seen) after $(q "SELECT floor(extract(epoch FROM now() - max(beat_at)) / 60) FROM pgvigil.collector_heartbeat") min, sent once by serve's watchdog" \
-    || fail "B not seen: alerts $sent (want 1); serve log: $(grep -i watchdog "$WORK/serve.log" | tail -3 | tr '\n' ' ' | cut -c1-400)"
+  sent=$(spool_n firing "collector or network"); sent2=$(SPOOL=$WORK/spool2 spool_n firing "collector or network")
+  [[ "$sent" == 1 && "$sent2" == 1 ]] && grep -qE 'collector_down(=|":)true' "$WORK/serve.log" \
+    && ok "B not seen: 'collector or network' (collector not seen: pgvigil-svc) after $(q "SELECT floor(extract(epoch FROM now() - max(beat_at)) / 60) FROM pgvigil.collector_heartbeat WHERE host = 'pgvigil-svc'") min, sent once on each channel by serve's watchdog" \
+    || fail "B not seen: alerts $sent / scoped $sent2 (want 1 / 1); serve log: $(grep -i watchdog "$WORK/serve.log" | tail -3 | tr '\n' ' ' | cut -c1-400)"
 else fail "B not seen: no 'collector not seen' 8 min after the stop"; fi
 docker exec "$SVC" systemctl start pgvigil.service
-waitfor 200 "SELECT (SELECT count(*) FROM pgvigil.collector_live) = 1 AND NOT pgvigil.collector_hold()" \
+waitfor 200 "SELECT (SELECT count(*) FROM pgvigil.collector_live) = 1 AND NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent)" \
   && ok "B started: up again, the parent cleared" || fail "B started: not up with the parent cleared in 200 s"
 
 # ---- G purge -------------------------------------------------------------------------------------------------------
@@ -278,4 +288,4 @@ page=$(api '' | jget repository | python3 -c "import json,sys; r=json.load(sys.s
 
 echo "the service's journal (last lines): $(docker exec "$SVC" journalctl -u pgvigil -n 4 --no-pager 2>&1 | tr '\n' ' ' | cut -c1-600)"
 if (( FAILS )); then echo "FAIL: $FAILS case(s)"; exit 1; fi
-echo "proof-collector-health: OK (the heartbeat of a systemd unit, its load and a refused login, the page, the network and the stopped collector each one alert with the instances held, one collector per repository, the purge recorded)"
+echo "proof-collector-health: OK (the heartbeat of a systemd unit, its load and a refused login, the page, failing together and a stopped collector each one alert with only their unread instances held, many collectors on one repository, the purge recorded)"

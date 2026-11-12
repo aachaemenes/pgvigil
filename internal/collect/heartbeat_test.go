@@ -43,14 +43,22 @@ func TestBucket(t *testing.T) {
 	}
 }
 
-// TestRecordTake: a minute's runs per collection and per instance, a skipped run counted as a connection only, the
-// failed runs in a row kept across takes and sent when they change.
+// TestRecordTake: a minute's runs per collection and per instance (a skipped run not counted), the connects counted
+// at the connect (an opened one, a refused login, a per-database connect), the failed runs in a row kept across takes
+// and sent when they change.
 func TestRecordTake(t *testing.T) {
 	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	current.Store(h)
+	defer current.Store(nil)
 	now := time.Now()
+	CountConnect("t1", nil)
 	h.record("t1", "postgres", "activity", Result{Rows: 5, Duration: 3 * time.Millisecond}, now)
-	h.record("t1", "postgres", "activity", Result{Duration: 20 * time.Millisecond, Err: &pgconn.PgError{Code: "28P01"}}, now)
+	CountConnect("t1", fmt.Errorf("connect t1: %w", &pgconn.PgError{Code: "28P01"}))
+	h.record("t1", "postgres", "activity", Result{Duration: 20 * time.Millisecond, Err: errors.New("connect t1: refused")}, now)
+	CountConnect("t1", nil)                            // the run of tables
+	CountConnect("t1", &pgconn.PgError{Code: "28000"}) // its per-database connect refused by pg_hba
 	h.record("t1", "postgres", "logs", Result{Note: " (skipped: no log door)"}, now)
+	CountConnect("t2", nil)
 	h.record("t2", "sqlserver", "activity", Result{Rows: 2, Duration: time.Millisecond}, now)
 	b := h.take()
 	if len(b.Runs) != 2 || len(b.Load) != 2 || b.Instances != 2 {
@@ -62,15 +70,23 @@ func TestRecordTake(t *testing.T) {
 		}
 	}
 	for _, l := range b.Load {
-		if l.Instance == "t1" && (l.Connections != 3 || l.Runs != 2 || l.Failures != 1 || l.Auth != 1) {
+		if l.Instance == "t1" && (l.Attempts != 4 || l.Opened != 2 || l.Auth != 2 || l.Runs != 2 || l.Failures != 1) {
 			t.Errorf("t1 load: %+v", l)
 		}
+		if l.Instance == "t2" && (l.Attempts != 1 || l.Opened != 1 || l.Auth != 0 || l.Runs != 1) {
+			t.Errorf("t2 load: %+v", l)
+		}
 	}
-	if len(b.Streaks) != 1 || b.Streaks[0].Instance != "t1" || b.Streaks[0].Fails != 1 {
+	// t1's failure, and t2's first result since the start (fresh: sent once, 0)
+	sk := map[string]int{}
+	for _, x := range b.Streaks {
+		sk[x.Instance] = x.Fails
+	}
+	if len(b.Streaks) != 2 || sk["t1"] != 1 || sk["t2"] != 0 {
 		t.Errorf("streaks: %+v", b.Streaks)
 	}
 	// the next minute: nothing new, nothing sent; a success after the failure resets and is sent once
-	if b2 := h.take(); len(b2.Runs) != 0 || len(b2.Streaks) != 0 {
+	if b2 := h.take(); len(b2.Runs) != 0 || len(b2.Streaks) != 0 || len(b2.Load) != 0 {
 		t.Errorf("an empty minute sent %+v", b2)
 	}
 	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
@@ -80,5 +96,34 @@ func TestRecordTake(t *testing.T) {
 	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
 	if b4 := h.take(); len(b4.Streaks) != 0 {
 		t.Errorf("a success after a success was sent: %+v", b4.Streaks)
+	}
+}
+
+// TestNoHeartbeat: without StartHeartbeat (pgvigil collect, a test) counting is a no-op.
+func TestNoHeartbeat(t *testing.T) {
+	current.Store(nil)
+	CountConnect("t1", nil)
+	RecordRun("t1", "postgres", "activity", Result{})
+}
+
+// TestStreakAfterRestart: a streak loaded from the repository (5 failed in a row before a restart) - the first success
+// after the start resets it and is sent; a first failure counts on from 5.
+func TestStreakAfterRestart(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{
+		{"t1", "activity"}: {fails: 5, fresh: true}, {"t1", "dbstats"}: {fails: 5, fresh: true}}}
+	now := time.Now()
+	h.record("t1", "postgres", "activity", Result{Rows: 1}, now)
+	h.record("t1", "postgres", "dbstats", Result{Err: errors.New("down")}, now)
+	h.record("t2", "postgres", "activity", Result{Rows: 1}, now) // never failed: its first result is sent once (0)
+	got := map[string]int{}
+	for _, s := range h.take().Streaks {
+		got[s.Instance+"/"+s.Collection] = s.Fails
+	}
+	if len(got) != 3 || got["t1/activity"] != 0 || got["t1/dbstats"] != 6 || got["t2/activity"] != 0 {
+		t.Errorf("after the restart: %v", got)
+	}
+	h.record("t2", "postgres", "activity", Result{Rows: 1}, now)
+	if b := h.take(); len(b.Streaks) != 0 {
+		t.Errorf("a second success was sent: %+v", b.Streaks)
 	}
 }

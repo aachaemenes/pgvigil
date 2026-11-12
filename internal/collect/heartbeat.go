@@ -1,12 +1,11 @@
 package collect
 
 // The collector's heartbeat (task 201, migration 0121): once a minute `pgvigil run` writes who it is and what the minute's
-// runs did - per collection (runs, failures, rows written, durations as a histogram) and per instance (the connections
-// pgvigil opened - one per run on both engines - its failures and authentication failures) - and each instance's
-// failed runs in a row. One collector per repository: StartHeartbeat refuses to start beside another host's live
-// collector, and a running collector is told at its beat when an older one of another host is live; either way the
-// reason is logged and the run's context is cancelled. Watchdog is serve's: while no collector has beaten for 5
-// minutes the alert pass that lives in the collector cannot run, so serve runs it.
+// runs did - per collection (runs, failures, rows written, durations as a histogram) and per instance (pgvigil's own
+// load: connection attempts, connections opened and logins refused, counted at every connect of a collection through
+// connectCounted / CountConnect, and the runs and failures) - and each instance's failed runs in a row. Many collectors
+// may write to one repository (one per host). Watchdog is serve's: while a collector has not beaten for 5 minutes the
+// alert pass that lives in it cannot run, so serve runs it; WatchdogStatus says on or off (the Collector page).
 
 import (
 	"context"
@@ -22,12 +21,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// RunsAs, when set before StartHeartbeat, says how the process runs (the Windows service handler sets "windows service");
-// empty = found here: a systemd unit (INVOCATION_ID), a container, else a console.
+// RunsAs says how the process runs when set before StartHeartbeat (the Windows service handler sets "windows
+// service"); empty = found here: a systemd unit, a container (Kubernetes), else a console.
 var RunsAs string
 
 // HeartbeatInfo is what the caller knows about this collector.
@@ -46,7 +46,7 @@ type runAgg struct {
 }
 
 type loadAgg struct {
-	connections, runs, failures, auth int
+	attempts, opened, runs, failures, auth int
 }
 
 type streak struct {
@@ -54,11 +54,13 @@ type streak struct {
 	lastErr string
 	at      time.Time
 	dirty   bool
+	fresh   bool // loaded from the repository at the start: the first result after it is sent, whatever it is
 }
 
 // Heartbeat is one running collector's record keeper.
 type Heartbeat struct {
 	id, host string
+	info     HeartbeatInfo
 	pool     *pgxpool.Pool
 	log      *slog.Logger
 	mu       sync.Mutex
@@ -79,7 +81,39 @@ func RecordRun(instance, engine, collection string, res Result) {
 
 func skipped(res Result) bool { return res.Err == nil && strings.Contains(res.Note, "skipped") }
 
-// AuthFailure: the server refused the login - PostgreSQL 28P01 (bad password) or 28000 (no such role / not allowed),
+// CountConnect counts one connection attempt to an instance: opened when err is nil, a login refused when the server
+// said so (AuthFailure). Every collection's connect calls it (connectCounted; the SQL Server connector directly).
+func CountConnect(instance string, err error) {
+	if h := current.Load(); h != nil {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		l := h.loadOf(instance)
+		l.attempts++
+		if err == nil {
+			l.opened++
+		} else if AuthFailure(err) {
+			l.auth++
+		}
+	}
+}
+
+// connectCounted is pgx.ConnectConfig counted for the instance's load.
+func connectCounted(ctx context.Context, instance string, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	CountConnect(instance, err)
+	return conn, err
+}
+
+func (h *Heartbeat) loadOf(instance string) *loadAgg {
+	l := h.load[instance]
+	if l == nil {
+		l = &loadAgg{}
+		h.load[instance] = l
+	}
+	return l
+}
+
+// AuthFailure says whether the server refused the login - PostgreSQL 28P01 (bad password) or 28000 (no such role / not allowed),
 // SQL Server 18456 (login failed).
 func AuthFailure(err error) bool {
 	var pe *pgconn.PgError
@@ -102,24 +136,16 @@ func bucket(d time.Duration) int {
 }
 
 func (h *Heartbeat) record(instance, engine, collection string, res Result, now time.Time) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	l := h.load[instance]
-	if l == nil {
-		l = &loadAgg{}
-		h.load[instance] = l
-	}
-	l.connections++ // every run opens one connection, a skipped one too (it connects to find out)
 	if skipped(res) {
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	l := h.loadOf(instance)
 	failed := res.Err != nil
 	l.runs++
 	if failed {
 		l.failures++
-		if AuthFailure(res.Err) {
-			l.auth++
-		}
 	}
 	k := [2]string{engine, collection}
 	a := h.runs[k]
@@ -140,7 +166,7 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 	sk := [2]string{instance, collection}
 	s := h.streaks[sk]
 	if s == nil {
-		s = &streak{}
+		s = &streak{fresh: true} // never seen since the start: its first result is sent (a stored streak is replaced)
 		h.streaks[sk] = s
 	}
 	was := s.fails
@@ -151,8 +177,10 @@ func (h *Heartbeat) record(instance, engine, collection string, res Result, now 
 		s.fails, s.lastErr = 0, ""
 	}
 	s.at = now
-	// a streak row is written when it changes: a failure, or the first success after failures
-	s.dirty = s.dirty || failed || was > 0
+	// a streak row is written when it changes (a failure, the first success after failures) and for the first result
+	// after a start (the repository's count, from before the restart, is carried on or reset)
+	s.dirty = s.dirty || failed || was > 0 || s.fresh
+	s.fresh = false
 }
 
 type beatRun struct {
@@ -167,11 +195,12 @@ type beatRun struct {
 }
 
 type beatLoad struct {
-	Instance    string `json:"instance"`
-	Connections int    `json:"connections"`
-	Runs        int    `json:"runs"`
-	Failures    int    `json:"failures"`
-	Auth        int    `json:"auth"`
+	Instance string `json:"instance"`
+	Attempts int    `json:"attempts"`
+	Opened   int    `json:"opened"`
+	Runs     int    `json:"runs"`
+	Failures int    `json:"failures"`
+	Auth     int    `json:"auth"`
 }
 
 type beatStreak struct {
@@ -203,7 +232,7 @@ func (h *Heartbeat) take() beat {
 			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})
 	}
 	for name, l := range h.load {
-		b.Load = append(b.Load, beatLoad{Instance: name, Connections: l.connections, Runs: l.runs, Failures: l.failures, Auth: l.auth})
+		b.Load = append(b.Load, beatLoad{Instance: name, Attempts: l.attempts, Opened: l.opened, Runs: l.runs, Failures: l.failures, Auth: l.auth})
 	}
 	for k, s := range h.streaks {
 		if s.dirty {
@@ -220,8 +249,13 @@ func runsAs() string {
 	if RunsAs != "" {
 		return RunsAs
 	}
-	if os.Getenv("INVOCATION_ID") != "" { // systemd sets it for every unit it starts
+	// systemd sets INVOCATION_ID for every unit it starts; a system service's parent is PID 1 (a shell in a terminal
+	// of a user session inherits the variable, not the parent)
+	if os.Getenv("INVOCATION_ID") != "" && os.Getppid() == 1 {
 		return "systemd unit"
+	}
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return "container (Kubernetes)"
 	}
 	for _, f := range []string{"/.dockerenv", "/run/.containerenv"} {
 		if _, err := os.Stat(f); err == nil {
@@ -231,10 +265,9 @@ func runsAs() string {
 	return "console"
 }
 
-// StartHeartbeat claims the repository for this collector and beats every minute until ctx ends (then marks a clean
-// stop). A refusal - another host's collector is live - is returned as the error before anything runs; a refusal told
-// at a later beat is logged and stop() is called. dsn is the collector's repository DSN (the import_ door).
-func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info HeartbeatInfo, stop context.CancelFunc) error {
+// StartHeartbeat writes this collector's row (its start in the repository's clock) and beats every minute until ctx ends,
+// then marks a clean stop. dsn is the collector's repository DSN (the import_ door).
+func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info HeartbeatInfo) error {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return fmt.Errorf("heartbeat: %w", err)
@@ -246,29 +279,52 @@ func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info Hear
 		return fmt.Errorf("heartbeat: %w", err)
 	}
 	host, _ := os.Hostname()
-	started := time.Now()
-	h := &Heartbeat{id: fmt.Sprintf("%s/%d/%d", host, os.Getpid(), started.Unix()), host: host, pool: pool, log: log,
-		runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
-	var why *string
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err = pool.QueryRow(cctx, `SELECT pgvigil.import_collector_claim($1, $2, $3, $4, $5, $6, $7)`,
-		h.id, host, runtime.GOOS+"/"+runtime.GOARCH, runsAs(), info.Version, os.Getpid(), started).Scan(&why)
-	cancel()
-	if err != nil {
+	h := &Heartbeat{id: fmt.Sprintf("%s/%d/%d", host, os.Getpid(), time.Now().UnixNano()), host: host, pool: pool, log: log,
+		info: info, runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	if err := h.claim(ctx); err != nil {
 		pool.Close()
-		return fmt.Errorf("heartbeat: the claim on the repository: %w", err)
+		return err
 	}
-	if why != nil {
-		pool.Close()
-		return errors.New(*why)
-	}
+	h.loadStreaks(ctx)
 	current.Store(h)
 	log.Info("heartbeat started", "collector", h.id, "runs_as", runsAs())
-	go h.loop(ctx, stop)
+	go h.loop(ctx)
 	return nil
 }
 
-func (h *Heartbeat) loop(ctx context.Context, stop context.CancelFunc) {
+func (h *Heartbeat) claim(ctx context.Context) error {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := h.pool.Exec(cctx, `SELECT pgvigil.import_collector_claim($1, $2, $3, $4, $5, $6)`,
+		h.id, h.host, runtime.GOOS+"/"+runtime.GOARCH, runsAs(), h.info.Version, os.Getpid()); err != nil {
+		return fmt.Errorf("heartbeat: the collector's row: %w", err)
+	}
+	return nil
+}
+
+// loadStreaks takes the failed runs in a row the repository holds (a restart keeps counting from them; the first result
+// of each is sent).
+func (h *Heartbeat) loadStreaks(ctx context.Context) {
+	lctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	rows, err := h.pool.Query(lctx, `SELECT instance, collection, fail_streak, coalesce(last_error, '') FROM pgvigil.import_collector_streaks()`)
+	if err != nil {
+		h.log.Warn("heartbeat: the stored streaks were not read (counted from 0)", "err", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var inst, coll, lastErr string
+		var n int
+		if err := rows.Scan(&inst, &coll, &n, &lastErr); err != nil {
+			h.log.Warn("heartbeat: a stored streak", "err", err)
+			return
+		}
+		h.streaks[[2]string{inst, coll}] = &streak{fails: n, lastErr: lastErr, fresh: true}
+	}
+}
+
+func (h *Heartbeat) loop(ctx context.Context) {
 	defer h.pool.Close()
 	defer current.CompareAndSwap(h, nil)
 	for {
@@ -284,26 +340,23 @@ func (h *Heartbeat) loop(ctx context.Context, stop context.CancelFunc) {
 			return
 		case <-time.After(time.Until(next)):
 		}
-		if why := h.beat(ctx, next.Truncate(time.Minute).Add(-time.Minute)); why != "" {
-			h.log.Error("this collector is refused: "+why, "collector", h.id)
-			stop()
-		}
+		h.beat(ctx, next.Truncate(time.Minute).Add(-time.Minute))
 	}
 }
 
-// beat writes the minute; the refusal's reason when there is one.
-func (h *Heartbeat) beat(ctx context.Context, minute time.Time) string {
+// beat writes the minute.
+func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 	b := h.take()
 	body, err := json.Marshal(b)
 	if err != nil {
 		h.log.Warn("heartbeat: the beat was not encoded", "err", err)
-		return ""
+		return
 	}
 	bctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	var why *string
-	if err := h.pool.QueryRow(bctx, `SELECT pgvigil.import_collector_beat($1, $2, $3::jsonb)`, h.id, minute, string(body)).Scan(&why); err != nil {
-		// the minute's counts are lost with the beat (the page shows the gap); the streaks are re-sent next minute
+	var known bool
+	if err := h.pool.QueryRow(bctx, `SELECT pgvigil.import_collector_beat($1, $2, $3::jsonb)`, h.id, minute, string(body)).Scan(&known); err != nil {
+		// the minute's counts are lost with the beat (the page shows the gap); the streaks are sent again next minute
 		h.log.Warn("heartbeat: the beat was not written", "err", err)
 		h.mu.Lock()
 		for _, s := range b.Streaks {
@@ -312,21 +365,36 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) string {
 			}
 		}
 		h.mu.Unlock()
-		return ""
+		return
 	}
-	if why != nil {
-		return *why
+	if !known { // the row is gone (trimmed after 8 days without a beat, or deleted): claimed again
+		if err := h.claim(ctx); err != nil {
+			h.log.Warn("heartbeat: the collector's row was not written again", "err", err)
+		}
+	}
+}
+
+var watchdog atomic.Value // string: "on", or "off: <why>"; empty when no watchdog was asked (not serve)
+
+// SetWatchdogOff records why serve runs no watchdog (logged by the caller; the Collector page shows it).
+func SetWatchdogOff(why string) { watchdog.Store("off: " + why) }
+
+// WatchdogStatus: "on", "off: <why>", or "" outside serve.
+func WatchdogStatus() string {
+	if v, ok := watchdog.Load().(string); ok {
+		return v
 	}
 	return ""
 }
 
-// Watchdog runs in `pgvigil serve`: each minute it asks the repository whether a collector beat in the last 5 minutes
-// (pgvigil.collector_down()); while none did, the alert pass that lives in the collector cannot run, so pass is called
+// Watchdog runs in `pgvigil serve`: each minute it asks the repository whether a collector is not seen for 5 minutes
+// (pgvigil.collector_down()); while one is, the alert pass that lives in it cannot run, so pass is called
 // (the alert pass's advisory lock keeps one sender, alert_state keeps one alert). dsn: any repository login that may
 // read (the reader's).
 func Watchdog(ctx context.Context, log *slog.Logger, dsn string, pass func(context.Context) error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
+		SetWatchdogOff("the repository DSN: " + err.Error())
 		log.Warn("collector watchdog off", "err", err)
 		return
 	}
@@ -334,10 +402,13 @@ func Watchdog(ctx context.Context, log *slog.Logger, dsn string, pass func(conte
 	cfg.ConnConfig.RuntimeParams["application_name"] = "pgvigil-watchdog"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
+		SetWatchdogOff("the repository: " + err.Error())
 		log.Warn("collector watchdog off", "err", err)
 		return
 	}
 	defer pool.Close()
+	watchdog.Store("on")
+	log.Info("collector watchdog on: serve runs the alert pass while a collector is not seen for 5 minutes")
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	took := false
