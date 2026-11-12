@@ -156,7 +156,8 @@ func runInstall(log *slog.Logger, args []string) error {
 	if o.Upgrade {
 		return runUpgrade(log, o)
 	}
-	return installService(log, o)
+	_, _, err = installService(log, o)
+	return err
 }
 
 func runUninstall(log *slog.Logger, args []string) error {
@@ -257,7 +258,8 @@ func writeIfAbsent(path, content string, mode os.FileMode) (bool, error) {
 }
 
 // ownFiles are the files the installer itself puts beside the config (and the folder of the Windows log).
-var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "pgvigil.log", "logs"}
+// instances/ and sources/ are the page's credential folders (task 204, config.SecretDir / SourceSecretDir), beside the config.
+var ownFiles = []string{"pgvigil.yaml", "pgvigil.env", "repo.dsn", "pgvigil.log", "logs", "instances", "sources"}
 
 // dedicatedFolder refuses a config folder that is not the installer's own. The installer sets that
 // folder's permissions and -purge removes it, so it must be named pgvigil, or not exist yet, or hold
@@ -318,6 +320,10 @@ func (e *configError) ExitCode() int { return 3 }
 // (an env:NAME DSN read from envFile, the environment file the unit loads, when one is named; a file: DSN from its
 // file). The instances may all be in the page (Admin > Instances, task 204), so none in the file is fine; with an
 // empty DSN the collector would end with exit 3 at once.
+// serviceEnv reads a variable of the installed service's own environment where the platform keeps one outside a file
+// (Windows: the service's registry Environment); nil elsewhere.
+var serviceEnv func(name string) (string, bool)
+
 func configReady(path, envFile string) (bool, string) {
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -325,9 +331,17 @@ func configReady(path, envFile string) (bool, string) {
 	}
 	raw := cfg.Repository.DSNRaw
 	dsn := cfg.Repository.DSN()
-	if name, ok := strings.CutPrefix(raw, "env:"); ok && envFile != "" {
-		if v, found := envFileValue(envFile, name); found {
-			dsn = v
+	if name, ok := strings.CutPrefix(raw, "env:"); ok {
+		// the service's own environment first: systemd's EnvironmentFile on Linux, the service's registry Environment
+		// on Windows; the installer's process environment only after them
+		if envFile != "" {
+			if v, found := envFileValue(envFile, name); found {
+				dsn = v
+			}
+		} else if serviceEnv != nil {
+			if v, found := serviceEnv(name); found {
+				dsn = v
+			}
 		}
 	}
 	if strings.TrimSpace(dsn) == "" {
@@ -396,7 +410,7 @@ type upgradeHooks struct {
 	secureDumpDir  func(dir string) error  // a folder for the owner of the host only (0700; SYSTEM and Administrators)
 	secureDumpFile func(file string) error // the dump file itself in a folder the operator named (Windows: its ACL)
 	previous       func(bin string) string
-	ready          func(o installOptions) (bool, string) // installService's own gate: may the service start (configReady), or why not
+	active         func() bool // the installed service runs now (recorded in the preflight)
 }
 
 var upgradeHooksOf *upgradeHooks
@@ -420,6 +434,7 @@ type upgradePlan struct {
 	conn         string // the owner's connection string without its password (pg_dump's command line)
 	password     string // the password alone (pg_dump's temporary password file)
 	sameBinary   bool   // the installed binary is already this one (a re-run after a half upgrade)
+	wasActive    bool   // the service ran when the preflight read it: only such a service is started again after a refusal
 	installedVer string // what the installed binary says it is
 }
 
@@ -474,6 +489,9 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 	if p.dumpFile != "" {
 		if err := upgradeDump(h, p); err != nil {
 			// nothing has changed but the stop (and the copy beside the binary): the old collector runs again
+			if !p.wasActive {
+				return fmt.Errorf("the dump failed; the service was not running before the upgrade and is left stopped; nothing else was changed: %w", err)
+			}
 			if serr := h.start(log); serr != nil {
 				return fmt.Errorf("the dump failed (%v) and the service did not start again (%v): start it by hand; nothing else was changed", err, serr)
 			}
@@ -491,12 +509,14 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 	fmt.Printf("4. migrated the repository: %d file(s) applied\n", n)
 	inst := p.inst
 	inst.Upgrade, inst.NoStart = false, false
-	ready, why := h.ready(inst) // the gate installService starts the service by: the repository DSN, not an instance in the file (task 204)
-	if err := installService(log, inst); err != nil {
+	// step 5 says what installService did: it alone asks the gate (the repository DSN, task 204) from the service's own
+	// environment, after its own files are in place, and checks the start
+	started, why, err := installService(log, inst)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "the install of the new binary did not finish: %s\n", wayBack(p, false))
 		return err
 	}
-	if ready {
+	if started {
 		fmt.Printf("5. swapped the binary and started the service\n%s\n", wayBack(p, true))
 	} else {
 		fmt.Printf("5. swapped the binary; the service is enabled, not started (%s)\n%s\n", why, wayBack(p, true))
@@ -531,8 +551,12 @@ func upgradePreflight(log *slog.Logger, h *upgradeHooks, o installOptions) (*upg
 			return nil, fmt.Errorf("-%s %s disagrees with the installed service's %s: leave the flag out (the upgrade keeps the installed paths and account)", f.name, f.flag, f.installed)
 		}
 	}
+	// the swap's own refusal (a config folder holding files the installer does not own) comes now, never after the migrate
+	if err := dedicatedFolder(filepath.Dir(inst.Config), filepath.Base(inst.Config)); err != nil {
+		return nil, err
+	}
 	inst.Upgrade = true
-	p := &upgradePlan{inst: inst, previous: h.previous(inst.Bin)}
+	p := &upgradePlan{inst: inst, previous: h.previous(inst.Bin), wasActive: h.active()}
 	if p.ownerDSN, err = ownerDSN(o); err != nil {
 		return nil, err
 	}

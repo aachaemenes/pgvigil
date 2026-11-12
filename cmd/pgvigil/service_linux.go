@@ -152,38 +152,39 @@ func ensureAccount(log *slog.Logger, name string) (int, int, error) {
 	return uid, gid, nil
 }
 
-func installService(log *slog.Logger, o installOptions) error {
+func installService(log *slog.Logger, o installOptions) (started bool, why string, err error) {
 	if os.Geteuid() != 0 {
-		return errors.New("install needs root: run it with sudo")
+		return false, "", errors.New("install needs root: run it with sudo")
 	}
 	_, gid, err := ensureAccount(log, o.User)
 	if err != nil {
-		return err
-	}
-	if err := installBinary(log, o.Bin); err != nil {
-		return err
+		return false, "", err
 	}
 	cfgDir := filepath.Dir(o.Config)
 	envFile := filepath.Join(cfgDir, envName)
+	// the folder's refusal before anything is written: a refused folder leaves the binary as it was
 	if err := dedicatedFolder(cfgDir, filepath.Base(o.Config)); err != nil {
-		return err
+		return false, "", err
+	}
+	if err := installBinary(log, o.Bin); err != nil {
+		return false, "", err
 	}
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
-		return err
+		return false, "", err
 	}
 	if err := os.Chown(cfgDir, 0, gid); err != nil {
-		return fmt.Errorf("chown %s: %w", cfgDir, err)
+		return false, "", fmt.Errorf("chown %s: %w", cfgDir, err)
 	}
 	if err := os.Chmod(cfgDir, 0o750); err != nil {
-		return err
+		return false, "", err
 	}
 	for _, f := range []struct{ path, content string }{{o.Config, configTemplate("env:PGVIGIL_REPO_DSN")}, {envFile, envTemplate}} {
 		wrote, err := writeIfAbsent(f.path, f.content, 0o640)
 		if err != nil {
-			return err
+			return false, "", err
 		}
 		if err := os.Chown(f.path, 0, gid); err != nil {
-			return fmt.Errorf("chown %s: %w", f.path, err)
+			return false, "", fmt.Errorf("chown %s: %w", f.path, err)
 		}
 		if wrote {
 			log.Info("written", "path", f.path)
@@ -192,49 +193,44 @@ func installService(log *slog.Logger, o installOptions) error {
 		}
 	}
 	if err := writeFile(unitPath, renderUnit(o.Bin, o.Config, envFile, o.User), 0o644); err != nil {
-		return err
+		return false, "", err
 	}
 	log.Info("unit written", "path", unitPath)
 	if !systemdRunning() {
 		fmt.Printf("systemd is not running here: the unit is written; start the collector with\n  %s run -config %s\nafter editing %s and %s.\n", o.Bin, o.Config, o.Config, envFile)
-		return nil
+		return false, "systemd is not running here", nil
 	}
 	if out, err := systemctl("daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
+		return false, "", fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
 	}
 	if out, err := systemctl("enable", "pgvigil.service"); err != nil {
-		return fmt.Errorf("systemctl enable: %v: %s", err, out)
+		return false, "", fmt.Errorf("systemctl enable: %v: %s", err, out)
 	}
 	ready, why := configReady(o.Config, envFile)
+	if o.NoStart && ready {
+		why = "-no-start"
+	}
 	if o.NoStart || !ready {
 		if !ready {
 			log.Info("service enabled, not started", "why", why)
 		}
 		if state, _ := systemctl("is-active", "pgvigil.service"); state == "active" {
 			fmt.Printf("pgvigil is upgraded and enabled; the running service still runs the previous binary until: systemctl restart pgvigil\n")
-			return nil
+			return false, "the running service still runs the previous binary until: systemctl restart pgvigil", nil
 		}
 		fmt.Printf("pgvigil is installed and enabled. Next:\n  1. %s: the repository login in PGVIGIL_REPO_DSN (and one line per instance the config names by env:)\n  2. %s: list the instances, or add them later in the page (Admin > Instances)\n  3. systemctl start pgvigil && systemctl status pgvigil (or run this installer again)\n", envFile, o.Config)
-		return nil
+		return false, why, nil
 	}
 	restarted := time.Now()
 	if out, err := systemctl("restart", "pgvigil.service"); err != nil {
-		return fmt.Errorf("systemctl restart: %v: %s", err, out)
+		return false, "", fmt.Errorf("systemctl restart: %v: %s", err, out)
 	}
 	// Type=simple reads 'active' from the exec on, so a start that fails in its first seconds (the repository's
 	// schema behind this binary, a refused repository login) still looks up at a first glance: the unit counts as
 	// running only after it stayed active for upSettle; a start that failed is named with its reason
-	up := true
-	for waited := time.Duration(0); waited < upSettle; waited += upStep {
-		time.Sleep(upStep)
-		if state, _ := systemctl("is-active", "pgvigil.service"); state != "active" {
-			up = false
-			break
-		}
-	}
-	if up {
+	if settledActive() {
 		fmt.Printf("pgvigil is installed and running (systemctl status pgvigil; journalctl -u pgvigil -f).\n")
-		return nil
+		return true, "", nil
 	}
 	journal := func() string {
 		out, _ := exec.Command("journalctl", "-u", "pgvigil.service", "--no-pager", "-o", "cat", "-n", "20",
@@ -252,13 +248,25 @@ func installService(log *slog.Logger, o installOptions) error {
 		out, _ := systemctl("status", "--no-pager", "-n", "10", "pgvigil.service")
 		fmt.Fprintf(os.Stderr, "%s\n", out)
 	}
-	return errors.New(msg)
+	return false, "", errors.New(msg)
 }
 
 const (
 	upSettle = 4 * time.Second // how long the unit must stay active before the installer calls it running
 	upStep   = 500 * time.Millisecond
 )
+
+// settledActive: Type=simple reads 'active' from the exec on, so the unit counts as running only after it stayed active
+// for upSettle (a start that fails in its first seconds, an empty repository DSN's exit 3, reads inactive by then).
+func settledActive() bool {
+	for waited := time.Duration(0); waited < upSettle; waited += upStep {
+		time.Sleep(upStep)
+		if state, _ := systemctl("is-active", "pgvigil.service"); state != "active" {
+			return false
+		}
+	}
+	return true
+}
 
 // schemaBehind is the line 'pgvigil run' ends with when the repository's schema is older than the binary (main.go).
 var schemaBehind = regexp.MustCompile(`repository schema is behind this binary \(needs ([^)\s]+)\)`)
@@ -324,9 +332,21 @@ func writeFile(path, content string, mode os.FileMode) error {
 
 func init() {
 	upgradeHooksOf = &upgradeHooks{
-		installed:     installedUnit,
-		stop:          func(_ *slog.Logger) error { return systemdStop() },
-		start:         func(_ *slog.Logger) error { return systemdStart() },
+		installed: installedUnit,
+		stop:      func(_ *slog.Logger) error { return systemdStop() },
+		start: func(_ *slog.Logger) error {
+			if err := systemdStart(); err != nil {
+				return err
+			}
+			if !settledActive() {
+				return errors.New("it did not stay up: journalctl -u pgvigil -n 20")
+			}
+			return nil
+		},
+		active: func() bool {
+			state, _ := systemctl("is-active", "pgvigil.service")
+			return state == "active"
+		},
 		others:        otherProcesses,
 		freeBytes:     freeBytes,
 		dumpDir:       "/var/backups/pgvigil",
@@ -340,9 +360,6 @@ func init() {
 			return nil
 		},
 		previous: func(bin string) string { return bin + ".previous" },
-		ready: func(o installOptions) (bool, string) {
-			return configReady(o.Config, filepath.Join(filepath.Dir(o.Config), envName))
-		},
 	}
 }
 

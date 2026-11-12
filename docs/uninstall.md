@@ -108,8 +108,11 @@ pgvigil-app.exe uninstall      # the machine-wide app: its files, start-at-login
 pgvigil-app.exe uninstall -user   # a user's own app (as that user)
 ```
 
-These leave the account, the repository and its roles, the dumps, `pgvigil.previous`, and on Windows the PATH entry
-and the policy key; `-all` takes them.
+These leave the account, the repository and its roles, the dumps, `pgvigil.previous`, the page's credential folders
+beside the config (`instances/` and `sources/`: the passwords of the monitored servers added in the page, 0600 files on
+Linux, DPAPI blobs on Windows; `-purge` keeps them and the folder with them: `rm -r /etc/pgvigil/instances
+/etc/pgvigil/sources`, or `Remove-Item -Recurse "$env:ProgramData\pgvigil\instances", "$env:ProgramData\pgvigil\sources"`),
+and on Windows the PATH entry and the policy key; `-all` takes them.
 
 Not seen on Windows by this project's proofs yet: the Windows steps are checked by unit tests and a Windows build of
 the code only.
