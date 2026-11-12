@@ -1,0 +1,273 @@
+package config
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
+	file := []Instance{{Name: "pg1", Engine: EnginePostgres, DSNRaw: "env:X", Platform: "auto", QueryText: "full"}}
+	page := []PageInstance{
+		{Name: "pg1", Engine: EnginePostgres, DSNRef: "file:/etc/pgvigil/instances/pg1.dsn"}, // the file's name: left out
+		{Name: "sql1", Engine: EngineSQLServer, DSNRef: "file:/etc/pgvigil/instances/sql1.dsn", Tags: []string{"group:Prod"}},
+		{Name: "off", Engine: EnginePostgres, DSNRef: "file:/x/off.dsn", Disabled: true}, // disabled: not run, not an error
+		{Name: "bad ref", Engine: EnginePostgres, DSNRef: "host=x password=y"},           // name and ref both wrong
+		{Name: "inline", Engine: EnginePostgres, DSNRef: "host=x password=y"},            // a connection string, never run
+		{Name: "eng", Engine: "oracle", DSNRef: "file:/x/eng.dsn"},
+	}
+	all, skipped := Merge(file, page, "normalized")
+	var names []string
+	for _, in := range all {
+		names = append(names, in.Name)
+	}
+	if !slices.Equal(names, []string{"pg1", "sql1"}) {
+		t.Fatalf("merged %v, want [pg1 sql1]", names)
+	}
+	if all[0].DSNRaw != "env:X" {
+		t.Fatalf("the file's pg1 was replaced: %q", all[0].DSNRaw)
+	}
+	if all[1].Platform != "auto" || all[1].QueryText != "normalized" || all[1].DSNRaw != "file:/etc/pgvigil/instances/sql1.dsn" {
+		t.Fatalf("sql1 = %+v", all[1])
+	}
+	if len(skipped) != 4 {
+		t.Fatalf("skipped %v, want 4 (pg1, bad ref, inline, eng)", skipped)
+	}
+}
+
+func TestDiffStartsAndStopsByFingerprint(t *testing.T) {
+	a := Instance{Name: "a", Engine: EnginePostgres, DSNRaw: "file:/a"}
+	b := Instance{Name: "b", Engine: EnginePostgres, DSNRaw: "file:/b"}
+	b2 := b
+	b2.Tags = []string{"env:prod"}
+	c := Instance{Name: "c", Engine: EngineSQLServer, DSNRaw: "file:/c"}
+	stop, start := Diff([]Instance{a, b}, []Instance{a, b2, c})
+	if !slices.Equal(stop, []string{"b"}) || !slices.Equal(start, []string{"b", "c"}) {
+		t.Fatalf("stop %v start %v, want [b] [b c]", stop, start)
+	}
+	stop, start = Diff([]Instance{a, b2, c}, []Instance{a})
+	if !slices.Equal(stop, []string{"b", "c"}) || len(start) != 0 {
+		t.Fatalf("stop %v start %v, want [b c] []", stop, start)
+	}
+	if s, st := Diff([]Instance{a}, []Instance{a}); len(s)+len(st) != 0 {
+		t.Fatalf("no change gave %v %v", s, st)
+	}
+}
+
+type fakeInv struct {
+	mu   sync.Mutex
+	gen  int64
+	list []PageInstance
+	fail bool
+	read int
+}
+
+func (f *fakeInv) InventoryGeneration(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return 0, errors.New("down")
+	}
+	return f.gen, nil
+}
+
+func (f *fakeInv) Inventory(context.Context) ([]PageInstance, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.read++
+	return slices.Clone(f.list), f.gen, nil
+}
+
+func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
+	src := &fakeInv{gen: 1, list: []PageInstance{{Name: "p", Engine: EnginePostgres, DSNRef: "file:/p"}}}
+	got := make(chan []string, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+			var n []string
+			for _, in := range all {
+				n = append(n, in.Name)
+			}
+			got <- n
+		})
+		close(done)
+	}()
+	first := <-got
+	if !slices.Equal(first, []string{"f", "p"}) {
+		t.Fatalf("first %v", first)
+	}
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case n := <-got:
+		t.Fatalf("applied again without a new generation: %v", n)
+	default:
+	}
+	src.mu.Lock()
+	src.gen, src.list = 2, nil
+	src.mu.Unlock()
+	select {
+	case n := <-got:
+		if !slices.Equal(n, []string{"f"}) {
+			t.Fatalf("after the removal %v", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the new generation was not applied")
+	}
+	src.mu.Lock()
+	src.fail = true
+	src.mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case n := <-got:
+		t.Fatalf("a failed read changed the list: %v", n)
+	default:
+	}
+	cancel()
+	<-done
+}
+
+func TestBuildDSN(t *testing.T) {
+	cases := []struct {
+		c    Conn
+		want string
+		bad  bool
+	}{
+		{Conn{Engine: EngineSQLServer, Auth: "sql", Host: "sql01", Port: 1433, DBName: "master", Login: "mon", Password: "p@ss w:rd"},
+			"sqlserver://mon:p%40ss%20w%3Ard@sql01:1433?database=master&encrypt=true", false},
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: `sql02\PROD`}, "sqlserver://sql02/PROD?encrypt=true", false},
+		{Conn{Engine: EngineSQLServer, Auth: "windows", Host: "sql02", Password: "x"}, "", true},
+		{Conn{Engine: EngineSQLServer, Auth: "sql", Host: "sql01", Login: "mon"}, "", true},
+		{Conn{Engine: EngineSQLServer, Auth: "sql", Host: "sql01", Login: "mon", Password: "x", Extra: "TrustServerCertificate=true&server=evil"},
+			"sqlserver://mon:x@sql01?TrustServerCertificate=true&encrypt=true", false},
+		{Conn{Engine: EnginePostgres, Auth: "password", Host: "pg1", Port: 5432, Login: "pgvigil", Password: "it's a pw"},
+			`host=pg1 port=5432 dbname=postgres user=pgvigil password='it\'s a pw'`, false},
+		{Conn{Engine: EnginePostgres, Auth: "pgpass", Host: "pg1", Login: "pgvigil", Extra: "sslmode=require host=evil"},
+			"host=pg1 dbname=postgres user=pgvigil sslmode=require", false},
+		{Conn{Engine: EnginePostgres, Auth: "sql", Host: "pg1"}, "", true},
+		{Conn{Engine: EnginePostgres, Auth: "password", Host: "pg 1", Login: "a", Password: "b"}, "", true},
+	}
+	for i, c := range cases {
+		got, err := BuildDSN(c.c)
+		if c.bad != (err != nil) {
+			t.Fatalf("case %d: err %v, want bad=%v", i, err, c.bad)
+		}
+		if c.want != "" && got != c.want {
+			t.Fatalf("case %d:\n got %s\nwant %s", i, got, c.want)
+		}
+		if !c.bad && c.c.Engine == EngineSQLServer && c.c.Auth == "windows" && strings.Contains(got, "@") {
+			t.Fatalf("case %d: a Windows account carries a login: %s", i, got)
+		}
+	}
+}
+
+func TestParseServerList(t *testing.T) {
+	plain := "# the fleet\nsql01\nsql02,14330\n10.0.0.5:1433\nsql01\n\n"
+	p, err := ParseServerList(strings.NewReader(plain), EngineSQLServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p) != 3 || p[1].Host != "sql02" || p[1].Port != 14330 || p[2].Host != "10.0.0.5" || p[2].Port != 1433 || p[0].Server != "sql01" {
+		t.Fatalf("plain list %+v", p)
+	}
+	csvText := "host,port,name,tags,dbname\npg1,5432,billing,env:prod team:billing,app\npg2,,,,\n"
+	p, err = ParseServerList(strings.NewReader(csvText), EnginePostgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p) != 2 || p[0].Server != "pg1,5432" || p[0].DBName != "app" || !slices.Equal(p[0].Tags, []string{"env:prod", "team:billing"}) || p[1].Port != 0 {
+		t.Fatalf("csv %+v", p)
+	}
+	if _, err := ParseServerList(strings.NewReader("host,port\npg1,notaport\n"), EnginePostgres); err == nil {
+		t.Fatal("a bad port was taken")
+	}
+	if _, err := ParseServerList(strings.NewReader("two words\n"), EnginePostgres); err == nil {
+		t.Fatal("a line with a space was taken")
+	}
+}
+
+func TestParsePgServiceNeverReadsThePassword(t *testing.T) {
+	conf := "# services\n[billing]\nhost=pg1.example\nport=5433\ndbname=app\nuser=mon\npassword=secret\n\n[reports]\nhost = pg2\n"
+	p, err := ParsePgService(strings.NewReader(conf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p) != 2 || p[0].Server != "billing" || p[0].Host != "pg1.example" || p[0].Port != 5433 || p[0].Login != "mon" || p[1].Host != "pg2" {
+		t.Fatalf("%+v", p)
+	}
+	for _, x := range p {
+		if strings.Contains(strings.Join([]string{x.Server, x.Host, x.DBName, x.Login, x.DisplayName}, " "), "secret") {
+			t.Fatalf("the password reached a proposal: %+v", x)
+		}
+	}
+	if _, err := ParsePgService(strings.NewReader("[nohost]\nport=5432\n")); err == nil {
+		t.Fatal("a service with no host was taken")
+	}
+}
+
+func TestWriteSecretMode0600AndRemove(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("DPAPI on Windows: proven on the Windows sandbox")
+	}
+	dir := filepath.Join(t.TempDir(), "instances")
+	ref, err := WriteSecret(dir, "pg1", "host=pg1 password=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !RefOK(ref) || !strings.HasPrefix(ref, "file:") {
+		t.Fatalf("ref %q", ref)
+	}
+	p := strings.TrimPrefix(ref, "file:")
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, want 0600", st.Mode().Perm())
+	}
+	if d, _ := os.Stat(dir); d.Mode().Perm() != 0o700 {
+		t.Fatalf("the folder's mode %v, want 0700", d.Mode().Perm())
+	}
+	if Resolve(ref) != "host=pg1 password=x" {
+		t.Fatalf("Resolve read %q", Resolve(ref))
+	}
+	if _, err := WriteSecret(dir, "../escape", "x"); err == nil {
+		t.Fatal("a name with a path was taken")
+	}
+	outside := filepath.Join(t.TempDir(), "keep.dsn")
+	_ = os.WriteFile(outside, []byte("x"), 0o600)
+	if err := RemoveSecret(dir, "file:"+outside); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatal("RemoveSecret removed a file outside its folder")
+	}
+	if err := RemoveSecret(dir, ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the secret file stayed")
+	}
+	left, _ := os.ReadDir(dir)
+	if len(left) != 0 {
+		t.Fatalf("left in the folder: %v", left)
+	}
+}
+
+func TestRefOK(t *testing.T) {
+	for v, want := range map[string]bool{"file:/etc/x.dsn": true, `dpapi:C:\ProgramData\pgvigil\instances\a.dpapi`: true, "file:x.dsn": false,
+		"env:X": false, "host=x": false, "sqlserver://a:b@c": false} {
+		if RefOK(v) != want {
+			t.Fatalf("RefOK(%q) = %v", v, !want)
+		}
+	}
+}
