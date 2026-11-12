@@ -38,13 +38,18 @@ type Info struct {
 	MsdbAccess        bool
 }
 
+// detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
+// Microsoft's DMV pages name, except on Basic, S0, S1 and in an elastic pool, where they ask for the server admin or
+// ##MS_ServerStateReader##: there the server-level check stays.
 const detectSQL = `SELECT
   CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)),
   CAST(SERVERPROPERTY('Edition') AS nvarchar(128)),
   CAST(SERVERPROPERTY('EngineEdition') AS int),
   CAST(ISNULL(@@SERVERNAME, CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))) AS nvarchar(128)),
   CAST(ISNULL(SERVERPROPERTY('IsHadrEnabled'), 0) AS int),
-  CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE'), 0) AS int),
+  CAST(ISNULL(CASE WHEN CAST(SERVERPROPERTY('EngineEdition') AS int) = 5
+         AND CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS nvarchar(128)) NOT IN (N'Basic', N'S0', N'S1', N'ElasticPool')
+    THEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DATABASE STATE') ELSE HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE') END, 0) AS int),
   CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION'), 0) AS int),
   CAST(ISNULL(HAS_DBACCESS('msdb'), 0) AS int),
   CAST(CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS int),

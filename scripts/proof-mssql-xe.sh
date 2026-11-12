@@ -78,8 +78,14 @@
 #     after (the sandbox is shared: another tool's session that changed meanwhile is named, not judged); the drop
 #     script printed by pgvigil drops exactly the four; the read after it says 'not installed' four times again.
 #  N. NOT PROVEN HERE: the Azure SQL Database and Managed Instance forms of the script (no such endpoint: the text is
-#     checked by the unit test only), SQL Server 2016-2019, Windows paths of an event file, a ring buffer whose
-#     events left before a read (the 'missed' count is the import function's arithmetic, checked in part O by hand).
+#     checked by the unit test only); part J (AlwaysOn_health) on SQL Server 2016 (one server, no Windows cluster:
+#     SKIPPED there); an event file's Windows path on any version but 2016 (2017 and later run as Linux containers);
+#     a ring buffer whose events left before a read (the 'missed' count is the import function's arithmetic, checked
+#     in part O by hand); SQL Server 2016 before SP3 (SP1, SP2) and editions other than Developer (docs/sqlserver-2016.md,
+#     Not proven). Proven elsewhere: SQL Server 2017, 2019, 2022 and 2025 by scripts/proof-mssql-versions.sh,
+#     which runs this proof on each (docs/sqlserver.md, Versions); SQL Server 2016 SP3 on one Windows server by
+#     scripts/proof-mssql-2016.sh, the slow session's event files read by their Windows path in the instance's Log
+#     folder (docs/sqlserver-2016.md).
 #  O. the loss arithmetic and the engine guard, on the repository alone: a state row whose ring buffer took 50 more
 #     events than the read found stores missed_events 50 with lost_at set and fires 'the ring buffer dropped
 #     events'; import_mssql_xe on a PostgreSQL instance raises 'is not a SQL Server instance'.
@@ -496,5 +502,5 @@ SE=$(cat "$SA" "$SB" | grep -c ERROR || true); SD=$(cat "$SA" "$SB" | grep ERROR
 [ "$(q "select (select count(*) from pgvigil.mssql_slow_events where instance_id=$sa) || '|' || (select count(*) from pgvigil.mssql_ag_events where instance_id=$sb)")" = "60|60" ] || fail "S: rows stored: $(q "select (select count(*) from pgvigil.mssql_slow_events where instance_id=$sa), (select count(*) from pgvigil.mssql_ag_events where instance_id=$sb)") (want 60|60)"
 echo "S: OK"
 
-echo "N: NOT PROVEN (the Azure SQL Database and Managed Instance forms, SQL Server 2016-2019, Windows paths of an event file, a live ring buffer overrun)"
+echo "N: NOT PROVEN (the Azure SQL Database and Managed Instance forms, AlwaysOn_health on SQL Server 2016, an event file's Windows path on any version but 2016, a live ring buffer overrun, SQL Server 2016 before SP3 and editions other than Developer)"
 echo "proof-mssql-xe: PASS (A-M, O, P, R, S)"

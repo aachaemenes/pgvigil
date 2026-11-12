@@ -20,7 +20,8 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, String(r.name), ' ', badge('SQL Server', ''), ...(r.platform && r.platform !== 'sqlserver' ? [' ', badge(String(r.platform), '')] : [])));
   const mine = groups.filter(g => g.key === 'collect' || g.mssql);
   const notOk = mine.filter(g => !c[g.key].none && c[g.key].level > 0);
-  const unread = mine.filter(g => c[g.key].none);
+  const unread = mine.filter(g => c[g.key].none && c[g.key].text !== 'n/a');
+  const notHere = mine.filter(g => c[g.key].none && c[g.key].text === 'n/a');
   sec.append(el('p', { class: 'meta counts' }, notOk.length === 0 ? 'No warning or critical' : 'Not OK: ',
     ...notOk.flatMap((g, i) => {
       const x = c[g.key];
@@ -28,7 +29,8 @@ export async function mssqlSummary(ctx: Ctx): Promise<HTMLElement> {
       if (x.detail.length) a.title = x.detail.join('\n');
       return i ? [', ', a] : [a];
     }),
-    unread.length ? `; not read yet: ${unread.map(g => g.mssql?.[2] ?? g.label).join(', ')}.` : '.'));
+    unread.length ? `; not read yet: ${unread.map(g => g.mssql?.[2] ?? g.label).join(', ')}` : '',
+    notHere.length ? `; skipped on this instance (each page says why): ${notHere.map(g => g.mssql?.[2] ?? g.label).join(', ')}.` : '.'));
   const mem = (v: unknown) => v == null ? '' : `${(Number(v) / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`;
   const yn = (v: unknown) => v === true ? 'yes' : v === false ? 'no' : '';
   sec.append(el('h3', {}, 'Server'), props([

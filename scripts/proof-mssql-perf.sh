@@ -138,6 +138,10 @@ for i in "${!CTS[@]}"; do
   echo "--- A. mssql_cpu as the monitoring login"
   ring() { sq "$ct" "SELECT COUNT(*) FROM sys.dm_os_ring_buffers WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' AND record LIKE N'%<SystemHealth>%'"; }
   batches() { sq "$ct" "SELECT cntr_value FROM sys.dm_os_performance_counters WHERE RTRIM(object_name) LIKE N'%:SQL Statistics' AND counter_name = N'Batch Requests/sec'"; }
+  # the scheduler monitor writes its first record about a minute after the server starts: on a pair this proof is the
+  # first to use (the versions run with only 'perf', setup 21 s), part A read an empty ring buffer and stored 0 records
+  RW=0; for _ in $(seq 1 90); do RW=$(ring); [ "${RW:-0}" -ge 1 ] && break; sleep 1; done
+  [ "${RW:-0}" -ge 1 ] || fail "A: the server's ring buffer holds no scheduler monitor record after 90 s (sa reads $RW)"
   B0=$(batches)
   collect mssql_cpu "$N" >/dev/null
   iid=$(q "select instance_id from pgvigil.instances where name='$N'")

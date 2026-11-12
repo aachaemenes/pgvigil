@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proof of the tab export (task 54; the workbook as DBA Dash writes its own and the grid tools, task 153): a demo
 # fleet is seeded into a throwaway database and served on loopback, a headless Chromium opens the fleet Summary,
-# Backups, Jobs and Storage and one instance's tabs, presses the bar's 'Export .xlsx' and 'Export CSV' on each and
+# Backups, Jobs, Storage, the Storage folder's Drives, DB Space and Files, the fleet Slow queries and one instance's tabs, presses the bar's 'Export .xlsx' and 'Export CSV' on each and
 # saves what downloads; each file is read back with python3's zipfile and csv and graded against the page it came
 # from, cell by cell for the colours. Needs go, psql, chromium, node, unzip and python3, the web bundle built with the
 # export wired into the bar (internal/web/dist/app.js carries 'Export .xlsx': `cd web && npm run build` after the
@@ -46,6 +46,11 @@
 #              plain is carried in the file by export.ts. Either way the value's colour = the judging cell's
 #   percent    Storage: every 'free' cell a number under numFmt 167 ('0.0#%') whose value is the screen's percent / 100;
 #              its CSV keeps the percent figure itself (12.5, not 0.125)
+#   drives     the Storage folder's grids at the root (task 176): Drives (its metrics grid, every status), DB Space and
+#              Files each show a grid with rows, named fleet_Drives_ / fleet_DB-Space_ / fleet_Files_, and are graded as
+#              every page here is (sheets, tables, colours, csv); Drives drawn with the status All and Toggle Metrics
+#              pressed, Files with the status All (read from the page); DB Space's allocated (GB) and used (GB) numbers
+#              in the workbook (no figure left as text; used's text only 'not read')
 #   library    when python3 has openpyxl, each workbook loads with it without an error, its tables counted; none = said
 #   tools      when the grid's menu carries the grid tools (ui.ts sends 'pgvigil:gridmenu'; not wired = said), on
 #              the fleet Backups grid: 'Copy the rows as HTML with the colours' puts a table on the clipboard whose
@@ -92,6 +97,7 @@ trap cleanup EXIT
 for t in go chromium node psql unzip python3 curl; do command -v $t >/dev/null || fail "$t is not on this machine"; done
 grep -q 'Export .xlsx' internal/web/dist/app.js || fail "the web bundle has no export button: wire exportButtons into the bar (main.ts) and run 'npm run build' in web/"
 grep -q 'tableParts' internal/web/dist/app.js || fail "the web bundle is older than the export's source (no Excel table writer in it): run 'npm run build' in web/"
+grep -q 'pgvigil.drivesMetrics' internal/web/dist/app.js || fail "the web bundle has no Storage folder pages (drives.ts not wired in main.ts): run 'npm run build' in web/"
 
 echo "== build and seed the demo into $DB, serve on 127.0.0.1:$PORT"
 CGO_ENABLED=0 go build -o "$WORK/pgvigil" ./cmd/pgvigil
@@ -148,7 +154,7 @@ const press = async (label, exts) => {
     const again = mine.filter(n => before[n] !== now[n]);
     if (again.length) throw new Error(`the download after ${label} replaced ${again[0]}: a page exported twice under one name (give the later visit another window, ?w=)`);
   }
-  throw new Error(`no ${exts.join(' or ')} downloaded after ${label}: ` + await ev(`document.querySelector('#bar .export [role=status]').textContent`));
+  throw new Error(`no ${exts.join(' or ')} downloaded after ${label} on ${await ev('location.hash')}: ` + await ev(`document.querySelector('#bar .export [role=status]').textContent`));
 };
 // what the screen shows of each grid, read as the export reads it: the header's words, and of every row drawn each
 // cell's words, the colour the screen gives it (a status cell, a badge or a dot in it, the page's own cell class) and
@@ -282,6 +288,14 @@ out.summary = await page('#/summary');
 out.backups = await page('#/backups');
 out.jobs = await page('#/jobs');
 out.storage = await page('#/storage');
+// the Storage folder's grids at the root (task 176): Drives as its metrics grid with every status, DB Space, Files
+await ev(`localStorage.setItem('pgvigil.drivesMetrics', '1'); localStorage.setItem('pgvigil.drivesStatus.folder', 'all'); localStorage.setItem('pgvigil.filesStatus.folder', 'all'); true`);
+// the state each page was drawn in (its status filter, the Drives metrics toggle), read after its export
+const STATE = `({ selects: [...document.querySelectorAll('main select')].map(s => s.id + '=' + s.value), metrics: [...document.querySelectorAll('main button')].find(b => b.textContent === 'Toggle Metrics')?.getAttribute('aria-pressed') ?? null })`;
+out.drives = await page('#/drives'); out.drives.state = await ev(STATE);
+out.dbspace = await page('#/dbspace'); out.dbspace.state = await ev(STATE);
+out.dbfiles = await page('#/dbfiles'); out.dbfiles.state = await ev(STATE);
+await ev(`['pgvigil.drivesMetrics', 'pgvigil.drivesStatus.folder', 'pgvigil.filesStatus.folder'].forEach(k => localStorage.removeItem(k)); true`);
 out.tables = await page(`#/tables?i=${one.instance_id}`, ['total', 'table']);
 // the Roles tab: grids under h4 headings (the privilege grids)
 out.roles = await page(`#/roles?i=${one.instance_id}`);
@@ -435,7 +449,7 @@ if want.startswith('fr'):
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
-for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname),
+for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('drives', 'Drives', 'fleet'), ('dbspace', 'DB-Space', 'fleet'), ('dbfiles', 'Files', 'fleet'), ('tables', 'Tables', iname), ('roles', 'Roles', iname),
                        ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('db', 'Database', iname), ('empty', 'Tables', iname)):
     p = d[key]; gs = grids(p)
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
@@ -487,6 +501,22 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     if key == 'backups': check(any('archiver' in g['head'] for g in gs), "backups: the fleet grid with the 'archiver' column is on the page")
     if key == 'jobs': check(any('last run' in g['head'] for g in gs), "jobs: the fleet grid with the 'last run' column is on the page")
     if key == 'storage': check(any('free' in g['head'] for g in gs), "storage: the fleet grid with the 'free' column is on the page")
+    if key in ('drives', 'dbspace', 'dbfiles'):
+        # a backstop: a page with no grid fails in the driver first (the export finds nothing, press() names the page)
+        check(len(gs) >= 1 and sum(g['rows'] for g in gs) >= 1, f"{key}: the Storage folder's page shows {len(gs)} grid(s), {sum(g['rows'] for g in gs)} rows")
+        sel = (p.get('state') or {}).get('selects') or []
+        if key == 'drives': check('drv-status=all' in sel and p['state'].get('metrics') == 'true', f"drives: drawn as its metrics grid with every status ({p.get('state')})")
+        if key == 'dbfiles': check('files-status=all' in sel, f"dbfiles: drawn with every status ({p.get('state')})")
+        if key == 'dbspace':
+            # the GB columns are numbers in the workbook (the page shows the GB figure with fmtNum); a used cell left as
+            # text is only 'not read' (a PostgreSQL instance)
+            sx = z.read('xl/worksheets/sheet2.xml').decode(); g0 = gs[0]
+            check(g0['head'][1:3] == ['allocated (GB)', 'used (GB)'], f"dbspace: the grid's columns 2 and 3 are allocated (GB) and used (GB) ({g0['head'][:4]})")
+            alloc = [k for r, k in re.findall(r'<c r="B(\d+)"[^>]*?(/>|><v>|t="inlineStr")', sx) if r != '1']
+            check(len(alloc) == g0['rows'] and sum(k == '><v>' for k in alloc) >= 1 and not any(k == 't="inlineStr"' for k in alloc), f"dbspace: allocated (GB) numeric in {sum(k == '><v>' for k in alloc)} of {g0['rows']} rows, none as text")
+            used_text = re.findall(r'<c r="C(\d+)"[^>]*t="inlineStr"><is><t[^>]*>([^<]*)</t>', sx)
+            used_num = [r for r, k in re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', sx) if r != '1' and k == '><v>']
+            check(len(used_num) >= 1 and all(t in ('not read', '') for r, t in used_text if r != '1'), f"dbspace: used (GB) numeric in {len(used_num)} rows, its text cells only 'not read' ({sorted({t for r, t in used_text if r != '1'})[:3]})")
     if key == 'empty':
         check(gs[-1]['rows'] == 0 and len(gs) > 1 and gs[0]['rows'] > 0, f"empty: the last grid is filtered to no rows, the first keeps its rows ({[g['rows'] for g in gs]})")
         check(classed == 2, f"empty: the two cells that carry only a class of the page's own rule (crit, warn) are filled in their colours ({classed} cells)")
@@ -669,4 +699,4 @@ for L in en-US fr-FR; do
   fi
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; echo "kept in $PGVIGIL_EXPORT_OUT/$L"; }
 done
-echo "OK: ten pages exported to .xlsx and CSV in two languages, each file matching its page cell by cell (every grid with rows an Excel table)"
+echo "OK: thirteen pages exported to .xlsx and CSV in two languages, each file matching its page cell by cell (every grid with rows an Excel table)"

@@ -64,12 +64,13 @@ const (
 	indexNamesCap = 500
 )
 
-// indexLockDatabasesSQL: the databases the function is asked about, with what the name read needs (the name quoted
-// by the server, and whether the login can enter the database).
+// indexLockDatabasesSQL: the databases the function is asked about - the online ones the login can enter (without a
+// user there the function refuses with 297, as on Amazon RDS, whose master user cannot enter model) - with what the
+// name read needs (the name quoted by the server, and whether the login can enter the database).
 const indexLockDatabasesSQL = `SELECT CAST(d.database_id AS int) AS database_id, CAST(d.name AS nvarchar(128)) AS database_name,
   QUOTENAME(d.name) AS quoted_name, CAST(ISNULL(HAS_DBACCESS(d.name), 0) AS int) AS can_enter
 FROM sys.databases d
-WHERE d.state = 0
+WHERE d.state = 0 AND HAS_DBACCESS(d.name) = 1
 ORDER BY d.database_id`
 
 // indexLocksSQL: one database's rowsets with a lock wait or an escalation attempt. @db is the database's id. Object

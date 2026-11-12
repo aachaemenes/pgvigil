@@ -53,6 +53,7 @@ func TestHADRApplies(t *testing.T) {
 		{"mssql_mirroring", with(func(i *Info) { i.ViewServerState = false }), true, ""},
 		{"mssql_mirroring", with(func(i *Info) { i.Kind = KindAzureDB }), false, "Azure SQL Database"},
 		{"mssql_logshipping", with(func(i *Info) { i.MsdbAccess = false }), false, "msdb"},
+		{"mssql_logshipping", with(func(i *Info) { i.Kind = KindRDS }), false, "Amazon RDS"},
 		{"mssql_jobs", full, true, ""},
 		{"mssql_jobs", with(func(i *Info) { i.MsdbAccess = false }), false, "db_datareader"},
 		{"mssql_jobs", with(func(i *Info) { i.Kind = KindAzureDB }), false, "no SQL Server Agent"},

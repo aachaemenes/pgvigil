@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/aachaemenes/pgvigil/internal/alerts"
+	"github.com/aachaemenes/pgvigil/internal/reportmail"
 )
 
 // runAlerts is `pgvigil alerts -config f`: one pass of the alert channels the configuration's alerts: list names
@@ -29,6 +30,12 @@ func runAlerts(ctx context.Context, log *slog.Logger, args []string) error {
 	res, err := alerts.Once(ctx, dsn, chs)
 	if err != nil {
 		return err
+	}
+	// task 171: the report mails owed, mailed in the same pass on the same login
+	if mres, err := reportmail.OnceDSN(ctx, dsn, chs); err != nil {
+		log.Warn("report mail pass failed", "err", err)
+	} else if mres.Sent+mres.Failed > 0 {
+		fmt.Println("report mail: " + mres.String())
 	}
 	if len(chs) == 0 {
 		fmt.Println("alerts: no channel configured: nothing sent")

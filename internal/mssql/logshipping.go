@@ -21,6 +21,9 @@ func (logshippingCollector) Applies(info Info) (bool, string) {
 	switch {
 	case info.Kind == KindAzureDB:
 		return false, "Azure SQL Database has no log shipping"
+	case info.Kind == KindRDS:
+		// RDS's master user cannot grant msdb's log shipping tables either: the login could never read them
+		return false, "Amazon RDS for SQL Server has no log shipping"
 	case !info.MsdbAccess:
 		return false, "the login has no access to msdb (a user there with db_datareader)"
 	}

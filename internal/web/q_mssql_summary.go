@@ -18,6 +18,7 @@ WITH inst AS (
   VALUES ('blocking', ARRAY['mssql_requests']), ('events', ARRAY['mssql_xe']),
          ('availability', ARRAY['mssql_ag', 'mssql_mirroring', 'mssql_logshipping', 'mssql_replication']),
          ('backups', ARRAY['mssql_backups']), ('jobs', ARRAY['mssql_jobs']), ('storage', ARRAY['mssql_storage', 'mssql_versionstore']),
+         ('disk', ARRAY['mssql_storage']),
          ('uptime', ARRAY['mssql_instance']), ('dbstate', ARRAY['mssql_storage']),
          ('agent', ARRAY['mssql_services']), ('dbmail', ARRAY['mssql_services']), ('dumps', ARRAY['mssql_services']),
          ('qs', ARRAY['mssql_querystore']), ('audit', ARRAY['mssql_audit'])
@@ -49,7 +50,8 @@ WITH inst AS (
 ), f AS (
   SELECT instance_id, severity, setting, value, detail,
          CASE source WHEN 'mssql_running' THEN 'blocking' WHEN 'mssql_xe' THEN 'events' WHEN 'mssql_hadr' THEN 'availability'
-                     WHEN 'mssql_storage' THEN 'storage'
+                     -- a volume's free space is DBA Dash's Drive Space, its own column (task 176); the files and the log stay Storage
+                     WHEN 'mssql_storage' THEN CASE WHEN setting = 'a volume under 10 % free' THEN 'disk' ELSE 'storage' END
                      WHEN 'mssql_jobs' THEN CASE WHEN setting ILIKE '%backup%' OR value = 'mssql_backups' THEN 'backups' ELSE 'jobs' END END AS key
     -- the five SQL Server findings views themselves, as pgvigil.findings maps them (check_name = setting, object =
     -- value): a filter on the big view's source still scans every PostgreSQL arm of it
@@ -79,7 +81,7 @@ WITH inst AS (
          coalesce((array_agg(f.setting || coalesce(': ' || nullif(f.value, ''), '') || coalesce(' - ' || f.detail, '')
                              ORDER BY f.severity, f.setting) FILTER (WHERE f.instance_id IS NOT NULL))[1:12], '{}') AS detail
     FROM st LEFT JOIN f ON f.instance_id = st.instance_id AND f.key = st.key
-   WHERE st.key IN ('blocking', 'events', 'availability', 'backups', 'jobs', 'storage')
+   WHERE st.key IN ('blocking', 'events', 'availability', 'backups', 'jobs', 'storage', 'disk')
    GROUP BY st.instance_id, st.key
   UNION ALL
   -- uptime, DBA Dash's defaults: critical under 12 hours since the start, warning under 48; a start time ahead of

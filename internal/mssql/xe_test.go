@@ -142,8 +142,13 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 		if (form == XEFormServer) != strings.Contains(script, "package0.event_file") {
 			t.Errorf("%s: only the server form writes an event file", form)
 		}
-		if form != XEFormServer && !strings.Contains(script, "NOT PROVEN") {
-			t.Errorf("%s: the form is not marked not proven", form)
+		// the Managed Instance form is written from the documentation; the Azure SQL Database form is proven (scripts/proof-mssql-azuresqldb.sh)
+		if (form == XEFormAzureMI) != strings.Contains(script, "NOT PROVEN") {
+			t.Errorf("%s: only the Managed Instance form is marked not proven", form)
+		}
+		// Azure SQL Database has no server_principal_name action (Msg 25744): its form names the login by username
+		if (form == XEFormAzureDB) == strings.Contains(script, "server_principal_name") || (form == XEFormAzureDB) != strings.Contains(script, "sqlserver.username") {
+			t.Errorf("%s: the login's action is server_principal_name everywhere but Azure SQL Database, username there", form)
 		}
 	}
 	for _, ev := range xeAGEvents {

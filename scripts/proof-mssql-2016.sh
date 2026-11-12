@@ -53,7 +53,8 @@
 #     same read with GODEBUG=x509negativeserial=0 for that one call either passes or fails with exactly 'x509:
 #     negative serial number'; which, is recorded in the summary's row "certificate serial negative" (a record,
 #     never a verdict: the server draws the number). Any other failure of the control fails C.
-#  H. after the seed, msdb.dbo.sysjobhistory holds 60 rows or more and 'Database Mail XPs' is 1 in use.
+#  H. after the seed, msdb.dbo.sysjobhistory holds 60 rows or more and 'Database Mail XPs' is 1 in use; the database
+#     pgvv_qs_<n> (Query Store on, one-minute intervals, forty statements run and flushed) holds 1 or more runtime rows.
 #  K. every SQL Server collection of the collector (the names its collectors register, read from internal/mssql/*.go
 #     at run time, tests left out; fewer than 21 names, or a count that differs from the Register calls, ends the
 #     run before the server is touched, with exit 1 and one FAIL line), `collect -once <it>` as sa: exits 0, and no line it prints is an ERROR, carries the server's words
@@ -61,6 +62,14 @@
 #     function name', 'Incorrect syntax') or any server error ('mssql: <message> (<number>)': as sa, every server
 #     error is a finding); its row in collection_dates is ok, or skipped / partial with a note that is none of those
 #     (never error, never missing). Only the first collector error of a run reaches its note: the output is read too. A collection that fails K is the finding: its output names the statement.
+#     mssql_defaulttrace too: ok, also on a server whose rollover set holds an unreadable older file.
+#  Q. the Query Store wait time is not read on SQL Server 2016 (no wait statistics there): of pgvv_qs_<n>, K stored 1 or
+#     more runtime rows and 1 or more intervals with plans, and every wait_ms of them is NULL (never 0 ms).
+#  D. the default trace's files as sa reads them: the current file (sys.traces) and the up to four older ones that
+#     exist (xp_fileexist), each read alone (fn_trace_gettable); every older one that is no readable trace file (Msg
+#     567: the lab's setup stops the engine by force, which can leave the file of the run before it so) is named in
+#     the reader's note as skipped, and the reader's state is 'read'; with none, the note names no
+#     skipped file and the cell says so (the choice of the file to go on from is then proven by defaulttrace_test.go).
 #  T. the live tests of internal/mssql against the server as sa (`go test ./internal/mssql -run 'Live$'` with
 #     PGVIGIL_MSSQL_TEST_DSN): TestQueryRowsLive, TestRunningLive, TestHADRStatementsLive (every availability group,
 #     mirroring, log shipping, replication, job and backup statement compiled by the server under SET NOEXEC ON, and
@@ -79,7 +88,7 @@
 #      near 'WAIT_STATS_CAPTURE_MODE'"), and it reads the 2017 wait statistics in its own comparisons.]
 #  S. proof-mssql-summary.sh (no SQL Server) exits 0, once.
 #  The last line is "proof-mssql-2016: PASS (<build>; <n> proofs, <m> not proven on one node, <k> collections,
-#  summary once; logs in <folder>)" and the exit code 0 only when P, C, H, K, T, R and S hold; else the failed cells
+#  summary once; logs in <folder>)" and the exit code 0 only when P, C, H, K, Q, D, T, R and S hold; else the failed cells
 #  are listed, the last line says FAIL with their count and the exit code is 1. What a passed proof itself prints
 #  as SKIPPED, NOT RUN or NOT PROVEN stays so: those lines are listed under the matrix and kept in left-out.txt.
 #  NOT PROVEN HERE: an availability group on SQL Server 2016 (a Windows cluster's group), a second server for the
@@ -124,6 +133,7 @@ fi
 SUF=$RANDOM; RUN_LABEL="pgvigil.v16.run=$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 CT=pgv16sql-$SUF; TOOLS=pgv16tools-$SUF; INST=pgv16-$SUF
 REPO_DB=pgvigil_v16proof_$SUF; MADE_REPO=; MADE_TOOLS=; MADE_SEED=; MADE_WIA=; DBMAIL_OLD=; ADV_OLD=; MAILSTATE_OLD=
+QSDB=pgvv_qs_$SUF; MADE_QSDB=
 OUT=${PGVIGIL_2016_OUT:-$(mktemp -d)}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 WORK=$(mktemp -d)
 rm -f "$OUT/stop" "$OUT/summary.md" "$OUT/results.txt" "$OUT"/*.left-out.txt "$OUT/proof.pid"; : > "$OUT/results.txt"; mkdir -p "$OUT/sweep"
@@ -153,9 +163,10 @@ cleanup() {
       sqa "EXEC msdb.dbo.sysmail_stop_sp;" >/dev/null 2>&1 || echo "CLEANUP: Database Mail was not stopped again on the server" >&2
     fi
     if [ -n "$MADE_WIA" ]; then sqa "IF OBJECT_ID('master.dbo.sp_WhoIsActive', 'P') IS NOT NULL DROP PROCEDURE dbo.sp_WhoIsActive;" >/dev/null 2>&1 || echo "CLEANUP: sp_WhoIsActive was not dropped" >&2; fi
+    if [ -n "$MADE_QSDB" ]; then sqa "IF DB_ID(N'$QSDB') IS NOT NULL BEGIN ALTER DATABASE [$QSDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [$QSDB]; END;" >/dev/null 2>&1 || echo "CLEANUP: the database $QSDB was not dropped on the server" >&2; fi
   fi
   ids=$("$REAL_DOCKER" ps -aq --filter "label=$RUN_LABEL")
-  if [ -n "$ids" ]; then "$REAL_DOCKER" rm -f $ids >/dev/null 2>&1 || echo "CLEANUP: a container of this run was not removed (label $RUN_LABEL)" >&2; fi
+  if [ -n "$ids" ]; then "$REAL_DOCKER" rm -f -v $ids >/dev/null 2>&1 || echo "CLEANUP: a container of this run was not removed (label $RUN_LABEL)" >&2; fi
   if [ -n "$MADE_REPO" ]; then psql "$PGVIGIL_ADMIN_DSN dbname=postgres" -XAtq -c "drop database if exists $REPO_DB with (force)" >/dev/null 2>&1 || echo "CLEANUP: database $REPO_DB not dropped" >&2; fi
   rm -rf "$WORK"
   exit $rc
@@ -266,6 +277,25 @@ if [ -n "$WHOISACTIVE" ]; then
   fi
   [ "$(sqa "SELECT CASE WHEN OBJECT_ID('master.dbo.sp_WhoIsActive', 'P') IS NULL THEN 0 ELSE 1 END")" = 1 ] || { result setup FAIL $((SECONDS - t0)) "H: sp_WhoIsActive is not in master"; exit 1; }
 fi
+# Q's seed: a database with Query Store on and a few statements in it, flushed, so K's mssql_querystore has a store to read
+MADE_QSDB=1
+{ cat <<SQL
+CREATE DATABASE [$QSDB];
+ALTER DATABASE [$QSDB] SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, INTERVAL_LENGTH_MINUTES = 1, QUERY_CAPTURE_MODE = ALL);
+SQL
+} | sqin 2>&1 | mask >> "$OUT/h.log" || { result setup FAIL $((SECONDS - t0)) "Q: the Query Store database $QSDB (h.log)"; exit 1; }
+{ cat <<'SQL'
+SET NOCOUNT ON;
+CREATE TABLE dbo.pgvv_t (i int NOT NULL PRIMARY KEY, v int NOT NULL);
+INSERT dbo.pgvv_t (i, v) SELECT TOP (5000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)), 1 FROM sys.all_objects a CROSS JOIN sys.all_objects b;
+DECLARE @k int = 0, @n int;
+WHILE @k < 20 BEGIN SELECT @n = COUNT(*) FROM dbo.pgvv_t WHERE v = 1; SELECT @n = SUM(i) FROM dbo.pgvv_t WHERE i > @k; SET @k += 1; END;
+EXEC sys.sp_query_store_flush_db;
+SQL
+} | timeout 300 "$REAL_DOCKER" exec -i -e SQLCMDPASSWORD "$TOOLS" "$SQLCMD" -S "$SQLHOST" -U sa -C -b -I -d "$QSDB" -i /dev/stdin 2>&1 | mask >> "$OUT/h.log" \
+  || { result setup FAIL $((SECONDS - t0)) "Q: the statements in $QSDB (h.log)"; exit 1; }
+got=$(sqa "SELECT CAST((SELECT COUNT(*) FROM [$QSDB].sys.query_store_runtime_stats) AS varchar(12))")
+[ "${got:-0}" -ge 1 ] 2>/dev/null || { result setup FAIL $((SECONDS - t0)) "Q: $QSDB's store holds $got runtime rows after the flush (want 1 or more)"; exit 1; }
 result setup PASS $((SECONDS - t0)) "$(cat "$OUT/build.txt")"
 
 # K: every collection once, as sa
@@ -282,6 +312,51 @@ for c in $COLLECTIONS; do
     result "collect mssql_$c" FAIL $((SECONDS - t1)) "exit $crc: ${bad:-$state}"
   fi
 done
+
+# Q: the Query Store wait time is not read on 2016 (no wait statistics): K's stored rows of the seeded store say NULL
+t1=$SECONDS
+got=$(rq "select (select count(*) || '|' || count(r.wait_ms) from pgvigil.mssql_qs_runtime r join pgvigil.instances i using (instance_id) where i.name = '$INST' and r.database_name = '$QSDB') || '|' ||
+              (select count(v.plans) || '|' || count(v.wait_ms) from pgvigil.mssql_qs_interval v join pgvigil.instances i using (instance_id) where i.name = '$INST' and v.database_name = '$QSDB')" 2>/dev/null || true)
+IFS='|' read -r q_rt q_rtw q_iv q_ivw <<<"$got"
+if [ "${q_rt:-0}" -ge 1 ] 2>/dev/null && [ "$q_rtw" = 0 ] && [ "${q_iv:-0}" -ge 1 ] 2>/dev/null && [ "$q_ivw" = 0 ]; then
+  result "query store wait time" PASS $((SECONDS - t1)) "$q_rt runtime row(s) and $q_iv interval(s) with plans of $QSDB stored, every wait_ms NULL (not read)"
+else
+  result "query store wait time" FAIL $((SECONDS - t1)) "runtime rows|with wait_ms|intervals with plans|with wait_ms = ${got:-no answer} (want 1 or more|0|1 or more|0)"
+fi
+
+# D: the default trace's files, as sa: every older file of the set that exists and is no readable trace file is named in
+# the reader's note as skipped, and the read is 'read'; with none, the note names no skipped file
+t1=$SECONDS
+TRCUR=$(sqa "SELECT CAST(path AS nvarchar(260)) FROM sys.traces WHERE is_default = 1 AND path IS NOT NULL" 2>/dev/null | tr -d '\r' | head -1 || true)
+UNREAD=; READABLE=; WHYD=
+if [[ $TRCUR =~ ^(.*)_([0-9]+)\.trc$ ]]; then
+  stem=${BASH_REMATCH[1]}; num=${BASH_REMATCH[2]}
+  for k in 4 3 2 1; do
+    [ $((num - k)) -ge 1 ] || continue
+    f="${stem}_$((num - k)).trc"
+    ex=$(sqa "DECLARE @f TABLE (e int, d int, p int); INSERT @f EXEC master.dbo.xp_fileexist N'$f'; SELECT e FROM @f;" 2>/dev/null | tr -d '\r' | head -1 || true)
+    [ "$ex" = 1 ] || continue
+    if sqa "SELECT COUNT(*) FROM sys.fn_trace_gettable(N'$f', 1)" >/dev/null 2>&1; then READABLE="$READABLE ${f##*[\\/]}"; else UNREAD="$UNREAD|$f"; fi
+  done
+else
+  WHYD="sys.traces names no default trace file of the set's form: '$TRCUR'"
+fi
+DSTATE=$(rq "select s.state || '|' || coalesce(s.note, '') from pgvigil.mssql_reader_state s join pgvigil.instances i using (instance_id) where i.name = '$INST' and s.reader = 'defaulttrace'" 2>/dev/null || true)
+if [ -z "$WHYD" ] && [ "${DSTATE%%|*}" != read ]; then WHYD="the reader's state is '${DSTATE%%|*}' (want read): ${DSTATE#*|}"; fi
+if [ -z "$WHYD" ]; then
+  IFS='|' read -r -a unread_files <<<"${UNREAD#|}"
+  for f in "${unread_files[@]}"; do
+    [ -n "$f" ] || continue
+    printf '%s' "$DSTATE" | grep -qF "the trace file $f is not a readable trace file" || WHYD="$WHYD the unreadable $f is not named as skipped;"
+  done
+  if [ -z "$UNREAD" ] && printf '%s' "$DSTATE" | grep -q 'is not a readable trace file'; then WHYD="no unreadable older file, yet the note names one: ${DSTATE#*|}"; fi
+fi
+if [ -z "$WHYD" ]; then
+  if [ -n "$UNREAD" ]; then dsay="unreadable older file(s) skipped and named:$(printf '%s' "$UNREAD" | tr '|' '\n' | sed 's#.*[\\/]##' | tr '\n' ' ')"; else dsay="no unreadable older file on this server (nothing to skip)"; fi
+  result "default trace files" PASS $((SECONDS - t1)) "current ${TRCUR##*[\\/]}; readable older:${READABLE:- none}; $dsay"
+else
+  result "default trace files" FAIL $((SECONDS - t1)) "$WHYD"
+fi
 
 # T: the live tests of the package, as sa
 echo "--- T. the live tests of internal/mssql, as sa"
@@ -411,6 +486,8 @@ cell() { awk -F'|' -v step="$1" '$1 == step { print $2; found = 1 } END { if (!f
     s=${step/collect_mssql_/collect mssql_}; s=${s/live_tests/live tests}
     printf '| %s | %s |\n' "$s" "$(cell "$s")"
   done
+  printf '| query store wait time | %s |\n' "$(cell 'query store wait time')"
+  printf '| default trace files | %s |\n' "$(cell 'default trace files')"
   printf '| summary | %s |\n' "$SUMMARY"
 } > "$OUT/summary.md"
 cat "$OUT/summary.md"
