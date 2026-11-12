@@ -1,0 +1,119 @@
+diff --git i/scripts/proof-mssql-querystore.sh w/scripts/proof-mssql-querystore.sh
+index a04e682..2361ec2 100755
+--- i/scripts/proof-mssql-querystore.sh
++++ w/scripts/proof-mssql-querystore.sh
+@@ -375,7 +375,7 @@ GO
+ SQL
+ collect "$N" >/dev/null
+ RW="from=$T&to=$(date -u -d "$T + 5 minutes" +%FT%TZ)"
+-curl -fs "$U/mssql/querystore?instance=$iid&$RW&db=$DB1&part=regressed" > "$WORK/reg.json" || fail "D: the API's regressed part"
++curl -fs "$U/mssql/querystore?instance=$iid&$RW&db=$DB1&base=prev&part=regressed" > "$WORK/reg.json" || fail "D: the API's regressed part"
+ REG=$(objs "$WORK/reg.json" regressed | jq -c '[.[] | select(.object_name == "dbo.pv_reg")]')
+ echo "  regressed: $(echo "$REG" | jq -c '.[] | {query_id, plan_id, new_plan, executions, before_executions, duration_ratio, avg_duration_ms, before_avg_duration_ms}')"
+ [ "$(echo "$REG" | jq '[.[] | select(.new_plan == true and .executions == 50 and .before_executions == 50 and .duration_ratio >= 1.5)] | length')" = 1 ] \
+@@ -640,7 +640,7 @@ fi
+ 
+ echo "--- P. the API"
+ curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: the page's read"
+-[ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
++[ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,regressed_skipped,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
+ [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
+   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
+ # the wait time: NULL (the page says n/a) where the server keeps no wait statistics (before SQL Server 2017), a number from
+@@ -690,7 +690,7 @@ RH0=$(dq "select to_char(min(snapshot_at) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH
+ [ -n "$RH0" ] || fail "DEMO: no stored row of Sales' plan 12"
+ D1="from=$RH0&to=$(date -u -d "$RH0 + 2 hours" +%FT%TZ)"
+ curl -fs "$D/mssql/querystore?instance=$s1&$DW" > "$WORK/d.json" || fail "DEMO: the page's read"
+-curl -fs "$D/mssql/querystore?instance=$s1&$D1&part=regressed" > "$WORK/dr.json" || fail "DEMO: the regressed part"
++curl -fs "$D/mssql/querystore?instance=$s1&$D1&base=prev&part=regressed" > "$WORK/dr.json" || fail "DEMO: the regressed part"
+ echo "  sql01: top $(objs "$WORK/d.json" top | jq length), forced $(objs "$WORK/d.json" forced | jq length), tuning $(objs "$WORK/d.json" tuning | jq length), regressed (1 h) $(objs "$WORK/dr.json" regressed | jq length)"
+ [ "$(objs "$WORK/d.json" top | jq 'length >= 8')" = true ] || fail "DEMO: the top list has $(objs "$WORK/d.json" top | jq length) queries"
+ [ "$(objs "$WORK/dr.json" regressed | jq '[.[] | select(.database_name == "Sales" and .query_id == 1 and .plan_id == 12 and .new_plan == true and .duration_ratio >= 1.5)] | length')" = 1 ] \
+diff --git i/web/src/mssql_plancache.ts w/web/src/mssql_plancache.ts
+index fc7edfa..6901cfd 100644
+--- i/web/src/mssql_plancache.ts
++++ w/web/src/mssql_plancache.ts
+@@ -5,6 +5,7 @@
+ // /api/mssql/plancache; the route and the tab's entry are the shell's.
+ import { get, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
++import { compareSection } from './mssql_querystore';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+ 
+@@ -100,10 +101,17 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
+         { key: 'plans', label: 'plans', num: true },
+         { key: 'query_key', label: 'query hash' },
+         { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
++        // PerformanceMonitor's 'Hashes and handles' (D10, 0126): the statements cached at the last read
++        { key: 'plan_hash', label: 'plan hash (cached now)' },
++        { key: 'sql_handle', label: 'SQL handle (cached now)' },
++        { key: 'plan_handle', label: 'plan handle (cached now)' },
+       ];
++      const at = top.find(r => r.handles_at != null)?.handles_at;
+       out.push(el('p', { class: 'meta' }, `${top.length >= LIMIT ? `The ${fmtNum(LIMIT)} with the most CPU.` : `${fmtNum(top.length)} statements, the most CPU first.`} `
+-        + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled.`),
+-        grid(top, cols));
++        + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled. `
++        + `The hashes and handles are the query's statements in the cache at the last read${at ? ' (' + fmtTime(at) + ')' : ''}, one of each (PerformanceMonitor's): none for a query no longer cached.`),
++        grid(top, cols),
++        compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
+     }
+ 
+     const health = rowsOf(d.health);
+diff --git i/web/src/mssql_procs.ts w/web/src/mssql_procs.ts
+index 2cd5ee1..db18812 100644
+--- i/web/src/mssql_procs.ts
++++ w/web/src/mssql_procs.ts
+@@ -5,6 +5,7 @@
+ // /api/mssql/procs; the route and the tab's entry are the shell's.
+ import { get, Row, rowsOf, Table } from './api';
+ import { lineChart } from './chart';
++import { compareSection } from './mssql_querystore';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+ 
+@@ -48,6 +49,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
+         { key: 'logical_reads', label: 'logical reads', num: true },
+         { key: 'physical_reads', label: 'physical reads', num: true },
+         { key: 'logical_writes', label: 'writes', num: true },
++        { key: 'spills', label: 'spilled pages', num: true, fmt: v => v == null ? 'not read' : fmtNum(v) },
+       ], 'No read of this procedure in the range.'));
+       (drill.querySelector('h3') as HTMLElement).focus();   // the new block is announced and scrolled to
+     } catch (e) {
+@@ -124,6 +126,9 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
+       { key: 'avg_physical_reads', label: 'avg physical reads', num: true },
+       { key: 'logical_writes', label: 'writes', num: true },
+       { key: 'avg_logical_writes', label: 'avg writes', num: true },
++      // PerformanceMonitor's 'I/O and spills' (D10, 0126): total_spills, SQL Server 2016 SP2 / 2017 CU3 on
++      { key: 'spills', label: 'Total spilled pages', num: true, fmt: (v, r) => v == null ? 'not read' : Number(r.spill_reads) < Number(r.intervals) ? `${fmtNum(v)} (${fmtNum(r.spill_reads)} of ${fmtNum(r.intervals)} reads)` : fmtNum(v) },
++      { key: 'avg_spills', label: 'Avg spilled pages', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+       { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
+     ];
+     const cut = procs.length >= LIMIT;
+@@ -131,8 +136,10 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
+       el('p', { class: 'meta' }, 'Per second and per minute are over the seconds the range\'s reads cover '
+         + `(${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))}). A name opens that procedure read by read. `
+         + 'Max executions /min is the procedure\'s busiest single read. '
+-        + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it).'),
+-      grid(procs, cols));
++        + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it). '
++        + 'Spilled pages: "not read" where the server has no total_spills (before SQL Server 2016 SP2 and 2017 CU3) or the reads came before pgvigil stored it.'),
++      grid(procs, cols),
++      compareSection(ctx, 'procs', { db: database || undefined }));
+     body.replaceChildren(...out);
+   }
+ 
+diff --git i/web/src/router.ts w/web/src/router.ts
+index 87340b5..582c43f 100644
+--- i/web/src/router.ts
++++ w/web/src/router.ts
+@@ -186,7 +186,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
+   // the Query Store page's view, sort and database (mssql_querystore.ts) stay on its own links
+   if (keep && c.tab === 'mssqlqs') {
+     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+-    for (const k of ['qs', 'qo', 'qdb']) { const v = cur.get(k); if (v) q.set(k, v); }
++    for (const k of ['qs', 'qo', 'qdb', 'qb']) { const v = cur.get(k); if (v) q.set(k, v); }
+   }
+   // the Database info and drill-down pages keep their own parameters (db, rel, scheduler, job, idx) on a link to the
+   // same page, so a range change stays on the same database, table, job or index

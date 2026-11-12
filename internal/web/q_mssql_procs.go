@@ -22,6 +22,12 @@ import (
 //	  series      the window in about 120 steps (five minutes at least): executions per second, CPU ms per second
 //	              and duration ms per second over all procedures (db= keeps one database's)
 //	  intervals   with db_id= and object=: that procedure's own reads, newest first (1,000 at most)
+//	  compare, compare_windows   with compare=prev|day|week: PerformanceMonitor's compare of the window against
+//	              the same span earlier, and the two windows' reads (sqlMSSQLProcCompare)
+//
+// spills (0126): total_spills' pages over the window's reads that had the figure (spill_reads of intervals; none
+// at all = NULL: the server has no total_spills, SQL Server 2016 SP2 / 2017 CU3 on, or the reads came before
+// 0126); avg_spills over those reads' executions (PerformanceMonitor's Avg Spilled Pages, DarlingMcpDataTools.cs:1103).
 //
 // A figure is what ran between two reads. A procedure compiled, run and dropped from the plan cache between two
 // reads is in no read, and the executions of a plan the cache dropped since the read before are lost with it.
@@ -60,6 +66,8 @@ WITH dbn AS (` + procDBNames + `), cover AS (
          sum(s.executions)::bigint AS executions, sum(s.cpu_us)::bigint AS cpu_us, sum(s.duration_us)::bigint AS duration_us,
          sum(s.logical_reads)::bigint AS logical_reads, sum(s.physical_reads)::bigint AS physical_reads,
          sum(s.logical_writes)::bigint AS logical_writes, count(*) AS intervals, max(s.snapshot_at) AS last_seen,
+         sum(s.spills)::bigint AS spills, count(s.spills) AS spill_reads,
+         sum(s.executions) FILTER (WHERE s.spills IS NOT NULL) AS spill_executions,
          max(s.executions * 60.0 / nullif(s.interval_secs, 0)) AS max_executions_min   -- the busiest single read
     FROM pgvigil.mssql_proc_sample s
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
@@ -78,7 +86,8 @@ SELECT p.database_id, p.object_id, n.database, p.schema_name, coalesce(p.object_
        p.logical_reads, round(p.logical_reads::numeric / nullif(p.executions, 0), 1) AS avg_logical_reads,
        p.physical_reads, round(p.physical_reads::numeric / nullif(p.executions, 0), 1) AS avg_physical_reads,
        p.logical_writes, round(p.logical_writes::numeric / nullif(p.executions, 0), 1) AS avg_logical_writes,
-       p.intervals, p.last_seen
+       p.intervals, p.last_seen,
+       p.spills, round(p.spills::numeric / nullif(p.spill_executions, 0), 1) AS avg_spills, p.spill_reads
   FROM p JOIN dbn n ON n.database_id = p.database_id CROSS JOIN cover
  ORDER BY p.duration_us DESC, n.database, p.object_name NULLS LAST, p.object_id
  LIMIT 2000`
@@ -115,7 +124,7 @@ SELECT c.step AS snapshot_at, round((coalesce(w.executions, 0) / c.secs)::numeri
 
 // sqlMSSQLProcIntervals: one procedure's reads ($4 database id, $5 object id), newest first.
 const sqlMSSQLProcIntervals = `
-SELECT s.snapshot_at, s.interval_secs, s.executions, round(s.cpu_us / 1000.0, 1) AS cpu_ms, round(s.duration_us / 1000.0, 1) AS duration_ms,
+SELECT s.snapshot_at, s.interval_secs, s.executions, s.spills, round(s.cpu_us / 1000.0, 1) AS cpu_ms, round(s.duration_us / 1000.0, 1) AS duration_ms,
        round(s.duration_us / 1000.0 / nullif(s.executions, 0), 3) AS avg_duration_ms,
        round(s.cpu_us / 1000.0 / nullif(s.executions, 0), 3) AS avg_cpu_ms,
        s.logical_reads, s.physical_reads, s.logical_writes
@@ -123,6 +132,74 @@ SELECT s.snapshot_at, s.interval_secs, s.executions, round(s.cpu_us / 1000.0, 1)
  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.database_id = $4 AND s.object_id = $5
  ORDER BY s.snapshot_at DESC
  LIMIT 1000`
+
+// sqlMSSQLProcCompare: PerformanceMonitor's compare (top-compare.js, MIT, Erik Darling, Darling Data LLC) on the
+// procedures' stored reads, keyed by (database, object) as PerformanceMonitor's [database_name, full_name]: the
+// window ($2, $3) against the same span $5 seconds earlier, one read over every stored sample of both windows ($4
+// one database's id, NULL all). NEW: no run stored in the earlier window's reads; GONE: none in the window's (the
+// view counts per cached plan, so a procedure compiled, run and dropped between two reads is in neither). The union
+// of each window's first 100 by duration, NEW first, GONE last, then by the rise of the average duration.
+const sqlMSSQLProcCompare = `
+WITH cur AS (
+  SELECT s.database_id, s.object_id, max(s.database_name) AS database_name, max(s.schema_name) AS schema_name, max(s.object_name) AS object_name,
+         sum(s.executions) AS e, sum(s.duration_us) AS d, sum(s.cpu_us) AS c
+    FROM pgvigil.mssql_proc_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
+   GROUP BY 1, 2
+), bef AS (
+  SELECT s.database_id, s.object_id, max(s.database_name) AS database_name, max(s.schema_name) AS schema_name, max(s.object_name) AS object_name,
+         sum(s.executions) AS e, sum(s.duration_us) AS d, sum(s.cpu_us) AS c
+    FROM pgvigil.mssql_proc_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2::timestamptz - make_interval(secs => $5)
+     AND s.snapshot_at <= $3::timestamptz - make_interval(secs => $5) AND ($4::int IS NULL OR s.database_id = $4)
+   GROUP BY 1, 2
+), j AS (
+  SELECT coalesce(c.database_id, b.database_id) AS database_id, coalesce(c.object_id, b.object_id) AS object_id,
+         coalesce(c.database_name, b.database_name) AS database_name, coalesce(c.schema_name, b.schema_name) AS schema_name,
+         coalesce(c.object_name, b.object_name) AS object_name,
+         coalesce(c.e, 0) AS now_e, c.d AS now_d, c.c AS now_c, coalesce(b.e, 0) AS bef_e, b.d AS bef_d, b.c AS bef_c
+    FROM cur c FULL JOIN bef b ON b.database_id = c.database_id AND b.object_id = c.object_id
+), n AS (
+  SELECT j.*,
+         CASE WHEN j.now_e > 0 AND j.bef_e = 0 THEN 'new' WHEN j.now_e = 0 AND j.bef_e > 0 THEN 'gone' ELSE '' END AS status,
+         row_number() OVER (ORDER BY j.now_d DESC NULLS LAST, j.database_id, j.object_id) AS rn_now,
+         row_number() OVER (ORDER BY j.bef_d DESC NULLS LAST, j.database_id, j.object_id) AS rn_bef,
+         count(*) OVER () AS n_keys, count(*) FILTER (WHERE j.now_e > 0 AND j.bef_e > 0) OVER () AS n_both,
+         count(*) FILTER (WHERE j.now_e > 0 AND j.bef_e = 0) OVER () AS n_new, count(*) FILTER (WHERE j.now_e = 0 AND j.bef_e > 0) OVER () AS n_gone
+    FROM j
+)
+SELECT o.database_id, o.object_id, coalesce(o.database_name, 'database ' || o.database_id) AS database, o.schema_name,
+       coalesce(o.object_name, 'object ' || o.object_id) AS object_name, o.status,
+       o.now_e AS executions, o.bef_e AS before_executions,
+       round(o.now_d / 1000.0, 1) AS duration_ms, round(o.bef_d / 1000.0, 1) AS before_duration_ms,
+       round(o.now_d / 1000.0 / nullif(o.now_e, 0), 3) AS avg_duration_ms, round(o.bef_d / 1000.0 / nullif(o.bef_e, 0), 3) AS before_avg_duration_ms,
+       round(o.now_c / 1000.0 / nullif(o.now_e, 0), 3) AS avg_cpu_ms, round(o.bef_c / 1000.0 / nullif(o.bef_e, 0), 3) AS before_avg_cpu_ms,
+       round(100.0 * (o.now_e - o.bef_e) / nullif(o.bef_e, 0), 1) AS executions_pct,
+       round(100.0 * (o.now_d / nullif(o.now_e, 0) - o.bef_d / nullif(o.bef_e, 0)) / nullif(o.bef_d / nullif(o.bef_e, 0), 0), 1) AS avg_duration_pct,
+       round(100.0 * (o.now_c / nullif(o.now_e, 0) - o.bef_c / nullif(o.bef_e, 0)) / nullif(o.bef_c / nullif(o.bef_e, 0), 0), 1) AS avg_cpu_pct,
+       o.n_keys, o.n_both, o.n_new, o.n_gone
+  FROM n o
+ WHERE (o.rn_now <= 100 AND o.now_e > 0) OR (o.rn_bef <= 100 AND o.bef_e > 0)
+ ORDER BY CASE o.status WHEN 'new' THEN 0 WHEN 'gone' THEN 2 ELSE 1 END,
+          (o.now_d / nullif(o.now_e, 0) - o.bef_d / nullif(o.bef_e, 0)) / nullif(o.bef_d / nullif(o.bef_e, 0), 0) DESC NULLS LAST,
+          o.now_d DESC NULLS LAST, o.database_id, o.object_id`
+
+// sqlMSSQLProcCompareWindows: the two windows, the reads each holds and the seconds they cover, whether they
+// overlap, and the coverage word (as the plan cache's).
+const sqlMSSQLProcCompareWindows = `
+WITH w AS (
+  SELECT $2::timestamptz AS now_from, $3::timestamptz AS now_to,
+         $2::timestamptz - make_interval(secs => $4) AS before_from, $3::timestamptz - make_interval(secs => $4) AS before_to
+), c AS (
+  SELECT count(*) FILTER (WHERE r.snapshot_at > w.now_from AND r.snapshot_at <= w.now_to) AS now_reads,
+         count(*) FILTER (WHERE r.snapshot_at > w.before_from AND r.snapshot_at <= w.before_to) AS before_reads,
+         coalesce(sum(r.interval_secs) FILTER (WHERE r.snapshot_at > w.now_from AND r.snapshot_at <= w.now_to), 0)::float8 AS now_covered_secs,
+         coalesce(sum(r.interval_secs) FILTER (WHERE r.snapshot_at > w.before_from AND r.snapshot_at <= w.before_to), 0)::float8 AS before_covered_secs
+    FROM w LEFT JOIN pgvigil.mssql_proc_read r ON r.instance_id = $1 AND r.snapshot_at > least(w.now_from, w.before_from) AND r.snapshot_at <= w.now_to
+)
+SELECT w.now_from, w.now_to, w.before_from, w.before_to, $4::float8 < extract(epoch FROM w.now_to - w.now_from) AS overlap, c.*,
+       CASE WHEN c.before_reads = 0 THEN 'no baseline' WHEN c.before_covered_secs >= 0.9 * c.now_covered_secs THEN 'ok' ELSE 'partial' END AS coverage
+  FROM w CROSS JOIN c`
 
 // procStep: about 120 steps over the range, never finer than the collection's five minutes.
 func procStep(secs float64) int {
@@ -166,6 +243,14 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		{"totals", sqlMSSQLProcTotals, []any{id, from, to, database}},
 		{"procs", sqlMSSQLProcs, []any{id, from, to, database}},
 		{"series", sqlMSSQLProcSeries, []any{id, from, to, database, procStep(to.Sub(from).Seconds())}},
+	}
+	// the compare reads both windows: only when a shift is asked for (the page asks for it apart, part=compare)
+	if shift, on, err := compareShift(q.Get("compare"), from, to); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	} else if on {
+		parts = append(parts, part{"compare", sqlMSSQLProcCompare, []any{id, from, to, database, shift}},
+			part{"compare_windows", sqlMSSQLProcCompareWindows, []any{id, from, to, shift}})
 	}
 	if q.Get("db_id") != "" || q.Get("object") != "" {
 		dbID, err1 := strconv.Atoi(q.Get("db_id"))
