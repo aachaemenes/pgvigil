@@ -337,9 +337,11 @@ $$;
 
 -- The proc's findings over the stored reports, its check ids, groups and words (checks 1-10, 1000, 1001; its header
 -- row -1 and its closing row are its own). Ordered as it orders them: check, group, the rank within the group.
+-- enable_nestloop off for the call: the planner guesses a filter on a CTE at 0.5 % (122 rows of 24,480) and then re-ran the
+-- walk once per victim in nested loops - 12,240 reports took 57.7 s (proof run t177d-proof15, the pages' limit is 15 s)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_block_findings(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (check_id int, database_name text, object_name text, finding_group text, finding text, sort_order bigint)
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SET enable_nestloop = off AS $$
   WITH b AS (SELECT * FROM pgvigil.mssql_blocks(p_instance_id, p_from, p_to)),
   rcsi AS (
     SELECT o.database_name, o.options->>'rcsi' = 'on' AS on_
@@ -515,10 +517,12 @@ $$;
 -- and login / application / host of the direct blocker: the victim rows,
 -- each blocked transaction's longest wait counted once (as the proc's checks 1000 and 1001), the reports and the
 -- blocked transactions behind each; each dimension's 200 largest.
+-- enable_nestloop off for the call: the planner guesses a filter on a CTE at 0.5 % (122 rows of 24,480) and then re-ran the
+-- walk once per victim in nested loops - 12,240 reports took 57.7 s (proof run t177d-proof15, the pages' limit is 15 s)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_block_rollup(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (dimension text, database_name text, name text, reports bigint, blocked_sessions bigint, total_wait_ms bigint,
                longest_wait_ms bigint, first_at timestamptz, last_at timestamptz)
-LANGUAGE sql STABLE AS $$
+LANGUAGE sql STABLE SET enable_nestloop = off AS $$
   WITH b AS (SELECT * FROM pgvigil.mssql_blocks(p_instance_id, p_from, p_to)),
   -- each blocker's chain lead per monitor loop (the proc's #session_leads, as in mssql_block_findings): a victim's wait
   -- belongs to the top of its chain, not to a session in the middle that is itself blocked

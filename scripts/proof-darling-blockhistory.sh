@@ -51,9 +51,9 @@
 #     session, the object dbo.pgvb_t, the panels together as many reports as the store; shots of each page and of the
 #     first head's opened panel in both themes; the Running tab shows the snapshot at= names (the pair link's own, then
 #     the pairs' first snapshot by the same address).
-#  G. 6,120 reports seeded in a window of their own (one chain, 120 monitor loops, 50 readers behind a writer behind a
-#     head): mssql_block_rollup (one lead, the head, 51 blocked transactions) and mssql_block_findings each finish under
-#     the pages' statement_timeout of 15 s.
+#  G. reports seeded in a window of their own (one chain, 50 readers behind a writer behind a head, 51 reports a monitor
+#     loop): over 3,060, 6,120 and 12,240 of them mssql_block_rollup (one lead, the head, 51 blocked transactions) and
+#     mssql_block_findings each finish under the pages' settings (statement_timeout 15 s, jit off).
 # NOT PROVEN HERE: the checks this chain does not raise, whose rules are read and not run: a stored-procedure lead
 # resolved to schema.procedure (check 9 is raised for this ad hoc head, run 8), repeatable read (4), the sleeping, background, done, compile-lock
 # and application-lock groups of 6 (the head waits in a WAITFOR: suspended), the implicit-transaction and auto-stats groups of 7, non-lock reports (10); a page or
@@ -426,8 +426,10 @@ ATL=$(echo "$out" | grep '^at running ' || true)
 echo "ok   F: $ATL"
 echo "ok   F: both pages in light and dark (heads $NHALL, findings $NFALL, pairs $NPALL as the store), $(echo "$out" | grep -c '^click ') link(s) clicked, each landing named; shots in $SHOTS"
 echo "== G. the findings and the rollup over a seeded convoy, inside the pages' statement timeout =="
-# 120 monitor loops of one chain: head 51 <- writer 52 <- 50 readers (6,120 reports), in a window of its own after every
-# real report; the pages' pool runs with statement_timeout 15 s (internal/web/web.go)
+# 240 monitor loops of one chain: head 51 <- writer 52 <- 50 readers (51 reports a loop), in a window of its own after every
+# real report, read over its first 60, 120 and 240 loops (3,060, 6,120, 12,240 reports) with the pages' pool settings
+# (statement_timeout 15 s, jit off: internal/web/web.go); each of the three must finish with the head as the one lead.
+# PGVIGIL_G_EXPLAIN=1 also writes both functions' plans over the 12,240 (auto_explain, nested) to \$SHOTS/g-explain.txt.
 GFROM=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+2 hours'); GTO=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+3 hours')
 pq "SELECT pgvigil.mssql_event_partition('mssql_blocked_reports', '$GFROM'::timestamptz), pgvigil.mssql_event_partition('mssql_blocked_reports', '$GTO'::timestamptz)" >/dev/null
 pq "INSERT INTO pgvigil.mssql_blocked_reports (instance_id, event_at, event_key, snapshot_at, database_name, wait_resource, wait_ms, lock_mode,
@@ -441,12 +443,28 @@ pq "INSERT INTO pgvigil.mssql_blocked_reports (instance_id, event_at, event_key,
            CASE WHEN v = 0 THEN 51 ELSE 52 END, 0, CASE WHEN v = 0 THEN 'G HEAD STATEMENT' ELSE 'G WRITER' END, 'sa', 'g_h', 'G',
            'suspended', '0x0200', md5(CASE WHEN v = 0 THEN 'G HEAD STATEMENT' ELSE 'G WRITER' END), 1000000 + l, 900000 + v, l * 5000,
            'LOCK', 'product'
-      FROM generate_series(1, 120) l, generate_series(0, 50) v"
-gtime() { local t0 t1 res; t0=$(date +%s%N); res=$(PGOPTIONS='-c statement_timeout=15000' pq "$1" 2>&1) || { echo "ERR ${res//$'\n'/ }"; return 0; }; t1=$(date +%s%N); echo "$(( (t1 - t0) / 1000000 )) $res"; }
-read -r GMSR GLEAD <<<"$(gtime "SELECT count(*) FILTER (WHERE dimension = 'lead') || ':' || string_agg(CASE WHEN dimension = 'lead' THEN name || '|' || blocked_sessions || '|' || reports END, ',') FROM pgvigil.mssql_block_rollup($SB, '$GFROM', '$GTO')")"
-read -r GMSF GNF <<<"$(gtime "SELECT count(*) FROM pgvigil.mssql_block_findings($SB, '$GFROM', '$GTO')")"
+      FROM generate_series(1, 240) l, generate_series(0, 50) v"
+gtime() { local t0 t1 res; t0=$(date +%s%N); res=$(PGOPTIONS='-c statement_timeout=15000 -c jit=off' pq "$1" 2>&1) || { echo "ERR ${res//$'\n'/ }"; return 0; }; t1=$(date +%s%N); echo "$(( (t1 - t0) / 1000000 )) $res"; }
+GBAD=(); GMS=()
+for GN in 60 120 240; do
+  GTON="'$GFROM'::timestamptz + interval '$((GN * 5)) seconds'"
+  read -r GMSR GLEAD <<<"$(gtime "SELECT count(*) FILTER (WHERE dimension = 'lead') || ':' || string_agg(CASE WHEN dimension = 'lead' THEN name || '|' || blocked_sessions || '|' || reports END, ',') FROM pgvigil.mssql_block_rollup($SB, '$GFROM', $GTON)")"
+  read -r GMSF GNF <<<"$(gtime "SELECT count(*) FROM pgvigil.mssql_block_findings($SB, '$GFROM', $GTON)")"
+  echo "G: $((GN * 51)) reports: the rollup $GMSR ms ($GLEAD), the findings $GMSF ms ($GNF)"
+  [[ "$GMSR" =~ ^[0-9]+$ && "$GLEAD" == "1:G HEAD STATEMENT|51|$((GN * 51))" ]] || GBAD+=("the rollup over $((GN * 51)): '$GMSR $GLEAD'")
+  [[ "$GMSF" =~ ^[0-9]+$ && "$GNF" =~ ^[1-9][0-9]*$ ]] || GBAD+=("the findings over $((GN * 51)): '$GMSF $GNF'")
+  GMS+=("$((GN * 51)): rollup $GMSR ms, findings $GMSF ms")
+done
+if [[ "${PGVIGIL_G_EXPLAIN:-0}" == 1 ]]; then
+  PGOPTIONS='-c jit=off' psql "$PGDSN" -Xq -v ON_ERROR_STOP=1 >"$SHOTS/g-explain.txt" 2>&1 <<SQL || echo "G: the plans were not written (see $SHOTS/g-explain.txt)"
+LOAD 'auto_explain';
+SET auto_explain.log_min_duration = 0; SET auto_explain.log_analyze = on; SET auto_explain.log_buffers = on;
+SET auto_explain.log_nested_statements = on; SET client_min_messages = log;
+SELECT count(*) FROM pgvigil.mssql_block_rollup($SB, '$GFROM', '$GFROM'::timestamptz + interval '1200 seconds');
+SELECT count(*) FROM pgvigil.mssql_block_findings($SB, '$GFROM', '$GFROM'::timestamptz + interval '1200 seconds');
+SQL
+fi
 pq "DELETE FROM pgvigil.mssql_blocked_reports WHERE instance_id = $SB AND event_key LIKE 'pgvb-g-%'" >/dev/null
-[[ "$GMSR" =~ ^[0-9]+$ && "$GLEAD" == "1:G HEAD STATEMENT|51|6120" ]] || fail "G: the rollup over 6,120 reports: '$GMSR $GLEAD' (want under 15 s, one lead 'G HEAD STATEMENT' with 51 blocked transactions and 6120 reports)"
-[[ "$GMSF" =~ ^[0-9]+$ && "$GNF" =~ ^[1-9][0-9]*$ ]] || fail "G: the findings over 6,120 reports: '$GMSF $GNF' (want under 15 s, some findings)"
-echo "ok   G: 6,120 seeded reports (one chain, 120 monitor loops): the rollup in $GMSR ms (one lead, the head, 51 blocked transactions), the findings in $GMSF ms ($GNF), both under the pages' 15 s"
+(( ${#GBAD[@]} == 0 )) || fail "G: $(printf '%s; ' "${GBAD[@]}")(want each under the pages' 15 s: one lead 'G HEAD STATEMENT' with 51 blocked transactions and the window's reports, and some findings)"
+echo "ok   G: seeded reports (one chain, 51 a monitor loop; the pages' settings), each read under 15 s with one lead, the head, 51 blocked transactions: $(printf '%s; ' "${GMS[@]}")"
 echo "proof-darling-blockhistory: OK (the reports with sp_HumanEventsBlockViewer's columns; its findings equal over the same capture; the pairs equal to the store; system_health's blockingTasks stored without a capture; the pages and their links in Chromium)"
