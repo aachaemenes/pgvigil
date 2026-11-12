@@ -12,7 +12,10 @@ import (
 //
 // GET /api/mssql/running?instance=<id>&[from=&to=][&at=] (Server.MssqlRunning): the kept snapshots of the window
 // (the time slider's stops, a quiet minute included), and one snapshot in full: the newest at or before at (or the
-// window's end): its rows with the statement text and the handles as 0x text, and its blocking heads.
+// window's end): its rows with the statement text and the handles as 0x text, and its blocking heads. With
+// part=headshare alone: every head statement of the window with its share of the window's blocked wait (0114's
+// mssql_head_share: 'lead' at 10 %, sp_HumanEventsBlockViewer's Top Lead Blocker rule); asked for apart, so the
+// snapshot and its slider never wait on (or fail with) a read of the whole window.
 // GET /api/mssql/waits?instance=<id>&[from=&to=] (Server.MssqlWaits): what the server waited on over the window
 // (the differences of sys.dm_os_wait_stats between reads), per wait type and over time. The waits of idle
 // background work (is_benign) are listed after the real ones and left out of the shares and the chart.
@@ -60,6 +63,12 @@ SELECT b.snapshot_at, b.head_session_id, b.victims, b.longest_wait_ms, b.in_snap
    AND b.snapshot_at = (SELECT max(s.snapshot_at) FROM pgvigil.mssql_requests_summary s WHERE s.instance_id = $1 AND s.snapshot_at <= $2)
  ORDER BY b.longest_wait_ms DESC NULLS LAST, b.head_session_id`
 
+// sqlMssqlHeadShare: the window's head statements, the largest blocked wait first (0114).
+const sqlMssqlHeadShare = `
+SELECT h.head_key, h.head_text_id, h.statement, h.full_chars, h.head_sessions, h.victims, h.blocked_wait_ms, h.range_blocked_wait_ms,
+       h.heads, h.share_pct, h.lead, h.snapshots, h.first_seen, h.last_seen, h.head_login, h.head_program, h.head_host, h.head_database, h.implicit
+  FROM pgvigil.mssql_head_share($1, $2, $3) h`
+
 // MssqlRunning serves /api/mssql/running.
 func (s *Server) MssqlRunning(w http.ResponseWriter, r *http.Request) {
 	id, from, to, err := params(r, true)
@@ -74,12 +83,16 @@ func (s *Server) MssqlRunning(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.multiPart(w, r, []part{
+	parts := []part{
 		{"state", sqlMssqlRunningState, []any{id, []string{"mssql_requests"}}},
 		{"snapshots", sqlMssqlSnapshots, []any{id, from, to}},
 		{"rows", sqlMssqlRunningRows, []any{id, at}},
 		{"blocking", sqlMssqlBlocking, []any{id, at}},
-	})
+	}
+	if r.URL.Query().Get("part") == "headshare" {
+		parts = append(parts, part{"headshare", sqlMssqlHeadShare, []any{id, from, to}})
+	}
+	s.multiPart(w, r, parts)
 }
 
 // sqlMssqlWaitEvents: every wait type of the window. pct is the share of the wait time of the real waits; a benign
