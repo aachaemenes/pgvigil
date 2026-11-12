@@ -1,8 +1,10 @@
 package collect
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,5 +127,19 @@ func TestStreakAfterRestart(t *testing.T) {
 	h.record("t2", "postgres", "activity", Result{Rows: 1}, now)
 	if b := h.take(); len(b.Streaks) != 0 {
 		t.Errorf("a second success was sent: %+v", b.Streaks)
+	}
+}
+
+// TestEmptyBeatJSON: a minute with nothing in it encodes its lists as [] (never null: the SQL reads them as arrays).
+func TestEmptyBeatJSON(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	body, err := json.Marshal(h.take())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"runs":[]`, `"load":[]`, `"streaks":[]`} {
+		if !strings.Contains(string(body), k) {
+			t.Errorf("%s not in %s", k, body)
+		}
 	}
 }

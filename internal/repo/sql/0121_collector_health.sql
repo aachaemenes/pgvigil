@@ -132,7 +132,7 @@ BEGIN
   INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist)
   SELECT p_minute, p_id, coalesce(nullif(r.engine, ''), 'postgres'), r.collection, r.runs, r.failures, r.rows, r.dur_sum, r.dur_max,
          ARRAY(SELECT jsonb_array_elements_text(r.hist)::int)
-    FROM jsonb_to_recordset(coalesce(p_beat->'runs', '[]')) AS r(engine text, collection text, runs int, failures int, rows bigint,
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(engine text, collection text, runs int, failures int, rows bigint,
                                                                   dur_sum bigint, dur_max int, hist jsonb)
   ON CONFLICT (minute, collector_id, engine, collection) DO UPDATE
      SET runs = collector_runs.runs + EXCLUDED.runs, failures = collector_runs.failures + EXCLUDED.failures,
@@ -141,7 +141,7 @@ BEGIN
          dur_hist = ARRAY(SELECT coalesce(a, 0) + coalesce(b, 0) FROM unnest(collector_runs.dur_hist, EXCLUDED.dur_hist) AS u(a, b));
   INSERT INTO pgvigil.collector_load (minute, instance_id, collector_id, attempts, opened, runs, failures, auth_failures)
   SELECT p_minute, i.instance_id, p_id, l.attempts, l.opened, l.runs, l.failures, l.auth
-    FROM jsonb_to_recordset(coalesce(p_beat->'load', '[]')) AS l(instance text, attempts int, opened int, runs int, failures int, auth int)
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'load') = 'array' THEN p_beat->'load' ELSE '[]'::jsonb END)) AS l(instance text, attempts int, opened int, runs int, failures int, auth int)
     JOIN pgvigil.instances i ON i.name = l.instance
   ON CONFLICT (minute, instance_id, collector_id) DO UPDATE
      SET attempts = collector_load.attempts + EXCLUDED.attempts, opened = collector_load.opened + EXCLUDED.opened,
@@ -149,7 +149,7 @@ BEGIN
          failures = collector_load.failures + EXCLUDED.failures, auth_failures = collector_load.auth_failures + EXCLUDED.auth_failures;
   INSERT INTO pgvigil.collector_streaks (instance_id, collection, fail_streak, last_error, last_run_at, failing_since)
   SELECT i.instance_id, s.collection, s.fails, nullif(s.error, ''), s.at, CASE WHEN s.fails > 0 THEN s.at END
-    FROM jsonb_to_recordset(coalesce(p_beat->'streaks', '[]')) AS s(instance text, collection text, fails int, error text, at timestamptz)
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'streaks') = 'array' THEN p_beat->'streaks' ELSE '[]'::jsonb END)) AS s(instance text, collection text, fails int, error text, at timestamptz)
     JOIN pgvigil.instances i ON i.name = s.instance
   ON CONFLICT (instance_id, collection) DO UPDATE
      SET fail_streak = EXCLUDED.fail_streak, last_error = EXCLUDED.last_error, last_run_at = EXCLUDED.last_run_at,
@@ -158,7 +158,7 @@ BEGIN
   INSERT INTO pgvigil.collector_beats (at, collector_id, mem_bytes, goroutines, repo_conns, repo_bytes, runs, failures, rows_written)
   SELECT now(), p_id, (p_beat->>'mem_bytes')::bigint, (p_beat->>'goroutines')::int, v_conns, pg_database_size(current_database()),
          coalesce(sum(r.runs), 0), coalesce(sum(r.failures), 0), coalesce(sum(r.rows), 0)
-    FROM jsonb_to_recordset(coalesce(p_beat->'runs', '[]')) AS r(runs int, failures int, rows bigint);
+    FROM jsonb_to_recordset((CASE WHEN jsonb_typeof(p_beat->'runs') = 'array' THEN p_beat->'runs' ELSE '[]'::jsonb END)) AS r(runs int, failures int, rows bigint);
   -- the history this file keeps: 8 days (the page reads 24 h and 7 days)
   DELETE FROM pgvigil.collector_beats WHERE at < now() - interval '8 days';
   DELETE FROM pgvigil.collector_runs WHERE minute < now() - interval '8 days';

@@ -226,7 +226,9 @@ func (h *Heartbeat) take() beat {
 	defer h.mu.Unlock()
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
-	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load)}
+	// empty lists as [] (a nil slice is JSON null, which jsonb_to_recordset refuses)
+	b := beat{MemBytes: ms.Sys, Goroutines: runtime.NumGoroutine(), Instances: len(h.load),
+		Runs: []beatRun{}, Load: []beatLoad{}, Streaks: []beatStreak{}}
 	for k, a := range h.runs {
 		b.Runs = append(b.Runs, beatRun{Engine: k[0], Collection: k[1], Runs: a.runs, Failures: a.failures, Rows: a.rows,
 			DurSum: a.durSum, DurMax: a.durMax, Hist: append([]int(nil), a.hist[:]...)})

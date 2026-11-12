@@ -77,7 +77,7 @@ CMD ["/lib/systemd/systemd"]
 EOF
   docker build -q -t "$IMG" "$WORK/img" >/dev/null || { echo "FAIL the systemd image did not build"; exit 1; }
 fi
-mkdir -p "$WORK/spool" "$WORK/spool2"; chmod 0777 "$WORK/spool" "$WORK/spool2"
+mkdir -p "$WORK/spool" "$WORK/spool2"; chmod 0755 "$WORK"; chmod 0777 "$WORK/spool" "$WORK/spool2"   # the service's user walks into the folder
 instances() { # $1 host, $2 port
   for n in 1 2 3 4; do printf '  - name: t%s\n    dsn: "host=%s port=%s user=l%s password=p%s dbname=db%s sslmode=disable"\n' "$n" "$1" "$2" "$n" "$n" "$n"; done
 }
@@ -210,7 +210,9 @@ for (const h of links) {
 line(links.length > 0 && landed === links.length, `links: ${landed} of ${links.length} landed (${[...new Set(links.map(h => h.split('?')[0]))].join(', ')})`);
 // the tree's node under Checks
 await go('#/summary');
-const tree = await ev(`(() => { const a = [...document.querySelectorAll('#tree a')].find(x => x.textContent.trim() === 'Collector'); if (!a) return ''; a.click(); return a.getAttribute('href'); })()`);
+const treeLink = `[...document.querySelectorAll('#tree a')].find(x => x.textContent.trim() === 'Collector')`;
+if (!(await ev(`!!${treeLink}`))) { await ev(`[...document.querySelectorAll('#tree .folder-name, #tree .folder-head')].find(x => x.textContent.trim().startsWith('Checks'))?.click(); true`); await sleep(400); }
+const tree = await ev(`(() => { const a = ${treeLink}; if (!a) return ''; a.click(); return a.getAttribute('href'); })()`);
 await sleep(300); await ready();
 line(tree !== '' && (await ev('location.hash')).startsWith('#/collector'), `the tree's Collector node (${tree}) lands on ${await ev('location.hash')}`);
 // the chart's menu
@@ -269,7 +271,7 @@ waitfor 150 "SELECT count(*) = 1 FROM pgvigil.collector_live" || true
 rm -f "$WORK"/spool/* "$WORK"/spool2/*
 docker exec "$SVC" systemctl stop pgvigil.service
 sleep 5
-st=$(api '' | jget collectors | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin) if x['host'] == 'pgvigil-svc'][0]; print(r['state'])")
+st=$(api '' | jget collectors | python3 -c "import json,sys; r=max((x for x in json.load(sys.stdin) if x['host'] == 'pgvigil-svc'), key=lambda x: x['started_at']); print(r['state'])")
 [[ "$st" == stopped ]] && ok "B stopped: the page says '$st' at once (a clean stop)" || fail "B stopped: the page says '$st'"
 if waitfor 600 "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_parent WHERE why = 'collector not seen' AND host = 'pgvigil-svc')"; then
   sleep 130   # serve's watchdog: its next minute
