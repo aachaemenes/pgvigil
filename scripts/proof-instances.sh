@@ -33,7 +33,11 @@
 #      interval, a new 'connect:' error and a 'server unreachable' finding; removed and added again while its server is
 #      still down -> the same; pg-never, added while its server is down and never collected -> its instances row at
 #      the add (active) and the same finding; sql-down (a SQL Server page instance on A's container, the last row: the
-#      container stopped) enabled while down -> the same through the SQL Server collector
+#      container stopped) enabled while down -> the same through the SQL Server collector; the join's w9e: pg-wrong
+#      added as sqlserver against a PostgreSQL port (never connects), removed (its row goes: no read reached it) and
+#      added again as postgres -> 200 and collected (finding 1); pg-plat added with platform onprem while nothing
+#      listens on its port, its server started -> first_seen at or after the start (finding 4); sql-never, a SQL
+#      Server page instance never collected (A's container stopped) -> its row at the add and 'server unreachable'
 #   L. the page on a serve with no UI login (-no-login, the join's w9c): the list renders read only, a plain note in the
 #      page's own words ('adding and changing instances needs the UI login: ...'), no error box, every control that
 #      writes disabled saying why on hover, the grids' filters still usable; an add through the API refused with the
@@ -57,7 +61,7 @@ ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
 IMG_SQL=mcr.microsoft.com/mssql/server:2022-latest
 IMG_PG=postgres:16
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-SQL=pgvin-sql-$SUF; PGA=pgvin-pga-$SUF; PGB=pgvin-pgb-$SUF; PGK=pgvin-pgk-$SUF; LBL=pgvigil-proof=s204
+SQL=pgvin-sql-$SUF; PGA=pgvin-pga-$SUF; PGB=pgvin-pgb-$SUF; PGK=pgvin-pgk-$SUF; PGP=pgvin-pgp-$SUF; LBL=pgvigil-proof=s204
 PGDB=pgv_in_$SUF; COL=pgv_incol_$SUF; USR=proofdba$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
@@ -74,7 +78,7 @@ cleanup() {
   [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
   [[ -n "$RUN2PID" ]] && kill "$RUN2PID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
-  for c in "$SQL" "$PGA" "$PGB" "$PGK"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
+  for c in "$SQL" "$PGA" "$PGB" "$PGK" "$PGP"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   psql "$ADMIN_DSN" -Xqc "DROP ROLE IF EXISTS $COL" >/dev/null 2>&1 || echo "CLEANUP: role $COL not dropped" >&2
   rm -rf "$TMPD"
@@ -477,7 +481,36 @@ T3=$(pq "SELECT now()")
 code=$(api POST admin/instances "$(js op=enable name=sql-down)"); [[ "$code" == 200 && "$(active sql-down)" == true ]] || fail "K: enable sql-down: $code, is_active $(active sql-down)"
 unreachable sql-down "$T3" "a SQL Server enabled while its server is down"
 code=$(api POST admin/instances "$(js op=remove name=sql-down)"); [[ "$code" == 200 ]] || fail "K: remove sql-down: $code"
-echo "ok   K: enabled while down, added again after a remove while down, added never collected (PostgreSQL), and a SQL Server enabled while down: each active at once and 'server unreachable' (critical) with a new connect error within one interval"
+# the join's w9e, finding 1: a page add that never connects left a row that kept its engine for good
+code=$(api POST admin/instances "$(js op=add name=pg-wrong engine=sqlserver host=127.0.0.1 port="$PA" auth=sql login=sa options=TrustServerCertificate=true password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-wrong as sqlserver: $code $(cat "$TMPD/ans.json")"
+T4=$(pq "SELECT now()")
+unreachable pg-wrong "$T4" "pg-wrong added as sqlserver against a PostgreSQL port"
+code=$(api POST admin/instances "$(js op=remove name=pg-wrong)"); [[ "$code" == 200 ]] || fail "K: remove pg-wrong: $code"
+[[ "$(pq "SELECT count(*) FROM pgvigil.instances WHERE name = 'pg-wrong'")" == 0 ]] || fail "K: pg-wrong's row (never read) is still there after its remove: $(pq "SELECT engine, is_active, server_version FROM pgvigil.instances WHERE name = 'pg-wrong'")"
+code=$(api POST admin/instances "$(js op=add name=pg-wrong engine=postgres host=127.0.0.1 port="$PA" dbname=postgres auth=password login=postgres password=@PG_PW)")
+[[ "$code" == 200 ]] || fail "K: pg-wrong added again as postgres: $code $(cat "$TMPD/ans.json") (want 200)"
+waitcol pg-wrong 120 "K"
+[[ "$(pq "SELECT engine || ' ' || is_active::text FROM pgvigil.instances WHERE name = 'pg-wrong'")" == "postgres true" ]] || fail "K: pg-wrong after its add as postgres: $(pq "SELECT engine, is_active FROM pgvigil.instances WHERE name = 'pg-wrong'")"
+code=$(api POST admin/instances "$(js op=remove name=pg-wrong)"); [[ "$code" == 200 ]] || fail "K: remove pg-wrong (postgres): $code"
+[[ "$(pq "SELECT count(*) || ' ' || bool_or(is_active)::text FROM pgvigil.instances WHERE name = 'pg-wrong'")" == "1 false" ]] || fail "K: pg-wrong, read once, must keep its row (history) at its remove: $(pq "SELECT count(*) FROM pgvigil.instances WHERE name = 'pg-wrong'")"
+echo "K: pg-wrong: added as sqlserver against a PostgreSQL port (unreachable), removed (its never-read row gone), added again as postgres -> 200 and collected; removed again after a read -> its row kept, inactive"
+# the join's w9e, finding 4: an explicit platform's first read moves first_seen (the Diff page's 'history from')
+PP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+code=$(api POST admin/instances "$(js op=add name=pg-plat engine=postgres host=127.0.0.1 port="$PP" dbname=postgres auth=password login=postgres platform=onprem password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-plat: $code $(cat "$TMPD/ans.json")"
+[[ "$(pq "SELECT platform || ' ' || (server_version IS NULL)::text FROM pgvigil.instances WHERE name = 'pg-plat'")" == "onprem true" ]] || fail "K: pg-plat's row at its add: $(pq "SELECT platform, server_version FROM pgvigil.instances WHERE name = 'pg-plat'")"
+sleep 2; TP=$(pq "SELECT now()")
+docker run -d --name "$PGP" --label "$LBL" --env-file "$TMPD/pg.env" -p "127.0.0.1:$PP:5432" "$IMG_PG" >/dev/null || fail "K: docker run pg-plat's server"
+waitcol pg-plat 180 "K"
+[[ "$(pq "SELECT (first_seen >= '$TP'::timestamptz)::text FROM pgvigil.instances WHERE name = 'pg-plat'")" == true ]] || fail "K: pg-plat (platform onprem) first read after $TP, but first_seen is $(pq "SELECT first_seen FROM pgvigil.instances WHERE name = 'pg-plat'") (the add's time)"
+code=$(api POST admin/instances "$(js op=remove name=pg-plat)"); [[ "$code" == 200 ]] || fail "K: remove pg-plat: $code"
+echo "K: pg-plat: added with platform onprem while nothing listened, its server started at $TP: first_seen $(pq "SELECT first_seen FROM pgvigil.instances WHERE name = 'pg-plat'") (moved to its first read)"
+# a SQL Server page instance never collected (A's container is stopped since sql-down): its row at the add, reported
+T5=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=add name=sql-never $SA_ password=@MON_PW)"); [[ "$code" == 200 ]] || fail "K: add sql-never: $code $(cat "$TMPD/ans.json")"
+[[ "$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'sql-never'")" == "true sqlserver auto" ]] || fail "K: sql-never's row at the add: [$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'sql-never'")]"
+unreachable sql-never "$T5" "a SQL Server page instance added while its server is down, never collected"
+code=$(api POST admin/instances "$(js op=remove name=sql-never)"); [[ "$code" == 200 ]] || fail "K: remove sql-never: $code"
+echo "ok   K: enabled while down, added again after a remove while down, added never collected (PostgreSQL and SQL Server), and a SQL Server enabled while down: each active at once and 'server unreachable' (critical) with a new connect error within one interval; a wrong engine removed and added again (200); an explicit platform's first_seen at its first read"
 echo "== L. the page on a serve with no UI login (-no-login): read only, a note, no error box; a write refused in the page's words =="
 PORTL=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); UL="http://127.0.0.1:$PORTL"
 (umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORTL" -no-login) >"$TMPD/serve-nl.log" 2>&1 & SRVLPID=$!
@@ -511,6 +544,12 @@ console.log(`enabled ${await ev(`[...document.querySelectorAll('main form button
 console.log(`filters ${await ev(`[...document.querySelectorAll('main .filter-btn')].filter(b => !b.disabled && (b.title ?? '').startsWith('Filter ')).length`)}`);
 console.log(`titles ${await ev(`[...new Set([...document.querySelectorAll('main button:disabled')].map(b => b.title))].join(' | ')`)}`);
 console.log(`rows ${await ev(`document.querySelectorAll('main table tbody tr').length`)}`);
+// a sort redraws a grid's rows through its columns' formats (the join's w9e, finding 5): each grid's first header
+// clicked, then the controls that write counted again
+console.log(`sorted ${await ev(`[...document.querySelectorAll('main table.grid thead tr:first-child th:first-child')].map(th => (th.click(), 1)).length`)}`);
+await sleep(500);
+console.log(`enabled2 ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled).length`)}`);
+console.log(`actions2 ${await ev(`document.querySelectorAll('main .actions button').length`)}`);
 ws.close(); process.exit(0);
 JS
 lout=$(node "$TMPD/l.mjs" "$CDP" "$UL/") || fail "L: the Chromium walk stopped: $lout"
@@ -519,6 +558,7 @@ echo "$lout" | grep -q '^ready true$' && echo "$lout" | grep -q '^errors 0$' && 
 [[ "$(echo "$lout" | sed -n 's/^filters //p')" -gt 0 ]] || fail "L: the grids' filters were disabled too (they only read)"
 echo "$lout" | grep -qF "note \"Read only: $NL.\"" && echo "$lout" | grep -qxF "titles $NL" || fail "L: the note or the hover words"
 [[ "$(echo "$lout" | sed -n 's/^rows //p')" -gt 0 ]] || fail "L: the list did not render"
+[[ "$(echo "$lout" | sed -n 's/^sorted //p')" -ge 1 && "$(echo "$lout" | sed -n 's/^actions2 //p')" -gt 0 ]] && echo "$lout" | grep -q '^enabled2 0$' || fail "L: after a sort of each grid a control that writes is enabled again, or no grid / action was redrawn (the join's w9e, finding 5)"
 kill "$SRVLPID" 2>/dev/null || true; SRVLPID=
-echo "ok   L: on -no-login the page lists the instances read only: the note 'Read only: $NL.', no error box, every control that writes disabled with those words on hover, the filters usable; an add refused 403 with them, nothing written"
+echo "ok   L: on -no-login the page lists the instances read only: the note 'Read only: $NL.', no error box, every control that writes disabled with those words on hover, still after a sort redraws each grid, the filters usable; an add refused 403 with them, nothing written"
 echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login, no error box; the NOT PROVEN lines above stand)"

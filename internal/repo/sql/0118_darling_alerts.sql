@@ -128,15 +128,30 @@ SELECT c.instance_id, 'critical', 'server unreachable', i.name, true, 'answering
    AND c.note LIKE 'connect: %';
 
 -- import_connect_failure: a collection that could not connect to its instance, recorded as that collection's error with
--- the note 'connect: <the driver's error>' (an instance with no row, or retired, is left alone: a file instance never
--- reached has no row; a page instance has its row from its add, 0122). The collector's door
--- (an import_ function: apply_roles makes it SECURITY DEFINER and the collector's).
-CREATE OR REPLACE FUNCTION pgvigil.import_connect_failure(p_name text, p_collection text, p_at timestamptz, p_duration_ms int, p_error text)
+-- the note 'connect: <the driver's error>'. An instance with no row - one of pgvigil.yaml never reached (its row is
+-- made at its first read that connects) - gets its row here with the configuration's engine, platform and tags, so
+-- it is reported as any instance that cannot be reached (the join's w9e, finding 7); not when the page removed the
+-- name in the last 5 minutes (a read in flight of a removed page instance). A retired row (is_active false: removed,
+-- disabled) is left alone. The collector's door (an import_ function: apply_roles makes it SECURITY DEFINER and the
+-- collector's).
+DROP FUNCTION IF EXISTS pgvigil.import_connect_failure(text, text, timestamptz, int, text);
+CREATE OR REPLACE FUNCTION pgvigil.import_connect_failure(p_name text, p_collection text, p_at timestamptz, p_duration_ms int, p_error text,
+                                                          p_engine text DEFAULT NULL, p_platform text DEFAULT NULL, p_tags text[] DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql AS $$
-DECLARE v_id int;
+DECLARE v_id int; v_active boolean;
 BEGIN
-  SELECT i.instance_id INTO v_id FROM pgvigil.instances i WHERE i.name = p_name AND i.is_active;
-  IF v_id IS NULL THEN RETURN; END IF;
+  SELECT i.instance_id, i.is_active INTO v_id, v_active FROM pgvigil.instances i WHERE i.name = p_name;
+  IF v_id IS NULL THEN
+    IF coalesce(p_engine, '') NOT IN ('postgres', 'sqlserver')
+       OR EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = p_name AND r.removed_at > now() - interval '5 minutes') THEN
+      RETURN;
+    END IF;
+    INSERT INTO pgvigil.instances (name, platform, engine, tags)
+    VALUES (p_name, coalesce(nullif(p_platform, ''), 'auto'), p_engine, coalesce(p_tags, '{}'))
+    ON CONFLICT (name) DO NOTHING;
+    SELECT i.instance_id, i.is_active INTO v_id, v_active FROM pgvigil.instances i WHERE i.name = p_name;
+  END IF;
+  IF v_id IS NULL OR NOT v_active THEN RETURN; END IF;
   PERFORM pgvigil.log_collection(v_id, p_collection, p_at, p_duration_ms, 'error', 'connect: ' || left(coalesce(nullif(p_error, ''), 'no reason given'), 2000));
 END $$;
 

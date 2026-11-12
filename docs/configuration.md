@@ -101,7 +101,7 @@ repository named under `dbadash:`, a server list file, a `pg_service.conf` and a
 marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
 15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
 checks until it is enabled. An instance enabled, or added (again), while its server is down is reported at its first
-read: 'server unreachable' and a failing collection, as for any instance that cannot be reached. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
+read: 'server unreachable' and a failing collection, as for any instance that cannot be reached; so is an instance of `pgvigil.yaml` whose server has never answered (its row is made at that first read, with the file's engine, platform and tags). Removing a page instance no read ever reached removes its row too, so the name can be added again with the other engine; an instance read once keeps its row and its history. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
 Linux and macOS so is a file only its owner may read (a server list is 0644), so no credential file is read into the
 page.
 

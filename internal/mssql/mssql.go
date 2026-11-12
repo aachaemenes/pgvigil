@@ -262,7 +262,7 @@ func RunOnce(ctx context.Context, log *slog.Logger, r *repo.Repo, in config.Inst
 		cerr := timeoutNote(sctx, limit, err)
 		if ctx.Err() == nil {
 			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), repoTimeout)
-			if lerr := r.LogConnectFailure(rctx, in.Name, name, start, time.Since(start), cerr); lerr != nil {
+			if lerr := r.LogConnectFailure(rctx, in.Name, config.EngineSQLServer, in.Platform, in.Tags, name, start, time.Since(start), cerr); lerr != nil {
 				log.Warn("the failed connect was not recorded", "instance", in.Name, "collection", name, "err", lerr)
 			}
 			rcancel()

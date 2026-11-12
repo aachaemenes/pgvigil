@@ -467,6 +467,23 @@ collect databases
 [[ $(rq "select count(*) from pgvigil.findings where setting = 'server unreachable' and instance_id = $DID") == 0 ]] || fail "F6: still unreachable after the server came back"
 clear_passes databases F6-up "$DKEY" "$DID"
 ok "F6: d30down unreachable ('${F6:0:160}') -> critical, sent; reachable again -> gone, the alert cleared"
+# F6b (the join's w9e, finding 7): a pgvigil.yaml instance whose server never answered, from its first read: its row
+# is made with the file's engine, platform and tags, and it is 'server unreachable' (critical) at that read; then it is
+# retired (is_active false) so the later rows read the fleet as before
+NEVERP=$(freeport)
+export D30_NEVER_DSN="$PGVIGIL_ADMIN_DSN dbname=$TGT host=127.0.0.1 port=$NEVERP connect_timeout=3"
+cat "$WORK/cfg.yaml" > "$WORK/cfg-never.yaml"
+printf '  - name: d30never\n    dsn: env:D30_NEVER_DSN\n    platform: onprem\n    tags: [d30:never]\n' >> "$WORK/cfg-never.yaml"
+[[ -z $(rq "select instance_id from pgvigil.instances where name = 'd30never'") ]] || fail "F6b: d30never has a row before its first read"
+"$WORK/pgvigil" collect -config "$WORK/cfg-never.yaml" -once databases > "$WORK/collect.never.log" 2>&1 || true
+NROW=$(rq "select engine || '|' || platform || '|' || array_to_string(tags, ',') || '|' || is_active || '|' || coalesce(server_version, 'none') from pgvigil.instances where name = 'd30never'")
+[[ $NROW == "postgres|onprem|d30:never|true|none" ]] || fail "F6b: d30never's row after its first read: '$NROW' (want postgres|onprem|d30:never|true|none): $(tail -3 "$WORK/collect.never.log")"
+NID=$(rq "select instance_id from pgvigil.instances where name = 'd30never'")
+F6B=$(rq "select severity || '|' || value || '|' || detail from pgvigil.findings where setting = 'server unreachable' and instance_id = $NID")
+[[ $F6B == critical\|d30never\|*"could not connect: "* && $(rq "select count(*) from pgvigil.collection_dates where instance_id = $NID and status = 'error' and note like 'connect: %'") -ge 1 ]] || fail "F6b: no 'server unreachable' for a yaml instance never reached: '$F6B'"
+rq "update pgvigil.instances set is_active = false where instance_id = $NID" >/dev/null
+[[ $(rq "select count(*) from pgvigil.findings where setting = 'server unreachable' and instance_id = $NID") == 0 ]] || fail "F6b: d30never retired is still said unreachable"
+ok "F6b: d30never (pgvigil.yaml, its server never up) at its first read: a row (postgres, onprem, d30:never, no version) and '${F6B:0:140}'; retired after"
 # F7 seeded: the runnable queue per scheduler over the last 5 minutes (three reads), 4 none / 10 warning / 20 critical
 R7=""
 for rq_ in 4 10 20; do

@@ -60,9 +60,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.admin_removed (
   removed_at  timestamptz NOT NULL DEFAULT now(),
   removed_by  text NOT NULL
 );
+-- It holds an insert too (the join's w9e, finding 1): a row never read is deleted at its remove, and a first read
+-- already in flight would insert it again, active.
 CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF NEW.is_active AND NOT OLD.is_active
+  IF NEW.is_active AND (TG_OP = 'INSERT' OR NOT OLD.is_active)
      AND (EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes')
           -- a page instance disabled in the last 5 minutes stays inactive against a run in flight (enable sets it
           -- active itself, in import_admin_instance); past that only a file instance of the name runs (the page's
@@ -75,13 +77,17 @@ END $$;
 DROP TRIGGER IF EXISTS admin_keep_removed ON pgvigil.instances;
 CREATE TRIGGER admin_keep_removed BEFORE UPDATE OF is_active ON pgvigil.instances
   FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
+DROP TRIGGER IF EXISTS admin_keep_removed_insert ON pgvigil.instances;
+CREATE TRIGGER admin_keep_removed_insert BEFORE INSERT ON pgvigil.instances
+  FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
 
--- a page instance's row made at its add (platform 'auto', no version: import_admin_instance) has its history from the
--- first read that connects: ensure_instance writes the version then, and first_seen moves to that read (the Diff
--- page's 'history from' reads it) - the join's review of fold 1, finding 3
+-- a page instance's row made at its add (no version: import_admin_instance) has its history from the first read that
+-- connects: ensure_instance writes the version then, and first_seen moves to that read (the Diff page's 'history
+-- from' reads it) - the join's review of fold 1, finding 3. Never read = no version, whatever the platform: the
+-- page's form sends one (onprem, rds, ...) - the join's w9e, finding 4
 CREATE OR REPLACE FUNCTION pgvigil.admin_first_read() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF OLD.platform = 'auto' AND OLD.server_version IS NULL AND NEW.server_version IS NOT NULL THEN
+  IF OLD.server_version IS NULL AND NEW.server_version IS NOT NULL THEN
     NEW.first_seen := now();
   END IF;
   RETURN NEW;
@@ -324,6 +330,15 @@ BEGIN
     INSERT INTO pgvigil.admin_removed (name, removed_at, removed_by) VALUES (v_name, p_at, v_user)
       ON CONFLICT (name) DO UPDATE SET removed_at = EXCLUDED.removed_at, removed_by = EXCLUDED.removed_by;
     UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
+    -- a row the add made and no read ever reached (no version, no SQL Server read, nothing but failed connects) goes
+    -- with the page's row, so the name can be added again with the other engine (the join's w9e, finding 1); its
+    -- 'connect:' rows go with it (ON DELETE CASCADE). A read in flight cannot make it again, active: admin_keep_removed
+    -- holds an insert for 5 minutes.
+    DELETE FROM pgvigil.instances i
+     WHERE i.name = v_name AND i.server_version IS NULL
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d WHERE d.instance_id = i.instance_id
+                        AND NOT (d.status = 'error' AND d.note LIKE 'connect: %'));
     UPDATE pgvigil.admin_proposals SET state = 'proposed', instance_name = NULL, decided_at = p_at, decided_by = v_user WHERE instance_name = v_name;
   ELSIF v_op = 'tested' THEN
     UPDATE pgvigil.admin_instances SET tested_at = p_at, tested_ok = (p_payload->>'ok')::boolean, tested_detail = left(p_payload->>'detail', 1000) WHERE name = v_name;
