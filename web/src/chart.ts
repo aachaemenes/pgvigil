@@ -119,6 +119,14 @@ const LINE_REACH = 4;
 const picked = new Map<string, Set<string>>();
 const pageScope = () => { const h = location.hash.split('?'), q = new URLSearchParams(h[1] ?? ''); for (const k of ['w', 'from', 'to']) q.delete(k); return h[0] + '?' + q; };
 
+// whenPlaced: fn once node is in the page, looked for frame by frame up to 20 s (past the server's 15 s statement
+// timeout): a page may place itself after a read of its own that follows its charts (drill.ts's database page, io.ts's
+// IO page); a node whose page was replaced never joins the page, and fn never runs
+function whenPlaced(node: Node, fn: () => void) {
+  const until = Date.now() + 20000;
+  const step = () => { if (node.isConnected) fn(); else if (Date.now() < until) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
 // lineChart draws one chart of the named series over snapshot_at.
 // stacked: the series are running totals (the caller sums them), drawn as filled bands from zero, each down to the
 // one below it (uPlot's bands), so a band's height is that series' share and the top line is the total.
@@ -133,9 +141,9 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   const box = el('div', { class: 'chart' }, el('h3', {}, title));
   if (rows.length < 2) {
     box.append(chartState('empty', rows.length ? 'Only one read in this window: a chart needs two.' : o.ownSpan ? 'No data in this span.' : undefined));
-    // a drag narrower than two reads leaves the charts empty: the way back stays (a frame later: a page may set the
-    // heading's words right after this returns)
-    requestAnimationFrame(() => { const r = zoomReset(); if (r && box.isConnected) box.querySelector('h3')?.append(' ', r); });
+    // a drag narrower than two reads leaves the charts empty: the way back stays (once the chart is in the page: a page
+    // may set the heading's words right after this returns, or place itself after a read of its own)
+    whenPlaced(box, () => { const r = zoomReset(); if (r) box.querySelector('h3')?.append(' ', r); });
     return box;
   }
   const xs = rows.map(r => new Date(String(r.snapshot_at)).getTime() / 1000);
@@ -208,12 +216,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   };
   let markState: { marks: FrameMark[] } = { marks: [] };
   const hiddenKey = pageScope() + '|' + title;
-  // size to the container once it is in the page: a page placed after a read of its own (a section read after its
-  // charts were made, the instance header) is waited for frame by frame, up to 20 s (past the server's 15 s statement
-  // timeout); a chart whose page was replaced never joins the page and stops there
-  const until = Date.now() + 20000;
-  const draw = () => {
-    if (!holder.isConnected) { if (Date.now() < until) requestAnimationFrame(draw); return; }
+  // size to the container once it is in the page (whenPlaced)
+  whenPlaced(holder, () => {
     opts.width = Math.max(300, holder.clientWidth || 560);
     // a panel that redraws itself (the Storage tab's days selector) leaves its old charts off the page: free them
     for (let i = live.length - 1; i >= 0; i--) if (!live[i].root.isConnected) live.splice(i, 1)[0].destroy();
@@ -273,8 +277,7 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
       }
       if (added.length) u.setData(u.data); else u.redraw(false, false);
     });
-  };
-  requestAnimationFrame(draw);
+  });
   return box;
 }
 

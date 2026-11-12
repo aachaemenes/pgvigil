@@ -25,7 +25,7 @@ import { Row, rowsOf, Table } from './api';
 import { AckData, ackDialog, ackHolds, checkAcks, endButton, loadAckSafe, writeButton } from './ack';
 import { Cell, cells, cellText, Fleet, fleet, groups, sinceState } from './fleet';
 import { Ctx, href } from './router';
-import { el, fmtTime } from './ui';
+import { el, fmtTime, pill } from './ui';
 
 export type Band = 'crit' | 'warn' | 'ok' | 'unknown';
 export interface Chip { key: string; label: string; value: string; detail: string; band: Band }
@@ -165,7 +165,7 @@ const bandBadge: Partial<Record<Band, string>> = { crit: 'CRIT', warn: 'WARN' };
 export function chipEl(c: Chip): HTMLElement {
   const b = bandBadge[c.band];
   return el('div', { class: `chip band-${bandClass(c.band)}`, role: 'group', 'aria-label': `${c.label}: ${c.value}${c.detail ? `, ${c.detail}` : ''}${b ? `, ${c.band === 'crit' ? 'critical' : 'warning'}` : ''}` },
-    el('div', { class: 'chip-label' }, c.label, b ? el('span', { class: `chip-badge ${bandClass(c.band)}`, 'aria-hidden': 'true' }, b) : null),
+    el('div', { class: 'chip-label' }, c.label, b ? hidden(pill(b, bandClass(c.band))) : null),
     el('div', { class: 'chip-value' }, c.value),
     c.detail ? el('div', { class: 'chip-detail' }, c.detail) : null);
 }
@@ -223,20 +223,24 @@ let silenced = new Set<number>();
 export const silencedSet = (): Set<number> => silenced;
 export async function refreshSilenced(): Promise<boolean> {
   const d = await loadAckSafe(['acks']);
+  if (d.acks === undefined) return false;   // a failed read keeps the set it had: no bell disappears on one bad read
   const next = new Set(rowsOf(d.acks ?? null).filter(r => r.live && r.kind === 'silence' && r.instance_id != null).map(r => Number(r.instance_id)));
   const changed = next.size !== silenced.size || [...next].some(x => !silenced.has(x));
   silenced = next;
   return changed;
 }
+// a pill beside a chip's label: the chip's own name already says the band
+function hidden(n: HTMLElement): HTMLElement { n.setAttribute('aria-hidden', 'true'); return n; }
 export const treeBell = (): HTMLElement => el('span', { class: 'silenced-bell', role: 'img', 'aria-label': 'Alerts silenced', title: 'Alerts silenced for this server' });
 
 // instanceFrame: one read for every instance page (main.ts): the header - the band dot and word (the Not OK reasons
 // its title), the freshness line ('Online · last collect <time> · N of M measured'), the silence, the six chips - and
 // the band's dot for the breadcrumb
-export async function instanceFrame(ctx: Ctx): Promise<{ header: HTMLElement; dot: HTMLElement } | null> {
+export async function instanceFrame(ctx: Ctx, fleetRead?: Promise<Fleet>): Promise<{ header: HTMLElement; dot: HTMLElement } | null> {
   if (!ctx.instance) return null;
   // the live read apart from the acknowledgements: one failing never takes the other with it
-  const [f, ad, lv] = await Promise.all([fleet(), loadAckSafe(['acks']), loadAckSafe(['live'], { instance: ctx.instance }) as Promise<Live>]);
+  // the fleet read the page's own render made (a Refresh's forced read: the header's band agrees with the tree's)
+  const [f, ad, lv] = await Promise.all([fleetRead ?? fleet(), loadAckSafe(['acks']), loadAckSafe(['live'], { instance: ctx.instance }) as Promise<Live>]);
   const r = f.instances.find(x => Number(x.instance_id) === ctx.instance);
   if (!r) return null;
   const live = rowsOf(lv.live ?? null).find(x => Number(x.instance_id) === ctx.instance);
@@ -250,7 +254,7 @@ export async function instanceFrame(ctx: Ctx): Promise<{ header: HTMLElement; do
   const redraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   const word = el('span', { class: `badge band-word ${b.cls}` }, b.word);
   if (b.reasons.length) word.title = b.reasons.join('\n');
-  const header = el('section', { class: 'inst-header', 'aria-label': `${String(r.name)}: ${b.word}` },
+  const header = el('section', { class: 'inst-header panel', 'aria-label': `${String(r.name)}: ${b.word}` },
     el('div', { class: 'inst-header-top' }, bandDot(b), ' ', el('a', { href: href(ctx, { tab: 'summary' }), class: 'inst-name' }, String(r.name)), ' ', word,
       silencedMark(live) ?? '', el('span', { class: `meta status-line${fr === 'awaiting' ? ' awaiting' : ''}` }, status),
       el('span', { style: 'margin-left:auto' }, silenceButton(ad, r, live, redraw))),

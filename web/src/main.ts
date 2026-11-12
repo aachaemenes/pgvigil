@@ -370,11 +370,14 @@ async function render(force = false) {
   }
 
   // the instance's header and its band's dot (task 177 D29), read beside the page; a failure there leaves them out
-  const frame = ctx.instance ? instanceFrame(ctx).catch(() => null) : Promise.resolve(null);
+  // one fleet read for the tree, the breadcrumb and the header (a Refresh forces it for all three)
+  const fleetRead = fleet(force);
+  fleetRead.catch(() => undefined);   // its failure is the tree's to show (below), never an unhandled rejection
+  const frame = ctx.instance ? instanceFrame(ctx, fleetRead).catch(() => null) : Promise.resolve(null);
   // the tree and the breadcrumb come from the fleet read; a failure there still shows the page
   const crumb = $('crumb');
   try {
-    const f = await fleet(force);
+    const f = await fleetRead;
     if (gen !== generation) return;
     updateTree(f, ctx);
     const inst = ctx.instance ? f.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
