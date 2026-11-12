@@ -353,7 +353,9 @@ export async function pgThresholdsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'warn_default', label: 'built in', fmt: (_v, r) => thresholdLine({ ...r, warn: r.warn_default, crit: r.crit_default, level: 'default' }) },
       { key: 'key', label: 'root', fmt: (v, r) => {
         const own = rows.find(x => x.key === v && x.level === 'root');
-        const b = el('button', { type: 'button', class: 'link', 'aria-label': `Change ${String(v)} at the root` }, own ? thresholdLine({ ...own, unit: r.unit, direction: r.direction }) : 'Set');
+        const txt = own ? thresholdLine({ ...own, unit: r.unit, direction: r.direction }) : 'Set';
+        // the accessible name starts with the visible text (WCAG 2.5.3, axe label-content-name-mismatch)
+        const b = el('button', { type: 'button', class: 'link', 'aria-label': `${txt}: change ${String(v)} at the root` }, txt);
         b.addEventListener('click', () => thresholdDialog(r, { level: 'root', where: 'the root (every instance)' }, own ? { ...own } : undefined, () => void draw()));
         return b;
       } },
