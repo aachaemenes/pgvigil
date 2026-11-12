@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,11 +20,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/term"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/repo"
@@ -36,6 +40,13 @@ import (
 //	pgvigil install   [-bin <path>] [-config <path>] [-user <account>] [-no-start]
 //	pgvigil install   -upgrade [-owner-dsn-file <path> | -owner-dsn-env <NAME>] [-dump <file> | -no-dump] [-pg-dump <path>]
 //	pgvigil uninstall [-config <path>] [-purge]
+//	pgvigil uninstall -all [-dry-run] [-drop-repository [-confirm-database <name>] [-owner-dsn-file <path>] [-dump <file> | -no-dump]]
+//
+// uninstall -all (docs/uninstall.md) removes everything of pgvigil on this host in one order: every refusal first, the
+// service stopped, the repository (with -drop-repository: the database's name typed, no other collector or session on
+// it, a dump, DROP DATABASE, the pgvigil roles nothing else uses), the Windows app, the service definition, the
+// binaries, the configuration, the account the install made last. A refusal after the stop starts the collector again.
+// -dry-run lists every item, present, absent or kept and why; a second run ends 'nothing of pgvigil is left to remove'.
 //
 // install -upgrade (the offline installers call it, docs/upgrade.md) upgrades the installed collector to this binary in
 // the order upgrade.md gives: every refusal first (the installed service's own paths and account, the repository
@@ -69,6 +80,11 @@ type installOptions struct {
 	NoDump       bool   // no dump: the operator's word that the way back is not wanted
 	PgDump       string // pg_dump to use (default: the one on PATH)
 
+	All             bool   // uninstall: everything of pgvigil on this host (docs/uninstall.md)
+	DryRun          bool   // uninstall -all: list every item and what would be done, change nothing
+	DropRepository  bool   // uninstall -all: drop the repository database and the pgvigil roles too
+	ConfirmDatabase string // uninstall -all -drop-repository: the database's name, for a run without a terminal
+
 	set map[string]bool // the flags named on the command line
 }
 
@@ -78,17 +94,24 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	fs.StringVar(&o.Bin, "bin", def.Bin, "path the binary is installed to")
 	fs.StringVar(&o.Config, "config", def.Config, "path of the configuration file")
 	fs.StringVar(&o.User, "user", def.User, "service account (Linux; install creates it as a system user when missing)")
+	// the repository owner's connection and the dump: -upgrade's (install) and -drop-repository's (uninstall -all)
+	with := "-upgrade"
 	if name == "install" {
 		fs.BoolVar(&o.NoStart, "no-start", false, "install and enable, but do not start the service")
 		fs.BoolVar(&o.Upgrade, "upgrade", false, "upgrade the installed collector: stop, dump, migrate, swap, start (docs/upgrade.md)")
-		fs.StringVar(&o.OwnerDSNEnv, "owner-dsn-env", "PGVIGIL_OWNER_DSN", "with -upgrade: the environment variable holding the repository owner's connection string")
-		fs.StringVar(&o.OwnerDSNFile, "owner-dsn-file", "", "with -upgrade: a file holding the repository owner's connection string (first line)")
-		fs.StringVar(&o.Dump, "dump", "", "with -upgrade: the dump file (default: "+dumpDirHint+")")
-		fs.BoolVar(&o.NoDump, "no-dump", false, "with -upgrade: take no dump (the way back then has no repository copy)")
-		fs.StringVar(&o.PgDump, "pg-dump", "", "with -upgrade: the pg_dump to use (default: the one on PATH)")
 	} else {
+		with = "-drop-repository"
 		fs.BoolVar(&o.Purge, "purge", false, "also remove the installer's files, their folder when empty, and the binary")
+		fs.BoolVar(&o.All, "all", false, "remove everything of pgvigil on this host: the service, the binaries, the configuration, the account the install made, the Windows app (docs/uninstall.md)")
+		fs.BoolVar(&o.DryRun, "dry-run", false, "with -all: list every item, present or absent, and what would be done; change nothing")
+		fs.BoolVar(&o.DropRepository, "drop-repository", false, "with -all: also drop the repository database and the pgvigil roles (the database's name typed, a dump first)")
+		fs.StringVar(&o.ConfirmDatabase, "confirm-database", "", "with -drop-repository: the repository database's name, for a run without a terminal")
 	}
+	fs.StringVar(&o.OwnerDSNEnv, "owner-dsn-env", "PGVIGIL_OWNER_DSN", "with "+with+": the environment variable holding the repository owner's connection string")
+	fs.StringVar(&o.OwnerDSNFile, "owner-dsn-file", "", "with "+with+": a file holding the repository owner's connection string (first line)")
+	fs.StringVar(&o.Dump, "dump", "", "with "+with+": the dump file (default: "+dumpDirHint+")")
+	fs.BoolVar(&o.NoDump, "no-dump", false, "with "+with+": take no dump (no copy of the repository is kept)")
+	fs.StringVar(&o.PgDump, "pg-dump", "", "with "+with+": the pg_dump to use (default: the one on PATH)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -97,16 +120,26 @@ func parseInstallArgs(name string, args []string, def installOptions) (installOp
 	}
 	o.set = map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { o.set[f.Name] = true })
+	ownerFlags := []string{"owner-dsn-env", "owner-dsn-file", "dump", "no-dump", "pg-dump"}
 	switch {
-	case !o.Upgrade:
-		for _, n := range []string{"owner-dsn-env", "owner-dsn-file", "dump", "no-dump", "pg-dump"} {
+	case name == "uninstall" && !o.All && (o.DryRun || o.DropRepository):
+		return o, errors.New("-dry-run and -drop-repository go with -all")
+	case name == "uninstall" && !o.DropRepository:
+		for _, n := range append(ownerFlags, "confirm-database") {
+			if o.set[n] {
+				return o, fmt.Errorf("-%s goes with -drop-repository only", n)
+			}
+		}
+	case name == "install" && !o.Upgrade:
+		for _, n := range ownerFlags {
 			if o.set[n] {
 				return o, fmt.Errorf("-%s goes with -upgrade only", n)
 			}
 		}
 	case o.NoStart:
 		return o, errors.New("-upgrade starts the service it stopped: -no-start does not go with it")
-	case o.NoDump && (o.set["dump"] || o.set["pg-dump"]):
+	}
+	if o.NoDump && (o.set["dump"] || o.set["pg-dump"]) {
 		return o, errors.New("-no-dump does not go with -dump or -pg-dump")
 	}
 	if o.User == "" {
@@ -131,6 +164,9 @@ func runUninstall(log *slog.Logger, args []string) error {
 	o, err := parseInstallArgs("uninstall", args, defaultInstallOptions())
 	if err != nil {
 		return err
+	}
+	if o.All {
+		return runUninstallAll(log, o)
 	}
 	return uninstallService(log, o)
 }
@@ -551,26 +587,37 @@ func upgradePreflight(log *slog.Logger, h *upgradeHooks, o installOptions) (*upg
 	if o.NoDump {
 		return p, nil
 	}
+	if err := dumpPreflight(h, o, p, fileSafe(version)); err != nil {
+		return nil, err
+	}
+	log.Debug("preflight done", "dump", p.dumpFile)
+	return p, nil
+}
+
+// dumpPreflight finds pg_dump (not older than the server), names the dump file (default: the platform's backup folder,
+// pgvigil-before-<what>-<UTC time>.dump) and checks the room for it; it makes nothing.
+func dumpPreflight(h *upgradeHooks, o installOptions, p *upgradePlan, what string) error {
+	var err error
 	p.pgDump = o.PgDump
 	if p.pgDump == "" {
 		if p.pgDump, err = exec.LookPath("pg_dump"); err != nil {
-			return nil, errors.New("no pg_dump on PATH: name one with -pg-dump <path> (its major version at least the server's), or take no dump with -no-dump")
+			return errors.New("no pg_dump on PATH: name one with -pg-dump <path> (its major version at least the server's), or take no dump with -no-dump")
 		}
 	}
 	if p.pgDumpMajor, err = pgDumpMajor(p.pgDump); err != nil {
-		return nil, err
+		return err
 	}
 	if p.pgDumpMajor < p.serverMajor {
-		return nil, fmt.Errorf("%s is pg_dump %d and the repository's server is PostgreSQL %d: pg_dump refuses a server newer than itself; name a pg_dump %d or newer with -pg-dump, or take no dump with -no-dump", p.pgDump, p.pgDumpMajor, p.serverMajor, p.serverMajor)
+		return fmt.Errorf("%s is pg_dump %d and the repository's server is PostgreSQL %d: pg_dump refuses a server newer than itself; name a pg_dump %d or newer with -pg-dump, or take no dump with -no-dump", p.pgDump, p.pgDumpMajor, p.serverMajor, p.serverMajor)
 	}
 	p.dumpFile = o.Dump
 	if p.dumpFile == "" {
-		p.dumpFile = filepath.Join(h.dumpDir, fmt.Sprintf("pgvigil-before-%s-%s.dump", fileSafe(version), time.Now().UTC().Format("20060102T150405Z")))
+		p.dumpFile = filepath.Join(h.dumpDir, fmt.Sprintf("pgvigil-before-%s-%s.dump", what, time.Now().UTC().Format("20060102T150405Z")))
 	}
 	if p.dumpFile, err = filepath.Abs(p.dumpFile); err != nil {
-		return nil, err
+		return err
 	}
-	// only the default folder, or one this upgrade makes, is locked down; a folder the operator named (a home, /tmp)
+	// only the default folder, or one this run makes, is locked down; a folder the operator named (a home, /tmp)
 	// keeps its own owner and permissions and only the file is made the host owner's alone
 	if dd := filepath.Dir(p.dumpFile); samePath(dd, h.dumpDir) {
 		p.ownDumpDir = true
@@ -578,21 +625,20 @@ func upgradePreflight(log *slog.Logger, h *upgradeHooks, o installOptions) (*upg
 		p.ownDumpDir = true
 	}
 	if _, err := os.Stat(p.dumpFile); err == nil {
-		return nil, fmt.Errorf("the dump file %s is already there: name another with -dump", p.dumpFile)
+		return fmt.Errorf("the dump file %s is already there: name another with -dump", p.dumpFile)
 	}
 	// the room is read on the folder or, while it does not exist yet, on its nearest existing parent: the preflight
 	// makes nothing (the folder is made in the dump step, after the stop)
 	dir := existingParent(filepath.Dir(p.dumpFile))
 	free, err := h.freeBytes(dir)
 	if err != nil {
-		return nil, fmt.Errorf("free space in %s: %w", dir, err)
+		return fmt.Errorf("free space in %s: %w", dir, err)
 	}
 	// a custom-format dump is compressed and smaller than the database; the database's own size is the bound taken
 	if int64(free) < p.dbBytes {
-		return nil, fmt.Errorf("%s has %s free and the repository is %s: free some room or name another place with -dump", dir, humanBytes(int64(free)), humanBytes(p.dbBytes))
+		return fmt.Errorf("%s has %s free and the repository is %s: free some room or name another place with -dump", dir, humanBytes(int64(free)), humanBytes(p.dbBytes))
 	}
-	log.Debug("preflight done", "dump", p.dumpFile)
-	return p, nil
+	return nil
 }
 
 // ownerDSN is the repository owner's connection string: from -owner-dsn-file, else the variable -owner-dsn-env names.
@@ -613,7 +659,7 @@ func ownerDSN(o installOptions) (string, error) {
 		_ = os.Unsetenv(o.OwnerDSNEnv)
 		return v, nil
 	}
-	return "", fmt.Errorf("the repository owner's connection string is not given: put it in a file readable by root only and name it with -owner-dsn-file <path>, or set %s (sudo drops variables: use -owner-dsn-file or sudo --preserve-env=%s); the service's own login cannot migrate (docs/upgrade.md)", o.OwnerDSNEnv, o.OwnerDSNEnv)
+	return "", fmt.Errorf("the repository owner's connection string is not given: put it in a file readable by root only and name it with -owner-dsn-file <path>, or set %s (sudo drops variables: use -owner-dsn-file or sudo --preserve-env=%s); the service's own login can neither migrate nor drop the repository (docs/upgrade.md, docs/uninstall.md)", o.OwnerDSNEnv, o.OwnerDSNEnv)
 }
 
 // ownerFacts connects as the owner: the database, the server's major version, the size, and that this login may migrate.
@@ -979,4 +1025,763 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// --- uninstall -all (docs/uninstall.md)
+
+// removal is one thing of pgvigil on this host: what it is and where, whether it is there, and either why it stays
+// (named on every run) or how it goes. The platform lists them in the order they are removed.
+type removal struct {
+	what    string
+	present bool
+	kept    string       // why it stays ("" = removed when present)
+	remove  func() error // removes it (nil when absent or kept)
+}
+
+// keptErr is a removal that found its item must stay (a folder still holding other files, a group with members, a
+// service marked for deletion): the item is named as kept and the run goes on.
+type keptErr struct{ why string }
+
+func (e *keptErr) Error() string { return e.why }
+
+// foreignFiles are the names in dir that are not the installer's own (own); nil when dir is absent.
+func foreignFiles(dir string, own ...string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var other []string
+	for _, e := range entries {
+		if !slices.Contains(own, e.Name()) {
+			other = append(other, e.Name())
+		}
+	}
+	return other
+}
+
+// removeFolder removes the installer's own files from dir, then dir; a folder that still holds anything is kept and
+// named (never 'removed' while it is there).
+func removeFolder(dir string, own ...string) error {
+	if err := purgeFolder(slog.New(slog.DiscardHandler), dir, own...); err != nil {
+		return err
+	}
+	if left := foreignFiles(dir); len(left) > 0 {
+		return &keptErr{"it still holds " + strings.Join(left, ", ")}
+	}
+	return nil
+}
+
+// uninstallHooks are the platform's side of uninstall -all (Linux and Windows set them beside upgradeHooksOf).
+type uninstallHooks struct {
+	privileged func() error
+	running    func() bool                                     // the installed service runs (stopped first, started again after a refusal)
+	items      func(inst installOptions, found bool) []removal // everything after the repository, in the order removed
+	repoDSN    func(inst installOptions) string                // the repository connection string this host's config holds ("" when none)
+}
+
+var uninstallHooksOf *uninstallHooks
+
+// pgvigilGroups are the group roles the migrations create (cluster-wide: uninstall -drop-repository drops them only when
+// nothing else uses them).
+var pgvigilGroups = []string{"pgvigil_collector", "pgvigil_reader", "pgvigil_auth", "pgvigil_alerter"}
+
+// otherCollectorWait is how long the repository is watched for another collector's write after the local service
+// stopped: the shortest collection interval is a minute.
+var otherCollectorWait = 75 * time.Second
+
+// dropPlan is everything -drop-repository read before any change.
+type dropPlan struct {
+	dump      *upgradePlan // the owner's connection, the database, its size and server, the dump file and pg_dump
+	present   bool         // the database is there (a re-run after the drop finds the roles only)
+	dbOID     int64        // -1 when the database is gone
+	dbOwner   string
+	maint     string // the server's maintenance database the drop runs from
+	login     string // the role the owner's connection logs in as
+	loginSup  bool   // that role is a superuser (not named as kept)
+	hostLogin string // the login this host's configuration names
+	roles     []roleStep
+	sessions  []string // other sessions on the database at the preflight
+}
+
+// roleStep is one role of the cluster that the repository brought: dropped, or kept and why.
+type roleStep struct {
+	name  string
+	login bool
+	drop  bool
+	why   string
+}
+
+// roleFacts are what decides a role's step (read from pg_roles, pg_auth_members, pg_shdepend, pg_stat_activity).
+type roleFacts struct {
+	name        string
+	super       bool
+	canLogin    bool
+	memberOf    []string // the roles it is a member of
+	usedIn      string   // the databases (or shared objects) other than the repository that record it (pg_shdepend)
+	sessionsIn  string   // the databases other than the repository it has a session in
+	isConnected bool     // it is the role this uninstall connects as
+}
+
+// decideGroup: a pgvigil group is dropped unless something else holds it.
+func decideGroup(f roleFacts) roleStep {
+	s := roleStep{name: f.name}
+	var other []string
+	for _, m := range f.memberOf {
+		if !slices.Contains(pgvigilGroups, m) {
+			other = append(other, m)
+		}
+	}
+	switch {
+	case f.super:
+		s.why = "a superuser"
+	case f.isConnected:
+		s.why = "the role this uninstall connects as"
+	case len(other) > 0:
+		s.why = "a member of " + strings.Join(other, ", ")
+	case f.usedIn != "":
+		s.why = "used in " + f.usedIn + " (another repository or database)"
+	default:
+		s.drop, s.why = true, "a pgvigil group"
+	}
+	return s
+}
+
+// decideLogin: a member of the pgvigil groups is dropped only when it is the login this host's configuration names,
+// every group it is in is dropped, and nothing else records it or has a session as it; any other is listed.
+func decideLogin(f roleFacts, hostLogin string, dropped map[string]bool) roleStep {
+	s := roleStep{name: f.name, login: true}
+	var notDropped []string
+	for _, m := range f.memberOf {
+		if !dropped[m] {
+			notDropped = append(notDropped, m)
+		}
+	}
+	switch {
+	case f.isConnected:
+		s.why = "the role this uninstall connects as"
+	case f.super:
+		s.why = "a superuser"
+	case f.name != hostLogin:
+		s.why = "not the login this host's configuration names"
+	case len(notDropped) > 0:
+		s.why = "a member of " + strings.Join(notDropped, ", ") + ", which stay"
+	case f.usedIn != "":
+		s.why = "used in " + f.usedIn
+	case f.sessionsIn != "":
+		s.why = "it has a session in " + f.sessionsIn
+	default:
+		s.drop, s.why = true, "the login this host's configuration names"
+	}
+	return s
+}
+
+func runUninstallAll(log *slog.Logger, o installOptions) error {
+	h, uh := upgradeHooksOf, uninstallHooksOf
+	if h == nil || uh == nil {
+		return errors.New("uninstall -all runs on Linux and Windows, where the installers place the collector as a service")
+	}
+	if err := uh.privileged(); err != nil {
+		return fmt.Errorf("uninstall refused, nothing was changed: %w", err)
+	}
+	inst, found, err := h.installed()
+	if err != nil {
+		return fmt.Errorf("uninstall refused, nothing was changed: reading the installed service: %w", err)
+	}
+	if found {
+		for _, f := range []struct{ name, flag, installed string }{{"bin", o.Bin, inst.Bin}, {"config", o.Config, inst.Config}, {"user", o.User, inst.User}} {
+			if o.set[f.name] && !samePath(f.flag, f.installed) {
+				return fmt.Errorf("uninstall refused, nothing was changed: -%s %s disagrees with the installed service's %s: leave the flag out", f.name, f.flag, f.installed)
+			}
+		}
+	} else {
+		inst = o
+	}
+	var p *dropPlan
+	if o.DropRepository {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		p, err = dropPreflight(ctx, h, uh, o, inst)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("uninstall refused, nothing was changed: %w", err)
+		}
+	}
+	items := uh.items(inst, found)
+	todo := printUninstallPlan(o, inst, uh, p, items)
+	if o.DryRun {
+		fmt.Println("dry run: nothing was changed")
+		return nil
+	}
+	if todo == 0 {
+		fmt.Println("nothing of pgvigil is left to remove")
+		return nil
+	}
+	if p != nil && (p.present || slices.ContainsFunc(p.roles, func(r roleStep) bool { return r.drop })) {
+		if err := confirmDrop(o, p.dump.database); err != nil {
+			return fmt.Errorf("uninstall refused, nothing was changed: %w", err)
+		}
+	}
+	// an install at other paths than the defaults: once the service definition is gone, a re-run needs them named
+	again := ""
+	if def := defaultInstallOptions(); found && (!samePath(inst.Bin, def.Bin) || !samePath(inst.Config, def.Config) || inst.User != def.User) {
+		again = fmt.Sprintf(" with -bin %s -config %s -user %s", inst.Bin, inst.Config, inst.User)
+	}
+	stopped := false
+	var changing atomic.Bool // the drop or a removal has begun: an interrupt no longer starts the service again
+	dumping := ""            // the dump file while pg_dump writes it
+	var dumpMu sync.Mutex
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-sig:
+			if f := passFile.Load(); f != nil {
+				_ = os.Remove(*f)
+			}
+			dumpMu.Lock()
+			if dumping != "" {
+				_ = os.Remove(dumping)
+			}
+			dumpMu.Unlock()
+			if changing.Load() {
+				fmt.Fprintf(os.Stderr, "\ninterrupted while removing: what is left is listed by 'pgvigil uninstall -all -dry-run%s'; run the same command again\n", again)
+			} else if stopped {
+				if err := h.start(log); err != nil {
+					fmt.Fprintf(os.Stderr, "\ninterrupted before any change but the stop, and the service did not start again (%v): start it by hand\n", err)
+				} else {
+					fmt.Fprintln(os.Stderr, "\ninterrupted before any change but the stop: the service runs again")
+				}
+			}
+			os.Exit(130)
+		case <-done:
+		}
+	}()
+	if uh.running() {
+		if err := h.stop(log); err != nil {
+			return fmt.Errorf("stopping the service: %w (nothing else was changed)", err)
+		}
+		stopped = true
+		fmt.Println("stopped the service")
+	}
+	// a refusal after the stop starts the collector again: the host is as it was (but a dump already written)
+	dumped := ""
+	refuse := func(err error) error {
+		kept := "nothing else was changed"
+		if dumped != "" {
+			kept = "nothing else was changed but the dump " + dumped + " (kept; a re-run takes a new one: leave -dump out or name another file)"
+		}
+		if stopped {
+			if serr := h.start(log); serr != nil {
+				return fmt.Errorf("uninstall refused (%w), and the service did not start again (%v): start it by hand; %s", err, serr, kept)
+			}
+			return fmt.Errorf("uninstall refused, the service runs again, %s: %w", kept, err)
+		}
+		return fmt.Errorf("uninstall refused, %s: %w", strings.Replace(kept, "nothing else was", "nothing was", 1), err)
+	}
+	if p != nil {
+		if p.present {
+			ctx, cancel := context.WithTimeout(context.Background(), otherCollectorWait+60*time.Second)
+			err := repositoryInUse(ctx, p)
+			cancel()
+			if err != nil {
+				return refuse(err)
+			}
+			if p.dump.dumpFile != "" {
+				dumpMu.Lock()
+				dumping = p.dump.dumpFile
+				dumpMu.Unlock()
+				err := upgradeDump(h, p.dump)
+				dumpMu.Lock()
+				dumping = ""
+				dumpMu.Unlock()
+				if err != nil {
+					return refuse(fmt.Errorf("the dump: %w", err))
+				}
+				dumped = p.dump.dumpFile
+				fmt.Printf("dumped the repository to %s\n", p.dump.dumpFile)
+			}
+		}
+		changing.Store(true)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		err := dropRepository(ctx, p)
+		cancel()
+		if err != nil {
+			if p.present && errors.Is(err, errDropNotDone) {
+				changing.Store(false)
+				return refuse(err)
+			}
+			return fmt.Errorf("%w (run the same command again%s once it is fixed)", err, again)
+		}
+	}
+	changing.Store(true)
+	for _, it := range items {
+		if !it.present || it.kept != "" || it.remove == nil {
+			continue
+		}
+		if err := it.remove(); err != nil {
+			var k *keptErr
+			if errors.As(err, &k) {
+				fmt.Printf("kept: %s: %s\n", it.what, k.why)
+				continue
+			}
+			return fmt.Errorf("removing %s: %w (what is left is above; run the same command again%s once it is fixed)", it.what, err, again)
+		}
+		fmt.Println("removed:", it.what)
+	}
+	for _, it := range items {
+		if it.present && it.kept != "" {
+			fmt.Printf("kept: %s: %s\n", it.what, it.kept)
+		}
+	}
+	if p != nil && p.present && p.dump.dumpFile != "" {
+		fmt.Printf("kept: the dump %s: yours to keep or delete\n", p.dump.dumpFile)
+	}
+	fmt.Println("pgvigil is uninstalled from this host")
+	return nil
+}
+
+// printUninstallPlan prints every item, the repository's steps and the monitored servers' note; it returns how many
+// things would change.
+func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHooks, p *dropPlan, items []removal) int {
+	host, _ := os.Hostname()
+	if o.DryRun {
+		fmt.Printf("uninstall -all on %s, dry run (nothing is changed):\n", host)
+	} else {
+		fmt.Printf("uninstall -all on %s:\n", host)
+	}
+	todo := 0
+	line := func(state, what string) { fmt.Printf("  %-8s %s\n", state, what) }
+	for _, it := range items {
+		switch {
+		case !it.present:
+			line("absent", it.what)
+		case it.kept != "":
+			line("kept", it.what+": "+it.kept)
+		default:
+			line("remove", it.what)
+			todo++
+		}
+	}
+	fmt.Println("the repository:")
+	if p == nil {
+		dsn := uh.repoDSN(inst)
+		if _, cfg := fileExists(inst.Config); dsn == "" && !cfg {
+			line("absent", "a repository named by this host's configuration (-drop-repository with the owner's connection string drops one)")
+		} else {
+			db := "named in " + inst.Config
+			if c, err := pgx.ParseConfig(dsn); dsn != "" && err == nil {
+				db = fmt.Sprintf("%s on %s:%d", c.Database, c.Host, c.Port)
+			}
+			line("kept", "the repository database ("+db+") and the pgvigil roles: -drop-repository drops them")
+		}
+	} else {
+		d := p.dump
+		if p.present {
+			dump := "no dump (-no-dump): no copy of it is kept"
+			if d.dumpFile != "" {
+				dump = fmt.Sprintf("a dump first to %s (pg_dump %d)", d.dumpFile, d.pgDumpMajor)
+			}
+			line("remove", fmt.Sprintf("the database %s (%s, PostgreSQL %d, owner %s), from %s: %s", d.database, humanBytes(d.dbBytes), d.serverMajor, p.dbOwner, p.maint, dump))
+			todo++
+			for _, s := range p.sessions {
+				line("session", s+" (no session but this one may be connected at the drop; the local service stops first)")
+			}
+		} else {
+			line("absent", "the database "+d.database)
+		}
+		if len(p.roles) == 0 {
+			line("absent", "the pgvigil roles")
+		}
+		for _, r := range p.roles {
+			kind := "group"
+			if r.login {
+				kind = "login"
+			}
+			if r.drop {
+				line("remove", fmt.Sprintf("the %s role %s (%s)", kind, r.name, r.why))
+				todo++
+			} else {
+				line("kept", fmt.Sprintf("the %s role %s: %s; when nothing else uses it: DROP ROLE %s;", kind, r.name, r.why, pgx.Identifier{r.name}.Sanitize()))
+			}
+		}
+		if !p.loginSup && !slices.ContainsFunc(p.roles, func(r roleStep) bool { return r.name == p.login }) {
+			line("kept", fmt.Sprintf("the login role %s: the owner's login this uninstall connects as; afterwards, from another login, when nothing else uses it: DROP ROLE %s;", p.login, pgx.Identifier{p.login}.Sanitize()))
+		}
+	}
+	fmt.Println("the monitored servers: never touched here; their monitoring logins (pgvigil roles prints them: pgvigil_monitor, pgvigil_actions, pgvigil_explain) are dropped there by their owners")
+	return todo
+}
+
+// confirmDrop: the database's name typed at a terminal, or -confirm-database with that name; anything else refuses.
+func confirmDrop(o installOptions, database string) error {
+	if o.set["confirm-database"] {
+		if o.ConfirmDatabase != database {
+			return fmt.Errorf("-confirm-database %s is not the repository database's name %s", o.ConfirmDatabase, database)
+		}
+		return nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("-drop-repository drops the database %s: type its name at a terminal, or pass -confirm-database %s", database, database)
+	}
+	fmt.Printf("type the repository database's name (%s) to drop it with its roles: ", database)
+	typed, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if strings.TrimRight(typed, "\r\n") != database {
+		return fmt.Errorf("the name typed is not %s", database)
+	}
+	return nil
+}
+
+// dropPreflight reads the repository and the roles as the owner and decides every step; it changes nothing.
+func dropPreflight(ctx context.Context, h *upgradeHooks, uh *uninstallHooks, o installOptions, inst installOptions) (*dropPlan, error) {
+	dsn, err := ownerDSN(o)
+	if err != nil {
+		return nil, err
+	}
+	d := &upgradePlan{ownerDSN: dsn}
+	p := &dropPlan{dump: d, dbOID: -1}
+	if d.conn, d.password, err = splitPassword(dsn); err != nil {
+		return nil, err
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("the owner's connection string: %w", err)
+	}
+	d.database = cfg.Database
+	if c, err := pgx.ConnectConfig(ctx, cfg); err == nil {
+		p.present = true
+		var num int
+		var hasSchema, mayDrop bool
+		err = c.QueryRow(ctx, `SELECT current_database(), current_setting('server_version_num')::int, pg_database_size(current_database()),
+		  to_regclass('pgvigil.schema_version') IS NOT NULL, d.oid::int8, pg_get_userbyid(d.datdba),
+		  pg_has_role(current_user, d.datdba, 'USAGE') OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+		  FROM pg_database d WHERE d.datname = current_database()`).Scan(&d.database, &num, &d.dbBytes, &hasSchema, &p.dbOID, &p.dbOwner, &mayDrop)
+		_ = c.Close(context.WithoutCancel(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("reading the repository as its owner: %w", err)
+		}
+		d.serverMajor = num / 10000
+		if !hasSchema {
+			return nil, fmt.Errorf("the database %s holds no pgvigil schema: the owner's connection string names another database", d.database)
+		}
+		if !mayDrop {
+			return nil, fmt.Errorf("the owner's connection string logs in as a role that may not drop %s (owned by %s): name its owner's login or a superuser's", d.database, p.dbOwner)
+		}
+	} else if !sqlState(err, "3D000") {
+		return nil, fmt.Errorf("connecting with the owner's connection string: %w", err)
+	}
+	mc, err := connectMaint(ctx, cfg, p)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = mc.Close(context.WithoutCancel(ctx)) }()
+	var createRole bool
+	var num int
+	if err := mc.QueryRow(ctx, `SELECT current_user, rolsuper, rolcreaterole, current_setting('server_version_num')::int FROM pg_roles WHERE rolname = current_user`).Scan(&p.login, &p.loginSup, &createRole, &num); err != nil {
+		return nil, err
+	}
+	if d.serverMajor == 0 {
+		d.serverMajor = num / 10000
+	}
+	if !p.loginSup && !createRole {
+		return nil, fmt.Errorf("the owner's login %s may not drop roles (neither CREATEROLE nor a superuser): name a login that may", p.login)
+	}
+	if err := sameRepository(ctx, uh.repoDSN(inst), p); err != nil {
+		return nil, err
+	}
+	if p.roles, err = planRoles(ctx, mc, p); err != nil {
+		return nil, fmt.Errorf("reading the roles: %w", err)
+	}
+	if !p.loginSup && d.serverMajor >= 16 {
+		// from PostgreSQL 16 DROP ROLE needs ADMIN OPTION on the role as well as CREATEROLE (a role a superuser made
+		// gives the owner none): refused now, never after the database is gone
+		for _, r := range p.roles {
+			if !r.drop {
+				continue
+			}
+			var admin bool
+			if err := mc.QueryRow(ctx, `SELECT pg_has_role(current_user, $1, 'MEMBER WITH ADMIN OPTION')`, r.name).Scan(&admin); err != nil {
+				return nil, err
+			}
+			if !admin {
+				return nil, fmt.Errorf("on PostgreSQL %d DROP ROLE needs ADMIN OPTION on the role, and the owner's login %s holds none on %s: as a superuser, GRANT %s TO %s WITH ADMIN OPTION, INHERIT FALSE, SET FALSE; or name a superuser's login",
+					d.serverMajor, p.login, r.name, pgx.Identifier{r.name}.Sanitize(), pgx.Identifier{p.login}.Sanitize())
+			}
+		}
+	}
+	if p.present {
+		rows, err := mc.Query(ctx, `SELECT format('pid %s: %s from %s as %s', pid, coalesce(nullif(application_name, ''), '(no application name)'),
+		  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = $1 AND backend_type IS DISTINCT FROM 'autovacuum worker' ORDER BY pid`, d.database)
+		if err != nil {
+			return nil, err
+		}
+		if p.sessions, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			return nil, err
+		}
+		if !o.NoDump {
+			if err := dumpPreflight(h, o, d, "uninstall"); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return p, nil
+}
+
+// sameRepository holds the owner's connection to the repository this host's configuration names (hostDSN, "" when the
+// configuration names none): the same database name, and, while it exists, the same database on the same server (its
+// oid and the server's start time, read through both connections). It sets p.hostLogin.
+func sameRepository(ctx context.Context, hostDSN string, p *dropPlan) error {
+	if hostDSN == "" {
+		return nil
+	}
+	hc, err := pgx.ParseConfig(hostDSN)
+	if err != nil {
+		return fmt.Errorf("this host's repository connection string: %w", err)
+	}
+	p.hostLogin = hc.User
+	if hc.Database != p.dump.database {
+		return fmt.Errorf("the owner's connection string names the database %s and this host's configuration %s: name the owner's login to this host's repository", p.dump.database, hc.Database)
+	}
+	if !p.present {
+		return nil
+	}
+	ident := func(cfg *pgx.ConnConfig) (string, error) {
+		c, err := pgx.ConnectConfig(ctx, cfg)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
+		var id string
+		err = c.QueryRow(ctx, `SELECT (SELECT oid FROM pg_database WHERE datname = current_database())::text || '@' || pg_postmaster_start_time()::text`).Scan(&id)
+		return id, err
+	}
+	oc, err := pgx.ParseConfig(p.dump.ownerDSN)
+	if err != nil {
+		return err
+	}
+	ownerID, err := ident(oc)
+	if err != nil {
+		return err
+	}
+	hostID, err := ident(hc)
+	if err != nil {
+		return fmt.Errorf("this host's repository login cannot connect (%v): the drop cannot tell it is the same database; fix the configuration, or uninstall without -drop-repository and drop the repository by hand", err)
+	}
+	if ownerID != hostID {
+		return fmt.Errorf("the owner's connection reaches another database %s than this host's configuration (%s on %s:%d): name the owner's login to this host's repository", p.dump.database, hc.Database, hc.Host, hc.Port)
+	}
+	return nil
+}
+
+// connectMaint connects as the owner to the server's maintenance database (postgres, else template1): DROP DATABASE
+// runs from another database than the one it drops.
+func connectMaint(ctx context.Context, cfg *pgx.ConnConfig, p *dropPlan) (*pgx.Conn, error) {
+	var last error
+	for _, db := range []string{"postgres", "template1"} {
+		mc := cfg.Copy()
+		mc.Database = db
+		c, err := pgx.ConnectConfig(ctx, mc)
+		if err == nil {
+			p.maint = db
+			return c, nil
+		}
+		last = err
+	}
+	return nil, fmt.Errorf("connecting as the owner to the maintenance database (postgres or template1), where the drop runs from: %w", last)
+}
+
+func sqlState(err error, code string) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == code
+}
+
+// planRoles reads the pgvigil groups and their members and decides each one's step: logins first, then the groups.
+func planRoles(ctx context.Context, c *pgx.Conn, p *dropPlan) ([]roleStep, error) {
+	// from PostgreSQL 16 a CREATEROLE login that creates a role is given an ADMIN-only membership of it (no inherit, no
+	// SET ROLE): it uses nothing of the role, so it is no member here
+	inUse := ""
+	if p.dump.serverMajor >= 16 {
+		inUse = " AND (m.inherit_option OR m.set_option)"
+	}
+	facts := func(name string) (roleFacts, bool, error) {
+		f := roleFacts{name: name, isConnected: name == p.login}
+		var oid int64
+		err := c.QueryRow(ctx, `SELECT oid::int8, rolsuper, rolcanlogin FROM pg_roles WHERE rolname = $1`, name).Scan(&oid, &f.super, &f.canLogin)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return f, false, nil
+		}
+		if err != nil {
+			return f, false, err
+		}
+		rows, err := c.Query(ctx, `SELECT b.rolname::text FROM pg_auth_members m JOIN pg_roles b ON b.oid = m.roleid WHERE m.member = $1::oid`+inUse+` ORDER BY 1`, oid)
+		if err != nil {
+			return f, false, err
+		}
+		if f.memberOf, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			return f, false, err
+		}
+		// pg_shdepend is the cluster's record of a role's grants and ownerships per database; the repository's own rows
+		// (dbid = its oid, and a grant on the repository database itself) go with the drop
+		err = c.QueryRow(ctx, `SELECT coalesce(string_agg(DISTINCT coalesce(d.datname::text, d0.datname::text, 'a shared object'), ', '), '')
+		  FROM pg_shdepend s
+		  LEFT JOIN pg_database d ON d.oid = s.dbid
+		  LEFT JOIN pg_database d0 ON s.dbid = 0 AND s.classid = 'pg_database'::regclass AND d0.oid = s.objid
+		  WHERE s.refclassid = 'pg_authid'::regclass AND s.refobjid = $1::oid AND s.deptype <> 'p'
+		    AND s.dbid::int8 <> $2 AND NOT (s.dbid = 0 AND s.classid = 'pg_database'::regclass AND s.objid::int8 = $2)`, oid, p.dbOID).Scan(&f.usedIn)
+		if err != nil {
+			return f, false, err
+		}
+		err = c.QueryRow(ctx, `SELECT coalesce(string_agg(DISTINCT coalesce(datname::text, '(no database)'), ', '), '') FROM pg_stat_activity
+		  WHERE usename = $1 AND datname IS DISTINCT FROM $2`, name, p.dump.database).Scan(&f.sessionsIn)
+		return f, true, err
+	}
+	var groups []roleStep
+	dropped := map[string]bool{}
+	for _, g := range pgvigilGroups {
+		f, ok, err := facts(g)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		s := decideGroup(f)
+		dropped[g] = s.drop
+		groups = append(groups, s)
+	}
+	rows, err := c.Query(ctx, `SELECT DISTINCT r.rolname::text FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member
+	  JOIN pg_roles g ON g.oid = m.roleid WHERE g.rolname = ANY($1) AND NOT r.rolname = ANY($1)`+inUse+` ORDER BY 1`, pgvigilGroups)
+	if err != nil {
+		return nil, err
+	}
+	members, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	var steps []roleStep
+	for _, m := range members {
+		f, ok, err := facts(m)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			steps = append(steps, decideLogin(f, p.hostLogin, dropped))
+		}
+	}
+	return append(steps, groups...), nil
+}
+
+// repositoryInUse refuses the drop while another collector writes into the repository or another session is on it:
+// collection_dates' newest snapshot read now (the local service is stopped) and again otherCollectorWait later.
+func repositoryInUse(ctx context.Context, p *dropPlan) error {
+	c, err := pgx.Connect(ctx, p.dump.ownerDSN)
+	if err != nil {
+		return fmt.Errorf("connecting with the owner's connection string: %w", err)
+	}
+	defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
+	newest := func() (string, error) {
+		var s string
+		err := c.QueryRow(ctx, `SELECT coalesce(max(snapshot_at)::text, '') FROM pgvigil.collection_dates`).Scan(&s)
+		return s, err
+	}
+	before, err := newest()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("watching the repository for %s: a collector on another host writes within a minute\n", otherCollectorWait)
+	select {
+	case <-time.After(otherCollectorWait):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	after, err := newest()
+	if err != nil {
+		return err
+	}
+	if after != before {
+		return fmt.Errorf("another collector writes into %s (collection_dates' newest snapshot moved from %s to %s while this host's service was stopped): stop it, or point it at another repository, first", p.dump.database, before, after)
+	}
+	rows, err := c.Query(ctx, `SELECT format('pid %s: %s from %s as %s', pid, coalesce(nullif(application_name, ''), '(no application name)'),
+	  coalesce(client_addr::text, 'a local socket'), usename) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()
+	  AND backend_type IS DISTINCT FROM 'autovacuum worker' ORDER BY pid`)
+	if err != nil {
+		return err
+	}
+	others, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	// every backend on the database counts but an autovacuum worker (DROP DATABASE ends those by itself); a login that
+	// may not read another role's session sees its backend_type as NULL, and such a session counts too
+	if len(others) > 0 {
+		return fmt.Errorf("other sessions are connected to %s (a serve, Grafana, a psql): end them first; the drop never forces them off:\n  %s", p.dump.database, strings.Join(others, "\n  "))
+	}
+	return nil
+}
+
+// errDropNotDone marks a DROP DATABASE that did not happen: nothing but the dump has changed.
+var errDropNotDone = errors.New("the database was not dropped")
+
+// dropRepository drops the database from the maintenance database, then the roles one statement each.
+func dropRepository(ctx context.Context, p *dropPlan) error {
+	cfg, err := pgx.ParseConfig(p.dump.ownerDSN)
+	if err != nil {
+		return err
+	}
+	cfg.Database = p.maint
+	c, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		if p.present {
+			return fmt.Errorf("%w: connecting to %s: %v", errDropNotDone, p.maint, err)
+		}
+		return err
+	}
+	defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
+	if p.present {
+		if _, err := c.Exec(ctx, "DROP DATABASE "+pgx.Identifier{p.dump.database}.Sanitize()); err != nil {
+			var pe *pgconn.PgError
+			if errors.As(err, &pe) && pe.Code == "55006" {
+				// someone connected after the check: name every backend on the database, whatever its kind
+				var who []string
+				if rows, qerr := c.Query(ctx, `SELECT format('pid %s: %s, %s from %s as %s, %s', pid, backend_type, coalesce(nullif(application_name, ''), '(no application name)'),
+				  coalesce(client_addr::text, 'a local socket'), coalesce(usename::text, '(no user)'), coalesce(state, '(no state)')) FROM pg_stat_activity WHERE datname = $1 ORDER BY pid`, p.dump.database); qerr == nil {
+					who, _ = pgx.CollectRows(rows, pgx.RowTo[string])
+				}
+				return fmt.Errorf("%w: %s (%s); on the database now: %s", errDropNotDone, pe.Message, pe.Detail, strings.Join(who, "; "))
+			}
+			return fmt.Errorf("%w: %v", errDropNotDone, err)
+		}
+		fmt.Printf("dropped the database %s\n", p.dump.database)
+	}
+	var failed []string
+	for _, r := range p.roles {
+		if !r.drop {
+			continue
+		}
+		if _, err := c.Exec(ctx, "DROP ROLE IF EXISTS "+pgx.Identifier{r.name}.Sanitize()); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", r.name, err))
+			continue
+		}
+		fmt.Printf("dropped the role %s\n", r.name)
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("roles not dropped: %s", strings.Join(failed, "; "))
+	}
+	return nil
+}
+
+// pathWithout is the machine PATH without dir (compared without case and a trailing backslash); found says it was there.
+func pathWithout(path, dir string) (string, bool) {
+	norm := func(s string) string { return strings.ToLower(strings.TrimRight(strings.TrimSpace(s), `\`)) }
+	var keep []string
+	found := false
+	for _, e := range strings.Split(path, ";") {
+		if e != "" && norm(e) == norm(dir) {
+			found = true
+			continue
+		}
+		keep = append(keep, e)
+	}
+	return strings.Join(keep, ";"), found
 }

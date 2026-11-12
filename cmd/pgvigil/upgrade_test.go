@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +86,174 @@ func TestPreviousNameLinux(t *testing.T) {
 	}
 	if got := upgradeHooksOf.previous("/usr/local/bin/pgvigil"); got != "/usr/local/bin/pgvigil.previous" && !strings.HasSuffix(got, ".previous.exe") {
 		t.Errorf("got %q", got)
+	}
+}
+
+// uninstall -all's pure parts (task 203): the flags' rules, the role decisions, the plan and its order.
+
+func TestUninstallFlags(t *testing.T) {
+	def := installOptions{Bin: "/usr/local/bin/pgvigil", Config: "/etc/pgvigil/pgvigil.yaml", User: "pgvigil"}
+	for _, c := range []struct {
+		args []string
+		bad  string
+	}{
+		{[]string{"-all"}, ""},
+		{[]string{"-all", "-dry-run"}, ""},
+		{[]string{"-all", "-drop-repository", "-confirm-database", "pgvigil", "-owner-dsn-file", "/root/o.dsn", "-dump", "/root/x.dump"}, ""},
+		{[]string{"-all", "-drop-repository", "-no-dump"}, ""},
+		{[]string{"-purge"}, ""},
+		{[]string{"-dry-run"}, "go with -all"},
+		{[]string{"-drop-repository"}, "go with -all"},
+		{[]string{"-all", "-confirm-database", "pgvigil"}, "-confirm-database goes with -drop-repository only"},
+		{[]string{"-all", "-owner-dsn-file", "/root/o.dsn"}, "-owner-dsn-file goes with -drop-repository only"},
+		{[]string{"-purge", "-dump", "/root/x.dump"}, "-dump goes with -drop-repository only"},
+		{[]string{"-all", "-drop-repository", "-no-dump", "-dump", "/x"}, "-no-dump does not go with"},
+		{[]string{"-all", "-upgrade"}, "flag provided but not defined"},
+	} {
+		_, err := parseInstallArgs("uninstall", c.args, def)
+		switch {
+		case c.bad == "" && err != nil:
+			t.Errorf("%v: %v", c.args, err)
+		case c.bad != "" && (err == nil || !strings.Contains(err.Error(), c.bad)):
+			t.Errorf("%v: want an error with %q, got %v", c.args, c.bad, err)
+		}
+	}
+	// install keeps its own rules: the owner's flags go with -upgrade, -all is not an install flag
+	if _, err := parseInstallArgs("install", []string{"-dump", "/x"}, def); err == nil || !strings.Contains(err.Error(), "goes with -upgrade only") {
+		t.Errorf("install -dump without -upgrade: %v", err)
+	}
+	if _, err := parseInstallArgs("install", []string{"-all"}, def); err == nil {
+		t.Error("install -all was accepted")
+	}
+}
+
+func TestDecideGroup(t *testing.T) {
+	for _, c := range []struct {
+		f    roleFacts
+		drop bool
+		why  string
+	}{
+		{roleFacts{name: "pgvigil_reader"}, true, "a pgvigil group"},
+		{roleFacts{name: "pgvigil_reader", memberOf: []string{"pgvigil_auth"}}, true, "a pgvigil group"},
+		{roleFacts{name: "pgvigil_reader", memberOf: []string{"pg_monitor"}}, false, "a member of pg_monitor"},
+		{roleFacts{name: "pgvigil_reader", usedIn: "pgvigil_eu"}, false, "used in pgvigil_eu"},
+		{roleFacts{name: "pgvigil_reader", super: true}, false, "a superuser"},
+		{roleFacts{name: "pgvigil_reader", isConnected: true}, false, "the role this uninstall connects as"},
+	} {
+		s := decideGroup(c.f)
+		if s.drop != c.drop || !strings.Contains(s.why, c.why) {
+			t.Errorf("%+v: got drop %v (%s), want %v (%s)", c.f, s.drop, s.why, c.drop, c.why)
+		}
+	}
+}
+
+func TestDecideLogin(t *testing.T) {
+	all := map[string]bool{"pgvigil_collector": true, "pgvigil_reader": true, "pgvigil_auth": true, "pgvigil_alerter": true}
+	some := map[string]bool{"pgvigil_collector": true, "pgvigil_reader": false}
+	for _, c := range []struct {
+		f       roleFacts
+		dropped map[string]bool
+		drop    bool
+		why     string
+	}{
+		{roleFacts{name: "pgvigil_agent", memberOf: []string{"pgvigil_collector"}}, all, true, "the login this host's configuration names"},
+		{roleFacts{name: "pgvigil_ui", memberOf: []string{"pgvigil_reader"}}, all, false, "not the login this host's configuration names"},
+		{roleFacts{name: "pgvigil_agent", memberOf: []string{"pgvigil_collector", "pgvigil_reader"}}, some, false, "a member of pgvigil_reader, which stay"},
+		{roleFacts{name: "pgvigil_agent", memberOf: []string{"pgvigil_collector", "app_rw"}}, all, false, "a member of app_rw"},
+		{roleFacts{name: "pgvigil_agent", memberOf: []string{"pgvigil_collector"}, usedIn: "other_db"}, all, false, "used in other_db"},
+		{roleFacts{name: "pgvigil_agent", memberOf: []string{"pgvigil_collector"}, sessionsIn: "other_db"}, all, false, "a session in other_db"},
+		{roleFacts{name: "pgvigil_agent", memberOf: []string{"pgvigil_collector"}, super: true}, all, false, "a superuser"},
+		{roleFacts{name: "pgvigil_agent", memberOf: []string{"pgvigil_collector"}, isConnected: true}, all, false, "connects as"},
+	} {
+		s := decideLogin(c.f, "pgvigil_agent", c.dropped)
+		if s.drop != c.drop || !strings.Contains(s.why, c.why) || !s.login {
+			t.Errorf("%+v: got drop %v (%s), want %v (%s)", c.f, s.drop, s.why, c.drop, c.why)
+		}
+	}
+}
+
+func TestPathWithout(t *testing.T) {
+	for _, c := range []struct {
+		in, dir, out string
+		found        bool
+	}{
+		{`C:\Windows;C:\Program Files\pgvigil;C:\Tools`, `C:\Program Files\pgvigil`, `C:\Windows;C:\Tools`, true},
+		{`C:\Windows;c:\program files\PGVIGIL\;C:\Tools`, `C:\Program Files\pgvigil`, `C:\Windows;C:\Tools`, true},
+		{`C:\Windows;C:\Tools`, `C:\Program Files\pgvigil`, `C:\Windows;C:\Tools`, false},
+		{`C:\Program Files\pgvigil-old;C:\Tools`, `C:\Program Files\pgvigil`, `C:\Program Files\pgvigil-old;C:\Tools`, false},
+	} {
+		out, found := pathWithout(c.in, c.dir)
+		if out != c.out || found != c.found {
+			t.Errorf("%q: got %q %v, want %q %v", c.in, out, found, c.out, c.found)
+		}
+	}
+}
+
+// captureStdout runs f and returns what it printed.
+func captureStdout(t *testing.T, f func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string)
+	go func() { b, _ := io.ReadAll(r); done <- string(b) }()
+	ferr := f()
+	os.Stdout = old
+	_ = w.Close()
+	return <-done, ferr
+}
+
+func TestUninstallAllOrder(t *testing.T) {
+	oldU, oldH := uninstallHooksOf, upgradeHooksOf
+	defer func() { uninstallHooksOf, upgradeHooksOf = oldU, oldH }()
+	var removed []string
+	stopped, privErr := 0, error(nil)
+	items := func(present bool) []removal {
+		rm := func(n string) func() error { return func() error { removed = append(removed, n); return nil } }
+		return []removal{
+			{what: "the service", present: present, remove: rm("service")},
+			{what: "the binary", present: present, remove: rm("binary")},
+			{what: "the dump folder", present: present, kept: "the repository's dumps", remove: rm("dumps")},
+			{what: "the account", present: present, remove: rm("account")},
+		}
+	}
+	present := true
+	upgradeHooksOf = &upgradeHooks{
+		installed: func() (installOptions, bool, error) { return installOptions{}, false, nil },
+		stop:      func(*slog.Logger) error { stopped++; return nil },
+		start:     func(*slog.Logger) error { return nil },
+	}
+	uninstallHooksOf = &uninstallHooks{
+		privileged: func() error { return privErr },
+		running:    func() bool { return present },
+		items:      func(installOptions, bool) []removal { return items(present) },
+		repoDSN:    func(installOptions) string { return "host=db port=5432 user=pgvigil_agent dbname=pgvigil" },
+	}
+	log := slog.New(slog.DiscardHandler)
+	o := installOptions{All: true, Bin: "/usr/local/bin/pgvigil", Config: "/etc/pgvigil/pgvigil.yaml", User: "pgvigil", set: map[string]bool{}}
+
+	dry := o
+	dry.DryRun = true
+	out, err := captureStdout(t, func() error { return runUninstallAll(log, dry) })
+	if err != nil || len(removed) != 0 || stopped != 0 || !strings.Contains(out, "dry run: nothing was changed") || !strings.Contains(out, "remove   the service") ||
+		!strings.Contains(out, "kept     the dump folder: the repository's dumps") || !strings.Contains(out, "pgvigil on db:5432") {
+		t.Fatalf("dry run: err %v, removed %v, stopped %d:\n%s", err, removed, stopped, out)
+	}
+	out, err = captureStdout(t, func() error { return runUninstallAll(log, o) })
+	if err != nil || strings.Join(removed, ",") != "service,binary,account" || stopped != 1 || !strings.Contains(out, "kept: the dump folder: the repository's dumps") {
+		t.Fatalf("the run: err %v, removed %v, stopped %d:\n%s", err, removed, stopped, out)
+	}
+	present, removed = false, nil
+	out, err = captureStdout(t, func() error { return runUninstallAll(log, o) })
+	if err != nil || len(removed) != 0 || stopped != 1 || !strings.Contains(out, "nothing of pgvigil is left to remove") {
+		t.Fatalf("the second run: err %v, removed %v, stopped %d:\n%s", err, removed, stopped, out)
+	}
+	privErr = errors.New("uninstall -all needs root")
+	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || !strings.Contains(err.Error(), "uninstall refused, nothing was changed") {
+		t.Fatalf("not root: %v", err)
 	}
 }
 
