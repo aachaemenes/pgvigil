@@ -167,7 +167,7 @@ func WatchInventory(ctx context.Context, log *slog.Logger, src InventoryReader, 
 			ok, err = hold(ctx)
 			if err == nil && !ok {
 				if !toldOther && ctx.Err() == nil {
-					log.Warn("instances: another collector holds the page's instances; this one collects the file's only (asked again every tick)")
+					log.Warn("instances: the page's instances are not this collector's now (another collector holds them, or its lease could not be renewed); it collects the file's only (asked again every tick)")
 					toldOther = true
 				}
 				if held || have == -1 { // lost the lock, or never had it: the file's list alone

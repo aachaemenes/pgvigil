@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -230,7 +231,7 @@ func TestApplyFollowsThePageList(t *testing.T) {
 	r.setHeld(false)
 	r.until("the lock lost", func(l map[string]string) bool { return names(l) == "f1" })
 	time.Sleep(100 * time.Millisecond)
-	if n := strings.Count(r.logs.String(), "another collector holds the page's instances"); n != 1 {
+	if n := strings.Count(r.logs.String(), "are not this collector's now"); n != 1 {
 		t.Fatalf("another holder was logged %d times (want once)", n)
 	}
 	r.setHeld(true)
@@ -272,5 +273,54 @@ func TestApplyWaitIsBounded(t *testing.T) {
 	s.apply(ctx, []config.Instance{{Name: "a", DSNRaw: "y"}})
 	if d := time.Since(t0); starts != 3 || d < 50*time.Millisecond {
 		t.Fatalf("a start after an earlier stop: starts %d after %v (want 3 after about 50 ms)", starts, d)
+	}
+}
+
+// The lease itself: held, one failed renewal (still held, an error: the watcher keeps its list), a second (let go,
+// no error: never beside the next holder), back, superseded (0), and no renewal after the release.
+func TestPageLeaseLetsGoAndStaysReleased(t *testing.T) {
+	var mu sync.Mutex
+	var fail bool
+	gen := int64(1)
+	calls := 0
+	l := &pageLease{log: slog.New(slog.NewTextHandler(io.Discard, nil)), holder: "h", call: func(context.Context, string) (int64, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if fail {
+			return 0, errors.New("the repository is down")
+		}
+		return gen, nil
+	}}
+	set := func(f bool, g int64) { mu.Lock(); fail, gen = f, g; mu.Unlock() }
+	ctx := context.Background()
+	if ok, err := l.hold(ctx); !ok || err != nil {
+		t.Fatalf("first hold: %v %v", ok, err)
+	}
+	set(true, 1)
+	l.renew(ctx)
+	if ok, err := l.hold(ctx); !ok || err == nil {
+		t.Fatalf("one failed renewal: %v %v (want held, with the error)", ok, err)
+	}
+	l.renew(ctx)
+	if ok, err := l.hold(ctx); ok || err != nil {
+		t.Fatalf("two failed renewals: %v %v (want let go, no error)", ok, err)
+	}
+	set(false, 1)
+	l.renew(ctx)
+	if ok, err := l.hold(ctx); !ok || err != nil {
+		t.Fatalf("renewed again: %v %v", ok, err)
+	}
+	set(false, 0)
+	l.renew(ctx)
+	if ok, err := l.hold(ctx); ok || err != nil {
+		t.Fatalf("superseded: %v %v (want not held)", ok, err)
+	}
+	set(false, 7)
+	l.release()
+	before := calls
+	l.renew(ctx)
+	if ok, _ := l.hold(ctx); ok || calls != before {
+		t.Fatalf("a renewal ran after the release (calls %d -> %d, held %v)", before, calls, ok)
 	}
 }

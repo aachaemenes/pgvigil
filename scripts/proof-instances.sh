@@ -24,7 +24,7 @@
 #      repository (every row of every table of the pgvigil schema, read as text), in the API's answer or in the logs;
 #      the credential files 0600 in a 0700 folder
 #   H. the collector's process is the one started in B (no restart) and logged each list it applied
-#   I. a second collector on the repository: it logs once that another collector holds the page's instances and
+#   I. a second collector on the repository: it logs once that the page's instances are not its own and
 #      collects the file's only (filepg), never a page instance
 #   J. the fenced lease: a take-over (the lease made 60 s old) bumps the generation; the first collector, superseded,
 #      drops the page's instances at its next tick; released, it takes the lease back with the next generation
@@ -393,33 +393,35 @@ echo "ok   H: pid $RUNPID ran from B to the end and applied $NA lists (generatio
 
 echo "== I. a second collector on the repository =="
 "$TMPD/pgvigil" run -config "$CFGD/collector.yaml" >"$TMPD/run2.log" 2>&1 & RUN2PID=$!
-for _ in $(seq 1 40); do grep -q "another collector holds the page's instances" "$TMPD/run2.log" && break; sleep 1; done
+for _ in $(seq 1 40); do grep -q "are not this collector's now" "$TMPD/run2.log" && break; sleep 1; done
 kill -0 "$RUN2PID" 2>/dev/null || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector exited"; }
-[[ "$(grep -c "another collector holds the page's instances" "$TMPD/run2.log")" == 1 ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector did not say once that another holds the page's instances"; }
+[[ "$(grep -c "are not this collector's now" "$TMPD/run2.log")" == 1 ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector did not say once that another holds the page's instances"; }
 sleep 20
-[[ "$(grep -c "another collector holds the page's instances" "$TMPD/run2.log")" == 1 ]] || fail "I: the second collector said it more than once"
+[[ "$(grep -c "are not this collector's now" "$TMPD/run2.log")" == 1 ]] || fail "I: the second collector said it more than once"
 PAGE2=$(grep 'scheduler: instances applied' "$TMPD/run2.log" | grep -oE ' instances=[0-9]+' | tr -d ' ' | sort -u | tr '\n' ' ')
 [[ "$PAGE2" == "instances=1 " ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector applied [$PAGE2] (want only the file's one instance)"; }
 ! grep -q 'instances: list read' "$TMPD/run2.log" || { grep -m3 'instances: list read' "$TMPD/run2.log" >&2; fail "I: the second collector read the page's list"; }
 kill "$RUN2PID" 2>/dev/null; wait "$RUN2PID" 2>/dev/null || true; RUN2PID=
 kill -0 "$RUNPID" 2>/dev/null || fail "I: the first collector stopped"
-echo "ok   I: a second collector said once that another holds the page's instances and applied the file's one instance only"
+echo "ok   I: a second collector said once that the page's instances are not its own and applied the file's one instance only"
 
 echo "== J. a fenced lease: a take-over bumps the generation; the superseded holder stops at its next tick, then takes it back =="
 last_applied() { grep 'scheduler: instances applied' "$TMPD/run.log" | tail -1 | grep -oE ' instances=[0-9]+' | tr -d ' '; }
 BEFORE=$(last_applied); G1=$(pq "SELECT generation FROM pgvigil.admin_page_holder")
+NOT0=$(grep -c "are not this collector's now" "$TMPD/run.log" || true); HOLD0=$(grep -c "holds the page's instances now" "$TMPD/run.log" || true)
 [[ "$(pq "SELECT holder LIKE '%:$RUNPID:%' FROM pgvigil.admin_page_holder")" == t && "$G1" -ge 1 ]] || fail "J: the first collector (pid $RUNPID) does not hold the lease: $(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")"
 # a lease 60 s old and a take-over in one transaction (the holder's renewal waits on the row, then finds itself superseded)
-TG=$(pq "UPDATE pgvigil.admin_page_holder SET beat = now() - interval '60 seconds'; SELECT pgvigil.import_admin_page_lease('proof-taker', 0, 45)")
+TG=$(pq "UPDATE pgvigil.admin_page_holder SET beat = now() - interval '60 seconds'; SELECT pgvigil.import_admin_page_lease('proof-taker', 45)")
 [[ "$TG" == $((G1 + 1)) ]] || fail "J: the take-over got generation $TG (want $((G1 + 1)))"
-for _ in $(seq 1 45); do grep -q "another collector holds the page's instances" "$TMPD/run.log" && break; sleep 1; done
-grep -q "another collector holds the page's instances" "$TMPD/run.log" || fail "J: the superseded holder did not say so within 45 s"
-for _ in $(seq 1 20); do [[ "$(last_applied)" == "instances=1" ]] && break; sleep 1; done
-[[ "$(last_applied)" == "instances=1" ]] || fail "J: the superseded holder still runs [$(last_applied)] (want the file's one instance)"
+# the docs' bound: its renewal (15 s) and its watcher's tick (15 s), 5 s spare
+for _ in $(seq 1 35); do [[ "$(last_applied)" == "instances=1" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "instances=1" ]] || fail "J: the superseded holder still runs [$(last_applied)] 35 s after the take-over (want the file's one instance)"
+[[ "$(grep -c "are not this collector's now" "$TMPD/run.log")" == $((NOT0 + 1)) ]] || fail "J: the superseded holder did not say once that the page's instances are not its own"
 [[ "$(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")" == "proof-taker $TG" ]] || fail "J: the superseded holder took the lease back while the taker's was alive"
 pq "SELECT pgvigil.import_admin_page_release('proof-taker', $TG)" >/dev/null
-for _ in $(seq 1 45); do grep -q "this collector holds the page's instances now" "$TMPD/run.log" && [[ "$(last_applied)" == "$BEFORE" ]] && break; sleep 1; done
-[[ "$(last_applied)" == "$BEFORE" ]] || fail "J: after the release the first collector runs [$(last_applied)] (want [$BEFORE] again)"
+for _ in $(seq 1 35); do [[ "$(last_applied)" == "$BEFORE" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "$BEFORE" ]] || fail "J: 35 s after the release the first collector runs [$(last_applied)] (want [$BEFORE] again)"
+[[ "$(grep -c "holds the page's instances now" "$TMPD/run.log")" == $((HOLD0 + 1)) ]] || fail "J: the take-back was not logged once"
 [[ "$(pq "SELECT generation FROM pgvigil.admin_page_holder")" == $((TG + 1)) ]] || fail "J: the take-back's generation is $(pq "SELECT generation FROM pgvigil.admin_page_holder") (want $((TG + 1)))"
 echo "ok   J: generation $G1 -> $TG (a take-over: the first collector superseded, the file's instance only) -> $((TG + 1)) (taken back: [$BEFORE] again)"
 echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; the NOT PROVEN lines above stand)"

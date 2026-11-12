@@ -79,8 +79,8 @@ CREATE TRIGGER admin_keep_removed BEFORE UPDATE OF is_active ON pgvigil.instance
 -- holder every 15 s and taken by another collector once it is older than p_ttl_s (45 s: three renewals missed - a
 -- holder stopped or its host lost). A row, not a session advisory lock: it holds through a transaction-mode pooler
 -- (PgBouncer) and needs no TCP keepalive to free it. Every time is the repository's now(), never a host's clock.
--- A fenced lease: each take-over bumps the generation, and a renewal must name the holder and the generation it
--- holds, so a holder superseded while it was away (a partition) gets 0 at its next call and stops.
+-- A fenced lease: each take-over bumps the generation and writes the new holder (a name unique to one process), so a
+-- holder superseded while it was away (a partition) no longer matches the row: it gets 0 at its next call and stops.
 CREATE TABLE IF NOT EXISTS pgvigil.admin_page_holder (
   id          int PRIMARY KEY CHECK (id = 1),
   holder      text NOT NULL,
@@ -89,8 +89,9 @@ CREATE TABLE IF NOT EXISTS pgvigil.admin_page_holder (
 );
 
 -- import_admin_page_lease: the generation p_holder holds after this call, 0 = not held (another holds it, or this
--- holder was superseded). p_generation = the one it last held (0 when it holds none).
-CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_lease(p_holder text, p_generation bigint, p_ttl_s int)
+-- holder was superseded). The holder alone decides a renewal (not the generation it last saw), so a reply lost after
+-- its commit never locks the holder out of its own lease.
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_lease(p_holder text, p_ttl_s int)
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
   v_gen bigint;
@@ -99,9 +100,8 @@ BEGIN
   INSERT INTO pgvigil.admin_page_holder AS h (id, holder, generation, beat) VALUES (1, p_holder, 1, now())
   ON CONFLICT (id) DO UPDATE
      SET holder = EXCLUDED.holder, beat = now(),
-         generation = CASE WHEN h.holder = EXCLUDED.holder AND h.generation = p_generation AND h.beat >= now() - v_ttl
-                           THEN h.generation ELSE h.generation + 1 END
-   WHERE (h.holder = EXCLUDED.holder AND h.generation = p_generation) OR h.beat < now() - v_ttl
+         generation = CASE WHEN h.holder = EXCLUDED.holder AND h.beat >= now() - v_ttl THEN h.generation ELSE h.generation + 1 END
+   WHERE h.holder = EXCLUDED.holder OR h.beat < now() - v_ttl
   RETURNING generation INTO v_gen;
   RETURN coalesce(v_gen, 0);
 END $$;
