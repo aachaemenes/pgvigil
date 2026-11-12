@@ -42,17 +42,18 @@ export const groups: Group[] = [
   { key: 'host', label: 'Host', checks: ['host', 'pi'], tab: 'host' },   // 'pi': cache starved by the ACU floor (the Capacity section sits on the Host tab)
   { key: 'disk', label: 'Disk', checks: ['disk'], tab: 'host' },
   { key: 'storage', label: 'Storage', checks: ['storage'], tab: 'storage', mssql: ['storage', 'mssqlstorage'] },
-  { key: 'backups', label: 'Backups', checks: ['backups'], tab: 'backups', mssql: ['backups', 'mssqlbackups'] },
+  { key: 'backups', label: 'Backups', checks: ['backups', 'base backups', 'log shipping'], tab: 'backups', mssql: ['backups', 'mssqlbackups'] },
   // DBA Dash's Summary columns (plan task 106), both engines
-  { key: 'uptime', label: 'Uptime', checks: [], tab: 'summary', mssql: ['uptime', 'summary'] },
+  { key: 'uptime', label: 'Uptime', checks: ['uptime'], tab: 'pgstate', mssql: ['uptime', 'summary'] },
   { key: 'dbstate', label: 'Database state', checks: [], tab: 'dbinfo', mssql: ['dbstate', 'mssqlfiles'] },
-  // SQL Server only until the PostgreSQL equivalents are built (the scheduler alive, crash restarts from the log)
+  // SQL Server only until the PostgreSQL equivalents are built (the scheduler alive); Memory dumps' PostgreSQL twin is the log's
+  // crash restarts, QS's is pg_stat_statements' state (task 162: the Server state tab)
   { key: 'agent', label: 'Agent', checks: [], tab: 'summary', mssql: ['agent', 'mssqljobs', 'SQL Server Agent'], mssqlOnly: true },
   { key: 'dbmail', label: 'DB Mail', checks: [], tab: 'summary', mssql: ['dbmail', 'summary', 'Database Mail'], mssqlOnly: true },
-  { key: 'dumps', label: 'Memory dumps', checks: [], tab: 'summary', mssql: ['dumps', 'summary'], mssqlOnly: true },
-  { key: 'qs', label: 'QS', checks: [], tab: 'summary', mssql: ['qs', 'mssqlqs', 'Query Store'], mssqlOnly: true },
+  { key: 'dumps', label: 'Dumps / crashes', checks: ['crashes'], tab: 'pgstate', mssql: ['dumps', 'summary', 'Memory dumps'] },
+  { key: 'qs', label: 'QS', checks: ['statement store'], tab: 'pgstate', mssql: ['qs', 'mssqlqs', 'Query Store'] },
   { key: 'audit', label: 'Audit', checks: [], tab: 'summary', mssql: ['audit', 'mssqlaudit', 'SQL Server Audit'], mssqlOnly: true },
-  { key: 'corruption', label: 'Corruption', checks: ['corruption'], tab: 'corruption' },
+  { key: 'corruption', label: 'Corruption', checks: ['corruption', 'amcheck age'], tab: 'corruption' },
   { key: 'io', label: 'IO', checks: ['io'], tab: 'io' },
   { key: 'roles', label: 'Roles', checks: ['roles'], tab: 'roles' },
   { key: 'indexes', label: 'Indexes', checks: ['indexes'], tab: 'indexes' },
@@ -117,15 +118,16 @@ export function cells(f: Fleet, r: Row): Record<string, Cell> {
       continue;
     }
     if (g.mssqlOnly) { out[g.key] = { level: 0, n: 0, detail: ['a SQL Server check: nothing is read for it on PostgreSQL'], none: true, text: 'n/a' }; continue; }
-    // Uptime on PostgreSQL: the postmaster's start from the instance row, with DBA Dash's default thresholds
-    // (critical under 12 hours since the start, warning under 48)
+    // Uptime on PostgreSQL: the postmaster's start from the instance row, judged by the 'uptime' check rows (task 162:
+    // the thresholds in force, DBA Dash's defaults of critical under 12 hours and warning under 48 until one is set)
     if (g.key === 'uptime') {
       const t = r.postmaster_start == null ? NaN : Date.parse(String(r.postmaster_start));
       if (isNaN(t)) { out[g.key] = { level: 0, n: 0, detail: ['no start time read yet'], none: true }; continue; }
-      const h = Math.max(0, (Date.now() - t) / 3600000), level: Level = h < 12 ? 2 : h < 48 ? 1 : 0;
+      const up = mine.filter(c => c.check_group === 'uptime');
+      const h = Math.max(0, (Date.now() - t) / 3600000), level = up.reduce<Level>((a, c) => Math.max(a, sevLevel(c.severity)) as Level, 0);
       const age = h < 48 ? `${Math.floor(h)} h` : `${Math.floor(h / 24)} d`;
       out[g.key] = { level, n: level ? 1 : 0, text: level ? `${age} ${level === 2 ? 'critical' : 'warning'}` : age,
-        detail: [`PostgreSQL started ${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC (critical under 12 hours, warning under 48)`] };
+        detail: up.length ? up.map(c => String(c.detail ?? '')) : [`PostgreSQL started ${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC (within the uptime thresholds: the Thresholds page)`] };
       continue;
     }
     // Database state on PostgreSQL: an invalid database is critical, one that refuses connections a warning
