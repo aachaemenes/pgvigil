@@ -5,7 +5,7 @@ Three collections of the [SQL Server engine](sqlserver.md) and the tabs they fee
 | collection | every | what | the login needs |
 |---|---|---|---|
 | `mssql_properties` | 1 hour | what the instance is: server, processors, memory, tempdb's layout, host; every change of a value | public for the server and tempdb rows and max / min server memory; `VIEW SERVER STATE` for the processor rows, the machine's memory and the memory model; the host rows are public's before SQL Server 2022 and need `VIEW SERVER PERFORMANCE STATE` from it (partial where a row cannot be read) |
-| `mssql_procstats` | 5 min | what each stored procedure did between two reads | `VIEW SERVER STATE` (2022: `VIEW SERVER PERFORMANCE STATE` is enough); names of another database's procedures: `CONNECT ANY DATABASE` and `VIEW ANY DEFINITION` |
+| `mssql_procstats` | 5 min | what each stored procedure did between two reads | `VIEW SERVER STATE` (2022: `VIEW SERVER PERFORMANCE STATE` should be enough; not proven); names of another database's procedures: `CONNECT ANY DATABASE` and `VIEW ANY DEFINITION` |
 | `mssql_indexlocks` | 5 min | where sessions waited for locks, per index, and lock escalations | as `mssql_procstats`; names: a database the login can enter |
 
 None of the three runs on Azure SQL Database.
@@ -99,4 +99,4 @@ The interval rows (`mssql_proc_sample`, `mssql_proc_read`, `mssql_indexlock_samp
 
 Result, 2026-11-11: every part passed, against SQL Server 2022 (16.0.4315.2, Developer edition) in the proof's own Linux container, with the repository on PostgreSQL 18.6 and the migration chain also applied on PostgreSQL 13. Among the figures of that run: 35 properties, 33 of them equal to `sa`'s reads; the forced lock wait stored as 1 wait of 5,472 ms and the UPDATE of 20,000 rows as 4 escalation attempts and 1 escalation, both equal to `sa`'s rise; a sorting session's grant of 92,328 KB equal to the grants view. The accessibility check (`scripts/proof-a11y.sh`) found 0 violations over 300 page renders with the three new tabs in both themes.
 
-Not proven: a real power plan (it needs a Windows SQL Server), a real tempdb page latch wait, SQL Server 2016 (the older `sys.dm_os_sys_info`; 2017, 2019, 2022 and 2025 are proven: [versions](sqlserver.md#versions)), Amazon RDS, Azure SQL Managed Instance, a list long enough to be cut and a database skipped on a real server, a columnstore rowset with lock waits.
+Not proven: a real power plan (it needs a Windows SQL Server: task 144), a real tempdb page latch wait, SQL Server 2016 (the older `sys.dm_os_sys_info`: task 164; 2017, 2019, 2022 and 2025 are proven: [versions](sqlserver.md#versions)), Amazon RDS (task 165), Azure SQL Managed Instance, a list long enough to be cut and a database skipped on a real server, a columnstore rowset with lock waits.

@@ -82,7 +82,7 @@ fails shows its error under its own heading, and the others still draw.
 
 A limit to know: the Database family summed over all databases reads every database's counters of the range, as the
 Counters charts did. On a server with very many databases a long range can pass the page's 15-second read limit
-(measured: about 150 databases over 31 days); the family then shows that error. A shorter range reads, and so does
+(not measured: no proof times a server with many databases); the family then shows that error. A shorter range reads, and so does
 one database picked above the grid, which reads that database's rows alone.
 
 ## Proof

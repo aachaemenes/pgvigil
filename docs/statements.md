@@ -11,16 +11,16 @@ of the total execution time, as a checkbox:
 - A tick narrows the page at once; several ticks in one group are an OR, ticks in two groups an AND.
 - A group's shares are over the statements the other groups' ticks leave, so a ticked database still lists the other
   databases with their shares (a faceted filter, as PMM's).
-- **Reset all** clears every tick. The ticks ride the page's link (`sg`, `sdb`, `suser`, `scl`), so a link keeps them.
+- **Reset all** clears every tick. The ticks ride the page's link (`sg`, `sdb`, `suser`, `scl`), so a link keeps them. Not proven in a browser: `scripts/proof-stmt-groups.sh` reads the API.
 
 **Group by** switches the grid beside it between the statements, the databases, the users and the client hosts. Each
 row has its total time, its **share** of the ticked statements' time (a number and a bar), its share **of all**
 statements' time, calls, the time per call, rows, IO blocks and the cache hit ratio.
 
 The client host is an estimate. `pg_stat_statements` keeps no client: a statement's time is split over the hosts the
-running-queries samples saw it from, in proportion to the samples (PostgreSQL 14 and later, with `compute_query_id`
+running-queries samples saw it from, in proportion to the samples (PostgreSQL 14 and later, proven on 18 only, with `compute_query_id`
 on or `auto` with `pg_stat_statements` loaded). A statement the samples never saw, because it is short or because the
-server is PostgreSQL 13, is `(not sampled)`. A session over the server's Unix socket has no address and is `[local]`.
+server is PostgreSQL 13 (not proven there), is `(not sampled)`. A session over the server's Unix socket has no address and is `[local]`.
 A parallel worker's samples are left out (they carry the leader's statement). The page says how much of the window's
 time was sampled.
 
@@ -103,7 +103,7 @@ older transaction, so an idle-in-transaction session stalls it.
 
 ## PostgreSQL depth
 
-Five collections read what `pg_stat_statements`' time and calls leave out. Their sections sit on the Statements tab
+Six collections read what `pg_stat_statements`' time and calls leave out. Their sections sit on the Statements tab
 (statement depth, functions), the IO tab (the server state, the SLRU caches) and the Indexes tab (the depth findings,
 btree bloat, sequences, the catalog checks). Each section says what it needs when a read is missing.
 
@@ -156,7 +156,7 @@ promotion); the client sessions against the slots a client may use (`max_connect
 `superuser_reserved_connections` and, from 16, `reserved_connections`); the physical standbys streaming from the
 server (a walsender of a logical slot is not counted); and, with `pg_monitor`, the `.ready` files the archiver has not
 sent and `pg_wal`'s segments and size. The ages are the server's own clock's, so a skewed collector clock never moves
-them. Aurora keeps no local WAL or control file: it shows connections and standbys
+them. Aurora keeps no local WAL or control file (not proven there: the proof runs in containers): it shows connections and standbys
 only.
 
 ### SLRU caches
@@ -223,11 +223,11 @@ run says so in no error.
 | dead rows | warning | 100,000 dead rows or more and 20 % or more of the table's rows (the tables collection) |
 | index bloat | info, warning at 1 GB of bloat | 50 % or more of an index of 10 MB or more |
 
-The proof `scripts/proof-pg-depth.sh` raises each finding with a state seeded on PostgreSQL 13, 16 and 18 and clears it
+The proof `scripts/proof-pg-depth.sh` raises each finding but the multixact SLRU one (no seed: not proven) with a state seeded on PostgreSQL 13, 16 and 18 and clears it
 by its undo there. The 24-hour expiry of the timeline and system-identifier findings is proven with a stored read 25
 hours later. The new columns are checked against a hand read of the server. Not proven: the subtransaction SLRU
-finding's live seed on PostgreSQL 16 (it passed there once and then not in three runs: its session's scan did not take the
-pg_subtrans path, cause unknown); the finding is proven live on 13 and 18.
+finding's live seed on PostgreSQL 16 (three runs failed there, the third because its session's scan did not take the
+pg_subtrans path, cause unknown; a fourth passed); the finding is proven live on 13 and 18.
 
 ## API
 

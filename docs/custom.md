@@ -28,7 +28,7 @@ rolled back:
   for a superuser or a member of `pg_execute_server_program`. So before any check runs, each run reads the login's
   rights, and the collection refuses to run on the instance (a failed collection naming the right, no check run) when
   the login is a superuser or a member of `pg_execute_server_program`, `pg_write_server_files` or
-  `pg_read_server_files`: pgvigil's collector never runs with more than `pg_monitor`;
+  `pg_read_server_files`;
 - the check sees what the monitoring login sees: the statistics views in full (`pg_monitor`), the catalogs, and the
   tables the login has been granted. A check that needs more is the server DBA's grant to that login, made by hand.
 
@@ -90,7 +90,7 @@ custom:
 The catalogue below takes its list of checks from the ACTIONS of
 [check_postgres](https://bucardo.org/check_postgres/) (Bucardo, BSD-2-Clause): the names and the ideas only. The SQL
 is pgvigil's own, written for a `pg_monitor` login on PostgreSQL 13 and later (lockwait: 14 and later, it reads
-`pg_locks.waitstart`); no code of check_postgres is copied.
+`pg_locks.waitstart`); not proven on PostgreSQL 13: `scripts/proof-custom.sh` part G runs all 18 on one sandbox server; no code of check_postgres is copied.
 Copy an entry into `custom:`, then set its `instances:` or `tags:` and tune its thresholds; the defaults below are a
 starting point.
 
@@ -98,7 +98,7 @@ starting point.
 
 The `.ready` files in `pg_wal/archive_status`: segments the archiver has not archived yet.
 `pg_ls_archive_statusdir()` is granted to `pg_monitor` like `pg_ls_waldir()`, which pgvigil's storage collection
-reads on every platform. Aurora keeps no WAL in `pg_wal` (the cluster volume holds it), so the count there is
+reads (proven on a self-managed server and on Aurora only). Aurora keeps no WAL in `pg_wal` (the cluster volume holds it), so the count there is
 expected to stay 0; the backups collection reads the archiver itself (`pg_stat_archiver`). Not yet run on RDS or
 Aurora.
 
@@ -378,8 +378,8 @@ The oldest database's xid age; PostgreSQL stops assigning transaction IDs at abo
 ### wal_files: pg_wal against max_wal_size
 
 The size of `pg_wal` as a percent of `max_wal_size`: a slot, a failing archiver or a long checkpoint keeps WAL past
-it. It reads `pg_ls_waldir()` as the storage collection does, on every platform as `pg_monitor`; Aurora keeps no WAL
-in `pg_wal` (its count is 0 there), so on Aurora the check reads 0 and never fires: the Storage tab and the
+it. It reads `pg_ls_waldir()` as the storage collection does, as `pg_monitor` (proven on a self-managed server and on Aurora only); Aurora keeps no WAL
+in `pg_wal` (its count is 0 there), so on Aurora the check has no value (no file to sum: "the value is NULL") and never fires (not run there); the Storage tab and the
 replication slots are the read there.
 
 ```yaml

@@ -11,7 +11,7 @@ what happens in the other order, and what the project's own proof showed (`scrip
   does not hold yet: in order, each in one transaction, each recorded in `pgvigil.schema_version`. A file already
   recorded is never run again, and a released file is never edited (the rule of `internal/repo/sql/README.md`), so a
   store that was upgraded and a store that was installed fresh have run the same files. A second `migrate` applies
-  nothing. The run takes an advisory lock, so two at once do not collide.
+  nothing. The run takes an advisory lock, so two at once do not collide (not proven: no proof runs two at once).
 - **The grants.** Every file re-applies the access contract (`pgvigil.apply_roles()`) inside its own transaction: the
   collector's login and the UI's login get their rights on the new tables and functions with it. `pgvigil roles` is
   not run again for an upgrade, unless the release notes name a new login.
@@ -73,7 +73,7 @@ On a network without Internet access step 1 reads a mirror folder instead
 carried across by hand and renamed `pgvigil`; the other steps are the same.
 
 The collector is down from step 2 to step 5. On the proof's store (three days of the demo's twelve instances, about
-430,000 rows) the 26 files from v0.3.0 ran in under four seconds; a migration that rewrites a large table would say
+430,000 rows) the 26 files from v0.3.0 to the first build named below ran in under four seconds (this tree carries 38); a migration that rewrites a large table would say
 so in its release notes.
 
 ## The way back
@@ -120,7 +120,7 @@ upgrade over stored history.
 
 `scripts/proof-upgrade.sh` starts from the released v0.3.0 itself and ends on the build of this tree, on throwaway
 containers: a Debian 12 host under systemd for pgvigil, on a network with no route out, a mirror folder there, and
-PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 against PostgreSQL 13, 16 and 18, green
+PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 against PostgreSQL 13, 16 and 18 on two earlier builds (86 migration files for the figures below, 89 for the installer-first line; this tree holds 98), green
 on each (the numbers are PostgreSQL 16's):
 
 - **The release.** v0.3.0's binary and SBOM match `SHA256SUMS`. The SBOM names exactly the 35 modules the binary
@@ -136,7 +136,7 @@ on each (the numbers are PostgreSQL 16's):
 - **The upgrade, in the order above.** This build refused to run on the old schema (exit 1, naming the file and
   `pgvigil migrate`). `migrate` applied 26 files in under four seconds, and a second run none. Every one of the 107
   tables held the row count it held before; in the 101 that hold rows, a hash of those rows over the columns v0.3.0
-  had was the same before and after. The 76 tables this version adds were empty. `./pgvigil install` ended
+  had was the same before and after. The 76 tables that build adds were empty. `./pgvigil install` ended
   `installed and running`, the config and the env file byte for byte as before, the unit running as `pgvigil` and
   still without a restart minutes later.
 - **The collector.** Under the collector's login, all 20 collections that ended ok under v0.3.0 ended ok under this

@@ -34,7 +34,7 @@ over the whole text, so a change after the cut still shows.
 
 **Size:** the collector hands the repository one database at a time (its event-trigger rows, then its objects), and a
 last call that marks a database neither read nor in error as gone; PostgreSQL refuses a jsonb array over 256 MB, so
-one payload for the whole instance would fail near 800,000 objects. A database whose objects come to more than about
+one payload for a large instance would fail. A database whose objects come to more than about
 160 MB of text (for example 8,000 views of 20,000 characters) is reported as a collector error and keeps its snapshot.
 
 **Versions:** on PostgreSQL 13 and 14 the trigger a partition inherits from its partitioned table is internal and is
@@ -144,7 +144,7 @@ under every policy.
   before, after or statement opens in place (a disclosure the keyboard reaches).
 - **The database page** has a Schema section with the same content for that one database.
 - `GET /api/schema?instance=<id>&from=&to=[&db=<dbid>]` serves both (`state`, `databases`, `changes`, `ddl`,
-  `findings`, and with `db` also `objects`, each row carrying the database's `total`); `part=<name>` returns one part.
+  `findings`, and with `db` also `objects`, each row carrying the database's `total`); `part=<name>` returns one part. Not proven: no proof grades this tab's content or its API (`scripts/proof-a11y.sh` and `scripts/proof-upgrade.sh` render the tab).
 
 ## Findings
 

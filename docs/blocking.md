@@ -86,4 +86,4 @@ trend; a real deadlock made on the SQL Server sandbox, stored, counted in the tr
 in a headless Chromium with its victim, both resources and the four labelled edges.
 
 Not proven: a chain under a minute, a head that is a background worker, a deadlock of more than two sessions or with
-a parallel exchange, Azure SQL Database and Managed Instance.
+a parallel exchange, Azure SQL Database (task 165) and Managed Instance.

@@ -9,7 +9,7 @@ Four collections cover three areas: the statements the plan cache ran, the index
 | `mssql_indexes` | 6 h | each user database's `sys.indexes`, `sys.index_columns`, `sys.dm_db_index_usage_stats` and `sys.dm_db_partition_stats`; the server's missing-index DMVs | `VIEW SERVER STATE`, `VIEW ANY DEFINITION`, `CONNECT ANY DATABASE`; `SELECT` on `msdb.dbo.restorehistory` for the restore date |
 | `mssql_stats` | 6 h | each user database's `sys.stats` with `sys.dm_db_stats_properties` | as `mssql_indexes`; `db_datareader` for the sample rates |
 
-All four run on SQL Server 2016 SP1 and later, on Amazon RDS and on Azure SQL Managed Instance. They do not run on Azure SQL Database yet.
+All four are written for SQL Server 2016 SP1 and later, Amazon RDS and Azure SQL Managed Instance; only SQL Server 2022 is proven (below). They do not run on Azure SQL Database yet.
 
 ## Plan cache (`mssql_plancache`, `mssql_plancache_health`)
 
@@ -27,7 +27,7 @@ The plan cache only shows what stays in it. Some work is never counted:
 
 On a cache that turns over fast, the figures are a floor. The health read shows how fast the cache turns over.
 
-The collector does not send every cached statement. It sends the first 500 by CPU, by duration, by logical reads and by executions, plus the first 500 with a memory grant or a spill. When the cache holds more, the read is marked *cut*. After a cut read, a statement that is new to the list gives its whole count only if it was compiled after that read. Otherwise it only sets its counters, because it may simply have been past the cut. Statement texts travel apart, each one once every six hours, and they follow the instance's query-text policy.
+The collector does not send every cached statement. It sends the first 500 by CPU, by duration, by logical reads and by executions, plus the first 500 with a memory grant or a spill. When the cache holds more, the read is marked *cut*. After a cut read, a statement that is new to the list gives its whole count only if it was compiled after that read. Otherwise it only sets its counters, because it may simply have been past the cut. Statement texts travel apart, each one at most once an hour, and they follow the instance's query-text policy.
 
 The **Plan cache** tab shows:
 
@@ -121,8 +121,8 @@ For each database the read stores:
 
 It does not show:
 
-- SQL Server 2016 to 2019.
-- RDS or Managed Instance.
+- SQL Server 2016 (task 164) to 2019, and 2025.
+- RDS (task 165) or Managed Instance.
 - A list cut on a real server, or a server with more databases than one run reaches.
 - An availability group, or a memory-optimized table.
 - The per-day missing-index finding (it needs days of uptime).

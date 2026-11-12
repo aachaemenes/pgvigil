@@ -42,7 +42,7 @@ catalog read a minute and no log read. The entries are read at whatever level `p
 the log readers never keep one as a log event, so its statement is not stored by that road either.
 
 `csvlog` and `jsonlog` files are not read (stderr only, as the log readers). On Azure, Cloud SQL and AlloyDB the
-settings are read and the entries are not.
+settings are read and the entries are not (not proven: no such server in the proofs).
 
 ## What is kept
 
@@ -114,11 +114,11 @@ instances:
 ```
 
 With `audit_text: true` the rows keep their statement, and their parameters where `pgaudit.log_parameter`
-writes them. Three limits stay:
+writes them (the parameters: not proven, the proof reads its log with `pgaudit.log_parameter` off). Three limits stay:
 
 - a counted entry never keeps text, with or without the switch;
 - the instance's `query_text` policy still applies, as to every other statement pgvigil keeps: under `normalized`
-  the literals are replaced and no parameters are kept, under `none` nothing is kept;
+  the literals are replaced and no parameters are kept, under `none` nothing is kept (not proven for these entries: the proof keeps the default, `full`);
 - a password in the text is masked (pgaudit redacts `CREATE` / `ALTER ROLE ... PASSWORD` itself; pgvigil masks what
   is left, as in every statement it stores).
 
@@ -142,7 +142,7 @@ Findings (they reach the Findings tab and the alert channels like any other):
   every bound value of an audited statement is written in clear to the log and to every place the log is shipped;
 - **pgaudit extension not created in ...** (info): DDL is audited and these databases' entries carry no object;
 - **pgaudit.log_statement off** (info): the entries carry no statement, so no role, grantee or setting is named and
-  the rules that need a name cannot fire.
+  the rules that need a name cannot fire. Neither this finding nor the one above is raised by the proof.
 
 ## Alert rules
 
