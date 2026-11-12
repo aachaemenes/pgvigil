@@ -150,7 +150,7 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
     const crit = checks.filter(c => c.severity === 'critical').length;
     out.push(el('div', { class: 'tiles' },
       tile('tools read', String(tools.length)),
-      tile('newest full backup', tools.length ? hours(Math.min(...tools.map(t => num(t.full_age_h)).filter(x => !isNaN(x)))) || 'none' : '-'),
+      tile('newest full backup', ((ages: number[]) => !tools.length ? '-' : ages.length ? hours(Math.min(...ages)) : 'none listed')(tools.map(t => num(t.full_age_h)).filter(x => !isNaN(x)))),
       tile('rules hit', String(checks.length), crit ? 'crit' : checks.length ? 'warn' : 'ok')));
     if (checks.length) out.push(el('section', {}, el('h3', {}, 'Rules hit'), grid(checks, checkCols)));
     if (tools.length) out.push(el('section', {}, el('h3', {}, 'By tool'), grid(tools, toolCols)));
@@ -168,7 +168,7 @@ export async function pgBackupsView(ctx: Ctx): Promise<HTMLElement> {
           ['paused', rep.replay_paused == null ? '' : rep.replay_paused ? 'yes' : 'no'],
           ['primary in the fleet', rep.primary_instance ? `${String(rep.primary_instance)} (last archived ${String(rep.primary_last_archived ?? '-')})` : 'not found (no instance with the same system identifier)'],
           ['caught up with its archive', rep.caught_up == null ? '' : rep.caught_up ? 'yes: nothing archived is left to replay' : 'no'],
-          ['threshold', `warning over ${fmtNum(rep.warn_min)} min, critical over ${fmtNum(rep.crit_min)} min (${String(rep.threshold_level ?? '')})`],
+          ['threshold', thresholdLine({ warn: rep.warn_min, crit: rep.crit_min, unit: 'minutes', direction: 'over', level: rep.threshold_level })],
         ])));
     }
     out.push(await thresholdsSection(rowsOf(d.thresholds), id, name, () => void draw()));
@@ -249,14 +249,16 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
     const crashes = rowsOf(d.crashes);
     const ackCol: Col = { key: 'ack_id', label: 'acknowledged', fmt: (v, r) => {
       if (v != null) return `by ${String(r.acked_by)} ${fmtTime(r.acked_at)}`;
-      const body: AckBody = { kind: 'ack', instance_id: id, check_key: 'dumps', seen_state: String(r.at) };
+      // the store clears every crash up to this acknowledgement (0103's pg_crashes) and a newer one opens the cell again;
+      // until_change with a state no cell ever reads keeps the Summary's own greying out of it
+      const body: AckBody = { kind: 'ack', instance_id: id, check_key: 'dumps', seen_state: `crash ${String(r.at)}`, until_change: true };
       return writeButton(ad, 'Acknowledge', `Acknowledge the crash of ${fmtTime(r.at)} on ${name}`, () => ackDialog({
         title: `Acknowledge the crash of ${fmtTime(r.at)}`,
         what: `The Summary's Crashes cell of ${name} loses this crash and every one before it; a newer crash colours it again. Who and when are kept.`,
         body, expiry: false, noteField: 'optional', after: () => void draw() }));
     } };
     out.push(el('section', {}, el('h3', {}, 'Crash restarts (30 days)'),
-      cs ? el('p', { class: 'meta' }, `${fmtNum(cs.crashes_30d)} crash restart(s), ${fmtNum(cs.open_30d)} not acknowledged; the cell: ${String(cs.status)} (critical within ${fmtNum(cs.crit_h)} h, warning within ${fmtNum(cs.warn_h)} h, ${String(cs.threshold_level)}).`) : '',
+      cs ? el('p', { class: 'meta' }, `${fmtNum(cs.crashes_30d)} crash restart(s), ${fmtNum(cs.open_30d)} not acknowledged; the cell: ${String(cs.status)} (a crash within the hours: ${thresholdLine({ warn: cs.warn_h, crit: cs.crit_h, unit: 'hours', direction: 'under', level: cs.threshold_level })}).`) : '',
       grid(crashes, [{ key: 'at', label: 'when', fmt: fmtTime }, { key: 'signal', num: true }, { key: 'detail', wide: true }, { key: 'lines', label: 'log lines', num: true }, ackCol],
         'No crash restart in the server log of 30 days (the log reader must run: Logs tab).')));
     // statement store
@@ -271,7 +273,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
     // uptime and amcheck
     if (up) out.push(el('section', {}, el('h3', {}, 'Uptime'), props([
       ['started', fmtTime(up.postmaster_start)], ['up for', hours(up.uptime_h)],
-      ['state', sev(up.status === 'ok' ? '' : up.status)], ['thresholds', `critical under ${fmtNum(up.crit_h)} h, warning under ${fmtNum(up.warn_h)} h (${String(up.threshold_level)})`],
+      ['state', sev(up.status === 'ok' ? '' : up.status)], ['thresholds', thresholdLine({ warn: up.warn_h, crit: up.crit_h, unit: 'hours', direction: 'under', level: up.threshold_level })],
     ])));
     const am = rowsOf(d.amcheck);
     const keys = await thresholdKeys().catch(() => [] as Row[]);
@@ -279,7 +281,7 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
     out.push(el('section', {}, el('h3', {}, 'amcheck: the last clean run per database'),
       grid(am, [{ key: 'datname', label: 'database' }, { key: 'last_ok_at', label: 'last clean run', fmt: v => v == null ? 'never' : fmtTime(v) },
         { key: 'age_days', label: 'age', num: true, fmt: v => v == null ? '' : `${fmtNum(v)} d` }, { key: 'last_status', label: 'newest run' },
-        { key: 'threshold_level', label: 'thresholds', fmt: (v, r) => `warning over ${fmtNum(r.warn_days)} d, critical over ${fmtNum(r.crit_days)} d (${String(v)})` },
+        { key: 'threshold_level', label: 'thresholds', fmt: (v, r) => thresholdLine({ warn: r.warn_days, crit: r.crit_days, unit: 'days', direction: 'over', level: v }) },
         { key: 'datname', label: '', fmt: (v, r) => {
           if (!amKey) return '';
           const b = el('button', { type: 'button', class: 'link', 'aria-label': `Change the amcheck threshold of ${String(v)}` }, 'Change');

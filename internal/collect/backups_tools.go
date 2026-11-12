@@ -85,6 +85,7 @@ var runTool = func(ctx context.Context, bin string, args ...string) ([]byte, err
 	cctx, cancel := context.WithTimeout(ctx, backupToolsTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, bin, args...)
+	cmd.WaitDelay = 5 * time.Second // a child that keeps the pipes open does not stretch the run past its timeout
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -148,18 +149,64 @@ func (backupToolsCollector) RunInstance(ctx context.Context, conn *pgx.Conn, _ p
 }
 
 // backupTool is a tool the server's commands name: pgbackrest (name = the stanza), barman (the server), barman-cloud
-// (the server; url = the destination).
+// (the server; url = the destination; opts = its --cloud-provider and --endpoint-url, checked, passed on to the read).
 type backupTool struct {
 	tool, name, url, from string
+	opts                  []string
 }
 
 var (
 	reStanza      = regexp.MustCompile(`(?:^|[\s/])pgbackrest\b[^|;&]*?--stanza[= ]([A-Za-z0-9_.-]+)`)
 	reBarmanWAL   = regexp.MustCompile(`(?:^|[\s/])barman-wal-(?:archive|restore)\b((?:\s+-[-\w]+(?:[= ](?:'[^']*'|"[^"]*"|[^\s-][^\s]*))?)*)\s+([^\s-][^\s]*)\s+([A-Za-z0-9_.-]+)`)
-	reBarmanCloud = regexp.MustCompile(`(?:^|[\s/])barman-cloud-wal-(?:archive|restore)\b(?:\s+-[-\w]+(?:[= ](?:'[^']*'|"[^"]*"|[^\s-][^\s]*))?)*\s+((?:s3|gs|azure|https?)://[^\s]+)\s+([A-Za-z0-9_.-]+)`)
 	reBarmanRsync = regexp.MustCompile(`(?:^|\s)rsync\b.*?:[^\s]*/([A-Za-z0-9_.-]+)/incoming/`)
-	reToolName    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
+	// a name starts with a letter, a digit or '_': never an option
+	reToolName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$`)
+	// a destination or an endpoint: a scheme, a host, an optional port and path, nothing a shell or an option could read
+	reCloudURL     = regexp.MustCompile(`^(?:s3|gs|azure|https?)://[A-Za-z0-9][A-Za-z0-9._-]*(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~/-]*)?$`)
+	reEndpointURL  = regexp.MustCompile(`^https?://[A-Za-z0-9][A-Za-z0-9._-]*(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~/-]*)?$`)
+	cloudProviders = map[string]bool{"aws-s3": true, "azure-blob-storage": true, "google-cloud-storage": true}
 )
+
+// barmanCloudTool reads barman-cloud-wal-archive / -restore [options] <url> <server> ...: the first argument that is a
+// destination URL and the next one; of the options only --cloud-provider (one of its three values) and --endpoint-url (a
+// checked URL) are kept. A destination or an option that fails its check names no tool.
+func barmanCloudTool(cmd, from string) (backupTool, bool) {
+	f := strings.Fields(cmd)
+	for i, w := range f {
+		if !strings.HasSuffix(w, "barman-cloud-wal-archive") && !strings.HasSuffix(w, "barman-cloud-wal-restore") {
+			continue
+		}
+		t := backupTool{tool: "barman-cloud", from: from}
+		for j := i + 1; j < len(f); j++ {
+			a := f[j]
+			key, val, hasVal := strings.Cut(a, "=")
+			switch key {
+			case "--cloud-provider", "--endpoint-url":
+				if !hasVal {
+					if j+1 >= len(f) {
+						return backupTool{}, false
+					}
+					j++
+					val = f[j]
+				}
+				if (key == "--cloud-provider" && !cloudProviders[val]) || (key == "--endpoint-url" && !reEndpointURL.MatchString(val)) {
+					return backupTool{}, false
+				}
+				t.opts = append(t.opts, key+"="+val)
+				continue
+			}
+			if strings.HasPrefix(a, "-") {
+				continue
+			}
+			if !reCloudURL.MatchString(a) || j+1 >= len(f) {
+				continue
+			}
+			t.url, t.name = a, f[j+1]
+			return t, true
+		}
+	}
+	return backupTool{}, false
+}
 
 // detectBackupTools names the tools the two commands call, archive_command's first; a name that fails the
 // pattern (a variable, a quote) is not used.
@@ -180,8 +227,8 @@ func detectBackupTools(archiveCmd, restoreCmd string) []backupTool {
 		if m := reStanza.FindStringSubmatch(c.cmd); m != nil {
 			add(backupTool{tool: "pgbackrest", name: m[1], from: c.from})
 		}
-		if m := reBarmanCloud.FindStringSubmatch(c.cmd); m != nil {
-			add(backupTool{tool: "barman-cloud", name: m[2], url: m[1], from: c.from})
+		if t, ok := barmanCloudTool(c.cmd, c.from); ok {
+			add(t)
 		} else if m := reBarmanWAL.FindStringSubmatch(c.cmd); m != nil {
 			add(backupTool{tool: "barman", name: m[3], from: c.from})
 		} else if m := reBarmanRsync.FindStringSubmatch(c.cmd); m != nil {
@@ -205,9 +252,9 @@ func readBackupTool(ctx context.Context, t backupTool, seg int64) []Row {
 	case "pgbackrest":
 		args = []string{"--output=json", "--stanza=" + t.name, "info"}
 	case "barman":
-		args = []string{"-f", "json", "list-backups", t.name}
+		args = []string{"-f", "json", "list-backups", "--", t.name}
 	default:
-		args = []string{"-f", "json", t.url, t.name}
+		args = append(append([]string{"-f", "json"}, t.opts...), "--", t.url, t.name)
 	}
 	start := time.Now()
 	raw, err := runTool(ctx, path, args...)
@@ -233,10 +280,47 @@ func readBackupTool(ctx context.Context, t backupTool, seg int64) []Row {
 		st["state"] = "ok"
 	}
 	st["backup_count"] = len(backups)
-	if len(backups) > backupToolsKept {
-		backups = backups[:backupToolsKept]
+	// every label rides on the tool row, so a backup past the newest backupToolsKept is not taken for expired
+	labels := make([]string, 0, len(backups))
+	for _, b := range backups {
+		labels = append(labels, fmt.Sprint(b["label"]))
 	}
-	return append([]Row{st}, backups...)
+	st["labels"] = labels
+	return append([]Row{st}, keepBackups(backups, backupToolsKept)...)
+}
+
+// keepBackups is the newest n backups (sorted newest first), plus the newest full and the newest that ended well when
+// they are older: the status rows read both.
+func keepBackups(rows []Row, n int) []Row {
+	if len(rows) <= n {
+		return rows
+	}
+	out := append([]Row{}, rows[:n]...)
+	var full, good bool
+	for _, r := range out {
+		full = full || (r["status"] == "ok" && isFullBackup(r["backup_type"]))
+		good = good || r["status"] == "ok"
+	}
+	for _, r := range rows[n:] {
+		if full && good {
+			break
+		}
+		f := r["status"] == "ok" && isFullBackup(r["backup_type"])
+		if (f && !full) || (r["status"] == "ok" && !good) {
+			out = append(out, r)
+			full, good = full || f, good || r["status"] == "ok"
+		}
+	}
+	return out
+}
+
+// isFullBackup: the kinds that hold the whole cluster (0103's pg_base_backup_status counts the same).
+func isFullBackup(t any) bool {
+	switch t {
+	case "full", "rsync", "snapshot":
+		return true
+	}
+	return false
 }
 
 // ---- pgBackRest ----------------------------------------------------------------------------------------
@@ -396,11 +480,19 @@ func parseBarman(raw []byte, server string) ([]Row, error) {
 	}
 	out := make([]Row, 0, len(list))
 	for _, b := range list {
-		r := Row{"kind": "backup", "tool": "barman", "name": server, "label": b.BackupID, "backup_type": nilIfEmpty(b.BackupType),
+		typ := b.BackupType
+		if typ == "" {
+			typ = "full" // before barman 3.11 every backup was a full one and the key did not exist
+		}
+		r := Row{"kind": "backup", "tool": "barman", "name": server, "label": b.BackupID, "backup_type": typ,
 			"status": barmanStatus(b.Status), "tool_status": nilIfEmpty(b.Status), "retention_status": nilIfEmpty(b.RetentionStatus),
 			"db_size_bytes": b.SizeBytes, "wal_since_bytes": b.WalSizeBytes}
 		if n, err := b.EndTimestamp.Int64(); err == nil && n > 0 {
 			r["stopped_at"] = unixUTC(n)
+		} else if t, err := time.Parse("20060102T150405", b.BackupID); err == nil {
+			// a backup still running or failed carries no end: its default id is its start on the barman server's
+			// clock, read as UTC, which places it among the others
+			r["started_at"] = t.UTC()
 		}
 		out = append(out, r)
 	}
@@ -415,9 +507,10 @@ func parseBarmanCloud(raw []byte, server string) ([]Row, error) {
 		List []struct {
 			BackupID string `json:"backup_id"`
 			Status   string `json:"status"`
-			Mode     string `json:"mode"`
 			Begin    string `json:"begin_time_iso"`
 			End      string `json:"end_time_iso"`
+			BeginC   string `json:"begin_time"`
+			EndC     string `json:"end_time"`
 			Size     *int64 `json:"size"`
 			BeginWAL string `json:"begin_wal"`
 			EndWAL   string `json:"end_wal"`
@@ -428,19 +521,32 @@ func parseBarmanCloud(raw []byte, server string) ([]Row, error) {
 	}
 	out := make([]Row, 0, len(all.List))
 	for _, b := range all.List {
-		r := Row{"kind": "backup", "tool": "barman-cloud", "name": server, "label": b.BackupID, "backup_type": nilIfEmpty(b.Mode),
+		// barman-cloud takes full base backups only (mode is how it copied: concurrent, exclusive)
+		r := Row{"kind": "backup", "tool": "barman-cloud", "name": server, "label": b.BackupID, "backup_type": "full",
 			"status": barmanStatus(b.Status), "tool_status": nilIfEmpty(b.Status), "db_size_bytes": b.Size,
 			"wal_start": nilIfEmpty(b.BeginWAL), "wal_stop": nilIfEmpty(b.EndWAL)}
-		if t, err := time.Parse(time.RFC3339Nano, b.Begin); err == nil {
-			r["started_at"] = t.UTC()
+		if t, ok := barmanTime(b.Begin, b.BeginC); ok {
+			r["started_at"] = t
 		}
-		if t, err := time.Parse(time.RFC3339Nano, b.End); err == nil {
-			r["stopped_at"] = t.UTC()
+		if t, ok := barmanTime(b.End, b.EndC); ok {
+			r["stopped_at"] = t
 		}
 		out = append(out, r)
 	}
 	sortBackups(out)
 	return out, nil
+}
+
+// barmanTime: the ISO field (barman 3.13 and later), else the older ctime one ('Wed Nov 11 10:00:00 2026', no zone:
+// read as UTC).
+func barmanTime(iso, ctime string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339Nano, iso); err == nil {
+		return t.UTC(), true
+	}
+	if t, err := time.Parse(time.ANSIC, ctime); err == nil {
+		return t.UTC(), true
+	}
+	return time.Time{}, false
 }
 
 // barmanStatus maps barman's status to ok (DONE), running (a backup in flight) or error (FAILED and the rest).

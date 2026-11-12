@@ -116,6 +116,9 @@ BEGIN
           v_why := format('%s must be a number from 0 to %s (%s), or null', CASE i WHEN 1 THEN 'warn' ELSE 'crit' END, v_k.max_value, v_k.unit);
         ELSIF v IS NOT NULL AND v::numeric > v_k.max_value THEN
           v_why := format('%s must be a number from 0 to %s (%s), or null', CASE i WHEN 1 THEN 'warn' ELSE 'crit' END, v_k.max_value, v_k.unit);
+        ELSIF v IS NOT NULL AND v_key = 'archive_age' AND (v !~ '^[0-9]+$' OR v::numeric < 1) THEN
+          -- 0022's rule takes whole minutes (archive_warn_minutes is an int column there)
+          v_why := format('archive_age takes whole minutes from 1 to %s, or null', v_k.max_value);
         END IF;
       END;
       EXIT WHEN v_why IS NOT NULL;
@@ -291,9 +294,9 @@ BEGIN
   ON CONFLICT (instance_id, tool, name) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, named_by = EXCLUDED.named_by, state = EXCLUDED.state,
     message = EXCLUDED.message, status_code = EXCLUDED.status_code, status_message = EXCLUDED.status_message,
     -- a failed read keeps what the last good read said of the archive and the backups
-    backup_count = CASE WHEN EXCLUDED.state = 'ok' OR EXCLUDED.status_code IS NOT NULL THEN EXCLUDED.backup_count ELSE t.backup_count END,
-    archive_min = coalesce(EXCLUDED.archive_min, CASE WHEN EXCLUDED.status_code IS NULL THEN t.archive_min END),
-    archive_max = coalesce(EXCLUDED.archive_max, CASE WHEN EXCLUDED.status_code IS NULL THEN t.archive_max END),
+    backup_count = CASE WHEN EXCLUDED.state = 'ok' OR EXCLUDED.status_code IN (0, 2) THEN EXCLUDED.backup_count ELSE t.backup_count END,
+    archive_min = CASE WHEN EXCLUDED.state = 'ok' OR EXCLUDED.status_code IN (0, 2) THEN EXCLUDED.archive_min ELSE t.archive_min END,
+    archive_max = CASE WHEN EXCLUDED.state = 'ok' OR EXCLUDED.status_code IN (0, 2) THEN EXCLUDED.archive_max ELSE t.archive_max END,
     system_id = coalesce(EXCLUDED.system_id, t.system_id), db_version = coalesce(EXCLUDED.db_version, t.db_version),
     read_ms = EXCLUDED.read_ms, is_present = true;
 
@@ -312,13 +315,17 @@ BEGIN
     wal_start = EXCLUDED.wal_start, wal_stop = EXCLUDED.wal_stop, wal_since_segments = EXCLUDED.wal_since_segments, wal_since_bytes = EXCLUDED.wal_since_bytes,
     prior = EXCLUDED.prior, is_present = true;
 
-  -- a tool that answered lists its backups whole: the rest of its stanza's are gone (expired by its retention)
+  -- a tool that answered (state ok, or pgBackRest's status 0, or 2 = no valid backup) names every label it lists
+  -- (the tool row's labels; the backup rows are the newest of them): the rest of its stanza's are gone, expired by its
+  -- retention. Any other status (1 missing stanza path, 99 other: an unreadable repository) keeps them.
   UPDATE pgvigil.pg_base_backups b SET is_present = false
    WHERE b.instance_id = p_instance_id AND b.is_present
      AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
-                  WHERE r->>'kind' = 'tool' AND r->>'tool' = b.tool AND r->>'name' = b.name AND (r->>'state' = 'ok' OR r->>'status_code' IS NOT NULL))
-     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r
-                      WHERE r->>'kind' = 'backup' AND r->>'tool' = b.tool AND r->>'name' = b.name AND r->>'label' = b.label);
+                  WHERE r->>'kind' = 'tool' AND r->>'tool' = b.tool AND r->>'name' = b.name
+                    AND (r->>'state' = 'ok' OR (r->>'status_code')::int IN (0, 2))
+                    AND NOT coalesce(r->'labels' ? b.label, false)
+                    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) x
+                                     WHERE x->>'kind' = 'backup' AND x->>'tool' = b.tool AND x->>'name' = b.name AND x->>'label' = b.label));
 
   INSERT INTO pgvigil.pg_wal_replay AS w (instance_id, snapshot_at, has_receiver, last_replay_at, server_now, replay_delay_secs, replay_lsn, receive_lsn, replay_paused, is_present)
   SELECT p_instance_id, p_snapshot_at, (r->>'has_receiver')::boolean, (r->>'last_replay_at')::timestamptz, (r->>'server_now')::timestamptz,
@@ -438,9 +445,9 @@ BEGIN
         WHEN v_sys IS NOT NULL AND o.system_identifier IS NOT NULL AND v_sys <> o.system_identifier THEN 'another cluster'
         WHEN o.is_replica AND NOT v_rep THEN 'promotion'
         WHEN NOT o.is_replica AND v_rep THEN 'demotion'
-        WHEN v_tl IS NOT NULL AND o.timeline_id IS NOT NULL AND v_tl <> o.timeline_id
-             -- a standby's checkpoint timeline trails its replay: only a rise counts, and only from the same source
-             AND (v_tl > o.timeline_id) AND r->>'timeline_source' IS NOT DISTINCT FROM o.timeline_source THEN 'timeline'
+        -- a standby's checkpoint timeline trails its replay: only a rise counts (from any source: the receiver restarts
+        -- in a failover, so the source flips exactly then); a lower reading is the trailing one and is not kept
+        WHEN v_tl IS NOT NULL AND o.timeline_id IS NOT NULL AND v_tl > o.timeline_id THEN 'timeline'
       END;
       IF v_kind IS NOT NULL THEN
         -- the time: the new timeline's history file when it was written between the two reads (the server's clock),
@@ -461,7 +468,7 @@ BEGIN
                 CASE WHEN o.since IS NOT NULL THEN greatest(0, extract(epoch FROM v_at - o.since))::bigint END);
       END IF;
       UPDATE pgvigil.pg_role_state SET read_at = p_snapshot_at, server_now = v_now, is_replica = v_rep,
-             timeline_id = CASE WHEN v_kind IS NULL AND v_tl < o.timeline_id AND r->>'timeline_source' IS NOT DISTINCT FROM o.timeline_source THEN o.timeline_id ELSE coalesce(v_tl, o.timeline_id) END,
+             timeline_id = CASE WHEN v_kind IN ('promotion', 'demotion', 'another cluster') THEN coalesce(v_tl, o.timeline_id) ELSE greatest(o.timeline_id, v_tl) END,
              timeline_source = r->>'timeline_source', system_identifier = coalesce(v_sys, o.system_identifier), postmaster_start = v_pm,
              cluster_name = r->>'cluster_name', history_file = r->>'history_file', history_at = v_hat,
              since = CASE WHEN v_kind IS NOT NULL THEN v_at ELSE o.since END,
@@ -485,10 +492,13 @@ BEGIN
       api_url = EXCLUDED.api_url, is_present = true;
     UPDATE pgvigil.pg_patroni_members m SET is_present = false
      WHERE m.instance_id = p_instance_id AND m.is_present AND m.snapshot_at < p_snapshot_at;
-  ELSIF r IS NOT NULL AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) x WHERE x->>'kind' = 'patroni_read') THEN
-    -- no Patroni session any more: the members read before are no longer this server's
+  ELSIF r IS NOT NULL THEN
+    -- Patroni did not answer (the read row says why) or no Patroni session any more: the members read before are not
+    -- shown as its state
     UPDATE pgvigil.pg_patroni_members m SET is_present = false WHERE m.instance_id = p_instance_id AND m.is_present;
-    DELETE FROM pgvigil.pg_patroni_read WHERE instance_id = p_instance_id;
+    IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) x WHERE x->>'kind' = 'patroni_read') THEN
+      DELETE FROM pgvigil.pg_patroni_read WHERE instance_id = p_instance_id;
+    END IF;
   END IF;
 END $$;
 
@@ -694,31 +704,34 @@ SELECT b.instance_id, 'critical' AS severity, b.tool || ' read failing' AS check
  WHERE b.state = 'error' AND b.read_at > now() - interval '1 day'
 UNION ALL
 SELECT b.instance_id, CASE WHEN b.full_age_s IS NULL OR (b.full_crit_h IS NOT NULL AND b.full_age_s > b.full_crit_h * 3600) THEN 'critical' ELSE 'warning' END,
-       'full backup older than ' || b.full_warn_h || ' h', b.name, b.read_at,
+       'full backup older than ' || coalesce(b.full_warn_h, b.full_crit_h) || ' h', b.name, b.read_at,
        coalesce('the newest full backup ' || b.full_label || ' ended ' || b.full_age_h || ' h before the read', 'no full backup is listed')
-       || ' (warning ' || b.full_warn_h || ' h' || coalesce(', critical ' || b.full_crit_h || ' h', '') || ', ' || b.full_level || ')', 'base backups'
+       || ' (' || concat_ws(', ', 'warning ' || b.full_warn_h || ' h', 'critical ' || b.full_crit_h || ' h', b.full_level) || ')', 'base backups'
   FROM pgvigil.pg_base_backup_status b
- WHERE b.state = 'ok' AND b.full_warn_h IS NOT NULL AND (b.full_age_s IS NULL OR b.full_age_s > b.full_warn_h * 3600) AND b.read_at > now() - interval '1 day'
+ WHERE b.state = 'ok' AND coalesce(b.full_warn_h, b.full_crit_h) IS NOT NULL
+   AND (b.full_age_s IS NULL OR b.full_age_s > coalesce(b.full_warn_h, b.full_crit_h) * 3600) AND b.read_at > now() - interval '1 day'
 UNION ALL
 SELECT b.instance_id, CASE WHEN b.last_age_s IS NULL OR (b.any_crit_h IS NOT NULL AND b.last_age_s > b.any_crit_h * 3600) THEN 'critical' ELSE 'warning' END,
-       'backup older than ' || b.any_warn_h || ' h', b.name, b.read_at,
+       'backup older than ' || coalesce(b.any_warn_h, b.any_crit_h) || ' h', b.name, b.read_at,
        coalesce('the newest backup ' || b.last_label || ' ended ' || b.last_age_h || ' h before the read', 'no backup is listed'), 'base backups'
   FROM pgvigil.pg_base_backup_status b
- WHERE b.state = 'ok' AND b.any_warn_h IS NOT NULL AND (b.last_age_s IS NULL OR b.last_age_s > b.any_warn_h * 3600) AND b.read_at > now() - interval '1 day'
+ WHERE b.state = 'ok' AND coalesce(b.any_warn_h, b.any_crit_h) IS NOT NULL
+   AND (b.last_age_s IS NULL OR b.last_age_s > coalesce(b.any_warn_h, b.any_crit_h) * 3600) AND b.read_at > now() - interval '1 day'
 UNION ALL
 SELECT x.instance_id, 'warning', 'newest backup failed', x.name, x.snapshot_at, x.label || ' (' || coalesce(x.tool_status, x.status) || ')', 'base backups'
   FROM (SELECT DISTINCT ON (b.instance_id, b.tool, b.name) b.* FROM pgvigil.pg_base_backups b
           JOIN pgvigil.instances i ON i.instance_id = b.instance_id AND i.is_active
-         WHERE b.is_present AND b.status <> 'running' ORDER BY b.instance_id, b.tool, b.name, b.stopped_at DESC NULLS LAST) x
+         WHERE b.is_present AND b.status <> 'running' ORDER BY b.instance_id, b.tool, b.name, coalesce(b.stopped_at, b.started_at) DESC NULLS LAST) x
  WHERE x.status = 'error' AND x.snapshot_at > now() - interval '1 day'
 UNION ALL
 SELECT w.instance_id, CASE WHEN w.crit_min IS NOT NULL AND w.replay_delay_secs > w.crit_min * 60 THEN 'critical' ELSE 'warning' END,
-       'replay delay over ' || w.warn_min || ' min', 'restore_command', w.read_at,
+       'replay delay over ' || coalesce(w.warn_min, w.crit_min) || ' min', 'restore_command', w.read_at,
        'last replayed commit ' || round((w.replay_delay_secs / 60)::numeric) || ' min before the read, no WAL receiver (file shipping)'
        || CASE WHEN w.primary_id IS NULL THEN '; its primary is not in the fleet: an idle primary also reads as a delay' ELSE '' END
        || CASE WHEN w.replay_paused THEN '; replay is paused' ELSE '' END, 'log shipping'
   FROM pgvigil.pg_wal_replay_status w
- WHERE NOT coalesce(w.has_receiver, false) AND w.warn_min IS NOT NULL AND w.replay_delay_secs > w.warn_min * 60 AND NOT coalesce(w.caught_up, false)
+ WHERE NOT coalesce(w.has_receiver, false) AND coalesce(w.warn_min, w.crit_min) IS NOT NULL AND w.replay_delay_secs > coalesce(w.warn_min, w.crit_min) * 60
+   AND NOT coalesce(w.caught_up, false)
    AND w.read_at > now() - interval '1 hour'
 UNION ALL
 SELECT c.instance_id, c.status, 'crash restart', 'log', c.open_crash_at,
@@ -742,11 +755,12 @@ SELECT u.instance_id, u.status, 'uptime under ' || CASE WHEN u.status = 'critica
  WHERE u.status IN ('warning', 'critical')
 UNION ALL
 SELECT a.instance_id, CASE WHEN a.last_ok_at IS NULL OR (a.crit_days IS NOT NULL AND a.age_s > a.crit_days * 86400) THEN 'critical' ELSE 'warning' END,
-       CASE WHEN a.last_ok_at IS NULL THEN 'amcheck never clean' ELSE 'amcheck older than ' || a.warn_days || ' d' END, a.datname, coalesce(a.last_run_at, now()),
+       CASE WHEN a.last_ok_at IS NULL THEN 'amcheck never clean' ELSE 'amcheck older than ' || coalesce(a.warn_days, a.crit_days) || ' d' END, a.datname, coalesce(a.last_run_at, now()),
        coalesce('the last clean run ' || a.age_days || ' d ago', 'no clean run stored') || coalesce(' (the newest run: ' || a.last_status || ')', '')
-       || ' (warning ' || a.warn_days || ' d' || coalesce(', critical ' || a.crit_days || ' d', '') || ', ' || a.threshold_level || ')', 'amcheck age'
+       || ' (' || concat_ws(', ', 'warning ' || a.warn_days || ' d', 'critical ' || a.crit_days || ' d', a.threshold_level) || ')', 'amcheck age'
   FROM pgvigil.pg_amcheck_age a
- WHERE a.amcheck_runs_any AND a.warn_days IS NOT NULL AND (a.last_ok_at IS NULL OR a.age_s > a.warn_days * 86400);
+ WHERE a.amcheck_runs_any AND coalesce(a.warn_days, a.crit_days) IS NOT NULL
+   AND (a.last_ok_at IS NULL OR a.age_s > coalesce(a.warn_days, a.crit_days) * 86400);
 
 -- The findings arm (the findings columns): the checks above but uptime (a state, not a finding), plus two info rows:
 -- a tool the server names that the collector's host lacks, and amcheck never run on an instance.
@@ -840,12 +854,14 @@ SELECT b.instance_id, 'warning', 'last archive older than ' || b.archive_warn_mi
  WHERE b.archiving AND b.wal_waiting AND b.platform <> 'aurora'
    AND (b.last_archived_time IS NULL OR b.archive_age_s > b.archive_warn_minutes * 60)
 UNION ALL
-SELECT b.instance_id, CASE WHEN b.retention_days <= coalesce(r.crit_days, 0) THEN 'critical' ELSE 'warning' END,
-       'retention under ' || trim_scale(r.warn_days) || ' days', b.cloud_resource, b.cloud_read_at,
+SELECT b.instance_id, CASE WHEN r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days THEN 'critical' ELSE 'warning' END,
+       CASE WHEN r.warn_days IS NOT NULL THEN 'retention under ' || trim_scale(r.warn_days) || ' days'
+            ELSE 'retention at or under ' || trim_scale(r.crit_days) || ' days' END, b.cloud_resource, b.cloud_read_at,
        CASE WHEN b.retention_days = 0 THEN 'automated backups are off (retention 0 days)'
             ELSE 'backup retention ' || b.retention_days || ' days' END
   FROM pgvigil.backup_status b JOIN pgvigil.backup_retention r USING (instance_id)
- WHERE r.warn_days IS NOT NULL AND b.retention_days < r.warn_days AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
+ WHERE ((r.warn_days IS NOT NULL AND b.retention_days < r.warn_days) OR (r.crit_days IS NOT NULL AND b.retention_days <= r.crit_days))
+   AND NOT (b.platform = 'rds' AND coalesce(b.is_replica, false) AND b.retention_days = 0)
 UNION ALL
 SELECT b.instance_id, 'warning', 'no snapshot in 24 h', b.cloud_resource, b.cloud_read_at,
        coalesce('newest snapshot ' || to_char(b.newest_snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC, '
@@ -858,12 +874,13 @@ CREATE OR REPLACE VIEW pgvigil.backup_findings AS
 SELECT h.instance_id, h.severity, h.check_name AS setting, h.object || ': ' || h.detail AS value, true AS is_set,
        CASE WHEN h.check_name = 'archiver failing' THEN 'read the server log for the archive_command error and fix the destination; WAL stays in pg_wal until it succeeds'
             WHEN h.check_name LIKE 'retention under %' THEN 'raise the backup retention period to ' || substring(h.check_name FROM 'under ([0-9.]+) days') || ' days or more'
+            WHEN h.check_name LIKE 'retention at or under %' THEN 'raise the backup retention period above ' || substring(h.check_name FROM 'under ([0-9.]+) days') || ' days'
             WHEN h.check_name = 'no snapshot in 24 h' THEN 'check the backup window and the automated backups; take a manual snapshot'
             ELSE 'check archive_command and its destination; set archive_timeout so a quiet server still archives'
        END AS suggested,
-       CASE WHEN h.check_name LIKE 'retention under %' OR h.check_name = 'no snapshot in 24 h' THEN 'managed' ELSE 'not aurora' END AS platforms,
+       CASE WHEN h.check_name LIKE 'retention %' OR h.check_name = 'no snapshot in 24 h' THEN 'managed' ELSE 'not aurora' END AS platforms,
        CASE WHEN h.check_name = 'archiver failing' THEN 'a failing archiver leaves no point-in-time recovery past the last archived file and fills pg_wal'
-            WHEN h.check_name LIKE 'retention under %' THEN 'a short retention leaves a narrow window to restore from (0 = no automated backups and no point-in-time restore)'
+            WHEN h.check_name LIKE 'retention %' THEN 'a short retention leaves a narrow window to restore from (0 = no automated backups and no point-in-time restore)'
             WHEN h.check_name = 'no snapshot in 24 h' THEN 'a missed daily snapshot widens the replay a restore needs, or there is nothing to restore from'
             ELSE 'WAL waits to be archived: a point-in-time recovery would lose what is not yet archived'
        END AS detail,

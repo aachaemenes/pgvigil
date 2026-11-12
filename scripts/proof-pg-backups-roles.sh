@@ -91,6 +91,29 @@
 #  failed: no 'base backups' row 40 s after the full with full_backup_age at 0.01 h. Cause: the rule compared the age
 #  rounded to a tenth of an hour (0.0) with the threshold. Fixed in 0103 (the rules compare unrounded seconds; amcheck
 #  age had the same rounding), the expectation unchanged.]
+#  [Run 2, s162-proof2, 15:45 PST, PG 18: every part as expected, PROOF OK. Run 3, s162-proof3, 15:50 PST: PROOF OK on 13
+#  (A4 not run) and 16.]
+#  [The review's fold (agent-runs/20261111-154515-reviewer), expected before run 4:
+#   A3 one more refusal: archive_age warn 0.4 (whole minutes only).
+#   A4 the barman answer as barman writes a failed and a running backup (no end, no size): 4 backups, the newest ended
+#      one FAILED (20261111T110000): one 'newest backup failed' row, warning, object pg1; the FAILED and running ones
+#      placed by their id's time; backup_count 4; after the reset the 4 stay present.
+#   [Run 4, s162-proof4, 16:07 PST: PROOF OK on 13; on 18 and 16 A4 failed: the barman stand-in checked the old argument
+#   list, and the fold puts '--' before the server name (the collector was right); the stand-in now expects
+#   '-f json list-backups -- pg1'.]
+#   S8 b: receiver timeline 1, checkpoint 1, receiver 2: exactly one 'timeline' row (1 -> 2); then checkpoint 1: no row,
+#      the state stays on 2.
+#   S9 b: the root retention at critical 12 alone: 'retention at or under 12 days' critical for retention 10.
+#   S10 a pgBackRest read with status 99 (an unreadable repository) and no backup keeps both backups present and the
+#      count 2; a read whose labels hold three names but whose backup rows are only the newest keeps the older two; a read
+#      with status 2 (no valid backup) and no label marks them absent.
+#   S11 full_backup_age at critical 0.5 h alone on an instance whose full ended an hour ago: one row, critical, 'full
+#      backup older than 0.5 h'; amcheck_age at critical 5 d alone: db1 (10 d) critical.
+#   S12 Patroni answered (one member), then failed (ok false): the member absent, the read row ok false.
+#   U  more cases: a barman server name starting with '-' names no tool; --cloud-provider google-cloud-storage and an
+#      --endpoint-url pass on as options, an unknown provider names no tool; keepBackups keeps an older full past the
+#      newest 50; barman-cloud's ctime fields before 3.13; barman without backup_type is full; a failed barman backup is
+#      placed by its id.]
 set -euo pipefail
 PG=${PG:-18}; RPG=${REPO_PG:-$PG}
 IMG=pgvigil-proof-pgbackrest:$PG
@@ -221,7 +244,7 @@ collect pv-primary backup_tools
   || fail "A3: $(q "select * from pgvigil.pg_backups_checks where instance_id = $P")"
 for bad in "{\"op\":\"set\",\"key\":\"nope\",\"level\":\"root\",\"warn\":1}" "{\"op\":\"set\",\"key\":\"full_backup_age\",\"level\":\"database\",\"instance_id\":$P,\"datname\":\"postgres\",\"warn\":1}" \
            "{\"op\":\"set\",\"key\":\"full_backup_age\",\"level\":\"root\",\"warn\":\"abc\"}" "{\"op\":\"set\",\"key\":\"full_backup_age\",\"level\":\"root\",\"warn\":10,\"crit\":5}" \
-           "{\"op\":\"inherit\",\"key\":\"uptime\",\"level\":\"root\"}"; do
+           "{\"op\":\"inherit\",\"key\":\"uptime\",\"level\":\"root\"}" "{\"op\":\"set\",\"key\":\"archive_age\",\"level\":\"root\",\"warn\":\"0.4\"}"; do
   b=${bad%\}},\"ui_user\":\"proof\"}
   [[ $(thr "$b") == refused ]] || fail "A3: not refused: $b"
 done
@@ -229,31 +252,34 @@ done
 [[ $(thr "{\"op\":\"inherit\",\"key\":\"full_backup_age\",\"level\":\"instance\",\"instance_id\":$P,\"ui_user\":\"proof\"}") == done ]] || fail "A3: inherit"
 collect pv-primary backup_tools
 [[ $(q "select count(*) from pgvigil.pg_backups_checks where instance_id = $P and check_group = 'base backups'") == 0 ]] || fail "A3: the row stayed after inherit"
-ok "A3: the instance threshold raised the row, five refusals, inherit cleared it"
+ok "A3: the instance threshold raised the row, six refusals, inherit cleared it"
 
 if (( PG >= 14 )); then
   cat > "$SHIM/barman" <<'EOF'
 #!/bin/sh
-[ "$1 $2 $3 $4" = "-f json list-backups pg1" ] || { echo "unexpected: $*" >&2; exit 2; }
+[ "$*" = "-f json list-backups -- pg1" ] || { echo "unexpected: $*" >&2; exit 2; }
 cat <<'J'
 {"pg1": [{"backup_id": "20261111T120000", "backup_type": "full", "status": "STARTED"},
+ {"backup_id": "20261111T110000", "backup_type": "full", "status": "FAILED"},
  {"backup_id": "20261111T100000", "backup_type": "full", "end_time_timestamp": "1794391200", "end_time": "Wed Nov 11 10:00:00 2026", "size_bytes": 52428800, "wal_size_bytes": 16777216, "size": "50.0 MiB", "wal_size": "16.0 MiB", "status": "DONE", "retention_status": "VALID"},
- {"backup_id": "20261110T100000", "backup_type": "full", "end_time_timestamp": "1794304800", "end_time": "Tue Nov 10 10:00:00 2026", "size_bytes": 50331648, "wal_size_bytes": 0, "size": "48.0 MiB", "wal_size": "0 B", "status": "FAILED", "retention_status": "-"}]}
+ {"backup_id": "20261110T100000", "backup_type": "full", "status": "FAILED"}]}
 J
 EOF
   chmod +x "$SHIM/barman"
   su "alter system set restore_command = 'barman-wal-restore -U barman backuphost pg1 %f %p'"; su "select pg_reload_conf()" >/dev/null; sleep 1
   collect pv-primary backup_tools
-  [[ $(q "select state || '|' || named_by || '|' || backup_count from pgvigil.pg_backup_tools where instance_id = $P and tool = 'barman' and name = 'pg1'") == "ok|restore_command|3" ]] \
+  [[ $(q "select state || '|' || named_by || '|' || backup_count from pgvigil.pg_backup_tools where instance_id = $P and tool = 'barman' and name = 'pg1'") == "ok|restore_command|4" ]] \
     || fail "A4: $(q "select * from pgvigil.pg_backup_tools where instance_id = $P and tool = 'barman'")"
   R=$(q "select string_agg(label || ':' || status || ':' || coalesce(db_size_bytes::text, '-') || ':' || coalesce(to_char(stopped_at at time zone 'UTC', 'HH24'), '-'), ',' order by label) from pgvigil.pg_base_backups where instance_id = $P and tool = 'barman'")
-  [[ $R == "20261110T100000:error:50331648:10,20261111T100000:ok:52428800:10,20261111T120000:running:-:-" ]] || fail "A4: barman rows $R"
-  [[ $(q "select count(*) from pgvigil.pg_backups_checks where instance_id = $P and check_name = 'newest backup failed'") == 0 ]] || fail "A4: a failed older backup flagged as the newest"
+  [[ $R == "20261110T100000:error:-:-,20261111T100000:ok:52428800:10,20261111T110000:error:-:-,20261111T120000:running:-:-" ]] || fail "A4: barman rows $R"
+  [[ $(q "select to_char(started_at at time zone 'UTC', 'YYYYMMDD\"T\"HH24MISS') from pgvigil.pg_base_backups where instance_id = $P and label = '20261111T110000'") == 20261111T110000 ]] || fail "A4: the failed one not placed by its id"
+  [[ $(q "select severity || '|' || object || '|' || detail from pgvigil.pg_backups_checks where instance_id = $P and check_name = 'newest backup failed'") == "warning|pg1|20261111T110000 (FAILED)" ]] \
+    || fail "A4: newest failed: $(q "select * from pgvigil.pg_backups_checks where instance_id = $P and check_name = 'newest backup failed'")"
   su "alter system reset restore_command"; su "select pg_reload_conf()" >/dev/null; sleep 1
   collect pv-primary backup_tools
   [[ $(q "select is_present from pgvigil.pg_backup_tools where instance_id = $P and tool = 'barman'") == f ]] || fail "A4: barman still present"
-  [[ $(q "select count(*) from pgvigil.pg_base_backups where instance_id = $P and tool = 'barman' and is_present") == 3 ]] || fail "A4: barman's backups dropped with the tool"
-  ok "A4: barman named by restore_command, its three states read, gone with the setting"
+  [[ $(q "select count(*) from pgvigil.pg_base_backups where instance_id = $P and tool = 'barman' and is_present") == 4 ]] || fail "A4: barman's backups dropped with the tool"
+  ok "A4: barman named by restore_command, its states read, the newest failed one flagged, gone with the setting"
 else
   echo "  A4: not run on PostgreSQL $PG (restore_command is a postmaster setting before 14)"
 fi
@@ -395,7 +421,12 @@ q "select pgvigil.import_rolechange($I_s8, '$T1', '[{\"kind\":\"role\",\"is_repl
 q "select pgvigil.import_rolechange($I_s8b, now() - interval '2 minutes', '[{\"kind\":\"role\",\"is_replica\":true,\"timeline_id\":4,\"timeline_source\":\"checkpoint\",\"system_identifier\":\"89\"}]')" >/dev/null
 q "select pgvigil.import_rolechange($I_s8b, now(), '[{\"kind\":\"role\",\"is_replica\":true,\"timeline_id\":3,\"timeline_source\":\"checkpoint\",\"system_identifier\":\"89\"}]')" >/dev/null
 [[ $(q "select count(*) from pgvigil.pg_role_changes where instance_id = $I_s8b") == 0 && $(q "select timeline_id from pgvigil.pg_role_state where instance_id = $I_s8b") == 4 ]] || fail "S8 a lower checkpoint timeline"
-ok "S8: a demotion timed by the restart, a trailing checkpoint timeline ignored"
+I_s8c=$(seed s8c 180000 true)
+rc8() { q "select pgvigil.import_rolechange($I_s8c, now() - interval '$1 seconds', '[{\"kind\":\"role\",\"is_replica\":true,\"timeline_id\":$2,\"timeline_source\":\"$3\",\"system_identifier\":\"90\"}]')" >/dev/null; }
+rc8 40 1 "wal receiver"; rc8 30 1 checkpoint; rc8 20 2 "wal receiver"; rc8 10 1 checkpoint
+[[ $(q "select count(*) || '|' || max(change) || '|' || max(from_timeline) || '|' || max(to_timeline) from pgvigil.pg_role_changes where instance_id = $I_s8c") == "1|timeline|1|2" \
+   && $(q "select timeline_id from pgvigil.pg_role_state where instance_id = $I_s8c") == 2 ]] || fail "S8b: $(q "select change, from_timeline, to_timeline from pgvigil.pg_role_changes where instance_id = $I_s8c")"
+ok "S8: a demotion timed by the restart, a trailing checkpoint timeline ignored, a rise across a source switch counted once"
 I_s9=$(q "select pgvigil.ensure_instance('s9-$SUF', 'rds', 'x', 160000, false, '{}')")
 q "select pgvigil.import_backups($I_s9, now(), '[{\"kind\":\"archiver\",\"name\":\"pg_stat_archiver\",\"archive_mode\":\"on\",\"archive_set\":true,\"is_replica\":false,\"wal_segment_bytes\":16777216,\"archive_lag_bytes\":0,\"archive_warn_minutes\":60},{\"kind\":\"cloud\",\"name\":\"db-s9\",\"resource_kind\":\"instance\",\"retention_days\":10},{\"kind\":\"snapshots_read\",\"name\":\"snapshots\",\"count\":0}]')" >/dev/null
 ret() { q "select coalesce(string_agg(severity || '|' || check_name, ','), 'none') from pgvigil.backup_rule_hits where instance_id = $I_s9 and check_name like 'retention%'"; }
@@ -405,7 +436,39 @@ ret() { q "select coalesce(string_agg(severity || '|' || check_name, ','), 'none
 [[ $(q "select count(*) from pgvigil.backup_findings where instance_id = $I_s9 and setting = 'retention under 14 days' and suggested like '%14 days%'") == 1 ]] || fail "S9 finding"
 [[ $(thr "{\"op\":\"inherit\",\"key\":\"retention\",\"level\":\"root\",\"ui_user\":\"proof\"}") == done && $(ret) == none ]] || fail "S9 reset"
 [[ $(q "select archive_warn_minutes from pgvigil.backup_status where instance_id = $I_s9") == 60 ]] || fail "S9 archive age"
-ok "S9: retention from the UI, 0022's lines kept"
+[[ $(thr "{\"op\":\"set\",\"key\":\"retention\",\"level\":\"root\",\"crit\":12,\"ui_user\":\"proof\"}") == done ]] || fail "S9b set"
+[[ $(ret) == "critical|retention at or under 12 days" ]] || fail "S9b $(ret)"
+[[ $(thr "{\"op\":\"inherit\",\"key\":\"retention\",\"level\":\"root\",\"ui_user\":\"proof\"}") == done ]] || fail "S9b reset"
+ok "S9: retention from the UI (a warning, a critical alone), 0022's lines kept"
+I_s10=$(seed s10)
+bt() { q "select pgvigil.import_backup_tools($I_s10, now(), '$1')" >/dev/null; }
+B1='{"kind":"backup","tool":"pgbackrest","name":"st","label":"L1","backup_type":"full","status":"ok","stopped_at":"2026-11-10T00:00:00Z"}'
+B2='{"kind":"backup","tool":"pgbackrest","name":"st","label":"L2","backup_type":"incr","status":"ok","stopped_at":"2026-11-11T00:00:00Z"}'
+B3='{"kind":"backup","tool":"pgbackrest","name":"st","label":"L3","backup_type":"incr","status":"ok","stopped_at":"2026-11-11T12:00:00Z"}'
+DT='{"kind":"detect","is_replica":false,"tools":1}'
+bt "[$DT,{\"kind\":\"tool\",\"tool\":\"pgbackrest\",\"name\":\"st\",\"state\":\"ok\",\"status_code\":0,\"backup_count\":2,\"labels\":[\"L1\",\"L2\"]},$B1,$B2]"
+bt "[$DT,{\"kind\":\"tool\",\"tool\":\"pgbackrest\",\"name\":\"st\",\"state\":\"error\",\"status_code\":99,\"status_message\":\"other\",\"backup_count\":0,\"labels\":[]}]"
+[[ $(q "select count(*) filter (where is_present) || '|' || (select backup_count from pgvigil.pg_backup_tools where instance_id = $I_s10) from pgvigil.pg_base_backups where instance_id = $I_s10") == "2|2" ]] || fail "S10 status 99 dropped the backups"
+bt "[$DT,{\"kind\":\"tool\",\"tool\":\"pgbackrest\",\"name\":\"st\",\"state\":\"ok\",\"status_code\":0,\"backup_count\":3,\"labels\":[\"L1\",\"L2\",\"L3\"]},$B3]"
+[[ $(q "select count(*) filter (where is_present) from pgvigil.pg_base_backups where instance_id = $I_s10") == 3 ]] || fail "S10 the labels list"
+bt "[$DT,{\"kind\":\"tool\",\"tool\":\"pgbackrest\",\"name\":\"st\",\"state\":\"error\",\"status_code\":2,\"status_message\":\"no valid backups\",\"backup_count\":0,\"labels\":[]}]"
+[[ $(q "select count(*) filter (where is_present) from pgvigil.pg_base_backups where instance_id = $I_s10") == 0 ]] || fail "S10 status 2 kept them"
+ok "S10: an unreadable repository keeps the backups, the labels list judges absence, status 2 ends them"
+I_s11=$(seed s11)
+q "select pgvigil.import_backup_tools($I_s11, now(), '[$DT,{\"kind\":\"tool\",\"tool\":\"pgbackrest\",\"name\":\"st\",\"state\":\"ok\",\"status_code\":0,\"labels\":[\"F1\"]},{\"kind\":\"backup\",\"tool\":\"pgbackrest\",\"name\":\"st\",\"label\":\"F1\",\"backup_type\":\"full\",\"status\":\"ok\",\"stopped_at\":\"$(date -u -d '-1 hour' +%FT%TZ)\"}]')" >/dev/null
+bbc() { q "select coalesce(string_agg(severity || '|' || check_name, ','), 'none') from pgvigil.pg_backups_checks where instance_id = $I_s11 and check_group = 'base backups'"; }
+[[ $(bbc) == none ]] || fail "S11 default $(bbc)"
+[[ $(thr "{\"op\":\"set\",\"key\":\"full_backup_age\",\"level\":\"instance\",\"instance_id\":$I_s11,\"crit\":\"0.5\",\"ui_user\":\"proof\"}") == done ]] || fail "S11 set"
+[[ $(bbc) == "critical|full backup older than 0.5 h" ]] || fail "S11 $(bbc)"
+[[ $(thr "{\"op\":\"set\",\"key\":\"amcheck_age\",\"level\":\"instance\",\"instance_id\":$I_s5,\"crit\":5,\"ui_user\":\"proof\"}") == done ]] || fail "S11 amcheck set"
+[[ $(q "select severity || '|' || check_name from pgvigil.pg_backups_checks where instance_id = $I_s5 and object = 'db1' and check_group = 'amcheck age'") == "critical|amcheck older than 5 d" ]] || fail "S11 amcheck $(amc "$I_s5")"
+ok "S11: a critical alone judges the full backup's age and amcheck's"
+I_s12=$(seed s12)
+ROLE12='{"kind":"role","is_replica":false,"timeline_id":1,"timeline_source":"wal file","system_identifier":"91"}'
+q "select pgvigil.import_rolechange($I_s12, now(), '[$ROLE12,{\"kind\":\"patroni_read\",\"url\":\"u\",\"ok\":true,\"members\":1,\"scope\":\"sc\"},{\"kind\":\"patroni\",\"member\":\"m1\",\"role\":\"leader\",\"state\":\"running\"}]')" >/dev/null
+q "select pgvigil.import_rolechange($I_s12, now(), '[$ROLE12,{\"kind\":\"patroni_read\",\"url\":\"u\",\"ok\":false,\"message\":\"connection refused\"}]')" >/dev/null
+[[ $(q "select (select count(*) from pgvigil.pg_patroni_members where instance_id = $I_s12 and is_present) || '|' || ok from pgvigil.pg_patroni_read where instance_id = $I_s12") == "0|false" ]] || fail "S12"
+ok "S12: a failed Patroni read takes its members away"
 
 echo "--- H. the web side"
 U="http://127.0.0.1:$AP"
@@ -447,6 +510,8 @@ func TestProof162Detect(t *testing.T) {
 		{"rsync -a %p barman@backup:/var/lib/barman/pg4/incoming/%f", "", "barman:pg4:archive_command"},
 		{"barman-cloud-wal-archive --cloud-provider aws-s3 s3://bucket/path pg5 %p", "", "barman-cloud:pg5:archive_command"},
 		{"cp %p /mnt/archive/%f", "", ""},
+		{"barman-wal-archive backuphost --version %p", "", ""},
+		{"barman-cloud-wal-archive --cloud-provider nope s3://b/p pg6 %p", "", ""},
 	}
 	for _, c := range cases {
 		got := ""
@@ -457,6 +522,29 @@ func TestProof162Detect(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%q / %q: %q, want %q", c.arch, c.rest, got, c.want)
 		}
+	}
+}
+
+func TestProof162CloudOptions(t *testing.T) {
+	b := detectBackupTools("barman-cloud-wal-archive --cloud-provider=google-cloud-storage --endpoint-url https://minio.local:9000 gs://bkt/pg pg1 %p", "")
+	if len(b) != 1 || b[0].url != "gs://bkt/pg" || b[0].name != "pg1" || len(b[0].opts) != 2 ||
+		b[0].opts[0] != "--cloud-provider=google-cloud-storage" || b[0].opts[1] != "--endpoint-url=https://minio.local:9000" {
+		t.Fatalf("cloud options: %+v", b)
+	}
+}
+
+func TestProof162Keep(t *testing.T) {
+	var rows []Row
+	for i := 0; i < 60; i++ {
+		typ := "incr"
+		if i == 55 {
+			typ = "full"
+		}
+		rows = append(rows, Row{"label": i, "backup_type": typ, "status": "ok"})
+	}
+	k := keepBackups(rows, 50)
+	if len(k) != 51 || k[50]["label"] != 55 {
+		t.Fatalf("kept %d, last %v", len(k), k[len(k)-1]["label"])
 	}
 }
 
@@ -487,6 +575,30 @@ func TestProof162Barman(t *testing.T) {
 	cl, err := parseBarmanCloud([]byte(`{"backups_list":[{"backup_id":"B","status":"DONE","mode":"concurrent","begin_time_iso":"2026-11-11T10:00:00+00:00","end_time_iso":"2026-11-11T10:05:00+00:00","size":99,"begin_wal":"000000010000000000000002","end_wal":"000000010000000000000003"}]}`), "pg5")
 	if err != nil || len(cl) != 1 || cl[0]["db_size_bytes"].(*int64) == nil || *cl[0]["db_size_bytes"].(*int64) != 99 {
 		t.Fatalf("barman-cloud: %v %v", cl, err)
+	}
+}
+
+func TestProof162BarmanOld(t *testing.T) {
+	cl, err := parseBarmanCloud([]byte(`{"backups_list":[{"backup_id":"C","status":"DONE","begin_time":"Wed Nov 11 10:00:00 2026","end_time":"Wed Nov 11 10:05:00 2026"}]}`), "pg5")
+	if err != nil || len(cl) != 1 || cl[0]["backup_type"] != "full" {
+		t.Fatalf("barman-cloud before 3.13: %v %v", cl, err)
+	}
+	if at, _ := cl[0]["stopped_at"].(time.Time); at.Format(time.RFC3339) != "2026-11-11T10:05:00Z" {
+		t.Errorf("ctime end %v", cl[0]["stopped_at"])
+	}
+	b, err := parseBarman([]byte(`{"pg1":[{"backup_id":"20261111T110000","status":"FAILED"},{"backup_id":"X","status":"DONE","end_time_timestamp":"1794391200"}]}`), "pg1")
+	if err != nil || len(b) != 2 {
+		t.Fatalf("barman: %v %v", b, err)
+	}
+	for _, r := range b {
+		if r["backup_type"] != "full" {
+			t.Errorf("%v: type %v", r["label"], r["backup_type"])
+		}
+		if r["label"] == "20261111T110000" {
+			if at, _ := r["started_at"].(time.Time); at.Format(time.RFC3339) != "2026-11-11T11:00:00Z" || r["status"] != "error" {
+				t.Errorf("the failed one: %v %v", r["started_at"], r["status"])
+			}
+		}
 	}
 }
 
