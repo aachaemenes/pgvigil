@@ -660,6 +660,8 @@ if (mode === 'early') {
   await go('#/about');
   await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+  // a fresh document after the login, as the main walk (a hash change alone keeps the page loaded before it)
+  await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
   for (const name of ['tempdb', 'fileio']) {
     if (!await go(pages[name])) { console.log(`FAIL render ${name}-early light`); continue; }
     const s = await state(); delete s.links;
