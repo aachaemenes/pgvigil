@@ -72,9 +72,10 @@ On a network without Internet access step 1 reads a mirror folder instead
 (`PGVIGIL_BASE_URL=https://mirror.example.internal/pgvigil`, [docs/airgap.md](airgap.md)), or the verified binary is
 carried across by hand and renamed `pgvigil`; the other steps are the same.
 
-The collector is down from step 2 to step 5. On the proof's store (three days of the demo's twelve instances, about
-430,000 rows) the 26 files from v0.3.0 to the first build named below ran in under four seconds (this tree carries 38); a migration that rewrites a large table would say
-so in its release notes.
+The collector is down from step 2 to step 5. On the proof's store (three days of the demo's twelve instances, 429,444
+to 429,545 rows in the three runs below) the 39 files from v0.3.0 to the build measured below ran in 2,237 to 3,079 ms
+(PostgreSQL 18, 16, 13: 2,237, 2,997 and 3,079 ms); a release with more files is measured again before its figure is
+given here, and a migration that rewrites a large table would say so in its release notes.
 
 ## The way back
 
@@ -120,8 +121,10 @@ upgrade over stored history.
 
 `scripts/proof-upgrade.sh` starts from the released v0.3.0 itself and ends on the build of this tree, on throwaway
 containers: a Debian 12 host under systemd for pgvigil, on a network with no route out, a mirror folder there, and
-PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 against PostgreSQL 13, 16 and 18 on two earlier builds (86 migration files for the figures below, 89 for the installer-first line; this tree holds 98), green
-on each (the numbers are PostgreSQL 16's):
+PostgreSQL as the repository and as the monitored server. Run on 2026-11-11 (PST) against PostgreSQL 13, 16 and 18 on
+the build of rel-join-w1 at 42cbbe2 (99 migration files, the newest 0110_join_release.sql; the proof's own tree differed
+from it in proof scripts and docs only), green on each, as the lab box jobs s175-upg13 (13) and s175-loop1 (16, then
+18). The numbers are PostgreSQL 16's; 13's and 18's are in brackets where they differ:
 
 - **The release.** v0.3.0's binary and SBOM match `SHA256SUMS`. The SBOM names exactly the 35 modules the binary
   itself reports (`go version -m`: name, version and hash of each) and the same build settings. The signature of
@@ -131,29 +134,33 @@ on each (the numbers are PostgreSQL 16's):
   v0.3.0 from the mirror folder with the checksum verified; a mirror copy changed by one byte was refused and nothing
   was installed.
 - **The old store.** v0.3.0's own `migrate` (60 files) as an owner with CREATEROLE, the logins `pgvigil roles`
-  prints, three days of v0.3.0's demo (12 instances; about 430,000 rows in 107 tables), and its collector running
+  prints, three days of v0.3.0's demo (12 instances; 429,510 rows in 107 tables [13: 429,444; 18: 429,545]), and its
+  collector running
   under the collector's login against a live server through a `pg_monitor` login.
 - **The upgrade, in the order above.** This build refused to run on the old schema (exit 1, naming the file and
-  `pgvigil migrate`). `migrate` applied 26 files in under four seconds, and a second run none. Every one of the 107
-  tables held the row count it held before; in the 101 that hold rows, a hash of those rows over the columns v0.3.0
-  had was the same before and after. The 76 tables that build adds were empty. `./pgvigil install` ended
-  `installed and running`, the config and the env file byte for byte as before, the unit running as `pgvigil` and
-  still without a restart minutes later.
-- **The collector.** Under the collector's login, all 20 collections that ended ok under v0.3.0 ended ok under this
-  build (18 of 18 on PostgreSQL 13), and none ended in an error.
-- **The pages.** This build's `serve`, under the UI's login, rendered 488 pages over the upgraded store with no error
-  box, no API answer of 400 or over, no failed request and no script exception: the 27 root pages, every tab of all
-  13 instances (35 each, 36 where a pooler is read) and the drill pages they link to (a database, a table, an index,
-  a job, the statement comparison). With the UI login's read role taken away the same walk fails at its first page,
+  `pgvigil migrate`). `migrate` applied 39 files in 2,997 ms [13: 3,079; 18: 2,237], and a second run none. Every
+  one of the 107 tables held the row count it held before; in the 101 that hold rows, a hash of those rows over the
+  columns v0.3.0 had was the same before and after. The 144 tables this build adds held what a migrate of an empty
+  repository leaves: no rows but the two seeded lists (pg_threshold_keys 8, pgaudit_rules 6). `./pgvigil install`
+  ended `installed and running`, the config and the env file byte for byte as before, the unit running as `pgvigil`
+  and still without a restart 209 s after the upgrade [13: 213 s; 18: 210 s].
+- **The collector.** Under the collector's login, all 20 collections that ended ok under v0.3.0 (20 ok, 0 partial,
+  7 skipped) ended ok under this build (30 ok, 0 partial, 8 skipped), and none ended in an error or newly partial
+  [13: 18 of 18; v0.3.0 18 ok, 1 partial, 8 skipped, this build 28 ok, 1 partial, 9 skipped].
+- **The pages.** This build's `serve`, under the UI's login, rendered 503 pages over the upgraded store with no error
+  box, no API answer of 400 or over, no failed request and no script exception (the same 503 on 13, 16 and 18): the 29
+  root pages, every tab of all 13 instances (469: 36 each, 37 where a pooler is read) and the 5 drill pages they link
+  to (a database, a table, an index, a job, the statement comparison). With the UI login's read role taken away the same walk fails at its first page,
   so a broken page would not pass unseen. The store of v0.3.0 holds PostgreSQL instances only, so the SQL Server
   pages are not in this walk (`scripts/proof-a11y.sh` walks them on a fresh store).
-- **After the restart.** The rows outside the live instance were still the counts from before the upgrade.
+- **After the restart.** The rows outside the live instance were still the counts from before the upgrade (107 tables,
+  426,345 rows [13: 426,347; 18: 426,332]).
 - **The way back.** The owner's dump, restored by the owner into a second database, held every table's row count and
   row hash from before the upgrade, and v0.3.0, reinstalled from the mirror, collected on it.
 - **The installer first.** On that restored store the installer for this build replaced the binary and ended with
   `the service did not come up` (exit 1), naming the migration file and `pgvigil migrate` in that same line, as the
-  journal did. After the owner's `migrate` the unit came up by itself at its next restart, and the rows outside
-  the live instance were the counts from before.
+  journal did; the unit restarted once in 12 s. After the owner's `migrate` the unit came up by itself at its next
+  restart, and the rows outside the live instance were the counts from before.
 
 Not proven here: Windows; a start from a version older than v0.3.0 (the one release that carries the installer); a
 store larger than the demo's three days; a repository behind a pooler.
