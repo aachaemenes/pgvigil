@@ -7,9 +7,9 @@ import (
 	mssqldb "github.com/microsoft/go-mssqldb"
 )
 
-// msg567 is the text of Msg 567 as SQL Server writes it, naming a file.
+// msg567 is the text of Msg 567 as sys.messages holds it ("File '%.*ls' is not a recognizable trace file."), naming a file.
 func msg567(file string) string {
-	return fmt.Sprintf("File '%s' either does not exist or is not a recognizable trace file. Or there was an error opening the file.", file)
+	return fmt.Sprintf("File '%s' is not a recognizable trace file.", file)
 }
 
 // The set read that failed on an older file goes on from the file after it; the current file, a file of another
@@ -20,7 +20,7 @@ func TestTraceRestartFile(t *testing.T) {
 		name, msg, current, restart, skipped string
 		ok                                   bool
 	}{
-		{"an older file (164's probe: log_7 of log_7-log_11)", msg567(win + "log_7.trc"), win + "log_11.trc", win + "log_8.trc", win + "log_7.trc", true},
+		{"the oldest file of log_7-log_11", msg567(win + "log_7.trc"), win + "log_11.trc", win + "log_8.trc", win + "log_7.trc", true},
 		{"two digits", msg567(win + "log_9.trc"), win + "log_12.trc", win + "log_10.trc", win + "log_9.trc", true},
 		{"the file before the current one", msg567(win + "log_10.trc"), win + "log_11.trc", win + "log_11.trc", win + "log_10.trc", true},
 		{"a Linux server", msg567("/var/opt/mssql/log/log_3.trc"), "/var/opt/mssql/log/log_5.trc", "/var/opt/mssql/log/log_4.trc", "/var/opt/mssql/log/log_3.trc", true},
