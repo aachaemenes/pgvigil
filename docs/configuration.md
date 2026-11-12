@@ -100,7 +100,8 @@ approves or ignores: a SQL Server Central Management Server (its login needs msd
 repository named under `dbadash:`, a server list file, a `pg_service.conf` and a CSV. A server gone from its source is
 marked gone, never removed. The instances of `pgvigil.yaml` are shown read-only. The collector takes a change within
 15 seconds, without a restart. A disabled instance is collected no more and leaves the fleet's stale and failing
-checks until it is enabled. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
+checks until it is enabled. An instance enabled, or added (again), while its server is down is reported at its first
+read: 'server unreachable' and a failing collection, as for any instance that cannot be reached. A network (UNC) path and a `.pgpass`-shaped line are refused as a server list or CSV, and on
 Linux and macOS so is a file only its owner may read (a server list is 0644), so no credential file is read into the
 page.
 

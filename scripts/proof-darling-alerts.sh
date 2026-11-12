@@ -274,9 +274,30 @@ vals = list((t or {}).get('form') or [])
 check(bool(t) and (t.get('items') or [])[:2] == ['PostgreSQL: connection count high', 'SQL Server: sustained blocking'] and (t.get('title') or '') == 'New alert rule'
       and all(v in vals for v in ('200', '500', '3', 'above', 'PostgreSQL: connection count high', 'sessions.total')) and t.get('saveOff') and (t.get('need') or '').startswith('Save needs a server where alert rules can be written'),
       f"T: 'Starter rules' lists PerformanceMonitor's two starters pgvigil has a metric for ({(t or {}).get('items')}); the first opens '{(t or {}).get('title')}' filled with sessions.total above 200 / 500 for 3 min, Save off: {(t or {}).get('need')!r} ({vals[:12]})")
-tabs = {'admin', 'mssqlactions', 'alerts', 'alert', 'alertrules', 'summary', 'findings', 'counters', 'performance', 'mssql_running', 'mssql_waits', 'mssql_blocked', 'activity', 'waits', 'logs', 'vacuum', 'config', 'metrics', 'drives', 'mssqlactions'}
-links = d['links']; odd = [x for x in links if not re.match(r'^#/[a-z_]+(\?|$)', x['href'] or '') or re.match(r'^#/([a-z_]+)', x['href']).group(1) not in tabs]
-check(len(links) > 0 and not odd, f"C: every link's target read: {len(links)} links on the three pages, each a page of the UI ({len(odd)} not: {odd[:3]})")
+# the UI's pages are the app's own route tables (web/src/router.ts: rootTabs, instanceTabs, mssqlInstanceTabs, drillTabs),
+# read now, so a page added later needs no list here. A link with an instance (i=) opens an instance or drill page, any
+# other link a root page (main.ts: the instance's pages when ctx.instance is set, the fleet's otherwise). The pages this
+# check named by hand before are a floor (less 'metrics', never a route: the Metrics tab is 'counters').
+src = open('web/src/router.ts', encoding='utf-8').read()
+tables = {}
+for m in re.finditer(r'export const (\w+Tabs)\b[^=]*= \{(.*?)\};', src, re.S):
+    tables[m.group(1)] = set(re.findall(r"""(?:^|[{,\s])([a-z_][a-z0-9_]*)\s*:\s*['"`]""", m.group(2)))
+root = tables.get('rootTabs', set()); inst = set().union(*(tables.get(k, set()) for k in ('instanceTabs', 'mssqlInstanceTabs', 'drillTabs')))
+check(sorted(tables) == ['drillTabs', 'instanceTabs', 'mssqlInstanceTabs', 'rootTabs'] and all(tables.values()),
+      f"C: the UI's route tables read from web/src/router.ts: {sorted((k, len(v)) for k, v in tables.items())}")
+floor = {'admin', 'mssqlactions', 'alerts', 'alert', 'alertrules', 'summary', 'findings', 'counters', 'performance', 'mssql_running', 'mssql_waits', 'mssql_blocked', 'activity', 'waits', 'logs', 'vacuum', 'config', 'drives', 'admin_instances'}
+check(floor <= root | inst, f"C: {len(root | inst)} pages, every page this check named by hand among them (missing: {sorted(floor - (root | inst))})")
+def off(href):
+    m = re.match(r'^#/([a-z_]+)(?:\?(.*))?$', href or '')
+    if not m:
+        return True
+    return m.group(1) not in (inst if re.search(r'(?:^|&)i=[1-9]', m.group(2) or '') else root)
+# the check can still fail: a link to a route the app does not have, a fleet page asked for an instance's tab, and a
+# word that is no table's key are counted
+check(off('#/no_such_page?w=1h') and off('#/statements?w=1h') and off('#/key?w=1h') and not off('#/admin_instances?w=1h') and not off('#/statements?i=3'),
+      "C: a link to a route the app does not have ('#/no_such_page'), an instance tab without its instance ('#/statements'), a word no table holds ('#/key') are counted; '#/admin_instances' and '#/statements?i=3' are pages")
+links = d['links']; odd = [x for x in links if off(x['href'])]
+check(len(links) > 0 and not odd, f"C: every link's target read: {len(links)} links on the pages walked, each a page of the UI ({len(odd)} not: {odd[:3]})")
 a = d.get('admin') or {}; tabsA = {t['label']: t for t in a.get('tabs', [])}
 want_tabs = ['Servers', 'Notification routes', 'Alert settings', 'Threshold overrides', 'Server actions']
 check(list(tabsA) == want_tabs and all(t['h3'] == t['label'] and not t['error'] and t['rows'] for t in tabsA.values())

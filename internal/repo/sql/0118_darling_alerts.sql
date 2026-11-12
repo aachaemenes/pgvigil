@@ -128,7 +128,8 @@ SELECT c.instance_id, 'critical', 'server unreachable', i.name, true, 'answering
    AND c.note LIKE 'connect: %';
 
 -- import_connect_failure: a collection that could not connect to its instance, recorded as that collection's error with
--- the note 'connect: <the driver's error>' (an instance never collected, or retired, is left alone). The collector's door
+-- the note 'connect: <the driver's error>' (an instance with no row, or retired, is left alone: a file instance never
+-- reached has no row; a page instance has its row from its add, 0122). The collector's door
 -- (an import_ function: apply_roles makes it SECURITY DEFINER and the collector's).
 CREATE OR REPLACE FUNCTION pgvigil.import_connect_failure(p_name text, p_collection text, p_at timestamptz, p_duration_ms int, p_error text)
 RETURNS void LANGUAGE plpgsql AS $$
