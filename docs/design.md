@@ -43,6 +43,7 @@ button). `scripts/proof-a11y.sh` checks every page in both themes against WCAG 2
 | `--surface-raised` | #ffffff | #252a32 | a menu, the range panel, the chart tooltip (with `--shadow-raised` / `--shadow-tip`) |
 | `--surface-hover` | #eceef2 | #2c313a | a control, a tree row or a menu item under the pointer (dark: lighter than a menu, so it shows there) |
 | `--hover-overlay` | 9 % grey | the same | laid over a grid's row under the pointer |
+| `--select-fill` | the accent at 14 % | the accent at 20 % | a drag's brush across a chart |
 | `--line` / `--line-strong` | #e0e3e9 / #c8cdd6 | #2a2f38 / #3a404b | a rule between rows / a control's border |
 | `--text` | #1b2230 | #e3e6eb | body text, a figure |
 | `--text-muted` | #545d6d | #a3abb8 | a label, a header, the second line (5.6:1 or more on every surface) |
@@ -75,6 +76,25 @@ read by chart.ts in that order, assigned in order and never cycled (a ninth seri
   chroma, colour-blind separation (worst light 8.3, dark 8.4) and normal-vision separation (worst light 15.9, dark 19.3)
   pass. Slots further apart can be close (light s4 / s6 under protanopia): a chart of more than four series is read
   with its legend, its tooltip and Pick series, never by colour alone.
+
+## The chart kit
+
+Every chart goes through chart.ts (`lineChart`, `donutChart`, `ringChart`, `volumeBars`), which draws with
+web/src/chartkit.ts; a page never styles a chart itself.
+- The chart a measure takes (`chartKind`): a rate or a level over time is a line; a share of a whole over time is
+  stacked areas (`stacked: true`), a share at one moment DBA Dash's pie or ring where Allen ordered one; a distribution
+  is bars (`bars: true`). One value axis: a second measure of another scale is its own chart (`y2` stays only where a
+  page already uses it).
+- The look (`chartLook`, `axisLook`): axis values in `--fs-xs` and `--text-muted`, grid lines in `--line`, short ticks,
+  about five values up a 220 px chart and seven along a 560 px one; the series in `--s1` ... `--s8` order.
+- The legend under the plot: a short line in each series' colour and its name; a click hides or shows a series, a
+  double-click shows it alone; the time stays in the legend for a screen reader and shows in the readout.
+- The readout under the pointer lists every series shown at that moment with its value and unit; one cursor runs
+  across the page's charts.
+- A drag across a chart sets the page's range (the address); while the page stands on that range, every chart's
+  heading offers 'Reset zoom' back to the range before the drag (`--select-fill` is the drag's brush).
+- Empty and loading (`chartState`, `chartPlaceholder`): one box in the chart's place, 'No data in this window (<the
+  window>).' or the caller's own words; loading is a status a screen reader announces.
 
 ## The rule for a new page
 

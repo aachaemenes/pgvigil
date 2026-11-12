@@ -35,6 +35,7 @@
   --ok: #237a35; --warn: #9a5a00; --crit: #c42626; --na: #606979; --ack: #1b6aa3;
   --ok-bg: #e3f4e6; --warn-bg: #fff1d6; --crit-bg: #fde2e2; --na-bg: #eceef2; --ack-bg: #e3eefa;
   --hover-overlay: rgba(127, 127, 127, .09);
+  --select-fill: rgba(34, 89, 200, .14);   /* a drag's brush across a chart */
   --shadow-raised: 0 4px 14px rgba(0, 0, 0, .14); --shadow-tip: 0 2px 8px rgba(0, 0, 0, .12);
   /* the chart series: one categorical order (blue, orange, aqua, yellow, magenta, green, violet, red), assigned in order,
      never cycled. Light: the set before task 181 darkened to clear 3:1 on every light surface (3.9:1 or more; slots 3-5 were
@@ -47,7 +48,7 @@
    surfaces, 3.2:1 or more on the page, the panel and a card) */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
+    --select-fill: rgba(111, 160, 255, .2); --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
     --line: #2a2f38; --line-strong: #3a404b;
     --text: #e3e6eb; --text-muted: #a3abb8; --text-faint: #969fad;
     --accent: #6fa0ff; --accent-soft: #1d2a44; --on-accent: #14171d;
@@ -59,7 +60,7 @@
   }
 }
 :root[data-theme="dark"] {
-  --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
+  --select-fill: rgba(111, 160, 255, .2); --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
   --line: #2a2f38; --line-strong: #3a404b;
   --text: #e3e6eb; --text-muted: #a3abb8; --text-faint: #969fad;
   --accent: #6fa0ff; --accent-soft: #1d2a44; --on-accent: #14171d;
@@ -187,12 +188,31 @@ form.login .error { margin: var(--sp-3) 0 0; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--sp-4); align-items: start; }
 /* the uPlot legend, axes and tooltip */
 .u-legend, .u-axis { color: var(--text); }
-.u-legend { font-size: var(--fs-sm); color: var(--text-muted); } .u-legend th, .u-legend .u-label { font-weight: var(--fw-normal); }
+.u-legend th, .u-legend .u-label { font-weight: var(--fw-normal); }
 .u-legend .u-series { cursor: pointer; }
 .u-tip { position: absolute; z-index: 10; pointer-events: none; padding: var(--sp-1) var(--sp-2); font-size: var(--fs-sm); white-space: nowrap; background: var(--surface-raised); color: var(--text);
          border: var(--bw) solid var(--line); border-radius: var(--r-sm); box-shadow: var(--shadow-tip); font-variant-numeric: var(--num); }
 .u-tip-time { color: var(--text-muted); margin-bottom: var(--sp-half); }
 .u-tip-key { display: inline-block; width: .6rem; height: .6rem; margin-right: var(--sp-1); border-radius: var(--r-xs); vertical-align: 0; }
+
+/* ---------- 5b. the chart kit (task 182, chartkit.ts): the legend under the plot as short coloured lines, the time kept
+   for a screen reader only (the readout shows it), the cursor a single quiet upright, the drag's brush in the accent,
+   the empty and loading states, the way back from a zoom, a chart's title link quiet until pointed at ---------- */
+.u-legend { font-size: var(--fs-sm); color: var(--text-muted); text-align: left; margin: var(--sp-1) 0 0; }
+.u-legend.u-inline tr { margin-right: var(--sp-4); }
+.u-legend.u-inline tr.u-series:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.u-legend.u-inline.u-live tr:has(.u-value:empty) th::after { content: ""; }
+.u-legend .u-marker { width: .875rem; height: calc(2 * var(--focus-w)); margin-right: var(--sp-1); border-width: var(--focus-w) 0 !important; border-radius: var(--r-xs); }
+.u-legend .u-value { color: var(--text); font-variant-numeric: var(--num); }
+.uplot .u-cursor-x { border-right: var(--bw) dashed var(--line-strong); }
+.uplot .u-cursor-y { border-bottom: none; }
+.uplot .u-select { background: var(--select-fill); }
+.chart-state { display: flex; align-items: center; justify-content: center; min-height: 8rem; margin: var(--sp-2) 0 0; padding: var(--sp-4);
+               color: var(--text-muted); background: var(--surface-card); border-radius: var(--r-sm); text-align: center; }
+.chart-reset { font-size: var(--fs-sm); font-weight: var(--fw-normal); margin-left: var(--sp-1); }
+.chart h3 a:not(.chart-reset) { color: var(--text); text-decoration-color: var(--line-strong); text-underline-offset: .2em; }
+.chart h3 a:not(.chart-reset):hover, .chart h3 a:not(.chart-reset):focus-visible { color: var(--accent); text-decoration-color: currentColor; }
+.chart-notes { font-size: var(--fs-sm); margin: var(--sp-1) 0 0; }
 
 /* ---------- 6. grids ---------- */
 table.grid { border-collapse: collapse; width: 100%; font-variant-numeric: var(--num); }

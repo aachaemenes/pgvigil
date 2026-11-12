@@ -4,6 +4,7 @@ import { href, MAX_RANGE_MS, parse, window_ } from './router';
 import { copyText, el, saveBlob, showMenu } from './ui';
 import { exportChart } from './export';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
+import { axisLook, chartLook, chartState, rememberZoom, zoomReset } from './chartkit';
 
 // live charts, destroyed before the next page is drawn (each holds window listeners)
 const live: uPlot[] = [];
@@ -35,7 +36,7 @@ export function destroyCharts() {
 // The series colours: one categorical order per theme (the stylesheet's --s1..--s8, each set validated for
 // colour-blind separation of neighbours and, on the dark surface, 3:1 contrast), assigned in order and never cycled
 // past the eighth: a ninth series and 'other' take the neutral.
-const fallback = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+const fallback = ['#2a6fd6', '#c4511a', '#0d8460', '#9a6a00', '#c03a7a', '#3d7a12', '#6250d6', '#d23b3a'];   // app.css's light set
 export function seriesColors(): string[] {
   const css = getComputedStyle(document.documentElement);
   return fallback.map((f, i) => css.getPropertyValue(`--s${i + 1}`).trim() || f);
@@ -102,6 +103,7 @@ function markHref(m: FrameMark): string {
 export interface ChartLine { value: number; label: string; kind?: 'threshold' | 'limit'; level?: 'warning' | 'critical'; y2?: boolean }
 export interface ChartOpts {
   stacked?: boolean;
+  bars?: boolean;                                                      // a distribution (chartkit chartKind 'bars'): each point a bar, not a line
   unit?: string;                                                       // the left axis's unit, written on the axis
   y2?: { keys: string[]; fmt?: (v: number) => string; unit?: string };  // series drawn against a second axis on the right
   lines?: ChartLine[];                                                 // threshold lines of the caller's own
@@ -127,7 +129,7 @@ const pageScope = () => { const h = location.hash.split('?'), q = new URLSearchP
 export function lineChart(title: string, rows: Row[], series: { key: string; label: string }[],
                           fmt: (v: number) => string = v => v.toLocaleString(), o: ChartOpts = {}): HTMLElement {
   const box = el('div', { class: 'chart' }, el('h3', {}, title));
-  if (rows.length < 2) { box.append(el('p', { class: 'empty' }, rows.length ? 'Only one read in this window: a chart needs two.' : 'Not enough snapshots in this window.')); return box; }
+  if (rows.length < 2) { box.append(chartState('empty', rows.length ? 'Only one read in this window: a chart needs two.' : undefined)); return box; }
   const xs = rows.map(r => new Date(String(r.snapshot_at)).getTime() / 1000);
   const data: uPlot.AlignedData = [xs, ...series.map(s => rows.map(r => r[s.key] == null ? null : Number(r[s.key])))];
   const holder = el('div');
@@ -153,10 +155,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   }
   if (reads < 3) partial = (partial ? partial + ' ' : '') + (reads === 1 ? 'Only one read in this window.' : reads === 0 ? 'No read with a value in this window.' : `Only ${reads} reads in this window.`);
   say();
-  // axis text and grid lines follow the page theme (light or dark)
-  const css = getComputedStyle(document.documentElement);
-  const fg = css.getPropertyValue('--muted').trim() || '#5d6676', grid = css.getPropertyValue('--line').trim() || '#dde1e8';
-  const axis = { stroke: fg, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 } };
+  // axis text and grid lines follow the page theme (light or dark): the kit's look, on the tokens
+  const look = chartLook(), axis = axisLook(look), timeAxis = axisLook(look, true);
   const palette = seriesColors();
   const zone = zoneChoice();
   const on2 = new Set(o.y2?.keys ?? []);
@@ -172,15 +172,16 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
   const yRange = (scale: string) => (_u: uPlot, min: number, max: number): uPlot.Range.MinMax => uPlot.rangeNum(Math.min(min, 0), reach(scale, max), 0.1, true);
   const opts: uPlot.Options = {
     width: 560, height: 220,
-    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: o.stacked ? 1 : 2,
+    series: [{}, ...series.map((s, i) => ({ label: s.label, stroke: colorAt(palette, i), width: o.stacked || o.bars ? 1 : 2,
                                             scale: on2.has(s.key) ? 'y2' : 'y',
-                                            fill: o.stacked ? withAlpha(colorAt(palette, i), 0.45) : undefined,
+                                            fill: o.stacked || o.bars ? withAlpha(colorAt(palette, i), o.bars ? 0.75 : 0.45) : undefined,
+                                            ...(o.bars ? { paths: uPlot.paths.bars!({ size: [0.6, 48] }), points: { show: false } } : {}),
                                             // stacked: the data are running totals, the legend (the screen reader's form) gives the
                                             // band's own value, as the tooltip does
                                             value: (u: uPlot, v: number | null, si: number, idx: number | null) => v == null ? ''
                                               : fmtOf(si)(o.stacked && si > 1 && idx != null ? v - (Number(u.data[si - 1][idx] ?? 0)) : v) }))],
     bands: o.stacked ? series.slice(1).map((_, i) => ({ series: [i + 2, i + 1] as [number, number] })) : undefined,
-    axes: [{ ...axis },
+    axes: [{ ...timeAxis },
       { ...axis, values: (_u: uPlot, vs: number[]) => vs.map(v => fmt(v)), size: fitAxis, ...(o.unit ? { label: o.unit, labelSize: 18 } : {}) },
       ...(on2.size ? [{ ...axis, scale: 'y2', side: 1, grid: { show: false }, values: (_u: uPlot, vs: number[]) => vs.map(v => (o.y2?.fmt ?? fmt)(v)),
                         size: (u: uPlot, vals: string[] | null, ai: number, cyc: number) => fitOwn(u, vals, ai, cyc), ...(o.y2?.unit ? { label: o.y2.unit, labelSize: 18 } : {}) }] : [])],
@@ -222,6 +223,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     isolateOnDoubleClick(u);
     chartMenu(box, title, u, !!o.stacked);
     fullWindow(box, title, u, hiddenKey);
+    const reset = zoomReset();   // the page stands on a range a drag set: the way back, in the heading
+    if (reset) box.querySelector('h3')?.append(' ', reset);
     // the frame read: the marks of the page's instance and the limits the chart names; a fleet page has neither
     const inst = parse().instance;
     if (!inst || (o.marks === false && !o.limits?.length)) return;
@@ -276,7 +279,9 @@ function dragRange(a: number, b: number) {
   if (to - from < minute) to = from + minute;
   if (to - from > MAX_RANGE_MS) from = to - MAX_RANGE_MS;
   const ctx = parse();
-  location.hash = href(ctx, { tab: ctx.tab, range: { from: new Date(from).toISOString(), to: new Date(to).toISOString() }, at: undefined });
+  const to2 = href(ctx, { tab: ctx.tab, range: { from: new Date(from).toISOString(), to: new Date(to).toISOString() }, at: undefined });
+  rememberZoom(to2);   // the address left behind: the charts of the zoomed page offer 'Reset zoom' back to it
+  location.hash = to2;
 }
 
 // fitOwn sizes a second value axis to its own longest label (fitAxis keeps one width for the left axes of a page)
@@ -558,7 +563,7 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
   let all = slices.filter(s => isFinite(s.value) && s.value > 0);
   if (!keepOrder) all = [...all].sort((a, b) => b.value - a.value);
   const total = all.reduce((a, s) => a + s.value, 0);
-  if (!all.length) { box.append(el('p', { class: 'empty' }, empty)); return box; }
+  if (!all.length) { box.append(chartState('empty', empty)); return box; }
   const share = (v: number) => (100 * v / total).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' %';
   let top = topGet(title) ?? max;
   if (!(top === 0 || top >= 2)) top = max;   // 0 = all
@@ -694,7 +699,7 @@ export interface Volume { name: string; used: number; free: number; note?: strin
 export function volumeBars(title: string, vols: Volume[], fmt: (v: number) => string, empty = 'No volume read yet.'): HTMLElement {
   const box = el('div', { class: 'chart bars' }, el('h3', {}, title));
   const rows = vols.filter(v => isFinite(v.used) && isFinite(v.free) && v.used + v.free > 0);
-  if (!rows.length) { box.append(el('p', { class: 'empty' }, empty)); return box; }
+  if (!rows.length) { box.append(chartState('empty', empty)); return box; }
   const body = el('tbody');
   for (const v of rows) {
     const total = v.used + v.free, usedPct = 100 * v.used / total, freePct = 100 - usedPct;
