@@ -22,9 +22,9 @@ SQL Server 2017, 2019, 2022 and 2025 are proven; the table says on what. `script
 | SQL Server 2019 | 15.0.4510.2 (RTM, CU32), Developer Edition | Ubuntu 20.04 | setup and all ten proofs passed |
 | SQL Server 2017 | 14.0.3570.2 (RTM, CU31), Developer Edition | Ubuntu 18.04 | setup and all ten proofs passed |
 | SQL Server 2016 (SP1 and later) | 13.0.7050.2 (SP3 CU1 GDR), Developer Edition | Windows Server 2019 Datacenter (an Azure VM) | proven on one Windows server by `scripts/proof-mssql-2016.sh`: [SQL Server 2016](sqlserver-2016.md) (Always On not proven: one server; `mssql_defaulttrace` partial there) |
-| Azure SQL Database | 12.0.2000.8, General Purpose serverless Gen5, 1 vCore | Azure (the service) | proven by `scripts/proof-mssql-azuresqldb.sh`: 4 collections stored equal to the setup login's read, 28 skipped by an Azure SQL Database rule, each with its reason ([SQL Server in the cloud](sqlserver-cloud.md)) |
+| Azure SQL Database | 12.0.2000.8, General Purpose serverless Gen5, 1 vCore | Azure (the service) | proven by `scripts/proof-mssql-azuresqldb.sh` on the 32 collections before `mssql_waiting_tasks` and `mssql_reports` joined: 4 collections stored equal to the setup login's read, 28 skipped by an Azure SQL Database rule, each with its reason ([SQL Server in the cloud](sqlserver-cloud.md)) |
 | Azure SQL Managed Instance | not proven yet | | |
-| Amazon RDS for SQL Server | 15.0.4500.2 (SQL Server 2019), Express Edition, db.t3.micro | AWS (the service) | proven by `scripts/proof-mssql-rds.sh`: 29 collections stored equal to the master user's read, 3 skipped by an RDS rule; the login is the RDS form ([SQL Server in the cloud](sqlserver-cloud.md)) |
+| Amazon RDS for SQL Server | 15.0.4500.2 (SQL Server 2019), Express Edition, db.t3.micro | AWS (the service) | proven by `scripts/proof-mssql-rds.sh` on the 32 collections before `mssql_waiting_tasks` and `mssql_reports` joined: 29 collections stored equal to the master user's read, 3 skipped by an RDS rule; the login is the RDS form ([SQL Server in the cloud](sqlserver-cloud.md)) |
 
 Each proof on each version, as the runs printed it (`setup` is the pair itself: both servers answer, the collector connects to both and stores the version it read, the group is synchronized; the other rows are `scripts/proof-mssql-<name>.sh`, and each proof's page says what it checks):
 
@@ -57,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
 
 ## Collections
 
-Thirty-two collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Thirty-four collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -66,6 +66,7 @@ Thirty-two collections; `mssql_checks` and `mssql_identity` are on [day-one chec
 | `mssql_services` | 5 min | is SQL Server Agent running, is Database Mail started, the memory dump files | VIEW SERVER STATE | not run | this page |
 | `mssql_requests` | 1 min | what runs now and who blocks whom | VIEW SERVER STATE | runs | [running queries](sqlserver-running.md) |
 | `mssql_waits` | 1 min | the wait counters, as the difference between two reads | VIEW SERVER STATE | runs (the database's own waits) | [running queries](sqlserver-running.md) |
+| `mssql_waiting_tasks` | 1 min | every task of every waiting request (`sys.dm_os_waiting_tasks` with `sys.dm_exec_requests`, PerformanceMonitor's read), its resource decoded to database, object and index, and the THREADPOOL waiters | VIEW SERVER STATE | runs (VIEW DATABASE STATE; not proven there) | the Waiting tasks tab |
 | `mssql_xe` | 1 min | the Extended Events sessions a DBA created from pgvigil's script: deadlocks, blocked-process reports, slow batches, cancelled requests, availability group events | VIEW SERVER STATE | runs (database-scoped sessions) | [Extended Events](sqlserver-xe.md) |
 | `mssql_ag` | 1 min | Always On availability groups | Always On enabled, VIEW SERVER STATE, VIEW ANY DEFINITION | not run | [availability, jobs, backups](sqlserver-hadr.md) |
 | `mssql_mirroring` | 1 min | database mirroring | VIEW SERVER STATE for the queues | not run | [availability, jobs, backups](sqlserver-hadr.md) |
@@ -91,6 +92,7 @@ Thirty-two collections; `mssql_checks` and `mssql_identity` are on [day-one chec
 | `mssql_errorlog` | 5 min | the error log forward from a date cursor: errors of severity 17+, sp_LogHunter's search strings, the instance's own | EXECUTE on xp_readerrorlog; the archives: securityadmin (2022+: VIEW SERVER STATE) | not run | [readers](sqlserver-readers.md) |
 | `mssql_defaulttrace` | 5 min | the default trace forward: file growths and shrinks, DBCC commands, DDL | ALTER TRACE | not run | [readers](sqlserver-readers.md) |
 | `mssql_syshealth` | 5 min | system_health's sp_server_diagnostics results (SYSTEM, RESOURCE, QUERY_PROCESSING, IO_SUBSYSTEM) | VIEW SERVER STATE | not run | [readers](sqlserver-readers.md) |
+| `mssql_reports` | 1 hour | server role members, SQL logins with their password age, the error log's failed logins, the services' files, extended properties and the largest tables of each database | VIEW ANY DEFINITION (role members, logins, properties), VIEW SERVER STATE (services; with VIEW ANY DEFINITION the table sizes), EXECUTE on xp_readerrorlog or securityadmin (the failed logins; 2022 and later VIEW SERVER STATE or VIEW ANY ERROR LOG) | not run | [reports](reports.md) |
 
 Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right; not proven here. Azure SQL Database and Amazon RDS for SQL Server have their own rules, logins and proofs: [SQL Server in the cloud](sqlserver-cloud.md) (on RDS the login below cannot be made: the master user holds no CONNECT ANY DATABASE and cannot add a member to msdb's db_datareader, so the page gives the RDS form).
 

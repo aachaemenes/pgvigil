@@ -643,6 +643,12 @@ curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: t
 [ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
 [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
+# the wait time: NULL (the page says n/a) where the server keeps no wait statistics (before SQL Server 2017), a number from
+# 2017, in the totals and in every series point in which a plan ran
+[ "$(objs "$WORK/all.json" totals | jq --argjson m "$QSMAJOR" '.[0] | (.wait_ms == null) == ($m < 14)')" = true ] \
+  || fail "P: the totals' wait_ms on major $QSMAJOR: $(objs "$WORK/all.json" totals | jq -c '.[0].wait_ms')"
+[ "$(objs "$WORK/all.json" series | jq --argjson m "$QSMAJOR" '[.[] | select((.executions | tonumber) > 0)] | length >= 1 and all(.[]; (.wait_ms == null) == ($m < 14))')" = true ] \
+  || fail "P: the series' wait_ms on major $QSMAJOR: $(objs "$WORK/all.json" series | jq -c '[.[] | [.executions, .wait_ms]]')"
 [ "$(objs "$WORK/all.json" state | jq 'length >= 3')" = true ] || fail "P: state is short"
 # the series: whole hours on this window of over two hours (a step that is no multiple of the interval's length draws a zigzag)
 [ "$(objs "$WORK/all.json" series | jq 'length >= 1 and all(.[]; .snapshot_at | test("T[0-9]{2}:00:00"))')" = true ] || fail "P: the series of the long window is not in whole hours: $(objs "$WORK/all.json" series | jq -c '[.[].snapshot_at]')"
