@@ -99,7 +99,10 @@ func (s *Server) MssqlRunning(w http.ResponseWriter, r *http.Request) {
 // wait has none. signal_pct is the part of a wait's time spent runnable, waiting for a CPU.
 const sqlMssqlWaitEvents = `
 WITH a AS (
-  SELECT w.wait_type, max(w.category) AS category, bool_or(w.is_benign) AS is_benign, sum(w.waiting_tasks)::bigint AS waiting_tasks,
+  -- the newest read's flag and category: SLEEP_TASK is benign or 'Potential hash spills' by its average at each read
+  -- (sp_PressureDetector's 1,000 ms rule, task 177 D14), and the window says what the newest read says
+  SELECT w.wait_type, (array_agg(w.category ORDER BY w.snapshot_at DESC))[1] AS category,
+         (array_agg(w.is_benign ORDER BY w.snapshot_at DESC))[1] AS is_benign, sum(w.waiting_tasks)::bigint AS waiting_tasks,
          sum(w.wait_ms)::bigint AS wait_ms, sum(w.signal_ms)::bigint AS signal_ms, max(w.max_wait_ms) AS max_wait_ms
     FROM pgvigil.mssql_wait_sample w
    WHERE w.instance_id = $1 AND w.snapshot_at > $2 AND w.snapshot_at <= $3

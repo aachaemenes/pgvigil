@@ -12,6 +12,7 @@ export const mssqlCpuTab = 'mssqlcpu';
 export const mssqlMemoryTab = 'mssqlmemory';
 export const mssqlFileIOTab = 'mssqlfileio';
 export const mssqlTempdbTab = 'mssqltempdb';
+export const mssqlConnectionsTab = 'mssqlconnections';
 
 const sevBadge = (v: unknown) => badge(String(v ?? ''), v === 'critical' ? 'crit' : v === 'warning' ? 'warn' : '');
 const pct = (v: unknown) => v == null ? '-' : fmtNum(v) + ' %';
@@ -55,8 +56,10 @@ const empty = (what: string, coll: string, cadence: string) =>
 // mssqlCpuView: the CPU chart (SQL Server, other processes), the scheduler pressure tiles with a verdict, the scheduler
 // trend and the throughput counters (Darling 13.3, DBA Dash's Performance CPU chart).
 export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<Record<'latest' | 'cpu' | 'sched' | 'counters' | 'checks', Table | null>>('mssql/cpu', { instance: ctx.instance, ...window_(ctx) });
-  const l = rowsOf(d.latest)[0], cpu = rowsOf(d.cpu), sched = rowsOf(d.sched), counters = rowsOf(d.counters), checks = rowsOf(d.checks);
+  const d = await get<Record<'latest' | 'cpu' | 'sched' | 'counters' | 'checks' | 'newest' | 'threadpool' | 'connectfail' | 'findings', Table | null>>('mssql/cpu', { instance: ctx.instance, ...window_(ctx) });
+  const l = rowsOf(d.latest)[0], cpu = rowsOf(d.cpu), sched = rowsOf(d.sched), counters = rowsOf(d.counters);
+  const checks = [...rowsOf(d.checks), ...rowsOf(d.findings)];
+  const n = rowsOf(d.newest)[0], tpool = rowsOf(d.threadpool), fails = rowsOf(d.connectfail);
   const sec = el('section', {}, el('h2', {}, `CPU (${rangeLabel(ctx)})`));
   if (!l && !cpu.length) { sec.append(empty('CPU', 'mssql_cpu', 'every minute')); return sec; }
   sec.append(stepNote(ctx));
@@ -68,12 +71,23 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
       + 'so only the SQL Server process\'s CPU is drawn; the other processes and the machine\'s total are not read.'));
   }
   sec.append(box);
+  // task 177 D14: a collection that could not connect leaves a gap; a server whose workers are all busy takes no login
+  if (fails.length) {
+    const f = fails[0];
+    sec.append(el('p', { class: 'meta', 'data-connectfail': String(fails.length) },
+      badge('possibly a worker shortage', 'warn'), ` ${fmtNum(fails.length)} collection(s) could not connect to this server in the range, the last at ${fmtTime(f.snapshot_at)} `
+      + `(${String(f.collection)}: ${String(f.note ?? '').slice(0, 300)}). A server whose worker threads are all busy (THREADPOOL) takes no new login, so its reads stop `
+      + 'while it lasts and the charts show a gap; the server being down, the network or the login can do the same. After it, the cumulative \'Wait for the worker\' counters '
+      + '(Metrics) and THREADPOOL in the waits show whether workers ran out.'));
+  }
 
-  // the scheduler pressure at the newest read, with the sentence a DBA reads first
+  // the scheduler pressure at the newest read, with the sentence a DBA reads first: pgvigil's level (0124's
+  // mssql_sched_levels for the newest read of the range; the same rule here for an older read), and PerformanceMonitor's
+  // ClassifyCpuSchedulerPressure word for word as a labelled second line (task 177 D14)
   if (l && l.schedulers != null) {
     const per = Number(l.runnable_per_sched ?? 0), wq = Number(l.work_queue ?? 0), wpct = Number(l.worker_pct ?? 0);
-    const level = per >= 1 || wq > 0 ? 'HIGH' : per >= 0.25 || wpct >= 80 ? 'ELEVATED' : 'NORMAL';
-    const verdict = wq > 0 ? `${fmtNum(wq)} task(s) wait for a worker thread: THREADPOOL waits follow; find what holds the workers (blocking, parallel queries) before raising max worker threads.`
+    const level = n ? String(n.level) : per >= 1 || wq > 0 ? 'HIGH' : per >= 0.25 || wpct >= 80 ? 'ELEVATED' : 'NORMAL';
+    const verdict = n ? String(n.verdict) : wq > 0 ? `${fmtNum(wq)} task(s) wait for a worker thread: THREADPOOL waits follow; find what holds the workers (blocking, parallel queries) before raising max worker threads.`
       : per >= 1 ? 'Work is ready and waits for a CPU on every scheduler: SOS_SCHEDULER_YIELD and signal waits follow; the queries using the most CPU are the lever.'
       : per >= 0.25 ? 'Some tasks wait for a CPU: worth a look if it lasts.'
       : wpct >= 80 ? 'Most worker threads are in use: blocking or many parallel queries hold them.'
@@ -88,7 +102,16 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
       tile('workers', `${fmtNum(l.current_workers)} of ${fmtNum(l.max_workers)}`, wpct >= 80 ? 'warn' : ''),
       tile('worker use', pct(l.worker_pct)),
       tile('active workers', fmtNum(l.active_workers)),
-    ), el('p', { class: 'meta' }, verdict));
+      ...(n && n.offline_cpus != null ? [tile('CPUs offline', fmtNum(n.offline_cpus), Number(n.offline_cpus) > 0 ? 'warn' : '')] : []),
+      ...(n && n.nodes_total != null ? [tile('NUMA nodes online', `${fmtNum(n.nodes_online)} of ${fmtNum(n.nodes_total)}`, Number(n.nodes_online) < Number(n.nodes_total) ? 'warn' : '')] : []),
+    ), el('p', { class: 'meta', 'data-verdict': level }, verdict));
+    if (n) {
+      sec.append(el('p', { class: 'meta', 'data-pm-level': String(n.pm_level) },
+        el('strong', {}, 'PerformanceMonitor: '), `${String(n.pm_level)} - ${String(n.pm_recommendation)}`,
+        ' (its runnable-task bands over 50, 20 and 10 tasks on the whole server, then worker use over 90 %, then its warnings; '
+        + 'its queued requests are Resource Governor\'s, not the worker queue)'));
+      sec.append(mssqlThreadRow(n), threadpoolBlock(n, tpool), cpuInfoLine(n));
+    }
   }
   const box2 = el('div', { class: 'charts' });
   box2.append(lineChart('CPU scheduler trend', sched,
@@ -226,10 +249,12 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
 // mssqlFileIOView: read and write latency by database and file type, MB/s per file, the files grid (Darling 13.6 and
 // 13.7, DBA Dash's IO Performance chart).
 export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<Record<'latency' | 'throughput' | 'files' | 'checks', Table | null>>('mssql/fileio', { instance: ctx.instance, ...window_(ctx) });
-  const lat = rowsOf(d.latency), thr = rowsOf(d.throughput), files = rowsOf(d.files), checks = rowsOf(d.checks);
+  const d = await get<Record<'latency' | 'throughput' | 'files' | 'checks' | 'logflush' | 'findings', Table | null>>('mssql/fileio', { instance: ctx.instance, ...window_(ctx) });
+  const lat = rowsOf(d.latency), thr = rowsOf(d.throughput), files = rowsOf(d.files), checks = [...rowsOf(d.checks), ...rowsOf(d.findings)];
+  const flush = rowsOf(d.logflush);
   const sec = el('section', {}, el('h2', {}, `File IO (${rangeLabel(ctx)})`));
-  if (!files.length) { sec.append(empty('file IO', 'mssql_fileio', 'every minute')); return sec; }
+  // the log flushes are mssql_activity's (task 177 D14): they show without a file IO read too
+  if (!files.length) { sec.append(empty('file IO', 'mssql_fileio', 'every minute'), await logFlushBlock(ctx, flush)); return sec; }
   sec.append(el('p', { class: 'meta' }, 'From sys.dm_io_virtual_file_stats: each minute\'s reads and writes per file and the time they stalled; the latency is the stall over the operations. '
     + 'The five busiest database and file type groups are drawn on their own, the rest as (other).'), stepNote(ctx));
   const r = pivot(lat.filter(x => x.read_ms != null), 'grp', 'read_ms'), w = pivot(lat.filter(x => x.write_ms != null), 'grp', 'write_ms');
@@ -247,13 +272,17 @@ export async function mssqlFileIOView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'read_ms', label: 'read latency', num: true, fmt: ms, cls: (v, row) => row.type_desc !== 'LOG' && Number(v) >= 50 ? 'warn' : '' },
     { key: 'reads', num: true },
     { key: 'read_bytes', label: 'read', num: true, fmt: fmtBytes },
+    // task 177 D14: sp_PressureDetector's KB per read and per write (file stats)
+    { key: '_kb_read', label: 'KB per read', num: true, fmt: (_v, row) => Number(row.reads) > 0 ? fmtNum(Math.round(10 * Number(row.read_bytes) / 1024 / Number(row.reads)) / 10) : '' },
     { key: 'write_ms', label: 'write latency', num: true, fmt: ms, cls: (v, row) => row.type_desc === 'LOG' && Number(v) >= 20 ? 'warn' : '' },
     { key: 'writes', num: true },
     { key: 'write_bytes', label: 'written', num: true, fmt: fmtBytes },
+    { key: '_kb_write', label: 'KB per write', num: true, fmt: (_v, row) => Number(row.writes) > 0 ? fmtNum(Math.round(10 * Number(row.write_bytes) / 1024 / Number(row.writes)) / 10) : '' },
     { key: 'stall_ms', label: 'stall', num: true, fmt: ms },
     { key: 'physical_name', label: 'path', wide: true },
   ]));
-  sec.append(checksBlock(checks, 'No file IO check raised (data file reads at 50 ms or more, log writes at 20 ms or more, over the last hour with 1,000 operations).'));
+  sec.append(await logFlushBlock(ctx, flush));
+  sec.append(checksBlock(checks, 'No file IO check raised (data file reads at 50 ms or more, log writes at 20 ms or more, data file writes over 100 ms, over the last hour with 1,000 operations).'));
   sec.append(el('p', { class: 'meta' }, 'tempdb\'s layout: ', el('a', { href: href(ctx, { tab: mssqlTempdbTab }) }, 'TempDB'), '.'));
   return sec;
 }
@@ -286,7 +315,7 @@ const tempdbCols = (fleet: boolean, ctx: Ctx): Col[] => [
 // mssqlTempdbView: one instance's tempdb layout, its files and its checks; at the root (no instance) every SQL
 // Server instance's row (keep: a tag folder's instances only).
 export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Promise<HTMLElement> {
-  const d = await get<Record<'layout' | 'files' | 'checks', Table | null>>('mssql/tempdb', ctx.instance ? { instance: ctx.instance } : {});
+  const d = await get<Record<'layout' | 'files' | 'checks' | 'holders' | 'holders_read', Table | null>>('mssql/tempdb', ctx.instance ? { instance: ctx.instance } : {});
   const k = keep ?? (() => true);
   const layout = rowsOf(d.layout).filter(k), files = rowsOf(d.files).filter(k), checks = rowsOf(d.checks).filter(k);
   const fleet = !ctx.instance;
@@ -295,7 +324,9 @@ export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
       + 'then more by fours only while allocation contention stays; every data file the same size and growth. Trace flags 1117 and 1118 are no longer '
       + 'required from SQL Server 2016 (their behaviour is tempdb\'s default).'));
   if (!layout.length) {
-    sec.append(el('p', { class: 'empty' }, 'No tempdb read yet: the mssql_tempdb collection runs hourly (the CPU count needs VIEW SERVER STATE).'));
+    sec.append(el('p', { class: 'empty' }, 'No tempdb layout read yet: the mssql_tempdb collection runs hourly (the CPU count needs VIEW SERVER STATE).'));
+    // the holders are mssql_activity's (task 177 D14): they show without a layout read too
+    if (!fleet) sec.append(tempdbHolders(rowsOf(d.holders), rowsOf(d.holders_read)[0]));
     return sec;
   }
   sec.append(grid(layout, tempdbCols(fleet, ctx)));
@@ -311,7 +342,60 @@ export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
   sec.append(el('h3', {}, 'Checks'), checks.length
     ? grid(checks, [...(fleet ? [{ key: 'instance' }] : []), ...checkCols])
     : el('p', { class: 'meta' }, 'No tempdb check raised: the data files match the recommended minimum, one size and one growth.'));
+  if (!fleet) sec.append(tempdbHolders(rowsOf(d.holders), rowsOf(d.holders_read)[0]));
   return sec;
+}
+
+// tempdbHolders (task 177 D14): the sessions holding tempdb at the newest mssql_activity read of the last 15 minutes,
+// sp_PressureDetector's allocations and current pages per session: sys.dm_db_task_space_usage (running tasks) and
+// sys.dm_db_session_space_usage (what the session's finished tasks hold, so an idle session keeping temp tables shows)
+// summed; 'none' only when that read ran and was not refused
+function tempdbHolders(rows: Row[], read?: Row): HTMLElement {
+  const box = el('div', {}, el('h3', {}, 'Sessions holding tempdb'));
+  const refused = ((read?.skipped ?? []) as { read?: string; error?: string }[]).find(s => s.read === 'sys.dm_db_session_space_usage');
+  box.append(el('p', { class: 'meta', 'data-holders': read == null ? 'not read' : refused ? 'refused' : String(rows.length) }, rows.length
+    ? `The newest mssql_activity read (every 5 minutes), ${fmtTime(rows[0].snapshot_at)}: the 20 sessions with the most tempdb allocated (sp_PressureDetector's figures: allocated, and current = allocated less deallocated; a running request's tasks and the session's finished ones summed, the running part also apart).`
+    : read == null ? 'Not read in the last 15 minutes: mssql_activity reads the sessions holding tempdb every 5 minutes (it needs VIEW SERVER STATE).'
+    : refused ? `The server refused the read at ${fmtTime(read.snapshot_at)}: ${String(refused.error ?? '').slice(0, 300)}`
+    : `No session held tempdb at the read of ${fmtTime(read.snapshot_at)}.`));
+  if (rows.length) box.append(grid(rows, [
+    { key: 'session_id', label: 'session', num: true }, { key: 'login_name', label: 'login' }, { key: 'program_name', label: 'program' },
+    { key: 'host_name', label: 'host' }, { key: 'status' }, { key: 'open_tran', label: 'open transactions', num: true },
+    { key: 'alloc_kb', label: 'allocated', num: true, fmt: kb }, { key: 'current_kb', label: 'current', num: true, fmt: kb },
+    { key: 'user_kb', label: 'user objects', num: true, fmt: kb }, { key: 'internal_kb', label: 'internal objects', num: true, fmt: kb },
+    { key: 'task_alloc_kb', label: 'allocated (running tasks)', num: true, fmt: kb }, { key: 'task_current_kb', label: 'current (running tasks)', num: true, fmt: kb },
+    { key: 'last_request_end', label: 'last request ended', fmt: fmtTime },
+  ]));
+  return box;
+}
+
+// logFlushBlock (task 177 D14): log bytes flushed per second per database (the Databases object's Log Bytes
+// Flushed/sec, read every 5 minutes): the five busiest databases charted, every database in a grid
+async function logFlushBlock(ctx: Ctx, rows: Row[]): Promise<HTMLElement> {
+  const box = el('div', {}, el('h3', {}, 'Log bytes flushed per database'),
+    el('p', { class: 'meta' }, 'From mssql_activity\'s per-database counters (the Databases object\'s Log Bytes Flushed/sec), read every 5 minutes.'));
+  if (!rows.length) {
+    box.append(el('p', { class: 'meta' }, 'No per-database log counters in this window.'));
+    return box;
+  }
+  const top = rows.slice(0, 5);
+  try {
+    const s = await get<Record<'series', Table | null>>('mssql/counters', { instance: ctx.instance, ...window_(ctx), part: 'series', series: top.map(r => String(r.series_id)).join(',') });
+    const name = new Map(top.map(r => [String(r.series_id), String(r.database_name)]));
+    const pts = pivot(rowsOf(s.series).map(r => ({ ...r, db: name.get(String(r.series_id)) ?? String(r.series_id) })), 'db', 'value');
+    const charts = el('div', { class: 'charts' });
+    charts.append(lineChart('Log bytes flushed per second (the five busiest databases)', pts.rows, pts.keys.map(k => ({ key: k, label: k })), v => fmtBytes(v) + '/s'));
+    box.append(charts);
+  } catch (e) {
+    box.append(el('p', { class: 'meta' }, 'The log flush series could not be read: ' + (e instanceof Error ? e.message : String(e))));
+  }
+  box.append(grid(rows, [
+    { key: 'database_name', label: 'database' },
+    { key: 'avg_bytes_s', label: 'average', num: true, fmt: v => v == null ? '' : fmtBytes(v) + '/s' },
+    { key: 'max_bytes_s', label: 'highest', num: true, fmt: v => v == null ? '' : fmtBytes(v) + '/s' },
+    { key: 'reads', label: 'reads with a rate', num: true }, { key: 'last_at', label: 'last read', fmt: fmtTime },
+  ]));
+  return box;
 }
 
 // memoryD13: the sections of task 177 D13 below the clerks, PerformanceMonitor's order (server-tabs.js, the Memory tab).
@@ -450,4 +534,98 @@ function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (
     { key: 'avg_use_count', label: 'avg uses', num: true },
   ], 'No plan cache read in this range.'));
   for (const s of rowsOf(d.skipped)) sec.append(el('p', { class: 'meta' }, `Not read at ${fmtTime(s.snapshot_at)}: ${String(s.read)} (${String(s.error)}).`));
+}
+
+// mssqlThreadRow: sp_PressureDetector's thread usage (CPU section, L4122-4256) at the newest read: total, used and
+// available threads, threads waiting for a CPU, requests waiting for a thread, current workers, the Resource Governor
+// workload groups' counters (Workload Group Stats; 'Queued requests' is Resource Governor's throttling at
+// GROUP_MAX_REQUESTS, not the worker queue), the average runnable tasks per scheduler and its runnable-request line
+function mssqlThreadRow(n: Row): HTMLElement {
+  const box = el('div', {});
+  const used = Number(n.active_workers ?? 0), max = Number(n.max_workers ?? 0);
+  box.append(el('h3', {}, 'Thread usage (sp_PressureDetector)'), grid([{
+    total_threads: n.max_workers, used_threads: n.active_workers, available_threads: max ? max - used : null,
+    threads_waiting_for_cpu: n.runnable_tasks, requests_waiting_for_threads: n.work_queue, current_workers: n.current_workers,
+    rg_active_requests: n.rg_active_requests, rg_queued_requests: n.rg_queued_requests, rg_blocked_tasks: n.rg_blocked_tasks,
+    rg_parallel_threads: n.rg_parallel_threads,
+    avg_runnable: Number(n.schedulers) > 0 ? Math.round(100 * Number(n.runnable_tasks ?? 0) / Number(n.schedulers)) / 100 : null,
+  }], [
+    { key: 'total_threads', label: 'total threads', num: true }, { key: 'used_threads', label: 'used threads', num: true },
+    { key: 'available_threads', label: 'available threads', num: true },
+    { key: 'threads_waiting_for_cpu', label: 'threads waiting for CPU', num: true },
+    { key: 'requests_waiting_for_threads', label: 'requests waiting for threads', num: true },
+    { key: 'current_workers', label: 'current workers', num: true },
+    { key: 'rg_active_requests', label: 'active requests (workload groups)', num: true },
+    { key: 'rg_queued_requests', label: 'queued requests (Resource Governor throttling)', num: true },
+    { key: 'rg_blocked_tasks', label: 'blocked tasks', num: true },
+    { key: 'rg_parallel_threads', label: 'active parallel threads', num: true },
+    { key: 'avg_runnable', label: 'average runnable tasks per scheduler', num: true },
+  ]));
+  const pctRun = Number(n.runnable_pct), total = Number(n.requests);
+  box.append(el('p', { class: 'meta', 'data-runnable-pct': n.runnable_pct == null ? '' : String(n.runnable_pct) },
+    n.requests_at == null ? 'Runnable requests: no requests read within 30 s of this read.'
+      : pctRun >= 10 && total >= 4 ? `${fmtNum(pctRun)}% of ${fmtNum(total)} queries are waiting to get on a CPU (the requests read at ${fmtTime(n.requests_at)}; sp_PressureDetector's line, shown at 10 % of 4 or more).`
+      : `${fmtNum(n.runnable_requests)} of ${fmtNum(total)} requests runnable at the requests read of ${fmtTime(n.requests_at)} (sp_PressureDetector names it at 10 % of 4 or more).`));
+  return box;
+}
+
+// threadpoolBlock: THREADPOOL at the waiting-tasks read nearest the newest scheduler read (D01's count, which takes
+// every task, and its tasks of sessions over 50); sp_PressureDetector's words when there is none
+function threadpoolBlock(n: Row, tasks: Row[]): HTMLElement {
+  const box = el('div', {}, el('h3', {}, 'THREADPOOL waits'));
+  if (n.threadpool_at == null) { box.append(el('p', { class: 'meta' }, 'No waiting-tasks read within 30 s of this read.')); return box; }
+  const c = Number(n.threadpool ?? 0);
+  box.append(el('p', { class: 'meta', 'data-threadpool': String(c) }, c === 0 ? `No current THREADPOOL waits (the waiting-tasks read at ${fmtTime(n.threadpool_at)}).`
+    : `${fmtNum(c)} task(s) waited for a worker thread at ${fmtTime(n.threadpool_at)}, the longest ${fmtNum(n.threadpool_longest_ms)} ms; a task queued before its login has no session and is counted here only.`));
+  if (tasks.length) box.append(grid(tasks, [{ key: 'session_id', label: 'session', num: true }, { key: 'wait_ms', label: 'waited', num: true, fmt: ms }, { key: 'snapshot_at', label: 'read', fmt: fmtTime }]));
+  return box;
+}
+
+// cpuInfoLine: sp_PressureDetector's CPU details as last read (the columns this server has)
+function cpuInfoLine(n: Row): HTMLElement {
+  const i = (n.cpu_info ?? {}) as Record<string, unknown>;
+  const parts: [string, string][] = [['socket_count', 'sockets'], ['numa_node_count', 'NUMA nodes'], ['cpu_count', 'logical CPUs'],
+    ['cores_per_socket', 'cores per socket'], ['hyperthread_ratio', 'hyperthread ratio'], ['softnuma_configuration_desc', 'soft-NUMA'],
+    ['scheduler_count', 'schedulers'], ['scheduler_total_count', 'schedulers in all']];
+  const said = parts.filter(([k]) => i[k] != null).map(([k, w]) => `${w} ${typeof i[k] === 'number' ? fmtNum(i[k]) : String(i[k])}`);
+  return el('p', { class: 'meta', 'data-cpuinfo': String(said.length) }, said.length ? `CPU details (sys.dm_os_sys_info, sp_PressureDetector's list): ${said.join(', ')}.`
+    : 'CPU details: not read yet (mssql_activity reads them every 5 minutes).');
+}
+
+// mssqlConnectionsView (task 177 D14): a SQL Server instance's sessions in PerformanceMonitor's Activity tab's shape:
+// its Sessions tiles (connections, running, sleeping, dormant, applications, when read) with its session totals (background,
+// idle over 30 minutes, databases with a connection, the top application and host, the requests waiting for memory),
+// its Session Stats Trend, and its Sessions by Application, here also by host and by database. Data from
+// /api/mssql/connections (the collection mssql_activity, every 5 minutes).
+export async function mssqlConnectionsView(ctx: Ctx): Promise<HTMLElement> {
+  const d = await get<Record<'summary' | 'series' | 'applications' | 'hosts' | 'databases', Table | null>>('mssql/connections', { instance: ctx.instance, ...window_(ctx) });
+  const s = rowsOf(d.summary)[0], series = rowsOf(d.series);
+  const sec = el('section', {}, el('h2', {}, `Connections (${rangeLabel(ctx)})`));
+  if (!s) { sec.append(empty('sessions', 'mssql_activity', 'every 5 minutes')); return sec; }
+  sec.append(el('p', { class: 'meta' }, 'From sys.dm_exec_sessions every 5 minutes: the totals count the sessions over 50; the groups count the user sessions over 50 '
+    + 'with a program name, pgvigil\'s own left out (PerformanceMonitor\'s Sessions and Sessions by Application). Waiting for memory: the requests '
+    + 'whose wait type names memory at the requests read nearest the sessions read.'));
+  sec.append(el('h3', {}, `Sessions (${fmtTime(s.snapshot_at)})`), el('div', { class: 'tiles' },
+    tile('connections', fmtNum(s.sessions)), tile('running', fmtNum(s.running)), tile('sleeping', fmtNum(s.sleeping)),
+    tile('dormant', fmtNum(s.dormant)), tile('applications', fmtNum(s.applications)), tile('background', fmtNum(s.background)),
+    tile('idle over 30 min', fmtNum(s.idle_30min)), tile('databases with connections', fmtNum(s.databases)),
+    tile('top application', s.top_application == null ? '-' : `${String(s.top_application)} (${fmtNum(s.top_application_sessions)})`),
+    tile('top host', s.top_host == null ? '-' : `${String(s.top_host)} (${fmtNum(s.top_host_sessions)})`),
+    tile('waiting for memory', s.requests_at == null ? 'not read' : fmtNum(s.waiting_for_memory)),
+  ));
+  const box = el('div', { class: 'charts' });
+  box.append(lineChart('Session stats trend', series, [{ key: 'sessions', label: 'total' }, { key: 'running', label: 'running' },
+    { key: 'sleeping', label: 'sleeping' }, { key: 'background', label: 'background' }, { key: 'dormant', label: 'dormant' },
+    { key: 'idle_30min', label: 'idle over 30 min' }, { key: 'waiting_for_memory', label: 'waiting for memory' }], v => fmtNum(v)));
+  sec.append(box);
+  const cols = (first: string): Col[] => [
+    { key: 'name', label: first }, { key: 'sessions', label: 'connections', num: true }, { key: 'running', num: true },
+    { key: 'sleeping', num: true }, { key: 'dormant', num: true }, { key: 'cpu_ms', label: 'CPU', num: true, fmt: ms },
+    { key: 'reads', num: true }, { key: 'writes', num: true }, { key: 'logical_reads', label: 'logical reads', num: true },
+  ];
+  sec.append(el('h3', {}, 'Sessions by application'), grid(rowsOf(d.applications), cols('application'), 'No user session with a program name at the newest read.'));
+  sec.append(el('h3', {}, 'Sessions by host'), grid(rowsOf(d.hosts), cols('host'), 'No user session with a host name at the newest read.'));
+  sec.append(el('h3', {}, 'Sessions by database'), grid(rowsOf(d.databases), cols('database'), 'No user session at the newest read.'));
+  sec.append(el('p', { class: 'meta' }, 'The sessions running now: ', el('a', { href: href(ctx, { tab: 'mssql_running' }) }, 'Running queries'), '.'));
+  return sec;
 }

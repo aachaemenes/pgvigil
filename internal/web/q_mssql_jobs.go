@@ -26,13 +26,21 @@ SELECT j.name, j.enabled, j.category, j.owner, j.schedule_names, j.schedules, j.
  WHERE j.instance_id = $1
  ORDER BY (j.last_outcome = 0) DESC NULLS LAST, j.name`
 
+// sqlMSSQLJobsRunning: the jobs running at the read with the average and the 95th percentile of their good runs (the
+// job outcome rows, step 0, of the last 31 days) and the run so far as a percentage of the average (task 177 D14,
+// PerformanceMonitor's Running Jobs: PERCENTILE_CONT(0.95) over the job's successful outcome rows, percent of average)
 const sqlMSSQLJobsRunning = `
 SELECT j.name, j.running_since, extract(epoch FROM j.snapshot_at - j.running_since)::bigint AS running_s, j.running_after_step,
-       (SELECT round(avg(r.duration_s)) FROM pgvigil.mssql_job_runs r
-         WHERE r.instance_id = j.instance_id AND r.job_id = j.job_id AND r.step_id = 0 AND r.run_status = 1
-           AND r.snapshot_at > now() - interval '31 days') AS avg_duration_s,
+       g.avg_duration_s, g.p95_duration_s, g.good_runs,
+       round(100.0 * extract(epoch FROM j.snapshot_at - j.running_since) / nullif(g.avg_duration_s, 0), 1) AS pct_of_avg,
        j.snapshot_at
   FROM pgvigil.mssql_jobs j
+  LEFT JOIN LATERAL (SELECT round(avg(r.duration_s)) AS avg_duration_s,
+                            round(percentile_cont(0.95) WITHIN GROUP (ORDER BY r.duration_s)::numeric) AS p95_duration_s,
+                            count(*) AS good_runs
+                       FROM pgvigil.mssql_job_runs r
+                      WHERE r.instance_id = j.instance_id AND r.job_id = j.job_id AND r.step_id = 0 AND r.run_status = 1
+                        AND r.snapshot_at > now() - interval '31 days') g ON true
  WHERE j.instance_id = $1 AND j.running_since IS NOT NULL
  ORDER BY j.running_since`
 
