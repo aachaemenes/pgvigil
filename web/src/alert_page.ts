@@ -6,9 +6,15 @@
 // dismissals). The links to the instance's pages open pinned to the firing's window ('at the firing') or to the last
 // hour ('now'); the export buttons keep the page as a workbook (the report). Data from /api/alerts?k= (q_alerts.go);
 // the route is the shell's (a WIRING BLOCK: router.ts and main.ts).
+// Task 177 D30 (PerformanceMonitor's triage notebook, its Alert History > Open): the evidence of the alert's family read
+// and drawn on the page itself at the firing - how to read it, the family's metrics charted around the firing
+// (/api/metrics/series, the Metrics page's samples) and the sessions or requests at the first send (/api/activity,
+// /api/mssql/running); the links stay for the rest.
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, MAX_RANGE_MS } from './router';
 import { badge, Col, copyText, el, errorBox, fmtTime, grid, props } from './ui';
+import { lineChart } from './chart';
+import { fmtMetric } from './alert_rules';
 import { exportButtons } from './export';
 import { loadAckSafe, AckData, writeButton } from './ack';
 import { whatIsThis } from './sqlview';
@@ -71,6 +77,120 @@ function instanceLinks(ctx: Ctx, instanceId: number, engine: unknown, win: { fro
   const out = el('p', { class: 'meta' }, win ? 'The instance at the firing: ' : 'The instance now: ');
   links.forEach((a, i) => { if (i) out.append(' · '); out.append(a); });
   return out;
+}
+
+// ---- the evidence per alert family --------------------------------------------------------------------------------
+// family: the reads that explain an alert of one kind (PerformanceMonitor opens an alert on a triage page per family):
+// what to look at first, the metrics to chart around the firing per engine (metric_catalog keys with their label and
+// unit), and the live read at the first send. The family is found by whole words of the alert's setting (a check's name),
+// then of its source; a setting that is a parameter's name (pg_gather's and the setting rules': 'lock_timeout',
+// 'autovacuum_max_workers') is a configuration finding, explained by the instance's load (The instance); an alert
+// rule's alert charts the rule's own metric first.
+interface Family { name: string; read: string; pg: [string, string, string][]; ms: [string, string, string][] }
+const families: { test: RegExp; f: Family }[] = [
+  { test: /\b(vacuum|autovacuum|xid|wraparound|dead tuples?|bloat|xmin|freeze)\b/i, f: { name: 'Vacuum',
+    read: 'Vacuum falls behind when an old snapshot (a long transaction, an idle-in-transaction session, a replication slot) holds back the xmin horizon, or when autovacuum is off or slowed for the table. The oldest xmin age climbing with a long idle transaction names the holder.',
+    pg: [['sessions.oldest_xmin_age', 'oldest xmin age', 'xids'], ['sessions.longest_idle_txn_secs', 'longest idle in transaction', 'secs'], ['sessions.longest_active_secs', 'longest active statement', 'secs']],
+    ms: [['requests.requests', 'requests running', 'count']] } },
+  { test: /\b(block(ed|ing|er|s)?|locks?|locked|deadlocks?|chains?)\b/i, f: { name: 'Blocking',
+    read: 'A blocked session waits for one that holds a lock. The charts show how many waited around the firing; the grid lists the sessions at the first send, the blockers first. The cause is the blocking head\'s transaction and its last statement, never the object the others wait on: find the session nobody blocks that others wait for, and read what its transaction did.',
+    pg: [['sessions.waiting_lock', 'waiting on a lock', 'count'], ['sessions.active', 'active sessions', 'count'], ['sessions.longest_idle_txn_secs', 'longest idle in transaction', 'secs']],
+    ms: [['requests.blocked', 'processes blocked', 'count'], ['requests.heads', 'blocking chain heads', 'count'], ['requests.longest_wait_ms', 'longest wait', 'ms']] } },
+  { test: /\b(replica(tion)?|replay|lag|slots?|wal|standby|availability group|ag|hadr|mirroring)\b/i, f: { name: 'Replication',
+    read: 'Replication lag grows when the primary writes faster than a standby replays, or when a standby or a slot stops. The write rate around the firing tells a burst from a stop.',
+    pg: [['server.wal_bytes_s', 'WAL bytes written', 'bytes_per_s'], ['sessions.active', 'active sessions', 'count']],
+    ms: [['scheduler.transactions_s', 'transactions', 'per_s'], ['scheduler.pending_io', 'pending disk IO', 'count']] } },
+  { test: /\b(cpu|schedulers?|runnable|workers?)\b/i, f: { name: 'CPU',
+    read: 'CPU pressure shows as the instance\'s own share against the host\'s, and as tasks waiting for a scheduler. A rise that follows one statement points at that statement (the grid at the first send); a rise of every session together points at the load.',
+    pg: [['host.cpu_pct', 'host CPU', 'pct'], ['host.cpu_iowait_pct', 'CPU in IO wait', 'pct'], ['sessions.active', 'active sessions', 'count']],
+    ms: [['cpu.sql_pct', 'SQL Server CPU', 'pct'], ['cpu.total_pct', 'machine CPU', 'pct'], ['scheduler.runnable_tasks', 'runnable tasks', 'count']] } },
+  { test: /\b(memory|grants?|ple|page life|swap|buffer pool)\b/i, f: { name: 'Memory',
+    read: 'Memory pressure shows as grants waiting and a falling page life expectancy (SQL Server), or the host\'s used memory and swap (PostgreSQL). A grant queue that empties when one query ends names that query.',
+    pg: [['host.mem_used_pct', 'host memory used', 'pct'], ['host.swap_used', 'swap used', 'bytes'], ['sessions.active', 'active sessions', 'count']],
+    ms: [['memory.grants_pending', 'memory grants pending', 'count'], ['memory.ple', 'page life expectancy', 'secs'], ['memory.available_mb', 'memory available', 'mb']] } },
+  { test: /\b(connections?|idle in transaction|too many clients)\b/i, f: { name: 'Connections',
+    read: 'A connection alert is about how many sessions are open and what they do. Idle-in-transaction sessions hold locks and old snapshots; a pool that grows without work points at the application.',
+    pg: [['sessions.connections_pct', 'connections used', 'pct'], ['sessions.idle_in_txn', 'idle in transaction', 'count'], ['sessions.total', 'sessions', 'count']],
+    ms: [['requests.sessions', 'sessions', 'count'], ['requests.requests', 'requests running', 'count'], ['scheduler.active_workers', 'active workers', 'count']] } },
+  { test: /\b(io|disk|storage|space|tempdb|files?|drives?|volumes?|growth|free)\b/i, f: { name: 'Storage and IO',
+    read: 'A space alert is about what fills the volume and how fast; an IO alert about who waits on the disk. The charts show the IO wait around the firing; the Storage and Files pages hold the sizes.',
+    pg: [['host.cpu_iowait_pct', 'CPU in IO wait', 'pct'], ['server.buffers_written_s', 'buffers written', 'per_s']],
+    ms: [['scheduler.pending_io', 'pending disk IO', 'count'], ['memory.available_mb', 'memory available', 'mb']] } },
+];
+const anyFamily: Family = { name: 'The instance',
+  read: 'The instance around the firing: its load and its sessions at the first send. The finding\'s detail above says what was judged; the links open the pages that hold the rest.',
+  pg: [['sessions.active', 'active sessions', 'count'], ['host.cpu_pct', 'host CPU', 'pct']],
+  ms: [['requests.requests', 'requests running', 'count'], ['cpu.total_pct', 'machine CPU', 'pct']] };
+export function familyOf(source: unknown, setting: unknown): Family {
+  const set = String(setting ?? ''), src = String(source ?? '').replace(/[_-]/g, ' ');   // 'mssql_hadr': its words
+  if (/^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(set)) return anyFamily;   // a parameter's name: a configuration finding
+  return families.find(x => x.test.test(set))?.f ?? families.find(x => x.test.test(src))?.f ?? anyFamily;
+}
+
+// the live read's columns per engine, in this order (the read's own row order kept: blockers first)
+const pgCols = ['pid', 'state', 'wait_event_type', 'wait_event', 'blocking_pids', 'is_blocker', 'xact_secs', 'query_secs', 'usename', 'application_name', 'query'];
+const msCols = ['session_id', 'blocking_session_id', 'head_session_id', 'status', 'wait_type', 'wait_ms', 'elapsed_ms', 'login_name', 'program_name', 'statement'];
+// liveGrid: a read's rows as a grid of the engine's columns (the ones the read has), the statement wide; a PostgreSQL
+// read's working sessions before its idle ones; at most 20 rows, the rest said
+function liveGrid(rows: Row[], keys: string[], empty: string, idleLast: boolean): HTMLElement {
+  if (idleLast) rows = [...rows.filter(r => r.state !== 'idle'), ...rows.filter(r => r.state === 'idle')];
+  const have = keys.filter(k => rows.some(r => k in r));
+  const cols: Col[] = have.map(k => ({ key: k, ...(/query|statement/.test(k) ? { wide: true } : {}) }));
+  const g = grid(rows.slice(0, 20), cols, empty);
+  return rows.length > 20 ? el('div', {}, g, el('p', { class: 'meta' }, `${rows.length - 20} more not shown: the instance's running queries page at that time holds them all.`)) : g;
+}
+
+let catalogKeys: Map<string, [string, string]> | null = null;   // 'family_label: label' -> [key, unit] (an alert rule's metric)
+async function ruleMetric(setting: unknown): Promise<[string, string, string] | null> {
+  if (!catalogKeys) {
+    const d = await get<{ catalog: Table | null }>('alertrules', { part: 'catalog' });
+    catalogKeys = new Map(rowsOf(d.catalog).map(c => [`${String(c.family_label)}: ${String(c.label)}`, [String(c.key), String(c.unit)] as [string, string]]));
+  }
+  const hit = catalogKeys.get(String(setting ?? ''));
+  return hit ? [hit[0], String(setting), hit[1]] : null;
+}
+
+// evidence: the family's section of the page: how to read it, its charts over the window, the live read at the firing
+// (with the read's own time and its distance from the first send) or, for an alert not sent yet, now
+function evidence(instanceId: number, engine: unknown, win: { from: string; to: string } | null, firedAt: unknown, source: unknown, setting: unknown): HTMLElement {
+  const rule = String(source ?? '') === 'alert rule';
+  const f = rule ? { ...anyFamily, name: 'Alert rule', read: 'An alert rule judges one metric against its warning and critical values: its chart is first, with the instance\'s load and its sessions beside it.' } : familyOf(source, setting);
+  const ms = engine === 'sqlserver';
+  const range = win ?? { from: new Date(Date.now() - 3600e3).toISOString(), to: new Date().toISOString() };
+  const when = win ? 'around the firing' : 'the last hour';
+  const charts = el('div', { class: 'charts' });
+  const live = el('div', {}, el('p', { class: 'meta' }, 'Reading the instance...'));
+  const box = el('section', { class: 'evidence', 'aria-label': `Evidence: ${f.name}` },
+    el('h3', {}, `Evidence: ${f.name} `, whatIsThis('The reads that explain an alert of this kind, made on this page: what to look at first, the family\'s metrics charted over the window (from half an hour before the first send to half an hour after the clear; the last hour for an alert not sent yet), and the sessions or requests the instance ran at the first send.', 'Evidence')),
+    el('p', { class: 'how-to-read' }, f.read), charts, live);
+  const chart = (key: string, label: string, unit: string) => {
+    const holder = el('div', {}, el('h3', {}, label));
+    charts.append(holder);
+    void get<{ series: Table | null; step_secs?: number }>('metrics/series', { instance: instanceId, metric: key, from: range.from, to: range.to })
+      .then(s => {
+        // a window bucketed by the server (over about 20 hours) draws each bucket's average, highest and lowest
+        const bucketed = Number(s.step_secs ?? 0) > 1;
+        const series = bucketed ? [{ key: 'value', label: `${label} (average per ${Math.round(Number(s.step_secs) / 60)} min)` }, { key: 'max_value', label: 'highest' }, { key: 'min_value', label: 'lowest' }] : [{ key: 'value', label }];
+        holder.replaceChildren(lineChart(`${label} (${when})`, rowsOf(s.series), series, v => fmtMetric(v, unit)));
+      })
+      .catch((e: unknown) => holder.replaceChildren(el('h3', {}, label), errorBox(e)));
+  };
+  void (rule ? ruleMetric(setting).catch(() => null) : Promise.resolve(null)).then(own => {
+    for (const [key, label, unit] of [...(own ? [own] : []), ...(ms ? f.ms : f.pg)]) chart(key, label, unit);
+  });
+  const at = firedAt != null && win ? new Date(Date.parse(String(firedAt))).toISOString() : undefined;
+  const title = el('h3', {}, `${ms ? 'Requests' : 'Sessions'} ${at ? 'at the first send' : 'now (not sent yet)'}`);
+  const said = (snap: unknown) => {
+    if (snap == null) return el('p', { class: 'meta' }, ms ? 'No request in the snapshot read (or no snapshot near enough).' : 'No snapshot was read.');
+    const gap = at ? Math.round((Date.parse(at) - Date.parse(String(snap))) / 60000) : 0;
+    return el('p', { class: 'meta' }, `The snapshot of ${fmtTime(snap)}` + (at ? (Math.abs(gap) > 15 ? `, ${gap} minutes before the first send: the activity collection read nothing nearer (the snapshot may say little of the firing).` : `, ${gap} minute(s) before the first send.`) : '.'));
+  };
+  (ms
+    ? get<{ rows: Table | null }>('mssql/running', { instance: instanceId, at }).then(d => { const rows = rowsOf(d.rows); return el('div', {}, said(rows[0]?.snapshot_at), liveGrid(rows, msCols, 'No request was running in that snapshot.', false)); })
+    : get<{ sessions: Table | null; snapshot_at?: unknown }>('activity', { instance: instanceId, at }).then(d => el('div', {}, said(d.snapshot_at), liveGrid(rowsOf(d.sessions), pgCols, 'No session in that snapshot.', true))))
+    .then(g => live.replaceChildren(title, g))
+    .catch((e: unknown) => live.replaceChildren(title, errorBox(e)));
+  return box;
 }
 
 // fixLine: the statement with its Copy button; a setting's note on reload and restart
@@ -153,6 +273,9 @@ export async function alertPageView(ctx: Ctx): Promise<HTMLElement> {
   if (card?.suggested) pairs.push(['Suggested', String(card.suggested)]);
   if (dismissed) pairs.push(['Dismissed', `by ${String(dismissed.by)} ${fmtTime(dismissed.at)}: ${String(dismissed.note ?? '')}`]);
   sec.append(el('div', { class: 'toolbar' }, seg, el('span', { class: 'meta' }, ' '), exportButtons(ctx, () => sec), copyLinkButton()), linksBox, props(pairs));
+  const engine = head.engine ?? card?.engine;
+  if (instanceId && engine != null) sec.append(evidence(instanceId, engine, win, o?.fired_at, head.source, head.setting));
+  else if (instanceId) sec.append(el('p', { class: 'meta' }, 'No evidence drawn: the instance is no longer in the repository (its reads went with it).'));
   if (card?.fix) sec.append(fixLine(card.fix));
   else if (card) sec.append(el('p', { class: 'meta' }, 'No fix statement: the detail says what to do (a fix statement is given for a PostgreSQL setting with a one-word suggested value, and for a maintenance statement the detail spells out).'));
   sec.append(dismissBar(door, key, dismissed));
