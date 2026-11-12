@@ -19,7 +19,10 @@
 --   4. pgvigil.mssql_config_pivot(): sys.configurations of every active SQL Server instance side by side, the odd
 --      value marked: a value that is not the one value most instances run.
 --   5. pgvigil.mssql_trace_flags, mssql_trace_flag_history and import_mssql_traceflags: the trace flags switched on
---      (DBCC TRACESTATUS(-1)) as last read, and each flag's added / removed history.
+--      (DBCC TRACESTATUS(-1)) as last read, and each flag's added / removed history. It is the one store of the
+--      flags: the collection carries the day-one checks' verdict of each flag (internal/mssql/checks.go), and the
+--      import writes the checks' 'traceflags' area and findings into 0090's mssql_check_area / mssql_check_finding;
+--      the view mssql_trace_flag_checks is the checks' grid (the flags on, the advised ones off, the ones gone).
 --   6. pgvigil.job_thresholds: thresholds on a job's failures at three levels (the fleet's root, an instance, one
 --      job; the most specific live row applies whole, a level without a row inherits), written through
 --      import_job_threshold (the actions door's audit login: apply_roles makes every import_* SECURITY DEFINER and
@@ -27,7 +30,7 @@
 --      the table is its own history. pgvigil.job_status(instance) judges every job against them.
 --
 -- Retention: job_versions, mssql_config_history, mssql_trace_flag_history and job_thresholds hold a row per change,
--- not per read; they are kept and go with their instance.
+-- not per read; they are kept and go with their instance (the checks' grid shows a flag gone for a year at most).
 -- Lock footprint: one ALTER TABLE ... ADD COLUMN without a default (a catalog change, no rewrite), one trigger on
 -- pgvigil.mssql_config (a row per instance and option, written hourly), new tables.
 
@@ -413,6 +416,11 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_trace_flags (
   first_seen    timestamptz NOT NULL,   -- the read that first saw it on (since it was last off)
   first_read    boolean NOT NULL DEFAULT false,   -- on at the first read of the instance's flags: switched on before it
   snapshot_at   timestamptz NOT NULL,
+  -- the checks' verdict of a global flag (checks.go traceFlagRows); NULL on a flag on for the session alone
+  status        text CHECK (status IN ('ok', 'warn', 'crit', 'none')),
+  severity      text,
+  rule          text,
+  detail        text,                   -- what the flag does, and why it is or is not in order
   PRIMARY KEY (instance_id, trace_flag)
 );
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_trace_flag_history (
@@ -420,20 +428,29 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_trace_flag_history (
   trace_flag    int NOT NULL,
   changed_at    timestamptz NOT NULL,   -- the read that saw the change
   change        text NOT NULL CHECK (change IN ('added', 'removed')),
+  -- the verdict the flag had while it was on (on 'removed': its last; on 'added': the read's)
+  status        text CHECK (status IN ('ok', 'warn', 'crit', 'none')),
+  severity      text,
+  rule          text,
+  detail        text,
   PRIMARY KEY (instance_id, trace_flag, changed_at)
 );
 -- the last read of an instance's flags: a server with no flag on has no row in mssql_trace_flags
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_trace_flags_read (
   instance_id   int PRIMARY KEY REFERENCES pgvigil.instances(instance_id) ON DELETE CASCADE,
   first_read_at timestamptz NOT NULL,
-  snapshot_at   timestamptz NOT NULL
+  snapshot_at   timestamptz NOT NULL,
+  advised       jsonb NOT NULL DEFAULT '[]'   -- the advised flags that are off, as last read: [{trace_flag, status, severity, rule, explain}]
 );
 
 -- import_mssql_traceflags: one read of DBCC TRACESTATUS(-1). payload: a 'flag' row per flag that is on ({trace_flag,
--- global, session}: the numbers of the command's columns) and one 'read' row; a payload without a 'read' row is
--- refused (a read that failed must not turn every flag off). A flag on for the collector's session alone is kept
--- with is_global false and is no change of the server. The first read is the baseline: its flags get no 'added'
--- row. A read older than the newest one changes nothing.
+-- global, session}: the numbers of the command's columns; a global flag also {status, severity, rule, explain}: the
+-- checks' verdict), an 'advised' row per advised flag that is off ({trace_flag, status, severity, rule, explain}), the
+-- checks' 'area' row {area 'traceflags', read} and 'finding' rows {area 'traceflags', check_name, object, severity,
+-- rule, value, explain}, and one 'read' row; a payload without a 'read' row is refused (a read that failed must not
+-- turn every flag off). A flag on for the collector's session alone is kept with is_global false and is no change of
+-- the server. The first read is the baseline: its flags get no 'added' row. A read older than the newest one changes
+-- nothing. The findings of the area are replaced by the read's; one still raised keeps its first_seen.
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_traceflags(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -453,30 +470,39 @@ BEGIN
     RETURN;
   END IF;
   v_first := v_last IS NULL;
-  INSERT INTO pgvigil.mssql_trace_flags_read (instance_id, first_read_at, snapshot_at) VALUES (p_instance_id, p_snapshot_at, p_snapshot_at)
-  ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at;
+  INSERT INTO pgvigil.mssql_trace_flags_read AS d (instance_id, first_read_at, snapshot_at, advised)
+  SELECT p_instance_id, p_snapshot_at, p_snapshot_at,
+         coalesce((SELECT jsonb_agg(jsonb_build_object('trace_flag', (r->>'trace_flag')::int, 'status', coalesce(r->>'status', 'none'),
+                                                       'severity', r->>'severity', 'rule', r->>'rule', 'explain', r->>'explain')
+                                    ORDER BY (r->>'trace_flag')::int)
+                     FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'advised' AND r->>'trace_flag' IS NOT NULL), '[]')
+  ON CONFLICT (instance_id) DO UPDATE SET snapshot_at = EXCLUDED.snapshot_at, advised = EXCLUDED.advised;
 
-  -- global flags that are no longer on (or on for the session alone now): removed
-  INSERT INTO pgvigil.mssql_trace_flag_history (instance_id, trace_flag, changed_at, change)
-  SELECT p_instance_id, t.trace_flag, p_snapshot_at, 'removed'
+  -- global flags that are no longer on (or on for the session alone now): removed, with the verdict they had
+  INSERT INTO pgvigil.mssql_trace_flag_history (instance_id, trace_flag, changed_at, change, status, severity, rule, detail)
+  SELECT p_instance_id, t.trace_flag, p_snapshot_at, 'removed', t.status, t.severity, t.rule, t.detail
     FROM pgvigil.mssql_trace_flags t
    WHERE t.instance_id = p_instance_id AND t.is_global
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r
                       WHERE r->>'kind' = 'flag' AND (r->>'trace_flag')::int = t.trace_flag AND (r->>'global')::int = 1);
   -- global flags that were not on: added (never on the first read)
-  INSERT INTO pgvigil.mssql_trace_flag_history (instance_id, trace_flag, changed_at, change)
-  SELECT DISTINCT p_instance_id, (r->>'trace_flag')::int, p_snapshot_at, 'added'
+  INSERT INTO pgvigil.mssql_trace_flag_history (instance_id, trace_flag, changed_at, change, status, severity, rule, detail)
+  SELECT DISTINCT ON ((r->>'trace_flag')::int) p_instance_id, (r->>'trace_flag')::int, p_snapshot_at, 'added',
+         r->>'status', r->>'severity', r->>'rule', r->>'explain'
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' = 'flag' AND r->>'trace_flag' IS NOT NULL AND (r->>'global')::int = 1 AND NOT v_first
      AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_trace_flags t
-                      WHERE t.instance_id = p_instance_id AND t.trace_flag = (r->>'trace_flag')::int AND t.is_global);
+                      WHERE t.instance_id = p_instance_id AND t.trace_flag = (r->>'trace_flag')::int AND t.is_global)
+   ORDER BY (r->>'trace_flag')::int;
 
   DELETE FROM pgvigil.mssql_trace_flags t
    WHERE t.instance_id = p_instance_id
      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_rows) r WHERE r->>'kind' = 'flag' AND (r->>'trace_flag')::int = t.trace_flag);
-  INSERT INTO pgvigil.mssql_trace_flags AS t (instance_id, trace_flag, is_global, is_session, first_seen, first_read, snapshot_at)
+  INSERT INTO pgvigil.mssql_trace_flags AS t (instance_id, trace_flag, is_global, is_session, first_seen, first_read, snapshot_at,
+      status, severity, rule, detail)
   SELECT DISTINCT ON ((r->>'trace_flag')::int) p_instance_id, (r->>'trace_flag')::int, (r->>'global')::int = 1, (r->>'session')::int = 1,
-         p_snapshot_at, v_first, p_snapshot_at
+         p_snapshot_at, v_first, p_snapshot_at,
+         CASE WHEN (r->>'global')::int = 1 THEN coalesce(r->>'status', 'none') END, r->>'severity', r->>'rule', r->>'explain'
     FROM jsonb_array_elements(v_rows) r
    WHERE r->>'kind' = 'flag' AND r->>'trace_flag' IS NOT NULL
    ORDER BY (r->>'trace_flag')::int
@@ -484,8 +510,56 @@ BEGIN
       -- a flag that turns global starts again: it was the session's alone until this read
       first_seen = CASE WHEN EXCLUDED.is_global AND NOT coalesce(t.is_global, false) THEN EXCLUDED.first_seen ELSE t.first_seen END,
       first_read = CASE WHEN EXCLUDED.is_global AND NOT coalesce(t.is_global, false) THEN false ELSE t.first_read END,
-      is_global = EXCLUDED.is_global, is_session = EXCLUDED.is_session, snapshot_at = EXCLUDED.snapshot_at;
+      is_global = EXCLUDED.is_global, is_session = EXCLUDED.is_session, snapshot_at = EXCLUDED.snapshot_at,
+      status = EXCLUDED.status, severity = EXCLUDED.severity, rule = EXCLUDED.rule, detail = EXCLUDED.detail;
+
+  -- the checks' area and findings (0090's tables, the shape import_mssql_checks writes for its own areas)
+  INSERT INTO pgvigil.mssql_check_area AS a (instance_id, area, is_read, note, snapshot_at, read_at)
+  VALUES (p_instance_id, 'traceflags', true, NULL, p_snapshot_at, p_snapshot_at)
+  ON CONFLICT (instance_id, area) DO UPDATE SET
+      is_read = EXCLUDED.is_read, note = EXCLUDED.note, snapshot_at = EXCLUDED.snapshot_at, read_at = EXCLUDED.read_at;
+  INSERT INTO pgvigil.mssql_check_finding AS f (instance_id, area, check_name, object, rule, severity, value, detail, first_seen, snapshot_at)
+  SELECT DISTINCT ON (r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''))
+         p_instance_id, 'traceflags', r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''), r->>'severity',
+         r->>'value', r->>'explain', p_snapshot_at, p_snapshot_at
+    FROM jsonb_array_elements(v_rows) r
+   WHERE r->>'kind' = 'finding' AND r->>'area' = 'traceflags' AND r->>'check_name' IS NOT NULL
+     AND r->>'severity' IN ('critical', 'warning', 'info')
+   ORDER BY r->>'check_name', coalesce(r->>'object', ''), coalesce(r->>'rule', ''),
+            CASE r->>'severity' WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END
+  ON CONFLICT (instance_id, area, check_name, object, rule) DO UPDATE SET
+      severity = EXCLUDED.severity, value = EXCLUDED.value, detail = EXCLUDED.detail, snapshot_at = EXCLUDED.snapshot_at;
+  DELETE FROM pgvigil.mssql_check_finding f
+   WHERE f.instance_id = p_instance_id AND f.area = 'traceflags' AND f.snapshot_at < p_snapshot_at;
 END $$;
+
+-- mssql_trace_flag_checks: the checks' grid of an instance's trace flags (the Checks page's Trace flags view):
+-- the flags on globally with their verdict (is_present true, is_on true, in this state since first_seen), the
+-- advised flags that are off (is_on false; off since the read that saw them removed, else since the first read), and
+-- the flags that were on and are gone, for a year after the last read (is_present false, the verdict they had,
+-- first_seen = the read that saw them gone). A flag on for the collector's session alone is not listed.
+CREATE OR REPLACE VIEW pgvigil.mssql_trace_flag_checks AS
+SELECT t.instance_id, t.trace_flag AS flag, true AS is_on, coalesce(t.status, 'none') AS status, t.severity, t.rule, t.detail,
+       t.first_seen, true AS is_present, t.snapshot_at
+  FROM pgvigil.mssql_trace_flags t
+ WHERE t.is_global
+UNION ALL
+SELECT d.instance_id, (a->>'trace_flag')::int, false, a->>'status', a->>'severity', a->>'rule', a->>'explain',
+       coalesce((SELECT max(h.changed_at) FROM pgvigil.mssql_trace_flag_history h
+                  WHERE h.instance_id = d.instance_id AND h.trace_flag = (a->>'trace_flag')::int AND h.change = 'removed'),
+                d.first_read_at),
+       true, d.snapshot_at
+  FROM pgvigil.mssql_trace_flags_read d
+ CROSS JOIN LATERAL jsonb_array_elements(d.advised) a
+UNION ALL
+SELECT g.instance_id, g.trace_flag, true, coalesce(g.status, 'none'), g.severity, g.rule, g.detail, g.changed_at, false, g.changed_at
+  FROM (SELECT DISTINCT ON (h.instance_id, h.trace_flag) h.*
+          FROM pgvigil.mssql_trace_flag_history h
+         ORDER BY h.instance_id, h.trace_flag, h.changed_at DESC) g
+  JOIN pgvigil.mssql_trace_flags_read d ON d.instance_id = g.instance_id
+ WHERE g.change = 'removed' AND g.changed_at > d.snapshot_at - interval '365 days'
+   AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_trace_flags t WHERE t.instance_id = g.instance_id AND t.trace_flag = g.trace_flag AND t.is_global)
+   AND NOT d.advised @> jsonb_build_array(jsonb_build_object('trace_flag', g.trace_flag));
 
 -- mssql_trace_flags_now and mssql_trace_flag_log: the flags on now and their history, of one instance or (NULL) of the fleet.
 CREATE OR REPLACE FUNCTION pgvigil.mssql_trace_flags_now(p_instance_id int DEFAULT NULL)
