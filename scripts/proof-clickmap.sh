@@ -102,7 +102,9 @@
 #     engine the header's name (its Summary), the breadcrumb's band dot (named OK / Warning / Critical / Offline), the
 #     calendar's Previous / Next month (Next off on this month) and This month, Show as table and back, the newest day
 #     with data ('Why this day is <its band>:') and each of its drills landing on that page over that UTC day (View Top
-#     Queries always), and the Performance page's 'Zoomed: <from> → <to>' chip whose x goes back to the range before.
+#     Queries always), and the Performance page's 'Zoomed: <from> → <to>' chip.
+#     The zoom (w9fold): one drag and the chip's x; two drags, the chip's x and every chart's Reset zoom the range before
+#     the first; a custom range, a drag, a chart's Reset zoom pressed (a real press) back to it with no chip.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
