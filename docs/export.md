@@ -1,7 +1,11 @@
 # Export to Excel and CSV
 
 Every tab of the web UI can be saved as an Excel workbook (.xlsx) or as CSV, from the two buttons in the bar
-beside Refresh: **Export .xlsx** and **Export CSV**. The export is built in the browser from the page on the
+beside Refresh: **Export .xlsx** and **Export CSV**. One grid alone: **Export Excel** on the grid's own menu
+(right-click, the menu key or Shift+F10), right after its copy lines, as DBA Dash's grid menu has it. On the fleet
+Summary the bar also has **Export to Excel**, a drop-down with **Export Summary** (the instance grid) and **Export
+Test Summary** (the grid of tests), as DBA Dash's Summary toolbar. A chart's numbers: **Export Excel** on the
+chart's menu (its button in the chart's heading, or a right-click on the chart), beside Copy image and Copy data. The export is built in the browser from the page on the
 screen, so the file holds what the screen shows: the same rows in the same sort order, the same columns, the
 same colours. The pgvigil server is asked only for an instance's name (on an instance's tab), nothing is written on any server, and nothing leaves the
 browser but the file you save. Not proven (no proof saves a file from either): that the browser window opened by `pgvigil -open` and the Windows app download the
@@ -24,16 +28,23 @@ same way as any browser.
   on), with no table style, so the cells keep their own colours. Its column names are the header cells: a
   heading that repeats gets ` (2)`, an empty one is `Column n` (Excel wants each column named once). A grid
   without rows (one a filter left empty, or one with no row at all) is a plain sheet of its header row with the
-  filter on; DBA Dash also exports an empty grid as its header row. A grid with no row at all carries every column
-  of the grid there (the grid tools hide columns in a grid with rows only).
-- **The header row is frozen**; the column widths follow the content (8 to 60 characters).
+  filter on; DBA Dash also exports an empty grid as its header row. A grid with no row at all leaves out a column
+  the grid tools hid while it had rows, as DBA Dash writes only the visible columns (the tools' choice is read from
+  this browser's storage; a choice a private window keeps only in memory is not seen there).
+- **No frozen pane**, as DBA Dash's: scrolled down, Excel shows a table's column names in place of the column
+  letters. **Each column is as wide as its widest cell** the way DBA Dash's writer measures it (ClosedXML's
+  AdjustToContents: the text in Calibri 11, by Carlito's widths, its metric twin; a header cell bold with its
+  filter button), at most 150 characters. The rule was fitted on DBA Dash's own exports: re-measured by it, each of
+  DBA Dash's 111 columns comes within 5 pixels (under one character) of the width DBA Dash stored (the comparison
+  fails past 6).
 - **A column hidden on the screen is left out.** The grid tools (below) hide columns; the workbook and the CSV
   hold the columns the screen shows.
 - **A link cell is drawn as DBA Dash's link column**: a cell the screen draws as a link (an instance name that
   opens its page) has a light fill (`#F1F1F6`) and the link blue as its text colour (`#004F83`). No other cell
   is filled: a cell has the colour the screen gives it, and the rows are not banded.
-- **Status colours** are the screen's solid fills (DBA Dash's colours; the orange carries dark text)
-  under a blue header row (`#0063A3`, white bold), whatever the theme or status style on screen:
+- **Status colours** are the screen's solid fills (DBA Dash's colours; the orange carries the screen's dark text,
+  where DBA Dash writes white at 2.5:1), in a plain font as DBA Dash writes them (not bold), under a blue header
+  row (`#0063A3`, white bold), whatever the theme or status style on screen:
 
   | Screen            | Fill      | Text      |
   |-------------------|-----------|-----------|
@@ -43,9 +54,12 @@ same way as any browser.
   | no sample (muted) | `#E0E1E9` | `#004F83` |
   | acknowledged      | `#1B6AA3` | `#FFFFFF` |
 
-  A cell is coloured when the screen colours it: a status cell (the Summary grid), a cell that holds a
-  coloured badge or dot (a severity, a check, a run status, a free share under 10 %), or a cell the page's own
-  rule marked (a late backup, a suspended replica, a ratio over its threshold).
+  A cell is coloured when the screen colours it, by the screen's own rule: a status cell (the Summary grid), a
+  cell that holds a coloured badge or dot (a severity, a check, a run status, a free share under 10 %, a test's
+  worst state), a data bar's fill (Performance summary's CPU), a word the page marks warning or critical, a value
+  whose text the page paints in the status colour (a failed count), or a cell the page's own rule marked (a late
+  backup, a suspended replica, a ratio over its threshold); with several marks in one cell, the worst. A picture in a
+  cell (the CPU histogram's bars) colours none.
 
   **A value takes the colour of the cell that judges it.** The screen puts the colour on the word (`failing`,
   `late`, `failed`, `4 %`); DBA Dash's own export colours the value beside it too (the date of the late backup,
@@ -61,7 +75,9 @@ same way as any browser.
   | Findings and checks                | severity, check          | value                                |
 
   A cell with a colour of its own keeps it; an empty cell takes none; an acknowledged cell stays blue.
-- **Numbers are numbers**, with formats, whenever the screen's text is pgvigil's rendering of the raw value:
+- **Numbers are numbers**, in DBA Dash's formats where it has one (a count or a decimal General, a share `0.0%`, a
+  time `yyyy-MM-dd HH:mm`) and pgvigil's unit formats where the screen shows a unit, whenever the screen's text is
+  pgvigil's rendering of the raw value:
 
   | Screen shows            | Cell value                          | Number format         |
   |-------------------------|-------------------------------------|-----------------------|
@@ -69,9 +85,9 @@ same way as any browser.
   | a duration (`1h 1m`)    | the duration as an Excel time       | `[h]:mm:ss`           |
   | a millisecond time (`0.3 ms`, `2,500 ms`, `3.72 s`, `1.08 min`) | the milliseconds | `#,##0.###" ms"` |
   | a negative duration     | the seconds                         | `#,##0" s"`           |
-  | a share (`12.5 %`, a growth `+3 %`, a rounded `12 %`) | the share (0.125), Excel's own percent | `0.0#%` |
-  | a count (`1,000`)       | the number                          | `#,##0` / `#,##0.00`  |
-  | a time                  | an Excel date in the browser's time, whole seconds | `yyyy-mm-dd hh:mm:ss` |
+  | a share (`12.5 %`, a growth `+3 %`, a rounded `12 %`) | the share (0.125), Excel's own percent | `0.0%` |
+  | a count (`1,000`), a decimal | the number                     | General (a count of 12 digits or more `0`: General would show it as `9.87654E+11`) |
+  | a time                  | an Excel date in the browser's time, whole seconds (the CSV keeps them) | `yyyy-MM-dd HH:mm` |
 
   The comparison is the same in every browser language (a locale that groups thousands with a space, fr-FR
   among them, gives numbers too). A cell a formatter replaced with words (`never`, `no access`, `server start`)
@@ -84,11 +100,17 @@ same way as any browser.
 
 ## Beside DBA Dash's own export
 
-The workbook writes one sheet per grid as an Excel table without a style, a blue header row in white bold, every
-cell in the colour its grid gives it, dates as dates and percents as percents, plus the Summary sheet (what was
-exported, from when, in which time zone), the frozen header row, and times to the second. Where the screen leaves a
-cell uncoloured, the workbook does too: a colour in the file is always one the
-page's own rule gave that cell, or the cell that judges it in the same row.
+The workbook writes one sheet per grid as an Excel table without a style (DBA Dash's style info: row stripes on, no
+style named, so none drawn), a blue header row in white bold, every cell in the colour its grid gives it in a plain
+font, counts General, dates `yyyy-MM-dd HH:mm` and percents `0.0%`, no frozen pane, and DBA Dash's column widths.
+`scripts/proof-export-dbadash.py` sets the Test Summary export beside DBA Dash's own (`summary-1.xlsx`) part by part.
+Kept on purpose and named there: the Summary sheet first (what was exported, from when, in which time zone; DBA
+Dash writes `Sheet1` alone), each sheet named by its grid's heading, the orange's dark text (the screen's), the unit
+formats of a size or a duration (DBA Dash has no such cell), and a value cell carried in the colour of the cell that
+judges it. Not copied: ClosedXML's artefacts (a `dataDxfId` on a table column whose cells share one style; a white
+`00FFFFFF` fill on a plain date, which hides the grid lines). Where the screen leaves a cell uncoloured, the workbook
+does too: a colour in the file is always one the page's own rule gave that cell, or the cell that judges it in the
+same row.
 
 ## CSV
 
@@ -103,13 +125,16 @@ injection. The workbook needs no guard: its text cells are stored as text, never
 
 ## File names
 
-`<instance>_<tab>_<from>_<to>.xlsx` (and `.csv` / `.csv.zip`), the window's start and end in the browser's
+`<instance>_<tab>_<from>_<to>.xlsx` (and `.csv` / `.csv.zip`); one grid's or one chart's workbook
+`<instance>_<tab>_<sheet>_<from>_<to>.xlsx` (the sheet: the grid's heading, `Instance Summary` / `Test Summary`
+from the Summary's drop-down, the chart's title); the window's start and end in the browser's
 time as `yyyymmdd-hhmm`; the instance is `fleet` on the root tabs and `tag-<tag>` in a tag folder. Characters
 outside `A-Z a-z 0-9 . _ -` become `-`.
 
 ## The grid tools
 
-Every grid's menu (right-click, the menu key or Shift+F10) carries, under the copy lines:
+Every grid's menu (right-click, the menu key or Shift+F10) carries **Export Excel** after the copy lines (that grid's
+workbook: the Summary sheet and its own; the grid's line says the file's name), and, under them:
 
 - **Copy the rows as Markdown** and **as HTML with the colours**: the rows the filter leaves and the columns
   shown, as a pipe table, or as an HTML table whose cells carry the workbook's colours in their own style (the
@@ -160,9 +185,17 @@ each file back and grades it against the page it came from:
 - every grid with rows as an Excel table: the table part named by the sheet, its range the sheet's, its
   column names unique and equal to the header cells (shared strings, as Excel itself stores a table's
   header); a grid without rows as a plain filtered sheet;
-- the frozen pane, the numeric cells with their number formats (a percent as a share under `0.0#%`, the CSV
-  with the percent figure), the sorted grid's order and its numbers, the sheet names against the screen's
-  headings, the CSV row counts against the grids';
+- no frozen pane, every column's width by the rule above within a pixel, the status cells not bold, the numeric
+  cells with their number formats (a percent as a share under `0.0%`, the CSV with the percent figure; a time
+  `yyyy-MM-dd HH:mm`; a count General), the sorted grid's order and its numbers, the sheet names against the
+  screen's headings, the CSV row counts against the grids';
+- each new menu item clicked and its download read (P03): a grid's Export Excel (placed right after the copies),
+  the Summary's Export to Excel > Export Summary and > Export Test Summary (the Test Summary by DBA Dash's rule: a
+  count 0 green, above 0 its column's status, a test's name its row's worst), a line chart's and a ring's Export
+  Excel (a time as a time, a share as `0.0%`), and an empty grid's sheet without the column the grid tools hid;
+- with `PGVIGIL_EXPORT_OUT` set, the downloads kept; `scripts/proof-export-dbadash.py <Test Summary .xlsx>
+  <DBA Dash's summary-1.xlsx>` then compares the header, each status's fill, text colour, weight and format, the
+  rule, the table part, the pane and the widths, and names each difference kept on purpose;
 - each workbook opened with a spreadsheet library (python's openpyxl) when the machine has it, and with
   LibreOffice when that is installed;
 - the grid tools through the grid's own menu: the HTML copy's colours cell by cell, the Markdown copy, the

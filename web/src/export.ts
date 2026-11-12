@@ -1,18 +1,23 @@
-// The export of a tab (task 54; the workbook as DBA Dash writes its own, task 153): every grid on the page as a sheet
-// of one .xlsx workbook, each grid with rows a real Excel table (sortable, filterable, no table style) under a blue
-// header row, every cell in the colour the screen gives it (a status cell, a badge, a dot, a cell class of the page's
-// own rule) and a value cell in the colour its row shows beside it, a link cell as DBA Dash's link column (a light
-// fill, the link blue), no other cell filled, the numbers as numbers with their formats, a frozen header row and the column widths from the content; a
+// The export of a tab (task 54; the workbook as DBA Dash writes its own, task 153 and parity P03): every grid on the page
+// as a sheet of one .xlsx workbook, each grid with rows a real Excel table (sortable, filterable, no table style) under
+// a blue header row in white bold, every cell in the colour the screen gives it (a status cell, a badge, a dot, a data
+// bar's fill, a warning or critical mark in it, a cell class of the page's own rule; the worst when it holds several)
+// in a plain (not bold) font and a value cell in the colour its row shows beside it, a link cell as DBA Dash's link
+// column (a light fill, the link blue), no other cell filled, the numbers as numbers (a count or a decimal General, a
+// share '0.0%', a time 'yyyy-MM-dd HH:mm': DBA Dash's formats), no frozen pane, and each column as wide as its widest
+// cell the way DBA Dash's writer measures it (ClosedXML AdjustToContents, capped at 150); a
 // column hidden with the grid tools (gridtools.ts) is left out, as on the screen; a Summary sheet first (the instance,
 // the tab, the window, the export time); the same rows as CSV beside it (one grid: a .csv; several: a .zip of one
 // .csv per grid). It reads the rendered page and each grid's page model (ui.ts gridModel: the raw values in the order
 // shown), so the file matches the screen; the server is untouched and nothing leaves the browser but the file the
 // user saves. The workbook is written here (SpreadsheetML in a zip): no library, no dependency in the bundle.
+// Besides the bar's buttons: Export Excel on every grid's menu (that grid's workbook), on every chart's menu (chart.ts:
+// its numbers) and, on the fleet Summary, the bar's Export to Excel drop-down (Export Summary / Export Test Summary).
 import { fleet } from './fleet';
 import { installGridTools } from './gridtools';
-import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, rangeLabel, rootTabs, window_ } from './router';
+import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
 import { fileStamp, offsetLabel, offsetMin, stamp, zoneChoice, zoneName } from './tz';
-import { Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel } from './ui';
+import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showMenu } from './ui';
 
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
@@ -109,15 +114,26 @@ export function excelDate(d: Date): number {
 }
 
 const statuses: Status[] = ['crit', 'warn', 'ok', 'none'];
-// statusOf: the colour of a cell: a status cell (the Summary grid's), else a badge or a dot in it, else the class the
-// page's own rule gave the cell without 'status'. ui.ts turns a Col's bare cls (ok, warn, crit) into a status cell, so
-// no page draws the third kind today; it stays for a page that sets the class on a cell itself, and proof-export.sh's
-// driver gives two cells one so the branch stays tested.
+// the marks inside a cell that colour it on the screen: a badge, a dot, a data bar's fill (perfsummary.ts), a word the
+// page marks warning or critical (a span with the class), a value whose text the page paints in the status colour
+// itself (slow.ts: a failed count's color var(--crit)). Only a text colour counts there: a background set inline is a
+// picture's part (perfsummary.ts histogram: its top bucket is var(--crit) also when it is empty and not drawn)
+const marks = '.badge, .dot, .bar-fill, .crit, .warn, [style*="color"]';
+// statusOf: the colour of a cell by the screen's own rule: a status cell (the Summary grid's), else the worst mark in it,
+// else the class the page's own rule gave the cell without 'status'. ui.ts turns a Col's bare cls (ok, warn, crit)
+// into a status cell, so no page draws the third kind today; it stays for a page that sets the class on a cell itself,
+// and proof-export.sh's driver gives two cells one so the branch stays tested.
 export function statusOf(td: Element): Status | undefined {
   const pick = (e: Element) => statuses.find(k => e.classList.contains(k));
   if (td.classList.contains('status')) return td.classList.contains('ack') ? 'ack' : pick(td);
-  const b = td.querySelector('.badge, .dot');
-  if (b) return pick(b);
+  const found = new Set<Status>();
+  for (const m of td.querySelectorAll(marks)) {
+    const col = (m as HTMLElement).style?.color ?? '';
+    const k = pick(m) ?? (col.includes('var(--crit)') ? 'crit' : col.includes('var(--warn)') ? 'warn' : undefined);
+    if (k) found.add(k);
+  }
+  const worst = statuses.find(k => found.has(k));
+  if (worst) return worst;
   return (['crit', 'warn', 'ok'] as Status[]).find(k => td.classList.contains(k));
 }
 
@@ -193,14 +209,47 @@ function readProps(table: HTMLTableElement): Pick<Section, 'cols' | 'rows'> {
   return { cols: ['item', 'value'], rows };
 }
 
+// ---- an empty grid's columns hidden with the grid tools -----------------------------------------------------
+// The grid tools keep a grid's hidden columns per browser under the grid's key (gridtools.ts keyOf: the tab, the heading
+// above the grid and its column names). A grid with no row is drawn as a note (ui.ts grid: its columns in data-cols),
+// with no table to mark, so the export reads the same key itself: the heading as headingOf finds it, the names as
+// names() numbers them. A choice a browser could not keep (a private window: the tools hold it in memory) is not seen.
+function toolsHash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+function hiddenOfEmpty(p: Element, cols: string[]): Set<number> {
+  let h = '';
+  for (const e of document.querySelectorAll('h2, h3, h4, p.empty[data-cols]')) {
+    if (e === p) break;
+    if (e.tagName !== 'P') { const c = e.cloneNode(true) as Element; c.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove()); h = cellText(c); }
+  }
+  h = h.replace(/\s*\(.*\)$/, '');
+  const seen = new Map<string, number>();
+  const ns = cols.map((c, j) => { const base = c || `column ${j + 1}`, n = (seen.get(base) ?? 0) + 1; seen.set(base, n); return n > 1 ? `${base} (${n})` : base; });
+  const key = `pgvigil.grid.${(/^#\/([A-Za-z_]+)/.exec(location.hash)?.[1] ?? 'summary')}.${toolsHash(h + '|' + ns.join('|'))}`;
+  let hidden: unknown = [];
+  try { hidden = (JSON.parse(localStorage.getItem(key) ?? '{}') as { hidden?: unknown } | null)?.hidden ?? []; } catch { hidden = []; }
+  const set = new Set(Array.isArray(hidden) ? hidden.filter(x => typeof x === 'string') as string[] : []);
+  const out = new Set(ns.map((n, j) => set.has(n) && j < 80 ? j : -1).filter(j => j >= 0));   // gridtools.ts MAX_COLS: the columns its hide rules reach
+  return out.size >= ns.length ? new Set() : out;   // a grid never loses every column (gridtools.ts apply)
+}
+
 // sections: every grid and property card on the page, in page order, each named by the heading above it. A heading
 // inside a region of its own (the Summary's 'Needs attention' strip) names the grids of that region only: the grids
 // after it keep the heading before it.
-// empties: a grid with no row is a section too (the Export buttons: a sheet of its header row, as DBA Dash writes one);
-// the mail and the grid menu's own copy read the tables alone, as before
+// empties: a grid with no row is a section too (the Export buttons, the grid's and the bar's Export Excel and the
+// mail's workbook: a sheet of its header row, as DBA Dash writes one); the mail's body and the grid menu's own copy
+// read the tables alone
 export function sections(root: ParentNode, fallback: string, empties = false): Section[] {
+  return walk(root, fallback, empties).map(f => f.sec);
+}
+
+// walk: sections() with the element each came from (a grid's menu exports the one it was opened on)
+function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Section; el: Element }[] {
   let outer = fallback, inner: { text: string; within: Element } | undefined;
-  const out: Section[] = [];
+  const out: { sec: Section; el: Element }[] = [];
   for (const e of root.querySelectorAll(empties ? 'h2, h3, h4, table.grid, table.props, p.empty[data-cols]' : 'h2, h3, h4, table.grid, table.props')) {
     if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
       const within = e.closest('[role=region]');
@@ -213,7 +262,11 @@ export function sections(root: ParentNode, fallback: string, empties = false): S
     if (e.tagName === 'P') {
       let cols: unknown = [];
       try { cols = JSON.parse((e as HTMLElement).dataset.cols ?? '[]'); } catch { cols = []; }
-      if (Array.isArray(cols) && cols.length) out.push({ name: heading, cols: cols.map(String), rows: [], note: text(e) || undefined });
+      if (Array.isArray(cols) && cols.length) {
+        // DBA Dash writes the visible columns' headers only: a column the grid tools hide stays out here too
+        const all = cols.map(String), hid = hiddenOfEmpty(e, all);
+        out.push({ sec: { name: heading, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: text(e) || undefined }, el: e });
+      }
       continue;
     }
     const t = e as HTMLTableElement;
@@ -225,7 +278,7 @@ export function sections(root: ParentNode, fallback: string, empties = false): S
     const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
     const notes = [prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;
-    out.push({ name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note });
+    out.push({ sec: { name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note }, el: t });
   }
   return out;
 }
@@ -233,15 +286,21 @@ export function sections(root: ParentNode, fallback: string, empties = false): S
 // ---- the workbook -----------------------------------------------------------------------------------------
 
 // the status colours of an exported sheet are the screen's solid ones (DBA Dash's light theme: solid fills with white text,
-// N/A grey with dark blue text, acknowledged blue; the orange carries dark text, white on it is 2.5:1) under a blue header
-// with white bold text, whatever the theme or status style on screen
+// N/A grey with dark blue text, acknowledged blue; the orange carries the screen's dark text, DBA Dash's white on it is
+// 2.5:1) in a plain font, as DBA Dash writes them, under a blue header with white bold text, whatever the theme or status
+// style on screen
 export const fillOf: Record<Status, string> = { ok: 'FF006638', warn: 'FFE49325', crit: 'FFAB1F26', none: 'FFE0E1E9', ack: 'FF1B6AA3' };
 export const fontOf: Record<Status, string> = { ok: 'FFFFFFFF', warn: 'FF1D1300', crit: 'FFFFFFFF', none: 'FF004F83', ack: 'FFFFFFFF' };
 export const headFill = 'FF0063A3';
 export const linkFill = 'FFF1F1F6', linkFont = 'FF004F83';   // DBA Dash's link column: its fill and its text
-// numFmt ids: 3 is Excel's built-in '#,##0'; 164 on are this file's own
-const fmtId: Record<Kind, number> = { text: 0, int: 3, dec: 164, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
-const customFmts: [number, string][] = [[164, '#,##0.00'], [165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '0.0#%'], [168, 'yyyy-mm-dd hh:mm:ss'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
+// numFmt ids: 0 is General (DBA Dash writes a count or a decimal so); 165 on are this file's own: a share and a time in
+// DBA Dash's formats (its P1 percent, its date), a size, a duration in pgvigil's units (the screen shows the unit; DBA Dash
+// has no such kind)
+const fmtId: Record<Kind, number> = { text: 0, int: 0, dec: 0, bytes: 165, secs: 166, pct: 167, date: 168, nsecs: 169, msecs: 170 };
+// fmtOf: a cell's number format. A count of 12 digits or more (a PostgreSQL counter: blocks hit, tuples returned) under
+// Excel's built-in '0' (1): General would show it as 9.87654E+11, six digits of it; DBA Dash's writer has no such count
+const fmtOf = (c: Cell) => c.kind === 'int' && typeof c.v === 'number' && Math.abs(c.v) >= 1e11 ? 1 : fmtId[c.kind];
+const customFmts: [number, string][] = [[165, '#,##0" B"'], [166, '[h]:mm:ss'], [167, '0.0%'], [168, 'yyyy-MM-dd HH:mm'], [169, '#,##0" s"'], [170, '#,##0.###" ms"']];
 
 const esc = (s: string) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -270,10 +329,10 @@ class Styles {
     if (i === undefined) { i = this.fonts.push(`<font>${bold ? '<b/>' : ''}<sz val="11"/><color rgb="${argb}"/><name val="Calibri"/></font>`) - 1; this.fontIds.set(k, i); }
     return i;
   }
-  id(kind: Kind, status?: Status, head = false, link = false): number {
+  id(fmt: number, status?: Status, head = false, link = false): number {
     const fill = head ? this.fill(headFill) : status ? this.fill(fillOf[status]) : link ? this.fill(linkFill) : 0;
-    const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], status !== 'none') : link ? this.font(linkFont, false) : 0;
-    const k = `${fmtId[kind]}|${fill}|${font}`;
+    const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], false) : link ? this.font(linkFont, false) : 0;
+    const k = `${fmt}|${fill}|${font}`;
     let i = this.xfs.get(k);
     if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }
     return i;
@@ -296,15 +355,48 @@ class Styles {
   }
 }
 
-// the width a cell's content needs, in Excel's character units
-function widthOf(c: Cell): number {
-  if (c.kind === 'date') return 19;
-  if (c.kind === 'secs' || c.kind === 'nsecs') return 12;
-  if (typeof c.v === 'number') return Math.round(Math.abs(c.kind === 'pct' ? c.v * 100 : c.v)).toLocaleString('en-US').length + (c.kind === 'int' ? 1 : 4);
-  return c.text.length;
+// ---- the column widths, as DBA Dash's writer sets them --------------------------------------------------------
+// ClosedXML's AdjustToContents (DBA Dash's export, capped at 150) measures each cell's text in Calibri 11 (Carlito, its
+// metric twin, where Calibri is absent) and stores whole pixels: width = (px - 0.025625) / 7. Fitted on DBA Dash's own
+// four exports (111 columns): a header cell (bold, its filter button beside it) 1.0286 x its text + 22.19 px, within
+// 3.2 px; any other cell 1.0738 x its text + 0.52 px, within about 5 px (under 0.75 of a character).
+// Carlito's advance widths, ASCII 32-126, in 1/2048 em: regular, bold
+const ADV = [463, 667, 821, 1020, 1038, 1464, 1397, 452, 621, 621, 1020, 1020, 511, 627, 517, 791, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 548, 548, 1020, 1020, 1020, 949, 1831, 1185, 1114, 1092, 1260, 1000, 941, 1292, 1276, 516, 653, 1064, 861, 1751, 1322, 1356, 1058, 1378, 1112, 941, 998, 1314, 1162, 1822, 1063, 998, 959, 628, 791, 628, 1020, 1020, 596, 981, 1076, 866, 1076, 1019, 625, 964, 1076, 470, 490, 931, 470, 1636, 1076, 1080, 1076, 1076, 714, 801, 686, 1076, 925, 1464, 887, 927, 809, 644, 943, 644, 1020];
+const ADV_B = [463, 667, 898, 1020, 1038, 1493, 1443, 478, 638, 638, 1020, 1020, 528, 627, 547, 880, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 565, 565, 1020, 1020, 1020, 949, 1840, 1241, 1148, 1084, 1291, 999, 940, 1305, 1292, 546, 678, 1120, 866, 1790, 1349, 1385, 1090, 1405, 1153, 968, 1014, 1337, 1211, 1856, 1128, 1064, 979, 665, 880, 665, 1020, 1020, 615, 1011, 1099, 857, 1099, 1031, 648, 971, 1099, 503, 523, 983, 503, 1666, 1099, 1101, 1099, 1099, 728, 817, 710, 1099, 969, 1526, 941, 970, 814, 704, 973, 704, 1020];
+const MAX_WIDTH = 150, PX = 11 * 96 / 72 / 2048;
+// textPx: the pixels a line of text takes in Calibri 11 (a character past ASCII: Carlito's Latin average, a wide one an em)
+export function textPx(s: string, bold: boolean): number {
+  const t = bold ? ADV_B : ADV;
+  let u = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0) ?? 32;
+    u += c >= 32 && c <= 126 ? t[c - 32] : c >= 0x2e80 ? 2048 : bold ? 1030 : 1013;
+    if (u * PX > MAX_WIDTH * 8) break;   // past the cap: the rest changes nothing
+  }
+  return u * PX;
+}
+// shown: the text Excel shows for a cell under its format (what the width is measured on)
+export function shown(c: Cell): string {
+  if (typeof c.v !== 'number') return c.v.split(/\r?\n/).reduce((a, b) => b.length > a.length ? b : a, '');
+  const n = c.v;
+  switch (c.kind) {
+    case 'date': return (c.stamp ?? '').slice(0, 16);
+    case 'pct': return (n * 100).toFixed(1) + '%';
+    case 'bytes': return Math.round(n).toLocaleString('en-US') + ' B';
+    case 'nsecs': return Math.round(n).toLocaleString('en-US') + ' s';
+    case 'msecs': return n.toLocaleString('en-US', { maximumFractionDigits: 3 }) + ' ms';
+    case 'secs': { const t = Math.round(n * 86400), a = Math.abs(t); return `${t < 0 ? '-' : ''}${Math.floor(a / 3600)}:${String(Math.floor(a / 60) % 60).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`; }
+    default: return String(n);   // a General number as the writer's own text of it (DBA Dash's ClosedXML measures the value's string)
+  }
+}
+// colWidth: a column's width from its cells' texts (head: the cell is a header, bold with its filter button)
+export function colWidth(cells: { text: string; head: boolean }[]): number {
+  const px = Math.round(Math.max(0, ...cells.map(c => c.text === '' ? 0 : c.head ? 1.0286 * textPx(c.text, true) + 22.19 : 1.0738 * textPx(c.text, false) + 0.52)));
+  if (px <= 0) return 8.43;   // an empty column: Excel's default
+  return Math.min(MAX_WIDTH, Math.round((px - 0.025625) / 7 * 1e6) / 1e6);
 }
 
-interface Sheet { name: string; head: string[]; rows: Cell[][]; freeze: boolean; table?: number }   // table: the id of its Excel table part
+interface Sheet { name: string; head: string[]; rows: Cell[][]; data: boolean; table?: number }   // data: a grid's sheet (the Summary sheet is not one); table: the id of its Excel table part
 
 // Shared: the workbook's shared strings. Only a table's header cells use them: Excel matches a table's column names
 // against its header cells, and every writer Excel is known to accept (its own, DBA Dash's) stores those as shared
@@ -343,12 +435,13 @@ function tableXml(id: number, head: string[], nrow: number): string {
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     + `<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="Table${id}" displayName="Table${id}" ref="${ref}" totalsRowShown="0">`
     + `<autoFilter ref="${ref}"/><tableColumns count="${head.length}">${head.map((h, j) => `<tableColumn id="${j + 1}" name="${esc(h)}"/>`).join('')}</tableColumns>`
-    + '<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="0" showColumnStripes="0"/></table>';
+    + '<tableStyleInfo showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>';   // DBA Dash's: no style name, so no stripe is drawn
 }
 
 function sheetXml(sh: Sheet, st: Styles, sst: Shared): string {
   const ncol = Math.max(sh.head.length, ...sh.rows.map(r => r.length), 1);
-  const widths = Array.from({ length: ncol }, (_, j) => Math.min(60, Math.max(8, (sh.head[j] ?? '').length + 3, ...sh.rows.map(r => r[j] ? widthOf(r[j]) + 1 : 0))));
+  const head = sh.table ? tableHead(sh.head, ncol) : sh.head;
+  const widths = Array.from({ length: ncol }, (_, j) => colWidth([{ text: head[j] ?? '', head: true }, ...sh.rows.map(r => ({ text: r[j] ? shown(r[j]) : '', head: !!r[j]?.head }))]));
   const cell = (ref: string, c: Cell, s: number) => {
     if (typeof c.v === 'number') return `<c r="${ref}" s="${s}"><v>${String(c.v).toUpperCase()}</v></c>`;
     if (c.v === '') return s ? `<c r="${ref}" s="${s}"/>` : '';
@@ -356,23 +449,21 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared): string {
     const v = c.v.length > 32767 ? c.v.slice(0, 32700) + ' ... [cut at Excel\'s cell limit]' : c.v;
     return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
   };
-  const hs = st.id('text', undefined, true);   // every sheet's header row, the Summary sheet's too
-  const head = sh.table ? tableHead(sh.head, ncol) : sh.head;
+  const hs = st.id(0, undefined, true);   // every sheet's header row, the Summary sheet's too
   const rows = [`<row r="1">${head.map((h, j) => sh.table ? `<c r="${colName(j)}1" s="${hs}" t="s"><v>${sst.id(h)}</v></c>` : cell(colName(j) + '1', { v: h, kind: 'text', text: h }, hs)).join('')}</row>`];
   // a cell has the fill the screen gives it and no other (DBA Dash bands no rows): a plain cell is unfilled
   sh.rows.forEach((r, i) => {
-    rows.push(`<row r="${i + 2}">${r.map((c, j) => cell(colName(j) + (i + 2), c, st.id(c.kind, c.status, !!c.head, c.link))).join('')}</row>`);
+    rows.push(`<row r="${i + 2}">${r.map((c, j) => cell(colName(j) + (i + 2), c, st.id(fmtOf(c), c.status, !!c.head, c.link))).join('')}</row>`);
   });
   const last = `${colName(ncol - 1)}${sh.rows.length + 1}`;
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
     + `<dimension ref="A1:${last}"/>`
-    + (sh.freeze ? '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews>'
-      : '<sheetViews><sheetView workbookViewId="0"/></sheetViews>')
+    + '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'   // no frozen pane, as DBA Dash: a table shows its column names in place of the letters when scrolled
     + '<sheetFormatPr defaultRowHeight="15"/>'
     + `<cols>${widths.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>`
     + `<sheetData>${rows.join('')}</sheetData>`
-    + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : sh.freeze ? `<autoFilter ref="A1:${last}"/>` : '')
+    + (sh.table ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : sh.data ? `<autoFilter ref="A1:${last}"/>` : '')
     + '</worksheet>';
 }
 
@@ -411,11 +502,11 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
     [t('Exported at'), d(meta.at)], [t('Time zone'), t(timeZone(meta.at))], [t('Source'), t('pgvigil')], [t(''), t('')], [h('Sheet'), h('Rows'), h('Note')],
     ...secs.map((s, i) => [t(names[i]), { v: s.rows.length, kind: 'int' as Kind, text: '' }, t(s.note ?? '')]),
   ];
-  const sheets: Sheet[] = [{ name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, freeze: false },
-    ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, freeze: true }))];
+  const sheets: Sheet[] = [{ name: 'Summary', head: ['Item', 'Value', 'Note'], rows: info, data: false },
+    ...secs.map((s, i) => ({ name: names[i], head: s.cols, rows: s.rows, data: true }))];
   // every grid with rows is an Excel table (a table needs a data row: an empty grid keeps the plain filter)
   let tables = 0;
-  for (const sh of sheets) if (sh.freeze && sh.rows.length > 0) sh.table = ++tables;
+  for (const sh of sheets) if (sh.data && sh.rows.length > 0) sh.table = ++tables;
   const st = new Styles(), sst = new Shared();
   const enc = new TextEncoder();
   const files = sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(sh, st, sst)) }));
@@ -425,7 +516,7 @@ export function workbook(meta: Meta, secs: Section[]): { name: string; data: Uin
     { name: `xl/tables/table${sh.table}.xml`, data: enc.encode(tableXml(sh.table, tableHead(sh.head, ncolOf(sh)), sh.rows.length)) },
     { name: `xl/worksheets/_rels/sheet${i + 1}.xml.rels`, data: enc.encode(x + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
       + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${sh.table}.xml"/></Relationships>`) }] : []);
-  const filters = sheets.map((sh, i) => sh.freeze && !sh.table
+  const filters = sheets.map((sh, i) => sh.data && !sh.table
     ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${esc(sh.name.replace(/'/g, "''"))}'!$A$1:$${colName(Math.max(sh.head.length, 1) - 1)}$${sh.rows.length + 1}</definedName>` : '').join('');
   return [
     { name: '[Content_Types].xml', data: enc.encode(x + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -554,11 +645,92 @@ function save(blob: Blob, name: string) {
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
+// oneFile: a workbook of one grid or one chart (the Summary sheet, then its own), named
+// <instance>_<tab>_<sheet>_<from>_<to>.xlsx
+async function oneFile(m: Meta, sec: Section): Promise<string> {
+  const z = await zip(workbook(m, [sec]), m.at);
+  const name = `${safe(m.instance)}_${safe(m.tab)}_${safe(sheetNames([sec.name])[0])}_${fileStamp(m.from)}_${fileStamp(m.to)}.xlsx`;
+  save(new Blob([z], { type: XLSX }), name);
+  return name;
+}
+
+// exportGrid: one grid's workbook (a grid's menu: Export Excel; the Summary's Export to Excel items), read as the bar's
+// export reads it (the same heading, cells, colours, hidden columns); an empty grid (its note) is a sheet of its header
+// row. name: the sheet's name instead of the heading's.
+export async function exportGrid(g: Element, name?: string, ctx: Ctx = parse()): Promise<string> {
+  const m = await metaOf(ctx);
+  const root = g.closest('dialog') ?? document.getElementById('main') ?? document.body;
+  const found = walk(root, m.tab, true).find(f => f.el === g)?.sec
+    ?? (g.tagName === 'TABLE' && g.classList.contains('grid') ? { name: m.tab, ...readGrid(g as HTMLTableElement) } : undefined);
+  if (!found) throw new Error('no grid here');
+  return oneFile(m, name ? { ...found, name } : found);
+}
+
+// exportChart: a chart's numbers as a workbook (a chart's menu: Export Excel; chart.ts): one sheet named by the chart's
+// title, a time as a time ('yyyy-MM-dd HH:mm'), a number as a number, a share (kind 'pct', the fraction) as '0.0%'
+export async function exportChart(title: string, cols: string[], rows: (string | number | Date | null | undefined)[][], kinds: (Kind | undefined)[] = [], ctx: Ctx = parse()): Promise<string> {
+  const m = await metaOf(ctx);
+  const cell = (v: string | number | Date | null | undefined, j: number): Cell => {
+    if (v instanceof Date) return { v: excelDate(v), kind: 'date', text: '', stamp: localStamp(v) };
+    if (typeof v === 'number' && isFinite(v)) return { v, kind: kinds[j] ?? (Number.isInteger(v) ? 'int' : 'dec'), text: String(v) };
+    const t = v == null || typeof v === 'number' ? '' : v;
+    return { v: t, kind: 'text', text: t };
+  };
+  return oneFile(m, { name: title || 'Chart', cols, rows: rows.map(r => r.map(cell)) });
+}
+
+// tell: a word in the grid's own count line for a moment (ui.ts grid: the 'n of m rows' line above it)
+function tell(g: Element, what: string) {
+  const count = g.closest('.grid-box')?.querySelector('.filter-count');
+  if (!count) return;
+  const before = count.textContent;
+  count.textContent = what;
+  window.setTimeout(() => { if (count.textContent === what) count.textContent = before; }, 2500);
+}
+
+// the grid's menu (ui.ts sends 'pgvigil:gridmenu' with its items): Export Excel after the copies, where DBA Dash's grid
+// menu has it (Copy, then Export Excel)
+let menuOn = false;
+function installGridExport() {
+  if (menuOn || typeof document === 'undefined') return;
+  menuOn = true;
+  document.addEventListener('pgvigil:gridmenu', e => {
+    const d = (e as CustomEvent<{ table?: HTMLTableElement; items?: [string, () => void][] }>).detail;
+    if (!d?.table || !Array.isArray(d.items)) return;
+    const t = d.table;
+    let at = 0;
+    d.items.forEach((it, i) => { if (/^Copy\b/.test(it[0])) at = i + 1; });
+    d.items.splice(at, 0, ['Export Excel', () => {
+      void exportGrid(t).then(n => tell(t, 'Exported ' + n), (x: unknown) => tell(t, 'Export failed: ' + (x instanceof Error ? x.message : String(x))));
+    }]);
+  });
+}
+
+// summaryExport: the fleet Summary's Export to Excel drop-down (DBA Dash's Summary toolbar): Export Summary (the
+// instance grid) or Export Test Summary (the grid of tests), each a workbook of that grid alone
+function summaryExport(ctx: Ctx, root: () => HTMLElement | null, note: HTMLElement): HTMLElement {
+  const b = el('button', { type: 'button', 'aria-haspopup': 'menu', title: 'The instance grid or the test grid as an Excel workbook' }, 'Export to Excel ', el('span', { 'aria-hidden': 'true' }, '\u25BE')) as HTMLButtonElement;
+  const one = (tests: boolean) => {
+    note.textContent = '';
+    const r = root();
+    const all = r ? [...r.querySelectorAll('table.grid, p.empty[data-cols]')].filter(g => !g.closest('.attention')) : [];
+    const g = tests ? all.find(x => x.closest('.tests')) : [...all].reverse().find(x => !x.closest('.tests'));
+    if (!g) { note.textContent = 'Nothing to export: the grid is not on this page.'; return; }
+    void exportGrid(g, tests ? 'Test Summary' : 'Instance Summary', ctx).catch((x: unknown) => { note.textContent = 'Export failed: ' + (x instanceof Error ? x.message : String(x)); });
+  };
+  b.addEventListener('click', () => {
+    const at = b.getBoundingClientRect();
+    showMenu(at.left, at.bottom + 2, [['Export Summary', () => one(false)], ['Export Test Summary', () => one(true)]], b);
+  });
+  return b;
+}
+
 // exportButtons: the bar's two buttons for the page under them (#main): the workbook and the CSV. The grid tools
 // (gridtools.ts: the column chooser, the copies with the colours, the selection's sums, the groups, the data bars)
 // start with the bar: they answer the grids' own menu and touch nothing until asked.
 export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => document.getElementById('main')): HTMLElement {
   installGridTools();
+  installGridExport();   // after the tools: its line goes after their copies
   const note = el('span', { class: 'meta', role: 'status' });
   const run = async (b: HTMLButtonElement, kind: 'xlsx' | 'csv') => {
     b.disabled = true; note.textContent = '';
@@ -585,5 +757,6 @@ export function exportButtons(ctx: Ctx, root: () => HTMLElement | null = () => d
   const c = el('button', { type: 'button', title: 'The same rows as CSV (several grids: a .zip of one CSV each)' }, 'Export CSV');
   x.addEventListener('click', () => { void run(x, 'xlsx'); });
   c.addEventListener('click', () => { void run(c, 'csv'); });
-  return el('span', { class: 'export' }, x, ' ', c, ' ', note);
+  const sum = !ctx.instance && ctx.tab === 'summary' ? [summaryExport(ctx, root, note), ' '] : [];
+  return el('span', { class: 'export' }, ...sum, x, ' ', c, ' ', note);
 }

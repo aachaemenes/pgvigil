@@ -32,7 +32,9 @@
 #   N  Send now: on the fleet Summary, Backups and Storage pages (a fixed window, the demo's last 23 hours) the bar's
 #      Mail... dialog takes an address and the channel 'mail', Send now says 'mail <n> queued'; within 3 minutes of
 #      sender passes each send is answered 'sent' and the sink holds its message (X-Pgvigil-Report: <n>), To = the
-#      address, Subject 'pgvigil: <page> - fleet - <window>'.
+#      address, Subject 'pgvigil: <page> - fleet - <window>'. P03: then a page whose grids are all empty (the first of
+#      seven report pages over the window that holds no table and at least one empty grid's note) is mailed the same
+#      way and answered sent (Mail refused it before: 'nothing to mail').
 #   S  schedules: on the Jobs page a column hidden with the grid's menu holds over a reload, and Mail... > Schedule this
 #      page... adds a schedule that keeps that grid's choice (grid_prefs, one grid); three more added through POST
 #      /api/reportmail (daily at 07:00, the same three routes, the third in America/Los_Angeles), next_at = the next
@@ -43,7 +45,7 @@
 #      next 07:00 of its zone, no lease, no token; the subject starts with the schedule's name and carries the window.
 #   T  Send test on a schedule: queued as kind test by the asking user, mailed with '[test] <name> - ' as its subject; a
 #      second test at once is refused (one at a time).
-#   C  every one of the eight mails (three now, four scheduled, the test) against the page's screen (the driver's read of the same route): the same grids in
+#   C  every one of the nine mails (four now, four scheduled, the test) against the page's screen (the driver's read of the same route): the same grids in
 #      order under the same headings, the same header cells, the same row count, and for every drawn row every cell's
 #      text equal; every cell the screen colours carries that status's fill and text colour (ok #006638 / #ffffff, warn
 #      #e49325 / #1d1300, crit #ab1f26 / #ffffff, none #e0e1e9 / #004f83, ack #1b6aa3 / #ffffff); a link cell #f1f1f6
@@ -55,8 +57,9 @@
 #      tbody, tr, th, td; no script, style element, class attribute, event attribute or javascript: URL; every th and
 #      td carries its own style; one HTML part (text/html, base64) and one plain part (text/plain) in a
 #      multipart/alternative.
-#   X  every mail's .xlsx attachment opens with openpyxl (a Summary sheet first, then one sheet per grid of the mail,
-#      each with the grid's rows under its header row).
+#   X  every mail's .xlsx attachment opens with openpyxl and is the page's Export .xlsx (P03): a Summary sheet first,
+#      then one sheet per grid of the page in order, each with the mail's grid's rows under its header row, an empty
+#      grid's sheet its header row alone (the screen's columns, no data row).
 #   F  failures: a Send now through 'badmail' (an smtp relay on a port nothing listens on) is answered 'failed' with
 #      the connection's error, and a 'report mail failed' notice naming the mail reaches the file drop and the sink (the
 #      notice is sent on every channel); a schedule whose owner is disabled before its turn is answered 'failed' with
@@ -284,13 +287,27 @@ const settled = async () => {
 const SCREEN = `(() => {
   const words = e => { const f = e.querySelector('[data-full]'); if (f) return f.getAttribute('data-full'); const t = (e.textContent || '').replace(/\\s+/g, ' ').trim(); return t || (e.querySelector('[data-text]')?.getAttribute('data-text') ?? ''); };
   const pick = x => ['crit', 'warn', 'ok', 'none'].find(k => x.classList.contains(k)) ?? null;
-  const st = td => { if (td.classList.contains('status')) return td.classList.contains('ack') ? 'ack' : pick(td); const b = td.querySelector('.badge, .dot'); if (b) return pick(b); return ['crit', 'warn', 'ok'].find(k => td.classList.contains(k)) ?? null; };
+  // the screen's colour of a cell, read on its own terms (proof-export.sh's reader; not export.ts's rule): a status cell; else the worst of the
+  // marks drawn in it (a badge, a dot, a data bar's fill, a span marked warn / crit: those with a size on the screen)
+  // and of its texts painted in the critical or the warning colour (computed); else a bare class on the cell
+  const probe = c => { const s = document.createElement('span'); s.style.color = 'var(--' + c + ')'; document.body.append(s); const v = getComputedStyle(s).color; s.remove(); return v; };
+  const CRIT = probe('crit'), WARN = probe('warn');
+  const KNOWN = '.badge, .dot, .bar-fill, .crit, .warn';
+  const drawn = m => { const r = m.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const own = m => [...m.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+  const st = td => { if (td.classList.contains('status')) return td.classList.contains('ack') ? 'ack' : pick(td);
+    const got = new Set([...td.querySelectorAll('*')].filter(drawn).map(m => m.matches(KNOWN) ? pick(m) : own(m) ? (getComputedStyle(m).color === CRIT ? 'crit' : getComputedStyle(m).color === WARN ? 'warn' : null) : null).filter(Boolean));
+    const w = ['crit', 'warn', 'ok', 'none'].find(k => got.has(k)); if (w) return w;
+    return ['crit', 'warn', 'ok'].find(k => td.classList.contains(k)) ?? null; };
   const head = c => { const x = c.cloneNode(true); x.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove()); return words(x); };
   const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]') });
   let outer = '', inner = null;
-  return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props')].flatMap(e => {
-    if (e.tagName !== 'TABLE') { const within = e.closest('[role=region]'); if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; } return []; }
+  return [...document.querySelectorAll('main h2, main h3, main h4, main table.grid, main table.props, main p.empty[data-cols]')].flatMap(e => {
+    if (e.tagName !== 'TABLE' && e.tagName !== 'P') { const within = e.closest('[role=region]'); if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; } return []; }
     const named = inner && inner.within.contains(e) ? inner.text : outer;
+    // a grid with no row (ui.ts grid: its note carries the columns): no table in the mail's body, a sheet of its header
+    // row in its workbook (P03: the mail's workbook is Export .xlsx's)
+    if (e.tagName === 'P') { let cols = []; try { cols = JSON.parse(e.dataset.cols || '[]'); } catch { cols = []; } return Array.isArray(cols) && cols.length ? [{ named, grid: true, empty: true, rows: 0, head: cols.map(String), cells: [] }] : []; }
     const grid = e.classList.contains('grid');
     const ths = grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')] : [];
     const keep = ths.map(h => !h.hasAttribute('data-gt-hidden'));   // a column hidden with the grid tools is left out, as the export leaves it
@@ -309,7 +326,9 @@ const open = async (route, zone = '') => {
 const split = a => a.includes('^') ? [a.slice(a.indexOf('^') + 1), a.slice(0, a.indexOf('^'))] : [a, ''];
 const res = {};
 if (mode === 'now' || mode === 'screen') {
-  for (const [i, arg] of routes.entries()) {
+  const base = mode === 'now' && /^\d+$/.test(tag) ? Number(tag) : 0;   // a later Send now numbers its screens on from the first's
+  for (const [k, arg] of routes.entries()) {
+    const i = base + k;
     const [route, zone] = split(arg);
     await open(route, zone);
     const screen = await ev(SCREEN);
@@ -328,6 +347,16 @@ if (mode === 'now' || mode === 'screen') {
       await sleep(300);
       fs.writeFileSync(`${out}/screen-nowb-${i}.json`, JSON.stringify({ route, screen: await ev(SCREEN) }));
     }
+  }
+} else if (mode === 'pickempty') {
+  // the first of the routes whose page holds grids and every one of them empty (no table.grid, no property card, at
+  // least one empty grid's note with its columns): the page Mail refused before P03
+  res.seen = [];
+  for (const route of routes) {
+    await open(route);
+    const k = await ev(`[document.querySelectorAll('main table.grid, main table.props').length, [...document.querySelectorAll('main p.empty[data-cols]')].filter(p => { try { return JSON.parse(p.dataset.cols).length > 0; } catch { return false; } }).length]`);
+    res.seen.push(`${route}: ${k[0]} tables, ${k[1]} empty grids`);
+    if (k[0] === 0 && k[1] > 0) { res.route = route; res.empties = k[1]; break; }
   }
 } else if (mode === 'prefs') {
   // a column hidden with the grid tools (the grid's menu), kept over a reload; then Mail... > Schedule this page... > Add
@@ -392,6 +421,18 @@ waitsent() {   # waitsent <ids...>: the sender's passes until every id is answer
 waitsent $NOWIDS || fail "N: not answered in 3 minutes: $(q "select send_id, coalesce(outcome, 'queued'), error from pgvigil.report_mail_sends where send_id in ($(tr ' ' ',' <<<"$NOWIDS"))")"
 [[ $(q "select count(*) from pgvigil.report_mail_sends where send_id in ($(tr ' ' ',' <<<"$NOWIDS")) and outcome = 'sent' and kind = 'now' and requested_by = '$UIUSER' and html is null") == 3 ]] || fail "N: $(q "select send_id, outcome, error from pgvigil.report_mail_sends where send_id in ($(tr ' ' ',' <<<"$NOWIDS"))")"
 ok "N: three pages mailed with Send now (mails $NOWIDS), each answered sent, the payload cleared"
+# P03: a page whose grids are all empty (Mail refused it before: 'nothing to mail'): mailed, its workbook a sheet of the
+# header row per grid (graded in X with the others)
+drive pickempty "$WORK" - "#/rp_killed?from=$FROM&to=$TO" "#/rp_flushed?from=$FROM&to=$TO" "#/rp_failed?from=$FROM&to=$TO" "#/rp_dbdeleted?from=$FROM&to=$TO" "#/rp_dbnew?from=$FROM&to=$TO" "#/rp_actions?from=$FROM&to=$TO" "#/corruption?from=$FROM&to=$TO" > "$WORK/pick.json" || fail "N: the empty page's pick: $(tail -3 "$WORK/pick.json")"
+EMPTYR=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("route") or "")' "$WORK/pick.json")
+[[ -n $EMPTYR ]] || fail "N: no page of the candidates holds only empty grids: $(cat "$WORK/pick.json")"
+drive now "$WORK" 3 "$EMPTYR" > "$WORK/now2.json" || fail "N: Send now of $EMPTYR: $(tail -3 "$WORK/now2.json")"
+EMPTYID=$(python3 -c 'import json,sys; print(" ".join(str(v) for v in json.load(open(sys.argv[1])).values()))' "$WORK/now2.json")
+[[ $(wc -w <<<"$EMPTYID") == 1 ]] || fail "N: the empty page's send: $(cat "$WORK/now2.json")"
+waitsent $EMPTYID || fail "N: the empty page's mail not answered in 3 minutes"
+[[ $(q "select count(*) from pgvigil.report_mail_sends where send_id = $EMPTYID and outcome = 'sent' and kind = 'now'") == 1 ]] || fail "N: the empty page's mail: $(q "select send_id, outcome, error from pgvigil.report_mail_sends where send_id = $EMPTYID")"
+ok "N: $EMPTYR, every grid on it empty ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["empties"])' "$WORK/pick.json") grids), mailed with Send now (mail $EMPTYID), answered sent"
+NOWIDS="$NOWIDS $EMPTYID"
 
 # ---- S: schedules, brought due, rendered by two serves -------------------------------------------------------------------
 JOBS="#/jobs?from=$FROM&to=$TO"
@@ -572,14 +613,15 @@ for sid, s in sorted(sends.items()):
     if p.bad: problems.append(f'mail {sid}: {p.bad[:3]}')
     if p.unstyled: problems.append(f'mail {sid}: {p.unstyled} cells without a style')
     if re.search(r'<\s*(script|style)\b', body, re.I): problems.append(f'mail {sid}: a script or style element')
-    grids = [g for g in scr]
+    book = [g for g in scr]   # every grid of the page in order, the empty ones too: the workbook's sheets
+    grids = [g for g in scr if not g.get('empty')]   # the grids with rows: the mail's body
     zone = re.search(r'>Time zone</th><td[^>]*>([^<]*)<', body)
     if s['schedule'] == SLA and s['kind'] == 'scheduled' and not (zone and zone.group(1).startswith('America/Los_Angeles')): problems.append(f'mail {sid}: the Los Angeles schedule\'s time zone line {zone and zone.group(1)!r}')
     if s['schedule'] == SJOB and (not p.grids or HIDDEN in [c['t'] for c in p.grids[0]['head']]): problems.append(f'mail {sid}: the column {HIDDEN!r} the owner hid is in the mail')
     if [g['name'] for g in p.grids] != [g['named'] for g in grids]:
         problems.append(f'mail {sid}: grids {[g["name"] for g in p.grids]} vs the screen {[g["named"] for g in grids]}'); continue
     cells = coloured = moved = 0
-    alts = [g for g in alt_scr]
+    alts = [g for g in alt_scr if not g.get('empty')]
     for g, sg, ag in zip(p.grids, grids, alts if len(alts) == len(grids) else grids):
         if [c['t'] for c in g['head']] != sg['head']: problems.append(f'mail {sid} {sg["named"]}: head {[c["t"] for c in g["head"]]} vs {sg["head"]}')
         for c in g['head']:
@@ -607,13 +649,21 @@ for sid, s in sorted(sends.items()):
     x = [p for p in m.walk() if p.get_content_type().endswith('spreadsheetml.sheet')]
     if len(x) != 1: problems.append(f'mail {sid}: {len(x)} workbooks'); continue
     wb = openpyxl.load_workbook(io.BytesIO(x[0].get_payload(decode=True)))
-    if wb.sheetnames[0] != 'Summary' or len(wb.sheetnames) != 1 + len(p.grids): problems.append(f'mail {sid}: sheets {wb.sheetnames}')
+    # P03: the workbook is Export .xlsx's: the Summary sheet, then a sheet per grid of the page in order, an empty grid's
+    # its header row alone (its columns, no data row)
+    if wb.sheetnames[0] != 'Summary' or len(wb.sheetnames) != 1 + len(book): problems.append(f'mail {sid}: sheets {wb.sheetnames} vs 1 + {len(book)} grids of the page ({sum(1 for g in book if g.get("empty"))} empty)')
     else:
-        for ws, g in zip(wb.worksheets[1:], p.grids):
+        body = iter(p.grids)
+        for ws, g in zip(wb.worksheets[1:], book):
             n = sum(1 for r in ws.iter_rows(min_row=2) if any(c.value is not None for c in r))
-            if n != len(g['rows']) and len(g['rows']): problems.append(f'mail {sid} {g["name"]}: the sheet {ws.title} has {n} rows, the mail {len(g["rows"])}')
+            if g.get('empty'):
+                hd = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))] if ws.max_row >= 1 else []
+                if n or [str(v) for v in hd if v is not None] != g['head']: problems.append(f'mail {sid} {g["named"]}: the empty grid\'s sheet {ws.title}: {n} rows, header {hd} vs {g["head"]}')
+                continue
+            mg = next(body, None)
+            if mg is not None and n != len(mg['rows']) and len(mg['rows']): problems.append(f'mail {sid} {mg["name"]}: the sheet {ws.title} has {n} rows, the mail {len(mg["rows"])}')
     total += cells
-    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched the second read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets)')
+    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched the second read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
 for x in problems[:40]: print('     ' + x)
 if problems: print(f'{len(problems)} problems'); sys.exit(1)
 print(f'ok   H: every mail tables and inline styles only, no script, style, class or event attribute; X: every workbook opens with openpyxl; {total} cells in all')
@@ -624,7 +674,7 @@ drive page "$WORK" - > "$WORK/page.json" || fail "P: the driver: $(cat "$WORK/pa
 python3 - "$WORK/page.json" <<'PY' || fail "P: the Report mail page (above)"
 import json, sys
 d = json.load(open(sys.argv[1]))
-g = {x['named']: x for x in d['screen']}
+g = {x['named']: x for x in d['screen'] if not x.get('empty')}   # an empty grid's note is no table of the page
 sch, snd = g.get('Schedules'), next((v for k, v in g.items() if k.startswith('Sends')), None)
 bad = []
 if not sch or sch['rows'] != 5: bad.append(f'Schedules: {sch and sch["rows"]} rows, want 5')
