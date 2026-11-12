@@ -54,9 +54,9 @@
 #     negative serial number'; which, is recorded in the summary's row "certificate serial negative" (a record,
 #     never a verdict: the server draws the number). Any other failure of the control fails C.
 #  H. after the seed, msdb.dbo.sysjobhistory holds 60 rows or more and 'Database Mail XPs' is 1 in use.
-#  K. every SQL Server collection of the collector (21: ag backups cpu fileio indexlocks instance jobs logshipping
-#     memory mirroring procstats properties querystore replication requests services storage tempdb versionstore
-#     waits xe), `collect -once <it>` as sa: exits 0, and no line it prints is an ERROR, carries the server's words
+#  K. every SQL Server collection of the collector (the names its collectors register, read from internal/mssql/*.go
+#     at run time, tests left out; fewer than 21 names, or a count that differs from the Register calls, ends the
+#     run before the server is touched, with exit 1 and one FAIL line), `collect -once <it>` as sa: exits 0, and no line it prints is an ERROR, carries the server's words
 #     for a statement 2016 does not have ('Invalid column name', 'Invalid object name', 'is not a recognized built-in
 #     function name', 'Incorrect syntax') or any server error ('mssql: <message> (<number>)': as sa, every server
 #     error is a finding); its row in collection_dates is ok, or skipped / partial with a note that is none of those
@@ -78,7 +78,7 @@
 #      name: its setup turns on WAIT_STATS_CAPTURE_MODE, a Query Store option of SQL Server 2017 ("Incorrect syntax
 #      near 'WAIT_STATS_CAPTURE_MODE'"), and it reads the 2017 wait statistics in its own comparisons.]
 #  S. proof-mssql-summary.sh (no SQL Server) exits 0, once.
-#  The last line is "proof-mssql-2016: PASS (<build>; <n> proofs, <m> not proven on one node, 21 collections,
+#  The last line is "proof-mssql-2016: PASS (<build>; <n> proofs, <m> not proven on one node, <k> collections,
 #  summary once; logs in <folder>)" and the exit code 0 only when P, C, H, K, T, R and S hold; else the failed cells
 #  are listed, the last line says FAIL with their count and the exit code is 1. What a passed proof itself prints
 #  as SKIPPED, NOT RUN or NOT PROVEN stays so: those lines are listed under the matrix and kept in left-out.txt.
@@ -98,6 +98,12 @@ for g in "${GROUP_PROOFS[@]}"; do [ "$g" = hadr ] || { echo "FAIL: PGVIGIL_2016_
 PTIMEOUT=${PGVIGIL_2016_TIMEOUT:-2400}
 [[ $PTIMEOUT =~ ^[1-9][0-9]*$ ]] || { echo "FAIL: PGVIGIL_2016_TIMEOUT is a whole number above 0" >&2; exit 1; }
 for name in "${PROOFS[@]}"; do [ -f "scripts/proof-mssql-$name.sh" ] || { echo "FAIL: no scripts/proof-mssql-$name.sh" >&2; exit 1; }; done
+# the collections K runs: every name a collector of internal/mssql registers (its Name() method), tests left out, and
+# as many names as Register calls (a collector the pattern cannot read fails here, never silently left out)
+COLLECTIONS=$(grep -ho --exclude='*_test.go' 'Name() string *{ return Prefix + "[a-z0-9_]*" }' internal/mssql/*.go | grep -o '"[a-z0-9_]*"' | tr -d '"' | sort -u | tr '\n' ' ' || true)
+REGISTERED=$(grep -ho --exclude='*_test.go' 'Register(&\?[A-Za-z0-9_]*{})' internal/mssql/*.go | wc -l || true)
+[ "$(wc -w <<<"$COLLECTIONS")" -ge 21 ] && [ "$(wc -w <<<"$COLLECTIONS")" -eq "$REGISTERED" ] \
+  || { echo "FAIL: $(wc -w <<<"$COLLECTIONS") SQL Server collection names read from internal/mssql/*.go for $REGISTERED Register calls (want them equal, and 21 or more): $COLLECTIONS" >&2; exit 1; }
 TOOLS_IMAGE=${PGVIGIL_2016_TOOLS_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 ADDR=${PGVIGIL_MSSQL2016_ADDR:-}
 if [ -z "$ADDR" ] && [ -r .lab/pgv16.addr ]; then ADDR=$(head -1 .lab/pgv16.addr); fi
@@ -263,8 +269,7 @@ fi
 result setup PASS $((SECONDS - t0)) "$(cat "$OUT/build.txt")"
 
 # K: every collection once, as sa
-COLLECTIONS="ag backups cpu fileio indexlocks instance jobs logshipping memory mirroring procstats properties querystore replication requests services storage tempdb versionstore waits xe"
-echo "--- K. every SQL Server collection once, as sa"
+echo "--- K. every SQL Server collection once, as sa ($(wc -w <<<"$COLLECTIONS"): $COLLECTIONS)"
 for c in $COLLECTIONS; do
   t1=$SECONDS; crc=0
   "$BIN" collect -config "$CFG" -once "mssql_$c" -instance "$INST" > "$OUT/sweep/$c.raw" 2>&1 || crc=$?
