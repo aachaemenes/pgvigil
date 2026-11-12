@@ -67,11 +67,11 @@
 #     [169b] The tree (tree.ts): the root's Reports folder lists the 17 stock pages in DBA Dash's order, then Custom
 #     reports and Community tools; Custom reports holds the three seeded reports as DBA Dash's Reports folder holds
 #     its own (sub folders first by name, then the reports by name: Ops > Daily > rp169 tree pg, Ops > rp169 tree
-#     store, rp169 tree ms); under the PostgreSQL instance only its engine's (Ops > Daily > rp169 tree pg), under the
-#     SQL Server one only rp169 tree ms; each report node clicked opens #/customreports?report=N (&i=<id> under an
+#     store, rp169 tree ms); under an instance its engine's and the repository's (PostgreSQL: Ops > Daily > rp169 tree
+#     pg, Ops > rp169 tree store; SQL Server: Ops > rp169 tree store, rp169 tree ms); each report node clicked opens #/customreports?report=N (&i=<id> under an
 #     instance) and the page's h2 is the report's name; Community tools opens #/community (?i= under an instance).
-#     The Deadlock Charts and Query Stats Charts rings are rings (each slice two arcs, a whole slice a stroked circle:
-#     DBA Dash's InnerRadius 0.5); the PostgreSQL instance's Databases by size stays a pie (each wedge from the centre).
+#     The Deadlock Charts and Query Stats Charts rings are rings with a hole half their radius (each slice an outer arc
+#     and an inner one of radius 27, a whole slice a circle of radius 40.5 stroked 27 wide: DBA Dash's InnerRadius 0.5); the PostgreSQL instance's Databases by size stays a pie (each wedge from the centre).
 #  G. each page's Export .xlsx (16: every page with a grid) gives a workbook that opens (openpyxl where the box has
 #     it, else the zip's workbook.xml) with a sheet, after its own Summary sheet, for every grid heading of its page that
 #     holds rows [fold: all 16; run 8: an empty grid (pgaudit's, not in the image) shows a note, not a table, and the
@@ -556,7 +556,9 @@ const allGrids = {}, emptyGrids = {};
 // from the centre, a whole slice a filled disc
 const shapes = sel => ev(`[...document.querySelectorAll('${sel}')].filter(r => r.querySelector('svg')).map(r => {
   const ps = [...r.querySelectorAll('svg path')], cs = [...r.querySelectorAll('svg circle')];
-  return { ring: ps.every(x => (x.getAttribute('d').match(/A/g) || []).length === 2) && cs.every(x => x.getAttribute('fill') === 'none'),
+  // a ring's inner arc has radius 27 (half the outer 54); a whole ring is a circle of radius 40.5 stroked 27 wide
+  return { ring: ps.every(x => (x.getAttribute('d').match(/A/g) || []).length === 2 && x.getAttribute('d').includes(' A27 27 '))
+             && cs.every(x => x.getAttribute('fill') === 'none' && x.getAttribute('r') === '40.5' && x.getAttribute('stroke-width') === '27'),
            pie: ps.every(x => x.getAttribute('d').startsWith('M60 60 ')) && cs.every(x => x.getAttribute('fill') !== 'none'), n: ps.length + cs.length }; })`);
 // the root's Reports folder: every page
 for (const [tab, name] of Object.entries(names)) {
@@ -667,14 +669,15 @@ let to = (await clickIn('r/reports/cr/Ops/Daily', 'rp169 tree pg')) ? await land
 check('tree: a root report node opens its report', to.at?.startsWith('#/customreports?') && q(to.at).get('report') === crpg && !q(to.at).get('i') && to.h === 'rp169 tree pg', JSON.stringify(to));
 to = (await clickIn('r/reports', 'Community tools')) ? await landed(h => h.startsWith('#/community'), 'Community tools') : { at: 'no node' };
 check('tree: the root Community tools node opens its page', to.at?.startsWith('#/community') && !q(to.at).get('i') && to.h === 'Community tools', JSON.stringify(to));
-for (const [inst, eng, path, rep, id] of [[ipg, 'PostgreSQL', ['Ops', 'Daily'], 'rp169 tree pg', crpg], [ims, 'SQL Server', [], 'rp169 tree ms', crms]]) {
+// under an instance: its engine's reports and the repository's (rp169 tree store, in Ops)
+for (const [inst, eng, path, rep, id, wantSeen] of [[ipg, 'PostgreSQL', ['Ops', 'Daily'], 'rp169 tree pg', crpg, [['Ops'], ['Daily', 'rp169 tree store'], ['rp169 tree pg']]],
+                                                    [ims, 'SQL Server', [], 'rp169 tree ms', crms, [['Ops', 'rp169 tree ms']]]]) {
   await openKey(`i${inst}`);
   const rk = await openKey(`i${inst}/reports`) ?? [];
   check(`tree: the ${eng} instance's Reports folder ends with Custom reports and Community tools`, JSON.stringify(rk.slice(-2)) === JSON.stringify(['Custom reports', 'Community tools']), JSON.stringify(rk));
   let key = `i${inst}/reports/cr`; const seen = [await openKey(key)];
   for (const part of path) { key += '/' + part; seen.push(await openKey(key)); }
-  const wantSeen = path.length ? [['Ops'], ['Daily'], [rep]] : [[rep]];
-  check(`tree: the ${eng} instance's Custom reports - its engine's report only`, JSON.stringify(seen) === JSON.stringify(wantSeen), JSON.stringify(seen));
+  check(`tree: the ${eng} instance's Custom reports - its engine's report and the repository's`, JSON.stringify(seen) === JSON.stringify(wantSeen), JSON.stringify(seen));
   to = (await clickIn(key, rep)) ? await landed(h => q(h).get('report') === id && q(h).get('i') === inst, rep) : { at: 'no node' };
   check(`tree: the ${eng} instance's report node opens its report there`, q(to.at ?? '').get('report') === id && q(to.at ?? '').get('i') === inst && to.h === rep, JSON.stringify(to));
   to = (await clickIn(`i${inst}/reports`, 'Community tools')) ? await landed(h => h.startsWith('#/community') && q(h).get('i') === inst, 'Community tools') : { at: 'no node' };

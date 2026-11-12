@@ -175,6 +175,8 @@ function flip(key: string) {
   if (opened.has(key)) opened.delete(key); else opened.add(key);
   // closing and opening a folder retries a read that failed (an error is never kept past the user's own retry)
   if (loads.get(key)?.err) loads.delete(key);
+  // a Custom reports node reads under one key for the whole tree ('customreports')
+  if (key.endsWith('/cr') && loads.get('customreports')?.err) loads.delete('customreports');
   try { sessionStorage.setItem('pgvigil.treeOpen', JSON.stringify([...opened])); } catch { /* private window */ }
 }
 function toggle(key: string) { flip(key); draw(); }
@@ -182,6 +184,7 @@ function toggle(key: string) { flip(key); draw(); }
 // again (the tree menu's Refresh, task 172)
 export function reloadTree(prefix = '') {
   for (const k of [...loads.keys()]) if (!prefix || k === prefix || k.startsWith(prefix + '/')) loads.delete(k);
+  if (/^i\d+$/.test(prefix) || prefix.endsWith('/cr')) loads.delete('customreports');   // an instance's Custom reports node
   draw();
 }
 
@@ -271,7 +274,8 @@ function state(l: Load, depth: number, empty: string): HTMLElement | null {
 // customReports: the Custom reports node of a Reports folder (task 170's saved reports, /api/customreports, read once for
 // the whole tree), laid out as DBA Dash lays out its Reports folder (SQLTreeItem.PopulateReportsFolder): the sub folders
 // first by name, then the reports by name; a report's folder path ('Ops/Daily') makes its folders. Under an instance
-// only the reports of its engine; at the root every report. The node's name opens the Custom reports page, a report
+// the reports of its engine and the repository's (a repository report runs about the instance, as every DBA Dash custom
+// report does); at the root every report. The node's name opens the Custom reports page, a report
 // #/customreports?report=N (&i= under an instance).
 function customReports(ctx: Ctx, key: string, label: string, depth: number, base: string, on: boolean, id?: number, engine?: unknown): HTMLElement {
   const withReport = (n: unknown) => { const [p, q] = base.split('?'); const u = new URLSearchParams(q ?? ''); u.set('report', String(n)); return `${p}?${u}`; };
@@ -293,10 +297,10 @@ function customReports(ctx: Ctx, key: string, label: string, depth: number, base
   return folder(key, label, depth, () => {
     const l = loaded('customreports', async () => rowsOf((await get<{ reports: Table | null }>('customreports')).reports));
     const want = id === undefined ? undefined : isMssql(engine) ? 'sqlserver' : 'postgres';
-    const rows = l.rows?.filter(r => want === undefined || r.engine === want);
+    const rows = l.rows?.filter(r => want === undefined || r.engine === want || r.engine === 'store');
     const s = state({ ...l, rows }, depth + 1, 'No saved report.');
     return s ? [s] : level(rows!, '', depth + 1);
-  }, base, on && cur === undefined, on);
+  }, base, on && cur === undefined, on && cur === undefined);
 }
 
 // instanceFolders: what opens under an instance node
