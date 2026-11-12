@@ -1,239 +1,229 @@
-:root { --bg: #f4f6f9; --fg: #1d2330; --muted: #5d6676; --line: #dde1e8; --card: #fff; --side: #eef1f5; --accent: #2b64cf;
-        --crit: #c42626; --warn: #9a5a00; --ok: #237a35; --crit-bg: #fde2e2; --warn-bg: #fff1d6; --ok-bg: #e3f4e6; --badge-fg: #fff; color-scheme: light; }
-/* every text / background pair above and below meets WCAG 2.1 AA (4.5:1): the light warn and ok tones and the accent were darkened for white text on them and for links on the page background; in the dark theme the badge and highlight backgrounds are light, so their text is dark (--badge-fg). scripts/proof-a11y.sh checks every page in both themes. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --bg: #14171d; --fg: #e4e7ec; --muted: #9aa3b2; --line: #2c323d; --card: #1b1f27; --side: #171a21; --accent: #6b9cff;
-          --crit: #ff6b6b; --warn: #f0a33a; --ok: #51cf66; --crit-bg: #4a1f22; --warn-bg: #45351a; --ok-bg: #1d3b25; --badge-fg: #14171d; color-scheme: dark; }
+/* pgvigil's styles (task 181, the visual pass): every colour, size, weight, space, radius, border and shadow below is a
+   token of the first block; a rule uses the tokens and holds no value of its own but a layout measure (a column's width, a
+   panel's max-width). docs/design.md names each token, what it is for and the rule for a new page. scripts/proof-a11y.sh
+   checks every text / background pair on every page in both themes (WCAG 2.1 AA: 4.5:1 for text). */
+
+/* ---------- 1. the tokens ---------- */
+:root {
+  /* type: one proportional family, the monospace for statements and code; five sizes, two weights, tabular figures */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-xs: 11px;    /* the smallest words: the range panel's legends, a chart's axis values, a ring's total */
+  --fs-sm: 12px;    /* the second line: meta, a legend, a chip, code, a tooltip, a grid's header in the quiet style */
+  --fs-md: 13px;    /* the body and a grid's cells */
+  --fs-lg: 15px;    /* a section's title (h3), the brand */
+  --fs-xl: 20px;    /* a page's title (h2), a tile's figure */
+  --fw-normal: 400;
+  --fw-strong: 600;
+  --lh: 1.45; --lh-tight: 1.2;
+  --caps-tracking: .05em;
+  --ul-offset: .2em;   /* a link's underline below its letters */
+  --num: tabular-nums;
+  /* space: a 4 px step */
+  --sp-1: .25rem; --sp-2: .5rem; --sp-3: .75rem; --sp-4: 1rem; --sp-5: 1.5rem;
+  --sp-half: .125rem;
+  /* radii, borders, the status stripe */
+  --r-xs: 2px; --r-sm: 4px; --r-md: 6px; --r-pill: 999px;
+  --bw: 1px; --stripe: 3px; --focus-w: 2px;
+
+  /* light: surfaces from the page up (page, panel, card inside a panel, raised over everything) */
+  --surface-page: #f3f4f7; --surface-panel: #ffffff; --surface-card: #f6f7f9; --surface-raised: #ffffff; --surface-hover: #eceef2;
+  --line: #e0e3e9; --line-strong: #c8cdd6;
+  --text: #1b2230; --text-muted: #545d6d; --text-faint: #606979;
+  --accent: #2259c8; --accent-soft: #e6edfb; --on-accent: #ffffff;
+  /* the states as text on a surface and as a tint behind their own text (the quiet style, a pill) */
+  --ok: #237a35; --warn: #9a5a00; --crit: #c42626; --na: #606979; --ack: #1b6aa3;
+  --ok-bg: #e3f4e6; --warn-bg: #fff1d6; --crit-bg: #fde2e2; --na-bg: #eceef2; --ack-bg: #e3eefa;
+  --hover-overlay: rgba(127, 127, 127, .09);
+  --shadow-raised: 0 4px 14px rgba(0, 0, 0, .14); --shadow-tip: 0 2px 8px rgba(0, 0, 0, .12);
+  /* the chart series: one categorical order (blue, orange, aqua, yellow, magenta, green, violet, red), assigned in order,
+     never cycled. Light: the set before task 181 darkened to clear 3:1 on every light surface (3.9:1 or more; slots 3-5 were
+     2.17-2.82 on white), checked as a set with the dataviz validator: lightness band, chroma, neighbours' colour-blind
+     separation (worst 8.3, protanopia) and normal-vision separation (worst 15.9) all pass. */
+  --s1: #2a6fd6; --s2: #c4511a; --s3: #0d8460; --s4: #9a6a00; --s5: #c03a7a; --s6: #3d7a12; --s7: #6250d6; --s8: #d23b3a;
+  color-scheme: light;
 }
-:root[data-theme="dark"] { --bg: #14171d; --fg: #e4e7ec; --muted: #9aa3b2; --line: #2c323d; --card: #1b1f27; --side: #171a21; --accent: #6b9cff;
-        --crit: #ff6b6b; --warn: #f0a33a; --ok: #51cf66; --crit-bg: #4a1f22; --warn-bg: #45351a; --ok-bg: #1d3b25; --badge-fg: #14171d; color-scheme: dark; }
+/* dark: the same names; the series are the validated set from before task 181 (every check passes on the panel and card
+   surfaces, 3.2:1 or more on the page, the panel and a card) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
+    --line: #2a2f38; --line-strong: #3a404b;
+    --text: #e3e6eb; --text-muted: #a3abb8; --text-faint: #969fad;
+    --accent: #6fa0ff; --accent-soft: #1d2a44; --on-accent: #14171d;
+    --ok: #57c76c; --warn: #f0a33a; --crit: #ff6b6b; --na: #969fad; --ack: #6fb0e6;
+    --ok-bg: #16281b; --warn-bg: #2f2613; --crit-bg: #341a1d; --na-bg: #22262e; --ack-bg: #172636;
+    --shadow-raised: 0 4px 14px rgba(0, 0, 0, .45); --shadow-tip: 0 2px 8px rgba(0, 0, 0, .4);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
+  --line: #2a2f38; --line-strong: #3a404b;
+  --text: #e3e6eb; --text-muted: #a3abb8; --text-faint: #969fad;
+  --accent: #6fa0ff; --accent-soft: #1d2a44; --on-accent: #14171d;
+  --ok: #57c76c; --warn: #f0a33a; --crit: #ff6b6b; --na: #969fad; --ack: #6fb0e6;
+  --ok-bg: #16281b; --warn-bg: #2f2613; --crit-bg: #341a1d; --na-bg: #22262e; --ack-bg: #172636;
+  --shadow-raised: 0 4px 14px rgba(0, 0, 0, .45); --shadow-tip: 0 2px 8px rgba(0, 0, 0, .4);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  color-scheme: dark;
+}
+/* DBA Dash's solid status fills on the status grids (the default; 'Colours: quiet' in the header turns them off): its
+   light theme's green, orange and red, N/A grey, acknowledged blue, its TrimbleBlueDark header (0, 79, 131, task P08).
+   The orange carries dark text, not DBA Dash's white (2.5:1); every pair clears 4.5:1 (white on the green 7.10, on the
+   red 7.11, on the acknowledged blue 5.77, on the header blue 8.58; the dark text on the orange 7.42; the N/A text 6.59
+   light and 7.81 dark). */
+:root:not([data-status="quiet"]) { --st-ok: #006638; --st-warn: #e49325; --st-crit: #ab1f26; --st-none: #e0e1e9; --st-none-fg: #004f83;
+                                   --st-ack: #1b6aa3; --st-head: #004f83; --st-on: #ffffff; --st-on-warn: #1d1300; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]):not([data-status="quiet"]) { --st-none: #2c323d; --st-none-fg: #c3cad6; } }
+:root[data-theme="dark"]:not([data-status="quiet"]) { --st-none: #2c323d; --st-none-fg: #c3cad6; }
+/* the old names, kept for the code that reads them (chart.ts, gridtools.ts, treemenu.ts, diff.ts, pi.ts, deadlock_graph.ts,
+   inline styles): each is one of the tokens above. --bg is what a grid's cell or a chart is painted on (a frozen column, the
+   full-window chart): the panel, not the page. */
+:root { --bg: var(--surface-panel); --card: var(--surface-panel); --fg: var(--text); --muted: var(--text-muted); --badge-fg: var(--on-accent); }
+
+/* ---------- 2. the page ---------- */
 * { box-sizing: border-box; }
-body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg);
+html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + var(--sp-2)); }
+body { margin: 0; font: var(--fs-md)/var(--lh) var(--font-sans); background: var(--surface-page); color: var(--text);
        display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: auto 1fr; min-height: 100vh; }
-header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.2rem; padding: .5rem 1rem; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 3; }
-#crumb { color: var(--muted); } #crumb a { text-decoration: none; }
+a { color: var(--accent); }
+h2 { margin: var(--sp-1) 0 var(--sp-3); font-size: var(--fs-xl); font-weight: var(--fw-strong); line-height: var(--lh-tight); }
+h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: var(--fs-lg); font-weight: var(--fw-strong); line-height: var(--lh-tight); }
+main { padding: var(--sp-4) var(--sp-5); max-width: 1800px; }
+.meta, .empty { color: var(--text-muted); }
+.error { color: var(--crit); font-weight: var(--fw-strong); }
+pre.sql, code, .grid td.wide, .mono { font-family: var(--font-mono); }
+pre.sql, code { font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-word; }
+pre.sql { margin: var(--sp-2) 0; padding: var(--sp-2); background: var(--surface-card); border-radius: var(--r-sm); }
+[hidden], .range .custom[hidden] { display: none !important; }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* ---------- 3. the shell: header, tree, tabs ---------- */
+header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-4); padding: var(--sp-2) var(--sp-4);
+         background: var(--surface-panel); border-bottom: var(--bw) solid var(--line); position: sticky; top: 0; z-index: 3; }
+.brand { font-weight: var(--fw-strong); font-size: var(--fs-lg); color: var(--text); text-decoration: none; }
+#crumb { color: var(--text-muted); }
+#crumb a { text-decoration: underline; text-underline-offset: var(--ul-offset); }   /* told from the crumb text by more than colour (WCAG 1.4.1) */
+#bar { display: flex; gap: var(--sp-2); align-items: center; margin-left: auto; flex-wrap: wrap; }
 #show-tree { display: none; }
 body.tree-hidden { grid-template-columns: 0 minmax(0, 1fr); }
 body.tree-hidden #tree { display: none; }
 body.tree-hidden #show-tree { display: inline-block; }
 body.signin { grid-template-columns: minmax(0, 1fr); }
 body.signin #tree, body.signin #tabs, body.signin #show-tree { display: none; }
-#tree { background: var(--side); border-right: 1px solid var(--line); padding: .6rem .5rem; overflow-y: auto; position: sticky; top: 3rem; height: calc(100vh - 3rem); }
-.tree-top { display: flex; gap: .3rem; margin-bottom: .5rem; }
+#tree { background: var(--surface-panel); border-right: var(--bw) solid var(--line); padding: var(--sp-2); overflow-y: auto; position: sticky; top: 3rem; height: calc(100vh - 3rem); }
+.tree-top { display: flex; gap: var(--sp-1); margin-bottom: var(--sp-2); }
 .tree-top input { flex: 1; min-width: 0; }
-.tree-hide { padding: .1rem .45rem; }
-.tree-list a { text-decoration: none; color: var(--fg); }
-.tree-root, .inst { display: flex; align-items: center; gap: .45rem; padding: .2rem .4rem; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tree-root { font-weight: 600; margin-bottom: .3rem; }
-.folder-head { display: flex; align-items: center; gap: .35rem; padding: .15rem 0; font-weight: 600; }
-.folder-head .muted { color: var(--muted); }
-.folder-name { padding: .05rem .3rem; border-radius: 4px; }
+.tree-hide { padding: var(--sp-half) var(--sp-2); }
+.tree-list a { text-decoration: none; color: var(--text); }
+.tree-root, .inst { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-half) var(--sp-2); border-radius: var(--r-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-root { margin-bottom: var(--sp-1); }
+.folder-head { display: flex; align-items: center; gap: var(--sp-1); padding: var(--sp-half) 0; }
+.folder-head .muted { color: var(--text-muted); }
+.folder-name { padding: 0 var(--sp-1); border-radius: var(--r-sm); }
 .folder-items { margin-left: 1.15rem; }
-.tree-list a:hover { background: var(--line); }
-.tree-list a.on { background: var(--accent); color: var(--badge-fg); }
-.caret { border: none; background: none; padding: 0 .1rem; width: 1rem; color: var(--muted); }
-.dot { display: inline-block; width: .65rem; height: .65rem; border-radius: 50%; flex: none; background: var(--muted); }
+.tree-list a:hover { background: var(--surface-hover); }
+.tree-list a.on { background: var(--accent-soft); color: var(--accent); font-weight: var(--fw-strong); }
+.caret, .caret:hover { border: none; background: none; padding: 0 var(--sp-half); width: 1rem; color: var(--text-muted); }
+.dot { display: inline-block; width: .65rem; height: .65rem; border-radius: 50%; flex: none; background: var(--na); }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.crit { background: var(--crit); }
 #content { min-width: 0; }
-#tabs { display: flex; flex-wrap: wrap; gap: .2rem; padding: .5rem 1rem 0; border-bottom: 1px solid var(--line); background: var(--card); }
-#tabs a { padding: .4rem .8rem; color: var(--muted); text-decoration: none; border: 1px solid transparent; border-bottom: none; border-radius: 5px 5px 0 0; margin-bottom: -1px; }
-#tabs a:hover { color: var(--fg); }
-#tabs a.on { color: var(--accent); font-weight: 600; background: var(--bg); border-color: var(--line); }
-.range { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
-.range .custom { display: inline-flex; align-items: center; gap: .3rem; flex-wrap: wrap; }
-[hidden], .range .custom[hidden] { display: none !important; }
-.brand { font-weight: 700; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
-.subtabs { margin-bottom: .8rem; display: flex; flex-wrap: wrap; gap: .3rem; }
-.subtabs a { padding: .15rem .6rem; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); text-decoration: none; background: var(--card); }
-.subtabs a.on { color: var(--badge-fg); background: var(--accent); border-color: var(--accent); }
-#bar { display: flex; gap: .5rem; align-items: center; margin-left: auto; flex-wrap: wrap; }
-select, button { font: inherit; padding: .2rem .5rem; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+/* the tab row: words, the open one marked by a bar under it (and its weight), sticky under the header */
+#tabs { display: flex; flex-wrap: wrap; gap: 0 var(--sp-5); padding: var(--sp-2) var(--sp-5) 0; border-bottom: var(--bw) solid var(--line); background: var(--surface-panel);
+        position: sticky; top: var(--head-h, 2.9rem); z-index: 2; }
+#tabs a { padding: var(--sp-1) 0 var(--sp-2); margin-bottom: calc(-1 * var(--bw)); color: var(--text-muted); text-decoration: none; border-bottom: var(--focus-w) solid transparent; }
+#tabs a:hover { color: var(--text); }
+#tabs a.on { color: var(--text); font-weight: var(--fw-strong); border-bottom-color: var(--accent); }
+#tabs .tab-group { color: var(--text-muted); margin-right: calc(-1 * var(--sp-2)); padding: var(--sp-1) 0 var(--sp-2); }
+#tabs .tab-back { text-decoration: underline; text-underline-offset: var(--ul-offset); }
+.subtabs { margin-bottom: var(--sp-3); display: flex; flex-wrap: wrap; gap: var(--sp-half) var(--sp-4); }
+.subtabs a { color: var(--text-muted); text-decoration: none; }
+.subtabs a.on { color: var(--accent); font-weight: var(--fw-strong); text-decoration: underline; text-underline-offset: var(--ul-offset); }
+
+/* ---------- 4. controls ---------- */
+select, button { font: inherit; padding: var(--sp-half) var(--sp-2); background: var(--surface-panel); color: var(--text); border: var(--bw) solid var(--line-strong); border-radius: var(--r-sm); }
 button { cursor: pointer; }
-main { padding: 1rem; max-width: 1800px; }
-h2 { margin: .2rem 0 .8rem; font-size: 1.25rem; }
-h3 { margin: 1.2rem 0 .5rem; font-size: 1rem; }
-a { color: var(--accent); }
-.meta, .empty { color: var(--muted); }
-.error { color: var(--crit); font-weight: 600; }
-.grid-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
-table.grid { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-.grid th, .grid td { padding: .35rem .6rem; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; vertical-align: top; }
-.grid th { cursor: pointer; user-select: none; font-weight: 600; color: var(--muted); position: sticky; top: 0; background: var(--card); }
-.grid .num { text-align: right; }
-.grid td.wide { white-space: normal; max-width: 48rem; font-family: ui-monospace, monospace; font-size: 12px; word-break: break-word; }
-.badge { display: inline-block; padding: 0 .45rem; border-radius: 9px; font-size: 12px; font-weight: 600; color: var(--badge-fg); background: var(--muted); }
-.badge.crit { background: var(--crit); } .badge.warn { background: var(--warn); }
-.tiles { display: flex; gap: .8rem; flex-wrap: wrap; margin-bottom: 1rem; }
-.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: .6rem 1rem; min-width: 9rem; }
-.tile-v { font-size: 1.6rem; font-weight: 700; } .tile-l { color: var(--muted); }
-.tile.crit .tile-v { color: var(--crit); } .tile.warn .tile-v { color: var(--warn); } .tile.ok .tile-v { color: var(--ok); }
-.chain { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--crit); border-radius: 6px; padding: .6rem .8rem; margin-bottom: .8rem; }
-.chain-head { font-weight: 600; } .chain-w { margin-top: .25rem; }
-pre.sql, code { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-pre.sql { margin: .4rem 0; padding: .4rem; background: var(--bg); border-radius: 4px; }
-.charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 1rem; }
-.chart { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: .4rem .8rem; }
-.chart h3 { margin: .3rem 0; }
-.u-legend, .u-axis { color: var(--fg); }
-.picker { margin-bottom: .6rem; color: var(--muted); }
-input { font: inherit; padding: .15rem .4rem; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
-form.login { max-width: 22rem; margin: 10vh auto; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1.2rem 1.4rem 1.4rem; }
-form.login h2 { margin-bottom: 1rem; }
-form.login label { display: block; margin: .7rem 0; color: var(--muted); }
-form.login input { display: block; width: 100%; margin-top: .25rem; padding: .4rem .5rem; color: var(--fg); }
-form.login button { margin-top: .9rem; padding: .4rem 1rem; background: var(--accent); color: var(--badge-fg); border-color: var(--accent); }
-form.login button:disabled { opacity: .6; cursor: default; }
-form.login .error { margin: .8rem 0 0; }
+button:hover, select:hover { background: var(--surface-hover); }
+input { font: inherit; padding: var(--sp-half) var(--sp-2); background: var(--surface-panel); color: var(--text); border: var(--bw) solid var(--line-strong); border-radius: var(--r-sm); }
 button.link { background: none; border: none; color: var(--accent); padding: 0; text-decoration: underline; }
-.badge.ok { background: var(--ok); }
-.grid td.status { padding: 0; }
-.grid td.status .cell-link { display: block; padding: .35rem .6rem; text-decoration: none; font-weight: 600; }
-.grid td.status.ok { background: var(--ok-bg); } .grid td.status.ok .cell-link { color: var(--ok); }
-.grid td.status.warn { background: var(--warn-bg); } .grid td.status.warn .cell-link { color: var(--warn); }
-.grid td.status.none .cell-link { color: var(--muted); font-weight: 400; }
-.group.none { color: var(--muted); }
-.grid td.status.crit { background: var(--crit-bg); } .grid td.status.crit .cell-link { color: var(--crit); }
-.grid tbody tr:hover td { filter: brightness(0.97); }
-.groups { display: flex; flex-wrap: wrap; gap: .5rem; margin: .4rem 0 1rem; }
-.group { display: flex; flex-direction: column; min-width: 9rem; padding: .45rem .8rem; border-radius: 6px; border: 1px solid var(--line); text-decoration: none; }
-.group-l { font-size: 12px; color: var(--muted); } .group-v { font-weight: 700; }
-.group.ok { background: var(--ok-bg); color: var(--ok); } .group.warn { background: var(--warn-bg); color: var(--warn); } .group.crit { background: var(--crit-bg); color: var(--crit); }
-.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 1rem; align-items: start; }
-.checks-box .grid td.wide { min-width: 24rem; }
-table.props { border-collapse: collapse; width: 100%; }
-.props th, .props td { padding: .3rem .6rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-.props th { color: var(--muted); font-weight: 600; width: 40%; white-space: nowrap; }
-@media (max-width: 760px) {
-  body { grid-template-columns: minmax(0, 1fr); }
-  #tree { position: static; height: auto; max-height: 40vh; border-right: none; border-bottom: 1px solid var(--line); }
-  body.tree-hidden { grid-template-columns: minmax(0, 1fr); }
-  header { position: static; }
-}
-
-/* the rings (task 94): an SVG donut with its numbers in a table beside it; the days selector */
-.donut-body { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-.donut-body svg { width: 150px; height: 150px; flex: none; }
-.donut-total { fill: var(--fg); font-size: 11px; font-weight: 600; }
-.legend { border-collapse: collapse; font-size: 13px; }
-.legend th { text-align: left; font-weight: 600; color: var(--muted); padding: .1rem .7rem .2rem 0; }
-.legend td { padding: .1rem .7rem .1rem 0; }
-.legend .num { text-align: right; font-variant-numeric: tabular-nums; }
-.swatch { display: inline-block; width: .7rem; height: .7rem; border-radius: 2px; margin-right: .4rem; }
-.seg { display: inline-flex; align-items: center; gap: .3rem; flex-wrap: wrap; margin: .3rem 0 .6rem; }
-.seg button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-
-/* The flat pass (2026-11-10): the page is text, a tree and a grid. One type family, one accent, no cards, no
-   rounded corners, no pills; a line only where it separates the shell's three parts and the rows of a grid.
-   Status colours stay where they carry a status. Every text / background pair is one of the pairs checked above,
-   or the same text on a background further from it (scripts/proof-a11y.sh). */
-:root { --bg: #fff; --card: #fff; --side: #fff; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --bg: #111213; --card: #111213; --side: #111213; --fg: #d6d6d6; --line: #26282b; }
-}
-:root[data-theme="dark"] { --bg: #111213; --card: #111213; --side: #111213; --fg: #d6d6d6; --line: #26282b; }
-body { font: 13px/1.5 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-.grid-wrap, .chart, .tile, .chain, form.login { border: none; border-radius: 0; background: none; }
-.chart { padding: 0; }
-.chain { border-left: 2px solid var(--crit); }
-.tree-root, .inst, .folder-name, select, button, input, pre.sql, .badge, .swatch, .group { border-radius: 0; }
-.brand { font-size: 1rem; }
-h2 { font-size: 1.05rem; } h3 { font-size: 1rem; }
-#tabs { gap: .1rem 1.2rem; padding: .7rem 1rem .5rem; }
-#tabs a, #tabs a.on { padding: 0; border: none; border-radius: 0; margin: 0; background: none; }
-#tabs a.on { text-decoration: underline; text-underline-offset: .3rem; }
-.subtabs { gap: .1rem 1rem; }
-.subtabs a, .subtabs a.on { padding: 0; border: none; border-radius: 0; background: none; }
-.subtabs a.on { color: var(--accent); text-decoration: underline; text-underline-offset: .25rem; }
-.tree-root, .folder-head { font-weight: 400; }
-.tree-list a.on { background: none; color: var(--accent); font-weight: 600; }
-.grid th { font-weight: 400; }
-.grid td.status .cell-link { font-weight: 400; }
-.badge, .badge.ok, .badge.warn, .badge.crit { background: none; padding: 0; font-weight: 400; font-size: inherit; color: var(--muted); }
-.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.crit { color: var(--crit); }
-.counts .crit, .counts a.crit { color: var(--crit); } .counts .warn, .counts a.warn { color: var(--warn); }
-.seg button { border: none; padding: 0 .2rem; background: none; }
-.seg button[aria-pressed="true"] { text-decoration: underline; text-underline-offset: .25rem; }
-.grid-wrap.tests { max-width: 46rem; max-height: 36vh; overflow-y: auto; margin-bottom: 1.2rem; border-bottom: 1px solid var(--line); }
-.grid-wrap.tests .grid-box > .grid-wrap { overflow: visible; }
-.grid-wrap.tests td.num .cell-link { text-align: right; width: 100%; }
-.grid-wrap.tests button[aria-pressed="true"] { text-decoration: underline; text-underline-offset: .2rem; font-weight: 600; }
-/* the box is drawn, not named: the second content line gives it an empty alternative text where the browser knows the syntax */
-.seg button.toggle::before { content: "[ ] "; content: "[ ] " / ""; }
-.seg button.toggle[aria-pressed="true"]::before { content: "[x] "; content: "[x] " / ""; }
-#crumb a { text-decoration: underline; text-underline-offset: .2rem; }   /* told from the crumb text by more than colour (WCAG 1.4.1) */
-#tabs .tab-group { color: var(--muted); margin-right: -.4rem; }
-#tabs .tab-back { text-decoration: underline; text-underline-offset: .25rem; }
-/* volumes as bars (DBA Dash's drive bars): the used share filled, coloured by the free share left */
-.bars-table { width: 100%; max-width: 62rem; } .bars-table th[scope="row"] { font-weight: 400; text-align: left; white-space: nowrap; }
-.bar-cell { width: 45%; min-width: 10rem; }
-.bar { display: block; height: .9rem; background: var(--line); }
-.bar-fill { display: block; height: 100%; background: var(--ok); } .bar-fill.warn { background: var(--warn); } .bar-fill.crit { background: var(--crit); }
-.bars-table td { white-space: nowrap; }
-
-/* The calm pass (2026-11-10, after DBA Dash's screens and Few's rule for a status display: colour what is outside
-   the normal range, and a page that colours every cell colours none). One proportional type family for the page,
-   the monospace kept for statements and code; figures in a grid line up (tabular-nums). An OK status cell has no
-   fill, only its quiet mark; warning and critical keep a tint, their word and their count; the dark theme's tints
-   sit closer to the page. The tab row stays under the header while the page scrolls. The charts' series colours
-   are one categorical order per theme (--s1..--s8), validated for colour-blind separation of neighbours. Every dark
-   slot clears 3:1 on the dark page; in the light theme slots 3, 4 and 5 (aqua, yellow, magenta) sit under 3:1 on
-   white (2.82, 2.17, 2.69) by the palette's own design: the legend names each series with its value under the
-   cursor, and the slots are not re-stepped (the order is validated as a set). */
-:root { --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
-                                    --crit-bg: #341a1d; --warn-bg: #2f2613; --ok-bg: #16281b; }
-}
-:root[data-theme="dark"] { --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
-                           --crit-bg: #341a1d; --warn-bg: #2f2613; --ok-bg: #16281b; }
-body { font: 13px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-pre.sql, code, .grid td.wide, .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-.grid td.status.ok { background: none; }
-.grid tbody tr:hover td { filter: none; box-shadow: inset 0 0 0 999px rgba(127, 127, 127, .09); }
-#tabs { position: sticky; top: var(--head-h, 2.9rem); z-index: 2; }
-/* under 760 px the header scrolls away (position: static above), so the tab row sticks to the top of the window */
-@media (max-width: 760px) { #tabs { top: 0; } }
-/* a control reached by the keyboard is scrolled clear of the sticky header and tab row (WCAG 2.2 2.4.11): both
-   heights are measured (main.ts), the tab row's wraps included; under 760 px only the tab row sticks */
-html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + .5rem); }
-@media (max-width: 760px) { html { scroll-padding-top: calc(var(--tabs-h, 2.5rem) + .5rem); } }
-.grid td.status.ok .cell-link { color: var(--muted); }
-.u-legend { font-size: 12px; color: var(--muted); } .u-legend th, .u-legend .u-label { font-weight: 400; }
-.chart h3 { font-weight: 500; font-size: .95rem; }
-.test-name { display: inline-flex; align-items: center; gap: .45rem; }
-/* the Summary's toolbar: the tag filter and the focused view on one row; the toggle's box is drawn, the button keeps its name */
-.toolbar { display: flex; align-items: center; gap: 1.4rem; flex-wrap: wrap; margin: .2rem 0 .9rem; }
+.range { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; position: relative; }
+.range .custom { display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.picker { margin-bottom: var(--sp-2); color: var(--text-muted); }
+.seg { display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; margin: var(--sp-1) 0 var(--sp-2); }
+.seg button { border: none; padding: 0 var(--sp-1); background: none; }
+.seg button[aria-pressed="true"] { color: var(--accent); font-weight: var(--fw-strong); text-decoration: underline; text-underline-offset: var(--ul-offset); }
+/* the toggle's box is drawn, the button keeps its name */
+.seg button.toggle::before { content: ""; display: inline-block; width: .8rem; height: .8rem; margin-right: var(--sp-1); vertical-align: -.1rem;
+  border: var(--bw) solid var(--text-muted); border-radius: var(--r-xs); box-sizing: border-box; }
+.seg button.toggle[aria-pressed="true"]::before { content: ""; background: var(--accent); border-color: var(--accent); box-shadow: inset 0 0 0 var(--focus-w) var(--surface-page); }
+/* the Summary's toolbar: the tag filter and the focused view on one row */
+.toolbar { display: flex; align-items: center; gap: var(--sp-5); flex-wrap: wrap; margin: var(--sp-1) 0 var(--sp-3); }
 .toolbar .tag-filter, .toolbar .seg { margin: 0; }
-.seg button.toggle::before { content: ""; display: inline-block; width: .8rem; height: .8rem; margin-right: .4rem; vertical-align: -.1rem;
-  border: 1px solid var(--muted); border-radius: 2px; box-sizing: border-box; }
-.seg button.toggle[aria-pressed="true"]::before { content: ""; background: var(--accent); border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--bg); }
-/* the shared frame (ui.ts grid, chart.ts): the filter button in a header, the filter row, the copy menu, the crosshair readout */
+/* a menu (ui.ts showMenu) and the chart's tooltip: raised over the page */
+.menu { position: fixed; z-index: 50; display: flex; flex-direction: column; min-width: 11rem; padding: var(--sp-1) 0; background: var(--surface-raised); color: var(--text);
+        border: var(--bw) solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-raised); }
+.menu button { border: none; border-radius: 0; background: none; color: inherit; text-align: left; padding: var(--sp-1) var(--sp-3); font: inherit; cursor: pointer; }
+.menu button:hover, .menu button:focus-visible { background: var(--surface-hover); }
+.menu button:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: calc(-1 * var(--focus-w)); }
+form.login { max-width: 22rem; margin: 10vh auto; background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); padding: var(--sp-5); }
+form.login h2 { margin-bottom: var(--sp-4); }
+form.login label { display: block; margin: var(--sp-3) 0; color: var(--text-muted); }
+form.login input { display: block; width: 100%; margin-top: var(--sp-1); padding: var(--sp-2); color: var(--text); }
+form.login button { margin-top: var(--sp-4); padding: var(--sp-2) var(--sp-4); background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+form.login button:disabled { opacity: .6; cursor: default; }
+form.login .error { margin: var(--sp-3) 0 0; }
+
+/* ---------- 5. panels: a grid's box and a chart sit on the panel surface ---------- */
+.grid-wrap { overflow-x: auto; background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); }
+.grid-wrap .grid-wrap { background: none; border: none; border-radius: 0; }   /* a grid inside a grid's row (a statement's History) */
+.charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: var(--sp-4); }
+.chart { background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-4) var(--sp-3); }
+.chart h3 { margin: var(--sp-1) 0 var(--sp-2); font-size: var(--fs-md); font-weight: var(--fw-strong); }
+.chart-menu { border: none; background: none; color: var(--text-muted); cursor: pointer; padding: 0 var(--sp-1); font: inherit; line-height: 1; }
+.chart-menu:hover, .chart-menu:focus-visible { color: var(--text); background: none; }
+.chart-note { margin-left: var(--sp-1); font-size: var(--fs-sm); font-weight: var(--fw-normal); }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--sp-4); align-items: start; }
+/* the uPlot legend, axes and tooltip */
+.u-legend, .u-axis { color: var(--text); }
+.u-legend { font-size: var(--fs-sm); color: var(--text-muted); } .u-legend th, .u-legend .u-label { font-weight: var(--fw-normal); }
+.u-legend .u-series { cursor: pointer; }
+.u-tip { position: absolute; z-index: 10; pointer-events: none; padding: var(--sp-1) var(--sp-2); font-size: var(--fs-sm); white-space: nowrap; background: var(--surface-raised); color: var(--text);
+         border: var(--bw) solid var(--line); border-radius: var(--r-sm); box-shadow: var(--shadow-tip); font-variant-numeric: var(--num); }
+.u-tip-time { color: var(--text-muted); margin-bottom: var(--sp-half); }
+.u-tip-key { display: inline-block; width: .6rem; height: .6rem; margin-right: var(--sp-1); border-radius: var(--r-xs); vertical-align: 0; }
+
+/* ---------- 6. grids ---------- */
+table.grid { border-collapse: collapse; width: 100%; font-variant-numeric: var(--num); }
+.grid th, .grid td { padding: var(--sp-1) var(--sp-2); border-bottom: var(--bw) solid var(--line); text-align: left; white-space: nowrap; vertical-align: top; }
+.grid tbody tr:last-child td { border-bottom: none; }
+.grid th { cursor: pointer; user-select: none; position: sticky; top: 0; background: var(--surface-panel); color: var(--text-muted);
+           font-size: var(--fs-sm); font-weight: var(--fw-strong); vertical-align: bottom; }   /* small and strong in its own case: a unit keeps it (ms, KB) */
+.grid .num { text-align: right; }
+.grid td.wide { white-space: normal; max-width: 48rem; font-size: var(--fs-sm); word-break: break-word; }
+.grid td.wide:not(:empty) { min-width: 14rem; }   /* a wrapping cell beside columns that do not wrap keeps a width of its own */
+.checks-box .grid td.wide { min-width: 24rem; }
+.grid tbody tr:hover td { box-shadow: inset 0 0 0 999px var(--hover-overlay); }
+/* the filter button in a header, the filter row (ui.ts grid) */
 .grid th .filter-btn::before { content: "\25BE"; }
-.grid th .filter-btn { border: none; background: none; color: var(--muted); padding: 0 .15rem; margin-left: .25rem; font-size: .8em; cursor: pointer; opacity: .55; }
+.grid th .filter-btn { border: none; background: none; color: var(--text-muted); padding: 0 var(--sp-half); margin-left: var(--sp-1); font-size: var(--fs-xs); cursor: pointer; opacity: .55; }
 .grid th:hover .filter-btn, .grid th .filter-btn:focus-visible, .grid th .filter-btn.on { opacity: 1; }
 .grid th .filter-btn.on { color: var(--accent); }
-.grid tr.filters td { padding: .2rem .4rem; background: var(--card); }
-.grid tr.filters input.filter { width: 100%; min-width: 5rem; box-sizing: border-box; font: inherit; font-size: 12px; padding: .1rem .3rem; border: 1px solid var(--line); border-radius: 3px; background: var(--bg); color: var(--fg); }
+.grid tr.filters td { padding: var(--sp-half) var(--sp-1); background: var(--surface-panel); }
+.grid tr.filters input.filter { width: 100%; min-width: 5rem; box-sizing: border-box; font: inherit; font-size: var(--fs-sm); padding: 0 var(--sp-1); border: var(--bw) solid var(--line); border-radius: var(--r-sm); background: var(--surface-page); color: var(--text); }
 .grid-box .filter-count:empty { display: none; }
-.menu { position: fixed; z-index: 50; display: flex; flex-direction: column; min-width: 11rem; padding: .25rem 0; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
-.menu button { border: none; background: none; color: inherit; text-align: left; padding: .35rem .8rem; font: inherit; cursor: pointer; }
-.menu button:hover, .menu button:focus-visible { background: var(--side); outline: none; }
-.u-tip { position: absolute; z-index: 10; pointer-events: none; padding: .3rem .5rem; font-size: 12px; white-space: nowrap; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
-.u-tip-time { color: var(--muted); margin-bottom: .15rem; }
-.u-tip-key { display: inline-block; width: .6rem; height: .6rem; margin-right: .35rem; border-radius: 2px; vertical-align: 0; }
-.u-legend .u-series { cursor: pointer; }
-
-/* The status colours. By default a status cell is a solid fill as DBA Dash draws its status grids (its light
-   theme's green, orange and red; N/A grey; acknowledged blue) under a blue header row, on the light page and the dark
-   one; 'Colours: quiet' in the header brings the calm pass back (a tint on warning and critical only). The orange
-   carries dark text, not DBA Dash's white (2.5:1): every pair here clears WCAG AA 4.5:1 (white on the green 7.10, on
-   the red 7.11, on the acknowledged blue 5.77, on the header blue 6.34; the dark text on the orange 7.42; the N/A
-   text 6.59 light and 7.81 dark). A status cell that holds plain text (no cell link) keeps the grid's padding. */
-:root:not([data-status="quiet"]) { --st-ok: #006638; --st-warn: #e49325; --st-crit: #ab1f26; --st-none: #e0e1e9; --st-none-fg: #004f83;
-                                   --st-ack: #1b6aa3; --st-head: #0063a3; --st-on: #fff; --st-on-warn: #1d1300; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]):not([data-status="quiet"]) { --st-none: #2c323d; --st-none-fg: #c3cad6; } }
-:root[data-theme="dark"]:not([data-status="quiet"]) { --st-none: #2c323d; --st-none-fg: #c3cad6; }
-:root:not([data-status="quiet"]) .grid td.status { border: 1px solid var(--bg); }
+/* status cells, the quiet style: an OK cell has no fill, only its quiet mark; warning and critical keep a tint, their word and their count */
+.grid td.status { padding: 0; }
+.grid td.status .cell-link { display: block; padding: var(--sp-1) var(--sp-2); text-decoration: none; font-weight: var(--fw-normal); }
+.grid td.status:not(:has(.cell-link)) { padding: var(--sp-1) var(--sp-2); }   /* plain text in a status cell keeps the grid's padding */
+.grid td.status.ok .cell-link { color: var(--text-muted); }
+.grid td.status.warn { background: var(--warn-bg); } .grid td.status.warn .cell-link { color: var(--warn); }
+.grid td.status.crit { background: var(--crit-bg); } .grid td.status.crit .cell-link { color: var(--crit); }
+.grid td.status.none .cell-link { color: var(--text-muted); }
+:root[data-status="quiet"] .grid tbody tr:hover td.status:is(.warn, .crit) { box-shadow: none; }   /* the overlay would take a tinted cell under 4.5:1 */
+/* status cells, the solid style (the default): DBA Dash's fills and its header */
+:root:not([data-status="quiet"]) .grid td.status { border: var(--bw) solid var(--surface-panel); }   /* a hairline of the panel between two fills */
 :root:not([data-status="quiet"]) .grid td.status.ok { background: var(--st-ok); }
 :root:not([data-status="quiet"]) .grid td.status.warn { background: var(--st-warn); }
 :root:not([data-status="quiet"]) .grid td.status.crit { background: var(--st-crit); }
@@ -244,65 +234,103 @@ html { scroll-padding-top: calc(var(--head-h, 2.9rem) + var(--tabs-h, 2.5rem) + 
 :root:not([data-status="quiet"]) .grid td.status.none.ack, :root:not([data-status="quiet"]) .grid td.status.none.ack .cell-link, :root:not([data-status="quiet"]) .grid td.status.none.ack a { color: var(--st-on); }
 :root:not([data-status="quiet"]) .grid td.status.warn, :root:not([data-status="quiet"]) .grid td.status.warn .cell-link, :root:not([data-status="quiet"]) .grid td.status.warn a { color: var(--st-on-warn); }
 :root:not([data-status="quiet"]) .grid td.status.none:not(.ack), :root:not([data-status="quiet"]) .grid td.status.none:not(.ack) .cell-link, :root:not([data-status="quiet"]) .grid td.status.none:not(.ack) a { color: var(--st-none-fg); }
-:root:not([data-status="quiet"]) .grid td.status .cell-link { font-weight: 600; }
-:root:not([data-status="quiet"]) .grid > thead th { background: var(--st-head); color: var(--st-on); }
-:root:not([data-status="quiet"]) .grid > thead th button, :root:not([data-status="quiet"]) .grid > thead th a { color: var(--st-on); }
+:root:not([data-status="quiet"]) .grid td.status .cell-link { font-weight: var(--fw-strong); }
+:root:not([data-status="quiet"]) .grid td.status .badge { color: inherit; }        /* a badge in a fill takes the fill's text colour */
+:root:not([data-status="quiet"]) .grid td.status button.link { color: inherit; }  /* the Jobs grid's Thresholds door: the accent on a fill is under 4.5:1 */
+/* DBA Dash's header (G08, task P08): its blue with white words in its own case, wrapped as its narrow columns wrap them */
+:root:not([data-status="quiet"]) .grid > thead th { background: var(--st-head); color: var(--st-on); font-size: var(--fs-md); font-weight: var(--fw-normal); vertical-align: middle; }
+:root:not([data-status="quiet"]) .grid > thead th button, :root:not([data-status="quiet"]) .grid > thead th a,
 :root:not([data-status="quiet"]) .grid > thead th .filter-btn, :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { color: var(--st-on); }
 :root:not([data-status="quiet"]) .grid > thead th .filter-btn.on { text-decoration: underline; }
-/* a status cell that holds plain text (no link filling it) keeps the grid's own padding, in the solid and the quiet style */
-.grid td.status:not(:has(.cell-link)) { padding: .35rem .6rem; }
-/* a badge inside a filled status cell takes the cell's own text colour (its own would be the status colour on its own fill) */
-:root:not([data-status="quiet"]) .grid td.status .badge { color: inherit; }
-/* a link-styled button in a filled status cell (the Jobs grid's Thresholds door) takes the cell's text colour: the accent blue on a green or red fill is under 4.5:1 */
-:root:not([data-status="quiet"]) .grid td.status button.link { color: inherit; }
-/* a wrapping cell keeps a width of its own: beside columns that do not wrap it was squeezed to one character a line (a backup's device path made its row hundreds of pixels tall) */
-.grid td.wide:not(:empty) { min-width: 14rem; }
-/* the row's hover overlay would take the quiet style's tinted warn / crit cells under 4.5:1 (light theme): those keep their tint */
-:root[data-status="quiet"] .grid tbody tr:hover td.status:is(.warn, .crit) { box-shadow: none; }
-/* a chart's menu button in its heading, and the line that says what the menu did */
-.chart-menu { border: none; background: none; color: var(--muted); cursor: pointer; padding: 0 .35rem; font: inherit; line-height: 1; }
-.chart-menu:hover, .chart-menu:focus-visible { color: var(--fg); }
-.chart-note { margin-left: .4rem; font-size: 12px; font-weight: 400; }
-/* the range control (rangepicker.ts): a button that names the range, the display zone's offset beside it, and a panel
-   under the button: quick ranges and calendar periods side by side, then a start and an end, then the zone chooser */
-.range { position: relative; }
-.range-btn::after { content: ' \25BE' / ''; color: var(--muted); }
+:root:not([data-status="quiet"]) .grid > thead th .th-label { display: inline-block; max-width: 7.5em; white-space: normal; vertical-align: middle; }
+/* an empty grid is its header row alone (ui.ts grid), drawn only, never scrolling */
+.empty-grid { overflow: hidden; border-radius: var(--r-md); }
+.grid-empty { border-collapse: collapse; }
+.grid-empty th { padding: var(--sp-1) var(--sp-2); text-align: left; font-size: var(--fs-sm); font-weight: var(--fw-strong); vertical-align: middle; background: var(--surface-panel); color: var(--text-muted); border-bottom: var(--bw) solid var(--line); }
+:root:not([data-status="quiet"]) .grid-empty th { font-size: var(--fs-md); font-weight: var(--fw-normal); }
+.grid-empty th .th-label { display: inline-block; max-width: 7.5em; white-space: normal; }
+:root:not([data-status="quiet"]) .grid-empty th { background: var(--st-head); color: var(--st-on); }
+/* the fleet Summary's test grid (P08): DBA Dash's links - underlined, normal weight, the counts and their headers at the left;
+   a picked count keeps its mark (bold, a thicker line) */
+.grid-wrap.tests { max-width: 46rem; max-height: 36vh; overflow-y: auto; margin-bottom: var(--sp-5); }
+.grid-wrap.tests .grid-box > .grid-wrap { overflow: visible; }
+.grid-wrap.tests td.num .cell-link { width: 100%; }   /* a count's button fills its cell: the click and the focus are the cell */
+.grid-wrap.tests button[aria-pressed="true"] { text-decoration: underline; text-underline-offset: var(--ul-offset); font-weight: var(--fw-strong); }
+:root .fleet-summary .grid td.status .cell-link { text-decoration: underline; font-weight: var(--fw-normal); }
+:root .fleet-summary .grid td.status .cell-link[aria-pressed="true"] { font-weight: var(--fw-strong); text-decoration-thickness: var(--focus-w); }
+:root .fleet-summary .grid-wrap.tests .num, :root .fleet-summary .grid-wrap.tests td.num .cell-link { text-align: left; }
+.test-name { display: inline-flex; align-items: center; gap: var(--sp-2); }
+/* a label / value card (ui.ts props) */
+table.props { border-collapse: collapse; width: 100%; }
+.props th, .props td { padding: var(--sp-1) var(--sp-2); border-bottom: var(--bw) solid var(--line); text-align: left; vertical-align: top; }
+.props > tr:last-child > *, .props > tbody > tr:last-child > * { border-bottom: none; }
+.props th { color: var(--text-muted); font-weight: var(--fw-normal); width: 40%; white-space: nowrap; }
+.props td { font-variant-numeric: var(--num); }
+
+/* ---------- 7. tiles, badges, groups, a blocking chain ---------- */
+.badge { display: inline-block; color: var(--text-muted); }
+.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.crit { color: var(--crit); }
+.counts .crit, .counts a.crit { color: var(--crit); } .counts .warn, .counts a.warn { color: var(--warn); }
+.tiles { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+.tile { background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); padding: var(--sp-3) var(--sp-4); min-width: 9rem; }
+.tile-v { font-size: var(--fs-xl); font-weight: var(--fw-strong); line-height: var(--lh-tight); font-variant-numeric: var(--num); }
+.tile-l { color: var(--text-muted); font-size: var(--fs-sm); margin-top: var(--sp-half); }
+.tile.crit .tile-v { color: var(--crit); } .tile.warn .tile-v { color: var(--warn); } .tile.ok .tile-v { color: var(--ok); }
+.groups { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-1) 0 var(--sp-4); }
+.group { display: flex; flex-direction: column; min-width: 9rem; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); border: var(--bw) solid var(--line); background: var(--surface-panel); text-decoration: none; }
+.group-l { font-size: var(--fs-sm); color: var(--text-muted); } .group-v { font-weight: var(--fw-strong); }
+.group.none { color: var(--text-muted); }
+.group.ok { background: var(--ok-bg); color: var(--ok); } .group.warn { background: var(--warn-bg); color: var(--warn); } .group.crit { background: var(--crit-bg); color: var(--crit); }
+.chain { background: var(--surface-panel); border: var(--bw) solid var(--line); border-left: var(--stripe) solid var(--crit); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-3); }
+.chain-head { font-weight: var(--fw-strong); } .chain-w { margin-top: var(--sp-1); }
+
+/* ---------- 8. the rings, the legend, the volume bars ---------- */
+.donut-body { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
+.donut-body svg { width: 150px; height: 150px; flex: none; }
+.donut-total { fill: var(--text); font-size: var(--fs-xs); font-weight: var(--fw-strong); }
+.legend { border-collapse: collapse; font-size: var(--fs-md); }
+.legend th { text-align: left; font-weight: var(--fw-strong); color: var(--text-muted); padding: var(--sp-half) var(--sp-3) var(--sp-1) 0; }
+.legend td { padding: var(--sp-half) var(--sp-3) var(--sp-half) 0; }
+.legend .num { text-align: right; font-variant-numeric: var(--num); }
+.swatch { display: inline-block; width: .7rem; height: .7rem; border-radius: var(--r-xs); margin-right: var(--sp-1); }
+/* volumes as bars (DBA Dash's drive bars): the used share filled, coloured by the free share left */
+.bars-table { width: 100%; max-width: 62rem; } .bars-table th[scope="row"] { font-weight: var(--fw-normal); text-align: left; white-space: nowrap; }
+.bar-cell { width: 45%; min-width: 10rem; }
+.bar { display: block; height: .9rem; background: var(--line); border-radius: var(--r-xs); overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--ok); } .bar-fill.warn { background: var(--warn); } .bar-fill.crit { background: var(--crit); }
+.bars-table td { white-space: nowrap; font-variant-numeric: var(--num); }
+
+/* ---------- 9. the range control (rangepicker.ts) and the time strip (timestrip.ts) ---------- */
+.range-btn::after { content: ' \25BE' / ''; color: var(--text-muted); }
 .range-zone-tag { white-space: nowrap; }
-.range-panel { position: absolute; top: calc(100% + .35rem); left: 0; z-index: 40; width: min(36rem, calc(100vw - 1rem)); display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1.2rem;
-               padding: .7rem .9rem; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
+.range-panel { position: absolute; top: calc(100% + var(--sp-1)); left: 0; z-index: 40; width: min(36rem, calc(100vw - 1rem)); display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2) var(--sp-4);
+               padding: var(--sp-3) var(--sp-4); background: var(--surface-raised); color: var(--text); border: var(--bw) solid var(--line); border-radius: var(--r-md); box-shadow: var(--shadow-raised); }
 .range-panel fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-.range-panel legend { padding: 0; margin-bottom: .25rem; font-size: .78rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.range-panel legend { padding: 0; margin-bottom: var(--sp-1); font-size: var(--fs-xs); font-weight: var(--fw-strong); letter-spacing: var(--caps-tracking); text-transform: uppercase; color: var(--text-muted); }
 .range-panel .range-pick, .range-panel .range-zone { grid-column: 1 / -1; margin: 0; }
 .range-panel .range-zone select { max-width: 100%; }
-.range-item { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; width: 100%; padding: .25rem .5rem; border: 1px solid transparent; background: none; color: inherit; text-align: left; }
-.range-item:hover, .range-item:focus-visible { background: var(--side); }
+.range-item { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-4); width: 100%; padding: var(--sp-1) var(--sp-2); border: var(--bw) solid transparent; background: none; color: inherit; text-align: left; }
+.range-item:hover, .range-item:focus-visible { background: var(--surface-hover); }
 .range-item[aria-pressed="true"] { border-color: var(--accent); }
 @media (max-width: 34rem) { .range-panel { grid-template-columns: 1fr; } }
-/* the time strip above an event grid (timestrip.ts): sixty steps over the window, each filled from the bottom by its
-   share of the busiest step; a drag, a click or the keyboard narrows the grid to a stretch and dims the steps outside it */
-.strip { margin: .4rem 0 .5rem; }
-.strip-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .7rem; margin-bottom: .2rem; }
-.strip-band { display: flex; height: 2.6rem; background: var(--side); border: 1px solid var(--line); cursor: ew-resize; touch-action: pan-y; user-select: none; }
-.strip-band:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* sixty steps over the window, each filled from the bottom by its share of the busiest step; a drag, a click or the
+   keyboard narrows the grid to a stretch and dims the steps outside it */
+.strip { margin: var(--sp-2) 0; }
+.strip-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-half) var(--sp-3); margin-bottom: var(--sp-half); }
+.strip-band { display: flex; height: 2.6rem; background: var(--surface-card); border: var(--bw) solid var(--line); border-radius: var(--r-sm); overflow: hidden; cursor: ew-resize; touch-action: pan-y; user-select: none; }
+.strip-band:focus-visible { outline: var(--focus-w) solid var(--accent); outline-offset: var(--focus-w); }
 .strip-step { flex: 1 1 0; min-width: 0; background: linear-gradient(to top, var(--accent) var(--h, 0%), transparent var(--h, 0%)); }
-.strip-step.out { background: linear-gradient(to top, var(--muted) var(--h, 0%), transparent var(--h, 0%)); }   /* outside the stretch: grey instead of the accent, the density still readable (about 5:1 on the band) */
-.strip-step.cur { box-shadow: inset 0 0 0 2px var(--fg); }
-.strip-ends { display: flex; justify-content: space-between; font-size: .8rem; }
+.strip-step.out { background: linear-gradient(to top, var(--text-muted) var(--h, 0%), transparent var(--h, 0%)); }   /* outside the stretch: grey, the density still readable */
+.strip-step.cur { box-shadow: inset 0 0 0 var(--focus-w) var(--text); }
+.strip-ends { display: flex; justify-content: space-between; font-size: var(--fs-sm); }
 
-/* G08 (task P08): DBA Dash's grid headers - its TrimbleBlueDark (0, 79, 131) with white words, wrapped as its narrow
-   columns wrap them; an empty grid is its header row alone (.empty-grid, drawn only, never scrolling), the words kept
-   for a screen reader (.visually-hidden) */
-:root:not([data-status="quiet"]) .grid > thead th { background: #004f83; color: #fff; vertical-align: middle; }
-:root:not([data-status="quiet"]) .grid > thead th .th-label { display: inline-block; max-width: 7.5em; white-space: normal; vertical-align: middle; }
-:root:not([data-status="quiet"]) .grid > thead th .filter-btn { color: #fff; }
-.empty-grid { overflow: hidden; }
-.grid-empty { border-collapse: collapse; }
-.grid-empty th { padding: .35rem .6rem; text-align: left; font-weight: 400; vertical-align: middle; background: var(--card); color: var(--muted); border-bottom: 1px solid var(--line); }
-.grid-empty th .th-label { display: inline-block; max-width: 7.5em; white-space: normal; }
-:root:not([data-status="quiet"]) .grid-empty th { background: #004f83; color: #fff; }
-.visually-hidden { position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-/* P08: the Summary's cells as DBA Dash's links - underlined, normal weight, the test counts and their headers at the
-   left; a picked count keeps its mark (bold, a thicker line) */
-:root .fleet-summary .grid td.status .cell-link { text-decoration: underline; font-weight: 400; }
-:root .fleet-summary .grid td.status .cell-link[aria-pressed="true"] { font-weight: 700; text-decoration-thickness: 2px; }
-:root .fleet-summary .grid-wrap.tests .num, :root .fleet-summary .grid-wrap.tests td.num .cell-link { text-align: left; }
+/* ---------- 10. narrow windows ---------- */
+@media (max-width: 760px) {
+  body { grid-template-columns: minmax(0, 1fr); }
+  #tree { position: static; height: auto; max-height: 40vh; border-right: none; border-bottom: var(--bw) solid var(--line); }
+  body.tree-hidden { grid-template-columns: minmax(0, 1fr); }
+  header { position: static; }
+  #tabs { top: 0; }   /* the header scrolls away, so the tab row sticks to the top of the window */
+  main { padding: var(--sp-3); }
+  html { scroll-padding-top: calc(var(--tabs-h, 2.5rem) + var(--sp-2)); }
+}
