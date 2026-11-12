@@ -91,7 +91,6 @@ export const mssqlInstanceTabs: Record<string, string> = {
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
-  mssqlqueries: 'Queries',
   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
   // the instance's Reports folder (reports.ts)
   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
@@ -103,7 +102,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
@@ -205,8 +204,6 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['dr', 'di', 'dp', 'ds']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
-  // the Running queries tab's wait filter (mssql_running.ts, D10) stays on its own links
-  if (keep && c.tab === 'mssql_running') { const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('wait'); if (v) q.set('wait', v); }
   // the Waiting tasks tab's read and wait type (darling_waiting.ts) stay on its own links
   if (keep && (c.tab === 'mssql_waiting' || c.tab === 'waiting')) {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');

@@ -5,9 +5,7 @@
 // /api/mssql/procs; the route and the tab's entry are the shell's.
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
-import { procHistory } from './mssql_queries';
 import { compareSection } from './mssql_querystore';
-import { rereadStrip, stripOverlay } from './timestrip';
 import { Ctx, rangeLabel, window_ } from './router';
 import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
@@ -31,7 +29,6 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
   let database = (() => { try { return sessionStorage.getItem(store) ?? ''; } catch { return ''; } })();
   const sel = el('select', { 'aria-label': 'Database' }, el('option', { value: '' }, 'every database'));
   const body = el('div'), drill = el('div');
-  let strip: HTMLElement | null = null;
   let seq = 0, drillSeq = 0;
 
   async function intervals(r: Row) {
@@ -55,15 +52,6 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'spills', label: 'spilled pages', num: true, fmt: v => v == null ? 'not read' : fmtNum(v) },
       ], 'No read of this procedure in the range.'));
       (drill.querySelector('h3') as HTMLElement).focus();   // the new block is announced and scrolled to
-      const h = await procHistory(ctx, r.database_id, r.object_id, `${String(r.database)}: ${name}`);
-      if (mine !== drillSeq) return;
-      drill.append(h);
-      if (strip) {
-        const w = window_(ctx);
-        const hd = await get<{ history: Table | null }>('mssql/procs', { instance: ctx.instance, ...w, db_id: Number(r.database_id), object: String(r.object_id), part: 'history' });
-        if (mine === drillSeq) stripOverlay(strip, Date.parse(w.from), Date.parse(w.to), rowsOf(hd.history).map(x => ({ t: Date.parse(String(x.snapshot_at)), v: Number(x.duration_ms_s) })),
-          `The line: ${String(r.database)}: ${name}, its Duration (ms/s) per step.`);
-      }
     } catch (e) {
       if (mine === drillSeq) drill.replaceChildren(errorBox(e));
     }
@@ -144,22 +132,13 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
     ];
     const cut = procs.length >= LIMIT;
-    const gbox = el('div', {}, grid(procs, cols)), said = el('p', { class: 'meta', role: 'status' });
-    const win = window_(ctx);
-    strip = rereadStrip('Procedure duration', win, series.map(x => ({ t: Date.parse(String(x.snapshot_at)), v: Number(x.duration_ms_s) || 0 })),
-      n => `${num3(n)} ms/s summed`, 300e3, (from, to, words) => {
-        void get<Parts>('mssql/procs', { instance: ctx.instance, from: from ?? win.from, to: to ?? win.to, db: database || undefined, part: 'procs' }).then(x => {
-          said.textContent = from ? `The grid holds ${words ?? ''}, snapped to the five-minute reads (${fmtTime(from)} to ${fmtTime(to)}).` : '';
-          gbox.replaceChildren(grid(rowsOf(x.procs), cols));
-        }).catch(e => gbox.replaceChildren(errorBox(e)));
-      }, 'Every procedure\'s duration per step. Drag across it to read the grid for that stretch; a procedure opened below draws its own on it.');
     out.push(el('h3', {}, cut ? `Procedures (the ${fmtNum(LIMIT)} with the most duration of ${fmtNum(tot.procs)})` : `Procedures (${procs.length}, the most duration first)`),
       el('p', { class: 'meta' }, 'Per second and per minute are over the seconds the range\'s reads cover '
         + `(${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))}). A name opens that procedure read by read. `
         + 'Max executions /min is the procedure\'s busiest single read. '
         + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it). '
         + 'Spilled pages: "not read" where the server has no total_spills (before SQL Server 2016 SP2 and 2017 CU3) or the reads came before pgvigil stored it.'),
-      strip, said, gbox,
+      grid(procs, cols),
       compareSection(ctx, 'procs', { db: database || undefined }));
     body.replaceChildren(...out);
   }

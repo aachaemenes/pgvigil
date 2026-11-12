@@ -7,9 +7,11 @@
 #   ADMIN_DSN       a superuser connection to a PostgreSQL sandbox in KEYWORD form (default 'host=127.0.0.1 port=5432
 #                   user=postgres dbname=postgres'), with no password= in it (it rides on command lines: the password,
 #                   if any, comes from ~/.pgpass or PGPASSWORD); the proof makes its own repository databases and drops them.
-#   PGVIGIL_WIRING  1 (default) applies scripts/proof-darling-queries-wiring.patch (mssql_plancache.ts, mssql_procs.ts,
-#                   router.ts, proof-mssql-querystore.sh: the lead's files) to this copy when the tree lacks it; 0 = the
-#                   tree as it is.
+#   PGVIGIL_WIRING  1 (default) applies scripts/proof-darling-queries-wiring.patch (DONE-2's: router.ts, main.ts,
+#                   mssql_plancache.ts, mssql_procs.ts, mssql_running.ts, mssql_waits.ts, q_mssql_running.go,
+#                   docs/sqlserver-querystore.md: the lead's files) to this copy when the tree lacks it; 0 = the tree as
+#                   it is.
+#   PGVIGIL_SHOTS   where step I's page shots and click table go (default: a folder of the run, removed with it)
 # Everything the run makes carries its random suffix and is removed on every exit path the shell can catch. Every
 # password is made at run time and reaches the tools through environment files or the environment.
 #
@@ -122,9 +124,9 @@ nonempty() { jq -e --arg p "$2" '(.[$p].rows // []) | length > 0' "$1" >/dev/nul
 urlq() { URLQ_V="$1" python3 -c 'import os,urllib.parse as u; print(u.quote(os.environ["URLQ_V"], safe=""))'; }
 for t in docker go psql curl python3 node npm chromium setsid jq patch; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
-if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q "compareSection(ctx, 'plancache'" web/src/mssql_plancache.ts; then
+if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q "mssqlqueries: 'Queries'" web/src/router.ts; then
   patch -p1 < scripts/proof-darling-queries-wiring.patch >/dev/null || fail "the wiring patch"
-  echo "wiring applied to this copy (mssql_plancache.ts, mssql_procs.ts, router.ts, proof-mssql-querystore.sh)"
+  echo "wiring applied to this copy (router.ts, main.ts, mssql_plancache.ts, mssql_procs.ts, mssql_running.ts, mssql_waits.ts, q_mssql_running.go, docs)"
 fi
 dsnfor() { local d="$ADMIN_DSN"; d="${d/dbname=postgres/dbname=$1}"; [[ "$d" == *"dbname=$1"* ]] || d="$d dbname=$1"; printf '%s' "$d"; }
 

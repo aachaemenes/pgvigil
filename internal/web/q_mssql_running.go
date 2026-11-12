@@ -27,11 +27,10 @@ SELECT c.collection, c.status, c.note, c.snapshot_at
  WHERE c.instance_id = $1 AND c.collection = ANY ($2::text[])
  ORDER BY c.collection`
 
-// sqlMssqlSnapshots: the snapshots of the window, newest first; 1,500 at most (a day of minutes); in_range counts
-// every snapshot of the window (PerformanceMonitor's 'newest N of M snapshot times').
+// sqlMssqlSnapshots: the snapshots of the window, newest first; 1,500 at most (a day of minutes).
 const sqlMssqlSnapshots = `
 SELECT s.snapshot_at, s.server_utc, s.source, s.source_note, s.sessions, s.requests, s.blocked, s.heads, s.longest_wait_ms,
-       s.memory_grants_pending, s.read_ms, count(*) OVER () AS in_range
+       s.memory_grants_pending, s.read_ms
   FROM pgvigil.mssql_requests_summary s
  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
  ORDER BY s.snapshot_at DESC

@@ -21,7 +21,6 @@ import { foldedGrid } from './running';
 import { firstChars, sqlCell, whatIsThis } from './sqlview';
 import { mssqlBlockingTrend } from './blocking_history';
 import { mssqlKillCol } from './mssql_actions';
-import { timeStrip } from './timestrip';
 
 interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null; headshare?: Table | null }
 
@@ -169,18 +168,6 @@ function treeRows(rows: Row[], heads: Row[]): Row[] {
 // window (the list is newest first), which is also the one the API returned. A quiet minute has no row to read
 // its time from, so the time never comes from the rows. kill is the actions column, given only while the window is
 // live; it is used only on the newest snapshot.
-// waitOnly: the page's wait= (a wait type, PerformanceMonitor's active-queries wait filter, server-tabs.js:3863-3888)
-const waitOnly = () => (new URLSearchParams(location.hash.split('?')[1] ?? '').get('wait') ?? '').slice(0, 120);
-
-// runningWaitLink: this page over the same range with only the requests waiting on a wait type (the Waits page's link)
-export function runningWaitLink(waitType: string, inner: Node | string): HTMLElement {
-  const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
-  const q = new URLSearchParams();
-  for (const k of ['i', 'w', 'from', 'to']) { const v = cur.get(k); if (v) q.set(k, v); }
-  q.set('wait', waitType);
-  return el('a', { href: `#/mssql_running?${q}`, title: `Running queries: only the requests waiting on ${waitType}` }, inner);
-}
-
 function body(d: RunningData, instance: number | undefined, picked?: unknown, kill: Col | null = null): HTMLElement {
   const box = el('div');
   const rows = rowsOf(d.rows), heads = rowsOf(d.blocking);
@@ -220,15 +207,8 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
       ? `Kill waits for a newer snapshot: the newest is ${fmtSecs(Math.floor(age / 1000))} old, and its session ids may belong to other sessions by now (the collection's last run is named above when it did not read).`
       : 'Kill acts on the newest snapshot only: an earlier snapshot\'s session id may belong to another session by now. Latest opens it.'));
   }
-  const wait = waitOnly();
-  const shown = wait ? rows.filter(r => r.wait_type === wait) : rows;
-  if (wait) {
-    const all = new URLSearchParams(location.hash.split('?')[1] ?? '');
-    all.delete('wait');
-    box.append(el('p', { class: 'meta wait-only' }, `Only requests waiting on ${wait}. `, el('a', { href: `#/mssql_running?${all}` }, 'Show all active queries')));
-  }
   box.append(foldedGrid({
-    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...cols, killNow] : cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
+    store: `pgvigil.running.mssql.${instance}`, rows, cols: killNow ? [...cols, killNow] : cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
     blocked: nBlocked, inChain, waiting: r => Number(r.blocking_session_id) > 0,
     age: r => r.elapsed_ms == null ? null : Math.floor(Number(r.elapsed_ms) / 1000), ageLabel: 'longest running for',
     groups: [['database', text('database_name')], ['login', text('login_name')], ['program', text('program_name')], ['status', text('status')], ['wait', text('wait_type')]],
@@ -372,18 +352,6 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
     slider.addEventListener('input', say);
     slider.addEventListener('change', () => void load());
     say();
-    // PerformanceMonitor's strip over its active queries (requests per snapshot): a drag steps the slider to the
-    // newest snapshot at or before the stretch's end
-    const t0 = Date.parse(String(snaps[0].snapshot_at)), t1 = Math.max(t0 + 60000, Date.parse(String(snaps[snaps.length - 1].snapshot_at)));
-    const inRange = Number(snaps[0].in_range ?? snaps.length);
-    sec.append(timeStrip('Requests per snapshot', t0, t1, snaps.map(s => Date.parse(String(s.snapshot_at))), (_a, b) => {
-      if (b === undefined) { slider.value = String(snaps.length - 1); void load(); return; }
-      let i = 0;
-      snaps.forEach((s, j) => { if (Date.parse(String(s.snapshot_at)) < b) i = j; });
-      slider.value = String(i);
-      void load();
-    }, inRange > snaps.length ? `The newest ${fmtNum(snaps.length)} of ${fmtNum(inRange)} snapshot times.` : '',
-    { weights: snaps.map(s => Number(s.requests) || 0), unit: n => `${fmtNum(n)} requests` }));
     sec.append(el('p', { class: 'range' }, el('label', { for: 'mssql-snap' }, `Snapshot (${snaps.length} kept in the range${isLive(ctx) && !at ? '' : ', history'}): `),
       prev, ' ', slider, ' ', next, ' ', last, out));
   }

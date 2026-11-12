@@ -1,133 +1,301 @@
-diff --git i/docs/sqlserver-querystore.md w/docs/sqlserver-querystore.md
-index 4ef5050..78b901f 100644
---- i/docs/sqlserver-querystore.md
+diff --git c/docs/sqlserver-querystore.md w/docs/sqlserver-querystore.md
+index 0f7dff6..9931417 100644
+--- c/docs/sqlserver-querystore.md
 +++ w/docs/sqlserver-querystore.md
-@@ -69,7 +69,8 @@ The query hash and the plan hash are SQL Server's own and are stored under every
+@@ -68,15 +68,31 @@ The query hash and the plan hash are SQL Server's own and are stored under every
+ 
  A window takes every interval of the store that overlaps it: with 60-minute intervals the last hour at 10:20 is the intervals of 09:00 and 10:00. The database list narrows every view but Store state.
  
- - **Top**: the window's totals over every plan (executions, duration, CPU, logical reads, wait time) and the first 100 queries by duration, CPU, logical reads, memory grant, waits or executions, each with its share of the window's total. A query's `Open` shows its text, its plans in the window's stored rows (executions, average and maximum duration, average CPU and reads, the largest memory grant, forced or not) with a `Download .sqlplan` per plan, and each plan's average duration and CPU per interval as a line, with the numbers as a table.
--- **Regressed**: a plan whose average duration or CPU in the window is 1.5 times its query's average in the window of equal length before it, or more, and at least 1 ms. The average before is over all the query's stored plans. Only stored rows are compared: "not seen before" means the plan is in no stored row of the window before (it did not run then, or ran under every cut), and a query that was in no interval's top plans before has nothing to be weighed against and is not listed.
-+- **Regressed** (PerformanceMonitor 3.12.0's Query Store regressions, MIT, beside pgvigil's own test): one row per query, the window against a baseline: by default PerformanceMonitor's 7 days before the window; or the window of equal length before it, or the same window 24 or 168 hours earlier. A row of the store (one kept plan in one interval) is placed by its last run, as PerformanceMonitor places it: in the window when its interval overlaps the window and it ran last at or after the window's start, in the baseline when it ran last inside the baseline (so a run before the window never counts in it). With Yesterday or Last week over a range longer than the shift the baseline overlaps the range, and the page says so. A query is listed for **cost** (its Regular CPU per run more than 25 % above the baseline's, adding at least 1 s of CPU over the window), **timeouts** or **errors** (at least 3 Aborted or Exception runs in the window and at least twice the baseline's rate per hour, or any where the baseline had none; per hour over each window's clock hours from its start, or from the database's first stored interval when that is later), or **duration** (pgvigil's: one of its plans averages 1.5 times the query's average duration or CPU over the baseline, or more, and at least 1 ms). Severity and the columns are PerformanceMonitor's. Aborted is SQL Server's execution_type 3, a client abort: a timeout or a cancel; Exception (4) a run that ended in an error. Rows stored before pgvigil kept the two apart (migration 0126) read "not read apart", and the cost, timeouts and errors tests are not applied to their query. A query in no kept row of the baseline reads "no kept baseline".
-+- **Compare** (under Top, and under the Plan cache and Procedures grids; PerformanceMonitor's compare): the window against the same span earlier (Previous period, Yesterday = 24 hours, Last week = 168 hours, as UTC instants: across a change of the clocks the earlier window reads an hour off on the wall clock, and both windows are printed in UTC and the viewer's zone), by database and query hash (procedures by database and name), each row placed by its last run as in Regressed: executions, average duration and average CPU before and now with the change in percent, PerformanceMonitor's colours, each window's first 100 by duration. Query Store keeps each interval's top plans only: a query is **new** when its first plan was compiled after the earlier window, "not kept before" when it has no kept row then but was compiled earlier, "not kept now" when it has no kept row in the window. The plan cache says NEW / GONE only when no read of either window was cut, otherwise "not kept before / now" with the count of cut reads. "No data for the comparison window" when nothing was stored for it.
+-- **Top**: the window's totals over every plan (executions, duration, CPU, logical reads, wait time) and the first 100 queries by duration, CPU, logical reads, memory grant, waits or executions, each with its share of the window's total. A query's `Open` shows its text, its plans in the window's stored rows (executions, average and maximum duration, average CPU and reads, the largest memory grant, forced or not) with a `Download .sqlplan` per plan, and each plan's average duration and CPU per interval as a line, with the numbers as a table.
++- **Top**: the window's totals over every plan (executions, duration, CPU, logical reads, wait time) and the first 100 queries by duration, CPU, logical reads, memory grant, waits or executions, each with its share of the window's total. A query's `Open` shows its text, its plans in the window's stored rows (executions, average and maximum duration, average CPU and reads, the largest memory grant, forced or not) with a `Download .sqlplan` per plan, and each plan's average duration and CPU per interval as a line, with the numbers as a table. Over the grid, PerformanceMonitor's strip: the store's duration per step of the window; a drag across it (or a click, or the keyboard) reads the grid again for that stretch, widened to whole steps of the store's intervals, its shares of that stretch's own totals; a row's `Draw` puts that query's average duration per interval on the strip as a line.
+ - **Regressed** (PerformanceMonitor 3.12.0's Query Store regressions, MIT, beside pgvigil's own test): one row per query, the window against a baseline: by default PerformanceMonitor's 7 days before the window; or the window of equal length before it, or the same window 24 or 168 hours earlier. A row of the store (one kept plan in one interval) is placed by its last run, as PerformanceMonitor places it: in the window when its interval overlaps the window and it ran last at or after the window's start, in the baseline when it ran last inside the baseline (so a run before the window never counts in it). With Yesterday or Last week over a range longer than the shift the baseline overlaps the range, and the page says so. A query is listed for **cost** (its Regular CPU per run more than 25 % above the baseline's, adding at least 1 s of CPU over the window), **timeouts** or **errors** (at least 3 Aborted or Exception runs in the window and at least twice the baseline's rate per hour, or any where the baseline had none; per hour over each window's clock hours from its start, or from the database's first stored interval when that is later), or **duration** (pgvigil's: one of its plans averages 1.5 times the query's average duration or CPU over the baseline, or more, and at least 1 ms). Severity and the columns are PerformanceMonitor's. Aborted is SQL Server's execution_type 3, a client abort: a timeout or a cancel; Exception (4) a run that ended in an error. Rows stored before pgvigil kept the two apart (migration 0126) read "not read apart", and the cost, timeouts and errors tests are not applied to their query. A query in no kept row of the baseline reads "no kept baseline".
+ - **Compare** (under Top, and under the Plan cache and Procedures grids; PerformanceMonitor's compare): the window against the same span earlier (Previous period, Yesterday = 24 hours, Last week = 168 hours, as UTC instants: across a change of the clocks the earlier window reads an hour off on the wall clock, and both windows are printed in UTC and the viewer's zone), by database and query hash (procedures by database and name), each row placed by its last run as in Regressed: executions, average duration and average CPU before and now with the change in percent, PerformanceMonitor's colours, each window's first 100 by duration. Query Store keeps each interval's top plans only: a query is **new** when its first plan was compiled after the earlier window, "not kept before" when it has no kept row then but was compiled earlier, "not kept now" when it has no kept row in the window. The plan cache says NEW / GONE only when no read of either window, nor the read just before each, was cut, otherwise "not kept before / now" with the count of cut reads. "No data for the comparison window" when nothing was stored for it.
  - **Forced plans**: every forced plan as the last read found it, with the forcing type, the failure count and the last failure's reason.
- - **Tuning** (proven on demo and written rows only: no real recommendation was read): SQL Server's own plan-regression recommendations with their state, score and script, and each database's automatic tuning options. A restart of SQL Server empties the server's list; a recommendation it stopped listing inside the window stays, marked so. The statement beside a recommendation is the store's current query of that number.
+-- **Tuning** (proven on demo and written rows only: no real recommendation was read): SQL Server's own plan-regression recommendations with their state, score and script, and each database's automatic tuning options. A restart of SQL Server empties the server's list; a recommendation it stopped listing inside the window stays, marked so. The statement beside a recommendation is the store's current query of that number.
++- **Tuning** (proven on demo and written rows only: no real recommendation was read): SQL Server's own plan-regression recommendations with their state, score and script, and each database's automatic tuning options. A restart of SQL Server empties the server's list; a recommendation it stopped listing inside the window stays, marked so. The statement beside a recommendation is the store's current query of that number. First seen and Last seen are the first and the last read that listed the recommendation (PerformanceMonitor's columns; its Captures count is not kept).
  - **Store state**: one row per database: desired and actual state, the read-only reason spelled out, capture mode, cleanup mode, sizes, intervals and the capture policy. Under the grid, what each flagged state means; the checks at the top of the page say the same while the store's read is under three hours old.
-diff --git i/scripts/proof-mssql-querystore.sh w/scripts/proof-mssql-querystore.sh
-index a04e682..2361ec2 100755
---- i/scripts/proof-mssql-querystore.sh
-+++ w/scripts/proof-mssql-querystore.sh
-@@ -375,7 +375,7 @@ GO
- SQL
- collect "$N" >/dev/null
- RW="from=$T&to=$(date -u -d "$T + 5 minutes" +%FT%TZ)"
--curl -fs "$U/mssql/querystore?instance=$iid&$RW&db=$DB1&part=regressed" > "$WORK/reg.json" || fail "D: the API's regressed part"
-+curl -fs "$U/mssql/querystore?instance=$iid&$RW&db=$DB1&base=prev&part=regressed" > "$WORK/reg.json" || fail "D: the API's regressed part"
- REG=$(objs "$WORK/reg.json" regressed | jq -c '[.[] | select(.object_name == "dbo.pv_reg")]')
- echo "  regressed: $(echo "$REG" | jq -c '.[] | {query_id, plan_id, new_plan, executions, before_executions, duration_ratio, avg_duration_ms, before_avg_duration_ms}')"
- [ "$(echo "$REG" | jq '[.[] | select(.new_plan == true and .executions == 50 and .before_executions == 50 and .duration_ratio >= 1.5)] | length')" = 1 ] \
-@@ -640,7 +640,7 @@ fi
  
- echo "--- P. the API"
- curl -fs "$U/mssql/querystore?instance=$iid&$W" > "$WORK/all.json" || fail "P: the page's read"
--[ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
-+[ "$(jq -r 'keys | join(",")' "$WORK/all.json")" = "checks,forced,regressed,regressed_skipped,series,state,top,totals,tuning,tuning_options" ] || fail "P: the parts: $(jq -r 'keys | join(",")' "$WORK/all.json")"
- [ "$(objs "$WORK/all.json" totals | jq '.[0] | (.intervals >= 2) and (.executions >= 545) and (.kept_executions <= .executions) and (.kept_duration_ms <= .duration_ms + 0.1)')" = true ] \
-   || fail "P: the totals: $(objs "$WORK/all.json" totals)"
- # the wait time: NULL (the page says n/a) where the server keeps no wait statistics (before SQL Server 2017), a number from
-@@ -690,7 +690,7 @@ RH0=$(dq "select to_char(min(snapshot_at) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH
- [ -n "$RH0" ] || fail "DEMO: no stored row of Sales' plan 12"
- D1="from=$RH0&to=$(date -u -d "$RH0 + 2 hours" +%FT%TZ)"
- curl -fs "$D/mssql/querystore?instance=$s1&$DW" > "$WORK/d.json" || fail "DEMO: the page's read"
--curl -fs "$D/mssql/querystore?instance=$s1&$D1&part=regressed" > "$WORK/dr.json" || fail "DEMO: the regressed part"
-+curl -fs "$D/mssql/querystore?instance=$s1&$D1&base=prev&part=regressed" > "$WORK/dr.json" || fail "DEMO: the regressed part"
- echo "  sql01: top $(objs "$WORK/d.json" top | jq length), forced $(objs "$WORK/d.json" forced | jq length), tuning $(objs "$WORK/d.json" tuning | jq length), regressed (1 h) $(objs "$WORK/dr.json" regressed | jq length)"
- [ "$(objs "$WORK/d.json" top | jq 'length >= 8')" = true ] || fail "DEMO: the top list has $(objs "$WORK/d.json" top | jq length) queries"
- [ "$(objs "$WORK/dr.json" regressed | jq '[.[] | select(.database_name == "Sales" and .query_id == 1 and .plan_id == 12 and .new_plan == true and .duration_ratio >= 1.5)] | length')" = 1 ] \
-diff --git i/web/src/mssql_plancache.ts w/web/src/mssql_plancache.ts
-index fc7edfa..6901cfd 100644
---- i/web/src/mssql_plancache.ts
+ A cleared store (`ALTER DATABASE ... SET QUERY_STORE CLEAR`) numbers its queries and plans again from 1. Rows read before the clear keep the hashes they were read with and never show the text of the query that took their number; they show without text. A plan number that comes back under another query loses the XML stored for it.
+ 
++## The Queries page
++
++The Performance row's Queries tab (in Plan cache's place: the full Plan cache grid keeps its address and opens from the page) is PerformanceMonitor 3.12.0's Queries view in its section order, on what pgvigil stores. Each section reads when it first comes into view, by itself, and the page is not refreshed every 30 s.
++
++- **Active queries**: the requests per Running snapshot as a strip, and the first 10 requests of the newest snapshot; a drag on the strip shows the snapshot at the end of the stretch. Links to Running queries.
++- **Query duration trend** and **Executions per second**: the plan cache's duration and CPU (ms per second) and its executions per second over every cached statement.
++- **Top queries (plan cache)**: the Plan cache grid's first 10, with a `History` per row; the `Query` list draws the same chart for any of the first 100: the query's average duration and CPU per execution in about 120 steps of the window, each weighted by its executions (a step without a run is a gap; reads cut at the collector's lists are counted under the chart). The Plan cache tab has the same `History` per row.
++- **Query Store**: its strip and its first 10 queries by duration (the Top view's strip and `Draw`, as above).
++- **Regressions**: Regressed's first 10 against PerformanceMonitor's baseline, the 7 days before the window.
++- **Query heatmap** (PerformanceMonitor's, from the plan cache's stored five-minute reads): bins of 5 minutes and more, aiming at 144 columns over the window (10 minutes at 24 hours, 70 at 7 days), by seven log10 buckets of Duration (ms), CPU (ms), Logical Writes or Execution Count per read. A cell counts the distinct queries (database and query hash) whose reads fell in it: PerformanceMonitor counts its 1-minute rows, so its counts run higher, and a query that ran at two speeds in one bin counts in both cells. A picked cell names its most-executed query and opens Running queries at the bin's middle (30 minutes either side) with `Show Active Queries at This Time`; the table under the picture holds every cell with the same link. The newest 1,000 cells are kept (the page says when older ones are cut); 7 days is the reach. One read over every stored row of the window: about 2 s over 7 days at 761 statements a read and 8 s at 3,000 (the collector's ceiling) on the proof's 16-CPU box; a read past the 15 s statement timeout shows "the heatmap's read took too long for this range: pick 24 hours or less".
++- **Query Store overhead**: Query Store's own waits from the stored one-minute wait deltas, every QDS_* type but PerformanceMonitor's four sleep waits, in ms per hour over the seconds the window's wait reads cover; and PerformanceMonitor's line on its memory clerk, MEMORYCLERK_QUERYDISKSTORE (latest, largest, and whether the newest read held it among its 25 largest clerks). Per server, never per database.
++- **Long completions**: the Slow queries tab's first 10 statement shapes (pgvigil's capture: 1 s; PerformanceMonitor's: 2 s).
++- **Plan corrections and automatic tuning**: the Tuning view's first 10 recommendations with First seen and Last seen, and the options.
++
++On the Procedures tab a strip over the grid draws every procedure's duration per step; a drag reads the grid again for the stretch (whole five-minute reads), and a procedure opened by its name draws its own Duration (ms/s) on it, with its chart under its reads in PerformanceMonitor's four metrics (Avg Duration (ms), Avg CPU (ms), Duration (ms/s), Executions (per second)). On Running queries a strip of the requests per snapshot steps the snapshot slider to the end of a dragged stretch, and `wait=<wait type>` in the address (the Waits page's `requests` link beside each wait type) lists only the requests waiting on it, with `Show all active queries` to clear it.
++
+ ## The Summary's QS cell and the findings
+ 
+ The cell counts databases, per instance:
+diff --git c/internal/web/q_mssql_running.go w/internal/web/q_mssql_running.go
+index 1b05bfc..b96df4f 100644
+--- c/internal/web/q_mssql_running.go
++++ w/internal/web/q_mssql_running.go
+@@ -27,10 +27,11 @@ SELECT c.collection, c.status, c.note, c.snapshot_at
+  WHERE c.instance_id = $1 AND c.collection = ANY ($2::text[])
+  ORDER BY c.collection`
+ 
+-// sqlMssqlSnapshots: the snapshots of the window, newest first; 1,500 at most (a day of minutes).
++// sqlMssqlSnapshots: the snapshots of the window, newest first; 1,500 at most (a day of minutes); in_range counts
++// every snapshot of the window (PerformanceMonitor's 'newest N of M snapshot times').
+ const sqlMssqlSnapshots = `
+ SELECT s.snapshot_at, s.server_utc, s.source, s.source_note, s.sessions, s.requests, s.blocked, s.heads, s.longest_wait_ms,
+-       s.memory_grants_pending, s.read_ms
++       s.memory_grants_pending, s.read_ms, count(*) OVER () AS in_range
+   FROM pgvigil.mssql_requests_summary s
+  WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+  ORDER BY s.snapshot_at DESC
+diff --git c/web/src/main.ts w/web/src/main.ts
+index 71513f7..06a90d0 100644
+--- c/web/src/main.ts
++++ w/web/src/main.ts
+@@ -67,6 +67,7 @@ import { pgDbOptionsFleetView, pgDbOptionsView } from './pg_dboptions';
+ import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
+ import { mssqlProcsView } from './mssql_procs';
+ import { mssqlPlanCacheView } from './mssql_plancache';
++import { mssqlQueriesView } from './mssql_queries';
+ import { mssqlIndexesView } from './mssql_indexes';
+ import { mssqlIndexLocksView } from './mssql_indexlocks';
+ import { mssqlActionsLogView } from './mssql_actions';
+@@ -104,7 +105,7 @@ const mssqlPages: Record<string, Render> = {
+   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+   mssqlqs: mssqlQueryStoreView,
+   counters: metricsView,
+-  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
++  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
+   mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
+   customreports: customReportsView, community: communityView,
+   ...reportPages,
+diff --git c/web/src/mssql_plancache.ts w/web/src/mssql_plancache.ts
+index 6901cfd..9621c58 100644
+--- c/web/src/mssql_plancache.ts
 +++ w/web/src/mssql_plancache.ts
 @@ -5,6 +5,7 @@
  // /api/mssql/plancache; the route and the tab's entry are the shell's.
  import { get, rowsOf, Table } from './api';
  import { lineChart } from './chart';
-+import { compareSection } from './mssql_querystore';
++import { queryHistory } from './mssql_queries';
+ import { compareSection } from './mssql_querystore';
  import { Ctx, rangeLabel, window_ } from './router';
  import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
- 
-@@ -100,10 +101,17 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
-         { key: 'plans', label: 'plans', num: true },
-         { key: 'query_key', label: 'query hash' },
-         { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
-+        // PerformanceMonitor's 'Hashes and handles' (D10, 0126): the statements cached at the last read
-+        { key: 'plan_hash', label: 'plan hash (cached now)' },
-+        { key: 'sql_handle', label: 'SQL handle (cached now)' },
-+        { key: 'plan_handle', label: 'plan handle (cached now)' },
+@@ -84,6 +85,16 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
+         { key: 'query_store_on', label: 'Query Store', fmt: v => v == null ? 'not read' : v ? 'on' : 'off' },
+         { key: 'object_name', label: 'module' },
+         { key: 'query', label: 'statement', fmt: text, wide: true },
++        // PerformanceMonitor's History per row (D10): the query's average CPU and duration per execution over the range
++        { key: 'history', label: 'history', fmt: (_, r) => {
++          const b = el('button', { type: 'button', class: 'link', 'aria-label': `History of ${String(r.query_key)}` }, 'History');
++          b.addEventListener('click', () => {
++            hist.replaceChildren(el('p', { class: 'meta', role: 'status' }, 'Reading the history ...'));
++            queryHistory(ctx, r.database_id, r.query_key, `${String(r.database)} ${String(r.query_key)}`)
++              .then(h => { hist.replaceChildren(h); hist.scrollIntoView({ block: 'nearest' }); }).catch(e => hist.replaceChildren(errorBox(e)));
++          });
++          return b;
++        } },
+         { key: 'executions', num: true },
+         { key: 'cpu_ms', label: 'CPU (sec)', num: true, fmt: secs },
+         { key: 'avg_cpu_ms', label: 'avg CPU (ms)', num: true, fmt: num3 },
+@@ -106,11 +117,12 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
+         { key: 'sql_handle', label: 'SQL handle (cached now)' },
+         { key: 'plan_handle', label: 'plan handle (cached now)' },
        ];
-+      const at = top.find(r => r.handles_at != null)?.handles_at;
++      const hist = el('div', { class: 'pc-history' });
+       const at = top.find(r => r.handles_at != null)?.handles_at;
        out.push(el('p', { class: 'meta' }, `${top.length >= LIMIT ? `The ${fmtNum(LIMIT)} with the most CPU.` : `${fmtNum(top.length)} statements, the most CPU first.`} `
--        + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled.`),
--        grid(top, cols));
-+        + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled. `
-+        + `The hashes and handles are the query's statements in the cache at the last read${at ? ' (' + fmtTime(at) + ')' : ''}, one of each (PerformanceMonitor's): none for a query no longer cached.`),
-+        grid(top, cols),
-+        compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
+         + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled. `
+         + `The hashes and handles are the query's statements in the cache at the last read${at ? ' (' + fmtTime(at) + ')' : ''}, one of each (PerformanceMonitor's): none for a query no longer cached.`),
+-        grid(top, cols),
++        grid(top, cols), hist,
+         compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
      }
  
-     const health = rowsOf(d.health);
-diff --git i/web/src/mssql_procs.ts w/web/src/mssql_procs.ts
-index 2cd5ee1..db18812 100644
---- i/web/src/mssql_procs.ts
+diff --git c/web/src/mssql_procs.ts w/web/src/mssql_procs.ts
+index db18812..92eec11 100644
+--- c/web/src/mssql_procs.ts
 +++ w/web/src/mssql_procs.ts
-@@ -5,6 +5,7 @@
+@@ -5,7 +5,9 @@
  // /api/mssql/procs; the route and the tab's entry are the shell's.
  import { get, Row, rowsOf, Table } from './api';
  import { lineChart } from './chart';
-+import { compareSection } from './mssql_querystore';
++import { procHistory } from './mssql_queries';
+ import { compareSection } from './mssql_querystore';
++import { rereadStrip, stripOverlay } from './timestrip';
  import { Ctx, rangeLabel, window_ } from './router';
  import { Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
  
-@@ -48,6 +49,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
-         { key: 'logical_reads', label: 'logical reads', num: true },
-         { key: 'physical_reads', label: 'physical reads', num: true },
-         { key: 'logical_writes', label: 'writes', num: true },
-+        { key: 'spills', label: 'spilled pages', num: true, fmt: v => v == null ? 'not read' : fmtNum(v) },
+@@ -29,6 +31,7 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
+   let database = (() => { try { return sessionStorage.getItem(store) ?? ''; } catch { return ''; } })();
+   const sel = el('select', { 'aria-label': 'Database' }, el('option', { value: '' }, 'every database'));
+   const body = el('div'), drill = el('div');
++  let strip: HTMLElement | null = null;
+   let seq = 0, drillSeq = 0;
+ 
+   async function intervals(r: Row) {
+@@ -52,6 +55,15 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
+         { key: 'spills', label: 'spilled pages', num: true, fmt: v => v == null ? 'not read' : fmtNum(v) },
        ], 'No read of this procedure in the range.'));
        (drill.querySelector('h3') as HTMLElement).focus();   // the new block is announced and scrolled to
++      const h = await procHistory(ctx, r.database_id, r.object_id, `${String(r.database)}: ${name}`);
++      if (mine !== drillSeq) return;
++      drill.append(h);
++      if (strip) {
++        const w = window_(ctx);
++        const hd = await get<{ history: Table | null }>('mssql/procs', { instance: ctx.instance, ...w, db_id: Number(r.database_id), object: String(r.object_id), part: 'history' });
++        if (mine === drillSeq) stripOverlay(strip, Date.parse(w.from), Date.parse(w.to), rowsOf(hd.history).map(x => ({ t: Date.parse(String(x.snapshot_at)), v: Number(x.duration_ms_s) })),
++          `The line: ${String(r.database)}: ${name}, its Duration (ms/s) per step.`);
++      }
      } catch (e) {
-@@ -124,6 +126,9 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
-       { key: 'avg_physical_reads', label: 'avg physical reads', num: true },
-       { key: 'logical_writes', label: 'writes', num: true },
-       { key: 'avg_logical_writes', label: 'avg writes', num: true },
-+      // PerformanceMonitor's 'I/O and spills' (D10, 0126): total_spills, SQL Server 2016 SP2 / 2017 CU3 on
-+      { key: 'spills', label: 'Total spilled pages', num: true, fmt: (v, r) => v == null ? 'not read' : Number(r.spill_reads) < Number(r.intervals) ? `${fmtNum(v)} (${fmtNum(r.spill_reads)} of ${fmtNum(r.intervals)} reads)` : fmtNum(v) },
-+      { key: 'avg_spills', label: 'Avg spilled pages', num: true, fmt: v => v == null ? '' : fmtNum(v) },
+       if (mine === drillSeq) drill.replaceChildren(errorBox(e));
+     }
+@@ -132,13 +144,22 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
        { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
      ];
      const cut = procs.length >= LIMIT;
-@@ -131,8 +136,10 @@ export async function mssqlProcsView(ctx: Ctx): Promise<HTMLElement> {
++    const gbox = el('div', {}, grid(procs, cols)), said = el('p', { class: 'meta', role: 'status' });
++    const win = window_(ctx);
++    const st = strip = rereadStrip('Procedure duration', win, series.map(x => ({ t: Date.parse(String(x.snapshot_at)), v: Number(x.duration_ms_s) || 0 })),
++      n => `${num3(n)} ms/s summed`, 300e3, (from, to, words) => {
++        void get<Parts>('mssql/procs', { instance: ctx.instance, from: from ?? win.from, to: to ?? win.to, db: database || undefined, part: 'procs' }).then(x => {
++          said.textContent = from ? `The grid holds ${words ?? ''}, snapped to the five-minute reads (${fmtTime(from)} to ${fmtTime(to)}).` : '';
++          gbox.replaceChildren(grid(rowsOf(x.procs), cols));
++        }).catch(e => gbox.replaceChildren(errorBox(e)));
++      }, 'Every procedure\'s duration per step. Drag across it to read the grid for that stretch; a procedure opened below draws its own on it.');
+     out.push(el('h3', {}, cut ? `Procedures (the ${fmtNum(LIMIT)} with the most duration of ${fmtNum(tot.procs)})` : `Procedures (${procs.length}, the most duration first)`),
        el('p', { class: 'meta' }, 'Per second and per minute are over the seconds the range\'s reads cover '
          + `(${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))}). A name opens that procedure read by read. `
          + 'Max executions /min is the procedure\'s busiest single read. '
--        + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it).'),
--      grid(procs, cols));
-+        + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it). '
-+        + 'Spilled pages: "not read" where the server has no total_spills (before SQL Server 2016 SP2 and 2017 CU3) or the reads came before pgvigil stored it.'),
-+      grid(procs, cols),
-+      compareSection(ctx, 'procs', { db: database || undefined }));
+         + '"object <id>": the name was not read (the procedure is gone, the read gave up on a lock, or the login may not see it). '
+         + 'Spilled pages: "not read" where the server has no total_spills (before SQL Server 2016 SP2 and 2017 CU3) or the reads came before pgvigil stored it.'),
+-      grid(procs, cols),
++      st, said, gbox,
+       compareSection(ctx, 'procs', { db: database || undefined }));
      body.replaceChildren(...out);
    }
+diff --git c/web/src/mssql_running.ts w/web/src/mssql_running.ts
+index af35832..dbcaeb3 100644
+--- c/web/src/mssql_running.ts
++++ w/web/src/mssql_running.ts
+@@ -21,6 +21,7 @@ import { foldedGrid } from './running';
+ import { firstChars, sqlCell, whatIsThis } from './sqlview';
+ import { mssqlBlockingTrend } from './blocking_history';
+ import { mssqlKillCol } from './mssql_actions';
++import { timeStrip } from './timestrip';
  
-diff --git i/web/src/router.ts w/web/src/router.ts
-index 87340b5..582c43f 100644
---- i/web/src/router.ts
-+++ w/web/src/router.ts
-@@ -186,7 +186,7 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
-   // the Query Store page's view, sort and database (mssql_querystore.ts) stay on its own links
-   if (keep && c.tab === 'mssqlqs') {
-     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
--    for (const k of ['qs', 'qo', 'qdb']) { const v = cur.get(k); if (v) q.set(k, v); }
-+    for (const k of ['qs', 'qo', 'qdb', 'qb']) { const v = cur.get(k); if (v) q.set(k, v); }
+ interface RunningData { state: Table | null; snapshots: Table | null; rows: Table | null; blocking: Table | null; headshare?: Table | null }
+ 
+@@ -168,6 +169,18 @@ function treeRows(rows: Row[], heads: Row[]): Row[] {
+ // window (the list is newest first), which is also the one the API returned. A quiet minute has no row to read
+ // its time from, so the time never comes from the rows. kill is the actions column, given only while the window is
+ // live; it is used only on the newest snapshot.
++// waitOnly: the page's wait= (a wait type, PerformanceMonitor's active-queries wait filter, server-tabs.js:3863-3888)
++const waitOnly = () => (new URLSearchParams(location.hash.split('?')[1] ?? '').get('wait') ?? '').slice(0, 120);
++
++// runningWaitLink: this page over the same range with only the requests waiting on a wait type (the Waits page's link)
++export function runningWaitLink(waitType: string, inner: Node | string): HTMLElement {
++  const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
++  const q = new URLSearchParams();
++  for (const k of ['i', 'w', 'from', 'to']) { const v = cur.get(k); if (v) q.set(k, v); }
++  q.set('wait', waitType);
++  return el('a', { href: `#/mssql_running?${q}`, title: `Running queries: only the requests waiting on ${waitType}` }, inner);
++}
++
+ function body(d: RunningData, instance: number | undefined, picked?: unknown, kill: Col | null = null): HTMLElement {
+   const box = el('div');
+   const rows = rowsOf(d.rows), heads = rowsOf(d.blocking);
+@@ -207,8 +220,15 @@ function body(d: RunningData, instance: number | undefined, picked?: unknown, ki
+       ? `Kill waits for a newer snapshot: the newest is ${fmtSecs(Math.floor(age / 1000))} old, and its session ids may belong to other sessions by now (the collection's last run is named above when it did not read).`
+       : 'Kill acts on the newest snapshot only: an earlier snapshot\'s session id may belong to another session by now. Latest opens it.'));
    }
-   // the Database info and drill-down pages keep their own parameters (db, rel, scheduler, job, idx) on a link to the
-   // same page, so a range change stays on the same database, table, job or index
++  const wait = waitOnly();
++  const shown = wait ? rows.filter(r => r.wait_type === wait) : rows;
++  if (wait) {
++    const all = new URLSearchParams(location.hash.split('?')[1] ?? '');
++    all.delete('wait');
++    box.append(el('p', { class: 'meta wait-only' }, `Only requests waiting on ${wait}. `, el('a', { href: `#/mssql_running?${all}` }, 'Show all active queries')));
++  }
+   box.append(foldedGrid({
+-    store: `pgvigil.running.mssql.${instance}`, rows, cols: killNow ? [...cols, killNow] : cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
++    store: `pgvigil.running.mssql.${instance}`, rows: shown, cols: killNow ? [...cols, killNow] : cols, empty: 'Nothing ran and no transaction was open at this snapshot.',
+     blocked: nBlocked, inChain, waiting: r => Number(r.blocking_session_id) > 0,
+     age: r => r.elapsed_ms == null ? null : Math.floor(Number(r.elapsed_ms) / 1000), ageLabel: 'longest running for',
+     groups: [['database', text('database_name')], ['login', text('login_name')], ['program', text('program_name')], ['status', text('status')], ['wait', text('wait_type')]],
+@@ -352,6 +372,18 @@ export async function mssqlRunningView(ctx: Ctx): Promise<HTMLElement> {
+     slider.addEventListener('input', say);
+     slider.addEventListener('change', () => void load());
+     say();
++    // PerformanceMonitor's strip over its active queries (requests per snapshot): a drag steps the slider to the
++    // newest snapshot at or before the stretch's end
++    const t0 = Date.parse(String(snaps[0].snapshot_at)), t1 = Math.max(t0 + 60000, Date.parse(String(snaps[snaps.length - 1].snapshot_at)));
++    const inRange = Number(snaps[0].in_range ?? snaps.length);
++    sec.append(timeStrip('Requests per snapshot', t0, t1, snaps.map(s => Date.parse(String(s.snapshot_at))), (_a, b) => {
++      if (b === undefined) { slider.value = String(snaps.length - 1); void load(); return; }
++      let i = 0;
++      snaps.forEach((s, j) => { if (Date.parse(String(s.snapshot_at)) < b) i = j; });
++      slider.value = String(i);
++      void load();
++    }, inRange > snaps.length ? `The newest ${fmtNum(snaps.length)} of ${fmtNum(inRange)} snapshot times.` : '',
++    { weights: snaps.map(s => Number(s.requests) || 0), unit: n => `${fmtNum(n)} requests` }));
+     sec.append(el('p', { class: 'range' }, el('label', { for: 'mssql-snap' }, `Snapshot (${snaps.length} kept in the range${isLive(ctx) && !at ? '' : ', history'}): `),
+       prev, ' ', slider, ' ', next, ' ', last, out));
+   }
+diff --git c/web/src/mssql_waits.ts w/web/src/mssql_waits.ts
+index 1d9d5e2..da4c8a2 100644
+--- c/web/src/mssql_waits.ts
++++ w/web/src/mssql_waits.ts
+@@ -13,6 +13,7 @@ import { get, Row, rowsOf, Table } from './api';
+ import { Ctx, rangeLabel, window_ } from './router';
+ import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
+ import { waitingLink } from './darling_waiting';
++import { runningWaitLink } from './mssql_running';
+ 
+ interface WaitsData { state: Table | null; reads: Table | null; events: Table | null; series: Table | null }
+ interface WaitInfo { cores: Table | null; rates: Table | null; types: Table | null; families: Table | null }
+@@ -58,7 +59,8 @@ const poolCols: Col[] = [
+ ];
+ 
+ const eventCols: Col[] = [
+-  { key: 'wait_type', label: 'wait type', fmt: v => waitingLink(String(v), String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v)) },
++  { key: 'wait_type', label: 'wait type', fmt: v => el('span', {}, waitingLink(String(v), String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v)), ' ',
++    runningWaitLink(String(v), 'requests')) },
+   { key: 'category', fmt: (v, r) => r.is_benign ? badge(String(v), '') : String(v ?? '') },
+   { key: 'wait_ms', label: 'wait time', num: true, fmt: msSecs },
+   { key: 'pct', label: 'share', num: true, fmt: pct },
+diff --git c/web/src/router.ts w/web/src/router.ts
+index 582c43f..41f9371 100644
+--- c/web/src/router.ts
++++ w/web/src/router.ts
+@@ -91,6 +91,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
+   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
+   mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
++  mssqlqueries: 'Queries',
+   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
+   // the instance's Reports folder (reports.ts)
+   rp_props: 'Database Extended Properties', rp_finder: 'Database Finder', rp_dbdeleted: 'Deleted Databases', rp_failed: 'Failed Logins', rp_flushed: 'Flushed Plans', rp_killed: 'Killed Sessions', rp_dbnew: 'New Databases', rp_actions: 'User Actions', rp_roles: 'Server Role Members', rp_services: 'Server Services', rp_pwage: 'SQL Login Password Age', rp_tables: 'Table Size',
+@@ -102,7 +103,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
+   { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
+   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
+   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
+-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
++  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlqueries', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
+   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
+   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
+   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
+@@ -204,6 +205,8 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
+     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+     for (const k of ['dr', 'di', 'dp', 'ds']) { const v = cur.get(k); if (v) q.set(k, v); }
+   }
++  // the Running queries tab's wait filter (mssql_running.ts, D10) stays on its own links
++  if (keep && c.tab === 'mssql_running') { const v = new URLSearchParams(location.hash.split('?')[1] ?? '').get('wait'); if (v) q.set('wait', v); }
+   // the Waiting tasks tab's read and wait type (darling_waiting.ts) stay on its own links
+   if (keep && (c.tab === 'mssql_waiting' || c.tab === 'waiting')) {
+     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');

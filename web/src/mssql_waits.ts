@@ -13,7 +13,6 @@ import { get, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 import { waitingLink } from './darling_waiting';
-import { runningWaitLink } from './mssql_running';
 
 interface WaitsData { state: Table | null; reads: Table | null; events: Table | null; series: Table | null }
 interface WaitInfo { cores: Table | null; rates: Table | null; types: Table | null; families: Table | null }
@@ -59,8 +58,7 @@ const poolCols: Col[] = [
 ];
 
 const eventCols: Col[] = [
-  { key: 'wait_type', label: 'wait type', fmt: v => el('span', {}, waitingLink(String(v), String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v)), ' ',
-    runningWaitLink(String(v), 'requests')) },
+  { key: 'wait_type', label: 'wait type', fmt: v => waitingLink(String(v), String(v).startsWith('LCK_') ? badge(String(v), 'warn') : String(v)) },
   { key: 'category', fmt: (v, r) => r.is_benign ? badge(String(v), '') : String(v ?? '') },
   { key: 'wait_ms', label: 'wait time', num: true, fmt: msSecs },
   { key: 'pct', label: 'share', num: true, fmt: pct },
