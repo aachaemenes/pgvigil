@@ -59,12 +59,16 @@ SELECT d.database_id, d.database_name, d.query_store_on, d.database_state, d.sna
 const pcScope = `($4::int IS NULL OR s.database_id = $4)
    AND (NOT $5::boolean OR NOT EXISTS (SELECT 1 FROM pgvigil.mssql_pc_database q WHERE q.instance_id = s.instance_id AND q.database_id = s.database_id AND q.query_store_on))`
 
+// sqlMSSQLPCTotals: grouped by statement first, then counted and summed: count(DISTINCT (database, key)) sorted every
+// sample of the window (10.5 s over 7 days at 3,000 a read, s177j-17), the grouping hashes them
 const sqlMSSQLPCTotals = `
-SELECT count(DISTINCT (s.database_id, s.query_key)) AS statements, coalesce(sum(s.executions), 0)::bigint AS executions,
-       round(coalesce(sum(s.cpu_us), 0) / 1000.0, 1) AS cpu_ms, round(coalesce(sum(s.duration_us), 0) / 1000.0, 1) AS duration_ms,
-       coalesce(sum(s.logical_reads), 0)::bigint AS logical_reads
-  FROM pgvigil.mssql_pc_sample s
- WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ` + pcScope
+SELECT count(*) AS statements, coalesce(sum(g.e), 0)::bigint AS executions,
+       round(coalesce(sum(g.c), 0) / 1000.0, 1) AS cpu_ms, round(coalesce(sum(g.d), 0) / 1000.0, 1) AS duration_ms,
+       coalesce(sum(g.r), 0)::bigint AS logical_reads
+  FROM (SELECT s.database_id, s.query_key, sum(s.executions) AS e, sum(s.cpu_us) AS c, sum(s.duration_us) AS d, sum(s.logical_reads) AS r
+          FROM pgvigil.mssql_pc_sample s
+         WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ` + pcScope + `
+         GROUP BY 1, 2) g`
 
 // sqlMSSQLPCTop: the hashes and handles (PerformanceMonitor's 'Hashes and handles' group, one value of each per
 // query as its MAX, DarlingDataReader.cs:1162-1164) are the statements the cache held at the last read

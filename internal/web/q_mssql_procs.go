@@ -48,11 +48,14 @@ const procDBNames = `
    ORDER BY s.database_id, (s.database_name IS NULL), s.snapshot_at DESC`
 
 const sqlMSSQLProcDatabases = `
-WITH dbn AS (` + procDBNames + `)
-SELECT n.database_id, n.database, count(DISTINCT s.object_id) AS procs, sum(s.executions)::bigint AS executions
-  FROM pgvigil.mssql_proc_sample s
-  JOIN dbn n ON n.database_id = s.database_id
- WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+WITH dbn AS (` + procDBNames + `), g AS (
+  SELECT s.database_id, s.object_id, sum(s.executions) AS e
+    FROM pgvigil.mssql_proc_sample s
+   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3
+   GROUP BY 1, 2
+)
+SELECT n.database_id, n.database, count(*) AS procs, sum(g.e)::bigint AS executions
+  FROM g JOIN dbn n ON n.database_id = g.database_id
  GROUP BY n.database_id, n.database
  ORDER BY n.database, n.database_id`
 
@@ -95,12 +98,15 @@ SELECT p.database_id, p.object_id, n.database, p.schema_name, coalesce(p.object_
  LIMIT 2000`
 
 // sqlMSSQLProcTotals: the window's sums over EVERY procedure ($4 one database's), whatever the grid's limit.
+// (grouped by procedure first: a count(DISTINCT) of the pair sorts every sample of the window; see sqlMSSQLPCTotals)
 const sqlMSSQLProcTotals = `
-SELECT count(DISTINCT (s.database_id, s.object_id)) AS procs, coalesce(sum(s.executions), 0)::bigint AS executions,
-       round(coalesce(sum(s.cpu_us), 0) / 1000.0, 1) AS cpu_ms, round(coalesce(sum(s.duration_us), 0) / 1000.0, 1) AS duration_ms,
-       coalesce(sum(s.logical_reads), 0)::bigint AS logical_reads
-  FROM pgvigil.mssql_proc_sample s
- WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)`
+SELECT count(*) AS procs, coalesce(sum(g.e), 0)::bigint AS executions,
+       round(coalesce(sum(g.c), 0) / 1000.0, 1) AS cpu_ms, round(coalesce(sum(g.d), 0) / 1000.0, 1) AS duration_ms,
+       coalesce(sum(g.r), 0)::bigint AS logical_reads
+  FROM (SELECT s.database_id, s.object_id, sum(s.executions) AS e, sum(s.cpu_us) AS c, sum(s.duration_us) AS d, sum(s.logical_reads) AS r
+          FROM pgvigil.mssql_proc_sample s
+         WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
+         GROUP BY 1, 2) g`
 
 // sqlMSSQLProcSeries: every procedure's work per step ($5 seconds) over the seconds the step's reads cover (each
 // read once, an idle one too).

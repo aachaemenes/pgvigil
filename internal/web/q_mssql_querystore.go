@@ -64,10 +64,13 @@ var sqlMSSQLQSTotals = `
 WITH iv AS (
   SELECT i.* FROM pgvigil.mssql_qs_interval i WHERE ` + fmt.Sprintf(qsWindow, "i") + `
 ), rt AS (
-  SELECT sum(r.executions) AS executions, sum(r.duration_us) AS duration_us, sum(r.cpu_us) AS cpu_us,
-         sum(r.logical_reads) AS logical_reads, sum(r.wait_ms) AS wait_ms,
-         count(DISTINCT (r.database_name, r.query_id, r.query_hash)) AS queries
-    FROM pgvigil.mssql_qs_runtime r WHERE ` + fmt.Sprintf(qsWindow, "r") + `
+  -- grouped by query first (a count(DISTINCT) of the triple sorts every kept row of the window; see sqlMSSQLPCTotals)
+  SELECT sum(g.executions) AS executions, sum(g.duration_us) AS duration_us, sum(g.cpu_us) AS cpu_us,
+         sum(g.logical_reads) AS logical_reads, sum(g.wait_ms) AS wait_ms, count(*) AS queries
+    FROM (SELECT r.database_name, r.query_id, r.query_hash, sum(r.executions) AS executions, sum(r.duration_us) AS duration_us,
+                 sum(r.cpu_us) AS cpu_us, sum(r.logical_reads) AS logical_reads, sum(r.wait_ms) AS wait_ms
+            FROM pgvigil.mssql_qs_runtime r WHERE ` + fmt.Sprintf(qsWindow, "r") + `
+           GROUP BY 1, 2, 3) g
 )
 SELECT count(*) AS intervals, count(DISTINCT iv.database_name) AS databases, min(iv.snapshot_at) AS first_start,
        max(iv.interval_end) AS last_end, max(iv.read_at) AS read_at,
