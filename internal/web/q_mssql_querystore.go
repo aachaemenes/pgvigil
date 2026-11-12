@@ -657,8 +657,8 @@ func (s *Server) MSSQLQueryStore(w http.ResponseWriter, r *http.Request) {
 		{"totals", sqlMSSQLQSTotals, win},
 		{"series", sqlMSSQLQSSeries, []any{id, from, to, db, mssqlQSStep(to.Sub(from).Seconds())}},
 		{"top", sqlMSSQLQSTop, []any{id, from, to, db, order}},
-		{"regressed", sqlMSSQLQSRegressed, []any{id, from, to, db, baseFrom, baseTo}},
-		{"regressed_skipped", sqlMSSQLQSRegressedSkipped, []any{id, from, to, db, baseFrom, baseTo}},
+		{"regressed", sqlMSSQLQSRegressed, []any{planEach, id, from, to, db, baseFrom, baseTo}},
+		{"regressed_skipped", sqlMSSQLQSRegressedSkipped, []any{planEach, id, from, to, db, baseFrom, baseTo}},
 		{"forced", sqlMSSQLQSForced, []any{id, db}},
 		{"tuning", sqlMSSQLQSTuning, win},
 		{"tuning_options", sqlMSSQLQSTuningOptions, []any{id, db}},
@@ -669,8 +669,8 @@ func (s *Server) MSSQLQueryStore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	} else if on {
-		parts = append(parts, part{"compare", sqlMSSQLQSCompare, []any{id, from, to, db, shift}},
-			part{"compare_windows", sqlMSSQLQSCompareWindows, []any{id, from, to, db, shift}})
+		parts = append(parts, part{"compare", sqlMSSQLQSCompare, []any{planEach, id, from, to, db, shift}},
+			part{"compare_windows", sqlMSSQLQSCompareWindows, []any{planEach, id, from, to, db, shift}})
 	}
 	// a view reads its own parts: the Store state tab does not run the top list over the window
 	if view := r.URL.Query().Get("view"); view != "" {

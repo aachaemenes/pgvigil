@@ -262,8 +262,8 @@ func (s *Server) MSSQLProcs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	} else if on {
-		parts = append(parts, part{"compare", sqlMSSQLProcCompare, []any{id, from, to, database, shift}},
-			part{"compare_windows", sqlMSSQLProcCompareWindows, []any{id, from, to, shift}})
+		parts = append(parts, part{"compare", sqlMSSQLProcCompare, []any{planEach, id, from, to, database, shift}},
+			part{"compare_windows", sqlMSSQLProcCompareWindows, []any{planEach, id, from, to, shift}})
 	}
 	if q.Get("db_id") != "" || q.Get("object") != "" {
 		dbID, err1 := strconv.Atoi(q.Get("db_id"))

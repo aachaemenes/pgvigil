@@ -3,7 +3,16 @@ package web
 import (
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
+
+// planEach, first in a part's arguments, runs it as an unnamed statement (pgx's describe-exec, as q_customreports.go
+// does), so the server plans it with the window's own values on every read. Under pgx's default each statement is
+// prepared once per connection, and from its sixth run the server may keep a generic plan: for the 7-day plan-cache
+// compare at 3,000 rows a read that plan expected 9,575 rows a window for 6.05 M and sorted both windows on disk,
+// 18.3-20.4 s against 2.6 s planned with the values (s177j-spike4), past the pool's 15 s statement_timeout.
+const planEach = pgx.QueryExecModeDescribeExec
 
 // The Plan cache tab of a SQL Server instance (task 150; sp_QuickieCache's and sp_BlitzCache's reads): what each
 // cached statement did over the window, from the differences of sys.dm_exec_query_stats between two reads
@@ -255,8 +264,8 @@ func (s *Server) MSSQLPlanCache(w http.ResponseWriter, r *http.Request) {
 	}
 	// the compare reads both windows: only when a shift is asked for (the page asks for it apart, part=compare)
 	if cmp {
-		parts = append(parts, part{"compare", sqlMSSQLPCCompare, []any{id, from, to, database, noQS, shift}},
-			part{"compare_windows", sqlMSSQLPCCompareWindows, []any{id, from, to, shift}})
+		parts = append(parts, part{"compare", sqlMSSQLPCCompare, []any{planEach, id, from, to, database, noQS, shift}},
+			part{"compare_windows", sqlMSSQLPCCompareWindows, []any{planEach, id, from, to, shift}})
 	}
 	s.multiPart(w, r, parts)
 }

@@ -43,10 +43,11 @@
 #     the hand delta of total_spills (> 0); p_new 'new', p_gone 'gone'; mssql_pc_handles = sys.dm_exec_query_stats'
 #     sql_handle and query_plan_hash for q_cost's statement; the plan-cache compare labels q_new 'new', and with R1
 #     marked cut 'not kept before' and 1 cut read.
-#  F. timing through the API, three runs each, every one under 10 s or FAIL: the plan-cache compare (compare=week over a
-#     7-day window, 14 days stored) at 761 and 3,000 rows a read; the Query Store compare (compare=week, 7 days) and
-#     Regressed's default (a 1-hour window against PerformanceMonitor's 7 days) over 14 days of 1-minute intervals at
-#     250 kept plans each (the collector's ceiling: 5 lists of 50).
+#  F. timing through the API, eight runs each (past the fifth: pgx prepares a statement once per connection, and from
+#     its sixth run the server may keep a generic plan, which took 18-20 s here, s177j-spike4), every one under 10 s or
+#     FAIL: the plan-cache compare (compare=week over a 7-day window, 14 days stored) at 761 and 3,000 rows a read; the
+#     Query Store compare (compare=week, 7 days) and Regressed's default (a 1-hour window against PerformanceMonitor's 7
+#     days) over 14 days of 1-minute intervals at 250 kept plans each (the collector's ceiling: 5 lists of 50).
 #  G. the pages in headless Chromium (light): the Query Store's Top with its compare grid (= the API's rows), Regressed
 #     with q_to's and q_err's rows, Plan cache and Procedures with their compare and new columns; no error box.
 # NOT PROVEN HERE: SQL Server 2016 (no total_spills: the column check's unit test), Managed Instance, a readable
@@ -511,7 +512,7 @@ TF=""
 for spec in 761 3000; do
   eval "IID=\$IID_$spec"
   F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  for run in 1 2 3; do
+  for run in 1 2 3 4 5 6 7 8; do
     tt=$(curl -s -o "$TMPD/f-$spec-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$F7&to=$T7&compare=week&part=compare")
     [[ "${tt%% *}" == 200 ]] || fail "F: the compare at $spec rows a read answered ${tt%% *}: $(head -c 300 "$TMPD/f-$spec-$run.json")"
     python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the compare at $spec rows a read took ${tt##* } s (the fail line is 10 s)"
@@ -519,7 +520,7 @@ for spec in 761 3000; do
   done
   n=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-3.json"); [[ "$n" -ge 100 ]] || fail "F: the compare at $spec returned $n rows"
 done
-echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, three runs each):$TF"
+echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, eight runs each):$TF"
 # the Query Store at its ceiling: 1-minute intervals, 250 kept plans each (5 lists of 50), 14 days; 1 % of the rows
 # with failures, split as 0126 stores them
 QI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tqs', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
@@ -543,14 +544,14 @@ NQ=$(pq "SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = $QI")
 TQ=""
 F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); F1=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 for what in "compare:from=$F7&to=$T7&compare=week&part=compare" "regressed:from=$F1&to=$T7&part=regressed"; do
-  for run in 1 2 3; do
+  for run in 1 2 3 4 5 6 7 8; do
     tt=$(curl -s -o "$TMPD/fq-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/querystore?instance=$QI&${what#*:}")
     [[ "${tt%% *}" == 200 ]] || fail "F: the Query Store ${what%%:*} answered ${tt%% *}: $(head -c 300 "$TMPD/fq-$run.json")"
     python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the Query Store ${what%%:*} took ${tt##* } s over $NQ stored rows (the fail line is 10 s)"
     TQ+=" ${what%%:*}:${tt##* }"
   done
 done
-echo "ok   F: the Query Store over $NQ stored rows (14 days, 1-minute intervals, 250 kept plans each), through the API (s, three runs each):$TQ"
+echo "ok   F: the Query Store over $NQ stored rows (14 days, 1-minute intervals, 250 kept plans each), through the API (s, eight runs each):$TQ"
 
 echo "== G. the pages in headless Chromium =="
 CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
