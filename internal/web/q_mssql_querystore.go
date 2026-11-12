@@ -142,14 +142,16 @@ SELECT g.database_name, g.query_id, g.query_hash, q.object_name, q.query_text AS
 // PerformanceMonitor's 7 continuous days before the window, else the window of equal length before it, the window
 // 24 hours or 168 hours earlier (mssqlQSBase). An interval that starts before the window and ran its last run before
 // it is not recent, so a run before the window is never counted in it. A query is raised by:
-//   duration (pgvigil): one of its plans averages 1.5 times the query's average duration (or CPU) over the
-//     baseline, all execution types, or more, and at least 1,000 us (task 129's test, unchanged);
-//   cost (PerformanceMonitor, word for word): its Regular CPU per run is more than 25 % above its baseline's and
-//     the rise times its recent Regular runs adds at least 1,000 ms of CPU over the window (CostTestSql);
-//   timeouts / errors (PerformanceMonitor): at least 3 Aborted (Exception) runs in the window, and a per-hour rate
-//     at least 2 times the baseline's, or any where the baseline had none or holds no hours. Per hour divides by the
-//     window's clock hours from its start, or from the database's first stored interval when that is later (PM's
-//     base_fail_hours / recent_fail_hours).
+//
+//	duration (pgvigil): one of its plans averages 1.5 times the query's average duration (or CPU) over the
+//	  baseline, all execution types, or more, and at least 1,000 us (task 129's test, unchanged);
+//	cost (PerformanceMonitor, word for word): its Regular CPU per run is more than 25 % above its baseline's and
+//	  the rise times its recent Regular runs adds at least 1,000 ms of CPU over the window (CostTestSql);
+//	timeouts / errors (PerformanceMonitor): at least 3 Aborted (Exception) runs in the window, and a per-hour rate
+//	  at least 2 times the baseline's, or any where the baseline had none or holds no hours. Per hour divides by the
+//	  window's clock hours from its start, or from the database's first stored interval when that is later (PM's
+//	  base_fail_hours / recent_fail_hours).
+//
 // A query with no kept row in the baseline is 'no kept baseline' (left join): the cost and duration tests need one,
 // the failure tests count it as none. A row stored before 0126 (or by an older collector) with failed > 0 holds no
 // split ('not read apart'; told by the row itself, which also catches an older collector importing after 0126): the
@@ -345,11 +347,6 @@ SELECT count(*) AS queries, max(greatest(q.newest_unsplit, b.newest_unsplit)) AS
   FROM rq q
   LEFT JOIN bq b ON b.database_name = q.database_name AND b.query_id = q.query_id AND b.query_hash IS NOT DISTINCT FROM q.query_hash
  WHERE q.unsplit > 0 OR coalesce(b.unsplit, 0) > 0`
-SELECT count(DISTINCT (r.database_name, r.query_id, r.query_hash)) AS queries, max(r.snapshot_at) AS newest_unsplit
-  FROM pgvigil.mssql_qs_runtime r
- WHERE r.instance_id = $1 AND r.snapshot_at < $3 AND r.interval_end > least($2::timestamptz, $5::timestamptz)
-   AND r.snapshot_at > least($2::timestamptz, $5::timestamptz) - interval '1 day' AND ($4::text IS NULL OR r.database_name = $4)
-   AND coalesce(r.failed, 0) > 0 AND (r.aborted_executions IS NULL OR r.exception_executions IS NULL)`
 
 // qsBefore is qsWindow shifted back $5 seconds: the compare's earlier window; with the placement by the last run
 // (sqlMSSQLQSCompare) a row is in it when its last run is in [$2 - $5, $3 - $5).
@@ -368,11 +365,13 @@ const qsBefore = `%[1]s.instance_id = $1 AND %[1]s.snapshot_at < $3::timestamptz
 // window only. NEW and GONE come from that whole aggregate; the rows
 // shown are the union of each window's first 100 by duration (PerformanceMonitor's COMPARE_TOP), NEW first, GONE
 // last, then by the rise of the average duration (its sort). The store keeps each interval's top plans only, so:
-//   new              no kept row before, and the query's first plan was compiled at or after the earlier window's end
-//                    (mssql_qs_plan.initial_compile): it did not exist then;
-//   not kept before  no kept row before, compiled earlier: it may have run then below the kept plans;
-//   not kept now     no kept row in the window (the store's last execution is not read for a query out of the lists,
-//                    so 'gone' is never claimed).
+//
+//	new              no kept row before, and the query's first plan was compiled at or after the earlier window's end
+//	                 (mssql_qs_plan.initial_compile): it did not exist then;
+//	not kept before  no kept row before, compiled earlier: it may have run then below the kept plans;
+//	not kept now     no kept row in the window (the store's last execution is not read for a query out of the lists,
+//	                 so 'gone' is never claimed).
+//
 // The deltas are percent of the earlier figure, NULL where it was 0; the averages' delta is also NULL on a row with
 // no kept row now (pgvigil's choice: it may only have fallen below the kept plans; PerformanceMonitor shows -100 %
 // there). n_* count the whole aggregate, before the display cut.
@@ -584,7 +583,7 @@ func mssqlQSDatabase(r *http.Request, required bool) (string, error) {
 	return db, nil
 }
 
-// mssqlQSBase is Regressed's baseline window (base=): '' or '7d' PerformanceMonitor's 7 continuous days before the
+// mssqlQSBase is Regressed's baseline window (base=): ” or '7d' PerformanceMonitor's 7 continuous days before the
 // window (DarlingQueryStoreRegressionReader.cs:55); 'prev' the window of equal length before it (task 129's);
 // 'day' / 'week' the window 24 / 168 hours earlier (the compare's shifts).
 func mssqlQSBase(base string, from, to time.Time) (time.Time, time.Time, error) {
@@ -601,7 +600,7 @@ func mssqlQSBase(base string, from, to time.Time) (time.Time, time.Time, error) 
 	return time.Time{}, time.Time{}, errors.New("base must be one of 7d, prev, day, week")
 }
 
-// compareShift reads compare= (PerformanceMonitor's compare picks and DBA Dash's Previous Period): '' off; 'prev'
+// compareShift reads compare= (PerformanceMonitor's compare picks and DBA Dash's Previous Period): ” off; 'prev'
 // the window's own length; 'day' 24 hours; 'week' 168 hours (fixed spans of UTC instants: across a change of the
 // clocks in the viewer's zone the earlier window reads an hour off on the wall clock, and the page prints both).
 func compareShift(v string, from, to time.Time) (float64, bool, error) {
