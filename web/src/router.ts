@@ -45,7 +45,7 @@ export function capRange(from: Date, to: Date): { from: Date; to: Date } {
   return to.getTime() - from.getTime() > MAX_RANGE_MS ? { from: new Date(to.getTime() - MAX_RANGE_MS), to } : { from, to };
 }
 
-export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
+export const rootTabs: Record<string, string> = { summary: 'Summary', mssqlrisks: 'SQL Server options', pgrisks: 'PostgreSQL options', checks: 'Daily checks', findings: 'Findings', instances: 'Instances', dms: 'DMS', jobs: 'Jobs', disks: 'Disk report', storage: 'Storage', backups: 'Backups', corruption: 'Corruption', extensions: 'Extensions', versions: 'Versions', roles: 'Roles', slowqueries: 'Slow queries', running: 'Running queries', indexes: 'Indexes', growth: 'Growth', dbadash: 'DBADash', custom: 'Custom report', alerts: 'Alerts', alertrules: 'Alert rules', alert: 'Alert', perfsummary: 'Performance summary', jobstimeline: 'Jobs timeline', mssqltempdb: 'TempDB', dbchanges: 'New and dropped databases', diff: 'Diff', tablesize: 'Table size', about: 'About' };
 export const instanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', activity: 'Running queries', statements: 'Statements', slowqueries: 'Slow queries', counters: 'Metrics', tables: 'Tables', vacuum: 'Vacuum',
   io: 'IO', load: 'Load', replication: 'Replication', jobs: 'Jobs', jobsreport: 'Job report', logs: 'Logs', dms: 'DMS', config: 'Configuration', pgdboptions: 'Database options', findings: 'Findings',
@@ -189,6 +189,11 @@ export function href(ctx: Ctx, over: Partial<Ctx> & { tab: string }): string {
   if (keep && c.tab === 'dbadash') {
     const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
     for (const k of ['dr', 'di']) { const v = cur.get(k); if (v) q.set(k, v); }
+  }
+  // the alert page's key, firing time and view (alert_page.ts) stay on its own links: a range change keeps the alert
+  if (keep && c.tab === 'alert') {
+    const cur = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    for (const k of ['k', 't', 'v']) { const v = cur.get(k); if (v) q.set(k, v); }
   }
   // the Diff page's picks (diff.ts: mode, the two sides, their databases and times, identical rows) stay on a range change
   if (keep && c.tab === 'diff') {

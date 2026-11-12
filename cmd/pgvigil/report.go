@@ -312,6 +312,7 @@ var knownKeys = map[string]bool{
 	"repeat": true, "recovery": true, "clear_after": true, "smtp": true, "webhook": true, "file": true, "pagerduty": true,
 	"host": true, "port": true, "tls": true, "ca_file": true, "username": true, "password": true, "from": true, "to": true,
 	"helo": true, "url": true, "format": true, "dir": true, "routing_key": true,
+	"alerts_base_url": true, "opsgenie": true, "api_key": true, "max_per_hour": true, "templates": true, "subject": true, "line": true,
 	"custom": true, "description": true, "sql": true, "every": true, "rule": true, "value": true, "compare": true,
 	"warning": true, "critical": true,
 }

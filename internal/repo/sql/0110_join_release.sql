@@ -13,6 +13,7 @@
 --   among purge()'s parents; the stale-cursor DELETE keeps 'errorlog:search'; mssql_errorlog_search_set owner-only.
 --   task 155 (PostgreSQL depth, 0095): the pg_depth_findings arm; wal_state_sample, function_stats, slru_sample among purge()'s
 --   parents; sequence_state, db_checks, index_bloat and depth_databases lose their absent rows past the retention.
+--   task 151 (alerting): purge() deletes the alert test sends past the retention.
 --   task 163 (PostgreSQL database options, 0104): the pg_override_findings and pg_dboption_findings arms; nothing for purge().
 -- The view is 0099's with the new arms; purge() is 0088's with the new lines; apply_roles() is 0087's with the new name.
 
@@ -296,6 +297,9 @@ BEGIN
   n := n + pgvigil.mssql_running_purge(p_days);
   n := n + pgvigil.mssql_reads_purge(p_days);
   n := n + pgvigil.mssql_plancache_purge(p_days);
+  -- alert test sends (151) past the retention (alert_dismissals and the acks columns are an audit: kept)
+  DELETE FROM pgvigil.alert_tests WHERE requested_at < now() - make_interval(days => p_days);
+  GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   -- PostgreSQL depth (0095): rows no longer present past the retention
   DELETE FROM pgvigil.sequence_state WHERE NOT is_present AND snapshot_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
