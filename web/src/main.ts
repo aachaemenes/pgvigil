@@ -71,6 +71,7 @@ import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
 import { mountTree, setTreeHidden, treeHiddenSaved, updateTree } from './tree';
+import { tabMark, watchHiddenTab } from './tabmark';
 import { installTreeMenu } from './treemenu';
 import { installFileDrop, toolsButton } from './filedrop';
 import { retentionView } from './retention';
@@ -263,6 +264,7 @@ function showLogin(message = '') {
   timer = undefined;
   ++generation;
   loginShown = true;
+  tabMark(null);   // the sign-in form: no state is known
   document.body.classList.add('signin');
   closeRange();   // the bar is emptied: an open range panel must not come back open after the sign-in
   $('tabs').replaceChildren();
@@ -378,6 +380,7 @@ async function render(force = false) {
     const f = await fleet(force);
     if (gen !== generation) return;
     updateTree(f, ctx);
+    tabMark(f);
     const inst = ctx.instance ? f.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
     const oldDot = same ? crumb.querySelector('.band-dot') : null;
     crumb.replaceChildren(
@@ -395,6 +398,7 @@ async function render(force = false) {
     });
   } catch (e) {
     if (e instanceof LoginRequired) { showLogin(); return; }
+    if (gen === generation) tabMark(null);
     crumb.replaceChildren(errorBox(e));
   }
 
@@ -447,6 +451,8 @@ const setBand = () => {
 setBand();
 if (typeof ResizeObserver !== 'undefined') { const ro = new ResizeObserver(setBand); if (headEl) ro.observe(headEl); if (tabsEl) ro.observe(tabsEl); }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && timer === undefined && !loginShown && refreshSecs() > 0) void render(true); });
+// a hidden tab's mark: the fleet's status every 60 s (task 191); none on the sign-in form or with auto refresh Off
+watchHiddenTab(() => loginShown || refreshSecs() === 0);
 // a schedule's headless render (task 171): the render key leaves the address before the first render
 mailRenderBoot();
 // the first load asks who holds this session; a 401 shows the sign-in form before any page
