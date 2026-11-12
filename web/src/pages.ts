@@ -333,7 +333,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   // count is a button: it narrows the instance grid below to those instances; the same button again, or 'Clear
   // filter' shows them all; the column of that test moves to the front of the grid (DBA Dash 01a). An acknowledged
   // cell counts under 'acknowledged', not under its warning or critical (DBA Dash's Acknowledged column).
-  type Bucket = 'ok' | 'warn' | 'crit' | 'na' | 'ack';
+  type Bucket = 'ok' | 'warn' | 'crit' | 'na' | 'ack' | 'bad';   // 'bad': warning or critical (a test name without a page of its own)
   const bucketOf = (r: Row, key: string): Bucket => {
     const c = (r._cells as ReturnType<typeof cells>)[key];
     if ((r._acked as Acked)[key]) return 'ack';
@@ -344,7 +344,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     try {
       const p = JSON.parse(sessionStorage.getItem('pgvigil.summaryPick') ?? 'null') as { key?: string; b?: string } | null;
       const g = p && groups.find(x => x.key === p.key);
-      return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na' || p.b === 'ack') ? { key: g.key, label: g.label, b: p.b as Bucket } : null;
+      return g && p && (p.b === 'ok' || p.b === 'warn' || p.b === 'crit' || p.b === 'na' || p.b === 'ack' || p.b === 'bad') ? { key: g.key, label: g.label, b: p.b as Bucket } : null;
     } catch { return null; }
   })();
   const setPick = (p: typeof pick) => {
@@ -354,7 +354,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   const lower = el('div', {});
   const clear = el('button', { type: 'button', class: 'link' }, 'Clear filter');
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
-  const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'not sampled', ack: 'acknowledged' };
+  const words: Record<Bucket, string> = { ok: 'OK', warn: 'warning', crit: 'critical', na: 'not sampled', ack: 'acknowledged', bad: 'warning or critical' };
   // The focused view (DBA Dash's View > Focused view, the same rules): only what needs a look - the instances with
   // a warning or a critical status, the tests with one, and the status columns that hold one. Out of it, a status
   // column in which no instance has a sample is still left out, and a test nobody is sampled for is not listed.
@@ -372,7 +372,7 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     let shown = base();
     const inFocus = shown.length;
     if (pick && !live.some(g => g.key === pick!.key)) setPick(null);   // its test is not on the page (the focused view, a new scope)
-    if (pick) shown = shown.filter(r => bucketOf(r, pick!.key) === pick!.b);
+    if (pick) shown = shown.filter(r => pick!.b === 'bad' ? bad(r, pick!.key) : bucketOf(r, pick!.key) === pick!.b);
     for (const [k, b] of countBtns) b.setAttribute('aria-pressed', String(!!pick && k === pick.key + '|' + pick.b));
     said.replaceChildren(
       pick ? `${shown.length} instance(s) with ${pick.label} ${words[pick.b]}. ` : focus ? `${inFocus} of ${rows.length} instance(s) need a look. ` : `${rows.length} instance(s). `,
@@ -425,12 +425,29 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
     },
   });
   const hidden = (e: HTMLElement) => { e.setAttribute('aria-hidden', 'true'); return e; };
+  // DBA Dash's test link (Checks/Summary.cs L731-789): the test's own page over the scope (Drive Space -> Storage, Backup
+  // FULL -> Backups, Agent Jobs -> Jobs ...); a test without a page of its own filters the instance grid below to the
+  // instances where it is a warning or a critical. Never the Daily checks list.
+  const rootTabOf: Record<string, string> = {
+    storage: 'storage', disk: 'disks', backups: 'backups', jobs: 'jobs', activity: 'running', replication: 'pgreplication',
+    custom: 'custom', dms: 'dms', tables: 'tablesize', corruption: 'corruption', roles: 'roles', indexes: 'indexes', version: 'versions',
+  };
+  const testLink = (r: Row, text: string): HTMLElement => {
+    const tab = rootTabOf[String(r.key)];
+    if (tab) return el('a', { class: 'cell-link', href: href(ctx, { tab, instance: undefined }) }, text);
+    const b = el('button', { type: 'button', class: 'cell-link link', 'aria-label': `${text}: show the instances where it is a warning or a critical` }, text);
+    b.addEventListener('click', () => {
+      setPick(pick && pick.key === r.key && pick.b === 'bad' ? null : { key: String(r.key), label: text, b: 'bad' });
+      drawLower();
+    });
+    return b;
+  };
   const testCols: Col[] = [
     // the name carries a small mark of its worst count, never a fill: the count cells beside it hold the colour, so a
     // column of red names does not shout the same thing twice (the calm pass: colour only where a value is out of range)
     { key: 'test', label: 'test',
       fmt: (v, r) => el('span', { class: 'test-name' }, hidden(dot(Number(r._worst))),   // the counts' labels name the status
-        el('a', { class: 'cell-link', href: href(ctx, { tab: 'checks' }) }, String(v))) },
+        testLink(r, String(v))) },
     countCol('ok', 'instances OK'), countCol('warn', 'instances warning'), countCol('crit', 'instances critical'), countCol('na', 'instances N/A'), countCol('ack', 'acknowledged'),
   ];
   // ---- Needs attention (Darling's Fleet Overview strip): one line per instance with a warning or a critical cell not
