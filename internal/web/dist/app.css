@@ -18,6 +18,8 @@
   --lh: 1.45; --lh-tight: 1.2;
   --caps-tracking: .05em;
   --ul-offset: .2em;   /* a link's underline below its letters */
+  --ul-mix: 40%;       /* how much of a link's colour its resting underline takes */
+  --stale-gray: .9;    /* how far a stale part is greyed */
   --num: tabular-nums;
   /* space: a 4 px step */
   --sp-1: .25rem; --sp-2: .5rem; --sp-3: .75rem; --sp-4: 1rem; --sp-5: 1.5rem;
@@ -35,6 +37,7 @@
   --ok: #237a35; --warn: #9a5a00; --crit: #c42626; --na: #606979; --ack: #1b6aa3;
   --ok-bg: #e3f4e6; --warn-bg: #fff1d6; --crit-bg: #fde2e2; --na-bg: #eceef2; --ack-bg: #e3eefa;
   --hover-overlay: rgba(127, 127, 127, .09);
+  --select-fill: rgba(34, 89, 200, .14);   /* a drag's brush across a chart */
   --shadow-raised: 0 4px 14px rgba(0, 0, 0, .14); --shadow-tip: 0 2px 8px rgba(0, 0, 0, .12);
   /* the chart series: one categorical order (blue, orange, aqua, yellow, magenta, green, violet, red), assigned in order,
      never cycled. Light: the set before task 181 darkened to clear 3:1 on every light surface (3.9:1 or more; slots 3-5 were
@@ -47,7 +50,7 @@
    surfaces, 3.2:1 or more on the page, the panel and a card) */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
+    --select-fill: rgba(111, 160, 255, .2); --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
     --line: #2a2f38; --line-strong: #3a404b;
     --text: #e3e6eb; --text-muted: #a3abb8; --text-faint: #969fad;
     --accent: #6fa0ff; --accent-soft: #1d2a44; --on-accent: #14171d;
@@ -59,7 +62,7 @@
   }
 }
 :root[data-theme="dark"] {
-  --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
+  --select-fill: rgba(111, 160, 255, .2); --surface-page: #111317; --surface-panel: #181b21; --surface-card: #1f232a; --surface-raised: #252a32; --surface-hover: #2c313a;
   --line: #2a2f38; --line-strong: #3a404b;
   --text: #e3e6eb; --text-muted: #a3abb8; --text-faint: #969fad;
   --accent: #6fa0ff; --accent-soft: #1d2a44; --on-accent: #14171d;
@@ -187,12 +190,31 @@ form.login .error { margin: var(--sp-3) 0 0; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--sp-4); align-items: start; }
 /* the uPlot legend, axes and tooltip */
 .u-legend, .u-axis { color: var(--text); }
-.u-legend { font-size: var(--fs-sm); color: var(--text-muted); } .u-legend th, .u-legend .u-label { font-weight: var(--fw-normal); }
+.u-legend th, .u-legend .u-label { font-weight: var(--fw-normal); }
 .u-legend .u-series { cursor: pointer; }
 .u-tip { position: absolute; z-index: 10; pointer-events: none; padding: var(--sp-1) var(--sp-2); font-size: var(--fs-sm); white-space: nowrap; background: var(--surface-raised); color: var(--text);
          border: var(--bw) solid var(--line); border-radius: var(--r-sm); box-shadow: var(--shadow-tip); font-variant-numeric: var(--num); }
 .u-tip-time { color: var(--text-muted); margin-bottom: var(--sp-half); }
 .u-tip-key { display: inline-block; width: .6rem; height: .6rem; margin-right: var(--sp-1); border-radius: var(--r-xs); vertical-align: 0; }
+
+/* ---------- 5b. the chart kit (task 182, chartkit.ts): the legend under the plot as short coloured lines, the time kept
+   for a screen reader only (the readout shows it), the cursor a single quiet upright, the drag's brush in the accent,
+   the empty and loading states, the way back from a zoom, a chart's title link quiet until pointed at ---------- */
+.u-legend { font-size: var(--fs-sm); color: var(--text-muted); text-align: left; margin: var(--sp-1) 0 0; }
+.u-legend.u-inline tr { margin-right: var(--sp-4); }
+.u-legend.u-inline tr.u-series:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.u-legend.u-inline.u-live tr:has(.u-value:empty) th::after { content: ""; }
+.u-legend .u-marker { width: .875rem; height: calc(2 * var(--focus-w)); margin-right: var(--sp-1); border-width: var(--focus-w) 0 !important; border-radius: var(--r-xs); }
+.u-legend .u-value { color: var(--text); font-variant-numeric: var(--num); }
+.uplot .u-cursor-x { border-right: var(--bw) dashed var(--text-faint); }
+.uplot .u-cursor-y { border-bottom: none; }
+.uplot .u-select { background: var(--select-fill); }
+.chart-state { display: flex; align-items: center; justify-content: center; min-height: 8rem; margin: var(--sp-2) 0 0; padding: var(--sp-4);
+               color: var(--text-muted); background: var(--surface-card); border-radius: var(--r-sm); text-align: center; }
+.chart-reset { font-size: var(--fs-sm); font-weight: var(--fw-normal); margin-left: var(--sp-1); }
+.chart h3 a:not(.chart-reset) { color: var(--text); text-decoration-color: var(--line-strong); text-underline-offset: .2em; }
+.chart h3 a:not(.chart-reset):hover, .chart h3 a:not(.chart-reset):focus-visible { color: var(--accent); text-decoration-color: currentColor; }
+.chart-notes { font-size: var(--fs-sm); margin: var(--sp-1) 0 0; }
 
 /* ---------- 6. grids ---------- */
 table.grid { border-collapse: collapse; width: 100%; font-variant-numeric: var(--num); }
@@ -267,15 +289,8 @@ table.props { border-collapse: collapse; width: 100%; }
 .props th { color: var(--text-muted); font-weight: var(--fw-normal); width: 40%; white-space: nowrap; }
 .props td { font-variant-numeric: var(--num); }
 
-/* ---------- 7. tiles, badges, groups, a blocking chain ---------- */
-.badge { display: inline-block; color: var(--text-muted); }
-.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.crit { color: var(--crit); }
+/* ---------- 7a. groups, the counts, a blocking chain ---------- */
 .counts .crit, .counts a.crit { color: var(--crit); } .counts .warn, .counts a.warn { color: var(--warn); }
-.tiles { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
-.tile { background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); padding: var(--sp-3) var(--sp-4); min-width: 9rem; }
-.tile-v { font-size: var(--fs-xl); font-weight: var(--fw-strong); line-height: var(--lh-tight); font-variant-numeric: var(--num); }
-.tile-l { color: var(--text-muted); font-size: var(--fs-sm); margin-top: var(--sp-half); }
-.tile.crit .tile-v { color: var(--crit); } .tile.warn .tile-v { color: var(--warn); } .tile.ok .tile-v { color: var(--ok); }
 .groups { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-1) 0 var(--sp-4); }
 .group { display: flex; flex-direction: column; min-width: 9rem; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); border: var(--bw) solid var(--line); background: var(--surface-panel); text-decoration: none; }
 .group-l { font-size: var(--fs-sm); color: var(--text-muted); } .group-v { font-weight: var(--fw-strong); }
@@ -283,6 +298,54 @@ table.props { border-collapse: collapse; width: 100%; }
 .group.ok { background: var(--ok-bg); color: var(--ok); } .group.warn { background: var(--warn-bg); color: var(--warn); } .group.crit { background: var(--crit-bg); color: var(--crit); }
 .chain { background: var(--surface-panel); border: var(--bw) solid var(--line); border-left: var(--stripe) solid var(--crit); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-3); }
 .chain-head { font-weight: var(--fw-strong); } .chain-w { margin-top: var(--sp-1); }
+
+/* ---------- 7. the shared parts (task 183, ui.ts and tiles.ts): tiles, badges and pills, panels, the quiet toolbar, links,
+   the empty / loading / stale states ---------- */
+/* a tile: a card with a left stripe in its state colour, a small muted label over a large figure, a sub line, a pill */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-4); }
+.tile { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label pill" "value value" "sub sub"; align-items: start; gap: var(--sp-half) var(--sp-2);
+        min-width: 0; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+        background: var(--surface-panel); border: var(--bw) solid var(--line); border-left: var(--stripe) solid var(--line-strong); border-radius: var(--r-md); }
+.tile.ok { border-left-color: var(--ok); } .tile.warn { border-left-color: var(--warn); } .tile.crit { border-left-color: var(--crit); }
+.tile-l { grid-area: label; font-size: var(--fs-sm); color: var(--text-muted); overflow-wrap: anywhere; }
+.tile-v { font-size: var(--fs-xl); font-weight: var(--fw-strong); line-height: var(--lh-tight); font-variant-numeric: var(--num); color: var(--text); overflow-wrap: anywhere; grid-area: value; }
+.tile-unit { font-size: var(--fs-md); font-weight: var(--fw-normal); color: var(--text-muted); }
+.tile-sub { grid-area: sub; font-size: var(--fs-sm); color: var(--text-muted); }
+.tile > .pill { grid-area: pill; }
+.panel .tile { background: var(--surface-card); border-top-color: transparent; border-right-color: transparent; border-bottom-color: transparent; }
+.panel > .tiles:last-child { margin-bottom: 0; }
+/* a badge and a pill: the state's word on its own tint */
+.badge { display: inline-flex; align-items: center; padding: 0 var(--sp-2); border-radius: var(--r-pill); font-size: var(--fs-sm); font-weight: var(--fw-strong);
+         line-height: var(--lh); background: var(--na-bg); color: var(--text-muted); white-space: nowrap; }
+.badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.warn { background: var(--warn-bg); color: var(--warn); } .badge.crit { background: var(--crit-bg); color: var(--crit); }
+.badge.pill { font-size: var(--fs-xs); letter-spacing: var(--caps-tracking); }
+:root:not([data-status="quiet"]) .grid td.status .badge { background: none; padding: 0; }   /* in a fill: the fill's own text colour, no tint */
+/* a panel: a section as a card, its title with the window beside it */
+.panel { background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); padding: var(--sp-3) var(--sp-4) var(--sp-4); margin-bottom: var(--sp-4); }
+.panel-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-3); font-size: var(--fs-md); }
+.panel-note { font-size: var(--fs-sm); font-weight: var(--fw-normal); color: var(--text-muted); }
+.panel .grid-wrap, .panel .chart { border: none; border-radius: 0; padding-left: 0; padding-right: 0; }
+/* the toolbars as one quiet bar: no border on a control, a soft fill, the pressed one in the accent's tint; groups apart by a hairline */
+#bar button:not(.range-item, .link), #bar select, .toolbar button:not(.link), .toolbar select, #bar input, .toolbar input { border-color: var(--line); background: var(--surface-panel); }
+#bar button:not(.range-item, .link):hover, #bar select:hover, .toolbar button:not(.link):hover, .toolbar select:hover { background: var(--surface-hover); }
+#bar button:not(.range-item, .link)[aria-pressed="true"], .toolbar button:not(.link)[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.toolbar .seg button { background: none; border-color: transparent; }   /* a toggle keeps its own mark (its box, its underline) */
+.quiet-bar { gap: 0; }
+.tb-group { display: inline-flex; align-items: center; gap: var(--sp-1); padding: 0 var(--sp-3); border-left: var(--bw) solid var(--line); }
+.tb-group:first-child { padding-left: 0; border-left: none; }
+/* links: a link in running text keeps a faint underline (told from its text by more than colour, WCAG 1.4.1), the full
+   line when pointed at; a link standing alone (the tree, a tab, a tile, a card's name) has none; a grid's links keep DBA
+   Dash's full underline */
+a { text-underline-offset: var(--ul-offset); text-decoration-color: color-mix(in srgb, currentColor var(--ul-mix), transparent); }
+a:hover, a:focus-visible { text-decoration-color: currentColor; }
+.grid td a, .grid td .cell-link, #crumb a { text-decoration-color: currentColor; }
+.tile-v a, .tile-l a, .panel-head a { text-decoration: none; }
+.tile-v a:hover, .tile-l a:hover, .panel-head a:hover { text-decoration: underline; }
+/* the states, one shape: empty and loading a soft box in the muted text; stale greys the part and says when it was collected */
+.state, main > p.empty[role="status"] { margin: var(--sp-2) 0; padding: var(--sp-3) var(--sp-4); background: var(--surface-card); border-radius: var(--r-sm); color: var(--text-muted); }
+.state.stale { background: var(--warn-bg); color: var(--warn); font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-3); display: inline-block; }
+.is-stale > :not(.state) { filter: grayscale(var(--stale-gray)); }
+.panel > h3:first-child, .panel > .panel-head:first-child { margin-top: 0; }
 
 /* ---------- 8. the rings, the legend, the volume bars ---------- */
 .donut-body { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
