@@ -280,14 +280,15 @@ LANGUAGE sql STABLE AS $$
     SELECT r.*,
            '(' || r.blocking_spid || ':' || coalesce(r.blocking_ecid, 0) || ')' AS bg_desc,
            '(' || r.blocked_spid || ':' || coalesce(r.blocked_ecid, 0) || ')' AS bd_desc,
-           (SELECT o.obj FROM objs o WHERE o.w = r.wait_resource) AS bd_obj,
-           (SELECT o.obj FROM objs o WHERE o.w = r.blocking_wait_resource) AS bg_obj,
+           ob.obj AS bd_obj, og.obj AS bg_obj,
            -- a report stored before 0116 has no event transaction id: the blocked xactid, else the blocked session
            coalesce(r.transaction_id, r.blocked_xactid, -r.blocked_spid) AS tx,
            coalesce(r.blocked_wait_ms, r.wait_ms) AS bd_wait,
            -- system_health's reports carry no monitor loop of their own (0): each component result is its own loop
            CASE WHEN r.source = 'system_health' THEN extract(epoch FROM r.event_at)::bigint ELSE coalesce(r.monitor_loop, 0) END AS loop_
-      FROM r
+      FROM r   -- objs holds one row per resource: a join, not a subquery per report and resource (reports x resources)
+      LEFT JOIN objs ob ON ob.w = r.wait_resource
+      LEFT JOIN objs og ON og.w = r.blocking_wait_resource
   )
   SELECT d.event_at, d.event_key, d.source, s.activity, d.database_name,
          coalesce(s.obj, s.other_obj,
@@ -337,8 +338,8 @@ $$;
 
 -- The proc's findings over the stored reports, its check ids, groups and words (checks 1-10, 1000, 1001; its header
 -- row -1 and its closing row are its own). Ordered as it orders them: check, group, the rank within the group.
--- enable_nestloop off for the call: the planner guesses a filter on a CTE at 0.5 % (122 rows of 24,480) and then re-ran the
--- walk once per victim in nested loops - 12,240 reports took 57.7 s (proof run t177d-proof15, the pages' limit is 15 s)
+-- enable_nestloop off for the call: the planner guesses a filter on a CTE at 0.5 % and plans nested loops over the walk;
+-- the findings grew faster than the reports (903 ms at 3,060, 3,298 ms at 6,120: proof run t177d-proof15)
 CREATE OR REPLACE FUNCTION pgvigil.mssql_block_findings(p_instance_id int, p_from timestamptz, p_to timestamptz)
 RETURNS TABLE (check_id int, database_name text, object_name text, finding_group text, finding text, sort_order bigint)
 LANGUAGE sql STABLE SET enable_nestloop = off AS $$

@@ -34,9 +34,9 @@
 #     Blocking, Top Lead Blocker and the totals (1000, 1001).
 #  C. GET /api/blocking/history part=pairs: the pairs (blocked, blocking, snapshots, longest wait) equal a direct read of
 #     pgvigil.mssql_requests for the window; the trend part has reports in some step and a summed wait; the lead rollup
-#     has one lead, the head's statement, with all the blocked wait (the database's total; the writer in the middle
-#     of the chain is no lead), checked only when the chain has its middle (2 head statements: the writer the readers wait
-#     behind).
+#     agrees with the procedure's own Top Lead Blocker (B's check 9): its largest lead is the head's statement, with
+#     check 9's time and check 9's share of all the leads' wait (a lead per monitor loop: the writer in the chain's
+#     middle leads only a loop that lacks its own report), checked only when the chain has its middle (2 head statements).
 #  D. pgvigil's blocked session dropped (the chain still held, the threshold 5 again): within about 6.5 minutes a read
 #     of mssql_syshealth stores system_health's QUERY_PROCESSING blockingTasks as reports of source system_health
 #     (the syshealth wiring, scripts/proof-darling-blockhistory-join.patch, applied to the run's copy while the join
@@ -52,13 +52,16 @@
 #     first head's opened panel in both themes; the Running tab shows the snapshot at= names (the pair link's own, then
 #     the pairs' first snapshot by the same address).
 #  G. reports seeded in a window of their own (one chain, 50 readers behind a writer behind a head, 51 reports a monitor
-#     loop): over 3,060, 6,120 and 12,240 of them mssql_block_rollup (one lead, the head, 51 blocked transactions) and
-#     mssql_block_findings each finish under the pages' settings (statement_timeout 15 s, jit off).
+#     loop, 510 distinct key resources): over 3,060, 6,120 and 12,240 of them, before and after an ANALYZE,
+#     mssql_block_rollup (one lead, the head, 51 blocked transactions) and mssql_block_findings each finish under the
+#     pages' settings (statement_timeout 15 s, jit off).
 # NOT PROVEN HERE: the checks this chain does not raise, whose rules are read and not run: a stored-procedure lead
 # resolved to schema.procedure (check 9 is raised for this ad hoc head, run 8), repeatable read (4), the sleeping, background, done, compile-lock
 # and application-lock groups of 6 (the head waits in a WAITFOR: suspended), the implicit-transaction and auto-stats groups of 7, non-lock reports (10); a page or
 # RID lock's object; a report with several blocking processes; system_health's real monitorLoop value; reports stored
-# before 0116; an object locked in another database than the waiting request's (D01's object_name prefix); Azure SQL and SQL Server 2016-2019; proof-a11y (its own script, run beside this one).
+# before 0116; an object locked in another database than the waiting request's (D01's object_name prefix); G's timing
+# with D01's waiting-task reads behind many keys (each distinct resource is decoded against a day of them) and on PostgreSQL
+# 13-17 (G runs on 18); Azure SQL and SQL Server 2016-2019; proof-a11y (its own script, run beside this one).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -245,15 +248,26 @@ read -r TREP TSUM <<<"$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1
 NHEADS=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["blocked"]["rows"]))' "$TMPD/xe.json")
 NAPIF=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["block_findings"]["rows"]))' "$TMPD/xe.json")
 [[ "$NAPIF" == "$(wc -l < "$TMPD/pgv.txt")" ]] || fail "C: the API's findings $NAPIF, the function's $(wc -l < "$TMPD/pgv.txt")"
-# the lead rollup: the victims' wait belongs to the chain's head (the writer in the middle is not a lead), all of it
-read -r NLEAD LEADOK LEADW DBW <<<"$(python3 -c '
-import json, sys
-t = json.load(open(sys.argv[1]))["block_rollup"]; rs = [dict(zip(t["columns"], r)) for r in t["rows"]]
-lead = [r for r in rs if r["dimension"] == "lead"]; db = [r for r in rs if r["dimension"] == "database"]
-print(len(lead), str(bool(lead) and str(lead[0]["name"]).startswith("BEGIN TRAN")).lower(), lead[0]["total_wait_ms"] if lead else -1, db[0]["total_wait_ms"] if db else -2)' "$TMPD/xe.json")"
+# the lead rollup against the procedure's own Top Lead Blocker (check 9, in bv.txt): each victim's wait goes to its chain's
+# lead per monitor loop (the procedure's #session_leads), so the head leads unless a loop lacks the writer's own report
+# (then the writer leads that loop, in the procedure too: run 17, 92.3 %); the largest lead is the head's statement, its
+# wait is check 9's time and its share of all the leads' wait is check 9's percent
 [[ "$NHEADS" == 2 ]] || fail "C: $NHEADS head statement(s), want 2 (the head, and the writer the readers wait behind): without a session in the chain's middle the lead check below does not test the walk"
-[[ "$NLEAD" == 1 && "$LEADOK" == true && "$LEADW" == "$DBW" ]] || fail "C: the lead rollup: $NLEAD lead(s), the head's statement $LEADOK, its wait $LEADW ms against the database's $DBW ms (want 1, true, equal)"
-echo "ok   C: $NP pairs equal to the store's rows; the trend: $TREP reports, the largest summed wait ${TSUM} ms; $NHEADS head statement(s), $NAPIF findings"
+LEADCHK=$(python3 -c '
+import json, re, sys
+from decimal import Decimal, ROUND_HALF_UP
+t = json.load(open(sys.argv[1]))["block_rollup"]; rs = [dict(zip(t["columns"], r)) for r in t["rows"]]
+lead = sorted((r for r in rs if r["dimension"] == "lead"), key=lambda r: -int(r["total_wait_ms"] or 0))
+nine = [l for l in open(sys.argv[2]) if l.startswith("9|")]
+m = re.search(r"accounted for (\d+) (\d\d):(\d\d):(\d\d):\d+ of blocking wait time \(([\d.]+)% of total\)", nine[0]) if len(nine) == 1 else None
+if not lead or not m: print(f"leads={len(lead)} check9={len(nine)}"); sys.exit()
+d, h, mi, se, pct = m.groups(); secs = ((int(d) * 24 + int(h)) * 60 + int(mi)) * 60 + int(se)
+top = int(lead[0]["total_wait_ms"]); tot = sum(int(r["total_wait_ms"] or 0) for r in lead)
+share = (Decimal(100 * top) / Decimal(tot)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+ok = str(lead[0]["name"]).startswith("BEGIN TRAN") and top // 1000 == secs and str(share) == pct
+print(f"{str(ok).lower()} leads={len(lead)} top={top}ms/{secs}s share={share}%/{pct}%")' "$TMPD/xe.json" "$TMPD/bv.txt")
+[[ "$LEADCHK" == true\ * ]] || fail "C: the lead rollup against the procedure's Top Lead Blocker: $LEADCHK (want the largest lead the head's BEGIN TRAN statement, its wait = check 9's seconds, its share = check 9's percent)"
+echo "ok   C: $NP pairs equal to the store's rows; the trend: $TREP reports, the largest summed wait ${TSUM} ms; $NHEADS head statement(s), $NAPIF findings; the lead rollup as check 9: ${LEADCHK#true }"
 
 echo "== D. system_health's blockingTasks where no capture of pgvigil runs =="
 "$BIN" mssql-xe -print -drop -install-id "$XEID" > "$TMPD/xe-drop.sql" || fail "D: mssql-xe -print -drop"
@@ -426,8 +440,9 @@ ATL=$(echo "$out" | grep '^at running ' || true)
 echo "ok   F: $ATL"
 echo "ok   F: both pages in light and dark (heads $NHALL, findings $NFALL, pairs $NPALL as the store), $(echo "$out" | grep -c '^click ') link(s) clicked, each landing named; shots in $SHOTS"
 echo "== G. the findings and the rollup over a seeded convoy, inside the pages' statement timeout =="
-# 240 monitor loops of one chain: head 51 <- writer 52 <- 50 readers (51 reports a loop), in a window of its own after every
-# real report, read over its first 60, 120 and 240 loops (3,060, 6,120, 12,240 reports) with the pages' pool settings
+# 240 monitor loops of one chain: head 51 <- writer 52 <- 50 readers (51 reports a loop, 510 distinct key resources), in a
+# window of its own after every real report, read over its first 60, 120 and 240 loops (3,060, 6,120, 12,240 reports)
+# before and after an ANALYZE of the reports (fresh rows without statistics, then the usual state) with the pages' pool settings
 # (statement_timeout 15 s, jit off: internal/web/web.go); each of the three must finish with the head as the one lead.
 # PGVIGIL_G_EXPLAIN=1 also writes both functions' plans over the 12,240 (auto_explain, nested) to \$SHOTS/g-explain.txt.
 GFROM=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+2 hours'); GTO=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+3 hours')
@@ -437,7 +452,7 @@ pq "INSERT INTO pgvigil.mssql_blocked_reports (instance_id, event_at, event_key,
       blocking_spid, blocking_ecid, blocking_statement, blocking_login, blocking_host, blocking_program, blocking_status, blocking_sql_handle,
       head_key, monitor_loop, transaction_id, blocked_wait_ms, resource_owner_type, source)
     SELECT $SB, '$GFROM'::timestamptz + make_interval(secs => l * 5), 'pgvb-g-' || l || '-' || v, now(), 'pgvblock',
-           'KEY: 5:72057594045726720 (8194443284a0)', l * 5000, CASE WHEN v = 0 THEN 'X' ELSE 'S' END,
+           'KEY: 5:72057594045726720 (' || lpad(to_hex((l % 10) * 51 + v), 12, '0') || ')', l * 5000, CASE WHEN v = 0 THEN 'X' ELSE 'S' END,
            CASE WHEN v = 0 THEN 52 ELSE 100 + v END, 0, CASE WHEN v = 0 THEN 'G WRITER' ELSE 'G READER' END, 'sa', 'g_h', 'G',
            'read committed (2)', 'suspended',
            CASE WHEN v = 0 THEN 51 ELSE 52 END, 0, CASE WHEN v = 0 THEN 'G HEAD STATEMENT' ELSE 'G WRITER' END, 'sa', 'g_h', 'G',
@@ -446,14 +461,17 @@ pq "INSERT INTO pgvigil.mssql_blocked_reports (instance_id, event_at, event_key,
       FROM generate_series(1, 240) l, generate_series(0, 50) v"
 gtime() { local t0 t1 res; t0=$(date +%s%N); res=$(PGOPTIONS='-c statement_timeout=15000 -c jit=off' pq "$1" 2>&1) || { echo "ERR ${res//$'\n'/ }"; return 0; }; t1=$(date +%s%N); echo "$(( (t1 - t0) / 1000000 )) $res"; }
 GBAD=(); GMS=()
+for GSTATE in unanalysed analysed; do
+[[ $GSTATE == analysed ]] && pq "ANALYZE pgvigil.mssql_blocked_reports" >/dev/null
 for GN in 60 120 240; do
   GTON="'$GFROM'::timestamptz + interval '$((GN * 5)) seconds'"
   read -r GMSR GLEAD <<<"$(gtime "SELECT count(*) FILTER (WHERE dimension = 'lead') || ':' || string_agg(CASE WHEN dimension = 'lead' THEN name || '|' || blocked_sessions || '|' || reports END, ',') FROM pgvigil.mssql_block_rollup($SB, '$GFROM', $GTON)")"
   read -r GMSF GNF <<<"$(gtime "SELECT count(*) FROM pgvigil.mssql_block_findings($SB, '$GFROM', $GTON)")"
-  echo "G: $((GN * 51)) reports: the rollup $GMSR ms ($GLEAD), the findings $GMSF ms ($GNF)"
-  [[ "$GMSR" =~ ^[0-9]+$ && "$GLEAD" == "1:G HEAD STATEMENT|51|$((GN * 51))" ]] || GBAD+=("the rollup over $((GN * 51)): '$GMSR $GLEAD'")
-  [[ "$GMSF" =~ ^[0-9]+$ && "$GNF" =~ ^[1-9][0-9]*$ ]] || GBAD+=("the findings over $((GN * 51)): '$GMSF $GNF'")
-  GMS+=("$((GN * 51)): rollup $GMSR ms, findings $GMSF ms")
+  echo "G: $GSTATE, $((GN * 51)) reports: the rollup $GMSR ms ($GLEAD), the findings $GMSF ms ($GNF)"
+  [[ "$GMSR" =~ ^[0-9]+$ && "$GLEAD" == "1:G HEAD STATEMENT|51|$((GN * 51))" ]] || GBAD+=("the rollup over $((GN * 51)) ($GSTATE): '$GMSR $GLEAD'")
+  [[ "$GMSF" =~ ^[0-9]+$ && "$GNF" =~ ^[1-9][0-9]*$ ]] || GBAD+=("the findings over $((GN * 51)) ($GSTATE): '$GMSF $GNF'")
+  GMS+=("$GSTATE $((GN * 51)): rollup $GMSR ms, findings $GMSF ms")
+done
 done
 if [[ "${PGVIGIL_G_EXPLAIN:-0}" == 1 ]]; then
   PGOPTIONS='-c jit=off' psql "$PGDSN" -Xq -v ON_ERROR_STOP=1 >"$SHOTS/g-explain.txt" 2>&1 <<SQL || echo "G: the plans were not written (see $SHOTS/g-explain.txt)"
