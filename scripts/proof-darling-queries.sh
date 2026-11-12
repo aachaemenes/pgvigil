@@ -588,7 +588,7 @@ for (const [name, hash] of Object.entries(pages)) {
     const grids = sec ? [...sec.querySelectorAll('table')].filter(t => !t.classList.contains('u-legend')) : [];
     const heads = [...m.querySelectorAll('th')].map(th => th.textContent.trim());
     return JSON.stringify({ errors: m.querySelectorAll('.error:not([role=status])').length, compare: !!sec, compareRows: grids.length ? grids[0].querySelectorAll('tbody tr').length : -1,
-      compareText: sec ? sec.textContent.slice(0, 200) : '', heads: heads.filter(h => /Spilled|cached now|Timeouts|Errors|Why|Severity|new \\/ gone/.test(h)),
+      compareText: sec ? sec.textContent.slice(0, 200) : '', heads: heads.filter(h => /[Ss]pilled|cached now|Timeouts|Errors|Why|Severity|new \\/ gone/.test(h)),
       rows: [...m.querySelectorAll('tbody tr')].length, title: m.querySelector('h2')?.textContent ?? '',
       regRows: (() => { const t = [...m.querySelectorAll('table')].find(x => [...x.querySelectorAll('th')].some(th => th.textContent.trim() === 'Severity')); return t ? t.querySelectorAll('tbody tr').length : -1; })() }); })()`);
   console.log(`page ${name} ${s}`);
@@ -604,7 +604,7 @@ d = sys.argv[1]
 out = open(f"{d}/g.out").read()
 def n(f, part):
     return len((json.load(open(f"{d}/{f}")).get(part) or {}).get('rows') or [])
-want = {'top': ('cmp.json', None), 'plancache': ('ccmp.json', 'cached now'), 'procs': ('pcmp.json', 'Spilled'), 'regressed': (None, 'Timeouts')}
+want = {'top': ('cmp.json', None), 'plancache': ('ccmp.json', 'cached now'), 'procs': ('pcmp.json', 'spilled pages'), 'regressed': (None, 'Timeouts')}
 bad = []
 pages = {l.split(' ', 2)[1]: json.loads(l.split(' ', 2)[2]) for l in out.splitlines() if l.startswith('page ')}
 if not out.startswith('login 200'): bad.append('G login')
