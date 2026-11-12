@@ -570,7 +570,9 @@ const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set
 const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const settled = async () => { for (let i = 0; i < 150; i++) { const ok = await ev(`(() => { const m = document.querySelector('main'); return !!m && !!m.querySelector('h2') && ![...m.querySelectorAll('p')].some(p => p.textContent === 'Reading...'); })()`); if (ok) { await sleep(800); return true; } await sleep(200); } return false; };
-const go = async (hash) => { await cmd('Page.navigate', { url: U + hash }); await sleep(300); return settled(); };
+// each page a full load (about:blank first): a hash change alone keeps the app as it loaded, signed out before the
+// login below (proof-darling-cpu.sh does the same)
+const go = async (hash) => { await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200); await cmd('Page.navigate', { url: U + hash }); await sleep(300); return settled(); };
 await cmd('Page.enable'); await cmd('Runtime.enable');
 await cmd('Page.navigate', { url: U + '#/about' }); await sleep(800);
 const st = await ev(`fetch('/api/login', { method: 'POST', headers: { 'X-Pgvigil': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: ${JSON.stringify(process.env.G_USR)}, password: ${JSON.stringify(process.env.G_UPW)} }) }).then(r => r.status)`, true);
@@ -579,7 +581,7 @@ await ev(`(() => { for (const k of ['querystore', 'plancache', 'procs']) session
 const qw = `i=${sb}&from=${encodeURIComponent(qf)}&to=${encodeURIComponent(qt)}`, pw = `i=${sb}&from=${encodeURIComponent(pf)}&to=${encodeURIComponent(pt)}`;
 const pages = { top: `#/mssqlqs?${qw}&qdb=pgvq`, regressed: `#/mssqlqs?${qw}&qdb=pgvq&qs=regressed&qb=prev`, plancache: `#/mssqlplancache?${pw}`, procs: `#/mssqlprocs?${pw}` };
 for (const [name, hash] of Object.entries(pages)) {
-  if (!await go(hash)) { console.log(`FAIL render ${name}`); continue; }
+  if (!await go(hash) || await ev(`!!document.querySelector('form.login')`)) { console.log(`FAIL render ${name}`); continue; }
   await sleep(1500);   // the compare section reads by itself
   const s = await ev(`(() => { const m = document.querySelector('main');
     const sec = m.querySelector('section.compare');
