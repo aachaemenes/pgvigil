@@ -236,6 +236,8 @@ Estimates, not measurements of this build. Every figure below is scaled from one
 | `schedules: iostats: 1m`, the run's setting, scaled to a day | about 25.6 MB | about 770 GB-1.6 TB |
 | `schedules: iostats: disabled`, or PG15 and older (no pg_stat_io), derived (the measurement less its pg_stat_io share) | about 4.3 MB | about 130-260 GB |
 
+SQL Server's performance counters (task 177 D14: mssql_cpu's counter rows every minute, mssql_activity's per-database rows every 5 minutes) add about 10 MB per SQL Server instance-day, measured on this build on 2026-11-12: `scripts/proof-darling-cpu.sh` part B on a SQL Server 2022 container stored 90-93 rows per instance read and 18 per database read (three user databases), 57 bytes of row data each; one instance-day of rows in that shape (1,440 instance reads of 93 rows, 288 database reads of 18) written to a migrated repository took 10,567,680 bytes on disk with its index and the read rows, 76 bytes per counter row (10.1 MB, a MB being 1,048,576 bytes). Each further database adds 4 rows per 5-minute read (the Databases object's four counters), about 0.08 MB a day at that row size; a cumulative counter that never counted since the server started has no row.
+
 The index inventory adds one row per index and day on top of the table above, plus one current row per index (not proven: no named run measured its size). WAL is written on top of that (its volume not measured here): size the repository's WAL disk or archive for it. The demo's synthetic history is not a sizing base.
 
 The custom checks add one row per check and run: up to 100 rows x 50 cells of jsonb for a row-count check that keeps its rows; the size of a row is not measured here.

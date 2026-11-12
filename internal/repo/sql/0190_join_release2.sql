@@ -8,6 +8,8 @@
 --     mssql_memory_grant_query among purge()'s monthly partition parents.
 --   task 177 D30 (0118): the darling_alert_findings arm; nothing for purge().
 --   task 177 D15 (0120): the mssql_sysevents_findings arm; nothing for purge() (the events live in mssql_health_components, already a monthly parent).
+--   task 177 D14 (0124): the mssql_cpu_findings arm; mssql_counter_sample, mssql_counter_read, mssql_session_summary,
+--     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
 -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -139,6 +141,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- task 177 D30 (0118): Darling's alert thresholds (PerformanceMonitor's alert set) over the stored reads
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.darling_alert_findings
+    UNION ALL
+    -- task 177 D14 (0124): other processes holding the CPU, a transaction open for a long time, slow data file writes
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_cpu', at FROM pgvigil.mssql_cpu_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
@@ -168,7 +173,9 @@ BEGIN
                          'mssql_pc_read', 'mssql_pc_sample', 'mssql_errorlog', 'mssql_health_components', 'mssql_trace_events',
                          'wal_state_sample', 'function_stats', 'slru_sample',
                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
-                         'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query')
+                         'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                         'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+                         'mssql_session_tempdb', 'mssql_activity_read')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then

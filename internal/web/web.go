@@ -280,6 +280,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
+	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)

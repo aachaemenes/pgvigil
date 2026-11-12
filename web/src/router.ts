@@ -89,7 +89,7 @@ export const mssqlInstanceTabs: Record<string, string> = {
   summary: 'Summary', performance: 'Performance', mssql_running: 'Running queries', mssql_slow: 'Slow queries', mssql_waits: 'Waits', mssql_waiting: 'Waiting tasks', mssql_deadlocks: 'Deadlocks',
   mssql_blocked: 'Blocked reports', findings: 'Findings', availability: 'Availability', mssqlbackups: 'Backups', mssqljobs: 'Jobs',
   mssqlstorage: 'Storage', mssqlfiles: 'Database files', rowversions: 'Row versions', mssqlconfig: 'Configuration', mssqlactions: 'Actions log', jobstimeline: 'Jobs timeline',
-  mssqlcpu: 'CPU', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
+  mssqlcpu: 'CPU', mssqlconnections: 'Connections', mssqlmemory: 'Memory', mssqlfileio: 'File IO', mssqltempdb: 'TempDB', mssqlqs: 'Query Store', counters: 'Metrics',
   mssqlprocs: 'Procedures', mssqlindexlocks: 'Index locks', mssqlproperties: 'Properties', mssqlaudit: 'Audit', mssqlplancache: 'Plan cache', mssqlindexes: 'Indexes', mssqlchecks: 'Checks',
   mssqlerrorlog: 'Error log', mssqltrace: 'Default trace', mssqlhealth: 'System health',
   // the instance's Reports folder (reports.ts)
@@ -102,7 +102,7 @@ export const mssqlInstanceGroups: TabGroup[] = [
   { key: 'checks', name: 'Checks', tabs: ['collectiondates'] },
   { key: 'logs', name: 'Logs', tabs: ['mssqlerrorlog', 'mssqltrace', 'mssqlhealth'] },
   { key: 'hadr', name: 'HA/DR', tabs: ['availability', 'mssqlbackups'] },
-  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
+  { key: 'perf', name: 'Performance', tabs: ['counters', 'mssqlcpu', 'mssqlconnections', 'mssqlmemory', 'mssqlfileio', 'mssqlqs', 'mssqlplancache', 'mssqlprocs', 'mssqlindexlocks', 'mssqlindexes'] },
   { key: 'storage', name: 'Storage', tabs: ['drives', 'dbspace', 'dbfiles', 'mssqltempdb', 'driveperf', 'mssqlstorage', 'mssqlfiles', 'rowversions'] },
   { key: 'jobs', name: 'Jobs', tabs: ['mssqljobs', 'jobstimeline'] },
   { key: 'conf', name: 'Configuration', tabs: ['mssqlconfig', 'mssqlchecks', 'mssqlproperties', 'mssqlaudit', 'mssqlactions'] },
