@@ -165,7 +165,9 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
     const kind = run.outcome === 'done' ? 'ok' : run.outcome === 'refused' ? 'warn' : 'crit';
     box.append(head, el('p', { class: 'meta' }, badge(run.outcome, kind),
       ` ${fmtNum(run.rows)} rows in ${fmtNum(run.duration_ms)} ms${run.sets.length > 1 ? `, ${run.sets.length} result sets` : ''}`));
-    if (run.error) box.append(errorBox(run.error));
+    // refused = the server or the procedure said no about this instance (a login, a right, a setting): its words as a
+    // plain note; failed = the call broke: an error box
+    if (run.error) box.append(run.outcome === 'refused' ? el('p', { class: 'meta refused', role: 'note' }, run.error) : errorBox(run.error));
     run.sets.forEach((s, i) => {
       if (run.sets.length > 1) box.append(el('h3', {}, `${many ? run.instance + ': ' : ''}result set ${i + 1}`));
       if (s.truncated) box.append(el('p', { class: 'meta' }, `Cut at ${fmtNum(s.rows.length)} rows (the report's row cap, or the run's 24 MB).`));
@@ -238,7 +240,8 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Custom reports'));
   const msg = el('p', { class: 'meta', role: 'status' });
   const newBtn = el('button', { type: 'button' }, 'New report'), folderBtn = el('button', { type: 'button' }, 'New folder');
-  if (!d.state.enabled) { newBtn.setAttribute('disabled', ''); folderBtn.setAttribute('disabled', ''); }
+  const off = d.state.enabled ? '' : 'Off here: ' + (d.state.reason ?? '');
+  if (off) for (const b of [newBtn, folderBtn]) { b.setAttribute('disabled', ''); b.title = off; }
   newBtn.addEventListener('click', () => go({ new: '1' }));
   const folderIn = el('input', { type: 'text', 'aria-label': 'New folder path (parts joined by /)', placeholder: 'Ops/Daily' }) as HTMLInputElement;
   folderBtn.addEventListener('click', async () => {
@@ -260,14 +263,14 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
     { key: 'description', wide: true },
     { key: 'updated_by', label: 'changed by' },
     { key: 'updated_at', label: 'changed', fmt: fmtTime },
-    { key: 'actions', label: 'actions', fmt: (_v, r) => reportActions(r as unknown as ReportDef, folders, msg, d.state.enabled) },
+    { key: 'actions', label: 'actions', fmt: (_v, r) => reportActions(r as unknown as ReportDef, folders, msg, off) },
   ];
   const tops = byFolder('');
   sec.append(el('h3', {}, 'Top level'), grid(tops as unknown as Row[], reportCols, 'No report at the top level.'));
   for (const f of folders) {
     const depth = f.split('/').length - 1;
     const h = el('h3', { style: `margin-left:${depth * 1.2}rem` }, 'Folder ' + f);
-    sec.append(h, folderActions(f, msg, d.state.enabled),
+    sec.append(h, folderActions(f, msg, off),
       grid(byFolder(f) as unknown as Row[], reportCols, 'No report in this folder.'));
   }
   if (!reports.length) sec.append(el('p', { class: 'empty' }, 'No custom report yet: New report saves the first one.'));
@@ -276,7 +279,7 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
 }
 
 // reportActions: Open, Edit, Move to folder, Delete (a second click confirms)
-function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, on: boolean): HTMLElement {
+function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, off: string): HTMLElement {
   const box = el('span', { class: 'row-actions' });
   const id = String(r.report_id);
   const edit = el('button', { type: 'button', class: 'link' }, 'Edit');
@@ -296,12 +299,12 @@ function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, on: bo
     try { const x = await post<{ detail: string }>('customreports', { op: 'delete', report_id: r.report_id }); msg.textContent = x.detail; location.reload(); }
     catch (e) { msg.textContent = e instanceof Error ? e.message : String(e); }
   });
-  if (!on) for (const b of [edit, move, del]) b.setAttribute('disabled', '');
+  if (off) for (const b of [edit, move, del]) { b.setAttribute('disabled', ''); b.title = off; }
   box.append(edit, ' ', to, dl, ' ', move, ' ', del);
   return box;
 }
 
-function folderActions(f: string, msg: HTMLElement, on: boolean): HTMLElement {
+function folderActions(f: string, msg: HTMLElement, off: string): HTMLElement {
   const name = el('input', { type: 'text', value: f, 'aria-label': `New path of the folder ${f}`, size: '18' }) as HTMLInputElement;
   const ren = el('button', { type: 'button', class: 'link' }, 'Rename');
   ren.addEventListener('click', async () => {
@@ -315,7 +318,10 @@ function folderActions(f: string, msg: HTMLElement, on: boolean): HTMLElement {
   });
   const add = el('button', { type: 'button', class: 'link' }, 'New report here');
   add.addEventListener('click', () => go({ new: '1', folder: f }));
-  if (!on) for (const b of [ren, del, add]) b.setAttribute('disabled', '');
+  if (off) for (const b of [ren, del, add]) { b.setAttribute('disabled', ''); b.title = off; }
+  // Rename waits for a new path: the same path would be refused as a move into itself
+  const same = () => { if (off) return; const unchanged = name.value.trim() === f; ren.disabled = unchanged; ren.title = unchanged ? 'Type the folder\'s new path first' : ''; };
+  name.addEventListener('input', same); same();
   return el('div', { class: 'toolbar' }, el('span', {}, name, ' ', ren), del, add);
 }
 
@@ -367,7 +373,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
 
   const inputs = def.params.map(p => paramInput(p, q));
   const runBtn = el('button', { type: 'button' }, 'Run');
-  if (!d.state.enabled) runBtn.setAttribute('disabled', '');
+  if (!d.state.enabled) { runBtn.setAttribute('disabled', ''); runBtn.title = 'Off here: ' + (d.state.reason ?? ''); }
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
     ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);

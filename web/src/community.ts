@@ -13,8 +13,10 @@ import { Ctx } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid } from './ui';
 import { InstanceRun, resultView, ResultSet, setGrid } from './customreports';
 
-interface Tool { id: string; name: string; group: string; engine: string; kind: string; url?: string; description: string; help?: string; installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[] }
-interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; error?: string; tools: Tool[]; log: Table | null }
+// a need: what the tool lacks here before it can run and the way to get it (hard = the tool cannot run without it)
+interface Need { what: string; how?: string; hard: boolean }
+interface Tool { id: string; name: string; group: string; engine: string; kind: string; url?: string; description: string; help?: string; installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[]; needs?: Need[] }
+interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; error?: string; tools: Tool[]; log: Table | null; needs?: Need[] }
 interface ProcParam { name: string; type: string; max_length: number; help?: string }
 interface Params { installed: boolean; params: ProcParam[]; left_out: string[]; help_sets: ResultSet[]; help_error?: string; static_params?: { name: string; type: string; label?: string; default?: string }[] }
 interface GlennQuery { n: number; name: string; about: string; text: string }
@@ -62,8 +64,12 @@ async function instanceTools(instance: number, database = ''): Promise<HTMLEleme
       ? 'Each procedure runs as the instance\'s read login (never a sysadmin) with the parameters you give, under the timeout; pgvigil never installs one and never passes a parameter that writes a table.'
       : 'Each read runs on the instance\'s monitoring login in a read-only transaction, under the timeout and a 2 s lock timeout.')
     + ' Every run is audited.'));
-  if (!d.enabled) box.append(el('p', { class: 'meta' }, 'Running is off here: ' + (d.reason ?? '')));
-  if (d.error) box.append(errorBox(d.error));
+  // what every tool here lacks, said before any click: each need and the way to get it (the server's own state)
+  const all = d.needs ?? [];
+  if (all.length) box.append(needsBox(`Before a tool can run on ${d.instance}:`, all));
+  else if (!d.enabled) box.append(el('p', { class: 'meta' }, 'Running is off here: ' + (d.reason ?? '')));
+  // an error the server did not turn into a need (the procedures' list could not be read)
+  if (d.error && !all.some(n => n.what.includes(d.error ?? ''))) box.append(errorBox(d.error));
   if (d.engine === 'sqlserver') {
     const db = el('input', { type: 'text', value: d.database ?? 'master', 'aria-label': 'Database the procedures are installed in', size: '16' }) as HTMLInputElement;
     const again = el('button', { type: 'button' }, 'Look again');
@@ -78,6 +84,7 @@ async function instanceTools(instance: number, database = ''): Promise<HTMLEleme
       { key: 'name', label: 'tool', fmt: (_v, r) => openButton(r as unknown as Tool, instance, d, out) },
       { key: 'description', wide: true },
       { key: 'installed', fmt: (v, r) => v === true ? badge('installed in ' + String(r.where ?? ''), 'ok') : v === false ? notInstalled(r as unknown as Tool) : r.kind === 'proc' ? 'not read' : '' },
+      { key: 'needs', label: 'before it runs', wide: true, fmt: (_v, r) => needsCell(r as unknown as Tool, d) },
     ]));
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
@@ -88,9 +95,30 @@ function notInstalled(t: Tool): HTMLElement {
   return el('span', {}, badge('not installed', 'warn'), ' get it from ', el('a', { href: t.url ?? '#', rel: 'noopener noreferrer', target: '_blank' }, t.url ?? ''));
 }
 
+// blockers: the words of what keeps a tool from running here (the instance's needs, then the tool's own hard ones)
+function blockers(t: Tool, d: Tools): string[] {
+  const hard = [...(d.needs ?? []), ...(t.needs ?? [])].filter(n => n.hard).map(n => n.what + (n.how ? ' - ' + n.how : ''));
+  if (!hard.length && !d.enabled) hard.push(d.reason || 'running is off on this server');
+  return hard;
+}
+
+function needsBox(title: string, needs: Need[]): HTMLElement {
+  return el('div', { class: 'needs', role: 'note' }, el('p', {}, title),
+    el('ul', {}, ...needs.map(n => el('li', {}, n.what, ...(n.how ? [el('br'), 'How: ' + n.how] : [])))));
+}
+
+// needsCell: the tool's own needs beside it ('ready' when nothing stops it); the instance's are said above the list
+function needsCell(t: Tool, d: Tools): HTMLElement | string {
+  const own = t.needs ?? [];
+  if (!own.length) return (d.needs ?? []).some(n => n.hard) || !d.enabled ? 'see above the list' : badge('ready', 'ok');
+  return el('span', {}, ...own.flatMap((n, i) => [...(i ? [el('br')] : []), badge(n.hard ? 'needs' : 'note', n.hard ? 'warn' : ''), ' ' + n.what + (n.how ? '. How: ' + n.how : '')]));
+}
+
 function openButton(t: Tool, instance: number, d: Tools, out: HTMLElement): HTMLElement {
   const b = el('button', { type: 'button', class: 'link' }, t.name);
-  if (!d.enabled || t.installed === false) b.setAttribute('disabled', '');
+  const why = blockers(t, d);
+  // off: the reason on hover and, for a screen reader, in its name; the same words stand beside it (needs)
+  if (why.length) { b.setAttribute('disabled', ''); b.title = why.join('; '); b.setAttribute('aria-label', `${t.name} (off: ${why[0]})`); }
   b.addEventListener('click', async () => {
     out.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
     try { out.replaceChildren(t.kind === 'script' ? glennPanel(t, instance, d.database ?? '') : await toolPanel(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }

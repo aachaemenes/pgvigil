@@ -85,7 +85,20 @@
 #     styles carry the crit fill FFAB1F26 and the ok fill FF006638, the long row's name length cell styled with the
 #     crit fill and the others with the ok fill (openpyxl opens it where it is installed); axe-core (WCAG 2.1 A and
 #     AA) finds 0 violations on the tree, the report page with its result, the editor, and the community page of
-#     pgcr-msr with sp_WhoIsActive's form open and of pgcr-a, light and dark.
+#     pgcr-msr with sp_WhoIsActive's form open and of pgcr-a, light and dark. [B3] On pgcr-msa's community page (sa):
+#     the box 'Before a tool can run on pgcr-msa-<n>:' names sysadmin, every tool button is disabled with 'sysadmin'
+#     in its hover text, and a disabled link button is drawn off (no underline, not the accent colour: the wiring's
+#     app.css line); on pgcr-msr's: the column 'before it runs', sp_WhoIsActive 'ready'.
+#  N. [B3] before the click (GET /api/community says what a tool lacks here and how to get it; nothing is run for it):
+#     pgcr-msr: no instance need, enabled; sp_LogHunter one hard need naming xp_readerrorlog with 'GRANT EXECUTE ON
+#     sys.xp_readerrorlog TO [pgcr_reader] in master'; sp_HumanEventsBlockViewer one soft need naming 'blocked process
+#     threshold'; no other tool a need. sp_LogHunter run as it is: 200, outcome refused, 'sp_LogHunter refused: Current
+#     user does not have EXECUTE permission on xp_readerrorlog' (the procedure's own RAISERROR, not 'failed'); the grant
+#     made: its need gone and its run done. sp_HumanEventsBlockViewer with @session_name system_health: done. pgcr-msa
+#     (sa): enabled false, one hard instance need naming sysadmin with 'without sysadmin'. The -no-login serve on
+#     pgcr-msr: a hard instance need naming -no-login with 'pgvigil user add'. pgcr-a: Top statements one hard need
+#     naming the pg_stat_statements extension in the target database with CREATE EXTENSION; the extension created
+#     there: the need gone and Top statements done. pgcr-su: enabled false, a hard instance need naming superuser.
 #  A. the audit: the log's run rows (run, community_run, community_help) = the runs this proof made.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -442,6 +455,39 @@ fi
 [[ $(crun "{\"instance_id\":$SID,\"tool\":\"pg_running\"}") == 200 && $(js "d['runs'][0]['outcome']") == refused && $(js "d['runs'][0]['error']") == *superuser* ]] || fail "Q: the superuser: $(cat "$WORK/body")"
 ok "Q: 10 reads; running, settings, table sizes (t); the superuser refused"
 
+# ---- N: before the click (task B3) -------------------------------------------------------------------------------------------
+tl() { python3 -c "import json; d=json.load(open('$WORK/body')); t={x['id']: x for x in d['tools']}; print($1)"; }
+if [[ -z "$SKIP_MSSQL" ]]; then
+  [[ $(getc "community?instance=$MRID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "d['enabled']") == True ]] || fail "N: $MSR's instance needs: $(head -c 600 "$WORK/body")"
+  [[ $(tl "[n['hard'] for n in t['sp_LogHunter']['needs']]") == "[True]" && $(tl "t['sp_LogHunter']['needs'][0]['what']") == *xp_readerrorlog* \
+     && $(tl "t['sp_LogHunter']['needs'][0]['how']") == *"GRANT EXECUTE ON sys.xp_readerrorlog TO [pgcr_reader]"* ]] || fail "N: sp_LogHunter's need: $(tl "t['sp_LogHunter']['needs']")"
+  [[ $(tl "[n['hard'] for n in t['sp_HumanEventsBlockViewer']['needs']]") == "[False]" && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == *"blocked process threshold"* ]] || fail "N: sp_HumanEventsBlockViewer's note: $(tl "t['sp_HumanEventsBlockViewer']['needs']")"
+  [[ $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['sp_HumanEventsBlockViewer', 'sp_LogHunter']" ]] || fail "N: other tools with a need: $(tl "[(x['id'], x['needs']) for x in d['tools'] if x['needs']]")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == refused \
+     && $(js "d['runs'][0]['error']") == "sp_LogHunter refused: Current user does not have EXECUTE permission on xp_readerrorlog"* ]] || fail "N: sp_LogHunter without the right: $(head -c 600 "$WORK/body")"
+  sq "GRANT EXECUTE ON sys.xp_readerrorlog TO pgcr_reader;" >/dev/null || fail "N: the grant"
+  [[ $(getc "community?instance=$MRID") == 200 && $(tl "t['sp_LogHunter']['needs']") == "[]" ]] || fail "N: sp_LogHunter's need after the grant: $(tl "t['sp_LogHunter']['needs']")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_LogHunter\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_LogHunter with the right: $(head -c 600 "$WORK/body")"
+  [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: sp_HumanEventsBlockViewer on system_health: $(head -c 600 "$WORK/body")"
+  [[ $(getc "community?instance=$MAID") == 200 && $(tl "d['enabled']") == False && $(tl "[n['hard'] for n in d['needs']]") == "[True]" \
+     && $(tl "d['needs'][0]['what']") == *sysadmin* && $(tl "d['needs'][0]['how']") == *"without sysadmin"* ]] || fail "N: the sa instance's need: $(tl "d['needs']")"
+  [[ $(code "$U2/api/community?instance=$MRID") == 200 && $(tl "d['needs'][0]['what']") == *-no-login* && $(tl "d['needs'][0]['how']") == *"pgvigil user add"* && $(tl "d['needs'][0]['hard']") == True ]] || fail "N: the -no-login serve's need: $(head -c 600 "$WORK/body")"
+  ok "N: $MSR: sp_LogHunter needs EXECUTE on xp_readerrorlog (the GRANT line), refused in its own words, granted then done; the blocked process report a note, system_health done; sa and -no-login named before the click"
+fi
+[[ $(getc "community?instance=$AID") == 200 && $(tl "len(d['needs'])") == 0 && $(tl "[n['hard'] for n in t['pg_top_statements']['needs']]") == "[True]" \
+   && $(tl "t['pg_top_statements']['needs'][0]['what']") == *"pg_stat_statements extension in the database $TGT"* && $(tl "t['pg_top_statements']['needs'][0]['how']") == *"CREATE EXTENSION pg_stat_statements"* \
+   && $(tl "sorted(x['id'] for x in d['tools'] if x['needs'])") == "['pg_top_statements']" ]] || fail "N: $INSTA's needs: $(tl "(d['needs'], [(x['id'], x['needs']) for x in d['tools'] if x['needs']])")"
+tq "create extension if not exists pg_stat_statements" || fail "N: create extension pg_stat_statements in $TGT"
+[[ $(getc "community?instance=$AID") == 200 ]] || fail "N: GET after the extension"
+if [[ $(tl "t['pg_top_statements']['needs']") == "[]" ]]; then
+  [[ $(crun "{\"instance_id\":$AID,\"tool\":\"pg_top_statements\",\"params\":{}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: Top statements with the extension: $(head -c 600 "$WORK/body")"
+  ok "N: $INSTA: Top statements needs pg_stat_statements in $TGT (CREATE EXTENSION); created, the need gone, done"
+else
+  NOTPROVEN+=("N: Top statements after CREATE EXTENSION still needs: $(tl "t['pg_top_statements']['needs'][0]['what']") (this cluster does not load pg_stat_statements)")
+fi
+[[ $(getc "community?instance=$SID") == 200 && $(tl "d['enabled']") == False && $(tl "d['needs'][0]['what']") == *superuser* && $(tl "d['needs'][0]['hard']") == True ]] || fail "N: the superuser instance's need: $(tl "d['needs']")"
+ok "N: $INSTS: the superuser named before the click"
+
 # ---- A: the audit --------------------------------------------------------------------------------------------------------
 [[ $(runlog) == "$(nruns)" ]] || fail "A: $(runlog) run rows for $(nruns) runs"
 ok "A: $(nruns) runs, $(nruns) run rows in the log"
@@ -456,7 +502,7 @@ if [[ -n "${PGVIGIL_SKIP_PAGES:-}" ]]; then NOTPROVEN+=("NOT PROVEN (PAGES): PGV
   for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
   COOKIE=$(awk '$6 == "pgvigil_session" {print $7}' "$JAR")
   cat > "$WORK/pages.mjs" <<'JS'
-const [port, U, axePath, dl, cookie, srep, msr, pga] = process.argv.slice(2);
+const [port, U, axePath, dl, cookie, srep, msr, pga, msa] = process.argv.slice(2);
 const fs = await import('node:fs');
 const axeSrc = fs.readFileSync(axePath, 'utf8');
 const ver = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
@@ -513,6 +559,16 @@ for (const theme of ['light', 'dark']) {
     if (!await until(`[...document.querySelectorAll('main button')].some(b => b.textContent === 'Run sp_WhoIsActive')`)) throw new Error('the sp_WhoIsActive form did not open');
     await axe(`${theme} community sqlserver`);
   }
+  if (msa && theme === 'light') {
+    // B3: before the click - the reader's page has the 'before it runs' column; the sa page says why every tool is off
+    await open(`#/community?i=${msr}`, `[...document.querySelectorAll('main th')].some(h => /before it runs/.test(h.textContent))`);
+    out.msrReady = await ev(`(() => { const b = [...document.querySelectorAll('main button.link')].find(x => x.textContent === 'sp_WhoIsActive'); return b?.closest('tr')?.lastElementChild?.textContent.trim() ?? null; })()`);
+    await open(`#/community?i=${msa}`, `!!document.querySelector('main .needs')`);
+    out.msa = await ev(`(() => { const btns = [...document.querySelectorAll('main table.grid button.link')]; const cs = btns[0] ? getComputedStyle(btns[0]) : null;
+      const probe = document.createElement('span'); probe.style.color = 'var(--accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
+      return { box: document.querySelector('main .needs')?.textContent ?? '', n: btns.length, off: btns.filter(b => b.disabled && /sysadmin/.test(b.title)).length,
+        deco: cs?.textDecorationLine ?? '', color: cs?.color ?? '', accent }; })()`);
+  }
   await open(`#/community?i=${pga}`, `[...document.querySelectorAll('main h3')].some(h => h.textContent === 'pgvigil reads')`);
   await axe(`${theme} community postgres`);
 }
@@ -520,13 +576,19 @@ console.log(JSON.stringify(out));
 // the two CDP sockets keep node alive after the last line (Node 26's WebSocket): close them and exit, or the proof waits forever
 ws.close(); bws.close(); process.exit(0);
 JS
-  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
+  timeout 900 node "$WORK/pages.mjs" "$CDP" "$U/" "$WORK/node_modules/axe-core/axe.min.js" "$WORK/dl" "$COOKIE" "$SREP" "${MRID:-}" "$AID" "${MAID:-}" > "$WORK/pages.json" 2>"$WORK/pages.err" || fail "U: the page driver: $(tail -5 "$WORK/pages.err")"
   python3 - "$WORK/pages.json" "$WORK/dl" "$INSTL" "${PGVIGIL_PYLIB:-}" <<'PY' || fail "U: see above"
 import json, sys, zipfile, re, os
 d = json.load(open(sys.argv[1])); dl = sys.argv[2]; long_name = sys.argv[3]; pylib = sys.argv[4]
 bad = [p for p in d['pages'] if p['violations']]
 for p in d['pages']:
     print(('viol ' if p['violations'] else 'ok   ') + 'U: axe ' + p['label'] + ': ' + (json.dumps(p['violations']) if p['violations'] else '0 violations'))
+m = d.get('msa')
+if m is not None:
+    assert m['n'] == 14 and m['off'] == 14 and 'sysadmin' in m['box'] and m['box'].startswith('Before a tool can run on'), f"U: the sa page: {m['off']} of {m['n']} tool buttons off with 'sysadmin' on hover; its box: {m['box'][:200]!r}"
+    assert m['deco'] == 'none' and m['color'] != m['accent'], f"U: a disabled tool button is drawn like a link: text-decoration {m['deco']!r}, colour {m['color']} (accent {m['accent']}) - the wiring's app.css line"
+    assert d.get('msrReady') == 'ready', f"U: sp_WhoIsActive's 'before it runs' cell on pgcr-msr: {d.get('msrReady')!r}"
+    print(f"ok   U: [B3] pgcr-msa: 'Before a tool can run' names sysadmin, {m['off']} of {m['n']} tool buttons off with it on hover, drawn off ({m['color']}, no underline); pgcr-msr: sp_WhoIsActive 'ready'")
 cells = d['cells'] or []
 assert cells, 'U: no rows read from the report grid'
 for c in cells:

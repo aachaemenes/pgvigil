@@ -42,6 +42,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	mssqldb "github.com/microsoft/go-mssqldb"
 )
 
 // communityTool is one entry of the catalogue.
@@ -358,6 +359,109 @@ type toolState struct {
 	communityTool
 	Installed *bool  `json:"installed"`
 	Where     string `json:"where,omitempty"`
+	// what the tool needs before it can run on this instance (the page says it before the click)
+	Needs []toolNeed `json:"needs"`
+}
+
+// toolNeed is one thing a tool lacks before it can run here, in the page's words: what is missing and the way to get
+// it. A hard need keeps the tool's button off (its words on hover and beside it); a soft one is a note beside a tool
+// that still runs.
+type toolNeed struct {
+	What string `json:"what"`
+	How  string `json:"how,omitempty"`
+	Hard bool   `json:"hard"`
+}
+
+// communityOff is what this server lacks for any community tool to run, with the way to get it; nil = nothing. The
+// same states as customReportsOff, in the Community tools page's words.
+func (s *Server) communityOff() *toolNeed {
+	switch {
+	case s.auth == nil:
+		return &toolNeed{What: "a signed-in user: this server was started with -no-login, and a community tool runs only for a user who signed in (each run is audited under that name)",
+			How: "start pgvigil serve without -no-login and add a user with 'pgvigil user add <name>'", Hard: true}
+	case s.actions == nil:
+		return &toolNeed{What: "the actions door: this server runs without one, and each run is audited through it",
+			How: "serve with the configuration file: its repository dsn is the actions door's audit login (docs/customreports.md)", Hard: true}
+	case s.actions.audit == nil:
+		w := "the actions door's audit login: it is not connected"
+		if s.actions.off != "" {
+			w = "the actions door's audit login: it is off (" + s.actions.off + ")"
+		}
+		return &toolNeed{What: w + ", and each run is audited through it",
+			How: "the repository dsn of the configuration, a login in pgvigil_collector (docs/customreports.md); serve's log names why it did not connect", Hard: true}
+	}
+	return nil
+}
+
+// msToolNeeds reads, on the read login's connection, what two procedures check before they refuse (their own tests):
+// sp_LogHunter needs EXECUTE on xp_readerrorlog (unless Amazon RDS's reader is there), sp_HumanEventsBlockViewer the
+// blocked process report (unless its @session_name is system_health). A read that fails adds nothing: the run then
+// shows the procedure's own words.
+func msToolNeeds(ctx context.Context, conn *sql.Conn) map[string][]toolNeed {
+	var canRead, rds, threshold int
+	var login string
+	err := conn.QueryRowContext(ctx, `SELECT ISNULL(HAS_PERMS_BY_NAME(N'master.dbo.xp_readerrorlog', N'OBJECT', N'EXECUTE'), 0),
+       CASE WHEN OBJECT_ID(N'rdsadmin.dbo.rds_read_error_log', N'P') IS NULL THEN 0 ELSE 1 END,
+       ISNULL((SELECT CONVERT(int, c.value_in_use) FROM sys.configurations AS c WHERE c.name = N'blocked process threshold (s)'), -1),
+       SUSER_SNAME()`).Scan(&canRead, &rds, &threshold, &login)
+	out := map[string][]toolNeed{}
+	if err != nil {
+		return out
+	}
+	if canRead == 0 && rds == 0 {
+		out["sp_LogHunter"] = []toolNeed{{What: "EXECUTE on xp_readerrorlog for the read login " + login + ": sp_LogHunter reads the error log through it and refuses without it",
+			How: "USE master; CREATE USER " + msQuote(login) + " FOR LOGIN " + msQuote(login) + "; (if it has no user there) GRANT EXECUTE ON sys.xp_readerrorlog TO " + msQuote(login) + ";", Hard: true}}
+	}
+	if threshold == 0 {
+		out["sp_HumanEventsBlockViewer"] = []toolNeed{{What: "the blocked process report is off on this server (blocked process threshold 0): sp_HumanEventsBlockViewer refuses unless @session_name is system_health",
+			How: "a sysadmin turns it on: EXECUTE sys.sp_configure 'show advanced options', 1; EXECUTE sys.sp_configure 'blocked process threshold', 5; RECONFIGURE; - or run it with @session_name system_health"}}
+	}
+	return out
+}
+
+// pgToolNeeds connects as the monitoring login (read-only, as a run does) and reads what the reads need: a login a run
+// would refuse (a superuser or a server-file role) is the instance's need; Top statements needs pg_stat_statements
+// created in the login's database and loaded at start.
+func pgToolNeeds(ctx context.Context, dsn, name string) (inst []toolNeed, tools map[string][]toolNeed) {
+	tools = map[string][]toolNeed{}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return []toolNeed{{What: "the monitoring login's dsn for " + name + ": it does not parse", How: "correct the instance's dsn in the configuration file", Hard: true}}, tools
+	}
+	cfg.ConnectTimeout = 10 * time.Second
+	cfg.RuntimeParams["application_name"] = "pgvigil-community"
+	cfg.RuntimeParams["default_transaction_read_only"] = "on"
+	cfg.RuntimeParams["statement_timeout"] = "5000"
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return []toolNeed{{What: "a connection to " + name + " on its monitoring login: " + err.Error(), How: "check the instance's dsn and that this server reaches it", Hard: true}}, tools
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, tools
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if why, err := pgRefusal(ctx, tx); err == nil && why != "" {
+		return []toolNeed{{What: "a monitoring login a run accepts: " + why, How: "give the instance a login in pg_monitor without those roles", Hard: true}}, tools
+	}
+	var db string
+	var ext bool
+	if err := tx.QueryRow(ctx, `SELECT current_database(), EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')`).Scan(&db, &ext); err != nil {
+		return nil, tools
+	}
+	if !ext {
+		tools["pg_top_statements"] = []toolNeed{{What: "the pg_stat_statements extension in the database " + db + ": it is not created there",
+			How: "CREATE EXTENSION pg_stat_statements; in " + db + " (a superuser or the database's owner), with pg_stat_statements in shared_preload_libraries (a restart)", Hard: true}}
+		return nil, tools
+	}
+	// created but perhaps not loaded: the view itself says so
+	var one int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM pg_stat_statements LIMIT 1`).Scan(&one); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		tools["pg_top_statements"] = []toolNeed{{What: "pg_stat_statements readable in " + db + ": " + err.Error(),
+			How: "add pg_stat_statements to shared_preload_libraries and restart the server", Hard: true}}
+	}
+	return nil, tools
 }
 
 // Community is GET /api/community?instance=N&database=D.
@@ -388,13 +492,19 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		Error    string      `json:"error,omitempty"`
 		Tools    []toolState `json:"tools"`
 		Log      *table      `json:"log"`
-	}{Instance: name, Engine: engine, Tools: []toolState{}}
+		// what every tool here lacks before it can run (the server's state, the instance's login), with the way to get it
+		Needs []toolNeed `json:"needs"`
+	}{Instance: name, Engine: engine, Tools: []toolState{}, Needs: []toolNeed{}}
 	out.Reason = s.customReportsOff()
+	if n := s.communityOff(); n != nil {
+		out.Needs = append(out.Needs, *n)
+	}
 	for _, t := range communityTools {
 		if t.Engine == engine {
-			out.Tools = append(out.Tools, toolState{communityTool: t})
+			out.Tools = append(out.Tools, toolState{communityTool: t, Needs: []toolNeed{}})
 		}
 	}
+	per := map[string][]toolNeed{}
 	switch {
 	case engine == "sqlserver":
 		db = msDB(db)
@@ -402,6 +512,8 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		dsn := s.msDoorDSN(name)
 		if dsn == "" {
 			out.Reason = firstNonEmpty(out.Reason, "instance "+name+" has no read login configured on this server")
+			out.Needs = append(out.Needs, toolNeed{What: "a read login for " + name + ": none is configured on this server",
+				How: "give the instance a dsn in the configuration file with a login that is not a sysadmin (docs/sqlserver.md: VIEW SERVER STATE, VIEW ANY DEFINITION, CONNECT ANY DATABASE)", Hard: true})
 			break
 		}
 		dbc, conn, why, err := openMS(ctx, dsn, "pgvigil-community")
@@ -409,9 +521,13 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 			out.Reason = firstNonEmpty(out.Reason, why)
 			if err != nil {
 				out.Error = err.Error()
+				out.Needs = append(out.Needs, toolNeed{What: "a connection to " + name + " on its read login: " + err.Error(), How: "check the instance's dsn and that this server reaches it", Hard: true})
+			} else {
+				out.Needs = append(out.Needs, toolNeed{What: why, How: "give the instance a read login without sysadmin (docs/sqlserver.md)", Hard: true})
 			}
 			break
 		}
+		per = msToolNeeds(ctx, conn)
 		names := []string{}
 		for _, t := range out.Tools {
 			if t.Kind == "proc" {
@@ -452,11 +568,28 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 				out.Tools[i].Installed = &yes
 				if yes {
 					out.Tools[i].Where = db + ".dbo"
+				} else {
+					per[out.Tools[i].ID] = []toolNeed{{What: out.Tools[i].Name + " installed in " + db + ": it is not",
+						How: "install it from " + out.Tools[i].URL + " (pgvigil never installs one), or name above the database it is installed in", Hard: true}}
 				}
 			}
 		}
 	case s.pgDoorDSN(name) == "":
 		out.Reason = firstNonEmpty(out.Reason, "instance "+name+" has no monitoring login configured on this server")
+		out.Needs = append(out.Needs, toolNeed{What: "a monitoring login for " + name + ": none is configured on this server",
+			How: "give the instance a dsn in the configuration file with a login in pg_monitor, not a superuser", Hard: true})
+	default:
+		inst, tools := pgToolNeeds(ctx, s.pgDoorDSN(name), name)
+		if len(inst) > 0 {
+			out.Reason = firstNonEmpty(out.Reason, inst[0].What)
+			out.Needs = append(out.Needs, inst...)
+		}
+		per = tools
+	}
+	for i := range out.Tools {
+		if n := per[out.Tools[i].ID]; n != nil {
+			out.Tools[i].Needs = n
+		}
 	}
 	out.Enabled = out.Reason == ""
 	out.Log, err = s.query(ctx, sqlCommunityLog, id)
@@ -731,6 +864,12 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		_ = db.Close()
 		run.finish(t0, sets, "", err)
+		// a procedure that checks its own prerequisites says no with RAISERROR (message 50000, severity 16 or under):
+		// that is its answer about this server (a right, a setting, nothing to read), not a failed call
+		var me mssqldb.Error
+		if errors.As(err, &me) && me.Number == 50000 && me.Class <= 16 {
+			run.Outcome, run.Error = "refused", t.Name+" refused: "+strings.TrimSpace(me.Message)
+		}
 	}
 	run.Statement = stmt
 	actx, acancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditBudget)

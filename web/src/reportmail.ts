@@ -188,7 +188,7 @@ function dialog(title: string, what: string | Node, go: string, fields: HTMLElem
   const need = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   let busy = false, done = false;
-  const check = () => { const w = done ? '' : invalid(); need.textContent = w ? `${go} needs ${w}.` : ''; ok.disabled = busy || done || w !== ''; };
+  const check = () => { const w = done ? '' : invalid(); need.textContent = w ? `${go} needs ${w}.` : ''; ok.disabled = busy || done || w !== ''; ok.title = w ? need.textContent : ''; };
   const form = el('form', { method: 'dialog' }, el('h3', {}, title), el('p', {}, what),
     ...fields.map(f => el('div', { style: 'margin:.3rem 0' }, f)), need, msg, el('div', { style: 'margin-top:.6rem' }, ok, ' ', ...extra.flatMap(x => [x, ' ']), no));
   form.addEventListener('input', check);
@@ -281,6 +281,7 @@ async function openMail(ctx: Ctx, root: () => HTMLElement | null) {
     return `${res.detail} (${fmtNum(body.rows)} rows in ${fmtNum(body.grids)} grid${body.grids === 1 ? '' : 's'})`;
   }, invalid, [sched]);
   sched.disabled = !w.writable;
+  if (!w.writable) sched.title = w.reason ?? '';
   sched.addEventListener('click', () => {
     (sched.closest('dialog') as HTMLDialogElement | null)?.close();
     sched.closest('dialog')?.remove();
@@ -399,7 +400,7 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
 
   const button = (label: string, aria: string, run: () => void) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
-    if (!door0.writable) b.disabled = true; else b.addEventListener('click', run);
+    if (!door0.writable) { b.disabled = true; b.title = door0.reason ?? ''; } else b.addEventListener('click', run);
     return b;
   };
   const confirmAct = (title: string, what: string, go: string, op: string, id: unknown) => dialog(title, what, go, [], () => act(op, id, go), () => '', [], redraw);

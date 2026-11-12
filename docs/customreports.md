@@ -143,8 +143,16 @@ A run that fails part-way shows the rows it read before the error, and the error
 Some procedures do more with more rights: sp_Blitz skips the checks a non-sysadmin cannot run and says so; sp_LogHunter
 reads the error log through `xp_readerrorlog` (`GRANT EXECUTE ON master.sys.xp_readerrorlog`, as the error log reader
 asks: [readers](sqlserver-readers.md)); sp_HumanEventsBlockViewer reads an Extended Events session that captures the
-blocked process report; sp_QuickieStore needs Query Store on in the database it reads. A run that lacks a right shows
-the procedure's own error.
+blocked process report; sp_QuickieStore needs Query Store on in the database it reads.
+
+The page says before the click what each tool lacks on that instance and how to get it, in a column beside the tool
+and, for what stops every tool there, in a box above the list: a server started with `-no-login` (sign in), the
+actions door's audit login, the instance's read or monitoring login (none configured, a sysadmin or superuser, a failed
+connection), a procedure not installed in the database named (its download page), sp_LogHunter without `EXECUTE` on
+`xp_readerrorlog` (the `GRANT` line), the blocked process report off for sp_HumanEventsBlockViewer (a note: it still
+reads system_health with `@session_name = system_health`), and on PostgreSQL the `pg_stat_statements` extension for
+Top statements. A tool that cannot run is off, its reason on hover. A run the procedure itself turns down (its own
+`RAISERROR`, message 50000) shows as refused with the procedure's words; a run that breaks shows the error.
 
 On PostgreSQL the page offers pgvigil's own diagnostic reads, run on the instance's monitoring login like a custom
 report (read-only, refused for a superuser), each in the database you name (empty = the login's own):
