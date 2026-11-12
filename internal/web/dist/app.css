@@ -204,7 +204,7 @@ form.login .error { margin: var(--sp-3) 0 0; }
 .u-legend.u-inline.u-live tr:has(.u-value:empty) th::after { content: ""; }
 .u-legend .u-marker { width: .875rem; height: calc(2 * var(--focus-w)); margin-right: var(--sp-1); border-width: var(--focus-w) 0 !important; border-radius: var(--r-xs); }
 .u-legend .u-value { color: var(--text); font-variant-numeric: var(--num); }
-.uplot .u-cursor-x { border-right: var(--bw) dashed var(--line-strong); }
+.uplot .u-cursor-x { border-right: var(--bw) dashed var(--text-faint); }
 .uplot .u-cursor-y { border-bottom: none; }
 .uplot .u-select { background: var(--select-fill); }
 .chart-state { display: flex; align-items: center; justify-content: center; min-height: 8rem; margin: var(--sp-2) 0 0; padding: var(--sp-4);

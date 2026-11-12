@@ -4,7 +4,7 @@ import { href, MAX_RANGE_MS, parse, window_ } from './router';
 import { copyText, el, saveBlob, showMenu } from './ui';
 import { exportChart } from './export';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
-import { axisLook, chartLook, chartState, rememberZoom, zoomReset } from './chartkit';
+import { axisLook, chartKind, chartLook, chartState, Measure, rememberZoom, zoomReset } from './chartkit';
 
 // live charts, destroyed before the next page is drawn (each holds window listeners)
 const live: uPlot[] = [];
@@ -103,7 +103,8 @@ function markHref(m: FrameMark): string {
 export interface ChartLine { value: number; label: string; kind?: 'threshold' | 'limit'; level?: 'warning' | 'critical'; y2?: boolean }
 export interface ChartOpts {
   stacked?: boolean;
-  bars?: boolean;                                                      // a distribution (chartkit chartKind 'bars'): each point a bar, not a line
+  bars?: boolean;                                                      // a count per step (chartkit chartKind 'bars'): each point a bar, not a line
+  measure?: Measure;                                                   // what the series measure: 'share' draws stacked, 'distribution' bars (chartkit chartKind)
   unit?: string;                                                       // the left axis's unit, written on the axis
   y2?: { keys: string[]; fmt?: (v: number) => string; unit?: string };  // series drawn against a second axis on the right
   lines?: ChartLine[];                                                 // threshold lines of the caller's own
@@ -128,8 +129,15 @@ const pageScope = () => { const h = location.hash.split('?'), q = new URLSearchP
 // A chart whose reads start well after the window's start, or that holds under three reads, says so under it (K09.02).
 export function lineChart(title: string, rows: Row[], series: { key: string; label: string }[],
                           fmt: (v: number) => string = v => v.toLocaleString(), o: ChartOpts = {}): HTMLElement {
+  if (o.measure) { const k = chartKind(o.measure); o = { ...o, stacked: o.stacked || k === 'stacked', bars: o.bars || k === 'bars' }; }
   const box = el('div', { class: 'chart' }, el('h3', {}, title));
-  if (rows.length < 2) { box.append(chartState('empty', rows.length ? 'Only one read in this window: a chart needs two.' : undefined)); return box; }
+  if (rows.length < 2) {
+    box.append(chartState('empty', rows.length ? 'Only one read in this window: a chart needs two.' : o.ownSpan ? 'No data in this span.' : undefined));
+    // a drag narrower than two reads leaves the charts empty: the way back stays (a frame later: a page may set the
+    // heading's words right after this returns)
+    requestAnimationFrame(() => { const r = zoomReset(); if (r && box.isConnected) box.querySelector('h3')?.append(' ', r); });
+    return box;
+  }
   const xs = rows.map(r => new Date(String(r.snapshot_at)).getTime() / 1000);
   const data: uPlot.AlignedData = [xs, ...series.map(s => rows.map(r => r[s.key] == null ? null : Number(r[s.key])))];
   const holder = el('div');
@@ -189,7 +197,7 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     // the time axis and the legend's time on the display zone's clock (the browser's own needs nothing); the zone is the
     // one the chart was built in: a chart still on the page after a change of zone keeps reading its own
     ...(zone === 'local' ? {} : { tzDate: (ts: number) => uPlot.tzDate(new Date(ts * 1000), zone) }),
-    scales: { x: { time: true },
+    scales: { x: { time: true, ...(o.bars && xs.length > 1 ? { range: (_u: uPlot, min: number, max: number): uPlot.Range.MinMax => { const half = (xs[xs.length - 1] - xs[0]) / (xs.length - 1) / 2; return [min - half, max + half]; } } : {}) },
       ...(o.stacked ? { y: { range: (_u: uPlot, _min: number, max: number): uPlot.Range.MinMax => [0, reach('y', max > 0 ? max * 1.05 : 1)] } } : ranged ? { y: { range: yRange('y') } } : {}),
       ...(on2.size && ranged ? { y2: { range: yRange('y2') } } : {}) },
     // a drag across the plot sets the page's range; the cursor of every chart on the page follows the one under the

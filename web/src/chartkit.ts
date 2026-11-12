@@ -6,8 +6,9 @@ import type uPlot from 'uplot';
 import { el } from './ui';
 import { parse, rangeLabel } from './router';
 
-// The chart a measure takes: a rate or a level over time is a line (one series may fill as an area); a share of a whole
-// over time is stacked areas, a share at one moment DBA Dash's pie or ring where Allen ordered one; a distribution is bars.
+// The chart a measure takes (lineChart's o.measure): a rate or a level over time is a line; a share of a whole over time
+// is stacked areas, a share at one moment DBA Dash's pie or ring where Allen ordered one; a distribution over time (a
+// count per step: events, runs, failures) is bars.
 export type Measure = 'rate' | 'level' | 'share' | 'distribution';
 export type ChartKind = 'line' | 'stacked' | 'bars';
 export const chartKind = (m: Measure): ChartKind => m === 'share' ? 'stacked' : m === 'distribution' ? 'bars' : 'line';
@@ -34,29 +35,40 @@ export function axisLook(look: ChartLook, time = false): uPlot.Axis {
 
 // The empty and the loading state, one shape everywhere a chart stands: a box of the chart's height in the panel with
 // its words in the middle. Empty says the window it looked at; loading is a status for a screen reader.
+// Both carry the class 'empty' too: the proofs' settle checks wait while a p.empty says 'Loading'.
 export function chartState(kind: 'empty' | 'loading', words?: string): HTMLElement {
   const text = words ?? (kind === 'loading' ? 'Loading the chart' : `No data in this window (${rangeLabel(parse())}).`);
-  return el('p', { class: 'chart-state ' + kind, ...(kind === 'loading' ? { role: 'status' } : {}) }, text);
+  return el('p', { class: `chart-state ${kind} empty`, ...(kind === 'loading' ? { role: 'status' } : {}) }, text);
 }
-// A chart's box holding only its title and a state: the placeholder a page draws while its rows load
+// A chart's box holding only its title and a state: the placeholder a page draws while its rows load (the screen tasks
+// 185-189 adopt it)
 export function chartPlaceholder(title: string, kind: 'empty' | 'loading' = 'loading', words?: string): HTMLElement {
   return el('div', { class: 'chart' }, el('h3', {}, title), chartState(kind, words));
 }
 
-// The way back from a zoom: a drag across a chart sets the page's range (the address, as before); the address it left
-// is kept for this tab, and while the page stands on the zoomed address each chart's heading offers 'Reset zoom' back
-// to it. Another address (a new page, a preset picked) forgets it.
+// The way back from a zoom: a drag across a chart sets the page's range (the address, as before). The address before
+// the first drag is kept for this tab with every address a drag led to from it (a second drag on a zoomed page keeps the
+// first one's way back; the browser's Back and Forward among them keep it too), and while the page stands on one of those
+// each chart's heading offers 'Reset zoom' back to the range before the first drag. A drag from any other address starts
+// a new chain.
 const BACK = 'pgvigil.zoomBack';
+interface ZoomChain { back: string; zoomed: string[] }
+function readChain(): ZoomChain | null {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(BACK) ?? 'null') as ZoomChain | null;
+    return v && typeof v.back === 'string' && Array.isArray(v.zoomed) ? v : null;
+  } catch { return null; }   // storage off or a bad value
+}
 export function rememberZoom(to: string) {
-  try { sessionStorage.setItem(BACK, JSON.stringify({ back: location.hash, to: to.startsWith('#') ? to : '#' + to })); } catch { /* storage off */ }
+  const dest = to.startsWith('#') ? to : '#' + to, here = location.hash || '#/';
+  if (dest === here) return;   // a drag that rounds to the range already shown
+  const c = readChain();
+  const chain: ZoomChain = c && c.zoomed.includes(here) ? { back: c.back, zoomed: [...c.zoomed, dest].slice(-20) } : { back: here, zoomed: [dest] };
+  try { sessionStorage.setItem(BACK, JSON.stringify(chain)); } catch { /* storage off: the drag still moves the range */ }
 }
 export function zoomBack(): string | undefined {
-  try {
-    const v = JSON.parse(sessionStorage.getItem(BACK) ?? 'null') as { back?: string; to?: string } | null;
-    if (v?.back && v.to === location.hash) return v.back;
-    if (v) sessionStorage.removeItem(BACK);
-  } catch { /* storage off or a bad value */ }
-  return undefined;
+  const c = readChain(), here = location.hash || '#/';
+  return c && c.zoomed.includes(here) && c.back !== here ? c.back : undefined;
 }
 export function zoomReset(): HTMLElement | null {
   const back = zoomBack();
