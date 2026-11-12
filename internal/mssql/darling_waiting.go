@@ -19,10 +19,13 @@ import (
 // request; migration 0112 keeps them.
 //
 // The read is PerformanceMonitor's waiting-tasks collector (PerformanceMonitor.Collectors/WaitingTasksCollector.cs,
-// Darling Data, MIT; the notice is in 0112 and THIRD-PARTY-NOTICES.md): its FROM and WHERE kept as they are, so the
-// rows are the rows PerformanceMonitor would store from the same server at the same moment, widened by the exec
-// context, the resource and the request's statement (the columns Get-DbaWaitingTask reads). Like PerformanceMonitor,
-// the benign wait types are left out after the read (pgvigil's own list, the one the Waits tab uses).
+// Darling Data, MIT; the notice is in 0112 and THIRD-PARTY-NOTICES.md): its FROM and WHERE kept as they are, and its
+// ignore list (IgnoredWaitDefaults.All, 126 wait types, as data below) applied after the read as it applies it, so
+// the rows are the rows PerformanceMonitor would store from the same server at the same moment, widened by the exec
+// context, the resource and the request's statement (the columns Get-DbaWaitingTask reads). Like PerformanceMonitor's,
+// the join to the request is by session: a MARS session's task can be paired with another request of the session.
+// THREADPOOL is counted apart, with no filter, as sp_PressureDetector reads it: a login queued for a worker has no
+// request yet, so the WHERE above would drop it.
 //
 // Decoding the resource: a lock resource names a database id and a hobt id (key, page, rid locks) or an object id
 // (object locks); a page latch names database:file:page, which sys.dm_db_page_info (SQL Server 2019 and later, Azure)
@@ -43,6 +46,50 @@ func (waitingCollector) Applies(in Info) (bool, string) {
 
 // waitingCap is the most tasks one read keeps (the longest waits first); the summary keeps the full count.
 const waitingCap = 2000
+
+// pageLatchCap is the most contended pages one read decodes through sys.dm_db_page_info (a read of a hot page waits
+// on the same latch it reports).
+const pageLatchCap = 10
+
+// pmIgnoredWaits is PerformanceMonitor's IgnoredWaitDefaults.All (v3.12.0, Darling Data, MIT), used as data: the wait
+// types its waiting-tasks collector leaves out.
+var pmIgnoredWaits = func() map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(`
+AZURE_IMDS_VERSIONS BMPALLOCATION BMPBUILD BMPREPARTITION BROKER_EVENTHANDLER BROKER_RECEIVE_WAITFOR
+BROKER_TASK_STOP BROKER_TO_FLUSH BROKER_TRANSMITTER BUFFERPOOL_SCAN CHECKPOINT_QUEUE CHKPT CLR_AUTO_EVENT
+CLR_MANUAL_EVENT CLR_SEMAPHORE COLUMNSTORE_BUILD_THROTTLE DAC_INIT DBMIRROR_DBM_EVENT DBMIRROR_DBM_MUTEX
+DBMIRROR_EVENTS_QUEUE DBMIRRORING_CMD DBMIRROR_SEND DBMIRROR_WORKER_QUEUE DIRTY_PAGE_POLL DIRTY_PAGE_TABLE_LOCK
+DISPATCHER_QUEUE_SEMAPHORE FSAGENT FT_IFTSHC_MUTEX FT_IFTS_SCHEDULER_IDLE_WAIT HADR_CLUSAPI_CALL
+HADR_FABRIC_CALLBACK HADR_FILESTREAM_IOMGR_IOCOMPLETION HADR_LOGCAPTURE_WAIT HADR_NOTIFICATION_DEQUEUE
+HADR_TIMER_TASK HADR_WORK_QUEUE KSOURCE_WAKEUP LAZYWRITER_SLEEP LOGMGR_QUEUE MEMORY_ALLOCATION_EXT
+ONDEMAND_TASK_QUEUE PARALLEL_REDO_DRAIN_WORKER PARALLEL_REDO_FLOW_CONTROL PARALLEL_REDO_LOG_CACHE
+PARALLEL_REDO_TRAN_LIST PARALLEL_REDO_TRAN_TURN PARALLEL_REDO_WORKER_SYNC PARALLEL_REDO_WORKER_WAIT_WORK
+PERFORMANCE_COUNTERS_RWLOCK PREEMPTIVE_OS_FLUSHFILEBUFFERS PREEMPTIVE_XE_CALLBACKEXECUTE PREEMPTIVE_XE_DISPATCHER
+PREEMPTIVE_XE_GETTARGETSTATE PREEMPTIVE_XE_SESSIONCOMMIT PREEMPTIVE_XE_TARGETFINALIZE PREEMPTIVE_XE_TARGETINIT
+PRINT_ROLLBACK_PROGRESS PURVIEW_POLICY_SDK_PREEMPTIVE_SCHEDULING PVS_PREALLOCATE PWAIT_ALL_COMPONENTS_INITIALIZED
+PWAIT_DIRECTLOGCONSUMER_GETNEXT PWAIT_EXTENSIBILITY_CLEANUP_TASK PWAIT_HADR_ACTION_COMPLETED
+PWAIT_HADR_CHANGE_NOTIFIER_TERMINATION_SYNC PWAIT_HADR_CLUSTER_INTEGRATION PWAIT_HADR_FAILOVER_COMPLETED
+PWAIT_HADR_JOIN PWAIT_HADR_OFFLINE_COMPLETED PWAIT_HADR_ONLINE_COMPLETED PWAIT_HADR_POST_ONLINE_COMPLETED
+PWAIT_HADR_SERVER_READY_CONNECTIONS PWAIT_HADRSIM PWAIT_HADR_WORKITEM_COMPLETED PWAIT_MASTERDBREADY QDS_ASYNC_QUEUE
+QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP QDS_PERSIST_TASK_MAIN_LOOP_SLEEP QDS_SHUTDOWN_QUEUE
+QUERY_EXECUTION_INDEX_SORT_EVENT_OPEN QUERY_TASK_ENQUEUE_MUTEX RBIO_COMM_RETRY REDO_THREAD_PENDING_WORK
+REQUEST_FOR_DEADLOCK_SEARCH RESOURCE_QUEUE RESOURCE_SEMAPHORE_MUTEX SECURITY_CNG_PROVIDER_MUTEX SERVER_IDLE_CHECK
+SLEEP_BUFFERPOOL_HELPLW SLEEP_DBSTARTUP SLEEP_DCOMSTARTUP SLEEP_MASTERDBREADY SLEEP_MASTERMDREADY
+SLEEP_MASTERUPGRADED SLEEP_MSDBSTARTUP SLEEP_PHYSMASTERDBREADY SLEEP_SYSTEMTASK SLEEP_TASK SLEEP_TEMPDBSTARTUP
+SNI_CRITICAL_SECTION SNI_HTTP_ACCEPT SOS_PROCESS_AFFINITY_MUTEX SOS_WORK_DISPATCHER SP_SERVER_DIAGNOSTICS_SLEEP
+SQLTRACE_BUFFER_FLUSH SQLTRACE_FILE_BUFFER SQLTRACE_FILE_READ_IO_COMPLETION SQLTRACE_FILE_WRITE_IO_COMPLETION
+SQLTRACE_INCREMENTAL_FLUSH_SLEEP SQLTRACE_WAIT_ENTRIES SQP_STATS_REPORTING UCS_SESSION_REGISTRATION
+VDI_CLIENT_OTHER WAITFOR WAIT_FOR_RESULTS WAITFOR_TASKSHUTDOWN WAIT_XTP_CKPT_CLOSE WAIT_XTP_HOST_WAIT
+WAIT_XTP_OFFLINE_CKPT_NEW_LOG WAIT_XTP_RECOVERY WINDOW_AGGREGATES_MULTIPASS XE_BUFFERMGR_ALLPROCESSED_EVENT
+XE_DISPATCHER_JOIN XE_DISPATCHER_WAIT XE_FILE_TARGET_TVF XE_LIVE_TARGET_TVF XE_TIMER_EVENT`) {
+		m[w] = true
+	}
+	return m
+}()
+
+// threadpoolSQL counts the tasks waiting for a worker with no filter (sp_PressureDetector's read).
+const threadpoolSQL = `SELECT COUNT(*) AS n, MAX(wait_duration_ms) AS longest FROM sys.dm_os_waiting_tasks WHERE wait_type = N'THREADPOOL'`
 
 // waitingSQL is PerformanceMonitor's query (WaitingTasksCollector.QueryText) with pgvigil's columns added; its WHERE
 // clause is unchanged, the PerformanceMonitor database test included (it is 0 on a server without one).
@@ -86,7 +133,7 @@ var (
 	reLockDB   = regexp.MustCompile(`\bdbid=(\d+)`)
 	reHobt     = regexp.MustCompile(`\bhobtid=(\d+)`)
 	reAssoc    = regexp.MustCompile(`\bassociatedObjectId=(\d+)`)
-	reObjID    = regexp.MustCompile(`\bobjid=(\d+)`)
+	reObjID    = regexp.MustCompile(`\bobjid=(-?\d+)`)
 	reFile     = regexp.MustCompile(`\bfileid=(\d+)`)
 	rePage     = regexp.MustCompile(`\bpageid=(\d+)`)
 	rePageLtch = regexp.MustCompile(`^\s*(\d+):(\d+):(\d+)\s*$`)
@@ -115,6 +162,16 @@ func parseResource(desc string) waitResource {
 		r.kind, r.dbid, r.hobt, r.file, r.page = "rid", num64(reLockDB, d), num64(reAssoc, d), num64(reFile, d), num64(rePage, d)
 	case strings.HasPrefix(d, "objectlock"):
 		r.kind, r.dbid, r.object = "object", num64(reLockDB, d), num64(reObjID, d)
+	case strings.HasPrefix(d, "hobtlock"):
+		r.kind, r.dbid, r.hobt = "hobt", num64(reLockDB, d), num64(reHobt, d)
+	case strings.HasPrefix(d, "allocunitlock"):
+		r.kind, r.dbid = "allocation unit", num64(reLockDB, d)
+	case strings.HasPrefix(d, "extentlock"):
+		r.kind, r.dbid = "extent", num64(reLockDB, d)
+	case strings.HasPrefix(d, "metadatalock"):
+		r.kind, r.dbid = "metadata", num64(reLockDB, d)
+	case strings.HasPrefix(d, "applicationlock"):
+		r.kind, r.dbid = "application", num64(reLockDB, d)
 	case strings.HasPrefix(d, "exchangeEvent"):
 		r.kind = "exchange"
 	default:
@@ -160,7 +217,7 @@ func (waitingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]c
 		}
 		w, _ := r["wait_type"].(string)
 		w = strings.TrimSpace(w)
-		if w == "" || benignWaits[w] {
+		if w == "" || pmIgnoredWaits[w] {
 			continue
 		}
 		r["wait_type"] = w
@@ -172,17 +229,21 @@ func (waitingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]c
 		return a > b
 	})
 	sessions := map[int64]bool{}
-	threadpool := 0
 	var longest int64
 	for i, t := range tasks {
 		s, _ := asInt(t["session_id"])
 		sessions[s] = true
-		if t["wait_type"] == "THREADPOOL" {
-			threadpool++
-		}
 		if ms, ok := asInt(t["wait_duration_ms"]); ok && (i == 0 || ms > longest) {
 			longest = ms
 		}
+	}
+	tp, err := QueryRows(ctx, conn, threadpoolSQL)
+	if err != nil {
+		return nil, err
+	}
+	var threadpool, tpLongest any = int64(0), nil
+	if len(tp) == 1 {
+		threadpool, tpLongest = tp[0]["n"], tp[0]["longest"]
 	}
 	total := len(tasks)
 	if len(tasks) > waitingCap {
@@ -202,7 +263,8 @@ func (waitingCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]c
 	}
 	summary := collect.Row{
 		"kind": "summary", "server_utc": serverUTC, "tasks": total, "stored": len(tasks), "sessions": len(sessions),
-		"threadpool": threadpool, "decode_note": strings.Join(notes, "; "), "read_ms": time.Since(start).Milliseconds(),
+		"threadpool": threadpool, "threadpool_longest_ms": tpLongest, "decode_note": strings.Join(notes, "; "),
+		"read_ms": time.Since(start).Milliseconds(),
 	}
 	if total > 0 {
 		summary["longest_ms"] = longest
@@ -219,6 +281,7 @@ func decodeResources(ctx context.Context, conn *sql.Conn, info Info, tasks []col
 	}
 	res := make([]waitResource, len(tasks))
 	byDB := map[int64]*want{}
+	pages := 0
 	for i, t := range tasks {
 		d, _ := t["resource_description"].(string)
 		res[i] = parseResource(d)
@@ -226,6 +289,12 @@ func decodeResources(ctx context.Context, conn *sql.Conn, info Info, tasks []col
 		r := res[i]
 		if r.dbid <= 0 || (r.hobt == 0 && r.object == 0 && r.kind != "page latch") {
 			continue
+		}
+		if r.kind == "page latch" {
+			if wt, _ := t["wait_type"].(string); !strings.HasPrefix(wt, "PAGELATCH_") || pages >= pageLatchCap {
+				continue
+			}
+			pages++
 		}
 		w := byDB[r.dbid]
 		if w == nil {
@@ -237,7 +306,7 @@ func decodeResources(ctx context.Context, conn *sql.Conn, info Info, tasks []col
 			w.hobts[r.hobt] = true
 		case r.object != 0:
 			w.objects[r.object] = true
-		case r.kind == "page latch" && len(w.pages) < 50:
+		case r.kind == "page latch":
 			w.pages[[2]int64{r.file, r.page}] = true
 		}
 	}
@@ -286,6 +355,8 @@ func decodeResources(ctx context.Context, conn *sql.Conn, info Info, tasks []col
  WHERE p.hobt_id IN (`+joinIDs(w.hobts)+`)`)
 			if err != nil {
 				notes = append(notes, "not decoded in "+name+": "+err.Error())
+			} else if len(rs) < len(w.hobts) {
+				notes = append(notes, fmt.Sprintf("%d of %d lock resources in %s not in its catalog to this login (VIEW DEFINITION there names them)", len(w.hobts)-len(rs), len(w.hobts), name))
 			}
 			for _, r := range rs {
 				h, _ := asInt(r["hobt_id"])
@@ -304,6 +375,8 @@ func decodeResources(ctx context.Context, conn *sql.Conn, info Info, tasks []col
  WHERE o.object_id IN (`+joinIDs(w.objects)+`)`)
 			if err != nil {
 				notes = append(notes, "objects not decoded in "+name+": "+err.Error())
+			} else if len(rs) < len(w.objects) {
+				notes = append(notes, fmt.Sprintf("%d of %d locked objects in %s not in its catalog to this login (a temporary object, or no VIEW DEFINITION there)", len(w.objects)-len(rs), len(w.objects), name))
 			}
 			for _, r := range rs {
 				o, _ := asInt(r["object_id"])

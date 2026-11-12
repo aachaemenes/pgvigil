@@ -22,6 +22,9 @@ func TestParseResource(t *testing.T) {
 		{"2:1:3", waitResource{kind: "page latch", dbid: 2, file: 1, page: 3}},
 		{" 10:4:118207 ", waitResource{kind: "page latch", dbid: 10, file: 4, page: 118207}},
 		{"exchangeEvent id=Pipe1f2c WaitType=e_waitPipeGetRow nodeId=2", waitResource{kind: "exchange"}},
+		{"objectlock lockPartition=0 objid=-1234567 subresource=FULL dbid=2 id=lock4 mode=Sch-M", waitResource{kind: "object", dbid: 2, object: -1234567}},
+		{"hobtlock hobtid=72057594038910976 subresource=FULL dbid=5 id=lock5 mode=IX", waitResource{kind: "hobt", dbid: 5, hobt: 72057594038910976}},
+		{"metadatalock subresource=STATS classid=object_id = 1, stats_id = 2 dbid=5 id=lock6 mode=Sch-S", waitResource{kind: "metadata", dbid: 5}},
 		{"ACCESS_METHODS_DATASET_PARENT", waitResource{kind: "other"}},
 		{"", waitResource{kind: ""}},
 	}
@@ -38,13 +41,16 @@ func TestBracket(t *testing.T) {
 	}
 }
 
-// TestPrintBenign prints the benign wait list when PGVIGIL_PRINT_BENIGN is set (proof-darling-waiting.sh applies the
-// same list to PerformanceMonitor's read before it compares).
+// TestPrintBenign prints the ignored wait list of the waiting-tasks read (PerformanceMonitor's) when
+// PGVIGIL_PRINT_BENIGN is set (proof-darling-waiting.sh applies it to PerformanceMonitor's query before it compares).
 func TestPrintBenign(t *testing.T) {
 	if os.Getenv("PGVIGIL_PRINT_BENIGN") == "" {
 		t.Skip("PGVIGIL_PRINT_BENIGN not set")
 	}
-	for w := range benignWaits {
+	if len(pmIgnoredWaits) != 126 {
+		t.Fatalf("PerformanceMonitor's list has 126 wait types, this one %d", len(pmIgnoredWaits))
+	}
+	for w := range pmIgnoredWaits {
 		fmt.Println("benign", w)
 	}
 }

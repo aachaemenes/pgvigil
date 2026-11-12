@@ -5,8 +5,10 @@
 -- and the statement of its request. Nothing is created, changed or switched on the monitored server.
 --
 --   mssql_waiting_summary   monthly partitions; one row per read, also for a minute in which nothing waited: the tasks
---                           seen (after the benign list), the rows kept (the longest waits first, at most 2000), the
---                           sessions, the THREADPOOL waiters, the longest wait, and why a resource was not decoded.
+--                           seen (after PerformanceMonitor's ignore list), the rows kept (the longest waits first, at
+--                           most 2000), the sessions, the longest wait, why a resource was not decoded, and the
+--                           THREADPOOL waiters counted with no filter (sp_PressureDetector's read: a login queued for a
+--                           worker has no request, so the tasks' filter would drop it) with the longest of them.
 --   mssql_waiting_tasks     monthly partitions; the tasks of each read.
 --   mssql_waiting_findings  instance_id, severity, check_name, object, at, detail: THREADPOOL now (a task waits for a
 --                           worker thread in the newest read of the last 10 minutes), sp_PressureDetector's sign of
@@ -33,7 +35,9 @@
 -- For the join: the arm in pgvigil.findings
 --     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_waiting', at
 --       FROM pgvigil.mssql_waiting_findings
---   and 'mssql_waiting_summary', 'mssql_waiting_tasks' on purge()'s month-partition parents.
+--   and 'mssql_waiting_summary', 'mssql_waiting_tasks' on purge()'s month-partition parents. This file sorts after
+--   0110 (the number the task gave it), so the two lines cannot go into 0110 (it runs first on a new repository): they
+--   go into a join file after 0112, or this file takes a number in the 0105-0109 gap (the lead's choice).
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_waiting_summary (
   instance_id   int NOT NULL,
@@ -43,6 +47,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_waiting_summary (
   stored        int NOT NULL,
   sessions      int NOT NULL,
   threadpool    int NOT NULL,
+  threadpool_longest_ms bigint,
   longest_ms    bigint,
   decode_note   text,
   read_ms       int,
@@ -67,7 +72,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_waiting_tasks (
   command                   text,
   statement                 text
 ) PARTITION BY RANGE (snapshot_at);
-CREATE INDEX IF NOT EXISTS mssql_waiting_tasks_at ON pgvigil.mssql_waiting_tasks (instance_id, snapshot_at);
+-- (each monthly partition gets ensure_month_partition's own index on instance_id, snapshot_at)
 
 CREATE OR REPLACE FUNCTION pgvigil.import_mssql_waiting_tasks(p_instance_id int, p_snapshot_at timestamptz, p_payload jsonb)
 RETURNS void LANGUAGE plpgsql AS $$
@@ -79,10 +84,10 @@ BEGIN
   PERFORM pgvigil.ensure_month_partition('mssql_waiting_summary', p_snapshot_at);
   PERFORM pgvigil.ensure_month_partition('mssql_waiting_tasks', p_snapshot_at);
   INSERT INTO pgvigil.mssql_waiting_summary (instance_id, snapshot_at, server_utc, tasks, stored, sessions, threadpool,
-      longest_ms, decode_note, read_ms)
+      threadpool_longest_ms, longest_ms, decode_note, read_ms)
   SELECT p_instance_id, p_snapshot_at, (r->>'server_utc')::timestamptz, coalesce((r->>'tasks')::int, 0),
          coalesce((r->>'stored')::int, 0), coalesce((r->>'sessions')::int, 0), coalesce((r->>'threadpool')::int, 0),
-         (r->>'longest_ms')::bigint, nullif(r->>'decode_note', ''), (r->>'read_ms')::int
+         (r->>'threadpool_longest_ms')::bigint, (r->>'longest_ms')::bigint, nullif(r->>'decode_note', ''), (r->>'read_ms')::int
     FROM jsonb_array_elements(p_payload) r
    WHERE r->>'kind' = 'summary'
   ON CONFLICT (instance_id, snapshot_at) DO NOTHING;
@@ -143,7 +148,7 @@ $$;
 -- THREADPOOL now: in the newest read of the last 10 minutes a task waits for a worker thread
 CREATE OR REPLACE VIEW pgvigil.mssql_waiting_findings AS
 WITH last AS (
-  SELECT DISTINCT ON (s.instance_id) s.instance_id, s.snapshot_at, s.threadpool
+  SELECT DISTINCT ON (s.instance_id) s.instance_id, s.snapshot_at, s.threadpool, s.threadpool_longest_ms
     FROM pgvigil.mssql_waiting_summary s
    WHERE s.snapshot_at > now() - interval '10 minutes'
    ORDER BY s.instance_id, s.snapshot_at DESC)
@@ -152,17 +157,18 @@ SELECT l.instance_id, 'warning'::text AS severity, 'THREADPOOL waits now'::text 
        format('%s task(s) waiting for a worker thread at %s, the longest %s ms: the server is out of worker threads '
               '(blocking that holds workers, or many parallel requests); sp_PressureDetector''s sign of worker starvation',
               l.threadpool, to_char(l.snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS "UTC"'),
-              (SELECT max(t.wait_ms) FROM pgvigil.mssql_waiting_tasks t
-                WHERE t.instance_id = l.instance_id AND t.snapshot_at = l.snapshot_at AND t.wait_type = 'THREADPOOL')) AS detail
+              coalesce(l.threadpool_longest_ms::text, '?')) AS detail
   FROM last l
  WHERE l.threadpool > 0;
 
 -- the PostgreSQL twin: the waiting backends of one running-queries sample (the newest at or before p_at; NULL = the
 -- newest), one wait event when p_wait names it ('<type>:<event>' or the event alone). A backend waits when it is active
--- with a wait event that is not the client's or an idle background loop's (Activity, Client); a lock waiter always.
+-- with a wait event that is not the client's, an idle background loop's or a timer's (Activity, Client, Timeout: a
+-- pg_sleep is the WAITFOR of PostgreSQL, benign on the SQL Server side too); a lock waiter always. in_state_s is the
+-- time since the backend's state last changed (the sample keeps no wait start).
 CREATE OR REPLACE FUNCTION pgvigil.pg_waiting_at(p_instance_id int, p_at timestamptz, p_wait text)
 RETURNS TABLE (snapshot_at timestamptz, pid int, leader_pid int, datname text, usename text, application_name text,
-               state text, wait_event_type text, wait_event text, waited_s numeric, blocking_pids int[],
+               state text, wait_event_type text, wait_event text, in_state_s numeric, blocking_pids int[],
                backend_type text, query_id bigint, query text)
 LANGUAGE sql STABLE AS $$
   WITH snap AS (
@@ -175,7 +181,7 @@ LANGUAGE sql STABLE AS $$
     JOIN snap ON s.snapshot_at = snap.at
     LEFT JOIN pgvigil.query_text q ON q.query_hash = s.query_hash
    WHERE s.instance_id = p_instance_id AND s.wait_event IS NOT NULL
-     AND (s.wait_event_type = 'Lock' OR (s.state = 'active' AND s.wait_event_type NOT IN ('Activity', 'Client')))
+     AND (s.wait_event_type = 'Lock' OR (s.state = 'active' AND s.wait_event_type NOT IN ('Activity', 'Client', 'Timeout')))
      AND (p_wait IS NULL OR p_wait = s.wait_event OR p_wait = s.wait_event_type || ':' || s.wait_event)
    ORDER BY s.state_change NULLS LAST, s.pid
 $$;
@@ -187,7 +193,7 @@ LANGUAGE sql STABLE AS $$
   SELECT s.wait_event_type, s.wait_event, count(DISTINCT (s.snapshot_at, s.pid)), count(DISTINCT s.snapshot_at), max(s.snapshot_at)
     FROM pgvigil.activity_sample s
    WHERE s.instance_id = p_instance_id AND s.snapshot_at > p_from AND s.snapshot_at <= p_to AND s.wait_event IS NOT NULL
-     AND (s.wait_event_type = 'Lock' OR (s.state = 'active' AND s.wait_event_type NOT IN ('Activity', 'Client')))
+     AND (s.wait_event_type = 'Lock' OR (s.state = 'active' AND s.wait_event_type NOT IN ('Activity', 'Client', 'Timeout')))
    GROUP BY 1, 2
    ORDER BY 3 DESC, 1, 2
 $$;

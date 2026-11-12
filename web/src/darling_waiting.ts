@@ -28,7 +28,12 @@ function fmtSecsShort(s: number): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`;
   return `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
 }
-const iso = (v: unknown) => new Date(String(v)).toISOString();
+// a read's time exactly as the API wrote it (microseconds kept): at= must name the read itself, not a millisecond before it
+const iso = (v: unknown) => String(v ?? '');
+// a long text on one line, the whole of it as the title (a statement, a resource as read)
+const oneLine = (v: unknown, n = 120) => { const s = String(v ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? el('span', { title: s }, s.slice(0, n) + '...') : s; };
+// blocked by another session (a parallel request's exchange waits name its own session: not a block)
+const byOther = (r: Row) => r.blocking_session_id != null && Number(r.blocking_session_id) !== Number(r.session_id);
 
 // readNav: the read in view, Earlier / Later / Latest over the range's reads
 function readNav(ctx: Ctx, tab: string, reads: string[], cur: string | undefined, wt: string | undefined, label: string): HTMLElement {
@@ -71,7 +76,7 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('p', { class: 'empty' }, 'No read of the waiting tasks in this range: the collection mssql_waiting_tasks runs every minute on an instance whose login has VIEW SERVER STATE.'));
     return sec;
   }
-  const blocked = tasks.filter(r => r.blocking_session_id != null).length;
+  const blocked = tasks.filter(byOther).length;
   const sessions = new Set(tasks.map(r => r.session_id)).size;
   sec.append(el('div', { class: 'tiles' },
     tile(wt ? `Tasks waiting on ${wt}` : 'Tasks waiting', fmtNum(wt ? tasks.length : Number(snap?.tasks ?? tasks.length))),
@@ -83,25 +88,27 @@ export async function mssqlWaitingView(ctx: Ctx): Promise<HTMLElement> {
   if (snap && Number(snap.stored) < Number(snap.tasks)) sec.append(el('p', { class: 'meta' }, `The ${fmtNum(Number(snap.stored))} longest of ${fmtNum(Number(snap.tasks))} waiting tasks are kept for this read.`));
   if (snap?.decode_note) sec.append(el('p', { class: 'meta' }, `Not every resource was named: ${String(snap.decode_note)}.`));
   const cols: Col[] = [
-    { key: 'session_id', label: 'session', num: true },
-    { key: 'exec_context_id', label: 'context', num: true, fmt: (v, r) => Number(r.tasks_of_session) > 1 ? `${String(v)} of ${String(r.tasks_of_session)}` : String(v ?? '') },
+    { key: 'session_id', label: 'session', num: true, fmt: (v, r) => Number(r.tasks_of_session) > 1 ? `${String(v)} (${String(r.tasks_of_session)} tasks)` : String(v ?? '') },
+    { key: 'exec_context_id', label: 'context', num: true, fmt: v => String(v ?? '') },
     { key: 'wait_type', label: 'wait', fmt: v => el('a', { href: waitingHref(ctx, 'mssql_waiting', cur, String(v)), title: `the tasks waiting on ${String(v)}` }, String(v)) },
     { key: 'wait_ms', label: 'waited', num: true, fmt: v => ms(v) },
-    { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: (v, r) => v == null ? '' : `${String(v)}${r.blocking_exec_context_id != null && Number(r.blocking_exec_context_id) > 0 ? ` (context ${String(r.blocking_exec_context_id)})` : ''}` },
+    { key: 'blocking_session_id', label: 'blocked by', num: true, fmt: (v, r) => v == null ? '' : !byOther(r)
+      ? `own context ${String(r.blocking_exec_context_id ?? '')}`
+      : `${String(v)}${r.blocking_exec_context_id != null && Number(r.blocking_exec_context_id) > 0 ? ` (context ${String(r.blocking_exec_context_id)})` : ''}` },
     { key: 'resource_kind', label: 'resource' },
     { key: 'object_name', label: 'object' },
     { key: 'index_name', label: 'index' },
     { key: 'database_name', label: 'database' },
     { key: 'command' },
     { key: 'request_status', label: 'status' },
-    { key: 'statement', wide: true },
-    { key: 'resource_description', label: 'resource as read', wide: true },
+    { key: 'statement', fmt: v => oneLine(v) },
+    { key: 'resource_description', label: 'resource as read', fmt: v => oneLine(v, 60) },
   ];
   sec.append(el('h3', {}, 'The tasks of this read'), grid(tasks, cols, wt ? `No task waited on ${wt} in this read.` : 'No task waited in this read (beyond the benign waits).'));
   sec.append(el('h3', {}, 'Wait types over the range'),
-    el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, in how many reads, and the longest wait seen. A wait type opens the tasks waiting on it.'),
+    el('p', { class: 'meta' }, 'From the stored reads: how many tasks and sessions waited on each, in how many reads, and the longest wait seen. A wait type opens the read where it was last seen, filtered to it.'),
     grid(types, [
-      { key: 'wait_type', label: 'wait', fmt: v => el('a', { href: waitingHref(ctx, 'mssql_waiting', undefined, String(v)) }, String(v)) },
+      { key: 'wait_type', label: 'wait', fmt: (v, r) => el('a', { href: waitingHref(ctx, 'mssql_waiting', iso(r.last_seen), String(v)), title: `the read where ${String(v)} was last seen` }, String(v)) },
       { key: 'tasks', num: true }, { key: 'sessions', num: true }, { key: 'reads', num: true },
       { key: 'longest_ms', label: 'longest', num: true, fmt: v => ms(v) },
       { key: 'last_seen', label: 'last seen', fmt: v => fmtTime(v) },
@@ -116,7 +123,7 @@ export async function pgWaitingView(ctx: Ctx): Promise<HTMLElement> {
   const rows = rowsOf(d.pg), types = rowsOf(d.pgbytype);
   const cur = rows.length ? iso(rows[0].snapshot_at) : at;
   const sec = el('section', {}, el('h2', {}, 'Waiting backends'),
-    el('p', { class: 'meta' }, 'The backends that wait in a running-queries sample: active with a wait event (not the client\'s, not an idle loop\'s), and every lock waiter, with its parallel leader and the pids that block it. The lock\'s target relation is not sampled: Running queries shows the chain.'));
+    el('p', { class: 'meta' }, 'The backends that wait in a running-queries sample: active with a wait event (not the client\'s, an idle loop\'s or a timer\'s), and every lock waiter, with its parallel leader and the pids that block it. The lock\'s target relation is not sampled: Running queries shows the chain. One sample at a time: the newest of the range.'));
   const locks = rows.filter(r => r.wait_event_type === 'Lock').length, workers = rows.filter(r => r.leader_pid != null && r.leader_pid !== r.pid).length;
   sec.append(el('div', { class: 'tiles' },
     tile(wt ? `Backends waiting on ${wt}` : 'Backends waiting', fmtNum(rows.length)),
@@ -126,17 +133,17 @@ export async function pgWaitingView(ctx: Ctx): Promise<HTMLElement> {
     filterLine(ctx, 'waiting', cur, wt, 'backends'));
   const key = (r: Row) => `${String(r.wait_event_type)}:${String(r.wait_event)}`;
   sec.append(el('h3', {}, 'The backends of this sample'), grid(rows, [
-    { key: 'pid', num: true },
+    { key: 'pid', num: true, fmt: v => String(v ?? '') },
     { key: 'leader_pid', label: 'leader', num: true, fmt: (v, r) => v == null || v === r.pid ? '' : String(v) },
     { key: 'wait_event', label: 'wait', fmt: (_v, r) => el('a', { href: waitingHref(ctx, 'waiting', cur, key(r)), title: `the backends waiting on ${key(r)}` }, key(r)) },
-    { key: 'waited_s', label: 'waited', num: true, fmt: v => v == null ? '' : `${String(v)} s` },
+    { key: 'in_state_s', label: 'in this state', num: true, fmt: v => v == null ? '' : `${String(v)} s` },
     { key: 'blocking_pids', label: 'blocked by', fmt: v => Array.isArray(v) ? v.join(', ') : String(v ?? '') },
     { key: 'datname', label: 'database' }, { key: 'usename', label: 'user' }, { key: 'application_name', label: 'application' },
     { key: 'state' }, { key: 'backend_type', label: 'backend' },
-    { key: 'query', wide: true },
-  ], wt ? `No backend waited on ${wt} in this sample.` : 'No backend waited in this sample.'));
+    { key: 'query', fmt: v => oneLine(v) },
+  ], wt ? `No backend waited on ${wt} in this sample.` : 'No backend waited in the newest sample of this range (or no sample was taken in it).'));
   sec.append(el('h3', {}, 'Wait events over the range'), grid(types, [
-    { key: 'wait_event', label: 'wait', fmt: (_v, r) => el('a', { href: waitingHref(ctx, 'waiting', undefined, key(r)) }, key(r)) },
+    { key: 'wait_event', label: 'wait', fmt: (_v, r) => el('a', { href: waitingHref(ctx, 'waiting', iso(r.last_seen), key(r)), title: `the sample where ${key(r)} was last seen` }, key(r)) },
     { key: 'backends', num: true }, { key: 'samples', num: true }, { key: 'last_seen', label: 'last seen', fmt: v => fmtTime(v) },
   ], 'No backend waited in any sample of this range.'));
   return sec;

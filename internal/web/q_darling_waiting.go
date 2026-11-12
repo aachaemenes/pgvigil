@@ -10,7 +10,8 @@ import (
 // The waiting-tasks API (task 177, darling-open D01; migration 0112). The join wires the route in Handler:
 //   GET /api/waiting?instance=N[&from=..&to=..][&at=<RFC 3339>][&wait=<wait type>][&part=...] -> s.Waiting
 // A SQL Server instance's parts: snapshots (each read of the range: tasks, sessions, THREADPOOL, the longest wait),
-// tasks (one read's waiting tasks: the newest read at or before at, else the newest; wait narrows to one wait type),
+// tasks (one read's waiting tasks: the newest read at or before at, else at or before the range's end; wait narrows
+// to one wait type),
 // bytype (the range's wait types over the stored reads). A PostgreSQL instance's: pg (the waiting backends of one
 // running-queries sample, the same at and wait rules; wait is '<type>:<event>' or the event) and pgbytype. Each read
 // returns no row for the other engine, so the page asks for its engine's parts only.
@@ -47,6 +48,8 @@ func (s *Server) Waiting(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		at = &t
+	} else {
+		at = &to // no read named: the newest read of the range, never one after it
 	}
 	s.multiPart(w, r, []part{
 		{"snapshots", `SELECT * FROM pgvigil.mssql_waiting_snapshots($1, $2, $3)`, []any{id, from, to}},
