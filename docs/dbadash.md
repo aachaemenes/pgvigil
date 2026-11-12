@@ -79,11 +79,13 @@ DBA Dash's GUI is a desktop application with no URL, so these pages name the ins
 
 An instance read through a repository opens with the same tabs as a SQL Server instance pgvigil collects itself (the main tabs Summary, Performance, Running queries, Slow queries, Waits, Deadlocks, Blocked reports, Findings, and the groups Logs, HA/DR, Performance, Storage, Jobs, Configuration: 33 tabs). Which instance is which:
 
-- **Collected**: pgvigil collects a SQL Server whose `@@SERVERNAME` equals the instance's. It is pgvigil's own instance, with its own pages, and the repository adds nothing to them (the actions of the repository's screens go through it, below).
-- **Imported**: `pgvigil import dbadash` made a pgvigil SQL Server instance under the instance's display name, and pgvigil does not collect it. It opens at its pgvigil instance (`#/<tab>?i=<id>`); each tab is served as the table says.
+- **Collected**: pgvigil collects a SQL Server whose `@@SERVERNAME` equals the instance's, or the pgvigil instance of the display name has a collection attempt of its own (an `instances:` entry was added for it; a failed first collection counts, so its error shows on pgvigil's own pages). It is pgvigil's own instance, with its own pages, and the repository adds nothing to them (the actions of the repository's screens go through it, below).
+- **Imported**: `pgvigil import dbadash` made a pgvigil SQL Server instance under the instance's display name, and pgvigil has never tried to collect it.
+- Only repositories the configuration still names count: a repository removed from `dbadash:` leaves its imported servers as plain SQL Server instances with the history the import stored.
+- When several instances of the configured repositories carry one display name (two repositories, or a server re-added in one), the page reads the one still listed with the newest collection, and says so. It opens at its pgvigil instance (`#/<tab>?i=<id>`); each tab is served as the table says.
 - **Not imported**: neither. It opens at its own page (`#/dbadash?dr=<repository>&di=<InstanceID>&dp=<tab>`) with the same tabs; a tab the import would fill says so, with the command.
 
-An instance imported under another name (`-name <id>=<name>`) is not recognised as imported: it opens as a SQL Server instance with pgvigil's own pages over what the import stored, and its other tabs are empty. Import under the display name to get the table below.
+A limit of this release: an instance imported under another name (`-name <id>=<name>`) is not recognised as imported (the import records no source for a pgvigil instance), so it opens as a SQL Server instance with pgvigil's own pages over what the import stored, and the pages pgvigil's own collection fills are empty there. Import under the display name to get the table below.
 
 Each tab is served from pgvigil's store where the import fills the tables its page reads, else from the repository's live screen, else it says in one line `not read for an imported server: <what would read it>`, never an empty grid:
 

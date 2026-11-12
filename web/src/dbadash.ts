@@ -60,29 +60,33 @@ export async function dbadashData(force = false): Promise<DBADashData> {
 
 // Imported: a repository instance and the pgvigil SQL Server instance that stands for it; collected = pgvigil reads the
 // server itself (its own pages), else it is an imported server (made by pgvigil import dbadash under the display name)
-export interface Imported { repo: string; sourceId: number; instanceId: number; name: string; collected: boolean }
+export interface Imported { repo: string; sourceId: number; instanceId: number; name: string; collected: boolean; candidates: number }
 const matches = (d: DBADashData): Imported[] => rowsOf(d.imported).map(r => ({
   repo: String(r.repository), sourceId: Number(r.source_id), instanceId: Number(r.instance_id), name: String(r.name), collected: r.collected === true,
+  candidates: Number(r.candidates ?? 1),
 }));
-// pgvigilOf: the pgvigil instance of one repository instance, the collected one first (the API's order)
+// pgvigilOf: the pgvigil instance of one repository instance, the preferred one first (the API's order: collected, present, newest)
 const pgvigilOf = (d: DBADashData, repo: string, id: number) => matches(d).find(m => m.repo === repo && m.sourceId === id);
 
-// importedOf: the repository instance an imported server came from; undefined for a server pgvigil collects, or one no
-// repository lists
+// importedOf: the repository instance an imported server came from (the preferred one when several carry its name);
+// undefined for a server pgvigil collects, or one no configured repository lists
 export async function importedOf(instance: number | undefined): Promise<Imported | undefined> {
   if (!instance) return undefined;
   const ms = matches(await dbadashData()).filter(m => m.instanceId === instance);
   return ms.some(m => m.collected) ? undefined : ms[0];
 }
-// isImported: main.ts's question for a SQL Server instance (a failed read = not imported: its own pages)
+// isImported: main.ts's question for a SQL Server instance, asked before its page; a failed read (a signed-out session
+// included) = not imported: its own page, whose own read then reaches the login screen
 export async function isImported(instance: number | undefined): Promise<boolean> {
   try {
     return (await importedOf(instance)) !== undefined;
-  } catch (e) {
-    if (e instanceof LoginRequired) throw e;
+  } catch {
     return false;
   }
 }
+
+// ownLabel: a status label in pgvigil's words (the stored check list names the source in one label)
+const ownLabel = (l: unknown) => String(l ?? '').replace(/DBA ?Dash errors/i, 'Collection errors').replace(/DBA ?Dash/gi, 'source');
 
 // ---- what each SQL Server tab shows for an imported server (docs/dbadash.md has this table)
 
@@ -182,9 +186,9 @@ function fleetGrid(ctx: Ctx, d: DBADashData, rows: Row[], checks: Row[]): HTMLEl
     { key: 'pgvigil', label: 'in pgvigil', fmt: (_v, r) => { const pv = pgvigilOf(d, String(r.repository), Number(r.instance_id)); return pv ? (pv.collected ? 'collected' : 'imported') : 'not imported'; } },
     { key: 'last_collection', label: 'last collection', fmt: v => v == null ? 'never' : fmtTime(v) },
     ...checks.map(c => ({
-      key: 's_' + String(c.status_key), label: String(c.label),
+      key: 's_' + String(c.status_key), label: ownLabel(c.label),
       cls: (_v: unknown, r: Row) => 'status ' + codeClass(num((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)])),
-      fmt: (_v: unknown, r: Row) => statusCell((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)], String(c.label), undefined,
+      fmt: (_v: unknown, r: Row) => statusCell((r.statuses as Record<string, unknown> | null)?.[String(c.status_key)], ownLabel(c.label), undefined,
         instanceHref(ctx, d, String(r.repository), r.instance_id)),
     }) as Col),
   ];
@@ -235,7 +239,11 @@ export async function dbadashView(ctx: Ctx): Promise<HTMLElement> {
 export async function importedPage(ctx: Ctx, native: Record<string, Render>): Promise<HTMLElement | null> {
   const imp = await importedOf(ctx.instance);
   if (!imp) return null;
-  return tabView(ctx, { repo: imp.repo, id: imp.sourceId, instance: imp.instanceId, native }, ctx.tab);
+  const v = await tabView(ctx, { repo: imp.repo, id: imp.sourceId, instance: imp.instanceId, native }, ctx.tab);
+  if (imp.candidates > 1) {
+    v.prepend(el('p', { class: 'meta', role: 'note' }, `${imp.candidates} instances of the configured repositories carry the name ${imp.name}: this page reads ${imp.repo}'s instance ${imp.sourceId} (one still listed, the newest collection first). Give the others their own names in the source to tell them apart.`));
+  }
+  return v;
 }
 
 // repoInstanceView: a repository instance's own page; one pgvigil holds opens at its pgvigil instance instead
@@ -364,13 +372,13 @@ async function summaryInto(sec: HTMLElement, ctx: Ctx, m: Mode): Promise<number>
       tile('OK', String(st.filter(r => r.code === 4).length), 'ok')));
     // a cell per status, in the source's column order, with its header and words
     const cells = el('table', { class: 'grid', 'aria-label': 'Summary statuses' },
-      el('thead', {}, el('tr', {}, ...st.map(r => el('th', { scope: 'col' }, String(r.label))))),
-      el('tbody', {}, el('tr', {}, ...st.map(r => el('td', { class: 'status ' + codeClass(num(r.code)) }, statusCell(num(r.code), String(r.label), r.detail))))));
+      el('thead', {}, el('tr', {}, ...st.map(r => el('th', { scope: 'col' }, ownLabel(r.label))))),
+      el('tbody', {}, el('tr', {}, ...st.map(r => el('td', { class: 'status ' + codeClass(num(r.code)) }, statusCell(num(r.code), ownLabel(r.label), r.detail))))));
     sec.append(el('div', { class: 'grid-wrap', tabindex: '0', role: 'region', 'aria-label': 'Summary statuses, scrolls sideways' }, cells),
       el('h3', {}, 'Statuses'),
       grid(st, [
-        { key: 'label', label: 'check' },
-        { key: 'word', label: 'status', cls: (_v, r) => 'status ' + codeClass(num(r.code)), fmt: (_v, r) => statusCell(num(r.code), String(r.label), r.detail) },
+        { key: 'label', label: 'check', fmt: v => ownLabel(v) },
+        { key: 'word', label: 'status', cls: (_v, r) => 'status ' + codeClass(num(r.code)), fmt: (_v, r) => statusCell(num(r.code), ownLabel(r.label), r.detail) },
         { key: 'detail', wide: true },
       ]));
   }
@@ -378,7 +386,7 @@ async function summaryInto(sec: HTMLElement, ctx: Ctx, m: Mode): Promise<number>
   sec.append(el('h3', {}, 'Status changes in the window'),
     grid(ch, [
       { key: 'snapshot_at', label: 'read at', fmt: v => fmtTime(v) },
-      { key: 'label', label: 'check' },
+      { key: 'label', label: 'check', fmt: v => ownLabel(v) },
       { key: 'old_word', label: 'was', cls: (_v, r) => 'status ' + codeClass(num(r.old_code)), fmt: v => String(v ?? 'none') },
       { key: 'new_word', label: 'now', cls: (_v, r) => 'status ' + codeClass(num(r.new_code)), fmt: v => String(v ?? 'none') },
     ], 'No status changed in the window.'));

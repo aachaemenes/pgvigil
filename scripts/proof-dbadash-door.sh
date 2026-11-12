@@ -77,9 +77,10 @@
 #     G1 before any import, the DBA Dash instance's own page (#/dbadash?dr=lab&di=<id>) lists the 33 SQL Server tabs;
 #        each renders with no error box: summary, performance, mssql_running, mssqlbackups, mssqljobs (with the SQL
 #        Agent alerts), mssqlstorage (the Drives screen: 0 rows on Linux, as C's), mssqlfiles, mssqlconfig and
-#        mssqlproperties as the repository's screens with rows (mssqlstorage excepted), every other tab its one
-#        'not read for an imported server' line and no grid row; the tree shows 'Imported: lab' and no 'DBADash' or
-#        'DBA Dash' text;
+#        mssqlproperties as the repository's screens with rows (mssqlstorage: as many as part C's DrivesReport_Get),
+#        every other tab its one 'not read for an imported server' line and no grid row; no tab but the seven live
+#        screens holds 'DBADash' or 'DBA Dash' text; the tree shows 'Imported: lab' and no such text; the Imported servers
+#        page names the source product on its settings line only;
 #     G2 `pgvigil import dbadash -config <it> -repo lab` (the join's subcommand) exits 0 and makes the imported server
 #        under DBA Dash's display name;
 #     G3 the imported server at its own pgvigil instance (#/summary?i=<id>) lists the same 33 tabs (Availability
@@ -87,7 +88,9 @@
 #        mssqlstorage the imported database sizes from pgvigil's store (a grid row) above the Drives screen, the eight
 #        other screen tabs as in G1, every other tab its one line; the tree as in G1. [s168-proof2 expected pgvigil's own
 #        Storage page there; it lists the databases of pgvigil's own file read, which an imported server has not.]
-# NOT PROVEN HERE: the page's machine-name and latest-snapshot guards on the buttons in a browser; the 'volumes' mapping with rows
+# NOT PROVEN HERE: the page's machine-name and latest-snapshot guards on the buttons in a browser; the imported-server match
+# with two repositories under one display name, a repository removed from the configuration, or a collection attempt on
+# the imported server's name (read in the code and the review, not run); the 'volumes' mapping with rows
 # when DBA Dash collects none (Linux: run with PGVIGIL_DBADASH_BAK of a Windows-side repository); pgvigil's own
 # collector run after an import (the duplicates the docs' -to rule is about); a DBA Dash version other than 4.24.1;
 # Azure SQL Database rows of a repository.
@@ -539,7 +542,13 @@ if (!Array.isArray(tabs)) { console.log(`FAIL no tab list: ${await mainText()}`)
 // the tree: its Imported folder drawn (the read arrives after the first draw), no source-product name in it
 let tree = '';
 for (let i = 0; i < 40 && !/Imported: lab/.test(tree); i++) { await sleep(250); tree = await ev(`document.getElementById('tree')?.innerText ?? ''`); }
-console.log(`tree ${/Imported: lab/.test(tree) ? 'folder' : 'nofolder'} ${/DBA ?Dash/i.test(tree) ? 'named' : 'clean'}`);
+console.log(`tree ${/Imported: lab/.test(tree) ? 'folder' : 'nofolder'} ${/DBA ?Dash/.test(tree) ? 'named' : 'clean'}`);
+// the Imported servers page: the source product only on its settings line
+await cmd('Page.navigate', { url: U + '#/dbadash' }); await sleep(300);
+if (!await settled()) { console.log(`FAIL render root: ${await mainText()}`); process.exit(1); }
+const rootNamed = await ev(`(() => { const m = document.querySelector('main').cloneNode(true); m.querySelectorAll('[data-source-line]').forEach(e => e.remove()); return /DBA ?Dash/.test(m.innerText ?? m.textContent); })()`);
+const lines = await ev(`[...document.querySelectorAll('main [data-source-line]')].filter(e => /DBA ?Dash/.test(e.textContent)).length`);
+console.log(`root ${rootNamed ? 'named' : 'clean'} source-lines=${lines}`);
 for (const h of tabs) {
   const key = /[?&]dp=([^&]+)/.exec(h)?.[1] ?? /^#\/([^?]+)/.exec(h)?.[1];
   await cmd('Page.navigate', { url: U + h }); await sleep(300);
@@ -547,9 +556,9 @@ for (const h of tabs) {
   const r = await ev(`(() => { const m = document.querySelector('main'); const s = m.querySelector('[data-source]');
     const rows = [...m.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty') && tr.children.length > 0).length;
     return JSON.stringify({ src: s?.dataset.source ?? 'native', rows: s?.dataset.rows ?? '-', trs: rows, charts: m.querySelectorAll('canvas, svg').length,
-      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length }); })()`);
+      notread: m.querySelectorAll('p.notread').length, errors: m.querySelectorAll('.error:not([role=status])').length, named: /DBA ?Dash/.test(m.innerText) ? 1 : 0 }); })()`);
   const o = JSON.parse(r);
-  console.log(`tab ${key} render=yes source=${o.src} rows=${o.rows} trs=${o.trs} charts=${o.charts} notread=${o.notread} errors=${o.errors}`);
+  console.log(`tab ${key} render=yes source=${o.src} rows=${o.rows} trs=${o.trs} charts=${o.charts} notread=${o.notread} named=${o.named} errors=${o.errors}`);
 }
 ws.close();
 process.exit(0);
@@ -557,25 +566,30 @@ JS
 gwalk() { G_USR="$USR" G_UPW="$UPW" node "$TMPD/g-check.mjs" "$CDP" "$U/" "$1"; }
 # gtabs <walk output> <store tabs> <screen tabs>: every listed tab as said, every other its one line
 gtabs() {
-  local out="$1" store=" $2 " screen=" $3 " n line k
+  local out="$1" store=" $2 " screen=" $3 " data=" performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlstorage " n line k
   n=$(echo "$out" | grep -c '^tab ' || true); [[ "$n" == 33 ]] || fail "$4: $n tabs walked (want 33): $out"
   echo "$out" | grep -q '^tree folder clean$' || fail "$4: the tree: $(echo "$out" | grep '^tree')"
+  echo "$out" | grep -q '^root clean source-lines=1$' || fail "$4: the Imported servers page: $(echo "$out" | grep '^root')"
   while read -r line; do
     k=$(echo "$line" | awk '{print $2}')
     [[ "$line" == *" render=yes "* && "$line" == *" errors=0" ]] || fail "$4: $line"
+    # pgvigil's own words name no source product; a live screen's rows are the source's data and may (a session's program name)
+    [[ "$data" == *" $k "* || "$line" == *" named=0 "* ]] || fail "$4: $k names the source product in pgvigil's words: $line"
     if [[ "$store" == *" $k "* ]]; then
       [[ "$line" == *" source=store "* ]] || fail "$4: $k is not pgvigil's own page over the imported rows: $line"
       t=$(echo "$line" | sed -n 's/.* trs=\([0-9]*\) charts=\([0-9]*\) .*/\1 \2/p'); (( ${t% *} + ${t#* } > 0 )) || fail "$4: $k shows no imported row: $line"
     elif [[ "$screen" == *" $k "* ]]; then
       [[ "$line" == *" source=screen "* ]] || fail "$4: $k is not the repository's screen: $line"
       r=$(echo "$line" | sed -n 's/.* rows=\([0-9]*\) .*/\1/p')
-      [[ "$k" == mssqlstorage ]] && { [[ "$r" == "$n_vol" ]] || fail "$4: the Drives screen shows $r rows (want $n_vol, as the source)"; } || (( r > 0 )) || fail "$4: $k shows no row: $line"
+      [[ "$k" == mssqlstorage ]] && { [[ "$r" == "$n_drv" ]] || fail "$4: the Drives screen shows $r rows (want $n_drv, part C's DrivesReport_Get)"; } || (( r > 0 )) || fail "$4: $k shows no row: $line"
     else
       [[ "$line" == *" source=none "* && "$line" == *" notread=1 "* && "$line" == *" trs=0 "* ]] || fail "$4: $k is not one 'not read' line: $line"
     fi
   done < <(echo "$out" | grep '^tab ')
 }
 SCREENS="summary performance mssql_running mssqlbackups mssqljobs mssqlfiles mssqlconfig mssqlproperties"
+# the Drives screen's rows as part C read them (DrivesReport_Get through the read login)
+n_drv=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(s.get("rows") or []) for s in d.get("results") or []))' "$TMPD/pages/drives.json")
 g1=$(gwalk "#/dbadash?dr=lab&di=$ID") || fail "G1: the Chromium walk stopped: $g1"
 gtabs "$g1" "" "$SCREENS mssqlstorage" G1
 echo "ok   G1: the DBA Dash instance's own page: 33 tabs, $(echo "$g1" | grep -c 'source=screen') from the repository's screens, $(echo "$g1" | grep -c 'source=none') with their one 'not read' line, no error; the tree 'Imported: lab' and no source-product name"
