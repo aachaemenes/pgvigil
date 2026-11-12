@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strings"
 )
 
 // The Plan cache tab of a SQL Server instance (task 150; sp_QuickieCache's and sp_BlitzCache's reads): what each
@@ -90,10 +91,12 @@ SELECT p.database_id, coalesce(p.database_name, 'database ' || p.database_id) AS
 // sqlMSSQLPCCompare: PerformanceMonitor's compare (top-compare.js, MIT, Erik Darling, Darling Data LLC) on the plan
 // cache's stored reads: the window ($2, $3) against the same span $6 seconds earlier, one read over every stored
 // sample of both windows keyed by (database, query key: the query hash, or handle:offset where the server gave
-// none). NEW / GONE only when no read of either window was cut (mssql_pc_read.capped: a statement past the
-// collector's lists has no sample in a cut read, so it would flip at the cut): otherwise 'not kept before' / 'not
-// kept now' (the windows part says how many reads were cut). The union of each window's first 100 by duration,
-// NEW first, GONE last, then by the rise of the average duration; n_* count the whole aggregate.
+// none). NEW / GONE only when no read of either window was cut, nor
+// the read just before either window (mssql_pc_read.capped: a statement past the collector's lists has no sample in
+// a cut read, so it would flip at the cut; and the read before a window decides how its first read counts, 0092's
+// diff / whole / none): otherwise 'not kept before' / 'not kept now' (the windows part says how many reads were
+// cut). The union of each window's first 100 by duration, NEW first, GONE last, then by the rise of the average
+// duration; n_* count the whole aggregate.
 const sqlMSSQLPCCompare = `
 WITH cur AS (
   SELECT s.database_id, s.query_key, max(s.database_name) AS database_name, sum(s.executions) AS e, sum(s.duration_us) AS d, sum(s.cpu_us) AS c
@@ -110,7 +113,8 @@ WITH cur AS (
   SELECT count(*) AS cut_reads FROM pgvigil.mssql_pc_read r
    WHERE r.instance_id = $1 AND r.capped
      AND ((r.snapshot_at > $2 AND r.snapshot_at <= $3)
-       OR (r.snapshot_at > $2::timestamptz - make_interval(secs => $6) AND r.snapshot_at <= $3::timestamptz - make_interval(secs => $6)))
+       OR (r.snapshot_at > $2::timestamptz - make_interval(secs => $6) AND r.snapshot_at <= $3::timestamptz - make_interval(secs => $6))
+       OR r.snapshot_at IN (SELECT ` + pcEdge + `))
 ), j AS (
   SELECT coalesce(c.database_id, b.database_id) AS database_id, coalesce(c.query_key, b.query_key) AS query_key,
          coalesce(c.database_name, b.database_name) AS database_name,
@@ -145,7 +149,16 @@ SELECT o.database_id, coalesce(o.database_name, 'database ' || o.database_id) AS
           (o.now_d / nullif(o.now_e, 0) - o.bef_d / nullif(o.bef_e, 0)) / nullif(o.bef_d / nullif(o.bef_e, 0), 0) DESC NULLS LAST,
           o.now_d DESC NULLS LAST, o.database_id, o.query_key`
 
-// sqlMSSQLPCCompareWindows: the two windows, the reads each holds, the seconds they cover and how many were cut,
+// pcEdge lists the read just before each window (a day back at most), as a select list: $1 instance, $2 the
+// window's start, $6 the shift in seconds.
+const pcEdge = `(SELECT max(x.snapshot_at) FROM pgvigil.mssql_pc_read x WHERE x.instance_id = $1 AND x.snapshot_at <= $2
+                   AND x.snapshot_at > $2::timestamptz - interval '1 day')
+         UNION ALL SELECT (SELECT max(x.snapshot_at) FROM pgvigil.mssql_pc_read x WHERE x.instance_id = $1
+                   AND x.snapshot_at <= $2::timestamptz - make_interval(secs => $6)
+                   AND x.snapshot_at > $2::timestamptz - make_interval(secs => $6) - interval '1 day')`
+
+// sqlMSSQLPCCompareWindows: the two windows, the reads each holds, the seconds they cover and how many were cut
+// (edge_cut_reads: the read just before either window, which decides how the window's first read counts),
 // whether the windows overlap, and the coverage word ('ok': the earlier window's reads cover at least 90 % of what
 // the window's cover; 'partial': less; 'no baseline': no read; q_compare.go's words).
 const sqlMSSQLPCCompareWindows = `
@@ -157,6 +170,8 @@ WITH w AS (
          count(*) FILTER (WHERE r.snapshot_at > w.before_from AND r.snapshot_at <= w.before_to) AS before_reads,
          count(*) FILTER (WHERE r.capped AND r.snapshot_at > w.now_from AND r.snapshot_at <= w.now_to) AS now_cut_reads,
          count(*) FILTER (WHERE r.capped AND r.snapshot_at > w.before_from AND r.snapshot_at <= w.before_to) AS before_cut_reads,
+         (SELECT count(*) FROM pgvigil.mssql_pc_read e WHERE e.instance_id = $1 AND e.capped
+             AND e.snapshot_at IN (SELECT ` + strings.ReplaceAll(pcEdge, "$6", "$4") + `)) AS edge_cut_reads,
          coalesce(sum(r.interval_secs) FILTER (WHERE r.snapshot_at > w.now_from AND r.snapshot_at <= w.now_to), 0)::float8 AS now_covered_secs,
          coalesce(sum(r.interval_secs) FILTER (WHERE r.snapshot_at > w.before_from AND r.snapshot_at <= w.before_to), 0)::float8 AS before_covered_secs
     FROM w LEFT JOIN pgvigil.mssql_pc_read r ON r.instance_id = $1 AND r.snapshot_at > least(w.now_from, w.before_from) AND r.snapshot_at <= w.now_to

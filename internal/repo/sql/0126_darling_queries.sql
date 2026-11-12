@@ -26,15 +26,31 @@
 --
 -- Locks: a nullable ADD COLUMN rewrites nothing but holds ACCESS EXCLUSIVE on the table, and on a partitioned parent
 -- on every partition, until this file's transaction commits; the new table's foreign key takes SHARE ROW EXCLUSIVE
--- on mssql_pc_last. They are taken in purge()'s name order (0067's lock-order note): mssql_pc_last (the foreign
--- key), mssql_proc_last, mssql_proc_sample, mssql_qs_runtime. lock_timeout bounds the wait: a page read holds its
--- lock 15 seconds at most (the UI pool's statement timeout) and an import a few seconds, so 20 seconds outwaits
--- both; past it the file fails whole and the next 'pgvigil migrate' runs it again. While the file waits, the reads
--- and imports that come after it queue behind it, 20 seconds at most.
+-- on mssql_pc_last. They are taken in the order purge() and the imports take them, so no wait can close a ring with
+-- either: the partitioned parents first, by name (mssql_proc_sample, mssql_qs_runtime: purge() drops partitions
+-- parent by parent in name order; the procedures import locks its parents before it touches mssql_proc_last), then
+-- mssql_proc_last and mssql_pc_last (purge() deletes from them after the drops, mssql_reads_purge then
+-- mssql_plancache_purge). lock_timeout bounds each lock's wait, not the file's: a page read holds its lock 15 seconds
+-- at most (the UI pool's statement timeout) and an import a few seconds, so 20 seconds outwaits either; past it the
+-- file fails whole and the next 'pgvigil migrate' runs it again. Every lock the file already holds stays held while
+-- it waits for the next, so a read or an import of a table locked earlier can queue for up to 20 seconds per lock
+-- still to come (80 at the very worst, each later lock behind its own 15-second page read); a page read that queues
+-- past its own 15 seconds fails and is read again by the next refresh.
 --
 -- Partition parents for purge(): none new (mssql_pc_handles is not partitioned; the new columns go with their
 -- monthly partitions). Findings: none.
 SET LOCAL lock_timeout = '20s';
+
+-- the partitioned parents, by name; then the last-read tables, in purge()'s order
+ALTER TABLE pgvigil.mssql_proc_sample ADD COLUMN IF NOT EXISTS spills bigint;
+ALTER TABLE pgvigil.mssql_qs_runtime
+  ADD COLUMN IF NOT EXISTS aborted_executions bigint,
+  ADD COLUMN IF NOT EXISTS aborted_cpu_us bigint,
+  ADD COLUMN IF NOT EXISTS aborted_duration_us bigint,
+  ADD COLUMN IF NOT EXISTS exception_executions bigint,
+  ADD COLUMN IF NOT EXISTS exception_cpu_us bigint,
+  ADD COLUMN IF NOT EXISTS exception_duration_us bigint;
+ALTER TABLE pgvigil.mssql_proc_last ADD COLUMN IF NOT EXISTS spills bigint;
 
 CREATE TABLE IF NOT EXISTS pgvigil.mssql_pc_handles (
   instance_id    int NOT NULL,
@@ -48,16 +64,6 @@ CREATE TABLE IF NOT EXISTS pgvigil.mssql_pc_handles (
   FOREIGN KEY (instance_id, plan_handle, stmt_start, stmt_end, creation_time)
     REFERENCES pgvigil.mssql_pc_last (instance_id, plan_handle, stmt_start, stmt_end, creation_time) ON DELETE CASCADE
 );
-
-ALTER TABLE pgvigil.mssql_proc_last ADD COLUMN IF NOT EXISTS spills bigint;
-ALTER TABLE pgvigil.mssql_proc_sample ADD COLUMN IF NOT EXISTS spills bigint;
-ALTER TABLE pgvigil.mssql_qs_runtime
-  ADD COLUMN IF NOT EXISTS aborted_executions bigint,
-  ADD COLUMN IF NOT EXISTS aborted_cpu_us bigint,
-  ADD COLUMN IF NOT EXISTS aborted_duration_us bigint,
-  ADD COLUMN IF NOT EXISTS exception_executions bigint,
-  ADD COLUMN IF NOT EXISTS exception_cpu_us bigint,
-  ADD COLUMN IF NOT EXISTS exception_duration_us bigint;
 
 -- 0083's and 0092's imports, renamed and called unchanged
 DO $$ BEGIN

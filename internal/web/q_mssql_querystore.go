@@ -136,9 +136,12 @@ SELECT g.database_name, g.query_id, g.query_hash, q.object_name, q.query_text AS
 // query (database, query id and the query's hash as its rows were read: a cleared store gives the id to another
 // statement, so a regression is judged within one window pair and never across a clear).
 //
-// recent = the store's intervals that overlap the window ($2, $3); baseline = the intervals that ENDED inside the
-// baseline window ($5, $6]: by default PerformanceMonitor's 7 continuous days before the window, else the window
-// of equal length before it, the window 24 hours or 168 hours earlier (mssqlQSBase). A query is raised by:
+// A row (one kept plan in one store interval) is placed as PerformanceMonitor places it, by its last execution
+// (QueryStoreRegressionBaseline.cs L770-781): recent = the rows of the intervals that overlap the window ($2, $3)
+// whose last run is at or after its start; baseline = the rows whose last run is in [$5, $6): by default
+// PerformanceMonitor's 7 continuous days before the window, else the window of equal length before it, the window
+// 24 hours or 168 hours earlier (mssqlQSBase). An interval that starts before the window and ran its last run before
+// it is not recent, so a run before the window is never counted in it. A query is raised by:
 //   duration (pgvigil): one of its plans averages 1.5 times the query's average duration (or CPU) over the
 //     baseline, all execution types, or more, and at least 1,000 us (task 129's test, unchanged);
 //   cost (PerformanceMonitor, word for word): its Regular CPU per run is more than 25 % above its baseline's and
@@ -149,19 +152,26 @@ SELECT g.database_name, g.query_id, g.query_hash, q.object_name, q.query_text AS
 //     base_fail_hours / recent_fail_hours).
 // A query with no kept row in the baseline is 'no kept baseline' (left join): the cost and duration tests need one,
 // the failure tests count it as none. A row stored before 0126 (or by an older collector) with failed > 0 holds no
-// split ('not read apart'): the Regular figures and the failure counts of that side are unknown, and the cost and
-// failure tests are not applied to the query (never read as 0). Severity: PerformanceMonitor's (a cost row by its
-// Regular duration rise: over 100 % CRITICAL, 50 % HIGH, 25 % MEDIUM, else LOW; a timeouts / errors row HIGH at 5
-// times the baseline's rate or none before, else MEDIUM, never CRITICAL); a row raised by the duration test alone
-// takes the same bands on its plan's ratio. The cap is 200 rows, timeouts / errors alone at most a third of it when
-// other rows fill the rest (PerformanceMonitor's FailureShareDivisor). The task 129 columns stay: plan_id, new_plan,
-// executions, avg_duration_ms and duration_ratio are the plan the duration test picked (else the query's slowest
-// plan in the window), before_* the query's baseline over every execution type.
-var sqlMSSQLQSRegressed = `
+// split ('not read apart'; told by the row itself, which also catches an older collector importing after 0126): the
+// Regular figures and the failure counts of that side are unknown, and the cost and failure tests are not applied
+// to the query (never read as 0). Severity: PerformanceMonitor's (a cost row by its Regular duration rise: over 100 %
+// CRITICAL, 50 % HIGH, 25 % MEDIUM, else LOW; a timeouts / errors row HIGH at 5 times the baseline's rate or none
+// before, else MEDIUM, never CRITICAL; a row with both takes the higher); a row raised by the duration test alone
+// takes the cost bands on its plan's ratio. The order and the cap are PerformanceMonitor's: the cost rows first by
+// their added duration (a row raised by the duration test alone ranks with them by its plan's extra duration), then
+// the rest by their failed runs; 200 rows, timeouts / errors alone at most a third of them when other rows fill the
+// rest (FailureShareDivisor). The task 129 columns stay: plan_id, new_plan, executions, avg_duration_ms and
+// duration_ratio are the plan the duration test picked (else the plan with the most extra duration, then the
+// slowest), before_* the query's baseline over every execution type.
+// qsRegBase: Regressed's rows (recent rp per plan, rq per query; baseline bq per query) and each database's data start
+// (fst, bounded: a database with rows before both windows starts before them, which is all the hours need). $1
+// instance, $2 / $3 the window, $4 the database or NULL, $5 / $6 the baseline.
+var qsRegBase = `
 WITH fst AS (
   SELECT i.database_name, min(i.snapshot_at) AS held
     FROM pgvigil.mssql_qs_interval i
    WHERE i.instance_id = $1 AND ($4::text IS NULL OR i.database_name = $4)
+     AND i.snapshot_at > least($2::timestamptz, $5::timestamptz) - interval '1 day'
    GROUP BY 1
 ), rp AS (
   SELECT r.database_name, r.query_id, r.query_hash, r.plan_id, r.plan_hash_n,
@@ -171,14 +181,16 @@ WITH fst AS (
          sum(CASE WHEN coalesce(r.failed, 0) = 0 THEN r.cpu_us ELSE r.cpu_us - r.aborted_cpu_us - r.exception_cpu_us END) AS reg_cpu_us,
          sum(CASE WHEN coalesce(r.failed, 0) = 0 THEN r.duration_us ELSE r.duration_us - r.aborted_duration_us - r.exception_duration_us END) AS reg_dur_us,
          count(*) FILTER (WHERE coalesce(r.failed, 0) > 0 AND (r.aborted_executions IS NULL OR r.exception_executions IS NULL)) AS unsplit,
+         max(r.snapshot_at) FILTER (WHERE coalesce(r.failed, 0) > 0 AND (r.aborted_executions IS NULL OR r.exception_executions IS NULL)) AS newest_unsplit,
          coalesce(sum(r.aborted_executions), 0) AS a_execs, sum(r.aborted_cpu_us) AS a_cpu, sum(r.aborted_duration_us) AS a_dur,
          coalesce(sum(r.exception_executions), 0) AS e_execs, sum(r.exception_cpu_us) AS e_cpu, sum(r.exception_duration_us) AS e_dur
     FROM pgvigil.mssql_qs_runtime r
-   WHERE ` + fmt.Sprintf(qsWindow, "r") + ` AND r.query_id IS NOT NULL
+   WHERE ` + fmt.Sprintf(qsWindow, "r") + ` AND r.last_execution >= $2 AND r.query_id IS NOT NULL
    GROUP BY 1, 2, 3, 4, 5
 ), rq AS (
   SELECT database_name, query_id, query_hash, sum(executions) AS executions, sum(duration_us) AS duration_us,
          sum(reg_execs) AS reg_execs, sum(reg_cpu_us) AS reg_cpu_us, sum(reg_dur_us) AS reg_dur_us, sum(unsplit) AS unsplit,
+         max(newest_unsplit) AS newest_unsplit,
          sum(a_execs) AS a_execs, sum(a_cpu) AS a_cpu, sum(a_dur) AS a_dur, sum(e_execs) AS e_execs, sum(e_cpu) AS e_cpu, sum(e_dur) AS e_dur,
          count(*) AS plans, max(last_execution) AS last_execution
     FROM rp GROUP BY 1, 2, 3
@@ -189,15 +201,18 @@ WITH fst AS (
          sum(CASE WHEN coalesce(r.failed, 0) = 0 THEN r.cpu_us ELSE r.cpu_us - r.aborted_cpu_us - r.exception_cpu_us END) AS reg_cpu_us,
          sum(CASE WHEN coalesce(r.failed, 0) = 0 THEN r.duration_us ELSE r.duration_us - r.aborted_duration_us - r.exception_duration_us END) AS reg_dur_us,
          count(*) FILTER (WHERE coalesce(r.failed, 0) > 0 AND (r.aborted_executions IS NULL OR r.exception_executions IS NULL)) AS unsplit,
+         max(r.snapshot_at) FILTER (WHERE coalesce(r.failed, 0) > 0 AND (r.aborted_executions IS NULL OR r.exception_executions IS NULL)) AS newest_unsplit,
          coalesce(sum(r.aborted_executions), 0) AS a_execs, sum(r.aborted_cpu_us) AS a_cpu, sum(r.aborted_duration_us) AS a_dur,
          coalesce(sum(r.exception_executions), 0) AS e_execs, sum(r.exception_cpu_us) AS e_cpu, sum(r.exception_duration_us) AS e_dur,
          array_agg(DISTINCT r.plan_id) AS plan_ids
     FROM pgvigil.mssql_qs_runtime r
-   WHERE r.instance_id = $1 AND r.interval_end > $5 AND r.interval_end <= $6
+   WHERE r.instance_id = $1 AND r.last_execution >= $5 AND r.last_execution < $6
      AND r.snapshot_at < $6 AND r.snapshot_at > $5::timestamptz - interval '1 day'
      AND ($4::text IS NULL OR r.database_name = $4) AND r.query_id IS NOT NULL
    GROUP BY 1, 2, 3
-), pd AS (
+)`
+
+var sqlMSSQLQSRegressed = qsRegBase + `, pd AS (
   -- pgvigil's duration test per plan, and the plan each query's row names
   SELECT DISTINCT ON (p.database_name, p.query_id, p.query_hash)
          p.database_name, p.query_id, p.query_hash, p.plan_id, p.plan_hash_n, p.executions, p.logical_reads,
@@ -205,6 +220,7 @@ WITH fst AS (
          round(p.cpu_us / 1000.0 / nullif(p.executions, 0), 3) AS avg_cpu_ms,
          round(p.logical_reads / nullif(p.executions, 0), 1) AS avg_logical_reads,
          round((p.duration_us / nullif(p.executions, 0)) / nullif(b.duration_us / nullif(b.executions, 0), 0), 2) AS duration_ratio,
+         (p.duration_us / nullif(p.executions, 0)) / nullif(b.duration_us / nullif(b.executions, 0), 0) AS duration_ratio_x,
          round((p.cpu_us / nullif(p.executions, 0)) / nullif(b.cpu_us / nullif(b.executions, 0), 0), 2) AS cpu_ratio,
          (b.plan_ids IS NULL OR NOT (p.plan_id = ANY (b.plan_ids))) AS new_plan,
          round((p.duration_us / nullif(p.executions, 0) - b.duration_us / nullif(b.executions, 0)) * p.executions / 1000.0, 1) AS extra_duration_ms,
@@ -244,7 +260,7 @@ WITH fst AS (
     LEFT JOIN bq b ON b.database_name = q.database_name AND b.query_id = q.query_id AND b.query_hash IS NOT DISTINCT FROM q.query_hash
     LEFT JOIN fst f ON f.database_name = q.database_name
 ), fl AS (
-  SELECT j.*, pd.plan_id, pd.plan_hash_n, pd.executions, pd.avg_duration_ms, pd.avg_cpu_ms, pd.avg_logical_reads, pd.duration_ratio,
+  SELECT j.*, pd.plan_id, pd.plan_hash_n, pd.executions, pd.avg_duration_ms, pd.avg_cpu_ms, pd.avg_logical_reads, pd.duration_ratio, pd.duration_ratio_x,
          pd.cpu_ratio, pd.new_plan, pd.extra_duration_ms, pd.is_duration,
          (j.recent_dur_ms - j.base_dur_ms) * 100.0 / nullif(j.base_dur_ms, 0) AS duration_regression_percent,
          (j.recent_cpu_ms - j.base_cpu_ms) * 100.0 / nullif(j.base_cpu_ms, 0) AS cpu_regression_percent,
@@ -262,8 +278,9 @@ WITH fst AS (
          greatest(
            CASE WHEN NOT f.is_cost THEN 0 WHEN f.duration_regression_percent > 100 THEN 4 WHEN f.duration_regression_percent > 50 THEN 3
                 WHEN f.duration_regression_percent > 25 THEN 2 ELSE 1 END,
-           CASE WHEN NOT f.is_duration THEN 0 WHEN f.duration_ratio > 2 THEN 4 WHEN f.duration_ratio > 1.5 THEN 3
-                WHEN f.duration_ratio > 1.25 THEN 2 ELSE 1 END,
+           -- the duration test's bands only for a row nothing of PerformanceMonitor's raised, on the unrounded ratio
+           CASE WHEN NOT f.is_duration OR f.is_cost OR f.is_timeouts OR f.is_errors THEN 0 WHEN f.duration_ratio_x > 2 THEN 4
+                WHEN f.duration_ratio_x > 1.5 THEN 3 WHEN f.duration_ratio_x > 1.25 THEN 2 ELSE 1 END,
            CASE WHEN NOT f.is_timeouts THEN 0
                 WHEN f.base_aborted_execs = 0 OR f.base_hours = 0
                      OR (f.recent_aborted_execs / NULLIF(f.recent_hours, 0)) >= 5 * (f.base_aborted_execs / NULLIF(f.base_hours, 0)) THEN 3 ELSE 2 END,
@@ -277,7 +294,8 @@ WITH fst AS (
 ), ranked AS (
   SELECT q.*,
          row_number() OVER (PARTITION BY q.is_slower
-                            ORDER BY CASE WHEN q.is_slower THEN greatest(coalesce(q.additional_duration_ms, 0), coalesce(q.extra_duration_ms, 0))
+                            ORDER BY q.is_cost DESC,
+                                     CASE WHEN q.is_cost THEN coalesce(q.additional_duration_ms, 0) WHEN q.is_slower THEN coalesce(q.extra_duration_ms, 0)
                                           ELSE q.recent_aborted_execs + q.recent_exception_execs END DESC,
                                      q.database_name, q.query_id, q.query_hash) AS class_rn,
          count(*) FILTER (WHERE q.is_slower) OVER () AS slower_total, count(*) FILTER (WHERE NOT q.is_slower) OVER () AS failure_total
@@ -297,6 +315,7 @@ SELECT r.database_name, r.query_id, r.query_hash, qq.object_name, qq.query_text 
        round(r.duration_regression_percent::numeric, 1) AS duration_regression_percent,
        round(r.recent_cpu_ms::numeric, 3) AS recent_cpu_ms, round(r.base_cpu_ms::numeric, 3) AS base_cpu_ms,
        round(r.cpu_regression_percent::numeric, 1) AS cpu_regression_percent, round(r.additional_duration_ms::numeric, 1) AS additional_duration_ms,
+       r.recent_aborted_execs AS recent_timeouts, r.recent_exception_execs AS recent_errors,
        r.base_aborted_execs, r.recent_aborted_execs, round(r.base_aborted_cpu_ms::numeric, 3) AS base_aborted_cpu_ms,
        round(r.recent_aborted_cpu_ms::numeric, 3) AS recent_aborted_cpu_ms, round(r.base_aborted_dur_ms::numeric, 3) AS base_aborted_dur_ms,
        round(r.recent_aborted_dur_ms::numeric, 3) AS recent_aborted_dur_ms,
@@ -316,28 +335,37 @@ SELECT r.database_name, r.query_id, r.query_hash, qq.object_name, qq.query_text 
   LEFT JOIN pgvigil.mssql_qs_plan p ON p.instance_id = $1 AND p.database_name = r.database_name AND p.plan_id = r.plan_id
                                    AND p.plan_hash_n IS NOT DISTINCT FROM r.plan_hash_n
  WHERE (r.is_slower AND r.class_rn <= 200 - s.failure_slots) OR (NOT r.is_slower AND r.class_rn <= s.failure_slots)
- ORDER BY r.sev DESC, greatest(coalesce(r.additional_duration_ms, 0), coalesce(r.extra_duration_ms, 0)) DESC,
-          r.recent_aborted_execs + r.recent_exception_execs DESC NULLS LAST, r.database_name, r.query_id, r.query_hash`
+ ORDER BY r.is_slower DESC, r.class_rn, r.database_name, r.query_id, r.query_hash`
 
-// sqlMSSQLQSRegressedSkipped: the queries of the window whose rows (either side) hold failures not read apart: the
-// cost and failure tests were not applied to them (the page says how many, and from when the split is stored).
-var sqlMSSQLQSRegressedSkipped = `
+// sqlMSSQLQSRegressedSkipped: the queries Regressed could not judge: a query of the window (rq) with a row not read
+// apart on either side (rows stored before 0126): the cost and failure tests were not applied to it. The page says
+// how many, and the newest such row.
+var sqlMSSQLQSRegressedSkipped = qsRegBase + `
+SELECT count(*) AS queries, max(greatest(q.newest_unsplit, b.newest_unsplit)) AS newest_unsplit
+  FROM rq q
+  LEFT JOIN bq b ON b.database_name = q.database_name AND b.query_id = q.query_id AND b.query_hash IS NOT DISTINCT FROM q.query_hash
+ WHERE q.unsplit > 0 OR coalesce(b.unsplit, 0) > 0`
 SELECT count(DISTINCT (r.database_name, r.query_id, r.query_hash)) AS queries, max(r.snapshot_at) AS newest_unsplit
   FROM pgvigil.mssql_qs_runtime r
  WHERE r.instance_id = $1 AND r.snapshot_at < $3 AND r.interval_end > least($2::timestamptz, $5::timestamptz)
    AND r.snapshot_at > least($2::timestamptz, $5::timestamptz) - interval '1 day' AND ($4::text IS NULL OR r.database_name = $4)
    AND coalesce(r.failed, 0) > 0 AND (r.aborted_executions IS NULL OR r.exception_executions IS NULL)`
 
-// qsBefore is qsWindow shifted back $5 seconds: the compare's earlier window.
+// qsBefore is qsWindow shifted back $5 seconds: the compare's earlier window; with the placement by the last run
+// (sqlMSSQLQSCompare) a row is in it when its last run is in [$2 - $5, $3 - $5).
 const qsBefore = `%[1]s.instance_id = $1 AND %[1]s.snapshot_at < $3::timestamptz - make_interval(secs => $5)
      AND %[1]s.interval_end > $2::timestamptz - make_interval(secs => $5)
-     AND %[1]s.snapshot_at > $2::timestamptz - make_interval(secs => $5) - interval '1 day' AND ($4::text IS NULL OR %[1]s.database_name = $4)`
+     AND %[1]s.snapshot_at > $2::timestamptz - make_interval(secs => $5) - interval '1 day' AND ($4::text IS NULL OR %[1]s.database_name = $4)
+     AND %[1]s.last_execution >= $2::timestamptz - make_interval(secs => $5) AND %[1]s.last_execution < $3::timestamptz - make_interval(secs => $5)`
 
 // sqlMSSQLQSCompare: PerformanceMonitor's compare (top-compare.js, MIT, Erik Darling, Darling Data LLC) on the
 // stored rows: the window ($2, $3) against the same span $5 seconds earlier (Previous period, Yesterday 24 h, Last
 // week 168 h: UTC instants, as PerformanceMonitor shifts them), one read over every stored row of both windows,
 // keyed by (database, query hash) as PerformanceMonitor's (rows with no hash: the plan left the store between the
-// read's two steps; counted by the windows part and left out). NEW and GONE come from that whole aggregate; the rows
+// read's two steps; counted by the windows part and left out). A row is placed by its last run, as Regressed's
+// (PerformanceMonitor's placement): in the window when it ran last at or after its start, in the earlier window when
+// its last run is inside that one; with Previous period an interval that straddles the window's start is in one
+// window only. NEW and GONE come from that whole aggregate; the rows
 // shown are the union of each window's first 100 by duration (PerformanceMonitor's COMPARE_TOP), NEW first, GONE
 // last, then by the rise of the average duration (its sort). The store keeps each interval's top plans only, so:
 //   new              no kept row before, and the query's first plan was compiled at or after the earlier window's end
@@ -345,13 +373,14 @@ const qsBefore = `%[1]s.instance_id = $1 AND %[1]s.snapshot_at < $3::timestamptz
 //   not kept before  no kept row before, compiled earlier: it may have run then below the kept plans;
 //   not kept now     no kept row in the window (the store's last execution is not read for a query out of the lists,
 //                    so 'gone' is never claimed).
-// The deltas are percent of the earlier figure, NULL where it was 0 (PerformanceMonitor's). n_* count the whole
-// aggregate, before the display cut.
+// The deltas are percent of the earlier figure, NULL where it was 0; the averages' delta is also NULL on a row with
+// no kept row now (pgvigil's choice: it may only have fallen below the kept plans; PerformanceMonitor shows -100 %
+// there). n_* count the whole aggregate, before the display cut.
 var sqlMSSQLQSCompare = `
 WITH cur AS (
   SELECT r.database_name, r.query_hash, sum(r.executions) AS e, sum(r.duration_us) AS d, sum(r.cpu_us) AS c
     FROM pgvigil.mssql_qs_runtime r
-   WHERE ` + fmt.Sprintf(qsWindow, "r") + ` AND r.query_hash IS NOT NULL
+   WHERE ` + fmt.Sprintf(qsWindow, "r") + ` AND r.last_execution >= $2 AND r.query_hash IS NOT NULL
    GROUP BY 1, 2
 ), bef AS (
   SELECT r.database_name, r.query_hash, sum(r.executions) AS e, sum(r.duration_us) AS d, sum(r.cpu_us) AS c
@@ -403,9 +432,11 @@ SELECT o.database_name, o.query_hash, t.object_name, t.query_text AS query, o.st
           o.now_d DESC NULLS LAST, o.database_name, o.query_hash`
 
 // sqlMSSQLQSCompareWindows: the two windows of the compare, how much of each the stored intervals cover (the
-// distinct intervals of the databases read, each cut to the window), whether they overlap (a shift shorter than
-// the window), the coverage word ('ok': the earlier window holds at least 90 % of what the window holds; 'partial':
-// less; 'no baseline': no interval at all; q_compare.go's words), and the window's rows without a query hash.
+// distinct intervals of the databases read, each cut to the window: a store writes no interval for a minute in
+// which nothing ran, so this is activity, not coverage), whether they overlap (a shift shorter than the window), the
+// coverage word by where the stored data starts (PerformanceMonitor's effective start; q_compare.go's words): 'ok'
+// when it starts at or before the earlier window, 'partial' inside it, 'no baseline' after it; and the window's rows
+// without a query hash.
 var sqlMSSQLQSCompareWindows = `
 WITH w AS (
   SELECT $2::timestamptz AS now_from, $3::timestamptz AS now_to,
@@ -414,6 +445,10 @@ WITH w AS (
   SELECT DISTINCT i.snapshot_at, i.interval_end FROM pgvigil.mssql_qs_interval i, w
    WHERE i.instance_id = $1 AND i.snapshot_at < w.now_to AND i.interval_end > least(w.now_from, w.before_from)
      AND i.snapshot_at > least(w.now_from, w.before_from) - interval '1 day' AND ($4::text IS NULL OR i.database_name = $4)
+), st AS (
+  -- bounded: data before the earlier window's start is all 'ok' needs
+  SELECT min(i.snapshot_at) AS held FROM pgvigil.mssql_qs_interval i, w
+   WHERE i.instance_id = $1 AND ($4::text IS NULL OR i.database_name = $4) AND i.snapshot_at > w.before_from - interval '1 day'
 ), c AS (
   SELECT count(*) FILTER (WHERE iv.snapshot_at < w.now_to AND iv.interval_end > w.now_from) AS now_intervals,
          count(*) FILTER (WHERE iv.snapshot_at < w.before_to AND iv.interval_end > w.before_from) AS before_intervals,
@@ -423,9 +458,10 @@ WITH w AS (
 )
 SELECT w.now_from, w.now_to, w.before_from, w.before_to, $5::float8 < extract(epoch FROM w.now_to - w.now_from) AS overlap,
        c.now_intervals, c.before_intervals, c.now_covered_secs, c.before_covered_secs,
-       CASE WHEN c.before_intervals = 0 THEN 'no baseline' WHEN c.before_covered_secs >= 0.9 * c.now_covered_secs THEN 'ok' ELSE 'partial' END AS coverage,
+       st.held AS data_from,
+       CASE WHEN st.held IS NULL OR st.held >= w.before_to THEN 'no baseline' WHEN st.held <= w.before_from THEN 'ok' ELSE 'partial' END AS coverage,
        (SELECT count(*) FROM pgvigil.mssql_qs_runtime r WHERE ` + fmt.Sprintf(qsWindow, "r") + ` AND r.query_hash IS NULL) AS no_hash_rows
-  FROM w CROSS JOIN c`
+  FROM w CROSS JOIN c CROSS JOIN st`
 
 // sqlMSSQLQSForced: every forced plan of the databases the last read listed ($2 the database, NULL = all).
 const sqlMSSQLQSForced = `
@@ -623,7 +659,7 @@ func (s *Server) MSSQLQueryStore(w http.ResponseWriter, r *http.Request) {
 		{"series", sqlMSSQLQSSeries, []any{id, from, to, db, mssqlQSStep(to.Sub(from).Seconds())}},
 		{"top", sqlMSSQLQSTop, []any{id, from, to, db, order}},
 		{"regressed", sqlMSSQLQSRegressed, []any{id, from, to, db, baseFrom, baseTo}},
-		{"regressed_skipped", sqlMSSQLQSRegressedSkipped, []any{id, from, to, db, baseFrom}},
+		{"regressed_skipped", sqlMSSQLQSRegressedSkipped, []any{id, from, to, db, baseFrom, baseTo}},
 		{"forced", sqlMSSQLQSForced, []any{id, db}},
 		{"tuning", sqlMSSQLQSTuning, win},
 		{"tuning_options", sqlMSSQLQSTuningOptions, []any{id, db}},

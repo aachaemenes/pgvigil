@@ -134,36 +134,49 @@ SELECT s.snapshot_at, s.interval_secs, s.executions, s.spills, round(s.cpu_us / 
  LIMIT 1000`
 
 // sqlMSSQLProcCompare: PerformanceMonitor's compare (top-compare.js, MIT, Erik Darling, Darling Data LLC) on the
-// procedures' stored reads, keyed by (database, object) as PerformanceMonitor's [database_name, full_name]: the
-// window ($2, $3) against the same span $5 seconds earlier, one read over every stored sample of both windows ($4
-// one database's id, NULL all). NEW: no run stored in the earlier window's reads; GONE: none in the window's (the
-// view counts per cached plan, so a procedure compiled, run and dropped between two reads is in neither). The union
-// of each window's first 100 by duration, NEW first, GONE last, then by the rise of the average duration.
+// procedures' stored reads, keyed as PerformanceMonitor keys them, by database and name ([database_name,
+// full_name]: a procedure dropped and created again between the windows is one row; one whose name was not read is
+// keyed by its id): the window ($2, $3) against the same span $5 seconds earlier, one read over every stored sample
+// of both windows ($4 one database's id, NULL all). NEW: no run stored in the earlier window's reads; GONE: none in
+// the window's (the view counts per cached plan, so a procedure compiled, run and dropped between two reads is in
+// neither; pgvigil keeps no mark of a read cut at 5,000 plans, which the page says). The union of each window's first
+// 100 by duration, NEW first, GONE last, then by the rise of the average duration.
 const sqlMSSQLProcCompare = `
-WITH cur AS (
-  SELECT s.database_id, s.object_id, max(s.database_name) AS database_name, max(s.schema_name) AS schema_name, max(s.object_name) AS object_name,
+WITH s0 AS (
+  -- each window apart: where the two overlap (a shift shorter than the window) a read counts in both
+  SELECT s.database_id, s.object_id, true AS is_now, max(s.database_name) AS database_name,
+         max(s.schema_name) AS schema_name, max(s.object_name) AS object_name,
          sum(s.executions) AS e, sum(s.duration_us) AS d, sum(s.cpu_us) AS c
     FROM pgvigil.mssql_proc_sample s
-   WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND ($4::int IS NULL OR s.database_id = $4)
+   WHERE s.instance_id = $1 AND ($4::int IS NULL OR s.database_id = $4) AND s.snapshot_at > $2 AND s.snapshot_at <= $3
    GROUP BY 1, 2
-), bef AS (
-  SELECT s.database_id, s.object_id, max(s.database_name) AS database_name, max(s.schema_name) AS schema_name, max(s.object_name) AS object_name,
-         sum(s.executions) AS e, sum(s.duration_us) AS d, sum(s.cpu_us) AS c
+  UNION ALL
+  SELECT s.database_id, s.object_id, false, max(s.database_name), max(s.schema_name), max(s.object_name),
+         sum(s.executions), sum(s.duration_us), sum(s.cpu_us)
     FROM pgvigil.mssql_proc_sample s
-   WHERE s.instance_id = $1 AND s.snapshot_at > $2::timestamptz - make_interval(secs => $5)
-     AND s.snapshot_at <= $3::timestamptz - make_interval(secs => $5) AND ($4::int IS NULL OR s.database_id = $4)
+   WHERE s.instance_id = $1 AND ($4::int IS NULL OR s.database_id = $4)
+     AND s.snapshot_at > $2::timestamptz - make_interval(secs => $5) AND s.snapshot_at <= $3::timestamptz - make_interval(secs => $5)
    GROUP BY 1, 2
+), named AS (
+  -- one name per object id over both windows (a read that gave up on a lock stores none)
+  SELECT database_id, object_id, max(database_name) AS database_name, max(schema_name) AS schema_name, max(object_name) AS object_name
+    FROM s0 GROUP BY 1, 2
+), k AS (
+  SELECT s0.database_id, s0.is_now, n.database_name, n.schema_name, n.object_name,
+         CASE WHEN n.object_name IS NULL THEN '#' || s0.object_id ELSE coalesce(n.schema_name, '') || '.' || n.object_name END AS proc_key,
+         s0.object_id, s0.e, s0.d, s0.c
+    FROM s0 JOIN named n ON n.database_id = s0.database_id AND n.object_id = s0.object_id
 ), j AS (
-  SELECT coalesce(c.database_id, b.database_id) AS database_id, coalesce(c.object_id, b.object_id) AS object_id,
-         coalesce(c.database_name, b.database_name) AS database_name, coalesce(c.schema_name, b.schema_name) AS schema_name,
-         coalesce(c.object_name, b.object_name) AS object_name,
-         coalesce(c.e, 0) AS now_e, c.d AS now_d, c.c AS now_c, coalesce(b.e, 0) AS bef_e, b.d AS bef_d, b.c AS bef_c
-    FROM cur c FULL JOIN bef b ON b.database_id = c.database_id AND b.object_id = c.object_id
+  SELECT k.database_id, k.proc_key, max(k.database_name) AS database_name, max(k.schema_name) AS schema_name, max(k.object_name) AS object_name,
+         max(k.object_id) AS object_id,
+         coalesce(sum(k.e) FILTER (WHERE k.is_now), 0) AS now_e, sum(k.d) FILTER (WHERE k.is_now) AS now_d, sum(k.c) FILTER (WHERE k.is_now) AS now_c,
+         coalesce(sum(k.e) FILTER (WHERE NOT k.is_now), 0) AS bef_e, sum(k.d) FILTER (WHERE NOT k.is_now) AS bef_d, sum(k.c) FILTER (WHERE NOT k.is_now) AS bef_c
+    FROM k GROUP BY 1, 2
 ), n AS (
   SELECT j.*,
          CASE WHEN j.now_e > 0 AND j.bef_e = 0 THEN 'new' WHEN j.now_e = 0 AND j.bef_e > 0 THEN 'gone' ELSE '' END AS status,
-         row_number() OVER (ORDER BY j.now_d DESC NULLS LAST, j.database_id, j.object_id) AS rn_now,
-         row_number() OVER (ORDER BY j.bef_d DESC NULLS LAST, j.database_id, j.object_id) AS rn_bef,
+         row_number() OVER (ORDER BY j.now_d DESC NULLS LAST, j.database_id, j.proc_key) AS rn_now,
+         row_number() OVER (ORDER BY j.bef_d DESC NULLS LAST, j.database_id, j.proc_key) AS rn_bef,
          count(*) OVER () AS n_keys, count(*) FILTER (WHERE j.now_e > 0 AND j.bef_e > 0) OVER () AS n_both,
          count(*) FILTER (WHERE j.now_e > 0 AND j.bef_e = 0) OVER () AS n_new, count(*) FILTER (WHERE j.now_e = 0 AND j.bef_e > 0) OVER () AS n_gone
     FROM j
@@ -182,7 +195,7 @@ SELECT o.database_id, o.object_id, coalesce(o.database_name, 'database ' || o.da
  WHERE (o.rn_now <= 100 AND o.now_e > 0) OR (o.rn_bef <= 100 AND o.bef_e > 0)
  ORDER BY CASE o.status WHEN 'new' THEN 0 WHEN 'gone' THEN 2 ELSE 1 END,
           (o.now_d / nullif(o.now_e, 0) - o.bef_d / nullif(o.bef_e, 0)) / nullif(o.bef_d / nullif(o.bef_e, 0), 0) DESC NULLS LAST,
-          o.now_d DESC NULLS LAST, o.database_id, o.object_id`
+          o.now_d DESC NULLS LAST, o.database_id, o.proc_key`
 
 // sqlMSSQLProcCompareWindows: the two windows, the reads each holds and the seconds they cover, whether they
 // overlap, and the coverage word (as the plan cache's).

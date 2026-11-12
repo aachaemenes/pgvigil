@@ -5,7 +5,8 @@
 # (QueryStoreRegressionRules.cs) beside pgvigil's duration test - against hand reads of the same SQL Server.
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest), go, psql, curl, python3, node, npm, chromium, and:
 #   ADMIN_DSN       a superuser connection to a PostgreSQL sandbox in KEYWORD form (default 'host=127.0.0.1 port=5432
-#                   user=postgres dbname=postgres'); the proof makes its own repository databases and drops them.
+#                   user=postgres dbname=postgres'), with no password= in it (it rides on command lines: the password,
+#                   if any, comes from ~/.pgpass or PGPASSWORD); the proof makes its own repository databases and drops them.
 #   PGVIGIL_WIRING  1 (default) applies scripts/proof-darling-queries-wiring.patch (mssql_plancache.ts, mssql_procs.ts,
 #                   router.ts, proof-mssql-querystore.sh: the lead's files) to this copy when the tree lacks it; 0 = the
 #                   tree as it is.
@@ -18,12 +19,14 @@
 #     CONNECT ANY DATABASE, VIEW ANY DEFINITION).
 #  B. 0126 under a running import (PostgreSQL only): a repository migrated by a binary without 0126; a session holding
 #     ROW EXCLUSIVE on mssql_qs_runtime for 40 s makes the new binary's migrate fail in 20-25 s on the lock timeout
-#     (0126 not recorded, no new column); a holder of 8 s makes it wait and succeed (7-20 s); then the six columns,
-#     the spills columns, mssql_pc_handles and the two renamed imports exist.
+#     (0126 not recorded, no new column); a session shaped as the procedures import (its two parents locked, 8 s, then
+#     mssql_proc_last written) makes migrate wait and succeed (6-20 s: the holder starts 1 s before it), and the holder
+#     commits too (no deadlock: 0126 takes the parents before the last-read tables); then the six columns, the spills
+#     columns, mssql_pc_handles and the two renamed imports exist.
 #  C. old-shape payloads into the new imports (synthetic): procstats - an old-shape read (no spills key) then a new
 #     one (spills 100) stores the interval's spills NULL and last.spills 100; the next read (130) stores 30; a plan new
 #     in it (7) stores 7. querystore - a runtime row with failed 5 and no split keys stores the six NULL; with the keys
-#     stores them; failed 0 stores NULL.
+#     stores them; failed 0 with the keys sent stores NULL.
 #  D. live Query Store, W1 then W2 (two minutes each, on minute bounds of the server's clock): the stored split = a
 #     hand read by execution_type; Regressed (base=prev): q_cost 'cost', q_to and q_tonew (no kept baseline)
 #     'timeouts', q_err 'errors' with Aborted 0, q_cheap not 'cost'; with q_err's baseline rows in the pre-0126 shape it
@@ -35,8 +38,10 @@
 #     the hand delta of total_spills (> 0); p_new 'new', p_gone 'gone'; mssql_pc_handles = sys.dm_exec_query_stats'
 #     sql_handle and query_plan_hash for q_cost's statement; the plan-cache compare labels q_new 'new', and with R1
 #     marked cut 'not kept before' and 1 cut read.
-#  F. timing: the plan-cache compare (compare=week over 7 days, 14 days stored) at 761 and 3,000 rows a read, each
-#     under 10 s through the API.
+#  F. timing through the API, three runs each, every one under 10 s or FAIL: the plan-cache compare (compare=week over a
+#     7-day window, 14 days stored) at 761 and 3,000 rows a read; the Query Store compare (compare=week, 7 days) and
+#     Regressed's default (a 1-hour window against PerformanceMonitor's 7 days) over 14 days of 1-minute intervals at
+#     250 kept plans each (the collector's ceiling: 5 lists of 50).
 #  G. the pages in headless Chromium (light): the Query Store's Top with its compare grid (= the API's rows), Regressed
 #     with q_to's and q_err's rows, Plan cache and Procedures with their compare and new columns; no error box.
 # NOT PROVEN HERE: SQL Server 2016 (no total_spills: the column check's unit test), Managed Instance, a readable
@@ -57,6 +62,7 @@ TMPD=$(mktemp -d); SRVPID=; CHRPID=; BG=()
 SA_PW=$(pw); MON_PW=$(pw); UPW=$(pw)
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 cleanup() {
+  [[ -f "$TMPD/0126.sql" ]] && mv "$TMPD/0126.sql" internal/repo/sql/0126_darling_queries.sql   # the pre-0126 build's move, undone
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill -- "-$CHRPID" 2>/dev/null || kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
   for p in "${BG[@]}"; do kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true; done
@@ -65,12 +71,15 @@ cleanup() {
   rm -rf "$TMPD"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM
 # sq: T-SQL as sa (stdin; -I: QUOTED_IDENTIFIER ON); sqt: the same without -b and with a query timeout of $3 seconds
 # (a run the client cancels is Query Store's Aborted; an error is its Exception); sqok: loud
 sq() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout "${3:-120}" docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -b -I -W -h -1 -s "|" -l 60 -d "$0" -i /dev/stdin' "${2:-master}"; }
 sqt() { printf 'SET NOCOUNT ON;\n%s\n' "$1" | timeout 300 docker exec -i --env-file "$TMPD/sa.env" "$SQL" bash -c 'SQLCMDPASSWORD=$SA_PW '"$SQLCMD"' -S localhost -U sa -C -I -W -h -1 -l 60 -t "$1" -d "$0" -i /dev/stdin' "${2:-pgvq}" "${3:-0}" >/dev/null 2>&1 || true; }
 sqok() { local out; out=$(sq "$2" "${3:-master}" 2>&1) || fail "$1: $out"; }
 pq() { psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "$1"; }
+# objs <file> <part>: an API part ({columns, rows}) as a JSON array of objects
+objs() { jq -c --arg p "$2" '.[$p] | .columns as $c | [(.rows // [])[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add]' "$1"; }
 urlq() { URLQ_V="$1" python3 -c 'import os,urllib.parse as u; print(u.quote(os.environ["URLQ_V"], safe=""))'; }
 for t in docker go psql curl python3 node npm chromium setsid jq patch; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
@@ -102,19 +111,23 @@ python3 -c "import sys; sys.exit(0 if 19 <= $el1 <= 26 else 1)" || fail "B: the 
 [[ "$(pq "SELECT count(*) FROM pgvigil.schema_version WHERE version LIKE '0126%'")/$(pq "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'pgvigil' AND table_name = 'mssql_qs_runtime' AND column_name = 'aborted_executions'")" == 0/0 ]] \
   || fail "B: 0126 left a trace after its lock timeout"
 for p in "${BG[@]}"; do wait "$p" 2>/dev/null || true; done; BG=()
-hold 8
+# the procedures import's own order: its parents, then mssql_proc_last (0084 / 0126's import_mssql_procstats)
+( psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -c "BEGIN; LOCK TABLE ONLY pgvigil.mssql_proc_read, ONLY pgvigil.mssql_proc_sample IN ROW EXCLUSIVE MODE; SELECT pg_sleep(8);
+    DELETE FROM pgvigil.mssql_proc_last WHERE instance_id = -1; COMMIT;" >"$TMPD/b-holder.out" 2>&1; echo "exit=$?" >>"$TMPD/b-holder.out" ) & BG+=($!)
+sleep 1
 t0=$(date +%s.%N)
-"$TMPD/pgvigil" migrate -config "$TMPD/b.yaml" >"$TMPD/b-migrate2.out" 2>&1 || { tail -5 "$TMPD/b-migrate2.out" >&2; fail "B: migrate behind an 8 s holder"; }
+"$TMPD/pgvigil" migrate -config "$TMPD/b.yaml" >"$TMPD/b-migrate2.out" 2>&1 || { tail -5 "$TMPD/b-migrate2.out" >&2; cat "$TMPD/b-holder.out" >&2; fail "B: migrate beside an import-shaped holder"; }
 t1=$(date +%s.%N); el2=$(python3 -c "print(round($t1 - $t0, 1))")
-python3 -c "import sys; sys.exit(0 if 6 <= $el2 <= 20 else 1)" || fail "B: migrate behind an 8 s holder took $el2 s (want 7-20: it waited)"
 for p in "${BG[@]}"; do wait "$p" 2>/dev/null || true; done; BG=()
+grep -q 'exit=0' "$TMPD/b-holder.out" && ! grep -qi deadlock "$TMPD/b-holder.out" || { cat "$TMPD/b-holder.out" >&2; fail "B: the import-shaped holder did not commit"; }
+python3 -c "import sys; sys.exit(0 if 6 <= $el2 <= 20 else 1)" || fail "B: migrate beside an 8 s import-shaped holder took $el2 s (want 6-20: it waited; the holder starts 1 s before it)"
 got=$(pq "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'pgvigil' AND ((table_name = 'mssql_qs_runtime' AND column_name ~ '^(aborted|exception)_(executions|cpu_us|duration_us)$')
                                                          OR (table_name IN ('mssql_proc_last', 'mssql_proc_sample') AND column_name = 'spills')))
               || '/' || (to_regclass('pgvigil.mssql_pc_handles') IS NOT NULL) || '/' || (to_regprocedure('pgvigil.import_mssql_querystore_0083(int, timestamptz, jsonb)') IS NOT NULL)
               || '/' || (to_regprocedure('pgvigil.import_mssql_plancache_0092(int, timestamptz, jsonb)') IS NOT NULL)
               || '/' || (SELECT count(*) FROM pgvigil.schema_version WHERE version LIKE '0126%')")
 [[ "$got" == "8/true/true/true/1" ]] || fail "B: after the migrate: columns/handles/0083/0092/recorded = $got (want 8/true/true/true/1)"
-echo "ok   B: behind a 40 s holder migrate failed on the lock timeout after $el1 s and left nothing; behind an 8 s holder it waited and went through in $el2 s; 8 columns, mssql_pc_handles, both renamed imports"
+echo "ok   B: behind a 40 s holder migrate failed on the lock timeout after $el1 s and left nothing; beside an import-shaped holder (parents, 8 s, then mssql_proc_last) it waited and went through in $el2 s and the holder committed (no deadlock); 8 columns, mssql_pc_handles, both renamed imports"
 
 echo "== C. old-shape payloads into the new imports =="
 IC=$(pq "SELECT pgvigil.ensure_instance('pgvq-synth', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
@@ -128,9 +141,10 @@ pr "$T2" ",$P1,\"execution_count\":3,\"spills\":130},{\"kind\":\"proc\",\"plan_h
 got=$(pq "SELECT string_agg(object_id || ':' || coalesce(spills::text, 'null'), ',' ORDER BY snapshot_at, object_id) FROM pgvigil.mssql_proc_sample WHERE instance_id = $IC")
 [[ "$got" == "11:null,11:30,12:7" ]] || fail "C: procstats spills per interval = $got (want 11:null at the read after the old one, 11:30, 12:7)"
 [[ "$(pq "SELECT string_agg(spills::text, ',' ORDER BY object_id) FROM pgvigil.mssql_proc_last WHERE instance_id = $IC")" == "130,7" ]] || fail "C: mssql_proc_last.spills"
+QBASE=$(( $(date +%s) / 60 * 60 - 1800 ))   # one interval for the three reads below
 qsrow() {  # one Query Store read of one interval and one plan: $1 the read time, $2 failed, $3 the split keys (or '')
-  local base iv ive; base=$(( $(date +%s) / 60 * 60 - 1800 ))
-  iv=$(date -u -d "@$base" +%Y-%m-%dT%H:%M:%SZ); ive=$(date -u -d "@$((base + 60))" +%Y-%m-%dT%H:%M:%SZ)
+  local iv ive
+  iv=$(date -u -d "@$QBASE" +%Y-%m-%dT%H:%M:%SZ); ive=$(date -u -d "@$((QBASE + 60))" +%Y-%m-%dT%H:%M:%SZ)
   pq "SELECT pgvigil.import_mssql_querystore($IC, '$1'::timestamptz, '[{\"kind\":\"store\",\"database_id\":5,\"database_name\":\"d\",\"database_state\":\"ONLINE\",\"database_read_only\":0,\"read\":1,\"actual_state\":\"READ_WRITE\"},
     {\"kind\":\"interval\",\"database_name\":\"d\",\"interval_id\":1,\"interval_start\":\"$iv\",\"interval_end\":\"$ive\",\"plans\":1,\"executions\":10},
     {\"kind\":\"runtime\",\"database_name\":\"d\",\"interval_start\":\"$iv\",\"plan_id\":1,\"executions\":10,\"failed\":$2,\"duration_us\":100,\"cpu_us\":50$3},
@@ -140,9 +154,9 @@ qsrow() {  # one Query Store read of one interval and one plan: $1 the read time
         FROM pgvigil.mssql_qs_runtime WHERE instance_id = $IC AND plan_id = 1"; }
 S1=$(qsrow "$(date -u -d '-9 minutes' +%Y-%m-%dT%H:%M:%SZ)" 5 '')
 S2=$(qsrow "$(date -u -d '-8 minutes' +%Y-%m-%dT%H:%M:%SZ)" 5 ',"aborted_executions":3,"aborted_cpu_us":30,"aborted_duration_us":60,"exception_executions":2,"exception_cpu_us":4,"exception_duration_us":8')
-S3=$(qsrow "$(date -u -d '-7 minutes' +%Y-%m-%dT%H:%M:%SZ)" 0 '')
+S3=$(qsrow "$(date -u -d '-7 minutes' +%Y-%m-%dT%H:%M:%SZ)" 0 ',"aborted_executions":3,"aborted_cpu_us":30,"aborted_duration_us":60,"exception_executions":2,"exception_cpu_us":4,"exception_duration_us":8')
 [[ "$S1|$S2|$S3" == "null/null/null/null|3/30/2/8|null/null/null/null" ]] || fail "C: the Query Store split: old shape $S1, new $S2, failed 0 $S3"
-echo "ok   C: procstats spills after an old-shape read NULL (not 100), then 30, a new plan 7, last 130 / 7; the Query Store split NULL from an old payload, stored from a new one, NULL at failed 0"
+echo "ok   C: procstats spills after an old-shape read NULL (not 100), then 30, a new plan 7, last 130 / 7; the Query Store split NULL from an old payload, stored from a new one, NULL at failed 0 though the keys were sent"
 psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB2 WITH (FORCE)" >/dev/null
 
 echo "== A. the container =="
@@ -156,8 +170,8 @@ sqok "A: the database" "CREATE DATABASE pgvq; ALTER DATABASE pgvq SET RECOVERY S
 sqok "A: the table" "CREATE TABLE dbo.t (id int NOT NULL PRIMARY KEY, v int NOT NULL, pad char(500) NOT NULL DEFAULT 'a');
   INSERT dbo.t (id, v, pad) SELECT TOP (20000) n, n % 977, REPLICATE(CHAR(65 + n % 26), 400) FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b) x;" pgvq
 sqok "A: the procedures" "EXEC (N'CREATE PROCEDURE dbo.p_spill AS SELECT TOP (20000) id, pad FROM dbo.t ORDER BY pad DESC, v OPTION (MAX_GRANT_PERCENT = 0)');
-  EXEC (N'CREATE PROCEDURE dbo.p_new AS SELECT COUNT_BIG(*) FROM dbo.t WHERE v = 3');
-  EXEC (N'CREATE PROCEDURE dbo.p_gone AS SELECT COUNT_BIG(*) FROM dbo.t WHERE v = 4');" pgvq
+  EXEC (N'CREATE PROCEDURE dbo.p_new AS SELECT MAX(id) FROM dbo.t WHERE v = 3');
+  EXEC (N'CREATE PROCEDURE dbo.p_gone AS SELECT MIN(id) FROM dbo.t WHERE v = 4');" pgvq
 sqok "A: the monitor login" "CREATE LOGIN [$MON] WITH PASSWORD = '$MON_PW', CHECK_POLICY = OFF; GRANT VIEW SERVER STATE TO [$MON]; GRANT CONNECT ANY DATABASE TO [$MON]; GRANT VIEW ANY DEFINITION TO [$MON];"
 echo "ok   A: SQL Server $(sq "SELECT CAST(SERVERPROPERTY('ProductVersion') AS varchar(20))"), pgvq's Query Store $(sq "SELECT actual_state_desc + ' ' + CAST(interval_length_minutes AS varchar(5)) + ' min' FROM sys.database_query_store_options" pgvq)"
 
@@ -179,13 +193,18 @@ now_utc() { sq "SELECT CONVERT(varchar(19), SYSUTCDATETIME(), 126) + 'Z'"; }
 to_bound() { local s m; s=$(sq "SELECT 60 - DATEPART(second, SYSUTCDATETIME())"); sleep $((s + $1)); m=$(sq "SELECT CONVERT(varchar(16), SYSUTCDATETIME(), 126) + ':00Z'"); printf '%s' "$m"; }
 Q_COST="EXEC sp_executesql N'SELECT /*q_cost*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v + b.v = -1', N'@n int', @n ="
 Q_TO="EXEC sp_executesql N'SELECT /*q_to*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v * 2 + b.v = -1', N'@n int', @n ="
-Q_TONEW="EXEC sp_executesql N'SELECT /*q_tonew*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v * 3 + b.v = -1', N'@n int', @n ="
+# each scenario statement has a shape of its own: a query hash leaves literals out, so two statements that differ in
+# a literal only would be one key
+Q_TONEW="EXEC sp_executesql N'SELECT /*q_tonew*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.id * 2 + b.v = -1', N'@n int', @n ="
 Q_ERR="EXEC sp_executesql N'SELECT /*q_err*/ COUNT_BIG(*) / @d FROM dbo.t WHERE v >= 0', N'@d int', @d ="
 Q_CHEAP="EXEC sp_executesql N'SELECT /*q_cheap*/ COUNT_BIG(*) FROM dbo.t a CROSS JOIN (SELECT TOP (@n) v FROM dbo.t) b WHERE a.v - b.v = -1', N'@n int', @n ="
 Q_GONE="EXEC sp_executesql N'SELECT /*q_gone*/ COUNT_BIG(*) FROM dbo.t WHERE v = @v', N'@v int', @v = 5;"
 Q_NEW="EXEC sp_executesql N'SELECT /*q_new*/ MAX(v) FROM dbo.t WHERE id > @i', N'@i int', @i = 7;"
 Q_NK="EXEC sp_executesql N'SELECT /*q_nk*/ MIN(v) FROM dbo.t WHERE id < @i', N'@i int', @i = 19000;"
 rep() { local n=$1 s=$2 out=; for _ in $(seq 1 "$n"); do out+="$s"$'\nGO\n'; done; printf '%s' "$out"; }
+# plus <minute UTC> <seconds>: that time; until_s <minute UTC> <seconds>: sleep until the server's clock is past it
+plus() { date -u -d "@$(( $(date -u -d "$1" +%s) + $2 ))" +%Y-%m-%dT%H:%M:%SZ; }
+until_s() { local ms; ms=$(sq "SELECT DATEDIFF(millisecond, SYSUTCDATETIME(), DATEADD(second, $2, CONVERT(datetime2, '${1%Z}')))"); (( ms > 0 )) && sleep "$(python3 -c "print($ms / 1000)")"; return 0; }
 
 echo "== D. the Query Store, W0 / W1 / W2 =="
 col mssql_instance mssql_procstats mssql_plancache   # R0: the counters' start
@@ -193,21 +212,23 @@ SB=$(pq "SELECT instance_id FROM pgvigil.instances WHERE name = 'sqlbox'")
 R0=$(pq "SELECT max(snapshot_at) FROM pgvigil.mssql_pc_state WHERE instance_id = $SB")
 sleep 25
 M0=$(to_bound 2); sqt "$Q_NK" pgvq                                     # W0: q_nk compiled, before the earlier window
-M1=$(to_bound 2); echo "  W1 from $M1"
+M1=$(plus "$M0" 60); until_s "$M1" 2; echo "  W1 from $M1"
 sqt "$(rep 5 "$Q_COST 1;")$(rep 5 "$Q_TO 1;")$(rep 5 "$Q_ERR 1;")$(rep 5 "$Q_GONE")$(rep 10 "$Q_CHEAP 1;")$(rep 3 'EXEC dbo.p_spill;')$(rep 3 'EXEC dbo.p_gone;')" pgvq
+until_s "$M1" 110                                                       # R1 at W1's end: R2 - R1 stays under R1 - R0
 col mssql_procstats mssql_plancache                                     # R1
 R1=$(pq "SELECT snapshot_at FROM pgvigil.mssql_pc_state WHERE instance_id = $SB")
 SPILL1=$(sq "SELECT ISNULL(SUM(total_spills), 0) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgvq') AND object_id = OBJECT_ID('pgvq.dbo.p_spill')")
-[[ $(sq "SELECT CASE WHEN SYSUTCDATETIME() < DATEADD(second, 115, CONVERT(datetime2, '${M1%Z}')) THEN 1 ELSE 0 END") == 1 ]] || fail "D: W1's runs and R1 overran W1"
-M2=$(to_bound 2); echo "  W2 from $M2"
-sqt "$(rep 5 "$Q_COST 1500;")$(rep 5 "$Q_NEW")$(rep 5 "$Q_NK")$(rep 10 "$Q_CHEAP 6;")$(rep 3 'EXEC dbo.p_spill;')$(rep 3 'EXEC dbo.p_new;')" pgvq
+[[ $(sq "SELECT CASE WHEN SYSUTCDATETIME() < DATEADD(second, 119, CONVERT(datetime2, '${M1%Z}')) THEN 1 ELSE 0 END") == 1 ]] || fail "D: W1's runs and R1 overran W1"
+M2=$(plus "$M1" 120); until_s "$M2" 2; echo "  W2 from $M2"
+sqt "$(rep 5 "$Q_COST 1500;")$(rep 5 "$Q_NEW")$(rep 5 "$Q_NK")$(rep 10 "$Q_CHEAP 20;")$(rep 3 'EXEC dbo.p_spill;')$(rep 3 'EXEC dbo.p_new;')" pgvq
 sqt "$(rep 4 "$Q_TO 20000;")$(rep 4 "$Q_TONEW 20000;")" pgvq 1    # the client gives up after 1 s: Aborted
 sqt "$(rep 4 "$Q_ERR 0;")" pgvq                                         # divide by zero: Exception
 [[ $(sq "SELECT CASE WHEN SYSUTCDATETIME() < DATEADD(second, 58, CONVERT(datetime2, '${M2%Z}')) THEN 1 ELSE 0 END") == 1 ]] || fail "D: W2's first minute overran"
-M3=$(to_bound 2)
+M3=$(plus "$M2" 60); until_s "$M3" 2
 sqt "SET NOCOUNT ON; DECLARE @i int = 0, @s nvarchar(10); WHILE @i < 400 BEGIN SET @s = CAST(@i AS nvarchar(10));
-  EXEC (N'SELECT /*burst*/ COUNT_BIG(*) FROM dbo.t a WHERE a.v = ' + @s + N' AND EXISTS (SELECT 1 FROM dbo.t b WHERE b.id = a.id + ' + @s + N')'); SET @i += 1; END" pgvq
-M4=$(to_bound 3); echo "  W2 to $M4"
+  EXEC (N'SELECT /*burst*/ COUNT_BIG(*) FROM dbo.t a WHERE a.v = ' + @s + N' AND EXISTS (SELECT 1 FROM dbo.t b WHERE b.id = a.id + ' + @s + N') OPTION (RECOMPILE)'); SET @i += 1; END" pgvq
+# RECOMPILE: Query Store keeps each compile, the plan cache none (the cache stays under the collector's lists)
+M4=$(plus "$M2" 120); until_s "$M4" 3; echo "  W2 to $M4"
 col mssql_procstats mssql_plancache mssql_querystore                   # R2 and the store's read
 R2=$(pq "SELECT snapshot_at FROM pgvigil.mssql_pc_state WHERE instance_id = $SB")
 SPILL2=$(sq "SELECT ISNULL(SUM(total_spills), 0) FROM sys.dm_exec_procedure_stats WHERE database_id = DB_ID('pgvq') AND object_id = OBJECT_ID('pgvq.dbo.p_spill')")
@@ -260,9 +281,11 @@ import sys, json, subprocess, datetime as dt
 d, dsn, sb, m1, m2, m4, s1, s2 = sys.argv[1:]
 def q(s): return [l.split('|') for l in subprocess.run(['psql', dsn, '-XAtq', '-c', s], check=True, capture_output=True, text=True).stdout.splitlines() if l]
 def rows(f, part):
-    x = json.load(open(f"{d}/{f}")).get(part)
-    return x.get('rows', x) if isinstance(x, dict) else (x or [])
+    # a part is {columns, rows: [[...]]}: one dict per row
+    x = json.load(open(f"{d}/{f}")).get(part) or {}
+    return [dict(zip(x.get('columns', []), r)) for r in x.get('rows') or []]
 ep = lambda s: int(dt.datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp())
+K = lambda h: '0x' + (h or '')[2:].upper()   # a hash as the collector stores it: 0x and upper-case hex
 E1, E2, E4 = ep(m1), ep(m2), ep(m4)
 bad = []
 # the hand read: plan, query, hash, interval start (epoch), executions, aborted (n, cpu, dur), exception (n, cpu, dur), dur, cpu, text
@@ -270,7 +293,7 @@ hand = []
 for l in open(f"{d}/hand-qs.txt"):
     f = l.rstrip('\n').split('|')
     if len(f) < 14: continue
-    hand.append(dict(plan=int(f[0]), query=int(f[1]), hash=f[2].upper(), at=int(f[3]), e=int(f[4]), an=int(f[5]), ac=int(f[6]), ad=int(f[7]),
+    hand.append(dict(plan=int(f[0]), query=int(f[1]), hash=K(f[2]), at=int(f[3]), e=int(f[4]), an=int(f[5]), ac=int(f[6]), ad=int(f[7]),
                      xn=int(f[8]), xc=int(f[9]), xd=int(f[10]), dur=int(f[11]), cpu=int(f[12]), text=f[13]))
 tag = lambda h, t: next((k for k in ['q_cost', 'q_tonew', 'q_to', 'q_err', 'q_cheap', 'q_gone', 'q_new', 'q_nk'] if f'/*{k}*/' in h['text']), None)
 hashof = {}
@@ -292,22 +315,32 @@ for h in hand:
     if got[0] != want[0] or got[1] != want[1] or got[4] != want[4] or any(g is None or abs(g - w) > max(2, w * 1e-6) for g, w in zip(got[1:], want[1:])):
         bad.append(f"D split of plan {h['plan']} at {h['at']}: stored {got}, hand {want}")
 nofail = q(f"SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = {sb} AND coalesce(failed, 0) = 0 AND (aborted_executions IS NOT NULL OR exception_executions IS NOT NULL)")[0][0]
+fails = sorted(f"{tag(h, h['text'])}:a{h['an']}/x{h['xn']}" for h in hand if h['an'] + h['xn'] > 0)
+print(f"D failures in the hand read: {fails}")
 if nsplit < 3: bad.append(f"D only {nsplit} stored (plan, interval) rows with failures")
 if nofail != '0': bad.append(f"D {nofail} rows without failures carry split values (want NULL)")
 # 2. Regressed
-reg = {r['query_hash'].upper(): r for r in rows('reg.json', 'regressed') if r.get('query_hash')}
+reg = {K(r['query_hash']): r for r in rows('reg.json', 'regressed') if r.get('query_hash')}
 def raised(k): return (reg.get(hashof.get(k, '?'), {}) or {}).get('raised_by') or ''
 if 'cost' not in raised('q_cost'): bad.append(f"D Regressed q_cost raised_by '{raised('q_cost')}' (want cost)")
 if 'timeouts' not in raised('q_to'): bad.append(f"D Regressed q_to raised_by '{raised('q_to')}' (want timeouts)")
 r_tn = reg.get(hashof.get('q_tonew', '?'))
-if not r_tn or 'timeouts' not in (r_tn.get('raised_by') or '') or r_tn.get('has_baseline') is not False: bad.append(f"D Regressed q_tonew {r_tn and {k: r_tn[k] for k in ('raised_by', 'has_baseline')}} (want timeouts, no kept baseline)")
+if not r_tn or 'timeouts' not in (r_tn.get('raised_by') or '') or r_tn.get('has_baseline') not in (False, 'false', 'f'): bad.append(f"D Regressed q_tonew {r_tn and {k: r_tn[k] for k in ('raised_by', 'has_baseline')}} (want timeouts, no kept baseline)")
+num = lambda v: None if v is None or v == '' else float(v)   # a numeric may arrive as a JSON number or as text
 r_er = reg.get(hashof.get('q_err', '?'))
-if not r_er or 'errors' not in (r_er.get('raised_by') or '') or r_er.get('recent_aborted_execs') != 0 or r_er.get('recent_exception_execs', 0) < 3:
+if not r_er or 'errors' not in (r_er.get('raised_by') or '') or num(r_er.get('recent_aborted_execs')) != 0 or (num(r_er.get('recent_exception_execs')) or 0) < 3:
     bad.append(f"D Regressed q_err {r_er and {k: r_er.get(k) for k in ('raised_by', 'recent_aborted_execs', 'recent_exception_execs')}} (want errors, Aborted 0, Exception >= 3)")
-if 'cost' in raised('q_cheap'): bad.append(f"D Regressed q_cheap raised by cost: {reg.get(hashof.get('q_cheap', '?'))}")
+r_ch = reg.get(hashof.get('q_cheap', '?'))
+if not r_ch: bad.append("D Regressed lists no q_cheap (it should be there by pgvigil's duration test)")
+else:
+    added = (num(r_ch.get('recent_cpu_ms')) or 0) - (num(r_ch.get('base_cpu_ms')) or 0)
+    added *= num(r_ch.get('recent_execs')) or 0
+    if 'cost' in (r_ch.get('raised_by') or '') or (num(r_ch.get('cpu_regression_percent')) or 0) <= 25 or added >= 1000:
+        bad.append(f"D q_cheap: raised_by '{r_ch.get('raised_by')}', CPU +% {r_ch.get('cpu_regression_percent')}, added {added:.1f} ms (want CPU over +25 %, under 1,000 ms added, no 'cost')")
+    else: print(f"D q_cheap: CPU +{r_ch.get('cpu_regression_percent')} %, {added:.1f} ms added: not cost")
 print(f"D Regressed: " + '; '.join(f"{k} [{raised(k)}]" for k in ['q_cost', 'q_to', 'q_tonew', 'q_err', 'q_cheap']))
 # 3. the compare (W2 against W1) and the hand read of the same intervals (every plan of the scenario keys)
-cmp = {r['query_hash'].upper(): r for r in rows('cmp.json', 'compare')}
+cmp = {K(r['query_hash']): r for r in rows('cmp.json', 'compare')}
 w = rows('cmpw.json', 'compare_windows')[0]
 st_of = lambda k: (cmp.get(hashof.get(k, '?')) or {}).get('status')
 want = {'q_new': 'new', 'q_nk': 'not kept before', 'q_gone': 'not kept now', 'q_cost': ''}
@@ -323,7 +356,7 @@ for k in ['q_cost', 'q_to', 'q_err', 'q_cheap', 'q_new', 'q_nk', 'q_gone']:
     for side, lo, hi, ek, dk, ck in [('now', E2, E4, 'executions', 'avg_duration_ms', 'avg_cpu_ms'), ('before', E1, E2, 'before_executions', 'before_avg_duration_ms', 'before_avg_cpu_ms')]:
         hs = [h for h in hand if h['hash'] == hh and lo <= h['at'] < hi]
         e = sum(h['e'] for h in hs)
-        if int(r[ek]) != e: bad.append(f"D compare {k} {side} executions {r[ek]}, hand {e}")
+        if int(float(r[ek])) != e: bad.append(f"D compare {k} {side} executions {r[ek]}, hand {e}")
         if e:
             for key, tot in [(dk, sum(h['dur'] for h in hs)), (ck, sum(h['cpu'] for h in hs))]:
                 if r[key] is None or abs(float(r[key]) - tot / 1000.0 / e) > 0.002: bad.append(f"D compare {k} {side} {key} {r[key]}, hand {tot / 1000.0 / e:.3f}")
@@ -331,7 +364,7 @@ print(f"D compare: {len(cmp)} rows; " + ', '.join(f"{k} '{st_of(k)}'" for k in w
 # 4. the 400-query interval: the kept plans and the interval's own count
 cut = q(f"""SELECT i.plans, (SELECT count(*) FROM pgvigil.mssql_qs_runtime r WHERE r.instance_id = i.instance_id AND r.database_name = i.database_name AND r.snapshot_at = i.snapshot_at)
               FROM pgvigil.mssql_qs_interval i WHERE i.instance_id = {sb} AND i.database_name = 'pgvq' ORDER BY i.plans DESC NULLS LAST LIMIT 1""")[0]
-if int(cut[0]) < 400 or int(cut[1]) > 250: bad.append(f"D the busiest interval: {cut[0]} plans ran, {cut[1]} kept (want >= 400 and <= 250)")
+if int(cut[0]) < 400 or not 1 <= int(cut[1]) <= 250 or int(cut[1]) >= int(cut[0]): bad.append(f"D the busiest interval: {cut[0]} plans ran, {cut[1]} kept (want >= 400 ran, 1-250 kept)")
 print(f"D the busiest interval: {cut[0]} plans ran, {cut[1]} kept")
 # E. procedures: spills = the hand delta; the compare
 pr = {r['object_name']: r for r in rows('procs.json', 'procs')}
@@ -342,9 +375,12 @@ pc = {r['object_name']: r['status'] for r in rows('pcmp.json', 'compare')}
 if pc.get('p_new') != 'new' or pc.get('p_gone') != 'gone' or pc.get('p_spill') != '': bad.append(f"E procedures compare {pc}")
 print(f"E procedures: p_spill spills {sp} (hand {int(s2) - int(s1)}); compare {pc}")
 # E. the plan cache compare and the handles
-cc = {r['query_key'].upper(): r['status'] for r in rows('ccmp.json', 'compare')}
+cw = rows('ccmpw.json', 'compare_windows')[0]
+ncut = sum(int(float(cw.get(k) or 0)) for k in ('now_cut_reads', 'before_cut_reads', 'edge_cut_reads'))
+if ncut: bad.append(f"E the live plan cache reads were cut ({ncut}): its NEW / GONE check cannot run")
+cc = {K(r['query_key']): r['status'] for r in rows('ccmp.json', 'compare')}
 if cc.get(hashof.get('q_new', '?')) != 'new' or cc.get(hashof.get('q_gone', '?')) != 'gone': bad.append(f"E plan cache compare q_new '{cc.get(hashof.get('q_new', '?'))}', q_gone '{cc.get(hashof.get('q_gone', '?'))}' (want new, gone)")
-ct = {r['query_key'].upper(): r for r in rows('ctop.json', 'top')}
+ct = {K(r['query_key']): r for r in rows('ctop.json', 'top')}
 t = ct.get(hashof.get('q_cost', '?'), {})
 if not t.get('plan_hash') or not t.get('sql_handle') or not t.get('plan_handle'): bad.append(f"E the plan cache grid's handles for q_cost: {t.get('plan_hash')}, {t.get('sql_handle')}, {t.get('plan_handle')}")
 print(f"E plan cache: compare q_new '{cc.get(hashof.get('q_new', '?'))}', q_gone '{cc.get(hashof.get('q_gone', '?'))}'; q_cost plan hash {t.get('plan_hash')}")
@@ -366,24 +402,33 @@ pq "UPDATE pgvigil.mssql_pc_read SET capped = true WHERE instance_id = $SB AND s
 api "mssql/plancache?$PW&compare=prev&part=compare" ccmp2.json
 api "mssql/plancache?$PW&compare=prev&part=compare_windows" ccmpw2.json
 QN=$(jq -r '.q_new' "$TMPD/hashof.json")
-L2=$(jq -r --arg k "$QN" '(.compare.rows // .compare)[] | select((.query_key | ascii_upcase) == ($k | ascii_upcase)) | .status' "$TMPD/ccmp2.json")
-CUT=$(jq -r '(.compare_windows.rows // .compare_windows)[0].before_cut_reads' "$TMPD/ccmpw2.json")
+L2=$(objs "$TMPD/ccmp2.json" compare | jq -r --arg k "$QN" '.[] | select((.query_key | ascii_upcase) == ($k | ascii_upcase)) | .status')
+CUT=$(objs "$TMPD/ccmpw2.json" compare_windows | jq -r '.[0].before_cut_reads')
 [[ "$L2/$CUT" == "not kept before/1" ]] || fail "E: with R1 cut, q_new reads '$L2' with $CUT cut read(s) before (want 'not kept before' and 1)"
 pq "UPDATE pgvigil.mssql_pc_read SET capped = false WHERE instance_id = $SB AND snapshot_at = '$R1'" >/dev/null
 echo "ok   E: mssql_pc_handles = the DMV's sql_handle and query_plan_hash for every cached statement of q_cost; with R1 cut q_new reads 'not kept before' and the windows part 1 cut read"
 
 # D. q_err's baseline rows in the pre-0126 shape: the failure test is not applied, the cells say so
 QE=$(jq -r '.q_err' "$TMPD/hashof.json")
-pq "CREATE TABLE pgvigil.proof_keep AS SELECT * FROM pgvigil.mssql_qs_runtime WHERE instance_id = $SB AND query_hash = '$QE' AND snapshot_at < '$M2'" >/dev/null
-pq "UPDATE pgvigil.mssql_qs_runtime SET failed = 2, aborted_executions = NULL, aborted_cpu_us = NULL, aborted_duration_us = NULL, exception_executions = NULL, exception_cpu_us = NULL, exception_duration_us = NULL
-     WHERE instance_id = $SB AND query_hash = '$QE' AND snapshot_at < '$M2'" >/dev/null
+SK0=$(objs "$TMPD/regskip0.json" regressed_skipped | jq -r '.[0].queries')
+[[ "$SK0" == 0 ]] || fail "D: regressed_skipped before the pre-0126 rows: $SK0 (want 0)"
+pq "CREATE TABLE pgvigil.proof_keep AS SELECT * FROM pgvigil.mssql_qs_runtime WHERE instance_id = $SB AND upper(query_hash) = upper('$QE') AND snapshot_at < '$M2'" >/dev/null
+NU=$(pq "WITH u AS (UPDATE pgvigil.mssql_qs_runtime SET failed = 2, aborted_executions = NULL, aborted_cpu_us = NULL, aborted_duration_us = NULL, exception_executions = NULL, exception_cpu_us = NULL, exception_duration_us = NULL
+     WHERE instance_id = $SB AND upper(query_hash) = upper('$QE') AND snapshot_at < '$M2' RETURNING 1) SELECT count(*) FROM u")
+[[ "$NU" -ge 1 ]] || fail "D: no stored row of q_err before W2 to put in the pre-0126 shape"
 api "mssql/querystore?$QW&base=prev&part=regressed" reg2.json
 api "mssql/querystore?$QW&base=prev&part=regressed_skipped" regskip.json
-RB=$(jq -r --arg k "$QE" '[(.regressed.rows // .regressed)[] | select(.query_hash == $k) | (.raised_by + "|" + (.base_unsplit | tostring))] | join(",")' "$TMPD/reg2.json")
-SK=$(jq -r '(.regressed_skipped.rows // .regressed_skipped)[0].queries' "$TMPD/regskip.json")
+RB=$(objs "$TMPD/reg2.json" regressed | jq -r --arg k "$QE" '[.[] | select((.query_hash | ascii_upcase) == ($k | ascii_upcase)) | (.raised_by + "|" + (.base_unsplit | tostring))] | join(",")')
+SK=$(objs "$TMPD/regskip.json" regressed_skipped | jq -r '.[0].queries')
 [[ "$RB" != *errors* && "$SK" -ge 1 ]] || fail "D: q_err with pre-0126 baseline rows: '$RB', skipped $SK (want no 'errors', skipped >= 1)"
-pq "DELETE FROM pgvigil.mssql_qs_runtime WHERE instance_id = $SB AND query_hash = '$QE' AND snapshot_at < '$M2'; INSERT INTO pgvigil.mssql_qs_runtime SELECT * FROM pgvigil.proof_keep; DROP TABLE pgvigil.proof_keep" >/dev/null
-echo "ok   D: q_err's baseline in the pre-0126 shape: not raised by errors ('${RB:-not listed}'), regressed_skipped $SK"
+pq "DELETE FROM pgvigil.mssql_qs_runtime WHERE instance_id = $SB AND upper(query_hash) = upper('$QE') AND snapshot_at < '$M2'; INSERT INTO pgvigil.mssql_qs_runtime SELECT * FROM pgvigil.proof_keep; DROP TABLE pgvigil.proof_keep" >/dev/null
+echo "ok   D: q_err's $NU baseline row(s) in the pre-0126 shape: not raised by errors ('${RB:-not listed}'), regressed_skipped 0 before, $SK after"
+# Regressed's default (PerformanceMonitor's 7 days before): q_cost is still raised by cost
+api "mssql/querystore?$QW&part=regressed" reg7.json
+QC=$(jq -r '.q_cost' "$TMPD/hashof.json")
+R7=$(objs "$TMPD/reg7.json" regressed | jq -r --arg k "$QC" '[.[] | select((.query_hash | ascii_upcase) == ($k | ascii_upcase)) | .raised_by] | join(",")')
+[[ "$R7" == *cost* ]] || fail "D: Regressed's default baseline: q_cost raised by '$R7' (want cost)"
+echo "ok   D: Regressed's default baseline (7 days before) raises q_cost by '$R7'"
 
 echo "== F. the plan-cache compare over 7 days =="
 for spec in "761" "3000"; do
@@ -411,9 +456,40 @@ for spec in 761 3000; do
     python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the compare at $spec rows a read took ${tt##* } s (the fail line is 10 s)"
     TF+=" ${spec}:${tt##* }"
   done
-  n=$(jq '(.compare.rows // .compare) | length' "$TMPD/f-$spec-3.json"); [[ "$n" -ge 100 ]] || fail "F: the compare at $spec returned $n rows"
+  n=$(jq '(.compare.rows // []) | length' "$TMPD/f-$spec-3.json"); [[ "$n" -ge 100 ]] || fail "F: the compare at $spec returned $n rows"
 done
 echo "ok   F: the plan-cache compare, a 7-day window against the 7 days before, through the API (s, three runs each):$TF"
+# the Query Store at its ceiling: 1-minute intervals, 250 kept plans each (5 lists of 50), 14 days; 1 % of the rows
+# with failures, split as 0126 stores them
+QI=$(pq "SELECT pgvigil.ensure_instance('pgvq-tqs', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+for back in 15 8 0; do pq "SELECT pgvigil.ensure_month_partition('mssql_qs_runtime', now() - interval '$back days'), pgvigil.ensure_month_partition('mssql_qs_interval', now() - interval '$back days')" >/dev/null; done
+pq "INSERT INTO pgvigil.mssql_qs_interval (instance_id, snapshot_at, database_name, interval_id, interval_end, plans, executions, duration_us, cpu_us, logical_reads, wait_ms, read_at)
+    SELECT $QI, t, 'synth', n, t + interval '1 minute', 250, 25000, 1000000000, 500000000, 1000000, 0, t + interval '1 hour'
+      FROM generate_series(date_trunc('minute', now()) - interval '14 days', date_trunc('minute', now()), interval '1 minute') WITH ORDINALITY g(t, n)" >/dev/null
+pq "INSERT INTO pgvigil.mssql_qs_runtime (instance_id, snapshot_at, interval_end, database_name, plan_id, query_id, query_hash, plan_hash_n, executions, failed,
+      duration_us, cpu_us, logical_reads, physical_reads, logical_writes, row_count, max_duration_us, memory_pages, max_memory_pages, max_dop,
+      first_execution, last_execution, wait_ms, aborted_executions, aborted_cpu_us, aborted_duration_us, exception_executions, exception_cpu_us, exception_duration_us)
+    SELECT $QI, t, t + interval '1 minute', 'synth', p, p, '0x' || upper(lpad(to_hex((p * 2654435761) % 4294967296), 16, '0')), p, e, f,
+           d * e, d * e * 6 / 10, e * 10, 0, 0, e, d, 0, 0, 1, t, t + interval '30 seconds', 0,
+           CASE WHEN f > 0 THEN f END, CASE WHEN f > 0 THEN f * 100 END, CASE WHEN f > 0 THEN f * 1000 END,
+           CASE WHEN f > 0 THEN 0 END, CASE WHEN f > 0 THEN 0 END, CASE WHEN f > 0 THEN 0 END
+      FROM (SELECT t, ((extract(epoch FROM t)::bigint / 60) * 7 + g) % 2000 + 1 AS p, e, least(e, CASE WHEN random() < 0.01 THEN 1 + (random() * 3)::bigint ELSE 0 END) AS f,
+                   (exp(random() * ln(1e6)))::bigint AS d
+              FROM (SELECT t, g, 1 + (random() * 50)::bigint AS e
+                      FROM generate_series(date_trunc('minute', now()) - interval '14 days', date_trunc('minute', now()), interval '1 minute') t, generate_series(1, 250) g) a) x" >/dev/null
+psql "$PGDSN" -Xqc "VACUUM (ANALYZE) pgvigil.mssql_qs_runtime, pgvigil.mssql_qs_interval" >/dev/null
+NQ=$(pq "SELECT count(*) FROM pgvigil.mssql_qs_runtime WHERE instance_id = $QI")
+TQ=""
+F7=$(date -u -d '-7 days' +%Y-%m-%dT%H:%M:%SZ); F1=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ); T7=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+for what in "compare:from=$F7&to=$T7&compare=week&part=compare" "regressed:from=$F1&to=$T7&part=regressed"; do
+  for run in 1 2 3; do
+    tt=$(curl -s -o "$TMPD/fq-$run.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/querystore?instance=$QI&${what#*:}")
+    [[ "${tt%% *}" == 200 ]] || fail "F: the Query Store ${what%%:*} answered ${tt%% *}: $(head -c 300 "$TMPD/fq-$run.json")"
+    python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || fail "F: the Query Store ${what%%:*} took ${tt##* } s over $NQ stored rows (the fail line is 10 s)"
+    TQ+=" ${what%%:*}:${tt##* }"
+  done
+done
+echo "ok   F: the Query Store over $NQ stored rows (14 days, 1-minute intervals, 250 kept plans each), through the API (s, three runs each):$TQ"
 
 echo "== G. the pages in headless Chromium =="
 CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
@@ -449,7 +525,8 @@ for (const [name, hash] of Object.entries(pages)) {
     const heads = [...m.querySelectorAll('th')].map(th => th.textContent.trim());
     return JSON.stringify({ errors: m.querySelectorAll('.error:not([role=status])').length, compare: !!sec, compareRows: grids.length ? grids[0].querySelectorAll('tbody tr').length : -1,
       compareText: sec ? sec.textContent.slice(0, 200) : '', heads: heads.filter(h => /Spilled|cached now|Timeouts|Errors|Why|Severity|new \\/ gone/.test(h)),
-      rows: [...m.querySelectorAll('tbody tr')].length, title: m.querySelector('h2')?.textContent ?? '' }); })()`);
+      rows: [...m.querySelectorAll('tbody tr')].length, title: m.querySelector('h2')?.textContent ?? '',
+      regRows: (() => { const t = [...m.querySelectorAll('table')].find(x => [...x.querySelectorAll('th')].some(th => th.textContent.trim() === 'Severity')); return t ? t.querySelectorAll('tbody tr').length : -1; })() }); })()`);
   console.log(`page ${name} ${s}`);
 }
 ws.close(); process.exit(0);
@@ -462,7 +539,7 @@ import sys, json
 d = sys.argv[1]
 out = open(f"{d}/g.out").read()
 def n(f, part):
-    x = json.load(open(f"{d}/{f}")).get(part); x = x.get('rows', x) if isinstance(x, dict) else (x or []); return len(x)
+    return len((json.load(open(f"{d}/{f}")).get(part) or {}).get('rows') or [])
 want = {'top': ('cmp.json', None), 'plancache': ('ccmp.json', 'cached now'), 'procs': ('pcmp.json', 'Spilled'), 'regressed': (None, 'Timeouts')}
 bad = []
 pages = {l.split(' ', 2)[1]: json.loads(l.split(' ', 2)[2]) for l in out.splitlines() if l.startswith('page ')}
@@ -473,7 +550,7 @@ for name, (f, head) in want.items():
     if p['errors']: bad.append(f"G {name}: {p['errors']} error box(es)")
     if f and p['compareRows'] != n(f, 'compare'): bad.append(f"G {name}: the compare grid {p['compareRows']} rows, the API {n(f, 'compare')}")
     if head and not any(head in h for h in p['heads']): bad.append(f"G {name}: no column '{head}' ({p['heads']})")
-    if name == 'regressed' and p['rows'] < 3: bad.append(f"G regressed: {p['rows']} rows")
+    if name == 'regressed' and p['regRows'] != n('reg.json', 'regressed'): bad.append(f"G regressed: the grid {p['regRows']} rows, the API {n('reg.json', 'regressed')}")
 for b in bad: print('DIFF', b)
 sys.exit(1 if bad else 0)
 PYEND

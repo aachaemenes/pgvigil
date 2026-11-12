@@ -577,6 +577,12 @@ func qsRuntimeRows(name string, ivs []collect.Row, byID map[int64]collect.Row, c
 		for _, k := range []string{"tot_plans", "tot_executions", "tot_duration_us", "tot_cpu_us", "tot_logical_reads", "tot_wait_ms"} {
 			delete(c, k)
 		}
+		// the split travels only where the interval had a failure: the import stores NULL for the rest anyway
+		if f, _ := c["failed"].(int64); f == 0 {
+			for _, k := range qsSplitKeys {
+				delete(c, k)
+			}
+		}
 		c["kind"], c["database_name"], c["interval_start"] = "runtime", name, iv["interval_start"]
 		if p, _ := c["plan_id"].(int64); p > 0 {
 			planIDs[p] = true
@@ -585,6 +591,9 @@ func qsRuntimeRows(name string, ivs []collect.Row, byID map[int64]collect.Row, c
 	}
 	return append(ivs, out...)
 }
+
+// qsSplitKeys are a runtime row's aborted and exception figures (0126).
+var qsSplitKeys = []string{"aborted_executions", "aborted_cpu_us", "aborted_duration_us", "exception_executions", "exception_cpu_us", "exception_duration_us"}
 
 // qsPlanStored asks the repository whether it holds this plan's XML already (or looked at it within a day and
 // kept none under the instance's text policy): the stored plan's hash must be this plan's, since a cleared store

@@ -249,14 +249,17 @@ function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
   out.push(el('p', { class: 'meta' }, `This range: ${both(w.now_from)} to ${both(w.now_to)}. Earlier window: ${both(w.before_from)} to ${both(w.before_to)}.`
     + (w.overlap ? ' The two windows overlap (the shift is shorter than the range): what ran in the overlap counts in both.' : '')));
   const held = kind === 'querystore'
-    ? `The store's intervals cover ${hoursOf(w.now_covered_secs)} of this range and ${hoursOf(w.before_covered_secs)} of the earlier window`
+    ? `The stored Query Store data starts ${w.data_from ? fmtTime(w.data_from) : 'after the earlier window'}; intervals with runs: ${fmtNum(w.now_intervals)} in this range, `
+      + `${fmtNum(w.before_intervals)} in the earlier window (a store writes no interval for a minute in which nothing ran)`
     : `The reads cover ${hoursOf(w.now_covered_secs)} of this range (${fmtNum(w.now_reads)} reads) and ${hoursOf(w.before_covered_secs)} of the earlier window (${fmtNum(w.before_reads)} reads)`;
   out.push(el('p', { class: 'meta' }, `Baseline: ${text(w.coverage)}. ${held}.`));
-  if (w.coverage === 'no baseline') {
+  // PerformanceMonitor never draws every row as NEW: nothing in scope ran in the earlier window = no comparison
+  const r0 = rows[0] ?? {};
+  const before = Number(r0.n_both ?? 0) + Number(r0.n_not_kept_now ?? 0) + Number(r0.n_gone ?? 0);
+  if (w.coverage === 'no baseline' || (rows.length > 0 && before === 0)) {
     out.push(el('p', { class: 'empty' }, 'No data for the comparison window: nothing was stored for the earlier window. The grid above is this range alone.'));
     return out;
   }
-  const r0 = rows[0] ?? {};
   if (kind === 'querystore') {
     out.push(el('p', { class: 'meta' }, `${fmtNum(r0.n_keys ?? 0)} queries (database and query hash) in the two windows: ${fmtNum(r0.n_both ?? 0)} in both, `
       + `${fmtNum(r0.n_new ?? 0)} new (first compiled after the earlier window), ${fmtNum(r0.n_not_kept_before ?? 0)} not kept before, ${fmtNum(r0.n_not_kept_now ?? 0)} not kept now. `
@@ -264,12 +267,14 @@ function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
       + '(it may have run then below the kept plans); "not kept now" a query with no kept row in this range (pgvigil does not read whether it still runs).'
       + (Number(w.no_hash_rows) > 0 ? ` ${fmtNum(w.no_hash_rows)} row(s) of this range have no query hash (the plan left the store between the read's two steps) and are left out.` : '')));
   } else {
-    const cut = Number(w.now_cut_reads ?? 0) + Number(w.before_cut_reads ?? 0), reads = Number(w.now_reads ?? 0) + Number(w.before_reads ?? 0);
+    const cut = Number(w.now_cut_reads ?? 0) + Number(w.before_cut_reads ?? 0) + Number(w.edge_cut_reads ?? 0), reads = Number(w.now_reads ?? 0) + Number(w.before_reads ?? 0);
     out.push(el('p', { class: 'meta' }, `${fmtNum(r0.n_keys ?? 0)} ${kind === 'procs' ? 'procedures' : 'statements (database and query hash)'} in the two windows: `
       + `${fmtNum(r0.n_both ?? 0)} in both, ${fmtNum(r0.n_new ?? 0)} only in this range, ${fmtNum(r0.n_gone ?? 0)} only in the earlier window.`
-      + (kind === 'plancache' && cut > 0 ? ` ${fmtNum(cut)} of ${fmtNum(reads)} reads were cut (the cache held more statements than the collector's lists keep): `
+      + (kind === 'plancache' && cut > 0 ? ` ${fmtNum(cut)} cut read(s) among the ${fmtNum(reads)} of the two windows and the read just before each (the cache held more statements than the collector's lists keep): `
         + 'a statement past the cut has no row in a cut read, so the grid says "not kept before" / "not kept now" in place of NEW / GONE.' : '')
-      + (kind === 'procs' ? ' A procedure compiled, run and dropped from the plan cache between two reads is in neither window.' : '')));
+      + (kind === 'procs' ? ' Procedures are matched by database and name, as PerformanceMonitor matches them (one dropped and created again is one row). '
+        + 'A procedure compiled, run and dropped from the plan cache between two reads is in neither window, and on a server with more than 5,000 procedure plans '
+        + 'a read keeps the 5,000 with the most CPU (pgvigil does not keep which reads were cut): there NEW and GONE can be a procedure past the cut.' : '')));
   }
   const status = (v: unknown, r: Row) => {
     const t = text(v);
@@ -296,8 +301,8 @@ function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
   ];
   out.push(grid(rows, cols, kind === 'procs' ? 'No procedure ran in either window.' : 'No statement ran in either window.'),
     el('p', { class: 'meta' }, 'The rows: each window\'s first 100 by total duration, together (PerformanceMonitor\'s). New first, gone last, then the largest rise of the average duration. '
-      + '+% is against the earlier window, blank where that was 0. Red: duration or CPU per execution up more than 25 %, executions up more than 100 %; '
-      + 'green: down more than 25 % (executions 50 %).'));
+      + '+% is against the earlier window, blank where that was 0, and the averages\' blank on a row with nothing now (PerformanceMonitor shows -100 % there; here it may only have fallen below the kept rows). '
+      + 'Red: duration or CPU per execution up more than 25 %, executions up more than 100 %; green: down more than 25 % (executions 50 %).'));
   return out;
 }
 
@@ -380,7 +385,7 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
     Number(r[`${side}_unsplit`]) > 0 ? notApart : side === 'base' && !r.has_baseline ? 'no kept baseline' : v == null ? '' : fmtNum(v);
   const ms = (side: 'recent' | 'base') => (v: unknown, r: Row) =>
     side === 'base' && !r.has_baseline ? '' : Number(r[`${side}_unsplit`]) > 0 ? notApart : dur(v);
-  const abortedTip = 'Aborted (execution_type 3): "Client initiated aborted execution" (Microsoft): a timeout or a cancel by the client.';
+  const abortedTip = 'Timeouts (Aborted) is execution_type 3: "Client initiated aborted execution" (Microsoft): a timeout or a cancel by the client.';
   const cols: Col[] = [
     { key: 'severity', label: 'Severity', cls: sevCls, fmt: v => sevCls(v) ? tinted(text(v)) : text(v) },
     { key: 'raised_by', label: 'Why' },
@@ -388,8 +393,9 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
     { key: 'query', label: 'Query', fmt: stmt },
     { key: 'query_id', label: 'Query ID', num: true, fmt: v => text(v) },
     openCol(ctx, panel),
-    { key: 'recent_aborted_execs', label: 'Recent Timeouts', num: true, fmt: (v, r) => el('span', { title: abortedTip }, split('recent')(v, r)) },
-    { key: 'recent_exception_execs', label: 'Recent Errors', num: true, fmt: split('recent') },
+    // their own keys: the grid's column filters go by key, and the same counts come again under their groups
+    { key: 'recent_timeouts', label: 'Recent Timeouts', num: true, fmt: split('recent') },
+    { key: 'recent_errors', label: 'Recent Errors', num: true, fmt: split('recent') },
     { key: 'additional_duration_ms', label: 'Extra Duration', num: true, fmt: dur },
     { key: 'duration_regression_percent', label: 'Duration +%', num: true },
     { key: 'base_dur_ms', label: 'Baseline Duration', num: true, fmt: ms('base') },
@@ -430,9 +436,16 @@ function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
   ];
   const baseWords = base === 'prev' ? 'the range of equal length before it' : base === 'day' ? 'the same range 24 hours earlier'
     : base === 'week' ? 'the same range 168 hours earlier' : 'the 7 days before it (PerformanceMonitor\'s baseline)';
+  // a shift shorter than the range: the baseline holds part of the range itself
+  const w = window_(ctx), span = Date.parse(w.to) - Date.parse(w.from);
+  const shift = base === 'day' ? 864e5 : base === 'week' ? 6048e5 : 0;
+  const overlap = shift > 0 && span > shift;
   const out: HTMLElement[] = [
     switcher('Baseline', 'qb', bases, base, '7d'),
-    el('p', { class: 'meta' }, `One row per query, this range (${rangeLabel(ctx)}) against ${baseWords}: the store's intervals that overlap the range, against the ones that ended inside the baseline. A query is listed when:`),
+    el('p', { class: 'meta' }, `One row per query, this range (${rangeLabel(ctx)}) against ${baseWords}. A row of the store (one kept plan in one interval) is placed by its last run, as PerformanceMonitor places it: `
+      + 'in the range when its interval overlaps the range and it ran last at or after the range\'s start, in the baseline when it ran last inside the baseline. A query is listed when:'),
+    ...(overlap ? [el('p', { class: 'meta' }, 'The baseline overlaps this range (the shift is shorter than the range): the runs of the shared part count on both sides, which hides a regression inside it. '
+      + 'Pick a range shorter than the shift, or the 7 days before.')] : []),
     el('ul', { class: 'meta' },
       el('li', {}, 'cost (PerformanceMonitor): its Regular CPU per run is more than 25 % above the baseline\'s, and the rise times its recent Regular runs adds at least 1 s of CPU over the range;'),
       el('li', {}, 'timeouts / errors (PerformanceMonitor): at least 3 Aborted (Exception) runs in the range, and per hour at least 2 times the baseline\'s rate, or any where the baseline had none; '
