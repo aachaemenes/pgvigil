@@ -1,7 +1,7 @@
 // The menus' browser check (task 172): the tree's right-click menus, their keyboard (the context-menu key, Shift+F10,
 // the arrows into and out of a submenu, Escape back to the node), each item doing what DBA Dash's shot shows, the drive
-// nodes' used-space bars, the grids' cell-menu lines (Select, Filter by value, Exclude value, Clear filters, Export
-// Excel, 'Rows | Cols' and the Sum / Avg / Min / Max line), the Tools menu's file opening by the picker, a drop and a
+// nodes' used-space bars, the grids' cell-menu lines (Select, Filter by value, Exclude value, Clear filters, 'Rows |
+// Cols' and the Sum / Avg / Min / Max line; the grid's Export Excel is export.ts's, after the copy lines), the Tools menu's file opening by the picker, a drop and a
 // paste, and the Data Retention page against a hand read of the repository.
 //   PGVIGIL_ADMIN_DSN="host=... user=..." node scripts/menu-check.mjs
 // Self-contained: it builds the binary (the web bundle internal/web/dist/app.js must be built first), seeds the demo
@@ -45,8 +45,8 @@
 //   D  drives         under onprem-sql01's Storage folder one node per volume of /api/mssql/storage (total > 0), each with
 //                     a bar whose width is its used share (within 0.2 %) in the colour of its free share (ok / warn under
 //                     20 % / crit under 10 %), its visible words '... free (n %)', its title '... free of ...' (run 3)
-//   G  grid menu      Instances' first non-empty sessions cell: 'Select row|Select column|Filter by value: <v>|Exclude
-//                     value (contains)|Select all|Export Excel (this grid)|Rows: <n> | Cols: <m>|[sessions] Sum: <s> | Avg:
+//   G  grid menu      Instances' first non-empty sessions cell: one 'Export Excel' line before them, then 'Select row|Select
+//                     column|Filter by value: <v>|Exclude value (contains)|Select all|Rows: <n> | Cols: <m>|[sessions] Sum: <s> | Avg:
 //                     <a> | Min | Max' after the grid's own items, over the non-empty cells summed by hand (run 3: empty
 //                     cells are no numbers); Select column -> n cells, the tools' line says so, the menu then 'Selected
 //                     Cells: n (<numbers> numeric) | Sum: <s> ...'; Select row -> the m cells of one row; Filter by value
@@ -415,8 +415,11 @@ await guard('G grid menu', async () => {
   })()`);
   await shot('grid-cell-menu-light');
   const tail = g.items.slice(g.items.indexOf('Select row'));
-  const wantTail = ['Select row', 'Select column', `Filter by value: ${g.v}`, 'Exclude value (contains)', 'Select all', 'Export Excel (this grid)', `Rows: ${g.n} | Cols: ${g.cols}`, g.want];
+  const wantTail = ['Select row', 'Select column', `Filter by value: ${g.v}`, 'Exclude value (contains)', 'Select all', `Rows: ${g.n} | Cols: ${g.cols}`, g.want];
   check('G grid menu', JSON.stringify(tail) === JSON.stringify(wantTail), tail.join(' / ') + (JSON.stringify(tail) === JSON.stringify(wantTail) ? '' : ' (want ' + wantTail.join(' / ') + ')'));
+  // the grid's Export Excel (export.ts): one line, before these, after the copies
+  const xl = g.items.filter(x => x.startsWith('Export Excel'));
+  check('G grid menu Export Excel', xl.length === 1 && xl[0] === 'Export Excel' && g.items.indexOf('Export Excel') < g.items.indexOf('Select row'), JSON.stringify(xl));
   await clickItem('Select column'); await sleep(300);
   const sel = await ev(`(() => { const t = document.querySelector('main table.grid'); const td = t.querySelector('tbody td.gt-sel'); const r = td.getBoundingClientRect();
     const n = t.querySelectorAll('tbody td.gt-sel').length; const line = t.closest('.grid-box').querySelector('.gt-stats')?.textContent ?? '';

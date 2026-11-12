@@ -63,8 +63,8 @@ column, Freeze, Group by, Data bars, Columns...):
 - **Filter by value** sets the column's filter: on a number column the value exactly as shown (`=`, units included),
   on a text column the rows whose cell holds the words (the item says 'contains'). **Exclude value (contains)** keeps
   the rows whose cell does not hold them. **Clear filters** empties every filter of the grid.
-- **Export Excel (this grid)**: the grid alone as an .xlsx with its colours and number formats (the bar's Export .xlsx
-  takes every grid of the page).
+- **Export Excel** (higher in the menu, after the copy lines, where DBA Dash's grid menu has it; `docs/export.md`): the
+  grid alone as an .xlsx with its colours and number formats (the bar's Export .xlsx takes every grid of the page).
 - `Rows: n | Cols: m`: the rows the filters leave and the columns shown.
 - `[column] Sum: ... | Avg: ... | Min: ... | Max: ...`: the clicked cell's column over every row the filters leave (past
   the drawn page too; an empty cell is no number), in the column's own unit (bytes, durations, percentages as the screen writes them). With a selection of two cells or more:

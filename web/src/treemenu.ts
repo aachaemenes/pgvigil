@@ -9,8 +9,8 @@
 //   - an instance's Jobs or Databases folder: Filter (the folder's children by a part of their name), Refresh
 //   - a node that is a link: Open in a new tab as well (the browser's own menu is replaced on the tree)
 //   - a drive node under an instance's Storage folder: the volume's used-space bar beside its name (driveNodes)
-//   - every grid's cell menu: Select row / column / all, Filter by value, Exclude value, Clear filters, Export Excel
-//     (the grid alone), and DBA Dash's two lines at its foot: 'Rows: n | Cols: m' and the clicked column's (or the
+//   - every grid's cell menu: Select row / column / all, Filter by value, Exclude value, Clear filters (its Export Excel,
+//     the grid alone, is export.ts's, after the copy lines as DBA Dash places it), and DBA Dash's two lines at its foot: 'Rows: n | Cols: m' and the clicked column's (or the
 //     selection's) Sum / Avg / Min / Max; a click on a line copies it
 // Each menu opens on a right-click, the context-menu key or Shift+F10 on a node; Up / Down move, Right opens a
 // submenu, Left closes it, Enter runs, Escape closes and gives the focus back to the node.
@@ -19,10 +19,10 @@
 // data-nk and its link), so the tree itself carries no menu code.
 import { get, Row, rowsOf, Table } from './api';
 import { fleet, forget } from './fleet';
-import { Cell, fromText, readGrid, sections, sheetNames, typed, workbook, zip } from './export';
-import { Ctx, href, isMssql, parse, rangeLabel, window_ } from './router';
+import { Cell, fromText, typed } from './export';
+import { Ctx, href, isMssql, parse } from './router';
 import { hrefWith } from './dbinfo';
-import { badge, cellText, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, props, saveBlob } from './ui';
+import { badge, cellText, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, props } from './ui';
 import { reloadTree } from './tree';
 import { loadThresholds, thresholdsDialog } from './mssql_jobs';
 import { confirmJobAction, runningState } from './jobs_running';
@@ -687,19 +687,6 @@ function setFilter(t: HTMLTableElement, j: number, v: string) {
   inp.dispatchEvent(new Event('input'));
 }
 
-async function exportGrid(t: HTMLTableElement) {
-  const ctx = parse();
-  const w = window_(ctx);
-  const secs = sections(t.closest('.grid-box') ?? t.parentElement ?? t, document.title || 'grid');
-  const g = readGrid(t, true);
-  const name = secs[0]?.name ?? 'grid';
-  const inst = document.querySelector('#crumb b')?.textContent ?? 'All instances';
-  const m = { instance: inst, tab: name, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date() };
-  const z = await zip(workbook(m, [{ name: sheetNames([name])[0], cols: g.cols, rows: g.rows }]), m.at);
-  const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60);
-  saveBlob(new Blob([z], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${safe(inst)}_${safe(name)}.xlsx`);
-}
-
 function gridItems(t: HTMLTableElement, td: Element | null): GItem[] {
   const hs = heads(t), rows = dataRows(t);
   const total = Number(t.dataset.rows ?? rows.length);
@@ -725,7 +712,6 @@ function gridItems(t: HTMLTableElement, td: Element | null): GItem[] {
   }]);
   const filtered = [...t.querySelectorAll<HTMLInputElement>(':scope > thead > tr.filters input')].some(i => i.value.trim() !== '');
   if (filtered) out.push(['Clear filters', () => { t.querySelectorAll<HTMLInputElement>(':scope > thead > tr.filters input').forEach((i, k) => { if (i.value) setFilter(t, k, ''); }); }]);
-  out.push(['Export Excel (this grid)', () => { void exportGrid(t); }]);
   // the statistics: the selection's when there is one, else the clicked cell's column over the rows drawn
   const visibleCols = hs.filter(h => !h.hasAttribute('data-gt-hidden')).length;
   const dims = `Rows: ${fmtNum(total)} | Cols: ${fmtNum(visibleCols)}`;
