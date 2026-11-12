@@ -4,13 +4,13 @@ pgvigil runs where nothing may reach out. This page is the procedure for a site 
 
 ## What pgvigil connects to at run time
 
-- The PostgreSQL servers named in its configuration (the monitored instances), each through its own `pg_monitor` login.
+- The PostgreSQL and SQL Server instances named in its configuration (the monitored instances), each through its own monitoring login, and the PgBouncer admin console of an instance that names one (`pgbouncer:`).
 - The repository database (one PostgreSQL database that pgvigil owns).
-- On RDS and Aurora instances whose configuration has an `aws:` block: the AWS APIs for that region only (CloudWatch Logs, CloudWatch metrics, RDS Describe calls, DMS Describe calls), through the AWS SDK's endpoint for the region, so `us-gov-west-1` and `us-gov-east-1` resolve to the GovCloud (US) endpoints with nothing to configure beyond the region; FIPS endpoints follow the SDK's `AWS_USE_FIPS_ENDPOINT=true`. No `aws:` block, no AWS call.
+- On RDS and Aurora instances whose configuration has an `aws:` block: the AWS APIs for that region only (CloudWatch Logs, CloudWatch metrics, Performance Insights, RDS Describe calls, DMS Describe calls), through the AWS SDK's endpoint for the region, so `us-gov-west-1` and `us-gov-east-1` resolve to the GovCloud (US) endpoints with nothing to configure beyond the region; FIPS endpoints follow the SDK's `AWS_USE_FIPS_ENDPOINT=true` (the SDK's setting; not proven here). No `aws:` block, no AWS call.
 - The browser that opens the web UI, on loopback by default (an HTTPS listen elsewhere needs a certificate and the login).
 - The Windows app (`pgvigil-app.exe`), where it is installed: its own `pgvigil serve` on loopback, and once a day the release feed (`https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, one GET with `User-Agent: pgvigil-app/<version>`, nothing else sent; it notifies, never downloads). Off for every user with `HKLM\Software\Policies\pgvigil\App` `UpdateCheck` = 0 (the machine install's `-no-update-check` writes it), or pointed at an internal mirror with `UpdateFeed`; [docs/app.md](app.md). The WebView2 runtime the window runs in is Microsoft's, with its own policies for its own traffic.
 
-Nothing else: no telemetry, no update check in the collector or the UI server, no download at run time, no DNS name of the project's. The installers (`install.sh`, `install.ps1`) download a release when they run; on an air-gapped network they read a mirror folder instead (below) or are not used at all.
+The alert channels the configuration names, when alerts are on ([alerts.md](alerts.md): a webhook, SMTP, PagerDuty, Opsgenie). Nothing else: no telemetry, no update check in the collector or the UI server, no download at run time, no DNS name of the project's. The installers (`install.sh`, `install.ps1`) download a release when they run; on an air-gapped network they read a mirror folder instead (below) or are not used at all.
 
 ## 1. On a connected machine: fetch the release and verify it
 
@@ -77,12 +77,12 @@ PGVIGIL_VERSION=v0.2.0 PGVIGIL_BASE_URL=https://mirror.example.internal/pgvigil 
 
 ## 4. What the service may do on the host
 
-The systemd unit confines the collector: a non-root account, a read-only view of the file system (`ProtectSystem=strict`, nothing is written: logs go to the journal), no new privileges, no capabilities, no device access, the kernel's tunables, modules, logs and clock protected, `/proc` reduced to the service's own processes, no namespaces, no SUID files, no writable-and-executable memory, native system calls only through the `@system-service` allow list minus `@privileged`, and only Internet and local sockets (it must reach the servers and the repository). `systemd-analyze security` scores it 1.4 ("OK"; the unhardened unit scored 7.7); `scripts/proof-hardening.sh` checks the score and every directive, and `scripts/proof-install.sh` runs the unit on a systemd container. Controls deliberately left open, and why: the network (the collector's purpose), user namespaces (`PrivateUsers`, not available on every host), and `@resources` (Go raises its own file-descriptor limit at start). A site may add `IPAddressAllow=` lines for its servers' addresses in a drop-in.
+The systemd unit confines the collector: a non-root account, a read-only view of the file system (`ProtectSystem=strict`, nothing is written: logs go to the journal), no new privileges, no capabilities, no device access, the kernel's tunables, modules, logs and clock protected, `/proc` reduced to the service's own processes, no namespaces, no SUID files, no writable-and-executable memory, native system calls only through the `@system-service` allow list minus `@privileged`, and only Internet and local sockets (it must reach the servers and the repository). `systemd-analyze security` scores it 1.5 or under ("OK"; the unhardened unit scored 7.7); `scripts/proof-hardening.sh` checks the score and every directive, and `scripts/proof-install.sh` runs the unit on a systemd container. Controls deliberately left open, and why: the network (the collector's purpose), user namespaces (`PrivateUsers`, not available on every host), and `@resources` (Go raises its own file-descriptor limit at start). A site may add `IPAddressAllow=` lines for its servers' addresses in a drop-in.
 
 ## 5. The software review
 
 - `docs/notices.md`: every Go module in the binary with its licence (MIT, Apache-2.0, BSD-3-Clause).
 - The SBOM (`*.cdx.json`, CycloneDX 1.6) per target, with module versions, purls and licence evidence; `scripts/proof-sbom.sh` validates one against the CycloneDX schema and against `go list`.
-- `go mod verify` and `govulncheck` run on every CI build; the release is reproducible from the tag and `.github/workflows/release.yml`.
+- `go mod verify` and `govulncheck` run on every CI build; the release is built from the tag by `.github/workflows/release.yml` alone (a byte-for-byte rebuild is not proven).
 - The web UI is checked against WCAG 2.1 A and AA with axe-core on every page in both themes (`scripts/proof-a11y.sh`); the findings that remain are listed in that proof's output.
-- Nothing in the binary names an AWS endpoint, partition or region (`TestNoHardCodedAWSPartition`), so the AWS door works the same in GovCloud (US).
+- Nothing in the binary names an AWS endpoint, partition or region (`TestNoHardCodedAWSPartition`), so the AWS door resolves GovCloud (US) endpoints as any other region's (`TestAWSEndpointsFollowThePartition`; no run against GovCloud itself).

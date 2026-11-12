@@ -1,6 +1,6 @@
 # SQL Server: running queries, blocking and waits
 
-Two collections run every minute on a [SQL Server instance](sqlserver.md): `mssql_requests` (what runs now, and who blocks whom) and `mssql_waits` (what the server waited on since the last read). Both need `VIEW SERVER STATE` and nothing else; without it they are skipped with that reason. Nothing is installed on the monitored server and nothing is written there.
+Two collections run every minute on a [SQL Server instance](sqlserver.md): `mssql_requests` (what runs now, and who blocks whom) and `mssql_waits` (what the server waited on since the last read). Both need `VIEW SERVER STATE` and nothing else; without it they are skipped with that reason. Nothing is installed on the monitored server and nothing is written there, but for a session temp table on the sp_WhoIsActive path (below).
 
 ## Running queries (`mssql_requests`)
 
@@ -14,7 +14,7 @@ A row carries the session and request, the status and command, the wait type, wa
 
 **The statement.** For a request it is the statement that runs now, cut from its batch by the request's offsets on the server. For a session without a request it is the session's input buffer: its last batch. Text is stored once per instance, handle and offsets (`mssql_statement_text`); a minute's rows carry a key. A trivial statement the server auto-parameterises shows in its parameterised form (`(@1 int,@2 tinyint)UPDATE [dbo].[t] set [v] = [v]+@1 WHERE [id]=@2`): that is the text the request's handle names. A statement longer than 16,000 characters is cut there and its real length kept. The instance's `query_text` policy applies: `normalized` stores the text with its literals replaced, `none` stores the key with no text.
 
-**A parallel request.** `sys.dm_exec_requests` keeps CPU, reads and writes for the coordinator task alone, which can be a hundredth of the truth. The row keeps those numbers, marked "(coordinator)" on the page, and beside them the task count and the CPU and physical IO summed over the request's tasks (`tasks_cpu_ms`, `tasks_physical_io`, from `sys.sysprocesses`, one row per task). Not on Azure SQL Database, which does not offer that view.
+**A parallel request.** `sys.dm_exec_requests` keeps CPU, reads and writes for the coordinator task alone. The row keeps those numbers, marked "(coordinator)" on the page, and beside them the task count and the CPU and physical IO summed over the request's tasks (`tasks_cpu_ms`, `tasks_physical_io`, from `sys.sysprocesses`, one row per task). Not on Azure SQL Database, which does not offer that view.
 
 **Every time is UTC**, moved on the server by its own offset at the read, and the snapshot keeps the server's own clock beside the collector's. Durations (a wait, a request's elapsed time, a transaction's age) are the server's own numbers, so a clock difference between the two machines does not distort them.
 
@@ -90,7 +90,7 @@ From the newest snapshot of an instance, when it is at most five minutes old (`m
 | `mssql_blocking` | one per head and snapshot, monthly partitions | the retention |
 | `mssql_wait_sample` | one per wait type that moved and read, monthly partitions | the retention |
 
-A row of `mssql_requests` carries no text and keeps its handles as binary. An estimate, not a measurement: at about 300 bytes a row, a server that lists 20 sessions a minute stores about 8.6 MB a day; 500 such servers about 4.3 GB a day, 130 GB over 30 days. A server that lists 200 sessions a minute stores ten times that. The waits add about 40 rows a minute per server.
+A row of `mssql_requests` carries no text and keeps its handles as binary. The size grows with the sessions listed each minute; not measured.
 
 ## One run by hand
 
@@ -103,7 +103,7 @@ pgvigil collect -config pgvigil.yaml -once mssql_waits -instance sales-sql01
 
 `scripts/proof-mssql-running.sh` runs against a SQL Server container and a PostgreSQL sandbox as a least-privilege login of its own. It opens three sessions in its own database: one updates a row inside a transaction and goes to sleep, a second waits behind it, a third behind the second. The snapshot names the sleeping session as the head (depth 0) with its last batch, the two victims at depths 1 and 2 with the wait time within the tolerance; the handles read back as 0x text and join the text table; the statement cut by its offsets equals the statement; the finding fires once the wait passes 30 s; after the head commits the next snapshot holds no chain. The same chain is read through sp_WhoIsActive where it is installed. A `WAITFOR` the proof runs appears in the waits under its type; a read whose counters went down stores nothing; a login without VIEW SERVER STATE is skipped with the reason; an old day is purged.
 
-Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([versions](sqlserver.md#versions)). Not proven: SQL Server 2016, Azure SQL Database (its database filter and `sys.dm_db_wait_stats`), Managed Instance, RDS, the task sums on a real parallel plan, a MARS session, a blocker that is not a session, and anything on Windows. The cost of the read: about 60 ms with 300 sessions each holding an open transaction and about 0.1 s with 3,000, measured; at 10,000 sessions it is an estimate (0.3 to 0.5 s if it stays linear).
+Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([versions](sqlserver.md#versions)). Not proven: SQL Server 2016 (task 164, on a Windows host), Azure SQL Database (its database filter and `sys.dm_db_wait_stats`) and RDS (task 165), Managed Instance, the task sums on a real parallel plan, a MARS session, a blocker that is not a session, and anything on Windows (task 144). The cost of the read: 91 to 136 ms with 3,000 sessions each holding an open transaction, measured once by hand as sa (`scripts/proof-mssql-running.sh` part H prints it); not measured at 10,000 sessions.
 
 ## Sources
 

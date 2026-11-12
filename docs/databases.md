@@ -18,7 +18,7 @@ share) and **rows deleted** over the page's time range (pgwatch's Tables Overvie
   the new values. A reset whose counters climb past their old values within one 5-minute step is not seen, and that
   step counts low (the database's `stats_reset` cannot mark it: from PostgreSQL 15 a single table's reset moves it).
 - A range longer than 7 days is cut to its last 7 (the section says which span it shows): the read orders every
-  5-minute read of every table, and a month of 1,000 tables takes longer than the page's statement timeout. A table first read inside the window (it joined a busy database's top 100 late) counts from that read:
+  5-minute read of every table, and a long range can pass the page's statement timeout (not measured). A table first read inside the window (it joined a busy database's top 100 late) counts from that read:
   the "counted from" column says so.
 - The ranks are instance-wide: every database's tables compete.
 

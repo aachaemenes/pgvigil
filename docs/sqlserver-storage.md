@@ -95,4 +95,4 @@ pgvigil collect -config pgvigil.yaml -once mssql_versionstore -instance sales-sq
 - the version store under snapshot isolation: a session holds a snapshot transaction open while another rewrites rows; the store rises across two reads with a generation rate, the holder is named with its session and last statement, and after it commits the store falls and the holder is gone;
 - every finding's threshold, on imported rows.
 
-Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([versions](sqlserver.md#versions)). Not proven: Windows volumes (drive letters and mounted folders), SQL Server 2016, Managed Instance, RDS, a server with thousands of databases, a FILESTREAM container. Azure SQL Database is not covered by either collection yet.
+Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([versions](sqlserver.md#versions)). Not proven: Windows volumes (drive letters and mounted folders: task 144), SQL Server 2016 (task 164), Managed Instance, RDS (task 165), a server with thousands of databases, a FILESTREAM container. Azure SQL Database is not covered by either collection yet.

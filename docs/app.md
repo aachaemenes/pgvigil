@@ -1,6 +1,6 @@
 # The Windows app: pgvigil in its own window
 
-`pgvigil-app.exe` is a small Windows program that shows the pgvigil UI in its own window (Microsoft Edge WebView2), with a tray icon. It starts the UI server (`pgvigil serve`) on loopback as the signed-in user, or attaches to one that already runs, and stops the serve it started when it quits. Nothing in pgvigil needs it: `pgvigil serve -open` (any system, no install) opens the UI in an app-mode browser window, and a browser on the UI's address works as before.
+`pgvigil-app.exe` is a small Windows program that shows the pgvigil UI in its own window (Microsoft Edge WebView2), with a tray icon. It starts the UI server (`pgvigil serve`) on loopback as the signed-in user, or attaches to one that already runs, and stops the serve it started when it quits. Nothing in pgvigil needs it: `pgvigil serve -open` (no install; proven on Linux by `scripts/proof-open.sh`, not proven on Windows or macOS) opens the UI in an app-mode browser window, and a browser on the UI's address works as before.
 
 There are two ways to install it:
 
@@ -77,7 +77,7 @@ The administrator decides with the policy key `HKLM\Software\Policies\pgvigil\Ap
 
 A user's own choices sit in `HKCU\Software\pgvigil\App`: `UpdateCheck` (0 = off), `AttachURL`, `NoLogin`, the window's `Width`, `Height` and `Maximized`, and `LastUpdateCheck`. A per-user install with `-no-update-check` writes `UpdateCheck` = 0 there.
 
-An air-gapped or government site sets `UpdateCheck` = 0, or points `UpdateFeed` at a mirror on the inside. With the check off, pgvigil's code in the app connects to nothing but loopback (its own serve), and the serve to nothing but the repository. The WebView2 runtime that draws the window is Microsoft's and has network behaviour of its own: SmartScreen checks of the pages it shows, and its own updates through Edge Update. A site governs those with Microsoft's Edge, WebView2 and Edge Update group policies, as for any WebView2 program. The pages the window shows are pgvigil's own, served on loopback.
+An air-gapped or government site sets `UpdateCheck` = 0, or points `UpdateFeed` at a mirror on the inside. With the check off, pgvigil's code in the app connects to nothing but loopback (its own serve), and the serve to nothing but the repository (the app's side proven by `scripts/proof-app.ps1` B2; the serve's side not proven: no proof captures its connections). The WebView2 runtime that draws the window is Microsoft's and has network behaviour of its own: SmartScreen checks of the pages it shows, and its own updates through Edge Update. A site governs those with Microsoft's Edge, WebView2 and Edge Update group policies, as for any WebView2 program. The pages the window shows are pgvigil's own, served on loopback.
 
 The GitHub API answers 60 unauthenticated requests an hour per address. A large site behind one address can get "status 403" in `app.log` instead of a notice. A mirror (`UpdateFeed`) avoids that.
 
