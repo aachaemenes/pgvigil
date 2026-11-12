@@ -439,6 +439,27 @@ func otherProcesses(bin string) ([]string, error) {
 		}
 		return nil, err
 	}
+	return processesWhere(func(_, exe string) bool { return exe == want })
+}
+
+// namedProcesses lists the processes running a pgvigil binary from any path and under any name (uninstall -all's: a
+// serve from a bundle's release asset, a renamed copy, a go run), read through /proc/<pid>/exe (a binary deleted under
+// it too), each executable read once; but the service's own main process and this one.
+func namedProcesses() ([]string, error) {
+	seen := map[string]bool{}
+	return processesWhere(func(pid, exe string) bool {
+		v, ok := seen[exe]
+		if !ok {
+			v = pgvigilExe(filepath.Join("/proc", pid, "exe"), exe)
+			seen[exe] = v
+		}
+		return v
+	})
+}
+
+// processesWhere lists the processes whose executable (" (deleted)" trimmed: a binary replaced under it) matches, as
+// 'pid N: its command line', but the service's own main process and this one.
+func processesWhere(match func(pid, exe string) bool) ([]string, error) {
 	mainPID := 0
 	if v, err := systemctl("show", "-p", "MainPID", "--value", "pgvigil.service"); err == nil {
 		mainPID, _ = strconv.Atoi(strings.TrimSpace(v))
@@ -454,7 +475,7 @@ func otherProcesses(bin string) ([]string, error) {
 			continue
 		}
 		exe, err := os.Readlink(filepath.Join("/proc", e.Name(), "exe"))
-		if err != nil || strings.TrimSuffix(exe, " (deleted)") != want {
+		if err != nil || !match(e.Name(), strings.TrimSuffix(exe, " (deleted)")) {
 			continue
 		}
 		cmd, _ := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
@@ -494,10 +515,80 @@ func init() {
 		},
 		running: unitRunning,
 		items:   linuxItems,
+		named:   namedProcesses,
 		repoDSN: func(inst installOptions) (string, bool, error) {
-			return hostRepoDSN(inst, filepath.Join(filepath.Dir(inst.Config), envName))
+			envFile := filepath.Join(filepath.Dir(inst.Config), envName)
+			dsn, configured, err := hostRepoDSN(inst, envFile)
+			if err == nil && configured {
+				var raw string
+				if _, raw, err = serviceRepoDSN(inst.Config, envFile); err == nil {
+					err = unitEnvOnly(raw, envFile)
+				}
+			}
+			return dsn, configured, err
 		},
 	}
+}
+
+// unitEnvOnly (raw: the configuration's repository dsn as written) refuses when the installed pgvigil.service may use
+// another repository or configuration than the host check reads (the join review w9e, finding 9): with an env: dsn, an
+// env file other than the installer's (a drop-in's or an edit's EnvironmentFile=) or an Environment= that sets its
+// variable or cannot be read (systemd 239 prints a value holding a space as [unprintable]); with any dsn, a drop-in
+// that sets ExecStart= (another -config), User=, Environment= or EnvironmentFile=. What systemd loads is read from
+// systemctl show; with no systemd there is no other source.
+func unitEnvOnly(raw, envFile string) error {
+	if !systemdRunning() {
+		return nil
+	}
+	out, err := systemctl("show", "pgvigil.service", "-p", "EnvironmentFiles", "-p", "Environment", "-p", "DropInPaths")
+	if err != nil {
+		return fmt.Errorf("systemctl show pgvigil.service: %v: %s", err, out)
+	}
+	name, _ := strings.CutPrefix(raw, "env:")
+	if !strings.HasPrefix(raw, "env:") {
+		name = ""
+	}
+	return unitEnvExtra(out, envFile, name, os.ReadFile)
+}
+
+// unitEnvExtra reads systemctl show's EnvironmentFiles=, Environment= and DropInPaths= lines (name: the dsn's env:
+// variable, "" when the dsn is not env:) and names every source the host check does not read.
+func unitEnvExtra(show, envFile, name string, read func(string) ([]byte, error)) error {
+	var extra []string
+	setsName := regexp.MustCompile(`(^|[\s"'])` + regexp.QuoteMeta(name) + `=`)
+	dropKey := regexp.MustCompile(`^\s*(ExecStart|User|Environment|EnvironmentFile)\s*=`)
+	for _, l := range strings.Split(show, "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
+		switch {
+		case k == "EnvironmentFiles" && name != "":
+			f, _, _ := strings.Cut(v, " (")
+			if f = strings.TrimPrefix(strings.TrimSpace(f), "-"); f != "" && !samePath(f, envFile) {
+				extra = append(extra, "EnvironmentFile="+f)
+			}
+		case k == "Environment" && name != "" && strings.Contains(v, "[unprintable]"):
+			extra = append(extra, "an Environment= systemctl cannot print (a value holding a space)")
+		case k == "Environment" && name != "" && setsName.MatchString(v):
+			extra = append(extra, "Environment="+name+"=...")
+		case k == "DropInPaths":
+			for _, f := range strings.Fields(v) {
+				b, err := read(f)
+				if err != nil {
+					extra = append(extra, "the drop-in "+f+" (unreadable: "+err.Error()+")")
+					continue
+				}
+				for _, dl := range strings.Split(string(b), "\n") {
+					if m := dropKey.FindStringSubmatch(dl); m != nil {
+						extra = append(extra, "the drop-in "+f+" ("+m[1]+"=)")
+					}
+				}
+			}
+		}
+	}
+	if len(extra) > 0 {
+		return fmt.Errorf("pgvigil.service may use another repository than the host check reads (it reads %s and the unit's own -config): %s; put the repository the service uses in %s, take those lines out of the drop-in or the unit, or drop the repository by hand (docs/uninstall.md)",
+			envFile, strings.Join(slices.Compact(extra), "; "), envFile)
+	}
+	return nil
 }
 
 func present(path string) bool {

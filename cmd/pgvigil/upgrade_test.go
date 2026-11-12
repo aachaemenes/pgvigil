@@ -232,7 +232,9 @@ func TestUninstallAllOrder(t *testing.T) {
 		others:    func(string) ([]string, error) { return others, nil },
 		previous:  func(bin string) string { return bin + ".previous" },
 	}
+	var named []string
 	uninstallHooksOf = &uninstallHooks{
+		named:      func() ([]string, error) { return named, nil },
 		privileged: func() error { return privErr },
 		running:    func() bool { return present },
 		items:      func(installOptions, bool) []removal { return items(present) },
@@ -262,7 +264,7 @@ func TestUninstallAllOrder(t *testing.T) {
 	// another pgvigil process on the installed binary (a serve by hand): refused before any change; the dry run lists it
 	present, removed, others = true, nil, []string{"pid 4242: /usr/local/bin/pgvigil serve -config /etc/pgvigil/pgvigil.yaml"}
 	stoppedBefore := stopped
-	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || !strings.Contains(err.Error(), "uninstall refused, nothing was changed: other processes run the installed binary") ||
+	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || !strings.Contains(err.Error(), "uninstall refused, nothing was changed: other pgvigil processes run on this host") ||
 		!strings.Contains(err.Error(), "pid 4242") || len(removed) != 0 || stopped != stoppedBefore {
 		t.Fatalf("a serve on the installed binary: err %v, removed %v, stopped %d", err, removed, stopped-stoppedBefore)
 	}
@@ -270,7 +272,24 @@ func TestUninstallAllOrder(t *testing.T) {
 	if err != nil || !strings.Contains(out, "running  pid 4242: /usr/local/bin/pgvigil serve") || len(removed) != 0 {
 		t.Fatalf("the dry run with a serve running: err %v:\n%s", err, out)
 	}
+	// the join review w9e, finding 2: a pgvigil from another path (a bundle's copy) refuses too; a pid both lists name
+	// is said once
+	named = []string{"pid 4242: /usr/local/bin/pgvigil serve -config /etc/pgvigil/pgvigil.yaml", "pid 5151: /root/pgvigil-bundle/pgvigil serve -no-login"}
+	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || strings.Count(err.Error(), "pid 4242") != 1 ||
+		!strings.Contains(err.Error(), "pid 5151: /root/pgvigil-bundle/pgvigil serve -no-login") || len(removed) != 0 || stopped != stoppedBefore {
+		t.Fatalf("a serve from another path: err %v, removed %v, stopped %d", err, removed, stopped-stoppedBefore)
+	}
 	others = nil
+	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || !strings.Contains(err.Error(), "other pgvigil processes run on this host") ||
+		!strings.Contains(err.Error(), "pid 5151") || strings.Contains(err.Error(), "pid 4242: /root") || len(removed) != 0 || stopped != stoppedBefore {
+		t.Fatalf("only a serve from another path: err %v, removed %v", err, removed)
+	}
+	out, err = captureStdout(t, func() error { return runUninstallAll(log, dry) })
+	if err != nil || !strings.Contains(out, "running  pid 5151: /root/pgvigil-bundle/pgvigil serve -no-login (another pgvigil process") ||
+		!strings.Contains(out, "kept     any instances added in the page (Admin > Instances): they stay active in the kept repository") {
+		t.Fatalf("the dry run with a serve from another path: err %v:\n%s", err, out)
+	}
+	named = nil
 	privErr = errors.New("uninstall -all needs root")
 	if _, err = captureStdout(t, func() error { return runUninstallAll(log, o) }); err == nil || !strings.Contains(err.Error(), "uninstall refused, nothing was changed") {
 		t.Fatalf("not root: %v", err)
