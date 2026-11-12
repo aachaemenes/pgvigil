@@ -505,8 +505,8 @@ await cmd('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, dev
 // (a heading's own text: a chart's heading also holds its menu button and its Top select; a chart's heading names no grid)
 const gridsOf = `[...document.querySelectorAll('main section.report h3')].filter(h => !h.closest('.chart')).map(h => { let t = h.nextElementSibling;
   // an empty grid is a p.empty, or since task P08 a div.empty-grid holding its drawn header row and the p.empty
-  while (t && !t.querySelector?.('table.grid') && !t.matches?.('p.empty') && !t.querySelector?.(':scope > p.empty') && t.tagName !== 'H3') t = t.nextElementSibling;
-  const pe = t?.matches?.('p.empty') ? t : t?.querySelector?.(':scope > p.empty');
+  while (t && !t.querySelector?.('table.grid') && !t.matches?.('p.empty') && !t.matches?.('div.empty-grid') && t.tagName !== 'H3') t = t.nextElementSibling;
+  const pe = t?.matches?.('p.empty') ? t : t?.matches?.('div.empty-grid') ? t.querySelector(':scope > p.empty') : null;
   const tb = t?.querySelector?.('table.grid'); return [[...h.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim(), tb ? Number(tb.dataset.rows) : pe ? 0 : -1,
     !tb && pe ? JSON.parse(pe.dataset.cols || '[]').length : null]; })`;
 const want = {
