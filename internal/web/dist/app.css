@@ -287,15 +287,8 @@ table.props { border-collapse: collapse; width: 100%; }
 .props th { color: var(--text-muted); font-weight: var(--fw-normal); width: 40%; white-space: nowrap; }
 .props td { font-variant-numeric: var(--num); }
 
-/* ---------- 7. tiles, badges, groups, a blocking chain ---------- */
-.badge { display: inline-block; color: var(--text-muted); }
-.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.crit { color: var(--crit); }
+/* ---------- 7a. groups, the counts, a blocking chain ---------- */
 .counts .crit, .counts a.crit { color: var(--crit); } .counts .warn, .counts a.warn { color: var(--warn); }
-.tiles { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
-.tile { background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); padding: var(--sp-3) var(--sp-4); min-width: 9rem; }
-.tile-v { font-size: var(--fs-xl); font-weight: var(--fw-strong); line-height: var(--lh-tight); font-variant-numeric: var(--num); }
-.tile-l { color: var(--text-muted); font-size: var(--fs-sm); margin-top: var(--sp-half); }
-.tile.crit .tile-v { color: var(--crit); } .tile.warn .tile-v { color: var(--warn); } .tile.ok .tile-v { color: var(--ok); }
 .groups { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-1) 0 var(--sp-4); }
 .group { display: flex; flex-direction: column; min-width: 9rem; padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); border: var(--bw) solid var(--line); background: var(--surface-panel); text-decoration: none; }
 .group-l { font-size: var(--fs-sm); color: var(--text-muted); } .group-v { font-weight: var(--fw-strong); }
@@ -303,6 +296,54 @@ table.props { border-collapse: collapse; width: 100%; }
 .group.ok { background: var(--ok-bg); color: var(--ok); } .group.warn { background: var(--warn-bg); color: var(--warn); } .group.crit { background: var(--crit-bg); color: var(--crit); }
 .chain { background: var(--surface-panel); border: var(--bw) solid var(--line); border-left: var(--stripe) solid var(--crit); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-3); }
 .chain-head { font-weight: var(--fw-strong); } .chain-w { margin-top: var(--sp-1); }
+
+/* ---------- 7. the shared parts (task 183, ui.ts and tiles.ts): tiles, badges and pills, panels, the quiet toolbar, links,
+   the empty / loading / stale states ---------- */
+/* a tile: a card with a left stripe in its state colour, a small muted label over a large figure, a sub line, a pill */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-4); }
+.tile { position: relative; display: flex; flex-direction: column; gap: var(--sp-half); min-width: 0; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+        background: var(--surface-panel); border: var(--bw) solid var(--line); border-left: var(--stripe) solid var(--line-strong); border-radius: var(--r-md); }
+.tile.ok { border-left-color: var(--ok); } .tile.warn { border-left-color: var(--warn); } .tile.crit { border-left-color: var(--crit); }
+.tile-l { order: -1; font-size: var(--fs-sm); color: var(--text-muted); }
+.tile:has(> .pill) .tile-l { padding-right: 3.5rem; }
+.tile-v { font-size: var(--fs-xl); font-weight: var(--fw-strong); line-height: var(--lh-tight); font-variant-numeric: var(--num); color: var(--text); overflow-wrap: anywhere; }
+.tile-unit { font-size: var(--fs-md); font-weight: var(--fw-normal); color: var(--text-muted); }
+.tile-sub { font-size: var(--fs-sm); color: var(--text-muted); }
+.tile > .pill { position: absolute; top: var(--sp-2); right: var(--sp-2); }
+.panel .tile { background: var(--surface-card); border-color: transparent; }
+/* a badge and a pill: the state's word on its own tint */
+.badge { display: inline-flex; align-items: center; padding: 0 var(--sp-2); border-radius: var(--r-pill); font-size: var(--fs-sm); font-weight: var(--fw-strong);
+         line-height: var(--lh); background: var(--na-bg); color: var(--text-muted); white-space: nowrap; }
+.badge.ok { background: var(--ok-bg); color: var(--ok); } .badge.warn { background: var(--warn-bg); color: var(--warn); } .badge.crit { background: var(--crit-bg); color: var(--crit); }
+.badge.pill { font-size: var(--fs-xs); letter-spacing: var(--caps-tracking); }
+:root:not([data-status="quiet"]) .grid td.status .badge { background: none; padding: 0; }   /* in a fill: the fill's own text colour, no tint */
+/* a panel: a section as a card, its title with the window beside it */
+.panel { background: var(--surface-panel); border: var(--bw) solid var(--line); border-radius: var(--r-md); padding: var(--sp-3) var(--sp-4) var(--sp-4); margin-bottom: var(--sp-4); }
+.panel-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--sp-2); margin: 0 0 var(--sp-3); font-size: var(--fs-md); }
+.panel-note { font-size: var(--fs-sm); font-weight: var(--fw-normal); color: var(--text-muted); }
+.panel .grid-wrap, .panel .chart { border: none; border-radius: 0; padding-left: 0; padding-right: 0; }
+/* the toolbars as one quiet bar: no border on a control, a soft fill, the pressed one in the accent's tint; groups apart by a hairline */
+#bar button:not(.range-item), #bar select, .toolbar button, .toolbar select { border-color: transparent; background: var(--surface-card); }
+#bar button:not(.range-item):hover, #bar select:hover, .toolbar button:hover, .toolbar select:hover { background: var(--surface-hover); }
+#bar button:not(.range-item)[aria-pressed="true"], .toolbar button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+#bar input, .toolbar input { border-color: var(--line); }
+.toolbar .seg button, #bar .seg button { background: none; }
+.quiet-bar { gap: 0; }
+.tb-group { display: inline-flex; align-items: center; gap: var(--sp-1); padding: 0 var(--sp-3); border-left: var(--bw) solid var(--line); }
+.tb-group:first-child { padding-left: 0; border-left: none; }
+/* links: a link in running text keeps a faint underline (told from its text by more than colour, WCAG 1.4.1), the full
+   line when pointed at; a link standing alone (the tree, a tab, a tile, a card's name) has none; a grid's links keep DBA
+   Dash's full underline */
+a { text-underline-offset: .18em; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+a:hover, a:focus-visible { text-decoration-color: currentColor; }
+.grid td a, .grid td .cell-link, #crumb a { text-decoration-color: currentColor; }
+.tile a, .panel-head a { text-decoration: none; }
+.tile a:hover, .panel-head a:hover { text-decoration: underline; }
+/* the states, one shape: empty and loading a soft box in the muted text; stale greys the part and says when it was collected */
+.state, main > p.empty[role="status"] { margin: var(--sp-2) 0; padding: var(--sp-3) var(--sp-4); background: var(--surface-card); border-radius: var(--r-sm); color: var(--text-muted); }
+.state.stale { background: var(--warn-bg); color: var(--warn); font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-3); display: inline-block; }
+.is-stale .tile, .is-stale .grid-wrap, .is-stale .chart { filter: grayscale(.9); }
+.panel > h3:first-child, .panel > .panel-head:first-child { margin-top: 0; }
 
 /* ---------- 8. the rings, the legend, the volume bars ---------- */
 .donut-body { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }

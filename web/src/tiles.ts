@@ -18,6 +18,12 @@ export const tileLimits = {
   hitPct: [95, 90],                      // cache hit %, lower is worse: warn under 95, crit under 90
 };
 
+// tileRow (task 183, the tile kit): tiles side by side as one named group, each a card (ui.ts tile: a stripe in its state
+// colour, a small label over a large figure, a pill on a warning or a critical one); the row wraps to the panel's width
+export function tileRow(label: string, ...tiles: HTMLElement[]): HTMLElement {
+  return el('div', { class: 'tiles', role: 'group', 'aria-label': label }, ...tiles);
+}
+
 // level: 0 ok, 1 warn, 2 crit; NULL = not read.
 export function level(v: unknown, [warn, crit]: number[], lowerIsWorse = false): number | null {
   if (v == null || v === '') return null;
@@ -55,7 +61,7 @@ export async function tileWall(ctx: Ctx): Promise<HTMLElement> {
     return e;
   };
   const idleL = Math.max(level(t.idle_in_txn, tileLimits.idleInTxn) ?? -1, Number(t.idle_in_txn) > 0 ? level(t.longest_idle_txn_secs, tileLimits.idleTxnSecs) ?? -1 : -1);
-  const numbers = el('div', { class: 'tiles', role: 'group', 'aria-label': 'Instance health' },
+  const numbers = tileRow('Instance health',
     one('xmin horizon age', t.oldest_xmin_age, fmtNum(t.oldest_xmin_age), level(t.oldest_xmin_age, tileLimits.xminAge),
       'age(backend_xmin) of the oldest client session: how many transactions vacuum is held back by'),
     one('idle in transaction', t.idle_in_txn,
@@ -74,14 +80,14 @@ export async function tileWall(ctx: Ctx): Promise<HTMLElement> {
     const v = t[name], l = safety(name, v);
     return one(label, v, String(v ?? ''), l, help);
   };
-  const settings = el('div', { class: 'tiles', role: 'group', 'aria-label': 'Safety settings' },
+  const settings = tileRow('Safety settings',
     set('fsync', 'fsync', 'off: a crash can corrupt the cluster'),
     set('full_page_writes', 'full_page_writes', 'off: a torn page after a crash cannot be repaired'),
     set('synchronous_commit', 'synchronous_commit', 'off: a crash can lose the last commits (no corruption)'),
     set('data_checksums', 'data checksums', 'off: a corrupted page is not detected when read'),
     set('wal_level', 'wal_level', 'minimal: no physical replica, no point-in-time recovery from the archive'),
   );
-  return el('div', { class: 'tile-wall' },
+  return el('div', { class: 'tile-wall panel' },
     el('h3', {}, 'Health ', whatIsThis(`From the newest activity read of the window (${t.activity_at ? fmtTime(t.activity_at) : 'none'}), `
       + 'the cache hit over the whole window, the settings from the newest instance read'
       + (t.settings_at ? ` (${fmtTime(t.settings_at)})` : '') + '. Hover a tile for its meaning.', 'Health')),

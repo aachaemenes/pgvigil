@@ -356,8 +356,14 @@ export function grid(rows: Record<string, unknown>[], cols: Col[], empty = 'No r
   return box;
 }
 
+// badge: a state's word as a pill (its tint behind its own colour; app.css .badge); in a solid status cell it takes the
+// fill's text colour, no tint
 export function badge(text: string, kind: string): HTMLElement {
   return el('span', { class: 'badge ' + kind }, text);
+}
+// pill: the short form of a state on a tile or a card (CRIT, WARN, OK), the same shape as a badge
+export function pill(text: string, kind: string): HTMLElement {
+  return el('span', { class: 'badge pill ' + kind }, text);
 }
 
 export function errorBox(e: unknown): HTMLElement {
@@ -370,8 +376,42 @@ export function dot(level: number, title = ''): HTMLElement {
   return e;
 }
 
-export function tile(label: string, value: string, kind = ''): HTMLElement {
-  return el('div', { class: 'tile ' + kind }, el('div', { class: 'tile-v' }, value), el('div', { class: 'tile-l' }, label));
+// tile: a card - a left stripe in its state colour (kind 'ok' | 'warn' | 'crit', '' for none), a small muted label over a
+// large figure, an optional unit beside the figure and a sub line under it, and on a critical or a warning tile a CRIT
+// or WARN pill (the state in words, not the colour alone; o.pill false leaves it out, a string names it). The figure
+// (.tile-v) is the first child and the label (.tile-l) holds only its words: the proofs read both; app.css draws the
+// label above the figure.
+export interface TileOpts { unit?: string; sub?: string | Node; pill?: string | false }
+export function tile(label: string, value: string, kind = '', o: TileOpts = {}): HTMLElement {
+  const word = o.pill === false ? '' : o.pill ?? (kind === 'crit' ? 'CRIT' : kind === 'warn' ? 'WARN' : '');
+  return el('div', { class: 'tile ' + kind },
+    el('div', { class: 'tile-v' }, value, o.unit ? el('span', { class: 'tile-unit' }, ' ' + o.unit) : null),
+    el('div', { class: 'tile-l' }, label),
+    word ? pill(word, kind) : null,
+    o.sub ? el('div', { class: 'tile-sub' }, o.sub) : null);
+}
+
+// panel: a section as a card - its title, the window or the moment it covers beside it in the muted small text ('last
+// 1h', 'latest snapshot'), then its content
+export function panel(title: string, note: string, ...kids: (Node | string | null | undefined)[]): HTMLElement {
+  return el('section', { class: 'panel' }, el('h3', { class: 'panel-head' }, title, note ? el('span', { class: 'panel-note' }, note) : null), ...kids);
+}
+
+// toolbar: one quiet bar of controls, its groups apart by a hairline; a pressed button (aria-pressed) is the active one
+export function toolbar(...groups: (Node | Node[])[]): HTMLElement {
+  return el('div', { class: 'toolbar quiet-bar', role: 'toolbar' }, ...groups.map(g => el('span', { class: 'tb-group' }, ...(Array.isArray(g) ? g : [g]))));
+}
+
+// The states a part of a page is in besides showing its data, one shape everywhere: empty (the words say what was
+// looked for and the window), loading (a status a screen reader announces), stale (the newest read is old: the part is
+// greyed and says when it was collected).
+export function stateNote(kind: 'empty' | 'loading' | 'stale', words: string): HTMLElement {
+  return el('p', { class: `state ${kind}${kind === 'empty' ? ' empty' : ''}`, ...(kind === 'loading' ? { role: 'status' } : {}) }, words);
+}
+export function markStale(box: HTMLElement, at: unknown): HTMLElement {
+  box.classList.add('is-stale');
+  box.prepend(stateNote('stale', `Last collected ${fmtTime(at)}`));
+  return box;
 }
 
 // props renders label/value pairs as a two-column card.

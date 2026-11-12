@@ -98,6 +98,27 @@ web/src/chartkit.ts; a page never styles a chart itself.
   window>).', 'No data in this span.' on a chart of its own span, or the caller's words; loading is a status a screen
   reader announces (`chartPlaceholder` is for a page to draw while its rows load; the screen tasks adopt it).
 
+## The shared parts
+
+ui.ts and tiles.ts hold the parts every page builds from; a page calls them and their look follows the tokens.
+- `tile(label, value, kind, { unit, sub, pill })`: a card with a left stripe (`--stripe`) in its state colour (`kind`
+  'ok', 'warn', 'crit', or none), a small muted label over a large figure (`--fs-xl`, the text colour: the colour is on
+  the stripe, not the figure), the unit beside it, a sub line, and on a warning or a critical tile a WARN or CRIT pill
+  (the state in words). `tileRow(label, ...tiles)` (tiles.ts): tiles side by side as one named group. Inside a panel a
+  tile sits on `--surface-card`.
+- `badge(text, kind)` and `pill(text, kind)`: the state's word on its own tint (`--ok-bg` ... `--na-bg`, `--r-pill`);
+  inside a solid status cell a badge takes the fill's text colour and no tint.
+- `panel(title, note, ...content)`: a section as a card, its title with the window or the moment beside it ('last 1h',
+  'latest snapshot').
+- `toolbar(...groups)`: one quiet bar - no border on a control, a soft fill, the pressed one in the accent's tint,
+  groups apart by a hairline. The header's bar and the Summary's toolbar take the same look from app.css.
+- Links: a link in running text keeps a faint underline (WCAG 1.4.1: told from its text by more than colour), the full
+  line when pointed at; a link standing alone (the tree, a tab, a tile, a panel's title) has none; a grid's links keep
+  DBA Dash's full underline.
+- States, one shape: `stateNote('empty' | 'loading' | 'stale', words)` - empty and loading a soft box in the muted text
+  (the page's own 'Loading...' line too), stale a warning-tinted line 'Last collected <time>'; `markStale(box, at)`
+  greys a part whose newest read is old and puts that line at its top. An empty grid stays DBA Dash's header row alone.
+
 ## The rule for a new page
 
 1. Build it from the shared parts (ui.ts `grid`, `tile`, `badge`, `props`; chart.ts) before writing CSS; a page's own
