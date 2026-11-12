@@ -274,8 +274,21 @@ vals = list((t or {}).get('form') or [])
 check(bool(t) and (t.get('items') or [])[:2] == ['PostgreSQL: connection count high', 'SQL Server: sustained blocking'] and (t.get('title') or '') == 'New alert rule'
       and all(v in vals for v in ('200', '500', '3', 'above', 'PostgreSQL: connection count high', 'sessions.total')) and t.get('saveOff') and (t.get('need') or '').startswith('Save needs a server where alert rules can be written'),
       f"T: 'Starter rules' lists PerformanceMonitor's two starters pgvigil has a metric for ({(t or {}).get('items')}); the first opens '{(t or {}).get('title')}' filled with sessions.total above 200 / 500 for 3 min, Save off: {(t or {}).get('need')!r} ({vals[:12]})")
-tabs = {'admin', 'mssqlactions', 'alerts', 'alert', 'alertrules', 'summary', 'findings', 'counters', 'performance', 'mssql_running', 'mssql_waits', 'mssql_blocked', 'activity', 'waits', 'logs', 'vacuum', 'config', 'metrics', 'drives', 'mssqlactions'}
-links = d['links']; odd = [x for x in links if not re.match(r'^#/[a-z_]+(\?|$)', x['href'] or '') or re.match(r'^#/([a-z_]+)', x['href']).group(1) not in tabs]
+# the UI's pages are the app's own route table (web/src/router.ts: rootTabs, instanceTabs, mssqlInstanceTabs, drillTabs),
+# read now, so a page added later needs no list here (the lead 12:15, after 204's admin_instances); the pages this check
+# named by hand before are a floor (less 'metrics', which was never a route: the Metrics tab is 'counters'): a route table
+# read short fails here, not as a link of the UI
+src = open('web/src/router.ts', encoding='utf-8').read()
+tabs = set()
+for m in re.finditer(r'export const (\w+Tabs): Record<string, string> = \{(.*?)\};', src, re.S):
+    tabs |= set(re.findall(r"(?:^|[{,\s])([a-z_][a-z0-9_]*)\s*:\s*'", m.group(2)))
+floor = {'admin', 'mssqlactions', 'alerts', 'alert', 'alertrules', 'summary', 'findings', 'counters', 'performance', 'mssql_running', 'mssql_waits', 'mssql_blocked', 'activity', 'waits', 'logs', 'vacuum', 'config', 'drives', 'admin_instances'}
+check(floor <= tabs, f"C: the UI's routes read from web/src/router.ts: {len(tabs)} pages, every page this check named by hand among them (missing: {sorted(floor - tabs)})")
+def off(href):
+    return not re.match(r'^#/[a-z_]+(\?|$)', href or '') or re.match(r'^#/([a-z_]+)', href).group(1) not in tabs
+# the check can still fail: a link to a route the app does not have is counted
+check(off('#/no_such_page?w=1h') and not off('#/admin_instances?w=1h'), "C: a link to a route the app does not have ('#/no_such_page') is counted; '#/admin_instances' is a page")
+links = d['links']; odd = [x for x in links if off(x['href'])]
 check(len(links) > 0 and not odd, f"C: every link's target read: {len(links)} links on the three pages, each a page of the UI ({len(odd)} not: {odd[:3]})")
 a = d.get('admin') or {}; tabsA = {t['label']: t for t in a.get('tabs', [])}
 want_tabs = ['Servers', 'Notification routes', 'Alert settings', 'Threshold overrides', 'Server actions']
