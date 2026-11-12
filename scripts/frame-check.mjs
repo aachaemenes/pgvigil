@@ -178,7 +178,7 @@ const cm = await ev(`(async () => {
     note: box.querySelector('.chart-note')?.textContent ?? '', firstTime: (lines[1] ?? '').split('\\t')[0], name: b.getAttribute('aria-label') };
 })()`);
 // a chart of two series or more adds Pick series (task 152)
-check('M chart menu', !!cm && !cm.why && cm.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)' + (cm.series >= 2 ? '|Pick series' : '') && cm.head[0] === 'time' && cm.head.length === cm.series + 1
+check('M chart menu', !!cm && !cm.why && cm.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)|Export Excel' + (cm.series >= 2 ? '|Pick series' : '') && cm.head[0] === 'time' && cm.head.length === cm.series + 1
   && cm.lines > 2 && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(cm.firstTime) && cm.note === `Copied ${cm.lines - 1} points` && String(cm.name).startsWith('Chart menu: '),
   cm?.why ?? `${cm.items.join('|')}; header ${cm.head.join(',')} for ${cm.series} series; ${cm.lines - 1} points from ${cm.firstTime}; note '${cm.note}'; named '${cm.name}'`);
 
@@ -546,7 +546,7 @@ const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()
     if (top) break;
   }
   check('T slices, Top N, pie menu', !!slice && !slice.none && landed.hash === slice.to && landed.page && !!top && top.five.wedges === 5 && top.five.rows === 5 && top.every.rows === top.all && top.every.wedges === top.all
-    && top.stored.includes('0') && top.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)' && top.lines === top.all + 1 && top.head === 'name\tsize\tshare_pct',
+    && top.stored.includes('0') && top.items.join('|') === 'Copy image|Save image|Copy data|Export data (CSV)|Export Excel' && top.lines === top.all + 1 && top.head === 'name\tsize\tshare_pct',
     `${slice ? (slice.none ? 'no wedge with a page' : `the wedge opened ${landed.hash} (wanted ${slice.to}), rendered ${landed.page}`) : "no 'Databases by size' pie"}; ${top ? `${top.page} '${top.title}': Top 5 ${top.five.wedges} wedges / ${top.five.rows} rows, All ${top.every.wedges} / ${top.every.rows} of ${top.all}, stored ${top.stored.join(',')}; menu ${top.items.join('|')}; Copy data ${top.lines} lines '${top.head}'` : 'no pie over five slices on the pages tried'}`);
 }
 
