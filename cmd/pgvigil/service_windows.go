@@ -513,6 +513,18 @@ func startInstalled(_ *slog.Logger) error {
 
 // otherProcessesWindows lists the processes whose image is bin, but the service's own and this one.
 func otherProcessesWindows(bin string) ([]string, error) {
+	return processesWhereWindows(func(image string) bool { return strings.EqualFold(filepath.Clean(image), filepath.Clean(bin)) })
+}
+
+// namedProcessesWindows lists the processes whose image is named pgvigil.exe, from any path (uninstall -all's), but the
+// service's own and this one.
+func namedProcessesWindows() ([]string, error) {
+	return processesWhereWindows(func(image string) bool { return strings.EqualFold(filepath.Base(image), "pgvigil.exe") })
+}
+
+// processesWhereWindows lists the processes whose full image path matches, as 'pid N: its image name', but the
+// service's own and this one.
+func processesWhereWindows(match func(image string) bool) ([]string, error) {
 	var servicePID uint32
 	if m, err := connectSCM(); err == nil {
 		if s, err := m.OpenService(serviceName); err == nil {
@@ -547,7 +559,7 @@ func otherProcessesWindows(bin string) ([]string, error) {
 		if qerr != nil {
 			continue
 		}
-		if strings.EqualFold(filepath.Clean(windows.UTF16ToString(buf[:n])), filepath.Clean(bin)) {
+		if match(windows.UTF16ToString(buf[:n])) {
 			out = append(out, fmt.Sprintf("pid %d: %s", pid, windows.UTF16ToString(e.ExeFile[:])))
 		}
 	}
@@ -593,6 +605,7 @@ const (
 
 func init() {
 	uninstallHooksOf = &uninstallHooks{
+		named: namedProcessesWindows,
 		privileged: func() error {
 			if !windows.GetCurrentProcessToken().IsElevated() {
 				return errors.New("uninstall -all needs an elevated prompt (Run as administrator)")

@@ -1142,6 +1142,10 @@ type uninstallHooks struct {
 	// repoDSN is the repository connection string this host's installed service uses (hostRepoDSN), configured whether
 	// its configuration file is there
 	repoDSN func(inst installOptions) (dsn string, configured bool, err error)
+	// named lists every other process whose executable is named pgvigil (pgvigil.exe), from any path: a serve run from a
+	// bundle's copy or by go run outlives -all as surely as one on the installed binary (the service's own main
+	// process and this one left out)
+	named func() ([]string, error)
 }
 
 // hostRepoDSN is the repository connection string the service installed at inst resolves (serviceRepoDSN), envFile the
@@ -1274,16 +1278,32 @@ func runUninstallAll(log *slog.Logger, o installOptions) error {
 	// another pgvigil process on the installed binary or its .previous (a serve started by hand or by a unit of the house,
 	// the app's) would outlive the uninstall and keep writing (an Add in the page makes instances/ again): refused, as the
 	// upgrade refuses it; the dry run lists them
+	// and any process whose executable is named pgvigil, from any path (a bundle's copy, go run); each pid said once
 	var others []string
+	addOthers := func(ps []string) {
+		for _, p := range ps {
+			pid, _, _ := strings.Cut(p, ":")
+			if !slices.ContainsFunc(others, func(o string) bool { q, _, _ := strings.Cut(o, ":"); return q == pid }) {
+				others = append(others, p)
+			}
+		}
+	}
 	for _, b := range []string{inst.Bin, h.previous(inst.Bin)} {
 		ps, err := h.others(b)
 		if err != nil {
 			return fmt.Errorf("uninstall refused, nothing was changed: looking for other processes on %s: %w", b, err)
 		}
-		others = append(others, ps...)
+		addOthers(ps)
+	}
+	if uh.named != nil {
+		ps, err := uh.named()
+		if err != nil {
+			return fmt.Errorf("uninstall refused, nothing was changed: looking for other pgvigil processes: %w", err)
+		}
+		addOthers(ps)
 	}
 	if len(others) > 0 && !o.DryRun {
-		return fmt.Errorf("uninstall refused, nothing was changed: other processes run the installed binary (a serve, the app): stop them first:\n  %s", strings.Join(others, "\n  "))
+		return fmt.Errorf("uninstall refused, nothing was changed: other pgvigil processes run on this host (a serve, the app, a pgvigil from another path): stop them first:\n  %s", strings.Join(others, "\n  "))
 	}
 	var p *dropPlan
 	if o.DropRepository {
@@ -1443,7 +1463,7 @@ func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHook
 	todo := 0
 	line := func(state, what string) { fmt.Printf("  %-8s %s\n", state, what) }
 	for _, ps := range others {
-		line("running", ps+" (another process on the installed binary: the uninstall refuses until it is stopped)")
+		line("running", ps+" (another pgvigil process: the uninstall refuses until it is stopped)")
 	}
 	for _, it := range items {
 		switch {
@@ -1467,6 +1487,7 @@ func printUninstallPlan(o installOptions, inst installOptions, uh *uninstallHook
 				db = fmt.Sprintf("%s on %s:%d", c.Database, c.Host, c.Port)
 			}
 			line("kept", "the repository database ("+db+") and the pgvigil roles: -drop-repository drops them")
+			line("kept", "the instances added in the page (Admin > Instances), active in the kept repository: their passwords go with this host's credential folders, so another collector of the repository would report them unreachable; remove them in the page first if the repository lives on")
 		}
 	} else {
 		d := p.dump
@@ -1587,6 +1608,11 @@ func dropPreflight(ctx context.Context, h *upgradeHooks, uh *uninstallHooks, o i
 	}
 	if configured && hostDSN == "" {
 		return nil, fmt.Errorf("this host's configuration %s names no repository connection string the uninstall can read: -drop-repository cannot tell it is this host's database", inst.Config)
+	}
+	if !configured && p.present {
+		// the configuration is how the uninstall knows the database is this host's: a plain -all removed it, and any
+		// owner's connection string would pass (the join review w9e, finding 3)
+		return nil, fmt.Errorf("this host's configuration %s is gone: -drop-repository cannot tell the owner's database is this host's; drop it by hand (docs/uninstall.md)", inst.Config)
 	}
 	if err := sameRepository(ctx, hostDSN, p); err != nil {
 		return nil, err

@@ -46,3 +46,28 @@ func TestPurgeEnvFiles(t *testing.T) {
 		t.Errorf("the unit's file and README's place: %v", got)
 	}
 }
+
+// TestUnitEnvExtra (the join review w9e, finding 9): the unit's other environment sources, as systemctl show prints
+// them, are refused by name; the installer's own env file alone passes.
+func TestUnitEnvExtra(t *testing.T) {
+	env := "/etc/pgvigil/pgvigil.env"
+	for _, c := range []struct {
+		show, bad string
+	}{
+		{"EnvironmentFiles=/etc/pgvigil/pgvigil.env (ignore_errors=no)\nEnvironment=", ""},
+		{"EnvironmentFiles=/etc/pgvigil/pgvigil.env (ignore_errors=no)\nEnvironment=GOMAXPROCS=2 TZ=UTC", ""},
+		{"Environment=", ""},
+		{"EnvironmentFiles=/etc/pgvigil/pgvigil.env (ignore_errors=no)\nEnvironmentFiles=/etc/pgvigil/prod.env (ignore_errors=yes)\nEnvironment=", "EnvironmentFile=/etc/pgvigil/prod.env"},
+		{"EnvironmentFiles=/etc/pgvigil/pgvigil.env (ignore_errors=no)\nEnvironment=TZ=UTC PGVIGIL_REPO_DSN=host=x", "Environment=PGVIGIL_REPO_DSN=..."},
+		{"EnvironmentFiles=/etc/pgvigil/pgvigil.env (ignore_errors=no)\nEnvironment=\"PGVIGIL_REPO_DSN=host=x user=y\"", "Environment=PGVIGIL_REPO_DSN=..."},
+		{"EnvironmentFiles=/etc/pgvigil/pgvigil.env (ignore_errors=no)\nEnvironment=MY_PGVIGIL_REPO_DSN=x", ""},
+	} {
+		err := unitEnvExtra(c.show, env, "PGVIGIL_REPO_DSN")
+		switch {
+		case c.bad == "" && err != nil:
+			t.Errorf("%q: %v", c.show, err)
+		case c.bad != "" && (err == nil || !strings.Contains(err.Error(), c.bad)):
+			t.Errorf("%q: want an error naming %q, got %v", c.show, c.bad, err)
+		}
+	}
+}

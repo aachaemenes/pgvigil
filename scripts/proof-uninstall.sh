@@ -9,13 +9,17 @@
 #    /etc/pgvigil/pgvigil-purge.env, 0600 root)
 # C  refusals: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN
 #    naming another database than this host's configuration, the same with the configuration's dsn a file: (and no
-#    PGVIGIL_REPO_DSN in the env file), a configuration whose env: dsn the env file lacks (resolves to nothing), a
-#    -bin that disagrees, a 'pgvigil serve' running from the installed binary (named; the dry run lists it 'running'),
-#    a role the owner holds no ADMIN OPTION on (16+), a session held on the repository, a second collector writing;
-#    each leaves the host as it was (files, units, account, roles, databases, the service running); the first ten
-#    before the stop (no stop said), the last two after the stop and the 75 s watch
+#    PGVIGIL_REPO_DSN in the env file), a configuration whose env: dsn the env file lacks (resolves to nothing), the
+#    configuration gone with the database there (a plain -all before: the join review w9e, finding 3), a drop-in giving
+#    the service another EnvironmentFile= (finding 9), a -bin that disagrees, a 'pgvigil serve' running from the
+#    installed binary (named; the dry run lists it 'running'; idle and -no-login it still holds a repository session:
+#    finding 8), a serve from a copy of the binary at another path (named: finding 2), a role the owner holds no ADMIN
+#    OPTION on (16+), a session held on the repository, a second collector writing (from a binary not named pgvigil:
+#    another host's as this host sees it); each leaves the host as it was (files, units, account, roles, databases, the
+#    service running); all but the last two before the stop (no stop said), those after the stop and the 75 s watch
 # P  the dry run: every item and what would be done (the scheduled purge and its env file, each credential folder with its
-#    file count), a group another database uses kept, another login listed with its DROP ROLE line, nothing changed
+#    file count), a group another database uses kept, another login listed with its DROP ROLE line, nothing changed;
+#    without -drop-repository the page's instances named as kept in the repository (finding 10)
 # U  uninstall -all -drop-repository: the order of its steps; nothing of pgvigil left, read back item by item; the dump
 #    0600 and restorable
 # R  a second run, with and without -drop-repository: 'nothing of pgvigil is left to remove', exit 0
@@ -169,20 +173,48 @@ grep -qF "names no repository connection string the uninstall can read: -drop-re
 before_stop "resolves to nothing"
 insys sh -c "cp -p /root/cfg.bak $C && cp -p /root/env.bak $E && rm -f /etc/pgvigil/repo.dsn /root/cfg.bak /root/env.bak"
 same "a file: dsn and a dsn that resolves to nothing"
+# the configuration gone (as a plain -all leaves it) and the database there: refused, any owner DSN would pass otherwise
+insys mv "$C" /root/cfg.away
+refused "configuration gone" "this host's configuration $C is gone: -drop-repository cannot tell the owner's database is this host's; drop it by hand (docs/uninstall.md)" "${ALLDROP[@]}"
+before_stop "configuration gone"
+insys mv /root/cfg.away "$C"
+same "the configuration gone"
+# a drop-in giving the service another env file (it names another repository there): the check reads pgvigil.env alone
+insys sh -c "mkdir -p /etc/systemd/system/pgvigil.service.d && printf '[Service]\nEnvironmentFile=/etc/pgvigil/prod.env\n' > /etc/systemd/system/pgvigil.service.d/x.conf && umask 077 && printf 'PGVIGIL_REPO_DSN=host=127.0.0.1 dbname=pgvigil_prod\n' > /etc/pgvigil/prod.env && systemctl daemon-reload"
+refused "drop-in env" "pgvigil.service also takes its environment from EnvironmentFile=/etc/pgvigil/prod.env (a drop-in or an edit of the unit)" "${ALLDROP[@]}"
+before_stop "drop-in env"
+insys sh -c "rm -rf /etc/systemd/system/pgvigil.service.d /etc/pgvigil/prod.env && systemctl daemon-reload"
+same "a drop-in env file"
 refused "bin" "-bin /opt/elsewhere/pgvigil disagrees with the installed service's $B" "$B" uninstall -all -bin /opt/elsewhere/pgvigil
 before_stop "bin"; same "a -bin that disagrees"
 # a pgvigil serve running from the installed binary as root (review w9d finding 2: it would outlive -all and write
 # instances/ again): refused before any change and named; the dry run lists it as running
-SP=$(insys sh -c "setsid $B serve -config $C -listen 127.0.0.1:8089 -no-login -dsn 'host=127.0.0.1 port=5432 user=pgvigil_ui password=$UPW dbname=pgvigil sslmode=disable' >/root/serve.log 2>&1 < /dev/null & echo \$!")
+# (finding 8: its pool closes an idle connection after 2 s and checks every second here, so by the count below an
+# idle -no-login serve, which runs no query, holds a session only by the pool's one kept connection)
+SP=$(insys sh -c "setsid $B serve -config $C -listen 127.0.0.1:8089 -no-login -dsn 'host=127.0.0.1 port=5432 user=pgvigil_ui password=$UPW dbname=pgvigil sslmode=disable pool_max_conn_idle_time=2s pool_health_check_period=1s' >/root/serve.log 2>&1 < /dev/null & echo \$!")
 sleep 3; insys kill -0 "$SP" 2>/dev/null || fail "the serve exited: $(insys tail -n 5 /root/serve.log)"
-refused "serve" "other processes run the installed binary (a serve, the app): stop them first" "$B" uninstall -all
+refused "serve" "other pgvigil processes run on this host (a serve, the app, a pgvigil from another path): stop them first" "$B" uninstall -all
 grep -qF "pid $SP: $B serve -config $C" "$WORK/c.out" || fail "the serve is not named: $(cat "$WORK/c.out")"
 before_stop "serve"
 insys "$B" uninstall -all -dry-run </dev/null >"$WORK/c-serve-dry.out" 2>&1 || fail "the dry run with a serve running: $(cat "$WORK/c-serve-dry.out")"
 grep -qF "running  pid $SP: $B serve -config $C" "$WORK/c-serve-dry.out" || fail "the dry run does not list the serve: $(cat "$WORK/c-serve-dry.out")"
+sleep 6
+IDLE=$(PQDB=postgres pq "select count(*) from pg_stat_activity where datname = 'pgvigil' and usename = 'pgvigil_ui' and application_name = 'pgvigil-serve' and state = 'idle'")
+[[ "$IDLE" -ge 1 ]] || fail "the idle -no-login serve holds no repository session after 9 s (its pool closes idle connections after 2 s): $IDLE"
 insys kill "$SP"; gone=""; for _ in $(seq 1 30); do insys kill -0 "$SP" 2>/dev/null || { gone=1; break; }; sleep 1; done
 [[ -n "$gone" ]] || fail "the serve (pid $SP) did not end within 30 s of SIGTERM"
 same "a serve on the installed binary"
+# a serve from a copy of the binary at another path (a bundle left on the host): refused before any change and named
+insys sh -c "mkdir -p /root/pgvigil-bundle && cp $B /root/pgvigil-bundle/pgvigil"
+SQ=$(insys sh -c "setsid /root/pgvigil-bundle/pgvigil serve -config $C -listen 127.0.0.1:8090 -no-login -dsn 'host=127.0.0.1 port=5432 user=pgvigil_ui password=$UPW dbname=pgvigil sslmode=disable' >/root/serve2.log 2>&1 < /dev/null & echo \$!")
+sleep 3; insys kill -0 "$SQ" 2>/dev/null || fail "the copy's serve exited: $(insys tail -n 5 /root/serve2.log)"
+refused "serve copy" "other pgvigil processes run on this host" "$B" uninstall -all
+grep -qF "pid $SQ: /root/pgvigil-bundle/pgvigil serve -config $C" "$WORK/c.out" || fail "the copy's serve is not named: $(cat "$WORK/c.out")"
+before_stop "serve copy"
+insys kill "$SQ"; gone=""; for _ in $(seq 1 30); do insys kill -0 "$SQ" 2>/dev/null || { gone=1; break; }; sleep 1; done
+[[ -n "$gone" ]] || fail "the copy's serve (pid $SQ) did not end within 30 s of SIGTERM"
+insys rm -rf /root/pgvigil-bundle
+same "a serve from a copy at another path"
 # PostgreSQL 16+: a CREATEROLE login needs ADMIN OPTION on a role to drop it; without it the drop is refused up front
 PQDB=postgres pq "REVOKE ADMIN OPTION FOR pgvigil_alerter FROM pgvigil_owner" >/dev/null
 refused "no admin option" "DROP ROLE needs ADMIN OPTION on the role, and the owner's login pgvigil_owner holds none on pgvigil_alerter" "${ALLDROP[@]}"
@@ -201,14 +233,18 @@ same "a held session"
 # a second collector writing into the repository from 'another host': refused after the watch; the service runs again
 DSNV=$(insys sed -n 's/^PGVIGIL_REPO_DSN=//p' "$E" | tail -n 1); TGT=$(insys sed -n 's/^PROOF_TARGET_DSN=//p' "$E" | tail -n 1)
 [[ -n "$DSNV" && -n "$TGT" ]] || fail "the env file's DSNs"
-P2=$(insys sh -c "PGVIGIL_REPO_DSN='$DSNV' PROOF_TARGET_DSN='$TGT' setsid /root/pgvigil run -config $C >/root/second.log 2>&1 < /dev/null & echo \$!")
+# (a binary not named pgvigil: the process check would refuse a pgvigil one before the stop; another host's collector is
+# seen only by its writes)
+insys sh -c "cp /root/pgvigil /root/collector-elsewhere && chmod 0755 /root/collector-elsewhere"
+P2=$(insys sh -c "PGVIGIL_REPO_DSN='$DSNV' PROOF_TARGET_DSN='$TGT' setsid /root/collector-elsewhere run -config $C >/root/second.log 2>&1 < /dev/null & echo \$!")
 sleep 5; insys kill -0 "$P2" 2>/dev/null || fail "the second collector exited: $(insys tail -n 5 /root/second.log)"
 refused "second collector" "another collector writes into pgvigil" "${ALLDROP[@]}"
 grep -q 'the service runs again, nothing else was changed' "$WORK/c.out" || fail "the second collector's refusal did not start the service again: $(cat "$WORK/c.out")"
 insys kill "$P2"; gone=""; for _ in $(seq 1 30); do insys kill -0 "$P2" 2>/dev/null || { gone=1; break; }; sleep 1; done
 [[ -n "$gone" ]] || fail "the second collector (pid $P2) did not end within 30 s of SIGTERM: $(insys tail -n 5 /root/second.log)"
 same "a second collector"
-ok "refused with nothing changed, before the stop: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN naming another database (with an env: and with a file: dsn), a dsn that resolves to nothing, a -bin that disagrees, a serve on the installed binary (named, 'running' in the dry run), a role without ADMIN OPTION (PostgreSQL $PGMAJ); after the stop and the 75 s watch, the service started again: a held psql session (named), a second collector writing"
+insys rm -f /root/collector-elsewhere
+ok "refused with nothing changed, before the stop: not root, no terminal and no -confirm-database, a wrong -confirm-database, no owner DSN, an owner DSN naming another database (with an env: and with a file: dsn), a dsn that resolves to nothing, the configuration gone with the database there, a drop-in's EnvironmentFile= (named), a -bin that disagrees, a serve on the installed binary (named, 'running' in the dry run; idle and -no-login it held $IDLE repository session(s) after 9 s with a 2 s idle limit), a serve from a copy at another path (pid $SQ named), a role without ADMIN OPTION (PostgreSQL $PGMAJ); after the stop and the 75 s watch, the service started again: a held psql session (named), a second collector writing"
 
 echo "== P the dry run =="
 PQDB=postgres pq "CREATE DATABASE pgvigil_other" >/dev/null
@@ -229,12 +265,15 @@ for l in "remove   the service pgvigil (systemd unit $U)" "remove   the binary $
 done
 if grep -q 'role pgvigil_monitor' "$WORK/p.out"; then fail "the dry run plans a step for the monitored server's login: $(cat "$WORK/p.out")"; fi
 same "the dry run"
+insys "$B" uninstall -all -dry-run </dev/null >"$WORK/p2.out" 2>&1 || fail "the dry run without -drop-repository: $(cat "$WORK/p2.out")"
+grep -qF "kept     the instances added in the page (Admin > Instances), active in the kept repository: their passwords go with this host's credential folders" "$WORK/p2.out" || fail "the dry run without -drop-repository does not name the page's instances: $(cat "$WORK/p2.out")"
+same "the dry run without -drop-repository"
 # the owner's own steps the dry run named: the grant elsewhere revoked, the UI login dropped by its printed line
 PQDB=postgres pq "REVOKE CONNECT ON DATABASE pgvigil_other FROM pgvigil_reader" >/dev/null
 PQDB=postgres pq "DROP DATABASE pgvigil_other" >/dev/null
 uiline=$(grep -oF 'DROP ROLE "pgvigil_ui";' "$WORK/p.out" | head -n 1)
 insys sh -c "PGPASSWORD='$OPW' psql -h 127.0.0.1 -U pgvigil_owner -d postgres -XAtq -v ON_ERROR_STOP=1 -c '$uiline'" >/dev/null || fail "the printed line '$uiline'"
-ok "the dry run: every item 'remove' (the scheduled purge and its env file, each credential folder with its count) with the dump's file, pgvigil_reader kept while pgvigil_other holds a grant, pgvigil_ui listed with its DROP ROLE line (run by the owner after), the owner's login named, pgvigil_monitor untouched; nothing changed"
+ok "the dry run: every item 'remove' (the scheduled purge and its env file, each credential folder with its count) with the dump's file; without -drop-repository the page's instances named as kept in the repository; pgvigil_reader kept while pgvigil_other holds a grant, pgvigil_ui listed with its DROP ROLE line (run by the owner after), the owner's login named, pgvigil_monitor untouched; nothing changed"
 
 echo "== U uninstall -all -drop-repository =="
 ROWS=$(pq "select count(*) from pgvigil.collection_dates")
@@ -289,4 +328,4 @@ insys test -L /etc/pgvigil/instances && insys test -f /srv/pgvcreds/k.dsn || fai
 [[ -z "$(insys sh -c "for f in $B $C $E $U; do [ -e \"\$f\" ] && echo \"\$f\"; done; true")" ]] || fail "K left the installer's files"
 ok "an account that was there before (no mark), an operator's file and a credential folder that is a link (its target untouched) kept and named with their lines; the rest removed"
 
-echo "proof-uninstall: OK (uninstall -all removes this host's pgvigil in order, -drop-repository the database and the roles nothing else holds; twelve refusals change nothing; the dry run changes nothing; a second run finds nothing to remove; what the install did not make stays, named)"
+echo "proof-uninstall: OK (uninstall -all removes this host's pgvigil in order, -drop-repository the database and the roles nothing else holds; fifteen refusals change nothing (the configuration gone, a drop-in env file, a serve from another path among them); the dry run changes nothing; a second run finds nothing to remove; what the install did not make stays, named)"

@@ -107,6 +107,11 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	if cfg.MaxConns > 8 {
 		cfg.MaxConns = 8
 	}
+	// one session always open, idle or not: an idle serve (a -no-login one nobody browses runs no query) is then seen
+	// by uninstall -drop-repository's session check, as docs/uninstall.md says (the join review w9e, finding 8)
+	if cfg.MinConns < 1 {
+		cfg.MinConns = 1
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("repository: %w", err)

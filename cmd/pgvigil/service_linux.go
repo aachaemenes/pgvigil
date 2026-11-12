@@ -439,6 +439,18 @@ func otherProcesses(bin string) ([]string, error) {
 		}
 		return nil, err
 	}
+	return processesWhere(func(exe string) bool { return exe == want })
+}
+
+// namedProcesses lists the processes whose executable is named pgvigil, from any path (uninstall -all's: a serve from
+// a bundle's copy, a go run), but the service's own main process and this one.
+func namedProcesses() ([]string, error) {
+	return processesWhere(func(exe string) bool { return filepath.Base(exe) == "pgvigil" })
+}
+
+// processesWhere lists the processes whose executable (" (deleted)" trimmed: a binary replaced under it) matches, as
+// 'pid N: its command line', but the service's own main process and this one.
+func processesWhere(match func(exe string) bool) ([]string, error) {
 	mainPID := 0
 	if v, err := systemctl("show", "-p", "MainPID", "--value", "pgvigil.service"); err == nil {
 		mainPID, _ = strconv.Atoi(strings.TrimSpace(v))
@@ -454,7 +466,7 @@ func otherProcesses(bin string) ([]string, error) {
 			continue
 		}
 		exe, err := os.Readlink(filepath.Join("/proc", e.Name(), "exe"))
-		if err != nil || strings.TrimSuffix(exe, " (deleted)") != want {
+		if err != nil || !match(strings.TrimSuffix(exe, " (deleted)")) {
 			continue
 		}
 		cmd, _ := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
@@ -494,10 +506,63 @@ func init() {
 		},
 		running: unitRunning,
 		items:   linuxItems,
+		named:   namedProcesses,
 		repoDSN: func(inst installOptions) (string, bool, error) {
-			return hostRepoDSN(inst, filepath.Join(filepath.Dir(inst.Config), envName))
+			envFile := filepath.Join(filepath.Dir(inst.Config), envName)
+			dsn, configured, err := hostRepoDSN(inst, envFile)
+			if err == nil && configured {
+				var raw string
+				if _, raw, err = serviceRepoDSN(inst.Config, envFile); err == nil {
+					err = unitEnvOnly(raw, envFile)
+				}
+			}
+			return dsn, configured, err
 		},
 	}
+}
+
+// unitEnvOnly (raw: the configuration's repository dsn as written) refuses when pgvigil.service takes its environment from more than the installer's env file (a drop-in's or
+// an edit's EnvironmentFile=, or an Environment= setting the configuration's env: variable): the host check reads that
+// file alone, so it could name another repository than the service uses (the join review w9e, finding 9). What systemd
+// loads is read from systemctl show; with no systemd there is no other source.
+func unitEnvOnly(raw, envFile string) error {
+	if !systemdRunning() {
+		return nil
+	}
+	name, isEnv := strings.CutPrefix(raw, "env:")
+	if !isEnv {
+		return nil
+	}
+	out, err := systemctl("show", "pgvigil.service", "-p", "EnvironmentFiles", "-p", "Environment")
+	if err != nil {
+		return fmt.Errorf("systemctl show pgvigil.service: %v: %s", err, out)
+	}
+	return unitEnvExtra(out, envFile, name)
+}
+
+// unitEnvExtra reads systemctl show's EnvironmentFiles= and Environment= lines: an env file other than envFile, or an
+// Environment= assignment of name, is refused by name.
+func unitEnvExtra(show, envFile, name string) error {
+	var extra []string
+	setsName := regexp.MustCompile(`(^|[\s"'])` + regexp.QuoteMeta(name) + `=`)
+	for _, l := range strings.Split(show, "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
+		switch k {
+		case "EnvironmentFiles":
+			f, _, _ := strings.Cut(v, " (")
+			if f = strings.TrimPrefix(strings.TrimSpace(f), "-"); f != "" && !samePath(f, envFile) {
+				extra = append(extra, "EnvironmentFile="+f)
+			}
+		case "Environment":
+			if setsName.MatchString(v) {
+				extra = append(extra, "Environment="+name+"=...")
+			}
+		}
+	}
+	if len(extra) > 0 {
+		return fmt.Errorf("pgvigil.service also takes its environment from %s (a drop-in or an edit of the unit), and the check reads %s alone, so it cannot tell which repository the service uses: remove that (systemctl revert pgvigil.service), or drop the repository by hand (docs/uninstall.md)", strings.Join(extra, ", "), envFile)
+	}
+	return nil
 }
 
 func present(path string) bool {
