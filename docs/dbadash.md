@@ -1,6 +1,6 @@
 # The DBADash door
 
-pgvigil monitors PostgreSQL. A site that also runs [DBA Dash](https://github.com/trimble-oss/dba-dash) for its SQL Server estate can show DBA Dash's instances beside its PostgreSQL fleet: pgvigil reads the DBA Dash repository (a SQL Server database) with a read-only login and shows the statuses of DBA Dash's own Summary screen, in DBA Dash's words. pgvigil collects nothing from SQL Server itself. Every status on these pages was computed by DBA Dash, and DBA Dash's thresholds and acknowledgements apply.
+pgvigil monitors PostgreSQL. A site that also runs [DBA Dash](https://github.com/trimble-oss/dba-dash) for its SQL Server estate can show DBA Dash's instances beside its PostgreSQL fleet: pgvigil reads the DBA Dash repository (a SQL Server database) with a read-only login and shows the statuses of DBA Dash's own Summary screen, in DBA Dash's words. The door collects nothing from SQL Server itself. Every status on these pages was computed by DBA Dash, and DBA Dash's thresholds and acknowledgements apply.
 
 The door is off until the configuration names a repository.
 
@@ -66,13 +66,13 @@ DBA Dash's GUI is a desktop application with no URL, so these pages name the ins
 
 ## Storage and retention
 
-Migration 0052: `dbadash_repositories` (one row per configured repository: the last read, ok or `not read` with the reason), `dbadash_instances` and `dbadash_summary` (one current row per instance), and `dbadash_summary_history` (the change points: an instance's first read and every read whose statuses changed). The retention: from the wave's join migration on, `pgvigil purge` deletes history older than the retention while keeping each instance's newest row (its current baseline), and deletes an instance DBA Dash no longer lists once it is older than the retention. A read that fails keeps the last rows as they were. A repository removed from the configuration leaves the tree at the next start of `pgvigil run`, the last one too.
+Migration 0052: `dbadash_repositories` (one row per configured repository: the last read, ok or `not read` with the reason), `dbadash_instances` and `dbadash_summary` (one current row per instance), and `dbadash_summary_history` (the change points: an instance's first read and every read whose statuses changed). The retention (not proven: no proof purges these tables): from the wave's join migration on, `pgvigil purge` deletes history older than the retention while keeping each instance's newest row (its current baseline), and deletes an instance DBA Dash no longer lists once it is older than the retention. A read that fails keeps the last rows as they were. A repository removed from the configuration leaves the tree at the next start of `pgvigil run`, the last one too.
 
-The API: `GET /api/dbadash` (every repository and instance), `?repo=<name>` (one repository), `?repo=<name>&id=<DBA Dash InstanceID>&from=..&to=..` (one instance and the changes of the window). It reads 0052's functions only.
+The API: `GET /api/dbadash` (every repository and instance), `?repo=<name>` (one repository), `?repo=<name>&id=<DBA Dash InstanceID>&from=..&to=..` (one instance and the changes of the window). It reads 0052's functions only. Not proven: this API and the pages above in a browser (`scripts/proof-dbadash.sh` grades the functions; `scripts/proof-a11y.sh` renders the pages for accessibility only).
 
 ## What it does not do
 
-- No SQL Server collection: an instance DBA Dash does not monitor is not shown.
+- No SQL Server collection by the door: an instance DBA Dash does not monitor is not shown in its folder.
 - No Azure SQL Database rows (DBA Dash groups those per Azure server in its Summary; pgvigil leaves them out).
 - No write on the DBA Dash side, no DBA Dash procedure executed, no acknowledgement set from pgvigil.
 - Nothing outbound beyond the repositories the configuration names.

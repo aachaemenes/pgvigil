@@ -9,11 +9,11 @@ The [DBA Dash door](dbadash.md) is a different thing: it shows what a DBA Dash r
 - An instance says `engine: sqlserver`; everything else is PostgreSQL, as before.
 - Only SQL Server collections run on a SQL Server instance and only PostgreSQL collections on a PostgreSQL one. A SQL Server collection is named `mssql_<what>`. Naming a collection of the other engine under an instance's `schedules:` or `disabled:` is refused when the file is read.
 - The collector asks the server what it is (a server someone runs, Amazon RDS, Azure SQL Managed Instance, Azure SQL Database) and what the login may read (VIEW SERVER STATE, VIEW ANY DEFINITION, msdb) before each collection. A collection that does not apply there is skipped with the reason, never failed.
-- Nothing is installed on the monitored server and nothing is written there. The collector's session gives up on a lock after two seconds, loses any deadlock it is part of and reads without shared locks, so it cannot join a blocking chain. The one door that changes anything is the [actions door](sqlserver-actions.md), off until an instance opens it with a login of its own.
+- Nothing is installed on the monitored server and nothing is written there. The collector's session gives up on a lock after two seconds, loses any deadlock against a session of normal or high priority and reads without shared locks, so it cannot join a blocking chain. The one door that changes anything is the [actions door](sqlserver-actions.md), off until an instance opens it with a login of its own.
 
 ## Versions
 
-SQL Server 2017, 2019, 2022 and 2025 are proven; the table says on what. `scripts/proof-mssql-versions.sh` starts a pair of Linux containers of Microsoft's image per version (Developer edition, SQL Server Agent and Always On switched on), joins the pair in a clusterless availability group and runs every SQL Server proof of this repository against the pair. The runs of 2026-11-11 (SQL Server 2017, 2022 and 2025 in one run of the tree; SQL Server 2019 in a second run, after a fix to the proof's own choice of ports that had kept its pair from starting in the first):
+SQL Server 2017, 2019, 2022 and 2025 are proven; the table says on what. `scripts/proof-mssql-versions.sh` starts a pair of Linux containers of Microsoft's image per version (Developer edition, SQL Server Agent and Always On switched on), joins the pair in a clusterless availability group and runs thirteen SQL Server proofs of this repository (the rows below; `checks`, `audit` and `plancache-indexes` since task 166) against the pair. The runs of 2026-11-11 (SQL Server 2017, 2022 and 2025 in one run of the tree; SQL Server 2019 in a second run, after a fix to the proof's own choice of ports that had kept its pair from starting in the first):
 
 | | build the run read | the image's host | result |
 | --- | --- | --- | --- |
@@ -21,7 +21,7 @@ SQL Server 2017, 2019, 2022 and 2025 are proven; the table says on what. `script
 | SQL Server 2022 | 16.0.4315.2 (RTM, CU27), Developer Edition | Ubuntu 22.04 | setup and all ten proofs passed |
 | SQL Server 2019 | 15.0.4510.2 (RTM, CU32), Developer Edition | Ubuntu 20.04 | setup and all ten proofs passed |
 | SQL Server 2017 | 14.0.3570.2 (RTM, CU31), Developer Edition | Ubuntu 18.04 | setup and all ten proofs passed |
-| SQL Server 2016 (SP1 and later) | not proven yet | | Microsoft publishes no Linux image of it: the proof needs a Windows host |
+| SQL Server 2016 (SP1 and later) | 13.0.7050.2 (SP3 CU1 GDR), Developer Edition | Windows Server 2019 Datacenter (an Azure VM) | proven on one Windows server by `scripts/proof-mssql-2016.sh`: [SQL Server 2016](sqlserver-2016.md) (Always On not proven: one server; `mssql_defaulttrace` partial there) |
 | Azure SQL Database | not proven yet | | |
 | Azure SQL Managed Instance | not proven yet | | |
 | Amazon RDS for SQL Server | not proven yet | | |
@@ -41,6 +41,9 @@ Each proof on each version, as the runs printed it (`setup` is the pair itself: 
 | `reads` | PASS | PASS | PASS | PASS |
 | `querystore` | PASS | PASS | PASS | PASS |
 | `actions` | PASS | PASS | PASS | PASS |
+| `audit` | PASS | PASS | PASS | PASS |
+| `plancache-indexes` | PASS | PASS | PASS | PASS |
+| `checks` | PASS | PASS | PASS | PASS |
 | certificate with a negative serial (node a, node b) | no, no | no, no | no, no | yes, yes |
 
 What a version changes. The collector reads the server's version at every connection and names a column only where that version has it:
@@ -54,7 +57,7 @@ Not proven by these runs: a Windows host on any version, an edition other than D
 
 ## Collections
 
-Thirty collections. `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
+Thirty-two collections; `mssql_checks` and `mssql_identity` are on [day-one checks](sqlserver-checks.md). `every` is the default; an instance's `schedules:` changes it and `disabled:` switches one off.
 
 | collection | every | reads | needs | Azure SQL Database | page |
 | --- | --- | --- | --- | --- | --- |
@@ -91,7 +94,7 @@ Thirty collections. `every` is the default; an instance's `schedules:` changes i
 
 Amazon RDS for SQL Server and Azure SQL Managed Instance: no collection is switched off by the kind of server; each runs wherever the login has its right. Neither is proven here (each page's Proof section says what is).
 
-Not yet: the performance counters beyond the ones named below, the plan cache, index and statistics health, DBCC and corruption, the error log, logins and permissions, Azure SQL Database's storage and version store, a proof of Windows authentication, and the `aws:` block (CloudWatch and RDS metrics) on a SQL Server instance. Azure SQL Database's backups are the service's own and are not read. On the Summary a SQL Server instance's cell in a PostgreSQL-only column says `n/a`, and a column with a SQL Server read says `not yet` until a read of its group is stored; the fleet pages of PostgreSQL checks (Versions, Corruption, Slow queries' sources) do not list it, and no PostgreSQL finding is raised on it. Azure Synapse Analytics answers on the same protocol and is refused with a clear error: it is not a SQL Server.
+Not yet: the performance counters beyond the ones named below, logins and permissions, Azure SQL Database's storage and version store, a proof of Windows authentication, and the `aws:` block (CloudWatch and RDS metrics) on a SQL Server instance. Azure SQL Database's backups are the service's own and are not read. On the Summary a SQL Server instance's cell in a PostgreSQL-only column says `n/a`, and a column with a SQL Server read says `not yet` until a read of its group is stored; the fleet pages of PostgreSQL checks (Versions, Corruption, Slow queries' sources) do not list it, and no PostgreSQL finding is raised on it. Azure Synapse Analytics answers on the same protocol and is refused with a clear error: it is not a SQL Server.
 
 ## Configuration
 
@@ -110,7 +113,7 @@ The connection string is the driver's own form, `sqlserver://login:password@host
 
 ## The login
 
-A SQL login or a Windows login with these rights and no more; never sysadmin.
+A SQL login (or a Windows login: not proven here) with these rights and no more; never sysadmin.
 
 ```sql
 CREATE LOGIN [pgvigil_monitor] WITH PASSWORD = '<a long random password>';
@@ -179,4 +182,4 @@ pgvigil collect -config pgvigil.yaml -once mssql_instance -instance sales-sql01
 
 ## Proof
 
-`scripts/proof-mssql-base.sh` runs against a SQL Server container and a PostgreSQL sandbox: the collection as the least-privilege login compared with what `sa` reads, the other engine's collections refused both ways, a login without VIEW SERVER STATE stored as partial, a name refused under a second engine, a configuration change kept with its previous value, a value the server no longer lists marked as gone, and the collector's row contract (handles and GUIDs as text that survives, times without a false time zone) read back from the server. Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([Versions](#versions)). Not proven: Azure SQL Database, Managed Instance, RDS, SQL Server 2016, Windows authentication, and that a collector session never waits behind a writer (no collection of the base reads a user table). The server's start time is moved to UTC by the offset the server has at the read: a server started before a daylight-saving change shows it one hour off until its next restart.
+`scripts/proof-mssql-base.sh` runs against a SQL Server container and a PostgreSQL sandbox: the collection as the least-privilege login compared with what `sa` reads, the other engine's collections refused both ways, a login without VIEW SERVER STATE stored as partial, a name refused under a second engine, a configuration change kept with its previous value, a value the server no longer lists marked as gone, and the collector's row contract (handles and GUIDs as text that survives, times without a false time zone) read back from the server. Proven on SQL Server 2017, 2019, 2022 and 2025 in Linux containers ([Versions](#versions)). Not proven: Azure SQL Database, Managed Instance, RDS, SQL Server 2016, Windows authentication, and that a collector session never waits behind a writer (no collection of the base reads a user table). The server's start time is moved to UTC by the offset the server has at the read: a server started before a daylight-saving change shows it one hour off until its next restart (not proven: no proof crosses a daylight-saving change).
