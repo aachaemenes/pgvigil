@@ -268,30 +268,38 @@ func runsAs() string {
 }
 
 // StartHeartbeat writes this collector's row (its start in the repository's clock) and beats every minute until ctx ends,
-// then marks a clean stop. dsn is the collector's repository DSN (the import_ door).
-func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info HeartbeatInfo) error {
+// then writes the last minute and marks a clean stop. dsn is the collector's repository DSN (the import_ door). The
+// returned wait blocks until that is written (at most 15 s): the caller defers it, or the process ends first.
+func StartHeartbeat(ctx context.Context, log *slog.Logger, dsn string, info HeartbeatInfo) (wait func(), err error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return fmt.Errorf("heartbeat: %w", err)
+		return nil, fmt.Errorf("heartbeat: %w", err)
 	}
 	cfg.MaxConns = 2
 	cfg.ConnConfig.RuntimeParams["application_name"] = "pgvigil-heartbeat"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("heartbeat: %w", err)
+		return nil, fmt.Errorf("heartbeat: %w", err)
 	}
 	host, _ := os.Hostname()
 	h := &Heartbeat{id: fmt.Sprintf("%s/%d/%d", host, os.Getpid(), time.Now().UnixNano()), host: host, pool: pool, log: log,
 		info: info, runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
 	if err := h.claim(ctx); err != nil {
 		pool.Close()
-		return err
+		return nil, err
 	}
 	h.loadStreaks(ctx)
 	current.Store(h)
 	log.Info("heartbeat started", "collector", h.id, "runs_as", runsAs())
-	go h.loop(ctx)
-	return nil
+	done := make(chan struct{})
+	go func() { defer close(done); h.loop(ctx) }()
+	return func() {
+		select {
+		case <-done:
+		case <-time.After(15 * time.Second):
+			log.Warn("heartbeat: the stop mark was not written in 15 s")
+		}
+	}, nil
 }
 
 func (h *Heartbeat) claim(ctx context.Context) error {

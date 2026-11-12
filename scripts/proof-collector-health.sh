@@ -102,6 +102,8 @@ jget() { python3 -c "import json,sys; d=json.load(sys.stdin); t=d[sys.argv[1]]; 
 # spool_n EVENT SETTING [INSTANCE]: the alert files (one JSON per alert: <time>-<event>-<channel>-<key>.json) of an event
 # whose setting is SETTING (and instance INSTANCE)
 spool_n() {
+  # the service writes its alert files 0640 as its own user: made readable here first
+  docker exec "$SVC" chmod -R a+rX /work/spool /work/spool2 2>/dev/null || true
   python3 - "${SPOOL:-$WORK/spool}" "$@" <<'PY'
 import glob, json, os, sys
 d, ev, setting = sys.argv[1:4]; inst = sys.argv[4] if len(sys.argv) > 4 else None
@@ -211,7 +213,8 @@ line(links.length > 0 && landed === links.length, `links: ${landed} of ${links.l
 // the tree's node under Checks
 await go('#/summary');
 const treeLink = `[...document.querySelectorAll('#tree a')].find(x => x.textContent.trim() === 'Collector')`;
-if (!(await ev(`!!${treeLink}`))) { await ev(`[...document.querySelectorAll('#tree .folder-name, #tree .folder-head')].find(x => x.textContent.trim().startsWith('Checks'))?.click(); true`); await sleep(400); }
+// a root folder's head is a .tree-node: its caret (the first child) opens it; its name is a link to its first page
+if (!(await ev(`!!${treeLink}`))) { await ev(`(() => { const n = [...document.querySelectorAll('#tree .tree-node')].find(x => /^\W*Checks\b/.test(x.textContent.trim())); n?.firstElementChild?.dispatchEvent(new MouseEvent('click', { bubbles: true })); return !!n; })()`); await sleep(400); }
 const tree = await ev(`(() => { const a = ${treeLink}; if (!a) return ''; a.click(); return a.getAttribute('href'); })()`);
 await sleep(300); await ready();
 line(tree !== '' && (await ev('location.hash')).startsWith('#/collector'), `the tree's Collector node (${tree}) lands on ${await ev('location.hash')}`);
@@ -225,8 +228,11 @@ EOF
 node "$WORK/page.mjs" "$CDP" "http://127.0.0.1:$SP/" "$PWD/.vis/collector-shots" || FAILS=$((FAILS + 1))
 psql "$TDSN" -XAtqc "alter role l2 password 'p2'" >/dev/null
 docker exec "$SVC" systemctl restart pgvigil.service   # a changed password is fixed and the service restarted
-if waitfor 300 "SELECT NOT EXISTS (SELECT 1 $T2 AND f.setting IN ('authentication failing', 'collection failing')) AND (SELECT count(*) FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 't2' AND s.fail_streak > 0) <= $base_fail"; then
-  ok "E restart: the password back and the service restarted - t2's 'collection failing' and 'authentication failing' gone, its streaks reset"
+# t2 back to t1's state: no 'authentication failing', and t2 fails no collection t1 does not (some collections fail on
+# every plain target: host without system_stats, jobs without pg_cron, ...)
+CF="SELECT f.value FROM pgvigil.collector_findings f JOIN pgvigil.instances i USING (instance_id) WHERE f.setting = 'collection failing' AND i.name ="
+if waitfor 300 "SELECT NOT EXISTS (SELECT 1 $T2 AND f.setting = 'authentication failing') AND NOT EXISTS ($CF 't2' EXCEPT $CF 't1')"; then
+  ok "E restart: the password back and the service restarted - t2's 'authentication failing' gone, its collections failing as t1's ($(q "SELECT count(*) FROM ($CF 't1') x") on every plain target: $(q "SELECT string_agg(value, ' ') FROM ($CF 't1') x"))"
 else fail "E restart: t2 still $(q "SELECT string_agg(f.setting || ' ' || f.value, ', ') $T2") 300 s after the restart"; fi
 sleep 90   # the passes that send t2's recoveries, before D counts
 
