@@ -235,7 +235,7 @@ export async function mssqlBlocked(ctx: Ctx): Promise<HTMLElement> {
     const rows = rowsOf(d.blocked);
     const panel = detailPanel('The reports of one blocking statement');
     const cols: Col[] = [
-      { key: 'blocking_statement', label: 'blocking statement (the head\'s last batch)', wide: true, fmt: v => text(v) || '(no input buffer)' },
+      { key: 'blocking_statement', label: 'blocking statement (the blocking session\'s last batch)', wide: true, fmt: v => text(v) || '(no input buffer)' },
       { key: 'head_key', label: 'open', fmt: (_, r) => openButton('Open', `the reports blocked by ${(text(r.blocking_statement) || 'a session without an input buffer').slice(0, 80)}`, () => { void openHead(ctx, r, panel); }) },
       { key: 'blocking_spid', label: 'blocking session', num: true },
       { key: 'blocking_status', label: 'its status' },

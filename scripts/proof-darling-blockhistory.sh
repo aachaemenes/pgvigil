@@ -35,7 +35,8 @@
 #  C. GET /api/blocking/history part=pairs: the pairs (blocked, blocking, snapshots, longest wait) equal a direct read of
 #     pgvigil.mssql_requests for the window; the trend part has reports in some step and a summed wait; the lead rollup
 #     has one lead, the head's statement, with all the blocked wait (the database's total; the writer in the middle
-#     of the chain is no lead).
+#     of the chain is no lead), checked only when the chain has its middle (2 head statements: the writer the readers wait
+#     behind).
 #  D. pgvigil's blocked session dropped (the chain still held, the threshold 5 again): within about 6.5 minutes a read
 #     of mssql_syshealth stores system_health's QUERY_PROCESSING blockingTasks as reports of source system_health
 #     (the syshealth wiring, scripts/proof-darling-blockhistory-join.patch, applied to the run's copy while the join
@@ -48,12 +49,16 @@
 #     landing named (one 'click' line each) and rendered without an error box; each head's Open button clicked on a
 #     fresh render: its panel (in place) lists as many reports as the head's row counts, each blocked by that head's
 #     session, the object dbo.pgvb_t, the panels together as many reports as the store; shots of each page and of the
-#     first head's opened panel in both themes.
+#     first head's opened panel in both themes; the Running tab shows the snapshot at= names (the pair link's own, then
+#     the pairs' first snapshot by the same address).
+#  G. 6,120 reports seeded in a window of their own (one chain, 120 monitor loops, 50 readers behind a writer behind a
+#     head): mssql_block_rollup (one lead, the head, 51 blocked transactions) and mssql_block_findings each finish under
+#     the pages' statement_timeout of 15 s.
 # NOT PROVEN HERE: the checks this chain does not raise, whose rules are read and not run: a stored-procedure lead
 # resolved to schema.procedure (check 9 is raised for this ad hoc head, run 8), repeatable read (4), the sleeping, background, done, compile-lock
 # and application-lock groups of 6 (the head waits in a WAITFOR: suspended), the implicit-transaction and auto-stats groups of 7, non-lock reports (10); a page or
 # RID lock's object; a report with several blocking processes; system_health's real monitorLoop value; reports stored
-# before 0116; Azure SQL and SQL Server 2016-2019; proof-a11y (its own script, run beside this one).
+# before 0116; an object locked in another database than the waiting request's (D01's object_name prefix); Azure SQL and SQL Server 2016-2019; proof-a11y (its own script, run beside this one).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:/usr/local/go/bin:$PATH"
@@ -246,6 +251,7 @@ import json, sys
 t = json.load(open(sys.argv[1]))["block_rollup"]; rs = [dict(zip(t["columns"], r)) for r in t["rows"]]
 lead = [r for r in rs if r["dimension"] == "lead"]; db = [r for r in rs if r["dimension"] == "database"]
 print(len(lead), str(bool(lead) and str(lead[0]["name"]).startswith("BEGIN TRAN")).lower(), lead[0]["total_wait_ms"] if lead else -1, db[0]["total_wait_ms"] if db else -2)' "$TMPD/xe.json")"
+[[ "$NHEADS" == 2 ]] || fail "C: $NHEADS head statement(s), want 2 (the head, and the writer the readers wait behind): without a session in the chain's middle the lead check below does not test the walk"
 [[ "$NLEAD" == 1 && "$LEADOK" == true && "$LEADW" == "$DBW" ]] || fail "C: the lead rollup: $NLEAD lead(s), the head's statement $LEADOK, its wait $LEADW ms against the database's $DBW ms (want 1, true, equal)"
 echo "ok   C: $NP pairs equal to the store's rows; the trend: $TREP reports, the largest summed wait ${TSUM} ms; $NHEADS head statement(s), $NAPIF findings"
 
@@ -367,9 +373,25 @@ for (let i = 0; i < nOpen; i++) {
   console.log(`click blocked Open#${i + 1} -> panel in place (${r.hash.split('?')[0]}) rows=${r.rows} of=${head.reports || '-'} session=${r.spids} head=${head.spid || '-'} object=${r.object} errors=${r.errors}`);
 }
 if (nOpen === 0) console.log('click blocked Open none');
+// the Running tab shows the snapshot at= names: the pair link's own (the pairs' last), then the pairs' first by the same
+// address with at= changed (the newest snapshot of the range would show either way without at=)
+{
+  const mainText = () => ev(`document.querySelector('main')?.textContent ?? ''`);
+  const snapAt = t => ((t.match(/Snapshot (\d+\/\d+\/\d+, \d\d:\d\d:\d\d)/) ?? [])[1] ?? '-').slice(-8);
+  const firstIso = (process.env.F_FIRST ?? '').replace(' ', 'T') + 'Z';
+  await go(pages.running); const s = await state();
+  const l = s.links.find(x => x.h.startsWith('#/mssql_running') && /[?&]at=/.test(x.h));
+  if (l) {
+    const lastIso = new URLSearchParams(l.h.split('?')[1]).get('at') ?? '';
+    await go(l.h); const shownLast = snapAt(await mainText());
+    await go(l.h.replace(/([?&]at=)[^&]*/, `$1${encodeURIComponent(firstIso)}`)); const shownFirst = snapAt(await mainText());
+    console.log(`at running last=${lastIso.slice(11, 19)} shown=${shownLast} first=${firstIso.slice(11, 19)} shown=${shownFirst}`);
+  } else console.log('at running none');
+}
 ws.close(); process.exit(0);
 JS
-out=$(F_USR="$USR" F_UPW="$UPW" node "$TMPD/f.mjs" "$CDP" "$U/" "$SB" "$SHOTS" "$START" "$DEND") || fail "F: the Chromium walk stopped: $out"
+FIRSTAT=$(pq "SELECT min(first_at) AT TIME ZONE 'UTC' FROM pgvigil.mssql_block_pairs($SB, '$START', '$DEND')")
+out=$(F_USR="$USR" F_UPW="$UPW" F_FIRST="$FIRSTAT" node "$TMPD/f.mjs" "$CDP" "$U/" "$SB" "$SHOTS" "$START" "$DEND") || fail "F: the Chromium walk stopped: $out"
 echo "$out"
 echo "$out" | grep -q '^login 200$' || fail "F: the UI login in Chromium"
 ! echo "$out" | grep -q '^FAIL' || fail "F: a page did not render"
@@ -385,7 +407,7 @@ echo "$out" | grep '^click running ' | grep -q -- '-> #/mssql_running (.*) rende
 NOPEN=$(echo "$out" | grep -c '^click blocked Open#' || true)
 [[ "$NOPEN" == "$NHALL" ]] || fail "F: $NOPEN Open button(s) clicked, the grid has $NHALL head(s)"
 # each panel is its own head's reports: as many rows as the head's row counts, every row blocked by that head's session
-OPENRE='rows=([0-9]+) of=([0-9]+) session=([^ ]+) head=([^ ]+) object=([^ ]+) errors=(-?[0-9]+)$'
+OPENRE='rows=([0-9]+) of=([0-9]+) session=([0-9]+) head=([0-9]+) object=([^ ]+) errors=(-?[0-9]+)$'
 while IFS= read -r line; do
   [[ "$line" =~ $OPENRE ]] || fail "F: an Open line out of shape: $line"
   [[ "${BASH_REMATCH[1]}" != 0 && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" && "${BASH_REMATCH[3]}" == "${BASH_REMATCH[4]}" && "${BASH_REMATCH[5]}" == dbo.pgvb_t && "${BASH_REMATCH[6]}" == 0 ]] \
@@ -397,5 +419,34 @@ done
 SUMOPEN=$(echo "$out" | sed -n 's/^click blocked Open#.* rows=\([0-9]*\) .*/\1/p' | awk '{ n += $1 } END { print n + 0 }')
 NRALL=$(pq "SELECT count(*) FROM pgvigil.mssql_blocked_reports WHERE instance_id = $SB AND event_at > '$START' AND event_at <= '$DEND' AND source = 'product'")
 [[ "$SUMOPEN" == "$NRALL" ]] || fail "F: the Open panels hold $SUMOPEN report(s), the store $NRALL"
+ATRE='^at running last=([0-9:]{8}) shown=([0-9:]{8}) first=([0-9:]{8}) shown=([0-9:]{8})$'
+ATL=$(echo "$out" | grep '^at running ' || true)
+[[ "$ATL" =~ $ATRE && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" && "${BASH_REMATCH[3]}" == "${BASH_REMATCH[4]}" && "${BASH_REMATCH[1]}" != "${BASH_REMATCH[3]}" ]] \
+  || fail "F: the Running tab does not show the snapshot at= names: '$ATL' (want shown = last, shown = first, first before last)"
+echo "ok   F: $ATL"
 echo "ok   F: both pages in light and dark (heads $NHALL, findings $NFALL, pairs $NPALL as the store), $(echo "$out" | grep -c '^click ') link(s) clicked, each landing named; shots in $SHOTS"
+echo "== G. the findings and the rollup over a seeded convoy, inside the pages' statement timeout =="
+# 120 monitor loops of one chain: head 51 <- writer 52 <- 50 readers (6,120 reports), in a window of its own after every
+# real report; the pages' pool runs with statement_timeout 15 s (internal/web/web.go)
+GFROM=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+2 hours'); GTO=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+3 hours')
+pq "SELECT pgvigil.mssql_event_partition('mssql_blocked_reports', '$GFROM'::timestamptz), pgvigil.mssql_event_partition('mssql_blocked_reports', '$GTO'::timestamptz)" >/dev/null
+pq "INSERT INTO pgvigil.mssql_blocked_reports (instance_id, event_at, event_key, snapshot_at, database_name, wait_resource, wait_ms, lock_mode,
+      blocked_spid, blocked_ecid, blocked_statement, blocked_login, blocked_host, blocked_program, blocked_isolation, blocked_status,
+      blocking_spid, blocking_ecid, blocking_statement, blocking_login, blocking_host, blocking_program, blocking_status, blocking_sql_handle,
+      head_key, monitor_loop, transaction_id, blocked_wait_ms, resource_owner_type, source)
+    SELECT $SB, '$GFROM'::timestamptz + make_interval(secs => l * 5), 'pgvb-g-' || l || '-' || v, now(), 'pgvblock',
+           'KEY: 5:72057594045726720 (8194443284a0)', l * 5000, CASE WHEN v = 0 THEN 'X' ELSE 'S' END,
+           CASE WHEN v = 0 THEN 52 ELSE 100 + v END, 0, CASE WHEN v = 0 THEN 'G WRITER' ELSE 'G READER' END, 'sa', 'g_h', 'G',
+           'read committed (2)', 'suspended',
+           CASE WHEN v = 0 THEN 51 ELSE 52 END, 0, CASE WHEN v = 0 THEN 'G HEAD STATEMENT' ELSE 'G WRITER' END, 'sa', 'g_h', 'G',
+           'suspended', '0x0200', md5(CASE WHEN v = 0 THEN 'G HEAD STATEMENT' ELSE 'G WRITER' END), 1000000 + l, 900000 + v, l * 5000,
+           'LOCK', 'product'
+      FROM generate_series(1, 120) l, generate_series(0, 50) v"
+gtime() { local t0 t1 res; t0=$(date +%s%N); res=$(PGOPTIONS='-c statement_timeout=15000' pq "$1" 2>&1) || { echo "ERR ${res//$'\n'/ }"; return 0; }; t1=$(date +%s%N); echo "$(( (t1 - t0) / 1000000 )) $res"; }
+read -r GMSR GLEAD <<<"$(gtime "SELECT count(*) FILTER (WHERE dimension = 'lead') || ':' || string_agg(CASE WHEN dimension = 'lead' THEN name || '|' || blocked_sessions || '|' || reports END, ',') FROM pgvigil.mssql_block_rollup($SB, '$GFROM', '$GTO')")"
+read -r GMSF GNF <<<"$(gtime "SELECT count(*) FROM pgvigil.mssql_block_findings($SB, '$GFROM', '$GTO')")"
+pq "DELETE FROM pgvigil.mssql_blocked_reports WHERE instance_id = $SB AND event_key LIKE 'pgvb-g-%'" >/dev/null
+[[ "$GMSR" =~ ^[0-9]+$ && "$GLEAD" == "1:G HEAD STATEMENT|51|6120" ]] || fail "G: the rollup over 6,120 reports: '$GMSR $GLEAD' (want under 15 s, one lead 'G HEAD STATEMENT' with 51 blocked transactions and 6120 reports)"
+[[ "$GMSF" =~ ^[0-9]+$ && "$GNF" =~ ^[1-9][0-9]*$ ]] || fail "G: the findings over 6,120 reports: '$GMSF $GNF' (want under 15 s, some findings)"
+echo "ok   G: 6,120 seeded reports (one chain, 120 monitor loops): the rollup in $GMSR ms (one lead, the head, 51 blocked transactions), the findings in $GMSF ms ($GNF), both under the pages' 15 s"
 echo "proof-darling-blockhistory: OK (the reports with sp_HumanEventsBlockViewer's columns; its findings equal over the same capture; the pairs equal to the store; system_health's blockingTasks stored without a capture; the pages and their links in Chromium)"

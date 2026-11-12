@@ -360,7 +360,8 @@ LANGUAGE sql STABLE AS $$
   pairs AS (SELECT DISTINCT b.monitor_loop, b.blocking_desc, b.blocked_desc FROM b),
   walk AS (
     WITH RECURSIVE w(monitor_loop, lead_desc, session_desc, lead_path) AS (
-      SELECT p.monitor_loop, p.blocking_desc, p.blocking_desc, p.blocking_desc
+      -- one anchor per head (pairs holds a head once per session it blocks: K copies of each chain without DISTINCT)
+      SELECT DISTINCT p.monitor_loop, p.blocking_desc, p.blocking_desc, p.blocking_desc
         FROM pairs p
        WHERE NOT EXISTS (SELECT 1 FROM pairs p2 WHERE p2.monitor_loop = p.monitor_loop AND p2.blocked_desc = p.blocking_desc)
       UNION ALL
@@ -524,7 +525,8 @@ LANGUAGE sql STABLE AS $$
   pairs AS (SELECT DISTINCT b.monitor_loop, b.blocking_desc, b.blocked_desc FROM b),
   walk AS (
     WITH RECURSIVE w(monitor_loop, lead_desc, session_desc, lead_path) AS (
-      SELECT p.monitor_loop, p.blocking_desc, p.blocking_desc, p.blocking_desc
+      -- one anchor per head (pairs holds a head once per session it blocks: K copies of each chain without DISTINCT)
+      SELECT DISTINCT p.monitor_loop, p.blocking_desc, p.blocking_desc, p.blocking_desc
         FROM pairs p
        WHERE NOT EXISTS (SELECT 1 FROM pairs p2 WHERE p2.monitor_loop = p.monitor_loop AND p2.blocked_desc = p.blocking_desc)
       UNION ALL
@@ -537,14 +539,19 @@ LANGUAGE sql STABLE AS $$
   lead_text AS (
     SELECT b.monitor_loop, b.blocking_desc AS lead_desc, max(b.query_text) AS txt FROM b WHERE b.activity = 'blocking' GROUP BY 1, 2
   ),
+  -- one lead per session per monitor loop, joined by equality (a lookup per victim grew with victims x the walk)
+  lead_of AS (
+    SELECT DISTINCT ON (w.monitor_loop, w.session_desc) w.monitor_loop, w.session_desc, w.lead_desc
+      FROM walk w ORDER BY w.monitor_loop, w.session_desc, w.lead_desc
+  ),
   v AS (
     SELECT bd.event_at, bd.event_key, bd.database_name, bd.contentious_object, bd.transaction_id, bd.wait_time_ms,
-           coalesce(ld.txt, bg.query_text) AS lead_text, bg.login_name, bg.client_app, bg.host_name
+           -- a lead found: its own text (none: '[Unknown]', never the blocker's); no lead (a cycle): the blocker itself,
+           -- as the proc's fallback
+           CASE WHEN lo.lead_desc IS NULL THEN bg.query_text ELSE lt.txt END AS lead_text, bg.login_name, bg.client_app, bg.host_name
       FROM b bd JOIN b bg ON bg.event_key = bd.event_key AND bg.event_at = bd.event_at AND bg.activity = 'blocking'
-      LEFT JOIN LATERAL (
-        SELECT lt.txt FROM walk w JOIN lead_text lt ON lt.monitor_loop = w.monitor_loop AND lt.lead_desc = w.lead_desc
-         WHERE w.monitor_loop = bg.monitor_loop AND w.session_desc = bg.blocking_desc
-         ORDER BY w.lead_desc LIMIT 1) ld ON true   -- a cycle (no lead) keeps the blocker itself, as the proc's fallback
+      LEFT JOIN lead_of lo ON lo.monitor_loop = bg.monitor_loop AND lo.session_desc = bg.blocking_desc
+      LEFT JOIN lead_text lt ON lt.monitor_loop = lo.monitor_loop AND lt.lead_desc = lo.lead_desc
      WHERE bd.activity = 'blocked'
   ),
   dims AS (
