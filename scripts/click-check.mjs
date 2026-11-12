@@ -143,7 +143,8 @@ const clickHref = async (scopeHash, href, column) => {
 };
 
 // clickDialog: the cell's click opens the Uptime dialog over the Summary: the address stays, an open dialog names the
-// instance and its warning and critical thresholds
+// instance and its warning and critical thresholds, in DBA Dash's layout ('Warning:' over its box, Root Threshold Config
+// more than 100 px right of Inherit)
 const clickDialog = async (scopeHash, href, column, inst) => {
   await go(scopeHash);
   const before = await ev('location.hash');
@@ -153,7 +154,11 @@ const clickDialog = async (scopeHash, href, column, inst) => {
   for (let i = 0; i < 50 && !d; i++) {
     d = await ev(`(() => { const x = document.querySelector('dialog[open]'); if (!x) return null; const t = x.textContent;
       if (!/In force|could not be read/.test(t)) return null;
-      return { label: x.getAttribute('aria-label') ?? '', text: t.replace(/\\s+/g, ' ').slice(0, 400), hash: location.hash }; })()`);
+      const wi = x.querySelector('input[aria-label="Warning (mins)"]'), wl = wi && x.querySelector('label[for="' + wi.id + '"]');
+      const inh = [...x.querySelectorAll('label')].find(l => l.textContent.trim() === 'Inherit'), rl = [...x.querySelectorAll('button')].find(b => b.textContent === 'Root Threshold Config');
+      return { label: x.getAttribute('aria-label') ?? '', text: t.replace(/\\s+/g, ' ').slice(0, 400), hash: location.hash,
+        above: !!(wi && wl) && wl.getBoundingClientRect().bottom <= wi.getBoundingClientRect().top + 2,
+        rootRight: !!(inh && rl) && rl.getBoundingClientRect().left - inh.getBoundingClientRect().right > 100 }; })()`);
     if (!d) await sleep(100);
   }
   await ev(`(() => { const x = document.querySelector('dialog[open]'); if (x) { x.close(); x.remove(); } })()`);
@@ -165,6 +170,7 @@ const clickDialog = async (scopeHash, href, column, inst) => {
   if (d.hash !== before) return { ok: false, why: `the address changed to ${d.hash}` };
   if (!want) return { ok: false, why: `the dialog is not 'Uptime Threshold Config ${inst}': ${d.label}` };
   if (!thr) return { ok: false, why: `no thresholds in the dialog: ${d.text.slice(0, 160)}` };
+  if (!d.above || !d.rootRight) return { ok: false, why: `not DBA Dash's layout: 'Warning:' over its box ${d.above}, Root Threshold Config at the right ${d.rootRight}` };
   return { ok: true, why: d.label, text: d.text };
 };
 
@@ -256,12 +262,17 @@ const openDialog = async () => {
     const d = await ev(`(() => { const x = document.querySelector('dialog[open]'); if (!x || !/In force|Set on the root|The default|could not be read/.test(x.textContent)) return null;
       const v = s => x.querySelector('input[aria-label="' + s + '"]');
       return { label: x.getAttribute('aria-label'), text: x.textContent.replace(/ +/g, ' ').slice(0, 600), crit: v('Critical Threshold (Hrs)')?.value ?? null, warn: v('Warning Threshold (Hrs)')?.value ?? null,
-        inheritDisabled: x.querySelector('input[type=checkbox]')?.disabled ?? null }; })()`);
+        inheritDisabled: x.querySelector('input[type=checkbox]')?.disabled ?? null, inheritOn: x.querySelector('input[type=checkbox]')?.checked ?? null,
+        warnEditable: (() => { const w = x.querySelector('input[aria-label="Warning (mins)"]'); return !!w && !w.disabled && !w.closest('fieldset:disabled'); })(),
+        boxRight: (() => { const b = v('Warning Threshold (Hrs)'), c = x.querySelector('input[aria-label="Warning Threshold (Hrs): judged"]'); return !!(b && c) && c.getBoundingClientRect().left >= b.getBoundingClientRect().right; })(),
+        ackLeft: (() => { const b = v('Warning Threshold (Hrs)'), l = b && x.querySelector('label[for="' + b.id + '"]'), a = [...x.querySelectorAll('button')].find(y => y.textContent === 'Acknowledge'); return !!(l && a) && Math.abs(a.getBoundingClientRect().left - l.getBoundingClientRect().left) <= 2; })() }; })()`);
     if (d) return d;
     await sleep(100);
   }
   return null;
 };
+// the words appear in this order in the text (DBA Dash's tab order)
+const wordsInOrder = (t, words) => words.map(w => t.indexOf(w)).every((p, i, a) => p >= 0 && (i === 0 || p > a[i - 1]));
 const closeDialog = () => ev(`(() => { const x = document.querySelector('dialog[open]'); if (x) { x.close(); x.remove(); } })()`);
 await ev(`(() => { try { localStorage.removeItem('pgvigil.summaryTestsMaxPct'); localStorage.removeItem('pgvigil.summaryShowTests'); localStorage.removeItem('pgvigil.summaryFocus'); sessionStorage.removeItem('pgvigil.summaryPick'); } catch (e) {} })()`);
 if (!(await go('#/summary'))) shape('the Summary', 'not drawn', false, 'the Summary did not render');
@@ -327,15 +338,16 @@ else {
   await clickItem('Configure Thresholds');
   const dd1 = await openDialog(); await closeDialog();
   const dumpOk = !!dd1 && dd1.label === 'Memory Dump Thresholds' && (dumpRoot.length < 2 || (Number(dd1.crit) === Number(dumpRoot[0]) && Number(dd1.warn) === Number(dumpRoot[1])))
-    && ['Acknowledge', 'Clear', 'Update', 'Cancel'].every(w => dd1.text.includes(w));
+    && dd1.boxRight && dd1.ackLeft && wordsInOrder(dd1.text, ['Warning Threshold (Hrs)', 'Critical Threshold (Hrs)', 'Acknowledge', 'Clear', 'Cancel', 'Update']);
   shape('Memory Dump Thresholds', dd1 ? `${dm.join(' | ')}; ${dd1.label}: critical ${dd1.crit}, warning ${dd1.warn}` : 'no dialog', dumpOk && dm.join('|') === 'Acknowledge Dumps|Configure Thresholds',
-    dumpOk ? 'Memory Dumps > Acknowledge Dumps / Configure Thresholds; the root threshold shown' : `want the root ${dumpRoot.join(' / ')}: ${dd1 ? dd1.text.slice(0, 160) : ''}`);
+    dumpOk ? 'Memory Dumps > Acknowledge Dumps / Configure Thresholds; the root threshold shown; DBA Dash\'s order: Warning, Critical (each box then its check box), Acknowledge (under the labels), Clear, Cancel, Update'
+      : `want the root ${dumpRoot.join(' / ')} in DBA Dash's order (check box after its box ${dd1?.boxRight}, Acknowledge under the Warning label ${dd1?.ackLeft}): ${dd1 ? dd1.text.slice(0, 240) : ''}`);
   await clickTb('Options'); await sleep(200); await clickItem('Instance Uptime'); await sleep(200);
   const um = await menuItems();
   await clickItem('Configure Thresholds');
   const ud = await openDialog(); await closeDialog();
-  shape('Uptime Threshold Config (root)', ud ? `${um.join(' | ')}; ${ud.label}` : 'no dialog', !!ud && ud.label === 'Uptime Threshold Config (root)' && ud.inheritDisabled === true && um.join('|') === 'Acknowledge Uptime|Configure Thresholds' && ud.text.includes('Clear ALL Alerts'),
-    'Instance Uptime > Acknowledge Uptime / Configure Thresholds; the root\'s dialog, Inherit off, Clear ALL Alerts');
+  shape('Uptime Threshold Config (root)', ud ? `${um.join(' | ')}; ${ud.label}; Inherit ${ud.inheritOn ? 'on' : 'off'}${ud.inheritDisabled ? ' (disabled)' : ''}, Warning box ${ud.warnEditable ? 'editable' : 'disabled'}` : 'no dialog', !!ud && ud.label === 'Uptime Threshold Config (root)' && ud.inheritDisabled === true && ud.inheritOn === false && ud.warnEditable === true && um.join('|') === 'Acknowledge Uptime|Configure Thresholds' && ud.text.includes('Clear ALL Alerts'),
+    'Instance Uptime > Acknowledge Uptime / Configure Thresholds; the root\'s dialog, Inherit off and disabled, its Warning box editable, Clear ALL Alerts');
   await clickTb('View'); await sleep(200);
   const vm = await menuItems(); await ev(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
   shape('View menu', vm.join(' | '), vm.length === 2 && vm[0].endsWith('Focused View') && vm[1].endsWith('Show Test Summary') && vm[1] !== 'Show Test Summary', 'Focused View, Show Test Summary (ticked)');

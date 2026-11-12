@@ -91,9 +91,12 @@
 #     name cell filled with its worst count, Instance Uptime acknowledged 1 or more; the toolbar holds Refresh, View,
 #     Options, Clear Filter and 'Refresh Time: ' with its icon; Options opens Memory Dumps, Instance Uptime and Test
 #     Summary Max Height % (10% ... 90%, 70% ticked; 40% sets the test pane to 40vh); Memory Dumps > Configure
-#     Thresholds opens 'Memory Dump Thresholds' with Critical 100 and Warning 200 (the root row T10 set); Instance
-#     Uptime > Configure Thresholds 'Uptime Threshold Config (root)'; an Uptime cell 'Uptime Threshold Config <instance>'
-#     with Inherit, Enabled, Warning / Critical in mins, Uptime:, Start Time:, Clear Alert and Update.
+#     Thresholds opens 'Memory Dump Thresholds' with Critical 100 and Warning 200 (the root row T10 set), its words in
+#     DBA Dash's order (Warning, Critical, Acknowledge, Clear, Cancel, Update), the warning check box right of its
+#     box and Acknowledge at the labels' left edge; Instance Uptime > Configure Thresholds 'Uptime Threshold Config (root)' with Inherit off and disabled and its
+#     Warning box editable; an Uptime cell 'Uptime Threshold Config <instance>' with Inherit, Enabled, Warning / Critical
+#     in mins, Uptime:, Start Time:, Clear Alert and Update, 'Warning:' over its box and Root Threshold Config more than
+#     100 px right of Inherit (DBA Dash's layout).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"

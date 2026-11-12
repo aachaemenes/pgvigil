@@ -5,8 +5,8 @@
 //   Clear Alert (Clear ALL Alerts at the root) and Update. One store for both engines: 162's thresholds, key 'uptime'
 //   (0113 lets a SQL Server instance hold it), kept in hours; the dialog shows minutes as DBA Dash's does.
 // - Memory Dump Thresholds (Checks/MemoryDumpThresholdsConfig): from Options > Memory Dumps > Configure Thresholds,
-//   the root's only: Critical and Warning Threshold (Hrs), each with its check box (unchecked = not judged), the time
-//   dumps were last acknowledged with Clear and Acknowledge, Update and Cancel. Key 'crash' (0117): SQL Server's memory
+//   the root's only: Warning and Critical Threshold (Hrs), each with its check box (unchecked = not judged), Acknowledge,
+//   the time dumps were last acknowledged and Clear, Cancel and Update (DBA Dash's order). Key 'crash' (0117): SQL Server's memory
 //   dumps and PostgreSQL's crash restarts, DBA Dash's 48 / 168 hours by default.
 // The writes go through POST /api/pg/thresholds with its doors (the header, a signed-in user, the actions
 // configuration); Clear Alert and Acknowledge are pgvigil's acknowledgements (POST /api/ack), held until the start or
@@ -55,8 +55,12 @@ function frame(title: string, instanceId: number) {
   return { form, dlg, msg, said, done: () => { changed = true; }, show: (focus: HTMLElement) => { form.append(msg); document.body.append(dlg); dlg.showModal(); focus.focus(); } };
 }
 const row = (...kids: (Node | string)[]) => el('div', { style: 'display:flex;gap:.8rem;align-items:center;margin:.45rem 0;flex-wrap:wrap' }, ...kids);
+// DBA Dash's forms place their fields on a grid: a column per label, box and check box (cells in reading order)
+const table = (cols: number, ...cells: (Node | string)[]) => el('div', { style: `display:grid;grid-template-columns:repeat(${cols},max-content);column-gap:1.4rem;row-gap:.35rem;align-items:center;justify-items:start;margin:.45rem 0` }, ...cells);
 const check = (label: string, on: boolean) => { const c = el('input', { type: 'checkbox' }) as HTMLInputElement; c.checked = on; return { box: c, label: el('label', {}, c, ' ', label) }; };
-const number = (label: string, v: string, max: unknown) => el('input', { type: 'number', min: '0', step: 'any', ...(max == null ? {} : { max: String(max) }), 'aria-label': label, value: v, style: 'width:7rem' }) as HTMLInputElement;
+let seq = 0;   // the inputs' ids, unique on the page: a label never names a box in another dialog
+const number = (label: string, v: string, max: unknown) => el('input', { type: 'number', id: `thr-${++seq}`, min: '0', step: 'any', ...(max == null ? {} : { max: String(max) }), 'aria-label': label, value: v, style: 'width:7rem' }) as HTMLInputElement;
+const labelOf = (text: string, input: HTMLInputElement) => el('label', { for: input.id }, text);
 
 // openUptimeDialog: DBA Dash's 'Uptime Threshold Config <instance>' for an instance, or the root's (instanceId -1);
 // clearAll is the Summary's Acknowledge Uptime (the root's Clear ALL Alerts)
@@ -71,14 +75,16 @@ export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Pr
   const own = root ? r?.threshold_id != null : r?.own_id != null;
   const warnNow = root ? (r?.threshold_id != null ? r.warn : r?.warn_default) : r?.warn;
   const critNow = root ? (r?.threshold_id != null ? r.crit : r?.crit_default) : r?.crit;
-  const inherit = check('Inherit', !own);
+  const inherit = check('Inherit', !root && !own);   // the root: off (with no root row too) and disabled, its boxes editable
   inherit.box.disabled = root;   // the root inherits from nothing (DBA Dash: Inherit is off at the root)
   const enabled = check('Enabled', warnNow != null && critNow != null);
   const warn = number('Warning (mins)', minsOf(warnNow ?? r?.warn_default), r?.max_value == null ? null : Number(r.max_value) * 60);
   const crit = number('Critical (mins)', minsOf(critNow ?? r?.crit_default), r?.max_value == null ? null : Number(r.max_value) * 60);
   const rootLink = el('button', { type: 'button', class: 'link' }, 'Root Threshold Config');
+  // DBA Dash's panel: 'Warning:' and 'Critical:' over their boxes, Enabled on the boxes' line, 'mins' after each
   const panel = el('fieldset', { style: 'border:none;padding:0;margin:0' },
-    row(enabled.label, el('label', {}, 'Warning: ', warn, ' mins'), el('label', {}, 'Critical: ', crit, ' mins')));
+    table(3, el('span', {}), labelOf('Warning: ', warn), labelOf('Critical: ', crit),
+      enabled.label, el('span', {}, warn, ' mins'), el('span', {}, crit, ' mins')));
   const sync = () => { panel.disabled = inherit.box.checked; warn.disabled = crit.disabled = !enabled.box.checked; };
   inherit.box.addEventListener('change', sync); enabled.box.addEventListener('change', sync); sync();
   const started = root ? null : r?.started_at;
@@ -94,11 +100,11 @@ export async function openUptimeDialog(instanceId: number, clearAll?: Acked): Pr
   const update = el('button', { type: 'submit' }, 'Update');
   if (!r) update.disabled = true;
   f.form.append(
-    row(inherit.label, root ? '' : rootLink),
+    row(inherit.label, el('span', { style: 'flex:1' }), root ? '' : rootLink),   // DBA Dash: the link at the right
     panel,
     root ? el('p', { class: 'meta' }, 'The root threshold: every instance without its own or a tag\'s takes it.')
-      : el('p', {}, `Uptime: ${uptime == null ? 'not read yet' : humanize(uptime, 3)}${acked ? ' (Acknowledged)' : ''}`),
-    root ? '' : el('p', {}, `Start Time: ${started == null ? 'not read yet' : fmtTime(started)}`),
+      : el('p', { style: 'font-style:italic' }, `Uptime: ${uptime == null ? 'not read yet' : humanize(uptime, 3)}${acked ? ' (Acknowledged)' : ''}`),
+    root ? '' : el('p', { style: 'font-style:italic' }, `Start Time: ${started == null ? 'not read yet' : fmtTime(started)}`),
     el('p', { class: 'meta threshold-now' }, r
       ? `In force: ${warnNow == null ? 'no warning' : `warning under ${minsOf(warnNow)} mins`}, ${critNow == null ? 'no critical' : `critical under ${minsOf(critNow)} mins`}${root ? (r.threshold_id != null ? ' (set on the root)' : ' (the default)') : r.level === 'default' ? ' (the default)' : r.level === 'tag' ? ` (set on the tag ${String(r.tag)})` : ` (set on the ${String(r.level)})`}; the default: warning under ${minsOf(r.warn_default)} mins, critical under ${minsOf(r.crit_default)} mins.`
       : 'The instance or its threshold could not be read.'),
@@ -158,14 +164,17 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
   ackLink.disabled = !acknowledge;
   const update = el('button', { type: 'submit' }, 'Update'), cancel = el('button', { type: 'button' }, 'Cancel');
   if (!r) update.disabled = true;
+  // DBA Dash's order (MemoryDumpThresholdsConfig.Designer.cs): Warning, then Critical, each label | box | check box;
+  // Acknowledge | the acknowledge date | Clear; Cancel, Update. No acknowledgement: DBA Dash shows its stored
+  // 1/1/1900; pgvigil stores none and says so
   f.form.append(
-    row(critOn.label, el('label', {}, 'Critical Threshold (Hrs): ', crit)),
-    row(warnOn.label, el('label', {}, 'Warning Threshold (Hrs): ', warn)),
-    row(el('span', {}, ackAt == null ? 'Not acknowledged' : `Acknowledged ${fmtTime(ackAt)}`), clearLink, ackLink),
+    table(3, labelOf('Warning Threshold (Hrs): ', warn), warn, warnOn.label,
+      labelOf('Critical Threshold (Hrs): ', crit), crit, critOn.label,
+      ackLink, el('span', {}, ackAt == null ? 'Not acknowledged' : fmtTime(ackAt)), clearLink),
     el('p', { class: 'meta threshold-now' }, r
       ? `${set ? 'Set on the root' : 'The default'}: critical when the newest memory dump (SQL Server) or crash restart (PostgreSQL) is under ${critV ?? '-'} hours old, warning under ${warnV ?? '-'}; the default ${r.crit_default} / ${r.warn_default} hours.`
       : 'The threshold could not be read.'),
-    row(el('span', { style: 'flex:1' }), update, cancel));
+    row(el('span', { style: 'flex:1' }), cancel, update));
   cancel.addEventListener('click', () => f.dlg.close());
   ackLink.addEventListener('click', async () => {
     ackLink.disabled = true;
@@ -191,7 +200,7 @@ export async function openDumpDialog(acknowledge?: Acked): Promise<void> {
     } catch (e) { f.said(false, e instanceof Error ? e.message : String(e)); }
     update.disabled = false;
   });
-  f.show(critOn.box);
+  f.show(warn.disabled ? warnOn.box : warn);   // DBA Dash's first field: the warning box
 }
 
 // summaryCellAction: the Summary grid's cell link of a group, given what DBA Dash's Summary does on that cell
