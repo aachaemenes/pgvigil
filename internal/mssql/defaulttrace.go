@@ -137,6 +137,49 @@ func traceBasePath(current string) string {
 	return current[:i+1] + "log.trc"
 }
 
+// traceFileNum splits a default trace file's path (C:\...\Log\log_12.trc, /var/opt/mssql/log/log_12.trc) into its
+// folder and stem (...\log) and its number; traceFileInMsg finds the file a server message names.
+var (
+	traceFileNum   = regexp.MustCompile(`(?i)^(.*[\\/][^\\/]*?)_(\d+)\.trc$`)
+	traceFileInMsg = regexp.MustCompile(`'([^']+\.trc)'`)
+)
+
+// traceUnreadable is the error a file of the set raises when it is not a readable trace file (Msg 567: a file the
+// engine was writing when it was stopped by force or crashed is left so).
+const traceUnreadable = 567
+
+// traceRestartFile chooses where a read of the set goes on after Msg 567 (msg: the server's message) named one of
+// its files: when the named file is an older one of the set than current (the file written now, sys.traces' path),
+// the file after it, in current's folder; skipped is the named file. ok is false for the current file itself (that
+// read stays failed), a file of another set or folder, a name not of the set's form, or a message naming no file.
+func traceRestartFile(msg, current string) (restart, skipped string, ok bool) {
+	m := traceFileInMsg.FindStringSubmatch(msg)
+	if m == nil {
+		return "", "", false
+	}
+	skipped = m[1]
+	sk, cu := traceFileNum.FindStringSubmatch(skipped), traceFileNum.FindStringSubmatch(current)
+	if sk == nil || cu == nil || !strings.EqualFold(sk[1], cu[1]) {
+		return "", skipped, false
+	}
+	sn, err1 := strconv.Atoi(sk[2])
+	cn, err2 := strconv.Atoi(cu[2])
+	if err1 != nil || err2 != nil || sn >= cn {
+		return "", skipped, false
+	}
+	return fmt.Sprintf("%s_%d.trc", cu[1], sn+1), skipped, true
+}
+
+// traceFileNumber is the number of a trace file of the set (log_12.trc: 12), -1 for another name.
+func traceFileNumber(p string) int {
+	if m := traceFileNum.FindStringSubmatch(p); m != nil {
+		if n, err := strconv.Atoi(m[2]); err == nil {
+			return n
+		}
+	}
+	return -1
+}
+
 // traceRow turns one row of the read into the payload's row. offset is the server's local time less UTC. It returns
 // the time the event was written (the cursor's; local) and its sequence number beside the row.
 func traceRow(r collect.Row, offset time.Duration) (collect.Row, time.Time, int64, bool) {
@@ -234,12 +277,22 @@ func (defaultTraceCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ I
 	var notes []string
 	var scanned int64
 	newest := cur.LastEventAt
+	setStart := base // the set's first readable file: base, or the file after one Msg 567 named
 	for {
 		rows, err := QueryRows(ctx, conn, defaultTraceReadSQL, file, localText(startAt), startSeq, defaultTraceBatch)
-		if err != nil && file != base && ctx.Err() == nil {
+		if err != nil && file == setStart && mssqlErrNumber(err) == traceUnreadable && ctx.Err() == nil {
+			// an older file of the set is not a readable trace file: the set is read from the file after it (each
+			// restart a later file, the current one the last; an unreadable current file stays a failed read)
+			if next, skipped, ok := traceRestartFile(err.Error(), path.String); ok && (setStart == base || traceFileNumber(next) > traceFileNumber(setStart)) {
+				notes = append(notes, fmt.Sprintf("the trace file %s is not a readable trace file (Msg 567; an engine stopped by force or a crash leaves one): it was skipped and the set read from %s", skipped, next))
+				file, setStart = next, next
+				continue
+			}
+		}
+		if err != nil && file != setStart && ctx.Err() == nil {
 			// the file the cursor names was rolled away: the whole set, by the same time
 			notes = append(notes, fmt.Sprintf("the cursor's file %s could not be read (%v): the trace was read again from its oldest file, by event time", file, err))
-			file = base
+			file = setStart
 			continue
 		}
 		if err != nil && noRightError(err) {
@@ -300,7 +353,7 @@ func (defaultTraceCollector) RunBatches(ctx context.Context, conn *sql.Conn, _ I
 		}
 	}
 	var oldest sql.NullString
-	if err := conn.QueryRowContext(ctx, defaultTraceOldestSQL, base).Scan(&oldest); err == nil && oldest.Valid {
+	if err := conn.QueryRowContext(ctx, defaultTraceOldestSQL, setStart).Scan(&oldest); err == nil && oldest.Valid {
 		if t, perr := time.Parse("2006-01-02T15:04:05.999", oldest.String); perr == nil {
 			state["oldest_at"] = instantText(t.Add(-offset))
 		}
