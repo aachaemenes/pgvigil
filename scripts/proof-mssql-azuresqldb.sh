@@ -61,10 +61,10 @@
 #        Added at the release join: mssql_reports, skipped by its own rule (no server roles, SQL logins or service
 #        list of its own to read), its seven tables empty for the instance.]
 #     A skip is never counted as collected or as failed; a RUN collection skipped for a missing right is a FAIL.
-#  C. the pages: GET /api/mssql/summary gives the instance the cells availability, backups, jobs, storage, dbstate,
-#     agent, dbmail, dumps and qs as n/a (every collection of the group skipped) and blocking, events and uptime as
-#     ok [after the join: audit n/a too; the collections that feed an ok cell run again right before C, so no cell
-#     reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
+#  C. the pages: GET /api/mssql/summary gives the instance blocking, events and uptime as ok and every other cell
+#     the tree's Summary has as n/a (every collection of the group skipped; the keys are read from the API, not
+#     listed here: task P08 made them DBA Dash's, e.g. full/diff/log for backups) [the collections that feed an ok
+#     cell run again right before C, so no cell reads stale from the proof's own order]; the Summary page renders (chromium) with the platform badge azuresqldb and names no n/a group as "not read
 #     yet"; each SQL Server tab of the instance renders without an error line, and each tab whose collections are
 #     all skipped here says so (the skip's own text, or "not on this platform") [at the release join: the Storage
 #     folder's Drives, DB Space, Files and Drive Performance too, and Waiting tasks renders] [165b: the Reports folder's
@@ -325,15 +325,23 @@ else
   # cells is a table: {columns: [...], rows: [[...], ...]}
   GOT=$(jq -r --argjson i "$iid" '.cells as $t | ($t.columns | index("instance_id")) as $ci | ($t.columns | index("key")) as $ck | ($t.columns | index("state")) as $cs
     | [$t.rows[] | select(.[$ci] == $i) | "\(.[$ck])=\(.[$cs])"] | sort | join(" ")' "$WORK/sum.json")
-  WANT="agent=n/a audit=n/a availability=n/a backups=n/a blocking=ok dbmail=n/a dbstate=n/a disk=n/a dumps=n/a events=ok jobs=n/a qs=n/a storage=n/a uptime=ok"
-  [ "$GOT" = "$WANT" ] && echo "  summary cells: OK" || bad "C: the summary cells '$GOT', want '$WANT'"
+  # the cell keys come from the tree's own Summary (task P08 set them one for one under DBA Dash's): the three cells
+  # whose collections run here (blocking: mssql_requests, events: mssql_xe, uptime: mssql_instance) must say ok, every
+  # other cell n/a (its collection skipped by the platform rule); a key with any other state fails by its name
+  OKCELLS="blocking events uptime"; CBAD=""
+  for kv in $GOT; do k=${kv%%=*}; s=${kv#*=}
+    if [[ " $OKCELLS " == *" $k "* ]]; then [ "$s" = ok ] || CBAD+=" $k=$s (want ok)"; else [ "$s" = n/a ] || CBAD+=" $k=$s (want n/a)"; fi
+  done
+  for k in $OKCELLS; do [[ " $GOT " == *" $k="* ]] || CBAD+=" $k missing"; done
+  [ -z "$CBAD" ] && echo "  summary cells: OK ($(wc -w <<<"$GOT") cells: $OKCELLS ok, the rest n/a)" || bad "C: the summary cells:$CBAD (all: '$GOT')"
   if command -v chromium >/dev/null; then
     page() { timeout 60 chromium --headless=new --no-sandbox --disable-gpu --user-data-dir="$WORK/chrome" --virtual-time-budget=15000 --dump-dom "http://127.0.0.1:$PORT/#/$1?i=$iid&w=1h" 2>/dev/null; }
     text() { python3 -c 'import sys,re,html; t=re.sub(r"<(script|style)[^>]*>.*?</\1>","",sys.stdin.read(),flags=re.S); print(html.unescape(re.sub(r"<[^>]+>"," ",t)))'; }
     page summary > "$WORK/p-summary.html" || true
     T=$(text < "$WORK/p-summary.html")
     grep -q 'azuresqldb' <<<"$T" || bad "C: the Summary page does not show the platform badge azuresqldb"
-    if grep -qE 'not read yet:[^.]*(Availability|Backups|Jobs|Storage|Drive space|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store|SQL Server Audit)' <<<"$T"; then
+    # the n/a groups by the page's own labels (web/src/fleet.ts: g.mssql[2] ?? g.label, task P08's set)
+    if grep -qE 'not read yet:[^.]*(Availability|Log shipping|Mirroring|Full backups|Differential backups|Log backups|Agent Jobs|Drive space|File space|Files at their max size|Database state|SQL Server Agent|Database Mail|Memory dumps|Query Store|SQL Server Audit|Last good CHECKDB|Log space|Suspect pages|Agent alerts|Identity columns)' <<<"$T"; then
       bad "C: the Summary page lists groups that do not run on Azure SQL Database as 'not read yet': $(grep -oE 'not read yet:[^.]*' <<<"$T" | head -1)"; fi
     declare -A SKIPTABS=([availability]="mssql_ag" [mssqlbackups]="mssql_backups" [mssqljobs]="mssql_jobs" [jobstimeline]="mssql_jobs" [mssqlstorage]="mssql_storage"
       [mssqlfiles]="mssql_storage" [rowversions]="mssql_versionstore" [mssqltempdb]="mssql_tempdb" [mssqlcpu]="mssql_cpu" [mssqlmemory]="mssql_memory"
