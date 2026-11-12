@@ -8,7 +8,7 @@ pgvigil runs where nothing may reach out. This page is the procedure for a site 
 - The repository database (one PostgreSQL database that pgvigil owns).
 - On RDS and Aurora instances whose configuration has an `aws:` block: the AWS APIs for that region only (CloudWatch Logs, CloudWatch metrics, Performance Insights, RDS Describe calls, DMS Describe calls), through the AWS SDK's endpoint for the region, so `us-gov-west-1` and `us-gov-east-1` resolve to the GovCloud (US) endpoints with nothing to configure beyond the region; FIPS endpoints follow the SDK's `AWS_USE_FIPS_ENDPOINT=true` (the SDK's setting; not proven here). No `aws:` block, no AWS call.
 - The browser that opens the web UI, on loopback by default (an HTTPS listen elsewhere needs a certificate and the login).
-- The Windows app (`pgvigil-app.exe`), where it is installed: its own `pgvigil serve` on loopback, and, only where it is turned on, once a day the release feed (`https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, one GET with `User-Agent: pgvigil-app/<version>`, nothing else sent; it notifies, never downloads). The check is off by default: `HKLM\Software\Policies\pgvigil\App` `UpdateCheck` = 1 turns it on for every user (the machine install's `-update-check`, `install.ps1 -UpdateCheck`, writes it), a user may turn it on for themselves where no policy says 0, and `UpdateCheck` = 0 keeps it off for every user (`-no-update-check`); `UpdateFeed` points it at an internal mirror; [docs/app.md](app.md). The WebView2 runtime the window runs in is Microsoft's, with its own policies for its own traffic.
+- The Windows app (`pgvigil-app.exe`), where it is installed: its own `pgvigil serve` on loopback, and, only where it is turned on, once a day the release feed (`https://api.github.com/repos/aachaemenes/pgvigil/releases/latest`, one GET with `User-Agent: pgvigil-app/<version>`, nothing else sent; it notifies, never downloads). The check is off by default: `HKLM\Software\Policies\pgvigil\App` `UpdateCheck` = 1 turns it on for every user (the machine install's `-update-check`, `install.ps1 -UpdateCheck`, writes it), a user may turn it on for themselves where no policy says 0, and `UpdateCheck` = 0 keeps it off for every user (`-no-update-check`); `UpdateFeed` points it at an internal mirror; [docs/app.md](app.md). A machine whose app was installed by v0.3.0 holds the policy `UpdateCheck` = 1 that installer wrote by default, and an upgrade leaves a policy as it finds it: `pgvigil-app install -no-update-check` (or removing the value) turns the check off there. The WebView2 runtime the window runs in is Microsoft's, with its own policies for its own traffic.
 - The alert channels the configuration names, when alerts are on ([alerts.md](alerts.md): a webhook, SMTP, PagerDuty, Opsgenie).
 - The DBA Dash repositories under `dbadash:` (SQL Server databases), through their read-only login ([dbadash.md](dbadash.md)).
 
@@ -27,14 +27,15 @@ are listed in `SHA256SUMS.offline`, which carries a keyless signature of its own
 On the connected machine, verify the archive, then what is inside:
 
 ```sh
-TAG=v0.4.0; OS=linux   # or windows (the .zip)
+TAG=v0.4.0; OS=linux; EXT=tar.gz   # or OS=windows; EXT=zip
 BASE=https://github.com/aachaemenes/pgvigil/releases/download/$TAG
 ID="https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/$TAG"
-for f in pgvigil-offline-$TAG-$OS-amd64.tar.gz SHA256SUMS.offline SHA256SUMS.offline.sig SHA256SUMS.offline.pem SHA256SUMS.offline.bundle; do curl -fsSLO "$BASE/$f"; done
+for f in pgvigil-offline-$TAG-$OS-amd64.$EXT SHA256SUMS.offline SHA256SUMS.offline.sig SHA256SUMS.offline.pem SHA256SUMS.offline.bundle; do curl -fsSLO "$BASE/$f"; done
 sha256sum -c SHA256SUMS.offline --ignore-missing
 cosign verify-blob --bundle SHA256SUMS.offline.bundle --certificate-identity "$ID" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS.offline
-tar -xzf pgvigil-offline-$TAG-$OS-amd64.tar.gz && cd pgvigil-offline-$TAG-$OS-amd64
+if [ "$EXT" = zip ]; then unzip -q pgvigil-offline-$TAG-$OS-amd64.zip; else tar -xzf pgvigil-offline-$TAG-$OS-amd64.tar.gz; fi
+cd pgvigil-offline-$TAG-$OS-amd64
 sha256sum -c SHA256SUMS --ignore-missing
 cosign verify-blob --bundle SHA256SUMS.bundle --certificate-identity "$ID" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
@@ -58,7 +59,8 @@ sudo sh /mnt/usb/pgvigil-offline-v0.4.0-linux-amd64/install.sh --from /mnt/usb/p
 
 The installer copies the binary and `SHA256SUMS` into a new folder of root's (Administrators') alone, checks its own
 bytes and the binary's against `SHA256SUMS`, and runs only the copy: a share or a drive can change between a check and
-a use. That checksum proves the files are the ones `SHA256SUMS` names (integrity), not where they came from (origin):
+a use. The installer script itself is read by the shell while it runs, so when the folder sits on a share another host
+can write, copy the folder to local disk first and run the copy. That checksum proves the files are the ones `SHA256SUMS` names (integrity), not where they came from (origin):
 the signature does that. Where cosign is on the host, `--trust-root <dir>` (`-TrustRoot`) names a folder with the
 site's OWN three trust-root files and the installer verifies the signature of `SHA256SUMS` offline with them; the
 files inside the bundle are never used for it. Without it the installer says that the signature was not verified there.

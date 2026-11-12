@@ -46,8 +46,18 @@ function Add-MachinePath([string]$dir) {
     }
 }
 
+if (-not $From -and ($Fips -or $Plain -or $TrustRoot -or $App -or $UpdateCheck -or $OwnerDsnFile -or $Dump -or $NoDump -or $PgDump)) {
+    throw 'pgvigil install: -Fips, -Plain, -TrustRoot, -App, -UpdateCheck and the upgrade switches go with -From <folder>'
+}
+# a native command's stderr under 'Stop' in Windows PowerShell 5.1 throws when it is redirected: run such a command with
+# 'Continue' and read its exit code instead
+function Invoke-Native([scriptblock]$cmd) {
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $out = & $cmd 2>&1 | ForEach-Object { "$_" }; return @{ Code = $LASTEXITCODE; Out = ($out -join "`n") } } finally { $ErrorActionPreference = $eap }
+}
 if ($From) {
     if ($Fips -and $Plain) { throw 'pgvigil install: -Fips and -Plain name opposite builds' }
+    if ($UpdateCheck -and -not $App) { throw 'pgvigil install: -UpdateCheck goes with -App (it is the app''s setting)' }
     if ($NoDump -and ($Dump -or $PgDump)) { throw 'pgvigil install: -NoDump does not go with -Dump or -PgDump' }
     $noSvc = ($env:PGVIGIL_NO_SERVICE -eq '1')
     if (-not $noSvc) {
@@ -65,6 +75,8 @@ if ($From) {
     try {
         & icacls.exe $work /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "pgvigil install: icacls on $work exited with $LASTEXITCODE" }
+        # nothing may have been put there before the ACL closed it (ProgramData lets users create files)
+        if (@(Get-ChildItem -Force -LiteralPath $work).Count -ne 0) { throw "pgvigil install: $work was not empty when its ACL was set: nothing was installed" }
         Copy-Item -LiteralPath $sums -Destination (Join-Path $work 'SHA256SUMS')
         $lines = @(Get-Content -LiteralPath (Join-Path $work 'SHA256SUMS'))
         function Get-Sum([string]$name) {
@@ -88,10 +100,11 @@ if ($From) {
             if (-not (Test-Path -LiteralPath $bundle)) { throw "pgvigil install: $From has no SHA256SUMS.bundle (an unsigned bundle cannot be verified)" }
             Copy-Item -LiteralPath $bundle -Destination (Join-Path $work 'SHA256SUMS.bundle')
             $env:SIGSTORE_ROOT_FILE = Join-Path $TrustRoot 'fulcio.pem'; $env:SIGSTORE_REKOR_PUBLIC_KEY = Join-Path $TrustRoot 'rekor.pub'; $env:SIGSTORE_CT_LOG_PUBLIC_KEY_FILE = Join-Path $TrustRoot 'ctfe.pub'
-            & $cosign.Source verify-blob --offline --bundle (Join-Path $work 'SHA256SUMS.bundle') `
+            $cs = $cosign.Source; $bf = Join-Path $work 'SHA256SUMS.bundle'; $sf = Join-Path $work 'SHA256SUMS'
+            $r = Invoke-Native { & $cs verify-blob --offline --bundle $bf `
                 --certificate-identity "https://github.com/aachaemenes/pgvigil/.github/workflows/release.yml@refs/tags/$version" `
-                --certificate-oidc-issuer https://token.actions.githubusercontent.com (Join-Path $work 'SHA256SUMS') 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "pgvigil install: the signature of SHA256SUMS does not verify against the trust root in $TrustRoot for ${version}: nothing was installed" }
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com $sf }
+            if ($r.Code -ne 0) { throw "pgvigil install: the signature of SHA256SUMS does not verify against the trust root in $TrustRoot for ${version}: nothing was installed ($($r.Out))" }
             Write-Host "signature of SHA256SUMS verified (the release workflow of $version, with the trust root in $TrustRoot)"
         } else {
             Write-Host "signature not verified here: the checksums prove the files are the ones SHA256SUMS names, not where they came from; verify the signature on the connected side, or pass -TrustRoot <the site's own trust root> (docs/airgap.md)"
@@ -100,7 +113,7 @@ if ($From) {
         $installed = $null
         if ($svc -and $svc.PathName -match '^\s*"([^"]+)"|^\s*(\S+)') { $installed = if ($Matches[1]) { $Matches[1] } else { $Matches[2] } }
         $was = $null
-        if ($installed -and (Test-Path -LiteralPath $installed)) { $was = if ((& $installed version 2>$null) -match 'fips140 on') { 'fips' } else { 'plain' } }
+        if ($installed -and (Test-Path -LiteralPath $installed)) { $was = if ((Invoke-Native { & $installed version }).Out -match 'fips140 on') { 'fips' } else { 'plain' } }
         $flavour = if ($Fips) { 'fips' } elseif ($Plain) { 'plain' } elseif ($was) { $was } else { 'plain' }
         if ($was -and $was -ne $flavour) { Write-Host "the installed build is $was; -$flavour installs the $flavour build in its place" }
         $asset = if ($flavour -eq 'fips') { "pgvigil_${version}_windows_amd64_fips.exe" } else { "pgvigil_${version}_windows_amd64.exe" }

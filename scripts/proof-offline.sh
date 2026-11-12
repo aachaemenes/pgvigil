@@ -33,16 +33,17 @@
 #              its migrate as the owner, the logins 'pgvigil roles' prints, its demo over the days asked (12 instances),
 #              the live server as an instance; the unit running; an activity sample of the live instance arrives
 #  C refusals  each ends non-zero with its own line and changes nothing (the unit's main PID, the installed binary's
-#              sha256, schema_version's count and the backup folder's file count as before): no owner DSN ('the
+#              sha256, schema_version's count, the backup folder's mode and file count, and no .previous, as before):
+#              not root ('the upgrade needs root', run as nobody); no owner DSN ('the
 #              repository owner's connection string is not given'); a -bin that disagrees ('disagrees with the installed
 #              service's /opt/pgv/bin/pgvigil'); a pg_dump 12 against PostgreSQL 15 ('is pg_dump 12 and the repository's
 #              server is PostgreSQL 15'); a dump on a 64 KiB tmpfs ('free and the repository is'); a second process on the
 #              installed binary ('other processes run the installed binary', its pid named)
-#  M migrate   with the database read only by default the upgrade stops, dumps, and its migrate fails: 'the migrate
-#    fails     failed: the binary was not swapped and the service stays stopped' and the way back; the unit inactive, the
-#              binary unchanged, no .previous, schema_version as before, the dump file there (0600); after the reset the
-#              old collector starts again
-#  U upgrade   install.sh --from with --owner-dsn-file: steps 1 to 5 printed, 'installed and running', the way back; the
+#  M migrate   with the database read only by default the upgrade keeps the previous binary (before the stop), stops,
+#    fails     dumps, and its migrate fails: 'the migrate failed: the binary was not swapped and the service stays
+#              stopped' and the way back; the unit inactive, the binary unchanged, .previous = the old binary, schema_version
+#              as before, the dump file there (0600); after the reset the old collector starts again
+#  U upgrade   install.sh --from with --owner-dsn-file: steps 1 (previous kept) to 5 (swapped, started) printed, 'installed and running', the way back; the
 #              dump in /var/backups/pgvigil (0700 root) as a 0600 file pg_restore lists; /opt/pgv/bin/pgvigil.previous is
 #              the v0.3.0 FIPS binary byte for byte; the installed binary prints <v> and fips140 on (the flavour kept,
 #              no switch given); the unit keeps ExecStart=/opt/pgv/bin/pgvigil run -config /srv/pgvigil/pgvigil.yaml and
@@ -50,8 +51,11 @@
 #              table with an instance column holds, outside the live instance, its row count and its rows' md5 over the
 #              columns v0.3.0 had; a table without one has not shrunk; the collector writes an activity sample after
 #              the restart
-#  R re-run    install.sh --from again (the installed binary is already this one): 'migrated ... 0 file(s)', 'already
-#              this one', .previous still v0.3.0's
+#  R re-run    install.sh --from again (the installed binary is already this one) with --dump into an existing folder
+#              of another owner (0755, 65534): 'migrated ... 0 file(s)', 'already this one', .previous still v0.3.0's, the
+#              folder's mode and owner as before, the dump file 0600 root's
+#  D downgrade the repository naming a migration newer than this build's: 'newer than this build's newest migration',
+#              nothing changed
 #  W way back  the dump restored by the owner into a new database holds every instance table's rows as before the
 #              upgrade (outside the live instance); .previous prints v0.3.0 and fips140 on
 # NOT PROVEN HERE: the signature (the bundle is unsigned; proof-upgrade C verifies a real release offline), Windows
@@ -226,7 +230,7 @@ ok "$OLD FIPS at $OB (config $OC, account $OU): $OLDFILES migration files, the l
 
 echo "== C refusals before any change =="
 insys sh -c "umask 077; printf '%s\n' '$OWNER_DSN' > /root/owner.dsn"
-state() { echo "$(insys systemctl show -p MainPID --value pgvigil) $(insys sha256sum "$OB" | cut -c1-64) $(pq "select count(*) from pgvigil.schema_version") $(insys sh -c 'ls /var/backups/pgvigil 2>/dev/null | wc -l')"; }
+state() { echo "$(insys systemctl show -p MainPID --value pgvigil) $(insys sha256sum "$OB" | cut -c1-64) $(pq "select count(*) from pgvigil.schema_version") $(insys sh -c 'stat -c %a:%U /var/backups/pgvigil 2>/dev/null || echo none') $(insys sh -c 'ls /var/backups/pgvigil 2>/dev/null | wc -l') $(insys sh -c "[ -e $OB.previous ] && echo previous || echo no-previous")"; }
 S0=$(state); [[ "${S0%% *}" != 0 ]] || fail "the old service is not running before the refusals"
 refused() { # refused <label> <expected line> <command...>
   local label=$1 want=$2; shift 2
@@ -234,8 +238,9 @@ refused() { # refused <label> <expected line> <command...>
   grep -qF "$want" "$WORK/c.out" || fail "C $label: no '$want' in: $(cat "$WORK/c.out")"
   [[ "$(state)" == "$S0" ]] || fail "C $label: something changed: $(state) (before: $S0)"
 }
+insys sh -c "cp $B/pgvigil_${V}_linux_amd64_fips /root/newbin && chmod 0755 /root/newbin && cp /root/newbin /tmp/newbin && chmod 0755 /tmp/newbin"
+refused "not root" "the upgrade needs root" runuser -u nobody -- /tmp/newbin install -upgrade -owner-dsn-file /root/owner.dsn
 refused "no owner" "the repository owner's connection string is not given" sh "$B/install.sh" --from "$B"
-insys sh -c "cp $B/pgvigil_${V}_linux_amd64_fips /root/newbin && chmod 0755 /root/newbin"
 refused "-bin" "disagrees with the installed service's $OB" /root/newbin install -upgrade -bin /usr/local/bin/pgvigil -owner-dsn-file /root/owner.dsn
 insys sh -c "printf '#!/bin/sh\necho \"pg_dump (PostgreSQL) 12.22\"\n' > /root/pg_dump12 && chmod 0755 /root/pg_dump12"
 refused "pg_dump 12" "is pg_dump 12 and the repository's server is PostgreSQL $PGMAJ" sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn --pg-dump /root/pg_dump12
@@ -246,22 +251,24 @@ docker exec -d "$SYS" sh -c "export PGVIGIL_REPO_DSN=\"\$(sed -n 's/^PGVIGIL_REP
 sp=""; for _ in $(seq 1 20); do sp=$(insys pgrep -f "^$OB run -config $OC" | grep -v "^$(insys systemctl show -p MainPID --value pgvigil)\$" | head -n 1 || true); [[ -n "$sp" ]] && break; sleep 0.5; done
 [[ -n "$sp" ]] || fail "C: the second process did not start: $(insys tail -n 5 /root/second.log 2>&1)"
 refused "second process" "pid $sp:" sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn
-insys kill "$sp"; sleep 1
-ok "refused with nothing changed: no owner DSN, a -bin that disagrees, pg_dump 12 against PostgreSQL $PGMAJ, a dump on a 64 KiB tmpfs, a second process (pid $sp) on $OB"
+insys kill "$sp"
+for _ in $(seq 1 40); do insys kill -0 "$sp" 2>/dev/null || break; sleep 0.25; done
+if insys kill -0 "$sp" 2>/dev/null; then fail "C: the second process $sp is still there 10 s after its kill"; fi
+ok "refused with nothing changed: not root, no owner DSN, a -bin that disagrees, pg_dump 12 against PostgreSQL $PGMAJ, a dump on a 64 KiB tmpfs, a second process (pid $sp) on $OB"
 
 echo "== M a failed migrate =="
 PQDB=postgres pq "ALTER DATABASE pgvigil SET default_transaction_read_only = on" >/dev/null
 if insys sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn >"$WORK/m.out" 2>&1; then fail "M: the upgrade passed on a read-only database"; fi
 PQDB=postgres pq "ALTER DATABASE pgvigil RESET default_transaction_read_only" >/dev/null
-for l in '1. stopped the service' '2. dumped the repository' 'the migrate failed: the binary was not swapped and the service stays stopped' 'The way back:'; do grep -qF "$l" "$WORK/m.out" || fail "M: no '$l' in: $(cat "$WORK/m.out")"; done
+for l in "1. kept the previous binary as $OB.previous" '2. stopped the service' '3. dumped the repository' 'the migrate failed: the binary was not swapped and the service stays stopped' 'The way back:'; do grep -qF "$l" "$WORK/m.out" || fail "M: no '$l' in: $(cat "$WORK/m.out")"; done
 [[ "$(insys systemctl is-active pgvigil || true)" == inactive ]] || fail "M: the service is $(insys systemctl is-active pgvigil || true) after the failed migrate"
 [[ "$(insys sha256sum "$OB" | cut -c1-64)" == "$OLDSHA" ]] || fail "M: the binary changed"
-insys test ! -e "$OB.previous" || fail "M: a .previous was made"
+[[ "$(insys sha256sum "$OB.previous" | cut -c1-64)" == "$OLDSHA" ]] || fail "M: $OB.previous is not the old binary"
 [[ "$(pq "select count(*) from pgvigil.schema_version")" == "$OLDFILES" ]] || fail "M: schema_version moved"
 MD=$(insys sh -c 'ls /var/backups/pgvigil/*.dump' | head -n 1); [[ -n "$MD" && "$(insys stat -c %a "$MD")" == 600 ]] || fail "M: the dump: '$MD' $(insys stat -c %a "$MD" 2>/dev/null)"
 insys rm -f "$MD"; insys systemctl start pgvigil; sleep 3
 [[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "M: the old collector did not start again"
-ok "the failed migrate: stopped, dumped (0600), no swap, no .previous, schema as before, the service left stopped and the way back printed; the old collector started again after the reset"
+ok "the failed migrate: the previous binary kept first, stopped, dumped (0600), no swap, schema as before, the service left stopped and the way back printed; the old collector started again after the reset"
 
 echo "== U the upgrade from the bundle =="
 counts() { # counts <file>: 'table|i or g|rows' for every table, the live instance's rows left out
@@ -292,10 +299,10 @@ counts "$WORK/before.cnt" || fail "the counts before"
 hashes "$WORK/before.hash" "$WORK/cols" || fail "the hashes before"
 T1=$(pq "select now()")
 insys sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn >"$WORK/u.out" 2>&1 || fail "the upgrade: $(cat "$WORK/u.out")"
-for l in "an installed collector was found" '1. stopped the service' '2. dumped the repository to /var/backups/pgvigil/pgvigil-before-' '3. migrated the repository:' "4. kept the previous binary as $OB.previous" '5. swapped the binary and started the service' 'installed and running' 'The way back:'; do
+for l in "an installed collector was found" "1. kept the previous binary as $OB.previous" '2. stopped the service' '3. dumped the repository to /var/backups/pgvigil/pgvigil-before-' '4. migrated the repository:' '5. swapped the binary and started the service' 'installed and running' 'The way back:'; do
   grep -qF "$l" "$WORK/u.out" || fail "U: no '$l' in: $(cat "$WORK/u.out")"
 done
-APPLIED=$(sed -n 's/^3. migrated the repository: \([0-9]*\) file(s) applied$/\1/p' "$WORK/u.out")
+APPLIED=$(sed -n 's/^4. migrated the repository: \([0-9]*\) file(s) applied$/\1/p' "$WORK/u.out")
 NFILES=$(ls internal/repo/sql/*.sql | wc -l)
 [[ "$(pq "select count(*) from pgvigil.schema_version")" == "$NFILES" && "$APPLIED" == "$((NFILES - OLDFILES))" ]] || fail "U: schema_version $(pq "select count(*) from pgvigil.schema_version"), applied $APPLIED (want $NFILES and $((NFILES - OLDFILES)))"
 UD=$(insys sh -c 'ls /var/backups/pgvigil/*.dump' | head -n 1)
@@ -327,11 +334,21 @@ PY
 diff "$WORK/before.hash" "$WORK/after.hash" >"$WORK/hash.diff" || fail "U: the rows' md5 changed: $(head -5 "$WORK/hash.diff")"
 ok "upgraded $OLD FIPS to $V FIPS in place ($OB, $OC, $OU): $APPLIED files applied; the dump 0600 in a 0700 folder, pg_restore lists it; .previous = $OLD byte for byte; config and env unchanged; $cmpres, each table's md5 the same ($(wc -l < "$WORK/after.hash") tables); a sample after the restart"
 
-echo "== R the re-run =="
-insys sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn >"$WORK/r.out" 2>&1 || fail "R: $(cat "$WORK/r.out")"
-grep -qF '3. migrated the repository: 0 file(s) applied' "$WORK/r.out" && grep -qF 'the installed binary is already this one' "$WORK/r.out" || fail "R: $(cat "$WORK/r.out")"
+echo "== R the re-run, its dump in a folder of another owner =="
+insys sh -c "mkdir -p /srv/opdir && chown 65534:65534 /srv/opdir && chmod 0755 /srv/opdir"
+insys sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn --dump /srv/opdir/r.dump >"$WORK/r.out" 2>&1 || fail "R: $(cat "$WORK/r.out")"
+grep -qF '4. migrated the repository: 0 file(s) applied' "$WORK/r.out" && grep -qF 'the installed binary is already this one' "$WORK/r.out" || fail "R: $(cat "$WORK/r.out")"
 [[ "$(insys sha256sum "$OB.previous" | cut -c1-64)" == "$OLDSHA" ]] || fail "R: $OB.previous was overwritten"
-ok "re-run: 0 files, the binary already this one, .previous still $OLD's"
+[[ "$(insys stat -c '%a %u %g' /srv/opdir)" == "755 65534 65534" ]] || fail "R: the operator's folder changed: $(insys stat -c '%a %u %g' /srv/opdir)"
+[[ "$(insys stat -c '%a %U' /srv/opdir/r.dump)" == "600 root" ]] || fail "R: the dump file: $(insys stat -c '%a %U' /srv/opdir/r.dump)"
+ok "re-run: 0 files, the binary already this one, .previous still $OLD's; the dump in the operator's folder 0600 root's, the folder as it was (755, 65534)"
+
+echo "== D a downgrade =="
+pq "INSERT INTO pgvigil.schema_version (version) VALUES ('9999_from_a_newer_build.sql')" >/dev/null
+S0=$(state)
+refused "downgrade" "newer than this build's newest migration" sh "$B/install.sh" --from "$B" --owner-dsn-file /root/owner.dsn
+pq "DELETE FROM pgvigil.schema_version WHERE version = '9999_from_a_newer_build.sql'" >/dev/null
+ok "a repository naming a migration newer than this build: refused, nothing changed"
 
 echo "== W the way back =="
 PQDB=postgres pq "CREATE DATABASE pgvigil_back OWNER pgvigil_owner" >/dev/null
@@ -346,4 +363,4 @@ if bad: sys.exit(", ".join(bad))
 PY
 pv=$(insys "$OB.previous" version); [[ "$pv" == "pgvigil $OLD ("* && "$pv" == *"fips140 on"* ]] || fail "W: .previous says $pv"
 ok "the dump restored into pgvigil_back holds every instance table's rows as before; .previous runs ($pv)"
-echo "proof-offline: OK (the bundles laid out and checked; a fresh install and an upgrade of $OLD FIPS with its history from the bundle with no network; five refusals and a failed migrate change nothing they should not; the re-run keeps the way back; the way back restores)"
+echo "proof-offline: OK (the bundles laid out and checked; a fresh install and an upgrade of $OLD FIPS with its history from the bundle with no network; six refusals, a downgrade and a failed migrate change nothing they should not; the re-run keeps the way back; the way back restores)"

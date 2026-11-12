@@ -328,7 +328,15 @@ func init() {
 		freeBytes:     freeBytes,
 		dumpDir:       "/var/backups/pgvigil",
 		secureDumpDir: secureDir,
-		previous:      func(bin string) string { return bin + ".previous" },
+		// a file in the operator's own folder: made 0600 by the upgrade before pg_dump writes into it, nothing more
+		secureDumpFile: func(string) error { return nil },
+		privileged: func() error {
+			if os.Geteuid() != 0 {
+				return errors.New("the upgrade needs root (it stops the service, writes beside the binary and the unit): run it with sudo")
+			}
+			return nil
+		},
+		previous: func(bin string) string { return bin + ".previous" },
 	}
 }
 

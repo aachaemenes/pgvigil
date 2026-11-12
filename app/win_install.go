@@ -105,6 +105,21 @@ func runInstall(args []string) error {
 	return installMachine(self, srcServe, ch)
 }
 
+// machineUpdatePolicy reads the machine policy's UpdateCheck: its value and whether it is set. One place for the read, so
+// a later 'remove an installer-written 1' is one line where it is called.
+func machineUpdatePolicy() (uint32, bool) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, policyKey, registry.QUERY_VALUE)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = k.Close() }()
+	v, _, err := k.GetIntegerValue("UpdateCheck")
+	if err != nil {
+		return 0, false
+	}
+	return uint32(v), true
+}
+
 func installMachine(self, srcServe string, ch installChoice) error {
 	dst := filepath.Join(os.Getenv("ProgramFiles"), "pgvigil")
 	if ch.appOnly {
@@ -161,6 +176,11 @@ func installMachine(self, srcServe string, ch installChoice) error {
 			return fmt.Errorf("policy UpdateCheck: %w", err)
 		}
 		fmt.Printf("update check (HKLM\\%s UpdateCheck): %d\n", policyKey, on)
+	} else if v, set := machineUpdatePolicy(); set && v != 0 {
+		// an earlier install (v0.3.0 wrote 1 by default) or an administrator left the check on: said, nothing written
+		fmt.Printf("update check: ON by a policy an earlier install wrote (HKLM\\%s UpdateCheck = %d): the app asks the release feed once a day; -no-update-check turns it off. Nothing written.\n", policyKey, v)
+	} else if set {
+		fmt.Printf("update check: off by the policy (HKLM\\%s UpdateCheck = 0), kept. Nothing written.\n", policyKey)
 	} else {
 		fmt.Println("update check: off by default, no policy written (-update-check turns it on for every user)")
 	}

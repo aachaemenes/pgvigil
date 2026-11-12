@@ -12,12 +12,15 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -321,14 +324,16 @@ instances: []
 // upgradeHooks is what a platform gives the upgrade; service_linux.go and service_windows.go set it in init. Elsewhere it
 // stays nil and -upgrade refuses (the installers run on Linux and Windows).
 type upgradeHooks struct {
-	installed     func() (o installOptions, found bool, err error) // the installed service's binary, config and account
-	stop          func(log *slog.Logger) error                     // stop the installed service, wait until it is down
-	start         func(log *slog.Logger) error                     // start it again (the way back after a refused dump)
-	others        func(bin string) ([]string, error)               // processes running bin that the service does not own
-	freeBytes     func(dir string) (uint64, error)
-	dumpDir       string                 // where a dump goes by default (outside every folder an uninstall removes)
-	secureDumpDir func(dir string) error // the folder for the owner of the host only (0700; SYSTEM and Administrators)
-	previous      func(bin string) string
+	installed      func() (o installOptions, found bool, err error) // the installed service's binary, config and account
+	privileged     func() error                                     // root (Linux), an elevated token (Windows), or why not
+	stop           func(log *slog.Logger) error                     // stop the installed service, wait until it is down
+	start          func(log *slog.Logger) error                     // start it again (the way back after a refused dump)
+	others         func(bin string) ([]string, error)               // processes running bin that the service does not own
+	freeBytes      func(dir string) (uint64, error)
+	dumpDir        string                  // where a dump goes by default (outside every folder an uninstall removes)
+	secureDumpDir  func(dir string) error  // a folder for the owner of the host only (0700; SYSTEM and Administrators)
+	secureDumpFile func(file string) error // the dump file itself in a folder the operator named (Windows: its ACL)
+	previous       func(bin string) string
 }
 
 var upgradeHooksOf *upgradeHooks
@@ -346,7 +351,11 @@ type upgradePlan struct {
 	pgDump       string
 	pgDumpMajor  int
 	dumpFile     string
+	ownDumpDir   bool // the dump's folder is the default one or one this upgrade makes: locked to root / Administrators
 	previous     string
+	hasPrevious  bool
+	conn         string // the owner's connection string without its password (pg_dump's command line)
+	password     string // the password alone (pg_dump's temporary password file)
 	sameBinary   bool   // the installed binary is already this one (a re-run after a half upgrade)
 	installedVer string // what the installed binary says it is
 }
@@ -367,19 +376,47 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 	} else {
 		fmt.Printf("  no dump (-no-dump): the way back has no copy of the repository\n")
 	}
+	// the copy of the installed binary comes first, while the service still runs: a copy that cannot be made (a
+	// read-only or full disk, no right) ends the upgrade before anything else changes, never after the migrate
+	if p.sameBinary {
+		fmt.Printf("1. the installed binary is already this one: %s is left as it is\n", p.previous)
+	} else {
+		if err := copyFileMode(p.inst.Bin, p.previous, 0o755); err != nil {
+			return fmt.Errorf("upgrade refused, nothing else was changed: keeping the installed binary as %s: %w", p.previous, err)
+		}
+		fmt.Printf("1. kept the previous binary as %s\n", p.previous)
+	}
+	_, p.hasPrevious = fileExists(p.previous)
+	// an interrupt while the service is down: say where the host stands and what takes it back, remove the password file
+	stopped := make(chan struct{})
+	defer close(stopped)
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	go func() {
+		select {
+		case <-sig:
+			if f := passFile.Load(); f != nil {
+				_ = os.Remove(*f)
+			}
+			fmt.Fprintf(os.Stderr, "\ninterrupted: the service is stopped and the upgrade did not finish (the migrate may have run). %s\n", wayBack(p, false))
+			os.Exit(130)
+		case <-stopped:
+		}
+	}()
 	if err := h.stop(log); err != nil {
 		return fmt.Errorf("stopping the service: %w (nothing else was changed)", err)
 	}
-	fmt.Printf("1. stopped the service\n")
+	fmt.Printf("2. stopped the service\n")
 	if p.dumpFile != "" {
 		if err := upgradeDump(h, p); err != nil {
-			// nothing has changed but the stop: the old collector runs again
+			// nothing has changed but the stop (and the copy beside the binary): the old collector runs again
 			if serr := h.start(log); serr != nil {
 				return fmt.Errorf("the dump failed (%v) and the service did not start again (%v): start it by hand; nothing else was changed", err, serr)
 			}
 			return fmt.Errorf("the dump failed, the service runs again on the previous binary, nothing else was changed: %w", err)
 		}
-		fmt.Printf("2. dumped the repository to %s\n", p.dumpFile)
+		fmt.Printf("3. dumped the repository to %s\n", p.dumpFile)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -388,28 +425,35 @@ func runUpgrade(log *slog.Logger, o installOptions) error {
 		fmt.Fprintf(os.Stderr, "the migrate failed: the binary was not swapped and the service stays stopped. %s\n", wayBack(p, false))
 		return fmt.Errorf("migrate: %w", err)
 	}
-	fmt.Printf("3. migrated the repository: %d file(s) applied\n", n)
-	if p.sameBinary {
-		fmt.Printf("4. the installed binary is already this one: %s is kept as it is (the version before it)\n", p.previous)
-	} else {
-		if err := copyFileMode(p.inst.Bin, p.previous, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "keeping the previous binary failed: the binary was not swapped and the service stays stopped. %s\n", wayBack(p, false))
-			return fmt.Errorf("keeping the previous binary as %s: %w", p.previous, err)
-		}
-		fmt.Printf("4. kept the previous binary as %s\n", p.previous)
-	}
+	fmt.Printf("4. migrated the repository: %d file(s) applied\n", n)
 	inst := p.inst
 	inst.Upgrade, inst.NoStart = false, false
+	ready, why := configNamesAnInstance(inst.Config)
 	if err := installService(log, inst); err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", wayBack(p, true))
+		fmt.Fprintf(os.Stderr, "the install of the new binary did not finish: %s\n", wayBack(p, false))
 		return err
 	}
-	fmt.Printf("5. swapped the binary and started the service\n%s\n", wayBack(p, true))
+	if ready {
+		fmt.Printf("5. swapped the binary and started the service\n%s\n", wayBack(p, true))
+	} else {
+		fmt.Printf("5. swapped the binary; the service is enabled, not started (%s)\n%s\n", why, wayBack(p, true))
+	}
 	return nil
+}
+
+// passFile is the password file of a running pg_dump, for the interrupt handler to remove.
+var passFile atomic.Pointer[string]
+
+func fileExists(path string) (os.FileInfo, bool) {
+	st, err := os.Stat(path)
+	return st, err == nil
 }
 
 // upgradePreflight reads everything the upgrade needs and refuses before any change.
 func upgradePreflight(log *slog.Logger, h *upgradeHooks, o installOptions) (*upgradePlan, error) {
+	if err := h.privileged(); err != nil {
+		return nil, err
+	}
 	inst, found, err := h.installed()
 	if err != nil {
 		return nil, fmt.Errorf("reading the installed service: %w", err)
@@ -433,8 +477,16 @@ func upgradePreflight(log *slog.Logger, h *upgradeHooks, o installOptions) (*upg
 	if err != nil {
 		return nil, err
 	}
-	p.sameBinary, _ = sameContent(self, inst.Bin)
+	if _, ok := fileExists(inst.Bin); !ok {
+		return nil, fmt.Errorf("the installed service runs %s, and there is no such file: run install without -upgrade", inst.Bin)
+	}
+	if p.sameBinary, err = sameContent(self, inst.Bin); err != nil {
+		return nil, fmt.Errorf("comparing %s with this binary: %w", inst.Bin, err)
+	}
 	p.installedVer = binaryVersion(inst.Bin)
+	if p.conn, p.password, err = splitPassword(p.ownerDSN); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := ownerFacts(ctx, p); err != nil {
@@ -463,6 +515,16 @@ func upgradePreflight(log *slog.Logger, h *upgradeHooks, o installOptions) (*upg
 	p.dumpFile = o.Dump
 	if p.dumpFile == "" {
 		p.dumpFile = filepath.Join(h.dumpDir, fmt.Sprintf("pgvigil-before-%s-%s.dump", fileSafe(version), time.Now().UTC().Format("20060102T150405Z")))
+	}
+	if p.dumpFile, err = filepath.Abs(p.dumpFile); err != nil {
+		return nil, err
+	}
+	// only the default folder, or one this upgrade makes, is locked down; a folder the operator named (a home, /tmp)
+	// keeps its own owner and permissions and only the file is made the host owner's alone
+	if dd := filepath.Dir(p.dumpFile); samePath(dd, h.dumpDir) {
+		p.ownDumpDir = true
+	} else if _, ok := fileExists(dd); !ok {
+		p.ownDumpDir = true
 	}
 	if _, err := os.Stat(p.dumpFile); err == nil {
 		return nil, fmt.Errorf("the dump file %s is already there: name another with -dump", p.dumpFile)
@@ -496,6 +558,8 @@ func ownerDSN(o installOptions) (string, error) {
 		return strings.TrimSpace(line), nil
 	}
 	if v := strings.TrimSpace(os.Getenv(o.OwnerDSNEnv)); v != "" {
+		// read once and dropped: no child of this run (pg_dump, the installed binary's version) inherits the password
+		_ = os.Unsetenv(o.OwnerDSNEnv)
 		return v, nil
 	}
 	return "", fmt.Errorf("the repository owner's connection string is not given: put it in a file readable by root only and name it with -owner-dsn-file <path>, or set %s (sudo drops variables: use -owner-dsn-file or sudo --preserve-env=%s); the service's own login cannot migrate (docs/upgrade.md)", o.OwnerDSNEnv, o.OwnerDSNEnv)
@@ -510,22 +574,35 @@ func ownerFacts(ctx context.Context, p *upgradePlan) error {
 	defer func() { _ = c.Close(context.WithoutCancel(ctx)) }()
 	var num int
 	var owner bool
+	var hasSchema bool
 	err = c.QueryRow(ctx, `SELECT current_database(), current_setting('server_version_num')::int, pg_database_size(current_database()),
-	  pg_has_role(current_user, (SELECT datdba FROM pg_database WHERE datname = current_database()), 'USAGE')
-	  OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)`).Scan(&p.database, &num, &p.dbBytes, &owner)
+	  to_regclass('pgvigil.schema_version') IS NOT NULL`).Scan(&p.database, &num, &p.dbBytes, &hasSchema)
 	if err != nil {
 		return fmt.Errorf("reading the repository as its owner: %w", err)
 	}
 	p.serverMajor = num / 10000
-	if !owner {
-		return fmt.Errorf("the owner's connection string logs in as a role that does not own the database %s: name the login that ran the first 'pgvigil migrate'", p.database)
-	}
-	var hasSchema bool
-	if err := c.QueryRow(ctx, `SELECT to_regclass('pgvigil.schema_version') IS NOT NULL`).Scan(&hasSchema); err != nil {
-		return err
-	}
 	if !hasSchema {
 		return fmt.Errorf("the database %s holds no pgvigil schema: the owner's connection string names another database", p.database)
+	}
+	// the owner is the role that owns the pgvigil schema (the login that ran the first migrate), not the database's
+	if err := c.QueryRow(ctx, `SELECT pg_has_role(current_user, (SELECT nspowner FROM pg_namespace WHERE nspname = 'pgvigil'), 'USAGE')
+	  OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)`).Scan(&owner); err != nil {
+		return err
+	}
+	if !owner {
+		return fmt.Errorf("the owner's connection string logs in as a role that does not own the pgvigil schema in %s: name the login that ran the first 'pgvigil migrate'", p.database)
+	}
+	// a repository newer than this build is a downgrade: the way back of docs/upgrade.md, never this command
+	latest, err := repo.LatestMigration()
+	if err != nil {
+		return err
+	}
+	var newest string
+	if err := c.QueryRow(ctx, `SELECT coalesce(max(version), '') FROM pgvigil.schema_version`).Scan(&newest); err != nil {
+		return err
+	}
+	if newest > latest {
+		return fmt.Errorf("the repository holds %s, newer than this build's newest migration %s: this build is older than the installed one; going back is docs/upgrade.md's 'The way back', not an upgrade", newest, latest)
 	}
 	return nil
 }
@@ -533,13 +610,9 @@ func ownerFacts(ctx context.Context, p *upgradePlan) error {
 // upgradeDump runs pg_dump as the owner into a file made 0600 first (pg_dump writes into it and keeps its mode); the
 // password goes through a temporary password file of the host's owner only, never a command line or the environment.
 func upgradeDump(h *upgradeHooks, p *upgradePlan) error {
-	conn, password, err := splitPassword(p.ownerDSN)
-	if err != nil {
-		return err
-	}
-	if dir := filepath.Dir(p.dumpFile); dir != "" {
-		if err := h.secureDumpDir(dir); err != nil {
-			return fmt.Errorf("the dump folder %s: %w", dir, err)
+	if p.ownDumpDir {
+		if err := h.secureDumpDir(filepath.Dir(p.dumpFile)); err != nil {
+			return fmt.Errorf("the dump folder %s: %w", filepath.Dir(p.dumpFile), err)
 		}
 	}
 	f, err := os.OpenFile(p.dumpFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -547,23 +620,36 @@ func upgradeDump(h *upgradeHooks, p *upgradePlan) error {
 		return err
 	}
 	_ = f.Close()
-	cmd := exec.Command(p.pgDump, "--format=custom", "--no-password", "--file="+p.dumpFile, "--dbname="+conn)
-	cmd.Env = os.Environ()
-	if password != "" {
+	if !p.ownDumpDir {
+		if err := h.secureDumpFile(p.dumpFile); err != nil {
+			_ = os.Remove(p.dumpFile)
+			return fmt.Errorf("the dump file %s: %w", p.dumpFile, err)
+		}
+	}
+	cmd := exec.Command(p.pgDump, "--format=custom", "--no-password", "--file="+p.dumpFile, "--dbname="+p.conn)
+	// the environment without a password libpq would take over the file (PGPASSWORD wins over PGPASSFILE)
+	for _, e := range os.Environ() {
+		if k, _, _ := strings.Cut(e, "="); k != "PGPASSWORD" && k != "PGPASSFILE" {
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
+	if p.password != "" {
 		pf, err := os.CreateTemp("", "pgvigil-pgpass-*")
 		if err != nil {
 			return err
 		}
-		defer func() { _ = os.Remove(pf.Name()) }()
+		name := pf.Name()
+		passFile.Store(&name)
+		defer func() { _ = os.Remove(name); passFile.Store(nil) }()
 		_ = pf.Chmod(0o600)
-		if _, err := pf.WriteString("*:*:*:*:" + pgpassEscape(password) + "\n"); err != nil {
+		if _, err := pf.WriteString("*:*:*:*:" + pgpassEscape(p.password) + "\n"); err != nil {
 			_ = pf.Close()
 			return err
 		}
 		if err := pf.Close(); err != nil {
 			return err
 		}
-		cmd.Env = append(cmd.Env, "PGPASSFILE="+pf.Name())
+		cmd.Env = append(cmd.Env, "PGPASSFILE="+name)
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -585,14 +671,19 @@ func upgradeMigrate(ctx context.Context, dsn string) (int, error) {
 	return r.Migrate(ctx)
 }
 
-// wayBack is the text that takes the host back to before the upgrade.
+// wayBack is the text that takes the host back to before the upgrade; swapped: the new binary is in place.
 func wayBack(p *upgradePlan, swapped bool) string {
 	var b strings.Builder
 	b.WriteString("The way back:\n")
-	if swapped {
+	switch {
+	case swapped && p.hasPrevious:
 		fmt.Fprintf(&b, "  stop the service; put the previous binary back: %s over %s\n", p.previous, p.inst.Bin)
-	} else {
-		fmt.Fprintf(&b, "  the binary %s is still the previous one\n", p.inst.Bin)
+	case swapped:
+		fmt.Fprintf(&b, "  stop the service; no previous binary was kept (%s was already this one): install the previous release's binary\n", p.inst.Bin)
+	case p.hasPrevious:
+		fmt.Fprintf(&b, "  the previous binary is kept as %s; if %s is no longer it ('pgvigil version'), put it back over it\n", p.previous, p.inst.Bin)
+	default:
+		fmt.Fprintf(&b, "  the binary %s was not swapped\n", p.inst.Bin)
 	}
 	if p.dumpFile != "" {
 		fmt.Fprintf(&b, "  restore the dump as the owner into a new, empty database and make it the repository (docs/upgrade.md, 'The way back'):\n    pg_restore --exit-on-error -d <the owner's connection to the new database> %s\n", p.dumpFile)

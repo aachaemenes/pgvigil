@@ -339,6 +339,20 @@ func init() {
 		freeBytes:     freeBytesWindows,
 		dumpDir:       filepath.Join(programData(), "pgvigil-backups"),
 		secureDumpDir: secureDirWindows,
+		secureDumpFile: func(file string) error {
+			// the file alone for SYSTEM and Administrators: a folder the operator named keeps its own permissions
+			out, err := exec.Command("icacls", file, "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F").CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("icacls: %v: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
+		privileged: func() error {
+			if !windows.GetCurrentProcessToken().IsElevated() {
+				return errors.New("the upgrade needs an elevated prompt (Run as administrator)")
+			}
+			return nil
+		},
 		previous: func(bin string) string {
 			return strings.TrimSuffix(bin, filepath.Ext(bin)) + ".previous" + filepath.Ext(bin)
 		},

@@ -76,8 +76,8 @@ if [ -n "$FROM" ]; then
   sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
   command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || die "neither sha256sum nor shasum is installed"
   # a new folder of this user's alone (mktemp -d makes it 0700); the copies are checked and only the copies run
-  WORK=$(mktemp -d); WORK2=""
-  trap 'rm -rf "$WORK" "$WORK2"' EXIT
+  WORK=$(mktemp -d); WORK1=$WORK; WORK2=""
+  trap 'rm -rf "$WORK1" "$WORK2"' EXIT
   cp "$FROM/SHA256SUMS" "$WORK/SHA256SUMS"
   # every line names one file: '<64 hex>  <name>' (a '*' before the name is sha256sum's binary mark)
   sumof() { awk -v f="$1" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; c++ } } END { if (c != 1) exit 1 }' "$WORK/SHA256SUMS"; }

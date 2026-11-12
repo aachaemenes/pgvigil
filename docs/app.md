@@ -70,10 +70,12 @@ The administrator decides with the policy key `HKLM\Software\Policies\pgvigil\Ap
 
 | Value | Type | Meaning |
 |---|---|---|
-| `UpdateCheck` | DWORD | 0 = no update check for any user on this machine; 1 = on (a user may still turn it off for themselves) |
+| `UpdateCheck` | DWORD | 0 = no update check for any user on this machine; 1 = on (a user may still turn it off for themselves); not set = off (the default) unless the user turns it on |
 | `UpdateFeed` | string | another feed of the same JSON shape (`tag_name`, `html_url`), such as an internal mirror; https, or http to loopback |
 | `AttachURL` | string | the loopback address of a serve to attach to |
 | `RequireLogin` | DWORD | 1 = the app always starts its serve with the UI login (a user's `NoLogin` is ignored) |
+
+The check is off by default: the machine install writes `UpdateCheck` only when a switch names it (`-update-check` writes 1, `-no-update-check` writes 0). An upgrade leaves a policy value as it finds it, so a machine whose app an earlier pgvigil installed (v0.3.0 wrote `UpdateCheck` = 1 by default) keeps the check ON: the app asks the release feed once a day, and `pgvigil-app install -no-update-check` (which writes `UpdateCheck` = 0) turns it off; a machine install with neither switch reads the value first and says which it found.
 
 A user's own choices sit in `HKCU\Software\pgvigil\App`: `UpdateCheck` (0 = off), `AttachURL`, `NoLogin`, the window's `Width`, `Height` and `Maximized`, and `LastUpdateCheck`. A per-user install with `-no-update-check` writes `UpdateCheck` = 0 there.
 

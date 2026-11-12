@@ -45,22 +45,27 @@ sudo sh <bundle>/install.sh --from <bundle> --owner-dsn-file /root/pgvigil-owner
 
 It finds the installed collector (the unit's `ExecStart=` and `User=`, the service's command line) and keeps its
 binary path, config and account; a `-bin`, `-config` or `-user` that names another is refused. Then, before anything
-changes, it refuses when: the owner's connection string is missing or does not own the repository; `pg_dump` is older
+changes, it refuses when: it does not run as root (elevated); the repository already holds a migration newer than this
+build (a downgrade: the way back below, not this command); the owner's connection string is missing or does not own the repository; `pg_dump` is older
 (major version) than the repository's server, or missing (`--pg-dump <path>` names one, `--no-dump` takes none); the
 dump's folder has less room than the repository's size; another process runs the installed binary (a `pgvigil serve`,
 the Windows app: the swap would leave it on the old binary over the new schema). Then:
 
-1. stops the service;
-2. dumps the repository as its owner (`pg_dump --format=custom`), by default to
+1. keeps the binary it replaces as `pgvigil.previous` (`pgvigil.previous.exe`) beside it, while the service still runs (a
+   copy that cannot be made ends the run before anything else changes); a run after a half-finished upgrade, where the
+   installed binary is already this one, leaves `pgvigil.previous` as it is;
+2. stops the service;
+3. dumps the repository as its owner (`pg_dump --format=custom`), by default to
    `/var/backups/pgvigil/pgvigil-before-<version>-<UTC time>.dump` (Windows: `%ProgramData%\pgvigil-backups\`), a
    folder of root's (SYSTEM's and Administrators') alone and a file of mode 0600 (the dump holds the UI users'
-   password hashes and statement text); `--dump <file>` names another; the password reaches `pg_dump` through a
-   temporary password file, never a command line. A failed dump starts the old service again and changes nothing else;
-3. migrates the repository as its owner;
-4. keeps the binary it replaces as `pgvigil.previous` (`pgvigil.previous.exe`) beside it; a run after a half-finished
-   upgrade, where the installed binary is already this one, leaves `pgvigil.previous` as it is;
+   password hashes and statement text); `--dump <file>` names another, and a folder the operator names keeps its own
+   permissions (only the file is made root's alone); the password reaches `pg_dump` through a temporary password file,
+   never a command line or its environment. A failed dump starts the old service again and changes nothing else;
+4. migrates the repository as its owner (the role that owns the `pgvigil` schema);
 5. swaps the binary, writes the unit or the service again with the same paths and account, starts it;
 6. prints the way back: the previous binary, the dump and the restore line below.
+
+The Windows app's update check: an upgrade leaves a policy value as it finds it, so a machine whose app an earlier pgvigil installed (v0.3.0 wrote `UpdateCheck` = 1 by default) keeps the check ON: the app asks the release feed once a day, and `pgvigil-app install -no-update-check` (which writes `UpdateCheck` = 0) turns it off; a machine install with neither switch reads the value first and says which it found ([app.md](app.md), [airgap.md](airgap.md)).
 
 A failed migrate swaps nothing and starts nothing: the service stays stopped on the previous binary, the way back is
 printed (a migration file is its own transaction, so the files before the failed one are applied: the dump is the way
