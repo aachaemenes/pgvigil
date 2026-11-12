@@ -107,9 +107,46 @@ export async function mssqlCpuView(ctx: Ctx): Promise<HTMLElement> {
 }
 
 // mssqlMemoryView: the tiles of the newest read, the memory trend, the clerks' trend with a picker, the clerks grid,
-// the grants (Darling 13.4, DBA Dash's Memory tab).
+// the grants (Darling 13.4, DBA Dash's Memory tab); task 177 D13, in PerformanceMonitor's Memory tab's order: the plan
+// cache trend, the resource monitor's pressure events, the grants per resource pool and per semaphore over the range
+// and at the newest read, the workload groups and pools, the queries holding or waiting for a grant, the caches
+// (sp_PressureDetector's) and the plan cache by type with its bloat level.
+type MemoryParts = 'latest' | 'series' | 'clerks' | 'clerk_stats' | 'checks' | 'pools_window' | 'semaphores_window' | 'pools_newest'
+  | 'semaphores_newest' | 'pool_series' | 'rmon' | 'rmon_hourly' | 'caches' | 'plancache' | 'plancache_types' | 'plancache_trend'
+  | 'grants_now' | 'rg' | 'skipped';
+const mbOf = (v: unknown) => v == null ? '-' : fmtNum(Math.round(Number(v) / 102.4) / 10) + ' MB';
+const grantWindowCols = (bySem: boolean): Col[] => [
+  { key: 'pool_name', label: 'pool', fmt: (v, r) => String(v ?? 'pool ' + String(r.pool_id)) },
+  ...(bySem ? [{ key: 'semaphore_id', label: 'semaphore', num: true, fmt: (v: unknown) => v === 0 ? '0 (regular)' : v === 1 ? '1 (small query)' : String(v ?? '') }] : []),
+  { key: 'snapshots', label: 'reads', num: true },
+  { key: 'peak_waiters', label: 'peak waiters', num: true },
+  { key: 'peak_waiters_at', label: 'peak waiters at', fmt: fmtTime },
+  { key: 'peak_granted_kb', label: 'peak granted', num: true, fmt: mbOf },
+  { key: 'peak_granted_at', label: 'peak granted at', fmt: fmtTime },
+  { key: 'min_available_kb', label: 'least available', num: true, fmt: mbOf },
+  { key: 'timeouts', label: 'timeouts', num: true },
+  { key: 'forced_grants', label: 'forced grants', num: true },
+  { key: 'first_at', label: 'first', fmt: fmtTime },
+  { key: 'last_at', label: 'last', fmt: fmtTime },
+];
+const grantNewestCols = (bySem: boolean): Col[] => [
+  { key: 'snapshot_at', label: 'read', fmt: fmtTime },
+  { key: 'pool_name', label: 'pool', fmt: (v, r) => String(v ?? 'pool ' + String(r.pool_id)) },
+  ...(bySem ? [{ key: 'semaphore_id', label: 'semaphore', num: true, fmt: (v: unknown) => v === 0 ? '0 (regular)' : v === 1 ? '1 (small query)' : String(v ?? '') },
+    { key: 'target_kb', label: 'target', num: true, fmt: mbOf }, { key: 'max_target_kb', label: 'max target', num: true, fmt: mbOf },
+    { key: 'total_kb', label: 'total', num: true, fmt: mbOf }] : []),
+  { key: 'granted_kb', label: 'granted', num: true, fmt: mbOf },
+  { key: 'used_kb', label: 'used', num: true, fmt: mbOf },
+  { key: 'available_kb', label: 'available', num: true, fmt: mbOf },
+  { key: 'grantees', label: 'grantees', num: true },
+  { key: 'waiters', label: 'waiters', num: true },
+  { key: 'timeouts_delta', label: 'timeouts (since the read before)', num: true },
+  { key: 'forced_delta', label: 'forced grants (since the read before)', num: true },
+  { key: 'timeouts_total', label: 'timeouts since start', num: true },
+  { key: 'forced_total', label: 'forced since start', num: true },
+];
 export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
-  const d = await get<Record<'latest' | 'series' | 'clerks' | 'clerk_stats' | 'checks', Table | null>>('mssql/memory', { instance: ctx.instance, ...window_(ctx) });
+  const d = await get<Record<MemoryParts, Table | null>>('mssql/memory', { instance: ctx.instance, ...window_(ctx) });
   const l = rowsOf(d.latest)[0], series = rowsOf(d.series), stats = rowsOf(d.clerk_stats), checks = rowsOf(d.checks);
   const sec = el('section', {}, el('h2', {}, `Memory (${rangeLabel(ctx)})`));
   if (!l) { sec.append(empty('memory', 'mssql_memory', 'every minute')); return sec; }
@@ -136,6 +173,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
     ['committed / target', `${kb(l.committed_kb)} of ${kb(l.committed_target_kb)}`],
     ['memory grants', `${fmtNum(l.sem_granted ?? 0)} granted (${kb(l.sem_granted_kb)} of a ${kb(l.sem_target_kb)} target), ${fmtNum(l.sem_waiting ?? 0)} waiting; `
       + `largest grant ${kb(l.max_grant_kb)}, all grants ${kb(l.sum_grant_kb)}, largest asked ${kb(l.max_requested_kb)}`],
+    ['workspace memory', l.max_workspace_kb == null ? 'not read' : `${kb(l.granted_workspace_kb)} granted of ${kb(l.max_workspace_kb)} (Maximum Workspace Memory: `
+      + 'a grant over 15 % of it is raised, sp_BlitzFirst 46)'],
+    ['In-Memory OLTP and the token cache', `MEMORYCLERK_XTP ${kb(l.xtp_kb)}; TokenAndPermUserStore ${kb(l.tokenperm_kb)}`
+      + (l.clerks_kb ? ` (${fmtNum(Math.round(1000 * Number(l.tokenperm_kb ?? 0) / Number(l.clerks_kb)) / 10)} % of all clerks)` : '')],
   ]));
   sec.append(stepNote(ctx));
   const mb = (v: number) => fmtNum(v) + ' MB';
@@ -162,6 +203,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
   }
   draw();
   sec.append(el('h3', {}, 'Memory clerks'), picker, holder);
+  const pcBox = el('div', { class: 'charts' });
+  pcBox.append(lineChart('Plan cache: single-use and multi-use plans', rowsOf(d.plancache_trend),
+    [{ key: 'single_use_mb', label: 'single-use plans' }, { key: 'multi_use_mb', label: 'multi-use plans' }], mb));
+  sec.append(pcBox);
   sec.append(grid(stats, [
     { key: 'clerk_type', label: 'clerk type' },
     { key: 'current_kb', label: 'pages (current)', num: true, fmt: kb },
@@ -171,7 +216,10 @@ export async function mssqlMemoryView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'min_kb', label: 'min', num: true, fmt: kb },
     { key: 'snapshot_at', label: 'read', fmt: fmtTime },
   ], 'No clerk read in this range.'));
-  sec.append(checksBlock(checks, 'No memory check raised (available physical memory low; queries waiting for memory grants in 3 of 15 minutes).'));
+  memoryD13(sec, d, mb);
+  sec.append(checksBlock(checks, 'No memory check raised (available physical memory low; queries waiting for memory grants in 3 of 15 minutes; '
+    + 'grant timeouts; a low-memory notification; In-Memory OLTP and the token cache; a grant over 15 % of workspace; plan cache bloat '
+    + 'with optimize for ad hoc off; instant file initialization off).'));
   return sec;
 }
 
@@ -264,4 +312,130 @@ export async function mssqlTempdbView(ctx: Ctx, keep?: (r: Row) => boolean): Pro
     ? grid(checks, [...(fleet ? [{ key: 'instance' }] : []), ...checkCols])
     : el('p', { class: 'meta' }, 'No tempdb check raised: the data files match the recommended minimum, one size and one growth.'));
   return sec;
+}
+
+// memoryD13: the sections of task 177 D13 below the clerks, PerformanceMonitor's order (server-tabs.js, the Memory tab).
+function memoryD13(sec: HTMLElement, d: Record<MemoryParts, Table | null>, mb: (v: number) => string): void {
+  // the resource monitor's records: per hour the samples with an indicator of 2 or more (PerformanceMonitor), and all
+  const hourly = rowsOf(d.rmon_hourly).map(r => ({ ...r, snapshot_at: r.at }));
+  const rmon = rowsOf(d.rmon);
+  const pBox = el('div', { class: 'charts' });
+  pBox.append(lineChart('Memory pressure events per hour', hourly, [{ key: 'sql_medium', label: 'SQL Server (medium)' },
+    { key: 'sql_severe', label: 'SQL Server (severe)' }, { key: 'os_medium', label: 'operating system (medium)' },
+    { key: 'os_severe', label: 'operating system (severe)' }], v => fmtNum(v)));
+  sec.append(el('h3', {}, 'Memory pressure events'), el('p', { class: 'meta' },
+    'The resource monitor ring buffer (RING_BUFFER_RESOURCE_MONITOR), every record of the range: an hour counts a record when the process '
+    + '(SQL Server) or the system (operating system) indicator reads 2 or more, 2 medium, 3 or more severe; an hour without one counts 0. '
+    + `${fmtNum(rmon.length)} record(s) in the range.`), pBox,
+  grid(rmon, [
+    { key: 'sample_at', label: 'time', fmt: fmtTime },
+    { key: 'notification', label: 'notification' },
+    { key: 'ind_process', label: 'process', num: true },
+    { key: 'ind_system', label: 'system', num: true },
+    { key: 'avail_phys_kb', label: 'available physical', num: true, fmt: mbOf },
+    { key: 'avail_vas_kb', label: 'available virtual', num: true, fmt: mbOf },
+  ], 'No resource monitor record in this range.'));
+
+  // the grants per resource pool: per step, over the range, at the newest read; then per semaphore
+  const ps = rowsOf(d.pool_series);
+  const wt = pivot(ps, 'pool', 'waiters'), gr = pivot(ps, 'pool', 'granted_mb'), to = pivot(ps.map(r => ({ ...r, tf: Number(r.timeouts ?? 0) + Number(r.forced_grants ?? 0) })), 'pool', 'tf');
+  const gBox = el('div', { class: 'charts' });
+  gBox.append(lineChart('Memory grant waiters per pool', wt.rows, wt.keys.map(k => ({ key: k, label: k })), v => fmtNum(v)));
+  gBox.append(lineChart('Memory granted per pool', gr.rows, gr.keys.map(k => ({ key: k, label: k })), mb));
+  gBox.append(lineChart('Grant timeouts and forced grants per pool', to.rows, to.keys.map(k => ({ key: k, label: k })), v => fmtNum(v)));
+  sec.append(el('h3', {}, 'Memory grants per resource pool'), el('p', { class: 'meta' },
+    'sys.dm_exec_query_resource_semaphores per read, a pool\'s semaphores with a max target summed (sp_PressureDetector\'s and '
+    + 'PerformanceMonitor\'s filter); the timeouts and forced grants are the counters\' growth between reads.'), gBox,
+  el('h3', {}, 'Memory grant pressure (every read of the range, per pool)'),
+  grid(rowsOf(d.pools_window), grantWindowCols(false), 'No memory grant read in this range.'),
+  el('h3', {}, 'Memory grants (the newest read of the range, per pool: a moment, not the range)'),
+  grid(rowsOf(d.pools_newest), grantNewestCols(false), 'No memory grant read in this range.'),
+  el('h3', {}, 'Resource semaphore pressure (every read of the range, per semaphore)'),
+  grid(rowsOf(d.semaphores_window), grantWindowCols(true), 'No semaphore read in this range.'),
+  el('h3', {}, 'Resource semaphores (the newest read of the range)'),
+  grid(rowsOf(d.semaphores_newest), grantNewestCols(true), 'No semaphore read in this range.'));
+
+  // the Resource Governor: each workload group with its limits beside its pool's
+  sec.append(el('h3', {}, 'Workload groups and resource pools (the newest read)'), grid(rowsOf(d.rg), [
+    { key: 'pool_name', label: 'pool' },
+    { key: 'min_memory_pct', label: 'pool min memory %', num: true },
+    { key: 'max_memory_pct', label: 'pool max memory %', num: true },
+    { key: 'target_memory_kb', label: 'pool target', num: true, fmt: mbOf },
+    { key: 'used_memory_kb', label: 'pool used', num: true, fmt: mbOf },
+    { key: 'used_memgrant_kb', label: 'pool grants used', num: true, fmt: mbOf },
+    { key: 'memgrant_waiters', label: 'pool grant waiters', num: true },
+    { key: 'memgrant_timeouts', label: 'pool grant timeouts', num: true },
+    { key: 'group_name', label: 'group' },
+    { key: 'importance', label: 'importance' },
+    { key: 'max_grant_pct', label: 'max grant % (the cap)', num: true },
+    { key: 'grant_timeout_sec', label: 'grant timeout s', num: true, fmt: v => v === 0 ? '0 (the default)' : fmtNum(v) },
+    { key: 'max_dop', label: 'max DOP', num: true },
+    { key: 'max_cpu_sec', label: 'max CPU s', num: true },
+    { key: 'max_requests', label: 'max requests', num: true },
+    { key: 'reduced_grants', label: 'reduced grants', num: true },
+    { key: 'requests', label: 'requests', num: true },
+    { key: 'active_requests', label: 'active', num: true },
+    { key: 'queued_requests', label: 'queued', num: true },
+    { key: 'max_request_grant_kb', label: 'largest grant', num: true, fmt: mbOf },
+  ], 'The workload groups were not read.'));
+
+  // the queries holding or waiting for a grant at the newest read (sp_PressureDetector's list, sp_BlitzWho's cost)
+  const gn = rowsOf(d.grants_now);
+  sec.append(el('h3', {}, 'Queries with memory grants (the newest read)'), el('p', { class: 'meta' },
+    'sys.dm_exec_query_memory_grants, the 50 largest asks: a row with no grant time waits for its grant (its place in the queue is the wait order).'),
+  grid(gn, [
+    { key: 'session_id', label: 'session', num: true },
+    { key: 'database_name', label: 'database' },
+    { key: 'grant_at', label: 'granted at', fmt: (v, r) => v == null ? 'waiting since ' + fmtTime(r.request_at) : fmtTime(v) },
+    { key: 'wait_time_ms', label: 'waited', num: true, fmt: ms },
+    { key: 'requested_kb', label: 'requested', num: true, fmt: mbOf },
+    { key: 'granted_kb', label: 'granted', num: true, fmt: mbOf },
+    { key: 'used_kb', label: 'used', num: true, fmt: mbOf },
+    { key: 'max_used_kb', label: 'max used', num: true, fmt: mbOf },
+    { key: 'ideal_kb', label: 'ideal', num: true, fmt: mbOf },
+    { key: 'required_kb', label: 'required', num: true, fmt: mbOf },
+    { key: 'query_cost', label: 'query cost', num: true, fmt: v => v == null ? '-' : fmtNum(Math.round(Number(v) * 100) / 100) },
+    { key: 'dop', label: 'DOP', num: true },
+    { key: 'queue_id', label: 'queue', num: true },
+    { key: 'wait_order', label: 'wait order', num: true },
+    { key: 'is_next_candidate', label: 'next candidate', fmt: yes },
+    { key: 'is_small', label: 'small query', fmt: yes },
+    { key: 'pool_id', label: 'pool', num: true },
+    { key: 'wait_type', label: 'longest wait', fmt: (v, r) => v == null ? '' : String(v) + ' ' + ms(r.wait_ms) },
+    { key: 'statement', label: 'statement', wide: true },
+  ], 'No query held or waited for a memory grant at the newest read.'));
+
+  // the caches (sp_PressureDetector's) and the plan cache by type (PerformanceMonitor's)
+  sec.append(el('h3', {}, 'Caches (the newest read, the 20 largest)'), grid(rowsOf(d.caches), [
+    { key: 'cache_name', label: 'cache' },
+    { key: 'pages_kb', label: 'pages', num: true, fmt: mbOf },
+    { key: 'pages_in_use_kb', label: 'in use', num: true, fmt: mbOf },
+    { key: 'entries', label: 'entries', num: true },
+    { key: 'entries_in_use', label: 'entries in use', num: true },
+  ], 'No cache read in this range.'));
+  const pc = rowsOf(d.plancache)[0];
+  sec.append(el('h3', {}, 'Plan cache (the newest read)'));
+  if (pc) {
+    const lvl = String(pc.bloat_level ?? '');
+    sec.append(el('div', { class: 'tiles' },
+      tile('bloat', lvl, lvl === 'NORMAL' ? '' : 'warn'),
+      tile('plans', fmtNum(pc.plans)),
+      tile('single-use', fmtNum(pc.single_use_plans)),
+      tile('single-use %', pct(pc.single_use_pct)),
+      tile('cached plans size', kb(pc.size_kb)),
+      tile('single-use size', kb(pc.single_use_kb)),
+      tile('wasted %', pct(pc.wasted_pct)),
+      tile('optimize for ad hoc', pc.optimize_for_ad_hoc == null ? 'not read' : Number(pc.optimize_for_ad_hoc) === 1 ? 'on' : 'off')),
+    el('p', { class: 'meta' }, `${String(pc.recommendation ?? '')} (PerformanceMonitor's levels: single-use plans over 50 % CRITICAL, over 30 % HIGH, over 20 % MEDIUM).`));
+  } else sec.append(el('p', { class: 'meta' }, 'No plan cache read in this range.'));
+  sec.append(el('h3', {}, 'Plan cache by type'), grid(rowsOf(d.plancache_types), [
+    { key: 'cache_type', label: 'cache' },
+    { key: 'object_type', label: 'object type' },
+    { key: 'plans', label: 'plans', num: true },
+    { key: 'size_kb', label: 'size', num: true, fmt: kb },
+    { key: 'single_use_plans', label: 'single-use', num: true },
+    { key: 'single_use_kb', label: 'single-use size', num: true, fmt: kb },
+    { key: 'avg_use_count', label: 'avg uses', num: true },
+  ], 'No plan cache read in this range.'));
+  for (const s of rowsOf(d.skipped)) sec.append(el('p', { class: 'meta' }, `Not read at ${fmtTime(s.snapshot_at)}: ${String(s.read)} (${String(s.error)}).`));
 }
