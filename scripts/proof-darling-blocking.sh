@@ -45,7 +45,9 @@
 #        box; pgbox's Running queries: the head's tree row (idle in transaction) and every client session row have
 #        Cancel and Terminate on; shots of both pages in both themes, and on sqlbox two more per theme with the part
 #        below or right of the first view scrolled in: 'Lead blockers over the range' at the top (blocking-mssql-share-*)
-#        and the sessions grid's first Kill button in the middle (blocking-mssql-kill-*) [after s177b-proof4];
+#        and the sessions grid's first Kill button in the middle (blocking-mssql-kill-*) [after s177b-proof4]; each
+#        checked in view: below the sticky header and tab band, inside the window, the button inside its grid's
+#        scroll box and of non-zero size [after review s177b-2];
 #     E2 sqlbox-ro: every Kill button aria-disabled with a title naming actions_dsn, and a click opens no dialog;
 #        pgbox-ro: every Terminate button disabled with a title naming actions_dsn;
 #     E3 sqlbox at= the first snapshot: no Kill button anywhere and the line 'Kill acts on the newest snapshot only';
@@ -342,9 +344,9 @@ for (const theme of ['light', 'dark']) {
   console.log(`mssql ${theme} ${JSON.stringify({ tree: kills(s.tree), implicit: s.tree.filter(r => /implicit/.test(r.text)).map(r => r.id),
     sessions: kills(s.sessions), share: s.share.map(r => /lead/.test(r.text)), status: s.status, errors: s.errors })}`);
   await shot(`blocking-mssql-${theme}`);
-  const shareIn = await ev(`(() => { const h = [...document.querySelectorAll('main h3')].find(x => /^Lead blockers over the range/.test(x.textContent)); if (!h) return false; h.scrollIntoView({ block: 'start' }); return h.getBoundingClientRect().top < innerHeight; })()`);
+  const shareIn = await ev(`(() => { const h = [...document.querySelectorAll('main h3')].find(x => /^Lead blockers over the range/.test(x.textContent)); if (!h) return false; h.scrollIntoView({ block: 'start' }); const band = document.getElementById('tabs').getBoundingClientRect().bottom; const r = h.getBoundingClientRect(); return r.height > 0 && r.top >= band && r.bottom <= innerHeight; })()`);
   await sleep(300); await shot(`blocking-mssql-share-${theme}`);
-  const killIn = await ev(`(() => { const h = [...document.querySelectorAll('main h3')].find(x => /^(Sessions and requests|Sessions)/.test(x.textContent)); let g = h?.nextElementSibling; while (g && !g.querySelector('table') && g.tagName !== 'TABLE') g = g.nextElementSibling; const b = g?.querySelector('button.act-kill'); if (!b) return false; b.scrollIntoView({ block: 'center', inline: 'center' }); const r = b.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight; })()`);
+  const killIn = await ev(`(() => { const h = [...document.querySelectorAll('main h3')].find(x => /^(Sessions and requests|Sessions)/.test(x.textContent)); let g = h?.nextElementSibling; while (g && !g.querySelector('table') && g.tagName !== 'TABLE') g = g.nextElementSibling; const b = g?.querySelector('button.act-kill'); if (!b) return false; b.scrollIntoView({ block: 'center', inline: 'center' }); const band = document.getElementById('tabs').getBoundingClientRect().bottom; const w = (b.closest('.grid-wrap') ?? g).getBoundingClientRect(); const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.left >= Math.max(0, w.left) && r.right <= Math.min(innerWidth, w.right) && r.top >= band && r.bottom <= innerHeight; })()`);
   await sleep(300); await shot(`blocking-mssql-kill-${theme}`);
   console.log(`mssql-shots ${theme} share=${shareIn} kill=${killIn}`);
   await ev(`(() => { window.scrollTo(0, 0); return 1; })()`);
