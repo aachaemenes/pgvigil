@@ -186,6 +186,10 @@ PY
   [[ "$n" == -1 ]] && echo "cnt $*" >> "$WORK/unreadable"
   echo "$n"
 }
+# within SECONDS DIR EVENT SETTING INSTANCES [N]: the seconds until N (default 1) such files are there (-1: not in time).
+# A recovery takes up to two alert passes after its finding left (alert_mark stamps missing_since on the first, the
+# resolve needs a pass after it and an ok read since), so a resolve is waited for, never read after a fixed sleep.
+within() { local t0=$SECONDS; while (( SECONDS - t0 < $1 )); do [[ "$(cnt "$2" "$3" "$4" "$5")" -ge "${6:-1}" ]] && { echo $((SECONDS - t0)); return 0; }; sleep 5; done; echo -1; }
 # keymax DIR EVENT: the most files one alert key has for the EVENT in DIR (the key = the file name's last part)
 keymax() {
   docker exec "$SVC" chmod -R a+rX /work/spool /work/spool2 /work/spool3 /work/spool4 >/dev/null 2>&1
@@ -288,7 +292,7 @@ await go('#/summary');
 const treeLink = `[...document.querySelectorAll('#tree a')].find(x => x.textContent.trim() === 'Collector')`;
 let how = 'open already';
 if (!(await ev(`!!${treeLink}`))) {
-  how = await ev(`(() => { const n = [...document.querySelectorAll('#tree .tree-node')].find(x => /^\W*Checks\b/.test(x.textContent.trim())); if (!n) return 'no Checks node'; const c = n.querySelector('button.caret'); if (!c) return 'no caret'; c.click(); return 'caret ' + c.getAttribute('data-key'); })()`);
+  how = await ev(`(() => { const n = [...document.querySelectorAll('#tree .tree-node')].find(x => x.querySelector('a, .folder-name')?.textContent.trim() === 'Checks'); if (!n) return 'no Checks node'; const c = n.querySelector('button.caret'); if (!c) return 'no caret'; c.click(); return 'caret ' + c.getAttribute('data-key'); })()`);
   await sleep(600);
 }
 const tree = await ev(`(() => { const a = ${treeLink}; if (!a) return ''; a.click(); return a.getAttribute('href'); })()`);
@@ -313,10 +317,9 @@ docker exec "$SVC" systemctl restart pgvigil.service   # a changed password is f
 # every plain target: host without system_stats, jobs without pg_cron, ...)
 CF="SELECT f.value FROM pgvigil.collector_findings f JOIN pgvigil.instances i USING (instance_id) WHERE f.setting = 'collection failing' AND i.name ="
 if waitfor 300 "SELECT NOT EXISTS (SELECT 1 $T2 AND f.setting = 'authentication failing') AND NOT EXISTS ($CF 't2' EXCEPT $CF 't1')"; then
-  sleep 90   # the passes that send t2's recovery
-  e_res=$(cnt "$WORK/spool" resolved "authentication failing" t2)
-  [[ "$e_res" == 1 ]] && ok "E restart: the password back and the service restarted - t2's 'authentication failing' gone and resolved once, its 'collection failing' within t1's ($(q "SELECT count(*) FROM ($CF 't1') x") on t1: $(q "SELECT string_agg(value, ' ') FROM ($CF 't1') x"))" \
-    || fail "E restart: t2's 'authentication failing' resolved $e_res times (want 1)"
+  e_w=$(within 240 "$WORK/spool" resolved "authentication failing" t2); e_res=$(cnt "$WORK/spool" resolved "authentication failing" t2)
+  [[ "$e_res" == 1 ]] && ok "E restart: the password back and the service restarted - t2's 'authentication failing' gone and resolved once ($e_w s after it left the view), its 'collection failing' within t1's ($(q "SELECT count(*) FROM ($CF 't1') x") on t1: $(q "SELECT string_agg(value, ' ') FROM ($CF 't1') x"))" \
+    || fail "E restart: t2's 'authentication failing' resolved $e_res times in 240 s (want 1)"
 else fail "E restart: t2 still $(q "SELECT string_agg(f.setting || ' ' || f.value, ', ') $T2") 300 s after the restart"; fi
 mkdir -p .vis/spool-evidence/E && cp -r "$WORK"/spool* .vis/spool-evidence/E/ 2>/dev/null || true
 fi
@@ -334,8 +337,6 @@ NOPARENT="SELECT NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent) AND NOT EXI
 d_clean() { logins login t1 t2 t3 t4; waitfor 600 "$NOPARENT" || fail "D: not clean 600 s after the logins came back"; sleep 70; rm -f "$WORK"/spool*/*; }
 # per DIR EVENT INSTANCES: the instances' own alerts ($PER), the collections failing on the plain target left out
 per() { cnt "$1" "$2" "$PER" "$3" "$(plain)"; }
-# within SECONDS DIR EVENT SETTING INSTANCES: the seconds until the first such file (-1: none in time)
-within() { local t0=$SECONDS; while (( SECONDS - t0 < $1 )); do [[ "$(cnt "$2" "$3" "$4" "$5")" -ge 1 ]] && { echo $((SECONDS - t0)); return 0; }; sleep 5; done; echo -1; }
 PAR="collector or network"
 # d_cut CASE SECOND MINUTES: t1-t3 cut at the SECOND of a minute for MINUTES (D1, D1b)
 d_cut() {
@@ -348,7 +349,8 @@ d_cut() {
   pr=$(per "$WORK/spool" firing "t1|t2|t3"); pr2=$(per "$WORK/spool2" firing t1)
   logins login t1 t2 t3
   waitfor 480 "$NOPARENT" || fail "$c: the parent still standing 480 s after the lift"
-  sleep 130   # the passes after the parent left: its recovery, and nothing of t1-t3
+  SKIP=$L within 240 "$WORK/spool" resolved "$PAR" "" >/dev/null; SKIP=$L within 60 "$WORK/spool2" resolved "$PAR" "" >/dev/null
+  sleep 60   # one more pass: nothing of t1-t3 may follow the parent's recovery
   ur=$(SKIP=$L cnt "$WORK/spool" resolved "$PAR" ""); sr=$(SKIP=$L cnt "$WORK/spool2" resolved "$PAR" "")
   af=$(SKIP=$L per "$WORK/spool" firing "t1|t2|t3"); ar=$(per "$WORK/spool" resolved "t1|t2|t3"); s1=$(per "$WORK/spool2" resolved t1)
   keep "$c"
@@ -373,7 +375,8 @@ if want D3; then
   left=$(( 240 - (SECONDS - t0) )); if (( left > 0 )); then sleep "$left"; fi   # the cut stands 4 min: nothing more goes out
   d3a=$(cnt "$WORK/spool" firing "authentication failing" "t1|t2"); d3c=$(cnt "$WORK/spool" firing "collection failing|server unreachable" "t1|t2" "$(plain)")
   d3p=$(cnt "$WORK/spool" firing "$PAR" ""); d3h=$(q "SELECT EXISTS (SELECT 1 FROM pgvigil.collector_held_instances)"); d3s=$(cnt "$WORK/spool2" firing "authentication failing" t1)
-  logins login t1 t2; waitfor 300 "$NOPARENT" || true; sleep 90
+  logins login t1 t2; waitfor 300 "$NOPARENT" || true
+  within 240 "$WORK/spool" resolved "authentication failing" "t1|t2" 2 >/dev/null; within 60 "$WORK/spool2" resolved "authentication failing" t1 >/dev/null
   d3r=$(cnt "$WORK/spool" resolved "authentication failing" "t1|t2"); d3sr=$(cnt "$WORK/spool2" resolved "authentication failing" t1)
   keep D3
   [[ "$tw" -ge 0 && "$d3a" == 2 && "$d3c" == 0 && "$d3p" == 0 && "$d3h" == f && "$d3s" == 1 && "$d3r" == 2 && "$d3sr" == 1 ]] \
@@ -390,7 +393,8 @@ if want D4; then
   d4h=$(cnt "$WORK/spool" resolved "authentication failing" t1)$(cnt "$WORK/spool2" resolved "authentication failing" t1)
   d4o=$(per "$WORK/spool" firing "t2|t3"); d4d=$(q "SELECT detail FROM pgvigil.collector_findings WHERE setting = '$PAR'" | grep -o 'it covers.*' | cut -c1-160 || true)
   snap D4; L=$WORK/D4.lst
-  logins login t1 t2 t3; waitfor 480 "$NOPARENT" || fail "D4: the parent still standing 480 s after the lift"; sleep 130
+  logins login t1 t2 t3; waitfor 480 "$NOPARENT" || fail "D4: the parent still standing 480 s after the lift"
+  SKIP=$L within 240 "$WORK/spool" resolved "authentication failing" t1 >/dev/null; SKIP=$L within 60 "$WORK/spool2" resolved "authentication failing" t1 >/dev/null; sleep 60
   d4a=$(SKIP=$L cnt "$WORK/spool" resolved "authentication failing" t1)$(SKIP=$L cnt "$WORK/spool2" resolved "authentication failing" t1)
   d4o2=$(per "$WORK/spool" firing "t2|t3"); d4rt2=$(cnt "$WORK/spool3" repeat "authentication failing" t1)
   keep D4
@@ -404,11 +408,11 @@ if want D5; then
   left=$(( 240 - (SECONDS - t0) )); if (( left > 0 )); then sleep "$left"; fi
   logins login t1 t2
   t3w=-1; if waitfor 480 "SELECT NOT EXISTS (SELECT 1 FROM pgvigil.collector_parent)"; then t3w=$(within 150 "$WORK/spool" firing "authentication failing" t3); fi
-  sleep 70
+  within 240 "$WORK/spool" resolved "$PAR" "" >/dev/null; within 60 "$WORK/spool2" resolved "$PAR" "" >/dev/null
   d5p=$(cnt "$WORK/spool" resolved "$PAR" ""); d5o=$(per "$WORK/spool" firing "t1|t2")$(per "$WORK/spool" resolved "t1|t2")
   d5t=$(cnt "$WORK/spool" firing "authentication failing" t3)$(cnt "$WORK/spool" resolved "authentication failing" t3)
   d5s=$(cnt "$WORK/spool2" firing "$PAR" "")$(cnt "$WORK/spool2" resolved "$PAR" "")$(per "$WORK/spool2" firing t1)
-  logins login t3; waitfor 300 "$NOPARENT" || true; sleep 90
+  logins login t3; waitfor 300 "$NOPARENT" || true; within 240 "$WORK/spool" resolved "authentication failing" t3 >/dev/null
   d5t2=$(cnt "$WORK/spool" resolved "authentication failing" t3)
   keep D5
   [[ "$tp" -ge 0 && "$d5p" == 1 && "$d5o" == 00 && "$t3w" -ge 0 && "$d5t" == 10 && "$d5s" == 110 && "$d5t2" == 1 ]] \
