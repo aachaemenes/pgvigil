@@ -571,9 +571,15 @@ if (!dbHref) throw new Error('no database link on the Database info tab');
 out.db = await page(dbHref);
 // the Table Size tab again (another window: another file name), its second grid filtered to nothing: a sheet without rows
 out.empty = await page(`#/tables?i=${one.instance_id}&w=24h`, null, true);
-// (decision (b)) the SQL Server instance's Jobs tab: each job's step grid named by its job (data-sheet)
-const sq = rows.find(r => r.engine === 'sqlserver');
-if (sq) { out.sqljobs = await page(`#/mssqljobs?i=${sq.instance_id}&w=24h`); out.sqljobs.instance = sq.name; }
+// (decision (b)) the SQL Server instance's Jobs tab: each job's step grid named by its job (data-sheet); the demo's '-sql01'
+// is the instance with jobs (internal/demo mssqlCollections); a tab that shows no grid is said, not pressed
+const sq = rows.find(r => r.engine === 'sqlserver' && /-sql01$/.test(r.name)) ?? rows.find(r => r.engine === 'sqlserver');
+if (sq) {
+  await cmd('Page.navigate', { url: U + `#/mssqljobs?i=${sq.instance_id}&w=24h` }); await sleep(300);
+  if (!await settled()) throw new Error('the SQL Server Jobs tab did not render');
+  const any = await ev(`!!document.querySelector('main table.grid, main table.props, main p.empty[data-cols]')`);
+  out.sqljobs = any ? { ...(await page(`#/mssqljobs?i=${sq.instance_id}&w=24h`)), instance: sq.name } : { none: await ev(`(document.querySelector('main')?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160)`), instance: sq.name };
+}
 out.tools = await tools();
 // ---- P03: the new menu items, each clicked and its download read ---------------------------------------------------
 const waitDl = async (before, what) => {
@@ -1438,7 +1444,8 @@ CONVERTED = [0]
 # (decision (b)) the SQL Server instance's Jobs tab, when the demo has a SQL Server instance
 PAGES = [('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('drives', 'Drives', 'fleet'), ('dbspace', 'DB-Space', 'fleet'), ('dbfiles', 'Files', 'fleet'), ('tables', 'Table-Size', iname), ('roles', 'Roles', iname),
          ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('perf', 'Performance-summary', 'fleet'), ('db', 'Database', iname), ('empty', 'Table-Size', iname)]
-if d.get('sqljobs'): PAGES.append(('sqljobs', 'Jobs', re.sub(r'[^A-Za-z0-9._-]+', '-', d['sqljobs']['instance'])))
+if d.get('sqljobs') and not d['sqljobs'].get('none'): PAGES.append(('sqljobs', 'Jobs', re.sub(r'[^A-Za-z0-9._-]+', '-', d['sqljobs']['instance'])))
+elif d.get('sqljobs'): print(f"not checked: sqljobs: the SQL Server instance {d['sqljobs']['instance']}'s Jobs tab shows no grid ({d['sqljobs']['none'][:100]})")
 else: print("not checked: sqljobs: the demo has no SQL Server instance (its Jobs tab's step grids)")
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
@@ -1664,7 +1671,8 @@ for key, tab, inst in PAGES:
         check('Roles tiles' in names and 'Roles' in names, f"roles: the tiles 'Roles tiles' and the grid 'Roles' ({names})")
     if key == 'sqljobs':
         js_ = [(g['named'], names[k - 1]) for g, k in zip(gs, gsheet) if g.get('own') == 'alone']
-        check(not any(re.search(r' \(\d+\)$', n_) for n_ in names) and all(n_ == clean_(j_)[:31].rstrip(" '") or named_by(n_, clean_(j_), None) for j_, n_ in js_),
+        if not js_: print(f"not checked: sqljobs: no job step grid on the page (the demo's jobs carry no steps; decision (b)'s names: the unit tests and the same-data run on a real server) - sheets {names}")
+        else: check(not any(re.search(r' \(\d+\)$', n_) for n_ in names) and all(n_ == clean_(j_)[:31].rstrip(" '") or named_by(n_, clean_(j_), None) for j_, n_ in js_),
               f"sqljobs: {len(js_)} job step grid(s), each sheet named by its job (data-sheet), no numbered repeat ({js_[:4]})")
     if key == 'tables':
         check(gn == [g['name'] for g in gs], f"tables: grid sheet names {gn} = the screen's headings {[g['name'] for g in gs]}")
