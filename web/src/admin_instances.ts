@@ -43,7 +43,7 @@ const authOpts = (engine: string): [string, string][] => engine === 'sqlserver'
     ['entra-identity', 'Entra managed identity (this host\'s own, no secret)']]
   : [['password', 'login and password'], ['pgpass', 'the service account\'s .pgpass']];
 const platOpts = (engine: string): [string, string][] => engine === 'sqlserver'
-  ? [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['azuresqldb', 'Azure SQL Database'], ['azuresqlmi', 'Azure SQL Managed Instance']]
+  ? [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['azuresqldb', 'Azure SQL Database'], ['azuresqlmi', 'Azure SQL Managed Instance'], ['cloudsql', 'Google Cloud SQL']]
   : [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['aurora', 'Aurora'], ['azure', 'Azure'], ['cloudsql', 'Cloud SQL'], ['alloydb', 'AlloyDB']];
 
 export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {

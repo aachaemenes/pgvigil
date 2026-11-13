@@ -17,6 +17,10 @@ const (
 	KindRDS     Kind = "rdssqlserver" // Amazon RDS for SQL Server
 	KindAzureDB Kind = "azuresqldb"   // Azure SQL Database (one database is the instance)
 	KindAzureMI Kind = "azuresqlmi"   // Azure SQL Managed Instance
+	// Google Cloud SQL for SQL Server: its server role CustomerDbRootRole (the sqlserver user is its member) or msdb's
+	// gcloudsql_* procedures, both visible to a login only with VIEW ANY DEFINITION; without it (or before the first
+	// read) the configuration's platform: cloudsql, or 205's discovery's proposal, names it
+	KindCloudSQL Kind = "cloudsqlsqlserver"
 )
 
 // Info is what a connection told about the server and about the login's rights.
@@ -36,6 +40,7 @@ type Info struct {
 	ViewServerState   bool
 	ViewAnyDefinition bool
 	MsdbAccess        bool
+	WindowsLogin      bool // the login is a Windows (Active Directory) login: Cloud SQL keeps SQL Agent from such a login
 }
 
 // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
@@ -53,15 +58,18 @@ const detectSQL = `SELECT
   CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION'), 0) AS int),
   CAST(ISNULL(HAS_DBACCESS('msdb'), 0) AS int),
   CAST(CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS int),
-  CAST(LEFT(@@VERSION, 400) AS nvarchar(400))`
+  CAST(LEFT(@@VERSION, 400) AS nvarchar(400)),
+  CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'CustomerDbRootRole' AND type = 'R')
+              OR OBJECT_ID(N'msdb.dbo.gcloudsql_bulk_insert') IS NOT NULL THEN 1 ELSE 0 END AS int),
+  CAST(CASE WHEN SUSER_SNAME() LIKE N'%\%' THEN 1 ELSE 0 END AS int)`
 
 // Detect reads what the server is and what the login may read. forced is the config's platform: auto (or empty)
 // keeps what the server says, anything else names the kind.
 func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	var in Info
 	var pv, ed, name, ver sql.NullString
-	var ee, hadr, vss, vad, msdb, rds sql.NullInt64
-	if err := conn.QueryRowContext(ctx, detectSQL).Scan(&pv, &ed, &ee, &name, &hadr, &vss, &vad, &msdb, &rds, &ver); err != nil {
+	var ee, hadr, vss, vad, msdb, rds, gcs, win sql.NullInt64
+	if err := conn.QueryRowContext(ctx, detectSQL).Scan(&pv, &ed, &ee, &name, &hadr, &vss, &vad, &msdb, &rds, &ver, &gcs, &win); err != nil {
 		return in, fmt.Errorf("sql server detect: %w", err)
 	}
 	in.ProductVersion, in.Edition, in.ServerName = pv.String, ed.String, name.String
@@ -71,11 +79,12 @@ func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	}
 	in.HADREnabled = hadr.Int64 == 1
 	in.ViewServerState, in.ViewAnyDefinition, in.MsdbAccess = vss.Int64 == 1, vad.Int64 == 1, msdb.Int64 == 1
+	in.WindowsLogin = win.Int64 == 1
 	in.Version, _, _ = strings.Cut(ver.String, "\n")
 	in.Version = strings.TrimSpace(in.Version)
 	in.Major, in.Minor, in.Build = parseVersion(in.ProductVersion)
 	in.VersionNum = in.Major*10000 + in.Minor
-	in.Kind = kindOf(in.EngineEdition, rds.Int64 == 1, forced)
+	in.Kind = kindOf(in.EngineEdition, rds.Int64 == 1, gcs.Int64 == 1, forced)
 	return in, nil
 }
 
@@ -89,8 +98,9 @@ func supported(engineEdition int) error {
 	return nil
 }
 
-// kindOf names the platform: the config's word when it gives one, else the engine edition and RDS's own database.
-func kindOf(engineEdition int, hasRDSAdmin bool, forced string) Kind {
+// kindOf names the platform: the config's word when it gives one, else the engine edition, RDS's own database and
+// Cloud SQL's role or procedures (read after RDS's: a server cannot be both).
+func kindOf(engineEdition int, hasRDSAdmin, hasCloudSQL bool, forced string) Kind {
 	switch forced {
 	case "onprem":
 		return KindServer
@@ -100,6 +110,8 @@ func kindOf(engineEdition int, hasRDSAdmin bool, forced string) Kind {
 		return KindAzureDB
 	case "azuresqlmi":
 		return KindAzureMI
+	case "cloudsql":
+		return KindCloudSQL
 	}
 	switch {
 	case engineEdition == 5:
@@ -108,6 +120,8 @@ func kindOf(engineEdition int, hasRDSAdmin bool, forced string) Kind {
 		return KindAzureMI
 	case hasRDSAdmin:
 		return KindRDS
+	case hasCloudSQL:
+		return KindCloudSQL
 	}
 	return KindServer
 }

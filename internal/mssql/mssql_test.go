@@ -35,24 +35,30 @@ func TestParseVersion(t *testing.T) {
 
 func TestKindOf(t *testing.T) {
 	for _, c := range []struct {
-		ee     int
-		rds    bool
-		forced string
-		want   Kind
+		ee       int
+		rds, gcs bool
+		forced   string
+		want     Kind
 	}{
-		{3, false, "", KindServer},
-		{3, false, "auto", KindServer},
-		{2, true, "auto", KindRDS},
-		{5, false, "auto", KindAzureDB},
-		{8, false, "", KindAzureMI},
-		{5, true, "", KindAzureDB},
-		{3, true, "onprem", KindServer},
-		{3, false, "rds", KindRDS},
-		{3, false, "azuresqlmi", KindAzureMI},
-		{3, false, "azuresqldb", KindAzureDB},
+		{3, false, false, "", KindServer},
+		{3, false, false, "auto", KindServer},
+		{2, true, false, "auto", KindRDS},
+		{5, false, false, "auto", KindAzureDB},
+		{8, false, false, "", KindAzureMI},
+		{5, true, false, "", KindAzureDB},
+		{3, true, false, "onprem", KindServer},
+		{3, false, false, "rds", KindRDS},
+		{3, false, false, "azuresqlmi", KindAzureMI},
+		{3, false, false, "azuresqldb", KindAzureDB},
+		// Cloud SQL (CLOUDSQL C2): its role or procedures, after RDS's database; the configuration's word over both
+		{4, false, true, "", KindCloudSQL},
+		{2, false, true, "auto", KindCloudSQL},
+		{3, true, true, "", KindRDS},
+		{3, false, false, "cloudsql", KindCloudSQL},
+		{4, false, true, "onprem", KindServer},
 	} {
-		if got := kindOf(c.ee, c.rds, c.forced); got != c.want {
-			t.Errorf("kindOf(%d, %v, %q) = %s; want %s", c.ee, c.rds, c.forced, got, c.want)
+		if got := kindOf(c.ee, c.rds, c.gcs, c.forced); got != c.want {
+			t.Errorf("kindOf(%d, rds %v, cloudsql %v, %q) = %s; want %s", c.ee, c.rds, c.gcs, c.forced, got, c.want)
 		}
 	}
 }
