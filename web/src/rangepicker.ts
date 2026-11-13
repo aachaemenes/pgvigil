@@ -246,14 +246,17 @@ export function monthChoices(now: Date, fixed: (a: Date, b: Date) => Range): Cho
   return out;
 }
 // dayMonth: one of the two as a select under its own label naming the display zone; the current range selected when it
-// is one of them; a pick goes to it at once
+// is one of them; its Show button goes to the pick (WCAG 3.2.2, technique H84: arrowing through a closed select fires
+// 'change' on each option in Chrome and Firefox, so a pick never navigates by itself)
 function dayMonth(name: 'Date' | 'Month', choices: Choice[], isCur: (r: Range) => boolean): HTMLElement {
   const words = name === 'Date' ? `a whole day in ${zoneName()}` : `a whole month in ${zoneName()}`;
   const sel = el('select', { class: 'range-daymonth', 'aria-label': `${name}: ${words}` }) as HTMLSelectElement;
   sel.append(el('option', { value: '' }, name === 'Date' ? 'Pick a day' : 'Pick a month'));
   choices.forEach((c, i) => { const o = el('option', { value: String(i) }, c.text); if (isCur(c.range)) o.selected = true; sel.append(o); });
-  sel.addEventListener('change', () => { const c = choices[Number(sel.value)]; if (sel.value !== '' && c) go(c.range); });
-  return el('label', { class: 'range-daymonth-label' }, `${name} `, sel, el('span', { class: 'meta' }, ` ${words}`));
+  const show = el('button', { type: 'button', class: 'range-daymonth-go', 'aria-label': `Show the ${name === 'Date' ? 'day' : 'month'} picked` }, 'Show');
+  show.addEventListener('click', () => { const c = choices[Number(sel.value)]; if (sel.value !== '' && c) go(c.range); });
+  return el('span', { class: 'range-daymonth-row' },
+    el('label', { class: 'range-daymonth-label' }, `${name} `, sel, el('span', { class: 'meta' }, ` ${words}`)), ' ', show);
 }
 
 function build(): HTMLElement {

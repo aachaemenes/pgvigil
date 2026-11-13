@@ -38,6 +38,21 @@ const openRange = async () => { if (!(await ev(`!!${rangePanel}`))) await ev(`${
 const erp = process.env.RANGE_ERP;
 const words = `[...document.querySelectorAll('main .range-note p, main .read-window')].map(p => p.className + ': ' + p.textContent)`;
 
+// R10 (its own pass, RANGE_CASE=R10, after proof-range.sh puts erp01's sizes 60 days back): a chart drawn over its
+// own span longer than a part's reach (the Storage growth panel at 90 days on a 1-hour page) says its marks' read
+// itself, and the page's line claims no cut for the 1-hour window
+if (process.env.RANGE_CASE === 'R10') {
+  await go(`#/storage?i=${erp}&w=1h`); await sleep(1500);
+  await ev(`[...document.querySelectorAll('main button')].find(b => b.textContent === '90 days').click(); 'ok'`);
+  await sleep(4500);
+  const r10 = await ev(words);
+  const said = await ev(`(document.querySelector('main').innerText.match(/Marks are read for the newest \\d+ days of this window: [^\\n]*/) ?? [''])[0]`);
+  check('R10 own span', (await params()).get('w') === '1h' && !r10.some(t => t.startsWith('meta range-cut')) && /^Marks are read for the newest 31 days of this window: .+ to .+ \(this chart is longer than they read\)\.$/.test(said),
+    `w=1h, growth 90 days: the page's line ${JSON.stringify(r10)}; the chart's '${said}'`);
+  console.log(failed ? 'FAIL 1 case(s)' : 'range-check R10: ok');
+  process.exit(failed ? 1 : 0);
+}
+
 // R1. the panel's quick ranges, Date and Month
 await go('#/summary?w=1h');
 await openRange();
@@ -73,18 +88,23 @@ check('R2 year', yearW === '1y' && r2.some(t => t.startsWith('meta range-cut: ')
 
 // R3. Date and Month go to the calendar's ranges: Today = w=today, Yesterday = the calendar's Yesterday, 2 days ago ends
 // where Yesterday starts; This Month = w=mtd, Last Month = the calendar's Previous month, 2 months ago ends where it starts
+// a pick alone never navigates (WCAG 3.2.2: arrowing through a closed select fires 'change'); its Show button does
 const pick = async (which, value) => { await go('#/summary?w=1h'); await openRange();
   await ev(`(() => { const s = ${rangePanel}.querySelectorAll('select.range-daymonth')[${which}]; s.value = '${value}'; s.dispatchEvent(new Event('change')); return 'ok'; })()`);
-  await sleep(1200); const q = await params(); return { w: q.get('w'), from: q.get('from'), to: q.get('to') }; };
+  await sleep(600); const held = (await ev('location.hash')) === (await ev(`'#/summary?w=1h'`));
+  const shown = await ev(`(() => { const p = ${rangePanel}; const s = p && p.querySelectorAll('select.range-daymonth')[${which}];
+    const b = s && s.closest('.range-daymonth-row') && s.closest('.range-daymonth-row').querySelector('button.range-daymonth-go'); if (!b) return false; b.click(); return true; })()`);
+  await sleep(1200); const q = await params(); return { w: q.get('w'), from: q.get('from'), to: q.get('to'), held, shown }; };
 const cal = async name => { await go('#/summary?w=1h'); await openRange();
   await ev(`[...${rangePanel}.querySelectorAll('button.range-item')].find(b => b.firstChild.textContent === ${JSON.stringify(name)}).click(); 'ok'`);
   await sleep(1200); const q = await params(); return { w: q.get('w'), from: q.get('from'), to: q.get('to') }; };
 const dToday = await pick(0, 0), dYest = await pick(0, 1), d2 = await pick(0, 2), cYest = await cal('Yesterday');
 const mThis = await pick(1, 0), mLast = await pick(1, 1), m2 = await pick(1, 2), cPrev = await cal('Previous month');
 const hours = r => (Date.parse(r.to) - Date.parse(r.from)) / 3600e3;
-check('R3 date/month', dToday.w === 'today' && dYest.from === cYest.from && dYest.to === cYest.to && !!dYest.from && d2.to === dYest.from && [23, 24, 25].includes(hours(d2))
+const picks = [dToday, dYest, d2, mThis, mLast, m2];
+check('R3 date/month', picks.every(p => p.held && p.shown) && dToday.w === 'today' && dYest.from === cYest.from && dYest.to === cYest.to && !!dYest.from && d2.to === dYest.from && [23, 24, 25].includes(hours(d2))
   && mThis.w === 'mtd' && mLast.from === cPrev.from && mLast.to === cPrev.to && !!mLast.from && m2.to === mLast.from && hours(m2) >= 28 * 24 - 1 && hours(m2) <= 31 * 24 + 1,
-  `Date: Today w=${dToday.w}; Yesterday ${dYest.from} - ${dYest.to} (calendar ${cYest.from} - ${cYest.to}); 2 days ago ${d2.from} - ${d2.to} (${hours(d2)} h); Month: This w=${mThis.w}; Last ${mLast.from} - ${mLast.to} (calendar ${cPrev.from} - ${cPrev.to}); 2 months ago ${m2.from} - ${m2.to}`);
+  `a pick alone held the page ${picks.map(p => p.held).join('/')}, Show there ${picks.map(p => p.shown).join('/')}; Date: Today w=${dToday.w}; Yesterday ${dYest.from} - ${dYest.to} (calendar ${cYest.from} - ${cYest.to}); 2 days ago ${d2.from} - ${d2.to} (${hours(d2)} h); Month: This w=${mThis.w}; Last ${mLast.from} - ${mLast.to} (calendar ${cPrev.from} - ${cPrev.to}); 2 months ago ${m2.from} - ${m2.to}`);
 
 // R4. Zoom out: 180 days to a year; off at a year with its words, the key '-' changing nothing; an old 4h address
 const zoomBtn = `document.querySelector('#bar .range button[aria-label^="Zoom out"]')`;
@@ -169,6 +189,31 @@ const r8 = await ev(`(async () => {
 const html = r8.html ?? '';
 check('R8 mail', /<th[^>]*>Read<\/th><td[^>]*>Parts of this page read the newest 31 days of this window: /.test(html) && html.includes('This list reads the newest 31 days of this window'),
   r8.err ?? `the body: 'Read' line ${/>Read<\/th>/.test(html)}, the page's words ${html.includes('Parts of this page read the newest 31 days')}, the list's note ${html.includes('This list reads the newest 31 days')} (${html.length} bytes)`);
+
+// R9. a reply of the page before comes back after a newer draw began: never in the newer page's line (blocker 1). The
+// 60-day page's statements read is held 3 s in the page, the address goes to 1 hour while it is held
+const hold = await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const real = window.fetch;
+  window.fetch = async (u, o) => { const s = String(u), q = new URLSearchParams(s.split('?')[1] ?? '');
+    const long = s.includes('/api/statements?') && Date.parse(q.get('to')) - Date.parse(q.get('from')) > 40 * 86400e3;
+    if (long) window.__held = true;
+    const res = await real(u, o); if (long) await new Promise(r => setTimeout(r, 3000)); return res; }; })();` });
+await send('Page.navigate', { url: 'about:blank' }); await sleep(200);
+await send('Page.navigate', { url: base + `#/statements?i=${erp}&w=60d` });
+for (let i = 0; i < 80 && !(await ev('!!window.__held')); i++) await sleep(125);
+const heldSeen = await ev('!!window.__held');
+await ev(`location.hash = '#/statements?i=${erp}&w=1h'; 'ok'`);
+await sleep(4500);
+const r9 = await ev(words), w9 = (await params()).get('w');
+await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: hold.result?.identifier });
+check('R9 late reply', heldSeen && w9 === '1h' && !r9.some(t => t.startsWith('meta range-cut')),
+  `the 60-day read held ${heldSeen}, then w=${w9}: ${JSON.stringify(r9).slice(0, 500)}`);
+
+// R11. a page with two cut reads of one reach says the reach once (SQL Server File IO over 60 days: its fileio and its
+// counters read, asked milliseconds apart)
+await go(`#/mssqlfileio?i=${process.env.RANGE_SQL01}&w=60d`); await sleep(3000);
+const cut11 = (await ev(words)).find(t => t.startsWith('meta range-cut: ')) ?? '';
+const times11 = (cut11.match(/the newest 31 days of this window/g) ?? []).length;
+check('R11 once', times11 === 1, `the reach said ${times11} time(s): ${cut11.slice(0, 400)}`);
 
 if (failed) { console.log(`FAIL ${failed} case(s)`); process.exit(1); }
 console.log('range-check: every case ok');

@@ -1,7 +1,7 @@
 import uPlot from 'uplot';
 import { get, Row, rowsOf, Table } from './api';
 import { href, MAX_RANGE_MS, parse, window_ } from './router';
-import { copyText, el, saveBlob, showMenu } from './ui';
+import { copyText, el, readWindowWords, saveBlob, showMenu } from './ui';
 import { exportChart } from './export';
 import { fileStamp, fmt as fmtZone, stamp, zoneChoice } from './tz';
 import { axisLook, chartKind, chartLook, chartState, Measure, rememberZoom, zoomReset } from './chartkit';
@@ -51,7 +51,7 @@ const withAlpha = (c: string, a: number) => /^#[0-9a-f]{6}$/i.test(c)
 // marks on its time axis (setting changes, restarts, failovers, deadlocks) and the server limits it may draw as lines.
 // One read per instance and window for the whole page: the charts of a page share it, a new page reads again.
 export interface FrameMark { at: number; kind: string; label: string; tab: string; ofKind: number }
-interface FrameRead { marks: FrameMark[]; limits: Map<string, number> }
+interface FrameRead { marks: FrameMark[]; limits: Map<string, number>; read?: { from: string; to: string } }
 const frameReads = new Map<string, Promise<FrameRead>>();
 // the page's window, taken once per address and draw (a preset's now moves): a page builds its charts before the frame
 // clears the last page's (main.ts render), so the address is the key, not the clearing alone
@@ -73,6 +73,8 @@ function frameRead(instance: number, from: number, to: number): Promise<FrameRea
       .then(d => ({
         marks: rowsOf(d.events).map(r => ({ at: Date.parse(String(r.at)), kind: String(r.kind), label: String(r.label ?? ''), tab: String(r.tab ?? ''), ofKind: Number(r.of_kind ?? 0) })).filter(m => !Number.isNaN(m.at)),
         limits: new Map(rowsOf(d.limits).filter(r => r.value != null).map(r => [String(r.name), Number(r.value)])),
+        // the events' own read window when the server cut the chart's span to its reach: the chart says it (markNote)
+        read: d.events?.read_from && d.events.read_to ? { from: d.events.read_from, to: d.events.read_to } : undefined,
       }))
       .catch(() => ({ marks: [], limits: new Map<string, number>() }));   // a failed read draws the chart without its marks
     frameReads.set(key, p);
@@ -266,6 +268,11 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
         const all = capped.get(k) ?? n;
         return all > n && f.marks.filter(m => m.kind === k).length < all ? `the newest ${n} of ${all} ${word(k, all)}` : `${n} ${word(k, n)}`;
       }).join(', ') + '.' : '';
+      // a chart over its own span longer than the events' reach (the Storage tab's 90 days to a year): its marks are of
+      // the newest part, and the chart says so here - never the page's line, whose window is the page's (api.ts)
+      if (o.marks !== false && f.read && Date.parse(f.read.from) > xs[0] * 1000 + 60e3) {
+        markNote = (markNote ? markNote + ' ' : '') + `Marks are read for ${readWindowWords(f.read)} (this chart is longer than they read).`;
+      }
       say();
       // the marks are links out of the keyboard's way (tabindex -1, hundreds on a long window): their one tab stop is
       // this list under the chart, closed until opened

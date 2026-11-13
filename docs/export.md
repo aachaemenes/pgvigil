@@ -116,7 +116,10 @@ same row.
 
 The same rows and the same columns: one grid gives one `.csv`; a tab with several grids gives a `.csv.zip` with one CSV per grid,
 numbered in page order and named by the sheet names above. RFC 4180, UTF-8 with a byte-order mark (Excel reads
-the encoding from it), CRLF line ends. Numbers are plain values (bytes, seconds for a `1h 1m` duration, milliseconds for a millisecond time, the percent
+the encoding from it), CRLF line ends. The header row is the first line, except in the CSV of a list that read only the
+newest part of a long window: there one quoted sentence comes first ('This list reads the newest 31 days of this window:
+<from> to <to>.') and the header row is the second line - a reader that takes line 1 as the header skips that line
+first (pandas: `skiprows=1`). Numbers are plain values (bytes, seconds for a `1h 1m` duration, milliseconds for a millisecond time, the percent
 figure); times are
 `yyyy-mm-dd hh:mm:ss` in the browser's time. A text cell that a spreadsheet program would run as a formula
 (it starts with `=`, `+`, `-`, `@`, a tab or a carriage return: query text, an application name or any other

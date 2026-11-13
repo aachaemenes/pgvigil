@@ -409,7 +409,8 @@ a:hover, a:focus-visible { text-decoration-color: currentColor; }
 /* DBA Dash's twenty lengths in two columns, so the panel stays inside a 900-px-high window; Date and Month under the
    calendar periods, each a select under its label */
 .range-panel .range-quick { display: grid; grid-template-columns: 1fr 1fr; column-gap: var(--sp-2); }
-.range-daymonth-label { display: block; margin-top: var(--sp-2); padding: 0 var(--sp-2); }
+.range-daymonth-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); margin-top: var(--sp-2); padding: 0 var(--sp-2); }
+.range-daymonth-label { display: block; }
 .range-daymonth-label .meta { display: block; font-size: var(--fs-xs); }
 .range-daymonth { max-width: 100%; }
 @media (max-width: 34rem) { .range-panel { grid-template-columns: 1fr; } }

@@ -337,15 +337,21 @@ let shownPath = '';   // its tab, instance and tag alone: another of them opens 
 let storedRead: { at: number; row: Row | null } | undefined;
 async function storedRow(): Promise<Row | null> {
   if (!storedRead || Date.now() - storedRead.at > 300000) {
-    let row: Row | null = null;
-    try { row = rowsOf(await get('stored'))[0] ?? null; } catch { row = null; }
+    let row: Row | null;
+    try { row = rowsOf(await get('stored'))[0] ?? null; } catch { return null; }   // a failed read is not kept: the next draw asks again
     storedRead = { at: Date.now(), row };
   }
   return storedRead.row;
 }
 const utcWords = (ms: number, o: Intl.DateTimeFormatOptions) => new Date(ms).toLocaleDateString(undefined, { ...o, timeZone: 'UTC' });
+// one status node per address: a refresh of the same page keeps it with its words until its own reads are back (drawn
+// 300 ms after the last of them), and changes its children only when the words change - so a screen reader hears the
+// line when it appears or changes, not again at every refresh
+let noteNode: HTMLElement | undefined, noteKey = '';
 function rangeNote(ctx: Ctx, gen: number): HTMLElement {
-  const note = el('div', { class: 'range-note', role: 'status' });
+  const reused = !!noteNode && noteKey === location.hash;
+  if (!noteNode || !reused) { noteNode = el('div', { class: 'range-note', role: 'status', hidden: '' }); noteKey = location.hash; }
+  const note = noteNode;
   const from = Date.parse(window_(ctx).from);
   let storedWords = '';
   const draw = () => {
@@ -353,10 +359,15 @@ function rangeNote(ctx: Ctx, gen: number): HTMLElement {
     const cut = cutWords();
     if (cut) kids.push(el('p', { class: 'meta range-cut' }, cut + '.'));
     if (storedWords) kids.push(el('p', { class: 'meta range-stored' }, storedWords + ' ', el('a', { href: href(ctx, { tab: 'retention', instance: undefined }) }, 'Data retention')));
+    const said = kids.map(k => k.textContent).join('\n');
+    if (note.dataset.said === said) return;
+    note.dataset.said = said;
     note.replaceChildren(...kids);
     note.hidden = kids.length === 0;
   };
-  onCutRead(() => { if (gen === generation) draw(); });
+  let pending: number | undefined;
+  const later = () => { window.clearTimeout(pending); pending = window.setTimeout(() => { if (gen === generation) draw(); }, 300); };
+  onCutRead(() => { if (gen === generation) later(); });
   void storedRow().then(row => {
     if (gen !== generation || !row) return;
     const at = (k: string) => (row[k] == null ? NaN : Date.parse(String(row[k])));
@@ -365,12 +376,12 @@ function rangeNote(ctx: Ctx, gen: number): HTMLElement {
     if (!kept.length || from >= Math.max(...kept)) return;
     const bits: string[] = [];
     if (!Number.isNaN(rows)) bits.push(`the per-snapshot summaries from ${fmt(new Date(rows))} (pgvigil purge -days ${String(row.purge_days)}, last run ${fmt(new Date(String(row.purge_at)))})`);
-    if (!Number.isNaN(months)) bits.push(`the monthly history from ${utcWords(months, { month: 'long', year: 'numeric' })}`);
+    if (!Number.isNaN(months)) bits.push(`the monthly history from ${utcWords(months, { month: 'long', year: 'numeric' })} (UTC)`);
     if (!Number.isNaN(days)) bits.push(`the daily history from ${utcWords(days, { day: 'numeric', month: 'long', year: 'numeric' })} (UTC)`);
     storedWords = `This window starts ${fmt(new Date(from))}, before what the repository keeps: ${bits.join('; ')}.`;
-    draw();
+    later();
   }).catch(() => undefined);
-  draw();
+  if (!reused) draw();   // a new page's node goes in empty (hidden) and gets its words when its reads come back
   return note;
 }
 
@@ -378,9 +389,11 @@ async function render(force = false) {
   window.clearTimeout(timer);
   timer = undefined;
   const gen = ++generation;
-  startReads();   // the cut reads said under the range bar are this draw's
   dropMenu();   // a grid's copy menu never outlives the page it was opened on (a 30 s refresh included)
   const ctx = parse();
+  // the cut reads said under the range bar are this draw's, of this window's length (api.ts)
+  const w0 = window_(ctx);
+  startReads(Date.parse(w0.to) - Date.parse(w0.from));
   rememberInstance(ctx.instance);
   // another page or another range / filter of it: say so at once instead of leaving the old grids on screen while the
   // new ones read (an export in that gap took the old page); the same hash's refresh keeps its content (no flicker every

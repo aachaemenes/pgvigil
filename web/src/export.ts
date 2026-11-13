@@ -644,11 +644,16 @@ async function metaOf(ctx: Ctx): Promise<Meta> {
   return { instance, tab, from: new Date(w.from), to: new Date(w.to), window: rangeLabel(ctx), at: new Date(), read: cutWords() };
 }
 
-// cutWords: the page's reads the server cut to a part's reach (api.ts cutReads), in words, one per read window; none = undefined
+// cutWords: the page's reads the server cut to a part's reach (api.ts cutReads), in words, once per reach (its length in
+// whole minutes: a draw's reads ask the window milliseconds apart, so their ends differ), the newest read of each; none =
+// undefined
 export function cutWords(): string | undefined {
-  const seen = new Map<string, string>();
-  for (const c of cutReads()) seen.set(`${c.from}|${c.to}`, readWindowWords({ from: c.from, to: c.to }));
-  return seen.size ? 'Parts of this page read ' + [...seen.values()].join('; ') + ' (the window is longer than they read)' : undefined;
+  const byReach = new Map<number, { from: string; to: string }>();
+  for (const c of cutReads()) {
+    const k = Math.round((Date.parse(c.to) - Date.parse(c.from)) / 60e3), had = byReach.get(k);
+    if (!had || Date.parse(c.to) > Date.parse(had.to)) byReach.set(k, { from: c.from, to: c.to });
+  }
+  return byReach.size ? 'Parts of this page read ' + [...byReach.values()].map(rw => readWindowWords(rw)).join('; ') + ' (the window is longer than they read)' : undefined;
 }
 
 export function exportName(m: Meta, ext: string): string {

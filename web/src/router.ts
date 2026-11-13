@@ -41,8 +41,9 @@ export const menuPresets = ['5m', '10m', '15m', '30m', '1h', '2h', '3h', '6h', '
 // from / to the range panel writes.
 export const periods: Record<string, string> = { today: 'today', wtd: 'week to date', mtd: 'month to date' };
 // MAX_RANGE_MS: the longest window the server takes (internal/web maxWindow: a year, a leap day and a fall-back hour);
-// REACH_MS: what a part reads of a longer window unless it names its own reach (internal/web defaultReach) - the reply
-// then says what it read (X-Pgvigil-Read-From / -To, api.ts) and the page says so under the range bar
+// REACH_MS: what a part reads of a longer window unless it names its own reach (internal/web defaultReach). The page's
+// words never assume it: each reply says what it read (X-Pgvigil-Read-From / -To and read_from / read_to, api.ts);
+// tz-check's row keeps this equal to the server's
 export const MAX_RANGE_MS = (366 * 24 + 1) * 3600e3;
 export const REACH_MS = (31 * 24 + 1) * 3600e3;
 // periodStart: where a period of the instant `now` begins; back = whole periods earlier (1 = the one before)

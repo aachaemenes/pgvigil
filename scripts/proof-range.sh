@@ -50,6 +50,7 @@ cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
 WORK=$(mktemp -d); DB="pgvigil_range_$RANDOM"; PORT=$((21000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
+bad=0; no() { echo "FAIL: $*" >&2; bad=$((bad + 1)); }   # a row that failed: the next rows still run, the end exits 1
 cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
   [[ -n "$CHR" ]] && kill "$CHR" 2>/dev/null || true
@@ -74,8 +75,10 @@ BASE="http://127.0.0.1:$PORT/"
 Q() { psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -c "$1"; }
 ERP=$(Q "select instance_id from pgvigil.instances where name = 'demo-onprem-erp01'")
 [[ -n "$ERP" ]] || fail "the demo has no demo-onprem-erp01"
+SQL01=$(Q "select instance_id from pgvigil.instances where name = 'demo-onprem-sql01'")
+[[ -n "$SQL01" ]] || fail "the demo has no demo-onprem-sql01"
 
-echo "== RA: the API's read window"
+echo "== RA: the API's read window"; b0=$bad
 ts() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 N=$(date -u +%s); now=$(ts $N); y365=$(ts $((N - 365 * 86400)))
 want_from=$(ts $((N - 745 * 3600)))
@@ -84,32 +87,32 @@ h() { grep -i "^$1:" "$WORK/h.txt" | tr -d '\r' | cut -d' ' -f2; }
 c=$(hdr "api/statements?instance=$ERP&from=$y365&to=$now")
 jf=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("read_from",""))' "$WORK/b.json")
 [[ "$c" == 200 && "$(h X-Pgvigil-Read-From)" == "$want_from" && "$(h X-Pgvigil-Window-From)" == "$y365" && "$jf" == "$want_from" ]] \
-  || fail "RA: statements over 365 days: $c, read from '$(h X-Pgvigil-Read-From)' (want $want_from), window from '$(h X-Pgvigil-Window-From)', JSON read_from '$jf'"
+  || no "RA: statements over 365 days: $c, read from '$(h X-Pgvigil-Read-From)' (want $want_from), window from '$(h X-Pgvigil-Window-From)', JSON read_from '$jf'"
 d20=$(ts $((N - 20 * 86400)))
 c2=$(hdr "api/statements?instance=$ERP&from=$d20&to=$now")
-[[ "$c2" == 200 && -z "$(h X-Pgvigil-Read-From)" ]] && ! grep -q '"read_from"' "$WORK/b.json" || fail "RA: 20 days: $c2, read header '$(h X-Pgvigil-Read-From)'"
+[[ "$c2" == 200 && -z "$(h X-Pgvigil-Read-From)" ]] && ! grep -q '"read_from"' "$WORK/b.json" || no "RA: 20 days: $c2, read header '$(h X-Pgvigil-Read-From)'"
 over=$(ts $((N - 366 * 86400 - 3600 - 1)))
 c3=$(hdr "api/statements?instance=$ERP&from=$over&to=$now")
-[[ "$c3" == 400 ]] && grep -q 'window longer than a year' "$WORK/b.json" || fail "RA: 366 days, an hour and a second: $c3 $(head -c 200 "$WORK/b.json")"
+[[ "$c3" == 400 ]] && grep -q 'window longer than a year' "$WORK/b.json" || no "RA: 366 days, an hour and a second: $c3 $(head -c 200 "$WORK/b.json")"
 c4=$(hdr "api/dbinfo?instance=$ERP&part=db_series&from=$y365&to=$now")
-[[ "$c4" == 200 && -z "$(h X-Pgvigil-Read-From)" ]] || fail "RA: db_series over 365 days: $c4, read header '$(h X-Pgvigil-Read-From)'"
+[[ "$c4" == 200 && -z "$(h X-Pgvigil-Read-From)" ]] || no "RA: db_series over 365 days: $c4, read header '$(h X-Pgvigil-Read-From)'"
 c5=$(hdr "api/replication?instance=$ERP&from=$y365&to=$now")
 parts=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join(k+("=cut" if isinstance(v,dict) and v.get("read_from") else "") for k,v in sorted(d.items())))' "$WORK/b.json")
-[[ "$c5" == 200 && " $parts " == *" series=cut "* && " $parts " == *" latest "* && " $parts " == *" checks "* ]] || fail "RA: replication over 365 days: $c5, parts '$parts'"
+[[ "$c5" == 200 && " $parts " == *" series=cut "* && " $parts " == *" latest "* && " $parts " == *" checks "* ]] || no "RA: replication over 365 days: $c5, parts '$parts'"
 # a reply that is not one table (a struct, a map): each table that read the cut window carries it (red on c5c7e83)
 c6=$(hdr "api/plans?instance=$ERP&from=$y365&to=$now")
 pf=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("plans") or {}).get("read_from",""))' "$WORK/b.json")
 c7=$(hdr "api/perfsummary?from=$y365&to=$now&part=pg")
 pg=$(python3 -I -c 'import json,sys; print((json.load(open(sys.argv[1])).get("pg") or {}).get("read_from",""))' "$WORK/b.json")
 [[ "$c6" == 200 && "$pf" == "$want_from" && "$c7" == 200 && "$pg" == "$want_from" ]] \
-  || fail "RA: plans over 365 days: $c6, plans.read_from '$pf'; perfsummary pg: $c7, pg.read_from '$pg' (want $want_from)"
+  || no "RA: plans over 365 days: $c6, plans.read_from '$pf'; perfsummary pg: $c7, pg.read_from '$pg' (want $want_from)"
 # a part with its own 7-day reach says 7 days, not the default's 31 (red on c5c7e83: it said 745 h and read 7 days)
 d60=$(ts $((N - 60 * 86400))); want7=$(ts $((N - 7 * 86400)))
 c8=$(hdr "api/tables/top?instance=$ERP&from=$d60&to=$now")
-[[ "$c8" == 200 && "$(h X-Pgvigil-Read-From)" == "$want7" ]] || fail "RA: tables/top over 60 days: $c8, read from '$(h X-Pgvigil-Read-From)' (want $want7)"
-echo "ok   RA api: 365 days 200 read from $want_from of $y365 (JSON the same); plans and perfsummary tables the same; tables/top 7 days; 20 days whole; 366 d 1 h 1 s 400; db_series a year whole; replication '$parts'"
+[[ "$c8" == 200 && "$(h X-Pgvigil-Read-From)" == "$want7" ]] || no "RA: tables/top over 60 days: $c8, read from '$(h X-Pgvigil-Read-From)' (want $want7)"
+[[ $bad -eq $b0 ]] && echo "ok   RA api: 365 days 200 read from $want_from of $y365 (JSON the same); plans and perfsummary tables the same; tables/top 7 days; 20 days whole; 366 d 1 h 1 s 400; db_series a year whole; replication '$parts'"
 
-echo "== RB: what the repository keeps after 'pgvigil purge -days 8', then 'pgvigil purge -days 10'"
+echo "== RB: what the repository keeps after 'pgvigil purge -days 8', then 'pgvigil purge -days 10'"; b0=$bad
 CFG="$WORK/repo.yaml"; printf 'repository:\n  dsn: env:PGVIGIL_REPO_DSN\ninstances: []\n' > "$CFG"
 for d in 8 10; do
   PGVIGIL_REPO_DSN="$PGVIGIL_ADMIN_DSN dbname=$DB" "$WORK/pgvigil" purge -config "$CFG" -days $d > "$WORK/purge.out" 2>&1 || { cat "$WORK/purge.out"; fail "RB: the purge -days $d failed"; }
@@ -129,8 +132,8 @@ def iso(v):
     return t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 day = lambda v: iso(v)[:10] if v else ""
 print("|".join([str(r["purge_days"]), iso(r["purge_at"]), iso(r["rows_from"]), day(r["months_from"]), day(r["days_from"])]))' "$WORK/stored.json")
-[[ "$api" == "$hdays|$hat|$hrows|$hm|$hd" ]] || fail "RB: /api/stored '$api', the hand read '$hdays|$hat|$hrows|$hm|$hd'"
-echo "ok   RB stored: purge -days $hdays at $hat: rows from $hrows; the oldest monthly partition $hm, daily ${hd:-none} (= the hand read)"
+[[ "$api" == "$hdays|$hat|$hrows|$hm|$hd" ]] || no "RB: /api/stored '$api', the hand read '$hdays|$hat|$hrows|$hm|$hd'"
+[[ $bad -eq $b0 ]] && echo "ok   RB stored: purge -days $hdays at $hat: rows from $hrows; the oldest monthly partition $hm, daily ${hd:-none} (= the hand read)"
 
 echo "== a headless Chromium on CDP $CDP"
 mkdir -p "$WORK/dl"
@@ -138,7 +141,22 @@ chromium --headless=new --remote-debugging-port=$CDP --user-data-dir="$WORK/chro
 CHR=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
-RANGE_ERP=$ERP RANGE_ROWS_FROM="$hrows" RANGE_PURGE_AT="$hat" RANGE_MONTHS_FROM="$hm" RANGE_DAYS_FROM="$hd" \
+RANGE_ERP=$ERP RANGE_SQL01=$SQL01 RANGE_ROWS_FROM="$hrows" RANGE_PURGE_AT="$hat" RANGE_MONTHS_FROM="$hm" RANGE_DAYS_FROM="$hd" \
   node scripts/range-check.mjs "$CDP" "$BASE" "$WORK/dl" | tee "$WORK/check.txt"
-[[ ${PIPESTATUS[0]} -eq 0 ]] || fail "range-check: a case failed"
-echo "OK: the range up to a year (RA RB R1-R8)"
+[[ ${PIPESTATUS[0]} -eq 0 ]] || no "range-check: a case failed"
+
+echo "== R10: erp01's database sizes of its oldest day copied 60 days back (more history than a part's reach), the growth panel at w=1h"
+Q "select pgvigil.ensure_month_partition('database_sizes', (select min(snapshot_at) from pgvigil.database_sizes where instance_id = $ERP) - interval '60 days')" >/dev/null
+n10=$(Q "with o as (select min(snapshot_at) m from pgvigil.database_sizes where instance_id = $ERP),
+  ins as (insert into pgvigil.database_sizes (instance_id, snapshot_at, dbid, datname, size_bytes, xid_age)
+          select s.instance_id, s.snapshot_at - interval '60 days', s.dbid, s.datname, s.size_bytes, s.xid_age
+            from pgvigil.database_sizes s, o where s.instance_id = $ERP and s.snapshot_at < o.m + interval '1 day' returning 1)
+  select count(*) from ins")
+if [[ "${n10:-0}" -gt 0 ]]; then
+  RANGE_CASE=R10 RANGE_ERP=$ERP node scripts/range-check.mjs "$CDP" "$BASE" "$WORK/dl" | tee -a "$WORK/check.txt"
+  [[ ${PIPESTATUS[0]} -eq 0 ]] || no "range-check R10: failed"
+else
+  no "R10: no size row of erp01 to copy back"
+fi
+[[ $bad -eq 0 ]] || fail "$bad row(s) failed (above)"
+echo "OK: the range up to a year (RA RB R1-R11)"
