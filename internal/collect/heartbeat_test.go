@@ -271,3 +271,33 @@ func TestStreakSince(t *testing.T) {
 		t.Errorf("a stop-cut connect counted as an attempt: %+v", l)
 	}
 }
+
+// TestChannelBackoff: serve's watchdog pass backs a failing channel off as the collector's own alert loop does
+// (alerts.Run): 1, 2, 4, 8, 16 minutes, then 30 at most; a channel that succeeds is tried every pass again.
+func TestChannelBackoff(t *testing.T) {
+	var b ChannelBackoff
+	t0 := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	if n := len(b.Skip(t0)); n != 0 {
+		t.Fatalf("a fresh backoff skips %d channel(s), want 0", n)
+	}
+	bad := map[string]error{"hook": errors.New("503"), "mail": nil}
+	at := t0
+	for i, want := range []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute} {
+		b.Note(at, bad)
+		if s := b.Skip(at.Add(want - time.Second)); !s["hook"] || s["mail"] {
+			t.Fatalf("failure %d: %v before its wait of %v ends the skip map is %v, want hook only", i+1, time.Second, want, s)
+		}
+		if s := b.Skip(at.Add(want)); s["hook"] {
+			t.Fatalf("failure %d: hook is still skipped after its wait of %v", i+1, want)
+		}
+		at = at.Add(want)
+	}
+	b.Note(at, map[string]error{"hook": nil})
+	if s := b.Skip(at.Add(time.Second)); len(s) != 0 {
+		t.Fatalf("after a success the skip map is %v, want empty", s)
+	}
+	b.Note(at, map[string]error{"hook": errors.New("503")})
+	if s := b.Skip(at.Add(61 * time.Second)); s["hook"] {
+		t.Fatal("a failure after a success waits 1 minute again, not the old wait")
+	}
+}

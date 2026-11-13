@@ -482,6 +482,50 @@ func (h *Heartbeat) beat(ctx context.Context, minute time.Time) {
 	}
 }
 
+// ChannelBackoff keeps a failing alert channel out of the next passes, as the collector's own alert loop does
+// (alerts.Run): 1 minute after its first failure, then 2, 4, 8 and 16, then 30 at most; a pass in which it succeeds
+// forgets it. serve's watchdog pass uses it: a collector may be down for long, and a webhook answering 5xx or 429 must
+// not be retried every minute. Not safe for two goroutines: the watchdog calls its pass from one.
+type ChannelBackoff struct {
+	m map[string]*channelBack
+}
+
+type channelBack struct {
+	fails int
+	until time.Time
+}
+
+// Skip names the channels still waiting at now (the skip map of alerts.Pass).
+func (b *ChannelBackoff) Skip(now time.Time) map[string]bool {
+	skip := map[string]bool{}
+	for n, c := range b.m {
+		if now.Before(c.until) {
+			skip[n] = true
+		}
+	}
+	return skip
+}
+
+// Note takes a pass's outcome per channel (nil = it sent): a failure lengthens the channel's wait from now.
+func (b *ChannelBackoff) Note(now time.Time, outcome map[string]error) {
+	for n, e := range outcome {
+		if e == nil {
+			delete(b.m, n)
+			continue
+		}
+		if b.m == nil {
+			b.m = map[string]*channelBack{}
+		}
+		c := b.m[n]
+		if c == nil {
+			c = &channelBack{}
+			b.m[n] = c
+		}
+		c.fails++
+		c.until = now.Add(min(time.Minute<<min(c.fails-1, 5), 30*time.Minute))
+	}
+}
+
 var watchdog atomic.Value // string: "on", "on; the last alert pass failed: <err>", or "off: <why>"; empty outside serve
 
 // SetWatchdogOff records why serve runs no watchdog (logged by the caller; the Collector page shows it).

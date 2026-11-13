@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS pgvigil.collector_heartbeat (
   started_at    timestamptz NOT NULL,
   beat_at       timestamptz NOT NULL,
   stopped_at    timestamptz,                      -- a clean stop; a crash leaves it empty and the beat ages
+  retired_at    timestamptz,                      -- the host's collector uninstalled (import_collector_retire): the run is left out of collector_hosts
   mem_bytes     bigint,                           -- the Go runtime's memory from the OS (runtime.MemStats.Sys)
   goroutines    int,
   instances     int,                              -- instances it ran a collection on in the last minute
@@ -111,7 +112,7 @@ CREATE OR REPLACE FUNCTION pgvigil.import_collector_claim(p_id text, p_host text
 RETURNS void LANGUAGE sql AS $$
   INSERT INTO pgvigil.collector_heartbeat (collector_id, host, os, runs_as, version, pid, started_at, beat_at)
   VALUES (p_id, p_host, p_os, p_runs_as, p_version, p_pid, now(), now())
-  ON CONFLICT (collector_id) DO UPDATE SET beat_at = now(), stopped_at = NULL;
+  ON CONFLICT (collector_id) DO UPDATE SET beat_at = now(), stopped_at = NULL, retired_at = NULL;
 $$;
 
 -- import_collector_beat: the minute's beat. p_beat: {mem_bytes, goroutines, instances,
@@ -133,7 +134,8 @@ BEGIN
    WHERE datname = current_database() AND application_name LIKE 'pgvigil%';
   UPDATE pgvigil.collector_heartbeat
      SET beat_at = now(), mem_bytes = (p_beat->>'mem_bytes')::bigint, goroutines = (p_beat->>'goroutines')::int,
-         instances = (p_beat->>'instances')::int, repo_conns = v_conns
+         instances = (p_beat->>'instances')::int, repo_conns = v_conns,
+         retired_at = NULL                        -- a run that beats is not retired, whatever was marked by hand
    WHERE collector_id = p_id;
   INSERT INTO pgvigil.collector_runs (minute, collector_id, engine, collection, runs, failures, rows_written, dur_ms_sum, dur_ms_max, dur_hist)
   SELECT p_minute, p_id, coalesce(nullif(r.engine, ''), 'postgres'), r.collection, r.runs, r.failures, r.rows, r.dur_sum, r.dur_max,
@@ -187,6 +189,20 @@ RETURNS TABLE (instance text, collection text, fail_streak int, last_error text)
    WHERE i.is_active AND s.fail_streak > 0
 $$;
 
+-- import_collector_retire: the host's collector is uninstalled and its repository kept (uninstall calls it; the
+-- repository owner may, for a host that is gone): every run of the host is marked retired, and stopped when it left no
+-- stop mark. collector_hosts leaves such runs out, so the host raises no 'collector not seen', holds no alert and no
+-- longer keeps serve's watchdog on - without it the host would stand as not seen until its load is trimmed, and for
+-- good while another collector's beat keeps trimming nothing of it. A new run on that host claims a fresh row and is
+-- back; a retired run that beats again loses the mark. Returns the runs it marked.
+CREATE OR REPLACE FUNCTION pgvigil.import_collector_retire(p_host text)
+RETURNS int LANGUAGE sql AS $$
+  WITH u AS (
+    UPDATE pgvigil.collector_heartbeat SET retired_at = now(), stopped_at = coalesce(stopped_at, now())
+     WHERE host = p_host AND retired_at IS NULL RETURNING 1)
+  SELECT count(*)::int FROM u
+$$;
+
 -- import_collector_stop: a clean stop
 CREATE OR REPLACE FUNCTION pgvigil.import_collector_stop(p_id text)
 RETURNS void LANGUAGE sql AS $$
@@ -225,28 +241,30 @@ END $$;
 -- not seen
 CREATE OR REPLACE VIEW pgvigil.collector_status AS
 SELECT h.*,
-       CASE WHEN h.stopped_at IS NOT NULL THEN 'stopped'
+       CASE WHEN h.retired_at IS NOT NULL THEN 'retired'
+            WHEN h.stopped_at IS NOT NULL THEN 'stopped'
             WHEN EXISTS (SELECT 1 FROM pgvigil.collector_heartbeat n WHERE n.host = h.host AND n.started_at > h.beat_at) THEN 'ended'
             WHEN h.beat_at > now() - interval '2 minutes' THEN 'up'
             ELSE 'not seen' END AS state,
        round(extract(epoch FROM now() - h.beat_at))::bigint AS beat_age_secs
   FROM pgvigil.collector_heartbeat h;
 
--- collector_live: the runs beating now (not stopped, not ended, a beat in the last 3 minutes)
+-- collector_live: the runs beating now (not stopped, not ended, not retired, a beat in the last 3 minutes)
 CREATE OR REPLACE VIEW pgvigil.collector_live AS
 SELECT * FROM pgvigil.collector_status
- WHERE state NOT IN ('stopped', 'ended') AND beat_at > now() - interval '3 minutes';
+ WHERE state NOT IN ('stopped', 'ended', 'retired') AND beat_at > now() - interval '3 minutes';
 
 -- collector_hosts: each collector (a host): its newest beat over all its runs (a console run stopped beside the service
 -- does not make the host look down), whether any run is live, and its active instances - those it collected in the 15
--- minutes before its newest beat - with the ones no other host has read since that beat (orphaned)
+-- minutes before its newest beat - with the ones no other host has read since that beat (orphaned). A retired run
+-- (import_collector_retire) is not read: a host whose every run is retired is no collector any more
 CREATE OR REPLACE VIEW pgvigil.collector_hosts AS
 WITH hb AS (
   SELECT h.host, max(h.beat_at) AS beat_at, bool_and(h.stopped_at IS NOT NULL) AS all_stopped
-    FROM pgvigil.collector_heartbeat h GROUP BY h.host
+    FROM pgvigil.collector_heartbeat h WHERE h.retired_at IS NULL GROUP BY h.host
 ), mine AS (
   SELECT DISTINCT hb.host, l.instance_id
-    FROM hb JOIN pgvigil.collector_heartbeat h ON h.host = hb.host
+    FROM hb JOIN pgvigil.collector_heartbeat h ON h.host = hb.host AND h.retired_at IS NULL
     JOIN pgvigil.collector_load l ON l.collector_id = h.collector_id AND l.minute >= hb.beat_at - interval '15 minutes'
     JOIN pgvigil.instances i ON i.instance_id = l.instance_id AND i.is_active
 )
@@ -316,16 +334,43 @@ SELECT DISTINCT x.instance_id
 
 -- collector_shared_cause: the findings a shared cause (the network, the collector host, a shared login) explains -
 -- the ones alert_due (0190) holds under 'collector or network' and makes wait while one forms: the collector's own
--- kinds, and the findings judged by age against now() on data a cut stops refreshing (a job still 'running', a due
+-- kinds (0118's 'server unreachable' with them, for an instance no heartbeat covers), and the findings judged by age against now() on data a cut stops refreshing (a job still 'running', a due
 -- time passed with no run seen, the last clean amcheck, an index's unused window). Every other finding comes from the
 -- last good read and is sent as it is (a full disk found before a cut may be the shared cause itself).
 CREATE OR REPLACE FUNCTION pgvigil.collector_shared_cause(p_source text, p_setting text)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT coalesce((p_source = 'pgvigil collector' AND p_setting IN ('authentication failing', 'collection failing', 'server unreachable'))
+      OR (p_source = 'collector' AND p_setting = 'server unreachable')   -- 0118's (task 177 D30), where no heartbeat covers the instance
       OR (p_source = 'pgvigil' AND p_setting IN ('job run over twice its average', 'job schedule missed'))
       OR (p_source = 'mssql_jobs' AND p_setting = 'a job runs far longer than its average')
       OR (p_source = 'pg-backups' AND p_setting LIKE 'amcheck older than %')
       OR (p_source = 'pgvigil indexes' AND p_setting = 'unused index'), false)
+$$;
+
+-- collector_covers: does a collector that beats cover the instance's failed read at p_at - a run not retired wrote a
+-- load row of the instance in (p_at - 20 minutes, p_at + 2 minutes]? Then the instance's connect failures are this
+-- file's to report ('authentication failing', 'server unreachable': they carry the streak, its start and the
+-- failing-together window), and the findings view (0190) leaves 0118's own 'server unreachable' out for it: an
+-- instance has ONE. Tied to the failed read's own time, not to now: an instance moved to a `pgvigil collect` on a
+-- schedule (no heartbeat) keeps 0118's finding, and a stopped collector's instances stay covered for as long as
+-- 0118's row lives. A read failing in the minute before the collector's first beat names the instance is not covered
+-- yet (the load row is written at the beat).
+CREATE OR REPLACE FUNCTION pgvigil.collector_covers(p_instance_id int, p_at timestamptz)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+                  WHERE l.instance_id = p_instance_id AND h.retired_at IS NULL
+                    AND l.minute > p_at - interval '20 minutes' AND l.minute <= p_at + interval '2 minutes')
+$$;
+
+-- alert_key: an alert's key. The repository-wide 'collector or network' is keyed on its value AS IT IS - the value
+-- names the collector's host, and alert_finding_key (0059) replaces a number by '#', so the parents of hosts 'pgv-1'
+-- and 'pgv-2' shared one key and the second, cut by the same event, was never sent. Every other finding keeps 0059's
+-- key. alert_findings (0190) and the alert page's two queries call it, so they agree.
+CREATE OR REPLACE FUNCTION pgvigil.alert_key(p_instance_id int, p_source text, p_setting text, p_value text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE WHEN p_instance_id IS NULL AND p_source = 'pgvigil repository' AND p_setting = 'collector or network'
+              THEN md5('0' || E'\x1f' || p_source || E'\x1f' || p_setting || E'\x1f' || coalesce(p_value, ''))
+              ELSE pgvigil.alert_finding_key(coalesce(p_instance_id, 0), p_source, p_setting, p_value) END
 $$;
 
 -- collector_forming: the instances of a 'collector or network' that may be forming - in a collector's (host's) newest
