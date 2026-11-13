@@ -202,7 +202,7 @@ const state = `({ hash: location.hash, h2: document.querySelector('main h2')?.te
 // a control's signature: where it is, its tag, its words with numbers folded; a grid cell's link by its column
 const SIG = `(el => { const t = el.tagName, cell = el.closest('td');
   let w = (el.getAttribute('aria-label') || el.textContent || el.title || el.getAttribute('name') || el.id || '').replace(/\\s+/g, ' ').trim().replace(/[0-9][0-9:.,\\- ]*/g, '#').slice(0, 60);
-  if (cell && t === 'A') w = 'cell ' + cell.cellIndex;
+  if (cell && (t === 'A' || t === 'BUTTON')) w = 'cell ' + cell.cellIndex;
   const where = el.closest('dialog[open]') ? 'dlg ' : el.closest('[role=menu], .menu') ? 'menu ' : el.closest('.inst-header') ? 'hdr ' : el.closest('#bar') ? 'bar ' : '';
   if (t === 'A') { const h = el.getAttribute('href') || ''; const [p, qs] = h.split('?'); return where + 'A ' + p + '?' + [...new URLSearchParams(qs || '').keys()].sort().join('&') + ' ' + w; }
   if (t === 'INPUT') return where + 'I' + el.type + ' ' + w; if (t === 'SELECT') return where + 'S ' + w; if (t === 'SUMMARY') return where + 'D ' + w; return where + 'B ' + w; })`;
@@ -213,7 +213,7 @@ const controls = withBar => ev(`(() => { const S = ${SIG}; const seen = new Map(
     what: (el.getAttribute('aria-label') || el.textContent || el.title || '').replace(/\\s+/g, ' ').trim().slice(0, 80), disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
     reason: [el.title, ...(el.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).map(i => document.getElementById(i)?.textContent?.trim() ?? '')].filter(Boolean).join(' | ').slice(0, 240),
     href: el.getAttribute('href'), type: el.type || '', opts: el.tagName === 'SELECT' ? [...el.options].map(o => o.value) : null, cur: el.tagName === 'SELECT' ? el.value : null,
-    on: ['aria-pressed', 'aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') }); seen.get(s).n++; }
+    on: ['aria-pressed', 'aria-selected', 'aria-current'].some(a => (el.getAttribute(a) || 'false') !== 'false') || (el.type === 'radio' && el.checked) }); seen.get(s).n++; }
   return [...seen.values()]; })()`);
 const offNotes = () => ev(`[...document.querySelectorAll('main p.meta, main p.note, main .note, main .off-reason, main [id^=off-], dialog[open] p')].map(p => p.textContent.trim()).filter(t => /off here|is off|read only|read-only|needs|refused|not configured|no read login|no monitoring login|-no-login|disabled|demo/i.test(t)).map(t => t.slice(0, 240))`);
 // one step: the control by its signature, then a click (or a select's option, or a file input's fixture)

@@ -16,22 +16,16 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the second run, after the driver's own faults the first run showed were fixed - stored state cleared before
-# each page, the right-click only where a grid has a cell, never the option a select holds, a change read by a hash of
-# the page with reads, copies and focus as effects, menus seen by their boxes, empty error boxes ignored, a link to '#'
-# clicked, the grid's own controls 3 times a driver; written before it):
-#   the grader's self-test: 9 of 9 cases; the expected file: 2 rows (the threshold dialogs' Inherit, the calendar's
-#     Next month: disabled with no words)
-#   the click map: its own verdict line
-#   listed: 181 pages as the first run (root 63, PostgreSQL demo-onprem-erp01 64 with the Pooler of demo-aurora-crm01,
-#     SQL Server demo-onprem-sql01 54) in 4 shards balanced by each page's controls; every page settled
-#   the walk: fewer pages over the cap than the first run's 126 (the grid's own controls no longer spend it); no 'not
-#     reached' row from a page without a grid; no NOTHING row from a select's own value or a Refresh; the longest driver
-#     under the first run's 4297 s
-#   the grade: the 2 listed rows hold (the first run: 21 rows); every other FAIL row is NEW: 'click-through: FAIL (<n>
-#     FAIL row(s) outside the expected file)' - those rows, by cause with the smallest fix and its file (a control that
-#     does nothing, a step the walk could not reach, an off control without words), are the run's table, listed here
-#     after it; a row that is the walk's own fault is fixed in the driver first
+# Expected (the third run: the second run's 107 rows outside the file read - 18 the driver's own (a button in a grid cell
+# named by its text, live data that changes between snapshots; a checked radio clicked), fixed; 89 findings, listed by
+# cause; written before it):
+#   the grader's self-test: 9 of 9 cases; the expected file: 8 rows
+#   the click map: its own verdict line (the second run: 524 links, 0 FAIL)
+#   listed: 180 pages as the second run (root 62, PostgreSQL demo-onprem-erp01 64 with the Pooler of
+#     demo-aurora-crm01, SQL Server demo-onprem-sql01 54) in 4 shards; 181 with the bar; every page settled
+#   the walk: the longest driver about the second run's 3012 s or less (a grid cell's buttons now one per column)
+#   the grade: every FAIL row listed: 'click-through: OK (<n> FAIL row(s), each listed; <m> expected row(s) not
+#     seen)' - the second run's FAIL rows by row: 21 + 89; a row NEW now is a finding or the driver's own, read first
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_click_$RANDOM"; SRV=""; CHR=""; DRV=()
