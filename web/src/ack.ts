@@ -60,6 +60,14 @@ export function ackWhy(d: AckData, instanceId?: AckInstance, name?: string): str
   return d.reason ?? 'acknowledgements are off';
 }
 
+// onDoor: a demo serve whose writes go through the door alone (the server's own stay off)
+export const onDoor = (d: AckData): boolean => !d.writable && !!d.door;
+
+// doorRows: the instances a picker offers. On a demo serve the door's own alone - a control is never on for an
+// instance the door would refuse - and every instance on any other server.
+export const doorRows = (d: AckData, insts: Row[]): Row[] =>
+  onDoor(d) ? insts.filter(i => d.door!.instances.includes(Number(i.instance_id))) : insts;
+
 export interface AckResult { outcome: string; detail: string; ack_id?: number | null }
 export const addAck = (b: AckBody) => post<AckResult>('ack', b);
 export const endAck = (id: number) => post<AckResult>('ack/end', { ack_id: id });
@@ -100,8 +108,10 @@ export function jobAcks(d: AckData): Map<string, Row> {
 // jobAckCell: a Jobs grid's Acknowledge cell (the Jobs pages call it: their WIRING). A failed job not acknowledged:
 // an 'Acknowledge' button; acknowledged for this failure: the date and who, with 'Clear'; a newer failure than the one
 // acknowledged: the button again (the old row lapses by itself). lastFail is the job's last failure time as the page
-// has it; no failure = an empty cell.
-export function jobAckCell(d: AckData, instanceId: number, jobName: string, lastFail: unknown, after: () => void): HTMLElement {
+// has it; no failure = an empty cell. note: the page's one sentence for an Acknowledge that is off on this page (every
+// row of the grid shares the reason - the server writes nothing, or the instance is not the demo's): the button points
+// at it, and the cell - which Copy all and the exports carry - holds the button alone.
+export function jobAckCell(d: AckData, instanceId: number, jobName: string, lastFail: unknown, after: () => void, note?: HTMLElement): HTMLElement {
   const span = el('span', { style: 'white-space:nowrap' });
   if (lastFail == null || lastFail === '') return span;
   const a = jobAcks(d).get(`${instanceId}|${jobName}`);
@@ -115,7 +125,7 @@ export function jobAckCell(d: AckData, instanceId: number, jobName: string, last
     what: `Its failure of ${fmtTime(lastFail)} is acknowledged: the cell loses its colour until the job fails again. Who and when are kept.`,
     body: { kind: 'job', instance_id: instanceId, job_name: jobName, seen_state: String(lastFail) },
     expiry: false, after,
-  }), { instance: instanceId }));
+  }), { instance: instanceId, note }));
   return span;
 }
 
