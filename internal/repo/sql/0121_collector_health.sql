@@ -641,6 +641,10 @@ SELECT s.instance_id, 'critical', 'collection failing', s.collection, true, 'the
  WHERE i.is_active AND s.collection <> '(connect)' AND s.fail_streak >= 3 AND s.last_run_at > now() - interval '1 day'
    -- it stands during an outage too (the page shows it); alert_due (0190) decides the send: held while 'collector or
    -- network' stands, and after it one failed run past its window (collector_in_window)
+   -- a streak speaks only while a beating collector still names the instance (collector_covers): only such a run ends
+   -- it. An instance moved to a `pgvigil collect` on a schedule, or one whose collector died, leaves this view 20
+   -- minutes after its last naming; the Summary's Collection Errors check reads the scheduled collect's errors
+   AND pgvigil.collector_covers(s.instance_id, now())
 UNION ALL
 -- the instance's own connect failing, the server not answering (not a refused login: that is 'authentication
 -- failing'): 3 attempts in a row over a minute or more (heartbeat.go's '(connect)' streak); a run that fails there
@@ -651,6 +655,11 @@ SELECT s.instance_id, 'critical', 'server unreachable', 'no connection', true, '
   FROM pgvigil.collector_streaks s JOIN pgvigil.instances i USING (instance_id)
  WHERE i.is_active AND s.collection = '(connect)' AND s.fail_streak >= 3
    AND s.last_run_at - s.failing_since >= interval '60 seconds' AND s.last_run_at > now() - interval '1 day'
+   -- while a beating collector names the instance (as 'collection failing'); past that 0118's own speaks for it (0190
+   -- lets it through for a read no heartbeat covers): one finding for the server, never two. Its open alert is not
+   -- resolved by leaving (0059 resolves on an ok read only); a move to a scheduled collect while it fails is announced
+   -- again by 0118's (another source: the docs say it)
+   AND pgvigil.collector_covers(s.instance_id, now())
 UNION ALL
 SELECT l.instance_id, 'critical', 'authentication failing', 'login refused', true, 'the login the collector uses works', 'all',
        format('%s login(s) refused in 15 minutes (a per-database connect included): a changed password or pg_hba? each run retries it and can lock the login out',
