@@ -14,7 +14,7 @@ import { pictureOf, pngBytes, SCALE, svgSource, themeColours } from './export_ch
 import type { PictureBox } from './export_chart';
 import type { Placed } from './export_chart';
 import { stamp } from './tz';
-import { borderLeftOf, paintOf, textLook } from './export_colours';
+import { borderLeftOf, hex, paintOf, parseColour, textLook } from './export_colours';
 import { gridModel } from './ui';
 
 export interface PageSheet { name: string; rows: Cell[][]; widths: number[]; freeze: number; pictures: Placed[]; charts: Section[] }   // charts: each picture's numbers, the sheets after the grids'
@@ -37,6 +37,22 @@ function seen(e: Element): 'no' | 'yes' | 'contents' {
 
 // ---- a cell's look: the page's CSS for the cell and its marks ------------------------------------------------
 const BADGE = '.badge';
+// a chart legend's colour square (a .swatch: an empty span painted only by its background) is carried as a '■' run in
+// its colour before its words, as a .dot is a '●' (a colour is never the only carrier: its name follows it); the
+// swatch is painted inline at draw time in the screen theme's colour, so it is mapped to the light theme's as the
+// chart's own picture is (svgSource); toLight is set by pageSheet for its run
+const SWATCH = '.swatch';
+let toLight = (c: string): string => c;
+function lightOf(screen: string[]): (c: string) => string {
+  const light = themeColours(), key = (s: string | undefined) => { const q = parseColour(s); return q ? hex(q) : ''; };
+  const map = new Map(screen.map((s, i) => [key(s), key(light[i])] as [string, string]).filter(([a, b]) => a && b && a !== b));
+  return c => map.get(c) ?? c;
+}
+// markOf: a dot's or a swatch's glyph and colour (a swatch's in the light theme)
+function markOf(x: Element, base: Element): { glyph: string; color: string } {
+  const q = paintOf(x, base), sw = x.matches(SWATCH);
+  return { glyph: sw ? '■ ' : '● ', color: sw ? toLight(q.fill ?? q.text) : q.fill ?? q.text };
+}
 // pageLines: the lines the page draws an element's words on - its text nodes' own line boxes, grouped by their place
 // (a td's box is as tall as its row, so its height says nothing of its words)
 export function pageLines(e: Element): number {
@@ -73,7 +89,7 @@ function shape(td: Element): string {
   return k;
 }
 export type LookCache = Map<string, CellLook>;
-export interface CellLook { look: Look; dot?: { color: string; name: string } }
+export interface CellLook { look: Look; dot?: { color: string; name: string; glyph?: string } }
 // cellLook: a grid cell's fill, text colour, weight and underline (E2-4', E2-5'): the cell's own fill; else the fill of a
 // badge or pill in it (the whole cell takes the badge's tint and its text colour, bold as the badge is); the text colour
 // of the element whose words come first; a dot's colour and name (a rich-text run before the cell's words)
@@ -97,11 +113,11 @@ export function cellLook(td: Element, table: Element, cache?: LookCache): CellLo
     if (l.underline) look.underline = true;
   }
   if (!look.fill) delete look.fill;
-  const d = td.querySelector('.dot');
+  const d = td.querySelector('.dot, ' + SWATCH);
   let dot: CellLook['dot'];
   if (d && seen(d) === 'yes') {
-    const q = paintOf(d, table);
-    dot = { color: q.fill ?? q.text, name: flat(d.getAttribute('aria-label') || d.getAttribute('title') || '') };
+    const q = markOf(d, table);
+    dot = { color: q.color, name: d.matches(SWATCH) ? '' : flat(d.getAttribute('aria-label') || d.getAttribute('title') || ''), ...(d.matches(SWATCH) ? { glyph: q.glyph } : {}) };
   }
   const out = { look, ...(dot ? { dot } : {}) };
   cache?.set(key, out);
@@ -129,8 +145,8 @@ export function gridHeadLook(root: Element): Look {
 // colour is never the only carrier of a state, WCAG 1.4.1); a number keeps its number and leaves the dot out
 export function withDot(c: Cell, l: CellLook): Cell {
   if (!l.dot || typeof c.v === 'number') return c;
-  const words = c.v === '' ? l.dot.name : c.v;
-  return { ...c, v: '● ' + words, text: c.text || words, runs: [{ text: '● ', color: l.dot.color }, { text: words, color: c.look?.color, bold: c.look?.bold }] };
+  const words = c.v === '' ? l.dot.name : c.v, g = l.dot.glyph ?? '● ';
+  return { ...c, v: g + words, text: c.text || words, runs: [{ text: g, color: l.dot.color }, { text: words, color: c.look?.color, bold: c.look?.bold }] };
 }
 
 // badgeCell: a badge or pill as a cell of its own: its tint, its text colour, its weight
@@ -156,10 +172,12 @@ function lineCells(e: Element, base: Element): Cell[] {
     }
     runs = [];
   };
+  let mark = false;   // the run before is a swatch's '■ ': the page's space after it is that run's
   const visit = (n: Node) => {
     if (n.nodeType === 3) {
       const p = n.parentElement!;
-      const s = (n.textContent ?? '').replace(/\s+/g, ' ');
+      const s0 = (n.textContent ?? '').replace(/\s+/g, ' '), s = mark ? s0.replace(/^ /, '') : s0;
+      mark = false;
       if (!s) return;
       const l = textLook(p, e);
       runs.push({ text: s, color: paintOf(p, base).text, ...(l.bold ? { bold: true } : {}), ...(l.italic ? { italic: true } : {}), ...(l.underline ? { underline: true } : {}), ...(l.pt ? { pt: l.pt } : {}) });
@@ -172,6 +190,12 @@ function lineCells(e: Element, base: Element): Cell[] {
       close();
       const c = badgeCell(x, base);
       if (c.text) out.push(c);
+      return;
+    }
+    if (x !== e && x.matches(SWATCH)) {
+      const q = markOf(x, base);
+      runs.push({ text: q.glyph, color: q.color });
+      mark = true;
       return;
     }
     if (x !== e && x.matches('.dot')) {
@@ -219,7 +243,7 @@ function flow(row: Cell[], widths: number[]): Cell[] {
 }
 
 // ---- the walk ----------------------------------------------------------------------------------------------
-interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[] }; flow?: boolean; cards?: number[]; label?: number; pic?: Omit<Placed, 'row' | 'col'> }
+interface Block { rows: Cell[][]; rect: DOMRect; grid?: { th: number[] }; flow?: boolean; cards?: number[]; label?: number; table?: boolean; pic?: Omit<Placed, 'row' | 'col'> }
 const txt = (v: string, look: Look = {}): Cell => ({ v, kind: 'text', text: v, look });
 
 // pageSheet: the page sheet of #main (root), for the grids `grids` (export.ts walk's elements, in sheet order:
@@ -227,6 +251,10 @@ const txt = (v: string, look: Look = {}): Cell => ({ v, kind: 'text', text: v, l
 // by `sheets` (export.ts resolves both once the sheets are named)
 // screen: the chart colours under the screen's theme (export_chart.ts themeColours), read before the light theme is set
 export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new Map<Element, LookCache>(), screen: string[] = []): PageSheet {
+  toLight = screen.length ? lightOf(screen) : (c: string) => c;
+  try { return sheetOf(root, m, grids, cache, screen); } finally { toLight = (c: string) => c; }
+}
+function sheetOf(root: Element, m: Meta, grids: Element[], cache: Map<Element, LookCache>, screen: string[]): PageSheet {
   const blocks: Block[] = [];
   const charts: Section[] = [];
   let pics = 0;   // the SVG charts' pictures (a uPlot chart's count is its numbers sheet's)
@@ -382,7 +410,10 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
         pics++;
         add(e, [[head, ...(k !== undefined ? [{ ...txt('(its numbers: sheet {sheet})', { color: quiet, italic: true, underline: true }), jump: k }] : [])], ...Array.from({ length: n }, (): Cell[] => [])],
           undefined, { flow: true, pic: { png: new Uint8Array(0), svg: { src: s.src, bg: getComputedStyle(root.ownerDocument.documentElement).getPropertyValue('--card').trim() || '#ffffff' }, w: s.w, h: s.h, name: `Chart ${charts.length + pics}: ${title}`, descr } });
-        rest(sv);
+        // its legend and notes: the ring keeps its legend table beside the SVG in one box, so the walk goes into a box
+        // that holds the SVG (never the SVG itself)
+        const into = (p: Element) => { for (const c of p.children) { if (c === h || c === sv) continue; if (c.contains(sv)) into(c); else visit(c); } };
+        into(e);
         return;
       }
       // a chart the page draws in HTML (the Drives page's volume bars: a table): its line, then its content as any block
@@ -403,7 +434,7 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
       add(e, rows, undefined, { label: Math.min(40, Math.round((lw + 2) / 7 * 100) / 100) });
       return;
     }
-    if (e.tagName === 'TABLE') { add(e, tableBlock(e)); return; }
+    if (e.tagName === 'TABLE') { add(e, tableBlock(e), undefined, { table: true }); return; }
     // a row of tiles or chips: cards side by side (the tile wall, a heading over rows of tiles, is walked into)
     if (e.matches('.tiles, .chips')) { const cr = cardsBlock([...e.children]); add(e, cr, undefined, { cards: cardW }); return; }
     if (e.matches('.tile, .chip')) { const cr = cardsBlock([e]); add(e, cr, undefined, { cards: cardW }); return; }
@@ -441,11 +472,11 @@ export function pageSheet(root: Element, m: Meta, grids: Element[], cache = new 
   for (const b of blocks) if (b.label) widths[0] = Math.max(widths[0] ?? 0, b.label);
   for (const b of blocks) if (b.cards) b.cards.forEach((w, j) => { if (j >= gridCols) widths[j] = Math.max(widths[j] ?? 0, w); });
   for (let j = 0; j < widths.length; j++) if (widths[j] === undefined) widths[j] = 0;
-  // a grid's, a property card's or a card's words wider than their column at these widths wrap when a cell with words
-  // or a fill is to their right on the row (else it would cut them); with nothing to their right they run over the
-  // empty cells as the page's one line does (E2 1b, b1): only the page's own wrap wraps them
+  // a grid's, a property card's, a card's or a plain table's (a ring's legend) words wider than their column at these
+  // widths wrap when a cell with words or a fill is to their right on the row (else it would cut them); with nothing to
+  // their right they run over the empty cells as the page's one line does (E2 1b, b1): only the page's own wrap wraps them
   const something = (c: Cell | undefined) => !!c && (String(c.v) !== '' || !!c.look?.fill || !!c.look?.border);
-  for (const b of blocks) if (b.grid || b.label !== undefined || b.cards) for (const r of b.rows) r.forEach((c, j) => {
+  for (const b of blocks) if (b.grid || b.label !== undefined || b.cards || b.table) for (const r of b.rows) r.forEach((c, j) => {
     if (!c || typeof c.v === 'number' || c.look?.wrap || !r.slice(j + 1).some(something)) return;
     const t = c.runs ? c.runs.map(x => x.text).join('') : c.v;
     if (t && measured(t, !!c.look?.bold, c.look?.pt) > colPx(widths[j])) r[j] = { ...c, look: { ...c.look, wrap: true } };

@@ -321,6 +321,8 @@ const PAGELOOK = `(() => {
              series: sv ? [...b.querySelectorAll('.swatch')].map(s => ({ label: flat(s.nextSibling?.textContent), on: true }))
                : [...b.querySelectorAll('.u-legend .u-series')].slice(1).map(s => ({ label: flat(s.querySelector('.u-label')?.textContent ?? s.textContent), on: !s.classList.contains('u-off') })),
              svg: !!sv, table: !!sv && (() => { for (let a = b; a && a !== main; a = a.parentElement) { const nx = a.nextElementSibling; if (nx && nx.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) return true; } return false; })(), fills: sv ? [...new Set([...sv.querySelectorAll('rect[fill], path[fill], circle[stroke]')].filter(x => { const r = x.getBoundingClientRect(); return r.width >= 1 && r.height >= 1; }).map(x => (x.getAttribute('fill') || x.getAttribute('stroke') || '').toLowerCase()).filter(f => /^#[0-9a-f]{6}$/.test(f)))] : [],
+             legend: !!sv && !!b.querySelector('table.legend, .swatch'),
+             swatches: sv ? [...b.querySelectorAll('.swatch')].filter(vis).map(s => ({ label: flat(s.nextSibling?.textContent), colour: getComputedStyle(s).backgroundColor })) : [],
              state: flat(b.querySelector('.chart-state')?.textContent) };
   });
   const css = getComputedStyle(document.documentElement);
@@ -608,6 +610,14 @@ for (const hash of ['#/dbspace?w=2h', `#/summary?i=${one.instance_id}&w=2h`, `#/
   }
 }
 out.charts = charts;
+// a chart the page draws in HTML (chart.ts volumeBars: the Volumes bars of an instance's Storage page, a table): the
+// bars' rows as the page draws them, then the page's export (its rows on the page sheet after the chart's line)
+{
+  const hashV = `#/storage?i=${one.instance_id}&w=24h`;
+  await go(hashV); await sleep(700);
+  const bars = await ev(`[...document.querySelectorAll('main .chart.bars tbody tr')].map(tr => [...tr.children].map(td => (td.textContent || '').replace(/\\s+/g, ' ').trim()))`);
+  out.volumes = { hash: hashV, bars, xlsx: await press('Export .xlsx', ['.xlsx']) };
+}
 // an empty grid's sheet without the column the grid tools hide: a grid with rows over 24 h that is an empty grid's
 // note (no table to mark) in a window of 2001, under the same heading with the same columns, found on the first
 // candidate page that has one; a column hidden with its menu over 24 h, then the 2001 page exported
@@ -1064,6 +1074,23 @@ def rgb_of(s):
     if m: return tuple(int(c * 2, 16) for c in m.group(1))
     m = re.match(r'rgba?\((\d+),\s*(\d+),\s*(\d+)', s)
     return tuple(int(m.group(k)) for k in (1, 2, 3)) if m else None
+def colour_runs(x):
+    # every inline string cell's runs with their colours: [(text, 'RRGGBB' or None)]; a plain inline cell one run, None
+    out = []
+    for m in re.finditer(r'<c r="[A-Z]+\d+" s="\d+" t="inlineStr"><is>(.*?)</is></c>', x, re.S):
+        rs = re.findall(r'<r>(?:<rPr>(.*?)</rPr>)?<t[^>]*>([^<]*)</t></r>', m.group(1))
+        out.append([(unesc(tt), (re.search(r'<color rgb="FF([0-9A-Fa-f]{6})"', rp or '') or [None, None])[1]) for rp, tt in rs]
+                   or [(unesc(''.join(re.findall(r'<t[^>]*>([^<]*)</t>', m.group(1)))), None)])
+    return out
+def legend_audit(cells, swatches):
+    # (21:20) each swatch of a chart's legend on the page sheet: a run '■' in the swatch's colour, its name in the run
+    # after it; the names not found so
+    wrong = []
+    for s in swatches:
+        q = rgb_of(s.get('colour')); want = ('%02X%02X%02X' % q) if q else '?'
+        if not any(rs[k][0].strip() == '■' and (rs[k][1] or '').upper() == want and k + 1 < len(rs) and rs[k + 1][0].strip().startswith(s['label'])
+                   for rs in cells for k in range(len(rs))): wrong.append(s['label'])
+    return wrong
 def pictures_of(z):
     # the page sheet's pictures in drawing order: (width and height in CSS px from the anchor's EMU, alt text, PNG bytes)
     if 'xl/drawings/drawing1.xml' not in z.namelist(): return []
@@ -1106,6 +1133,13 @@ def chart_audit(key, z, names, sst, look, light=None):
         found = [sum(v for q, v in cols.items() if near(tuple(q), wc)) for wc in want]
         check(w > 0 and near(at(w - 1, 0), card, 2) and len(cols) >= 8 and all(f_ >= 3 for f_ in found),
               f"{key}: chart '{c['title']}' picture: the card colour {lk.get('card')} behind its title ({at(w - 1, 0) if w else None}), {len(cols)} colours sampled, each shown series' colour found {found}")
+        if c.get('svg') and c.get('legend'):
+            # its legend (an HTML swatch legend or the ring's legend table): each colour square a '■' in the light
+            # page's colour before its name (light: the light page's swatches for an export made dark)
+            lc = next((q for q in (lk.get('charts') or []) if q.get('title') == c['title']), c)
+            sws = lc.get('swatches') or []
+            wrong = legend_audit(colour_runs(sheet_rows(z, 1)[0]), sws)
+            check(len(sws) >= 1 and not wrong, f"{key}: chart '{c['title']}': its legend on the page sheet - each of its {len(sws)} swatch(es) a ■ in the swatch's colour before its name ({len(sws) - len(wrong)} found; wrong {wrong[:4]})")
     return pics
 def width_audit(x, cx, sst):
     # every column: the width the rule gives its cells (row 1, the header, measured as DBA Dash's bold header: the
@@ -1175,6 +1209,12 @@ _pp = bytes((x * 37 + y * 91 + k * 13) % 256 for y in range(4) for x in range(5)
 _dec = png_rgba(_png(5, 4, _pp, [0, 1, 2, 4]))
 check(_dec == (5, 4, 4, _pp) and rgb_of('#2a6fd6') == (42, 111, 214) and rgb_of('rgb(255, 255, 255)') == (255, 255, 255),
       f"charts: self-test - a planted 5 x 4 PNG with rows filtered none / sub / up / Paeth decoded to its own pixels ({_dec[:3]}, {'equal' if _dec[3] == _pp else 'DIFFERENT'}); colours read from #hex and rgb()")
+_lg = lambda col: f'<sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><r><rPr><sz val="11"/>{col}<rFont val="Calibri"/></rPr><t xml:space="preserve">■ </t></r><r><rPr><sz val="11"/><color rgb="FF1B2230"/><rFont val="Calibri"/></rPr><t xml:space="preserve">WRITELOG</t></r></is></c></row></sheetData>'
+_sw = [{'label': 'WRITELOG', 'colour': 'rgb(42, 111, 214)'}]
+_lg_ok, _lg_other = legend_audit(colour_runs(_lg('<color rgb="FF2A6FD6"/>')), _sw), legend_audit(colour_runs(_lg('<color rgb="FFC4511A"/>')), _sw)
+_lg_none = legend_audit(colour_runs('<sheetData><row r="1"><c r="A1" s="0" t="inlineStr"><is><t>WRITELOG</t></is></c></row></sheetData>'), _sw)
+check(_lg_ok == [] and _lg_other == ['WRITELOG'] and _lg_none == ['WRITELOG'],
+      f"charts: self-test - a legend's ■ in its swatch's colour before its name found ({_lg_ok}); a ■ in another colour ({_lg_other}) and a name without its ■ ({_lg_none}) found wrong")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
@@ -1499,6 +1539,16 @@ if cl.get('dark') and cl.get('look'):
     if cl.get('page'):
         fl = lambda zz: sorted(set(re.findall(r'rgb="(\w+)"', zz.read('xl/styles.xml').decode())))
         check(fl(zd) == fl(zipfile.ZipFile(f"{dl}/{cl['page']}")), f"charts: the dark export's colours are the light export's (E2-16) ({len(fl(zd))} colours)")
+
+vo = d.get('volumes') or {}
+check(bool(vo.get('xlsx')), f"volumes: an instance's Storage page ({vo.get('hash')}) exported ({vo.get('xlsx')})")
+if vo.get('xlsx'):
+    zv = zipfile.ZipFile(f"{dl}/{vo['xlsx']}"); tv = texts_of(sheet_rows(zv, 1)[0], shared(zv)); rv = {}
+    for (r_, c_), (_, t_, _) in tv.items(): rv.setdefault(r_, set()).add(t_)
+    hv = min([r_ for r_, ts in rv.items() if any(t_.startswith('Chart: Volumes') for t_ in ts)] or [0])
+    bars = vo.get('bars') or []
+    miss = [b[0] for b in bars if not any(r_ > hv and {b[0], b[3], b[5]} <= ts for r_, ts in rv.items())]
+    check(hv > 0 and len(bars) >= 1 and not miss, f"volumes: the Volumes chart (an HTML table, chart.ts volumeBars) on the page sheet after its 'Chart: Volumes' line (row {hv}): {len(bars)} bar row(s) the page draws, each one's volume, share and status in one row ({len(bars) - len(miss)} found; missing {miss[:4]})")
 
 for kind in ('line', 'ring'):
     c = ch.get(kind)
