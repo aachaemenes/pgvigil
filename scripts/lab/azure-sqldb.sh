@@ -6,6 +6,7 @@
 #   scripts/lab/azure-sqldb.sh up                  make the server, the database and the state file
 #   scripts/lab/azure-sqldb.sh allow <ip> [<ip>]   the server's firewall admits these addresses only
 #   scripts/lab/azure-sqldb.sh logins              (where 1433 reaches) the collector's contained user and its right
+#   scripts/lab/azure-sqldb.sh vmdoor <ip>         (tier pool) the VM's ssh door admits this address only
 #   scripts/lab/azure-sqldb.sh status              what this lab holds now, read from Azure
 #   scripts/lab/azure-sqldb.sh down                delete everything it made and read the listing back
 #
@@ -17,7 +18,11 @@
 #   PGVIGIL_LAB_AZ_TIER          free (default): General Purpose serverless Gen5, 1 vCore at most, under the monthly
 #                                free limit with AutoPause when it is used up (nothing is billed); basic: the Basic
 #                                tier (billed per day; its server-state DMVs need the server admin, not VIEW DATABASE
-#                                STATE, so the proof's least-privilege user reads less there)
+#                                STATE, so the proof's least-privilege user reads less there); pool: a Basic elastic
+#                                pool of 50 eDTU with two Basic databases in it, the server's Entra admin set to the
+#                                CLI's signed-in user, and one Standard_B2ats_v2 Ubuntu VM with a system-assigned
+#                                managed identity (scripts/proof-mssql-pool.sh: the pool's figures and the
+#                                entra-identity sign-in; Basic pool about USD 0.08 / h, the VM about USD 0.01 / h)
 #   PGVIGIL_LAB_DIR              the state folder, default .lab (up writes a .gitignore of '*' into it)
 #   PGVIGIL_SQLCMD_IMAGE         the image whose sqlcmd 'logins' runs, default mcr.microsoft.com/mssql/server:2022-latest
 #   AZ                           the Azure CLI, default az on the PATH
@@ -30,6 +35,14 @@
 # mode-600 request body that is removed right after the call, never on a command line, in the output or a log.
 # down deletes the server (its database and firewall rules with it), reads the listing back (the server, and every
 # resource of the subscription that carries the tag) and removes the state file only when nothing is left.
+# The pool tier also makes, each named from the server's name and tagged: the VM (its OS disk and NIC deleted with
+# it), its public address, its network security group (NO inbound rule until 'vmdoor': nothing reaches it), its
+# virtual network, and a mode-600 ssh key pair in the state folder; its 'logins' make two SQL logins in master
+# (pgv_pool: ##MS_ServerStateReader##, a user in each pooled database; pgv_conn: ##MS_ServerStateReader## and
+# ##MS_DatabaseConnector##, no user anywhere), the contained user of the free / basic tiers in the first database,
+# and the VM's identity as a user of the first database only, made by SID = its client id, TYPE = E (Microsoft's
+# CREATE USER: 'The Database Engine doesn't validate the specified ID in Microsoft Entra': no directory role is
+# needed). down deletes the VM and its pieces first, then the server, and reads both back.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 DIR=${PGVIGIL_LAB_DIR:-.lab}
@@ -37,6 +50,7 @@ STATE=$DIR/azure-sqldb.env
 SQLCMD_IMAGE=${PGVIGIL_SQLCMD_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 AZ=${AZ:-az}
 TIER=${PGVIGIL_LAB_AZ_TIER:-free}
+VM_SIZE=Standard_B2ats_v2
 CMD=${1:-}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 need_az() {
@@ -65,13 +79,19 @@ fw_clear() { local rules r; rules=$(az_ sql server firewall-rule list -g "$PGVIG
 case $CMD in
 up)
   need_az; : "${PGVIGIL_LAB_AZ_REGION:?the region}"
-  case $TIER in free|basic) ;; *) fail "PGVIGIL_LAB_AZ_TIER is free or basic" ;; esac
+  case $TIER in free|basic|pool) ;; *) fail "PGVIGIL_LAB_AZ_TIER is free, basic or pool" ;; esac
   [ ! -e "$STATE" ] || fail "$STATE exists: this lab is up (status) or was not taken down (down)"
   # a region can refuse new SQL servers for a subscription (ProvisioningDisabled), and the server's create then fails
   # minutes after it was accepted: the region's capability is read first and a restricted region is refused here
   ED=$([ "$TIER" = free ] && echo GeneralPurpose || echo Basic)
   CAP=$(az_ sql db list-editions -l "$PGVIGIL_LAB_AZ_REGION" --edition "$ED" --query '[0].status' -o tsv)
   case $CAP in Available|Default) ;; *) fail "the region $PGVIGIL_LAB_AZ_REGION refuses $ED for this subscription ($CAP): $(az_ sql db list-editions -l "$PGVIGIL_LAB_AZ_REGION" --edition "$ED" --query '[0].reason' -o tsv)" ;; esac
+  if [ "$TIER" = pool ]; then
+    command -v ssh-keygen >/dev/null || fail "ssh-keygen is not on this machine (the VM's key)"
+    [ "$(az_ vm list-skus -l "$PGVIGIL_LAB_AZ_REGION" --size "$VM_SIZE" --query "length([?name=='$VM_SIZE'])" -o tsv)" = 1 ] || fail "the region $PGVIGIL_LAB_AZ_REGION offers no $VM_SIZE"
+    R=$(az_ vm list-skus -l "$PGVIGIL_LAB_AZ_REGION" --size "$VM_SIZE" --query "[?name=='$VM_SIZE'] | [0].restrictions[].reasonCode" -o tsv)
+    [ -z "$R" ] || fail "the region $PGVIGIL_LAB_AZ_REGION restricts $VM_SIZE for this subscription: $R"
+  fi
   mkdir -p "$DIR"; chmod 700 "$DIR"; printf '*\n' > "$DIR/.gitignore"   # the folder ignores itself on any clone
   SUF=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
   ( umask 077; cat > "$STATE" <<EOF
@@ -89,6 +109,20 @@ MON_USER=pgv_monitor
 MON_PW=$(pw)
 EOF
   )
+  if [ "$TIER" = pool ]; then ( umask 077; cat >> "$STATE" <<EOF
+AZ_DB=pgvpool1
+AZ_DB2=pgvpool2
+AZ_POOL=pgvpool
+POOL_USER=pgv_pool
+POOL_PW=$(pw)
+CONN_USER=pgv_conn
+CONN_PW=$(pw)
+LAB_REGION=$PGVIGIL_LAB_AZ_REGION
+VM_NAME=pgv-proof-$SUF-vm
+VM_ADMIN=pgv
+VM_KEY=$DIR/azure-vm.key
+EOF
+  ); fi
   load
   BODY=$(umask 077; mktemp "$DIR/azsrv.XXXXXX.json")
   trap 'rm -f "$BODY"' EXIT
@@ -114,7 +148,33 @@ PY
   echo "made: logical server $AZ_SERVER in $PGVIGIL_LAB_AZ_GROUP ($PGVIGIL_LAB_AZ_REGION), tag pgvigil-proof=$PGVIGIL_LAB_PROOF, TLS 1.2+"
   # a server made through the API has no firewall rule; any rule found (another tool's default) is removed
   fw_clear
-  if [ "$TIER" = free ]; then
+  if [ "$TIER" = pool ]; then
+    read -r ME_ID ME_UPN < <("$AZ" ad signed-in-user show --query '[id,userPrincipalName]' -o tsv --only-show-errors)
+    [ -n "${ME_ID:-}" ] && [ -n "${ME_UPN:-}" ] || fail "the CLI's signed-in user was not read (az ad signed-in-user show)"
+    az_ sql server ad-admin create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --display-name "$ME_UPN" --object-id "$ME_ID" >/dev/null
+    echo "made: the Entra admin of $AZ_SERVER = the CLI's signed-in user (undo: goes with the server)"
+    az_ sql elastic-pool create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" --edition Basic --capacity 50 \
+      --db-max-capacity 5 --db-min-capacity 0 --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[name,sku.tier,sku.capacity,state]' -o tsv
+    echo "made: elastic pool $AZ_POOL (Basic, 50 eDTU), tag pgvigil-proof=$PGVIGIL_LAB_PROOF"
+    for d in "$AZ_DB" "$AZ_DB2"; do
+      az_ sql db create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$d" --elastic-pool "$AZ_POOL" --backup-storage-redundancy Local \
+        --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[name,currentServiceObjectiveName,elasticPoolName,status]' -o tsv
+      echo "made: database $d in $AZ_POOL, tag pgvigil-proof=$PGVIGIL_LAB_PROOF"
+    done
+    ssh-keygen -q -t ed25519 -N '' -C pgv-proof -f "$VM_KEY"; chmod 600 "$VM_KEY"
+    VMJ=$(az_ vm create -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" -l "$LAB_REGION" --image Ubuntu2404 --size "$VM_SIZE" \
+      --admin-username "$VM_ADMIN" --ssh-key-values "$VM_KEY.pub" --assign-identity '[system]' --nsg "$VM_NAME-nsg" --nsg-rule NONE \
+      --public-ip-address "$VM_NAME-ip" --public-ip-sku Standard --vnet-name "$VM_NAME-vnet" --nic-delete-option Delete \
+      --os-disk-delete-option Delete --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" -o json)
+    VM_IP=$(jq -r '.publicIpAddress // empty' <<<"$VMJ"); VM_PRINCIPAL=$(jq -r '.identity.systemAssignedIdentity // empty' <<<"$VMJ")
+    [ -n "$VM_IP" ] && [ -n "$VM_PRINCIPAL" ] || fail "the VM's address or identity was not read back (down removes what was made)"
+    VM_CLIENT=$("$AZ" ad sp show --id "$VM_PRINCIPAL" --query appId -o tsv --only-show-errors)
+    [[ $VM_CLIENT =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "the VM identity's client id was not read"
+    ( umask 077; printf 'VM_IP=%s\nVM_PRINCIPAL=%s\nVM_CLIENT=%s\n' "$VM_IP" "$VM_PRINCIPAL" "$VM_CLIENT" >> "$STATE" )
+    echo "made: VM $VM_NAME ($VM_SIZE, Ubuntu 24.04, system-assigned identity) at $VM_IP, its NIC, OS disk, $VM_NAME-ip, $VM_NAME-nsg (no inbound rule), $VM_NAME-vnet; tag pgvigil-proof=$PGVIGIL_LAB_PROOF"
+    echo "up: $AZ_HOST,1433 pool $AZ_POOL, databases $AZ_DB and $AZ_DB2; VM $VM_NAME at $VM_IP; no address admitted yet: allow <ip> [<ip>] (this machine, the VM), vmdoor <ip>, then logins"
+    exit 0
+  elif [ "$TIER" = free ]; then
     az_ sql db create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" -e GeneralPurpose -f Gen5 -c 1 \
       --compute-model Serverless --min-capacity 0.5 --auto-pause-delay 60 --use-free-limit true \
       --free-limit-exhaustion-behavior AutoPause --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[name,currentServiceObjectiveName,status]' -o tsv
@@ -137,6 +197,17 @@ allow)
   GOT=$(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].[startIpAddress,endIpAddress]' -o tsv | awk '{ print ($1 == $2 ? $1 : "RANGE " $1 "-" $2) }' | sort -u)
   [ "$GOT" = "$(printf '%s\n' "$@" | sort -u)" ] || fail "the firewall reads '$(tr '\n' ' ' <<<"$GOT")', not the addresses given: run allow again or down"
   echo "allowed: $AZ_SERVER admits $(az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].[startIpAddress,endIpAddress]' -o tsv | awk '{ printf "%s%s", (NR > 1 ? " " : ""), ($1 == $2 ? $1 : $1 "-" $2) }') only"
+  ;;
+vmdoor)
+  need_az; load; shift
+  [ "${AZ_TIER:-}" = pool ] || fail "vmdoor is the pool tier's (no VM in this lab)"
+  [ $# -eq 1 ] && ip_ok "$1" || fail "vmdoor <ip>: one IPv4 address"
+  az_ network nsg rule delete -g "$PGVIGIL_LAB_AZ_GROUP" --nsg-name "$VM_NAME-nsg" -n pgv-ssh >/dev/null 2>&1 || true
+  az_ network nsg rule create -g "$PGVIGIL_LAB_AZ_GROUP" --nsg-name "$VM_NAME-nsg" -n pgv-ssh --priority 1000 --direction Inbound \
+    --access Allow --protocol Tcp --source-address-prefixes "$1/32" --destination-port-ranges 22 >/dev/null
+  GOT=$(az_ network nsg rule list -g "$PGVIGIL_LAB_AZ_GROUP" --nsg-name "$VM_NAME-nsg" --query "[?direction=='Inbound' && access=='Allow'].[name,sourceAddressPrefix,destinationPortRange]" -o tsv)
+  [ "$GOT" = "$(printf 'pgv-ssh\t%s/32\t22' "$1")" ] || fail "the VM's door reads '$GOT', not ssh from $1 alone"
+  echo "door: $VM_NAME admits ssh from $1 only (undo: goes with the VM)"
   ;;
 logins)
   # runs where 1433 reaches (the reading machine). The first connection may wake a paused database (error 40613
@@ -163,6 +234,47 @@ SELECT 'logins: ' + N'$MON_USER' + ' (contained, ' + authentication_type_desc + 
           WHERE member_principal_id = DATABASE_PRINCIPAL_ID(N'$MON_USER')), 'none')
 FROM sys.database_principals WHERE name = N'$MON_USER';
 SQL
+  if [ "${AZ_TIER:-}" = pool ]; then
+    sq() { local d=$1; docker run --rm -i -e SQLCMDPASSWORD --entrypoint /opt/mssql-tools18/bin/sqlcmd "$SQLCMD_IMAGE" -S "tcp:$AZ_HOST,$AZ_PORT" -U "$ADMIN_USER" -d "$d" -C -b -l 60 -h -1 -W -i /dev/stdin; }
+    sq master <<SQL
+SET NOCOUNT ON;
+IF SUSER_ID(N'$POOL_USER') IS NULL CREATE LOGIN [$POOL_USER] WITH PASSWORD = N'$POOL_PW';
+ELSE ALTER LOGIN [$POOL_USER] WITH PASSWORD = N'$POOL_PW';
+IF SUSER_ID(N'$CONN_USER') IS NULL CREATE LOGIN [$CONN_USER] WITH PASSWORD = N'$CONN_PW';
+ELSE ALTER LOGIN [$CONN_USER] WITH PASSWORD = N'$CONN_PW';
+GO
+ALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER [$POOL_USER];
+ALTER SERVER ROLE ##MS_ServerStateReader## ADD MEMBER [$CONN_USER];
+ALTER SERVER ROLE ##MS_DatabaseConnector## ADD MEMBER [$CONN_USER];
+GO
+SELECT 'logins: ' + p.name + ' in ' + ISNULL((SELECT STRING_AGG(r.name, ', ') WITHIN GROUP (ORDER BY r.name) FROM sys.server_role_members m
+          JOIN sys.server_principals r ON r.principal_id = m.role_principal_id WHERE m.member_principal_id = p.principal_id), 'no server role')
+FROM sys.sql_logins p WHERE p.name IN (N'$POOL_USER', N'$CONN_USER') ORDER BY p.name;
+SQL
+    for d in "$AZ_DB" "$AZ_DB2"; do sq "$d" <<SQL
+SET NOCOUNT ON;
+IF USER_ID(N'$POOL_USER') IS NULL CREATE USER [$POOL_USER] FOR LOGIN [$POOL_USER];
+GO
+SELECT 'logins: ' + DB_NAME() + ' users ' + STRING_AGG(name + ' (' + authentication_type_desc + ')', ', ') WITHIN GROUP (ORDER BY name)
+FROM sys.database_principals WHERE type IN ('S', 'E', 'X') AND principal_id > 4;
+SQL
+    done
+    # the VM's identity: a user of the first database only, by SID = its client id (no lookup in Entra)
+    sq "$AZ_DB" <<SQL
+SET NOCOUNT ON;
+IF USER_ID(N'$VM_NAME') IS NULL
+BEGIN
+  DECLARE @sql nvarchar(max) = N'CREATE USER [$VM_NAME] WITH SID = ' + CONVERT(nvarchar(64), CAST(CAST(N'$VM_CLIENT' AS uniqueidentifier) AS varbinary(16)), 1) + N', TYPE = E;';
+  EXEC (@sql);
+END
+GRANT VIEW DATABASE STATE TO [$VM_NAME];
+GO
+SELECT 'logins: ' + name + ' (' + type_desc + ', ' + authentication_type_desc + ') in ' + DB_NAME() + ' holds ' +
+  ISNULL((SELECT STRING_AGG(permission_name, ', ') FROM sys.database_permissions WHERE grantee_principal_id = principal_id AND state = 'G'), 'nothing')
+FROM sys.database_principals WHERE name = N'$VM_NAME';
+SQL
+    echo "logins: Microsoft says a server role's membership may take up to 5 minutes to take effect"
+  fi
   ;;
 status)
   need_az
@@ -171,10 +283,27 @@ status)
   if [ -r "$STATE" ]; then load
     az_ sql db show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB" --query '[name,status,currentServiceObjectiveName,useFreeLimit]' -o tsv 2>/dev/null | sed 's/^/  database: /' || true
     az_ sql server firewall-rule list -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --query '[].[name,startIpAddress,endIpAddress]' -o tsv 2>/dev/null | sed 's/^/  firewall: /' || true
+    if [ "${AZ_TIER:-}" = pool ]; then
+      az_ sql db show -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_DB2" --query '[name,status,currentServiceObjectiveName,elasticPoolName]' -o tsv 2>/dev/null | sed 's/^/  database: /' || true
+      az_ vm show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" -d --query '[name,powerState,publicIps]' -o tsv 2>/dev/null | sed 's/^/  vm: /' || true
+    fi
   fi
   ;;
 down)
   need_az; load
+  if [ "${AZ_TIER:-}" = pool ]; then
+    if az_ vm show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" >/dev/null 2>&1; then
+      az_ vm delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" --yes; echo "deleted: VM $VM_NAME (its OS disk and NIC with it)"
+    fi
+    for r in "public-ip $VM_NAME-ip" "nsg $VM_NAME-nsg" "vnet $VM_NAME-vnet"; do
+      set -- $r
+      if az_ network "$1" show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$2" >/dev/null 2>&1; then az_ network "$1" delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$2"; echo "deleted: $1 $2"; fi
+    done
+    LEFT_VM=$(az_ resource list -g "$PGVIGIL_LAB_AZ_GROUP" --query "length([?starts_with(name, '$VM_NAME')])" -o tsv)
+    echo "read back: resources named $VM_NAME* in $PGVIGIL_LAB_AZ_GROUP $LEFT_VM"
+    [ "$LEFT_VM" = 0 ] || fail "the VM's pieces are not all gone (above): the state file $STATE stays"
+    rm -f "$VM_KEY" "$VM_KEY.pub"
+  fi
   if az_ sql server show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$AZ_SERVER" >/dev/null 2>&1; then
     az_ sql server delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$AZ_SERVER" --yes
     echo "deleted: logical server $AZ_SERVER (its database and firewall rules with it)"
