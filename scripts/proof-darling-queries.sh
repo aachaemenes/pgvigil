@@ -62,19 +62,24 @@
 #     by executions summed, the newest 1,000, n_cells all), and equal on a PostgreSQL 13 repository (a throwaway
 #     postgres:13 container, where date_bin is refused); the heatmap at 24 h and 7 days at 761 and 3,000 rows a read
 #     under 10 s (eight runs each; at 3,000 / 7 days the median of the eight, a slower run printed); 8 days refused 400
-#     with 'pick 7 days or less'; a window past 6,048,000 stored samples refused 400 with its own count (H2's row at
-#     3,000 a read is the ceiling); the 1,000-cell cut by whole bins (every bucket of 7 days' bins: 142 kept, the rest
-#     counted, H1's 24 h whole); one query's and one procedure's history
+#     with 'pick 7 days or less'; 6,048,001 stored samples (the ceiling and one) refused 400 with its own count, and
+#     H2's 3,000 / 7 days window, anchored on its seed's newest read, holds exactly 6,048,000 and answers 200; the
+#     1,000-cell cut by whole bins (every bucket of 7 days' bins but the newest bin's top one: 143 kept, exactly 1,000
+#     cells, the rest counted, H1's 24 h whole); one query's and one procedure's history
 #     sum their executions = a hand sum, about 120 steps, under 10 s over 7 days; the Query Store overhead lists the
 #     QDS_* waits but PerformanceMonitor's sleep waits, per hour over the measured seconds; the memory clerk's captures,
 #     samples, latest and max.
 #  I. DONE-2's pages (headless Chromium, light and dark): the Queries page's ten sections in PerformanceMonitor's order,
-#     each head = the first rows of its tab's own API read (Running, Plan cache, Query Store, Regressed, Slow queries,
-#     Tuning), the heatmap's table = the API's cells, no error box; the Query Store strip re-reads its grid for a step and
-#     draws a query's line; the plan cache's History draws a chart; a procedure's chart in PerformanceMonitor's four
-#     metrics and its line on the procedures strip; Running's strip steps the slider; wait=WAITFOR shows 'Only requests
-#     waiting on WAITFOR.' and 'Show all active queries' clears it; the Waits page's 'requests' link lands there; a
-#     heatmap cell's 'Show Active Queries at This Time' lands on Running at its time; with its read held past the UI
+#     each head = the first rows of its tab's own API read, row by row in order (Running, Plan cache, Query Store,
+#     Regressed, Slow queries, Tuning), the heatmap's table and picture = the API's cells, no error box; the Query Store
+#     strip re-reads its grid for a step and draws a query's line; the plan cache's History draws a chart; a procedure's
+#     chart in PerformanceMonitor's four metrics and its line on the procedures strip; Running's strip steps the slider;
+#     with two requests on two waits in the snapshot (a lock holder on WAITFOR, a reader on LCK_M_S) wait=WAITFOR shows
+#     'Only requests waiting on WAITFOR.' and the API's WAITFOR rows alone, 'Show all active queries' shows them all; the
+#     Waits page's 'requests' link lands there; a heatmap cell's 'Show Active Queries at This Time' lands on Running at
+#     its bin's middle; the heatmap's size on the page (the refusal's words, the cut note with the picture starting at
+#     drawn_from and its cells = the API's, no note where it fits); every walk bounded (900 s, 120 s; a CDP call 30 s;
+#     each wait a bounded poll that names itself 'WAITED <what>'); with its read held past the UI
 #     pool's real 15 s statement timeout (mssql_pc_sample renamed for the walk, a view of the same name that sleeps 20 s
 #     once in its place: a lock cannot do it, the pool's lock_timeout of 2 s cancels a lock wait first) the heatmap
 #     section says 'the heatmap's read took too long for this range: pick 24 hours or less' (no error box, no grid,
@@ -129,8 +134,12 @@ nonempty() { jq -e --arg p "$2" '(.[$p].rows // []) | length > 0' "$1" >/dev/nul
 urlq() { URLQ_V="$1" python3 -c 'import os,urllib.parse as u; print(u.quote(os.environ["URLQ_V"], safe=""))'; }
 for t in docker go psql curl python3 node npm chromium setsid jq patch; do command -v "$t" >/dev/null || fail "needs $t"; done
 psql "$ADMIN_DSN" -XAtqc "select 1" >/dev/null || fail "ADMIN_DSN does not answer"
+# the wiring patch is applied to this job's copy and kept there (the copy goes with the job); a dry run first, so a tree
+# that holds part of it already fails here with nothing applied, never half patched or stopped at a question
 if [[ "${PGVIGIL_WIRING:-1}" == 1 ]] && ! grep -q "mssqlqueries: 'Queries'" web/src/router.ts; then
-  patch -p1 < scripts/proof-darling-queries-wiring.patch >/dev/null || fail "the wiring patch"
+  patch -p1 --batch --forward --dry-run < scripts/proof-darling-queries-wiring.patch >"$TMPD/wiring-dry.out" 2>&1 \
+    || { cat "$TMPD/wiring-dry.out" >&2; fail "the wiring patch does not apply whole to this copy (dry run, above; nothing applied)"; }
+  patch -p1 --batch --forward < scripts/proof-darling-queries-wiring.patch >/dev/null || fail "the wiring patch"
   echo "wiring applied to this copy (router.ts, main.ts, mssql_plancache.ts, mssql_procs.ts, mssql_running.ts, mssql_waits.ts, q_mssql_running.go, docs)"
 fi
 dsnfor() { local d="$ADMIN_DSN"; d="${d/dbname=postgres/dbname=$1}"; [[ "$d" == *"dbname=$1"* ]] || d="$d dbname=$1"; printf '%s' "$d"; }
@@ -863,7 +872,16 @@ TH=""; HSLOW=""; HEMPTY=""; HMED=""; HNOTE=""   # a slow run, a slow median or a
 for spec in 761 3000; do
   eval "IID=\$IID_$spec"
   for span in 24h 7d; do
-    NOW=$(date -u +%s); [[ $span == 24h ]] && HF=$(iso $((NOW - 86400))) || HF=$(iso $((NOW - 604800))); HT=$(iso "$NOW")   # one clock read
+    # the window ends a second past the seed's newest read (F laid its reads every 5 minutes up to its own clock), so a
+    # 7-day window holds exactly 2,016 reads however late it is read: at 3,000 a read that is the ceiling, 6,048,000
+    HTS=$(pq "SELECT floor(extract(epoch FROM max(snapshot_at)))::bigint + 1 FROM pgvigil.mssql_pc_read WHERE instance_id = $IID")
+    [[ "$HTS" =~ ^[0-9]+$ ]] || fail "H: no stored read of the $spec seed ('$HTS')"
+    [[ $span == 24h ]] && HF=$(iso $((HTS - 86400))) || HF=$(iso $((HTS - 604800))); HT=$(iso "$HTS")
+    if [[ "$spec/$span" == 3000/7d ]]; then
+      N3=$(pq "SELECT coalesce(sum(statements), 0) FROM pgvigil.mssql_pc_read WHERE instance_id = $IID AND snapshot_at > '$HF' AND snapshot_at <= '$HT'")
+      [[ "$N3" == 6048000 ]] || fail "H: H2's 3,000 / 7 days window $HF .. $HT holds $N3 stored samples, not the ceiling 6,048,000"
+      H3F=$HF; H3T=$HT
+    fi
     T8=()
     for run in 1 2 3 4 5 6 7 8; do
       l1=$(cut -d' ' -f1 /proc/loadavg)
@@ -895,27 +913,31 @@ echo "ok   H: 8 days answered 400 'the heatmap reaches 7 days: pick 7 days or le
 # H4. the heatmap's size (a2): a window whose reads stored more samples than the proven ceiling (2,016 reads x 3,000) is
 # refused before the read, with the window's own count; H2's timed row at 3,000 a read is the seed at the ceiling
 IID_BIG=$(pq "SELECT pgvigil.ensure_instance('pgvq-big', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+# 2,016 reads in the window (BF, BT], the newest at BT itself: 2,015 of 3,000 and one of 3,001 = the ceiling and one
+NOW=$(date -u +%s); BF=$(iso $((NOW - 604800))); BT=$(iso "$NOW")   # one clock read, whole seconds
 pq "INSERT INTO pgvigil.mssql_pc_read (instance_id, snapshot_at, interval_secs, statements, capped)
-      SELECT $IID_BIG, t, 300, 3500, false FROM generate_series(now() - interval '7 days' + interval '1 minute', now(), interval '5 minutes') t" >/dev/null
-NOW=$(date -u +%s); BF=$(iso $((NOW - 604800))); BT=$(iso "$NOW")   # one clock read
+      SELECT $IID_BIG, t, 300, CASE WHEN t = to_timestamp($NOW) THEN 3001 ELSE 3000 END, false
+        FROM generate_series(to_timestamp($NOW) - interval '7 days' + interval '5 minutes', to_timestamp($NOW), interval '5 minutes') t" >/dev/null
 NB=$(pq "SELECT coalesce(sum(statements), 0) FROM pgvigil.mssql_pc_read WHERE instance_id = $IID_BIG AND snapshot_at > '$BF' AND snapshot_at <= '$BT'")
+[[ "$NB" == 6048001 ]] || fail "H: the refusal's seed holds $NB stored samples over $BF .. $BT (want 6,048,001: the ceiling and one)"
 c=$(curl -s --max-time 30 -o "$TMPD/hbig.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_BIG&from=$BF&to=$BT&part=heatmap") || true
 WANT_BIG="this range holds about $(python3 -c 'import sys; print(f"{int(sys.argv[1]) / 1e6:.2f}")' "$NB") million stored plan-cache samples; the heatmap reads at most about 6 million: pick a shorter range"
 [[ "$c" == 400 && "$(jq -r '.error // empty' "$TMPD/hbig.json" 2>/dev/null)" == "$WANT_BIG" ]] \
   || fail "H: $NB stored samples over 7 days answered $c '$(head -c 300 "$TMPD/hbig.json" 2>/dev/null)' (want 400 '$WANT_BIG')"
-N3=$(pq "SELECT coalesce(sum(statements), 0) FROM pgvigil.mssql_pc_read WHERE instance_id = $IID_3000 AND snapshot_at > now() - interval '7 days'")
-(( NB > 2016 * 3000 && N3 <= 2016 * 3000 )) || fail "H: the seeds do not straddle the ceiling 6,048,000 (past it $NB, at it $N3)"
-echo "ok   H: a2 - $NB stored samples over 7 days (3,500 a read) answered 400 '$WANT_BIG'; H2's timed row at 3,000 a read holds $N3 (the ceiling 6,048,000) and answered 200"
+(( NB == 2016 * 3000 + 1 && N3 == 2016 * 3000 )) || fail "H: the seeds are not the ceiling and the ceiling and one (past it $NB, at it $N3)"
+echo "ok   H: a2 - $NB stored samples over 7 days (the ceiling and one) answered 400 '$WANT_BIG'; H2's timed window at 3,000 a read ($H3F .. $H3T) holds exactly the ceiling, $N3, and answered 200 in each of its eight runs"
 # H5. the 1,000-cell cut (a4 / b5): every bucket of every 70-minute bin of 7 days holds a query (a sample every 10
-# minutes, one per bucket, and one just inside the window's start): bins are kept newest first while their cells add up
-# to 1,000 or fewer - 142 whole bins, the oldest left out, counted and their end named; H1's 24 h fits (no bin cut)
+# minutes, one per bucket, and one just inside the window's start) but the top bucket of the newest bin: bins are kept
+# newest first while their cells add up to 1,000 or fewer - 6 + 142 x 7 = exactly 1,000 in 143 whole bins (the edge
+# itself), the oldest left out, counted and their end named; H1's 24 h fits (no bin cut)
 IID_CUT=$(pq "SELECT pgvigil.ensure_instance('pgvq-cut', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
 NOW=$(date -u +%s); CF=$(iso $((NOW - 604800))); CT=$(iso "$NOW")   # one clock read
 pq "INSERT INTO pgvigil.mssql_pc_sample (instance_id, snapshot_at, database_id, query_key, database_name, executions, cpu_us, duration_us,
       logical_reads, physical_reads, logical_writes, row_count, spills, plans, interval_secs)
     SELECT $IID_CUT, t, 5, '0xc' || lpad(k::text, 15, '0'), 'db5', 1, 5 * 10 ^ (k + 2), 5 * 10 ^ (k + 2), 0, 0, 0, 1, 0, 1, 300
       FROM (SELECT to_timestamp($NOW - n * 600) AS t FROM generate_series(0, 1007) n UNION ALL SELECT to_timestamp($NOW - 604799)) x,
-           generate_series(0, 6) k" >/dev/null
+           generate_series(0, 6) k
+     WHERE NOT (k = 6 AND floor(extract(epoch FROM t) / 4200) = $NOW / 4200)" >/dev/null
 NBINS=$(pq "SELECT count(DISTINCT floor(extract(epoch FROM snapshot_at) / 4200)) FROM pgvigil.mssql_pc_sample WHERE instance_id = $IID_CUT AND snapshot_at > '$CF' AND snapshot_at <= '$CT'")
 api "mssql/plancache?instance=$IID_CUT&from=$CF&to=$CT&part=heatmap&metric=duration" hcut.json
 python3 - "$TMPD/hcut.json" "$TMPD/h-duration.json" "$NBINS" "$NOW" <<'PYCUT' || fail "H: the 1,000-cell cut (above)"
@@ -925,11 +947,12 @@ j = json.load(open(sys.argv[1]))['heatmap']; rows = [dict(zip(j['columns'], r)) 
 nbins, now = int(sys.argv[3]), int(sys.argv[4]); bad = []
 bins = sorted({r['time_bin'] for r in rows})
 per = {b: sum(1 for r in rows if r['time_bin'] == b) for b in bins}
-keep = 1000 // 7
-if len(rows) != 7 * keep or len(bins) != keep or set(per.values()) != {7}: bad.append(f'{len(rows)} cells in {len(bins)} bins, per bin {sorted(set(per.values()))} (want {7 * keep} in {keep}, 7 each)')
+keep = 143   # 6 + 142 x 7 = 1,000
+if len(rows) != 1000 or len(bins) != keep or [per[b] for b in bins] != [7] * (keep - 1) + [6]:
+    bad.append(f'{len(rows)} cells in {len(bins)} bins, per bin {sorted(set(per.values()))}, the newest {per[bins[-1]] if bins else None} (want 1,000 in {keep}, 7 each and 6 in the newest)')
 r0 = rows[0] if rows else {}
-if r0.get('n_cells') != 7 * nbins or r0.get('bins_cut') != nbins - keep or r0.get('drawn_from') != (bins[0] if bins else None):
-    bad.append(f"n_cells {r0.get('n_cells')} bins_cut {r0.get('bins_cut')} drawn_from {r0.get('drawn_from')} (want {7 * nbins}, {nbins - keep}, {bins[0] if bins else None})")
+if r0.get('n_cells') != 7 * nbins - 1 or r0.get('bins_cut') != nbins - keep or r0.get('drawn_from') != (bins[0] if bins else None):
+    bad.append(f"n_cells {r0.get('n_cells')} bins_cut {r0.get('bins_cut')} drawn_from {r0.get('drawn_from')} (want {7 * nbins - 1}, {nbins - keep}, {bins[0] if bins else None})")
 newest = max(int(datetime.fromisoformat(b.replace('Z', '+00:00')).timestamp()) for b in bins) if bins else 0
 if newest != now // 4200 * 4200: bad.append(f'the newest bin kept {newest}, want {now // 4200 * 4200}')
 f = json.load(open(sys.argv[2]))['heatmap']; fr = [dict(zip(f['columns'], r)) for r in f['rows']]
@@ -937,7 +960,7 @@ if not fr or fr[0]['bins_cut'] != 0 or fr[0]['n_cells'] != len(fr): bad.append(f
 if bad: print('DIFF', bad); sys.exit(1)
 print(f"H cut: {len(rows)} cells in {len(bins)} whole bins of {nbins}, n_cells {r0['n_cells']}, bins_cut {r0['bins_cut']}, drawn from {r0['drawn_from']}; H1's 24 h: {len(fr)} cells, none cut")
 PYCUT
-echo "ok   H: a4 / b5 - every bucket of all $NBINS bins of 7 days held a query: 142 whole bins (994 cells, the newest first), n_cells $((NBINS * 7)), $((NBINS - 142)) bins left out and counted, drawn_from the oldest kept; H1's 24 h fits whole (bins_cut 0)"
+echo "ok   H: a4 / b5 - every bucket of all $NBINS bins of 7 days held a query but the newest bin's top one: 143 whole bins (exactly 1,000 cells, the newest first: the 1,000 edge kept), n_cells $((NBINS * 7 - 1)), $((NBINS - 143)) bins left out and counted, drawn_from the oldest kept; H1's 24 h fits whole (bins_cut 0)"
 # H3. one query's history (plan cache) and one procedure's history: their executions = a hand sum; 7 days timed
 NOW=$(date -u +%s); F7=$(iso $((NOW - 604800))); T7=$(iso "$NOW")   # one clock read
 # (the procedures' seed is F's: 1,000 a read, 14 days)
@@ -1084,8 +1107,13 @@ PYEND
 echo "ok   G: Top's compare grid, Plan cache's and Procedures' compare grids = the API's rows; their new columns and Regressed's PerformanceMonitor columns drawn; no error box"
 echo "== I. DONE-2's pages in headless Chromium: the Queries page, the strips, the histories, the wait filter; light and dark =="
 SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
-# a request waiting on WAITFOR while two Running reads and two wait reads are taken (the strip's bars, the wait filter)
-( sq "WAITFOR DELAY '00:00:45';" pgvq 90 >/dev/null 2>&1 ) & BG+=($!)
+# two requests on two waits while two Running reads and two wait reads are taken (the strip's bars, the wait filter):
+# one holds a row lock and waits on WAITFOR, one waits on that lock for a shared one (LCK_M_S); wait=WAITFOR must keep
+# the first alone
+sqok "I: the lock table" "IF OBJECT_ID('dbo.i_lock') IS NULL CREATE TABLE dbo.i_lock (id int NOT NULL PRIMARY KEY, v int NOT NULL); DELETE dbo.i_lock; INSERT dbo.i_lock VALUES (1, 0);" pgvq
+( sq "BEGIN TRAN; UPDATE dbo.i_lock SET v = v + 1 WHERE id = 1; WAITFOR DELAY '00:00:45'; ROLLBACK;" pgvq 90 >/dev/null 2>&1 ) & BG+=($!)
+sleep 1
+( sq "SELECT v FROM dbo.i_lock WITH (READCOMMITTEDLOCK) WHERE id = 1;" pgvq 90 >/dev/null 2>&1 ) & BG+=($!)
 # a short WAITFOR ends between the two wait reads, so the Waits page lists WAITFOR (a wait counts when it ends)
 sleep 3; col mssql_requests mssql_waits; sqok "I: a short WAITFOR" "WAITFOR DELAY '00:00:02';" pgvq; col mssql_requests mssql_waits
 # the page window starts a minute before this run's first plan-cache read, so the plan cache's charts and History hold
@@ -1107,7 +1135,11 @@ api "mssql/xe?$IW&part=slow_shapes" i-long.json
 api "mssql/querystore?$IW&view=tuning" i-tun.json
 api "mssql/plancache?$IW&part=heatmap&metric=duration" i-heat.json
 WAITED=$(jq -r '.rows.columns as $c | [(.rows.rows // [])[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add | .wait_type // empty] | map(select(. == "WAITFOR")) | length' "$TMPD/i-run.json")
-[[ "$WAITED" -ge 1 ]] || fail "I: the newest Running snapshot holds no request waiting on WAITFOR (the wait filter's case)"
+NRUN=$(jq '(.rows.rows // []) | length' "$TMPD/i-run.json")
+NLCK=$(jq -r '.rows.columns as $c | [(.rows.rows // [])[] | [$c, .] | transpose | map({(.[0]): .[1]}) | add | .wait_type // empty] | map(select(. == "LCK_M_S")) | length' "$TMPD/i-run.json")
+[[ "$WAITED" -ge 1 && "$NLCK" -ge 1 && "$NRUN" -gt "$WAITED" ]] \
+  || fail "I: the newest Running snapshot holds $NRUN request(s), $WAITED on WAITFOR, $NLCK on LCK_M_S (the wait filter's case needs both)"
+echo "     I: the newest Running snapshot: $NRUN requests, $WAITED waiting on WAITFOR, $NLCK on LCK_M_S"
 cat > "$TMPD/i.mjs" <<'JS'
 const [port, U, sb, from, to, shots, mode, hf, ht, hi] = process.argv.slice(2);
 const fs = await import('node:fs');
@@ -1116,21 +1148,41 @@ const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl)
 await new Promise(r => ws.addEventListener('open', r));
 let id = 0; const wait = new Map();
 ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
-const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+// cmd: one CDP call, 30 s at most (a native dialog or a hung renderer would hold it for good): past it the walk stops
+// naming the method
+const cmd = (method, params = {}) => new Promise((r, j) => { const i = ++id;
+  const t = setTimeout(() => { wait.delete(i); j(new Error(`CDP ${method} did not answer within 30 s`)); }, 30000);
+  wait.set(i, d => { clearTimeout(t); r(d); }); ws.send(JSON.stringify({ id: i, method, params })); });
 const ev = async (expr, awaitPromise = false) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise }); if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 300)); return d.result?.result?.value; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// poll: a page expression read every 100 ms till true, `limit` ms at most; past it the line 'WAITED <what> <ms>' (the
+// row that needed it then fails on its own check, the line names why)
+const poll = async (what, expr, limit = 10000) => { const t0 = Date.now(); while (Date.now() - t0 < limit) { if (await ev(expr)) return true; await sleep(100); } console.log(`WAITED ${what} ${limit}`); return false; };
 const settled = async () => { for (let i = 0; i < 150; i++) { const ok = await ev(`(() => { const m = document.querySelector('main'); return !!m && !!m.querySelector('h2') && ![...m.querySelectorAll('p')].some(p => /^Reading/.test(p.textContent) && !p.closest('.queries-part')); })()`); if (ok) { await sleep(800); return true; } await sleep(200); } return false; };
 const go = async (hash) => { await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200); await cmd('Page.navigate', { url: U + hash }); await sleep(300); return settled(); };
+// must: go(), a page that does not settle printed as a FAIL line (the grade fails on it)
+const must = async (hash) => { const ok = await go(hash); if (!ok) console.log(`FAIL render ${hash.slice(0, 120)}`); return ok; };
 const shot = async (name) => { const d = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }); fs.writeFileSync(`${shots}/${name}.png`, Buffer.from(d.result.data, 'base64')); };
 // every section of the Queries page scrolled into view, then read till none says 'Reading' (40 s at most)
 const allParts = async (limit = 40000) => {
   await ev(`(async () => { for (const s of document.querySelectorAll('.queries-part')) { s.scrollIntoView(); await new Promise(r => setTimeout(r, 150)); } window.scrollTo(0, 0); return 'ok'; })()`, true);
-  for (let t = 0; t < limit; t += 500) { const busy = await ev(`[...document.querySelectorAll('.queries-part')].some(s => /^Reading|comes into view/.test(s.querySelector('.queries-body')?.textContent ?? ''))`); if (!busy) break; await sleep(500); }
+  let done = false;
+  for (let t = 0; t < limit; t += 500) { const busy = await ev(`[...document.querySelectorAll('.queries-part')].some(s => /^Reading|comes into view/.test(s.querySelector('.queries-body')?.textContent ?? ''))`); if (!busy) { done = true; break; } await sleep(500); }
+  if (!done) console.log(`WAITED allParts ${limit}`);
   await sleep(600);
 };
+// CELLS: the drawn heatmap cells under an element, as [bin start ms, bucket, queries]
+const CELLS = `(h => [...h.querySelectorAll('.heatmap-cell[data-n]')].map(c => [Number(c.dataset.t), Number(c.dataset.b), Number(c.dataset.n)]))`;
+// parts: each section's head rows by column label (a cell's button label, else its full text, else its words) and the
+// heatmap's drawn cells
 const parts = () => ev(`JSON.stringify([...document.querySelectorAll('.queries-part')].map(s => { const t = [...s.querySelectorAll('table')].filter(x => !x.classList.contains('u-legend'));
-  return { part: s.dataset.part, errors: s.querySelectorAll('.error:not([role=status])').length, rows: t.length ? [...t[0].querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty')).length : -1,
-    charts: s.querySelectorAll('.uplot').length, strips: s.querySelectorAll('.strip-band').length, cells: s.querySelectorAll('.heatmap-cell[title]').length, text: (s.querySelector('.queries-body')?.textContent ?? '').slice(0, 160) }; }))`).then(JSON.parse);
+  const trs = t.length ? [...t[0].querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty')) : [];
+  const heads = t.length ? [...t[0].querySelectorAll('thead th .th-label')].map(x => x.textContent.trim()) : [];
+  const keys = trs.map(tr => Object.fromEntries([...tr.children].map((td, i) => [heads[i] ?? String(i),
+    (td.querySelector('button[aria-label]')?.getAttribute('aria-label') ?? td.querySelector('[data-full]')?.getAttribute('data-full') ?? td.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 80)])));
+  return { part: s.dataset.part, errors: s.querySelectorAll('.error:not([role=status])').length, rows: t.length ? trs.length : -1, keys,
+    charts: s.querySelectorAll('.uplot').length, strips: s.querySelectorAll('.strip-band').length, cells: s.querySelectorAll('.heatmap-cell[data-n]').length, heat: ${CELLS}(s),
+    text: (s.querySelector('.queries-body')?.textContent ?? '').slice(0, 160) }; }))`).then(JSON.parse);
 const state = () => ev(`(() => { const m = document.querySelector('main');
   return JSON.stringify({ hash: location.hash, title: m.querySelector('h2')?.textContent ?? '', errors: m.querySelectorAll('.error:not([role=status])').length,
     links: [...m.querySelectorAll('a[href]')].map(a => ({ t: a.textContent.trim().slice(0, 60), h: a.getAttribute('href') })), controls: [...m.querySelectorAll('input, button, select')].length }); })()`).then(JSON.parse);
@@ -1142,11 +1194,14 @@ const w = `i=${sb}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}
 if (mode === 'heat') {
   // the heatmap section alone, settled: the refusal's words, the cut note, its drawn cells
   await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
-  await go(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
+  await must(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
   await ev(`(() => { document.querySelector('[data-part=heatmap]').scrollIntoView(); return 'ok'; })()`);
-  for (let t = 0; t < 60000; t += 500) { const s = await ev(`(() => { const h = document.querySelector('[data-part=heatmap] .queries-body'); return h ? h.textContent : ''; })()`); if (!/Reading|comes into view/.test(s)) break; await sleep(500); }
-  const hs = await ev(`(() => { const h = document.querySelector('[data-part=heatmap]'); return JSON.stringify({ many: h.querySelector('.heatmap-too-many')?.textContent ?? null,
-    cut: h.querySelector('.heatmap-cut')?.textContent ?? null, errors: h.querySelectorAll('.error:not([role=status])').length, cells: h.querySelectorAll('.heatmap-cell[title]').length }); })()`);
+  await poll('the heatmap section read', `!/Reading|comes into view/.test(document.querySelector('[data-part=heatmap] .queries-body')?.textContent ?? 'Reading')`, 60000);
+  // first: the oldest column drawn (every cell, a 'no query' one too, carries its bin's start): a cut picture starts at drawn_from
+  const hs = await ev(`(() => { const h = document.querySelector('[data-part=heatmap]'); const all = [...h.querySelectorAll('.heatmap-cell')].map(c => Number(c.dataset.t));
+    return JSON.stringify({ many: h.querySelector('.heatmap-too-many')?.textContent ?? null,
+    cut: h.querySelector('.heatmap-cut')?.textContent ?? null, errors: h.querySelectorAll('.error:not([role=status])').length, cells: h.querySelectorAll('.heatmap-cell[data-n]').length,
+    first: all.length ? Math.min(...all) : null, drawn: ${CELLS}(h) }); })()`);
   await shot(`d10-heatmap-${hi}`);
   console.log(`heat ${hs}`);
   ws.close(); process.exit(0);
@@ -1156,7 +1211,7 @@ if (mode === 'slow') {
   // 20 s): wait while the section has not started ('comes into view') or still reads, 60 s at most (the page's other
   // sections time out too and hold the pool's 8 connections up to 15 s each before the heatmap's read starts)
   await ev(`localStorage.setItem('pgvigil.theme', 'light'); 'ok'`);
-  await go(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
+  await must(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
   const t0 = Date.now();
   await ev(`(() => { document.querySelector('[data-part=heatmap]').scrollIntoView(); return 'ok'; })()`);
   let s = '';
@@ -1187,50 +1242,65 @@ const kbd = (sel, keys) => ev(`(async () => { const b = document.querySelector($
 // the Query Store strip: Draw puts a query's line on it (clicked on the whole range's grid: the strip's first step can
 // lie before the store's first interval, and its grid then holds no row and no Draw); Home + Enter then reads the grid
 // again for the first step
-await go(pages.qs);
+await must(pages.qs);
 const qs0 = await ev(`document.querySelector('main .strip-band') ? 'band' : 'none'`);
-const drew = await ev(`(async () => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent === 'Draw'); if (!b) return 'no Draw'; b.click(); await new Promise(r => setTimeout(r, 2500));
-  return JSON.stringify({ line: !!document.querySelector('main svg.strip-overlay polyline'), note: document.querySelector('main .strip-overlay-note')?.textContent ?? null }); })()`, true);
-const k1 = await kbd('main .strip-band', ['Home', 'Enter']); await sleep(2500);
+let drew = await ev(`(() => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent === 'Draw'); if (!b) return 'no Draw'; b.click(); return 'clicked'; })()`);
+if (drew === 'clicked') {
+  await poll("Draw's line on the strip", `!!document.querySelector('main svg.strip-overlay polyline')`);
+  drew = await ev(`JSON.stringify({ line: !!document.querySelector('main svg.strip-overlay polyline'), note: document.querySelector('main .strip-overlay-note')?.textContent ?? null })`);
+}
+const k1 = await kbd('main .strip-band', ['Home', 'Enter']);
+await poll("the Query Store grid read again for the strip's first step", `[...document.querySelectorAll('main p[role=status]')].some(p => p.textContent.startsWith('The grid holds'))`);
 const qs1 = await ev(`JSON.stringify({ said: [...document.querySelectorAll('main p[role=status]')].map(p => p.textContent).find(t => t.startsWith('The grid holds')) ?? null, stretchEmpty: (document.querySelector('main')?.textContent ?? '').includes("No query ran in the store's intervals of this stretch."), errors: document.querySelectorAll('main .error:not([role=status])').length })`);
 console.log(`qsstrip ${qs0} ${k1} ${qs1} ${drew}`);
 // the plan cache's History
-await go(pages.plancache);
+await must(pages.plancache);
 const ph = await ev(`(async () => { const b = [...document.querySelectorAll('main button')].find(x => x.textContent === 'History'); if (!b) return 'no History'; b.click();
   for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 250)); const h = document.querySelector('main .pc-history'); if (h && !/Reading/.test(h.textContent)) break; }
   const h = document.querySelector('main .pc-history'); return JSON.stringify({ chart: !!h.querySelector('.uplot'), text: h.textContent.slice(0, 160), errors: h.querySelectorAll('.error').length }); })()`, true);
 console.log(`pchistory ${ph}`);
 // a procedure opened: its chart in PerformanceMonitor's metrics, the metric switched, its line on the strip
-await go(pages.procs);
-const pr = await ev(`(async () => { const b = [...document.querySelectorAll('main button[title="This procedure read by read"]')][0]; if (!b) return 'no procedure';
-  b.click(); for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 250)); if (document.querySelector('main .proc-history')) break; }
-  await new Promise(r => setTimeout(r, 1500));
-  const h = document.querySelector('main .proc-history'); if (!h) return 'no chart';
-  const s = h.querySelector('select'); const t1 = h.querySelector('h3, .chart-title, [class*=title]')?.textContent ?? '';
-  s.value = 'executions_s'; s.dispatchEvent(new Event('change', { bubbles: true })); await new Promise(r => setTimeout(r, 500));
-  return JSON.stringify({ metrics: [...s.options].map(o => o.textContent), before: t1.slice(0, 80), after: (h.querySelector('h3, .chart-title, [class*=title]')?.textContent ?? '').slice(0, 80),
-    line: !!document.querySelector('main svg.strip-overlay polyline'), errors: document.querySelectorAll('main .error:not([role=status])').length }); })()`, true);
+await must(pages.procs);
+let pr = await ev(`(() => { const b = [...document.querySelectorAll('main button[title="This procedure read by read"]')][0]; if (!b) return 'no procedure'; b.click(); return 'clicked'; })()`);
+if (pr === 'clicked') {
+  const T = `(document.querySelector('main .proc-history')?.querySelector('h3, .chart-title, [class*=title]')?.textContent ?? '').slice(0, 80)`;
+  await poll("the procedure's chart and its line on the strip", `!!document.querySelector('main .proc-history .uplot') && !!document.querySelector('main svg.strip-overlay polyline')`);
+  const t1 = await ev(T);
+  await ev(`(() => { const s = document.querySelector('main .proc-history select'); if (!s) return 'no select'; s.value = 'executions_s'; s.dispatchEvent(new Event('change', { bubbles: true })); return 'ok'; })()`);
+  await poll("the procedure's chart drawn again for Executions (per second)", `${T}.includes('Executions (per second)')`);
+  pr = await ev(`(() => { const h = document.querySelector('main .proc-history'); if (!h) return 'no chart'; const s = h.querySelector('select');
+    return JSON.stringify({ metrics: [...s.options].map(o => o.textContent), before: ${JSON.stringify(t1)}, after: ${T},
+      line: !!document.querySelector('main svg.strip-overlay polyline'), errors: document.querySelectorAll('main .error:not([role=status])').length }); })()`);
+}
 console.log(`prochistory ${pr}`);
 // Running: the strip's Home + Enter steps the slider to the first snapshot; the wait filter and its way back
-await go(pages.running);
+await must(pages.running);
 const r0 = await ev(`document.getElementById('mssql-snap')?.value ?? 'none'`);
-const k2 = await kbd('main .strip-band', ['Home', 'Enter']); await sleep(1500);
+const k2 = await kbd('main .strip-band', ['Home', 'Enter']);
+await poll('the Running slider at the first snapshot', `document.getElementById('mssql-snap')?.value === '0'`);
 const r1 = await ev(`document.getElementById('mssql-snap')?.value ?? 'none'`);
 console.log(`runstrip ${r0} ${k2} ${r1}`);
-await go(`${pages.running}&wait=WAITFOR`);
-const wf = await ev(`JSON.stringify({ line: document.querySelector('main .wait-only')?.textContent ?? null, back: document.querySelector('main .wait-only a')?.getAttribute('href') ?? null })`);
+// RUNGRID: the grid under 'Sessions and requests': its rows and each row's 'waiting on' cell
+const RUNGRID = `(() => { const h = [...document.querySelectorAll('main h3')].find(x => x.textContent.startsWith('Sessions and requests'));
+  const t = h ? [...document.querySelectorAll('main table.grid')].find(x => h.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING) : null;
+  if (!t) return { rows: -1, waits: [] };
+  const i = [...t.querySelectorAll('thead th .th-label')].findIndex(x => x.textContent.trim() === 'waiting on');
+  const trs = [...t.querySelectorAll('tbody tr')].filter(tr => !tr.querySelector('.empty'));
+  return { rows: trs.length, waits: trs.map(tr => (i < 0 ? '?' : (tr.children[i]?.textContent ?? '')).replace(/\\s+/g, ' ').trim().slice(0, 40)) }; })()`;
+await must(`${pages.running}&wait=WAITFOR`);
+const wf = await ev(`JSON.stringify({ line: document.querySelector('main .wait-only')?.textContent ?? null, back: document.querySelector('main .wait-only a')?.getAttribute('href') ?? null, grid: ${RUNGRID} })`);
 console.log(`waitfilter ${wf}`);
-const back = JSON.parse(wf).back; if (back) { await go(back); console.log(`waitback ${await ev(`JSON.stringify({ hash: location.hash, line: !!document.querySelector('main .wait-only') })`)}`); }
-await go(pages.waits);
+const back = JSON.parse(wf).back; if (back) { await must(back); console.log(`waitback ${await ev(`JSON.stringify({ hash: location.hash, line: !!document.querySelector('main .wait-only'), grid: ${RUNGRID} })`)}`); }
+await must(pages.waits);
 const wl = await ev(`[...document.querySelectorAll('main a')].filter(a => a.textContent === 'requests').map(a => a.getAttribute('href')).find(h => h.includes('wait=WAITFOR')) ?? null`);
-if (wl) { await go(wl); console.log(`waitlink ${wl} ${await ev(`document.querySelector('main .wait-only')?.textContent ?? 'none'`)}`); } else console.log('waitlink none');
+if (wl) { await must(wl); console.log(`waitlink ${wl} ${await ev(`document.querySelector('main .wait-only')?.textContent ?? 'none'`)}`); } else console.log('waitlink none');
 // the heatmap: a cell picked, its 'Show Active Queries at This Time' followed
-await go(pages.queries); await allParts();
-const hc = await ev(`(async () => { const c = document.querySelector('.heatmap-cell[title]'); if (!c) return 'no cell'; c.click(); await new Promise(r => setTimeout(r, 300));
-  const a = [...document.querySelectorAll('.heatmap-detail a')].find(x => x.textContent === 'Show Active Queries at This Time'); return a ? a.getAttribute('href') : 'no link'; })()`, true);
-if (hc.startsWith('#')) { await go(hc); console.log(`heatcell ${hc} -> ${await ev(`JSON.stringify({ hash: location.hash, title: document.querySelector('main h2')?.textContent ?? '' })`)}`); } else console.log(`heatcell ${hc}`);
+await must(pages.queries); await allParts();
+const hc = JSON.parse(await ev(`(() => { const c = document.querySelector('.heatmap-cell[data-n]'); if (!c) return JSON.stringify({ href: 'no cell' }); c.click();
+  const a = [...document.querySelectorAll('.heatmap-detail a')].find(x => x.textContent === 'Show Active Queries at This Time'); return JSON.stringify({ t: Number(c.dataset.t), href: a ? a.getAttribute('href') : 'no link' }); })()`));
+if (hc.href.startsWith('#')) { await must(hc.href); console.log(`heatcell ${JSON.stringify({ ...hc, landed: JSON.parse(await ev(`JSON.stringify({ hash: location.hash, title: document.querySelector('main h2')?.textContent ?? '' })`)) })}`); } else console.log(`heatcell ${JSON.stringify(hc)}`);
 // the click table: every link and every control of the Queries page, each clicked once, with its landing
-await go(pages.queries); await allParts();
+await must(pages.queries); await allParts();
 const links = (await state()).links; const seen = new Set();
 for (const l of links) {
   if (seen.has(l.h)) continue; seen.add(l.h);
@@ -1238,7 +1308,7 @@ for (const l of links) {
   const ok = await go(l.h); const r = await state();
   console.log(`click link queries ${JSON.stringify(l.t)} ${l.h} -> ${r.hash.split('&')[0]} title=${JSON.stringify(r.title)} errors=${r.errors} rendered=${ok}`);
 }
-await go(pages.queries); await allParts();
+await must(pages.queries); await allParts();
 const n = (await state()).controls;
 for (let i = 0; i < n; i++) {
   const what = await ev(`(() => { const c = [...document.querySelector('main').querySelectorAll('input, button, select')][${i}]; if (!c) return null;
@@ -1247,7 +1317,8 @@ for (let i = 0; i < n; i++) {
     if (t === 'select') { c.selectedIndex = Math.min(c.options.length - 1, 1); c.dispatchEvent(new Event('change', { bubbles: true })); } else { c.click(); }
     return JSON.stringify({ t, lab }); })()`);
   if (!what) { console.log(`click control queries ${i} gone`); continue; }
-  await sleep(600);
+  await sleep(150);   // the click's own work starts (a hash change renders the next page), then a bounded poll
+  await poll(`control ${i} settled`, `!!document.querySelector('main h2') && ![...document.querySelectorAll('main [role=status]')].some(p => /^Reading/.test(p.textContent))`, 5000);
   const dlg = await ev(`(() => { const d = document.querySelector('dialog[open]'); if (d) { d.close(); return true; } return false; })()`);
   const r = await state(); const wv = JSON.parse(what);
   console.log(`click control queries ${i} ${wv.t} ${JSON.stringify(wv.lab)} -> ${r.hash.split('?')[0]} dialog=${dlg} errors=${r.errors}`);
@@ -1255,24 +1326,33 @@ for (let i = 0; i < n; i++) {
 }
 ws.close(); process.exit(0);
 JS
-out=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS") || fail "I: the Chromium walk stopped: $out"
+out=$(G_USR="$USR" G_UPW="$UPW" timeout 900 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS") || fail "I: the Chromium walk stopped (exit 124 = past its 900 s): $out"
 # the heatmap's size on the page: the refusal's words in the heatmap's place (a2), the cut note naming the columns left
 # out (a4 / b5), and no note where the cells fit (H1's 24 h at 761 a read)
 NOW=$(date -u +%s); FF=$(iso $((NOW - 86400))); FT=$(iso "$NOW")
-HPB=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$BF" "$BT" "$IID_BIG") || fail "I: the heatmap walk (a2) stopped: $HPB"
-HPC=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$CF" "$CT" "$IID_CUT") || fail "I: the heatmap walk (a4 / b5) stopped: $HPC"
-HPF=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$FF" "$FT" "$IID_761") || fail "I: the heatmap walk (fits) stopped: $HPF"
-python3 - "$(printf '%s\n' "$HPB" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPC" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPF" | sed -n 's/^heat //p')" "$WANT_BIG" "$NBINS" <<'PYPAGE' || fail "I: the heatmap's size on the page (above)"
+HPB=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$BF" "$BT" "$IID_BIG") || fail "I: the heatmap walk (a2) stopped: $HPB"
+HPC=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$CF" "$CT" "$IID_CUT") || fail "I: the heatmap walk (a4 / b5) stopped: $HPC"
+HPF=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$FF" "$FT" "$IID_761") || fail "I: the heatmap walk (fits) stopped: $HPF"
+python3 - "$(printf '%s\n' "$HPB" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPC" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPF" | sed -n 's/^heat //p')" "$WANT_BIG" "$NBINS" "$TMPD/hcut.json" <<'PYPAGE' || fail "I: the heatmap's size on the page (above)"
 import sys, json
+from datetime import datetime
 b, c, f = (json.loads(x or '{}') for x in sys.argv[1:4]); want, nbins = sys.argv[4], int(sys.argv[5]); bad = []
-if b.get('many') != want[0].upper() + want[1:] + '.' or b.get('cells') or b.get('errors'): bad.append(f'past the ceiling: {b}')
-cut = c.get('cut') or ''
-if not cut.startswith(f'The oldest {nbins - 142} columns, before ') or f'{7 * nbins:,} cells in all, 1,000 at most' not in cut or c.get('cells') != 994 or c.get('errors'): bad.append(f'the cut: {c}')
-if f.get('cut') is not None or f.get('many') is not None or not f.get('cells') or f.get('errors'): bad.append(f'fits: {f}')
+j = json.load(open(sys.argv[6]))['heatmap']; api = [dict(zip(j['columns'], r)) for r in j['rows']]
+ms = lambda t: int(datetime.fromisoformat(str(t).replace('Z', '+00:00')).timestamp() * 1000)
+if b.get('many') != want[0].upper() + want[1:] + '.' or b.get('cells') or b.get('errors'): bad.append(f"past the ceiling: { {k: v for k, v in b.items() if k != 'drawn'} }")
+cut, left = c.get('cut') or '', nbins - 143
+if not cut.startswith(f"The oldest {left} {'column' if left == 1 else 'columns'}, before ") or f'{7 * nbins - 1:,} cells in all, 1,000 at most' not in cut or c.get('cells') != 1000 or c.get('errors'):
+    bad.append(f"the cut: { {k: v for k, v in c.items() if k != 'drawn'} }")
+# no column of a cut bin drawn, not even empty: the picture's oldest column is drawn_from; its cells = the API's
+if not api or c.get('first') != ms(api[0]['drawn_from']): bad.append(f"the cut picture starts at {c.get('first')}, drawn_from {api[0]['drawn_from'] if api else None} = {ms(api[0]['drawn_from']) if api else None}")
+want_cells = sorted((ms(r['time_bin']), int(r['bucket']), int(r['queries'])) for r in api)
+got_cells = sorted(tuple(int(v) for v in x) for x in (c.get('drawn') or []))
+if got_cells != want_cells: bad.append(f'the cut picture: {len(got_cells)} cells, the API {len(want_cells)}; first differing {[x for x in got_cells if x not in set(want_cells)][:2]} / {[x for x in want_cells if x not in set(got_cells)][:2]}')
+if f.get('cut') is not None or f.get('many') is not None or not f.get('cells') or f.get('errors'): bad.append(f"fits: { {k: v for k, v in f.items() if k != 'drawn'} }")
 if bad: print('DIFF', bad); sys.exit(1)
-print(f"I heatmap size: past the ceiling '{b['many']}'; the cut '{cut}', {c['cells']} cells drawn; fits: {f['cells']} cells, no note")
+print(f"I heatmap size: past the ceiling '{b['many']}'; the cut '{cut}', {c['cells']} cells drawn = the API's (time, bucket, queries), the picture from drawn_from {api[0]['drawn_from']}; fits: {f['cells']} cells, no note")
 PYPAGE
-echo "ok   I: the heatmap's size on the page: the refusal's words in the heatmap's place (no cell, no error box), the cut note naming the $((NBINS - 142)) oldest columns and where the drawn part starts (994 cells), no note where the cells fit"
+echo "ok   I: the heatmap's size on the page: the refusal's words in the heatmap's place (no cell, no error box), the cut note naming the $((NBINS - 143)) oldest column(s) and where the drawn part starts, 1,000 cells drawn = the API's cell by cell, no column of a cut bin drawn (not even empty), no note where the cells fit"
 printf '%s\n' "$out" > "$TMPD/i.out"; printf '%s\n' "$out" | grep '^click ' > "$SHOTS/d10-click-table.txt" || true
 echo "$out" | grep -v '^click ' | sed 's/^/  /'
 # the heatmap's read past the UI pool's real 15 s statement timeout: the plain line, no error box, no grid. A lock on
@@ -1284,7 +1364,7 @@ api "mssql/plancache?instance=$IID_761&from=$HF&to=$HT&part=heatmap&metric=durat
 HN0=$(jq '.heatmap.rows | length' "$TMPD/i-heat-before.json")
 pq "ALTER TABLE pgvigil.mssql_pc_sample RENAME TO mssql_pc_sample_i; CREATE VIEW pgvigil.mssql_pc_sample AS SELECT * FROM pgvigil.mssql_pc_sample_i WHERE (SELECT true FROM pg_sleep(20));" || fail "I: the slow view"
 SL0=$(grep -c . "$TMPD/serve.out" || true)
-lk=$(G_USR="$USR" G_UPW="$UPW" node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" slow "$HF" "$HT" "$IID_761") || { pq "DROP VIEW IF EXISTS pgvigil.mssql_pc_sample; ALTER TABLE IF EXISTS pgvigil.mssql_pc_sample_i RENAME TO mssql_pc_sample;" || true; fail "I: the slow walk stopped: $lk"; }
+lk=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" slow "$HF" "$HT" "$IID_761") || { pq "DROP VIEW IF EXISTS pgvigil.mssql_pc_sample; ALTER TABLE IF EXISTS pgvigil.mssql_pc_sample_i RENAME TO mssql_pc_sample;" || true; fail "I: the slow walk stopped: $lk"; }
 pq "DROP VIEW pgvigil.mssql_pc_sample; ALTER TABLE pgvigil.mssql_pc_sample_i RENAME TO mssql_pc_sample;" || fail "I: the table put back"
 # the serve's own log names the cause of the heatmap's failed read: the statement timeout, not a lock timeout
 HCAUSE=$(tail -n +"$((SL0 + 1))" "$TMPD/serve.out" | grep -E 'api query failed.*mssql/plancache' | grep -oE 'heatmap: ERROR: canceling statement due to [a-z ]+' | sed 's/ *$//' | sort -u | tr '\n' ';' || true)
@@ -1306,6 +1386,21 @@ bad += [l for l in out if l.startswith('FAIL')]
 want = {'active': min(10, n('i-run.json', 'rows')), 'top': min(10, n('i-top.json', 'top')), 'qs': min(10, n('i-qs.json', 'top')),
         'regressed': min(10, n('i-reg.json', 'regressed')), 'long': min(10, n('i-long.json', 'slow_shapes')), 'tuning': min(10, n('i-tun.json', 'tuning'))}
 heat = n('i-heat.json', 'heatmap')
+def api_rows(f, p):
+    t = json.load(open(f"{d}/{f}")).get(p) or {}
+    return [dict(zip(t.get('columns') or [], r)) for r in (t.get('rows') or [])]
+def txt(v):
+    return '' if v is None else ' '.join(str(v).split())
+from datetime import datetime
+ms = lambda t: int(datetime.fromisoformat(str(t).replace('Z', '+00:00')).timestamp() * 1000)
+# each head row by row: the page's key column against the API's first 10 in order
+KEY = {'active': ('i-run.json', 'rows', 'session', lambda r: txt(r['session_id'])),
+       'top': ('i-top.json', 'top', 'history', lambda r: f"History of {txt(r['query_key'])}"),
+       'qs': ('i-qs.json', 'top', 'query', lambda r: txt(r['query_id'])),
+       'regressed': ('i-reg.json', 'regressed', 'Query ID', lambda r: txt(r['query_id'])),
+       'long': ('i-long.json', 'slow_shapes', 'statement shape', lambda r: (txt(r['shape']) or '(no statement text stored)')[:80]),
+       'tuning': ('i-tun.json', 'tuning', 'query', lambda r: txt(r['query_id']))}
+hcells = sorted((ms(r['time_bin']), int(r['bucket']), int(r['queries'])) for r in api_rows('i-heat.json', 'heatmap'))
 for theme in ('light', 'dark'):
     line = next((l for l in out if l.startswith(f'parts {theme} ')), None)
     if not line: bad.append(f'no parts line {theme}'); continue
@@ -1317,7 +1412,12 @@ for theme in ('light', 'dark'):
     for k, wv in want.items():
         got = ps.get(k, {}).get('rows', -9)
         if got != wv and not (wv == 0 and got in (-1, 0)): bad.append(f'{theme} {k}: {got} rows, the API head {wv}')
+    for k, (f, p, col, key) in KEY.items():
+        want_k = [key(r) for r in api_rows(f, p)[:10]]
+        got_k = [r.get(col, '?') for r in ps.get(k, {}).get('keys', [])]
+        if got_k != want_k: bad.append(f'{theme} {k} head by rows: the page {got_k[:4]}..., the API {want_k[:4]}...')
     if ps.get('heatmap', {}).get('rows') != heat: bad.append(f"{theme} heatmap: {ps.get('heatmap', {}).get('rows')} table rows, the API {heat} cells")
+    if sorted(tuple(int(v) for v in x) for x in ps.get('heatmap', {}).get('heat', [])) != hcells: bad.append(f"{theme} heatmap picture: {len(ps.get('heatmap', {}).get('heat', []))} cells differ from the API's {len(hcells)} (time, bucket, queries)")
     if ps.get('active', {}).get('strips') != 1 or ps.get('qs', {}).get('strips') != 1: bad.append(f'{theme} strips: active {ps.get("active", {}).get("strips")}, qs {ps.get("qs", {}).get("strips")}')
     if ps.get('duration', {}).get('charts', 0) < 1 or ps.get('execs', {}).get('charts', 0) < 1: bad.append(f'{theme} the duration / executions charts')
     for pg in ('qs', 'plancache', 'procs', 'running', 'waits'):
@@ -1333,18 +1433,31 @@ r = one('prochistory')
 if '"Avg Duration (ms)","Avg CPU (ms)","Duration (ms/s)","Executions (per second)"' not in r or '"line":true' not in r or '"errors":0' not in r: bad.append(f'procedure history: {r}')
 rs = one('runstrip').split()
 if len(rs) != 4 or rs[2] != 'ok' or rs[3] != '0' or rs[1] == '0': bad.append(f'running strip: {rs}')
-wf = one('waitfilter')
-if 'Only requests waiting on WAITFOR. Show all active queries' not in wf: bad.append(f'wait filter: {wf}')
-wb = one('waitback')
-if '"line":false' not in wb or 'wait=' in wb: bad.append(f'wait filter back: {wb}')
+# the wait filter by what it shows: unfiltered = the API's rows (two waits at least), filtered = its WAITFOR rows alone
+run = api_rows('i-run.json', 'rows'); n_all = len(run); n_wf = sum(1 for r in run if r.get('wait_type') == 'WAITFOR')
+wf = one('waitfilter'); wfj = json.loads(wf.split(' ', 1)[1]) if wf else {}
+if wfj.get('line') != 'Only requests waiting on WAITFOR. Show all active queries': bad.append(f'wait filter: {wf}')
+g = wfj.get('grid') or {}
+if g.get('rows') != n_wf or not 1 <= n_wf < n_all or any('WAITFOR' not in w for w in g.get('waits') or ['?']): bad.append(f"wait filter rows: {g} (want the API's {n_wf} WAITFOR rows of {n_all}, each on WAITFOR)")
+wb = one('waitback'); wbj = json.loads(wb.split(' ', 1)[1]) if wb else {}
+if wbj.get('line') is not False or 'wait=' in wbj.get('hash', 'wait='): bad.append(f'wait filter back: {wb}')
+g = wbj.get('grid') or {}
+if g.get('rows') != n_all or n_all < 2 or all('WAITFOR' in w for w in g.get('waits') or []): bad.append(f"unfiltered rows: {g} (want the API's {n_all}, another wait among them)")
 wl = one('waitlink')
 if 'Only requests waiting on WAITFOR' not in wl: bad.append(f'the Waits page link: {wl}')
-hc = one('heatcell')
-if '#/mssql_running' not in hc or 'at=' not in hc or '"hash":"#/mssql_running' not in hc: bad.append(f'heatmap cell: {hc}')
+# the cell's link: Running at its bin's middle (PerformanceMonitor's heatmapDrillMs), landed there
+hc = one('heatcell'); hcj = json.loads(hc.split(' ', 1)[1]) if hc else {}
+import urllib.parse
+bin_min = (api_rows('i-heat.json', 'heatmap') or [{}])[0].get('bin_minutes')
+at = urllib.parse.parse_qs((hcj.get('href') or '').split('?', 1)[-1]).get('at', [''])[0]
+if not str(hcj.get('href', '')).startswith('#/mssql_running') or not str((hcj.get('landed') or {}).get('hash', '')).startswith('#/mssql_running') \
+        or not at or not bin_min or ms(at) != hcj.get('t', 0) + int(bin_min) * 30000:
+    bad.append(f"heatmap cell: {hc} (want at = the bin's start + half a bin of {bin_min} minutes)")
 lk = one('slow')
 if lk:
     j = json.loads(lk.split(' ', 1)[1])
-    if j['line'] != "the heatmap's read took too long for this range: pick 24 hours or less" or j['errors'] or j['tables'] or j['cells'] or j['ms'] < 14000: bad.append(f'slow: {j}')
+    # ms only shows the walk waited (the heatmap's read starts at render, before t0): the cause is the serve log's line below
+    if j['line'] != "the heatmap's read took too long for this range: pick 24 hours or less" or j['errors'] or j['tables'] or j['cells'] or j['ms'] < 10000: bad.append(f'slow: {j}')
 else: bad.append('no slow line')
 sc = one('slowcause')
 if sc != 'slowcause heatmap: ERROR: canceling statement due to statement timeout;': bad.append(f'the heatmap read\'s cause in the serve log: {sc!r}')
@@ -1354,9 +1467,11 @@ clicks = [l for l in out if l.startswith('click ')]
 cbad = [l for l in clicks if ('errors=0' not in l and 'not followed' not in l and not l.endswith(' gone')) or 'rendered=false' in l]
 if not clicks: bad.append('no click table')
 bad += [f'click: {l}' for l in cbad]
+for w in (l for l in out if l.startswith('WAITED ')): print('NOTE', w)
 for b in bad: print('DIFF', b)
-print(f"I: {len(clicks)} clicks in the click table")
+print(f"I: {len(clicks)} clicks in the click table; heads by rows: " + ', '.join(f"{k} {min(10, len(api_rows(f, p)))}" for k, (f, p, _, _) in KEY.items())
+      + f"; the heatmap {len(hcells)} cells; the wait filter {n_wf} of {n_all}")
 sys.exit(1 if bad else 0)
 PYEND
-echo "ok   I: the Queries page in PerformanceMonitor's section order, each head = its tab's API head (Running, Plan cache, Query Store, Regressed, Slow queries, Tuning), the heatmap's table = the API's cells, light and dark, no error box; the Query Store strip re-reads its grid and draws a query's line; the plan cache's History and a procedure's chart in PerformanceMonitor's four metrics with its line on the strip; Running's strip steps the slider, the wait filter and its way back, the Waits page's link; a heatmap cell opens Running at its time; a heatmap read held past the pool's 15 s statement timeout says the plain line (no error box, no grid; the serve log's cause the statement timeout) and reads again once the table is back; $(grep -c . "$SHOTS/d10-click-table.txt") clicks in the click table; shots in $SHOTS"
+echo "ok   I: the Queries page in PerformanceMonitor's section order, each head = its tab's API head row by row in order (Running, Plan cache, Query Store, Regressed; Slow queries and Tuning by the counts printed above, empty when 0), the heatmap's table and picture = the API's cells (time, bucket, queries), light and dark, no error box; the Query Store strip re-reads its grid and draws a query's line; the plan cache's History and a procedure's chart in PerformanceMonitor's four metrics with its line on the strip; Running's strip steps the slider; wait=WAITFOR shows the API's WAITFOR rows alone of the snapshot's requests on two waits, and its way back shows them all; the Waits page's link; a heatmap cell opens Running at its bin's middle; a heatmap read held past the pool's 15 s statement timeout says the plain line (no error box, no grid; the serve log's cause the statement timeout) and reads again once the table is back; $(grep -c . "$SHOTS/d10-click-table.txt") clicks in the click table; shots in $SHOTS"
 echo "PROOF OK: D10 DONE-1 and DONE-2"
