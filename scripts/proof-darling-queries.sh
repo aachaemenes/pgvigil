@@ -832,9 +832,9 @@ kill "$S13" 2>/dev/null || true; docker rm -f -v "$PG13" >/dev/null 2>&1 || true
 echo "ok   H: on PostgreSQL $V13 (date_bin refused there) the heatmap's cells over the same $N13 samples = PostgreSQL 18's, duration, cpu, writes and executions ($(for m in duration cpu writes executions; do jq '.heatmap.rows | length' "$TMPD/h13-$m.json"; done | paste -sd/) cells)"
 # H2. the heatmap timed at 24 h and 7 days at 761 and 3,000 rows a read (eight runs each: past the fifth, where a
 # prepared statement may turn generic), the fail line 10 s a run; at the ceiling shape (3,000 rows a read, 7 days) the
-# line is the MEDIAN of the eight (the lead 19:20, (C')): every run there is printed with the 1-minute load at its start,
-# a single run over 10 s prints as a slow run, named under a2 for DONE-2 (date_bin's own form crossed 10 s in two of
-# s177j-26's spike rounds on the shared box: one run fails on load, not on the form)
+# line is the MEDIAN of the eight: on a shared box one run there can cross 10 s on load alone, so every run is printed
+# with the 1-minute load at its start and a single run over 10 s prints as a slow run; the median guards the form. A run
+# curl cannot finish (its --max-time) fails with its line, as any answer but 200.
 # hmedian: the median of the run times given; exit 1 when it is 10 s or more
 hmedian() { python3 -c 'import sys, statistics; m = statistics.median(float(x) for x in sys.argv[1:]); print(f"{m:.3f}"); sys.exit(0 if m < 10 else 1)' "$@"; }
 TH=""; HSLOW=""; HEMPTY=""; HMED=""; HNOTE=""   # a slow run, a slow median or an empty read fails H after the last timing
@@ -845,8 +845,8 @@ for spec in 761 3000; do
     T8=()
     for run in 1 2 3 4 5 6 7 8; do
       l1=$(cut -d' ' -f1 /proc/loadavg)
-      tt=$(curl -s --max-time 30 -o "$TMPD/hh.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$HF&to=$HT&part=heatmap")
-      [[ "${tt%% *}" == 200 ]] || fail "H: the heatmap at $spec rows a read over $span answered ${tt%% *}: $(head -c 300 "$TMPD/hh.json")"
+      tt=$(curl -s --max-time 30 -o "$TMPD/hh.json" -w '%{http_code} %{time_total}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID&from=$HF&to=$HT&part=heatmap") || true
+      [[ "${tt%% *}" == 200 ]] || fail "H: the heatmap at $spec rows a read over $span answered ${tt%% *} (run $run, ${tt##* } s): $(head -c 300 "$TMPD/hh.json" 2>/dev/null)"
       if [[ "$spec/$span" == 3000/7d ]]; then
         T8+=("${tt##* }")
         python3 -c "import sys; sys.exit(0 if float('${tt##* }') < 10 else 1)" || HNOTE+=" heatmap/$spec/$span run $run:${tt##* } (load $l1)"
@@ -864,7 +864,7 @@ for spec in 761 3000; do
 done
 echo "     H: the heatmap through the API (s, eight runs each, $(ld); at 3,000 / 7 days each run @ the 1-minute load at its start):$TH"
 echo "     H: the heatmap at 3,000 rows a read over 7 days: the median of the eight runs $HMED s (the failing line there, 10 s)"
-[[ -z "$HNOTE" ]] || echo "     H: slow run(s) at 3,000 / 7 days, over 10 s but not failing (the median is the line; named under a2 for DONE-2):$HNOTE"
+[[ -z "$HNOTE" ]] || echo "     H: slow run(s) at 3,000 / 7 days, over 10 s (none fails alone: the median above is the line; for a2 in DONE-2):$HNOTE"
 # a range past PerformanceMonitor's 168 h reach is refused with its words
 c=$(curl -s -o "$TMPD/h8.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_761&from=$(date -u -d '-8 days' +%Y-%m-%dT%H:%M:%SZ)&to=$(date -u +%Y-%m-%dT%H:%M:%SZ)&part=heatmap")
 [[ "$c" == 400 ]] && grep -q 'pick 7 days or less' "$TMPD/h8.json" || fail "H: 8 days answered $c: $(head -c 200 "$TMPD/h8.json")"
