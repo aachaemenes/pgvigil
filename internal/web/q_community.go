@@ -426,7 +426,12 @@ func markOf(t *communityTool, sm *community.Sample, instance string) *sampleMark
 	case "pgvigil":
 		line = fmt.Sprintf("pgvigil's own read, captured %s on a test server (%s) loaded with the demo's invented schema; not %s.", day, sm.Server, instance)
 	case "DarlingData":
-		line = fmt.Sprintf("%s %s (DarlingData, %s) output, captured %s on a test server (%s); %s; not %s.", t.Name, sm.Version, sm.VersionDate, day, sm.Server, kitLicense[sm.Kit], instance)
+		// each DarlingData procedure has a version of its own: the procedure first, the kit and its release beside it
+		rel := "DarlingData"
+		if sm.VersionDate != "" {
+			rel += ", " + sm.VersionDate
+		}
+		line = fmt.Sprintf("%s %s (%s) output, captured %s on a test server (%s); %s; not %s.", t.Name, sm.Version, rel, day, sm.Server, kitLicense[sm.Kit], instance)
 	default:
 		of := " (" + t.Name + ")"
 		if sm.Kit == t.Name {
@@ -1061,8 +1066,8 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
 		return
 	}
-	var demo bool
-	if err := s.pool.QueryRow(ctx, `SELECT 'demo' = ANY (tags) FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&demo); err != nil {
+	demo, err := s.demoWithoutDoor(ctx, id, name, engine)
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -1091,7 +1096,7 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	}
 	var c *communityCheck
 	switch {
-	case demo && door == "":
+	case demo:
 		// a demo instance: invented by pgvigil demo, no server behind it (its tag and no login; never the process)
 		out.Demo = true
 		out.Needs = append(out.Needs, toolNeed{What: name + " is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here.",

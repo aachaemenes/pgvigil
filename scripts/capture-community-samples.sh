@@ -33,6 +33,8 @@ CDIR=$(realpath "$PGVIGIL_COMMUNITY_DIR")
 N=$RANDOM$RANDOM
 WORK=$(mktemp -d)
 RAW=${PGVIGIL_SAMPLE_RAW:-$WORK/raw}; mkdir -p "$RAW"; RAW=$(realpath "$RAW")
+# the raw answers and meta.json hold this machine's own names: never inside the repository unless git ignores them
+case "$RAW/" in "$ROOT"/*) git -C "$ROOT" check-ignore -q "$RAW" 2>/dev/null || { echo "FAIL: PGVIGIL_SAMPLE_RAW is inside the repository and not ignored: keep the raw answers outside it" >&2; exit 1; };; esac
 REPO=capt_repo_$N; CT=capt-mssql-$N
 PGD=$WORK/pgdata; SOCK=$WORK/sock; mkdir -p "$SOCK"
 SRV=""; MADE_CT=""; PGUP=""; HOLD=()
@@ -148,9 +150,9 @@ sq "EXEC dbo.sp_HumanEvents @event_type = N'blocking', @keep_alive = 1;" >/dev/n
 echo "ok   Sales, the logins, Query Store, the threshold 5 s, keeper_HumanEvents_blocking running"
 
 echo "--- SQL Server: a deadlock, the workload, the error log"
-sqbg orders_app Sales "BEGIN TRAN; UPDATE dbo.Stock SET qty = qty - 1 WHERE stock_id = 1; WAITFOR DELAY '00:00:03'; UPDATE dbo.OrderLine SET qty = qty WHERE line_id = 1; COMMIT;"
-sqbg stock_job Sales "BEGIN TRAN; UPDATE dbo.OrderLine SET qty = qty WHERE line_id = 1; WAITFOR DELAY '00:00:03'; UPDATE dbo.Stock SET qty = qty + 1 WHERE stock_id = 1; COMMIT;"
-docker exec -e SQLCMDPASSWORD="$APW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -I -U orders_app -d Sales -Q "SET NOCOUNT ON;
+# the workload first, alone (with -b, and its last line the passes it made: all 200 or the capture stops), then the
+# deadlock: run beside it, the workload's own scan queued behind the deadlock's row and it was the victim
+WL=$(docker exec -e SQLCMDPASSWORD="$APW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -b -I -h -1 -W -U orders_app -d Sales -Q "SET NOCOUNT ON;
   DECLARE @i int = 0; WHILE @i < 200 BEGIN
     EXEC dbo.usp_SearchOrders @text = N'1', @top = 100;
     SELECT c.region, COUNT(*) AS orders, SUM(o.total) AS total FROM dbo.Orders o JOIN dbo.Customer c ON c.customer_id = o.customer_id WHERE o.ordered >= DATEADD(day, -30, sysutcdatetime()) GROUP BY c.region;
@@ -158,7 +160,11 @@ docker exec -e SQLCMDPASSWORD="$APW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S loca
     UPDATE dbo.Orders SET status = 'shipped' WHERE order_id = 1 + (@i * 7) % 50000;
     INSERT dbo.AuditLog (logged, what) VALUES (sysutcdatetime(), N'order changed');
     SET @i += 1;
-  END" >/dev/null 2>&1 || fail "the workload"
+  END;
+  SELECT CONCAT('workload passes ', @i);" 2>&1 | tail -3) || fail "the workload: $WL"
+grep -q '^workload passes 200$' <<<"$WL" || fail "the workload did not make its 200 passes: $(printf '%s' "$WL" | tail -3)"
+sqbg orders_app Sales "BEGIN TRAN; UPDATE dbo.Stock SET qty = qty - 1 WHERE stock_id = 1; WAITFOR DELAY '00:00:03'; UPDATE dbo.OrderLine SET qty = qty WHERE line_id = 1; COMMIT;"
+sqbg stock_job Sales "BEGIN TRAN; UPDATE dbo.OrderLine SET qty = qty WHERE line_id = 1; WAITFOR DELAY '00:00:03'; UPDATE dbo.Stock SET qty = qty + 1 WHERE stock_id = 1; COMMIT;"
 sq "RAISERROR (N'Sales: the nightly stock job failed: 3 orders were not shipped', 16, 1) WITH LOG; RAISERROR (N'Sales: a backup of Sales_archive has not run for 8 days', 10, 1) WITH LOG;" >/dev/null 2>&1 || true
 sq "EXEC sys.sp_query_store_flush_db;" Sales >/dev/null
 for _ in $(seq 1 90); do
@@ -172,7 +178,7 @@ echo "--- PostgreSQL: a cluster of its own"
 INITDB=$(command -v initdb || ls /usr/lib/postgresql/*/bin/initdb 2>/dev/null | sort -V | tail -1)
 [[ -x "$INITDB" ]] || fail "initdb is not on this machine"
 PGCTL=$(dirname "$INITDB")/pg_ctl; PP=$(freeport)
-"$INITDB" -D "$PGD" -U postgres -A trust >"$WORK/initdb.log" 2>&1 || fail "initdb: $(tail -3 "$WORK/initdb.log")"
+"$INITDB" -D "$PGD" -U postgres --auth-local=trust --auth-host=scram-sha-256 >"$WORK/initdb.log" 2>&1 || fail "initdb: $(tail -3 "$WORK/initdb.log")"
 "$PGCTL" -D "$PGD" -o "-p $PP -k $SOCK -c listen_addresses=localhost -c shared_preload_libraries=pg_stat_statements -c max_prepared_transactions=5 -c work_mem=16MB -c random_page_cost=1.1 -c log_min_duration_statement=1000 -c track_io_timing=on -c shared_buffers=64MB" \
   -l "$WORK/pg.log" -w start >/dev/null || fail "the cluster did not start: $(tail -3 "$WORK/pg.log")"
 PGUP=1
@@ -221,6 +227,7 @@ psql "$SU dbname=erp" -XAtq -c "create unique index concurrently order_lines_sta
     for j in $(seq 1 10); do echo "update user_sessions set last_seen = now() where id = $((i * 10 + j));"; echo "select * from items where sku = 'SKU-$((i * j))';"; done
   done
 } > "$WORK/workload.sql"
+pq "select pg_stat_statements_reset()" erp >/dev/null   # Top statements: the workload's, not the load's
 PGAPPNAME=erp-api psql "host=$SOCK port=$PP user=app_erp dbname=erp" -XAtq -f "$WORK/workload.sql" >/dev/null || fail "the PostgreSQL workload"
 echo "ok   erp loaded (5,000 items, 200,000 order lines), the workload ran, an invalid index, a sequence at 80 %"
 
@@ -267,7 +274,9 @@ for f in sys.argv[1:]:
 print('ok   every tool ready on both test servers')
 PY
 
-# capt <tool> <instance> <database> <params json> [help]: the form, then the run; its answer kept
+# capt <tool> <instance> <database> <params json>: the form, then the run; its answer kept. MARK (when set): words the
+# rows must hold - the rig's own subject, so a sample shows what it was built for, never rows that are there either way;
+# NOKIT (when set): no kit's own statement may be among the rows (a plan cache or Query Store read)
 TOOLS_META=()
 capt() {
   local tool=$1 inst=$2 db=$3 params=$4 code
@@ -277,15 +286,30 @@ capt() {
   fi
   code=$(post "{\"instance_id\":$inst,\"tool\":\"$tool\",\"database\":\"$db\",\"params\":$params,\"timeout_secs\":60}" "$RAW/$tool.run.json" community/run)
   [[ $code == 200 ]] || fail "$tool: the run answered $code: $(head -c 300 "$RAW/$tool.run.json")"
-  python3 - "$RAW/$tool.run.json" "$tool" <<'PY' || fail "$tool: the run did not end done with rows"
-import json, sys
+  MARK=${MARK:-} NOKIT=${NOKIT:-} python3 - "$RAW/$tool.run.json" "$tool" <<'PY' || fail "$tool: the run did not end done with rows of its subject"
+import json, os, re, sys
 r = json.load(open(sys.argv[1]))['runs'][0]
 rows = sum(len(s['rows']) for s in r['sets'])
-print(f"capt {sys.argv[2]}: {r['outcome']}, {len(r['sets'])} sets, {rows} rows{(': ' + r.get('error', '')[:200]) if r['outcome'] != 'done' else ''}")
-sys.exit(0 if r['outcome'] == 'done' and rows > 0 else 1)
+text = json.dumps(r['sets'])
+mark, nokit = os.environ['MARK'], os.environ['NOKIT']
+miss = [m for m in mark.split('|') if m and m not in text]
+kit = re.findall(r'#BlitzResults|#Recompile|#partdb|#BlitzWho|WhoIsActive|@VersionCheckMode|#ErrorLog|#deadlock_data', text) if nokit else []
+print(f"capt {sys.argv[2]}: {r['outcome']}, {len(r['sets'])} sets, {rows} rows" + (f"; holds '{mark}'" if mark and not miss else '')
+      + (f"; MISSING {miss}" if miss else '') + (f"; KIT CODE {sorted(set(kit))}" if kit else '') + ((': ' + r.get('error', '')[:200]) if r['outcome'] != 'done' else ''))
+sys.exit(0 if r['outcome'] == 'done' and rows > 0 and not miss and not kit else 1)
 PY
 }
 
+FRK='"kit":"First Responder Kit","version":"8.34","version_date":"2026-07-02","help":true'
+dar() { echo "\"kit\":\"DarlingData\",\"version\":\"${DV[$1]}\",\"version_date\":\"2026-11-01\",\"help\":true"; }
+WIA='"kit":"sp_WhoIsActive","version":"v2200.20260409","version_date":"2026-04-09","help":false'
+ms() {   # ms <tool> <database> <params json> <kit fields> (MARK / NOKIT from the caller's environment)
+  capt "$1" "$MSID" "$2" "$3"
+  TOOLS_META+=("{\"tool\":\"$1\",\"engine\":\"sqlserver\",\"database\":\"${2:-master}\",\"params\":$3,$4}")
+}
+echo "--- SQL Server: the plan cache and Query Store of Sales, before any kit ran there (their rows are statements)"
+MARK='usp_SearchOrders' NOKIT=1 ms sp_BlitzCache "" '{"@DatabaseName":"Sales"}' "$FRK"
+MARK='Orders' NOKIT=1 ms sp_QuickieStore "" '{"@database_name":"Sales"}' "$(dar sp_QuickieStore)"
 echo "--- SQL Server: the chain held (a sleeping head with an open transaction, two sessions waiting on it)"
 mkfifo "$WORK/head.in"
 docker exec -i -e SQLCMDPASSWORD="$APW" "$CT" /opt/mssql-tools18/bin/sqlcmd -S localhost -C -I -U stock_job -d Sales < "$WORK/head.in" >/dev/null 2>&1 & HOLD+=($!)
@@ -298,29 +322,20 @@ for _ in $(seq 1 30); do [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_requests WHER
 [[ $(sq "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id > 0") -ge 2 ]] || fail "the chain did not form"
 sleep 20   # blocked process reports at 5, 10, 15 and 20 s into the keeper session
 echo "ok   the chain is held"
-FRK='"kit":"First Responder Kit","version":"8.34","version_date":"2026-07-02","help":true'
-dar() { echo "\"kit\":\"DarlingData\",\"version\":\"${DV[$1]}\",\"version_date\":\"2026-11-01\",\"help\":true"; }
-WIA='"kit":"sp_WhoIsActive","version":"v2200.20260409","version_date":"2026-04-09","help":false'
-ms() {   # ms <tool> <database> <params json> <kit fields>
-  capt "$1" "$MSID" "$2" "$3"
-  TOOLS_META+=("{\"tool\":\"$1\",\"engine\":\"sqlserver\",\"database\":\"${2:-master}\",\"params\":$3,$4}")
-}
-ms sp_WhoIsActive "" '{"@find_block_leaders":"1"}' "$WIA"
-ms sp_BlitzWho "" '{}' "$FRK"
-ms sp_HumanEventsBlockViewer "" '{}' "$(dar sp_HumanEventsBlockViewer)"
-ms sp_PressureDetector "" '{}' "$(dar sp_PressureDetector)"
-ms sp_BlitzFirst "" '{}' "$FRK"
+MARK='LCK_M_|stock_job' NOKIT=1 ms sp_WhoIsActive "" '{"@find_block_leaders":"1"}' "$WIA"
+MARK='stock_job' NOKIT=1 ms sp_BlitzWho "" '{}' "$FRK"
+MARK='Stock' NOKIT=1 ms sp_HumanEventsBlockViewer "" '{}' "$(dar sp_HumanEventsBlockViewer)"
+NOKIT=1 ms sp_PressureDetector "" '{}' "$(dar sp_PressureDetector)"
+NOKIT=1 ms sp_BlitzFirst "" '{}' "$FRK"
 exec 7>&-
 sq "DECLARE @k nvarchar(max) = N''; SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE login_name IN (N'orders_app', N'stock_job'); EXEC (@k);" >/dev/null 2>&1 || true
 echo "ok   the chain released"
-ms sp_Blitz "" '{"@CheckServerInfo":"1"}' "$FRK"
-ms sp_BlitzCache "" '{}' "$FRK"
-ms sp_BlitzIndex "" '{"@DatabaseName":"Sales","@Mode":"4"}' "$FRK"
-ms sp_BlitzLock "" '{}' "$FRK"
-ms sp_QuickieStore "" '{"@database_name":"Sales"}' "$(dar sp_QuickieStore)"
-ms sp_HealthParser "" '{}' "$(dar sp_HealthParser)"
-ms sp_LogHunter "" '{}' "$(dar sp_LogHunter)"
-ms sp_IndexCleanup "" '{"@database_name":"Sales"}' "$(dar sp_IndexCleanup)"
+MARK='Sales' ms sp_Blitz "" '{"@CheckServerInfo":"1"}' "$FRK"
+MARK='Unindexed Foreign Keys' ms sp_BlitzIndex "" '{"@DatabaseName":"Sales","@Mode":"4"}' "$FRK"
+MARK='dbo.Stock|orders_app' NOKIT=1 ms sp_BlitzLock "" '{}' "$FRK"
+MARK='deadlock' NOKIT=1 ms sp_HealthParser "" '{}' "$(dar sp_HealthParser)"
+MARK='was killed by' ms sp_LogHunter "" '{}' "$(dar sp_LogHunter)"
+MARK='IX_Orders_customer_2' ms sp_IndexCleanup "" '{"@database_name":"Sales"}' "$(dar sp_IndexCleanup)"
 
 echo "--- PostgreSQL: an idle in transaction head, two sessions waiting on it, a prepared transaction"
 mkfifo "$WORK/pghead.in"
@@ -338,34 +353,39 @@ pg() {   # pg <tool> <params json>
   capt "$1" "$PGID" erp "$2"
   TOOLS_META+=("{\"tool\":\"$1\",\"engine\":\"postgres\",\"database\":\"erp\",\"params\":$2,\"kit\":\"pgvigil\",\"version\":\"own read\",\"version_date\":\"\",\"help\":false}")
 }
-pg pg_running '{}'
-pg pg_blocking '{}'
-pg pg_xmin_horizon '{}'
-pg pg_top_statements '{}'
-pg pg_table_sizes '{}'
-pg pg_unused_indexes '{}'
-pg pg_duplicate_indexes '{}'
-pg pg_invalid_indexes '{}'
-pg pg_settings_changed '{}'
-pg pg_sequences '{}'
+MARK='idle in transaction' pg pg_running '{}'
+MARK='head' pg pg_blocking '{}'
+MARK='erp_batch_42' pg pg_xmin_horizon '{}'
+MARK='order_lines|user_sessions' pg pg_top_statements '{}'
+MARK='order_lines' pg pg_table_sizes '{}'
+MARK='user_sessions_last_seen_idx' pg pg_unused_indexes '{}'
+MARK='items_sku_idx1' pg pg_duplicate_indexes '{}'
+MARK='order_lines_status_key' pg pg_invalid_indexes '{}'
+MARK='max_prepared_transactions' pg pg_settings_changed '{}'
+MARK='invoice_no_seq' pg pg_sequences '{}'
 exec 8>&-
 pq "rollback prepared 'erp_batch_42'" >/dev/null 2>&1 || true
 
 # ---- meta, the pack, the tests ---------------------------------------------------------------------------------------
 HOST=$(hostname); HOSTF=$(hostname -f 2>/dev/null || hostname)
 PROJECT=$(curl -s --max-time 3 -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id 2>/dev/null || true)
+# on GCE the full host name carries the project (<host>.<zone>.c.<project>.internal): its name, or the capture stops
+if [[ -z $PROJECT && $HOSTF == *.c.*.internal ]]; then PROJECT=${HOSTF#*.c.}; PROJECT=${PROJECT%.internal}; fi
+[[ -n $PROJECT || $HOSTF != *.internal ]] || fail "this machine's cloud project could not be read: its name would not be denied"
 DENY_ALL="$HOST,$HOSTF,${CID:0:12},$REPO${PROJECT:+,$PROJECT}${PGVIGIL_SAMPLE_DENY:+,$PGVIGIL_SAMPLE_DENY}"
 TOOLS_JSON=$(IFS=,; echo "[${TOOLS_META[*]}]")
-python3 - "$RAW/meta.json" <<PY
-import json, sys, datetime
+export M_MS="$MS_SERVER" M_PG="$PG_SERVER" M_TOOLS="$TOOLS_JSON" M_DENY="$DENY_ALL" M_PGD="$PGD" M_SOCK="$SOCK" M_WORK="$WORK" M_CID="$CID" M_CT="$CT" M_HOSTF="$HOSTF" M_HOST="$HOST" M_REPO="$REPO" M_ROOT="$ROOT"
+python3 - "$RAW/meta.json" <<'PY'
+import json, sys, datetime, os
+e = os.environ
 m = {
   "captured_at": datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-  "servers": {"sqlserver": """$MS_SERVER""", "postgres": """$PG_SERVER"""},
-  "tools": json.loads(r'''$TOOLS_JSON'''),
-  "replace": [["$PGD", "/var/lib/postgresql/data"], ["$SOCK", "/var/run/postgresql"], ["$WORK", "/tmp/capture"],
-              ["$CID", "testsql01"], ["${CID:0:12}", "testsql01"], ["$CT", "testsql01"], ["$HOSTF", "pgvigil-host"], ["$HOST", "pgvigil-host"],
-              ["$REPO", "pgvigil"], ["$ROOT", "/opt/pgvigil"]],
-  "deny": [w for w in """$DENY_ALL""".split(",") if w.strip()],
+  "servers": {"sqlserver": e['M_MS'], "postgres": e['M_PG']},
+  "tools": json.loads(e['M_TOOLS']),
+  "replace": [[e['M_PGD'], "/var/lib/postgresql/data"], [e['M_SOCK'], "/var/run/postgresql"], [e['M_WORK'], "/tmp/capture"],
+              [e['M_CID'], "testsql01"], [e['M_CID'][:12], "testsql01"], [e['M_CT'], "testsql01"], [e['M_HOSTF'], "pgvigil-host"], [e['M_HOST'], "pgvigil-host"],
+              [e['M_REPO'], "pgvigil"], [e['M_ROOT'], "/opt/pgvigil"]],
+  "deny": [w for w in e['M_DENY'].split(",") if w.strip()],
 }
 json.dump(m, open(sys.argv[1], "w"), indent=1)
 print(f"ok   meta: {len(m['tools'])} tools, {len(m['replace'])} replacements, {len(m['deny'])} denied words")

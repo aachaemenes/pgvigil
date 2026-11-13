@@ -446,20 +446,27 @@ SAMPID=$(python3 -c 'import json,sys; print(" ".join(str(v) for v in json.load(o
 [[ $(wc -w <<<"$SAMPID") == 1 ]] || fail "N2: the sample's send: $(cat "$WORK/now3.json")"
 waitsent $SAMPID || fail "N2: the sample's mail not answered in 3 minutes"
 python3 - "$WORK/sink" "$SAMPID" "$SMARK" <<'PY' || fail "N2: see above"
-import email, glob, html, io, os, sys, zipfile
+import email, glob, html, io, os, re, sys, zipfile
 from email import policy
 sink, sid, mark = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 m = next((email.message_from_binary_file(open(f, 'rb'), policy=policy.default) for f in sorted(glob.glob(os.path.join(sink, '*.eml')))
           if email.message_from_binary_file(open(f, 'rb'), policy=policy.default)['X-Pgvigil-Report'] == str(sid)), None)
 assert m is not None, f"N2: mail {sid} is not in the sink"
 body = html.unescape(m.get_body(('html',)).get_content())
-assert mark in body, f"N2: the mail's body does not carry the mark {mark!r}"
+# the mark on exactly the panel's two grids (its parameters and its sample), each line right above its table
+assert body.count(mark) == 2 and all(body.find('<table', i) - i < 400 for i in [k.start() for k in re.finditer(re.escape(mark), body)]), f"N2: the mail's body carries the mark {body.count(mark)} times (2 wanted, each above its grid)"
 xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
 z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
-summary = html.unescape(z.read('xl/worksheets/sheet1.xml').decode())   # the Summary sheet writes its text inline
-assert mark in summary, f"N2: the mail's workbook's Summary sheet does not carry the mark"
-print(f"ok   N2: mail {sid}: the sample of sp_Blitz on a demo instance mailed with Send now; the body's line above its grid and the workbook's Summary carry the mark ({mark[:60]}...)")
+xml = z.read('xl/worksheets/sheet1.xml').decode()   # the Summary sheet writes its text inline
+rows = {}
+for r, b in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', xml):
+    cells = {c: html.unescape(re.sub(r'<[^>]+>', '', t)) for c, t in re.findall(r'<c r="([A-Z]+)\d+"[^>]*>(.*?)</c>', b)}
+    if int(r) >= 12 and cells.get('A'): rows[cells['A']] = cells.get('C', '')
+bad = [n for n, note in rows.items() if (mark in note) != n.startswith('sp_Blitz')]
+assert rows and not bad and sum(1 for n in rows if n.startswith('sp_Blitz')) == 2, f"N2: the mail's workbook's Summary: {rows} (wrong: {bad})"
+print(f"ok   N2: mail {sid}: the sample of sp_Blitz on a demo instance mailed with Send now; the mark above exactly the panel's 2 grids in the body and on exactly their 2 sheets in the workbook's Summary ({mark[:60]}...)")
 PY
+NOWIDS="$NOWIDS $SAMPID"   # graded by C, H and X with the others (the one mail that carries a kit's stored words)
 
 # ---- S: schedules, brought due, rendered by two serves -------------------------------------------------------------------
 JOBS="#/jobs?from=$FROM&to=$TO"

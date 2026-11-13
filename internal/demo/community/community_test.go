@@ -42,13 +42,11 @@ func TestStoredSamples(t *testing.T) {
 			if len(set.Types) != len(set.Columns) {
 				t.Errorf("%s set %d: %d types for %d columns", tool, i+1, len(set.Types), len(set.Columns))
 			}
-			for _, c := range set.Columns {
-				if strings.Contains(strings.ToLower(c), "query_plan") {
-					for _, row := range set.Rows {
-						if v, ok := row[indexOf(set.Columns, c)].(string); ok && strings.Contains(v, "<ShowPlanXML") {
-							t.Errorf("%s set %d: plan XML in %s", tool, i+1, c)
-							break
-						}
+			// the pack's rule, whatever the column is called: no cell holds showplan XML
+			for _, row := range set.Rows {
+				for c, v := range row {
+					if v, ok := v.(string); ok && strings.Contains(v, "<ShowPlanXML") {
+						t.Errorf("%s set %d: plan XML in %s", tool, i+1, set.Columns[c])
 					}
 				}
 			}
@@ -70,15 +68,6 @@ func TestStoredSamples(t *testing.T) {
 	t.Logf("%d stored samples, %d bytes", len(tools), total)
 }
 
-func indexOf(xs []string, x string) int {
-	for i, v := range xs {
-		if v == x {
-			return i
-		}
-	}
-	return -1
-}
-
 // The deny-list itself: an address is found, a version number is not; the generic words; an extra word without
 // case, masked in what it says.
 func TestDeny(t *testing.T) {
@@ -91,6 +80,8 @@ func TestDeny(t *testing.T) {
 		{`Microsoft SQL Server 2022 (RTM-CU16) - 16.0.4165.4 (X64)`, false},
 		{`version 8.34, 6.11`, false},
 		{`1.2.3.4.5`, false},
+		{`connection from 10.20.1.11.`, true},
+		{`build 16.0.4325.4.`, false},
 		{`/home/someone/x`, true},
 		{`a job under ~/cloudbox/x`, true},
 		{`pgcr_seed`, true},
@@ -107,7 +98,7 @@ func TestDeny(t *testing.T) {
 	if len(h) != 1 || strings.Contains(strings.ToLower(h[0]), "myboxname7") {
 		t.Errorf("an extra word: %v (found once, never said whole)", h)
 	}
-	if got := ScrubIPv4("from 10.0.0.1,10.0.0.2 and 192.168.1.20:5432; build 16.0.4295.3"); got != "from (address),(address) and (address):5432; build 16.0.4295.3" {
+	if got := ScrubIPv4("from 10.0.0.1,10.0.0.2 and 192.168.1.20:5432; build 16.0.4295.3; from 10.20.1.11."); got != "from (address),(address) and (address):5432; build 16.0.4295.3; from (address)." {
 		t.Errorf("ScrubIPv4: %q", got)
 	}
 }

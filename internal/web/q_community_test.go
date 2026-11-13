@@ -184,6 +184,10 @@ func TestCommunitySamples(t *testing.T) {
 		if sm.Engine != tool.Engine {
 			t.Errorf("%s: a sample of %s for a %s tool", tool.ID, sm.Engine, tool.Engine)
 		}
+		// the kit the sample names is the kit of the tool's group (the line's licence words follow the kit)
+		if want := map[string]string{"sp_WhoIsActive": "sp_WhoIsActive", "First Responder Kit": "First Responder Kit", "Darling Data": "DarlingData", "pgvigil reads": "pgvigil"}[tool.Group]; sm.Kit != want {
+			t.Errorf("%s: the sample's kit %q, the tool's group %q (want %q)", tool.ID, sm.Kit, tool.Group, want)
+		}
 		page := samplePage[tool.ID]
 		in := pg
 		if tool.Engine == "sqlserver" {

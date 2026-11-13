@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aachaemenes/pgvigil/internal/demo/community"
 )
@@ -99,7 +100,8 @@ func newScrubber(pairs [][2]string) *scrubber {
 	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i][0]) > len(pairs[j][0]) })
 	s := &scrubber{count: map[string]int{}}
 	for _, p := range pairs {
-		if len(strings.TrimSpace(p[0])) < 4 { // a short name would replace parts of ordinary words
+		// a short name, or one an ordinary cell holds (localhost), would replace parts of ordinary words
+		if w := strings.TrimSpace(p[0]); len(w) < 4 || strings.EqualFold(w, "localhost") {
 			continue
 		}
 		s.res = append(s.res, regexp.MustCompile(`(?i)`+regexp.QuoteMeta(p[0])))
@@ -118,6 +120,23 @@ func (s *scrubber) str(v string) string {
 	if w := community.ScrubIPv4(v); w != v {
 		s.count["(address)"]++
 		v = w
+	}
+	return v
+}
+
+// any scrubs a cell: a string, or the strings inside an array or an object (a cell PostgreSQL returns as one)
+func (s *scrubber) any(v any) any {
+	switch x := v.(type) {
+	case string:
+		return s.str(x)
+	case []any:
+		for i := range x {
+			x[i] = s.any(x[i])
+		}
+	case map[string]any:
+		for k := range x {
+			x[k] = s.any(x[k])
+		}
 	}
 	return v
 }
@@ -142,14 +161,9 @@ func run(raw, out string) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
-	old, _ := filepath.Glob(filepath.Join(out, "*.json.gz"))
-	for _, f := range old {
-		if err := os.Remove(f); err != nil {
-			return err
-		}
-	}
 	var bad []string
 	total := 0
+	files := map[string][]byte{}
 	for _, t := range m.Tools {
 		s, err := one(raw, m, t)
 		if err != nil {
@@ -170,9 +184,7 @@ func run(raw, out string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(out, t.Tool+".json.gz"), gz, 0o644); err != nil {
-			return err
-		}
+		files[t.Tool] = gz
 		total += len(gz)
 		fmt.Printf("pack %s: %d sets, %d rows, %d bytes (json %d)%s\n", t.Tool, len(s.Sets), s.Rows(), len(gz), len(text), notes(s))
 	}
@@ -181,7 +193,19 @@ func run(raw, out string) error {
 		bad = append(bad, fmt.Sprintf("the samples are %d bytes, over the cap of %d", total, community.MaxBytes))
 	}
 	if len(bad) > 0 {
-		return fmt.Errorf("%d problem(s):\n  %s", len(bad), strings.Join(bad, "\n  "))
+		return fmt.Errorf("%d problem(s), nothing written (the samples in %s stay as they were):\n  %s", len(bad), out, strings.Join(bad, "\n  "))
+	}
+	// every sample passed: the earlier capture's files go, these take their place
+	old, _ := filepath.Glob(filepath.Join(out, "*.json.gz"))
+	for _, f := range old {
+		if err := os.Remove(f); err != nil {
+			return err
+		}
+	}
+	for tool, gz := range files {
+		if err := os.WriteFile(filepath.Join(out, tool+".json.gz"), gz, 0o644); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -229,10 +253,13 @@ func one(raw string, m meta, t toolMeta) (*community.Sample, error) {
 		for _, x := range pa.Params {
 			typ := x.Type
 			if x.MaxLength != 0 && strings.Contains(strings.ToLower(typ), "char") {
-				if x.MaxLength < 0 {
+				switch n := x.MaxLength; {
+				case n < 0:
 					typ += "(max)"
-				} else {
-					typ += fmt.Sprintf("(%d)", x.MaxLength)
+				case strings.HasPrefix(strings.ToLower(typ), "n"):
+					typ += fmt.Sprintf("(%d)", n/2) // sys.parameters.max_length is in bytes: two per nchar / nvarchar character
+				default:
+					typ += fmt.Sprintf("(%d)", n)
 				}
 			}
 			d := community.ParamDoc{Name: x.Name, Type: typ}
@@ -255,10 +282,16 @@ func one(raw string, m meta, t toolMeta) (*community.Sample, error) {
 				if str, ok := v.(string); ok {
 					str = sc.str(str)
 					if len(str) > maxCell {
-						str = str[:maxCell] + " [cut for the demo]"
+						n := maxCell
+						for n > 0 && !utf8.RuneStart(str[n]) { // never half a character
+							n--
+						}
+						str = str[:n] + " [cut for the demo]"
 						cut++
 					}
 					row[j] = str
+				} else {
+					row[j] = sc.any(v)
 				}
 			}
 		}

@@ -28,7 +28,7 @@ interface Tool {
 interface SampleMark { kit: string; version: string; version_date?: string; captured_at: string; server: string; page?: string; line: string; mark: string }
 interface SampleAnswer extends SampleMark {
   tool: string; name: string; instance: string; database?: string; params: Record<string, string>;
-  param_doc: { name: string; type: string; help?: string }[] | null; dropped: string[] | null; cut: string[] | null; sets: ResultSet[];
+  param_doc: { name: string; type: string; help?: string }[] | null; dropped: string[] | null; cut: string[] | null; scrubbed: string[] | null; sets: ResultSet[];
 }
 interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string }
 interface ProcParam { name: string; type: string; max_length: number; help?: string }
@@ -121,9 +121,13 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     ]));
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
-  // the address named a tool: its panel is open when the page has drawn (a mail of the page carries it)
-  const t = open ? d.tools.find(x => x.id === open) : undefined;
-  if (t) { try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); } }
+  // the address named a tool: on a demo instance its sample is open when the page has drawn (a mail of the page carries
+  // it); on a real instance the address opens nothing - a tool's form runs its help on the server, which only a click asks
+  if (open && d.demo) {
+    const t = d.tools.find(x => x.id === open);
+    if (t) { try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); } }
+    else out.replaceChildren(el('p', { class: 'meta', role: 'note' }, `No tool '${open}' on ${d.instance}: pick one above.`));
+  }
   return box;
 }
 
@@ -168,6 +172,12 @@ function openButton(t: Tool, instance: number, d: Tools, out: HTMLElement, cell:
   if (!t.on && !d.demo) offControl(b, dec ? dec.what + (dec.how ? ' How: ' + dec.how : '') : 'off here', cell ?? above ?? undefined);
   b.addEventListener('click', async () => {
     out.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
+    // a demo sample's own address (tool=): a schedule or a link of this page then opens it again
+    if (d.demo) {
+      const [path, q] = location.hash.split('?');
+      const qs = new URLSearchParams(q ?? '');
+      if (qs.get('i') === String(instance)) { qs.set('tool', t.id); history.replaceState(null, '', `${path}?${qs}`); }
+    }
     try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }
   });
   return b;
@@ -197,7 +207,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     const v = preset.get(x.name.toLowerCase());
     if (v !== undefined) { i.value = v; filled.push(`${x.name} = ${v}`); }
     inputs.push([x.name, i]);
-    table.append(el('tr', {}, el('td', {}, x.name), el('td', {}, x.type + (x.max_length > 0 && /char/i.test(x.type) ? `(${x.max_length < 0 ? 'max' : x.max_length})` : '')), el('td', {}, i), el('td', {}, x.help ?? '')));
+    table.append(el('tr', {}, el('td', {}, x.name), el('td', {}, x.type + (x.max_length !== 0 && /char/i.test(x.type) ? `(${x.max_length < 0 ? 'max' : /^n/i.test(x.type) ? x.max_length / 2 : x.max_length})` : '')), el('td', {}, i), el('td', {}, x.help ?? '')));
   }
   if (p.params.length) {
     sec.append(el('p', { class: 'meta' }, 'Leave a parameter empty to take the procedure\'s own default.'),
@@ -238,7 +248,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
 // instance's), the link to this instance's own page on the subject, and Run off with the demo's line beside it
 async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLElement> {
   const sec = el('section', {}, el('h3', {}, t.name), el('p', {}, t.description));
-  if (t.url) sec.append(el('p', { class: 'meta' }, 'Its documentation: ', el('a', { href: t.url, rel: 'noopener noreferrer', target: '_blank' }, t.url)));
+  if (t.url && t.kind !== 'script') sec.append(el('p', { class: 'meta' }, 'Its documentation: ', el('a', { href: t.url, rel: 'noopener noreferrer', target: '_blank' }, t.url)));
   const demoWhy = (d.needs ?? []).find(n => n.state === 'demo')?.what ?? `${d.instance} is a demo instance: no server stands behind it, so no tool runs here.`;
   const why = el('p', { class: 'meta demo-why' }, demoWhy);
   const run = el('button', { type: 'button' }, 'Run ' + t.name);
@@ -260,15 +270,18 @@ async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
   }
   const used = Object.entries(s.params ?? {});
   if (s.param_doc?.length) {
-    const used2 = new Map(used.map(([k, v]) => [k.toLowerCase(), v]));
-    sec.append(el('div', { class: 'grid-wrap', tabindex: '0' }, el('table', { class: 'props' },
-      el('thead', {}, el('tr', {}, el('th', {}, 'parameter'), el('th', {}, 'type'), el('th', {}, 'in the stored run'), el('th', {}, 'what it does'))),
-      el('tbody', {}, ...s.param_doc.map(x => el('tr', {}, el('td', {}, x.name), el('td', {}, x.type), el('td', {}, used2.get(x.name.toLowerCase()) ?? ''), el('td', {}, x.help ?? '')))))));
+    // a grid (an export or a mail reads its four columns as they are), under a heading of its own
+    const byName = new Map(used.map(([k, v]) => [k.toLowerCase(), v]));
+    sec.append(el('h4', {}, `${t.name} parameters`), grid(s.param_doc.map(x => ({ name: x.name, type: x.type, used: byName.get(x.name.toLowerCase()) ?? '', help: x.help ?? '' })), [
+      { key: 'name', label: 'parameter' }, { key: 'type' }, { key: 'used', label: 'in the stored run' }, { key: 'help', label: 'what it does', wide: true },
+    ]));
   } else if (used.length) {
     sec.append(el('p', { class: 'meta' }, 'The stored run passed ' + used.map(([k, v]) => `${k} = ${v}`).join(', ') + '.'));
   }
   const left = [...(s.dropped ?? []), ...(s.cut ?? [])];
   if (left.length) sec.append(el('p', { class: 'meta' }, 'Left out of the stored copy: ' + left.join('; ') + '.'));
+  // the test server's own names (its data folder, its socket) replaced by fixed words: said, never passed off as its own
+  if (s.scrubbed?.length) sec.append(el('p', { class: 'meta' }, 'The test server\'s own names replaced in the stored copy by the fixed words ' + s.scrubbed.join('; ') + '.'));
   sec.append(el('div', { class: 'toolbar' }, run), why);
   // the grids inside the mark: an export or a mail of them carries it (export.ts reads data-sample)
   const box = el('div', { class: 'sample', 'data-sample': s.mark });

@@ -1145,7 +1145,8 @@ if (mode === 'live') {
     return { line: sec.querySelector('.sample-line')?.textContent ?? '', mark: box?.getAttribute('data-sample') ?? '',
       grids: box ? box.querySelectorAll('table.grid').length : 0, rows: box ? box.querySelectorAll('table.grid tbody tr').length : 0,
       runOff: run?.getAttribute('aria-disabled') === 'true', runDesc: desc, file: !!sec.querySelector('input[type=file]'),
-      link: link?.getAttribute('href') ?? '', notes: [...sec.querySelectorAll('[role=note]')].map(p => p.textContent).join(' ').slice(0, 400),
+      link: link?.getAttribute('href') ?? '', ext: [...sec.querySelectorAll('a[href^="http"]')].map(x => x.getAttribute('href')),
+      notes: [...sec.querySelectorAll('[role=note]')].map(p => p.textContent).join(' ').slice(0, 400),
       error: sec.querySelector('.error')?.textContent?.slice(0, 300) ?? '' }; })()`);
   const clickTool = (name) => ev(`(() => { const b = [...document.querySelectorAll('main table.grid button.link')].find(b => b.textContent.trim() === ${JSON.stringify(name)}); if (!b) return false; b.click(); return true; })()`);
   // the accessibility tree's description of the controls sel matches, beside the page's own described text
@@ -1177,6 +1178,7 @@ if (mode === 'live') {
         const first = label === 'sqlserver' ? 'sp_Blitz' : 'Largest tables';
         await clickTool(first); await until(`!!(${panel(first)}?.querySelector('.sample table.grid'))`);
         s.dark = await readPanel(first);
+        s.dark.bg = await ev(`getComputedStyle(document.body).backgroundColor`);
       }
       if (t === 'light') {
         const api = await ev(`fetch('/api/community?instance=${inst}').then(r => r.json()).then(d => ({ instance: d.instance, engine: d.engine, tools: d.tools.map(x => ({ id: x.id, name: x.name, group: x.group, kind: x.kind, sample: x.sample ?? null })) }))`);
@@ -1215,14 +1217,18 @@ if (mode === 'live') {
       for (let i = 0; i < 100 && !out.files[kind]; i++) { await sleep(200); const f = fs.readdirSync(dl).find(x => !before.has(x) && re.test(x)); if (f) out.files[kind] = f; }
     }
   }
-  // the fleet page's picker reaches the same page
-  await open(U4 + '#/community', `!!document.querySelector('main select')`);
-  await ev(`(() => { const s = document.querySelector('main select'); s.value = ${JSON.stringify(String(dms))}; s.dispatchEvent(new Event('change')); return 1; })()`);
-  await until(communityReady);
-  out.picker = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')]; return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true').length, box: document.querySelector('main .needs')?.textContent?.slice(0, 120) ?? '' }; })()`);
-  await clickTool('sp_BlitzLock');
-  await until(`!!(${panel('sp_BlitzLock')}?.querySelector('.sample table.grid'))`);
-  out.picker.panel = await readPanel('sp_BlitzLock');
+  // the fleet page's picker, per engine: the picked instance's own panel (its line, mark and link name that instance)
+  out.picker = [];
+  for (const [inst, tool] of [[dms, 'sp_BlitzLock'], [dpg, 'What holds back vacuum']]) {
+    await open(U4 + '#/community', `!!document.querySelector('main select')`);
+    await ev(`(() => { const s = document.querySelector('main select'); s.value = ${JSON.stringify(String(inst))}; s.dispatchEvent(new Event('change')); return 1; })()`);
+    await until(communityReady);
+    const pk = await ev(`(() => { const bs = [...document.querySelectorAll('main table.grid button.link')]; return { n: bs.length, off: bs.filter(b => b.getAttribute('aria-disabled') === 'true').length, box: document.querySelector('main .needs')?.textContent?.slice(0, 120) ?? '' }; })()`);
+    await clickTool(tool);
+    await until(`!!(${panel(tool)}?.querySelector('.sample table.grid'))`);
+    pk.id = inst; pk.tool = tool; pk.panel = await readPanel(tool);
+    out.picker.push(pk);
+  }
   // the real instance served beside the demo's: its own state, never the demo line, no sample
   await open(U4 + `#/community?i=${realMsr}`, communityReady);
   out.real = await ev(`(() => { const m = document.querySelector('main')?.textContent ?? ''; return { demoLine: /is a demo instance/.test(m), nologin: /-no-login/.test(m), off: [...document.querySelectorAll('main table.grid button.link')].filter(b => b.getAttribute('aria-disabled') === 'true').length }; })()`);
@@ -1387,31 +1393,35 @@ PY
   DMS=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
   DPG=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'postgres' order by name limit 1")
   [[ -n $DMS && -n $DPG ]] || fail "U2: the demo seeded no SQL Server or no PostgreSQL instance"
+  DMSN=$(q "select name from pgvigil.instances where instance_id = $DMS"); DPGN=$(q "select name from pgvigil.instances where instance_id = $DPG")
   LOG0=$(q "select count(*) from pgvigil.custom_report_log")
   rm -rf "$WORK/dl"; mkdir -p "$WORK/dl"
   timeout 900 node "$WORK/buttons.mjs" demo "$CDP" "$U4/" "$DMS" "$DPG" "${MRID:-$AID}" "$SHOTS" "$WORK/dl" > "$WORK/demo.json" 2>"$WORK/demo.err" || fail "S: the demo driver: $(tail -5 "$WORK/demo.err")"
   LOG1=$(q "select count(*) from pgvigil.custom_report_log")
   # a run asked of a demo instance on the signed-in serve (the same repository): never a sample
   tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}") == 400 ]] || fail "S: a run asked of a demo instance: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run.json"
-  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" <<'PY' || fail "S: see above"
+  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$DMS=$DMSN" "$DPG=$DPGN" <<'PY' || fail "S: see above"
 import json, sys, zipfile, os, re, html
 d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'; dl = sys.argv[3]
+# each instance's name as the repository holds it (never the name the page's own API answered)
+names = dict(a.split('=', 1) for a in sys.argv[7:9])
 kit_of = {'First Responder Kit': 'First Responder Kit', 'Darling Data': 'DarlingData', 'sp_WhoIsActive': 'sp_WhoIsActive', 'pgvigil reads': 'pgvigil', 'Glenn Berry': None}
 for s in d['demo']:
     want = 14 if s['label'].endswith('sqlserver') else 10
     assert s['n'] == want and s['off'] == 0 and 'is a demo instance' in s['box'] and not s['error'] and not s['nologin'], f"S: demo {s['label']}: {s}"
     if 'tools' not in s:
         k = s.get('dark') or {}
-        assert k.get('rows', 0) >= 1 and k.get('runOff'), f"S: demo {s['label']}: the sample panel in the dark theme: {k}"
+        rgb = [int(x) for x in re.findall(r'\d+', k.get('bg', ''))[:3]] or [255, 255, 255]
+        assert k.get('rows', 0) >= 1 and k.get('runOff') and sum(rgb) / 3 < 80, f"S: demo {s['label']}: the sample panel in the dark theme: {k}"
         print(f"ok   S: demo {s['label']}: {s['n']} tool names, none off (each opens its sample), the demo line above them; a sample panel ({k['rows']} rows, Run off)"); continue
-    inst = s['instance']; eng = 'SQL Server 2022 ' if s['engine'] == 'sqlserver' else 'PostgreSQL '
+    inst = names[str(s['id'])]; eng = 'SQL Server 2022 ' if s['engine'] == 'sqlserver' else 'PostgreSQL '
     assert len(s['tools']) == want, f"S: {inst}: {len(s['tools'])} tools"
     for t in s['tools']:
         tag = f"S: {inst} {t['name']}"
         assert t['ready'] and not t.get('error') and t.get('runOff') and 'is a demo instance' in t.get('runDesc', ''), f"{tag}: the panel {t}"
         if t['kind'] == 'script':
-            assert not t['sample'] and not t['file'] and "Nothing of Glenn Berry's script is stored" in t['notes'], f"{tag}: {t}"
-            print(f"ok   {tag}: no sample, no file input, why nothing of it is stored; Run off with the demo line"); continue
+            assert not t['sample'] and not t['file'] and "Nothing of Glenn Berry's script is stored" in t['notes'] and any('glennsqlperformance.com' in x for x in t['ext']), f"{tag}: {t}"
+            print(f"ok   {tag}: no sample, no file input, why nothing of it is stored, the script's download link; Run off with the demo line"); continue
         sm = t['sample']; assert sm, f"{tag}: no sample mark in the API"
         assert sm['kit'] == kit_of[t['group']], f"{tag}: kit {sm['kit']} in the group {t['group']}"
         line = t['line']
@@ -1425,17 +1435,30 @@ for s in d['demo']:
 p = d['deep']; assert p and p['rows'] >= 1 and 'stored sample of sp_Blitz' in p['mark'], f"S: tool=sp_Blitz: {p}"
 print(f"ok   S: the address's tool=sp_Blitz opens its sample as the page loads ({p['rows']} rows)")
 fx = d['files']; assert fx.get('xlsx') and fx.get('csv'), f"S: the downloads: {fx}"
-# the Summary sheet (sheet1) writes its text inline; a grid's text may go to the shared strings
-z = zipfile.ZipFile(os.path.join(dl, fx['xlsx'])); summary = html.unescape(z.read('xl/worksheets/sheet1.xml').decode())
-assert p['mark'] in summary, f"S: the workbook's Summary sheet does not carry the mark {p['mark']!r}"
-print(f"ok   S: Export .xlsx: the Summary sheet's note carries the mark ({fx['xlsx']})")
+# the Summary sheet (sheet1, its text inline): each sheet's row - the sp_Blitz panel's sheets carry the mark in their
+# note, the tools' grids and the log never
+def summary_rows(xml):
+    out = {}
+    for r, body in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', xml):
+        cells = {c: html.unescape(re.sub(r'<[^>]+>', '', t)) for c, t in re.findall(r'<c r="([A-Z]+)\d+"[^>]*>(.*?)</c>', body)}
+        if int(r) >= 12 and cells.get('A'): out[cells['A']] = cells.get('C', '')
+    return out
+z = zipfile.ZipFile(os.path.join(dl, fx['xlsx'])); rows = summary_rows(z.read('xl/worksheets/sheet1.xml').decode())
+bad = [(n, p['mark'] in note) for n, note in rows.items() if (p['mark'] in note) != n.startswith('sp_Blitz')]
+assert rows and not bad and sum(1 for n in rows if n.startswith('sp_Blitz')) == 2, f"S: the workbook's Summary: {rows} (wrong: {bad})"
+print(f"ok   S: Export .xlsx: the Summary sheet's notes carry the mark on exactly the panel's 2 sheets ({', '.join(n for n in rows if n.startswith('sp_Blitz'))}), none of the other {len(rows) - 2}")
 cpath = os.path.join(dl, fx['csv'])
-texts = [zipfile.ZipFile(cpath).read(n).decode('utf-8-sig') for n in zipfile.ZipFile(cpath).namelist()] if cpath.endswith('.zip') else [open(cpath, encoding='utf-8-sig').read()]
-firsts = [x.split('\r\n', 1)[0].strip('"') for x in texts]
-assert p['mark'] in firsts, f"S: no CSV file starts with the mark: {[f[:80] for f in firsts]}"
-print(f"ok   S: Export CSV: the sample's file starts with the mark; the tools' grids' files do not ({sum(1 for f in firsts if f == p['mark'])} of {len(firsts)})")
-q = d['picker']; assert q['n'] == 14 and q['off'] == 0 and 'is a demo instance' in q['box'] and q['panel'] and q['panel']['rows'] >= 1 and q['panel']['runOff'], f"S: the fleet page's picker on the demo: {q}"
-print(f"ok   S: the fleet page's picker: 14 tool names, sp_BlitzLock's sample ({q['panel']['rows']} rows), its Run off")
+assert cpath.endswith('.zip'), f"S: one CSV for a page of several grids: {fx['csv']}"
+zc = zipfile.ZipFile(cpath)
+firsts = {n: zc.read(n).decode('utf-8-sig').split('\r\n', 1)[0].strip('"') for n in zc.namelist()}
+bad = [n for n, f in firsts.items() if (f == p['mark']) != ('sp_Blitz' in n)]
+assert not bad and sum(1 for n in firsts if 'sp_Blitz' in n) == 2, f"S: the CSV files' first lines: {[(n, f[:60]) for n, f in firsts.items()]} (wrong: {bad})"
+print(f"ok   S: Export CSV: exactly the panel's 2 files start with the mark ({', '.join(n for n in firsts if 'sp_Blitz' in n)}), none of the other {len(firsts) - 2}")
+for q in d['picker']:
+    nm = names[str(q['id'])]; x = q['panel'] or {}; want = 14 if q['tool'] == 'sp_BlitzLock' else 10
+    assert q['n'] == want and q['off'] == 0 and 'is a demo instance' in q['box'] and x.get('rows', 0) >= 1 and x.get('runOff') \
+        and x['line'].rstrip().endswith(f"not {nm}.") and f"not {nm}" in x['mark'] and x['link'].endswith(f"?i={q['id']}"), f"S: the fleet page's picker for {nm}: {q}"
+    print(f"ok   S: the fleet page's picker, {nm}: {q['n']} tool names, none off; {q['tool']}'s sample ({x['rows']} rows) says 'not {nm}.', its link {x['link']}, Run off")
 assert sys.argv[4] == sys.argv[5], f"S: custom_report_log {sys.argv[4]} -> {sys.argv[5]}: opening samples wrote audit rows"
 print(f"ok   S: no audit row from any sample opened (custom_report_log {sys.argv[4]} before and after)")
 rr = json.load(open(sys.argv[6]))

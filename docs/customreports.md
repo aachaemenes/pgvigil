@@ -168,7 +168,9 @@ PostgreSQL server of their own, loaded with the demo's own invented names; the k
 the test server's version in the line above it, and 'not <instance>'), with a link to the instance's own page of the
 same subject and Run off with the demo's line. A sample is never a run: nothing is sent, nothing is audited, and it is
 never among the instance's runs; its grids carry the line's short form into Export .xlsx (the Summary sheet), Export
-CSV (the file's first line) and report mail. Plan XML is left out of the stored copy and said. Glenn Berry's queries
+CSV (the file's first line: a program that reads the CSV takes that line as its first record) and report mail; the
+address keeps the tool open (`tool=<id>`), so a page scheduled or linked from there opens the sample again (on a real
+instance `tool=` opens nothing: a tool's form asks the server, which only a click does). Plan XML is left out of the stored copy and said. Glenn Berry's queries
 are his own text: nothing of them is stored, and the demo says where to get the script.
 
 What decides it, and where pgvigil reads it:
@@ -248,7 +250,7 @@ Samokhvalov) and pghero's sequence and index checks (MIT, Andrew Kane); no text 
 | `POST /api/community/params` | `{instance_id, tool, database}`: a procedure's form and help |
 | `POST /api/community/run` | `{instance_id, tool, database, params, timeout_secs, text, query_name}`; each run's `declined` is true when the procedure turned it down in its own listed words (stored `failed`) |
 | `POST /api/community/glenn/parse` | `{text}`: the queries of a diagnostic script |
-| `GET /api/community/sample?instance=N&tool=T` | a demo instance's stored sample of the tool: its mark (kit, version, `captured_at`, server, `line`, `mark`, the instance tab of the subject), the parameters of the stored run and the procedure's own (help text for the MIT kits only), what was left out, and its result sets; 404 for an instance that is not a demo instance without a login, and for a tool without a sample (with why) |
+| `GET /api/community/sample?instance=N&tool=T` | a demo instance's stored sample of the tool: its mark (`kit`, `version`, `version_date`, `captured_at`, `server`, `line`, `mark`, `page`: the instance tab of the subject), `database`, `params` (the stored run's), `param_doc` (the procedure's own; help text for the MIT kits only), `dropped` and `cut` (what was left out), `scrubbed` (the test server's own names replaced, by the fixed word put in), `sets`; 400 for an unknown tool or one of the other engine, 404 for an instance that is not a demo instance without a login and for a tool without a sample (with why) |
 
 A POST carries the `X-Pgvigil` header (a cross-site form cannot set it) and the session cookie. A run on a tag goes to
 at most 20 instances of the report's engine, four at a time, within 62 s in all (the serve answers within 75 s): an

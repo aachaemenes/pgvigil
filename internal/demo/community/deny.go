@@ -9,8 +9,9 @@ import (
 // MaxBytes caps the stored samples together (gzipped), so the binary does not grow past what the demo is worth.
 const MaxBytes = 1 << 20
 
-// ipv4 is a dotted quad of octets 0-255 standing alone (a version like 16.0.4295.3 is not one).
-var ipv4 = regexp.MustCompile(`(^|[^0-9.])((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])($|[^0-9.])`)
+// ipv4 is a dotted quad of octets 0-255 standing alone (a version like 16.0.4295.3 is not one; an address that ends a
+// sentence, 'from 10.20.1.11.', is).
+var ipv4 = regexp.MustCompile(`(^|[^0-9.])((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])($|[^0-9.]|\.($|[^0-9]))`)
 
 // generic are the words no stored sample may hold wherever it was captured: a home folder, the box's job folders,
 // the proofs' and the capture's own name prefixes.
@@ -58,7 +59,7 @@ func Deny(text []byte, extra []string) []string {
 	return hits
 }
 
-// mask: a denied word said by its first and last letters only (the log names no machine).
+// mask: a denied word said by its first two and last two letters only (the log names no machine).
 func mask(w string) string {
 	if len(w) <= 4 {
 		return strings.Repeat("*", len(w))
@@ -81,8 +82,10 @@ func scrubOnce(s string) string {
 		if m != "" && (m[0] < '0' || m[0] > '9') {
 			lead, m = m[:1], m[1:]
 		}
-		if n := len(m); n > 0 && (m[n-1] < '0' || m[n-1] > '9') {
-			tail = m[n-1:]
+		// the tail kept: what follows the address (a '.' that ends a sentence and the character after it, or one character)
+		for n := len(m); n > 0 && (m[n-1] < '0' || m[n-1] > '9'); n = len(m) {
+			tail = m[n-1:] + tail
+			m = m[:n-1]
 		}
 		return lead + "(address)" + tail
 	})
