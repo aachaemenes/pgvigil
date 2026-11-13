@@ -24,6 +24,17 @@ await new Promise(r => ws.addEventListener('open', r));
 let id = 0; const wait = new Map();
 ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
 const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+// the browser's end said in words (box runs of 2026-11-13 lost the socket after 364 and 518 pages with no reason printed):
+// the socket's close and a crash of the page's renderer, each with the pages walked so far
+let walked = 0;
+ws.addEventListener('close', e => { console.log(`the browser's socket closed (code ${e.code}) after ${walked} page(s)`); process.exitCode = 3; });
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (d.method === 'Inspector.targetCrashed' || d.method === 'Inspector.detached') console.log(`the page's renderer: ${d.method} ${JSON.stringify(d.params ?? {})} after ${walked} page(s)`); });
+await cmd('Inspector.enable'); await cmd('Performance.enable');
+// every 50 pages the page's own weight: a long walk in ONE tab is how a DBA keeps the UI open all day
+const weigh = async () => {
+  const m = Object.fromEntries(((await cmd('Performance.getMetrics')).result?.metrics ?? []).map(x => [x.name, x.value]));
+  console.log(`weight after ${walked} page(s): heap ${(m.JSHeapUsedSize / 1048576).toFixed(1)} of ${(m.JSHeapTotalSize / 1048576).toFixed(1)} MB, ${m.Nodes} DOM nodes, ${m.JSEventListeners} listeners, ${m.Documents} documents`);
+};
 const ev = async (expr, awaitPromise = false) => {
   const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise });
   if (d.result?.exceptionDetails) throw new Error(JSON.stringify(d.result.exceptionDetails).slice(0, 400));
@@ -148,6 +159,7 @@ for (const theme of ['light', 'dark']) {
     const r = JSON.parse(res);
     const n = r.v.reduce((a, v) => a + v.nodes.length, 0);
     console.log(`${n ? 'viol ' : 'ok   '}${style} ${theme} ${entry}: ${r.v.length} rule(s), ${n} node(s), ${r.passes} rules passed`);
+    walked++; if (walked % 50 === 0) await weigh();
     for (const v of r.v) {
       all.push({ theme, style, page: entry, ...v });
       const k = perRule.get(v.id) ?? { impact: v.impact, help: v.help, nodes: 0, pages: new Set() };

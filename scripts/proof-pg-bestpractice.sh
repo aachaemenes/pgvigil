@@ -6,8 +6,10 @@
 #   PGVIGIL_ADMIN_DSN   keyword-form connection to a cluster as a login that may create a database
 #   PGVIGIL_DEMO_WAIT_S the seconds to wait for the seeded demo to serve (default 240)
 # Expected:
-#   same      pgvigil.findings holds exactly the rows the view of 0088 yields on the same store (0099 re-creates it on
-#             top of pgvigil.setting_rules): more than 0 rows, 0 rows only in the old, 0 rows only in the new
+#   same      the setting rules' rows of pgvigil.findings (source pg_gather) are exactly the rows 0088's view yields on
+#             the same store (0099 re-creates the view on top of pgvigil.setting_rules): more than 0, 0 only in the old,
+#             0 only in the new; the other sources' differences (arms added or redefined since: 0103, 0110, 0121, 0190)
+#             are printed one line per source and not graded here (each arm's own proof grades it)
 #   rules     pgvigil.setting_rules: 44 rows per PostgreSQL instance that has an instance read (35 rules: 31 name one
 #             setting, four name several - 2, 2, 2 and 7; every named setting has a value, set or default; the count
 #             is the rule SQL's own, run over one instance with all 41 settings: 29 + 15 rows);
@@ -63,12 +65,19 @@ OLD=internal/repo/sql/0088_parity4_join_qs.sql
 [[ "$(sed -n 13p $OLD)" == "CREATE OR REPLACE VIEW pgvigil.findings AS" ]] || fail "0088's findings view is not at line 13"
 [[ "$(sed -n 187p $OLD)" == " ORDER BY x.instance_id, x.setting, x.value, x.detail;" ]] || fail "0088's findings view does not end at line 187"
 { echo "CREATE TEMP VIEW old_findings AS"; sed -n 14,187p $OLD
-  echo "SELECT (SELECT count(*) FROM pgvigil.findings) || ' ' ||"
-  echo "       (SELECT count(*) FROM (SELECT * FROM old_findings EXCEPT SELECT * FROM pgvigil.findings) a) || ' ' ||"
-  echo "       (SELECT count(*) FROM (SELECT * FROM pgvigil.findings EXCEPT SELECT * FROM old_findings) b);"; } > "$WORK/same.sql"
-read -r NEWN ONLYOLD ONLYNEW < <(psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -v ON_ERROR_STOP=1 -f "$WORK/same.sql" | tail -1)
-[[ "$NEWN" -gt 0 && "$ONLYOLD" == 0 && "$ONLYNEW" == 0 ]] || fail "findings differ from 0088's view: $NEWN rows, $ONLYOLD only in the old, $ONLYNEW only in the new"
-ok "pgvigil.findings: $NEWN rows, the same as 0088's view (0 only in the old, 0 only in the new)"
+  echo "CREATE TEMP VIEW only_new AS SELECT * FROM pgvigil.findings EXCEPT SELECT * FROM old_findings;"
+  echo "CREATE TEMP VIEW only_old AS SELECT * FROM old_findings EXCEPT SELECT * FROM pgvigil.findings;"
+  # 0099's claim: the setting rules' rows (source pg_gather, 0088 L84) are the same rows on top of setting_rules
+  echo "SELECT (SELECT count(*) FROM pgvigil.findings WHERE source = 'pg_gather') || ' ' ||"
+  echo "       (SELECT count(*) FROM only_old WHERE source = 'pg_gather') || ' ' || (SELECT count(*) FROM only_new WHERE source = 'pg_gather');"
+  # every other difference, said by source (arms added or redefined since 0088: 0103, 0110, 0121, 0190), not graded here
+  echo "SELECT 'other source, only in the new: ' || coalesce(source, '(none)') || ' ' || count(*) FROM only_new WHERE source IS DISTINCT FROM 'pg_gather' GROUP BY source ORDER BY 1;"
+  echo "SELECT 'other source, only in the old: ' || coalesce(source, '(none)') || ' ' || count(*) FROM only_old WHERE source IS DISTINCT FROM 'pg_gather' GROUP BY source ORDER BY 1;"; } > "$WORK/same.sql"
+psql "$PGVIGIL_ADMIN_DSN dbname=$DB" -XAtq -v ON_ERROR_STOP=1 -f "$WORK/same.sql" > "$WORK/same.out" || fail "same.sql did not run"
+read -r NRULE ONLYOLD ONLYNEW < <(grep -E '^[0-9]+ [0-9]+ [0-9]+$' "$WORK/same.out" | tail -1)
+grep '^other source' "$WORK/same.out" || echo "other source: none"
+[[ "$NRULE" -gt 0 && "$ONLYOLD" == 0 && "$ONLYNEW" == 0 ]] || fail "the setting rules' findings differ from 0088's view: $NRULE rows, $ONLYOLD only in the old, $ONLYNEW only in the new"
+ok "the setting rules' findings (source pg_gather): $NRULE rows, the same as 0088's view (0 only in the old, 0 only in the new)"
 
 echo "== rules"
 BAD=$(q "SELECT count(*) FROM (SELECT instance_id FROM pgvigil.setting_rules GROUP BY 1 HAVING count(*) <> 44) x")

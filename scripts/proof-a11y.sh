@@ -50,6 +50,7 @@ node scripts/a11y-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$AXE" "${PGVIGIL_A
   grep -q '^off-reason: [1-9]' "$WORK/a11y.txt" && fail "an off control on Community tools, Custom reports or Report mail has no visible reason (the 'off' lines above)"
   grep -q '^off-reason self-test:' "$WORK/a11y.txt" && ! grep -q '^off-reason self-test: planted off buttons without a reason counted 4 of 4$' "$WORK/a11y.txt" \
     && fail "the off-reason check's self-test did not count its 4 planted buttons"
+  echo "chromium alive: $(kill -0 $CHR 2>/dev/null && echo yes || echo no); its log's last lines:"; tail -15 "$WORK/chrome.log" | cut -c1-300
   fail "a page did not render or axe did not run on it"; }
 # the demo has SQL Server instances: a check that walked none of their pages has not checked them
 sqlp=$(sed -n 's/^SQL Server pages in the check: \([0-9]*\)$/\1/p' "$WORK/a11y.txt"); (( ${sqlp:-0} > 0 )) || fail "no SQL Server page was in the check"
