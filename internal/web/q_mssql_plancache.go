@@ -248,8 +248,12 @@ SELECT f.severity, f.check_name, f.object, f.at, f.detail
 // Each stored sample that ran (one (database, query key) of one read, executions > 0) gives one value: $7 'duration'
 // and 'cpu' ms per execution, 'writes' logical writes per execution, 'executions' the read's executions
 // (PerformanceMonitor's four, :124-128); the value falls in one of PerformanceMonitor's seven log10 buckets
-// (:207-215), in bins of $6 minutes cut from the UTC epoch (:190; floor arithmetic on epoch seconds, as the history
-// and the migrations bin: date_bin is PostgreSQL 14+, the repository's floor is 13). A cell counts the distinct (database, query key)
+// (:207-215), found in integer arithmetic: value < 10^k is x < u * 10^k with x the whole milliseconds (duration, cpu),
+// the writes or the executions and u the executions (1 for 'executions'), exact as u * 10^k is whole; no numeric per
+// row (s177j-spike6: the bucket compared in bigints ran 10.8 % under the numeric value, within date_bin's noise, at
+// 3,000 rows a read over 7 days); bigint room to 9.2e13 executions in one read; in bins of $6 minutes cut from the
+// UTC epoch (:190; floor arithmetic on epoch seconds, as the history and the migrations bin: date_bin is PostgreSQL
+// 14+, the repository's floor is 13). A cell counts the distinct (database, query key)
 // with a sample in it: PerformanceMonitor's own words for the count ('Distinct queries in the cell, NOT
 // executions', DarlingMcpQueryHeatmapTools.cs:219), where its SQL counts rows, one per read. A query whose reads
 // fall in two buckets of a bin counts in both. The cell's most-executed query is the one with the most executions
@@ -260,16 +264,17 @@ const sqlMSSQLPCHeatmap = `
 WITH r AS (
   SELECT to_timestamp(floor(extract(epoch FROM s.snapshot_at) / ($6 * 60)) * ($6 * 60)) AS time_bin,
          s.database_id, s.query_key, s.executions,
-         CASE $7::text WHEN 'cpu' THEN s.cpu_us / 1000.0 / s.executions
-                       WHEN 'writes' THEN s.logical_writes::numeric / s.executions
-                       WHEN 'executions' THEN s.executions::numeric
-                       ELSE s.duration_us / 1000.0 / s.executions END AS v
+         CASE $7::text WHEN 'cpu' THEN s.cpu_us / 1000
+                       WHEN 'writes' THEN s.logical_writes
+                       WHEN 'executions' THEN s.executions
+                       ELSE s.duration_us / 1000 END AS x,
+         CASE $7::text WHEN 'executions' THEN 1 ELSE s.executions END AS u
     FROM pgvigil.mssql_pc_sample s
    WHERE s.instance_id = $1 AND s.snapshot_at > $2 AND s.snapshot_at <= $3 AND s.executions > 0 AND ` + pcScope + `
 ), q AS (
   SELECT r.time_bin,
-         CASE WHEN r.v < 1 THEN 0 WHEN r.v < 10 THEN 1 WHEN r.v < 100 THEN 2 WHEN r.v < 1000 THEN 3
-              WHEN r.v < 10000 THEN 4 WHEN r.v < 100000 THEN 5 ELSE 6 END AS bucket,
+         CASE WHEN r.x < r.u THEN 0 WHEN r.x < r.u * 10 THEN 1 WHEN r.x < r.u * 100 THEN 2 WHEN r.x < r.u * 1000 THEN 3
+              WHEN r.x < r.u * 10000 THEN 4 WHEN r.x < r.u * 100000 THEN 5 ELSE 6 END AS bucket,
          r.database_id, r.query_key, sum(r.executions) AS e
     FROM r
    GROUP BY 1, 2, 3, 4
