@@ -12,8 +12,8 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X0  every cell of a grid sheet is the header style (row 1) or one named pair or plain: no other fill, font colour,
       weight, slant, underline, size, border, alignment or wrap; no row of a custom height (plain = no fill and no
       text colour of its own or black FF000000)
-  X1  the workbook opens on a grid: sheet 1 holds one Excel table (a grid; not an Item | Value sheet, not 'About'),
-      activeTab 0
+  X1  the workbook opens on a grid sheet: sheet 1 holds one Excel table and is not 'About' (a page's first section may be
+      its tiles or a card as an Item | Value | Status table: a grid sheet like any other), activeTab 0
   X2  sheet names: 1-31 characters, none of \\ / ? * [ ] :, unique ignoring case, no read time, no numbered repeat ' (n)',
       not 'History'
   X3  a Warning cell (fill FFE49325) has text FF1D1300 or FFFFFFFF
@@ -256,7 +256,7 @@ def check(book):
     else:
         first = book.sheets[0]
         head = [c['v'] for c in sorted((c for c in first['cells'] if c['row'] == 1), key=lambda c: c['col'])]
-        if first['name'] == 'About' or [str(h or '').strip().lower() for h in head[:2]] == ['item', 'value'] or len(first['tables']) != 1:
+        if first['name'] == 'About' or len(first['tables']) != 1:
             out['X1'].append("sheet 1 '%s' is not a grid (header %s; %d tables)" % (first['name'], ' | '.join(str(h) for h in head[:3]), len(first['tables'])))
         if book.active != 0:
             out['X1'].append('activeTab %d' % book.active)
