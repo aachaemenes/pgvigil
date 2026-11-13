@@ -1083,7 +1083,7 @@ def colour_runs(x):
                    or [(unesc(''.join(re.findall(r'<t[^>]*>([^<]*)</t>', m.group(1)))), None)])
     return out
 def legend_audit(cells, swatches):
-    # (21:20) each swatch of a chart's legend on the page sheet: a run '■' in the swatch's colour, its name in the run
+    # (21:05) each swatch of a chart's legend on the page sheet: a run '■' in the swatch's colour, its name in the run
     # after it; the names not found so
     wrong = []
     for s in swatches:
