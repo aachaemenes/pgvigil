@@ -498,6 +498,13 @@ nextok "" || fail "S: next_at $(q "select schedule_id, timezone, next_at, cron f
 GONE=$(jget "d['schedule_id']")
 [[ $(q "select cron from pgvigil.report_mail_schedules where schedule_id = $GONE") == "30 6 * * 1,3" ]] || fail "S: the weekly line: $(q "select cron from pgvigil.report_mail_schedules where schedule_id = $GONE")"
 "$BIN" user disable -config "$CFG" $U2USER >/dev/null 2>&1 || fail "user disable"
+# the screens each scheduled mail is graded against: read before the turns are brought due (sa), while the first turn is
+# drawn (sm) and after the turns (sb); a cell is the window's when it equals any of the three. Every turn lies between
+# two neighbouring reads, so a finding that leaves the view while the turns are drawn equals one of them, and a time
+# counted from now ('2 minutes') moves little between neighbours (sa alone before the turns would leave the turns drawn
+# minutes from both reads)
+SCREENS=("${ROUTES[0]}" "${ROUTES[1]}" "America/Los_Angeles^${ROUTES[2]}" "$JOBS")
+drive screen "$WORK" sa "${SCREENS[@]}" > /dev/null || fail "S: the driver's read before the turns are due"
 DUE=$(q "update pgvigil.report_mail_schedules set next_at = now() - interval '1 second' where schedule_id in ($SL, $GONE) returning to_char(now() at time zone 'UTC', 'HH24:MI:SS')" | head -1)
 echo "     the five schedules brought due at $DUE UTC (the proof's hand on next_at); two serves with the login claim them"
 # another server's claim, taken over while the first claim's page is drawn: that render's turn must be refused (it is
@@ -513,10 +520,7 @@ for _ in $(seq 1 600); do
   sleep 0.2
 done
 [[ -n $STOLEN ]] || fail "S: no serve claimed a turn in 2 minutes: $(grep -i 'report mail' "$WORK/serve.log" "$WORK/serve3.log" | tail -4)"
-# the screens each scheduled mail is graded against: read while the turns are drawn and again after: a cell is the
-# window's when it equals either read (a time counted from now may move one minute between)
-SCREENS=("${ROUTES[0]}" "${ROUTES[1]}" "America/Los_Angeles^${ROUTES[2]}" "$JOBS")
-drive screen "$WORK" sa "${SCREENS[@]}" > /dev/null || fail "S: the driver's read before the renders"
+drive screen "$WORK" sm "${SCREENS[@]}" > /dev/null || fail "S: the driver's read while the turns are drawn"
 live() { q "select count(*) from pgvigil.report_mail_sends where schedule_id in ($SL, $GONE) and kind = 'scheduled' and outcome is distinct from 'refused'"; }
 got=0
 for _ in $(seq 1 120); do
@@ -632,10 +636,10 @@ problems = []; total = 0
 for sid, s in sorted(sends.items()):
     m = mails.get(sid)
     if m is None: problems.append(f'mail {sid}: not in the sink'); continue
-    pair = ('now', 'nowb') if s['kind'] == 'now' else ('sa', 'sb')
+    pair = ('now', 'nowb') if s['kind'] == 'now' else ('sa', 'sm', 'sb')
     reads = [screens.get(norm(s['route']), {}).get(k) for k in pair]
     if None in reads: problems.append(f'mail {sid}: no screens of {s["route"]} ({sorted(screens.get(norm(s["route"]), {}))})'); continue
-    scr, alt_scr = reads
+    scr, alt_scrs = reads[0], reads[1:]
     to = m['To']
     if to != ', '.join(s['to']): problems.append(f'mail {sid}: To {to!r}')
     subj = str(m['Subject'])
@@ -660,16 +664,27 @@ for sid, s in sorted(sends.items()):
     if [g['name'] for g in p.grids] != [g['named'] for g in grids]:
         problems.append(f'mail {sid}: grids {[g["name"] for g in p.grids]} vs the screen {[g["named"] for g in grids]}'); continue
     cells = coloured = moved = 0
-    alts = [g for g in alt_scr if not g.get('empty')]
-    for g, sg, ag in zip(p.grids, grids, alts if len(alts) == len(grids) else grids):
+    altss = [[g for g in a if not g.get('empty')] for a in alt_scrs]
+    altss = [a if len(a) == len(grids) else grids for a in altss]
+    for gi, (g, sg) in enumerate(zip(p.grids, grids)):
+        ags = [a[gi] for a in altss]
         if [c['t'] for c in g['head']] != sg['head']: problems.append(f'mail {sid} {sg["named"]}: head {[c["t"] for c in g["head"]]} vs {sg["head"]}')
         for c in g['head']:
             if (c['bg'], c['fg'], c['bold']) != ('#0063a3', '#ffffff', True): problems.append(f'mail {sid} {sg["named"]}: a header cell {c}'); break
-        if len(g['rows']) not in (sg['rows'], ag['rows']): problems.append(f'mail {sid} {sg["named"]}: {len(g["rows"])} rows vs {sg["rows"]} on the screen')
-        for i, (mr, sr, ar) in enumerate(zip(g['rows'], sg['cells'], ag['cells'] + [None] * max(0, len(sg['cells']) - len(ag['cells'])))):
-            if ar is not None and len(ar) == len(sr) and any(mc['t'] != sc['t'] and mc['t'] == ac['t'] for mc, sc, ac in zip(mr, sr, ar)):
-                sr = [ac if mc['t'] == ac['t'] and mc['t'] != sc['t'] else sc for mc, sc, ac in zip(mr, sr, ar)]
-                moved += 1
+        if len(g['rows']) not in [sg['rows']] + [ag['rows'] for ag in ags]: problems.append(f'mail {sid} {sg["named"]}: {len(g["rows"])} rows vs {sg["rows"]} on the screen')
+        for i, (mr, sr) in enumerate(zip(g['rows'], sg['cells'])):
+            later = [ag['cells'][i] for ag in ags if i < len(ag['cells']) and len(ag['cells'][i]) == len(sr)]
+            miss = lambda r: sum(1 for mc, c in zip(mr, r) if mc['t'] != c['t'])
+            # the read whose row the mail holds best (the earliest on a tie), whole: its texts and the colours they give the
+            # row (a row's label takes the row's worst status, so its text alone never tells the reads apart)
+            best = min([sr] + later, key=miss)
+            took = miss(best) < miss(sr)
+            if took: sr = best
+            for ar in later:   # a cell that moved apart from its row between reads: taken from the read that holds it
+                if any(mc['t'] != sc['t'] and mc['t'] == ac['t'] for mc, sc, ac in zip(mr, sr, ar)):
+                    sr = [ac if mc['t'] == ac['t'] and mc['t'] != sc['t'] else sc for mc, sc, ac in zip(mr, sr, ar)]
+                    took = True
+            moved += took
             if len(mr) != len(sr): problems.append(f'mail {sid} {sg["named"]} row {i}: {len(mr)} cells vs {len(sr)}'); continue
             row_st = {c['s'] for c in sr if c['s']}
             for j, (mc, sc) in enumerate(zip(mr, sr)):
@@ -702,7 +717,7 @@ for sid, s in sorted(sends.items()):
             mg = next(body, None)
             if mg is not None and n != len(mg['rows']) and len(mg['rows']): problems.append(f'mail {sid} {mg["name"]}: the sheet {ws.title} has {n} rows, the mail {len(mg["rows"])}')
     total += cells
-    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched the second read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
+    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched a later read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
 for x in problems[:40]: print('     ' + x)
 if problems: print(f'{len(problems)} problems'); sys.exit(1)
 print(f'ok   H: every mail tables and inline styles only, no script, style, class or event attribute; X: every workbook opens with openpyxl; {total} cells in all')
