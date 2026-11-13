@@ -65,7 +65,7 @@ func TestPoolOnAStore(t *testing.T) {
 	send(b, 99, 50, 0, 1, 2) // the same two minutes and one more
 	var n, readByA int
 	var cpu0 float64
-	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE read_by = $2), max(avg_cpu_percent) FILTER (WHERE minute = $3)::float8
+	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE instance_id = $2), max(avg_cpu_percent) FILTER (WHERE snapshot_at = $3)::float8
 	                                FROM pgvigil.mssql_pool_minute WHERE server = $1`, server, a, base).Scan(&n, &readByA, &cpu0); err != nil {
 		t.Fatal(err)
 	}
