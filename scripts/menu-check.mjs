@@ -43,9 +43,15 @@
 //                     call) and Stop off (not running, or actions off), each saying why; Configure Thresholds ->
 //                     'Job thresholds: <name>'
 //   D2 drive history  a drive's History on onprem-sql01's Drives page (2026-11-12: the chart was fixed at 30 days with no
-//                     way to change it): a window picker '7|30|90|180|365' standing at 30 and the chart 'over 30 days'; 90
-//                     picked -> a read of /api/drives/history with days=90 and the chart 'over 90 days'; 365 the same;
-//                     the pick kept in the browser (pgvigil.driveHistoryDays = 365)
+//                     way to change it; then: 5 minutes to one year): a window picker of twelve windows in minutes
+//                     '5|15|30|60|360|1440|2880|10080|43200|129600|259200|525600' standing at 43200 and the chart 'over 30
+//                     days'; 90 days picked -> a read of /api/drives/history with minutes=129600, the chart 'over 90 days'
+//                     DRAWN (its first point over 80 % of the window back: the demo holds a year of volume reads) under a
+//                     line 'N reads over ... of history'; 5 minutes -> minutes=5, the chart 'over 5 minutes' and the line
+//                     that says why no line is drawn ('This window holds no read|one read ... read about every ...': a
+//                     SQL Server volume is read hourly); 1 year as 90 days, with minutes=525600; the pick kept in the
+//                     browser (pgvigil.driveHistoryMinutes = 525600) and READ BACK: the History closed and opened again
+//                     stands at 525600 under 'over 1 year'
 //   D  drives         under onprem-sql01's Storage folder one node per volume of /api/mssql/storage (total > 0), each with
 //                     a bar whose width is its used share (within 0.2 %) in the colour of its free share (ok / warn under
 //                     20 % / crit under 10 %), its visible words '... free (n %)', its title '... free of ...' (run 3)
@@ -403,25 +409,38 @@ await guard('D drives', async () => {
 // ---- D2: a drive's History and its window picker ----
 await guard('D2 drive history', async () => {
   const sqlId = idOf('demo-onprem-sql01');
-  await ev(`localStorage.removeItem('pgvigil.driveHistoryDays')`);
+  await ev(`localStorage.removeItem('pgvigil.driveHistoryMinutes')`);
+  await ev('performance.clearResourceTimings()');   // the browser keeps 250 reads of one document: D2 counts only its own
   await go(`#/drives?i=${sqlId}`);
   const histSel = 'button.link[aria-label^="History of"]', winSel = 'select[aria-label^="History window of"]';
   for (let k = 0; k < 40 && !(await ev(`!!document.querySelector('${histSel}')`)); k++) await sleep(250);
   await ev(`document.querySelector('${histSel}').click()`);
-  const titled = async n => { for (let k = 0; k < 40; k++) { if (await ev(`document.querySelector('#main').innerText.includes('used and free over ${n} days')`)) return true; await sleep(250); } return false; };
-  const first = await titled(30);
+  const titled = async words => { for (let k = 0; k < 40; k++) { if (await ev(`document.querySelector('#main').innerText.includes('used and free over ${words}')`)) return true; await sleep(250); } return false; };
+  const first = await titled('30 days');
   const opts = await ev(`[...(document.querySelector('${winSel}')?.options ?? [])].map(o => o.value).join('|')`);
   const at = await ev(`document.querySelector('${winSel}')?.value ?? ''`);
-  const pick = async n => {
-    await ev(`(() => { const s = document.querySelector('${winSel}'); s.value = '${n}'; s.dispatchEvent(new Event('change')); return true; })()`);
-    const t = await titled(n);
-    const read = await ev(`performance.getEntriesByType('resource').some(e => e.name.includes('/api/drives/history') && /[?&]days=${n}(&|$)/.test(e.name))`);
-    return t && read;
+  // the History's own line (how much the window holds, or why no line is drawn)
+  const line = () => ev(`[...document.querySelectorAll('#main p[role=status]')].map(p => p.textContent).find(t => /of history|This window holds/.test(t)) ?? ''`);
+  // pick(minutes, words, drawn): the window picked, its read on the wire, its title; drawn = a chart whose first point
+  // lies over 80 % of the window back and the line 'N reads over ...'; not drawn = the line that says why
+  const pick = async (m, words, drawn) => {
+    await ev(`(() => { const s = document.querySelector('${winSel}'); s.value = '${m}'; s.dispatchEvent(new Event('change')); return true; })()`);
+    const t = await titled(words);
+    const read = await ev(`performance.getEntriesByType('resource').some(e => e.name.includes('/api/drives/history') && /[?&]minutes=${m}(&|$)/.test(e.name))`);
+    const firstAt = await ev(`[...document.querySelectorAll('#main .chart')].find(b => b.querySelector('h3')?.textContent.includes('used and free over ${words}'))?.dataset.first ?? ''`);
+    const said = await line();
+    const ok = drawn ? !!firstAt && Date.now() - Date.parse(firstAt) > m * 60e3 * 0.8 && /^\d[\d,.]* reads over .+ of history/.test(said)
+      : !firstAt && /^This window holds (no read|one read)/.test(said) && /read about every/.test(said);
+    return { ok: t && read && ok, said };
   };
-  const p90 = await pick(90), p365 = await pick(365);
-  const kept = await ev(`localStorage.getItem('pgvigil.driveHistoryDays')`);
-  check('D2 drive history', first && opts === '7|30|90|180|365' && at === '30' && p90 && p365 && kept === '365',
-    `opened at 30 days: ${first}; windows '${opts}' at '${at}'; 90 days read and drawn: ${p90}; 365 days read and drawn: ${p365}; kept: ${kept}`);
+  const p90 = await pick(129600, '90 days', true), p5 = await pick(5, '5 minutes', false), pYear = await pick(525600, '1 year', true);
+  const kept = await ev(`localStorage.getItem('pgvigil.driveHistoryMinutes')`);
+  // the stored pick is read back: the History closed and opened again stands at the year
+  await ev(`document.querySelector('${histSel}').click()`); await sleep(300);
+  await ev(`document.querySelector('${histSel}').click()`);
+  const reopened = await titled('1 year') && await ev(`document.querySelector('${winSel}')?.value ?? ''`) === '525600';
+  check('D2 drive history', first && opts === '5|15|30|60|360|1440|2880|10080|43200|129600|259200|525600' && at === '43200' && p90.ok && p5.ok && pYear.ok && kept === '525600' && reopened,
+    `opened at 30 days: ${first}; windows '${opts}' at '${at}'; 90 days read and drawn: ${p90.ok} ('${p90.said}'); 5 minutes read and said: ${p5.ok} ('${p5.said}'); 1 year read and drawn: ${pYear.ok} ('${pYear.said}'); kept: ${kept}; reopened at the year: ${reopened}`);
 });
 
 // ---- G: the grid cell menu ----

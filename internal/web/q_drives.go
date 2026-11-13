@@ -191,19 +191,38 @@ func (s *Server) DriveThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
-// sqlDriveHistory: one drive's size, used and free over $3 days per $4-second bucket (the bucket's last read): a
-// PostgreSQL host's from host_disk_history, a SQL Server's from mssql_volume_sample. $1 the instance, $2 the drive.
+// sqlDriveHistory: one drive's size, used and free over the last $3 seconds per $4-second bucket (the bucket's last
+// read): a PostgreSQL host's from host_disk_history, a SQL Server's from mssql_volume_sample. $1 the instance, $2 the drive.
 const sqlDriveHistory = `
 SELECT DISTINCT ON (1) to_timestamp(floor(extract(epoch FROM h.snapshot_at) / $4) * $4) AS snapshot_at, h.total_bytes, h.used_bytes, h.free_bytes,
        round(100.0 * h.free_bytes / nullif(h.total_bytes, 0), 1) AS free_pct
   FROM (SELECT x.snapshot_at, x.total_bytes, x.used_bytes, x.free_bytes FROM pgvigil.host_disk_history x
-         WHERE x.instance_id = $1 AND x.mount_point = $2 AND x.snapshot_at > now() - make_interval(days => $3)
+         WHERE x.instance_id = $1 AND x.mount_point = $2 AND x.snapshot_at > now() - make_interval(secs => $3::int)
         UNION ALL
         SELECT v.snapshot_at, v.total_bytes, v.total_bytes - v.free_bytes, v.free_bytes FROM pgvigil.mssql_volume_sample v
-         WHERE v.instance_id = $1 AND v.volume = $2 AND v.snapshot_at > now() - make_interval(days => $3)) h
+         WHERE v.instance_id = $1 AND v.volume = $2 AND v.snapshot_at > now() - make_interval(secs => $3::int)) h
  ORDER BY 1, h.snapshot_at DESC`
 
-// DriveHistory is GET /api/drives/history?instance=N&drive=..[&days=30]: DBA Dash's drive History.
+// sqlDriveNewest: the drive's newest two reads whatever the window: when it was last read and how far apart its reads
+// are (a PostgreSQL host's volume is stored every 15 minutes at most, a SQL Server's at each storage collection), so a
+// window too short to hold two reads can say why it draws no line. $1 the instance, $2 the drive.
+const sqlDriveNewest = `
+SELECT h.snapshot_at, h.total_bytes, h.used_bytes, h.free_bytes
+  FROM ((SELECT x.snapshot_at, x.total_bytes, x.used_bytes, x.free_bytes FROM pgvigil.host_disk_history x
+          WHERE x.instance_id = $1 AND x.mount_point = $2 ORDER BY x.snapshot_at DESC LIMIT 2)
+        UNION ALL
+        (SELECT v.snapshot_at, v.total_bytes, v.total_bytes - v.free_bytes, v.free_bytes FROM pgvigil.mssql_volume_sample v
+          WHERE v.instance_id = $1 AND v.volume = $2 ORDER BY v.snapshot_at DESC LIMIT 2)) h
+ ORDER BY h.snapshot_at DESC LIMIT 2`
+
+// driveHistoryMinutes are the windows a drive's History offers, in minutes: 5, 15 and 30 minutes, 1, 6 and 24 hours,
+// 2, 7, 30, 90 and 180 days, one year.
+var driveHistoryMinutes = map[int]bool{5: true, 15: true, 30: true, 60: true, 360: true, 1440: true, 2880: true, 10080: true,
+	43200: true, 129600: true, 259200: true, 525600: true}
+
+// DriveHistory is GET /api/drives/history?instance=N&drive=..[&minutes=43200]: DBA Dash's drive History over one of
+// driveHistoryMinutes' windows (days=7|30|90|180|365 is still taken where minutes is not given). history: the window's
+// reads, one per bucket (300 buckets at most); newest: the drive's newest two reads whatever the window.
 func (s *Server) DriveHistory(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	id, err := strconv.Atoi(q.Get("instance"))
@@ -216,15 +235,23 @@ func (s *Server) DriveHistory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("drive must name the drive (400 characters at most)"))
 		return
 	}
-	days := 30
-	if v := q.Get("days"); v != "" {
-		if days, err = strconv.Atoi(v); err != nil || !dbSpaceDays[days] {
+	minutes := 43200
+	if v := q.Get("minutes"); v != "" {
+		if minutes, err = strconv.Atoi(v); err != nil || !driveHistoryMinutes[minutes] {
+			writeErr(w, http.StatusBadRequest, errors.New("minutes must be 5, 15, 30, 60, 360, 1440, 2880, 10080, 43200, 129600, 259200 or 525600"))
+			return
+		}
+	} else if v := q.Get("days"); v != "" {
+		days, err := strconv.Atoi(v)
+		if err != nil || !dbSpaceDays[days] {
 			writeErr(w, http.StatusBadRequest, errors.New("days must be 7, 30, 90, 180 or 365"))
 			return
 		}
+		minutes = days * 1440
 	}
-	step := int(math.Ceil(float64(days) * 86400 / 300))
-	s.multiPart(w, r, []part{{"history", sqlDriveHistory, []any{id, drive, days, step}}})
+	secs := minutes * 60
+	step := int(math.Ceil(float64(secs) / 300))
+	s.multiPart(w, r, []part{{"history", sqlDriveHistory, []any{id, drive, secs, step}}, {"newest", sqlDriveNewest, []any{id, drive}}})
 }
 
 // sqlDBSpaceInstances: per instance of the scope, the space its databases hold now. PostgreSQL: the databases' sizes

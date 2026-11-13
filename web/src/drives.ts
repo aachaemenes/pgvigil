@@ -182,7 +182,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
       const open = hist.getAttribute('aria-expanded') === 'true';
       hist.setAttribute('aria-expanded', String(!open));
       if (open) { histBox.replaceChildren(); return; }
-      void driveHistory(Number(r.instance_id), String(r.drive), histBox);
+      void driveHistory(Number(r.instance_id), String(r.drive), String(r.instance), !folderView, histBox);
     });
     const free = `${gb(r.free_bytes)} free (${pct(r.free_pct)}) of ${gb(r.total_bytes)}`;
     return el('div', { class: 'drive', style: 'margin:.2rem 0 1rem;max-width:72rem;display:flex;gap:.6rem;align-items:flex-start', 'data-status': st },
@@ -228,26 +228,53 @@ function drivesGrid(ctx: Ctx, rows: Row[], folder: boolean): HTMLElement {
   return grid(rows, cols, 'No drive.');
 }
 
-// driveHistory: one drive's used and free space as a chart, over a window the reader picks (the windows
-// /api/drives/history takes: 7, 30, 90, 180, 365 days); the pick is kept for every drive's History.
-const historyDays = [7, 30, 90, 180, 365];
-async function driveHistory(id: number, drive: string, box: HTMLElement) {
-  let day = Number(lsGet('pgvigil.driveHistoryDays')); if (!historyDays.includes(day)) day = 30;
-  const sel = el('select', { 'aria-label': `History window of ${drive}` }, ...historyDays.map(n => el('option', { value: String(n) }, `${n} days`)));
-  sel.value = String(day);
+// driveHistory: one drive's used and free space as a chart over a window the reader picks, 5 minutes to one year (the
+// windows /api/drives/history takes, in minutes); the pick is kept for every drive's History. A line over the chart
+// says how much history the window really holds; a window too short for the drive's read interval (a PostgreSQL
+// host's volume is stored every 15 minutes at most, a SQL Server's at each storage collection) says so in words.
+const historyWindows: [number, string][] = [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [360, '6 hours'], [1440, '24 hours'],
+  [2880, '2 days'], [10080, '7 days'], [43200, '30 days'], [129600, '90 days'], [259200, '180 days'], [525600, '1 year']];
+// lengthWords: a length in the unit that reads best (minutes under 90 minutes, hours under 2 days, days after)
+function lengthWords(ms: number): string {
+  const m = ms / 60e3, one = (n: number, unit: string) => `${fmtNum(n)} ${unit}${n === 1 ? '' : 's'}`;
+  return m < 90 ? one(Math.max(1, Math.round(m)), 'minute') : m < 2880 ? one(Math.round(m / 6) / 10, 'hour') : one(Math.round(m / 144) / 10, 'day');
+}
+// historyLine: what the window holds. rows: the window's reads, oldest first; newest: the drive's newest two reads
+// whatever the window; marked: the chart marks restarts, failovers and setting changes (an instance's page)
+function historyLine(rows: Row[], newest: Row[], minutes: number, words: string, marked: boolean): string {
+  const at = (r: Row | undefined) => r ? Date.parse(String(r.snapshot_at)) : NaN;
+  const gap = at(newest[0]) - at(newest[1]);   // how far apart the drive's reads are
+  if (rows.length < 2) {
+    const last = newest[0];
+    return `This window holds ${rows.length ? 'one read' : 'no read'}: a line needs two.`
+      + (Number.isFinite(gap) && gap > 0 ? ` This drive is read about every ${lengthWords(gap)}` : last ? ' This drive has been read once' : ' No history is stored for this drive yet')
+      + (last ? `; its newest read, ${fmtTime(last.snapshot_at)}: ${fmtBytes(last.used_bytes)} used, ${fmtBytes(last.free_bytes)} free.` : '.')
+      + (last ? ' Pick a longer window.' : '');
+  }
+  const win = minutes * 60e3, span = Date.now() - at(rows[0]), step = Number.isFinite(gap) && gap > 0 ? gap : (at(rows[rows.length - 1]) - at(rows[0])) / (rows.length - 1);
+  return `${fmtNum(rows.length)} reads over ${lengthWords(span)} of history`
+    + (win - span > Math.max(2 * step, 0.05 * win) ? ` (the ${words} window holds no more yet)` : '') + '.'
+    + (marked && minutes > 31 * 1440 ? ' Restarts, failovers and setting changes are marked for the last 31 days only.' : '');
+}
+async function driveHistory(id: number, drive: string, inst: string, marked: boolean, box: HTMLElement) {
+  let win = Number(lsGet('pgvigil.driveHistoryMinutes')); if (!historyWindows.some(w => w[0] === win)) win = 43200;
+  const sel = el('select', { 'aria-label': `History window of ${drive} on ${inst}` }, ...historyWindows.map(([m, words]) => el('option', { value: String(m) }, words)));
+  sel.value = String(win);
   const chart = el('div');
   let seq = 0;
   async function draw() {
-    const mine = ++seq, want = day;
+    const mine = ++seq, want = win, words = historyWindows.find(w => w[0] === want)![1];
     chart.replaceChildren(el('p', { class: 'meta' }, 'Reading the history...'));
     try {
-      const d = await get<Parts<'history'>>('drives/history', { instance: id, drive, days: want });
+      const d = await get<Parts<'history' | 'newest'>>('drives/history', { instance: id, drive, minutes: want });
       if (mine !== seq) return;
-      chart.replaceChildren(lineChart(`${drive}: used and free over ${want} days`, rowsOf(d.history),
-        [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v)));
+      const rows = rowsOf(d.history);
+      chart.replaceChildren(el('p', { class: 'meta', role: 'status' }, historyLine(rows, rowsOf(d.newest), want, words, marked)),
+        lineChart(`${drive} on ${inst}: used and free over ${words}`, rows,
+          [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v), { ownSpan: true }));
     } catch (e) { if (mine === seq) chart.replaceChildren(errorBox(e)); }
   }
-  sel.addEventListener('change', () => { day = Number(sel.value); lsSet('pgvigil.driveHistoryDays', String(day)); void draw(); });
+  sel.addEventListener('change', () => { win = Number(sel.value); lsSet('pgvigil.driveHistoryMinutes', String(win)); void draw(); });
   box.replaceChildren(el('div', { class: 'toolbar' }, el('label', {}, 'History ', sel)), chart);
   await draw();
 }
