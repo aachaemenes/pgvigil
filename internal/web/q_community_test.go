@@ -3,12 +3,16 @@ package web
 import (
 	"context"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	mssqldb "github.com/microsoft/go-mssqldb"
+
+	"github.com/aachaemenes/pgvigil/internal/demo/community"
 )
 
 // resetCommunityCache empties the package's check cache and sets the GET's budget for one test.
@@ -144,6 +148,73 @@ func TestIsSystemDB(t *testing.T) {
 	for db, want := range map[string]bool{"master": true, "MSDB": true, "tempdb": true, "model": true, "rdsadmin": true, "pgcr_seed": false, "masterdata": false, "": false} {
 		if got := isSystemDB(db); got != want {
 			t.Errorf("isSystemDB(%q) = %v, want %v", db, got, want)
+		}
+	}
+}
+
+// Every catalogue tool has a stored sample of its own engine or a listed reason for none (a tool added later cannot
+// ship an empty demo panel); a listed reason never stands beside a sample; every tool with a sample names a page of
+// its engine's instance tabs (web/src/router.ts) for the link under it; the sample line names the kit, its version,
+// the test server and 'not <instance>'.
+func TestCommunitySamples(t *testing.T) {
+	router, err := os.ReadFile("../../web/src/router.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabs := func(table string) string {
+		i := strings.Index(string(router), "export const "+table+": Record<string, string> = {")
+		if i < 0 {
+			t.Fatalf("router.ts has no %s", table)
+		}
+		j := strings.Index(string(router)[i:], "\n};")
+		return string(router)[i : i+j]
+	}
+	ms, pg := tabs("mssqlInstanceTabs"), tabs("instanceTabs")
+	for _, tool := range communityTools {
+		sm, err := community.Get(tool.ID)
+		_, listed := noSample[tool.ID]
+		switch {
+		case err == nil && listed:
+			t.Errorf("%s: a stored sample and a reason for none (noSample)", tool.ID)
+		case err != nil && !listed:
+			t.Errorf("%s: no stored sample and no reason listed in noSample (%v)", tool.ID, err)
+		case err != nil:
+			continue
+		}
+		if sm.Engine != tool.Engine {
+			t.Errorf("%s: a sample of %s for a %s tool", tool.ID, sm.Engine, tool.Engine)
+		}
+		// the kit the sample names is the kit of the tool's group (the line's licence words follow the kit)
+		if want := map[string]string{"sp_WhoIsActive": "sp_WhoIsActive", "First Responder Kit": "First Responder Kit", "Darling Data": "DarlingData", "pgvigil reads": "pgvigil"}[tool.Group]; sm.Kit != want {
+			t.Errorf("%s: the sample's kit %q, the tool's group %q (want %q)", tool.ID, sm.Kit, tool.Group, want)
+		}
+		page := samplePage[tool.ID]
+		in := pg
+		if tool.Engine == "sqlserver" {
+			in = ms
+		}
+		if page == "" || !regexp.MustCompile(`[{ ,\n]`+regexp.QuoteMeta(page)+`: '`).MatchString(in) {
+			t.Errorf("%s: its page %q is not an instance tab of %s", tool.ID, page, tool.Engine)
+		}
+		m := markOf(&tool, sm, "demo-x01")
+		for _, want := range []string{sm.Version, sm.Server, "captured " + sm.CapturedAt.UTC().Format("2006-01-02"), "not demo-x01."} {
+			if sm.Kit == "pgvigil" && want == sm.Version {
+				continue
+			}
+			if !strings.Contains(m.Line, want) {
+				t.Errorf("%s: the line %q lacks %q", tool.ID, m.Line, want)
+			}
+		}
+		if !strings.Contains(m.Mark, "not demo-x01") || !strings.Contains(m.Mark, "stored sample") {
+			t.Errorf("%s: the mark %q", tool.ID, m.Mark)
+		}
+		if sm.Kit != "pgvigil" && kitLicense[sm.Kit] == "" {
+			t.Errorf("%s: no license words for the kit %q", tool.ID, sm.Kit)
+		}
+	}
+	for id := range noSample {
+		if findTool(id) == nil {
+			t.Errorf("noSample names %q, no catalogue tool", id)
 		}
 	}
 }

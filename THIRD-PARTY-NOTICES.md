@@ -129,6 +129,65 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+## The demo's stored samples of the community tools
+
+On a demo instance (`pgvigil demo`: no server stands behind it) the Community tools page opens each tool's stored sample: the result sets a run of the tool returned on a test server built for the capture (scripts/capture-community-samples.sh), marked as that test server's wherever it is shown, exported or mailed. The findings' names, details and URLs in them are the kits' own words as the procedures returned them. No code of any kit is stored: the reads of the plan cache and of Query Store run first, in the test server's user database only, and the capture stops when the rows of a tool that reads statements hold a kit's own statement.
+
+| What | From | Licence | Where |
+|---|---|---|---|
+| Stored result sets of sp_Blitz, sp_BlitzFirst, sp_BlitzCache, sp_BlitzIndex, sp_BlitzLock and sp_BlitzWho (their findings' words and links as the procedures returned them on a test server; plan XML left out), and their parameters' names and help text, for the demo only | SQL Server First Responder Kit 8.34 (2026-07-02) | MIT; its licence whole below (it names further MIT portions) | internal/demo/community/samples/sp_Blitz*.json.gz |
+| Stored result sets of sp_PressureDetector 6.11, sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11, sp_HealthParser 3.11, sp_LogHunter 3.11 and sp_IndexCleanup 2.11 (their findings' words and links as the procedures returned them on a test server; plan XML left out), and their parameters' names and help text, for the demo only | DarlingData (2026-11-01) | MIT, Copyright 2026 Darling Data, LLC (the MIT licence above) | internal/demo/community/samples/ (the six files named for them) |
+| Stored result rows of sp_WhoIsActive v2200.20260409: the test server's own sessions as it listed them, and its parameters' names; none of its own text (its @help output and its parameters' descriptions are not stored) | sp_WhoIsActive, (C) 2007-2026 Adam Machanic | GPL-3.0: the rows are the server's data, the program's output, not a copy of the program | internal/demo/community/samples/sp_WhoIsActive.json.gz |
+
+Glenn Berry's SQL Server Diagnostic Queries: nothing of them is stored (his script's header reserves all rights); the demo says what the tool does and where to download the script.
+
+The First Responder Kit's licence, whole (LICENSE.md of its repository, read 2026-11-12):
+
+```text
+MIT License
+
+Copyright for portions of sp_Blitz are held by Microsoft as part of project 
+tigertoolbox and are provided under the MIT license:
+https://github.com/Microsoft/tigertoolbox
+All other copyrights for sp_Blitz are held by Brent Ozar Unlimited, 2022 as
+described below.
+
+Copyright for portions of DatabaseRestore are held by GregWhiteDBA as part
+of project MSSQLAutoRestore and are provided under the MIT license:
+https://github.com/GregWhiteDBA/MSSQLAutoRestore
+All other copyrights for DatabaseRestore are held by Brent Ozar Unlimited, 2022
+as described below.
+
+Copyright for sp_BlitzInMemoryOLTP are held by Ned Otter and Konstantin
+Taranov as part of project sqlserver-kit and are provided under the MIT license:
+https://github.com/ktaranov/sqlserver-kit
+
+Copyright for SqlServerVersionScript are held by Josh Darnell as part of
+project SqlServerVersionScript and are provided under the MIT license:
+https://github.com/jadarnel27/SqlServerVersionScript
+
+
+Copyright (c) 2022 Brent Ozar Unlimited
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Read, not copied
 
 The DBADash door (internal/dbadash, task 55) reads a DBA Dash repository (Trimble, MIT) through SQL against its tables dbo.Instances, dbo.Summary, dbo.CollectionDates and dbo.DBVersionHistory with a read-only login; the table and column names and the status codes (1 Critical, 2 Warning, 3 N/A, 4 OK) are DBA Dash's own, read from the repository DBA Dash 4.24.1 built in the proof; no code of DBA Dash is copied. The SQL Server driver is github.com/microsoft/go-mssqldb (BSD 3-Clause), listed with every module in docs/notices.md.

@@ -7,9 +7,12 @@
 // Data: GET /api/community?instance=N&database=D, POST /api/community/params, /api/community/run and
 // /api/community/glenn/parse (internal/web/q_community.go).
 // The shell mounts communityView(ctx): an instance tab 'community' (ctx.instance) and a root tab with an instance picker
-// (the lead wires the route and the tabs).
+// (the lead wires the route and the tabs). On a demo instance (pgvigil demo invented it: no server behind it) each tool
+// opens its stored sample (GET /api/community/sample: what the tool returned on a test server built for the capture,
+// marked as that, with a link to this instance's own page on the subject) and its Run stays off with the demo's line.
+// The address's tool=<id> opens that tool's panel as the page loads (a mailed page carries it).
 import { get, post, Row, rowsOf, Table } from './api';
-import { Ctx } from './router';
+import { Ctx, tabsFor } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, offControl } from './ui';
 import { InstanceRun, logOutcome, resultView, ResultSet, setGrid } from './customreports';
 
@@ -19,7 +22,13 @@ interface Need { what: string; how?: string; hard: boolean; state: string; sourc
 interface Tool {
   id: string; name: string; group: string; engine: string; kind: string; url?: string; description: string; help?: string;
   installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[];
-  state: string; on: boolean; needs?: Need[]; preset?: Record<string, string>;
+  state: string; on: boolean; needs?: Need[]; preset?: Record<string, string>; sample?: SampleMark;
+}
+// a stored sample's mark (q_community.go sampleMark): line = the words above it, mark = what an export or a mail carries
+interface SampleMark { kit: string; version: string; version_date?: string; captured_at: string; server: string; page?: string; line: string; mark: string }
+interface SampleAnswer extends SampleMark {
+  tool: string; name: string; instance: string; database?: string; params: Record<string, string>;
+  param_doc: { name: string; type: string; help?: string }[] | null; dropped: string[] | null; cut: string[] | null; scrubbed: string[] | null; sets: ResultSet[];
 }
 interface Tools { enabled: boolean; reason?: string; instance: string; engine: string; database?: string; demo: boolean; tools: Tool[]; log: Table | null; needs?: Need[]; checked_at?: string }
 interface ProcParam { name: string; type: string; max_length: number; help?: string }
@@ -43,7 +52,8 @@ export async function communityView(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Community tools'));
   const body = el('div', {});
   if (ctx.instance) {
-    body.append(await instanceTools(ctx.instance));
+    const open = new URLSearchParams(location.hash.split('?')[1] ?? '').get('tool') ?? '';
+    body.append(await instanceTools(ctx.instance, '', false, open));
     sec.append(body);
     return sec;
   }
@@ -70,7 +80,7 @@ function readAt(n: Need): string {
   return n.read_at ? ` (read ${fmtTime(n.read_at)})` : '';
 }
 
-async function instanceTools(instance: number, database = '', fresh = false): Promise<HTMLElement> {
+async function instanceTools(instance: number, database = '', fresh = false, open = ''): Promise<HTMLElement> {
   const d = await get<Tools>('community', { instance, database, ...(fresh ? { fresh: '1' } : {}) });
   const box = el('div', {});
   const out = el('div', {});
@@ -111,7 +121,20 @@ async function instanceTools(instance: number, database = '', fresh = false): Pr
     ]));
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
+  // the address named a tool: on a demo instance its sample is open when the page has drawn (a mail of the page carries
+  // it); on a real instance the address opens nothing - a tool's form runs its help on the server, which only a click asks
+  if (open && d.demo) {
+    const t = d.tools.find(x => x.id === open);
+    if (t) { try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); } }
+    else out.replaceChildren(el('p', { class: 'meta', role: 'note' }, `No tool '${open}' on ${d.instance}: pick one above.`));
+  }
   return box;
+}
+
+// panelOf: the tool's panel - on a demo instance its stored sample, else its form (Glenn's: the file step)
+function panelOf(t: Tool, instance: number, d: Tools): Promise<HTMLElement> {
+  if (d.demo) return demoPanel(t, instance, d);
+  return t.kind === 'script' ? Promise.resolve(glennPanel(t, instance, d.database ?? '')) : toolPanel(t, instance, d);
 }
 
 function needLine(n: Need): (Node | string)[] {
@@ -144,11 +167,18 @@ function needsCell(t: Tool, d: Tools): HTMLElement {
 function openButton(t: Tool, instance: number, d: Tools, out: HTMLElement, cell: HTMLElement | undefined, above: HTMLElement | null): HTMLElement {
   const b = el('button', { type: 'button', class: 'link' }, t.name);
   const dec = decider(t, d);
-  // off: in the tab order, the reason beside it (its state cell) as its description, on hover too
-  if (!t.on) offControl(b, dec ? dec.what + (dec.how ? ' How: ' + dec.how : '') : 'off here', cell ?? above ?? undefined);
+  // off: in the tab order, the reason beside it (its state cell) as its description, on hover too; on a demo instance
+  // the name opens the tool's stored sample (its Run is the control that stays off there)
+  if (!t.on && !d.demo) offControl(b, dec ? dec.what + (dec.how ? ' How: ' + dec.how : '') : 'off here', cell ?? above ?? undefined);
   b.addEventListener('click', async () => {
     out.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
-    try { out.replaceChildren(t.kind === 'script' ? glennPanel(t, instance, d.database ?? '') : await toolPanel(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }
+    // a demo sample's own address (tool=): a schedule or a link of this page then opens it again
+    if (d.demo) {
+      const [path, q] = location.hash.split('?');
+      const qs = new URLSearchParams(q ?? '');
+      if (qs.get('i') === String(instance)) { qs.set('tool', t.id); history.replaceState(null, '', `${path}?${qs}`); }
+    }
+    try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); }
   });
   return b;
 }
@@ -177,7 +207,7 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     const v = preset.get(x.name.toLowerCase());
     if (v !== undefined) { i.value = v; filled.push(`${x.name} = ${v}`); }
     inputs.push([x.name, i]);
-    table.append(el('tr', {}, el('td', {}, x.name), el('td', {}, x.type + (x.max_length > 0 && /char/i.test(x.type) ? `(${x.max_length < 0 ? 'max' : x.max_length})` : '')), el('td', {}, i), el('td', {}, x.help ?? '')));
+    table.append(el('tr', {}, el('td', {}, x.name), el('td', {}, x.type + (x.max_length !== 0 && /char/i.test(x.type) ? `(${x.max_length < 0 ? 'max' : /^n/i.test(x.type) ? x.max_length / 2 : x.max_length})` : '')), el('td', {}, i), el('td', {}, x.help ?? '')));
   }
   if (p.params.length) {
     sec.append(el('p', { class: 'meta' }, 'Leave a parameter empty to take the procedure\'s own default.'),
@@ -211,6 +241,56 @@ async function toolPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     p.help_sets.forEach((s, i) => det.append(el('h3', {}, `${t.name} help, part ${i + 1}`), setGrid(s, i)));
     sec.append(det);
   }
+  return sec;
+}
+
+// demoPanel: a demo instance's tool - what it does, its stored sample marked as a test server's (never this
+// instance's), the link to this instance's own page on the subject, and Run off with the demo's line beside it
+async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLElement> {
+  const sec = el('section', {}, el('h3', {}, t.name), el('p', {}, t.description));
+  if (t.url && t.kind !== 'script') sec.append(el('p', { class: 'meta' }, 'Its documentation: ', el('a', { href: t.url, rel: 'noopener noreferrer', target: '_blank' }, t.url)));
+  const demoWhy = (d.needs ?? []).find(n => n.state === 'demo')?.what ?? `${d.instance} is a demo instance: no server stands behind it, so no tool runs here.`;
+  const why = el('p', { class: 'meta demo-why' }, demoWhy);
+  const run = el('button', { type: 'button' }, 'Run ' + t.name);
+  offControl(run, demoWhy, why);
+  if (!t.sample) {
+    const none = (t.needs ?? []).find(n => n.state === 'note')?.what ?? 'no stored sample for this tool';
+    sec.append(el('p', { class: 'meta', role: 'note' }, none.charAt(0).toUpperCase() + none.slice(1) + '.'));
+    if (t.kind === 'script' && t.url) sec.append(el('p', { class: 'meta' }, 'The script for the server\'s version: ', el('a', { href: t.url, rel: 'noopener noreferrer', target: '_blank' }, t.url), '.'));
+    sec.append(el('div', { class: 'toolbar' }, run), why);
+    return sec;
+  }
+  const s = await get<SampleAnswer>('community/sample', { instance, tool: t.id });
+  // every grid of the panel is the test server's (the stored run's parameters too): an export or a mail carries the mark
+  sec.setAttribute('data-sample', s.mark);
+  sec.append(el('p', { class: 'meta sample-line', role: 'note' }, badge('stored sample', 'none'), ' ', s.line));
+  if (s.page) {
+    const label = tabsFor(d.engine)[s.page] ?? s.page;
+    sec.append(el('p', { class: 'meta' }, `${d.instance}'s own data on this subject: `, el('a', { href: `#/${s.page}?i=${instance}` }, `the ${label} page`), '.'));
+  }
+  const used = Object.entries(s.params ?? {});
+  if (s.param_doc?.length) {
+    // a grid (an export or a mail reads its four columns as they are), under a heading of its own
+    const byName = new Map(used.map(([k, v]) => [k.toLowerCase(), v]));
+    sec.append(el('h4', {}, `${t.name} parameters`), grid(s.param_doc.map(x => ({ name: x.name, type: x.type, used: byName.get(x.name.toLowerCase()) ?? '', help: x.help ?? '' })), [
+      { key: 'name', label: 'parameter' }, { key: 'type' }, { key: 'used', label: 'in the stored run' }, { key: 'help', label: 'what it does', wide: true },
+    ]));
+  } else if (used.length) {
+    sec.append(el('p', { class: 'meta' }, 'The stored run passed ' + used.map(([k, v]) => `${k} = ${v}`).join(', ') + '.'));
+  }
+  const left = [...(s.dropped ?? []), ...(s.cut ?? [])];
+  if (left.length) sec.append(el('p', { class: 'meta' }, 'Left out of the stored copy: ' + left.join('; ') + '.'));
+  // the test server's own names (its data folder, its socket) replaced by fixed words: said, never passed off as its own
+  if (s.scrubbed?.length) sec.append(el('p', { class: 'meta' }, 'The test server\'s own names replaced in the stored copy by the fixed words ' + s.scrubbed.join('; ') + '.'));
+  sec.append(el('div', { class: 'toolbar' }, run), why);
+  // the grids inside the mark: an export or a mail of them carries it (export.ts reads data-sample)
+  const box = el('div', { class: 'sample', 'data-sample': s.mark });
+  s.sets.forEach((set, i) => {
+    box.append(el('h3', {}, s.sets.length > 1 ? `${t.name} sample, result set ${i + 1}` : `${t.name} sample`));
+    if (set.truncated) box.append(el('p', { class: 'meta' }, `The first ${fmtNum(set.rows.length)} rows of the stored run.`));
+    box.append(setGrid(set, i));
+  });
+  sec.append(box);
   return sec;
 }
 
