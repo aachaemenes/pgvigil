@@ -63,7 +63,7 @@ const BUCKETS: Record<string, string[]> = {   // DarlingQueryHeatmapReader.cs:10
 };
 const AT_QUERIES = 'Show Active Queries at This Time';   // query-heatmap.js:22
 const REACH_MS = 168 * 3600e3;                            // DarlingMcpQueryHeatmapTools.cs:101-102
-export const HEATMAP_LEGEND = 'Queries = distinct queries (database and query hash) whose 5-minute reads fell in this cell. '
+export const HEATMAP_LEGEND = 'Queries = distinct queries (database and query hash) whose plan-cache reads fell in this cell. '
   + 'PerformanceMonitor counts its 1-minute rows, so its counts run higher. A query that ran at two speeds in one bin counts in both cells.';
 export const HEATMAP_TOO_LONG = 'the heatmap\'s read took too long for this range: pick 24 hours or less';
 
@@ -73,6 +73,16 @@ function shade(count: number, max: number): number {
   if (!(max > 0)) return 1;
   return Math.min(8, Math.max(1, Math.ceil(8 * Math.log1p(Math.min(count, max)) / Math.log1p(max))));
 }
+// a shade's fill, and PerformanceMonitor's 'no query' mark (an outlined, unfilled cell, never the lightest shade)
+const shadeFill = (s: number) => `background:color-mix(in srgb, var(--accent) ${Math.round(100 * s / 8)}%, var(--surface-card))`;
+const NO_QUERY = 'outline:1px solid var(--line);outline-offset:-1px';
+
+// heatmapCellText: PerformanceMonitor's sentence for a cell, its title and its detail line (query-heatmap-model.js:91-94);
+// the metric word is the metric's label without ' (ms)' (query-heatmap.js:41)
+function heatmapCellText(when: string, label: string, count: number, metricWord: string): string {
+  return `${when} | ${metricWord ? metricWord + ' ' : ''}${label} | ${count.toLocaleString('en-US')}${count === 1 ? ' query' : ' queries'}`;
+}
+const oneLine = (t: unknown, max: number) => { const f = text(t).replace(/\s+/g, ' ').trim(); return f.length > max ? f.slice(0, max) + '...' : f; };
 
 // the Running queries page at a time, the range t +- 30 minutes (PerformanceMonitor's charts.js:1338, 1364)
 export function runningAt(ctx: Ctx, t: number): string {
@@ -111,9 +121,12 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
       return;
     }
     if (metric !== pick.value) return;   // a newer pick is reading
-    const labels = BUCKETS[metric], top = METRICS.find(m => m[0] === metric)![2];
+    const [, mLabel, top] = METRICS.find(m => m[0] === metric)!, labels = BUCKETS[metric], word = mLabel.replace(/ \(ms\)$/, '');
     if (!rows.length) {
-      out.replaceChildren(el('p', { class: 'empty' }, 'No query of the plan cache\'s reads ran in this range (the mssql_plancache collection reads every five minutes).'));
+      // PerformanceMonitor tells a server nobody collected from an idle one (server-tabs.js:2218-2220): here by the reads
+      out.replaceChildren(el('p', { class: 'empty' }, Number(reads.reads) > 0
+        ? 'No query executed in this range: the plan cache\'s reads in it hold no query.'
+        : 'No plan-cache read was taken in this range (the mssql_plancache collection did not run), so nothing is known about its queries.'));
       return;
     }
     const binMin = Number(rows[0].bin_minutes), binMs = binMin * 60e3, nCells = Number(rows[0].n_cells);
@@ -125,10 +138,10 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
     const cell = new Map<string, Row>();
     for (const r of rows) cell.set(`${Math.round((Date.parse(text(r.time_bin)) - start) / binMs)}:${r.bucket}`, r);
     const detail = el('div', { class: 'heatmap-detail', role: 'status' });
+    const words = (r: Row) => heatmapCellText(fmtTime(text(r.time_bin)), labels[Number(r.bucket)] ?? text(r.bucket), Number(r.queries), word);
     const show = (r: Row) => {
       const t = Date.parse(text(r.time_bin));
-      detail.replaceChildren(el('p', {},
-        `${fmtTime(text(r.time_bin))} | ${labels[Number(r.bucket)]} | ${fmtNum(r.queries)} ${Number(r.queries) === 1 ? 'query' : 'queries'}; most executed: `,
+      detail.replaceChildren(el('p', {}, `${words(r)}; most executed: `,
         el('code', {}, text(r.query_key)), ` (${fmtNum(r.top_executions)} executions) ${text(r.top_query)} `,
         el('a', { href: runningAt(ctx, t + binMs / 2) }, AT_QUERIES)));
     };
@@ -139,16 +152,26 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
     for (let b = 6; b >= 0; b--) {
       pic.append(el('span', { class: 'meta' }, labels[b]));
       for (let c = 0; c < cols; c++) {
-        const r = cell.get(`${c}:${b}`);
-        const sq = el('span', { class: 'heatmap-cell' });
-        sq.style.cssText = 'height:1.1rem;border-radius:1px;' + (r
-          ? `background:color-mix(in srgb, var(--accent) ${Math.round(100 * shade(Number(r.queries), max) / 8)}%, var(--surface-card));cursor:pointer`
-          : 'outline:1px solid var(--line);outline-offset:-1px');
-        if (r) { sq.title = `${fmtTime(text(r.time_bin))} | ${labels[b]} | ${fmtNum(r.queries)} queries`; sq.addEventListener('click', () => show(r)); }
+        const r = cell.get(`${c}:${b}`), t = start + c * binMs;
+        // data-t (the bin's start, ms), data-b (the bucket) and, on a drawn cell, data-n (its queries): what the proof reads
+        const sq = el('span', { class: 'heatmap-cell', 'data-t': String(r ? Date.parse(text(r.time_bin)) : t), 'data-b': String(b) });
+        sq.style.cssText = 'height:1.1rem;border-radius:1px;' + (r ? `${shadeFill(shade(Number(r.queries), max))};cursor:pointer` : NO_QUERY);
+        if (r) {
+          sq.dataset.n = String(Number(r.queries));
+          const q1 = oneLine(r.top_query, 120);
+          sq.title = words(r) + (q1 ? '\n' + q1 : '');
+          sq.addEventListener('click', () => show(r));
+        } else sq.title = `${fmtTime(iso(t))} | ${labels[b]} | no query`;   // query-heatmap.js:87
         pic.append(sq);
       }
     }
-    const notes: HTMLElement[] = [el('p', { class: 'meta' }, `${binMin}-minute bins from the plan cache's stored reads, ${top} at the top. ${HEATMAP_LEGEND}`)];
+    // PerformanceMonitor's legend (query-heatmap.js:111-118): the 'no query' mark, 'none', '1', the eight shades, the busiest
+    // cell's count on the log scale, the column's minutes and what the top row holds
+    const swatch = (style: string) => { const s = el('span', { class: 'heatmap-swatch', 'aria-hidden': 'true' });
+      s.style.cssText = `display:inline-block;width:0.9rem;height:0.9rem;margin:0 1px;vertical-align:middle;border-radius:1px;${style}`; return s; };
+    const legend = el('p', { class: 'meta heatmap-legend' }, swatch(NO_QUERY), ' none \u00a0 1 ', ...[1, 2, 3, 4, 5, 6, 7, 8].map(s => swatch(shadeFill(s))),
+      ` ${max.toLocaleString('en-US')} queries (log scale). Each column is ${binMin} minutes; ${top} are at the top.`);
+    const notes: HTMLElement[] = [legend, el('p', { class: 'meta' }, `From the plan cache's stored reads. ${HEATMAP_LEGEND}`)];
     const binsCut = Number(rows[0].bins_cut);
     if (binsCut > 0) notes.push(el('p', { class: 'meta heatmap-cut' }, `The oldest ${fmtNum(binsCut)} ${binsCut === 1 ? 'column' : 'columns'}, before ${fmtTime(text(rows[0].drawn_from))}, `
       + `are not drawn: ${fmtNum(nCells)} cells in all, 1,000 at most. Pick a shorter range to see them.`));
@@ -245,19 +268,25 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
     const d = await get<Record<string, Table | null>>('mssql/running', q);
     const snaps = rowsOf(d.snapshots), rows = rowsOf(d.rows);
     const t0 = Date.parse(win.from), t1 = Date.parse(win.to);
-    const headGrid = (rs: Row[]) => grid(rs.slice(0, HEAD), [
+    const headGrid = (rs: Row[], empty = 'No request in the newest snapshot of this range.') => grid(rs.slice(0, HEAD), [
       { key: 'session_id', label: 'session', num: true, fmt: v => String(v) }, { key: 'status' }, { key: 'wait_type', label: 'waiting on' },
       { key: 'elapsed_ms', label: 'running for', num: true, fmt: dur }, { key: 'database_name', label: 'database' }, { key: 'statement', fmt: stmt },
-    ], 'No request in the newest snapshot of this range.');
-    const g = el('div', {}, headGrid(rows));
+    ], empty);
+    // the rows part reads the newest snapshot at or before 'to' with no lower bound: a snapshot older than the range is
+    // not this range's (the grid stays empty and says so)
+    const ofRange = (rs: Row[]) => rs.length && Date.parse(text(rs[0].snapshot_at)) >= t0 ? rs : [];
+    const NONE = 'No Running snapshot was taken in this range.';
+    const g = el('div', {}, snaps.length ? headGrid(ofRange(rows)) : headGrid([], NONE));
     const at = el('p', { class: 'meta' }, snaps.length ? `The newest snapshot of the range, ${fmtTime(snaps[0].snapshot_at)}: its first ${HEAD} requests.` : '');
+    let asked = 0;   // a newer drag's answer wins: an older, slower one is dropped
     const strip = timeStrip('Requests per snapshot', t0, t1, snaps.map(s => Date.parse(text(s.snapshot_at))), (_a, b) => {
-      const when = b === undefined ? undefined : iso(Math.min(b, t1));
+      const when = b === undefined ? undefined : iso(Math.min(b, t1)), mine = ++asked;
       void get<Record<string, Table | null>>('mssql/running', { ...q, at: when }).then(x => {
-        const s = rowsOf(x.rows);
+        if (mine !== asked) return;
+        const s = ofRange(rowsOf(x.rows));
         at.textContent = when ? `The snapshot at or before ${fmtTime(when)}: its first ${HEAD} requests.` : `The newest snapshot of the range: its first ${HEAD} requests.`;
-        g.replaceChildren(headGrid(s));
-      }).catch(e => g.replaceChildren(errorBox(e)));
+        g.replaceChildren(headGrid(s, when ? `No Running snapshot of this range is at or before ${fmtTime(when)}.` : NONE));
+      }).catch(e => { if (mine === asked) g.replaceChildren(errorBox(e)); });
     }, snaps.length >= 1500 ? `The newest 1,500 snapshot times of the range (the Running page's own list).` : '',
     { weights: snaps.map(s => Number(s.requests) || 0), unit: n => `${fmtNum(n)} requests` });
     body.replaceChildren(strip, at, g);
@@ -300,16 +329,20 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
       { key: 'database_name', label: 'database' }, { key: 'query_id', label: 'query', num: true, fmt: v => text(v) },
       { key: 'executions', num: true }, { key: 'duration_ms', label: 'total duration', num: true, fmt: dur },
       { key: 'avg_duration_ms', label: 'avg duration', num: true, fmt: dur }, { key: 'avg_cpu_ms', label: 'avg CPU', num: true, fmt: dur },
-      { key: 'line', label: 'on the strip', fmt: (_, r) => { const b = el('button', { type: 'button', class: 'link', 'aria-label': `Draw query ${text(r.query_id)} on the strip` }, 'Draw'); b.addEventListener('click', () => { void qsOverlay(ctx, strip, r).catch(e => said.replaceChildren(errorBox(e))); }); return b; } },
+      // no Draw on a row the overlay read refuses (a query id or hash not kept: 'plans gone from the store')
+      { key: 'line', label: 'on the strip', fmt: (_, r) => { if (r.query_id == null || r.query_hash == null) return ''; const b = el('button', { type: 'button', class: 'link', 'aria-label': `Draw query ${text(r.query_id)} on the strip` }, 'Draw'); b.addEventListener('click', () => { void qsOverlay(ctx, strip, r).catch(e => said.replaceChildren(errorBox(e))); }); return b; } },
       { key: 'query', label: 'statement', fmt: stmt },
     ];
     const g = el('div', {}, grid(rowsOf(d.top).slice(0, HEAD), cols, 'No query ran in the store\'s intervals of this range.'));
     const said = el('p', { class: 'meta' }, `The store's first ${HEAD} queries by duration over the range.`);
+    let asked = 0;   // a newer drag's answer wins
     const strip = qsStrip(win, rowsOf(d.series), (from, to, words) => {
+      const mine = ++asked;
       void get<Record<string, Table | null>>('mssql/querystore', { ...q, from: from ?? win.from, to: to ?? win.to, view: 'top', part: 'top' }).then(x => {
+        if (mine !== asked) return;
         said.textContent = from ? `The store's first ${HEAD} queries by duration from ${words ?? ''} (snapped to the store's intervals: ${fmtTime(from)} to ${fmtTime(to)}).` : `The store's first ${HEAD} queries by duration over the range.`;
         g.replaceChildren(grid(rowsOf(x.top).slice(0, HEAD), cols, 'No query ran in the store\'s intervals of this stretch.'));
-      }).catch(e => g.replaceChildren(errorBox(e)));
+      }).catch(e => { if (mine === asked) g.replaceChildren(errorBox(e)); });
     });
     body.replaceChildren(strip, said, g);
   }));

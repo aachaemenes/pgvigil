@@ -363,9 +363,12 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
   const gbox = el('div', {});
   const said = el('p', { class: 'meta', role: 'status' });
   const win = window_(ctx);
+  let asked = 0;   // a newer drag's answer wins: an older, slower one is dropped
   const strip = qsStrip(win, series, (from, to, words) => {
+    const mine = ++asked;
     const p = { instance: ctx.instance, from: from ?? win.from, to: to ?? win.to, db: hashQS().get('qdb')?.slice(0, 128) || undefined, order, view: 'top' };
     void Promise.all([get<QS>('mssql/querystore', { ...p, part: 'top' }), get<QS>('mssql/querystore', { ...p, part: 'totals' })]).then(([a, b]) => {
+      if (mine !== asked) return;
       const rs = rowsOf(a.top), tt = rowsOf(b.totals)[0] ?? {};
       const all = totalKey ? Number(tt[totalKey]) : 0;
       for (const r of rs) r.share = totalKey ? r[totalKey] : null;
@@ -373,9 +376,10 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
       const cs = shareCol < 0 ? cols : cols.map((c, i) => i === shareCol ? { ...c, fmt: (_: unknown, r: Row) => share(r[totalKey], all) } : c);
       said.textContent = from ? `The grid holds ${words ?? ''}, snapped to the store's intervals (${fmtTime(from)} to ${fmtTime(to)}); its shares are of that stretch.` : '';
       gbox.replaceChildren(grid(rs, cs, 'No query ran in the store\'s intervals of this stretch.'));
-    }).catch(e => gbox.replaceChildren(errorBox(e)));
+    }).catch(e => { if (mine === asked) gbox.replaceChildren(errorBox(e)); });
   });
   cols.splice(3, 0, { key: 'line', label: 'on the strip', fmt: (_, r) => {
+    if (r.query_id == null || r.query_hash == null) return '';   // the overlay read refuses it ('plans gone from the store')
     const b = el('button', { type: 'button', class: 'link', 'aria-label': `Draw query ${text(r.query_id)} on the strip` }, 'Draw');
     b.addEventListener('click', () => { void qsOverlay(ctx, strip, r).catch(e => said.replaceChildren(errorBox(e))); });
     return b;
