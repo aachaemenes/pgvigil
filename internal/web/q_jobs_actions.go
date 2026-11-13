@@ -367,26 +367,18 @@ func (s *Server) JobExclusions(w http.ResponseWriter, r *http.Request) {
 	why := s.ackOff()
 	out["writable"] = why == ""
 	if why != "" {
-		out["reason"] = strings.Replace(why, "acknowledgements", "job exclusions", 1)
+		out["reason"] = s.offWords(why, "job exclusions")
 	}
 	out["exclusions"], err = s.query(r.Context(), `SELECT * FROM pgvigil.job_exclusion_rows($1)`, id)
 	s.reply(w, r, out, err)
 }
 
 func (s *Server) jobExclusionWrite(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, strings.Replace(s.ackOff(), "acknowledgements", "job exclusions", 1))
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(strings.Replace(why, "acknowledgements", "job exclusions", 1)))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 8193))
 	if err != nil || len(raw) > 8192 {
 		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 8 KB"))
@@ -402,7 +394,7 @@ func (s *Server) jobExclusionWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// only the named keys travel on; who and from where are the server's to say
-	pay := map[string]any{"ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"ui_user": user, "client": seat.client}
 	for _, k := range []string{"op", "level", "instance_id", "match_on", "pattern", "note", "exclusion_id"} {
 		if v, ok := in[k]; ok && v != nil {
 			pay[k] = v
@@ -417,7 +409,11 @@ func (s *Server) jobExclusionWrite(w http.ResponseWriter, r *http.Request) {
 	var out []byte
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_job_exclusion($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	pool, ok := seat.poolFor(wctx, w, scopeOfExclusion(pay))
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.import_job_exclusion($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("job exclusion: not written", "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return

@@ -49,6 +49,8 @@ type Server struct {
 	tags TagsUI
 	// version is this binary's version line for the About page (GET /api/health); "" = not said.
 	version string
+	// demo is the demo's write door (demodoor.go); nil on every serve.
+	demo *demoDoor
 }
 
 // Options shape a Server beyond its repository connection.
@@ -70,23 +72,25 @@ type Options struct {
 	AppName string
 	// Version is this binary's version line (`pgvigil version`): the About page shows it and puts it into a problem report's mail.
 	Version string
+	// DemoDoor opens the demo's write door (demodoor.go): only `pgvigil demo -serve` sets it; nil on every serve.
+	DemoDoor *DemoDoor
 }
 
 // Expected is the interval map of the stale check.
 type Expected struct {
 	Defaults  map[string]int            `json:"defaults"`
 	Instances map[string]map[string]int `json:"instances"`
+	// Builtin is each collection's own interval (0 = opt-in), before the file's global schedules: (Defaults holds
+	// those, for an instance the page holds): the Collections dialogs' default_s
+	Builtin map[string]int `json:"builtin"`
 }
 
 // DefaultStaleSecs is the age after which a collection with no known interval is stale.
 const DefaultStaleSecs = 3 * 3600
 
-// Open connects to the repository read-only and, with o.Login, checks that the login can work:
-// the serve login must hold pgvigil_auth and the schema must carry 0015.
-func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server, error) {
-	if strings.TrimSpace(dsn) == "" {
-		return nil, errors.New("repository dsn is empty")
-	}
+// uiPoolConfig is the UI pool's configuration: the session settings serve sends at every connect and the pool's
+// size. Open connects with it; TestUIPoolConfig reads it, so a setting dropped here fails a test.
+func uiPoolConfig(dsn string, o Options) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("repository dsn: %w", err)
@@ -98,11 +102,36 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	}
 	rp["default_transaction_read_only"] = "on"
 	rp["statement_timeout"] = "15000"
+	// every run of a statement planned with its own values (the join review d10a, verdict (a)): pgx prepares each
+	// statement once per connection, and from its sixth run the server may keep a generic plan, which for a 7-day
+	// window at 3,000 plan-cache rows a read took 18-20 s against 2.6 s (s177j-spike4), past the 15 s above. Behind
+	// PgBouncer (any pool mode) every startup setting set here must be listed in its track_extra_parameters (1.20+):
+	// one in neither that list nor ignore_startup_parameters refuses the connection, one in ignore_startup_parameters
+	// is dropped silently (the README's serve section says what to set before 1.20)
+	rp["plan_cache_mode"] = "force_custom_plan"
 	rp["jit"] = "off" // the findings view (sixteen UNION arms of CASE-heavy rules) crosses jit_above_cost: LLVM compiled 1,289 functions per read, 147 s against 3 s without (2026-11-09)
 	rp["lock_timeout"] = "2000"
 	rp["search_path"] = "pgvigil, pg_catalog"
 	if cfg.MaxConns > 8 {
 		cfg.MaxConns = 8
+	}
+	// one session always open, idle or not: an idle serve (a -no-login one nobody browses runs no query) is then seen
+	// by uninstall -drop-repository's session check, as docs/uninstall.md says (the join review w9e, finding 8)
+	if cfg.MinConns < 1 {
+		cfg.MinConns = 1
+	}
+	return cfg, nil
+}
+
+// Open connects to the repository read-only and, with o.Login, checks that the login can work:
+// the serve login must hold pgvigil_auth and the schema must carry 0015.
+func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("repository dsn is empty")
+	}
+	cfg, err := uiPoolConfig(dsn, o)
+	if err != nil {
+		return nil, err
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -145,11 +174,18 @@ func Open(ctx context.Context, log *slog.Logger, dsn string, o Options) (*Server
 	} else if o.Actions != nil && s.actions.off != "" {
 		log.Warn("actions are off", "reason", s.actions.off)
 	}
+	if o.DemoDoor != nil {
+		if s.demo, err = newDemoDoor(ctx, s, o.DemoDoor); err != nil {
+			s.actions.Close()
+			pool.Close()
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
 // Close releases the audit pool and the pool.
-func (s *Server) Close() { s.actions.Close(); s.pool.Close() }
+func (s *Server) Close() { s.actions.Close(); s.demo.close(); s.pool.Close() }
 
 // Handler returns the routes: /api/... (behind the login when it is on) and the embedded frontend.
 // The shell and its assets are public: they hold no data.
@@ -183,6 +219,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/dbfiles", s.DBFiles)
 	api.HandleFunc("GET /api/driveperf", s.DrivePerf)
 	api.HandleFunc("GET /api/collectiondates", s.CollectionDates)
+	api.HandleFunc("GET /api/collector", s.Collector) // task 201
 	// task 204: Admin > Instances (q_instances_admin.go)
 	api.HandleFunc("GET /api/admin/instances", s.InstancesAdminView)
 	api.HandleFunc("POST /api/admin/instances", s.InstancesAdminWrite)
@@ -258,6 +295,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/community/params", s.CommunityParams)
 	api.HandleFunc("POST /api/community/run", s.CommunityRun)
 	api.HandleFunc("POST /api/community/glenn/parse", s.CommunityGlennParse)
+	api.HandleFunc("GET /api/community/sample", s.CommunitySample)
 	api.HandleFunc("GET /api/extensions", s.Extensions)
 	api.HandleFunc("GET /api/roles", s.Roles)
 	api.HandleFunc("GET /api/versions", s.Versions)
@@ -277,6 +315,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/actions/log", s.actions.Log)
 	api.HandleFunc("GET /api/mssql/storage", s.MSSQLStorage)
 	api.HandleFunc("GET /api/mssql/cpu", s.MSSQLCPU)
+	api.HandleFunc("GET /api/mssql/connections", s.MSSQLConnections)
+	api.HandleFunc("GET /api/mssql/counters", s.MSSQLCounters)
 	api.HandleFunc("GET /api/mssql/memory", s.MSSQLMemory)
 	api.HandleFunc("GET /api/mssql/fileio", s.MSSQLFileIO)
 	api.HandleFunc("GET /api/mssql/tempdb", s.MSSQLTempdb)

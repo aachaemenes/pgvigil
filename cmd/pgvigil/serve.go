@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/actions"
+	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/web"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // runServe starts the web UI and JSON API over the repository:
@@ -52,9 +54,19 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err := collect.LoadCustomChecks(*path, cfg.Instances); err != nil {
 		return err
 	}
+	for _, w := range collect.CustomWarnings() {
+		log.Warn(w)
+	}
 	d := cfg.Repository.DSN()
 	if *dsn != "" {
 		d = config.Resolve(*dsn)
+	}
+	if strings.TrimSpace(d) == "" {
+		src := "repository.dsn " + cfg.Repository.DSNRaw
+		if *dsn != "" {
+			src = "-dsn " + *dsn
+		}
+		return &configError{fmt.Errorf("config %s: the repository dsn (%s) resolves to nothing: fill in the env file or the file it names", *path, src)}
 	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {
@@ -92,6 +104,49 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	// task 201: the collector watchdog - while no collector has beaten for 5 minutes, serve runs the alert pass (its
+	// advisory lock keeps one sender) on the alerts login, so 'collector or network' goes out. It starts after the
+	// configuration checks and the listen, and connects inside its goroutine: an alerts host that does not answer
+	// never delays serve, and an empty connection string never reaches a connect (without an alerts_dsn it is the
+	// repository serve itself reads, -dsn included: checked above). A failing channel is backed off as the collector's
+	// own alert loop backs it off (collect.ChannelBackoff).
+	if ast, aerr := alerts.LoadFile(*path); aerr == nil && len(ast.Channels) > 0 {
+		adsn := ast.DSN()
+		if adsn == "" {
+			adsn = d
+		}
+		go func() {
+			apool, perr := pgxpool.New(ctx, adsn)
+			if perr == nil {
+				pctx, pcancel := context.WithTimeout(ctx, 20*time.Second)
+				perr = apool.Ping(pctx) // a pool connects when first used: the watchdog is on only once the alerts login answered
+				pcancel()
+				if perr != nil {
+					apool.Close()
+				}
+			}
+			if perr != nil {
+				collect.SetWatchdogOff("the alerts login: " + perr.Error())
+				log.Warn("collector watchdog off: the alerts login", "err", perr)
+				return
+			}
+			defer apool.Close()
+			var back collect.ChannelBackoff
+			collect.Watchdog(ctx, log, d, func(c context.Context) error {
+				now := time.Now()
+				_, outcome, err := alerts.Pass(c, apool, ast.Channels, now, back.Skip(now))
+				back.Note(now, outcome)
+				return err
+			})
+		}()
+	} else {
+		why := "serve's configuration has no alerts: list, so no alert goes out while a collector is down"
+		if aerr != nil {
+			why = "serve's alerts: list did not load: " + aerr.Error()
+		}
+		collect.SetWatchdogOff(why)
+		log.Warn("collector watchdog off: " + why)
+	}
 	var hosts []string // nil = any Host (beyond loopback the certificate names the server)
 	if loopback {
 		hosts = web.LoopbackHosts(strconv.Itoa(ln.Addr().(*net.TCPAddr).Port))
@@ -105,7 +160,7 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 		return err
 	}
 	defer srv.Close()
-	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}}
+	pc := web.PlansConfig{Gates: map[string]actions.ExplainGate{}, QueryText: map[string]string{}, Hypo: map[string]bool{}, DefaultQueryText: cfg.QueryText}
 	for _, in := range cfg.Instances {
 		pc.Gates[in.Name] = actions.ExplainGate{Enabled: in.ExplainAnalyze, DSN: in.ExplainDSN(),
 			Configured: strings.TrimSpace(in.ExplainDSNRaw) != "", Timeout: in.ExplainTimeout.Duration}
@@ -169,10 +224,13 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 // expectedIntervals gives the stale check every collection's default interval and each
 // configured instance's effective one (0 = disabled there), in seconds.
 func expectedIntervals(cfg *config.Config) web.Expected {
-	e := web.Expected{Defaults: map[string]int{}, Instances: map[string]map[string]int{}}
+	e := web.Expected{Defaults: map[string]int{}, Instances: map[string]map[string]int{}, Builtin: map[string]int{}}
 	all := engines.AllSpecs()
 	for _, c := range all {
-		e.Defaults[c.Name] = int(c.Default / time.Second)
+		// the file's global schedules: apply to an instance the page holds (it has no entry below); the dialogs'
+		// default_s stays the collection's own (Builtin)
+		e.Defaults[c.Name] = int(cfg.Interval(config.Instance{}, c.Name, c.Default) / time.Second)
+		e.Builtin[c.Name] = int(c.Default / time.Second)
 	}
 	for _, in := range cfg.Instances {
 		m := map[string]int{}

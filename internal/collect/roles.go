@@ -317,7 +317,7 @@ func rolesReadOther(ctx context.Context, in config.Instance, db string) ([]Row, 
 		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
 	cfg.Database = db
-	conn, err := pgx.ConnectConfig(ctx, cfg)
+	conn, err := connectCounted(ctx, in.Name, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}

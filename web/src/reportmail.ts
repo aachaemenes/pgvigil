@@ -15,7 +15,7 @@ import { fleet } from './fleet';
 import { toHtml } from './gridtools';
 import { Ctx, drillTabs, instanceTabs, mssqlInstanceTabs, parse, rangeLabel, rootTabs, window_ } from './router';
 import { browserZone, stamp, zoneName, zones } from './tz';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtTime, grid, offControl } from './ui';
 
 interface Door {
   writable: boolean; reason?: string; user: string; browser: boolean; browser_reason?: string;
@@ -188,7 +188,11 @@ function dialog(title: string, what: string | Node, go: string, fields: HTMLElem
   const need = el('p', { class: 'meta' });
   const msg = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
   let busy = false, done = false;
-  const check = () => { const w = done ? '' : invalid(); need.textContent = w ? `${go} needs ${w}.` : ''; ok.disabled = busy || done || w !== ''; };
+  // the go button is off while it works, once done, and while the form lacks something: the words beside it say which
+  const check = () => {
+    const w = done ? '' : invalid(); need.textContent = w ? `${go} needs ${w}.` : '';
+    offControl(ok, busy ? 'working' : done ? 'done' : w ? need.textContent : null, busy || done ? msg : need);
+  };
   const form = el('form', { method: 'dialog' }, el('h3', {}, title), el('p', {}, what),
     ...fields.map(f => el('div', { style: 'margin:.3rem 0' }, f)), need, msg, el('div', { style: 'margin-top:.6rem' }, ok, ' ', ...extra.flatMap(x => [x, ' ']), no));
   form.addEventListener('input', check);
@@ -269,6 +273,7 @@ async function openMail(ctx: Ctx, root: () => HTMLElement | null) {
     el('label', {}, 'Subject ', subj), el('label', {}, attach, ' attach the workbook (.xlsx)')];
   const sched = el('button', { type: 'button' }, 'Schedule this page...');
   const w = d.door;
+  const schedWhy = offControl(sched, w.writable ? null : (w.reason || 'report mail is off on this server'));
   const what = w.writable
     ? `The grids of this page as they show now, in their colours, with the workbook attached; at most ${fmtBytes(w.max_html)} of body and ${fmtBytes(w.max_xlsx)} of workbook. The alert sender (pgvigil run) mails it within a minute.`
     : `Report mail is off here: ${w.reason ?? ''}`;
@@ -279,8 +284,7 @@ async function openMail(ctx: Ctx, root: () => HTMLElement | null) {
       xlsx: attach.checked ? body.xlsx : '' });
     if (res.send_id) void watchSend(Number(res.send_id), msg);
     return `${res.detail} (${fmtNum(body.rows)} rows in ${fmtNum(body.grids)} grid${body.grids === 1 ? '' : 's'})`;
-  }, invalid, [sched]);
-  sched.disabled = !w.writable;
+  }, invalid, w.writable ? [sched] : [sched, schedWhy]);
   sched.addEventListener('click', () => {
     (sched.closest('dialog') as HTMLDialogElement | null)?.close();
     sched.closest('dialog')?.remove();
@@ -387,19 +391,22 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
   doorCache = { at: Date.now(), d };
   const door0 = d.door;
   const box = el('section', { 'aria-label': 'Report mail' });
+  const doorLine = el('p', {}, door0.writable ? badge('on', 'ok') : badge('off', 'warn'), ' ', door0.writable ? `signed in as ${door0.user}` : door0.reason ?? '',
+    door0.writable && !door0.browser ? ' ' : '', door0.writable && !door0.browser ? badge('no browser', 'warn') : '', door0.writable && !door0.browser ? ' ' + (door0.browser_reason ?? '') : '');
   box.append(el('h2', {}, 'Report mail'),
     el('p', { class: 'meta' }, 'Any page mailed now (the bar\'s Mail... on the page) or on a schedule (below): the mail body is the page\'s grids in the colours, numbers and dates the screen shows, and the page\'s workbook is attached. The alert sender (pgvigil run) mails it through an smtp channel of the alerts: block.'),
-    el('p', {}, door0.writable ? badge('on', 'ok') : badge('off', 'warn'), ' ', door0.writable ? `signed in as ${door0.user}` : door0.reason ?? '',
-      door0.writable && !door0.browser ? ' ' : '', door0.writable && !door0.browser ? badge('no browser', 'warn') : '', door0.writable && !door0.browser ? ' ' + (door0.browser_reason ?? '') : ''));
+    doorLine);
   const add = el('button', { type: 'button' }, 'New schedule...');
-  add.disabled = !door0.writable;
-  if (!door0.writable) add.title = door0.reason ?? '';
+  // off: the door line above says why (their description)
+  if (!door0.writable) offControl(add, door0.reason || 'report mail is off on this server', doorLine);
   add.addEventListener('click', () => { void scheduleDialog({}); });
   box.append(el('p', {}, add));
 
-  const button = (label: string, aria: string, run: () => void) => {
+  // a schedule's action: off with the door's reason, or its own (offWhy: a test needs the server's headless browser)
+  const button = (label: string, aria: string, offWhy: string | null, run: () => void) => {
     const b = el('button', { type: 'button', class: 'link', 'aria-label': aria }, label);
-    if (!door0.writable) b.disabled = true; else b.addEventListener('click', run);
+    const why = !door0.writable ? (door0.reason || 'report mail is off on this server') : offWhy;
+    if (why) offControl(b, why, doorLine); else b.addEventListener('click', run);
     return b;
   };
   const confirmAct = (title: string, what: string, go: string, op: string, id: unknown) => dialog(title, what, go, [], () => act(op, id, go), () => '', [], redraw);
@@ -417,15 +424,15 @@ export async function reportMailView(ctx: Ctx): Promise<HTMLElement> {
     { key: 'last_outcome', label: 'last outcome', fmt: v => v == null ? '' : outcomeBadge(String(v)) },
     { key: 'last_error', label: 'last error', wide: true },
     { key: 'schedule_id', label: 'actions', fmt: (v, r) => el('span', {},
-      button('Edit', `Change schedule ${String(r.name)}`, () => { void scheduleDialog({ schedule: r }); }), ' ',
-      button('Send test', `Send a test of schedule ${String(r.name)} now`, () => {
+      button('Edit', `Change schedule ${String(r.name)}`, null, () => { void scheduleDialog({ schedule: r }); }), ' ',
+      button('Send test', `Send a test of schedule ${String(r.name)} now`, door0.browser ? null : (door0.browser_reason || 'no headless browser on this server: a test is drawn on the server'), () => {
         dialog(`Send a test of ${String(r.name)}`, `The page is drawn now on the server as you and mailed to ${String(r.recipients)} with [test] in its subject.`, 'Send test', [],
           async () => (await post<WriteResult>('reportmail/test', { schedule_id: Number(v) })).detail, () => '', [], redraw);
       }), ' ',
-      button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, () => {
+      button(r.enabled ? 'Turn off' : 'Turn on', `${r.enabled ? 'Turn off' : 'Turn on'} schedule ${String(r.name)}`, null, () => {
         confirmAct(`${r.enabled ? 'Turn off' : 'Turn on'} ${String(r.name)}`, r.enabled ? 'No mail goes out until it is turned on again.' : 'The next send is the cron line\'s next time.', r.enabled ? 'Turn off' : 'Turn on', r.enabled ? 'disable' : 'enable', v);
       }), ' ',
-      button('End', `End schedule ${String(r.name)}`, () => { confirmAct(`End ${String(r.name)}`, 'The schedule ends for good; its sends stay in the log.', 'End', 'end', v); })) },
+      button('End', `End schedule ${String(r.name)}`, null, () => { confirmAct(`End ${String(r.name)}`, 'The schedule ends for good; its sends stay in the log.', 'End', 'end', v); })) },
   ];
   box.append(el('h3', {}, 'Schedules'), grid(rowsOf(d.schedules), sched, 'No schedule yet: open a page, press Mail... and Schedule this page, or New schedule above.'));
 

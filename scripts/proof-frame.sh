@@ -65,7 +65,10 @@
 #   W typed range 'now-6h' previews '..., follows now' and gives w=6h; 'now-1d/d to now/d' previews '... (1d)' and gives a
 #                 fixed range of 24 h ending at the zone's midnight, no w=; 'soon' previews 'not a time', the address unchanged
 #   X footer      on the Summary: the instances as /api/instances counts them, 'collections: n healthy, ...', the
-#                 repository's size, the seat with 'actions on|off', 'newest read ...', 'auto refresh every 30 s'; a fixed
+#                 repository's size, the seat - this proof serves a demo and says so to the check (FRAME_EXPECT_DOOR=demo):
+#                 the acknowledgement route names the door's user demo and the seat reads 'demo: changes to the demo's
+#                 own instances are saved as user demo; nothing reaches a server' (the plain seat 'read only, actions
+#                 off' is read by proof-demodoor's R10 on a serve -no-login) - 'newest read ...', 'auto refresh every 30 s'; a fixed
 #                 Performance window: 'auto refresh not on this page'; /api/frame/events without an instance and over 32 days: 400
 #   Y axes, limit erp01's Transactions chart: 3 axes, its note naming commits/s left and rollbacks/s right; the CPU chart: 2
 #                 threshold lines (98 % above 90 %, inside the plot), its note 'threshold warning 90 %, threshold critical
@@ -114,5 +117,5 @@ for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2
 curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null || fail "chromium's CDP port never answered"
 
 echo "== the checks"
-node scripts/frame-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$WORK/dl" || fail "a case did not hold"
+FRAME_EXPECT_DOOR=demo node scripts/frame-check.mjs "$CDP" "http://127.0.0.1:$PORT/" "$WORK/dl" || fail "a case did not hold"
 echo "OK: the shared frame: filter, export, copy menu, clipboard, nested grid, tests pane, refresh, chart, chart menu, paging, pies, colours, range and zone, time strip"

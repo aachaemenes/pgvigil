@@ -115,8 +115,11 @@ Each piece below is named in a comment beside it in the file. Where only a shape
 | The error log's match list and noise list (the search strings of its @custom_message_only = 0 run less 'Microsoft SQL Server' and 'Server name is', and the line patterns it deletes after the search), as data | DarlingData (darlingdata-20261101), sp_LogHunter.sql | MIT, Copyright (c) 2021 Darling Data, LLC | internal/mssql/errorlog.go (errorLogMatches, errorLogNoise*) |
 | The waiting-tasks read (its query and WHERE: sessions 50 and up, not the collector's own, a wait type, not PerformanceMonitor's own database; the collector's own session dropped as a blocker) and the ignored-wait list (IgnoredWaitDefaults.All, 126 types), as data; THREADPOOL waiters counted with no filter as sp_PressureDetector reads them | PerformanceMonitor 3.12.0, PerformanceMonitor.Collectors/WaitingTasksCollector.cs and IgnoredWaitDefaults.cs; DarlingData (darlingdata-20261101), sp_PressureDetector.sql | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/darling_waiting.go (waitingSQL, pmIgnoredWaits, threadpoolSQL), internal/repo/sql/0108_darling_waiting_tasks.sql |
 | The blocking findings' rules and words (an implicit transaction blocking, sessions in implicit transactions, a lead blocker's share of the blocked wait at 10 %), the wait findings' thresholds and words (wait share, signal wait ratio, SOS_SCHEDULER_YIELD, tempdb page latch, forced grants, poison waits, range locks, CMEMTHREAD on NUMA), and the blocked-process reports' checks 1-10, 1000 and 1001 with the lead walk, ported from the procedures' text | DarlingData (darlingdata-20261101): sp_HumanEventsBlockViewer 5.11 (checks 1-10, 1000, 1001), sp_PerfCheck 2.11 (6001, 6101, 6102, 2010, 4101), sp_HealthParser 3.11 (system_health's blockingTasks); SQL Server First Responder Kit 8.34: sp_BlitzFirst (30, 37), sp_Blitz (117, 121, 162, 215) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC; MIT, Copyright (c) Brent Ozar Unlimited | internal/repo/sql/0114_darling_blocking.sql, 0115_darling_waits.sql, 0116_darling_blocking_history.sql, internal/mssql/xe_shred.go (blockingTasks) |
-| The four system_health events read beside the component results (the memory broker, memory node out-of-memory, the scheduler monitor, wait_info), its significant-wait filter (500 ms) and ignorable wait list, and the System Events page's Corruption and Contention Events charts (each the largest value per bucket), ported from the procedure's text and PerformanceMonitor's page | DarlingData (darlingdata-20261101): sp_HealthParser 3.11; PerformanceMonitor 3.12.0 (its System Events page) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/readers_sysevents.go, internal/repo/sql/0120_darling_sysevents.sql, web/src/mssql_errorlog.ts |
+| The four system_health events read beside the component results (the memory broker, memory node out-of-memory, the scheduler monitor, wait_info), its significant-wait filter (500 ms) and ignorable wait list, and the System Events page's Corruption and Contention Events charts (each the largest value per bucket) and the scheduler monitor's warnings (SQL Server's CPU 90 %, other processes 50 %, memory utilization 50), ported from the procedure's text and PerformanceMonitor's page | DarlingData (darlingdata-20261101): sp_HealthParser 3.11; PerformanceMonitor 3.12.0 (its System Events page) | MIT, Copyright (c) 2021 Darling Data, LLC; MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/readers_sysevents.go, internal/repo/sql/0120_darling_sysevents.sql, internal/web/q_mssql_errorlog.go (sqlMSSQLHealthSeries, sqlMSSQLHealthSpinlocks, sqlMSSQLHealthScheduler, sqlMSSQLHealthWaits), web/src/mssql_errorlog.ts |
 | The memory reads and their shapes (the grants with their queries, the semaphores, the grant cap and reduced grants, the largest clerks and caches, stolen memory, the resource monitor's low-memory records, the plan cache by cache and object type with its bloat level) and the memory findings' rules (sp_Blitz 145 / 146, sp_BlitzFirst 45 / 46, grant timeouts), ported from the procedures' text and PerformanceMonitor's collectors | DarlingData (darlingdata-20261101): sp_PressureDetector (its memory section); PerformanceMonitor 3.12.0: MemoryGrantsCollector, MemoryPressureEventsCollector, PlanCacheStatsCollector and the Memory tab's columns; SQL Server First Responder Kit 8.34: sp_BlitzFirst (45, 46), sp_Blitz (145, 146) | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC; MIT, Copyright (c) Brent Ozar Unlimited | internal/mssql/memory.go, internal/repo/sql/0119_darling_memory.sql, web/src/mssql_perf.ts |
+| The performance counter list and its storage per series (a cumulative counter as its rate and its total), the CPU details, the thread row with its runnable line and THREADPOOL waits, the scheduler pressure line beside pgvigil's own level, the sessions by application, host and database with their totals, tempdb space per session, SLEEP_TASK kept at an average of 1,000 ms or more, the remote admin connections line, and the findings on other processes holding the CPU, a long open transaction and slow data file writes | DarlingData (darlingdata-20261101): sp_PressureDetector (its perfmon list, CPU and thread usage sections, tempdb per session); PerformanceMonitor 3.12.0: PerfmonStatsCollector, CpuSchedulerStatsCollector, SessionStatsCollector, SessionSummaryStatsCollector, ClassifyCpuSchedulerPressure, the perfmon panel's and the Activity tab's columns | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/mssql/cpu.go, internal/mssql/activity.go, internal/mssql/waits.go (sleepTaskSpills), internal/mssql/checks.go, internal/repo/sql/0124_darling_cpu.sql, web/src/mssql_perf.ts, web/src/metrics.ts |
+| PerformanceMonitor's alert defaults as findings (dead tuples, replay lag, slot WAL, a volume under 5 / 2 GB free, AG secondary 300 s, runnable queue 8 / 16 per scheduler, long-running requests at 30 min with its exclusions as data, Server Unreachable on any failed connect) and the Admin page's five tabs | PerformanceMonitor 3.12.0: CustomAlertTemplates.cs, DarlingConfig.cs, RunnableQueueEvaluator.cs, DarlingAlertReadAdapter.cs, LongRunningQueryExclusions.cs, ConnectionAlertPolicy.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/repo/sql/0118_darling_alerts.sql, web/src/alerts.ts (builtIn, adminView) |
+| The Query Store regression tests (cost: Regular CPU per run more than 25 % above the baseline's adding at least 1,000 ms over the window; timeouts / errors: at least 3 Aborted / Exception runs at twice the baseline's per-hour rate, or any where the baseline had none), the 7-day baseline, a row placed by its last run, the severity bands, the order and the 200-row cap with the failures' third; the compare picks (Previous period, Yesterday, Last week) and their column labels; the plan cache's hashes and handles and the procedures' spilled pages | PerformanceMonitor 3.12.0: QueryStoreRegressionRules.cs, PerformanceMonitor.Darling.Storage/QueryStoreRegressionBaseline.cs, top-compare.js, server-tabs.js, DarlingDataReader.cs, DarlingMcpDataTools.cs | MIT, Copyright (c) 2026 Erik Darling, Darling Data LLC | internal/web/q_mssql_querystore.go (qsRegBase, sqlMSSQLQSRegressed, sqlMSSQLQSCompare), internal/web/q_mssql_plancache.go (sqlMSSQLPCCompare), internal/web/q_mssql_procs.go (sqlMSSQLProcCompare, sqlMSSQLProcs), internal/web/q_mssql_plancache.go (sqlMSSQLPCTop), web/src/mssql_querystore.ts, web/src/mssql_plancache.ts, web/src/mssql_procs.ts |
 
 The MIT licence of each of these sources, with its copyright line above:
 
@@ -125,6 +128,65 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## The demo's stored samples of the community tools
+
+On a demo instance (`pgvigil demo`: no server stands behind it) the Community tools page opens each tool's stored sample: the result sets a run of the tool returned on a test server built for the capture (scripts/capture-community-samples.sh), marked as that test server's wherever it is shown, exported or mailed. The findings' names, details and URLs in them are the kits' own words as the procedures returned them. No code of any kit is stored: the reads of the plan cache and of Query Store run first, in the test server's user database only, and the capture stops when the rows of a tool that reads statements hold a kit's own statement.
+
+| What | From | Licence | Where |
+|---|---|---|---|
+| Stored result sets of sp_Blitz, sp_BlitzFirst, sp_BlitzCache, sp_BlitzIndex, sp_BlitzLock and sp_BlitzWho (their findings' words and links as the procedures returned them on a test server; plan XML left out), and their parameters' names and help text, for the demo only | SQL Server First Responder Kit 8.34 (2026-07-02) | MIT; its licence whole below (it names further MIT portions) | internal/demo/community/samples/sp_Blitz*.json.gz |
+| Stored result sets of sp_PressureDetector 6.11, sp_QuickieStore 6.11, sp_HumanEventsBlockViewer 5.11, sp_HealthParser 3.11, sp_LogHunter 3.11 and sp_IndexCleanup 2.11 (their findings' words and links as the procedures returned them on a test server; plan XML left out), and their parameters' names and help text, for the demo only | DarlingData (2026-11-01) | MIT, Copyright 2026 Darling Data, LLC (the MIT licence above) | internal/demo/community/samples/ (the six files named for them) |
+| Stored result rows of sp_WhoIsActive v2200.20260409: the test server's own sessions as it listed them, and its parameters' names; none of its own text (its @help output and its parameters' descriptions are not stored) | sp_WhoIsActive, (C) 2007-2026 Adam Machanic | GPL-3.0: the rows are the server's data, the program's output, not a copy of the program | internal/demo/community/samples/sp_WhoIsActive.json.gz |
+
+Glenn Berry's SQL Server Diagnostic Queries: nothing of them is stored (his script's header reserves all rights); the demo says what the tool does and where to download the script.
+
+The First Responder Kit's licence, whole (LICENSE.md of its repository, read 2026-11-12):
+
+```text
+MIT License
+
+Copyright for portions of sp_Blitz are held by Microsoft as part of project 
+tigertoolbox and are provided under the MIT license:
+https://github.com/Microsoft/tigertoolbox
+All other copyrights for sp_Blitz are held by Brent Ozar Unlimited, 2022 as
+described below.
+
+Copyright for portions of DatabaseRestore are held by GregWhiteDBA as part
+of project MSSQLAutoRestore and are provided under the MIT license:
+https://github.com/GregWhiteDBA/MSSQLAutoRestore
+All other copyrights for DatabaseRestore are held by Brent Ozar Unlimited, 2022
+as described below.
+
+Copyright for sp_BlitzInMemoryOLTP are held by Ned Otter and Konstantin
+Taranov as part of project sqlserver-kit and are provided under the MIT license:
+https://github.com/ktaranov/sqlserver-kit
+
+Copyright for SqlServerVersionScript are held by Josh Darnell as part of
+project SqlServerVersionScript and are provided under the MIT license:
+https://github.com/jadarnel27/SqlServerVersionScript
+
+
+Copyright (c) 2022 Brent Ozar Unlimited
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Read, not copied
 

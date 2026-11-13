@@ -14,7 +14,7 @@ import { corruptionView } from './corruption';
 import { pgBackupsView, pgBaseBackupsFleetSection, pgReplicationFleetView, pgStateView, pgThresholdsView } from './pg_backups';
 import { dbadashView, importedPage, isImported } from './dbadash';
 import { mssqlWaitingView, pgWaitingView } from './darling_waiting';
-import { alertsView } from './alerts';
+import { adminView, alertsView } from './alerts';
 import { alertRulesView } from './alert_rules';
 import { alertPageView } from './alert_page';
 import { metricsView } from './metrics';
@@ -57,7 +57,7 @@ import { jobsPgView } from './jobs_pg';
 import { pgDeadlocksView } from './pg_deadlocks';
 import { mssqlFilesView, mssqlStorageView } from './mssql_storage';
 import { mssqlRowVersionsView } from './mssql_rowversions';
-import { mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
+import { mssqlConnectionsView, mssqlCpuView, mssqlFileIOView, mssqlMemoryView, mssqlTempdbView } from './mssql_perf';
 import { mssqlQueryStoreView } from './mssql_querystore';
 import { mssqlConfigView } from './mssql_config';
 import { mssqlPropertiesView } from './mssql_properties';
@@ -84,6 +84,7 @@ import { diffView } from './diff';
 import { tableSizeView } from './tablesize';
 import { dbFilesView, dbSpaceView, drivePerfView, drivesView, pgTempView } from './drives';
 import { collectionDatesView } from './collectiondates';
+import { collectorView } from './collector';
 import { aboutLink, aboutView } from './about';
 import { adminInstancesView } from './admin_instances';
 import { reportPages } from './reports';
@@ -101,7 +102,7 @@ const mssqlPages: Record<string, Render> = {
   mssqlbackups: mssqlBackups, mssqljobs: mssqlJobs, mssqlstorage: mssqlStorageView, mssqlfiles: mssqlFilesView,
   drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, driveperf: drivePerfView, collectiondates: collectionDatesView,
   rowversions: mssqlRowVersionsView, mssqlconfig: mssqlConfigView, mssqlactions: mssqlActionsLogView,
-  mssqlcpu: mssqlCpuView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
+  mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
   mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
@@ -113,7 +114,7 @@ const mssqlPages: Record<string, Render> = {
 // such as Azure SQL Database's, a missing right): the page opens with the collector's own reason (GET /api/mssql/state)
 const mssqlTabRuns: Record<string, string[]> = {
   mssqlstorage: ['mssql_storage'], mssqlfiles: ['mssql_storage'], rowversions: ['mssql_versionstore'], jobstimeline: ['mssql_jobs'],
-  mssqlcpu: ['mssql_cpu'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
+  mssqlcpu: ['mssql_cpu'], mssqlconnections: ['mssql_activity'], mssqlmemory: ['mssql_memory'], mssqlfileio: ['mssql_fileio'], mssqltempdb: ['mssql_tempdb'], mssqlqs: ['mssql_querystore'],
   drives: ['mssql_storage'], dbspace: ['mssql_storage'], dbfiles: ['mssql_storage'], driveperf: ['mssql_fileio'],
   rp_props: ['mssql_reports'], rp_failed: ['mssql_reports'], rp_roles: ['mssql_reports'], rp_services: ['mssql_reports'], rp_pwage: ['mssql_reports'], rp_tables: ['mssql_reports'],
 };
@@ -139,7 +140,7 @@ const tagKeep = async (c: Ctx): Promise<((r: Row) => boolean) | undefined> => {
 };
 const jobsTimelineFleet: Render = async c => jobsTimelineView(c, await tagKeep(c));
 const tempdbFleet: Render = async c => mssqlTempdbView(c, await tagKeep(c));
-const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(await pgBaseBackupsFleetSection(c)); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages };
+const rootPages: Record<string, Render> = { summary: fleetSummary, checks, findings, instances, dms, disks, storage, backups: async c => { const v = await backups(c); v.append(await pgBaseBackupsFleetSection(c)); return v; }, pgreplication: pgReplicationFleetView, pgthresholds: pgThresholdsView, corruption, extensions, versions, roles, slowqueries: slows, jobs: jobsRoot, indexes, growth, dbadash: dbadashView, custom: customRoot, alerts: alertsView, alertrules: alertRulesView, alert: alertPageView, perfsummary: perfSummaryView, running: runningFleet, jobstimeline: jobsTimelineFleet, mssqltempdb: tempdbFleet, dbchanges: async c => dbChangesView(c, await tagKeep(c)), diff: diffView, tablesize: async c => tableSizeView(c, await tagKeep(c)), mssqlrisks: mssqlChecksFleetView, pgrisks: pgDbOptionsFleetView, reportmail: reportMailView, customreports: customReportsView, community: communityView, retention: retentionView, collectiondates: collectionDatesView, collector: collectorView, drives: drivesView, dbspace: dbSpaceView, dbfiles: dbFilesView, about: aboutView, admin_instances: adminInstancesView, ...reportPages, admin: adminView };
 const instancePages: Record<string, Render> = {
   summary: instanceSummary, performance: performanceView, activity: runningView, statements, counters: metricsView, replication, jobs: jobsPgView, pg_deadlocks: pgDeadlocksView, logs, dms, config, pgdboptions: pgDbOptionsView,
   tables: c => tablesView(c.instance!, c), vacuum: vacuumView, findings, load: loadView,
@@ -251,7 +252,10 @@ async function statusLine(ctx: Ctx, live: boolean) {
       n('failing') ? el('a', { href: href(ctx, { tab: 'checks', instance: undefined, tag: undefined }) }, `${n('failing')} failing`) : '0 failing',
       `, ${n('stale')} stale, ${n('not_collected')} not collected`, n('no_permission') ? `; ${n('no_permission')} without a permission` : ''),
     el('span', { 'data-part': 'repository' }, `repository ${fmtBytes(statusRow.repository_bytes)}`),
-    el('span', { 'data-part': 'seat' }, `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
+    // a demo serve's seat: whose door this is, said once on every page (task B7)
+    el('span', { 'data-part': 'seat' }, statusRow.door
+      ? `demo: changes to the demo's own instances are saved as user ${String(statusRow.door)}; nothing reaches a server`
+      : `${statusRow.repository_writes ? 'read-write' : 'read only'}, actions ${String(statusRow.actions ?? 'off')}`),
     el('span', { 'data-part': 'newest' }, statusRow.newest_read ? `newest read ${fmtClock(new Date(String(statusRow.newest_read)))}` : 'no read yet'),
     el('span', { 'data-part': 'refresh' }, `auto refresh ${refresh}`),
   ] : [el('span', { 'data-part': 'error' }, 'Status not read: ' + statusErr)];
@@ -373,11 +377,14 @@ async function render(force = false) {
   }
 
   // the instance's header and its band's dot (task 177 D29), read beside the page; a failure there leaves them out
-  const frame = ctx.instance ? instanceFrame(ctx).catch(() => null) : Promise.resolve(null);
+  // one fleet read for the tree, the breadcrumb and the header (a Refresh forces it for all three)
+  const fleetRead = fleet(force);
+  fleetRead.catch(() => undefined);   // its failure is the tree's to show (below), never an unhandled rejection
+  const frame = ctx.instance ? instanceFrame(ctx, fleetRead).catch(() => null) : Promise.resolve(null);
   // the tree and the breadcrumb come from the fleet read; a failure there still shows the page
   const crumb = $('crumb');
   try {
-    const f = await fleet(force);
+    const f = await fleetRead;
     if (gen !== generation) return;
     updateTree(f, ctx);
     tabMark(f);

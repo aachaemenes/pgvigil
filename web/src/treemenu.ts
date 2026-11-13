@@ -26,7 +26,7 @@ import { badge, cellText, copyText, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmt
 import { reloadTree } from './tree';
 import { loadThresholds, thresholdsDialog } from './mssql_jobs';
 import { confirmJobAction, runningState } from './jobs_running';
-import { ackDialog, loadAckSafe } from './ack';
+import { ackDialog, ackWhy, loadAckSafe } from './ack';
 
 // ---- a menu with submenus ------------------------------------------------------------------------------------
 
@@ -410,9 +410,10 @@ function connectionOptions(id: number, back: HTMLElement | null) {
 function addBlackout(id: number, back: HTMLElement | null) {
   void Promise.all([instanceRow(id), loadAckSafe(['acks'])]).then(([r, ad]) => {
     const name = String(r?.name ?? `instance ${id}`);
-    if (!ad.writable) {
+    const why = ackWhy(ad, id, name);
+    if (why) {
       const { body } = dialog('Add Alert Blackout', back);
-      body.append(el('p', {}, badge('read only', 'warn'), ' ', ad.reason ?? 'acknowledgements cannot be written on this server'));
+      body.append(el('p', {}, badge('read only', 'warn'), ' ', why));
       return;
     }
     ackDialog({ title: `Blackout '${name}'`, what: 'From the start to the end the server\'s alerts are held (still logged) and flagged blackout.',

@@ -93,7 +93,7 @@ func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
 			var n []string
 			for _, in := range all {
 				n = append(n, in.Name)
@@ -310,6 +310,19 @@ func TestListsRefuseCredentialsWithoutEchoingThem(t *testing.T) {
 	if _, err := ParseServerList(strings.NewReader("host,port\npg1,x=y\n"), EnginePostgres); err == nil || strings.Contains(err.Error(), "x=y") {
 		t.Fatalf("a CSV field with '=': %v", err)
 	}
+	// a .pgpass line (the collector account's own, the pgpass login mode's file) is no server list: refused by its
+	// line number, the password never echoed (the join review of 204, finding 4)
+	for _, in := range []string{"pg1\ndb1:5432:*:pgvigil:S3cret\n", "pg1\n*:*:*:pgvigil:S3cret\n", "host,port\npg1,1\ndb1:5432:app:u:S3cret,2\n",
+		"pg1\n\\:\\:1:5432:*:pgvigil:S3cret\n"} {
+		_, err := ParseServerList(strings.NewReader(in), EnginePostgres)
+		if err == nil || strings.Contains(err.Error(), "S3cret") || !strings.Contains(err.Error(), "line 2") && !strings.Contains(err.Error(), "line 3") {
+			t.Fatalf("a .pgpass line %q: %v", in, err)
+		}
+	}
+	// an IPv6 address and host:port stay servers
+	if got, err := ParseServerList(strings.NewReader("2001:db8:0:0:1:0:0:1\npg2:5433\n[2603:1030:20e:3::23c]:5432\n[2603:1030:20e:3::23c]\n"), EnginePostgres); err != nil || len(got) != 4 {
+		t.Fatalf("IPv6 / host:port: %v %v", got, err)
+	}
 	if _, err := ParseServerList(strings.NewReader("np:sql01\n"), EngineSQLServer); err == nil {
 		t.Fatal("a named pipe was taken")
 	}
@@ -333,5 +346,53 @@ func TestBuildDSNRefusesAPasswordInTheOptions(t *testing.T) {
 	}
 	if got := QuoteValue(`C:\Program Files\pg_service.conf`); got != `'C:\\Program Files\\pg_service.conf'` {
 		t.Fatalf("QuoteValue %s", got)
+	}
+}
+
+// A failed first read runs the file's instances once, not again on every failed tick, and the read's recovery
+// hands the merged list (the join review of 204's fold, finding 7 of its review).
+func TestWatchInventoryFailedFirstReadAppliesTheFileOnce(t *testing.T) {
+	src := &fakeInv{gen: 1, fail: true, list: []PageInstance{{Name: "p", Engine: EnginePostgres, DSNRef: "file:/p"}}}
+	var mu sync.Mutex
+	var applied [][]string
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		WatchInventory(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), src, nil, []Instance{{Name: "f", Engine: EnginePostgres, DSNRaw: "env:F"}}, "full", 20*time.Millisecond, func(all []Instance) {
+			var n []string
+			for _, in := range all {
+				n = append(n, in.Name)
+			}
+			mu.Lock()
+			applied = append(applied, n)
+			mu.Unlock()
+		})
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
+	time.Sleep(150 * time.Millisecond)
+	mu.Lock()
+	n := len(applied)
+	once := n == 1 && slices.Equal(applied[0], []string{"f"})
+	mu.Unlock()
+	if !once {
+		t.Fatalf("a failing first read applied the list %d times (want the file's list once)", n)
+	}
+	src.mu.Lock()
+	src.fail = false
+	src.mu.Unlock()
+	for i := 0; i < 100; i++ {
+		mu.Lock()
+		n = len(applied)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(applied) != 2 || !slices.Equal(applied[1], []string{"f", "p"}) {
+		t.Fatalf("after the recovery %v", applied)
 	}
 }

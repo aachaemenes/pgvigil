@@ -146,8 +146,8 @@ func (c CustomCheck) AppliesTo(in config.Instance) bool {
 
 var customNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
 
-// validate checks one entry and fills its defaults; known = the configured instance names.
-func (c *CustomCheck) validate(i int, known map[string]bool) error {
+// validate checks one entry and fills its defaults (the instance names it lists are checked by the caller).
+func (c *CustomCheck) validate(i int) error {
 	c.Name = strings.TrimSpace(c.Name)
 	if !customNameRE.MatchString(c.Name) {
 		return fmt.Errorf("custom[%d]: name %q must be lower-case letters, digits, '_', '.' or '-' (1..63, starting with a letter or digit)", i, c.Name)
@@ -196,11 +196,6 @@ func (c *CustomCheck) validate(i int, known map[string]bool) error {
 			return fmt.Errorf("custom %q: critical %v is reached before warning %v with compare %s", c.Name, k, w, c.Compare)
 		}
 	}
-	for _, n := range c.Instances {
-		if !known[n] {
-			return fmt.Errorf("custom %q: instance %q is not in the instances: list", c.Name, n)
-		}
-	}
 	for _, s := range c.Tags {
 		if _, err := config.ParseTag(s); err != nil {
 			return fmt.Errorf("custom %q: %w", c.Name, err)
@@ -217,19 +212,29 @@ var customState struct {
 	sync.RWMutex
 	configured bool // the file has a custom: key (an empty list included)
 	checks     []CustomCheck
+	warnings   []string
 }
 
-// ParseCustomChecks reads the custom: key of a configuration file's bytes and validates it against the configured
-// instances; present = the key is in the file (custom: [] included).
+// ParseCustomChecks reads the custom: key of a configuration file's bytes and validates it; present = the key is in
+// the file (custom: [] included). The warnings of ParseCustomChecksWarn are dropped.
 func ParseCustomChecks(b []byte, instances []config.Instance) (checks []CustomCheck, present bool, err error) {
+	checks, present, _, err = ParseCustomChecksWarn(b, instances)
+	return checks, present, err
+}
+
+// ParseCustomChecksWarn is ParseCustomChecks with its warnings: an instance name the file does not list, or a check
+// whose instances and tags match no instance of the file, is a warning, never an error - Admin > Instances may hold
+// the instances it names (task 204); the scheduler warns again over the merged list (a typo like env:prd still
+// shows).
+func ParseCustomChecksWarn(b []byte, instances []config.Instance) (checks []CustomCheck, present bool, warnings []string, err error) {
 	var f struct {
 		Custom *[]CustomCheck `yaml:"custom"`
 	}
 	if err := yaml.Unmarshal(b, &f); err != nil {
-		return nil, false, fmt.Errorf("custom: %w", err)
+		return nil, false, nil, fmt.Errorf("custom: %w", err)
 	}
 	if f.Custom == nil {
-		return nil, false, nil
+		return nil, false, nil, nil
 	}
 	known := map[string]bool{}
 	for _, in := range instances {
@@ -238,11 +243,16 @@ func ParseCustomChecks(b []byte, instances []config.Instance) (checks []CustomCh
 	seen := map[string]bool{}
 	out := *f.Custom
 	for i := range out {
-		if err := out[i].validate(i, known); err != nil {
-			return nil, true, err
+		if err := out[i].validate(i); err != nil {
+			return nil, true, nil, err
 		}
-		// a check whose instances and tags match no configured instance (env:prd for env:prod) would never run, never
-		// be listed and raise nothing: refused as an unknown instance is
+		for _, n := range out[i].Instances {
+			if !known[n] {
+				warnings = append(warnings, fmt.Sprintf("custom %q: instance %q is not in the file's instances: list (it runs if the page holds it)", out[i].Name, n))
+			}
+		}
+		// a check whose instances and tags match no instance of the file (env:prd for env:prod) runs only where the
+		// page's instances match it
 		matched := false
 		for _, in := range instances {
 			if out[i].AppliesTo(in) {
@@ -251,14 +261,14 @@ func ParseCustomChecks(b []byte, instances []config.Instance) (checks []CustomCh
 			}
 		}
 		if !matched {
-			return nil, true, fmt.Errorf("custom %q: its instances and tags (%s) match no instance in the instances: list", out[i].Name, out[i].Targets())
+			warnings = append(warnings, fmt.Sprintf("custom %q: its instances and tags (%s) match no instance of the file (it runs on the page's instances it matches)", out[i].Name, out[i].Targets()))
 		}
 		if seen[out[i].Name] {
-			return nil, true, fmt.Errorf("custom %q is listed twice", out[i].Name)
+			return nil, true, nil, fmt.Errorf("custom %q is listed twice", out[i].Name)
 		}
 		seen[out[i].Name] = true
 	}
-	return out, true, nil
+	return out, true, warnings, nil
 }
 
 // LoadCustomChecks reads the custom: list of the configuration file at path (after config.Load) and makes it the
@@ -268,12 +278,22 @@ func LoadCustomChecks(path string, instances []config.Instance) error {
 	if err != nil {
 		return fmt.Errorf("custom: %w", err)
 	}
-	checks, present, err := ParseCustomChecks(b, instances)
+	checks, present, warnings, err := ParseCustomChecksWarn(b, instances)
 	if err != nil {
 		return err
 	}
 	SetCustomChecks(checks, present)
+	customState.Lock()
+	customState.warnings = warnings
+	customState.Unlock()
 	return nil
+}
+
+// CustomWarnings are the last LoadCustomChecks's warnings (the caller logs them).
+func CustomWarnings() []string {
+	customState.RLock()
+	defer customState.RUnlock()
+	return append([]string(nil), customState.warnings...)
 }
 
 // SetCustomChecks replaces the list (tests and LoadCustomChecks).

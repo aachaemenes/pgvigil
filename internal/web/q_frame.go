@@ -41,12 +41,18 @@ func (s *Server) FrameStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// the UI's own writes (acknowledgements, alert rules' edits) go through the actions door's audit login: the serve
 	// pool itself is read only (default_transaction_read_only), so the seat is the door's state, never the pool's
-	t, err := s.query(r.Context(), sqlFrameStatus, string(exp), DefaultStaleSecs, noPermission, actions, s.ackOff() == "")
+	// the demo's write door (demodoor.go): its user where one stands, empty on every serve - the footer says once whose
+	// door this is; repository_writes stays the serve's own seat
+	door := ""
+	if s.demo != nil {
+		door = doorUser
+	}
+	t, err := s.query(r.Context(), sqlFrameStatus, string(exp), DefaultStaleSecs, noPermission, actions, s.ackOff() == "", door)
 	s.reply(w, r, t, err)
 }
 
 // sqlFrameStatus: $1 the stale check's expectations (a collection disabled or gated off for an instance, 0, is
-// counted nowhere), $2 the default stale age, $3 the no-permission pattern, $4 the actions door ('on' | 'off'), $5
+// counted nowhere), $2 the default stale age, $3 the no-permission pattern, $4 the actions door ('on' | 'off'), $6 the demo door's user (empty on a serve), $5
 // whether this server writes the UI's own rows (ackOff: the login on, the door's audit login connected).
 // A collection is one of: no_permission (an error or skip whose note names a missing right), failing (another
 // error), not_collected (another skip: the collection does not apply there), stale (ok but older than its interval
@@ -77,6 +83,7 @@ SELECT (SELECT count(*) FROM pgvigil.instances WHERE is_active) AS instances,
        pg_database_size(current_database()) AS repository_bytes,
        $5::boolean AS repository_writes,
        $4::text AS actions,
+       $6::text AS door,
        now() AS server_now
   FROM k`
 

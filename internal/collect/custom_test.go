@@ -81,26 +81,34 @@ custom:
 		"compare":    "custom: [{name: a, sql: SELECT 1, compare: '=>'}]",
 		"order":      "custom: [{name: a, sql: SELECT 1, warning: 10, critical: 5}]",
 		"order <":    "custom: [{name: a, sql: SELECT 1, compare: '<', warning: 5, critical: 10}]",
-		"instance":   "custom: [{name: a, sql: SELECT 1, instances: [nope]}]",
 		"tag":        "custom: [{name: a, sql: SELECT 1, tags: ['env:']}]",
 		"rows value": "custom: [{name: a, sql: SELECT 1, rule: rows, value: n}]",
-		"no match":   "custom: [{name: a, sql: SELECT 1, tags: ['env:prd']}]",
 	}
 	for k, y := range bad {
 		if _, _, err := ParseCustomChecks([]byte(y), ins); err == nil {
 			t.Errorf("%s: accepted %s", k, y)
 		}
 	}
-	if _, _, err := ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, tags: ['env:prd']}]"), ins); err == nil ||
-		!strings.Contains(err.Error(), "match no instance") {
-		t.Errorf("a tag no instance carries: %v", err)
+	// an instance or a tag the file does not hold is a warning, never an error: the page may hold the instance (204)
+	cs, _, warns, err := ParseCustomChecksWarn([]byte("custom: [{name: a, sql: SELECT 1, tags: ['env:prd']}]"), ins)
+	if err != nil || len(cs) != 1 || len(warns) != 1 || !strings.Contains(warns[0], "match no instance of the file") {
+		t.Errorf("a tag no file instance carries: %v %d %v", err, len(cs), warns)
+	}
+	cs, _, warns, err = ParseCustomChecksWarn([]byte("custom: [{name: a, sql: SELECT 1, instances: [sql07, erp01]}]"), ins)
+	if err != nil || len(cs) != 1 || len(warns) != 1 || !strings.Contains(warns[0], `instance "sql07" is not in the file's instances`) {
+		t.Errorf("an instance only the page holds: %v %d %v", err, len(cs), warns)
+	}
+	// no instance in the file at all (a host whose instances are all in the page): every check loads, with its warning
+	cs, _, warns, err = ParseCustomChecksWarn([]byte("custom: [{name: a, sql: SELECT 1}]"), nil)
+	if err != nil || len(cs) != 1 || len(warns) != 1 {
+		t.Errorf("a check over no file instance: %v %d %v", err, len(cs), warns)
 	}
 	// a tag one instance carries, beside an unmatched one, is enough
 	if _, _, err := ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, tags: ['env:prd', billing]}]"), ins); err != nil {
 		t.Errorf("one matching tag: %v", err)
 	}
 	// <> and == are read as != and =
-	cs, _, err := ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, compare: '<>', warning: 1}]"), ins)
+	cs, _, err = ParseCustomChecks([]byte("custom: [{name: a, sql: SELECT 1, compare: '<>', warning: 1}]"), ins)
 	if err != nil || cs[0].Compare != "!=" {
 		t.Fatalf("<>: %v %+v", err, cs)
 	}

@@ -1,13 +1,14 @@
 // The Query Store page of a SQL Server instance (task 129; DBA Dash's Query Store Top Queries, Forced Plans and
 // QS options grids, Darling's Query Store tab): five views of what the mssql_querystore collection read from each
 // database's store (hourly): Top (the window's queries by duration, CPU, reads, memory grant, waits or executions;
-// a query opens its plans over time with a .sqlplan download per plan), Regressed (the window against the window
-// before it, per plan), Forced plans (with the failure count and reason), Tuning (the automatic tuning
-// recommendations and options) and Store state (actual against desired, the read-only reason, size against max).
-// Data from /api/mssql/querystore and its two detail routes.
+// a query opens its plans over time with a .sqlplan download per plan; under it PerformanceMonitor's compare with
+// an earlier window), Regressed (PerformanceMonitor's regressions and pgvigil's duration test, per query, against a
+// baseline: the 7 days before by default), Forced plans (with the failure count and reason), Tuning (the automatic
+// tuning recommendations and options) and Store state (actual against desired, the read-only reason, size against
+// max). Data from /api/mssql/querystore and its two detail routes.
 //
-// The view, the sort and the database ride the page's hash (qs=, qo=, qdb=), read here as stmt_filter.ts reads its
-// own; the lead's wiring keeps them on the tab's own links (router.ts).
+// The view, the sort, the database and Regressed's baseline ride the page's hash (qs=, qo=, qdb=, qb=), read here as
+// stmt_filter.ts reads its own; the lead's wiring keeps them on the tab's own links (router.ts).
 import { get, Row, rowsOf, Table } from './api';
 import { lineChart } from './chart';
 import { Ctx, rangeLabel, window_ } from './router';
@@ -17,7 +18,7 @@ import { badge, Col, el, errorBox, fmtNum, fmtTime, grid, props, tile } from './
 // The tab key of the page (the router's entry carries the same key).
 export const mssqlQueryStoreTab = 'mssqlqs';
 
-type Parts = 'state' | 'totals' | 'series' | 'top' | 'regressed' | 'forced' | 'tuning' | 'tuning_options' | 'checks';
+type Parts = 'state' | 'totals' | 'series' | 'top' | 'regressed' | 'regressed_skipped' | 'forced' | 'tuning' | 'tuning_options' | 'checks';
 type QS = Partial<Record<Parts, Table | null>>;   // the page asks for its view's parts: the others are absent
 
 const views: [string, string][] = [['top', 'Top'], ['regressed', 'Regressed'], ['forced', 'Forced plans'], ['tuning', 'Tuning'], ['state', 'Store state']];
@@ -180,6 +181,131 @@ const openCol = (ctx: Ctx, panel: ReturnType<typeof detailPanel>): Col => ({
   fmt: (_, r) => r.query_id == null ? '' : openButton('Open', `the plans of query ${text(r.query_id)} in ${text(r.database_name)}`, () => { void openQuery(ctx, r, panel); }),
 });
 
+// ---- the compare: PerformanceMonitor's top-compare.js (3.12.0, MIT License, Copyright (c) Erik Darling, Darling Data
+// LLC) on pgvigil's stored rows: the range against the same span earlier, on the Query Store, Plan cache and
+// Procedures grids. One section, the grids' pages place it under their grid (compareSection).
+
+export type CompareKind = 'querystore' | 'plancache' | 'procs';
+// PerformanceMonitor's picks (Off, Yesterday, Last week; its 'Same day last week' shifts as Last week does) and DBA
+// Dash's Previous Period
+const comparePicks: [string, string][] = [['', 'Off'], ['prev', 'Previous period'], ['day', 'Yesterday'], ['week', 'Last week']];
+// a time in UTC and in the viewer's zone (the windows are UTC instants: across a change of the clocks the earlier
+// window reads an hour off on the wall clock)
+const both = (v: unknown) => v == null || v === '' ? '' : `${new Date(text(v)).toISOString().slice(0, 16).replace('T', ' ')} UTC (${fmtTime(v)} here)`;
+const hoursOf = (secs: unknown) => fmtNum(Math.round(Number(secs ?? 0) / 360) / 10) + ' h';
+// PerformanceMonitor's colour bands (top-compare.js:153-155): duration and CPU red over +25 %, green under -25 %;
+// executions red over +100 %, green under -50 %
+function band(up: number, down: number): Pick<Col, 'fmt' | 'cls'> {
+  const cls = (v: unknown) => v == null || v === '' ? '' : Number(v) > up ? 'status crit' : Number(v) < down ? 'status ok' : '';
+  return {
+    fmt: v => { if (v == null || v === '') return ''; const t = (Number(v) > 0 ? '+' : '') + fmtNum(v) + ' %'; return cls(v) ? tinted(t) : t; },
+    cls,
+  };
+}
+
+// compareSection: the pick and, for any but Off, the windows, how much of each the stored rows cover, and the grid.
+// filter: the page's own narrowing (db=, scope=) so the compare reads what its grid reads. The pick is remembered per
+// page for the session.
+export function compareSection(ctx: Ctx, kind: CompareKind, filter: Record<string, string | number | undefined>): HTMLElement {
+  const store = `pgvigil.mssql.compare.${kind}`;
+  let pick = (() => { try { return sessionStorage.getItem(store) ?? ''; } catch { return ''; } })();
+  if (!comparePicks.some(c => c[0] === pick)) pick = '';
+  const id = `cmp-${kind}`;
+  const sel = el('select', { id }) as HTMLSelectElement;
+  for (const [k, l] of comparePicks) sel.append(el('option', { value: k }, l));
+  sel.value = pick;
+  const body = el('div', { 'aria-live': 'polite' });
+  const box = el('section', { class: 'compare' }, el('h3', {}, 'Compare with an earlier window'),
+    el('div', { class: 'toolbar' }, el('label', { for: id }, 'Compare with '), sel), body);
+  let seq = 0;
+  async function draw() {
+    const mine = ++seq;
+    if (!pick) { body.replaceChildren(); return; }
+    body.replaceChildren(el('p', { class: 'meta' }, 'Reading...'));
+    const w = window_(ctx);
+    const q = { instance: ctx.instance, ...w, ...filter, compare: pick };
+    try {
+      const [wd, cd] = await Promise.all([
+        get<{ compare_windows: Table | null }>(`mssql/${kind}`, { ...q, part: 'compare_windows' }),
+        get<{ compare: Table | null }>(`mssql/${kind}`, { ...q, part: 'compare' }),
+      ]);
+      if (mine !== seq) return;
+      body.replaceChildren(...compareBody(kind, rowsOf(wd.compare_windows)[0] ?? {}, rowsOf(cd.compare)));
+    } catch (e) {
+      if (mine === seq) body.replaceChildren(errorBox(e));
+    }
+  }
+  sel.addEventListener('change', () => {
+    pick = sel.value;
+    try { sessionStorage.setItem(store, pick); } catch { /* private window */ }
+    void draw();
+  });
+  void draw();
+  return box;
+}
+
+function compareBody(kind: CompareKind, w: Row, rows: Row[]): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  out.push(el('p', { class: 'meta' }, `This range: ${both(w.now_from)} to ${both(w.now_to)}. Earlier window: ${both(w.before_from)} to ${both(w.before_to)}.`
+    + (w.overlap ? ' The two windows overlap (the shift is shorter than the range): what ran in the overlap counts in both.' : '')));
+  const held = kind === 'querystore'
+    ? `The stored Query Store data starts ${w.data_from ? fmtTime(w.data_from) : 'after the earlier window'}; intervals with runs: ${fmtNum(w.now_intervals)} in this range, `
+      + `${fmtNum(w.before_intervals)} in the earlier window (a store writes no interval for a minute in which nothing ran)`
+    : `The reads cover ${hoursOf(w.now_covered_secs)} of this range (${fmtNum(w.now_reads)} reads) and ${hoursOf(w.before_covered_secs)} of the earlier window (${fmtNum(w.before_reads)} reads)`;
+  out.push(el('p', { class: 'meta' }, `Baseline: ${text(w.coverage)}. ${held}.`));
+  // PerformanceMonitor never draws every row as NEW: nothing in scope ran in the earlier window = no comparison
+  const r0 = rows[0] ?? {};
+  const before = Number(r0.n_both ?? 0) + Number(r0.n_not_kept_now ?? 0) + Number(r0.n_gone ?? 0);
+  if (w.coverage === 'no baseline' || (rows.length > 0 && before === 0)) {
+    out.push(el('p', { class: 'empty' }, 'No data for the comparison window: nothing was stored for the earlier window. The grid above is this range alone.'));
+    return out;
+  }
+  if (kind === 'querystore') {
+    out.push(el('p', { class: 'meta' }, `${fmtNum(r0.n_keys ?? 0)} queries (database and query hash) in the two windows: ${fmtNum(r0.n_both ?? 0)} in both, `
+      + `${fmtNum(r0.n_new ?? 0)} new (first compiled after the earlier window), ${fmtNum(r0.n_not_kept_before ?? 0)} not kept before, ${fmtNum(r0.n_not_kept_now ?? 0)} not kept now. `
+      + 'The store keeps each interval\'s top plans only: "not kept before" is a query with no kept row in the earlier window that was compiled before it '
+      + '(it may have run then below the kept plans); "not kept now" a query with no kept row in this range (pgvigil does not read whether it still runs).'
+      + (Number(w.no_hash_rows) > 0 ? ` ${fmtNum(w.no_hash_rows)} row(s) of this range have no query hash (the plan left the store between the read's two steps) and are left out.` : '')));
+  } else {
+    const cut = Number(w.now_cut_reads ?? 0) + Number(w.before_cut_reads ?? 0) + Number(w.edge_cut_reads ?? 0), reads = Number(w.now_reads ?? 0) + Number(w.before_reads ?? 0);
+    out.push(el('p', { class: 'meta' }, `${fmtNum(r0.n_keys ?? 0)} ${kind === 'procs' ? 'procedures' : 'statements (database and query hash)'} in the two windows: `
+      + `${fmtNum(r0.n_both ?? 0)} in both, ${fmtNum(r0.n_new ?? 0)} only in this range, ${fmtNum(r0.n_gone ?? 0)} only in the earlier window.`
+      + (kind === 'plancache' && cut > 0 ? ` ${fmtNum(cut)} cut read(s) among the ${fmtNum(reads)} of the two windows and the read just before each (the cache held more statements than the collector's lists keep): `
+        + 'a statement past the cut has no row in a cut read, so the grid says "not kept before" / "not kept now" in place of NEW / GONE.' : '')
+      + (kind === 'procs' ? ' Procedures are matched by database and name, as PerformanceMonitor matches them (one dropped and created again is one row). '
+        + 'A procedure compiled, run and dropped from the plan cache between two reads is in neither window, and on a server with more than 5,000 procedure plans '
+        + 'a read keeps the 5,000 with the most CPU (pgvigil does not keep which reads were cut): there NEW and GONE can be a procedure past the cut.' : '')));
+  }
+  const status = (v: unknown, r: Row) => {
+    const t = text(v);
+    if (t === 'new') return badge(kind === 'querystore' ? `new: first compiled ${fmtTime(r.first_compile)}` : 'NEW', 'warn');
+    if (t === 'gone') return badge('GONE', '');
+    return t;
+  };
+  const keyCols: Col[] = kind === 'procs'
+    ? [{ key: 'database' }, { key: 'schema_name', label: 'schema' }, { key: 'object_name', label: 'name' }]
+    : kind === 'plancache'
+      ? [{ key: 'database' }, { key: 'query_key', label: 'query hash' }, { key: 'object_name', label: 'object' }]
+      : [{ key: 'database_name', label: 'database' }, { key: 'query_hash', label: 'query hash' }, { key: 'object_name', label: 'object' }];
+  const cols: Col[] = [
+    ...keyCols,
+    { key: 'status', label: 'new / gone', fmt: status },
+    { key: 'before_executions', label: 'executions before', num: true }, { key: 'executions', label: 'executions now', num: true },
+    { key: 'executions_pct', label: 'executions +%', num: true, ...band(100, -50) },
+    { key: 'before_avg_duration_ms', label: 'avg duration before', num: true, fmt: dur }, { key: 'avg_duration_ms', label: 'avg duration now', num: true, fmt: dur },
+    { key: 'avg_duration_pct', label: 'avg duration +%', num: true, ...band(25, -25) },
+    { key: 'before_avg_cpu_ms', label: 'avg CPU before', num: true, fmt: dur }, { key: 'avg_cpu_ms', label: 'avg CPU now', num: true, fmt: dur },
+    { key: 'avg_cpu_pct', label: 'avg CPU +%', num: true, ...band(25, -25) },
+    { key: 'before_duration_ms', label: 'total duration before', num: true, fmt: dur }, { key: 'duration_ms', label: 'total duration now', num: true, fmt: dur },
+    ...(kind === 'procs' ? [] : [{ key: 'query', label: 'statement', fmt: stmt }] as Col[]),
+  ];
+  out.push(grid(rows, cols, kind === 'procs' ? 'No procedure ran in either window.' : 'No statement ran in either window.'),
+    el('p', { class: 'meta' }, 'The rows: each window\'s first 100 by total duration, together (PerformanceMonitor\'s). New first, gone last, then the largest rise of the average duration. '
+      + '+% is against the earlier window, blank where that was 0, and the averages\' blank on a row with nothing now (PerformanceMonitor shows -100 % there; here it may only have fallen below the kept rows). '
+      + 'Red: duration or CPU per execution up more than 25 %, executions up more than 100 %; green: down more than 25 % (executions 50 %).'));
+  return out;
+}
+
 // ---- Top
 
 function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
@@ -232,6 +358,7 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
   // the share column sorts by the ordered total
   for (const r of rows) r.share = totalKey ? r[totalKey] : null;
   out.push(grid(rows, cols, 'No query ran in the store\'s intervals of this range.'), panel.box);
+  out.push(compareSection(ctx, 'querystore', { db: hashQS().get('qdb')?.slice(0, 128) || undefined }));
   out.push(el('div', { class: 'charts' },
     lineChart('The store over time: duration and CPU of every plan', series, [{ key: 'duration_ms', label: 'duration' }, { key: 'cpu_ms', label: 'CPU' }], v => dur(v)),
     lineChart('The store over time: executions', series, [{ key: 'executions', label: 'executions' }])));
@@ -242,39 +369,100 @@ function topView(ctx: Ctx, d: QS, order: string): HTMLElement[] {
   return out;
 }
 
-// ---- Regressed
+// ---- Regressed: PerformanceMonitor's Query Store regressions (3.12.0, QueryStoreRegressionRules.cs and its grid,
+// server-tabs.js:4072-4111; MIT License, Copyright (c) Erik Darling, Darling Data LLC) beside pgvigil's duration test
 
-function regressedView(ctx: Ctx, d: QS): HTMLElement[] {
-  const rows = rowsOf(d.regressed);
+// the baselines: PerformanceMonitor's 7 days before the range (its default) and the compare's shifts
+const bases: [string, string][] = [['7d', 'The 7 days before (PerformanceMonitor)'], ['prev', 'Previous period'], ['day', 'Yesterday'], ['week', 'Last week']];
+const sevCls = (v: unknown) => v === 'CRITICAL' ? 'status crit' : v === 'HIGH' ? 'status warn' : '';
+const notApart = 'not read apart';
+
+function regressedView(ctx: Ctx, d: QS, base: string): HTMLElement[] {
+  const rows = rowsOf(d.regressed), skipped = rowsOf(d.regressed_skipped)[0] ?? {};
   const panel = detailPanel('One query');
+  // a side with a row read before 0126 (or by an older collector) holds no split: its counts are unknown, never 0
+  const split = (side: 'recent' | 'base') => (v: unknown, r: Row) =>
+    Number(r[`${side}_unsplit`]) > 0 ? notApart : side === 'base' && !r.has_baseline ? 'no kept baseline' : v == null ? '' : fmtNum(v);
+  const ms = (side: 'recent' | 'base') => (v: unknown, r: Row) =>
+    side === 'base' && !r.has_baseline ? '' : Number(r[`${side}_unsplit`]) > 0 ? notApart : dur(v);
+  const abortedTip = 'Timeouts (Aborted) is execution_type 3: "Client initiated aborted execution" (Microsoft): a timeout or a cancel by the client.';
   const cols: Col[] = [
-    { key: 'database_name', label: 'database' }, { key: 'query_id', label: 'query', num: true, fmt: v => text(v) },
+    { key: 'severity', label: 'Severity', cls: sevCls, fmt: v => sevCls(v) ? tinted(text(v)) : text(v) },
+    { key: 'raised_by', label: 'Why' },
+    { key: 'database_name', label: 'Database' },
+    { key: 'query', label: 'Query', fmt: stmt },
+    { key: 'query_id', label: 'Query ID', num: true, fmt: v => text(v) },
     openCol(ctx, panel),
+    // their own keys: the grid's column filters go by key, and the same counts come again under their groups
+    { key: 'recent_timeouts', label: 'Recent Timeouts', num: true, fmt: split('recent') },
+    { key: 'recent_errors', label: 'Recent Errors', num: true, fmt: split('recent') },
+    { key: 'additional_duration_ms', label: 'Extra Duration', num: true, fmt: dur },
+    { key: 'duration_regression_percent', label: 'Duration +%', num: true },
+    { key: 'base_dur_ms', label: 'Baseline Duration', num: true, fmt: ms('base') },
+    { key: 'recent_dur_ms', label: 'Recent Duration', num: true, fmt: ms('recent') },
+    { key: 'cpu_regression_percent', label: 'CPU +%', num: true },
+    { key: 'base_cpu_ms', label: 'Baseline CPU', num: true, fmt: ms('base') },
+    { key: 'recent_cpu_ms', label: 'Recent CPU', num: true, fmt: ms('recent') },
+    { key: 'base_execs', label: 'Base Execs', num: true, fmt: split('base') },
+    { key: 'recent_execs', label: 'Recent Execs', num: true, fmt: split('recent') },
+    { key: 'before_plans', label: 'Baseline Plans', num: true },
+    { key: 'recent_plans', label: 'Recent Plans', num: true },
+    { key: 'base_aborted_execs', label: 'Baseline Timeouts Execs', num: true, fmt: split('base') },
+    { key: 'recent_aborted_execs', label: 'Recent Timeouts Execs', num: true, fmt: split('recent') },
+    { key: 'base_aborted_cpu_ms', label: 'Baseline Timeouts CPU', num: true, fmt: ms('base') },
+    { key: 'recent_aborted_cpu_ms', label: 'Recent Timeouts CPU', num: true, fmt: ms('recent') },
+    { key: 'base_aborted_dur_ms', label: 'Baseline Timeouts Duration', num: true, fmt: ms('base') },
+    { key: 'recent_aborted_dur_ms', label: 'Recent Timeouts Duration', num: true, fmt: ms('recent') },
+    { key: 'base_aborted_per_hour', label: 'Baseline Timeouts Per Hour', num: true, fmt: split('base') },
+    { key: 'recent_aborted_per_hour', label: 'Recent Timeouts Per Hour', num: true, fmt: split('recent') },
+    { key: 'base_exception_execs', label: 'Baseline Errors Execs', num: true, fmt: split('base') },
+    { key: 'recent_exception_execs', label: 'Recent Errors Execs', num: true, fmt: split('recent') },
+    { key: 'base_exception_cpu_ms', label: 'Baseline Errors CPU', num: true, fmt: ms('base') },
+    { key: 'recent_exception_cpu_ms', label: 'Recent Errors CPU', num: true, fmt: ms('recent') },
+    { key: 'base_exception_dur_ms', label: 'Baseline Errors Duration', num: true, fmt: ms('base') },
+    { key: 'recent_exception_dur_ms', label: 'Recent Errors Duration', num: true, fmt: ms('recent') },
+    { key: 'base_exception_per_hour', label: 'Baseline Errors Per Hour', num: true, fmt: split('base') },
+    { key: 'recent_exception_per_hour', label: 'Recent Errors Per Hour', num: true, fmt: split('recent') },
+    { key: 'base_regular_per_hour', label: 'Baseline Execs/Hour', num: true, fmt: split('base') },
+    { key: 'recent_regular_per_hour', label: 'Recent Execs/Hour', num: true, fmt: split('recent') },
+    { key: 'last_execution', label: 'Last Exec', fmt: fmtTime },
+    // pgvigil's duration test (task 129): the plan it names
     { key: 'plan_id', label: 'plan', num: true, fmt: v => text(v) },
-    { key: 'new_plan', label: 'plan seen before', fmt: v => v ? badge('not seen before', 'warn') : 'yes' },
+    { key: 'new_plan', label: 'plan seen before', fmt: (v, r) => !r.has_baseline ? '' : v ? badge('not seen before', 'warn') : 'yes' },
     { key: 'forced', fmt: v => v ? badge('forced', 'ok') : '' },
-    { key: 'extra_duration_ms', label: 'extra duration', num: true, fmt: dur },
-    { key: 'avg_duration_ms', label: 'avg duration', num: true, fmt: dur },
-    { key: 'before_avg_duration_ms', label: 'before', num: true, fmt: dur },
-    { key: 'duration_ratio', label: 'duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
-    { key: 'avg_cpu_ms', label: 'avg CPU', num: true, fmt: dur },
-    { key: 'before_avg_cpu_ms', label: 'CPU before', num: true, fmt: dur },
-    { key: 'cpu_ratio', label: 'CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
-    { key: 'avg_logical_reads', label: 'avg logical reads', num: true },
-    { key: 'before_avg_logical_reads', label: 'reads before', num: true },
-    { key: 'executions', num: true }, { key: 'before_executions', label: 'executions before', num: true },
-    { key: 'before_plans', label: 'plans before', num: true },
-    { key: 'last_execution', label: 'last execution', fmt: fmtTime },
+    { key: 'duration_ratio', label: 'plan duration x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
+    { key: 'cpu_ratio', label: 'plan CPU x', num: true, fmt: v => Number(v) >= 1.5 ? tinted(times(v)) : times(v), cls: v => Number(v) >= 1.5 ? 'status warn' : '' },
     { key: 'object_name', label: 'object' },
-    { key: 'query', label: 'statement', fmt: stmt },
   ];
-  return [
-    el('p', { class: 'meta' }, `A plan whose average duration or CPU in this range (${rangeLabel(ctx)}) is 1.5 times its query's average in the range of equal length before it, or more, and at least 1 ms. `
-      + 'The query\'s average before is over all its stored plans, so a plan not seen before is weighed against what the query cost then; "extra duration" is what the difference cost over the range\'s executions. '
-      + 'Only the stored rows are compared (each interval\'s top plans): "not seen before" means the plan is in no stored row of the range before, and a query that was in no interval\'s top plans before has no figure to be weighed against and is not listed.'),
-    grid(rows, cols, 'No regressed plan among the stored rows of this range: each is within 1.5 times its query\'s average before, or the range before holds no stored row of its query.'),
-    panel.box,
+  const baseWords = base === 'prev' ? 'the range of equal length before it' : base === 'day' ? 'the same range 24 hours earlier'
+    : base === 'week' ? 'the same range 168 hours earlier' : 'the 7 days before it (PerformanceMonitor\'s baseline)';
+  // a shift shorter than the range: the baseline holds part of the range itself
+  const w = window_(ctx), span = Date.parse(w.to) - Date.parse(w.from);
+  const shift = base === 'day' ? 864e5 : base === 'week' ? 6048e5 : 0;
+  const overlap = shift > 0 && span > shift;
+  const out: HTMLElement[] = [
+    switcher('Baseline', 'qb', bases, base, '7d'),
+    el('p', { class: 'meta' }, `One row per query, this range (${rangeLabel(ctx)}) against ${baseWords}. A row of the store (one kept plan in one interval) is placed by its last run, as PerformanceMonitor places it: `
+      + 'in the range when its interval overlaps the range and it ran last at or after the range\'s start, in the baseline when it ran last inside the baseline. A query is listed when:'),
+    ...(overlap ? [el('p', { class: 'meta' }, 'The baseline overlaps this range (the shift is shorter than the range): the runs of the shared part count on both sides, which hides a regression inside it. '
+      + 'Pick a range shorter than the shift, or the 7 days before.')] : []),
+    el('ul', { class: 'meta' },
+      el('li', {}, 'cost (PerformanceMonitor): its Regular CPU per run is more than 25 % above the baseline\'s, and the rise times its recent Regular runs adds at least 1 s of CPU over the range;'),
+      el('li', {}, 'timeouts / errors (PerformanceMonitor): at least 3 Aborted (Exception) runs in the range, and per hour at least 2 times the baseline\'s rate, or any where the baseline had none; '
+        + 'per hour is over the clock hours of each window from its start, or from the database\'s first stored interval when that is later;'),
+      el('li', {}, 'duration (pgvigil): one of its plans averages 1.5 times the query\'s average duration or CPU over the baseline (every execution type), or more, and at least 1 ms; that plan is the row\'s "plan".')),
+    el('p', { class: 'meta' }, 'Severity is PerformanceMonitor\'s: a cost row by its Regular duration rise (over 100 % CRITICAL, 50 % HIGH, 25 % MEDIUM, else LOW); a timeouts or errors row HIGH at 5 times the baseline\'s rate '
+      + '(or none before), else MEDIUM, never CRITICAL; a row raised by the duration test alone takes the same bands on its plan\'s ratio. '
+      + `${abortedTip} Exception: the run ended in an error. Regular figures leave both out. `
+      + '"No kept baseline": the query is in no kept row of the baseline (the store keeps each interval\'s top plans only): the cost and duration tests need one, the timeouts and errors tests count it as none. '
+      + 'A query is one store\'s query id and its hash: a cleared store numbers its queries again, so a query is never compared across a clear.'),
   ];
+  if (Number(skipped.queries) > 0) {
+    out.push(el('p', { class: 'meta' }, `${fmtNum(skipped.queries)} quer${Number(skipped.queries) === 1 ? 'y has' : 'ies have'} failed runs stored before Aborted and Exception were kept apart `
+      + `(the newest ${fmtTime(skipped.newest_unsplit)}): "${notApart}" in their cells, and the cost, timeouts and errors tests are not applied to them (never read as none).`));
+  }
+  out.push(grid(rows, cols, 'No query regressed among the stored rows: none passes a test against this baseline, or the baseline holds no kept row of it.'), panel.box);
+  return out;
 }
 
 // ---- Forced plans
@@ -405,9 +593,11 @@ export async function mssqlQueryStoreView(ctx: Ctx): Promise<HTMLElement> {
   const view = views.some(v => v[0] === hq.get('qs')) ? hq.get('qs')! : 'top';
   const order = orders.some(o => o[0] === hq.get('qo')) ? hq.get('qo')! : 'duration';
   const db = (hq.get('qdb') ?? '').slice(0, 128);
+  const base = bases.some(b => b[0] === hq.get('qb')) ? hq.get('qb')! : '7d';
   const sec = el('section', {}, el('h2', {}, `Query Store (${rangeLabel(ctx)})`));
   try {
-    const d = await get<QS>('mssql/querystore', { instance: ctx.instance, ...window_(ctx), db: db || undefined, order, view });
+    const d = await get<QS>('mssql/querystore', { instance: ctx.instance, ...window_(ctx), db: db || undefined, order, view,
+      base: view === 'regressed' ? base : undefined });
     const state = rowsOf(d.state), checks = rowsOf(d.checks);
     if (!state.length) {
       sec.append(el('p', { class: 'empty' }, 'No Query Store read yet: the mssql_querystore collection runs hourly, on SQL Server 2016 and later, and needs VIEW SERVER STATE '
@@ -434,7 +624,7 @@ export async function mssqlQueryStoreView(ctx: Ctx): Promise<HTMLElement> {
     sec.append(el('div', { style: 'display:flex;flex-wrap:wrap;gap:1rem;align-items:baseline' },
       switcher('View', 'qs', views, view, 'top'),
       el('label', { class: 'meta', for: 'qs-db' }, 'Database '), pick));
-    const body = view === 'regressed' ? regressedView(ctx, d) : view === 'forced' ? forcedView(ctx, d) : view === 'tuning' ? tuningView(d)
+    const body = view === 'regressed' ? regressedView(ctx, d, base) : view === 'forced' ? forcedView(ctx, d) : view === 'tuning' ? tuningView(d)
       : view === 'state' ? stateView(d) : topView(ctx, d, order);
     sec.append(...body);
   } catch (e) {

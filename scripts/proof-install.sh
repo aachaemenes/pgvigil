@@ -7,10 +7,11 @@
 # Expected: a -config in a shared folder (/etc) is refused before anything is touched; `curl | sh` with
 # PGVIGIL_VERSION and PGVIGIL_BASE_URL verifies the checksum and installs: the
 # binary at /usr/local/bin/pgvigil prints the version, the system user pgvigil exists, /etc/pgvigil holds
-# pgvigil.yaml and pgvigil.env (0640 root:pgvigil), the unit is enabled and inactive (no instance yet) and
-# the script says what to edit; started with that template the unit fails once with exit 3 and is not
-# restarted; a checksum that does not match is refused; after the config names an
-# instance a second run (the upgrade path) keeps the edited config, restarts nothing extra and starts the
+# pgvigil.yaml and pgvigil.env (0640 root:pgvigil), the unit is enabled and inactive (the repository DSN empty
+# yet) and the script says what to edit; started with that template the unit fails once with exit 3 (an empty
+# repository DSN) and is not restarted; a checksum that does not match is refused; with PGVIGIL_REPO_DSN filled in
+# and still no instance in the file a second run starts the service (the page may hold every instance); after the
+# config names an instance a third run (the upgrade path) keeps the edited config and the
 # service, which runs as pgvigil and writes an instance row and an activity sample to the repository within
 # 90 s; `pgvigil uninstall` removes the unit and keeps the config and binary; `-purge` removes those too;
 # busybox ash parses install.sh.
@@ -91,8 +92,8 @@ insys id -u pgvigil >/dev/null || fail "no system user pgvigil"
 [[ "$(insys stat -c '%a %U:%G' /etc/pgvigil/pgvigil.env)" == "640 root:pgvigil" ]] || fail "pgvigil.env mode/owner: $(insys stat -c '%a %U:%G' /etc/pgvigil/pgvigil.env)"
 [[ "$(insys stat -c '%a %U:%G' /etc/pgvigil)" == "750 root:pgvigil" ]] || fail "/etc/pgvigil mode/owner"
 [[ "$(insys systemctl is-enabled pgvigil)" == enabled ]] || fail "unit not enabled"
-[[ "$(insys systemctl is-active pgvigil || true)" == inactive ]] || fail "the service started without an instance: $(insys systemctl is-active pgvigil || true)"
-echo "ok   binary $V, user, 640/750 files, unit enabled, service inactive until an instance is named"
+[[ "$(insys systemctl is-active pgvigil || true)" == inactive ]] || fail "the service started with an empty repository DSN: $(insys systemctl is-active pgvigil || true)"
+echo "ok   binary $V, user, 640/750 files, unit enabled, service inactive until the repository DSN is filled in"
 
 echo "== the boot case: started with the empty template, the unit fails once and does not loop =="
 insys systemctl start pgvigil || true
@@ -103,14 +104,21 @@ sleep 12
 insys systemctl reset-failed pgvigil >/dev/null 2>&1 || true
 echo "ok   unconfigured start: exit 3, no restart"
 
-echo "== the config names an instance; the second run (upgrade path) starts the service =="
+echo "== the repository DSN filled in, still no instance in the file: the second run (upgrade path) starts the service =="
 insys /usr/local/bin/pgvigil migrate -config /etc/pgvigil/pgvigil.yaml >/dev/null 2>&1 && fail "migrate ran with an empty PGVIGIL_REPO_DSN" || true
 insys sh -c "PGVIGIL_REPO_DSN='postgres://postgres:$PW@$REPO:5432/postgres?sslmode=disable' /usr/local/bin/pgvigil migrate -config /etc/pgvigil/pgvigil.yaml" >/dev/null 2>&1 || fail "migrate as the owner"
 insys sh -c "printf 'PGVIGIL_REPO_DSN=postgres://postgres:$PW@$REPO:5432/postgres?sslmode=disable\nPROOF_TARGET_DSN=host=$REPO port=5432 user=postgres password=$PW dbname=postgres sslmode=disable\n' >> /etc/pgvigil/pgvigil.env"
+insys grep -q '^instances: \[\]' /etc/pgvigil/pgvigil.yaml || fail "the template's empty instance list is not there"
+insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh" >"$WORK/i2.out" 2>&1 || fail "second install.sh failed: $(cat "$WORK/i2.out")"
+grep -q 'installed and running' "$WORK/i2.out" || fail "the DSN filled in with no instance in the file: the second install did not end with 'installed and running' (the gate is the DSN; the page may hold every instance): $(cat "$WORK/i2.out")"
+[[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "service not active with the DSN filled in and no instance in the file"
+echo "ok   the DSN filled in, no instance in the file: the service runs (the page may hold the instances)"
+
+echo "== the config names an instance; the third run (upgrade path) keeps it and the service collects it =="
 insys sh -c "sed -i 's/^instances: \[\]/instances:\n  - name: proof-target\n    dsn: env:PROOF_TARGET_DSN\n    tags: [proof]/' /etc/pgvigil/pgvigil.yaml"
 insys grep -q 'proof-target' /etc/pgvigil/pgvigil.yaml || fail "the instance edit did not land"
-insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh" >"$WORK/i2.out" 2>&1 || fail "second install.sh failed: $(cat "$WORK/i2.out")"
-grep -q 'installed and running' "$WORK/i2.out" || fail "the second install did not end with 'installed and running': $(cat "$WORK/i2.out")"
+insys sh -c "curl -fsSL http://$ASSETS:8000/install.sh | PGVIGIL_VERSION=$V PGVIGIL_BASE_URL=http://$ASSETS:8000 sh" >"$WORK/i3.out" 2>&1 || fail "third install.sh failed: $(cat "$WORK/i3.out")"
+grep -q 'installed and running' "$WORK/i3.out" || fail "the third install did not end with 'installed and running': $(cat "$WORK/i3.out")"
 insys grep -q 'proof-target' /etc/pgvigil/pgvigil.yaml || fail "the upgrade overwrote the edited config"
 [[ "$(insys systemctl is-active pgvigil)" == active ]] || fail "service not active"
 [[ "$(insys systemctl show -p User --value pgvigil)" == pgvigil ]] || fail "the unit does not run as pgvigil"
@@ -128,4 +136,4 @@ insys /usr/local/bin/pgvigil uninstall -purge >"$WORK/u2.out" 2>&1 || fail "unin
 insys test ! -e /etc/pgvigil || fail "-purge kept /etc/pgvigil"
 insys test ! -e /usr/local/bin/pgvigil || fail "-purge kept the binary"
 echo "ok   uninstall keeps config and binary; -purge removes both"
-echo "proof-install: OK (checksum refusal, shared folder refused, install without an instance, the unconfigured start exits 3 without a loop, upgrade path starting the service as pgvigil with $n sample(s), uninstall, purge; busybox parse)"
+echo "proof-install: OK (checksum refusal, shared folder refused, install with an empty repository DSN (not started), the unconfigured start exits 3 without a loop, the DSN filled in with no instance in the file starting the service, the upgrade path keeping the config and collecting as pgvigil with $n sample(s), uninstall, purge; busybox parse)"

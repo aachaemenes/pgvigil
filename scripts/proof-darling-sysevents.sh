@@ -328,11 +328,15 @@ pq "INSERT INTO pgvigil.mssql_xe_state (instance_id, capture, snapshot_at, state
     ON CONFLICT (instance_id, capture) DO UPDATE SET truncated = true, snapshot_at = now(), event_count = 812, session_name = 'pgvs_ring'" >/dev/null
 EF=$(pq "SELECT string_agg(severity || '|' || check_name || '|' || split_part(detail, ':', 1), ',' ORDER BY check_name) FROM pgvigil.mssql_sysevents_findings WHERE instance_id = $FX")
 ER=$(pq "SELECT string_agg(severity || '|' || check_name, ',') FROM pgvigil.mssql_sysevents_findings WHERE instance_id = $SB AND check_name = 'the ring buffer output was cut off'")
+# the join's arm (0190): the same findings reach pgvigil.findings under the source mssql_sysevents
+EA=$(pq "SELECT count(*) FROM pgvigil.findings WHERE instance_id = $FX AND source = 'mssql_sysevents'")
+EB=$(pq "SELECT count(*) FROM pgvigil.findings WHERE instance_id = $SB AND source = 'mssql_sysevents' AND setting = 'the ring buffer output was cut off'")
 pq "DELETE FROM pgvigil.mssql_health_components WHERE instance_id = $FX" >/dev/null
 [[ "$XST" == 0 ]] && pq "DELETE FROM pgvigil.mssql_xe_state WHERE instance_id = $SB AND capture = 'slow'" >/dev/null || pq "UPDATE pgvigil.mssql_xe_state SET truncated = false WHERE instance_id = $SB AND capture = 'slow'" >/dev/null
 WANTF="warning|system_health: other processes used half the CPU|1 sample(s) in the last hour with other processes at 50 % or more of the CPU (the most 50 %, SQL Server 10 % at that sample),warning|system_health: the working set was trimmed|1 sample(s) in the last hour with memory utilization at 50 or less (the least 50)"
 [[ "$EF" == "$WANTF" ]] || fail "E: the scheduler findings over the seeds (other 50 / 49, memory 50 / 51, a Linux sample without idle): '$EF', want '$WANTF'"
 [[ "$ER" == "warning|the ring buffer output was cut off" ]] || fail "E: the ring buffer finding '$ER'"
+[[ "$EA" == 2 && "$EB" == 1 ]] || fail "E: pgvigil.findings' mssql_sysevents arm holds $EA of the 2 scheduler findings and $EB of the 1 ring buffer finding (0190)"
 # the filters of part=waits (sp_HealthParser's) and part=scheduler (its warnings), on rows seeded in a window of their own
 seed() { pq "INSERT INTO pgvigil.mssql_health_components (instance_id, event_at, event_key, snapshot_at, component, state, detail)
               VALUES ($SB, '$EW0'::timestamptz + interval '$2 minutes', 'pgvs-$1', now(), '$3', 'EVENT', '$4')" >/dev/null; }

@@ -12,8 +12,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -100,8 +102,11 @@ func systemctl(args ...string) (string, error) {
 	return strings.TrimSpace(out.String()), err
 }
 
+// accountMark is the comment (GECOS) of an account install created: uninstall -all removes only a marked account.
+const accountMark = "created by pgvigil install"
+
 // ensureAccount looks the service account up and creates it as a system user without a home or a
-// login shell when missing (useradd, else busybox adduser). It returns its uid and gid.
+// login shell when missing (useradd, else busybox adduser), marked with accountMark. It returns its uid and gid.
 func ensureAccount(log *slog.Logger, name string) (int, int, error) {
 	u, err := user.Lookup(name)
 	if err != nil {
@@ -123,9 +128,9 @@ func ensureAccount(log *slog.Logger, name string) (int, int, error) {
 		}
 		var out []byte
 		if _, lookErr := exec.LookPath("useradd"); lookErr == nil {
-			out, err = exec.Command("useradd", "--system", "--no-create-home", "--user-group", "--shell", "/usr/sbin/nologin", name).CombinedOutput()
+			out, err = exec.Command("useradd", "--system", "--no-create-home", "--user-group", "--shell", "/usr/sbin/nologin", "--comment", accountMark, name).CombinedOutput()
 		} else if _, lookErr := exec.LookPath("adduser"); lookErr == nil {
-			out, err = exec.Command("adduser", "-S", "-D", "-H", "-s", "/sbin/nologin", name).CombinedOutput()
+			out, err = exec.Command("adduser", "-S", "-D", "-H", "-s", "/sbin/nologin", "-g", accountMark, name).CombinedOutput()
 		} else {
 			return 0, 0, fmt.Errorf("no useradd or adduser on this system: create the account %q (a system user, no login) and run install again, or name an existing one with -user", name)
 		}
@@ -148,38 +153,39 @@ func ensureAccount(log *slog.Logger, name string) (int, int, error) {
 	return uid, gid, nil
 }
 
-func installService(log *slog.Logger, o installOptions) error {
+func installService(log *slog.Logger, o installOptions) (started bool, why string, err error) {
 	if os.Geteuid() != 0 {
-		return errors.New("install needs root: run it with sudo")
-	}
-	_, gid, err := ensureAccount(log, o.User)
-	if err != nil {
-		return err
-	}
-	if err := installBinary(log, o.Bin); err != nil {
-		return err
+		return false, "", errors.New("install needs root: run it with sudo")
 	}
 	cfgDir := filepath.Dir(o.Config)
 	envFile := filepath.Join(cfgDir, envName)
+	// the folder's refusal before anything is written: a refused folder leaves the account and the binary as they were
 	if err := dedicatedFolder(cfgDir, filepath.Base(o.Config)); err != nil {
-		return err
+		return false, "", err
+	}
+	_, gid, err := ensureAccount(log, o.User)
+	if err != nil {
+		return false, "", err
+	}
+	if err := installBinary(log, o.Bin); err != nil {
+		return false, "", err
 	}
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
-		return err
+		return false, "", err
 	}
 	if err := os.Chown(cfgDir, 0, gid); err != nil {
-		return fmt.Errorf("chown %s: %w", cfgDir, err)
+		return false, "", fmt.Errorf("chown %s: %w", cfgDir, err)
 	}
 	if err := os.Chmod(cfgDir, 0o750); err != nil {
-		return err
+		return false, "", err
 	}
 	for _, f := range []struct{ path, content string }{{o.Config, configTemplate("env:PGVIGIL_REPO_DSN")}, {envFile, envTemplate}} {
 		wrote, err := writeIfAbsent(f.path, f.content, 0o640)
 		if err != nil {
-			return err
+			return false, "", err
 		}
 		if err := os.Chown(f.path, 0, gid); err != nil {
-			return fmt.Errorf("chown %s: %w", f.path, err)
+			return false, "", fmt.Errorf("chown %s: %w", f.path, err)
 		}
 		if wrote {
 			log.Info("written", "path", f.path)
@@ -188,49 +194,44 @@ func installService(log *slog.Logger, o installOptions) error {
 		}
 	}
 	if err := writeFile(unitPath, renderUnit(o.Bin, o.Config, envFile, o.User), 0o644); err != nil {
-		return err
+		return false, "", err
 	}
 	log.Info("unit written", "path", unitPath)
 	if !systemdRunning() {
 		fmt.Printf("systemd is not running here: the unit is written; start the collector with\n  %s run -config %s\nafter editing %s and %s.\n", o.Bin, o.Config, o.Config, envFile)
-		return nil
+		return false, "systemd is not running here", nil
 	}
 	if out, err := systemctl("daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
+		return false, "", fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
 	}
 	if out, err := systemctl("enable", "pgvigil.service"); err != nil {
-		return fmt.Errorf("systemctl enable: %v: %s", err, out)
+		return false, "", fmt.Errorf("systemctl enable: %v: %s", err, out)
 	}
-	ready, why := configNamesAnInstance(o.Config)
+	ready, why := configReady(o.Config, envFile)
+	if o.NoStart && ready {
+		why = "-no-start"
+	}
 	if o.NoStart || !ready {
 		if !ready {
 			log.Info("service enabled, not started", "why", why)
 		}
 		if state, _ := systemctl("is-active", "pgvigil.service"); state == "active" {
 			fmt.Printf("pgvigil is upgraded and enabled; the running service still runs the previous binary until: systemctl restart pgvigil\n")
-			return nil
+			return false, "the running service still runs the previous binary until: systemctl restart pgvigil", nil
 		}
-		fmt.Printf("pgvigil is installed and enabled. Next:\n  1. %s: the repository login in PGVIGIL_REPO_DSN and one line per monitored instance\n  2. %s: list the instances\n  3. systemctl start pgvigil && systemctl status pgvigil\n", envFile, o.Config)
-		return nil
+		fmt.Printf("pgvigil is installed and enabled. Next:\n  1. %s: the repository login in PGVIGIL_REPO_DSN (and one line per instance the config names by env:)\n  2. %s: list the instances, or add them later in the page (Admin > Instances)\n  3. systemctl start pgvigil && systemctl status pgvigil (or run this installer again)\n", envFile, o.Config)
+		return false, why, nil
 	}
 	restarted := time.Now()
 	if out, err := systemctl("restart", "pgvigil.service"); err != nil {
-		return fmt.Errorf("systemctl restart: %v: %s", err, out)
+		return false, "", fmt.Errorf("systemctl restart: %v: %s", err, out)
 	}
 	// Type=simple reads 'active' from the exec on, so a start that fails in its first seconds (the repository's
 	// schema behind this binary, a refused repository login) still looks up at a first glance: the unit counts as
 	// running only after it stayed active for upSettle; a start that failed is named with its reason
-	up := true
-	for waited := time.Duration(0); waited < upSettle; waited += upStep {
-		time.Sleep(upStep)
-		if state, _ := systemctl("is-active", "pgvigil.service"); state != "active" {
-			up = false
-			break
-		}
-	}
-	if up {
+	if settledActive() {
 		fmt.Printf("pgvigil is installed and running (systemctl status pgvigil; journalctl -u pgvigil -f).\n")
-		return nil
+		return true, "", nil
 	}
 	journal := func() string {
 		out, _ := exec.Command("journalctl", "-u", "pgvigil.service", "--no-pager", "-o", "cat", "-n", "20",
@@ -248,13 +249,25 @@ func installService(log *slog.Logger, o installOptions) error {
 		out, _ := systemctl("status", "--no-pager", "-n", "10", "pgvigil.service")
 		fmt.Fprintf(os.Stderr, "%s\n", out)
 	}
-	return errors.New(msg)
+	return false, "", errors.New(msg)
 }
 
 const (
 	upSettle = 4 * time.Second // how long the unit must stay active before the installer calls it running
 	upStep   = 500 * time.Millisecond
 )
+
+// settledActive: Type=simple reads 'active' from the exec on, so the unit counts as running only after it stayed active
+// for upSettle (a start that fails in its first seconds, an empty repository DSN's exit 3, reads inactive by then).
+func settledActive() bool {
+	for waited := time.Duration(0); waited < upSettle; waited += upStep {
+		time.Sleep(upStep)
+		if state, _ := systemctl("is-active", "pgvigil.service"); state != "active" {
+			return false
+		}
+	}
+	return true
+}
 
 // schemaBehind is the line 'pgvigil run' ends with when the repository's schema is older than the binary (main.go).
 var schemaBehind = regexp.MustCompile(`repository schema is behind this binary \(needs ([^)\s]+)\)`)
@@ -296,7 +309,7 @@ func uninstallService(log *slog.Logger, o installOptions) error {
 		}
 		log.Info("removed", "binary", o.Bin)
 	} else {
-		fmt.Printf("the service is gone; %s and %s are kept (pgvigil uninstall -purge removes them).\n", filepath.Dir(o.Config), o.Bin)
+		fmt.Printf("the service is gone; %s and %s are kept (-purge removes the installer's files; the page's instances/ and sources/ go with uninstall -all).\n", filepath.Dir(o.Config), o.Bin)
 	}
 	fmt.Printf("the account %s is kept; remove it with: userdel %s\n", o.User, o.User)
 	return nil
@@ -314,4 +327,468 @@ func writeFile(path, content string, mode os.FileMode) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(content), mode)
+}
+
+// --- install -upgrade on Linux (install.go's runUpgrade)
+
+func init() {
+	upgradeHooksOf = &upgradeHooks{
+		installed: installedUnit,
+		stop:      func(_ *slog.Logger) error { return systemdStop() },
+		start: func(_ *slog.Logger) error {
+			if err := systemdStart(); err != nil {
+				return err
+			}
+			if !settledActive() {
+				return errors.New("it did not stay up: journalctl -u pgvigil -n 20")
+			}
+			return nil
+		},
+		active:        unitRunning,
+		others:        otherProcesses,
+		freeBytes:     freeBytes,
+		dumpDir:       "/var/backups/pgvigil",
+		secureDumpDir: secureDir,
+		// a file in the operator's own folder: made 0600 by the upgrade before pg_dump writes into it, nothing more
+		secureDumpFile: func(string) error { return nil },
+		privileged: func() error {
+			if os.Geteuid() != 0 {
+				return errors.New("the upgrade needs root (it stops the service, writes beside the binary and the unit): run it with sudo")
+			}
+			return nil
+		},
+		previous: func(bin string) string { return bin + ".previous" },
+	}
+}
+
+// installedUnit reads the binary, the config and the account from the unit the installer wrote (renderUnit's
+// ExecStart=<bin> run -config <config> and User=<account>).
+func installedUnit() (installOptions, bool, error) {
+	b, err := os.ReadFile(unitPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return installOptions{}, false, nil
+	}
+	if err != nil {
+		return installOptions{}, false, err
+	}
+	return parseUnit(string(b))
+}
+
+func parseUnit(unit string) (installOptions, bool, error) {
+	var o installOptions
+	for _, line := range strings.Split(unit, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "User":
+			o.User = strings.TrimSpace(v)
+		case "ExecStart":
+			f := strings.Fields(v)
+			if len(f) >= 4 && f[1] == "run" && f[2] == "-config" {
+				o.Bin, o.Config = f[0], f[3]
+			}
+		}
+	}
+	if o.Bin == "" || o.Config == "" {
+		return o, false, fmt.Errorf("%s has no ExecStart=<binary> run -config <file> line: not the installer's unit", unitPath)
+	}
+	if o.User == "" {
+		return o, false, fmt.Errorf("%s has no User= line: not the installer's unit", unitPath)
+	}
+	return o, true, nil
+}
+
+func systemdStop() error {
+	if !systemdRunning() {
+		return errors.New("systemd is not running here: stop the collector by hand and run the upgrade's steps of docs/upgrade.md")
+	}
+	if out, err := systemctl("stop", "pgvigil.service"); err != nil {
+		return fmt.Errorf("systemctl stop: %v: %s", err, out)
+	}
+	if state, _ := systemctl("is-active", "pgvigil.service"); state == "active" || state == "deactivating" {
+		return fmt.Errorf("the service is still %s after systemctl stop", state)
+	}
+	return nil
+}
+
+func systemdStart() error {
+	if out, err := systemctl("start", "pgvigil.service"); err != nil {
+		return fmt.Errorf("systemctl start: %v: %s", err, out)
+	}
+	return nil
+}
+
+// unitRunning: the unit runs or is on its way (activating: Restart='s wait or a start; reloading): an upgrade or an
+// uninstall that stops it starts it again on a refusal.
+func unitRunning() bool {
+	if !systemdRunning() {
+		return false
+	}
+	state, _ := systemctl("is-active", "pgvigil.service")
+	return state == "active" || state == "activating" || state == "reloading"
+}
+
+// otherProcesses lists the processes whose executable is bin, but the service's own main process and this one.
+func otherProcesses(bin string) ([]string, error) {
+	want, err := filepath.EvalSymlinks(bin)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return processesWhere(func(_, exe string) bool { return exe == want })
+}
+
+// namedProcesses lists the processes running a pgvigil binary from any path and under any name (uninstall -all's: a
+// serve from a bundle's release asset, a renamed copy, a go run), read through /proc/<pid>/exe (a binary deleted under
+// it too), each executable read once; but the service's own main process and this one.
+func namedProcesses() ([]string, error) {
+	seen := map[string]bool{}
+	return processesWhere(func(pid, exe string) bool {
+		v, ok := seen[exe]
+		if !ok {
+			v = pgvigilExe(filepath.Join("/proc", pid, "exe"), exe)
+			seen[exe] = v
+		}
+		return v
+	})
+}
+
+// processesWhere lists the processes whose executable (" (deleted)" trimmed: a binary replaced under it) matches, as
+// 'pid N: its command line', but the service's own main process and this one.
+func processesWhere(match func(pid, exe string) bool) ([]string, error) {
+	mainPID := 0
+	if v, err := systemctl("show", "-p", "MainPID", "--value", "pgvigil.service"); err == nil {
+		mainPID, _ = strconv.Atoi(strings.TrimSpace(v))
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == os.Getpid() || pid == mainPID {
+			continue
+		}
+		exe, err := os.Readlink(filepath.Join("/proc", e.Name(), "exe"))
+		if err != nil || !match(e.Name(), strings.TrimSuffix(exe, " (deleted)")) {
+			continue
+		}
+		cmd, _ := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		out = append(out, fmt.Sprintf("pid %d: %s", pid, strings.TrimSpace(strings.ReplaceAll(string(cmd), "\x00", " "))))
+	}
+	return out, nil
+}
+
+func freeBytes(dir string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, err
+	}
+	return st.Bavail * uint64(st.Bsize), nil
+}
+
+// secureDir makes dir (and its missing parents) and leaves dir itself to root alone: 0700, root's.
+func secureDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chown(dir, 0, 0); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
+}
+
+// --- uninstall -all on Linux (install.go's runUninstallAll)
+
+func init() {
+	uninstallHooksOf = &uninstallHooks{
+		privileged: func() error {
+			if os.Geteuid() != 0 {
+				return errors.New("uninstall -all needs root: run it with sudo")
+			}
+			return nil
+		},
+		running: unitRunning,
+		items:   linuxItems,
+		named:   namedProcesses,
+		repoDSN: func(inst installOptions) (string, bool, error) {
+			envFile := filepath.Join(filepath.Dir(inst.Config), envName)
+			dsn, configured, err := hostRepoDSN(inst, envFile)
+			if err == nil && configured {
+				var raw string
+				if _, raw, err = serviceRepoDSN(inst.Config, envFile); err == nil {
+					err = unitEnvOnly(raw, envFile)
+				}
+			}
+			return dsn, configured, err
+		},
+	}
+}
+
+// unitEnvOnly (raw: the configuration's repository dsn as written) refuses when the installed pgvigil.service may use
+// another repository or configuration than the host check reads (the join review w9e, finding 9): with an env: dsn, an
+// env file other than the installer's (a drop-in's or an edit's EnvironmentFile=) or an Environment= that sets its
+// variable or cannot be read (systemd 239 prints a value holding a space as [unprintable]); with any dsn, a drop-in
+// that sets ExecStart= (another -config), User=, Environment= or EnvironmentFile=. What systemd loads is read from
+// systemctl show; with no systemd there is no other source.
+func unitEnvOnly(raw, envFile string) error {
+	if !systemdRunning() {
+		return nil
+	}
+	out, err := systemctl("show", "pgvigil.service", "-p", "EnvironmentFiles", "-p", "Environment", "-p", "DropInPaths")
+	if err != nil {
+		return fmt.Errorf("systemctl show pgvigil.service: %v: %s", err, out)
+	}
+	name, _ := strings.CutPrefix(raw, "env:")
+	if !strings.HasPrefix(raw, "env:") {
+		name = ""
+	}
+	return unitEnvExtra(out, envFile, name, os.ReadFile)
+}
+
+// unitEnvExtra reads systemctl show's EnvironmentFiles=, Environment= and DropInPaths= lines (name: the dsn's env:
+// variable, "" when the dsn is not env:) and names every source the host check does not read.
+func unitEnvExtra(show, envFile, name string, read func(string) ([]byte, error)) error {
+	var extra []string
+	setsName := regexp.MustCompile(`(^|[\s"'])` + regexp.QuoteMeta(name) + `=`)
+	dropKey := regexp.MustCompile(`^\s*(ExecStart|User|Environment|EnvironmentFile)\s*=`)
+	for _, l := range strings.Split(show, "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
+		switch {
+		case k == "EnvironmentFiles" && name != "":
+			f, _, _ := strings.Cut(v, " (")
+			if f = strings.TrimPrefix(strings.TrimSpace(f), "-"); f != "" && !samePath(f, envFile) {
+				extra = append(extra, "EnvironmentFile="+f)
+			}
+		case k == "Environment" && name != "" && strings.Contains(v, "[unprintable]"):
+			extra = append(extra, "an Environment= systemctl cannot print (a value holding a space)")
+		case k == "Environment" && name != "" && setsName.MatchString(v):
+			extra = append(extra, "Environment="+name+"=...")
+		case k == "DropInPaths":
+			for _, f := range strings.Fields(v) {
+				b, err := read(f)
+				if err != nil {
+					extra = append(extra, "the drop-in "+f+" (unreadable: "+err.Error()+")")
+					continue
+				}
+				for _, dl := range strings.Split(string(b), "\n") {
+					if m := dropKey.FindStringSubmatch(dl); m != nil {
+						extra = append(extra, "the drop-in "+f+" ("+m[1]+"=)")
+					}
+				}
+			}
+		}
+	}
+	if len(extra) > 0 {
+		return fmt.Errorf("pgvigil.service may use another repository than the host check reads (it reads %s and the unit's own -config): %s; put the repository the service uses in %s, take those lines out of the drop-in or the unit, or drop the repository by hand (docs/uninstall.md)",
+			envFile, strings.Join(slices.Compact(extra), "; "), envFile)
+	}
+	return nil
+}
+
+func present(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+func removeFile(path string) func() error {
+	return func() error {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+}
+
+// linuxItems lists everything of pgvigil on this host after the repository, in the order uninstall -all removes it:
+// the service definition, the binaries, the configuration, the account last.
+func linuxItems(inst installOptions, _ bool) []removal {
+	cfgDir := filepath.Dir(inst.Config)
+	envFile := filepath.Join(cfgDir, envName)
+	var items []removal
+	// the scheduled purge README tells operators to lay down (deploy/pgvigil-purge.service and .timer, the owner's
+	// connection string in pgvigil-purge.env): its timer would run a removed binary as a removed account every day, and
+	// its env file is the repository owner's password
+	timer, purgeSvc := "/etc/systemd/system/pgvigil-purge.timer", "/etc/systemd/system/pgvigil-purge.service"
+	items = append(items, removal{what: "the scheduled purge (systemd units " + timer + " and " + purgeSvc + ")", present: present(timer) || present(purgeSvc), remove: func() error {
+		if systemdRunning() {
+			if present(timer) {
+				if out, err := systemctl("disable", "--now", "pgvigil-purge.timer"); err != nil {
+					return fmt.Errorf("systemctl disable --now pgvigil-purge.timer: %v: %s", err, out)
+				}
+			}
+			if out, err := systemctl("stop", "pgvigil-purge.service"); err != nil && present(purgeSvc) {
+				return fmt.Errorf("systemctl stop pgvigil-purge.service: %v: %s", err, out)
+			}
+		}
+		for _, f := range []string{timer, purgeSvc} {
+			if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		if systemdRunning() {
+			_, _ = systemctl("daemon-reload")
+			_, _ = systemctl("reset-failed", "pgvigil-purge.timer", "pgvigil-purge.service")
+		}
+		return nil
+	}})
+	for _, d := range []string{timer + ".d", purgeSvc + ".d"} {
+		if present(d) {
+			items = append(items, removal{what: "the purge unit's drop-in folder " + d, present: true, kept: "an operator's overrides, not the installer's: remove it by hand"})
+		}
+	}
+	items = append(items, removal{what: "the service pgvigil (systemd unit " + unitPath + ")", present: present(unitPath), remove: func() error {
+		if systemdRunning() {
+			if out, err := systemctl("disable", "--now", "pgvigil.service"); err != nil {
+				return fmt.Errorf("systemctl disable --now: %v: %s", err, out)
+			}
+		}
+		if err := os.Remove(unitPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if systemdRunning() {
+			_, _ = systemctl("daemon-reload")
+			_, _ = systemctl("reset-failed", "pgvigil.service")
+		}
+		return nil
+	}})
+	if d := unitPath + ".d"; present(d) {
+		items = append(items, removal{what: "the unit's drop-in folder " + d, present: true, kept: "an operator's overrides, not the installer's: remove it by hand"})
+	}
+	items = append(items,
+		removal{what: "the binary " + inst.Bin, present: present(inst.Bin), remove: removeFile(inst.Bin)},
+		removal{what: "the previous binary " + inst.Bin + ".previous", present: present(inst.Bin + ".previous"), remove: removeFile(inst.Bin + ".previous")},
+		removal{what: "the configuration " + inst.Config, present: present(inst.Config), remove: removeFile(inst.Config)},
+		removal{what: "the environment file " + envFile, present: present(envFile), remove: removeFile(envFile)},
+	)
+	// the purge's env file: the one the purge unit names (EnvironmentFile=), else README's place beside the config
+	for _, f := range purgeEnvFiles(purgeSvc, filepath.Join(cfgDir, "pgvigil-purge.env")) {
+		items = append(items, removal{what: "the purge's env file " + f + " (the repository owner's connection string)", present: present(f), remove: removeFile(f)})
+	}
+	// the page's credential folders (task 204): the passwords of the monitored servers added in the page; -all takes
+	// them with the rest (a decommissioned host keeps no monitored server's password)
+	creds, credOwn := credentialItems(cfgDir, os.RemoveAll)
+	items = append(items, creds...)
+	// on Linux the installer writes the configuration and the environment file (the logs go to the journal); the
+	// credential folders and the purge's env file go just above
+	own := append([]string{filepath.Base(inst.Config), envName, "pgvigil-purge.env"}, credOwn...)
+	folder := removal{what: "the configuration folder " + cfgDir, present: present(cfgDir)}
+	if other := foreignFiles(cfgDir, own...); len(other) > 0 {
+		folder.kept = "it holds files the installer did not write (" + strings.Join(other, ", ") + ")"
+	}
+	folder.remove = func() error { return removeFolder(cfgDir, own...) }
+	items = append(items, folder)
+	if d := "/var/backups/pgvigil"; present(d) {
+		items = append(items, removal{what: "the dump folder " + d, present: true, kept: "the repository's dumps: yours to keep or delete"})
+	}
+	return append(items, accountItem(inst.User))
+}
+
+// purgeEnvFiles: the EnvironmentFile= files the purge unit names (a leading '-' dropped), and def (README's place) when
+// the unit names none or def is there too; each once.
+func purgeEnvFiles(unit, def string) []string {
+	var out []string
+	if b, err := os.ReadFile(unit); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(l), "="); ok && strings.TrimSpace(k) == "EnvironmentFile" {
+				if f := strings.TrimPrefix(strings.TrimSpace(v), "-"); f != "" && !slices.Contains(out, f) {
+					out = append(out, f)
+				}
+			}
+		}
+	}
+	if !slices.Contains(out, def) && (len(out) == 0 || present(def)) {
+		out = append(out, def)
+	}
+	return out
+}
+
+// accountItem: the service account goes only when install made it (accountMark) and no process runs as it.
+func accountItem(name string) removal {
+	it := removal{what: "the service account " + name}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return it
+	}
+	it.present = true
+	if u.Name != accountMark {
+		it.kept = fmt.Sprintf("install did not make it (no %q mark): when nothing else uses it, userdel %s", accountMark, name)
+		return it
+	}
+	if procs := processesOf(u.Uid, true); len(procs) > 0 {
+		it.kept = "processes run as it: " + strings.Join(procs, "; ")
+		return it
+	}
+	it.remove = func() error {
+		if procs := processesOf(u.Uid, false); len(procs) > 0 {
+			return fmt.Errorf("processes run as %s: %s", name, strings.Join(procs, "; "))
+		}
+		var out []byte
+		var err error
+		if _, lookErr := exec.LookPath("userdel"); lookErr == nil {
+			out, err = exec.Command("userdel", name).CombinedOutput()
+		} else {
+			out, err = exec.Command("deluser", name).CombinedOutput()
+		}
+		if err != nil {
+			return fmt.Errorf("userdel %s: %v: %s", name, err, strings.TrimSpace(string(out)))
+		}
+		// useradd --user-group made a group of the same name; userdel takes it with the account where USERGROUPS_ENAB is
+		// on, else it goes here when nothing else is in it (a supplementary member keeps it, named)
+		if g, err := user.LookupGroup(name); err == nil && g.Gid == u.Gid {
+			if ent, _ := exec.Command("getent", "group", name).Output(); len(strings.Split(strings.TrimSpace(string(ent)), ":")) == 4 {
+				if members := strings.Split(strings.TrimSpace(string(ent)), ":")[3]; members != "" {
+					return &keptErr{fmt.Sprintf("the account is gone; its group %s stays: it has members (%s): groupdel %s when they no longer need it", name, members, name)}
+				}
+			}
+			if _, lookErr := exec.LookPath("groupdel"); lookErr == nil {
+				out, err = exec.Command("groupdel", name).CombinedOutput()
+			} else {
+				out, err = exec.Command("delgroup", name).CombinedOutput()
+			}
+			if err != nil {
+				return fmt.Errorf("the account is gone; its group %s stays: %v: %s", name, err, strings.TrimSpace(string(out)))
+			}
+		}
+		return nil
+	}
+	return it
+}
+
+// processesOf lists the processes running as uid; skipService leaves the pgvigil service's own main process out (it is
+// stopped before the account goes).
+func processesOf(uid string, skipService bool) []string {
+	mainPID := ""
+	if skipService {
+		if v, err := systemctl("show", "-p", "MainPID", "--value", "pgvigil.service"); err == nil {
+			mainPID = strings.TrimSpace(v)
+		}
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil || e.Name() == mainPID {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "status"))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if f := strings.Fields(line); len(f) >= 2 && f[0] == "Uid:" && f[1] == uid {
+				cmd, _ := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+				out = append(out, fmt.Sprintf("pid %s: %s", e.Name(), strings.TrimSpace(strings.ReplaceAll(string(cmd), "\x00", " "))))
+				break
+			}
+		}
+	}
+	return out
 }

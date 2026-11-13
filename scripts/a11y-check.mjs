@@ -79,6 +79,21 @@ pages.push(`#/pooler?i=${crm.instance_id}`);
 const hr = pick(r => String(r.name).endsWith('onprem-hr01')) ?? onprem;
 pages.push(`#/pooler?i=${hr.instance_id}`, `#/activity?i=${hr.instance_id}`);
 const all = []; let failed = 0; const perRule = new Map();
+// every control that is off and shown has a visible, non-empty reason as its description (aria-describedby): the
+// pages of wave 4 (Community tools, Custom reports, Report mail) fail without it, every other page is listed (task B2)
+const offCheck = () => ev(`(() => {
+  const vis = e => !!(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+  const ctl = [...document.querySelectorAll('main button, main input, main select, main textarea, dialog button')]
+    .filter(e => (e.disabled || e.getAttribute('aria-disabled') === 'true') && vis(e));
+  // a reason is words: a badge word alone ('off', 'not checked', ...) is none
+  const said = x => x.textContent.replace(/^\\s*(off|not checked|demo|note|on|declined)\\b/i, '').trim().length > 0;
+  const bad = ctl.filter(e => !(e.getAttribute('aria-describedby') || '').split(/\\s+/).filter(Boolean).some(i => { const x = document.getElementById(i); return vis(x) && said(x); }));
+  const name = e => (e.tagName + ' ' + (e.textContent || e.getAttribute('aria-label') || '').trim()).slice(0, 60);
+  // the instance header (instheader.ts) sits above every instance page: its controls are its own page's, listed apart
+  return { own: bad.filter(e => !e.closest('.inst-header')).map(name), header: bad.filter(e => e.closest('.inst-header')).map(e => 'header ' + name(e)) };
+})()`);
+const wave4 = h => /^#\/(community|customreports|reportmail)\b/.test(h);
+let offFail = 0; const offList = new Map(); let selftest = null;
 // the status style is remembered per origin too: every page in the solid style (the default), and the pages that carry
 // status cells again in the quiet one
 pages.push('#/summary|range');   // the Summary once more with the range panel open, so axe scans the panel too
@@ -107,6 +122,27 @@ for (const theme of ['light', 'dark']) {
       const shown = await ev(`(async () => { if (!document.querySelector('#bar [role="dialog"]')) document.querySelector('#bar [aria-haspopup="dialog"]')?.click(); await new Promise(r => setTimeout(r, 300)); return !!document.querySelector('#bar [role="dialog"]'); })()`, true);
       if (!shown) { failed++; console.log(`FAIL render ${style} ${theme} ${entry}: the range panel did not open`); continue; }
     }
+    const offRead = await offCheck();
+    if (selftest === null) {
+      // four off buttons without a reason, each a way to miss one: no description, a description that names no element,
+      // a hidden one, one that holds only a badge word
+      await ev(`(() => { const m = document.querySelector('main');
+        const mk = (t, d) => { const b = document.createElement('button'); b.textContent = 'planted ' + t; b.setAttribute('aria-disabled', 'true'); if (d) b.setAttribute('aria-describedby', d); m.append(b); };
+        const span = (id, text, hidden) => { const s = document.createElement('span'); s.id = id; s.textContent = text; s.hidden = hidden; m.append(s); };
+        span('planted-hidden', 'a reason', true); span('planted-word', 'off', false);
+        mk('none'); mk('missing', 'planted-missing'); mk('hidden', 'planted-hidden'); mk('word', 'planted-word'); return 1; })()`);
+      selftest = (await offCheck()).own.length - offRead.own.length;
+      await ev(`(() => { [...document.querySelectorAll('main button')].filter(b => b.textContent.startsWith('planted ')).forEach(b => b.remove());
+        ['planted-hidden', 'planted-word'].forEach(i => document.getElementById(i)?.remove()); return 1; })()`);
+      console.log(`off-reason self-test: planted off buttons without a reason counted ${selftest} of 4`);
+      if (selftest !== 4) failed++;
+    }
+    const offBad = wave4(hash) ? offRead.own : [...offRead.header, ...offRead.own];
+    if (offBad.length) {
+      console.log(`${wave4(hash) ? 'off  ' : 'b2   '}${style} ${theme} ${entry}: ${offBad.length} off control(s) without a visible reason: ${offBad.slice(0, 4).join('; ')}`);
+      if (wave4(hash)) offFail++; else offList.set(hash.replace(/i=\d+/, 'i=N'), offBad);
+    }
+    if (wave4(hash) && offRead.header.length) offList.set('the instance header (on every instance page)', offRead.header);
     await cmd('Runtime.evaluate', { expression: axeSrc });
     const res = await ev(`axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }, resultTypes: ['violations'] }).then(r => JSON.stringify({ v: r.violations.map(v => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.map(n => ({ target: n.target, html: n.html.slice(0, 160), summary: n.failureSummary?.slice(0, 200) })) })), passes: r.passes.length }))`, true);
     const r = JSON.parse(res);
@@ -123,6 +159,8 @@ console.log('');
 console.log('rule | impact | nodes | pages | help');
 for (const [rule, k] of [...perRule.entries()].sort((a, b) => b[1].nodes - a[1].nodes)) console.log(`${rule} | ${k.impact} | ${k.nodes} | ${k.pages.size} | ${k.help}`);
 console.log(`total: ${perRule.size} rule(s), ${all.reduce((a, v) => a + v.nodes.length, 0)} node(s) over ${pages.length * 2} page renders; ${failed} page(s) failed to render`);
+console.log(`off-reason: ${offFail} wave 4 page render(s) with an off control without its reason; ${offList.size} other page(s) listed for B2`);
+for (const [h, b] of offList) console.log(`b2 list: ${h}: ${b.slice(0, 6).join('; ')}`);
 if (outPath) fs.writeFileSync(outPath, JSON.stringify({ pages, violations: all }, null, 1));
 ws.close();
-process.exit(failed ? 1 : 0);
+process.exit(failed || offFail ? 1 : 0);

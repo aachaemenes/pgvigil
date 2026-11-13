@@ -123,6 +123,7 @@ Neither session is ever started, stopped or altered. An `AlwaysOn_health` sessio
 | a capture is not installed (one row per instance, after two reads) | info |
 | a capture is stopped (one row per instance, after two reads) | warning |
 | the ring buffer dropped events (the session dropped events, or events left a ring buffer between two reads) | warning |
+| the ring buffer output was cut off (a capture's ring buffer XML came back cut at a read in the last hour: the newest events are the ones missing) | warning |
 | an availability replica changed role or state in the last hour | warning; a failover: critical |
 
 ## Query text

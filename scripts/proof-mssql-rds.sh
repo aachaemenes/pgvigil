@@ -135,7 +135,7 @@
 #      every new hand read). Run 17: identity differed by sq's empty line for an empty result (dropped on both sides);
 #      stats partial on rdsadmin (finding F8 in the slice report: the collector leaves rdsadmin out on RDS); defaulttrace
 #      stored nothing - the RDS form had no ALTER TRACE (now granted: the master user holds it WITH GRANT OPTION; R wants
-#      it); syshealth: this instance writes no sp_server_diagnostics_component_result (probe 3), so 0 stored = 0 read
+#      it); syshealth: this instance writes no sp_server_diagnostics_component_result (probe 3), so 0 component results stored = 0 read
 #      with the reader's state 'read' is what is compared, a component row's content NOT PROVEN. Run 18: storage's hand
 #      read took tempdb's start size from sys.master_files where the collector takes the database's own
 #      sys.database_files (the fixture grew tempdb): mirrored. plancache: the proof's statement keeps its plan handle and
@@ -773,12 +773,12 @@ if run_ok mssql_syshealth; then sq "$SHSQL" > "$WORK/sh-a.txt" || : > "$WORK/sh-
   if [ ! -s "$WORK/sh-b.txt" ] && [ ! -s "$WORK/sh-a.txt" ] && [ ! -s "$WORK/sh-s.txt" ]; then
     # this instance writes no sp_server_diagnostics_component_result (probe 3: the session defines it, its files and its
     # ring buffer hold none): what is compared is the reader's own pass over the files
-    # the reader's scanned and stored are the component events it kept (syshealth.go: new_events): 0 here, as the files hold
+    # the reader's scanned and stored count every event kept, the four system events (0120) included: not 0 here, as the files hold
     # the reader went through the files: its cursor names a file of the session (it moves on every event, kept or not)
     CUR=$(q "select coalesce(file_name, '') || '|' || coalesce(file_offset::text, '') from pgvigil.mssql_cursor where instance_id=$iid and source='syshealth'")
     XEDIR=${XEPAT%system_health\*.xel}
-    if [ "$RS" = 'read|0|0|' ] && [[ ${CUR,,} == "${XEDIR,,}system_health"*.xel\|[0-9]* ]] && [[ $NB =~ ^[0-9]+$ ]] && [ "$NB" -gt 0 ]; then
-      VERDICT[mssql_syshealth]="PASS (0 component results stored, 0 in the session's files, which hold $NB to $NA events of other kinds; the reader's state 'read', 0 kept, its cursor at $CUR; a component row's content NOT PROVEN: this instance writes none)"
+    if [[ $RS =~ ^read\|[0-9]+\|[0-9]+\| ]] && [ "$(q "select count(*) from pgvigil.mssql_health_components where instance_id=$iid and state = 'EVENT' and component not in ('MEMORY_BROKER','MEMORY_NODE_OOM','SCHEDULER_MONITOR','WAIT_INFO')")" = 0 ] && [[ ${CUR,,} == "${XEDIR,,}system_health"*.xel\|[0-9]* ]] && [[ $NB =~ ^[0-9]+$ ]] && [ "$NB" -gt 0 ]; then
+      VERDICT[mssql_syshealth]="PASS (0 component results stored, 0 in the session's files, which hold $NB to $NA events of other kinds; the reader's state 'read', $SCN kept (the four system events, state EVENT; no component result), its cursor at $CUR; a component row's content NOT PROVEN: this instance writes none)"
     else VERDICT[mssql_syshealth]="FAIL"; bad "B: mssql_syshealth: the reader's state '$RS', its cursor '$CUR', the session's files held $NB events before the run and $NA after ($XEPAT)"; fi
   else
     bracket mssql_syshealth "$WORK/sh-b.txt" "$WORK/sh-a.txt" "$WORK/sh-s.txt"

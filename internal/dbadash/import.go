@@ -424,14 +424,31 @@ SELECT f FROM unnest(ARRAY['pgvigil.ensure_month_partition(text, timestamptz)',
 }
 
 // pgvigilInstance finds or (not in a dry run) creates the pgvigil SQL Server instance for a DBADash instance. An
-// existing SQL Server instance of that name is used as it is (its description and tags are pgvigil's); one stored as
-// PostgreSQL is a skip with its reason.
+// existing SQL Server instance of that name is used as it is (its description and tags are pgvigil's), except that a
+// row Admin > Instances made at its add and pgvigil never read (no version, no mssql_instance read: whatever platform
+// the page gave it - the join's w9e, finding 4) takes DBA Dash's version, and its platform when the page left it
+// 'auto', as a new one would; one stored as PostgreSQL is a skip with its reason.
 func pgvigilInstance(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, name string, in srcInstance, dry bool) (int, string, error) {
 	var id int
 	var engine string
-	err := pool.QueryRow(ctx, `SELECT instance_id, engine FROM pgvigil.instances WHERE name = $1`, name).Scan(&id, &engine)
+	var never bool
+	err := pool.QueryRow(ctx, `SELECT i.instance_id, i.engine, (i.server_version IS NULL
+	    AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)) FROM pgvigil.instances i WHERE i.name = $1`, name).Scan(&id, &engine, &never)
+	platform := "sqlserver"
+	if in.Edition == 8 { // DBADash's EngineEdition 8: Azure SQL Managed Instance (internal/mssql detect.go's kinds)
+		platform = "azuresqlmi"
+	}
 	switch {
 	case err == nil && engine == "sqlserver":
+		if never && !dry {
+			// is_active and the tags stay the page's (a disabled page instance stays disabled)
+			if _, err := pool.Exec(ctx, `UPDATE pgvigil.instances SET platform = CASE WHEN platform = 'auto' THEN $2 ELSE platform END,
+			     server_version = $3, server_version_num = $4
+			     WHERE instance_id = $1 AND server_version IS NULL`, id, platform, nullIfEmpty(in.Version), versionNum(in.Version)); err != nil {
+				return 0, "", fmt.Errorf("the page instance %s: %w", name, err)
+			}
+			log.Info("dbadash import: a page instance never read takes the source's platform and version", "name", name, "instance_id", id, "platform", platform)
+		}
 		return id, "", nil
 	case err == nil:
 		return 0, fmt.Sprintf("pgvigil stores %s as a %s instance: give the SQL Server its own name (the import's name map)", name, engine), nil
@@ -440,10 +457,6 @@ func pgvigilInstance(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, 
 	}
 	if dry {
 		return 0, "", nil
-	}
-	platform := "sqlserver"
-	if in.Edition == 8 { // DBADash's EngineEdition 8: Azure SQL Managed Instance (internal/mssql detect.go's kinds)
-		platform = "azuresqlmi"
 	}
 	err = pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, $2, $3, $4, false, $5, 'sqlserver')`,
 		name, platform, nullIfEmpty(in.Version), versionNum(in.Version), in.Tags).Scan(&id)

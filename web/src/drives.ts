@@ -182,7 +182,7 @@ export async function drivesView(ctx: Ctx): Promise<HTMLElement> {
       const open = hist.getAttribute('aria-expanded') === 'true';
       hist.setAttribute('aria-expanded', String(!open));
       if (open) { histBox.replaceChildren(); return; }
-      void driveHistory(Number(r.instance_id), String(r.drive), histBox);
+      void driveHistory(Number(r.instance_id), String(r.drive), String(r.instance), !folderView, histBox);
     });
     const free = `${gb(r.free_bytes)} free (${pct(r.free_pct)}) of ${gb(r.total_bytes)}`;
     return el('div', { class: 'drive', style: 'margin:.2rem 0 1rem;max-width:72rem;display:flex;gap:.6rem;align-items:flex-start', 'data-status': st },
@@ -228,14 +228,65 @@ function drivesGrid(ctx: Ctx, rows: Row[], folder: boolean): HTMLElement {
   return grid(rows, cols, 'No drive.');
 }
 
-async function driveHistory(id: number, drive: string, box: HTMLElement) {
-  box.replaceChildren(el('p', { class: 'meta' }, 'Reading the history...'));
-  try {
-    const d = await get<Parts<'history'>>('drives/history', { instance: id, drive, days: 30 });
-    const rows = rowsOf(d.history);
-    box.replaceChildren(lineChart(`${drive}: used and free over 30 days`, rows,
-      [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v)));
-  } catch (e) { box.replaceChildren(errorBox(e)); }
+// driveHistory: one drive's used and free space as a chart over a window the reader picks, 5 minutes to one year (the
+// windows /api/drives/history takes, in minutes); the pick is kept for every drive's History. A line over the chart
+// says how much history the window really holds; a window too short for the drive's read interval (a PostgreSQL
+// host's volume is stored every 15 minutes at most, a SQL Server's at each storage collection) says so in words.
+const historyWindows: [number, string][] = [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [360, '6 hours'], [1440, '24 hours'],
+  [2880, '2 days'], [10080, '7 days'], [43200, '30 days'], [129600, '90 days'], [259200, '180 days'], [525600, '1 year']];
+// lengthWords: a length in the unit that reads best (minutes under 90 minutes, hours under 2 days, days after)
+function lengthWords(ms: number): string {
+  const m = ms / 60e3, one = (n: number, unit: string) => `${fmtNum(n)} ${unit}${n === 1 ? '' : 's'}`;
+  return m < 90 ? one(Math.max(1, Math.round(m)), 'minute') : m < 2880 ? one(Math.round(m / 6) / 10, 'hour') : one(Math.round(m / 144) / 10, 'day');
+}
+// historyLine: what the window holds. rows: the window's reads, oldest first, each under its own time; newest: the
+// drive's newest reads whatever the window (five at most); marked: the chart marks restarts, failovers and setting
+// changes (an instance's page)
+function historyLine(rows: Row[], newest: Row[], minutes: number, words: string, marked: boolean): string {
+  const at = (r: Row | undefined) => r ? Date.parse(String(r.snapshot_at)) : NaN;
+  // the drive's read interval: the upper median of the gaps between its newest reads. One read off the cycle (a
+  // collection runs once at each collector start) splits one interval into two short gaps: of four gaps the upper
+  // median is still the interval (16:00, 16:17, 17:00, 18:00, 19:00 -> 17, 43, 60, 60 minutes -> 60)
+  const gaps = newest.slice(1).map((r, i) => at(newest[i]) - at(r)).filter(g => Number.isFinite(g) && g > 0).sort((x, y) => x - y);
+  const gap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : NaN;
+  const last = newest[0], now = Date.now(), age = now - at(last);
+  // reads that stopped: none for over two intervals (an hour's interval taken where one read is all there is)
+  const stopped = Number.isFinite(age) && age > Math.max(2 * (Number.isFinite(gap) ? gap : 3600e3), 30 * 60e3);
+  const stoppedNote = stopped ? ` No read for ${lengthWords(age)}: this drive's collection has stopped.` : '';
+  if (rows.length < 2) {
+    return `This window holds ${rows.length ? 'one read' : 'no read'}, so no line is drawn.`
+      + (Number.isFinite(gap) ? ` This drive ${stopped ? 'was' : 'is'} read about every ${lengthWords(gap)}` : last ? ' This drive has been read once' : ' No history is stored for this drive yet')
+      + (last ? `; its newest read, ${fmtTime(last.snapshot_at)}: ${fmtBytes(last.used_bytes)} used, ${fmtBytes(last.free_bytes)} free.` : '.')
+      + stoppedNote + (Number.isFinite(gap) ? ' Pick a longer window.' : '');
+  }
+  const first = at(rows[0]), end = at(rows[rows.length - 1]), win = minutes * 60e3;
+  const step = Math.max(Number.isFinite(gap) ? gap : 0, (end - first) / (rows.length - 1));
+  return `${fmtNum(rows.length)} reads over ${lengthWords(end - first)} of history`
+    + (first - (now - win) > Math.max(2 * step, 0.05 * win) ? ` (the ${words} window holds no more yet)` : '') + '.' + stoppedNote
+    + (marked && minutes > 31 * 1440 ? ' Restarts, failovers and setting changes are marked for the last 31 days only.' : '');
+}
+async function driveHistory(id: number, drive: string, inst: string, marked: boolean, box: HTMLElement) {
+  let win = Number(lsGet('pgvigil.driveHistoryMinutes')); if (!historyWindows.some(w => w[0] === win)) win = 43200;
+  const sel = el('select', { 'aria-label': `History window of ${drive} on ${inst}` }, ...historyWindows.map(([m, words]) => el('option', { value: String(m) }, words)));
+  sel.value = String(win);
+  const chart = el('div');
+  let seq = 0;
+  async function draw() {
+    const mine = ++seq, want = win, words = historyWindows.find(w => w[0] === want)![1];
+    chart.replaceChildren(el('p', { class: 'meta' }, 'Reading the history...'));
+    try {
+      const d = await get<Parts<'history' | 'newest'>>('drives/history', { instance: id, drive, minutes: want });
+      if (mine !== seq) return;
+      const rows = rowsOf(d.history), title = `${drive} on ${inst}: used and free over ${words}`;
+      // under two reads the line above says why no chart is drawn: the title alone stands under it (no second sentence)
+      chart.replaceChildren(el('p', { class: 'meta', role: 'status' }, historyLine(rows, rowsOf(d.newest), want, words, marked)),
+        rows.length < 2 ? el('div', { class: 'chart' }, el('h3', {}, title))
+          : lineChart(title, rows, [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v), { ownSpan: true }));
+    } catch (e) { if (mine === seq) chart.replaceChildren(errorBox(e)); }
+  }
+  sel.addEventListener('change', () => { win = Number(sel.value); lsSet('pgvigil.driveHistoryMinutes', String(win)); void draw(); });
+  box.replaceChildren(el('div', { class: 'toolbar' }, el('label', {}, 'History ', sel)), chart);
+  await draw();
 }
 
 // ---- DB Space

@@ -221,10 +221,10 @@ fs() { q "select setting || '|' || severity from pgvigil.findings where instance
 [[ $(fs "$F3") == "autovacuum_vacuum_cost_delay|warning max_standby_archive_delay|warning max_standby_streaming_delay|info synchronous_standby_names|warning" ]] || fail "replica findings: $(fs "$F3")"
 F4=$(inst find-collector onprem false "[$(s track_counts off),$(s enable_indexscan off),$(s synchronous_commit off),$(s log_statement mod),$(s log_min_duration_statement 0),$(s log_min_messages debug1),$(s log_planner_stats on),$(s debug_print_plan on),$(s autovacuum_freeze_max_age 400000000),$GOOD]")
 q "select pgvigil.import_databases($F4, now(), \$j\$[{\"dbid\":5,\"datname\":\"app\",\"is_template\":false,\"xid_age\":350000000},{\"dbid\":6,\"datname\":\"young\",\"is_template\":false,\"xid_age\":1000},{\"dbid\":7,\"datname\":\"old\",\"is_template\":false,\"xid_age\":1200000000}]\$j\$::jsonb)" >/dev/null
-WANT4="autovacuum_freeze_max_age|info database xid age|critical database xid age|warning debug_print_plan|warning enable_indexscan|warning log_min_duration_statement|warning log_min_messages|warning log_planner_stats|warning log_statement|warning synchronous_commit|warning track_counts|critical"
+WANT4="amcheck never run|info autovacuum_freeze_max_age|info database xid age|critical database xid age|warning debug_print_plan|warning enable_indexscan|warning log_min_duration_statement|warning log_min_messages|warning log_planner_stats|warning log_statement|warning synchronous_commit|warning track_counts|critical"
 [[ $(fs "$F4") == "$WANT4" ]] || fail "pg-collector findings: $(fs "$F4")"
-[[ $(q "select count(*) from pgvigil.findings where instance_id=$F4 and source <> 'pg-collector'") == 0 ]] || fail "pg-collector findings carry another source"
-echo "D: OK (3 / 6 / 4 pg_gather findings, 11 pg-collector findings)"
+[[ $(q "select count(*) from pgvigil.findings where instance_id=$F4 and source <> 'pg-collector' and not (source = 'pg-backups' and setting = 'amcheck never run')") == 0 ]] || fail "pg-collector findings carry another source"
+echo "D: OK (3 / 6 / 4 pg_gather findings, 11 pg-collector findings and pg-backups' amcheck never run)"
 
 echo "--- E. DMS drain"
 DID=$(q "select pgvigil.ensure_instance('dms-drain-$SUF', 'aurora', 'proof', 160004, false, '{proof}')")

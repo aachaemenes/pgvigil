@@ -14,8 +14,9 @@ import (
 )
 
 // procStatsCollector is mssql_procstats: what each stored procedure did, every five minutes, from
-// sys.dm_exec_procedure_stats: the executions, the CPU, the duration, the logical and physical reads and the
-// logical writes. The view has one row per cached plan and counts since the plan entered the cache, so the
+// sys.dm_exec_procedure_stats: the executions, the CPU, the duration, the logical and physical reads, the logical
+// writes and the spilled pages (total_spills, where the server has the column: SQL Server 2016 SP2 and 2017 CU3 on;
+// sys.all_columns is asked, and a server without it sends NULL). The view has one row per cached plan and counts since the plan entered the cache, so the
 // collector sends the counters as they are, one row per plan (its handle and cached time), and the import stores
 // what the interval added, summed per procedure (0084: a plan the read before did not hold, or one whose counters
 // went down, gives its whole count; nothing is ever negative). A procedure that never left the cache between two
@@ -73,18 +74,32 @@ const procStatsSQL = `SELECT TOP ({{top}}) 'proc' AS kind, ps.plan_handle AS pla
   CAST(ps.execution_count AS bigint) AS execution_count,
   CAST(ps.total_worker_time AS bigint) AS worker_us, CAST(ps.total_elapsed_time AS bigint) AS elapsed_us,
   CAST(ps.total_logical_reads AS bigint) AS logical_reads, CAST(ps.total_physical_reads AS bigint) AS physical_reads,
-  CAST(ps.total_logical_writes AS bigint) AS logical_writes
+  CAST(ps.total_logical_writes AS bigint) AS logical_writes, {{spills}} AS spills
 FROM sys.dm_exec_procedure_stats ps
 WHERE ps.database_id <> 32767
 ORDER BY ps.total_worker_time DESC, ps.plan_handle`
 
-// procStatsQuery fills procStatsSQL: with the names, or without them.
+// procStatsQuery fills procStatsSQL: with the names, or without them; the spills as NULL (procStatsWithSpills puts
+// the server's own column in where it has one).
 func procStatsQuery(names bool) string {
 	schema, object := "NULL", "NULL"
 	if names {
 		schema, object = "OBJECT_SCHEMA_NAME(ps.object_id, ps.database_id)", "OBJECT_NAME(ps.object_id, ps.database_id)"
 	}
-	return strings.NewReplacer("{{top}}", fmt.Sprint(procStatsCap+1), "{{schema}}", schema, "{{object}}", object).Replace(procStatsSQL)
+	return strings.NewReplacer("{{top}}", fmt.Sprint(procStatsCap+1), "{{schema}}", schema, "{{object}}", object,
+		"{{spills}}", procSpillsNone).Replace(procStatsSQL)
+}
+
+// procStatsColsSQL lists the view's columns: total_spills arrived in SQL Server 2016 SP2 and 2017 CU3.
+const procStatsColsSQL = `SELECT CAST(name AS nvarchar(128)) AS name FROM sys.all_columns WHERE object_id = OBJECT_ID(N'sys.dm_exec_procedure_stats')`
+
+// procSpillsNone is the spills of a server without the column: NULL, never 0 (the page says "not read on this
+// version", where a 0 would say the procedure never spilled).
+const procSpillsNone = "CAST(NULL AS bigint)"
+
+// procStatsWithSpills reads the server's own total_spills in a statement procStatsQuery wrote.
+func procStatsWithSpills(q string) string {
+	return strings.Replace(q, procSpillsNone+" AS spills", "CAST(ps.total_spills AS bigint) AS spills", 1)
 }
 
 // isLockTimeout says whether the server refused a statement because a lock was not granted in time.
@@ -113,9 +128,19 @@ func (procStatsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 	if err != nil {
 		return nil, err
 	}
+	have, err := columnSet(ctx, conn, procStatsColsSQL)
+	if err != nil {
+		return nil, err
+	}
+	query := func(names bool) string {
+		if have["total_spills"] {
+			return procStatsWithSpills(procStatsQuery(names))
+		}
+		return procStatsQuery(names)
+	}
 	var notes []collect.Row
 	named := true
-	procs, err := QueryRows(ctx, conn, procStatsQuery(true))
+	procs, err := QueryRows(ctx, conn, query(true))
 	if err != nil {
 		// only a lock the name functions waited for: any other failure is the read's own
 		if !isLockTimeout(err) {
@@ -123,7 +148,7 @@ func (procStatsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([
 		}
 		nameErr := err
 		named = false
-		if procs, err = QueryRows(ctx, conn, procStatsQuery(false)); err != nil {
+		if procs, err = QueryRows(ctx, conn, query(false)); err != nil {
 			return nil, err
 		}
 		notes = append(notes, collect.Row{"kind": "collector_error", "source": "OBJECT_NAME",

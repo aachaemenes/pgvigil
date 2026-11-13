@@ -2,8 +2,10 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // The SQL Server CPU, Memory, File IO and TempDB pages (task 119; Darling's CPU, Memory, File I/O and I/O Trends
@@ -230,7 +232,81 @@ func (s *Server) MSSQLCPU(w http.ResponseWriter, r *http.Request) {
 		{"sched", sqlMSSQLSchedSeries, base},
 		{"counters", sqlMSSQLCounterSeries, base},
 		{"checks", sqlMSSQLPerfChecks, []any{id, "^(CPU|scheduler)"}},
+		// task 177 D14: both scheduler levels, the workload groups, runnable requests, THREADPOOL, the CPU details;
+		// the THREADPOOL sessions; the collections that could not connect; D14's findings
+		{"newest", `SELECT * FROM pgvigil.mssql_cpu_newest($1, $2, $3)`, []any{id, from, to}},
+		{"threadpool", `SELECT * FROM pgvigil.mssql_threadpool_newest($1, $2, $3)`, []any{id, from, to}},
+		{"connectfail", `SELECT * FROM pgvigil.mssql_connect_failures_between($1, $2, $3)`, []any{id, from, to}},
+		{"findings", sqlMSSQLCPUFindings, []any{id, "^(other processes|a transaction)"}},
 	})
+}
+
+// sqlMSSQLCPUFindings: 0124's findings of one instance; $2 picks them by the start of the check's name.
+const sqlMSSQLCPUFindings = `
+SELECT severity, check_name, object, at, detail FROM pgvigil.mssql_cpu_findings
+ WHERE instance_id = $1 AND check_name ~ $2
+ ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END, check_name, object`
+
+// MSSQLConnections is GET /api/mssql/connections?instance=N[&from=&to=][&part=...] (task 177 D14, the Connections
+// page): the newest session read of the window (PerformanceMonitor's Sessions), the reads over the window (its
+// Session Stats Trend), and the user sessions per application, host and database at the newest read.
+func (s *Server) MSSQLConnections(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.multiPart(w, r, []part{
+		{"summary", `SELECT * FROM pgvigil.mssql_session_newest($1, $2, $3)`, []any{id, from, to}},
+		{"series", `SELECT * FROM pgvigil.mssql_session_series_between($1, $2, $3)`, []any{id, from, to}},
+		{"applications", `SELECT * FROM pgvigil.mssql_session_groups_newest($1, $2, $3, 'program')`, []any{id, from, to}},
+		{"hosts", `SELECT * FROM pgvigil.mssql_session_groups_newest($1, $2, $3, 'host')`, []any{id, from, to}},
+		{"databases", `SELECT * FROM pgvigil.mssql_session_groups_newest($1, $2, $3, 'database')`, []any{id, from, to}},
+	})
+}
+
+// MSSQLCounters is GET /api/mssql/counters?instance=N[&from=&to=][&series=1,2,...][&part=...] (task 177 D14, the
+// Metrics page's SQL Server counters): the newest read of each scope in the window (instance counters every minute,
+// per-database every 5 minutes) and up to ten picked series over the window.
+func (s *Server) MSSQLCounters(w http.ResponseWriter, r *http.Request) {
+	id, from, to, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ids, err := seriesIDs(r.URL.Query().Get("series"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	step := perfStep(to.Sub(from).Seconds())
+	s.multiPart(w, r, []part{
+		{"now", `SELECT * FROM pgvigil.mssql_counter_newest($1, $2, $3)`, []any{id, from, to}},
+		{"series", `SELECT * FROM pgvigil.mssql_counter_series_between($1, $2, $3, $4, $5)`, []any{id, from, to, step, ids}},
+		{"meta", `SELECT $1::int AS step_secs, $2::int AS series_cap`, []any{step, maxCounterSeries}},
+	})
+}
+
+// maxCounterSeries: the most series one chart draws (PerformanceMonitor's MAX_COUNTERS_CHARTED).
+const maxCounterSeries = 10
+
+// seriesIDs reads ?series=1,2,3: positive ids, at most maxCounterSeries, none = an empty list.
+func seriesIDs(v string) ([]int32, error) {
+	out := []int32{}
+	if strings.TrimSpace(v) == "" {
+		return out, nil
+	}
+	for _, f := range strings.Split(v, ",") {
+		n, err := strconv.ParseInt(strings.TrimSpace(f), 10, 32)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("series must be positive series ids separated by commas: %q", f)
+		}
+		out = append(out, int32(n))
+	}
+	if len(out) > maxCounterSeries {
+		return nil, fmt.Errorf("at most %d series at once (%d asked)", maxCounterSeries, len(out))
+	}
+	return out, nil
 }
 
 // sqlMSSQLMemoryChecks: 0074's memory checks (as they stand) and 0119's memory findings over the range.
@@ -331,6 +407,9 @@ func (s *Server) MSSQLFileIO(w http.ResponseWriter, r *http.Request) {
 		{"throughput", sqlMSSQLFileThroughput, base},
 		{"files", sqlMSSQLIOFiles, []any{id, from, to}},
 		{"checks", sqlMSSQLPerfChecks, []any{id, "^slow (log|data)"}},
+		// task 177 D14: log bytes flushed per second per database (every 5 minutes), and 0124's slow data file writes
+		{"logflush", `SELECT * FROM pgvigil.mssql_log_flush_between($1, $2, $3)`, []any{id, from, to}},
+		{"findings", sqlMSSQLCPUFindings, []any{id, "^slow data file writes"}},
 	})
 }
 
@@ -349,5 +428,8 @@ func (s *Server) MSSQLTempdb(w http.ResponseWriter, r *http.Request) {
 		{"layout", sqlMSSQLTempdb, []any{id}},
 		{"files", sqlMSSQLTempdbFiles, []any{id}},
 		{"checks", sqlMSSQLTempdbChecks, []any{id}},
+		// task 177 D14: the sessions holding tempdb at the newest activity read of the last 15 minutes (one instance)
+		{"holders", `SELECT * FROM pgvigil.mssql_session_tempdb_newest($1, now() - interval '15 minutes', now())`, []any{id}},
+		{"holders_read", `SELECT * FROM pgvigil.mssql_activity_read_newest($1, now() - interval '15 minutes', now())`, []any{id}},
 	})
 }

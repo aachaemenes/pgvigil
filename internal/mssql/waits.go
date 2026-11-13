@@ -67,6 +67,9 @@ func (waitsCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]col
 		if c := waitCategory(w); c != "" {
 			r["category"] = c
 		}
+		if w == "SLEEP_TASK" && sleepTaskSpills(r) {
+			r["is_benign"], r["category"] = false, "Potential hash spills"
+		}
 	}
 	return append(state, rows...), nil
 }
@@ -209,4 +212,14 @@ func WaitDescriptions() map[string]string {
 // WaitFamilies returns the groups of wait types by the start of their name, in the order a type is matched against.
 func WaitFamilies() []WaitFamily {
 	return append([]WaitFamily(nil), waitFamilies...)
+}
+
+// sleepTaskSpills is sp_PressureDetector's SLEEP_TASK rule (task 177 D14; sp_PressureDetector.sql, darlingdata-20261101,
+// L1430-1442, and its description 'Potential Hash spills', L1341): SLEEP_TASK is idle background work and stays out
+// of the top list, unless its average wait since the server started (wait time over waiting tasks) is 1,000 ms or
+// more, which hash operations spilling to tempdb leave.
+func sleepTaskSpills(r collect.Row) bool {
+	ms, ok1 := r["wait_ms"].(int64)
+	n, ok2 := r["waiting_tasks"].(int64)
+	return ok1 && ok2 && n > 0 && float64(ms)/float64(n) >= 1000
 }

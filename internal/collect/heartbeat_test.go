@@ -271,3 +271,63 @@ func TestStreakSince(t *testing.T) {
 		t.Errorf("a stop-cut connect counted as an attempt: %+v", l)
 	}
 }
+
+// TestChannelBackoff: serve's watchdog pass backs a failing channel off as the collector's own alert loop does
+// (alerts.Run): 1, 2, 4, 8, 16 minutes, then 30 at most; a channel that succeeds is tried every pass again.
+func TestChannelBackoff(t *testing.T) {
+	var b ChannelBackoff
+	t0 := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	if n := len(b.Skip(t0)); n != 0 {
+		t.Fatalf("a fresh backoff skips %d channel(s), want 0", n)
+	}
+	bad := map[string]error{"hook": errors.New("503"), "mail": nil}
+	at := t0
+	for i, want := range []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, 30 * time.Minute, 30 * time.Minute} {
+		b.Note(at, bad)
+		if s := b.Skip(at.Add(want - time.Second)); !s["hook"] || s["mail"] {
+			t.Fatalf("failure %d: %v before its wait of %v ends the skip map is %v, want hook only", i+1, time.Second, want, s)
+		}
+		if s := b.Skip(at.Add(want)); s["hook"] {
+			t.Fatalf("failure %d: hook is still skipped after its wait of %v", i+1, want)
+		}
+		at = at.Add(want)
+	}
+	b.Note(at, map[string]error{"hook": nil})
+	if s := b.Skip(at.Add(time.Second)); len(s) != 0 {
+		t.Fatalf("after a success the skip map is %v, want empty", s)
+	}
+	b.Note(at, map[string]error{"hook": errors.New("503")})
+	if s := b.Skip(at.Add(61 * time.Second)); s["hook"] {
+		t.Fatal("a failure after a success waits 1 minute again, not the old wait")
+	}
+}
+
+// TestSeenDue: the heartbeat names an instance in the repository at its first connect in a run and again when its name
+// was not written for seenEvery (an instance read once an hour), never at every connect; a write that failed is due
+// again at the next connect; a beat names what it loads, so an instance read every minute is never due between beats.
+func TestSeenDue(t *testing.T) {
+	h := &Heartbeat{runs: map[[2]string]*runAgg{}, load: map[string]*loadAgg{}, streaks: map[[2]string]*streak{}}
+	t0 := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	if !h.seenDue("t1", t0) {
+		t.Fatal("the first connect of an instance in a run must name it")
+	}
+	if h.seenDue("t1", t0.Add(seenEvery-time.Second)) {
+		t.Fatal("named again before seenEvery passed")
+	}
+	if !h.seenDue("t2", t0.Add(time.Second)) {
+		t.Fatal("another instance's first connect must name it")
+	}
+	if !h.seenDue("t1", t0.Add(seenEvery)) {
+		t.Fatal("not named again after seenEvery")
+	}
+	h.seenFailed("t1")
+	if !h.seenDue("t1", t0.Add(seenEvery+time.Second)) {
+		t.Fatal("a failed write must be due again at the next connect")
+	}
+	// the beat names what it loads
+	h.loadOf("t3")
+	h.take()
+	if h.seenDue("t3", time.Now().Add(time.Minute)) {
+		t.Fatal("an instance the beat just named is due again a minute later")
+	}
+}

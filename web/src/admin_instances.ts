@@ -54,12 +54,14 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
     editing = ''; // a redraw builds a fresh 'Add' form: no edit may outlive it
     const d = await get<AdminData>('admin/instances');
     const page = rowsOf(d.page), file = rowsOf(d.file), sources = rowsOf(d.sources), props = rowsOf(d.proposals), audit = rowsOf(d.audit);
+    whyNot = d.writable ? '' : String(d.why_not ?? '');
     root.replaceChildren(
       el('h2', {}, 'Instances'),
       el('p', { class: 'meta' }, `${file.length} from pgvigil.yaml (read-only), ${page.length} added here, ${props.filter(p => p.state === 'proposed' && !p.gone).length} proposed by the sync sources. `,
         'A change reaches the collector within 15 seconds, without a restart (inventory generation ', String(d.generation), '). ',
         d.secret_dir ? `Credentials are written to their own files in ${d.secret_dir}; the repository keeps only each file's name.` : ''),
-      d.writable ? '' : el('p', { class: 'meta error' }, `Changes are off on this server: ${d.why_not}`),
+      // read only on this server: a note, not an error (the page works; the join's w9c)
+      d.writable ? '' : el('p', { class: 'meta', role: 'note' }, `Read only: ${d.why_not}.`),
       status,
       instanceForm(d),
       el('h3', {}, 'Instances added here'),
@@ -77,6 +79,31 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       grid(audit, [{ key: 'at', fmt: fmtTime }, { key: 'ui_user', label: 'by' }, { key: 'client' }, { key: 'op' }, { key: 'target' },
         { key: 'outcome', fmt: v => badge(String(v), v === 'done' ? '' : 'warn') }, { key: 'detail', wide: true }], 'No change yet.'),
     );
+    readOnly(d);
+  }
+
+  // why this server cannot write ('' = it can). A grid draws its rows again at each sort, filter and 'Show more',
+  // through the columns' formats, so each actions cell locks its own buttons (the join's w9e, finding 5): a redraw
+  // never brings an enabled write button back under the read-only note
+  let whyNot = '';
+  function lock(cell: HTMLElement): HTMLElement {
+    if (whyNot) {
+      for (const b of cell.querySelectorAll('button')) {
+        b.disabled = true;
+        b.title = whyNot;
+      }
+    }
+    return cell;
+  }
+
+  // read only: every control that would write (the forms', the rows' actions) is disabled and says why on hover; the
+  // grids' own filters and 'Show more' only read, and stay as they are (as ack.ts and alert_rules.ts do)
+  function readOnly(d: AdminData): void {
+    if (d.writable) return;
+    for (const c of root.querySelectorAll('form button, form input, form select, form textarea, .actions button')) {
+      (c as HTMLButtonElement).disabled = true;
+      (c as HTMLElement).title = d.why_not;
+    }
   }
 
   async function act(path: string, data: Record<string, unknown>, done: string): Promise<boolean> {
@@ -172,7 +199,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.disabled ? 'Enable' : 'Disable'} ${n}` }, r.disabled ? 'Enable' : 'Disable');
       toggle.addEventListener('click', () => { void act('admin/instances', { op: r.disabled ? 'enable' : 'disable', name: n }, r.disabled ? `${n} enabled: collected again within 15 seconds.` : `${n} disabled: its collections stop within 15 seconds.`); });
       const rm = removeButton(n, () => { void act('admin/instances', { op: 'remove', name: n }, `${n} removed: its collections stop within 15 seconds; its history stays.`); });
-      return el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm);
+      return lock(el('span', { class: 'actions' }, test, ' ', edit, ' ', toggle, ' ', rm));
     } },
   ];
 
@@ -187,7 +214,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
       const toggle = el('button', { type: 'button', class: 'link', 'aria-label': `${r.enabled ? 'Turn off' : 'Turn on'} ${n}` }, r.enabled ? 'Turn off' : 'Turn on');
       toggle.addEventListener('click', () => { void act('admin/sources', { op: r.enabled ? 'disable' : 'enable', name: n }, `${n} turned ${r.enabled ? 'off' : 'on'}.`); });
       const rm = removeButton(`source ${n}`, () => { void act('admin/sources', { op: 'remove', name: n }, `Source ${n} removed with its proposals; the instances approved from it stay.`); });
-      return el('span', { class: 'actions' }, sync, ' ', toggle, ' ', rm);
+      return lock(el('span', { class: 'actions' }, sync, ' ', toggle, ' ', rm));
     } },
   ];
 
@@ -212,7 +239,7 @@ export async function adminInstancesView(_ctx: Ctx): Promise<HTMLElement> {
         const n = String(r.instance_name);
         out.append(removeButton(n, () => { void act('admin/instances', { op: 'remove', name: n }, `${n} removed: its collections stop within 15 seconds; its history stays.`); }));
       }
-      return out;
+      return lock(out);
     } },
   ];
 

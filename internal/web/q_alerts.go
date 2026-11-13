@@ -126,11 +126,12 @@ SELECT a.ack_id, a.kind, a.instance_id, a.instance_name AS instance, a.check_key
 const sqlAlertFixes = `
 WITH k AS (SELECT DISTINCT s.finding_key FROM pgvigil.alert_state s),
 fx AS MATERIALIZED (
-  SELECT pgvigil.alert_finding_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested,
+  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested,
          pgvigil.finding_fix(i.engine, y.source, y.instance_id, y.setting, y.is_set, y.suggested, y.detail) AS fix,
          pgvigil.severity_rank(y.severity) AS sev
     FROM pgvigil.findings y
-    JOIN pgvigil.instances i ON i.instance_id = y.instance_id AND i.is_active
+    LEFT JOIN pgvigil.instances i ON i.instance_id = y.instance_id
+   WHERE i.is_active OR y.source = 'pgvigil repository'
 )
 SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix, fx.suggested
   FROM fx JOIN k ON k.finding_key = fx.finding_key
@@ -140,7 +141,7 @@ SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix, fx.suggested
 // The alert's page (k=<finding key>): the finding as it stands now (none = gone from the findings) with its fix
 const sqlAlertCard = `
 WITH f AS MATERIALIZED (
-  SELECT pgvigil.alert_finding_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.instance_id, y.severity,
+  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.instance_id, y.severity,
          y.source, y.setting, y.value, y.suggested, y.detail, y.at, y.is_set
     FROM pgvigil.findings y
   UNION ALL
@@ -148,12 +149,12 @@ WITH f AS MATERIALIZED (
          r.setting, r.value, r.suggested, r.detail, r.at, r.is_set
     FROM pgvigil.alert_rule_findings r
 )
-SELECT f.finding_key, f.instance_id, i.name AS instance, f.severity, f.source, f.setting, f.value, f.suggested, f.detail,
+SELECT f.finding_key, f.instance_id, coalesce(i.name, 'pgvigil') AS instance, f.severity, f.source, f.setting, f.value, f.suggested, f.detail,
        f.at, i.engine, f.is_set, pgvigil.finding_fix(i.engine, f.source, f.instance_id, f.setting, f.is_set, f.suggested, f.detail) AS fix,
        CASE WHEN f.source = 'alert rule' THEN substring(f.value FROM '^((?:above|below) [^ ]+)') ELSE f.suggested END AS threshold
   FROM f
-  JOIN pgvigil.instances i ON i.instance_id = f.instance_id AND i.is_active
- WHERE f.finding_key = $1
+  LEFT JOIN pgvigil.instances i ON i.instance_id = f.instance_id
+ WHERE f.finding_key = $1 AND (i.is_active OR f.source = 'pgvigil repository')
  ORDER BY pgvigil.severity_rank(f.severity) DESC
  LIMIT 1`
 
@@ -244,22 +245,14 @@ func doorBody(r *http.Request, into any) error {
 // (at, payload) and answering {outcome, detail, <id>}; build adds the request's fields to the payload (an error = 400,
 // nothing called). The answer: 200 done, 409 refused (the store's reason), as /api/ack.
 func (s *Server) alertDoor(w http.ResponseWriter, r *http.Request, fn string, build func(ctx context.Context, pay map[string]any) error) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, s.ackOff())
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(why))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	pay := map[string]any{"ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"ui_user": user, "client": seat.client}
 	if err := build(ctx, pay); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -269,7 +262,11 @@ func (s *Server) alertDoor(w http.ResponseWriter, r *http.Request, fn string, bu
 	// the write outlives a client that hangs up (its audit row is kept), never the 15 s
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.`+fn+`($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	pool, ok := seat.poolFor(wctx, w, scopeOfAlertFn(fn, pay))
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.`+fn+`($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("alerts: not written", "fn", fn, "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return

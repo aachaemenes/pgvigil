@@ -76,8 +76,8 @@ while the digits inside a name (`orders_idx1`, `orders_idx2`) keep two indexes a
 | new (firing) | A finding at or above the channel's severity, in its scope, that the channel has not sent. |
 | new (escalated) | The finding's severity rose above the one sent. It goes out at once. |
 | still open (repeat) | The repeat interval has passed since the last send. |
-| resolved | The finding has been gone from the findings for `clear_after` (default 10 minutes, so a finding at a time window's edge does not send a recovery and a new alert a minute later), **and** the collector has read the instance successfully since the finding went missing. An instance left unread (unreachable, the collector stopped, a gap of any length) holds its alerts open: its time-windowed findings leave the view, but nothing was fixed. Sent when `recovery` is on; otherwise the alert is closed without a message (the log's outcome `cleared`). |
-| closed without a message | The instance was deactivated or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. PagerDuty and Opsgenie are the exception: they close their incident, or it would stay open for good. |
+| resolved | The finding has been gone from the findings for `clear_after` (default 10 minutes, so a finding at a time window's edge does not send a recovery and a new alert a minute later), **and** the collector has read the instance successfully since the finding went missing. An instance left unread (unreachable, the collector stopped, a gap of any length) holds its alerts open: its time-windowed findings leave the view, but nothing was fixed. 'Read successfully' means a collection that finished with status ok; a partial read (one database or one source failed) does not count. Under `pgvigil run` several reads run every minute and give one each minute on a healthy instance (PostgreSQL: activity and connections, usually the database statistics; SQL Server: database mirroring, which needs no VIEW SERVER STATE and ends ok on a server with no mirrored database, and with VIEW SERVER STATE the waits, memory, CPU, file IO, requests and waiting tasks). An instance whose every-minute reads all end skipped or partial (before SQL Server 2022, a login without VIEW SERVER STATE on a server with a mirrored database) holds a resolved alert open until another collection reads it whole. A `pgvigil collect -once` run from another host writes to the same repository: a connect it cannot make there raises 'server unreachable' for that instance until the service's next ok read. Sent when `recovery` is on; otherwise the alert is closed without a message (the log's outcome `cleared`). |
+| closed without a message | The instance was deactivated, disabled on Admin > Instances, or removed, or the channel's instances or tags no longer cover it: nothing was fixed, so no recovery is sent. PagerDuty and Opsgenie are the exception: they close their incident, or it would stay open for good. |
 
 A finding that falls below the channel's severity floor but stays (critical to warning on a critical channel) keeps its
 alert open and quiet: no repeat, no recovery. If it rises again it is not sent again until the repeat interval.
@@ -96,6 +96,55 @@ send: a pass holds an advisory lock in the repository, and a second sender skips
 One collector sends alerts: name the `alerts:` list in one configuration. A collector without the list leaves the
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
 column; renamed, it is a new channel and sends the standing findings again.
+
+## When many instances fail at once
+
+A network cut, the collector's host in trouble or a shared login gone wrong fails many instances at once. pgvigil
+sends one alert for it, **collector or network** (critical, source `pgvigil repository`, to every channel past its
+severity floor, scoped channels too), instead of one per instance:
+
+- **raised** when a collector (a host) has not beaten for 5 minutes while no other collector reads its instances
+  (*collector not seen*), or in a minute in which at least 3 of its instances, and over half of those it ran, failed
+  every run (*instances failing together*);
+- **stands** until no such minute is left in its last 4 written minutes, and resolves `clear_after` later (10 minutes
+  by default): its recovery comes about 14 minutes after the network heals.
+
+Only the alerts a shared cause explains wait under it: *authentication failing*, *collection failing*, *server
+unreachable*, and the findings judged by their age on data the cut stops refreshing (*job run over twice its
+average*, *job schedule missed*, *a job runs far longer than its average*, *amcheck older than N d*, *unused index*).
+Every other finding comes from the last good read and is sent as it is: a disk filling up before the cut may be its
+cause.
+
+| When | What those alerts do |
+|---|---|
+| A collector's newest written minute shows 3 or more of its instances, and over half of those it ran, with a failed run (a cut starts partway through a minute) | A new one waits for the next minute: about a minute, 3 minutes at most. One or two instances failing never wait. A cut that starts late in a minute may reach only some instances before the minute ends; when that is fewer than 3, or not over half of those the collector ran, they alert at once: up to half of a collector's instances, one beat (about a minute) before the parent, which then names them among the open alerts it covers. |
+| The parent stands | Held for its instances not read since it began: no new alert, no repeat, no recovery. One already open stays open and silent, and the parent's text names the open alerts it covers. An instance that comes back while held sends nothing. |
+| After the parent clears | An instance still failing sends one alert per finding after its next failure (its next refused login, failed run or failed connect), never off a streak built during the outage. |
+
+A refused login, or a server that does not answer at the instance's own connect, is that instance's one finding
+(*authentication failing* or *server unreachable*): the collections that could not connect do not each raise
+*collection failing*. An empty or unreadable DSN shows as *server unreachable* too, its error in the detail. For an
+instance the collector service reads (`pgvigil run`, which beats), *server unreachable* is raised after 3 failed
+connects in a row over a minute or more, and a refused login is *authentication failing* alone: one failed connect is
+not yet a server down (a restart, a failover or a network blip ends inside a minute), and the Collection dates page
+shows the failed read at once. At the default intervals a server that stops answering (its port refuses) is reported
+1 to about 4 minutes later, 2 and a half on average: up to a minute until the instance's next collection, the rule's
+own minute, then the collector's beat and the alert pass, each up to a minute. A host that drops packets instead
+takes longer by the operating system's connect timeout per attempt (about 2 minutes on Linux when the DSN sets no
+`connect_timeout`): set one. An instance read only
+by `pgvigil collect` on a schedule has no heartbeat: its *server unreachable* is raised by its first failed connect
+of any kind, a refused login included. The service names each instance to the repository inside the instance's own
+connect, so its first failed connect is already the service's to report - after a long stop, for an instance read
+once an hour, and for one never reached.
+
+A host whose collector was uninstalled while the repository stays is retired there by the uninstall
+([uninstall.md](uninstall.md)): it raises no *collector not seen*. A blackout, silence or mute that names an instance
+never holds *collector or network* or *purge not run in 2 days*, which belong to no instance and carry no tag - mute
+those by their own alert, by check (`collector or network`) or by text.
+
+A cut that drops packets instead of refusing them makes each connect hang until the operating system gives up (about
+2 minutes on Linux when the DSN sets no `connect_timeout`). A run is counted when it ends, so the parent can rise a
+minute or two later than for a refused connection.
 
 ## The address of an alert, templates, the send cap, Send test
 

@@ -12,15 +12,36 @@
 #      approved; each collected; one deleted from the CMS: marked gone, its instance kept
 #   D. a pg_service.conf of the two PostgreSQL servers as a source: two proposed, approved, collected
 #   E. the API: test (a wrong and a right password), add, the refusals (a name twice, a file name, a connection
-#      change without the password), a tags edit, disable (its collections stop), enable (they start again), remove
-#      (its credential file removed, its history kept); every change and refusal in the audit
+#      change without the password), a tags edit, disable (its collections stop; is_active false, so the fleet's stale
+#      check passes it by), enable (they start again; is_active true at the enable), remove (its credential file removed
+#      after the 30 s grace, its history kept); every change and refusal in the audit
 #   F. the page in headless Chromium, light and dark: every control clicked (the add form's test and add, a row's
 #      Test, Edit + Save, Disable, Enable, Remove + Keep, Remove + confirm, Cancel the edit, a source's Read now,
 #      Turn off, Turn on, Add the source, Remove + confirm, a proposal's Ignore, Propose again, Approve), each with
 #      what it answered: the click table
-#   G. no credential anywhere in the repository (every row of every table of the pgvigil schema, read as text), in
-#      the API's answer or in the two logs; the credential files 0600 in a 0700 folder
+#   G. a list source pointed at a .pgpass (0600) is refused with 400 and leaves no row; one at a readable file of
+#      .pgpass lines adds the source but its read is refused by line number; no credential anywhere in the
+#      repository (every row of every table of the pgvigil schema, read as text), in the API's answer or in the logs;
+#      the credential files 0600 in a 0700 folder
 #   H. the collector's process is the one started in B (no restart) and logged each list it applied
+#   I. a second collector on the repository: it logs once that the page's instances are not its own and
+#      collects the file's only (filepg), never a page instance
+#   J. the fenced lease: a take-over (the lease made 60 s old) bumps the generation; the first collector, superseded,
+#      drops the page's instances at its next tick; released, it takes the lease back with the next generation
+#   K. a page instance whose server is down is seen failing (the join's review, finding 1): pg-down (its own
+#      PostgreSQL container) collected, disabled, its server stopped, enabled -> is_active true at once and, within one
+#      interval, a new 'connect:' error and a 'server unreachable' finding; removed and added again while its server is
+#      still down -> the same; pg-never, added while its server is down and never collected -> its instances row at
+#      the add (active) and the same finding; sql-down (a SQL Server page instance on A's container, the last row: the
+#      container stopped) enabled while down -> the same through the SQL Server collector; the join's w9e: pg-wrong
+#      added as sqlserver against a PostgreSQL port (never connects), removed (its row goes: no read reached it) and
+#      added again as postgres -> 200 and collected (finding 1); pg-plat added with platform onprem while nothing
+#      listens on its port, its server started -> first_seen at or after the start (finding 4); sql-never, a SQL
+#      Server page instance never collected (A's container stopped) -> its row at the add and 'server unreachable'
+#   L. the page on a serve with no UI login (-no-login, the join's w9c): the list renders read only, a plain note in the
+#      page's own words ('adding and changing instances needs the UI login: ...'), no error box, every control that
+#      writes disabled saying why on hover, the grids' filters still usable; an add through the API refused with the
+#      same words
 #
 # Needs: docker (pulls mcr.microsoft.com/mssql/server:2022-latest and postgres:16), go, psql, curl, python3, node,
 # npm, chromium. Everything the run makes carries its random suffix and is removed on every exit path the shell can
@@ -40,22 +61,24 @@ ADMIN_DSN=${ADMIN_DSN:-host=127.0.0.1 port=5432 user=postgres dbname=postgres}
 IMG_SQL=mcr.microsoft.com/mssql/server:2022-latest
 IMG_PG=postgres:16
 SUF=$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-SQL=pgvin-sql-$SUF; PGA=pgvin-pga-$SUF; PGB=pgvin-pgb-$SUF; LBL=pgvigil-proof=s204
+SQL=pgvin-sql-$SUF; PGA=pgvin-pga-$SUF; PGB=pgvin-pgb-$SUF; PGK=pgvin-pgk-$SUF; PGP=pgvin-pgp-$SUF; LBL=pgvigil-proof=s204
 PGDB=pgv_in_$SUF; COL=pgv_incol_$SUF; USR=proofdba$SUF
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pw() { printf 'Pv9%sa!' "$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"; }
 umask 077
-TMPD=$(mktemp -d); SRVPID=; RUNPID=; CHRPID=
+TMPD=$(mktemp -d); SRVPID=; RUNPID=; RUN2PID=; CHRPID=; SRVLPID=
 SHOTS=${PGVIGIL_SHOTS:-$TMPD/shots}; mkdir -p "$SHOTS"
-SA_PW=$(pw); MON_PW=$(pw); CMS_PW=$(pw); PG_PW=$(pw); BAD_PW=$(pw); UPW=$(pw); COL_PW=$(pw)
-export MON_PW CMS_PW PG_PW BAD_PW
+SA_PW=$(pw); MON_PW=$(pw); CMS_PW=$(pw); PG_PW=$(pw); BAD_PW=$(pw); UPW=$(pw); COL_PW=$(pw); PGPASS_PW=$(pw)
+export MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW
 printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\nSA_PW=%s\n' "$SA_PW" "$SA_PW" > "$TMPD/sa.env"
 printf 'POSTGRES_PASSWORD=%s\n' "$PG_PW" > "$TMPD/pg.env"
 cleanup() {
   [[ -n "$SRVPID" ]] && kill "$SRVPID" 2>/dev/null || true
+  [[ -n "$SRVLPID" ]] && kill "$SRVLPID" 2>/dev/null || true
   [[ -n "$RUNPID" ]] && kill "$RUNPID" 2>/dev/null || true
+  [[ -n "$RUN2PID" ]] && kill "$RUN2PID" 2>/dev/null || true
   if [[ -n "$CHRPID" ]]; then kill "$CHRPID" 2>/dev/null || true; wait "$CHRPID" 2>/dev/null || true; fi
-  for c in "$SQL" "$PGA" "$PGB"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
+  for c in "$SQL" "$PGA" "$PGB" "$PGK" "$PGP"; do docker rm -f -v "$c" >/dev/null 2>&1 || { docker inspect "$c" >/dev/null 2>&1 && echo "CLEANUP: container $c not removed" >&2; }; done
   psql "$ADMIN_DSN" -Xqc "DROP DATABASE IF EXISTS $PGDB WITH (FORCE)" >/dev/null 2>&1 || echo "CLEANUP: database $PGDB not dropped" >&2
   psql "$ADMIN_DSN" -Xqc "DROP ROLE IF EXISTS $COL" >/dev/null 2>&1 || echo "CLEANUP: role $COL not dropped" >&2
   rm -rf "$TMPD"
@@ -223,19 +246,25 @@ code=$(api POST admin/instances "$(js op=edit name=pg-manual $A "tags=env:proof 
 code=$(api POST admin/instances "$(js op=test name=pg-manual)"); [[ "$code" == 200 && "$(ans ok)" == True ]] || fail "E: the stored instance's test: $code $(cat "$TMPD/ans.json")"
 [[ "$(pq "SELECT tested_ok FROM pgvigil.admin_instances WHERE name = 'pg-manual'")" == t ]] || fail "E: the test result was not kept"
 code=$(api POST admin/instances "$(js op=disable name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: disable: $code"
+# a run in flight at the disable calls ensure_instance as the collector: admin_keep_removed keeps it inactive
+psql "$PGV_COL_DSN" -XAtq -v ON_ERROR_STOP=1 -c "SELECT pgvigil.ensure_instance('pg-manual', 'auto', '', 0, false, '{}')" >/dev/null || fail "E: ensure_instance as the collector"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: a run in flight set the disabled pg-manual active again (admin_keep_removed)"
 sleep 30; D0=$(newest pg-manual); sleep 75; D1=$(newest pg-manual)
 [[ "$D0" == "$D1" ]] || fail "E: pg-manual was collected after the disable ($D0 -> $D1)"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: pg-manual is still active after the disable (the fleet's stale check would flag it)"
 code=$(api POST admin/instances "$(js op=enable name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: enable: $code"
 for _ in $(seq 1 120); do [[ "$(newest pg-manual)" > "$D1" ]] && break; sleep 1; done
 [[ "$(newest pg-manual)" > "$D1" ]] || fail "E: pg-manual was not collected again after the enable"
+[[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == t ]] || fail "E: pg-manual is not active after the enable and a run"
 REF=$(pq "SELECT dsn_ref FROM pgvigil.admin_instances WHERE name = 'pg-manual'"); RF=${REF#file:}
 [[ -f "$RF" ]] || fail "E: the credential file $RF is missing"
 code=$(api POST admin/instances "$(js op=remove name=pg-manual)"); [[ "$code" == 200 ]] || fail "E: remove: $code"
-[[ ! -e "$RF" ]] || fail "E: the credential file stayed after the remove"
+[[ -e "$RF" ]] || fail "E: the credential file went at once (the collector may still read it for 15 s: 30 s grace)"
 RM="$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-manual'")|$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")"
 [[ "$RM" == "0|f" ]] || fail "E: the remove: admin rows|is_active = $RM (want 0|f)"
 [[ "$(collected pg-manual)" -gt 0 ]] || fail "E: the remove dropped the history"
 sleep 30; R0=$(newest pg-manual); sleep 75; [[ "$(newest pg-manual)" == "$R0" ]] || fail "E: pg-manual was collected after the remove"
+[[ ! -e "$RF" ]] || fail "E: the credential file stayed 105 s after the remove (the grace is 30 s)"
 [[ "$(pq "SELECT is_active FROM pgvigil.instances WHERE name = 'pg-manual'")" == f ]] || fail "E: pg-manual is active again after the remove (a run in flight)"
 AUD=$(pq "SELECT string_agg(op || ':' || outcome, ' ' ORDER BY audit_id) FROM pgvigil.admin_audit WHERE target = 'pg-manual'")
 for w in "instance add:done" "instance add:refused" "instance edit:done" "instance tested:done" "instance disable:done" "instance enable:done" "instance remove:done"; do
@@ -245,7 +274,7 @@ echo "ok   E: tests (wrong: refused by the server, right: connected), add (colle
 echo "== F. the page in headless Chromium =="
 sqok "F: a fourth server in the CMS" "DECLARE @test int = (SELECT server_group_id FROM msdb.dbo.sysmanagement_shared_server_groups WHERE name = N'Test'), @id int;
   EXEC msdb.dbo.sp_sysmanagement_add_shared_registered_server @name = N'nobody', @server_group_id = @test, @server_name = N'ignoreme.invalid', @description = N'', @server_type = 0, @server_id = @id OUTPUT;" msdb
-printf 'host,port,name,tags\n127.0.0.1,%s,csv one,env:csv\n' "$PA" > "$CFGD/servers.csv"
+printf 'host,port,name,tags\n127.0.0.1,%s,csv one,env:csv\n' "$PA" > "$CFGD/servers.csv"; chmod 644 "$CFGD/servers.csv"  # a server list is readable: the page refuses one only its owner reads (the proof's umask is 077)
 CDP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 chromium --headless=new --remote-debugging-port="$CDP" --user-data-dir="$TMPD/chrome" --no-first-run --disable-gpu --window-size=1600,1200 about:blank >"$TMPD/chrome.log" 2>&1 & CHRPID=$!
 for _ in $(seq 1 60); do curl -fs "http://127.0.0.1:$CDP/json/list" >/dev/null 2>&1 && break; sleep 0.5; done
@@ -346,13 +375,24 @@ waitcol "$NCSV" 120 "F"
 echo "ok   F: the page in light and dark (every field labelled, no error); $(echo "$out" | grep -c '^click ') clicks, each answered as above; the CSV source's server $NCSV collected after its source was removed"
 
 echo "== G. no credential in the repository, the API or the logs =="
+PGPASS_FILE=$TMPD/pgpass; printf '127.0.0.1:%s:*:postgres:%s\n' "$PA" "$PGPASS_PW" > "$PGPASS_FILE"; chmod 600 "$PGPASS_FILE"
+code=$(api POST admin/sources "$(js op=add kind=sqlserver_list name=pgpass1 ref="$PGPASS_FILE" every_s=3600)")
+[[ "$code" == 400 && "$(pq "SELECT count(*) FROM pgvigil.admin_sources WHERE name = 'pgpass1'")" == 0 ]] || fail "G: a 0600 .pgpass as a list source: $code $(head -c 300 "$TMPD/ans.json") (want 400, no row)"
+grep -q 'owner only' "$TMPD/ans.json" || fail "G: the refusal does not say why: $(head -c 300 "$TMPD/ans.json")"
+chmod 644 "$PGPASS_FILE"
+code=$(api POST admin/sources "$(js op=add kind=pg_csv name=pgpass2 ref="$PGPASS_FILE" every_s=3600)")
+[[ "$code" == 200 && "$(ans sync_error)" == *".pgpass line"* && "$(ans sync_error)" == *"line 1"* ]] || fail "G: a readable file of .pgpass lines: $code $(head -c 300 "$TMPD/ans.json") (want its read refused by line number)"
+[[ "$(pq "SELECT count(*) FROM pgvigil.admin_proposals WHERE source = 'pgpass2'")" == 0 ]] || fail "G: the .pgpass file was read into proposals"
+code=$(api POST admin/sources "$(js op=remove name=pgpass2)"); [[ "$code" == 200 ]] || fail "G: remove pgpass2: $code"
+echo "G: a 0600 .pgpass refused (400, no row); a readable one's read refused by line number, no proposal"
+for _ in $(seq 1 40); do (( $(find "$CFGD/instances" -type f | wc -l) == $(pq "SELECT count(*) FROM pgvigil.admin_instances") )) && break; sleep 1; done  # the 30 s grace of the files F replaced
 TABLES=$(pq "SELECT c.oid::regclass FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'pgvigil' AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1")
 NT=0; HITS=""
 for t in $TABLES; do NT=$((NT + 1))
-  for v in MON_PW CMS_PW PG_PW BAD_PW; do n=$(pq "SELECT count(*) FROM $t x WHERE strpos(x::text, '${!v}') > 0"); [[ "$n" == 0 ]] || HITS+=" $t:$v=$n"; done; done
+  for v in MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW; do n=$(pq "SELECT count(*) FROM $t x WHERE strpos(x::text, '${!v}') > 0"); [[ "$n" == 0 ]] || HITS+=" $t:$v=$n"; done; done
 [[ -z "$HITS" ]] || fail "G: a password is in the repository:$HITS"
 api GET admin/instances >/dev/null
-for v in MON_PW CMS_PW PG_PW BAD_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/run.log"; do ! grep -qF -- "${!v}" "$f" || fail "G: $v is in $(basename "$f")"; done; done
+for v in MON_PW CMS_PW PG_PW BAD_PW PGPASS_PW; do for f in "$TMPD/ans.json" "$TMPD/serve.log" "$TMPD/run.log"; do ! grep -qF -- "${!v}" "$f" || fail "G: $v is in $(basename "$f")"; done; done
 NF=0; for d in instances sources; do [[ "$(stat -c %a "$CFGD/$d")" == 700 ]] || fail "G: the credential folder $d is $(stat -c %a "$CFGD/$d")"
   for f in "$CFGD/$d"/*; do NF=$((NF + 1)); [[ "$(stat -c %a "$f")" == 600 ]] || fail "G: $d/$(basename "$f") is $(stat -c %a "$f")"; done; done
 NREF=$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE dsn_ref LIKE 'file:$CFGD/instances/%'")
@@ -365,4 +405,160 @@ kill -0 "$RUNPID" 2>/dev/null || fail "H: the collector stopped"
 NA=$(grep -c 'scheduler: instances applied' "$TMPD/run.log" || true)
 (( NA >= 8 )) || fail "H: the collector applied $NA lists (want one per change: 8 or more)"
 echo "ok   H: pid $RUNPID ran from B to the end and applied $NA lists (generation $G0 -> $(gen))"
-echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository; no restart; the NOT PROVEN lines above stand)"
+
+echo "== I. a second collector on the repository =="
+"$TMPD/pgvigil" run -config "$CFGD/collector.yaml" >"$TMPD/run2.log" 2>&1 & RUN2PID=$!
+for _ in $(seq 1 40); do grep -q "are not this collector's now" "$TMPD/run2.log" && break; sleep 1; done
+kill -0 "$RUN2PID" 2>/dev/null || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector exited"; }
+[[ "$(grep -c "are not this collector's now" "$TMPD/run2.log")" == 1 ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector did not say once that another holds the page's instances"; }
+sleep 20
+[[ "$(grep -c "are not this collector's now" "$TMPD/run2.log")" == 1 ]] || fail "I: the second collector said it more than once"
+PAGE2=$(grep 'scheduler: instances applied' "$TMPD/run2.log" | grep -oE ' instances=[0-9]+' | tr -d ' ' | sort -u | tr '\n' ' ')
+[[ "$PAGE2" == "instances=1 " ]] || { tail -20 "$TMPD/run2.log" >&2; fail "I: the second collector applied [$PAGE2] (want only the file's one instance)"; }
+! grep -q 'instances: list read' "$TMPD/run2.log" || { grep -m3 'instances: list read' "$TMPD/run2.log" >&2; fail "I: the second collector read the page's list"; }
+kill "$RUN2PID" 2>/dev/null; wait "$RUN2PID" 2>/dev/null || true; RUN2PID=
+kill -0 "$RUNPID" 2>/dev/null || fail "I: the first collector stopped"
+echo "ok   I: a second collector said once that the page's instances are not its own and applied the file's one instance only"
+
+echo "== J. a fenced lease: a take-over bumps the generation; the superseded holder stops at its next tick, then takes it back =="
+last_applied() { grep 'scheduler: instances applied' "$TMPD/run.log" | tail -1 | grep -oE ' instances=[0-9]+' | tr -d ' '; }
+BEFORE=$(last_applied); G1=$(pq "SELECT generation FROM pgvigil.admin_page_holder")
+NOT0=$(grep -c "are not this collector's now" "$TMPD/run.log" || true); HOLD0=$(grep -c "holds the page's instances now" "$TMPD/run.log" || true)
+[[ "$(pq "SELECT holder LIKE '%:$RUNPID:%' FROM pgvigil.admin_page_holder")" == t && "$G1" -ge 1 ]] || fail "J: the first collector (pid $RUNPID) does not hold the lease: $(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")"
+# a lease 60 s old and a take-over in one transaction (the holder's renewal waits on the row, then finds itself superseded)
+TG=$(pq "UPDATE pgvigil.admin_page_holder SET beat = now() - interval '60 seconds'; SELECT pgvigil.import_admin_page_lease('proof-taker', 45)")
+[[ "$TG" == $((G1 + 1)) ]] || fail "J: the take-over got generation $TG (want $((G1 + 1)))"
+# the docs' bound: its renewal (15 s) and its watcher's tick (15 s), 5 s spare
+for _ in $(seq 1 35); do [[ "$(last_applied)" == "instances=1" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "instances=1" ]] || fail "J: the superseded holder still runs [$(last_applied)] 35 s after the take-over (want the file's one instance)"
+[[ "$(grep -c "are not this collector's now" "$TMPD/run.log")" == $((NOT0 + 1)) ]] || fail "J: the superseded holder did not say once that the page's instances are not its own"
+[[ "$(pq "SELECT holder || ' ' || generation FROM pgvigil.admin_page_holder")" == "proof-taker $TG" ]] || fail "J: the superseded holder took the lease back while the taker's was alive"
+pq "SELECT pgvigil.import_admin_page_release('proof-taker', $TG)" >/dev/null
+for _ in $(seq 1 35); do [[ "$(last_applied)" == "$BEFORE" ]] && break; sleep 1; done
+[[ "$(last_applied)" == "$BEFORE" ]] || fail "J: 35 s after the release the first collector runs [$(last_applied)] (want [$BEFORE] again)"
+[[ "$(grep -c "holds the page's instances now" "$TMPD/run.log")" == $((HOLD0 + 1)) ]] || fail "J: the take-back was not logged once"
+[[ "$(pq "SELECT generation FROM pgvigil.admin_page_holder")" == $((TG + 1)) ]] || fail "J: the take-back's generation is $(pq "SELECT generation FROM pgvigil.admin_page_holder") (want $((TG + 1)))"
+echo "ok   J: generation $G1 -> $TG (a take-over: the first collector superseded, the file's instance only) -> $((TG + 1)) (taken back: [$BEFORE] again)"
+echo "== K. a page instance whose server is down: enabled, added again, added never collected - each active and unreachable =="
+docker run -d --name "$PGK" --label "$LBL" --env-file "$TMPD/pg.env" -p 127.0.0.1::5432 "$IMG_PG" >/dev/null
+PK=$(docker port "$PGK" 5432/tcp | head -1 | sed 's/.*://')
+for _ in $(seq 1 60); do PGPASSWORD=$PG_PW psql "host=127.0.0.1 port=$PK user=postgres dbname=postgres connect_timeout=2" -XAtqc 'select 1' >/dev/null 2>&1 && break; sleep 1; done
+KA="engine=postgres host=127.0.0.1 port=$PK dbname=postgres auth=password login=postgres"
+active() { pq "SELECT coalesce((SELECT is_active::text FROM pgvigil.instances WHERE name = '$1'), 'no row')"; }
+# unreachable NAME SINCE: a 'connect:' error recorded after SINCE (the repository's clock) and the finding, within 120 s
+unreachable() { local e f; for _ in $(seq 1 120); do
+    e=$(pq "SELECT count(*) FROM pgvigil.collection_dates d JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND d.status = 'error' AND d.note LIKE 'connect: %' AND d.snapshot_at > '$2'")
+    f=$(pq "SELECT count(*) FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = '$1' AND f.setting = 'server unreachable' AND f.severity = 'critical'")
+    [[ "$e" -gt 0 && "$f" -gt 0 ]] && return 0; sleep 1; done
+  tail -5 "$TMPD/run.log" >&2; fail "K: $3: within 120 s: connect errors after $2 = $e, 'server unreachable' findings = $f (want both > 0)"; }
+code=$(api POST admin/instances "$(js op=add name=pg-down $KA password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-down: $code $(cat "$TMPD/ans.json")"
+waitcol pg-down 120 "K"
+code=$(api POST admin/instances "$(js op=disable name=pg-down)"); [[ "$code" == 200 && "$(active pg-down)" == false ]] || fail "K: disable: $code, is_active $(active pg-down)"
+docker stop -t 5 "$PGK" >/dev/null || fail "K: docker stop"
+T0=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=enable name=pg-down)"); [[ "$code" == 200 ]] || fail "K: enable: $code"
+[[ "$(active pg-down)" == true ]] || fail "K: pg-down is $(active pg-down) right after the enable (want true: its failed connects are recorded only for an active row)"
+unreachable pg-down "$T0" "enabled while its server is down"
+echo "K: enabled while down: is_active true at the enable; $(pq "SELECT left(detail, 160) FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'pg-down' AND f.setting = 'server unreachable'")"
+code=$(api POST admin/instances "$(js op=remove name=pg-down)"); [[ "$code" == 200 && "$(active pg-down)" == false ]] || fail "K: remove: $code, is_active $(active pg-down)"
+[[ "$(pq "SELECT count(*) FROM pgvigil.findings f JOIN pgvigil.instances i USING (instance_id) WHERE i.name = 'pg-down' AND f.setting = 'server unreachable'")" == 0 ]] || fail "K: a removed instance is still said unreachable"
+T1=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=add name=pg-down $KA password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add again: $code $(cat "$TMPD/ans.json")"
+[[ "$(active pg-down)" == true ]] || fail "K: pg-down is $(active pg-down) right after the add again (want true)"
+unreachable pg-down "$T1" "added again after a remove while its server is down"
+T2=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=add name=pg-never $KA password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-never: $code $(cat "$TMPD/ans.json")"
+[[ "$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'pg-never'")" == "true postgres auto" ]] || fail "K: pg-never's row at the add: [$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'pg-never'")] (want 'true postgres auto')"
+unreachable pg-never "$T2" "added while its server is down, never collected"
+for n in pg-down pg-never; do code=$(api POST admin/instances "$(js op=remove name=$n)"); [[ "$code" == 200 ]] || fail "K: remove $n: $code"; done
+# the SQL Server collector's path (internal/mssql records its failed connects the same way): A's container, stopped last
+SA_="engine=sqlserver host=127.0.0.1 port=$PORT_SQL auth=sql login=$MONL options=TrustServerCertificate=true"
+code=$(api POST admin/instances "$(js op=add name=sql-down $SA_ password=@MON_PW)"); [[ "$code" == 200 ]] || fail "K: add sql-down: $code $(cat "$TMPD/ans.json")"
+waitcol sql-down 120 "K"
+code=$(api POST admin/instances "$(js op=disable name=sql-down)"); [[ "$code" == 200 && "$(active sql-down)" == false ]] || fail "K: disable sql-down: $code, is_active $(active sql-down)"
+docker stop -t 5 "$SQL" >/dev/null || fail "K: docker stop the SQL Server"
+T3=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=enable name=sql-down)"); [[ "$code" == 200 && "$(active sql-down)" == true ]] || fail "K: enable sql-down: $code, is_active $(active sql-down)"
+unreachable sql-down "$T3" "a SQL Server enabled while its server is down"
+code=$(api POST admin/instances "$(js op=remove name=sql-down)"); [[ "$code" == 200 ]] || fail "K: remove sql-down: $code"
+# the join's w9e, finding 1: a page add that never connects left a row that kept its engine for good
+code=$(api POST admin/instances "$(js op=add name=pg-wrong engine=sqlserver host=127.0.0.1 port="$PA" auth=sql login=sa options=TrustServerCertificate=true password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-wrong as sqlserver: $code $(cat "$TMPD/ans.json")"
+T4=$(pq "SELECT now()")
+unreachable pg-wrong "$T4" "pg-wrong added as sqlserver against a PostgreSQL port"
+code=$(api POST admin/instances "$(js op=remove name=pg-wrong)"); [[ "$code" == 200 ]] || fail "K: remove pg-wrong: $code"
+[[ "$(pq "SELECT count(*) FROM pgvigil.instances WHERE name = 'pg-wrong'")" == 0 ]] || fail "K: pg-wrong's row (never read) is still there after its remove: $(pq "SELECT engine, is_active, server_version FROM pgvigil.instances WHERE name = 'pg-wrong'")"
+code=$(api POST admin/instances "$(js op=add name=pg-wrong engine=postgres host=127.0.0.1 port="$PA" dbname=postgres auth=password login=postgres password=@PG_PW)")
+[[ "$code" == 200 ]] || fail "K: pg-wrong added again as postgres: $code $(cat "$TMPD/ans.json") (want 200)"
+waitcol pg-wrong 120 "K"
+[[ "$(pq "SELECT engine || ' ' || is_active::text FROM pgvigil.instances WHERE name = 'pg-wrong'")" == "postgres true" ]] || fail "K: pg-wrong after its add as postgres: $(pq "SELECT engine, is_active FROM pgvigil.instances WHERE name = 'pg-wrong'")"
+code=$(api POST admin/instances "$(js op=remove name=pg-wrong)"); [[ "$code" == 200 ]] || fail "K: remove pg-wrong (postgres): $code"
+[[ "$(pq "SELECT count(*) || ' ' || bool_or(is_active)::text FROM pgvigil.instances WHERE name = 'pg-wrong'")" == "1 false" ]] || fail "K: pg-wrong, read once, must keep its row (history) at its remove: $(pq "SELECT count(*) FROM pgvigil.instances WHERE name = 'pg-wrong'")"
+echo "K: pg-wrong: added as sqlserver against a PostgreSQL port (unreachable), removed (its never-read row gone), added again as postgres -> 200 and collected; removed again after a read -> its row kept, inactive"
+# the join's w9e, finding 4: an explicit platform's first read moves first_seen (the Diff page's 'history from')
+PP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+code=$(api POST admin/instances "$(js op=add name=pg-plat engine=postgres host=127.0.0.1 port="$PP" dbname=postgres auth=password login=postgres platform=onprem password=@PG_PW)"); [[ "$code" == 200 ]] || fail "K: add pg-plat: $code $(cat "$TMPD/ans.json")"
+[[ "$(pq "SELECT platform || ' ' || (server_version IS NULL)::text FROM pgvigil.instances WHERE name = 'pg-plat'")" == "onprem true" ]] || fail "K: pg-plat's row at its add: $(pq "SELECT platform, server_version FROM pgvigil.instances WHERE name = 'pg-plat'")"
+sleep 2; TP=$(pq "SELECT now()")
+docker run -d --name "$PGP" --label "$LBL" --env-file "$TMPD/pg.env" -p "127.0.0.1:$PP:5432" "$IMG_PG" >/dev/null || fail "K: docker run pg-plat's server"
+waitcol pg-plat 180 "K"
+[[ "$(pq "SELECT (first_seen >= '$TP'::timestamptz)::text FROM pgvigil.instances WHERE name = 'pg-plat'")" == true ]] || fail "K: pg-plat (platform onprem) first read after $TP, but first_seen is $(pq "SELECT first_seen FROM pgvigil.instances WHERE name = 'pg-plat'") (the add's time)"
+code=$(api POST admin/instances "$(js op=remove name=pg-plat)"); [[ "$code" == 200 ]] || fail "K: remove pg-plat: $code"
+echo "K: pg-plat: added with platform onprem while nothing listened, its server started at $TP: first_seen $(pq "SELECT first_seen FROM pgvigil.instances WHERE name = 'pg-plat'") (moved to its first read)"
+# a SQL Server page instance never collected (A's container is stopped since sql-down): its row at the add, reported
+T5=$(pq "SELECT now()")
+code=$(api POST admin/instances "$(js op=add name=sql-never $SA_ password=@MON_PW)"); [[ "$code" == 200 ]] || fail "K: add sql-never: $code $(cat "$TMPD/ans.json")"
+[[ "$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'sql-never'")" == "true sqlserver auto" ]] || fail "K: sql-never's row at the add: [$(pq "SELECT is_active::text || ' ' || engine || ' ' || platform FROM pgvigil.instances WHERE name = 'sql-never'")]"
+unreachable sql-never "$T5" "a SQL Server page instance added while its server is down, never collected"
+code=$(api POST admin/instances "$(js op=remove name=sql-never)"); [[ "$code" == 200 ]] || fail "K: remove sql-never: $code"
+echo "ok   K: enabled while down, added again after a remove while down, added never collected (PostgreSQL and SQL Server), and a SQL Server enabled while down: each active at once and 'server unreachable' (critical) with a new connect error within one interval; a wrong engine removed and added again (200); an explicit platform's first_seen at its first read"
+echo "== L. the page on a serve with no UI login (-no-login): read only, a note, no error box; a write refused in the page's words =="
+PORTL=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'); UL="http://127.0.0.1:$PORTL"
+(umask 022; exec "$TMPD/pgvigil" serve -config "$CFGD/pgvigil.yaml" -listen "127.0.0.1:$PORTL" -no-login) >"$TMPD/serve-nl.log" 2>&1 & SRVLPID=$!
+for _ in $(seq 1 100); do curl -s -o /dev/null "$UL/api/session" 2>/dev/null && break; sleep 0.1; done
+kill -0 "$SRVLPID" 2>/dev/null || { cat "$TMPD/serve-nl.log" >&2; fail "L: the -no-login serve exited"; }
+NL='adding and changing instances needs the UI login: this server runs with -no-login'
+code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -H 'X-Pgvigil: 1' "$UL/api/admin/instances"); [[ "$code" == 200 && "$(ans writable)" == False && "$(ans why_not)" == "$NL" ]] || fail "L: the list on -no-login: $code $(head -c 300 "$TMPD/ans.json")"
+printf '%s' "$(js op=add name=pg-nl engine=postgres host=127.0.0.1 port="$PA" dbname=postgres auth=password login=postgres password=@PG_PW)" > "$TMPD/body.json"
+code=$(curl -s -o "$TMPD/ans.json" -w '%{http_code}' -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' --data @"$TMPD/body.json" "$UL/api/admin/instances")
+[[ "$code" == 403 && "$(cat "$TMPD/ans.json")" == *"$NL"* && "$(pq "SELECT count(*) FROM pgvigil.admin_instances WHERE name = 'pg-nl'")" == 0 ]] || fail "L: an add on -no-login: $code $(head -c 300 "$TMPD/ans.json")"
+cat > "$TMPD/l.mjs" <<'JS'
+const [port, U] = process.argv.slice(2);
+const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const ws = new WebSocket(list.find(t => t.type === 'page').webSocketDebuggerUrl);
+await new Promise(r => ws.addEventListener('open', r));
+let id = 0; const wait = new Map();
+ws.addEventListener('message', m => { const d = JSON.parse(m.data); if (wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const cmd = (method, params = {}) => new Promise(r => { const i = ++id; wait.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const ev = async (expr) => { const d = await cmd('Runtime.evaluate', { expression: expr, returnByValue: true }); return d.result?.result?.value; };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+await cmd('Page.enable'); await cmd('Runtime.enable');
+await cmd('Page.navigate', { url: 'about:blank' }); await sleep(200);
+await cmd('Page.navigate', { url: U + '#/admin_instances?w=1h' });
+let ok = false;
+for (let i = 0; i < 150 && !ok; i++) { ok = await ev(`!!document.querySelector('main .admin-instances h2')`); if (!ok) await sleep(200); }
+await sleep(500);
+console.log(`ready ${ok}`);
+console.log(`errors ${await ev(`document.querySelectorAll('main .error:not([role=status])').length`)}`);
+console.log(`note ${JSON.stringify(await ev(`document.querySelector('main [role=note]')?.textContent ?? ''`))}`);
+console.log(`enabled ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled).length`)}`);
+console.log(`filters ${await ev(`[...document.querySelectorAll('main .filter-btn')].filter(b => !b.disabled && (b.title ?? '').startsWith('Filter ')).length`)}`);
+console.log(`titles ${await ev(`[...new Set([...document.querySelectorAll('main button:disabled')].map(b => b.title))].join(' | ')`)}`);
+console.log(`rows ${await ev(`document.querySelectorAll('main table tbody tr').length`)}`);
+// a sort redraws a grid's rows through its columns' formats (the join's w9e, finding 5): each grid's first header
+// clicked, then the controls that write counted again
+console.log(`sorted ${await ev(`[...document.querySelectorAll('main table.grid thead tr:first-child th:first-child')].map(th => (th.click(), 1)).length`)}`);
+await sleep(500);
+console.log(`enabled2 ${await ev(`[...document.querySelectorAll('main form button, main form input, main form select, main form textarea, main .actions button')].filter(c => !c.disabled).length`)}`);
+console.log(`actions2 ${await ev(`document.querySelectorAll('main .actions button').length`)}`);
+ws.close(); process.exit(0);
+JS
+lout=$(node "$TMPD/l.mjs" "$CDP" "$UL/") || fail "L: the Chromium walk stopped: $lout"
+echo "$lout"
+echo "$lout" | grep -q '^ready true$' && echo "$lout" | grep -q '^errors 0$' && echo "$lout" | grep -q '^enabled 0$' || fail "L: the page on -no-login (an error box, or a control that writes left enabled)"
+[[ "$(echo "$lout" | sed -n 's/^filters //p')" -gt 0 ]] || fail "L: the grids' filters were disabled too (they only read)"
+echo "$lout" | grep -qF "note \"Read only: $NL.\"" && echo "$lout" | grep -qxF "titles $NL" || fail "L: the note or the hover words"
+[[ "$(echo "$lout" | sed -n 's/^rows //p')" -gt 0 ]] || fail "L: the list did not render"
+[[ "$(echo "$lout" | sed -n 's/^sorted //p')" -ge 1 && "$(echo "$lout" | sed -n 's/^actions2 //p')" -gt 0 ]] && echo "$lout" | grep -q '^enabled2 0$' || fail "L: after a sort of each grid a control that writes is enabled again, or no grid / action was redrawn (the join's w9e, finding 5)"
+kill "$SRVLPID" 2>/dev/null || true; SRVLPID=
+echo "ok   L: on -no-login the page lists the instances read only: the note 'Read only: $NL.', no error box, every control that writes disabled with those words on hover, still after a sort redraws each grid, the filters usable; an add refused 403 with them, nothing written"
+echo "proof-instances: OK (the CMS and the pg_service.conf proposed, approved, collected, a gone server marked; add, test, edit, disable, enable, remove through the API and the page in both themes; no credential in the repository, a .pgpass refused as a list; no restart; a second collector leaves the page's instances to the first; a fenced lease; a page instance whose server is down seen unreachable after enable, re-add and a first add; read only on -no-login, no error box; the NOT PROVEN lines above stand)"

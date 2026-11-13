@@ -13,11 +13,13 @@
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { badge, Col, copyText, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
-import { AckData, ackDialog, addAck, endAck, endButton, liveRows, loadAckSafe, writeButton } from './ack';
+import { AckData, ackDialog, ackOn, addAck, doorRows, endAck, endButton, liveRows, loadAckSafe, offBeside, onDoor, writeButton } from './ack';
 import { fleet, tagsOf } from './fleet';
 import { whatIsThis } from './sqlview';
 import { alertHref, dismissDialog } from './alert_page';
 import { fromInput, toInput } from './tz';
+import { conditionWords, scopeWords, willAlert } from './alert_rules';
+import { mssqlActionsState } from './mssql_actions';
 
 interface AlertsData {
   channels: Table | null; open: Table | null; log: Table | null;
@@ -56,8 +58,10 @@ function testCell(ad: AckData, r: Row, redraw: () => void): HTMLElement {
       said.textContent = ' ' + res.detail;
       window.setTimeout(redraw, 2000);
     } catch (e) { said.textContent = ' not asked: ' + (e instanceof Error ? e.message : String(e)); b.disabled = false; }
-  });
-  if (!r.is_configured) { b.disabled = true; if (ad.writable) b.title = 'the configuration no longer names this channel'; }
+  }, { why: ad.door ? 'Send test asks the alert sender to send a message; pgvigil demo -serve runs no sender and sends nothing here' : undefined });
+  // a channel the configuration no longer names: off with that reason in words where the button was on (a button
+  // already off keeps the reason it has); never the disabled attribute, which takes it out of the tab order
+  if (!r.is_configured && b.getAttribute('aria-disabled') !== 'true') offBeside(b, 'the configuration no longer names this channel');
   const last = r.last_test_at == null ? '' : ` last: ${String(r.last_test_outcome)} ${fmtTime(r.last_test_done ?? r.last_test_at)} (${String(r.last_test_by ?? '')})` + (r.last_test_error ? `: ${String(r.last_test_error)}` : '');
   return el('span', { style: 'white-space:nowrap' }, b, last ? el('span', { class: 'meta' }, last) : '', said);
 }
@@ -133,6 +137,12 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   }
   const notRead = (p: string) => missing[p] ? el('p', { class: 'meta' }, `Not read: ${missing[p]}`) : '';
   const ad = await loadAckSafe(['acks', 'alerts', 'suppressed', 'log'], window_(ctx));
+  // the page's one sentence where its writes are off: on a server that writes nothing every off control of the page
+  // points at it (ad.note); on a demo serve it says whose door this is, and a control that is off says its own reason
+  const offP = ad.writable ? null : el('p', { class: 'meta' }, ad.door
+    ? `Demo: an acknowledgement, a note, a mute, a silence or a dismissal here is saved as user ${ad.door.user}, on the demo's own instances only. A change that reaches past one instance, and Send test, stay off: they need pgvigil serve with a signed-in user.`
+    : `Acknowledge, notes, mute, dismiss and Send test are read only here: ${ad.reason ?? ''}`);
+  if (offP && !ad.door) ad.note = offP;
   const f = await fleet().catch(() => null);
   const chans = rowsOf(d.channels), open = rowsOf(d.open), log = rowsOf(d.log);
   const fixes = new Map(rowsOf(d.fixes).filter(r => r.fix != null).map(r => [String(r.finding_key), String(r.fix)]));
@@ -152,7 +162,7 @@ export async function alertsView(ctx: Ctx): Promise<HTMLElement> {
   if (configured.length) sec.append(el('p', { class: 'meta' }, base
     ? `Every sent alert carries the address of its own page: ${String(base)}/#/alert?k=...`
     : 'The sent alerts carry no link to their page: alerts_base_url (the UI\'s address as a reader opens it) is not set in the configuration.'));
-  if (!ad.writable) sec.append(el('p', { class: 'meta' }, `Acknowledge, notes, mute, dismiss and Send test are read only here: ${ad.reason ?? ''}`));
+  if (offP) sec.append(offP);
   // a metric threshold is an alert rule (task 131): its alerts are listed here with source 'alert rule'
   sec.append(el('p', { class: 'meta' }, 'An alert of source \'alert rule\' comes from a threshold on a charted metric: ',
     el('a', { href: href(ctx, { tab: 'alertrules' }) }, 'Alert rules'), ' lists the rules and what the sender last made of each.'));
@@ -198,7 +208,7 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
     { key: 'severity', fmt: sevBadge },
     { key: 'instance' },
     { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.fired_at, ctx) }, [r.source, v].filter(x => x != null && x !== '').map(String).join(': ')) },
-    { key: 'value', fmt: v => oneLine(v) },
+    { key: 'value', label: 'detail', fmt: (v, r) => detailCell(v, r) },
     { key: 'threshold', fmt: v => String(v ?? '') },
     { key: 'channels', fmt: v => list(v) },
     { key: 'sends', num: true },
@@ -207,6 +217,22 @@ function historyView(ctx: Ctx, rows: Row[]): HTMLElement {
   ];
   return el('div', {}, el('h3', {}, `Alert history ${rangeLabel(ctx)} `, whatIsThis('Every firing of an alert that was open at some time in the range: when it was first sent, when it cleared (on every channel), how it ended (resolved: a recovery was sent; cleared without a fix: its instance retired, the channel no longer covers it, or recovery is off - PagerDuty and Opsgenie closed their incident, the other kinds sent nothing), the value last sent and the threshold (an alert rule\'s value, a finding\'s suggested value while it stands). A firing is the channels\' alerts of one finding grouped while their periods overlap. The history is as long as the purge window keeps the cleared alerts.', 'Alert history')),
     grid(rows, cols, 'No alert was open in the time range.'));
+}
+
+// detailCell: the alert's value on one line, clipped, opening in the row to its labelled detail (PerformanceMonitor's
+// Alert History Detail column: a disclosure per row); the export and the copies take the value alone (data-full)
+function detailCell(v: unknown, r: Row): HTMLElement | string {
+  const t = v == null ? '' : String(v);
+  if (!t) return '';
+  const line = (k: string, x: unknown) => x == null || x === '' ? null : el('div', {}, el('b', {}, k + ': '), String(x));
+  const chans = Array.isArray(r.channels) ? r.channels.join(', ') : r.channels;
+  return el('details', { class: 'alert-detail', 'data-full': t },
+    el('summary', { title: t, style: 'max-width:18rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' }, t.split('\n')[0]),
+    el('div', { style: 'white-space:normal;max-width:40rem;padding:.2rem 0' },
+      ...[line('Value', t), line('Threshold', r.threshold), line('Alert', [r.source, r.setting].filter(x => x != null && x !== '').map(String).join(': ')),
+        line('Instance', r.instance), line('First sent', (r.fired_at ?? r.first_sent_at) == null ? null : fmtTime(r.fired_at ?? r.first_sent_at)),
+        line('Cleared', r.cleared_at == null ? null : fmtTime(r.cleared_at)), line('Channels', chans),
+        line('Sends', r.sends), line('Firing', r.occurrence)].filter((x): x is HTMLDivElement => !!x)));
 }
 
 // oneLine: a cell's text on one line, clipped, the whole of it in the title
@@ -225,12 +251,18 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
   const drawnKeys = () => new Set(boxes().map(b => String(b.dataset.key)));
   const wrap = el('div', {});
   const said = el('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+  // on a demo serve the list's one sentence for 'Mute similar' (a rule on every instance: off in every row for the
+  // same reason); a button off for its own reason says it beside itself. A server that writes nothing has the page's
+  // one sentence (ad.note), and every off button points at that.
+  const muteOff = !ad.writable && ad.door
+    ? el('p', { class: 'meta' }, "Mute similar is off here: a rule on every instance would reach past the demo's instances (use Mute this alert, or pgvigil serve with a signed-in user).")
+    : undefined;
   // an action takes the ticked rows still drawn: a row hidden since by a filter or a Show toggle is left alone
   const pickedRows = () => { const on = drawnKeys(); return all.filter(r => picked.has(String(r.finding_key)) && on.has(String(r.finding_key))); };
   const act = (label: string, run: () => void) => writeButton(ad, label, label + ' (the ticked alerts)', () => {
     if (!pickedRows().length) { said.textContent = 'Tick one or more alerts first.'; return; }
     run();
-  });
+  }, { instance: 'any' });
   const ackSel = act('Acknowledge alerts', () => ackDialog({
     title: `Acknowledge ${picked.size} alert(s)`,
     what: 'An acknowledged alert is not sent again on its repeat interval; a rise in its severity is still sent. Who and when are kept.',
@@ -284,7 +316,7 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
       { key: 'setting', label: 'alert', fmt: (v, r) => el('a', { href: alertHref(r.finding_key, r.first_sent_at, ctx), title: 'open the alert\'s page' },
         oneLine([r.source, v].filter(x => x != null && x !== '').map(String).join(': '))) },
       // one line per row: the value clipped, whole in its title
-      { key: 'value', fmt: v => oneLine(v) },
+      { key: 'value', label: 'detail', fmt: (v, r) => detailCell(v, r) },
       { key: 'first_sent_at', label: 'first sent', fmt: fmtTime },
       { key: 'sends', label: 'sends', num: true, fmt: (v, r) => el('span', { title: `last sent ${fmtTime(r.last_sent_at)} to ${list(r.channels)}` }, String(v ?? '')) },
       { key: '_state', label: 'state', fmt: (_v, r) => oneLine([
@@ -300,13 +332,14 @@ function triageView(ctx: Ctx, ad: AckData, all: Row[], redraw: () => void, fixes
       { key: '_mute', label: 'mute', fmt: (_v, r) => el('span', { style: 'white-space:nowrap' },
         writeButton(ad, 'Mute this alert', `Mute this alert: ${String(r.instance)} ${String(r.setting ?? '')}`, () => ackDialog({
           title: 'Mute this alert', what: `${String(r.instance)}: ${String(r.source ?? '')} ${String(r.setting ?? '')}. Its sends are held while the mute stands and logged under Held sends.`,
-          body: { kind: 'mute', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) }, expiry: true, noteField: 'optional', after: redraw })),
+          body: { kind: 'mute', instance_id: Number(r.instance_id) || undefined, finding_key: String(r.finding_key) }, expiry: true, noteField: 'optional', after: redraw }),
+          { instance: Number(r.instance_id) || null, name: String(r.instance ?? '') }),
         ' · ',
         writeButton(ad, 'Mute similar', `Mute similar: ${String(r.setting ?? r.source ?? '')} on every instance`, () => ackDialog({
           title: 'Mute similar alerts', what: 'Every alert matching the fields below is held while the rule stands (every instance unless one is named), and logged under Held sends.',
-          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }))) },
+          body: { kind: 'mute', check_key: String(r.setting ?? r.source ?? '') }, expiry: true, matchFields: true, noteField: 'optional', after: redraw }), { note: muteOff })) },
     ];
-    wrap.replaceChildren(grid(rows, cols, all.length ? 'Every open alert is closed or dismissed: Show closed and Show dismissed list them.' : 'No open alert: nothing sent is still standing.'));
+    wrap.replaceChildren(...(muteOff ? [muteOff] : []), grid(rows, cols, all.length ? 'Every open alert is closed or dismissed: Show closed and Show dismissed list them.' : 'No open alert: nothing sent is still standing.'));
     syncAll();
   };
   // a filter or sort of the grid redraws its rows: the box follows what is drawn
@@ -342,20 +375,30 @@ const whenCols: Col[] = [
   { key: 'until', label: 'until', fmt: v => v == null ? 'no expiry' : fmtTime(v) },
 ];
 
+// noDoorPick: why a demo serve's picker has nothing to pick (its controls are then off with these words)
+const noDoorPick = "none of this demo's instances can be picked here: the instance list could not be read, or holds none of them";
+
 // serversView: the servers silenced (Darling's Silence: every alert of the server held, still logged) and the
 // blackouts (a window on one instance: its alerts are held and flagged blackout)
 function serversView(ad: AckData, insts: Row[], redraw: () => void): HTMLElement {
   const rows = liveRows(ad).filter(r => r.kind === 'silence' || r.kind === 'blackout').concat(rowsOf(ad.acks).filter(r => r.kind === 'blackout' && !r.live && !r.ended_at && r.starts_at && Date.parse(String(r.starts_at)) > Date.now()));
-  const sel = el('select', { 'aria-label': 'instance' }, ...insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
-  const pick = () => insts.find(i => String(i.instance_id) === sel.value);
+  // on a demo serve the list holds the door's instances alone (the first one picked): Silence and Blackout are never
+  // on for an instance the door would refuse
+  const pickable = doorRows(ad, insts);
+  const sel = el('select', { 'aria-label': 'instance' }, ...pickable.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
+  const pick = () => pickable.find(i => String(i.instance_id) === sel.value);
+  // a demo serve whose list holds none of the door's instances (the instance list could not be read, or none of them
+  // is the demo's any more): nothing can be picked, so both buttons are off for that one reason, said once beside them
+  const noneP = onDoor(ad) && !pickable.length ? el('span', { class: 'off-reason' }, noDoorPick) : undefined;
+  const at = noneP ? { instance: null, why: noDoorPick, note: noneP } : { instance: 'any' as const };
   const silence = writeButton(ad, 'Silence', 'Silence the instance picked', () => ackDialog({
     title: `Silence all alerts for '${String(pick()?.name ?? '')}'?`,
     what: 'This holds every alert of the server; the held alerts are still logged (Held sends). Unsilence removes it.',
-    body: { kind: 'silence', instance_id: Number(sel.value) }, expiry: true, noteField: 'optional', after: redraw }));
+    body: { kind: 'silence', instance_id: Number(sel.value) }, expiry: true, noteField: 'optional', after: redraw }), at);
   const blackout = writeButton(ad, 'Blackout', 'A blackout window for the instance picked', () => ackDialog({
     title: `Blackout '${String(pick()?.name ?? '')}'`,
     what: 'From the start to the end the server\'s alerts are held (still logged) and flagged blackout.',
-    body: { kind: 'blackout', instance_id: Number(sel.value) }, expiry: false, blackout: true, noteField: 'optional', after: redraw }));
+    body: { kind: 'blackout', instance_id: Number(sel.value) }, expiry: false, blackout: true, noteField: 'optional', after: redraw }), at);
   const cols: Col[] = [
     { key: 'kind', fmt: v => v === 'silence' ? 'silenced' : 'blackout' },
     { key: 'instance' },
@@ -364,10 +407,10 @@ function serversView(ad: AckData, insts: Row[], redraw: () => void): HTMLElement
     { key: 'note', wide: true },
     { key: 'held_alerts', label: 'alerts held', num: true },
     { key: 'held_last', label: 'last held', fmt: fmtTime },
-    { key: '_end', label: '', fmt: (_v, r) => ad.writable ? endButton(Number(r.ack_id), `${r.kind === 'silence' ? 'Unsilence' : 'End the blackout of'} ${String(r.instance)}`, redraw, r.kind === 'silence' ? 'Unsilence' : 'End') : '' },
+    { key: '_end', label: '', fmt: (_v, r) => ackOn(ad, Number(r.instance_id) || null) ? endButton(Number(r.ack_id), `${r.kind === 'silence' ? 'Unsilence' : 'End the blackout of'} ${String(r.instance)}`, redraw, r.kind === 'silence' ? 'Unsilence' : 'End') : '' },
   ];
   return el('div', {}, el('h3', {}, 'Silenced servers and blackouts'),
-    el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel), el('div', { class: 'seg' }, silence, blackout)),
+    el('div', { class: 'toolbar' }, el('label', {}, 'Instance ', sel), el('div', { class: 'seg' }, silence, blackout), ...(noneP ? [noneP] : [])),
     grid(rows, cols, 'No server is silenced and no blackout is set.'));
 }
 
@@ -377,7 +420,9 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
   const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', kind === 'mute' ? 'New mute rule' : 'New known pattern', () => ackDialog({
     title: kind === 'mute' ? 'New mute rule' : 'New known pattern',
     what: kind === 'mute' ? 'Alerts matching every field filled are held while the rule stands; the held sends are logged.' : 'Alerts matching every field filled carry the label; nothing is held.',
-    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }));
+    // its dialog has no instance field: on a demo serve every rule it makes would be one on every instance, which the
+    // door refuses - off there, in ackWhy's words
+    body: { kind }, expiry: true, matchFields: true, noteField: kind === 'noise' ? 'label' : 'optional', after: redraw }), { instance: onDoor(ad) ? null : 'any' });
   const cols: Col[] = [
     { key: 'check_key', label: 'check' },
     { key: 'instance' },
@@ -387,7 +432,7 @@ function rulesView(ad: AckData, kind: 'mute' | 'noise', redraw: () => void): HTM
     { key: 'note', label: kind === 'noise' ? 'label' : 'note', wide: true },
     ...whenCols,
     ...(kind === 'mute' ? [{ key: 'held_alerts', label: 'alerts held', num: true }, { key: 'held_last', label: 'last held', fmt: fmtTime }] as Col[] : []),
-    { key: '_end', label: '', fmt: (_v, r) => ad.writable ? endButton(Number(r.ack_id), `Remove the ${kind === 'mute' ? 'mute rule' : 'known pattern'} ${String(r.ack_id)}`, redraw, 'Remove') : '' },
+    { key: '_end', label: '', fmt: (_v, r) => ackOn(ad, Number(r.instance_id) || null) ? endButton(Number(r.ack_id), `Remove the ${kind === 'mute' ? 'mute rule' : 'known pattern'} ${String(r.ack_id)}`, redraw, 'Remove') : '' },
   ];
   return el('div', {}, el('h3', {}, kind === 'mute' ? 'Mute rules' : 'Known patterns'),
     el('div', { class: 'seg' }, mk),
@@ -400,7 +445,11 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
   const rows = all.filter(r => r.kind === kind);
   let showEnded = false;
   const word = kind === 'mute' ? 'mute rule' : 'known pattern';
-  const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', `New ${word}`, () => muteDialog({ kind, insts, after: redraw }));
+  // on a demo serve the dialogs offer the door's instances alone and no 'any instance'
+  const dlgInsts = doorRows(ad, insts), door = onDoor(ad);
+  // a door whose list holds none of its instances: the dialog could name no instance, so New is off with that reason
+  const mk = writeButton(ad, kind === 'mute' ? 'New mute rule' : 'New known pattern', `New ${word}`, () => muteDialog({ kind, insts: dlgInsts, door, after: redraw }),
+    door && !dlgInsts.length ? { instance: null, why: noDoorPick } : { instance: 'any' });
   const endedBtn = el('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, 'Show ended (7 days)');
   const wrap = el('div', {});
   const change = (r: Row, op: 'pause' | 'resume') => async () => {
@@ -423,11 +472,11 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
       { key: 'created_at', label: 'made', fmt: (v, r) => `${fmtTime(v)} by ${String(r.created_by)}` + (r.replaces != null ? ` (replaces ${String(r.replaces)})` : '') },
       ...(kind === 'mute' ? [{ key: 'held_alerts', label: 'alerts held', num: true }, { key: 'held_last', label: 'last held', fmt: fmtTime }] as Col[] : []),
       { key: 'ended_at', label: 'ended', fmt: (v, r) => v == null ? '' : `${fmtTime(v)} by ${String(r.ended_by ?? '')}` + (r.replaced_by != null ? ` (edited: rule ${String(r.replaced_by)})` : '') },
-      { key: '_act', label: '', fmt: (_v, r) => r.state === 'ended' || r.state === 'expired' || !ad.writable ? '' : el('span', { style: 'white-space:nowrap' },
-        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts, rule: r, after: redraw })), ' \u00b7 ',
+      { key: '_act', label: '', fmt: (_v, r) => r.state === 'ended' || r.state === 'expired' || !ackOn(ad, Number(r.instance_id) || null) ? '' : el('span', { style: 'white-space:nowrap' },
+        writeButton(ad, 'Edit', `Edit the ${word} ${String(r.ack_id)}`, () => muteDialog({ kind, insts: dlgInsts, door, rule: r, after: redraw }), { instance: Number(r.instance_id) || null }), ' \u00b7 ',
         ...(kind === 'mute' ? [r.paused_at != null
-          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'))
-          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause')), ' \u00b7 '] : []),
+          ? writeButton(ad, 'Resume', `Resume the mute rule ${String(r.ack_id)}`, change(r, 'resume'), { instance: Number(r.instance_id) || null })
+          : writeButton(ad, 'Pause', `Pause the mute rule ${String(r.ack_id)}`, change(r, 'pause'), { instance: Number(r.instance_id) || null }), ' \u00b7 '] : []),
         endButton(Number(r.ack_id), `Remove the ${word} ${String(r.ack_id)}`, redraw, 'Remove')) },
     ];
     wrap.replaceChildren(grid(vis, cols, kind === 'mute' ? 'No mute rule: a quiet send log is genuine, not muted.' : 'No known pattern.'));
@@ -437,7 +486,8 @@ function mutesView(ctx: Ctx, ad: AckData, all: Row[], kind: 'mute' | 'noise', in
   return el('div', {}, el('h3', {}, kind === 'mute' ? 'Mute rules' : 'Known patterns'), el('div', { class: 'seg' }, mk, endedBtn), wrap);
 }
 
-interface MuteDialog { kind: 'mute' | 'noise'; insts: Row[]; rule?: Row; after: () => void }
+// door: a demo serve's dialog - insts are the door's instances, and 'any instance' is not offered (the first one is picked)
+interface MuteDialog { kind: 'mute' | 'noise'; insts: Row[]; door?: boolean; rule?: Row; after: () => void }
 
 const untilHours: [string, number][] = [['no expiry', 0], ['1 hour after the start', 1], ['4 hours after the start', 4], ['1 day after the start', 24], ['7 days after the start', 168], ['a time ...', -1]];
 
@@ -449,7 +499,7 @@ function muteDialog(o: MuteDialog) {
   const word = o.kind === 'mute' ? 'mute rule' : 'known pattern';
   const text = (v: unknown, label: string) => el('input', { type: 'text', maxlength: '200', 'aria-label': label, value: v == null ? '' : String(v) });
   const check = text(r?.check_key, 'check'), tag = text(r?.tag, 'tag'), match = text(r?.match_text, 'text');
-  const inst = el('select', { 'aria-label': 'instance' }, el('option', { value: '' }, 'any instance'),
+  const inst = el('select', { 'aria-label': 'instance' }, ...(o.door ? [] : [el('option', { value: '' }, 'any instance')]),
     ...o.insts.map(i => el('option', { value: String(i.instance_id) }, String(i.name))));
   // the rule's own instance stays picked even when the instance list lacks it (removed since, or the list not read):
   // an edit never widens a rule to every instance unless 'any instance' is picked by hand
@@ -557,7 +607,7 @@ const heldCols: Col[] = [
   { key: 'severity', fmt: sevBadge },
   { key: 'source' },
   { key: 'setting' },
-  { key: 'value', fmt: v => oneLine(v) },
+  { key: 'value', label: 'detail', fmt: (v, r) => detailCell(v, r) },
   { key: 'held_by', label: 'held by', fmt: (v, r) => `${String(v)} ${String(r.rule ?? '')} (${String(r.created_by)})` },
 ];
 
@@ -579,3 +629,116 @@ export const alertCol: Col = {
   fmt: (v, r) => v == null ? '' :
     `sent ${fmtTime(v)} to ${list(r.alert_channels)} (first ${fmtTime(r.alert_first_sent)}, ${fmtNum(r.alert_sends)} send(s))`,
 };
+
+// ---- Admin (task 177 D30: PerformanceMonitor's Admin page - its Servers, Notification Routes, Alert Settings, Threshold
+// Overrides and Server actions tabs) -------------------------------------------------------------------------------------
+// What this pgvigil runs with, in one place and read only: the configuration file (pgvigil.yaml) and Admin > Instances are
+// the sources of the instances; the file is the source of the channels and the action switches, and the alert rules are written on Alert rules (each tab says where a
+// change is made). The tab rides in the address (atab=). The route and the tab are the shell's (a WIRING BLOCK).
+// builtIn: PerformanceMonitor's defaults pgvigil judges as findings (migration 0118; MIT, Erik Darling, Darling Data, LLC)
+const builtIn: Row[] = [
+  { finding: 'dead tuples piling up', engine: 'PostgreSQL', warning: '1,000,000 dead tuples in a table', critical: '10,000,000', from: 'template pg-autovacuum-dead-tuples' },
+  { finding: 'replay lag', engine: 'PostgreSQL', warning: '30 s', critical: '5 min', from: 'template pg-replication-lag' },
+  { finding: 'replication slot retaining WAL', engine: 'PostgreSQL', warning: '10 GB', critical: '50 GB', from: 'template pg-replication-slot-wal' },
+  { finding: 'a volume under 5 GB free', engine: 'SQL Server', warning: 'under 5 GB free, on a volume over 10 GB whose percent threshold (Drives) raises nothing', critical: '2 GB or less (the same volumes: needs a percent threshold under 20 %)', from: 'LowDiskThresholdGb, DiskCriticalFreeGb' },
+  { finding: 'AG secondary behind', engine: 'SQL Server', warning: '300 s behind the primary', critical: '', from: 'agLagAlertSeconds' },
+  { finding: 'runnable queue per scheduler', engine: 'SQL Server', warning: '8 per scheduler (5 min)', critical: '16', from: 'RunnableQueueWarning / CriticalPerScheduler' },
+  { finding: 'long-running requests', engine: 'SQL Server', warning: '30 min (BACKUP, RESTORE, WAITFOR, Service Broker waits and system sessions left out)', critical: '', from: 'LongRunningQueryThresholdMinutes, LongRunningQueryExcludeBackups' },
+  { finding: 'server unreachable', engine: 'both', warning: '', critical: 'the newest read could not connect or log in', from: 'Server Unreachable (ConnectionAlertPolicy)' },
+];
+export async function adminView(ctx: Ctx): Promise<HTMLElement> {
+  const sec = el('section', { class: 'admin' }, el('h2', {}, 'Admin'),
+    el('p', { class: 'meta' }, 'What this pgvigil runs with, read only: the configuration file (pgvigil.yaml) and ', el('a', { href: href(ctx, { tab: 'admin_instances', instance: undefined }) }, 'Admin > Instances'), ' are the sources of the servers (a page change applies within 15 seconds, a file change takes a reload of the service); the configuration file is the source of the notification channels and the action switches; the alert rules and their overrides are written on ',
+      el('a', { href: href(ctx, { tab: 'alertrules', instance: undefined }) }, 'Alert rules'), '; acknowledgements, mutes and channel tests on ', el('a', { href: href(ctx, { tab: 'alerts', instance: undefined }) }, 'Alerts'), '.'));
+  const tabs: [string, string, () => Promise<HTMLElement>][] = [
+    ['servers', 'Servers', async () => {
+      const insts = (await fleet()).instances;
+      const want = ['name', 'engine', 'platform', 'server_version', 'is_replica', 'tags', 'last_seen', 'collections_failing'];
+      const keys = want.filter(k => insts.some(r => k in r));
+      return el('div', {}, el('p', { class: 'meta' }, `${insts.length} server(s) in the repository: each named in pgvigil.yaml (instances:) or on Admin > Instances, and read by the collector at least once (a server never reached is listed after its first read); last seen and the collections failing now.`),
+        grid(insts, keys.map(k => ({ key: k, ...(k === 'name' ? { fmt: (v: unknown, r: Row) => el('a', { href: href(ctx, { tab: 'summary', instance: Number(r.instance_id) }) }, String(v)) } : {}),
+          ...(k === 'last_seen' ? { label: 'last seen', fmt: fmtTime } : {}), ...(k === 'collections_failing' ? { label: 'collections failing', num: true } : {}),
+          ...(k === 'is_replica' ? { label: 'replica', fmt: (v: unknown) => v ? 'yes' : '' } : {}),
+          ...(k === 'tags' ? { fmt: (v: unknown) => Array.isArray(v) ? v.join(', ') : String(v ?? '') } : {}) })), 'No server in the repository yet.'));
+    }],
+    ['routes', 'Notification routes', async () => {
+      const d = await get<AlertsData>('alerts', { ...window_(ctx), part: 'channels' });
+      const all = rowsOf(d.channels);
+      const rows = all.filter(r => r.is_configured !== false);
+      const gone = all.length - rows.length;
+      const cols = ['name', 'kind', 'destination', 'min_severity', 'instances', 'tags', 'quiet_hours', 'repeat_secs', 'recovery', 'open_alerts', 'last_outcome', 'last_error'];
+      return el('div', {}, el('p', { class: 'meta' }, `${rows.length} channel(s) (the configuration's alerts:): where each alert goes, from which severity, and for which instances.${gone ? ` ${gone} channel(s) no longer in the configuration are left out (Alerts lists them).` : ''}`),
+        grid(rows, cols.map(k => ({ key: k, ...(/destination|instances|tags|last_error/.test(k) ? { wide: true } : {}), ...(k === 'min_severity' ? { label: 'from severity' } : {}),
+          ...(k === 'repeat_secs' ? { label: 'repeat (s)', num: true } : {}), ...(k === 'open_alerts' ? { label: 'open alerts', num: true } : {}),
+          ...(k === 'recovery' ? { fmt: (v: unknown) => v ? 'on' : 'off' } : {}), ...(/instances|tags/.test(k) ? { fmt: (v: unknown) => Array.isArray(v) ? (v.length ? v.join(', ') : 'all') : String(v ?? '') } : {}) })),
+          'No channel in the configuration: the alert sender has not run with a channel configured.'));
+    }],
+    ['settings', 'Alert settings', async () => {
+      const d = await get<{ rules?: Table | null; inforce?: Table | null; sender?: Table | null }>('alertrules', window_(ctx));
+      const on = rowsOf(d.rules).filter(r => r.live && r.enabled);
+      const noChannel = Number(rowsOf(d.sender)[0]?.channels ?? 0) === 0;
+      return el('div', {},
+        on.length ? el('p', { class: 'will-alert' }, willAlert(on, r => String(r.name ?? `${String(r.family_label ?? '')}: ${String(r.label ?? r.metric)}`), noChannel)) : el('p', { class: 'meta' }, 'No alert rule is switched on.'),
+        el('h3', {}, 'Built-in thresholds (PerformanceMonitor\'s defaults)'),
+        grid(builtIn, [{ key: 'finding' }, { key: 'engine' }, { key: 'warning' }, { key: 'critical' }, { key: 'from', label: 'PerformanceMonitor\'s setting', wide: true }]),
+        el('h3', {}, 'Thresholds in force per instance'),
+        rowsOf(d.inforce).length > 500 ? el('p', { class: 'meta' }, `The first 500 of ${rowsOf(d.inforce).length} rows; Alert rules lists them all.`) : '',
+        grid(rowsOf(d.inforce).slice(0, 500), Object.keys(rowsOf(d.inforce)[0] ?? {}).filter(k => !k.startsWith('_') && k !== 'tags').slice(0, 9).map(k => ({ key: k })), 'No threshold in force.'));
+    }],
+    ['overrides', 'Threshold overrides', async () => {
+      const d = await get<{ rules?: Table | null }>('alertrules', window_(ctx));
+      const live = rowsOf(d.rules).filter(r => r.live);
+      const insts = (await fleet()).instances;
+      // a wider rule on the same metric and database; a tag rule only where the instance carries that tag
+      const same = (w: Row, r: Row) => w.metric === r.metric && String(w.database ?? '') === String(r.database ?? '');
+      const over = (r: Row): string => {
+        const wide = live.find(w => w.scope === 'fleet' && same(w, r));
+        const tags = r.scope === 'instance' ? tagsOf(insts.find(i => Number(i.instance_id) === Number(r.instance_id)) ?? {}) : [];
+        const tag = r.scope === 'instance' ? live.find(w => w.scope === 'tag' && same(w, r) && tags.includes(String(w.tag))) : undefined;
+        return tag ? `tag rule ${String(tag.rule_id)}${wide ? ` and fleet rule ${String(wide.rule_id)}` : ''}` : wide ? `fleet rule ${String(wide.rule_id)}` : 'none (no wider rule on this metric: a rule of its own scope)';
+      };
+      const rows = live.filter(r => r.scope !== 'fleet');
+      return el('div', {}, el('p', { class: 'meta' }, 'A tag or an instance rule overrides a fleet rule on the same metric (an instance rule over a tag rule): made and edited on ',
+        el('a', { href: href(ctx, { tab: 'alertrules', instance: undefined }) }, 'Alert rules'), ' (its Thresholds in force line opens an override).'),
+        grid(rows, [{ key: 'rule_id', label: 'rule', num: true }, { key: 'metric', fmt: (v, r) => `${String(r.family_label ?? '')}: ${String(r.label ?? v)}` },
+          { key: 'scope', label: 'covers', fmt: (v, r) => scopeWords(v, r.tag ?? r.instance_name) }, { key: 'op', label: 'alert when', fmt: (_v, r) => conditionWords(r) },
+          { key: 'enabled', label: 'on', fmt: v => v ? 'on' : 'off' }, { key: 'overrides', fmt: (_v, r) => over(r) }], 'No override: every live rule covers the fleet.'));
+    }],
+    ['actions', 'Server actions', async () => {
+      const ms = (await fleet()).instances.filter(r => r.engine === 'sqlserver');
+      const rows: Row[] = [];
+      for (let i = 0; i < ms.length; i += 8) {      // eight at a time: a large fleet in a few round trips, the server not flooded
+        const part = ms.slice(i, i + 8);
+        const sts = await Promise.all(part.map(r => mssqlActionsState(Number(r.instance_id))));
+        part.forEach((r, j) => { for (const k of ['kill', 'job_start', 'job_stop'] as const) rows.push({ instance: r.name, instance_id: r.instance_id, action: k, state: sts[j].actions[k]?.enabled ? 'on' : 'off', reason: sts[j].actions[k]?.reason ?? '' }); });
+      }
+      return el('div', {}, el('p', { class: 'meta' }, 'Each SQL Server instance\'s action switches (the configuration\'s actions: allow list and the login\'s rights) and why one is off; each instance\'s Actions page does them.'),
+        grid(rows, [{ key: 'instance', fmt: (v, r) => el('a', { href: href(ctx, { tab: 'mssqlactions', instance: Number(r.instance_id) }) }, String(v)) }, { key: 'action' },
+          { key: 'state', fmt: v => badge(String(v), v === 'on' ? 'ok' : '') }, { key: 'reason', label: 'why off', wide: true }], 'No SQL Server instance.'));
+    }],
+  ];
+  let cur = new URLSearchParams(location.hash.split('?')[1] ?? '').get('atab') ?? 'servers';
+  if (!tabs.some(t => t[0] === cur)) cur = 'servers';
+  const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Admin tabs' });
+  const body = el('div', { class: 'admin-body' });
+  const btns = new Map<string, HTMLButtonElement>();
+  let seq = 0;
+  const show = async (k: string) => {
+    cur = k; const mine = ++seq;     // a slower tab's answer arriving after a later click is dropped
+    for (const [key, b] of btns) b.setAttribute('aria-pressed', String(key === k));
+    const [path, qs] = location.hash.split('?'); const q = new URLSearchParams(qs ?? ''); q.set('atab', k); history.replaceState(null, '', `${path}?${q}`);
+    body.replaceChildren(el('p', { class: 'meta' }, 'Loading...'));
+    const t = tabs.find(x => x[0] === k)!;
+    let out: HTMLElement;
+    try { out = await t[2](); } catch (e) { if (mine === seq) body.replaceChildren(el('h3', {}, t[1]), errorBox(e)); return; }
+    if (mine === seq) body.replaceChildren(el('h3', {}, t[1]), out);
+  };
+  for (const [k, label] of tabs) {
+    const b = el('button', { type: 'button', class: 'toggle', 'aria-pressed': String(k === cur) }, label) as HTMLButtonElement;
+    b.addEventListener('click', () => { void show(k); });
+    btns.set(k, b); seg.append(b);
+  }
+  sec.append(seg, body);
+  await show(cur);
+  return sec;
+}

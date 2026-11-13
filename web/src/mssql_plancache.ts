@@ -5,6 +5,7 @@
 // /api/mssql/plancache; the route and the tab's entry are the shell's.
 import { get, rowsOf, Table } from './api';
 import { lineChart } from './chart';
+import { compareSection } from './mssql_querystore';
 import { Ctx, rangeLabel, window_ } from './router';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
 
@@ -100,10 +101,17 @@ export async function mssqlPlanCacheView(ctx: Ctx): Promise<HTMLElement> {
         { key: 'plans', label: 'plans', num: true },
         { key: 'query_key', label: 'query hash' },
         { key: 'last_seen', label: 'last ran before', fmt: fmtTime },
+        // PerformanceMonitor's 'Hashes and handles' (D10, 0126): the statements cached at the last read
+        { key: 'plan_hash', label: 'plan hash (cached now)' },
+        { key: 'sql_handle', label: 'SQL handle (cached now)' },
+        { key: 'plan_handle', label: 'plan handle (cached now)' },
       ];
+      const at = top.find(r => r.handles_at != null)?.handles_at;
       out.push(el('p', { class: 'meta' }, `${top.length >= LIMIT ? `The ${fmtNum(LIMIT)} with the most CPU.` : `${fmtNum(top.length)} statements, the most CPU first.`} `
-        + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled.`),
-        grid(top, cols));
+        + `Per second over the ${fmtSecs(Math.round(Number(reads?.covered_secs ?? 0)))} the reads cover. Max grant and DOP are the largest since the plans were compiled. `
+        + `The hashes and handles are the query's statements in the cache at the last read${at ? ' (' + fmtTime(at) + ')' : ''}, one of each (PerformanceMonitor's): none for a query no longer cached.`),
+        grid(top, cols),
+        compareSection(ctx, 'plancache', { db: database || undefined, scope: noqs ? 'noqs' : undefined }));
     }
 
     const health = rowsOf(d.health);

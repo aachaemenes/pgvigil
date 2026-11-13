@@ -101,16 +101,8 @@ SELECT l.at, l.ui_user, l.client, l.op, l.schedule_id, l.send_id, l.outcome, l.d
 // reportMailOff says why report mail cannot be written on this server, "" when it can: like alert rules it rides
 // the UI login and the actions door's audit login.
 func (s *Server) reportMailOff() string {
-	switch {
-	case s.auth == nil:
-		return "report mail is behind the UI login: this server runs with -no-login"
-	case s.actions == nil:
-		return "report mail is off on this server (no actions door)"
-	case s.actions.audit == nil:
-		if s.actions.off != "" {
-			return "report mail is written through the actions door's audit login, and it is off: " + s.actions.off
-		}
-		return "report mail is written through the actions door's audit login, and it is not connected"
+	if w := s.serverOff(); w != "" {
+		return "Sending or scheduling a mail needs " + w + "."
 	}
 	return ""
 }
@@ -494,7 +486,7 @@ func serveContext() context.Context {
 // the grid tools' localStorage entries, or ""), and waits for the page's mail. slot: the browser slot it takes.
 func (s *Server) renderPage(ctx context.Context, user, route, tz, prefs string, slot chan struct{}) (mailRequest, error) {
 	if s.auth == nil {
-		return mailRequest{}, errors.New("report mail is behind the UI login: this server runs with -no-login")
+		return mailRequest{}, errors.New("report mail is behind the UI login: this server runs without it (pgvigil serve -no-login, or pgvigil demo -serve)")
 	}
 	if err := reportmail.CheckRoute(route); err != nil {
 		return mailRequest{}, err

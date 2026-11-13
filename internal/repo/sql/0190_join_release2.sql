@@ -6,7 +6,10 @@
 --   task 177 D04 (0116): nothing here (its findings are the Blocked reports tab's own; mssql_blocked_reports is purged).
 --   task 177 D13 (0119): the mssql_memory_findings arm; mssql_memory_rmon, mssql_memory_cache, mssql_plancache_type and
 --     mssql_memory_grant_query among purge()'s monthly partition parents.
+--   task 177 D30 (0118): the darling_alert_findings arm; nothing for purge().
 --   task 177 D15 (0120): the mssql_sysevents_findings arm; nothing for purge() (the events live in mssql_health_components, already a monthly parent).
+--   task 177 D14 (0124): the mssql_cpu_findings arm; mssql_counter_sample, mssql_counter_read, mssql_session_summary,
+--     mssql_session_group, mssql_session_tempdb and mssql_activity_read among purge()'s monthly partition parents.
 -- The view is 0110's with the new arms; purge() is 0110's with the new parent; apply_roles() is 0110's, unchanged.
 
 CREATE OR REPLACE VIEW pgvigil.findings AS
@@ -14,6 +17,9 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
   FROM (
     SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at
       FROM pgvigil.setting_rules WHERE hit
+    UNION ALL
+    -- task 201 (0121): the collector's own findings; instance_id NULL for the repository-wide ones
+    SELECT instance_id, severity, setting, value, is_set, suggested, platforms, detail, source, at FROM pgvigil.collector_findings
     UNION ALL
     -- pg-collector: a database's frozen-xid age past 300 million (the databases collection's xid_age)
     SELECT d.instance_id, CASE WHEN d.xid_age >= 1000000000 THEN 'critical' ELSE 'warning' END, 'database xid age',
@@ -135,15 +141,28 @@ SELECT DISTINCT ON (x.instance_id, x.setting, x.value, x.detail) x.*
     UNION ALL
     -- task 177 D13 (0119): grant timeouts, sp_Blitz 145 / 146, sp_BlitzFirst 45 / 46, the plan cache's bloat
     SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_memory', at FROM pgvigil.mssql_memory_findings
+    UNION ALL
+    -- task 177 D30 (0118): Darling's alert thresholds (PerformanceMonitor's alert set) over the stored reads
+    SELECT d.instance_id, d.severity, d.setting, d.value, d.is_set, d.suggested, d.platforms, d.detail, d.source, d.at FROM pgvigil.darling_alert_findings d
+     -- task 201 (the join fold): an instance has ONE 'server unreachable'. Where a collector that beats covers the failed
+     -- read (0121's collector_covers) the connect failure is 0121's to report - 'authentication failing' for a refused
+     -- login, 'server unreachable' after 3 failed connects in a row - with its streak and its place under 'collector or
+     -- network'; 0118's own stays for an instance no heartbeat covers (a `pgvigil collect` on a schedule)
+     WHERE NOT (d.source = 'collector' AND d.setting = 'server unreachable' AND pgvigil.collector_covers(d.instance_id, d.at))
+    UNION ALL
+    -- task 177 D14 (0124): other processes holding the CPU, a transaction open for a long time, slow data file writes
+    SELECT instance_id, severity, check_name, object, NULL::boolean, NULL::text, NULL::text, detail, 'mssql_cpu', at FROM pgvigil.mssql_cpu_findings
   ) x
  ORDER BY x.instance_id, x.setting, x.value, x.detail;
 
 CREATE OR REPLACE FUNCTION pgvigil.purge(p_days int DEFAULT 30)
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
-  n       bigint := 0;
-  v_rows  bigint;
-  v_part  record;
+  n         bigint := 0;
+  v_rows    bigint;
+  v_part    record;
+  v_started timestamptz := clock_timestamp();   -- task 201: purge_runs
+  v_dropped text[] := '{}';
 BEGIN
   FOR v_part IN
     SELECT c.relname
@@ -164,7 +183,9 @@ BEGIN
                          'mssql_pc_read', 'mssql_pc_sample', 'mssql_errorlog', 'mssql_health_components', 'mssql_trace_events',
                          'wal_state_sample', 'function_stats', 'slru_sample',
                          'mssql_waiting_summary', 'mssql_waiting_tasks', 'mssql_memory_pool',
-                         'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query')
+                         'mssql_memory_rmon', 'mssql_memory_cache', 'mssql_plancache_type', 'mssql_memory_grant_query',
+                         'mssql_counter_sample', 'mssql_counter_read', 'mssql_session_summary', 'mssql_session_group',
+                         'mssql_session_tempdb', 'mssql_activity_read')
        AND c.relname ~ '_[0-9]{6}$'
        AND (to_date(right(c.relname, 6) || '01', 'YYYYMMDD') + interval '1 month') AT TIME ZONE 'UTC' < now() - make_interval(days => p_days)
      -- by parent, then partition: the order the imports take their parents in (a DROP takes the partition, then
@@ -172,6 +193,7 @@ BEGIN
      ORDER BY p.relname, c.relname
   LOOP
     EXECUTE format('DROP TABLE pgvigil.%I', v_part.relname);
+    v_dropped := v_dropped || v_part.relname::text;
     n := n + 1;
   END LOOP;
   DELETE FROM pgvigil.job_runs WHERE start_time < now() - make_interval(days => p_days);
@@ -388,5 +410,115 @@ BEGIN
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
   DELETE FROM pgvigil.mssql_failed_logins WHERE logged_at < now() - make_interval(days => p_days);
   GET DIAGNOSTICS v_rows = ROW_COUNT; n := n + v_rows;
+  -- task 201: the run recorded (the Collector page's last purge, the 'purge not run in 2 days' finding)
+  INSERT INTO pgvigil.purge_runs (started_at, finished_at, days, partitions_dropped, rows_deleted, total)
+  VALUES (v_started, clock_timestamp(), p_days, v_dropped, n - cardinality(v_dropped), n);
   RETURN n;
 END $$;
+
+-- task 201 (0121): alert_findings with the repository-wide findings (source 'pgvigil repository', no instance: each
+-- collector's 'collector or network', 'purge not run in 2 days'), keyed as instance 0 (alert_finding_key of a NULL
+-- instance is NULL) and named 'pgvigil'. The key is pgvigil.alert_key (0121): 0059's, but for 'collector or network',
+-- whose value names a host and keeps its digits (the parents of 'pgv-1' and 'pgv-2' shared one key).
+CREATE OR REPLACE VIEW pgvigil.alert_findings AS
+SELECT pgvigil.alert_key(f.instance_id, f.source, f.setting, f.value) AS finding_key,
+       f.instance_id, coalesce(i.name, 'pgvigil') AS instance, coalesce(t.tags, '{}'::text[]) AS tags,
+       f.severity, f.setting, f.value, f.suggested, f.detail, f.source, f.at
+  FROM (SELECT x.instance_id, x.severity, x.setting, x.value, x.suggested, x.detail, x.source, x.at FROM pgvigil.findings x
+        UNION ALL
+        SELECT y.instance_id, y.severity, y.setting, y.value, y.suggested, y.detail, y.source, y.at FROM pgvigil.alert_rule_findings y) f
+  LEFT JOIN pgvigil.instances i USING (instance_id)
+  LEFT JOIN pgvigil.instance_tags_merged t USING (instance_id)
+ WHERE i.is_active OR f.source = 'pgvigil repository';
+
+-- task 201: alert_due is 0073's with these changes: a repository-wide finding (source 'pgvigil repository') goes to
+-- every channel past its severity floor, scoped channels too; an alert of a kind a shared cause explains
+-- (pgvigil.collector_shared_cause) is held - it neither fires, repeats nor resolves - while a 'collector or network' of
+-- its collector stands and the instance has had no ok collection since it began (collector_held_instances); a NEW
+-- alert of such a kind waits while its instance is in a parent that may be forming (collector_forming: until the next
+-- minute is written, 3 minutes at most) and, for the collector's own kinds, while its newest failure is inside an
+-- 'instances failing together' window of the instance (collector_in_window: one failure past it after the parent
+-- clears); every other finding is sent as it is; a repository-wide alert is never 'the instance left' and resolves
+-- once its finding has been gone for the channel's clear_after. held and forming are read once per pass.
+CREATE OR REPLACE FUNCTION pgvigil.alert_due(p_at timestamptz, p_channels jsonb)
+RETURNS TABLE (channel text, event text, finding_key text, instance_id int, instance text, severity text, source text,
+               setting text, value text, detail text, suggested text, finding_at timestamptz, first_sent_at timestamptz,
+               send_count int)
+LANGUAGE sql STABLE SET jit = off AS $$
+  WITH held AS MATERIALIZED (   -- task 201: the instances held under their collector's 'collector or network'
+    SELECT instance_id FROM pgvigil.collector_held_instances
+  ), forming AS MATERIALIZED (  -- task 201: the instances of a parent that may be forming
+    SELECT DISTINCT instance_id FROM pgvigil.collector_forming
+  ), ch AS (
+    SELECT c.name, pgvigil.severity_rank(c.min_severity) AS floor, coalesce(c.instances, '{}') AS instances,
+           coalesce(c.tags, '{}') AS tags, coalesce(c.repeat_secs, 0) AS repeat_secs,
+           coalesce(c.clear_after_secs, 600) AS clear_after_secs, coalesce(c.recovery, true) AS recovery
+      FROM jsonb_to_recordset(coalesce(p_channels, '[]'::jsonb))
+           AS c(name text, min_severity text, instances text[], tags text[], repeat_secs int, clear_after_secs int, recovery boolean)
+  ), sc AS (   -- every finding in a channel's scope, any severity
+    SELECT DISTINCT ON (ch.name, f.finding_key) ch.name AS channel, ch.floor, f.*
+      FROM ch JOIN pgvigil.alert_findings f
+        ON pgvigil.alert_in_scope(f.instance, f.tags, ch.instances, ch.tags) OR f.source = 'pgvigil repository'
+     ORDER BY ch.name, f.finding_key, pgvigil.severity_rank(f.severity) DESC, f.at DESC
+  ), m AS (    -- the ones at or above its floor that nothing holds
+    SELECT * FROM sc WHERE pgvigil.severity_rank(sc.severity) >= sc.floor
+       AND pgvigil.ack_hold(p_at, sc.instance, sc.tags, sc.finding_key, sc.source, sc.setting, sc.value) IS NULL
+       AND NOT (pgvigil.collector_shared_cause(sc.source, sc.setting)
+                AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = sc.instance_id))
+  ), s AS (
+    SELECT st.*, ch.repeat_secs, ch.recovery, ch.clear_after_secs,
+           (i.is_active IS TRUE OR st.source = 'pgvigil repository') AS instance_active,
+           EXISTS (SELECT 1 FROM pgvigil.alert_findings f WHERE f.finding_key = st.finding_key) AS present
+      FROM pgvigil.alert_state st JOIN ch ON ch.name = st.channel
+      LEFT JOIN pgvigil.instances i ON i.instance_id = st.instance_id
+     WHERE st.cleared_at IS NULL
+  )
+  SELECT m.channel,
+         CASE WHEN s.channel IS NULL THEN 'firing'
+              WHEN pgvigil.severity_rank(m.severity) > pgvigil.severity_rank(s.severity) THEN 'escalated'
+              ELSE 'repeat' END,
+         m.finding_key, m.instance_id, m.instance, m.severity, m.source, m.setting, m.value, m.detail, m.suggested, m.at,
+         s.first_sent_at, coalesce(s.send_count, 0)
+    FROM m LEFT JOIN s ON s.channel = m.channel AND s.finding_key = m.finding_key
+   WHERE CASE WHEN s.channel IS NULL   -- new: it waits while its instance's parent may be forming, or inside its window
+              THEN NOT (pgvigil.collector_shared_cause(m.source, m.setting)
+                        AND (EXISTS (SELECT 1 FROM forming WHERE forming.instance_id = m.instance_id)
+                             OR (m.source = 'pgvigil collector' AND pgvigil.collector_in_window(m.instance_id, m.at))))
+              ELSE pgvigil.severity_rank(m.severity) > pgvigil.severity_rank(s.severity)
+                   OR (s.repeat_secs > 0 AND p_at - s.last_sent_at >= make_interval(secs => s.repeat_secs)
+                       AND NOT pgvigil.ack_alert_acked(p_at, m.finding_key, s.first_sent_at)) END
+  UNION ALL
+  SELECT s.channel,
+         CASE WHEN NOT s.instance_active OR s.present THEN 'cleared'          -- the instance left, or out of scope now
+              WHEN s.recovery THEN 'resolved' ELSE 'cleared' END,
+         s.finding_key, s.instance_id, s.instance_name, s.severity, s.source, s.setting, s.value, NULL, NULL, NULL,
+         s.first_sent_at, s.send_count
+    FROM s
+   WHERE NOT EXISTS (SELECT 1 FROM sc WHERE sc.channel = s.channel AND sc.finding_key = s.finding_key)
+     AND (NOT s.instance_active OR s.present
+          OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)
+              AND s.source = 'pgvigil repository')
+          OR (s.missing_since IS NOT NULL AND p_at - s.missing_since >= make_interval(secs => s.clear_after_secs)
+              AND NOT (pgvigil.collector_shared_cause(s.source, s.setting)
+                       AND EXISTS (SELECT 1 FROM held WHERE held.instance_id = s.instance_id))
+              AND EXISTS (SELECT 1 FROM pgvigil.collection_dates d
+                           WHERE d.instance_id = s.instance_id AND d.status = 'ok' AND d.snapshot_at > s.missing_since)))
+  ORDER BY 1, 2, 6, 5
+$$;
+
+-- task 201, the join fold (review 201a finding 5): a rule that names an instance never matches a repository-wide
+-- alert. Those rows have no instance (source 'pgvigil repository': each collector's 'collector or network', 'purge not
+-- run in 2 days') and are shown under the name 'pgvigil', which a real instance may carry too - the repository's own
+-- server, monitored: a blackout for its maintenance held the parent on every channel. No name is impossible for an
+-- instance of pgvigil.yaml but a blank one, so the test is bound to the row, not to a name. 0073's function with that
+-- one change; alert_due, ack_hold and the alert page's matches all go through it.
+CREATE OR REPLACE FUNCTION pgvigil.ack_rule_matches(a pgvigil.acks, p_instance text, p_tags text[], p_finding_key text,
+                                                    p_source text, p_setting text, p_value text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT (a.instance_name IS NULL OR (a.instance_name = p_instance AND p_source IS DISTINCT FROM 'pgvigil repository'))
+     AND (a.tag IS NULL OR a.tag = ANY (coalesce(p_tags, '{}')))
+     AND (a.finding_key IS NULL OR a.finding_key = p_finding_key)
+     AND (a.check_key IS NULL OR lower(a.check_key) = lower(coalesce(p_source, '')) OR lower(a.check_key) = lower(coalesce(p_setting, '')))
+     AND (a.match_text IS NULL
+          OR strpos(lower(concat_ws(' ', p_source, p_setting, p_value)), lower(a.match_text)) > 0)
+$$;

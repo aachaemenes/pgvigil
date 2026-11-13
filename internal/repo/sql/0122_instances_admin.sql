@@ -60,10 +60,21 @@ CREATE TABLE IF NOT EXISTS pgvigil.admin_removed (
   removed_at  timestamptz NOT NULL DEFAULT now(),
   removed_by  text NOT NULL
 );
+-- It holds an insert too (the join's w9e, finding 1): a row never read is deleted at its remove, and a first read
+-- already in flight would insert it again, active. An insert takes the name's lock first, the lock the remove holds
+-- to its commit: a remove still open is waited for, so its admin_removed row is seen (its review: without it an
+-- insert that waited on the deleted row went in active).
 CREATE OR REPLACE FUNCTION pgvigil.admin_keep_removed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF NEW.is_active AND NOT OLD.is_active
-     AND EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes') THEN
+  IF TG_OP = 'INSERT' THEN
+    PERFORM pg_advisory_xact_lock(hashtext('pgvigil.instance:' || NEW.name));
+  END IF;
+  IF NEW.is_active AND (TG_OP = 'INSERT' OR NOT OLD.is_active)
+     AND (EXISTS (SELECT 1 FROM pgvigil.admin_removed r WHERE r.name = NEW.name AND r.removed_at > now() - interval '5 minutes')
+          -- a page instance disabled in the last 5 minutes stays inactive against a run in flight (enable sets it
+          -- active itself, in import_admin_instance); past that only a file instance of the name runs (the page's
+          -- holder skips disabled rows)
+          OR EXISTS (SELECT 1 FROM pgvigil.admin_instances a WHERE a.name = NEW.name AND a.disabled AND a.updated_at > now() - interval '5 minutes')) THEN
     NEW.is_active := false;
   END IF;
   RETURN NEW;
@@ -71,6 +82,73 @@ END $$;
 DROP TRIGGER IF EXISTS admin_keep_removed ON pgvigil.instances;
 CREATE TRIGGER admin_keep_removed BEFORE UPDATE OF is_active ON pgvigil.instances
   FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
+DROP TRIGGER IF EXISTS admin_keep_removed_insert ON pgvigil.instances;
+CREATE TRIGGER admin_keep_removed_insert BEFORE INSERT ON pgvigil.instances
+  FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_keep_removed();
+
+-- admin_imported: the instance holds history pgvigil import dbadash wrote, which leaves no collection_dates or
+-- mssql_instance row and no version when DBA Dash's ProductVersion is empty (the fold's review, finding 3): the three
+-- tables it writes whose index leads with instance_id (mssql_cpu_sample has none; DBA Dash's file sizes come with
+-- every instance it monitors)
+CREATE OR REPLACE FUNCTION pgvigil.admin_imported(p_id int) RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM pgvigil.mssql_database_size WHERE instance_id = p_id)
+      OR EXISTS (SELECT 1 FROM pgvigil.mssql_volume_sample WHERE instance_id = p_id)
+      OR EXISTS (SELECT 1 FROM pgvigil.mssql_job_runs WHERE instance_id = p_id)
+$$;
+
+-- a page instance's row made at its add (no version: import_admin_instance) has its history from the first read that
+-- connects: ensure_instance writes the version then, and first_seen moves to that read (the Diff page's 'history
+-- from' reads it) - the join's review of fold 1, finding 3. Never read = no version, whatever the platform: the
+-- page's form sends one (onprem, rds, ...) - the join's w9e, finding 4
+CREATE OR REPLACE FUNCTION pgvigil.admin_first_read() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  -- a row DBA Dash's import filled keeps its first_seen: its history is older than pgvigil's first read
+  IF OLD.server_version IS NULL AND NEW.server_version IS NOT NULL AND NOT pgvigil.admin_imported(NEW.instance_id) THEN
+    NEW.first_seen := now();
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS admin_first_read ON pgvigil.instances;
+CREATE TRIGGER admin_first_read BEFORE UPDATE OF server_version ON pgvigil.instances
+  FOR EACH ROW EXECUTE FUNCTION pgvigil.admin_first_read();
+
+-- The page's instances belong to one collector of a repository: the holder of this lease (one row), renewed by its
+-- holder every 15 s and taken by another collector once it is older than p_ttl_s (45 s: three renewals missed - a
+-- holder stopped or its host lost). A row, not a session advisory lock: it holds through a transaction-mode pooler
+-- (PgBouncer) and needs no TCP keepalive to free it. Every time is the repository's now(), never a host's clock.
+-- A fenced lease: each take-over bumps the generation and writes the new holder (a name unique to one process), so a
+-- holder superseded while it was away (a partition) no longer matches the row: it gets 0 at its next call and stops.
+CREATE TABLE IF NOT EXISTS pgvigil.admin_page_holder (
+  id          int PRIMARY KEY CHECK (id = 1),
+  holder      text NOT NULL,
+  generation  bigint NOT NULL,
+  beat        timestamptz NOT NULL
+);
+
+-- import_admin_page_lease: the generation p_holder holds after this call, 0 = not held (another holds it, or this
+-- holder was superseded). The holder alone decides a renewal (not the generation it last saw), so a reply lost after
+-- its commit never locks the holder out of its own lease.
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_lease(p_holder text, p_ttl_s int)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+  v_gen bigint;
+  v_ttl interval := make_interval(secs => greatest(p_ttl_s, 30));
+BEGIN
+  INSERT INTO pgvigil.admin_page_holder AS h (id, holder, generation, beat) VALUES (1, p_holder, 1, now())
+  ON CONFLICT (id) DO UPDATE
+     SET holder = EXCLUDED.holder, beat = now(),
+         generation = CASE WHEN h.holder = EXCLUDED.holder AND h.beat >= now() - v_ttl THEN h.generation ELSE h.generation + 1 END
+   WHERE h.holder = EXCLUDED.holder OR h.beat < now() - v_ttl
+  RETURNING generation INTO v_gen;
+  RETURN coalesce(v_gen, 0);
+END $$;
+
+-- import_admin_page_release: a holder stopping cleanly frees the lease at once (only the generation it holds): the
+-- row is expired, not deleted, so the next take-over still bumps the generation (it only ever rises)
+CREATE OR REPLACE FUNCTION pgvigil.import_admin_page_release(p_holder text, p_generation bigint)
+RETURNS void LANGUAGE sql AS $$
+  UPDATE pgvigil.admin_page_holder SET beat = '-infinity' WHERE holder = p_holder AND generation = p_generation
+$$;
 
 CREATE TABLE IF NOT EXISTS pgvigil.admin_audit (
   audit_id  bigserial PRIMARY KEY,
@@ -235,6 +313,15 @@ BEGIN
     VALUES (v_name, v_eng, coalesce(nullif(p_payload->>'platform', ''), 'auto'), v_ref, p_payload->>'auth', btrim(p_payload->>'host'),
             nullif(p_payload->>'port', '')::int, nullif(p_payload->>'dbname', ''), nullif(p_payload->>'login', ''), nullif(p_payload->>'options', ''), coalesce(v_tags, '{}'),
             coalesce(nullif(p_payload->>'source', ''), 'page'), p_at, v_user, p_at, v_user);
+    -- active from the add (the join's review, finding 1): a failed connect is recorded for an active row only
+    -- (0118's import_connect_failure), and ensure_instance runs only after a connect that succeeded, so a name added
+    -- again after a remove, or added while its server is down, would be silent until its server answers. A name
+    -- never collected gets its row here (the page's platform, 'auto' until the first read that connects writes the
+    -- detected one, its version and tags through ensure_instance), so its first failed connect is recorded too.
+    -- admin_keep_removed holds nothing here: the admin_removed row is gone and the page row is not disabled.
+    INSERT INTO pgvigil.instances AS i (name, platform, engine, tags)
+    VALUES (v_name, coalesce(nullif(p_payload->>'platform', ''), 'auto'), v_eng, coalesce(v_tags, '{}'))
+    ON CONFLICT (name) DO UPDATE SET is_active = true WHERE i.engine = EXCLUDED.engine;
   ELSIF v_op = 'edit' THEN
     UPDATE pgvigil.admin_instances SET platform = coalesce(nullif(p_payload->>'platform', ''), platform), dsn_ref = v_ref, auth = p_payload->>'auth',
            host = btrim(p_payload->>'host'), port = nullif(p_payload->>'port', '')::int, dbname = nullif(p_payload->>'dbname', ''),
@@ -242,12 +329,35 @@ BEGIN
      WHERE name = v_name;
   ELSIF v_op IN ('disable', 'enable') THEN
     UPDATE pgvigil.admin_instances SET disabled = (v_op = 'disable'), updated_at = p_at, updated_by = v_user WHERE name = v_name;
+    -- a disabled instance leaves the fleet pages' stale and failing checks (they read is_active); enable makes it
+    -- active again at once (the join's review, finding 1: waiting for the next run's ensure_instance left an
+    -- instance enabled while its server is down silent - no failed connect recorded, no 'server unreachable'); a
+    -- row that is missing is made as the add makes it. admin_keep_removed holds nothing: the page row is not disabled.
+    IF v_op = 'disable' THEN
+      UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
+    ELSE
+      INSERT INTO pgvigil.instances AS i (name, platform, engine, tags)
+      VALUES (v_name, coalesce(v_have.platform, 'auto'), v_have.engine, coalesce(v_have.tags, '{}'))
+      ON CONFLICT (name) DO UPDATE SET is_active = true WHERE i.engine = EXCLUDED.engine;
+    END IF;
   ELSIF v_op = 'remove' THEN
+    -- the name's lock to the commit: an insert of the name (a read in flight) waits and then sees admin_removed
+    PERFORM pg_advisory_xact_lock(hashtext('pgvigil.instance:' || v_name));
     DELETE FROM pgvigil.admin_instances WHERE name = v_name;
     -- its history stays; the fleet pages read is_active (kept false against a run in flight: admin_keep_removed)
     INSERT INTO pgvigil.admin_removed (name, removed_at, removed_by) VALUES (v_name, p_at, v_user)
       ON CONFLICT (name) DO UPDATE SET removed_at = EXCLUDED.removed_at, removed_by = EXCLUDED.removed_by;
     UPDATE pgvigil.instances SET is_active = false WHERE name = v_name;
+    -- a row the add made and no read ever reached (no version, no SQL Server read, nothing but failed connects) goes
+    -- with the page's row, so the name can be added again with the other engine (the join's w9e, finding 1); its
+    -- 'connect:' rows go with it (ON DELETE CASCADE). A read in flight cannot make it again, active: admin_keep_removed
+    -- holds an insert for 5 minutes.
+    DELETE FROM pgvigil.instances i
+     WHERE i.name = v_name AND i.server_version IS NULL
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.mssql_instance m WHERE m.instance_id = i.instance_id)
+       AND NOT EXISTS (SELECT 1 FROM pgvigil.collection_dates d WHERE d.instance_id = i.instance_id
+                        AND NOT (d.status = 'error' AND d.note LIKE 'connect: %'))
+       AND NOT pgvigil.admin_imported(i.instance_id);
     UPDATE pgvigil.admin_proposals SET state = 'proposed', instance_name = NULL, decided_at = p_at, decided_by = v_user WHERE instance_name = v_name;
   ELSIF v_op = 'tested' THEN
     UPDATE pgvigil.admin_instances SET tested_at = p_at, tested_ok = (p_payload->>'ok')::boolean, tested_detail = left(p_payload->>'detail', 1000) WHERE name = v_name;

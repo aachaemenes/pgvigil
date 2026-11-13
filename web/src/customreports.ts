@@ -11,7 +11,7 @@
 import { reloadTree } from './tree';
 import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, window_ } from './router';
-import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { badge, Col, el, errorBox, fmtBytes, fmtNum, fmtSecs, fmtTime, grid, offControl } from './ui';
 
 export interface Param { name: string; type: string; label?: string; default?: string; required?: boolean }
 export interface ColFmt { set: number; column: string; label?: string; format?: string; decimals?: number; hidden?: boolean }
@@ -21,7 +21,7 @@ export interface ReportDef {
   params: Param[]; columns: ColFmt[]; rules: Rule[]; timeout_secs: number; max_rows: number; version?: number;
 }
 export interface ResultSet { columns: string[]; types: string[]; rows: unknown[][]; truncated?: boolean }
-export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[] }
+export interface InstanceRun { instance_id?: number; instance: string; engine: string; outcome: string; error?: string; duration_ms: number; rows: number; sets: ResultSet[]; declined?: boolean }
 interface State { enabled: boolean; reason?: string }
 
 const engineName: Record<string, string> = { store: 'the repository', postgres: 'PostgreSQL instances', sqlserver: 'SQL Server instances' };
@@ -162,10 +162,14 @@ export function resultView(runs: InstanceRun[], def?: Pick<ReportDef, 'columns' 
   for (const run of runs) {
     const many = runs.length > 1 || run.instance !== 'store';
     const head = el('h3', {}, many ? `${title}: ${run.instance}` : title);
-    const kind = run.outcome === 'done' ? 'ok' : run.outcome === 'refused' ? 'warn' : 'crit';
-    box.append(head, el('p', { class: 'meta' }, badge(run.outcome, kind),
+    // declined: a community procedure looked at this server and said no in its own words (stored failed: it ran)
+    const plain = run.outcome === 'refused' || !!run.declined;
+    const kind = run.outcome === 'done' ? 'ok' : plain ? 'warn' : 'crit';
+    box.append(head, el('p', { class: 'meta' }, badge(run.declined ? 'declined' : run.outcome, kind),
       ` ${fmtNum(run.rows)} rows in ${fmtNum(run.duration_ms)} ms${run.sets.length > 1 ? `, ${run.sets.length} result sets` : ''}`));
-    if (run.error) box.append(errorBox(run.error));
+    // refused = pgvigil sent nothing (a login, a right, a setting it knows); declined = the procedure's own no: their
+    // words as a plain note; failed = the call broke: an error box
+    if (run.error) box.append(plain ? el('p', { class: 'meta refused', role: 'note' }, run.error) : errorBox(run.error));
     run.sets.forEach((s, i) => {
       if (run.sets.length > 1) box.append(el('h3', {}, `${many ? run.instance + ': ' : ''}result set ${i + 1}`));
       if (s.truncated) box.append(el('p', { class: 'meta' }, `Cut at ${fmtNum(s.rows.length)} rows (the report's row cap, or the run's 24 MB).`));
@@ -202,13 +206,20 @@ async function instances(): Promise<Inst[]> {
   return rowsOf(t).map(r => ({ id: Number(r.instance_id), name: String(r.name), engine: String(r.engine ?? 'postgres'), tags: Array.isArray(r.tags) ? (r.tags as unknown[]).map(String) : [] }));
 }
 
+// logOutcome: a log row's outcome; a community run the procedure declined in its own words is stored failed (it reached
+// the server) and shown as declined, a note, on every log that lists it
+export function logOutcome(v: unknown, r: Row): HTMLElement {
+  const o = String(v ?? ''), dec = o === 'failed' && / declined: /.test(String(r.detail ?? ''));
+  return badge(dec ? 'declined' : o, o === 'done' ? 'ok' : o === 'refused' || dec ? 'warn' : 'crit');
+}
+
 const logCols: Col[] = [
   { key: 'at', label: 'when', fmt: fmtTime },
   { key: 'ui_user', label: 'who' },
   { key: 'op', label: 'what' },
   { key: 'report_name', label: 'report' },
   { key: 'instance', label: 'ran on' },
-  { key: 'outcome', fmt: v => badge(String(v ?? ''), v === 'done' ? 'ok' : v === 'refused' ? 'warn' : 'crit') },
+  { key: 'outcome', fmt: logOutcome },
   { key: 'rows', num: true },
   { key: 'duration_ms', label: 'took (ms)', num: true },
   { key: 'detail', wide: true },
@@ -238,7 +249,10 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
   const sec = el('section', {}, el('h2', {}, 'Custom reports'));
   const msg = el('p', { class: 'meta', role: 'status' });
   const newBtn = el('button', { type: 'button' }, 'New report'), folderBtn = el('button', { type: 'button' }, 'New folder');
-  if (!d.state.enabled) { newBtn.setAttribute('disabled', ''); folderBtn.setAttribute('disabled', ''); }
+  // off: every writing control says why beside it (one line under the toolbar, their description)
+  const off = d.state.enabled ? '' : (d.state.reason || 'Saving or running a report is off on this server.');
+  const offNote = el('p', { class: 'meta off-reason' }, off);
+  if (off) for (const b of [newBtn, folderBtn]) offControl(b, off, offNote);
   newBtn.addEventListener('click', () => go({ new: '1' }));
   const folderIn = el('input', { type: 'text', 'aria-label': 'New folder path (parts joined by /)', placeholder: 'Ops/Daily' }) as HTMLInputElement;
   folderBtn.addEventListener('click', async () => {
@@ -246,7 +260,7 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
     catch (e) { msg.textContent = e instanceof Error ? e.message : String(e); }
   });
   sec.append(el('div', { class: 'toolbar' }, newBtn, el('span', {}, folderIn, ' ', folderBtn)), msg);
-  if (!d.state.enabled) sec.append(el('p', { class: 'meta' }, 'Saving and running are off here: ' + (d.state.reason ?? '')));
+  if (off) sec.append(offNote);
   sec.append(el('p', { class: 'meta' }, 'Each report is the DBA\'s own SQL (or a procedure) with its parameters, column formats and colour rules, in folders every user shares. '
     + 'A report on the repository reads pgvigil\'s own tables; a PostgreSQL or SQL Server report runs read-only on a chosen instance or on a tag\'s instances, '
     + 'under its timeout and a 2 s lock timeout, and every run is audited (the log below).'));
@@ -260,14 +274,14 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
     { key: 'description', wide: true },
     { key: 'updated_by', label: 'changed by' },
     { key: 'updated_at', label: 'changed', fmt: fmtTime },
-    { key: 'actions', label: 'actions', fmt: (_v, r) => reportActions(r as unknown as ReportDef, folders, msg, d.state.enabled) },
+    { key: 'actions', label: 'actions', fmt: (_v, r) => reportActions(r as unknown as ReportDef, folders, msg, off, offNote) },
   ];
   const tops = byFolder('');
   sec.append(el('h3', {}, 'Top level'), grid(tops as unknown as Row[], reportCols, 'No report at the top level.'));
   for (const f of folders) {
     const depth = f.split('/').length - 1;
     const h = el('h3', { style: `margin-left:${depth * 1.2}rem` }, 'Folder ' + f);
-    sec.append(h, folderActions(f, msg, d.state.enabled),
+    sec.append(h, folderActions(f, msg, off, offNote),
       grid(byFolder(f) as unknown as Row[], reportCols, 'No report in this folder.'));
   }
   if (!reports.length) sec.append(el('p', { class: 'empty' }, 'No custom report yet: New report saves the first one.'));
@@ -276,7 +290,7 @@ async function treePage(ctx: Ctx): Promise<HTMLElement> {
 }
 
 // reportActions: Open, Edit, Move to folder, Delete (a second click confirms)
-function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, on: boolean): HTMLElement {
+function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, off: string, offNote: HTMLElement): HTMLElement {
   const box = el('span', { class: 'row-actions' });
   const id = String(r.report_id);
   const edit = el('button', { type: 'button', class: 'link' }, 'Edit');
@@ -296,12 +310,12 @@ function reportActions(r: ReportDef, folders: string[], msg: HTMLElement, on: bo
     try { const x = await post<{ detail: string }>('customreports', { op: 'delete', report_id: r.report_id }); msg.textContent = x.detail; location.reload(); }
     catch (e) { msg.textContent = e instanceof Error ? e.message : String(e); }
   });
-  if (!on) for (const b of [edit, move, del]) b.setAttribute('disabled', '');
+  if (off) for (const b of [edit, move, del]) offControl(b, off, offNote);
   box.append(edit, ' ', to, dl, ' ', move, ' ', del);
   return box;
 }
 
-function folderActions(f: string, msg: HTMLElement, on: boolean): HTMLElement {
+function folderActions(f: string, msg: HTMLElement, off: string, offNote: HTMLElement): HTMLElement {
   const name = el('input', { type: 'text', value: f, 'aria-label': `New path of the folder ${f}`, size: '18' }) as HTMLInputElement;
   const ren = el('button', { type: 'button', class: 'link' }, 'Rename');
   ren.addEventListener('click', async () => {
@@ -315,8 +329,12 @@ function folderActions(f: string, msg: HTMLElement, on: boolean): HTMLElement {
   });
   const add = el('button', { type: 'button', class: 'link' }, 'New report here');
   add.addEventListener('click', () => go({ new: '1', folder: f }));
-  if (!on) for (const b of [ren, del, add]) b.setAttribute('disabled', '');
-  return el('div', { class: 'toolbar' }, el('span', {}, name, ' ', ren), del, add);
+  if (off) for (const b of [ren, del, add]) offControl(b, off, offNote);
+  // Rename waits for a new path (the same path is no rename), the words beside it
+  const renWhy = el('span', { class: 'meta off-reason' });
+  const same = () => { if (off) return; const why = name.value.trim() === f ? 'type the new path' : null; renWhy.textContent = why ?? ''; offControl(ren, why, renWhy); };
+  name.addEventListener('input', same); same();
+  return el('div', { class: 'toolbar' }, el('span', {}, name, ' ', ren, ' ', renWhy), del, add);
 }
 
 // paramInput is one parameter's field, filled from the address (p.<name>) or its default
@@ -367,20 +385,25 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
 
   const inputs = def.params.map(p => paramInput(p, q));
   const runBtn = el('button', { type: 'button' }, 'Run');
-  if (!d.state.enabled) runBtn.setAttribute('disabled', '');
+  // off with the page's own words: the server's door, or (an instance report) no active instance of its engine to run on
+  const noInst = def.engine !== 'store' && !mine.length;
+  const runWhy = !d.state.enabled ? (d.state.reason || 'Running a report is off on this server.')
+    : noInst ? `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance to run it on.` : '';
+  const runOff = el('p', { class: 'meta off-reason' }, runWhy);
+  if (runWhy) offControl(runBtn, runWhy, runOff);
   const editBtn = el('a', { href: `#/customreports?edit=${def.report_id}` }, 'Edit this report');
   const form = el('div', { class: 'toolbar' }, el('label', {}, 'Run on ', target), instBox, tagBox,
     ...def.params.map((p, i) => el('label', {}, `${p.label || p.name} `, inputs[i])), runBtn, editBtn);
   sec.append(form);
-  if (!d.state.enabled) sec.append(el('p', { class: 'meta' }, 'Running is off here: ' + (d.state.reason ?? '')));
-  if (!mine.length) sec.append(el('p', { class: 'empty' }, `No active ${def.engine === 'sqlserver' ? 'SQL Server' : 'PostgreSQL'} instance to run it on.`));
+  if (runWhy) sec.append(runOff);
+  if (def.engine === 'store' && !mine.length) sec.append(el('p', { class: 'empty' }, 'No active instance: a run reads none.'));
   const status = el('p', { class: 'meta', role: 'status' });
   const out = el('div', {});
   sec.append(status, out);
 
   const run = async () => {
     status.textContent = 'Running...';
-    runBtn.setAttribute('disabled', '');
+    offControl(runBtn, 'running', status);
     const w = window_(ctx);
     const params: Record<string, string> = {};
     def.params.forEach((p, i) => { params[p.name] = inputs[i].value; });
@@ -394,7 +417,7 @@ async function reportPage(ctx: Ctx, id: number, q: URLSearchParams): Promise<HTM
       out.replaceChildren(errorBox(e));
       status.textContent = '';
     } finally {
-      if (d.state.enabled) runBtn.removeAttribute('disabled');
+      offControl(runBtn, runWhy || null, runWhy ? runOff : status);
     }
   };
   runBtn.addEventListener('click', () => { void run(); });

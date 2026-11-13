@@ -35,6 +35,9 @@
 #      address, Subject 'pgvigil: <page> - fleet - <window>'. P03: then a page whose grids are all empty (the first of
 #      seven report pages over the window that holds no table and at least one empty grid's note) is mailed the same
 #      way and answered sent (Mail refused it before: 'nothing to mail').
+#   N2 [B3 DONE-2] Send now of a demo SQL Server instance's Community tools page with tool=sp_Blitz (its stored sample
+#      open as the page loads): answered sent; the mail's HTML carries the sample's mark (GET /api/community's
+#      sample.mark) above its grid and the workbook's Summary sheet carries it too.
 #   S  schedules: on the Jobs page a column hidden with the grid's menu holds over a reload, and Mail... > Schedule this
 #      page... adds a schedule that keeps that grid's choice (grid_prefs, one grid); three more added through POST
 #      /api/reportmail (daily at 07:00, the same three routes, the third in America/Los_Angeles), next_at = the next
@@ -433,6 +436,37 @@ waitsent $EMPTYID || fail "N: the empty page's mail not answered in 3 minutes"
 [[ $(q "select count(*) from pgvigil.report_mail_sends where send_id = $EMPTYID and outcome = 'sent' and kind = 'now'") == 1 ]] || fail "N: the empty page's mail: $(q "select send_id, outcome, error from pgvigil.report_mail_sends where send_id = $EMPTYID")"
 ok "N: $EMPTYR, every grid on it empty ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["empties"])' "$WORK/pick.json") grids), mailed with Send now (mail $EMPTYID), answered sent"
 NOWIDS="$NOWIDS $EMPTYID"
+# ---- N2 (B3 DONE-2): a demo instance's stored sample mailed: its grid carries its mark into the body and the workbook ----
+DSID=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
+[[ -n $DSID ]] || fail "N2: the demo seeded no SQL Server instance"
+[[ $(code -b "$JAR" "$U/api/community?instance=$DSID") == 200 ]] || fail "N2: GET /api/community: $(head -c 300 "$WORK/body")"
+SMARK=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(t["sample"]["mark"] for t in d["tools"] if t["id"] == "sp_Blitz"))' "$WORK/body") || fail "N2: no sample mark for sp_Blitz: $(head -c 300 "$WORK/body")"
+drive now "$WORK" 4 "#/community?i=$DSID&tool=sp_Blitz" > "$WORK/now3.json" || fail "N2: Send now of the sample: $(tail -3 "$WORK/now3.json")"
+SAMPID=$(python3 -c 'import json,sys; print(" ".join(str(v) for v in json.load(open(sys.argv[1])).values()))' "$WORK/now3.json")
+[[ $(wc -w <<<"$SAMPID") == 1 ]] || fail "N2: the sample's send: $(cat "$WORK/now3.json")"
+waitsent $SAMPID || fail "N2: the sample's mail not answered in 3 minutes"
+python3 - "$WORK/sink" "$SAMPID" "$SMARK" <<'PY' || fail "N2: see above"
+import email, glob, html, io, os, re, sys, zipfile
+from email import policy
+sink, sid, mark = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+m = next((email.message_from_binary_file(open(f, 'rb'), policy=policy.default) for f in sorted(glob.glob(os.path.join(sink, '*.eml')))
+          if email.message_from_binary_file(open(f, 'rb'), policy=policy.default)['X-Pgvigil-Report'] == str(sid)), None)
+assert m is not None, f"N2: mail {sid} is not in the sink"
+body = html.unescape(m.get_body(('html',)).get_content())
+# the mark on exactly the panel's two grids (its parameters and its sample), each line right above its table
+assert body.count(mark) == 2 and all(body.find('<table', i) - i < 400 for i in [k.start() for k in re.finditer(re.escape(mark), body)]), f"N2: the mail's body carries the mark {body.count(mark)} times (2 wanted, each above its grid)"
+xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
+z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
+xml = z.read('xl/worksheets/sheet1.xml').decode()   # the Summary sheet writes its text inline
+rows = {}
+for r, b in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', xml):
+    cells = {c: html.unescape(re.sub(r'<[^>]+>', '', t)) for c, t in re.findall(r'<c r="([A-Z]+)\d+"[^>]*>(.*?)</c>', b)}
+    if int(r) >= 12 and cells.get('A'): rows[cells['A']] = cells.get('C', '')
+bad = [n for n, note in rows.items() if (mark in note) != n.startswith('sp_Blitz')]
+assert rows and not bad and sum(1 for n in rows if n.startswith('sp_Blitz')) == 2, f"N2: the mail's workbook's Summary: {rows} (wrong: {bad})"
+print(f"ok   N2: mail {sid}: the sample of sp_Blitz on a demo instance mailed with Send now; the mark above exactly the panel's 2 grids in the body and on exactly their 2 sheets in the workbook's Summary ({mark[:60]}...)")
+PY
+NOWIDS="$NOWIDS $SAMPID"   # graded by C, H and X with the others (the one mail that carries a kit's stored words)
 
 # ---- S: schedules, brought due, rendered by two serves -------------------------------------------------------------------
 JOBS="#/jobs?from=$FROM&to=$TO"

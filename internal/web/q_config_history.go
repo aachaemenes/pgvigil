@@ -91,7 +91,7 @@ func (s *Server) JobThresholds(w http.ResponseWriter, r *http.Request) {
 	why := s.ackOff()
 	out["writable"] = why == ""
 	if why != "" {
-		out["reason"] = strings.Replace(why, "acknowledgements", "thresholds", 1)
+		out["reason"] = s.offWords(why, "thresholds")
 	}
 	for _, p := range ps {
 		t, err := s.query(r.Context(), p.sql, p.args...)
@@ -112,19 +112,11 @@ var jobThresholdKeys = []string{"fail_24h_warn", "fail_24h_crit", "fail_7d_warn"
 // JobThresholdWrite is POST /api/jobs/thresholds: one attempt to set a level's thresholds or to make it inherit.
 // The function checks every value and answers done or refused; a refused attempt is 409 with its reason.
 func (s *Server) JobThresholdWrite(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get(loginHeader) == "" {
-		writeErr(w, http.StatusForbidden, errors.New("the X-Pgvigil header is required"))
+	seat, ok := s.seat(w, r, strings.Replace(s.ackOff(), "acknowledgements", "thresholds", 1))
+	if !ok {
 		return
 	}
-	if why := s.ackOff(); why != "" {
-		writeErr(w, http.StatusForbidden, errors.New(strings.Replace(why, "acknowledgements", "thresholds", 1)))
-		return
-	}
-	user := s.sessionUser(r)
-	if user == "" {
-		writeErr(w, http.StatusUnauthorized, errors.New("login required"))
-		return
-	}
+	user := seat.user
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 8193))
 	if err != nil || len(raw) > 8192 {
 		writeErr(w, http.StatusBadRequest, errors.New("body: unreadable or over 8 KB"))
@@ -140,7 +132,7 @@ func (s *Server) JobThresholdWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// only the named keys travel on; who and from where are the server's to say
-	pay := map[string]any{"ui_user": user, "client": clientIP(r)}
+	pay := map[string]any{"ui_user": user, "client": seat.client}
 	for _, k := range append([]string{"op", "level", "instance_id", "job_name", "last_fail_is"}, jobThresholdKeys...) {
 		if v, ok := in[k]; ok && v != nil {
 			pay[k] = v
@@ -156,7 +148,11 @@ func (s *Server) JobThresholdWrite(w http.ResponseWriter, r *http.Request) {
 	// the write outlives a client that hangs up, never the 15 s
 	wctx, wcancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer wcancel()
-	if err := s.actions.audit.QueryRow(wctx, `SELECT pgvigil.import_job_threshold($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
+	pool, ok := seat.poolFor(wctx, w, scopeOfLevel(doorJobThreshold, pay))
+	if !ok {
+		return
+	}
+	if err := pool.QueryRow(wctx, `SELECT pgvigil.import_job_threshold($1, $2::jsonb)::text`, time.Now(), string(b)).Scan(&out); err != nil {
 		s.log.Error("job threshold: not written", "user", user, "err", err)
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("not written: %v", err))
 		return

@@ -42,7 +42,10 @@ const dbadash = {
   'Availability Groups': { postgres: ['replication'], sqlserver: ['availability'], dd: 'Availability Groups -> HA/DR > Availability Groups' },
   'Log Space':           { sqlserver: ['dbfiles'], dd: 'Log Space -> Storage > Files' },
   'File Space':          { sqlserver: ['dbfiles'], dd: 'File Space -> Storage > Files' },
-  'QS':                  { postgres: ['pgstate'], sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS (PostgreSQL: the statement store on Server state)' },
+  // QS is SQL Server's Query Store alone (a QS link on a PostgreSQL instance FAILS: 'the column has no read there');
+  // PostgreSQL's statement store has its own column, which SQL Server has no cell in
+  'QS':                  { sqlserver: ['mssqlqs'], dd: 'QS -> Configuration > QS' },
+  'pg_stat_statements':  { postgres: ['pgstate'], dd: 'no DBA Dash column: PostgreSQL has no Query Store, its statement store is on Server state' },
   'Custom Checks':       { postgres: ['custom'], dd: 'Custom Checks -> Checks > Custom Checks' },
   'Snapshot Age':        { postgres: ['collectiondates'], sqlserver: ['collectiondates'], dd: 'Snapshot Age -> Checks > Collection Dates' },
   'Identity Columns':    { sqlserver: ['mssqlchecks'], cv: { sqlserver: 'identity' }, dd: 'Identity Columns -> Checks > Identity Columns' },
@@ -393,7 +396,8 @@ for (const s of storageScopes.slice(2)) {
 }
 
 // P (task 177 D29): PerformanceMonitor's links and buttons on pgvigil - the instance header's name, the Summary
-// row's Silence button (the demo serves without the UI login: it is drawn off, with why), the calendar's month
+// row's Silence button (on for an instance the demo's write door carries: its confirm opens; anywhere else it is off -
+// aria-disabled, never the disabled attribute - with its reason as visible words it is described by), the calendar's month
 // buttons, a day and its drills (each to its page over that UTC day), Show as table, and the Performance page's zoom
 // chip (its x back to the range before the zoom), on an instance of each engine
 const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: 'pm', column, engine, link: column, landed, verdict: good ? `ok (${why})` : `FAIL ${why}` });
@@ -402,11 +406,14 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
     const sb = await ev(`(() => { const tr = [...document.querySelectorAll('main .summary-instances tbody tr')].find(t => t.querySelector('td')?.textContent.trim() === ${JSON.stringify(pg.name)});
       const b = tr && [...tr.querySelectorAll('button')].find(x => /^(Silence|Unsilence)$/.test(x.textContent));
       if (!b) return null; const was = location.hash; b.click(); const d = document.querySelector('dialog[open]');
-      const out = { text: b.textContent, aria: b.getAttribute('aria-label'), disabled: b.disabled, title: b.title, dialog: d ? (d.querySelector('h3,h2')?.textContent ?? d.textContent.slice(0, 80)) : '', moved: location.hash !== was };
+      // off = aria-disabled (ui.ts offControl), its reason the visible words it is described by; a click on it does nothing
+      const n = b.getAttribute('aria-describedby') ? document.getElementById(b.getAttribute('aria-describedby')) : null;
+      const out = { text: b.textContent, aria: b.getAttribute('aria-label'), off: b.getAttribute('aria-disabled') === 'true', disabledAttr: b.disabled,
+        words: n && n.offsetParent !== null ? n.textContent.trim() : '', dialog: d ? (d.querySelector('h3,h2')?.textContent ?? d.textContent.slice(0, 80)) : '', moved: location.hash !== was };
       if (d) { d.close(); d.remove(); } return out; })()`);
-    pm('root', 'Silence (Summary row)', 'postgres', sb ? `${sb.text}: ${sb.disabled ? `off - ${sb.title}` : `dialog '${sb.dialog}'`}` : 'no button',
-      !!sb && !sb.moved && sb.aria === `Silence all alerts for '${pg.name}'` && (sb.disabled ? sb.title.length > 0 : sb.dialog.startsWith(`Silence all alerts for '${pg.name}'?`)),
-      "PerformanceMonitor's Silence on the server's row: its confirm, or off with why");
+    pm('root', 'Silence (Summary row)', 'postgres', sb ? `${sb.text}: ${sb.off ? `off - ${sb.words || 'NO words on the page'}` : `dialog '${sb.dialog}'`}${sb.disabledAttr ? ' (the disabled attribute is set)' : ''}` : 'no button',
+      !!sb && !sb.moved && !sb.disabledAttr && sb.aria === `Silence all alerts for '${pg.name}'` && (sb.off ? sb.words.length > 0 && sb.dialog === '' : sb.dialog.startsWith(`Silence all alerts for '${pg.name}'?`)),
+      "PerformanceMonitor's Silence on the server's row: its confirm, or off (aria-disabled) with its reason in words");
   } else pm('root', 'Silence (Summary row)', 'postgres', 'the Summary did not draw', false, 'the Summary did not draw');
   for (const [inst, eng] of [[ms, 'sqlserver'], [pg, 'postgres']]) {
     const home = `#/summary?i=${inst.instance_id}`;
@@ -455,28 +462,69 @@ const pm = (scope, column, engine, landed, good, why) => record({ scope, kind: '
       if (!day.drills.some(([t]) => t === 'View Top Queries')) pm(`${eng} ${inst.name}`, 'calendar View Top Queries', eng, 'missing', false, 'a day with data links its top queries');
     }
     // the Performance page's zoom: a real drag across the first chart (CDP mouse events: uPlot's own drag, chart.ts
-    // sets the page's range), then the chip and its x
-    if (await go(`#/performance?i=${inst.instance_id}`)) {
-      // the header lands above the charts when its read ends: waited for before the chart is measured for the drag
+    // sets the page's range); the chip ('Zoomed: from → to ×', shown while chartkit's zoom chain holds the address) and
+    // every chart's 'Reset zoom' go to one place, the range before the FIRST drag. Three cases, each from a fresh chain:
+    // one drag from the page's preset range and the chip's x; two drags, the chip's x and a chart's link the same
+    // address; a custom range (not a drag's), a drag, then a chart's 'Reset zoom' back to that range and no chip.
+    const perf = `#/performance?i=${inst.instance_id}`;
+    const fresh = async (hash) => { await ev(`(() => { try { sessionStorage.removeItem('pgvigil.zoomBack'); } catch {} return true; })()`); return go(hash); };
+    // a real mouse click (CDP: pointerdown, mousedown, mouseup, click) at the centre of the first element a selector finds
+    const press = async (sel) => {
+      const r = await ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; e.scrollIntoView({ block: 'center' }); const b = e.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
+      if (!r) return false;
+      await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: r.x, y: r.y });
+      await cmd('Input.dispatchMouseEvent', { type: 'mousePressed', x: r.x, y: r.y, button: 'left', buttons: 1, clickCount: 1 });
+      await cmd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: r.x, y: r.y, button: 'left', buttons: 0, clickCount: 1 });
+      await sleep(300); await settled();
+      return true;
+    };
+    const drag = async () => {
+      // the header lands above the charts when its read ends: waited for before the chart is measured
       for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .inst-header')`)); i++) await sleep(100);
       const before = await ev('location.hash');
       const r0 = await ev(`(() => { const o = document.querySelector('main .charts .u-over'); if (!o) return null; o.scrollIntoView({ block: 'center' }); const b = o.getBoundingClientRect(); return { x: b.left, y: b.top + b.height / 2, w: b.width }; })()`);
-      if (r0) {
-        const x1 = r0.x + r0.w * 0.45, x2 = r0.x + r0.w * 0.8;
-        await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x1, y: r0.y });
-        await cmd('Input.dispatchMouseEvent', { type: 'mousePressed', x: x1, y: r0.y, button: 'left', buttons: 1, clickCount: 1 });
-        for (let k = 1; k <= 6; k++) { await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x1 + (x2 - x1) * k / 6, y: r0.y, button: 'left', buttons: 1 }); await sleep(30); }
-        await cmd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2, y: r0.y, button: 'left', buttons: 0, clickCount: 1 });
-      }
+      if (!r0) return null;
+      const x1 = r0.x + r0.w * 0.3, x2 = r0.x + r0.w * 0.8;
+      await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x1, y: r0.y });
+      await cmd('Input.dispatchMouseEvent', { type: 'mousePressed', x: x1, y: r0.y, button: 'left', buttons: 1, clickCount: 1 });
+      for (let k = 1; k <= 6; k++) { await cmd('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x1 + (x2 - x1) * k / 6, y: r0.y, button: 'left', buttons: 1 }); await sleep(30); }
+      await cmd('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2, y: r0.y, button: 'left', buttons: 0, clickCount: 1 });
       for (let i = 0; i < 40 && (await ev('location.hash')) === before; i++) await sleep(100);
       await settled(); await sleep(400);
-      const zoomedTo = await ev('location.hash');
-      const chip = await ev(`document.querySelector('main .zoom-chip')?.textContent ?? ''`);
-      await ev(`document.querySelector('main .zoom-chip button[aria-label="Reset zoom"]')?.click()`); await settled();
-      const after = await ev('location.hash');
-      pm(`${eng} ${inst.name}`, 'Performance zoom', eng, `drag -> ${paramsOf(zoomedTo).get('from') ? 'a custom range' : zoomedTo}; ${chip.slice(0, 60)}; x -> ${after === before ? 'the range before' : after}`,
-        !!r0 && zoomedTo !== before && !!paramsOf(zoomedTo).get('from') && chip.startsWith('Zoomed: ') && chip.includes('→') && after === before,
+      for (let i = 0; i < 50 && !(await ev(`!!document.querySelector('main .charts .u-over')`)); i++) await sleep(100);   // the zoomed page's charts drawn
+      const h = await ev('location.hash');
+      return h !== before ? h : null;
+    };
+    const chipNow = () => ev(`(() => { const c = document.querySelector('main .zoom-chip'); return c ? { text: c.textContent, x: c.querySelector('[aria-label="Reset zoom"]')?.getAttribute('href') ?? null } : null; })()`);
+    const resets = () => ev(`[...document.querySelectorAll('main .chart h3 a.chart-reset')].map(a => a.getAttribute('href'))`);
+    if (await fresh(perf)) {
+      // one drag from the preset range
+      const p0 = await ev('location.hash');
+      const z1 = await drag(); const c1 = await chipNow();
+      await press('main .zoom-chip [aria-label="Reset zoom"]');
+      const after = await ev('location.hash'), c1after = await chipNow();
+      pm(`${eng} ${inst.name}`, 'Performance zoom', eng, `drag -> ${z1 && paramsOf(z1).get('from') ? 'a custom range' : z1}; ${(c1?.text ?? 'no chip').slice(0, 60)}; x -> ${after === p0 ? 'the range before' : after}${c1after ? ', a chip still there' : ''}`,
+        !!z1 && !!paramsOf(z1).get('from') && !!c1 && c1.text.startsWith('Zoomed: ') && c1.text.includes('→') && after === p0 && !c1after,
         "a drag on a chart zooms every chart (the page's range); PerformanceMonitor's 'Zoomed: from → to' chip, its x back to the range before");
+      // two drags: the chip's x and every chart's 'Reset zoom' go to the range before the first
+      await fresh(perf);
+      const q0 = await ev('location.hash');
+      const d1 = await drag(), d2 = d1 ? await drag() : null;
+      const c2 = await chipNow(), r2 = await resets();
+      pm(`${eng} ${inst.name}`, 'zoom: two drags', eng, `chip x ${c2?.x ?? 'none'}; ${r2.length} chart link(s) ${[...new Set(r2)].join(', ')}; the start ${q0}`,
+        !!d1 && !!d2 && d2 !== d1 && c2?.x === q0 && r2.length > 0 && r2.every(h => h === q0),
+        "after two drags the chip's x and each chart's Reset zoom go to one place, the range before the first drag (design.md: 'Reset zoom' back to the range before the first drag)");
+      // a custom range that no drag made, a drag, then a chart's 'Reset zoom': back to that range, no chip
+      const custom = d1;   // the first drag's address, opened afresh: a custom range outside any chain
+      if (custom && await fresh(custom)) {
+        const c3a = await chipNow();
+        const d3 = await drag();
+        await press('main .chart h3 a.chart-reset');   // a real press: a press on it must never be taken for a drag
+        const back = await ev('location.hash'), c3 = await chipNow();
+        pm(`${eng} ${inst.name}`, 'zoom: Reset zoom from a custom range', eng, `${c3a ? 'a chip before the drag; ' : ''}drag ${d3 ? 'ok' : 'none'}; Reset zoom -> ${back === custom ? 'the custom range' : back}; chip ${c3 ? c3.text.slice(0, 40) : 'none'}`,
+          !c3a && !!d3 && back === custom && !c3,
+          "a chart's Reset zoom after a drag from a custom range goes back to that range and leaves no chip (it is never taken for a drag)");
+      } else pm(`${eng} ${inst.name}`, 'zoom: Reset zoom from a custom range', eng, 'no custom range to open', false, 'the first case left no zoomed address');
     } else pm(`${eng} ${inst.name}`, 'Performance zoom', eng, 'not drawn', false, 'the Performance page did not draw');
   }
 }

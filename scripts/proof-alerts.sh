@@ -16,10 +16,16 @@
 #
 # The demo's findings move while the proof runs (some are defined over the last minutes), so every count below is
 # graded against what the pass itself recorded (its alert_log rows, the alert rows it opened), never against a later
-# read of the findings view. [First form, before the review fold: D graded against the view and failed twice in four
+# read of the findings view alone; B's key sets are the one exception: the view read right before and right after its
+# pass, a key in one read only owed neither way. [First form, before the review fold: D graded against the view and failed twice in four
 # runs; root cause: a finding entered or left the view between the pass and the read.] Two findings are the proof's
 # own and do not move: 'autovacuum is off' (critical) on instance P, made by a non-default setting in its
 # instance_state, and P's 'database xid age', whose severity the proof sets through pgvigil.databases.
+# [B's first form compared mail's count with a count of the view's critical keys read before the pass, within 2: it
+# failed 3 of 3 runs (18 mailed, 21 counted). Root cause: the count held a key the demo's own silence holds, which no
+# pass sends, and keys of findings defined over the last minutes that left the view before the pass read it (runs 2
+# and 3 in full; run 1 named two of its three keys). B now compares key sets: the unheld critical keys read right
+# before and right after the pass against the keys mail opened.]
 #
 # Expected (written before the run; P1 = mail's alerts opened by B's pass):
 #  R. the role contract: the collector login (IN ROLE pgvigil_collector) is refused alert_due and alert_record
@@ -33,8 +39,13 @@
 #  B. channels at min_severity critical: mail (SMTP, tls none, loopback), hook (webhook json), drop and drop2 (file;
 #     drop2 recovery false), grace (file, the default clear_after 10m); redir (a webhook the listener answers with a
 #     307), dead (a webhook to a closed port), night (a file drop in its quiet hours); mail, hook, drop and drop2 with
-#     clear_after 0. One run, exit 1 (two channels did not send): mail's sent row carries P1 firing, P1 >= 2 and within
-#     2 of the view's critical count read before; the message holds P1 "[FIRING CRITICAL]" lines among them P's
+#     clear_after 0. One run, exit 1 (two channels did not send): mail's sent row carries P1 firing, P1 >= 2; the
+#     keys mail opened are P1 keys; the view's critical keys that no mute, silence or blackout holds, read right before
+#     and right after the pass (jit off, as alert_due runs), number 2 or more in both reads, and every one of them is
+#     among mail's keys; every key mail opened is unheld and critical in at least one of the two reads (a key unheld in
+#     one read only moved while the pass ran: printed, owed neither way, 3 of them at most; a key held in both reads
+#     is in neither set, so a mailed one fails); one key or more is held in both reads (the demo's silence); the
+#     message holds P1 "[FIRING CRITICAL]" lines among them P's
 #     autovacuum; hook 1 POST of P1, drop, drop2 and grace P1 files each, night 0; the five channels P1 open rows each;
 #     redir 1 refused ("redirect: not followed"), dead 1 failed ("connection refused"), no token in any error or
 #     destination; alert_channels 9 configured. [join fold] bulk (a webhook at min_severity warning on a listener path
@@ -286,7 +297,27 @@ out=$("$BIN" alerts -config "$WORK/none.yaml")
 [[ $(smtp_count) == 0 && $(http_count) == 0 ]] || fail "A: something was sent"
 ok "A: no channel, nothing sent, no sync, the log's 'none' row"
 
-NV=$(q "select count(distinct finding_key) from pgvigil.alert_findings where severity = 'critical'")
+# the view's critical keys as a critical channel without a scope is owed them now, by alert_due's own rule: a key's
+# highest severity row, and whether a mute, silence or blackout holds it at the read's time. One read of the view a
+# call, with jit off as alert_due itself runs (0073: the view takes seconds with it), so the two reads sit close to the
+# pass; one line a key: key|instance|setting|true (held) or false
+crit_keys() {
+  PGOPTIONS='-c jit=off' q "select k.finding_key || '|' || k.instance || '|' || coalesce(k.setting, '') || '|' ||
+            (pgvigil.ack_hold(clock_timestamp(), k.instance, k.tags, k.finding_key, k.source, k.setting, k.value) is not null)::text
+       from (select distinct on (f.finding_key) f.* from pgvigil.alert_findings f
+              order by f.finding_key, pgvigil.severity_rank(f.severity) desc, f.at desc) k
+      where k.severity = 'critical'" | LC_ALL=C sort -u
+}
+side() { sed -n "s/|$2\$//p" "$1"; }                                       # a crit_keys file's lines of one kind: false (unheld) or true
+keys_of() { cut -d'|' -f1 "$1" | LC_ALL=C sort -u; }                       # the keys of a crit_keys file
+names_of() {                                                               # stdin: keys; $@: crit_keys files to name them from
+  local k n out=""
+  while read -r k; do
+    n=$(cat "$@" | grep -m1 "^$k|" | cut -d'|' -f2- | tr '|' ':' || true)
+    out+="${out:+; }${n:-$k}"
+  done
+  printf '%s' "$out"
+}
 DEACT=$(q "select instance from pgvigil.alert_findings where severity = 'critical' and instance_id <> $PID group by instance order by count(distinct finding_key) desc, instance limit 1")
 
 # ---- B: the channels ---------------------------------------------------------------------------------------------------
@@ -307,13 +338,43 @@ alerts:
   - {name: bulk, kind: webhook, min_severity: warning, clear_after: 0, webhook: {url: env:PGV_PROOF_BULK, format: json}}
   - {name: night, kind: file, min_severity: critical, quiet_hours: "$(printf %02d $((10#$H0))):00-$(printf %02d $H2):00", file: {dir: $WORK/night}}
 EOF
+E0=$EPOCHREALTIME
+crit_keys > "$WORK/b.v0" || fail "B: the read of the view's critical keys before the pass failed"
+E1=$EPOCHREALTIME
 TB=$(mark)
 set +e; out=$("$BIN" alerts -config "$WORK/alerts.yaml" 2>"$WORK/b.err"); rc=$?; set -e
+TA=$(mark)
+E2=$EPOCHREALTIME
+crit_keys > "$WORK/b.v1" || fail "B: the read of the view's critical keys after the pass failed"
+E3=$EPOCHREALTIME
+for n in 0 1; do side "$WORK/b.v$n" false > "$WORK/b.s$n"; side "$WORK/b.v$n" true > "$WORK/b.h$n"; done
 echo "B: $out (exit $rc)"
 (( rc == 1 )) || fail "B: exit $rc, want 1; $(cat "$WORK/b.err")"
 [[ $out == *"quiet hours: night"* ]] || fail "B: night is not named under quiet hours"
 P1=$(logsum mail n_firing "$TB" sent)
-(( P1 >= 2 && P1 >= NV - 2 && P1 <= NV + 2 )) || fail "B: mail opened $P1, the view held $NV critical keys"
+(( P1 >= 2 )) || fail "B: mail opened $P1 alerts, want 2 or more"
+# the key sets: what mail opened against the unheld critical keys read right before and right after the pass
+q "select finding_key || '|' || coalesce(instance_name, '') || '|' || coalesce(setting, '') from pgvigil.alert_state where channel = 'mail' and cleared_at is null" > "$WORK/b.m.raw" || fail "B: the read of mail's open rows failed"
+LC_ALL=C sort -u "$WORK/b.m.raw" > "$WORK/b.m"
+keys_of "$WORK/b.s0" > "$WORK/b.k0"; keys_of "$WORK/b.s1" > "$WORK/b.k1"; keys_of "$WORK/b.m" > "$WORK/b.km"
+LC_ALL=C comm -12 "$WORK/b.k0" "$WORK/b.k1" > "$WORK/b.stable"              # unheld and critical in both reads
+LC_ALL=C sort -u "$WORK/b.k0" "$WORK/b.k1" > "$WORK/b.either"               # in one read or both
+LC_ALL=C comm -3 "$WORK/b.k0" "$WORK/b.k1" | tr -d '\t' > "$WORK/b.moved"   # in one read only
+LC_ALL=C comm -23 "$WORK/b.stable" "$WORK/b.km" > "$WORK/b.missed"
+LC_ALL=C comm -23 "$WORK/b.km" "$WORK/b.either" > "$WORK/b.stray"
+NH=$(LC_ALL=C comm -12 <(keys_of "$WORK/b.h0") <(keys_of "$WORK/b.h1") | wc -l)
+echo "B: the view's unheld critical keys: $(wc -l < "$WORK/b.k0") before the pass ($TB), $(wc -l < "$WORK/b.k1") after ($TA), $(wc -l < "$WORK/b.stable") in both; held in both reads: $NH; mail opened $(wc -l < "$WORK/b.km"); the reads took $(awk -v a="$E0" -v b="$E1" -v c="$E2" -v d="$E3" 'BEGIN { printf "%.1f s and %.1f s, the pass %.1f s", b - a, d - c, c - b }')"
+while read -r k; do
+  [[ -n $k ]] || continue
+  echo "B: moved while the pass ran: $(names_of "$WORK/b.s0" "$WORK/b.s1" <<<"$k") ($(grep -qx "$k" "$WORK/b.k0" && echo 'before only' || echo 'after only'); $(grep -qx "$k" "$WORK/b.km" && echo mailed || echo 'not mailed'))"
+done < "$WORK/b.moved"
+NM=$(wc -l < "$WORK/b.moved")
+(( NM <= 3 )) || fail "B: $NM key(s) moved while the pass ran ($TB to $TA), want 3 or fewer: each is owed neither way"
+(( NH >= 1 )) || fail "B: no critical key held by a mute, silence or blackout in both reads: the hold went unexercised"
+[[ $(wc -l < "$WORK/b.stable") -ge 2 ]] || fail "B: the view held $(wc -l < "$WORK/b.stable") unheld critical key(s) through the pass, want 2 or more"
+[[ ! -s "$WORK/b.missed" ]] || fail "B: mail did not open $(wc -l < "$WORK/b.missed") unheld critical key(s) the view held before and after the pass: $(names_of "$WORK/b.s0" < "$WORK/b.missed")"
+[[ ! -s "$WORK/b.stray" ]] || fail "B: mail opened $(wc -l < "$WORK/b.stray") key(s) the view did not hold, unheld and critical, before or after the pass: $(names_of "$WORK/b.m" < "$WORK/b.stray")"
+[[ $(wc -l < "$WORK/b.km") == "$P1" ]] || fail "B: mail's open rows hold $(wc -l < "$WORK/b.km") keys, its sent row says $P1 firing"
 [[ $(smtp_count) == 1 && $(grep -c '^\[FIRING CRITICAL\]' "$WORK/smtp/1.eml") == "$P1" ]] || fail "B: the mail's firing lines"
 grep -q "^\[FIRING CRITICAL\] $PNAME: pg_gather autovacuum = off" "$WORK/smtp/1.eml" || fail "B: P's autovacuum is not in the mail"
 [[ $(http_count) == 1 ]] || fail "B: the listener holds $(http_count) post(s)"
@@ -334,7 +395,7 @@ BULK=$(python3 -c 'import json,sys,glob; n=[len(json.load(open(p))["alerts"]) fo
 [[ $(q "select count(*) from pgvigil.alert_log where error like '%secret-token%'") == 0 ]] || fail "B: an error shows a webhook token"
 [[ $(q "select count(*) from pgvigil.alert_channels where destination like '%secret-token%'") == 0 ]] || fail "B: a destination shows a webhook token"
 [[ $(q "select count(*) from pgvigil.alert_channels where is_configured") == 9 ]] || fail "B: alert_channels"
-ok "B: $P1 critical alerts to mail (1 message), hook (1 post), drop, drop2 and grace; night held, redir refused, dead failed; bulk $PB alerts in posts of at most 25"
+ok "B: $P1 critical alerts to mail (1 message), hook (1 post), drop, drop2 and grace: every unheld critical key of both reads, none outside them ($NM moved, $NH held and not mailed); night held, redir refused, dead failed; bulk $PB alerts in posts of at most 25"
 
 # ---- C: repeat -----------------------------------------------------------------------------------------------------------
 TC=$(mark)

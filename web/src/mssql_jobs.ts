@@ -16,7 +16,8 @@ import { get, post, Row, rowsOf, Table } from './api';
 import { Ctx, rangeLabel, window_ } from './router';
 import { jsonRows, mssqlFindingCols } from './mssql_hadr';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid, tile } from './ui';
-import { jobAckCell, jobAcks, loadAckSafe } from './ack';
+import { ackOn, ackWhy, jobAckCell, jobAcks, loadAckSafe } from './ack';
+import { fleet } from './fleet';
 import { jobChartSection } from './jobs_chart';
 import { definitionCompare, definitionView, diffCounts, lineDiff, textDiffView } from './diff';
 import { mssqlJobCol } from './mssql_actions';
@@ -271,6 +272,22 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
   const d = await get<Record<'jobs', Table | null>>('jobs/history', { engine, instance: ctx.instance, ...w });
   const jobs = rowsOf(d.jobs);
   const ad = await loadAckSafe(['acks']);
+  // the grid's Acknowledge buttons share one reason when they are off - a server that writes nothing at all, or on a
+  // demo serve an instance that is not the demo's: said once above the grid, and every button points at that sentence
+  // (given to each cell: where a door stands the page's note is not a control's default)
+  // (drawn where a button will point at it: a failed job not yet acknowledged for that failure)
+  const ackIsOff = !ackOn(ad, Number(ctx.instance)) && jobs.some(j => {
+    if (j.last_failed_at == null || j.last_failed_at === '') return false;
+    const a = jobAcks(ad).get(`${String(ctx.instance)}|${String(j.name)}`);
+    return !(a && String(a.seen_state) === String(j.last_failed_at));
+  });
+  // the instance's name is read only where the sentence names it (a demo serve, an instance that is not the demo's);
+  // a failed read of the instance list leaves the sentence with 'this instance', never the page without its grid
+  const ackName = ackIsOff && ad.door
+    ? await fleet().then(f => String(f.instances.find(r => Number(r.instance_id) === Number(ctx.instance))?.name ?? 'this instance'), () => undefined) : undefined;
+  const ackWhyNot = ackIsOff ? ackWhy(ad, Number(ctx.instance), ackName) : null;
+  const ackOffP = ackWhyNot ? el('p', { class: 'meta' }, `Acknowledge is off: ${ackWhyNot}`) : null;
+  if (ackOffP && !ad.door) ad.note = ackOffP;
   const ackRedraw = () => window.dispatchEvent(new HashChangeEvent('hashchange'));
   const th = await loadThresholds(Number(ctx.instance));
   const statusOf = new Map(rowsOf(th?.status).map(r => [`${String(r.scheduler)}|${String(r.job_id)}`, r]));
@@ -340,7 +357,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
       fmt: (v, r) => r.dropped_at ? el('span', {}, badge(`dropped ${fmtTime(r.dropped_at)}`, 'warn'), v ? ` (last run ${String(v)})` : '') : outcomeBadge(v) },
     ...(th ? [statusCol(th)] : []),
     { key: 'last_failure', label: 'last failure', fmt: (v, r) => v == null ? '' : el('span', {}, `${fmtTime(r.last_failed_at)}${r.failed_step ? ` step ${String(r.failed_step)}` : ''}: `, oneLine(v)) },
-    { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), r.last_failed_at, ackRedraw) },
+    { key: '_ack', label: 'acknowledged', fmt: (_v, r) => jobAckCell(ad, Number(ctx.instance), String(r.name), r.last_failed_at, ackRedraw, ackOffP ?? undefined, ackName) },
     { key: 'next_run', label: 'next run', fmt: (v, r) => v ? fmtTime(v) : r.dropped_at || r.enabled === false ? '' : !r.schedule ? 'no schedule' : '' },
     { key: 'runs', num: true },
     { key: 'failures', num: true, cls: (v, r) => Number(v) > 0 ? (jobAcked(r) ? '' : 'status crit') : 'status ok',
@@ -350,7 +367,7 @@ export async function jobsPanel(ctx: Ctx, engine: 'pg' | 'mssql', extra: Col[] =
     { key: 'changes', label: 'changed', num: true, fmt: (v, r) => Number(v) > 0 ? `${fmtNum(v)} (${fmtTime(r.last_change_at)})` : '' },
     ...extra,
   ];
-  box.append(grid(jobs, cols, 'No job on this server.'), detail);
+  box.append(...(ackOffP ? [ackOffP] : []), grid(jobs, cols, 'No job on this server.'), detail);
   if (jobs.length) detail.append(el('p', { class: 'meta' }, 'Pick a job for its history and its versions (the script, the diff, the job as it was).'));
   return box;
 }
@@ -379,6 +396,11 @@ const runningCols: Col[] = [
   { key: 'name', label: 'job' }, { key: 'running_since', label: 'started', fmt: fmtTime },
   { key: 'running_s', label: 'running for (at the read)', num: true, fmt: fmtSecs },
   { key: 'avg_duration_s', label: 'average of its good runs', num: true, fmt: fmtSecs },
+  // task 177 D14: PerformanceMonitor's Running Jobs columns (the 95th percentile of the good runs, the run so far
+  // against the average)
+  { key: 'p95_duration_s', label: 'p95 of its good runs', num: true, fmt: fmtSecs },
+  { key: 'pct_of_avg', label: '% of average', num: true, fmt: v => v == null ? '' : `${fmtNum(v)} %` },
+  { key: 'good_runs', label: 'good runs (31 days)', num: true },
   { key: 'running_after_step', label: 'last step finished', num: true },
 ];
 

@@ -22,7 +22,7 @@ import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showM
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
 export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string }   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
-export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string }   // note: the page's 'the newest N of M' line above the grid
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; sample?: string }   // note: the page's 'the newest N of M' line above the grid   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note, the mail's line above the grid and a CSV's first line
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -265,7 +265,8 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
       if (Array.isArray(cols) && cols.length) {
         // DBA Dash writes the visible columns' headers only: a column the grid tools hide stays out here too
         const all = cols.map(String), hid = hiddenOfEmpty(e, all);
-        out.push({ sec: { name: heading, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: text(e) || undefined }, el: e });
+        const sample = e.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
+        out.push({ sec: { name: heading, cols: all.filter((_, j) => !hid.has(j)), rows: [], note: [sample, text(e)].filter(Boolean).join('; ') || undefined, sample }, el: e });
       }
       continue;
     }
@@ -276,9 +277,11 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
     const box = wrap.parentElement?.classList.contains('grid-box') ? wrap.parentElement : wrap;
     const prev = box.previousElementSibling;
     const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
-    const notes = [prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
+    // a stored sample's grid carries its mark first: never read as the instance's own data in a file or a mail
+    const sample = t.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
+    const notes = [sample ?? '', prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;
-    out.push({ sec: { name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note }, el: t });
+    out.push({ sec: { name: heading, ...(t.classList.contains('grid') ? readGrid(t) : readProps(t)), note, sample }, el: t });
   }
   return out;
 }
@@ -561,7 +564,8 @@ export function csv(s: Section): string {
     return /^[=+\-@\t\r]/.test(c.v) ? "'" + c.v : c.v;
   };
   const q = (v: string) => /[",\r\n]|^\s|\s$/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
-  return '﻿' + [s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
+  // a stored sample's file starts with its mark, a line of its own above the header
+  return '﻿' + [...(s.sample ? [q(s.sample)] : []), s.cols.map(q).join(','), ...s.rows.map(r => r.map(c => q(val(c))).join(','))].join('\r\n') + '\r\n';
 }
 
 // ---- zip (the .xlsx container and the CSV bundle) ---------------------------------------------------------
