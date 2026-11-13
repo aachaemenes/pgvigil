@@ -117,7 +117,15 @@ that no collector, serve or Grafana of another host still uses that database: th
 
 Named on every run, never removed:
 
-- Without `-drop-repository`: the repository, its roles and its scheduled work. The instances added in the page
+- Without `-drop-repository`: the repository, its roles and its scheduled work. This host is retired in it as a
+  collector (`pgvigil.import_collector_retire`, called on the service's own repository login once the service is
+  gone; a plain `pgvigil uninstall` does the same), so no *collector or network* alert stands for a host that is no
+  longer a collector. It follows the service's removal, also when a later step of the uninstall fails. When the
+  repository could not be reached, or the service's repository connection cannot be read the way the service reads it
+  (a drop-in of the unit that sets `Environment=`, `EnvironmentFile=`, `User=` or `ExecStart=`), the uninstall says so
+  and names the statement: run `SELECT pgvigil.import_collector_retire('<this host's name>')` as the repository owner.
+  `-dry-run` does not list this step. Its instances stay listed until another collector reads them or they are
+  removed. The instances added in the page
   (Admin > Instances) stay in it, active, while their passwords go with this host's credential folders: another
   collector of the same repository then reports each of them unreachable. Remove them in the page first when the
   repository lives on.

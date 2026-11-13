@@ -126,7 +126,7 @@ SELECT a.ack_id, a.kind, a.instance_id, a.instance_name AS instance, a.check_key
 const sqlAlertFixes = `
 WITH k AS (SELECT DISTINCT s.finding_key FROM pgvigil.alert_state s),
 fx AS MATERIALIZED (
-  SELECT pgvigil.alert_finding_key(coalesce(y.instance_id, 0), y.source, y.setting, y.value) AS finding_key, y.suggested,
+  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.suggested,
          pgvigil.finding_fix(i.engine, y.source, y.instance_id, y.setting, y.is_set, y.suggested, y.detail) AS fix,
          pgvigil.severity_rank(y.severity) AS sev
     FROM pgvigil.findings y
@@ -141,7 +141,7 @@ SELECT DISTINCT ON (fx.finding_key) fx.finding_key, fx.fix, fx.suggested
 // The alert's page (k=<finding key>): the finding as it stands now (none = gone from the findings) with its fix
 const sqlAlertCard = `
 WITH f AS MATERIALIZED (
-  SELECT pgvigil.alert_finding_key(coalesce(y.instance_id, 0), y.source, y.setting, y.value) AS finding_key, y.instance_id, y.severity,
+  SELECT pgvigil.alert_key(y.instance_id, y.source, y.setting, y.value) AS finding_key, y.instance_id, y.severity,
          y.source, y.setting, y.value, y.suggested, y.detail, y.at, y.is_set
     FROM pgvigil.findings y
   UNION ALL

@@ -61,40 +61,6 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	if *dsn != "" {
 		d = config.Resolve(*dsn)
 	}
-	// task 201: the collector watchdog - while no collector has beaten for 5 minutes, serve runs the alert pass (its
-	// advisory lock keeps one sender) on the alerts login, so 'collector or network' goes out
-	if ast, aerr := alerts.LoadFile(*path); aerr == nil && len(ast.Channels) > 0 {
-		adsn := ast.DSN()
-		if adsn == "" {
-			adsn = cfg.Repository.DSN()
-		}
-		apool, perr := pgxpool.New(ctx, adsn)
-		if perr == nil {
-			pctx, pcancel := context.WithTimeout(ctx, 20*time.Second)
-			perr = apool.Ping(pctx) // a pool connects when first used: the watchdog is on only once the alerts login answered
-			pcancel()
-			if perr != nil {
-				apool.Close()
-			}
-		}
-		if perr == nil {
-			defer apool.Close()
-			go collect.Watchdog(ctx, log, d, func(c context.Context) error {
-				_, _, err := alerts.Pass(c, apool, ast.Channels, time.Now(), nil)
-				return err
-			})
-		} else {
-			collect.SetWatchdogOff("the alerts login: " + perr.Error())
-			log.Warn("collector watchdog off: the alerts login", "err", perr)
-		}
-	} else {
-		why := "serve's configuration has no alerts: list, so no alert goes out while a collector is down"
-		if aerr != nil {
-			why = "serve's alerts: list did not load: " + aerr.Error()
-		}
-		collect.SetWatchdogOff(why)
-		log.Warn("collector watchdog off: " + why)
-	}
 	if strings.TrimSpace(d) == "" {
 		src := "repository.dsn " + cfg.Repository.DSNRaw
 		if *dsn != "" {
@@ -137,6 +103,49 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
+	}
+	// task 201: the collector watchdog - while no collector has beaten for 5 minutes, serve runs the alert pass (its
+	// advisory lock keeps one sender) on the alerts login, so 'collector or network' goes out. It starts after the
+	// configuration checks and the listen, and connects inside its goroutine: an alerts host that does not answer
+	// never delays serve, and an empty connection string never reaches a connect (without an alerts_dsn it is the
+	// repository serve itself reads, -dsn included: checked above). A failing channel is backed off as the collector's
+	// own alert loop backs it off (collect.ChannelBackoff).
+	if ast, aerr := alerts.LoadFile(*path); aerr == nil && len(ast.Channels) > 0 {
+		adsn := ast.DSN()
+		if adsn == "" {
+			adsn = d
+		}
+		go func() {
+			apool, perr := pgxpool.New(ctx, adsn)
+			if perr == nil {
+				pctx, pcancel := context.WithTimeout(ctx, 20*time.Second)
+				perr = apool.Ping(pctx) // a pool connects when first used: the watchdog is on only once the alerts login answered
+				pcancel()
+				if perr != nil {
+					apool.Close()
+				}
+			}
+			if perr != nil {
+				collect.SetWatchdogOff("the alerts login: " + perr.Error())
+				log.Warn("collector watchdog off: the alerts login", "err", perr)
+				return
+			}
+			defer apool.Close()
+			var back collect.ChannelBackoff
+			collect.Watchdog(ctx, log, d, func(c context.Context) error {
+				now := time.Now()
+				_, outcome, err := alerts.Pass(c, apool, ast.Channels, now, back.Skip(now))
+				back.Note(now, outcome)
+				return err
+			})
+		}()
+	} else {
+		why := "serve's configuration has no alerts: list, so no alert goes out while a collector is down"
+		if aerr != nil {
+			why = "serve's alerts: list did not load: " + aerr.Error()
+		}
+		collect.SetWatchdogOff(why)
+		log.Warn("collector watchdog off: " + why)
 	}
 	var hosts []string // nil = any Host (beyond loopback the certificate names the server)
 	if loopback {
