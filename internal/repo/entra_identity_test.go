@@ -184,3 +184,65 @@ func TestEntraIdentitySourceOnAStore(t *testing.T) {
 		t.Fatalf("the approved row: auth %q, proposal %q, %v", auth, state, err)
 	}
 }
+
+// On a migrated store (PGVIGIL_REPO_TEST_DSN, skipped without it), the join's review 3e: a proposal keeps the
+// platform word its cloud gave when it is one of its engine's (admin_read_rows), and the approve gives the instance
+// that platform - a Cloud SQL for SQL Server proposal is 'cloudsql', never 'auto' - while a proposal with none stays
+// 'auto' until the first read.
+func TestProposalPlatformOnAStore(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var kept string
+	if err := pool.QueryRow(ctx, `SELECT string_agg(server || '=' || coalesce(platform, '-'), ' ' ORDER BY server) FROM pgvigil.admin_read_rows($1::jsonb)`,
+		`[{"server":"a","engine":"sqlserver","host":"h1","platform":"cloudsql"},{"server":"b","engine":"sqlserver","host":"h2","platform":"aurora"},
+		  {"server":"c","engine":"postgres","host":"h3","platform":"aurora"},{"server":"d","engine":"postgres","host":"h4"}]`).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if kept != "a=cloudsql b=- c=aurora d=-" {
+		t.Fatalf("admin_read_rows kept %q; want a=cloudsql b=- (aurora is no SQL Server word) c=aurora d=-", kept)
+	}
+	n := time.Now().UnixNano() % 1000000000
+	src, i1, i2 := fmt.Sprintf("plat-src-%d", n), fmt.Sprintf("plat-gcs-%d", n), fmt.Sprintf("plat-list-%d", n)
+	defer func() {
+		for _, q := range []string{`DELETE FROM pgvigil.instances WHERE name IN ($1, $2)`, `DELETE FROM pgvigil.admin_instances WHERE name IN ($1, $2)`} {
+			if _, err := pool.Exec(context.Background(), q, i1, i2); err != nil {
+				t.Error(err)
+			}
+		}
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.admin_sources WHERE name = $1`, src); err != nil {
+			t.Error(err)
+		}
+	}()
+	var o, d string
+	if err := pool.QueryRow(ctx, `SELECT r->>'outcome', coalesce(r->>'detail', '') FROM pgvigil.import_admin_source(now(), $1::jsonb) AS t(r)`,
+		fmt.Sprintf(`{"op":"add","ui_user":"test","name":%q,"kind":"sqlserver_list","ref":"/etc/pgvigil/servers.csv","auth":"windows","every_s":"3600"}`, src)).Scan(&o, &d); err != nil || o != "done" {
+		t.Fatalf("the source: %s %q %v", o, d, err)
+	}
+	for _, c := range []struct{ inst, server, plat, want string }{{i1, "gcs1", "cloudsql", "cloudsql"}, {i2, "list1", "", "auto"}} {
+		var id int64
+		if err := pool.QueryRow(ctx, `INSERT INTO pgvigil.admin_proposals (source, server, engine, host, port, platform) VALUES ($1, $2, 'sqlserver', $2 || '.example', 1433, nullif($3, ''))
+		                               RETURNING proposal_id`, src, c.server, c.plat).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT r->>'outcome', coalesce(r->>'detail', '') FROM pgvigil.import_admin_decision(now(), $1::jsonb) AS t(r)`,
+			fmt.Sprintf(`{"op":"approve","ui_user":"test","proposal_id":"%d","name":%q,"dsn_ref":"file:/x/%s.dsn","auth":"windows"}`, id, c.inst, c.inst)).Scan(&o, &d); err != nil || o != "done" {
+			t.Fatalf("the approve of %s: %s %q %v", c.server, o, d, err)
+		}
+		var pa, pi string
+		if err := pool.QueryRow(ctx, `SELECT a.platform, i.platform FROM pgvigil.admin_instances a JOIN pgvigil.instances i USING (name) WHERE a.name = $1`, c.inst).Scan(&pa, &pi); err != nil {
+			t.Fatal(err)
+		}
+		if pa != c.want || pi != c.want {
+			t.Fatalf("%s approved as platform %q (page) / %q (instances); want %q", c.server, pa, pi, c.want)
+		}
+	}
+}

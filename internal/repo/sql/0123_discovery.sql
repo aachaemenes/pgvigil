@@ -38,6 +38,9 @@ ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS note text;
 ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS entra_only boolean NOT NULL DEFAULT false;
 ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS serverless text;
 ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS auto_pause boolean NOT NULL DEFAULT false;
+-- the cloud's own word for the server (rds, aurora, azure, cloudsql, alloydb; azuresqldb, azuresqlmi): an approved
+-- proposal's instance starts with it, never 'auto' when the source knows (the join's review 3e); NULL from a list source
+ALTER TABLE pgvigil.admin_proposals ADD COLUMN IF NOT EXISTS platform text;
 ALTER TABLE pgvigil.admin_proposals DROP CONSTRAINT IF EXISTS admin_proposals_source_server_key;
 CREATE UNIQUE INDEX IF NOT EXISTS admin_proposals_key ON pgvigil.admin_proposals (source, server, (coalesce(resource_id, '')));
 
@@ -199,7 +202,7 @@ BEGIN
   END IF;
   IF v_why IS NULL AND v_op = 'approve' THEN
     v_res := pgvigil.import_admin_instance(p_at, jsonb_build_object('op', 'add', 'ui_user', v_user, 'client', v_cli,
-      'name', p_payload->>'name', 'engine', v_p.engine, 'dsn_ref', p_payload->>'dsn_ref', 'auth', coalesce(nullif(p_payload->>'auth', ''), v_s.auth), 'host', v_p.host,
+      'name', p_payload->>'name', 'engine', v_p.engine, 'platform', v_p.platform, 'dsn_ref', p_payload->>'dsn_ref', 'auth', coalesce(nullif(p_payload->>'auth', ''), v_s.auth), 'host', v_p.host,
       'port', v_p.port, 'dbname', v_p.dbname, 'login', coalesce(nullif(p_payload->>'login_used', ''), v_p.login), 'tags', to_jsonb(v_p.tags), 'source', v_s.kind || ':' || v_s.name,
       'file_names', p_payload->'file_names'));
     IF v_res->>'outcome' <> 'done' THEN
@@ -284,14 +287,17 @@ END $$;
 DROP FUNCTION IF EXISTS pgvigil.admin_read_rows(jsonb);
 CREATE FUNCTION pgvigil.admin_read_rows(p_rows jsonb)
 RETURNS TABLE (server text, engine text, host text, port int, dbname text, login text, display_name text, tags text[],
-               resource_id text, alt_host text, master_user text, note text, entra_only boolean, serverless text, auto_pause boolean)
+               resource_id text, alt_host text, master_user text, note text, entra_only boolean, serverless text, auto_pause boolean, platform text)
 LANGUAGE sql IMMUTABLE AS $$
   SELECT left(r.server, 300), min(r.engine), min(left(r.host, 300)), min(r.port), min(r.dbname), min(r.login), min(r.display_name),
          coalesce(array_agg(DISTINCT t ORDER BY t) FILTER (WHERE btrim(t) <> ''), '{}'),
          nullif(left(r.resource_id, 500), ''), min(left(r.alt_host, 300)), min(r.master_user), min(left(r.note, 500)),
-         coalesce(bool_or(r.entra_only), false), min(left(r.serverless, 200)), coalesce(bool_or(r.auto_pause), false)
+         coalesce(bool_or(r.entra_only), false), min(left(r.serverless, 200)), coalesce(bool_or(r.auto_pause), false),
+         -- a platform word of the server's engine only (internal/config's lists); anything else is left to the first read
+         CASE WHEN (min(r.engine) = 'postgres' AND min(r.platform) IN ('rds', 'aurora', 'azure', 'cloudsql', 'alloydb'))
+                OR (min(r.engine) = 'sqlserver' AND min(r.platform) IN ('rds', 'azuresqldb', 'azuresqlmi', 'cloudsql')) THEN min(r.platform) END
     FROM jsonb_to_recordset(coalesce(p_rows, '[]')) AS r(server text, engine text, host text, port int, dbname text, login text, display_name text, tags jsonb,
-                                                         resource_id text, alt_host text, master_user text, note text, entra_only boolean, serverless text, auto_pause boolean)
+                                                         resource_id text, alt_host text, master_user text, note text, entra_only boolean, serverless text, auto_pause boolean, platform text)
     LEFT JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(r.tags) = 'array' THEN r.tags ELSE '[]' END) t ON true
    WHERE coalesce(r.server, '') <> '' AND r.engine IN ('postgres', 'sqlserver') AND coalesce(r.host, '') <> ''
    GROUP BY left(r.server, 300), nullif(left(r.resource_id, 500), '')
@@ -358,14 +364,14 @@ BEGIN
   SELECT count(*) INTO v_back FROM pgvigil.admin_proposals p JOIN pgvigil.admin_read_rows(p_rows) a ON a.server = p.server AND coalesce(p.resource_id, '') = coalesce(a.resource_id, '')
    WHERE p.source = p_source AND p.gone;
   INSERT INTO pgvigil.admin_proposals AS p (source, server, engine, host, port, dbname, login, display_name, tags, first_seen, last_seen,
-                                           resource_id, alt_host, master_user, note, entra_only, serverless, auto_pause)
+                                           resource_id, alt_host, master_user, note, entra_only, serverless, auto_pause, platform)
   SELECT p_source, a.server, a.engine, a.host, a.port, a.dbname, a.login, a.display_name, a.tags, p_at, p_at,
-         a.resource_id, a.alt_host, a.master_user, a.note, a.entra_only, a.serverless, a.auto_pause FROM pgvigil.admin_read_rows(p_rows) a
+         a.resource_id, a.alt_host, a.master_user, a.note, a.entra_only, a.serverless, a.auto_pause, a.platform FROM pgvigil.admin_read_rows(p_rows) a
   ON CONFLICT (source, server, (coalesce(resource_id, ''))) DO UPDATE
      SET engine = EXCLUDED.engine, host = EXCLUDED.host, port = EXCLUDED.port, dbname = EXCLUDED.dbname, login = EXCLUDED.login,
          display_name = EXCLUDED.display_name, tags = EXCLUDED.tags, last_seen = p_at, gone = false, gone_at = NULL,
          alt_host = EXCLUDED.alt_host, master_user = EXCLUDED.master_user, note = EXCLUDED.note, entra_only = EXCLUDED.entra_only,
-         serverless = EXCLUDED.serverless, auto_pause = EXCLUDED.auto_pause;
+         serverless = EXCLUDED.serverless, auto_pause = EXCLUDED.auto_pause, platform = EXCLUDED.platform;
   UPDATE pgvigil.admin_proposals p SET gone = true, gone_at = p_at
    WHERE p.source = p_source AND NOT p.gone
      AND NOT EXISTS (SELECT 1 FROM pgvigil.admin_read_rows(p_rows) a WHERE a.server = p.server AND coalesce(a.resource_id, '') = coalesce(p.resource_id, ''))

@@ -487,6 +487,10 @@ type Proposal struct {
 	EntraOnly  bool              `json:"entra_only,omitempty"`
 	Serverless string            `json:"serverless,omitempty"`
 	AutoPause  bool              `json:"auto_pause,omitempty"`
+	// Platform: what the cloud says the server is, the configuration's platform word (rds, aurora, azure, cloudsql,
+	// alloydb for PostgreSQL; rds, azuresqldb, azuresqlmi, cloudsql for SQL Server) - an approved proposal's instance
+	// starts with it, never 'auto' when the source knows (the join's review 3e); empty for the list and CMS sources
+	Platform string `json:"platform,omitempty"`
 }
 
 // SplitHostPort reads "host", "host,port" (SQL Server's form), "host:port" and "[v6]:port"; a named instance

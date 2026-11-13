@@ -200,6 +200,13 @@ func TestAWSProposesEachInstanceByItsOwnEndpoint(t *testing.T) {
 		keys = append(keys, strings.TrimPrefix(p.Server, pre)+"|"+p.Host+"|"+strings.Join(p.Tags, ","))
 		byKey[strings.TrimPrefix(p.Server, pre)] = p
 	}
+	// the platform the approve gives the instance (the join's review 3e): Aurora's engines aurora, RDS's rds (a Multi-AZ
+	// DB cluster's members too, and SQL Server)
+	for id, want := range map[string]string{"pg-a-1": "aurora", "pg-a-2": "aurora", "maz-1": "rds", "sql1": "rds"} {
+		if got := byKey[id].Platform; got != want {
+			t.Errorf("%s: platform %q, want %q", id, got, want)
+		}
+	}
 	base := "account:111122223333,cloud:aws,"
 	want := []string{
 		"maz-1|maz-1.x|" + base + "cluster:maz,region:us-east-2,role:writer",
@@ -523,6 +530,12 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 	if o2 := byKey[pre+"sql:sqlsrv/otherdb"]; o2.EntraOnly || !o2.AutoPause || !strings.Contains(o2.Serverless, "pauses after 60 min") {
 		t.Fatalf("a serverless database: %+v", o2)
 	}
+	// the platform the approve gives the instance (the join's review 3e)
+	for k, want := range map[string]string{"sql:sqlsrv/appdb": "azuresqldb", "sql:sqlsrv/otherdb": "azuresqldb", "mi:mi1": "azuresqlmi", "pg:pgf": "azure"} {
+		if got := byKey[pre+k].Platform; got != want {
+			t.Errorf("%s: platform %q, want %q", k, got, want)
+		}
+	}
 	if pg := byKey[pre+"pg:pgf"]; pg.Engine != config.EnginePostgres || pg.Port != 5432 || pg.DBName != "postgres" || !pg.EntraOnly {
 		t.Fatalf("the flexible server %+v", pg)
 	}
@@ -711,6 +724,12 @@ func TestGCPSignsAKeyListsBothAPIsAndNotesWhatItCannotSee(t *testing.T) {
 	// or partial one is
 	if got := strings.Join(rd.Unseen, " "); got != "gcp:p1:alloydb: gcp:p3:alloydb: gcp:p3:sql: gcp:p4:alloydb: gcp:p5:alloydb: gcp:p5:sql: gcp:p7:alloydb: gcp:p7:sql:" {
 		t.Fatalf("unseen %q", got)
+	}
+	// the platform the approve gives the instance (the join's review 3e): Cloud SQL's both engines cloudsql, AlloyDB alloydb
+	for k, want := range map[string]string{"gcp:p1:sql:ms22": "cloudsql", "gcp:p1:sql:pg16": "cloudsql", "gcp:p1:alloydb:us-central1/c1/i1": "alloydb"} {
+		if got := byKey[k].Platform; got != want {
+			t.Errorf("%s: platform %q, want %q", k, got, want)
+		}
 	}
 	rr, a1 := byKey["gcp:p1:sql:pg16-rr"], byKey["gcp:p1:alloydb:us-central1/c1/i1"]
 	if strings.Join(rr.Tags, " ") != "cloud:gcp project:p1 region:us-west1 role:replica source-instance:pg16" || rr.ResourceID != "https://x/projects/p1/instances/pg16-rr@2026-11-01T00:00:00Z" {

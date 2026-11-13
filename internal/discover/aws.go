@@ -751,7 +751,11 @@ func awsRegion(ctx context.Context, mk func(context.Context, string) (rdsAPI, er
 					sv = "Aurora Serverless v2"
 				}
 			}
-			out = append(out, config.Proposal{Server: "aws:" + account + ":" + region + ":instance:" + id, Engine: eng, Host: aws.ToString(in.Endpoint.Address),
+			plat := "rds" // RDS for PostgreSQL or SQL Server; Aurora's engines are aurora-*
+			if strings.HasPrefix(aws.ToString(in.Engine), "aurora") {
+				plat = "aurora"
+			}
+			out = append(out, config.Proposal{Server: "aws:" + account + ":" + region + ":instance:" + id, Engine: eng, Platform: plat, Host: aws.ToString(in.Endpoint.Address),
 				Port: int(aws.ToInt32(in.Endpoint.Port)), DBName: db, DisplayName: display, MasterUser: master, ResourceID: aws.ToString(in.DbiResourceId),
 				Tags: sortedTags(tags...), CloudTags: cloud, Serverless: sv, AutoPause: pause})
 		}

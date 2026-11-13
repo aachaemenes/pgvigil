@@ -402,7 +402,7 @@ func azureProposal(x azureRow) (config.Proposal, string) {
 			return p, server + "/" + x.Name + ": a dedicated SQL pool (left out)"
 		}
 		p.Server = "azure:" + sub + ":sql:" + server + "/" + strings.ToLower(x.Name)
-		p.Engine, p.Port, p.DBName, p.DisplayName = config.EngineSQLServer, 1433, x.Name, server+"/"+x.Name
+		p.Engine, p.Port, p.DBName, p.DisplayName, p.Platform = config.EngineSQLServer, 1433, x.Name, server+"/"+x.Name, "azuresqldb"
 		if x.DatabaseID != "" { // the database's own GUID: a database made again under the name is a new one
 			p.ResourceID = "databaseId:" + strings.ToLower(x.DatabaseID)
 		}
@@ -420,13 +420,13 @@ func azureProposal(x azureRow) (config.Proposal, string) {
 		}
 	case "microsoft.sql/managedinstances":
 		p.Server = "azure:" + sub + ":mi:" + strings.ToLower(x.Name)
-		p.Engine, p.Port, p.DisplayName = config.EngineSQLServer, 1433, x.Name
+		p.Engine, p.Port, p.DisplayName, p.Platform = config.EngineSQLServer, 1433, x.Name, "azuresqlmi"
 		if x.DNSZone != "" { // the DNS zone a Managed Instance gets at its creation
 			p.ResourceID = strings.ToLower(x.Name) + "@" + strings.ToLower(x.DNSZone)
 		}
 	case "microsoft.dbforpostgresql/flexibleservers":
 		p.Server = "azure:" + sub + ":pg:" + strings.ToLower(x.Name)
-		p.Engine, p.Port, p.DBName, p.DisplayName = config.EnginePostgres, 5432, "postgres", x.Name
+		p.Engine, p.Port, p.DBName, p.DisplayName, p.Platform = config.EnginePostgres, 5432, "postgres", x.Name, "azure"
 	default:
 		return p, x.ID + ": type " + x.Type + " (not read)"
 	}
