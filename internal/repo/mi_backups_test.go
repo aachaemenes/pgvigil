@@ -36,7 +36,9 @@ func TestBackupJudged0129Is0066PlusManagedInstance(t *testing.T) {
 	got := view("0129_mssql_mi_backups.sql")
 	reason := `              WHEN m.database_name IN ('master', 'model', 'msdb')
                    AND EXISTS (SELECT 1 FROM pgvigil.instances x WHERE x.instance_id = m.instance_id AND x.platform = 'azuresqlmi')
-                THEN 'Azure SQL Managed Instance backs up its system databases itself and does not record those backups in msdb'
+                THEN CASE WHEN m.database_name = 'master'
+                          THEN 'Azure SQL Managed Instance does not back up the physical master database and records no system database backup in msdb'
+                          ELSE 'Azure SQL Managed Instance backs up its system databases itself and does not record those backups in msdb' END
 `
 	if strings.Count(got, reason) != 1 {
 		t.Fatalf("0129's mssql_backup_judged holds the Managed Instance reason %d times, want once", strings.Count(got, reason))
@@ -107,9 +109,10 @@ func TestManagedInstanceBackupsOnAStore(t *testing.T) {
 		rows.Close()
 	}
 	const reason = "Azure SQL Managed Instance backs up its system databases itself and does not record those backups in msdb"
-	for _, name := range []string{"master", "model", "msdb"} {
-		if got := judged["azuresqlmi"][name]; got != [2]string{reason, "not judged"} {
-			t.Errorf("Managed Instance %s: %q, want not judged with Microsoft's reason", name, got)
+	const master = "Azure SQL Managed Instance does not back up the physical master database and records no system database backup in msdb"
+	for name, why := range map[string]string{"master": master, "model": reason, "msdb": reason} {
+		if got := judged["azuresqlmi"][name]; got != [2]string{why, "not judged"} {
+			t.Errorf("Managed Instance %s: %q, want not judged with its reason (%s)", name, got, why)
 		}
 	}
 	if got := judged["azuresqlmi"]["app"]; got != [2]string{"", "ok"} {

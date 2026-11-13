@@ -1,7 +1,8 @@
 -- 0129: Azure SQL Managed Instance's system databases are not judged by their backups (CLOUDSQL C5). Microsoft's
 -- 'Automated backups in Azure SQL Managed Instance': "The system databases are automatically backed up (excluding the
 -- physical master database), but these backups aren't currently logged in msdb." - so a Managed Instance's master,
--- model and msdb would read 'never' backed up while the service keeps them. mssql_backup_judged is 0066's view with
+-- model and msdb would read 'never' backed up: model and msdb are kept by the service, master (the physical one) is
+-- not backed up at all; each says its own reason. mssql_backup_judged is 0066's view with
 -- one more not_judged reason, line for line otherwise (internal/repo TestBackupJudged0129Is0066PlusManagedInstance
 -- holds the two equal: an edit of 0066's view is made here too). Its user databases stay judged: Microsoft's
 -- 'Monitor backup activity' for Managed Instance says it stores backup information in msdb (whether each automatic
@@ -47,7 +48,9 @@ WITH own AS (
               WHEN m.database_name = 'tempdb' THEN 'tempdb is never backed up'
               WHEN m.database_name IN ('master', 'model', 'msdb')
                    AND EXISTS (SELECT 1 FROM pgvigil.instances x WHERE x.instance_id = m.instance_id AND x.platform = 'azuresqlmi')
-                THEN 'Azure SQL Managed Instance backs up its system databases itself and does not record those backups in msdb'
+                THEN CASE WHEN m.database_name = 'master'
+                          THEN 'Azure SQL Managed Instance does not back up the physical master database and records no system database backup in msdb'
+                          ELSE 'Azure SQL Managed Instance backs up its system databases itself and does not record those backups in msdb' END
               WHEN m.is_snapshot THEN 'a database snapshot'
               WHEN m.state IS DISTINCT FROM 'ONLINE' THEN 'the database is ' || coalesce(lower(m.state), 'in an unknown state')
               WHEN m.is_standby THEN 'a standby database (restoring logs)'
