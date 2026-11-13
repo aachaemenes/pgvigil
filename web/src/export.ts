@@ -74,6 +74,9 @@ export function typed(raw: unknown, text: string): Pick<Cell, 'v' | 'kind' | 'st
     const d = new Date(raw);
     if (!isNaN(d.getTime())) return { v: excelDate(d), kind: 'date', stamp: localStamp(d) };
   }
+  // (X7, X8) a date alone the server sends as text ('2026-11-11', a date column) and the page writes as it is: a date cell
+  // under 'yyyy-MM-dd'
+  if (typeof raw === 'string' && raw.slice(0, 10) === text) { const day = dayCell(text); if (day) return day; }
   // a text that only looks like a number (a role or database named '0042', a '+5') is kept as the text it is
   if (typeof raw === 'string' && /^[+0]\d/.test(raw)) return { v: text, kind: 'text' };
   const n = numeric(raw);

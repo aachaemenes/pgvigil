@@ -2115,4 +2115,4 @@ for L in en-US fr-FR; do
   fi
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; echo "kept in $PGVIGIL_EXPORT_OUT/$L"; }
 done
-echo "OK: fourteen pages exported to .xlsx and CSV in two languages, each file matching its page cell by cell (every grid with rows an Excel table, DBA Dash's formats and widths); a grid's menu, the Summary's drop-down and two charts' menus exported with Export Excel"
+echo "OK: every page above exported to .xlsx and CSV in two languages, each file matching its page cell by cell (every grid with rows an Excel table, DBA Dash's formats and widths); a grid's menu, the Summary's drop-down and two charts' menus exported with Export Excel"
