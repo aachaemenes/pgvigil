@@ -951,7 +951,7 @@ def grids(page):
 def sheet_rows(z, i):
     x = z.read(f'xl/worksheets/sheet{i}.xml').decode()
     return x, len(re.findall(r'<row r="', x)) - 1
-UNIT_RE = r' \((?:B|KB|MB|GB|TB|PB|ms|s|min)\)$'
+UNIT_RE = r' \((?:B|KB|MB|GB|TB|PB|ms|s|min|days|(?:B|KB|MB|GB|TB|PB)/day)\)$'   # a unit the export names in a header (X7: sizes, durations, days, sizes per day)
 def table_head(head):
     # export.ts tableHead: each column named once (case ignored): an empty heading 'Column n', a repeat ' (2)'
     used, out = set(), []
@@ -1102,7 +1102,7 @@ def shown_py(val, text, fmt):
     if fmt == 168: return (datetime.datetime(1899, 12, 30) + datetime.timedelta(seconds=round(val * 86400))).strftime('%Y-%m-%d %H:%M')
     if fmt == 167: return f'{val * 100:.1f}%'
     if fmt == 165: return f'{round(val):,} B'
-    if fmt == 169: return f'{round(val):,} s'
+    if FMT_CODES.get(fmt) == 'yyyy-MM-dd': return (datetime.datetime(1899, 12, 30) + datetime.timedelta(days=round(val))).strftime('%Y-%m-%d')   # a day alone (169)
     if fmt == 170: return f'{val:,.3f}'.rstrip('0').rstrip('.') + ' ms'
     if fmt == 166:
         t = round(val * 86400); a = abs(t); return f"{'-' if t < 0 else ''}{a // 3600}:{a // 60 % 60:02d}:{a % 60:02d}"

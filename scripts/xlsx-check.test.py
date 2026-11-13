@@ -154,6 +154,10 @@ PROBES = [
     ('X8 fr-FR date-time as text', 'X8', 'FAIL', lambda: set_b2(base(), '13/11/2026 21:05:35')),
     ('X8 day-first date-time as text', 'X8', 'FAIL', lambda: set_b2(base(), '03/10/2026 21:05:00')),
     ('X8 ISO day as text', 'X8', 'FAIL', lambda: set_b2(base(), '2026-11-11')),
+    ('X8 ISO date-time with seconds and a zone', 'X8', 'FAIL', lambda: set_b2(base(), '2026-11-12T16:15:00Z')),
+    ('X8 a 12-hour date-time', 'X8', 'FAIL', lambda: set_b2(base(), '11/13/2026, 2:10:00 PM')),
+    ('X8 a message that starts with a time', 'X8', 'PASS', lambda: set_b2(base(), '11/13/2026, 02:10:00 step 2 merge into orders: failed')),
+    ('X8 a range of two times', 'X8', 'PASS', lambda: set_b2(base(), '11/12/2026, 16:15:13 to 11/12/2026, 17:15:13')),
     ('X8 a version string', 'X8', 'PASS', lambda: set_b2(base(), '16.0.4325.4')),
     ('X8 a duration in days', 'X8', 'PASS', lambda: set_b2(base(), '233.3 days')),
     # X9: a boolean stored as text

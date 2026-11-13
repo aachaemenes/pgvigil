@@ -30,8 +30,9 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
   X6  no pane on any sheet
   X7  each cell's number format is General (id 0 or an empty code), '0', '0.0%', '0.00%', 'yyyy-MM-dd HH:mm' or, for a
       day alone (a chart's per-day column), 'yyyy-MM-dd'
-  X8  no text cell that reads as a date-time or a day, ISO or a page's locale form ('10/3/2026, 21:05:00',
-      '13/11/2026 21:05:35', '2026-11-11'): a date is a number under its format; a column's empty value may be text
+  X8  no text cell whose whole value reads as a date-time or a day, ISO or a page's locale form ('10/3/2026, 21:05:00',
+      '13/11/2026 21:05:35', '2026-11-11'): a date is a number under its format; a column's empty value may be text; a
+      message that starts with a time, or a range of two times, is words
   X9  no text cell whose whole value is true / false / yes / no (on / off are setting values, not booleans)
   X10 every column holding a value has a custom width of at most 150 characters (stored 150.71 with the padding); a numeric column at least as wide as its widest
       shown number (a digit one unit, any other character half)
@@ -75,9 +76,10 @@ PAIRS = {
 PLAIN_TEXT = {None, 'FF000000', 'auto', 'theme:1', 'indexed:8', 'indexed:64'}
 MAX_WIDTH = 150 + 5 / 7 + 1e-6   # 150 characters and Excel's 5 px of padding: DBA Dash's capped column is stored 150.71
 RULES = ['X0', 'X1', 'X2', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10', 'X11', 'X12']
-DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}'                                   # ISO date-time
-                       r'|\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4},?(?:\s+|T)\d{1,2}[:h.]\d{2}'               # a locale date-time
-                       r'|(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/.]\d{1,2}[/.]\d{4})\s*$)')                  # a day alone
+# a whole cell that reads as one date-time or one day (a message that starts with a time, or a range of two, is words)
+DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?'   # ISO
+                       r'|\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4},?(?:\s+|T)\d{1,2}[:h.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?'   # a locale date-time
+                       r'|\d{1,2}[/.]\d{1,2}[/.]\d{4})\s*$')                                                         # a locale day
 BOOL_TEXT = re.compile(r'\s*(true|false|yes|no)\s*', re.I)
 # a read time in a sheet name: a day with a 4-digit year and a clock after it (its ':' refused, a space or a dot), the
 # export's compact stamp, a clock of hours, minutes and seconds; not an address, a version or a day alone (a job's own words)
@@ -286,6 +288,8 @@ def shown_number(v, fmt):
         return '%.2f%%' % (x * 100)
     if fmt == DATE_FMT:
         return '0000-00-00 00:00'
+    if fmt == DAY_FMT:
+        return '0000-00-00'
     if fmt == '0':
         return '%d' % round(x)
     if x == int(x) and abs(x) < 1e11:
