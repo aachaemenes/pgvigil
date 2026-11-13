@@ -135,7 +135,9 @@
 #     followed lands on that tab; the address's tool=sp_Blitz opens its sample as the page loads, and Export .xlsx
 #     (the Summary sheet's note) and Export CSV (the sample's file's first line) carry the mark; no custom_report_log row
 #     from any of it; the real instance: no sample in its tools, GET /api/community/sample 404; POST /api/community/run
-#     on a demo instance (signed in) is refused (400, 'is a demo instance'), never answered with a sample.
+#     of the demo's SQL Server instance, never answered with a sample: on the signed-in plain serve (an instance without
+#     a login there since FOLD 2) refused in its run row ('instance <name> has no read login configured on this
+#     server', nothing sent); on the demo serve 403 ('Running a tool needs a signed-in user ...').
 #     [the fold of review 20261112-222929] a real PostgreSQL instance tagged demo on the plain -no-login serve: its
 #     ordinary line, no demo words, GET /api/community/sample 404 (only an instance this pgvigil demo seeded is a demo
 #     instance); the panels' instances are the first demo SQL Server and PostgreSQL instance
@@ -1476,9 +1478,13 @@ PY
   rm -rf "$WORK/dl"; mkdir -p "$WORK/dl"
   timeout 900 node "$WORK/buttons.mjs" demo "$CDP" "$U4/" "$DMS" "$DPG" "${MRID:-$AID}" "$SHOTS" "$WORK/dl" "$DMS2" "$DPG2" > "$WORK/demo.json" 2>"$WORK/demo.err" || fail "S: the demo driver: $(tail -5 "$WORK/demo.err")"
   LOG1=$(q "select count(*) from pgvigil.custom_report_log")
-  # a run asked of a demo instance on the signed-in serve (the same repository): never a sample
-  tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}") == 400 ]] || fail "S: a run asked of a demo instance: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run.json"
-  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$(ident $DMS)" "$(ident $DPG)" "$(ident $DMS2)" "$(ident $DPG2)" <<'PY' || fail "S: see above"
+  # a run asked of the demo's SQL Server instance, never a sample (FOLD 2: only the demo serve's own seeded instances are
+  # demo instances): on the signed-in plain serve (the same repository) it is an instance without a login there, its
+  # run refused in the custom report's words before anything is sent (a run row, so a tick); on the demo serve (no
+  # login) the gate refuses the POST first (403, no row)
+  tick; [[ $(post community/run "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}") == 200 ]] || fail "S: a run asked of the demo's instance on the signed-in serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run.json"
+  [[ $(code -H 'X-Pgvigil: 1' -H 'Content-Type: application/json' -d "{\"instance_id\":$DMS,\"tool\":\"sp_Blitz\"}" "$U4/api/community/run") == 403 ]] || fail "S: a run asked of a demo instance on the demo serve: $(head -c 300 "$WORK/body")"; cp "$WORK/body" "$WORK/demo-run4.json"
+  python3 - "$WORK/demo.json" "${MRID:+sqlserver}" "$WORK/dl" "$LOG0" "$LOG1" "$WORK/demo-run.json" "$(ident $DMS)" "$(ident $DPG)" "$(ident $DMS2)" "$(ident $DPG2)" "$WORK/demo-run4.json" <<'PY' || fail "S: see above"
 import json, sys, zipfile, os, re, html
 d = json.load(open(sys.argv[1])); real_ms = sys.argv[2] == 'sqlserver'; dl = sys.argv[3]
 # each instance's name and platform as the repository holds them (never the name the page's own API answered)
@@ -1565,9 +1571,14 @@ for q in d['picker']:
     print(f"ok   S: the fleet page's picker, {nm} ({plat[str(q['id'])]}): {q['n']} tool names, none off; {q['tool']}'s sample ({x['rows']} rows) ends {tl!r}, its mark {tm!r}, its link {x['link']}, Run off")
 assert sys.argv[4] == sys.argv[5], f"S: custom_report_log {sys.argv[4]} -> {sys.argv[5]}: opening samples wrote audit rows"
 print(f"ok   S: no audit row from any sample opened (custom_report_log {sys.argv[4]} before and after)")
-rr = json.load(open(sys.argv[6]))
-assert 'runs' not in rr and 'sets' not in json.dumps(rr) and 'is a demo instance' in json.dumps(rr), f"S: a run asked of a demo instance: {str(rr)[:300]}"
-print(f"ok   S: POST /api/community/run on a demo instance is refused before anything is sent (400: {str(rr.get('error', rr))[:90]}...) - never a sample")
+rr = json.load(open(sys.argv[6])); runs = rr.get('runs') or []; dname = ids[0][1]
+want = f"instance {dname} has no read login configured on this server"
+assert len(runs) == 1 and runs[0].get('outcome') == 'refused' and runs[0].get('error') == want and runs[0].get('sets') == [] \
+    and runs[0].get('rows') == 0 and 'sample' not in json.dumps(rr), f"S: a run asked of the demo's instance on the signed-in serve: {str(rr)[:300]}"
+print(f"ok   S: POST /api/community/run on {dname} from the signed-in plain serve: an instance without a login there, refused before anything is sent ('{want}') - never a sample")
+r4 = json.load(open(sys.argv[11])); e4 = r4.get('error', '')
+assert set(r4) == {'error'} and e4.startswith('Running a tool needs a signed-in user') and 'pgvigil demo -serve' in e4, f"S: a run asked of a demo instance on the demo serve: {str(r4)[:300]}"
+print(f"ok   S: POST /api/community/run on {dname} from the demo serve: 403 ('{e4[:70]}...') - never a sample")
 r = d['real']
 assert not r['demoLine'] and r['nologin'] and r['off'] == (14 if real_ms else 10) and r['samples'] == 0 and r['sampleStatus'] == 404, f"S: the real instance served beside the demo: {r}"
 print(f"ok   S: pgvigil demo -serve -config: the real instance shows its own state (-no-login, {r['off']} off), never the demo line, no sample (GET /api/community/sample 404)")
