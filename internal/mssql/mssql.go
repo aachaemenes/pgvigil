@@ -20,6 +20,7 @@ import (
 
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 	"github.com/aachaemenes/pgvigil/internal/repo"
 )
 
@@ -132,7 +133,7 @@ func Connect(ctx context.Context, in config.Instance) (*sql.DB, *sql.Conn, error
 	if strings.TrimSpace(dsn) == "" {
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: the dsn resolved to an empty string (unset variable or unreadable file)", in.Name))
 	}
-	db, err := sql.Open("sqlserver", withAppName(dsn))
+	db, err := mssqlopen.Open(withAppName(dsn))
 	if err != nil {
 		return nil, nil, collect.InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn: %w", in.Name, err))
 	}

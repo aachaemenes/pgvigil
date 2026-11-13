@@ -39,6 +39,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // InstancesAdmin is what serve hands the page: where the config lives (the credential files go beside it), the
@@ -563,7 +564,7 @@ func testConnection(ctx context.Context, engine, dsn string) (bool, string) {
 	defer cancel()
 	switch engine {
 	case config.EngineSQLServer:
-		db, err := sql.Open("sqlserver", mssqlApp(dsn, "pgvigil-admin-test"))
+		db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-admin-test"))
 		if err != nil {
 			return false, "the connection string: " + err.Error()
 		}
@@ -772,7 +773,7 @@ func (s *Server) readSource(ctx context.Context, src *sourceRow) ([]config.Propo
 		if err != nil {
 			return nil, err
 		}
-		db, err := sql.Open("sqlserver", mssqlApp(dsn, "pgvigil-sync"))
+		db, err := mssqlopen.Open(mssqlApp(dsn, "pgvigil-sync"))
 		if err != nil {
 			return nil, fmt.Errorf("the connection string: %w", err)
 		}

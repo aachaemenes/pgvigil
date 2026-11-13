@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -282,6 +283,9 @@ func RemoveSecret(dir, ref string) error {
 	return nil
 }
 
+// dsnGOOS is the system the collector runs on (a test sets another): auth windows is SSPI on Windows, Kerberos elsewhere.
+var dsnGOOS = runtime.GOOS
+
 // Conn is what the page or a source gives for one server; BuildDSN makes its connection string.
 type Conn struct {
 	Engine, Auth, Host string
@@ -293,8 +297,15 @@ type Conn struct {
 
 // BuildDSN makes the connection string the collector opens.
 //   - sqlserver, auth sql: sqlserver://login:password@host:port?database=db&encrypt=true&TrustServerCertificate=<extra's>
-//   - sqlserver, auth windows: no login (go-mssqldb uses the service account: SSPI on Windows, Kerberos on Linux)
-//   - sqlserver, auth entra: fedauth=ActiveDirectoryServicePrincipal (login = the application id, password = its secret)
+//   - sqlserver, auth windows: no password. On Windows the service's own account (SSPI: the gMSA the service runs
+//     as); the login is not used there. Elsewhere Kerberos (authenticator=krb5): a keytab or a credential cache,
+//     named in the options (krb5-keytabfile, krb5-credcachefile, krb5-configfile, krb5-realm) or by KRB5_KTNAME /
+//     KRB5CCNAME, with the login = the principal (user@REALM, or the gMSA's name$), required with a keytab. Never
+//     NTLM: go-mssqldb's NTLM, given no DOMAIN\user, falls back to a SQL login with an empty user name.
+//   - sqlserver, auth entra: fedauth=ActiveDirectoryServicePrincipal (login = the application id[@tenant], password =
+//     its secret)
+//   - sqlserver, auth entra-identity: fedauth=ActiveDirectoryManagedIdentity, no secret anywhere (login = a
+//     user-assigned identity's client id, empty for the host's system-assigned identity)
 //   - postgres, auth password: host=... port=... dbname=... user=... password='...'
 //   - postgres, auth pgpass: no password (the service account's .pgpass or PGPASSFILE)
 //
@@ -336,14 +347,25 @@ func BuildDSN(c Conn) (string, error) {
 			if c.Password != "" {
 				return "", errors.New("a Windows account connects as the service's own account: no password is stored")
 			}
+			if dsnGOOS != "windows" {
+				q.Set("authenticator", "krb5")
+			}
 		case "entra":
 			if c.Login == "" || c.Password == "" {
 				return "", errors.New("an Entra service principal needs its application id and secret")
 			}
 			u.User = url.UserPassword(c.Login, c.Password)
 			q.Set("fedauth", "ActiveDirectoryServicePrincipal")
+		case "entra-identity":
+			if c.Password != "" {
+				return "", errors.New("a managed identity signs in with the host's own Azure identity: no secret is stored")
+			}
+			if c.Login != "" {
+				u.User = url.User(c.Login)
+			}
+			q.Set("fedauth", "ActiveDirectoryManagedIdentity")
 		default:
-			return "", fmt.Errorf("auth %q is not a SQL Server one (sql, windows, entra)", c.Auth)
+			return "", fmt.Errorf("auth %q is not a SQL Server one (sql, windows, entra, entra-identity)", c.Auth)
 		}
 		if x := strings.TrimSpace(c.Extra); x != "" {
 			ex, err := url.ParseQuery(strings.TrimPrefix(x, "?"))
@@ -354,9 +376,23 @@ func BuildDSN(c Conn) (string, error) {
 				if strings.EqualFold(k, "server") || strings.EqualFold(k, "host") {
 					continue
 				}
+				switch lk := strings.ToLower(strings.TrimSpace(k)); {
+				case lk == "fedauth" || lk == "user id" || lk == "user" || lk == "uid":
+					return "", fmt.Errorf("the driver options choose no sign-in (%s): the authentication and the login do", k)
+				case lk == "authenticator" && (c.Auth != "windows" || len(vs) != 1 || !strings.EqualFold(vs[0], "krb5")):
+					return "", fmt.Errorf("the driver options' authenticator: only krb5, with auth windows")
+				}
 				for _, v := range vs {
 					q.Set(k, v)
 				}
+			}
+		}
+		if c.Auth == "windows" && q.Get("authenticator") == "krb5" {
+			// Kerberos names its principal; a keytab cannot be used without it (go-mssqldb integratedauth/krb5)
+			if c.Login != "" {
+				u.User = url.User(c.Login)
+			} else if q.Get("krb5-keytabfile") != "" {
+				return "", errors.New("a Kerberos keytab needs its principal: the login is user@REALM (or the gMSA's name$)")
 			}
 		}
 		if q.Get("encrypt") == "" {

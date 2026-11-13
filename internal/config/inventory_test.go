@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/microsoft/go-mssqldb/msdsn"
 )
 
 func TestMergeKeepsFileFirstAndSkipsBadPageRows(t *testing.T) {
@@ -137,6 +139,10 @@ func TestWatchInventoryAppliesOnlyWhenTheGenerationMoves(t *testing.T) {
 }
 
 func TestBuildDSN(t *testing.T) {
+	// the rows below are a Windows collector's (auth windows = SSPI); TestBuildDSNSignIns has the other systems'
+	was := dsnGOOS
+	dsnGOOS = "windows"
+	defer func() { dsnGOOS = was }()
 	cases := []struct {
 		c    Conn
 		want string
@@ -334,6 +340,67 @@ func TestSplitHostPortProtocolPrefix(t *testing.T) {
 	}
 	if !NotTCP("np:\\\\sql01\\pipe\\sql\\query") || !NotTCP("lpc:sql01") || NotTCP("tcp:sql01") {
 		t.Fatal("NotTCP")
+	}
+}
+
+// The sign-ins without a stored password (CLOUDSQL C1): auth windows is Kerberos off Windows (never go-mssqldb's NTLM,
+// which falls back to a SQL login with an empty user), entra-identity is the host's managed identity; each string read
+// back by go-mssqldb's own parser says who signs in, and how.
+func TestBuildDSNSignIns(t *testing.T) {
+	was := dsnGOOS
+	defer func() { dsnGOOS = was }()
+	const keytab = "krb5-keytabfile=/etc/pgvigil/pgvigil.keytab&krb5-configfile=/etc/krb5.conf"
+	for _, c := range []struct {
+		name, goos string
+		c          Conn
+		user, auth string // the user id and the authenticator the string carries
+		fedauth    string
+		bad        string // a word of the refusal
+	}{
+		{"linux windows, a credential cache", "linux", Conn{Auth: "windows", Host: `sql02\PROD`}, "", "krb5", "", ""},
+		{"linux windows, a keytab and its principal", "linux", Conn{Auth: "windows", Host: "sql01", Login: "pgvigil-gmsa$@CORP.EXAMPLE.COM", Extra: keytab},
+			"pgvigil-gmsa$@CORP.EXAMPLE.COM", "krb5", "", ""},
+		{"linux windows, a keytab without its principal", "linux", Conn{Auth: "windows", Host: "sql01", Extra: keytab}, "", "", "", "principal"},
+		{"linux windows, a password", "linux", Conn{Auth: "windows", Host: "sql01", Login: "u@R", Password: "x"}, "", "", "", "no password"},
+		{"linux windows, NTLM asked in the options", "linux", Conn{Auth: "windows", Host: "sql01", Extra: "authenticator=ntlm"}, "", "", "", "only krb5"},
+		{"windows windows, the service's own account", "windows", Conn{Auth: "windows", Host: "sql01", Login: "ignored"}, "", "", "", ""},
+		{"windows windows, Kerberos asked in the options", "windows", Conn{Auth: "windows", Host: "sql01", Login: "svc@R", Extra: "authenticator=krb5&" + keytab},
+			"svc@R", "krb5", "", ""},
+		{"entra-identity, system-assigned", "linux", Conn{Auth: "entra-identity", Host: "srv1.database.windows.net", DBName: "db1"}, "", "", "ActiveDirectoryManagedIdentity", ""},
+		{"entra-identity, user-assigned", "linux", Conn{Auth: "entra-identity", Host: "srv1.database.windows.net", Login: "6a1b2c3d-0000-4000-8000-000000000001"},
+			"6a1b2c3d-0000-4000-8000-000000000001", "", "ActiveDirectoryManagedIdentity", ""},
+		{"entra-identity, a secret", "linux", Conn{Auth: "entra-identity", Host: "srv1.database.windows.net", Password: "x"}, "", "", "", "no secret"},
+		{"entra, a service principal", "linux", Conn{Auth: "entra", Host: "srv1.database.windows.net", Login: "app-id@tenant-id", Password: "s3cret"},
+			"app-id@tenant-id", "", "ActiveDirectoryServicePrincipal", ""},
+		{"sql, fedauth in the options", "linux", Conn{Auth: "sql", Host: "sql01", Login: "mon", Password: "x", Extra: "fedauth=ActiveDirectoryDefault"}, "", "", "", "choose no sign-in"},
+		{"sql, a user id in the options", "linux", Conn{Auth: "sql", Host: "sql01", Login: "mon", Password: "x", Extra: "user id=sa"}, "", "", "", "choose no sign-in"},
+		{"sql, an authenticator in the options", "linux", Conn{Auth: "sql", Host: "sql01", Login: "mon", Password: "x", Extra: "authenticator=krb5"}, "", "", "", "only krb5"},
+	} {
+		dsnGOOS = c.goos
+		c.c.Engine = EngineSQLServer
+		got, err := BuildDSN(c.c)
+		if c.bad != "" {
+			if err == nil || !strings.Contains(err.Error(), c.bad) {
+				t.Errorf("%s: got %q, %v; want a refusal with %q", c.name, got, err, c.bad)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		cfg, err := msdsn.Parse(got)
+		if err != nil {
+			t.Errorf("%s: go-mssqldb cannot read %s: %v", c.name, got, err)
+			continue
+		}
+		if cfg.User != c.user || cfg.Password != c.c.Password || cfg.Parameters["authenticator"] != c.auth || cfg.Parameters["fedauth"] != c.fedauth {
+			t.Errorf("%s: %s reads as user %q password set %v authenticator %q fedauth %q; want user %q authenticator %q fedauth %q",
+				c.name, got, cfg.User, cfg.Password != "", cfg.Parameters["authenticator"], cfg.Parameters["fedauth"], c.user, c.auth, c.fedauth)
+		}
+		if strings.Contains(c.c.Extra, "krb5-keytabfile") && cfg.Parameters["krb5-keytabfile"] != "/etc/pgvigil/pgvigil.keytab" {
+			t.Errorf("%s: the keytab reads as %q", c.name, cfg.Parameters["krb5-keytabfile"])
+		}
 	}
 }
 

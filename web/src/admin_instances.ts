@@ -39,7 +39,8 @@ function select(name: string, opts: [string, string][], value = ''): HTMLSelectE
   return s;
 }
 const authOpts = (engine: string): [string, string][] => engine === 'sqlserver'
-  ? [['sql', 'SQL login'], ['windows', 'Windows account (the service\'s own)'], ['entra', 'Entra service principal']]
+  ? [['sql', 'SQL login'], ['windows', 'Windows account (the service\'s own; off Windows a Kerberos keytab or cache)'], ['entra', 'Entra service principal'],
+    ['entra-identity', 'Entra managed identity (this host\'s own, no secret)']]
   : [['password', 'login and password'], ['pgpass', 'the service account\'s .pgpass']];
 const platOpts = (engine: string): [string, string][] => engine === 'sqlserver'
   ? [['auto', 'auto'], ['onprem', 'on premises'], ['rds', 'Amazon RDS'], ['azuresqldb', 'Azure SQL Database'], ['azuresqlmi', 'Azure SQL Managed Instance']]
