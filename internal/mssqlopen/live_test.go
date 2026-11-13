@@ -123,6 +123,11 @@ func TestEntraIdentityLive(t *testing.T) {
 		}
 		return d
 	}
+	if out := os.Getenv("PGVIGIL_ENTRA_DSN_OUT"); out != "" { // E3's instance takes the same string (no secret in it)
+		if err := os.WriteFile(out, []byte(dsnFor(dbName)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	db, err := Open(dsnFor(dbName))
 	if err != nil {
 		t.Fatalf("E1 open: %v", err)
@@ -156,6 +161,9 @@ func TestEntraIdentityLive(t *testing.T) {
 		if err == nil {
 			t.Fatalf("E2 the database with no user let the identity in as %q", login)
 		}
-		t.Logf("E2 refused as expected: %v", err)
+		if !strings.Contains(err.Error(), "Login failed") && !strings.Contains(err.Error(), "18456") {
+			t.Fatalf("E2 failed, but not with Azure's sign-in refusal (Login failed / 18456): %v", err)
+		}
+		t.Logf("E2 refused by Azure: %v", err)
 	}
 }

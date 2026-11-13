@@ -78,6 +78,9 @@ func TestPoolLive(t *testing.T) {
 		if ui.Kind != KindAzureDB {
 			t.Errorf("P0 the contained user: kind %s, want azuresqldb", ui.Kind)
 		}
+		if ok || !strings.Contains(why, "##MS_ServerStateReader##") {
+			t.Errorf("P0 the contained user (VIEW DATABASE STATE only): mssql_pool applies %v %q; want skipped for VIEW SERVER STATE", ok, why)
+		}
 	}
 	if ok, why := (poolCollector{}).Applies(info); !ok {
 		t.Fatalf("P1 mssql_pool does not apply to pgv_pool: %s", why)
@@ -113,22 +116,37 @@ func TestPoolLive(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatalf("P1 the collector stored no complete minute (the admin's read holds %d samples, %d complete minutes)", len(samples), len(want))
 	}
+	oldest := ""
+	for m := range want {
+		if oldest == "" || m < oldest {
+			oldest = m
+		}
+	}
+	compared := 0
 	for _, r := range rows {
 		m := r["minute"].(string)
 		w, ok := want[m]
-		if !ok {
-			t.Errorf("P1 minute %s: the collector has it, the admin's read does not (the view keeps about 40 minutes)", m)
+		if !ok && m <= oldest { // expired from the view between the two reads, or the admin read's dropped oldest minute
+			t.Logf("P1 minute %s: older than the admin read's oldest kept minute %s: not compared", m, oldest)
 			continue
 		}
+		if !ok {
+			t.Errorf("P1 minute %s: the collector has it, the admin's read does not", m)
+			continue
+		}
+		compared++
 		for k, v := range r {
 			if fmt.Sprint(w[k]) != fmt.Sprint(v) {
 				t.Errorf("P1 minute %s %s: collector %v, admin's read %v", m, k, v, w[k])
 			}
 		}
 	}
+	if compared == 0 {
+		t.Fatalf("P1 no minute compared (collector %d, admin %d)", len(rows), len(want))
+	}
 	first, last := rows[0], rows[len(rows)-1]
-	t.Logf("P1 %d complete minutes from %s to %s equal the admin's read (%d samples); the newest: allocated %v %%, storage limit %v MB, eDTU %v %%",
-		len(rows), first["minute"], last["minute"], len(samples), last["allocated_storage_percent"], last["storage_limit_mb"], last["avg_edtu_percent"])
+	t.Logf("P1 %d of %d complete minutes (%s to %s) compared equal to the admin's read (%d samples); the newest: allocated %v %%, storage limit %v MB, eDTU %v %%",
+		compared, len(rows), first["minute"], last["minute"], len(samples), last["allocated_storage_percent"], last["storage_limit_mb"], last["avg_edtu_percent"])
 
 	// P4
 	info.PoolTag = ""

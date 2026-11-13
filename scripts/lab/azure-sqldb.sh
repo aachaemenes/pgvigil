@@ -151,25 +151,25 @@ PY
   # a server made through the API has no firewall rule; any rule found (another tool's default) is removed
   fw_clear
   if [ "$TIER" = pool ]; then
-    read -r ME_ID ME_UPN < <("$AZ" ad signed-in-user show --query '[id,userPrincipalName]' -o tsv --only-show-errors)
+    read -r ME_ID ME_UPN < <("$AZ" ad signed-in-user show --query '[[id,userPrincipalName]]' -o tsv --only-show-errors)
     [ -n "${ME_ID:-}" ] && [ -n "${ME_UPN:-}" ] || fail "the CLI's signed-in user was not read (az ad signed-in-user show)"
     az_ sql server ad-admin create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" --display-name "$ME_UPN" --object-id "$ME_ID" >/dev/null
     echo "made: the Entra admin of $AZ_SERVER = the CLI's signed-in user (undo: goes with the server)"
     az_ sql elastic-pool create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$AZ_POOL" --edition Basic --capacity 50 \
-      --db-max-capacity 5 --db-min-capacity 0 --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[name,sku.tier,sku.capacity,state]' -o tsv
+      --db-max-capacity 5 --db-min-capacity 0 --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[[name,sku.tier,sku.capacity,state]]' -o tsv
     echo "made: elastic pool $AZ_POOL (Basic, 50 eDTU), tag pgvigil-proof=$PGVIGIL_LAB_PROOF"
     for d in "$AZ_DB" "$AZ_DB2"; do
       az_ sql db create -g "$PGVIGIL_LAB_AZ_GROUP" -s "$AZ_SERVER" -n "$d" --elastic-pool "$AZ_POOL" --backup-storage-redundancy Local \
-        --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[name,currentServiceObjectiveName,elasticPoolName,status]' -o tsv
+        --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" --query '[[name,currentServiceObjectiveName,elasticPoolName,status]]' -o tsv
       echo "made: database $d in $AZ_POOL, tag pgvigil-proof=$PGVIGIL_LAB_PROOF"
     done
     ssh-keygen -q -t ed25519 -N '' -C pgv-proof -f "$VM_KEY"; chmod 600 "$VM_KEY"
-    VMJ=$(az_ vm create -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" -l "$LAB_REGION" --image Ubuntu2404 --size "$VM_SIZE" \
+    VMJ=$(az_ vm create -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" -l "$LAB_REGION" --image Canonical:ubuntu-24_04-lts:server:latest --size "$VM_SIZE" \
       --admin-username "$VM_ADMIN" --ssh-key-values "$VM_KEY.pub" --assign-identity '[system]' --nsg "$VM_NAME-nsg" --nsg-rule NONE \
       --public-ip-address "$VM_NAME-ip" --public-ip-sku Standard --vnet-name "$VM_NAME-vnet" --nic-delete-option Delete \
       --os-disk-delete-option Delete --storage-sku StandardSSD_LRS --os-disk-size-gb 30 --tags "pgvigil-proof=$PGVIGIL_LAB_PROOF" -o json)
     VM_IP=$(jq -r '.publicIpAddress // empty' <<<"$VMJ"); VM_PRINCIPAL=$(jq -r '.identity.systemAssignedIdentity // empty' <<<"$VMJ")
-    [ -n "$VM_IP" ] && [ -n "$VM_PRINCIPAL" ] || fail "the VM's address or identity was not read back (down removes what was made)"
+    [ -n "$VM_IP" ] && [ -n "$VM_PRINCIPAL" ] || fail "the VM's address or identity was not read back (down removes what was made, its NIC first)"
     VM_CLIENT=$("$AZ" ad sp show --id "$VM_PRINCIPAL" --query appId -o tsv --only-show-errors)
     [[ $VM_CLIENT =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "the VM identity's client id was not read"
     ( umask 077; printf 'VM_IP=%s\nVM_PRINCIPAL=%s\nVM_CLIENT=%s\n' "$VM_IP" "$VM_PRINCIPAL" "$VM_CLIENT" >> "$STATE" )
@@ -297,11 +297,17 @@ down)
     if az_ vm show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" >/dev/null 2>&1; then
       az_ vm delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$VM_NAME" --yes; echo "deleted: VM $VM_NAME (its OS disk and NIC with it)"
     fi
-    for r in "public-ip $VM_NAME-ip" "nsg $VM_NAME-nsg" "vnet $VM_NAME-vnet"; do
+    # the NIC first: a failed az vm create leaves it holding the public address, and the address cannot be deleted
+    # while it is in use (az's own NIC name: <vm>VMNic)
+    for r in "nic ${VM_NAME}VMNic" "public-ip $VM_NAME-ip" "nsg $VM_NAME-nsg" "vnet $VM_NAME-vnet"; do
       set -- $r
       if az_ network "$1" show -g "$PGVIGIL_LAB_AZ_GROUP" -n "$2" >/dev/null 2>&1; then az_ network "$1" delete -g "$PGVIGIL_LAB_AZ_GROUP" -n "$2"; echo "deleted: $1 $2"; fi
     done
-    LEFT_VM=$(az_ resource list -g "$PGVIGIL_LAB_AZ_GROUP" --query "length([?starts_with(name, '$VM_NAME')])" -o tsv)
+    LEFT_VM=
+    for _ in $(seq 1 12); do
+      LEFT_VM=$(az_ resource list -g "$PGVIGIL_LAB_AZ_GROUP" --query "length([?starts_with(name, '$VM_NAME')])" -o tsv)
+      [ "$LEFT_VM" = 0 ] && break; sleep 10
+    done
     echo "read back: resources named $VM_NAME* in $PGVIGIL_LAB_AZ_GROUP $LEFT_VM"
     [ "$LEFT_VM" = 0 ] || fail "the VM's pieces are not all gone (above): the state file $STATE stays"
     rm -f "$VM_KEY" "$VM_KEY.pub"
