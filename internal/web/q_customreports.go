@@ -1243,9 +1243,9 @@ func (s *Server) runOnInstance(ctx context.Context, d *reportDef, t runTarget, s
 	run := instanceRun{InstanceID: t.id, Instance: t.name, Engine: t.engine, Statement: stmt}
 	t0 := time.Now()
 	if t.engine == "sqlserver" {
-		dsn := s.msDoorDSN(t.name)
-		if dsn == "" {
-			run.finish(t0, nil, "instance "+t.name+" has no read login configured on this server", nil)
+		dsn, no := s.msRunLogin(t.name)
+		if no != "" {
+			run.finish(t0, nil, no, nil)
 			return run
 		}
 		args := []any{sql.Named("from", from), sql.Named("to", to)}

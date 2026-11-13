@@ -219,7 +219,7 @@ func (d *demoDoor) allow(ctx context.Context, sc writeScope) (string, error) {
 		if !ok {
 			return fmt.Sprintf("no instance %d", id), nil
 		}
-		if !d.ids[id] || !in.DemoTag || !strings.HasPrefix(in.Name, d.prefix) {
+		if !d.seeded(id, in) { // q_community.go: the one rule, the Community page's demo instance too
 			return in.Name + " is not one of this demo's instances: changing it needs pgvigil serve with a signed-in user", nil
 		}
 	}

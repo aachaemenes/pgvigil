@@ -22,7 +22,7 @@ import { Col, cellText, el, fmtBytes, fmtNum, fmtSecs, fmtTime, gridModel, showM
 export type Status = 'ok' | 'warn' | 'crit' | 'none' | 'ack';
 export type Kind = 'text' | 'int' | 'dec' | 'bytes' | 'secs' | 'nsecs' | 'msecs' | 'pct' | 'date';
 export interface Cell { v: string | number; kind: Kind; status?: Status; link?: boolean; head?: boolean; text: string; stamp?: string }   // link: the screen draws the cell as a link   // head: a heading inside a sheet (the Summary sheet's list of sheets)   // stamp: a time's local text for the CSV
-export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; sample?: string }   // note: the page's 'the newest N of M' line above the grid   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note, the mail's line above the grid and a CSV's first line
+export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; sample?: string }   // note: the page's 'the newest N of M' line above the grid   // sample: the mark of a stored sample's grid (a demo instance's community tool, community.ts data-sample): in the Summary sheet's note and a CSV's first line (a sample is never mailed: only pgvigil demo -serve shows one, and it sends no mail)
 
 // ---- reading the page -----------------------------------------------------------------------------------
 
@@ -277,7 +277,7 @@ function walk(root: ParentNode, fallback: string, empties: boolean): { sec: Sect
     const box = wrap.parentElement?.classList.contains('grid-box') ? wrap.parentElement : wrap;
     const prev = box.previousElementSibling;
     const filtered = box !== wrap ? text(box.querySelector('.filter-count') ?? box) : '';
-    // a stored sample's grid carries its mark first: never read as the instance's own data in a file or a mail
+    // a stored sample's grid carries its mark first: never read as the instance's own data in a file
     const sample = t.closest('[data-sample]')?.getAttribute('data-sample') || undefined;
     const notes = [sample ?? '', prev && prev.matches('p.meta') && /\d\S* of \d/.test(text(prev)) ? text(prev) : '', box !== wrap && /filtered|the stretch/.test(filtered) ? filtered : ''].filter(Boolean);
     const note = notes.length ? notes.join('; ') : undefined;

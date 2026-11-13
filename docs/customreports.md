@@ -161,16 +161,24 @@ list what stops every tool there, each with the way to get it:
 | not checked | off | the check that failed or ran out of time: a tool is never 'ready' on a guess |
 | demo | Run off; the name opens the stored sample | a demo instance: `pgvigil demo` invented its data and no server stands behind it |
 
-On a demo instance (its `demo` tag and no login for it on this server: decided per instance, so `pgvigil demo -serve
--config` shows real instances beside it as themselves) each tool's name opens its stored sample: what a run of the tool
+On a demo instance (one this running `pgvigil demo -serve` seeded, still tagged `demo` under the demo's name prefix,
+with no login for it on this server: decided per instance, so `pgvigil demo -serve -config` shows real instances beside
+it as themselves; a plain `pgvigil serve` has no demo instance, whatever an instance's tags, and the demo's instances
+there are instances without a login) each tool's name opens its stored sample: what a run of the tool
 returned on a test server built for the capture (`scripts/capture-community-samples.sh`: a SQL Server 2022 and a
-PostgreSQL server of their own, loaded with the demo's own invented names; the kit, its version, the capture's date and
-the test server's version in the line above it, and 'not <instance>'), with a link to the instance's own page of the
-same subject and Run off with the demo's line. A sample is never a run: nothing is sent, nothing is audited, and it is
-never among the instance's runs; its grids carry the line's short form into Export .xlsx (the Summary sheet), Export
-CSV (the file's first line: a program that reads the CSV takes that line as its first record) and report mail; the
-address keeps the tool open (`tool=<id>`), so a page scheduled or linked from there opens the sample again (on a real
-instance `tool=` opens nothing: a tool's form asks the server, which only a click does). Plan XML is left out of the stored copy and said. Glenn Berry's queries
+PostgreSQL server of their own, loaded with the demo's own invented names; the kit, its version, the capture's date (its
+UTC day, said so) and the test server's version in the line above it, and 'not <instance>' - with the instance's
+platform where it is not the test server's, since the same run there returns other rows: 'not demo-azure-sql03, an
+Azure SQL Managed Instance, where the same run returns other rows.'), with a link to the instance's own page of the
+same subject and Run off with the demo's line. Beside the result sets a sample keeps the stored run's parameters: their
+names, and for the First Responder Kit's and DarlingData's procedures their own help text (MIT, as
+THIRD-PARTY-NOTICES.md says); sp_WhoIsActive's sample holds its result rows and its parameters' names only. A sample is never a run: nothing is sent, nothing is audited, and it is
+never among the instance's runs; its grids carry the line's short form into Export .xlsx (the Summary sheet) and Export
+CSV (the file's first line: a program that reads the CSV takes that line as its first record). A sample is never
+mailed: `pgvigil demo -serve` has no login, so it sends and schedules no report mail (its door writes the repository
+only), and a serve that mails has no demo instance. The address keeps the tool open (`tool=<id>`), so a page linked
+from there opens the sample again (on a real instance `tool=` opens nothing: a tool's form asks the server, which only
+a click does). Plan XML is left out of the stored copy and said, and so are the capture login's own statements in Top statements (the monitor's reads are not the demo's subject). Glenn Berry's queries
 are his own text: nothing of them is stored, and the demo says where to get the script.
 
 What decides it, and where pgvigil reads it:

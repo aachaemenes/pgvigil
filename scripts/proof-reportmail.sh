@@ -35,9 +35,11 @@
 #      address, Subject 'pgvigil: <page> - fleet - <window>'. P03: then a page whose grids are all empty (the first of
 #      seven report pages over the window that holds no table and at least one empty grid's note) is mailed the same
 #      way and answered sent (Mail refused it before: 'nothing to mail').
-#   N2 [B3 DONE-2] Send now of a demo SQL Server instance's Community tools page with tool=sp_Blitz (its stored sample
-#      open as the page loads): answered sent; the mail's HTML carries the sample's mark (GET /api/community's
-#      sample.mark) above its grid and the workbook's Summary sheet carries it too.
+#   N2 [B3 DONE-2] the demo's first SQL Server instance on this signed-in plain serve is an instance without a
+#      login there, never a demo instance (pgvigil demo -serve alone has demo instances, and it has no login, so it
+#      mails nothing): GET /api/community demo false, no sample, the read login's reason; GET /api/community/sample 404;
+#      Send now of its Community tools page with tool=sp_Blitz answered sent, its HTML and its workbook's Summary with
+#      no 'captured <day> UTC' mark and no demo words.
 #   S  schedules: on the Jobs page a column hidden with the grid's menu holds over a reload, and Mail... > Schedule this
 #      page... adds a schedule that keeps that grid's choice (grid_prefs, one grid); three more added through POST
 #      /api/reportmail (daily at 07:00, the same three routes, the third in America/Los_Angeles), next_at = the next
@@ -436,37 +438,40 @@ waitsent $EMPTYID || fail "N: the empty page's mail not answered in 3 minutes"
 [[ $(q "select count(*) from pgvigil.report_mail_sends where send_id = $EMPTYID and outcome = 'sent' and kind = 'now'") == 1 ]] || fail "N: the empty page's mail: $(q "select send_id, outcome, error from pgvigil.report_mail_sends where send_id = $EMPTYID")"
 ok "N: $EMPTYR, every grid on it empty ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["empties"])' "$WORK/pick.json") grids), mailed with Send now (mail $EMPTYID), answered sent"
 NOWIDS="$NOWIDS $EMPTYID"
-# ---- N2 (B3 DONE-2): a demo instance's stored sample mailed: its grid carries its mark into the body and the workbook ----
+# ---- N2 (B3 DONE-2): the demo's SQL Server instance on this signed-in plain serve is an instance without a
+# login, never a demo instance (only pgvigil demo -serve's own seeded instances are, and that serve has no login, so
+# it mails nothing): no sample, and the mail of its Community tools page with tool=sp_Blitz carries no kit's stored words
 DSID=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
-[[ -n $DSID ]] || fail "N2: the demo seeded no SQL Server instance"
+DSNAME=$(q "select name from pgvigil.instances where instance_id = ${DSID:-0}")
+[[ -n $DSID && -n $DSNAME ]] || fail "N2: the demo seeded no SQL Server instance"
 [[ $(code -b "$JAR" "$U/api/community?instance=$DSID") == 200 ]] || fail "N2: GET /api/community: $(head -c 300 "$WORK/body")"
-SMARK=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(t["sample"]["mark"] for t in d["tools"] if t["id"] == "sp_Blitz"))' "$WORK/body") || fail "N2: no sample mark for sp_Blitz: $(head -c 300 "$WORK/body")"
-drive now "$WORK" 4 "#/community?i=$DSID&tool=sp_Blitz" > "$WORK/now3.json" || fail "N2: Send now of the sample: $(tail -3 "$WORK/now3.json")"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); n=sys.argv[2]
+assert d["demo"] is False and not any("sample" in t for t in d["tools"]) and d["reason"].startswith("a read login for " + n + ": this server holds none"), str(d)[:300]' "$WORK/body" "$DSNAME" \
+  || fail "N2: the demo's instance on the plain serve: $(head -c 300 "$WORK/body")"
+[[ $(code -b "$JAR" "$U/api/community/sample?instance=$DSID&tool=sp_Blitz") == 404 ]] || fail "N2: GET /api/community/sample on the plain serve: $(head -c 300 "$WORK/body")"
+drive now "$WORK" 4 "#/community?i=$DSID&tool=sp_Blitz" > "$WORK/now3.json" || fail "N2: Send now of the page: $(tail -3 "$WORK/now3.json")"
 SAMPID=$(python3 -c 'import json,sys; print(" ".join(str(v) for v in json.load(open(sys.argv[1])).values()))' "$WORK/now3.json")
-[[ $(wc -w <<<"$SAMPID") == 1 ]] || fail "N2: the sample's send: $(cat "$WORK/now3.json")"
-waitsent $SAMPID || fail "N2: the sample's mail not answered in 3 minutes"
-python3 - "$WORK/sink" "$SAMPID" "$SMARK" <<'PY' || fail "N2: see above"
+[[ $(wc -w <<<"$SAMPID") == 1 ]] || fail "N2: the page's send: $(cat "$WORK/now3.json")"
+waitsent $SAMPID || fail "N2: the page's mail not answered in 3 minutes"
+python3 - "$WORK/sink" "$SAMPID" "$DSNAME" <<'PY' || fail "N2: see above"
 import email, glob, html, io, os, re, sys, zipfile
 from email import policy
-sink, sid, mark = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+sink, sid, name = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 m = next((email.message_from_binary_file(open(f, 'rb'), policy=policy.default) for f in sorted(glob.glob(os.path.join(sink, '*.eml')))
           if email.message_from_binary_file(open(f, 'rb'), policy=policy.default)['X-Pgvigil-Report'] == str(sid)), None)
 assert m is not None, f"N2: mail {sid} is not in the sink"
 body = html.unescape(m.get_body(('html',)).get_content())
-# the mark on exactly the panel's two grids (its parameters and its sample), each line right above its table
-assert body.count(mark) == 2 and all(body.find('<table', i) - i < 400 for i in [k.start() for k in re.finditer(re.escape(mark), body)]), f"N2: the mail's body carries the mark {body.count(mark)} times (2 wanted, each above its grid)"
+# a sample's mark says 'captured <day> UTC' (markOf, q_community.go); the demo's words say 'is a demo instance'
+stored = re.compile(r'captured \d{4}-\d{2}-\d{2} UTC|is a demo instance')
+assert not stored.search(body), f"N2: the mail's body holds stored words: {stored.findall(body)[:3]}"
 xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
 z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
-xml = z.read('xl/worksheets/sheet1.xml').decode()   # the Summary sheet writes its text inline
-rows = {}
-for r, b in re.findall(r'<row r="(\d+)"[^>]*>(.*?)</row>', xml):
-    cells = {c: html.unescape(re.sub(r'<[^>]+>', '', t)) for c, t in re.findall(r'<c r="([A-Z]+)\d+"[^>]*>(.*?)</c>', b)}
-    if int(r) >= 12 and cells.get('A'): rows[cells['A']] = cells.get('C', '')
-bad = [n for n, note in rows.items() if (mark in note) != n.startswith('sp_Blitz')]
-assert rows and not bad and sum(1 for n in rows if n.startswith('sp_Blitz')) == 2, f"N2: the mail's workbook's Summary: {rows} (wrong: {bad})"
-print(f"ok   N2: mail {sid}: the sample of sp_Blitz on a demo instance mailed with Send now; the mark above exactly the panel's 2 grids in the body and on exactly their 2 sheets in the workbook's Summary ({mark[:60]}...)")
+# the Summary sheet writes its text inline; the tags go first, so a note split into rich-text runs is read whole
+xml = html.unescape(re.sub(r'<[^>]+>', '', z.read('xl/worksheets/sheet1.xml').decode()))
+assert not stored.search(xml), f"N2: the mail's workbook's Summary holds stored words: {stored.findall(xml)[:3]}"
+print(f"ok   N2: mail {sid}: {name}'s Community tools page (tool=sp_Blitz) from the signed-in plain serve, an instance without a login there: no sample (GET /api/community/sample 404), the mail sent with no kit's stored words in its body or its workbook")
 PY
-NOWIDS="$NOWIDS $SAMPID"   # graded by C, H and X with the others (the one mail that carries a kit's stored words)
+NOWIDS="$NOWIDS $SAMPID"   # graded by C, H and X with the others
 
 # ---- S: schedules, brought due, rendered by two serves -------------------------------------------------------------------
 JOBS="#/jobs?from=$FROM&to=$TO"
@@ -493,6 +498,13 @@ nextok "" || fail "S: next_at $(q "select schedule_id, timezone, next_at, cron f
 GONE=$(jget "d['schedule_id']")
 [[ $(q "select cron from pgvigil.report_mail_schedules where schedule_id = $GONE") == "30 6 * * 1,3" ]] || fail "S: the weekly line: $(q "select cron from pgvigil.report_mail_schedules where schedule_id = $GONE")"
 "$BIN" user disable -config "$CFG" $U2USER >/dev/null 2>&1 || fail "user disable"
+# the screens each scheduled mail is graded against: read before the turns are brought due (sa), while the first turn is
+# drawn (sm) and after the turns (sb); a cell is the window's when it equals any of the three. Every turn lies between
+# two neighbouring reads, so a finding that leaves the view while the turns are drawn equals one of them, and a time
+# counted from now ('2 minutes') moves little between neighbours (sa alone before the turns would leave the turns drawn
+# minutes from both reads)
+SCREENS=("${ROUTES[0]}" "${ROUTES[1]}" "America/Los_Angeles^${ROUTES[2]}" "$JOBS")
+drive screen "$WORK" sa "${SCREENS[@]}" > /dev/null || fail "S: the driver's read before the turns are due"
 DUE=$(q "update pgvigil.report_mail_schedules set next_at = now() - interval '1 second' where schedule_id in ($SL, $GONE) returning to_char(now() at time zone 'UTC', 'HH24:MI:SS')" | head -1)
 echo "     the five schedules brought due at $DUE UTC (the proof's hand on next_at); two serves with the login claim them"
 # another server's claim, taken over while the first claim's page is drawn: that render's turn must be refused (it is
@@ -508,10 +520,7 @@ for _ in $(seq 1 600); do
   sleep 0.2
 done
 [[ -n $STOLEN ]] || fail "S: no serve claimed a turn in 2 minutes: $(grep -i 'report mail' "$WORK/serve.log" "$WORK/serve3.log" | tail -4)"
-# the screens each scheduled mail is graded against: read while the turns are drawn and again after: a cell is the
-# window's when it equals either read (a time counted from now may move one minute between)
-SCREENS=("${ROUTES[0]}" "${ROUTES[1]}" "America/Los_Angeles^${ROUTES[2]}" "$JOBS")
-drive screen "$WORK" sa "${SCREENS[@]}" > /dev/null || fail "S: the driver's read before the renders"
+drive screen "$WORK" sm "${SCREENS[@]}" > /dev/null || fail "S: the driver's read while the turns are drawn"
 live() { q "select count(*) from pgvigil.report_mail_sends where schedule_id in ($SL, $GONE) and kind = 'scheduled' and outcome is distinct from 'refused'"; }
 got=0
 for _ in $(seq 1 120); do
@@ -537,6 +546,8 @@ TESTID=""
 for _ in $(seq 1 60); do TESTID=$(q "select send_id from pgvigil.report_mail_sends where schedule_id = $S1 and kind = 'test'"); [[ -n $TESTID ]] && break; sleep 2; done
 [[ -n $TESTID ]] || fail "T: the test was not queued: $(grep -i 'report mail' "$WORK/serve.log" | tail -3)"
 waitsent "$TESTID" || fail "T: the test not answered"
+# the test mail is drawn after 'sb': one more read of its page after it (sc), so it too lies between two reads
+drive screen "$WORK" sc "${ROUTES[1]}" > /dev/null || fail "T: the driver's read after the test"
 [[ $(q "select outcome = 'sent' and subject like '[test] Proof schedule 1 - %' and requested_by = '$UIUSER' from pgvigil.report_mail_sends where send_id = $TESTID") == t ]] || fail "T: $(q "select outcome, subject, error from pgvigil.report_mail_sends where send_id = $TESTID")"
 ok "T: Send test drew schedule $S1's page as $UIUSER and mailed it (mail $TESTID, [test] in its subject); a second test at once refused (one at a time)"
 
@@ -627,10 +638,9 @@ problems = []; total = 0
 for sid, s in sorted(sends.items()):
     m = mails.get(sid)
     if m is None: problems.append(f'mail {sid}: not in the sink'); continue
-    pair = ('now', 'nowb') if s['kind'] == 'now' else ('sa', 'sb')
+    pair = {'now': ('now', 'nowb'), 'test': ('sb', 'sc')}.get(s['kind'], ('sa', 'sm', 'sb'))
     reads = [screens.get(norm(s['route']), {}).get(k) for k in pair]
     if None in reads: problems.append(f'mail {sid}: no screens of {s["route"]} ({sorted(screens.get(norm(s["route"]), {}))})'); continue
-    scr, alt_scr = reads
     to = m['To']
     if to != ', '.join(s['to']): problems.append(f'mail {sid}: To {to!r}')
     subj = str(m['Subject'])
@@ -647,6 +657,11 @@ for sid, s in sorted(sends.items()):
     if p.bad: problems.append(f'mail {sid}: {p.bad[:3]}')
     if p.unstyled: problems.append(f'mail {sid}: {p.unstyled} cells without a style')
     if re.search(r'<\s*(script|style)\b', body, re.I): problems.append(f'mail {sid}: a script or style element')
+    # the base is the read whose grids with rows match the mail's by name and row count (the earliest such read): its
+    # grid list, empty grids and sheet count; the first read when none does (its differences are then the problems)
+    shape = lambda r: [(g['named'], g['rows']) for g in r if not g.get('empty')]
+    scr = next((r for r in reads if shape(r) == [(g['name'], len(g['rows'])) for g in p.grids]), reads[0])
+    alt_scrs = [r for r in reads if r is not scr]
     book = [g for g in scr]   # every grid of the page in order, the empty ones too: the workbook's sheets
     grids = [g for g in scr if not g.get('empty')]   # the grids with rows: the mail's body
     zone = re.search(r'>Time zone</th><td[^>]*>([^<]*)<', body)
@@ -655,16 +670,28 @@ for sid, s in sorted(sends.items()):
     if [g['name'] for g in p.grids] != [g['named'] for g in grids]:
         problems.append(f'mail {sid}: grids {[g["name"] for g in p.grids]} vs the screen {[g["named"] for g in grids]}'); continue
     cells = coloured = moved = 0
-    alts = [g for g in alt_scr if not g.get('empty')]
-    for g, sg, ag in zip(p.grids, grids, alts if len(alts) == len(grids) else grids):
+    altss = [[g for g in a if not g.get('empty')] for a in alt_scrs]
+    altss = [a if len(a) == len(grids) else grids for a in altss]
+    for gi, (g, sg) in enumerate(zip(p.grids, grids)):
+        ags = [a[gi] for a in altss]
         if [c['t'] for c in g['head']] != sg['head']: problems.append(f'mail {sid} {sg["named"]}: head {[c["t"] for c in g["head"]]} vs {sg["head"]}')
         for c in g['head']:
             if (c['bg'], c['fg'], c['bold']) != ('#0063a3', '#ffffff', True): problems.append(f'mail {sid} {sg["named"]}: a header cell {c}'); break
-        if len(g['rows']) not in (sg['rows'], ag['rows']): problems.append(f'mail {sid} {sg["named"]}: {len(g["rows"])} rows vs {sg["rows"]} on the screen')
-        for i, (mr, sr, ar) in enumerate(zip(g['rows'], sg['cells'], ag['cells'] + [None] * max(0, len(sg['cells']) - len(ag['cells'])))):
-            if ar is not None and len(ar) == len(sr) and any(mc['t'] != sc['t'] and mc['t'] == ac['t'] for mc, sc, ac in zip(mr, sr, ar)):
-                sr = [ac if mc['t'] == ac['t'] and mc['t'] != sc['t'] else sc for mc, sc, ac in zip(mr, sr, ar)]
-                moved += 1
+        if len(g['rows']) not in [sg['rows']] + [ag['rows'] for ag in ags]: problems.append(f'mail {sid} {sg["named"]}: {len(g["rows"])} rows vs {sg["rows"]} on the screen')
+        for i, (mr, sr) in enumerate(zip(g['rows'], sg['cells'])):
+            rows_i = [sr] + [ag['cells'][i] for ag in ags if i < len(ag['cells']) and len(ag['cells'][i]) == len(sr)]
+            miss = lambda r: sum(1 for mc, c in zip(mr, r) if mc['t'] != c['t'])
+            # the read whose row the mail holds best (the base on a tie), whole: its texts and the colours they give the row
+            # (a row's label takes the row's worst status, so its text alone never tells the reads apart)
+            best = min(rows_i, key=miss)
+            took = best is not sr
+            sr = best
+            for ar in rows_i:   # a cell that moved apart from its row between reads: taken from any other read that holds it
+                if ar is best: continue
+                if any(mc['t'] != sc['t'] and mc['t'] == ac['t'] for mc, sc, ac in zip(mr, sr, ar)):
+                    sr = [ac if mc['t'] == ac['t'] and mc['t'] != sc['t'] else sc for mc, sc, ac in zip(mr, sr, ar)]
+                    took = True
+            moved += took
             if len(mr) != len(sr): problems.append(f'mail {sid} {sg["named"]} row {i}: {len(mr)} cells vs {len(sr)}'); continue
             row_st = {c['s'] for c in sr if c['s']}
             for j, (mc, sc) in enumerate(zip(mr, sr)):
@@ -697,7 +724,7 @@ for sid, s in sorted(sends.items()):
             mg = next(body, None)
             if mg is not None and n != len(mg['rows']) and len(mg['rows']): problems.append(f'mail {sid} {mg["name"]}: the sheet {ws.title} has {n} rows, the mail {len(mg["rows"])}')
     total += cells
-    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched the second read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
+    print(f'ok   C: mail {sid} ({s["kind"]}, {s["route"].split("?")[0]}): {len(p.grids)} grids, {cells} cells equal to the screen ({moved} rows matched a later read), {coloured} of them coloured; the workbook opens ({len(wb.sheetnames)} sheets, {sum(1 for g in book if g.get("empty"))} of an empty grid)')
 for x in problems[:40]: print('     ' + x)
 if problems: print(f'{len(problems)} problems'); sys.exit(1)
 print(f'ok   H: every mail tables and inline styles only, no script, style, class or event attribute; X: every workbook opens with openpyxl; {total} cells in all')

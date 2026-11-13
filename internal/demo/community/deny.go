@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// CaptureLogins are the read logins scripts/capture-community-samples.sh creates on its test servers (pgvigil_read on
+// both). OwnRows names, per tool, the column that says who ran a row: the pack leaves the rows of those logins out and
+// says so - a stranger would read the demo's top statements as the monitor's own reads (review 20261112-222929 finding
+// 4: 18 of pg_top_statements' 30 rows were pgvigil_read's).
+var (
+	CaptureLogins = []string{"pgvigil_read"}
+	OwnRows       = map[string]string{"pg_top_statements": "user"}
+)
+
 // MaxBytes caps the stored samples together (gzipped), so the binary does not grow past what the demo is worth.
 const MaxBytes = 1 << 20
 
