@@ -1197,11 +1197,16 @@ if (mode === 'heat') {
   await must(`#/mssqlqueries?i=${hi}&from=${encodeURIComponent(hf)}&to=${encodeURIComponent(ht)}`);
   await ev(`(() => { document.querySelector('[data-part=heatmap]').scrollIntoView(); return 'ok'; })()`);
   await poll('the heatmap section read', `!/Reading|comes into view/.test(document.querySelector('[data-part=heatmap] .queries-body')?.textContent ?? 'Reading')`, 60000);
+  await poll('the Active queries section read', `!/Reading|comes into view/.test(document.querySelector('[data-part=active] .queries-body')?.textContent ?? 'Reading')`, 30000);
   // first: the oldest column drawn (every cell, a 'no query' one too, carries its bin's start): a cut picture starts at drawn_from
   const hs = await ev(`(() => { const h = document.querySelector('[data-part=heatmap]'); const all = [...h.querySelectorAll('.heatmap-cell')].map(c => Number(c.dataset.t));
     return JSON.stringify({ many: h.querySelector('.heatmap-too-many')?.textContent ?? null,
     cut: h.querySelector('.heatmap-cut')?.textContent ?? null, errors: h.querySelectorAll('.error:not([role=status])').length, cells: h.querySelectorAll('.heatmap-cell[data-n]').length,
-    first: all.length ? Math.min(...all) : null, drawn: ${CELLS}(h) }); })()`);
+    first: all.length ? Math.min(...all) : null, drawn: ${CELLS}(h),
+    legend: h.querySelector('.heatmap-legend')?.textContent ?? null, empty: h.querySelector('.heatmap p.empty')?.textContent ?? null,
+    title: h.querySelector('.heatmap-cell[data-n]')?.title ?? null, tb: Number(h.querySelector('.heatmap-cell[data-n]')?.dataset.b ?? -1), tn: Number(h.querySelector('.heatmap-cell[data-n]')?.dataset.n ?? -1),
+    etitle: h.querySelector('.heatmap-cell:not([data-n])')?.title ?? null, eb: Number(h.querySelector('.heatmap-cell:not([data-n])')?.dataset.b ?? -1),
+    active: (document.querySelector('[data-part=active] .queries-body')?.textContent ?? '').slice(0, 300) }); })()`);
   await shot(`d10-heatmap-${hi}`);
   console.log(`heat ${hs}`);
   ws.close(); process.exit(0);
@@ -1333,7 +1338,23 @@ NOW=$(date -u +%s); FF=$(iso $((NOW - 86400))); FT=$(iso "$NOW")
 HPB=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$BF" "$BT" "$IID_BIG") || fail "I: the heatmap walk (a2) stopped: $HPB"
 HPC=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$CF" "$CT" "$IID_CUT") || fail "I: the heatmap walk (a4 / b5) stopped: $HPC"
 HPF=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$FF" "$FT" "$IID_761") || fail "I: the heatmap walk (fits) stopped: $HPF"
-python3 - "$(printf '%s\n' "$HPB" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPC" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPF" | sed -n 's/^heat //p')" "$WANT_BIG" "$NBINS" "$TMPD/hcut.json" <<'PYPAGE' || fail "I: the heatmap's size on the page (above)"
+# the heatmap's empty line both ways and Active queries outside its range: a window after this run's last snapshot and
+# read (no plan-cache read in it, while the Running API's rows part still answers the older snapshot's requests), and
+# an instance whose three reads in the last 24 hours stored no sample (idle)
+IID_IDLE=$(pq "SELECT pgvigil.ensure_instance('pgvq-idle', 'sqlserver', '16.0', 160000, false, '{}', 'sqlserver')")
+pq "INSERT INTO pgvigil.mssql_pc_read (instance_id, snapshot_at, interval_secs, statements, capped)
+      SELECT $IID_IDLE, now() - n * interval '5 minutes', 300, 0, false FROM generate_series(1, 3) n" >/dev/null
+NOW=$(date -u +%s); EF=$(iso $((NOW + 300))); ET=$(iso $((NOW + 900)))   # after every snapshot and read of the run
+api "mssql/running?instance=$SB&from=$EF&to=$ET" i-run-after.json
+api "mssql/plancache?instance=$SB&from=$EF&to=$ET&part=reads" i-reads-after.json
+NRA=$(jq '(.rows.rows // []) | length' "$TMPD/i-run-after.json"); NSA=$(jq '(.snapshots.rows // []) | length' "$TMPD/i-run-after.json")
+NPA=$(jq -r '.reads.columns as $c | (.reads.rows // [])[0] | [$c, .] | transpose | map({(.[0]): .[1]}) | add | .reads' "$TMPD/i-reads-after.json")
+[[ "$NRA" -ge 1 && "$NSA" == 0 && "$NPA" == 0 ]] \
+  || fail "I: the window after the run ($EF .. $ET): the API's rows $NRA, snapshots $NSA, plan-cache reads $NPA (want the older snapshot's rows, no snapshot and no read in it)"
+HPE=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$EF" "$ET" "$SB") || fail "I: the heatmap walk (no read) stopped: $HPE"
+HPI=$(G_USR="$USR" G_UPW="$UPW" timeout 120 node "$TMPD/i.mjs" "$CDP" "$U/" "$SB" "$IF" "$IT" "$SHOTS" heat "$FF" "$FT" "$IID_IDLE") || fail "I: the heatmap walk (idle) stopped: $HPI"
+python3 - "$(printf '%s\n' "$HPB" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPC" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPF" | sed -n 's/^heat //p')" "$WANT_BIG" "$NBINS" "$TMPD/hcut.json" \
+  "$(printf '%s\n' "$HPE" | sed -n 's/^heat //p')" "$(printf '%s\n' "$HPI" | sed -n 's/^heat //p')" "$NRA" <<'PYPAGE' || fail "I: the heatmap's size and words on the page (above)"
 import sys, json
 from datetime import datetime
 b, c, f = (json.loads(x or '{}') for x in sys.argv[1:4]); want, nbins = sys.argv[4], int(sys.argv[5]); bad = []
@@ -1349,10 +1370,27 @@ want_cells = sorted((ms(r['time_bin']), int(r['bucket']), int(r['queries'])) for
 got_cells = sorted(tuple(int(v) for v in x) for x in (c.get('drawn') or []))
 if got_cells != want_cells: bad.append(f'the cut picture: {len(got_cells)} cells, the API {len(want_cells)}; first differing {[x for x in got_cells if x not in set(want_cells)][:2]} / {[x for x in want_cells if x not in set(got_cells)][:2]}')
 if f.get('cut') is not None or f.get('many') is not None or not f.get('cells') or f.get('errors'): bad.append(f"fits: { {k: v for k, v in f.items() if k != 'drawn'} }")
+# PerformanceMonitor's legend and cell words (query-heatmap.js:87, :111-118; query-heatmap-model.js:91-94) on the cut walk
+BUCK = ['0-1ms', '1-10ms', '10-100ms', '100ms-1s', '1-10s', '10-100s', '>100s']
+mx = max((int(r['queries']) for r in api), default=0)
+leg, want_leg = ' '.join((c.get('legend') or '').split()), f"none 1 {mx:,} queries (log scale). Each column is {api[0]['bin_minutes'] if api else '?'} minutes; the slowest queries are at the top."
+if leg != want_leg: bad.append(f'the legend {leg!r}, want {want_leg!r}')
+t = (c.get('title') or '').split('\n')[0].split(' | '); tb, tn = int(c.get('tb', -1)), int(c.get('tn', -1))
+if len(t) != 3 or not 0 <= tb <= 6 or t[1] != f'Duration {BUCK[tb]}' or t[2] != f"{tn:,} {'query' if tn == 1 else 'queries'}": bad.append(f"a drawn cell's title {c.get('title')!r} (bucket {tb}, {tn} queries)")
+et, eb = (c.get('etitle') or '').split(' | '), int(c.get('eb', -1))
+if len(et) != 3 or not 0 <= eb <= 6 or et[1] != BUCK[eb] or et[2] != 'no query': bad.append(f"an empty cell's title {c.get('etitle')!r} (bucket {eb})")
+# the empty line both ways (reads = 0 against idle) and Active queries outside its range
+e, i_, nra = json.loads(sys.argv[7] or '{}'), json.loads(sys.argv[8] or '{}'), int(sys.argv[9])
+NOREAD = 'No plan-cache read was taken in this range (the mssql_plancache collection did not run), so nothing is known about its queries.'
+IDLE = "No query executed in this range: the plan cache's reads in it hold no query."
+if e.get('empty') != NOREAD or e.get('cells') or e.get('errors'): bad.append(f"no read: {e.get('empty')!r}, cells {e.get('cells')}, errors {e.get('errors')}")
+if 'No Running snapshot was taken in this range.' not in (e.get('active') or ''): bad.append(f"Active queries after the run (the API answers {nra} older rows): {e.get('active')!r}")
+if i_.get('empty') != IDLE or i_.get('cells') or i_.get('errors'): bad.append(f"idle: {i_.get('empty')!r}, cells {i_.get('cells')}, errors {i_.get('errors')}")
 if bad: print('DIFF', bad); sys.exit(1)
+print(f"I heatmap words: the legend '{leg}'; a cell '{c.get('title')}'; an empty cell '{c.get('etitle')}'; no read '{e.get('empty')}'; idle '{i_.get('empty')}'; Active queries after the run (the API's {nra} older rows not shown) '{(e.get('active') or '')[:80]}'")
 print(f"I heatmap size: past the ceiling '{b['many']}'; the cut '{cut}', {c['cells']} cells drawn = the API's (time, bucket, queries), the picture from drawn_from {api[0]['drawn_from']}; fits: {f['cells']} cells, no note")
 PYPAGE
-echo "ok   I: the heatmap's size on the page: the refusal's words in the heatmap's place (no cell, no error box), the cut note naming the $((NBINS - 143)) oldest column(s) and where the drawn part starts, 1,000 cells drawn = the API's cell by cell, no column of a cut bin drawn (not even empty), no note where the cells fit"
+echo "ok   I: the heatmap's size on the page: the refusal's words in the heatmap's place (no cell, no error box), the cut note naming the $((NBINS - 143)) oldest column(s) and where the drawn part starts, 1,000 cells drawn = the API's cell by cell, no column of a cut bin drawn (not even empty), no note where the cells fit; PerformanceMonitor's legend and cell words (a drawn and an empty cell); the empty line says no read was taken (a window after the run) or that no query executed (an idle instance's reads); Active queries shows no older snapshot's requests"
 printf '%s\n' "$out" > "$TMPD/i.out"; printf '%s\n' "$out" | grep '^click ' > "$SHOTS/d10-click-table.txt" || true
 echo "$out" | grep -v '^click ' | sed 's/^/  /'
 # the heatmap's read past the UI pool's real 15 s statement timeout: the plain line, no error box, no grid. A lock on
