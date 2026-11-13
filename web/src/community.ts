@@ -251,6 +251,8 @@ async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
     return sec;
   }
   const s = await get<SampleAnswer>('community/sample', { instance, tool: t.id });
+  // every grid of the panel is the test server's (the stored run's parameters too): an export or a mail carries the mark
+  sec.setAttribute('data-sample', s.mark);
   sec.append(el('p', { class: 'meta sample-line', role: 'note' }, badge('stored sample', 'none'), ' ', s.line));
   if (s.page) {
     const label = tabsFor(d.engine)[s.page] ?? s.page;

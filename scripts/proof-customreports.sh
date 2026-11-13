@@ -1425,8 +1425,9 @@ for s in d['demo']:
 p = d['deep']; assert p and p['rows'] >= 1 and 'stored sample of sp_Blitz' in p['mark'], f"S: tool=sp_Blitz: {p}"
 print(f"ok   S: the address's tool=sp_Blitz opens its sample as the page loads ({p['rows']} rows)")
 fx = d['files']; assert fx.get('xlsx') and fx.get('csv'), f"S: the downloads: {fx}"
-z = zipfile.ZipFile(os.path.join(dl, fx['xlsx'])); strings = html.unescape(z.read('xl/sharedStrings.xml').decode()) if 'xl/sharedStrings.xml' in z.namelist() else ''
-assert p['mark'] in strings, f"S: the workbook's Summary does not carry the mark {p['mark']!r}"
+# the Summary sheet (sheet1) writes its text inline; a grid's text may go to the shared strings
+z = zipfile.ZipFile(os.path.join(dl, fx['xlsx'])); summary = html.unescape(z.read('xl/worksheets/sheet1.xml').decode())
+assert p['mark'] in summary, f"S: the workbook's Summary sheet does not carry the mark {p['mark']!r}"
 print(f"ok   S: Export .xlsx: the Summary sheet's note carries the mark ({fx['xlsx']})")
 cpath = os.path.join(dl, fx['csv'])
 texts = [zipfile.ZipFile(cpath).read(n).decode('utf-8-sig') for n in zipfile.ZipFile(cpath).namelist()] if cpath.endswith('.zip') else [open(cpath, encoding='utf-8-sig').read()]

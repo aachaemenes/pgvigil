@@ -456,8 +456,8 @@ body = html.unescape(m.get_body(('html',)).get_content())
 assert mark in body, f"N2: the mail's body does not carry the mark {mark!r}"
 xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
 z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
-strings = html.unescape(z.read('xl/sharedStrings.xml').decode()) if 'xl/sharedStrings.xml' in z.namelist() else ''
-assert mark in strings, f"N2: the mail's workbook does not carry the mark"
+summary = html.unescape(z.read('xl/worksheets/sheet1.xml').decode())   # the Summary sheet writes its text inline
+assert mark in summary, f"N2: the mail's workbook's Summary sheet does not carry the mark"
 print(f"ok   N2: mail {sid}: the sample of sp_Blitz on a demo instance mailed with Send now; the body's line above its grid and the workbook's Summary carry the mark ({mark[:60]}...)")
 PY
 

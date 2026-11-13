@@ -69,7 +69,7 @@ var (
 	cache = map[string]*Sample{}
 )
 
-// ErrNone: the tool has no stored sample.
+// ErrNone is what Get returns for a tool without a stored sample.
 var ErrNone = errors.New("no stored sample for this tool")
 
 func fileOf(tool string) string { return Dir + "/" + tool + ".json.gz" }
@@ -102,7 +102,7 @@ func Get(tool string) (*Sample, error) {
 	return s, nil
 }
 
-// Has: the tool has a stored sample.
+// Has reports whether the tool has a stored sample.
 func Has(tool string) bool {
 	_, err := files.ReadFile(fileOf(tool))
 	return err == nil
@@ -136,7 +136,7 @@ func gunzip(b []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	return io.ReadAll(io.LimitReader(zr, 64<<20))
 }
 
