@@ -373,26 +373,9 @@ SELECT hb.host, hb.beat_at, hb.all_stopped,
                                        AND l2.minute >= date_trunc('minute', hb.beat_at))), '{}') AS orphaned
   FROM hb;
 
--- collector_minutes: the grouping the parent, the forming wait and the window all read, so they cannot disagree - per
--- collector (host), minute and instance the counts summed over the host's runs, and what they say: ran (it had a run:
--- the denominator), dead (it ran and every run failed), hit (it ran with a failed run, or a connect did not open).
--- The minutes p_from to p_to, both ends included.
-CREATE OR REPLACE FUNCTION pgvigil.collector_minutes(p_from timestamptz, p_to timestamptz)
-RETURNS TABLE (host text, minute timestamptz, instance_id int, runs bigint, failures bigint, attempts bigint, opened bigint,
-               ran boolean, dead boolean, hit boolean)
-LANGUAGE sql STABLE AS $$
-  SELECT x.host, x.minute, x.instance_id, x.runs, x.failures, x.attempts, x.opened,
-         x.runs > 0, x.runs > 0 AND x.failures >= x.runs, (x.runs > 0 AND x.failures > 0) OR x.attempts > x.opened
-    FROM (SELECT h.host, l.minute, l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures,
-                 sum(l.attempts) AS attempts, sum(l.opened) AS opened
-            FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
-           WHERE l.minute >= p_from AND l.minute <= p_to
-           GROUP BY h.host, l.minute, l.instance_id) x
-$$;
-
--- collector_together: do p_n instances, of the p_ran a collector ran in a minute, point at a shared cause - 5 or more
--- (40 of 200 cut is one alert, not forty: DBA Dash's consolidation threshold), or at least 3 and over half of those it
--- ran (a small collector). The parent, the forming wait and the window call it, each with its own count.
+-- collector_together: do p_n instances, of the p_ran a collector ran, point at a shared cause - 5 or more (40 of 200
+-- cut is one alert, not forty: DBA Dash's consolidation threshold), or at least 3 and over half of those it ran (a
+-- small collector). The cohorts, the forming wait and the window call it, each with its own count.
 CREATE OR REPLACE FUNCTION pgvigil.collector_together(p_n bigint, p_ran bigint)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT p_n >= 5 OR (p_n >= 3 AND p_n * 2 > p_ran)
@@ -527,38 +510,42 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
 $$;
 
 -- collector_forming: the instances of a 'collector or network' that may be forming - in a collector's (host's) newest
--- written minute the instances that COUNT are a shared cause (collector_together). An instance counts when a connect
--- of it did not open (a refused login, a server or a network not answering), or when it has a failed run and its own
--- previous written minute on that host (65 minutes back at most) had none: a failure that is new. A collection that
--- fails every minute on its own (a missing right) therefore does not count, however many instances carry one; a cut
--- that opens the connect and fails the query (a pooler with its servers gone, a failover) counts on the instances that
--- were clean the minute before. Not every run: a cut starts partway through a minute. alert_due holds the NEW alerts
--- of the counted instances (collector_shared_cause) until the next minute is written; the parent's own rule (every
--- run failed) is unchanged. The cap: when the host's last 4 written minutes all form, nothing waits any more (about 3
--- minutes). A minute older than 2 minutes is not newest (a late collector); the repository's current minute counts (a
+-- written minute the instances whose trouble is NEW are a shared cause (collector_together, of the instances the host
+-- ran in that minute). New: a 'noconn' spell (a connect that did not open) that began within the last span + 1 minute
+-- of written minutes, or a failed run in the minute with a failed-run streak that began as recently. A standing
+-- failure is never new (a refused login an hour old, a 5-minute collection failing every run), however many
+-- instances carry one. alert_due holds the NEW alerts of the counted instances (collector_shared_cause) until the
+-- next minute is written; nothing waits longer than span + 3 minutes after its own trouble began - the cap is the
+-- clock. A minute older than 2 minutes is not newest (a late collector); the repository's current minute counts (a
 -- beat writes a minute once it ended on the collector's clock, which may run ahead).
 CREATE OR REPLACE VIEW pgvigil.collector_forming AS
-WITH m AS (
-  SELECT c.*,
-         c.hit AND (c.attempts > c.opened
-                    OR NOT coalesce((SELECT p.failures > 0
-                                       FROM pgvigil.collector_minutes(c.minute - interval '65 minutes', c.minute) p
-                                      WHERE p.host = c.host AND p.instance_id = c.instance_id AND p.minute < c.minute
-                                      ORDER BY p.minute DESC LIMIT 1), false)) AS counts
-    FROM pgvigil.collector_minutes(date_trunc('minute', now()) - interval '6 minutes', date_trunc('minute', now())) c
-), mm AS (
-  SELECT m.host, m.minute,
-         pgvigil.collector_together(count(*) FILTER (WHERE m.counts), count(*) FILTER (WHERE m.ran)) AS forming
-    FROM m GROUP BY m.host, m.minute
-), newest AS (
-  SELECT DISTINCT ON (mm.host) mm.host, mm.minute, mm.forming FROM mm ORDER BY mm.host, mm.minute DESC
+WITH hn AS (
+  SELECT h.host, max(l.minute) AS newest, pgvigil.collector_span(h.host) + interval '1 minute' AS age
+    FROM pgvigil.collector_load l JOIN pgvigil.collector_heartbeat h USING (collector_id)
+   WHERE l.minute >= date_trunc('minute', now()) - interval '2 minutes' AND h.retired_at IS NULL
+   GROUP BY h.host
+), m AS (
+  SELECT hn.host, hn.newest, hn.age, l.instance_id, sum(l.runs) AS runs, sum(l.failures) AS failures
+    FROM hn
+    JOIN pgvigil.collector_heartbeat h ON h.host = hn.host
+    JOIN pgvigil.collector_load l ON l.collector_id = h.collector_id AND l.minute = hn.newest
+   GROUP BY hn.host, hn.newest, hn.age, l.instance_id
+), c AS (
+  SELECT m.*,
+         EXISTS (SELECT 1 FROM pgvigil.collector_spells s
+                  WHERE s.host = m.host AND s.instance_id = m.instance_id AND s.kind = 'noconn' AND s.ended_at IS NULL
+                    AND s.last = m.newest AND s.since >= m.newest - m.age)
+         OR (m.failures > 0 AND EXISTS (SELECT 1 FROM pgvigil.collector_streaks t
+                                         WHERE t.instance_id = m.instance_id AND t.fail_streak > 0
+                                           AND t.failing_since >= m.newest - m.age)) AS counts
+    FROM m
+), f AS (
+  SELECT c.host, pgvigil.collector_together(count(*) FILTER (WHERE c.counts), count(*) FILTER (WHERE c.runs > 0)) AS forming
+    FROM c GROUP BY c.host
 )
-SELECT DISTINCT m.instance_id, n.host, n.minute
-  FROM newest n
-  JOIN m ON m.host = n.host AND m.minute = n.minute AND m.counts
- WHERE n.forming AND n.minute >= date_trunc('minute', now()) - interval '2 minutes'
-   AND (SELECT count(*) FROM mm x WHERE x.host = n.host AND x.forming
-           AND x.minute >= n.minute - interval '3 minutes' AND x.minute <= n.minute) < 4;
+SELECT c.instance_id, c.host, c.newest AS minute
+  FROM c JOIN f USING (host)
+ WHERE f.forming AND c.counts;
 
 -- collector_in_window: whether a failure at p_at of the instance lies inside an 'instances failing together' window
 -- of a host that ran it - a minute in (p_at - (span + 4 min), p_at + (span + 4 min)] in which the instance's dead spell
