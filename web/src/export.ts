@@ -31,7 +31,7 @@ export interface Cell { v: string | number; kind: Kind; status?: Status; link?: 
   sheets?: number[] }   // the page sheet: '{sheet:k}' in the words is grid k's sheet name
 // Look: a cell's look in the file: its fill and text colour ('RRGGBB'), weight, slant, underline, size in points, wrapped
 // words, a thick left border in a colour (a tile's stripe)
-export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string }
+export interface Look { fill?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; pt?: number; wrap?: boolean; border?: string; valign?: 'top' | 'middle' }   // valign: as the page aligns the cell (a cell with a look and none: top)
 export interface Section { name: string; cols: string[]; rows: Cell[][]; note?: string; heads?: Look[] }   // note: the page's 'the newest N of M' line above the grid   // heads: the header cells' looks as the page draws them
 
 // ---- reading the page -----------------------------------------------------------------------------------
@@ -346,8 +346,10 @@ class Styles {
     if (i === undefined) { i = this.borders.push(`<border><left style="thick"><color rgb="${argb}"/></left><right/><top/><bottom/><diagonal/></border>`) - 1; this.borderIds.set(argb, i); }
     return i;
   }
-  private xf(fmt: number, fill: number, font: number, border: number, wrap: boolean): number {
-    const k = `${fmt}|${fill}|${font}|${border}|${+wrap}`;
+  // al: the cell's alignment - '' none (a cell of the export's own: Excel's bottom), 't' top, 'm' middle, a 'w' after
+  // either when it wraps
+  private xf(fmt: number, fill: number, font: number, border: number, al: string): number {
+    const k = `${fmt}|${fill}|${font}|${border}|${al}`;
     let i = this.xfs.get(k);
     if (i === undefined) { i = this.xfs.size; this.xfs.set(k, i); }
     return i;
@@ -355,20 +357,20 @@ class Styles {
   id(fmt: number, status?: Status, head = false, link = false): number {
     const fill = head ? this.fill(headFill) : status ? this.fill(fillOf[status]) : link ? this.fill(linkFill) : 0;
     const font = head ? this.font('FFFFFFFF', true) : status ? this.font(fontOf[status], false) : link ? this.font(linkFont, false) : 0;
-    return this.xf(fmt, fill, font, 0, false);
+    return this.xf(fmt, fill, font, 0, '');
   }
   // look: a cell in the page's look ('RRGGBB' colours)
   look(fmt: number, l: Look): number {
     const fill = l.fill ? this.fill('FF' + l.fill) : 0;
     const plain = !l.color && !l.bold && !l.italic && !l.underline && !l.pt;
     const font = plain ? 0 : this.font(l.color ? 'FF' + l.color : '', !!l.bold, !!l.italic, !!l.underline, l.pt ?? 11);
-    return this.xf(fmt, fill, font, l.border ? this.border('FF' + l.border) : 0, !!l.wrap);
+    return this.xf(fmt, fill, font, l.border ? this.border('FF' + l.border) : 0, (l.valign === 'middle' ? 'm' : 't') + (l.wrap ? 'w' : ''));
   }
   xml(): string {
     const xfs = [...this.xfs.keys()].map(k => {
-      const [n, f, t, b, w] = k.split('|');
+      const [n, f, t, b, a] = k.split('|');
       return `<xf numFmtId="${n}" fontId="${t}" fillId="${f}" borderId="${b}" xfId="0"${n !== '0' ? ' applyNumberFormat="1"' : ''}${f !== '0' ? ' applyFill="1"' : ''}${t !== '0' ? ' applyFont="1"' : ''}${b !== '0' ? ' applyBorder="1"' : ''}`
-        + (w === '1' ? ' applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' : '/>');
+        + (a ? ` applyAlignment="1"><alignment vertical="${a.startsWith('m') ? 'center' : 'top'}"${a.endsWith('w') ? ' wrapText="1"' : ''}/></xf>` : '/>');
     });
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
       + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
@@ -403,6 +405,19 @@ export function textPx(s: string, bold: boolean, cap = true): number {
     if (cap && u * PX > MAX_WIDTH * 8) break;   // past the cap: the rest changes nothing to a width
   }
   return u * PX;
+}
+// linePx: a text cell's lines in pixels as written, each run at its own size and weight (a rich-text cell: a tile's large
+// value and its small label on one line), the whole text measured (no cap)
+export function linePx(c: Cell): number[] {
+  const runs = c.runs ?? [{ text: String(c.v), bold: c.look?.bold, pt: c.look?.pt }];
+  const out = [0];
+  for (const r of runs) {
+    String(r.text).split(/\r?\n/).forEach((part, k) => {
+      if (k > 0) out.push(0);
+      out[out.length - 1] += textPx(part, !!(r.bold ?? c.look?.bold), false) * (r.pt ?? c.look?.pt ?? 11) / 11;
+    });
+  }
+  return out;
 }
 // shown: the text Excel shows for a cell under its format (what the width is measured on)
 export function shown(c: Cell): string {
@@ -495,12 +510,11 @@ function sheetXml(sh: Sheet, st: Styles, sst: Shared, names: string[] = []): str
     let pt = 11, ht = 15;
     r.forEach((c, j) => {
       if (!c) return;
-      const size = c.look?.pt ?? 11;
+      const size = Math.max(c.look?.pt ?? 11, ...(c.runs ?? []).map(x => x.pt ?? 11));
       pt = Math.max(pt, size);
       if (!c.look?.wrap || typeof c.v === 'number') return;
-      const words = c.runs ? c.runs.map(x => x.text).join('') : c.v;
       const room = Math.max(10, colPx(j) - 6);
-      const lines = String(words).split(/\r?\n/).reduce((n, l) => n + Math.max(1, Math.ceil((1.0738 * textPx(l, !!c.look?.bold, false) * size / 11 + 1) / room)), 0);
+      const lines = linePx(c).reduce((n, w) => n + Math.max(1, Math.ceil((1.0738 * w + 1) / room)), 0);
       ht = Math.max(ht, Math.ceil(lines * size * 1.36));
     });
     ht = Math.max(ht, Math.ceil(pt * 1.36));

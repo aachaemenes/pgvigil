@@ -89,10 +89,11 @@ export function cellLook(td: Element, table: Element, cache?: LookCache): CellLo
   cache?.set(key, out);
   return out;
 }
-// headLook: a header cell's look (the page's th: its fill, white text, its weight), wrapped as the page wraps it
+// headLook: a header cell's look (the page's th: its fill, white text, its weight), wrapped as the page wraps it, in the
+// middle of its row as the page sets it (app.css '.grid > thead th' vertical-align: middle)
 export function headLook(th: Element, table: Element): Look {
   const p = paintOf(th, table), l = textLook(th.querySelector('.th-label') ?? th, th);
-  return { ...(p.fill ? { fill: p.fill } : {}), color: p.text, ...(l.bold ? { bold: true } : {}), wrap: true };
+  return { ...(p.fill ? { fill: p.fill } : {}), color: p.text, ...(l.bold ? { bold: true } : {}), wrap: true, valign: 'middle' };
 }
 // gridHeadLook: the look the page gives a grid's header cell, for a sheet whose header row is the export's own (a
 // property card's 'item | value': the page draws no header over a card): a probe header in the page, read and removed

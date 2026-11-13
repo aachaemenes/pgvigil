@@ -812,15 +812,15 @@ def sheets_of(z):
 def xfs(z):
     st = z.read('xl/styles.xml').decode()
     fills = re.findall(r'<fill>(.*?)</fill>', re.search(r'<fills[^>]*>(.*?)</fills>', st).group(1))
-    cx = re.findall(r'<xf ([^>]*?)\s*/?>(?:<alignment[^>]*/></xf>)?', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st).group(1))
+    cx = re.findall(r'<xf ([^>]*?)\s*/?>(?:(<alignment[^>]*/>)</xf>)?', re.search(r'<cellXfs[^>]*>(.*?)</cellXfs>', st).group(1))
     fonts = re.findall(r'<font>(.*?)</font>', re.search(r'<fonts[^>]*>(.*?)</fonts>', st).group(1))
     out = []
-    for a in cx:
+    for a, al in cx:
         g = lambda k: int(re.search(k + r'="(\d+)"', a).group(1))
         f = re.search(r'rgb="(\w+)"', fills[g('fillId')])
         fo = fonts[g('fontId')]; c = re.search(r'rgb="(\w+)"', fo)
         sz = re.search(r'<sz val="([\d.]+)"/>', fo)
-        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'wrap': 'applyAlignment' in a, 'sz': float(sz.group(1)) if sz else 11.0})
+        out.append({'fmt': g('numFmtId'), 'fill': f.group(1) if f else None, 'font': c.group(1) if c else None, 'bold': '<b/>' in fo, 'wrap': 'wrapText="1"' in al, 'valign': (re.search(r'vertical="(\w+)"', al) or [None, 'bottom'])[1], 'sz': float(sz.group(1)) if sz else 11.0})
     return st, out
 def grids(page):
     head, out = '', []
@@ -878,16 +878,30 @@ def widths_of(x):
         for k in range(int(a), int(b) + 1): out[k - 1] = float(w)
     return out
 def texts_of(x, sst):
-    # every cell's words as written: an inline string's runs joined, a shared string, else none (a number)
+    # every cell's words as written: an inline string's runs joined, a shared string, else none (a number); with its runs
+    # (text, size, bold): a rich string's each in its own font, a plain one a single run in the cell's (None, None)
     out = {}
     for m in re.finditer(r'<c r="([A-Z]+)(\d+)" s="(\d+)"(?: t="(\w+)")?(?:/>|>(.*?)</c>)', x, re.S):
         body = m.group(5) or ''
-        if m.group(4) == 'inlineStr': t = unesc(''.join(re.findall(r'<t[^>]*>([^<]*)</t>', body)))
+        if m.group(4) == 'inlineStr':
+            t = unesc(''.join(re.findall(r'<t[^>]*>([^<]*)</t>', body)))
+            rs = re.findall(r'<r>(?:<rPr>(.*?)</rPr>)?<t[^>]*>([^<]*)</t></r>', body)
+            segs = [(unesc(tt), float((re.search(r'<sz val="([\d.]+)"', rp or '') or [None, 0])[1]) or None, ('<b/>' in rp) if rp else None) for rp, tt in rs] if rs else [(t, None, None)]
         elif m.group(4) == 's':
-            v = re.search(r'<v>(\d+)</v>', body); t = sst[int(v.group(1))] if v and int(v.group(1)) < len(sst) else ''
+            v = re.search(r'<v>(\d+)</v>', body); t = sst[int(v.group(1))] if v and int(v.group(1)) < len(sst) else ''; segs = [(t, None, None)]
         else: continue
-        out[(int(m.group(2)), colidx(m.group(1)))] = (int(m.group(3)), t)
+        out[(int(m.group(2)), colidx(m.group(1)))] = (int(m.group(3)), t, segs)
     return out
+def seg_lines(segs, bold, sz):
+    # a cell's lines in pixels, each run at its own size and weight (as export.ts linePx), the whole text (no cap)
+    out = [0.0]
+    for t, s, b in segs:
+        for k, part in enumerate(t.split('\n')):
+            if k: out.append(0.0)
+            out[-1] += tpx(part, b if b is not None else bold, False) * (s or sz) / 11
+    return out
+def seg_size(segs, sz):
+    return max([sz] + [s for _, s, _ in segs if s])
 def fit_audit(x, cx, sst):
     # (E2 1b, fault 1) every text cell of a sheet is whole: a line of words fits the room it is drawn in - its column and
     # the empty cells after it in its row (none after it: it runs to the sheet's edge) - measured in the file's font as
@@ -898,21 +912,41 @@ def fit_audit(x, cx, sst):
     px = lambda j: round((ws.get(j, 0) if ws.get(j, 0) > 0 else 8.43) * 7) + 5
     full = {k for k, v in allc.items() if v[1] is not None or (k in tx and tx[k][1] != '')}
     cut = []
-    for (r, j), (sid, t) in tx.items():
+    for (r, j), (sid, t, segs) in tx.items():
         if not t: continue
         st_ = cx[sid] if sid < len(cx) else {'bold': False, 'sz': 11.0, 'wrap': False}
-        sz = st_.get('sz', 11.0)
+        sz = st_.get('sz', 11.0); ls = seg_lines(segs, st_['bold'], sz)
         if st_.get('wrap'):
             room = max(10, px(j) - 6)
-            lines = sum(max(1, math.ceil((1.0738 * tpx(l, st_['bold'], False) * sz / 11 + 1) / room)) for l in t.split('\n'))
-            if lines * sz * 1.36 > hts.get(r, 15.0) + 0.5: cut.append(f"{colname(j)}{r} '{t[:30]}' needs {lines} lines, row {hts.get(r, 15.0)} pt")
+            lines = sum(max(1, math.ceil((1.0738 * w + 1) / room)) for w in ls)
+            if lines * seg_size(segs, sz) * 1.36 > hts.get(r, 15.0) + 0.5: cut.append(f"{colname(j)}{r} '{t[:30]}' needs {lines} lines, row {hts.get(r, 15.0)} pt")
             continue
-        need = 1.0738 * tpx(t, st_['bold'], False) * sz / 11 + 6
+        need = 1.0738 * max(ls) + 6
         after = [k for (rr, k) in full if rr == r and k > j]
         if not after: continue
         room = sum(px(k) for k in range(j, min(after)))
         if need > room + 2: cut.append(f"{colname(j)}{r} '{t[:30]}' needs {round(need)} px, has {room}")
     return cut
+def tall_audit(x, cx, sst):
+    # (1b d) a row given a height is no taller than its tallest cell needs: its largest font's line, a wrapped cell's
+    # lines at its column's width (each run at its own size), 1.36 x the points a line; (1b e) every cell of a row taller
+    # than one line sits where the page sets it - top (the page's td and props cells), middle (its grid header) - never
+    # at the bottom (Excel's default). Returns (rows over, cells at the bottom).
+    ws = widths_of(x); hts = {int(r): float(h) for r, h in re.findall(r'<row r="(\d+)" ht="([\d.]+)"', x)}
+    px = lambda j: round((ws.get(j, 0) if ws.get(j, 0) > 0 else 8.43) * 7) + 5
+    tx = texts_of(x, sst); need = {}; low = []
+    for m in re.finditer(r'<c r="([A-Z]+)(\d+)" s="(\d+)"', x):
+        r, j, sid = int(m.group(2)), colidx(m.group(1)), int(m.group(3))
+        st_ = cx[sid] if sid < len(cx) else {'bold': False, 'sz': 11.0, 'wrap': False, 'valign': 'bottom'}
+        sz = st_.get('sz', 11.0); segs = tx.get((r, j), (0, '', []))[2]; size = seg_size(segs, sz) if segs else sz
+        h = size * 1.36
+        if st_.get('wrap') and (r, j) in tx and tx[(r, j)][1]:
+            h = sum(max(1, math.ceil((1.0738 * w + 1) / max(10, px(j) - 6))) for w in seg_lines(segs, st_['bold'], sz)) * size * 1.36
+        need[r] = max(need.get(r, 15.0), math.ceil(h))
+        if hts.get(r, 15.0) > 15.5 and st_.get('valign', 'bottom') == 'bottom' and (r, j) in tx and tx[(r, j)][1]:
+            low.append(f"{colname(j)}{r} '{tx[(r, j)][1][:24]}' in a {hts[r]} pt row")
+    over = [f"row {r} {h} pt, its lines {need.get(r, 15)}" for r, h in sorted(hts.items()) if h > need.get(r, 15.0) + 1]
+    return over, low
 def width_audit(x, cx, sst):
     # every column: the width the rule gives its cells (row 1, the header, measured as DBA Dash's bold header: the
     # rule's own place, not the cell's font - the page's header is not bold, and a bold badge cell is no header),
@@ -948,6 +982,10 @@ _n = lambda cap: max(1, math.ceil((1.0738 * tpx(_long, False, cap) + 1) / (round
 _x4 = lambda n: f'<cols><col min="1" max="1" width="150" customWidth="1"/></cols><sheetData><row r="1" ht="{math.ceil(n * 11 * 1.36)}" customHeight="1"><c r="A1" s="1" t="inlineStr"><is><t>{_long}</t></is></c></row></sheetData>'
 check(_n(True) < _n(False) and len(fit_audit(_x4(_n(True)), _cx, [])) == 1 and fit_audit(_x4(_n(False)), _cx, []) == [],
       f"fit: self-test - a wrapped text past the 1,200 px cap ({round(tpx(_long, False, False))} px) in a row of the capped count's {_n(True)} lines is found, in a row of its {_n(False)} lines whole")
+_cx2 = _cx + [{'fmt': 0, 'bold': False, 'wrap': True, 'sz': 15.0, 'valign': 'top'}, {'fmt': 0, 'bold': False, 'wrap': False, 'sz': 11.0, 'valign': 'bottom'}, {'fmt': 0, 'bold': False, 'wrap': False, 'sz': 11.0, 'valign': 'top'}]
+_tile = lambda ht, s: f'<cols><col min="1" max="2" width="20" customWidth="1"/></cols><sheetData><row r="1" ht="{ht}" customHeight="1"><c r="A1" s="2" t="inlineStr"><is><r><rPr><sz val="15"/></rPr><t xml:space="preserve">13</t></r><r><rPr><sz val="11"/></rPr><t xml:space="preserve">xmin horizon age</t></r></is></c><c r="B1" s="{s}" t="inlineStr"><is><t>version</t></is></c></row></sheetData>'
+check(tall_audit(_tile(21, 4), _cx2, []) == ([], []) and len(tall_audit(_tile(41, 4), _cx2, [])[0]) == 1 and len(tall_audit(_tile(21, 3), _cx2, [])[1]) == 1 and fit_audit(_tile(21, 4), _cx2, []) == [],
+      f"tall: self-test - a tile's 15 pt value and 11 pt label on one line: a 21 pt row whole and not over, the 41 pt of the count at one size found over ({tall_audit(_tile(41, 4), _cx2, [])[0]}), a label at the bottom of the tall row found ({tall_audit(_tile(21, 3), _cx2, [])[1]})")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
@@ -967,6 +1005,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         check('<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' in x, f"{key}: sheet '{names[i + 1]}' its header row frozen (ySplit 1)")
         nw, woff = width_audit(x, cx, sst)
         check(nw >= max(1, len(g['head'])) and not woff, f"{key}: sheet '{names[i + 1]}' {nw} column widths by DBA Dash's rule, none over 150 ({len(woff)} off {woff[:3]})")
+        over, low = tall_audit(x, cx, sst)
+        check(not over and not low, f"{key}: sheet '{names[i + 1]}' no row taller than its lines, no cell at the bottom of a tall row (over {over[:2]}; bottom {low[:2]})")
         check(n == g['rows'], f"{key}: sheet '{names[i + 1]}' {n} data rows = {g['rows']} on screen")
         counts, cells = audit(key, names[i + 1], x, cx, g, sst)
         classed += counts['class']
@@ -1121,6 +1161,8 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     # a card's label column is wide enough, a wrapped cell or header row is as tall as its lines
     cut1 = fit_audit(first, cx, sst)
     check(not cut1, f"{key}: every text on the page sheet whole ({len(texts_of(first, sst))} text cells; {len(cut1)} cut {cut1[:3]})")
+    over, low = tall_audit(first, cx, sst)
+    check(not over and not low, f"{key}: the page sheet: no row taller than its lines, no cell at the bottom of a tall row ({len(over)} over {over[:2]}; {len(low)} at the bottom {low[:2]})")
     # (fault 5) row 2 says the scope in the page's words: no engine or platform key ('sqlserver', 'onprem')
     r2 = [ptext(2, j) for j in range(12) if ptext(2, j)]
     keys_ = {'postgres', 'sqlserver', 'auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb', 'azuresqldb', 'azuremi', 'azuresqlmi'}
