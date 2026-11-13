@@ -187,7 +187,10 @@ What decides it, and where pgvigil reads it:
   configuration file, without `-no-login`, and add a user with `pgvigil user add`), no actions door or its audit login
   not connected (then a PostgreSQL instance's own login is not asked about: the server's line is the reason); each page names it in its own words (Running a tool / Saving or running a
   report / Sending or scheduling a mail needs ...).
-- the configuration file: no read login (SQL Server) or monitoring login (PostgreSQL) for the instance.
+- the configuration file: no read login (SQL Server) or monitoring login (PostgreSQL) for the instance; an instance
+  added in Admin > Instances has its stored login as its door only where `doors: page_instance_reads: on` is set and
+  its sign-in is one the page door opens ([Configuration](configuration.md#community-tools-and-custom-reports-on-a-page-instance)),
+  else its own words say which of these it is.
 - live, on the instance's own login, within 5 s for the instance and the database named, kept 60 s (Look again checks at
   once, except that it first shows the answer of a check that outran the 5 s; at most 16 checks run at once): a sysadmin
   or superuser login (refused); each procedure in the database named as the login sees it (not there: name the database

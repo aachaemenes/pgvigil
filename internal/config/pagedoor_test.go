@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -106,6 +108,32 @@ func TestPageDSNRefusal(t *testing.T) {
 		}
 		if why := PageDSNRefusal("i1", c.Engine, dsn); why != "" {
 			t.Errorf("BuildDSN's own string for %s %s refused: %s (%q)", c.Engine, c.Auth, why, dsn)
+		}
+	}
+}
+
+// the switch is pgvigil.yaml's alone and off unless it says so ('on' as the docs write it, YAML 1.1's word)
+func TestDoorsSwitch(t *testing.T) {
+	for _, c := range []struct {
+		yaml string
+		want bool
+	}{
+		{"", false},
+		{"doors:\n  page_instance_reads: on\n", true},
+		{"doors:\n  page_instance_reads: true\n", true},
+		{"doors:\n  page_instance_reads: off\n", false},
+		{"doors: {}\n", false},
+	} {
+		p := filepath.Join(t.TempDir(), "pgvigil.yaml")
+		if err := os.WriteFile(p, []byte("repository:\n  dsn: host=r\n"+c.yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("%q: %v", c.yaml, err)
+		}
+		if cfg.Doors.PageInstanceReads != c.want {
+			t.Errorf("%q: page_instance_reads %v, want %v", c.yaml, cfg.Doors.PageInstanceReads, c.want)
 		}
 	}
 }

@@ -33,6 +33,8 @@ type Config struct {
 	DBADash []DBADashRepo `yaml:"dbadash"`
 	// Doors holds the switches of serve's doors that only this file turns on, never the page (pagedoor.go):
 	// doors: page_instance_reads: on lets Community tools and custom reports run on instances added in Admin > Instances.
+	// A later release (task 330) lists these switches on a Site settings page, one switch per door in one named place,
+	// where this file's off still wins (file off > profile > page).
 	Doors Doors `yaml:"doors"`
 	// Flags carries command-line choices; never read from the file.
 	Flags Flags `yaml:"-"`

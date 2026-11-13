@@ -367,8 +367,8 @@ func (s *Server) communityInstance(ctx context.Context, id int) (name, engine st
 }
 
 const sqlCommunityLog = `
-SELECT log_id, at, ui_user, client, op, tool, instance, outcome, detail, rows, duration_ms, statement
-  FROM pgvigil.custom_report_log WHERE op IN ('community_run', 'community_help') AND instance_id = $1
+SELECT log_id, at, ui_user, client, op, tool, instance, outcome, detail, rows, duration_ms, statement, door, door_generation
+  FROM pgvigil.custom_report_log WHERE op IN ('community_run', 'community_help', 'community_form') AND instance_id = $1
  ORDER BY at DESC, log_id DESC LIMIT 100`
 
 type toolState struct {

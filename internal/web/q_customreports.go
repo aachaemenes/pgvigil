@@ -774,13 +774,15 @@ SELECT folder FROM pgvigil.custom_report_folders
  ORDER BY 1`
 
 const sqlCustomReportLog = `
-SELECT log_id, at, ui_user, client, op, report_id, report_name, tool, instance_id, instance, outcome, detail, rows, duration_ms, statement
+SELECT log_id, at, ui_user, client, op, report_id, report_name, tool, instance_id, instance, outcome, detail, rows, duration_ms, statement,
+       door, door_generation
   FROM pgvigil.custom_report_log ORDER BY at DESC, log_id DESC LIMIT 200`
 
 const sqlCustomReportOne = `SELECT ` + sqlCustomReportCols + ` FROM pgvigil.custom_reports WHERE report_id = $1 AND deleted_at IS NULL`
 
 const sqlCustomReportOneLog = `
-SELECT log_id, at, ui_user, client, op, report_id, report_name, tool, instance_id, instance, outcome, detail, rows, duration_ms, statement
+SELECT log_id, at, ui_user, client, op, report_id, report_name, tool, instance_id, instance, outcome, detail, rows, duration_ms, statement,
+       door, door_generation
   FROM pgvigil.custom_report_log WHERE report_id = $1 ORDER BY at DESC, log_id DESC LIMIT 100`
 
 // CustomReports is GET /api/customreports (the tree, the definitions and the log) or ?report=N (one report).
