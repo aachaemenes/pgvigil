@@ -24,7 +24,8 @@ interface Tool {
   installed: boolean | null; where?: string; params?: { name: string; type: string; label?: string; default?: string }[];
   state: string; on: boolean; needs?: Need[]; preset?: Record<string, string>; sample?: SampleMark;
 }
-// a stored sample's mark (q_community.go sampleMark): line = the words above it, mark = what an export or a mail carries
+// a stored sample's mark (q_community.go sampleMark): line = the words above it, mark = what an export carries (a demo
+// serve mails nothing)
 interface SampleMark { kit: string; version: string; version_date?: string; captured_at: string; server: string; page?: string; line: string; mark: string }
 interface SampleAnswer extends SampleMark {
   tool: string; name: string; instance: string; database?: string; params: Record<string, string>;
@@ -121,8 +122,9 @@ async function instanceTools(instance: number, database = '', fresh = false, ope
     ]));
   }
   box.append(out, el('h3', {}, 'Runs on this instance'), grid(rowsOf(d.log), logCols, 'No community tool ran here yet.'));
-  // the address named a tool: on a demo instance its sample is open when the page has drawn (a mail of the page carries
-  // it); on a real instance the address opens nothing - a tool's form runs its help on the server, which only a click asks
+  // the address named a tool: on a demo instance its sample is open when the page has drawn (a linked page opens it
+  // again); on a real instance the address opens nothing - a tool's form runs its help on the server, which only a
+  // click asks
   if (open && d.demo) {
     const t = d.tools.find(x => x.id === open);
     if (t) { try { out.replaceChildren(await panelOf(t, instance, d)); } catch (e) { out.replaceChildren(errorBox(e)); } }
@@ -285,7 +287,7 @@ async function demoPanel(t: Tool, instance: number, d: Tools): Promise<HTMLEleme
   // the test server's own names (its data folder, its socket) replaced by fixed words: said, never passed off as its own
   if (s.scrubbed?.length) sec.append(el('p', { class: 'meta' }, 'The test server\'s own names replaced in the stored copy by the fixed words ' + s.scrubbed.join('; ') + '.'));
   sec.append(el('div', { class: 'toolbar' }, run), why);
-  // the grids inside the mark: an export or a mail of them carries it (export.ts reads data-sample)
+  // the grids inside the mark: an export of them carries it (export.ts reads data-sample)
   const box = el('div', { class: 'sample', 'data-sample': s.mark });
   s.sets.forEach((set, i) => {
     box.append(el('h3', {}, s.sets.length > 1 ? `${t.name} sample, result set ${i + 1}` : `${t.name} sample`));
