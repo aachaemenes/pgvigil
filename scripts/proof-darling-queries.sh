@@ -711,13 +711,23 @@ echo "ok   F: PostgreSQL's rule on the compare's SQL: PREPAREd and run 6 x 7 day
 # A pool on auto fails it only where a generic plan was kept (the configuration itself is TestUIPoolConfig's)
 if [[ "$PSS" == on ]]; then
   psql "$PGDSN" -Xqc "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" >/dev/null
+  # pg_stat_statements shows a statement's constants as $n placeholders numbered after its own parameters (0, 1000.0
+  # and 1 in the totals' SQL), so both texts are compared with every $n and every number as one mark (s177j-24 read
+  # 0|0 on the plain text)
   CP=$(psql "$PGDSN" -XAtq -v ON_ERROR_STOP=1 -v sql="$(cat "$TMPD/totals.sql")" <<'PSQLEND'
-SELECT coalesce(sum(calls), 0) || '|' || coalesce(sum(plans), 0) FROM pg_stat_statements
- WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-   AND btrim(regexp_replace(query, '\s+', ' ', 'g')) = btrim(regexp_replace(:'sql', '\s+', ' ', 'g'));
+CREATE TEMP VIEW pss_norm AS
+SELECT calls, plans, query,
+       btrim(regexp_replace(regexp_replace(regexp_replace(query, '\$\d+', '?', 'g'), '\y\d+(\.\d+)?\y', '?', 'g'), '\s+', ' ', 'g')) AS norm
+  FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database());
+SELECT coalesce(sum(calls), 0) || '|' || coalesce(sum(plans), 0) FROM pss_norm
+ WHERE norm = btrim(regexp_replace(regexp_replace(regexp_replace(:'sql', '\$\d+', '?', 'g'), '\y\d+(\.\d+)?\y', '?', 'g'), '\s+', ' ', 'g'));
 PSQLEND
 ) || fail "F: the pg_stat_statements read"
-  [[ "${CP%%|*}" -ge 8 && "${CP%%|*}" == "${CP##*|}" ]] || fail "F: serve's totals read calls|plans $CP in pg_stat_statements (want 8 or more calls, each planned)"
+  if ! [[ "${CP%%|*}" -ge 8 && "${CP%%|*}" == "${CP##*|}" ]]; then
+    psql "$PGDSN" -XAtq -c "SELECT 'pss: ' || count(*) || ' statements in this database; track ' || current_setting('pg_stat_statements.track') || ', track_planning ' || current_setting('pg_stat_statements.track_planning') || ', compute_query_id ' || current_setting('compute_query_id') FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())" >&2 || true
+    psql "$PGDSN" -XAtq -c "SELECT 'pss: ' || calls || '|' || plans || ' ' || left(regexp_replace(query, '\s+', ' ', 'g'), 240) FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) AND query LIKE '%mssql_pc_sample%' ORDER BY calls DESC LIMIT 4" >&2 || true
+    fail "F: serve's totals read calls|plans $CP in pg_stat_statements (want 8 or more calls, each planned; above: what it holds)"
+  fi
   echo "ok   F: the UI pool through serve: the plan cache's totals ran $CP calls|plans (pg_stat_statements, track_planning on): every run planned"
 else
   echo "     F: NOT PROVEN: plans = calls through serve's pool (pg_stat_statements is not in the box's shared_preload_libraries); the pool's configuration is TestUIPoolConfig's"
