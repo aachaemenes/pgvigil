@@ -130,7 +130,7 @@ func runMSSQLXE(args []string) error {
 	doPrint := fs.Bool("print", false, "print the script that creates and starts the sessions")
 	drop := fs.Bool("drop", false, "with -print: the script that drops the sessions instead")
 	id := fs.String("install-id", "main", "the install id in the session names (pgvigil_<install id>_<capture>): 1 to 20 lower-case letters and digits")
-	form := fs.String("form", mssql.XEFormServer, "server (SQL Server, Amazon RDS), azuresqlmi or azuresqldb")
+	form := fs.String("form", mssql.XEFormServer, "server (SQL Server, Amazon RDS), azuresqlmi, azuresqldb or cloudsql (Google Cloud SQL)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

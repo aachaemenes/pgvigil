@@ -33,6 +33,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aachaemenes/pgvigil/internal/config"
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // ImportOptions shape one import.
@@ -221,7 +222,7 @@ func Import(ctx context.Context, log *slog.Logger, srcDSN, repoDSN string, opt I
 	if !opt.From.Before(opt.To) {
 		return nil, errors.New("from must be before to")
 	}
-	db, err := sql.Open("sqlserver", withAppName(srcDSN))
+	db, err := mssqlopen.Open(withAppName(srcDSN))
 	if err != nil {
 		return nil, fmt.Errorf("dbadash dsn: %w", err)
 	}

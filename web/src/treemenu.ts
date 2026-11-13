@@ -280,7 +280,7 @@ function addConnections(back: HTMLElement | null) {
   const name = el('input', { id: 'tm-ac-name', placeholder: 'sql02', autocomplete: 'off' }) as HTMLInputElement;
   const engine = el('select', { id: 'tm-ac-engine' }, el('option', { value: 'postgres' }, 'PostgreSQL'), el('option', { value: 'sqlserver' }, 'SQL Server')) as HTMLSelectElement;
   // the platforms the config accepts for each engine (config.Validate): another pair stops the collector at start
-  const platforms: Record<string, string[]> = { postgres: ['auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb'], sqlserver: ['auto', 'onprem', 'rds', 'azuresqldb', 'azuresqlmi'] };
+  const platforms: Record<string, string[]> = { postgres: ['auto', 'onprem', 'rds', 'aurora', 'azure', 'cloudsql', 'alloydb'], sqlserver: ['auto', 'onprem', 'rds', 'azuresqldb', 'azuresqlmi', 'cloudsql'] };
   const platform = el('select', { id: 'tm-ac-platform' }) as HTMLSelectElement;
   const fillPlatforms = () => { const was = platform.value; platform.replaceChildren(...platforms[engine.value].map(p => el('option', { value: p }, p))); if (platforms[engine.value].includes(was)) platform.value = was; };
   const taken = el('p', { class: 'error', role: 'status', 'aria-live': 'polite' });

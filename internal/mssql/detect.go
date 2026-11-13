@@ -17,6 +17,10 @@ const (
 	KindRDS     Kind = "rdssqlserver" // Amazon RDS for SQL Server
 	KindAzureDB Kind = "azuresqldb"   // Azure SQL Database (one database is the instance)
 	KindAzureMI Kind = "azuresqlmi"   // Azure SQL Managed Instance
+	// Google Cloud SQL for SQL Server: its server role CustomerDbRootRole (the sqlserver user is its member) on a
+	// Linux host, the role visible to a login only with VIEW ANY DEFINITION; without it the configuration's
+	// platform: cloudsql names it
+	KindCloudSQL Kind = "cloudsqlsqlserver"
 )
 
 // Info is what a connection told about the server and about the login's rights.
@@ -36,6 +40,10 @@ type Info struct {
 	ViewServerState   bool
 	ViewAnyDefinition bool
 	MsdbAccess        bool
+	// Azure SQL Database: the database's service objective ('ElasticPool' in a pool), and the pool's name when the
+	// instance's tag pool:<name> gives it (the runner sets it; the view of the pool's figures names no pool)
+	ServiceObjective string
+	PoolTag          string
 }
 
 // detectSQL: on Azure SQL Database (engine edition 5) the database is the instance and VIEW DATABASE STATE is the right
@@ -53,15 +61,24 @@ const detectSQL = `SELECT
   CAST(ISNULL(HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW ANY DEFINITION'), 0) AS int),
   CAST(ISNULL(HAS_DBACCESS('msdb'), 0) AS int),
   CAST(CASE WHEN DB_ID('rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS int),
-  CAST(LEFT(@@VERSION, 400) AS nvarchar(400))`
+  CAST(LEFT(@@VERSION, 400) AS nvarchar(400)),
+  CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS nvarchar(128))`
+
+// cloudSQLMarkSQL: Cloud SQL's own server role on a Linux host (a role of that name carried to a Windows server
+// someone runs is not Cloud SQL). A statement of its own, asked only of a server that is neither Azure nor RDS: the
+// batch above runs on every platform, Azure SQL Database's included, and stays as proven there; on a server older
+// than SQL Server 2017 (no sys.dm_os_host_info) it fails and the server is not Cloud SQL. Google creates the msdb
+// procedure gcloudsql_bulk_insert only once its bulk-insert flag is on, so it is not a mark.
+const cloudSQLMarkSQL = `SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'CustomerDbRootRole' AND type = 'R')
+  AND EXISTS (SELECT 1 FROM sys.dm_os_host_info WHERE host_platform = N'Linux') THEN 1 ELSE 0 END AS int)`
 
 // Detect reads what the server is and what the login may read. forced is the config's platform: auto (or empty)
 // keeps what the server says, anything else names the kind.
 func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	var in Info
-	var pv, ed, name, ver sql.NullString
+	var pv, ed, name, ver, so sql.NullString
 	var ee, hadr, vss, vad, msdb, rds sql.NullInt64
-	if err := conn.QueryRowContext(ctx, detectSQL).Scan(&pv, &ed, &ee, &name, &hadr, &vss, &vad, &msdb, &rds, &ver); err != nil {
+	if err := conn.QueryRowContext(ctx, detectSQL).Scan(&pv, &ed, &ee, &name, &hadr, &vss, &vad, &msdb, &rds, &ver, &so); err != nil {
 		return in, fmt.Errorf("sql server detect: %w", err)
 	}
 	in.ProductVersion, in.Edition, in.ServerName = pv.String, ed.String, name.String
@@ -71,11 +88,17 @@ func Detect(ctx context.Context, conn *sql.Conn, forced string) (Info, error) {
 	}
 	in.HADREnabled = hadr.Int64 == 1
 	in.ViewServerState, in.ViewAnyDefinition, in.MsdbAccess = vss.Int64 == 1, vad.Int64 == 1, msdb.Int64 == 1
+	in.ServiceObjective = so.String
 	in.Version, _, _ = strings.Cut(ver.String, "\n")
 	in.Version = strings.TrimSpace(in.Version)
 	in.Major, in.Minor, in.Build = parseVersion(in.ProductVersion)
 	in.VersionNum = in.Major*10000 + in.Minor
-	in.Kind = kindOf(in.EngineEdition, rds.Int64 == 1, forced)
+	gcs := false
+	if askCloudSQL(in.EngineEdition, rds.Int64 == 1, forced) {
+		var mark sql.NullInt64
+		gcs = conn.QueryRowContext(ctx, cloudSQLMarkSQL).Scan(&mark) == nil && mark.Int64 == 1
+	}
+	in.Kind = kindOf(in.EngineEdition, rds.Int64 == 1, gcs, forced)
 	return in, nil
 }
 
@@ -89,8 +112,15 @@ func supported(engineEdition int) error {
 	return nil
 }
 
-// kindOf names the platform: the config's word when it gives one, else the engine edition and RDS's own database.
-func kindOf(engineEdition int, hasRDSAdmin bool, forced string) Kind {
+// askCloudSQL says whether Cloud SQL's mark is asked: a SQL Server box edition (Standard, Enterprise, Express), no
+// rdsadmin, and no platform named in the configuration.
+func askCloudSQL(engineEdition int, hasRDSAdmin bool, forced string) bool {
+	return (forced == "" || forced == "auto") && !hasRDSAdmin && engineEdition >= 2 && engineEdition <= 4
+}
+
+// kindOf names the platform: the config's word when it gives one, else the engine edition, RDS's own database and
+// Cloud SQL's role or procedures (read after RDS's: a server cannot be both).
+func kindOf(engineEdition int, hasRDSAdmin, hasCloudSQL bool, forced string) Kind {
 	switch forced {
 	case "onprem":
 		return KindServer
@@ -100,6 +130,8 @@ func kindOf(engineEdition int, hasRDSAdmin bool, forced string) Kind {
 		return KindAzureDB
 	case "azuresqlmi":
 		return KindAzureMI
+	case "cloudsql":
+		return KindCloudSQL
 	}
 	switch {
 	case engineEdition == 5:
@@ -108,6 +140,8 @@ func kindOf(engineEdition int, hasRDSAdmin bool, forced string) Kind {
 		return KindAzureMI
 	case hasRDSAdmin:
 		return KindRDS
+	case hasCloudSQL:
+		return KindCloudSQL
 	}
 	return KindServer
 }

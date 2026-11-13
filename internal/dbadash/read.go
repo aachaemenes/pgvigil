@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/microsoft/go-mssqldb" // the sqlserver driver (BSD-3)
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen" // the sqlserver driver (go-mssqldb, BSD-3) and its Entra / Kerberos sign-ins
 )
 
 // StatusKeys are dbo.Summary's status columns, in the column order of DBADash's Summary screen (0052's
@@ -86,7 +86,7 @@ func Read(ctx context.Context, dsn string) (Payload, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
 	defer cancel()
-	db, err := sql.Open("sqlserver", withAppName(dsn))
+	db, err := mssqlopen.Open(withAppName(dsn))
 	if err != nil {
 		return Payload{}, fmt.Errorf("dsn: %w", err)
 	}

@@ -32,6 +32,10 @@ func (jobsCollector) Applies(info Info) (bool, string) {
 	switch {
 	case info.Kind == KindAzureDB:
 		return false, "Azure SQL Database has no SQL Server Agent"
+	case info.Kind == KindCloudSQL && !info.MsdbAccess:
+		// Google (Cloud SQL's Managed AD page): users created through SQL Server directly cannot use SQL Server Agent,
+		// because msdb is protected; a user made through the console or gcloud carries CustomerDbRootRole's rights
+		return false, "Cloud SQL protects msdb from logins made in T-SQL (Google): SQL Server Agent's jobs need a user made through the console or gcloud, which carries more rights than a monitor needs"
 	case !info.MsdbAccess:
 		return false, "the login has no access to msdb (a user there with db_datareader)"
 	}

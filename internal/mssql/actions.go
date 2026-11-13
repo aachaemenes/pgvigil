@@ -31,6 +31,8 @@ import (
 	"time"
 
 	mssqldb "github.com/microsoft/go-mssqldb"
+
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // ActionKind is one action of the door.
@@ -229,7 +231,7 @@ func withApp(dsn, app string) string {
 
 // openAction opens one short-lived connection that cannot hang behind a lock.
 func openAction(ctx context.Context, dsn, app string) (*sql.DB, *sql.Conn, error) {
-	db, err := sql.Open("sqlserver", withApp(dsn, app))
+	db, err := mssqlopen.Open(withApp(dsn, app))
 	if err != nil {
 		return nil, nil, err
 	}

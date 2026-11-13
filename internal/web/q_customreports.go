@@ -59,6 +59,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	mssqldb "github.com/microsoft/go-mssqldb"
+
+	"github.com/aachaemenes/pgvigil/internal/mssqlopen"
 )
 
 // ---- definitions ------------------------------------------------------------------------------------------------
@@ -654,7 +656,7 @@ func openMS(ctx context.Context, dsn, app string) (*sql.DB, *sql.Conn, string, e
 	if strings.TrimSpace(dsn) == "" {
 		return nil, nil, "", errors.New("the read login's dsn resolved to an empty string")
 	}
-	db, err := sql.Open("sqlserver", mssqlApp(dsn, app))
+	db, err := mssqlopen.Open(mssqlApp(dsn, app))
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("dsn: %w", err)
 	}

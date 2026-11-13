@@ -132,5 +132,8 @@ folders; on Windows a DPAPI machine-scope blob in a folder whose access list is 
 account. The repository keeps only each file's name, so `pgvigil serve` and `pgvigil run` must share the configuration
 folder (one host). Every change is audited (the page's Changes grid).
 
-Not in this release: Entra (Azure AD) sign-in for an instance added here. The page can build such a connection, but the
-collector does not sign in with it yet; its test says so.
+A SQL Server added here signs in by `sql` (a login and its password), `windows` (the service's own account on Windows;
+off Windows Kerberos, the login the principal and the driver options naming the keytab or credential cache), `entra`
+(an Entra service principal and its secret) or `entra-identity` (the host's Azure managed identity, no secret): which
+works where is [SQL Server in the cloud](sqlserver-cloud.md#signing-in-without-a-stored-password). Entra and Kerberos
+are not proven against a live server in this release.

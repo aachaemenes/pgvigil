@@ -501,9 +501,9 @@ func (c *Config) Validate() error {
 			}
 		case EngineSQLServer:
 			switch in.Platform {
-			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi":
+			case "auto", "onprem", "rds", "azuresqldb", "azuresqlmi", "cloudsql":
 			default:
-				return fmt.Errorf("instance %q: unknown platform %q for engine sqlserver (auto, onprem, rds, azuresqldb, azuresqlmi)", in.Name, in.Platform)
+				return fmt.Errorf("instance %q: unknown platform %q for engine sqlserver (auto, onprem, rds, azuresqldb, azuresqlmi, cloudsql)", in.Name, in.Platform)
 			}
 			if v := strings.TrimSpace(in.DSNRaw); !strings.HasPrefix(v, "env:") && !strings.HasPrefix(v, "file:") && inlinePassword(v) {
 				return fmt.Errorf("instance %q: a sqlserver dsn that carries a password must come through env:NAME or file:/path", in.Name)
