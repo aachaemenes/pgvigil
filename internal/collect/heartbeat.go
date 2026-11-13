@@ -580,12 +580,18 @@ func (b *ChannelBackoff) Note(now time.Time, outcome map[string]error) {
 	}
 }
 
-var watchdog atomic.Value // string: "on", "on; the last alert pass failed: <err>", or "off: <why>"; empty outside serve
+var watchdog atomic.Value // string: "starting", "on", "on; the last alert pass failed: <err>", or "off: <why>"; empty outside serve
 
 // SetWatchdogOff records why serve runs no watchdog (logged by the caller; the Collector page shows it).
 func SetWatchdogOff(why string) { watchdog.Store("off: " + why) }
 
-// WatchdogStatus is "on" (with the last pass's failure when it failed), "off: <why>", or "" outside serve.
+// SetWatchdogStarting records that serve runs the watchdog and is still reaching the alerts login and the repository
+// (each ping up to 20 s): the Collector page says 'Starting', never 'not this process', until the watchdog's goroutine
+// stores 'on' or 'off: <why>'.
+func SetWatchdogStarting() { watchdog.Store("starting") }
+
+// WatchdogStatus is "starting" (serve reaching its logins), "on" (with the last pass's failure when it failed),
+// "off: <why>", or "" outside serve.
 func WatchdogStatus() string {
 	if v, ok := watchdog.Load().(string); ok {
 		return v

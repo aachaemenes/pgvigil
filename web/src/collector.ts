@@ -51,6 +51,7 @@ export async function collectorView(ctx: Ctx): Promise<HTMLElement> {
   const st = serviceState(collectors, findings), me = collectors.find(r => r.state === 'up') ?? collectors[0];
   const wd = String(rowsOf(d.watchdog)[0]?.watchdog ?? '');
   const wdTile = wd === 'on' ? tile('Watchdog', 'On', '', { sub: 'serve sends the alert while a collector is down' })
+    : wd === 'starting' ? tile('Watchdog', 'Starting', '', { sub: 'serve is reaching the alerts login and the repository (up to 40 s)' })
     : wd.startsWith('on;') ? tile('Watchdog', 'On', 'warn', { sub: wd.slice(4) })
     : wd ? tile('Watchdog', 'Off', 'warn', { sub: wd.replace(/^off: /, '') }) : tile('Watchdog', '-', '', { sub: 'not this process' });
 

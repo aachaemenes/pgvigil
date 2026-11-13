@@ -331,3 +331,18 @@ func TestSeenDue(t *testing.T) {
 		t.Fatal("an instance the beat just named is due again a minute later")
 	}
 }
+
+// TestWatchdogStarting: serve says 'starting' from the moment it decides to run the watchdog until the alerts login and
+// the repository answered (up to 40 s) - the Collector page says so instead of 'not this process' (task 201 DONE-2,
+// the review of the merges' finding 2); the goroutine then moves it on to 'on' or 'off: <why>'.
+func TestWatchdogStarting(t *testing.T) {
+	defer watchdog.Store("")
+	SetWatchdogStarting()
+	if got := WatchdogStatus(); got != "starting" {
+		t.Fatalf("after SetWatchdogStarting the status is %q, want 'starting'", got)
+	}
+	SetWatchdogOff("the alerts login: no answer")
+	if got := WatchdogStatus(); got != "off: the alerts login: no answer" {
+		t.Fatalf("after SetWatchdogOff the status is %q", got)
+	}
+}
