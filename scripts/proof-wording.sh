@@ -13,7 +13,7 @@
 #   PGVIGIL_DEMO_WAIT_S   seconds to wait for the seeded demo (default 240)
 #   PGVIGIL_WORDING_OUT   a file that gets the walk's JSON (every page, every red, the grade)
 #   PGVIGIL_WORDING_SHOTS a folder: a shot of each page read
-# Expected (written before the first run, rel-join-w1 be578e2 + the walk's files):
+# Expected (written before the first run, rel-join-w1 42ca98d (merged a1317d8) + the walk's files):
 #   the matcher's self-test: 39 of 39 cases
 #   picked: PostgreSQL demo-onprem-erp01 and demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
 #     demo-onprem-sql01 and demo-azure-sql03; tags aurora (PostgreSQL; 3 instances, before onprem by name) and sales
