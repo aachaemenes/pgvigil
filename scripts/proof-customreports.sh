@@ -527,6 +527,9 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   ok "N: 11 sibling pairs agree with a default run with the right revoked; hard: ${hard[*]:-none}"
   # threshold 5, no session capturing the report: system_health preset with its note; a session made: its name preset
   sq "EXEC sys.sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sys.sp_configure 'blocked process threshold (s)', 5; RECONFIGURE;" >/dev/null || fail "N: threshold 5"
+  # the page reads the threshold from the repository (the instance collection's sys.configurations, with its time): collect it
+  "$BIN" collect -config "$CFG" -once mssql_instance >>"$WORK/collect.log" 2>&1 || true
+  [[ $(q "select value_in_use from pgvigil.mssql_config where instance_id = $MRID and name = 'blocked process threshold (s)'") == 5 ]] || fail "N: the collection did not read threshold 5"
   [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" \
      && $(tl "t['sp_HumanEventsBlockViewer']['needs'][0]['what']") == "no running session captures the blocked process report"* ]] || fail "N: threshold 5 without a session: $(tl "t['sp_HumanEventsBlockViewer']")"
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"system_health\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: the state (c) default click: $(head -c 400 "$WORK/body")"
@@ -536,8 +539,7 @@ if [[ -z "$SKIP_MSSQL" ]]; then
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"$XES\"}}") == 200 && $(js "d['runs'][0]['outcome']") == done ]] || fail "N: the state (b) click: $(head -c 400 "$WORK/body")"
   [[ $(crun "{\"instance_id\":$MRID,\"tool\":\"sp_HumanEventsBlockViewer\",\"params\":{\"@session_name\":\"pgcr_none\"}}") == 200 && $(js "d['runs'][0].get('declined')") == True \
      && $(js "d['runs'][0]['error']") == *"A session with the name pgcr_none does not exist or is not currently active."* ]] || fail "N: a typed session that does not exist: $(head -c 400 "$WORK/body")"
-  sq "ALTER EVENT SESSION [$XES] ON SERVER STATE = STOP; DROP EVENT SESSION [$XES] ON SERVER; EXEC sys.sp_configure 'blocked process threshold (s)', 0; RECONFIGURE;" >/dev/null || fail "N: the session dropped"
-  ok "N: sp_HumanEventsBlockViewer: threshold 5 with no session = system_health preset and its note, run done; a session made = its name preset, run done; a typed session that does not exist declined"
+  ok "N: sp_HumanEventsBlockViewer: threshold 5 (collected) with no session = system_health preset and its note, run done; a session made = its name preset, run done; a typed session that does not exist declined (the session stays for U2's state (b) click)"
   # the grant: sp_LogHunter's need gone, a note on the archived logs (no securityadmin), its run done
   sq "GRANT EXECUTE ON sys.xp_readerrorlog TO pgcr_reader;" >/dev/null || fail "N: the grant"
   [[ $(fresh "$MRID") == 200 && $(tl "[(n['hard'], n['state']) for n in t['sp_LogHunter']['needs']]") == "[(False, 'note')]" && $(tl "t['sp_LogHunter']['on']") == True ]] || fail "N: sp_LogHunter after the grant: $(tl "t['sp_LogHunter']['needs']")"
@@ -907,6 +909,23 @@ if (mode === 'live') {
   out.nologinClick = await clickOff('main table.grid button.link[aria-disabled="true"]');
   out.nologinAx = (await axOff()).slice(0, 3);
   await shot(shots, 'nologin-msr-light');
+} else if (mode === 'bv') {
+  const [U, cookie, msr, shots] = a;
+  await cmd('Network.setCookie', { name: 'pgvigil_session', value: cookie, url: U });
+  await open(U + `#/community?i=${msr}`, communityReady);
+  await ev(`[...document.querySelectorAll('main table.grid button.link')].find(x => x.textContent.trim() === 'sp_HumanEventsBlockViewer').click(); 1`);
+  const b = {};
+  if (await until(`[...document.querySelectorAll('main button')].some(x => x.textContent === 'Run sp_HumanEventsBlockViewer')`, 30000)) {
+    b.filled = await ev(`document.querySelector('main .preset')?.textContent ?? ''`);
+    b.sessionInput = await ev(`[...document.querySelectorAll('main input')].find(i => /^@session_name/.test(i.getAttribute('aria-label') || ''))?.value ?? null`);
+    await ev(`[...document.querySelectorAll('main button')].find(x => x.textContent === 'Run sp_HumanEventsBlockViewer').click(); 1`);
+    const ran = await until(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') || !!document.querySelector('main section .error')`, 75000);
+    b.result = ran ? await ev(`/^Ran at/.test([...document.querySelectorAll('main [role=status]')].pop()?.textContent ?? '') ? 'ran' : 'error'`) : 'timeout';
+    b.badge = await ev(`document.querySelector('main .report-result .badge')?.textContent ?? ''`);
+    b.error = await ev(`document.querySelector('main section .error')?.textContent?.slice(0, 160) ?? ''`);
+    await shot(shots, 'live-blockviewer-state-c');
+  } else b.result = 'no form';
+  out.bv = b;
 } else {
   const [U4, dms, dpg, realMsr, shots] = a;
   out.demo = [];
@@ -939,7 +958,7 @@ JS
   SHOTS=${PGVIGIL_SHOTS:-$WORK/shots}
   if [[ -z "$SKIP_MSSQL" ]]; then
     timeout 1500 node "$WORK/buttons.mjs" live "$CDP" "$U/" "$COOKIE" "$U2/" "$MRID" "$MAID" "$AID" "$SREP" "$WORK/glenn.sql" "$SHOTS" > "$WORK/buttons.json" 2>"$WORK/buttons.err" || fail "U2: the live driver: $(tail -5 "$WORK/buttons.err")"
-    python3 - "$WORK/buttons.json" <<'PY' || fail "U2: see above"
+    python3 - "$WORK/buttons.json" "$XES" <<'PY' || fail "U2: see above"
 import json, sys
 d = json.load(open(sys.argv[1])); rows = d['rows']; bad = []
 for r in rows:
@@ -952,9 +971,9 @@ n_ms = sum(1 for r in rows if r['inst'] == 'sqlserver'); n_pg = sum(1 for r in r
 assert n_ms == 14 and n_pg == 10, f"U2: {n_ms} SQL Server and {n_pg} PostgreSQL tools on the pages, not 14 and 10"
 assert not bad, f"U2: {len(bad)} tool(s) did not end 'Ran at' with done: {bad}"
 print(f"ok   U2: all {n_ms + n_pg} tools clicked and run on the rig: each ended 'Ran at' with done (Glenn's two fixture queries with their grids)")
-bv = next(r for r in rows if r['tool'] == 'sp_HumanEventsBlockViewer')
-assert bv.get('sessionInput') == 'system_health' and 'system_health' in (bv.get('filled') or ''), f"U2: sp_HumanEventsBlockViewer's default click: {bv}"
-print(f"ok   U2: sp_HumanEventsBlockViewer's default click (threshold 0): @session_name filled system_health, said ('{bv['filled'][:90]}'), done")
+bv = next(r for r in rows if r['tool'] == 'sp_HumanEventsBlockViewer'); xes = sys.argv[2]
+assert bv.get('sessionInput') == xes and xes in (bv.get('filled') or ''), f"U2: sp_HumanEventsBlockViewer's default click in state (b): {bv}"
+print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (b): @session_name filled {xes} (the running session with the blocked process report), said, done")
 ax, tab = d['msaAx'], d['msaTab']
 assert len(ax) == 14 and all(x['same'] for x in ax), f"U2: the sa page's off tools in the accessibility tree: {[(x['name'], x['same'], x['axDesc'][:60]) for x in ax]}"
 assert sorted(tab) == sorted(x['name'] for x in ax), f"U2: Tab reached {len(tab)} of the {len(ax)} off tools: {sorted(set(x['name'] for x in ax) - set(tab))} missing"
@@ -975,6 +994,16 @@ assert all(p['off'] > 0 for p in nl), f"U2: a -no-login page with no off control
 c = d['nologinClick']; assert c['clicked'] and c['sent'] == 0, f"U2: a click on the -no-login serve: {c}"
 assert not domBad, f"U2: {len(domBad)} page(s) with an off control without its reason"
 print(f"ok   U2: -no-login: a click on {c['clicked']} sent nothing")
+PY
+    # state (c): the session dropped (threshold still 5): the default click reads system_health and says why
+    sq "ALTER EVENT SESSION [$XES] ON SERVER STATE = STOP; DROP EVENT SESSION [$XES] ON SERVER;" >/dev/null || fail "U2: the session dropped"
+    [[ $(fresh "$MRID") == 200 && $(tl "t['sp_HumanEventsBlockViewer']['preset']") == "{'@session_name': 'system_health'}" ]] || fail "U2: state (c) after the drop: $(tl "t['sp_HumanEventsBlockViewer']")"
+    timeout 300 node "$WORK/buttons.mjs" bv "$CDP" "$U/" "$COOKIE" "$MRID" "$SHOTS" > "$WORK/bv.json" 2>"$WORK/bv.err" || fail "U2: the state (c) driver: $(tail -5 "$WORK/bv.err")"
+    python3 - "$WORK/bv.json" <<'PY' || fail "U2: see above"
+import json, sys
+b = json.load(open(sys.argv[1]))['bv']
+assert b['sessionInput'] == 'system_health' and 'no running session captures the blocked process report' in b['filled'] and b['result'] == 'ran' and b['badge'] == 'done' and not b['error'], f"U2: the state (c) default click: {b}"
+print(f"ok   U2: sp_HumanEventsBlockViewer's default click in state (c) (threshold 5, no session): system_health filled, the note shown ('{b['filled'][:80]}...'), Ran at, done")
 PY
   else NOTPROVEN+=("U2: the live page rows need the SQL Server part"); fi
   # the demo seeded into this proof's repository beside its real instances, served by pgvigil demo (no login, no doors)
