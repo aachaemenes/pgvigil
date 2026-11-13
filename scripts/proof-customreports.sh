@@ -247,6 +247,8 @@ AID=$(id_of "$INSTA"); SID=$(id_of "$INSTS"); LID=$(id_of "$INSTL")
 [[ -n $AID && -n $SID && -n $LID ]] || fail "the PostgreSQL instances are not registered: $(tail -5 "$WORK/collect.log")"
 if [[ -z "$SKIP_MSSQL" ]]; then MRID=$(id_of "$MSR"); MAID=$(id_of "$MSA"); MNID=$(id_of "$MSN"); [[ -n $MRID && -n $MAID && -n $MNID ]] || fail "the SQL Server instances are not registered: $(tail -5 "$WORK/collect.log")"; fi
 DID=$(id_of "$INSTD")
+# a collection never reached it (nothing listens on its port), so it registers it the way a collection would
+[[ -n $DID ]] || DID=$(q "select pgvigil.ensure_instance('$INSTD', 'onprem', null, null, false, '{}')")
 PGVIGIL_PASSWORD=$UIPW "$BIN" user add -config "$CFG" $UIUSER >/dev/null 2>&1 || fail "user add"
 export UI_DSN; UI_DSN=$(as_dsn "$REPO" "$RDR")
 PORT=$(freeport); U="http://127.0.0.1:$PORT"
