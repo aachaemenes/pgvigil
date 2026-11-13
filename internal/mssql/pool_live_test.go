@@ -108,13 +108,20 @@ func TestPoolLive(t *testing.T) {
 		}
 		samples = append(samples, s)
 	}
+	if len(rows) == 0 {
+		t.Fatalf("P1 the collector stored no complete minute (the admin's read holds %d samples)", len(samples))
+	}
+	// the name's source as the collector reports it: the database's own sys.database_service_objectives wins over the
+	// tag when the login can read it, the tag otherwise; either way the pool is the one the tag names
+	from, _ := rows[0]["name_from"].(string)
+	if (from != "service objectives" && from != "tag") || fmt.Sprint(rows[0]["pool"]) != tag {
+		t.Fatalf("P1 the pool's name: %v from %q; want %s from 'service objectives' or 'tag'", rows[0]["pool"], from, tag)
+	}
+	t.Logf("P1 the pool's name %s from %s", tag, from)
 	want := map[string]collect.Row{}
 	for _, m := range poolMinutes(samples, now) {
-		r := m.row(info.ServerName, tag, "tag")
+		r := m.row(info.ServerName, tag, from)
 		want[r["minute"].(string)] = r
-	}
-	if len(rows) == 0 {
-		t.Fatalf("P1 the collector stored no complete minute (the admin's read holds %d samples, %d complete minutes)", len(samples), len(want))
 	}
 	oldest := ""
 	for m := range want {
