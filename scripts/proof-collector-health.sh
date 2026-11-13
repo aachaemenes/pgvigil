@@ -28,7 +28,8 @@
 #      D3  t1, t2 cut (2 of 4): no parent; 'authentication failing' once each (S: t1 once) within the cut + 2:05; no
 #          'collection failing'; resolved once each after.
 #      D4  t1 refused first (its alert open on U, S and R - R repeats every 5 min), then t2, t3: during the hold R
-#          repeats the parent and not t1, nothing resolves; after the lift t1 resolved once.
+#          repeats the parent and not t1, nothing resolves; after the lift t1 resolved once and R repeats it 0 times
+#          (its finding stands until the next clean minute is written; the repeat waits inside the window).
 #      D5  t1-t3 cut, t1 t2 back, t3 kept: the parent resolves; t3's 'authentication failing' once, within 2 alert
 #          passes of the parent leaving collector_parent; t1, t2 nothing.
 #      DQ  a channel Q in quiet hours from the cut's minute - 1 to its minute + 3: the parent once on Q after the quiet
@@ -404,9 +405,9 @@ if want D4; then
   d4a=$(SKIP=$L cnt "$WORK/spool" resolved "authentication failing" t1)$(SKIP=$L cnt "$WORK/spool2" resolved "authentication failing" t1)
   d4o2=$(per "$WORK/spool" firing "t2|t3"); d4rt2=$(SKIP=$L cnt "$WORK/spool3" repeat "authentication failing" t1)
   keep D4
-  [[ "$tw" -ge 0 && "$tp" -ge 0 && "$d4rp" -ge 1 && "$d4rt" == 0 && "$d4h" == 00 && "$d4o" == 0 && "$d4d" == *"t1 authentication failing"* && "$d4a" == 11 && "$d4o2" == 0 && "$d4rt2" -le 1 ]] \
-    && ok "D4: t1 refused first (its alert out in $tw s on U, S and R), then t2, t3 - the parent $tp s after; during the hold R repeated the parent $d4rp time(s) and t1 0 times, t1 resolved 0, t2 t3 sent 0; the parent's text '$d4d'; after the lift t1 resolved once on U and on S (R: $d4rt2 repeat of t1 after the lift, at most 1: its finding stands until the next minute is written)" \
-    || fail "D4: t1 out after $tw s, parent after $tp s; R repeats parent $d4rp (want >= 1) / t1 $d4rt (want 0); t1 resolved during the hold U+S '$d4h' (want 00); t2 t3 sent $d4o (want 0); covers '$d4d'; after: t1 resolved U+S '$d4a' (want 11), t2 t3 $d4o2, R t1 repeats after the lift $d4rt2 (want <= 1): $(ls "$WORK/spool" "$WORK/spool3" | tr '\n' ' ' | cut -c1-700)"
+  [[ "$tw" -ge 0 && "$tp" -ge 0 && "$d4rp" -ge 1 && "$d4rt" == 0 && "$d4h" == 00 && "$d4o" == 0 && "$d4d" == *"t1 authentication failing"* && "$d4a" == 11 && "$d4o2" == 0 && "$d4rt2" == 0 ]] \
+    && ok "D4: t1 refused first (its alert out in $tw s on U, S and R), then t2, t3 - the parent $tp s after; during the hold R repeated the parent $d4rp time(s) and t1 0 times, t1 resolved 0, t2 t3 sent 0; the parent's text '$d4d'; after the lift t1 resolved once on U and on S, and R sent $d4rt2 repeat(s) of t1 (its repeat waits while its newest failure is inside the window: the resolve arrives alone)" \
+    || fail "D4: t1 out after $tw s, parent after $tp s; R repeats parent $d4rp (want >= 1) / t1 $d4rt (want 0); t1 resolved during the hold U+S '$d4h' (want 00); t2 t3 sent $d4o (want 0); covers '$d4d'; after: t1 resolved U+S '$d4a' (want 11), t2 t3 $d4o2, R t1 repeats after the lift $d4rt2 (want 0): $(ls "$WORK/spool" "$WORK/spool3" | tr '\n' ' ' | cut -c1-700)"
 fi
 if want D5; then
   d_clean; pin_at 20; logins nologin t1 t2 t3; t0=$SECONDS
