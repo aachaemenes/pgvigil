@@ -414,7 +414,7 @@ func (s *Server) MSSQLPlanCache(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if samples > heatmapMaxSamples {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("this range holds about %.1f million stored plan-cache samples; "+
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("this range holds about %.2f million stored plan-cache samples; "+
 				"the heatmap reads at most about 6 million: pick a shorter range", float64(samples)/1e6))
 			return
 		}

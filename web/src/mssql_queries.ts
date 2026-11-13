@@ -101,6 +101,7 @@ export function heatmapSection(ctx: Ctx): HTMLElement {
       ]);
       rows = rowsOf(h.heatmap); reads = rowsOf(r.reads)[0] ?? {};
     } catch (e) {
+      if (metric !== pick.value) return;   // a newer pick is reading: its answer, not this error, goes in the box
       // the UI pool's 15 s statement timeout cancelled the read: a plain line, never an error box or an empty grid
       const msg = String((e as Error)?.message ?? e);
       // a range past the proven size is refused with its own words (the server's): shown in the heatmap's place
@@ -323,7 +324,6 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
     ], 'No query regressed against the 7 days before this range.'), el('p', { class: 'meta' }, 'Against PerformanceMonitor\'s baseline, the 7 days before the range.'));
   }));
 
-  sec.append(part('heatmap', 'Query heatmap', null, async body => { body.replaceChildren(heatmapSection(ctx)); }));
 
   sec.append(part('overhead', 'Query Store overhead', null, async body => {
     const [o, m] = await Promise.all([
@@ -351,6 +351,8 @@ export async function mssqlQueriesView(ctx: Ctx): Promise<HTMLElement> {
       el('p', { class: 'meta' }, 'Per server, never per database. pgvigil stores no wait delta across a restart or a reset, so PerformanceMonitor\'s unrateable rows have no counterpart here.'));
   }));
 
+  // PerformanceMonitor's order: the Query Store's overhead and memory clerk, then the heatmap (server-tabs.js:2186-2213)
+  sec.append(part('heatmap', 'Query heatmap', null, async body => { body.replaceChildren(heatmapSection(ctx)); }));
   sec.append(part('long', 'Long completions', [href(ctx, { tab: 'mssql_slow' }), 'Slow queries'], async body => {
     const d = await get<Record<string, Table | null>>('mssql/xe', { ...q, part: 'slow_shapes' });
     body.replaceChildren(grid(rowsOf(d.slow_shapes).slice(0, HEAD), [

@@ -900,7 +900,7 @@ pq "INSERT INTO pgvigil.mssql_pc_read (instance_id, snapshot_at, interval_secs, 
 NOW=$(date -u +%s); BF=$(iso $((NOW - 604800))); BT=$(iso "$NOW")   # one clock read
 NB=$(pq "SELECT coalesce(sum(statements), 0) FROM pgvigil.mssql_pc_read WHERE instance_id = $IID_BIG AND snapshot_at > '$BF' AND snapshot_at <= '$BT'")
 c=$(curl -s --max-time 30 -o "$TMPD/hbig.json" -w '%{http_code}' -b "$TMPD/cj" -H 'X-Pgvigil: 1' "$U/api/mssql/plancache?instance=$IID_BIG&from=$BF&to=$BT&part=heatmap") || true
-WANT_BIG="this range holds about $(python3 -c 'import sys; print(f"{int(sys.argv[1]) / 1e6:.1f}")' "$NB") million stored plan-cache samples; the heatmap reads at most about 6 million: pick a shorter range"
+WANT_BIG="this range holds about $(python3 -c 'import sys; print(f"{int(sys.argv[1]) / 1e6:.2f}")' "$NB") million stored plan-cache samples; the heatmap reads at most about 6 million: pick a shorter range"
 [[ "$c" == 400 && "$(jq -r '.error // empty' "$TMPD/hbig.json" 2>/dev/null)" == "$WANT_BIG" ]] \
   || fail "H: $NB stored samples over 7 days answered $c '$(head -c 300 "$TMPD/hbig.json" 2>/dev/null)' (want 400 '$WANT_BIG')"
 N3=$(pq "SELECT coalesce(sum(statements), 0) FROM pgvigil.mssql_pc_read WHERE instance_id = $IID_3000 AND snapshot_at > now() - interval '7 days'")
@@ -1311,7 +1311,7 @@ for theme in ('light', 'dark'):
     if not line: bad.append(f'no parts line {theme}'); continue
     ps = {p['part']: p for p in json.loads(line.split(' ', 2)[2])}
     order = list(ps)
-    if order != ['active', 'duration', 'execs', 'top', 'qs', 'regressed', 'heatmap', 'overhead', 'long', 'tuning']: bad.append(f'{theme} section order {order}')
+    if order != ['active', 'duration', 'execs', 'top', 'qs', 'regressed', 'overhead', 'heatmap', 'long', 'tuning']: bad.append(f'{theme} section order {order}')
     for k, v in ps.items():
         if v['errors']: bad.append(f'{theme} {k}: {v["errors"]} error box(es) {v["text"][:100]}')
     for k, wv in want.items():
