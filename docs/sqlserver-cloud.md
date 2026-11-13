@@ -1,4 +1,4 @@
-# SQL Server in the cloud: Azure SQL Database and Amazon RDS
+# SQL Server in the cloud: Azure SQL Database, Amazon RDS and Google Cloud SQL
 
 The [SQL Server engine](sqlserver.md) reads two managed services besides a server someone runs: Azure SQL Database and Amazon RDS for SQL Server. This page says, per service, how pgvigil tells it apart, which login it needs, what each collection does there and why, and what was proven against a real instance of each.
 
@@ -13,8 +13,9 @@ Before each collection the collector asks the server what it is (`internal/mssql
 | Azure SQL Database | 5 | | `azuresqldb` | 12.0 (120000) whatever engine runs it |
 | Amazon RDS for SQL Server | 2, 3 or 4 (Standard, Enterprise, Express; Web reads as Standard) | the database `rdsadmin` exists | `rdssqlserver` | the engine's own (SQL Server 2019 = 150000) |
 | Azure SQL Managed Instance | 8 | | `azuresqlmi` | 12.0 |
+| Google Cloud SQL for SQL Server | 2, 3 or 4 | the server role `CustomerDbRootRole`, or `msdb.dbo.gcloudsql_bulk_insert`; the login sees either only with VIEW ANY DEFINITION | `cloudsqlsqlserver` | the engine's own |
 
-`platform:` in the configuration names the service instead (`azuresqldb`, `rds`, `azuresqlmi`, `onprem`); `auto` (the default) keeps what the server says. The instance's Summary shows the platform as a badge beside its name.
+`platform:` in the configuration names the service instead (`azuresqldb`, `rds`, `azuresqlmi`, `cloudsql`, `onprem`); `auto` (the default) keeps what the server says. The instance's Summary shows the platform as a badge beside its name.
 
 ## Signing in without a stored password
 
@@ -82,6 +83,44 @@ The database's own resource use (`sys.dm_db_resource_stats`), its files and its 
 ### Extended Events
 
 `pgvigil mssql-xe -print -form azuresqldb -install-id <id>` prints the four database-scoped sessions (ring buffer targets); the database's admin runs it in the monitored database. The collector only reads them.
+
+## Google Cloud SQL for SQL Server
+
+Google's own SQL Server instances: SQL Server on Linux that Google runs, the customer's highest login being the `sqlserver` user (no sysadmin). DBA Dash has no Cloud SQL detection; this is pgvigil's own reading of Google's pages, run so far only against a simulation (below).
+
+### How it is told apart
+
+Google names two marks of its own: the server role `CustomerDbRootRole` (the `sqlserver` user is its member, and grants it makes name it as their grantor) and msdb's `gcloudsql_*` procedures. Detection reads both after RDS's `rdsadmin`. A login sees either one only with VIEW ANY DEFINITION; a login without it reads the instance as a server someone runs, unless the configuration's `platform: cloudsql` (or Admin > Instances' platform Google Cloud SQL) names it.
+
+### The login
+
+Made in T-SQL by the `sqlserver` user (a user made through gcloud or the console gets the `sqlserver` user's own rights, more than a monitor needs):
+
+```sql
+-- in master, as the sqlserver user
+CREATE LOGIN [pgvigil_monitor] WITH PASSWORD = '<a long random password>';
+GRANT VIEW SERVER STATE TO [pgvigil_monitor];
+GRANT VIEW ANY DEFINITION TO [pgvigil_monitor];
+-- in msdb
+CREATE USER [pgvigil_monitor] FOR LOGIN [pgvigil_monitor];
+ALTER ROLE db_datareader ADD MEMBER [pgvigil_monitor];
+```
+
+Whether the `sqlserver` user may grant each of these (Google's pages show its own rights, not which it may pass on) is settled only against a real instance. Google offers no IAM sign-in for SQL Server; the password-free way is Windows authentication through Managed Service for Microsoft Active Directory (above).
+
+### What runs
+
+The collections run as on a server someone runs, with these differences:
+
+- SQL Server Agent's jobs: read with a SQL login; skipped for an Active Directory login, which Google keeps from SQL Server Agent's objects in msdb.
+- The Windows power plan: not read (Google runs the host; SQL Server on Linux there).
+- Extended Events: `pgvigil mssql-xe -print -form cloudsql` writes the slow capture's event file under `/var/opt/mssql/xevents/`, the folder Google names, and gives the blocked process threshold as the instance's database flag (Cloud SQL has no `sp_configure`).
+
+Not settled until a real instance answers: the error log (Google sends it to Cloud Logging; whether `sp_readerrorlog` answers the monitoring login), the default trace, Extended Events sessions made by a login other than the `sqlserver` user, Database Mail, Resource Governor and server triggers (Google lists them as unavailable), and how a high-availability instance or a read replica shows itself in T-SQL.
+
+### Proof
+
+`scripts/proof-cloudsql-sim.sh` is a SIMULATION: a SQL Server 2022 container wearing the two marks. A login with exactly the grants above is stored as `cloudsqlsqlserver`; without VIEW ANY DEFINITION the marks are invisible and the instance is a server, until `platform: cloudsql` names it; every collection ends as it ends on the same server and login with `platform: onprem`. Against a real Cloud SQL instance: not proven in this release.
 
 ## Amazon RDS for SQL Server
 
@@ -161,4 +200,4 @@ These results are for this release's code, which includes the collector and page
 
 - Azure SQL Database: the Basic, S0 and S1 tiers and elastic pools (their rights differ, above), Microsoft Entra sign-in against a live server (`entra-identity` and `entra` are built: above), a geo-replica.
 - Amazon RDS: editions other than Express (Web, Standard, Enterprise: SQL Server Agent and its jobs, Multi-AZ with Always On or mirroring), Windows authentication through AWS Managed Microsoft AD, RDS Custom.
-- Not in this release: Azure SQL Managed Instance, Google Cloud SQL for SQL Server and AlloyDB are not proven against a real instance; a Managed Instance is detected and read like a server, with no collection switched off by its kind.
+- Not in this release: Azure SQL Managed Instance, Google Cloud SQL for SQL Server (only its simulation, above) and AlloyDB are not proven against a real instance; a Managed Instance is detected and read like a server, with no collection switched off by its kind.
