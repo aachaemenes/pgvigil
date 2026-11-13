@@ -255,6 +255,11 @@ export function selfTest() {
     ['postgres', { id: '1' }, 'summary?i=1', 'heading', 'Azure SQL options', ['Azure SQL']],
     ['postgres', { tag: 'aurora' }, 'summary?tag=aurora', 'heading', 'aurora', []],
     ['postgres', { tag: 'aurora' }, 'alerts?tag=aurora', 'cell', 'demo-aurora-crm01 env:prod', []],
+    // the Admin overview is pgvigil's own in any folder: its Servers grid lists every server of the repository with
+    // its platform; the row is that page's platform cell alone (its prose and another page's cell stay red)
+    ['sqlserver', { tag: 'sales' }, 'admin?tag=sales&w=1h', 'cell', 'aurora', []],
+    ['sqlserver', { tag: 'sales' }, 'admin?tag=sales&w=1h', 'prose', 'an Aurora cluster volume grows by itself', ['Aurora']],
+    ['sqlserver', { tag: 'sales' }, 'disks?tag=sales&w=1h', 'cell', 'aurora', ['Aurora']],
   ];
   for (const [engine, scope, page, kind, text, want] of scoped) {
     const got = check({ text, kind, page }, { engine, words, allow, names: scopeNames(fleet, scope) }).map(r => r.word);

@@ -13,17 +13,16 @@
 #   PGVIGIL_DEMO_WAIT_S   seconds to wait for the seeded demo (default 240)
 #   PGVIGIL_WORDING_OUT   a file that gets the walk's JSON (every page, every red, the grade)
 #   PGVIGIL_WORDING_SHOTS a folder: a shot of each page read
-# Expected (the fourth run: the third run's 13 reds outside the file read - 7 were the matcher's own (a ';' inside
-# parentheses ended a clause, and 'X:' held only to the next ';' where it holds to the next engine name), fixed with
-# their self-test cases; 6 are findings, listed; written before it):
-#   the matcher's self-test: 57 of 57 cases (63 words, 4 allow rows, 149 expected rows)
+# Expected (the fifth run: the fourth run's one red outside the file - the Admin overview's platform cell 'aurora' in
+# the SQL Server folder, pgvigil's own page listing every server of the repository - is an allow row (A4) with its
+# self-test cases; the fourth run's reds re-graded on these files: 0 outside, 0 must missing; written before it):
+#   the matcher's self-test: 60 of 60 cases (63 words, 5 allow rows, 149 expected rows)
 #   picked: PostgreSQL demo-onprem-erp01 and demo-rds-billing01, the Pooler on demo-aurora-crm01; SQL Server
 #     demo-onprem-sql01 and demo-azure-sql03; tags aurora (PostgreSQL; 3 instances) and sales (SQL Server; 2)
-#   pages: 357 (the third run: pg-instance 125, ms-instance 107, pg-tag 61, ms-tag 61, root 3), 0 not read (0 not
-#     settled, 0 with 0 elements, 0 with an error box); the tree menu 4 items per engine
-#   the grade: every must row listed (109: the third run's 103 and its 6), every must-not row gone (8), the 32 may
-#     rows reported (the third run: 27 seen, 5 not); no red outside the file: 'wording walk: OK'. A must row missing
-#     now would be the sentence-wide A1 excusing a red the clause rule kept: read before any change to the file
+#   pages: 357 (as the fourth run), 0 not read (0 not settled, 0 with 0 elements, 0 with an error box); the tree menu
+#     4 items per engine
+#   the grade: every must row listed (109), every must-not row gone (8), the 32 may rows reported (the fourth run:
+#     27 seen, 5 not); no red outside the file: 'wording walk: OK'
 set -uo pipefail
 cd "$(dirname "$0")/.."
 WORK=$(mktemp -d); DB="pgvigil_wording_$RANDOM"; PORT=$((21000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
