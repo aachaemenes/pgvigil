@@ -17,6 +17,9 @@ package web
 //	                                            audited like any run)
 //	POST /api/community/run                     {instance_id, tool, database, params, timeout_secs, text, query_name}
 //	POST /api/community/glenn/parse             {text: the script}: its queries {n, name, about, text}
+//	GET  /api/community/sample?instance=N&tool=T a demo instance's stored sample of the tool (internal/demo/community):
+//	                                            the answer a run of it gave on a test server built for the capture,
+//	                                            marked as that - never a run, never audited, never in the instance's log
 //
 // pgvigil never installs a procedure: a missing one says where to get it. A run goes through the instance's read
 // login (SQL Server: refused for a sysadmin; PostgreSQL: the monitoring login, refused for a superuser or a member of
@@ -47,6 +50,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	mssqldb "github.com/microsoft/go-mssqldb"
+
+	"github.com/aachaemenes/pgvigil/internal/demo/community"
 )
 
 // communityTool is one entry of the catalogue.
@@ -371,6 +376,67 @@ type toolState struct {
 	// form values the page fills in before the click (a parameter's name with its @): the run the procedure's own
 	// defaults would make is one it declines or one that reads nothing here
 	Preset map[string]string `json:"preset,omitempty"`
+	// a demo instance only: the tool's stored sample (GET /api/community/sample has its result sets)
+	Sample *sampleMark `json:"sample,omitempty"`
+}
+
+// sampleMark says what a stored sample is, wherever it is shown: the kit and version that produced it, when and on
+// what test server, the page of this instance that holds the same subject from its own data, and the line the page
+// prints above it.
+type sampleMark struct {
+	Kit         string    `json:"kit"`
+	Version     string    `json:"version"`
+	VersionDate string    `json:"version_date,omitempty"`
+	CapturedAt  time.Time `json:"captured_at"`
+	Server      string    `json:"server"`
+	Page        string    `json:"page,omitempty"` // an instance tab (web/src/router.ts) of the same subject
+	Line        string    `json:"line"`           // '<kit> <version> output, captured <date> on a test server (...); ...; not <instance>.'
+	Mark        string    `json:"mark"`           // the short form an exported or mailed grid carries
+}
+
+// samplePage: the instance tab that shows each tool's subject from the instance's own collected (on the demo: seeded)
+// data - the link under a sample, so the demo shows the instance's real page beside the kit's labelled output.
+var samplePage = map[string]string{
+	"sp_WhoIsActive": "mssql_running", "sp_BlitzWho": "mssql_running", "sp_Blitz": "findings", "sp_BlitzFirst": "mssql_waits",
+	"sp_BlitzCache": "mssqlplancache", "sp_BlitzIndex": "mssqlindexes", "sp_IndexCleanup": "mssqlindexes", "sp_BlitzLock": "mssql_deadlocks",
+	"sp_PressureDetector": "mssqlmemory", "sp_QuickieStore": "mssqlqs", "sp_HumanEventsBlockViewer": "mssql_blocked",
+	"sp_HealthParser": "mssqlhealth", "sp_LogHunter": "mssqlerrorlog",
+	"pg_running": "activity", "pg_blocking": "waiting", "pg_top_statements": "statements", "pg_table_sizes": "tables",
+	"pg_unused_indexes": "indexes", "pg_duplicate_indexes": "indexes", "pg_invalid_indexes": "indexes", "pg_xmin_horizon": "vacuum",
+	"pg_settings_changed": "config", "pg_sequences": "schema",
+}
+
+// noSample lists the catalogue's tools that have no stored sample, with why (a test fails on a tool with neither).
+var noSample = map[string]string{
+	"glenn_berry": "nothing of Glenn Berry's script is stored (his queries are his own text, all rights reserved): picking the file and running a query need a live install",
+}
+
+// kitLicense: the words a sample line says about whose words its findings are.
+var kitLicense = map[string]string{
+	"First Responder Kit": "the findings' words and links are the First Responder Kit's own (MIT, (c) Brent Ozar Unlimited; portions (c) Microsoft, tigertoolbox)",
+	"DarlingData":         "the findings' words and links are DarlingData's own (MIT, (c) 2026 Darling Data, LLC)",
+	"sp_WhoIsActive":      "its rows are that test server's sessions (sp_WhoIsActive is GPL-3.0, (C) 2007-2026 Adam Machanic; none of its own text is stored)",
+}
+
+// markOf: the sample's mark as instance shows it.
+func markOf(t *communityTool, sm *community.Sample, instance string) *sampleMark {
+	day := sm.CapturedAt.UTC().Format("2006-01-02")
+	var line string
+	switch sm.Kit {
+	case "pgvigil":
+		line = fmt.Sprintf("pgvigil's own read, captured %s on a test server (%s) loaded with the demo's invented schema; not %s.", day, sm.Server, instance)
+	case "DarlingData":
+		line = fmt.Sprintf("%s %s (DarlingData, %s) output, captured %s on a test server (%s); %s; not %s.", t.Name, sm.Version, sm.VersionDate, day, sm.Server, kitLicense[sm.Kit], instance)
+	default:
+		of := " (" + t.Name + ")"
+		if sm.Kit == t.Name {
+			of = ""
+		}
+		line = fmt.Sprintf("%s %s output%s, captured %s on a test server (%s); %s; not %s.", sm.Kit, sm.Version, of, day, sm.Server, kitLicense[sm.Kit], instance)
+	}
+	return &sampleMark{Kit: sm.Kit, Version: sm.Version, VersionDate: sm.VersionDate, CapturedAt: sm.CapturedAt, Server: sm.Server,
+		Page: samplePage[t.ID], Line: line,
+		Mark: fmt.Sprintf("stored sample of %s (%s %s, captured %s on a test server, %s), not %s", t.Name, sm.Kit, sm.Version, day, sm.Server, instance)}
 }
 
 // toolNeed is one thing a tool lacks before it can run here, in the page's words: what is missing and the way to get
@@ -1067,6 +1133,18 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range out.Tools {
 		t := &out.Tools[i]
+		if out.Demo {
+			// the tool's stored sample, said per tool; a tool without one says why beside it
+			if sm, err := community.Get(t.ID); err == nil {
+				t.Sample = markOf(&t.communityTool, sm, name)
+			} else {
+				why := noSample[t.ID]
+				if why == "" {
+					why = "no stored sample for this tool"
+				}
+				t.Needs = append(t.Needs, noteNeed(why, "", "repository"))
+			}
+		}
 		if c != nil {
 			if n := c.Tools[t.ID]; n != nil { // a procedure's id is its name
 				t.Needs = n
@@ -1101,6 +1179,83 @@ func (s *Server) Community(w http.ResponseWriter, r *http.Request) {
 	out.Enabled = out.Reason == ""
 	out.Log, err = s.query(ctx, sqlCommunityLog, id)
 	s.reply(w, r, out, err)
+}
+
+// demoWithoutDoor: the instance is one pgvigil demo invented (its demo tag) and this server holds no login for it -
+// decided per instance, never by the process (pgvigil demo -serve -config serves real instances beside the demo's).
+func (s *Server) demoWithoutDoor(ctx context.Context, id int, name, engine string) (bool, error) {
+	var demo bool
+	if err := s.pool.QueryRow(ctx, `SELECT 'demo' = ANY (tags) FROM pgvigil.instances WHERE instance_id = $1`, id).Scan(&demo); err != nil {
+		return false, err
+	}
+	door := s.pgDoorDSN(name)
+	if engine == "sqlserver" {
+		door = s.msDoorDSN(name)
+	}
+	return demo && door == "", nil
+}
+
+// CommunitySample is GET /api/community/sample?instance=N&tool=T: a demo instance's stored sample of the tool - a read
+// of the samples built into pgvigil (internal/demo/community), never a run: nothing is sent to any server, no audit
+// row is written, and it never appears under the instance's runs. An instance that is not a demo instance without a
+// login answers 404 (its tools run on its server), as does a tool without a stored sample (with why).
+func (s *Server) CommunitySample(w http.ResponseWriter, r *http.Request) {
+	id, _, _, err := params(r, true)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	t := findTool(r.URL.Query().Get("tool"))
+	if t == nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("no community tool %q", r.URL.Query().Get("tool")))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	name, engine, err := s.communityInstance(ctx, id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no instance %d", id))
+		return
+	}
+	if engine != t.Engine {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s is a %s tool and instance %s is %s", t.Name, t.Engine, name, engine))
+		return
+	}
+	demo, err := s.demoWithoutDoor(ctx, id, name, engine)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !demo {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("%s is not a demo instance without a login: its tools run on its server, and no stored sample is shown for it", name))
+		return
+	}
+	sm, err := community.Get(t.ID)
+	if errors.Is(err, community.ErrNone) {
+		why := noSample[t.ID]
+		if why == "" {
+			why = community.ErrNone.Error()
+		}
+		writeErr(w, http.StatusNotFound, errors.New(why))
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.reply(w, r, struct {
+		Tool     string `json:"tool"`
+		Name     string `json:"name"`
+		Instance string `json:"instance"`
+		*sampleMark
+		Database string               `json:"database,omitempty"`
+		Params   map[string]string    `json:"params"`
+		ParamDoc []community.ParamDoc `json:"param_doc"`
+		Dropped  []string             `json:"dropped"`
+		Cut      []string             `json:"cut"`
+		Scrubbed []string             `json:"scrubbed"`
+		Sets     []community.Set      `json:"sets"`
+	}{t.ID, t.Name, name, markOf(t, sm, name), sm.Database, sm.Params, sm.ParamDoc, sm.Dropped, sm.Cut, sm.Scrubbed, sm.Sets}, nil)
 }
 
 type communityBody struct {
@@ -1240,6 +1395,14 @@ func (s *Server) CommunityRun(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := s.mayAudit(ctx); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	// a demo instance has no server behind it: refused before anything is sent - never answered with its stored sample
+	// (that is GET /api/community/sample, which runs nothing)
+	if demo, err := s.demoWithoutDoor(ctx, in.InstanceID, name, t.Engine); err == nil && demo {
+		s.refuseRun(w, r, map[string]any{"op": "community_run", "ui_user": user, "client": clientIP(r), "tool": t.ID,
+			"instance_id": in.InstanceID, "instance": name, "params": map[string]any{"values": in.Params, "database": in.Database}},
+			fmt.Errorf("%s is a demo instance: pgvigil demo invented its data and no server stands behind it, so no tool runs here", name))
 		return
 	}
 	timeout := time.Duration(in.TimeoutSecs) * time.Second

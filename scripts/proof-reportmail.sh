@@ -35,6 +35,9 @@
 #      address, Subject 'pgvigil: <page> - fleet - <window>'. P03: then a page whose grids are all empty (the first of
 #      seven report pages over the window that holds no table and at least one empty grid's note) is mailed the same
 #      way and answered sent (Mail refused it before: 'nothing to mail').
+#   N2 [B3 DONE-2] Send now of a demo SQL Server instance's Community tools page with tool=sp_Blitz (its stored sample
+#      open as the page loads): answered sent; the mail's HTML carries the sample's mark (GET /api/community's
+#      sample.mark) above its grid and the workbook's Summary sheet carries it too.
 #   S  schedules: on the Jobs page a column hidden with the grid's menu holds over a reload, and Mail... > Schedule this
 #      page... adds a schedule that keeps that grid's choice (grid_prefs, one grid); three more added through POST
 #      /api/reportmail (daily at 07:00, the same three routes, the third in America/Los_Angeles), next_at = the next
@@ -433,6 +436,30 @@ waitsent $EMPTYID || fail "N: the empty page's mail not answered in 3 minutes"
 [[ $(q "select count(*) from pgvigil.report_mail_sends where send_id = $EMPTYID and outcome = 'sent' and kind = 'now'") == 1 ]] || fail "N: the empty page's mail: $(q "select send_id, outcome, error from pgvigil.report_mail_sends where send_id = $EMPTYID")"
 ok "N: $EMPTYR, every grid on it empty ($(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["empties"])' "$WORK/pick.json") grids), mailed with Send now (mail $EMPTYID), answered sent"
 NOWIDS="$NOWIDS $EMPTYID"
+# ---- N2 (B3 DONE-2): a demo instance's stored sample mailed: its grid carries its mark into the body and the workbook ----
+DSID=$(q "select instance_id from pgvigil.instances where 'demo' = any (tags) and engine = 'sqlserver' order by name limit 1")
+[[ -n $DSID ]] || fail "N2: the demo seeded no SQL Server instance"
+[[ $(code -b "$JAR" "$U/api/community?instance=$DSID") == 200 ]] || fail "N2: GET /api/community: $(head -c 300 "$WORK/body")"
+SMARK=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(t["sample"]["mark"] for t in d["tools"] if t["id"] == "sp_Blitz"))' "$WORK/body") || fail "N2: no sample mark for sp_Blitz: $(head -c 300 "$WORK/body")"
+drive now "$WORK" 4 "#/community?i=$DSID&tool=sp_Blitz" > "$WORK/now3.json" || fail "N2: Send now of the sample: $(tail -3 "$WORK/now3.json")"
+SAMPID=$(python3 -c 'import json,sys; print(" ".join(str(v) for v in json.load(open(sys.argv[1])).values()))' "$WORK/now3.json")
+[[ $(wc -w <<<"$SAMPID") == 1 ]] || fail "N2: the sample's send: $(cat "$WORK/now3.json")"
+waitsent $SAMPID || fail "N2: the sample's mail not answered in 3 minutes"
+python3 - "$WORK/sink" "$SAMPID" "$SMARK" <<'PY' || fail "N2: see above"
+import email, glob, html, io, os, sys, zipfile
+from email import policy
+sink, sid, mark = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+m = next((email.message_from_binary_file(open(f, 'rb'), policy=policy.default) for f in sorted(glob.glob(os.path.join(sink, '*.eml')))
+          if email.message_from_binary_file(open(f, 'rb'), policy=policy.default)['X-Pgvigil-Report'] == str(sid)), None)
+assert m is not None, f"N2: mail {sid} is not in the sink"
+body = html.unescape(m.get_body(('html',)).get_content())
+assert mark in body, f"N2: the mail's body does not carry the mark {mark!r}"
+xl = next(p for p in m.iter_attachments() if (p.get_filename() or '').endswith('.xlsx'))
+z = zipfile.ZipFile(io.BytesIO(xl.get_content()))
+strings = html.unescape(z.read('xl/sharedStrings.xml').decode()) if 'xl/sharedStrings.xml' in z.namelist() else ''
+assert mark in strings, f"N2: the mail's workbook does not carry the mark"
+print(f"ok   N2: mail {sid}: the sample of sp_Blitz on a demo instance mailed with Send now; the body's line above its grid and the workbook's Summary carry the mark ({mark[:60]}...)")
+PY
 
 # ---- S: schedules, brought due, rendered by two serves -------------------------------------------------------------------
 JOBS="#/jobs?from=$FROM&to=$TO"

@@ -159,7 +159,17 @@ list what stops every tool there, each with the way to get it:
 | note | on | what the run will not see, or what the form filled in for this server |
 | off | off | what it lacks: the line to ask for (a `GRANT`, a configuration key, a setting) |
 | not checked | off | the check that failed or ran out of time: a tool is never 'ready' on a guess |
-| demo | off | a demo instance: `pgvigil demo` invented its data and no server stands behind it |
+| demo | Run off; the name opens the stored sample | a demo instance: `pgvigil demo` invented its data and no server stands behind it |
+
+On a demo instance (its `demo` tag and no login for it on this server: decided per instance, so `pgvigil demo -serve
+-config` shows real instances beside it as themselves) each tool's name opens its stored sample: what a run of the tool
+returned on a test server built for the capture (`scripts/capture-community-samples.sh`: a SQL Server 2022 and a
+PostgreSQL server of their own, loaded with the demo's own invented names; the kit, its version, the capture's date and
+the test server's version in the line above it, and 'not <instance>'), with a link to the instance's own page of the
+same subject and Run off with the demo's line. A sample is never a run: nothing is sent, nothing is audited, and it is
+never among the instance's runs; its grids carry the line's short form into Export .xlsx (the Summary sheet), Export
+CSV (the file's first line) and report mail. Plan XML is left out of the stored copy and said. Glenn Berry's queries
+are his own text: nothing of them is stored, and the demo says where to get the script.
 
 What decides it, and where pgvigil reads it:
 
@@ -238,6 +248,7 @@ Samokhvalov) and pghero's sequence and index checks (MIT, Andrew Kane); no text 
 | `POST /api/community/params` | `{instance_id, tool, database}`: a procedure's form and help |
 | `POST /api/community/run` | `{instance_id, tool, database, params, timeout_secs, text, query_name}`; each run's `declined` is true when the procedure turned it down in its own listed words (stored `failed`) |
 | `POST /api/community/glenn/parse` | `{text}`: the queries of a diagnostic script |
+| `GET /api/community/sample?instance=N&tool=T` | a demo instance's stored sample of the tool: its mark (kit, version, `captured_at`, server, `line`, `mark`, the instance tab of the subject), the parameters of the stored run and the procedure's own (help text for the MIT kits only), what was left out, and its result sets; 404 for an instance that is not a demo instance without a login, and for a tool without a sample (with why) |
 
 A POST carries the `X-Pgvigil` header (a cross-site form cannot set it) and the session cookie. A run on a tag goes to
 at most 20 instances of the report's engine, four at a time, within 62 s in all (the serve answers within 75 s): an
