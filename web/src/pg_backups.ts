@@ -261,9 +261,13 @@ export async function pgStateView(ctx: Ctx): Promise<HTMLElement> {
       return writeButton(ad, 'Acknowledge', `Acknowledge the crash of ${fmtTime(r.at)} on ${name}`, () => ackDialog({
         title: `Acknowledge the crash of ${fmtTime(r.at)}`,
         what: `The Summary's Crashes cell of ${name} loses this crash and every one before it; a newer crash colours it again. Who and when are kept.`,
-        body, expiry: false, noteField: 'optional', after: () => void draw() }));
+        body, expiry: false, noteField: 'optional', after: () => void draw() }), { instance: id, name });
     } };
-    out.push(el('section', {}, el('h3', {}, 'Crash restarts (30 days)'),
+    // a server that writes nothing at all: the grid's Acknowledge buttons share one reason, said once above the grid
+    const crashOffP = !ad.writable && !ad.door && crashes.some(c => c.ack_id == null)
+      ? el('p', { class: 'meta' }, `Acknowledge is off: ${ad.reason ?? ''}`) : null;
+    if (crashOffP) ad.note = crashOffP;
+    out.push(el('section', {}, el('h3', {}, 'Crash restarts (30 days)'), crashOffP ?? '',
       cs ? el('p', { class: 'meta' }, `${fmtNum(cs.crashes_30d)} crash restart(s), ${fmtNum(cs.open_30d)} not acknowledged; the cell: ${String(cs.status)} (a crash within the hours: ${thresholdLine({ warn: cs.warn_h, crit: cs.crit_h, unit: 'hours', direction: 'under', level: cs.threshold_level })}).`) : '',
       grid(crashes, [{ key: 'at', label: 'when', fmt: fmtTime }, { key: 'signal', num: true }, { key: 'detail', wide: true }, { key: 'lines', label: 'log lines', num: true }, ackCol],
         'No crash restart in the server log of 30 days (the log reader must run: Logs tab).')));

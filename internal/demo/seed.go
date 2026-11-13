@@ -67,6 +67,12 @@ type Fleet struct {
 	last time.Time
 }
 
+// IDs are the instance ids this fleet seeded, in its order (the demo's write door writes for these and no other).
+func (f *Fleet) IDs() []int { return append([]int(nil), f.ids...) }
+
+// Prefix is the name prefix this fleet was seeded with: the option's, or the default where the option was empty.
+func (f *Fleet) Prefix() string { return f.opts.Prefix }
+
 // Replace removes the instances tagged demo whose name starts with prefix, and every row of theirs:
 // each table of the pgvigil schema with an instance_id column is cleared for them, then the
 // instance rows. Instances without the tag or the prefix are never touched. Needs the owner login.

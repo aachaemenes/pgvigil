@@ -633,12 +633,15 @@ const dayQ = `from=${fixedDay.from.toISOString()}&to=${fixedDay.to.toISOString()
   // refuses or not; the frame routes refuse a missing instance and a window over 31 days (400)
   const ack = await (await fetch(`${base}api/ack?part=acks`)).json();
   const seatWant = `${ack.writable ? 'read-write' : 'read only'}, actions `;
+  // a demo serve with its write door (task B7) says once whose door it is; every other server its seat and the actions door
+  const seatOk = ack.door ? sum.seat === `demo: changes to the demo's own instances are saved as user ${ack.door.user}; nothing reaches a server`
+    : sum.seat.startsWith(seatWant) && /actions (on|off)$/.test(sum.seat);
   const noInst = (await fetch(`${base}api/frame/events`)).status;
   const tooLong = (await fetch(`${base}api/frame/events?instance=1&from=2026-01-01T00:00:00Z&to=2026-02-02T00:00:00Z`)).status;
   check('X footer', sum.landmark === 'FOOTER' && sum.inst.startsWith(`${inst.rows.length} instances (`) && /^collections: \d+ healthy, /.test(sum.col) && /^repository \d/.test(sum.repo)
-    && sum.seat.startsWith(seatWant) && /actions (on|off)$/.test(sum.seat) && sum.newest.startsWith('newest read ') && sum.refresh === 'auto refresh every 30 s' && perf === 'auto refresh not on this page'
+    && seatOk && sum.newest.startsWith('newest read ') && sum.refresh === 'auto refresh every 30 s' && perf === 'auto refresh not on this page'
     && noInst === 400 && tooLong === 400,
-    `${sum.inst} · ${sum.col} · ${sum.repo} · ${sum.seat} (the ack route: writable ${ack.writable}) · ${sum.newest} · ${sum.refresh}; Performance: '${perf}'; /api/frame/events without an instance ${noInst}, over 32 days ${tooLong}`);
+    `${sum.inst} · ${sum.col} · ${sum.repo} · ${sum.seat} (the ack route: writable ${ack.writable}${ack.door ? `, door user ${ack.door.user}` : ''}) · ${sum.newest} · ${sum.refresh}; Performance: '${perf}'; /api/frame/events without an instance ${noInst}, over 32 days ${tooLong}`);
 }
 
 // Y. a second y axis and a server limit: erp01's Transactions chart draws three axes, the right one written

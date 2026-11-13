@@ -181,6 +181,8 @@ func (s *Server) alertRulesDoor(r *http.Request, out map[string]any) {
 // ride the UI login and the actions door's audit login.
 func (s *Server) alertRulesOff() string {
 	switch {
+	case s.demo != nil:
+		return "alert rules are judged by the alert sender, which pgvigil demo -serve does not run: editing them needs pgvigil serve with a signed-in user"
 	case s.auth == nil:
 		return "alert rules are edited behind the UI login: this server runs with -no-login"
 	case s.actions == nil:
