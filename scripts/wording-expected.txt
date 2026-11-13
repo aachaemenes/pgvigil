@@ -1,0 +1,73 @@
+# The wording walk's expected reds (scripts/proof-wording.sh): written before the first run (the design D3 as folded;
+# rel-join-w1 be578e2). A row: status | scope | page | kind | word | source | the smallest fix and its file
+#   status  must      the red shows (on at least one page the page pattern matches, in that scope)
+#           may       the demo's state decides; after the FIRST box run each may row that showed becomes must in
+#                     the same commit as the run's table (the lead 23:13); from then on this file changes only in
+#                     the commit that changes the page
+#           must-not  a fixed red that must stay gone (a regression row)
+#   scope   pg-instance | ms-instance (an instance page of that engine) | pg-tag | ms-tag (a fleet page on a tag
+#           folder of one engine) | root-pg-row | root-ms-row (a row-scoped element of the mixed root, judged
+#           against its own row's engine)
+#   page    a JavaScript regular expression over the address after '#/' (the instance id or the tag left in)
+#   kind    the element kind the walk reports (th, tab, heading, prose, cell, attr, tree, button, menuitem, tile ...)
+#   word    the word as scripts/wording-words.txt names it (an engine's name for the label rule)
+# The exit is 0 only when every must row shows, no must-not row shows and no red falls outside this file; may rows
+# are reported either way. A red outside the file is a finding of the run (its table), listed after it.
+
+# --- regressions (fixed by f0c821c before the walk; the design pass found them gone at 0d189b8)
+must-not | pg-instance | ^summary\?i= | prose | QS | pages.ts:639 (n/a cells left out) | -
+must-not | pg-instance | ^summary\?i= | prose | SQL Agent | pages.ts:639 | -
+must-not | pg-instance | ^summary\?i= | prose | Mirroring | pages.ts:639 | -
+must-not | pg-instance | ^summary\?i= | prose | Elastic Pool | pages.ts:639 | -
+must-not | pg-instance | ^summary\?i= | prose | Database Mail | pages.ts:639 | -
+must-not | pg-instance | ^summary\?i= | prose | Service Broker | pages.ts:639 | -
+must-not | pg-instance | ^rp_finder\?i= | th | QS | reports.ts:153 (gated on anyMs) | -
+must-not | pg-instance | ^rp_finder\?i= | th | Forced Plans | reports.ts:155 | -
+
+# --- a PostgreSQL instance's own pages
+may | pg-instance | ^summary\?i= | prose | Memory Dump | pages.ts:641 'Not OK:' links | a pgLabel on Group (web/src/fleet.ts), used at pages.ts:641 (Item 6, the fix pane)
+may | pg-instance | ^summary\?i= | prose | Availability Group | pages.ts:641 | the same pgLabel (Item 6)
+may | pg-instance | ^summary\?i= | prose | Last Good Check DB | pages.ts:641 | the same pgLabel (Item 6)
+may | pg-instance | ^summary\?i= | prose | Agent Jobs | pages.ts:641 | the same pgLabel (Item 6)
+may | pg-instance | ^summary\?i= | prose | Backup LOG | pages.ts:641 | the same pgLabel (Item 6)
+may | pg-instance | . | attr | Memory Dump | instheader.ts:181 (the band dot's title, every page of the instance) | the pgLabel at instheader.ts:181 (Item 6)
+may | pg-instance | . | attr | Availability Group | instheader.ts:181 | the pgLabel at instheader.ts:181 (Item 6)
+may | pg-instance | . | attr | Last Good Check DB | instheader.ts:181 | the pgLabel at instheader.ts:181 (Item 6)
+may | pg-instance | . | attr | Agent Jobs | instheader.ts:181 | the pgLabel at instheader.ts:181 (Item 6)
+may | pg-instance | . | attr | Backup LOG | instheader.ts:181 | the pgLabel at instheader.ts:181 (Item 6)
+must | pg-instance | ^rp_\w+\?i= | tab | Extended Properties | router.ts instanceGroups' Reports (rp_props 'Database Extended Properties') | rp_props named for PostgreSQL ('Database comments') where the instance is PostgreSQL: the tab name per engine in web/src/router.ts, or rp_props out of instanceGroups' Reports
+must | pg-instance | ^rp_\w+\?i= | tab | SQL Login | router.ts instanceGroups' Reports (rp_pwage 'SQL Login Password Age') | rp_pwage named for PostgreSQL ('Role Password Age': VALID UNTIL) in web/src/router.ts
+must | pg-instance | ^rp_props\?i= | heading | Extended Properties | reports.ts (the page's heading) | the heading per engine in web/src/reports.ts
+must | pg-instance | ^rp_pwage\?i= | heading | SQL Login | reports.ts (the page's heading) | the heading per engine in web/src/reports.ts
+must | pg-instance | ^dbfiles\?i= | th | Filegroup | drives.ts:367 | the filegroup column only where a row is SQL Server (web/src/drives.ts:367)
+
+# --- fleet pages on a PostgreSQL-only tag folder
+must | pg-tag | ^summary\?tag= | th | Memory Dump | pages.ts (the Summary's column header) | the PostgreSQL label where the scope holds no SQL Server: pgLabel on Group (web/src/fleet.ts), Item 6
+must | pg-tag | ^summary\?tag= | th | Availability Group | pages.ts | the same (Item 6)
+must | pg-tag | ^summary\?tag= | th | Last Good Check DB | pages.ts | the same (Item 6)
+must | pg-tag | ^summary\?tag= | th | Agent Jobs | pages.ts | the same (Item 6)
+must | pg-tag | ^summary\?tag= | th | Backup LOG | pages.ts | the same (Item 6)
+must | pg-tag | ^summary\?tag= | cell | Memory Dump | pages.ts:463 (the tests grid's labels) | pgLabel in the tests grid, web/src/pages.ts:463 (passed to the fix pane 23:13)
+must | pg-tag | ^summary\?tag= | cell | Availability Group | pages.ts:463 | the same
+must | pg-tag | ^summary\?tag= | cell | Last Good Check DB | pages.ts:463 | the same
+must | pg-tag | ^summary\?tag= | cell | Agent Jobs | pages.ts:463 | the same
+must | pg-tag | ^summary\?tag= | cell | Backup LOG | pages.ts:463 | the same
+must | pg-tag | ^summary\?tag= | attr | Memory Dump | pages.ts:345 (the cell link's aria-label) | pgLabel at web/src/pages.ts:345 (Item 6)
+may | pg-tag | ^summary\?tag= | prose | Memory Dump | pages.ts:531 (Needs attention: the demo's state) | pgLabel at web/src/pages.ts:531 (Item 6)
+must | pg-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | SQL Server | main.ts:349 ('SQL Server options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:349
+must | pg-tag | ^(drives|dbspace|dbfiles|mssqltempdb|tablesize|disks|storage|growth|dbchanges|indexes)\?tag= | tab | tempdb | main.ts:349 ('TempDB' in the strip) | the same filter, web/src/main.ts:349
+must | pg-tag | ^mssqlrisks\?tag= | heading | SQL Server | the page's h2 'SQL Server options' | unreachable once main.ts:349 filters the strip
+must | pg-tag | ^mssqltempdb\?tag= | heading | tempdb | the page's h2 'TempDB' | unreachable once main.ts:349 filters the strip
+must | pg-tag | ^rp_\w+\?tag= | tab | Flushed Plans | router.ts rootGroups' Reports (rp_flushed) | rp_flushed out of the strip where the scope holds no SQL Server (web/src/main.ts:349's filter by engine)
+must | pg-tag | ^rp_flushed\?tag= | prose | plan cache | reports.ts:435 ('Each plan cache flush the server recorded: DBCC FREEPROCCACHE ... default trace') | that sentence only where the scope holds SQL Server, or begun 'SQL Server:' (web/src/reports.ts:435)
+must | pg-tag | ^rp_flushed\?tag= | prose | DBCC | reports.ts:435 | the same
+must | pg-tag | ^rp_flushed\?tag= | prose | default trace | reports.ts:435 | the same
+must | pg-tag | ^dbfiles\?tag= | th | Filegroup | drives.ts:367 | the filegroup column only where a row is SQL Server (web/src/drives.ts:367)
+must | pg-tag | ^running\?tag= | th | tempdb | running_fleet.ts:74-77 ('tempdb latch waits', 'tempdb latch wait (ms)', 'tempdb allocation waits', 'tempdb allocation wait (ms)') | those four columns only where the scope holds SQL Server (web/src/running_fleet.ts:74-77)
+
+# --- the reverse: fleet pages on a SQL Server-only tag folder (the first run reads #/pgreplication, #/pgthresholds,
+# #/extensions and #/backups there too: what it finds is a finding)
+must | ms-tag | ^(versions|extensions|roles|diff|mssqlrisks|pgrisks|pgthresholds|retention)\?tag= | tab | PostgreSQL | main.ts:349 ('PostgreSQL options' in the strip) | the fleet strip filtered by the scope's engines: web/src/main.ts:349
+must | ms-tag | ^pgrisks\?tag= | heading | PostgreSQL | pg_dboptions.ts:183 (h2 'PostgreSQL options') | unreachable once main.ts:349 filters the strip
+
+# --- allowed, never a red (scripts/wording-allow.txt): "PostgreSQL's TempDB" (drives.ts:443, A5)

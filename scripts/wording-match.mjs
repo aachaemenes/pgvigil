@@ -108,6 +108,32 @@ export function check(el, ctx) {
   return reds;
 }
 
+// loadExpected: the expected file's rows as { status, scope, page, kind, word, source, fix }
+export const SCOPES = ['pg-instance', 'ms-instance', 'pg-tag', 'ms-tag', 'root-pg-row', 'root-ms-row'];
+export function loadExpected(text) {
+  return rows(text).map(([status, scope, page, kind, word, source, ...fix], i) => {
+    if (!['must', 'may', 'must-not'].includes(status) || !SCOPES.includes(scope)) throw new Error(`expected row ${i + 1}: status ${status}, scope ${scope}`);
+    return { status, scope, page: new RegExp(page), pageText: page, kind, word, source, fix: fix.join(' | ') };
+  });
+}
+
+// validateExpected: each row's word is a word of the file or an engine's name (a typo would never match)
+export function validateExpected(expected, words) {
+  const known = new Set([...words.map(w => w.word), 'SQL Server', 'PostgreSQL']);
+  return expected.filter(e => !known.has(e.word)).map(e => `the expected row '${e.scope} ${e.pageText} ${e.kind} ${e.word}' names no word of wording-words.txt`);
+}
+
+// grade: the run's reds ({ scope, page, kind, word, ... }) against the expected rows. A red matches a row of its
+// scope whose page pattern, kind (or '*') and word fit; returns each row's hits and the reds no row holds.
+export function grade(reds, expected) {
+  const fits = (r, e) => e.scope === r.scope && e.page.test(r.page) && (e.kind === '*' || e.kind === r.kind) && e.word === r.word;
+  const rowsOut = expected.map(e => ({ ...e, hits: reds.filter(r => fits(r, e)) }));
+  const outside = reds.filter(r => !expected.some(e => e.status !== 'must-not' && fits(r, e)));
+  const mustMissing = rowsOut.filter(e => e.status === 'must' && e.hits.length === 0);
+  const mustNotSeen = rowsOut.filter(e => e.status === 'must-not' && e.hits.length > 0);
+  return { rows: rowsOut, outside, mustMissing, mustNotSeen, ok: outside.length === 0 && mustMissing.length === 0 && mustNotSeen.length === 0 };
+}
+
 // the self-test: each case is one element on a page of one engine, and the words it must find (none = right)
 const here = path.dirname(fileURLToPath(import.meta.url));
 export function selfTest() {
@@ -160,7 +186,23 @@ export function selfTest() {
     const ok = want.length === new Set(got).size && want.every(w => got.includes(w));
     if (!ok) { bad++; console.log(`FAIL self-test: ${engine} ${page} ${kind} ${JSON.stringify(text)}: found [${got.join(', ')}], want [${want.join(', ')}]`); }
   }
-  console.log(`wording-match self-test: ${cases.length - bad} of ${cases.length} cases right (${words.length} words, ${allow.length} allow rows)`);
+  // the expected file loads, names only known words; grade: a listed red, a missing must, a must-not seen, one outside
+  const expected = loadExpected(fs.readFileSync(path.join(here, 'wording-expected.txt'), 'utf8'));
+  const unknown = validateExpected(expected, words);
+  for (const u of unknown) { bad++; console.log('FAIL self-test: ' + u); }
+  const ex = loadExpected([
+    'must | pg-tag | ^summary\\?tag= | th | Memory Dump | s | f',
+    'must | pg-tag | ^running\\?tag= | th | tempdb | s | f',
+    'must-not | pg-instance | ^summary\\?i= | prose | QS | s | -',
+    'may | pg-instance | . | attr | Agent Jobs | s | f'].join('\n'));
+  const g = grade([
+    { scope: 'pg-tag', page: 'summary?tag=aurora', kind: 'th', word: 'Memory Dump' },
+    { scope: 'pg-instance', page: 'summary?i=3', kind: 'prose', word: 'QS' },
+    { scope: 'ms-tag', page: 'versions?tag=sales', kind: 'tab', word: 'PostgreSQL' }], ex);
+  const gOk = !g.ok && g.mustMissing.map(e => e.word).join() === 'tempdb' && g.mustNotSeen.map(e => e.word).join() === 'QS'
+    && g.outside.map(r => r.word).join() === 'QS,PostgreSQL' && g.rows[3].hits.length === 0;
+  if (!gOk) { bad++; console.log(`FAIL self-test: grade ${JSON.stringify({ missing: g.mustMissing.map(e => e.word), notSeen: g.mustNotSeen.map(e => e.word), outside: g.outside.map(r => r.word) })}`); }
+  console.log(`wording-match self-test: ${cases.length - bad + 2} of ${cases.length + 2} cases right (${words.length} words, ${allow.length} allow rows, ${expected.length} expected rows)`);
   return bad === 0;
 }
 
