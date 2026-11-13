@@ -19,6 +19,7 @@ from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECK = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, 'xlsx-check.py')
+sys.dont_write_bytecode = True   # no __pycache__ beside the check
 spec = importlib.util.spec_from_file_location('xlsx_check', CHECK)
 xc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(xc)
@@ -203,7 +204,9 @@ PROBES = [
     # X2: a time in a sheet name, not an address
     ('X2 a compact stamp in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Findings 20261112-1615')),
     ('X2 a clock in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Sessions 16 15 00')),
-    ('X2 a day in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Backups 2026-11-12')),
+    ('X2 a day and a clock in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Backups 2026-11-12 16 15')),
+    ('X2 a locale day and a clock in a name', 'X2', 'FAIL', lambda: rename(base(), 0, 'Jobs 11 13 2026, 05 25 00')),
+    ('X2 a day alone in a name (a job of its own words)', 'X2', 'PASS', lambda: rename(base(), 0, 'Purge 2026-01-01')),
     ('X2 a numbered repeat', 'X2', 'FAIL', lambda: rename(base(), 1, 'Grid (2)')),
     ('X2 a host address in a name', 'X2', 'PASS', lambda: rename(base(), 0, 'Host 10.1.2.30')),
     ('X2 a version in a name', 'X2', 'PASS', lambda: rename(base(), 0, 'Release 1.2.3 notes')),

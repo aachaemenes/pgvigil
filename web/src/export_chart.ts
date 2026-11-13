@@ -6,7 +6,9 @@
 // chart not drawn yet) keeps its line and says so.
 import type { Kind } from './export';
 
-export interface ChartNumbers { cols: string[]; rows: (string | number | Date | null)[][]; kinds?: (Kind | undefined)[] }
+// fmts: each column's formatter as the chart draws its values (its axis: fmtBytes, fmtSecs, a millisecond one): the
+// workbook writes the column in the unit the axis shows, named in its header (export.ts chartSection)
+export interface ChartNumbers { cols: string[]; rows: (string | number | Date | null)[][]; kinds?: (Kind | undefined)[]; fmts?: (((v: number) => string) | undefined)[] }
 export interface ChartPicture {
   title: string;
   first?: number; last?: number;   // the span drawn (ms)

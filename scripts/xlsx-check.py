@@ -18,8 +18,8 @@ The rules (a 'grid sheet' is every sheet but a LAST sheet named 'About'):
       a row's own style (drawn on its empty cells) is plain too; a style, font, fill or border index past its list fails
   X1  the workbook opens on a grid sheet: sheet 1 holds one Excel table and is not 'About' (a page's first section may be
       its tiles or a card as an Item | Value | Status table: a grid sheet like any other), activeTab 0
-  X2  sheet names: 1-31 characters, none of \\ / ? * [ ] :, unique ignoring case, no read time, no numbered repeat ' (n)',
-      not 'History'
+  X2  sheet names: 1-31 characters, none of \\ / ? * [ ] :, unique ignoring case, no read time (a day with a clock, the
+      export's stamp), no numbered repeat ' (n)', not 'History'
   X3  a Warning cell (fill FFE49325) has text FF1D1300 or FFFFFFFF
   X4  row 1 of a grid sheet: fill FF0063A3, white bold Calibri 11, nothing else
   X5  one Excel table per grid sheet over the whole grid (an empty grid: header + one empty row), autofilter = its ref,
@@ -79,9 +79,10 @@ DATE_TEXT = re.compile(r'^\s*(?:\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}'             
                        r'|\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4},?(?:\s+|T)\d{1,2}[:h.]\d{2}'               # a locale date-time
                        r'|(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/.]\d{1,2}[/.]\d{4})\s*$)')                  # a day alone
 BOOL_TEXT = re.compile(r'\s*(true|false|yes|no)\s*', re.I)
-# a read time in a sheet name: a day with a 4-digit year, a clock, the export's compact stamp; not an address or a version
-READ_TIME = re.compile(r'\b\d{4}[ ./-]\d{1,2}[ ./-]\d{1,2}\b|\b\d{1,2}[ ./-]\d{1,2}[ ./-]\d{4}\b|\b\d{8}[-_ ]?\d{4}\b'
-                       r'|\b\d{1,2} \d{2} \d{2}\b|\b\d{1,2}:\d{2}\b')
+# a read time in a sheet name: a day with a 4-digit year and a clock after it (its ':' refused, a space or a dot), the
+# export's compact stamp, a clock of hours, minutes and seconds; not an address, a version or a day alone (a job's own words)
+READ_TIME = re.compile(r'\b(?:\d{4}[ ./-]\d{1,2}[ ./-]\d{1,2}|\d{1,2}[ ./-]\d{1,2}[ ./-]\d{4}),?[ T]+\d{1,2}[ .:]\d{2}\b'
+                       r'|\b\d{8}[-_ ]?\d{4}\b|\b\d{1,2} \d{2} \d{2}\b|\b\d{1,2}:\d{2}\b')
 TABLE_NAME = re.compile(r'[A-Za-z_\\][A-Za-z0-9_.]*$')
 CELL_LIKE = re.compile(r'(?:[A-Za-z]{1,3}\d+|[RrCc]|[Rr]\d*[Cc]\d*)$')
 

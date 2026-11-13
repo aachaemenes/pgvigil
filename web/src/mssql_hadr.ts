@@ -289,9 +289,11 @@ export async function mssqlAvailability(ctx: Ctx): Promise<HTMLElement> {
       if (members.length) sec.append(el('h4', {}, 'Cluster members'), grid(members, clusterCols));
 
       const series = rowsOf(d.series);
-      sec.append(lineChart('Log waiting to be sent and to be redone (all database replicas)', series, [
-        { key: 'log_send_queue_kb', label: 'send queue' }, { key: 'redo_queue_kb', label: 'redo queue' },
-      ], v => fmtBytes(v * 1024)));
+      // the chart draws bytes (the server reads kilobytes): its numbers carry the unit its axis shows (export.ts chartSection)
+      const kb = (v: unknown) => v == null ? null : Number(v) * 1024;
+      sec.append(lineChart('Log waiting to be sent and to be redone (all database replicas)', series.map(r => ({ ...r, send_bytes: kb(r.log_send_queue_kb), redo_bytes: kb(r.redo_queue_kb) })), [
+        { key: 'send_bytes', label: 'send queue' }, { key: 'redo_bytes', label: 'redo queue' },
+      ], v => fmtBytes(v)));
       const det = el('details', {}, el('summary', {}, 'The chart\'s numbers as a table'), grid(series, seriesCols, 'No read in this window.'));
       sec.append(det);
       const lim = rowsOf(d.limits)[0];

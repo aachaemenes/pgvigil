@@ -237,7 +237,8 @@ export function lineChart(title: string, rows: Row[], series: { key: string; lab
     const u = new uPlot(opts, data, holder);
     live.push(u);
     isolateOnDoubleClick(u);
-    chartMenu(box, title, u, !!o.stacked);
+    // each series' formatter as its axis draws it (o.y2's series on the right axis): its numbers carry the axis's unit
+    chartMenu(box, title, u, !!o.stacked, j => (o.y2?.keys.includes(series[j - 1]?.key ?? '') ? o.y2?.fmt : undefined) ?? fmt);
     fullWindow(box, title, u, hiddenKey);
     const reset = zoomReset();   // the page stands on a range a drag set: the way back, in the heading
     if (reset) box.querySelector('h3')?.append(' ', reset);
@@ -392,7 +393,7 @@ function fullWindow(box: HTMLElement, title: string, u: uPlot, key: string) {
 // The button in the chart's heading opens it (the keyboard's way) and so does a right-click on the plot. The numbers are
 // the series shown, a row per point, the time as 'YYYY-MM-DD HH:MM:SS' in the display zone; a stacked chart gives each
 // band's own value.
-function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) {
+function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean, fmtOf: (j: number) => (v: number) => string = () => v => v.toLocaleString()) {
   const head = box.querySelector('h3');
   if (!head) return;
   const note = el('span', { class: 'meta chart-note', role: 'status' });
@@ -405,6 +406,7 @@ function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) 
   const numbers = (): ChartNumbers => {
     const cols = shown(), xs = u.data[0] as number[];
     return {
+      fmts: [undefined, ...cols.map(c => fmtOf(c.j))],
       cols: ['time', ...cols.map(c => String(c.s.label ?? ''))],
       rows: xs.map((x, i) => [new Date(x * 1000), ...cols.map(c => {
         const tot = u.data[c.j][i], below = stacked && c.j > 1 ? u.data[c.j - 1][i] : 0;
@@ -463,7 +465,7 @@ function chartMenu(box: HTMLElement, title: string, u: uPlot, stacked: boolean) 
     // Export Excel (DBA Dash's chart menu): the same numbers as a workbook, a time as a time, each value a number
     ['Export Excel', () => {
       const n = numbers();
-      void exportChart(title, n.cols, n.rows)
+      void exportChart(title, n.cols, n.rows, n.kinds, parse(), n.fmts)
         .then(() => say(`Saved ${n.rows.length} points as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
     }],
     ...(u.series.length > 2 ? [['Pick series', () => pickSeries(box, u, btn)] as [string, () => void]] : []),
@@ -920,7 +922,7 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
   });
   // sliceNumbers: every slice as the menu's Export Excel writes it (its size a number, its share under '0.0%'); the page's
   // own workbook reads the same from the box (export.ts pageExtras, X12: a chart's series as a sheet)
-  const sliceNumbers = (): ChartNumbers => ({ cols: ['name', 'size', 'share'], rows: all.map(s => [s.label, s.value, total ? s.value / total : null]), kinds: [undefined, undefined, 'pct'] });
+  const sliceNumbers = (): ChartNumbers => ({ cols: ['name', 'size', 'share'], rows: all.map(s => [s.label, s.value, total ? s.value / total : null]), kinds: [undefined, undefined, 'pct'], fmts: [undefined, fmt, undefined] });
   (box as PictureBox).pgvNumbers = sliceNumbers;
   const items: [string, () => void][] = [
     ['Copy image', () => { void (async () => {
@@ -933,7 +935,7 @@ function pieOrRing(title: string, slices: Slice[], fmt: (v: number) => string, m
     // Export Excel: every slice as a row, its size a number and its share under '0.0%'
     ['Export Excel', () => {
       const n = sliceNumbers();
-      void exportChart(title, n.cols, n.rows, n.kinds)
+      void exportChart(title, n.cols, n.rows, n.kinds, parse(), n.fmts)
         .then(() => say(`Saved ${all.length} slices as Excel`), (x: unknown) => say('Export failed: ' + (x instanceof Error ? x.message : String(x))));
     }],
   ];

@@ -21,8 +21,10 @@
 #              .csv.zip (the Table Size tab has two grids), the instance named as in the tree
 #   summary    sheets: the page's sections in page order - each grid (a sheet named by the heading above it, h2 to h5, or
 #              by the name the page gives it: data-sheet, a tile row's aria-label), each property card, tile row and the
-#              Needs attention lines as an Item | Value | Status table, a chart's series - then 'About' LAST (D-A: the
-#              window, the zone, the export's time, the source, each sheet's rows; also the document's properties); no
+#              Needs attention lines (every line, also past the 8 the page draws) as an Item | Value | Status table, one
+#              sheet per chart that has numbers, named by its title, in the charts' page order, no other - then 'About'
+#              LAST (D-A: the window, the zone, the export's time, the source, every sheet's rows; also the document's
+#              properties); no
 #              name a numbered repeat (X2: two headings equal after the cut keep their start, an ellipsis and the words
 #              where they part; a name taken goes under the heading above it; sections sharing a heading take 'tiles' or
 #              'properties'); no pane (X6); each column's width the rule's (export.ts colWidth, DBA Dash's AdjustToContents:
@@ -72,16 +74,25 @@
 #              DBA Dash writes one); a size column in ONE unit named in its header ('size (GB)'), the cells plain numbers
 #              (X7: no '#,##0" B"' or other custom format)
 #   roles      the instance's Roles tab: the privilege grids sit under h4 headings; every sheet's name follows the
-#              heading above its grid, none a numbered repeat (the tiles 'Roles tiles', the grid 'Roles')
+#              heading above its grid (or the heading above that one, 'Role beta Database privileges'), none a numbered
+#              repeat (the tiles 'Roles tiles', the grid 'Roles')
 #   activity   the instance's Running queries tab over 7 days: Per sample shows 500 rows; 'About' carries 'the newest
 #              500 of N samples' beside its rows; every workbook's 'About' has a Time zone row ('<zone> (UTC+hh:mm at
-#              export)')
-#   slow       the fleet's Slow queries tab (24 h): the hand-built Per day table's statements column numeric (its sheet
-#              'Per day': the time in its heading left out); a duration column plain numbers in one unit named in its
-#              header (X7, X8: no custom format); on EVERY page no 'x ms / x s / x min' text is left in any sheet (each tab
-#              rounds its milliseconds its own way)
-#   db         a database's drill page: its statements' durations are numbers under General (X7), two at least and not
-#              all equal
+#              export)', the value read)
+#   slow       the fleet's Slow queries tab (24 h): the hand-built Per day table's statements column numeric and its day
+#              column dates under 'yyyy-MM-dd' (its sheet 'Per day': the time in its heading left out); a duration column
+#              plain numbers in one unit named in its header (X7, X8: no custom format)
+#   units      (X7) on EVERY page no number with a unit is left as text on a grid sheet or a chart's series sheet (a size,
+#              a duration, a rate, a count of days; the mixed list by column only: an Item | Value | Status sheet's Value,
+#              the Instance Summary's ages as DBA Dash's Summary writes them, a Files growth column holding a percent);
+#              every column whose header names a unit the export added holds the screen's figure converted into it, within
+#              the figure's shown precision (1024 steps for sizes, 1000 / 60 for times), a cell the screen shows with no
+#              number empty in a column of days or of a rate; a size chart's series named with its unit
+#   values     (X7-X9) an Item | Value | Status sheet's Value is typed by its content: no bare number left as text
+#   db         a database's drill page: its statements' durations (the columns headed ' (ms)' / ' (s)' / ' (min)') are
+#              numbers under General (X7), two at least and not all equal
+#   sqljobs    (decision (b)) the SQL Server instance's Jobs tab: graded as every page here; each job's step grid named by
+#              its job (data-sheet), no numbered repeat
 #   perf       (P03) the fleet's Performance summary: graded as every page here; its CPU histogram column (a picture of
 #              bars, the top bucket painted critical even when empty) has no fill in any row
 #   reader     the screen's colour of a cell is read on its own terms, not by export.ts's rule: a status cell, else the
@@ -117,7 +128,8 @@
 #              pages without the bar's export; with PGVIGIL_EXPORT_OUT the inventory is kept there as
 #              sections-inventory.json (the list E3's page sheet is graded against)
 #   csv        the Summary's .csv: its data rows (python csv, header excluded) = the grid's rows; the Tables
-#              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so)
+#              .csv.zip: two CSVs, each with its grid's row count; a UTF-8 BOM first (every page's CSV is graded so); a
+#              .csv.zip's files named by their grids' sheet names in the workbook (no numbered repeat)
 #   gridmenu   (P03) the fleet Backups grid's menu has one Export Excel line (no other line starting so: task 172's
 #              'Export Excel (this grid)' out of treemenu.ts, P03's WIRING BLOCK), right after its copies (DBA Dash's grid
 #              menu: Copy, then Export Excel); clicked, it downloads fleet_Backups_<sheet>_<from>_<to>.xlsx: that grid's
@@ -138,9 +150,12 @@
 #              the 2001 page's Export .xlsx: that grid's sheet is its header row without the hidden column
 #   shots      with PGVIGIL_EXPORT_SHOTS: grid-menu, summary-export, chart-menu-line, chart-menu-ring, each -light and -dark
 #   libre      when soffice is on the machine, each .xlsx converts to CSV headless (the file opens); none = said
-#   xcheck     (X0-X12) every downloaded .xlsx passes scripts/xlsx-check.py rules: the file rules DBA Dash's own exports
-#              pass (a grid sheet per grid, the named colour pairs only, the fixed header, one table each, no pane, the
-#              formats General / '0' / '0.0%' / '0.00%' / 'yyyy-MM-dd HH:mm', booleans, widths, no app link, no picture)
+#   xcheck     (X0-X12) scripts/xlsx-check.test.py (its built workbooks, a probe per shape) all ok; every downloaded .xlsx
+#              passes scripts/xlsx-check.py rules: the file rules DBA Dash's own exports pass (a grid sheet per grid, the
+#              named colour pairs only, the fixed header, one table each, no pane, the formats General / '0' / '0.0%' /
+#              '0.00%' / 'yyyy-MM-dd HH:mm' / 'yyyy-MM-dd', booleans, widths, no app link, no picture); 'ok xcheck Xn'
+#              only on one PASS line per workbook
+#   volumes    an instance's Storage page: each volume its Volumes chart draws is a row of the 'Volumes' grid sheet
 #   languages  all of the above twice: Chromium in en-US and in fr-FR (navigator.language says so; 1234567 shows
 #              without a comma: the locale's grouping space), the numbers numeric in both
 set -euo pipefail
@@ -148,7 +163,8 @@ cd "$(dirname "$0")/.."
 : "${PGVIGIL_ADMIN_DSN:?}"
 WORK=$(mktemp -d); DB="pgvigil_export_$RANDOM"; PORT=$((21000 + RANDOM % 9000)); CDP=$((PORT + 1)); SRV=""; CHR=""
 fail() { echo "FAIL: $*" >&2; exit 1; }
-XCHECK="$(cd "$(dirname "$0")" && pwd)/xlsx-check.py"   # the file rules X0-X12 (every downloaded workbook)
+XCHECK="$PWD/scripts/xlsx-check.py"   # the file rules X0-X12 (every downloaded workbook); $PWD is the repository's root (cd above)
+[[ -f "$XCHECK" ]] || fail "scripts/xlsx-check.py is not in $PWD"
 ok() { echo "ok   $*"; }
 cleanup() {
   [[ -n "$SRV" ]] && kill "$SRV" 2>/dev/null || true
@@ -171,6 +187,9 @@ echo "== the sheet names' unit tests (web/src/export_names.ts)"
 web/node_modules/.bin/esbuild web/src/export_names.ts --format=esm --log-level=warning --outfile="$WORK/export_names.mjs" || fail "esbuild could not compile web/src/export_names.ts"
 node web/src/export_names.test.mjs "$WORK/export_names.mjs" > "$WORK/names-unit.out" 2>&1 || { cat "$WORK/names-unit.out"; fail "the sheet names' unit tests"; }
 ok "sheet names: $(tail -1 "$WORK/names-unit.out")"
+echo "== the X rules' own tests (scripts/xlsx-check.test.py: built workbooks, a probe per shape)"
+python3 -I scripts/xlsx-check.test.py "$XCHECK" > "$WORK/xcheck-unit.out" 2>&1 || { cat "$WORK/xcheck-unit.out"; fail "the X rules' own tests"; }
+ok "X rules' tests: $(tail -1 "$WORK/xcheck-unit.out")"
 # the same module as a script for the page (the driver runs it there: window.__pgvColours)
 web/node_modules/.bin/esbuild web/src/export_colours.ts --format=iife --global-name=__pgvColours --log-level=warning --outfile="$WORK/export_colours.js" || fail "esbuild could not compile web/src/export_colours.ts as a script"
 
@@ -262,7 +281,7 @@ const SCREEN = `(() => {
     const got = new Set([...td.querySelectorAll('*')].filter(drawn).map(m => m.matches(KNOWN) ? pick(m) : own(m) ? (getComputedStyle(m).color === CRIT ? 'crit' : getComputedStyle(m).color === WARN ? 'warn' : null) : null).filter(Boolean));
     const w = ['crit', 'warn', 'ok', 'none'].find(k => got.has(k)); if (w) return w;
     return ['crit', 'warn', 'ok'].find(k => td.classList.contains(k)) ?? null; };
-  const head = c => { const x = c.cloneNode(true); x.querySelectorAll('.whatis, .filter-btn').forEach(b => b.remove()); return words(x); };
+  const head = c => { const x = c.cloneNode(true); x.querySelectorAll('.whatis, .filter-btn, .chart-reset').forEach(b => b.remove()); return words(x); };
   // the look the page's CSS gives a cell, read here on its own (not by web/src/export_colours.ts): the backgrounds laid
   // over each other up to the nearest solid one; the cell's fill when it differs from its table's, else a badge's in it;
   // the text colour of the first words (or the badge's) blended over what lies under them; bold at 600 or more
@@ -288,20 +307,25 @@ const SCREEN = `(() => {
   const cell = td => ({ t: words(td), s: st(td), l: !td.classList.contains('status') && !!td.querySelector('a[href]'), p: look(td, td.closest('table')), a: al(td),
     b: !td.classList.contains('status') && !td.querySelector(KNOWN) && ['crit', 'warn', 'ok'].some(k => td.classList.contains(k)) });
   // a heading inside a region of its own (the Summary's Needs attention strip) names only the grids of that region; h2 to
-  // h5 (export.ts headings); a grid inside an element with data-sheet that holds no heading met so far (a disclosure per
-  // job or per check, a totals grid) is named by it
-  let outer = '', inner = null, last = null;
+  // h5 by level (export.ts headings), 'up' the heading above the one that names a grid; a grid inside an element with
+  // data-sheet (a disclosure per job or per check, a totals grid) is named by it ('alone'), or - when that element holds
+  // the last heading met (a pgAgent job's 'Steps') - by it then that heading ('with', oh)
+  let outer = '', inner = null, last = null, upper = '';
+  const lv = [];
   return [...document.querySelectorAll('main h2, main h3, main h4, main h5, main table.grid, main table.props, main p.empty[data-cols]')].map(e => {
     if (e.tagName !== 'TABLE' && e.tagName !== 'P') {
       const within = e.closest('[role=region]');
-      if (within) inner = { text: head(e), within }; else { outer = head(e); inner = null; last = e; }
+      if (within) inner = { text: head(e), within, up: outer };
+      else { const n = Number(e.tagName.slice(1)); lv.length = n; lv[n] = head(e); outer = head(e); upper = lv.slice(0, n).filter(Boolean).pop() || ''; inner = null; last = e; }
       return { h: head(e) };
     }
-    const own = e.closest('[data-sheet]'), ownName = own && !(last && own.contains(last)) ? (own.getAttribute('data-sheet') || '').trim() : '';
-    const named = ownName || (inner && inner.within.contains(e) ? inner.text : outer);
+    const inR = !!inner && inner.within.contains(e), hd = inR ? inner.text : outer, wi = inR ? inner.up : upper;
+    const own = e.closest('[data-sheet]'), on = own ? (own.getAttribute('data-sheet') || '').trim() : '';
+    const kind = on ? (last && own.contains(last) ? 'with' : 'alone') : '';
+    const named = kind === 'alone' ? on : kind === 'with' ? on : hd, oh = kind === 'with' ? hd : '', up = kind === 'alone' ? hd : wi;
     // a grid with no row (ui.ts grid: its note carries its columns' names): the export's sheet of its header row alone
     // (a note with no column the export leaves out: null, dropped by grids())
-    if (e.tagName === 'P') { const cols = JSON.parse(e.dataset.cols || '[]'); const eth = e.parentElement && e.parentElement.querySelector(':scope > table.grid-empty th'); return cols.length ? { named, rows: 0, head: cols, cells: [], status: [], empty: true, hl: eth ? look(eth, eth.closest('table')) : null, tests: !!e.closest('.tests'), att: !!e.closest('.attention') } : null; }
+    if (e.tagName === 'P') { const cols = JSON.parse(e.dataset.cols || '[]'); const eth = e.parentElement && e.parentElement.querySelector(':scope > table.grid-empty th'); return cols.length ? { named, own: kind, oh, up, rows: 0, head: cols, cells: [], status: [], empty: true, hl: eth ? look(eth, eth.closest('table')) : null, tests: !!e.closest('.tests'), att: !!e.closest('.attention') } : null; }
     const grid = e.classList.contains('grid');
     const cells = grid ? [...e.querySelectorAll(':scope > tbody > tr')].map(tr => [...tr.children].map(cell))
       : [...e.querySelectorAll('tr')].map(tr => { const th = tr.querySelector('th'), td = tr.querySelector('td'); return [{ t: th ? words(th) : '', s: null, l: false, p: th ? look(th, e) : null }, { t: td ? words(td) : '', s: td ? st(td) : null, l: false, p: td ? look(td, e) : null }]; });
@@ -311,7 +335,7 @@ const SCREEN = `(() => {
       w.innerHTML = '<table class="grid"><thead><tr><th><span class="th-label">x</span></th></tr></thead></table>'; document.getElementById('main').append(w);
       const r = look(w.querySelector('th'), w.querySelector('table')); w.remove(); return r; };
     const th0 = grid ? e.querySelector(':scope > thead > tr:first-child > th') : null;
-    return { named, rows: e.dataset.rows ? Number(e.dataset.rows) : cells.length, head: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(head) : ['item', 'value'], cells, hl: th0 ? look(th0, e) : probe(),
+    return { named, own: kind, oh, up, rows: e.dataset.rows ? Number(e.dataset.rows) : cells.length, head: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(head) : ['item', 'value'], cells, hl: th0 ? look(th0, e) : probe(),
       ha: grid ? [...e.querySelectorAll(':scope > thead > tr:first-child > th')].map(al) : null,
       status: [...new Set(cells.flat().map(c => c.s).filter(k => k && k !== 'ack'))], tests: !!e.closest('.tests'), att: !!e.closest('.attention') };
   });
@@ -333,8 +357,12 @@ const PAGELOOK = `(() => {
   // the charts: each one's title, its plot's CSS width, its legend's series (shown or off) and its own state words
   const charts = [...main.querySelectorAll('.chart')].filter(vis).map(b => {
     const h = b.querySelector('h3, h4'), sv = b.querySelector('.uplot') ? null : b.querySelector('svg[role=img]'), cv = b.querySelector('.uplot canvas') ?? sv;
-    const hc = h ? h.cloneNode(true) : null; if (hc) hc.querySelectorAll('button, select, .chart-note, .whatis, .filter-btn').forEach(x => x.remove());
-    return { title: flat(hc ? hc.textContent : ''), w: cv ? cv.getBoundingClientRect().width : null, h: cv ? cv.getBoundingClientRect().height : null,
+    const hc = h ? h.cloneNode(true) : null; if (hc) hc.querySelectorAll('button, select, .chart-note, .chart-reset, .whatis, .filter-btn').forEach(x => x.remove());
+    // tbl: the page shows the chart's numbers as a table of its own (that table's sheet); nums: the rows of the numbers its
+    // menu's Export Excel writes (chart.ts pgvNumbers), null for a chart that has none
+    const tbl = (() => { for (let a = b; a && a !== main; a = a.parentElement) { const nx = a.nextElementSibling; if (nx && nx.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) return true; } return false; })();
+    let nums = null; try { nums = typeof b.pgvNumbers === 'function' ? (b.pgvNumbers().rows || []).length : null; } catch { nums = null; }
+    return { title: flat(hc ? hc.textContent : ''), tbl, nums, w: cv ? cv.getBoundingClientRect().width : null, h: cv ? cv.getBoundingClientRect().height : null,
              series: sv ? [...b.querySelectorAll('.swatch')].map(s => ({ label: flat(s.nextSibling?.textContent), on: true }))
                : [...b.querySelectorAll('.u-legend .u-series')].slice(1).map(s => ({ label: flat(s.querySelector('.u-label')?.textContent ?? s.textContent), on: !s.classList.contains('u-off') })),
              svg: !!sv, table: !!sv && (() => { for (let a = b; a && a !== main; a = a.parentElement) { const nx = a.nextElementSibling; if (nx && nx.tagName === 'DETAILS' && /numbers as a table/.test(nx.querySelector('summary')?.textContent ?? '')) return true; } return false; })(), fills: sv ? [...new Set([...sv.querySelectorAll('rect[fill], path[fill], circle[stroke]')].filter(x => { const r = x.getBoundingClientRect(); return r.width >= 1 && r.height >= 1; }).map(x => (x.getAttribute('fill') || x.getAttribute('stroke') || '').toLowerCase()).filter(f => /^#[0-9a-f]{6}$/.test(f)))] : [],
@@ -345,9 +373,14 @@ const PAGELOOK = `(() => {
   // (F1) the fleet Summary's 'Needs attention' lines: each one's instance name (its link), its reasons, its badge
   const attention = [...main.querySelectorAll('.attention-row')].filter(vis).map(r => ({ name: flat(r.querySelector('a')?.textContent),
     text: flat([...r.children].find(c => c.tagName === 'SPAN' && !c.matches('.dot, .badge'))?.textContent), badge: flat(r.querySelector('.badge')?.textContent) }));
+  // the lines the strip holds in all: its 'Show all N' button's N, else the lines drawn
+  const allBtn = [...main.querySelectorAll('.attention button')].find(b => /^Show all \\d/.test(flat(b.textContent)));
+  const attentionTotal = allBtn ? Number(flat(allBtn.textContent).replace(/\\D/g, '')) : attention.length;
+  // the rows of tiles (a .tiles holding a tile on the screen): each one a section of its own
+  const tileRows = [...main.querySelectorAll('.tiles')].filter(vis).filter(t => [...t.querySelectorAll(':scope > .tile')].some(vis)).length;
   const css = getComputedStyle(document.documentElement);
   const palette = [1, 2, 3, 4, 5, 6, 7, 8].map(i => css.getPropertyValue('--s' + i).trim());
-  return { tiles, attention, wrapped: [...new Set(wrapped)], charts, palette, card: css.getPropertyValue('--card').trim(), theme: document.documentElement.getAttribute('data-theme') };
+  return { tiles, tileRows, attention, attentionTotal, wrapped: [...new Set(wrapped)], charts, palette, card: css.getPropertyValue('--card').trim(), theme: document.documentElement.getAttribute('data-theme') };
 })()`;
 // SECTIONS (E2-1): the page's visible sections in page order, read on the page's own terms (not by export.ts's walk):
 // every block of #main the eye sees - a heading, a grid (an empty grid's header-only table too), a property card, a
@@ -538,6 +571,9 @@ if (!dbHref) throw new Error('no database link on the Database info tab');
 out.db = await page(dbHref);
 // the Table Size tab again (another window: another file name), its second grid filtered to nothing: a sheet without rows
 out.empty = await page(`#/tables?i=${one.instance_id}&w=24h`, null, true);
+// (decision (b)) the SQL Server instance's Jobs tab: each job's step grid named by its job (data-sheet)
+const sq = rows.find(r => r.engine === 'sqlserver');
+if (sq) { out.sqljobs = await page(`#/mssqljobs?i=${sq.instance_id}&w=24h`); out.sqljobs.instance = sq.name; }
 out.tools = await tools();
 // ---- P03: the new menu items, each clicked and its download read ---------------------------------------------------
 const waitDl = async (before, what) => {
@@ -938,6 +974,81 @@ def grid_sheets(z, gs, names):
         out.append(found)
         if found: k = found + 1
     return out, [i for i in range(1, len(names)) if i not in out]
+# export_names.ts mirrored (X2): the page's own time shapes leave a name (a date with a 4-digit year and a clock after it,
+# in brackets or after a word), a bare count in brackets in grouping; a rate's slash reads 'per'; each character Excel
+# refuses a space, runs of spaces one, spaces and quotes at either end off; ownName; under (the heading above, then the title)
+DAY_ = r'(?:\d{4}[/.-]\d{1,2}[/.-]\d{1,2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{4})'
+CLOCK_ = r',?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?'
+def clean_(t):
+    t = re.sub(r'(\S)/(s|sec|min|h|hr|day)\b', r'\1 per \2', t)
+    return re.sub(r"^[\s']+|[\s']+$", '', re.sub(r'\s+', ' ', re.sub(r'[\\/?*\[\]:]', ' ', t)))
+def title_of(t):
+    t2 = re.sub(r'\s*\((?:read\s+)?[^()]*' + DAY_ + CLOCK_ + r'[^()]*\)', '', t)
+    t2 = re.sub(r'\s*(?:\b(?:since|from|until|to|at|as of|read|of)\s+)?' + DAY_ + CLOCK_, '', t2, flags=re.I).strip()
+    t2 = re.sub(r'\s*\(\d{1,3}(?:[,.\s\u202f\u00a0]\d{3})*\)$', '', t2).strip() or t   # a bare count in brackets out too ('Findings (16)')
+    return clean_(t2)
+def name_of(g):
+    # the title a grid's sheet starts from: a data-sheet's own name kept whole ('alone'); one holding its own heading
+    # ('with'), that name then the heading's title (export_names.ts ownName); else the heading's title
+    if g.get('own') == 'with': return clean_(clean_(g['named']) + ' ' + title_of(g.get('oh') or ''))
+    if g.get('own') == 'alone': return clean_(g['named'])
+    return title_of(g['name'])
+def under_(up, t):
+    both = f'{up} {t}'
+    if len(both) <= 31: return clean_(both)
+    return clean_(re.sub(r"[\s'_.-]+$", '', up[:31 - 2 - len(t)]) + '… ' + t if len(t) <= 25 else re.sub(r"[\s']+$", '', both[:31]))
+def named_by(n, f, up):
+    # a sheet's name made from its title f (export_names.ts sheetNames): the title cut at 31 (a bracket the cut lands in
+    # left out), its start then '…' and the words where it parts from another, or under the heading above it
+    h = f[:24].rstrip()
+    if n.startswith(h): return True
+    if len(f) > 31 and n == re.sub(r'\s\([^)]*$', '', re.sub(r"[\s']+$", '', f[:31])): return True
+    if up and n == under_(title_of(up), f): return True
+    if '…' in n:
+        a_, b_ = n.split('…', 1)
+        return f.startswith(a_.rstrip(" '_.-")) and (f.endswith(b_.strip()) or (a_ == '' and b_.strip() in f))
+    return n.endswith(' ' + f[:31 - 2]) or n.endswith(' ' + f)
+def safe_(n): return re.sub(r'[^A-Za-z0-9._-]+', '-', n).strip('-') or 'x'
+# (X7, the lead 13:44 (2)) a number with a unit as the pages write it: a size, a duration (fmtSecs's '1d 2h' too), a
+# rate, a count of days
+UNIT_TEXT = re.compile(r'-?[\d\s,.\u202f\u00a0]*\d ?(?:B|KB|MB|GB|TB|PB|ms|s|min|h|d|days?|hours?)(?: ?/ ?(?:day|h|s))?|-?\d+[dhm](?: \d+[hms])?|off \(\d+ days?\)')
+# the mixed list, by sheet and column: the Instance Summary's ages (DBA Dash's Summary writes its ages as text: 'Instance
+# Uptime' '51 minutes, 19 seconds' in its own file)
+AGES = {'Memory Dump', 'Corruption', 'Last Good Check DB', 'Instance Uptime', 'Snapshot Age', 'Alerts'}
+SIZE_U = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+DUR_MS = {'ms': 1, 's': 1000, 'min': 60000}
+def digits_(t):
+    t = re.sub(r'[\s\u202f\u00a0]', '', t)
+    t = t.replace(',', '') if want.startswith('en') else t.replace(',', '.')
+    try: return float(t), len(t.split('.')[1]) if '.' in t else 0
+    except ValueError: return None, 0
+def converted(head_unit, screen):
+    # the screen's figure in the header's unit and its tolerance (half the shown last digit, and an fmtSecs part's truncation);
+    # None: the screen shows no figure of that family; 'none': the screen shows no number at all
+    if not re.search(r'\d', screen): return 'none'
+    m = re.fullmatch(r'(-?\d+(?:\.(\d+))?) (B|KB|MB|GB|TB|PB)( / day)?', screen)
+    hu = re.fullmatch(r'(B|KB|MB|GB|TB|PB)(/day)?', head_unit)
+    if m and hu and bool(m.group(4)) == bool(hu.group(2)):
+        k = len(m.group(2) or ''); b = float(m.group(1)) * 1024 ** SIZE_U.index(m.group(3)); tol = 0.5 * 10 ** -k * 1024 ** SIZE_U.index(m.group(3))
+        return b / 1024 ** SIZE_U.index(hu.group(1)), tol / 1024 ** SIZE_U.index(hu.group(1)) + 1e-9
+    if head_unit in DUR_MS:
+        m = re.fullmatch(r'(.+) (ms|s|min)', screen)
+        if m:
+            v, k = digits_(m.group(1))
+            if v is not None: return v * DUR_MS[m.group(2)] / DUR_MS[head_unit], 0.5 * 10 ** -k * DUR_MS[m.group(2)] / DUR_MS[head_unit] + 1e-9
+        m = re.fullmatch(r'(-)?(?:(\d+)d)? ?(?:(\d+)h)? ?(?:(\d+)m)? ?(?:(\d+)s)?', screen)
+        if m and any(m.group(i) for i in range(2, 6)):
+            parts = [(m.group(2), 86400), (m.group(3), 3600), (m.group(4), 60), (m.group(5), 1)]
+            secs = sum(int(a) * u for a, u in parts if a); low = min(u for a, u in parts if a)
+            sign = -1 if m.group(1) else 1
+            return sign * (secs + low / 2) * 1000 / DUR_MS[head_unit], (low / 2) * 1000 / DUR_MS[head_unit] + 1e-6
+    if head_unit == 'days':
+        m = re.fullmatch(r'(?:off \()?(.+) days?\)?', screen)
+        if m:
+            v, k = digits_(m.group(1))
+            if v is not None: return v, 0.5 * 10 ** -k + 1e-9
+        if re.fullmatch(r'over \d+ years', screen): return 'over'
+    return None
 def stamp(n, inst, tab, ext):
     return re.fullmatch(re.escape(inst) + '_' + re.escape(tab) + r'_\d{8}-\d{4}_\d{8}-\d{4}' + re.escape(ext), n) is not None
 # P03: the column widths as DBA Dash's writer sets them (export.ts colWidth: ClosedXML's AdjustToContents, Carlito's
@@ -1323,10 +1434,15 @@ check(len(_at_ok[0]) == 1 and not _at_ok[1] and len(_at_two[0]) == 2 and _at_run
 check(_lg_ok == [] and _lg_other == ['WRITELOG'] and _lg_none == ['WRITELOG'],
       f"charts: self-test - a legend's ■ in its swatch's colour before its name found ({_lg_ok}); a ■ in another colour ({_lg_other}) and a name without its ■ ({_lg_none}) found wrong")
 iname = re.sub(r'[^A-Za-z0-9._-]+', '-', d['instance'])
+CONVERTED = [0]
+# (decision (b)) the SQL Server instance's Jobs tab, when the demo has a SQL Server instance
+PAGES = [('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('drives', 'Drives', 'fleet'), ('dbspace', 'DB-Space', 'fleet'), ('dbfiles', 'Files', 'fleet'), ('tables', 'Table-Size', iname), ('roles', 'Roles', iname),
+         ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('perf', 'Performance-summary', 'fleet'), ('db', 'Database', iname), ('empty', 'Table-Size', iname)]
+if d.get('sqljobs'): PAGES.append(('sqljobs', 'Jobs', re.sub(r'[^A-Za-z0-9._-]+', '-', d['sqljobs']['instance'])))
+else: print("not checked: sqljobs: the demo has no SQL Server instance (its Jobs tab's step grids)")
 if openpyxl is None:
     skipped('lib', "python3 has no openpyxl (PGVIGIL_PYLIB names a folder that holds it): no workbook was opened by a spreadsheet library")
-for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', 'fleet'), ('jobs', 'Jobs', 'fleet'), ('storage', 'Storage', 'fleet'), ('drives', 'Drives', 'fleet'), ('dbspace', 'DB-Space', 'fleet'), ('dbfiles', 'Files', 'fleet'), ('tables', 'Table-Size', iname), ('roles', 'Roles', iname),
-                       ('activity', 'Running-queries', iname), ('slow', 'Slow-queries', 'fleet'), ('perf', 'Performance-summary', 'fleet'), ('db', 'Database', iname), ('empty', 'Table-Size', iname)):
+for key, tab, inst in PAGES:
     p = d[key]; gs = grids(p)
     check(stamp(p['xlsx'], inst, tab, '.xlsx'), f"{key}: the workbook's name {p['xlsx']}")
     z = zipfile.ZipFile(f"{dl}/{p['xlsx']}")
@@ -1383,6 +1499,29 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             check(all(nu(c) == nu(h) for c, h in zip(cols, gh) if h and gh.count(h) == 1),
                   f"{key}: sheet '{names[gsheet[i] - 1]}' the header cells are the screen's headings ({[(c, h) for c, h in zip(cols, gh) if h and gh.count(h) == 1 and nu(c) != nu(h)][:3]})")
             tabs.append((re.search(r'<table [^>]*\bid="(\d+)"', tx) or [0, ''])[1] + '|' + (re.search(r'displayName="([^"]+)"', tx) or [0, ''])[1])
+            # (X7) a column whose header names a unit the export added holds the screen's figure converted
+            # into it, within the figure's shown precision; in a column of days or of a rate a cell the screen shows with no
+            # number is empty
+            if not card:
+                off_, ncmp = [], 0
+                for j, (c_, h_) in enumerate(zip(cols, g['head'])):
+                    mu = re.search(r' \(([^()]+)\)$', c_ or '')
+                    if not mu or (h_ or '').endswith(mu.group(0)) or not re.fullmatch(r'(?:B|KB|MB|GB|TB|PB)(?:/day)?|ms|s|min|days', mu.group(1)): continue
+                    for k_, r_ in enumerate(g['cells']):
+                        if j >= len(r_): continue
+                        sid, v_, t_ = cells.get((k_ + 2, j), (0, None, None)); scr = r_[j]['t']
+                        e_ = converted(mu.group(1), scr)
+                        if e_ is None: continue
+                        if e_ == 'none':
+                            if (mu.group(1) == 'days' or mu.group(1).endswith('/day')) and (v_ is not None or t_): off_.append(f"{colname(j)}{k_ + 2} '{scr}' -> {v_ if v_ is not None else t_!r}, not empty")
+                            continue
+                        ncmp += 1
+                        if e_ == 'over':
+                            if v_ is None or v_ <= 3650: off_.append(f"{colname(j)}{k_ + 2} '{scr}' -> {v_}")
+                        elif v_ is None or abs(v_ - e_[0]) > e_[1] + abs(e_[0]) * 1e-9: off_.append(f"{colname(j)}{k_ + 2} '{scr}' -> {v_} ({mu.group(1)}), want {e_[0]:.6g}")
+                CONVERTED[0] += ncmp
+                if ncmp or off_:
+                    check(not off_, f"{key}: sheet '{names[gsheet[i] - 1]}' {ncmp} figure(s) in its unit-headed columns = the screen's, converted, within the shown precision ({off_[:3]})")
             check(bool(m) and f'PartName="/xl/tables/{m.group(1)}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"' in ct, f"{key}: sheet '{names[gsheet[i] - 1]}' its table part is in [Content_Types].xml")
         if key == 'summary' and g['rows'] > 1 and any(c['l'] and not c['s'] for r in g['cells'] for c in r):
             # (changed by X11: a link cell is DBA Dash's link column - F1F1F6 / 004F83, no underline, no hyperlink)
@@ -1397,6 +1536,30 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             off = [(a, b) for a, b in seen if a is None or b[1] is None or cx[b[0]]['fmt'] != 167 or abs(b[1] * 100 - a) > 0.006]
             check(len(seen) >= 1 and not off and 'numFmtId="167" formatCode="0.0%"' in st, f"storage: sheet '{names[gsheet[i] - 1]}' {len(seen)} 'free' cells, each the screen's percent / 100 under numFmt 167 '0.0%' (DBA Dash's) ({off[:2]})")
     check(len(set(tabs)) == len(tabs) and all(re.fullmatch(r'\d+\|Table\d+', t) for t in tabs), f"{key}: {len(tabs)} table(s), ids and names unique in the workbook")
+    # (X12) the sheets that are no grid: one per row of tiles, one for the Needs attention lines, one per
+    # chart that has numbers (not one whose numbers the page shows as a table), named by its title, in the charts' page order
+    pl = p.get('pagelook') or {}
+    if 'tileRows' in pl:
+        drawn_ch = [c for c in pl.get('charts') or [] if c.get('nums') and not c.get('tbl')]
+        want_x = pl['tileRows'] + (1 if pl.get('attention') else 0) + len(drawn_ch)
+        at_ = []
+        for c in drawn_ch:
+            t_ = title_of(c.get('title') or '')
+            at_.append(next((k for k in extra if t_ and (names[k - 1].startswith(t_[:24].rstrip()) or names[k - 1].endswith(' ' + t_[:20]) or named_by(names[k - 1], t_, None))), None))
+        check(len(extra) == want_x and None not in at_ and at_ == sorted(at_),
+              f"{key}: {len(extra)} section sheet(s) = {pl['tileRows']} tile row(s) + {1 if pl.get('attention') else 0} attention + {len(drawn_ch)} chart(s) with numbers; each chart's sheet named by its title in page order ({[(c.get('title'), k) for c, k in zip(drawn_ch, at_)]}; sections {[names[k - 1] for k in extra]})")
+    else:
+        print(f"not checked: {key}: the section sheets' count (the driver reads no tile rows)")
+    # (X7-X9, the lead 13:44 (1)) an Item | Value | Status sheet's Value typed by its content: no bare number in the page's
+    # locale left as text (a version - its Item names one - is no number)
+    BARE = r'-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d+(?:\.\d+)?' if want.startswith('en') else r'-?\d{1,3}(?:[\u202f\u00a0 ]\d{3})*(?:,\d+)?|-?\d+(?:,\d+)?'
+    vt = []
+    for k in extra + [k_ for k_ in gsheet if k_]:
+        cv = cells_of(z.read(f'xl/worksheets/sheet{k}.xml').decode(), sst)
+        if [cv.get((1, j), (0, None, None))[2] for j in range(3)] != ['Item', 'Value', 'Status']: continue
+        for (r_, c_), (_, v_, t_) in cv.items():
+            if r_ > 1 and c_ == 1 and v_ is None and t_ and re.fullmatch(BARE, t_) and not re.search(r'\bversion\b', cv.get((r_, 0), (0, None, ''))[2] or '', re.I): vt.append(f"{names[k - 1]}!B{r_} '{t_}'")
+    check(not vt, f"{key}: no Value cell a bare number left as text (the lead 13:44 (1)) ({vt[:3]})")
     # (P1) one table on every grid sheet, no sheet filter and no _FilterDatabase anywhere
     for k in extra:
         ex = z.read(f'xl/worksheets/sheet{k}.xml').decode()
@@ -1490,24 +1653,19 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     # (changed by P5, the lead 22:34: a time the heading carries in brackets is left out of the sheet's name)
     # (changed by X2: a time after a word too; never a numbered repeat - two headings equal after the cut keep their start,
     # '…' and the words where they part; a name taken in full goes under the heading above it: export_names.ts)
-    def title_of(t):
-        t2 = re.sub(r'\s*\((?:read\s+)?[^()]*\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}[^()]*\)', '', t)
-        t2 = re.sub(r'\s*(?:\b(?:since|from|until|to|at|as of|read)\s+)?\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}(?:,?\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)?', '', t2, flags=re.I).strip()
-        t2 = re.sub(r'\s*\(\d[\d,.\s\u202f\u00a0]*\)$', '', t2).strip() or t   # a bare count in brackets out too ('Findings (16)')
-        return re.sub(r'\s+', ' ', re.sub(r"^'+|'+$", '', re.sub(r'[\\/?*\[\]:]', ' ', t2))).strip()
-    full = [title_of(g['name']) for g in gs]
-    hs = [f[:24].rstrip() for f in full]
+    # (changed: the export's own time shapes only, a data-sheet's name kept whole or before its own
+    # heading, a name under the heading above it - the page-level title_of / name_of / named_by above)
+    full = [name_of(g) for g in gs]
     gn = [names[k - 1] for k in gsheet]
-    def named_by(n, h, f):
-        if n.startswith(h): return True
-        if '…' in n:
-            a_, b_ = n.split('…', 1)
-            return f.startswith(a_.rstrip(" '_.-")) and f.endswith(b_.strip())
-        return n.endswith(' ' + f[:31 - 2]) or n.endswith(' ' + f)
-    check(all(named_by(n, h, f) or (key == 'summary' and n in ('Test Summary', 'Instance Summary')) for n, h, f in zip(gn, hs, full)) and not any(re.search(r' \(\d+\)$', n) for n in names),
+    check(all(named_by(n, f, g.get('up')) or (key == 'summary' and n in ('Test Summary', 'Instance Summary')) for n, f, g in zip(gn, full, gs)) and not any(re.search(r' \(\d+\)$', n) for n in names),
           f"{key}: grid sheet names {gn} follow the screen's headings {[g['name'] for g in gs]}, none a numbered repeat (X2)")
     if key == 'roles':
         check(any(g['name'].endswith('privileges') or 'privileges' in g['name'] for g in gs), "roles: a grid under a privileges (h4) heading on screen")
+        check('Roles tiles' in names and 'Roles' in names, f"roles: the tiles 'Roles tiles' and the grid 'Roles' ({names})")
+    if key == 'sqljobs':
+        js_ = [(g['named'], names[k - 1]) for g, k in zip(gs, gsheet) if g.get('own') == 'alone']
+        check(not any(re.search(r' \(\d+\)$', n_) for n_ in names) and all(n_ == clean_(j_)[:31].rstrip(" '") or named_by(n_, clean_(j_), None) for j_, n_ in js_),
+              f"sqljobs: {len(js_)} job step grid(s), each sheet named by its job (data-sheet), no numbered repeat ({js_[:4]})")
     if key == 'tables':
         check(gn == [g['name'] for g in gs], f"tables: grid sheet names {gn} = the screen's headings {[g['name'] for g in gs]}")
         x = ''.join(z.read(f'xl/worksheets/sheet{gsheet[i]}.xml').decode() for i in range(len(gs)))
@@ -1536,11 +1694,12 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
     # Needs attention lines, pictures) are not graded; X12: each of those is a section sheet; D-A: 'About' last)
     ab = cells_of(z.read(f'xl/worksheets/sheet{len(names)}.xml').decode(), sst)
     items = [ab.get((r_, 0), (0, None, None))[2] for r_ in range(2, max([r_ for r_, _ in ab] + [1]) + 1)]
-    check(items[:8] == ['Instance', 'Tab', 'Window', 'Window from', 'Window to', 'Exported at', 'Time zone', 'Source'] and all(f'Sheet {names[k - 1]}' in items for k in gsheet),
-          f"{key}: 'About' (D-A) - Instance, Tab, Window, from, to, Exported at, Time zone, Source, then each grid sheet's rows ({items[:10]})")
+    check(items[:8] == ['Instance', 'Tab', 'Window', 'Window from', 'Window to', 'Exported at', 'Time zone', 'Source'] and all(f'Sheet {n_}' in items for n_ in names[:-1]),
+          f"{key}: 'About' (D-A) - Instance, Tab, Window, from, to, Exported at, Time zone, Source, then every sheet's rows ({items[:10]}; missing {[n_ for n_ in names[:-1] if f'Sheet {n_}' not in items][:3]})")
+    tz_ = next((ab.get((r_, 1), (0, None, None))[2] for (r_, c_), (_, _, t_) in ab.items() if c_ == 0 and t_ == 'Time zone'), None)
+    check(bool(tz_) and re.search(r'\S \(UTC[+-]\d{2}:\d{2} at export\)', tz_ or '') is not None, f"{key}: 'About' Time zone reads '<zone> (UTC+hh:mm at export)' ({tz_!r})")
     core = z.read('docProps/core.xml').decode() if 'docProps/core.xml' in z.namelist() else ''
     check('<dc:title>' in core and '<dc:description>' in core and 'core-properties' in z.read('_rels/.rels').decode(), f"{key}: the document's properties hold the export's facts (D-A)")
-    pl = p.get('pagelook') or {}
     if pl.get('tiles'):
         allt = set()
         for k in extra:
@@ -1548,12 +1707,14 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         lab = [t.get('label') or t.get('l') for t in pl['tiles']]
         miss = [l_ for l_ in lab if l_ and l_ not in allt]
         check(not miss, f"{key}: the page's {len(lab)} tiles are rows of an Item | Value | Status sheet (X12) (missing {miss[:3]})")
-    if pl.get('attention'):
+    # (the Summary's guard back - its strip read at all; every line, also past the 8 the page draws)
+    if pl.get('attention') or (key == 'summary' and 'attention' in pl):
         an = [n_ for n_ in names if n_.startswith('Needs attention')]
         rows_ = cells_of(z.read(f'xl/worksheets/sheet{names.index(an[0]) + 1}.xml').decode(), sst) if an else {}
         got = {t_ for (r_, c_), (_, _, t_) in rows_.items() if c_ == 0 and r_ > 1}
         miss = [a_['name'] for a_ in pl['attention'] if a_.get('name') not in got]
-        check(bool(an) and not miss, f"{key}: the page's {len(pl['attention'])} Needs attention line(s) on the sheet 'Needs attention', a row each (X12) (missing {miss[:3]})")
+        total_ = pl.get('attentionTotal', len(pl['attention']))
+        check(bool(an) and not miss and len(got) == total_, f"{key}: the page's {total_} Needs attention line(s) on the sheet 'Needs attention', a row each, also past the 8 drawn (X12) ({len(got)} rows; missing {miss[:3]})")
     if key == 'activity':
         i = next((i for i, g in enumerate(gs) if g['name'] == 'Per sample'), None)
         check(i is not None and gs[i]['rows'] == 500, f"activity: the Per sample grid shows 500 rows on screen ({gs[i]['rows'] if i is not None else 'no grid'})")
@@ -1567,10 +1728,25 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             cnt = re.findall(r'<c r="C(\d+)"[^>]*?(/>|><v>|t="inlineStr")', x)
             numeric = [r for r, k in cnt if r != '1' and k == '><v>']
             check(len(numeric) == gs[i]['rows'], f"slow: Per day's statements column (no page model): {len(numeric)} of {gs[i]['rows']} rows numeric")
-    # every page: a duration ('x ms', 'x s', 'x min') is never left as text in any sheet, whichever tab's formatter wrote it
+            # (the lead 13:44 (4)) its day column dates under 'yyyy-MM-dd' (numFmt 169), never a false 00:00
+            dc_ = cells_of(x, sst); days_ = [dc_.get((r_, 0)) for r_ in range(2, gs[i]['rows'] + 2)]
+            check(all(v and v[1] is not None and FMT_CODES.get(cx[v[0]]['fmt']) == 'yyyy-MM-dd' for v in days_), f"slow: Per day's day column {len(days_)} dates under 'yyyy-MM-dd' ({[(v[1], cx[v[0]]['fmt']) if v else None for v in days_][:2]})")
+    # (changed, X7: any number with a unit - a size, a duration, a rate, a count of days - is never
+    # left as text on a grid sheet or a chart's series sheet, whichever tab's formatter wrote it; the mixed list by column)
     allx = ''.join(z.read(f'xl/worksheets/sheet{gsheet[j]}.xml').decode() for j in range(len(gs)))
-    texts = [t for t in re.findall(r't="inlineStr"><is><t[^>]*>([^<]*)</t>', allx) if re.fullmatch(r'[\d\s,.\u202f\u00a0]+ (ms|s|min)', t)]
-    check(not texts, f"{key}: no duration left as text ({texts[:3]})")
+    texts = []
+    for k in [k_ for k_ in gsheet if k_] + extra:
+        cv = cells_of(z.read(f'xl/worksheets/sheet{k}.xml').decode(), sst); hd_ = {c_: t_ for (r_, c_), (_, _, t_) in cv.items() if r_ == 1}
+        if [hd_.get(j) for j in range(3)] == ['Item', 'Value', 'Status']: continue   # a Value with a unit stays the page's words (13:44 (1))
+        colt = {}
+        for (r_, c_), (_, v_, t_) in cv.items():
+            if r_ > 1 and v_ is None and t_: colt.setdefault(c_, []).append(t_)
+        for c_, ts in colt.items():
+            h_ = hd_.get(c_) or ''
+            if names[k - 1] == 'Instance Summary' and h_ in AGES: continue
+            if h_ == 'growth' and any(re.fullmatch(r'\d+(?:[.,]\d+)? ?%', t_) for t_ in ts): continue   # a Files growth column holding a percent
+            texts += [f"{names[k - 1]} '{h_}' '{t_}'" for t_ in ts if UNIT_TEXT.fullmatch(t_.strip())]
+    check(not texts, f"{key}: no number with a unit left as text on a grid or a chart's sheet (X7) ({texts[:3]})")
     if key in ('slow', 'db'):
         nums = {int(s) for s in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>', allx)}
         # (changed by X7: a duration column holds plain numbers in one unit named in its header; no custom format)
@@ -1578,15 +1754,24 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
         check(len(tu) >= 1 and 'ms&quot;' not in st and 's&quot;' not in st, f"{key}: a duration column in one unit named in its header ({tu[:3]}), no custom duration format (X7)")
     if key == 'db':
         # (changed by X7: the statements' durations are plain numbers under General, two at least and not all equal; no
-        # numFmt 170 any more)
-        vals = [float(v) for sid, v in re.findall(r'<c r="[A-Z]+\d+" s="(\d+)"><v>([^<]*)</v>', allx) if cx[int(sid)]['fmt'] == 0]
-        check(len(vals) >= 2 and min(vals) < max(vals), f"db: the statements' durations are numbers (X7) ({len(vals)} cells, min {min(vals) if vals else '-'}, max {max(vals) if vals else '-'})")
+        # numFmt 170 any more) (changed: the duration columns only, by their headers' unit)
+        vals, wrong_ = [], []
+        for k in [k_ for k_ in gsheet if k_]:
+            cv = cells_of(z.read(f'xl/worksheets/sheet{k}.xml').decode(), sst)
+            dc = {c_ for (r_, c_), (_, _, t_) in cv.items() if r_ == 1 and re.search(r' \((?:ms|s|min)\)$', t_ or '')}
+            for (r_, c_), (sid, v_, t_) in cv.items():
+                if r_ > 1 and c_ in dc and (v_ is not None or t_):
+                    if v_ is None or cx[sid]['fmt'] != 0: wrong_.append(f"{names[k - 1]}!{colname(c_)}{r_} {t_!r}")
+                    else: vals.append(v_)
+        check(len(vals) >= 2 and min(vals) < max(vals) and not wrong_, f"db: the statements' durations are numbers under General (X7) ({len(vals)} cells in the ' (ms)' / ' (s)' / ' (min)' columns, min {min(vals) if vals else '-'}, max {max(vals) if vals else '-'}; not a number {wrong_[:3]})")
     # CSV
     if p['csv'].endswith('.csv.zip'):
         cz = zipfile.ZipFile(f"{dl}/{p['csv']}")
         parts = sorted(cz.namelist())
         check(len(parts) == len(gs), f"{key}: {len(parts)} CSV(s) in {p['csv']} = {len(gs)} grid(s)")
         blobs = [cz.read(n) for n in parts]
+        # each CSV named by its grid's sheet in the workbook: the same names, no numbered repeat
+        check([n_[3:-4] for n_ in parts] == [safe_(names[k - 1]) for k in gsheet], f"{key}: the CSVs named by their grids' sheet names ({[n_[3:-4] for n_ in parts][:4]} | {[safe_(names[k - 1]) for k in gsheet][:4]})")
     else:
         check(len(gs) == 1, f"{key}: one grid, one .csv")
         blobs = [open(f"{dl}/{p['csv']}", 'rb').read()]
@@ -1601,6 +1786,11 @@ for key, tab, inst in (('summary', 'Summary', 'fleet'), ('backups', 'Backups', '
             pairs = [(number(r[g['head'].index('free')]['t']), recs[k + 1][j]) for k, r in enumerate(g['cells']) if r[g['head'].index('free')]['t'] != '']
             check(len(pairs) >= 1 and all(a is not None and abs(float(v) - a) < 1e-6 for a, v in pairs), f"storage: CSV '{g['name']}' {len(pairs)} 'free' values are the screen's percent figures ({pairs[:2]})")
 
+check(CONVERTED[0] >= 20, f"units: {CONVERTED[0]} figures in unit-headed columns compared with the screen across the pages (at least 20)")
+# converted()'s self-test: a figure in another unit, a rate, an fmtSecs pair, a badge's days, a cell with no number, a wrong value off
+_cv = [converted('GB', '93.9 GB'), converted('MB/day', '3.0 GB / day'), converted('s', '1m 5s'), converted('days', 'off (0 days)'), converted('days', 'never'), converted('GB', '12 ms')]
+check(abs(_cv[0][0] - 93.9) < 1e-9 and abs(_cv[1][0] - 3072) < 1e-9 and _cv[1][1] > 51 and abs(_cv[2][0] - 65.5) < 1e-9 and _cv[3][0] == 0 and _cv[4] == 'none' and _cv[5] is None
+      and abs(93.9 * 1.01 - _cv[0][0]) > _cv[0][1], f"units: self-test - converted() reads a size, a rate, an fmtSecs pair, a badge's days, no number, another family; a value 1 % off is off ({_cv})")
 # ---- P03: the new menu items, each clicked, each download read --------------------------------------------------
 def one_book(key, fname, inst, tab, sheet, g):
     # a workbook of one grid: its name, one sheet named so then 'About' (X12, D-A), the grid's rows, every cell its named
@@ -1674,13 +1864,12 @@ if cl.get('dark') and cl.get('look'):
 
 vo = d.get('volumes') or {}
 check(bool(vo.get('xlsx')), f"volumes: an instance's Storage page ({vo.get('hash')}) exported ({vo.get('xlsx')})")
-if vo.get('xlsx') and False:   # (D-B) the Volumes bars on the page sheet: parked with it; the bars have no numbers sheet (an HTML chart), said
-    zv = zipfile.ZipFile(f"{dl}/{vo['xlsx']}"); tv = texts_of(sheet_rows(zv, 1)[0], shared(zv)); rv = {}
-    for (r_, c_), (_, t_, _) in tv.items(): rv.setdefault(r_, set()).add(t_)
-    hv = min([r_ for r_, ts in rv.items() if any(t_.startswith('Chart: Volumes') for t_ in ts)] or [0])
+if vo.get('xlsx'):   # (changed by D-B: the page sheet is parked; the Volumes bars' volumes are rows of the 'Volumes' grid sheet)
+    zv = zipfile.ZipFile(f"{dl}/{vo['xlsx']}"); nv = sheets_of(zv)
+    av = {t_ for (r_, c_), (_, _, t_) in cells_of(sheet_rows(zv, nv.index('Volumes') + 1)[0], shared(zv)).items() if c_ == 0 and r_ > 1 and t_} if 'Volumes' in nv else set()
     bars = vo.get('bars') or []
-    miss = [b[0] for b in bars if not any(r_ > hv and {b[0], b[3], b[5]} <= ts for r_, ts in rv.items())]
-    check(hv > 0 and len(bars) >= 1 and not miss, f"volumes: the Volumes chart (an HTML table, chart.ts volumeBars) on the page sheet after its 'Chart: Volumes' line (row {hv}): {len(bars)} bar row(s) the page draws, each one's volume, share and status in one row ({len(bars) - len(miss)} found; missing {miss[:4]})")
+    miss = [b[0] for b in bars if not any(a_ == b[0] or a_.startswith(b[0] + ' (') for a_ in av)]
+    check('Volumes' in nv and len(bars) >= 1 and not miss, f"volumes: the {len(bars)} volume(s) the Volumes chart draws are rows of the 'Volumes' grid sheet ({len(bars) - len(miss)} found; missing {miss[:4]}; sheets {nv[:6]})")
 
 for kind in ('line', 'ring'):
     c = ch.get(kind)
@@ -1700,7 +1889,9 @@ for kind in ('line', 'ring'):
     else:
         sh = [cells.get((r, 2)) for r in range(2, n + 2)]
         tot = sum(v[1] for v in sh if v and v[1] is not None)
-        check(hdr == ['name', 'size', 'share'] and all(v and cx[v[0]]['fmt'] == 167 for v in sh) and abs(tot - 1) < 1e-6, f"charts: the ring's sheet is name / size / share, every share under '0.0%', adding up to 1 ({hdr}, {tot})")
+        # (changed by the lead 13:44 (3): a size ring's size carries its axis's unit, 'size (GB)')
+        unit_ok = re.fullmatch(r'size \((?:B|KB|MB|GB|TB|PB)\)', hdr[1] or '') is not None if c['hash'].startswith('#/dbspace') else re.fullmatch(r'size(?: \(\w+\))?', hdr[1] or '') is not None
+        check(hdr[0] == 'name' and unit_ok and hdr[2] == 'share' and all(v and cx[v[0]]['fmt'] == 167 for v in sh) and abs(tot - 1) < 1e-6, f"charts: the ring's sheet is name / size (its unit) / share, every share under '0.0%', adding up to 1 ({hdr}, {tot})")
     if openpyxl is not None:
         try: openpyxl.load_workbook(f"{dl}/{c['xlsx']}"); check(True, f"charts: openpyxl opens the {kind} chart's workbook")
         except Exception as e: check(False, f"charts: openpyxl could not open {c['xlsx']}: {e}")
@@ -1895,9 +2086,10 @@ for L in en-US fr-FR; do
   XRC=0; python3 -I "$XCHECK" rules "$DL"/*.xlsx > "$WORK/xcheck-$L.txt" || XRC=$?   # exit 1 = a rule failed (set -e: caught)
   [[ -n "${PGVIGIL_EXPORT_OUT:-}" ]] && { mkdir -p "$PGVIGIL_EXPORT_OUT/$L"; cp "$WORK/xcheck-$L.txt" "$WORK/drive-$L.json" "$DL"/* "$PGVIGIL_EXPORT_OUT/$L"/; }
   { grep -E '^FAIL' "$WORK/xcheck-$L.txt" || true; } | cut -c1-400   # no FAIL line: grep's exit 1 must not end the proof (pipefail)
+  NW=$(ls "$DL"/*.xlsx | wc -l)
   for r in X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 X10 X11 X12; do
-    n=$(grep -c "^FAIL $r " "$WORK/xcheck-$L.txt" || true)
-    if [[ "$n" == 0 ]]; then ok "xcheck $r: every workbook ($L, $(ls "$DL"/*.xlsx | wc -l) files)"; else echo "FAIL: xcheck $r: $n workbook(s) ($L)"; fi
+    n=$(grep -c "^FAIL $r " "$WORK/xcheck-$L.txt" || true); np=$(grep -c "^PASS $r " "$WORK/xcheck-$L.txt" || true)
+    if [[ "$n" == 0 && "$np" == "$NW" ]]; then ok "xcheck $r: every workbook ($L, $np of $NW files PASS)"; else echo "FAIL: xcheck $r: $n FAIL, $np PASS of $NW workbook(s) ($L)"; XRC=1; fi
   done
   echo "== the files read back ($L)"
   # (the X rules' verdict after the read-back: one run shows both)
