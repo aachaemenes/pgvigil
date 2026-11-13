@@ -165,3 +165,50 @@ func TestPoolMinutePurgedOnAStore(t *testing.T) {
 		t.Fatalf("purge(365) left %s (two years old): mssql_pool_minute is not among purge()'s monthly parents", part)
 	}
 }
+
+// TestPoolImportReadsMinuteRowsOnly (the wire review's blocker 1): on a migrated store (PGVIGIL_REPO_TEST_DSN, skipped
+// without it) import_mssql_pool stores the minutes of a read that also carries the collector's note row (a stale pool
+// tag) and stores nothing, without an error, for a read that carries the note alone.
+func TestPoolImportReadsMinuteRowsOnly(t *testing.T) {
+	dsn := os.Getenv("PGVIGIL_REPO_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PGVIGIL_REPO_TEST_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sfx := time.Now().UnixNano() % 1000000000
+	server := fmt.Sprintf("srv-note-%d", sfx)
+	var id int
+	if err := pool.QueryRow(ctx, `SELECT pgvigil.ensure_instance($1, 'azuresqldb', '12.0', 120000, false, '{}'::text[], 'sqlserver')`, fmt.Sprintf("poolnote-%d", sfx)).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.mssql_pool_minute WHERE server = $1`, server); err != nil {
+			t.Error(err)
+		}
+		if _, err := pool.Exec(context.Background(), `DELETE FROM pgvigil.instances WHERE instance_id = $1`, id); err != nil {
+			t.Error(err)
+		}
+	}()
+	note := map[string]any{"kind": "collector_error", "source": "sys.database_service_objectives", "message": "the instance's tag pool:a names another pool than the database's own, b"}
+	minute := map[string]any{"server": server, "pool": "b", "name_from": "service objectives", "samples": 4, "minute": "2026-11-13T12:00:00Z",
+		"avg_cpu_percent": 1.0, "max_cpu_percent": 1.0, "allocated_storage_percent": 2.0, "storage_limit_mb": 5000.0}
+	for _, c := range []struct {
+		rows []map[string]any
+		want int
+	}{{[]map[string]any{note}, 0}, {[]map[string]any{minute, note}, 1}} {
+		p, _ := json.Marshal(c.rows)
+		if _, err := pool.Exec(ctx, `SELECT pgvigil.import_mssql_pool($1, now(), $2::jsonb)`, id, string(p)); err != nil {
+			t.Fatalf("import of %d row(s): %v", len(c.rows), err)
+		}
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM pgvigil.mssql_pool_minute WHERE server = $1`, server).Scan(&n); err != nil || n != c.want {
+			t.Fatalf("after %d row(s): %d minutes stored (%v), want %d", len(c.rows), n, err, c.want)
+		}
+	}
+}

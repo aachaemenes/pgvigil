@@ -65,20 +65,20 @@ const poolStatsSQL = `SELECT CONVERT(varchar(27), end_time, 126) AS end_time,
 FROM sys.dm_elastic_pool_resource_stats`
 
 // poolName chooses the pool's name: the database's own answer (sys.database_service_objectives) when the login may
-// read it, the instance's tag pool:<name> when not; a tag that names another pool than the database's own answer is a
-// skip (a database moved between pools would otherwise write its new pool's figures under the old name, mixed minute
-// by minute with the old pool's real ones).
-func poolName(tag, objectives string) (pool, from string, err error) {
+// read it, the instance's tag pool:<name> when not. A tag that names another pool than the database's own answer (a
+// database moved between pools after its tag was written - discovery writes the tag at the approve) is stale: the
+// database's own answer is read, and stale says so for the run's note (never a skip: the new pool would go unread).
+func poolName(tag, objectives string) (pool, from, stale string, err error) {
 	tag, objectives = strings.TrimSpace(tag), strings.TrimSpace(objectives)
 	switch {
 	case objectives != "" && tag != "" && !strings.EqualFold(tag, objectives):
-		return "", "", fmt.Errorf("the instance's tag pool:%s names another pool than the database's own, %s (sys.database_service_objectives): fix the tag: %w", tag, objectives, collect.ErrSkip)
+		return objectives, "service objectives", fmt.Sprintf("the instance's tag pool:%s names another pool than the database's own, %s: read as %s; change the tag (Admin > Instances, Edit)", tag, objectives, objectives), nil
 	case objectives != "":
-		return objectives, "service objectives", nil
+		return objectives, "service objectives", "", nil
 	case tag != "":
-		return tag, "tag", nil
+		return tag, "tag", "", nil
 	}
-	return "", "", fmt.Errorf("the pool's name is unknown to this login (sys.database_service_objectives answers the database's creator or owner, or dbManager): tag the instance pool:<name>: %w", collect.ErrSkip)
+	return "", "", "", fmt.Errorf("the pool's name is unknown to this login (sys.database_service_objectives answers the database's creator or owner, or dbManager): tag the instance pool:<name>: %w", collect.ErrSkip)
 }
 
 func (poolCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]collect.Row, error) {
@@ -86,7 +86,7 @@ func (poolCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]coll
 	if rows, err := QueryRows(ctx, conn, poolNameSQL); err == nil && len(rows) == 1 {
 		objectives, _ = rows[0]["pool"].(string)
 	}
-	pool, from, err := poolName(info.PoolTag, objectives)
+	pool, from, stale, err := poolName(info.PoolTag, objectives)
 	if err != nil {
 		return nil, err
 	}
@@ -110,6 +110,9 @@ func (poolCollector) Run(ctx context.Context, conn *sql.Conn, info Info) ([]coll
 	out := make([]collect.Row, 0, 45)
 	for _, m := range poolMinutes(samples, now) {
 		out = append(out, m.row(server, pool, from))
+	}
+	if stale != "" { // the run ends partial with the words (0128's import reads only the rows that carry a minute)
+		out = append(out, collect.Row{"kind": "collector_error", "source": "sys.database_service_objectives", "message": stale})
 	}
 	return out, nil
 }

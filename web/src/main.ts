@@ -335,7 +335,8 @@ async function render(force = false) {
     shownPage = pageKey;
   }
   // the instance's engine chooses its tab set and pages (the fleet read is cached; unknown = PostgreSQL)
-  const engine = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance)?.engine : undefined;
+  const fleetRow = ctx.instance ? (await fleet().catch(() => null))?.instances.find(r => Number(r.instance_id) === ctx.instance) : undefined;
+  const engine = fleetRow?.engine;
   let tabs = ctx.instance ? tabsFor(engine) : rootTabs;
   // an imported server (pgvigil import dbadash, not collected by pgvigil): every SQL Server tab, each from dbadash.ts
   const imported = ctx.instance !== undefined && isMssql(engine) && await isImported(ctx.instance);
@@ -345,7 +346,8 @@ async function render(force = false) {
     if (!imported && !(await hasAvailability(ctx.instance).catch(() => false))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'availability'));
     // the Elastic pool tab in the strip only where the database is in a pool now (an imported server has no pgvigil read
     // of it); its page stays one of the scope's (a link, the tree, the a11y walk)
-    if (imported || !(await hasPool(ctx.instance).catch(() => false))) offStrip.add('mssqlpool');
+    // asked only of an Azure SQL Database: no other kind of server is ever in an elastic pool (one request saved per render)
+    if (imported || fleetRow?.platform !== 'azuresqldb' || !(await hasPool(ctx.instance).catch(() => false))) offStrip.add('mssqlpool');
   } else if (ctx.instance) {
     // the Pooler tab only where the instance has a pooler read (a pgbouncer: DSN); a failed check hides it
     if (!(await poolerKnown(ctx.instance))) tabs = Object.fromEntries(Object.entries(tabs).filter(([k]) => k !== 'pooler'));

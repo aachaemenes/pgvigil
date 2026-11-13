@@ -179,9 +179,14 @@ func TestEntraIdentitySourceOnAStore(t *testing.T) {
 		t.Fatalf("an Entra-only server with entra-identity: %s %q", o, d)
 	}
 	var auth, state string
-	if err := pool.QueryRow(ctx, `SELECT i.auth, p.state FROM pgvigil.admin_instances i JOIN pgvigil.admin_proposals p ON p.instance_name = i.name
-	                               WHERE i.name = $1`, inst).Scan(&auth, &state); err != nil || auth != "entra-identity" || state != "approved" {
+	var login *string
+	if err := pool.QueryRow(ctx, `SELECT i.auth, p.state, i.login FROM pgvigil.admin_instances i JOIN pgvigil.admin_proposals p ON p.instance_name = i.name
+	                               WHERE i.name = $1`, inst).Scan(&auth, &state, &login); err != nil || auth != "entra-identity" || state != "approved" {
 		t.Fatalf("the approved row: auth %q, proposal %q, %v", auth, state, err)
+	}
+	// the proposal's SQL login (admin1) is never the managed identity's (the wire review's blocker 2)
+	if login != nil {
+		t.Fatalf("the managed identity's row holds the login %q, want none (the host's own identity)", *login)
 	}
 }
 

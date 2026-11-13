@@ -523,6 +523,13 @@ func TestAzureReadsResourceGraphPagesAndMapsTypes(t *testing.T) {
 	if got := strings.Join(byKey[pre+"sql:sqlsrv/otherdb"].Tags, " "); strings.Contains(got, "pool:") {
 		t.Fatalf("a database in no pool: %s", got)
 	}
+	// a pool name the approve's tag rule would refuse (a comma) writes no tag: the read names the pool by the
+	// database's own answer (the wire review's finding 8)
+	if p, _ := azureProposal(azureRow{ID: "/subscriptions/" + subA + "/resourceGroups/rg1/providers/Microsoft.Sql/servers/s2/databases/d2", Name: "d2",
+		Type: "microsoft.sql/servers/databases", Location: "westus3", SubscriptionID: subA, FQDN: "s2.database.windows.net",
+		ElasticPoolID: "/subscriptions/" + subA + "/resourceGroups/rg1/providers/Microsoft.Sql/servers/s2/elasticPools/a,b"}); strings.Contains(strings.Join(p.Tags, " "), "pool:") {
+		t.Fatalf("a pool name with a comma: %v", p.Tags)
+	}
 	// the Entra-only flags and a serverless database's auto-pause
 	if !db.EntraOnly || !strings.Contains(db.Note, "Entra-only") {
 		t.Fatalf("an Entra-only server's database: %+v", db)

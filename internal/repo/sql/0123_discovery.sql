@@ -203,7 +203,11 @@ BEGIN
   IF v_why IS NULL AND v_op = 'approve' THEN
     v_res := pgvigil.import_admin_instance(p_at, jsonb_build_object('op', 'add', 'ui_user', v_user, 'client', v_cli,
       'name', p_payload->>'name', 'engine', v_p.engine, 'platform', v_p.platform, 'dsn_ref', p_payload->>'dsn_ref', 'auth', coalesce(nullif(p_payload->>'auth', ''), v_s.auth), 'host', v_p.host,
-      'port', v_p.port, 'dbname', v_p.dbname, 'login', coalesce(nullif(p_payload->>'login_used', ''), v_p.login), 'tags', to_jsonb(v_p.tags), 'source', v_s.kind || ':' || v_s.name,
+      'port', v_p.port, 'dbname', v_p.dbname,
+      -- a managed identity's login is the client id the approve used, or none (the host's own identity): never the
+      -- proposal's SQL login, which a later Edit would put into the identity's DSN (the wire review's blocker 2)
+      'login', CASE WHEN coalesce(nullif(p_payload->>'auth', ''), v_s.auth) = 'entra-identity' THEN nullif(p_payload->>'login_used', '')
+                    ELSE coalesce(nullif(p_payload->>'login_used', ''), v_p.login) END, 'tags', to_jsonb(v_p.tags), 'source', v_s.kind || ':' || v_s.name,
       'file_names', p_payload->'file_names'));
     IF v_res->>'outcome' <> 'done' THEN
       v_why := v_res->>'detail';

@@ -88,7 +88,7 @@ func TestPoolSummaryCellOnAStore(t *testing.T) {
 		}
 		return out
 	}
-	send := func(minutesAgo int, alloc float64) {
+	send := func(minutesAgo int, alloc any) {
 		t.Helper()
 		p, _ := json.Marshal([]map[string]any{{"server": server, "pool": "p1", "name_from": "service objectives", "samples": 4,
 			"minute": now.Add(-time.Duration(minutesAgo) * time.Minute).Format(time.RFC3339), "avg_cpu_percent": 1.0, "max_cpu_percent": 1.0,
@@ -116,5 +116,11 @@ func TestPoolSummaryCellOnAStore(t *testing.T) {
 				t.Fatalf("a server in no pool (instance %d): %+v; want n/a", other, o)
 			}
 		}
+	}
+	// a newest minute without the percentage (the view's NULL): not read, with its reason - never an empty OK whose
+	// detail reads "null" (the wire review's finding 3)
+	send(0, nil)
+	if in := read()[ids[0]]; in.sampled || in.value != "" || in.critical+in.warn != 0 || len(in.detail) != 1 || !strings.HasSuffix(in.detail[0], ": the newest minute holds no allocated storage percentage") {
+		t.Fatalf("a minute without the percentage: %+v; want not read with its reason", in)
 	}
 }

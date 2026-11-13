@@ -406,8 +406,13 @@ func azureProposal(x azureRow) (config.Proposal, string) {
 		if x.DatabaseID != "" { // the database's own GUID: a database made again under the name is a new one
 			p.ResourceID = "databaseId:" + strings.ToLower(x.DatabaseID)
 		}
-		if x.ElasticPoolID != "" { // in an elastic pool: the pool's name, the tag mssql_pool reads (the name compared without case)
-			p.Tags = sortedTags(append(p.Tags, "pool:"+strings.ToLower(path.Base(x.ElasticPoolID)))...)
+		// in an elastic pool: the pool's name, the tag mssql_pool reads (the name compared without case) - left off when
+		// the approve's tag rule would refuse it (config.ParseTag: no comma, no control character, 141 at most), and the
+		// pool is then named by the database's own answer at the read
+		if pt := "pool:" + strings.ToLower(path.Base(x.ElasticPoolID)); x.ElasticPoolID != "" && len(pt) <= 141 && !strings.ContainsAny(pt, ",") {
+			if _, err := config.ParseTag(pt); err == nil {
+				p.Tags = sortedTags(append(p.Tags, pt)...)
+			}
 		}
 		if strings.Contains(strings.ToLower(x.Kind), "serverless") || strings.HasPrefix(strings.ToUpper(x.SkuName), "GP_S_") {
 			p.Serverless = "Azure SQL Database serverless"

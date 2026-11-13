@@ -184,16 +184,17 @@ WITH inst AS (
         FROM pgvigil.mssql_database_option d
        WHERE d.instance_id = i.instance_id AND d.is_present AND d.options ? 'last_good_checkdb') cd ON k.key = 'checkdb'
   UNION ALL
-  -- DBA Dash's Elastic Pool Storage (CLOUDSQL C4; Allen's 2026-11-10 order): the database's pool's newest minute
+  -- DBA Dash's Elastic Pool Storage: the database's pool's newest minute
   -- against the pool's thresholds, pgvigil.mssql_pool_storage_status (0128: DBA Dash's view
   -- AzureDBElasticPoolStorageStatus, plus pgvigil's 5-minute stale N/A and 10-minute member rule). A database read in
   -- no pool has no row there; its state is mssql_pool's (n/a where the collection is skipped). The pool's N/A (no
-  -- minute in 5 minutes, no warning threshold) is 'not read', with its reason.
-  SELECT i.instance_id, 'elasticpool', coalesce(ps.status IN ('OK', 'Warning', 'Critical'), false),
+  -- minute in 5 minutes, no warning threshold) and a newest minute without the percentage are 'not read', with the reason.
+  SELECT i.instance_id, 'elasticpool', coalesce(ps.status IN ('OK', 'Warning', 'Critical') AND ps.allocated_storage_percent IS NOT NULL, false),
          coalesce(ps.status = 'Critical', false)::int, coalesce(ps.status = 'Warning', false)::int,
-         CASE WHEN ps.status IN ('OK', 'Warning', 'Critical') THEN trim_scale(round(ps.allocated_storage_percent, 1))::text || ' %' END,
+         CASE WHEN ps.status IN ('OK', 'Warning', 'Critical') AND ps.allocated_storage_percent IS NOT NULL THEN trim_scale(round(ps.allocated_storage_percent, 1))::text || ' %' END,
          CASE WHEN ps.pool IS NULL THEN '{}'::text[]
               WHEN ps.minute IS NULL OR ps.minute < now() - interval '5 minutes' THEN ARRAY['pool ' || ps.pool || ' on ' || ps.server || ': no minute of the pool read in the last 5 minutes']
+              WHEN ps.allocated_storage_percent IS NULL THEN ARRAY['pool ' || ps.pool || ' on ' || ps.server || ': the newest minute holds no allocated storage percentage']
               WHEN ps.warning IS NULL THEN ARRAY['pool ' || ps.pool || ' on ' || ps.server || ': no warning threshold set (pgvigil.mssql_pool_thresholds)']
               ELSE ARRAY['pool ' || ps.pool || ' on ' || ps.server || ': ' || trim_scale(round(ps.allocated_storage_percent, 1)) || ' % of its maximum data size allocated at '
                          || to_char(ps.minute AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') || ' UTC (warning over ' || trim_scale(ps.warning * 100) || ' %'

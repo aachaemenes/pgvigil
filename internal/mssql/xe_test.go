@@ -151,9 +151,10 @@ func TestXEScriptEventsHaveParsers(t *testing.T) {
 			(form == XEFormServer || form == XEFormAzureMI) != strings.Contains(script, "EXEC sys.sp_configure") {
 			t.Errorf("%s: the blocked process threshold's advice", form)
 		}
-		// the Managed Instance and Cloud SQL forms are written from the documentation; the Azure SQL Database form is proven (scripts/proof-mssql-azuresqldb.sh)
-		if (form == XEFormAzureMI || form == XEFormCloudSQL) != strings.Contains(script, "NOT PROVEN") {
-			t.Errorf("%s: only the Managed Instance and Cloud SQL forms are marked not proven", form)
+		// the Managed Instance form is written from the documentation; the Azure SQL Database form is proven
+		// (scripts/proof-mssql-azuresqldb.sh) and the Cloud SQL form too (a real instance, 2026-11-13)
+		if (form == XEFormAzureMI) != strings.Contains(script, "NOT PROVEN") {
+			t.Errorf("%s: only the Managed Instance form is marked not proven", form)
 		}
 		// Azure SQL Database has no server_principal_name action (Msg 25744): its form names the login by username
 		if (form == XEFormAzureDB) == strings.Contains(script, "server_principal_name") || (form == XEFormAzureDB) != strings.Contains(script, "sqlserver.username") {

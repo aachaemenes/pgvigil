@@ -72,10 +72,12 @@ BEGIN
   IF (SELECT engine FROM pgvigil.instances WHERE instance_id = p_instance_id) IS DISTINCT FROM 'sqlserver' THEN
     RAISE EXCEPTION 'import_mssql_pool: instance % is not a SQL Server instance', p_instance_id;
   END IF;
-  IF jsonb_typeof(p_payload) <> 'array' OR jsonb_array_length(p_payload) = 0 THEN
+  -- only the rows that carry a minute: a collector's note row (a stale pool tag) is the run's, not a minute; a read
+  -- with no complete minute stores nothing
+  IF jsonb_typeof(p_payload) <> 'array' OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_payload) r WHERE r ? 'minute') THEN
     RETURN;
   END IF;
-  SELECT min((r->>'minute')::timestamptz), max((r->>'minute')::timestamptz) INTO v_min, v_max FROM jsonb_array_elements(p_payload) r;
+  SELECT min((r->>'minute')::timestamptz), max((r->>'minute')::timestamptz) INTO v_min, v_max FROM jsonb_array_elements(p_payload) r WHERE r ? 'minute';
   PERFORM pgvigil.ensure_month_partition('mssql_pool_minute', v_min);
   PERFORM pgvigil.ensure_month_partition('mssql_pool_minute', v_max);
   INSERT INTO pgvigil.mssql_pool_minute (server, pool, snapshot_at, samples, avg_cpu_percent, max_cpu_percent, avg_data_io_percent,
@@ -89,10 +91,10 @@ BEGIN
          (r->>'instance_vcores')::numeric, round((r->>'used_storage_mb')::numeric)::bigint, round((r->>'allocated_storage_mb')::numeric)::bigint,
          round((r->>'storage_limit_mb')::numeric)::bigint, (r->>'used_storage_percent')::numeric, (r->>'allocated_storage_percent')::numeric,
          p_instance_id, r->>'name_from'
-    FROM jsonb_array_elements(p_payload) r
+    FROM jsonb_array_elements(p_payload) r WHERE r ? 'minute'
   ON CONFLICT (server, pool, snapshot_at) DO NOTHING;
   -- the database's pool as this read saw it (the newest minute's)
-  SELECT r INTO v_r FROM jsonb_array_elements(p_payload) r ORDER BY (r->>'minute')::timestamptz DESC LIMIT 1;
+  SELECT r INTO v_r FROM jsonb_array_elements(p_payload) r WHERE r ? 'minute' ORDER BY (r->>'minute')::timestamptz DESC LIMIT 1;
   INSERT INTO pgvigil.mssql_pool_member (instance_id, server, pool, seen_at)
   VALUES (p_instance_id, v_r->>'server', v_r->>'pool', p_snapshot_at)
   ON CONFLICT (instance_id) DO UPDATE SET server = EXCLUDED.server, pool = EXCLUDED.pool, seen_at = EXCLUDED.seen_at;
