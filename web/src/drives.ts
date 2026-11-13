@@ -228,14 +228,28 @@ function drivesGrid(ctx: Ctx, rows: Row[], folder: boolean): HTMLElement {
   return grid(rows, cols, 'No drive.');
 }
 
+// driveHistory: one drive's used and free space as a chart, over a window the reader picks (the windows
+// /api/drives/history takes: 7, 30, 90, 180, 365 days); the pick is kept for every drive's History.
+const historyDays = [7, 30, 90, 180, 365];
 async function driveHistory(id: number, drive: string, box: HTMLElement) {
-  box.replaceChildren(el('p', { class: 'meta' }, 'Reading the history...'));
-  try {
-    const d = await get<Parts<'history'>>('drives/history', { instance: id, drive, days: 30 });
-    const rows = rowsOf(d.history);
-    box.replaceChildren(lineChart(`${drive}: used and free over 30 days`, rows,
-      [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v)));
-  } catch (e) { box.replaceChildren(errorBox(e)); }
+  let day = Number(lsGet('pgvigil.driveHistoryDays')); if (!historyDays.includes(day)) day = 30;
+  const sel = el('select', { 'aria-label': `History window of ${drive}` }, ...historyDays.map(n => el('option', { value: String(n) }, `${n} days`)));
+  sel.value = String(day);
+  const chart = el('div');
+  let seq = 0;
+  async function draw() {
+    const mine = ++seq, want = day;
+    chart.replaceChildren(el('p', { class: 'meta' }, 'Reading the history...'));
+    try {
+      const d = await get<Parts<'history'>>('drives/history', { instance: id, drive, days: want });
+      if (mine !== seq) return;
+      chart.replaceChildren(lineChart(`${drive}: used and free over ${want} days`, rowsOf(d.history),
+        [{ key: 'used_bytes', label: 'used' }, { key: 'free_bytes', label: 'free' }], v => fmtBytes(v)));
+    } catch (e) { if (mine === seq) chart.replaceChildren(errorBox(e)); }
+  }
+  sel.addEventListener('change', () => { day = Number(sel.value); lsSet('pgvigil.driveHistoryDays', String(day)); void draw(); });
+  box.replaceChildren(el('div', { class: 'toolbar' }, el('label', {}, 'History ', sel)), chart);
+  await draw();
 }
 
 // ---- DB Space

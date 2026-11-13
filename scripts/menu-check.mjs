@@ -42,6 +42,10 @@
 //                     href exactly (run 3); Start/Stop Job -> 'Execute Job - <name>' with Start off (pg_cron has no run-now
 //                     call) and Stop off (not running, or actions off), each saying why; Configure Thresholds ->
 //                     'Job thresholds: <name>'
+//   D2 drive history  a drive's History on onprem-sql01's Drives page (2026-11-12: the chart was fixed at 30 days with no
+//                     way to change it): a window picker '7|30|90|180|365' standing at 30 and the chart 'over 30 days'; 90
+//                     picked -> a read of /api/drives/history with days=90 and the chart 'over 90 days'; 365 the same;
+//                     the pick kept in the browser (pgvigil.driveHistoryDays = 365)
 //   D  drives         under onprem-sql01's Storage folder one node per volume of /api/mssql/storage (total > 0), each with
 //                     a bar whose width is its used share (within 0.2 %) in the colour of its free share (ok / warn under
 //                     20 % / crit under 10 %), its visible words '... free (n %)', its title '... free of ...' (run 3)
@@ -394,6 +398,30 @@ await guard('D drives', async () => {
     return n && Math.abs(n.w - used) <= 0.2 && / free \(/.test(n.text) && / free of /.test(n.title) && n.cls.includes(free < 10 ? 'crit' : free < 20 ? 'warn' : 'ok');
   });
   check('D drives', vols.length > 0 && okW, `${d.length} drive nodes for ${vols.length} volumes: ${d.map(x => `${x.v} ${x.w}% (${x.cls.replace('tm-bar ', '')}) '${x.text}'`).join(', ')}`);
+});
+
+// ---- D2: a drive's History and its window picker ----
+await guard('D2 drive history', async () => {
+  const sqlId = idOf('demo-onprem-sql01');
+  await ev(`localStorage.removeItem('pgvigil.driveHistoryDays')`);
+  await go(`#/drives?i=${sqlId}`);
+  const histSel = 'button.link[aria-label^="History of"]', winSel = 'select[aria-label^="History window of"]';
+  for (let k = 0; k < 40 && !(await ev(`!!document.querySelector('${histSel}')`)); k++) await sleep(250);
+  await ev(`document.querySelector('${histSel}').click()`);
+  const titled = async n => { for (let k = 0; k < 40; k++) { if (await ev(`document.querySelector('#main').innerText.includes('used and free over ${n} days')`)) return true; await sleep(250); } return false; };
+  const first = await titled(30);
+  const opts = await ev(`[...(document.querySelector('${winSel}')?.options ?? [])].map(o => o.value).join('|')`);
+  const at = await ev(`document.querySelector('${winSel}')?.value ?? ''`);
+  const pick = async n => {
+    await ev(`(() => { const s = document.querySelector('${winSel}'); s.value = '${n}'; s.dispatchEvent(new Event('change')); return true; })()`);
+    const t = await titled(n);
+    const read = await ev(`performance.getEntriesByType('resource').some(e => e.name.includes('/api/drives/history') && /[?&]days=${n}(&|$)/.test(e.name))`);
+    return t && read;
+  };
+  const p90 = await pick(90), p365 = await pick(365);
+  const kept = await ev(`localStorage.getItem('pgvigil.driveHistoryDays')`);
+  check('D2 drive history', first && opts === '7|30|90|180|365' && at === '30' && p90 && p365 && kept === '365',
+    `opened at 30 days: ${first}; windows '${opts}' at '${at}'; 90 days read and drawn: ${p90}; 365 days read and drawn: ${p365}; kept: ${kept}`);
 });
 
 // ---- G: the grid cell menu ----
