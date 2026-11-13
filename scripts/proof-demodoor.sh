@@ -48,10 +48,12 @@
 #     - an alert's key of one demo instance with another demo instance's id: 403 'the alert belongs to another instance'
 #     - Send test: 403 '... pgvigil demo -serve runs no sender ...'; an alert rule: 403 '... judged by the alert sender,
 #       which pgvigil demo -serve does not run ...'; cancel: 403 'actions are off on this server (no actions
-#       configuration)'; Admin > Instances: 403 '... writes connection secrets and connects to servers ...'
+#       configuration)'; Admin > Instances (an instance add, a source's sweep and edit, a proposal's test): 403 '...
+#       writes connection secrets and connects to servers ...'
 #     - every row the door wrote names demo: no ack_log row with client 'demo door' and another user
 #     - nothing else was written: over the tables the page's write functions touch (acks, ack_log, the three threshold
-#       tables, job_exclusions, alert_dismissals, alert_rules, alert_tests, instances), counted before part A's first
+#       tables, job_exclusions, alert_dismissals, alert_rules, alert_tests, instances, admin_sources, admin_proposals,
+#       admin_audit), counted before part A's first
 #       request and after its last, the whole change is 'acks +1 ack_log +2 drive_thresholds +1', no threshold of demo
 #       is live and no door row is without an instance [added at the review's fold]
 #     [Added at the review's fold, red on the tree before it:]
@@ -231,7 +233,9 @@ counts() { q "select concat_ws(' ', 'acks', (select count(*) from pgvigil.acks),
   'drive_thresholds', (select count(*) from pgvigil.drive_thresholds), 'pg_thresholds', (select count(*) from pgvigil.pg_thresholds),
   'job_thresholds', (select count(*) from pgvigil.job_thresholds), 'job_exclusions', (select count(*) from pgvigil.job_exclusions),
   'alert_dismissals', (select count(*) from pgvigil.alert_dismissals), 'alert_rules', (select count(*) from pgvigil.alert_rules),
-  'alert_tests', (select count(*) from pgvigil.alert_tests), 'instances', (select count(*) from pgvigil.instances))"; }
+  'alert_tests', (select count(*) from pgvigil.alert_tests), 'instances', (select count(*) from pgvigil.instances),
+  'admin_sources', (select count(*) from pgvigil.admin_sources), 'admin_proposals', (select count(*) from pgvigil.admin_proposals),
+  'admin_audit', (select count(*) from pgvigil.admin_audit))"; }
 C0=$(counts)
 
 echo "== A. the API"
@@ -299,6 +303,9 @@ post alerts/test '{"channel":"ops"}' "${H[@]}"; want "Send test" 403 "pgvigil de
 post alertrules '{"name":"x"}' "${H[@]}"; want "an alert rule" 403 "judged by the alert sender, which pgvigil demo -serve does not run"
 post actions/cancel "{\"instance_id\":$D1,\"pid\":1,\"reason\":\"x\"}" "${H[@]}"; want "cancel" 403 "actions are off on this server (no actions configuration)"
 post admin/instances '{"op":"add","name":"x"}' "${H[@]}"; want "Admin > Instances" 403 "writes connection secrets and connects to servers"
+post admin/sources '{"op":"sweep","name":"x"}' "${H[@]}"; want "Admin > Instances: a source's sweep" 403 "writes connection secrets and connects to servers"
+post admin/sources '{"op":"edit","name":"x"}' "${H[@]}"; want "Admin > Instances: a source's edit" 403 "writes connection secrets and connects to servers"
+post admin/proposals '{"op":"test","proposal_id":"1"}' "${H[@]}"; want "Admin > Instances: a proposal's test" 403 "writes connection secrets and connects to servers"
 if [[ $(q "select count(*) from pgvigil.ack_log where client = 'demo door' and ui_user is distinct from 'demo'") == 0 ]]; then ok "A every row through the door names demo"; else fail "A a door row names another user"; fi
 # nothing else was written: over the tables the page's write functions touch, part A's whole change is one silence
 # (made and ended: one acks row, two log rows) and one drive threshold (set, then ended by inherit: one row, none live)

@@ -42,7 +42,7 @@ writes `pgvigil-report-<UTC time>.zip` into the folder it is run in, prints what
 | `version.txt` | the line of `pgvigil version`, the operating system and its release name, the CPU count, the build's revision and the versions of the main modules (the database drivers, the YAML reader, the AWS SDK) |
 | `config.yaml` | the configuration file, masked (below), and the result of the check the commands run on it |
 | `repository.txt` | the repository's server version, its migration level against this binary's, the last runs counted by status |
-| `instances.txt` | engine, platform, server version, active or not and last seen, per instance the repository knows |
+| `instances.txt` | engine, platform, server version, active or not and last seen ('not read yet (added <time>)' for an instance added on Admin > Instances that no read has reached), per instance the repository knows |
 | `collection-errors.txt` | the collections whose last run failed and the newest errors of the collection log, with their notes |
 
 The zip is still written when the configuration does not load or the repository does not answer: the report then says that, with the reason. That is when a report is needed.

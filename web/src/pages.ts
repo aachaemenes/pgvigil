@@ -3,7 +3,7 @@ import { DMS, get, Row, rowsOf, Table } from './api';
 import { planLink } from './plan';
 import { dmsDrainView, findingsView, slowCols, statementOrders, stmtCols } from './borrowed';
 import { lineChart } from './chart';
-import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, summaryText, tagsOf } from './fleet';
+import { Cell, cellClass, cells, cellText, checkLabel, Fleet, fleet, forget, Group, groups, notReadYet, summaryText, tagsOf } from './fleet';
 import { Ctx, href, rangeLabel, window_ } from './router';
 import { stripGrid } from './timestrip';
 import { functionsView, statementDepthView } from './statements';
@@ -371,7 +371,9 @@ export async function fleetSummary(ctx: Ctx): Promise<HTMLElement> {
   };
   // DBA Dash's columns in its order, then pgvigil's own tests, then pgvigil's other columns
   const cols: Col[] = [
-    { key: 'name', label: 'Instance', fmt: (v, r) => instLink(ctx, String(v), r.instance_id) },
+    // an instance added on Admin > Instances and not read yet says so beside its name (its cells are all 'not yet')
+    { key: 'name', label: 'Instance', fmt: (v, r) => { const nr = notReadYet(r); const a = instLink(ctx, String(v), r.instance_id);
+      return nr ? el('span', {}, a, ' ', el('span', { class: 'meta not-read' }, nr)) : a; } },
     ...groups.filter(g => g.dd).map(statusCol),
     ...groups.filter(g => !g.dd).map(statusCol),
     // PerformanceMonitor's server card as columns (task 177 D29): each chip's value, its detail in the cell's title
@@ -666,7 +668,7 @@ export async function instanceSummary(ctx: Ctx): Promise<HTMLElement> {
     ['data checksums', String(r.data_checksums ?? '')],
     ['pg_stat_statements', r.has_pg_stat_statements ? 'yes' : 'no'],
     ['tags', tagsOf(r).join(', ')],
-    ['last seen', fmtTime(r.last_seen)],
+    ['last seen', notReadYet(r) || fmtTime(r.last_seen)],
     ['last activity sample', fmtTime(r.activity_at)],
   ])));
   const checkCols: Col[] = [

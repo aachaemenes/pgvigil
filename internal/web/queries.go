@@ -3,8 +3,12 @@ package web
 // sqlInstances lists the active instances with their state and the latest session summary.
 // $1 = the stale check's expectations: a collection disabled or gated off for an instance (0) is not
 // counted as failing there, so an error row an earlier build left behind does not alarm for ever.
+// A row never read (no server_version: an instance added on Admin > Instances whose server has not answered yet)
+// has no last_seen (the column holds its add) and its added_at, which the pages print as 'not read yet (added ...)'.
 const sqlInstances = `
-SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coalesce(tm.tags, i.tags) AS tags, i.last_seen,
+SELECT i.instance_id, i.name, i.platform, i.server_version, i.is_replica, coalesce(tm.tags, i.tags) AS tags,
+       CASE WHEN i.server_version IS NOT NULL THEN i.last_seen END AS last_seen,
+       CASE WHEN i.server_version IS NULL THEN i.first_seen END AS added_at,
        i.engine, st.postmaster_start, st.max_connections, st.data_checksums, st.has_pg_stat_statements,
        a.snapshot_at AS activity_at, a.total, a.active, a.idle_in_txn, a.waiting_lock,
        a.longest_active_secs, a.longest_idle_txn_secs, a.oldest_xmin_age, h.snapshot_at AS host_at,

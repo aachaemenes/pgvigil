@@ -2,6 +2,7 @@
 // fetched at most once per 25 s unless a refresh forces it.
 import { get, Row, rowsOf, Table } from './api';
 import { auditFleetCell, readAuditFleet } from './pgaudit';
+import { fmtTime } from './ui';
 import { versionCell } from './versions';
 
 // mssql: the SQL Server instances' status cells (one row per instance and group) and their descriptions
@@ -300,6 +301,12 @@ export function worst(f: Fleet, r: Row): Level {
 export const levelClass = ['ok', 'warn', 'crit'];
 export const cellClass = (c: Cell) => c.none ? 'none' : levelClass[c.level];
 export const cellText = (c: Cell) => c.none ? c.text ?? 'no sample' : c.text ?? (c.level === 0 ? 'OK' : `${c.n} ${c.level === 2 ? 'critical' : 'warning'}`);
+
+// notReadYet: an instance added on Admin > Instances whose server has not answered a read yet (no server version:
+// /api/instances gives it no last_seen and its added_at) reads 'not read yet (added <t>)'; '' for any other row
+export function notReadYet(r: Row): string {
+  return r.last_seen == null && r.added_at != null ? `not read yet (added ${fmtTime(r.added_at)})` : '';
+}
 
 export function tagsOf(r: Row): string[] {
   const t = r.tags;

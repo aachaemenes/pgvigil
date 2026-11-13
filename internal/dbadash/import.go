@@ -427,7 +427,8 @@ SELECT f FROM unnest(ARRAY['pgvigil.ensure_month_partition(text, timestamptz)',
 // existing SQL Server instance of that name is used as it is (its description and tags are pgvigil's), except that a
 // row Admin > Instances made at its add and pgvigil never read (no version, no mssql_instance read: whatever platform
 // the page gave it - the join's w9e, finding 4) takes DBA Dash's version, and its platform when the page left it
-// 'auto', as a new one would; one stored as PostgreSQL is a skip with its reason.
+// 'auto', as a new one would, and is seen now (last_seen: the fleet
+// no longer says 'not read yet'); one stored as PostgreSQL is a skip with its reason.
 func pgvigilInstance(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, name string, in srcInstance, dry bool) (int, string, error) {
 	var id int
 	var engine string
@@ -443,7 +444,7 @@ func pgvigilInstance(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, 
 		if never && !dry {
 			// is_active and the tags stay the page's (a disabled page instance stays disabled)
 			if _, err := pool.Exec(ctx, `UPDATE pgvigil.instances SET platform = CASE WHEN platform = 'auto' THEN $2 ELSE platform END,
-			     server_version = $3, server_version_num = $4
+			     server_version = $3, server_version_num = $4, last_seen = now()
 			     WHERE instance_id = $1 AND server_version IS NULL`, id, platform, nullIfEmpty(in.Version), versionNum(in.Version)); err != nil {
 				return 0, "", fmt.Errorf("the page instance %s: %w", name, err)
 			}

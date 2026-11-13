@@ -1083,7 +1083,10 @@ func (m *masker) readRepository(ctx context.Context, dsn string, maxErr int) rep
 
 	// instances first: their names become aliases before any error text is scrubbed
 	b.Reset()
-	rows, err = conn.Query(ctx, `SELECT instance_id, name, coalesce(engine, 'postgres'), platform, coalesce(server_version, ''), is_active, last_seen
+	// an instance added on Admin > Instances whose server has not answered a read (no server_version) has no read time:
+	// its last_seen holds the add, said as 'not read yet (added <t>)'
+	rows, err = conn.Query(ctx, `SELECT instance_id, name, coalesce(engine, 'postgres'), platform, coalesce(server_version, ''), is_active,
+       server_version IS NULL, CASE WHEN server_version IS NULL THEN first_seen ELSE last_seen END
   FROM pgvigil.instances ORDER BY instance_id`)
 	if err != nil {
 		fmt.Fprintf(&b, "instances: not read: %s\n", why(err))
@@ -1093,13 +1096,17 @@ func (m *masker) readRepository(ctx context.Context, dsn string, maxErr int) rep
 		for rows.Next() {
 			var id int32
 			var name, engine, platform, sv string
-			var active bool
+			var active, never bool
 			var seen time.Time
-			if err := rows.Scan(&id, &name, &engine, &platform, &sv, &active, &seen); err != nil {
+			if err := rows.Scan(&id, &name, &engine, &platform, &sv, &active, &never, &seen); err != nil {
 				continue
 			}
 			n++
-			fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%t\t%s\n", m.instanceName(name, id), field(engine), field(platform), oneLine(sv, 120), active, seen.UTC().Format("2006-01-02 15:04"))
+			when := seen.UTC().Format("2006-01-02 15:04")
+			if never {
+				when = "not read yet (added " + when + ")"
+			}
+			fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%t\t%s\n", m.instanceName(name, id), field(engine), field(platform), oneLine(sv, 120), active, when)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
