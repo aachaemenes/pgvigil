@@ -9,6 +9,7 @@ import type { Ctx } from './router';
 import { href } from './router';
 import { fleet, tagsOf } from './fleet';
 import { badge, Col, el, errorBox, fmtNum, fmtSecs, fmtTime, grid } from './ui';
+import { collectorLine } from './collector';
 
 const word: Record<string, string> = { critical: 'Critical', warning: 'Warning', ok: 'OK', disabled: 'Disabled' };
 const kind: Record<string, string> = { critical: 'crit', warning: 'warn', ok: 'ok', disabled: '' };
@@ -66,6 +67,7 @@ export async function collectionDatesView(ctx: Ctx): Promise<HTMLElement> {
   statusSel.addEventListener('change', () => { lsSet('pgvigil.collectionDatesStatus', statusSel.value); void draw(); });
   refresh.addEventListener('click', () => void draw());
   sec.append(el('div', { class: 'toolbar' }, refresh, ' ', el('label', { for: 'cd-status' }, 'Status ', statusSel)), body);
+  if (ctx.instance) sec.insertBefore(await collectorLine(ctx), body); // task 201: the collector's line
   await draw();
   return sec;
 }

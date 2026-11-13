@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/aachaemenes/pgvigil/internal/actions"
+	"github.com/aachaemenes/pgvigil/internal/alerts"
 	"github.com/aachaemenes/pgvigil/internal/collect"
 	"github.com/aachaemenes/pgvigil/internal/config"
 	"github.com/aachaemenes/pgvigil/internal/dbadash"
 	"github.com/aachaemenes/pgvigil/internal/engines"
 	"github.com/aachaemenes/pgvigil/internal/mssql"
 	"github.com/aachaemenes/pgvigil/internal/web"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // runServe starts the web UI and JSON API over the repository:
@@ -58,6 +60,40 @@ func runServe(ctx context.Context, log *slog.Logger, args []string) error {
 	d := cfg.Repository.DSN()
 	if *dsn != "" {
 		d = config.Resolve(*dsn)
+	}
+	// task 201: the collector watchdog - while no collector has beaten for 5 minutes, serve runs the alert pass (its
+	// advisory lock keeps one sender) on the alerts login, so 'collector or network' goes out
+	if ast, aerr := alerts.LoadFile(*path); aerr == nil && len(ast.Channels) > 0 {
+		adsn := ast.DSN()
+		if adsn == "" {
+			adsn = cfg.Repository.DSN()
+		}
+		apool, perr := pgxpool.New(ctx, adsn)
+		if perr == nil {
+			pctx, pcancel := context.WithTimeout(ctx, 20*time.Second)
+			perr = apool.Ping(pctx) // a pool connects when first used: the watchdog is on only once the alerts login answered
+			pcancel()
+			if perr != nil {
+				apool.Close()
+			}
+		}
+		if perr == nil {
+			defer apool.Close()
+			go collect.Watchdog(ctx, log, d, func(c context.Context) error {
+				_, _, err := alerts.Pass(c, apool, ast.Channels, time.Now(), nil)
+				return err
+			})
+		} else {
+			collect.SetWatchdogOff("the alerts login: " + perr.Error())
+			log.Warn("collector watchdog off: the alerts login", "err", perr)
+		}
+	} else {
+		why := "serve's configuration has no alerts: list, so no alert goes out while a collector is down"
+		if aerr != nil {
+			why = "serve's alerts: list did not load: " + aerr.Error()
+		}
+		collect.SetWatchdogOff(why)
+		log.Warn("collector watchdog off: " + why)
 	}
 	if strings.TrimSpace(d) == "" {
 		src := "repository.dsn " + cfg.Repository.DSNRaw

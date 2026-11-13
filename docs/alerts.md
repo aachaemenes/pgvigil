@@ -97,6 +97,38 @@ One collector sends alerts: name the `alerts:` list in one configuration. A coll
 channels as recorded. A channel removed from the list keeps its open alerts in the repository but leaves the Findings
 column; renamed, it is a new channel and sends the standing findings again.
 
+## When many instances fail at once
+
+A network cut, the collector's host in trouble or a shared login gone wrong fails many instances at once. pgvigil
+sends one alert for it, **collector or network** (critical, source `pgvigil repository`, to every channel past its
+severity floor, scoped channels too), instead of one per instance:
+
+- **raised** when a collector (a host) has not beaten for 5 minutes while no other collector reads its instances
+  (*collector not seen*), or in a minute in which at least 3 of its instances, and over half of those it ran, failed
+  every run (*instances failing together*);
+- **stands** until no such minute is left in its last 4 written minutes, and resolves `clear_after` later (10 minutes
+  by default): its recovery comes about 14 minutes after the network heals.
+
+Only the alerts a shared cause explains wait under it: *authentication failing*, *collection failing*, *server
+unreachable*, and the findings judged by their age on data the cut stops refreshing (*job run over twice its
+average*, *job schedule missed*, *a job runs far longer than its average*, *amcheck older than N d*, *unused index*).
+Every other finding comes from the last good read and is sent as it is: a disk filling up before the cut may be its
+cause.
+
+| When | What those alerts do |
+|---|---|
+| A collector's newest written minute shows 3 or more of its instances, and over half of those it ran, with a failed run (a cut starts partway through a minute) | A new one waits for the next minute: about a minute, 3 minutes at most. One or two instances failing never wait. A cut that starts late in a minute may reach only some instances before the minute ends; when that is fewer than 3, or not over half of those the collector ran, they alert at once: up to half of a collector's instances, one beat (about a minute) before the parent, which then names them among the open alerts it covers. |
+| The parent stands | Held for its instances not read since it began: no new alert, no repeat, no recovery. One already open stays open and silent, and the parent's text names the open alerts it covers. An instance that comes back while held sends nothing. |
+| After the parent clears | An instance still failing sends one alert per finding after its next failure (its next refused login, failed run or failed connect), never off a streak built during the outage. |
+
+A refused login, or a server that does not answer at the instance's own connect, is that instance's one finding
+(*authentication failing* or *server unreachable*): the collections that could not connect do not each raise
+*collection failing*. An empty or unreadable DSN shows as *server unreachable* too, its error in the detail.
+
+A cut that drops packets instead of refusing them makes each connect hang until the operating system gives up (about
+2 minutes on Linux when the DSN sets no `connect_timeout`). A run is counted when it ends, so the parent can rise a
+minute or two later than for a refused connection.
+
 ## The address of an alert, templates, the send cap, Send test
 
 - **Every alert carries the address of its page.** With `alerts_base_url` set (the UI's address as a reader opens it:

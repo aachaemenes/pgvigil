@@ -123,9 +123,10 @@ SET application_name = 'pgvigil';`
 func Connect(ctx context.Context, in config.Instance) (*pgx.Conn, error) {
 	dsn := in.DSN()
 	if dsn == "" {
-		return nil, fmt.Errorf("connect %s: dsn %q resolved to an empty string (unset variable or unreadable file)", in.Name, in.DSNRaw)
+		return nil, InstanceConnect(in.Name, fmt.Errorf("connect %s: dsn %q resolved to an empty string (unset variable or unreadable file)", in.Name, in.DSNRaw))
 	}
 	conn, err := pgx.Connect(ctx, dsn)
+	err = InstanceConnect(in.Name, err)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s: %w", in.Name, err)
 	}

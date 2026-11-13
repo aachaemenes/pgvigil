@@ -17,12 +17,12 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/aachaemenes/pgvigil/internal/collect"
+	"github.com/aachaemenes/pgvigil/internal/config"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
-
-	"github.com/aachaemenes/pgvigil/internal/config"
 )
 
 const (
@@ -315,6 +315,7 @@ func (p *pgvigilService) Execute(_ []string, r <-chan svc.ChangeRequest, changes
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	collect.RunsAs = "windows service" // task 201: the heartbeat says how it runs
 	go func() { done <- runScheduler(ctx, p.log, p.args) }()
 	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	for {
