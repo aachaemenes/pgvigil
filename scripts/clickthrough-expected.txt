@@ -1,2 +1,2 @@
 # The click-through's expected FAIL rows (scripts/clickthrough-grade.mjs): kind | scope | page | control | why, and the smallest fix and its file
-# The first run (click-c1) lists none: its FAIL rows are WALK DONE-2's table, by cause, then listed here.
+# Empty before the first run: that run's FAIL rows, by cause, are listed here after it.

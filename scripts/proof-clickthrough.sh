@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof of the web UI's click-through (the pre-publish walk, DONE-2; run before a tag and on request, not in CI): every
+# Proof of the web UI's click-through (the pre-publish walk; run before a tag and on request, not in CI): every
 # page, tab, button, menu item and tree node of both engines clicked once on the demo, each click a row - landed where,
 # opened what, off with which words, a write sent (held by the walk, so the demo's state never changes), or NOTHING -
 # and a shot of each page. The demo fleet is seeded into a throwaway database and served on loopback (or
@@ -16,8 +16,7 @@
 #   PGVIGIL_CLICK_DRIVERS   drivers in parallel (default 4)
 #   PGVIGIL_CLICKTHROUGH_OUT a folder that gets the rows (clickthrough.json / .tsv), the contact sheet (contact.html),
 #                           the shots (shots/), each driver's JSON and log, and the click map's JSON
-# Expected (the first run, click-c1, on rel-click = rel-walk 3929810 (rel-join-w1 42ca98d + WALK DONE-1's files) + the
-# click-through's files; written before it):
+# Expected (the first run, on this tree; written before it):
 #   the grader's self-test: 9 of 9 cases
 #   the click map: its own verdict line (proof-clickmap's driver; a FAIL there is a row 'click map FAIL', not a stop)
 #   listed: about 165-180 pages - root about 59, PostgreSQL demo-onprem-erp01 about 55 with the Pooler of
@@ -25,8 +24,8 @@
 #   the walk: about 1,200-2,000 control rows and the tree's carets and leaves; every page settled; each driver about
 #     10-25 min (no tool run waits: a Run is a held write)
 #   the grade: FAIL 'click-through: FAIL (<n> FAIL row(s) outside the expected file)' - the expected file lists no row
-#     before the first run, so every FAIL row is NEW: those rows, by cause with the smallest fix and its file, are WALK
-#     DONE-2's table, listed in the expected file in the same commit; the second run's expected is 'click-through: OK'.
+#     before the first run, so every FAIL row is NEW: those rows, by cause with the smallest fix and its file, are the
+#     run's table, listed in the expected file in the same commit; the second run's expected is 'click-through: OK'.
 #     Most rows: link, navigates, redraws, dialog, menu, write held, disabled with its words; the rows that FAIL are
 #     expected among NOTHING (a control the demo leaves inert), error / api (a read refused on the demo), not reached
 set -uo pipefail

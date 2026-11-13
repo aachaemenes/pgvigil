@@ -1,4 +1,4 @@
-// The click-through (the pre-publish walk, DONE-2): every page, tab, button, menu item and tree node of both engines
+// The click-through (the pre-publish walk): every page, tab, button, menu item and tree node of both engines
 // clicked once on a `pgvigil demo -serve`, each click a row - landed where, opened what, off with which words, a
 // write sent (held by the walk), or NOTHING - and a shot of each page. Two modes:
 //   node scripts/clickthrough.mjs list <cdp port> <base url/> <pages.json> <shards>
@@ -169,7 +169,7 @@ if (mode === 'list') {
       add(kind === 'alert' ? 'root' : p.scope, kind === 'alert' ? null : p.engine, h, kind === 'alert' ? null : (p.engine === 'sqlserver' ? ms : pg));
     }
   }
-  // the cost a page is expected to take (B1: Community tools and Custom reports hold most clicks) and the cap
+  // the cost a page is expected to take (Community tools and Custom reports hold most clicks) and the cap
   for (const p of pages) { p.cap = /^(community|customreports)$/.test(p.tab) ? 140 : 45; p.cost = p.cap; p.ctx = true; }
   const bins = Array.from({ length: shards }, (_, k) => ({ k, cost: k === 0 ? 180 : 0, pages: [] }));
   for (const p of [...pages].sort((x, y) => y.cost - x.cost)) { const b = bins.reduce((m, x) => x.cost < m.cost ? x : m); b.pages.push(p); b.cost += p.cost; }

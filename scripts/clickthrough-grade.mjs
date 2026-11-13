@@ -1,4 +1,4 @@
-// The click-through's grade (the pre-publish walk, DONE-2): the drivers' rows merged with the click map's (proof-clickmap's
+// The click-through's grade (the pre-publish walk): the drivers' rows merged with the click map's (proof-clickmap's
 // click-check.mjs JSON from the same build's run: its links are rows, not clicked again), written as JSON, as a table
 // (TSV) and as a contact sheet (one HTML page: each page's shot with its rows beside it), and graded against
 // scripts/clickthrough-expected.txt. Usage:
