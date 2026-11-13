@@ -68,6 +68,7 @@ import { pgDbOptionsFleetView, pgDbOptionsView } from './pg_dboptions';
 import { mssqlErrorLogView, mssqlDefaultTraceView, mssqlSysHealthView } from './mssql_errorlog';
 import { mssqlProcsView } from './mssql_procs';
 import { mssqlPlanCacheView } from './mssql_plancache';
+import { mssqlQueriesView } from './mssql_queries';
 import { mssqlIndexesView } from './mssql_indexes';
 import { mssqlIndexLocksView } from './mssql_indexlocks';
 import { mssqlActionsLogView } from './mssql_actions';
@@ -106,7 +107,7 @@ const mssqlPages: Record<string, Render> = {
   mssqlcpu: mssqlCpuView, mssqlconnections: mssqlConnectionsView, mssqlmemory: mssqlMemoryView, mssqlfileio: mssqlFileIOView, mssqltempdb: mssqlTempdbView,
   mssqlqs: mssqlQueryStoreView,
   counters: metricsView,
-  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
+  mssqlprocs: mssqlProcsView, mssqlplancache: mssqlPlanCacheView, mssqlqueries: mssqlQueriesView, mssqlindexes: mssqlIndexesView, mssqlindexlocks: mssqlIndexLocksView, mssqlproperties: mssqlPropertiesView, mssqlaudit: mssqlAuditView, mssqlchecks: mssqlChecksView,
   mssqlerrorlog: mssqlErrorLogView, mssqltrace: mssqlDefaultTraceView, mssqlhealth: mssqlSysHealthView,
   customreports: customReportsView, community: communityView,
   ...reportPages,
