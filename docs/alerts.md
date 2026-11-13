@@ -123,7 +123,24 @@ cause.
 
 A refused login, or a server that does not answer at the instance's own connect, is that instance's one finding
 (*authentication failing* or *server unreachable*): the collections that could not connect do not each raise
-*collection failing*. An empty or unreadable DSN shows as *server unreachable* too, its error in the detail.
+*collection failing*. An empty or unreadable DSN shows as *server unreachable* too, its error in the detail. For an
+instance the collector service reads (`pgvigil run`, which beats), *server unreachable* is raised after 3 failed
+connects in a row over a minute or more, and a refused login is *authentication failing* alone: one failed connect is
+not yet a server down (a restart, a failover or a network blip ends inside a minute), and the Collection dates page
+shows the failed read at once. At the default intervals a server that stops answering (its port refuses) is reported
+1 to about 4 minutes later, 2 and a half on average: up to a minute until the instance's next collection, the rule's
+own minute, then the collector's beat and the alert pass, each up to a minute. A host that drops packets instead
+takes longer by the operating system's connect timeout per attempt (about 2 minutes on Linux when the DSN sets no
+`connect_timeout`): set one. An instance read only
+by `pgvigil collect` on a schedule has no heartbeat: its *server unreachable* is raised by its first failed connect
+of any kind, a refused login included. The service names each instance to the repository inside the instance's own
+connect, so its first failed connect is already the service's to report - after a long stop, for an instance read
+once an hour, and for one never reached.
+
+A host whose collector was uninstalled while the repository stays is retired there by the uninstall
+([uninstall.md](uninstall.md)): it raises no *collector not seen*. A blackout, silence or mute that names an instance
+never holds *collector or network* or *purge not run in 2 days*, which belong to no instance and carry no tag - mute
+those by their own alert, by check (`collector or network`) or by text.
 
 A cut that drops packets instead of refusing them makes each connect hang until the operating system gives up (about
 2 minutes on Linux when the DSN sets no `connect_timeout`). A run is counted when it ends, so the parent can rise a

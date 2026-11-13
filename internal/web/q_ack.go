@@ -73,6 +73,7 @@ SELECT o.*, coalesce(t.tags, '{}'::text[]) AS tags,
        (SELECT n.note || ' (' || n.created_by || ')' FROM pgvigil.acks n WHERE n.kind = 'note' AND n.finding_key = o.finding_key
            AND n.ended_at IS NULL ORDER BY n.created_at DESC LIMIT 1) AS last_note,
        EXISTS (SELECT 1 FROM pgvigil.acks b WHERE b.kind = 'blackout' AND b.instance_name = o.instance
+                  AND o.source IS DISTINCT FROM 'pgvigil repository'   -- task 201: no instance, so no instance's blackout
                   AND pgvigil.ack_live(b.ended_at, b.starts_at, b.until, $1)) AS is_blackout,
        h.kind AS held_by, h.ack_id AS hold_id,
        (SELECT string_agg(z.note, '; ' ORDER BY z.ack_id) FROM pgvigil.acks z
